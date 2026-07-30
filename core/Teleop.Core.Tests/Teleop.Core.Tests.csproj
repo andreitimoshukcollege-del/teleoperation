@@ -24,4 +24,11 @@
     <ProjectReference Include="..\Teleop.Core\Teleop.Core.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <!-- Explicit Link (rather than a glob) because MSBuild's default relative-path handling for
+         an Include outside the project directory ("..") does not reliably preserve the
+         "testdata/golden/" structure under the output directory otherwise. -->
+    <None Include="..\testdata\golden\basic-session.tlog" CopyToOutputDirectory="PreserveNewest" Link="testdata\golden\basic-session.tlog" />
+  </ItemGroup>
+
 </Project>

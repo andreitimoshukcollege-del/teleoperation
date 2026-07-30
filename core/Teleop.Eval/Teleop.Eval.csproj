@@ -4,6 +4,10 @@
     <ProjectReference Include="..\Teleop.Core\Teleop.Core.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <None Include="..\testdata\golden\basic-session.tlog" CopyToOutputDirectory="PreserveNewest" Link="testdata\golden\basic-session.tlog" />
+  </ItemGroup>
+
   <PropertyGroup>
     <OutputType>Exe</OutputType>
     <TargetFramework>net8.0</TargetFramework>

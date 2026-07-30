@@ -7,6 +7,17 @@ that wraps another transport. Sockets live in `Bridge/UdpTransport.cs` because I
 concern, not because `System.Net` is unavailable (it is available under IL2CPP). Keeping Core
 I/O-free is what makes replay bit-deterministic.
 
+## Implemented
+
+| Name | File | Idea |
+|---|---|---|
+| loopback | `LoopbackTransport.cs` | zero-impairment baseline: fixed-capacity FIFO ring, `arrivalTicks == sendTicks`, full ring returns false |
+| emulated | `EmulatedTransport.cs` | decorator: fixed delay + uniform jitter + Gilbert-Elliott burst loss + explicit reorder knob, all from an injected `SeededRng` |
+
+Neither has a `Registry/Registries.cs` entry yet — that file does not exist in the repo (no
+Core folder has a registry table at time of writing). Both need one the moment it lands, or a
+sweep cannot name them.
+
 ## EmulatedTransport
 
 A **decorator** — it wraps any `ITransport` and injects delay, jitter, loss, and reordering
@@ -18,6 +29,29 @@ Requirements:
 - Trace-driven mode replays recorded one-way delays sample by sample, no resampling.
 - Loss must model **bursts**, not just a Bernoulli rate. Real links lose runs of packets, and
   burst length is what breaks jitter buffers.
+
+Status against those requirements: the first and third are met (`Types/NetworkProfile.cs`, a
+2-state Gilbert-Elliott chain with expected burst length `1 / (1 - LossProbabilityAfterLost)`).
+**Trace-driven mode is not implemented** — `core/testdata/traces/` does not exist yet and the
+standard profile set is frozen behind an ADR; `EmulatedTransport` is parametric-only for now.
+
+How the delay is applied, since it constrains anything built on top: `ITransport.Send` has no
+future-delivery parameter and Core has no threads, so delay lives entirely on the receive side.
+`TryReceive` drains the wrapped transport, stamps each drained datagram with
+`innerArrivalTicks + delay` — the tick the wrapped transport *reported*, never the poll tick —
+and holds it in a fixed-capacity min-heap until due. Consequences worth knowing:
+
+- Impairment is **additive** over the wrapped transport, so wrapping a real socket gives real
+  delay plus the profile, not the profile alone.
+- Reordering needs no special case: delivery pops by earliest synthetic arrival.
+- The jitter and reorder draws happen at drain time while the loss draw happens at send time, so
+  the two interleave in the RNG stream according to the poll schedule. Deterministic for a fixed
+  schedule; a *different* poll schedule with the same seed is a different realization.
+- Every datagram consumes exactly one draw at send and two at drain regardless of the profile's
+  values, so two profiles differing in one knob and sharing a seed keep common random numbers on
+  the others.
+- When `maxInFlight` is exhausted the wrapped transport is simply not drained (back-pressure);
+  the emulator never destroys a datagram the profile did not say to lose.
 
 ## Codecs
 

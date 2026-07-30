@@ -1,0 +1,46 @@
+# MSBuild output, redirected here by core/Directory.Build.props
+build/
+bin/
+obj/
+
+# Windows / Visual Studio artifacts
+.vs/
+UpgradeLog*
+*.user
+
+# Never commit build products
+*.apk
+*.aab
+*.keystore
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.ipynb_checkpoints/
+
+# ROS 2 / colcon
+robot/build/
+robot/install/
+robot/log/
+
+# Bulk research data: commit small golden fixtures in core/testdata/ only.
+# Session recordings and video go to a GitHub Release, not to git or LFS.
+recordings/
+*.mp4
+*.mkv
+
+# Training checkpoints. Only published models get committed.
+analysis/training/checkpoints/
+*.ckpt
+*.pt
+*.pth
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Note: Unity's own ignore file lives at unity/TeleopVR/.gitignore.
+# Gitignore patterns containing a slash are relative to the file that declares them,
+# so Unity's official file only works unmodified when nested there.

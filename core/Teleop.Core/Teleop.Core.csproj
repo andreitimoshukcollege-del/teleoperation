@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <!-- Unity 2022.3 uses C# 9 and offers .NET Standard 2.1 as its API Compatibility
+         Level. Do NOT retarget to net8.0 and do NOT raise LangVersion: anything newer
+         compiles under `dotnet` and breaks the Quest build, so green tests are not
+         evidence that this is correct. -->
+    <TargetFramework>netstandard2.1</TargetFramework>
+    <LangVersion>9.0</LangVersion>
+
+    <!-- Nullable is enforced by `dotnet build` only. Unity compiles this assembly from
+         the .asmdef and ignores this file, so it will not flag the same warnings.
+         Useful, but don't rely on it for correctness reasoning. -->
+    <Nullable>enable</Nullable>
+
+    <!-- Zero PackageReference entries, by design. Need a library? Declare an interface
+         here and implement it in Teleop.Eval (headless) and Bridge/ (Unity). -->
+  </PropertyGroup>
+
+</Project>

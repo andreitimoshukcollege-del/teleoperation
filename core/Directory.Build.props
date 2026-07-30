@@ -1,0 +1,11 @@
+<Project>
+  <!-- Redirects MSBuild output OUT of core/Teleop.Core/.
+       Without this, `dotnet build` drops bin/ and obj/ inside the UPM package folder,
+       Unity imports the loose DLL as a plugin assembly, and every type in Core is
+       defined twice. BaseIntermediateOutputPath must live here rather than in the
+       .csproj because NuGet restore reads it very early. -->
+  <PropertyGroup>
+    <BaseOutputPath>$(MSBuildThisFileDirectory)../build/$(MSBuildProjectName)/bin/</BaseOutputPath>
+    <BaseIntermediateOutputPath>$(MSBuildThisFileDirectory)../build/$(MSBuildProjectName)/obj/</BaseIntermediateOutputPath>
+  </PropertyGroup>
+</Project>

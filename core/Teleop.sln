@@ -1,0 +1,34 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.0.31903.59
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Teleop.Core", "Teleop.Core\Teleop.Core.csproj", "{690403C8-2667-47F4-B829-D6506503A61A}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Teleop.Core.Tests", "Teleop.Core.Tests\Teleop.Core.Tests.csproj", "{7FF1BF06-BCCC-41E0-B597-4B096AF559FD}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Teleop.Eval", "Teleop.Eval\Teleop.Eval.csproj", "{FAB345A6-1749-436E-8562-8BD0E7743F7D}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{690403C8-2667-47F4-B829-D6506503A61A}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{690403C8-2667-47F4-B829-D6506503A61A}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{690403C8-2667-47F4-B829-D6506503A61A}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{690403C8-2667-47F4-B829-D6506503A61A}.Release|Any CPU.Build.0 = Release|Any CPU
+		{7FF1BF06-BCCC-41E0-B597-4B096AF559FD}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{7FF1BF06-BCCC-41E0-B597-4B096AF559FD}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{7FF1BF06-BCCC-41E0-B597-4B096AF559FD}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{7FF1BF06-BCCC-41E0-B597-4B096AF559FD}.Release|Any CPU.Build.0 = Release|Any CPU
+		{FAB345A6-1749-436E-8562-8BD0E7743F7D}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{FAB345A6-1749-436E-8562-8BD0E7743F7D}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{FAB345A6-1749-436E-8562-8BD0E7743F7D}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{FAB345A6-1749-436E-8562-8BD0E7743F7D}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+EndGlobal

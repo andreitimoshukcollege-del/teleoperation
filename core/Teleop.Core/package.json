@@ -1,0 +1,7 @@
+{
+  "name": "com.teleop.core",
+  "version": "0.1.0",
+  "displayName": "Teleop Core",
+  "description": "Latency-mitigation algorithms. No Unity dependencies. Compiled by both dotnet and Unity from one source tree.",
+  "unity": "2022.3"
+}

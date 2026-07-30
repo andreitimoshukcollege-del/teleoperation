@@ -1,0 +1,65 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "env": {
+    "CLAUDE_CODE_GIT_BASH_PATH": "C:\\Program Files\\Git\\bin\\bash.exe"
+  },
+  "permissions": {
+    "defaultMode": "default",
+    "allow": [
+      "Read(./**)",
+      "Bash(dotnet:*)",
+      "Bash(git status:*)",
+      "Bash(git diff:*)",
+      "Bash(git log:*)",
+      "Bash(git rev-parse:*)",
+      "Bash(git show:*)",
+      "Bash(ls:*)",
+      "Bash(find:*)",
+      "Bash(rg:*)",
+      "Bash(python3:*)",
+      "Bash(pytest:*)",
+      "Edit(core/**)",
+      "Edit(analysis/**)",
+      "Edit(experiments/**)",
+      "Edit(docs/**)",
+      "Bash(adb logcat:*)"
+    ],
+    "ask": [
+      "Edit(unity/**)",
+      "Edit(robot/**)",
+      "Edit(.claude/**)",
+      "Edit(.github/**)",
+      "Bash(git push:*)",
+      "Bash(git tag:*)",
+      "Bash(adb:*)"
+    ],
+    "deny": [
+      "Edit(results/**)",
+      "Edit(core/testdata/**)",
+      "Edit(unity/TeleopVR/Library/**)",
+      "Edit(build/**)",
+      "Bash(rm -rf:*)",
+      "Bash(git commit --amend:*)",
+      "Bash(git rebase:*)",
+      "Bash(git reset --hard:*)",
+      "Bash(git filter-branch:*)",
+      "Bash(git push --force:*)",
+      "Read(./.env)",
+      "Read(./.env.*)",
+      "Read(./secrets/**)"
+    ]
+  },
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash ./scripts/hooks/core-guard.sh"
+          }
+        ]
+      }
+    ]
+  }
+}

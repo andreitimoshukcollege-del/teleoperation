@@ -51,9 +51,8 @@ A task is complete only when all of these exist:
    zero allocation on the hot path.
 4. A benchmark row so it runs in the standard sweep.
 5. The folder's `CLAUDE.md` "Implemented" table updated.
-6. All three verification commands pass:
-   `dotnet test`, `dotnet run --project Teleop.Eval -- verify`,
-   `dotnet run --project Teleop.Eval -- audit`.
+6. All three verification commands pass — and if any is not yet implemented, it must
+   exit non-zero and you must say so explicitly rather than reporting a pass.
 
 A successful build is not evidence of success. Run the commands. If `audit` or `verify` fails,
 fix it — do not report the task done with a note about it.

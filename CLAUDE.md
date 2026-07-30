@@ -63,6 +63,8 @@ capabilities to Core by **implementing interfaces that Core declares** (`IRobotP
    them passing.
 9. **New algorithm = new file + `Registries.cs` entry + unit test + benchmark row.** No
    exceptions. Use `/new-impl`.
+10. **An unimplemented check must exit non-zero.** Never a stub that returns success. An
+    always-passing gate manufactures confidence and is worse than no gate.
 
 ## Where new code goes
 
@@ -99,14 +101,23 @@ before claiming a task is done. Never report success on the basis of a successfu
 
 ## Environment
 
-- Windows dev box; repo root is `C:\Users\andre\Projects\teleoperation`.
-- **Unity 2022.3.46f1** — C# 9, API Compatibility Level `.NET Standard 2.1`. Sentis requires
-  2023.2+, so on-device ML inference goes through `IInferenceBackend` with a backend chosen at
-  Phase 7; do not write `using Unity.Sentis` anywhere.
-- CI runs on Linux. **Paths are case-sensitive there even though Windows tolerates
-  mismatches** — match the on-disk casing of files, folders, and namespaces exactly. A CI
-  failure on a path that obviously exists is almost always a casing mismatch.
-- PowerShell for `dotnet`, `git`, `adb`, Unity CLI. Git Bash for `scripts/*.sh`.
+- Repo lives on NTFS at `C:\Users\andre\Projects\teleoperation` (required — Unity is a
+  Windows app and cannot open a project over `\\wsl$\`). Reached from WSL as
+  `/mnt/c/Users/andre/Projects/teleoperation`.
+- Shell is zsh under WSL, but `dotnet` is the **Windows** SDK, reached via a wrapper at
+  `~/.local/bin/dotnet`. Never install the Linux SDK — two SDKs sharing `build/` and
+  `obj/` cause rebuild churn and restore errors. Pass relative paths only; WSL
+  translates the CWD for Windows processes but not arguments. Use
+  `$(wslpath -w <path>)` if an absolute path is unavoidable.
+- Unity, `adb`, and Unity CLI builds run on the Windows side. `git` and `git-lfs` are
+  installed in WSL; never run a working-tree-modifying git command from a shell
+  without `git-lfs`, or LFS-tracked binaries get written as pointer text files.
+- **Unity 2022.3.46f1** — C# 9, API Compatibility Level `.NET Standard 2.1`. Sentis
+  requires 2023.2+, so on-device ML inference goes through `IInferenceBackend` with a
+  backend chosen at Phase 7; do not write `using Unity.Sentis` anywhere.
+- CI runs on Linux and paths are case-sensitive there. WSL is also case-sensitive while
+  NTFS is not, so a casing mismatch may work in Unity and fail everywhere else. Match
+  on-disk casing exactly.
 
 ## Traps that have bitten this repo before
 

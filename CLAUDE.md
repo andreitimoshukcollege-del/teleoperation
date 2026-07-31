@@ -69,8 +69,8 @@ capabilities to Core by **implementing interfaces that Core declares** (`IRobotP
 ## Where new code goes
 
 - New approach to an existing question → new file in the matching Core folder
-  (`Prediction/`, `Reconciliation/`, `Buffering/`, `Transport/`, `Autonomy/`) + registry entry
-  + test. Nothing else changes.
+  (`Prediction/`, `Reconciliation/`, `Buffering/`, `Transport/`, `Autonomy/`, `Plant/`) +
+  registry entry + test. Nothing else changes.
 - New question entirely → new interface in `Contracts/`, new folder, `Pipeline/` learns to
   wire it. This is an architecture change: write an ADR in `docs/adr/` first.
 - Needs a `Transform`, `GameObject`, GPU, XR device, socket, or file → `unity/TeleopVR/

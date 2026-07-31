@@ -69,6 +69,12 @@ format changes what mitigation is even possible downstream.
 has a plan to follow through a lost packet. It converts a latency problem into an
 intent-transmission problem, and it interacts with the predictor — benchmark the pair.
 
+Only `raw` is implemented so far (fixed 73-byte little-endian binary, `Pipeline/`'s Phase-4
+zero-mitigation baseline codec — binary, not text like `Recording/`'s `.tlog`, because this
+crosses a bounded datagram on the per-frame hot path and is never committed or diffed).
+`delta-quant`, `trajectory`, `redundant` remain planned; their rows describe the design, not
+the disk.
+
 ## Network profiles
 
 Frozen in `core/testdata/traces/`. **Do not edit or add to the standard set** without an ADR;

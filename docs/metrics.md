@@ -35,6 +35,12 @@ delay looks suspiciously frame-quantized.
 **One-way delay (OWD)** — `t_recv − t_send`, per direction, reported separately. Uplink and
 downlink are frequently asymmetric and averaging them hides that.
 
+Metric names emitted via `IMetricSink.Record`: `owd_uplink_ms` (`t_recv − t_send` for the
+operator→robot command) and `owd_downlink_ms` (`t_recv − t_send` for the robot→operator state
+reply), both in milliseconds, both already converted into the operator's canonical clock domain
+via `ClockSync` before the subtraction (`docs/adr/0002-latency-trace.md`). First emitted by
+`Pipeline/OperatorEndpoint.cs`.
+
 **Motion-to-photon (M2P)** — `t_photon(displayed) − t_capture(operator motion)`. The headline
 number. Validate the software estimate against a physical rig at least once — LED plus
 photodiode, or a high-speed camera on a spinning marker — then trust the software estimate and

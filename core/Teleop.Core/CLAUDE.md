@@ -11,6 +11,8 @@ drift. That property is the reason the project is laid out this way — protect 
   "what are the swappable parts of this system?"
 - `Prediction/`, `Reconciliation/`, `Buffering/`, `Transport/`, `Autonomy/` — implementations
   of exactly one contract each. `ls` answers "what have we tried on this axis?"
+- `Plant/` — the Core-side `IRobotPlant` sweeps run against. Kinematic, not physics; the Unity
+  and hardware plants live in `Bridge/`.
 - `Types/` — value types crossing the wire. Immutable, `System.Numerics`, ROS convention.
 - `Time/` — `ITimeAuthority` and its implementations. Nothing else reads a clock.
 - `Pipeline/` — composition. The wiring diagram, expressed in code.

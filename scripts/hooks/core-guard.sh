@@ -13,7 +13,10 @@ CORE="core/Teleop.Core"
 FAIL=0
 report() { echo "CORE INVARIANT VIOLATION — $1" >&2; FAIL=1; }
 
-hit() { grep -rn --include='*.cs' -E "$1" "$CORE" 2>/dev/null | grep -v '^\s*//'; }
+# grep -n prefixes "path:line:" before the matched content, so a naive '^\s*//' comment
+# filter never matches (it's anchored against the path, not the code). Match past the
+# "path:line:" prefix instead.
+hit() { grep -rn --include='*.cs' -E "$1" "$CORE" 2>/dev/null | grep -vE '^[^:]*:[0-9]+:[[:space:]]*//'; }
 
 # 1. Unity leakage
 out=$(hit 'using[[:space:]]+UnityEngine|UnityEngine\.')            && [ -n "$out" ] && report "UnityEngine referenced in Core:"$'\n'"$out"

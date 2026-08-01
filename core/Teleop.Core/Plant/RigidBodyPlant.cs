@@ -48,14 +48,6 @@ namespace Teleop.Core.Plant
     /// </summary>
     public sealed class RigidBodyPlant : IRobotPlant
     {
-        /// <summary>
-        /// Below this angular speed (radians/second) the rotation integration is skipped entirely
-        /// rather than normalizing a zero axis. Not a research knob and not a dead band on
-        /// operator input: it exists only because the rotation axis is undefined for a zero rate
-        /// vector. Small enough that any rate a real operator or codec produces integrates
-        /// normally — at this rate a full revolution takes longer than the age of the universe.
-        /// </summary>
-        private const float AngularRateEpsilon = 1e-12f;
 
         private readonly Pose _initialPose;
         private readonly long _ticksPerSecond;
@@ -179,11 +171,14 @@ namespace Teleop.Core.Plant
         /// commanded velocities. A step at or before the current state time is a no-op, so a
         /// duplicate or out-of-order step cannot double-integrate or move time backwards.
         ///
-        /// Rotation integrates in the <b>world</b> frame: the delta built from the axis-angle rate
-        /// vector is pre-multiplied onto the current orientation, so the commanded axis is fixed
-        /// in the world, not carried around by the body. The result is renormalized every step
-        /// because thousands of quaternion products otherwise drift off the unit sphere.
-        /// Allocation-free.
+        /// Rotation integrates via <see cref="MotionMath.IntegrateWorld"/> in the <b>world</b>
+        /// frame: the delta is pre-multiplied onto the current orientation, so the commanded axis
+        /// is fixed in the world, not carried around by the body, and the result is renormalized
+        /// every step because thousands of quaternion products otherwise drift off the unit
+        /// sphere. Sharing that implementation with every predictor that extrapolates rotation
+        /// (rather than each rolling its own) is deliberate -- see <see cref="MotionMath"/>'s own
+        /// doc for why a second rotation-integration site is exactly the kind of divergence that
+        /// looks indistinguishable from prediction error. Allocation-free.
         /// </summary>
         public void Step(long nowTicks)
         {
@@ -197,16 +192,7 @@ namespace Teleop.Core.Plant
             float dt = (float)(nowTicks - _stateTicks) / _ticksPerSecond;
 
             _position += _linearVelocity * dt;
-
-            float angularSpeed = _angularVelocity.Length();
-            if (angularSpeed > AngularRateEpsilon)
-            {
-                // Divide by the length already computed rather than calling Vector3.Normalize,
-                // which would repeat the square root.
-                Vector3 axis = _angularVelocity / angularSpeed;
-                Quaternion delta = Quaternion.CreateFromAxisAngle(axis, angularSpeed * dt);
-                _rotation = Quaternion.Normalize(delta * _rotation);
-            }
+            _rotation = MotionMath.IntegrateWorld(_rotation, _angularVelocity * dt);
 
             _stateTicks = nowTicks;
         }

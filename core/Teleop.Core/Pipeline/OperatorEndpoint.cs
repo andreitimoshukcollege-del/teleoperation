@@ -9,13 +9,23 @@ using Teleop.Core.Types;
 namespace Teleop.Core.Pipeline
 {
     /// <summary>
-    /// The operator side of a zero-mitigation loopback: capture a pose, send it as a command,
-    /// and match the robot's eventual reply back to a <see cref="LatencyTrace"/>. This is the
+    /// The operator side of the loopback: capture a pose, send it as a command, match the
+    /// robot's eventual reply back to a <see cref="LatencyTrace"/>, and maintain a live estimate
+    /// of the robot's current state via an injected predictor/reconciler pair. This is the
     /// composition layer the root <c>CLAUDE.md</c> describes as "the wiring diagram, expressed
     /// in code" — it holds no algorithm of its own, only the sequencing that ties
-    /// <see cref="ICommandCodec"/>, <see cref="ITransport"/>, and <see cref="ClockSync"/>
-    /// together for Phase 4's baseline (docs/setup.md), which has no predictor, reconciler, or
-    /// autonomy arbiter to wire in yet.
+    /// <see cref="ICommandCodec"/>, <see cref="ITransport"/>, <see cref="ClockSync"/>,
+    /// <see cref="IPredictor{TState}"/>, and <see cref="IReconciler{TState}"/> together.
+    ///
+    /// The predictor/reconciler are <b>required</b> constructor dependencies, never defaulted
+    /// internally: this type "holds no algorithm of its own" is a real constraint, not a
+    /// figure of speech, so the zero-mitigation configuration (a passthrough predictor plus a
+    /// snap reconciler) must be visible at the call site, not hidden inside this class. Only
+    /// operator-side prediction is wired here — estimating the robot's current state from stale
+    /// downlink samples. Robot-side prediction (estimating operator intent from stale commands)
+    /// is a different problem with different signal statistics per
+    /// <see cref="IPredictor{TState}"/>'s own doc, and nothing here attempts it; see
+    /// <see cref="RobotEndpoint"/>, which is unchanged.
     ///
     /// <see cref="ITimeAuthority"/> is used only for <c>TicksPerSecond</c> (a fixed conversion
     /// constant) — never <c>NowTicks</c>. Every "when is it now" arrives as an explicit
@@ -23,7 +33,7 @@ namespace Teleop.Core.Pipeline
     /// discipline <see cref="ITransport"/> and <c>IRobotPlant</c> already enforce.
     ///
     /// <c>t_playout</c> is set equal to <c>t_operatorRecv</c> in <see cref="TryReceiveState"/> —
-    /// the explicit Phase-4 stand-in for the not-yet-built <c>ImmediatePlayout</c>
+    /// the explicit stand-in for the not-yet-built <c>ImmediatePlayout</c>
     /// (<c>Buffering/CLAUDE.md</c>'s "zero buffer" baseline). This is a deliberately temporary
     /// shortcut: once <c>IPlayoutPolicy</c> has an implementation, this inline assignment is
     /// replaced by a real call to it.
@@ -40,6 +50,8 @@ namespace Teleop.Core.Pipeline
         private readonly long _ticksPerSecond;
         private readonly IMetricSink _metrics;
         private readonly ClockSync _clockSync;
+        private readonly IPredictor<Pose> _robotStatePredictor;
+        private readonly IReconciler<Pose> _robotStateReconciler;
 
         private readonly byte[] _sendBuffer;
         private readonly byte[] _recvBuffer;
@@ -60,6 +72,8 @@ namespace Teleop.Core.Pipeline
             ITimeAuthority operatorClock,
             IMetricSink metrics,
             ClockSync clockSync,
+            IPredictor<Pose> robotStatePredictor,
+            IReconciler<Pose> robotStateReconciler,
             int inFlightCapacity)
         {
             if (commandCodec.MaxEncodedBytes > uplinkTransport.MaxPayloadBytes)
@@ -75,6 +89,8 @@ namespace Teleop.Core.Pipeline
             _ticksPerSecond = operatorClock.TicksPerSecond;
             _metrics = metrics;
             _clockSync = clockSync;
+            _robotStatePredictor = robotStatePredictor;
+            _robotStateReconciler = robotStateReconciler;
 
             _sendBuffer = new byte[commandCodec.MaxEncodedBytes];
             _recvBuffer = new byte[downlinkTransport.MaxPayloadBytes];
@@ -116,11 +132,12 @@ namespace Teleop.Core.Pipeline
         /// Drains the downlink transport and, if a reply matching an in-flight
         /// <see cref="LatencyTrace"/> arrives, completes it: converts the robot's raw
         /// timestamps into operator domain via <see cref="ClockSync"/>, feeds the round trip
-        /// back into <see cref="ClockSync"/> for the next estimate, and records one-way-delay
-        /// metrics. A reply for an unknown or already-evicted sequence is an ordinary, silently
-        /// skipped outcome -- the same "false is ordinary" spirit as the rest of
-        /// <see cref="ITransport"/>. Returns false when nothing completed this call. Call in a
-        /// loop until it returns false to drain a step. Allocation-free.
+        /// back into <see cref="ClockSync"/> for the next estimate, records one-way-delay
+        /// metrics, and folds the robot's reported state into the predictor/reconciler pair
+        /// (see <see cref="EstimateRobotState"/>). A reply for an unknown or already-evicted
+        /// sequence is an ordinary, silently skipped outcome -- the same "false is ordinary"
+        /// spirit as the rest of <see cref="ITransport"/>. Returns false when nothing completed
+        /// this call. Call in a loop until it returns false to drain a step. Allocation-free.
         /// </summary>
         public bool TryReceiveState(long nowTicks, out LatencyTrace completedTrace)
         {
@@ -157,11 +174,38 @@ namespace Teleop.Core.Pipeline
                 _lastAckSequence = stateFrame.Sequence;
 
                 RecordOneWayDelayMetrics(completedTrace, nowTicks);
+                ObserveRobotState(stateFrame.Pose, downlinkSendOperatorDomain);
                 return true;
             }
 
             completedTrace = default;
             return false;
+        }
+
+        /// <summary>
+        /// The live estimate of the robot's current state: <c>Reconcile(Predict(nowTicks), nowTicks)</c>.
+        /// Named for, and intended to be called from, docs/setup.md's <c>Application.onBeforeRender</c>
+        /// callback slot ("<c>EstimateRobotState</c> → write Transforms") -- the last hook before
+        /// rendering, so the estimate is as fresh as possible at the moment it's used.
+        /// Allocation-free.
+        /// </summary>
+        public Pose EstimateRobotState(long nowTicks) =>
+            _robotStateReconciler.Reconcile(_robotStatePredictor.Predict(nowTicks), nowTicks);
+
+        /// <summary>
+        /// Folds one robot-state sample into the predictor and reconciler, in the order that
+        /// makes <see cref="IReconciler{TState}.Observe"/>'s <c>predictedAtCapture</c> parameter
+        /// correct: the prediction for <paramref name="captureTicks"/> is read <b>before</b> the
+        /// new sample is folded into the predictor, so it reflects what was actually displayed
+        /// for that instant, not a prediction contaminated by the truth that just arrived.
+        /// </summary>
+        private void ObserveRobotState(Pose robotPose, long captureTicks)
+        {
+            Pose predictedAtCapture = _robotStatePredictor.Predict(captureTicks);
+            var sample = new Stamped<Pose>(captureTicks, robotPose);
+
+            _robotStatePredictor.Observe(sample);
+            _robotStateReconciler.Observe(sample, predictedAtCapture, _robotStatePredictor.Diagnostics);
         }
 
         private void RecordOneWayDelayMetrics(in LatencyTrace trace, long nowTicks)
@@ -205,9 +249,9 @@ namespace Teleop.Core.Pipeline
 
         /// <summary>
         /// Returns the endpoint to its as-constructed state: no in-flight traces, sequence
-        /// counters reset. Does not reset <see cref="ClockSync"/> or the transports -- those are
-        /// injected dependencies with their own <c>Reset()</c>, called separately by whatever
-        /// owns them.
+        /// counters reset. Does not reset <see cref="ClockSync"/>, the transports, or the
+        /// injected predictor/reconciler -- those are injected dependencies with their own
+        /// <c>Reset()</c>, called separately by whatever owns them.
         /// </summary>
         public void Reset()
         {

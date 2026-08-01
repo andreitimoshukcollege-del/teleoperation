@@ -14,12 +14,21 @@ implemented here.
 | — | `RobotEndpoint.cs` | drains commands → `IRobotPlant`; replies with plant state once per received datagram |
 | — | `RobotStateFrame.cs` / `RobotStateFrameCodec.cs` | the downlink wire message and its 49-byte fixed binary codec (plain class, not a `Contracts/` interface — exactly one downlink shape exists) |
 
-This is Phase 4's (docs/setup.md) zero-mitigation baseline substrate: no predictor, no
-reconciler, no autonomy arbiter, no `IPlayoutPolicy` are wired in yet, because none of
-`Prediction/`, `Reconciliation/`, `Autonomy/`, `Buffering/` have an implementation to wire.
-`OperatorEndpoint` hardcodes `t_playout = t_operatorRecv` inline as the explicit, temporary
-stand-in for the not-yet-built `ImmediatePlayout` — replace that line, not add around it, once
-`IPlayoutPolicy` has a real implementation.
+`OperatorEndpoint` now hosts a live, injected `IPredictor<Pose>`/`IReconciler<Pose>` pair
+(Phase 5): `TryReceiveState` folds each robot-state sample into both, and
+`EstimateRobotState(nowTicks)` (`Reconcile(Predict(nowTicks), nowTicks)`) is the live estimate a
+host calls from `Application.onBeforeRender` per docs/setup.md's callback table. The pair is a
+**required** constructor dependency, never defaulted internally — Pipeline "holds no algorithm
+of its own" is a real constraint, so the zero-mitigation configuration
+(`PassthroughPredictor` + `SnapReconciler`) must be visible at the call site, not hidden in this
+class. Only operator-side prediction is wired (estimating the robot's state from stale downlink
+samples); `RobotEndpoint` is untouched, since robot-side prediction of operator intent is a
+different problem per `IPredictor<TState>`'s own doc and nothing here needs it yet.
+
+No autonomy arbiter, no `IPlayoutPolicy` are wired in yet — `Autonomy/`/`Buffering/` still have
+no implementation. `OperatorEndpoint` hardcodes `t_playout = t_operatorRecv` inline as the
+explicit, temporary stand-in for the not-yet-built `ImmediatePlayout` — replace that line, not
+add around it, once `IPlayoutPolicy` has a real implementation.
 
 ## Requirements
 
@@ -33,8 +42,10 @@ stand-in for the not-yet-built `ImmediatePlayout` — replace that line, not add
    `IRobotPlant.Command` returns `void`, so replying with the plant's current state for every
    receipt (after `Step`, not before) is what avoids needing to duplicate the plant's own
    staleness policy in the caller.
-4. **No `Registry/Registries.cs` entry.** Exactly one `OperatorEndpoint`/`RobotEndpoint` pairing
-   exists; nothing here is a family of competing implementations yet.
+4. **No `Registry/Registries.cs` entry for `OperatorEndpoint`/`RobotEndpoint` themselves.**
+   Exactly one pairing exists; nothing here is a family of competing implementations. The
+   predictor/reconciler `OperatorEndpoint` is constructed with, by contrast, are resolved by the
+   caller via `Registries.Predictors`/`Registries.Reconcilers`.
 5. Allocation-free per call: every buffer and the in-flight-trace ring are preallocated in each
    endpoint's constructor.
 

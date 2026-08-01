@@ -1,7 +1,10 @@
 using System.Numerics;
+using Teleop.Core.Contracts;
 using Teleop.Core.Metrics;
 using Teleop.Core.Pipeline;
 using Teleop.Core.Plant;
+using Teleop.Core.Prediction;
+using Teleop.Core.Reconciliation;
 using Teleop.Core.Time;
 using Teleop.Core.Transport;
 using Teleop.Core.Types;
@@ -31,6 +34,22 @@ public class LoopbackPipelineIntegrationTests
         historyCapacity: 16, smoothingAlpha: 0.5f, maxAcceptableRttTicks: 10_000_000,
         outlierRttMultiple: 10.0, minSamplesBeforeTrusted: 1);
 
+    // Zero-mitigation baseline: PassthroughPredictor + SnapReconciler together reduce to
+    // pass-through, matching this project's pre-Phase-5 behavior by construction. Same config
+    // values as OperatorEndpointTests.MakeEndpoint, duplicated locally rather than shared across
+    // files since these are representative test defaults, not a contract between the two files.
+    private static IPredictor<Pose> MakePredictor() => new PassthroughPredictor(new PredictorConfig(
+        maxHorizonTicks: 4_000_000, maxObservationGapTicks: 2_000_000, historyCapacity: 16,
+        smoothingAlpha: 0.3f, smoothingBeta: 0.1f, processNoise: 0.01f, measurementNoise: 0.001f,
+        maxLinearSpeed: 5f, maxAngularSpeed: 10f));
+
+    private static IReconciler<Pose> MakeReconciler(IMetricSink metrics, ITimeAuthority clock) =>
+        new SnapReconciler(new ReconcilerConfig(
+            convergencePositionToleranceMeters: 0.001f, convergenceOrientationToleranceRadians: 0.01f,
+            maxTimeToConvergenceTicks: 1_000_000, maxCorrectionLinearSpeedMetersPerSecond: 5f,
+            maxCorrectionAngularSpeedRadPerSecond: 10f, rollbackHistoryCapacity: 16),
+            metrics, clock);
+
     [Fact]
     public void Loopback_RoundTrip_PopulatesEveryHeadlessField_InCausalOrder()
     {
@@ -45,7 +64,8 @@ public class LoopbackPipelineIntegrationTests
 
         var operatorEndpoint = new OperatorEndpoint(
             new RawPoseCodec(), new RobotStateFrameCodec(), uplink, downlink,
-            clock, metrics, clockSync, inFlightCapacity: 8);
+            clock, metrics, clockSync, MakePredictor(), MakeReconciler(metrics, clock),
+            inFlightCapacity: 8);
         var robotEndpoint = new RobotEndpoint(
             plant, new RawPoseCodec(), new RobotStateFrameCodec(), uplink, downlink, clock);
 
@@ -109,7 +129,8 @@ public class LoopbackPipelineIntegrationTests
 
         var operatorEndpoint = new OperatorEndpoint(
             new RawPoseCodec(), new RobotStateFrameCodec(), uplink, downlink,
-            clock, metrics, clockSync, inFlightCapacity: 8);
+            clock, metrics, clockSync, MakePredictor(), MakeReconciler(metrics, clock),
+            inFlightCapacity: 8);
         var robotEndpoint = new RobotEndpoint(
             plant, new RawPoseCodec(), new RobotStateFrameCodec(), uplink, downlink, clock);
 
@@ -137,7 +158,8 @@ public class LoopbackPipelineIntegrationTests
 
             var operatorEndpoint = new OperatorEndpoint(
                 new RawPoseCodec(), new RobotStateFrameCodec(), uplink, downlink,
-                clock, metrics, clockSync, inFlightCapacity: 8);
+                clock, metrics, clockSync, MakePredictor(), MakeReconciler(metrics, clock),
+                inFlightCapacity: 8);
             var robotEndpoint = new RobotEndpoint(
                 plant, new RawPoseCodec(), new RobotStateFrameCodec(), uplink, downlink, clock);
 
@@ -184,7 +206,8 @@ public class LoopbackPipelineIntegrationTests
 
         var operatorEndpoint = new OperatorEndpoint(
             new RawPoseCodec(), new RobotStateFrameCodec(), uplink, downlink,
-            clock, metrics, clockSync, inFlightCapacity: 8);
+            clock, metrics, clockSync, MakePredictor(), MakeReconciler(metrics, clock),
+            inFlightCapacity: 8);
         var robotEndpoint = new RobotEndpoint(
             plant, new RawPoseCodec(), new RobotStateFrameCodec(), uplink, downlink, clock);
 

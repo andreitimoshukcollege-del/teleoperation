@@ -28,12 +28,23 @@ benchmark it separately on each.
 |---|---|---|
 | `none` | `PassthroughPredictor.cs` | returns last observation; the baseline everything is measured against |
 | `const-vel` | `ConstantVelocityPredictor.cs` | first-order dead reckoning |
-| `const-accel` | `ConstantAccelPredictor.cs` | second-order; overshoots on direction reversal |
 | `double-exp` | `DoubleExponentialPredictor.cs` | Kalman-free, two parameters, strong baseline for head/hand pose |
+
+Keep this table current — it is how the next session avoids reimplementing something. It
+previously overclaimed `const-accel`/`ekf`/`seq-model` as implemented; they are **planned, not
+built** — see below.
+
+## Planned, not yet implemented
+
+| Name (registry key) | File | Notes |
+|---|---|---|
+| `const-accel` | `ConstantAccelPredictor.cs` | second-order; overshoots on direction reversal |
 | `ekf` | `ExtendedKalmanPredictor.cs` | reports covariance; the reconciler can use it |
 | `seq-model` | `SequenceModelPredictor.cs` | uses `IInferenceBackend`, never an ONNX library directly |
 
-Keep this table current — it is how the next session avoids reimplementing something.
+Move a row up to "Implemented" only once its file, tests, and `Registry/Registries.cs` entry
+all actually exist — `Teleop.Eval -- audit`'s registry-completeness check will catch a row that
+claims otherwise.
 
 ## Tried and rejected
 

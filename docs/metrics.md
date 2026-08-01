@@ -103,6 +103,21 @@ smoother, less accurate one.
 **Time-to-convergence** — ms from correction onset until displayed state is within tolerance of
 authoritative state. Bounded convergence is a requirement of `IReconciler`, not a nice-to-have.
 
+Metric names emitted via `IMetricSink.Record`, first emitted by
+`Reconciliation/SnapReconciler.cs`:
+
+| Name | Unit | Emitted | Definition |
+|---|---|---|---|
+| `correction_magnitude_mm` | mm | on each authoritative sample that disagrees beyond tolerance, stamped at that sample's `t_capture` | `PoseMath.PositionErrorMeters(predictedAtCapture, authoritative)` × 1000 |
+| `correction_magnitude_deg` | degrees | as above | `PoseMath.OrientationErrorRadians(predictedAtCapture, authoritative)` in degrees |
+| `time_to_convergence_ms` | ms | on the frame a correction completes, stamped at that frame | onset frame to the frame the displayed state is within tolerance; `snap` always reports 0 |
+| `jerk_mm_s3` | mm/s³ | on the frame a correction is applied, stamped at that frame | magnitude of the third derivative of displayed position, from a cascade of central differences over the four most recent displayed positions; not emitted until four exist |
+
+**Correction rate** is derived at analysis time by counting `correction_magnitude_mm` samples
+above the stated perceptual threshold per second — it is not a separately emitted metric, so
+that "corrections per second" and "correction magnitude" can never disagree about what counted
+as a correction.
+
 ## 6. Task performance
 
 Measured on the frozen benchmark tasks (Fitts reciprocal tapping, peg-in-hole, pick-and-place,

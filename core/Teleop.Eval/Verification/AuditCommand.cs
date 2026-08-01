@@ -54,7 +54,7 @@ namespace Teleop.Eval.Verification
             RunSourceTextChecks(sourceDir, findings);
             RunAssemblyChecks(dllPath, findings);
             RunProjectFileChecks(sourceDir, findings);
-            RunRegistryCompletenessCheck(sourceDir, findings);
+            RunRegistryCompletenessCheck(sourceDir, dllPath, findings);
             RunBuildOutputCheck(sourceDir, findings);
 
             if (findings.Count == 0)
@@ -221,19 +221,78 @@ namespace Teleop.Eval.Verification
             }
         }
 
-        private static void RunRegistryCompletenessCheck(string sourceDir, List<string> findings)
+        // Axes checked for completeness: every public, non-abstract implementer of the interface
+        // must be textually referenced somewhere in Registries.cs. `Transports` is deliberately
+        // excluded -- `EmulatedTransport` implements `ITransport` but is documented in
+        // `Registry/CLAUDE.md` as intentionally unregistered (its constructor shape doesn't fit
+        // the simple `(maxPayloadBytes, capacity)` factory `LoopbackTransport` uses), so an
+        // automated scan of that axis would flag a known, accepted gap on every run rather than
+        // an actionable one.
+        private static readonly (string InterfaceFullName, string RegistryPropertyName)[] RegistryCompletenessAxes =
+        {
+            ("Teleop.Core.Contracts.IPredictor`1", "Predictors"),
+            ("Teleop.Core.Contracts.IReconciler`1", "Reconcilers"),
+            ("Teleop.Core.Contracts.ICommandCodec", "Codecs"),
+            ("Teleop.Core.Contracts.IPlayoutPolicy`1", "PlayoutPolicies"),
+            ("Teleop.Core.Contracts.IAutonomyArbiter", "Arbiters"),
+        };
+
+        private static void RunRegistryCompletenessCheck(string sourceDir, string dllPath, List<string> findings)
         {
             string registriesPath = Path.Combine(sourceDir, "Registry", "Registries.cs");
             if (!File.Exists(registriesPath))
             {
                 // Not a failure: nothing in this project has more than one implementation to
-                // register yet (that starts in Phase 5). Reported for visibility, not as a finding.
-                Console.WriteLine("audit: registry-completeness: N/A -- Registries.cs not introduced yet (Phase 5).");
+                // register yet. Reported for visibility, not as a finding.
+                Console.WriteLine("audit: registry-completeness: N/A -- Registries.cs not introduced yet.");
                 return;
             }
 
-            // Once Registries.cs exists, a real completeness check (every Contracts/IXxx
-            // implementer is registered) belongs here.
+            Assembly assembly;
+            try
+            {
+                assembly = Assembly.LoadFrom(dllPath);
+            }
+            catch (Exception ex)
+            {
+                findings.Add($"registry-completeness: could not load {dllPath}: {ex.Message}");
+                return;
+            }
+
+            string registriesSource = File.ReadAllText(registriesPath);
+
+            foreach (var (interfaceFullName, registryPropertyName) in RegistryCompletenessAxes)
+            {
+                Type? interfaceType = assembly.GetType(interfaceFullName);
+                if (interfaceType == null)
+                {
+                    findings.Add($"registry-completeness: could not find {interfaceFullName} in {Path.GetFileName(dllPath)} -- has Contracts/ changed?");
+                    continue;
+                }
+
+                foreach (Type candidate in assembly.GetTypes())
+                {
+                    if (!candidate.IsPublic || !candidate.IsClass || candidate.IsAbstract)
+                    {
+                        continue;
+                    }
+
+                    bool implementsAxis = candidate.GetInterfaces()
+                        .Any(i => (i.IsGenericType ? i.GetGenericTypeDefinition() : i) == interfaceType);
+
+                    if (!implementsAxis)
+                    {
+                        continue;
+                    }
+
+                    if (!registriesSource.Contains(candidate.Name, StringComparison.Ordinal))
+                    {
+                        findings.Add(
+                            $"registry-completeness: {candidate.FullName} implements {interfaceFullName} but is not " +
+                            $"referenced anywhere in {registriesPath} -- add it to Registries.{registryPropertyName}");
+                    }
+                }
+            }
         }
 
         private static void RunBuildOutputCheck(string sourceDir, List<string> findings)

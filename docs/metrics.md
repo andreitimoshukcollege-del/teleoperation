@@ -46,6 +46,14 @@ number. Validate the software estimate against a physical rig at least once — 
 photodiode, or a high-speed camera on a spinning marker — then trust the software estimate and
 re-validate whenever the render path changes.
 
+Metric name emitted via `IMetricSink.Record`: `m2p_ms`, milliseconds, already in the operator's
+canonical clock domain (both `t_photon` and `t_capture` are operator-domain natively per
+`docs/adr/0002-latency-trace.md`, so no `ClockSync` correction applies here the way it does for
+OWD). Host-only, for the same reason `t_render`/`t_photon` themselves are host-only
+(`Types/LatencyTrace.cs`): Core has no compositor to produce either stamp. First emitted by
+`Bridge/TeleopOperatorBridge.cs`. See `docs/adr/0003-display-offset-calibration.md` for where
+`DisplayOffset` (folded into `t_photon` before this subtraction) comes from.
+
 **Command-to-actuation (C2A)** — `t_actuation − t_capture` on the operator input that caused
 it. The other headline number; separate from M2P because they can be improved independently.
 

@@ -8,9 +8,11 @@ The Core-side `IRobotPlant` — the robot the pipeline commands, headless and de
 |---|---|---|
 | — | `RigidBodyPlant.cs` | kinematic dead-reckoner: setpoint snap on `Command`, coast on last commanded velocity between commands, semi-implicit Euler in `Step` |
 
-No `Registry/Registries.cs` entry — that file does not exist in the repo yet (no Core folder has
-a registry table at time of writing). This needs one the moment it lands, or a sweep cannot name
-the plant it ran against.
+`Registry/Registries.cs` exists now (see `Registry/CLAUDE.md`), but has no `Plants` table:
+plants aren't selected by name the way predictors/reconcilers are -- the host always knows which
+plant it wants (Core's for a sweep, `Bridge/`'s for a real rig or Unity physics) and constructs
+it directly. A registry table would still be one line away the day a sweep actually needs to
+name a plant, but nothing today does.
 
 **This folder exists late on purpose, and its absence was an accident.** Each of the five
 research axes (`Prediction/`, `Reconciliation/`, `Buffering/`, `Transport/`, `Autonomy/`) got a

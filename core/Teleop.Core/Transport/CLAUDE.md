@@ -14,9 +14,12 @@ I/O-free is what makes replay bit-deterministic.
 | loopback | `LoopbackTransport.cs` | zero-impairment baseline: fixed-capacity FIFO ring, `arrivalTicks == sendTicks`, full ring returns false |
 | emulated | `EmulatedTransport.cs` | decorator: fixed delay + uniform jitter + Gilbert-Elliott burst loss + explicit reorder knob, all from an injected `SeededRng` |
 
-Neither has a `Registry/Registries.cs` entry yet — that file does not exist in the repo (no
-Core folder has a registry table at time of writing). Both need one the moment it lands, or a
-sweep cannot name them.
+`loopback` has a `Registry/Registries.cs` entry (`Transports["loopback"]`). `EmulatedTransport`
+deliberately does not: it is a decorator over another `ITransport` plus a `NetworkProfile` and a
+`SeededRng`, a materially different constructor shape than `LoopbackTransport`'s
+`(maxPayloadBytes, capacity)` -- see `Registry/CLAUDE.md` for the full reasoning. It needs an
+entry (its own shape, or a small builder type) the moment a sweep needs to select a transport by
+name rather than wiring one directly, as every current test does.
 
 ## EmulatedTransport
 

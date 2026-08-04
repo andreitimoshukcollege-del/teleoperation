@@ -1,0 +1,15 @@
+[project]
+name = "teleop-analysis"
+version = "0.1.0"
+description = "Reads results/ from Teleop.Eval sweeps and Unity/real-world sessions, produces captioned figures and percentile tables."
+requires-python = ">=3.10"
+
+[project.scripts]
+teleop-report = "teleop_analysis.cli:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["teleop_analysis*"]

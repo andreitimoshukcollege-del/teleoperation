@@ -20,6 +20,30 @@ disagree, and you will trust the wrong one.
 - Pin dependencies in `requirements.txt`. State the statistical test being used and check its
   assumptions before applying it.
 
+## Testing
+
+- One-time setup, from `analysis/`:
+  ```bash
+  # No Linux Python/pip/venv under WSL here -- python.exe below is the real Windows
+  # interpreter, reached the same way root CLAUDE.md's Environment section documents for
+  # dotnet. Use whatever `python3`/`python` already works if this machine has one on the
+  # WSL side; the point is a normal venv, not this specific path.
+  /mnt/c/Users/andre/AppData/Local/Microsoft/WindowsApps/python.exe -m venv .venv
+  ./.venv/Scripts/python.exe -m pip install -r requirements-dev.txt
+  ./.venv/Scripts/python.exe -m pip install -e . --no-build-isolation
+  ```
+- Run the suite: `./.venv/Scripts/python.exe -m pytest -v`, from `analysis/`.
+- `tests/test_cli_against_committed_run.py` runs the real CLI end-to-end against the committed
+  `results/exp-001-predictor-baseline/` run and checks a computed p50 against a hand
+  computation from the raw CSV — it skips itself if that result directory isn't present, it
+  never fabricates a pass. This is the test that actually proves the pipeline works, not just
+  that its pieces don't crash; a change that breaks only this test is a real regression, not a
+  fixture problem.
+- Every new figure/aggregation function needs a test against the tiny synthetic fixture in
+  `tests/conftest.py` (`synthetic_run`), not the real committed result — hand-computable values
+  keep assertions meaningful instead of "whatever the code currently outputs."
+- `.venv/` is gitignored; recreate it, don't commit it.
+
 ## Model training
 
 - Training data comes from committed or archived `.tlog` recordings, loaded via

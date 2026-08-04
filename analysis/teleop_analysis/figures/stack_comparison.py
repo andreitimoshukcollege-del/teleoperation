@@ -13,6 +13,7 @@ from teleop_analysis import percentiles
 from teleop_analysis.axis_diff import classify_stacks
 from teleop_analysis.figures._bars import plot_percentile_bars
 from teleop_analysis.figures.captions import build_caption
+from teleop_analysis.labels import PERCENTILE_EXPLANATION, friendly_stack_name
 from teleop_analysis.manifest import Manifest
 
 DEFAULT_METRIC = "prediction_position_error_mm"
@@ -43,15 +44,30 @@ def plot_stack_comparison(
     combined_names = [n for n, c in classification.items() if c == "combined"]
 
     fig, axes = plt.subplots(1, 2, figsize=(12, 5))
+    ylabel = f"{metric.replace('_mm', '').replace('_', ' ').title()} (lower is better)"
 
     single_table = percentiles.summarize(subset[subset["stack"].isin(single_names)], ["stack"])
-    plot_percentile_bars(axes[0], single_table, "stack", "Tested separately (vs. baseline)", metric)
+    plot_percentile_bars(
+        axes[0],
+        single_table,
+        "stack",
+        "Each mitigation tried on its own, vs. no mitigation",
+        ylabel,
+        label_fn=friendly_stack_name,
+    )
 
     if combined_names:
         best_single = _best_by_p50(single_table, exclude=baseline_names)
         names = list(dict.fromkeys(baseline_names + combined_names + ([best_single] if best_single else [])))
         combined_table = percentiles.summarize(subset[subset["stack"].isin(names)], ["stack"])
-        plot_percentile_bars(axes[1], combined_table, "stack", "Tested together (vs. baseline + best single-axis)", metric)
+        plot_percentile_bars(
+            axes[1],
+            combined_table,
+            "stack",
+            "Mitigations combined, vs. baseline and the best single one",
+            ylabel,
+            label_fn=friendly_stack_name,
+        )
     else:
         axes[1].axis("off")
         axes[1].text(
@@ -61,8 +77,12 @@ def plot_stack_comparison(
         )
 
     caption = build_caption(manifest, profile)
-    fig.text(0.5, 0.01, f"{caption} | metric={metric}", ha="center", fontsize=9)
-    fig.tight_layout(rect=(0, 0.05, 1, 1))
+    fig.text(
+        0.5, 0.01,
+        f"{caption} | metric={metric}\n{PERCENTILE_EXPLANATION}",
+        ha="center", fontsize=8, wrap=True,
+    )
+    fig.tight_layout(rect=(0, 0.09, 1, 1))
 
     out_dir.mkdir(parents=True, exist_ok=True)
     out_path = out_dir / f"{profile}__stack_comparison.png"

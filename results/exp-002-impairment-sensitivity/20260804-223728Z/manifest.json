@@ -1,0 +1,52 @@
+{
+  "experimentId": "exp-002-impairment-sensitivity",
+  "gitSha": "0fc30b9573221971d4e1d861a4922ee49881511a",
+  "seeds": [
+    1,
+    2,
+    3,
+    4,
+    5
+  ],
+  "predictors": [
+    "none",
+    "const-vel",
+    "double-exp"
+  ],
+  "reconciler": "snap",
+  "networkProfiles": [
+    "jitter-0ms",
+    "jitter-5ms",
+    "jitter-10ms",
+    "jitter-15ms",
+    "jitter-20ms",
+    "jitter-30ms",
+    "jitter-40ms",
+    "jitter-50ms",
+    "jitter-60ms",
+    "delay-0ms",
+    "delay-25ms",
+    "delay-50ms",
+    "delay-75ms",
+    "delay-100ms",
+    "delay-150ms",
+    "delay-200ms",
+    "delay-250ms",
+    "delay-300ms",
+    "loss-0pct",
+    "loss-0.25pct",
+    "loss-0.5pct",
+    "loss-1pct",
+    "loss-1.5pct",
+    "loss-2pct",
+    "loss-3pct",
+    "loss-4pct",
+    "loss-5pct"
+  ],
+  "trialSteps": 500,
+  "stepIntervalTicks": 100000,
+  "configPath": "../experiments/exp-002-impairment-sensitivity.yaml",
+  "machine": "ANDREI",
+  "command": "dotnet run --project core/Teleop.Eval -- sweep ../experiments/exp-002-impairment-sensitivity.yaml",
+  "generatedAtUtc": "2026-08-04T22:37:29.3249054Z"
+}

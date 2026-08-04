@@ -56,6 +56,24 @@ def run_all() -> int:
 def run_interactive() -> int:
     import questionary
 
+    # questionary's default style hardcodes colors (including backgrounds) for the
+    # highlighted/selected rows, which can come out unreadable on terminals whose theme those
+    # colors weren't chosen for (e.g. a light-background profile). Only setting text attributes
+    # (bold/italic) here, with no fg/bg colors at all, means every row renders in the terminal's
+    # own normal foreground-on-background pair -- whatever that is, it's already readable.
+    no_color_style = questionary.Style([
+        ("qmark", "bold"),
+        ("question", "bold"),
+        ("answer", "bold"),
+        ("pointer", "bold"),
+        ("highlighted", "bold"),
+        ("selected", "bold"),
+        ("separator", "bold"),
+        ("instruction", ""),
+        ("text", ""),
+        ("disabled", "italic"),
+    ])
+
     node_ids = collect_test_ids()
     if not node_ids:
         print("No tests collected -- check that analysis/tests/ exists and pytest can import it.")
@@ -74,6 +92,7 @@ def run_interactive() -> int:
     selected = questionary.checkbox(
         "Select tests to run (space to toggle, enter to run, ctrl-c to cancel):",
         choices=choices,
+        style=no_color_style,
     ).ask()
 
     if selected is None:

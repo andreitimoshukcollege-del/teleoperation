@@ -95,6 +95,19 @@ badly wrong about direction of travel, which the reconciler then has to absorb.
 behavior matters more than average accuracy; a predictor with a lower p50 and a worse p99 is
 usually the worse choice.
 
+**`prediction_position_error_mm`** / **`prediction_orientation_error_deg`** — metric names
+emitted via `IMetricSink.Record`, mm and degrees respectively, first emitted by
+`Teleop.Eval/Sweep/SweepCommand.cs`. `PoseMath.PositionErrorMeters`/`OrientationErrorRadians`
+between the predictor's live estimate and the plant's simultaneous ground truth, stamped at that
+instant. **This is a simplified online proxy, not the counterfactual, horizon-binned
+methodology above** — it compares "now" to "now," not "a stale prediction for *t+Δ*" to "truth
+that arrived at *t+Δ*," and reports no horizon breakdown. It exists because that fuller
+mechanism needs an offline `.tlog` replay scorer that does not exist yet; this metric is what
+makes Gate 5's "prediction error and correction cost reported together" requirement literally
+true in the meantime, honestly labeled as a stand-in rather than silently presented as the real
+thing. Replace it with the counterfactual scorer's output, don't add around it, once that scorer
+exists.
+
 ## 5. Correction cost
 
 The counterweight to prediction accuracy, and the reason accuracy alone is never a result.

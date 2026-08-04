@@ -36,10 +36,17 @@ namespace Teleop.Core.Transport
     /// by send order, so any two datagrams whose synthetic arrivals invert — from a jitter draw or
     /// from the explicit reorder knob — are returned out of send order with no special case.
     ///
-    /// <b>Not implemented here:</b> trace-driven replay of recorded one-way delays. That mode reads
-    /// a frozen capture from <c>core/testdata/traces/</c>, which does not exist yet, and per
-    /// <c>Transport/CLAUDE.md</c> the standard profile set cannot be extended without an ADR. This
-    /// class covers the parametric profiles only.
+    /// <b>Trace-driven mode</b> (the <see cref="EmulatedTransport(ITransport, long[], NetworkProfile, SeededRng, int)"/>
+    /// overload) replaces <c>BaseDelayTicks + jitter</c> with samples drawn sequentially from a
+    /// recorded delay trace (<c>core/testdata/traces/</c>, per <c>docs/adr/0004-network-profile-suite.md</c>),
+    /// wrapping back to the start when the trace is exhausted rather than resampling or throwing --
+    /// a sweep trial may run longer than the trace itself, and repeating the recorded sequence
+    /// verbatim is what "no resampling" (<c>Transport/CLAUDE.md</c>) actually requires. Burst loss
+    /// and reordering are independent of delay source and still apply exactly as in parametric
+    /// mode; a trace-mode profile's <see cref="NetworkProfile.BaseDelayTicks"/> and
+    /// <see cref="NetworkProfile.JitterTicks"/> must both be zero (rejected otherwise), since the
+    /// trace already represents the true recorded delay and synthetic jitter on top of it would
+    /// double-model variance.
     ///
     /// Everything is preallocated in the constructor; <see cref="Send"/> and
     /// <see cref="TryReceive"/> allocate nothing. Not thread-safe, by contract.
@@ -49,6 +56,12 @@ namespace Teleop.Core.Transport
         private readonly ITransport _inner;
         private readonly NetworkProfile _profile;
         private readonly int _maxInFlight;
+
+        /// <summary>Recorded one-way-delay trace for trace-driven mode; null in parametric mode.</summary>
+        private readonly long[]? _traceTicks;
+
+        /// <summary>Next index into <see cref="_traceTicks"/>; wraps modulo its length.</summary>
+        private int _traceIndex;
 
         /// <summary>
         /// Cached at construction rather than read per drain. <c>ITransport.MaxPayloadBytes</c> is
@@ -138,6 +151,66 @@ namespace Teleop.Core.Transport
             _heapSlots = new int[maxInFlight];
 
             ResetLocalState();
+        }
+
+        /// <param name="inner">Transport to decorate. Its delay and losses are kept, not replaced.</param>
+        /// <param name="delayTraceTicks">
+        /// A recorded one-way-delay trace, one sample per datagram in ticks, consumed in order and
+        /// wrapped back to the start when exhausted -- see the type doc's "Trace-driven mode"
+        /// section. Must be non-empty and every sample non-negative; rejected otherwise. Copied
+        /// defensively at construction, so a caller mutating the original array afterward cannot
+        /// silently break this instance's determinism.
+        /// </param>
+        /// <param name="profile">
+        /// Impairment parameters for loss and reordering only in this mode --
+        /// <see cref="NetworkProfile.BaseDelayTicks"/> and <see cref="NetworkProfile.JitterTicks"/>
+        /// must both be zero (rejected otherwise), since <paramref name="delayTraceTicks"/> already
+        /// supplies the delay.
+        /// </param>
+        /// <param name="rng">
+        /// Seeded generator driving every impairment decision. Taken by value and owned: this
+        /// instance's <c>Reset()</c> reseeds its own copy and does not disturb the caller's.
+        /// </param>
+        /// <param name="maxInFlight">
+        /// Number of delayed datagrams held at once. When full, the wrapped transport is simply not
+        /// drained, so its datagrams stay queued there (back-pressure) rather than being silently
+        /// destroyed by the emulator.
+        /// </param>
+        public EmulatedTransport(
+            ITransport inner, long[] delayTraceTicks, NetworkProfile profile, SeededRng rng, int maxInFlight)
+            : this(inner, profile, rng, maxInFlight)
+        {
+            if (delayTraceTicks == null)
+            {
+                throw new ArgumentNullException(nameof(delayTraceTicks));
+            }
+
+            if (delayTraceTicks.Length == 0)
+            {
+                throw new ArgumentException(
+                    "Delay trace must contain at least one sample.", nameof(delayTraceTicks));
+            }
+
+            foreach (long sample in delayTraceTicks)
+            {
+                if (sample < 0)
+                {
+                    throw new ArgumentOutOfRangeException(
+                        nameof(delayTraceTicks), sample, "Delay trace samples must not be negative.");
+                }
+            }
+
+            if (profile.BaseDelayTicks != 0 || profile.JitterTicks != 0)
+            {
+                throw new ArgumentException(
+                    "BaseDelayTicks and JitterTicks must both be zero in trace-driven mode -- delay " +
+                    "comes from the trace, and synthetic jitter on top of an already-recorded delay " +
+                    "would double-model variance.",
+                    nameof(profile));
+            }
+
+            _traceTicks = (long[])delayTraceTicks.Clone();
+            _traceIndex = 0;
         }
 
         /// <inheritdoc/>
@@ -277,6 +350,7 @@ namespace Teleop.Core.Transport
             _heapCount = 0;
             _nextSequence = 0;
             _previousWasLost = false;
+            _traceIndex = 0;
         }
 
         /// <summary>
@@ -323,7 +397,12 @@ namespace Teleop.Core.Transport
             ulong span = ((ulong)halfWidth * 2UL) + 1UL;
             long jitter = (long)(_rng.NextUInt64() % span) - halfWidth;
 
-            long delayTicks = _profile.BaseDelayTicks + jitter;
+            // The jitter draw above is always made, even in trace mode where its result (always
+            // exactly 0, since JitterTicks is validated to 0) is discarded: every datagram must
+            // consume exactly one draw here regardless of mode, or a trace run and a parametric
+            // run sharing a seed would desynchronize their RNG streams on the loss/reorder draws
+            // that follow, breaking common random numbers across a sweep (Transport/CLAUDE.md).
+            long delayTicks = _traceTicks != null ? NextTraceSample() : _profile.BaseDelayTicks + jitter;
 
             if (_rng.NextDouble() < _profile.ReorderProbability)
             {
@@ -331,6 +410,17 @@ namespace Teleop.Core.Transport
             }
 
             return delayTicks < 0 ? 0 : delayTicks;
+        }
+
+        /// <summary>
+        /// Next sample from <see cref="_traceTicks"/>, wrapping back to index 0 when exhausted --
+        /// the "no resampling" trace-driven contract, not a fresh draw.
+        /// </summary>
+        private long NextTraceSample()
+        {
+            long sample = _traceTicks![_traceIndex];
+            _traceIndex = (_traceIndex + 1) % _traceTicks.Length;
+            return sample;
         }
 
         private void HeapPush(long arrivalTicks, int slot)

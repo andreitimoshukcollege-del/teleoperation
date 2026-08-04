@@ -5,7 +5,12 @@
   </ItemGroup>
 
   <ItemGroup>
+    <PackageReference Include="YamlDotNet" Version="16.2.1" />
+  </ItemGroup>
+
+  <ItemGroup>
     <None Include="..\testdata\golden\basic-session.tlog" CopyToOutputDirectory="PreserveNewest" Link="testdata\golden\basic-session.tlog" />
+    <None Include="..\testdata\traces\synthetic-burst.trace" CopyToOutputDirectory="PreserveNewest" Link="testdata\traces\synthetic-burst.trace" />
   </ItemGroup>
 
   <PropertyGroup>

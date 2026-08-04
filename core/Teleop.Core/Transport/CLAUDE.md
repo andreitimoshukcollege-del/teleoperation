@@ -33,10 +33,14 @@ Requirements:
 - Loss must model **bursts**, not just a Bernoulli rate. Real links lose runs of packets, and
   burst length is what breaks jitter buffers.
 
-Status against those requirements: the first and third are met (`Types/NetworkProfile.cs`, a
-2-state Gilbert-Elliott chain with expected burst length `1 / (1 - LossProbabilityAfterLost)`).
-**Trace-driven mode is not implemented** — `core/testdata/traces/` does not exist yet and the
-standard profile set is frozen behind an ADR; `EmulatedTransport` is parametric-only for now.
+Status against those requirements: all three are met. `Types/NetworkProfile.cs` is a 2-state
+Gilbert-Elliott chain with expected burst length `1 / (1 - LossProbabilityAfterLost)`.
+**Trace-driven mode is implemented** — a second `EmulatedTransport` constructor takes a delay-tick
+array in place of `BaseDelayTicks`/`JitterTicks` (both must be zero in trace mode), consumed in
+order and wrapped rather than resampled when exhausted. See
+`docs/adr/0004-network-profile-suite.md` for the trace file format and
+`core/Teleop.Eval/Sweep/TraceFile.cs`/`NetworkProfileCatalog.cs` for reading one and resolving it
+by name (the catalog lives in `Teleop.Eval`, not here — loading a trace file is I/O).
 
 How the delay is applied, since it constrains anything built on top: `ITransport.Send` has no
 future-delivery parameter and Core has no threads, so delay lives entirely on the receive side.
@@ -85,3 +89,9 @@ changing the benchmark suite destroys comparability with every result already re
 
 `lan` · `50ms-5j` · `150ms-20j-0.5loss` · `300ms-60j-2loss-bursty` · `cellular-congested`
 (trace) · `leo-satellite` (trace, periodic reconfiguration spikes) · `long-haul` (real capture)
+
+Per `docs/adr/0004-network-profile-suite.md`: the four parametric names plus a new
+`synthetic-burst` trace-driven profile are implemented, with exact parametric values recorded
+there. `cellular-congested`/`leo-satellite`/`long-haul` remain reserved names, honestly
+unimplemented pending an actual network capture — not faked. Resolution by name lives in
+`core/Teleop.Eval/Sweep/NetworkProfileCatalog.cs`, not here (loading a trace file is I/O).

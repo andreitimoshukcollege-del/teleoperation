@@ -1,6 +1,7 @@
 ﻿// core/Teleop.Eval/Program.cs
 using System;
 using System.IO;
+using Teleop.Eval.Sweep;
 using Teleop.Eval.Tooling;
 using Teleop.Eval.Verification;
 
@@ -15,18 +16,21 @@ namespace Teleop.Eval
             {
                 case "gen-golden":
                     return RunGenGolden(args);
+                case "gen-trace":
+                    return RunGenTrace(args);
                 case "verify":
                     return VerifyCommand.Run();
                 case "audit":
                     return AuditCommand.Run();
                 case "sweep":
+                    return SweepCommand.Run(args);
                 case "replay":
                 case "compare":
                     Console.Error.WriteLine($"'{cmd}' is NOT IMPLEMENTED. " +
                         "Do not treat this as a passing check. See docs/setup.md Phase 3.");
                     return 70;   // EX_SOFTWARE
                 default:
-                    Console.Error.WriteLine("usage: verify | audit | sweep | replay | compare | gen-golden");
+                    Console.Error.WriteLine("usage: verify | audit | sweep | replay | compare | gen-golden | gen-trace");
                     return 64;   // EX_USAGE
             }
         }
@@ -49,6 +53,26 @@ namespace Teleop.Eval
             GoldenSessionBuilder.Build(fullPath);
 
             Console.WriteLine($"Wrote golden session to {fullPath}");
+            return 0;
+        }
+
+        // Not one of the five documented subcommands, same reasoning as gen-golden: the
+        // synthetic-burst network trace is generated deterministically and committed, never
+        // hand-authored.
+        private static int RunGenTrace(string[] args)
+        {
+            string outputPath = args.Length > 1 ? args[1] : Path.Combine("testdata", "traces", "synthetic-burst.trace");
+            string fullPath = Path.GetFullPath(outputPath);
+
+            string? directory = Path.GetDirectoryName(fullPath);
+            if (!string.IsNullOrEmpty(directory))
+            {
+                Directory.CreateDirectory(directory);
+            }
+
+            SyntheticTraceBuilder.Build(fullPath);
+
+            Console.WriteLine($"Wrote synthetic trace to {fullPath}");
             return 0;
         }
     }

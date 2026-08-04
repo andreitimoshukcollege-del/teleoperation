@@ -1,0 +1,18 @@
+# The first sweep (Gate 5, docs/setup.md): every implemented predictor against the fixed
+# baseline reconciler, across the honest five-profile set (docs/adr/0004-network-profile-suite.md).
+# Schema documented in experiments/CLAUDE.md.
+id: exp-001-predictor-baseline
+seeds: [1, 2, 3, 4, 5]
+predictors:
+  - none
+  - const-vel
+  - double-exp
+reconciler: snap
+networkProfiles:
+  - lan
+  - 50ms-5j
+  - 150ms-20j-0.5loss
+  - 300ms-60j-2loss-bursty
+  - synthetic-burst
+trialSteps: 500
+stepIntervalTicks: 100000

@@ -519,6 +519,169 @@ public class EmulatedTransportTests
     }
 
     [Fact]
+    public void TraceMode_DelaysDatagramsByTheTraceSamplesInOrderAndWrapsAround()
+    {
+        var trace = new long[] { 100_000, 200_000, 300_000 };
+        var profile = new NetworkProfile(0, 0, 0.0, 0.0, 0.0, 0);
+        var inner = new LoopbackTransport(MaxPayload, capacity: 16);
+        var transport = new EmulatedTransport(inner, trace, profile, new SeededRng(1UL), maxInFlight: 16);
+        var destination = new byte[MaxPayload];
+
+        // Sends spaced far enough apart (1,000,000 ticks) that each drains before the next is
+        // sent, so send order and arrival order coincide -- isolates "which trace sample did this
+        // send get" from the heap's separate earliest-arrival ordering (covered by
+        // Reordering_DeliversInSyntheticArrivalOrderNotSendOrder). Four sends against a 3-sample
+        // trace: the fourth must wrap back to the first sample (100_000), not throw or draw fresh.
+        var arrivals = new List<long>();
+        for (int i = 0; i < 4; i++)
+        {
+            long sendTicks = i * 1_000_000L;
+            Assert.True(transport.Send(Tagged(i), sendTicks));
+            Assert.True(transport.TryReceive(sendTicks + 900_000, destination, out _, out long arrival));
+            arrivals.Add(arrival - sendTicks);
+        }
+
+        Assert.Equal(new long[] { 100_000, 200_000, 300_000, 100_000 }, arrivals);
+    }
+
+    [Fact]
+    public void TraceMode_Determinism_TwoInstancesWithTheSameSeedAndTraceProduceIdenticalStreams()
+    {
+        var trace = new long[] { 50_000, 10_000, 80_000, 20_000 };
+        // Loss and reorder both live, so the RNG draws made in trace mode are load-bearing too.
+        var profile = new NetworkProfile(0, 0, 0.1, 0.5, 0.2, 15_000);
+
+        var a = new EmulatedTransport(
+            new LoopbackTransport(MaxPayload, 64), trace, profile, new SeededRng(0xC0FFEEUL), 64);
+        var b = new EmulatedTransport(
+            new LoopbackTransport(MaxPayload, 64), trace, profile, new SeededRng(0xC0FFEEUL), 64);
+
+        var first = RunSchedule(a, count: 100, stepTicks: 10_000, tailPolls: 64);
+        var second = RunSchedule(b, count: 100, stepTicks: 10_000, tailPolls: 64);
+
+        Assert.Equal(first.Sends, second.Sends);
+        Assert.Equal(first.Receives, second.Receives);
+        Assert.Contains(false, first.Sends);
+    }
+
+    [Fact]
+    public void TraceMode_Constructor_RejectsNullEmptyOrNegativeTrace()
+    {
+        var inner = new LoopbackTransport(MaxPayload, capacity: 8);
+        var profile = new NetworkProfile(0, 0, 0.0, 0.0, 0.0, 0);
+        var rng = new SeededRng(1UL);
+
+        Assert.Throws<ArgumentNullException>(
+            () => new EmulatedTransport(inner, (long[])null!, profile, rng, 8));
+        Assert.Throws<ArgumentException>(
+            () => new EmulatedTransport(inner, Array.Empty<long>(), profile, rng, 8));
+        Assert.Throws<ArgumentOutOfRangeException>(
+            () => new EmulatedTransport(inner, new long[] { 100, -1, 200 }, profile, rng, 8));
+    }
+
+    [Fact]
+    public void TraceMode_Constructor_RejectsNonZeroBaseDelayOrJitter()
+    {
+        var inner = new LoopbackTransport(MaxPayload, capacity: 8);
+        var trace = new long[] { 100_000 };
+        var rng = new SeededRng(1UL);
+
+        Assert.Throws<ArgumentException>(
+            () => new EmulatedTransport(inner, trace, new NetworkProfile(1, 0, 0, 0, 0, 0), rng, 8));
+        Assert.Throws<ArgumentException>(
+            () => new EmulatedTransport(inner, trace, new NetworkProfile(0, 1, 0, 0, 0, 0), rng, 8));
+    }
+
+    [Fact]
+    public void TraceMode_Reset_ReturnsTheTraceCursorToTheStart()
+    {
+        var trace = new long[] { 111_000, 222_000, 333_000 };
+        var profile = new NetworkProfile(0, 0, 0.0, 0.0, 0.0, 0);
+        var inner = new LoopbackTransport(MaxPayload, capacity: 16);
+        var transport = new EmulatedTransport(inner, trace, profile, new SeededRng(9UL), maxInFlight: 16);
+        var destination = new byte[MaxPayload];
+
+        // Consume two samples (advance the cursor into the middle of the trace).
+        transport.Send(Tagged(0), 0);
+        transport.Send(Tagged(1), 0);
+        transport.TryReceive(long.MaxValue / 4, destination, out _, out _);
+        transport.TryReceive(long.MaxValue / 4, destination, out _, out _);
+
+        transport.Reset();
+
+        transport.Send(Tagged(2), 0);
+        Assert.True(transport.TryReceive(long.MaxValue / 4, destination, out _, out long arrival));
+        Assert.Equal(111_000, arrival);
+    }
+
+    [Fact]
+    public void TraceMode_BurstLossStillApplies()
+    {
+        var trace = new long[] { 10_000 };
+        var profile = new NetworkProfile(0, 0, 0.02, 0.8, 0.0, 0);
+        var inner = new LoopbackTransport(MaxPayload, capacity: 4);
+        var transport = new EmulatedTransport(inner, trace, profile, new SeededRng(2024UL), 4);
+        var destination = new byte[MaxPayload];
+
+        int lost = 0;
+        for (int i = 0; i < 2000; i++)
+        {
+            if (!transport.Send(Tagged(i & 0xFF), i))
+            {
+                lost++;
+            }
+
+            while (transport.TryReceive(i, destination, out _, out _))
+            {
+            }
+        }
+
+        Assert.True(lost > 0, "expected some losses even in trace mode");
+    }
+
+    [Fact]
+    public void TraceMode_ReorderStillApplies()
+    {
+        long step = 10_000;
+        var trace = new long[] { 100_000 };
+        var profile = new NetworkProfile(0, 0, 0.0, 0.0, 0.5, 50_000);
+        var inner = new LoopbackTransport(MaxPayload, capacity: 64);
+        var transport = new EmulatedTransport(inner, trace, profile, new SeededRng(31337UL), 64);
+        var destination = new byte[MaxPayload];
+
+        for (int i = 0; i < 24; i++)
+        {
+            Assert.True(transport.Send(Tagged(i), i * step));
+        }
+
+        var tags = new List<int>();
+        while (transport.TryReceive(long.MaxValue / 4, destination, out _, out _))
+        {
+            tags.Add(destination[0]);
+        }
+
+        Assert.Equal(24, tags.Count);
+        Assert.NotEqual(Enumerable.Range(0, 24).ToArray(), tags.ToArray());
+    }
+
+    [Fact]
+    public void TraceMode_SendAndTryReceive_Allocate_Zero_Bytes()
+    {
+        var trace = new long[] { 0 };
+        var profile = new NetworkProfile(0, 0, 0.0, 0.0, 0.0, 0);
+        var inner = new LoopbackTransport(MaxPayload, capacity: 8);
+        var transport = new EmulatedTransport(inner, trace, profile, new SeededRng(21UL), maxInFlight: 8);
+        var payload = new byte[MaxPayload];
+        var destination = new byte[MaxPayload];
+
+        AllocationAssert.Zero(() =>
+        {
+            transport.Send(payload, 0);
+            transport.TryReceive(0, destination, out _, out _);
+        });
+    }
+
+    [Fact]
     public void SendAndTryReceive_SteadyState_Allocate_Zero_Bytes()
     {
         // Common path only: no loss, no jitter, no reordering, and the datagram is due

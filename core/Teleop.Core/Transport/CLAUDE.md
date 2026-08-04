@@ -95,3 +95,11 @@ Per `docs/adr/0004-network-profile-suite.md`: the four parametric names plus a n
 there. `cellular-congested`/`leo-satellite`/`long-haul` remain reserved names, honestly
 unimplemented pending an actual network capture — not faked. Resolution by name lives in
 `core/Teleop.Eval/Sweep/NetworkProfileCatalog.cs`, not here (loading a trace file is I/O).
+
+Extended by `docs/adr/0005-isolated-impairment-profiles.md`: `jitter-<N>ms` / `delay-<N>ms` /
+`loss-<N>pct`, each isolating one `NetworkProfile` parameter with the other two held fixed —
+answers "how sensitive is this to one variable," not "does it survive a realistic bad link,"
+which is what the frozen five above are for. Resolved by pattern
+(`NetworkProfileCatalog.TryResolveIsolatedAxisProfile`), not one named case per point; that ADR's
+own rule governs adding more points to an existing family, and a new ADR is still required for a
+genuinely new family (different fixed companions, or reintroducing burst shape on the loss axis).

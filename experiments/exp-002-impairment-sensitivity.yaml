@@ -1,0 +1,41 @@
+# Isolated single-variable sensitivity sweep (docs/adr/0005-isolated-impairment-profiles.md):
+# same predictors/reconciler/seeds as exp-001-predictor-baseline so results are comparable, but
+# against network profiles that vary exactly one of jitter/delay/loss at a time instead of
+# exp-001's realistic bundled presets. Schema documented in experiments/CLAUDE.md.
+id: exp-002-impairment-sensitivity
+seeds: [1, 2, 3, 4, 5]
+predictors:
+  - none
+  - const-vel
+  - double-exp
+reconciler: snap
+networkProfiles:
+  - jitter-0ms
+  - jitter-5ms
+  - jitter-10ms
+  - jitter-15ms
+  - jitter-20ms
+  - jitter-30ms
+  - jitter-40ms
+  - jitter-50ms
+  - jitter-60ms
+  - delay-0ms
+  - delay-25ms
+  - delay-50ms
+  - delay-75ms
+  - delay-100ms
+  - delay-150ms
+  - delay-200ms
+  - delay-250ms
+  - delay-300ms
+  - loss-0pct
+  - loss-0.25pct
+  - loss-0.5pct
+  - loss-1pct
+  - loss-1.5pct
+  - loss-2pct
+  - loss-3pct
+  - loss-4pct
+  - loss-5pct
+trialSteps: 500
+stepIntervalTicks: 100000

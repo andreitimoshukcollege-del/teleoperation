@@ -184,12 +184,43 @@ class PickerApp:
         self.root.destroy()
 
 
+def _set_windows_dpi_awareness() -> None:
+    """Must run before tk.Tk() exists. Without this, Windows treats the process as DPI-unaware
+    and bitmap-stretches the whole window to match the display's scale factor -- that stretch is
+    exactly what makes a tkinter window look blurry on a high-DPI screen. Telling Windows we
+    handle our own scaling stops it from doing that; _apply_dpi_scaling below does the "our own
+    scaling" part so the window comes out sharp *and* a normal physical size, not sharp-but-tiny.
+    """
+    if sys.platform != "win32":
+        return
+    import ctypes
+
+    try:
+        ctypes.windll.shcore.SetProcessDpiAwareness(1)  # PROCESS_SYSTEM_DPI_AWARE
+    except (AttributeError, OSError):
+        try:
+            ctypes.windll.user32.SetProcessDPIAware()
+        except (AttributeError, OSError):
+            pass
+
+
+def _apply_dpi_scaling(root: tk.Tk) -> None:
+    """Must run after tk.Tk() exists (needs a window to query real display metrics from)."""
+    try:
+        dpi = root.winfo_fpixels("1i")
+        root.tk.call("tk", "scaling", dpi / 72.0)
+    except tk.TclError:
+        pass
+
+
 def launch(node_ids: List[str]) -> Optional[int]:
     if not node_ids:
         print("No tests collected -- check that analysis/tests/ exists and pytest can import it.")
         return 1
 
+    _set_windows_dpi_awareness()
     root = tk.Tk()
+    _apply_dpi_scaling(root)
     app = PickerApp(root, node_ids)
     root.mainloop()
     return app.last_exit_code

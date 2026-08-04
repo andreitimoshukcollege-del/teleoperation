@@ -7,7 +7,7 @@ from pathlib import Path
 # package -- add it to sys.path explicitly rather than making it importable as a package module.
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from run_tests import collect_test_ids, group_by_file  # noqa: E402
+from run_tests import collect_test_ids, group_by_file, humanize_test_name  # noqa: E402
 
 
 def test_collect_test_ids_finds_known_tests():
@@ -32,3 +32,18 @@ def test_group_by_file_groups_synthetic_ids_correctly():
 
 def test_group_by_file_handles_empty_input():
     assert group_by_file([]) == {}
+
+
+def test_humanize_test_name_strips_prefix_and_spaces_words():
+    assert (
+        humanize_test_name("test_find_baseline_returns_exact_no_mitigation_stack")
+        == "Find baseline returns exact no mitigation stack"
+    )
+
+
+def test_humanize_test_name_handles_name_without_test_prefix():
+    assert humanize_test_name("already_a_name") == "Already a name"
+
+
+def test_humanize_test_name_handles_empty_string():
+    assert humanize_test_name("") == ""

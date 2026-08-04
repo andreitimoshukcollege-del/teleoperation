@@ -39,6 +39,16 @@ def group_by_file(node_ids: List[str]) -> Dict[str, List[str]]:
     return grouped
 
 
+def humanize_test_name(test_name: str) -> str:
+    """'test_find_baseline_returns_exact_no_mitigation_stack' -> 'find baseline returns exact
+    no mitigation stack' -- the raw snake_case name is the real pytest node id (unchanged, still
+    used to actually run the test); this is display text only, for the checklist to scan quickly.
+    """
+    name = test_name[len("test_"):] if test_name.startswith("test_") else test_name
+    name = name.replace("_", " ")
+    return name[:1].upper() + name[1:] if name else name
+
+
 def run_all() -> int:
     return pytest.main([str(TESTS_DIR), "-v"])
 
@@ -53,10 +63,13 @@ def run_interactive() -> int:
 
     choices = []
     for file_path, ids_in_file in group_by_file(node_ids).items():
-        choices.append(questionary.Separator(f"-- {file_path} --"))
+        display_file = file_path.split("/")[-1]
+        choices.append(questionary.Separator(f"-- {display_file} --"))
         for node_id in ids_in_file:
             test_name = node_id.split("::", 1)[1]
-            choices.append(questionary.Choice(title=test_name, value=node_id, checked=True))
+            choices.append(
+                questionary.Choice(title=humanize_test_name(test_name), value=node_id, checked=True)
+            )
 
     selected = questionary.checkbox(
         "Select tests to run (space to toggle, enter to run, ctrl-c to cancel):",

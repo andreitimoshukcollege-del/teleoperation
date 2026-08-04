@@ -56,7 +56,7 @@ analysis-setup:
 test: _analysis-venv
     cd analysis && ./.venv/Scripts/python.exe -m pytest -v
 
-# Interactively pick which analysis/ tests to run (needs a real terminal, not piped output)
+# Opens a GUI window to pick which analysis/ tests to run (needs a real display)
 test-pick: _analysis-venv
     cd analysis && ./.venv/Scripts/python.exe run_tests.py
 

@@ -8,6 +8,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from run_tests import collect_test_ids, group_by_file, humanize_test_name  # noqa: E402
+from test_gui import build_pytest_command, find_summary_line  # noqa: E402
 
 
 def test_collect_test_ids_finds_known_tests():
@@ -47,3 +48,43 @@ def test_humanize_test_name_handles_name_without_test_prefix():
 
 def test_humanize_test_name_handles_empty_string():
     assert humanize_test_name("") == ""
+
+
+def test_build_pytest_command_includes_selected_ids_and_verbose_flag():
+    import sys
+
+    command = build_pytest_command(["tests/test_a.py::test_one", "tests/test_b.py::test_two"])
+    assert command[0] == sys.executable
+    assert command[1:4] == ["-m", "pytest", "tests/test_a.py::test_one"]
+    assert command[-2:] == ["tests/test_b.py::test_two", "-v"]
+
+
+def test_build_pytest_command_handles_no_selected_ids():
+    import sys
+
+    assert build_pytest_command([]) == [sys.executable, "-m", "pytest", "-v"]
+
+
+def test_find_summary_line_extracts_passing_summary():
+    lines = [
+        "collecting ...\n",
+        "tests/test_a.py::test_one PASSED\n",
+        "==================== 17 passed, 14 warnings in 3.21s ====================\n",
+    ]
+    assert find_summary_line(lines) == "17 passed, 14 warnings in 3.21s"
+
+
+def test_find_summary_line_extracts_failing_summary():
+    lines = [
+        "tests/test_a.py::test_one FAILED\n",
+        "=================== 1 failed, 16 passed in 2.05s ===================\n",
+    ]
+    assert find_summary_line(lines) == "1 failed, 16 passed in 2.05s"
+
+
+def test_find_summary_line_returns_none_when_no_summary_present():
+    assert find_summary_line(["just some output\n", "no summary line here\n"]) is None
+
+
+def test_find_summary_line_returns_none_for_empty_input():
+    assert find_summary_line([]) is None

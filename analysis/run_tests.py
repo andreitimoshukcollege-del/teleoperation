@@ -1,7 +1,7 @@
-"""Interactive test picker for analysis/tests/.
+"""Test picker for analysis/tests/.
 
-Run: <venv python> run_tests.py           -- pick which tests to run from a checklist
-     <venv python> run_tests.py --all     -- run everything, no prompt (scriptable; this is what
+Run: <venv python> run_tests.py           -- opens a GUI window to pick which tests to run
+     <venv python> run_tests.py --all     -- run everything, no window (scriptable; this is what
                                               CI or an agent verifying "did the tests pass" should
                                               use instead -- see analysis/CLAUDE.md's Testing
                                               section, which documents `pytest -v` directly for
@@ -53,57 +53,12 @@ def run_all() -> int:
     return pytest.main([str(TESTS_DIR), "-v"])
 
 
-def run_interactive() -> int:
-    import questionary
+def run_gui() -> int:
+    # Imported lazily so `run_tests.py --all` (the scriptable/CI path) never needs tkinter or a
+    # display at all -- only opening the picker window does.
+    import test_gui
 
-    # questionary's default style hardcodes colors (including backgrounds) for the
-    # highlighted/selected rows, which can come out unreadable on terminals whose theme those
-    # colors weren't chosen for (e.g. a light-background profile). Only setting text attributes
-    # (bold/italic) here, with no fg/bg colors at all, means every row renders in the terminal's
-    # own normal foreground-on-background pair -- whatever that is, it's already readable.
-    no_color_style = questionary.Style([
-        ("qmark", "bold"),
-        ("question", "bold"),
-        ("answer", "bold"),
-        ("pointer", "bold"),
-        ("highlighted", "bold"),
-        ("selected", "bold"),
-        ("separator", "bold"),
-        ("instruction", ""),
-        ("text", ""),
-        ("disabled", "italic"),
-    ])
-
-    node_ids = collect_test_ids()
-    if not node_ids:
-        print("No tests collected -- check that analysis/tests/ exists and pytest can import it.")
-        return 1
-
-    choices = []
-    for file_path, ids_in_file in group_by_file(node_ids).items():
-        display_file = file_path.split("/")[-1]
-        choices.append(questionary.Separator(f"-- {display_file} --"))
-        for node_id in ids_in_file:
-            test_name = node_id.split("::", 1)[1]
-            choices.append(
-                questionary.Choice(title=humanize_test_name(test_name), value=node_id, checked=True)
-            )
-
-    selected = questionary.checkbox(
-        "Select tests to run (space to toggle, enter to run, ctrl-c to cancel):",
-        choices=choices,
-        style=no_color_style,
-    ).ask()
-
-    if selected is None:
-        print("Cancelled.")
-        return 130
-    if not selected:
-        print("Nothing selected.")
-        return 0
-
-    print(f"\nRunning {len(selected)} test(s)...\n")
-    return pytest.main([*selected, "-v"])
+    return test_gui.launch(collect_test_ids()) or 0
 
 
 def main(argv: List[str] | None = None) -> int:
@@ -115,7 +70,7 @@ def main(argv: List[str] | None = None) -> int:
 
     if args.all:
         return run_all()
-    return run_interactive()
+    return run_gui()
 
 
 if __name__ == "__main__":

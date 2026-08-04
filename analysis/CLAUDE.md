@@ -38,12 +38,14 @@ disagree, and you will trust the wrong one.
   from the repo root). This is the
   scriptable path — use it for CI or when an agent needs to verify pass/fail non-interactively;
   it doesn't change with the picker below.
-- For a human at a terminal who wants to pick a subset instead of memorizing pytest node-id
-  syntax: `./.venv/Scripts/python.exe run_tests.py` (or `just test-pick`) opens an interactive checklist (arrow keys
-  + space to toggle, one entry per test grouped by file, all checked by default so Enter alone
-  still runs everything). Requires a real console — it will not run through a piped/non-TTY
-  shell. `run_tests.py --all` skips the prompt and runs everything, equivalent to `pytest -v`
-  but useful if you want the same script for both cases.
+- For a human who wants to pick a subset instead of memorizing pytest node-id syntax:
+  `./.venv/Scripts/python.exe run_tests.py` (or `just test-pick`) opens a **GUI window**
+  (`test_gui.py`, plain tkinter — no extra dependency, ships with Python) with a checkbox per
+  test grouped by file, all checked by default, a Run button, and a live output pane. Needs a
+  real display, not a piped/non-interactive shell — in this repo that's never an issue since
+  `analysis/` already runs on the Windows-side Python (see setup above), so it opens as a normal
+  Windows window. `run_tests.py --all` skips the window and runs everything non-interactively,
+  equivalent to `pytest -v` — this is what CI or an agent should use instead.
 - `tests/test_cli_against_committed_run.py` runs the real CLI end-to-end against the committed
   `results/exp-001-predictor-baseline/` run and checks a computed p50 against a hand
   computation from the raw CSV — it skips itself if that result directory isn't present, it

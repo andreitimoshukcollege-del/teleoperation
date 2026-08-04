@@ -60,13 +60,11 @@ namespace Teleop.Eval.Sweep
         public static bool TryResolve(
             string name, long ticksPerSecond, string tracesDirectory, out NamedProfile profile, out string? error)
         {
-            double msToTicks(double ms) => ms / 1000.0 * ticksPerSecond;
-
             switch (name)
             {
                 case "lan":
                     profile = new NamedProfile(name, new NetworkProfile(
-                        baseDelayTicks: (long)msToTicks(2), jitterTicks: (long)msToTicks(1),
+                        baseDelayTicks: MsToTicks(2, ticksPerSecond), jitterTicks: MsToTicks(1, ticksPerSecond),
                         lossProbabilityAfterDelivered: 0.0, lossProbabilityAfterLost: 0.0,
                         reorderProbability: 0.0, reorderDelayTicks: 0), traceTicks: null);
                     error = null;
@@ -74,7 +72,7 @@ namespace Teleop.Eval.Sweep
 
                 case "50ms-5j":
                     profile = new NamedProfile(name, new NetworkProfile(
-                        baseDelayTicks: (long)msToTicks(50), jitterTicks: (long)msToTicks(5),
+                        baseDelayTicks: MsToTicks(50, ticksPerSecond), jitterTicks: MsToTicks(5, ticksPerSecond),
                         lossProbabilityAfterDelivered: 0.0, lossProbabilityAfterLost: 0.0,
                         reorderProbability: 0.0, reorderDelayTicks: 0), traceTicks: null);
                     error = null;
@@ -84,7 +82,7 @@ namespace Teleop.Eval.Sweep
                     // Not "bursty" in the name: equal after-delivered/after-lost probabilities
                     // degenerate the Gilbert-Elliott chain to plain Bernoulli loss at 0.5%.
                     profile = new NamedProfile(name, new NetworkProfile(
-                        baseDelayTicks: (long)msToTicks(150), jitterTicks: (long)msToTicks(20),
+                        baseDelayTicks: MsToTicks(150, ticksPerSecond), jitterTicks: MsToTicks(20, ticksPerSecond),
                         lossProbabilityAfterDelivered: 0.005, lossProbabilityAfterLost: 0.005,
                         reorderProbability: 0.0, reorderDelayTicks: 0), traceTicks: null);
                     error = null;
@@ -95,7 +93,7 @@ namespace Teleop.Eval.Sweep
                     // an expected burst length of 1/(1-0.7) ≈ 3.33: solving
                     // p/(p+(1-0.7)) = 0.02 for p gives p ≈ 0.00612.
                     profile = new NamedProfile(name, new NetworkProfile(
-                        baseDelayTicks: (long)msToTicks(300), jitterTicks: (long)msToTicks(60),
+                        baseDelayTicks: MsToTicks(300, ticksPerSecond), jitterTicks: MsToTicks(60, ticksPerSecond),
                         lossProbabilityAfterDelivered: 0.00612, lossProbabilityAfterLost: 0.7,
                         reorderProbability: 0.0, reorderDelayTicks: 0), traceTicks: null);
                     error = null;
@@ -144,6 +142,8 @@ namespace Teleop.Eval.Sweep
             }
         }
 
+        private static long MsToTicks(double ms, long ticksPerSecond) => (long)(ms / 1000.0 * ticksPerSecond);
+
         private static readonly Regex JitterAxisPattern = new Regex(@"^jitter-(\d+(?:\.\d+)?)ms$", RegexOptions.Compiled);
         private static readonly Regex DelayAxisPattern = new Regex(@"^delay-(\d+(?:\.\d+)?)ms$", RegexOptions.Compiled);
         private static readonly Regex LossAxisPattern = new Regex(@"^loss-(\d+(?:\.\d+)?)pct$", RegexOptions.Compiled);
@@ -161,14 +161,12 @@ namespace Teleop.Eval.Sweep
         private static bool TryResolveIsolatedAxisProfile(
             string name, long ticksPerSecond, out NetworkProfile profile)
         {
-            double msToTicks(double ms) => ms / 1000.0 * ticksPerSecond;
-
             Match jitterMatch = JitterAxisPattern.Match(name);
             if (jitterMatch.Success)
             {
                 double jitterMs = double.Parse(jitterMatch.Groups[1].Value, CultureInfo.InvariantCulture);
                 profile = new NetworkProfile(
-                    baseDelayTicks: (long)msToTicks(50), jitterTicks: (long)msToTicks(jitterMs),
+                    baseDelayTicks: MsToTicks(50, ticksPerSecond), jitterTicks: MsToTicks(jitterMs, ticksPerSecond),
                     lossProbabilityAfterDelivered: 0.0, lossProbabilityAfterLost: 0.0,
                     reorderProbability: 0.0, reorderDelayTicks: 0);
                 return true;
@@ -179,7 +177,7 @@ namespace Teleop.Eval.Sweep
             {
                 double delayMs = double.Parse(delayMatch.Groups[1].Value, CultureInfo.InvariantCulture);
                 profile = new NetworkProfile(
-                    baseDelayTicks: (long)msToTicks(delayMs), jitterTicks: (long)msToTicks(5),
+                    baseDelayTicks: MsToTicks(delayMs, ticksPerSecond), jitterTicks: MsToTicks(5, ticksPerSecond),
                     lossProbabilityAfterDelivered: 0.0, lossProbabilityAfterLost: 0.0,
                     reorderProbability: 0.0, reorderDelayTicks: 0);
                 return true;
@@ -193,7 +191,7 @@ namespace Teleop.Eval.Sweep
                 // Equal after-delivered/after-lost keeps ExpectedBurstLength ~1 at every point --
                 // this family isolates loss rate, not burst shape (docs/adr/0005).
                 profile = new NetworkProfile(
-                    baseDelayTicks: (long)msToTicks(100), jitterTicks: (long)msToTicks(10),
+                    baseDelayTicks: MsToTicks(100, ticksPerSecond), jitterTicks: MsToTicks(10, ticksPerSecond),
                     lossProbabilityAfterDelivered: lossProbability, lossProbabilityAfterLost: lossProbability,
                     reorderProbability: 0.0, reorderDelayTicks: 0);
                 return true;

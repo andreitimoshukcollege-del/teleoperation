@@ -78,6 +78,7 @@ class PickerApp:
         self.run_display_to_path: Dict[str, Path] = {}
         self.figures_queue: "queue.Queue" = queue.Queue()
         self._current_photo: Optional[tk.PhotoImage] = None
+        self._tests_running = False
 
         notebook = ttk.Notebook(self.root)
         notebook.pack(fill=tk.BOTH, expand=True)
@@ -171,6 +172,7 @@ class PickerApp:
             return
 
         self.run_button.config(state=tk.DISABLED)
+        self._tests_running = True
         self.output.configure(state=tk.NORMAL)
         self.output.delete("1.0", tk.END)
         self.output.configure(state=tk.DISABLED)
@@ -208,11 +210,12 @@ class PickerApp:
                     self._append_output(f"\n{label}", tag)
                     self._append_output(f" -- {summary}\n" if summary else "\n")
                     self.run_button.config(state=tk.NORMAL)
+                    self._tests_running = False
                     return
                 self._append_output(item)
         except queue.Empty:
             pass
-        if str(self.run_button["state"]) == "disabled":
+        if self._tests_running:
             self.root.after(50, self._poll_output)
 
     # ---- Figures tab ----

@@ -32,7 +32,15 @@ disagree, and you will trust the wrong one.
   ./.venv/Scripts/python.exe -m pip install -r requirements-dev.txt
   ./.venv/Scripts/python.exe -m pip install -e . --no-build-isolation
   ```
-- Run the suite: `./.venv/Scripts/python.exe -m pytest -v`, from `analysis/`.
+- Run the suite: `./.venv/Scripts/python.exe -m pytest -v`, from `analysis/`. This is the
+  scriptable path — use it for CI or when an agent needs to verify pass/fail non-interactively;
+  it doesn't change with the picker below.
+- For a human at a terminal who wants to pick a subset instead of memorizing pytest node-id
+  syntax: `./.venv/Scripts/python.exe run_tests.py` opens an interactive checklist (arrow keys
+  + space to toggle, one entry per test grouped by file, all checked by default so Enter alone
+  still runs everything). Requires a real console — it will not run through a piped/non-TTY
+  shell. `run_tests.py --all` skips the prompt and runs everything, equivalent to `pytest -v`
+  but useful if you want the same script for both cases.
 - `tests/test_cli_against_committed_run.py` runs the real CLI end-to-end against the committed
   `results/exp-001-predictor-baseline/` run and checks a computed p50 against a hand
   computation from the raw CSV — it skips itself if that result directory isn't present, it

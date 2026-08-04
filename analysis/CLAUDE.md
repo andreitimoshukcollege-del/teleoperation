@@ -32,11 +32,14 @@ disagree, and you will trust the wrong one.
   ./.venv/Scripts/python.exe -m pip install -r requirements-dev.txt
   ./.venv/Scripts/python.exe -m pip install -e . --no-build-isolation
   ```
-- Run the suite: `./.venv/Scripts/python.exe -m pytest -v`, from `analysis/`. This is the
+  (`just analysis-setup` from the repo root does the same thing, if [`just`](
+  https://github.com/casey/just) is installed — see root `CLAUDE.md`.)
+- Run the suite: `./.venv/Scripts/python.exe -m pytest -v`, from `analysis/` (or `just test`
+  from the repo root). This is the
   scriptable path — use it for CI or when an agent needs to verify pass/fail non-interactively;
   it doesn't change with the picker below.
 - For a human at a terminal who wants to pick a subset instead of memorizing pytest node-id
-  syntax: `./.venv/Scripts/python.exe run_tests.py` opens an interactive checklist (arrow keys
+  syntax: `./.venv/Scripts/python.exe run_tests.py` (or `just test-pick`) opens an interactive checklist (arrow keys
   + space to toggle, one entry per test grouped by file, all checked by default so Enter alone
   still runs everything). Requires a real console — it will not run through a piped/non-TTY
   shell. `run_tests.py --all` skips the prompt and runs everything, equivalent to `pytest -v`

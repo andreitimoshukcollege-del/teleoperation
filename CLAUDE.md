@@ -90,6 +90,13 @@ dotnet run --project Teleop.Eval -- audit          # invariant check over the bu
 `verify` and `audit` are the two that catch the failures unit tests miss. Run all three
 before claiming a task is done. Never report success on the basis of a successful build alone.
 
+If [`just`](https://github.com/casey/just) is installed, the repo-root `justfile` wraps the
+above plus `analysis/`'s test suite: `just core-check` runs all three `core/` gates, `just test`
+runs `analysis/`'s pytest suite, `just check` runs everything. `just --list` shows every
+recipe (`sweep`, `report`, `analysis-setup`, `test-pick`, ...). This is a convenience wrapper,
+not a new source of truth — the raw commands above and in `analysis/CLAUDE.md` still work
+unchanged and are what CI/agents without `just` should fall back to.
+
 ## Boundaries for agents
 
 - Free rein: `core/`, `analysis/`, `experiments/`, `docs/`.

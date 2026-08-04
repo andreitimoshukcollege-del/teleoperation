@@ -1,4 +1,4 @@
-"""Tkinter GUI for selecting and running analysis/tests/.
+"""Tkinter GUI for analysis/: run tests and view generated figures.
 
 Launched by run_tests.py when invoked without --all. Needs a real display -- this project's
 analysis/ venv is a Windows-native Python reached via WSL interop (see analysis/CLAUDE.md), so
@@ -12,6 +12,7 @@ import subprocess
 import sys
 import threading
 import tkinter as tk
+from pathlib import Path
 from tkinter import ttk
 from tkinter.scrolledtext import ScrolledText
 from typing import Dict, List, Optional
@@ -19,6 +20,7 @@ from typing import Dict, List, Optional
 from run_tests import group_by_file, humanize_test_name
 
 _SUMMARY_RE = re.compile(r"^=+\s*(.*?)\s*=+$")
+RESULTS_DIR = Path(__file__).resolve().parent.parent / "results"
 
 
 def build_pytest_command(node_ids: List[str]) -> List[str]:
@@ -38,22 +40,56 @@ def find_summary_line(lines: List[str]) -> Optional[str]:
     return None
 
 
+def discover_runs(results_dir: Path = RESULTS_DIR) -> List[Path]:
+    """Every results/<exp>/<run>/ directory that has a manifest.json -- a directory without one
+    isn't a real run (results/CLAUDE.md: a result without a manifest isn't citable), so it's
+    never offered here. Newest-looking (by path, which sorts with the ISO-8601 run timestamp) first.
+    """
+    if not results_dir.is_dir():
+        return []
+    return sorted((p.parent for p in results_dir.glob("*/*/manifest.json")), reverse=True)
+
+
+def figures_for_run(run_dir: Path) -> List[Path]:
+    """PNGs already generated for a run, or an empty list if `report` hasn't been run for it yet."""
+    figures_dir = run_dir / "figures"
+    if not figures_dir.is_dir():
+        return []
+    return sorted(figures_dir.glob("*.png"))
+
+
+def build_report_command(run_dir: Path) -> List[str]:
+    """The exact subprocess argv used to (re)generate a run's figures -- same CLI `just report`
+    wraps. Absolute path so it doesn't matter what the subprocess's cwd ends up being.
+    """
+    return [sys.executable, "-m", "teleop_analysis.cli", str(run_dir.resolve())]
+
+
 class PickerApp:
     def __init__(self, root: tk.Tk, node_ids: List[str]):
         self.root = root
-        self.root.title("analysis/ test picker")
+        self.root.title("analysis/ toolkit")
         self.node_ids = node_ids
         self.vars: Dict[str, tk.BooleanVar] = {}
         self.process: Optional[subprocess.Popen] = None
         self.last_exit_code: Optional[int] = None
         self.output_queue: "queue.Queue" = queue.Queue()
 
-        self._build_widgets()
+        self.run_display_to_path: Dict[str, Path] = {}
+        self.figures_queue: "queue.Queue" = queue.Queue()
+        self._current_photo: Optional[tk.PhotoImage] = None
+
+        notebook = ttk.Notebook(self.root)
+        notebook.pack(fill=tk.BOTH, expand=True)
+        notebook.add(self._build_tests_tab(notebook), text="Tests")
+        notebook.add(self._build_figures_tab(notebook), text="Figures")
+
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
 
-    def _build_widgets(self) -> None:
-        container = ttk.Frame(self.root, padding=8)
-        container.pack(fill=tk.BOTH, expand=True)
+    # ---- Tests tab ----
+
+    def _build_tests_tab(self, notebook: ttk.Notebook) -> ttk.Frame:
+        container = ttk.Frame(notebook, padding=8)
 
         list_frame = ttk.Frame(container)
         list_frame.pack(fill=tk.BOTH, expand=True)
@@ -104,6 +140,7 @@ class PickerApp:
         self.output.tag_config("fail", foreground="#cf222e")
 
         self._update_status()
+        return container
 
     def _selected_ids(self) -> List[str]:
         return [node_id for node_id, var in self.vars.items() if var.get()]
@@ -177,6 +214,123 @@ class PickerApp:
             pass
         if str(self.run_button["state"]) == "disabled":
             self.root.after(50, self._poll_output)
+
+    # ---- Figures tab ----
+
+    def _build_figures_tab(self, notebook: ttk.Notebook) -> ttk.Frame:
+        container = ttk.Frame(notebook, padding=8)
+
+        top_row = ttk.Frame(container)
+        top_row.pack(fill=tk.X)
+        ttk.Label(top_row, text="Run:").pack(side=tk.LEFT)
+        self.run_combo = ttk.Combobox(top_row, state="readonly", width=55)
+        self.run_combo.pack(side=tk.LEFT, padx=(6, 6))
+        self.run_combo.bind("<<ComboboxSelected>>", lambda e: self._refresh_figure_list())
+        self.generate_button = ttk.Button(
+            top_row, text="Generate / Refresh Figures", command=self._on_generate_figures_clicked
+        )
+        self.generate_button.pack(side=tk.LEFT)
+        self.figures_status = ttk.Label(top_row, text="")
+        self.figures_status.pack(side=tk.RIGHT)
+
+        body = ttk.Frame(container)
+        body.pack(fill=tk.BOTH, expand=True, pady=(8, 0))
+
+        self.figure_listbox = tk.Listbox(body, width=32, exportselection=False)
+        self.figure_listbox.pack(side=tk.LEFT, fill=tk.Y)
+        self.figure_listbox.bind("<<ListboxSelect>>", lambda e: self._on_figure_selected())
+
+        image_frame = ttk.Frame(body)
+        image_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(8, 0))
+        image_frame.grid_rowconfigure(0, weight=1)
+        image_frame.grid_columnconfigure(0, weight=1)
+
+        self.image_canvas = tk.Canvas(image_frame, background="white")
+        v_scroll = ttk.Scrollbar(image_frame, orient="vertical", command=self.image_canvas.yview)
+        h_scroll = ttk.Scrollbar(image_frame, orient="horizontal", command=self.image_canvas.xview)
+        self.image_canvas.configure(yscrollcommand=v_scroll.set, xscrollcommand=h_scroll.set)
+        self.image_canvas.grid(row=0, column=0, sticky="nsew")
+        v_scroll.grid(row=0, column=1, sticky="ns")
+        h_scroll.grid(row=1, column=0, sticky="ew")
+
+        self._refresh_run_list()
+        return container
+
+    def _refresh_run_list(self) -> None:
+        runs = discover_runs()
+        self.run_display_to_path = {
+            str(run.relative_to(RESULTS_DIR)).replace("\\", "/"): run for run in runs
+        }
+        values = list(self.run_display_to_path.keys())
+        self.run_combo["values"] = values
+        if values and not self.run_combo.get():
+            self.run_combo.set(values[0])
+            self._refresh_figure_list()
+
+    def _selected_run(self) -> Optional[Path]:
+        return self.run_display_to_path.get(self.run_combo.get())
+
+    def _refresh_figure_list(self) -> None:
+        self.figure_listbox.delete(0, tk.END)
+        self._clear_image()
+        run = self._selected_run()
+        if run is None:
+            return
+        figures = figures_for_run(run)
+        for path in figures:
+            self.figure_listbox.insert(tk.END, path.name)
+        self.figures_status.config(text="" if figures else "No figures yet -- click Generate.")
+
+    def _clear_image(self) -> None:
+        self.image_canvas.delete("all")
+        self._current_photo = None
+
+    def _on_figure_selected(self) -> None:
+        selection = self.figure_listbox.curselection()
+        run = self._selected_run()
+        if not selection or run is None:
+            return
+        path = run / "figures" / self.figure_listbox.get(selection[0])
+        photo = tk.PhotoImage(file=str(path))
+        self._current_photo = photo  # tkinter drops the image if nothing keeps a reference
+        self.image_canvas.delete("all")
+        self.image_canvas.create_image(0, 0, anchor="nw", image=photo)
+        self.image_canvas.configure(scrollregion=(0, 0, photo.width(), photo.height()))
+
+    def _on_generate_figures_clicked(self) -> None:
+        run = self._selected_run()
+        if run is None:
+            self.figures_status.config(text="No run selected.")
+            return
+
+        self.generate_button.config(state=tk.DISABLED)
+        self.figures_status.config(text="Generating...")
+        threading.Thread(
+            target=self._generate_figures_in_background, args=(run,), daemon=True
+        ).start()
+        self.root.after(100, self._poll_figures_generation)
+
+    def _generate_figures_in_background(self, run: Path) -> None:
+        proc = subprocess.run(build_report_command(run), capture_output=True, text=True)
+        self.figures_queue.put((proc.returncode, proc.stdout, proc.stderr))
+
+    def _poll_figures_generation(self) -> None:
+        try:
+            exit_code, stdout, stderr = self.figures_queue.get_nowait()
+        except queue.Empty:
+            self.root.after(100, self._poll_figures_generation)
+            return
+
+        self.generate_button.config(state=tk.NORMAL)
+        if exit_code == 0:
+            self.figures_status.config(text="Figures generated.")
+        else:
+            error_text = (stderr or stdout).strip()
+            last_line = error_text.splitlines()[-1] if error_text else "unknown error"
+            self.figures_status.config(text=f"Generation failed: {last_line}")
+        self._refresh_figure_list()
+
+    # ---- shared ----
 
     def _on_close(self) -> None:
         if self.process is not None:

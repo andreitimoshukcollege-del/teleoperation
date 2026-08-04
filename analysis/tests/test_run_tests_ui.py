@@ -8,7 +8,13 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from run_tests import collect_test_ids, group_by_file, humanize_test_name  # noqa: E402
-from test_gui import build_pytest_command, find_summary_line  # noqa: E402
+from test_gui import (  # noqa: E402
+    build_pytest_command,
+    build_report_command,
+    discover_runs,
+    figures_for_run,
+    find_summary_line,
+)
 
 
 def test_collect_test_ids_finds_known_tests():
@@ -88,3 +94,45 @@ def test_find_summary_line_returns_none_when_no_summary_present():
 
 def test_find_summary_line_returns_none_for_empty_input():
     assert find_summary_line([]) is None
+
+
+def test_discover_runs_finds_only_directories_with_a_manifest(tmp_path):
+    results_dir = tmp_path / "results"
+    run_a = results_dir / "exp-a" / "20260101-000000Z"
+    run_b = results_dir / "exp-b" / "20260102-000000Z"
+    run_a.mkdir(parents=True)
+    run_b.mkdir(parents=True)
+    (run_a / "manifest.json").write_text("{}")
+    (run_b / "manifest.json").write_text("{}")
+    # A directory with no manifest.json is not a citable run (results/CLAUDE.md) and must not
+    # be offered as one.
+    (results_dir / "exp-c" / "not-a-run").mkdir(parents=True)
+
+    assert set(discover_runs(results_dir)) == {run_a, run_b}
+
+
+def test_discover_runs_returns_empty_list_when_results_dir_missing(tmp_path):
+    assert discover_runs(tmp_path / "does-not-exist") == []
+
+
+def test_figures_for_run_lists_only_png_files(tmp_path):
+    run_dir = tmp_path / "run"
+    figures_dir = run_dir / "figures"
+    figures_dir.mkdir(parents=True)
+    (figures_dir / "b.png").write_bytes(b"")
+    (figures_dir / "a.png").write_bytes(b"")
+    (figures_dir / "summary_table.csv").write_bytes(b"")
+
+    assert [p.name for p in figures_for_run(run_dir)] == ["a.png", "b.png"]
+
+
+def test_figures_for_run_returns_empty_list_when_no_figures_dir(tmp_path):
+    assert figures_for_run(tmp_path / "run-without-figures") == []
+
+
+def test_build_report_command_uses_absolute_run_path():
+    import sys
+
+    command = build_report_command(Path("results/exp-001/20260101-000000Z"))
+    assert command[:3] == [sys.executable, "-m", "teleop_analysis.cli"]
+    assert Path(command[3]).is_absolute()

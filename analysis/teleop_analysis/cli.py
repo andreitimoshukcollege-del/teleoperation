@@ -62,8 +62,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
     if "impairment-response" in requested:
         for path in (
-            impairment_response.plot_correction_vs_impairment(df, manifest, figures_dir),
-            impairment_response.plot_prediction_error_vs_impairment(df, manifest, figures_dir),
+            impairment_response.plot_correction_vs_jitter(df, manifest, figures_dir),
+            impairment_response.plot_prediction_error_vs_jitter(df, manifest, figures_dir),
+            impairment_response.plot_correction_vs_delay(df, manifest, figures_dir),
+            impairment_response.plot_prediction_error_vs_delay(df, manifest, figures_dir),
+            impairment_response.plot_correction_vs_loss(df, manifest, figures_dir),
+            impairment_response.plot_prediction_error_vs_loss(df, manifest, figures_dir),
         ):
             if path is not None:
                 written.append(path)

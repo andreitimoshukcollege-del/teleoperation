@@ -83,3 +83,40 @@ def synthetic_run_two_profiles(tmp_path) -> Path:
             }).to_csv(profile_dir / "metrics.csv", index=False)
 
     return run_dir
+
+
+@pytest.fixture
+def synthetic_run_two_loss_profiles(tmp_path) -> Path:
+    """A tiny two-stack, two-profile sweep run using the isolated "loss-<N>pct" family
+    (docs/adr/0005-isolated-impairment-profiles.md) -- the legacy presets have no clean loss
+    value, so the loss-axis figures need profiles from this family specifically.
+    """
+    run_dir = tmp_path / "exp-997-synthetic-loss" / "20260101-000000Z"
+    manifest = {
+        "experimentId": "exp-997-synthetic-loss",
+        "gitSha": "1234deadbeefcafef00d",
+        "seeds": [1, 2],
+        "predictors": ["none", "fast"],
+        "reconciler": "snap",
+        "networkProfiles": ["loss-0pct", "loss-5pct"],
+        "trialSteps": 10,
+        "stepIntervalTicks": 100000,
+        "configPath": "experiments/exp-997-synthetic-loss.yaml",
+        "machine": "TESTHOST",
+        "command": "dotnet run --project core/Teleop.Eval -- sweep experiments/exp-997-synthetic-loss.yaml",
+        "generatedAtUtc": "2026-01-01T00:00:00Z",
+    }
+    run_dir.mkdir(parents=True)
+    (run_dir / "manifest.json").write_text(json.dumps(manifest))
+
+    for stack, scale in (("none", 1.0), ("fast", 0.5)):
+        for profile in ("loss-0pct", "loss-5pct"):
+            profile_dir = run_dir / stack / profile
+            profile_dir.mkdir(parents=True)
+            pd.DataFrame({
+                "name": ["prediction_position_error_mm"] * 10 + ["correction_magnitude_mm"] * 10,
+                "value": [v * scale for v in range(1, 11)] + [v * scale for v in range(11, 21)],
+                "ticks": list(range(0, 1000, 100)) * 2,
+            }).to_csv(profile_dir / "metrics.csv", index=False)
+
+    return run_dir

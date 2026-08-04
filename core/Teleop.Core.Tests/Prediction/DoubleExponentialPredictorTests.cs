@@ -448,6 +448,118 @@ public class DoubleExponentialPredictorTests
         Assert.Equal(0f, PoseMath.OrientationErrorRadians(expected, predicted), 1e-3f);
     }
 
+    // Regression tests for the divergence a Phase-5 sweep actually recorded: several observations
+    // arriving with very small gaps between them (datagrams draining back-to-back right after a
+    // trace-driven network burst clears) turned an ordinary position delta into a huge apparent
+    // instantaneous speed, which -- before Observe() clamped it -- compounded across consecutive
+    // calls into float.PositiveInfinity/NaN. These assert the *stored* trend is bounded going
+    // forward, not just Predict()'s output for one call.
+    // Extracted directly from a real Teleop.Eval sweep trial (double-exp predictor, the
+    // "synthetic-burst" trace-driven network profile) that diverged to float.PositiveInfinity
+    // before this fix: (dt in seconds, observed position.X) pairs, in order, captured from the
+    // actual failing run. Several dt values are genuinely microsecond-scale (as small as 2E-07s)
+    // -- several datagrams draining back-to-back once a congestion burst clears -- which is far
+    // smaller than a synthetic worst-case guess would likely have picked, and is exactly what
+    // makes this a faithful reproduction rather than an approximation.
+    private static readonly (double DtSeconds, float PositionX)[] BurstReproSequence =
+    {
+        (0.01, 0.0049999165f), (0.01, 0.009999333f), (0.01, 0.019994667f), (0.02, 0.029982002f),
+        (0.02, 0.034971423f), (0.01, 0.044939276f), (0.01, 0.049916707f), (0.02, 0.059856102f),
+        (0.02, 0.06977156f), (0.02, 0.079659104f), (0.02, 0.08459117f), (0.01, 0.09442945f),
+        (0.02, 0.099334665f), (0.01, 0.10422995f), (0.01, 0.10911481f), (0.01, 0.113988765f),
+        (0.01, 0.11885131f), (0.01, 0.12370198f), (0.01, 0.12854028f), (0.01, 0.13336572f),
+        (0.01, 0.13817783f), (0.01, 0.1429761f), (0.01, 0.15252931f), (0.01, 0.15728328f),
+        (0.01, 0.16202152f), (0.01, 0.16674355f), (0.02, 0.17613712f), (0.2200075, 0.27401197f),
+        (0.01, 0.2781805f), (0.0001231, 0.2781805f), (0.02, 0.28232124f), (0.0099485, 0.29051757f),
+        (3.77E-05, 0.29051757f), (0.0099768, 0.29457238f), (0.01, 0.29457238f),
+        (0.0098523, 0.29859772f), (0.01, 0.3025932f), (0.0098851, 0.30655843f),
+        (0.0102078, 0.3143965f), (0.0001204, 0.3143965f), (0.0099311, 0.3182686f),
+        (0.0198607, 0.32210883f), (0.0098819, 0.3259169f), (0.0100335, 0.32969233f),
+        (0.0100268, 0.33343482f), (0.0100214, 0.33714396f), (0.0100171, 0.3408194f),
+        (0.0100137, 0.34446073f), (0.010011, 0.3480676f), (0.0100088, 0.35163972f),
+        (0.010007, 0.35517663f), (0.0100056, 0.35867804f), (0.0100045, 0.36557293f),
+        (3.6E-06, 0.36557293f), (0.0100029, 0.3689657f), (0.0100023, 0.37232155f),
+        (0.0200018, 0.37892127f), (1.5E-06, 0.37892127f), (0.0100012, 0.38216448f),
+        (0.0100009, 0.38536945f), (0.0100007, 0.3885359f), (0.0100006, 0.39166346f),
+        (0.0200005, 0.3978008f), (4E-07, 0.3978008f), (0.0200003, 0.40377906f),
+        (2E-07, 0.40377906f), (0.0100002, 0.40670776f), (0.0100002, 0.4095958f),
+        (0.0100001, 0.41244286f), (0.0100001, 0.4152487f), (0.0200001, 0.41801298f),
+        (0.0100001, 0.42341593f), (0.01, 0.426054f), (0.01, 0.4286495f), (0.02, 0.43371162f),
+        (0.01, 0.43617773f), (0.02, 0.4409789f), (0.02, 0.44331345f), (0.01, 0.44560367f),
+        (0.01, 0.44784933f),
+    };
+
+    [Fact]
+    public void Observe_RealBurstDrainSequence_KeepsPositionTrendFiniteAndBounded()
+    {
+        // Same smoothing values as the sweep config this was captured from: low alpha*beta means
+        // the trend recursion decays slowly (~3% per step here), so a burst of oversized forcing
+        // terms from tiny-dt observations accumulates across many steps rather than dying out
+        // immediately -- which is what let it reach float.PositiveInfinity/NaN in the real run.
+        var predictor = new DoubleExponentialPredictor(
+            Config(
+                smoothingAlpha: 0.3f, smoothingBeta: 0.1f, maxLinearSpeed: 10f, maxAngularSpeed: 10f,
+                maxObservationGapTicks: 1_000_000_000),
+            new ManualClock(TicksPerSecondForBurstRepro));
+
+        long ticks = 0;
+        predictor.Observe(Sample(ticks, Vector3.Zero));
+
+        foreach ((double dtSeconds, float positionX) in BurstReproSequence)
+        {
+            ticks += Math.Max(1, (long)Math.Round(dtSeconds * TicksPerSecondForBurstRepro));
+            predictor.Observe(Sample(ticks, new Vector3(positionX, 0f, 0f)));
+
+            Pose predicted = predictor.Predict(ticks + 50);
+            Assert.True(float.IsFinite(predicted.Position.X), $"diverged to {predicted.Position.X}");
+
+            // The real observed trajectory never exceeds 0.5m; this is a generous bound that the
+            // pre-fix code blew past by ten orders of magnitude on this exact sequence.
+            Assert.True(
+                Math.Abs(predicted.Position.X) < 1000f,
+                $"predicted X {predicted.Position.X} implausibly far from the observed trajectory");
+        }
+    }
+
+    // High resolution (matches the real sweep's 10,000,000 ticks/sec), not this file's usual 1000
+    // -- the captured microsecond-scale dt values need sub-millisecond tick resolution to replay
+    // faithfully; a 1000-ticks/sec clock cannot represent a gap smaller than 1 ms at all.
+    private const long TicksPerSecondForBurstRepro = 10_000_000;
+
+    // Defense-in-depth, not a captured reproduction: no real run was observed diverging on the
+    // rotation side specifically (the actual sweep failure was in prediction_position_error_mm).
+    // The rotation recursion has the identical mathematical shape as the position one (substitute
+    // MotionMath.RelativeRotationVector for subtraction), so it is clamped for the same reason by
+    // symmetry, and this checks that clamp does not break normal unit-quaternion output -- it is
+    // not, on its own, evidence that an unclamped rotation trend was ever observed running away.
+    [Fact]
+    public void Observe_ConsecutiveVerySmallDt_KeepsRotationTrendFiniteAndBounded()
+    {
+        const float maxAngularSpeed = 5f;
+        var predictor = NewPredictor(Config(
+            smoothingAlpha: 0.3f, smoothingBeta: 0.1f, maxLinearSpeed: 100f,
+            maxAngularSpeed: maxAngularSpeed, maxObservationGapTicks: 1_000_000));
+
+        predictor.Observe(Sample(0, Vector3.Zero, Quaternion.Identity));
+
+        long ticks = 0;
+        for (int i = 1; i <= 500; i++)
+        {
+            ticks += 1;
+            Quaternion rotation = Quaternion.CreateFromAxisAngle(Vector3.UnitY, i * 0.01f);
+            predictor.Observe(Sample(ticks, Vector3.Zero, rotation));
+
+            Pose predicted = predictor.Predict(ticks + 50);
+            Assert.True(
+                float.IsFinite(predicted.Rotation.X) && float.IsFinite(predicted.Rotation.Y) &&
+                float.IsFinite(predicted.Rotation.Z) && float.IsFinite(predicted.Rotation.W),
+                $"step {i}: rotation diverged to {predicted.Rotation}");
+            Assert.True(
+                Math.Abs(predicted.Rotation.Length() - 1f) < 0.01f,
+                $"step {i}: predicted rotation is not a unit quaternion: {predicted.Rotation}");
+        }
+    }
+
     [Fact]
     public void Diagnostics_NeverClaimUncertainty()
     {

@@ -67,6 +67,19 @@ namespace Teleop.Core.Prediction
     /// stranded between two positions the operator was never at. The cost is that the post-gap
     /// trend has to be re-learned, which is honest -- nothing is known about motion across a stall.
     ///
+    /// <b>The trend is clamped in <see cref="Observe"/>, not only in <see cref="Predict"/>.</b> A
+    /// very small <c>dt</c> between two accepted observations (several datagrams draining
+    /// back-to-back right after a network burst clears, for example) turns an ordinary position
+    /// delta into a huge instantaneous rate. Left unclamped, that value is smoothed into
+    /// <see cref="_trend"/>/<see cref="_rotationTrend"/> and feeds directly into the *next* call's
+    /// projected level, so a run of consecutive small-<c>dt</c> observations compounds
+    /// multiplicatively instead of converging -- observed in practice diverging to
+    /// <see cref="float.PositiveInfinity"/>/NaN under a bursty trace-driven profile. Clamping only
+    /// <see cref="Predict"/>'s output cannot undo state that already ran away, so both methods
+    /// clamp to the same <see cref="PredictorConfig.MaxLinearSpeed"/>/
+    /// <see cref="PredictorConfig.MaxAngularSpeed"/> bound -- which is that field's own documented
+    /// purpose either way, just applied where the value is stored as well as where it is consumed.
+    ///
     /// Deterministic and allocation-free; there is nothing to preallocate, since the whole state is
     /// four value-typed fields. Not thread-safe, by contract.
     /// </summary>
@@ -219,7 +232,20 @@ namespace Teleop.Core.Prediction
             Vector3 previousLevel = _level;
             Vector3 projectedLevel = previousLevel + _trend * dt;
             Vector3 newLevel = _alpha * obs.Value.Position + (1f - _alpha) * projectedLevel;
-            _trend = _beta * ((newLevel - previousLevel) / dt) + (1f - _beta) * _trend;
+            Vector3 newTrend = _beta * ((newLevel - previousLevel) / dt) + (1f - _beta) * _trend;
+            // Clamped here, not just in Predict(): a very small dt (several datagrams draining
+            // back-to-back after a network burst clears, for example) turns an ordinary position
+            // delta into a huge instantaneous "velocity". Left unclamped, that value would be
+            // smoothed into _trend and then feed straight into the *next* call's projectedLevel,
+            // compounding across consecutive small-dt observations instead of converging -- which
+            // is exactly how this predictor was observed diverging to float.PositiveInfinity/NaN
+            // under a bursty trace-driven profile. Predict()'s own clamp only protects its output;
+            // it can't undo state that already ran away. Clamping the stored trend to the same
+            // MaxLinearSpeed bound Predict() uses is this field's own documented purpose
+            // (PredictorConfig.MaxLinearSpeed: "applied ... so that a corrupt or mis-stamped
+            // sample cannot throw the prediction an implausible distance") -- just applied where
+            // the value is stored, not only where it is finally consumed.
+            _trend = MotionMath.ClampMagnitude(newTrend, _maxLinearSpeed);
             _level = newLevel;
 
             Quaternion previousRotationLevel = _rotationLevel;
@@ -235,7 +261,9 @@ namespace Teleop.Core.Prediction
 
             Vector3 rotationLevelRate =
                 MotionMath.RelativeRotationVector(previousRotationLevel, newRotationLevel) / dt;
-            _rotationTrend = _beta * rotationLevelRate + (1f - _beta) * _rotationTrend;
+            Vector3 newRotationTrend = _beta * rotationLevelRate + (1f - _beta) * _rotationTrend;
+            // Same reasoning as the position trend clamp above, mirrored for the angular rate.
+            _rotationTrend = MotionMath.ClampMagnitude(newRotationTrend, _maxAngularSpeed);
             _rotationLevel = newRotationLevel;
 
             _lastAcceptedTicks = obs.CaptureTicks;

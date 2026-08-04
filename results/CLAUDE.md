@@ -8,11 +8,14 @@ appears in a paper came from here and has a manifest — if it doesn't have both
 ```
 results/<experiment-id>/<UTC-timestamp>/
     manifest.json
-    metrics.csv
+    <predictor>/<network-profile>/metrics.csv
 ```
 
-Written by `Teleop.Eval -- sweep <experiments/*.yaml>` (`core/Teleop.Eval/Sweep/SweepCommand.cs`),
-normally invoked via `/run-sweep`, never by hand.
+One `metrics.csv` per (predictor, network profile) combination, pooling every seed of that
+configuration into a single file — seeds are repeated trials of the *same* configuration, meant
+to be pooled into one percentile distribution, not scattered across configurations with no way
+to tell them apart afterward. Written by `Teleop.Eval -- sweep <experiments/*.yaml>`
+(`core/Teleop.Eval/Sweep/SweepCommand.cs`), normally invoked via `/run-sweep`, never by hand.
 
 ## `manifest.json`
 

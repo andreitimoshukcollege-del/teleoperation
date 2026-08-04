@@ -71,17 +71,23 @@ namespace Teleop.Eval.Sweep
             string outputDir = Path.Combine(repoRoot, "results", config.Id, timestamp);
             Directory.CreateDirectory(outputDir);
 
-            string csvPath = Path.Combine(outputDir, "metrics.csv");
-            using (var sink = new CsvMetricSink(csvPath))
+            // One metrics.csv per (predictor, network profile), pooling every seed of that
+            // configuration together -- multiple seeds are multiple trials of the SAME
+            // configuration, meant to be pooled into one percentile distribution, not
+            // interleaved with other configurations in a single undifferentiated file with no
+            // way to tell them apart afterward.
+            foreach (string predictorName in config.Predictors)
             {
-                foreach (string predictorName in config.Predictors)
+                foreach (string profileName in config.NetworkProfiles)
                 {
-                    foreach (string profileName in config.NetworkProfiles)
+                    string configDir = Path.Combine(outputDir, predictorName, profileName);
+                    Directory.CreateDirectory(configDir);
+                    string csvPath = Path.Combine(configDir, "metrics.csv");
+
+                    using var sink = new CsvMetricSink(csvPath);
+                    foreach (ulong seed in config.Seeds)
                     {
-                        foreach (ulong seed in config.Seeds)
-                        {
-                            RunTrial(predictorName, config.Reconciler, profileName, seed, config, tracesDirectory, sink);
-                        }
+                        RunTrial(predictorName, config.Reconciler, profileName, seed, config, tracesDirectory, sink);
                     }
                 }
             }

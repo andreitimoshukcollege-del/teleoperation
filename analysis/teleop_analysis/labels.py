@@ -30,8 +30,50 @@ FRIENDLY_PROFILE_NAMES: Dict[str, str] = {
 }
 
 
+_COMBO_PREFIX = "combo__"
+_COMBO_DELAY_RE = re.compile(r"^delay-(\d+(?:\.\d+)?)ms$")
+_COMBO_JITTER_RE = re.compile(r"^jitter-(\d+(?:\.\d+)?)ms$")
+_COMBO_LOSS_RE = re.compile(r"^loss-(\d+(?:\.\d+)?)pct$")
+_COMBO_AXIS_ORDER = {"delay": 0, "jitter": 1, "loss": 2}
+
+
+def _friendly_combined_profile_name(name: str) -> Optional[str]:
+    """docs/adr/0006-combined-impairment-profiles.md: "combo__delay-150ms__jitter-20ms" ->
+    "150ms delay, 20ms jitter (combined)". Mirrors NetworkProfileCatalog.TryResolveCombinedProfile's
+    grammar for figure captions only -- returns None for anything that isn't a well-formed
+    combo__ name, same as a failed regex match anywhere else in this module.
+    """
+    if not name.startswith(_COMBO_PREFIX):
+        return None
+
+    parts: List[Tuple[str, str]] = []
+    for segment in name[len(_COMBO_PREFIX):].split("__"):
+        delay_match = _COMBO_DELAY_RE.match(segment)
+        if delay_match:
+            parts.append(("delay", f"{delay_match.group(1)}ms delay"))
+            continue
+        jitter_match = _COMBO_JITTER_RE.match(segment)
+        if jitter_match:
+            parts.append(("jitter", f"{jitter_match.group(1)}ms jitter"))
+            continue
+        loss_match = _COMBO_LOSS_RE.match(segment)
+        if loss_match:
+            parts.append(("loss", f"{loss_match.group(1)}% loss"))
+            continue
+        return None  # unrecognized segment -- not a well-formed combo__ name
+
+    if not parts:
+        return None
+
+    parts.sort(key=lambda p: _COMBO_AXIS_ORDER[p[0]])
+    return ", ".join(text for _, text in parts) + " (combined)"
+
+
 def friendly_profile_name(name: str) -> str:
-    return FRIENDLY_PROFILE_NAMES.get(name, name)
+    if name in FRIENDLY_PROFILE_NAMES:
+        return FRIENDLY_PROFILE_NAMES[name]
+    combined = _friendly_combined_profile_name(name)
+    return combined if combined is not None else name
 
 
 # Per-axis scalar value lookup, mirroring core/Teleop.Eval/Sweep/NetworkProfileCatalog.cs by hand

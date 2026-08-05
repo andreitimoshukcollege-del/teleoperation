@@ -9,6 +9,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from experiment_builder import (  # noqa: E402
     build_experiment_yaml,
+    combined_points,
     delay_points,
     jitter_points,
     loss_points,
@@ -56,6 +57,40 @@ def test_points_raises_when_max_below_min():
 
     with pytest.raises(ValueError):
         jitter_points(10, 0, 1)
+
+
+def test_combined_points_takes_the_cross_product_of_two_axes():
+    points = combined_points(delay_ms=[100, 150], jitter_ms=[20])
+    assert points == ["combo__delay-100ms__jitter-20ms", "combo__delay-150ms__jitter-20ms"]
+
+
+def test_combined_points_supports_all_three_axes_in_canonical_order():
+    points = combined_points(delay_ms=[150], jitter_ms=[20], loss_pct=[0.5])
+    assert points == ["combo__delay-150ms__jitter-20ms__loss-0.5pct"]
+
+
+def test_combined_points_omits_empty_axes_entirely():
+    points = combined_points(jitter_ms=[30], loss_pct=[1])
+    assert points == ["combo__jitter-30ms__loss-1pct"]
+
+
+def test_combined_points_cross_product_size_matches_axis_lengths():
+    points = combined_points(delay_ms=[0, 100, 200], jitter_ms=[5, 10])
+    assert len(points) == 6
+
+
+def test_combined_points_raises_with_fewer_than_two_axes():
+    import pytest
+
+    with pytest.raises(ValueError):
+        combined_points(jitter_ms=[10, 20])
+
+
+def test_combined_points_raises_with_no_axes():
+    import pytest
+
+    with pytest.raises(ValueError):
+        combined_points()
 
 
 def test_build_experiment_yaml_shape():

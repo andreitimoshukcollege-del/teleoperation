@@ -26,6 +26,27 @@ def test_friendly_profile_name_falls_back_to_raw_name_for_unknown_profiles():
     assert friendly_profile_name("custom-profile") == "custom-profile"
 
 
+def test_friendly_profile_name_formats_combined_profiles_in_canonical_axis_order():
+    # jitter listed before delay in the name -- output must still be delay, jitter, loss order.
+    name = "combo__jitter-20ms__delay-150ms__loss-0.5pct"
+    assert friendly_profile_name(name) == "150ms delay, 20ms jitter, 0.5% loss (combined)"
+
+
+def test_friendly_profile_name_formats_combined_profiles_with_omitted_axes():
+    assert friendly_profile_name("combo__jitter-30ms__loss-1pct") == "30ms jitter, 1% loss (combined)"
+
+
+def test_friendly_profile_name_falls_back_to_raw_name_for_malformed_combined_profile():
+    assert friendly_profile_name("combo__not-a-real-axis") == "combo__not-a-real-axis"
+
+
+def test_axis_value_returns_none_for_every_axis_on_a_combined_profile():
+    name = "combo__delay-150ms__jitter-20ms__loss-0.5pct"
+    assert axis_value(name, "delay") is None
+    assert axis_value(name, "jitter") is None
+    assert axis_value(name, "loss") is None
+
+
 def test_ordered_profiles_by_jitter_sorts_ascending_and_drops_unknown():
     ordered = ordered_profiles_by_jitter(
         ["300ms-60j-2loss-bursty", "lan", "synthetic-burst", "50ms-5j"]

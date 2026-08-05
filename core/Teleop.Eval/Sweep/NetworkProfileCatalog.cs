@@ -40,6 +40,12 @@ namespace Teleop.Eval.Sweep
     /// <c>delay-&lt;N&gt;ms</c>, <c>loss-&lt;N&gt;pct</c>) via <see cref="TryResolveIsolatedAxisProfile"/>,
     /// by regex rather than one named case per point -- see that method's doc comment.
     ///
+    /// Also resolves the combined multi-axis family from
+    /// <c>docs/adr/0006-combined-impairment-profiles.md</c> (<c>combo__delay-&lt;N&gt;ms__jitter-&lt;N&gt;ms__loss-&lt;N&gt;pct</c>,
+    /// any 2-or-3-axis subset) via <see cref="TryResolveCombinedProfile"/> -- unlike the isolated
+    /// family, an axis absent from the name is 0, not a nonzero baseline, since this family
+    /// represents one chosen composite condition rather than isolating a variable.
+    ///
     /// <c>cellular-congested</c>, <c>leo-satellite</c>, and <c>long-haul</c> are reserved names
     /// from the frozen 7-name set that specifically imply a real network capture. They are not
     /// resolvable yet -- <see cref="Resolve"/> reports them as a distinct "not yet available"
@@ -134,6 +140,13 @@ namespace Teleop.Eval.Sweep
                         return true;
                     }
 
+                    if (TryResolveCombinedProfile(name, ticksPerSecond, out NetworkProfile combinedProfile))
+                    {
+                        profile = new NamedProfile(name, combinedProfile, traceTicks: null);
+                        error = null;
+                        return true;
+                    }
+
                     profile = default;
                     error = ReservedPendingRealCapture.Contains(name)
                         ? $"'{name}' is reserved for a real network capture, not yet available -- see docs/adr/0004-network-profile-suite.md"
@@ -199,6 +212,93 @@ namespace Teleop.Eval.Sweep
 
             profile = default;
             return false;
+        }
+
+        private static readonly Regex CombinedDelaySegmentPattern = new Regex(@"^delay-(\d+(?:\.\d+)?)ms$", RegexOptions.Compiled);
+        private static readonly Regex CombinedJitterSegmentPattern = new Regex(@"^jitter-(\d+(?:\.\d+)?)ms$", RegexOptions.Compiled);
+        private static readonly Regex CombinedLossSegmentPattern = new Regex(@"^loss-(\d+(?:\.\d+)?)pct$", RegexOptions.Compiled);
+
+        /// <summary>
+        /// Combined multi-axis profiles from
+        /// <c>docs/adr/0006-combined-impairment-profiles.md</c> --
+        /// <c>combo__delay-&lt;N&gt;ms__jitter-&lt;N&gt;ms__loss-&lt;N&gt;pct</c>, with any subset of the
+        /// three axis segments present (each at most once) in any order. Unlike
+        /// <see cref="TryResolveIsolatedAxisProfile"/>, an axis segment that's absent resolves to
+        /// 0 (no impairment on that axis), not a nonzero baseline -- this family is one composite
+        /// condition the caller chose, not a variable being isolated against fixed companions.
+        /// The Python generator that produces these names (<c>experiment_builder.combined_points</c>)
+        /// enforces at least 2 axes; this resolver itself accepts 1+ so it stays a pure grammar
+        /// check, not a policy check.
+        /// </summary>
+        private static bool TryResolveCombinedProfile(
+            string name, long ticksPerSecond, out NetworkProfile profile)
+        {
+            const string prefix = "combo__";
+            if (!name.StartsWith(prefix, StringComparison.Ordinal))
+            {
+                profile = default;
+                return false;
+            }
+
+            string[] segments = name.Substring(prefix.Length).Split(
+                new[] { "__" }, StringSplitOptions.None);
+            if (segments.Length == 0)
+            {
+                profile = default;
+                return false;
+            }
+
+            double? delayMs = null;
+            double? jitterMs = null;
+            double? lossPercent = null;
+
+            foreach (string segment in segments)
+            {
+                Match delayMatch = CombinedDelaySegmentPattern.Match(segment);
+                if (delayMatch.Success)
+                {
+                    if (delayMs.HasValue) { profile = default; return false; }
+                    delayMs = double.Parse(delayMatch.Groups[1].Value, CultureInfo.InvariantCulture);
+                    continue;
+                }
+
+                Match jitterMatch = CombinedJitterSegmentPattern.Match(segment);
+                if (jitterMatch.Success)
+                {
+                    if (jitterMs.HasValue) { profile = default; return false; }
+                    jitterMs = double.Parse(jitterMatch.Groups[1].Value, CultureInfo.InvariantCulture);
+                    continue;
+                }
+
+                Match lossMatch = CombinedLossSegmentPattern.Match(segment);
+                if (lossMatch.Success)
+                {
+                    if (lossPercent.HasValue) { profile = default; return false; }
+                    lossPercent = double.Parse(lossMatch.Groups[1].Value, CultureInfo.InvariantCulture);
+                    continue;
+                }
+
+                // Unrecognized segment -- not a combo name, let the caller report "unknown profile".
+                profile = default;
+                return false;
+            }
+
+            if (!delayMs.HasValue && !jitterMs.HasValue && !lossPercent.HasValue)
+            {
+                profile = default;
+                return false;
+            }
+
+            double lossProbability = (lossPercent ?? 0.0) / 100.0;
+            profile = new NetworkProfile(
+                baseDelayTicks: MsToTicks(delayMs ?? 0.0, ticksPerSecond),
+                jitterTicks: MsToTicks(jitterMs ?? 0.0, ticksPerSecond),
+                // Equal after-delivered/after-lost -> plain Bernoulli loss (ExpectedBurstLength ~1),
+                // same reasoning as the isolated loss family: this grammar doesn't expose burst
+                // shape, only rate.
+                lossProbabilityAfterDelivered: lossProbability, lossProbabilityAfterLost: lossProbability,
+                reorderProbability: 0.0, reorderDelayTicks: 0);
+            return true;
         }
     }
 }

@@ -103,3 +103,12 @@ which is what the frozen five above are for. Resolved by pattern
 (`NetworkProfileCatalog.TryResolveIsolatedAxisProfile`), not one named case per point; that ADR's
 own rule governs adding more points to an existing family, and a new ADR is still required for a
 genuinely new family (different fixed companions, or reintroducing burst shape on the loss axis).
+
+Extended again by `docs/adr/0006-combined-impairment-profiles.md`: `combo__delay-<N>ms__jitter-
+<N>ms__loss-<N>pct`, any 2-or-3-axis subset, values chosen by the caller rather than isolated
+against a fixed companion — answers "what happens at this specific multi-variable combination,"
+a third question distinct from both families above. An axis absent from the name is 0, not a
+baseline, unlike the isolated family. Resolved by pattern
+(`NetworkProfileCatalog.TryResolveCombinedProfile`); `analysis/experiment_builder.py`'s
+`combined_points` is what actually generates these names as a cross-product of small explicit
+per-axis value lists.

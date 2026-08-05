@@ -1,5 +1,6 @@
 """Builds an experiments/*.yaml for the isolated jitter/delay/loss profile families
-(docs/adr/0005-isolated-impairment-profiles.md), for the GUI's Experiment tab.
+(docs/adr/0005-isolated-impairment-profiles.md) and the combined multi-axis family
+(docs/adr/0006-combined-impairment-profiles.md), for the GUI's Experiment tab.
 
 Pure string/list generation -- no file I/O here, the caller decides where to write the result.
 Kept outside teleop_analysis/ on purpose: that package only reads results/ and produces figures
@@ -9,7 +10,8 @@ run_tests.py/test_gui.py outside that package.
 """
 from __future__ import annotations
 
-from typing import List
+from itertools import product
+from typing import List, Sequence
 
 _POINT_EPSILON = 1e-9
 
@@ -46,6 +48,40 @@ def delay_points(min_ms: float, max_ms: float, step_ms: float) -> List[str]:
 
 def loss_points(min_pct: float, max_pct: float, step_pct: float) -> List[str]:
     return [f"loss-{_format_number(v)}pct" for v in _points(min_pct, max_pct, step_pct)]
+
+
+def combined_points(
+    delay_ms: Sequence[float] = (),
+    jitter_ms: Sequence[float] = (),
+    loss_pct: Sequence[float] = (),
+) -> List[str]:
+    """Cartesian product of the given per-axis value lists into "combo__" profile names
+    (docs/adr/0006-combined-impairment-profiles.md) -- e.g. delay_ms=[100, 150], jitter_ms=[20]
+    produces ["combo__delay-100ms__jitter-20ms", "combo__delay-150ms__jitter-20ms"]. An axis
+    passed as empty is omitted from every generated name entirely (resolves to 0 at sweep time,
+    not a value of 0 in this product), not one of the values being combined.
+
+    Requires at least 2 non-empty axes -- combining exactly one axis is just the isolated family
+    (jitter_points/delay_points/loss_points above), which already exists and isolates its
+    companions properly for sensitivity charts; this function is for genuine combinations only.
+    """
+    axes = [
+        ("delay", "ms", delay_ms),
+        ("jitter", "ms", jitter_ms),
+        ("loss", "pct", loss_pct),
+    ]
+    populated = [(label, unit, values) for label, unit, values in axes if values]
+    if len(populated) < 2:
+        raise ValueError("combined profiles need at least 2 non-empty axes")
+
+    combos = []
+    for combo in product(*(values for _, _, values in populated)):
+        segments = [
+            f"{label}-{_format_number(value)}{unit}"
+            for (label, unit, _), value in zip(populated, combo)
+        ]
+        combos.append("combo__" + "__".join(segments))
+    return combos
 
 
 def build_experiment_yaml(

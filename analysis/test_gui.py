@@ -110,6 +110,8 @@ class PickerApp:
         self.predictor_vars: Dict[str, tk.BooleanVar] = {}
         self.axis_enabled_vars: Dict[str, tk.BooleanVar] = {}
         self.axis_entries: Dict[str, Dict[str, ttk.Entry]] = {}
+        self.combined_axis_enabled_vars: Dict[str, tk.BooleanVar] = {}
+        self.combined_axis_values_entries: Dict[str, ttk.Entry] = {}
 
         self.run_display_to_path: Dict[str, Path] = {}
         self.figures_queue: "queue.Queue" = queue.Queue()
@@ -154,6 +156,25 @@ class PickerApp:
                 entries[field] = entry
             ttk.Label(row, text=defaults["unit"]).pack(side=tk.LEFT, padx=(4, 0))
             self.axis_entries[axis] = entries
+
+        ttk.Label(
+            container, text="Combined impairments (cross-product of the values you list)",
+            font=("TkDefaultFont", 10, "bold"),
+        ).pack(anchor="w", pady=(8, 0))
+        for axis, defaults in AXIS_DEFAULTS.items():
+            row = ttk.Frame(container)
+            row.pack(anchor="w", pady=2, fill=tk.X)
+
+            enabled = tk.BooleanVar(value=False)
+            self.combined_axis_enabled_vars[axis] = enabled
+            ttk.Checkbutton(row, text=axis, variable=enabled, width=8).pack(side=tk.LEFT)
+
+            ttk.Label(row, text=f"values ({defaults['unit']}, comma-separated)").pack(
+                side=tk.LEFT, padx=(8, 2)
+            )
+            entry = ttk.Entry(row, width=24)
+            entry.pack(side=tk.LEFT)
+            self.combined_axis_values_entries[axis] = entry
 
         settings_row = ttk.Frame(container)
         settings_row.pack(anchor="w", pady=(8, 0), fill=tk.X)
@@ -213,6 +234,38 @@ class PickerApp:
                 profiles.extend(point_fns[axis](min_v, max_v, step_v))
             except ValueError as exc:
                 return None, f"{axis}: {exc}"
+
+        combined_values: Dict[str, List[float]] = {}
+        for axis, enabled in self.combined_axis_enabled_vars.items():
+            if not enabled.get():
+                continue
+            raw = self.combined_axis_values_entries[axis].get()
+            try:
+                combined_values[axis] = [float(v.strip()) for v in raw.split(",") if v.strip()]
+            except ValueError:
+                return None, f"combined {axis}: values must be a comma-separated list of numbers"
+            if not combined_values[axis]:
+                return None, f"combined {axis}: checked but no values given"
+
+        if combined_values:
+            try:
+                combined_profiles = experiment_builder.combined_points(
+                    delay_ms=combined_values.get("delay", ()),
+                    jitter_ms=combined_values.get("jitter", ()),
+                    loss_pct=combined_values.get("loss", ()),
+                )
+            except ValueError as exc:
+                return None, f"combined impairments: {exc}"
+
+            if len(combined_profiles) > 200 and not messagebox.askyesno(
+                "Large combined sweep",
+                f"This will generate {len(combined_profiles)} combined profiles "
+                f"(before multiplying by algorithms and seeds). Continue?",
+            ):
+                return None, "Combined sweep cancelled."
+
+            profiles.extend(combined_profiles)
+
         return profiles, None
 
     def _on_run_sweep_clicked(self) -> None:

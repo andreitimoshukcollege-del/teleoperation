@@ -15,11 +15,23 @@ import tkinter as tk
 from pathlib import Path
 from tkinter import messagebox, ttk
 from tkinter.scrolledtext import ScrolledText
-from typing import Dict, List, Optional, Tuple
+from typing import Callable, Dict, List, Optional, Tuple
 
-from PIL import Image, ImageTk
+import matplotlib.pyplot as plt
+import pandas as pd
+from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
+from matplotlib.figure import Figure
 
 import experiment_builder
+from teleop_analysis import io_utils
+from teleop_analysis.figures import (
+    combined_response,
+    error_vs_cost,
+    impairment_response,
+    latency_distribution,
+    stack_comparison,
+)
+from teleop_analysis.manifest import Manifest
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 RESULTS_DIR = REPO_ROOT / "results"
@@ -77,28 +89,65 @@ FIGURE_GROUPS = {
     "Table": ("table",),
 }
 
-# Figures tab zoom -- a dense chart (e.g. a 300-step combined sweep) is often too small to read
-# at the figure's native size, and the PNG-viewing canvas has no zoom of its own by default.
+# Figures tab: the selected figure is embedded as a live matplotlib Figure (FigureCanvasTkAgg),
+# not a saved PNG -- crisp at any zoom level (matplotlib redraws from the real data instead of
+# resampling a raster image) and matplotlib's own NavigationToolbar2Tk supplies pan/zoom-
+# rectangle/save/reset. Scroll-wheel zoom is added on top of that toolbar, anchored on the data
+# point under the cursor.
 _ZOOM_STEP = 1.25
-_ZOOM_MIN = 0.25
-_ZOOM_MAX = 8.0
+
+# Maps a per-profile figure's filename *suffix* to the build_* function that (re)builds it as a
+# live Figure -- the profile name is whatever's left after stripping the suffix, mirroring how
+# each figures/*.py module names its own saved PNG (f"{profile}__<suffix>").
+_PER_PROFILE_BUILDERS: Dict[str, Callable[[pd.DataFrame, Manifest, str], Tuple[Figure, str]]] = {
+    "__error_vs_cost.png": error_vs_cost.build_error_vs_cost_figure,
+    "__latency.png": latency_distribution.build_latency_distribution_figure,
+    "__stack_comparison.png": stack_comparison.build_stack_comparison_figure,
+}
+
+# Whole-run figures (no per-profile suffix to strip) keyed by their exact, fixed filename.
+_FIXED_BUILDERS: Dict[str, Callable[[pd.DataFrame, Manifest], Optional[Tuple[Figure, str]]]] = {
+    "impairment__correction_vs_jitter.png": impairment_response.build_correction_vs_jitter_figure,
+    "impairment__prediction_error_vs_jitter.png": impairment_response.build_prediction_error_vs_jitter_figure,
+    "impairment__correction_vs_delay.png": impairment_response.build_correction_vs_delay_figure,
+    "impairment__prediction_error_vs_delay.png": impairment_response.build_prediction_error_vs_delay_figure,
+    "impairment__correction_vs_loss.png": impairment_response.build_correction_vs_loss_figure,
+    "impairment__prediction_error_vs_loss.png": impairment_response.build_prediction_error_vs_loss_figure,
+    "combined__correction.png": combined_response.build_correction_vs_combined_figure,
+    "combined__prediction_error.png": combined_response.build_prediction_error_vs_combined_figure,
+}
 
 
-def _clamp_zoom(level: float) -> float:
-    return max(_ZOOM_MIN, min(_ZOOM_MAX, level))
-
-
-def _zoom_scroll_fraction(anchor_frac: float, anchor_viewport_frac: float, visible_frac: float) -> float:
-    """The top-left scroll fraction (what Canvas.xview_moveto/yview_moveto expects) that keeps
-    `anchor_frac` (0..1, a point's position within the image before a zoom) sitting at
-    `anchor_viewport_frac` (0..1, that point's position within the visible viewport) after a zoom
-    that now shows `visible_frac` (0..1) of the resized image -- clamped so the view never scrolls
-    past the image's edges. `anchor_viewport_frac=0.5` keeps the point centered in the view (the
-    +/-/Reset buttons); passing the cursor's own position within the viewport instead keeps that
-    point fixed under the cursor (scroll-wheel zoom), which reads as "zooming into where the
-    mouse is pointing" rather than always recentering on the middle of the view.
+def _figure_builder_for_filename(
+    filename: str,
+) -> Optional[Callable[[pd.DataFrame, Manifest], Optional[Tuple[Figure, str]]]]:
+    """Maps a figure PNG's filename back to the in-process function that (re)builds it as a live
+    matplotlib Figure, for the Figures tab's embedded live view -- mirrors the filename patterns
+    each figures/*.py module's plot_* wrapper already writes to disk. `None` for a name that
+    doesn't match any known figure kind ("table"'s summary_table.csv never reaches this at all --
+    it isn't a .png, so figures_for_run never lists it).
     """
-    return max(0.0, min(1.0 - visible_frac, anchor_frac - anchor_viewport_frac * visible_frac))
+    if filename in _FIXED_BUILDERS:
+        return _FIXED_BUILDERS[filename]
+    for suffix, build_fn in _PER_PROFILE_BUILDERS.items():
+        if filename.endswith(suffix):
+            profile = filename[: -len(suffix)]
+            return lambda df, manifest: build_fn(df, manifest, profile)
+    return None
+
+
+def _zoom_axes_around_point(ax, x_px: float, y_px: float, zoom_in: bool) -> None:
+    """Rescales `ax`'s x/y limits by _ZOOM_STEP around the data point under (x_px, y_px) (pixel
+    coordinates in the figure's own space, bottom-left origin like matplotlib's), keeping that
+    point fixed on screen -- "zooming into where the mouse is pointing," on real axis limits
+    instead of a raster image, so it's exact at any zoom level instead of softening.
+    """
+    data_x, data_y = ax.transData.inverted().transform((x_px, y_px))
+    factor = (1.0 / _ZOOM_STEP) if zoom_in else _ZOOM_STEP
+    xlo, xhi = ax.get_xlim()
+    ylo, yhi = ax.get_ylim()
+    ax.set_xlim(data_x - (data_x - xlo) * factor, data_x + (xhi - data_x) * factor)
+    ax.set_ylim(data_y - (data_y - ylo) * factor, data_y + (yhi - data_y) * factor)
 
 
 def build_report_command(run_dir: Path, figures: Optional[str] = None) -> List[str]:
@@ -140,9 +189,10 @@ class PickerApp:
 
         self.run_display_to_path: Dict[str, Path] = {}
         self.figures_queue: "queue.Queue" = queue.Queue()
-        self._current_photo: Optional[ImageTk.PhotoImage] = None
-        self._current_pil_image: Optional[Image.Image] = None
-        self._zoom_level: float = 1.0
+        self._current_figure: Optional[Figure] = None
+        self._current_figure_canvas: Optional[FigureCanvasTkAgg] = None
+        self._current_toolbar: Optional[NavigationToolbar2Tk] = None
+        self._run_data_cache: Optional[Tuple[Path, Manifest, pd.DataFrame]] = None
         self.figure_group_vars: Dict[str, tk.BooleanVar] = {}
 
         notebook = ttk.Notebook(self.root)
@@ -406,16 +456,13 @@ class PickerApp:
         self.figures_status = ttk.Label(top_row, text="")
         self.figures_status.pack(side=tk.RIGHT)
 
-        zoom_row = ttk.Frame(container)
-        zoom_row.pack(fill=tk.X, pady=(6, 0))
-        ttk.Label(zoom_row, text="Zoom:").pack(side=tk.LEFT)
-        ttk.Button(zoom_row, text="-", width=3, command=self._zoom_out).pack(side=tk.LEFT, padx=(4, 2))
-        self.zoom_label = ttk.Label(zoom_row, text="100%", width=6, anchor="center")
-        self.zoom_label.pack(side=tk.LEFT)
-        ttk.Button(zoom_row, text="+", width=3, command=self._zoom_in).pack(side=tk.LEFT, padx=(2, 8))
-        ttk.Button(zoom_row, text="Reset", command=self._zoom_reset).pack(side=tk.LEFT)
+        hint_row = ttk.Frame(container)
+        hint_row.pack(fill=tk.X, pady=(6, 0))
         ttk.Label(
-            zoom_row, text="  (scroll wheel over the image also zooms)", foreground="#666666"
+            hint_row,
+            text="Scroll wheel over the chart zooms into wherever the cursor is pointing; "
+            "the toolbar below the chart also has pan/zoom-rectangle/save/reset.",
+            foreground="#666666",
         ).pack(side=tk.LEFT)
 
         body = ttk.Frame(container)
@@ -427,17 +474,15 @@ class PickerApp:
 
         image_frame = ttk.Frame(body)
         image_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(8, 0))
-        image_frame.grid_rowconfigure(0, weight=1)
-        image_frame.grid_columnconfigure(0, weight=1)
 
-        self.image_canvas = tk.Canvas(image_frame, background="white")
-        v_scroll = ttk.Scrollbar(image_frame, orient="vertical", command=self.image_canvas.yview)
-        h_scroll = ttk.Scrollbar(image_frame, orient="horizontal", command=self.image_canvas.xview)
-        self.image_canvas.configure(yscrollcommand=v_scroll.set, xscrollcommand=h_scroll.set)
-        self.image_canvas.bind("<MouseWheel>", self._on_mouse_wheel)
-        self.image_canvas.grid(row=0, column=0, sticky="nsew")
-        v_scroll.grid(row=0, column=1, sticky="ns")
-        h_scroll.grid(row=1, column=0, sticky="ew")
+        # The figure is a live matplotlib chart (FigureCanvasTkAgg), not a saved PNG -- crisp at
+        # any zoom level since matplotlib redraws from the real data instead of resampling a
+        # raster image. self.toolbar_container/self.canvas_container get torn down and rebuilt
+        # each time a different figure is selected (see _show_figure/_clear_image).
+        self.toolbar_container = ttk.Frame(image_frame)
+        self.toolbar_container.pack(side=tk.TOP, fill=tk.X)
+        self.canvas_container = ttk.Frame(image_frame)
+        self.canvas_container.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
 
         self._refresh_run_list()
         return container
@@ -489,110 +534,76 @@ class PickerApp:
             self.figure_listbox.insert(tk.END, path.name)
         self.figures_status.config(text="" if figures else "No figures yet -- click Generate.")
 
+    def _run_data(self, run: Path) -> Tuple[Manifest, pd.DataFrame]:
+        """Cached (manifest, df) for `run`, recomputed only when the selected run changes -- a
+        run's metrics.csv is immutable once written (results/CLAUDE.md: append-only), so there's
+        nothing to invalidate for the same path; a new sweep completing always writes a new,
+        differently-timestamped run directory instead.
+        """
+        if self._run_data_cache is None or self._run_data_cache[0] != run:
+            manifest, df = io_utils.discover_run(run)
+            self._run_data_cache = (run, manifest, df)
+        _, manifest, df = self._run_data_cache
+        return manifest, df
+
     def _clear_image(self) -> None:
-        self.image_canvas.delete("all")
-        self._current_photo = None
-        self._current_pil_image = None
-        self._zoom_level = 1.0
-        self.zoom_label.config(text="100%")
+        if self._current_toolbar is not None:
+            self._current_toolbar.destroy()
+            self._current_toolbar = None
+        if self._current_figure_canvas is not None:
+            self._current_figure_canvas.get_tk_widget().destroy()
+            self._current_figure_canvas = None
+        if self._current_figure is not None:
+            plt.close(self._current_figure)
+            self._current_figure = None
+
+    def _show_figure(self, fig: Figure) -> None:
+        self._clear_image()
+        self._current_figure = fig
+        canvas = FigureCanvasTkAgg(fig, master=self.canvas_container)
+        canvas.draw()
+        widget = canvas.get_tk_widget()
+        widget.pack(fill=tk.BOTH, expand=True)
+        widget.bind("<MouseWheel>", self._on_canvas_scroll)
+        toolbar = NavigationToolbar2Tk(canvas, self.toolbar_container)
+        toolbar.update()
+        self._current_figure_canvas = canvas
+        self._current_toolbar = toolbar
 
     def _on_figure_selected(self) -> None:
         selection = self.figure_listbox.curselection()
         run = self._selected_run()
         if not selection or run is None:
             return
-        path = run / "figures" / self.figure_listbox.get(selection[0])
-        self._current_pil_image = Image.open(path)
-        self._zoom_level = 1.0
-        self._render_image()
-
-    def _render_image(
-        self,
-        anchor_frac: Optional[Tuple[float, float]] = None,
-        anchor_viewport_frac: Tuple[float, float] = (0.5, 0.5),
-    ) -> None:
-        """(Re)draws `self._current_pil_image` at `self._zoom_level`, keeping `anchor_frac` (a
-        point's position within the image, 0..1 on each axis) sitting at `anchor_viewport_frac`
-        (that point's position within the visible viewport) after the resize -- otherwise every
-        zoom step would jump back to the image's top-left corner, which is disorienting for
-        repeated zooming. Defaults to the current view's own center when the caller (the
-        +/-/Reset buttons) doesn't have a more specific point in mind; scroll-wheel zoom passes
-        the cursor's position instead, so it zooms into wherever the mouse is pointing.
-        """
-        if self._current_pil_image is None:
+        filename = self.figure_listbox.get(selection[0])
+        builder = _figure_builder_for_filename(filename)
+        if builder is None:
+            self._clear_image()
+            self.figures_status.config(text=f"No live view available for {filename}.")
             return
 
-        if anchor_frac is None:
-            xlo, xhi = self.image_canvas.xview()
-            ylo, yhi = self.image_canvas.yview()
-            anchor_frac = ((xlo + xhi) / 2, (ylo + yhi) / 2)
-            anchor_viewport_frac = (0.5, 0.5)
-        visible_width_px = self.image_canvas.winfo_width()
-        visible_height_px = self.image_canvas.winfo_height()
-
-        base_width, base_height = self._current_pil_image.size
-        new_width = max(1, round(base_width * self._zoom_level))
-        new_height = max(1, round(base_height * self._zoom_level))
-        resized = self._current_pil_image.resize((new_width, new_height), Image.LANCZOS)
-        photo = ImageTk.PhotoImage(resized)
-        self._current_photo = photo  # tkinter drops the image if nothing keeps a reference
-
-        self.image_canvas.delete("all")
-        self.image_canvas.create_image(0, 0, anchor="nw", image=photo)
-        self.image_canvas.configure(scrollregion=(0, 0, new_width, new_height))
-
-        self.image_canvas.xview_moveto(_zoom_scroll_fraction(
-            anchor_frac[0], anchor_viewport_frac[0], visible_width_px / new_width
-        ))
-        self.image_canvas.yview_moveto(_zoom_scroll_fraction(
-            anchor_frac[1], anchor_viewport_frac[1], visible_height_px / new_height
-        ))
-        self.zoom_label.config(text=f"{round(self._zoom_level * 100)}%")
-
-    def _set_zoom(
-        self,
-        level: float,
-        anchor_frac: Optional[Tuple[float, float]] = None,
-        anchor_viewport_frac: Tuple[float, float] = (0.5, 0.5),
-    ) -> None:
-        self._zoom_level = _clamp_zoom(level)
-        self._render_image(anchor_frac, anchor_viewport_frac)
-
-    def _zoom_in(self) -> None:
-        self._set_zoom(self._zoom_level * _ZOOM_STEP)
-
-    def _zoom_out(self) -> None:
-        self._set_zoom(self._zoom_level / _ZOOM_STEP)
-
-    def _zoom_reset(self) -> None:
-        self._set_zoom(1.0)
-
-    def _on_mouse_wheel(self, event) -> None:
-        if self._current_pil_image is None:
+        manifest, df = self._run_data(run)
+        result = builder(df, manifest)
+        if result is None:
+            self._clear_image()
+            self.figures_status.config(text=f"Nothing to show for {filename} in this run.")
             return
+        fig, _caption = result
+        self._show_figure(fig)
+        self.figures_status.config(text="")
 
-        # event.x/event.y are already relative to the canvas widget's own top-left corner, which
-        # is exactly the viewport-fraction numerator _zoom_scroll_fraction needs -- no manual
-        # scroll-offset math required for that half. canvasx/canvasy convert to the image's own
-        # coordinate space (accounting for however far the view is currently scrolled) to get the
-        # cursor's position *within the image* instead.
-        current_width = self._current_pil_image.width * self._zoom_level
-        current_height = self._current_pil_image.height * self._zoom_level
-        anchor_frac = (
-            self.image_canvas.canvasx(event.x) / current_width,
-            self.image_canvas.canvasy(event.y) / current_height,
-        )
-        viewport_width_px = self.image_canvas.winfo_width()
-        viewport_height_px = self.image_canvas.winfo_height()
-        anchor_viewport_frac = (
-            event.x / viewport_width_px if viewport_width_px else 0.5,
-            event.y / viewport_height_px if viewport_height_px else 0.5,
-        )
-
-        new_level = (
-            self._zoom_level * _ZOOM_STEP if event.delta > 0 else self._zoom_level / _ZOOM_STEP
-        )
-        self._set_zoom(new_level, anchor_frac, anchor_viewport_frac)
+    def _on_canvas_scroll(self, event) -> None:
+        if self._current_figure is None or self._current_figure_canvas is None:
+            return
+        # Tk event coordinates are top-left origin; matplotlib figure pixel coordinates are
+        # bottom-left origin -- flip y before hit-testing/zooming against the figure's axes.
+        widget_height = self._current_figure_canvas.get_tk_widget().winfo_height()
+        x_px, y_px = event.x, widget_height - event.y
+        for ax in self._current_figure.axes:
+            if ax.bbox.contains(x_px, y_px):
+                _zoom_axes_around_point(ax, x_px, y_px, zoom_in=event.delta > 0)
+                break
+        self._current_figure_canvas.draw_idle()
 
     def _selected_figure_kinds(self) -> Optional[str]:
         selected_groups = [name for name, var in self.figure_group_vars.items() if var.get()]

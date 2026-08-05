@@ -21,6 +21,30 @@ def test_jitter_plots_generate_with_two_known_jitter_profiles(
         assert path.stat().st_size > 0
 
 
+def test_build_jitter_figure_functions_return_a_live_figure(
+    synthetic_run_two_profiles: Path,
+):
+    # The GUI's live figure view (test_gui.py) calls these directly instead of the plot_*
+    # wrappers above, specifically to embed the Figure without ever writing/reloading a PNG.
+    manifest, df = io_utils.discover_run(synthetic_run_two_profiles)
+
+    correction = impairment_response.build_correction_vs_jitter_figure(df, manifest)
+    error = impairment_response.build_prediction_error_vs_jitter_figure(df, manifest)
+
+    for result in (correction, error):
+        assert result is not None
+        fig, caption = result
+        assert len(fig.axes) == 1
+        assert isinstance(caption, str) and caption
+
+
+def test_build_jitter_figure_returns_none_for_the_same_case_the_plot_wrapper_skips(
+    synthetic_run: Path,
+):
+    manifest, df = io_utils.discover_run(synthetic_run)
+    assert impairment_response.build_correction_vs_jitter_figure(df, manifest) is None
+
+
 def test_delay_plots_generate_with_the_same_two_profiles(
     synthetic_run_two_profiles: Path, tmp_path: Path
 ):

@@ -3,10 +3,13 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
+import math
+
 import matplotlib
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+from matplotlib.figure import Figure
 import pandas as pd
 
 from teleop_analysis import percentiles
@@ -37,18 +40,33 @@ def _tick_label(axes: Dict[str, float]) -> str:
     return ", ".join(f"{axis}={axes[axis]:g}{_AXIS_UNIT[axis]}" for axis in _AXIS_ORDER if axis in axes)
 
 
-def _thinned_tick_indices(step_count: int) -> List[int]:
-    """Which of the `step_count` x positions get a tick label. Every step up to
-    _MAX_TICK_LABELS; past that, an evenly spaced subset (always including the last step) so a
-    dense sweep's labels don't overwrite each other into an unreadable smear.
+def _thinned_tick_indices_in_range(step_count: int, xlo: float, xhi: float) -> List[int]:
+    """Which x positions in the visible range [xlo, xhi] get a tick label. Every visible step up
+    to _MAX_TICK_LABELS; past that, an evenly spaced subset (always including the last visible
+    step) so a dense sweep's labels don't overwrite each other into an unreadable smear.
+    Range-aware (rather than always thinning the *whole* sweep) so the GUI's live, zoomable view
+    can re-thin to just the currently visible steps as the user zooms in -- otherwise a zoomed-in
+    view could land entirely between two of the whole-sweep's chosen labels and show none at all.
     """
-    if step_count <= _MAX_TICK_LABELS:
-        return list(range(step_count))
-    stride = -(-step_count // _MAX_TICK_LABELS)  # ceil division
-    indices = list(range(0, step_count, stride))
-    if indices[-1] != step_count - 1:
-        indices.append(step_count - 1)
+    lo = max(0, math.floor(xlo))
+    hi = min(step_count - 1, math.ceil(xhi))
+    if lo > hi:
+        return []
+    visible_count = hi - lo + 1
+    if visible_count <= _MAX_TICK_LABELS:
+        return list(range(lo, hi + 1))
+    stride = -(-visible_count // _MAX_TICK_LABELS)  # ceil division
+    indices = list(range(lo, hi + 1, stride))
+    if indices[-1] != hi:
+        indices.append(hi)
     return indices
+
+
+def _thinned_tick_indices(step_count: int) -> List[int]:
+    """The whole-sweep case of _thinned_tick_indices_in_range -- what the static saved PNG uses,
+    since it never changes its own view.
+    """
+    return _thinned_tick_indices_in_range(step_count, 0, step_count - 1)
 
 
 def _marker_style(step_count: int) -> Tuple[Optional[str], Optional[int]]:
@@ -60,29 +78,35 @@ def _marker_style(step_count: int) -> Tuple[Optional[str], Optional[int]]:
     return None, None
 
 
-def _plot_metric_vs_combined(
+def _build_metric_vs_combined_figure(
     df: pd.DataFrame,
     manifest: Manifest,
-    out_dir: Path,
     metric: str,
     title: str,
     ylabel: str,
-    filename: str,
-) -> Optional[Path]:
-    """One line per stack across a co-varying combined sweep
-    (docs/adr/0006-combined-impairment-profiles.md) -- every axis checked in the GUI's "Combined
-    impairments" section marches forward together (experiment_builder.combined_points is a
-    lockstep zip, not a cross product), so there's exactly one point per step, all on one graph,
-    not a separate chart per combined profile. x position is step index; the tick label spells
-    out every axis's value at that step, since a combined profile has no single scalar the way
-    an isolated-axis one does (labels.axis_value returns None for it on every axis).
+) -> Optional[Tuple[Figure, str]]:
+    """Builds the figure and its caption without saving anything -- split out of
+    _plot_metric_vs_combined so the GUI's live figure view (test_gui.py) can embed the same
+    figure directly instead of loading a saved PNG back off disk. One line per stack across a
+    co-varying combined sweep (docs/adr/0006-combined-impairment-profiles.md) -- every axis
+    checked in the GUI's "Combined impairments" section marches forward together
+    (experiment_builder.combined_points is a lockstep zip, not a cross product), so there's
+    exactly one point per step, all on one graph, not a separate chart per combined profile. x
+    position is step index; the tick label spells out every axis's value at that step, since a
+    combined profile has no single scalar the way an isolated-axis one does (labels.axis_value
+    returns None for it on every axis).
+
+    Registers an `xlim_changed` callback that re-thins the visible tick labels to whatever range
+    is currently in view -- inert for the static saved PNG (its xlim never changes), but what
+    keeps a live, zoomed-in view of a dense sweep from landing on a stretch with no labels at
+    all, since the whole-sweep thinning only accounted for the full-width view.
     """
     available_profiles = df["profile"].unique().tolist()
     parsed = {p: combined_profile_axes(p) for p in available_profiles}
     combined_profiles = [p for p, axes in parsed.items() if axes]
     if len(combined_profiles) < 2:
         print(
-            f"Not enough combined ('combo__') profiles to plot {filename} "
+            f"Not enough combined ('combo__') profiles to plot "
             f"(need at least 2, have {len(combined_profiles)}) -- skipping."
         )
         return None
@@ -92,10 +116,7 @@ def _plot_metric_vs_combined(
     axis_keys = set.intersection(*(set(parsed[p].keys()) for p in combined_profiles))
     common_axis = next((a for a in _AXIS_ORDER if a in axis_keys), None)
     if common_axis is None:
-        print(
-            f"Combined profiles in this run don't share a common axis to order by -- "
-            f"skipping {filename}."
-        )
+        print("Combined profiles in this run don't share a common axis to order by -- skipping.")
         return None
     ordered = sorted(combined_profiles, key=lambda p: parsed[p][common_axis])
     step_count = len(ordered)
@@ -121,12 +142,17 @@ def _plot_metric_vs_combined(
             label=f"{friendly_stack_name(stack)} (occasional worst case)",
         )
 
-    tick_indices = _thinned_tick_indices(step_count)
-    ax.set_xticks(tick_indices)
-    ax.set_xticklabels(
-        [_tick_label(parsed[ordered[i]]) for i in tick_indices],
-        fontsize=8, rotation=30, ha="right",
-    )
+    def _apply_ticks(ax) -> None:
+        xlo, xhi = ax.get_xlim()
+        tick_indices = _thinned_tick_indices_in_range(step_count, xlo, xhi)
+        ax.set_xticks(tick_indices)
+        ax.set_xticklabels(
+            [_tick_label(parsed[ordered[i]]) for i in tick_indices],
+            fontsize=8, rotation=30, ha="right",
+        )
+
+    _apply_ticks(ax)
+    ax.callbacks.connect("xlim_changed", _apply_ticks)
     ax.set_xlabel("Combined impairment (every checked axis stepped together)")
     ax.set_ylabel(ylabel)
     ax.set_title(title)
@@ -140,12 +166,36 @@ def _plot_metric_vs_combined(
         ha="center", fontsize=8, wrap=True,
     )
     fig.tight_layout(rect=(0, 0.16, 1, 1))
+    return fig, caption
 
+
+def _plot_metric_vs_combined(
+    df: pd.DataFrame,
+    manifest: Manifest,
+    out_dir: Path,
+    metric: str,
+    title: str,
+    ylabel: str,
+    filename: str,
+) -> Optional[Path]:
+    result = _build_metric_vs_combined_figure(df, manifest, metric, title, ylabel)
+    if result is None:
+        return None
+    fig, caption = result
     out_dir.mkdir(parents=True, exist_ok=True)
     out_path = out_dir / filename
     fig.savefig(out_path, metadata={"Description": caption})
     plt.close(fig)
     return out_path
+
+
+def build_correction_vs_combined_figure(df: pd.DataFrame, manifest: Manifest) -> Optional[Tuple[Figure, str]]:
+    return _build_metric_vs_combined_figure(
+        df, manifest,
+        metric=CORRECTION_METRIC,
+        title="Correction cost across a combined impairment sweep",
+        ylabel=_CORRECTION_YLABEL,
+    )
 
 
 def plot_correction_vs_combined(df: pd.DataFrame, manifest: Manifest, out_dir: Path) -> Optional[Path]:
@@ -155,6 +205,15 @@ def plot_correction_vs_combined(df: pd.DataFrame, manifest: Manifest, out_dir: P
         title="Correction cost across a combined impairment sweep",
         ylabel=_CORRECTION_YLABEL,
         filename="combined__correction.png",
+    )
+
+
+def build_prediction_error_vs_combined_figure(df: pd.DataFrame, manifest: Manifest) -> Optional[Tuple[Figure, str]]:
+    return _build_metric_vs_combined_figure(
+        df, manifest,
+        metric=PREDICTION_ERROR_METRIC,
+        title="Prediction error across a combined impairment sweep",
+        ylabel=_PREDICTION_ERROR_YLABEL,
     )
 
 

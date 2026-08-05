@@ -32,3 +32,17 @@ def test_figures_generate_without_crashing_on_a_two_stack_run(synthetic_run: Pat
     assert not table.empty
     written = summary_table.write_summary_table(table, out_dir)
     assert written.exists()
+
+
+def test_build_figure_functions_return_a_live_figure_without_touching_disk(synthetic_run: Path):
+    # The GUI's live figure view (test_gui.py) calls these directly instead of the plot_* wrappers
+    # above, specifically to embed the Figure without ever writing/reloading a PNG.
+    manifest, df = io_utils.discover_run(synthetic_run)
+
+    fig1, caption1 = error_vs_cost.build_error_vs_cost_figure(df, manifest, "lan")
+    fig2, caption2 = latency_distribution.build_latency_distribution_figure(df, manifest, "lan")
+    fig3, caption3 = stack_comparison.build_stack_comparison_figure(df, manifest, "lan")
+
+    for fig, caption in ((fig1, caption1), (fig2, caption2), (fig3, caption3)):
+        assert len(fig.axes) == 2  # each of these is a two-panel comparison figure
+        assert isinstance(caption, str) and caption

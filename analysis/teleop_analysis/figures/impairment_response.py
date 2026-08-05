@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 import matplotlib
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+from matplotlib.figure import Figure
 import pandas as pd
 
 from teleop_analysis import percentiles
@@ -52,34 +53,36 @@ def _excluded_note(excluded: List[str], axis: str) -> str:
     return f" | excluded (no single {axis} value): {detail}"
 
 
-def _plot_metric_vs_impairment(
+def _build_metric_vs_impairment_figure(
     df: pd.DataFrame,
     manifest: Manifest,
-    out_dir: Path,
     metric: str,
     axis: str,
     title: str,
     ylabel: str,
-    filename: str,
-) -> Optional[Path]:
-    """One line per stack: the typical (p50, solid) and occasional-worst-case (p95, dashed)
-    value of `metric`, plotted against each profile's value on `axis` ("jitter" | "delay" |
-    "loss"). Answers "as this one variable gets worse, how much does this technique's output
-    degrade" directly, rather than needing to flip between separate bar charts per profile.
+) -> Optional[Tuple[Figure, str]]:
+    """Builds the figure and its caption without saving anything -- split out of
+    _plot_metric_vs_impairment so the GUI's live figure view (test_gui.py) can embed the same
+    figure directly instead of loading a saved PNG back off disk. One line per stack: the
+    typical (p50, solid) and occasional-worst-case (p95, dashed) value of `metric`, plotted
+    against each profile's value on `axis` ("jitter" | "delay" | "loss"). Answers "as this one
+    variable gets worse, how much does this technique's output degrade" directly, rather than
+    needing to flip between separate bar charts per profile.
 
     Only profiles with one clean scalar value on `axis` are placed on it (see
     labels.axis_value) -- a profile like "synthetic-burst" replays a recorded trace and has no
     single value on any axis, and the legacy bundled presets have no clean value on the loss axis
     specifically (docs/adr/0005-isolated-impairment-profiles.md: they'd conflate loss rate with
     burst length). Excluded profiles are named in the caption rather than forced onto a
-    misleading position.
+    misleading position. Returns None (with nothing built) if fewer than 2 profiles in this run
+    have a clean value on `axis`.
     """
     available_profiles = df["profile"].unique().tolist()
     ordered = ordered_profiles_by_axis(available_profiles, axis)
     if len(ordered) < 2:
         print(
-            f"Not enough {axis}-comparable network profiles to plot {filename} "
-            f"(need at least 2, have {len(ordered)}) -- skipping."
+            f"Not enough {axis}-comparable network profiles to plot (need at least 2, have "
+            f"{len(ordered)}) -- skipping."
         )
         return None
 
@@ -115,12 +118,35 @@ def _plot_metric_vs_impairment(
         ha="center", fontsize=8, wrap=True,
     )
     fig.tight_layout(rect=(0, 0.1, 1, 1))
+    return fig, caption
 
+
+def _plot_metric_vs_impairment(
+    df: pd.DataFrame,
+    manifest: Manifest,
+    out_dir: Path,
+    metric: str,
+    axis: str,
+    title: str,
+    ylabel: str,
+    filename: str,
+) -> Optional[Path]:
+    result = _build_metric_vs_impairment_figure(df, manifest, metric, axis, title, ylabel)
+    if result is None:
+        return None
+    fig, caption = result
     out_dir.mkdir(parents=True, exist_ok=True)
     out_path = out_dir / filename
     fig.savefig(out_path, metadata={"Description": caption})
     plt.close(fig)
     return out_path
+
+
+def build_correction_vs_jitter_figure(df: pd.DataFrame, manifest: Manifest) -> Optional[Tuple[Figure, str]]:
+    return _build_metric_vs_impairment_figure(
+        df, manifest, metric=CORRECTION_METRIC, axis="jitter",
+        title=f"Correction cost as {_AXIS_PHRASES['jitter']}", ylabel=_CORRECTION_YLABEL,
+    )
 
 
 def plot_correction_vs_jitter(df: pd.DataFrame, manifest: Manifest, out_dir: Path) -> Optional[Path]:
@@ -130,6 +156,13 @@ def plot_correction_vs_jitter(df: pd.DataFrame, manifest: Manifest, out_dir: Pat
         title=f"Correction cost as {_AXIS_PHRASES['jitter']}",
         ylabel=_CORRECTION_YLABEL,
         filename="impairment__correction_vs_jitter.png",
+    )
+
+
+def build_prediction_error_vs_jitter_figure(df: pd.DataFrame, manifest: Manifest) -> Optional[Tuple[Figure, str]]:
+    return _build_metric_vs_impairment_figure(
+        df, manifest, metric=PREDICTION_ERROR_METRIC, axis="jitter",
+        title=f"Prediction error as {_AXIS_PHRASES['jitter']}", ylabel=_PREDICTION_ERROR_YLABEL,
     )
 
 
@@ -143,6 +176,13 @@ def plot_prediction_error_vs_jitter(df: pd.DataFrame, manifest: Manifest, out_di
     )
 
 
+def build_correction_vs_delay_figure(df: pd.DataFrame, manifest: Manifest) -> Optional[Tuple[Figure, str]]:
+    return _build_metric_vs_impairment_figure(
+        df, manifest, metric=CORRECTION_METRIC, axis="delay",
+        title=f"Correction cost as {_AXIS_PHRASES['delay']}", ylabel=_CORRECTION_YLABEL,
+    )
+
+
 def plot_correction_vs_delay(df: pd.DataFrame, manifest: Manifest, out_dir: Path) -> Optional[Path]:
     return _plot_metric_vs_impairment(
         df, manifest, out_dir,
@@ -150,6 +190,13 @@ def plot_correction_vs_delay(df: pd.DataFrame, manifest: Manifest, out_dir: Path
         title=f"Correction cost as {_AXIS_PHRASES['delay']}",
         ylabel=_CORRECTION_YLABEL,
         filename="impairment__correction_vs_delay.png",
+    )
+
+
+def build_prediction_error_vs_delay_figure(df: pd.DataFrame, manifest: Manifest) -> Optional[Tuple[Figure, str]]:
+    return _build_metric_vs_impairment_figure(
+        df, manifest, metric=PREDICTION_ERROR_METRIC, axis="delay",
+        title=f"Prediction error as {_AXIS_PHRASES['delay']}", ylabel=_PREDICTION_ERROR_YLABEL,
     )
 
 
@@ -163,6 +210,13 @@ def plot_prediction_error_vs_delay(df: pd.DataFrame, manifest: Manifest, out_dir
     )
 
 
+def build_correction_vs_loss_figure(df: pd.DataFrame, manifest: Manifest) -> Optional[Tuple[Figure, str]]:
+    return _build_metric_vs_impairment_figure(
+        df, manifest, metric=CORRECTION_METRIC, axis="loss",
+        title=f"Correction cost as {_AXIS_PHRASES['loss']}", ylabel=_CORRECTION_YLABEL,
+    )
+
+
 def plot_correction_vs_loss(df: pd.DataFrame, manifest: Manifest, out_dir: Path) -> Optional[Path]:
     return _plot_metric_vs_impairment(
         df, manifest, out_dir,
@@ -170,6 +224,13 @@ def plot_correction_vs_loss(df: pd.DataFrame, manifest: Manifest, out_dir: Path)
         title=f"Correction cost as {_AXIS_PHRASES['loss']}",
         ylabel=_CORRECTION_YLABEL,
         filename="impairment__correction_vs_loss.png",
+    )
+
+
+def build_prediction_error_vs_loss_figure(df: pd.DataFrame, manifest: Manifest) -> Optional[Tuple[Figure, str]]:
+    return _build_metric_vs_impairment_figure(
+        df, manifest, metric=PREDICTION_ERROR_METRIC, axis="loss",
+        title=f"Prediction error as {_AXIS_PHRASES['loss']}", ylabel=_PREDICTION_ERROR_YLABEL,
     )
 
 

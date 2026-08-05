@@ -3,15 +3,20 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+import matplotlib.pyplot as plt
+import pytest
+
+from teleop_analysis import io_utils
+from teleop_analysis.figures import combined_response, impairment_response
+
 # test_gui.py lives at analysis/ (one level above tests/), not inside the teleop_analysis
 # package -- add it to sys.path explicitly rather than making it importable as a package module.
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from test_gui import (  # noqa: E402
-    _ZOOM_MAX,
-    _ZOOM_MIN,
-    _clamp_zoom,
-    _zoom_scroll_fraction,
+    _ZOOM_STEP,
+    _figure_builder_for_filename,
+    _zoom_axes_around_point,
     build_report_command,
     build_sweep_command,
     delete_run,
@@ -81,53 +86,76 @@ def test_delete_run_removes_the_run_directory_and_its_contents(tmp_path):
     assert not run_dir.exists()
 
 
-def test_clamp_zoom_passes_through_values_within_range():
-    assert _clamp_zoom(1.0) == 1.0
-    assert _clamp_zoom(2.5) == 2.5
+def test_zoom_axes_around_point_zoom_in_shrinks_the_range_and_keeps_the_point_fixed():
+    fig, ax = plt.subplots()
+    try:
+        ax.set_xlim(0, 100)
+        ax.set_ylim(0, 100)
+        fig.canvas.draw()
+
+        data_x, data_y = 30, 40
+        x_px, y_px = ax.transData.transform((data_x, data_y))
+
+        _zoom_axes_around_point(ax, x_px, y_px, zoom_in=True)
+
+        new_xlo, new_xhi = ax.get_xlim()
+        new_ylo, new_yhi = ax.get_ylim()
+        assert (new_xhi - new_xlo) == pytest.approx(100 / _ZOOM_STEP)
+        assert (new_yhi - new_ylo) == pytest.approx(100 / _ZOOM_STEP)
+
+        # The same pixel position must still land on the same data point -- that's the whole
+        # point of "zoom into where the mouse is pointing" rather than just shrinking the range.
+        new_data_x, new_data_y = ax.transData.inverted().transform((x_px, y_px))
+        assert new_data_x == pytest.approx(data_x)
+        assert new_data_y == pytest.approx(data_y)
+    finally:
+        plt.close(fig)
 
 
-def test_clamp_zoom_clamps_to_the_configured_min_and_max():
-    assert _clamp_zoom(_ZOOM_MIN / 2) == _ZOOM_MIN
-    assert _clamp_zoom(_ZOOM_MAX * 2) == _ZOOM_MAX
+def test_zoom_axes_around_point_zoom_out_grows_the_range():
+    fig, ax = plt.subplots()
+    try:
+        ax.set_xlim(0, 100)
+        ax.set_ylim(0, 100)
+        fig.canvas.draw()
+
+        x_px, y_px = ax.transData.transform((50, 50))
+        _zoom_axes_around_point(ax, x_px, y_px, zoom_in=False)
+
+        new_xlo, new_xhi = ax.get_xlim()
+        assert (new_xhi - new_xlo) == pytest.approx(100 * _ZOOM_STEP)
+    finally:
+        plt.close(fig)
 
 
-def test_zoom_scroll_fraction_keeps_the_same_center_when_zooming_in():
-    # Viewing the middle of the image, now only 20% of the (larger) image fits on screen --
-    # the top-left of the view should sit at 0.4 so the centered point (0.5) stays centered
-    # (anchor_viewport_frac=0.5, what the +/-/Reset buttons use).
-    assert _zoom_scroll_fraction(anchor_frac=0.5, anchor_viewport_frac=0.5, visible_frac=0.2) == 0.4
-
-
-def test_zoom_scroll_fraction_clamps_at_the_image_edges():
-    # Near the left edge, centering exactly would go negative -- clamp to 0 instead.
-    assert _zoom_scroll_fraction(anchor_frac=0.05, anchor_viewport_frac=0.5, visible_frac=0.2) == 0.0
-    # Near the right edge, centering exactly would overshoot past 1.0 -- clamp so the view's
-    # trailing edge lands exactly on the image's right edge instead.
-    assert _zoom_scroll_fraction(anchor_frac=0.95, anchor_viewport_frac=0.5, visible_frac=0.2) == 0.8
-
-
-def test_zoom_scroll_fraction_clamps_to_zero_when_the_whole_image_already_fits():
-    # visible_frac > 1 means the image is smaller than the canvas (zoomed out, or a tiny
-    # figure) -- there's nowhere to scroll to, so this must not go negative.
-    assert _zoom_scroll_fraction(anchor_frac=0.5, anchor_viewport_frac=0.5, visible_frac=1.5) == 0.0
-
-
-def test_zoom_scroll_fraction_keeps_the_cursor_point_fixed_under_the_cursor():
-    import pytest
-
-    # Cursor sits 1/4 of the way across the viewport (anchor_viewport_frac=0.25), pointing at
-    # the 60% mark of the image (anchor_frac=0.6) -- scroll-wheel zoom (unlike the buttons) must
-    # keep that image point under the cursor, not recenter it in the middle of the view.
-    result = _zoom_scroll_fraction(anchor_frac=0.6, anchor_viewport_frac=0.25, visible_frac=0.2)
-    assert result == pytest.approx(0.55)
-
-
-def test_zoom_scroll_fraction_cursor_anchor_matches_centering_at_the_viewport_midpoint():
-    # anchor_viewport_frac=0.5 is exactly the +/-/Reset buttons' centering behavior -- confirms
-    # the cursor-anchored formula is a strict generalization, not a separate code path.
-    assert _zoom_scroll_fraction(0.5, 0.5, 0.2) == _zoom_scroll_fraction(
-        anchor_frac=0.5, anchor_viewport_frac=0.5, visible_frac=0.2
+def test_figure_builder_for_filename_maps_fixed_impairment_and_combined_names():
+    assert (
+        _figure_builder_for_filename("impairment__correction_vs_jitter.png")
+        is impairment_response.build_correction_vs_jitter_figure
     )
+    assert (
+        _figure_builder_for_filename("combined__prediction_error.png")
+        is combined_response.build_prediction_error_vs_combined_figure
+    )
+
+
+def test_figure_builder_for_filename_returns_none_for_an_unknown_name():
+    # "table"'s summary_table.csv isn't a .png and never reaches this, but a defensive check
+    # against an unrecognized name is still correct behavior.
+    assert _figure_builder_for_filename("summary_table.csv") is None
+    assert _figure_builder_for_filename("something-unrelated.png") is None
+
+
+def test_figure_builder_for_filename_extracts_the_profile_for_per_profile_kinds(synthetic_run: Path):
+    manifest, df = io_utils.discover_run(synthetic_run)
+    builder = _figure_builder_for_filename("lan__error_vs_cost.png")
+    assert builder is not None
+
+    result = builder(df, manifest)
+    assert result is not None
+    fig, caption = result
+    assert "LAN" in caption  # build_caption embeds the friendly name of the extracted profile
+    plt.close(fig)
 
 
 def test_build_sweep_command_uses_absolute_yaml_path_and_dotnet_sweep_args():

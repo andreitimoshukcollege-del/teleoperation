@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Tuple
 
 import matplotlib
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+from matplotlib.figure import Figure
 import pandas as pd
 
 from teleop_analysis import percentiles
@@ -20,9 +22,12 @@ UPLINK_METRIC = "owd_uplink_ms"
 DOWNLINK_METRIC = "owd_downlink_ms"
 
 
-def plot_latency_distribution(df: pd.DataFrame, manifest: Manifest, profile: str, out_dir: Path) -> Path:
-    """One-way delay in each direction, kept separate because they're frequently asymmetric --
-    averaging them would hide that.
+def build_latency_distribution_figure(df: pd.DataFrame, manifest: Manifest, profile: str) -> Tuple[Figure, str]:
+    """Builds the figure and its caption without saving anything -- split out of
+    plot_latency_distribution so the GUI's live figure view (test_gui.py) can embed the same
+    figure directly instead of loading a saved PNG back off disk. One-way delay in each
+    direction, kept separate because they're frequently asymmetric -- averaging them would hide
+    that.
     """
     subset = df[df["profile"] == profile]
 
@@ -50,7 +55,11 @@ def plot_latency_distribution(df: pd.DataFrame, manifest: Manifest, profile: str
     caption = build_caption(manifest, profile)
     fig.text(0.5, 0.01, f"{caption}\n{PERCENTILE_EXPLANATION}", ha="center", fontsize=8, wrap=True)
     fig.tight_layout(rect=(0, 0.09, 1, 1))
+    return fig, caption
 
+
+def plot_latency_distribution(df: pd.DataFrame, manifest: Manifest, profile: str, out_dir: Path) -> Path:
+    fig, caption = build_latency_distribution_figure(df, manifest, profile)
     out_dir.mkdir(parents=True, exist_ok=True)
     out_path = out_dir / f"{profile}__latency.png"
     fig.savefig(out_path, metadata={"Description": caption})

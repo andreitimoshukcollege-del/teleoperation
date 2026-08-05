@@ -57,14 +57,18 @@ disagree, and you will trust the wrong one.
   generate (bar graphs, line graphs, table) — useful because a dense sweep's bar charts (one per
   profile) can otherwise bury the handful of line charts; `combined-response` (the whole combined
   sweep as one chart, x-tick labels spelling out every axis's value at each step) is grouped
-  under "Line graphs" alongside `impairment-response`. The displayed figure can be zoomed (+/-
-  buttons, a Reset button, or the scroll wheel over the image) and panned via the scrollbars --
-  useful for a dense chart where the native size is too small to read a specific region. The
-  +/-/Reset buttons zoom on the view's current center; the scroll wheel zooms on wherever the
-  cursor is pointing instead, so you can zoom straight into one spot of a busy chart without
-  first scrolling it to the middle. Backed by Pillow (`PIL.Image`/`ImageTk`, pinned in
-  `requirements.txt`) since plain `tkinter.PhotoImage` only supports integer zoom factors; the
-  underlying PNG on disk is untouched, this only affects how it's displayed.
+  under "Line graphs" alongside `impairment-response`. Selecting a figure embeds the **live
+  matplotlib chart** (`FigureCanvasTkAgg`), not the saved PNG -- crisp at any zoom level since
+  matplotlib redraws from the real data instead of resampling a raster image, and matplotlib's
+  own `NavigationToolbar2Tk` (below the chart) gives pan/zoom-rectangle/save/home for free. The
+  scroll wheel additionally zooms straight into wherever the cursor is pointing (in real data
+  coordinates, via `_zoom_axes_around_point`), rather than needing the toolbar's zoom-rectangle
+  tool for that. Each `figures/*.py` module exposes a `build_<x>_figure(...)` function (returns
+  the `Figure` + caption, no I/O) alongside its existing `plot_<x>(...)` (builds, then saves to
+  `results/<run>/figures/*.png` and closes) -- `test_gui.py`'s `_figure_builder_for_filename`
+  maps a listed filename back to the right `build_*` function so the live view always matches
+  what's on disk. The saved PNG stays the citable, disk-based artifact either way; the live
+  embed is purely a nicer way to look at it.
   `experiments/*.yaml` generation is
   `experiment_builder.py` (pure, unit tested) — the GUI just writes what it returns and shells
   out to `dotnet run -- sweep`. Needs a real display, not a piped/non-interactive shell — in this

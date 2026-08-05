@@ -46,11 +46,13 @@ disagree, and you will trust the wrong one.
   min/max/step controls to generate `combo__delay-<N>ms__jitter-<N>ms__loss-<N>pct`-style
   profiles (docs/adr/0006-combined-impairment-profiles.md) — a **lockstep** walk across whichever
   axes are checked (point *i* takes the i-th value of every checked axis, so a 4-point delay
-  range and a 4-point jitter range together produce 4 combined profiles, not 16), for studying
-  how the system degrades as the whole link gets simultaneously worse, plotted as a single line
-  chart (see `combined-response` below) rather than one isolated variable at a time. Warns and
-  asks for confirmation before launching a sweep whose combined-profile count exceeds 200, as a
-  backstop. Click Run, watch the sweep's own output stream live, then switch to the Figures tab
+  range and a 4-point jitter range together produce 4 combined profiles, not 16). Axes don't need
+  matching point counts -- the walk runs as long as the longest one, and any shorter axis holds
+  at its last value for the remaining steps. For studying how the system degrades as the whole
+  link gets simultaneously worse, plotted as a single line chart (see `combined-response` below)
+  rather than one isolated variable at a time. Warns and asks for confirmation before launching a
+  sweep whose combined-profile count exceeds 200, as a backstop. Click Run, watch the sweep's own
+  output stream live, then switch to the Figures tab
   to generate/view that run's charts. Checkboxes there also let you pick which figure *kinds* to
   generate (bar graphs, line graphs, table) — useful because a dense sweep's bar charts (one per
   profile) can otherwise bury the handful of line charts; `combined-response` (the whole combined

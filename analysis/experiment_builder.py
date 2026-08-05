@@ -67,28 +67,34 @@ def combined_points(
     Requires at least 2 non-empty axes -- combining exactly one axis is just the isolated family
     (jitter_points/delay_points/loss_points above), which already exists and isolates its
     companions properly for sensitivity charts; this function is for genuine combinations only.
-    Requires every populated axis to have the same number of points -- there's no principled way
-    to pair up a 7-point axis with a 5-point one, so this raises rather than silently truncating.
+
+    Axes don't need the same number of points: the walk runs as long as the *longest* populated
+    axis, and any shorter axis holds at its last value for the remaining steps -- e.g.
+    delay_ms=[0, 100, 200, 300], jitter_ms=[0, 20] produces 4 profiles, with jitter staying at 20
+    for the last two. This mirrors how the isolated-axis controls above already let each axis
+    have its own independent min/max/step; forcing every combined axis to work out to the exact
+    same point count would be a needless coupling between controls that otherwise don't interact.
     """
     axes = [
         ("delay", "ms", delay_ms),
         ("jitter", "ms", jitter_ms),
         ("loss", "pct", loss_pct),
     ]
-    populated = [(label, unit, values) for label, unit, values in axes if values]
+    populated = [(label, unit, list(values)) for label, unit, values in axes if values]
     if len(populated) < 2:
         raise ValueError("combined profiles need at least 2 non-empty axes")
 
-    lengths = {len(values) for _, _, values in populated}
-    if len(lengths) > 1:
-        detail = ", ".join(f"{label}={len(values)}" for label, _, values in populated)
-        raise ValueError(f"combined axes must have the same number of points, got {detail}")
+    step_count = max(len(values) for _, _, values in populated)
+    held = [
+        (label, unit, values + [values[-1]] * (step_count - len(values)))
+        for label, unit, values in populated
+    ]
 
     combos = []
-    for combo in zip(*(values for _, _, values in populated)):
+    for combo in zip(*(values for _, _, values in held)):
         segments = [
             f"{label}-{_format_number(value)}{unit}"
-            for (label, unit, _), value in zip(populated, combo)
+            for (label, unit, _), value in zip(held, combo)
         ]
         combos.append("combo__" + "__".join(segments))
     return combos

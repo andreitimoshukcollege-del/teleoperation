@@ -86,11 +86,27 @@ def test_combined_points_omits_empty_axes_entirely():
     assert points == ["combo__jitter-30ms__loss-1pct", "combo__jitter-40ms__loss-2pct"]
 
 
-def test_combined_points_raises_when_axis_lengths_differ():
-    import pytest
+def test_combined_points_holds_the_shorter_axis_at_its_last_value():
+    # delay has 4 points, jitter only 2 -- the walk runs as long as delay, and jitter holds at
+    # its last value (20) for the remaining steps.
+    points = combined_points(delay_ms=[0, 100, 200, 300], jitter_ms=[0, 20])
+    assert points == [
+        "combo__delay-0ms__jitter-0ms",
+        "combo__delay-100ms__jitter-20ms",
+        "combo__delay-200ms__jitter-20ms",
+        "combo__delay-300ms__jitter-20ms",
+    ]
 
-    with pytest.raises(ValueError):
-        combined_points(delay_ms=[0, 100, 200], jitter_ms=[5, 10])
+
+def test_combined_points_holds_the_shorter_axis_regardless_of_argument_order():
+    # Same as above but jitter is the longer axis this time, to confirm "longest wins" isn't
+    # accidentally tied to argument position.
+    points = combined_points(delay_ms=[0, 100], jitter_ms=[0, 10, 20])
+    assert points == [
+        "combo__delay-0ms__jitter-0ms",
+        "combo__delay-100ms__jitter-10ms",
+        "combo__delay-100ms__jitter-20ms",
+    ]
 
 
 def test_combined_points_raises_with_fewer_than_two_axes():

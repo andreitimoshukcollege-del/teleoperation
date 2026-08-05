@@ -55,14 +55,22 @@ check. The **generator** that actually produces these names,
 
 ### Generated as a lockstep (co-varying) walk across per-axis min/max/step ranges, not a cross product
 
-`combined_points(delay_ms, jitter_ms, loss_pct)` takes a list of values per axis and `zip`s them
-— point *i* is `(delay_ms[i], jitter_ms[i], loss_pct[i])` for whichever axes are populated, so a
-4-point delay range and a 4-point jitter range together produce 4 combined profiles, not 16. This
-answers "how does the system degrade as the whole link gets simultaneously worse" — every checked
-axis marching forward together at its own step size — not "every possible pairing of these
-values," which is a different, much larger question this ADR does not attempt to answer. Requires
-every populated axis to have the same number of points (raises otherwise — there's no principled
-way to pair a 7-point axis with a 5-point one).
+`combined_points(delay_ms, jitter_ms, loss_pct)` takes a list of values per axis and walks them
+together — point *i* is `(delay_ms[i], jitter_ms[i], loss_pct[i])` for whichever axes are
+populated, so a 4-point delay range and a 4-point jitter range together produce 4 combined
+profiles, not 16. This answers "how does the system degrade as the whole link gets
+simultaneously worse" — every checked axis marching forward together at its own step size — not
+"every possible pairing of these values," which is a different, much larger question this ADR
+does not attempt to answer.
+
+Axes don't have to have the same number of points. The walk runs as long as the *longest*
+populated axis, and any shorter axis **holds at its last value** for the remaining steps — e.g.
+delay with 4 points and jitter with 2 produces 4 profiles, with jitter frozen at its second value
+for steps 3 and 4. This was chosen over requiring equal-length axes because the isolated-axis
+controls immediately above already let each axis have an independent min/max/step with no
+coupling between them; making the combined section suddenly require matching counts would be a
+surprising new constraint between controls that otherwise don't interact, for no benefit the
+lockstep-with-holding behavior doesn't already provide.
 
 The GUI builds each axis's list with the same `axis_points(min, max, step)` function
 `jitter_points`/`delay_points`/`loss_points` already use, so the "Combined impairments" section

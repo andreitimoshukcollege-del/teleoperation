@@ -55,11 +55,27 @@ def figures_for_run(run_dir: Path) -> List[Path]:
     return sorted(figures_dir.glob("*.png"))
 
 
-def build_report_command(run_dir: Path) -> List[str]:
+# Groups teleop_analysis.cli's --figures kinds by chart shape, for the Figures tab's checkboxes.
+# A dense sweep (hundreds of profiles) makes the bar-graph group alone hundreds of PNGs -- one
+# per profile per bar-chart kind -- easy to let bury the handful of line-graph PNGs in the
+# figure list, so letting either group be skipped is the point, not just a convenience.
+FIGURE_GROUPS = {
+    "Bar graphs": ("error-cost", "latency", "stack-comparison"),
+    "Line graphs": ("impairment-response",),
+    "Table": ("table",),
+}
+
+
+def build_report_command(run_dir: Path, figures: Optional[str] = None) -> List[str]:
     """The exact subprocess argv used to (re)generate a run's figures -- same CLI `just report`
-    wraps. Absolute path so it doesn't matter what the subprocess's cwd ends up being.
+    wraps. Absolute path so it doesn't matter what the subprocess's cwd ends up being. `figures`
+    is teleop_analysis.cli's own --figures value (comma-separated kinds); omitted entirely means
+    its default (everything).
     """
-    return [sys.executable, "-m", "teleop_analysis.cli", str(run_dir.resolve())]
+    command = [sys.executable, "-m", "teleop_analysis.cli", str(run_dir.resolve())]
+    if figures:
+        command += ["--figures", figures]
+    return command
 
 
 def build_sweep_command(yaml_path: Path) -> List[str]:
@@ -88,6 +104,7 @@ class PickerApp:
         self.run_display_to_path: Dict[str, Path] = {}
         self.figures_queue: "queue.Queue" = queue.Queue()
         self._current_photo: Optional[tk.PhotoImage] = None
+        self.figure_group_vars: Dict[str, tk.BooleanVar] = {}
 
         notebook = ttk.Notebook(self.root)
         notebook.pack(fill=tk.BOTH, expand=True)
@@ -272,11 +289,17 @@ class PickerApp:
         top_row = ttk.Frame(container)
         top_row.pack(fill=tk.X)
         ttk.Label(top_row, text="Run:").pack(side=tk.LEFT)
-        self.run_combo = ttk.Combobox(top_row, state="readonly", width=55)
+        self.run_combo = ttk.Combobox(top_row, state="readonly", width=45)
         self.run_combo.pack(side=tk.LEFT, padx=(6, 6))
         self.run_combo.bind("<<ComboboxSelected>>", lambda e: self._refresh_figure_list())
+
+        for group_name in FIGURE_GROUPS:
+            var = tk.BooleanVar(value=True)
+            self.figure_group_vars[group_name] = var
+            ttk.Checkbutton(top_row, text=group_name, variable=var).pack(side=tk.LEFT, padx=(0, 8))
+
         self.generate_button = ttk.Button(
-            top_row, text="Generate / Refresh Figures", command=self._on_generate_figures_clicked
+            top_row, text="Generate / Refresh", command=self._on_generate_figures_clicked
         )
         self.generate_button.pack(side=tk.LEFT)
         self.figures_status = ttk.Label(top_row, text="")
@@ -346,21 +369,36 @@ class PickerApp:
         self.image_canvas.create_image(0, 0, anchor="nw", image=photo)
         self.image_canvas.configure(scrollregion=(0, 0, photo.width(), photo.height()))
 
+    def _selected_figure_kinds(self) -> Optional[str]:
+        selected_groups = [name for name, var in self.figure_group_vars.items() if var.get()]
+        if len(selected_groups) == len(FIGURE_GROUPS):
+            return None  # everything selected -- let the CLI use its own default
+        kinds: List[str] = []
+        for name in selected_groups:
+            kinds.extend(FIGURE_GROUPS[name])
+        return ",".join(kinds)
+
     def _on_generate_figures_clicked(self) -> None:
         run = self._selected_run()
         if run is None:
             self.figures_status.config(text="No run selected.")
             return
+        if not any(var.get() for var in self.figure_group_vars.values()):
+            self.figures_status.config(text="Select at least one figure kind.")
+            return
 
+        figures = self._selected_figure_kinds()
         self.generate_button.config(state=tk.DISABLED)
         self.figures_status.config(text="Generating...")
         threading.Thread(
-            target=self._generate_figures_in_background, args=(run,), daemon=True
+            target=self._generate_figures_in_background, args=(run, figures), daemon=True
         ).start()
         self.root.after(100, self._poll_figures_generation)
 
-    def _generate_figures_in_background(self, run: Path) -> None:
-        proc = subprocess.run(build_report_command(run), capture_output=True, text=True)
+    def _generate_figures_in_background(self, run: Path, figures: Optional[str]) -> None:
+        proc = subprocess.run(
+            build_report_command(run, figures=figures), capture_output=True, text=True
+        )
         self.figures_queue.put((proc.returncode, proc.stdout, proc.stderr))
 
     def _poll_figures_generation(self) -> None:

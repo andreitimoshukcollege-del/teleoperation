@@ -55,6 +55,16 @@ def test_build_report_command_uses_absolute_run_path():
     assert Path(command[3]).is_absolute()
 
 
+def test_build_report_command_omits_figures_flag_by_default():
+    command = build_report_command(Path("results/exp-001/20260101-000000Z"))
+    assert "--figures" not in command
+
+
+def test_build_report_command_appends_figures_flag_when_given():
+    command = build_report_command(Path("results/exp-001/20260101-000000Z"), figures="table")
+    assert command[-2:] == ["--figures", "table"]
+
+
 def test_build_sweep_command_uses_absolute_yaml_path_and_dotnet_sweep_args():
     command = build_sweep_command(Path("experiments/exp-gui-sweep.yaml"))
     assert command[0] == "dotnet"

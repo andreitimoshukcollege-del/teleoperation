@@ -73,3 +73,20 @@ def test_returns_none_when_fewer_than_two_jitter_comparable_profiles(
 
     assert impairment_response.plot_correction_vs_jitter(df, manifest, out_dir) is None
     assert impairment_response.plot_prediction_error_vs_jitter(df, manifest, out_dir) is None
+
+
+def test_excluded_note_names_a_handful_of_profiles():
+    note = impairment_response._excluded_note(["lan", "synthetic-burst"], "jitter")
+    assert note == " | excluded (no single jitter value): LAN (near-ideal), Recorded burst trace"
+
+
+def test_excluded_note_falls_back_to_a_count_past_the_threshold():
+    excluded = [f"delay-{n}ms" for n in range(50)]
+    note = impairment_response._excluded_note(excluded, "jitter")
+    assert note == " | excluded (no single jitter value): 50 profiles"
+    # Never a wall of names, even though it could technically render one.
+    assert "delay-0ms" not in note
+
+
+def test_excluded_note_returns_empty_string_when_nothing_excluded():
+    assert impairment_response._excluded_note([], "jitter") == ""

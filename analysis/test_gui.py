@@ -17,6 +17,8 @@ from tkinter import messagebox, ttk
 from tkinter.scrolledtext import ScrolledText
 from typing import Dict, List, Optional, Tuple
 
+from PIL import Image, ImageTk
+
 import experiment_builder
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -75,6 +77,25 @@ FIGURE_GROUPS = {
     "Table": ("table",),
 }
 
+# Figures tab zoom -- a dense chart (e.g. a 300-step combined sweep) is often too small to read
+# at the figure's native size, and the PNG-viewing canvas has no zoom of its own by default.
+_ZOOM_STEP = 1.25
+_ZOOM_MIN = 0.25
+_ZOOM_MAX = 8.0
+
+
+def _clamp_zoom(level: float) -> float:
+    return max(_ZOOM_MIN, min(_ZOOM_MAX, level))
+
+
+def _zoom_scroll_fraction(center_frac: float, visible_frac: float) -> float:
+    """The top-left scroll fraction (what Canvas.xview_moveto/yview_moveto expects) that keeps
+    `center_frac` (0..1, the point that was centered in the view before a zoom) centered in a
+    view that now shows `visible_frac` (0..1) of the resized image -- clamped so the view never
+    scrolls past the image's edges.
+    """
+    return max(0.0, min(1.0 - visible_frac, center_frac - visible_frac / 2))
+
 
 def build_report_command(run_dir: Path, figures: Optional[str] = None) -> List[str]:
     """The exact subprocess argv used to (re)generate a run's figures -- same CLI `just report`
@@ -115,7 +136,9 @@ class PickerApp:
 
         self.run_display_to_path: Dict[str, Path] = {}
         self.figures_queue: "queue.Queue" = queue.Queue()
-        self._current_photo: Optional[tk.PhotoImage] = None
+        self._current_photo: Optional[ImageTk.PhotoImage] = None
+        self._current_pil_image: Optional[Image.Image] = None
+        self._zoom_level: float = 1.0
         self.figure_group_vars: Dict[str, tk.BooleanVar] = {}
 
         notebook = ttk.Notebook(self.root)
@@ -379,6 +402,18 @@ class PickerApp:
         self.figures_status = ttk.Label(top_row, text="")
         self.figures_status.pack(side=tk.RIGHT)
 
+        zoom_row = ttk.Frame(container)
+        zoom_row.pack(fill=tk.X, pady=(6, 0))
+        ttk.Label(zoom_row, text="Zoom:").pack(side=tk.LEFT)
+        ttk.Button(zoom_row, text="-", width=3, command=self._zoom_out).pack(side=tk.LEFT, padx=(4, 2))
+        self.zoom_label = ttk.Label(zoom_row, text="100%", width=6, anchor="center")
+        self.zoom_label.pack(side=tk.LEFT)
+        ttk.Button(zoom_row, text="+", width=3, command=self._zoom_in).pack(side=tk.LEFT, padx=(2, 8))
+        ttk.Button(zoom_row, text="Reset", command=self._zoom_reset).pack(side=tk.LEFT)
+        ttk.Label(
+            zoom_row, text="  (scroll wheel over the image also zooms)", foreground="#666666"
+        ).pack(side=tk.LEFT)
+
         body = ttk.Frame(container)
         body.pack(fill=tk.BOTH, expand=True, pady=(8, 0))
 
@@ -395,6 +430,7 @@ class PickerApp:
         v_scroll = ttk.Scrollbar(image_frame, orient="vertical", command=self.image_canvas.yview)
         h_scroll = ttk.Scrollbar(image_frame, orient="horizontal", command=self.image_canvas.xview)
         self.image_canvas.configure(yscrollcommand=v_scroll.set, xscrollcommand=h_scroll.set)
+        self.image_canvas.bind("<MouseWheel>", self._on_mouse_wheel)
         self.image_canvas.grid(row=0, column=0, sticky="nsew")
         v_scroll.grid(row=0, column=1, sticky="ns")
         h_scroll.grid(row=1, column=0, sticky="ew")
@@ -452,6 +488,9 @@ class PickerApp:
     def _clear_image(self) -> None:
         self.image_canvas.delete("all")
         self._current_photo = None
+        self._current_pil_image = None
+        self._zoom_level = 1.0
+        self.zoom_label.config(text="100%")
 
     def _on_figure_selected(self) -> None:
         selection = self.figure_listbox.curselection()
@@ -459,11 +498,64 @@ class PickerApp:
         if not selection or run is None:
             return
         path = run / "figures" / self.figure_listbox.get(selection[0])
-        photo = tk.PhotoImage(file=str(path))
+        self._current_pil_image = Image.open(path)
+        self._zoom_level = 1.0
+        self._render_image()
+
+    def _render_image(self) -> None:
+        """(Re)draws `self._current_pil_image` at `self._zoom_level`, keeping whatever point was
+        centered in the view centered after the resize -- otherwise every zoom step would jump
+        back to the image's top-left corner, which is disorienting for repeated zooming.
+        """
+        if self._current_pil_image is None:
+            return
+
+        xlo, xhi = self.image_canvas.xview()
+        ylo, yhi = self.image_canvas.yview()
+        center_x_frac = (xlo + xhi) / 2
+        center_y_frac = (ylo + yhi) / 2
+        visible_width_px = self.image_canvas.winfo_width()
+        visible_height_px = self.image_canvas.winfo_height()
+
+        base_width, base_height = self._current_pil_image.size
+        new_width = max(1, round(base_width * self._zoom_level))
+        new_height = max(1, round(base_height * self._zoom_level))
+        resized = self._current_pil_image.resize((new_width, new_height), Image.LANCZOS)
+        photo = ImageTk.PhotoImage(resized)
         self._current_photo = photo  # tkinter drops the image if nothing keeps a reference
+
         self.image_canvas.delete("all")
         self.image_canvas.create_image(0, 0, anchor="nw", image=photo)
-        self.image_canvas.configure(scrollregion=(0, 0, photo.width(), photo.height()))
+        self.image_canvas.configure(scrollregion=(0, 0, new_width, new_height))
+
+        self.image_canvas.xview_moveto(
+            _zoom_scroll_fraction(center_x_frac, visible_width_px / new_width)
+        )
+        self.image_canvas.yview_moveto(
+            _zoom_scroll_fraction(center_y_frac, visible_height_px / new_height)
+        )
+        self.zoom_label.config(text=f"{round(self._zoom_level * 100)}%")
+
+    def _set_zoom(self, level: float) -> None:
+        self._zoom_level = _clamp_zoom(level)
+        self._render_image()
+
+    def _zoom_in(self) -> None:
+        self._set_zoom(self._zoom_level * _ZOOM_STEP)
+
+    def _zoom_out(self) -> None:
+        self._set_zoom(self._zoom_level / _ZOOM_STEP)
+
+    def _zoom_reset(self) -> None:
+        self._set_zoom(1.0)
+
+    def _on_mouse_wheel(self, event) -> None:
+        if self._current_pil_image is None:
+            return
+        if event.delta > 0:
+            self._zoom_in()
+        else:
+            self._zoom_out()
 
     def _selected_figure_kinds(self) -> Optional[str]:
         selected_groups = [name for name, var in self.figure_group_vars.items() if var.get()]

@@ -8,6 +8,10 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from test_gui import (  # noqa: E402
+    _ZOOM_MAX,
+    _ZOOM_MIN,
+    _clamp_zoom,
+    _zoom_scroll_fraction,
     build_report_command,
     build_sweep_command,
     delete_run,
@@ -75,6 +79,36 @@ def test_delete_run_removes_the_run_directory_and_its_contents(tmp_path):
     delete_run(run_dir)
 
     assert not run_dir.exists()
+
+
+def test_clamp_zoom_passes_through_values_within_range():
+    assert _clamp_zoom(1.0) == 1.0
+    assert _clamp_zoom(2.5) == 2.5
+
+
+def test_clamp_zoom_clamps_to_the_configured_min_and_max():
+    assert _clamp_zoom(_ZOOM_MIN / 2) == _ZOOM_MIN
+    assert _clamp_zoom(_ZOOM_MAX * 2) == _ZOOM_MAX
+
+
+def test_zoom_scroll_fraction_keeps_the_same_center_when_zooming_in():
+    # Viewing the middle of the image, now only 20% of the (larger) image fits on screen --
+    # the top-left of the view should sit at 0.4 so the centered point (0.5) stays centered.
+    assert _zoom_scroll_fraction(center_frac=0.5, visible_frac=0.2) == 0.4
+
+
+def test_zoom_scroll_fraction_clamps_at_the_image_edges():
+    # Near the left edge, centering exactly would go negative -- clamp to 0 instead.
+    assert _zoom_scroll_fraction(center_frac=0.05, visible_frac=0.2) == 0.0
+    # Near the right edge, centering exactly would overshoot past 1.0 -- clamp so the view's
+    # trailing edge lands exactly on the image's right edge instead.
+    assert _zoom_scroll_fraction(center_frac=0.95, visible_frac=0.2) == 0.8
+
+
+def test_zoom_scroll_fraction_clamps_to_zero_when_the_whole_image_already_fits():
+    # visible_frac > 1 means the image is smaller than the canvas (zoomed out, or a tiny
+    # figure) -- there's nowhere to scroll to, so this must not go negative.
+    assert _zoom_scroll_fraction(center_frac=0.5, visible_frac=1.5) == 0.0
 
 
 def test_build_sweep_command_uses_absolute_yaml_path_and_dotnet_sweep_args():

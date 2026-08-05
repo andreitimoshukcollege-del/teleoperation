@@ -57,7 +57,12 @@ disagree, and you will trust the wrong one.
   generate (bar graphs, line graphs, table) — useful because a dense sweep's bar charts (one per
   profile) can otherwise bury the handful of line charts; `combined-response` (the whole combined
   sweep as one chart, x-tick labels spelling out every axis's value at each step) is grouped
-  under "Line graphs" alongside `impairment-response`. `experiments/*.yaml` generation is
+  under "Line graphs" alongside `impairment-response`. The displayed figure can be zoomed (+/-
+  buttons, a Reset button, or the scroll wheel over the image) and panned via the scrollbars --
+  useful for a dense chart where the native size is too small to read a specific region. Backed
+  by Pillow (`PIL.Image`/`ImageTk`, pinned in `requirements.txt`) since plain `tkinter.PhotoImage`
+  only supports integer zoom factors; the underlying PNG on disk is untouched, this only affects
+  how it's displayed. `experiments/*.yaml` generation is
   `experiment_builder.py` (pure, unit tested) — the GUI just writes what it returns and shells
   out to `dotnet run -- sweep`. Needs a real display, not a piped/non-interactive shell — in this
   repo that's never an issue since `analysis/` already runs on the Windows-side Python (see setup

@@ -29,8 +29,8 @@ sweep config:
 # ---- analysis/ (python: figures, percentile tables) ----
 
 # Internal: create analysis/.venv if it doesn't exist yet (fast no-op otherwise). `.venv/` is
-# gitignored, so a fresh clone has none -- this makes `test`/`test-pick`/`report` below work on
-# the first try instead of failing with "python.exe: not found" and telling you to run setup
+# gitignored, so a fresh clone has none -- this makes `test`/`experiment-gui`/`report` below work
+# on the first try instead of failing with "python.exe: not found" and telling you to run setup
 # yourself. Safe to depend on from every recipe below; it won't touch an existing venv.
 _analysis-venv:
     #!/usr/bin/env bash
@@ -43,7 +43,7 @@ _analysis-venv:
     just analysis-setup
 
 # One-time analysis/ venv setup (Windows Python via WSL interop -- see analysis/CLAUDE.md).
-# Also called automatically by test/test-pick/report if analysis/.venv doesn't exist yet.
+# Also called automatically by test/experiment-gui/report if analysis/.venv doesn't exist yet.
 analysis-setup:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -56,8 +56,8 @@ analysis-setup:
 test: _analysis-venv
     cd analysis && ./.venv/Scripts/python.exe -m pytest -v
 
-# Opens a GUI window to pick which analysis/ tests to run (needs a real display)
-test-pick: _analysis-venv
+# Opens a GUI window to configure and run a sweep, then view its figures (needs a real display)
+experiment-gui: _analysis-venv
     cd analysis && ./.venv/Scripts/python.exe run_tests.py
 
 # Generate figures + summary table for a run, e.g. `just report results/exp-001-predictor-baseline/20260804-020431Z`

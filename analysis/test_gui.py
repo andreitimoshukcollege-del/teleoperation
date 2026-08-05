@@ -1,4 +1,4 @@
-"""Tkinter GUI for analysis/: run tests and view generated figures.
+"""Tkinter GUI for analysis/: configure and run a sweep, then view its figures.
 
 Launched by run_tests.py when invoked without --all. Needs a real display -- this project's
 analysis/ venv is a Windows-native Python reached via WSL interop (see analysis/CLAUDE.md), so
@@ -7,7 +7,6 @@ this opens as a normal Windows window with no extra display-server setup.
 from __future__ import annotations
 
 import queue
-import re
 import subprocess
 import sys
 import threading
@@ -15,29 +14,27 @@ import tkinter as tk
 from pathlib import Path
 from tkinter import ttk
 from tkinter.scrolledtext import ScrolledText
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
-from run_tests import group_by_file, humanize_test_name
+import experiment_builder
 
-_SUMMARY_RE = re.compile(r"^=+\s*(.*?)\s*=+$")
-RESULTS_DIR = Path(__file__).resolve().parent.parent / "results"
+REPO_ROOT = Path(__file__).resolve().parent.parent
+RESULTS_DIR = REPO_ROOT / "results"
+CORE_EVAL_DIR = REPO_ROOT / "core" / "Teleop.Eval"
+EXPERIMENTS_DIR = REPO_ROOT / "experiments"
+GENERATED_YAML_PATH = EXPERIMENTS_DIR / "exp-gui-sweep.yaml"
 
+# Registry/Registries.cs's Predictors keys -- hardcoded the same way labels.py's
+# FRIENDLY_STACK_NAMES already is (no runtime way to query the C# registry from Python). Update
+# both places by hand when a new predictor is registered.
+PREDICTORS = ("none", "const-vel", "double-exp")
 
-def build_pytest_command(node_ids: List[str]) -> List[str]:
-    """The exact subprocess argv used to run a set of selected tests."""
-    return [sys.executable, "-m", "pytest", *node_ids, "-v"]
-
-
-def find_summary_line(lines: List[str]) -> Optional[str]:
-    """Pull pytest's final '==== N passed/failed ... ====' line out of captured output, for
-    display only -- pass/fail itself is decided by the subprocess exit code, never by parsing
-    this text, so a summary line this doesn't recognize just means no summary text is shown.
-    """
-    for line in reversed(lines):
-        match = _SUMMARY_RE.match(line.strip())
-        if match and match.group(1):
-            return match.group(1)
-    return None
+# Defaults match experiments/exp-002-impairment-sensitivity.yaml's current density.
+AXIS_DEFAULTS = {
+    "jitter": {"min": "0", "max": "60", "step": "1", "unit": "ms"},
+    "delay": {"min": "0", "max": "300", "step": "1", "unit": "ms"},
+    "loss": {"min": "0", "max": "5", "step": "0.1", "unit": "%"},
+}
 
 
 def discover_runs(results_dir: Path = RESULTS_DIR) -> List[Path]:
@@ -65,99 +62,98 @@ def build_report_command(run_dir: Path) -> List[str]:
     return [sys.executable, "-m", "teleop_analysis.cli", str(run_dir.resolve())]
 
 
+def build_sweep_command(yaml_path: Path) -> List[str]:
+    """The exact subprocess argv used to run a sweep from a generated experiment YAML. This
+    process is a native Windows process throughout (the Windows-side python.exe that runs this
+    GUI, per analysis/CLAUDE.md), so plain pathlib absolute paths already come out Windows-style
+    -- no WSL/POSIX path translation needed here, unlike shelling out from a WSL shell.
+    """
+    return ["dotnet", "run", "--project", str(CORE_EVAL_DIR), "--", "sweep", str(yaml_path.resolve())]
+
+
 class PickerApp:
-    def __init__(self, root: tk.Tk, node_ids: List[str]):
+    def __init__(self, root: tk.Tk):
         self.root = root
         self.root.title("analysis/ toolkit")
-        self.node_ids = node_ids
-        self.vars: Dict[str, tk.BooleanVar] = {}
+
         self.process: Optional[subprocess.Popen] = None
         self.last_exit_code: Optional[int] = None
         self.output_queue: "queue.Queue" = queue.Queue()
+        self._sweep_running = False
+
+        self.predictor_vars: Dict[str, tk.BooleanVar] = {}
+        self.axis_enabled_vars: Dict[str, tk.BooleanVar] = {}
+        self.axis_entries: Dict[str, Dict[str, ttk.Entry]] = {}
 
         self.run_display_to_path: Dict[str, Path] = {}
         self.figures_queue: "queue.Queue" = queue.Queue()
         self._current_photo: Optional[tk.PhotoImage] = None
-        self._tests_running = False
 
         notebook = ttk.Notebook(self.root)
         notebook.pack(fill=tk.BOTH, expand=True)
-        notebook.add(self._build_tests_tab(notebook), text="Tests")
+        notebook.add(self._build_experiment_tab(notebook), text="Experiment")
         notebook.add(self._build_figures_tab(notebook), text="Figures")
 
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
 
-    # ---- Tests tab ----
+    # ---- Experiment tab ----
 
-    def _build_tests_tab(self, notebook: ttk.Notebook) -> ttk.Frame:
+    def _build_experiment_tab(self, notebook: ttk.Notebook) -> ttk.Frame:
         container = ttk.Frame(notebook, padding=8)
 
-        list_frame = ttk.Frame(container)
-        list_frame.pack(fill=tk.BOTH, expand=True)
+        ttk.Label(container, text="Algorithms", font=("TkDefaultFont", 10, "bold")).pack(anchor="w")
+        algo_row = ttk.Frame(container)
+        algo_row.pack(anchor="w", pady=(0, 8))
+        for predictor in PREDICTORS:
+            var = tk.BooleanVar(value=True)
+            self.predictor_vars[predictor] = var
+            ttk.Checkbutton(algo_row, text=predictor, variable=var).pack(side=tk.LEFT, padx=(0, 12))
 
-        canvas = tk.Canvas(list_frame, borderwidth=0, highlightthickness=0)
-        scrollbar = ttk.Scrollbar(list_frame, orient="vertical", command=canvas.yview)
-        self.checklist_frame = ttk.Frame(canvas)
+        ttk.Label(container, text="Impairments", font=("TkDefaultFont", 10, "bold")).pack(anchor="w")
+        for axis, defaults in AXIS_DEFAULTS.items():
+            row = ttk.Frame(container)
+            row.pack(anchor="w", pady=2, fill=tk.X)
 
-        self.checklist_frame.bind(
-            "<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
-        )
-        canvas.create_window((0, 0), window=self.checklist_frame, anchor="nw")
-        canvas.configure(yscrollcommand=scrollbar.set)
+            enabled = tk.BooleanVar(value=True)
+            self.axis_enabled_vars[axis] = enabled
+            ttk.Checkbutton(row, text=axis, variable=enabled, width=8).pack(side=tk.LEFT)
 
-        canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+            entries: Dict[str, ttk.Entry] = {}
+            for field in ("min", "max", "step"):
+                ttk.Label(row, text=field).pack(side=tk.LEFT, padx=(8, 2))
+                entry = ttk.Entry(row, width=8)
+                entry.insert(0, defaults[field])
+                entry.pack(side=tk.LEFT)
+                entries[field] = entry
+            ttk.Label(row, text=defaults["unit"]).pack(side=tk.LEFT, padx=(4, 0))
+            self.axis_entries[axis] = entries
 
-        for file_path, ids_in_file in group_by_file(self.node_ids).items():
-            display_file = file_path.split("/")[-1]
-            ttk.Label(
-                self.checklist_frame, text=display_file, font=("TkDefaultFont", 10, "bold")
-            ).pack(anchor="w", pady=(6, 0))
-            for node_id in ids_in_file:
-                test_name = node_id.split("::", 1)[1]
-                var = tk.BooleanVar(value=True)
-                self.vars[node_id] = var
-                ttk.Checkbutton(
-                    self.checklist_frame,
-                    text=humanize_test_name(test_name),
-                    variable=var,
-                    command=self._update_status,
-                ).pack(anchor="w", padx=(16, 0))
+        settings_row = ttk.Frame(container)
+        settings_row.pack(anchor="w", pady=(8, 0), fill=tk.X)
+        ttk.Label(settings_row, text="Seeds").pack(side=tk.LEFT)
+        self.seeds_entry = ttk.Entry(settings_row, width=16)
+        self.seeds_entry.insert(0, "1,2,3,4,5")
+        self.seeds_entry.pack(side=tk.LEFT, padx=(4, 16))
+        ttk.Label(settings_row, text="Experiment ID").pack(side=tk.LEFT)
+        self.experiment_id_entry = ttk.Entry(settings_row, width=24)
+        self.experiment_id_entry.insert(0, "exp-gui-sweep")
+        self.experiment_id_entry.pack(side=tk.LEFT, padx=(4, 0))
 
         button_row = ttk.Frame(container)
         button_row.pack(fill=tk.X, pady=(8, 0))
-        ttk.Button(button_row, text="Select All", command=self._select_all).pack(side=tk.LEFT)
-        ttk.Button(button_row, text="Select None", command=self._select_none).pack(
-            side=tk.LEFT, padx=(6, 0)
+        self.run_sweep_button = ttk.Button(
+            button_row, text="Run Sweep", command=self._on_run_sweep_clicked
         )
-        self.run_button = ttk.Button(button_row, text="Run Selected", command=self._on_run_clicked)
-        self.run_button.pack(side=tk.LEFT, padx=(6, 0))
-        self.status_label = ttk.Label(button_row, text="")
-        self.status_label.pack(side=tk.RIGHT)
+        self.run_sweep_button.pack(side=tk.LEFT)
+        self.sweep_status = ttk.Label(button_row, text="")
+        self.sweep_status.pack(side=tk.RIGHT)
 
         self.output = ScrolledText(container, height=16, font=("Consolas", 10), state=tk.DISABLED)
         self.output.pack(fill=tk.BOTH, expand=True, pady=(8, 0))
         self.output.tag_config("pass", foreground="#1a7f37")
         self.output.tag_config("fail", foreground="#cf222e")
 
-        self._update_status()
         return container
-
-    def _selected_ids(self) -> List[str]:
-        return [node_id for node_id, var in self.vars.items() if var.get()]
-
-    def _update_status(self) -> None:
-        self.status_label.config(text=f"{len(self._selected_ids())} of {len(self.vars)} selected")
-
-    def _select_all(self) -> None:
-        for var in self.vars.values():
-            var.set(True)
-        self._update_status()
-
-    def _select_none(self) -> None:
-        for var in self.vars.values():
-            var.set(False)
-        self._update_status()
 
     def _append_output(self, text: str, tag: Optional[str] = None) -> None:
         self.output.configure(state=tk.NORMAL)
@@ -165,58 +161,108 @@ class PickerApp:
         self.output.see(tk.END)
         self.output.configure(state=tk.DISABLED)
 
-    def _on_run_clicked(self) -> None:
-        selected = self._selected_ids()
-        if not selected:
-            self._append_output("Nothing selected.\n")
+    def _selected_predictors(self) -> List[str]:
+        return [p for p, var in self.predictor_vars.items() if var.get()]
+
+    def _build_profiles(self) -> Tuple[Optional[List[str]], Optional[str]]:
+        """(profiles, None) on success, or (None, error message) -- never both/neither."""
+        profiles: List[str] = []
+        point_fns = {
+            "jitter": experiment_builder.jitter_points,
+            "delay": experiment_builder.delay_points,
+            "loss": experiment_builder.loss_points,
+        }
+        for axis, enabled in self.axis_enabled_vars.items():
+            if not enabled.get():
+                continue
+            entries = self.axis_entries[axis]
+            try:
+                min_v = float(entries["min"].get())
+                max_v = float(entries["max"].get())
+                step_v = float(entries["step"].get())
+            except ValueError:
+                return None, f"{axis}: min/max/step must be numbers"
+            try:
+                profiles.extend(point_fns[axis](min_v, max_v, step_v))
+            except ValueError as exc:
+                return None, f"{axis}: {exc}"
+        return profiles, None
+
+    def _on_run_sweep_clicked(self) -> None:
+        predictors = self._selected_predictors()
+        if not predictors:
+            self.sweep_status.config(text="Select at least one algorithm.")
             return
 
-        self.run_button.config(state=tk.DISABLED)
-        self._tests_running = True
+        profiles, error = self._build_profiles()
+        if error:
+            self.sweep_status.config(text=error)
+            return
+        if not profiles:
+            self.sweep_status.config(text="Select at least one impairment.")
+            return
+
+        try:
+            seeds = [int(s.strip()) for s in self.seeds_entry.get().split(",") if s.strip()]
+        except ValueError:
+            self.sweep_status.config(text="Seeds must be a comma-separated list of integers.")
+            return
+        if not seeds:
+            self.sweep_status.config(text="At least one seed is required.")
+            return
+
+        experiment_id = self.experiment_id_entry.get().strip() or "exp-gui-sweep"
+        yaml_text = experiment_builder.build_experiment_yaml(experiment_id, predictors, seeds, profiles)
+        GENERATED_YAML_PATH.write_text(yaml_text)
+
+        self.run_sweep_button.config(state=tk.DISABLED)
+        self.sweep_status.config(text="")
+        self._sweep_running = True
         self.output.configure(state=tk.NORMAL)
         self.output.delete("1.0", tk.END)
         self.output.configure(state=tk.DISABLED)
-        self._append_output(f"Running {len(selected)} test(s)...\n\n")
+        self._append_output(
+            f"Running: {len(predictors)} algorithm(s) x {len(profiles)} profile(s) x "
+            f"{len(seeds)} seed(s)...\n\n"
+        )
 
-        threading.Thread(target=self._run_in_background, args=(selected,), daemon=True).start()
-        self.root.after(50, self._poll_output)
+        threading.Thread(target=self._run_sweep_in_background, daemon=True).start()
+        self.root.after(50, self._poll_sweep_output)
 
-    def _run_in_background(self, selected: List[str]) -> None:
+    def _run_sweep_in_background(self) -> None:
         self.process = subprocess.Popen(
-            build_pytest_command(selected),
+            build_sweep_command(GENERATED_YAML_PATH),
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
             bufsize=1,
         )
-        lines: List[str] = []
         assert self.process.stdout is not None
         for line in self.process.stdout:
-            lines.append(line)
             self.output_queue.put(line)
         exit_code = self.process.wait()
         self.process = None
-        self.output_queue.put(("__done__", exit_code, find_summary_line(lines)))
+        self.output_queue.put(("__done__", exit_code))
 
-    def _poll_output(self) -> None:
+    def _poll_sweep_output(self) -> None:
         try:
             while True:
                 item = self.output_queue.get_nowait()
                 if isinstance(item, tuple):
-                    _, exit_code, summary = item
+                    _, exit_code = item
                     self.last_exit_code = exit_code
                     tag = "pass" if exit_code == 0 else "fail"
-                    label = "PASSED" if exit_code == 0 else "FAILED"
-                    self._append_output(f"\n{label}", tag)
-                    self._append_output(f" -- {summary}\n" if summary else "\n")
-                    self.run_button.config(state=tk.NORMAL)
-                    self._tests_running = False
+                    label = "DONE" if exit_code == 0 else "FAILED"
+                    self._append_output(f"\n{label}\n", tag)
+                    self.run_sweep_button.config(state=tk.NORMAL)
+                    self._sweep_running = False
+                    self._refresh_run_list()  # new run shows up in Figures immediately
                     return
                 self._append_output(item)
         except queue.Empty:
             pass
-        if self._tests_running:
-            self.root.after(50, self._poll_output)
+        if self._sweep_running:
+            self.root.after(50, self._poll_sweep_output)
 
     # ---- Figures tab ----
 
@@ -370,20 +416,14 @@ def _apply_dpi_scaling(root: tk.Tk) -> None:
         pass
 
 
-def launch(node_ids: List[str]) -> Optional[int]:
-    if not node_ids:
-        print("No tests collected -- check that analysis/tests/ exists and pytest can import it.")
-        return 1
-
+def launch() -> Optional[int]:
     _set_windows_dpi_awareness()
     root = tk.Tk()
     _apply_dpi_scaling(root)
-    app = PickerApp(root, node_ids)
+    app = PickerApp(root)
     root.mainloop()
     return app.last_exit_code
 
 
 if __name__ == "__main__":
-    from run_tests import collect_test_ids
-
-    sys.exit(launch(collect_test_ids()) or 0)
+    sys.exit(launch() or 0)

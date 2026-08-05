@@ -15,7 +15,11 @@ def summarize(df: pd.DataFrame, group_cols: List[str], value_col: str = "value")
     if df.empty:
         return pd.DataFrame(columns=[*group_cols, "p50", "p95", "p99", "n"])
 
-    grouped = df.groupby(group_cols)[value_col]
+    # observed=True: a categorical group column (e.g. "name", read as category in io_utils.py)
+    # otherwise keeps every category it was ever declared with, including ones filtered out of
+    # this particular `df` -- silently adding empty (all-NaN) rows to the result. This is also
+    # where pandas' own default is headed (observed=False is deprecated).
+    grouped = df.groupby(group_cols, observed=True)[value_col]
     table = grouped.quantile(list(QUANTILES)).unstack(level=-1)
     table = table.rename(columns=QUANTILE_LABELS)[["p50", "p95", "p99"]]
     table["n"] = grouped.count()

@@ -42,11 +42,12 @@ disagree, and you will trust the wrong one.
   (`test_gui.py`, plain tkinter — no extra dependency, ships with Python) for configuring and
   running a sweep — check which algorithms (raw predictor registry keys) and which impairments
   (jitter/delay/loss, each with its own min/max/step, independently combinable into one sweep)
-  to include. A separate "Combined impairments" section below that generates
-  `combo__delay-<N>ms__jitter-<N>ms__loss-<N>pct`-style profiles
-  (docs/adr/0006-combined-impairment-profiles.md) — a cross-product of small explicit value
-  lists per axis (not min/max/step, which would combine catastrophically), for studying multiple
-  impairments at nonzero values simultaneously rather than one isolated variable at a time.
+  to include. A separate "Combined impairments" section below that uses the same per-axis
+  min/max/step controls to generate `combo__delay-<N>ms__jitter-<N>ms__loss-<N>pct`-style
+  profiles (docs/adr/0006-combined-impairment-profiles.md) — a cross-product across whichever
+  axes are checked, for studying multiple impairments at nonzero values simultaneously rather
+  than one isolated variable at a time. Warns and asks for confirmation before launching a sweep
+  whose combined-profile count exceeds 200, since full-size ranges multiply catastrophically.
   Click Run, watch the sweep's own output stream live, then switch to the Figures tab
   to generate/view that run's charts. Checkboxes there also let you pick which figure *kinds* to
   generate (bar graphs, line graphs, table) — useful because a dense sweep's bar charts (one per

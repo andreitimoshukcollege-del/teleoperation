@@ -111,7 +111,7 @@ class PickerApp:
         self.axis_enabled_vars: Dict[str, tk.BooleanVar] = {}
         self.axis_entries: Dict[str, Dict[str, ttk.Entry]] = {}
         self.combined_axis_enabled_vars: Dict[str, tk.BooleanVar] = {}
-        self.combined_axis_values_entries: Dict[str, ttk.Entry] = {}
+        self.combined_axis_entries: Dict[str, Dict[str, ttk.Entry]] = {}
 
         self.run_display_to_path: Dict[str, Path] = {}
         self.figures_queue: "queue.Queue" = queue.Queue()
@@ -158,7 +158,7 @@ class PickerApp:
             self.axis_entries[axis] = entries
 
         ttk.Label(
-            container, text="Combined impairments (cross-product of the values you list)",
+            container, text="Combined impairments (cross-product -- check 2+ to combine)",
             font=("TkDefaultFont", 10, "bold"),
         ).pack(anchor="w", pady=(8, 0))
         for axis, defaults in AXIS_DEFAULTS.items():
@@ -169,12 +169,15 @@ class PickerApp:
             self.combined_axis_enabled_vars[axis] = enabled
             ttk.Checkbutton(row, text=axis, variable=enabled, width=8).pack(side=tk.LEFT)
 
-            ttk.Label(row, text=f"values ({defaults['unit']}, comma-separated)").pack(
-                side=tk.LEFT, padx=(8, 2)
-            )
-            entry = ttk.Entry(row, width=24)
-            entry.pack(side=tk.LEFT)
-            self.combined_axis_values_entries[axis] = entry
+            entries: Dict[str, ttk.Entry] = {}
+            for field in ("min", "max", "step"):
+                ttk.Label(row, text=field).pack(side=tk.LEFT, padx=(8, 2))
+                entry = ttk.Entry(row, width=8)
+                entry.insert(0, defaults[field])
+                entry.pack(side=tk.LEFT)
+                entries[field] = entry
+            ttk.Label(row, text=defaults["unit"]).pack(side=tk.LEFT, padx=(4, 0))
+            self.combined_axis_entries[axis] = entries
 
         settings_row = ttk.Frame(container)
         settings_row.pack(anchor="w", pady=(8, 0), fill=tk.X)
@@ -239,13 +242,17 @@ class PickerApp:
         for axis, enabled in self.combined_axis_enabled_vars.items():
             if not enabled.get():
                 continue
-            raw = self.combined_axis_values_entries[axis].get()
+            entries = self.combined_axis_entries[axis]
             try:
-                combined_values[axis] = [float(v.strip()) for v in raw.split(",") if v.strip()]
+                min_v = float(entries["min"].get())
+                max_v = float(entries["max"].get())
+                step_v = float(entries["step"].get())
             except ValueError:
-                return None, f"combined {axis}: values must be a comma-separated list of numbers"
-            if not combined_values[axis]:
-                return None, f"combined {axis}: checked but no values given"
+                return None, f"combined {axis}: min/max/step must be numbers"
+            try:
+                combined_values[axis] = experiment_builder.axis_points(min_v, max_v, step_v)
+            except ValueError as exc:
+                return None, f"combined {axis}: {exc}"
 
         if combined_values:
             try:

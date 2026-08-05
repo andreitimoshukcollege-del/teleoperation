@@ -16,7 +16,7 @@ from typing import List, Sequence
 _POINT_EPSILON = 1e-9
 
 
-def _points(min_value: float, max_value: float, step: float) -> List[float]:
+def axis_points(min_value: float, max_value: float, step: float) -> List[float]:
     if step <= 0:
         raise ValueError(f"step must be positive, got {step}")
     if max_value < min_value:
@@ -39,15 +39,15 @@ def _format_number(value: float) -> str:
 
 
 def jitter_points(min_ms: float, max_ms: float, step_ms: float) -> List[str]:
-    return [f"jitter-{_format_number(v)}ms" for v in _points(min_ms, max_ms, step_ms)]
+    return [f"jitter-{_format_number(v)}ms" for v in axis_points(min_ms, max_ms, step_ms)]
 
 
 def delay_points(min_ms: float, max_ms: float, step_ms: float) -> List[str]:
-    return [f"delay-{_format_number(v)}ms" for v in _points(min_ms, max_ms, step_ms)]
+    return [f"delay-{_format_number(v)}ms" for v in axis_points(min_ms, max_ms, step_ms)]
 
 
 def loss_points(min_pct: float, max_pct: float, step_pct: float) -> List[str]:
-    return [f"loss-{_format_number(v)}pct" for v in _points(min_pct, max_pct, step_pct)]
+    return [f"loss-{_format_number(v)}pct" for v in axis_points(min_pct, max_pct, step_pct)]
 
 
 def combined_points(

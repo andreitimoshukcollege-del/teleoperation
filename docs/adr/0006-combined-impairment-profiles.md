@@ -49,14 +49,16 @@ check. The **generator** that actually produces these names,
 `analysis/experiment_builder.py`'s `combined_points`, is what enforces "at least 2 axes," so a
 1-axis `combo__` name is never actually produced (use the isolated family for that case instead).
 
-### Generated as a cross-product of small explicit value lists, not min/max/step
+### Generated as a cross-product of per-axis min/max/step ranges, same controls as ADR 0005
 
-Unlike ADR 0005's evenly-spaced ranges (up to 301 points on the delay axis alone),
-`combined_points` takes an explicit list of values per axis and returns their Cartesian product.
-A min/max/step control here would combine catastrophically (ADR 0005's own ranges multiplied
-together are tens of millions of points) — the GUI surfaces this as short comma-separated value
-lists ("0,20,60") per axis instead of range controls, and warns before launching a sweep whose
-combined-profile count exceeds 200.
+`combined_points(delay_ms, jitter_ms, loss_pct)` takes a list of values per axis and returns
+their Cartesian product; the GUI builds each axis's list with the same `axis_points(min, max,
+step)` function `jitter_points`/`delay_points`/`loss_points` already use, so the "Combined
+impairments" section looks and works exactly like the isolated-axis rows above it. Multiplying
+full-size ranges together this way combines catastrophically (ADR 0005's own ranges multiplied
+together are tens of millions of points), so the GUI warns and requires confirmation before
+launching any sweep whose combined-profile count exceeds 200 — the guard is on the resulting
+count, not on how the per-axis values were entered, so it applies regardless of range size.
 
 ### No change to `analysis/teleop_analysis/labels.py`'s axis lookups
 

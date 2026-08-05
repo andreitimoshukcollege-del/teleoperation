@@ -8,12 +8,19 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from experiment_builder import (  # noqa: E402
+    axis_points,
     build_experiment_yaml,
     combined_points,
     delay_points,
     jitter_points,
     loss_points,
 )
+
+
+def test_axis_points_is_the_public_min_max_step_generator_used_by_the_gui():
+    # jitter_points/delay_points/loss_points/the GUI's combined-impairments controls all build
+    # on this -- covered directly since it's public API now, not just an internal helper.
+    assert axis_points(0, 10, 5) == [0, 5, 10]
 
 
 def test_jitter_points_covers_the_full_range_inclusive():

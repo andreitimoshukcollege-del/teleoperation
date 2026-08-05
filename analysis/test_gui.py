@@ -88,13 +88,17 @@ def _clamp_zoom(level: float) -> float:
     return max(_ZOOM_MIN, min(_ZOOM_MAX, level))
 
 
-def _zoom_scroll_fraction(center_frac: float, visible_frac: float) -> float:
+def _zoom_scroll_fraction(anchor_frac: float, anchor_viewport_frac: float, visible_frac: float) -> float:
     """The top-left scroll fraction (what Canvas.xview_moveto/yview_moveto expects) that keeps
-    `center_frac` (0..1, the point that was centered in the view before a zoom) centered in a
-    view that now shows `visible_frac` (0..1) of the resized image -- clamped so the view never
-    scrolls past the image's edges.
+    `anchor_frac` (0..1, a point's position within the image before a zoom) sitting at
+    `anchor_viewport_frac` (0..1, that point's position within the visible viewport) after a zoom
+    that now shows `visible_frac` (0..1) of the resized image -- clamped so the view never scrolls
+    past the image's edges. `anchor_viewport_frac=0.5` keeps the point centered in the view (the
+    +/-/Reset buttons); passing the cursor's own position within the viewport instead keeps that
+    point fixed under the cursor (scroll-wheel zoom), which reads as "zooming into where the
+    mouse is pointing" rather than always recentering on the middle of the view.
     """
-    return max(0.0, min(1.0 - visible_frac, center_frac - visible_frac / 2))
+    return max(0.0, min(1.0 - visible_frac, anchor_frac - anchor_viewport_frac * visible_frac))
 
 
 def build_report_command(run_dir: Path, figures: Optional[str] = None) -> List[str]:
@@ -502,18 +506,27 @@ class PickerApp:
         self._zoom_level = 1.0
         self._render_image()
 
-    def _render_image(self) -> None:
-        """(Re)draws `self._current_pil_image` at `self._zoom_level`, keeping whatever point was
-        centered in the view centered after the resize -- otherwise every zoom step would jump
-        back to the image's top-left corner, which is disorienting for repeated zooming.
+    def _render_image(
+        self,
+        anchor_frac: Optional[Tuple[float, float]] = None,
+        anchor_viewport_frac: Tuple[float, float] = (0.5, 0.5),
+    ) -> None:
+        """(Re)draws `self._current_pil_image` at `self._zoom_level`, keeping `anchor_frac` (a
+        point's position within the image, 0..1 on each axis) sitting at `anchor_viewport_frac`
+        (that point's position within the visible viewport) after the resize -- otherwise every
+        zoom step would jump back to the image's top-left corner, which is disorienting for
+        repeated zooming. Defaults to the current view's own center when the caller (the
+        +/-/Reset buttons) doesn't have a more specific point in mind; scroll-wheel zoom passes
+        the cursor's position instead, so it zooms into wherever the mouse is pointing.
         """
         if self._current_pil_image is None:
             return
 
-        xlo, xhi = self.image_canvas.xview()
-        ylo, yhi = self.image_canvas.yview()
-        center_x_frac = (xlo + xhi) / 2
-        center_y_frac = (ylo + yhi) / 2
+        if anchor_frac is None:
+            xlo, xhi = self.image_canvas.xview()
+            ylo, yhi = self.image_canvas.yview()
+            anchor_frac = ((xlo + xhi) / 2, (ylo + yhi) / 2)
+            anchor_viewport_frac = (0.5, 0.5)
         visible_width_px = self.image_canvas.winfo_width()
         visible_height_px = self.image_canvas.winfo_height()
 
@@ -528,17 +541,22 @@ class PickerApp:
         self.image_canvas.create_image(0, 0, anchor="nw", image=photo)
         self.image_canvas.configure(scrollregion=(0, 0, new_width, new_height))
 
-        self.image_canvas.xview_moveto(
-            _zoom_scroll_fraction(center_x_frac, visible_width_px / new_width)
-        )
-        self.image_canvas.yview_moveto(
-            _zoom_scroll_fraction(center_y_frac, visible_height_px / new_height)
-        )
+        self.image_canvas.xview_moveto(_zoom_scroll_fraction(
+            anchor_frac[0], anchor_viewport_frac[0], visible_width_px / new_width
+        ))
+        self.image_canvas.yview_moveto(_zoom_scroll_fraction(
+            anchor_frac[1], anchor_viewport_frac[1], visible_height_px / new_height
+        ))
         self.zoom_label.config(text=f"{round(self._zoom_level * 100)}%")
 
-    def _set_zoom(self, level: float) -> None:
+    def _set_zoom(
+        self,
+        level: float,
+        anchor_frac: Optional[Tuple[float, float]] = None,
+        anchor_viewport_frac: Tuple[float, float] = (0.5, 0.5),
+    ) -> None:
         self._zoom_level = _clamp_zoom(level)
-        self._render_image()
+        self._render_image(anchor_frac, anchor_viewport_frac)
 
     def _zoom_in(self) -> None:
         self._set_zoom(self._zoom_level * _ZOOM_STEP)
@@ -552,10 +570,29 @@ class PickerApp:
     def _on_mouse_wheel(self, event) -> None:
         if self._current_pil_image is None:
             return
-        if event.delta > 0:
-            self._zoom_in()
-        else:
-            self._zoom_out()
+
+        # event.x/event.y are already relative to the canvas widget's own top-left corner, which
+        # is exactly the viewport-fraction numerator _zoom_scroll_fraction needs -- no manual
+        # scroll-offset math required for that half. canvasx/canvasy convert to the image's own
+        # coordinate space (accounting for however far the view is currently scrolled) to get the
+        # cursor's position *within the image* instead.
+        current_width = self._current_pil_image.width * self._zoom_level
+        current_height = self._current_pil_image.height * self._zoom_level
+        anchor_frac = (
+            self.image_canvas.canvasx(event.x) / current_width,
+            self.image_canvas.canvasy(event.y) / current_height,
+        )
+        viewport_width_px = self.image_canvas.winfo_width()
+        viewport_height_px = self.image_canvas.winfo_height()
+        anchor_viewport_frac = (
+            event.x / viewport_width_px if viewport_width_px else 0.5,
+            event.y / viewport_height_px if viewport_height_px else 0.5,
+        )
+
+        new_level = (
+            self._zoom_level * _ZOOM_STEP if event.delta > 0 else self._zoom_level / _ZOOM_STEP
+        )
+        self._set_zoom(new_level, anchor_frac, anchor_viewport_frac)
 
     def _selected_figure_kinds(self) -> Optional[str]:
         selected_groups = [name for name, var in self.figure_group_vars.items() if var.get()]

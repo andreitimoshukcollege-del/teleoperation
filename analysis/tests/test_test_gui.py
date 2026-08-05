@@ -93,22 +93,41 @@ def test_clamp_zoom_clamps_to_the_configured_min_and_max():
 
 def test_zoom_scroll_fraction_keeps_the_same_center_when_zooming_in():
     # Viewing the middle of the image, now only 20% of the (larger) image fits on screen --
-    # the top-left of the view should sit at 0.4 so the centered point (0.5) stays centered.
-    assert _zoom_scroll_fraction(center_frac=0.5, visible_frac=0.2) == 0.4
+    # the top-left of the view should sit at 0.4 so the centered point (0.5) stays centered
+    # (anchor_viewport_frac=0.5, what the +/-/Reset buttons use).
+    assert _zoom_scroll_fraction(anchor_frac=0.5, anchor_viewport_frac=0.5, visible_frac=0.2) == 0.4
 
 
 def test_zoom_scroll_fraction_clamps_at_the_image_edges():
     # Near the left edge, centering exactly would go negative -- clamp to 0 instead.
-    assert _zoom_scroll_fraction(center_frac=0.05, visible_frac=0.2) == 0.0
+    assert _zoom_scroll_fraction(anchor_frac=0.05, anchor_viewport_frac=0.5, visible_frac=0.2) == 0.0
     # Near the right edge, centering exactly would overshoot past 1.0 -- clamp so the view's
     # trailing edge lands exactly on the image's right edge instead.
-    assert _zoom_scroll_fraction(center_frac=0.95, visible_frac=0.2) == 0.8
+    assert _zoom_scroll_fraction(anchor_frac=0.95, anchor_viewport_frac=0.5, visible_frac=0.2) == 0.8
 
 
 def test_zoom_scroll_fraction_clamps_to_zero_when_the_whole_image_already_fits():
     # visible_frac > 1 means the image is smaller than the canvas (zoomed out, or a tiny
     # figure) -- there's nowhere to scroll to, so this must not go negative.
-    assert _zoom_scroll_fraction(center_frac=0.5, visible_frac=1.5) == 0.0
+    assert _zoom_scroll_fraction(anchor_frac=0.5, anchor_viewport_frac=0.5, visible_frac=1.5) == 0.0
+
+
+def test_zoom_scroll_fraction_keeps_the_cursor_point_fixed_under_the_cursor():
+    import pytest
+
+    # Cursor sits 1/4 of the way across the viewport (anchor_viewport_frac=0.25), pointing at
+    # the 60% mark of the image (anchor_frac=0.6) -- scroll-wheel zoom (unlike the buttons) must
+    # keep that image point under the cursor, not recenter it in the middle of the view.
+    result = _zoom_scroll_fraction(anchor_frac=0.6, anchor_viewport_frac=0.25, visible_frac=0.2)
+    assert result == pytest.approx(0.55)
+
+
+def test_zoom_scroll_fraction_cursor_anchor_matches_centering_at_the_viewport_midpoint():
+    # anchor_viewport_frac=0.5 is exactly the +/-/Reset buttons' centering behavior -- confirms
+    # the cursor-anchored formula is a strict generalization, not a separate code path.
+    assert _zoom_scroll_fraction(0.5, 0.5, 0.2) == _zoom_scroll_fraction(
+        anchor_frac=0.5, anchor_viewport_frac=0.5, visible_frac=0.2
+    )
 
 
 def test_build_sweep_command_uses_absolute_yaml_path_and_dotnet_sweep_args():

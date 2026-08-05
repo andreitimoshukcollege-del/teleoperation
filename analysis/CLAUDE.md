@@ -43,13 +43,21 @@ disagree, and you will trust the wrong one.
   running a sweep — check which algorithms (raw predictor registry keys) and which impairments
   (jitter/delay/loss, each with its own min/max/step, independently combinable into one sweep)
   to include, click Run, watch the sweep's own output stream live, then switch to the Figures tab
-  to generate/view that run's charts. `experiments/*.yaml` generation is
+  to generate/view that run's charts. Checkboxes there also let you pick which figure *kinds* to
+  generate (bar graphs, line graphs, table) — useful because a dense sweep's bar charts (one per
+  profile) can otherwise bury the handful of line charts. `experiments/*.yaml` generation is
   `experiment_builder.py` (pure, unit tested) — the GUI just writes what it returns and shells
   out to `dotnet run -- sweep`. Needs a real display, not a piped/non-interactive shell — in this
   repo that's never an issue since `analysis/` already runs on the Windows-side Python (see setup
   above), so it opens as a normal Windows window. This is a human-facing convenience, not a
   replacement for `pytest -v`/`run_tests.py --all` above, which stay the way to verify
   `analysis/`'s own code.
+- The Figures tab's **Delete Run** button permanently removes a `results/<exp>/<run>/`
+  directory, after a confirmation dialog — the one intentional exception to root CLAUDE.md's
+  "never touch `results/`" boundary, since it's a human clicking a button and confirming, not an
+  agent acting on its own. It exists for clearing scratch sweeps (e.g. repeated
+  `exp-gui-sweep` runs from this same GUI), not for routine cleanup — nothing a paper or writeup
+  cites should ever go through it.
 - `tests/test_cli_against_committed_run.py` runs the real CLI end-to-end against the committed
   `results/exp-001-predictor-baseline/` run and checks a computed p50 against a hand
   computation from the raw CSV — it skips itself if that result directory isn't present, it

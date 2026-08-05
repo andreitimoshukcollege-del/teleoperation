@@ -7,12 +7,13 @@ this opens as a normal Windows window with no extra display-server setup.
 from __future__ import annotations
 
 import queue
+import shutil
 import subprocess
 import sys
 import threading
 import tkinter as tk
 from pathlib import Path
-from tkinter import ttk
+from tkinter import messagebox, ttk
 from tkinter.scrolledtext import ScrolledText
 from typing import Dict, List, Optional, Tuple
 
@@ -53,6 +54,15 @@ def figures_for_run(run_dir: Path) -> List[Path]:
     if not figures_dir.is_dir():
         return []
     return sorted(figures_dir.glob("*.png"))
+
+
+def delete_run(run_dir: Path) -> None:
+    """Irreversibly removes a results/<exp>/<run>/ directory. root CLAUDE.md documents results/
+    as append-only -- this exists for clearing scratch sweeps (e.g. repeated exp-gui-sweep runs),
+    not for routine cleanup of anything citable. The GUI is the only caller and always confirms
+    with the human first; this function itself does not ask.
+    """
+    shutil.rmtree(run_dir)
 
 
 # Groups teleop_analysis.cli's --figures kinds by chart shape, for the Figures tab's checkboxes.
@@ -292,6 +302,10 @@ class PickerApp:
         self.run_combo = ttk.Combobox(top_row, state="readonly", width=45)
         self.run_combo.pack(side=tk.LEFT, padx=(6, 6))
         self.run_combo.bind("<<ComboboxSelected>>", lambda e: self._refresh_figure_list())
+        self.delete_run_button = ttk.Button(
+            top_row, text="Delete Run", command=self._on_delete_run_clicked
+        )
+        self.delete_run_button.pack(side=tk.LEFT, padx=(0, 12))
 
         for group_name in FIGURE_GROUPS:
             var = tk.BooleanVar(value=True)
@@ -341,6 +355,28 @@ class PickerApp:
 
     def _selected_run(self) -> Optional[Path]:
         return self.run_display_to_path.get(self.run_combo.get())
+
+    def _on_delete_run_clicked(self) -> None:
+        run = self._selected_run()
+        if run is None:
+            self.figures_status.config(text="No run selected.")
+            return
+
+        display_name = self.run_combo.get()
+        confirmed = messagebox.askyesno(
+            "Delete run",
+            f"Permanently delete {display_name}?\n\n"
+            "This cannot be undone. results/ is meant to be append-only -- only delete runs "
+            "you know are scratch/test sweeps, not anything a paper or writeup cites.",
+        )
+        if not confirmed:
+            return
+
+        delete_run(run)
+        self.run_combo.set("")
+        self._refresh_run_list()
+        self._refresh_figure_list()
+        self.figures_status.config(text=f"Deleted {display_name}.")
 
     def _refresh_figure_list(self) -> None:
         self.figure_listbox.delete(0, tk.END)

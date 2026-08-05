@@ -10,6 +10,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from test_gui import (  # noqa: E402
     build_report_command,
     build_sweep_command,
+    delete_run,
     discover_runs,
     figures_for_run,
 )
@@ -63,6 +64,17 @@ def test_build_report_command_omits_figures_flag_by_default():
 def test_build_report_command_appends_figures_flag_when_given():
     command = build_report_command(Path("results/exp-001/20260101-000000Z"), figures="table")
     assert command[-2:] == ["--figures", "table"]
+
+
+def test_delete_run_removes_the_run_directory_and_its_contents(tmp_path):
+    run_dir = tmp_path / "exp-a" / "20260101-000000Z"
+    (run_dir / "figures").mkdir(parents=True)
+    (run_dir / "manifest.json").write_text("{}")
+    (run_dir / "figures" / "a.png").write_bytes(b"")
+
+    delete_run(run_dir)
+
+    assert not run_dir.exists()
 
 
 def test_build_sweep_command_uses_absolute_yaml_path_and_dotnet_sweep_args():

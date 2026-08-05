@@ -66,24 +66,31 @@ def test_points_raises_when_max_below_min():
         jitter_points(10, 0, 1)
 
 
-def test_combined_points_takes_the_cross_product_of_two_axes():
-    points = combined_points(delay_ms=[100, 150], jitter_ms=[20])
-    assert points == ["combo__delay-100ms__jitter-20ms", "combo__delay-150ms__jitter-20ms"]
+def test_combined_points_marches_two_axes_forward_together_not_cross_product():
+    # Lockstep, not a cross product: point i is (delay[i], jitter[i]), so 2 values per axis
+    # produces 2 profiles, not 4.
+    points = combined_points(delay_ms=[100, 150], jitter_ms=[20, 30])
+    assert points == ["combo__delay-100ms__jitter-20ms", "combo__delay-150ms__jitter-30ms"]
 
 
 def test_combined_points_supports_all_three_axes_in_canonical_order():
-    points = combined_points(delay_ms=[150], jitter_ms=[20], loss_pct=[0.5])
-    assert points == ["combo__delay-150ms__jitter-20ms__loss-0.5pct"]
+    points = combined_points(delay_ms=[0, 150], jitter_ms=[0, 20], loss_pct=[0, 0.5])
+    assert points == [
+        "combo__delay-0ms__jitter-0ms__loss-0pct",
+        "combo__delay-150ms__jitter-20ms__loss-0.5pct",
+    ]
 
 
 def test_combined_points_omits_empty_axes_entirely():
-    points = combined_points(jitter_ms=[30], loss_pct=[1])
-    assert points == ["combo__jitter-30ms__loss-1pct"]
+    points = combined_points(jitter_ms=[30, 40], loss_pct=[1, 2])
+    assert points == ["combo__jitter-30ms__loss-1pct", "combo__jitter-40ms__loss-2pct"]
 
 
-def test_combined_points_cross_product_size_matches_axis_lengths():
-    points = combined_points(delay_ms=[0, 100, 200], jitter_ms=[5, 10])
-    assert len(points) == 6
+def test_combined_points_raises_when_axis_lengths_differ():
+    import pytest
+
+    with pytest.raises(ValueError):
+        combined_points(delay_ms=[0, 100, 200], jitter_ms=[5, 10])
 
 
 def test_combined_points_raises_with_fewer_than_two_axes():

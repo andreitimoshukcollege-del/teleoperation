@@ -71,7 +71,7 @@ def delete_run(run_dir: Path) -> None:
 # figure list, so letting either group be skipped is the point, not just a convenience.
 FIGURE_GROUPS = {
     "Bar graphs": ("error-cost", "latency", "stack-comparison"),
-    "Line graphs": ("impairment-response",),
+    "Line graphs": ("impairment-response", "combined-response"),
     "Table": ("table",),
 }
 

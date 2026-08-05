@@ -44,14 +44,18 @@ disagree, and you will trust the wrong one.
   (jitter/delay/loss, each with its own min/max/step, independently combinable into one sweep)
   to include. A separate "Combined impairments" section below that uses the same per-axis
   min/max/step controls to generate `combo__delay-<N>ms__jitter-<N>ms__loss-<N>pct`-style
-  profiles (docs/adr/0006-combined-impairment-profiles.md) — a cross-product across whichever
-  axes are checked, for studying multiple impairments at nonzero values simultaneously rather
-  than one isolated variable at a time. Warns and asks for confirmation before launching a sweep
-  whose combined-profile count exceeds 200, since full-size ranges multiply catastrophically.
-  Click Run, watch the sweep's own output stream live, then switch to the Figures tab
+  profiles (docs/adr/0006-combined-impairment-profiles.md) — a **lockstep** walk across whichever
+  axes are checked (point *i* takes the i-th value of every checked axis, so a 4-point delay
+  range and a 4-point jitter range together produce 4 combined profiles, not 16), for studying
+  how the system degrades as the whole link gets simultaneously worse, plotted as a single line
+  chart (see `combined-response` below) rather than one isolated variable at a time. Warns and
+  asks for confirmation before launching a sweep whose combined-profile count exceeds 200, as a
+  backstop. Click Run, watch the sweep's own output stream live, then switch to the Figures tab
   to generate/view that run's charts. Checkboxes there also let you pick which figure *kinds* to
   generate (bar graphs, line graphs, table) — useful because a dense sweep's bar charts (one per
-  profile) can otherwise bury the handful of line charts. `experiments/*.yaml` generation is
+  profile) can otherwise bury the handful of line charts; `combined-response` (the whole combined
+  sweep as one chart, x-tick labels spelling out every axis's value at each step) is grouped
+  under "Line graphs" alongside `impairment-response`. `experiments/*.yaml` generation is
   `experiment_builder.py` (pure, unit tested) — the GUI just writes what it returns and shells
   out to `dotnet run -- sweep`. Needs a real display, not a piped/non-interactive shell — in this
   repo that's never an issue since `analysis/` already runs on the Windows-side Python (see setup

@@ -10,7 +10,6 @@ run_tests.py/test_gui.py outside that package.
 """
 from __future__ import annotations
 
-from itertools import product
 from typing import List, Sequence
 
 _POINT_EPSILON = 1e-9
@@ -55,15 +54,21 @@ def combined_points(
     jitter_ms: Sequence[float] = (),
     loss_pct: Sequence[float] = (),
 ) -> List[str]:
-    """Cartesian product of the given per-axis value lists into "combo__" profile names
-    (docs/adr/0006-combined-impairment-profiles.md) -- e.g. delay_ms=[100, 150], jitter_ms=[20]
-    produces ["combo__delay-100ms__jitter-20ms", "combo__delay-150ms__jitter-20ms"]. An axis
-    passed as empty is omitted from every generated name entirely (resolves to 0 at sweep time,
-    not a value of 0 in this product), not one of the values being combined.
+    """Co-varying (lockstep) multi-axis profiles into "combo__" profile names
+    (docs/adr/0006-combined-impairment-profiles.md) -- point i takes the i-th value of every
+    populated axis, e.g. delay_ms=[0, 100], jitter_ms=[0, 20] produces
+    ["combo__delay-0ms__jitter-0ms", "combo__delay-100ms__jitter-20ms"] (2 profiles, not the 4 a
+    cross product would give). This is deliberately not a Cartesian product: the point is to
+    march every checked axis forward together at whatever the sweep's own step size implies (a
+    "how bad is a realistically-degrading link" sweep), not to enumerate every combination of
+    values. An axis passed as empty is omitted from every generated name entirely (resolves to 0
+    at sweep time, not a value of 0 in this product), not one of the values being combined.
 
     Requires at least 2 non-empty axes -- combining exactly one axis is just the isolated family
     (jitter_points/delay_points/loss_points above), which already exists and isolates its
     companions properly for sensitivity charts; this function is for genuine combinations only.
+    Requires every populated axis to have the same number of points -- there's no principled way
+    to pair up a 7-point axis with a 5-point one, so this raises rather than silently truncating.
     """
     axes = [
         ("delay", "ms", delay_ms),
@@ -74,8 +79,13 @@ def combined_points(
     if len(populated) < 2:
         raise ValueError("combined profiles need at least 2 non-empty axes")
 
+    lengths = {len(values) for _, _, values in populated}
+    if len(lengths) > 1:
+        detail = ", ".join(f"{label}={len(values)}" for label, _, values in populated)
+        raise ValueError(f"combined axes must have the same number of points, got {detail}")
+
     combos = []
-    for combo in product(*(values for _, _, values in populated)):
+    for combo in zip(*(values for _, _, values in populated)):
         segments = [
             f"{label}-{_format_number(value)}{unit}"
             for (label, unit, _), value in zip(populated, combo)

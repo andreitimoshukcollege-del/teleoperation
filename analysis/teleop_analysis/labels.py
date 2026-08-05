@@ -37,36 +37,54 @@ _COMBO_LOSS_RE = re.compile(r"^loss-(\d+(?:\.\d+)?)pct$")
 _COMBO_AXIS_ORDER = {"delay": 0, "jitter": 1, "loss": 2}
 
 
-def _friendly_combined_profile_name(name: str) -> Optional[str]:
-    """docs/adr/0006-combined-impairment-profiles.md: "combo__delay-150ms__jitter-20ms" ->
-    "150ms delay, 20ms jitter (combined)". Mirrors NetworkProfileCatalog.TryResolveCombinedProfile's
-    grammar for figure captions only -- returns None for anything that isn't a well-formed
-    combo__ name, same as a failed regex match anywhere else in this module.
+_COMBO_AXIS_PATTERNS: Dict[str, Pattern[str]] = {
+    "delay": _COMBO_DELAY_RE,
+    "jitter": _COMBO_JITTER_RE,
+    "loss": _COMBO_LOSS_RE,
+}
+
+
+def combined_profile_axes(name: str) -> Optional[Dict[str, float]]:
+    """docs/adr/0006-combined-impairment-profiles.md: parses a "combo__..." name into
+    {"delay": 150.0, "jitter": 20.0} -- only the axes actually present in the name. `None` for
+    anything that isn't a well-formed combo__ name (unrecognized segment, a duplicate axis, or no
+    axes at all). Mirrors NetworkProfileCatalog.TryResolveCombinedProfile's grammar; used both for
+    friendly captions and for ordering/labeling a combined-sweep line chart
+    (figures/combined_response.py), since a combo__ profile has no single scalar value the way an
+    isolated-axis one does (labels.axis_value deliberately returns None for it on every axis).
     """
     if not name.startswith(_COMBO_PREFIX):
         return None
 
-    parts: List[Tuple[str, str]] = []
+    axes: Dict[str, float] = {}
     for segment in name[len(_COMBO_PREFIX):].split("__"):
-        delay_match = _COMBO_DELAY_RE.match(segment)
-        if delay_match:
-            parts.append(("delay", f"{delay_match.group(1)}ms delay"))
-            continue
-        jitter_match = _COMBO_JITTER_RE.match(segment)
-        if jitter_match:
-            parts.append(("jitter", f"{jitter_match.group(1)}ms jitter"))
-            continue
-        loss_match = _COMBO_LOSS_RE.match(segment)
-        if loss_match:
-            parts.append(("loss", f"{loss_match.group(1)}% loss"))
-            continue
-        return None  # unrecognized segment -- not a well-formed combo__ name
+        matched = False
+        for axis, pattern in _COMBO_AXIS_PATTERNS.items():
+            match = pattern.match(segment)
+            if match:
+                if axis in axes:
+                    return None  # duplicate axis -- not a well-formed combo__ name
+                axes[axis] = float(match.group(1))
+                matched = True
+                break
+        if not matched:
+            return None  # unrecognized segment
 
-    if not parts:
+    return axes or None
+
+
+def _friendly_combined_profile_name(name: str) -> Optional[str]:
+    """"combo__delay-150ms__jitter-20ms" -> "150ms delay, 20ms jitter (combined)"."""
+    axes = combined_profile_axes(name)
+    if axes is None:
         return None
 
-    parts.sort(key=lambda p: _COMBO_AXIS_ORDER[p[0]])
-    return ", ".join(text for _, text in parts) + " (combined)"
+    unit = {"delay": "ms", "jitter": "ms", "loss": "%"}
+    parts = [
+        f"{axes[axis]:g}{unit[axis]} {axis}"
+        for axis in sorted(axes, key=lambda a: _COMBO_AXIS_ORDER[a])
+    ]
+    return ", ".join(parts) + " (combined)"
 
 
 def friendly_profile_name(name: str) -> str:

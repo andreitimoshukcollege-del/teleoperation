@@ -106,9 +106,9 @@ genuinely new family (different fixed companions, or reintroducing burst shape o
 
 Extended again by `docs/adr/0006-combined-impairment-profiles.md`: `combo__delay-<N>ms__jitter-
 <N>ms__loss-<N>pct`, any 2-or-3-axis subset, values chosen by the caller rather than isolated
-against a fixed companion — answers "what happens at this specific multi-variable combination,"
-a third question distinct from both families above. An axis absent from the name is 0, not a
-baseline, unlike the isolated family. Resolved by pattern
-(`NetworkProfileCatalog.TryResolveCombinedProfile`); `analysis/experiment_builder.py`'s
-`combined_points` is what actually generates these names as a cross-product of small explicit
-per-axis value lists.
+against a fixed companion — answers "what happens as the whole link degrades at once," a third
+question distinct from both families above. An axis absent from the name is 0, not a baseline,
+unlike the isolated family. Resolved by pattern (`NetworkProfileCatalog.TryResolveCombinedProfile`);
+`analysis/experiment_builder.py`'s `combined_points` generates these names as a **lockstep**
+walk (point *i* takes the i-th value of every checked axis) rather than a cross product, so the
+whole sweep can be plotted as one line chart (`analysis/teleop_analysis/figures/combined_response.py`).

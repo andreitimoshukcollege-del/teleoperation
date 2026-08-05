@@ -8,6 +8,7 @@ from typing import Optional, Sequence
 from teleop_analysis import io_utils, stats
 from teleop_analysis.baseline import find_baseline
 from teleop_analysis.figures import (
+    combined_response,
     error_vs_cost,
     impairment_response,
     latency_distribution,
@@ -15,7 +16,10 @@ from teleop_analysis.figures import (
     summary_table,
 )
 
-ALL_FIGURES = ("error-cost", "latency", "stack-comparison", "impairment-response", "table")
+ALL_FIGURES = (
+    "error-cost", "latency", "stack-comparison", "impairment-response", "combined-response",
+    "table",
+)
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
@@ -68,6 +72,14 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             impairment_response.plot_prediction_error_vs_delay(df, manifest, figures_dir),
             impairment_response.plot_correction_vs_loss(df, manifest, figures_dir),
             impairment_response.plot_prediction_error_vs_loss(df, manifest, figures_dir),
+        ):
+            if path is not None:
+                written.append(path)
+
+    if "combined-response" in requested:
+        for path in (
+            combined_response.plot_correction_vs_combined(df, manifest, figures_dir),
+            combined_response.plot_prediction_error_vs_combined(df, manifest, figures_dir),
         ):
             if path is not None:
                 written.append(path)

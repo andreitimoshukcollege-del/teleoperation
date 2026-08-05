@@ -70,6 +70,30 @@ def synthetic_run_two_profiles(tmp_path) -> Path:
 
 
 @pytest.fixture
+def synthetic_run_combined_profiles(tmp_path) -> Path:
+    """A tiny two-stack, three-step co-varying combined sweep
+    (docs/adr/0006-combined-impairment-profiles.md) -- delay and jitter marching forward
+    together in lockstep, as experiment_builder.combined_points actually generates them (not a
+    cross product), for testing figures/combined_response.py.
+    """
+    run_dir = tmp_path / "exp-996-synthetic-combined" / "20260101-000000Z"
+    profiles = [
+        "combo__delay-0ms__jitter-0ms",
+        "combo__delay-50ms__jitter-10ms",
+        "combo__delay-100ms__jitter-20ms",
+    ]
+    _write_manifest(
+        run_dir, experimentId="exp-996-synthetic-combined", networkProfiles=profiles
+    )
+
+    for stack, scale in (("none", 1.0), ("fast", 0.5)):
+        for profile in profiles:
+            _write_metrics_csv(run_dir / stack / profile, scale=scale)
+
+    return run_dir
+
+
+@pytest.fixture
 def synthetic_run_two_loss_profiles(tmp_path) -> Path:
     """A tiny two-stack, two-profile sweep run using the isolated "loss-<N>pct" family
     (docs/adr/0005-isolated-impairment-profiles.md) -- the legacy presets have no clean loss

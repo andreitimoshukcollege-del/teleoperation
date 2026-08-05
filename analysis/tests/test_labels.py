@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from teleop_analysis.labels import (
     axis_value,
+    combined_profile_axes,
     friendly_profile_name,
     friendly_stack_name,
     ordered_profiles_by_axis,
@@ -45,6 +46,22 @@ def test_axis_value_returns_none_for_every_axis_on_a_combined_profile():
     assert axis_value(name, "delay") is None
     assert axis_value(name, "jitter") is None
     assert axis_value(name, "loss") is None
+
+
+def test_combined_profile_axes_parses_every_present_axis():
+    name = "combo__delay-150ms__jitter-20ms__loss-0.5pct"
+    assert combined_profile_axes(name) == {"delay": 150.0, "jitter": 20.0, "loss": 0.5}
+
+
+def test_combined_profile_axes_omits_axes_not_in_the_name():
+    assert combined_profile_axes("combo__jitter-30ms") == {"jitter": 30.0}
+
+
+def test_combined_profile_axes_returns_none_for_non_combined_or_malformed_names():
+    assert combined_profile_axes("lan") is None
+    assert combined_profile_axes("jitter-30ms") is None  # isolated family, not combo__
+    assert combined_profile_axes("combo__not-a-real-axis") is None
+    assert combined_profile_axes("combo__jitter-30ms__jitter-40ms") is None  # duplicate axis
 
 
 def test_ordered_profiles_by_jitter_sorts_ascending_and_drops_unknown():

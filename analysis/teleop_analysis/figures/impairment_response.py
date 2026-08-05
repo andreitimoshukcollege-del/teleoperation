@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Optional
+from typing import List, Optional
 
 import matplotlib
 
@@ -33,6 +33,23 @@ _AXIS_PHRASES = {
 
 _CORRECTION_YLABEL = 'Size of the visible "snap" when truth arrives (mm) -- lower is better'
 _PREDICTION_ERROR_YLABEL = "Distance from predicted to true position (mm) -- lower is better"
+
+
+_EXCLUDED_NAME_LIMIT = 6
+
+
+def _excluded_note(excluded: List[str], axis: str) -> str:
+    """" | excluded (no single jitter value): ..." -- naming every profile is fine for a
+    handful, but a dense sweep can exclude hundreds (every point from the *other* two axes),
+    which would bury the chart in caption text -- fall back to a count past a small threshold.
+    """
+    if not excluded:
+        return ""
+    if len(excluded) <= _EXCLUDED_NAME_LIMIT:
+        detail = ", ".join(friendly_profile_name(p) for p in excluded)
+    else:
+        detail = f"{len(excluded)} profiles"
+    return f" | excluded (no single {axis} value): {detail}"
 
 
 def _plot_metric_vs_impairment(
@@ -90,10 +107,7 @@ def _plot_metric_vs_impairment(
     ax.legend(fontsize=8)
 
     caption = build_caption_multi_profile(manifest)
-    note = ""
-    if excluded:
-        excluded_names = ", ".join(friendly_profile_name(p) for p in excluded)
-        note = f" | excluded (no single {axis} value): {excluded_names}"
+    note = _excluded_note(excluded, axis)
     fig.text(
         0.5, 0.01,
         f"{caption}{note}\nSolid = p50 (typical case), dashed = p95 (occasional worst case, "

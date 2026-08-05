@@ -1,4 +1,5 @@
 using System.Numerics;
+using System.Threading.Tasks;
 using Teleop.Core.Contracts;
 using Teleop.Core.Metrics;
 using Teleop.Core.Pipeline;
@@ -76,21 +77,33 @@ namespace Teleop.Eval.Sweep
             // configuration, meant to be pooled into one percentile distribution, not
             // interleaved with other configurations in a single undifferentiated file with no
             // way to tell them apart afterward.
+            //
+            // Parallelized across (predictor, profile) pairs, not across seeds within a pair:
+            // each pair already gets its own CsvMetricSink/output file, so pairs share no mutable
+            // state and running them concurrently is safe. Seeds within one pair stay sequential
+            // on purpose -- they'd otherwise be multiple threads calling the same CsvMetricSink's
+            // non-thread-safe StreamWriter.WriteLine concurrently, corrupting metrics.csv.
+            var configPairs = new List<(string Predictor, string Profile)>();
             foreach (string predictorName in config.Predictors)
             {
                 foreach (string profileName in config.NetworkProfiles)
                 {
-                    string configDir = Path.Combine(outputDir, predictorName, profileName);
-                    Directory.CreateDirectory(configDir);
-                    string csvPath = Path.Combine(configDir, "metrics.csv");
-
-                    using var sink = new CsvMetricSink(csvPath);
-                    foreach (ulong seed in config.Seeds)
-                    {
-                        RunTrial(predictorName, config.Reconciler, profileName, seed, config, tracesDirectory, sink);
-                    }
+                    configPairs.Add((predictorName, profileName));
                 }
             }
+
+            Parallel.ForEach(configPairs, pair =>
+            {
+                string configDir = Path.Combine(outputDir, pair.Predictor, pair.Profile);
+                Directory.CreateDirectory(configDir);
+                string csvPath = Path.Combine(configDir, "metrics.csv");
+
+                using var sink = new CsvMetricSink(csvPath);
+                foreach (ulong seed in config.Seeds)
+                {
+                    RunTrial(pair.Predictor, config.Reconciler, pair.Profile, seed, config, tracesDirectory, sink);
+                }
+            });
 
             string commandLine = "dotnet run --project core/Teleop.Eval -- sweep " + yamlPath;
             ManifestWriter.Write(Path.Combine(outputDir, "manifest.json"), config, yamlPath, commandLine);

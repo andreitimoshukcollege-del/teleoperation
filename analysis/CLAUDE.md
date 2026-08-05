@@ -38,14 +38,26 @@ disagree, and you will trust the wrong one.
   from the repo root). This is the
   scriptable path — use it for CI or when an agent needs to verify pass/fail non-interactively;
   it doesn't change with the picker below.
-- For a human who wants to pick a subset instead of memorizing pytest node-id syntax:
-  `./.venv/Scripts/python.exe run_tests.py` (or `just test-pick`) opens a **GUI window**
-  (`test_gui.py`, plain tkinter — no extra dependency, ships with Python) with a checkbox per
-  test grouped by file, all checked by default, a Run button, and a live output pane. Needs a
-  real display, not a piped/non-interactive shell — in this repo that's never an issue since
-  `analysis/` already runs on the Windows-side Python (see setup above), so it opens as a normal
-  Windows window. `run_tests.py --all` skips the window and runs everything non-interactively,
-  equivalent to `pytest -v` — this is what CI or an agent should use instead.
+- `./.venv/Scripts/python.exe run_tests.py` (or `just experiment-gui`) opens a **GUI window**
+  (`test_gui.py`, plain tkinter — no extra dependency, ships with Python) for configuring and
+  running a sweep — check which algorithms (raw predictor registry keys) and which impairments
+  (jitter/delay/loss, each with its own min/max/step, independently combinable into one sweep)
+  to include, click Run, watch the sweep's own output stream live, then switch to the Figures tab
+  to generate/view that run's charts. Checkboxes there also let you pick which figure *kinds* to
+  generate (bar graphs, line graphs, table) — useful because a dense sweep's bar charts (one per
+  profile) can otherwise bury the handful of line charts. `experiments/*.yaml` generation is
+  `experiment_builder.py` (pure, unit tested) — the GUI just writes what it returns and shells
+  out to `dotnet run -- sweep`. Needs a real display, not a piped/non-interactive shell — in this
+  repo that's never an issue since `analysis/` already runs on the Windows-side Python (see setup
+  above), so it opens as a normal Windows window. This is a human-facing convenience, not a
+  replacement for `pytest -v`/`run_tests.py --all` above, which stay the way to verify
+  `analysis/`'s own code.
+- The Figures tab's **Delete Run** button permanently removes a `results/<exp>/<run>/`
+  directory, after a confirmation dialog — the one intentional exception to root CLAUDE.md's
+  "never touch `results/`" boundary, since it's a human clicking a button and confirming, not an
+  agent acting on its own. It exists for clearing scratch sweeps (e.g. repeated
+  `exp-gui-sweep` runs from this same GUI), not for routine cleanup — nothing a paper or writeup
+  cites should ever go through it.
 - `tests/test_cli_against_committed_run.py` runs the real CLI end-to-end against the committed
   `results/exp-001-predictor-baseline/` run and checks a computed p50 against a hand
   computation from the raw CSV — it skips itself if that result directory isn't present, it

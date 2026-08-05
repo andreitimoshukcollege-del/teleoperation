@@ -93,7 +93,7 @@ before claiming a task is done. Never report success on the basis of a successfu
 If [`just`](https://github.com/casey/just) is installed, the repo-root `justfile` wraps the
 above plus `analysis/`'s test suite: `just core-check` runs all three `core/` gates, `just test`
 runs `analysis/`'s pytest suite, `just check` runs everything. `just --list` shows every
-recipe (`sweep`, `report`, `analysis-setup`, `test-pick`, ...). This is a convenience wrapper,
+recipe (`sweep`, `report`, `analysis-setup`, `experiment-gui`, ...). This is a convenience wrapper,
 not a new source of truth — the raw commands above and in `analysis/CLAUDE.md` still work
 unchanged and are what CI/agents without `just` should fall back to.
 

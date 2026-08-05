@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Dict, List, Optional, Tuple
 
 import matplotlib
 
@@ -25,9 +25,39 @@ _PREDICTION_ERROR_YLABEL = "Distance from predicted to true position (mm) -- low
 _AXIS_ORDER = ("delay", "jitter", "loss")
 _AXIS_UNIT = {"delay": "ms", "jitter": "ms", "loss": "%"}
 
+# A dense combined sweep (e.g. a 300-point delay range, ADR 0006's "hold the shorter axis"
+# behavior) has far too many steps to label every one without the labels overwriting each other,
+# and dots that are fine 10 apart become a solid blob 300 apart on the same figure width -- these
+# thresholds keep the chart legible regardless of how many steps the sweep actually has.
+_MAX_TICK_LABELS = 12
+_MARKER_CUTOFF = 20
+
 
 def _tick_label(axes: Dict[str, float]) -> str:
-    return "\n".join(f"{axis}={axes[axis]:g}{_AXIS_UNIT[axis]}" for axis in _AXIS_ORDER if axis in axes)
+    return ", ".join(f"{axis}={axes[axis]:g}{_AXIS_UNIT[axis]}" for axis in _AXIS_ORDER if axis in axes)
+
+
+def _thinned_tick_indices(step_count: int) -> List[int]:
+    """Which of the `step_count` x positions get a tick label. Every step up to
+    _MAX_TICK_LABELS; past that, an evenly spaced subset (always including the last step) so a
+    dense sweep's labels don't overwrite each other into an unreadable smear.
+    """
+    if step_count <= _MAX_TICK_LABELS:
+        return list(range(step_count))
+    stride = -(-step_count // _MAX_TICK_LABELS)  # ceil division
+    indices = list(range(0, step_count, stride))
+    if indices[-1] != step_count - 1:
+        indices.append(step_count - 1)
+    return indices
+
+
+def _marker_style(step_count: int) -> Tuple[Optional[str], Optional[int]]:
+    """A marker at every step is legible up to a couple dozen points; past that the dots
+    overlap into a solid blob, so drop them and let the line alone carry a dense sweep's shape.
+    """
+    if step_count <= _MARKER_CUTOFF:
+        return "o", 5
+    return None, None
 
 
 def _plot_metric_vs_combined(
@@ -68,11 +98,13 @@ def _plot_metric_vs_combined(
         )
         return None
     ordered = sorted(combined_profiles, key=lambda p: parsed[p][common_axis])
+    step_count = len(ordered)
 
-    x_positions = list(range(len(ordered)))
-    tick_labels = [_tick_label(parsed[p]) for p in ordered]
+    x_positions = list(range(step_count))
+    marker, markersize = _marker_style(step_count)
 
-    fig, ax = plt.subplots(figsize=(9, 5.5))
+    fig_width = max(9.0, min(20.0, 9.0 + 0.05 * step_count))
+    fig, ax = plt.subplots(figsize=(fig_width, 5.5))
     for stack in sorted(df["stack"].unique()):
         stack_df = df[(df["stack"] == stack) & (df["name"] == metric) & (df["profile"].isin(ordered))]
         table = percentiles.summarize(stack_df, ["profile"]).set_index("profile")
@@ -80,15 +112,21 @@ def _plot_metric_vs_combined(
         p95_values = [table.loc[p, "p95"] if p in table.index else float("nan") for p in ordered]
 
         line = ax.plot(
-            x_positions, p50_values, marker="o", label=f"{friendly_stack_name(stack)} (typical)"
+            x_positions, p50_values, marker=marker, markersize=markersize,
+            label=f"{friendly_stack_name(stack)} (typical)",
         )[0]
         ax.plot(
-            x_positions, p95_values, marker="o", linestyle="--", alpha=0.6,
-            color=line.get_color(), label=f"{friendly_stack_name(stack)} (occasional worst case)",
+            x_positions, p95_values, marker=marker, markersize=markersize, linestyle="--",
+            alpha=0.6, color=line.get_color(),
+            label=f"{friendly_stack_name(stack)} (occasional worst case)",
         )
 
-    ax.set_xticks(x_positions)
-    ax.set_xticklabels(tick_labels, fontsize=8)
+    tick_indices = _thinned_tick_indices(step_count)
+    ax.set_xticks(tick_indices)
+    ax.set_xticklabels(
+        [_tick_label(parsed[ordered[i]]) for i in tick_indices],
+        fontsize=8, rotation=30, ha="right",
+    )
     ax.set_xlabel("Combined impairment (every checked axis stepped together)")
     ax.set_ylabel(ylabel)
     ax.set_title(title)
@@ -101,7 +139,7 @@ def _plot_metric_vs_combined(
         "about 1 run in 20)",
         ha="center", fontsize=8, wrap=True,
     )
-    fig.tight_layout(rect=(0, 0.14, 1, 1))
+    fig.tight_layout(rect=(0, 0.16, 1, 1))
 
     out_dir.mkdir(parents=True, exist_ok=True)
     out_path = out_dir / filename

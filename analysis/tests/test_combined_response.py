@@ -6,6 +6,28 @@ from teleop_analysis import io_utils
 from teleop_analysis.figures import combined_response
 
 
+def test_thinned_tick_indices_labels_every_step_below_the_threshold():
+    assert combined_response._thinned_tick_indices(5) == [0, 1, 2, 3, 4]
+    assert combined_response._thinned_tick_indices(combined_response._MAX_TICK_LABELS) == list(
+        range(combined_response._MAX_TICK_LABELS)
+    )
+
+
+def test_thinned_tick_indices_thins_a_dense_sweep_and_keeps_the_last_step():
+    indices = combined_response._thinned_tick_indices(301)
+    assert len(indices) <= combined_response._MAX_TICK_LABELS + 1  # +1 for the appended last step
+    assert indices[-1] == 300
+    assert indices == sorted(indices)  # still left-to-right
+
+
+def test_marker_style_shows_markers_below_the_cutoff_and_hides_them_above_it():
+    marker, size = combined_response._marker_style(combined_response._MARKER_CUTOFF)
+    assert marker is not None and size is not None
+
+    marker, size = combined_response._marker_style(combined_response._MARKER_CUTOFF + 1)
+    assert marker is None and size is None
+
+
 def test_plots_generate_as_one_chart_across_the_whole_combined_sweep(
     synthetic_run_combined_profiles: Path, tmp_path: Path
 ):

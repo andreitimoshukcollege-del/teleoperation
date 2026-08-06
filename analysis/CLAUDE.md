@@ -86,6 +86,18 @@ disagree, and you will trust the wrong one.
   differently-sized previous figure, a resize race, and a further failure switching repeatedly
   while full-screened); a fresh `FigureCanvasTkAgg` is always guaranteed to have a correctly
   sized backing buffer, which reuse evidently isn't across every window/figure-size combination.
+  Rebuilding the canvas on every click has its own real gotcha on a >100%-scaled Windows
+  display, though: `FigureCanvasBase.__init__` captures `figure._original_dpi = figure.dpi`
+  ("we don't want to scale up the figure DPI more than once," per matplotlib's own comment
+  there) assuming one canvas per figure for its whole lifetime, then a `<Map>` callback scales
+  `dpi` up by the display's device pixel ratio -- rebuilding the canvas instead means each new
+  one recaptures `_original_dpi` from whatever the *previous* canvas already scaled `dpi` to,
+  compounding the scale-up (and every point-sized element -- fonts, line widths, markers --
+  with it) on every single figure switch. `_reset_figure_dpi_to_native` resets `fig.dpi` back to
+  its build-time value (stashed once as `fig._native_dpi` when the figure first enters the
+  cache) before every construction, breaking that chain -- verified directly against the real
+  `backend_bases.py` mechanism (`FigureCanvasTkAgg._set_device_pixel_ratio`), not just this
+  reimplementation, since it's otherwise inert (and unreproducible) at 100% display scaling.
   Every axes gets a `ylim_changed` callback (`_clamp_ylim_nonnegative`) pulling the
   lower bound back to 0 if zoom/pan ever pushes it negative -- every metric plotted here is a
   non-negative magnitude (a distance in mm, a one-way delay in ms), so a negative y value is

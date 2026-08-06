@@ -197,6 +197,26 @@ def _clamp_xlim_nonnegative(ax) -> None:
         ax.set_xlim(0, xhi)
 
 
+def _reset_figure_dpi_to_native(fig: Figure) -> None:
+    """Resets `fig.dpi` to its native (build-time) value, stashed once as `fig._native_dpi` when
+    the figure first entered the cache (see `_poll_figure_build`) -- a no-op if `_native_dpi`
+    isn't set (a figure that was never cached at all, e.g. one `_show_figure` never got called
+    for).
+
+    Must run before every `FigureCanvasTkAgg` construction for a figure that might already have
+    had one: on a >100%-scaled Windows display, `FigureCanvasBase.__init__` captures
+    `figure._original_dpi = figure.dpi` (matplotlib's own comment there: "we don't want to scale
+    up the figure DPI more than once"), and a later `<Map>` callback scales `dpi` up from that
+    baseline by the display's device pixel ratio. That safeguard assumes one canvas per figure
+    for its whole lifetime; rebuilding the canvas on every click instead means each new canvas
+    recaptures `_original_dpi` from whatever `dpi` the *previous* canvas already scaled it to,
+    compounding the scale-up -- and every point-sized element (fonts, line widths, markers) with
+    it -- on every single figure switch. Resetting to the never-touched-by-a-canvas native value
+    first breaks that chain.
+    """
+    fig.dpi = getattr(fig, "_native_dpi", fig.dpi)
+
+
 def build_report_command(run_dir: Path, figures: Optional[str] = None) -> List[str]:
     """The exact subprocess argv used to (re)generate a run's figures -- same CLI `just report`
     wraps. Absolute path so it doesn't matter what the subprocess's cwd ends up being. `figures`
@@ -641,7 +661,14 @@ class PickerApp:
         large blank margins above/below a figure whose aspect ratio didn't match the window's,
         which is worse than the different figure kinds simply looking differently proportioned
         against each other.
+
+        `fig.dpi` is reset to its native value (`_reset_figure_dpi_to_native`) before every
+        `FigureCanvasTkAgg` construction -- see that function's docstring for why rebuilding the
+        canvas on every click needs this specifically (on a >100%-scaled Windows display, it's
+        what stops every point-sized element -- fonts, line widths, markers -- from compounding
+        larger on every single figure switch).
         """
+        _reset_figure_dpi_to_native(fig)
         self._clear_image()
         canvas = FigureCanvasTkAgg(fig, master=self.canvas_container)
         widget = canvas.get_tk_widget()
@@ -730,6 +757,10 @@ class PickerApp:
             return
 
         fig, caption = result
+        # Stashed once, here, before any FigureCanvasTkAgg has ever touched this figure -- see
+        # _show_figure for why this needs to be reset before every canvas construction, not just
+        # captured once.
+        fig._native_dpi = fig.dpi
         # Connected once, here, when the figure first enters the cache -- not in _show_figure,
         # which also runs on every cache-hit re-display of an already-connected figure.
         clamp_x = filename in _FIXED_BUILDERS  # line charts only -- see _clamp_xlim_nonnegative

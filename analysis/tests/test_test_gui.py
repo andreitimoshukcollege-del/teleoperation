@@ -18,6 +18,7 @@ from test_gui import (  # noqa: E402
     _clamp_xlim_nonnegative,
     _clamp_ylim_nonnegative,
     _figure_builder_for_filename,
+    _reset_figure_dpi_to_native,
     _select_zoom_target,
     _zoom_axes_around_point,
     build_report_command,
@@ -231,6 +232,29 @@ def test_clamp_xlim_nonnegative_self_corrects_when_registered_as_a_callback():
         ax.callbacks.connect("xlim_changed", _clamp_xlim_nonnegative)
         ax.set_xlim(-10, 60)
         assert ax.get_xlim() == (0.0, 60.0)
+    finally:
+        plt.close(fig)
+
+
+def test_reset_figure_dpi_to_native_restores_the_stashed_value():
+    # Simulates what a >100%-scaled Windows display compounds fig.dpi to across repeated
+    # FigureCanvasTkAgg constructions for the same cached figure (verified against the real
+    # matplotlib backend_bases.py mechanism, not just this reimplementation).
+    fig, _ = plt.subplots(dpi=100)
+    try:
+        fig._native_dpi = 100
+        fig.dpi = 337.5
+        _reset_figure_dpi_to_native(fig)
+        assert fig.dpi == 100
+    finally:
+        plt.close(fig)
+
+
+def test_reset_figure_dpi_to_native_is_a_noop_without_a_stashed_native_dpi():
+    fig, _ = plt.subplots(dpi=123)
+    try:
+        _reset_figure_dpi_to_native(fig)
+        assert fig.dpi == 123
     finally:
         plt.close(fig)
 

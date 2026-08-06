@@ -80,7 +80,14 @@ disagree, and you will trust the wrong one.
   instead. Every axes gets a `ylim_changed` callback (`_clamp_ylim_nonnegative`) pulling the
   lower bound back to 0 if zoom/pan ever pushes it negative -- every metric plotted here is a
   non-negative magnitude (a distance in mm, a one-way delay in ms), so a negative y value is
-  never real, only ever a zoom/pan artifact.
+  never real, only ever a zoom/pan artifact. The line-chart figures
+  (`impairment-response`/`combined-response`, whose x-axis is a network-impairment magnitude or
+  a step index -- never negative either) get the same treatment on x
+  (`_clamp_xlim_nonnegative`), applied once immediately on load (fixing matplotlib's own default
+  autoscale margin, not just future zoom/pan) as well as on every subsequent change. The
+  bar-chart figures (`error-cost`/`latency`/`stack-comparison`) deliberately do *not* get the
+  x-clamp -- their leftmost bar group is centered at x=0 and extends slightly left of it
+  (`figures/_bars.py`), so clamping there would clip it.
   `experiments/*.yaml` generation is
   `experiment_builder.py` (pure, unit tested) — the GUI just writes what it returns and shells
   out to `dotnet run -- sweep`. Needs a real display, not a piped/non-interactive shell — in this

@@ -185,6 +185,18 @@ def _clamp_ylim_nonnegative(ax) -> None:
         ax.set_ylim(0, yhi)
 
 
+def _clamp_xlim_nonnegative(ax) -> None:
+    """Same idea as _clamp_ylim_nonnegative, for x -- but only wired up for the line-chart
+    figures (impairment_response.py's jitter/delay/loss, combined_response.py's step index; see
+    _poll_figure_build's `filename in _FIXED_BUILDERS` check), never the bar-chart figures
+    (error_vs_cost.py etc.): a bar chart's leftmost group is centered *at* x=0 and extends
+    slightly left of it (`_bars.py`'s `x - width`), so clamping there would clip it.
+    """
+    xlo, xhi = ax.get_xlim()
+    if xlo < 0:
+        ax.set_xlim(0, xhi)
+
+
 def _figures_same_size(a: Optional[Figure], b: Optional[Figure]) -> bool:
     """Whether two figures would produce the same `FigureCanvasTkAgg` backing-buffer size --
     the condition `_show_figure` uses to decide whether reusing the existing canvas/toolbar is
@@ -705,8 +717,13 @@ class PickerApp:
         fig, caption = result
         # Connected once, here, when the figure first enters the cache -- not in _show_figure,
         # which also runs on every cache-hit re-display of an already-connected figure.
+        clamp_x = filename in _FIXED_BUILDERS  # line charts only -- see _clamp_xlim_nonnegative
         for ax in fig.axes:
             ax.callbacks.connect("ylim_changed", _clamp_ylim_nonnegative)
+            _clamp_ylim_nonnegative(ax)  # also fixes up the initial autoscaled view, not just future zoom/pan
+            if clamp_x:
+                ax.callbacks.connect("xlim_changed", _clamp_xlim_nonnegative)
+                _clamp_xlim_nonnegative(ax)
         self._figure_cache[(run, filename)] = (fig, caption)
         self._show_figure(fig)
         self.figures_status.config(text="")

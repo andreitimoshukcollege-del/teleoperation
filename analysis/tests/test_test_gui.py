@@ -15,6 +15,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from test_gui import (  # noqa: E402
     _ZOOM_STEP,
+    _clamp_xlim_nonnegative,
     _clamp_ylim_nonnegative,
     _figure_builder_for_filename,
     _figures_same_size,
@@ -243,6 +244,36 @@ def test_clamp_ylim_nonnegative_self_corrects_when_registered_as_a_callback():
         ax.callbacks.connect("ylim_changed", _clamp_ylim_nonnegative)
         ax.set_ylim(-50, 100)
         assert ax.get_ylim() == (0.0, 100.0)
+    finally:
+        plt.close(fig)
+
+
+def test_clamp_xlim_nonnegative_pulls_a_negative_lower_bound_up_to_zero():
+    fig, ax = plt.subplots()
+    try:
+        ax.set_xlim(-10, 60)  # e.g. matplotlib's default autoscale margin, or a zoomed-out view
+        _clamp_xlim_nonnegative(ax)
+        assert ax.get_xlim() == (0.0, 60.0)
+    finally:
+        plt.close(fig)
+
+
+def test_clamp_xlim_nonnegative_leaves_an_already_nonnegative_range_alone():
+    fig, ax = plt.subplots()
+    try:
+        ax.set_xlim(5, 60)
+        _clamp_xlim_nonnegative(ax)
+        assert ax.get_xlim() == (5.0, 60.0)
+    finally:
+        plt.close(fig)
+
+
+def test_clamp_xlim_nonnegative_self_corrects_when_registered_as_a_callback():
+    fig, ax = plt.subplots()
+    try:
+        ax.callbacks.connect("xlim_changed", _clamp_xlim_nonnegative)
+        ax.set_xlim(-10, 60)
+        assert ax.get_xlim() == (0.0, 60.0)
     finally:
         plt.close(fig)
 

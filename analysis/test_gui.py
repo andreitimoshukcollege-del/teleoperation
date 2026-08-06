@@ -637,9 +637,23 @@ class PickerApp:
         previous, larger figure's pixels visible around the edges of the new one, which is
         exactly the "stack on top of each other" bug this guards against. Only a fresh
         `FigureCanvasTkAgg` is guaranteed to have a correctly sized buffer, so any size change
-        (combined_response's width grows with sweep density; every other figure type is a fixed
-        size) falls back to a full rebuild.
+        falls back to a full rebuild.
+
+        `fig` is resized to the container's *current* pixel dimensions before any of that --
+        every figure type otherwise defaults to its own fixed build-time size (or, for
+        combined-response, a size scaled to sweep density), relying on matplotlib's own
+        `<Configure>`-triggered auto-resize to grow it to fill the window after the fact. That
+        auto-resize is reliable when the *same* figure is already showing and the window changes
+        size around it, but not when a *new*, differently-sized canvas gets created directly into
+        an already-large container (e.g. switching figures while already full-screened) -- sizing
+        the figure explicitly first sidesteps that race instead of depending on it.
         """
+        self.canvas_container.update_idletasks()
+        container_w = self.canvas_container.winfo_width()
+        container_h = self.canvas_container.winfo_height()
+        if container_w > 1 and container_h > 1:
+            fig.set_size_inches(container_w / fig.dpi, container_h / fig.dpi)
+
         if (
             self._current_figure_canvas is not None
             and _figures_same_size(fig, self._current_figure)

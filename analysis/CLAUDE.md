@@ -71,13 +71,20 @@ disagree, and you will trust the wrong one.
   embed is purely a nicer way to look at it. Built figures are cached per `(run, filename)` for
   the life of the GUI process (a run's data is immutable once written -- `results/CLAUDE.md`) and
   a cache miss builds off the Tk main thread (same background-thread-plus-`root.after`-polling
-  pattern as running a sweep), so switching figures doesn't hang the window; the canvas and
-  toolbar are reused across figure switches only when the new figure is the exact same size as
-  the one showing (`_figures_same_size`) -- `FigureCanvasTkAgg`'s backing buffer is sized once,
-  at construction, so reusing it across a size change (e.g. `combined-response`'s width, which
-  grows with sweep density, vs. any fixed-size figure) leaves the previous figure's pixels
-  visible around the edges of the new one; a size change always gets a fresh canvas/toolbar
-  instead. Every axes gets a `ylim_changed` callback (`_clamp_ylim_nonnegative`) pulling the
+  pattern as running a sweep), so switching figures doesn't hang the window. Every figure is
+  explicitly resized to the container's *current* pixel dimensions (`_show_figure`, before the
+  canvas is even created) rather than relying on matplotlib's own `<Configure>`-triggered
+  auto-resize to grow it afterward -- that auto-resize is reliable when the *same* figure is
+  already showing and the window changes size around it, but not when a new, differently-sized
+  canvas gets created directly into an already-large container (e.g. switching figures while
+  already full-screened), which otherwise left the chart rendered at the wrong size. The canvas
+  and toolbar are then reused across figure switches only when the new (now container-sized)
+  figure is the exact same size as the one showing (`_figures_same_size`) --
+  `FigureCanvasTkAgg`'s backing buffer is sized once, at construction, so reusing it across a
+  size change (e.g. the window itself was resized since the last figure, or `combined-response`'s
+  width, which grows with sweep density) leaves the previous figure's pixels visible around the
+  edges of the new one; a size change always gets a fresh canvas/toolbar instead. Every axes gets
+  a `ylim_changed` callback (`_clamp_ylim_nonnegative`) pulling the
   lower bound back to 0 if zoom/pan ever pushes it negative -- every metric plotted here is a
   non-negative magnitude (a distance in mm, a one-way delay in ms), so a negative y value is
   never real, only ever a zoom/pan artifact. The line-chart figures

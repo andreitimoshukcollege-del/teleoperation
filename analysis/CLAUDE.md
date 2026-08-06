@@ -68,7 +68,12 @@ disagree, and you will trust the wrong one.
   `results/<run>/figures/*.png` and closes) -- `test_gui.py`'s `_figure_builder_for_filename`
   maps a listed filename back to the right `build_*` function so the live view always matches
   what's on disk. The saved PNG stays the citable, disk-based artifact either way; the live
-  embed is purely a nicer way to look at it.
+  embed is purely a nicer way to look at it. Built figures are cached per `(run, filename)` for
+  the life of the GUI process (a run's data is immutable once written -- `results/CLAUDE.md`) and
+  a cache miss builds off the Tk main thread (same background-thread-plus-`root.after`-polling
+  pattern as running a sweep), so switching figures doesn't hang the window; the canvas and
+  toolbar are created once and reused across figure switches rather than rebuilt per click, since
+  recreating `NavigationToolbar2Tk` re-decodes every toolbar icon from disk each time.
   `experiments/*.yaml` generation is
   `experiment_builder.py` (pure, unit tested) — the GUI just writes what it returns and shells
   out to `dotnet run -- sweep`. Needs a real display, not a piped/non-interactive shell — in this

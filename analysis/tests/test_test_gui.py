@@ -16,6 +16,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from test_gui import (  # noqa: E402
     _ZOOM_STEP,
     _figure_builder_for_filename,
+    _select_zoom_target,
     _zoom_axes_around_point,
     build_report_command,
     build_sweep_command,
@@ -126,6 +127,48 @@ def test_zoom_axes_around_point_zoom_out_grows_the_range():
         assert (new_xhi - new_xlo) == pytest.approx(100 * _ZOOM_STEP)
     finally:
         plt.close(fig)
+
+
+def test_select_zoom_target_always_targets_the_only_axes_even_outside_its_bbox():
+    fig, ax = plt.subplots()
+    try:
+        # Shrink the plotted area drastically -- like combined_response.py's large bottom
+        # margin (rect=(0, 0.16, 1, 1)) plus rotated tick labels -- so a point well within the
+        # canvas sits outside ax.bbox, the way a user's cursor often does when pointing at a
+        # dense combined chart's rotated x-axis labels.
+        ax.set_position([0.1, 0.4, 0.8, 0.5])
+        fig.canvas.draw()
+
+        x_px, y_px = fig.bbox.width / 2, 5  # near the bottom margin, outside the shrunk axes
+        assert not ax.bbox.contains(x_px, y_px)
+
+        assert _select_zoom_target(fig.axes, x_px, y_px) is ax
+    finally:
+        plt.close(fig)
+
+
+def test_select_zoom_target_uses_containment_for_multiple_axes():
+    fig, (ax_left, ax_right) = plt.subplots(1, 2)
+    try:
+        fig.canvas.draw()
+        cx = ax_left.bbox.x0 + ax_left.bbox.width / 2
+        cy = ax_left.bbox.y0 + ax_left.bbox.height / 2
+        assert _select_zoom_target(fig.axes, cx, cy) is ax_left
+    finally:
+        plt.close(fig)
+
+
+def test_select_zoom_target_returns_none_when_no_axes_contains_the_point():
+    fig, (ax_left, ax_right) = plt.subplots(1, 2)
+    try:
+        fig.canvas.draw()
+        assert _select_zoom_target(fig.axes, -1000, -1000) is None
+    finally:
+        plt.close(fig)
+
+
+def test_select_zoom_target_returns_none_for_an_empty_figure():
+    assert _select_zoom_target([], 0, 0) is None
 
 
 def test_figure_builder_for_filename_maps_fixed_impairment_and_combined_names():

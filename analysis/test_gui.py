@@ -150,6 +150,23 @@ def _zoom_axes_around_point(ax, x_px: float, y_px: float, zoom_in: bool) -> None
     ax.set_ylim(data_y - (data_y - ylo) * factor, data_y + (yhi - data_y) * factor)
 
 
+def _select_zoom_target(axes, x_px: float, y_px: float):
+    """Which of `axes` a scroll-wheel zoom at pixel position (x_px, y_px) should target. A
+    single-axes figure has no "which panel" to disambiguate, so it's always the target
+    regardless of exact cursor position -- a strict bbox-containment check there misses whenever
+    the cursor is over a chart's caption/tick-label margin rather than the plotted area itself,
+    which for e.g. combined_response.py's large bottom margin + rotated tick labels is often
+    exactly where a user points to zoom into a dense chart's x-axis. A multi-axes figure
+    (side-by-side panels) still needs the containment check to pick the right one; `None` if the
+    point is over neither panel.
+    """
+    if not axes:
+        return None
+    if len(axes) == 1:
+        return axes[0]
+    return next((ax for ax in axes if ax.bbox.contains(x_px, y_px)), None)
+
+
 def build_report_command(run_dir: Path, figures: Optional[str] = None) -> List[str]:
     """The exact subprocess argv used to (re)generate a run's figures -- same CLI `just report`
     wraps. Absolute path so it doesn't matter what the subprocess's cwd ends up being. `figures`
@@ -194,6 +211,13 @@ class PickerApp:
         self._current_toolbar: Optional[NavigationToolbar2Tk] = None
         self._run_data_cache: Optional[Tuple[Path, Manifest, pd.DataFrame]] = None
         self.figure_group_vars: Dict[str, tk.BooleanVar] = {}
+
+        # (run, filename) -> (Figure, caption) -- a run's data is immutable once written
+        # (results/CLAUDE.md: append-only), so a cached figure never needs invalidating for the
+        # same run; only closed (plt.close) when the whole cache is torn down in _on_close.
+        self._figure_cache: Dict[Tuple[Path, str], Tuple[Figure, str]] = {}
+        self._figure_build_queue: "queue.Queue" = queue.Queue()
+        self._figure_request_id = 0
 
         notebook = ttk.Notebook(self.root)
         notebook.pack(fill=tk.BOTH, expand=True)
@@ -547,28 +571,47 @@ class PickerApp:
         return manifest, df
 
     def _clear_image(self) -> None:
+        """Hides the current display. Never closes a Figure -- every Figure that ever reaches
+        `_current_figure` is already sitting in `self._figure_cache` by then (see
+        `_poll_figure_build`), and closing it here would break re-selecting it later in the same
+        session. Cached figures are only closed in `_on_close`, on app shutdown.
+        """
         if self._current_toolbar is not None:
             self._current_toolbar.destroy()
             self._current_toolbar = None
         if self._current_figure_canvas is not None:
             self._current_figure_canvas.get_tk_widget().destroy()
             self._current_figure_canvas = None
-        if self._current_figure is not None:
-            plt.close(self._current_figure)
-            self._current_figure = None
+        self._current_figure = None
 
     def _show_figure(self, fig: Figure) -> None:
-        self._clear_image()
+        """Displays `fig`, reusing the existing canvas/toolbar if one is already showing --
+        recreating `NavigationToolbar2Tk` on every figure switch was the single largest fixed
+        cost in the old per-click rebuild (it re-decodes and resizes every toolbar icon PNG from
+        disk on construction), and the icons never change, only the Figure does.
+        """
+        if self._current_figure_canvas is None:
+            canvas = FigureCanvasTkAgg(fig, master=self.canvas_container)
+            widget = canvas.get_tk_widget()
+            widget.pack(fill=tk.BOTH, expand=True)
+            widget.bind("<MouseWheel>", self._on_canvas_scroll)
+            toolbar = NavigationToolbar2Tk(canvas, self.toolbar_container)
+            toolbar.update()
+            self._current_figure_canvas = canvas
+            self._current_toolbar = toolbar
+        else:
+            canvas = self._current_figure_canvas
+            canvas.figure = fig
+            fig.set_canvas(canvas)
+            # Different figure kinds have different figsize (combined_response's width grows
+            # with sweep density) -- resize the Tk widget to match, the same computation
+            # FigureCanvasTkAgg.__init__ itself does from a fresh figure.
+            width_px = round(fig.get_size_inches()[0] * fig.dpi)
+            height_px = round(fig.get_size_inches()[1] * fig.dpi)
+            canvas.get_tk_widget().config(width=width_px, height=height_px)
+
         self._current_figure = fig
-        canvas = FigureCanvasTkAgg(fig, master=self.canvas_container)
         canvas.draw()
-        widget = canvas.get_tk_widget()
-        widget.pack(fill=tk.BOTH, expand=True)
-        widget.bind("<MouseWheel>", self._on_canvas_scroll)
-        toolbar = NavigationToolbar2Tk(canvas, self.toolbar_container)
-        toolbar.update()
-        self._current_figure_canvas = canvas
-        self._current_toolbar = toolbar
 
     def _on_figure_selected(self) -> None:
         selection = self.figure_listbox.curselection()
@@ -582,13 +625,49 @@ class PickerApp:
             self.figures_status.config(text=f"No live view available for {filename}.")
             return
 
+        self._figure_request_id += 1
+        request_id = self._figure_request_id
+
+        cache_key = (run, filename)
+        cached = self._figure_cache.get(cache_key)
+        if cached is not None:
+            fig, _caption = cached
+            self._show_figure(fig)
+            self.figures_status.config(text="")
+            return
+
+        self.figures_status.config(text="Loading...")
+        threading.Thread(
+            target=self._build_figure_in_background,
+            args=(request_id, run, filename, builder),
+            daemon=True,
+        ).start()
+        self.root.after(50, self._poll_figure_build)
+
+    def _build_figure_in_background(
+        self, request_id: int, run: Path, filename: str, builder: Callable
+    ) -> None:
         manifest, df = self._run_data(run)
         result = builder(df, manifest)
+        self._figure_build_queue.put((request_id, run, filename, result))
+
+    def _poll_figure_build(self) -> None:
+        try:
+            request_id, run, filename, result = self._figure_build_queue.get_nowait()
+        except queue.Empty:
+            self.root.after(50, self._poll_figure_build)
+            return
+
+        if request_id != self._figure_request_id:
+            return  # stale -- the user has since selected a different figure
+
         if result is None:
             self._clear_image()
             self.figures_status.config(text=f"Nothing to show for {filename} in this run.")
             return
-        fig, _caption = result
+
+        fig, caption = result
+        self._figure_cache[(run, filename)] = (fig, caption)
         self._show_figure(fig)
         self.figures_status.config(text="")
 
@@ -599,10 +678,11 @@ class PickerApp:
         # bottom-left origin -- flip y before hit-testing/zooming against the figure's axes.
         widget_height = self._current_figure_canvas.get_tk_widget().winfo_height()
         x_px, y_px = event.x, widget_height - event.y
-        for ax in self._current_figure.axes:
-            if ax.bbox.contains(x_px, y_px):
-                _zoom_axes_around_point(ax, x_px, y_px, zoom_in=event.delta > 0)
-                break
+
+        target = _select_zoom_target(self._current_figure.axes, x_px, y_px)
+        if target is None:
+            return
+        _zoom_axes_around_point(target, x_px, y_px, zoom_in=event.delta > 0)
         self._current_figure_canvas.draw_idle()
 
     def _selected_figure_kinds(self) -> Optional[str]:
@@ -658,6 +738,8 @@ class PickerApp:
     def _on_close(self) -> None:
         if self.process is not None:
             self.process.terminate()
+        for fig, _caption in self._figure_cache.values():
+            plt.close(fig)
         self.root.destroy()
 
 

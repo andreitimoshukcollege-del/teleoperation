@@ -197,15 +197,6 @@ def _clamp_xlim_nonnegative(ax) -> None:
         ax.set_xlim(0, xhi)
 
 
-def _figures_same_size(a: Optional[Figure], b: Optional[Figure]) -> bool:
-    """Whether two figures would produce the same `FigureCanvasTkAgg` backing-buffer size --
-    the condition `_show_figure` uses to decide whether reusing the existing canvas/toolbar is
-    safe (see its docstring for why a size change specifically must not reuse them)."""
-    if a is None or b is None:
-        return False
-    return tuple(a.get_size_inches()) == tuple(b.get_size_inches()) and a.dpi == b.dpi
-
-
 def build_report_command(run_dir: Path, figures: Optional[str] = None) -> List[str]:
     """The exact subprocess argv used to (re)generate a run's figures -- same CLI `just report`
     wraps. Absolute path so it doesn't matter what the subprocess's cwd ends up being. `figures`
@@ -624,29 +615,28 @@ class PickerApp:
         self._current_figure = None
 
     def _show_figure(self, fig: Figure) -> None:
-        """Displays `fig`, reusing the existing canvas/toolbar only when the new figure is
-        exactly the same size as the one currently shown -- recreating `NavigationToolbar2Tk` on
-        every figure switch was the single largest fixed cost in the old per-click rebuild (it
-        re-decodes and resizes every toolbar icon PNG from disk on construction), so it's worth
-        avoiding when we safely can.
+        """Displays `fig`, always rebuilding the canvas and toolbar from scratch.
 
-        Reuse is deliberately size-gated: `FigureCanvasTkAgg`'s internal backing buffer
-        (`_tkphoto`) is sized once, at construction, to that first figure's pixel dimensions.
-        Reconfiguring the *outer* Tk widget's width/height (as an earlier version of this method
-        did) does not resize that inner buffer -- switching to a smaller figure then left the
-        previous, larger figure's pixels visible around the edges of the new one, which is
-        exactly the "stack on top of each other" bug this guards against. Only a fresh
-        `FigureCanvasTkAgg` is guaranteed to have a correctly sized buffer, so any size change
-        falls back to a full rebuild.
+        An earlier version of this method tried to reuse the existing canvas/toolbar when the
+        new figure was the same pixel size as the one currently shown, to avoid
+        `NavigationToolbar2Tk`'s per-construction cost (it re-decodes and resizes every toolbar
+        icon PNG from disk). That reuse path caused three separate rendering bugs in a row --
+        stale pixels from the previous, differently-sized figure remaining visible; a resize
+        race when a fresh, differently-sized canvas was created directly into an
+        already-full-screened container; and switching figures repeatedly while full-screened
+        eventually rendering incorrectly again even with the previous two fixed. Getting
+        `FigureCanvasTkAgg` reuse fully correct across every window-size/figure-size combination
+        is evidently more subtle than it looks; a full rebuild sidesteps all of it at once, since
+        a *fresh* canvas is always guaranteed to have a correctly sized backing buffer for
+        whatever figure it's given. The remaining fixed cost (rebuilding the toolbar every click)
+        is real but no longer the dominant one -- figure *construction* (the actual slow part) is
+        still cached and backgrounded exactly as before.
 
-        `fig` is resized to the container's *current* pixel dimensions before any of that --
-        every figure type otherwise defaults to its own fixed build-time size (or, for
-        combined-response, a size scaled to sweep density), relying on matplotlib's own
-        `<Configure>`-triggered auto-resize to grow it to fill the window after the fact. That
-        auto-resize is reliable when the *same* figure is already showing and the window changes
-        size around it, but not when a *new*, differently-sized canvas gets created directly into
-        an already-large container (e.g. switching figures while already full-screened) -- sizing
-        the figure explicitly first sidesteps that race instead of depending on it.
+        `fig` is resized to the container's *current* pixel dimensions first -- every figure type
+        otherwise defaults to its own fixed build-time size (or, for combined-response, a size
+        scaled to sweep density), and relying on matplotlib's own `<Configure>`-triggered
+        auto-resize to grow it to fill the window afterward is exactly the unreliable path this
+        method no longer depends on.
         """
         self.canvas_container.update_idletasks()
         container_w = self.canvas_container.winfo_width()
@@ -654,23 +644,15 @@ class PickerApp:
         if container_w > 1 and container_h > 1:
             fig.set_size_inches(container_w / fig.dpi, container_h / fig.dpi)
 
-        if (
-            self._current_figure_canvas is not None
-            and _figures_same_size(fig, self._current_figure)
-        ):
-            canvas = self._current_figure_canvas
-            canvas.figure = fig
-            fig.set_canvas(canvas)
-        else:
-            self._clear_image()
-            canvas = FigureCanvasTkAgg(fig, master=self.canvas_container)
-            widget = canvas.get_tk_widget()
-            widget.pack(fill=tk.BOTH, expand=True)
-            widget.bind("<MouseWheel>", self._on_canvas_scroll)
-            toolbar = NavigationToolbar2Tk(canvas, self.toolbar_container)
-            toolbar.update()
-            self._current_figure_canvas = canvas
-            self._current_toolbar = toolbar
+        self._clear_image()
+        canvas = FigureCanvasTkAgg(fig, master=self.canvas_container)
+        widget = canvas.get_tk_widget()
+        widget.pack(fill=tk.BOTH, expand=True)
+        widget.bind("<MouseWheel>", self._on_canvas_scroll)
+        toolbar = NavigationToolbar2Tk(canvas, self.toolbar_container)
+        toolbar.update()
+        self._current_figure_canvas = canvas
+        self._current_toolbar = toolbar
 
         self._current_figure = fig
         canvas.draw()

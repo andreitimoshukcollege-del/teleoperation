@@ -18,7 +18,6 @@ from test_gui import (  # noqa: E402
     _clamp_xlim_nonnegative,
     _clamp_ylim_nonnegative,
     _figure_builder_for_filename,
-    _figures_same_size,
     _select_zoom_target,
     _zoom_axes_around_point,
     build_report_command,
@@ -172,48 +171,6 @@ def test_select_zoom_target_returns_none_when_no_axes_contains_the_point():
 
 def test_select_zoom_target_returns_none_for_an_empty_figure():
     assert _select_zoom_target([], 0, 0) is None
-
-
-def test_figures_same_size_true_for_matching_figsize_and_dpi():
-    fig_a, _ = plt.subplots(figsize=(9, 5.5), dpi=100)
-    fig_b, _ = plt.subplots(figsize=(9, 5.5), dpi=100)
-    try:
-        assert _figures_same_size(fig_a, fig_b) is True
-    finally:
-        plt.close(fig_a)
-        plt.close(fig_b)
-
-
-def test_figures_same_size_false_for_different_figsize():
-    # Exactly the combined_response.py-vs-everything-else case that caused the old pixels of a
-    # wider figure to remain visible around a narrower one reusing the same canvas buffer.
-    wide, _ = plt.subplots(figsize=(20, 5.5), dpi=100)
-    narrow, _ = plt.subplots(figsize=(9, 5.5), dpi=100)
-    try:
-        assert _figures_same_size(wide, narrow) is False
-    finally:
-        plt.close(wide)
-        plt.close(narrow)
-
-
-def test_figures_same_size_false_for_different_dpi():
-    fig_a, _ = plt.subplots(figsize=(9, 5.5), dpi=100)
-    fig_b, _ = plt.subplots(figsize=(9, 5.5), dpi=150)
-    try:
-        assert _figures_same_size(fig_a, fig_b) is False
-    finally:
-        plt.close(fig_a)
-        plt.close(fig_b)
-
-
-def test_figures_same_size_false_when_either_figure_is_none():
-    fig, _ = plt.subplots()
-    try:
-        assert _figures_same_size(fig, None) is False
-        assert _figures_same_size(None, fig) is False
-        assert _figures_same_size(None, None) is False
-    finally:
-        plt.close(fig)
 
 
 def test_clamp_ylim_nonnegative_pulls_a_negative_lower_bound_up_to_zero():

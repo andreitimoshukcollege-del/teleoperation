@@ -78,13 +78,14 @@ disagree, and you will trust the wrong one.
   already showing and the window changes size around it, but not when a new, differently-sized
   canvas gets created directly into an already-large container (e.g. switching figures while
   already full-screened), which otherwise left the chart rendered at the wrong size. The canvas
-  and toolbar are then reused across figure switches only when the new (now container-sized)
-  figure is the exact same size as the one showing (`_figures_same_size`) --
-  `FigureCanvasTkAgg`'s backing buffer is sized once, at construction, so reusing it across a
-  size change (e.g. the window itself was resized since the last figure, or `combined-response`'s
-  width, which grows with sweep density) leaves the previous figure's pixels visible around the
-  edges of the new one; a size change always gets a fresh canvas/toolbar instead. Every axes gets
-  a `ylim_changed` callback (`_clamp_ylim_nonnegative`) pulling the
+  and toolbar are then rebuilt from scratch on *every* figure switch -- an earlier version tried
+  to reuse them when the new figure matched the current one's pixel size, to avoid
+  `NavigationToolbar2Tk`'s per-construction cost (it re-decodes every toolbar icon from disk),
+  but that reuse path caused three separate rendering bugs in a row (stale pixels from a
+  differently-sized previous figure, a resize race, and a further failure switching repeatedly
+  while full-screened); a fresh `FigureCanvasTkAgg` is always guaranteed to have a correctly
+  sized backing buffer, which reuse evidently isn't across every window/figure-size combination.
+  Every axes gets a `ylim_changed` callback (`_clamp_ylim_nonnegative`) pulling the
   lower bound back to 0 if zoom/pan ever pushes it negative -- every metric plotted here is a
   non-negative magnitude (a distance in mm, a one-way delay in ms), so a negative y value is
   never real, only ever a zoom/pan artifact. The line-chart figures

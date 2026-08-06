@@ -197,21 +197,6 @@ def _clamp_xlim_nonnegative(ax) -> None:
         ax.set_xlim(0, xhi)
 
 
-def _size_to_fit(native_w: float, native_h: float, container_w: float, container_h: float) -> Tuple[float, float]:
-    """The largest `(w, h)` that preserves `native_w`/`native_h`'s own aspect ratio while fitting
-    within `container_w`/`container_h` (a "contain," not a "stretch" -- scaling both dimensions
-    by the same factor rather than fitting width and height independently). Each figure type's
-    own aspect ratio is a real design choice (impairment_response.py's fixed 9x5.5,
-    combined_response.py's width scaled to sweep density, ...); stretching every figure to
-    exactly match the container regardless of that made different figure kinds look
-    inconsistently proportioned against each other when switching between them.
-    """
-    if native_w <= 0 or native_h <= 0 or container_w <= 0 or container_h <= 0:
-        return native_w, native_h
-    scale = min(container_w / native_w, container_h / native_h)
-    return native_w * scale, native_h * scale
-
-
 def build_report_command(run_dir: Path, figures: Optional[str] = None) -> List[str]:
     """The exact subprocess argv used to (re)generate a run's figures -- same CLI `just report`
     wraps. Absolute path so it doesn't matter what the subprocess's cwd ends up being. `figures`
@@ -650,16 +635,17 @@ class PickerApp:
         is real but no longer the dominant one -- figure *construction* (the actual slow part) is
         still cached and backgrounded exactly as before.
 
-        Placed via `.place()`, not `.pack(fill=tk.BOTH, expand=True)`: `pack`'s `fill`/`expand`
-        actively stretch the widget to the container's exact width *and* height independently,
-        which is what was overriding `_fit_figure_to_container`'s aspect-preserving resize below
-        (matplotlib's own `<Configure>`-triggered auto-resize just matches whatever size `pack`
-        decided on, ignoring the figure's own designed aspect ratio) -- `.place()` with an
-        explicit width/height does not.
+        Packed with `fill=tk.BOTH, expand=True`, so it always stretches to exactly fill
+        `self.canvas_container` -- an earlier version tried to preserve each figure's own native
+        aspect ratio instead (letterboxing it within the container via `.place()`), but that left
+        large blank margins above/below a figure whose aspect ratio didn't match the window's,
+        which is worse than the different figure kinds simply looking differently proportioned
+        against each other.
         """
         self._clear_image()
         canvas = FigureCanvasTkAgg(fig, master=self.canvas_container)
         widget = canvas.get_tk_widget()
+        widget.pack(fill=tk.BOTH, expand=True)
         widget.bind("<MouseWheel>", self._on_canvas_scroll)
         toolbar = NavigationToolbar2Tk(canvas, self.toolbar_container)
         toolbar.update()
@@ -669,13 +655,14 @@ class PickerApp:
         self._fit_figure_to_container()
 
     def _fit_figure_to_container(self) -> None:
-        """Resizes the currently displayed figure (if any) to fit inside
-        `self.canvas_container`'s *current* pixel dimensions, preserving its own native aspect
-        ratio (`_size_to_fit`) rather than stretching to exactly match the container -- every
-        figure type otherwise defaults to its own fixed build-time size (or, for
-        combined-response, a size scaled to sweep density). Called once from `_show_figure` when
-        a figure is first displayed, and bound to the container's own `<Configure>` event so a
-        live window resize re-fits whatever's currently on screen too, not just a figure switch.
+        """Resizes the currently displayed figure (if any) to exactly match
+        `self.canvas_container`'s *current* pixel dimensions. Called once from `_show_figure`
+        when a figure is first displayed, and bound to the container's own `<Configure>` event
+        so a live window resize re-fits whatever's currently on screen too, not just a figure
+        switch -- both matter since `pack(fill=BOTH, expand=True)` alone only handles the latter
+        reliably (matplotlib's own `<Configure>`-triggered auto-resize can otherwise race when a
+        *new*, differently-sized canvas is created directly into an already-large container,
+        e.g. switching figures while already full-screened).
         """
         if self._current_figure is None or self._current_figure_canvas is None:
             return
@@ -686,12 +673,7 @@ class PickerApp:
             return
 
         fig = self._current_figure
-        native_w, native_h = getattr(fig, "_native_size_inches", tuple(fig.get_size_inches()))
-        fit_w, fit_h = _size_to_fit(native_w * fig.dpi, native_h * fig.dpi, container_w, container_h)
-        fig.set_size_inches(fit_w / fig.dpi, fit_h / fig.dpi)
-
-        widget = self._current_figure_canvas.get_tk_widget()
-        widget.place(relx=0.5, rely=0.5, anchor="center", width=round(fit_w), height=round(fit_h))
+        fig.set_size_inches(container_w / fig.dpi, container_h / fig.dpi)
         self._current_figure_canvas.draw_idle()
 
     def _on_figure_selected(self) -> None:
@@ -748,12 +730,6 @@ class PickerApp:
             return
 
         fig, caption = result
-        # Stashed once, here, before _show_figure ever rescales fig for display -- its own
-        # aspect ratio (impairment_response's fixed 9x5.5, combined_response's width scaled to
-        # sweep density, ...) is a real design choice each figures/*.py module made, and
-        # _show_figure needs the *original* proportions to scale from every time this cached
-        # figure is redisplayed, not whatever size it happened to be resized to last.
-        fig._native_size_inches = tuple(fig.get_size_inches())
         # Connected once, here, when the figure first enters the cache -- not in _show_figure,
         # which also runs on every cache-hit re-display of an already-connected figure.
         clamp_x = filename in _FIXED_BUILDERS  # line charts only -- see _clamp_xlim_nonnegative

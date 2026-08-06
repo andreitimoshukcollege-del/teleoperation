@@ -19,7 +19,6 @@ from test_gui import (  # noqa: E402
     _clamp_ylim_nonnegative,
     _figure_builder_for_filename,
     _select_zoom_target,
-    _size_to_fit,
     _zoom_axes_around_point,
     build_report_command,
     build_sweep_command,
@@ -235,30 +234,6 @@ def test_clamp_xlim_nonnegative_self_corrects_when_registered_as_a_callback():
     finally:
         plt.close(fig)
 
-
-def test_size_to_fit_preserves_aspect_ratio_when_width_is_the_binding_constraint():
-    # A wide combined-response-style figure (aspect ~3.6:1) fit into a squarer container --
-    # width is the limit, height should shrink to match, not stretch to fill the container.
-    w, h = _size_to_fit(native_w=2000, native_h=550, container_w=1000, container_h=1000)
-    assert w == pytest.approx(1000)
-    assert h == pytest.approx(275)  # same 3.636:1 aspect ratio as the native size
-
-
-def test_size_to_fit_preserves_aspect_ratio_when_height_is_the_binding_constraint():
-    w, h = _size_to_fit(native_w=900, native_h=550, container_w=2000, container_h=600)
-    assert h == pytest.approx(600)
-    assert w == pytest.approx(900 * 600 / 550)
-
-
-def test_size_to_fit_scales_up_a_small_figure_to_fill_a_large_container():
-    # The whole point of "fit the screen" -- a small figure in a big fullscreen window should
-    # grow to use the available space, not stay pinned at its small build-time size.
-    w, h = _size_to_fit(native_w=900, native_h=550, container_w=1800, container_h=1100)
-    assert (w, h) == pytest.approx((1800, 1100))
-
-
-def test_size_to_fit_returns_native_size_for_a_degenerate_container():
-    assert _size_to_fit(900, 550, 0, 0) == (900, 550)
 
 
 def test_figure_builder_for_filename_maps_fixed_impairment_and_combined_names():

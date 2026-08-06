@@ -14,7 +14,6 @@ from teleop_analysis.figures import combined_response, impairment_response
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from test_gui import (  # noqa: E402
-    _CAPTION_MARGIN_INCHES,
     _MAX_CAPTION_FRACTION,
     _ZOOM_STEP,
     _caption_bottom_fraction,
@@ -264,24 +263,34 @@ def test_reset_figure_dpi_to_native_is_a_noop_without_a_stashed_native_dpi():
 
 
 def test_caption_bottom_fraction_is_small_for_a_tall_figure():
-    # A window stretched much taller than the caption margin needs -- the fraction should shrink
-    # accordingly rather than eating a fixed proportion of the now-much-taller figure.
-    tall = _caption_bottom_fraction(20.0)
-    assert tall == pytest.approx(_CAPTION_MARGIN_INCHES / 20.0)
+    # A window stretched much taller than the figure's own native margin needs -- the fraction
+    # should shrink accordingly rather than eating a fixed proportion of the now-much-taller
+    # figure.
+    tall = _caption_bottom_fraction(0.7, 20.0)
+    assert tall == pytest.approx(0.7 / 20.0)
     assert tall < _MAX_CAPTION_FRACTION
 
 
+def test_caption_bottom_fraction_uses_a_larger_native_margin_for_dense_rotated_tick_labels():
+    # combined_response.py's rotated, dense tick labels need more absolute room than plain
+    # caption text -- its own build-time tight_layout already measured that larger margin, and
+    # this helper must scale from *that* value, not a single guess shared by every figure kind.
+    plain_caption = _caption_bottom_fraction(0.7, 10.0)
+    dense_rotated_labels = _caption_bottom_fraction(1.5, 10.0)
+    assert dense_rotated_labels > plain_caption
+
+
 def test_caption_bottom_fraction_is_capped_for_a_short_figure():
-    # A figure shorter than _CAPTION_MARGIN_INCHES would otherwise need a fraction > 1 (or just
-    # very large) to keep the caption's absolute size -- capped so the caption can never claim
-    # more than _MAX_CAPTION_FRACTION of a very short figure.
-    short = _caption_bottom_fraction(1.0)
+    # A figure shorter than its own native margin would otherwise need a fraction > 1 (or just
+    # very large) to keep that margin's absolute size -- capped so the caption/tick-label strip
+    # can never claim more than _MAX_CAPTION_FRACTION of a very short figure.
+    short = _caption_bottom_fraction(0.7, 1.0)
     assert short == _MAX_CAPTION_FRACTION
 
 
 def test_caption_bottom_fraction_handles_zero_or_negative_height_without_dividing_by_zero():
-    assert _caption_bottom_fraction(0.0) == _MAX_CAPTION_FRACTION
-    assert _caption_bottom_fraction(-5.0) == _MAX_CAPTION_FRACTION
+    assert _caption_bottom_fraction(0.7, 0.0) == _MAX_CAPTION_FRACTION
+    assert _caption_bottom_fraction(0.7, -5.0) == _MAX_CAPTION_FRACTION
 
 
 def test_figure_builder_for_filename_maps_fixed_impairment_and_combined_names():

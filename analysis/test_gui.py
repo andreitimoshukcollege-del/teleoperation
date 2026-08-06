@@ -167,27 +167,32 @@ def _select_zoom_target(axes, x_px: float, y_px: float):
     return next((ax for ax in axes if ax.bbox.contains(x_px, y_px)), None)
 
 
-_CAPTION_MARGIN_INCHES = 0.7  # enough for the ~2-line caption + note every figures/*.py builder
-                              # adds below its axes, regardless of how tall the live view stretches
+_CAPTION_MARGIN_INCHES_FALLBACK = 0.7  # only used if a figure somehow reaches _show_figure
+                                       # without ever going through _poll_figure_build's stash
 _MAX_CAPTION_FRACTION = 0.3  # never let the caption strip eat more than this on a very short figure
 
 
-def _caption_bottom_fraction(figure_height_inches: float) -> float:
+def _caption_bottom_fraction(native_margin_inches: float, figure_height_inches: float) -> float:
     """The bottom-margin fraction `_fit_figure_to_container` should pass to `fig.subplots_adjust`
-    so the caption stays a fixed *absolute* height regardless of the figure's current size.
+    so the caption (and, for combined_response.py, its rotated x-tick labels) stays a fixed
+    *absolute* height regardless of the figure's current size.
 
-    Every figures/*.py builder reserves the caption's margin as a one-shot *fraction* of the
-    figure's build-time height (`fig.tight_layout(rect=(0, MARGIN, 1, 1))`, MARGIN 0.09-0.16
-    depending on module) -- sized for that small, fixed build-time height. Once the live GUI view
-    stretches the same figure to fill a much taller window, that fraction becomes a much larger
-    absolute gap (the caption's font size is fixed in points, not scaled with the figure), which
-    is the large blank strip below the caption text on a maximized window. Recomputing the
-    fraction from a fixed absolute inches value keeps the gap the same physical size no matter how
-    tall the container gets.
+    `native_margin_inches` is `fig._native_bottom_margin_inches`, captured once in
+    `_poll_figure_build` right after a figure is built: `fig.subplotpars.bottom *
+    fig.get_size_inches()[1]`, i.e. exactly what that figure's own one-shot
+    `fig.tight_layout(rect=(0, MARGIN, 1, 1))` call already measured was needed below the axes for
+    *this specific figure's* content (caption text, but also combined_response.py's rotated,
+    dense x-tick labels, which need considerably more room than plain caption text and than
+    impairment-response's/the bar charts' un-rotated or shorter labels -- a single fixed guess
+    here previously caused the caption to overlap combined_response.py's tick labels). Once the
+    live GUI view stretches the same figure to fill a much taller window, that same *fraction*
+    would become a much larger absolute gap (fonts are fixed in points, not scaled with the
+    figure) -- recomputing the fraction from the fixed absolute-inches value keeps the gap the
+    same physical size no matter how tall the container gets.
     """
     if figure_height_inches <= 0:
         return _MAX_CAPTION_FRACTION
-    return min(_MAX_CAPTION_FRACTION, _CAPTION_MARGIN_INCHES / figure_height_inches)
+    return min(_MAX_CAPTION_FRACTION, native_margin_inches / figure_height_inches)
 
 
 def _clamp_ylim_nonnegative(ax) -> None:
@@ -724,7 +729,8 @@ class PickerApp:
 
         fig = self._current_figure
         fig.set_size_inches(container_w / fig.dpi, container_h / fig.dpi)
-        fig.subplots_adjust(bottom=_caption_bottom_fraction(fig.get_size_inches()[1]))
+        native_margin = getattr(fig, "_native_bottom_margin_inches", _CAPTION_MARGIN_INCHES_FALLBACK)
+        fig.subplots_adjust(bottom=_caption_bottom_fraction(native_margin, fig.get_size_inches()[1]))
         self._current_figure_canvas.draw_idle()
 
     def _on_figure_selected(self) -> None:
@@ -781,10 +787,14 @@ class PickerApp:
             return
 
         fig, caption = result
-        # Stashed once, here, before any FigureCanvasTkAgg has ever touched this figure -- see
-        # _show_figure for why this needs to be reset before every canvas construction, not just
-        # captured once.
+        # Stashed once, here, before any FigureCanvasTkAgg or _fit_figure_to_container has ever
+        # touched this figure -- see _show_figure for why _native_dpi needs to be reset before
+        # every canvas construction, not just captured once. _native_bottom_margin_inches is the
+        # bottom margin this figure's own build-time tight_layout(rect=(0, MARGIN, 1, 1)) call
+        # already correctly measured for its content (caption text, and for combined_response.py,
+        # rotated x-tick labels too) -- see _caption_bottom_fraction.
         fig._native_dpi = fig.dpi
+        fig._native_bottom_margin_inches = fig.subplotpars.bottom * fig.get_size_inches()[1]
         # Connected once, here, when the figure first enters the cache -- not in _show_figure,
         # which also runs on every cache-hit re-display of an already-connected figure.
         clamp_x = filename in _FIXED_BUILDERS  # line charts only -- see _clamp_xlim_nonnegative

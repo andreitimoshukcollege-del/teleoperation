@@ -120,14 +120,28 @@ disagree, and you will trust the wrong one.
   bar-chart figures (`error-cost`/`latency`/`stack-comparison`) deliberately do *not* get the
   x-clamp -- their leftmost bar group is centered at x=0 and extends slightly left of it
   (`figures/_bars.py`), so clamping there would clip it. `_fit_figure_to_container` also
-  recomputes the caption's bottom margin on every resize (`_caption_bottom_fraction`, from a
-  fixed `_CAPTION_MARGIN_INCHES = 0.7` capped at `_MAX_CAPTION_FRACTION` of the figure's height)
-  rather than leaving each figure's one-shot `fig.tight_layout(rect=(0, MARGIN, 1, 1))` margin
-  (a *fraction*, sized for that figure's small build-time height) in place -- otherwise the same
-  fraction becomes a much larger *absolute* gap once the container stretches the figure to fill a
-  tall window, since the caption's font size is fixed in points, not scaled with the figure. None
-  of the 5 figure builders set a persistent layout engine, so this later `subplots_adjust` call
-  doesn't conflict with their one-shot `tight_layout`.
+  recomputes the caption's bottom margin on every resize (`_caption_bottom_fraction`) rather than
+  leaving each figure's one-shot `fig.tight_layout(rect=(0, MARGIN, 1, 1))` margin (a *fraction*,
+  sized for that figure's small build-time height) in place -- otherwise the same fraction
+  becomes a much larger *absolute* gap once the container stretches the figure to fill a tall
+  window, since caption/tick-label font sizes are fixed in points, not scaled with the figure.
+  The absolute margin to hold onto (`fig._native_bottom_margin_inches`) is captured once in
+  `_poll_figure_build`, right after a figure is built and before anything else has touched it:
+  `fig.subplotpars.bottom * fig.get_size_inches()[1]` -- exactly what that figure's own
+  `tight_layout` call already measured its content needs, so `combined_response.py`'s rotated,
+  dense x-tick labels (which need considerably more room than plain caption text) automatically
+  get a bigger preserved margin than `impairment-response`'s or the bar charts' shorter/unrotated
+  labels, with no per-module special-casing in `test_gui.py` -- an earlier version used one flat
+  guess for every figure kind, which was too small for `combined-response` and let its caption
+  overlap the rotated tick labels. None of the 5 figure builders set a persistent layout engine,
+  so this later `subplots_adjust` call doesn't conflict with their one-shot `tight_layout`.
+  `combined-response`'s and `impairment-response`'s shared per-metric builders filter and group
+  the run's dataframe *once* (`name == metric`, then one `percentiles.summarize(..., ["stack",
+  "profile"])` call) rather than once per stack -- `stack`/`profile` are deliberately plain string
+  columns (`io_utils.py`), so a dense sweep's dataframe (tens of millions of rows) being scanned
+  repeatedly is real, measured cost (a ~92M-row stress-test sweep's `combined-response` builds
+  went from ~24s/~32s to ~16s/~20s after this change, output confirmed identical against the
+  unvectorized version).
   `experiments/*.yaml` generation is
   `experiment_builder.py` (pure, unit tested) — the GUI just writes what it returns and shells
   out to `dotnet run -- sweep`. Needs a real display, not a piped/non-interactive shell — in this

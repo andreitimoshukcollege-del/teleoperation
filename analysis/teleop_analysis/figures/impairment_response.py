@@ -90,11 +90,21 @@ def _build_metric_vs_impairment_figure(
     x_values = [axis_value(p, axis) for p in ordered]
 
     fig, ax = plt.subplots(figsize=(9, 5.5))
+
+    # Filter and group once, not once per stack -- df can be tens of millions of rows for a dense
+    # sweep, and `stack`/`profile` are deliberately plain string columns (io_utils.py), so a
+    # filter pass is a full string-hash scan every time it reruns.
+    metric_df = df[(df["name"] == metric) & (df["profile"].isin(ordered))]
+    table = percentiles.summarize(metric_df, ["stack", "profile"]).set_index(["stack", "profile"])
+    known_stacks = set(table.index.get_level_values("stack"))
+
     for stack in sorted(df["stack"].unique()):
-        stack_df = df[(df["stack"] == stack) & (df["name"] == metric) & (df["profile"].isin(ordered))]
-        table = percentiles.summarize(stack_df, ["profile"]).set_index("profile")
-        p50_values = [table.loc[p, "p50"] if p in table.index else float("nan") for p in ordered]
-        p95_values = [table.loc[p, "p95"] if p in table.index else float("nan") for p in ordered]
+        if stack in known_stacks:
+            stack_table = table.xs(stack, level="stack").reindex(ordered)
+        else:
+            stack_table = pd.DataFrame(index=ordered, columns=["p50", "p95"], dtype=float)
+        p50_values = stack_table["p50"].to_numpy()
+        p95_values = stack_table["p95"].to_numpy()
 
         line = ax.plot(
             x_values, p50_values, marker="o", label=f"{friendly_stack_name(stack)} (typical)"

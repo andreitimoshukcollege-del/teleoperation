@@ -829,10 +829,27 @@ def _apply_dpi_scaling(root: tk.Tk) -> None:
         pass
 
 
+def _cap_window_to_screen(root: tk.Tk) -> None:
+    """Tk's own geometry manager doesn't clamp a window's requested size to the physical
+    screen on its own -- combined with `_apply_dpi_scaling` above (needed so widgets aren't
+    sharp-but-tiny on a >100% Windows display-scaling setting), the *sum* of every child
+    widget's now-larger natural size can add up to more than the screen itself, and maximizing
+    (or full-screening) then asks for a window bigger than the display -- the embedded chart
+    included, since it's sized to whatever its container ends up getting. Setting an explicit
+    maximum caps every subsequent resize (including maximize) to the screen's own bounds,
+    regardless of what the DPI-scaled child widgets would otherwise add up to.
+    """
+    try:
+        root.maxsize(root.winfo_screenwidth(), root.winfo_screenheight())
+    except tk.TclError:
+        pass
+
+
 def launch() -> Optional[int]:
     _set_windows_dpi_awareness()
     root = tk.Tk()
     _apply_dpi_scaling(root)
+    _cap_window_to_screen(root)
     app = PickerApp(root)
     root.mainloop()
     return app.last_exit_code

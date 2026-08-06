@@ -94,7 +94,14 @@ disagree, and you will trust the wrong one.
   repo that's never an issue since `analysis/` already runs on the Windows-side Python (see setup
   above), so it opens as a normal Windows window. This is a human-facing convenience, not a
   replacement for `pytest -v`/`run_tests.py --all` above, which stay the way to verify
-  `analysis/`'s own code.
+  `analysis/`'s own code. `launch()` also does two DPI things Windows needs, in order: tell
+  Windows the process handles its own scaling (`_set_windows_dpi_awareness`, otherwise the whole
+  window comes out blurry on a >100%-scaled display), then tell Tk the real DPI
+  (`_apply_dpi_scaling`, so widgets come out a normal physical size instead of sharp-but-tiny) --
+  and, since that second step can otherwise make maximizing/full-screening request a window
+  bigger than the screen (a >100%-scaled display's widgets add up to more space than the display
+  has), `_cap_window_to_screen` caps the window's max size to the screen's own bounds right
+  after.
 - The Figures tab's **Delete Run** button permanently removes a `results/<exp>/<run>/`
   directory, after a confirmation dialog — the one intentional exception to root CLAUDE.md's
   "never touch `results/`" boundary, since it's a human clicking a button and confirming, not an

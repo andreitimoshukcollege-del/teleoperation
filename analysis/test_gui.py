@@ -167,6 +167,33 @@ def _select_zoom_target(axes, x_px: float, y_px: float):
     return next((ax for ax in axes if ax.bbox.contains(x_px, y_px)), None)
 
 
+def _clamp_ylim_nonnegative(ax) -> None:
+    """Every metric this GUI plots is a non-negative magnitude -- a Euclidean position error in
+    mm (docs/metrics.md's `PoseMath.PositionErrorMeters`), a correction distance in mm, or a
+    one-way delay in ms. Negative y is never a real value; it's only ever an artifact of
+    interactive zoom/pan pushing the visible range past the data's own floor of 0. Registered as
+    a `ylim_changed` callback (see _poll_figure_build) so it self-corrects regardless of what
+    caused the change -- our own scroll zoom, or the toolbar's pan/zoom-rectangle tools, which
+    have no notion of this constraint on their own.
+
+    Calling `set_ylim` again here re-fires `ylim_changed` once more, but with `ylo` now exactly
+    0 (not negative), so the guard below is false on that second call and it stops there --
+    bounded recursion, not a loop.
+    """
+    ylo, yhi = ax.get_ylim()
+    if ylo < 0:
+        ax.set_ylim(0, yhi)
+
+
+def _figures_same_size(a: Optional[Figure], b: Optional[Figure]) -> bool:
+    """Whether two figures would produce the same `FigureCanvasTkAgg` backing-buffer size --
+    the condition `_show_figure` uses to decide whether reusing the existing canvas/toolbar is
+    safe (see its docstring for why a size change specifically must not reuse them)."""
+    if a is None or b is None:
+        return False
+    return tuple(a.get_size_inches()) == tuple(b.get_size_inches()) and a.dpi == b.dpi
+
+
 def build_report_command(run_dir: Path, figures: Optional[str] = None) -> List[str]:
     """The exact subprocess argv used to (re)generate a run's figures -- same CLI `just report`
     wraps. Absolute path so it doesn't matter what the subprocess's cwd ends up being. `figures`
@@ -585,12 +612,31 @@ class PickerApp:
         self._current_figure = None
 
     def _show_figure(self, fig: Figure) -> None:
-        """Displays `fig`, reusing the existing canvas/toolbar if one is already showing --
-        recreating `NavigationToolbar2Tk` on every figure switch was the single largest fixed
-        cost in the old per-click rebuild (it re-decodes and resizes every toolbar icon PNG from
-        disk on construction), and the icons never change, only the Figure does.
+        """Displays `fig`, reusing the existing canvas/toolbar only when the new figure is
+        exactly the same size as the one currently shown -- recreating `NavigationToolbar2Tk` on
+        every figure switch was the single largest fixed cost in the old per-click rebuild (it
+        re-decodes and resizes every toolbar icon PNG from disk on construction), so it's worth
+        avoiding when we safely can.
+
+        Reuse is deliberately size-gated: `FigureCanvasTkAgg`'s internal backing buffer
+        (`_tkphoto`) is sized once, at construction, to that first figure's pixel dimensions.
+        Reconfiguring the *outer* Tk widget's width/height (as an earlier version of this method
+        did) does not resize that inner buffer -- switching to a smaller figure then left the
+        previous, larger figure's pixels visible around the edges of the new one, which is
+        exactly the "stack on top of each other" bug this guards against. Only a fresh
+        `FigureCanvasTkAgg` is guaranteed to have a correctly sized buffer, so any size change
+        (combined_response's width grows with sweep density; every other figure type is a fixed
+        size) falls back to a full rebuild.
         """
-        if self._current_figure_canvas is None:
+        if (
+            self._current_figure_canvas is not None
+            and _figures_same_size(fig, self._current_figure)
+        ):
+            canvas = self._current_figure_canvas
+            canvas.figure = fig
+            fig.set_canvas(canvas)
+        else:
+            self._clear_image()
             canvas = FigureCanvasTkAgg(fig, master=self.canvas_container)
             widget = canvas.get_tk_widget()
             widget.pack(fill=tk.BOTH, expand=True)
@@ -599,16 +645,6 @@ class PickerApp:
             toolbar.update()
             self._current_figure_canvas = canvas
             self._current_toolbar = toolbar
-        else:
-            canvas = self._current_figure_canvas
-            canvas.figure = fig
-            fig.set_canvas(canvas)
-            # Different figure kinds have different figsize (combined_response's width grows
-            # with sweep density) -- resize the Tk widget to match, the same computation
-            # FigureCanvasTkAgg.__init__ itself does from a fresh figure.
-            width_px = round(fig.get_size_inches()[0] * fig.dpi)
-            height_px = round(fig.get_size_inches()[1] * fig.dpi)
-            canvas.get_tk_widget().config(width=width_px, height=height_px)
 
         self._current_figure = fig
         canvas.draw()
@@ -667,6 +703,10 @@ class PickerApp:
             return
 
         fig, caption = result
+        # Connected once, here, when the figure first enters the cache -- not in _show_figure,
+        # which also runs on every cache-hit re-display of an already-connected figure.
+        for ax in fig.axes:
+            ax.callbacks.connect("ylim_changed", _clamp_ylim_nonnegative)
         self._figure_cache[(run, filename)] = (fig, caption)
         self._show_figure(fig)
         self.figures_status.config(text="")

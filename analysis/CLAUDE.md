@@ -72,8 +72,15 @@ disagree, and you will trust the wrong one.
   the life of the GUI process (a run's data is immutable once written -- `results/CLAUDE.md`) and
   a cache miss builds off the Tk main thread (same background-thread-plus-`root.after`-polling
   pattern as running a sweep), so switching figures doesn't hang the window; the canvas and
-  toolbar are created once and reused across figure switches rather than rebuilt per click, since
-  recreating `NavigationToolbar2Tk` re-decodes every toolbar icon from disk each time.
+  toolbar are reused across figure switches only when the new figure is the exact same size as
+  the one showing (`_figures_same_size`) -- `FigureCanvasTkAgg`'s backing buffer is sized once,
+  at construction, so reusing it across a size change (e.g. `combined-response`'s width, which
+  grows with sweep density, vs. any fixed-size figure) leaves the previous figure's pixels
+  visible around the edges of the new one; a size change always gets a fresh canvas/toolbar
+  instead. Every axes gets a `ylim_changed` callback (`_clamp_ylim_nonnegative`) pulling the
+  lower bound back to 0 if zoom/pan ever pushes it negative -- every metric plotted here is a
+  non-negative magnitude (a distance in mm, a one-way delay in ms), so a negative y value is
+  never real, only ever a zoom/pan artifact.
   `experiments/*.yaml` generation is
   `experiment_builder.py` (pure, unit tested) — the GUI just writes what it returns and shells
   out to `dotnet run -- sweep`. Needs a real display, not a piped/non-interactive shell — in this

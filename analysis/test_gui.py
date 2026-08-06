@@ -167,6 +167,29 @@ def _select_zoom_target(axes, x_px: float, y_px: float):
     return next((ax for ax in axes if ax.bbox.contains(x_px, y_px)), None)
 
 
+_CAPTION_MARGIN_INCHES = 0.7  # enough for the ~2-line caption + note every figures/*.py builder
+                              # adds below its axes, regardless of how tall the live view stretches
+_MAX_CAPTION_FRACTION = 0.3  # never let the caption strip eat more than this on a very short figure
+
+
+def _caption_bottom_fraction(figure_height_inches: float) -> float:
+    """The bottom-margin fraction `_fit_figure_to_container` should pass to `fig.subplots_adjust`
+    so the caption stays a fixed *absolute* height regardless of the figure's current size.
+
+    Every figures/*.py builder reserves the caption's margin as a one-shot *fraction* of the
+    figure's build-time height (`fig.tight_layout(rect=(0, MARGIN, 1, 1))`, MARGIN 0.09-0.16
+    depending on module) -- sized for that small, fixed build-time height. Once the live GUI view
+    stretches the same figure to fill a much taller window, that fraction becomes a much larger
+    absolute gap (the caption's font size is fixed in points, not scaled with the figure), which
+    is the large blank strip below the caption text on a maximized window. Recomputing the
+    fraction from a fixed absolute inches value keeps the gap the same physical size no matter how
+    tall the container gets.
+    """
+    if figure_height_inches <= 0:
+        return _MAX_CAPTION_FRACTION
+    return min(_MAX_CAPTION_FRACTION, _CAPTION_MARGIN_INCHES / figure_height_inches)
+
+
 def _clamp_ylim_nonnegative(ax) -> None:
     """Every metric this GUI plots is a non-negative magnitude -- a Euclidean position error in
     mm (docs/metrics.md's `PoseMath.PositionErrorMeters`), a correction distance in mm, or a
@@ -701,6 +724,7 @@ class PickerApp:
 
         fig = self._current_figure
         fig.set_size_inches(container_w / fig.dpi, container_h / fig.dpi)
+        fig.subplots_adjust(bottom=_caption_bottom_fraction(fig.get_size_inches()[1]))
         self._current_figure_canvas.draw_idle()
 
     def _on_figure_selected(self) -> None:

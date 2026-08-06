@@ -55,7 +55,18 @@ disagree, and you will trust the wrong one.
   output stream live, then switch to the Figures tab
   to generate/view that run's charts. Checkboxes there also let you pick which figure *kinds* to
   generate (bar graphs, line graphs, table) — useful because a dense sweep's bar charts (one per
-  profile) can otherwise bury the handful of line charts; `combined-response` (the whole combined
+  profile) can otherwise bury the handful of line charts; whichever bar-chart kinds are requested
+  are generated in parallel across profiles (`teleop_analysis/cli.py`'s `ProcessPoolExecutor`
+  over `_generate_profile_figures`, one process-pool task per profile, fed a pre-grouped
+  (`df.groupby("profile", observed=True)`) per-profile slice rather than the whole run's
+  dataframe) rather than the sequential per-profile loop this used to be -- a 121-profile dense
+  sweep's bar charts went from ~118s to ~23s in measurement, with byte-identical PNG output,
+  since matplotlib rendering is CPU/Python-bound (unlike `io_utils.py`'s I/O-bound CSV reads, so
+  a thread pool wouldn't give real parallelism here). Note `dict(df.groupby(...))` -- without
+  wrapping in `iter()` -- raises `TypeError: 'str' object is not callable`: `GroupBy` has a
+  `.keys` *attribute* (whatever was passed to `by=`), and `dict()` decides an argument is a
+  mapping by checking `hasattr(arg, "keys")`, then calls it as `arg.keys()` -- calling the string
+  itself. `combined-response` (the whole combined
   sweep as one chart, x-tick labels spelling out every axis's value at each step) is grouped
   under "Line graphs" alongside `impairment-response`. Selecting a figure embeds the **live
   matplotlib chart** (`FigureCanvasTkAgg`), not the saved PNG -- crisp at any zoom level since
@@ -108,7 +119,15 @@ disagree, and you will trust the wrong one.
   autoscale margin, not just future zoom/pan) as well as on every subsequent change. The
   bar-chart figures (`error-cost`/`latency`/`stack-comparison`) deliberately do *not* get the
   x-clamp -- their leftmost bar group is centered at x=0 and extends slightly left of it
-  (`figures/_bars.py`), so clamping there would clip it.
+  (`figures/_bars.py`), so clamping there would clip it. `_fit_figure_to_container` also
+  recomputes the caption's bottom margin on every resize (`_caption_bottom_fraction`, from a
+  fixed `_CAPTION_MARGIN_INCHES = 0.7` capped at `_MAX_CAPTION_FRACTION` of the figure's height)
+  rather than leaving each figure's one-shot `fig.tight_layout(rect=(0, MARGIN, 1, 1))` margin
+  (a *fraction*, sized for that figure's small build-time height) in place -- otherwise the same
+  fraction becomes a much larger *absolute* gap once the container stretches the figure to fill a
+  tall window, since the caption's font size is fixed in points, not scaled with the figure. None
+  of the 5 figure builders set a persistent layout engine, so this later `subplots_adjust` call
+  doesn't conflict with their one-shot `tight_layout`.
   `experiments/*.yaml` generation is
   `experiment_builder.py` (pure, unit tested) — the GUI just writes what it returns and shells
   out to `dotnet run -- sweep`. Needs a real display, not a piped/non-interactive shell — in this

@@ -15,9 +15,23 @@ import tkinter as tk
 from pathlib import Path
 from tkinter import messagebox, ttk
 from tkinter.scrolledtext import ScrolledText
-from typing import Dict, List, Optional, Tuple
+from typing import Callable, Dict, List, Optional, Tuple
+
+import matplotlib.pyplot as plt
+import pandas as pd
+from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
+from matplotlib.figure import Figure
 
 import experiment_builder
+from teleop_analysis import io_utils
+from teleop_analysis.figures import (
+    combined_response,
+    error_vs_cost,
+    impairment_response,
+    latency_distribution,
+    stack_comparison,
+)
+from teleop_analysis.manifest import Manifest
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 RESULTS_DIR = REPO_ROOT / "results"
@@ -71,9 +85,164 @@ def delete_run(run_dir: Path) -> None:
 # figure list, so letting either group be skipped is the point, not just a convenience.
 FIGURE_GROUPS = {
     "Bar graphs": ("error-cost", "latency", "stack-comparison"),
-    "Line graphs": ("impairment-response",),
+    "Line graphs": ("impairment-response", "combined-response"),
     "Table": ("table",),
 }
+
+# Figures tab: the selected figure is embedded as a live matplotlib Figure (FigureCanvasTkAgg),
+# not a saved PNG -- crisp at any zoom level (matplotlib redraws from the real data instead of
+# resampling a raster image) and matplotlib's own NavigationToolbar2Tk supplies pan/zoom-
+# rectangle/save/reset. Scroll-wheel zoom is added on top of that toolbar, anchored on the data
+# point under the cursor.
+_ZOOM_STEP = 1.25
+
+# Maps a per-profile figure's filename *suffix* to the build_* function that (re)builds it as a
+# live Figure -- the profile name is whatever's left after stripping the suffix, mirroring how
+# each figures/*.py module names its own saved PNG (f"{profile}__<suffix>").
+_PER_PROFILE_BUILDERS: Dict[str, Callable[[pd.DataFrame, Manifest, str], Tuple[Figure, str]]] = {
+    "__error_vs_cost.png": error_vs_cost.build_error_vs_cost_figure,
+    "__latency.png": latency_distribution.build_latency_distribution_figure,
+    "__stack_comparison.png": stack_comparison.build_stack_comparison_figure,
+}
+
+# Whole-run figures (no per-profile suffix to strip) keyed by their exact, fixed filename.
+_FIXED_BUILDERS: Dict[str, Callable[[pd.DataFrame, Manifest], Optional[Tuple[Figure, str]]]] = {
+    "impairment__correction_vs_jitter.png": impairment_response.build_correction_vs_jitter_figure,
+    "impairment__prediction_error_vs_jitter.png": impairment_response.build_prediction_error_vs_jitter_figure,
+    "impairment__correction_vs_delay.png": impairment_response.build_correction_vs_delay_figure,
+    "impairment__prediction_error_vs_delay.png": impairment_response.build_prediction_error_vs_delay_figure,
+    "impairment__correction_vs_loss.png": impairment_response.build_correction_vs_loss_figure,
+    "impairment__prediction_error_vs_loss.png": impairment_response.build_prediction_error_vs_loss_figure,
+    "combined__correction.png": combined_response.build_correction_vs_combined_figure,
+    "combined__prediction_error.png": combined_response.build_prediction_error_vs_combined_figure,
+}
+
+
+def _figure_builder_for_filename(
+    filename: str,
+) -> Optional[Callable[[pd.DataFrame, Manifest], Optional[Tuple[Figure, str]]]]:
+    """Maps a figure PNG's filename back to the in-process function that (re)builds it as a live
+    matplotlib Figure, for the Figures tab's embedded live view -- mirrors the filename patterns
+    each figures/*.py module's plot_* wrapper already writes to disk. `None` for a name that
+    doesn't match any known figure kind ("table"'s summary_table.csv never reaches this at all --
+    it isn't a .png, so figures_for_run never lists it).
+    """
+    if filename in _FIXED_BUILDERS:
+        return _FIXED_BUILDERS[filename]
+    for suffix, build_fn in _PER_PROFILE_BUILDERS.items():
+        if filename.endswith(suffix):
+            profile = filename[: -len(suffix)]
+            return lambda df, manifest: build_fn(df, manifest, profile)
+    return None
+
+
+def _zoom_axes_around_point(ax, x_px: float, y_px: float, zoom_in: bool) -> None:
+    """Rescales `ax`'s x/y limits by _ZOOM_STEP around the data point under (x_px, y_px) (pixel
+    coordinates in the figure's own space, bottom-left origin like matplotlib's), keeping that
+    point fixed on screen -- "zooming into where the mouse is pointing," on real axis limits
+    instead of a raster image, so it's exact at any zoom level instead of softening.
+    """
+    data_x, data_y = ax.transData.inverted().transform((x_px, y_px))
+    factor = (1.0 / _ZOOM_STEP) if zoom_in else _ZOOM_STEP
+    xlo, xhi = ax.get_xlim()
+    ylo, yhi = ax.get_ylim()
+    ax.set_xlim(data_x - (data_x - xlo) * factor, data_x + (xhi - data_x) * factor)
+    ax.set_ylim(data_y - (data_y - ylo) * factor, data_y + (yhi - data_y) * factor)
+
+
+def _select_zoom_target(axes, x_px: float, y_px: float):
+    """Which of `axes` a scroll-wheel zoom at pixel position (x_px, y_px) should target. A
+    single-axes figure has no "which panel" to disambiguate, so it's always the target
+    regardless of exact cursor position -- a strict bbox-containment check there misses whenever
+    the cursor is over a chart's caption/tick-label margin rather than the plotted area itself,
+    which for e.g. combined_response.py's large bottom margin + rotated tick labels is often
+    exactly where a user points to zoom into a dense chart's x-axis. A multi-axes figure
+    (side-by-side panels) still needs the containment check to pick the right one; `None` if the
+    point is over neither panel.
+    """
+    if not axes:
+        return None
+    if len(axes) == 1:
+        return axes[0]
+    return next((ax for ax in axes if ax.bbox.contains(x_px, y_px)), None)
+
+
+_CAPTION_MARGIN_INCHES_FALLBACK = 0.7  # only used if a figure somehow reaches _show_figure
+                                       # without ever going through _poll_figure_build's stash
+_MAX_CAPTION_FRACTION = 0.3  # never let the caption strip eat more than this on a very short figure
+
+
+def _caption_bottom_fraction(native_margin_inches: float, figure_height_inches: float) -> float:
+    """The bottom-margin fraction `_fit_figure_to_container` should pass to `fig.subplots_adjust`
+    so the caption (and, for combined_response.py, its rotated x-tick labels) stays a fixed
+    *absolute* height regardless of the figure's current size.
+
+    `native_margin_inches` is `fig._native_bottom_margin_inches`, captured once in
+    `_poll_figure_build` right after a figure is built: `fig.subplotpars.bottom *
+    fig.get_size_inches()[1]`, i.e. exactly what that figure's own one-shot
+    `fig.tight_layout(rect=(0, MARGIN, 1, 1))` call already measured was needed below the axes for
+    *this specific figure's* content (caption text, but also combined_response.py's rotated,
+    dense x-tick labels, which need considerably more room than plain caption text and than
+    impairment-response's/the bar charts' un-rotated or shorter labels -- a single fixed guess
+    here previously caused the caption to overlap combined_response.py's tick labels). Once the
+    live GUI view stretches the same figure to fill a much taller window, that same *fraction*
+    would become a much larger absolute gap (fonts are fixed in points, not scaled with the
+    figure) -- recomputing the fraction from the fixed absolute-inches value keeps the gap the
+    same physical size no matter how tall the container gets.
+    """
+    if figure_height_inches <= 0:
+        return _MAX_CAPTION_FRACTION
+    return min(_MAX_CAPTION_FRACTION, native_margin_inches / figure_height_inches)
+
+
+def _clamp_ylim_nonnegative(ax) -> None:
+    """Every metric this GUI plots is a non-negative magnitude -- a Euclidean position error in
+    mm (docs/metrics.md's `PoseMath.PositionErrorMeters`), a correction distance in mm, or a
+    one-way delay in ms. Negative y is never a real value; it's only ever an artifact of
+    interactive zoom/pan pushing the visible range past the data's own floor of 0. Registered as
+    a `ylim_changed` callback (see _poll_figure_build) so it self-corrects regardless of what
+    caused the change -- our own scroll zoom, or the toolbar's pan/zoom-rectangle tools, which
+    have no notion of this constraint on their own.
+
+    Calling `set_ylim` again here re-fires `ylim_changed` once more, but with `ylo` now exactly
+    0 (not negative), so the guard below is false on that second call and it stops there --
+    bounded recursion, not a loop.
+    """
+    ylo, yhi = ax.get_ylim()
+    if ylo < 0:
+        ax.set_ylim(0, yhi)
+
+
+def _clamp_xlim_nonnegative(ax) -> None:
+    """Same idea as _clamp_ylim_nonnegative, for x -- but only wired up for the line-chart
+    figures (impairment_response.py's jitter/delay/loss, combined_response.py's step index; see
+    _poll_figure_build's `filename in _FIXED_BUILDERS` check), never the bar-chart figures
+    (error_vs_cost.py etc.): a bar chart's leftmost group is centered *at* x=0 and extends
+    slightly left of it (`_bars.py`'s `x - width`), so clamping there would clip it.
+    """
+    xlo, xhi = ax.get_xlim()
+    if xlo < 0:
+        ax.set_xlim(0, xhi)
+
+
+def _reset_figure_dpi_to_native(fig: Figure) -> None:
+    """Resets `fig.dpi` to its native (build-time) value, stashed once as `fig._native_dpi` when
+    the figure first entered the cache (see `_poll_figure_build`) -- a no-op if `_native_dpi`
+    isn't set (a figure that was never cached at all, e.g. one `_show_figure` never got called
+    for).
+
+    Must run before every `FigureCanvasTkAgg` construction for a figure that might already have
+    had one: on a >100%-scaled Windows display, `FigureCanvasBase.__init__` captures
+    `figure._original_dpi = figure.dpi` (matplotlib's own comment there: "we don't want to scale
+    up the figure DPI more than once"), and a later `<Map>` callback scales `dpi` up from that
+    baseline by the display's device pixel ratio. That safeguard assumes one canvas per figure
+    for its whole lifetime; rebuilding the canvas on every click instead means each new canvas
+    recaptures `_original_dpi` from whatever `dpi` the *previous* canvas already scaled it to,
+    compounding the scale-up -- and every point-sized element (fonts, line widths, markers) with
+    it -- on every single figure switch. Resetting to the never-touched-by-a-canvas native value
+    first breaks that chain.
+    """
+    fig.dpi = getattr(fig, "_native_dpi", fig.dpi)
 
 
 def build_report_command(run_dir: Path, figures: Optional[str] = None) -> List[str]:
@@ -110,11 +279,23 @@ class PickerApp:
         self.predictor_vars: Dict[str, tk.BooleanVar] = {}
         self.axis_enabled_vars: Dict[str, tk.BooleanVar] = {}
         self.axis_entries: Dict[str, Dict[str, ttk.Entry]] = {}
+        self.combined_axis_enabled_vars: Dict[str, tk.BooleanVar] = {}
+        self.combined_axis_entries: Dict[str, Dict[str, ttk.Entry]] = {}
 
         self.run_display_to_path: Dict[str, Path] = {}
         self.figures_queue: "queue.Queue" = queue.Queue()
-        self._current_photo: Optional[tk.PhotoImage] = None
+        self._current_figure: Optional[Figure] = None
+        self._current_figure_canvas: Optional[FigureCanvasTkAgg] = None
+        self._current_toolbar: Optional[NavigationToolbar2Tk] = None
+        self._run_data_cache: Optional[Tuple[Path, Manifest, pd.DataFrame]] = None
         self.figure_group_vars: Dict[str, tk.BooleanVar] = {}
+
+        # (run, filename) -> (Figure, caption) -- a run's data is immutable once written
+        # (results/CLAUDE.md: append-only), so a cached figure never needs invalidating for the
+        # same run; only closed (plt.close) when the whole cache is torn down in _on_close.
+        self._figure_cache: Dict[Tuple[Path, str], Tuple[Figure, str]] = {}
+        self._figure_build_queue: "queue.Queue" = queue.Queue()
+        self._figure_request_id = 0
 
         notebook = ttk.Notebook(self.root)
         notebook.pack(fill=tk.BOTH, expand=True)
@@ -154,6 +335,28 @@ class PickerApp:
                 entries[field] = entry
             ttk.Label(row, text=defaults["unit"]).pack(side=tk.LEFT, padx=(4, 0))
             self.axis_entries[axis] = entries
+
+        ttk.Label(
+            container, text="Combined impairments (cross-product -- check 2+ to combine)",
+            font=("TkDefaultFont", 10, "bold"),
+        ).pack(anchor="w", pady=(8, 0))
+        for axis, defaults in AXIS_DEFAULTS.items():
+            row = ttk.Frame(container)
+            row.pack(anchor="w", pady=2, fill=tk.X)
+
+            enabled = tk.BooleanVar(value=False)
+            self.combined_axis_enabled_vars[axis] = enabled
+            ttk.Checkbutton(row, text=axis, variable=enabled, width=8).pack(side=tk.LEFT)
+
+            entries: Dict[str, ttk.Entry] = {}
+            for field in ("min", "max", "step"):
+                ttk.Label(row, text=field).pack(side=tk.LEFT, padx=(8, 2))
+                entry = ttk.Entry(row, width=8)
+                entry.insert(0, defaults[field])
+                entry.pack(side=tk.LEFT)
+                entries[field] = entry
+            ttk.Label(row, text=defaults["unit"]).pack(side=tk.LEFT, padx=(4, 0))
+            self.combined_axis_entries[axis] = entries
 
         settings_row = ttk.Frame(container)
         settings_row.pack(anchor="w", pady=(8, 0), fill=tk.X)
@@ -213,6 +416,42 @@ class PickerApp:
                 profiles.extend(point_fns[axis](min_v, max_v, step_v))
             except ValueError as exc:
                 return None, f"{axis}: {exc}"
+
+        combined_values: Dict[str, List[float]] = {}
+        for axis, enabled in self.combined_axis_enabled_vars.items():
+            if not enabled.get():
+                continue
+            entries = self.combined_axis_entries[axis]
+            try:
+                min_v = float(entries["min"].get())
+                max_v = float(entries["max"].get())
+                step_v = float(entries["step"].get())
+            except ValueError:
+                return None, f"combined {axis}: min/max/step must be numbers"
+            try:
+                combined_values[axis] = experiment_builder.axis_points(min_v, max_v, step_v)
+            except ValueError as exc:
+                return None, f"combined {axis}: {exc}"
+
+        if combined_values:
+            try:
+                combined_profiles = experiment_builder.combined_points(
+                    delay_ms=combined_values.get("delay", ()),
+                    jitter_ms=combined_values.get("jitter", ()),
+                    loss_pct=combined_values.get("loss", ()),
+                )
+            except ValueError as exc:
+                return None, f"combined impairments: {exc}"
+
+            if len(combined_profiles) > 200 and not messagebox.askyesno(
+                "Large combined sweep",
+                f"This will generate {len(combined_profiles)} combined profiles "
+                f"(before multiplying by algorithms and seeds). Continue?",
+            ):
+                return None, "Combined sweep cancelled."
+
+            profiles.extend(combined_profiles)
+
         return profiles, None
 
     def _on_run_sweep_clicked(self) -> None:
@@ -319,6 +558,15 @@ class PickerApp:
         self.figures_status = ttk.Label(top_row, text="")
         self.figures_status.pack(side=tk.RIGHT)
 
+        hint_row = ttk.Frame(container)
+        hint_row.pack(fill=tk.X, pady=(6, 0))
+        ttk.Label(
+            hint_row,
+            text="Scroll wheel over the chart zooms into wherever the cursor is pointing; "
+            "the toolbar below the chart also has pan/zoom-rectangle/save/reset.",
+            foreground="#666666",
+        ).pack(side=tk.LEFT)
+
         body = ttk.Frame(container)
         body.pack(fill=tk.BOTH, expand=True, pady=(8, 0))
 
@@ -328,16 +576,18 @@ class PickerApp:
 
         image_frame = ttk.Frame(body)
         image_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(8, 0))
-        image_frame.grid_rowconfigure(0, weight=1)
-        image_frame.grid_columnconfigure(0, weight=1)
 
-        self.image_canvas = tk.Canvas(image_frame, background="white")
-        v_scroll = ttk.Scrollbar(image_frame, orient="vertical", command=self.image_canvas.yview)
-        h_scroll = ttk.Scrollbar(image_frame, orient="horizontal", command=self.image_canvas.xview)
-        self.image_canvas.configure(yscrollcommand=v_scroll.set, xscrollcommand=h_scroll.set)
-        self.image_canvas.grid(row=0, column=0, sticky="nsew")
-        v_scroll.grid(row=0, column=1, sticky="ns")
-        h_scroll.grid(row=1, column=0, sticky="ew")
+        # The figure is a live matplotlib chart (FigureCanvasTkAgg), not a saved PNG -- crisp at
+        # any zoom level since matplotlib redraws from the real data instead of resampling a
+        # raster image. self.toolbar_container/self.canvas_container get torn down and rebuilt
+        # each time a different figure is selected (see _show_figure/_clear_image).
+        self.toolbar_container = ttk.Frame(image_frame)
+        self.toolbar_container.pack(side=tk.TOP, fill=tk.X)
+        self.canvas_container = ttk.Frame(image_frame)
+        self.canvas_container.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
+        # Re-fits whatever figure is currently showing whenever the container itself changes
+        # size (e.g. the window is resized or maximized), not just on a figure switch.
+        self.canvas_container.bind("<Configure>", lambda e: self._fit_figure_to_container())
 
         self._refresh_run_list()
         return container
@@ -389,21 +639,188 @@ class PickerApp:
             self.figure_listbox.insert(tk.END, path.name)
         self.figures_status.config(text="" if figures else "No figures yet -- click Generate.")
 
+    def _run_data(self, run: Path) -> Tuple[Manifest, pd.DataFrame]:
+        """Cached (manifest, df) for `run`, recomputed only when the selected run changes -- a
+        run's metrics.csv is immutable once written (results/CLAUDE.md: append-only), so there's
+        nothing to invalidate for the same path; a new sweep completing always writes a new,
+        differently-timestamped run directory instead.
+        """
+        if self._run_data_cache is None or self._run_data_cache[0] != run:
+            manifest, df = io_utils.discover_run(run)
+            self._run_data_cache = (run, manifest, df)
+        _, manifest, df = self._run_data_cache
+        return manifest, df
+
     def _clear_image(self) -> None:
-        self.image_canvas.delete("all")
-        self._current_photo = None
+        """Hides the current display. Never closes a Figure -- every Figure that ever reaches
+        `_current_figure` is already sitting in `self._figure_cache` by then (see
+        `_poll_figure_build`), and closing it here would break re-selecting it later in the same
+        session. Cached figures are only closed in `_on_close`, on app shutdown.
+        """
+        if self._current_toolbar is not None:
+            self._current_toolbar.destroy()
+            self._current_toolbar = None
+        if self._current_figure_canvas is not None:
+            self._current_figure_canvas.get_tk_widget().destroy()
+            self._current_figure_canvas = None
+        self._current_figure = None
+
+    def _show_figure(self, fig: Figure) -> None:
+        """Displays `fig`, always rebuilding the canvas and toolbar from scratch.
+
+        An earlier version of this method tried to reuse the existing canvas/toolbar when the
+        new figure was the same pixel size as the one currently shown, to avoid
+        `NavigationToolbar2Tk`'s per-construction cost (it re-decodes and resizes every toolbar
+        icon PNG from disk). That reuse path caused three separate rendering bugs in a row --
+        stale pixels from the previous, differently-sized figure remaining visible; a resize
+        race when a fresh, differently-sized canvas was created directly into an
+        already-full-screened container; and switching figures repeatedly while full-screened
+        eventually rendering incorrectly again even with the previous two fixed. Getting
+        `FigureCanvasTkAgg` reuse fully correct across every window-size/figure-size combination
+        is evidently more subtle than it looks; a full rebuild sidesteps all of it at once, since
+        a *fresh* canvas is always guaranteed to have a correctly sized backing buffer for
+        whatever figure it's given. The remaining fixed cost (rebuilding the toolbar every click)
+        is real but no longer the dominant one -- figure *construction* (the actual slow part) is
+        still cached and backgrounded exactly as before.
+
+        Packed with `fill=tk.BOTH, expand=True`, so it always stretches to exactly fill
+        `self.canvas_container` -- an earlier version tried to preserve each figure's own native
+        aspect ratio instead (letterboxing it within the container via `.place()`), but that left
+        large blank margins above/below a figure whose aspect ratio didn't match the window's,
+        which is worse than the different figure kinds simply looking differently proportioned
+        against each other.
+
+        `fig.dpi` is reset to its native value (`_reset_figure_dpi_to_native`) before every
+        `FigureCanvasTkAgg` construction -- see that function's docstring for why rebuilding the
+        canvas on every click needs this specifically (on a >100%-scaled Windows display, it's
+        what stops every point-sized element -- fonts, line widths, markers -- from compounding
+        larger on every single figure switch).
+        """
+        _reset_figure_dpi_to_native(fig)
+        self._clear_image()
+        canvas = FigureCanvasTkAgg(fig, master=self.canvas_container)
+        widget = canvas.get_tk_widget()
+        widget.pack(fill=tk.BOTH, expand=True)
+        widget.bind("<MouseWheel>", self._on_canvas_scroll)
+        toolbar = NavigationToolbar2Tk(canvas, self.toolbar_container)
+        toolbar.update()
+        self._current_figure_canvas = canvas
+        self._current_toolbar = toolbar
+        self._current_figure = fig
+        self._fit_figure_to_container()
+
+    def _fit_figure_to_container(self) -> None:
+        """Resizes the currently displayed figure (if any) to exactly match
+        `self.canvas_container`'s *current* pixel dimensions. Called once from `_show_figure`
+        when a figure is first displayed, and bound to the container's own `<Configure>` event
+        so a live window resize re-fits whatever's currently on screen too, not just a figure
+        switch -- both matter since `pack(fill=BOTH, expand=True)` alone only handles the latter
+        reliably (matplotlib's own `<Configure>`-triggered auto-resize can otherwise race when a
+        *new*, differently-sized canvas is created directly into an already-large container,
+        e.g. switching figures while already full-screened).
+        """
+        if self._current_figure is None or self._current_figure_canvas is None:
+            return
+        self.canvas_container.update_idletasks()
+        container_w = self.canvas_container.winfo_width()
+        container_h = self.canvas_container.winfo_height()
+        if container_w <= 1 or container_h <= 1:
+            return
+
+        fig = self._current_figure
+        fig.set_size_inches(container_w / fig.dpi, container_h / fig.dpi)
+        native_margin = getattr(fig, "_native_bottom_margin_inches", _CAPTION_MARGIN_INCHES_FALLBACK)
+        fig.subplots_adjust(bottom=_caption_bottom_fraction(native_margin, fig.get_size_inches()[1]))
+        self._current_figure_canvas.draw_idle()
 
     def _on_figure_selected(self) -> None:
         selection = self.figure_listbox.curselection()
         run = self._selected_run()
         if not selection or run is None:
             return
-        path = run / "figures" / self.figure_listbox.get(selection[0])
-        photo = tk.PhotoImage(file=str(path))
-        self._current_photo = photo  # tkinter drops the image if nothing keeps a reference
-        self.image_canvas.delete("all")
-        self.image_canvas.create_image(0, 0, anchor="nw", image=photo)
-        self.image_canvas.configure(scrollregion=(0, 0, photo.width(), photo.height()))
+        filename = self.figure_listbox.get(selection[0])
+        builder = _figure_builder_for_filename(filename)
+        if builder is None:
+            self._clear_image()
+            self.figures_status.config(text=f"No live view available for {filename}.")
+            return
+
+        self._figure_request_id += 1
+        request_id = self._figure_request_id
+
+        cache_key = (run, filename)
+        cached = self._figure_cache.get(cache_key)
+        if cached is not None:
+            fig, _caption = cached
+            self._show_figure(fig)
+            self.figures_status.config(text="")
+            return
+
+        self.figures_status.config(text="Loading...")
+        threading.Thread(
+            target=self._build_figure_in_background,
+            args=(request_id, run, filename, builder),
+            daemon=True,
+        ).start()
+        self.root.after(50, self._poll_figure_build)
+
+    def _build_figure_in_background(
+        self, request_id: int, run: Path, filename: str, builder: Callable
+    ) -> None:
+        manifest, df = self._run_data(run)
+        result = builder(df, manifest)
+        self._figure_build_queue.put((request_id, run, filename, result))
+
+    def _poll_figure_build(self) -> None:
+        try:
+            request_id, run, filename, result = self._figure_build_queue.get_nowait()
+        except queue.Empty:
+            self.root.after(50, self._poll_figure_build)
+            return
+
+        if request_id != self._figure_request_id:
+            return  # stale -- the user has since selected a different figure
+
+        if result is None:
+            self._clear_image()
+            self.figures_status.config(text=f"Nothing to show for {filename} in this run.")
+            return
+
+        fig, caption = result
+        # Stashed once, here, before any FigureCanvasTkAgg or _fit_figure_to_container has ever
+        # touched this figure -- see _show_figure for why _native_dpi needs to be reset before
+        # every canvas construction, not just captured once. _native_bottom_margin_inches is the
+        # bottom margin this figure's own build-time tight_layout(rect=(0, MARGIN, 1, 1)) call
+        # already correctly measured for its content (caption text, and for combined_response.py,
+        # rotated x-tick labels too) -- see _caption_bottom_fraction.
+        fig._native_dpi = fig.dpi
+        fig._native_bottom_margin_inches = fig.subplotpars.bottom * fig.get_size_inches()[1]
+        # Connected once, here, when the figure first enters the cache -- not in _show_figure,
+        # which also runs on every cache-hit re-display of an already-connected figure.
+        clamp_x = filename in _FIXED_BUILDERS  # line charts only -- see _clamp_xlim_nonnegative
+        for ax in fig.axes:
+            ax.callbacks.connect("ylim_changed", _clamp_ylim_nonnegative)
+            _clamp_ylim_nonnegative(ax)  # also fixes up the initial autoscaled view, not just future zoom/pan
+            if clamp_x:
+                ax.callbacks.connect("xlim_changed", _clamp_xlim_nonnegative)
+                _clamp_xlim_nonnegative(ax)
+        self._figure_cache[(run, filename)] = (fig, caption)
+        self._show_figure(fig)
+        self.figures_status.config(text="")
+
+    def _on_canvas_scroll(self, event) -> None:
+        if self._current_figure is None or self._current_figure_canvas is None:
+            return
+        # Tk event coordinates are top-left origin; matplotlib figure pixel coordinates are
+        # bottom-left origin -- flip y before hit-testing/zooming against the figure's axes.
+        widget_height = self._current_figure_canvas.get_tk_widget().winfo_height()
+        x_px, y_px = event.x, widget_height - event.y
+
+        target = _select_zoom_target(self._current_figure.axes, x_px, y_px)
+        if target is None:
+            return
+        _zoom_axes_around_point(target, x_px, y_px, zoom_in=event.delta > 0)
+        self._current_figure_canvas.draw_idle()
 
     def _selected_figure_kinds(self) -> Optional[str]:
         selected_groups = [name for name, var in self.figure_group_vars.items() if var.get()]
@@ -458,6 +875,8 @@ class PickerApp:
     def _on_close(self) -> None:
         if self.process is not None:
             self.process.terminate()
+        for fig, _caption in self._figure_cache.values():
+            plt.close(fig)
         self.root.destroy()
 
 
@@ -490,10 +909,27 @@ def _apply_dpi_scaling(root: tk.Tk) -> None:
         pass
 
 
+def _cap_window_to_screen(root: tk.Tk) -> None:
+    """Tk's own geometry manager doesn't clamp a window's requested size to the physical
+    screen on its own -- combined with `_apply_dpi_scaling` above (needed so widgets aren't
+    sharp-but-tiny on a >100% Windows display-scaling setting), the *sum* of every child
+    widget's now-larger natural size can add up to more than the screen itself, and maximizing
+    (or full-screening) then asks for a window bigger than the display -- the embedded chart
+    included, since it's sized to whatever its container ends up getting. Setting an explicit
+    maximum caps every subsequent resize (including maximize) to the screen's own bounds,
+    regardless of what the DPI-scaled child widgets would otherwise add up to.
+    """
+    try:
+        root.maxsize(root.winfo_screenwidth(), root.winfo_screenheight())
+    except tk.TclError:
+        pass
+
+
 def launch() -> Optional[int]:
     _set_windows_dpi_awareness()
     root = tk.Tk()
     _apply_dpi_scaling(root)
+    _cap_window_to_screen(root)
     app = PickerApp(root)
     root.mainloop()
     return app.last_exit_code

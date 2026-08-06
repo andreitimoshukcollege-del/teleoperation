@@ -30,8 +30,68 @@ FRIENDLY_PROFILE_NAMES: Dict[str, str] = {
 }
 
 
+_COMBO_PREFIX = "combo__"
+_COMBO_DELAY_RE = re.compile(r"^delay-(\d+(?:\.\d+)?)ms$")
+_COMBO_JITTER_RE = re.compile(r"^jitter-(\d+(?:\.\d+)?)ms$")
+_COMBO_LOSS_RE = re.compile(r"^loss-(\d+(?:\.\d+)?)pct$")
+_COMBO_AXIS_ORDER = {"delay": 0, "jitter": 1, "loss": 2}
+
+
+_COMBO_AXIS_PATTERNS: Dict[str, Pattern[str]] = {
+    "delay": _COMBO_DELAY_RE,
+    "jitter": _COMBO_JITTER_RE,
+    "loss": _COMBO_LOSS_RE,
+}
+
+
+def combined_profile_axes(name: str) -> Optional[Dict[str, float]]:
+    """docs/adr/0006-combined-impairment-profiles.md: parses a "combo__..." name into
+    {"delay": 150.0, "jitter": 20.0} -- only the axes actually present in the name. `None` for
+    anything that isn't a well-formed combo__ name (unrecognized segment, a duplicate axis, or no
+    axes at all). Mirrors NetworkProfileCatalog.TryResolveCombinedProfile's grammar; used both for
+    friendly captions and for ordering/labeling a combined-sweep line chart
+    (figures/combined_response.py), since a combo__ profile has no single scalar value the way an
+    isolated-axis one does (labels.axis_value deliberately returns None for it on every axis).
+    """
+    if not name.startswith(_COMBO_PREFIX):
+        return None
+
+    axes: Dict[str, float] = {}
+    for segment in name[len(_COMBO_PREFIX):].split("__"):
+        matched = False
+        for axis, pattern in _COMBO_AXIS_PATTERNS.items():
+            match = pattern.match(segment)
+            if match:
+                if axis in axes:
+                    return None  # duplicate axis -- not a well-formed combo__ name
+                axes[axis] = float(match.group(1))
+                matched = True
+                break
+        if not matched:
+            return None  # unrecognized segment
+
+    return axes or None
+
+
+def _friendly_combined_profile_name(name: str) -> Optional[str]:
+    """"combo__delay-150ms__jitter-20ms" -> "150ms delay, 20ms jitter (combined)"."""
+    axes = combined_profile_axes(name)
+    if axes is None:
+        return None
+
+    unit = {"delay": "ms", "jitter": "ms", "loss": "%"}
+    parts = [
+        f"{axes[axis]:g}{unit[axis]} {axis}"
+        for axis in sorted(axes, key=lambda a: _COMBO_AXIS_ORDER[a])
+    ]
+    return ", ".join(parts) + " (combined)"
+
+
 def friendly_profile_name(name: str) -> str:
-    return FRIENDLY_PROFILE_NAMES.get(name, name)
+    if name in FRIENDLY_PROFILE_NAMES:
+        return FRIENDLY_PROFILE_NAMES[name]
+    combined = _friendly_combined_profile_name(name)
+    return combined if combined is not None else name
 
 
 # Per-axis scalar value lookup, mirroring core/Teleop.Eval/Sweep/NetworkProfileCatalog.cs by hand

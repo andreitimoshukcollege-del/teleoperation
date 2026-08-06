@@ -2,20 +2,52 @@ from __future__ import annotations
 
 import argparse
 import sys
+from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
-from typing import Optional, Sequence
+from typing import List, Optional, Sequence, Set
+
+import pandas as pd
 
 from teleop_analysis import io_utils, stats
 from teleop_analysis.baseline import find_baseline
 from teleop_analysis.figures import (
+    combined_response,
     error_vs_cost,
     impairment_response,
     latency_distribution,
     stack_comparison,
     summary_table,
 )
+from teleop_analysis.manifest import Manifest
 
-ALL_FIGURES = ("error-cost", "latency", "stack-comparison", "impairment-response", "table")
+ALL_FIGURES = (
+    "error-cost", "latency", "stack-comparison", "impairment-response", "combined-response",
+    "table",
+)
+
+_BAR_CHART_KINDS = ("error-cost", "latency", "stack-comparison")
+
+
+def _generate_profile_figures(
+    profile_df: pd.DataFrame,
+    manifest: Manifest,
+    profile: str,
+    figures_dir: Path,
+    bar_kinds_requested: Set[str],
+) -> List[Path]:
+    """Runs in a worker process (see main()'s ProcessPoolExecutor) -- generates whichever
+    per-profile bar-chart kinds were requested for exactly one profile, using `profile_df` (an
+    already-filtered slice of the run's dataframe, not the whole thing) so each worker's task
+    payload stays small regardless of how many profiles or rows the full sweep has.
+    """
+    written = []
+    if "error-cost" in bar_kinds_requested:
+        written.append(error_vs_cost.plot_error_vs_cost(profile_df, manifest, profile, figures_dir))
+    if "latency" in bar_kinds_requested:
+        written.append(latency_distribution.plot_latency_distribution(profile_df, manifest, profile, figures_dir))
+    if "stack-comparison" in bar_kinds_requested:
+        written.append(stack_comparison.plot_stack_comparison(profile_df, manifest, profile, figures_dir))
+    return written
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
@@ -52,13 +84,32 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         )
 
     written = []
-    for profile in manifest.network_profiles:
-        if "error-cost" in requested:
-            written.append(error_vs_cost.plot_error_vs_cost(df, manifest, profile, figures_dir))
-        if "latency" in requested:
-            written.append(latency_distribution.plot_latency_distribution(df, manifest, profile, figures_dir))
-        if "stack-comparison" in requested:
-            written.append(stack_comparison.plot_stack_comparison(df, manifest, profile, figures_dir))
+    bar_kinds_requested = requested & set(_BAR_CHART_KINDS)
+    if bar_kinds_requested:
+        # A dense sweep means hundreds of profiles, each independently filtering the *entire*
+        # dataframe down to itself inside plot_error_vs_cost/etc. -- pre-splitting once here
+        # turns that into a cheap dict lookup per task, and running the tasks across processes
+        # (matplotlib rendering is CPU/Python-bound, unlike io_utils.py's I/O-bound CSV reads,
+        # so a thread pool wouldn't give real parallelism here) is what actually cuts wall time
+        # on a multi-core machine.
+        # dict(df.groupby(...)) -- without the iter() -- breaks: GroupBy has a `.keys`
+        # *attribute* (whatever was passed to `by=`, here the string "profile"), and dict()
+        # decides an arg is a mapping by checking hasattr(arg, "keys"), then calls it as
+        # obj.keys() -- "profile"() -- "'str' object is not callable". iter() forces the
+        # iterable-of-(name, group)-pairs protocol instead.
+        profile_frames = dict(iter(df.groupby("profile", observed=True)))
+        empty_frame = df.iloc[0:0]  # same columns/dtypes, for a profile with no rows at all
+        with ProcessPoolExecutor() as executor:
+            futures = [
+                executor.submit(
+                    _generate_profile_figures,
+                    profile_frames.get(profile, empty_frame),
+                    manifest, profile, figures_dir, bar_kinds_requested,
+                )
+                for profile in manifest.network_profiles
+            ]
+            for future in futures:
+                written.extend(future.result())
 
     if "impairment-response" in requested:
         for path in (
@@ -68,6 +119,14 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             impairment_response.plot_prediction_error_vs_delay(df, manifest, figures_dir),
             impairment_response.plot_correction_vs_loss(df, manifest, figures_dir),
             impairment_response.plot_prediction_error_vs_loss(df, manifest, figures_dir),
+        ):
+            if path is not None:
+                written.append(path)
+
+    if "combined-response" in requested:
+        for path in (
+            combined_response.plot_correction_vs_combined(df, manifest, figures_dir),
+            combined_response.plot_prediction_error_vs_combined(df, manifest, figures_dir),
         ):
             if path is not None:
                 written.append(path)

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from teleop_analysis.labels import (
     axis_value,
+    combined_profile_axes,
     friendly_profile_name,
     friendly_stack_name,
     ordered_profiles_by_axis,
@@ -24,6 +25,43 @@ def test_friendly_profile_name_uses_known_mapping():
 
 def test_friendly_profile_name_falls_back_to_raw_name_for_unknown_profiles():
     assert friendly_profile_name("custom-profile") == "custom-profile"
+
+
+def test_friendly_profile_name_formats_combined_profiles_in_canonical_axis_order():
+    # jitter listed before delay in the name -- output must still be delay, jitter, loss order.
+    name = "combo__jitter-20ms__delay-150ms__loss-0.5pct"
+    assert friendly_profile_name(name) == "150ms delay, 20ms jitter, 0.5% loss (combined)"
+
+
+def test_friendly_profile_name_formats_combined_profiles_with_omitted_axes():
+    assert friendly_profile_name("combo__jitter-30ms__loss-1pct") == "30ms jitter, 1% loss (combined)"
+
+
+def test_friendly_profile_name_falls_back_to_raw_name_for_malformed_combined_profile():
+    assert friendly_profile_name("combo__not-a-real-axis") == "combo__not-a-real-axis"
+
+
+def test_axis_value_returns_none_for_every_axis_on_a_combined_profile():
+    name = "combo__delay-150ms__jitter-20ms__loss-0.5pct"
+    assert axis_value(name, "delay") is None
+    assert axis_value(name, "jitter") is None
+    assert axis_value(name, "loss") is None
+
+
+def test_combined_profile_axes_parses_every_present_axis():
+    name = "combo__delay-150ms__jitter-20ms__loss-0.5pct"
+    assert combined_profile_axes(name) == {"delay": 150.0, "jitter": 20.0, "loss": 0.5}
+
+
+def test_combined_profile_axes_omits_axes_not_in_the_name():
+    assert combined_profile_axes("combo__jitter-30ms") == {"jitter": 30.0}
+
+
+def test_combined_profile_axes_returns_none_for_non_combined_or_malformed_names():
+    assert combined_profile_axes("lan") is None
+    assert combined_profile_axes("jitter-30ms") is None  # isolated family, not combo__
+    assert combined_profile_axes("combo__not-a-real-axis") is None
+    assert combined_profile_axes("combo__jitter-30ms__jitter-40ms") is None  # duplicate axis
 
 
 def test_ordered_profiles_by_jitter_sorts_ascending_and_drops_unknown():

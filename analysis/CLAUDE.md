@@ -42,16 +42,120 @@ disagree, and you will trust the wrong one.
   (`test_gui.py`, plain tkinter — no extra dependency, ships with Python) for configuring and
   running a sweep — check which algorithms (raw predictor registry keys) and which impairments
   (jitter/delay/loss, each with its own min/max/step, independently combinable into one sweep)
-  to include, click Run, watch the sweep's own output stream live, then switch to the Figures tab
+  to include. A separate "Combined impairments" section below that uses the same per-axis
+  min/max/step controls to generate `combo__delay-<N>ms__jitter-<N>ms__loss-<N>pct`-style
+  profiles (docs/adr/0006-combined-impairment-profiles.md) — a **lockstep** walk across whichever
+  axes are checked (point *i* takes the i-th value of every checked axis, so a 4-point delay
+  range and a 4-point jitter range together produce 4 combined profiles, not 16). Axes don't need
+  matching point counts -- the walk runs as long as the longest one, and any shorter axis holds
+  at its last value for the remaining steps. For studying how the system degrades as the whole
+  link gets simultaneously worse, plotted as a single line chart (see `combined-response` below)
+  rather than one isolated variable at a time. Warns and asks for confirmation before launching a
+  sweep whose combined-profile count exceeds 200, as a backstop. Click Run, watch the sweep's own
+  output stream live, then switch to the Figures tab
   to generate/view that run's charts. Checkboxes there also let you pick which figure *kinds* to
   generate (bar graphs, line graphs, table) — useful because a dense sweep's bar charts (one per
-  profile) can otherwise bury the handful of line charts. `experiments/*.yaml` generation is
+  profile) can otherwise bury the handful of line charts; whichever bar-chart kinds are requested
+  are generated in parallel across profiles (`teleop_analysis/cli.py`'s `ProcessPoolExecutor`
+  over `_generate_profile_figures`, one process-pool task per profile, fed a pre-grouped
+  (`df.groupby("profile", observed=True)`) per-profile slice rather than the whole run's
+  dataframe) rather than the sequential per-profile loop this used to be -- a 121-profile dense
+  sweep's bar charts went from ~118s to ~23s in measurement, with byte-identical PNG output,
+  since matplotlib rendering is CPU/Python-bound (unlike `io_utils.py`'s I/O-bound CSV reads, so
+  a thread pool wouldn't give real parallelism here). Note `dict(df.groupby(...))` -- without
+  wrapping in `iter()` -- raises `TypeError: 'str' object is not callable`: `GroupBy` has a
+  `.keys` *attribute* (whatever was passed to `by=`), and `dict()` decides an argument is a
+  mapping by checking `hasattr(arg, "keys")`, then calls it as `arg.keys()` -- calling the string
+  itself. `combined-response` (the whole combined
+  sweep as one chart, x-tick labels spelling out every axis's value at each step) is grouped
+  under "Line graphs" alongside `impairment-response`. Selecting a figure embeds the **live
+  matplotlib chart** (`FigureCanvasTkAgg`), not the saved PNG -- crisp at any zoom level since
+  matplotlib redraws from the real data instead of resampling a raster image, and matplotlib's
+  own `NavigationToolbar2Tk` (below the chart) gives pan/zoom-rectangle/save/home for free. The
+  scroll wheel additionally zooms straight into wherever the cursor is pointing (in real data
+  coordinates, via `_zoom_axes_around_point`), rather than needing the toolbar's zoom-rectangle
+  tool for that. Each `figures/*.py` module exposes a `build_<x>_figure(...)` function (returns
+  the `Figure` + caption, no I/O) alongside its existing `plot_<x>(...)` (builds, then saves to
+  `results/<run>/figures/*.png` and closes) -- `test_gui.py`'s `_figure_builder_for_filename`
+  maps a listed filename back to the right `build_*` function so the live view always matches
+  what's on disk. The saved PNG stays the citable, disk-based artifact either way; the live
+  embed is purely a nicer way to look at it. Built figures are cached per `(run, filename)` for
+  the life of the GUI process (a run's data is immutable once written -- `results/CLAUDE.md`) and
+  a cache miss builds off the Tk main thread (same background-thread-plus-`root.after`-polling
+  pattern as running a sweep), so switching figures doesn't hang the window. The currently shown
+  figure always stretches to exactly fill `self.canvas_container`'s *current* pixel dimensions
+  (`_fit_figure_to_container`, called both when a figure is first shown and on the container's
+  own `<Configure>` event, so a live window resize re-fits it too, via `pack(fill=tk.BOTH,
+  expand=True)`) -- an earlier version tried to preserve each figure's own native aspect ratio
+  instead (letterboxing it within the container via `.place()`), but that left large blank
+  margins above/below a figure whose aspect ratio didn't match the window's, which is worse than
+  the different figure kinds simply looking differently proportioned against each other. The
+  canvas and toolbar are rebuilt from scratch on *every* figure switch -- an earlier version tried
+  to reuse them when the new figure matched the current one's pixel size, to avoid
+  `NavigationToolbar2Tk`'s per-construction cost (it re-decodes every toolbar icon from disk),
+  but that reuse path caused three separate rendering bugs in a row (stale pixels from a
+  differently-sized previous figure, a resize race, and a further failure switching repeatedly
+  while full-screened); a fresh `FigureCanvasTkAgg` is always guaranteed to have a correctly
+  sized backing buffer, which reuse evidently isn't across every window/figure-size combination.
+  Rebuilding the canvas on every click has its own real gotcha on a >100%-scaled Windows
+  display, though: `FigureCanvasBase.__init__` captures `figure._original_dpi = figure.dpi`
+  ("we don't want to scale up the figure DPI more than once," per matplotlib's own comment
+  there) assuming one canvas per figure for its whole lifetime, then a `<Map>` callback scales
+  `dpi` up by the display's device pixel ratio -- rebuilding the canvas instead means each new
+  one recaptures `_original_dpi` from whatever the *previous* canvas already scaled `dpi` to,
+  compounding the scale-up (and every point-sized element -- fonts, line widths, markers --
+  with it) on every single figure switch. `_reset_figure_dpi_to_native` resets `fig.dpi` back to
+  its build-time value (stashed once as `fig._native_dpi` when the figure first enters the
+  cache) before every construction, breaking that chain -- verified directly against the real
+  `backend_bases.py` mechanism (`FigureCanvasTkAgg._set_device_pixel_ratio`), not just this
+  reimplementation, since it's otherwise inert (and unreproducible) at 100% display scaling.
+  Every axes gets a `ylim_changed` callback (`_clamp_ylim_nonnegative`) pulling the
+  lower bound back to 0 if zoom/pan ever pushes it negative -- every metric plotted here is a
+  non-negative magnitude (a distance in mm, a one-way delay in ms), so a negative y value is
+  never real, only ever a zoom/pan artifact. The line-chart figures
+  (`impairment-response`/`combined-response`, whose x-axis is a network-impairment magnitude or
+  a step index -- never negative either) get the same treatment on x
+  (`_clamp_xlim_nonnegative`), applied once immediately on load (fixing matplotlib's own default
+  autoscale margin, not just future zoom/pan) as well as on every subsequent change. The
+  bar-chart figures (`error-cost`/`latency`/`stack-comparison`) deliberately do *not* get the
+  x-clamp -- their leftmost bar group is centered at x=0 and extends slightly left of it
+  (`figures/_bars.py`), so clamping there would clip it. `_fit_figure_to_container` also
+  recomputes the caption's bottom margin on every resize (`_caption_bottom_fraction`) rather than
+  leaving each figure's one-shot `fig.tight_layout(rect=(0, MARGIN, 1, 1))` margin (a *fraction*,
+  sized for that figure's small build-time height) in place -- otherwise the same fraction
+  becomes a much larger *absolute* gap once the container stretches the figure to fill a tall
+  window, since caption/tick-label font sizes are fixed in points, not scaled with the figure.
+  The absolute margin to hold onto (`fig._native_bottom_margin_inches`) is captured once in
+  `_poll_figure_build`, right after a figure is built and before anything else has touched it:
+  `fig.subplotpars.bottom * fig.get_size_inches()[1]` -- exactly what that figure's own
+  `tight_layout` call already measured its content needs, so `combined_response.py`'s rotated,
+  dense x-tick labels (which need considerably more room than plain caption text) automatically
+  get a bigger preserved margin than `impairment-response`'s or the bar charts' shorter/unrotated
+  labels, with no per-module special-casing in `test_gui.py` -- an earlier version used one flat
+  guess for every figure kind, which was too small for `combined-response` and let its caption
+  overlap the rotated tick labels. None of the 5 figure builders set a persistent layout engine,
+  so this later `subplots_adjust` call doesn't conflict with their one-shot `tight_layout`.
+  `combined-response`'s and `impairment-response`'s shared per-metric builders filter and group
+  the run's dataframe *once* (`name == metric`, then one `percentiles.summarize(..., ["stack",
+  "profile"])` call) rather than once per stack -- `stack`/`profile` are deliberately plain string
+  columns (`io_utils.py`), so a dense sweep's dataframe (tens of millions of rows) being scanned
+  repeatedly is real, measured cost (a ~92M-row stress-test sweep's `combined-response` builds
+  went from ~24s/~32s to ~16s/~20s after this change, output confirmed identical against the
+  unvectorized version).
+  `experiments/*.yaml` generation is
   `experiment_builder.py` (pure, unit tested) — the GUI just writes what it returns and shells
   out to `dotnet run -- sweep`. Needs a real display, not a piped/non-interactive shell — in this
   repo that's never an issue since `analysis/` already runs on the Windows-side Python (see setup
   above), so it opens as a normal Windows window. This is a human-facing convenience, not a
   replacement for `pytest -v`/`run_tests.py --all` above, which stay the way to verify
-  `analysis/`'s own code.
+  `analysis/`'s own code. `launch()` also does two DPI things Windows needs, in order: tell
+  Windows the process handles its own scaling (`_set_windows_dpi_awareness`, otherwise the whole
+  window comes out blurry on a >100%-scaled display), then tell Tk the real DPI
+  (`_apply_dpi_scaling`, so widgets come out a normal physical size instead of sharp-but-tiny) --
+  and, since that second step can otherwise make maximizing/full-screening request a window
+  bigger than the screen (a >100%-scaled display's widgets add up to more space than the display
+  has), `_cap_window_to_screen` caps the window's max size to the screen's own bounds right
+  after.
 - The Figures tab's **Delete Run** button permanently removes a `results/<exp>/<run>/`
   directory, after a confirmation dialog — the one intentional exception to root CLAUDE.md's
   "never touch `results/`" boundary, since it's a human clicking a button and confirming, not an

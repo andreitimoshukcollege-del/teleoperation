@@ -3,11 +3,26 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+import matplotlib.pyplot as plt
+import pytest
+
+from teleop_analysis import io_utils
+from teleop_analysis.figures import combined_response, impairment_response
+
 # test_gui.py lives at analysis/ (one level above tests/), not inside the teleop_analysis
 # package -- add it to sys.path explicitly rather than making it importable as a package module.
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from test_gui import (  # noqa: E402
+    _MAX_CAPTION_FRACTION,
+    _ZOOM_STEP,
+    _caption_bottom_fraction,
+    _clamp_xlim_nonnegative,
+    _clamp_ylim_nonnegative,
+    _figure_builder_for_filename,
+    _reset_figure_dpi_to_native,
+    _select_zoom_target,
+    _zoom_axes_around_point,
     build_report_command,
     build_sweep_command,
     delete_run,
@@ -75,6 +90,237 @@ def test_delete_run_removes_the_run_directory_and_its_contents(tmp_path):
     delete_run(run_dir)
 
     assert not run_dir.exists()
+
+
+def test_zoom_axes_around_point_zoom_in_shrinks_the_range_and_keeps_the_point_fixed():
+    fig, ax = plt.subplots()
+    try:
+        ax.set_xlim(0, 100)
+        ax.set_ylim(0, 100)
+        fig.canvas.draw()
+
+        data_x, data_y = 30, 40
+        x_px, y_px = ax.transData.transform((data_x, data_y))
+
+        _zoom_axes_around_point(ax, x_px, y_px, zoom_in=True)
+
+        new_xlo, new_xhi = ax.get_xlim()
+        new_ylo, new_yhi = ax.get_ylim()
+        assert (new_xhi - new_xlo) == pytest.approx(100 / _ZOOM_STEP)
+        assert (new_yhi - new_ylo) == pytest.approx(100 / _ZOOM_STEP)
+
+        # The same pixel position must still land on the same data point -- that's the whole
+        # point of "zoom into where the mouse is pointing" rather than just shrinking the range.
+        new_data_x, new_data_y = ax.transData.inverted().transform((x_px, y_px))
+        assert new_data_x == pytest.approx(data_x)
+        assert new_data_y == pytest.approx(data_y)
+    finally:
+        plt.close(fig)
+
+
+def test_zoom_axes_around_point_zoom_out_grows_the_range():
+    fig, ax = plt.subplots()
+    try:
+        ax.set_xlim(0, 100)
+        ax.set_ylim(0, 100)
+        fig.canvas.draw()
+
+        x_px, y_px = ax.transData.transform((50, 50))
+        _zoom_axes_around_point(ax, x_px, y_px, zoom_in=False)
+
+        new_xlo, new_xhi = ax.get_xlim()
+        assert (new_xhi - new_xlo) == pytest.approx(100 * _ZOOM_STEP)
+    finally:
+        plt.close(fig)
+
+
+def test_select_zoom_target_always_targets_the_only_axes_even_outside_its_bbox():
+    fig, ax = plt.subplots()
+    try:
+        # Shrink the plotted area drastically -- like combined_response.py's large bottom
+        # margin (rect=(0, 0.16, 1, 1)) plus rotated tick labels -- so a point well within the
+        # canvas sits outside ax.bbox, the way a user's cursor often does when pointing at a
+        # dense combined chart's rotated x-axis labels.
+        ax.set_position([0.1, 0.4, 0.8, 0.5])
+        fig.canvas.draw()
+
+        x_px, y_px = fig.bbox.width / 2, 5  # near the bottom margin, outside the shrunk axes
+        assert not ax.bbox.contains(x_px, y_px)
+
+        assert _select_zoom_target(fig.axes, x_px, y_px) is ax
+    finally:
+        plt.close(fig)
+
+
+def test_select_zoom_target_uses_containment_for_multiple_axes():
+    fig, (ax_left, ax_right) = plt.subplots(1, 2)
+    try:
+        fig.canvas.draw()
+        cx = ax_left.bbox.x0 + ax_left.bbox.width / 2
+        cy = ax_left.bbox.y0 + ax_left.bbox.height / 2
+        assert _select_zoom_target(fig.axes, cx, cy) is ax_left
+    finally:
+        plt.close(fig)
+
+
+def test_select_zoom_target_returns_none_when_no_axes_contains_the_point():
+    fig, (ax_left, ax_right) = plt.subplots(1, 2)
+    try:
+        fig.canvas.draw()
+        assert _select_zoom_target(fig.axes, -1000, -1000) is None
+    finally:
+        plt.close(fig)
+
+
+def test_select_zoom_target_returns_none_for_an_empty_figure():
+    assert _select_zoom_target([], 0, 0) is None
+
+
+def test_clamp_ylim_nonnegative_pulls_a_negative_lower_bound_up_to_zero():
+    fig, ax = plt.subplots()
+    try:
+        ax.set_ylim(-50, 100)  # e.g. after zooming out past the data's own floor of 0
+        _clamp_ylim_nonnegative(ax)
+        assert ax.get_ylim() == (0.0, 100.0)
+    finally:
+        plt.close(fig)
+
+
+def test_clamp_ylim_nonnegative_leaves_an_already_nonnegative_range_alone():
+    fig, ax = plt.subplots()
+    try:
+        ax.set_ylim(10, 100)
+        _clamp_ylim_nonnegative(ax)
+        assert ax.get_ylim() == (10.0, 100.0)
+    finally:
+        plt.close(fig)
+
+
+def test_clamp_ylim_nonnegative_self_corrects_when_registered_as_a_callback():
+    # The real usage: connected to "ylim_changed" so it fires regardless of what caused the
+    # change -- scroll-wheel zoom, or the toolbar's own pan/zoom-rectangle tools.
+    fig, ax = plt.subplots()
+    try:
+        ax.callbacks.connect("ylim_changed", _clamp_ylim_nonnegative)
+        ax.set_ylim(-50, 100)
+        assert ax.get_ylim() == (0.0, 100.0)
+    finally:
+        plt.close(fig)
+
+
+def test_clamp_xlim_nonnegative_pulls_a_negative_lower_bound_up_to_zero():
+    fig, ax = plt.subplots()
+    try:
+        ax.set_xlim(-10, 60)  # e.g. matplotlib's default autoscale margin, or a zoomed-out view
+        _clamp_xlim_nonnegative(ax)
+        assert ax.get_xlim() == (0.0, 60.0)
+    finally:
+        plt.close(fig)
+
+
+def test_clamp_xlim_nonnegative_leaves_an_already_nonnegative_range_alone():
+    fig, ax = plt.subplots()
+    try:
+        ax.set_xlim(5, 60)
+        _clamp_xlim_nonnegative(ax)
+        assert ax.get_xlim() == (5.0, 60.0)
+    finally:
+        plt.close(fig)
+
+
+def test_clamp_xlim_nonnegative_self_corrects_when_registered_as_a_callback():
+    fig, ax = plt.subplots()
+    try:
+        ax.callbacks.connect("xlim_changed", _clamp_xlim_nonnegative)
+        ax.set_xlim(-10, 60)
+        assert ax.get_xlim() == (0.0, 60.0)
+    finally:
+        plt.close(fig)
+
+
+def test_reset_figure_dpi_to_native_restores_the_stashed_value():
+    # Simulates what a >100%-scaled Windows display compounds fig.dpi to across repeated
+    # FigureCanvasTkAgg constructions for the same cached figure (verified against the real
+    # matplotlib backend_bases.py mechanism, not just this reimplementation).
+    fig, _ = plt.subplots(dpi=100)
+    try:
+        fig._native_dpi = 100
+        fig.dpi = 337.5
+        _reset_figure_dpi_to_native(fig)
+        assert fig.dpi == 100
+    finally:
+        plt.close(fig)
+
+
+def test_reset_figure_dpi_to_native_is_a_noop_without_a_stashed_native_dpi():
+    fig, _ = plt.subplots(dpi=123)
+    try:
+        _reset_figure_dpi_to_native(fig)
+        assert fig.dpi == 123
+    finally:
+        plt.close(fig)
+
+
+
+def test_caption_bottom_fraction_is_small_for_a_tall_figure():
+    # A window stretched much taller than the figure's own native margin needs -- the fraction
+    # should shrink accordingly rather than eating a fixed proportion of the now-much-taller
+    # figure.
+    tall = _caption_bottom_fraction(0.7, 20.0)
+    assert tall == pytest.approx(0.7 / 20.0)
+    assert tall < _MAX_CAPTION_FRACTION
+
+
+def test_caption_bottom_fraction_uses_a_larger_native_margin_for_dense_rotated_tick_labels():
+    # combined_response.py's rotated, dense tick labels need more absolute room than plain
+    # caption text -- its own build-time tight_layout already measured that larger margin, and
+    # this helper must scale from *that* value, not a single guess shared by every figure kind.
+    plain_caption = _caption_bottom_fraction(0.7, 10.0)
+    dense_rotated_labels = _caption_bottom_fraction(1.5, 10.0)
+    assert dense_rotated_labels > plain_caption
+
+
+def test_caption_bottom_fraction_is_capped_for_a_short_figure():
+    # A figure shorter than its own native margin would otherwise need a fraction > 1 (or just
+    # very large) to keep that margin's absolute size -- capped so the caption/tick-label strip
+    # can never claim more than _MAX_CAPTION_FRACTION of a very short figure.
+    short = _caption_bottom_fraction(0.7, 1.0)
+    assert short == _MAX_CAPTION_FRACTION
+
+
+def test_caption_bottom_fraction_handles_zero_or_negative_height_without_dividing_by_zero():
+    assert _caption_bottom_fraction(0.7, 0.0) == _MAX_CAPTION_FRACTION
+    assert _caption_bottom_fraction(0.7, -5.0) == _MAX_CAPTION_FRACTION
+
+
+def test_figure_builder_for_filename_maps_fixed_impairment_and_combined_names():
+    assert (
+        _figure_builder_for_filename("impairment__correction_vs_jitter.png")
+        is impairment_response.build_correction_vs_jitter_figure
+    )
+    assert (
+        _figure_builder_for_filename("combined__prediction_error.png")
+        is combined_response.build_prediction_error_vs_combined_figure
+    )
+
+
+def test_figure_builder_for_filename_returns_none_for_an_unknown_name():
+    # "table"'s summary_table.csv isn't a .png and never reaches this, but a defensive check
+    # against an unrecognized name is still correct behavior.
+    assert _figure_builder_for_filename("summary_table.csv") is None
+    assert _figure_builder_for_filename("something-unrelated.png") is None
+
+
+def test_figure_builder_for_filename_extracts_the_profile_for_per_profile_kinds(synthetic_run: Path):
+    manifest, df = io_utils.discover_run(synthetic_run)
+    builder = _figure_builder_for_filename("lan__error_vs_cost.png")
+    assert builder is not None
+
+    result = builder(df, manifest)
+    assert result is not None
+    fig, caption = result
+    assert "LAN" in caption  # build_caption embeds the friendly name of the extracted profile
+    plt.close(fig)
 
 
 def test_build_sweep_command_uses_absolute_yaml_path_and_dotnet_sweep_args():

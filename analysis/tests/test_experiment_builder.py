@@ -8,11 +8,19 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from experiment_builder import (  # noqa: E402
+    axis_points,
     build_experiment_yaml,
+    combined_points,
     delay_points,
     jitter_points,
     loss_points,
 )
+
+
+def test_axis_points_is_the_public_min_max_step_generator_used_by_the_gui():
+    # jitter_points/delay_points/loss_points/the GUI's combined-impairments controls all build
+    # on this -- covered directly since it's public API now, not just an internal helper.
+    assert axis_points(0, 10, 5) == [0, 5, 10]
 
 
 def test_jitter_points_covers_the_full_range_inclusive():
@@ -56,6 +64,63 @@ def test_points_raises_when_max_below_min():
 
     with pytest.raises(ValueError):
         jitter_points(10, 0, 1)
+
+
+def test_combined_points_marches_two_axes_forward_together_not_cross_product():
+    # Lockstep, not a cross product: point i is (delay[i], jitter[i]), so 2 values per axis
+    # produces 2 profiles, not 4.
+    points = combined_points(delay_ms=[100, 150], jitter_ms=[20, 30])
+    assert points == ["combo__delay-100ms__jitter-20ms", "combo__delay-150ms__jitter-30ms"]
+
+
+def test_combined_points_supports_all_three_axes_in_canonical_order():
+    points = combined_points(delay_ms=[0, 150], jitter_ms=[0, 20], loss_pct=[0, 0.5])
+    assert points == [
+        "combo__delay-0ms__jitter-0ms__loss-0pct",
+        "combo__delay-150ms__jitter-20ms__loss-0.5pct",
+    ]
+
+
+def test_combined_points_omits_empty_axes_entirely():
+    points = combined_points(jitter_ms=[30, 40], loss_pct=[1, 2])
+    assert points == ["combo__jitter-30ms__loss-1pct", "combo__jitter-40ms__loss-2pct"]
+
+
+def test_combined_points_holds_the_shorter_axis_at_its_last_value():
+    # delay has 4 points, jitter only 2 -- the walk runs as long as delay, and jitter holds at
+    # its last value (20) for the remaining steps.
+    points = combined_points(delay_ms=[0, 100, 200, 300], jitter_ms=[0, 20])
+    assert points == [
+        "combo__delay-0ms__jitter-0ms",
+        "combo__delay-100ms__jitter-20ms",
+        "combo__delay-200ms__jitter-20ms",
+        "combo__delay-300ms__jitter-20ms",
+    ]
+
+
+def test_combined_points_holds_the_shorter_axis_regardless_of_argument_order():
+    # Same as above but jitter is the longer axis this time, to confirm "longest wins" isn't
+    # accidentally tied to argument position.
+    points = combined_points(delay_ms=[0, 100], jitter_ms=[0, 10, 20])
+    assert points == [
+        "combo__delay-0ms__jitter-0ms",
+        "combo__delay-100ms__jitter-10ms",
+        "combo__delay-100ms__jitter-20ms",
+    ]
+
+
+def test_combined_points_raises_with_fewer_than_two_axes():
+    import pytest
+
+    with pytest.raises(ValueError):
+        combined_points(jitter_ms=[10, 20])
+
+
+def test_combined_points_raises_with_no_axes():
+    import pytest
+
+    with pytest.raises(ValueError):
+        combined_points()
 
 
 def test_build_experiment_yaml_shape():

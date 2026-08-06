@@ -1,5 +1,6 @@
 """Builds an experiments/*.yaml for the isolated jitter/delay/loss profile families
-(docs/adr/0005-isolated-impairment-profiles.md), for the GUI's Experiment tab.
+(docs/adr/0005-isolated-impairment-profiles.md) and the combined multi-axis family
+(docs/adr/0006-combined-impairment-profiles.md), for the GUI's Experiment tab.
 
 Pure string/list generation -- no file I/O here, the caller decides where to write the result.
 Kept outside teleop_analysis/ on purpose: that package only reads results/ and produces figures
@@ -9,12 +10,12 @@ run_tests.py/test_gui.py outside that package.
 """
 from __future__ import annotations
 
-from typing import List
+from typing import List, Sequence
 
 _POINT_EPSILON = 1e-9
 
 
-def _points(min_value: float, max_value: float, step: float) -> List[float]:
+def axis_points(min_value: float, max_value: float, step: float) -> List[float]:
     if step <= 0:
         raise ValueError(f"step must be positive, got {step}")
     if max_value < min_value:
@@ -37,15 +38,66 @@ def _format_number(value: float) -> str:
 
 
 def jitter_points(min_ms: float, max_ms: float, step_ms: float) -> List[str]:
-    return [f"jitter-{_format_number(v)}ms" for v in _points(min_ms, max_ms, step_ms)]
+    return [f"jitter-{_format_number(v)}ms" for v in axis_points(min_ms, max_ms, step_ms)]
 
 
 def delay_points(min_ms: float, max_ms: float, step_ms: float) -> List[str]:
-    return [f"delay-{_format_number(v)}ms" for v in _points(min_ms, max_ms, step_ms)]
+    return [f"delay-{_format_number(v)}ms" for v in axis_points(min_ms, max_ms, step_ms)]
 
 
 def loss_points(min_pct: float, max_pct: float, step_pct: float) -> List[str]:
-    return [f"loss-{_format_number(v)}pct" for v in _points(min_pct, max_pct, step_pct)]
+    return [f"loss-{_format_number(v)}pct" for v in axis_points(min_pct, max_pct, step_pct)]
+
+
+def combined_points(
+    delay_ms: Sequence[float] = (),
+    jitter_ms: Sequence[float] = (),
+    loss_pct: Sequence[float] = (),
+) -> List[str]:
+    """Co-varying (lockstep) multi-axis profiles into "combo__" profile names
+    (docs/adr/0006-combined-impairment-profiles.md) -- point i takes the i-th value of every
+    populated axis, e.g. delay_ms=[0, 100], jitter_ms=[0, 20] produces
+    ["combo__delay-0ms__jitter-0ms", "combo__delay-100ms__jitter-20ms"] (2 profiles, not the 4 a
+    cross product would give). This is deliberately not a Cartesian product: the point is to
+    march every checked axis forward together at whatever the sweep's own step size implies (a
+    "how bad is a realistically-degrading link" sweep), not to enumerate every combination of
+    values. An axis passed as empty is omitted from every generated name entirely (resolves to 0
+    at sweep time, not a value of 0 in this product), not one of the values being combined.
+
+    Requires at least 2 non-empty axes -- combining exactly one axis is just the isolated family
+    (jitter_points/delay_points/loss_points above), which already exists and isolates its
+    companions properly for sensitivity charts; this function is for genuine combinations only.
+
+    Axes don't need the same number of points: the walk runs as long as the *longest* populated
+    axis, and any shorter axis holds at its last value for the remaining steps -- e.g.
+    delay_ms=[0, 100, 200, 300], jitter_ms=[0, 20] produces 4 profiles, with jitter staying at 20
+    for the last two. This mirrors how the isolated-axis controls above already let each axis
+    have its own independent min/max/step; forcing every combined axis to work out to the exact
+    same point count would be a needless coupling between controls that otherwise don't interact.
+    """
+    axes = [
+        ("delay", "ms", delay_ms),
+        ("jitter", "ms", jitter_ms),
+        ("loss", "pct", loss_pct),
+    ]
+    populated = [(label, unit, list(values)) for label, unit, values in axes if values]
+    if len(populated) < 2:
+        raise ValueError("combined profiles need at least 2 non-empty axes")
+
+    step_count = max(len(values) for _, _, values in populated)
+    held = [
+        (label, unit, values + [values[-1]] * (step_count - len(values)))
+        for label, unit, values in populated
+    ]
+
+    combos = []
+    for combo in zip(*(values for _, _, values in held)):
+        segments = [
+            f"{label}-{_format_number(value)}{unit}"
+            for (label, unit, _), value in zip(held, combo)
+        ]
+        combos.append("combo__" + "__".join(segments))
+    return combos
 
 
 def build_experiment_yaml(

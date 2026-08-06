@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Iterable, Optional
+from typing import Iterable, Optional, Tuple
 
 import matplotlib
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+from matplotlib.figure import Figure
 import pandas as pd
 
 from teleop_analysis import percentiles
@@ -26,16 +27,18 @@ def _best_by_p50(table: pd.DataFrame, exclude: Iterable[str]) -> Optional[str]:
     return candidates.loc[candidates["p50"].idxmin(), "stack"]
 
 
-def plot_stack_comparison(
+def build_stack_comparison_figure(
     df: pd.DataFrame,
     manifest: Manifest,
     profile: str,
-    out_dir: Path,
     metric: str = DEFAULT_METRIC,
-) -> Path:
-    """Two panels: mitigations tested separately (single-axis vs baseline) and tested together
-    (multi-axis combinations vs baseline and the best single-axis result) -- this is what makes
-    "separately and together" a literal, readable comparison rather than one pooled chart.
+) -> Tuple[Figure, str]:
+    """Builds the figure and its caption without saving anything -- split out of
+    plot_stack_comparison so the GUI's live figure view (test_gui.py) can embed the same figure
+    directly instead of loading a saved PNG back off disk. Two panels: mitigations tested
+    separately (single-axis vs baseline) and tested together (multi-axis combinations vs
+    baseline and the best single-axis result) -- this is what makes "separately and together" a
+    literal, readable comparison rather than one pooled chart.
     """
     subset = df[(df["profile"] == profile) & (df["name"] == metric)]
     classification = classify_stacks(manifest)
@@ -83,7 +86,17 @@ def plot_stack_comparison(
         ha="center", fontsize=8, wrap=True,
     )
     fig.tight_layout(rect=(0, 0.09, 1, 1))
+    return fig, caption
 
+
+def plot_stack_comparison(
+    df: pd.DataFrame,
+    manifest: Manifest,
+    profile: str,
+    out_dir: Path,
+    metric: str = DEFAULT_METRIC,
+) -> Path:
+    fig, caption = build_stack_comparison_figure(df, manifest, profile, metric)
     out_dir.mkdir(parents=True, exist_ok=True)
     out_path = out_dir / f"{profile}__stack_comparison.png"
     fig.savefig(out_path, metadata={"Description": caption})

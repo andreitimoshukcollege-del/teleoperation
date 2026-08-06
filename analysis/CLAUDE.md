@@ -71,14 +71,20 @@ disagree, and you will trust the wrong one.
   embed is purely a nicer way to look at it. Built figures are cached per `(run, filename)` for
   the life of the GUI process (a run's data is immutable once written -- `results/CLAUDE.md`) and
   a cache miss builds off the Tk main thread (same background-thread-plus-`root.after`-polling
-  pattern as running a sweep), so switching figures doesn't hang the window. Every figure is
-  explicitly resized to the container's *current* pixel dimensions (`_show_figure`, before the
-  canvas is even created) rather than relying on matplotlib's own `<Configure>`-triggered
-  auto-resize to grow it afterward -- that auto-resize is reliable when the *same* figure is
-  already showing and the window changes size around it, but not when a new, differently-sized
-  canvas gets created directly into an already-large container (e.g. switching figures while
-  already full-screened), which otherwise left the chart rendered at the wrong size. The canvas
-  and toolbar are then rebuilt from scratch on *every* figure switch -- an earlier version tried
+  pattern as running a sweep), so switching figures doesn't hang the window. The currently shown
+  figure is fit to `self.canvas_container`'s *current* pixel dimensions (`_fit_figure_to_container`,
+  called both when a figure is first shown and on the container's own `<Configure>` event, so a
+  live window resize re-fits it too) while preserving its own native aspect ratio
+  (`_size_to_fit`, stashed once per figure as `fig._native_size_inches` right when it's built) --
+  a "contain," not a "stretch," since different figure types have deliberately different aspect
+  ratios (impairment_response.py's fixed 9x5.5, combined_response.py's width scaled to sweep
+  density) that switching between them must not distort. The widget is positioned via `.place()`
+  with an explicit width/height rather than `.pack(fill=tk.BOTH, expand=True)`, since `pack`'s
+  fill/expand actively stretch a widget to the container's exact width *and* height
+  independently -- which is what was overriding the aspect-preserving resize in the first place,
+  via matplotlib's own `<Configure>`-triggered auto-resize matching whatever size `pack` decided
+  on regardless of the figure's own aspect ratio. The canvas and toolbar are rebuilt from scratch
+  on *every* figure switch -- an earlier version tried
   to reuse them when the new figure matched the current one's pixel size, to avoid
   `NavigationToolbar2Tk`'s per-construction cost (it re-decodes every toolbar icon from disk),
   but that reuse path caused three separate rendering bugs in a row (stale pixels from a

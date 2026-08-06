@@ -197,6 +197,21 @@ def _clamp_xlim_nonnegative(ax) -> None:
         ax.set_xlim(0, xhi)
 
 
+def _size_to_fit(native_w: float, native_h: float, container_w: float, container_h: float) -> Tuple[float, float]:
+    """The largest `(w, h)` that preserves `native_w`/`native_h`'s own aspect ratio while fitting
+    within `container_w`/`container_h` (a "contain," not a "stretch" -- scaling both dimensions
+    by the same factor rather than fitting width and height independently). Each figure type's
+    own aspect ratio is a real design choice (impairment_response.py's fixed 9x5.5,
+    combined_response.py's width scaled to sweep density, ...); stretching every figure to
+    exactly match the container regardless of that made different figure kinds look
+    inconsistently proportioned against each other when switching between them.
+    """
+    if native_w <= 0 or native_h <= 0 or container_w <= 0 or container_h <= 0:
+        return native_w, native_h
+    scale = min(container_w / native_w, container_h / native_h)
+    return native_w * scale, native_h * scale
+
+
 def build_report_command(run_dir: Path, figures: Optional[str] = None) -> List[str]:
     """The exact subprocess argv used to (re)generate a run's figures -- same CLI `just report`
     wraps. Absolute path so it doesn't matter what the subprocess's cwd ends up being. `figures`
@@ -537,6 +552,9 @@ class PickerApp:
         self.toolbar_container.pack(side=tk.TOP, fill=tk.X)
         self.canvas_container = ttk.Frame(image_frame)
         self.canvas_container.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
+        # Re-fits whatever figure is currently showing whenever the container itself changes
+        # size (e.g. the window is resized or maximized), not just on a figure switch.
+        self.canvas_container.bind("<Configure>", lambda e: self._fit_figure_to_container())
 
         self._refresh_run_list()
         return container
@@ -632,30 +650,49 @@ class PickerApp:
         is real but no longer the dominant one -- figure *construction* (the actual slow part) is
         still cached and backgrounded exactly as before.
 
-        `fig` is resized to the container's *current* pixel dimensions first -- every figure type
-        otherwise defaults to its own fixed build-time size (or, for combined-response, a size
-        scaled to sweep density), and relying on matplotlib's own `<Configure>`-triggered
-        auto-resize to grow it to fill the window afterward is exactly the unreliable path this
-        method no longer depends on.
+        Placed via `.place()`, not `.pack(fill=tk.BOTH, expand=True)`: `pack`'s `fill`/`expand`
+        actively stretch the widget to the container's exact width *and* height independently,
+        which is what was overriding `_fit_figure_to_container`'s aspect-preserving resize below
+        (matplotlib's own `<Configure>`-triggered auto-resize just matches whatever size `pack`
+        decided on, ignoring the figure's own designed aspect ratio) -- `.place()` with an
+        explicit width/height does not.
         """
-        self.canvas_container.update_idletasks()
-        container_w = self.canvas_container.winfo_width()
-        container_h = self.canvas_container.winfo_height()
-        if container_w > 1 and container_h > 1:
-            fig.set_size_inches(container_w / fig.dpi, container_h / fig.dpi)
-
         self._clear_image()
         canvas = FigureCanvasTkAgg(fig, master=self.canvas_container)
         widget = canvas.get_tk_widget()
-        widget.pack(fill=tk.BOTH, expand=True)
         widget.bind("<MouseWheel>", self._on_canvas_scroll)
         toolbar = NavigationToolbar2Tk(canvas, self.toolbar_container)
         toolbar.update()
         self._current_figure_canvas = canvas
         self._current_toolbar = toolbar
-
         self._current_figure = fig
-        canvas.draw()
+        self._fit_figure_to_container()
+
+    def _fit_figure_to_container(self) -> None:
+        """Resizes the currently displayed figure (if any) to fit inside
+        `self.canvas_container`'s *current* pixel dimensions, preserving its own native aspect
+        ratio (`_size_to_fit`) rather than stretching to exactly match the container -- every
+        figure type otherwise defaults to its own fixed build-time size (or, for
+        combined-response, a size scaled to sweep density). Called once from `_show_figure` when
+        a figure is first displayed, and bound to the container's own `<Configure>` event so a
+        live window resize re-fits whatever's currently on screen too, not just a figure switch.
+        """
+        if self._current_figure is None or self._current_figure_canvas is None:
+            return
+        self.canvas_container.update_idletasks()
+        container_w = self.canvas_container.winfo_width()
+        container_h = self.canvas_container.winfo_height()
+        if container_w <= 1 or container_h <= 1:
+            return
+
+        fig = self._current_figure
+        native_w, native_h = getattr(fig, "_native_size_inches", tuple(fig.get_size_inches()))
+        fit_w, fit_h = _size_to_fit(native_w * fig.dpi, native_h * fig.dpi, container_w, container_h)
+        fig.set_size_inches(fit_w / fig.dpi, fit_h / fig.dpi)
+
+        widget = self._current_figure_canvas.get_tk_widget()
+        widget.place(relx=0.5, rely=0.5, anchor="center", width=round(fit_w), height=round(fit_h))
+        self._current_figure_canvas.draw_idle()
 
     def _on_figure_selected(self) -> None:
         selection = self.figure_listbox.curselection()
@@ -711,6 +748,12 @@ class PickerApp:
             return
 
         fig, caption = result
+        # Stashed once, here, before _show_figure ever rescales fig for display -- its own
+        # aspect ratio (impairment_response's fixed 9x5.5, combined_response's width scaled to
+        # sweep density, ...) is a real design choice each figures/*.py module made, and
+        # _show_figure needs the *original* proportions to scale from every time this cached
+        # figure is redisplayed, not whatever size it happened to be resized to last.
+        fig._native_size_inches = tuple(fig.get_size_inches())
         # Connected once, here, when the figure first enters the cache -- not in _show_figure,
         # which also runs on every cache-hit re-display of an already-connected figure.
         clamp_x = filename in _FIXED_BUILDERS  # line charts only -- see _clamp_xlim_nonnegative

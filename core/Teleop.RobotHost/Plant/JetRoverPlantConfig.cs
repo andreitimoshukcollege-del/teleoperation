@@ -1,47 +1,107 @@
+using System;
+using Teleop.RobotHost.Kinematics;
+
 namespace Teleop.RobotHost.Plant
 {
     /// <summary>
     /// <see cref="JetRoverPlant"/>'s tunable knobs. Unlike <c>RigidBodyPlant</c> (Core's plant,
     /// deliberately config-free because it has no real research knobs), this plant drives real
-    /// motors and has at least one genuinely safety-relevant parameter -- a config struct is the
-    /// right call here, not ceremony.
-    ///
-    /// Phase 1 scope only: <see cref="PositionXToDirectionScale"/> and
-    /// <see cref="MaxDirectionMagnitude"/> exist solely to support the temporary
-    /// <c>CommandFrame.Pose</c>-to-relative-servo-nudge stand-in documented on
-    /// <see cref="JetRoverPlant.Command"/>, and go away once real inverse kinematics replaces it
-    /// (docs/adr/0007-jetrover-plant-and-robot-host.md).
+    /// motors and has several genuinely safety- and calibration-relevant parameters -- a config
+    /// struct is the right call here, not ceremony.
     /// </summary>
     public readonly struct JetRoverPlantConfig
     {
+        /// <summary>Ruler-measured link lengths for <see cref="FourDofArmKinematics"/>.</summary>
+        public readonly ArmLinkLengths Links;
+
         /// <summary>
-        /// Phase-1-only stand-in scale factor: multiplies <c>CommandFrame.Pose.Position.X</c>
-        /// (metres) into the base servo's "direction" units (see <c>RelayProtocol</c>'s doc for
-        /// what that unit means on the ROS side). Meaningless once real IK lands.
+        /// Pulse units per radian, for converting an IK joint-angle delta into the relay's
+        /// "direction" units. Confirmed against Hiwonder's own published docs: the servo's full
+        /// travel is 0-1000 pulse = 0-240 degrees (<b>not</b> the 180 degrees
+        /// `ServoController.pulseToDeg` in the ported ROS SDK assumes -- that mismatch is a
+        /// separate, pre-existing inaccuracy in that file, deliberately not touched here; this
+        /// plant does its own pulse/radian conversion independently and only ever sends
+        /// <c>direction</c> units over the wire, never degrees, for these four joints).
         /// </summary>
-        public readonly float PositionXToDirectionScale;
+        public readonly float PulsePerRadian;
+
+        /// <summary>
+        /// Pulse units per degree using the ROS SDK's own (separate, pre-existing) 180-degree
+        /// assumption -- <b>only</b> for reversing <c>ServoController.pulseToDeg</c>'s conversion
+        /// when interpreting an incoming feedback reading (which that function already produced
+        /// using that assumption before publishing it as a ROS topic value), so the round trip
+        /// through degrees on the wire is numerically exact. Every other angle computation in
+        /// this plant uses <see cref="PulsePerRadian"/> (the confirmed-correct 240-degree range)
+        /// -- the two must not be conflated.
+        /// </summary>
+        public readonly float PulsePerDegreeAssumed180;
+
+        /// <summary>
+        /// <c>ServoController.setPos</c>'s own fixed step size (50 pulse per unit of
+        /// "direction") -- needed to convert a desired pulse delta into the direction value that
+        /// produces it: <c>direction = pulseDelta / StepSizePulses</c>.
+        /// </summary>
+        public readonly float StepSizePulses;
 
         /// <summary>
         /// Hard clamp on the magnitude of any single direction value sent to the relay,
-        /// independent of whatever <see cref="PositionXToDirectionScale"/> computes -- a
-        /// safety backstop against a bug in that computation (or in whatever produces
-        /// <c>CommandFrame.Pose</c> upstream) commanding an oversized single step.
+        /// independent of the computed delta -- a safety backstop against a bug in the IK/
+        /// tracking computation (or a bad <c>CommandFrame.Pose</c> from upstream) commanding an
+        /// oversized single step.
         /// </summary>
         public readonly float MaxDirectionMagnitude;
 
-        public JetRoverPlantConfig(float positionXToDirectionScale, float maxDirectionMagnitude)
-        {
-            PositionXToDirectionScale = positionXToDirectionScale;
-            MaxDirectionMagnitude = maxDirectionMagnitude;
-        }
+        /// <summary>Servo pulse value corresponding to joint angle 0 -- the arm's own "center" (matches <c>resetArm</c>'s pulse 500 for every joint).</summary>
+        public readonly int ZeroPulse;
+
+        /// <summary>Full raw travel range, in pulse units (0-1000 on this hardware) -- joint-angle targets are clamped to this before being converted to a direction delta.</summary>
+        public readonly int MinPulse;
+        public readonly int MaxPulse;
 
         /// <summary>
-        /// Conservative defaults for the Phase 1 smoke test: a 1:1 scale, and a magnitude clamp
-        /// matching the direction values already manually verified safe against the real
-        /// hardware (docs/adr/0007-jetrover-plant-and-robot-host.md's Phase 0/1 hardware tests).
+        /// Gripper open/closed servo-degree values, in the *ROS SDK's own* assumed 0-180 degree
+        /// space (<c>ServoController.degToPulse</c>) -- not the corrected 240-degree range above,
+        /// since <see cref="Teleop.RobotHost.Relay.LocalArmCommand.GripperDegrees"/> passes
+        /// through to that function unmodified. Defaults are a plausible half-open range, not yet
+        /// calibrated against the real gripper's actual travel.
         /// </summary>
+        public readonly float GripperOpenDegrees;
+        public readonly float GripperClosedDegrees;
+
+        public JetRoverPlantConfig(
+            ArmLinkLengths links,
+            float pulsePerRadian,
+            float pulsePerDegreeAssumed180,
+            float stepSizePulses,
+            float maxDirectionMagnitude,
+            int zeroPulse,
+            int minPulse,
+            int maxPulse,
+            float gripperOpenDegrees,
+            float gripperClosedDegrees)
+        {
+            Links = links;
+            PulsePerRadian = pulsePerRadian;
+            PulsePerDegreeAssumed180 = pulsePerDegreeAssumed180;
+            StepSizePulses = stepSizePulses;
+            MaxDirectionMagnitude = maxDirectionMagnitude;
+            ZeroPulse = zeroPulse;
+            MinPulse = minPulse;
+            MaxPulse = maxPulse;
+            GripperOpenDegrees = gripperOpenDegrees;
+            GripperClosedDegrees = gripperClosedDegrees;
+        }
+
         public static JetRoverPlantConfig Default => new JetRoverPlantConfig(
-            positionXToDirectionScale: 1f,
-            maxDirectionMagnitude: 5f);
+            links: ArmLinkLengths.Measured,
+            pulsePerRadian: 1000f / (240f * MathF.PI / 180f),
+            pulsePerDegreeAssumed180: 1000f / 180f,
+            stepSizePulses: 50f,
+            maxDirectionMagnitude: 5f,
+            zeroPulse: 500,
+            minPulse: 0,
+            maxPulse: 1000,
+            gripperOpenDegrees: 30f,
+            gripperClosedDegrees: 150f);
     }
 }

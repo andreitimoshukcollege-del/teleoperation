@@ -7,7 +7,9 @@ namespace Teleop.RobotHost.Tests.Relay
         [Fact]
         public void ArmCommand_RoundTripsThroughEncodeDecode()
         {
-            var original = new LocalArmCommand(baseDirection: -3.25f);
+            var original = new LocalArmCommand(
+                baseDirection: -3.25f, lowerDirection: 1.5f, middleDirection: -0.75f,
+                upperDirection: 2.0f, gripperDegrees: 120f);
             Span<byte> buffer = stackalloc byte[RelayProtocol.ArmCommandEncodedSize];
 
             int written = RelayProtocol.EncodeCommand(original, buffer);
@@ -16,12 +18,20 @@ namespace Teleop.RobotHost.Tests.Relay
             Assert.Equal(RelayProtocol.ArmCommandEncodedSize, written);
             Assert.True(ok);
             Assert.Equal(original.BaseDirection, decoded.BaseDirection);
+            Assert.Equal(original.LowerDirection, decoded.LowerDirection);
+            Assert.Equal(original.MiddleDirection, decoded.MiddleDirection);
+            Assert.Equal(original.UpperDirection, decoded.UpperDirection);
+            Assert.Equal(original.GripperDegrees, decoded.GripperDegrees);
         }
 
         [Fact]
         public void Feedback_RoundTripsThroughEncodeDecode()
         {
-            var original = new LocalFeedback(baseDegreesValid: true, baseDegrees: -42);
+            var original = new LocalFeedback(
+                @base: new JointFeedback(true, -42),
+                lower: new JointFeedback(false, 0),
+                middle: new JointFeedback(true, 88),
+                upper: new JointFeedback(true, -5));
             Span<byte> buffer = stackalloc byte[RelayProtocol.FeedbackEncodedSize];
 
             int written = RelayProtocol.EncodeFeedback(original, buffer);
@@ -29,15 +39,18 @@ namespace Teleop.RobotHost.Tests.Relay
 
             Assert.Equal(RelayProtocol.FeedbackEncodedSize, written);
             Assert.True(ok);
-            Assert.Equal(original.BaseDegreesValid, decoded.BaseDegreesValid);
-            Assert.Equal(original.BaseDegrees, decoded.BaseDegrees);
+            Assert.Equal(original.Base.Valid, decoded.Base.Valid);
+            Assert.Equal(original.Base.Degrees, decoded.Base.Degrees);
+            Assert.Equal(original.Lower.Valid, decoded.Lower.Valid);
+            Assert.Equal(original.Middle.Degrees, decoded.Middle.Degrees);
+            Assert.Equal(original.Upper.Degrees, decoded.Upper.Degrees);
         }
 
         [Fact]
         public void TryDecodeCommand_RejectsWrongVersion()
         {
             Span<byte> buffer = stackalloc byte[RelayProtocol.ArmCommandEncodedSize];
-            RelayProtocol.EncodeCommand(new LocalArmCommand(1f), buffer);
+            RelayProtocol.EncodeCommand(new LocalArmCommand(1f, 0f, 0f, 0f, 90f), buffer);
             buffer[0] = RelayProtocol.Version + 1;
 
             bool ok = RelayProtocol.TryDecodeCommand(buffer, out _);
@@ -59,7 +72,10 @@ namespace Teleop.RobotHost.Tests.Relay
         public void TryDecodeFeedback_RejectsWrongVersion()
         {
             Span<byte> buffer = stackalloc byte[RelayProtocol.FeedbackEncodedSize];
-            RelayProtocol.EncodeFeedback(new LocalFeedback(true, 1), buffer);
+            var feedback = new LocalFeedback(
+                new JointFeedback(true, 1), new JointFeedback(true, 1),
+                new JointFeedback(true, 1), new JointFeedback(true, 1));
+            RelayProtocol.EncodeFeedback(feedback, buffer);
             buffer[0] = RelayProtocol.Version + 1;
 
             bool ok = RelayProtocol.TryDecodeFeedback(buffer, out _);

@@ -33,7 +33,8 @@ Teleop.RobotHost (on the Jetson)          jetrover-teleop-ros (on the Jetson)
       | teleop_relay/relay_protocol.py -- must match exactly, kept in sync by hand)
       v
   teleop_relay (ROS 2 node) ──────────────────────────────────────────>  jetrover_arm_control
-                                                                          (/arm/servo/base today)
+                                                                          (base/lower/middle/upper
+                                                                           joints + gripper)
 ```
 
 `teleop_relay` is a real, working ROS 2 package in `jetrover-teleop-ros` (not planned anymore) --
@@ -49,16 +50,38 @@ protocol above into calls against `jetrover_arm_control`'s existing topics.
   `jetrover_arm_control`'s `/arm/servo/base` topic, and physically moving the real servo --
   visually confirmed. Feedback round-trips correctly back through the same chain into the
   `RobotStateFrame` reply.
-- Two real, pre-existing bugs in the ported `jetrover_arm_control` SDK were found and fixed along
-  the way (both in `jetrover-teleop-ros`, not here): an uncaught `queue.Empty` on a board-read
-  timeout that crashed the whole ROS node, and a single-slot response queue with no
+- **Phase 2 (real inverse kinematics, all four position-affecting joints, gripper) also confirmed
+  working on the physical robot.** `JetRoverPlant.Command` now runs
+  `Kinematics/FourDofArmKinematics.cs` against `CommandFrame.Pose` instead of Phase 1's stand-in,
+  and denormalizes `CommandFrame.Gripper`. A commanded Cartesian target moved the arm to
+  approximately the right position -- X/Y matched the intended target closely; Z was
+  off by the amount explained below (not a sign or math error -- confirmed by hand-deriving the
+  IK for the test target and cross-checking against a passing round-trip test suite).
+- **Real, hardware-level finding: this JetRover's middle-arm servo (ID 3) never responds to
+  position-read requests**, confirmed independently of ROS by calling the board SDK directly,
+  repeatedly, with nothing else running. Writes to it work fine (it visibly moves); only reads
+  never succeed. This is not a software bug to fix -- `JetRoverPlant.State` already degrades
+  honestly for exactly this case (`IsFullySensed` reports false; the affected joint's contribution
+  falls back to this plant's last-commanded target rather than a stale sensed value or a fixed
+  default). It is the reason Phase 2's real-hardware Z result didn't exactly match the commanded
+  target: the middle joint's actual contribution to `State` is an estimate, not a measurement,
+  until/unless this servo's read path is fixed at the hardware or firmware level.
+- Three real, pre-existing bugs in the ported `jetrover_arm_control` SDK were found and fixed
+  along the way (all in `jetrover-teleop-ros`, not here): an uncaught `queue.Empty` on a
+  board-read timeout that crashed the whole ROS node; a single-slot response queue with no
   request/response correlation that silently dropped fresh servo-position responses whenever a
-  previous request's response had arrived late -- see that repo's commit history for details.
-- `CommandFrame.Pose` isn't converted through real inverse kinematics yet (Phase 2) -- Phase 1
-  uses a documented, temporary stand-in (`JetRoverPlant`'s own doc comment) to prove the pipe
-  works. Gripper and the lower/middle/upper joints are not wired up yet either.
+  previous request's response had arrived late; and (found during Phase 2) the same
+  ROS-side node's `pulseToDeg` uses an assumed 180-degree servo range where Hiwonder's own
+  published docs confirm the real range is 240 degrees -- `JetRoverPlantConfig` accounts for this
+  explicitly (`PulsePerRadian` vs `PulsePerDegreeAssumed180`) rather than treating it as fixed.
+- A real bug was also found and fixed in `JetRoverPlant` itself during Phase 2's hardware testing:
+  when a single command's required delta exceeded the per-call direction clamp, the plant
+  credited its own belief with the full, unclamped target instead of the amount actually applied
+  -- silently stalling large moves forever instead of closing the remaining distance over
+  repeated commands. See `JetRoverPlant`'s own doc comment and its regression test.
 - Mecanum base motion is explicitly out of scope for now — no wheel odometry exists anywhere in
   the board SDK, so a base plant could only ever be dead-reckoned from commanded velocity, never
   sensed.
-- Real cross-machine `ClockSync` validation (Phase 3) hasn't been done yet -- today's test proved
-  the pipe works, not that its latency numbers are trustworthy yet.
+- Real cross-machine `ClockSync` validation (Phase 3) hasn't been done yet -- Phases 1-2's tests
+  proved the pipe (and now the kinematics) work, not that the latency numbers crossing it are
+  trustworthy yet.

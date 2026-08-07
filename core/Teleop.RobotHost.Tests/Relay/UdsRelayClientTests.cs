@@ -23,7 +23,8 @@ namespace Teleop.RobotHost.Tests.Relay
                 relaySocket.Blocking = false;
 
                 using var client = new UdsRelayClient(hostPath, relayPath);
-                client.Send(new LocalArmCommand(baseDirection: 2.5f));
+                client.Send(new LocalArmCommand(
+                    baseDirection: 2.5f, lowerDirection: 0f, middleDirection: 0f, upperDirection: 0f, gripperDegrees: 90f));
 
                 byte[] buffer = new byte[RelayProtocol.ArmCommandEncodedSize];
                 int received = PollReceive(relaySocket, buffer);
@@ -52,7 +53,10 @@ namespace Teleop.RobotHost.Tests.Relay
                 using var client = new UdsRelayClient(hostPath, relayPath);
 
                 byte[] buffer = new byte[RelayProtocol.FeedbackEncodedSize];
-                RelayProtocol.EncodeFeedback(new LocalFeedback(baseDegreesValid: true, baseDegrees: 17), buffer);
+                var sentFeedback = new LocalFeedback(
+                    @base: new JointFeedback(true, 17), lower: new JointFeedback(true, 0),
+                    middle: new JointFeedback(false, 0), upper: new JointFeedback(true, -3));
+                RelayProtocol.EncodeFeedback(sentFeedback, buffer);
                 relaySocket.SendTo(buffer, new UnixDomainSocketEndPoint(hostPath));
 
                 bool received = false;
@@ -67,8 +71,10 @@ namespace Teleop.RobotHost.Tests.Relay
                 }
 
                 Assert.True(received);
-                Assert.True(feedback.BaseDegreesValid);
-                Assert.Equal(17, feedback.BaseDegrees);
+                Assert.True(feedback.Base.Valid);
+                Assert.Equal(17, feedback.Base.Degrees);
+                Assert.False(feedback.Middle.Valid);
+                Assert.Equal(-3, feedback.Upper.Degrees);
             }
             finally
             {

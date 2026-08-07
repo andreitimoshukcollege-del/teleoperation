@@ -14,6 +14,8 @@ wall clock, do real file I/O, and take NuGet dependencies (`YamlDotNet`, so far)
 | `Verification/` | `VerifyCommand`, `AuditCommand` — Gate 3's two real checks |
 | `Sweep/` | `ExperimentConfig`, `NetworkProfileCatalog`, `TraceFile`, `SweepCommand`, `ManifestWriter` — Gate 5's sweep |
 | `Tooling/` | `GoldenSessionBuilder`, `SyntheticTraceBuilder` — deterministic generators for committed fixtures, never hand-authored data |
+| `Net/` | `UdpTransport` — a real, socket-backed `ITransport` for this host's side of a cross-machine link. A deliberate byte-for-byte duplicate of `Teleop.RobotHost`'s own copy, same precedent as `Time/MonotonicClock` |
+| `ClockSyncCheck/` | `ClockSyncCheckCommand`, `ClockSyncCheckArgs` — Phase 3's real cross-machine `ClockSync` diagnostic |
 
 ## Subcommands
 
@@ -24,6 +26,7 @@ wall clock, do real file I/O, and take NuGet dependencies (`YamlDotNet`, so far)
 | `sweep` | real — runs an `experiments/*.yaml`, writes `results/<id>/<timestamp>/` |
 | `gen-golden` | real, not one of the five documented subcommands — regenerates the golden `.tlog` |
 | `gen-trace` | real, not one of the five documented subcommands — regenerates a network trace |
+| `clocksync-check` | real, not one of the five documented subcommands — Phase 3 of the JetRover integration (`docs/adr/0007-jetrover-plant-and-robot-host.md`); a real cross-machine `ClockSync` diagnostic against an already-running `Teleop.RobotHost`, see `ClockSyncCheck/ClockSyncCheckCommand.cs`'s own doc comment |
 | `replay` | stub, exits 70 (`EX_SOFTWARE`) — not built yet |
 | `compare` | stub, exits 70 — not built yet |
 

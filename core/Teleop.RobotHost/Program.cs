@@ -53,6 +53,9 @@ namespace Teleop.RobotHost
             Console.WriteLine(
                 $"Teleop.RobotHost listening on UDP :{a.LocalPort}, replying to " +
                 $"{remoteEndPoint}, relay socket {a.RelaySocketPath}. Ctrl+C to stop.");
+            Console.WriteLine(
+                $"[clock] TicksPerSecond={clock.TicksPerSecond}. Teleop.Eval's clocksync-check prints its " +
+                "own rate too -- ClockSync's offset arithmetic assumes the two match; compare them by hand.");
 
             using var stop = new ManualResetEventSlim(initialState: false);
             Console.CancelKeyPress += (_, cancelArgs) =>

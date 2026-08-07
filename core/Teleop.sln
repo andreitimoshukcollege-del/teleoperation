@@ -9,6 +9,10 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Teleop.Core.Tests", "Teleop
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Teleop.Eval", "Teleop.Eval\Teleop.Eval.csproj", "{FAB345A6-1749-436E-8562-8BD0E7743F7D}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Teleop.RobotHost", "Teleop.RobotHost\Teleop.RobotHost.csproj", "{6C7C66AC-8D1C-4576-BCC9-BB933AF0DB76}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Teleop.RobotHost.Tests", "Teleop.RobotHost.Tests\Teleop.RobotHost.Tests.csproj", "{E8FBB4A8-42CC-405B-A8A6-8E100CC71A2B}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -30,5 +34,13 @@ Global
 		{FAB345A6-1749-436E-8562-8BD0E7743F7D}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{FAB345A6-1749-436E-8562-8BD0E7743F7D}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{FAB345A6-1749-436E-8562-8BD0E7743F7D}.Release|Any CPU.Build.0 = Release|Any CPU
+		{6C7C66AC-8D1C-4576-BCC9-BB933AF0DB76}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{6C7C66AC-8D1C-4576-BCC9-BB933AF0DB76}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{6C7C66AC-8D1C-4576-BCC9-BB933AF0DB76}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{6C7C66AC-8D1C-4576-BCC9-BB933AF0DB76}.Release|Any CPU.Build.0 = Release|Any CPU
+		{E8FBB4A8-42CC-405B-A8A6-8E100CC71A2B}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{E8FBB4A8-42CC-405B-A8A6-8E100CC71A2B}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{E8FBB4A8-42CC-405B-A8A6-8E100CC71A2B}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{E8FBB4A8-42CC-405B-A8A6-8E100CC71A2B}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 EndGlobal

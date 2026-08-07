@@ -1,0 +1,74 @@
+using System;
+using System.Net;
+
+namespace Teleop.RobotHost
+{
+    /// <summary>Parsed command-line arguments for <see cref="Program"/>.</summary>
+    internal readonly struct RobotHostArgs
+    {
+        public readonly int LocalPort;
+        public readonly IPAddress RemoteHost;
+        public readonly int RemotePort;
+        public readonly string RelaySocketPath;
+        public readonly string LocalRelaySocketPath;
+
+        public const string Usage =
+            "Usage: Teleop.RobotHost --local-port <port> --remote-host <ip> --remote-port <port> " +
+            "--relay-socket <path> --local-relay-socket <path>";
+
+        private RobotHostArgs(
+            int localPort, IPAddress remoteHost, int remotePort,
+            string relaySocketPath, string localRelaySocketPath)
+        {
+            LocalPort = localPort;
+            RemoteHost = remoteHost;
+            RemotePort = remotePort;
+            RelaySocketPath = relaySocketPath;
+            LocalRelaySocketPath = localRelaySocketPath;
+        }
+
+        public static RobotHostArgs? TryParse(string[] args, out string? error)
+        {
+            int? localPort = null;
+            IPAddress? remoteHost = null;
+            int? remotePort = null;
+            string? relaySocketPath = null;
+            string? localRelaySocketPath = null;
+
+            for (int i = 0; i < args.Length; i++)
+            {
+                switch (args[i])
+                {
+                    case "--local-port" when i + 1 < args.Length:
+                        localPort = ParseIntOrNull(args[++i]);
+                        break;
+                    case "--remote-host" when i + 1 < args.Length:
+                        IPAddress.TryParse(args[++i], out remoteHost);
+                        break;
+                    case "--remote-port" when i + 1 < args.Length:
+                        remotePort = ParseIntOrNull(args[++i]);
+                        break;
+                    case "--relay-socket" when i + 1 < args.Length:
+                        relaySocketPath = args[++i];
+                        break;
+                    case "--local-relay-socket" when i + 1 < args.Length:
+                        localRelaySocketPath = args[++i];
+                        break;
+                }
+            }
+
+            if (localPort is null || remoteHost is null || remotePort is null ||
+                relaySocketPath is null || localRelaySocketPath is null)
+            {
+                error = "Missing or invalid required argument.";
+                return null;
+            }
+
+            error = null;
+            return new RobotHostArgs(
+                localPort.Value, remoteHost, remotePort.Value, relaySocketPath, localRelaySocketPath);
+        }
+
+        private static int? ParseIntOrNull(string s) => int.TryParse(s, out int value) ? value : null;
+    }
+}

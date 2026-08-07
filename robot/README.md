@@ -82,6 +82,37 @@ protocol above into calls against `jetrover_arm_control`'s existing topics.
 - Mecanum base motion is explicitly out of scope for now — no wheel odometry exists anywhere in
   the board SDK, so a base plant could only ever be dead-reckoned from commanded velocity, never
   sensed.
-- Real cross-machine `ClockSync` validation (Phase 3) hasn't been done yet -- Phases 1-2's tests
-  proved the pipe (and now the kinematics) work, not that the latency numbers crossing it are
-  trustworthy yet.
+- **Phase 3 (real cross-machine `ClockSync` validation) is done, with a real finding.** A new
+  `Teleop.Eval` verb, `clocksync-check` (`core/Teleop.Eval/ClockSyncCheck/`), builds a real
+  `OperatorEndpoint` over a real UDP socket and talks to an already-running `Teleop.RobotHost`
+  over Tailscale. Run against the physical Jetson: `IsSynced` converged, round trips were
+  accepted with zero rejections, and measured RTT (~63-110ms depending on network conditions)
+  was plausible for a real Tailscale link. The arm moved correctly end-to-end, confirmed by a
+  byte-for-byte match between what `JetRoverPlant.Command()` computed and what the relay
+  received and decoded.
+  - **Real finding: `ClockSync`'s offset/OWD numbers are not trustworthy across this specific
+    pair of machines.** The Jetson (`.NET` on Linux ARM64) reports `TicksPerSecond=1,000,000,000`;
+    this project's Windows dev machine reports `10,000,000` -- a 100x mismatch.
+    `ClockSync.AddRoundTrip` (`core/Teleop.Core/Time/ClockSync.cs`) adds and subtracts
+    operator-domain and robot-domain ticks directly, which is only numerically valid if both
+    sides' rates agree -- true by construction on every loopback/sweep use (one process, one
+    clock), never checked before because Phase 1-2's own hardware tests never depended on the
+    diagnostic numbers being right, only on the arm moving correctly. The symptom is
+    unmistakable once looked for: `owd_uplink_ms` and `owd_downlink_ms` come out enormous and
+    of opposite sign (order 10,000-40,000ms) while still summing back to the real RTT, because
+    the scale error is identical and opposite in the two terms. Not fixed here -- doing so
+    needs either a wire-carried `TicksPerSecond` handshake or normalizing all stamps to a
+    fixed-rate unit (e.g. nanoseconds) before transmission, both of which are Core/wire-format
+    changes bigger than this validation phase's scope. `Teleop.RobotHost` now prints its own
+    `TicksPerSecond` at startup specifically so this can be checked by hand until it's fixed.
+  - Getting a real hardware-motion signal required isolating the failure by layer (direct ROS
+    topic publish, then a raw datagram straight to the relay's Unix socket, then the full
+    `Teleop.RobotHost` pipeline) after an initial false alarm: a diagnostic `pyserial` probe
+    opened during debugging toggled the board's DTR line and reset it, which looked identical
+    to "nothing moves" until traced back and fixed with a clean ROS-stack restart.
+  - Also real, and unrelated to any of the above: the dev machine's `dotnet` process (a native
+    Windows process, per this repo's WSL-to-Windows `dotnet` wrapper) and a plain WSL-native
+    process take genuinely different network paths to Tailscale -- WSL's own NAT rewrites the
+    source port for WSL-native traffic but not for the Windows-native `dotnet` process's own
+    traffic. A NAT-discovery step aimed at the wrong process's traffic silently pointed
+    `Teleop.RobotHost`'s reply target at a port nothing was listening on.

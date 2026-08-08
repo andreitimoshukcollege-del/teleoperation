@@ -113,25 +113,31 @@ protocol above into calls against `jetrover_arm_control`'s existing topics.
     ticks are uptime-based with an arbitrary per-machine epoch, not wall-clock-synced, so a large
     offset is expected and not a bug — only the RTT/OWD figures, which depend solely on tick
     *differences* within a domain, are the numbers this fix was actually about).
-  - **New real finding, found while re-verifying the fix above, unrelated to it: at the arm's
-    normal 20 Hz command rate, `JetRoverPlant`'s first few (large, correct) corrective commands
-    can be silently lost before the physical servo ever executes them.** Confirmed by layered
-    diagnosis: a temporary print added to `relay_node.py`'s decode path (reverted, never
-    committed) proved the *relay* faithfully receives and republishes the real, correct
+  - **Real finding, found while re-verifying the fix above, unrelated to it and since fixed: at
+    the arm's normal 20 Hz command rate, `JetRoverPlant`'s first few (large, correct) corrective
+    commands could be silently lost before the physical servo ever executed them.** Confirmed by
+    layered diagnosis: a temporary print added to `relay_node.py`'s decode path (reverted, never
+    committed) proved the *relay* faithfully received and republished the real, correct
     direction values `JetRoverPlant` computes (e.g. `lower=-3.022 middle=5.000 upper=-5.000` on
     the very first real command toward the validated target) — the same values a hand-crafted
-    raw datagram sent directly to the relay's socket reliably moves the arm with. Yet at 20 Hz
-    the arm did not move at all across several repeated attempts. Slowing `clocksync-check`'s
-    own send rate to 1 Hz (`--rate-hz 1`) made the exact same target move the arm reliably. Root
-    cause not yet isolated to a specific layer — candidates are a depth-1 "keep only latest" QoS
-    somewhere between the relay's publish and `robot_controller_node`'s servo-write callback
-    racing against a slow serial write/read round trip, or `JetRoverPlant`'s optimistic belief
-    converging to zero (via `StepSizePulses`) within 2-3 calls (~100-150ms) — faster than the
-    physical bus servo can execute the first large correction it was actually sent. Not fixed
-    here: this is a pre-existing characteristic of the already-merged Phase 1/2 pipeline, entirely
-    unrelated to the `ClockSync` wire-format change above (confirmed unrelated: `ClockSync`
-    affects only the downlink diagnostic numbers, never the uplink command content or its
-    cadence), not something this PR touches or needs to fix to be correct.
+    raw datagram sent directly to the relay's socket reliably moved the arm with. Yet at 20 Hz
+    the arm did not move at all across several repeated attempts. Slowing `clocksync-check`'s own
+    send rate to 1 Hz (`--rate-hz 1`) made the exact same target move the arm reliably. Root cause
+    (confirmed by direct code inspection, not this session's earlier hypotheses): `jetrover_arm_control`'s
+    `robot_controller_node.py` subscribed to the servo topics with depth-1 QoS on a
+    single-threaded ROS executor, and `ServoController.setPos` did a blocking serial *read*
+    (up to a 1s timeout) before every write, plus a hard 0.3s `sleep` after each move — all on the
+    executor's only thread. At 20 Hz that ~1.3s worst case meant later commands silently
+    overwrote earlier unprocessed ones in the depth-1 queue before their callback ever ran; at
+    1 Hz there was no contention. **Fixed** in
+    [`jetrover-teleop-ros#1`](https://github.com/andreitimoshukcollege-del/jetrover-teleop-ros/pull/1):
+    `ServoController` now tracks a local position belief (mirroring `JetRoverPlant`'s own
+    optimistic/sensed pattern) instead of re-reading hardware before every write, replaced the
+    blocking sleep with a non-blocking cooldown, and bumped QoS depth to 3 as defense-in-depth.
+    Re-verified on the real robot at both 20 Hz and 1 Hz: the arm now moves to the target and
+    holds at the real teleop rate. Entirely unrelated to the `ClockSync` wire-format change above
+    (confirmed unrelated: `ClockSync` affects only the downlink diagnostic numbers, never the
+    uplink command content or its cadence).
   - Getting a real hardware-motion signal required isolating the failure by layer (direct ROS
     topic publish, then a raw datagram straight to the relay's Unix socket, then the full
     `Teleop.RobotHost` pipeline) after an initial false alarm: a diagnostic `pyserial` probe

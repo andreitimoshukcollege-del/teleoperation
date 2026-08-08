@@ -17,10 +17,13 @@ namespace Teleop.Core.Pipeline
     /// second <c>ClockSync</c> instance robot-side would contradict "conversion happens once,
     /// at the point <c>ClockSync</c> has the sample."
     ///
-    /// <see cref="ITimeAuthority"/> is used only for construction-time context (this endpoint
-    /// does not currently read <c>TicksPerSecond</c>, but takes the same authority the plant and
-    /// caller share, for symmetry with <see cref="OperatorEndpoint"/> and in case a future
-    /// change needs it) -- time otherwise arrives as an explicit <c>nowTicks</c> parameter.
+    /// <see cref="ITimeAuthority"/> is read for <c>TicksPerSecond</c> only, never
+    /// <c>NowTicks</c> -- time otherwise arrives as an explicit <c>nowTicks</c> parameter, the
+    /// same discipline <see cref="OperatorEndpoint"/> follows. That rate is stamped onto every
+    /// <see cref="RobotStateFrame"/> this endpoint sends: it is the unit the frame's two
+    /// robot-domain timestamps are counted in, and the only way the operator can ever learn it,
+    /// since it is a fact about this machine's clock that no operator-side measurement reveals
+    /// (docs/adr/0008-clocksync-cross-rate-normalization.md).
     ///
     /// Allocation-free per call: the send/receive buffers and the per-step scratch buffer of
     /// received sequences are all preallocated in the constructor.
@@ -32,6 +35,7 @@ namespace Teleop.Core.Pipeline
         private readonly RobotStateFrameCodec _stateCodec;
         private readonly ITransport _uplinkTransport;
         private readonly ITransport _downlinkTransport;
+        private readonly long _ticksPerSecond;
 
         private readonly byte[] _sendBuffer;
         private readonly byte[] _recvBuffer;
@@ -62,7 +66,7 @@ namespace Teleop.Core.Pipeline
             _stateCodec = stateCodec;
             _uplinkTransport = uplinkTransport;
             _downlinkTransport = downlinkTransport;
-            _ = robotClock;
+            _ticksPerSecond = robotClock.TicksPerSecond;
 
             _sendBuffer = new byte[stateCodec.MaxEncodedBytes];
             _recvBuffer = new byte[uplinkTransport.MaxPayloadBytes];
@@ -125,7 +129,8 @@ namespace Teleop.Core.Pipeline
 
         private void SendStateReply(uint sequence, long robotRecvTicks, long downlinkSendTicks)
         {
-            var stateFrame = new RobotStateFrame(sequence, robotRecvTicks, downlinkSendTicks, _plant.State.Value);
+            var stateFrame = new RobotStateFrame(
+                sequence, robotRecvTicks, downlinkSendTicks, _ticksPerSecond, _plant.State.Value);
 
             if (_stateCodec.TryEncode(stateFrame, _sendBuffer, out int bytesWritten))
             {

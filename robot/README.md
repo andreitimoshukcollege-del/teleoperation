@@ -90,21 +90,48 @@ protocol above into calls against `jetrover_arm_control`'s existing topics.
   was plausible for a real Tailscale link. The arm moved correctly end-to-end, confirmed by a
   byte-for-byte match between what `JetRoverPlant.Command()` computed and what the relay
   received and decoded.
-  - **Real finding: `ClockSync`'s offset/OWD numbers are not trustworthy across this specific
-    pair of machines.** The Jetson (`.NET` on Linux ARM64) reports `TicksPerSecond=1,000,000,000`;
-    this project's Windows dev machine reports `10,000,000` -- a 100x mismatch.
-    `ClockSync.AddRoundTrip` (`core/Teleop.Core/Time/ClockSync.cs`) adds and subtracts
-    operator-domain and robot-domain ticks directly, which is only numerically valid if both
-    sides' rates agree -- true by construction on every loopback/sweep use (one process, one
-    clock), never checked before because Phase 1-2's own hardware tests never depended on the
-    diagnostic numbers being right, only on the arm moving correctly. The symptom is
-    unmistakable once looked for: `owd_uplink_ms` and `owd_downlink_ms` come out enormous and
-    of opposite sign (order 10,000-40,000ms) while still summing back to the real RTT, because
-    the scale error is identical and opposite in the two terms. Not fixed here -- doing so
-    needs either a wire-carried `TicksPerSecond` handshake or normalizing all stamps to a
-    fixed-rate unit (e.g. nanoseconds) before transmission, both of which are Core/wire-format
-    changes bigger than this validation phase's scope. `Teleop.RobotHost` now prints its own
-    `TicksPerSecond` at startup specifically so this can be checked by hand until it's fixed.
+  - **Real finding, since fixed: `ClockSync`'s offset/OWD numbers were not trustworthy across
+    this specific pair of machines.** The Jetson (`.NET` on Linux ARM64) reports
+    `TicksPerSecond=1,000,000,000`; this project's Windows dev machine reports `10,000,000` -- a
+    100x mismatch. `ClockSync.AddRoundTrip` (`core/Teleop.Core/Time/ClockSync.cs`) added and
+    subtracted operator-domain and robot-domain ticks directly, which is only numerically valid
+    if both sides' rates agree -- true by construction on every loopback/sweep use (one process,
+    one clock), never checked before because Phase 1-2's own hardware tests never depended on the
+    diagnostic numbers being right, only on the arm moving correctly. The symptom was unmistakable
+    once looked for: `owd_uplink_ms` and `owd_downlink_ms` came out enormous and of opposite sign
+    (order 10,000-40,000ms) while still summing back to the real RTT, because the scale error was
+    identical and opposite in the two terms. **Fixed** in
+    `docs/adr/0008-clocksync-cross-rate-normalization.md`: `RobotStateFrame` now carries the
+    robot's own `TicksPerSecond` on every reply (wire v2), and `ClockSync.AddRoundTrip`/
+    `ToOperatorTicks` rescale robot-domain stamps into operator-tick-equivalent units before any
+    cross-domain arithmetic. **Re-verified against the real Jetson: fixed.** `clocksync-check`
+    now reports `IsSynced: True`, `LastRttMs`/`MinRttMs` in the 61-77ms range (matching the real
+    Tailscale RTT observed independently, not the previous ~100x-inflated figures),
+    `OffsetUncertaintyMs` tracking `LastRttMs/2` exactly as the algorithm intends, zero rejected
+    samples, and `owd_uplink_ms + owd_downlink_ms` tracking `MinRttMs` closely, per the tool's own
+    sanity check. The reported clock *offset* itself is still a very large number (both machines'
+    ticks are uptime-based with an arbitrary per-machine epoch, not wall-clock-synced, so a large
+    offset is expected and not a bug — only the RTT/OWD figures, which depend solely on tick
+    *differences* within a domain, are the numbers this fix was actually about).
+  - **New real finding, found while re-verifying the fix above, unrelated to it: at the arm's
+    normal 20 Hz command rate, `JetRoverPlant`'s first few (large, correct) corrective commands
+    can be silently lost before the physical servo ever executes them.** Confirmed by layered
+    diagnosis: a temporary print added to `relay_node.py`'s decode path (reverted, never
+    committed) proved the *relay* faithfully receives and republishes the real, correct
+    direction values `JetRoverPlant` computes (e.g. `lower=-3.022 middle=5.000 upper=-5.000` on
+    the very first real command toward the validated target) — the same values a hand-crafted
+    raw datagram sent directly to the relay's socket reliably moves the arm with. Yet at 20 Hz
+    the arm did not move at all across several repeated attempts. Slowing `clocksync-check`'s
+    own send rate to 1 Hz (`--rate-hz 1`) made the exact same target move the arm reliably. Root
+    cause not yet isolated to a specific layer — candidates are a depth-1 "keep only latest" QoS
+    somewhere between the relay's publish and `robot_controller_node`'s servo-write callback
+    racing against a slow serial write/read round trip, or `JetRoverPlant`'s optimistic belief
+    converging to zero (via `StepSizePulses`) within 2-3 calls (~100-150ms) — faster than the
+    physical bus servo can execute the first large correction it was actually sent. Not fixed
+    here: this is a pre-existing characteristic of the already-merged Phase 1/2 pipeline, entirely
+    unrelated to the `ClockSync` wire-format change above (confirmed unrelated: `ClockSync`
+    affects only the downlink diagnostic numbers, never the uplink command content or its
+    cadence), not something this PR touches or needs to fix to be correct.
   - Getting a real hardware-motion signal required isolating the failure by layer (direct ROS
     topic publish, then a raw datagram straight to the relay's Unix socket, then the full
     `Teleop.RobotHost` pipeline) after an initial false alarm: a diagnostic `pyserial` probe

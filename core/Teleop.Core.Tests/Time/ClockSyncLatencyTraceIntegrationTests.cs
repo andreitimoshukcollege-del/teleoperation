@@ -11,6 +11,12 @@ namespace Teleop.Core.Tests.Time;
 /// </summary>
 public class ClockSyncLatencyTraceIntegrationTests
 {
+    // Both machines' ITimeAuthority tick at the same rate in these scenarios, so ClockSync's
+    // rescale ratio (ADR 0008) is exactly 1.0 and the offsets below are the same ones this test
+    // asserted before cross-rate normalization existed. The mismatched-rate cases live in
+    // ClockSyncTests.
+    private const long SharedRate = 10_000_000;
+
     [Fact]
     public void RoundTrip_ConvertsRobotDomainStampsIntoOperatorDomain_ConsistentWithLatencyTrace()
     {
@@ -32,13 +38,14 @@ public class ClockSyncLatencyTraceIntegrationTests
             outlierRttMultiple: 10.0,
             minSamplesBeforeTrusted: 1));
 
-        bool accepted = sync.AddRoundTrip(operatorSendTicks, robotRecvTicksRaw, robotSendTicksRaw, operatorRecvTicks);
+        bool accepted = sync.AddRoundTrip(
+            operatorSendTicks, SharedRate, robotRecvTicksRaw, robotSendTicksRaw, SharedRate, operatorRecvTicks);
         Assert.True(accepted);
         Assert.Equal(trueOffset, sync.Diagnostics.OffsetTicks);
         Assert.True(sync.Diagnostics.IsSynced);
 
-        long robotRecvOperatorDomain = sync.ToOperatorTicks(robotRecvTicksRaw);
-        long downlinkSendOperatorDomain = sync.ToOperatorTicks(robotSendTicksRaw);
+        long robotRecvOperatorDomain = sync.ToOperatorTicks(robotRecvTicksRaw, SharedRate, SharedRate);
+        long downlinkSendOperatorDomain = sync.ToOperatorTicks(robotSendTicksRaw, SharedRate, SharedRate);
 
         var trace = LatencyTrace.ForSequence(7)
             .WithCaptureTicks(operatorSendTicks)
@@ -81,7 +88,7 @@ public class ClockSyncLatencyTraceIntegrationTests
         Assert.False(sync.Diagnostics.IsSynced);
 
         var trace = LatencyTrace.ForSequence(1)
-            .WithRobotRecvTicks(sync.ToOperatorTicks(9999))
+            .WithRobotRecvTicks(sync.ToOperatorTicks(9999, SharedRate, SharedRate))
             .WithClockSync(sync.Diagnostics.OffsetTicks, sync.Diagnostics.OffsetUncertaintyTicks);
 
         Assert.True(trace.TryGetRobotRecvTicks(out long robotRecv));

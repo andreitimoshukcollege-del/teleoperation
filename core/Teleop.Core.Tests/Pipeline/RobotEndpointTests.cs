@@ -68,6 +68,33 @@ public class RobotEndpointTests
         Assert.False(secondReply);
     }
 
+    /// <summary>
+    /// Every reply must stamp the robot <c>ITimeAuthority</c>'s own tick rate onto the frame --
+    /// the operator has no other way to learn it, and without it the two robot-domain timestamps
+    /// on the same frame are uninterpretable (ADR 0008). Built with a 1 GHz clock rather than the
+    /// 10 MHz default so a hard-coded constant or a leaked operator-side rate would fail here.
+    /// </summary>
+    [Fact]
+    public void Step_Reply_CarriesTheInjectedRobotClocksTickRate()
+    {
+        const long jetsonRate = 1_000_000_000;
+        var uplink = new LoopbackTransport(maxPayloadBytes: 128, capacity: 16);
+        var downlink = new LoopbackTransport(maxPayloadBytes: 128, capacity: 16);
+        var plant = new RigidBodyPlant(Pose.Identity, jetsonRate);
+        var endpoint = new RobotEndpoint(
+            plant, new RawPoseCodec(), new RobotStateFrameCodec(), uplink, downlink,
+            new ManualClock(jetsonRate));
+        SendCommand(uplink, new CommandFrame(5, 0, 0, Pose.Identity, Vector3.Zero, Vector3.Zero, 0f), sendTicks: 0);
+
+        endpoint.Step(100_000_000);
+
+        byte[] buffer = new byte[128];
+        var codec = new RobotStateFrameCodec();
+        Assert.True(downlink.TryReceive(100_000_000, buffer, out int byteCount, out _));
+        Assert.True(codec.TryDecode(buffer.AsSpan(0, byteCount), out RobotStateFrame reply));
+        Assert.Equal(jetsonRate, reply.TicksPerSecond);
+    }
+
     [Fact]
     public void Step_MultipleReceivedDatagrams_ProducesOneReplyEach()
     {

@@ -11,15 +11,25 @@ namespace Teleop.Core.Pipeline
     /// this project, not a family of competing implementations to select between, the same
     /// reasoning <c>Time/ClockSync.cs</c> gives for not being behind an interface either.
     ///
-    /// Fixed 49-byte little-endian layout, mirroring <c>Transport/RawPoseCodec.cs</c>'s
+    /// Fixed 57-byte little-endian layout, mirroring <c>Transport/RawPoseCodec.cs</c>'s
     /// <see cref="ICommandCodec"/>-shaped contract by convention (false + required-length on a
     /// too-small buffer, no partial state on failure, reject rather than throw on a bad version
     /// byte) even though this type sits outside that interface: byte 0 version, bytes 1-4
     /// <c>Sequence</c> (uint32), bytes 5-12 <c>RobotRecvTicks</c> (int64), bytes 13-20
     /// <c>DownlinkSendTicks</c> (int64), bytes 21-48 <c>Pose</c> (3 position floats + 4 rotation
-    /// floats). Binary, not text like <c>Recording/RecordFormat.cs</c>'s <c>.tlog</c> format:
-    /// this crosses a bounded datagram on the per-frame hot path and is never committed or
-    /// diffed, so the text-format rationale doesn't apply here.
+    /// floats), bytes 49-56 <c>TicksPerSecond</c> (int64). Binary, not text like
+    /// <c>Recording/RecordFormat.cs</c>'s <c>.tlog</c> format: this crosses a bounded datagram on
+    /// the per-frame hot path and is never committed or diffed, so the text-format rationale
+    /// doesn't apply here.
+    ///
+    /// <b>Version 2</b> (docs/adr/0008-clocksync-cross-rate-normalization.md) appended
+    /// <c>TicksPerSecond</c> after the pose rather than grouping it with the other two tick
+    /// fields, keeping v1's byte offsets untouched so the diff is confined to the new trailing
+    /// field. A v1 payload is rejected by the existing version-byte check, not misread: this is a
+    /// deliberate breaking change, safe only because both ends of this hop
+    /// (<c>Teleop.Eval</c>/Unity and <c>Teleop.RobotHost</c>) are built from this one Core source
+    /// and redeployed together — there is no independently maintained decoder of this frame, in
+    /// contrast to the JetRover relay protocol, which has a hand-mirrored Python twin.
     ///
     /// Floats are written as their raw bit pattern (<see cref="BitConverter.SingleToInt32Bits"/>)
     /// through <see cref="BinaryPrimitives.WriteInt32LittleEndian"/>/
@@ -30,8 +40,8 @@ namespace Teleop.Core.Pipeline
     /// </summary>
     public sealed class RobotStateFrameCodec
     {
-        public const byte Version = 1;
-        public const int EncodedSize = 49;
+        public const byte Version = 2;
+        public const int EncodedSize = 57;
 
         public int MaxEncodedBytes => EncodedSize;
 
@@ -60,6 +70,8 @@ namespace Teleop.Core.Pipeline
             WriteSingle(destination.Slice(37, 4), frame.Pose.Rotation.Y);
             WriteSingle(destination.Slice(41, 4), frame.Pose.Rotation.Z);
             WriteSingle(destination.Slice(45, 4), frame.Pose.Rotation.W);
+
+            BinaryPrimitives.WriteInt64LittleEndian(destination.Slice(49, 8), frame.TicksPerSecond);
 
             bytesWritten = EncodedSize;
             return true;
@@ -90,11 +102,13 @@ namespace Teleop.Core.Pipeline
             float rotZ = ReadSingle(source.Slice(41, 4));
             float rotW = ReadSingle(source.Slice(45, 4));
 
+            long ticksPerSecond = BinaryPrimitives.ReadInt64LittleEndian(source.Slice(49, 8));
+
             var pose = new Types.Pose(
                 new System.Numerics.Vector3(posX, posY, posZ),
                 new System.Numerics.Quaternion(rotX, rotY, rotZ, rotW));
 
-            frame = new RobotStateFrame(sequence, robotRecvTicks, downlinkSendTicks, pose);
+            frame = new RobotStateFrame(sequence, robotRecvTicks, downlinkSendTicks, ticksPerSecond, pose);
             return true;
         }
 

@@ -14,6 +14,18 @@ namespace Teleop.Core.Pipeline
     /// <c>ClockSync</c> four-timestamp estimate needs (<see cref="RobotRecvTicks"/>,
     /// <see cref="DownlinkSendTicks"/> — uncorrected; domain conversion happens exactly once,
     /// operator-side, per that ADR).
+    ///
+    /// It also carries <see cref="TicksPerSecond"/>, the robot <c>ITimeAuthority</c>'s own tick
+    /// rate, which is what makes those two robot-domain stamps interpretable at all: the two
+    /// stamps are meaningless numbers without the rate they are counted in, and that rate is a
+    /// fact about a remote machine the operator cannot determine from its own clock. Sent on
+    /// every reply rather than negotiated once — it is 8 bytes and "fixed for the lifetime of the
+    /// instance" per <c>ITimeAuthority</c>, so resending it is free of any staleness concern and
+    /// costs no connection-lifecycle state. See
+    /// docs/adr/0008-clocksync-cross-rate-normalization.md, which introduced this field after a
+    /// real Windows-operator/Jetson-robot pairing (10 MHz vs 1 GHz) inflated every measured RTT
+    /// 100x. The uplink <c>CommandFrame</c> deliberately has no counterpart field: conversion is
+    /// operator-side only, so the robot never needs the operator's rate.
     /// </summary>
     public readonly struct RobotStateFrame
     {
@@ -26,19 +38,28 @@ namespace Teleop.Core.Pipeline
         /// <summary>t2: when this reply left the robot, robot-domain, uncorrected.</summary>
         public readonly long DownlinkSendTicks;
 
+        /// <summary>
+        /// The robot <c>ITimeAuthority</c>'s tick rate — the unit <see cref="RobotRecvTicks"/> and
+        /// <see cref="DownlinkSendTicks"/> are counted in, without which the operator cannot
+        /// compare them against its own.
+        /// </summary>
+        public readonly long TicksPerSecond;
+
         /// <summary>The plant's state at the moment this reply was sent.</summary>
         public readonly Pose Pose;
 
-        public RobotStateFrame(uint sequence, long robotRecvTicks, long downlinkSendTicks, Pose pose)
+        public RobotStateFrame(
+            uint sequence, long robotRecvTicks, long downlinkSendTicks, long ticksPerSecond, Pose pose)
         {
             Sequence = sequence;
             RobotRecvTicks = robotRecvTicks;
             DownlinkSendTicks = downlinkSendTicks;
+            TicksPerSecond = ticksPerSecond;
             Pose = pose;
         }
 
         public override string ToString() =>
             $"RobotStateFrame(seq={Sequence}, robotRecv={RobotRecvTicks}, " +
-            $"downlinkSend={DownlinkSendTicks}, {Pose})";
+            $"downlinkSend={DownlinkSendTicks}, ticksPerSecond={TicksPerSecond}, {Pose})";
     }
 }

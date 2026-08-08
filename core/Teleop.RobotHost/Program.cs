@@ -54,8 +54,9 @@ namespace Teleop.RobotHost
                 $"Teleop.RobotHost listening on UDP :{a.LocalPort}, replying to " +
                 $"{remoteEndPoint}, relay socket {a.RelaySocketPath}. Ctrl+C to stop.");
             Console.WriteLine(
-                $"[clock] TicksPerSecond={clock.TicksPerSecond}. Teleop.Eval's clocksync-check prints its " +
-                "own rate too -- ClockSync's offset arithmetic assumes the two match; compare them by hand.");
+                $"[clock] TicksPerSecond={clock.TicksPerSecond}, stamped on every RobotStateFrame reply so " +
+                "the operator can normalize for a mismatched rate automatically " +
+                "(docs/adr/0008-clocksync-cross-rate-normalization.md).");
 
             using var stop = new ManualResetEventSlim(initialState: false);
             Console.CancelKeyPress += (_, cancelArgs) =>

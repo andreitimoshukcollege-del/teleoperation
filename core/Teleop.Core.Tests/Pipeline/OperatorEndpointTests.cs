@@ -12,6 +12,12 @@ namespace Teleop.Core.Tests.Pipeline;
 
 public class OperatorEndpointTests
 {
+    // Every hand-built RobotStateFrame below reports this as the robot's TicksPerSecond, matching
+    // the default ManualClock the endpoint under test is given, so ClockSync's cross-rate rescale
+    // (ADR 0008) is the identity here. Genuinely mismatched rates are covered in ClockSyncTests;
+    // this file's job is the endpoint's wiring, not the estimator's arithmetic.
+    private const long RobotTicksPerSecond = 10_000_000;
+
     // Zero-mitigation baseline: PassthroughPredictor + SnapReconciler together reduce to
     // pass-through, matching this project's Phase-4 behavior by construction. Config values are
     // representative test defaults, not swept parameters.
@@ -102,7 +108,9 @@ public class OperatorEndpointTests
         var endpoint = MakeEndpoint(out _, out LoopbackTransport downlink, out _, out _);
 
         // A reply for a sequence never submitted.
-        var stateFrame = new RobotStateFrame(sequence: 999, robotRecvTicks: 10, downlinkSendTicks: 20, Pose.Identity);
+        var stateFrame = new RobotStateFrame(
+            sequence: 999, robotRecvTicks: 10, downlinkSendTicks: 20,
+            ticksPerSecond: RobotTicksPerSecond, Pose.Identity);
         var codec = new RobotStateFrameCodec();
         byte[] buffer = new byte[RobotStateFrameCodec.EncodedSize];
         codec.TryEncode(stateFrame, buffer, out int n);
@@ -122,7 +130,9 @@ public class OperatorEndpointTests
         LatencyTrace opened = endpoint.SubmitCommand(Pose.Identity, Vector3.Zero, Vector3.Zero, 0f, nowTicks: 100);
         Assert.True(opened.TryGetUplinkSendTicks(out long uplinkSendTicks));
 
-        var stateFrame = new RobotStateFrame(opened.Sequence, robotRecvTicks: uplinkSendTicks + 10, downlinkSendTicks: uplinkSendTicks + 15, Pose.Identity);
+        var stateFrame = new RobotStateFrame(
+            opened.Sequence, robotRecvTicks: uplinkSendTicks + 10, downlinkSendTicks: uplinkSendTicks + 15,
+            ticksPerSecond: RobotTicksPerSecond, Pose.Identity);
         var codec = new RobotStateFrameCodec();
         byte[] buffer = new byte[RobotStateFrameCodec.EncodedSize];
         codec.TryEncode(stateFrame, buffer, out int n);
@@ -144,6 +154,69 @@ public class OperatorEndpointTests
         Assert.True(metrics.TryGetLatest("owd_downlink_ms", out _, out _));
     }
 
+    /// <summary>
+    /// The endpoint must feed <see cref="ClockSync"/> the rate carried on the <b>frame</b>, not
+    /// its own, which is the whole reason <c>RobotStateFrame.TicksPerSecond</c> exists (ADR 0008).
+    /// Scenario: a 10 MHz operator and a 1 GHz robot whose clocks read the same instant, i.e. the
+    /// real Windows/Jetson pairing.
+    ///
+    /// <list type="bullet">
+    /// <item>Operator sends at 1,000,000 operator ticks (0.1s).</item>
+    /// <item>Robot receives 1ms later, at 0.101s, which its 1 GHz clock reads as 101,000,000.</item>
+    /// <item>Robot replies 0.5ms after that: 101,500,000 robot ticks.</item>
+    /// <item>Operator receives at 0.102s == 1,020,000 operator ticks.</item>
+    /// </list>
+    ///
+    /// Rescaled (ratio 0.01) the robot stamps are 1,010,000 and 1,015,000, giving
+    /// rtt = 20,000 - 5,000 = 15,000 ticks (1.5ms) and offset = -2,500 ticks. Both one-way delays
+    /// then come out at 0.75ms, summing to the 1.5ms round trip. Had the endpoint passed its own
+    /// rate for the robot's, the raw 101,000,000 would have produced a negative RTT (rejected
+    /// outright) and robot-domain stamps ten seconds in the future -- so the causal-ordering
+    /// assertions below fail loudly in that case rather than drifting quietly.
+    /// </summary>
+    [Fact]
+    public void TryReceiveState_RobotReportsADifferentTickRate_NormalizesUsingTheFramesRate()
+    {
+        const long jetsonRate = 1_000_000_000;
+        var endpoint = MakeEndpoint(
+            out _, out LoopbackTransport downlink, out ClockSync clockSync, out InMemoryMetricTracker metrics);
+
+        LatencyTrace opened = endpoint.SubmitCommand(Pose.Identity, Vector3.Zero, Vector3.Zero, 0f, nowTicks: 1_000_000);
+        Assert.True(opened.TryGetUplinkSendTicks(out long uplinkSendTicks));
+
+        var stateFrame = new RobotStateFrame(
+            opened.Sequence, robotRecvTicks: 101_000_000, downlinkSendTicks: 101_500_000,
+            ticksPerSecond: jetsonRate, Pose.Identity);
+        var codec = new RobotStateFrameCodec();
+        byte[] buffer = new byte[RobotStateFrameCodec.EncodedSize];
+        codec.TryEncode(stateFrame, buffer, out int n);
+        downlink.Send(buffer.AsSpan(0, n), 1_020_000);
+
+        bool received = endpoint.TryReceiveState(1_020_000, out LatencyTrace completed);
+
+        Assert.True(received);
+        Assert.Equal(1, clockSync.Diagnostics.AcceptedSampleCount);
+        Assert.Equal(0, clockSync.Diagnostics.RejectedSampleCount);
+        Assert.Equal(15_000, clockSync.Diagnostics.LastRttTicks);
+        Assert.Equal(-2_500, clockSync.Diagnostics.OffsetTicks);
+
+        Assert.True(completed.TryGetRobotRecvTicks(out long robotRecv));
+        Assert.True(completed.TryGetDownlinkSendTicks(out long downlinkSend));
+        Assert.True(completed.TryGetOperatorRecvTicks(out long operatorRecv));
+        Assert.Equal(1_007_500, robotRecv);
+        Assert.Equal(1_012_500, downlinkSend);
+
+        // One causal timeline, in operator ticks -- unreachable without the rescale.
+        Assert.True(uplinkSendTicks <= robotRecv);
+        Assert.True(robotRecv <= downlinkSend);
+        Assert.True(downlinkSend <= operatorRecv);
+
+        Assert.True(metrics.TryGetLatest("owd_uplink_ms", out double uplinkMs, out _));
+        Assert.True(metrics.TryGetLatest("owd_downlink_ms", out double downlinkMs, out _));
+        Assert.Equal(0.75, uplinkMs, 6);
+        Assert.Equal(0.75, downlinkMs, 6);
+    }
+
     [Fact]
     public void EstimateRobotState_BeforeAnyReply_ReturnsIdentity()
     {
@@ -162,7 +235,8 @@ public class OperatorEndpointTests
         opened.TryGetUplinkSendTicks(out long uplinkSendTicks);
 
         var receivedPose = new Pose(new Vector3(7, 8, 9), Quaternion.Identity);
-        var stateFrame = new RobotStateFrame(opened.Sequence, uplinkSendTicks + 10, uplinkSendTicks + 15, receivedPose);
+        var stateFrame = new RobotStateFrame(
+            opened.Sequence, uplinkSendTicks + 10, uplinkSendTicks + 15, RobotTicksPerSecond, receivedPose);
         var codec = new RobotStateFrameCodec();
         byte[] buffer = new byte[RobotStateFrameCodec.EncodedSize];
         codec.TryEncode(stateFrame, buffer, out int n);
@@ -192,7 +266,8 @@ public class OperatorEndpointTests
 
         var codec = new RobotStateFrameCodec();
         byte[] buffer = new byte[RobotStateFrameCodec.EncodedSize];
-        var stateFrame = new RobotStateFrame(opened.Sequence, uplinkSendTicks + 10, uplinkSendTicks + 15, Pose.Identity);
+        var stateFrame = new RobotStateFrame(
+            opened.Sequence, uplinkSendTicks + 10, uplinkSendTicks + 15, RobotTicksPerSecond, Pose.Identity);
         codec.TryEncode(stateFrame, buffer, out int n);
 
         downlink.Send(buffer.AsSpan(0, n), 130);
@@ -270,7 +345,7 @@ public class OperatorEndpointTests
 
             var codec = new RobotStateFrameCodec();
             var stateFrame = new RobotStateFrame(
-                opened.Sequence, uplinkSendTicks + 10, uplinkSendTicks + 15,
+                opened.Sequence, uplinkSendTicks + 10, uplinkSendTicks + 15, RobotTicksPerSecond,
                 new Pose(new Vector3(1, 2, 3), Quaternion.Identity));
             byte[] buffer = new byte[RobotStateFrameCodec.EncodedSize];
             codec.TryEncode(stateFrame, buffer, out int n);

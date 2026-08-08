@@ -19,17 +19,27 @@ namespace Teleop.Eval.ClockSyncCheck
     /// first genuinely cross-machine exercise of <c>Time/ClockSync.cs</c>. Every earlier use --
     /// every sweep trial, the whole loopback baseline -- runs operator and robot logic in one
     /// process on one <c>ITimeAuthority</c>, which proves the arithmetic but not the assumption
-    /// underneath it: <c>ClockSync.AddRoundTrip</c> adds and subtracts operator-domain and
+    /// underneath it: <c>ClockSync.AddRoundTrip</c> used to add and subtract operator-domain and
     /// robot-domain ticks directly (<c>operatorSendTicks - robotRecvTicks</c>), which is only
     /// numerically meaningful if both sides' <see cref="ITimeAuthority.TicksPerSecond"/> agree.
     /// On one process they trivially do. Across two real machines -- this dev host's Windows
-    /// <c>Stopwatch</c> and the Jetson's Linux ARM one -- they are not guaranteed to, and often
-    /// are not (Windows commonly reports 10,000,000; .NET on Linux commonly reports
-    /// 1,000,000,000). This tool cannot fix that by itself (the wire protocol carries no
-    /// <c>TicksPerSecond</c> field today -- see <see cref="RawPoseCodec"/>/<c>RobotStateFrame</c>),
-    /// so it surfaces the two rates loudly instead: print this side's own rate, and rely on
-    /// <c>Teleop.RobotHost</c>'s own startup line (see its <c>Program.cs</c>) for the other side,
-    /// so a human running both can compare them before trusting any offset/OWD number below.
+    /// <c>Stopwatch</c> and the Jetson's Linux ARM one -- they are not, and this tool's first run
+    /// proved it (Windows reported 10,000,000; .NET on Linux reported 1,000,000,000, and every
+    /// RTT/offset below came out 100x inflated).
+    ///
+    /// That is fixed at the source now, not worked around here:
+    /// docs/adr/0008-clocksync-cross-rate-normalization.md made <c>ClockSync</c> take both rates
+    /// on every call and rescale the robot's stamps into operator-tick units first, and gave
+    /// <c>RobotStateFrame</c> a <c>TicksPerSecond</c> field (wire version 2) so the operator
+    /// learns the robot's rate from the reply itself. The figures below are therefore
+    /// rate-corrected without a human doing anything. This tool still prints its own rate, and
+    /// <c>Teleop.RobotHost</c> still prints its own at startup (see its <c>Program.cs</c>),
+    /// because seeing the two rates remains the fastest way to recognize this specific failure if
+    /// it ever reappears -- but comparing them by hand is no longer a precondition for trusting
+    /// the numbers. The robot's rate is not printed here: it arrives inside a decoded
+    /// <c>RobotStateFrame</c> that <see cref="OperatorEndpoint.TryReceiveState"/> consumes
+    /// internally and reports only as a <c>LatencyTrace</c>, and widening that API purely for a
+    /// diagnostic print is not worth the coupling.
     ///
     /// Talks to an already-running <c>Teleop.RobotHost</c> (unmodified) over real UDP, exactly
     /// the way a real operator eventually will: builds a real <see cref="OperatorEndpoint"/>
@@ -71,10 +81,10 @@ namespace Teleop.Eval.ClockSyncCheck
 
             var clock = new Teleop.Eval.Time.MonotonicClock();
             Console.WriteLine(
-                $"[clocksync-check] operator TicksPerSecond={clock.TicksPerSecond}. Compare this against " +
-                "the robot-side Teleop.RobotHost process's own printed TicksPerSecond before trusting any " +
-                "offset/OWD figure below -- ClockSync's arithmetic assumes they match (see this file's " +
-                "class doc).");
+                $"[clocksync-check] operator TicksPerSecond={clock.TicksPerSecond}. The robot-side " +
+                "Teleop.RobotHost process prints its own rate at startup; the two need not match -- " +
+                "ClockSync now normalizes across them per ADR 0008, using the rate carried on every " +
+                "RobotStateFrame (wire v2). Both ends must be built from the same Teleop.Core revision.");
 
             var remoteEndPoint = new IPEndPoint(a.RemoteHost, a.RemotePort);
             using var transport = new UdpTransport(a.LocalPort, remoteEndPoint, MaxDatagramBytes, clock);

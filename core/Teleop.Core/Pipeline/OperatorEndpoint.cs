@@ -30,7 +30,11 @@ namespace Teleop.Core.Pipeline
     /// <see cref="ITimeAuthority"/> is used only for <c>TicksPerSecond</c> (a fixed conversion
     /// constant) — never <c>NowTicks</c>. Every "when is it now" arrives as an explicit
     /// <paramref name="nowTicks"/>-shaped parameter, the same "time is always a parameter"
-    /// discipline <see cref="ITransport"/> and <c>IRobotPlant</c> already enforce.
+    /// discipline <see cref="ITransport"/> and <c>IRobotPlant</c> already enforce. That rate is
+    /// also what this endpoint hands <see cref="ClockSync"/> as the operator side of every
+    /// round trip; the robot's own rate arrives on each <see cref="RobotStateFrame"/> rather
+    /// than being assumed equal to ours
+    /// (docs/adr/0008-clocksync-cross-rate-normalization.md).
     ///
     /// <c>t_playout</c> is set equal to <c>t_operatorRecv</c> in <see cref="TryReceiveState"/> —
     /// the explicit stand-in for the not-yet-built <c>ImmediatePlayout</c>
@@ -158,10 +162,18 @@ namespace Teleop.Core.Pipeline
                     continue;
                 }
 
-                _clockSync.AddRoundTrip(uplinkSendTicks, stateFrame.RobotRecvTicks, stateFrame.DownlinkSendTicks, arrivalTicks);
+                // Both tick rates go in explicitly: the robot's arrives on the frame itself, since
+                // its clock need not tick at the same rate as ours (10 MHz vs 1 GHz across a real
+                // Windows/Linux pair) -- docs/adr/0008-clocksync-cross-rate-normalization.md.
+                _clockSync.AddRoundTrip(
+                    uplinkSendTicks, _ticksPerSecond,
+                    stateFrame.RobotRecvTicks, stateFrame.DownlinkSendTicks, stateFrame.TicksPerSecond,
+                    arrivalTicks);
 
-                long robotRecvOperatorDomain = _clockSync.ToOperatorTicks(stateFrame.RobotRecvTicks);
-                long downlinkSendOperatorDomain = _clockSync.ToOperatorTicks(stateFrame.DownlinkSendTicks);
+                long robotRecvOperatorDomain = _clockSync.ToOperatorTicks(
+                    stateFrame.RobotRecvTicks, stateFrame.TicksPerSecond, _ticksPerSecond);
+                long downlinkSendOperatorDomain = _clockSync.ToOperatorTicks(
+                    stateFrame.DownlinkSendTicks, stateFrame.TicksPerSecond, _ticksPerSecond);
                 ClockSyncDiagnostics syncDiagnostics = _clockSync.Diagnostics;
 
                 completedTrace = trace

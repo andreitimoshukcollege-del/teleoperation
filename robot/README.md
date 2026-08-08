@@ -90,21 +90,22 @@ protocol above into calls against `jetrover_arm_control`'s existing topics.
   was plausible for a real Tailscale link. The arm moved correctly end-to-end, confirmed by a
   byte-for-byte match between what `JetRoverPlant.Command()` computed and what the relay
   received and decoded.
-  - **Real finding: `ClockSync`'s offset/OWD numbers are not trustworthy across this specific
-    pair of machines.** The Jetson (`.NET` on Linux ARM64) reports `TicksPerSecond=1,000,000,000`;
-    this project's Windows dev machine reports `10,000,000` -- a 100x mismatch.
-    `ClockSync.AddRoundTrip` (`core/Teleop.Core/Time/ClockSync.cs`) adds and subtracts
-    operator-domain and robot-domain ticks directly, which is only numerically valid if both
-    sides' rates agree -- true by construction on every loopback/sweep use (one process, one
-    clock), never checked before because Phase 1-2's own hardware tests never depended on the
-    diagnostic numbers being right, only on the arm moving correctly. The symptom is
-    unmistakable once looked for: `owd_uplink_ms` and `owd_downlink_ms` come out enormous and
-    of opposite sign (order 10,000-40,000ms) while still summing back to the real RTT, because
-    the scale error is identical and opposite in the two terms. Not fixed here -- doing so
-    needs either a wire-carried `TicksPerSecond` handshake or normalizing all stamps to a
-    fixed-rate unit (e.g. nanoseconds) before transmission, both of which are Core/wire-format
-    changes bigger than this validation phase's scope. `Teleop.RobotHost` now prints its own
-    `TicksPerSecond` at startup specifically so this can be checked by hand until it's fixed.
+  - **Real finding, since fixed: `ClockSync`'s offset/OWD numbers were not trustworthy across
+    this specific pair of machines.** The Jetson (`.NET` on Linux ARM64) reports
+    `TicksPerSecond=1,000,000,000`; this project's Windows dev machine reports `10,000,000` -- a
+    100x mismatch. `ClockSync.AddRoundTrip` (`core/Teleop.Core/Time/ClockSync.cs`) added and
+    subtracted operator-domain and robot-domain ticks directly, which is only numerically valid
+    if both sides' rates agree -- true by construction on every loopback/sweep use (one process,
+    one clock), never checked before because Phase 1-2's own hardware tests never depended on the
+    diagnostic numbers being right, only on the arm moving correctly. The symptom was unmistakable
+    once looked for: `owd_uplink_ms` and `owd_downlink_ms` came out enormous and of opposite sign
+    (order 10,000-40,000ms) while still summing back to the real RTT, because the scale error was
+    identical and opposite in the two terms. **Fixed** in
+    `docs/adr/0008-clocksync-cross-rate-normalization.md`: `RobotStateFrame` now carries the
+    robot's own `TicksPerSecond` on every reply (wire v2), and `ClockSync.AddRoundTrip`/
+    `ToOperatorTicks` rescale robot-domain stamps into operator-tick-equivalent units before any
+    cross-domain arithmetic. Re-verification against the real Jetson (RTT should now land near
+    the ~63-110ms independently observed, not the ~100x-inflated figures above) is the next step.
   - Getting a real hardware-motion signal required isolating the failure by layer (direct ROS
     topic publish, then a raw datagram straight to the relay's Unix socket, then the full
     `Teleop.RobotHost` pipeline) after an initial false alarm: a diagnostic `pyserial` probe

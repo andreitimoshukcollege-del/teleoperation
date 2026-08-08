@@ -12,7 +12,15 @@ implemented here.
 |---|---|---|
 | — | `OperatorEndpoint.cs` | capture pose → command → in-flight `LatencyTrace`; matches downlink replies by `Sequence`, drives `ClockSync` |
 | — | `RobotEndpoint.cs` | drains commands → `IRobotPlant`; replies with plant state once per received datagram |
-| — | `RobotStateFrame.cs` / `RobotStateFrameCodec.cs` | the downlink wire message and its 49-byte fixed binary codec (plain class, not a `Contracts/` interface — exactly one downlink shape exists) |
+| — | `RobotStateFrame.cs` / `RobotStateFrameCodec.cs` | the downlink wire message and its 57-byte fixed binary codec, wire v2 (plain class, not a `Contracts/` interface — exactly one downlink shape exists) |
+
+`RobotStateFrame` carries the robot's own `ITimeAuthority.TicksPerSecond` alongside its two
+robot-domain timestamps (wire v2, `docs/adr/0008-clocksync-cross-rate-normalization.md`). Two
+machines' clocks need not tick at the same rate — a Windows operator reports 10 MHz, a Jetson
+1 GHz — and the operator cannot determine a remote machine's rate any other way, so `RobotEndpoint`
+stamps it on every reply and `OperatorEndpoint` hands it, plus its own rate, to `ClockSync` on
+every call. v1 payloads are rejected on the version byte; both ends of this hop build from this
+one Core source and redeploy together, so there is no independent decoder to keep in step.
 
 `OperatorEndpoint` now hosts a live, injected `IPredictor<Pose>`/`IReconciler<Pose>` pair
 (Phase 5): `TryReceiveState` folds each robot-state sample into both, and
@@ -34,7 +42,9 @@ add around it, once `IPlayoutPolicy` has a real implementation.
 
 1. **`ITimeAuthority` is read for `TicksPerSecond` only, never `NowTicks`.** Every "when is it
    now" arrives as an explicit `nowTicks` parameter — the same discipline `ITransport` and
-   `IRobotPlant` already enforce in their own doc comments.
+   `IRobotPlant` already enforce in their own doc comments. Both endpoints read it: the operator's
+   for `ms` conversion and as `ClockSync`'s operator-side rate, the robot's to stamp onto every
+   `RobotStateFrame`.
 2. **No third "driver" class.** Cadence (advance clock → submit → step → receive) is host
    orchestration, per docs/setup.md's callback-placement table (network thread / `FixedUpdate`
    / `Update` / `onBeforeRender`) — Core exposes step-oriented methods and never a driving loop.

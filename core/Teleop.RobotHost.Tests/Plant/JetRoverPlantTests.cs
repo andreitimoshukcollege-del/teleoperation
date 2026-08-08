@@ -87,6 +87,48 @@ namespace Teleop.RobotHost.Tests.Plant
         }
 
         [Fact]
+        public void Command_LowerArmNeverExceedsConfiguredLowerArmMaxPulse()
+        {
+            // Regression test for a real incident (2026-08-08): the lower arm collided with the
+            // robot's own base plate at a real physical target -- LowerArmMaxPulse exists
+            // specifically to make that unreachable in software, independent of what the IK
+            // target asks for. This target's unclamped IK would put the lower arm at pulse
+            // ~748 (well above center); the configured cap of 600 must win regardless of how
+            // many repeated commands try to keep pushing past it.
+            var configWithLowerLimit = new JetRoverPlantConfig(
+                links: Config.Links, pulsePerRadian: Config.PulsePerRadian,
+                pulsePerDegreeAssumed180: Config.PulsePerDegreeAssumed180, stepSizePulses: Config.StepSizePulses,
+                maxDirectionMagnitude: Config.MaxDirectionMagnitude, zeroPulse: Config.ZeroPulse,
+                minPulse: Config.MinPulse, maxPulse: Config.MaxPulse,
+                gripperOpenDegrees: Config.GripperOpenDegrees, gripperClosedDegrees: Config.GripperClosedDegrees,
+                lowerArmMaxPulse: 600);
+            var relay = new FakeRelayClient();
+            var plant = new JetRoverPlant(configWithLowerLimit, relay);
+
+            // Straight up: pushes the unclamped lower-arm IK target well past the configured cap.
+            var straightUpTarget = new Vector3(
+                0f, 0f, Config.Links.Base + Config.Links.Lower + Config.Links.Middle - 0.001f);
+
+            float cumulativeLowerPulseDelta = 0f;
+            for (int i = 0; i < 20; i++)
+            {
+                plant.Command(Frame(captureTicks: 10 + i, position: straightUpTarget));
+                cumulativeLowerPulseDelta += relay.SentCommands[relay.SentCommands.Count - 1].LowerDirection
+                    * configWithLowerLimit.StepSizePulses;
+            }
+
+            float impliedLowerPulse = configWithLowerLimit.ZeroPulse + cumulativeLowerPulseDelta;
+            Assert.True(
+                impliedLowerPulse <= configWithLowerLimit.LowerArmMaxPulse + 1e-3f,
+                $"lower arm pulse {impliedLowerPulse} exceeded the configured cap of {configWithLowerLimit.LowerArmMaxPulse}");
+
+            LocalArmCommand last = relay.SentCommands[relay.SentCommands.Count - 1];
+            Assert.True(
+                MathF.Abs(last.LowerDirection) < 0.01f,
+                $"lower arm still moving after 20 calls, should have converged at the cap: {last.LowerDirection}");
+        }
+
+        [Fact]
         public void Command_DenormalizesGripperToConfiguredDegreeRange()
         {
             var relay = new FakeRelayClient();
@@ -133,6 +175,53 @@ namespace Teleop.RobotHost.Tests.Plant
             Pose pose = plant.State.Value;
             Assert.Equal(1000, plant.State.CaptureTicks);
             Assert.True(pose.Position.X > 0f, $"expected a positive X reach at rest, got {pose.Position}");
+        }
+
+        [Fact]
+        public void Command_FirstUseSeedsBeliefFromSensedData_NotZeroPulse()
+        {
+            // Regression test for a real incident (2026-08-08): Step() polls the relay for
+            // feedback from startup regardless of whether any command has arrived, so by the
+            // time the first real Command() lands, a joint is often already sensed away from
+            // ZeroPulse (e.g. after a Teleop.RobotHost restart mid-session, or a manual physical
+            // correction). Computing the first *relative* delta from an unseeded ZeroPulse belief
+            // instead of the real sensed position sends a step sized for the wrong starting
+            // point, which the real servo then applies on top of its own true position --
+            // overshooting by the belief/reality gap in either direction. Verified here by
+            // comparing two otherwise-identical plants, one that observed sensed feedback before
+            // its first Command() and one that didn't: they must diverge for lower (whose sensed
+            // value differs from ZeroPulse here), and the seeded one must match hand-derived IK
+            // computed directly against the real sensed starting point, not ZeroPulse.
+            var seededRelay = new FakeRelayClient();
+            var seededPlant = new JetRoverPlant(Config, seededRelay);
+            seededRelay.EnqueueFeedback(new LocalFeedback(
+                @base: new JointFeedback(true, 90), lower: new JointFeedback(true, 70),
+                middle: new JointFeedback(false, 0), upper: new JointFeedback(true, 90)));
+            seededPlant.Step(nowTicks: 1000);
+
+            var unseededRelay = new FakeRelayClient();
+            var unseededPlant = new JetRoverPlant(Config, unseededRelay); // never Step()'d -- belief stays ZeroPulse
+
+            seededPlant.Command(Frame(captureTicks: 2000, position: ReachableTarget));
+            unseededPlant.Command(Frame(captureTicks: 2000, position: ReachableTarget));
+
+            LocalArmCommand seededSent = seededRelay.SentCommands[0];
+            LocalArmCommand unseededSent = unseededRelay.SentCommands[0];
+
+            Assert.NotEqual(unseededSent.LowerDirection, seededSent.LowerDirection);
+
+            // Hand-derive the expected direction directly against the real sensed starting
+            // point, exactly as production code does, rather than hardcoding a precomputed
+            // magic number.
+            FourDofArmKinematics.TryInverse(
+                Config.Links, ReachableTarget, out _, out float lowerPitch, out _);
+            float targetPulseLower = Config.ZeroPulse + lowerPitch * Config.PulsePerRadian;
+            float sensedPulseLower = 70 * Config.PulsePerDegreeAssumed180;
+            float expectedLowerDirection = System.Math.Clamp(
+                (targetPulseLower - sensedPulseLower) / Config.StepSizePulses,
+                -Config.MaxDirectionMagnitude, Config.MaxDirectionMagnitude);
+
+            Assert.Equal(expectedLowerDirection, seededSent.LowerDirection, 3);
         }
 
         [Fact]

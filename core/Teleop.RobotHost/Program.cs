@@ -40,7 +40,24 @@ namespace Teleop.RobotHost
             var transport = new UdpTransport(a.LocalPort, remoteEndPoint, MaxDatagramBytes, clock);
 
             using var relay = new UdsRelayClient(a.LocalRelaySocketPath, a.RelaySocketPath);
-            var plant = new JetRoverPlant(JetRoverPlantConfig.Default, relay);
+
+            // Always a custom config, never JetRoverPlantConfig.Default directly: LowerArmMaxPulse
+            // is a real safety limit (see its own doc comment) that must always be applied, not
+            // just when --max-direction-magnitude happens to also be overridden.
+            var defaults = JetRoverPlantConfig.Default;
+            var plantConfig = new JetRoverPlantConfig(
+                links: defaults.Links,
+                pulsePerRadian: defaults.PulsePerRadian,
+                pulsePerDegreeAssumed180: defaults.PulsePerDegreeAssumed180,
+                stepSizePulses: defaults.StepSizePulses,
+                maxDirectionMagnitude: a.MaxDirectionMagnitude ?? defaults.MaxDirectionMagnitude,
+                zeroPulse: defaults.ZeroPulse,
+                minPulse: defaults.MinPulse,
+                maxPulse: defaults.MaxPulse,
+                gripperOpenDegrees: defaults.GripperOpenDegrees,
+                gripperClosedDegrees: defaults.GripperClosedDegrees,
+                lowerArmMaxPulse: a.LowerArmMaxPulse);
+            var plant = new JetRoverPlant(plantConfig, relay);
 
             var endpoint = new RobotEndpoint(
                 plant,
@@ -57,6 +74,9 @@ namespace Teleop.RobotHost
                 $"[clock] TicksPerSecond={clock.TicksPerSecond}, stamped on every RobotStateFrame reply so " +
                 "the operator can normalize for a mismatched rate automatically " +
                 "(docs/adr/0008-clocksync-cross-rate-normalization.md).");
+            Console.WriteLine(
+                $"[plant] MaxDirectionMagnitude={plantConfig.MaxDirectionMagnitude:0.##} " +
+                $"LowerArmMaxPulse={plantConfig.LowerArmMaxPulse}");
 
             using var stop = new ManualResetEventSlim(initialState: false);
             Console.CancelKeyPress += (_, cancelArgs) =>

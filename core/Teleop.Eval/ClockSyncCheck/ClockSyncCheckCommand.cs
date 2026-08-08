@@ -56,6 +56,16 @@ namespace Teleop.Eval.ClockSyncCheck
     /// holds -- the same shape <c>JetRoverPlantTests.Command_RepeatingTheSameTarget_...</c>
     /// exercises against a fake relay) -- see <see cref="ClockSyncCheckArgs"/>'s
     /// <c>--confirm-hardware-motion</c> requirement.
+    ///
+    /// <b>The default 20Hz send rate is fine for this tool's own purpose (RTT/offset sampling)
+    /// but does not guarantee the arm physically reaches the exact commanded target</b> --
+    /// found 2026-08-08 (see <c>MoveArm/MoveArmArgs.cs</c>'s <c>DefaultRateHz</c> comment for the
+    /// full incident): the ROS-side servo enforces a real ~300ms cooldown between physical moves,
+    /// so a sender faster than that can have its final, smallest correction silently dropped
+    /// while <c>JetRoverPlant</c>'s own belief still credits itself with having sent it. This
+    /// tool's `IsSynced`/RTT numbers are unaffected (they only depend on round trips completing,
+    /// not on the arm's final resting position), but do not use this tool's convergence as
+    /// evidence the arm reached the exact target -- use <c>move-arm</c> for that instead.
     /// </summary>
     internal static class ClockSyncCheckCommand
     {

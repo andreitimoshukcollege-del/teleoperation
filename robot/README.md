@@ -149,3 +149,45 @@ protocol above into calls against `jetrover_arm_control`'s existing topics.
     source port for WSL-native traffic but not for the Windows-native `dotnet` process's own
     traffic. A NAT-discovery step aimed at the wrong process's traffic silently pointed
     `Teleop.RobotHost`'s reply target at a port nothing was listening on.
+- **`move-arm` (`core/Teleop.Eval/MoveArm/`) is a general-purpose "move the real arm to x,y,z and
+  wait for real convergence" operator tool** (`just move-arm x y z`), built after Phase 3 to make
+  ad hoc real-hardware testing easier than hand-rolling a harness each time. Building and using it
+  surfaced two more real findings:
+  - **A real collision, and two software fixes it drove.** Testing `move-arm` against the arm's
+    normal working target drove the lower arm into the robot's own base plate, straining the
+    servo against the obstruction until manually corrected (twice, across this session -- see
+    below). Root cause: after a `Teleop.RobotHost` restart mid-session, `JetRoverPlant`'s belief
+    starts at `ZeroPulse` regardless of the arm's real physical position, so its first *relative*
+    step is sized for the wrong starting point and the real servo applies it on top of its own
+    true position -- overshooting by the belief/reality gap. Fixed with two changes to
+    `JetRoverPlant.cs`: a one-time seed of each joint's belief from real sensed feedback the first
+    time it's used (not on every command -- that would reintroduce stale-feedback overshoot for a
+    different reason), and a new, safe-by-default, configurable `LowerArmMaxPulse` hard limit
+    (`--lower-arm-max-pulse`, `Teleop.RobotHost/RobotHostArgs.cs`) preventing the lower arm from
+    ever being commanded past a calibrated boundary, regardless of what any IK target asks for.
+  - **Calibrating that boundary against the real robot, with a human confirming clearance at
+    every step, surfaced a second real bug: a servo command-rate race that had silently
+    invalidated the first calibration pass.** `ServoController.setPos` (ROS side) enforces a real
+    ~300ms cooldown between physical moves. `move-arm`'s original default send rate was 5Hz
+    (200ms) -- faster than that cooldown -- so a final, smallest, most important correction could
+    arrive inside the cooldown window and be silently dropped, while `JetRoverPlant`'s belief
+    still credited itself with having sent it (no ack exists for "did this specific direction
+    actually land"). The first calibration pass converged on 25 pulse as "safe," confirmed by
+    eye -- but re-testing at a rate below the cooldown (2Hz) revealed the arm had never actually
+    reached 25; it reached a much higher (further from the plate) real pulse the whole time, and
+    reducing `--rate-hz` to something the arm could keep up with immediately drove it into a real
+    strain at a target the first pass had called safe. Recalibrated at 2Hz with a human confirming
+    clearance at every step; the real boundary is 50 pulse, now `RobotHostArgs.DefaultLowerArmMaxPulse`.
+    `move-arm`'s own default rate is now 2Hz for the same reason.
+  - **Also real: the ROS-side write-gate itself had two bugs, fixed in the same investigation**
+    (`jetrover-teleop-ros#2`). The original gate (`abs(nextPos - currentPos) >= 50`) silently
+    dropped any smaller real correction with no error, which is what made the calibration race
+    above hard to see -- a fix that removed the gate entirely was tried first and immediately
+    caused a real regression on hardware (floating-point noise in `JetRoverPlant`'s asymptotic
+    convergence, truncated to whole pulses, drove the arm measurably past the calibrated limit
+    over a run of otherwise-idle commands). Landed on a small (5 pulse) noise floor instead of
+    zero: large enough to filter truncation noise, small enough that a real 25-pulse correction
+    still goes through.
+  - Three real hardware strain incidents happened across this session's `move-arm` work, each
+    resolved with a manual corrective command (`ros2 topic pub` directly to `/arm/servo/joint/lower`)
+    confirmed by the operator watching the hardware before continuing. No damage occurred.

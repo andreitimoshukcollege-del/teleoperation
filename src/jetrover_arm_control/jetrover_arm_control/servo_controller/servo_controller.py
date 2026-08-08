@@ -4,6 +4,14 @@ from time import sleep
 from jetrover_arm_control.board_manager.robot_board_manager import BoardManager
 from jetrover_arm_control.servo_controller.servo_id_enum import SERVO_ENUM
 
+# setPos's write-gate threshold, in pulse units -- see setPos's own comment on this exact
+# constant for the full history (2026-08-08): large enough to filter out per-call floating-point
+# truncation noise from JetRoverPlant's belief convergence (observed as single-pulse jitter),
+# small enough that a real intended correction (the original bug this threshold replaced a much
+# coarser one for: a 25-pulse residual) still goes through.
+MIN_MEANINGFUL_PULSE_DELTA = 5
+
+
 class ServoController:
     """setPos tracks a local, optimistic belief of each servo's position (keyed by servoID,
     self._beliefPos) instead of re-reading real hardware before every write. A blocking serial
@@ -88,8 +96,26 @@ class ServoController:
         # elif toPos < 400:
         #     toPos = 400
 
-        if abs(nextPos - currentPos) >= stepSize:
-            # Set servo position only if the next position is within limits
+        if abs(nextPos - currentPos) >= MIN_MEANINGFUL_PULSE_DELTA:
+            # The original gate here was `>= stepSize` (50 pulses, ~12 degrees), which silently
+            # dropped every smaller commanded delta -- no error, no belief correction -- while
+            # the .NET side (JetRoverPlant) still credited its own belief with the move and
+            # never resent it, permanently losing a real residual correction. That surfaced as
+            # confusing, seemingly nondeterministic behavior while calibrating a real safety
+            # limit on 2026-08-08.
+            #
+            # The fix is this much smaller threshold, not zero: JetRoverPlant's own belief
+            # tracking is floating-point and converges toward its target asymptotically, so once
+            # very close it can keep emitting a technically-nonzero direction that never exactly
+            # reaches zero bit-for-bit. Writing on literally any nonzero delta (tried first, also
+            # on 2026-08-08) let that floating-point noise -- after `int()` truncation above,
+            # often exactly 1 pulse -- through as a real write on nearly every call; since
+            # `int()` truncates toward zero rather than rounding, repeated truncation of a
+            # persistent small residual is not guaranteed to average out; it drove the arm
+            # measurably past a calibrated limit over a series of otherwise-idle calls.
+            # MIN_MEANINGFUL_PULSE_DELTA is comfortably above that per-call truncation noise
+            # (observed as single-pulse jitter) while still well below any real intended
+            # correction (the case this whole fix exists for was a 25-pulse residual).
             self.board.bus_servo_set_position(servoSpeed, [[servoID, nextPos]])
 
             # The STM32 firmware paces the physical move itself via servoSpeed (the `duration`

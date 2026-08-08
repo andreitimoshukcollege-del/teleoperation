@@ -26,6 +26,13 @@ core-check: core-test core-verify core-audit
 sweep config:
     cd core && dotnet run --project Teleop.Eval -- sweep ../{{config}}
 
+# Move the real JetRover arm to a Cartesian target (wrist frame, meters) and hold, e.g. `just move-arm 0.15 0 0.08` -- requires Teleop.RobotHost running on the Jetson and a human watching the hardware
+move-arm x y z gripper="0" remote_host="100.112.90.72" remote_port="6000" local_port="6001":
+    cd core && dotnet run --project Teleop.Eval -- move-arm \
+        --x {{x}} --y {{y}} --z {{z}} --gripper {{gripper}} \
+        --remote-host {{remote_host}} --remote-port {{remote_port}} --local-port {{local_port}} \
+        --confirm-hardware-motion
+
 # ---- analysis/ (python: figures, percentile tables) ----
 
 # Internal: create analysis/.venv if it doesn't exist yet (fast no-op otherwise). `.venv/` is

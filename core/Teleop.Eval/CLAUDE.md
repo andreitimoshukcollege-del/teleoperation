@@ -28,7 +28,7 @@ wall clock, do real file I/O, and take NuGet dependencies (`YamlDotNet`, so far)
 | `gen-golden` | real, not one of the five documented subcommands — regenerates the golden `.tlog` |
 | `gen-trace` | real, not one of the five documented subcommands — regenerates a network trace |
 | `clocksync-check` | real, not one of the five documented subcommands — Phase 3 of the JetRover integration (`docs/adr/0007-jetrover-plant-and-robot-host.md`); a real cross-machine `ClockSync` diagnostic against an already-running `Teleop.RobotHost`, see `ClockSyncCheck/ClockSyncCheckCommand.cs`'s own doc comment |
-| `move-arm` | real, not one of the five documented subcommands — sends a fixed `CommandFrame` to an already-running `Teleop.RobotHost`, repeated for the run's duration, so the real arm moves to `--x --y --z` and holds; see `MoveArm/MoveArmCommand.cs`'s own doc comment |
+| `move-arm` | real, not one of the five documented subcommands — sends a fixed `CommandFrame` to an already-running `Teleop.RobotHost`, repeated until the robot's own reported position converges within `--position-tolerance-meters` of `--x --y --z` (or `--timeout-seconds` elapses, exit non-zero) — never claims success on a fixed duration alone; see `MoveArm/MoveArmCommand.cs`'s own doc comment |
 | `replay` | stub, exits 70 (`EX_SOFTWARE`) — not built yet |
 | `compare` | stub, exits 70 — not built yet |
 

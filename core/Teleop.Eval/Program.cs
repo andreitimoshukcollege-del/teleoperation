@@ -2,6 +2,7 @@
 using System;
 using System.IO;
 using Teleop.Eval.ClockSyncCheck;
+using Teleop.Eval.MoveArm;
 using Teleop.Eval.Sweep;
 using Teleop.Eval.Tooling;
 using Teleop.Eval.Verification;
@@ -27,6 +28,8 @@ namespace Teleop.Eval
                     return SweepCommand.Run(args);
                 case "clocksync-check":
                     return ClockSyncCheckCommand.Run(args);
+                case "move-arm":
+                    return MoveArmCommand.Run(args);
                 case "replay":
                 case "compare":
                     Console.Error.WriteLine($"'{cmd}' is NOT IMPLEMENTED. " +
@@ -34,7 +37,8 @@ namespace Teleop.Eval
                     return 70;   // EX_SOFTWARE
                 default:
                     Console.Error.WriteLine(
-                        "usage: verify | audit | sweep | replay | compare | gen-golden | gen-trace | clocksync-check");
+                        "usage: verify | audit | sweep | replay | compare | gen-golden | gen-trace | " +
+                        "clocksync-check | move-arm");
                     return 64;   // EX_USAGE
             }
         }

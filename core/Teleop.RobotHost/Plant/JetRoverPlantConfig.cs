@@ -59,24 +59,32 @@ namespace Teleop.RobotHost.Plant
         public readonly int MaxPulse;
 
         /// <summary>
-        /// Per-joint override of <see cref="MaxPulse"/> for the lower-arm joint specifically --
+        /// Per-joint override of <see cref="MinPulse"/> for the lower-arm joint specifically --
         /// a real mechanical limit, not a research knob: on 2026-08-08 the lower arm collided
         /// with the robot's own base plate at a real physical target, straining the servo against
-        /// the obstruction until the operator manually commanded it back. <see cref="MaxPulse"/>
-        /// (1000, the servo's full electrical travel) does not reflect this robot's actual usable
-        /// range once the plate is accounted for. Defaults to <see cref="MaxPulse"/> (no
-        /// additional restriction) so a fresh robot/config with different mechanical clearance
-        /// isn't silently limited by this one -- <c>Teleop.RobotHost</c>'s
-        /// <c>--lower-arm-max-pulse</c> sets this explicitly for the real hardware, calibrated to
-        /// 50 pulse (~9 degrees in <see cref="PulsePerDegreeAssumed180"/>'s space) by iterative
-        /// real-hardware testing with a human confirming clearance at each step (see
-        /// robot/README.md). An initial calibration pass landed on a higher, wrong value because
-        /// the ROS-side servo's own 300ms per-move cooldown was silently dropping the final small
-        /// correction at the sender's default rate -- the arm never actually reached the
-        /// commanded pulse, so the "safe" value that pass converged on didn't reflect where the
-        /// arm would land once that race was fixed. Recalibrated at a slower send rate afterward.
+        /// the obstruction until the operator manually commanded it back. On this hardware,
+        /// *lower* pulse values are what drive the lower arm toward the plate -- <see cref="MinPulse"/>
+        /// (0, the servo's full electrical travel) does not reflect this robot's actual usable
+        /// range once the plate is accounted for; the arm must never be commanded below this
+        /// value. Defaults to <see cref="MinPulse"/> (no additional restriction) so a fresh
+        /// robot/config with different mechanical clearance isn't silently limited by this one --
+        /// <c>Teleop.RobotHost</c>'s <c>--lower-arm-min-pulse</c> sets this explicitly for the
+        /// real hardware, calibrated to 50 pulse (~9 degrees in
+        /// <see cref="PulsePerDegreeAssumed180"/>'s space) by iterative real-hardware testing with
+        /// a human confirming clearance at each step (see robot/README.md). Two real mistakes
+        /// happened while getting to that number, both now fixed: an initial calibration pass
+        /// landed on a higher, wrong value because the ROS-side servo's own 300ms per-move
+        /// cooldown was silently dropping the final small correction at the sender's default
+        /// rate, so the arm never actually reached the commanded pulse and had to be recalibrated
+        /// at a slower send rate; and this field was originally implemented as an upper bound
+        /// (`Math.Clamp(value, MinPulse, this)`), which only ever demonstrated correctly against
+        /// the one target used throughout calibration (whose unclamped value happened to always
+        /// exceed the limit) -- a different target with a naturally lower unclamped value sailed
+        /// straight past it in the dangerous direction, since nothing was stopping the value from
+        /// going *below* this field at all. It is a floor, not a ceiling: see <see cref="JetRoverPlant.Command"/>'s
+        /// `Math.Clamp(value, LowerArmMinPulse, MaxPulse)`.
         /// </summary>
-        public readonly int LowerArmMaxPulse;
+        public readonly int LowerArmMinPulse;
 
         /// <summary>
         /// Gripper open/closed servo-degree values, in the *ROS SDK's own* assumed 0-180 degree
@@ -99,7 +107,7 @@ namespace Teleop.RobotHost.Plant
             int maxPulse,
             float gripperOpenDegrees,
             float gripperClosedDegrees,
-            int? lowerArmMaxPulse = null)
+            int? lowerArmMinPulse = null)
         {
             Links = links;
             PulsePerRadian = pulsePerRadian;
@@ -111,7 +119,7 @@ namespace Teleop.RobotHost.Plant
             MaxPulse = maxPulse;
             GripperOpenDegrees = gripperOpenDegrees;
             GripperClosedDegrees = gripperClosedDegrees;
-            LowerArmMaxPulse = lowerArmMaxPulse ?? maxPulse;
+            LowerArmMinPulse = lowerArmMinPulse ?? minPulse;
         }
 
         public static JetRoverPlantConfig Default => new JetRoverPlantConfig(

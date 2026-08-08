@@ -40,7 +40,20 @@ namespace Teleop.RobotHost
             var transport = new UdpTransport(a.LocalPort, remoteEndPoint, MaxDatagramBytes, clock);
 
             using var relay = new UdsRelayClient(a.LocalRelaySocketPath, a.RelaySocketPath);
-            var plant = new JetRoverPlant(JetRoverPlantConfig.Default, relay);
+            JetRoverPlantConfig plantConfig = a.MaxDirectionMagnitude is float overrideMagnitude
+                ? new JetRoverPlantConfig(
+                    links: JetRoverPlantConfig.Default.Links,
+                    pulsePerRadian: JetRoverPlantConfig.Default.PulsePerRadian,
+                    pulsePerDegreeAssumed180: JetRoverPlantConfig.Default.PulsePerDegreeAssumed180,
+                    stepSizePulses: JetRoverPlantConfig.Default.StepSizePulses,
+                    maxDirectionMagnitude: overrideMagnitude,
+                    zeroPulse: JetRoverPlantConfig.Default.ZeroPulse,
+                    minPulse: JetRoverPlantConfig.Default.MinPulse,
+                    maxPulse: JetRoverPlantConfig.Default.MaxPulse,
+                    gripperOpenDegrees: JetRoverPlantConfig.Default.GripperOpenDegrees,
+                    gripperClosedDegrees: JetRoverPlantConfig.Default.GripperClosedDegrees)
+                : JetRoverPlantConfig.Default;
+            var plant = new JetRoverPlant(plantConfig, relay);
 
             var endpoint = new RobotEndpoint(
                 plant,
@@ -57,6 +70,7 @@ namespace Teleop.RobotHost
                 $"[clock] TicksPerSecond={clock.TicksPerSecond}, stamped on every RobotStateFrame reply so " +
                 "the operator can normalize for a mismatched rate automatically " +
                 "(docs/adr/0008-clocksync-cross-rate-normalization.md).");
+            Console.WriteLine($"[plant] MaxDirectionMagnitude={plantConfig.MaxDirectionMagnitude:0.##}");
 
             using var stop = new ManualResetEventSlim(initialState: false);
             Console.CancelKeyPress += (_, cancelArgs) =>

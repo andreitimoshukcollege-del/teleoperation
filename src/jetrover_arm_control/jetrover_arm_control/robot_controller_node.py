@@ -4,12 +4,9 @@ from std_msgs.msg import Bool, Float32, Int32, String
 
 from datetime import datetime, timezone
 
-from time import sleep
-
 from jetrover_arm_control.board_manager.robot_board_manager import BoardManager
 from jetrover_arm_control.robot_data.robot_val import RobotVal
 from jetrover_arm_control.servo_controller.servo_sub_callback import ServoSubscriberCallback
-from jetrover_arm_control.servo_controller.servo_pub_callback import ServoPublisherCallback
 from jetrover_arm_control.servo_controller.servo_controller import ServoController
 from jetrover_arm_control.servo_controller.servo_id_enum import SERVO_ENUM
 
@@ -26,18 +23,27 @@ class RobotController(Node):
         self.get_logger().info("Initializing Servo Data Manager...")
 
         self.robotData = RobotVal(boardMgr = self.boardMgr)
-        self.servoSubManager = ServoSubscriberCallback(boardMgr = self.boardMgr)
-        self.servoPubManager = ServoPublisherCallback(boardMgr = self.boardMgr)
+        # One shared ServoController for both writes (via servoSubManager) and the 50Hz feedback
+        # reads below -- required for ServoController's local position belief to be corrected by
+        # those reads (see fix-servo-command-rate-loss / ServoController's own class doc). Two
+        # separate instances (as before) would mean writes never saw the correction.
         self.servoController = ServoController(boardMgr = self.boardMgr)
+        self.servoSubManager = ServoSubscriberCallback(servoController = self.servoController)
 
         # Subscribers
         self.get_logger().info("Initializing Servo Subscribers...")
         self.resetArmSub = self.create_subscription(Float32, "/arm/servo/reset", self.servoSubManager.resetArmCbk, 5)
         
-        self.setBaseSub = self.create_subscription(Float32, "/arm/servo/base", self.servoSubManager.setBaseCbk, 1)
-        self.setLowerArmSub = self.create_subscription(Float32, "/arm/servo/joint/lower", self.servoSubManager.setJointLowerCbk, 1)
-        self.setMiddleArmSub = self.create_subscription(Float32, "/arm/servo/joint/middle", self.servoSubManager.setJointMiddleCbk, 1)
-        self.setUpperArmSub = self.create_subscription(Float32, "/arm/servo/joint/upper", self.servoSubManager.setJointUpperCbk, 1)
+        # depth=3, not 1: defense-in-depth against a transient executor stall (e.g. a servo's
+        # one-time belief-seed read in ServoController.setPos) now that the steady-state cost
+        # of each callback is near-zero -- see fix-servo-command-rate-loss. Deliberately shallow:
+        # these are relative direction steps, so draining a short backlog late doesn't overshoot
+        # (order-independent sum), but a deep queue would let the arm visibly keep moving on
+        # stale input after the operator stops sending.
+        self.setBaseSub = self.create_subscription(Float32, "/arm/servo/base", self.servoSubManager.setBaseCbk, 3)
+        self.setLowerArmSub = self.create_subscription(Float32, "/arm/servo/joint/lower", self.servoSubManager.setJointLowerCbk, 3)
+        self.setMiddleArmSub = self.create_subscription(Float32, "/arm/servo/joint/middle", self.servoSubManager.setJointMiddleCbk, 3)
+        self.setUpperArmSub = self.create_subscription(Float32, "/arm/servo/joint/upper", self.servoSubManager.setJointUpperCbk, 3)
         self.setGripperBaseSub = self.create_subscription(Float32, "/arm/servo/gripper/base", self.servoSubManager.setGripperBaseCbk, 1)
         self.setGripperMainSub = self.create_subscription(Float32, "/arm/servo/gripper/main", self.servoSubManager.setGripperMainCbk, 1)
 
@@ -123,22 +129,6 @@ class RobotController(Node):
         msg.data = servoPos
 
         self.basePub.publish(msg)
-        
-        # pulse = self.servoPubManager.getServoPosPulse(SERVO_ENUM.BASE_SERVO)
-        
-        # if self.lastBasePos is None or abs(pulse - self.lastBasePos) >= 50:
-        #     deg = self.servoPubManager.getServoDeg(SERVO_ENUM.BASE_SERVO)
-        #     msg = Int32()
-        #     msg.data = deg
-            
-        #     # Publish the message
-        #     self.basePub.publish(msg)
-            
-        #     # Update the last published pulse value
-        #     self.lastBasePos = pulse
-        #     print("base"+ str(pulse))
-
-        sleep(0.02)
 
     def lowerArmPublisher(self):
         data = self.servoController.getRawPos(SERVO_ENUM.LOWER_ARM.value)
@@ -149,13 +139,7 @@ class RobotController(Node):
         msg.data = servoPos
 
 
-        # deg = self.servoPubManager.getServoLowerArm()
-        # msg = Int32()
-        # msg.data = deg
-    
         self.lowerArmPub.publish(msg)
-
-        sleep(0.02)
 
     def middleArmPublisher(self):
         data = self.servoController.getRawPos(SERVO_ENUM.MIDDLE_ARM.value)
@@ -165,13 +149,7 @@ class RobotController(Node):
         msg = Int32()
         msg.data = servoPos
 
-        # deg = self.servoPubManager.getServoMiddleArm()
-        # msg = Int32()
-        # msg.data = deg
-    
         self.middleArmPub.publish(msg)
-
-        sleep(0.02)
 
     def upperArmPublisher(self):
         data = self.servoController.getRawPos(SERVO_ENUM.UPPER_ARM.value)
@@ -181,13 +159,7 @@ class RobotController(Node):
         msg = Int32()
         msg.data = servoPos
 
-        # deg = self.servoPubManager.getServoUpperArm()
-        # msg = Int32()
-        # msg.data = deg
-    
         self.upperArmPub.publish(msg)
-
-        sleep(0.02)
 
     def gripperBasePublisher(self):
         data = self.servoController.getRawPos(SERVO_ENUM.GRIPPER_BASE.value)
@@ -197,13 +169,7 @@ class RobotController(Node):
         msg = Int32()
         msg.data = servoPos
 
-        # deg = self.servoPubManager.getServoGripperBase()
-        # msg = Int32()
-        # msg.data = deg
-    
         self.gripperBasePub.publish(msg)
-
-        sleep(0.02)
 
     def gripperMainPublisher(self):
         data = self.servoController.getRawPos(SERVO_ENUM.GRIPPER_MAIN.value)
@@ -213,13 +179,7 @@ class RobotController(Node):
         msg = Int32()
         msg.data = servoPos
 
-        # deg = self.servoPubManager.getServoGripperMain()
-        # msg = Int32()
-        # msg.data = deg
-
         self.gripperMainPub.publish(msg)
-
-        sleep(0.02)
 
     def batteryPublisher(self):
         data = self.robotData.getBattery()
@@ -230,8 +190,6 @@ class RobotController(Node):
 
         self.batteryPub.publish(msg)
 
-        sleep(0.02)
-
     def servoTempPublisher(self):
         data = self.servoController.getServoTemp()
         if data is None:
@@ -240,8 +198,6 @@ class RobotController(Node):
         msg.data = data
 
         self.tempPub.publish(msg)
-
-        sleep(0.02)
 
     def servoVoltPublisher(self):
         data = self.servoController.getServoVolt()
@@ -252,8 +208,6 @@ class RobotController(Node):
 
         self.voltPub.publish(msg)
 
-        sleep(0.02)
-
     def servoTorquePublisher(self):
         data = self.servoController.getServoTorque()
         if data is None:
@@ -262,8 +216,6 @@ class RobotController(Node):
         msg.data = data
 
         self.torquePub.publish(msg)
-
-        sleep(0.02)
 
     def createPublisher(self, publisherName, msgType, msgTopic, pollRate: int, clbFunc, queueSize=1):
         dataPub = self.create_publisher(msgType, msgTopic, queueSize)

@@ -82,10 +82,7 @@ def test_first_setpos_reads_once_then_never_again(monkeypatch):
 
 def test_belief_arithmetic_matches_expected_clamped_sums(monkeypatch):
     """A sequence of directions accumulates on belief exactly like the old read-every-time code
-    would have, including clamping to [0, 1000]. (Starting at 900, not e.g. 980: the write-gate
-    `abs(nextPos - currentPos) >= stepSize` can suppress a move entirely when the unclamped
-    target overshoots the boundary by less than stepSize -- a pre-existing quirk of this gate,
-    unrelated to this fix, that a boundary-hugging start value would otherwise trip over.)"""
+    would have, including clamping to [0, 1000]."""
     board = StubBoard()
     board.read_return = 900
     controller, clock = make_controller(monkeypatch, board)
@@ -99,6 +96,24 @@ def test_belief_arithmetic_matches_expected_clamped_sums(monkeypatch):
         (0.01, [[SERVO_ID, 1000]]),
     ]
     assert controller._beliefPos[SERVO_ID] == 1000
+
+
+def test_a_small_subthreshold_delta_still_writes(monkeypatch):
+    """Regression test for a real bug found calibrating a safety limit on 2026-08-08: the old
+    write-gate (`abs(nextPos - currentPos) >= stepSize`) silently dropped any commanded delta
+    under 50 pulses, with no error and no belief correction -- the caller (JetRoverPlant) still
+    believed the move had landed and never resent it, permanently losing a real residual
+    correction. A target 25 pulses away (direction=0.5, well under the old 50-pulse threshold)
+    must still produce a real write; there is no minimum meaningful move smaller than one pulse
+    on this hardware."""
+    board = StubBoard()
+    board.read_return = 500
+    controller, clock = make_controller(monkeypatch, board)
+
+    controller.setPos(servoID=SERVO_ID, direction=0.5, servoSpeed=0.1)  # 500 -> 525, delta 25 < 50
+
+    assert board.written == [(0.1, [[SERVO_ID, 525]])]
+    assert controller._beliefPos[SERVO_ID] == 525
 
 
 def test_cooldown_suppresses_a_second_setpos_within_the_window(monkeypatch):

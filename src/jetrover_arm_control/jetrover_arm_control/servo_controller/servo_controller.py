@@ -88,8 +88,18 @@ class ServoController:
         # elif toPos < 400:
         #     toPos = 400
 
-        if abs(nextPos - currentPos) >= stepSize:
-            # Set servo position only if the next position is within limits
+        if nextPos != currentPos:
+            # Write any real, nonzero change -- not just deltas >= stepSize. The old
+            # `abs(nextPos - currentPos) >= stepSize` gate silently dropped every smaller
+            # command with no error and no belief correction: the .NET side (JetRoverPlant)
+            # still credited its own belief with the full move and never resent it, so a real
+            # residual correction under ~12 degrees was permanently lost, not just delayed.
+            # This surfaced as confusing, seemingly nondeterministic behavior while calibrating
+            # a real safety limit on 2026-08-08 -- two commands a few pulses apart could produce
+            # visibly different real-world results depending on unrelated factors, because
+            # whichever one happened to be under the old threshold silently did nothing. There
+            # is no minimum meaningful move on this hardware smaller than one pulse; nothing
+            # downstream needs a bigger one.
             self.board.bus_servo_set_position(servoSpeed, [[servoID, nextPos]])
 
             # The STM32 firmware paces the physical move itself via servoSpeed (the `duration`

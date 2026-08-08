@@ -1,17 +1,19 @@
 
 
-from jetrover_arm_control.board_manager.robot_board_manager import BoardManager
 from jetrover_arm_control.servo_controller.servo_id_enum import SERVO_ENUM
 from jetrover_arm_control.servo_controller.servo_controller import ServoController
 
 class ServoSubscriberCallback:
 
-    def __init__(self, boardMgr: BoardManager):
-        
+    def __init__(self, servoController: ServoController):
+        # Takes an injected, shared ServoController rather than constructing its own -- the
+        # 50Hz feedback-publisher timers in robot_controller_node.py read through the SAME
+        # instance, which is what lets ServoController's local position belief (see its own
+        # class doc) get opportunistically corrected by those reads at no extra bus cost.
+        # A separate instance here would mean writes never see those corrections.
         self.servoSpeed = 0.3
-        self.boardMgr = boardMgr
-        self.servoController = ServoController(boardMgr= self.boardMgr)
-        
+        self.servoController = servoController
+
     
     # --------------------Subscribers--------------------------- #
     

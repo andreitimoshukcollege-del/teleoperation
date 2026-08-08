@@ -1,12 +1,29 @@
+import time
 from time import sleep
 
 from jetrover_arm_control.board_manager.robot_board_manager import BoardManager
 from jetrover_arm_control.servo_controller.servo_id_enum import SERVO_ENUM
 
 class ServoController:
+    """setPos tracks a local, optimistic belief of each servo's position (keyed by servoID,
+    self._beliefPos) instead of re-reading real hardware before every write. A blocking serial
+    read (up to a 1s timeout, see board_manager/robot_controller_sdk.py) inside every single
+    write was the actual cause of real commands being silently lost at teleop rate: the ROS
+    executor is single-threaded, so a command arriving while a previous one was still blocked in
+    that read would overwrite the queued-but-unprocessed message under depth-1 QoS before its
+    callback ever ran (see the fix-servo-command-rate-loss branch/PR for the full diagnosis).
+
+    Belief is corrected opportunistically whenever a real read *does* succeed (getRawPos, called
+    independently by robot_controller_node.py's 50Hz feedback-publisher timers) -- real feedback
+    always wins over the optimistic value, mirroring the .NET side of this same pipeline
+    (core/Teleop.RobotHost/Plant/JetRoverPlant.cs's sensed-over-commanded preference). This only
+    works because robot_controller_node.py constructs one ServoController and shares it between
+    the write path and those feedback timers -- a second, separate instance would never see the
+    correction.
+    """
 
     def __init__(self, boardMgr: BoardManager):
-        
+
         self.boardMgr = boardMgr
         self.board = self.getBoard()
 
@@ -14,6 +31,11 @@ class ServoController:
         self.pwm_max = 1000
         self.deg_min = 0
         self.deg_max = 180
+
+        # See class doc: optimistic write-side belief, keyed by servoID, and the monotonic
+        # timestamp (time.monotonic()) after which the next real write for that servo is due.
+        self._beliefPos = {}
+        self._nextAllowedWriteAt = {}
 
         # self.servoList = [SERVO_ENUM.BASE_SERVO.value, SERVO_ENUM.LOWER_ARM.value, \
         #                   SERVO_ENUM.MIDDLE_ARM.value, SERVO_ENUM.UPPER_ARM.value, SERVO_ENUM.GRIPPER_BASE.value, SERVO_ENUM.GRIPPER_MAIN.value]
@@ -34,23 +56,33 @@ class ServoController:
                 pos (int) - position in PWM
                 servoSpeed (int) - servo speed; DEFAULT = 1
         """
-        # Fetch the current position
-        currentPos = self.getRawPos(servoID=servoID)
-        if currentPos is None:
-            # The board's read can time out (real, observed occurrence -- see
-            # robot_controller_sdk.py's bus_servo_read_and_unpack). Skipping this command
-            # rather than crashing on `None + int` matches how every read failure elsewhere
-            # in this file is already treated: missed data for one cycle, not a fatal error.
+        now = time.monotonic()
+        if now < self._nextAllowedWriteAt.get(servoID, 0.0):
+            # Still cooling down from this servo's last real move. Belief already reflects
+            # that write, so there is nothing new to compute -- returning here coalesces a
+            # burst of same-direction commands into one physical move instead of blocking the
+            # ROS executor on a redundant serial round trip for each one. See class doc.
             return
+
+        # Fetch the current position: belief if we have one, else a real read to seed it.
+        currentPos = self._beliefPos.get(servoID)
+        if currentPos is None:
+            currentPos = self.getRawPos(servoID=servoID)
+            if currentPos is None:
+                # No belief yet and the seed read failed -- a real, observed case (the
+                # middle-arm servo's reads never succeed at all). Falling back to center
+                # rather than giving up lets this servo still receive writes, unlike before.
+                currentPos = 500
+            self._beliefPos[servoID] = currentPos
         stepSize = 50
 
         # Calculate the new target position based on direction
         nextPos = int(currentPos + (stepSize * direction))
 
         # print("currentPos:", currentPos, "Direction:", direction, "Target Position:", nextPos)
-        
-        nextPos = 0 if nextPos < 0 else 1000 if nextPos > 1000 else nextPos 
-        
+
+        nextPos = 0 if nextPos < 0 else 1000 if nextPos > 1000 else nextPos
+
         # if toPos > 600:
         #     toPos = 600
         # elif toPos < 400:
@@ -59,9 +91,12 @@ class ServoController:
         if abs(nextPos - currentPos) >= stepSize:
             # Set servo position only if the next position is within limits
             self.board.bus_servo_set_position(servoSpeed, [[servoID, nextPos]])
-        
-            # Give the servo time to move to the new position
-            sleep(servoSpeed)
+
+            # The STM32 firmware paces the physical move itself via servoSpeed (the `duration`
+            # parameter bus_servo_set_position encodes into the packet) -- no need to block
+            # this thread waiting for it. Track when the next write may go out instead.
+            self._beliefPos[servoID] = nextPos
+            self._nextAllowedWriteAt[servoID] = now + servoSpeed
 
     def setGripperPos(self, servoID: int, direction: int, servoSpeed: float = 0.5):
         pulse_pos = self.degToPulse(direction)
@@ -80,8 +115,13 @@ class ServoController:
         if(servoID):
             readPos = self.board.bus_servo_read_position(servo_id= servoID)
             if(readPos):
+                # Real feedback always overwrites the optimistic belief setPos tracks -- see
+                # class doc. Whether this call came from setPos's own seed read or from
+                # robot_controller_node.py's independent 50Hz feedback timers, the effect is
+                # the same: the write path's next command starts from ground truth.
+                self._beliefPos[servoID] = readPos[0]
                 return readPos[0]
-            
+
             # return self.board.bus_servo_read_position(servo_id= servoID)[0]
         else:
             return -1

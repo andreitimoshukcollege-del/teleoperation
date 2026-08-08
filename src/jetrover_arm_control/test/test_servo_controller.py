@@ -98,22 +98,42 @@ def test_belief_arithmetic_matches_expected_clamped_sums(monkeypatch):
     assert controller._beliefPos[SERVO_ID] == 1000
 
 
-def test_a_small_subthreshold_delta_still_writes(monkeypatch):
+def test_a_small_delta_above_the_new_threshold_still_writes(monkeypatch):
     """Regression test for a real bug found calibrating a safety limit on 2026-08-08: the old
-    write-gate (`abs(nextPos - currentPos) >= stepSize`) silently dropped any commanded delta
-    under 50 pulses, with no error and no belief correction -- the caller (JetRoverPlant) still
+    write-gate (`abs(nextPos - currentPos) >= stepSize`, 50 pulses) silently dropped any smaller
+    commanded delta, with no error and no belief correction -- the caller (JetRoverPlant) still
     believed the move had landed and never resent it, permanently losing a real residual
-    correction. A target 25 pulses away (direction=0.5, well under the old 50-pulse threshold)
-    must still produce a real write; there is no minimum meaningful move smaller than one pulse
-    on this hardware."""
+    correction. A target 25 pulses away (direction=0.5, well under the old 50-pulse threshold,
+    comfortably above the new MIN_MEANINGFUL_PULSE_DELTA) must still produce a real write."""
     board = StubBoard()
     board.read_return = 500
     controller, clock = make_controller(monkeypatch, board)
 
-    controller.setPos(servoID=SERVO_ID, direction=0.5, servoSpeed=0.1)  # 500 -> 525, delta 25 < 50
+    controller.setPos(servoID=SERVO_ID, direction=0.5, servoSpeed=0.1)  # 500 -> 525, delta 25
 
     assert board.written == [(0.1, [[SERVO_ID, 525]])]
     assert controller._beliefPos[SERVO_ID] == 525
+
+
+def test_a_delta_below_the_noise_threshold_does_not_write(monkeypatch):
+    """The other half of the same 2026-08-08 fix: writing on literally *any* nonzero delta
+    (tried first) let floating-point truncation noise from JetRoverPlant's belief convergence
+    -- often exactly 1 pulse after this file's own int() truncation -- through as a real write
+    on nearly every call, and since int() truncates toward zero rather than rounding, that is
+    not guaranteed to average out: it measurably drove the arm past a calibrated safety limit
+    over a series of otherwise-idle calls. A delta smaller than MIN_MEANINGFUL_PULSE_DELTA must
+    be silently ignored, exactly like the old (too coarse) gate did for its own threshold."""
+    board = StubBoard()
+    board.read_return = 500
+    controller, clock = make_controller(monkeypatch, board)
+
+    # direction=0.06 -> delta = 3 pulses, below MIN_MEANINGFUL_PULSE_DELTA (5).
+    controller.setPos(servoID=SERVO_ID, direction=0.06, servoSpeed=0.1)
+
+    assert board.written == []
+    # Belief is not force-corrected to a value that was never actually written -- it stays at
+    # the real starting point, exactly like a rejected move should.
+    assert controller._beliefPos[SERVO_ID] == 500
 
 
 def test_cooldown_suppresses_a_second_setpos_within_the_window(monkeypatch):

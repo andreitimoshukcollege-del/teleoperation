@@ -39,6 +39,20 @@ namespace Teleop.RobotHost.Plant
     /// the sensed one -- feedback lags physical motion by at least one relay round trip, so
     /// composing consecutive commands against stale sensed data would under- or over-shoot.
     ///
+    /// The commanded belief is seeded from sensed data exactly once, the first time each joint's
+    /// belief is used, rather than always starting at <see cref="JetRoverPlantConfig.ZeroPulse"/>
+    /// -- a real bug found during hardware testing (2026-08-08): <see cref="Step"/> polls the
+    /// relay from startup regardless of whether any command has arrived, so by the time the first
+    /// real command lands the real sensed position is usually already known and does not
+    /// necessarily match <c>ZeroPulse</c> (e.g. after a restart mid-session). Computing a
+    /// *relative* step from an unseeded, wrong reference sends a delta sized for the wrong
+    /// starting point, which the real servo then applies on top of its own true position --
+    /// overshooting by the belief/reality gap, in either direction, regardless of any per-joint
+    /// pulse limit (a limit only bounds this plant's own belief, not what a wrongly-referenced
+    /// relative step does to real hardware once applied). Only the very first use per joint
+    /// seeds; every use after that stays purely optimistic, per the no-stale-sensed-data rule
+    /// above.
+    ///
     /// A single command's required delta can exceed <see cref="JetRoverPlantConfig.MaxDirectionMagnitude"/>;
     /// when it does, only the clamped amount is actually asked of the hardware, and the belief
     /// update must track that same clamped amount -- crediting the full unclamped target here
@@ -78,6 +92,11 @@ namespace Teleop.RobotHost.Plant
         private float _targetPulseMiddle;
         private float _targetPulseUpper;
 
+        // True once each joint's optimistic target has been seeded for real (see Command()'s
+        // one-time seed-from-sensed logic below) -- distinct from _xSensed, which tracks whether
+        // a real reading currently exists, not whether the belief has consumed one yet.
+        private bool _targetBaseSeeded, _targetLowerSeeded, _targetMiddleSeeded, _targetUpperSeeded;
+
         // Sensed beliefs -- only ever updated from real feedback in Step().
         private bool _baseSensed, _lowerSensed, _middleSensed, _upperSensed;
         private float _sensedPulseBase, _sensedPulseLower, _sensedPulseMiddle, _sensedPulseUpper;
@@ -108,6 +127,62 @@ namespace Teleop.RobotHost.Plant
 
             _lastAcceptedCaptureTicks = command.CaptureTicks;
 
+            // One-time seed from real sensed feedback, the first time each joint's belief is
+            // ever used -- a real gap found during real-hardware testing (2026-08-08): this
+            // plant's own ITimeAuthority-driven Step() loop polls the relay for feedback from
+            // startup regardless of whether any command has arrived yet, so by the time the
+            // first real CommandFrame lands, _xSensed is usually already true and reflects
+            // wherever the arm actually physically is -- which is not necessarily ZeroPulse
+            // (e.g. after a Teleop.RobotHost restart mid-session, or after a manual physical
+            // correction). Computing the first delta against an unseeded ZeroPulse belief while
+            // the real servo sits somewhere else sends a *relative* step sized for the wrong
+            // starting point, which the real servo then applies on top of its own true position
+            // -- overshooting by exactly the gap between belief and reality, in either direction,
+            // independent of any per-joint pulse limit (a limit only bounds this plant's own
+            // belief, not what a wrongly-referenced relative step does to real hardware). Only
+            // the first use seeds; every call after that is purely optimistic tracking, per this
+            // class's own "composing consecutive commands against stale sensed data would under-
+            // or over-shoot" rule -- seeding every time would reintroduce that exact problem.
+            if (!_targetBaseSeeded)
+            {
+                if (_baseSensed)
+                {
+                    _targetPulseBase = _sensedPulseBase;
+                }
+
+                _targetBaseSeeded = true;
+            }
+
+            if (!_targetLowerSeeded)
+            {
+                if (_lowerSensed)
+                {
+                    _targetPulseLower = _sensedPulseLower;
+                }
+
+                _targetLowerSeeded = true;
+            }
+
+            if (!_targetMiddleSeeded)
+            {
+                if (_middleSensed)
+                {
+                    _targetPulseMiddle = _sensedPulseMiddle;
+                }
+
+                _targetMiddleSeeded = true;
+            }
+
+            if (!_targetUpperSeeded)
+            {
+                if (_upperSensed)
+                {
+                    _targetPulseUpper = _sensedPulseUpper;
+                }
+
+                _targetUpperSeeded = true;
+            }
+
             FourDofArmKinematics.TryInverse(
                 _config.Links, command.Pose.Position,
                 out float baseYaw, out float lowerPitch, out float middlePitch);
@@ -115,7 +190,10 @@ namespace Teleop.RobotHost.Plant
             float upperPitch = FourDofArmKinematics.InverseUpperPitch(lowerPitch, middlePitch, desiredPitch);
 
             float targetPulseBase = ClampPulse(_config.ZeroPulse + baseYaw * _config.PulsePerRadian);
-            float targetPulseLower = ClampPulse(_config.ZeroPulse + lowerPitch * _config.PulsePerRadian);
+            // Lower arm gets its own, tighter max -- see JetRoverPlantConfig.LowerArmMaxPulse's
+            // doc comment: a real mechanical collision with the base plate, not a research knob.
+            float targetPulseLower = Math.Clamp(
+                _config.ZeroPulse + lowerPitch * _config.PulsePerRadian, _config.MinPulse, _config.LowerArmMaxPulse);
             float targetPulseMiddle = ClampPulse(_config.ZeroPulse + middlePitch * _config.PulsePerRadian);
             float targetPulseUpper = ClampPulse(_config.ZeroPulse + upperPitch * _config.PulsePerRadian);
 
@@ -228,6 +306,7 @@ namespace Teleop.RobotHost.Plant
             _targetPulseLower = _config.ZeroPulse;
             _targetPulseMiddle = _config.ZeroPulse;
             _targetPulseUpper = _config.ZeroPulse;
+            _targetBaseSeeded = _targetLowerSeeded = _targetMiddleSeeded = _targetUpperSeeded = false;
             _baseSensed = _lowerSensed = _middleSensed = _upperSensed = false;
             _sensedPulseBase = _sensedPulseLower = _sensedPulseMiddle = _sensedPulseUpper = _config.ZeroPulse;
         }

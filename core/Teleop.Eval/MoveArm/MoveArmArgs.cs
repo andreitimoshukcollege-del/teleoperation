@@ -20,7 +20,18 @@ namespace Teleop.Eval.MoveArm
 
         public const float DefaultGripper = 0f;
         public const double DefaultTimeoutSeconds = 15.0;
-        public const double DefaultRateHz = 5.0;
+
+        // 2026-08-08: the ROS-side servo enforces a real ~300ms cooldown between physical moves
+        // (ServoController.setPos's _nextAllowedWriteAt). A sender faster than that (the
+        // previous default, 5Hz = 200ms) can have its final, smallest, most important correction
+        // arrive inside the cooldown window and get silently dropped -- JetRoverPlant's belief
+        // still credits itself with having sent it, so it never resends, and the arm quietly
+        // stops short of (or past, depending on direction) the intended target with no error.
+        // This invalidated a real safety-limit calibration pass before being found: the "safe"
+        // value that pass converged on didn't reflect where the arm actually was, only where
+        // JetRoverPlant's belief thought it was. 2Hz keeps every send comfortably outside the
+        // cooldown window.
+        public const double DefaultRateHz = 2.0;
         public const float DefaultPositionToleranceMeters = 0.01f; // 1cm
 
         public const string Usage =
@@ -33,7 +44,11 @@ namespace Teleop.Eval.MoveArm
             "  to 1 (closed).\n" +
             "  Waits up to --timeout-seconds for the robot's own reported position to converge\n" +
             "  within --position-tolerance-meters of the target, then exits 0 -- or exits non-zero\n" +
-            "  if it times out first (never claims success on a fixed duration alone).\n" +
+            "  if it times out first (never claims success on a fixed duration alone). --rate-hz\n" +
+            "  defaults to 2Hz, deliberately below the real servo's ~300ms per-move cooldown --\n" +
+            "  going faster risks a final small correction being silently dropped by that cooldown\n" +
+            "  while JetRoverPlant's belief still thinks it landed (see this default's own comment\n" +
+            "  in MoveArmArgs.cs for the real incident that found this).\n" +
             "  --confirm-hardware-motion is mandatory: the remote endpoint is a real RobotEndpoint/\n" +
             "  IRobotPlant. This tool sends a fixed CommandFrame repeatedly until convergence or\n" +
             "  timeout -- on a real JetRoverPlant that means the physical arm moves to that pose and\n" +

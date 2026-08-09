@@ -9,22 +9,35 @@ Phase 2 scope: base/lower/middle/upper joints (relative "direction" commands, ma
 ServoController.setPos) plus the gripper (absolute degrees, matching setGripperPos). Gripper
 feedback is not relayed -- Teleop.RobotHost's JetRoverPlant sends the gripper open-loop, with no
 delta tracking that would need it.
+
+Each joint's feedback validity is time-boxed (StaleTrackedValue), not "has a reading ever
+arrived": a joint whose real feedback silently stops (e.g. the middle-arm servo's reads, which
+robot_controller_node.py's own comment says never succeed) must eventually report invalid again,
+not keep replaying its one lucky reading forever -- a real bug found via move-arm 0.1 0.1 0.1
+no longer converging on 2026-08-08/09, even though JetRoverPlant's belief tracking was correct.
 """
 
 import os
 import socket
+import time
 
 import rclpy
 from rclpy.node import Node
 from std_msgs.msg import Float32, Int32
 
 from teleop_relay import relay_protocol
+from teleop_relay.stale_tracked_value import StaleTrackedValue
 
 LOCAL_RELAY_SOCKET = "/tmp/jetrover_relay.sock"
 HOST_SOCKET = "/tmp/teleop_robot_host.sock"
 
 _COMMAND_POLL_PERIOD_SECONDS = 0.02  # 50 Hz
 _FEEDBACK_SEND_PERIOD_SECONDS = 0.05  # 20 Hz
+
+# ~10x robot_controller_node.py's 50Hz feedback poll rate -- generous enough to absorb normal
+# jitter or an occasional dropped read, tight enough to flag a genuinely dead servo within a
+# fraction of a second instead of never.
+_STALENESS_TIMEOUT_SECONDS = 0.2
 
 
 class TeleopRelayNode(Node):
@@ -51,10 +64,10 @@ class TeleopRelayNode(Node):
         self.create_subscription(Int32, "/unity/robot/servo/joint/middle", self._on_middle_feedback, 1)
         self.create_subscription(Int32, "/unity/robot/servo/joint/upper", self._on_upper_feedback, 1)
 
-        self._last_base_degrees = None
-        self._last_lower_degrees = None
-        self._last_middle_degrees = None
-        self._last_upper_degrees = None
+        self._base_feedback = StaleTrackedValue(_STALENESS_TIMEOUT_SECONDS)
+        self._lower_feedback = StaleTrackedValue(_STALENESS_TIMEOUT_SECONDS)
+        self._middle_feedback = StaleTrackedValue(_STALENESS_TIMEOUT_SECONDS)
+        self._upper_feedback = StaleTrackedValue(_STALENESS_TIMEOUT_SECONDS)
 
         self.create_timer(_COMMAND_POLL_PERIOD_SECONDS, self._poll_local_socket)
         self.create_timer(_FEEDBACK_SEND_PERIOD_SECONDS, self._send_feedback)
@@ -64,16 +77,16 @@ class TeleopRelayNode(Node):
         )
 
     def _on_base_feedback(self, msg: Int32) -> None:
-        self._last_base_degrees = msg.data
+        self._base_feedback.update(msg.data, time.monotonic())
 
     def _on_lower_feedback(self, msg: Int32) -> None:
-        self._last_lower_degrees = msg.data
+        self._lower_feedback.update(msg.data, time.monotonic())
 
     def _on_middle_feedback(self, msg: Int32) -> None:
-        self._last_middle_degrees = msg.data
+        self._middle_feedback.update(msg.data, time.monotonic())
 
     def _on_upper_feedback(self, msg: Int32) -> None:
-        self._last_upper_degrees = msg.data
+        self._upper_feedback.update(msg.data, time.monotonic())
 
     def _poll_local_socket(self) -> None:
         # Drain every pending datagram but act only on the most recent -- IRelayClient's
@@ -108,11 +121,16 @@ class TeleopRelayNode(Node):
         publisher.publish(msg)
 
     def _send_feedback(self) -> None:
+        now = time.monotonic()
+        base_valid, base_degrees = self._base_feedback.read(now)
+        lower_valid, lower_degrees = self._lower_feedback.read(now)
+        middle_valid, middle_degrees = self._middle_feedback.read(now)
+        upper_valid, upper_degrees = self._upper_feedback.read(now)
         payload = relay_protocol.encode_feedback(
-            base_valid=self._last_base_degrees is not None, base_degrees=self._last_base_degrees or 0,
-            lower_valid=self._last_lower_degrees is not None, lower_degrees=self._last_lower_degrees or 0,
-            middle_valid=self._last_middle_degrees is not None, middle_degrees=self._last_middle_degrees or 0,
-            upper_valid=self._last_upper_degrees is not None, upper_degrees=self._last_upper_degrees or 0,
+            base_valid=base_valid, base_degrees=base_degrees,
+            lower_valid=lower_valid, lower_degrees=lower_degrees,
+            middle_valid=middle_valid, middle_degrees=middle_degrees,
+            upper_valid=upper_valid, upper_degrees=upper_degrees,
         )
         try:
             self._socket.sendto(payload, HOST_SOCKET)

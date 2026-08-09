@@ -162,9 +162,9 @@ protocol above into calls against `jetrover_arm_control`'s existing topics.
     true position -- overshooting by the belief/reality gap. Fixed with two changes to
     `JetRoverPlant.cs`: a one-time seed of each joint's belief from real sensed feedback the first
     time it's used (not on every command -- that would reintroduce stale-feedback overshoot for a
-    different reason), and a new, safe-by-default, configurable `LowerArmMaxPulse` hard limit
-    (`--lower-arm-max-pulse`, `Teleop.RobotHost/RobotHostArgs.cs`) preventing the lower arm from
-    ever being commanded past a calibrated boundary, regardless of what any IK target asks for.
+    different reason), and a new, safe-by-default, configurable `LowerArmMinPulse` hard limit
+    (`--lower-arm-min-pulse`, `Teleop.RobotHost/RobotHostArgs.cs`) preventing the lower arm from
+    ever being commanded below a calibrated boundary, regardless of what any IK target asks for.
   - **Calibrating that boundary against the real robot, with a human confirming clearance at
     every step, surfaced a second real bug: a servo command-rate race that had silently
     invalidated the first calibration pass.** `ServoController.setPos` (ROS side) enforces a real
@@ -177,8 +177,19 @@ protocol above into calls against `jetrover_arm_control`'s existing topics.
     reached 25; it reached a much higher (further from the plate) real pulse the whole time, and
     reducing `--rate-hz` to something the arm could keep up with immediately drove it into a real
     strain at a target the first pass had called safe. Recalibrated at 2Hz with a human confirming
-    clearance at every step; the real boundary is 50 pulse, now `RobotHostArgs.DefaultLowerArmMaxPulse`.
+    clearance at every step; the real boundary is 50 pulse, now `RobotHostArgs.DefaultLowerArmMinPulse`.
     `move-arm`'s own default rate is now 2Hz for the same reason.
+  - **A third real bug in this same limit: the clamp direction was backwards.** The field was
+    originally implemented as an upper bound (`Math.Clamp(value, MinPulse, LowerArmMaxPulse)`),
+    which does nothing to stop the lower-arm target from going *below* the calibrated value --
+    exactly the dangerous direction on this hardware, since a lower pulse is what drives the
+    lower arm toward the plate. Invisible throughout every calibration test above because they
+    all retested against the same target, whose unclamped pulse happened to always be *above*
+    the limit; surfaced by the operator hitting `move-arm 0.1 0.1 0.1` and `move-arm 0 0 0`,
+    whose unclamped pulses are naturally low, and finding the arm went below the calibrated 50
+    with nothing stopping it. Fixed by renaming the field to `LowerArmMinPulse` and flipping the
+    clamp to `Math.Clamp(value, LowerArmMinPulse, MaxPulse)` -- a floor, not a ceiling. Retested
+    against the exact targets that exposed it.
   - **Also real: the ROS-side write-gate itself had two bugs, fixed in the same investigation**
     (`jetrover-teleop-ros#2`). The original gate (`abs(nextPos - currentPos) >= 50`) silently
     dropped any smaller real correction with no error, which is what made the calibration race

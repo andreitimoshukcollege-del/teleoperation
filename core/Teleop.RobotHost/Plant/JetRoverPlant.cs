@@ -190,10 +190,13 @@ namespace Teleop.RobotHost.Plant
             float upperPitch = FourDofArmKinematics.InverseUpperPitch(lowerPitch, middlePitch, desiredPitch);
 
             float targetPulseBase = ClampPulse(_config.ZeroPulse + baseYaw * _config.PulsePerRadian);
-            // Lower arm gets its own, tighter max -- see JetRoverPlantConfig.LowerArmMaxPulse's
+            // Lower arm gets its own, tighter floor -- see JetRoverPlantConfig.LowerArmMinPulse's
             // doc comment: a real mechanical collision with the base plate, not a research knob.
+            // This must be a MINIMUM, not a maximum: on this hardware, lower pulse values drive
+            // the lower arm toward the plate, so the calibrated safe value is the floor below
+            // which the target must never fall.
             float targetPulseLower = Math.Clamp(
-                _config.ZeroPulse + lowerPitch * _config.PulsePerRadian, _config.MinPulse, _config.LowerArmMaxPulse);
+                _config.ZeroPulse + lowerPitch * _config.PulsePerRadian, _config.LowerArmMinPulse, _config.MaxPulse);
             float targetPulseMiddle = ClampPulse(_config.ZeroPulse + middlePitch * _config.PulsePerRadian);
             float targetPulseUpper = ClampPulse(_config.ZeroPulse + upperPitch * _config.PulsePerRadian);
 

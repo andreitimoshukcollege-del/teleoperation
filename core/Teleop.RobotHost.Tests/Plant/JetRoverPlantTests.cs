@@ -87,45 +87,54 @@ namespace Teleop.RobotHost.Tests.Plant
         }
 
         [Fact]
-        public void Command_LowerArmNeverExceedsConfiguredLowerArmMaxPulse()
+        public void Command_LowerArmNeverGoesBelowConfiguredLowerArmMinPulse()
         {
-            // Regression test for a real incident (2026-08-08): the lower arm collided with the
-            // robot's own base plate at a real physical target -- LowerArmMaxPulse exists
-            // specifically to make that unreachable in software, independent of what the IK
-            // target asks for. This target's unclamped IK would put the lower arm at pulse
-            // ~748 (well above center); the configured cap of 600 must win regardless of how
-            // many repeated commands try to keep pushing past it.
+            // Regression test for two real incidents (2026-08-08). First: the lower arm
+            // collided with the robot's own base plate at a real physical target --
+            // LowerArmMinPulse exists specifically to make that unreachable in software,
+            // independent of what the IK target asks for. Second: this limit was originally
+            // implemented as an upper bound (a maximum on the pulse value), which does nothing
+            // to stop the target from going *below* it -- exactly the dangerous direction on
+            // this hardware, since lower pulse values drive the lower arm toward the plate. That
+            // bug was invisible throughout calibration because every test used the same target,
+            // whose unclamped pulse happened to always be above the limit; a target whose
+            // unclamped pulse is naturally low (like this one) exposes it immediately. This
+            // target's unclamped IK puts the lower arm well below center; the configured floor
+            // of 400 must win regardless of how many repeated commands try to keep pushing below
+            // it.
             var configWithLowerLimit = new JetRoverPlantConfig(
                 links: Config.Links, pulsePerRadian: Config.PulsePerRadian,
                 pulsePerDegreeAssumed180: Config.PulsePerDegreeAssumed180, stepSizePulses: Config.StepSizePulses,
                 maxDirectionMagnitude: Config.MaxDirectionMagnitude, zeroPulse: Config.ZeroPulse,
                 minPulse: Config.MinPulse, maxPulse: Config.MaxPulse,
                 gripperOpenDegrees: Config.GripperOpenDegrees, gripperClosedDegrees: Config.GripperClosedDegrees,
-                lowerArmMaxPulse: 600);
+                lowerArmMinPulse: 400);
             var relay = new FakeRelayClient();
             var plant = new JetRoverPlant(configWithLowerLimit, relay);
 
-            // Straight up: pushes the unclamped lower-arm IK target well past the configured cap.
-            var straightUpTarget = new Vector3(
-                0f, 0f, Config.Links.Base + Config.Links.Lower + Config.Links.Middle - 0.001f);
+            // Straight down: pushes the unclamped lower-arm IK target well below the configured
+            // floor -- the mirror image of the "straight up" target used to test the opposite
+            // (upper) clamp in Command_ClampsEachDirectionToConfiguredMaximum.
+            var straightDownTarget = new Vector3(
+                0f, 0f, -(Config.Links.Base + Config.Links.Lower + Config.Links.Middle - 0.001f));
 
             float cumulativeLowerPulseDelta = 0f;
             for (int i = 0; i < 20; i++)
             {
-                plant.Command(Frame(captureTicks: 10 + i, position: straightUpTarget));
+                plant.Command(Frame(captureTicks: 10 + i, position: straightDownTarget));
                 cumulativeLowerPulseDelta += relay.SentCommands[relay.SentCommands.Count - 1].LowerDirection
                     * configWithLowerLimit.StepSizePulses;
             }
 
             float impliedLowerPulse = configWithLowerLimit.ZeroPulse + cumulativeLowerPulseDelta;
             Assert.True(
-                impliedLowerPulse <= configWithLowerLimit.LowerArmMaxPulse + 1e-3f,
-                $"lower arm pulse {impliedLowerPulse} exceeded the configured cap of {configWithLowerLimit.LowerArmMaxPulse}");
+                impliedLowerPulse >= configWithLowerLimit.LowerArmMinPulse - 1e-3f,
+                $"lower arm pulse {impliedLowerPulse} fell below the configured floor of {configWithLowerLimit.LowerArmMinPulse}");
 
             LocalArmCommand last = relay.SentCommands[relay.SentCommands.Count - 1];
             Assert.True(
                 MathF.Abs(last.LowerDirection) < 0.01f,
-                $"lower arm still moving after 20 calls, should have converged at the cap: {last.LowerDirection}");
+                $"lower arm still moving after 20 calls, should have converged at the floor: {last.LowerDirection}");
         }
 
         [Fact]

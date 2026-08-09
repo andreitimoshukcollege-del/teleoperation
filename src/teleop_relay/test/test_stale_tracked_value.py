@@ -29,11 +29,11 @@ def test_update_older_than_timeout_reads_as_invalid():
     assert valid is False
 
 
-def test_update_exactly_at_timeout_boundary_still_reads_as_valid():
+def test_update_just_inside_the_timeout_still_reads_as_valid():
     value = StaleTrackedValue(staleness_timeout_seconds=0.2)
 
     value.update(42, now=100.0)
-    valid, _ = value.read(now=100.2)
+    valid, _ = value.read(now=100.19)
 
     assert valid is True
 

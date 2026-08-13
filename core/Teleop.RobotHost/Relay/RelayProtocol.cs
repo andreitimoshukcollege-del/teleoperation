@@ -5,34 +5,32 @@ namespace Teleop.RobotHost.Relay
 {
     /// <summary>
     /// One arm command over the local relay channel (<see cref="IRelayClient"/>). Base/lower/
-    /// middle/upper are relative "direction" multipliers, in the same units the existing
-    /// <c>jetrover_arm_control</c> ROS node's <c>/arm/servo/*</c> topics already expect (see
-    /// <c>ServoController.setPos</c> in that repo: <c>nextPos = currentPos + stepSize *
-    /// direction</c>) -- not absolute angles. <see cref="GripperDegrees"/> is the one exception:
-    /// the gripper's own topic (<c>ServoController.setGripperPos</c>) already takes an absolute
-    /// target angle in degrees, not a relative step, so this field is denormalized
-    /// <c>CommandFrame.Gripper</c> (0=open..1=closed), not a delta.
-    ///
-    /// <see cref="JetRoverPlant"/> computes each relative field as (IK target angle - its own
-    /// believed current angle from the last feedback), not as an independent value per call --
-    /// see that class's doc for why sending a raw relative nudge on every accepted
-    /// <c>CommandFrame</c> would only ever have been safe for Phase 1's one-shot smoke test.
+    /// middle/upper are absolute pulse targets (0-1000, hardware units) -- <b>not</b> relative
+    /// direction deltas (changed in wire v3, docs/adr/0010-absolute-joint-targets-over-local-relay.md;
+    /// see that ADR for why sending the resulting target rather than the delta used to reach it
+    /// removes an entire independently-maintained belief-tracking system on the ROS side).
+    /// <see cref="JetRoverPlant"/> already computes exactly this value
+    /// (<c>_targetPulseBase</c>/etc.) as the last step before sending -- this field is that value,
+    /// unmodified. <see cref="GripperDegrees"/> is a different unit space, unaffected by this
+    /// change: the gripper's own topic (<c>ServoController.setGripperPos</c>) already takes an
+    /// absolute target angle in degrees, not pulse, so this field is denormalized
+    /// <c>CommandFrame.Gripper</c> (0=open..1=closed) exactly as before.
     /// </summary>
     public readonly struct LocalArmCommand
     {
-        public readonly float BaseDirection;
-        public readonly float LowerDirection;
-        public readonly float MiddleDirection;
-        public readonly float UpperDirection;
+        public readonly float BasePulse;
+        public readonly float LowerPulse;
+        public readonly float MiddlePulse;
+        public readonly float UpperPulse;
         public readonly float GripperDegrees;
 
         public LocalArmCommand(
-            float baseDirection, float lowerDirection, float middleDirection, float upperDirection, float gripperDegrees)
+            float basePulse, float lowerPulse, float middlePulse, float upperPulse, float gripperDegrees)
         {
-            BaseDirection = baseDirection;
-            LowerDirection = lowerDirection;
-            MiddleDirection = middleDirection;
-            UpperDirection = upperDirection;
+            BasePulse = basePulse;
+            LowerPulse = lowerPulse;
+            MiddlePulse = middlePulse;
+            UpperPulse = upperPulse;
             GripperDegrees = gripperDegrees;
         }
     }
@@ -84,9 +82,13 @@ namespace Teleop.RobotHost.Relay
     /// </summary>
     public static class RelayProtocol
     {
-        public const byte Version = 2;
+        // v3: base/lower/middle/upper are absolute pulse targets, not relative direction deltas
+        // -- docs/adr/0010-absolute-joint-targets-over-local-relay.md. Byte layout is unchanged
+        // from v2 (still 5 floats); only the meaning of the first four inverts, which is exactly
+        // why the version must still bump -- a stale peer must reject, not misinterpret.
+        public const byte Version = 3;
 
-        // version + 5 floats (base/lower/middle/upper direction + gripper degrees)
+        // version + 5 floats (base/lower/middle/upper absolute pulse + gripper degrees)
         public const int ArmCommandEncodedSize = 1 + 5 * 4;
 
         // version + 4 * (1 valid byte + 4-byte int32 degrees)
@@ -100,10 +102,10 @@ namespace Teleop.RobotHost.Relay
             }
 
             destination[0] = Version;
-            BinaryPrimitives.WriteSingleLittleEndian(destination.Slice(1, 4), command.BaseDirection);
-            BinaryPrimitives.WriteSingleLittleEndian(destination.Slice(5, 4), command.LowerDirection);
-            BinaryPrimitives.WriteSingleLittleEndian(destination.Slice(9, 4), command.MiddleDirection);
-            BinaryPrimitives.WriteSingleLittleEndian(destination.Slice(13, 4), command.UpperDirection);
+            BinaryPrimitives.WriteSingleLittleEndian(destination.Slice(1, 4), command.BasePulse);
+            BinaryPrimitives.WriteSingleLittleEndian(destination.Slice(5, 4), command.LowerPulse);
+            BinaryPrimitives.WriteSingleLittleEndian(destination.Slice(9, 4), command.MiddlePulse);
+            BinaryPrimitives.WriteSingleLittleEndian(destination.Slice(13, 4), command.UpperPulse);
             BinaryPrimitives.WriteSingleLittleEndian(destination.Slice(17, 4), command.GripperDegrees);
             return ArmCommandEncodedSize;
         }
@@ -116,12 +118,12 @@ namespace Teleop.RobotHost.Relay
                 return false;
             }
 
-            float baseDirection = BinaryPrimitives.ReadSingleLittleEndian(source.Slice(1, 4));
-            float lowerDirection = BinaryPrimitives.ReadSingleLittleEndian(source.Slice(5, 4));
-            float middleDirection = BinaryPrimitives.ReadSingleLittleEndian(source.Slice(9, 4));
-            float upperDirection = BinaryPrimitives.ReadSingleLittleEndian(source.Slice(13, 4));
+            float basePulse = BinaryPrimitives.ReadSingleLittleEndian(source.Slice(1, 4));
+            float lowerPulse = BinaryPrimitives.ReadSingleLittleEndian(source.Slice(5, 4));
+            float middlePulse = BinaryPrimitives.ReadSingleLittleEndian(source.Slice(9, 4));
+            float upperPulse = BinaryPrimitives.ReadSingleLittleEndian(source.Slice(13, 4));
             float gripperDegrees = BinaryPrimitives.ReadSingleLittleEndian(source.Slice(17, 4));
-            command = new LocalArmCommand(baseDirection, lowerDirection, middleDirection, upperDirection, gripperDegrees);
+            command = new LocalArmCommand(basePulse, lowerPulse, middlePulse, upperPulse, gripperDegrees);
             return true;
         }
 

@@ -24,13 +24,13 @@ namespace Teleop.RobotHost.Tests.Relay
 
                 using var client = new UdsRelayClient(hostPath, relayPath);
                 client.Send(new LocalArmCommand(
-                    baseDirection: 2.5f, lowerDirection: 0f, middleDirection: 0f, upperDirection: 0f, gripperDegrees: 90f));
+                    basePulse: 2.5f, lowerPulse: 0f, middlePulse: 0f, upperPulse: 0f, gripperDegrees: 90f));
 
                 byte[] buffer = new byte[RelayProtocol.ArmCommandEncodedSize];
                 int received = PollReceive(relaySocket, buffer);
 
                 Assert.True(RelayProtocol.TryDecodeCommand(buffer.AsSpan(0, received), out LocalArmCommand decoded));
-                Assert.Equal(2.5f, decoded.BaseDirection);
+                Assert.Equal(2.5f, decoded.BasePulse);
             }
             finally
             {

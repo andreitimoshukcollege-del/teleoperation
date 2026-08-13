@@ -2,7 +2,7 @@ using System;
 using System.Numerics;
 using Teleop.Core.Contracts;
 using Teleop.Core.Types;
-using Teleop.RobotHost.Kinematics;
+using Teleop.JetRover.Kinematics;
 using Teleop.RobotHost.Relay;
 
 namespace Teleop.RobotHost.Plant
@@ -23,13 +23,15 @@ namespace Teleop.RobotHost.Plant
     ///
     /// <b>Real inverse kinematics (<see cref="FourDofArmKinematics"/>), replacing Phase 1's
     /// stand-in.</b> <see cref="Command"/> runs IK against <c>CommandFrame.Pose</c> to get a
-    /// target angle for each of the four position-affecting joints, converts each target into a
-    /// pulse value, and sends the *delta* from this plant's own tracked target (not from sensed
-    /// feedback -- see "optimistic target tracking" below) as the relay's relative "direction"
-    /// unit, since the underlying ROS topics are relative-step, not absolute-setpoint, and
-    /// changing that is out of scope here. <see cref="FourDofArmKinematics"/>'s own doc covers
-    /// what this model does and doesn't represent (roll/yaw dropped, target point is the wrist
-    /// not the gripper fingertip, ruler-measured link lengths).
+    /// target angle for each of the four position-affecting joints and converts each target into
+    /// a pulse value. The relay wire itself carries an *absolute* pulse target per joint
+    /// (docs/adr/0010-absolute-joint-targets-over-local-relay.md, wire v3) -- internally, this
+    /// plant still advances its own tracked target by a clamped step each call (see "optimistic
+    /// target tracking" below) rather than jumping straight to the IK output, but what crosses
+    /// the wire is the resulting absolute belief, not the step used to reach it.
+    /// <see cref="FourDofArmKinematics"/>'s own doc covers what this model does and doesn't
+    /// represent (roll/yaw dropped, target point is the wrist not the gripper fingertip,
+    /// ruler-measured link lengths).
     ///
     /// <b>Optimistic target tracking.</b> This plant tracks two separate beliefs per joint: the
     /// pulse value it last *commanded* (updated in <see cref="Command"/> by the amount actually
@@ -83,7 +85,17 @@ namespace Teleop.RobotHost.Plant
         private readonly JetRoverPlantConfig _config;
         private readonly IRelayClient _relay;
 
-        private long _lastAcceptedCaptureTicks;
+        // Separate staleness trackers for Command and CommandJointAngles -- these are two
+        // genuinely independent command streams (Cartesian-target callers like move-arm/
+        // clocksync-check vs. pre-computed-angle callers like the JetRover VR feature), and a
+        // real caller can legitimately stamp both with the identical CaptureTicks in the same
+        // tick (JetRoverOperatorBridge does exactly this, using one `now` for both channels).
+        // A single shared tracker treated that as a stale duplicate and silently dropped
+        // whichever command lost the race -- found via real-hardware testing (2026-08-12): the
+        // joint channel's commands were being rejected roughly half the time even though nothing
+        // else was using the Cartesian path at all.
+        private long _lastAcceptedCartesianCaptureTicks;
+        private long _lastAcceptedJointCaptureTicks;
         private long _stateTicks;
 
         // Optimistic targets -- what this plant last commanded, assumed to have been honored.
@@ -112,37 +124,76 @@ namespace Teleop.RobotHost.Plant
         public bool IsFullySensed => _baseSensed && _lowerSensed && _middleSensed && _upperSensed;
 
         /// <summary>
-        /// Runs inverse kinematics against <paramref name="command"/>'s pose, converts each
-        /// joint's target angle into a relay direction delta from this plant's own optimistic
-        /// target belief, denormalizes the gripper, and sends the result. Stale or duplicate
-        /// frames (by <see cref="CommandFrame.CaptureTicks"/>) are rejected whole, never
-        /// partially applied, per <see cref="IRobotPlant.Command"/>.
+        /// Runs inverse kinematics against <paramref name="command"/>'s pose, then applies the
+        /// result exactly as <see cref="CommandJointAngles"/> does. Stale or duplicate frames (by
+        /// <see cref="CommandFrame.CaptureTicks"/>) are rejected whole, never partially applied,
+        /// per <see cref="IRobotPlant.Command"/>.
         /// </summary>
         public void Command(in CommandFrame command)
         {
-            if (command.CaptureTicks <= _lastAcceptedCaptureTicks)
+            if (command.CaptureTicks <= _lastAcceptedCartesianCaptureTicks)
             {
                 return;
             }
 
-            _lastAcceptedCaptureTicks = command.CaptureTicks;
+            _lastAcceptedCartesianCaptureTicks = command.CaptureTicks;
+            SeedBeliefsFromSensedIfNeeded();
 
-            // One-time seed from real sensed feedback, the first time each joint's belief is
-            // ever used -- a real gap found during real-hardware testing (2026-08-08): this
-            // plant's own ITimeAuthority-driven Step() loop polls the relay for feedback from
-            // startup regardless of whether any command has arrived yet, so by the time the
-            // first real CommandFrame lands, _xSensed is usually already true and reflects
-            // wherever the arm actually physically is -- which is not necessarily ZeroPulse
-            // (e.g. after a Teleop.RobotHost restart mid-session, or after a manual physical
-            // correction). Computing the first delta against an unseeded ZeroPulse belief while
-            // the real servo sits somewhere else sends a *relative* step sized for the wrong
-            // starting point, which the real servo then applies on top of its own true position
-            // -- overshooting by exactly the gap between belief and reality, in either direction,
-            // independent of any per-joint pulse limit (a limit only bounds this plant's own
-            // belief, not what a wrongly-referenced relative step does to real hardware). Only
-            // the first use seeds; every call after that is purely optimistic tracking, per this
-            // class's own "composing consecutive commands against stale sensed data would under-
-            // or over-shoot" rule -- seeding every time would reintroduce that exact problem.
+            FourDofArmKinematics.TryInverse(
+                _config.Links, command.Pose.Position,
+                out float baseYaw, out float lowerPitch, out float middlePitch, out _);
+            float desiredPitch = FourDofArmKinematics.ExtractPitchRadians(command.Pose.Rotation);
+            float upperPitch = FourDofArmKinematics.InverseUpperPitch(lowerPitch, middlePitch, desiredPitch);
+
+            ApplyJointTargets(baseYaw, lowerPitch, middlePitch, upperPitch, command.Gripper);
+        }
+
+        /// <summary>
+        /// Applies already-computed joint angles directly, skipping
+        /// <see cref="FourDofArmKinematics.TryInverse"/> entirely -- the JetRover-specific
+        /// counterpart to <see cref="Command"/>, for a caller that ran inverse kinematics itself
+        /// (docs/adr/0009-jetrover-operator-side-inverse-kinematics.md, motivated by the Jetson's
+        /// weak CPU under an interactive command rate far higher than <c>move-arm</c>'s occasional
+        /// use). Shares every other rule <see cref="Command"/> has: stale/duplicate
+        /// <paramref name="captureTicks"/> rejected whole, same one-time seed-from-sensed
+        /// behavior, same clamp/belief-tracking tail.
+        /// </summary>
+        public void CommandJointAngles(
+            float baseYaw, float lowerPitch, float middlePitch, float upperPitch, float gripper, long captureTicks)
+        {
+            if (captureTicks <= _lastAcceptedJointCaptureTicks)
+            {
+                return;
+            }
+
+            _lastAcceptedJointCaptureTicks = captureTicks;
+            SeedBeliefsFromSensedIfNeeded();
+
+            ApplyJointTargets(baseYaw, lowerPitch, middlePitch, upperPitch, gripper);
+        }
+
+        /// <summary>
+        /// One-time seed from real sensed feedback, the first time each joint's belief is ever
+        /// used -- a real gap found during real-hardware testing (2026-08-08): this plant's own
+        /// <c>ITimeAuthority</c>-driven <see cref="Step"/> loop polls the relay for feedback from
+        /// startup regardless of whether any command has arrived yet, so by the time the first
+        /// real command lands, <c>_xSensed</c> is usually already true and reflects wherever the
+        /// arm actually physically is -- which is not necessarily <see cref="JetRoverPlantConfig.ZeroPulse"/>
+        /// (e.g. after a <c>Teleop.RobotHost</c> restart mid-session, or after a manual physical
+        /// correction). Computing the first delta against an unseeded <c>ZeroPulse</c> belief
+        /// while the real servo sits somewhere else sends a *relative* step sized for the wrong
+        /// starting point, which the real servo then applies on top of its own true position --
+        /// overshooting by exactly the gap between belief and reality, in either direction,
+        /// independent of any per-joint pulse limit (a limit only bounds this plant's own belief,
+        /// not what a wrongly-referenced relative step does to real hardware). Only the first use
+        /// per joint seeds; every call after that is purely optimistic tracking, per this class's
+        /// own "composing consecutive commands against stale sensed data would under- or
+        /// over-shoot" rule -- seeding every time would reintroduce that exact problem. Shared by
+        /// both <see cref="Command"/> and <see cref="CommandJointAngles"/> so this rule lives in
+        /// exactly one place regardless of which entry point a given command arrived through.
+        /// </summary>
+        private void SeedBeliefsFromSensedIfNeeded()
+        {
             if (!_targetBaseSeeded)
             {
                 if (_baseSensed)
@@ -182,13 +233,24 @@ namespace Teleop.RobotHost.Plant
 
                 _targetUpperSeeded = true;
             }
+        }
 
-            FourDofArmKinematics.TryInverse(
-                _config.Links, command.Pose.Position,
-                out float baseYaw, out float lowerPitch, out float middlePitch);
-            float desiredPitch = FourDofArmKinematics.ExtractPitchRadians(command.Pose.Rotation);
-            float upperPitch = FourDofArmKinematics.InverseUpperPitch(lowerPitch, middlePitch, desiredPitch);
-
+        /// <summary>
+        /// Converts target joint angles into pulse values, clamps, advances this plant's own
+        /// optimistic target belief by no more than <see cref="JetRoverPlantConfig.MaxDirectionMagnitude"/>
+        /// per call, denormalizes the gripper, and sends the resulting absolute pulse targets --
+        /// the shared tail of both <see cref="Command"/> and <see cref="CommandJointAngles"/>, so
+        /// there is exactly one place this logic lives regardless of which entry point supplied
+        /// the angles.
+        ///
+        /// Sends the belief's resulting absolute pulse, not the per-cycle step used to reach it
+        /// (docs/adr/0010-absolute-joint-targets-over-local-relay.md, wire v3) -- the clamping and
+        /// belief-tracking below are unchanged from the delta-sending design, only the value
+        /// handed to <see cref="_relay"/> at the end differs.
+        /// </summary>
+        private void ApplyJointTargets(
+            float baseYaw, float lowerPitch, float middlePitch, float upperPitch, float gripper)
+        {
             float targetPulseBase = ClampPulse(_config.ZeroPulse + baseYaw * _config.PulsePerRadian);
             // Lower arm gets its own, tighter floor -- see JetRoverPlantConfig.LowerArmMinPulse's
             // doc comment: a real mechanical collision with the base plate, not a research knob.
@@ -201,15 +263,13 @@ namespace Teleop.RobotHost.Plant
             float targetPulseUpper = ClampPulse(_config.ZeroPulse + upperPitch * _config.PulsePerRadian);
 
             // Direction is clamped to MaxDirectionMagnitude below -- when a single command's
-            // required delta exceeds that clamp, only the CLAMPED amount is actually asked of
-            // the hardware. The belief update must track that same clamped amount, not the
-            // unclamped IK target: crediting the full target here would make this plant think a
-            // large move already landed in one step when it didn't, silently stalling out the
-            // remaining distance forever (repeating the same CommandFrame would keep computing a
-            // zero delta against a belief that was never true). Accumulating the actually-applied
-            // delta instead lets repeated/continuous commands toward the same real-world target
-            // keep closing the gap over successive calls, the same way the relay's own
-            // fire-and-forget "here is the current setpoint" semantics already assume.
+            // required delta exceeds that clamp, only the CLAMPED amount is actually applied to
+            // this plant's own belief. Crediting the full unclamped IK target here would make this
+            // plant think a large move already landed in one step when it didn't, silently
+            // stalling out the remaining distance forever (repeating the same command would keep
+            // computing a zero delta against a belief that was never true). Accumulating only the
+            // actually-applied delta instead lets repeated/continuous commands toward the same
+            // real-world target keep closing the gap over successive calls.
             float baseDirection = ToDirection(targetPulseBase - _targetPulseBase);
             float lowerDirection = ToDirection(targetPulseLower - _targetPulseLower);
             float middleDirection = ToDirection(targetPulseMiddle - _targetPulseMiddle);
@@ -220,11 +280,13 @@ namespace Teleop.RobotHost.Plant
             _targetPulseMiddle += middleDirection * _config.StepSizePulses;
             _targetPulseUpper += upperDirection * _config.StepSizePulses;
 
-            float gripperFraction = Math.Clamp(command.Gripper, 0f, 1f);
+            float gripperFraction = Math.Clamp(gripper, 0f, 1f);
             float gripperDegrees = _config.GripperOpenDegrees
                 + gripperFraction * (_config.GripperClosedDegrees - _config.GripperOpenDegrees);
 
-            _relay.Send(new LocalArmCommand(baseDirection, lowerDirection, middleDirection, upperDirection, gripperDegrees));
+            // The relay now receives the resulting absolute pulse belief, not the direction used
+            // to compute it -- see this method's own doc and docs/adr/0010.
+            _relay.Send(new LocalArmCommand(_targetPulseBase, _targetPulseLower, _targetPulseMiddle, _targetPulseUpper, gripperDegrees));
         }
 
         /// <summary>
@@ -303,7 +365,8 @@ namespace Teleop.RobotHost.Plant
 
         private void ResetInternal()
         {
-            _lastAcceptedCaptureTicks = long.MinValue;
+            _lastAcceptedCartesianCaptureTicks = long.MinValue;
+            _lastAcceptedJointCaptureTicks = long.MinValue;
             _stateTicks = 0;
             _targetPulseBase = _config.ZeroPulse;
             _targetPulseLower = _config.ZeroPulse;

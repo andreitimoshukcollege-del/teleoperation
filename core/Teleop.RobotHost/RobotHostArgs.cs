@@ -13,6 +13,17 @@ namespace Teleop.RobotHost
         public readonly string LocalRelaySocketPath;
         public readonly float? MaxDirectionMagnitude;
 
+        /// <summary>
+        /// Optional second listener for pre-computed joint-angle commands
+        /// (docs/adr/0009-jetrover-operator-side-inverse-kinematics.md) -- null (the default)
+        /// disables it entirely, so existing deployments/scripts that only know about
+        /// <see cref="LocalPort"/> are completely unaffected unless someone explicitly opts in.
+        /// Uplink-only: this channel never replies, since a caller sending
+        /// <c>JointCommandFrame</c>s already gets robot state feedback through its own separate,
+        /// unmodified Cartesian <see cref="RemotePort"/> connection.
+        /// </summary>
+        public readonly int? JointLocalPort;
+
         /// <summary>Always resolved by <see cref="TryParse"/> -- <see cref="DefaultLowerArmMinPulse"/>
         /// unless <c>--lower-arm-min-pulse</c> was passed. Never left unset: see that default's
         /// own doc comment for why this must be safe-by-default, not opt-in.</summary>
@@ -38,19 +49,23 @@ namespace Teleop.RobotHost
         public const string Usage =
             "Usage: Teleop.RobotHost --local-port <port> --remote-host <ip> --remote-port <port> " +
             "--relay-socket <path> --local-relay-socket <path> [--max-direction-magnitude <n>] " +
-            "[--lower-arm-min-pulse <n>]\n" +
+            "[--lower-arm-min-pulse <n>] [--joint-local-port <port>]\n" +
             "  --max-direction-magnitude overrides JetRoverPlantConfig.Default's clamp (5) on how far\n" +
             "  a single accepted command may move a joint's belief -- lower it (e.g. 1-2) for a\n" +
             "  visibly slower, gentler arm; omit it to keep the default.\n" +
             "  --lower-arm-min-pulse overrides the default (50) hard floor on the lower arm's pulse\n" +
             "  -- the arm cannot go below this pulse value -- in place since a real collision with\n" +
             "  the robot's own base plate; see JetRoverPlantConfig.LowerArmMinPulse's doc comment.\n" +
-            "  Only override this after confirming the mechanical setup has actually changed.";
+            "  Only override this after confirming the mechanical setup has actually changed.\n" +
+            "  --joint-local-port opens a second, optional listener for pre-computed joint-angle\n" +
+            "  commands (JetRoverPlant.CommandJointAngles) instead of the default Cartesian-target\n" +
+            "  path -- see docs/adr/0009-jetrover-operator-side-inverse-kinematics.md. Omit it to\n" +
+            "  run exactly as before, with only the Cartesian path active.";
 
         private RobotHostArgs(
             int localPort, IPAddress remoteHost, int remotePort,
             string relaySocketPath, string localRelaySocketPath, float? maxDirectionMagnitude,
-            int lowerArmMinPulse)
+            int lowerArmMinPulse, int? jointLocalPort)
         {
             LocalPort = localPort;
             RemoteHost = remoteHost;
@@ -59,6 +74,7 @@ namespace Teleop.RobotHost
             LocalRelaySocketPath = localRelaySocketPath;
             MaxDirectionMagnitude = maxDirectionMagnitude;
             LowerArmMinPulse = lowerArmMinPulse;
+            JointLocalPort = jointLocalPort;
         }
 
         public static RobotHostArgs? TryParse(string[] args, out string? error)
@@ -70,6 +86,7 @@ namespace Teleop.RobotHost
             string? localRelaySocketPath = null;
             float? maxDirectionMagnitude = null;
             int? lowerArmMinPulse = null;
+            int? jointLocalPort = null;
 
             for (int i = 0; i < args.Length; i++)
             {
@@ -99,22 +116,25 @@ namespace Teleop.RobotHost
                     case "--lower-arm-min-pulse" when i + 1 < args.Length:
                         lowerArmMinPulse = ParseIntOrNull(args[++i]);
                         break;
+                    case "--joint-local-port" when i + 1 < args.Length:
+                        jointLocalPort = ParseIntOrNull(args[++i]);
+                        break;
                 }
             }
 
             if (localPort is null || remoteHost is null || remotePort is null ||
                 relaySocketPath is null || localRelaySocketPath is null ||
-                maxDirectionMagnitude is <= 0f || lowerArmMinPulse is <= 0)
+                maxDirectionMagnitude is <= 0f || lowerArmMinPulse is <= 0 || jointLocalPort is <= 0)
             {
-                error = "Missing or invalid required argument (--max-direction-magnitude and " +
-                    "--lower-arm-min-pulse must be positive).";
+                error = "Missing or invalid required argument (--max-direction-magnitude, " +
+                    "--lower-arm-min-pulse, and --joint-local-port, if given, must be positive).";
                 return null;
             }
 
             error = null;
             return new RobotHostArgs(
                 localPort.Value, remoteHost, remotePort.Value, relaySocketPath, localRelaySocketPath,
-                maxDirectionMagnitude, lowerArmMinPulse ?? DefaultLowerArmMinPulse);
+                maxDirectionMagnitude, lowerArmMinPulse ?? DefaultLowerArmMinPulse, jointLocalPort);
         }
 
         private static int? ParseIntOrNull(string s) => int.TryParse(s, out int value) ? value : null;

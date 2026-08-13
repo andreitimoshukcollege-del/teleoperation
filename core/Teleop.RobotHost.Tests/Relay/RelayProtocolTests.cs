@@ -8,8 +8,8 @@ namespace Teleop.RobotHost.Tests.Relay
         public void ArmCommand_RoundTripsThroughEncodeDecode()
         {
             var original = new LocalArmCommand(
-                baseDirection: -3.25f, lowerDirection: 1.5f, middleDirection: -0.75f,
-                upperDirection: 2.0f, gripperDegrees: 120f);
+                basePulse: -3.25f, lowerPulse: 1.5f, middlePulse: -0.75f,
+                upperPulse: 2.0f, gripperDegrees: 120f);
             Span<byte> buffer = stackalloc byte[RelayProtocol.ArmCommandEncodedSize];
 
             int written = RelayProtocol.EncodeCommand(original, buffer);
@@ -17,10 +17,10 @@ namespace Teleop.RobotHost.Tests.Relay
 
             Assert.Equal(RelayProtocol.ArmCommandEncodedSize, written);
             Assert.True(ok);
-            Assert.Equal(original.BaseDirection, decoded.BaseDirection);
-            Assert.Equal(original.LowerDirection, decoded.LowerDirection);
-            Assert.Equal(original.MiddleDirection, decoded.MiddleDirection);
-            Assert.Equal(original.UpperDirection, decoded.UpperDirection);
+            Assert.Equal(original.BasePulse, decoded.BasePulse);
+            Assert.Equal(original.LowerPulse, decoded.LowerPulse);
+            Assert.Equal(original.MiddlePulse, decoded.MiddlePulse);
+            Assert.Equal(original.UpperPulse, decoded.UpperPulse);
             Assert.Equal(original.GripperDegrees, decoded.GripperDegrees);
         }
 

@@ -1,7 +1,7 @@
 using System;
 using System.Numerics;
 
-namespace Teleop.RobotHost.Kinematics
+namespace Teleop.JetRover.Kinematics
 {
     /// <summary>
     /// Closed-form forward/inverse kinematics for the JetRover arm's position-affecting chain:
@@ -10,6 +10,13 @@ namespace Teleop.RobotHost.Kinematics
     /// model of a physically richer arm -- see the class-level caveats below for exactly what it
     /// drops and why, before trusting it for anything beyond what
     /// docs/adr/0007-jetrover-plant-and-robot-host.md's Phase 2 needs.
+    ///
+    /// Lives in <c>Teleop.JetRover</c>, a shared package compiled by both <c>Teleop.RobotHost</c>
+    /// and Unity (docs/adr/0009-jetrover-operator-side-inverse-kinematics.md) -- moved here from
+    /// <c>Teleop.RobotHost</c> once the operator side (Unity) needed to run this same computation
+    /// for real, not just approximate it for visualization. Deliberately not part of
+    /// <c>Teleop.Core</c>: this is one specific robot's ruler-measured hardware geometry, not a
+    /// general research technique (<c>core/Teleop.Core/Plant/CLAUDE.md</c>).
     ///
     /// <b>Link lengths are ruler-measured, not from a datasheet or URDF</b> -- no such
     /// specification exists for this JetRover variant (checked the Jetson filesystem and the
@@ -38,8 +45,8 @@ namespace Teleop.RobotHost.Kinematics
         /// Forward kinematics: given the three position-affecting joint angles (radians), returns
         /// the wrist position in the arm's local frame (origin at the base-yaw axis, Z up,
         /// X-forward when <paramref name="baseYaw"/> is zero -- Core's ROS convention). Used only
-        /// to round-trip-test <see cref="TryInverse"/>; <see cref="JetRoverPlant"/> does not call
-        /// this directly (its own believed-position tracking comes from sensed joint angles, not
+        /// to round-trip-test <see cref="TryInverse"/>; <c>JetRoverPlant</c> does not call this
+        /// directly (its own believed-position tracking comes from sensed joint angles, not
         /// from re-deriving a position it already commanded).
         /// </summary>
         public static Vector3 Forward(ArmLinkLengths links, float baseYaw, float lowerPitch, float middlePitch)
@@ -63,8 +70,12 @@ namespace Teleop.RobotHost.Kinematics
         /// Inverse kinematics for the position-affecting joints. Always succeeds (returns true):
         /// a target outside the arm's physical reach is clamped to the nearest reachable point
         /// on the boundary of the working envelope (documented behavior, not silently wrong
-        /// behavior) rather than rejected, since <see cref="Teleop.Core.Contracts.IRobotPlant.Command"/>
-        /// has no failure channel to report an unreachable target through.
+        /// behavior) rather than rejected, since <c>IRobotPlant.Command</c> has no failure channel
+        /// to report an unreachable target through. <paramref name="wasClamped"/> reports whether
+        /// that happened, so a caller close enough to the wire to matter (e.g. a VR operator
+        /// dragging past reach) can show it -- added when this became operator-side, authoritative
+        /// computation rather than a robot-side-only detail; see this file's own class doc and
+        /// docs/adr/0009-jetrover-operator-side-inverse-kinematics.md.
         ///
         /// "Elbow-up" solution chosen arbitrarily (the other real solution, "elbow-down", is
         /// never produced) -- there is no basis yet to prefer one over the other without an
@@ -76,11 +87,24 @@ namespace Teleop.RobotHost.Kinematics
             Vector3 targetPosition,
             out float baseYaw,
             out float lowerPitch,
-            out float middlePitch)
+            out float middlePitch,
+            out bool wasClamped)
         {
-            baseYaw = MathF.Atan2(targetPosition.Y, targetPosition.X);
-
             float r = MathF.Sqrt(targetPosition.X * targetPosition.X + targetPosition.Y * targetPosition.Y);
+
+            // baseYaw is physically meaningless (and Atan2 is numerically ill-conditioned) when
+            // the target sits almost directly above the base-yaw axis -- a real bug found via the
+            // JetRover VR drag feature (2026-08-13): a sub-millimeter jitter in X or Y this close
+            // to the axis, well within real controller tracking noise, can swing the raw Atan2
+            // result by up to 180 degrees despite the target barely moving, which showed up as
+            // the Unity arm rig visibly flashing between two poses while dragging a target that
+            // looked perfectly still. Below this radius, any yaw reaches the same point, so pin
+            // it to a fixed value instead of computing an unstable one. The threshold is
+            // comfortably above real tracking jitter (millimeters) and small relative to this
+            // arm's ~0.26m max reach.
+            const float minYawStabilizationRadius = 0.01f;
+            baseYaw = r > minYawStabilizationRadius ? MathF.Atan2(targetPosition.Y, targetPosition.X) : 0f;
+
             float dz = targetPosition.Z - links.Base;
             float reach = MathF.Sqrt(r * r + dz * dz);
 
@@ -90,7 +114,9 @@ namespace Teleop.RobotHost.Kinematics
             // cosines denominators well-defined but the solution numerically singular (an
             // infinitesimal input change would flip the elbow-up/down branch).
             const float epsilon = 1e-4f;
-            reach = Math.Clamp(reach, minReach + epsilon, maxReach - epsilon);
+            float clampedReach = Math.Clamp(reach, minReach + epsilon, maxReach - epsilon);
+            wasClamped = clampedReach != reach;
+            reach = clampedReach;
 
             float cosGamma = (links.Lower * links.Lower + links.Middle * links.Middle - reach * reach)
                 / (2f * links.Lower * links.Middle);

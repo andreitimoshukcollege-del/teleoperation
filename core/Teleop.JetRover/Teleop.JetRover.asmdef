@@ -1,0 +1,16 @@
+{
+  "name": "Teleop.JetRover",
+  "rootNamespace": "Teleop.JetRover",
+  "references": [
+    "Teleop.Core"
+  ],
+  "includePlatforms": [],
+  "excludePlatforms": [],
+  "allowUnsafeCode": false,
+  "overrideReferences": false,
+  "precompiledReferences": [],
+  "autoReferenced": true,
+  "defineConstraints": [],
+  "versionDefines": [],
+  "noEngineReferences": true
+}

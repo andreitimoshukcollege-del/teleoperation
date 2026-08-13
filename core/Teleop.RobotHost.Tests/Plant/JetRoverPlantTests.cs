@@ -1,6 +1,6 @@
 using System.Numerics;
 using Teleop.Core.Types;
-using Teleop.RobotHost.Kinematics;
+using Teleop.JetRover.Kinematics;
 using Teleop.RobotHost.Plant;
 using Teleop.RobotHost.Relay;
 
@@ -25,7 +25,7 @@ namespace Teleop.RobotHost.Tests.Plant
         private static readonly Vector3 ReachableTarget = new Vector3(0.15f, 0f, 0.08f);
 
         [Fact]
-        public void Command_SendsANonZeroDirectionTowardTheIkTarget()
+        public void Command_SendsANonZeroPulseTargetTowardTheIkTarget()
         {
             var relay = new FakeRelayClient();
             var plant = new JetRoverPlant(Config, relay);
@@ -35,23 +35,27 @@ namespace Teleop.RobotHost.Tests.Plant
             Assert.Single(relay.SentCommands);
             LocalArmCommand sent = relay.SentCommands[0];
             // Starting from the zero-pulse (arm-centered) belief, any reachable off-center
-            // target should produce a real move on at least one joint.
+            // target should produce a real move on at least one joint -- the sent value is now
+            // the resulting absolute pulse (docs/adr/0010), so "moved" means "differs from the
+            // starting ZeroPulse belief," not "direction is nonzero."
             bool anyJointMoved =
-                sent.BaseDirection != 0f || sent.LowerDirection != 0f || sent.MiddleDirection != 0f || sent.UpperDirection != 0f;
+                sent.BasePulse != Config.ZeroPulse || sent.LowerPulse != Config.ZeroPulse ||
+                sent.MiddlePulse != Config.ZeroPulse || sent.UpperPulse != Config.ZeroPulse;
             Assert.True(anyJointMoved);
         }
 
         [Fact]
-        public void Command_RepeatingTheSameTarget_GraduallyConvergesToZeroDelta()
+        public void Command_RepeatingTheSameTarget_GraduallyConvergesToAStableAbsoluteTarget()
         {
             // Regression test for a real bug: an earlier version updated this plant's belief to
-            // the full, unclamped IK target after every Command() call, even when the direction
-            // actually sent had been clamped to a smaller value -- silently stalling out any move
-            // whose single-step delta exceeded MaxDirectionMagnitude forever, since a repeated
-            // CommandFrame toward the same target would then compute a zero delta against a
-            // belief that was never actually reached. The belief must instead accumulate only the
-            // clamped, actually-applied delta each call, so repeating the same target keeps
-            // closing the remaining distance over successive calls.
+            // the full, unclamped IK target after every Command() call, even when the amount
+            // actually applied had been clamped to a smaller step -- silently stalling out any
+            // move whose single-step delta exceeded MaxDirectionMagnitude forever, since a
+            // repeated CommandFrame toward the same target would then compute a zero delta
+            // against a belief that was never actually reached. The belief must instead
+            // accumulate only the clamped, actually-applied delta each call, so repeating the
+            // same target keeps closing the remaining distance over successive calls until the
+            // sent absolute pulse stops changing between calls (converged).
             var relay = new FakeRelayClient();
             var plant = new JetRoverPlant(Config, relay);
 
@@ -60,15 +64,16 @@ namespace Teleop.RobotHost.Tests.Plant
                 plant.Command(Frame(captureTicks: 10 + i, position: ReachableTarget));
             }
 
+            LocalArmCommand secondToLast = relay.SentCommands[relay.SentCommands.Count - 2];
             LocalArmCommand last = relay.SentCommands[relay.SentCommands.Count - 1];
-            Assert.True(MathF.Abs(last.BaseDirection) < 0.01f, $"base still moving: {last.BaseDirection}");
-            Assert.True(MathF.Abs(last.LowerDirection) < 0.01f, $"lower still moving: {last.LowerDirection}");
-            Assert.True(MathF.Abs(last.MiddleDirection) < 0.01f, $"middle still moving: {last.MiddleDirection}");
-            Assert.True(MathF.Abs(last.UpperDirection) < 0.01f, $"upper still moving: {last.UpperDirection}");
+            Assert.True(MathF.Abs(last.BasePulse - secondToLast.BasePulse) < 0.5f, $"base still moving: {last.BasePulse} vs {secondToLast.BasePulse}");
+            Assert.True(MathF.Abs(last.LowerPulse - secondToLast.LowerPulse) < 0.5f, $"lower still moving: {last.LowerPulse} vs {secondToLast.LowerPulse}");
+            Assert.True(MathF.Abs(last.MiddlePulse - secondToLast.MiddlePulse) < 0.5f, $"middle still moving: {last.MiddlePulse} vs {secondToLast.MiddlePulse}");
+            Assert.True(MathF.Abs(last.UpperPulse - secondToLast.UpperPulse) < 0.5f, $"upper still moving: {last.UpperPulse} vs {secondToLast.UpperPulse}");
         }
 
         [Fact]
-        public void Command_ClampsEachDirectionToConfiguredMaximum()
+        public void Command_ClampsEachJointsPerCallMovementToConfiguredMaximum()
         {
             var relay = new FakeRelayClient();
             var plant = new JetRoverPlant(Config, relay);
@@ -79,11 +84,16 @@ namespace Teleop.RobotHost.Tests.Plant
 
             plant.Command(Frame(captureTicks: 10, position: extremeTarget));
 
+            // Only one call, starting from ZeroPulse, so the sent absolute pulse can differ from
+            // ZeroPulse by no more than one clamped step (docs/adr/0010 -- the sent value is now
+            // the resulting belief, not the direction, but the per-call movement it can represent
+            // is still bounded by MaxDirectionMagnitude * StepSizePulses).
+            float maxStep = Config.MaxDirectionMagnitude * Config.StepSizePulses;
             LocalArmCommand sent = relay.SentCommands[0];
-            Assert.True(MathF.Abs(sent.BaseDirection) <= Config.MaxDirectionMagnitude + 1e-4f);
-            Assert.True(MathF.Abs(sent.LowerDirection) <= Config.MaxDirectionMagnitude + 1e-4f);
-            Assert.True(MathF.Abs(sent.MiddleDirection) <= Config.MaxDirectionMagnitude + 1e-4f);
-            Assert.True(MathF.Abs(sent.UpperDirection) <= Config.MaxDirectionMagnitude + 1e-4f);
+            Assert.True(MathF.Abs(sent.BasePulse - Config.ZeroPulse) <= maxStep + 1e-3f);
+            Assert.True(MathF.Abs(sent.LowerPulse - Config.ZeroPulse) <= maxStep + 1e-3f);
+            Assert.True(MathF.Abs(sent.MiddlePulse - Config.ZeroPulse) <= maxStep + 1e-3f);
+            Assert.True(MathF.Abs(sent.UpperPulse - Config.ZeroPulse) <= maxStep + 1e-3f);
         }
 
         [Fact]
@@ -114,27 +124,25 @@ namespace Teleop.RobotHost.Tests.Plant
 
             // Straight down: pushes the unclamped lower-arm IK target well below the configured
             // floor -- the mirror image of the "straight up" target used to test the opposite
-            // (upper) clamp in Command_ClampsEachDirectionToConfiguredMaximum.
+            // (upper) clamp in Command_ClampsEachJointsPerCallMovementToConfiguredMaximum.
             var straightDownTarget = new Vector3(
                 0f, 0f, -(Config.Links.Base + Config.Links.Lower + Config.Links.Middle - 0.001f));
 
-            float cumulativeLowerPulseDelta = 0f;
             for (int i = 0; i < 20; i++)
             {
                 plant.Command(Frame(captureTicks: 10 + i, position: straightDownTarget));
-                cumulativeLowerPulseDelta += relay.SentCommands[relay.SentCommands.Count - 1].LowerDirection
-                    * configWithLowerLimit.StepSizePulses;
             }
 
-            float impliedLowerPulse = configWithLowerLimit.ZeroPulse + cumulativeLowerPulseDelta;
-            Assert.True(
-                impliedLowerPulse >= configWithLowerLimit.LowerArmMinPulse - 1e-3f,
-                $"lower arm pulse {impliedLowerPulse} fell below the configured floor of {configWithLowerLimit.LowerArmMinPulse}");
-
+            // The sent value is now the resulting absolute pulse directly (docs/adr/0010), so no
+            // need to accumulate a delta history to know where the belief ended up.
+            LocalArmCommand secondToLast = relay.SentCommands[relay.SentCommands.Count - 2];
             LocalArmCommand last = relay.SentCommands[relay.SentCommands.Count - 1];
             Assert.True(
-                MathF.Abs(last.LowerDirection) < 0.01f,
-                $"lower arm still moving after 20 calls, should have converged at the floor: {last.LowerDirection}");
+                last.LowerPulse >= configWithLowerLimit.LowerArmMinPulse - 1e-3f,
+                $"lower arm pulse {last.LowerPulse} fell below the configured floor of {configWithLowerLimit.LowerArmMinPulse}");
+            Assert.True(
+                MathF.Abs(last.LowerPulse - secondToLast.LowerPulse) < 0.5f,
+                $"lower arm still moving after 20 calls, should have converged at the floor: {last.LowerPulse} vs {secondToLast.LowerPulse}");
         }
 
         [Fact]
@@ -193,14 +201,20 @@ namespace Teleop.RobotHost.Tests.Plant
             // feedback from startup regardless of whether any command has arrived, so by the
             // time the first real Command() lands, a joint is often already sensed away from
             // ZeroPulse (e.g. after a Teleop.RobotHost restart mid-session, or a manual physical
-            // correction). Computing the first *relative* delta from an unseeded ZeroPulse belief
-            // instead of the real sensed position sends a step sized for the wrong starting
-            // point, which the real servo then applies on top of its own true position --
-            // overshooting by the belief/reality gap in either direction. Verified here by
-            // comparing two otherwise-identical plants, one that observed sensed feedback before
-            // its first Command() and one that didn't: they must diverge for lower (whose sensed
-            // value differs from ZeroPulse here), and the seeded one must match hand-derived IK
-            // computed directly against the real sensed starting point, not ZeroPulse.
+            // correction). Computing the first step from an unseeded ZeroPulse belief instead of
+            // the real sensed position sizes that step for the wrong starting point, which the
+            // real servo then applies on top of its own true position -- overshooting by the
+            // belief/reality gap in either direction.
+            //
+            // Note (docs/adr/0010): when a move is *not* clamped, the resulting absolute target
+            // converges to exactly the same value regardless of the starting belief (the starting
+            // point algebraically cancels out of `belief + clamp(target - belief)`), so seeding
+            // only produces an observably different *sent* value when the move needs clamping --
+            // this test therefore uses the same extreme, clamp-triggering target as
+            // Command_ClampsEachJointsPerCallMovementToConfiguredMaximum, not ReachableTarget, so
+            // the seeded and unseeded beliefs actually diverge in what gets sent.
+            var extremeTarget = new Vector3(0f, 0f, Config.Links.Base + Config.Links.Lower + Config.Links.Middle - 0.001f);
+
             var seededRelay = new FakeRelayClient();
             var seededPlant = new JetRoverPlant(Config, seededRelay);
             seededRelay.EnqueueFeedback(new LocalFeedback(
@@ -211,26 +225,29 @@ namespace Teleop.RobotHost.Tests.Plant
             var unseededRelay = new FakeRelayClient();
             var unseededPlant = new JetRoverPlant(Config, unseededRelay); // never Step()'d -- belief stays ZeroPulse
 
-            seededPlant.Command(Frame(captureTicks: 2000, position: ReachableTarget));
-            unseededPlant.Command(Frame(captureTicks: 2000, position: ReachableTarget));
+            seededPlant.Command(Frame(captureTicks: 2000, position: extremeTarget));
+            unseededPlant.Command(Frame(captureTicks: 2000, position: extremeTarget));
 
             LocalArmCommand seededSent = seededRelay.SentCommands[0];
             LocalArmCommand unseededSent = unseededRelay.SentCommands[0];
 
-            Assert.NotEqual(unseededSent.LowerDirection, seededSent.LowerDirection);
-
-            // Hand-derive the expected direction directly against the real sensed starting
-            // point, exactly as production code does, rather than hardcoding a precomputed
-            // magic number.
+            // Hand-derive the expected resulting absolute pulse directly against the real sensed
+            // starting point, exactly as production code does, rather than hardcoding a
+            // precomputed magic number. Confirm the move actually clamps -- otherwise this test
+            // would silently stop testing what it claims to (see the note above).
             FourDofArmKinematics.TryInverse(
-                Config.Links, ReachableTarget, out _, out float lowerPitch, out _);
+                Config.Links, extremeTarget, out _, out float lowerPitch, out _, out _);
             float targetPulseLower = Config.ZeroPulse + lowerPitch * Config.PulsePerRadian;
             float sensedPulseLower = 70 * Config.PulsePerDegreeAssumed180;
             float expectedLowerDirection = System.Math.Clamp(
                 (targetPulseLower - sensedPulseLower) / Config.StepSizePulses,
                 -Config.MaxDirectionMagnitude, Config.MaxDirectionMagnitude);
+            Assert.Equal(Config.MaxDirectionMagnitude, MathF.Abs(expectedLowerDirection), 3);
 
-            Assert.Equal(expectedLowerDirection, seededSent.LowerDirection, 3);
+            Assert.NotEqual(unseededSent.LowerPulse, seededSent.LowerPulse);
+
+            float expectedLowerPulse = sensedPulseLower + expectedLowerDirection * Config.StepSizePulses;
+            Assert.Equal(expectedLowerPulse, seededSent.LowerPulse, 3);
         }
 
         [Fact]
@@ -339,6 +356,101 @@ namespace Teleop.RobotHost.Tests.Plant
             plant.Reset();
 
             Assert.Equal(beforeReset, relay.SentCommands.Count); // Reset itself sent nothing
+        }
+
+        // CommandJointAngles (docs/adr/0009-jetrover-operator-side-inverse-kinematics.md) shares
+        // ApplyJointTargets's tail with Command -- these tests establish parity with the
+        // equivalent Command(CommandFrame) tests above, not a full second copy of every scenario.
+
+        [Fact]
+        public void CommandJointAngles_SendsANonZeroPulseTargetTowardTheGivenAngles()
+        {
+            var relay = new FakeRelayClient();
+            var plant = new JetRoverPlant(Config, relay);
+
+            plant.CommandJointAngles(
+                baseYaw: 0.3f, lowerPitch: 0.2f, middlePitch: -0.1f, upperPitch: 0f, gripper: 0f, captureTicks: 10);
+
+            Assert.Single(relay.SentCommands);
+            LocalArmCommand sent = relay.SentCommands[0];
+            bool anyJointMoved =
+                sent.BasePulse != Config.ZeroPulse || sent.LowerPulse != Config.ZeroPulse ||
+                sent.MiddlePulse != Config.ZeroPulse || sent.UpperPulse != Config.ZeroPulse;
+            Assert.True(anyJointMoved);
+        }
+
+        [Fact]
+        public void CommandJointAngles_RejectsStaleOrDuplicateCaptureTicks()
+        {
+            var relay = new FakeRelayClient();
+            var plant = new JetRoverPlant(Config, relay);
+
+            plant.CommandJointAngles(0.3f, 0.2f, -0.1f, 0f, 0f, captureTicks: 100);
+            int afterFirst = relay.SentCommands.Count;
+
+            plant.CommandJointAngles(0.5f, 0.4f, -0.3f, 0f, 0f, captureTicks: 100); // duplicate stamp
+            plant.CommandJointAngles(0.5f, 0.4f, -0.3f, 0f, 0f, captureTicks: 50);  // stale
+
+            Assert.Equal(afterFirst, relay.SentCommands.Count);
+        }
+
+        [Fact]
+        public void CommandJointAngles_LowerArmNeverGoesBelowConfiguredLowerArmMinPulse()
+        {
+            // Mirrors Command_LowerArmNeverGoesBelowConfiguredLowerArmMinPulse, but supplies the
+            // lower-arm pitch directly instead of deriving it from a Cartesian target via IK --
+            // CommandJointAngles skips TryInverse entirely, so this exercises ApplyJointTargets's
+            // shared clamp/belief tail on its own.
+            var configWithLowerLimit = new JetRoverPlantConfig(
+                links: Config.Links, pulsePerRadian: Config.PulsePerRadian,
+                pulsePerDegreeAssumed180: Config.PulsePerDegreeAssumed180, stepSizePulses: Config.StepSizePulses,
+                maxDirectionMagnitude: Config.MaxDirectionMagnitude, zeroPulse: Config.ZeroPulse,
+                minPulse: Config.MinPulse, maxPulse: Config.MaxPulse,
+                gripperOpenDegrees: Config.GripperOpenDegrees, gripperClosedDegrees: Config.GripperClosedDegrees,
+                lowerArmMinPulse: 400);
+            var relay = new FakeRelayClient();
+            var plant = new JetRoverPlant(configWithLowerLimit, relay);
+
+            // lowerPitch=-1.6 rad computes to an unclamped pulse well below the 400 floor
+            // (ZeroPulse=500, PulsePerRadian~238.73 => ~500-383=117).
+            for (int i = 0; i < 20; i++)
+            {
+                plant.CommandJointAngles(
+                    baseYaw: 0f, lowerPitch: -1.6f, middlePitch: 0f, upperPitch: 0f, gripper: 0f, captureTicks: 10 + i);
+            }
+
+            // The sent value is now the resulting absolute pulse directly (docs/adr/0010).
+            float lastLowerPulse = relay.SentCommands[relay.SentCommands.Count - 1].LowerPulse;
+            Assert.True(
+                lastLowerPulse >= configWithLowerLimit.LowerArmMinPulse - 1e-3f,
+                $"lower arm pulse {lastLowerPulse} fell below the configured floor of {configWithLowerLimit.LowerArmMinPulse}");
+        }
+
+        [Fact]
+        public void CommandJointAngles_AndCommand_TrackStalenessIndependently()
+        {
+            // Regression test for a real bug found via real-hardware testing (2026-08-12):
+            // CommandJointAngles and Command originally shared one _lastAcceptedCaptureTicks
+            // tracker, so a real caller stamping both channels with the identical CaptureTicks in
+            // the same tick (JetRoverOperatorBridge does exactly this) would have roughly half its
+            // joint commands silently rejected as "stale" against its own Cartesian command from
+            // the same instant, even with no other caller involved at all. Each entry point now
+            // tracks its own staleness independently, so a Command call must never cause a later
+            // CommandJointAngles call (or vice versa) to be rejected, even at an identical or
+            // earlier CaptureTicks.
+            var relay = new FakeRelayClient();
+            var plant = new JetRoverPlant(Config, relay);
+
+            plant.Command(Frame(captureTicks: 100, position: ReachableTarget));
+            int afterCartesianCommand = relay.SentCommands.Count;
+
+            // Same CaptureTicks as the Cartesian command above -- would have been rejected as
+            // stale/duplicate under the old shared-tracker behavior.
+            plant.CommandJointAngles(0.3f, 0.2f, -0.1f, 0f, 0f, captureTicks: 100);
+
+            Assert.True(
+                relay.SentCommands.Count > afterCartesianCommand,
+                "CommandJointAngles was rejected due to the Cartesian command's identical CaptureTicks -- the two channels must track staleness independently.");
         }
     }
 }

@@ -1,7 +1,7 @@
 using System.Numerics;
-using Teleop.RobotHost.Kinematics;
+using Teleop.JetRover.Kinematics;
 
-namespace Teleop.RobotHost.Tests.Kinematics
+namespace Teleop.JetRover.Tests.Kinematics
 {
     public class FourDofArmKinematicsTests
     {
@@ -24,8 +24,10 @@ namespace Teleop.RobotHost.Tests.Kinematics
         {
             var target = new Vector3(x, y, z);
 
-            bool ok = FourDofArmKinematics.TryInverse(Links, target, out float baseYaw, out float lowerPitch, out float middlePitch);
+            bool ok = FourDofArmKinematics.TryInverse(
+                Links, target, out float baseYaw, out float lowerPitch, out float middlePitch, out bool wasClamped);
             Assert.True(ok);
+            Assert.False(wasClamped, "target is well within reach; should not have clamped");
 
             Vector3 recovered = FourDofArmKinematics.Forward(Links, baseYaw, lowerPitch, middlePitch);
 
@@ -46,7 +48,7 @@ namespace Teleop.RobotHost.Tests.Kinematics
             float fullReach = Links.Lower + Links.Middle - 0.00001f;
             var target = new Vector3(fullReach, 0f, Links.Base);
 
-            FourDofArmKinematics.TryInverse(Links, target, out _, out _, out float middlePitch);
+            FourDofArmKinematics.TryInverse(Links, target, out _, out _, out float middlePitch, out _);
 
             Assert.True(MathF.Abs(middlePitch) < 0.1f, $"Expected middlePitch near 0, got {middlePitch}");
         }
@@ -56,9 +58,11 @@ namespace Teleop.RobotHost.Tests.Kinematics
         {
             var farBeyondReach = new Vector3(10f, 0f, Links.Base);
 
-            bool ok = FourDofArmKinematics.TryInverse(Links, farBeyondReach, out float baseYaw, out float lowerPitch, out float middlePitch);
+            bool ok = FourDofArmKinematics.TryInverse(
+                Links, farBeyondReach, out float baseYaw, out float lowerPitch, out float middlePitch, out bool wasClamped);
 
             Assert.True(ok);
+            Assert.True(wasClamped, "a target far beyond max reach must report as clamped");
             Assert.False(float.IsNaN(baseYaw));
             Assert.False(float.IsNaN(lowerPitch));
             Assert.False(float.IsNaN(middlePitch));
@@ -67,15 +71,51 @@ namespace Teleop.RobotHost.Tests.Kinematics
         [Fact]
         public void Inverse_TargetInsideMinReach_ClampsInsteadOfFailing()
         {
-            // Equal link lengths => minReach is ~0; a target essentially on top of the shoulder
-            // pivot is the degenerate near-zero-reach case.
-            var almostAtShoulder = new Vector3(0.0001f, 0f, Links.Base);
+            // Equal link lengths => minReach is exactly 0, and TryInverse's own epsilon floor is
+            // 1e-4 -- pick a reach well below that so this reliably exercises the clamp rather
+            // than landing right on the epsilon boundary by coincidence.
+            var almostAtShoulder = new Vector3(0.00001f, 0f, Links.Base);
 
-            bool ok = FourDofArmKinematics.TryInverse(Links, almostAtShoulder, out float baseYaw, out float lowerPitch, out float middlePitch);
+            bool ok = FourDofArmKinematics.TryInverse(
+                Links, almostAtShoulder, out float baseYaw, out float lowerPitch, out float middlePitch, out bool wasClamped);
 
             Assert.True(ok);
+            Assert.True(wasClamped, "a target essentially on top of the shoulder pivot must report as clamped");
             Assert.False(float.IsNaN(lowerPitch));
             Assert.False(float.IsNaN(middlePitch));
+        }
+
+        [Fact]
+        public void Inverse_TargetWellWithinReach_DoesNotReportClamped()
+        {
+            var target = new Vector3(0.15f, 0f, 0.08f);
+
+            FourDofArmKinematics.TryInverse(Links, target, out _, out _, out _, out bool wasClamped);
+
+            Assert.False(wasClamped);
+        }
+
+        [Fact]
+        public void Inverse_TargetNearlyDirectlyOverhead_BaseYawIsStableUnderTinyJitter()
+        {
+            // A real, observed bug (2026-08-13): when a target sits almost exactly above the
+            // base-yaw axis (horizontal radius near zero), baseYaw = Atan2(y, x) is numerically
+            // unstable -- a sub-millimeter jitter in x or y (well within real VR controller
+            // tracking noise) can swing the result by up to 180 degrees even though the target
+            // barely moved. Found via the JetRover VR drag feature: the Unity arm rig visibly
+            // flashed between two poses while dragging a target that looked perfectly still.
+            // baseYaw is physically meaningless when reach is directly overhead anyway (any yaw
+            // reaches the same point), so TryInverse must stabilize it near the axis instead of
+            // computing an ill-conditioned Atan2.
+            var jitterA = new Vector3(0.0001f, 0.0001f, 0.2f);
+            var jitterB = new Vector3(0.0001f, -0.0001f, 0.2f);
+
+            FourDofArmKinematics.TryInverse(Links, jitterA, out float yawA, out _, out _, out _);
+            FourDofArmKinematics.TryInverse(Links, jitterB, out float yawB, out _, out _, out _);
+
+            Assert.True(
+                MathF.Abs(yawA - yawB) < 0.1f,
+                $"Expected stable baseYaw under sub-millimeter jitter near the base axis, got {yawA} vs {yawB}");
         }
 
         [Fact]
@@ -83,7 +123,7 @@ namespace Teleop.RobotHost.Tests.Kinematics
         {
             var target = new Vector3(0f, 0.15f, Links.Base); // straight out along +Y
 
-            FourDofArmKinematics.TryInverse(Links, target, out float baseYaw, out _, out _);
+            FourDofArmKinematics.TryInverse(Links, target, out float baseYaw, out _, out _, out _);
 
             Assert.Equal(MathF.PI / 2f, baseYaw, 3);
         }

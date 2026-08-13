@@ -22,6 +22,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\Teleop.Core\Teleop.Core.csproj" />
+    <ProjectReference Include="..\Teleop.JetRover\Teleop.JetRover.csproj" />
     <ProjectReference Include="..\Teleop.RobotHost\Teleop.RobotHost.csproj" />
   </ItemGroup>
 

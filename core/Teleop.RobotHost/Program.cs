@@ -3,6 +3,7 @@ using System.Net;
 using System.Threading;
 using Teleop.Core.Pipeline;
 using Teleop.Core.Transport;
+using Teleop.JetRover.Wire;
 using Teleop.RobotHost.Net;
 using Teleop.RobotHost.Plant;
 using Teleop.RobotHost.Relay;
@@ -67,6 +68,19 @@ namespace Teleop.RobotHost
                 downlinkTransport: transport,
                 robotClock: clock);
 
+            // Optional second, JetRover-specific listener for pre-computed joint-angle commands
+            // (docs/adr/0009-jetrover-operator-side-inverse-kinematics.md) -- not a RobotEndpoint,
+            // since that class is hardwired to one ICommandCodec/CommandFrame shape. Uplink-only:
+            // it never replies, since a caller sending these already gets robot state feedback
+            // through its own separate Cartesian connection above. Shares the same plant instance,
+            // so JetRoverPlant.CommandJointAngles's calls interleave with Command's on the one
+            // belief/staleness tracker -- see the ADR's documented limitation about running both
+            // paths against the same robot process at the same time.
+            using var jointTransport = a.JointLocalPort.HasValue
+                ? new UdpTransport(a.JointLocalPort.Value, remoteEndPoint, MaxDatagramBytes, clock)
+                : null;
+            byte[]? jointRecvBuffer = jointTransport != null ? new byte[MaxDatagramBytes] : null;
+
             Console.WriteLine(
                 $"Teleop.RobotHost listening on UDP :{a.LocalPort}, replying to " +
                 $"{remoteEndPoint}, relay socket {a.RelaySocketPath}. Ctrl+C to stop.");
@@ -77,6 +91,12 @@ namespace Teleop.RobotHost
             Console.WriteLine(
                 $"[plant] MaxDirectionMagnitude={plantConfig.MaxDirectionMagnitude:0.##} " +
                 $"LowerArmMinPulse={plantConfig.LowerArmMinPulse}");
+            if (jointTransport != null)
+            {
+                Console.WriteLine(
+                    $"[joint] listening on UDP :{a.JointLocalPort} for pre-computed joint-angle " +
+                    "commands (docs/adr/0009-jetrover-operator-side-inverse-kinematics.md), uplink-only.");
+            }
 
             using var stop = new ManualResetEventSlim(initialState: false);
             Console.CancelKeyPress += (_, cancelArgs) =>
@@ -87,6 +107,19 @@ namespace Teleop.RobotHost
 
             while (!stop.IsSet)
             {
+                if (jointTransport != null)
+                {
+                    while (jointTransport.TryReceive(clock.NowTicks, jointRecvBuffer!, out int byteCount, out long _))
+                    {
+                        if (JointCommandCodec.TryDecode(jointRecvBuffer.AsSpan(0, byteCount), out JointCommandFrame frame))
+                        {
+                            plant.CommandJointAngles(
+                                frame.BaseYaw, frame.LowerPitch, frame.MiddlePitch, frame.UpperPitch,
+                                frame.Gripper, frame.CaptureTicks);
+                        }
+                    }
+                }
+
                 endpoint.Step(clock.NowTicks);
                 Thread.Sleep(5);
             }

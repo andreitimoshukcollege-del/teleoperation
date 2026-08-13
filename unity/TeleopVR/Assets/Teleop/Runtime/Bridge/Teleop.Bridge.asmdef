@@ -3,6 +3,7 @@
   "rootNamespace": "Teleop.Bridge",
   "references": [
     "Teleop.Core",
+    "Teleop.JetRover",
     "Unity.TextMeshPro"
   ],
   "includePlatforms": [],

@@ -8,9 +8,14 @@ socket on one machine. See that file's own doc comment for the full reasoning.
 
 import struct
 
-VERSION = 2
+# v3: base/lower/middle/upper are absolute pulse targets (0-1000, hardware units), not relative
+# direction deltas -- teleoperation's docs/adr/0010-absolute-joint-targets-over-local-relay.md.
+# Byte layout is unchanged from v2 (still 5 floats); only the meaning of the first four inverts,
+# which is exactly why the version must still bump -- a stale peer must reject, not
+# misinterpret an absolute target as a delta or vice versa.
+VERSION = 3
 
-# version, base/lower/middle/upper direction (relative "direction" units), gripper degrees (absolute)
+# version, base/lower/middle/upper absolute pulse target, gripper degrees (absolute)
 _ARM_COMMAND_FORMAT = "<Bfffff"
 ARM_COMMAND_SIZE = struct.calcsize(_ARM_COMMAND_FORMAT)
 
@@ -20,17 +25,17 @@ FEEDBACK_SIZE = struct.calcsize(_FEEDBACK_FORMAT)
 
 
 def decode_arm_command(data: bytes):
-    """Returns (base_direction, lower_direction, middle_direction, upper_direction,
-    gripper_degrees), or None if `data` isn't a well-formed, version-matching LocalArmCommand --
-    mirrors RelayProtocol.TryDecodeCommand's "reject, don't throw" contract.
+    """Returns (base_pulse, lower_pulse, middle_pulse, upper_pulse, gripper_degrees), or None if
+    `data` isn't a well-formed, version-matching LocalArmCommand -- mirrors
+    RelayProtocol.TryDecodeCommand's "reject, don't throw" contract.
     """
     if len(data) < ARM_COMMAND_SIZE:
         return None
-    version, base_direction, lower_direction, middle_direction, upper_direction, gripper_degrees = \
+    version, base_pulse, lower_pulse, middle_pulse, upper_pulse, gripper_degrees = \
         struct.unpack_from(_ARM_COMMAND_FORMAT, data, 0)
     if version != VERSION:
         return None
-    return base_direction, lower_direction, middle_direction, upper_direction, gripper_degrees
+    return base_pulse, lower_pulse, middle_pulse, upper_pulse, gripper_degrees
 
 
 def encode_feedback(

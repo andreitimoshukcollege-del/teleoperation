@@ -1,13 +1,26 @@
-"""Unit tests for ServoController's local position-belief tracking.
+"""Unit tests for ServoController.setPos (wire v3,
+teleoperation's docs/adr/0010-absolute-joint-targets-over-local-relay.md, plus the 2026-08-13
+constant-speed follow-up): it receives an already-resolved absolute pulse target per call and
+writes it directly, computing its own move duration from the distance to travel at a constant
+speed (PULSES_PER_SECOND) -- no belief tracking, relative-delta arithmetic, seed-from-read
+fallback, or externally-supplied duration. That state now lives entirely in Teleop.RobotHost's
+JetRoverPlant on the .NET side.
 
 Mirrors teleoperation's JetRoverPlantTests.cs in spirit: a fake/stub hardware boundary (here, a
-stub board object) so the belief-tracking logic itself -- the actual fix for
-fix-servo-command-rate-loss -- is proven correct without any real serial hardware, ROS node, or
+stub board object) so this class's own logic -- the write-gate, the speed-based duration
+computation, and the write cooldown (which predates and survives both the wire v3 and
+constant-speed changes) -- is proven correct without any real serial hardware, ROS node, or
 sleep. See ServoController's own class doc for the full rationale.
 """
 
+import pytest
+
 from jetrover_arm_control.servo_controller import servo_controller as servo_controller_module
-from jetrover_arm_control.servo_controller.servo_controller import ServoController
+from jetrover_arm_control.servo_controller.servo_controller import (
+    MIN_MOVE_DURATION_SECONDS,
+    PULSES_PER_SECOND,
+    ServoController,
+)
 
 SERVO_ID = 1
 
@@ -59,132 +72,156 @@ def make_controller(monkeypatch, board, start_time=0.0):
     return controller, clock
 
 
-def test_first_setpos_reads_once_then_never_again(monkeypatch):
-    """The seed read happens exactly once per servoID; later calls use belief, not hardware."""
+def test_setpos_writes_the_given_absolute_pulse_directly(monkeypatch):
+    """No read, no belief, no relative arithmetic: the given target is written as-is."""
     board = StubBoard()
-    board.read_return = 500
     controller, clock = make_controller(monkeypatch, board)
 
-    controller.setPos(servoID=SERVO_ID, direction=1, servoSpeed=0.1)
-    assert board.read_call_count == 1
+    controller.setPos(servoID=SERVO_ID, direction=550)
+    assert board.read_call_count == 0  # setPos never reads hardware
 
-    clock.now += 1.0  # clear of the cooldown
-    controller.setPos(servoID=SERVO_ID, direction=1, servoSpeed=0.1)
+    clock.now += 10.0  # clear of any cooldown
+    controller.setPos(servoID=SERVO_ID, direction=600)
 
-    # Two real moves happened (550 then 600), but only the very first setPos call should ever
-    # have needed a real read.
-    assert board.read_call_count == 1
-    assert board.written == [
-        (0.1, [[SERVO_ID, 550]]),
-        (0.1, [[SERVO_ID, 600]]),
+    assert [positions for _, positions in board.written] == [
+        [[SERVO_ID, 550]],
+        [[SERVO_ID, 600]],
+    ]
+    assert board.read_call_count == 0
+
+
+def test_setpos_first_call_for_a_servo_uses_the_minimum_duration(monkeypatch):
+    """No prior sent value means no real distance to measure a speed against -- falls back to
+    the minimum duration rather than an undefined or zero-distance one."""
+    board = StubBoard()
+    controller, clock = make_controller(monkeypatch, board)
+
+    controller.setPos(servoID=SERVO_ID, direction=999)  # first-ever call, any target
+
+    assert board.written == [(MIN_MOVE_DURATION_SECONDS, [[SERVO_ID, 999]])]
+
+
+def test_setpos_duration_is_proportional_to_distance_at_the_configured_speed(monkeypatch):
+    board = StubBoard()
+    controller, clock = make_controller(monkeypatch, board)
+
+    controller.setPos(servoID=SERVO_ID, direction=500)
+    clock.now += 10.0  # clear of the (short, first-move) cooldown
+
+    distance = 300
+    controller.setPos(servoID=SERVO_ID, direction=500 + distance)
+
+    expected_duration = distance / PULSES_PER_SECOND
+    assert board.written[-1] == (pytest.approx(expected_duration), [[SERVO_ID, 800]])
+
+
+def test_setpos_small_delta_still_uses_the_minimum_duration_floor(monkeypatch):
+    board = StubBoard()
+    controller, clock = make_controller(monkeypatch, board)
+
+    controller.setPos(servoID=SERVO_ID, direction=500)
+    clock.now += 10.0
+
+    # delta=10 -> 10/PULSES_PER_SECOND would be well under MIN_MOVE_DURATION_SECONDS unclamped.
+    controller.setPos(servoID=SERVO_ID, direction=510)
+
+    assert board.written[-1] == (MIN_MOVE_DURATION_SECONDS, [[SERVO_ID, 510]])
+
+
+def test_setpos_has_no_maximum_duration_for_a_large_delta(monkeypatch):
+    """Regression test locking in an explicit design choice: unlike the minimum, there is no
+    maximum duration clamp -- a large move takes proportionally longer, not a capped amount."""
+    board = StubBoard()
+    controller, clock = make_controller(monkeypatch, board)
+
+    controller.setPos(servoID=SERVO_ID, direction=0)
+    clock.now += 10.0
+
+    distance = 900
+    controller.setPos(servoID=SERVO_ID, direction=distance)
+
+    expected_duration = distance / PULSES_PER_SECOND  # 3.0s -- deliberately uncapped
+    assert board.written[-1] == (pytest.approx(expected_duration), [[SERVO_ID, 900]])
+
+
+def test_setpos_clamps_the_given_target_to_the_valid_pulse_range(monkeypatch):
+    board = StubBoard()
+    controller, clock = make_controller(monkeypatch, board)
+
+    controller.setPos(servoID=SERVO_ID, direction=-50)
+    clock.now += 10.0
+    controller.setPos(servoID=SERVO_ID, direction=1200)
+
+    assert [positions for _, positions in board.written] == [
+        [[SERVO_ID, 0]],
+        [[SERVO_ID, 1000]],
     ]
 
 
-def test_belief_arithmetic_matches_expected_clamped_sums(monkeypatch):
-    """A sequence of directions accumulates on belief exactly like the old read-every-time code
-    would have, including clamping to [0, 1000]."""
+def test_a_meaningful_change_from_the_last_sent_value_still_writes(monkeypatch):
+    """A target MIN_MEANINGFUL_PULSE_DELTA or more away from the last value actually sent must
+    produce a real write, even though it's a small absolute change."""
     board = StubBoard()
-    board.read_return = 900
     controller, clock = make_controller(monkeypatch, board)
 
-    controller.setPos(servoID=SERVO_ID, direction=1, servoSpeed=0.01)  # 900 -> 950
-    clock.now += 1.0
-    controller.setPos(servoID=SERVO_ID, direction=2, servoSpeed=0.01)  # 950 -> 1050 -> 1000 (clamped)
+    controller.setPos(servoID=SERVO_ID, direction=500)
+    clock.now += 10.0
+    controller.setPos(servoID=SERVO_ID, direction=525)  # delta 25 from last sent
 
-    assert board.written == [
-        (0.01, [[SERVO_ID, 950]]),
-        (0.01, [[SERVO_ID, 1000]]),
+    assert [positions for _, positions in board.written] == [
+        [[SERVO_ID, 500]],
+        [[SERVO_ID, 525]],
     ]
-    assert controller._beliefPos[SERVO_ID] == 1000
 
 
-def test_a_small_delta_above_the_new_threshold_still_writes(monkeypatch):
-    """Regression test for a real bug found calibrating a safety limit on 2026-08-08: the old
-    write-gate (`abs(nextPos - currentPos) >= stepSize`, 50 pulses) silently dropped any smaller
-    commanded delta, with no error and no belief correction -- the caller (JetRoverPlant) still
-    believed the move had landed and never resent it, permanently losing a real residual
-    correction. A target 25 pulses away (direction=0.5, well under the old 50-pulse threshold,
-    comfortably above the new MIN_MEANINGFUL_PULSE_DELTA) must still produce a real write."""
+def test_a_change_below_the_write_gate_threshold_does_not_write(monkeypatch):
+    """Purely a bus-traffic optimization now (docs/adr/0010 -- there is no accumulation left for
+    floating-point noise to drift into), but still worth keeping: a target within
+    MIN_MEANINGFUL_PULSE_DELTA of the last value actually sent should not produce a redundant
+    physical write."""
     board = StubBoard()
-    board.read_return = 500
     controller, clock = make_controller(monkeypatch, board)
 
-    controller.setPos(servoID=SERVO_ID, direction=0.5, servoSpeed=0.1)  # 500 -> 525, delta 25
+    controller.setPos(servoID=SERVO_ID, direction=500)
+    clock.now += 10.0
+    controller.setPos(servoID=SERVO_ID, direction=503)  # delta 3, below the gate (5)
 
-    assert board.written == [(0.1, [[SERVO_ID, 525]])]
-    assert controller._beliefPos[SERVO_ID] == 525
-
-
-def test_a_delta_below_the_noise_threshold_does_not_write(monkeypatch):
-    """The other half of the same 2026-08-08 fix: writing on literally *any* nonzero delta
-    (tried first) let floating-point truncation noise from JetRoverPlant's belief convergence
-    -- often exactly 1 pulse after this file's own int() truncation -- through as a real write
-    on nearly every call, and since int() truncates toward zero rather than rounding, that is
-    not guaranteed to average out: it measurably drove the arm past a calibrated safety limit
-    over a series of otherwise-idle calls. A delta smaller than MIN_MEANINGFUL_PULSE_DELTA must
-    be silently ignored, exactly like the old (too coarse) gate did for its own threshold."""
-    board = StubBoard()
-    board.read_return = 500
-    controller, clock = make_controller(monkeypatch, board)
-
-    # direction=0.06 -> delta = 3 pulses, below MIN_MEANINGFUL_PULSE_DELTA (5).
-    controller.setPos(servoID=SERVO_ID, direction=0.06, servoSpeed=0.1)
-
-    assert board.written == []
-    # Belief is not force-corrected to a value that was never actually written -- it stays at
-    # the real starting point, exactly like a rejected move should.
-    assert controller._beliefPos[SERVO_ID] == 500
+    assert len(board.written) == 1
 
 
 def test_cooldown_suppresses_a_second_setpos_within_the_window(monkeypatch):
-    """Calling setPos again before the servo's cooldown expires is a no-op: no read, no write,
-    belief unchanged -- the safe coalesce fix-servo-command-rate-loss relies on."""
+    """Calling setPos again before the servo's cooldown expires is a no-op: no write at all --
+    the safe coalesce fix-servo-command-rate-loss relies on. Unrelated to and unaffected by the
+    wire v3 belief-removal or constant-speed changes."""
     board = StubBoard()
-    board.read_return = 500
     controller, clock = make_controller(monkeypatch, board)
 
-    controller.setPos(servoID=SERVO_ID, direction=1, servoSpeed=0.3)
-    assert board.written == [(0.3, [[SERVO_ID, 550]])]
+    controller.setPos(servoID=SERVO_ID, direction=500)
+    clock.now += 10.0
+    controller.setPos(servoID=SERVO_ID, direction=800)  # distance 300 -> duration 1.0s
+    assert len(board.written) == 2
 
-    clock.now += 0.1  # still well inside the 0.3s cooldown
-    controller.setPos(servoID=SERVO_ID, direction=1, servoSpeed=0.3)
+    clock.now += 0.5  # still well inside the 1.0s cooldown from the 800 move
+    controller.setPos(servoID=SERVO_ID, direction=900)  # would otherwise be a real move
 
-    assert board.written == [(0.3, [[SERVO_ID, 550]])]  # no second write
-    assert controller._beliefPos[SERVO_ID] == 550
+    assert len(board.written) == 2  # no third write
 
 
-def test_a_successful_real_read_overwrites_belief_even_mid_cooldown(monkeypatch):
-    """Real feedback always wins over the optimistic belief, at any time -- the opportunistic
-    correction the 50Hz feedback-publisher timers rely on."""
+def test_getRawPos_has_no_effect_on_setPos_write_gating_or_duration(monkeypatch):
+    """A deliberate behavior change from the pre-wire-v3 design, worth locking in: reads no
+    longer correct any write-side state at all. getRawPos exists purely for
+    robot_controller_node.py's own feedback-publisher timers now."""
     board = StubBoard()
-    board.read_return = 500
     controller, clock = make_controller(monkeypatch, board)
 
-    controller.setPos(servoID=SERVO_ID, direction=1, servoSpeed=0.3)
-    assert controller._beliefPos[SERVO_ID] == 550
+    controller.setPos(servoID=SERVO_ID, direction=500)
+    clock.now += 10.0
 
-    board.read_return = 700  # what a real feedback-publisher read would now observe
-    result = controller.getRawPos(servoID=SERVO_ID)
+    board.read_return = 999  # a real feedback read, unrelated to what was actually sent
+    assert controller.getRawPos(servoID=SERVO_ID) == 999
 
-    assert result == 700
-    assert controller._beliefPos[SERVO_ID] == 700
-
-
-def test_fallback_seed_is_used_and_persisted_when_the_initial_read_fails(monkeypatch):
-    """A servo whose reads never succeed (the real, observed middle-arm case) must still be
-    writable: the fallback seed lets it, and the seed is only ever consulted once."""
-    board = StubBoard()
-    board.read_return = None  # every read fails, matching the middle-arm servo
-    controller, clock = make_controller(monkeypatch, board)
-
-    controller.setPos(servoID=SERVO_ID, direction=0, servoSpeed=0.1)  # direction=0: no real move
-
-    assert board.written == []  # no move commanded, so nothing written
-    assert controller._beliefPos[SERVO_ID] == 500  # but the fallback seed was still recorded
-    assert board.read_call_count == 1
-
-    # A second call, even immediately, must not attempt another failing read -- belief already
-    # holds the fallback seed.
-    controller.setPos(servoID=SERVO_ID, direction=1, servoSpeed=0.1)
-    assert board.written == [(0.1, [[SERVO_ID, 550]])]
-    assert board.read_call_count == 1
+    # The write gate and duration still compare against the last value setPos actually sent
+    # (500), not the value getRawPos just observed (999) -- a small delta from 500 is still
+    # gated.
+    controller.setPos(servoID=SERVO_ID, direction=503)
+    assert len(board.written) == 1

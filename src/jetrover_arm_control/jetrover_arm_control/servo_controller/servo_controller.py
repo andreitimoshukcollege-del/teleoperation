@@ -4,30 +4,49 @@ from time import sleep
 from jetrover_arm_control.board_manager.robot_board_manager import BoardManager
 from jetrover_arm_control.servo_controller.servo_id_enum import SERVO_ENUM
 
-# setPos's write-gate threshold, in pulse units -- see setPos's own comment on this exact
-# constant for the full history (2026-08-08): large enough to filter out per-call floating-point
-# truncation noise from JetRoverPlant's belief convergence (observed as single-pulse jitter),
-# small enough that a real intended correction (the original bug this threshold replaced a much
-# coarser one for: a 25-pulse residual) still goes through.
+# setPos's write-gate threshold, in pulse units. Originally existed to filter per-call
+# floating-point truncation noise from JetRoverPlant's belief *convergence* toward a target
+# (2026-08-08) -- a real correctness concern back when this side reconstructed an absolute
+# position from a relative delta accumulated onto its own belief, since repeated truncation could
+# compound into real drift over many calls. Since teleoperation's
+# docs/adr/0010-absolute-joint-targets-over-local-relay.md (wire v3), setPos receives the
+# already-resolved absolute pulse target directly every time -- nothing here accumulates, so
+# there is nothing for truncation noise to drift into. This gate is now a bus-traffic
+# optimization only (skip a physical write that wouldn't move the servo perceptibly), not a
+# correctness requirement -- kept at the same threshold since it's still a reasonable one for
+# that purpose.
 MIN_MEANINGFUL_PULSE_DELTA = 5
+
+# setPos's move speed, in pulses/second, and the minimum move duration regardless of distance.
+# Found 2026-08-13: a fixed move duration (this file's own history had it hardcoded to 0.3s)
+# means a bigger move must travel *faster* to finish in the same window than a smaller one --
+# inconsistent, and visible on real hardware as the arm moving in discrete "step, pause, step,
+# pause" jumps once a move needed more than one command's worth of distance, since each
+# fixed-duration step finished early and sat idle waiting for the next command. A constant speed
+# instead means duration scales with distance: a bigger move just takes proportionally longer, at
+# the same physical rate, so a move spanning multiple commands (see JetRoverPlantConfig's
+# MaxDirectionMagnitude, which bounds how much distance one command can cover) is one continuous
+# motion at a steady rate instead of separately-timed chunks. No maximum duration is applied --
+# only a minimum, to avoid an implausibly fast/jerky instantaneous move for a near-zero delta.
+PULSES_PER_SECOND = 300
+MIN_MOVE_DURATION_SECONDS = 0.05
 
 
 class ServoController:
-    """setPos tracks a local, optimistic belief of each servo's position (keyed by servoID,
-    self._beliefPos) instead of re-reading real hardware before every write. A blocking serial
-    read (up to a 1s timeout, see board_manager/robot_controller_sdk.py) inside every single
-    write was the actual cause of real commands being silently lost at teleop rate: the ROS
-    executor is single-threaded, so a command arriving while a previous one was still blocked in
-    that read would overwrite the queued-but-unprocessed message under depth-1 QoS before its
-    callback ever ran (see the fix-servo-command-rate-loss branch/PR for the full diagnosis).
+    """setPos (wire v3, docs/adr/0010-absolute-joint-targets-over-local-relay.md, plus the
+    constant-speed follow-up above) receives an already-resolved absolute pulse target per call
+    and writes it directly -- no belief, no relative-delta arithmetic, no seed-from-read fallback.
+    `Teleop.RobotHost`'s `JetRoverPlant` is the one place that tracks "where do we currently
+    believe this joint is" now; this class only needs a plain per-servo cache of the last pulse it
+    actually *sent* (self._lastSentPulse) -- not a belief combining any assumption about where the
+    servo physically is -- for two purposes: MIN_MEANINGFUL_PULSE_DELTA can skip a physical write
+    that wouldn't move the servo perceptibly, and PULSES_PER_SECOND can size this specific move's
+    duration from how far it actually needs to travel.
 
-    Belief is corrected opportunistically whenever a real read *does* succeed (getRawPos, called
-    independently by robot_controller_node.py's 50Hz feedback-publisher timers) -- real feedback
-    always wins over the optimistic value, mirroring the .NET side of this same pipeline
-    (core/Teleop.RobotHost/Plant/JetRoverPlant.cs's sensed-over-commanded preference). This only
-    works because robot_controller_node.py constructs one ServoController and shares it between
-    the write path and those feedback timers -- a second, separate instance would never see the
-    correction.
+    The per-servo write cooldown (self._nextAllowedWriteAt) is unrelated to any of that: it is
+    real hardware pacing (the STM32 firmware paces the physical move itself via the commanded
+    duration, so a new command arriving before the previous one's move has finished is coalesced
+    rather than queued) and predates this class's belief-tracking history entirely.
     """
 
     def __init__(self, boardMgr: BoardManager):
@@ -40,9 +59,10 @@ class ServoController:
         self.deg_min = 0
         self.deg_max = 180
 
-        # See class doc: optimistic write-side belief, keyed by servoID, and the monotonic
+        # See class doc: the last pulse actually sent per servoID (used for the write gate and
+        # for sizing this move's speed-based duration, not a position belief), and the monotonic
         # timestamp (time.monotonic()) after which the next real write for that servo is due.
-        self._beliefPos = {}
+        self._lastSentPulse = {}
         self._nextAllowedWriteAt = {}
 
         # self.servoList = [SERVO_ENUM.BASE_SERVO.value, SERVO_ENUM.LOWER_ARM.value, \
@@ -57,72 +77,50 @@ class ServoController:
 
         return deg
         
-    def setPos(self, servoID:int, direction: int, servoSpeed: float = 0.02):
-        """This class sets the position of the servo motor.
-            Arguments:
-                servoID (int) - ID for the servo
-                pos (int) - position in PWM
-                servoSpeed (int) - servo speed; DEFAULT = 1
+    def setPos(self, servoID: int, direction: int):
+        """Moves the servo directly to an absolute pulse target, at a constant speed
+        (PULSES_PER_SECOND) -- the move duration is computed from how far this specific servo
+        actually needs to travel, not passed in by the caller (see PULSES_PER_SECOND's own
+        comment for why).
+
+        Arguments:
+            servoID (int) - ID for the servo
+            direction (float) - absolute pulse target (0-1000), despite the name kept from the
+                pre-wire-v3 relative-delta protocol -- servo_sub_callback.py's ROS callbacks pass
+                the raw Float32 message value straight through unchanged, and that value's
+                *meaning* is what changed (docs/adr/0010-absolute-joint-targets-over-local-relay.md
+                on the teleoperation side); renaming this parameter is out of scope for this
+                change alone since it's also this method's public argument name elsewhere.
         """
         now = time.monotonic()
         if now < self._nextAllowedWriteAt.get(servoID, 0.0):
-            # Still cooling down from this servo's last real move. Belief already reflects
-            # that write, so there is nothing new to compute -- returning here coalesces a
-            # burst of same-direction commands into one physical move instead of blocking the
-            # ROS executor on a redundant serial round trip for each one. See class doc.
+            # Still cooling down from this servo's last real move -- coalesces a burst of
+            # commands into one physical move instead of blocking the ROS executor on a
+            # redundant serial round trip for each one. See class doc.
             return
 
-        # Fetch the current position: belief if we have one, else a real read to seed it.
-        currentPos = self._beliefPos.get(servoID)
-        if currentPos is None:
-            currentPos = self.getRawPos(servoID=servoID)
-            if currentPos is None:
-                # No belief yet and the seed read failed -- a real, observed case (the
-                # middle-arm servo's reads never succeed at all). Falling back to center
-                # rather than giving up lets this servo still receive writes, unlike before.
-                currentPos = 500
-            self._beliefPos[servoID] = currentPos
-        stepSize = 50
-
-        # Calculate the new target position based on direction
-        nextPos = int(currentPos + (stepSize * direction))
-
-        # print("currentPos:", currentPos, "Direction:", direction, "Target Position:", nextPos)
-
+        nextPos = int(direction)
         nextPos = 0 if nextPos < 0 else 1000 if nextPos > 1000 else nextPos
 
-        # if toPos > 600:
-        #     toPos = 600
-        # elif toPos < 400:
-        #     toPos = 400
+        lastSent = self._lastSentPulse.get(servoID)
+        if lastSent is not None and abs(nextPos - lastSent) < MIN_MEANINGFUL_PULSE_DELTA:
+            # Not a real correctness concern anymore (see MIN_MEANINGFUL_PULSE_DELTA's own
+            # comment) -- just skips a physical write that wouldn't move the servo perceptibly.
+            return
 
-        if abs(nextPos - currentPos) >= MIN_MEANINGFUL_PULSE_DELTA:
-            # The original gate here was `>= stepSize` (50 pulses, ~12 degrees), which silently
-            # dropped every smaller commanded delta -- no error, no belief correction -- while
-            # the .NET side (JetRoverPlant) still credited its own belief with the move and
-            # never resent it, permanently losing a real residual correction. That surfaced as
-            # confusing, seemingly nondeterministic behavior while calibrating a real safety
-            # limit on 2026-08-08.
-            #
-            # The fix is this much smaller threshold, not zero: JetRoverPlant's own belief
-            # tracking is floating-point and converges toward its target asymptotically, so once
-            # very close it can keep emitting a technically-nonzero direction that never exactly
-            # reaches zero bit-for-bit. Writing on literally any nonzero delta (tried first, also
-            # on 2026-08-08) let that floating-point noise -- after `int()` truncation above,
-            # often exactly 1 pulse -- through as a real write on nearly every call; since
-            # `int()` truncates toward zero rather than rounding, repeated truncation of a
-            # persistent small residual is not guaranteed to average out; it drove the arm
-            # measurably past a calibrated limit over a series of otherwise-idle calls.
-            # MIN_MEANINGFUL_PULSE_DELTA is comfortably above that per-call truncation noise
-            # (observed as single-pulse jitter) while still well below any real intended
-            # correction (the case this whole fix exists for was a 25-pulse residual).
-            self.board.bus_servo_set_position(servoSpeed, [[servoID, nextPos]])
+        # No prior sent value for this servo (its very first move) -- there is no real distance
+        # to measure a speed against yet, so this one call falls back to the minimum duration
+        # rather than an undefined or zero-distance one.
+        pulseDelta = abs(nextPos - lastSent) if lastSent is not None else 0
+        duration = max(MIN_MOVE_DURATION_SECONDS, pulseDelta / PULSES_PER_SECOND)
 
-            # The STM32 firmware paces the physical move itself via servoSpeed (the `duration`
-            # parameter bus_servo_set_position encodes into the packet) -- no need to block
-            # this thread waiting for it. Track when the next write may go out instead.
-            self._beliefPos[servoID] = nextPos
-            self._nextAllowedWriteAt[servoID] = now + servoSpeed
+        self.board.bus_servo_set_position(duration, [[servoID, nextPos]])
+
+        # The STM32 firmware paces the physical move itself via duration (the parameter
+        # bus_servo_set_position encodes into the packet) -- no need to block this thread waiting
+        # for it. Track when the next write may go out instead.
+        self._lastSentPulse[servoID] = nextPos
+        self._nextAllowedWriteAt[servoID] = now + duration
 
     def setGripperPos(self, servoID: int, direction: int, servoSpeed: float = 0.5):
         pulse_pos = self.degToPulse(direction)
@@ -141,11 +139,9 @@ class ServoController:
         if(servoID):
             readPos = self.board.bus_servo_read_position(servo_id= servoID)
             if(readPos):
-                # Real feedback always overwrites the optimistic belief setPos tracks -- see
-                # class doc. Whether this call came from setPos's own seed read or from
-                # robot_controller_node.py's independent 50Hz feedback timers, the effect is
-                # the same: the write path's next command starts from ground truth.
-                self._beliefPos[servoID] = readPos[0]
+                # setPos (wire v3) no longer tracks a position belief for this to correct -- see
+                # class doc. This read is purely for robot_controller_node.py's own 50Hz
+                # feedback-publisher timers now.
                 return readPos[0]
 
             # return self.board.bus_servo_read_position(servo_id= servoID)[0]

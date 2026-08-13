@@ -34,12 +34,16 @@ class RobotController(Node):
         self.get_logger().info("Initializing Servo Subscribers...")
         self.resetArmSub = self.create_subscription(Float32, "/arm/servo/reset", self.servoSubManager.resetArmCbk, 5)
         
-        # depth=3, not 1: defense-in-depth against a transient executor stall (e.g. a servo's
-        # one-time belief-seed read in ServoController.setPos) now that the steady-state cost
-        # of each callback is near-zero -- see fix-servo-command-rate-loss. Deliberately shallow:
-        # these are relative direction steps, so draining a short backlog late doesn't overshoot
-        # (order-independent sum), but a deep queue would let the arm visibly keep moving on
-        # stale input after the operator stops sending.
+        # depth=3, not 1: defense-in-depth against a transient executor stall now that the
+        # steady-state cost of each callback is near-zero -- see fix-servo-command-rate-loss.
+        # setPos now receives absolute pulse targets directly and computes its own move duration
+        # from the distance to move (teleoperation's
+        # docs/adr/0010-absolute-joint-targets-over-local-relay.md and the constant-speed
+        # follow-up, 2026-08-13), so a shallow backlog being drained late just replays a couple of
+        # recent-but-slightly-stale absolute targets in order, each independently valid -- not the
+        # relative-delta summing this comment used to describe. A deep queue would still let the
+        # arm visibly keep moving on stale input after the operator stops sending, hence keeping
+        # this shallow rather than removing the limit.
         self.setBaseSub = self.create_subscription(Float32, "/arm/servo/base", self.servoSubManager.setBaseCbk, 3)
         self.setLowerArmSub = self.create_subscription(Float32, "/arm/servo/joint/lower", self.servoSubManager.setJointLowerCbk, 3)
         self.setMiddleArmSub = self.create_subscription(Float32, "/arm/servo/joint/middle", self.servoSubManager.setJointMiddleCbk, 3)

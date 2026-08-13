@@ -6,9 +6,10 @@ from teleop_relay import relay_protocol
 
 
 def test_decode_arm_command_round_trips_with_the_dotnet_encoder_layout():
-    # version=2, base/lower/middle/upper directions, gripper degrees, little-endian -- matches
-    # RelayProtocol.EncodeCommand's exact byte layout in the .NET project.
-    data = struct.pack("<Bfffff", 2, -3.25, 1.5, -0.75, 2.0, 120.0)
+    # version=3, base/lower/middle/upper ABSOLUTE PULSE targets (not direction deltas --
+    # teleoperation's docs/adr/0010-absolute-joint-targets-over-local-relay.md), gripper degrees,
+    # little-endian -- matches RelayProtocol.EncodeCommand's exact byte layout in the .NET project.
+    data = struct.pack("<Bfffff", 3, -3.25, 1.5, -0.75, 2.0, 120.0)
 
     result = relay_protocol.decode_arm_command(data)
 
@@ -16,7 +17,7 @@ def test_decode_arm_command_round_trips_with_the_dotnet_encoder_layout():
 
 
 def test_decode_arm_command_rejects_wrong_version():
-    data = struct.pack("<Bfffff", 1, 1.0, 0.0, 0.0, 0.0, 90.0)
+    data = struct.pack("<Bfffff", relay_protocol.VERSION - 1, 1.0, 0.0, 0.0, 0.0, 90.0)
 
     assert relay_protocol.decode_arm_command(data) is None
 

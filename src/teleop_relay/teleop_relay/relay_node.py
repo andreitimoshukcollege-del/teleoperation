@@ -2,13 +2,16 @@
 teleoperation's docs/adr/0007-jetrover-plant-and-robot-host.md) to jetrover_arm_control's
 existing ROS topics, over a local Unix domain socket (relay_protocol.py). Deliberately thin: no
 staleness/sequencing/gap-policy logic here at all -- that's JetRoverPlant's job, upstream of this
-socket. This node only ever translates "here are the current direction/gripper values" into the
-ROS topic calls jetrover_arm_control already exposes, and relays servo feedback back the same way.
+socket. This node only ever translates "here are the current absolute pulse/gripper targets" into
+the ROS topic calls jetrover_arm_control already exposes, and relays servo feedback back the same
+way.
 
-Phase 2 scope: base/lower/middle/upper joints (relative "direction" commands, matching
-ServoController.setPos) plus the gripper (absolute degrees, matching setGripperPos). Gripper
-feedback is not relayed -- Teleop.RobotHost's JetRoverPlant sends the gripper open-loop, with no
-delta tracking that would need it.
+Wire v3 (teleoperation's docs/adr/0010-absolute-joint-targets-over-local-relay.md): base/lower/
+middle/upper joints are absolute pulse targets (0-1000, matching what ServoController.setPos now
+applies directly), not relative "direction" deltas as in earlier versions of this protocol. The
+gripper (absolute degrees, matching setGripperPos) is unchanged. Gripper feedback is not relayed
+-- Teleop.RobotHost's JetRoverPlant sends the gripper open-loop, with no belief tracking that
+would need it.
 
 Each joint's feedback validity is time-boxed (StaleTrackedValue), not "has a reading ever
 arrived": a joint whose real feedback silently stops (e.g. the middle-arm servo's reads, which
@@ -106,12 +109,12 @@ class TeleopRelayNode(Node):
         decoded = relay_protocol.decode_arm_command(latest)
         if decoded is None:
             return
-        base_direction, lower_direction, middle_direction, upper_direction, gripper_degrees = decoded
+        base_pulse, lower_pulse, middle_pulse, upper_pulse, gripper_degrees = decoded
 
-        self._publish_float(self._base_pub, base_direction)
-        self._publish_float(self._lower_pub, lower_direction)
-        self._publish_float(self._middle_pub, middle_direction)
-        self._publish_float(self._upper_pub, upper_direction)
+        self._publish_float(self._base_pub, base_pulse)
+        self._publish_float(self._lower_pub, lower_pulse)
+        self._publish_float(self._middle_pub, middle_pulse)
+        self._publish_float(self._upper_pub, upper_pulse)
         self._publish_float(self._gripper_main_pub, gripper_degrees)
 
     @staticmethod

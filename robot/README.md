@@ -57,15 +57,69 @@ protocol above into calls against `jetrover_arm_control`'s existing topics.
   approximately the right position -- X/Y matched the intended target closely; Z was
   off by the amount explained below (not a sign or math error -- confirmed by hand-deriving the
   IK for the test target and cross-checking against a passing round-trip test suite).
-- **Real, hardware-level finding: this JetRover's middle-arm servo (ID 3) never responds to
-  position-read requests**, confirmed independently of ROS by calling the board SDK directly,
-  repeatedly, with nothing else running. Writes to it work fine (it visibly moves); only reads
-  never succeed. This is not a software bug to fix -- `JetRoverPlant.State` already degrades
-  honestly for exactly this case (`IsFullySensed` reports false; the affected joint's contribution
-  falls back to this plant's last-commanded target rather than a stale sensed value or a fixed
-  default). It is the reason Phase 2's real-hardware Z result didn't exactly match the commanded
-  target: the middle joint's actual contribution to `State` is an estimate, not a measurement,
-  until/unless this servo's read path is fixed at the hardware or firmware level.
+- **Real, hardware-level finding: this JetRover's middle-arm servo (ID 3) never responds to any
+  read command, full stop -- not specific to position.** Originally found (and under-described)
+  as "never responds to position-read requests"; re-investigated on 2026-08-13 after the
+  operator, feeling real resistance/torque at the joint, correctly pushed back on that servo being
+  described as "confirmed physically dead" (a mischaracterization that had crept into
+  `unity/.../JetRoverArmRig.cs`'s doc comment, since corrected -- it is not in this file, which
+  was always accurate). A standalone script calling the board SDK directly (ROS stopped, exclusive
+  serial access, `jetrover-teleop-ros`'s own pattern for isolating hardware-layer findings) probed
+  servo ID 3 with `read_id`/`read_position`/`read_temp`/`read_vin`/`read_offset`, 5 attempts each:
+  **zero responses across all 25 attempts, every command type**, while the same probe repeated
+  against servo IDs 1 (base), 2 (lower), and 4 (upper) -- all on the identical shared bus --
+  succeeded on 24/25 or better, every command type, for every one of those three. ID 4 (upper) is
+  physically further down the daisy chain than ID 3's own connector, so its clean reads prove the
+  bus wire itself is electrically intact end-to-end through and past the middle servo's
+  connector -- ruling out a loose/broken connector or wiring fault as the cause. Writes to ID 3
+  still work fine (it visibly moves, and the operator can feel it holding torque under a write).
+  Taken alone, a servo that receives and acts on every write but never drives a response onto an
+  otherwise-healthy bus for *any* read command looked like an isolated fault in that one unit's
+  own transmit/response path (e.g. a failed bus-driver output stage), with the rest of the
+  mechanism assumed fine.
+
+  **That narrower theory is contradicted by a second finding, the same day.** With the robot
+  fully powered off, the operator found the middle servo has significantly more resistance to
+  manual rotation than the other (also powered-off) servos, and confirmed the resistance is
+  **uniform through the servo's full rotation range**, not localized to one spot. Uniform
+  drag rather than a localized catch/grind rules out a stripped gear tooth or debris in the mesh
+  (which would only show up at the rotation angle where the damaged tooth engages) and instead
+  matches, specifically, a **shorted motor winding**: the classic and specific behavior of a
+  shorted small DC motor is cogging/braking via induced current at every shaft angle, not a
+  positional catch. This is not something a communications-only fault would produce, and it is
+  not confirmed by opening the case, but the behavioral signature is now quite specific. The
+  honest current state is real internal motor damage, not an isolated response-driver fault with
+  an otherwise-healthy mechanism. **Do not describe this servo as "dead"** (it demonstrably still
+  moves and holds torque under command) **and do not assume the mechanism is otherwise fine** (it
+  is not). A shorted winding is not something to keep driving: repeatedly energizing a shorted
+  winding draws excess current through the drive circuit and risks heat damage to the servo's own
+  driver stage or, over enough repetitions, the board's own motor-driver channel for that servo.
+
+  **Resolved 2026-08-13: the servo was physically replaced, and the replacement is confirmed
+  fully working.** The same protocol-level probe (`read_id`/`read_position`/`read_temp`/
+  `read_vin`/`read_offset`, 5 attempts each) now succeeds 25/25 for the middle joint, matching
+  base/lower/upper. One real complication during replacement, worth recording: the new unit
+  shipped with its bus ID still at its factory default (1), colliding with the existing base
+  servo (also ID 1) once installed -- symptomatic as intermittent, seemingly-random read failures
+  on *both* base and the new middle servo, which briefly looked like the replacement unit was
+  itself defective (or the wiring still bad) until traced to the ID collision. Fixed via a
+  three-step temporary-ID swap, since the physical bus topology (single chain, board connector
+  inaccessible without full teardown) makes it impossible to isolate the new servo alone on the
+  bus directly: with only the base servo connected (the one accessible isolation point), its ID
+  was moved 1 -> 9 (a scratch ID); with everything reconnected, ID 1 now uniquely belonged to the
+  new servo, which was moved 1 -> 3 (its correct address); base was then moved back 9 -> 1. Each
+  step was verified by reading back the new ID before proceeding, and by confirming the old ID no
+  longer responded. General lesson for any future bus-servo replacement on this hardware: check
+  (or reset) a replacement unit's ID *before* installing it, since a default-ID collision with an
+  existing servo is easy to mistake for a hardware fault in the new part.
+  This is not a software bug to fix -- `JetRoverPlant.State` already degrades honestly for exactly
+  this case (`IsFullySensed` reports false; the affected joint's contribution falls back to this
+  plant's last-commanded target rather than a stale sensed value or a fixed default). It is the
+  reason Phase 2's real-hardware Z result didn't exactly match the commanded target, and it also
+  means this joint's belief can never be corrected by real feedback (see
+  `SeedBeliefsFromSensedIfNeeded` in `JetRoverPlant.cs`) -- a real, still-open contributor to
+  reports of the arm "moving but not quite correctly" at this joint, distinct from the
+  rate-dependent command loss below.
 - Three real, pre-existing bugs in the ported `jetrover_arm_control` SDK were found and fixed
   along the way (all in `jetrover-teleop-ros`, not here): an uncaught `queue.Empty` on a
   board-read timeout that crashed the whole ROS node; a single-slot response queue with no

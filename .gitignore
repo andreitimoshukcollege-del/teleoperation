@@ -44,3 +44,12 @@ Thumbs.db
 # Note: Unity's own ignore file lives at unity/TeleopVR/.gitignore.
 # Gitignore patterns containing a slash are relative to the file that declares them,
 # so Unity's official file only works unmodified when nested there.
+
+# Experiment output. Reproducibility comes from manifest.json's recorded git SHA, not from
+# committing the run's own metrics.csv files -- those stay local/shared out-of-band. The
+# directory's own README of its append-only contract stays tracked.
+results/*
+!results/CLAUDE.md
+
+# Scratch publish output from ad hoc dotnet publish deploys (not a build/ or obj/ path).
+core/_scratch_publish/

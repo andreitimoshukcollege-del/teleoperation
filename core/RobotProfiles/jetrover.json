@@ -1,0 +1,17 @@
+{
+  "name": "jetrover",
+  "hasRotatingBase": true,
+  "baseHeight": 0.035,
+  "proximalLinkLength": 0.13,
+  "distalLinkLength": 0.13,
+  "wristJointCount": 1,
+  "hasGripper": true,
+  "gripperCanRotate": false,
+  "joints": [
+    { "motorId": 1, "role": "BaseYaw" },
+    { "motorId": 2, "role": "Proximal", "minAngleRadians": -1.8851179, "zeroOffsetRadians": 0.12217305 },
+    { "motorId": 3, "role": "Distal" },
+    { "motorId": 4, "role": "Wrist", "wristIndex": 0 },
+    { "motorId": 5, "role": "GripperMain" }
+  ]
+}

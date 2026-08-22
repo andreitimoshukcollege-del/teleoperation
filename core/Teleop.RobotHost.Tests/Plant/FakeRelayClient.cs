@@ -1,33 +1,38 @@
 using System.Collections.Generic;
+using Teleop.RobotArm.Wire;
 using Teleop.RobotHost.Relay;
 
 namespace Teleop.RobotHost.Tests.Plant
 {
     /// <summary>
-    /// A test double for <see cref="IRelayClient"/> -- lets <see cref="JetRoverPlant"/>'s
+    /// A test double for <see cref="IRelayClient"/> -- lets <see cref="GenericArmPlant"/>'s
     /// staleness/gap-policy/direction logic be tested with no ROS, no Jetson, and no motors,
     /// matching this project's "an algorithm that cannot be evaluated headlessly does not count"
-    /// ethos extended to host-adjacent code with real algorithmic content.
+    /// ethos extended to host-adjacent code with real algorithmic content. Each captured command
+    /// is copied into its own array (a <c>Span</c> passed to <see cref="Send"/> is only valid for
+    /// the call itself) so tests can inspect every call's joint targets after the fact.
     /// </summary>
     internal sealed class FakeRelayClient : IRelayClient
     {
-        public List<LocalArmCommand> SentCommands { get; } = new List<LocalArmCommand>();
+        public List<JointTarget[]> SentCommands { get; } = new List<JointTarget[]>();
 
-        private readonly Queue<LocalFeedback> _pendingFeedback = new Queue<LocalFeedback>();
+        private readonly Queue<JointFeedbackEntry[]> _pendingFeedback = new Queue<JointFeedbackEntry[]>();
 
-        public void Send(in LocalArmCommand command) => SentCommands.Add(command);
+        public void Send(ReadOnlySpan<JointTarget> targets) => SentCommands.Add(targets.ToArray());
 
-        public void EnqueueFeedback(LocalFeedback feedback) => _pendingFeedback.Enqueue(feedback);
+        public void EnqueueFeedback(params JointFeedbackEntry[] entries) => _pendingFeedback.Enqueue(entries);
 
-        public bool TryReceiveFeedback(out LocalFeedback feedback)
+        public bool TryReceiveFeedback(System.Span<JointFeedbackEntry> entriesBuffer, out int entryCount)
         {
             if (_pendingFeedback.Count == 0)
             {
-                feedback = default;
+                entryCount = 0;
                 return false;
             }
 
-            feedback = _pendingFeedback.Dequeue();
+            JointFeedbackEntry[] entries = _pendingFeedback.Dequeue();
+            entries.CopyTo(entriesBuffer);
+            entryCount = entries.Length;
             return true;
         }
     }

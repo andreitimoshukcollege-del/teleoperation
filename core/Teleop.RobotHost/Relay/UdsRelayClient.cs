@@ -1,6 +1,7 @@
 using System;
 using System.IO;
 using System.Net.Sockets;
+using Teleop.RobotArm.Wire;
 
 namespace Teleop.RobotHost.Relay
 {
@@ -17,15 +18,17 @@ namespace Teleop.RobotHost.Relay
     /// Fire-and-forget in both directions, matching <see cref="IRelayClient"/>'s "here are the
     /// current numbers" contract: <see cref="Send"/> does not confirm the relay node received
     /// anything, and <see cref="TryReceiveFeedback"/> only ever returns the most recent
-    /// datagram sitting in the socket's receive buffer.
+    /// datagram sitting in the socket's receive buffer. Fixed-size buffers sized to
+    /// <see cref="RelayProtocol.MaxJointsPerMessage"/> -- allocation-free regardless of how many
+    /// joints the profile in use actually has.
     /// </summary>
     public sealed class UdsRelayClient : IRelayClient, IDisposable
     {
         private readonly Socket _socket;
         private readonly UnixDomainSocketEndPoint _peerEndPoint;
         private readonly string _localSocketPath;
-        private readonly byte[] _sendBuffer = new byte[RelayProtocol.ArmCommandEncodedSize];
-        private readonly byte[] _receiveBuffer = new byte[RelayProtocol.FeedbackEncodedSize];
+        private readonly byte[] _sendBuffer = new byte[RelayProtocol.CommandEncodedSize(RelayProtocol.MaxJointsPerMessage)];
+        private readonly byte[] _receiveBuffer = new byte[RelayProtocol.FeedbackEncodedSize(RelayProtocol.MaxJointsPerMessage)];
 
         /// <param name="localSocketPath">
         /// Filesystem path this process binds to receive feedback on. Deleted and recreated at
@@ -51,11 +54,11 @@ namespace Teleop.RobotHost.Relay
         /// <summary>
         /// Fire-and-forget. Swallows the case where the relay node isn't listening yet (or has
         /// restarted) rather than throwing -- the next <see cref="Send"/> after it comes back up
-        /// simply succeeds, same as the JetRover's own bus servos holding position through a gap.
+        /// simply succeeds, same as the robot's own bus servos holding position through a gap.
         /// </summary>
-        public void Send(in LocalArmCommand command)
+        public void Send(ReadOnlySpan<JointTarget> targets)
         {
-            int n = RelayProtocol.EncodeCommand(command, _sendBuffer);
+            int n = RelayProtocol.EncodeCommand(targets, _sendBuffer);
             try
             {
                 _socket.SendTo(_sendBuffer.AsSpan(0, n), SocketFlags.None, _peerEndPoint);
@@ -65,9 +68,9 @@ namespace Teleop.RobotHost.Relay
             }
         }
 
-        public bool TryReceiveFeedback(out LocalFeedback feedback)
+        public bool TryReceiveFeedback(Span<JointFeedbackEntry> entriesBuffer, out int entryCount)
         {
-            feedback = default;
+            entryCount = 0;
 
             if (_socket.Available <= 0)
             {
@@ -84,7 +87,7 @@ namespace Teleop.RobotHost.Relay
                 return false;
             }
 
-            return RelayProtocol.TryDecodeFeedback(_receiveBuffer.AsSpan(0, received), out feedback);
+            return RelayProtocol.TryDecodeFeedback(_receiveBuffer.AsSpan(0, received), entriesBuffer, out entryCount);
         }
 
         public void Dispose()

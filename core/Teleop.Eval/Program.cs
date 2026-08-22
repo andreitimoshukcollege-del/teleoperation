@@ -1,6 +1,7 @@
 ﻿// core/Teleop.Eval/Program.cs
 using System;
 using System.IO;
+using Teleop.Eval.BuildProfile;
 using Teleop.Eval.ClockSyncCheck;
 using Teleop.Eval.MoveArm;
 using Teleop.Eval.Sweep;
@@ -30,6 +31,8 @@ namespace Teleop.Eval
                     return ClockSyncCheckCommand.Run(args);
                 case "move-arm":
                     return MoveArmCommand.Run(args);
+                case "build-profile":
+                    return BuildProfileCommand.Run(args);
                 case "replay":
                 case "compare":
                     Console.Error.WriteLine($"'{cmd}' is NOT IMPLEMENTED. " +
@@ -38,7 +41,7 @@ namespace Teleop.Eval
                 default:
                     Console.Error.WriteLine(
                         "usage: verify | audit | sweep | replay | compare | gen-golden | gen-trace | " +
-                        "clocksync-check | move-arm");
+                        "clocksync-check | move-arm | build-profile");
                     return 64;   // EX_USAGE
             }
         }

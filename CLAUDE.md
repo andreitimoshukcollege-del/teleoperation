@@ -97,6 +97,18 @@ recipe (`sweep`, `report`, `analysis-setup`, `experiment-gui`, ...). This is a c
 not a new source of truth — the raw commands above and in `analysis/CLAUDE.md` still work
 unchanged and are what CI/agents without `just` should fall back to.
 
+## Testing the real robot
+
+Always drive real hardware through a `just` recipe (`just move-arm`, `just clocksync-check`,
+`just build-profile`, `just deploy-robothost`, ...), never by hand-typing the underlying
+`dotnet run --project Teleop.Eval -- ...` invocation or raw SSH/scp/deploy commands — see root
+`README.md`'s JetRover section for the current end-to-end procedure. If the operation you need
+doesn't have a recipe yet and it's a real, reusable step (not a one-off diagnostic), add it to
+the `justfile` as part of the same change instead of running it ad hoc — the next session (agent
+or human) should not have to reinvent or reverse-engineer a deploy/test step that's already been
+worked out once. `robot/README.md`'s incident log exists precisely because ad hoc hardware
+commands got lost otherwise.
+
 ## Boundaries for agents
 
 - Free rein: `core/`, `analysis/`, `experiments/`, `docs/`.

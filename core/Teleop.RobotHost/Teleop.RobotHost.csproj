@@ -2,7 +2,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\Teleop.Core\Teleop.Core.csproj" />
-    <ProjectReference Include="..\Teleop.JetRover\Teleop.JetRover.csproj" />
+    <ProjectReference Include="..\Teleop.RobotArm\Teleop.RobotArm.csproj" />
   </ItemGroup>
 
   <PropertyGroup>

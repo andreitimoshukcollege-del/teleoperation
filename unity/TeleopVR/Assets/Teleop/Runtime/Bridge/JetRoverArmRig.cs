@@ -12,7 +12,7 @@ namespace Teleop.Bridge
     /// the staleness or elbow-up/down ambiguity a re-derivation would risk.
     ///
     /// <b>The real middle-arm servo (ID 3) is not confirmed dead -- do not describe it that way.</b>
-    /// The actual finding (robot/README.md, <see cref="Teleop.RobotHost.Plant.JetRoverPlant"/>'s own
+    /// The actual finding (robot/README.md, <see cref="Teleop.RobotHost.Plant.GenericArmPlant"/>'s own
     /// doc) is narrower: writes to it work fine (it visibly moves, and a human can feel it holding
     /// torque), but position-*read* requests to it never succeed, confirmed independently of ROS by
     /// calling the board SDK directly. That means this rig's displayed angle for that joint may be
@@ -39,6 +39,11 @@ namespace Teleop.Bridge
     /// </summary>
     public sealed class JetRoverArmRig : MonoBehaviour
     {
+        [Header("Base anchor -- a STABLE, never-rotated Transform at the arm's base position. " +
+            "Must NOT be baseYawPivot (or this component's own transform, if that happens to be " +
+            "the same object) or any other pivot this class rotates -- see BaseAnchor's own doc.")]
+        [SerializeField] private Transform baseAnchor;
+
         [Header("Pivots -- see docs/adr/0009-jetrover-operator-side-inverse-kinematics.md's scene assembly steps")]
         [SerializeField] private Transform baseYawPivot;
         [SerializeField] private Transform lowerPitchPivot;
@@ -57,6 +62,44 @@ namespace Teleop.Bridge
         [SerializeField] private float upperPitchSign = -1f;
 
         private MaterialPropertyBlock _propertyBlock;
+
+        /// <summary>
+        /// The stable reference frame <see cref="JetRoverOperatorBridge"/> converts the drag
+        /// target's world position into before running inverse kinematics -- must be a Transform
+        /// this class never rotates. Real, found-in-practice bug (2026-08-17): an earlier scene
+        /// wiring used this component's own <c>transform</c> (which, in that scene, was the same
+        /// object as <see cref="baseYawPivot"/>) as that reference frame in
+        /// <c>JetRoverOperatorBridge.Update()</c>. Since <see cref="ApplyAngles"/> rotates
+        /// <see cref="baseYawPivot"/> every frame, using it as the IK reference frame too created
+        /// a closed feedback loop: each frame's newly-computed base yaw immediately changed the
+        /// very frame the *next* frame's yaw would be computed relative to, for the identical
+        /// stationary world-space target -- an oscillation between two poses that never settles,
+        /// even with the target held perfectly still. Only the vertical-axis rotation was
+        /// involved, so only the horizontal (X/Y) component ever oscillated; height (Z) stayed
+        /// correct throughout, which is what made this diagnosable at all. Falls back to this
+        /// component's own <c>transform</c> if left unassigned -- logging a loud warning when it
+        /// does, since that fallback being exercised at all is exactly the bug above. A silent
+        /// fallback here would just reproduce it with no clue why, the next time a scene forgets
+        /// to wire this field.
+        /// </summary>
+        public Transform BaseAnchor
+        {
+            get
+            {
+                if (baseAnchor != null)
+                {
+                    return baseAnchor;
+                }
+
+                Debug.LogWarning(
+                    $"{nameof(JetRoverArmRig)}.{nameof(baseAnchor)} is not assigned on '{name}' -- " +
+                    "falling back to this component's own transform, which is the exact " +
+                    $"self-referential setup that caused a real base-yaw oscillation bug " +
+                    $"(see {nameof(BaseAnchor)}'s own doc comment). Assign a separate, never-rotated " +
+                    "Transform in the Inspector.");
+                return transform;
+            }
+        }
 
         /// <summary>
         /// Applies one set of joint angles (radians, Core convention) to the rig's pivots and

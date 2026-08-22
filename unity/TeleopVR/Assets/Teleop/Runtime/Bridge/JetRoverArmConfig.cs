@@ -28,10 +28,33 @@ namespace Teleop.Bridge
         public int JointLocalPort = 0; // 0 = OS-assigned ephemeral port; this channel only ever sends
 
         [Header("Safety -- see JetRoverOperatorBridge's own doc for why these exist")]
-        // MoveArmArgs.DefaultRateHz's own comment records the real incident this guards against:
-        // the real servo's ~300ms per-move cooldown silently drops a correction sent faster than
-        // that. Do not raise this without re-reading that incident.
-        public double CommandRateHz = 2.0;
+        // MoveArmArgs.DefaultRateHz's own comment describes a real ~300ms-cooldown incident, but
+        // that number was specific to move-arm/ClockSyncCheckCommand's one-shot-target use case at
+        // the old, slower PulsesPerSecond -- it does NOT apply directly here. Ground-truthed
+        // against the real servo_controller.py on the Jetson (2026-08-22): the actual per-servo
+        // floor is `duration = max(0.05s, pulseDelta / PulsesPerSecond)`, and a setPos() call
+        // arriving inside another move's cooldown is silently COALESCED (not queued, not lost
+        // forever) -- explicit, documented behavior on that side, meant to absorb a fast burst
+        // into one physical move rather than block on a redundant serial round trip per packet.
+        //
+        // That coalescing is safe here specifically because JetRoverOperatorBridge.Update()
+        // unconditionally re-sends the current target every interval, even when stationary (see
+        // below) -- an occasionally-coalesced intermediate write is corrected by the very next
+        // tick once the servo's cooldown clears. move-arm/ClockSyncCheckCommand send a fixed
+        // target once and stop, so the same reasoning does NOT transfer to their own 2Hz, which
+        // stays unchanged.
+        //
+        // Raised 2.0 -> 40.0 -> 48.0 (2026-08-22, three rounds of operator feedback -- 40Hz felt
+        // "much better" but still noticeably laggy on real hardware). 48Hz is 96% of
+        // relay_node.py's own fixed 50Hz local-socket poll rate (_COMMAND_POLL_PERIOD_SECONDS),
+        // which is the actual hard ceiling on this path: sending faster than that cannot be
+        // noticed any sooner on the Jetson side, so this is close to the practical maximum this
+        // knob alone can deliver. Breaking past 50Hz for real would mean raising
+        // _COMMAND_POLL_PERIOD_SECONDS itself, on the Jetson's separate jetrover-teleop-ros repo --
+        // not done here, a bigger cross-repo change that needs its own explicit go-ahead. Watch
+        // the next real-hardware pass for jerkiness/buzzing/strain; fall back toward 40.0/20.0 if
+        // it shows any of that.
+        public double CommandRateHz = 48.0;
 
         // A human must deliberately arm real motion after confirming physical clearance -- this
         // feature's equivalent of MoveArmArgs.ConfirmHardwareMotion/--confirm-hardware-motion.

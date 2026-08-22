@@ -1,174 +1,215 @@
 using System;
 using System.Buffers.Binary;
+using Teleop.RobotArm.Wire;
 
 namespace Teleop.RobotHost.Relay
 {
     /// <summary>
-    /// One arm command over the local relay channel (<see cref="IRelayClient"/>). Base/lower/
-    /// middle/upper are absolute pulse targets (0-1000, hardware units) -- <b>not</b> relative
-    /// direction deltas (changed in wire v3, docs/adr/0010-absolute-joint-targets-over-local-relay.md;
-    /// see that ADR for why sending the resulting target rather than the delta used to reach it
-    /// removes an entire independently-maintained belief-tracking system on the ROS side).
-    /// <see cref="JetRoverPlant"/> already computes exactly this value
-    /// (<c>_targetPulseBase</c>/etc.) as the last step before sending -- this field is that value,
-    /// unmodified. <see cref="GripperDegrees"/> is a different unit space, unaffected by this
-    /// change: the gripper's own topic (<c>ServoController.setGripperPos</c>) already takes an
-    /// absolute target angle in degrees, not pulse, so this field is denormalized
-    /// <c>CommandFrame.Gripper</c> (0=open..1=closed) exactly as before.
+    /// One joint's last-known pulse value, sourced from the ROS node's own feedback for that motor
+    /// id. <see cref="Valid"/> is false whenever that read failed (a real, observed occurrence --
+    /// the board's serial read can time out) rather than silently reporting a stale or zeroed
+    /// value as if it were current. <see cref="Pulse"/> is raw pulse (0-1000, hardware units),
+    /// straight from <c>bus_servo_read_position</c> with no degree round-trip -- the old wire
+    /// (v3) reported degrees only because that was the shape the fixed-4-joint protocol happened
+    /// to choose; nothing about the underlying read was ever in degrees
+    /// (docs/adr/0011-generic-robot-arm-profiles.md).
     /// </summary>
-    public readonly struct LocalArmCommand
+    public readonly struct JointFeedbackEntry
     {
-        public readonly float BasePulse;
-        public readonly float LowerPulse;
-        public readonly float MiddlePulse;
-        public readonly float UpperPulse;
-        public readonly float GripperDegrees;
-
-        public LocalArmCommand(
-            float basePulse, float lowerPulse, float middlePulse, float upperPulse, float gripperDegrees)
-        {
-            BasePulse = basePulse;
-            LowerPulse = lowerPulse;
-            MiddlePulse = middlePulse;
-            UpperPulse = upperPulse;
-            GripperDegrees = gripperDegrees;
-        }
-    }
-
-    /// <summary>
-    /// One joint's last-known angle in degrees, sourced from the ROS node's own feedback
-    /// publisher for that joint. <see cref="Valid"/> is false whenever that publisher's own read
-    /// from the board failed (a real, observed occurrence -- the board's serial read can time
-    /// out) rather than silently reporting a stale or zeroed value as if it were current.
-    /// </summary>
-    public readonly struct JointFeedback
-    {
+        public readonly byte MotorId;
         public readonly bool Valid;
-        public readonly int Degrees;
+        public readonly float Pulse;
 
-        public JointFeedback(bool valid, int degrees)
+        public JointFeedbackEntry(byte motorId, bool valid, float pulse)
         {
+            MotorId = motorId;
             Valid = valid;
-            Degrees = degrees;
-        }
-    }
-
-    /// <summary>Feedback for all four position-affecting joints, over the local relay channel.</summary>
-    public readonly struct LocalFeedback
-    {
-        public readonly JointFeedback Base;
-        public readonly JointFeedback Lower;
-        public readonly JointFeedback Middle;
-        public readonly JointFeedback Upper;
-
-        public LocalFeedback(JointFeedback @base, JointFeedback lower, JointFeedback middle, JointFeedback upper)
-        {
-            Base = @base;
-            Lower = lower;
-            Middle = middle;
-            Upper = upper;
+            Pulse = pulse;
         }
     }
 
     /// <summary>
-    /// Fixed-size, versioned, little-endian encode/decode for the local relay channel -- same
-    /// style as Core's <c>RawPoseCodec</c>/<c>RobotStateFrameCodec</c>, but deliberately not an
-    /// <c>ICommandCodec</c>: this wire format only ever crosses a local Unix domain socket
-    /// between this host and the relay node, never the real network, so it has no staleness or
-    /// sequencing fields at all -- see <see cref="IRelayClient"/>'s doc for why. Targeting
-    /// net8.0 (unlike Core's netstandard2.1) means the modern
-    /// <see cref="BinaryPrimitives.WriteSingleLittleEndian"/>/<c>ReadSingleLittleEndian</c> can
-    /// be used directly, without Core's bit-pattern round trip through <c>Int32</c>.
+    /// Fixed-header, count-prefixed, versioned, little-endian encode/decode for the local relay
+    /// channel -- same style as Core's <c>RawPoseCodec</c>/<c>RobotStateFrameCodec</c>, but
+    /// deliberately not an <c>ICommandCodec</c>: this wire format only ever crosses a local Unix
+    /// domain socket between this host and the relay node, never the real network, so it has no
+    /// staleness or sequencing fields at all.
+    ///
+    /// Carries one <see cref="JointTarget"/> (commands) or <see cref="JointFeedbackEntry"/>
+    /// (feedback) per motor id the sending <c>RobotArmProfile</c> has -- generalized from the old
+    /// fixed 4-arm-joint-plus-gripper <c>LocalArmCommand</c>/<c>LocalFeedback</c>
+    /// (docs/adr/0011-generic-robot-arm-profiles.md). Both <see cref="JointTarget.Angle"/> and
+    /// <see cref="JointTarget.Speed"/> are in <b>pulse units</b> on this hop (pulse and
+    /// pulses/second respectively) -- continuing docs/adr/0010's reasoning for choosing pulse over
+    /// radians here: it avoids duplicating <c>PulsePerRadian</c>/<c>ZeroPulse</c> conversion on the
+    /// Python side. The gripper is no longer a separate degrees-based special case -- it is just
+    /// another joint in the profile, flowing through this exact same pulse-unit path.
+    ///
+    /// Targeting net8.0 (unlike Core's netstandard2.1) means the modern
+    /// <see cref="BinaryPrimitives.WriteSingleLittleEndian"/>/<c>ReadSingleLittleEndian</c> can be
+    /// used directly, without Core's bit-pattern round trip through <c>Int32</c>.
     /// </summary>
     public static class RelayProtocol
     {
-        // v3: base/lower/middle/upper are absolute pulse targets, not relative direction deltas
-        // -- docs/adr/0010-absolute-joint-targets-over-local-relay.md. Byte layout is unchanged
-        // from v2 (still 5 floats); only the meaning of the first four inverts, which is exactly
-        // why the version must still bump -- a stale peer must reject, not misinterpret.
-        public const byte Version = 3;
+        // v4: count-prefixed motor-id-keyed tuples, replacing the fixed 4-joint-plus-gripper
+        // named-field structs entirely (docs/adr/0011). A structurally different layout from v3,
+        // not just a reinterpreted meaning -- must still fail closed on any version mismatch.
+        public const byte Version = 4;
 
-        // version + 5 floats (base/lower/middle/upper absolute pulse + gripper degrees)
-        public const int ArmCommandEncodedSize = 1 + 5 * 4;
+        private const int VersionSize = sizeof(byte);
+        private const int CountSize = sizeof(byte);
+        private const int MotorIdSize = sizeof(byte);
+        private const int ValidSize = sizeof(byte);
+        private const int FloatSize = sizeof(float);
 
-        // version + 4 * (1 valid byte + 4-byte int32 degrees)
-        public const int FeedbackEncodedSize = 1 + 4 * (1 + 4);
+        private const int HeaderSize = VersionSize + CountSize;
 
-        public static int EncodeCommand(in LocalArmCommand command, Span<byte> destination)
+        /// <summary>MotorId, PulseTarget, PulsesPerSecond.</summary>
+        private const int PerJointCommandSize = MotorIdSize + FloatSize + FloatSize;
+
+        /// <summary>MotorId, Valid, Pulse.</summary>
+        private const int PerJointFeedbackSize = MotorIdSize + ValidSize + FloatSize;
+
+        /// <summary>
+        /// Upper bound on joints per record. Generous relative to any profile this platform
+        /// realistically targets (JetRover has 5) -- this hop is a local Unix domain socket, not a
+        /// UDP link with a practical MTU to budget against, so there is no equivalent pressure to
+        /// keep this tight the way <c>JointCommandCodec.MaxJointsPerMessage</c> has for its UDP hop.
+        /// </summary>
+        public const int MaxJointsPerMessage = 32;
+
+        public static int CommandEncodedSize(int jointCount) => HeaderSize + jointCount * PerJointCommandSize;
+
+        public static int FeedbackEncodedSize(int jointCount) => HeaderSize + jointCount * PerJointFeedbackSize;
+
+        public static int EncodeCommand(ReadOnlySpan<JointTarget> targets, Span<byte> destination)
         {
-            if (destination.Length < ArmCommandEncodedSize)
+            if (targets.Length > MaxJointsPerMessage)
             {
-                throw new ArgumentException("Destination too small for a LocalArmCommand.", nameof(destination));
+                throw new ArgumentException(
+                    $"Cannot encode {targets.Length} joints; MaxJointsPerMessage is {MaxJointsPerMessage}.", nameof(targets));
             }
 
-            destination[0] = Version;
-            BinaryPrimitives.WriteSingleLittleEndian(destination.Slice(1, 4), command.BasePulse);
-            BinaryPrimitives.WriteSingleLittleEndian(destination.Slice(5, 4), command.LowerPulse);
-            BinaryPrimitives.WriteSingleLittleEndian(destination.Slice(9, 4), command.MiddlePulse);
-            BinaryPrimitives.WriteSingleLittleEndian(destination.Slice(13, 4), command.UpperPulse);
-            BinaryPrimitives.WriteSingleLittleEndian(destination.Slice(17, 4), command.GripperDegrees);
-            return ArmCommandEncodedSize;
+            int size = CommandEncodedSize(targets.Length);
+            if (destination.Length < size)
+            {
+                throw new ArgumentException("Destination too small for this many joint targets.", nameof(destination));
+            }
+
+            int pos = 0;
+            destination[pos] = Version;
+            pos += VersionSize;
+            destination[pos] = (byte)targets.Length;
+            pos += CountSize;
+
+            foreach (JointTarget target in targets)
+            {
+                destination[pos] = target.MotorId;
+                pos += MotorIdSize;
+                BinaryPrimitives.WriteSingleLittleEndian(destination.Slice(pos, FloatSize), target.Angle);
+                pos += FloatSize;
+                BinaryPrimitives.WriteSingleLittleEndian(destination.Slice(pos, FloatSize), target.Speed);
+                pos += FloatSize;
+            }
+
+            return pos;
         }
 
-        public static bool TryDecodeCommand(ReadOnlySpan<byte> source, out LocalArmCommand command)
+        public static bool TryDecodeCommand(ReadOnlySpan<byte> source, Span<JointTarget> targetsBuffer, out int targetCount)
         {
-            command = default;
-            if (source.Length < ArmCommandEncodedSize || source[0] != Version)
+            targetCount = 0;
+            if (source.Length < HeaderSize || source[0] != Version)
             {
                 return false;
             }
 
-            float basePulse = BinaryPrimitives.ReadSingleLittleEndian(source.Slice(1, 4));
-            float lowerPulse = BinaryPrimitives.ReadSingleLittleEndian(source.Slice(5, 4));
-            float middlePulse = BinaryPrimitives.ReadSingleLittleEndian(source.Slice(9, 4));
-            float upperPulse = BinaryPrimitives.ReadSingleLittleEndian(source.Slice(13, 4));
-            float gripperDegrees = BinaryPrimitives.ReadSingleLittleEndian(source.Slice(17, 4));
-            command = new LocalArmCommand(basePulse, lowerPulse, middlePulse, upperPulse, gripperDegrees);
-            return true;
-        }
+            int pos = VersionSize;
+            int count = source[pos];
+            pos += CountSize;
 
-        public static int EncodeFeedback(in LocalFeedback feedback, Span<byte> destination)
-        {
-            if (destination.Length < FeedbackEncodedSize)
-            {
-                throw new ArgumentException("Destination too small for a LocalFeedback.", nameof(destination));
-            }
-
-            destination[0] = Version;
-            WriteJoint(feedback.Base, destination.Slice(1, 5));
-            WriteJoint(feedback.Lower, destination.Slice(6, 5));
-            WriteJoint(feedback.Middle, destination.Slice(11, 5));
-            WriteJoint(feedback.Upper, destination.Slice(16, 5));
-            return FeedbackEncodedSize;
-        }
-
-        public static bool TryDecodeFeedback(ReadOnlySpan<byte> source, out LocalFeedback feedback)
-        {
-            feedback = default;
-            if (source.Length < FeedbackEncodedSize || source[0] != Version)
+            if (count > MaxJointsPerMessage || count > targetsBuffer.Length || source.Length < CommandEncodedSize(count))
             {
                 return false;
             }
 
-            feedback = new LocalFeedback(
-                ReadJoint(source.Slice(1, 5)),
-                ReadJoint(source.Slice(6, 5)),
-                ReadJoint(source.Slice(11, 5)),
-                ReadJoint(source.Slice(16, 5)));
+            for (int i = 0; i < count; i++)
+            {
+                byte motorId = source[pos];
+                pos += MotorIdSize;
+                float pulse = BinaryPrimitives.ReadSingleLittleEndian(source.Slice(pos, FloatSize));
+                pos += FloatSize;
+                float pulsesPerSecond = BinaryPrimitives.ReadSingleLittleEndian(source.Slice(pos, FloatSize));
+                pos += FloatSize;
+                targetsBuffer[i] = new JointTarget(motorId, pulse, pulsesPerSecond);
+            }
+
+            targetCount = count;
             return true;
         }
 
-        private static void WriteJoint(JointFeedback joint, Span<byte> destination)
+        public static int EncodeFeedback(ReadOnlySpan<JointFeedbackEntry> entries, Span<byte> destination)
         {
-            destination[0] = joint.Valid ? (byte)1 : (byte)0;
-            BinaryPrimitives.WriteInt32LittleEndian(destination.Slice(1, 4), joint.Degrees);
+            if (entries.Length > MaxJointsPerMessage)
+            {
+                throw new ArgumentException(
+                    $"Cannot encode {entries.Length} joints; MaxJointsPerMessage is {MaxJointsPerMessage}.", nameof(entries));
+            }
+
+            int size = FeedbackEncodedSize(entries.Length);
+            if (destination.Length < size)
+            {
+                throw new ArgumentException("Destination too small for this many feedback entries.", nameof(destination));
+            }
+
+            int pos = 0;
+            destination[pos] = Version;
+            pos += VersionSize;
+            destination[pos] = (byte)entries.Length;
+            pos += CountSize;
+
+            foreach (JointFeedbackEntry entry in entries)
+            {
+                destination[pos] = entry.MotorId;
+                pos += MotorIdSize;
+                destination[pos] = entry.Valid ? (byte)1 : (byte)0;
+                pos += ValidSize;
+                BinaryPrimitives.WriteSingleLittleEndian(destination.Slice(pos, FloatSize), entry.Pulse);
+                pos += FloatSize;
+            }
+
+            return pos;
         }
 
-        private static JointFeedback ReadJoint(ReadOnlySpan<byte> source)
+        public static bool TryDecodeFeedback(ReadOnlySpan<byte> source, Span<JointFeedbackEntry> entriesBuffer, out int entryCount)
         {
-            bool valid = source[0] != 0;
-            int degrees = BinaryPrimitives.ReadInt32LittleEndian(source.Slice(1, 4));
-            return new JointFeedback(valid, degrees);
+            entryCount = 0;
+            if (source.Length < HeaderSize || source[0] != Version)
+            {
+                return false;
+            }
+
+            int pos = VersionSize;
+            int count = source[pos];
+            pos += CountSize;
+
+            if (count > MaxJointsPerMessage || count > entriesBuffer.Length || source.Length < FeedbackEncodedSize(count))
+            {
+                return false;
+            }
+
+            for (int i = 0; i < count; i++)
+            {
+                byte motorId = source[pos];
+                pos += MotorIdSize;
+                bool valid = source[pos] != 0;
+                pos += ValidSize;
+                float pulse = BinaryPrimitives.ReadSingleLittleEndian(source.Slice(pos, FloatSize));
+                pos += FloatSize;
+                entriesBuffer[i] = new JointFeedbackEntry(motorId, valid, pulse);
+            }
+
+            entryCount = count;
+            return true;
         }
     }
 }

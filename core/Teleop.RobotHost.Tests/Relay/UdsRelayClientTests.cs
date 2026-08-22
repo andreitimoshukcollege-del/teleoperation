@@ -1,6 +1,7 @@
 using System.IO;
 using System.Net.Sockets;
 using System.Threading;
+using Teleop.RobotArm.Wire;
 using Teleop.RobotHost.Relay;
 
 namespace Teleop.RobotHost.Tests.Relay
@@ -23,14 +24,15 @@ namespace Teleop.RobotHost.Tests.Relay
                 relaySocket.Blocking = false;
 
                 using var client = new UdsRelayClient(hostPath, relayPath);
-                client.Send(new LocalArmCommand(
-                    basePulse: 2.5f, lowerPulse: 0f, middlePulse: 0f, upperPulse: 0f, gripperDegrees: 90f));
+                client.Send(new[] { new JointTarget(motorId: 1, angle: 2.5f, speed: 300f) });
 
-                byte[] buffer = new byte[RelayProtocol.ArmCommandEncodedSize];
+                byte[] buffer = new byte[RelayProtocol.CommandEncodedSize(RelayProtocol.MaxJointsPerMessage)];
                 int received = PollReceive(relaySocket, buffer);
 
-                Assert.True(RelayProtocol.TryDecodeCommand(buffer.AsSpan(0, received), out LocalArmCommand decoded));
-                Assert.Equal(2.5f, decoded.BasePulse);
+                Span<JointTarget> decodeBuffer = stackalloc JointTarget[RelayProtocol.MaxJointsPerMessage];
+                Assert.True(RelayProtocol.TryDecodeCommand(buffer.AsSpan(0, received), decodeBuffer, out int targetCount));
+                Assert.Equal(1, targetCount);
+                Assert.Equal(2.5f, decodeBuffer[0].Angle);
             }
             finally
             {
@@ -52,18 +54,22 @@ namespace Teleop.RobotHost.Tests.Relay
 
                 using var client = new UdsRelayClient(hostPath, relayPath);
 
-                byte[] buffer = new byte[RelayProtocol.FeedbackEncodedSize];
-                var sentFeedback = new LocalFeedback(
-                    @base: new JointFeedback(true, 17), lower: new JointFeedback(true, 0),
-                    middle: new JointFeedback(false, 0), upper: new JointFeedback(true, -3));
+                var sentFeedback = new[]
+                {
+                    new JointFeedbackEntry(motorId: 1, valid: true, pulse: 17f),
+                    new JointFeedbackEntry(motorId: 2, valid: false, pulse: 0f),
+                    new JointFeedbackEntry(motorId: 3, valid: true, pulse: -3f),
+                };
+                byte[] buffer = new byte[RelayProtocol.FeedbackEncodedSize(sentFeedback.Length)];
                 RelayProtocol.EncodeFeedback(sentFeedback, buffer);
                 relaySocket.SendTo(buffer, new UnixDomainSocketEndPoint(hostPath));
 
                 bool received = false;
-                LocalFeedback feedback = default;
+                Span<JointFeedbackEntry> entriesBuffer = new JointFeedbackEntry[RelayProtocol.MaxJointsPerMessage];
+                int entryCount = 0;
                 for (int attempt = 0; attempt < 50 && !received; attempt++)
                 {
-                    received = client.TryReceiveFeedback(out feedback);
+                    received = client.TryReceiveFeedback(entriesBuffer, out entryCount);
                     if (!received)
                     {
                         Thread.Sleep(10);
@@ -71,10 +77,11 @@ namespace Teleop.RobotHost.Tests.Relay
                 }
 
                 Assert.True(received);
-                Assert.True(feedback.Base.Valid);
-                Assert.Equal(17, feedback.Base.Degrees);
-                Assert.False(feedback.Middle.Valid);
-                Assert.Equal(-3, feedback.Upper.Degrees);
+                Assert.Equal(3, entryCount);
+                Assert.True(entriesBuffer[0].Valid);
+                Assert.Equal(17f, entriesBuffer[0].Pulse);
+                Assert.False(entriesBuffer[1].Valid);
+                Assert.Equal(-3f, entriesBuffer[2].Pulse);
             }
             finally
             {

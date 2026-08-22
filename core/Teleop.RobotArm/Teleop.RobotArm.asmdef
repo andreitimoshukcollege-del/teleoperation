@@ -1,6 +1,6 @@
 {
-  "name": "Teleop.JetRover",
-  "rootNamespace": "Teleop.JetRover",
+  "name": "Teleop.RobotArm",
+  "rootNamespace": "Teleop.RobotArm",
   "references": [
     "Teleop.Core"
   ],

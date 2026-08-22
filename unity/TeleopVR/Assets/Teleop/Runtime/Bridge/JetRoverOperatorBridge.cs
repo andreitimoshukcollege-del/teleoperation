@@ -6,8 +6,9 @@ using Teleop.Core.Registry;
 using Teleop.Core.Time;
 using Teleop.Core.Transport;
 using Teleop.Core.Types;
-using Teleop.JetRover.Kinematics;
-using Teleop.JetRover.Wire;
+using Teleop.RobotArm.Kinematics;
+using Teleop.RobotArm.Types;
+using Teleop.RobotArm.Wire;
 using UnityEngine;
 using CoreVec = System.Numerics.Vector3;
 using CorePose = Teleop.Core.Types.Pose;
@@ -31,7 +32,8 @@ namespace Teleop.Bridge
     /// simulated robot. <b>This connection's command is never what drives the real arm, and its
     /// <c>EstimateRobotState</c> is never what drives <see cref="armRig"/></b> -- see below.</item>
     /// <item>A separate, plain <c>UdpTransport</c>-backed channel (<c>_jointTransport</c>) that
-    /// sends already-computed joint angles (<see cref="JointCommandFrame"/>) built
+    /// sends already-computed joint targets (<see cref="JointCommandCodec"/>, one
+    /// <see cref="JointTarget"/> per <see cref="RobotArmProfile"/> joint) built
     /// from the drag target's <i>raw, unreconciled</i> pose, rate-limited to
     /// <see cref="JetRoverArmConfig.CommandRateHz"/>. This is the one that actually moves the real
     /// robot, mirroring how <see cref="TeleopOperatorBridge.Update"/> also always sends the raw
@@ -71,6 +73,7 @@ namespace Teleop.Bridge
         [SerializeField] private JetRoverArmRig armRig;
 
         private JetRoverArmConfig _config;
+        private RobotArmProfile _profile;
         private UnityMonotonicClock _clock;
 
         private UdpTransport _cartesianUdp;
@@ -97,6 +100,8 @@ namespace Teleop.Bridge
         private void Awake()
         {
             _config = ConfigLoader.Load("jetrover_connection", "jetrover_connection.json", new JetRoverArmConfig());
+            _profile = ConfigLoader.Load(
+                "jetrover_arm_profile", "jetrover_arm_profile.json", new RobotArmProfileData()).ToProfile();
             _clock = new UnityMonotonicClock();
             _sendIntervalTicks = (long)(_clock.TicksPerSecond / _config.CommandRateHz);
 
@@ -193,32 +198,45 @@ namespace Teleop.Bridge
                 return;
             }
 
-            // Expressed relative to the arm's own base (armRig's transform), NOT world space:
-            // FourDofArmKinematics -- and the real robot -- assume the origin is the arm's own
+            // Expressed relative to the arm's own stable base anchor, NOT world space:
+            // ArmKinematics -- and the real robot -- assume the origin is the arm's own
             // base-yaw axis. dragTarget.ToCorePose() would hand over dragTarget's raw world
-            // position, which is only correct if BaseYawPivot happens to sit at the world origin.
-            // It generally won't (you position it wherever is convenient to reach in the scene),
-            // so skipping this conversion would aim the arm at a position offset by wherever
-            // BaseYawPivot actually is -- silently wrong, not obviously broken, since
-            // MaxDirectionMagnitude's per-step clamp would still make it move slowly *toward*
-            // the wrong target rather than jumping there.
-            Transform armBase = armRig != null ? armRig.transform : dragTarget;
+            // position, which is only correct if the base sits at the world origin. It generally
+            // won't (you position it wherever is convenient to reach in the scene), so skipping
+            // this conversion would aim the arm at a position offset by wherever the base
+            // actually is -- silently wrong, not obviously broken, since MaxDirectionMagnitude's
+            // per-step clamp would still make it move slowly *toward* the wrong target rather
+            // than jumping there.
+            //
+            // Deliberately armRig.BaseAnchor, NOT armRig.transform: a real, found-in-practice bug
+            // (2026-08-17) used armRig.transform directly here, which in the scene at the time was
+            // the same Transform ApplyAngles rotates as the base-yaw pivot -- a self-referential
+            // feedback loop where each frame's computed yaw altered the very frame the next
+            // frame's yaw was computed relative to, oscillating the arm between two poses forever
+            // even for a perfectly stationary target. BaseAnchor's own doc covers this in full;
+            // it must be a Transform this class never rotates.
+            Transform armBase = armRig != null ? armRig.BaseAnchor : dragTarget;
             Vector3 localPosition = armBase.InverseTransformPoint(dragTarget.position);
             Quaternion localRotation = Quaternion.Inverse(armBase.rotation) * dragTarget.rotation;
             CorePose capturedPose = new CorePose(localPosition.ToCore(), localRotation.ToCore());
 
-            FourDofArmKinematics.TryInverse(
-                ArmLinkLengths.Measured, capturedPose.Position,
-                out float baseYaw, out float lowerPitch, out float middlePitch, out bool wasClamped);
-            float desiredPitch = FourDofArmKinematics.ExtractPitchRadians(capturedPose.Rotation);
-            float upperPitch = FourDofArmKinematics.InverseUpperPitch(lowerPitch, middlePitch, desiredPitch);
+            float desiredPitch = ArmKinematics.ExtractPitchRadians(capturedPose.Rotation);
+            Span<float> wristPitches = stackalloc float[_profile.WristJointCount];
+            ArmKinematics.TryInverse(
+                _profile, capturedPose.Position, desiredPitch,
+                out float baseYaw, out float proximalPitch, out float distalPitch, wristPitches, out bool wasClamped);
+            float upperPitch = wristPitches.Length > 0 ? wristPitches[0] : 0f;
 
             // Applied every frame, unconditionally -- see this class's own doc for why this is
             // deliberately not gated on ConfirmHardwareMotion or rate-limited: the rig needs to
             // be exercisable (and its axis signs calibratable) with no robot connected at all.
+            // armRig's own ApplyAngles signature stays the 4-float shape it always had
+            // (docs/adr/0011-generic-robot-arm-profiles.md deliberately keeps JetRoverArmRig
+            // untouched -- a generic pivot-array rig is the deferred profile-picker-UI-adjacent
+            // work, not part of this pass).
             if (armRig != null)
             {
-                armRig.ApplyAngles(baseYaw, lowerPitch, middlePitch, upperPitch, wasClamped);
+                armRig.ApplyAngles(baseYaw, proximalPitch, distalPitch, upperPitch, wasClamped);
             }
 
             if (!_config.ConfirmHardwareMotion)
@@ -239,10 +257,14 @@ namespace Teleop.Bridge
             // TeleopOperatorBridge.Update's own "always send the raw captured pose" precedent.
             _operatorEndpoint.SubmitCommand(capturedPose, CoreVec.Zero, CoreVec.Zero, gripper: 0f, now);
 
-            var jointFrame = new JointCommandFrame(
-                _jointSequence++, now, baseYaw, lowerPitch, middlePitch, upperPitch, gripper: 0f);
-            Span<byte> buffer = stackalloc byte[JointCommandCodec.EncodedSize];
-            if (JointCommandCodec.TryEncode(jointFrame, buffer, out int bytesWritten))
+            // gripper: 0f -- this bridge has never driven the gripper (matches the pre-
+            // generalization behavior, which also hardcoded gripper: 0f here).
+            Span<JointTarget> jointTargets = stackalloc JointTarget[_profile.JointCount];
+            int targetCount = ArmKinematics.MapAnglesToJointTargets(
+                _profile, baseYaw, proximalPitch, distalPitch, wristPitches, gripperFraction: 0f, jointTargets);
+
+            Span<byte> buffer = stackalloc byte[JointCommandCodec.EncodedSize(targetCount)];
+            if (JointCommandCodec.TryEncode(_jointSequence++, now, jointTargets.Slice(0, targetCount), buffer, out int bytesWritten))
             {
                 _jointTransport.Send(buffer.Slice(0, bytesWritten), now);
             }

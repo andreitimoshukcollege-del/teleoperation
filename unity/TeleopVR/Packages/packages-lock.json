@@ -21,8 +21,8 @@
       "source": "local",
       "dependencies": {}
     },
-    "com.teleop.jetrover": {
-      "version": "file:../../../core/Teleop.JetRover",
+    "com.teleop.robotarm": {
+      "version": "file:../../../core/Teleop.RobotArm",
       "depth": 0,
       "source": "local",
       "dependencies": {

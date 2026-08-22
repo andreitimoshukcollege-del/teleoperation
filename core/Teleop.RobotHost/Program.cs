@@ -3,7 +3,8 @@ using System.Net;
 using System.Threading;
 using Teleop.Core.Pipeline;
 using Teleop.Core.Transport;
-using Teleop.JetRover.Wire;
+using Teleop.RobotArm.Types;
+using Teleop.RobotArm.Wire;
 using Teleop.RobotHost.Net;
 using Teleop.RobotHost.Plant;
 using Teleop.RobotHost.Relay;
@@ -14,7 +15,7 @@ namespace Teleop.RobotHost
     /// <summary>
     /// The robot-side host process (docs/adr/0007-jetrover-plant-and-robot-host.md): the actual
     /// <see cref="RobotEndpoint"/> (Core, unmodified) end of a real <see cref="UdpTransport"/>
-    /// link, driving a real <see cref="JetRoverPlant"/> through a local relay to the JetRover's
+    /// link, driving a real <see cref="GenericArmPlant"/> through a local relay to the robot's
     /// ROS 2 node. Runs forever, unattended -- unlike <c>Teleop.Eval</c>, which is a CLI that
     /// runs once and exits (root CLAUDE.md invariant 10's exit-code contract), this is a
     /// long-running server, which is why it is its own project rather than a new
@@ -23,6 +24,15 @@ namespace Teleop.RobotHost
     internal static class Program
     {
         private const int MaxDatagramBytes = 128;
+
+        /// <summary>
+        /// Separate size budget for the joint-angle listener, distinct from the Cartesian path's
+        /// own <see cref="MaxDatagramBytes"/> -- each <see cref="UdpTransport"/> owns its own
+        /// fixed receive buffer, so there is no reason the two hops must share one constant
+        /// (docs/adr/0011-generic-robot-arm-profiles.md). Numerically identical to
+        /// <see cref="MaxDatagramBytes"/> today only because nothing has needed to diverge yet.
+        /// </summary>
+        private const int MaxJointDatagramBytes = 128;
 
         private static int Main(string[] args)
         {
@@ -42,23 +52,26 @@ namespace Teleop.RobotHost
 
             using var relay = new UdsRelayClient(a.LocalRelaySocketPath, a.RelaySocketPath);
 
-            // Always a custom config, never JetRoverPlantConfig.Default directly: LowerArmMinPulse
-            // is a real safety limit (see its own doc comment) that must always be applied, not
-            // just when --max-direction-magnitude happens to also be overridden.
-            var defaults = JetRoverPlantConfig.Default;
-            var plantConfig = new JetRoverPlantConfig(
-                links: defaults.Links,
+            // a.ProfilePath omitted falls back to RobotArmProfile.JetRoverMeasuredDefault, the
+            // exact configuration this codebase has always run -- see RobotHostArgs.ProfilePath's
+            // own doc comment.
+            RobotArmProfile profile = a.ProfilePath != null
+                ? RobotArmProfileJson.Load(a.ProfilePath)
+                : RobotArmProfile.JetRoverMeasuredDefault;
+
+            var defaults = GenericArmPlantConfig.Default;
+            var plantConfig = new GenericArmPlantConfig(
+                profile: profile,
                 pulsePerRadian: defaults.PulsePerRadian,
-                pulsePerDegreeAssumed180: defaults.PulsePerDegreeAssumed180,
+                pulsesPerSecond: defaults.PulsesPerSecond,
                 stepSizePulses: defaults.StepSizePulses,
                 maxDirectionMagnitude: a.MaxDirectionMagnitude ?? defaults.MaxDirectionMagnitude,
                 zeroPulse: defaults.ZeroPulse,
                 minPulse: defaults.MinPulse,
                 maxPulse: defaults.MaxPulse,
-                gripperOpenDegrees: defaults.GripperOpenDegrees,
-                gripperClosedDegrees: defaults.GripperClosedDegrees,
-                lowerArmMinPulse: a.LowerArmMinPulse);
-            var plant = new JetRoverPlant(plantConfig, relay);
+                gripperOpenPulse: defaults.GripperOpenPulse,
+                gripperClosedPulse: defaults.GripperClosedPulse);
+            var plant = new GenericArmPlant(plantConfig, relay);
 
             var endpoint = new RobotEndpoint(
                 plant,
@@ -68,18 +81,21 @@ namespace Teleop.RobotHost
                 downlinkTransport: transport,
                 robotClock: clock);
 
-            // Optional second, JetRover-specific listener for pre-computed joint-angle commands
+            // Optional second listener for pre-computed joint-angle commands
             // (docs/adr/0009-jetrover-operator-side-inverse-kinematics.md) -- not a RobotEndpoint,
             // since that class is hardwired to one ICommandCodec/CommandFrame shape. Uplink-only:
             // it never replies, since a caller sending these already gets robot state feedback
             // through its own separate Cartesian connection above. Shares the same plant instance,
-            // so JetRoverPlant.CommandJointAngles's calls interleave with Command's on the one
+            // so GenericArmPlant.CommandJointAngles's calls interleave with Command's on the one
             // belief/staleness tracker -- see the ADR's documented limitation about running both
             // paths against the same robot process at the same time.
             using var jointTransport = a.JointLocalPort.HasValue
-                ? new UdpTransport(a.JointLocalPort.Value, remoteEndPoint, MaxDatagramBytes, clock)
+                ? new UdpTransport(a.JointLocalPort.Value, remoteEndPoint, MaxJointDatagramBytes, clock)
                 : null;
-            byte[]? jointRecvBuffer = jointTransport != null ? new byte[MaxDatagramBytes] : null;
+            byte[]? jointRecvBuffer = jointTransport != null ? new byte[MaxJointDatagramBytes] : null;
+            JointTarget[]? jointTargetsBuffer = jointTransport != null
+                ? new JointTarget[JointCommandCodec.MaxJointsPerMessage]
+                : null;
 
             Console.WriteLine(
                 $"Teleop.RobotHost listening on UDP :{a.LocalPort}, replying to " +
@@ -89,8 +105,8 @@ namespace Teleop.RobotHost
                 "the operator can normalize for a mismatched rate automatically " +
                 "(docs/adr/0008-clocksync-cross-rate-normalization.md).");
             Console.WriteLine(
-                $"[plant] MaxDirectionMagnitude={plantConfig.MaxDirectionMagnitude:0.##} " +
-                $"LowerArmMinPulse={plantConfig.LowerArmMinPulse}");
+                $"[plant] profile={profile.Name} JointCount={profile.JointCount} " +
+                $"MaxDirectionMagnitude={plantConfig.MaxDirectionMagnitude:0.##}");
             if (jointTransport != null)
             {
                 Console.WriteLine(
@@ -111,11 +127,11 @@ namespace Teleop.RobotHost
                 {
                     while (jointTransport.TryReceive(clock.NowTicks, jointRecvBuffer!, out int byteCount, out long _))
                     {
-                        if (JointCommandCodec.TryDecode(jointRecvBuffer.AsSpan(0, byteCount), out JointCommandFrame frame))
+                        if (JointCommandCodec.TryDecode(
+                            jointRecvBuffer.AsSpan(0, byteCount), out uint _, out long captureTicks,
+                            jointTargetsBuffer!, out int targetCount))
                         {
-                            plant.CommandJointAngles(
-                                frame.BaseYaw, frame.LowerPitch, frame.MiddlePitch, frame.UpperPitch,
-                                frame.Gripper, frame.CaptureTicks);
+                            plant.CommandJointAngles(jointTargetsBuffer!.AsSpan(0, targetCount), captureTicks);
                         }
                     }
                 }

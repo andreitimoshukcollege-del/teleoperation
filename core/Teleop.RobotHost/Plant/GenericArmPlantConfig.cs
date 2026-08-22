@@ -11,7 +11,7 @@ namespace Teleop.RobotHost.Plant
     /// real motors and has several genuinely safety- and calibration-relevant parameters -- a
     /// config struct is the right call here, not ceremony.
     ///
-    /// <see cref="PulsePerDegreeAssumed180"/> and its <c>DegreesToPulse</c> conversion are gone
+    /// <c>PulsePerDegreeAssumed180</c> and its <c>DegreesToPulse</c> conversion are gone
     /// entirely: feedback now carries raw pulse directly (docs/adr/0011), so there is no degree
     /// round-trip left to reverse.
     /// </summary>

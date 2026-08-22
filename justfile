@@ -33,6 +33,68 @@ move-arm x y z gripper="0" remote_host="100.112.90.72" remote_port="6000" local_
         --remote-host {{remote_host}} --remote-port {{remote_port}} --local-port {{local_port}} \
         --confirm-hardware-motion
 
+# Interactively author a new RobotArmProfile JSON (docs/adr/0011); answers prompts from the terminal, e.g. `just build-profile`
+build-profile output="" force="false":
+    cd core && dotnet run --project Teleop.Eval -- build-profile \
+        {{ if output != "" { "--output " + output } else { "" } }} \
+        {{ if force == "true" { "--force" } else { "" } }}
+
+# Phase-3 cross-machine ClockSync diagnostic against an already-running Teleop.RobotHost -- moves the real arm once and holds; a human must be watching the hardware
+clocksync-check remote_host="100.112.90.72" remote_port="6000" local_port="6001" rate_hz="20" duration_seconds="20":
+    cd core && dotnet run --project Teleop.Eval -- clocksync-check \
+        --remote-host {{remote_host}} --remote-port {{remote_port}} --local-port {{local_port}} \
+        --rate-hz {{rate_hz}} --duration-seconds {{duration_seconds}} \
+        --confirm-hardware-motion
+
+# Publish Teleop.RobotHost for the Jetson (linux-arm64), copy it over, and (re)start it there -- needs passwordless ssh/scp; does NOT touch the Jetson's ROS 2 nodes, see root README's JetRover section
+deploy-robothost remote_host="100.112.90.72" remote_user="jetson" operator_host="100.82.140.80" max_direction_magnitude="" profile_path="":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cd core
+    stamp=$(date +%Y%m%d-%H%M%S)
+    remote_dir="robothost_deploy_${stamp}"
+    # A relative path, not mktemp -d's /tmp/... -- dotnet here is the Windows SDK (see root
+    # CLAUDE.md's Environment section), which doesn't resolve a WSL-native absolute path passed as
+    # an argument (only the CWD gets translated), so -o would silently publish somewhere under
+    # C:\tmp instead and leave this script tarring up an empty directory.
+    publish_dir="_scratch_publish"
+    archive=$(mktemp -u --suffix=.tar.gz)
+    trap 'rm -f "$archive"; rm -rf "$publish_dir"' EXIT
+    rm -rf "$publish_dir"
+    echo "Publishing Teleop.RobotHost for linux-arm64..." >&2
+    dotnet publish Teleop.RobotHost -c Release -r linux-arm64 --self-contained false -f net8.0 -o "$publish_dir"
+    tar czf "$archive" -C "$publish_dir" .
+    echo "Copying to {{remote_user}}@{{remote_host}}:~/${remote_dir}..." >&2
+    scp -o StrictHostKeyChecking=accept-new "$archive" "{{remote_user}}@{{remote_host}}:/tmp/${remote_dir}.tar.gz"
+    extra_args=""
+    if [ -n "{{max_direction_magnitude}}" ]; then extra_args="$extra_args --max-direction-magnitude {{max_direction_magnitude}}"; fi
+    if [ -n "{{profile_path}}" ]; then extra_args="$extra_args --profile-path {{profile_path}}"; fi
+    # Deliberately a SEPARATE ssh call from the mkdir/tar/launch one below, not chained together
+    # with `;` -- `pkill -f` matches a process's FULL command line, and the remote shell executing
+    # a combined script that itself mentions "Teleop.RobotHost.dll" (in its own chmod/nohup lines)
+    # would match pkill's own pattern against ITS OWN ancestor shell, killing the script mid-run by
+    # signal (a real, reproduced failure: SSH reported "exit-signal" and the whole deploy died
+    # right after pkill ran). Isolating pkill in its own throwaway invocation means there is
+    # nothing left in that shell for a self-inflicted signal to interrupt.
+    ssh -o StrictHostKeyChecking=accept-new "{{remote_user}}@{{remote_host}}" "pkill -f 'Teleop.RobotHost.dll'" || true
+    ssh -o StrictHostKeyChecking=accept-new "{{remote_user}}@{{remote_host}}" "
+        set -e
+        mkdir -p ~/${remote_dir}
+        tar xzf /tmp/${remote_dir}.tar.gz -C ~/${remote_dir}
+        chmod +x ~/${remote_dir}/Teleop.RobotHost
+        sleep 1
+        cd ~/${remote_dir}
+        nohup ~/.dotnet/dotnet ./Teleop.RobotHost.dll \
+            --local-port 6000 --remote-host {{operator_host}} --remote-port 6001 \
+            --relay-socket /tmp/jetrover_relay.sock --local-relay-socket /tmp/teleop_robot_host.sock \
+            --joint-local-port 6002 ${extra_args} \
+            > /tmp/${remote_dir}.log 2>&1 < /dev/null &
+        disown
+        sleep 2
+        echo '--- Teleop.RobotHost startup banner ---'
+        cat /tmp/${remote_dir}.log
+    "
+
 # ---- analysis/ (python: figures, percentile tables) ----
 
 # Internal: create analysis/.venv if it doesn't exist yet (fast no-op otherwise). `.venv/` is

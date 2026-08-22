@@ -18,16 +18,18 @@ Runs on the JetRover's Jetson Nano, reachable over Tailscale.
 ## How it connects to this repo
 
 `IRobotPlant` (`core/Teleop.Core/Contracts/IRobotPlant.cs`) is Core's contract for "the robot
-being commanded." A real hardware implementation, `JetRoverPlant`, lives in a new sibling .NET
-project, `core/Teleop.RobotHost/` — **not** in `unity/`'s `Bridge/` and **not** in this
-directory. See that project's own docs (once it exists) and
-`docs/adr/0007-jetrover-plant-and-robot-host.md` for the full architecture and why.
+being commanded." A real hardware implementation, `GenericArmPlant` (originally `JetRoverPlant`,
+generalized to a configurable `RobotArmProfile` by docs/adr/0011-generic-robot-arm-profiles.md —
+the "Status" log below still says `JetRoverPlant` where that was the correct name at the time),
+lives in a new sibling .NET project, `core/Teleop.RobotHost/` — **not** in `unity/`'s `Bridge/`
+and **not** in this directory. See `docs/adr/0007-jetrover-plant-and-robot-host.md` for the
+original architecture and why, and `docs/adr/0011` for the later generalization.
 
 ```
 Teleop.RobotHost (on the Jetson)          jetrover-teleop-ros (on the Jetson)
   UdpTransport : ITransport   <-- real UDP over Tailscale, from the operator side
   RobotEndpoint (Core, unmodified)
-  JetRoverPlant : IRobotPlant
+  GenericArmPlant : IRobotPlant
       |
       | Unix domain socket, local only, tiny fixed struct (Relay/RelayProtocol.cs /
       | teleop_relay/relay_protocol.py -- must match exactly, kept in sync by hand)

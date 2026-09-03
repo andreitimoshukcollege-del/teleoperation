@@ -46,7 +46,7 @@ clocksync-check remote_host="100.112.90.72" remote_port="6000" local_port="6001"
         --rate-hz {{rate_hz}} --duration-seconds {{duration_seconds}} \
         --confirm-hardware-motion
 
-# Publish Teleop.RobotHost for the Jetson (linux-arm64), copy it over, and (re)start it there -- needs passwordless ssh/scp; does NOT touch the Jetson's ROS 2 nodes, see root README's JetRover section
+# Publish Teleop.RobotHost for the Jetson (linux-arm64), copy it over, and restart its systemd service -- needs passwordless ssh/scp; does NOT touch the Jetson's ROS 2 nodes, see robot/systemd/README.md
 deploy-robothost remote_host="100.112.90.72" remote_user="jetson" operator_host="100.82.140.80" max_direction_magnitude="" profile_path="":
     #!/usr/bin/env bash
     set -euo pipefail
@@ -69,31 +69,36 @@ deploy-robothost remote_host="100.112.90.72" remote_user="jetson" operator_host=
     extra_args=""
     if [ -n "{{max_direction_magnitude}}" ]; then extra_args="$extra_args --max-direction-magnitude {{max_direction_magnitude}}"; fi
     if [ -n "{{profile_path}}" ]; then extra_args="$extra_args --profile-path {{profile_path}}"; fi
-    # Deliberately a SEPARATE ssh call from the mkdir/tar/launch one below, not chained together
-    # with `;` -- `pkill -f` matches a process's FULL command line, and the remote shell executing
-    # a combined script that itself mentions "Teleop.RobotHost.dll" (in its own chmod/nohup lines)
-    # would match pkill's own pattern against ITS OWN ancestor shell, killing the script mid-run by
-    # signal (a real, reproduced failure: SSH reported "exit-signal" and the whole deploy died
-    # right after pkill ran). Isolating pkill in its own throwaway invocation means there is
-    # nothing left in that shell for a self-inflicted signal to interrupt.
-    ssh -o StrictHostKeyChecking=accept-new "{{remote_user}}@{{remote_host}}" "pkill -f 'Teleop.RobotHost.dll'" || true
+    # robothost-run.sh is the stable script teleop-robothost.service's ExecStart points at
+    # (robot/systemd/teleop-robothost.service) -- regenerated on every deploy with this run's exact
+    # args (including any optional extra_args), so redeploying never needs `systemctl
+    # daemon-reload` or touching the unit file itself, only `systemctl restart`. This also sidesteps
+    # the earlier pkill+nohup approach's self-inflicted-signal bug entirely (systemd owns the
+    # process lifecycle instead of a hand-rolled pkill matching its own ancestor shell).
+    ssh -o StrictHostKeyChecking=accept-new "{{remote_user}}@{{remote_host}}" "cat > /home/jetson/robothost-run.sh" <<EOF
+    #!/bin/bash
+    exec /home/jetson/.dotnet/dotnet /home/jetson/robothost_current/Teleop.RobotHost.dll \
+        --local-port 6000 --remote-host {{operator_host}} --remote-port 6001 \
+        --relay-socket /tmp/jetrover_relay.sock --local-relay-socket /tmp/teleop_robot_host.sock \
+        --joint-local-port 6002 ${extra_args}
+    EOF
     ssh -o StrictHostKeyChecking=accept-new "{{remote_user}}@{{remote_host}}" "
         set -e
         mkdir -p ~/${remote_dir}
         tar xzf /tmp/${remote_dir}.tar.gz -C ~/${remote_dir}
         chmod +x ~/${remote_dir}/Teleop.RobotHost
-        sleep 1
-        cd ~/${remote_dir}
-        nohup ~/.dotnet/dotnet ./Teleop.RobotHost.dll \
-            --local-port 6000 --remote-host {{operator_host}} --remote-port 6001 \
-            --relay-socket /tmp/jetrover_relay.sock --local-relay-socket /tmp/teleop_robot_host.sock \
-            --joint-local-port 6002 ${extra_args} \
-            > /tmp/${remote_dir}.log 2>&1 < /dev/null &
-        disown
+        ln -sfn ~/${remote_dir} ~/robothost_current
+        chmod +x ~/robothost-run.sh
+        sudo systemctl restart teleop-robothost
         sleep 2
-        echo '--- Teleop.RobotHost startup banner ---'
-        cat /tmp/${remote_dir}.log
+        echo '--- teleop-robothost.service status ---'
+        systemctl status teleop-robothost --no-pager -n 10
     "
+
+# SSH in and print systemctl status for all three Jetson-side services (teleop-robothost, jetrover-relay, jetrover-arm-control) in one shot -- see robot/systemd/README.md
+robot-status remote_host="100.112.90.72" remote_user="jetson":
+    ssh -o StrictHostKeyChecking=accept-new "{{remote_user}}@{{remote_host}}" \
+        "systemctl status teleop-robothost jetrover-relay jetrover-arm-control --no-pager -n 5"
 
 # ---- analysis/ (python: figures, percentile tables) ----
 

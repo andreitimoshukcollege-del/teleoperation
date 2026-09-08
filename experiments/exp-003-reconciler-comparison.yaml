@@ -1,0 +1,42 @@
+# The mirror image of exp-001: hold the predictor fixed and sweep the reconciler instead.
+#
+# Question: what does spreading a correction over a budget actually cost, and buy, against
+# snapping to truth? `snap` is the deliberate worst case on correction cost (Reconciliation/
+# CLAUDE.md: "measure how bad it is, don't skip it") and docs/metrics.md §8 requires it in every
+# comparison, so it is the baseline row here rather than an omission.
+#
+# Reads together as: correction magnitude is near-identical across both (same predictor, same
+# disagreements, same PoseMath definitions), so any difference is entirely in how the correction
+# is *spent* -- jerk_mm_s3 and time_to_convergence_ms. Those two are the tradeoff this axis
+# exists to characterise.
+#
+# Predictor held at double-exp, not none: with `none` the displayed pose is the last observation,
+# so corrections arrive as one large step per sample and the reconcilers are being compared on a
+# signal no real configuration produces. double-exp is the strongest baseline predictor available
+# (Prediction/CLAUDE.md), which makes the residual disagreements realistic.
+#
+# Same seeds and same five honest profiles as exp-001 (docs/adr/0004), so the two experiments'
+# rows sit on comparable axes. Schema in experiments/CLAUDE.md.
+id: exp-003-reconciler-comparison
+seeds: [1, 2, 3, 4, 5]
+predictors:
+  - double-exp
+reconcilers:
+  - snap
+  - spring
+networkProfiles:
+  - lan
+  - 50ms-5j
+  - 150ms-20j-0.5loss
+  - 300ms-60j-2loss-bursty
+  - synthetic-burst
+trialSteps: 500
+stepIntervalTicks: 100000
+# The reconciler operating point, stated explicitly rather than inherited from the default,
+# because it is what the jerk-versus-convergence-time result is conditional on. 100 ms is ten
+# frames at this step interval: long enough for a smoothed reconciler to actually spread a
+# correction, short enough that it usually finishes before the next one arrives. `snap` ignores
+# all three fields, so its rows are unaffected by them.
+convergenceBudgetMs: 100
+maxCorrectionLinearSpeedMetersPerSecond: 5
+maxCorrectionAngularSpeedRadiansPerSecond: 10

@@ -14,16 +14,49 @@ namespace Teleop.Eval.Sweep
     /// </summary>
     public static class ManifestWriter
     {
-        public static void Write(string path, ExperimentConfig config, string configPath, string commandLine)
+        public static void Write(
+            string path,
+            ExperimentConfig config,
+            IReadOnlyList<ResolvedStack> stacks,
+            string configPath,
+            string commandLine)
         {
             var manifest = new
             {
                 experimentId = config.Id,
                 gitSha = TryGetGitSha(),
                 seeds = config.Seeds,
+
+                // The fully-resolved stacks, one per results subdirectory.
+                // analysis/teleop_analysis/manifest.py has always preferred this shape and only
+                // falls back to synthesizing stacks from a flat predictors/reconciler pair when it
+                // is absent -- so emitting it needs no Python change and turns on the
+                // stack-comparison figures. Property names must match that reader exactly.
+                stacks = stacks.Select(stack => new
+                {
+                    name = stack.Name,
+                    predictor = stack.Predictor,
+                    reconciler = stack.Reconciler,
+                    playoutPolicy = stack.PlayoutPolicy,
+                    arbiter = stack.Arbiter,
+                }).ToList(),
+
                 predictors = config.Predictors,
-                reconciler = config.Reconciler,
+
+                // Plural, resolved from whichever spelling the YAML used. The old singular
+                // `reconciler` key is deliberately not written any more: with a reconciler sweep
+                // there is no single value it could honestly hold, and a field that is correct only
+                // for some runs is worse than one that is absent. Readers should use `stacks`.
+                reconcilers = config.ResolveReconcilers(),
+
                 networkProfiles = config.NetworkProfiles,
+
+                // The reconciler operating point. Recorded because results/CLAUDE.md requires the
+                // manifest to be self-contained: a jerk-versus-convergence-time figure is
+                // uninterpretable without knowing the budget it was produced under.
+                convergenceBudgetMs = config.ConvergenceBudgetMs,
+                maxCorrectionLinearSpeedMetersPerSecond = config.MaxCorrectionLinearSpeedMetersPerSecond,
+                maxCorrectionAngularSpeedRadiansPerSecond = config.MaxCorrectionAngularSpeedRadiansPerSecond,
                 trialSteps = config.TrialSteps,
                 stepIntervalTicks = config.StepIntervalTicks,
                 configPath,

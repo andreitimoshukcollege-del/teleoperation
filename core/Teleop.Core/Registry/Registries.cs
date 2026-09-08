@@ -65,6 +65,8 @@ namespace Teleop.Core.Registry
             {
                 ["snap"] = (config, metrics, clock) => new SnapReconciler(config, metrics, clock),
                 ["spring"] = (config, metrics, clock) => new SpringReconciler(config, metrics, clock),
+                ["budget-blend"] = (config, metrics, clock) => new TimeBudgetedBlendReconciler(config, metrics, clock),
+                ["velocity-match"] = (config, metrics, clock) => new VelocityMatchedReconciler(config, metrics, clock),
             };
 
         /// <summary><see cref="ICommandCodec"/> factories.</summary>

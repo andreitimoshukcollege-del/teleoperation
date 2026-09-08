@@ -412,6 +412,94 @@ public class SpringReconcilerTests
         return maxStep;
     }
 
+    /// <summary>
+    /// <b>The display is held for exactly one frame at a correction, and that is deliberate.</b>
+    /// Pinned here because it is a genuine C1 violation that was measured, found to be the better
+    /// of the two available behaviours, and kept — not an oversight.
+    ///
+    /// Seeding the offset from the previous frame's displayed pose cancels the predictor's
+    /// correction jump <i>exactly, by construction</i>: whatever the predictor did, the display is
+    /// pinned to where it already was. The cost is that the predictor's genuine motion over that
+    /// frame is cancelled too, so the display freezes for one frame — an O(1) velocity dropout that
+    /// does not shrink as the frame interval falls.
+    ///
+    /// The obvious alternative — advance the offset, then apply the disagreement measured in
+    /// <c>Observe</c> (<c>offset -= error</c>) — was implemented across all three reconcilers and
+    /// swept on 2026-09-08. It is worse. The error is measured at <i>capture</i> time against
+    /// <c>predictedAtCapture</c>, while the predictor's actual jump lands at <i>now</i> after it
+    /// re-anchors and extrapolates, so the mismatch leaks a residual step onto every correction
+    /// frame. That residual scales with correction frequency: jerk p99 improved 97% on <c>lan</c>
+    /// (~75 corrections) but regressed 81–865% on the impaired profiles (~526 and ~625), and the
+    /// spread between the three reconcilers collapsed from 2.8–3.7x to <b>1.01x</b> — the metric
+    /// stopped measuring the convergence law and started measuring the shared artifact. See
+    /// <c>Reconciliation/CLAUDE.md</c>.
+    ///
+    /// Removing the hold properly needs exact cancellation <i>and</i> motion continuity, which
+    /// means advancing the displayed pose by the predictor's estimated rate before seeding. That is
+    /// a real change and an open question, not something to patch in casually.
+    /// </summary>
+    [Fact]
+    public void TheDisplayIsHeldForOneFrameAtACorrection_ADeliberateTradeoff()
+    {
+        var fixture = new Fixture();
+        const float PerFrame = 0.01f;
+
+        for (int frame = 0; frame < 4; frame++)
+        {
+            fixture.Reconciler.Reconcile(PoseAt(frame * PerFrame), frame * FrameTicks);
+        }
+
+        fixture.Reconciler.Observe(
+            new Stamped<Pose>(3 * FrameTicks, PoseAt(3 * PerFrame + CorrectionMeters)),
+            PoseAt(3 * PerFrame),
+            PredictorDiagnostics.None);
+
+        Pose atSeedFrame = fixture.Reconciler.Reconcile(
+            PoseAt(4 * PerFrame + CorrectionMeters), 4 * FrameTicks);
+
+        // Held: the display is exactly where it was, despite the predictor advancing a full frame
+        // and absorbing a correction. This is the exact-cancellation property being bought.
+        Assert.Equal(3 * PerFrame, atSeedFrame.Position.X, 5);
+    }
+
+    /// <summary>
+    /// The same hold across a retarget — a second correction arriving mid-decay, which is the
+    /// common case on a lossy link. Kept for the reason the onset test above documents.
+    /// </summary>
+    [Fact]
+    public void TheDisplayIsHeldForOneFrameAtARetarget_ADeliberateTradeoff()
+    {
+        var fixture = new Fixture();
+        const float PerFrame = 0.01f;
+
+        for (int frame = 0; frame < 4; frame++)
+        {
+            fixture.Reconciler.Reconcile(PoseAt(frame * PerFrame), frame * FrameTicks);
+        }
+
+        fixture.Reconciler.Observe(
+            new Stamped<Pose>(3 * FrameTicks, PoseAt(3 * PerFrame + CorrectionMeters)),
+            PoseAt(3 * PerFrame),
+            PredictorDiagnostics.None);
+
+        Pose before = PoseAt(0f);
+        for (int frame = 4; frame < 6; frame++)
+        {
+            before = fixture.Reconciler.Reconcile(
+                PoseAt(frame * PerFrame + CorrectionMeters), frame * FrameTicks);
+        }
+
+        fixture.Reconciler.Observe(
+            new Stamped<Pose>(5 * FrameTicks, PoseAt(5 * PerFrame + 2f * CorrectionMeters)),
+            PoseAt(5 * PerFrame + CorrectionMeters),
+            PredictorDiagnostics.None);
+
+        Pose atRetarget = fixture.Reconciler.Reconcile(
+            PoseAt(6 * PerFrame + 2f * CorrectionMeters), 6 * FrameTicks);
+
+        Assert.Equal(before.Position.X, atRetarget.Position.X, 5);
+    }
+
     // ---- 6. Correction-cost metrics ----
 
     /// <summary>

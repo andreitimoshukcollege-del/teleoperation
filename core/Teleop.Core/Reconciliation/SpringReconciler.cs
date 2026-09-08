@@ -28,12 +28,29 @@ namespace Teleop.Core.Reconciliation
     /// which makes the displayed pose converge onto the corrected prediction rather than onto a stale
     /// sample. Decaying toward zero is therefore convergence toward <i>truth</i>, not away from it.
     ///
-    /// <b>C1 continuity, and how it survives a retarget.</b> The offset's velocity is carried across
-    /// re-seeding rather than reset, so a second correction arriving mid-flight bends the trajectory
-    /// instead of restarting it. Combined with a critically damped response whose velocity is zero at
-    /// onset (<c>x'(0) = 0</c> when seeded from rest), the displayed position is continuous and so is
-    /// its first derivative -- the full <see cref="IReconciler{TState}"/> C1 clause, which every
-    /// reconciler except <c>snap</c> owes its callers.
+    /// <b>C1 continuity, with one documented exception.</b> Through the decay itself the output is
+    /// C1: the offset's velocity is carried across re-seeding rather than reset, so a second
+    /// correction arriving mid-flight bends the trajectory instead of restarting it, and a critically
+    /// damped response seeded from rest has <c>x'(0) = 0</c>.
+    ///
+    /// The exception is the correction frame itself. Seeding the offset from the <i>previous
+    /// frame's</i> displayed pose cancels the predictor's jump exactly by construction -- but it
+    /// cancels the predictor's genuine motion over that frame too, so <b>the display is held for
+    /// exactly one frame at every onset and retarget</b>. That is an O(1) velocity dropout which does
+    /// not shrink as the frame interval falls, i.e. a real C1 violation rather than a sampling
+    /// artifact.
+    ///
+    /// It is kept deliberately, because the obvious alternative is measurably worse. Advancing the
+    /// offset and then applying the disagreement measured in <see cref="Observe"/>
+    /// (<c>offset -= error</c>) was implemented across all three smoothed reconcilers and swept:
+    /// the error is measured at <i>capture</i> time while the predictor's jump lands at <i>now</i>,
+    /// after it re-anchors and extrapolates, so the mismatch leaks a residual step onto every
+    /// correction frame. Jerk p99 improved 97% where corrections are rare and regressed 81-865%
+    /// where they are frequent, and the spread between the three reconcilers collapsed to 1.01x --
+    /// the metric stopped discriminating between convergence laws at all. Removing the hold properly
+    /// requires exact cancellation <i>and</i> motion continuity, which means advancing the displayed
+    /// pose by the predictor's estimated rate before seeding. See <c>Reconciliation/CLAUDE.md</c>'s
+    /// "Tried and rejected" and the tests named <c>..._ADeliberateTradeoff</c>.
     ///
     /// <b>Bounded convergence, and its stated bound.</b> The closed-form critically damped envelope is
     /// <c>|o(t)| = |o0| (1 + wt) e^(-wt)</c>. <see cref="ReconcilerConfig.MaxTimeToConvergenceTicks"/>

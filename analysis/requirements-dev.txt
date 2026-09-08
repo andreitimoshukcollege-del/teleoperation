@@ -4,3 +4,8 @@ wheel==0.48.0
 # `pip install -e . --no-build-isolation` needs a build backend present in the venv, and
 # Python 3.12+ venvs no longer seed setuptools the way older ones did.
 setuptools==84.0.0
+
+# Not an analysis dependency: it generates docs/Teleop-Research-Documentation.docx via
+# scripts/research-doc.py. It lives here because analysis/.venv is the repository's only Python
+# environment, and a second venv for one script would be worse than this note.
+python-docx==1.2.0

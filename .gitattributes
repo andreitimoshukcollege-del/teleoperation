@@ -29,6 +29,13 @@
 *.csv text eol=lf
 *.tlog text eol=lf
 
+# Word documents are ZIP archives. `binary` is -text -diff -merge: no line-ending rewriting
+# (which corrupts them), and no attempted auto-merge (which corrupts them worse -- a conflict here
+# has to be resolved by choosing a version, not by blending two). Deliberately NOT LFS-tracked:
+# docs/Teleop-Research-Documentation.docx is hand-edited often and small, and LFS pointers are a
+# trap on any machine whose shell lacks git-lfs.
+*.docx binary
+
 # Binaries -> LFS
 *.fbx   filter=lfs diff=lfs merge=lfs -text
 *.blend filter=lfs diff=lfs merge=lfs -text

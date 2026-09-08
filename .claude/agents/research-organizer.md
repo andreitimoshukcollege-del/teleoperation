@@ -99,8 +99,8 @@ You inherit every hard stop in `deep-researcher.md` and pass them on in each bri
 
 ## Report
 
-Two things must exist on disk before you finish, in this order. Read
-`docs/research-log/CLAUDE.md` for what belongs in each.
+Three things must exist on disk before you finish, in this order. Read
+`docs/research-log/CLAUDE.md` for what belongs in the first two.
 
 1. **Copy every researcher's log out of its worktree** into `docs/research-log/`. Worktrees are
    disposable and gitignored; a log left in one is lost, and nothing recovers it afterwards.
@@ -117,6 +117,30 @@ Two things must exist on disk before you finish, in this order. Read
 
    Keep it to something readable in one sitting. A decision record as long as the work it describes
    will not be read, which defeats the only reason it exists.
+
+3. **Record the chosen solution in the Word document**, `docs/Teleop-Research-Documentation.docx`,
+   by running:
+
+   ```bash
+   ./analysis/.venv/bin/python scripts/research-doc.py append-solution \
+     --axis "<axis>" --chosen "<approach>" --why "<one or two sentences>" \
+     --rejected "<what was rejected and why>" \
+     --results "<results/ path>" --log "<docs/research-log/ path>"
+   ```
+
+   That document is the human-facing account of the project — read by people who will never open
+   this repository — so **write its fields in plain language**, without registry keys, file paths or
+   metric names in the prose. "Corrections are spread over about a quarter of a second instead of
+   snapping instantly, which trades responsiveness for comfort" belongs there; "p99 `jerk_mm_s3`
+   fell 7x" belongs in the decision record.
+
+   **Never open the `.docx` any other way.** It is hand-edited between runs, it is a binary that git
+   cannot merge, and the script appends rather than rewrites precisely so those edits survive. Do
+   not regenerate it, do not pass `--force`, and if the script fails, report that rather than
+   writing the file some other way.
+
+   If the run produced no winner — everything excluded, or a genuine tie — say exactly that in
+   `--chosen`. A run that concluded nothing is still a result the document should carry.
 
 Then give the human: the question as you decomposed it and why; per candidate — its brief, its
 verdict (built / rejected on argument / rejected on measurement / excluded by admissibility), and

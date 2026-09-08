@@ -81,21 +81,15 @@ namespace Teleop.Core.Reconciliation
 
         private const double MillisecondsPerSecond = 1000.0;
 
-        /// <summary>
-        /// Samples of displayed position retained for the jerk estimate. Three, because a third
-        /// derivative needs four points: these three plus the one being produced. Not a research
-        /// knob -- it is the arity of the finite difference.
-        /// </summary>
-        private const int JerkHistoryLength = 3;
-
         private readonly float _positionTolerance;
         private readonly float _orientationTolerance;
         private readonly IMetricSink _metrics;
-        private readonly long _ticksPerSecond;
 
-        private readonly Vector3[] _historyPositions;
-        private readonly long[] _historyTicks;
-        private int _historyCount;
+        /// <summary>
+        /// Shared with every other reconciler so that <c>jerk_mm_s3</c> means one thing across the
+        /// axis being compared -- see <see cref="DisplayedJerkEstimator"/> for why that matters.
+        /// </summary>
+        private readonly DisplayedJerkEstimator _jerk;
 
         private bool _hasPendingCorrection;
         private Pose _pendingTarget;
@@ -157,10 +151,7 @@ namespace Teleop.Core.Reconciliation
             _positionTolerance = config.ConvergencePositionToleranceMeters;
             _orientationTolerance = config.ConvergenceOrientationToleranceRadians;
             _metrics = metrics;
-            _ticksPerSecond = clock.TicksPerSecond;
-
-            _historyPositions = new Vector3[JerkHistoryLength];
-            _historyTicks = new long[JerkHistoryLength];
+            _jerk = new DisplayedJerkEstimator(clock.TicksPerSecond);
 
             ClearCorrectionState();
         }
@@ -268,16 +259,20 @@ namespace Teleop.Core.Reconciliation
         /// a repeat call at an already-seen tick ignores <paramref name="predicted"/> entirely, even
         /// if a different value is passed.
         ///
-        /// Emits, on the frame a correction is applied:
+        /// Emits:
         /// <list type="bullet">
-        /// <item><c>time_to_convergence_ms</c> = 0. Convergence completes inside the call that
-        /// begins it, so the elapsed time is genuinely zero rather than unmeasured -- the tightest
-        /// bound <see cref="IReconciler{TState}"/> permits, and the value every smoothed reconciler's
-        /// figure should be read against.</item>
-        /// <item><c>jerk_mm_s3</c>, from the four most recent displayed positions. Emitted only once
-        /// four are available (three retained plus this one); before that a third derivative would be
-        /// an invented number, and inventing one at the start of every trial would bias the metric
-        /// exactly where the trial is least representative.</item>
+        /// <item><c>jerk_mm_s3</c> on <b>every</b> advancing frame, correction or pass-through, from
+        /// the four most recent displayed positions -- only once four are available (three retained
+        /// plus this one), since before that a third derivative would be an invented number and
+        /// inventing one at the start of every trial would bias the metric exactly where the trial
+        /// is least representative. Every frame rather than every correction because
+        /// docs/metrics.md §5 defines jerk as a property of the displayed trajectory; see
+        /// <see cref="Reconcile"/>'s body for why the narrower cadence made this reconciler
+        /// incomparable with a smoothed one.</item>
+        /// <item><c>time_to_convergence_ms</c> = 0, on the frame a correction is applied.
+        /// Convergence completes inside the call that begins it, so the elapsed time is genuinely
+        /// zero rather than unmeasured -- the tightest bound <see cref="IReconciler{TState}"/>
+        /// permits, and the value every smoothed reconciler's figure should be read against.</item>
         /// </list>
         ///
         /// The jerk history is pushed on <b>every</b> advancing call, corrections and pass-throughs
@@ -296,21 +291,28 @@ namespace Teleop.Core.Reconciliation
             Pose output = applied ? _pendingTarget : predicted;
             _hasPendingCorrection = false;
 
-            bool hasJerk = TryComputeJerkMillimetresPerSecondCubed(
+            bool hasJerk = _jerk.TryCompute(
                 output.Position, nowTicks, out double jerkMillimetresPerSecondCubed);
 
-            PushDisplayedPosition(output.Position, nowTicks);
+            _jerk.Push(output.Position, nowTicks);
             _lastReconcileTicks = nowTicks;
             _lastOutput = output;
+
+            // Jerk is emitted on every advancing frame, correction or pass-through, because
+            // docs/metrics.md §5 defines it as the third derivative of *displayed* position -- a
+            // property of the trajectory, not of a correction event. Emitting it only on
+            // correction frames made this reconciler's sample set incomparable with any reconciler
+            // that spreads a correction over many frames: `snap` contributed one sample per
+            // correction and `spring` contributed ~100, so pooled percentiles were comparing
+            // different populations rather than different reconcilers.
+            if (hasJerk)
+            {
+                _metrics.Record(JerkMetric, jerkMillimetresPerSecondCubed, nowTicks);
+            }
 
             if (applied)
             {
                 _metrics.Record(TimeToConvergenceMsMetric, 0.0, nowTicks);
-
-                if (hasJerk)
-                {
-                    _metrics.Record(JerkMetric, jerkMillimetresPerSecondCubed, nowTicks);
-                }
             }
 
             return output;
@@ -333,112 +335,12 @@ namespace Teleop.Core.Reconciliation
 
         private void ClearCorrectionState()
         {
-            _historyCount = 0;
+            _jerk.Reset();
             _hasPendingCorrection = false;
             _pendingTarget = Pose.Identity;
             _lastAcceptedCaptureTicks = long.MinValue;
             _lastReconcileTicks = long.MinValue;
             _lastOutput = Pose.Identity;
-        }
-
-        /// <summary>
-        /// Appends a displayed position to the three-slot history, dropping the oldest when full.
-        /// A shift over three elements rather than a ring index: at this length it is cheaper than
-        /// the modulo bookkeeping and leaves the array in oldest-first order, which is what the
-        /// finite difference wants.
-        /// </summary>
-        private void PushDisplayedPosition(in Vector3 position, long nowTicks)
-        {
-            if (_historyCount < JerkHistoryLength)
-            {
-                _historyPositions[_historyCount] = position;
-                _historyTicks[_historyCount] = nowTicks;
-                _historyCount++;
-                return;
-            }
-
-            for (int i = 0; i < JerkHistoryLength - 1; i++)
-            {
-                _historyPositions[i] = _historyPositions[i + 1];
-                _historyTicks[i] = _historyTicks[i + 1];
-            }
-
-            _historyPositions[JerkHistoryLength - 1] = position;
-            _historyTicks[JerkHistoryLength - 1] = nowTicks;
-        }
-
-        /// <summary>
-        /// Third derivative of displayed position at <paramref name="nowTicks"/>, in mm/s³
-        /// (docs/metrics.md §5), from the three retained samples plus the one about to be displayed.
-        /// Returns false when fewer than three are retained.
-        ///
-        /// Computed as a cascade of central differences on <b>unequally spaced</b> samples, which is
-        /// what a frame schedule actually produces: three velocities located at the midpoints of the
-        /// three intervals, two accelerations at the midpoints of those, and one jerk from the two
-        /// accelerations. Every division is by a strictly positive interval, since
-        /// <see cref="Reconcile"/> only pushes on strictly increasing ticks.
-        ///
-        /// Accumulated in <c>double</c>, per <see cref="IMetricSink.Record"/>'s note that the
-        /// parameter is <c>double</c> "so tick differences and jerk values survive without precision
-        /// loss": a snap divides a metre-scale step by a millisecond-scale interval three times, and
-        /// the intermediate magnitudes leave little of a float's mantissa.
-        /// </summary>
-        private bool TryComputeJerkMillimetresPerSecondCubed(
-            in Vector3 position, long nowTicks, out double jerkMillimetresPerSecondCubed)
-        {
-            if (_historyCount < JerkHistoryLength)
-            {
-                jerkMillimetresPerSecondCubed = 0.0;
-                return false;
-            }
-
-            // Seconds relative to the oldest retained sample. Relative, so the absolute tick
-            // magnitude never enters the arithmetic.
-            long originTicks = _historyTicks[0];
-            double t0 = 0.0;
-            double t1 = (_historyTicks[1] - originTicks) / (double)_ticksPerSecond;
-            double t2 = (_historyTicks[2] - originTicks) / (double)_ticksPerSecond;
-            double t3 = (nowTicks - originTicks) / (double)_ticksPerSecond;
-
-            Vector3 p0 = _historyPositions[0];
-            Vector3 p1 = _historyPositions[1];
-            Vector3 p2 = _historyPositions[2];
-
-            double jerkX = Jerk1D(p0.X, p1.X, p2.X, position.X, t0, t1, t2, t3);
-            double jerkY = Jerk1D(p0.Y, p1.Y, p2.Y, position.Y, t0, t1, t2, t3);
-            double jerkZ = Jerk1D(p0.Z, p1.Z, p2.Z, position.Z, t0, t1, t2, t3);
-
-            double magnitudeMetresPerSecondCubed =
-                Math.Sqrt(jerkX * jerkX + jerkY * jerkY + jerkZ * jerkZ);
-
-            jerkMillimetresPerSecondCubed = magnitudeMetresPerSecondCubed * MetresToMillimetres;
-            return true;
-        }
-
-        /// <summary>
-        /// One axis of the unequally-spaced third derivative described on
-        /// <see cref="TryComputeJerkMillimetresPerSecondCubed"/>. Positions in metres, times in
-        /// seconds, result in metres/second³.
-        /// </summary>
-        private static double Jerk1D(
-            double p0, double p1, double p2, double p3,
-            double t0, double t1, double t2, double t3)
-        {
-            double v01 = (p1 - p0) / (t1 - t0);
-            double v12 = (p2 - p1) / (t2 - t1);
-            double v23 = (p3 - p2) / (t3 - t2);
-
-            double tv01 = 0.5 * (t0 + t1);
-            double tv12 = 0.5 * (t1 + t2);
-            double tv23 = 0.5 * (t2 + t3);
-
-            double a0 = (v12 - v01) / (tv12 - tv01);
-            double a1 = (v23 - v12) / (tv23 - tv12);
-
-            double ta0 = 0.5 * (tv01 + tv12);
-            double ta1 = 0.5 * (tv12 + tv23);
-
-            return (a1 - a0) / (ta1 - ta0);
         }
     }
 }

@@ -12,16 +12,21 @@ usable at all: a hard snap on correction is nausea, regardless of how good the p
 | Name | File | Notes |
 |---|---|---|
 | `snap` | `SnapReconciler.cs` | jump to truth. The baseline — measure how bad it is, don't skip it |
+| `spring` | `SpringReconciler.cs` | critically damped decay of a residual offset; no overshoot, C1, converges within `MaxTimeToConvergenceTicks` to a stated 1% envelope |
+
+`DisplayedJerkEstimator.cs` is in this folder but is **not** a reconciler and has no registry
+entry: it is the shared `jerk_mm_s3` cascade (docs/metrics.md §5) that every reconciler here
+delegates to, so the axis is compared on one jerk definition rather than one per implementation.
 
 Keep this table current — it previously overclaimed `exp-smooth`/`spring`/`budget-blend`/
-`velocity-match`/`rollback` as implemented; they are **planned, not built** — see below.
+`velocity-match`/`rollback` as implemented. `spring` is now real; the rest remain **planned, not
+built** — see below.
 
 ## Planned, not yet implemented
 
 | Name | File | Notes |
 |---|---|---|
-| `exp-smooth` | `ExponentialSmoothingReconciler.cs` | one time constant; simple, biased |
-| `spring` | `SpringReconciler.cs` | critically damped; no overshoot |
+| `exp-smooth` | `ExponentialSmoothingReconciler.cs` | one time constant; simple, biased. **Note:** a single-time-constant lag is C0 but *not* C1 — its offset velocity steps from 0 at correction onset — so building it needs requirement 2 amended to cover it as a second quantified exception, the way `snap` is. Unresolved; that is why `spring` was built first |
 | `budget-blend` | `TimeBudgetedBlendReconciler.cs` | guarantees convergence within N ms |
 | `velocity-match` | `VelocityMatchedReconciler.cs` | corrects position while preserving apparent motion |
 | `rollback` | `RollbackReconciler.cs` | rewind to authoritative state, re-apply buffered inputs (GGPO-style) |

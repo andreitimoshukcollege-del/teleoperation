@@ -94,8 +94,55 @@ namespace Teleop.Bridge
         private LatencyTrace _pendingTrace;
         private bool _hasPendingTrace;
 
+        /// <summary>
+        /// How long since the last received downlink reply before <see cref="Status"/> reports
+        /// <see cref="ConnectionStatus.Stale"/> instead of <see cref="ConnectionStatus.Connected"/>
+        /// -- generous headroom above the current ~20-48Hz <see cref="JetRoverArmConfig.CommandRateHz"/>
+        /// range while still surfacing a real drop (a Teleop.RobotHost restart, a Jetson reboot,
+        /// a network partition) within about a second, not many seconds later.
+        /// </summary>
+        private const float StaleAfterSeconds = 1f;
+
+        private long _lastStateReceivedTicks;
+
         /// <summary>True once at least one downlink reply has ever been received -- a simple, cheap signal that Teleop.RobotHost is actually reachable, mirroring MoveArmCommand's own everObservedAnyState diagnostic.</summary>
         public bool HasReceivedAnyState { get; private set; }
+
+        /// <summary>
+        /// Whether this bridge has ever heard back from the real robot, and if so, whether that
+        /// contact is still fresh. There is no handshake or persistent "connection" to query here
+        /// (UDP has none, and this class sends every tick unconditionally regardless of replies --
+        /// see this class's own doc) -- this is a read of recency, not a live socket state.
+        /// Recovery after a drop needs no code of its own: sending never stops, so once
+        /// Teleop.RobotHost/the Jetson-side nodes come back, this flips back to
+        /// <see cref="ConnectionStatus.Connected"/> on its own the next time a reply arrives.
+        /// </summary>
+        public enum ConnectionStatus
+        {
+            /// <summary>No downlink reply has ever been received since this bridge started.</summary>
+            NeverConnected,
+
+            /// <summary>A reply arrived within the last <see cref="StaleAfterSeconds"/>.</summary>
+            Connected,
+
+            /// <summary>At least one reply arrived once, but not within the last <see cref="StaleAfterSeconds"/>.</summary>
+            Stale,
+        }
+
+        /// <summary>See <see cref="ConnectionStatus"/>'s own doc.</summary>
+        public ConnectionStatus Status
+        {
+            get
+            {
+                if (!HasReceivedAnyState)
+                {
+                    return ConnectionStatus.NeverConnected;
+                }
+
+                float secondsSinceLastReply = (_clock.NowTicks - _lastStateReceivedTicks) / (float)_clock.TicksPerSecond;
+                return secondsSinceLastReply < StaleAfterSeconds ? ConnectionStatus.Connected : ConnectionStatus.Stale;
+            }
+        }
 
         private void Awake()
         {
@@ -189,6 +236,7 @@ namespace Teleop.Bridge
             while (_operatorEndpoint.TryReceiveState(now, out LatencyTrace completedTrace))
             {
                 HasReceivedAnyState = true;
+                _lastStateReceivedTicks = now;
                 _pendingTrace = completedTrace;
                 _hasPendingTrace = true;
             }

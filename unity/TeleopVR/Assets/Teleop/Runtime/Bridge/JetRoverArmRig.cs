@@ -101,6 +101,42 @@ namespace Teleop.Bridge
             }
         }
 
+#if UNITY_EDITOR
+        /// <summary>
+        /// A second, stronger guard against the exact scene-wiring mistake <see cref="BaseAnchor"/>'s
+        /// own fallback already warns about at runtime -- that runtime warning alone was NOT enough
+        /// to prevent this from regressing once already (found again 2026-09-04, after the field
+        /// was added 2026-08-17 but the scene never got it wired), because it only fires once Play
+        /// is already running and the bug is already live, easy to miss among other Console noise.
+        /// This runs in the Editor the moment this component is touched or the scene is loaded --
+        /// no Play required -- and logs a hard error, not a warning, for the same two failure shapes:
+        /// left unassigned, or pointing at a Transform this class itself rotates
+        /// (<see cref="baseYawPivot"/> or this component's own <see cref="Component.transform"/>).
+        /// `#if UNITY_EDITOR` keeps this out of player builds entirely, matching Core's own
+        /// "no reflection, no editor-only code in the runtime path" spirit even though this file
+        /// already isn't part of Core.
+        /// </summary>
+        private void OnValidate()
+        {
+            if (baseAnchor == null)
+            {
+                Debug.LogError(
+                    $"{nameof(JetRoverArmRig)}.{nameof(baseAnchor)} is not assigned on '{name}' -- " +
+                    $"required, see {nameof(BaseAnchor)}'s own doc comment. The arm will oscillate " +
+                    "between two poses at runtime until this is fixed.", this);
+            }
+            else if (baseAnchor == baseYawPivot || baseAnchor == transform)
+            {
+                Debug.LogError(
+                    $"{nameof(JetRoverArmRig)}.{nameof(baseAnchor)} on '{name}' is assigned to a " +
+                    $"Transform this class itself rotates ({nameof(baseYawPivot)} or this " +
+                    $"component's own transform) -- this is the exact self-referential setup " +
+                    $"{nameof(BaseAnchor)}'s own doc describes as a real, already-found oscillation " +
+                    "bug. Assign a separate, never-rotated Transform instead.", this);
+            }
+        }
+#endif
+
         /// <summary>
         /// Applies one set of joint angles (radians, Core convention) to the rig's pivots and
         /// updates the reach-clamp warning color. Called from <see cref="JetRoverOperatorBridge"/>

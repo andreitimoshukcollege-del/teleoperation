@@ -13,6 +13,9 @@ predictors:                          # Registry/Registries.cs Predictors keys
   - const-vel
   - double-exp
 reconciler: snap                     # a single Reconcilers key, held fixed
+                                     # -- or `reconcilers: [snap, spring]` for a reconciler
+                                     #    study. Exactly one of the two spellings; both is
+                                     #    rejected, since which wins would be unguessable
 networkProfiles:                     # Sweep/NetworkProfileCatalog names
   - lan
   - 50ms-5j
@@ -21,11 +24,26 @@ networkProfiles:                     # Sweep/NetworkProfileCatalog names
   - synthetic-burst
 trialSteps: 500                      # command-submission steps per trial
 stepIntervalTicks: 100000            # ticks between steps (100,000 @ 10,000,000 ticks/sec = 10ms)
+
+# The reconciler operating point. Optional; these are the defaults. All three are ignored by
+# `snap`, so a predictor study can omit them entirely.
+convergenceBudgetMs: 100             # time a smoothed reconciler gets to absorb a correction
+maxCorrectionLinearSpeedMetersPerSecond: 5    # bounds apparent motion; overrides the budget
+maxCorrectionAngularSpeedRadiansPerSecond: 10
 ```
 
-Deliberately minimal — just what `exp-001-predictor-baseline.yaml` needs. Extend it (a delay
-distribution shape, a task script, a codec axis) only when an actual experiment needs the field,
-per the same "no invented knobs" reasoning `Types/PredictorConfig.cs` gives for its own fields.
+Deliberately minimal — just what the numbered experiments need. Extend it (a delay distribution
+shape, a task script, a codec axis) only when an actual experiment needs the field, per the same
+"no invented knobs" reasoning `Types/PredictorConfig.cs` gives for its own fields.
+
+The reconciler fields earned their place that way rather than by anticipation: they were
+hardcoded in `SweepCommand` while `snap` was the only reconciler and ignored all of them, and the
+hardcoded budget turned out to be one full second against a 10 ms frame — which left a smoothed
+reconciler essentially never converged and made `time_to_convergence_ms` measure "how long until
+corrections stopped arriving" instead of a response time. A reconciler study cannot state its own
+operating point unless these are in the config. Tolerances are still hardcoded, because they
+decide what counts as a correction at all rather than how one is spent, and no experiment needs
+to vary that yet.
 
 ## Requirements
 
@@ -33,7 +51,7 @@ per the same "no invented knobs" reasoning `Types/PredictorConfig.cs` gives for 
    studies vary only the reconciler — same predictor, same trace, same seed") generalizes: a
    predictor study holds the reconciler fixed (as `exp-001` does), a reconciler study holds the
    predictor fixed. Mixing both in one sweep produces a result nobody can attribute correctly.
-2. **Every `predictors`/`reconciler` entry must resolve in `Registry/Registries.cs`**, and every
+2. **Every `predictors`/`reconciler`/`reconcilers` entry must resolve in `Registry/Registries.cs`**, and every
    `networkProfiles` entry in `Sweep/NetworkProfileCatalog.cs` — `sweep` validates both before
    running anything and fails loudly (exit 1) rather than skipping an unresolvable entry.
 3. **Multiple seeds, always.** `docs/metrics.md` §8: "Never declare a winner from a single seed."

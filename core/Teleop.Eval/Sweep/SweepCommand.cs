@@ -83,30 +83,36 @@ namespace Teleop.Eval.Sweep
             // state and running them concurrently is safe. Seeds within one pair stay sequential
             // on purpose -- they'd otherwise be multiple threads calling the same CsvMetricSink's
             // non-thread-safe StreamWriter.WriteLine concurrently, corrupting metrics.csv.
-            var configPairs = new List<(string Predictor, string Profile)>();
-            foreach (string predictorName in config.Predictors)
+            List<ResolvedStack> stacks =
+                ResolvedStack.Enumerate(config.Predictors, config.ResolveReconcilers());
+
+            var configPairs = new List<(ResolvedStack Stack, string Profile)>();
+            foreach (ResolvedStack stack in stacks)
             {
                 foreach (string profileName in config.NetworkProfiles)
                 {
-                    configPairs.Add((predictorName, profileName));
+                    configPairs.Add((stack, profileName));
                 }
             }
 
             Parallel.ForEach(configPairs, pair =>
             {
-                string configDir = Path.Combine(outputDir, pair.Predictor, pair.Profile);
+                string configDir = Path.Combine(outputDir, pair.Stack.Name, pair.Profile);
                 Directory.CreateDirectory(configDir);
                 string csvPath = Path.Combine(configDir, "metrics.csv");
 
                 using var sink = new CsvMetricSink(csvPath);
                 foreach (ulong seed in config.Seeds)
                 {
-                    RunTrial(pair.Predictor, config.Reconciler, pair.Profile, seed, config, tracesDirectory, sink);
+                    RunTrial(
+                        pair.Stack.Predictor, pair.Stack.Reconciler, pair.Profile, seed, config,
+                        tracesDirectory, sink);
                 }
             });
 
             string commandLine = "dotnet run --project core/Teleop.Eval -- sweep " + yamlPath;
-            ManifestWriter.Write(Path.Combine(outputDir, "manifest.json"), config, yamlPath, commandLine);
+            ManifestWriter.Write(
+                Path.Combine(outputDir, "manifest.json"), config, stacks, yamlPath, commandLine);
 
             Console.WriteLine($"sweep: wrote {outputDir}");
             return 0;
@@ -141,9 +147,42 @@ namespace Teleop.Eval.Sweep
                 }
             }
 
-            if (!Registries.Reconcilers.ContainsKey(config.Reconciler))
+            if (config.HasConflictingReconcilerKeys)
             {
-                error = $"unknown reconciler '{config.Reconciler}' -- not in Registry/Registries.cs";
+                error = "experiment config sets both 'reconciler' and 'reconcilers' -- pick one; " +
+                    "which would win is not something a reader of the YAML could predict";
+                return false;
+            }
+
+            List<string> reconcilers = config.ResolveReconcilers();
+            if (reconcilers.Count == 0)
+            {
+                error = "experiment config has no 'reconciler' or 'reconcilers'";
+                return false;
+            }
+
+            foreach (string reconcilerName in reconcilers)
+            {
+                if (!Registries.Reconcilers.ContainsKey(reconcilerName))
+                {
+                    error = $"unknown reconciler '{reconcilerName}' -- not in Registry/Registries.cs";
+                    return false;
+                }
+            }
+
+            if (config.ConvergenceBudgetMs <= 0.0)
+            {
+                error = "'convergenceBudgetMs' must be positive -- it is a smoothed reconciler's " +
+                    "natural frequency, so there is no defined response without it";
+                return false;
+            }
+
+            if (config.MaxCorrectionLinearSpeedMetersPerSecond <= 0f ||
+                config.MaxCorrectionAngularSpeedRadiansPerSecond <= 0f)
+            {
+                error = "'maxCorrectionLinearSpeedMetersPerSecond' and " +
+                    "'maxCorrectionAngularSpeedRadiansPerSecond' must be positive -- a zero cap " +
+                    "can never converge";
                 return false;
             }
 
@@ -188,10 +227,16 @@ namespace Teleop.Eval.Sweep
                 maxHorizonTicks: TicksPerSecond / 2, maxObservationGapTicks: TicksPerSecond,
                 historyCapacity: 16, smoothingAlpha: 0.3f, smoothingBeta: 0.1f,
                 processNoise: 0.01f, measurementNoise: 0.001f, maxLinearSpeed: 10f, maxAngularSpeed: 10f);
+            // Tolerances stay hardcoded: they decide what counts as a correction at all, so
+            // varying them would change which events are counted rather than how they are spent,
+            // and no experiment needs that yet (experiments/CLAUDE.md: no invented knobs). The
+            // budget and the two rate caps come from the config -- they are the operating point.
             var reconcilerConfig = new ReconcilerConfig(
                 convergencePositionToleranceMeters: 0.005f, convergenceOrientationToleranceRadians: 0.017f,
-                maxTimeToConvergenceTicks: TicksPerSecond, maxCorrectionLinearSpeedMetersPerSecond: 5f,
-                maxCorrectionAngularSpeedRadPerSecond: 10f, rollbackHistoryCapacity: 16);
+                maxTimeToConvergenceTicks: MillisecondsToTicks(config.ConvergenceBudgetMs),
+                maxCorrectionLinearSpeedMetersPerSecond: config.MaxCorrectionLinearSpeedMetersPerSecond,
+                maxCorrectionAngularSpeedRadPerSecond: config.MaxCorrectionAngularSpeedRadiansPerSecond,
+                rollbackHistoryCapacity: 16);
             var clockSyncConfig = new ClockSyncConfig(
                 historyCapacity: 32, smoothingAlpha: 0.2f, maxAcceptableRttTicks: TicksPerSecond * 2,
                 outlierRttMultiple: 3.0, minSamplesBeforeTrusted: 3);
@@ -227,10 +272,25 @@ namespace Teleop.Eval.Sweep
 
                 while (operatorEndpoint.TryReceiveState(now, out _))
                 {
-                    // Metrics (owd_uplink_ms, owd_downlink_ms, correction_magnitude_mm/deg,
-                    // jerk_mm_s3, time_to_convergence_ms) are recorded internally by
-                    // OperatorEndpoint/SnapReconciler as a side effect of this call.
+                    // owd_uplink_ms, owd_downlink_ms and correction_magnitude_mm/deg are recorded
+                    // internally as a side effect of this call: the first two by OperatorEndpoint
+                    // itself, the last two by the reconciler's Observe.
                 }
+
+                // The frame tick. docs/setup.md's callback-placement table puts EstimateRobotState
+                // in Application.onBeforeRender -- once per frame, after the inbound queue is
+                // drained -- and one sweep step is one frame, so it belongs here.
+                //
+                // It is not optional bookkeeping: EstimateRobotState is the only thing that calls
+                // IReconciler.Reconcile, and Reconcile is what emits jerk_mm_s3 and
+                // time_to_convergence_ms (docs/metrics.md §5). Without this call a sweep records
+                // correction *magnitude* and nothing else -- and magnitude is identical across
+                // reconcilers by construction, since it is measured from the predictor's
+                // disagreement before any reconciler has acted. That made the whole
+                // Reconciliation/ axis unmeasurable by sweep: every reconciler produced byte-
+                // identical output. The returned pose is the displayed state a host would render;
+                // nothing here renders, so it is discarded, but the call must still happen.
+                _ = operatorEndpoint.EstimateRobotState(now);
 
                 // Online prediction error: compares the predictor's live estimate against the
                 // plant's simultaneous ground truth. This is a simplified proxy, not
@@ -245,6 +305,14 @@ namespace Teleop.Eval.Sweep
                 sink.Record("prediction_orientation_error_deg", orientationErrorDeg, now);
             }
         }
+
+        /// <summary>
+        /// A duration in milliseconds as ticks on this command's internal timebase. Rounded, not
+        /// truncated, so a budget that does not divide evenly into ticks lands on the nearest tick
+        /// rather than systematically short.
+        /// </summary>
+        private static long MillisecondsToTicks(double milliseconds) =>
+            (long)Math.Round(milliseconds / 1000.0 * TicksPerSecond);
 
         private static ITransport MakeTransport(ITransport inner, NamedProfile namedProfile, SeededRng rng) =>
             namedProfile.TraceTicks != null

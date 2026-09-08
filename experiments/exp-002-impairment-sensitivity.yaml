@@ -2,8 +2,10 @@
 # same predictors/reconciler/seeds as exp-001-predictor-baseline so results are comparable, but
 # against network profiles that vary exactly one of jitter/delay/loss at a time instead of
 # exp-001's realistic bundled presets. Densified to ~1ms/0.1% steps (previously 9 points per
-# axis at coarser spacing; that run stays committed as a historical artifact at
-# results/exp-002-impairment-sensitivity/20260804-223728Z/). Schema in experiments/CLAUDE.md.
+# axis at coarser spacing). The coarser run's output is no longer in the working tree -- commit
+# 2c178cf stopped tracking results/ run output, so recover it from history if you need it
+# (git show 2c178cf^:results/exp-002-impairment-sensitivity/20260804-223728Z/manifest.json).
+# Schema in experiments/CLAUDE.md.
 id: exp-002-impairment-sensitivity
 seeds: [1, 2, 3, 4, 5]
 predictors:

@@ -1,6 +1,10 @@
 {
   "$schema": "https://json.schemastore.org/claude-code-settings.json",
-  "worktree": { "bgIsolation": "none" },
+  "worktree": {
+    "//": "baseRef 'head' branches a worktree from local HEAD rather than origin/<default>. Work here lands on a local feature branch before it is ever pushed, so the 'fresh' default silently seeds a worktree agent from a commit predating everything in progress -- it looks healthy and researches the wrong tree.",
+    "bgIsolation": "none",
+    "baseRef": "head"
+  },
   "env": {
     "CLAUDE_CODE_GIT_BASH_PATH": "C:\\Program Files\\Git\\bin\\bash.exe"
   },

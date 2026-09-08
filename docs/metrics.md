@@ -132,7 +132,7 @@ Metric names emitted via `IMetricSink.Record`, first emitted by
 | `correction_magnitude_mm` | mm | on each authoritative sample that disagrees beyond tolerance, stamped at that sample's `t_capture` | `PoseMath.PositionErrorMeters(predictedAtCapture, authoritative)` × 1000 |
 | `correction_magnitude_deg` | degrees | as above | `PoseMath.OrientationErrorRadians(predictedAtCapture, authoritative)` in degrees |
 | `time_to_convergence_ms` | ms | on the frame a correction completes, stamped at that frame | onset frame to the frame the displayed state is within tolerance; `snap` always reports 0 |
-| `jerk_mm_s3` | mm/s³ | on the frame a correction is applied, stamped at that frame | magnitude of the third derivative of displayed position, from a cascade of central differences over the four most recent displayed positions; not emitted until four exist |
+| `jerk_mm_s3` | mm/s³ | on **every** frame that advances the displayed state, stamped at that frame | magnitude of the third derivative of displayed position, from a cascade of central differences over the four most recent displayed positions; not emitted until four exist. Every frame, not every correction: jerk is a property of the displayed trajectory, and emitting it per correction event gave a one-frame reconciler (`snap`) one sample where a smoothed one gave ~100, so pooled percentiles compared different populations instead of different reconcilers. All reconcilers share one estimator (`Reconciliation/DisplayedJerkEstimator.cs`) |
 
 **Correction rate** is derived at analysis time by counting `correction_magnitude_mm` samples
 above the stated perceptual threshold per second — it is not a separately emitted metric, so

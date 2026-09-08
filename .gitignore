@@ -53,3 +53,8 @@ results/*
 
 # Scratch publish output from ad hoc dotnet publish deploys (not a build/ or obj/ path).
 core/_scratch_publish/
+
+# Agent worktrees. `isolation: "worktree"` checks out a full copy of the repo under here (155 MB
+# for four of them), and they are scratch by definition -- the durable artifacts are the branch
+# each one leaves behind and anything copied out into docs/research-log/.
+.claude/worktrees/

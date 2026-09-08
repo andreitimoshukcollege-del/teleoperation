@@ -11,7 +11,8 @@ rules or `robot/README.md`'s hardware incident log — it points at both.
 
 ## Prerequisites
 
-- **.NET SDK** — the Windows SDK, even under WSL (see "Environment notes" below).
+- **.NET SDK 8** — the Linux SDK on the Linux box, the Windows SDK on the Windows box
+  (see "Environment notes" below — the two are not interchangeable).
 - **Python 3** — for `analysis/`, via a venv `just` sets up automatically.
 - **[`just`](https://github.com/casey/just)** — optional but recommended; every command below has
   a `just` recipe. Run `just --list` any time for the full, current list — this README doesn't
@@ -110,13 +111,27 @@ the robot.
 
 ## Environment notes
 
+This project is developed across **two machines with opposite rules**. Root `CLAUDE.md`'s
+"Environment" section is the full reference; the short version:
+
+**Linux box** — `core/` and `analysis/` work. Native Ubuntu on ext4, its own clone, the Linux
+.NET SDK, absolute paths fine, no WSL interop. Unity cannot open this clone. The
+Unix-domain-socket tests in `core/Teleop.RobotHost.Tests` only run here.
+
+**Windows box** — Unity, Quest builds, and JetRover hardware testing.
+
 - Repo lives on NTFS (`C:\Users\...`), reached from WSL — Unity requires this, it can't open a
   project over `\\wsl$\`.
 - `dotnet` is the **Windows** SDK even when invoked from a WSL shell. It does not resolve
   WSL-native absolute paths (e.g. from `mktemp -d`) passed as arguments — only the current
   directory gets translated. Use relative paths for anything `dotnet` needs to read or write.
-- `git`/`git-lfs` run in WSL — never run a working-tree-modifying git command from a shell without
-  `git-lfs`, or LFS-tracked binaries get written as pointer text files.
+- Do not add the Linux SDK *on this box* — two SDKs sharing one working tree's `build/`/`obj/`
+  churn each other. That constraint is specific to this box's shared tree.
+
+**Both** — `git-lfs` must be installed before any working-tree-modifying git command, or
+LFS-tracked binaries get written as pointer text files. And Core's C# 9 / `netstandard2.1`
+constraint comes from Unity on the Windows box but binds everywhere: code can test green under
+the Linux SDK and still break the Quest build.
 
 ## Contributing
 

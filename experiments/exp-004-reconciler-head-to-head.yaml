@@ -1,0 +1,31 @@
+# Head-to-head across every implemented reconciler, predictor held fixed.
+#
+# READ docs/research-log/2026-09-08-*.md BEFORE citing anything from this run. Two independent
+# findings say a naive reading of these numbers is invalid:
+#   1. All offset-carrying reconcilers share a one-frame display hold at correction onset and
+#      retarget -- an O(1) velocity dropout firing on ~20% of frames on impaired profiles,
+#      plausibly a larger jerk contributor than any convergence law here.
+#   2. Pooled per-frame jerk percentiles are not comparable across reconcilers with different
+#      correction durations, even at equal sample counts: the percentile cut lands in the tail of
+#      exact zeros belonging to whichever reconciler finishes soonest.
+# This run exists to quantify those, not to pick a winner.
+id: exp-004-reconciler-head-to-head
+seeds: [1, 2, 3, 4, 5]
+predictors:
+  - double-exp
+reconcilers:
+  - snap
+  - spring
+  - budget-blend
+  - velocity-match
+networkProfiles:
+  - lan
+  - 50ms-5j
+  - 150ms-20j-0.5loss
+  - 300ms-60j-2loss-bursty
+  - synthetic-burst
+trialSteps: 500
+stepIntervalTicks: 100000
+convergenceBudgetMs: 100
+maxCorrectionLinearSpeedMetersPerSecond: 5
+maxCorrectionAngularSpeedRadiansPerSecond: 10

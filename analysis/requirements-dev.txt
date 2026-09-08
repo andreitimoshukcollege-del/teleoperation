@@ -1,3 +1,6 @@
 -r requirements.txt
 pytest==8.2.2
-wheel==0.43.0
+wheel==0.48.0
+# `pip install -e . --no-build-isolation` needs a build backend present in the venv, and
+# Python 3.12+ venvs no longer seed setuptools the way older ones did.
+setuptools==84.0.0

@@ -105,33 +105,69 @@ _analysis-venv:
     #!/usr/bin/env bash
     set -euo pipefail
     cd analysis
-    if [ -f .venv/Scripts/python.exe ] || [ -x .venv/bin/python ]; then
-        exit 0
+    # A venv whose interpreter exists but has no pip is a real failure mode, not a fresh clone:
+    # on Debian/Ubuntu `python3 -m venv` half-succeeds without the python3-venv package, leaving
+    # .venv/bin/python in place with no ensurepip. Checking for the interpreter alone made this
+    # recipe no-op and pushed a confusing "No module named pip" into whatever ran next.
+    for py in .venv/Scripts/python.exe .venv/bin/python; do
+        if [ -x "$py" ] && "$py" -c 'import pip' >/dev/null 2>&1; then
+            exit 0
+        fi
+    done
+    if [ -e .venv ]; then
+        echo "analysis/.venv exists but is unusable (no pip) -- delete it and re-run" >&2
+        exit 1
     fi
     echo "analysis/.venv not found -- running one-time setup..." >&2
     just analysis-setup
 
-# One-time analysis/ venv setup (Windows Python via WSL interop -- see analysis/CLAUDE.md).
+# One-time analysis/ venv setup (host python auto-detected per box -- see analysis/CLAUDE.md).
 # Also called automatically by test/experiment-gui/report if analysis/.venv doesn't exist yet.
 analysis-setup:
     #!/usr/bin/env bash
     set -euo pipefail
     cd analysis
-    /mnt/c/Users/andre/AppData/Local/Microsoft/WindowsApps/python.exe -m venv .venv
-    ./.venv/Scripts/python.exe -m pip install -r requirements-dev.txt
-    ./.venv/Scripts/python.exe -m pip install -e . --no-build-isolation
+    # The host python differs per box (see root CLAUDE.md "Environment"): the Windows box builds
+    # a Scripts/ venv through WSL interop, the Linux box uses its own python3. Detect by which
+    # interpreter actually exists rather than by uname, so neither box needs a flag.
+    WIN_PY=/mnt/c/Users/andre/AppData/Local/Microsoft/WindowsApps/python.exe
+    if [ -f "$WIN_PY" ]; then
+        "$WIN_PY" -m venv .venv
+        PY=./.venv/Scripts/python.exe
+    else
+        python3 -m venv .venv || {
+            echo "python3 -m venv failed. On Debian/Ubuntu the stdlib venv/ensurepip module is" >&2
+            echo "packaged separately: sudo apt install python3-venv" >&2
+            exit 1
+        }
+        PY=./.venv/bin/python
+    fi
+    "$PY" -m pip install -r requirements-dev.txt
+    "$PY" -m pip install -e . --no-build-isolation
 
 # Run the analysis/ pytest suite -- scriptable, use this for CI/agent verification
 test: _analysis-venv
-    cd analysis && ./.venv/Scripts/python.exe -m pytest -v
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cd analysis
+    PY=$([ -f .venv/Scripts/python.exe ] && echo .venv/Scripts/python.exe || echo .venv/bin/python)
+    "$PY" -m pytest -v
 
 # Opens a GUI window to configure and run a sweep, then view its figures (needs a real display)
 experiment-gui: _analysis-venv
-    cd analysis && ./.venv/Scripts/python.exe run_tests.py
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cd analysis
+    PY=$([ -f .venv/Scripts/python.exe ] && echo .venv/Scripts/python.exe || echo .venv/bin/python)
+    "$PY" run_tests.py
 
 # Generate figures + summary table for a run, e.g. `just report results/exp-001-predictor-baseline/20260804-020431Z`
 report run_dir: _analysis-venv
-    cd analysis && ./.venv/Scripts/python.exe -m teleop_analysis.cli ../{{run_dir}}
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cd analysis
+    PY=$([ -f .venv/Scripts/python.exe ] && echo .venv/Scripts/python.exe || echo .venv/bin/python)
+    "$PY" -m teleop_analysis.cli ../{{run_dir}}
 
 # ---- everything ----
 

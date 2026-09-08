@@ -16,6 +16,18 @@ differently (instability).
 
 ## Implemented
 
+*(none)* — this folder contains no `.cs` files at all. `Registry/Registries.cs`'s `Arbiters`
+table is declared, correctly typed, and empty (`RegistriesTests` asserts that emptiness rather
+than pretending otherwise), and `Pipeline/` wires no arbiter in. `Types/AutonomyArbiterConfig.cs`,
+`Types/AutonomyArbiterDiagnostics.cs`, `Types/AutonomyRung.cs` and
+`Types/AutonomyRungReason.cs` are written ahead of any implementation, so this axis is
+contracts-and-types only.
+
+Keep this table current — it previously overclaimed `direct`/`scaled`/`waypoint`/`primitive`/
+`ladder` as implemented; they are **planned, not built** — see below.
+
+## Planned, not yet implemented
+
 | Name | File | Notes |
 |---|---|---|
 | `direct` | `DirectArbiter.cs` | pass-through. The baseline |
@@ -23,6 +35,11 @@ differently (instability).
 | `waypoint` | `WaypointArbiter.cs` | commands become goals; robot plans locally |
 | `primitive` | `IntentPrimitiveArbiter.cs` | classified intent -> robot-side primitive |
 | `ladder` | `SupervisoryLadderArbiter.cs` | selects a rung from measured latency and jitter |
+
+Move a row up to "Implemented" only once its file, tests, and `Registry/Registries.cs` entry
+all actually exist — `Teleop.Eval -- audit`'s registry-completeness check will catch a row that
+claims otherwise. Building the first one also means teaching `Pipeline/` to wire an arbiter in,
+which nothing does today.
 
 ## Tried and rejected
 

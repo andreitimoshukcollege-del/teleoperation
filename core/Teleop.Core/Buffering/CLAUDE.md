@@ -9,6 +9,19 @@ report its own operating point is not evaluable.
 
 ## Implemented
 
+*(none)* — this folder contains no `.cs` files at all. `Registry/Registries.cs`'s
+`PlayoutPolicies` table is declared, correctly typed, and empty (`RegistriesTests`
+asserts that emptiness rather than pretending otherwise), and `Pipeline/OperatorEndpoint.cs`
+hardcodes `t_playout = t_operatorRecv` inline as the explicit, temporary stand-in for the
+not-yet-built `immediate`. `Types/PlayoutPolicyConfig.cs` and
+`Types/PlayoutPolicyDiagnostics.cs` are written ahead of any implementation, so this axis is
+contracts-and-types only.
+
+Keep this table current — it previously overclaimed `immediate`/`fixed`/`percentile`/
+`kalman-jitter`/`adaptive`/`pareto` as implemented; they are **planned, not built** — see below.
+
+## Planned, not yet implemented
+
 | Name | File | Notes |
 |---|---|---|
 | `immediate` | `ImmediatePlayout.cs` | zero buffer. The baseline — maximum jitter, minimum latency |
@@ -17,6 +30,11 @@ report its own operating point is not evaluable.
 | `kalman-jitter` | `KalmanJitterPlayout.cs` | Kalman estimate of delay mean and variance |
 | `adaptive` | `NetEqAdaptivePlayout.cs` | NetEQ-style: expands/contracts against buffer occupancy |
 | `pareto` | `LatencyLossOptimizingPlayout.cs` | explicit operating point on the latency/loss curve |
+
+Move a row up to "Implemented" only once its file, tests, and `Registry/Registries.cs` entry
+all actually exist — `Teleop.Eval -- audit`'s registry-completeness check will catch a row that
+claims otherwise. Building the first one also means **replacing** `OperatorEndpoint`'s hardcoded
+`t_playout` line, not adding around it — see `Pipeline/CLAUDE.md`.
 
 ## Tried and rejected
 

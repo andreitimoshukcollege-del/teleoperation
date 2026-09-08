@@ -120,12 +120,35 @@ commands got lost otherwise.
 
 ## Environment
 
+**Two machines, two jobs.** A change to `core/` or `analysis/` can be developed and verified
+entirely on the Linux box. Anything involving Unity, the Quest, or the JetRover needs the
+Windows one. Check which box you are on before trusting a path or a `dotnet` invocation — the
+two have opposite rules.
+
+### Linux box — `core/`, `analysis/` (primary for algorithm work)
+
+- Native Ubuntu on ext4, its own clone at `~/Projects/teleoperation`. Shell is zsh. There is no
+  `/mnt/c`, no WSL interop, and no Unity.
+- `dotnet` here is the **Linux** SDK, installed normally. The Windows box's "never install the
+  Linux SDK" rule does not apply: that rule exists because two SDKs sharing one working tree's
+  `build/`/`obj/` churn each other, and this clone is never touched by a Windows `dotnet`.
+  Absolute paths work; none of the `wslpath` handling below applies.
+- `git-lfs` must be installed before any working-tree-modifying git command, or LFS-tracked
+  binaries get written as pointer text files. The LFS payloads are Unity assets only, so leaving
+  them unfetched here is fine — but the filter has to exist.
+- `unity/` changes are proposed here and built and reviewed on Windows; Unity cannot open this
+  clone and is not expected to.
+- `core/Teleop.RobotHost.Tests`' Unix-domain-socket tests are gated by `LinuxOnlyFactAttribute`,
+  so they **run here and skip on Windows**. This is the only box that exercises them.
+
+### Windows box — Unity, Quest, hardware testing
+
 - Repo lives on NTFS at `C:\Users\andre\Projects\teleoperation` (required — Unity is a
   Windows app and cannot open a project over `\\wsl$\`). Reached from WSL as
   `/mnt/c/Users/andre/Projects/teleoperation`.
 - Shell is zsh under WSL, but `dotnet` is the **Windows** SDK, reached via a wrapper at
-  `~/.local/bin/dotnet`. Never install the Linux SDK — two SDKs sharing `build/` and
-  `obj/` cause rebuild churn and restore errors. Pass relative paths only; WSL
+  `~/.local/bin/dotnet`. Never install the Linux SDK *on this machine* — two SDKs sharing
+  `build/` and `obj/` cause rebuild churn and restore errors. Pass relative paths only; WSL
   translates the CWD for Windows processes but not arguments. Use
   `$(wslpath -w <path>)` if an absolute path is unavoidable.
 - Unity, `adb`, and Unity CLI builds run on the Windows side. `git` and `git-lfs` are
@@ -134,9 +157,17 @@ commands got lost otherwise.
 - **Unity 2022.3.46f1** — C# 9, API Compatibility Level `.NET Standard 2.1`. Sentis
   requires 2023.2+, so on-device ML inference goes through `IInferenceBackend` with a
   backend chosen at Phase 7; do not write `using Unity.Sentis` anywhere.
-- CI runs on Linux and paths are case-sensitive there. WSL is also case-sensitive while
-  NTFS is not, so a casing mismatch may work in Unity and fail everywhere else. Match
-  on-disk casing exactly.
+
+### Both
+
+- CI runs on Linux and paths are case-sensitive there, as they are on the Linux box. NTFS is
+  not, so a casing mismatch may work in Unity and fail everywhere else. Match on-disk casing
+  exactly.
+- Core's `netstandard2.1`/C# 9 constraint (invariant 6) comes from the Windows box's Unity
+  editor and binds **everywhere**. Code written on the Linux box can compile and test green
+  under the Linux SDK and still break the Quest build; `audit` plus invariant 6's
+  banned-feature list is the headless approximation, not a guarantee. An IL2CPP build is the
+  only real check.
 
 ## Traps that have bitten this repo before
 

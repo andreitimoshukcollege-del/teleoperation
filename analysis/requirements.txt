@@ -1,4 +1,9 @@
-pandas==2.2.2
-numpy==1.26.4
-matplotlib==3.9.0
-scipy==1.13.1
+# Pinned deliberately (analysis/CLAUDE.md): a figure is only reproducible if the library that
+# drew it is. Bumped 2026-09-07 from pandas 2.2.2 / numpy 1.26.4 / matplotlib 3.9.0 /
+# scipy 1.13.1, which have no wheels for Python 3.14 (the Linux core-dev box). Done now
+# specifically because results/ held no run output at the time, so no committed figure's
+# comparability was at stake -- re-pinning after a citable sweep exists is far more expensive.
+pandas==2.3.3
+numpy==2.5.3
+matplotlib==3.11.1
+scipy==1.18.1

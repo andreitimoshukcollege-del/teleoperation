@@ -5,6 +5,27 @@ Repo root: `C:\Users\andre\Projects\teleoperation` · Windows · Unity 2022.3.46
 Each phase ends in a **gate**. Don't pass a gate you haven't checked — every one catches a
 class of problem that gets exponentially more confusing later. PowerShell unless noted.
 
+## Status
+
+The per-gate checkboxes below were never maintained, so read this table instead — it cites the
+commit that closed each gate rather than a tickmark nobody can source.
+
+| Gate | State | Evidence |
+|---|---|---|
+| 1 · Core dual-build | closed | `b1f1d8e` "Close Gate 1: remove SmokeTest after on-device verification" — the APK/`adb logcat` step was done |
+| 2 · agents + CI | closed | `26e5f56` added the three fast-tier workflows; `.github/workflows/{test,verify,audit}.yml` |
+| 3 · time + recording | closed | `7624a4c` "Phase 3: time, clock sync, recording — Gate 3 green" |
+| 4 · loopback baseline | **OPEN** | Core + Bridge landed (`42ecda2`, `e004641`), but **no physical M2P validation was ever done** and `DisplayOffset` is still the invented `20.0 ms` placeholder — see `docs/adr/0003`, which states no pre-calibration M2P figure may be cited |
+| 5 · first sweep | closed once, not reproducible now | `463fd7a` recorded the `exp-001` run, but `2c178cf` untracked `results/` output, so **no manifested run exists in the working tree** and there are currently zero citable results |
+
+Phases beyond 5 are not written up here. Phase 7 (an `IInferenceBackend` implementation for
+on-device ML) is referenced from root `CLAUDE.md` and `Contracts/IInferenceBackend.cs`.
+The Unity-version open decision at the bottom of this file was resolved by staying on 2022.3;
+that is now recorded in `docs/adr/0001-unity-2022-3.md`.
+
+A second, independent phase numbering covers the JetRover hardware integration (Phases 0–3,
+all done) and lives in `robot/README.md` and `docs/adr/0007`. Don't confuse the two.
+
 - [x] **Phase 0 — repo restructure.** Done. Unity project at `unity\TeleopVR`, skeleton dirs
       created, root has `.vscode analysis core docs experiments results robot scripts unity`.
 
@@ -184,7 +205,12 @@ scaffolding; everything after is research.
 | 4 · loopback baseline | ~1 day | Core yes, Unity review |
 | 5 · first sweep | days | yes |
 
-## Open decision
+## Open decision — resolved
+
+Resolved: **stayed on 2022.3.** Recorded in `docs/adr/0001-unity-2022-3.md`, which this section
+asked for. The original framing is kept below because the deadline it names ("do it before
+Phase 4") is the reason reopening the decision now costs comparability with the recorded
+baseline.
 
 **Stay on Unity 2022.3, or upgrade?** 2022.3 LTS is past its support window, and Sentis needs
 2023.2+. If you're going to upgrade, do it **before Phase 4** — after that you have a

@@ -1,0 +1,17 @@
+[Unit]
+Description=teleop_relay's relay_node -- local UDS bridge between Teleop.RobotHost and jetrover_arm_control
+After=multi-user.target
+
+[Service]
+Type=simple
+User=jetson
+# systemd's ExecStart does not run through a login shell, so it never sources ~/.bashrc --
+# both ROS setup scripts must be sourced explicitly here, and at these exact paths (confirmed
+# live against this Jetson; note ~/.bashrc itself sources a different, stale path left over from
+# an earlier/related project and must NOT be relied on).
+ExecStart=/bin/bash -c 'source /opt/ros/foxy/setup.bash && source /home/jetson/projects/jetrover-teleop-ros/install/setup.bash && export ROS_LOCALHOST_ONLY=1 PYTHONUNBUFFERED=1 && exec ros2 run teleop_relay relay_node'
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

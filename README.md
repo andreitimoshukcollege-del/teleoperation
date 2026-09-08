@@ -51,34 +51,28 @@ Jetson Nano — see `robot/README.md` for the full architecture diagram and hard
 history. The steps below are everything needed to go from a clean checkout to actually moving the
 arm.
 
-### 1. Start the ROS 2 nodes on the Jetson
+### 1. The robot side auto-starts — nothing to do after a Jetson reboot
 
-Only needed after a Jetson reboot — these stay running across `Teleop.RobotHost` redeploys.
+`Teleop.RobotHost`, `teleop_relay`'s `relay_node`, and `jetrover_arm_control`'s
+`robot_controller_manager` all run as systemd services (`robot/systemd/`), enabled on boot and
+auto-restarted on crash. As long as the Jetson is powered on, they're already up — including right
+after a reboot, with zero manual SSH step — so Unity's UDP sends (which start unconditionally the
+moment Play begins) actually land the instant the Jetson is reachable. `just robot-status` gives a
+one-line health check of all three without a manual SSH session. See `robot/systemd/README.md` if
+you need to (re)install these on a fresh Jetson image.
 
-```bash
-ssh jetson@<jetson-ip>
-source /opt/ros/foxy/setup.bash
-source ~/projects/jetrover-teleop-ros/install/setup.bash
-export ROS_LOCALHOST_ONLY=1
-export PYTHONUNBUFFERED=1        # otherwise Python buffers stdout and diagnostic logs appear empty
-nohup ros2 run teleop_relay relay_node > /tmp/relay_node.log 2>&1 &
-disown
-nohup ros2 run jetrover_arm_control robot_controller_manager > /tmp/robot_controller_manager.log 2>&1 &
-disown
-```
-
-### 2. Build & deploy `Teleop.RobotHost` to the Jetson
+### 2. Redeploy `Teleop.RobotHost` after a code change
 
 ```bash
 just deploy-robothost                          # defaults: Jetson at 100.112.90.72, user jetson
 just deploy-robothost 100.112.90.72 jetson      # explicit
 ```
 
-This publishes for `linux-arm64`, copies the build over, and (re)starts the process — it prints
-the new process's own startup banner (profile name, joint count, `MaxDirectionMagnitude`) so you
-can confirm it landed correctly. It does **not** touch the ROS nodes from step 1. If you don't
-have passwordless SSH to the Jetson set up, run the `dotnet publish` line from the recipe by hand
-and copy the output over yourself.
+This publishes for `linux-arm64`, copies the build over, and restarts `teleop-robothost.service` —
+it prints the service's own startup banner (profile name, joint count, `MaxDirectionMagnitude`) so
+you can confirm it landed correctly. It does **not** touch the two ROS services from step 1. If
+you don't have passwordless SSH to the Jetson set up, run the `dotnet publish` line from the
+recipe by hand and copy the output over yourself.
 
 ### 3. Drive the arm
 
@@ -99,12 +93,18 @@ From Unity (VR drag-target path): open `unity/TeleopVR/`, set `RemoteHost`/ports
 instance, set `ConfirmHardwareMotion: true` only once clearance is confirmed, and press Play.
 `JetRoverArmConfig.CommandRateHz` there controls how often real hardware commands are sent — see
 that field's own doc comment before changing it, it's tuned against a real, documented servo
-cooldown constraint, not an arbitrary number.
+cooldown constraint, not an arbitrary number. `JetRoverOperatorBridge` starts sending the moment
+Play begins, with no separate "connect" step (UDP has no handshake) — if a
+`JetRoverConnectionHud` is wired into the scene (`Bridge/JetRoverConnectionHud.cs`, reads
+`JetRoverOperatorBridge.Status`), it shows "connected"/"no connection yet"/"connection lost" so
+you don't have to watch the arm move or SSH into Jetson logs to tell whether it actually reached
+the robot.
 
 ### Reference
 
 - `core/RobotProfiles/*.json` — robot topology/geometry profiles (docs/adr/0011).
 - `core/Teleop.RobotHost/RobotHostArgs.cs` — the process's full CLI flag reference.
+- `robot/systemd/README.md` — the three auto-start services and how to (re)install them.
 - `robot/README.md` — architecture diagram, hardware status, and the incident log (servo faults,
   calibration findings, rate-dependent command loss) worth reading before debugging anything that
   looks like a repeat of a solved problem.

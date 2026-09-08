@@ -1,0 +1,24 @@
+[Unit]
+Description=Teleop.RobotHost -- real JetRover IRobotPlant host
+# Best-effort ordering, not a hard dependency: UdpTransport only binds a local port at startup
+# and sends fire-and-forget datagrams to a fixed remote address, so it doesn't actually need the
+# network to be up yet to start cleanly -- packets just silently go nowhere until it is. If
+# Tailscale isn't registered as a systemd unit named exactly this on a given install, this line is
+# harmless (After= on a nonexistent unit is a no-op, not an error).
+After=network-online.target tailscaled.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=jetson
+# A stable, deploy-owned wrapper script rather than a fixed ExecStart of flags baked into this
+# unit file -- `just deploy-robothost` (repo-root justfile) overwrites this script on every
+# deploy with the exact args for that run (including the optional --max-direction-magnitude/
+# --profile-path passthrough), so redeploying never requires `systemctl daemon-reload` or
+# reinstalling this unit file, only `systemctl restart`.
+ExecStart=/home/jetson/robothost-run.sh
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

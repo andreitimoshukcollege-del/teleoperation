@@ -11,8 +11,11 @@
   "permissions": {
     "//": "Precedence is deny -> ask -> allow, first match wins; specificity is ignored. Anything matching none of the three falls back to defaultMode. That is why the ask rules below still prompt even in acceptEdits.",
     "defaultMode": "acceptEdits",
+    "//web": "WebSearch/WebFetch are in allow rather than ask so an unattended research run does not stall on a prompt. Bash(curl:*) stays in deny, and that is a distinction rather than an inconsistency: these two are constrained read-only fetches, curl is a general-purpose network tool. What a source may and may not be used for is in .claude/agents/deep-researcher.md -- a published number never enters results/ and never settles a comparison.",
     "allow": [
       "Read(./**)",
+      "WebSearch",
+      "WebFetch",
       "Glob",
       "Grep",
       "Write(core/**)",

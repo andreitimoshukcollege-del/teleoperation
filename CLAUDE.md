@@ -111,12 +111,47 @@ commands got lost otherwise.
 
 ## Boundaries for agents
 
+**Scope follows the machine, and the two are worked on at the same time.** Ownership is by
+directory and is not advisory: an edit made on the wrong box is a merge conflict waiting to
+happen, not a style violation. "Environment" below says what each box can *build*; this says what
+each box may *change*.
+
+### On the Linux box — `core/` and backend
+
 - Free rein: `core/`, `analysis/`, `experiments/`, `docs/`.
-- **Ask first:** anything under `unity/`. Scene wiring and XR rig behavior cannot be verified
-  headlessly, so a human checks it.
+- **Never edit `unity/`. Propose instead** — describe the change and let it be applied on Windows,
+  where an editor can actually verify it. This is deliberately stricter than "ask first": Unity
+  rewrites scenes, prefabs, `.asset` and `.meta` files by itself while it is open, so an edit made
+  here can collide with a live editor session there. That is true even for plain C# under
+  `Bridge/`, because saving it makes Unity recompile and touch adjacent files.
+- `robot/` is documentation-only: ask first, and never command real hardware from this box (see
+  "Testing the real robot").
+
+### On the Windows box — Unity, Quest, hardware
+
+- Free rein: `unity/`.
+- Core changes belong on the Linux box, including Core problems *discovered* here. The standing
+  exception is the `.meta` files Unity writes into `core/Teleop.Core/` — Unity is their author,
+  they are tracked on purpose, and committing them from Windows is correct.
+- `unity/TeleopVR/Packages/manifest.json` links Core by relative path, so Core edits landing on
+  `main` change the Unity build immediately. Pull before opening the editor, or you will debug a
+  mismatch that git already resolved.
+
+### Both
+
 - Never touch: `results/` (append-only — write new directories, never edit old ones),
   `unity/TeleopVR/Library/`, `build/`, anything gitignored.
-- Never run `git push`, `git commit --amend`, or rewrite history.
+- **One branch per machine.** Never check out or commit to a branch the other box is working on;
+  reach `main` through a PR instead. Two machines committing to one branch diverge, and
+  untangling that costs more than the PR ever does.
+- Pull `main` before starting work, on either box.
+- The real conflict surface is the files neither box exclusively owns: root `CLAUDE.md`,
+  `justfile`, `.claude/`, `docs/metrics.md`, `Registry/Registries.cs`. Editing one is fine;
+  editing one while the other box is mid-change is what hurts. Keep those changes small and merge
+  them promptly rather than parking them on a long-lived branch.
+- Never `git commit --amend`, rebase, or rewrite history. Do not `git push`, open a PR, or tag
+  unless asked — when asked, that request is sufficient authority and no further confirmation is
+  needed.
 
 ## Environment
 

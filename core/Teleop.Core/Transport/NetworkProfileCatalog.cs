@@ -1,6 +1,8 @@
 using System;
 using System.Globalization;
 using System.Text.RegularExpressions;
+using Teleop.Core.Contracts;
+using Teleop.Core.Transport.Impairments;
 using Teleop.Core.Types;
 
 // C# 9: block-scoped namespace only. File-scoped namespaces (namespace X;) are C# 10
@@ -244,6 +246,95 @@ namespace Teleop.Core.Transport
                 // shape, only rate.
                 lossProbabilityAfterDelivered: lossProbability, lossProbabilityAfterLost: lossProbability,
                 reorderProbability: 0.0, reorderDelayTicks: 0);
+            return true;
+        }
+
+        /// <summary>
+        /// Turns a <see cref="NetworkProfile"/> into the impairment set that reproduces it.
+        ///
+        /// <b>An axis at its neutral value is omitted, not included-and-zeroed.</b> That is only
+        /// legal because every impairment consumes a constant number of draws per datagram
+        /// regardless of its parameters, which makes a neutral axis observationally identical to its
+        /// absence (docs/adr/0013). Under the previous single-shared-stream design, omitting a zero
+        /// axis would have shifted every subsequent draw and changed the whole realization.
+        ///
+        /// So `lan` yields exactly [delay, jitter]; `loss-0pct` yields [delay, jitter] with no loss
+        /// impairment at all; a profile with every field zero yields an empty set, which is a legal
+        /// unimpaired decorator.
+        ///
+        /// <b>Returns fresh instances on every call.</b> An impairment carries mutable model state
+        /// and one RNG substream and may be bound to exactly one transport, so the uplink and
+        /// downlink of a link must each get their own. Sharing them would make the two directions
+        /// lose and delay the same datagrams together, which no real pair of paths does.
+        ///
+        /// Constructing the concrete types here, by hand, is also what keeps them reachable for the
+        /// IL2CPP stripper: a type nothing references directly is a type full AOT may remove, and
+        /// there is no runtime codegen to recover it (root CLAUDE.md invariant 5).
+        /// </summary>
+        public static INetworkImpairment[] CreateImpairments(in NetworkProfile profile)
+        {
+            bool hasDelay = profile.BaseDelayTicks != 0;
+            bool hasJitter = profile.JitterTicks != 0;
+            bool hasLoss = profile.LossProbabilityAfterDelivered != 0.0
+                || profile.LossProbabilityAfterLost != 0.0;
+            bool hasReorder = profile.ReorderProbability != 0.0;
+
+            int count = (hasDelay ? 1 : 0) + (hasJitter ? 1 : 0) + (hasLoss ? 1 : 0) + (hasReorder ? 1 : 0);
+            var result = new INetworkImpairment[count];
+
+            int at = 0;
+            if (hasDelay)
+            {
+                result[at++] = new FixedDelayImpairment(profile.BaseDelayTicks);
+            }
+
+            if (hasJitter)
+            {
+                result[at++] = new UniformJitterImpairment(profile.JitterTicks);
+            }
+
+            if (hasLoss)
+            {
+                result[at++] = new GilbertElliottLossImpairment(
+                    profile.LossProbabilityAfterDelivered, profile.LossProbabilityAfterLost);
+            }
+
+            if (hasReorder)
+            {
+                result[at++] = new ReorderImpairment(
+                    profile.ReorderProbability, profile.ReorderDelayTicks);
+            }
+
+            return result;
+        }
+
+        /// <summary>
+        /// The trace-driven axis, constructed here rather than in <c>Teleop.Eval</c> so that every
+        /// concrete impairment type name appears in exactly one file. That is what makes the
+        /// <c>audit</c> reachability check a one-file scan, and what keeps the IL2CPP stripper away
+        /// from a type only a host constructs.
+        ///
+        /// Reading the trace off disk stays in <c>Teleop.Eval</c> (or Unity's <c>Bridge/</c>) --
+        /// Core does no I/O.
+        /// </summary>
+        public static INetworkImpairment CreateTraceDelay(long[] delayTraceTicks) =>
+            new TraceDelayImpairment(delayTraceTicks);
+
+        /// <summary>
+        /// Name to impairment set, for a host that wants a frozen benchmark link and has no use for
+        /// the <see cref="NetworkProfile"/> record itself. Resolves exactly the names
+        /// <see cref="TryResolveParametric"/> does, and rejects the rest identically.
+        /// </summary>
+        public static bool TryResolveImpairments(
+            string name, long ticksPerSecond, out INetworkImpairment[] impairments, out string? error)
+        {
+            if (!TryResolveParametric(name, ticksPerSecond, out NetworkProfile profile, out error))
+            {
+                impairments = null!;
+                return false;
+            }
+
+            impairments = CreateImpairments(profile);
             return true;
         }
     }

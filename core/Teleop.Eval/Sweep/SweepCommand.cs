@@ -346,8 +346,13 @@ namespace Teleop.Eval.Sweep
 
             var uplinkInner = new LoopbackTransport(RawPoseCodec.EncodedSize, TransportCapacity);
             var downlinkInner = new LoopbackTransport(RobotStateFrameCodec.EncodedSize, TransportCapacity);
-            ITransport uplink = MakeTransport(uplinkInner, namedProfile, new SeededRng(seed));
-            ITransport downlink = MakeTransport(downlinkInner, namedProfile, new SeededRng(unchecked(seed + 1)));
+            // Separate CreateImpairments() calls, not one shared array: an impairment owns mutable
+            // model state and one RNG substream and may be bound to exactly one transport. The two
+            // directions are decorrelated by the seed (seed, seed + 1), as before.
+            ITransport uplink = new EmulatedTransport(
+                uplinkInner, namedProfile.CreateImpairments(), seed, TransportCapacity);
+            ITransport downlink = new EmulatedTransport(
+                downlinkInner, namedProfile.CreateImpairments(), unchecked(seed + 1), TransportCapacity);
 
             var plant = new RigidBodyPlant(Pose.Identity, TicksPerSecond);
 
@@ -420,15 +425,10 @@ namespace Teleop.Eval.Sweep
         private static long MillisecondsToTicks(double milliseconds) =>
             (long)Math.Round(milliseconds / 1000.0 * TicksPerSecond);
 
-        private static ITransport MakeTransport(ITransport inner, NamedProfile namedProfile, SeededRng rng) =>
-            namedProfile.TraceTicks != null
-                ? new EmulatedTransport(inner, namedProfile.TraceTicks, namedProfile.Profile, rng, TransportCapacity)
-                : new EmulatedTransport(inner, namedProfile.Profile, rng, TransportCapacity);
-
         /// <summary>
         /// A fixed, deterministic operator trajectory -- a slow sinusoidal sweep -- shared by
         /// every trial regardless of seed. The seed instead varies the network realization
-        /// (<see cref="MakeTransport"/>), matching this sweep's actual research question ("how do
+        /// (the impairment substreams derived from it), matching this sweep's actual research question ("how do
         /// algorithms perform under different network realizations"), not a study of varied
         /// operator motion.
         /// </summary>

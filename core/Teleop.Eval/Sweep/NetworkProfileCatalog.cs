@@ -1,3 +1,5 @@
+using System;
+using Teleop.Core.Contracts;
 using Teleop.Core.Types;
 
 namespace Teleop.Eval.Sweep
@@ -19,6 +21,38 @@ namespace Teleop.Eval.Sweep
             Name = name;
             Profile = profile;
             TraceTicks = traceTicks;
+        }
+
+        /// <summary>
+        /// The impairment set this named profile resolves to, which is what
+        /// <c>EmulatedTransport</c> actually consumes. <see cref="Profile"/> is retained alongside
+        /// it as the record of what the name means -- the manifest reports it, and ADR 0004 froze
+        /// its numbers -- but nothing on the hot path reads it any more (docs/adr/0013).
+        ///
+        /// <b>Fresh instances on every call, and that is not an optimisation detail.</b> An
+        /// impairment owns mutable model state and one RNG substream, and rejects a second
+        /// <c>Bind</c>. Handing the same array to a link's uplink and downlink would either throw
+        /// or -- if it did not -- make both directions lose and delay the same datagrams together,
+        /// which no real pair of paths does. Call it once per transport.
+        ///
+        /// A trace-driven profile puts the trace axis first, then whatever loss and reordering the
+        /// profile carries. Order does not affect the outcome (see <c>DatagramFate</c>), so this is
+        /// for readability in a manifest, not for behaviour.
+        /// </summary>
+        public INetworkImpairment[] CreateImpairments()
+        {
+            INetworkImpairment[] parametric =
+                Teleop.Core.Transport.NetworkProfileCatalog.CreateImpairments(Profile);
+
+            if (TraceTicks == null)
+            {
+                return parametric;
+            }
+
+            var result = new INetworkImpairment[parametric.Length + 1];
+            result[0] = Teleop.Core.Transport.NetworkProfileCatalog.CreateTraceDelay(TraceTicks);
+            Array.Copy(parametric, 0, result, 1, parametric.Length);
+            return result;
         }
     }
 

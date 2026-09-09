@@ -7,19 +7,27 @@ using Teleop.Core.Types;
 namespace Teleop.Core.Transport
 {
     /// <summary>
-    /// A <see cref="ITransport"/> <b>decorator</b> that injects a reproducible synthetic
-    /// impairment — fixed delay, uniform jitter, Gilbert-Elliott burst loss, and explicit
-    /// reordering — on top of whatever transport it wraps. Most of this project's research runs
-    /// through it. Wrapping <see cref="LoopbackTransport"/> gives a fully synthetic link for
-    /// headless evaluation; wrapping the host's <c>Bridge/UdpTransport.cs</c> on a LAN gives a
-    /// reproducible impairment layered over a real socket. Impairment is always <i>additive</i>:
-    /// the wrapped transport's own transit delay and its own losses stand, and this decorator's
-    /// model is applied on top rather than in place of them.
+    /// A <see cref="ITransport"/> <b>decorator</b> that injects a reproducible synthetic impairment
+    /// on top of whatever transport it wraps. Most of this project's research runs through it.
+    /// Wrapping <see cref="LoopbackTransport"/> gives a fully synthetic link for headless
+    /// evaluation; wrapping the host's <c>Bridge/UdpTransport.cs</c> on a LAN gives a reproducible
+    /// impairment layered over a real socket. Impairment is always <i>additive</i>: the wrapped
+    /// transport's own transit delay and its own losses stand, and this decorator's model is applied
+    /// on top rather than in place of them.
     ///
-    /// All impairment is drawn from the injected <see cref="SeededRng"/>. Same seed, same profile
-    /// and same sequence of calls produce a bit-identical sequence of receives, which is the
-    /// property <c>Transport/CLAUDE.md</c> requires and the reason nothing here reads a clock or
-    /// calls <c>System.Random</c>.
+    /// <b>What impairment to apply is entirely the caller's, expressed as a set of
+    /// <see cref="INetworkImpairment"/> objects</b> (docs/adr/0013). This class holds no impairment
+    /// parameters of its own and knows nothing about profile names: it runs the send-stage
+    /// impairments, asks the wrapped transport, runs the deliver-stage ones, and schedules the
+    /// result. Adding a new kind of impairment is a new file implementing that interface, not an
+    /// edit here. An empty set is legal and means an unimpaired decorator.
+    ///
+    /// All randomness comes from per-impairment substreams derived from the <c>seed</c> given here,
+    /// so same seed plus same impairment set plus same call sequence produce a bit-identical
+    /// sequence of receives — the property <c>Transport/CLAUDE.md</c> requires, and the reason
+    /// nothing here reads a clock or calls <c>System.Random</c>. Because each impairment owns its
+    /// stream, <b>adding or removing one leaves every other one's realization untouched</b>, which
+    /// the previous single-shared-stream design could not offer.
     ///
     /// <b>Why delay is implemented on the receive side.</b> <see cref="ITransport.Send"/> has no
     /// "deliver at a future time" parameter and Core has no threads and no timers, so a datagram
@@ -36,17 +44,19 @@ namespace Teleop.Core.Transport
     /// by send order, so any two datagrams whose synthetic arrivals invert — from a jitter draw or
     /// from the explicit reorder knob — are returned out of send order with no special case.
     ///
-    /// <b>Trace-driven mode</b> (the <see cref="EmulatedTransport(ITransport, long[], NetworkProfile, SeededRng, int)"/>
-    /// overload) replaces <c>BaseDelayTicks + jitter</c> with samples drawn sequentially from a
-    /// recorded delay trace (<c>core/testdata/traces/</c>, per <c>docs/adr/0004-network-profile-suite.md</c>),
-    /// wrapping back to the start when the trace is exhausted rather than resampling or throwing --
-    /// a sweep trial may run longer than the trace itself, and repeating the recorded sequence
-    /// verbatim is what "no resampling" (<c>Transport/CLAUDE.md</c>) actually requires. Burst loss
-    /// and reordering are independent of delay source and still apply exactly as in parametric
-    /// mode; a trace-mode profile's <see cref="NetworkProfile.BaseDelayTicks"/> and
-    /// <see cref="NetworkProfile.JitterTicks"/> must both be zero (rejected otherwise), since the
-    /// trace already represents the true recorded delay and synthetic jitter on top of it would
-    /// double-model variance.
+    /// <b>Trace-driven replay is no longer a mode of this class.</b> It is
+    /// <c>TraceDelayImpairment</c>, one member of the set like any other, so there is no second
+    /// constructor and no cross-field validation. What used to be "a trace-mode profile must carry
+    /// zero base delay and jitter, or we reject it" is now simply which impairments the caller
+    /// chose to include: the composition is the configuration.
+    ///
+    /// <b>Two stages, because a datagram has two.</b> Send-stage impairments run inside
+    /// <see cref="Send"/> and may drop, in which case the datagram never reaches the wrapped
+    /// transport at all — what a real link does with a lost packet, and what
+    /// <see cref="ITransport.Send"/>'s "returns false when the datagram will not be delivered"
+    /// promises. Deliver-stage impairments run at drain time and may add delay. The set is
+    /// partitioned by stage once, at construction, so an impairment costs nothing at a stage it did
+    /// not declare.
     ///
     /// Everything is preallocated in the constructor; <see cref="Send"/> and
     /// <see cref="TryReceive"/> allocate nothing. Not thread-safe, by contract.
@@ -54,14 +64,22 @@ namespace Teleop.Core.Transport
     public sealed class EmulatedTransport : ITransport
     {
         private readonly ITransport _inner;
-        private readonly NetworkProfile _profile;
         private readonly int _maxInFlight;
 
-        /// <summary>Recorded one-way-delay trace for trace-driven mode; null in parametric mode.</summary>
-        private readonly long[]? _traceTicks;
+        /// <summary>
+        /// The impairment set, in caller order, cloned so a caller mutating its array afterwards
+        /// cannot change this transport's behaviour mid-run. Held as a concrete array and iterated
+        /// with an indexed <c>for</c>, never as an interface-typed sequence with <c>foreach</c>:
+        /// that would box an enumerator on <b>every datagram</b> and break the allocation tests
+        /// this class is required to pass.
+        /// </summary>
+        private readonly INetworkImpairment[] _impairments;
 
-        /// <summary>Next index into <see cref="_traceTicks"/>; wraps modulo its length.</summary>
-        private int _traceIndex;
+        /// <summary>Indices into <see cref="_impairments"/> declaring <c>ImpairmentStages.Send</c>.</summary>
+        private readonly int[] _sendStage;
+
+        /// <summary>Indices into <see cref="_impairments"/> declaring <c>ImpairmentStages.Deliver</c>.</summary>
+        private readonly int[] _deliverStage;
 
         /// <summary>
         /// Cached at construction rather than read per drain. <c>ITransport.MaxPayloadBytes</c> is
@@ -69,10 +87,6 @@ namespace Teleop.Core.Transport
         /// re-reading it would only create a way for the two to disagree.
         /// </summary>
         private readonly int _innerMaxPayloadBytes;
-
-        /// <summary>Owned by value. <see cref="SeededRng"/> is a mutable struct; it is never copied
-        /// out of this field, because a copy and the original would silently diverge.</summary>
-        private SeededRng _rng;
 
         // Payload slots. A drained datagram's bytes live in exactly one slot for its whole time in
         // flight; the heap moves 24-byte keys around, never these bytes.
@@ -97,30 +111,39 @@ namespace Teleop.Core.Transport
         /// </summary>
         private long _nextSequence;
 
-        /// <summary>
-        /// The one bit of Gilbert-Elliott state: whether the previous datagram sent through this
-        /// instance was dropped by this decorator's loss model. Starts false — the chain begins in
-        /// the good state.
-        /// </summary>
-        private bool _previousWasLost;
-
         /// <param name="inner">Transport to decorate. Its delay and losses are kept, not replaced.</param>
-        /// <param name="profile">Impairment parameters; see <see cref="NetworkProfile"/>.</param>
-        /// <param name="rng">
-        /// Seeded generator driving every impairment decision. Taken by value and owned: this
-        /// instance's <c>Reset()</c> reseeds its own copy and does not disturb the caller's.
+        /// <param name="impairments">
+        /// The impairment set, applied in the order given. May be empty, which yields an unimpaired
+        /// decorator -- useful as a structural baseline that still exercises this class's scheduling.
+        /// Cloned defensively, and each element is bound to this transport: an instance may belong to
+        /// exactly one transport, because it carries mutable model state and one RNG substream.
+        ///
+        /// Two impairments may not share an <c>AxisName</c>. That is what makes name-derived
+        /// substream identity collision-proof: two axes silently drawing the same numbers would
+        /// correlate, say, loss with jitter, and nothing in the source would look wrong.
+        /// </param>
+        /// <param name="seed">
+        /// Trial seed. Each impairment gets its own substream derived from this and its axis name
+        /// (<see cref="Impairments.ImpairmentStreams"/>), so adding or removing an impairment cannot
+        /// perturb any other one's realization.
         /// </param>
         /// <param name="maxInFlight">
         /// Number of delayed datagrams held at once. When full, the wrapped transport is simply not
         /// drained, so its datagrams stay queued there (back-pressure) rather than being silently
-        /// destroyed by the emulator — an emulator that dropped them would add loss that is not in
-        /// the profile and is therefore not in the manifest.
+        /// destroyed by the emulator — an emulator that dropped them would add loss no impairment
+        /// asked for, and which is therefore in no manifest.
         /// </param>
-        public EmulatedTransport(ITransport inner, NetworkProfile profile, SeededRng rng, int maxInFlight)
+        public EmulatedTransport(
+            ITransport inner, INetworkImpairment[] impairments, ulong seed, int maxInFlight)
         {
             if (inner == null)
             {
                 throw new ArgumentNullException(nameof(inner));
+            }
+
+            if (impairments == null)
+            {
+                throw new ArgumentNullException(nameof(impairments));
             }
 
             if (maxInFlight <= 0)
@@ -129,11 +152,7 @@ namespace Teleop.Core.Transport
                     nameof(maxInFlight), maxInFlight, "In-flight capacity must be positive.");
             }
 
-            ValidateProfile(profile);
-
             _inner = inner;
-            _profile = profile;
-            _rng = rng;
             _maxInFlight = maxInFlight;
             _innerMaxPayloadBytes = inner.MaxPayloadBytes;
 
@@ -141,6 +160,67 @@ namespace Teleop.Core.Transport
             {
                 throw new ArgumentException(
                     "Wrapped transport reports a non-positive MaxPayloadBytes.", nameof(inner));
+            }
+
+            _impairments = (INetworkImpairment[])impairments.Clone();
+
+            int sendCount = 0;
+            int deliverCount = 0;
+            for (int i = 0; i < _impairments.Length; i++)
+            {
+                INetworkImpairment impairment = _impairments[i];
+                if (impairment == null)
+                {
+                    throw new ArgumentException(
+                        $"Impairment at index {i} is null.", nameof(impairments));
+                }
+
+                for (int j = 0; j < i; j++)
+                {
+                    if (string.Equals(_impairments[j].AxisName, impairment.AxisName, StringComparison.Ordinal))
+                    {
+                        throw new ArgumentException(
+                            $"Two impairments share the axis name '{impairment.AxisName}'. Axis names " +
+                            "must be unique -- they derive the RNG substreams, so a duplicate would " +
+                            "make two axes draw identical numbers.",
+                            nameof(impairments));
+                    }
+                }
+
+                if ((impairment.Stages & ImpairmentStages.Send) != 0)
+                {
+                    sendCount++;
+                }
+
+                if ((impairment.Stages & ImpairmentStages.Deliver) != 0)
+                {
+                    deliverCount++;
+                }
+            }
+
+            // Partitioned once, here, so an impairment costs nothing at a stage it did not declare
+            // and neither loop has to test a flag per datagram.
+            _sendStage = new int[sendCount];
+            _deliverStage = new int[deliverCount];
+
+            int sendAt = 0;
+            int deliverAt = 0;
+            for (int i = 0; i < _impairments.Length; i++)
+            {
+                ImpairmentStages stages = _impairments[i].Stages;
+
+                if ((stages & ImpairmentStages.Send) != 0)
+                {
+                    _sendStage[sendAt++] = i;
+                }
+
+                if ((stages & ImpairmentStages.Deliver) != 0)
+                {
+                    _deliverStage[deliverAt++] = i;
+                }
+
+                _impairments[i].Bind(
+                    Impairments.ImpairmentStreams.DeriveForAxis(seed, _impairments[i].AxisName));
             }
 
             _slotPayloads = new byte[checked(_innerMaxPayloadBytes * maxInFlight)];
@@ -151,66 +231,6 @@ namespace Teleop.Core.Transport
             _heapSlots = new int[maxInFlight];
 
             ResetLocalState();
-        }
-
-        /// <param name="inner">Transport to decorate. Its delay and losses are kept, not replaced.</param>
-        /// <param name="delayTraceTicks">
-        /// A recorded one-way-delay trace, one sample per datagram in ticks, consumed in order and
-        /// wrapped back to the start when exhausted -- see the type doc's "Trace-driven mode"
-        /// section. Must be non-empty and every sample non-negative; rejected otherwise. Copied
-        /// defensively at construction, so a caller mutating the original array afterward cannot
-        /// silently break this instance's determinism.
-        /// </param>
-        /// <param name="profile">
-        /// Impairment parameters for loss and reordering only in this mode --
-        /// <see cref="NetworkProfile.BaseDelayTicks"/> and <see cref="NetworkProfile.JitterTicks"/>
-        /// must both be zero (rejected otherwise), since <paramref name="delayTraceTicks"/> already
-        /// supplies the delay.
-        /// </param>
-        /// <param name="rng">
-        /// Seeded generator driving every impairment decision. Taken by value and owned: this
-        /// instance's <c>Reset()</c> reseeds its own copy and does not disturb the caller's.
-        /// </param>
-        /// <param name="maxInFlight">
-        /// Number of delayed datagrams held at once. When full, the wrapped transport is simply not
-        /// drained, so its datagrams stay queued there (back-pressure) rather than being silently
-        /// destroyed by the emulator.
-        /// </param>
-        public EmulatedTransport(
-            ITransport inner, long[] delayTraceTicks, NetworkProfile profile, SeededRng rng, int maxInFlight)
-            : this(inner, profile, rng, maxInFlight)
-        {
-            if (delayTraceTicks == null)
-            {
-                throw new ArgumentNullException(nameof(delayTraceTicks));
-            }
-
-            if (delayTraceTicks.Length == 0)
-            {
-                throw new ArgumentException(
-                    "Delay trace must contain at least one sample.", nameof(delayTraceTicks));
-            }
-
-            foreach (long sample in delayTraceTicks)
-            {
-                if (sample < 0)
-                {
-                    throw new ArgumentOutOfRangeException(
-                        nameof(delayTraceTicks), sample, "Delay trace samples must not be negative.");
-                }
-            }
-
-            if (profile.BaseDelayTicks != 0 || profile.JitterTicks != 0)
-            {
-                throw new ArgumentException(
-                    "BaseDelayTicks and JitterTicks must both be zero in trace-driven mode -- delay " +
-                    "comes from the trace, and synthetic jitter on top of an already-recorded delay " +
-                    "would double-model variance.",
-                    nameof(profile));
-            }
-
-            _traceTicks = (long[])delayTraceTicks.Clone();
-            _traceIndex = 0;
         }
 
         /// <inheritdoc/>
@@ -246,17 +266,17 @@ namespace Teleop.Core.Transport
         /// </summary>
         public bool Send(ReadOnlySpan<byte> payload, long nowTicks)
         {
-            double lossProbability = _previousWasLost
-                ? _profile.LossProbabilityAfterLost
-                : _profile.LossProbabilityAfterDelivered;
-
-            // NextDouble() is uniform on [0, 1), so probability 0 never fires and probability 1
-            // always does — both endpoints behave exactly, with no epsilon anywhere.
-            bool lost = _rng.NextDouble() < lossProbability;
-            _previousWasLost = lost;
-
-            if (lost)
+            var fate = default(DatagramFate);
+            for (int i = 0; i < _sendStage.Length; i++)
             {
+                _impairments[_sendStage[i]].ApplyOnSend(ref fate);
+            }
+
+            if (fate.Dropped)
+            {
+                // Never reaches the wrapped transport: a real link does not put a dropped packet on
+                // the wire, and over a real socket this is the difference between modelling loss and
+                // transmitting bytes the model says were lost.
                 return false;
             }
 
@@ -318,18 +338,30 @@ namespace Teleop.Core.Transport
         }
 
         /// <summary>
-        /// Returns this decorator and the transport it wraps to their as-constructed state:
-        /// nothing in flight, the Gilbert-Elliott chain back in the good state, the tie-break
-        /// counter back to zero, and the owned RNG reseeded to its construction seed so the next
-        /// trial reproduces the previous one — all three requirements of
-        /// <see cref="ITransport.Reset"/>. <c>_inner.Reset()</c> is called because a decorator
-        /// resets what it wraps; leaving the wrapped transport holding a previous trial's
-        /// datagrams would contaminate the next trial in a way that looks like spurious loss.
+        /// Returns this decorator, every impairment it owns, and the transport it wraps to their
+        /// as-constructed state: nothing in flight, the tie-break counter back to zero, and each
+        /// impairment's model state cleared and substream reseeded so the next trial reproduces the
+        /// previous one — all three requirements of <see cref="ITransport.Reset"/>.
+        ///
+        /// Each impairment resets itself, which is why this method no longer knows what a
+        /// Gilbert-Elliott chain or a trace cursor is. That also makes "returns to as-constructed
+        /// state" testable per impairment, and therefore actually exhaustive, instead of resting on
+        /// one schedule-replay test hoping it covered every field.
+        ///
+        /// <c>_inner.Reset()</c> is called because a decorator resets what it wraps; leaving the
+        /// wrapped transport holding a previous trial's datagrams would contaminate the next trial
+        /// in a way that looks like spurious loss. Impairments stay bound — this is a reset, not a
+        /// teardown.
         /// </summary>
         public void Reset()
         {
             ResetLocalState();
-            _rng.Reset();
+
+            for (int i = 0; i < _impairments.Length; i++)
+            {
+                _impairments[i].Reset();
+            }
+
             _inner.Reset();
         }
 
@@ -349,8 +381,6 @@ namespace Teleop.Core.Transport
             _freeCount = _maxInFlight;
             _heapCount = 0;
             _nextSequence = 0;
-            _previousWasLost = false;
-            _traceIndex = 0;
         }
 
         /// <summary>
@@ -373,54 +403,31 @@ namespace Teleop.Core.Transport
 
                 _freeCount--;
                 _slotLengths[slot] = length;
-                HeapPush(innerArrivalTicks + DrawDelayTicks(), slot);
+
+                var fate = default(DatagramFate);
+                for (int i = 0; i < _deliverStage.Length; i++)
+                {
+                    _impairments[_deliverStage[i]].ApplyOnDeliver(ref fate);
+                }
+
+                if (fate.Dropped)
+                {
+                    // No shipped impairment sets Dropped at this stage -- loss belongs at send, where
+                    // the datagram never reaches the wire. Honoured anyway rather than ignored,
+                    // because silently discarding a decision an impairment made would be a trap for
+                    // whoever writes the first receiver-side model (a late-arrival discard, say).
+                    // Note it does NOT unsend: the wrapped transport already carried the bytes.
+                    _slotLengths[slot] = 0;
+                    _freeSlots[_freeCount] = slot;
+                    _freeCount++;
+                    continue;
+                }
+
+                // Clamped once, after the whole pipeline, so a jitter draw that ran before any delay
+                // was added cannot make a datagram arrive before it was sent.
+                long delayTicks = fate.DelayTicks < 0 ? 0 : fate.DelayTicks;
+                HeapPush(innerArrivalTicks + delayTicks, slot);
             }
-        }
-
-        /// <summary>
-        /// One packet's synthetic delay: base, plus a uniform integer jitter draw on
-        /// <c>[-JitterTicks, +JitterTicks]</c>, plus <c>ReorderDelayTicks</c> if the reorder roll
-        /// fires. Clamped at zero, since a negative total delay would mean arriving before the
-        /// wrapped transport actually delivered it.
-        ///
-        /// Both draws are made unconditionally, even when the corresponding knob is zero (a zero
-        /// half-width draws from a one-element range and yields exactly 0; a zero probability never
-        /// fires). That costs two draws per datagram and buys common random numbers across a sweep:
-        /// RNG consumption depends only on how many datagrams flowed, not on the profile's values,
-        /// so two profiles differing in one knob and sharing a seed see the same underlying stream
-        /// for every other knob, and the difference between their results is the knob rather than
-        /// re-randomization.
-        /// </summary>
-        private long DrawDelayTicks()
-        {
-            long halfWidth = _profile.JitterTicks;
-            ulong span = ((ulong)halfWidth * 2UL) + 1UL;
-            long jitter = (long)(_rng.NextUInt64() % span) - halfWidth;
-
-            // The jitter draw above is always made, even in trace mode where its result (always
-            // exactly 0, since JitterTicks is validated to 0) is discarded: every datagram must
-            // consume exactly one draw here regardless of mode, or a trace run and a parametric
-            // run sharing a seed would desynchronize their RNG streams on the loss/reorder draws
-            // that follow, breaking common random numbers across a sweep (Transport/CLAUDE.md).
-            long delayTicks = _traceTicks != null ? NextTraceSample() : _profile.BaseDelayTicks + jitter;
-
-            if (_rng.NextDouble() < _profile.ReorderProbability)
-            {
-                delayTicks += _profile.ReorderDelayTicks;
-            }
-
-            return delayTicks < 0 ? 0 : delayTicks;
-        }
-
-        /// <summary>
-        /// Next sample from <see cref="_traceTicks"/>, wrapping back to index 0 when exhausted --
-        /// the "no resampling" trace-driven contract, not a fresh draw.
-        /// </summary>
-        private long NextTraceSample()
-        {
-            long sample = _traceTicks![_traceIndex];
-            _traceIndex = (_traceIndex + 1) % _traceTicks.Length;
-            return sample;
         }
 
         private void HeapPush(long arrivalTicks, int slot)
@@ -511,55 +518,6 @@ namespace Teleop.Core.Transport
             int slot = _heapSlots[a];
             _heapSlots[a] = _heapSlots[b];
             _heapSlots[b] = slot;
-        }
-
-        /// <summary>
-        /// Rejects a profile that cannot be honoured, at construction rather than per datagram.
-        /// A negative delay or an out-of-range probability is a configuration mistake, and one that
-        /// would otherwise show up as a subtly wrong distribution in a result rather than as a
-        /// failure.
-        /// </summary>
-        private static void ValidateProfile(NetworkProfile profile)
-        {
-            if (profile.BaseDelayTicks < 0)
-            {
-                throw new ArgumentOutOfRangeException(
-                    nameof(profile), profile.BaseDelayTicks, "BaseDelayTicks must not be negative.");
-            }
-
-            if (profile.JitterTicks < 0)
-            {
-                throw new ArgumentOutOfRangeException(
-                    nameof(profile), profile.JitterTicks, "JitterTicks must not be negative.");
-            }
-
-            // The uniform draw spans 2*JitterTicks+1 values; keep that inside long range.
-            if (profile.JitterTicks > long.MaxValue / 4)
-            {
-                throw new ArgumentOutOfRangeException(
-                    nameof(profile), profile.JitterTicks, "JitterTicks is implausibly large.");
-            }
-
-            if (profile.ReorderDelayTicks < 0)
-            {
-                throw new ArgumentOutOfRangeException(
-                    nameof(profile), profile.ReorderDelayTicks, "ReorderDelayTicks must not be negative.");
-            }
-
-            ValidateProbability(profile.LossProbabilityAfterDelivered, "LossProbabilityAfterDelivered");
-            ValidateProbability(profile.LossProbabilityAfterLost, "LossProbabilityAfterLost");
-            ValidateProbability(profile.ReorderProbability, "ReorderProbability");
-        }
-
-        private static void ValidateProbability(double value, string name)
-        {
-            // The NaN case is written as a failed in-range test rather than double.IsNaN so that a
-            // NaN cannot slip through as "not less than 0 and not greater than 1".
-            if (!(value >= 0.0 && value <= 1.0))
-            {
-                throw new ArgumentOutOfRangeException(
-                    nameof(NetworkProfile), value, name + " must be in [0, 1].");
-            }
         }
     }
 }

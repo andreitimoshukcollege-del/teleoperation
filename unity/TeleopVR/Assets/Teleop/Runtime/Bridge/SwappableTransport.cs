@@ -3,6 +3,7 @@ using Teleop.Core.Contracts;
 using Teleop.Core.Transport;
 using Teleop.Core.Types;
 
+
 namespace Teleop.Bridge
 {
     /// <summary>
@@ -78,37 +79,21 @@ namespace Teleop.Bridge
         /// Replaces the impairment stage with one built from <paramref name="profile"/>. Safe to
         /// call when already impaired -- the previous emulator is discarded.
         /// </summary>
-        /// <param name="seed">
-        /// Seeds this direction's impairment stream. Give the two directions of a link *different*
-        /// seeds: an identical seed makes uplink and downlink drop the same datagram indices in
-        /// lockstep, which no real link does and which would make a loss result meaningless.
+        /// <param name="impairments">
+        /// The impairment set, already built for this transport. Must not be shared with another
+        /// <see cref="SwappableTransport"/>: a Core impairment owns mutable model state and one RNG
+        /// substream and rejects a second bind.
         /// </param>
-        public void Install(NetworkProfile profile, ulong seed)
+        /// <param name="seed">
+        /// Seeds this direction's impairment substreams. Give the two directions of a link
+        /// <b>different</b> seeds: identical ones would make uplink and downlink drop the same
+        /// datagram indices in lockstep, which no real link does and which would make a loss result
+        /// meaningless.
+        /// </param>
+        public void Install(INetworkImpairment[] impairments, ulong seed)
         {
             LastSwapDiscardedCount = _emulator?.InFlightCount ?? 0;
-            _emulator = new EmulatedTransport(_inner, profile, new SeededRng(seed), _maxInFlight);
-        }
-
-        /// <summary>
-        /// Installs a <b>trace-driven</b> impairment stage: delay comes from
-        /// <paramref name="delayTraceTicks"/>, consumed in order and wrapped when exhausted, while
-        /// <paramref name="profile"/> still supplies loss and reordering.
-        ///
-        /// <paramref name="profile"/> must have zero base delay and zero jitter --
-        /// <see cref="EmulatedTransport"/> rejects anything else, on the grounds that synthetic
-        /// jitter layered on an already-recorded delay double-models the same variance.
-        /// <see cref="NetworkImpairmentSettings.ToProfile"/> zeroes both when trace mode is on, so
-        /// callers coming from there satisfy this by construction.
-        ///
-        /// The samples must already be in this host's tick domain; see
-        /// <see cref="DelayTraceLoader.TryLoad"/>, which rescales them and explains why skipping
-        /// that step produces a 100x error that still looks plausible.
-        /// </summary>
-        public void Install(long[] delayTraceTicks, NetworkProfile profile, ulong seed)
-        {
-            LastSwapDiscardedCount = _emulator?.InFlightCount ?? 0;
-            _emulator = new EmulatedTransport(
-                _inner, delayTraceTicks, profile, new SeededRng(seed), _maxInFlight);
+            _emulator = new EmulatedTransport(_inner, impairments, seed, _maxInFlight);
         }
 
         /// <summary>Removes the impairment stage, restoring the bare inner transport.</summary>

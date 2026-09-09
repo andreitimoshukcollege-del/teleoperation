@@ -161,11 +161,15 @@ namespace Teleop.Bridge
 
             if (!string.IsNullOrEmpty(_config.NetworkProfileName))
             {
-                if (Teleop.Core.Transport.NetworkProfileCatalog.TryResolveParametric(
-                    _config.NetworkProfileName, _clock.TicksPerSecond, out NetworkProfile profile, out string? profileError))
+                // Resolved to an impairment set rather than a profile struct (docs/adr/0013); the
+                // frozen names and their numbers are unchanged.
+                if (Teleop.Core.Transport.NetworkProfileCatalog.TryResolveImpairments(
+                    _config.NetworkProfileName, _clock.TicksPerSecond,
+                    out Teleop.Core.Contracts.INetworkImpairment[] impairments, out string? profileError))
                 {
                     _cartesianTransport = new EmulatedTransport(
-                        _cartesianUdp, profile, new SeededRng(unchecked((ulong)DateTime.UtcNow.Ticks)), maxInFlight: 64);
+                        _cartesianUdp, impairments,
+                        unchecked((ulong)DateTime.UtcNow.Ticks), maxInFlight: 64);
                 }
                 else
                 {

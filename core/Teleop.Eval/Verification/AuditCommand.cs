@@ -55,6 +55,7 @@ namespace Teleop.Eval.Verification
             RunAssemblyChecks(dllPath, findings);
             RunProjectFileChecks(sourceDir, findings);
             RunRegistryCompletenessCheck(sourceDir, dllPath, findings);
+            RunImpairmentReachabilityCheck(sourceDir, dllPath, findings);
             RunBuildOutputCheck(sourceDir, findings);
 
             if (findings.Count == 0)
@@ -291,6 +292,74 @@ namespace Teleop.Eval.Verification
                             $"registry-completeness: {candidate.FullName} implements {interfaceFullName} but is not " +
                             $"referenced anywhere in {registriesPath} -- add it to Registries.{registryPropertyName}");
                     }
+                }
+            }
+        }
+
+        /// <summary>
+        /// Every <c>INetworkImpairment</c> implementation must be constructed by name somewhere in
+        /// <c>Transport/NetworkProfileCatalog.cs</c>.
+        ///
+        /// This is the impairment axis's analogue of the registry-completeness check above, and it
+        /// exists because that check reads a hardcoded list of <c>Contracts/</c> interfaces which
+        /// deliberately does not include this one. Impairments get no <c>Registries.cs</c> table:
+        /// their five constructors have five different shapes, and forcing them into one factory
+        /// signature would produce a stringly-typed parameter bag -- the same objection
+        /// <c>Registry/CLAUDE.md</c> already raises against registering <c>EmulatedTransport</c>.
+        /// The catalog is this axis's registry, mapping a name to a whole set rather than to one
+        /// type (docs/adr/0013).
+        ///
+        /// It doubles as an IL2CPP reachability check. Full AOT strips types nothing references and
+        /// has no runtime codegen to recover them, so an impairment no code constructs directly is
+        /// one that can vanish on device while every headless test still passes.
+        /// </summary>
+        private static void RunImpairmentReachabilityCheck(string sourceDir, string dllPath, List<string> findings)
+        {
+            string catalogPath = Path.Combine(sourceDir, "Transport", "NetworkProfileCatalog.cs");
+            if (!File.Exists(catalogPath))
+            {
+                Console.WriteLine("audit: impairment-reachability: N/A -- NetworkProfileCatalog.cs not found.");
+                return;
+            }
+
+            Assembly assembly;
+            try
+            {
+                assembly = Assembly.LoadFrom(dllPath);
+            }
+            catch (Exception ex)
+            {
+                findings.Add($"impairment-reachability: could not load {dllPath}: {ex.Message}");
+                return;
+            }
+
+            Type? impairmentInterface = assembly.GetType("Teleop.Core.Contracts.INetworkImpairment");
+            if (impairmentInterface == null)
+            {
+                Console.WriteLine("audit: impairment-reachability: N/A -- INetworkImpairment not present.");
+                return;
+            }
+
+            string catalogSource = File.ReadAllText(catalogPath);
+
+            foreach (Type candidate in assembly.GetTypes())
+            {
+                if (!candidate.IsPublic || !candidate.IsClass || candidate.IsAbstract)
+                {
+                    continue;
+                }
+
+                if (!candidate.GetInterfaces().Any(i => i == impairmentInterface))
+                {
+                    continue;
+                }
+
+                if (!catalogSource.Contains(candidate.Name, StringComparison.Ordinal))
+                {
+                    findings.Add(
+                        $"impairment-reachability: {candidate.FullName} implements INetworkImpairment but is " +
+                        $"never constructed in {catalogPath} -- add it there, or IL2CPP may strip it and no " +
+                        "headless test will notice");
                 }
             }
         }

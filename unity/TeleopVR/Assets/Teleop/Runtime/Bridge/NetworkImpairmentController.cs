@@ -1,4 +1,3 @@
-using Teleop.Core.Types;
 using UnityEngine;
 
 namespace Teleop.Bridge
@@ -298,14 +297,13 @@ namespace Teleop.Bridge
                 impair = settings.AnyEnabled;
             }
 
-            NetworkProfile profile = settings.ToProfile(_clock.TicksPerSecond);
-            bool traceMode = settings.UsesDelayTrace && _traceTicks != null;
-
             ulong seed = unchecked((ulong)randomSeed);
             int discarded = 0;
-            discarded += ApplyTo(_uplink, impair && applyToUplink, traceMode, profile, seed);
-            discarded += ApplyTo(
-                _downlink, impair && applyToDownlink, traceMode, profile, unchecked(seed + DownlinkSeedOffset));
+
+            // Built separately per direction, never shared: a Core impairment owns mutable model
+            // state and one RNG substream and rejects a second bind.
+            discarded += ApplyTo(_uplink, impair && applyToUplink, seed);
+            discarded += ApplyTo(_downlink, impair && applyToDownlink, unchecked(seed + DownlinkSeedOffset));
 
             settings.CopyTo(_applied);
             _numericChangeUnappliedSince = -1f;
@@ -325,20 +323,16 @@ namespace Teleop.Bridge
                 (discarded > 0 ? $" -- {discarded} in-flight datagram(s) discarded by the swap" : string.Empty));
         }
 
-        private int ApplyTo(
-            SwappableTransport transport, bool impair, bool traceMode, NetworkProfile profile, ulong seed)
+        private int ApplyTo(SwappableTransport transport, bool impair, ulong seed)
         {
-            if (!impair)
+            if (impair)
             {
-                transport.Remove();
-            }
-            else if (traceMode)
-            {
-                transport.Install(_traceTicks, profile, seed);
+                transport.Install(
+                    settings.CreateImpairments(_clock.TicksPerSecond, _traceTicks), seed);
             }
             else
             {
-                transport.Install(profile, seed);
+                transport.Remove();
             }
 
             return transport.LastSwapDiscardedCount;

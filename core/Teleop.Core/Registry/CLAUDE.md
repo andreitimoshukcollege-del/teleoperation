@@ -45,3 +45,22 @@ small builder type) once a sweep actually needs to select a transport by name.
 3. Non-generic. Every contract's own doc says `TState` is "typically `Pose`," and nothing in
    this project instantiates one against another state type. A second `TState` is a second
    table, not a generic rewrite.
+
+## Impairments have no table here, on purpose
+
+`Contracts/INetworkImpairment.cs` is a research axis but gets no `Registries.cs` entry, and
+`audit`'s `RegistryCompletenessAxes` list deliberately does not include it. Two reasons, and they
+are the same ones that keep `EmulatedTransport` out:
+
+- The five constructors take five different shapes — `(long)`, `(long)`, `(double, double)`,
+  `(double, long)`, `(long[])`. One factory signature covering them all is a stringly-typed
+  parameter bag, which is worse than not registering them.
+- The by-name selection this axis needs already exists and is richer than a dictionary could be:
+  `Transport/NetworkProfileCatalog.cs` maps a name to a whole *set*, including three regex-driven
+  families. The catalog is this axis's registry.
+
+Rather than leave the gap silent, `audit` gains its own check: every `INetworkImpairment`
+implementation must be constructed by name in `NetworkProfileCatalog.cs`. That asks the honest
+analogue of the registry question — "can this be reached by name?" — and doubles as an IL2CPP
+reachability check, since a type nothing constructs is a type full AOT may strip. See
+`docs/adr/0013-composable-network-impairments.md` decision 8.

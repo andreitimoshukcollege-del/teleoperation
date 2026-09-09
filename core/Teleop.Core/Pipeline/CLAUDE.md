@@ -33,10 +33,18 @@ class. Only operator-side prediction is wired (estimating the robot's state from
 samples); `RobotEndpoint` is untouched, since robot-side prediction of operator intent is a
 different problem per `IPredictor<TState>`'s own doc and nothing here needs it yet.
 
-No autonomy arbiter, no `IPlayoutPolicy` are wired in yet — `Autonomy/`/`Buffering/` still have
-no implementation. `OperatorEndpoint` hardcodes `t_playout = t_operatorRecv` inline as the
-explicit, temporary stand-in for the not-yet-built `ImmediatePlayout` — replace that line, not
-add around it, once `IPlayoutPolicy` has a real implementation.
+`OperatorEndpoint` also hosts an injected `IPlayoutPolicy<Pose>`, and **receive is two-phase**
+because of it (`docs/adr/0012-playout-policy-wiring.md`). `TryReceiveState` does the arrival work —
+decode, `ClockSync`, `owd_*` — and enqueues the sample. `TryPlayoutState` drains the policy: it
+stamps `t_playout`, folds the released sample into the predictor and reconciler, and returns the
+completed trace. The hardcoded `t_playout = t_operatorRecv` line is gone, replaced rather than
+added around.
+
+**A host must drain both, in order, every step.** Nothing reaches the predictor at arrival any
+more, so a host that calls only `TryReceiveState` gets a frozen estimate and an empty
+Reconciliation axis — the same silent shape as forgetting `EstimateRobotState`, and asserted by
+`LoopbackPipelineIntegrationTests` for that reason. No autonomy arbiter is wired in yet;
+`Autonomy/` still has no implementation.
 
 ## Requirements
 
@@ -62,4 +70,7 @@ add around it, once `IPlayoutPolicy` has a real implementation.
 ## Metric names
 
 `owd_uplink_ms` and `owd_downlink_ms`, defined in docs/metrics.md §2, emitted by
-`OperatorEndpoint` on every completed round trip.
+`OperatorEndpoint` on every completed round trip — **at arrival, and deliberately unchanged by the
+playout split.** OWD is an arrival-side quantity; keeping it there is what makes the buffer's own
+cost a separate, addable stage (`playout_delay_ms`, emitted by `Buffering/`) rather than a silent
+inflation of one-way delay.

@@ -3,7 +3,14 @@ from __future__ import annotations
 import warnings
 from typing import Optional
 
-from teleop_analysis.manifest import Manifest, ResolvedStack
+from teleop_analysis.manifest import LEGACY_PLAYOUT_POLICY, Manifest, ResolvedStack
+
+# Both spellings name the same operating point on the buffering axis: no buffer at all. `immediate`
+# is the real policy (docs/adr/0012-playout-policy-wiring.md); `legacy-inline-playout` is what a run
+# from before that ADR did inline. The two are not interchangeable for *comparison* -- the older one
+# did not enforce capture order -- but either is the correct baseline to compare its own run
+# against, which is what this function picks.
+NO_BUFFERING = frozenset({"immediate", LEGACY_PLAYOUT_POLICY})
 
 
 def find_baseline(manifest: Manifest) -> Optional[ResolvedStack]:
@@ -24,7 +31,7 @@ def find_baseline(manifest: Manifest) -> Optional[ResolvedStack]:
 
     exact = [
         s for s in candidates
-        if s.playout_policy == "immediate" and s.arbiter == "direct"
+        if s.playout_policy in NO_BUFFERING and s.arbiter == "direct"
     ]
     if exact:
         if len(exact) > 1:
@@ -35,7 +42,8 @@ def find_baseline(manifest: Manifest) -> Optional[ResolvedStack]:
         return exact[0]
 
     warnings.warn(
-        f"no stack with playoutPolicy='immediate' and arbiter='direct' found for "
+        f"no stack with an unbuffered playoutPolicy ({sorted(NO_BUFFERING)}) and "
+        f"arbiter='direct' found for "
         f"{manifest.experiment_id!r}; using {candidates[0].name!r} as baseline anyway, "
         f"but it is not a true no-mitigation-on-every-axis stack"
     )

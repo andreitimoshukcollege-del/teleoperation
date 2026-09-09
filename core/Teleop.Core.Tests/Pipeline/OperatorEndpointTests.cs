@@ -51,6 +51,7 @@ public class OperatorEndpointTests
             operatorClock, metrics, clockSync,
             new PassthroughPredictor(DefaultPredictorConfig),
             new SnapReconciler(DefaultReconcilerConfig, metrics, operatorClock),
+            TestPlayout.Immediate(metrics, operatorClock),
             inFlightCapacity: 8);
     }
 
@@ -163,7 +164,13 @@ public class OperatorEndpointTests
         Assert.False(received);
         Assert.Equal(default, trace);
 
-        // But the pose must have reached the predictor and reconciler. Before the fix this was 0.
+        // Playout reports nothing for the same reason -- there is no trace to complete -- but it
+        // must still have released the sample into the predictor. This is the invariant across
+        // both phases now: a bookkeeping structure may lose a *trace*, never the *state*.
+        Assert.False(endpoint.TryPlayoutState(200, out LatencyTrace playoutTrace));
+        Assert.Equal(default, playoutTrace);
+
+        // The pose must have reached the predictor and reconciler. Before the fix this was 0.
         Pose estimate = endpoint.EstimateRobotState(300);
         Assert.Equal(4f, estimate.Position.X, 4);
     }
@@ -191,8 +198,16 @@ public class OperatorEndpointTests
         Assert.True(completed.TryGetDownlinkSendTicks(out _));
         Assert.True(completed.TryGetOperatorRecvTicks(out long operatorRecv));
         Assert.Equal(130, operatorRecv);
-        Assert.True(completed.TryGetPlayoutTicks(out long playout));
-        Assert.Equal(operatorRecv, playout);
+
+        // t_playout is not an arrival-side stamp any more: the sample has been handed to the
+        // policy but not yet released, so the trace this phase returns is arrival-complete only.
+        Assert.False(completed.TryGetPlayoutTicks(out _));
+
+        Assert.True(endpoint.TryPlayoutState(130, out LatencyTrace playedOut));
+        Assert.True(playedOut.TryGetPlayoutTicks(out long playout));
+        Assert.Equal(operatorRecv, playout); // `immediate`: released at arrival, adding nothing.
+        Assert.Equal(completed.Sequence, playedOut.Sequence);
+
         Assert.True(completed.TryGetClockOffsetTicks(out _));
         Assert.True(completed.TryGetClockOffsetUncertaintyTicks(out _));
         Assert.True(clockSync.Diagnostics.AcceptedSampleCount >= 1);
@@ -288,6 +303,7 @@ public class OperatorEndpointTests
         codec.TryEncode(stateFrame, buffer, out int n);
         downlink.Send(buffer.AsSpan(0, n), 130);
         endpoint.TryReceiveState(130, out _);
+        endpoint.TryPlayoutState(130, out _); // Playout, not arrival, is what feeds the estimator.
 
         // Zero-mitigation baseline (PassthroughPredictor + SnapReconciler): the estimate snaps
         // to exactly the last received pose, regardless of nowTicks.
@@ -319,11 +335,17 @@ public class OperatorEndpointTests
         downlink.Send(buffer.AsSpan(0, n), 130);
         Assert.True(endpoint.TryReceiveState(130, out _));
 
+        // Deliberately *not* drained in between: the trace now stays in the ring until its sample
+        // plays out, so a duplicate reply arriving first is the case that used to be impossible.
         downlink.Send(buffer.AsSpan(0, n), 140);
         bool secondReceived = endpoint.TryReceiveState(140, out LatencyTrace secondTrace);
 
         Assert.False(secondReceived);
         Assert.Equal(default, secondTrace);
+
+        // And exactly one round trip reached ClockSync -- the duplicate must not be counted twice.
+        Assert.True(endpoint.TryPlayoutState(140, out _));
+        Assert.False(endpoint.TryPlayoutState(140, out _));
     }
 
     [Fact]
@@ -384,7 +406,8 @@ public class OperatorEndpointTests
 
             var endpoint = new OperatorEndpoint(
                 new RawPoseCodec(), new RobotStateFrameCodec(), uplink, downlink,
-                clock, metrics, clockSync, predictor, reconciler, inFlightCapacity: 8);
+                clock, metrics, clockSync, predictor, reconciler,
+                TestPlayout.Immediate(metrics, clock), inFlightCapacity: 8);
 
             LatencyTrace opened = endpoint.SubmitCommand(Pose.Identity, Vector3.Zero, Vector3.Zero, 0f, nowTicks: 100);
             opened.TryGetUplinkSendTicks(out long uplinkSendTicks);
@@ -397,7 +420,8 @@ public class OperatorEndpointTests
             codec.TryEncode(stateFrame, buffer, out int n);
             downlink.Send(buffer.AsSpan(0, n), 130);
 
-            endpoint.TryReceiveState(130, out LatencyTrace completed);
+            endpoint.TryReceiveState(130, out _);
+            endpoint.TryPlayoutState(130, out LatencyTrace completed);
             metrics.TryGetLatest("owd_uplink_ms", out double uplinkMs, out _);
             metrics.TryGetLatest("owd_downlink_ms", out double downlinkMs, out _);
             return (completed, uplinkMs, downlinkMs);

@@ -89,6 +89,94 @@ namespace Teleop.Eval.Sweep
         public float MaxCorrectionAngularSpeedRadiansPerSecond { get; set; } = 10f;
 
         /// <summary>
+        /// The single <see cref="Teleop.Core.Registry.Registries.PlayoutPolicies"/> key held fixed
+        /// while another axis varies. Defaults to <c>immediate</c> -- the zero buffer, which is the
+        /// operating point every pre-Buffering run implicitly had, so an existing experiment YAML
+        /// that says nothing about playout keeps meaning what it meant. Mutually exclusive with
+        /// <see cref="PlayoutPolicies"/>.
+        /// </summary>
+        public string PlayoutPolicy { get; set; } = string.Empty;
+
+        /// <summary>
+        /// <see cref="Teleop.Core.Registry.Registries.PlayoutPolicies"/> keys to sweep, for a
+        /// buffering study. Mutually exclusive with <see cref="PlayoutPolicy"/>.
+        ///
+        /// Sweeping this axis against a <b>single</b> budget is usually the wrong experiment:
+        /// <c>fixed</c> is a family of operating points, not one, and comparing a single budget
+        /// against <c>immediate</c> compares two arbitrary points on a curve. Vary
+        /// <see cref="PlayoutBudgetMs"/> across runs to get the curve itself, which is what an
+        /// adaptive policy's claim is stated against
+        /// (docs/research-log/2026-09-09-playout-bounds-decisions.md).
+        /// </summary>
+        public List<string> PlayoutPolicies { get; set; } = new List<string>();
+
+        /// <summary>
+        /// <see cref="Teleop.Core.Types.PlayoutPolicyConfig.InitialDelayBudgetTicks"/>, in
+        /// milliseconds. Ignored by <c>immediate</c>, whose budget is structurally zero. Defaults
+        /// to zero so that a config which names no buffering intent gets none.
+        /// </summary>
+        public double PlayoutBudgetMs { get; set; } = 0.0;
+
+        /// <summary>
+        /// <see cref="Teleop.Core.Types.PlayoutPolicyConfig.HistoryCapacity"/>: how many samples a
+        /// policy may hold, and therefore how far out of order a sample may arrive and still be
+        /// reinserted. Not a research knob -- it is a bound that must exceed the budget divided by
+        /// the step interval, or the buffer discards samples it had room to keep and the late rate
+        /// measures the capacity rather than the policy.
+        /// </summary>
+        public int PlayoutHistoryCapacity { get; set; } = 64;
+
+        /// <summary>
+        /// <see cref="Teleop.Core.Types.PlayoutPolicyConfig.TargetPercentile"/>: the quantile of
+        /// observed one-way delay <c>percentile</c> holds its budget at. 1.0 is the window maximum
+        /// and is the operating point <c>analysis/playout_bounds.py</c> measured. Ignored by
+        /// <c>immediate</c> and <c>fixed</c>.
+        /// </summary>
+        public double PlayoutTargetPercentile { get; set; } = 0.95;
+
+        /// <summary>
+        /// <see cref="Teleop.Core.Types.PlayoutPolicyConfig.DelayWindowSamples"/>: how many recent
+        /// delays that quantile is taken over. The second knob of a tracking policy — the offline
+        /// analysis moved from 47% to 61% saving across windows of 64 down to 24 — so a
+        /// <c>percentile</c> study varies this or the percentile, not both at once.
+        /// </summary>
+        public int PlayoutDelayWindowSamples { get; set; } = 64;
+
+        /// <summary>
+        /// Floor and ceiling, in milliseconds, on the budget a deriving policy may settle on. The
+        /// floor stops a quiet stretch tuning the buffer to nothing right before a burst; the
+        /// ceiling bounds how much latency a bad run can extract before the policy has failed
+        /// rather than adapted. Ignored by <c>immediate</c> and <c>fixed</c>, whose budgets do not
+        /// move.
+        /// </summary>
+        public double PlayoutMinBudgetMs { get; set; } = 0.0;
+
+        /// <inheritdoc cref="PlayoutMinBudgetMs"/>
+        public double PlayoutMaxBudgetMs { get; set; } = 500.0;
+
+        /// <summary>
+        /// The playout keys this config actually asks for, whichever of the two spellings it used.
+        /// Mirrors <see cref="ResolveReconcilers"/>, including its fallback: an empty config means
+        /// <c>immediate</c> here rather than an empty list, because unlike a reconciler there is no
+        /// such thing as running without a playout policy once one is wired.
+        /// </summary>
+        public List<string> ResolvePlayoutPolicies()
+        {
+            if (PlayoutPolicies.Count > 0)
+            {
+                return PlayoutPolicies;
+            }
+
+            return string.IsNullOrWhiteSpace(PlayoutPolicy)
+                ? new List<string> { "immediate" }
+                : new List<string> { PlayoutPolicy };
+        }
+
+        /// <summary>Both playout spellings used at once -- a config error, not a merge.</summary>
+        public bool HasConflictingPlayoutKeys =>
+            PlayoutPolicies.Count > 0 && !string.IsNullOrWhiteSpace(PlayoutPolicy);
+
+        /// <summary>
         /// The reconciler keys this config actually asks for, whichever of the two spellings it
         /// used. Returns empty when neither is set, which <c>SweepCommand</c>'s validation reports.
         /// </summary>

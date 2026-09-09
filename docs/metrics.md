@@ -61,6 +61,28 @@ it. The other headline number; separate from M2P because they can be improved in
 M2P within tolerance; if it doesn't, a stage is unaccounted for. Report as a stacked
 contribution, because the point of the breakdown is deciding where optimization is worth doing.
 
+**Playout delay** — `t_playout − t_recv`: the `buffer` stage of that breakdown, and the price a
+jitter buffer charges every sample whether or not that sample needed the wait. Separate from OWD
+on purpose: `owd_downlink_ms` ends at `t_recv`, so before this metric existed a playout policy
+could halve its late-arrival rate and the added latency appeared nowhere at all — a buffering win
+read as free.
+
+Metric name: `playout_delay_ms`, milliseconds, one sample per released sample, stamped at
+`t_playout`. Zero for `immediate` by construction. First emitted by `Buffering/PlayoutMetrics.cs`.
+
+**Playout budget** — the delay budget the policy is currently targeting between a sample's capture
+and its playout: the x-axis of a latency/loss plot. Constant for `immediate` (always zero) and
+`fixed`; for an adaptive policy this moving is the entire mechanism.
+
+Metric name: `playout_budget_ms`, milliseconds, one sample per released sample. Report it
+alongside `playout_delay_ms`, never instead of it — the budget is what the policy *intends*, the
+delay is what it *charged*, and they differ whenever a sample arrives after its own due instant.
+
+**Playout occupancy** — buffered samples as a fraction of the policy's capacity, in [0, 1].
+Reported as a fraction rather than a count so it is comparable across policies configured with
+different capacities. Metric name: `playout_occupancy`, dimensionless, one sample per released
+sample. Occupancy pinned at 1.0 means the capacity, not the policy, is deciding the late rate.
+
 ## 3. Network
 
 **Jitter** — report both, they answer different questions:
@@ -74,6 +96,27 @@ alongside the rate always. A 2% loss rate in bursts of 20 and a 2% rate of isola
 break a jitter buffer in completely different ways, and the rate alone cannot distinguish them.
 
 **Reordering rate** — fraction arriving out of sequence, plus max displacement.
+
+**Late-arrival (induced) loss** — samples the network delivered but the playout policy discarded
+as too late to play in capture order. **This is not network loss and must never be added to it:**
+network loss is what the link destroyed, this is what the buffer chose to drop, and the whole
+latency/loss tradeoff is the second trading against `playout_delay_ms`. A policy reporting one
+without the other is not evaluable (`Buffering/CLAUDE.md` requirement 1).
+
+Metric name: `playout_late`, one sample of value 1 per discarded sample, stamped at its arrival.
+A count rather than a rate, so a policy that discards nothing emits nothing rather than a stream
+of zeroes; the rate is
+`count(playout_late) / (count(playout_late) + count(playout_delay_ms))`, computed by the analyst.
+
+**Playout underrun** — a drain that released nothing and had nothing to release: the pipeline asked
+the policy for a sample and there was none to have. Distinct from late loss, which is a sample
+arriving too late to use; an underrun is no sample at all. Both halves of that definition matter —
+see `docs/adr/0012-playout-policy-wiring.md` §5 for the two simpler definitions that score one
+baseline or the other at 100%.
+
+Metric name: `playout_underrun`, one sample of value 1 per starved drain. Never silently zero on a
+lossy trace: `IPlayoutPolicy` clause 3 requires this pushed to `IMetricSink`, because graceful
+degradation is what the caller does with an underrun, not a reason to stop counting it.
 
 **Goodput** — application-useful bytes/s, excluding redundancy and retransmission.
 

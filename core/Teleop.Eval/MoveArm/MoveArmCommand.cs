@@ -78,9 +78,18 @@ namespace Teleop.Eval.MoveArm
             IReconciler<Pose> reconciler = Registries.Reconcilers["snap"](reconcilerConfig, sink, clock);
             var clockSync = new Teleop.Core.Time.ClockSync(clockSyncConfig);
 
+            // Zero buffer: this tool measures the link, so it must not add delay of its own.
+            // docs/adr/0012-playout-policy-wiring.md -- every sample still has to pass through a
+            // policy, and `immediate` is the one that changes nothing about when it plays.
+            var playoutConfig = new PlayoutPolicyConfig(
+                historyCapacity: InFlightCapacity, initialDelayBudgetTicks: 0, minDelayBudgetTicks: 0,
+                maxDelayBudgetTicks: 0, targetPercentile: 0.95, delayWindowSamples: 64, delayProcessNoise: 0.01f,
+                delayMeasurementNoise: 0.001f, maxAdaptationRatePerSecond: 0.0, lossWeight: 0.5);
+            IPlayoutPolicy<Pose> playoutPolicy = Registries.PlayoutPolicies["immediate"](playoutConfig, sink, clock);
+
             var operatorEndpoint = new OperatorEndpoint(
                 new RawPoseCodec(), new RobotStateFrameCodec(), transport, transport,
-                clock, sink, clockSync, predictor, reconciler, InFlightCapacity);
+                clock, sink, clockSync, predictor, reconciler, playoutPolicy, InFlightCapacity);
 
             Console.WriteLine(
                 $"[move-arm] sending {targetPosition} (gripper={a.Gripper:0.##}) to {remoteEndPoint} at " +
@@ -110,6 +119,14 @@ namespace Teleop.Eval.MoveArm
                 while (operatorEndpoint.TryReceiveState(clock.NowTicks, out _))
                 {
                     acceptedRoundTrips++;
+                }
+
+                // Playout, not arrival, is what feeds the predictor now
+                // (docs/adr/0012-playout-policy-wiring.md), so the convergence check has to read the
+                // estimate after a sample has actually played out. With `immediate` that is the same
+                // instant it arrived, which is why this tool's behaviour is unchanged.
+                while (operatorEndpoint.TryPlayoutState(clock.NowTicks, out _))
+                {
                     everObservedAnyState = true;
                     lastObservedPosition = operatorEndpoint.EstimateRobotState(clock.NowTicks).Position;
 

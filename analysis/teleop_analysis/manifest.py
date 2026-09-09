@@ -6,10 +6,16 @@ from pathlib import Path
 from typing import List
 
 # A manifest written before mitigation stacks existed only has a flat `predictors` list and a
-# single `reconciler`. Per docs/adr/0005 (planned), that shape is normalized into one synthetic
-# stack per predictor, named after the predictor, holding the playout/arbiter axes at the values
-# that reproduce today's pre-Phase-6 pipeline stand-in exactly.
-LEGACY_PLAYOUT_POLICY = "immediate"
+# single `reconciler`. That shape is normalized into one synthetic stack per predictor, named after
+# the predictor, holding the playout/arbiter axes at the values that reproduce the pre-Phase-6
+# pipeline stand-in exactly.
+#
+# This value was the string "immediate" until docs/adr/0012-playout-policy-wiring.md. `immediate` is
+# now a real registry key whose policy enforces capture-time ordering, which the inline stand-in did
+# not -- so keeping the old label would make every legacy manifest claim its run used a policy that
+# behaved differently and did not exist when it ran. Runs on either side of that ADR are not
+# comparable on a profile where reordering occurs, and this label is what says so.
+LEGACY_PLAYOUT_POLICY = "legacy-inline-playout"
 LEGACY_ARBITER = "direct"
 
 DEFAULT_SOURCE = "sweep"

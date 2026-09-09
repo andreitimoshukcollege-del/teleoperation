@@ -1,3 +1,5 @@
+using System;
+using System.Linq;
 using Teleop.Core.Contracts;
 using Teleop.Core.Metrics;
 using Teleop.Core.Registry;
@@ -86,10 +88,16 @@ public class RegistriesTests
     }
 
     [Fact]
-    public void PlayoutPolicies_IsDeclaredAndEmpty()
+    public void PlayoutPolicies_HoldsTheBaselinesAndPercentile()
     {
         Assert.NotNull(Registries.PlayoutPolicies);
-        Assert.Empty(Registries.PlayoutPolicies);
+
+        // The two baselines plus the first deriving policy. `kalman-jitter`/`adaptive`/`pareto`
+        // are still rows in Buffering/CLAUDE.md's "planned" table -- this asserts that honestly
+        // rather than leaving the table to drift.
+        Assert.Equal(
+            new[] { "fixed", "immediate", "percentile" },
+            Registries.PlayoutPolicies.Keys.OrderBy(key => key, StringComparer.Ordinal).ToArray());
     }
 
     [Fact]

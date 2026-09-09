@@ -312,13 +312,26 @@ def cmd_init(args):
     print(f"wrote {DOC.relative_to(REPO)}")
 
 
+#: --chosen becomes a Word heading, so it has to read like one. The first smoke test passed a
+#: whole sentence and produced a heading that ran off the page and was useless in a table of
+#: contents. Rejecting it is better than truncating: truncation loses the tail silently, whereas
+#: an error tells the caller exactly what to do, and the explanation has a home already in --why.
+MAX_CHOSEN = 60
+
+
 def cmd_append_solution(args):
     if not DOC.exists():
         sys.exit(f"{DOC.relative_to(REPO)} does not exist. Run `init` first.")
 
+    if len(args.chosen) > MAX_CHOSEN:
+        sys.exit(
+            f"--chosen is {len(args.chosen)} characters; it becomes a Word heading, so keep it "
+            f"under {MAX_CHOSEN}. Pass a short label here -- \"spring\", \"no approach chosen\", "
+            f"\"snap retained\" -- and put the sentence explaining it in --why."
+        )
+
     d = docx.Document(str(DOC))
     _heading(d, f"{args.axis}: {args.chosen} ({_today()})", 2)
-    _para(d, "Chosen: ", bold=True).add_run(args.chosen)
     _para(d, "Why: ", bold=True).add_run(args.why)
     if args.rejected:
         _para(d, "Rejected: ", bold=True).add_run(args.rejected)
@@ -340,7 +353,10 @@ def main():
 
     p_add = sub.add_parser("append-solution", help="append one chosen-solution entry")
     p_add.add_argument("--axis", required=True, help="research axis, e.g. Reconciliation")
-    p_add.add_argument("--chosen", required=True, help="the approach that was chosen")
+    p_add.add_argument(
+        "--chosen", required=True,
+        help=f"SHORT label for the heading, under {MAX_CHOSEN} chars, e.g. 'spring' or "
+             f"'no approach chosen'. The explanation goes in --why, not here.")
     p_add.add_argument("--why", required=True, help="one or two sentences, in plain language")
     p_add.add_argument("--rejected", default="", help="what was rejected and why")
     p_add.add_argument("--results", default="", help="results/ path the numbers came from")

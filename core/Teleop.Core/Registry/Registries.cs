@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using Teleop.Core.Buffering;
 using Teleop.Core.Contracts;
 using Teleop.Core.Prediction;
 using Teleop.Core.Reconciliation;
@@ -26,9 +27,11 @@ namespace Teleop.Core.Registry
     /// not depend on locale/culture behavior differing between <c>dotnet test</c> and the Quest
     /// build.
     ///
-    /// <see cref="PlayoutPolicies"/> and <see cref="Arbiters"/> are declared, correctly typed,
-    /// and empty — <c>Buffering/</c> and <c>Autonomy/</c> have no implementations yet, but the
-    /// table exists so adding the first one is a one-line change here, not a new table to design.
+    /// <see cref="Arbiters"/> is declared, correctly typed, and empty — <c>Autonomy/</c> has no
+    /// implementation yet, but the table exists so adding the first one is a one-line change here,
+    /// not a new table to design. <see cref="PlayoutPolicies"/> was in that state until
+    /// <c>docs/adr/0012-playout-policy-wiring.md</c>, and adding its first two entries was indeed a
+    /// one-line change each.
     /// Non-generic by design: every contract's own doc already says <c>TState</c> is "typically
     /// <see cref="Pose"/>," and nothing in this project instantiates any of them against another
     /// state type. A second <c>TState</c> showing up later is a second table, not a generic
@@ -95,11 +98,27 @@ namespace Teleop.Core.Registry
             };
 
         /// <summary>
-        /// <see cref="IPlayoutPolicy{TState}"/> factories. Empty — <c>Buffering/</c> has no
-        /// implementation yet.
+        /// <see cref="IPlayoutPolicy{TState}"/> factories. The two baselines
+        /// (<c>docs/adr/0012-playout-policy-wiring.md</c>); <c>percentile</c>, <c>kalman-jitter</c>,
+        /// <c>adaptive</c> and <c>pareto</c> are still planned in <c>Buffering/CLAUDE.md</c>.
+        ///
+        /// <see cref="IMetricSink"/> is a constructor dependency because
+        /// <see cref="IPlayoutPolicy{TState}"/> clause 3 mandates it — an underrun is pushed, not
+        /// polled, for the same reason a reconciler pushes correction cost. <see cref="ITimeAuthority"/>
+        /// is taken for the same reason <see cref="Predictors"/> takes it: both policies here need
+        /// <c>TicksPerSecond</c> to report <c>playout_delay_ms</c> in milliseconds, and
+        /// <see cref="PlayoutPolicyConfig.MaxAdaptationRatePerSecond"/> — specified per second of
+        /// wall time — is unusable without one, so <c>adaptive</c> will need it too. Settling the
+        /// shape once matters here beyond the usual: root CLAUDE.md names this file as a
+        /// cross-machine conflict surface, so a second signature change is a second merge to
+        /// coordinate.
         /// </summary>
-        public static readonly IReadOnlyDictionary<string, Func<PlayoutPolicyConfig, IMetricSink, IPlayoutPolicy<Pose>>> PlayoutPolicies =
-            new Dictionary<string, Func<PlayoutPolicyConfig, IMetricSink, IPlayoutPolicy<Pose>>>(StringComparer.Ordinal);
+        public static readonly IReadOnlyDictionary<string, Func<PlayoutPolicyConfig, IMetricSink, ITimeAuthority, IPlayoutPolicy<Pose>>> PlayoutPolicies =
+            new Dictionary<string, Func<PlayoutPolicyConfig, IMetricSink, ITimeAuthority, IPlayoutPolicy<Pose>>>(StringComparer.Ordinal)
+            {
+                ["immediate"] = (config, metrics, clock) => new ImmediatePlayout(config, metrics, clock),
+                ["fixed"] = (config, metrics, clock) => new FixedDelayPlayout(config, metrics, clock),
+            };
 
         /// <summary>
         /// <see cref="IAutonomyArbiter"/> factories. Empty — <c>Autonomy/</c> has no

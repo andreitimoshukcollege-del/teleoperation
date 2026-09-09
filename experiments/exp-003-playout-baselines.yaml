@@ -1,0 +1,43 @@
+# The Buffering axis's first sweep: the two baselines against each other, predictor and reconciler
+# held fixed (experiments/CLAUDE.md rule 1 -- vary one axis at a time).
+#
+# What this can and cannot show. It measures the *shape* of the tradeoff: `fixed` should recover
+# the out-of-order samples `immediate` discards, and should charge a visible playout_delay_ms for
+# them. It does NOT reproduce the 47-61% adaptive advantage from
+# docs/research-log/2026-09-09-playout-bounds-decisions.md -- neither policy adapts, and a
+# 500-step trial sees only ~2 burst episodes on synthetic-burst. Resolving that needs a longer
+# trial, which changes what every existing results/ directory means.
+#
+# One budget, not a curve. Reading a winner out of a single budget would be reading one arbitrary
+# point off a curve; sweeping playoutBudgetMs across runs is what produces the curve an adaptive
+# policy's claim is stated against.
+id: exp-003-playout-baselines
+seeds: [1, 2, 3, 4, 5]
+predictors:
+  - none
+  - const-vel
+reconciler: snap
+playoutPolicies:
+  - immediate
+  - fixed
+# 40 ms, and what that turns out to mean is the most useful thing this sweep reports.
+#
+# The budget is measured from *capture*, per PlayoutPolicyConfig.InitialDelayBudgetTicks -- so a
+# budget below the link's one-way delay buffers nothing at all: every sample already arrives past
+# its own due instant and is released on sight. Measured here, `fixed` at 40 ms is byte-identical
+# to `immediate` on 50ms-5j, 150ms-20j-0.5loss and 300ms-60j-2loss-bursty, and differs only on lan
+# (0 ms base) and synthetic-burst (~20 ms base). That is correct behaviour and the textbook
+# property of a fixed playout budget, not a defect -- but it does mean one budget cannot be
+# meaningfully shared across profiles with different base delays.
+#
+# Left at 40 rather than tuned per profile, because tuning it here would hide exactly that.
+playoutBudgetMs: 40
+playoutHistoryCapacity: 64
+networkProfiles:
+  - lan
+  - 50ms-5j
+  - 150ms-20j-0.5loss
+  - 300ms-60j-2loss-bursty
+  - synthetic-burst
+trialSteps: 500
+stepIntervalTicks: 100000

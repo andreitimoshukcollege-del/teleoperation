@@ -36,11 +36,22 @@ namespace Teleop.Core.Pipeline
     /// than being assumed equal to ours
     /// (docs/adr/0008-clocksync-cross-rate-normalization.md).
     ///
-    /// <c>t_playout</c> is set equal to <c>t_operatorRecv</c> in <see cref="TryReceiveState"/> —
-    /// the explicit stand-in for the not-yet-built <c>ImmediatePlayout</c>
-    /// (<c>Buffering/CLAUDE.md</c>'s "zero buffer" baseline). This is a deliberately temporary
-    /// shortcut: once <c>IPlayoutPolicy</c> has an implementation, this inline assignment is
-    /// replaced by a real call to it.
+    /// <b>Receive is two-phase</b>, because <see cref="IPlayoutPolicy{TState}"/> is the first thing
+    /// in the pipeline that holds a sample across time
+    /// (docs/adr/0012-playout-policy-wiring.md). <see cref="TryReceiveState"/> does the work that
+    /// belongs to <i>arrival</i> — decode, <see cref="ClockSync"/>, <c>owd_uplink_ms</c> and
+    /// <c>owd_downlink_ms</c> — and then hands the sample to the policy.
+    /// <see cref="TryPlayoutState"/> drains the policy: it stamps <c>t_playout</c>, folds the
+    /// released sample into the predictor and reconciler, and returns the completed trace. A host
+    /// drains both, in that order, once per step; both replaced the single hardcoded
+    /// <c>t_playout = t_operatorRecv</c> line this class used to carry as a stand-in for the
+    /// missing axis.
+    ///
+    /// <b>Nothing reaches the predictor at arrival any more.</b> A host that drains
+    /// <see cref="TryReceiveState"/> and forgets <see cref="TryPlayoutState"/> sees a frozen robot
+    /// estimate and a silently empty Reconciliation axis — the same failure mode as forgetting
+    /// <see cref="EstimateRobotState"/>, which is why both are asserted by
+    /// <c>LoopbackPipelineIntegrationTests</c> rather than left to this comment.
     ///
     /// Allocation-free per call: the send/receive buffers and the in-flight trace ring are all
     /// preallocated in the constructor.
@@ -56,6 +67,7 @@ namespace Teleop.Core.Pipeline
         private readonly ClockSync _clockSync;
         private readonly IPredictor<Pose> _robotStatePredictor;
         private readonly IReconciler<Pose> _robotStateReconciler;
+        private readonly IPlayoutPolicy<Pose> _playoutPolicy;
 
         private readonly byte[] _sendBuffer;
         private readonly byte[] _recvBuffer;
@@ -78,6 +90,7 @@ namespace Teleop.Core.Pipeline
             ClockSync clockSync,
             IPredictor<Pose> robotStatePredictor,
             IReconciler<Pose> robotStateReconciler,
+            IPlayoutPolicy<Pose> playoutPolicy,
             int inFlightCapacity)
         {
             if (commandCodec.MaxEncodedBytes > uplinkTransport.MaxPayloadBytes)
@@ -95,6 +108,7 @@ namespace Teleop.Core.Pipeline
             _clockSync = clockSync;
             _robotStatePredictor = robotStatePredictor;
             _robotStateReconciler = robotStateReconciler;
+            _playoutPolicy = playoutPolicy;
 
             _sendBuffer = new byte[commandCodec.MaxEncodedBytes];
             _recvBuffer = new byte[downlinkTransport.MaxPayloadBytes];
@@ -166,18 +180,36 @@ namespace Teleop.Core.Pipeline
                 // loss, and every prediction and reconciliation number recorded on the impaired
                 // profiles was measured through that filter.
                 long uplinkSendTicks = 0;
-                bool hasTrace = TryTakeInFlight(stateFrame.Sequence, out LatencyTrace trace);
+                bool hasTrace = TryPeekInFlight(stateFrame.Sequence, out int slot);
                 if (hasTrace)
                 {
-                    hasTrace = trace.TryGetUplinkSendTicks(out uplinkSendTicks);
+                    // A trace that already carries t_operatorRecv belongs to a reply that has
+                    // already been accounted for and is merely waiting to play out. A second reply
+                    // for that sequence is a duplicate: dropping it here is what stops it feeding
+                    // ClockSync twice and emitting a second pair of owd_* samples. Before the
+                    // playout split this fell out for free, because the trace left the ring the
+                    // instant its reply arrived.
+                    if (_inFlightTraces[slot].TryGetOperatorRecvTicks(out _))
+                    {
+                        continue;
+                    }
+
+                    hasTrace = _inFlightTraces[slot].TryGetUplinkSendTicks(out uplinkSendTicks);
                 }
 
                 if (!hasTrace)
                 {
-                    ObserveRobotState(
-                        stateFrame.Pose,
-                        _clockSync.ToOperatorTicks(
-                            stateFrame.DownlinkSendTicks, stateFrame.TicksPerSecond, _ticksPerSecond));
+                    // Converted here rather than once above the branch: ToOperatorTicks reads the
+                    // current offset estimate, and the other branch deliberately converts *after*
+                    // AddRoundTrip has folded this round trip in. Hoisting it would silently stamp
+                    // every sample with the previous estimate.
+                    _playoutPolicy.Enqueue(
+                        stateFrame.Sequence,
+                        new Stamped<Pose>(
+                            _clockSync.ToOperatorTicks(
+                                stateFrame.DownlinkSendTicks, stateFrame.TicksPerSecond, _ticksPerSecond),
+                            stateFrame.Pose),
+                        arrivalTicks);
                     continue;
                 }
 
@@ -195,17 +227,75 @@ namespace Teleop.Core.Pipeline
                     stateFrame.DownlinkSendTicks, stateFrame.TicksPerSecond, _ticksPerSecond);
                 ClockSyncDiagnostics syncDiagnostics = _clockSync.Diagnostics;
 
-                completedTrace = trace
+                // Arrival-complete, not complete: t_playout is stamped by TryPlayoutState, whenever
+                // the policy decides this sample is due. The trace stays in its ring slot until then
+                // rather than moving to a second one -- the ring already overwrites oldest-first, and
+                // a trace lost to that only costs the playout attribution for one sample. The state
+                // itself is never censored by this structure, which is the invariant the in-flight
+                // ring was fixed to restore.
+                completedTrace = _inFlightTraces[slot]
                     .WithRobotRecvTicks(robotRecvOperatorDomain)
                     .WithDownlinkSendTicks(downlinkSendOperatorDomain)
                     .WithOperatorRecvTicks(arrivalTicks)
-                    .WithPlayoutTicks(arrivalTicks) // Phase-4 stand-in for IPlayoutPolicy -- see type doc.
                     .WithClockSync(syncDiagnostics.OffsetTicks, syncDiagnostics.OffsetUncertaintyTicks);
+                _inFlightTraces[slot] = completedTrace;
 
                 _lastAckSequence = stateFrame.Sequence;
 
+                // Emitted here, at arrival, and deliberately unchanged by the playout split: OWD is
+                // an arrival-side quantity, so keeping it here is what makes the buffer's own cost a
+                // separate, addable stage (playout_delay_ms) rather than a silent inflation of
+                // one-way delay -- docs/metrics.md section 2's stage breakdown.
                 RecordOneWayDelayMetrics(completedTrace, nowTicks);
-                ObserveRobotState(stateFrame.Pose, downlinkSendOperatorDomain);
+
+                _playoutPolicy.Enqueue(
+                    stateFrame.Sequence,
+                    new Stamped<Pose>(downlinkSendOperatorDomain, stateFrame.Pose),
+                    arrivalTicks);
+                return true;
+            }
+
+            completedTrace = default;
+            return false;
+        }
+
+        /// <summary>
+        /// Drains the playout policy: releases every sample due at <paramref name="nowTicks"/>,
+        /// stamps <c>t_playout</c> on its trace, and folds it into the predictor and reconciler.
+        /// Returns false when nothing more is due -- the common case, not an error. Call in a loop
+        /// until it returns false, after <see cref="TryReceiveState"/> and before
+        /// <see cref="EstimateRobotState"/>. Allocation-free.
+        ///
+        /// <b>This is the call that feeds the estimator.</b> <see cref="TryReceiveState"/> no
+        /// longer does; skipping this leaves the predictor with no observations at all.
+        ///
+        /// A released sample whose trace has been evicted from the in-flight ring still reaches the
+        /// predictor and reconciler -- only the latency bookkeeping is lost -- and is skipped over
+        /// rather than returned, the same way <see cref="TryReceiveState"/> handles a reply with no
+        /// matching trace.
+        /// </summary>
+        public bool TryPlayoutState(long nowTicks, out LatencyTrace completedTrace)
+        {
+            while (_playoutPolicy.TryDequeue(nowTicks, out uint sequence, out Pose pose, out long playoutTicks))
+            {
+                // Order matters: the trace must be taken before ObserveRobotState, because taking it
+                // frees the ring slot and Observe can run arbitrary predictor code. Reading the
+                // capture stamp from the policy's own release rather than from the trace keeps the
+                // two paths -- with and without a trace -- fed from one source.
+                bool hasTrace = TryTakeInFlight(sequence, out LatencyTrace trace);
+
+                long captureTicks = hasTrace && trace.TryGetDownlinkSendTicks(out long downlinkSend)
+                    ? downlinkSend
+                    : playoutTicks;
+
+                ObserveRobotState(pose, captureTicks);
+
+                if (!hasTrace)
+                {
+                    continue;
+                }
+
+                completedTrace = trace.WithPlayoutTicks(playoutTicks);
                 return true;
             }
 
@@ -262,6 +352,26 @@ namespace Teleop.Core.Pipeline
             _inFlightNextIndex = (_inFlightNextIndex + 1) % _inFlightSequences.Length;
         }
 
+        /// <summary>
+        /// Locates an occupied slot without freeing it, so <see cref="TryReceiveState"/> can write
+        /// the arrival-completed trace back and leave it for <see cref="TryPlayoutState"/> to take
+        /// when the sample actually plays.
+        /// </summary>
+        private bool TryPeekInFlight(uint sequence, out int slot)
+        {
+            for (int i = 0; i < _inFlightSequences.Length; i++)
+            {
+                if (_inFlightOccupied[i] && _inFlightSequences[i] == sequence)
+                {
+                    slot = i;
+                    return true;
+                }
+            }
+
+            slot = -1;
+            return false;
+        }
+
         private bool TryTakeInFlight(uint sequence, out LatencyTrace trace)
         {
             for (int i = 0; i < _inFlightSequences.Length; i++)
@@ -281,8 +391,10 @@ namespace Teleop.Core.Pipeline
         /// <summary>
         /// Returns the endpoint to its as-constructed state: no in-flight traces, sequence
         /// counters reset. Does not reset <see cref="ClockSync"/>, the transports, or the
-        /// injected predictor/reconciler -- those are injected dependencies with their own
-        /// <c>Reset()</c>, called separately by whatever owns them.
+        /// injected predictor/reconciler/playout policy -- those are injected dependencies with
+        /// their own <c>Reset()</c>, called separately by whatever owns them. A caller that resets
+        /// this endpoint without resetting the policy leaves samples buffered for sequence numbers
+        /// the endpoint is about to reissue.
         /// </summary>
         public void Reset()
         {

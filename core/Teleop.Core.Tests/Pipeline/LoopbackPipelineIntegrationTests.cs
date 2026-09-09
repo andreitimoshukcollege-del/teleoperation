@@ -5,6 +5,7 @@ using Teleop.Core.Pipeline;
 using Teleop.Core.Plant;
 using Teleop.Core.Prediction;
 using Teleop.Core.Reconciliation;
+using Teleop.Core.Tests.TestSupport;
 using Teleop.Core.Time;
 using Teleop.Core.Transport;
 using Teleop.Core.Types;
@@ -65,7 +66,7 @@ public class LoopbackPipelineIntegrationTests
         var operatorEndpoint = new OperatorEndpoint(
             new RawPoseCodec(), new RobotStateFrameCodec(), uplink, downlink,
             clock, metrics, clockSync, MakePredictor(), MakeReconciler(metrics, clock),
-            inFlightCapacity: 8);
+            TestPlayout.Immediate(metrics, clock), inFlightCapacity: 8);
         var robotEndpoint = new RobotEndpoint(
             plant, new RawPoseCodec(), new RobotStateFrameCodec(), uplink, downlink, clock);
 
@@ -83,9 +84,14 @@ public class LoopbackPipelineIntegrationTests
             robotEndpoint.Step(clock.NowTicks);
 
             clock.AdvanceTicks(1_000); // operator polls a moment after that
-            bool received = operatorEndpoint.TryReceiveState(clock.NowTicks, out LatencyTrace completed);
-
+            bool received = operatorEndpoint.TryReceiveState(clock.NowTicks, out _);
             Assert.True(received, $"round trip {i} did not complete over a zero-delay transport");
+
+            // The trace is only complete after playout -- t_playout is stamped there, and there is
+            // where the sample reaches the predictor. A host that drains only the first phase gets
+            // an incomplete trace and a frozen estimate (docs/adr/0012-playout-policy-wiring.md).
+            bool playedOut = operatorEndpoint.TryPlayoutState(clock.NowTicks, out LatencyTrace completed);
+            Assert.True(playedOut, $"round trip {i} arrived but never played out");
             lastCompleted = completed;
         }
 
@@ -130,7 +136,7 @@ public class LoopbackPipelineIntegrationTests
         var operatorEndpoint = new OperatorEndpoint(
             new RawPoseCodec(), new RobotStateFrameCodec(), uplink, downlink,
             clock, metrics, clockSync, MakePredictor(), MakeReconciler(metrics, clock),
-            inFlightCapacity: 8);
+            TestPlayout.Immediate(metrics, clock), inFlightCapacity: 8);
         var robotEndpoint = new RobotEndpoint(
             plant, new RawPoseCodec(), new RobotStateFrameCodec(), uplink, downlink, clock);
 
@@ -159,7 +165,7 @@ public class LoopbackPipelineIntegrationTests
             var operatorEndpoint = new OperatorEndpoint(
                 new RawPoseCodec(), new RobotStateFrameCodec(), uplink, downlink,
                 clock, metrics, clockSync, MakePredictor(), MakeReconciler(metrics, clock),
-                inFlightCapacity: 8);
+                TestPlayout.Immediate(metrics, clock), inFlightCapacity: 8);
             var robotEndpoint = new RobotEndpoint(
                 plant, new RawPoseCodec(), new RobotStateFrameCodec(), uplink, downlink, clock);
 
@@ -207,7 +213,7 @@ public class LoopbackPipelineIntegrationTests
         var operatorEndpoint = new OperatorEndpoint(
             new RawPoseCodec(), new RobotStateFrameCodec(), uplink, downlink,
             clock, metrics, clockSync, MakePredictor(), MakeReconciler(metrics, clock),
-            inFlightCapacity: 8);
+            TestPlayout.Immediate(metrics, clock), inFlightCapacity: 8);
         var robotEndpoint = new RobotEndpoint(
             plant, new RawPoseCodec(), new RobotStateFrameCodec(), uplink, downlink, clock);
 

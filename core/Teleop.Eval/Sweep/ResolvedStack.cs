@@ -17,28 +17,33 @@ namespace Teleop.Eval.Sweep
     public sealed class ResolvedStack
     {
         /// <summary>
-        /// The stand-in <c>Buffering/</c> selection recorded for every stack until an
-        /// <c>IPlayoutPolicy</c> exists. Matches <c>manifest.py</c>'s <c>LEGACY_PLAYOUT_POLICY</c>
-        /// exactly: it names the behaviour <c>Pipeline/OperatorEndpoint</c> actually has today, its
-        /// hardcoded <c>t_playout = t_operatorRecv</c>, and is deliberately <b>not</b> a
-        /// <c>Registry/Registries.cs</c> key -- <c>PlayoutPolicies</c> is empty. Recording it keeps
-        /// this writer and <c>manifest.py</c>'s legacy path from disagreeing about what a
-        /// pre-Buffering run did.
+        /// What a run recorded before <c>IPlayoutPolicy</c> was wired in: no policy at all, and
+        /// <c>Pipeline/OperatorEndpoint</c>'s hardcoded <c>t_playout = t_operatorRecv</c>. Matches
+        /// <c>manifest.py</c>'s <c>LEGACY_PLAYOUT_POLICY</c> exactly, and is deliberately <b>not</b>
+        /// a <c>Registry/Registries.cs</c> key.
+        ///
+        /// <b>It used to be the string <c>immediate</c>, and renaming it was the point.</b>
+        /// <c>immediate</c> is now a real policy that enforces capture-time ordering, which the
+        /// inline stand-in did not -- so leaving the old label would have made every pre-Buffering
+        /// manifest claim its run used a policy that behaved differently and did not exist when it
+        /// ran (docs/adr/0012-playout-policy-wiring.md). Manifests already on disk are untouched and
+        /// still read correctly; only what new runs write changes.
         /// </summary>
-        public const string StandInPlayoutPolicy = "immediate";
+        public const string LegacyInlinePlayout = "legacy-inline-playout";
 
         /// <summary>
         /// The stand-in <c>Autonomy/</c> selection, matching <c>manifest.py</c>'s
-        /// <c>LEGACY_ARBITER</c>. Same reasoning as <see cref="StandInPlayoutPolicy"/>: no arbiter
+        /// <c>LEGACY_ARBITER</c>. Same reasoning as <see cref="LegacyInlinePlayout"/>: no arbiter
         /// is wired into <c>Pipeline/</c>, so every command carries full direct authority.
         /// </summary>
         public const string StandInArbiter = "direct";
 
-        public ResolvedStack(string name, string predictor, string reconciler)
+        public ResolvedStack(string name, string predictor, string reconciler, string playoutPolicy)
         {
             Name = name;
             Predictor = predictor;
             Reconciler = reconciler;
+            PlayoutPolicy = playoutPolicy;
         }
 
         /// <summary>
@@ -51,33 +56,51 @@ namespace Teleop.Eval.Sweep
 
         public string Reconciler { get; }
 
-        public string PlayoutPolicy => StandInPlayoutPolicy;
+        public string PlayoutPolicy { get; }
 
         public string Arbiter => StandInArbiter;
 
         /// <summary>
-        /// Every (predictor, reconciler) combination the config asks for.
+        /// Every (predictor, reconciler, playout policy) combination the config asks for.
         ///
         /// <b>Naming rule: a stack is named for the axes the experiment actually varies.</b> With a
-        /// single reconciler held fixed the name is the bare predictor, which is byte-identical to
-        /// the layout every existing run used -- so re-running <c>exp-001</c>/<c>exp-002</c> puts
-        /// its <c>metrics.csv</c> in exactly the same place as before and nothing downstream moves.
-        /// With more than one reconciler the name is <c>predictor__reconciler</c>, because the
-        /// directory has to distinguish them. The alternative, always using the compound name,
-        /// would silently relocate every existing experiment's output for no benefit.
+        /// single reconciler and a single playout policy held fixed the name is the bare predictor,
+        /// which is byte-identical to the layout every existing run used -- so re-running
+        /// <c>exp-001</c>/<c>exp-002</c> puts its <c>metrics.csv</c> in exactly the same place as
+        /// before and nothing downstream moves. Each axis that actually varies appends its key, in
+        /// a fixed order: <c>predictor__reconciler__playout</c>. The alternative, always using the
+        /// full compound name, would silently relocate every existing experiment's output for
+        /// no benefit.
         /// </summary>
         public static List<ResolvedStack> Enumerate(
-            IReadOnlyList<string> predictors, IReadOnlyList<string> reconcilers)
+            IReadOnlyList<string> predictors,
+            IReadOnlyList<string> reconcilers,
+            IReadOnlyList<string> playoutPolicies)
         {
             bool reconcilerVaries = reconcilers.Count > 1;
-            var stacks = new List<ResolvedStack>(predictors.Count * reconcilers.Count);
+            bool playoutVaries = playoutPolicies.Count > 1;
+            var stacks = new List<ResolvedStack>(
+                predictors.Count * reconcilers.Count * playoutPolicies.Count);
 
             foreach (string predictor in predictors)
             {
                 foreach (string reconciler in reconcilers)
                 {
-                    string name = reconcilerVaries ? $"{predictor}__{reconciler}" : predictor;
-                    stacks.Add(new ResolvedStack(name, predictor, reconciler));
+                    foreach (string playout in playoutPolicies)
+                    {
+                        string name = predictor;
+                        if (reconcilerVaries)
+                        {
+                            name += "__" + reconciler;
+                        }
+
+                        if (playoutVaries)
+                        {
+                            name += "__" + playout;
+                        }
+
+                        stacks.Add(new ResolvedStack(name, predictor, reconciler, playout));
+                    }
                 }
             }
 

@@ -34,6 +34,15 @@ REPO = pathlib.Path(__file__).resolve().parent.parent
 DOC = REPO / "docs" / "Teleop-Research-Documentation.docx"
 
 
+def _today():
+    """UTC, matching the basis docs/research-log/ filenames and results/ timestamps use.
+
+    Local date was wrong: a run that crosses midnight UTC stamps an entry a day behind the log
+    it points at, which silently desyncs the document from the record it references.
+    """
+    return _dt.datetime.now(_dt.timezone.utc).date().isoformat()
+
+
 def _heading(d, text, level):
     d.add_heading(text, level=level)
 
@@ -87,7 +96,7 @@ def cmd_init(args):
     )
     _para(
         d,
-        f"Generated {_dt.date.today().isoformat()} from the state of the repository. This document "
+        f"Generated {_today()} from the state of the repository. This document "
         "is maintained by hand from here on; descriptions are deliberately brief and are meant to "
         "be expanded. Sections added automatically by the research organizer are marked as such.",
         italic=True,
@@ -308,7 +317,7 @@ def cmd_append_solution(args):
         sys.exit(f"{DOC.relative_to(REPO)} does not exist. Run `init` first.")
 
     d = docx.Document(str(DOC))
-    _heading(d, f"{args.axis}: {args.chosen} ({_dt.date.today().isoformat()})", 2)
+    _heading(d, f"{args.axis}: {args.chosen} ({_today()})", 2)
     _para(d, "Chosen: ", bold=True).add_run(args.chosen)
     _para(d, "Why: ", bold=True).add_run(args.why)
     if args.rejected:

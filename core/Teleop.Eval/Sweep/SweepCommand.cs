@@ -216,19 +216,53 @@ namespace Teleop.Eval.Sweep
                 return false;
             }
 
+            if (config.PlayoutTargetPercentile <= 0.0 || config.PlayoutTargetPercentile > 1.0)
+            {
+                error = "'playoutTargetPercentile' must be in (0, 1] -- 1.0 is the window maximum " +
+                    "and a legitimate operating point, 0.0 corresponds to no order statistic";
+                return false;
+            }
+
+            if (config.PlayoutDelayWindowSamples <= 0)
+            {
+                error = "'playoutDelayWindowSamples' must be positive -- a quantile over an empty " +
+                    "window is undefined";
+                return false;
+            }
+
+            if (config.PlayoutMinBudgetMs < 0.0 || config.PlayoutMaxBudgetMs < config.PlayoutMinBudgetMs)
+            {
+                error = "'playoutMinBudgetMs' and 'playoutMaxBudgetMs' must satisfy " +
+                    "0 <= min <= max -- they are the clamp a deriving policy settles inside";
+                return false;
+            }
+
             // A budget the buffer has no room to hold turns into discarded samples, and the late
             // rate then measures the capacity rather than the policy -- the one way this axis can
             // report a confidently wrong number. Caught here rather than left to the reader.
+            //
+            // Checked against the largest budget any policy in this config could reach, not just
+            // the fixed one: `percentile` settles anywhere up to 'playoutMaxBudgetMs', so a
+            // capacity sized only for 'playoutBudgetMs' would silently cap it.
+            double largestBudgetMs = config.PlayoutBudgetMs;
+            foreach (string playoutName in config.ResolvePlayoutPolicies())
+            {
+                if (playoutName != "immediate" && playoutName != "fixed")
+                {
+                    largestBudgetMs = Math.Max(largestBudgetMs, config.PlayoutMaxBudgetMs);
+                }
+            }
+
             long budgetSteps = config.StepIntervalTicks <= 0
                 ? 0
-                : MillisecondsToTicks(config.PlayoutBudgetMs) / config.StepIntervalTicks;
+                : MillisecondsToTicks(largestBudgetMs) / config.StepIntervalTicks;
             if (budgetSteps >= config.PlayoutHistoryCapacity)
             {
-                error = $"'playoutBudgetMs' ({config.PlayoutBudgetMs}) spans {budgetSteps} steps at " +
-                    $"the configured step interval, which does not fit in a " +
-                    $"'playoutHistoryCapacity' of {config.PlayoutHistoryCapacity} -- the buffer " +
-                    "would discard samples it had room to hold, and the measured late-arrival rate " +
-                    "would describe the capacity rather than the policy";
+                error = $"a playout budget of {largestBudgetMs}ms spans {budgetSteps} steps at the " +
+                    $"configured step interval, which does not fit in a 'playoutHistoryCapacity' " +
+                    $"of {config.PlayoutHistoryCapacity} -- the buffer would discard samples it had " +
+                    "room to hold, and the measured late-arrival rate would describe the capacity " +
+                    "rather than the policy";
                 return false;
             }
 
@@ -287,17 +321,20 @@ namespace Teleop.Eval.Sweep
                 historyCapacity: 32, smoothingAlpha: 0.2f, maxAcceptableRttTicks: TicksPerSecond * 2,
                 outlierRttMultiple: 3.0, minSamplesBeforeTrusted: 3);
 
-            // Only the budget and the capacity come from the config. Every estimator field is left
-            // at a placeholder because no policy registered here reads one -- `immediate` and
-            // `fixed` do not adapt. Wiring `percentile` or `adaptive` means promoting the fields
-            // they read to the config, the same way ConvergenceBudgetMs was promoted for the
-            // reconcilers, and not before (experiments/CLAUDE.md: no invented knobs).
+            // The two filter-noise fields and MaxAdaptationRatePerSecond stay at placeholders: no
+            // policy registered here reads them, and `kalman-jitter`/`adaptive` will promote them
+            // when they land, the same way ConvergenceBudgetMs was promoted for the reconcilers
+            // (experiments/CLAUDE.md: no invented knobs). Everything `percentile` reads is now a
+            // real config field, because a tracking policy with a hardcoded window and quantile
+            // would be one fixed operating point wearing an adaptive policy's name.
             var playoutConfig = new PlayoutPolicyConfig(
                 historyCapacity: config.PlayoutHistoryCapacity,
                 initialDelayBudgetTicks: MillisecondsToTicks(config.PlayoutBudgetMs),
-                minDelayBudgetTicks: 0,
-                maxDelayBudgetTicks: MillisecondsToTicks(config.PlayoutBudgetMs),
-                targetPercentile: 0.95, delayProcessNoise: 0.01f, delayMeasurementNoise: 0.001f,
+                minDelayBudgetTicks: MillisecondsToTicks(config.PlayoutMinBudgetMs),
+                maxDelayBudgetTicks: MillisecondsToTicks(config.PlayoutMaxBudgetMs),
+                targetPercentile: config.PlayoutTargetPercentile,
+                delayWindowSamples: config.PlayoutDelayWindowSamples,
+                delayProcessNoise: 0.01f, delayMeasurementNoise: 0.001f,
                 maxAdaptationRatePerSecond: 0.0, lossWeight: 0.5);
 
             IPredictor<Pose> predictor = Registries.Predictors[predictorName](predictorConfig, clock);

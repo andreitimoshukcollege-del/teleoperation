@@ -25,7 +25,7 @@ public class FixedDelayPlayoutTests
     private static PlayoutPolicyConfig Config(long budgetTicks, int capacity = 16) =>
         new PlayoutPolicyConfig(
             historyCapacity: capacity, initialDelayBudgetTicks: budgetTicks, minDelayBudgetTicks: 0,
-            maxDelayBudgetTicks: budgetTicks, targetPercentile: 0.95, delayProcessNoise: 0.01f,
+            maxDelayBudgetTicks: budgetTicks, targetPercentile: 0.95, delayWindowSamples: 64, delayProcessNoise: 0.01f,
             delayMeasurementNoise: 0.001f, maxAdaptationRatePerSecond: 0.0, lossWeight: 0.5);
 
     private static FixedDelayPlayout MakePolicy(

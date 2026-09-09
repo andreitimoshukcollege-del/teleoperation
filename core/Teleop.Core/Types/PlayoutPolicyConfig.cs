@@ -46,11 +46,31 @@ namespace Teleop.Core.Types
         public readonly long MaxDelayBudgetTicks;
 
         /// <summary>
-        /// Target quantile of observed one-way delay to hold the delay budget at, in (0, 1).
+        /// Target quantile of observed one-way delay to hold the delay budget at, in (0, 1].
         /// Used by <c>percentile</c>; ignored by policies that do not track a delay
         /// distribution.
+        ///
+        /// 1.0 is admitted deliberately and is not a degenerate case: it makes the budget the
+        /// maximum delay in the window, which is exactly the "max of the last w" policy
+        /// <c>analysis/playout_bounds.py</c> measured at 47-61% better than a matched-loss fixed
+        /// budget. Keeping that reachable is what lets the offline result be reproduced in Core
+        /// rather than merely cited.
         /// </summary>
         public readonly double TargetPercentile;
+
+        /// <summary>
+        /// How many recent one-way-delay observations <see cref="TargetPercentile"/> is taken
+        /// over. Distinct from <see cref="HistoryCapacity"/> on purpose: that one sizes the sample
+        /// buffer and is constrained by the budget and the step interval, while this one sets how
+        /// fast the estimate responds, and the two must be swept independently. Pinning them
+        /// together would mean no experiment could vary responsiveness without also changing how
+        /// far out of order a sample may arrive.
+        ///
+        /// It is the second knob of a tracking policy, not a tuning detail: the offline analysis
+        /// moved from 47% to 61% saving across windows of 64 down to 24. Used by
+        /// <c>percentile</c>; ignored by policies that do not keep a delay window.
+        /// </summary>
+        public readonly int DelayWindowSamples;
 
         /// <summary>
         /// Process-noise intensity for the delay-mean/variance filter. Used by
@@ -88,6 +108,7 @@ namespace Teleop.Core.Types
             long minDelayBudgetTicks,
             long maxDelayBudgetTicks,
             double targetPercentile,
+            int delayWindowSamples,
             float delayProcessNoise,
             float delayMeasurementNoise,
             double maxAdaptationRatePerSecond,
@@ -98,6 +119,7 @@ namespace Teleop.Core.Types
             MinDelayBudgetTicks = minDelayBudgetTicks;
             MaxDelayBudgetTicks = maxDelayBudgetTicks;
             TargetPercentile = targetPercentile;
+            DelayWindowSamples = delayWindowSamples;
             DelayProcessNoise = delayProcessNoise;
             DelayMeasurementNoise = delayMeasurementNoise;
             MaxAdaptationRatePerSecond = maxAdaptationRatePerSecond;

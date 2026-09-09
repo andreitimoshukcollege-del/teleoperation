@@ -24,7 +24,7 @@ internal static class TestPlayout
         initialDelayBudgetTicks: delayBudgetTicks,
         minDelayBudgetTicks: 0,
         maxDelayBudgetTicks: delayBudgetTicks,
-        targetPercentile: 0.95,
+        targetPercentile: 0.95, delayWindowSamples: 64,
         delayProcessNoise: 0.01f,
         delayMeasurementNoise: 0.001f,
         maxAdaptationRatePerSecond: 0.0,

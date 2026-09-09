@@ -188,6 +188,30 @@ Read `docs/research-log/CLAUDE.md` for what belongs in the first two.
    succeeded. Each is a full checkout of the repository — roughly 75 MB per researcher — and
    nothing else cleans them up, so they accumulate silently across runs.
 
+
+   **Never remove a worktree whose agent has not reported completion to you.** This is the first
+   condition and it outranks the others. A silent transcript is not a liveness signal: an agent can
+   work for hours without writing a file, and one that looks dead is usually just thinking. This
+   rule exists because it was violated — an organizer deleted two worktrees belonging to agents that
+   were still running, one of which had been going for nearly eight hours, and both lost their
+   checkout mid-run. Nothing was lost that time, by luck rather than judgement.
+
+   If an agent never reports, **leave its worktree, finish the run without it, and say so plainly**.
+   An incomplete run you can resume beats a tidy one you cannot.
+
+   For the same reason, **do not relaunch an agent you believe has died.** You will usually be
+   wrong, and the relaunch does not replace the original — you get two live agents with the same
+   file scope, competing. If you genuinely need a second attempt, treat the first as still running
+   and leave everything it owns alone.
+
+   **Then verify before you delete.** Diff each log against the copy you made and confirm they are
+   identical; if any copy is missing or differs, or if any earlier step failed, **leave every
+   worktree in place and say so in your report**. Worktree contents are gitignored, so a log deleted
+   before it was copied is gone permanently and no amount of care afterwards recovers it. Clutter is
+   a cost you can pay later; a lost log is not.
+
+   Only once all of that holds:
+
    ```bash
    for d in .claude/worktrees/*/; do
      p=$(cd "$d" && pwd)
@@ -196,12 +220,6 @@ Read `docs/research-log/CLAUDE.md` for what belongs in the first two.
    done
    git worktree prune
    ```
-
-   **Verify before you delete.** Diff each log against the copy you made and confirm they are
-   identical; if any copy is missing or differs, or if any earlier step failed, **leave every
-   worktree in place and say so in your report**. Worktree contents are gitignored, so a log deleted
-   before it was copied is gone permanently and no amount of care afterwards recovers it. Clutter is
-   a cost you can pay later; a lost log is not.
 
    Delete the `worktree-agent-*` branches too, but only after confirming each is an ancestor of the
    branch you are on — `git merge-base --is-ancestor <branch> HEAD`.

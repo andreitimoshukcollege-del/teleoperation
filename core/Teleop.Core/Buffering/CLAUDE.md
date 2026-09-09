@@ -31,6 +31,15 @@ Keep this table current — it previously overclaimed `immediate`/`fixed`/`perce
 | `adaptive` | `NetEqAdaptivePlayout.cs` | NetEQ-style: expands/contracts against buffer occupancy |
 | `pareto` | `LatencyLossOptimizingPlayout.cs` | explicit operating point on the latency/loss curve |
 
+**There is measured reason to build the top of this table.** `analysis/playout_bounds.py` scores
+`oracle`/`fixed`/`adaptive` offline against `core/testdata/traces/synthetic-burst.trace`: at
+matched late-loss, a policy no cleverer than "budget = max of the last w delays" buffers 47-61%
+less than the best possible constant budget. That is a lower bound -- `percentile` and `adaptive`
+have strictly more to work with -- and it is *not* currently reproducible through a sweep, because
+a 500-step trial contains only ~2 burst episodes. Read
+`docs/research-log/2026-09-09-playout-bounds-decisions.md` before starting here; it also records
+why the earlier transport survey concluded the opposite.
+
 Move a row up to "Implemented" only once its file, tests, and `Registry/Registries.cs` entry
 all actually exist — `Teleop.Eval -- audit`'s registry-completeness check will catch a row that
 claims otherwise. Building the first one also means **replacing** `OperatorEndpoint`'s hardcoded

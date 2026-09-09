@@ -1,0 +1,68 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Compiles the real Bridge/ sources against the real Core assemblies, headlessly, so that
+    "Core changed an interface and unity/ silently stopped compiling" is caught by `just
+    bridge-check` instead of by opening the Unity editor. See README.md in this folder for what
+    this does and, importantly, does not prove.
+
+    Deliberately mirrors Unity's own compilation settings for the Teleop.Bridge assembly, because
+    a check that compiles under different rules than the real compiler is worth very little:
+      - netstandard2.1 + LangVersion 9.0, matching root CLAUDE.md invariant 6 (Unity 2022.3 is
+        C# 9). This is what makes the check reject a file-scoped namespace or a `required` member
+        that would build fine under a modern `dotnet` and break the Quest build.
+      - ProjectReference, not a HintPath to a prebuilt DLL: referencing build output would let
+        this pass against a stale Core, which is precisely the failure it exists to catch.
+
+    Never packed, never run: building it IS the test. There is no entry point.
+  -->
+  <PropertyGroup>
+    <TargetFramework>netstandard2.1</TargetFramework>
+    <LangVersion>9.0</LangVersion>
+    <Nullable>disable</Nullable>
+    <IsPackable>false</IsPackable>
+    <AssemblyName>Teleop.BridgeCheck</AssemblyName>
+
+    <!-- Explicit list below; globbing would silently pull in files whose stubs don't exist yet
+         and turn a clean run into a wall of stub errors on someone else's unrelated change. -->
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+
+    <!-- Unity assigns [SerializeField] fields through serialization, never in code, so CS0649
+         ("never assigned to") fires on every one of them and means nothing here. Unity itself
+         suppresses it for the same reason. -->
+    <NoWarn>$(NoWarn);CS0649</NoWarn>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="UnityStubs.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!--
+      The covered set: every Bridge file that constructs or calls into Core, which is the whole
+      point. Adding a Bridge file here is cheap and worth doing whenever it starts touching a Core
+      API; adding one that needs a large new Unity surface means writing stubs for it first.
+
+      Not covered, and why: LatencyHud and JetRoverConnectionHud (TextMeshPro; display only, they
+      call no Core constructors), JetRoverArmRig (Unity Transform maths, no Core API), and the
+      adapters stubbed out in UnityStubs.cs. See README.md.
+    -->
+    <BridgeSource Include="TeleopOperatorBridge.cs" />
+    <BridgeSource Include="TeleopRobotBridge.cs" />
+    <BridgeSource Include="JetRoverOperatorBridge.cs" />
+    <BridgeSource Include="JetRoverArmConfig.cs" />
+    <BridgeSource Include="RobotArmProfileData.cs" />
+    <BridgeSource Include="NetworkImpairmentSettings.cs" />
+    <BridgeSource Include="SwappableTransport.cs" />
+    <BridgeSource Include="NetworkImpairmentController.cs" />
+
+    <Compile Include="@(BridgeSource->'../TeleopVR/Assets/Teleop/Runtime/Bridge/%(Identity)')"
+             Link="Bridge/%(Identity)" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../../core/Teleop.Core/Teleop.Core.csproj" />
+    <ProjectReference Include="../../core/Teleop.RobotArm/Teleop.RobotArm.csproj" />
+  </ItemGroup>
+
+</Project>

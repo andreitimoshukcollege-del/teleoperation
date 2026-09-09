@@ -22,6 +22,10 @@ core-audit:
 # Run all three core/ gates -- "Verify your work" in root CLAUDE.md
 core-check: core-test core-verify core-audit
 
+# Compile Bridge/ against Core headlessly -- catches a Core API change silently breaking unity/. NOT a substitute for opening the editor; see unity/BridgeCheck/README.md
+bridge-check:
+    cd unity/BridgeCheck && dotnet build --nologo
+
 # Run an experiment sweep, e.g. `just sweep experiments/exp-001-predictor-baseline.yaml`
 sweep config:
     cd core && dotnet run --project Teleop.Eval -- sweep ../{{config}}
@@ -176,5 +180,5 @@ report run_dir: _analysis-venv
 
 # ---- everything ----
 
-# Every verification gate in the repo: core/ dotnet tests + analysis/ python tests
-check: core-check test
+# Every verification gate in the repo: core/ dotnet tests + Bridge/-vs-Core compile + analysis/ python tests
+check: core-check bridge-check test

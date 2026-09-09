@@ -90,9 +90,19 @@ dotnet run --project Teleop.Eval -- audit          # invariant check over the bu
 `verify` and `audit` are the two that catch the failures unit tests miss. Run all three
 before claiming a task is done. Never report success on the basis of a successful build alone.
 
+**If you changed a Core signature, also run `just bridge-check`** (or `cd unity/BridgeCheck &&
+dotnet build`). It compiles `unity/`'s `Bridge/` against Core headlessly, at Unity's own
+`netstandard2.1`/C# 9 settings, and needs no Unity — so the Linux box can run it too. This exists
+because a Core interface change breaks `unity/` *silently*: nothing in `core/` references Bridge,
+so all three gates above stay green while the editor no longer compiles. That happened twice on
+2026-09-09 (ADR 0012 added a required `IPlayoutPolicy<Pose>` to `OperatorEndpoint`; both bridges
+kept calling the old signature). It is **not** a substitute for opening the editor — it cannot see
+serialization, scene wiring, or IL2CPP. See `unity/BridgeCheck/README.md`.
+
 If [`just`](https://github.com/casey/just) is installed, the repo-root `justfile` wraps the
-above plus `analysis/`'s test suite: `just core-check` runs all three `core/` gates, `just test`
-runs `analysis/`'s pytest suite, `just check` runs everything. `just --list` shows every
+above plus `analysis/`'s test suite: `just core-check` runs all three `core/` gates,
+`just bridge-check` compiles `Bridge/` against Core, `just test` runs `analysis/`'s pytest suite,
+`just check` runs everything. `just --list` shows every
 recipe (`sweep`, `report`, `analysis-setup`, `experiment-gui`, ...). This is a convenience wrapper,
 not a new source of truth — the raw commands above and in `analysis/CLAUDE.md` still work
 unchanged and are what CI/agents without `just` should fall back to.
@@ -124,6 +134,12 @@ each box may *change*.
   rewrites scenes, prefabs, `.asset` and `.meta` files by itself while it is open, so an edit made
   here can collide with a live editor session there. That is true even for plain C# under
   `Bridge/`, because saving it makes Unity recompile and touch adjacent files.
+  - **One carve-out: `unity/BridgeCheck/` is yours to edit and run.** Unity opens only
+    `unity/TeleopVR/`, so that folder is invisible to the editor and the collision the rule above
+    guards against cannot happen there. Run `just bridge-check` after any Core signature change,
+    and add a stub to `UnityStubs.cs` when it needs one — that is maintenance of your own gate, not
+    a Unity change. Editing anything under `unity/TeleopVR/` is still off-limits, including when
+    `bridge-check` is what revealed the problem: report the breakage, propose the fix.
 - `robot/` is documentation-only: ask first, and never command real hardware from this box (see
   "Testing the real robot").
 

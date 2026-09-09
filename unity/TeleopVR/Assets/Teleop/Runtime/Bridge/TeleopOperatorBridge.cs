@@ -20,8 +20,10 @@ namespace Teleop.Bridge
     ///
     /// <list type="bullet">
     /// <item><c>Update</c>: capture <see cref="poseSource"/>'s pose, <c>SubmitCommand</c>; drain
-    /// the downlink via <c>TryReceiveState</c>. The "network thread: TryReceive, stamp arrival"
-    /// row collapses into here for this phase -- both transports are in-process
+    /// the downlink via <c>TryReceiveState</c> and then the playout policy via
+    /// <c>TryPlayoutState</c>. Both, in that order: arrival and playout are separate phases
+    /// (docs/adr/0012-playout-policy-wiring.md), and only the second one feeds the predictor.
+    /// The "network thread: TryReceive, stamp arrival" row collapses into here for this phase -- both transports are in-process
     /// (<see cref="LoopbackTransport"/>), so there is no real socket to hand a thread for. A real
     /// <c>UdpTransport</c> would reintroduce that row; this is a deliberate simplification, not an
     /// oversight (docs/adr/0003-display-offset-calibration.md's sibling plan explains why).</item>
@@ -31,9 +33,12 @@ namespace Teleop.Bridge
     /// rendering, so the estimate and the M2P figure it produces are as fresh as possible.</item>
     /// </list>
     ///
-    /// Zero mitigation, by construction: <c>none</c> + <c>snap</c> resolved through
-    /// <see cref="Registries"/>, matching Gate 5's own baseline row and docs/setup.md's "zero
-    /// mitigation" description of this phase.
+    /// Zero mitigation, by construction: <c>none</c> + <c>snap</c> + <c>immediate</c> resolved
+    /// through <see cref="Registries"/>, matching Gate 5's own baseline row and docs/setup.md's
+    /// "zero mitigation" description of this phase. <c>immediate</c> is the zero buffer -- it
+    /// still enforces capture order, but over an in-process <see cref="LoopbackTransport"/> that
+    /// never reorders, it is behaviourally identical to the hardcoded <c>t_playout</c> assignment
+    /// it replaces.
     /// </summary>
     public sealed class TeleopOperatorBridge : MonoBehaviour
     {
@@ -49,6 +54,7 @@ namespace Teleop.Bridge
         private ClockSync _clockSync;
         private IPredictor<CorePose> _predictor;
         private IReconciler<CorePose> _reconciler;
+        private IPlayoutPolicy<CorePose> _playoutPolicy;
         private OperatorEndpoint _operatorEndpoint;
         private UnityMetricSink _metricSink;
 
@@ -112,8 +118,28 @@ namespace Teleop.Bridge
                 maxCorrectionAngularSpeedRadPerSecond: 0f,
                 rollbackHistoryCapacity: 0);
 
+            // Zero buffer, hardcoded alongside the "none"/"snap" pair above and for the same
+            // reason: this scene is the zero-mitigation loopback baseline, so every axis is pinned
+            // at the implementation that does nothing (docs/adr/0012-playout-policy-wiring.md).
+            // `immediate` is not a null object -- it still enforces capture order -- but over an
+            // in-process LoopbackTransport that never reorders, it is behaviourally identical to
+            // the hardcoded `t_playout = t_operatorRecv` line this replaces. Selecting a real
+            // policy by name is JetRoverOperatorBridge's job, where there is a config to read.
+            var playoutConfig = new PlayoutPolicyConfig(
+                historyCapacity: 64,
+                initialDelayBudgetTicks: 0,
+                minDelayBudgetTicks: 0,
+                maxDelayBudgetTicks: 0,
+                targetPercentile: 0.95,
+                delayWindowSamples: 64,
+                delayProcessNoise: 0f,
+                delayMeasurementNoise: 0f,
+                maxAdaptationRatePerSecond: 0.0,
+                lossWeight: 0.5);
+
             _predictor = Registries.Predictors["none"](predictorConfig, _clock);
             _reconciler = Registries.Reconcilers["snap"](reconcilerConfig, _metricSink, _clock);
+            _playoutPolicy = Registries.PlayoutPolicies["immediate"](playoutConfig, _metricSink, _clock);
 
             _operatorEndpoint = new OperatorEndpoint(
                 new RawPoseCodec(),
@@ -125,6 +151,7 @@ namespace Teleop.Bridge
                 _clockSync,
                 _predictor,
                 _reconciler,
+                _playoutPolicy,
                 inFlightCapacity: 64);
         }
 
@@ -143,7 +170,17 @@ namespace Teleop.Bridge
             // velocity estimate here.
             _operatorEndpoint.SubmitCommand(capturedPose, CoreVec.Zero, CoreVec.Zero, gripper: 0f, now);
 
-            while (_operatorEndpoint.TryReceiveState(now, out LatencyTrace completedTrace))
+            while (_operatorEndpoint.TryReceiveState(now, out _))
+            {
+                // Arrival only: ClockSync and owd_uplink_ms/owd_downlink_ms are recorded as a side
+                // effect here. The trace this yields has no t_playout yet.
+            }
+
+            // The playout drain, and it is not optional (docs/adr/0012-playout-policy-wiring.md).
+            // Nothing reaches the predictor or reconciler at arrival any more, so skipping this
+            // freezes the ghost robot -- and the trace HandleBeforeRender writes would be missing
+            // t_playout, silently, in every recorded .tlog.
+            while (_operatorEndpoint.TryPlayoutState(now, out LatencyTrace completedTrace))
             {
                 _pendingTraceForRender = completedTrace;
                 _hasPendingTraceForRender = true;

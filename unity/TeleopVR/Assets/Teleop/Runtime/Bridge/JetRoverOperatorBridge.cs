@@ -83,6 +83,7 @@ namespace Teleop.Bridge
         private ClockSync _clockSync;
         private IPredictor<CorePose> _predictor;
         private IReconciler<CorePose> _reconciler;
+        private IPlayoutPolicy<CorePose> _playoutPolicy;
         private OperatorEndpoint _operatorEndpoint;
         private UnityMetricSink _metricSink;
 
@@ -186,6 +187,11 @@ namespace Teleop.Bridge
                 throw new InvalidOperationException($"JetRoverOperatorBridge: unknown ReconcilerName '{_config.ReconcilerName}'.");
             }
 
+            if (!Registries.PlayoutPolicies.TryGetValue(_config.PlayoutPolicyName, out var playoutFactory))
+            {
+                throw new InvalidOperationException($"JetRoverOperatorBridge: unknown PlayoutPolicyName '{_config.PlayoutPolicyName}'.");
+            }
+
             string tlogPath = System.IO.Path.Combine(
                 Application.persistentDataPath, $"jetrover-session-{DateTime.UtcNow:yyyyMMdd-HHmmss}.tlog");
             _metricSink = new UnityMetricSink(
@@ -216,13 +222,27 @@ namespace Teleop.Bridge
                 outlierRttMultiple: _config.OutlierRttMultiple,
                 minSamplesBeforeTrusted: _config.MinSamplesBeforeTrusted);
 
+            var playoutConfig = new PlayoutPolicyConfig(
+                historyCapacity: _config.PlayoutHistoryCapacity,
+                initialDelayBudgetTicks: MillisecondsToTicks(_config.PlayoutBudgetMs),
+                minDelayBudgetTicks: MillisecondsToTicks(_config.PlayoutMinBudgetMs),
+                maxDelayBudgetTicks: MillisecondsToTicks(_config.PlayoutMaxBudgetMs),
+                targetPercentile: _config.PlayoutTargetPercentile,
+                delayWindowSamples: _config.PlayoutDelayWindowSamples,
+                delayProcessNoise: 0.01f,
+                delayMeasurementNoise: 0.001f,
+                maxAdaptationRatePerSecond: 0.0,
+                lossWeight: 0.5);
+
             _clockSync = new ClockSync(clockSyncConfig);
             _predictor = predictorFactory(predictorConfig, _clock);
             _reconciler = reconcilerFactory(reconcilerConfig, _metricSink, _clock);
+            _playoutPolicy = playoutFactory(playoutConfig, _metricSink, _clock);
 
             _operatorEndpoint = new OperatorEndpoint(
                 new RawPoseCodec(), new RobotStateFrameCodec(), _cartesianTransport, _cartesianTransport,
-                _clock, _metricSink, _clockSync, _predictor, _reconciler, inFlightCapacity: 32);
+                _clock, _metricSink, _clockSync, _predictor, _reconciler, _playoutPolicy,
+                inFlightCapacity: 32);
         }
 
         private void OnEnable() => Application.onBeforeRender += HandleBeforeRender;
@@ -233,7 +253,17 @@ namespace Teleop.Bridge
         {
             long now = _clock.NowTicks;
 
-            while (_operatorEndpoint.TryReceiveState(now, out LatencyTrace completedTrace))
+            while (_operatorEndpoint.TryReceiveState(now, out _))
+            {
+                // Arrival only: ClockSync and owd_uplink_ms/owd_downlink_ms are recorded as a side
+                // effect here. The trace this yields has no t_playout yet.
+            }
+
+            // The playout drain, and it is not optional (docs/adr/0012-playout-policy-wiring.md).
+            // Nothing reaches the predictor or reconciler at arrival any more, so skipping this
+            // freezes EstimateRobotState -- and the trace handed to WriteLatencyTrace below would
+            // be missing t_playout, silently, in every recorded .tlog.
+            while (_operatorEndpoint.TryPlayoutState(now, out LatencyTrace completedTrace))
             {
                 HasReceivedAnyState = true;
                 _lastStateReceivedTicks = now;

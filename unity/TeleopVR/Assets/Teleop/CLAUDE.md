@@ -45,13 +45,21 @@ leaking out of Core, and every leaked line is a line the headless sweeps can no 
 |---|---|
 | network thread | `TryReceive`, stamp arrival, push to a lock-free queue |
 | `FixedUpdate` | digital-twin physics only |
-| `Update` | drain inbound queue -> `Observe`; capture controller poses -> `SubmitCommand` |
+| `Update` | capture controller poses -> `SubmitCommand`; drain `TryReceiveState`, **then** drain `TryPlayoutState` |
 | `Application.onBeforeRender` | `EstimateRobotState` -> write Transforms |
 
 State estimation goes in `onBeforeRender`, not `Update`: it is the last hook before rendering,
 so the prediction target sits as close as possible to photon emission. Moving it to `Update`
 adds a frame of avoidable staleness to the one number this project exists to measure. Do not
 "simplify" it into `Update`.
+
+**The two drains are one step, not two.** `TryReceiveState` does the arrival work -- `ClockSync`,
+`owd_uplink_ms`/`owd_downlink_ms` -- and hands the sample to the injected `IPlayoutPolicy`;
+`TryPlayoutState` is what stamps `t_playout`, folds the sample into the predictor and reconciler,
+and returns the completed `LatencyTrace`
+(`docs/adr/0012-playout-policy-wiring.md`). A bridge that drains only the first compiles, runs, and
+is wrong in two ways at once: the ghost robot freezes, because nothing reaches the predictor any
+more, and every recorded `.tlog` silently loses `t_playout`. Neither failure raises anything.
 
 ## Quest / IL2CPP constraints
 

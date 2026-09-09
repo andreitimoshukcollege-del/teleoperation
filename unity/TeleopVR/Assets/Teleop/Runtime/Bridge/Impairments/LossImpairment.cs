@@ -1,4 +1,6 @@
 using System;
+using Teleop.Core.Contracts;
+using Teleop.Core.Transport.Impairments;
 using UnityEngine;
 
 namespace Teleop.Bridge
@@ -41,18 +43,25 @@ namespace Teleop.Bridge
 
         public override string AxisName => "loss";
 
-        public override void Contribute(ref NetworkProfileDraft draft, long ticksPerSecond)
+        public override INetworkImpairment ToCoreImpairment(long ticksPerSecond, long[] loadedTrace)
         {
-            double afterDelivered = LossPercent / 100.0;
+            double afterDelivered = Clamp01(LossPercent / 100.0);
 
-            // Equal after-delivered/after-lost degenerates the chain to plain Bernoulli -- the same
-            // identity docs/adr/0004 relies on for `150ms-20j-0.5loss`. So "bursty off" needs no
-            // special case in the emulator, only this assignment.
-            draft.LossProbabilityAfterDelivered = afterDelivered;
-            draft.LossProbabilityAfterLost = Bursty
-                ? Math.Min(BurstContinuationPercent / 100.0, MaxBurstContinuation)
+            // Equal after-delivered/after-lost degenerates the Gilbert-Elliott chain to plain
+            // Bernoulli -- the same identity docs/adr/0004 relies on for `150ms-20j-0.5loss`. So
+            // "bursty off" needs no special case, here or in Core.
+            double afterLost = Bursty
+                ? Math.Min(Clamp01(BurstContinuationPercent / 100.0), MaxBurstContinuation)
                 : afterDelivered;
+
+            return new GilbertElliottLossImpairment(afterDelivered, afterLost);
         }
+
+        /// <summary>
+        /// Clamped here because an Inspector value is operator-typed and Core's constructor throws
+        /// on an out-of-range probability. A checkbox click must not surface as an exception.
+        /// </summary>
+        private static double Clamp01(double v) => v < 0.0 ? 0.0 : (v > 1.0 ? 1.0 : v);
 
         public override string DescribeSettings() => Bursty
             ? $"loss {LossPercent:0.##}% bursty({BurstContinuationPercent:0.#}%)"

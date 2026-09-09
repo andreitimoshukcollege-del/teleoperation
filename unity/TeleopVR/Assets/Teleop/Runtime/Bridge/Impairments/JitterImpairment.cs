@@ -1,4 +1,6 @@
 using System;
+using Teleop.Core.Contracts;
+using Teleop.Core.Transport.Impairments;
 using UnityEngine;
 
 namespace Teleop.Bridge
@@ -24,10 +26,8 @@ namespace Teleop.Bridge
 
         public override string AxisName => "jitter";
 
-        public override void Contribute(ref NetworkProfileDraft draft, long ticksPerSecond)
-        {
-            draft.JitterTicks = ImpairmentUnits.MsToTicks(JitterMs, ticksPerSecond);
-        }
+        public override INetworkImpairment ToCoreImpairment(long ticksPerSecond, long[] loadedTrace) =>
+            new UniformJitterImpairment(ImpairmentUnits.MsToTicks(JitterMs, ticksPerSecond));
 
         public override string DescribeSettings() => $"jitter ±{JitterMs:0.#}ms";
 

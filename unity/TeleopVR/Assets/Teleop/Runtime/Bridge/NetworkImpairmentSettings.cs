@@ -1,12 +1,12 @@
 using System;
-using Teleop.Core.Types;
+using Teleop.Core.Contracts;
 using UnityEngine;
 
 namespace Teleop.Bridge
 {
     /// <summary>
     /// The whole network-disturbance configuration: one <see cref="NetworkImpairment"/> per axis,
-    /// and the one place that folds them into a Core <see cref="NetworkProfile"/>.
+    /// and the one place that turns them into the Core impairment set the transport consumes.
     ///
     /// <b>This type holds no impairment logic and must never grow any.</b> Every delay, drop and
     /// reorder decision is made by <c>Teleop.Core.Transport.EmulatedTransport</c> from the profile
@@ -15,7 +15,7 @@ namespace Teleop.Bridge
     /// is a bug.
     ///
     /// <b>Adding an axis</b> is a new file in <c>Impairments/</c> plus a field here and one line in
-    /// each of <see cref="ToProfile"/>, <see cref="Describe"/>, <see cref="ValueEquals"/> and
+    /// each of <see cref="CreateImpairments"/>, <see cref="Describe"/>, <see cref="ValueEquals"/> and
     /// <see cref="CopyTo"/> — all four of which are flat lists over <see cref="AllAxes"/>, so in
     /// practice it is the field and the array entry. Existing axes are not touched.
     ///
@@ -98,24 +98,64 @@ namespace Teleop.Bridge
         public bool UsesDelayTrace => DelayTrace.Enabled;
 
         /// <summary>
-        /// Composes the enabled axes into a Core profile. A disabled axis contributes nothing — its
-        /// neutral value, never a default — and <see cref="NetworkProfileDraft.Build"/> does the
-        /// clamping, so no axis can forget to.
+        /// Builds the impairment set <c>EmulatedTransport</c> consumes. A disabled axis contributes
+        /// nothing at all — it is omitted, not included at a neutral value, which is legal because
+        /// each Core impairment draws a constant number of random numbers per datagram regardless of
+        /// its parameters (docs/adr/0013).
+        ///
+        /// <paramref name="loadedTrace"/> is the delay trace the controller has already read, or
+        /// null. An axis that returns null builds nothing and is skipped, which is how the trace
+        /// axis declines to install itself when its file could not be read.
+        ///
+        /// <b>Fresh Core instances every call.</b> A Core impairment owns mutable model state and
+        /// one RNG substream and may be bound to exactly one transport, so the uplink and downlink
+        /// must each get their own set. Sharing them would either throw or make both directions of
+        /// the link lose and delay the same datagrams together.
+        ///
+        /// <b>Delay, jitter and a trace now compose rather than conflict.</b> The old code forced
+        /// delay and jitter to zero whenever a trace was active, because one flat struct could not
+        /// hold a recorded delay and a synthetic one at once. With separate impairments they simply
+        /// sum, which is a legal configuration meaning "a recorded link plus an extra fixed hop".
         /// </summary>
-        public NetworkProfile ToProfile(long ticksPerSecond)
+        public INetworkImpairment[] CreateImpairments(long ticksPerSecond, long[] loadedTrace)
         {
-            var draft = default(NetworkProfileDraft);
-
             NetworkImpairment[] axes = AllAxes;
+
+            int count = 0;
             for (int i = 0; i < axes.Length; i++)
             {
                 if (axes[i].Enabled)
                 {
-                    axes[i].Contribute(ref draft, ticksPerSecond);
+                    count++;
                 }
             }
 
-            return draft.Build();
+            var built = new INetworkImpairment[count];
+            int at = 0;
+            for (int i = 0; i < axes.Length; i++)
+            {
+                if (!axes[i].Enabled)
+                {
+                    continue;
+                }
+
+                INetworkImpairment core = axes[i].ToCoreImpairment(ticksPerSecond, loadedTrace);
+                if (core != null)
+                {
+                    built[at++] = core;
+                }
+            }
+
+            if (at == count)
+            {
+                return built;
+            }
+
+            // An axis declined to build (a trace with no file). Trim rather than hand the transport
+            // a null element, which it rejects.
+            var trimmed = new INetworkImpairment[at];
+            System.Array.Copy(built, trimmed, at);
+            return trimmed;
         }
 
         /// <summary>
@@ -124,9 +164,9 @@ namespace Teleop.Bridge
         /// recoverable from a <c>.tlog</c>, and a session recorded under unknown conditions is not a
         /// result.
         ///
-        /// A trace-superseded delay or jitter axis is omitted even when still ticked, because
-        /// <see cref="ToProfile"/> zeroed it: a summary listing an axis the run is not applying is
-        /// how a recording ends up described wrongly.
+        /// Every enabled axis is listed, including delay and jitter alongside a trace: since
+        /// docs/adr/0013 those compose rather than conflict, so all three genuinely apply and a
+        /// summary that hid two of them would describe the run wrongly.
         /// </summary>
         public string Describe()
         {
@@ -135,19 +175,12 @@ namespace Teleop.Bridge
                 return "none";
             }
 
-            bool traced = DelayTrace.Enabled;
             string result = string.Empty;
 
             NetworkImpairment[] axes = AllAxes;
             for (int i = 0; i < axes.Length; i++)
             {
-                NetworkImpairment axis = axes[i];
-                if (!axis.Enabled)
-                {
-                    continue;
-                }
-
-                if (traced && (axis == Delay || axis == Jitter))
+                if (!axes[i].Enabled)
                 {
                     continue;
                 }
@@ -157,7 +190,7 @@ namespace Teleop.Bridge
                     result += " ";
                 }
 
-                result += axis.DescribeSettings();
+                result += axes[i].DescribeSettings();
             }
 
             return result;

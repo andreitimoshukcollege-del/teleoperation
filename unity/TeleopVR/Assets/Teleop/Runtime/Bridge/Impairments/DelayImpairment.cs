@@ -1,4 +1,6 @@
 using System;
+using Teleop.Core.Contracts;
+using Teleop.Core.Transport.Impairments;
 using UnityEngine;
 
 namespace Teleop.Bridge
@@ -15,10 +17,8 @@ namespace Teleop.Bridge
 
         public override string AxisName => "delay";
 
-        public override void Contribute(ref NetworkProfileDraft draft, long ticksPerSecond)
-        {
-            draft.BaseDelayTicks = ImpairmentUnits.MsToTicks(BaseDelayMs, ticksPerSecond);
-        }
+        public override INetworkImpairment ToCoreImpairment(long ticksPerSecond, long[] loadedTrace) =>
+            new FixedDelayImpairment(ImpairmentUnits.MsToTicks(BaseDelayMs, ticksPerSecond));
 
         public override string DescribeSettings() => $"delay {BaseDelayMs:0.#}ms";
 

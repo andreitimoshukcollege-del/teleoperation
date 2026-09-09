@@ -13,7 +13,10 @@ drift. That property is the reason the project is laid out this way — protect 
   of exactly one contract each. `ls` answers "what have we tried on this axis?"
 - `Plant/` — the Core-side `IRobotPlant` sweeps run against. Kinematic, not physics; the Unity
   and hardware plants live in `Bridge/`.
+- `Transport/Impairments/` — one file per network-impairment axis, composed into a set the
+  emulator applies. `ls` answers "what can a link do to a datagram?" (docs/adr/0013).
 - `Types/` — value types crossing the wire. Immutable, `System.Numerics`, ROS convention.
+  Two deliberate mutable-struct exceptions, each documenting why: `SeededRng` and `DatagramFate`.
 - `Time/` — `ITimeAuthority` and its implementations. Nothing else reads a clock.
 - `Pipeline/` — composition. The wiring diagram, expressed in code.
 - `Registry/Registries.cs` — static `string -> factory` tables. Hand-maintained.

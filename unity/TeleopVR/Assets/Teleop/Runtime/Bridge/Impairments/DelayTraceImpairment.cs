@@ -1,4 +1,6 @@
 using System;
+using Teleop.Core.Contracts;
+using Teleop.Core.Transport.Impairments;
 
 namespace Teleop.Bridge
 {
@@ -33,10 +35,12 @@ namespace Teleop.Bridge
 
         public override string AxisName => "delay-trace";
 
-        public override void Contribute(ref NetworkProfileDraft draft, long ticksPerSecond)
-        {
-            draft.DelayFromTrace = true;
-        }
+        /// <summary>
+        /// Needs the samples the host already loaded; returns null when none are available, so the
+        /// caller installs nothing rather than silently running a different link.
+        /// </summary>
+        public override INetworkImpairment ToCoreImpairment(long ticksPerSecond, long[] loadedTrace) =>
+            loadedTrace == null ? null : new TraceDelayImpairment(loadedTrace);
 
         public override string DescribeSettings() => $"delay-trace '{TraceName}'";
 

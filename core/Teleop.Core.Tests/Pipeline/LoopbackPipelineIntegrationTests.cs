@@ -202,9 +202,11 @@ public class LoopbackPipelineIntegrationTests
             reorderProbability: 0.0, reorderDelayTicks: 0);
 
         var uplinkInner = new LoopbackTransport(maxPayloadBytes: 128, capacity: 16);
-        var uplink = new EmulatedTransport(uplinkInner, profile, new SeededRng(1), maxInFlight: 16);
+        var uplink = new EmulatedTransport(
+            uplinkInner, NetworkProfileCatalog.CreateImpairments(profile), 1UL, maxInFlight: 16);
         var downlinkInner = new LoopbackTransport(maxPayloadBytes: 128, capacity: 16);
-        var downlink = new EmulatedTransport(downlinkInner, profile, new SeededRng(2), maxInFlight: 16);
+        var downlink = new EmulatedTransport(
+            downlinkInner, NetworkProfileCatalog.CreateImpairments(profile), 2UL, maxInFlight: 16);
 
         var plant = new RigidBodyPlant(Pose.Identity, ticksPerSecond);
         var clockSync = new ClockSync(DefaultClockSyncConfig());

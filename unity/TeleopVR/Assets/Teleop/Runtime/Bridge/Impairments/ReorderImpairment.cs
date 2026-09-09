@@ -1,4 +1,6 @@
 using System;
+using Teleop.Core.Contracts;
+using Teleop.Core.Transport.Impairments;
 using UnityEngine;
 
 namespace Teleop.Bridge
@@ -31,11 +33,16 @@ namespace Teleop.Bridge
 
         public override string AxisName => "reorder";
 
-        public override void Contribute(ref NetworkProfileDraft draft, long ticksPerSecond)
-        {
-            draft.ReorderProbability = ReorderPercent / 100.0;
-            draft.ReorderDelayTicks = ImpairmentUnits.MsToTicks(ReorderDelayMs, ticksPerSecond);
-        }
+        public override INetworkImpairment ToCoreImpairment(long ticksPerSecond, long[] loadedTrace) =>
+            new Teleop.Core.Transport.Impairments.ReorderImpairment(
+                Clamp01(ReorderPercent / 100.0),
+                ImpairmentUnits.MsToTicks(ReorderDelayMs, ticksPerSecond));
+
+        /// <summary>
+        /// Clamped here because an Inspector value is operator-typed and Core's constructor throws
+        /// on an out-of-range probability. A checkbox click must not surface as an exception.
+        /// </summary>
+        private static double Clamp01(double v) => v < 0.0 ? 0.0 : (v > 1.0 ? 1.0 : v);
 
         public override string DescribeSettings() =>
             $"reorder {ReorderPercent:0.##}%@{ReorderDelayMs:0.#}ms";

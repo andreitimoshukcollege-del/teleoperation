@@ -77,21 +77,32 @@ this section's rule is about and it belongs back in Core.
 `Describe`, `ValueEquals` and `CopyTo` are flat loops over `AllAxes`, so none of them need editing.
 Existing axes are untouched.
 
-Axes contribute into a mutable `NetworkProfileDraft` rather than to `NetworkProfile` directly,
-because that type is a readonly struct with one six-argument constructor — five objects cannot each
-build part of one. `Draft.Build()` owns the clamping (so a new axis cannot forget it) and the one
-cross-axis rule (a delay trace superseding base delay and jitter), which is what makes
-`Contribute` order-independent.
+`NetworkProfileDraft` is gone: it existed only because `NetworkProfile` was a flat six-argument
+struct that five objects could not each build part of. Axes now construct Core impairments directly,
+and Core owns the clamping.
+
+A delay trace no longer supersedes delay and jitter — with separate impairments they compose, so
+enabling all three means a recorded link plus an extra fixed hop, and the delays sum. That is a
+legal configuration, not a contradiction to validate away.
 
 `AllAxes` is an explicitly-built array, never reflection: IL2CPP strips what nothing references and
 has no runtime codegen (invariant 5), so a reflective scan would work in the Editor and fail on
 device — the same reasoning behind `Registry/Registries.cs`.
 
-**This makes authoring extensible, not the impairment set.** A genuinely new *kind* of disturbance
-— duplication, bandwidth throttling, corruption — is not a Unity change: `NetworkProfile` is a
-fixed six-field readonly struct and `EmulatedTransport` is what would have to grow the behaviour,
-both in Core, on the Linux box, with an ADR. What this shape buys is that when Core does gain such
-a field, the Unity side is one file and one line.
+**The impairments themselves now live in Core** (`docs/adr/0013`). `Impairments/*.cs` here are
+serializable *authoring shells*: Inspector fields plus one `ToCoreImpairment` that constructs the
+real `Teleop.Core.Transport.Impairments` object. Every parameter clamp and every model decision is
+Core's.
+
+This layer survives rather than being deleted because Unity serialization needs parameterless
+constructors and mutable public fields, while Core validates at construction and holds its
+parameters readonly; `[Range]`/`[Min]`/`[Tooltip]` are `UnityEngine` and can never appear in Core;
+and `[SerializeReference]` loses managed references on a type rename, so binding scene data to Core
+type identities would make a later Core refactor a silent data-loss event here. `RobotArmProfileData`
+exists for the same reasons.
+
+Adding a new *kind* of disturbance is now a new Core file plus one shell here — no longer a
+widening of a fixed six-field struct and an edit at every construction site.
 
 ### Presets, and how this relates to the sweeps
 

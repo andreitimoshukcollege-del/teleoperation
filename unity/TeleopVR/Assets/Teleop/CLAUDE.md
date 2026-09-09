@@ -41,25 +41,94 @@ leaking out of Core, and every leaked line is a line the headless sweeps can no 
 
 ## Network impairment: the checkbox panel
 
-Three files let an operator switch lag, jitter, loss and reordering on and off during Play mode,
-so "what does 200ms feel like?" can be answered in a headset instead of argued about:
+Lets an operator switch lag, jitter, loss and reordering on and off during Play mode, so "what does
+200ms feel like?" can be answered in a headset instead of argued about.
 
-- `NetworkImpairmentSettings` — a `[Serializable]` data type: one bool plus one value per axis, and
-  a `ToProfile(ticksPerSecond)` that composes them into Core's `NetworkProfile`. Same category as
-  `RobotArmProfileData` — a Unity-serializable mirror feeding a constructor-only Core struct.
-- `SwappableTransport : ITransport` — an adapter that can install and remove an `EmulatedTransport`
-  over its inner transport while running. Needed because the endpoints take their transports once,
-  in their constructors, so without it every settings change would rebuild the endpoint stack and
-  throw away `ClockSync`'s convergence and the recording with it.
+- `NetworkImpairment` + `Impairments/*.cs` — the axis contract and one file per axis. See the file
+  layout section below.
+- `NetworkImpairmentSettings` — the aggregate: one axis per field, and a
+  `ToProfile(ticksPerSecond)` that folds the enabled ones into Core's `NetworkProfile`. Same
+  category as `RobotArmProfileData` — a Unity-serializable surface feeding a constructor-only Core
+  struct.
+- `NetworkProfilePresets` — loads a frozen profile's values into the axes (see below).
+- `DelayTraceLoader` — reads a recorded `.trace`, since Core cannot do I/O.
+- `SwappableTransport : ITransport` — installs and removes an `EmulatedTransport` over its inner
+  transport while running. Needed because the endpoints take their transports once, in their
+  constructors, so without it every settings change would rebuild the endpoint stack and throw away
+  `ClockSync`'s convergence and the recording with it.
 - `NetworkImpairmentController` — the MonoBehaviour holding the checkboxes, wired to
   `TeleopOperatorBridge`'s two transports.
 
-**This is three more files in a folder whose rule above is that growth is a warning sign, so the
+**That is a lot of files in a folder whose rule above is that growth is a warning sign, so the
 justification matters.** None of them impair anything. Every delay, drop and reorder decision is
 made by Core's `EmulatedTransport` from a Core `NetworkProfile`; what these add is a serializable
-surface for it and one level of indirection so it can be swapped at runtime. If a coefficient, a
-distribution, or a drop decision ever appears in any of the three, that is the leak this section's
-rule is about and it belongs back in Core.
+surface for it and one level of indirection so it can be swapped at runtime. The count is spread
+across small single-purpose files precisely so each stays a description rather than a computation.
+If a coefficient, a distribution, or a drop decision ever appears in any of them, that is the leak
+this section's rule is about and it belongs back in Core.
+
+### File layout: one file per impairment
+
+`NetworkImpairmentSettings` is the aggregate; each axis is its own file under `Impairments/`
+(`DelayImpairment`, `JitterImpairment`, `LossImpairment`, `ReorderImpairment`,
+`DelayTraceImpairment`), all deriving from `NetworkImpairment`.
+
+**Adding an axis** is a new file plus a field and an array entry in the aggregate — `ToProfile`,
+`Describe`, `ValueEquals` and `CopyTo` are flat loops over `AllAxes`, so none of them need editing.
+Existing axes are untouched.
+
+Axes contribute into a mutable `NetworkProfileDraft` rather than to `NetworkProfile` directly,
+because that type is a readonly struct with one six-argument constructor — five objects cannot each
+build part of one. `Draft.Build()` owns the clamping (so a new axis cannot forget it) and the one
+cross-axis rule (a delay trace superseding base delay and jitter), which is what makes
+`Contribute` order-independent.
+
+`AllAxes` is an explicitly-built array, never reflection: IL2CPP strips what nothing references and
+has no runtime codegen (invariant 5), so a reflective scan would work in the Editor and fail on
+device — the same reasoning behind `Registry/Registries.cs`.
+
+**This makes authoring extensible, not the impairment set.** A genuinely new *kind* of disturbance
+— duplication, bandwidth throttling, corruption — is not a Unity change: `NetworkProfile` is a
+fixed six-field readonly struct and `EmulatedTransport` is what would have to grow the behaviour,
+both in Core, on the Linux box, with an ADR. What this shape buys is that when Core does gain such
+a field, the Unity side is one file and one line.
+
+### Presets, and how this relates to the sweeps
+
+The impairment runs through the identical `EmulatedTransport` the sweeps use — same Gilbert-Elliott
+loss chain, same uniform jitter draw, both directions, decorrelated seeds. `SweepCommand` and
+`TeleopOperatorBridge` build structurally identical stacks. **The mechanism was never the
+difference; only how the numbers were authored was.**
+
+`NetworkProfilePresets` closes that in the safe direction. A preset dropdown loads a frozen
+profile's exact values — read from `NetworkProfileCatalog`, never duplicated here — into the
+per-axis fields. So "feel what `300ms-60j-2loss-bursty` is like" uses the numbers the sweep citing
+that name used. Every axis then stays independently editable, because "start from that profile and
+halve the jitter" is a real question a preset list can't enumerate.
+
+The moment any axis differs from what the preset loaded, the HUD/log says `<name> (modified)`. The
+settings genuinely are no longer that profile, and a summary that kept the bare name would make a
+recording look comparable to a sweep it isn't comparable to.
+
+**The frozen suite is never authored from here.** ADR 0004 records its numbers so a manifest and
+the documentation can't drift; a preset reads that suite, it does not write it.
+
+`synthetic-burst` is reachable too, via the `DelayTrace` axis — its bursts live in recorded samples and
+are not expressible as base+jitter, which is exactly why it matters (the Buffering result rests on
+it). `DelayTraceLoader` reads the file, since Core cannot do I/O. Two things about it:
+
+- **No copy of the trace is committed under `unity/`.** `core/testdata/traces/` is the one source;
+  `just install-traces` copies it to `Application.persistentDataPath` for the Editor, and `adb
+  push` does the same on device. A tracked duplicate would drift silently.
+- **The loader rescales samples between tick rates, and that is not cosmetic.** The header records
+  the writing machine's rate (10,000,000 on Windows, 1,000,000,000 on Linux ARM64). Replaying a
+  Windows-written trace on a Quest unrescaled would inflate every delay 100× while each individual
+  number still looked plausible — the exact failure already recorded in `robot/README.md`'s
+  ClockSync finding.
+
+In trace mode the delay and jitter axes are switched off rather than left ticked and ignored:
+`EmulatedTransport`'s trace constructor rejects a profile carrying either, on the grounds that
+synthetic jitter on an already-recorded delay double-models the same variance.
 
 Two things that are deliberate rather than incidental:
 

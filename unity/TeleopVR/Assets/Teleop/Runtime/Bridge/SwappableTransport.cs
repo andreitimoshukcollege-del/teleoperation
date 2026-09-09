@@ -89,6 +89,28 @@ namespace Teleop.Bridge
             _emulator = new EmulatedTransport(_inner, profile, new SeededRng(seed), _maxInFlight);
         }
 
+        /// <summary>
+        /// Installs a <b>trace-driven</b> impairment stage: delay comes from
+        /// <paramref name="delayTraceTicks"/>, consumed in order and wrapped when exhausted, while
+        /// <paramref name="profile"/> still supplies loss and reordering.
+        ///
+        /// <paramref name="profile"/> must have zero base delay and zero jitter --
+        /// <see cref="EmulatedTransport"/> rejects anything else, on the grounds that synthetic
+        /// jitter layered on an already-recorded delay double-models the same variance.
+        /// <see cref="NetworkImpairmentSettings.ToProfile"/> zeroes both when trace mode is on, so
+        /// callers coming from there satisfy this by construction.
+        ///
+        /// The samples must already be in this host's tick domain; see
+        /// <see cref="DelayTraceLoader.TryLoad"/>, which rescales them and explains why skipping
+        /// that step produces a 100x error that still looks plausible.
+        /// </summary>
+        public void Install(long[] delayTraceTicks, NetworkProfile profile, ulong seed)
+        {
+            LastSwapDiscardedCount = _emulator?.InFlightCount ?? 0;
+            _emulator = new EmulatedTransport(
+                _inner, delayTraceTicks, profile, new SeededRng(seed), _maxInFlight);
+        }
+
         /// <summary>Removes the impairment stage, restoring the bare inner transport.</summary>
         public void Remove()
         {

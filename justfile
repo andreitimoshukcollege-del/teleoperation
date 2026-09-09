@@ -26,6 +26,34 @@ core-check: core-test core-verify core-audit
 bridge-check:
     cd unity/BridgeCheck && dotnet build --nologo
 
+# Copy core/testdata/traces/*.trace where Unity's Editor can read them (Application.persistentDataPath), for NetworkImpairmentController's trace mode. On device, `adb push` them to the same place instead.
+install-traces:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    # Deliberately a copy at the moment of use rather than a tracked duplicate under unity/:
+    # core/testdata/traces/ is the one source, and a second committed copy would drift from it
+    # silently. Re-run this after regenerating a trace with `Teleop.Eval gen-trace`.
+    #
+    # Editor persistentDataPath on Windows is %USERPROFILE%\AppData\LocalLow\<company>\<product>,
+    # read here from ProjectSettings.asset rather than hardcoded so renaming the product in Unity
+    # doesn't leave this recipe silently writing to a directory nothing reads.
+    settings=unity/TeleopVR/ProjectSettings/ProjectSettings.asset
+    company=$(grep -m1 'companyName:' "$settings" | sed 's/.*companyName: *//' | tr -d '\r')
+    product=$(grep -m1 'productName:' "$settings" | sed 's/.*productName: *//' | tr -d '\r')
+    dest="/mnt/c/Users/$(cmd.exe /c 'echo %USERNAME%' 2>/dev/null | tr -d '\r\n')/AppData/LocalLow/${company}/${product}"
+    if [ ! -d "$dest" ]; then
+        echo "Creating $dest (Unity has not run yet, or the product name changed)" >&2
+        mkdir -p "$dest"
+    fi
+    count=0
+    for f in core/testdata/traces/*.trace; do
+        [ -e "$f" ] || { echo "No .trace files in core/testdata/traces/" >&2; exit 1; }
+        cp "$f" "$dest/"
+        echo "installed $(basename "$f") -> $dest"
+        count=$((count + 1))
+    done
+    echo "$count trace(s) installed."
+
 # Run an experiment sweep, e.g. `just sweep experiments/exp-001-predictor-baseline.yaml`
 sweep config:
     cd core && dotnet run --project Teleop.Eval -- sweep ../{{config}}

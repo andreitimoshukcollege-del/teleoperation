@@ -62,6 +62,13 @@ namespace UnityEngine
         public static string persistentDataPath => string.Empty;
         public static event Action onBeforeRender { add { } remove { } }
     }
+
+    public class TextAsset : Object { public string text => string.Empty; }
+
+    public static class Resources
+    {
+        public static T Load<T>(string path) where T : Object => null;
+    }
 }
 
 namespace Teleop.Bridge

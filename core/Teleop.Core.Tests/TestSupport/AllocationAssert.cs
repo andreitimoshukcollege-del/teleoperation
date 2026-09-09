@@ -1,3 +1,5 @@
+using System.Runtime.CompilerServices;
+
 namespace Teleop.Core.Tests.TestSupport;
 
 /// <summary>
@@ -33,16 +35,10 @@ public static class AllocationAssert
     /// </summary>
     public static void Zero(Action action, int iterations = 10_000)
     {
-        for (int i = 0; i < iterations; i++)
-        {
-            action();
-        }
+        RunLoop(action, iterations);
 
         long before = GC.GetAllocatedBytesForCurrentThread();
-        for (int i = 0; i < iterations; i++)
-        {
-            action();
-        }
+        RunLoop(action, iterations);
         long after = GC.GetAllocatedBytesForCurrentThread();
 
         long allocated = after - before;
@@ -50,5 +46,27 @@ public static class AllocationAssert
             allocated == 0,
             $"Expected zero allocation over {iterations} iterations, but {allocated} bytes " +
             $"were allocated ({(double)allocated / iterations:F3} bytes/call).");
+    }
+    /// <summary>
+    /// The loop, factored out so warmup and measurement run the <b>same</b> one.
+    ///
+    /// This is the correction to a first attempt that warmed up with a separate loop in this same
+    /// method. That warmed the delegate but not the loop calling it: the measured loop was still
+    /// entered cold, and a long-running cold loop is exactly what triggers on-stack replacement
+    /// mid-execution — inside the measurement window. Tiering of the callee was fixed and tiering
+    /// of the caller was left, which is why fractional bytes/call kept appearing on CI after the
+    /// first fix, on a different test each run.
+    ///
+    /// <see cref="MethodImplOptions.NoInlining"/> is load-bearing rather than decorative: inlined
+    /// into <see cref="Zero"/>, this collapses back into two separate loops and the bug returns
+    /// silently, with nothing in the source to show it.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static void RunLoop(Action action, int iterations)
+    {
+        for (int i = 0; i < iterations; i++)
+        {
+            action();
+        }
     }
 }

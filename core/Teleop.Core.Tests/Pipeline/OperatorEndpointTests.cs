@@ -107,7 +107,9 @@ public class OperatorEndpointTests
     {
         var endpoint = MakeEndpoint(out _, out LoopbackTransport downlink, out _, out _);
 
-        // A reply for a sequence never submitted.
+        // A reply for a sequence never submitted. "Ignored" means no trace completes and no
+        // latency metric is emitted — it does not mean the pose is discarded; see
+        // TryReceiveState_WhenTheInFlightTraceWasEvicted_StillObservesTheRobotPose.
         var stateFrame = new RobotStateFrame(
             sequence: 999, robotRecvTicks: 10, downlinkSendTicks: 20,
             ticksPerSecond: RobotTicksPerSecond, Pose.Identity);
@@ -120,6 +122,50 @@ public class OperatorEndpointTests
 
         Assert.False(received);
         Assert.Equal(default, trace);
+    }
+
+    /// <summary>
+    /// The in-flight ring evicts oldest-first once more commands are outstanding than it holds, and
+    /// a reply whose trace was evicted used to be discarded whole — pose and all. That censored the
+    /// estimator's input in the worst possible way, because the evicted traces are by construction
+    /// the <i>most delayed</i> ones. On `300ms-60j-2loss-bursty` only 57.8% of round trips completed
+    /// against roughly 4% profile loss, and every prediction and reconciliation figure recorded on
+    /// the impaired profiles was measured through that filter.
+    ///
+    /// Only the latency bookkeeping needs the trace. The pose does not: its playout stamp comes from
+    /// the state frame itself, through `ClockSync`.
+    /// </summary>
+    [Fact]
+    public void TryReceiveState_WhenTheInFlightTraceWasEvicted_StillObservesTheRobotPose()
+    {
+        var endpoint = MakeEndpoint(out _, out LoopbackTransport downlink, out _, out _);
+
+        // Capacity is 8, so a ninth submission evicts sequence 0 while it is still legitimately in
+        // flight — exactly what a long RTT does on a real profile.
+        for (int i = 0; i < 9; i++)
+        {
+            endpoint.SubmitCommand(Pose.Identity, Vector3.Zero, Vector3.Zero, 0f, nowTicks: 100 + i);
+        }
+
+        var reported = new Pose(new Vector3(4f, 0f, 0f), Quaternion.Identity);
+        var stateFrame = new RobotStateFrame(
+            sequence: 0, robotRecvTicks: 10, downlinkSendTicks: 20,
+            ticksPerSecond: RobotTicksPerSecond, reported);
+        var codec = new RobotStateFrameCodec();
+        byte[] buffer = new byte[RobotStateFrameCodec.EncodedSize];
+        codec.TryEncode(stateFrame, buffer, out int n);
+        downlink.Send(buffer.AsSpan(0, n), 200);
+
+        bool received = endpoint.TryReceiveState(200, out LatencyTrace trace);
+
+        // No trace survived, so there is no completed round trip and no OWD metric. That much is
+        // honest: those genuinely cannot be computed without the uplink send stamp.
+        Assert.False(received);
+        Assert.Equal(default, trace);
+
+        // But the pose must have reached the predictor and reconciler. Before the fix this was 0.
+        Pose estimate = endpoint.EstimateRobotState(300);
+        Assert.Equal(4f, estimate.Position.X, 4);
     }
 
     [Fact]

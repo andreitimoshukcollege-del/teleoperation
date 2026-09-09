@@ -152,13 +152,32 @@ namespace Teleop.Core.Pipeline
                     continue;
                 }
 
-                if (!TryTakeInFlight(stateFrame.Sequence, out LatencyTrace trace))
+                // A reply with no matching in-flight trace still carries valid robot state, and it
+                // must reach the predictor and reconciler. Only the *latency bookkeeping* needs the
+                // trace: ClockSync.AddRoundTrip needs the uplink send stamp, and the OWD metrics are
+                // computed from the trace's own timestamps. The pose does not -- its playout stamp
+                // comes from stateFrame.DownlinkSendTicks, converted through ClockSync, and is
+                // available whether or not the trace survived.
+                //
+                // Skipping the whole frame here was silently censoring the estimator's input, and
+                // censoring it in the worst possible way: the in-flight ring evicts oldest-first, so
+                // the frames dropped were exactly the most-delayed ones. On
+                // 300ms-60j-2loss-bursty only 57.8% of round trips completed against ~4% profile
+                // loss, and every prediction and reconciliation number recorded on the impaired
+                // profiles was measured through that filter.
+                long uplinkSendTicks = 0;
+                bool hasTrace = TryTakeInFlight(stateFrame.Sequence, out LatencyTrace trace);
+                if (hasTrace)
                 {
-                    continue;
+                    hasTrace = trace.TryGetUplinkSendTicks(out uplinkSendTicks);
                 }
 
-                if (!trace.TryGetUplinkSendTicks(out long uplinkSendTicks))
+                if (!hasTrace)
                 {
+                    ObserveRobotState(
+                        stateFrame.Pose,
+                        _clockSync.ToOperatorTicks(
+                            stateFrame.DownlinkSendTicks, stateFrame.TicksPerSecond, _ticksPerSecond));
                     continue;
                 }
 

@@ -94,5 +94,34 @@ namespace Teleop.Bridge
         public double MaxAcceptableRttMs = 2000.0;
         public double OutlierRttMultiple = 3.0;
         public int MinSamplesBeforeTrusted = 3;
+
+        // Buffering (docs/adr/0012-playout-policy-wiring.md). Selected by name from
+        // Registry/Registries.cs, the same way PredictorName and ReconcilerName already are --
+        // this is the axis a real Tailscale link is most likely to reward, so leaving it the one
+        // unselectable axis on the hardware path would be the wrong asymmetry.
+        //
+        // `immediate` is the default because it is the zero buffer, which is exactly what this
+        // bridge did before a playout policy existed: an unedited jetrover_connection.json keeps
+        // behaving as it did. `percentile` is the one worth trying over a real link -- see
+        // docs/research-log/2026-09-09-percentile-tracking-decisions.md for where it wins and
+        // where a tuned `fixed` budget still beats it.
+        public string PlayoutPolicyName = "immediate";
+
+        // `fixed`'s constant budget, and `percentile`'s warm-up value before its window fills.
+        // Measured from capture, not from arrival: a value below the link's one-way delay buffers
+        // nothing at all. Over Tailscale to the Jetson that means anything under ~60-110ms is a
+        // no-op, so it is left at 0 rather than at a number that looks configured but is inert.
+        public double PlayoutBudgetMs = 0.0;
+
+        public double PlayoutMinBudgetMs = 0.0;
+        public double PlayoutMaxBudgetMs = 400.0;
+
+        // Must exceed PlayoutMaxBudgetMs / the command interval, or the buffer discards samples it
+        // had room to hold and the late-arrival rate describes the capacity rather than the policy.
+        // At 48 Hz (~21ms) a 400ms ceiling spans ~19 samples, so 64 is comfortable.
+        public int PlayoutHistoryCapacity = 64;
+
+        public double PlayoutTargetPercentile = 1.0;
+        public int PlayoutDelayWindowSamples = 64;
     }
 }

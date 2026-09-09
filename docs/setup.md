@@ -163,8 +163,14 @@ Callback placement (this is a latency decision, not a style choice):
 |---|---|
 | network thread | `TryReceive`, stamp arrival, lock-free queue |
 | `FixedUpdate` | digital-twin physics only |
-| `Update` | drain queue → `Observe`; capture poses → `SubmitCommand` |
+| `Update` | capture poses → `SubmitCommand`; drain `TryReceiveState`, then drain `TryPlayoutState` |
 | `Application.onBeforeRender` | `EstimateRobotState` → write Transforms |
+
+The two drains in `Update` are one decision, not two lines: `TryReceiveState` does the arrival work
+(`ClockSync`, `owd_*`) and hands the sample to the playout policy, and `TryPlayoutState` is what
+stamps `t_playout` and folds the sample into the predictor and reconciler
+(`docs/adr/0012-playout-policy-wiring.md`). Draining only the first leaves a frozen estimate and a
+`.tlog` missing `t_playout`, with no error either way.
 
 ### Gate 4
 

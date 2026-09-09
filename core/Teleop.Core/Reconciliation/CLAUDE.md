@@ -14,6 +14,7 @@ usable at all: a hard snap on correction is nausea, regardless of how good the p
 | `snap` | `SnapReconciler.cs` | jump to truth. The baseline — measure how bad it is, don't skip it |
 | `spring` | `SpringReconciler.cs` | critically damped decay of a residual offset; no overshoot, C1, converges within `MaxTimeToConvergenceTicks` to a stated 1% envelope |
 | `budget-blend` | `TimeBudgetedBlendReconciler.cs` | quintic-Hermite blend; residual **bit-exactly zero** at a deadline fixed at seed time, for any correction magnitude. The hard-deadline counterpart to `spring`'s asymptotic envelope. Rate caps sized into the deadline a priori rather than clamped |
+| `exp-smooth-c1` | `EasedExponentialReconciler.cs` | one-pole decay eased to zero onset velocity, so it is C1 with no exception needed. Beats `spring` on p99 jerk by ~9-15% on the impaired profiles; structurally different from it, not a recalibration |
 | `velocity-match` | `VelocityMatchedReconciler.cs` | `spring`'s dynamics on a warped time axis, slowing the correction in proportion to apparent operator motion. Lowest jerk on the axis, at the highest convergence cost. Bound: 1% envelope within 4x the budget, unconditionally |
 
 `DisplayedJerkEstimator.cs` is in this folder but is **not** a reconciler and has no registry
@@ -32,11 +33,35 @@ from those runs; both contain caveats that change how the percentiles should be 
 
 | Name | File | Notes |
 |---|---|---|
-| `exp-smooth` | `ExponentialSmoothingReconciler.cs` | one time constant; simple, biased. **Note:** a single-time-constant lag is C0 but *not* C1 — its offset velocity steps from 0 at correction onset — so building it needs requirement 2 amended to cover it as a second quantified exception, the way `snap` is. Unresolved; that is why `spring` was built first |
 
 Move a row up to "Implemented" only once its file, tests, and `Registry/Registries.cs` entry
 all actually exist — `Teleop.Eval -- audit`'s registry-completeness check will catch a row that
 claims otherwise.
+
+## Built, registered, not adopted
+
+Code that exists and is in `Registry/Registries.cs` — so `audit` sees it and it must be listed
+honestly somewhere — but which the axis has not sanctioned. Neither is a rejection; both are
+waiting on a decision only a human can make.
+
+| Name | File | State |
+|---|---|---|
+| `exp-smooth` | `ExponentialSmoothingReconciler.cs` | Built and measured. Violates requirement 2 (C1) the way its planned row always said it would: velocity steps by `min(abs(o0)/tau, v_max)` at onset, jerk diverging O(1/dt²) against `snap`'s O(1/dt³) — one order milder than the exception the axis already grants. **Adoption needs requirement 2 amended to admit a second quantified exception. The 2026-09-09 run recommends against it**, because the case rests on a single percentile: it wins p99 by 14-29% across 15/15 matched seeds, is *worse* at p90 on two of three profiles, and is indistinguishable at p50. `exp-smooth-c1` captures a real gain needing no exception at all |
+| `exp-smooth-track` | `TrackingLagReconciler.cs` | Built. **Excluded by admissibility** for a missing several-hundred-millisecond gap test that all three siblings carry — one test from readmission, and it did not enter the head-to-head. It also exposed a scoping question in requirement 1: its lag is bounded in *magnitude* but unbounded in *duration*, and the clause's two sentences can be read either way. The judge ruled requirement 1 is scoped "under a constant correction" throughout; the wording is worth a human's eye regardless |
+
+_Results: `results/exp-005-exp-smooth-c1-tradeoff/`. Reasoning in
+`docs/research-log/2026-09-08-exp-smooth*.md` and the decision record
+`docs/research-log/2026-09-09-exp-smooth-c1-tradeoff-decisions.md` — read those before citing any
+number from that run; `lan` and `synthetic-burst` were struck from the verdict, and
+`time_to_convergence_ms` was ruled unreadable across stacks._
+
+**The axis measures smoothness and cannot measure its cost.** Every emitted metric describes the
+shape of a correction; nothing compares the *displayed* pose to ground truth, and
+`correction_magnitude_*` is stamped upstream of the reconciler so it is bit-identical across stacks
+by construction. The axis therefore structurally rewards any law that moves less, and a candidate
+that buys smoothness with tracking error is invisible to it. Fixing that is a `docs/metrics.md`
+decision and was deliberately not made mid-comparison — but no reconciler verdict here is complete
+until it is.
 
 ## Tried and rejected
 

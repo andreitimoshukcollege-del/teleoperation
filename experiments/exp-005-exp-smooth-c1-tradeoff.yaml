@@ -1,0 +1,39 @@
+# Head-to-head on the Reconciliation axis: does exp-smooth's C0-but-not-C1 single-pole law
+# earn a second documented exception to requirement 2 (C1 continuity), or does exp-smooth-c1 -- a
+# C1-preserving variant of the same one-time-constant idea -- get the same benefit for free?
+# `snap` and `spring` are carried along as the axis's existing baseline/reference points, exactly
+# as in exp-004, so this run stays comparable to results/exp-004-reconciler-head-to-head/.
+#
+# READ before citing anything from this run:
+#   docs/research-log/2026-09-08-exp-smooth.md       (candidate A, the C0 single-pole law)
+#   docs/research-log/2026-09-08-exp-smooth-c1.md    (candidate B, the C1-preserving variant)
+#   docs/research-log/2026-09-08-exp-smooth-track.md (candidate C -- EXCLUDED, see below)
+#
+# A third candidate, registry key `exp-smooth-track`, was assembled alongside these two but was
+# EXCLUDED by the admissibility judge and must not appear in this sweep or in any table drawn
+# from it -- ranking a candidate that failed its contract would let it win by cheating.
+#
+# Every field below except `reconcilers` is copied verbatim from exp-004-reconciler-head-to-head
+# (same predictor, seeds, network profiles, trial length, and reconciler operating point) so that
+# the only varying axis is the reconciler, per this directory's own "vary one axis at a time"
+# requirement.
+id: exp-005-exp-smooth-c1-tradeoff
+seeds: [1, 2, 3, 4, 5]
+predictors:
+  - double-exp
+reconcilers:
+  - snap
+  - spring
+  - exp-smooth
+  - exp-smooth-c1
+networkProfiles:
+  - lan
+  - 50ms-5j
+  - 150ms-20j-0.5loss
+  - 300ms-60j-2loss-bursty
+  - synthetic-burst
+trialSteps: 500
+stepIntervalTicks: 100000
+convergenceBudgetMs: 100
+maxCorrectionLinearSpeedMetersPerSecond: 5
+maxCorrectionAngularSpeedRadiansPerSecond: 10

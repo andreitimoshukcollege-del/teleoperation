@@ -67,6 +67,9 @@ namespace Teleop.Core.Registry
                 ["spring"] = (config, metrics, clock) => new SpringReconciler(config, metrics, clock),
                 ["budget-blend"] = (config, metrics, clock) => new TimeBudgetedBlendReconciler(config, metrics, clock),
                 ["velocity-match"] = (config, metrics, clock) => new VelocityMatchedReconciler(config, metrics, clock),
+                ["exp-smooth"] = (config, metrics, clock) => new ExponentialSmoothingReconciler(config, metrics, clock),
+                ["exp-smooth-c1"] = (config, metrics, clock) => new EasedExponentialReconciler(config, metrics, clock),
+                ["exp-smooth-track"] = (config, metrics, clock) => new TrackingLagReconciler(config, metrics, clock),
             };
 
         /// <summary><see cref="ICommandCodec"/> factories.</summary>

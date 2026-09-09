@@ -84,7 +84,8 @@ namespace Teleop.Eval.Sweep
             // on purpose -- they'd otherwise be multiple threads calling the same CsvMetricSink's
             // non-thread-safe StreamWriter.WriteLine concurrently, corrupting metrics.csv.
             List<ResolvedStack> stacks =
-                ResolvedStack.Enumerate(config.Predictors, config.ResolveReconcilers());
+                ResolvedStack.Enumerate(
+                    config.Predictors, config.ResolveReconcilers(), config.ResolvePlayoutPolicies());
 
             var configPairs = new List<(ResolvedStack Stack, string Profile)>();
             foreach (ResolvedStack stack in stacks)
@@ -105,8 +106,8 @@ namespace Teleop.Eval.Sweep
                 foreach (ulong seed in config.Seeds)
                 {
                     RunTrial(
-                        pair.Stack.Predictor, pair.Stack.Reconciler, pair.Profile, seed, config,
-                        tracesDirectory, sink);
+                        pair.Stack.Predictor, pair.Stack.Reconciler, pair.Stack.PlayoutPolicy,
+                        pair.Profile, seed, config, tracesDirectory, sink);
                 }
             });
 
@@ -186,6 +187,51 @@ namespace Teleop.Eval.Sweep
                 return false;
             }
 
+            if (config.HasConflictingPlayoutKeys)
+            {
+                error = "experiment config sets both 'playoutPolicy' and 'playoutPolicies' -- pick " +
+                    "one; which would win is not something a reader of the YAML could predict";
+                return false;
+            }
+
+            foreach (string playoutName in config.ResolvePlayoutPolicies())
+            {
+                if (!Registries.PlayoutPolicies.ContainsKey(playoutName))
+                {
+                    error = $"unknown playout policy '{playoutName}' -- not in Registry/Registries.cs";
+                    return false;
+                }
+            }
+
+            if (config.PlayoutBudgetMs < 0.0)
+            {
+                error = "'playoutBudgetMs' must not be negative -- a playout policy cannot schedule " +
+                    "a sample before it was captured";
+                return false;
+            }
+
+            if (config.PlayoutHistoryCapacity <= 0)
+            {
+                error = "'playoutHistoryCapacity' must be positive";
+                return false;
+            }
+
+            // A budget the buffer has no room to hold turns into discarded samples, and the late
+            // rate then measures the capacity rather than the policy -- the one way this axis can
+            // report a confidently wrong number. Caught here rather than left to the reader.
+            long budgetSteps = config.StepIntervalTicks <= 0
+                ? 0
+                : MillisecondsToTicks(config.PlayoutBudgetMs) / config.StepIntervalTicks;
+            if (budgetSteps >= config.PlayoutHistoryCapacity)
+            {
+                error = $"'playoutBudgetMs' ({config.PlayoutBudgetMs}) spans {budgetSteps} steps at " +
+                    $"the configured step interval, which does not fit in a " +
+                    $"'playoutHistoryCapacity' of {config.PlayoutHistoryCapacity} -- the buffer " +
+                    "would discard samples it had room to hold, and the measured late-arrival rate " +
+                    "would describe the capacity rather than the policy";
+                return false;
+            }
+
             if (config.NetworkProfiles.Count == 0)
             {
                 error = "experiment config has no 'networkProfiles'";
@@ -218,8 +264,8 @@ namespace Teleop.Eval.Sweep
         }
 
         private static void RunTrial(
-            string predictorName, string reconcilerName, string profileName, ulong seed,
-            ExperimentConfig config, string tracesDirectory, IMetricSink sink)
+            string predictorName, string reconcilerName, string playoutPolicyName, string profileName,
+            ulong seed, ExperimentConfig config, string tracesDirectory, IMetricSink sink)
         {
             var clock = new ManualClock(TicksPerSecond);
 
@@ -241,8 +287,22 @@ namespace Teleop.Eval.Sweep
                 historyCapacity: 32, smoothingAlpha: 0.2f, maxAcceptableRttTicks: TicksPerSecond * 2,
                 outlierRttMultiple: 3.0, minSamplesBeforeTrusted: 3);
 
+            // Only the budget and the capacity come from the config. Every estimator field is left
+            // at a placeholder because no policy registered here reads one -- `immediate` and
+            // `fixed` do not adapt. Wiring `percentile` or `adaptive` means promoting the fields
+            // they read to the config, the same way ConvergenceBudgetMs was promoted for the
+            // reconcilers, and not before (experiments/CLAUDE.md: no invented knobs).
+            var playoutConfig = new PlayoutPolicyConfig(
+                historyCapacity: config.PlayoutHistoryCapacity,
+                initialDelayBudgetTicks: MillisecondsToTicks(config.PlayoutBudgetMs),
+                minDelayBudgetTicks: 0,
+                maxDelayBudgetTicks: MillisecondsToTicks(config.PlayoutBudgetMs),
+                targetPercentile: 0.95, delayProcessNoise: 0.01f, delayMeasurementNoise: 0.001f,
+                maxAdaptationRatePerSecond: 0.0, lossWeight: 0.5);
+
             IPredictor<Pose> predictor = Registries.Predictors[predictorName](predictorConfig, clock);
             IReconciler<Pose> reconciler = Registries.Reconcilers[reconcilerName](reconcilerConfig, sink, clock);
+            IPlayoutPolicy<Pose> playoutPolicy = Registries.PlayoutPolicies[playoutPolicyName](playoutConfig, sink, clock);
             var clockSync = new ClockSync(clockSyncConfig);
 
             NetworkProfileCatalog.TryResolve(profileName, TicksPerSecond, tracesDirectory, out NamedProfile namedProfile, out _);
@@ -256,7 +316,7 @@ namespace Teleop.Eval.Sweep
 
             var operatorEndpoint = new OperatorEndpoint(
                 new RawPoseCodec(), new RobotStateFrameCodec(), uplink, downlink,
-                clock, sink, clockSync, predictor, reconciler, InFlightCapacity);
+                clock, sink, clockSync, predictor, reconciler, playoutPolicy, InFlightCapacity);
             var robotEndpoint = new RobotEndpoint(
                 plant, new RawPoseCodec(), new RobotStateFrameCodec(), uplink, downlink, clock, MaxDatagramsPerStep);
 
@@ -272,9 +332,18 @@ namespace Teleop.Eval.Sweep
 
                 while (operatorEndpoint.TryReceiveState(now, out _))
                 {
-                    // owd_uplink_ms, owd_downlink_ms and correction_magnitude_mm/deg are recorded
-                    // internally as a side effect of this call: the first two by OperatorEndpoint
-                    // itself, the last two by the reconciler's Observe.
+                    // owd_uplink_ms and owd_downlink_ms are recorded internally as a side effect of
+                    // this call. Nothing reaches the predictor or reconciler here any more -- that
+                    // moved to the playout drain below (docs/adr/0012-playout-policy-wiring.md).
+                }
+
+                // The playout drain. This is what feeds the predictor and reconciler, so
+                // correction_magnitude_mm/deg come from here, along with the buffering axis's own
+                // playout_delay_ms/playout_budget_ms/playout_occupancy. Omitting it does not fail
+                // loudly -- it silently produces a trial in which the estimator never observed
+                // anything, which is precisely the shape of the EstimateRobotState defect below.
+                while (operatorEndpoint.TryPlayoutState(now, out _))
+                {
                 }
 
                 // The frame tick. docs/setup.md's callback-placement table puts EstimateRobotState

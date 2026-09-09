@@ -28,6 +28,19 @@ stepIntervalTicks: 100000            # ticks between steps (100,000 @ 10,000,000
 # The reconciler operating point. Optional; these are the defaults. All three are ignored by
 # `snap`, so a predictor study can omit them entirely.
 convergenceBudgetMs: 100             # time a smoothed reconciler gets to absorb a correction
+
+# The buffering axis (docs/adr/0012-playout-policy-wiring.md). Optional; these are the defaults,
+# and they reproduce a zero buffer, which is what every pre-Buffering run implicitly had.
+playoutPolicy: immediate             # a single PlayoutPolicies key, held fixed
+                                     # -- or `playoutPolicies: [immediate, fixed]` for a
+                                     # buffering study. Setting both is rejected.
+playoutBudgetMs: 0                   # `fixed`'s constant budget, measured from CAPTURE -- a value
+                                     # below the profile's one-way delay buffers nothing at all
+                                     # and degenerates to `immediate` (see exp-003)
+playoutHistoryCapacity: 64           # samples the buffer may hold; must exceed
+                                     # playoutBudgetMs / stepIntervalTicks or the late rate
+                                     # measures the capacity rather than the policy. Rejected up
+                                     # front if it does not.
 maxCorrectionLinearSpeedMetersPerSecond: 5    # bounds apparent motion; overrides the budget
 maxCorrectionAngularSpeedRadiansPerSecond: 10
 ```

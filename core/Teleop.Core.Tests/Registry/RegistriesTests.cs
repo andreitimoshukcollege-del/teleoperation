@@ -1,3 +1,5 @@
+using System;
+using System.Linq;
 using Teleop.Core.Contracts;
 using Teleop.Core.Metrics;
 using Teleop.Core.Registry;
@@ -86,10 +88,17 @@ public class RegistriesTests
     }
 
     [Fact]
-    public void PlayoutPolicies_IsDeclaredAndEmpty()
+    public void PlayoutPolicies_HoldsTheTwoBaselines()
     {
         Assert.NotNull(Registries.PlayoutPolicies);
-        Assert.Empty(Registries.PlayoutPolicies);
+
+        // Both baselines, and only them: docs/metrics.md section 8 rule 1 needs a baseline in every
+        // comparison, and an adaptive policy's claim is stated at matched loss against `fixed`.
+        // `percentile`/`kalman-jitter`/`adaptive`/`pareto` are still rows in Buffering/CLAUDE.md's
+        // "planned" table -- this asserts that honestly rather than leaving the table to drift.
+        Assert.Equal(
+            new[] { "fixed", "immediate" },
+            Registries.PlayoutPolicies.Keys.OrderBy(key => key, StringComparer.Ordinal).ToArray());
     }
 
     [Fact]

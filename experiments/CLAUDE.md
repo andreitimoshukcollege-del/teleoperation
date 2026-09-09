@@ -37,6 +37,14 @@ playoutPolicy: immediate             # a single PlayoutPolicies key, held fixed
 playoutBudgetMs: 0                   # `fixed`'s constant budget, measured from CAPTURE -- a value
                                      # below the profile's one-way delay buffers nothing at all
                                      # and degenerates to `immediate` (see exp-003)
+playoutTargetPercentile: 0.95        # `percentile`'s quantile of observed one-way delay.
+                                     # 1.0 is the window maximum -- the operating point
+                                     # analysis/playout_bounds.py measured
+playoutDelayWindowSamples: 64        # how many recent delays that quantile is taken over. Also
+                                     # the warm-up length: the budget does not track until the
+                                     # window is full, which at 64 is 13% of a 500-step trial
+playoutMinBudgetMs: 0                # clamp a deriving policy settles inside
+playoutMaxBudgetMs: 500              # -- and the value the capacity check is made against
 playoutHistoryCapacity: 64           # samples the buffer may hold; must exceed
                                      # playoutBudgetMs / stepIntervalTicks or the late rate
                                      # measures the capacity rather than the policy. Rejected up

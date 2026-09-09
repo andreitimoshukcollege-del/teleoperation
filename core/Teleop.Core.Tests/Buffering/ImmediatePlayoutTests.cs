@@ -28,7 +28,7 @@ public class ImmediatePlayoutTests
         metrics = new InMemoryMetricTracker(capacity: 256);
         var config = new PlayoutPolicyConfig(
             historyCapacity: capacity, initialDelayBudgetTicks: 0, minDelayBudgetTicks: 0,
-            maxDelayBudgetTicks: 0, targetPercentile: 0.95, delayProcessNoise: 0.01f,
+            maxDelayBudgetTicks: 0, targetPercentile: 0.95, delayWindowSamples: 64, delayProcessNoise: 0.01f,
             delayMeasurementNoise: 0.001f, maxAdaptationRatePerSecond: 0.0, lossWeight: 0.5);
         return new ImmediatePlayout(config, metrics, new ManualClock(TicksPerSecond));
     }
@@ -56,7 +56,7 @@ public class ImmediatePlayoutTests
         var metrics = new InMemoryMetricTracker(capacity: 8);
         var config = new PlayoutPolicyConfig(
             historyCapacity: 0, initialDelayBudgetTicks: 0, minDelayBudgetTicks: 0,
-            maxDelayBudgetTicks: 0, targetPercentile: 0.95, delayProcessNoise: 0.01f,
+            maxDelayBudgetTicks: 0, targetPercentile: 0.95, delayWindowSamples: 64, delayProcessNoise: 0.01f,
             delayMeasurementNoise: 0.001f, maxAdaptationRatePerSecond: 0.0, lossWeight: 0.5);
 
         Assert.Throws<ArgumentException>(

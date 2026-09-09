@@ -88,16 +88,15 @@ public class RegistriesTests
     }
 
     [Fact]
-    public void PlayoutPolicies_HoldsTheTwoBaselines()
+    public void PlayoutPolicies_HoldsTheBaselinesAndPercentile()
     {
         Assert.NotNull(Registries.PlayoutPolicies);
 
-        // Both baselines, and only them: docs/metrics.md section 8 rule 1 needs a baseline in every
-        // comparison, and an adaptive policy's claim is stated at matched loss against `fixed`.
-        // `percentile`/`kalman-jitter`/`adaptive`/`pareto` are still rows in Buffering/CLAUDE.md's
-        // "planned" table -- this asserts that honestly rather than leaving the table to drift.
+        // The two baselines plus the first deriving policy. `kalman-jitter`/`adaptive`/`pareto`
+        // are still rows in Buffering/CLAUDE.md's "planned" table -- this asserts that honestly
+        // rather than leaving the table to drift.
         Assert.Equal(
-            new[] { "fixed", "immediate" },
+            new[] { "fixed", "immediate", "percentile" },
             Registries.PlayoutPolicies.Keys.OrderBy(key => key, StringComparer.Ordinal).ToArray());
     }
 

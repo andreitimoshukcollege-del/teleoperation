@@ -127,6 +127,34 @@ namespace Teleop.Eval.Sweep
         public int PlayoutHistoryCapacity { get; set; } = 64;
 
         /// <summary>
+        /// <see cref="Teleop.Core.Types.PlayoutPolicyConfig.TargetPercentile"/>: the quantile of
+        /// observed one-way delay <c>percentile</c> holds its budget at. 1.0 is the window maximum
+        /// and is the operating point <c>analysis/playout_bounds.py</c> measured. Ignored by
+        /// <c>immediate</c> and <c>fixed</c>.
+        /// </summary>
+        public double PlayoutTargetPercentile { get; set; } = 0.95;
+
+        /// <summary>
+        /// <see cref="Teleop.Core.Types.PlayoutPolicyConfig.DelayWindowSamples"/>: how many recent
+        /// delays that quantile is taken over. The second knob of a tracking policy — the offline
+        /// analysis moved from 47% to 61% saving across windows of 64 down to 24 — so a
+        /// <c>percentile</c> study varies this or the percentile, not both at once.
+        /// </summary>
+        public int PlayoutDelayWindowSamples { get; set; } = 64;
+
+        /// <summary>
+        /// Floor and ceiling, in milliseconds, on the budget a deriving policy may settle on. The
+        /// floor stops a quiet stretch tuning the buffer to nothing right before a burst; the
+        /// ceiling bounds how much latency a bad run can extract before the policy has failed
+        /// rather than adapted. Ignored by <c>immediate</c> and <c>fixed</c>, whose budgets do not
+        /// move.
+        /// </summary>
+        public double PlayoutMinBudgetMs { get; set; } = 0.0;
+
+        /// <inheritdoc cref="PlayoutMinBudgetMs"/>
+        public double PlayoutMaxBudgetMs { get; set; } = 500.0;
+
+        /// <summary>
         /// The playout keys this config actually asks for, whichever of the two spellings it used.
         /// Mirrors <see cref="ResolveReconcilers"/>, including its fallback: an empty config means
         /// <c>immediate</c> here rather than an empty list, because unlike a reconciler there is no

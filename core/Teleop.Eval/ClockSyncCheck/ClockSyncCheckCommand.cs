@@ -121,7 +121,7 @@ namespace Teleop.Eval.ClockSyncCheck
             // policy, and `immediate` is the one that changes nothing about when it plays.
             var playoutConfig = new PlayoutPolicyConfig(
                 historyCapacity: InFlightCapacity, initialDelayBudgetTicks: 0, minDelayBudgetTicks: 0,
-                maxDelayBudgetTicks: 0, targetPercentile: 0.95, delayProcessNoise: 0.01f,
+                maxDelayBudgetTicks: 0, targetPercentile: 0.95, delayWindowSamples: 64, delayProcessNoise: 0.01f,
                 delayMeasurementNoise: 0.001f, maxAdaptationRatePerSecond: 0.0, lossWeight: 0.5);
             IPlayoutPolicy<Pose> playoutPolicy = Registries.PlayoutPolicies["immediate"](playoutConfig, sink, clock);
 

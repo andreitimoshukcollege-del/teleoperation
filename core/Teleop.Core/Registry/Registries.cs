@@ -98,9 +98,10 @@ namespace Teleop.Core.Registry
             };
 
         /// <summary>
-        /// <see cref="IPlayoutPolicy{TState}"/> factories. The two baselines
-        /// (<c>docs/adr/0012-playout-policy-wiring.md</c>); <c>percentile</c>, <c>kalman-jitter</c>,
-        /// <c>adaptive</c> and <c>pareto</c> are still planned in <c>Buffering/CLAUDE.md</c>.
+        /// <see cref="IPlayoutPolicy{TState}"/> factories: the two baselines
+        /// (<c>docs/adr/0012-playout-policy-wiring.md</c>) plus the first policy that derives its
+        /// own budget. <c>kalman-jitter</c>, <c>adaptive</c> and <c>pareto</c> are still planned in
+        /// <c>Buffering/CLAUDE.md</c>.
         ///
         /// <see cref="IMetricSink"/> is a constructor dependency because
         /// <see cref="IPlayoutPolicy{TState}"/> clause 3 mandates it — an underrun is pushed, not
@@ -118,6 +119,7 @@ namespace Teleop.Core.Registry
             {
                 ["immediate"] = (config, metrics, clock) => new ImmediatePlayout(config, metrics, clock),
                 ["fixed"] = (config, metrics, clock) => new FixedDelayPlayout(config, metrics, clock),
+                ["percentile"] = (config, metrics, clock) => new PercentileTrackingPlayout(config, metrics, clock),
             };
 
         /// <summary>

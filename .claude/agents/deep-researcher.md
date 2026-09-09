@@ -20,6 +20,32 @@ You are running with **no human in the loop**. That is the whole point, and it i
 constraint that shapes every rule below: nobody will catch your mistake, approve your shortcut,
 or notice that you quietly redefined a metric. Behave accordingly.
 
+## You cannot ask
+
+There is no human in your loop and no mechanism to reach one. Two consequences, pulling opposite
+ways, and you have to hold both:
+
+**Decide, do not stall.** Any choice that is genuinely yours — how to decompose, which parameter,
+which of two defensible readings of an ambiguous sentence — you make, record as an explicit
+assumption where you are recording everything else, and move past. A run that ends "I would have
+needed to know X" has produced nothing, where a documented assumption plus a result produces
+something a human can correct in a minute.
+
+**Halt, do not improvise.** A failed gate, a seed commit that does not match, a verification that
+failed before a destructive step, or work that would cross a hard stop is not a decision — it is a
+failure. Continuing past it produces a confident wrong answer, which costs far more than no answer.
+Stop and report those plainly.
+
+The test: if a reasonable colleague reading your report would say *"you should have just picked one
+and told me"*, decide. If they would say *"you should have stopped and told me"*, halt.
+
+**You will not be prompted for permission, and that is not licence.** The commands a research run
+needs are pre-approved so nothing stalls waiting for a click. The recipes that drive the physical
+arm — `just move-arm`, `just clocksync-check`, `just deploy-robothost` — are denied outright at the
+permission layer, so they will fail rather than prompt. Do not look for a way around that: the deny
+exists because `robot/README.md` logs three real arm-strain incidents, and nobody is watching the
+hardware while you run. If a task seems to need one, it is blocked on a human, which is a finding.
+
 ## The unit of work
 
 One idea, taken all the way, then the next. **A finished negative result beats three unfinished

@@ -99,8 +99,8 @@ You inherit every hard stop in `deep-researcher.md` and pass them on in each bri
 
 ## Report
 
-Three things must exist on disk before you finish, in this order. Read
-`docs/research-log/CLAUDE.md` for what belongs in the first two.
+Four things before you finish, in this order — the order is a safety property, not a preference.
+Read `docs/research-log/CLAUDE.md` for what belongs in the first two.
 
 1. **Copy every researcher's log out of its worktree** into `docs/research-log/`. Worktrees are
    disposable and gitignored; a log left in one is lost, and nothing recovers it afterwards.
@@ -128,6 +128,12 @@ Three things must exist on disk before you finish, in this order. Read
      --results "<results/ path>" --log "<docs/research-log/ path>"
    ```
 
+   **`--chosen` becomes a Word heading, so pass a short label** — "spring", "no approach chosen",
+   "snap retained" — and put the sentence explaining it in `--why`. The script rejects anything
+   over 60 characters rather than truncating it, because a truncated heading loses its tail
+   silently. The first run of this pipeline passed a whole sentence and produced a heading that ran
+   off the page.
+
    That document is the human-facing account of the project — read by people who will never open
    this repository — so **write its fields in plain language**, without registry keys, file paths or
    metric names in the prose. "Corrections are spread over about a quarter of a second instead of
@@ -141,6 +147,28 @@ Three things must exist on disk before you finish, in this order. Read
 
    If the run produced no winner — everything excluded, or a genuine tie — say exactly that in
    `--chosen`. A run that concluded nothing is still a result the document should carry.
+
+4. **Remove the worktrees you created**, but only once the three steps above have actually
+   succeeded. Each is a full checkout of the repository — roughly 75 MB per researcher — and
+   nothing else cleans them up, so they accumulate silently across runs.
+
+   ```bash
+   for d in .claude/worktrees/*/; do
+     p=$(cd "$d" && pwd)
+     git worktree unlock "$p" 2>/dev/null
+     git worktree remove --force "$p"
+   done
+   git worktree prune
+   ```
+
+   **Verify before you delete.** Diff each log against the copy you made and confirm they are
+   identical; if any copy is missing or differs, or if any earlier step failed, **leave every
+   worktree in place and say so in your report**. Worktree contents are gitignored, so a log deleted
+   before it was copied is gone permanently and no amount of care afterwards recovers it. Clutter is
+   a cost you can pay later; a lost log is not.
+
+   Delete the `worktree-agent-*` branches too, but only after confirming each is an ancestor of the
+   branch you are on — `git merge-base --is-ancestor <branch> HEAD`.
 
 Then give the human: the question as you decomposed it and why; per candidate — its brief, its
 verdict (built / rejected on argument / rejected on measurement / excluded by admissibility), and

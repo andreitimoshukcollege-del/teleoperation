@@ -39,6 +39,41 @@ and eventually an `IInferenceBackend` (see Sentis note below).
 Bridge should stay small: roughly a dozen files, mostly under 100 lines. Growth means logic is
 leaking out of Core, and every leaked line is a line the headless sweeps can no longer test.
 
+## Network impairment: the checkbox panel
+
+Three files let an operator switch lag, jitter, loss and reordering on and off during Play mode,
+so "what does 200ms feel like?" can be answered in a headset instead of argued about:
+
+- `NetworkImpairmentSettings` — a `[Serializable]` data type: one bool plus one value per axis, and
+  a `ToProfile(ticksPerSecond)` that composes them into Core's `NetworkProfile`. Same category as
+  `RobotArmProfileData` — a Unity-serializable mirror feeding a constructor-only Core struct.
+- `SwappableTransport : ITransport` — an adapter that can install and remove an `EmulatedTransport`
+  over its inner transport while running. Needed because the endpoints take their transports once,
+  in their constructors, so without it every settings change would rebuild the endpoint stack and
+  throw away `ClockSync`'s convergence and the recording with it.
+- `NetworkImpairmentController` — the MonoBehaviour holding the checkboxes, wired to
+  `TeleopOperatorBridge`'s two transports.
+
+**This is three more files in a folder whose rule above is that growth is a warning sign, so the
+justification matters.** None of them impair anything. Every delay, drop and reorder decision is
+made by Core's `EmulatedTransport` from a Core `NetworkProfile`; what these add is a serializable
+surface for it and one level of indirection so it can be swapped at runtime. If a coefficient, a
+distribution, or a drop decision ever appears in any of the three, that is the leak this section's
+rule is about and it belongs back in Core.
+
+Two things that are deliberate rather than incidental:
+
+- **Only the loopback path is wired.** `TeleopOperatorBridge` owns both directions in-process, so
+  impairing them is honest. `JetRoverOperatorBridge` is deliberately left out: `EmulatedTransport`
+  impairs on the *receiving* side, so impairing what the real robot receives means wrapping
+  `Teleop.RobotHost`'s transport on the Jetson. Wiring it there anyway would give a checkbox that
+  moves the HUD's numbers while the physical arm behaves identically — worse than no checkbox.
+- **Changing conditions mid-session invalidates the recording.** The impairment state is not
+  recoverable from a `.tlog`, so every change is logged with its tick. This control is for feeling
+  out the parameter space and for demos. Citable numbers come from `Teleop.Eval` sweeps against the
+  frozen, *named* profile suite (`docs/adr/0004`–`0006`) — which is also why this composes an
+  ad-hoc profile instead of making that suite mutable.
+
 ## Callback placement is a latency decision
 
 | Callback | What belongs there |
@@ -111,10 +146,21 @@ own serializer should be the only thing writing scene YAML.
    TextMeshPro `Text` element, and a `LatencyHud` component (on the Canvas or a dedicated
    GameObject) with **Operator Bridge** set to `TeleopOperator` and **Label** set to that
    TextMeshPro object.
-4. Press Play. Console should be clean; moving the right controller should move both robot
+4. *(Optional — network impairment.)* Add a `NetworkImpairmentController` component to the
+   `TeleopOperator` GameObject. It finds `TeleopOperatorBridge` on its own when they share a
+   GameObject; otherwise set **Operator Bridge** explicitly. Leave every checkbox unchecked for a
+   clean link — with nothing checked, no emulator is installed at all and the path is what it was
+   before this component existed.
+5. Press Play. Console should be clean; moving the right controller should move both robot
    GameObjects; the HUD should show live `M2P`/`uplink OWD`/`downlink OWD` numbers. On stop, a
    `phase4-session-<timestamp>.tlog` should exist under `Application.persistentDataPath` (in the
    Editor on Windows: `%userprofile%\AppData\LocalLow\<CompanyName>\<ProductName>\`).
+6. *(If you added step 4.)* Still in Play mode, tick **Enable Delay** in the Inspector. The ghost
+   robot should visibly lag the controller, the HUD's OWD numbers should rise by roughly the
+   configured amount, and the Console should log one `NetworkImpairment @ tick ...` line per
+   change. Unticking it should restore the previous feel immediately. If ticking a box changes the
+   HUD but not the motion, or vice versa, something is wired wrong — both come off the same
+   transport.
 
 ## Known-broken: `XRI Default Input Actions.inputactions`
 

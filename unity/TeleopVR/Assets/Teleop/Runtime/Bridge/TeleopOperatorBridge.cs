@@ -79,8 +79,15 @@ namespace Teleop.Bridge
                 ticksPerSecond: _clock.TicksPerSecond,
                 sessionId: unchecked((ulong)DateTime.UtcNow.Ticks));
 
-            _uplinkTransport = new LoopbackTransport(RawPoseCodec.EncodedSize, capacity: 64);
-            _downlinkTransport = new LoopbackTransport(RobotStateFrameCodec.EncodedSize, capacity: 64);
+            // Wrapped in SwappableTransport so NetworkImpairmentController can install and remove
+            // an EmulatedTransport mid-session without rebuilding this endpoint stack (which would
+            // reset ClockSync and the recording along with it -- see that class's own doc). The
+            // wrapper is inert until something calls Install: with no impairment configured these
+            // forward straight to the LoopbackTransport, exactly as before.
+            _uplinkTransport = new SwappableTransport(
+                new LoopbackTransport(RawPoseCodec.EncodedSize, capacity: 64), maxInFlight: 64);
+            _downlinkTransport = new SwappableTransport(
+                new LoopbackTransport(RobotStateFrameCodec.EncodedSize, capacity: 64), maxInFlight: 64);
 
             var clockSyncConfig = new ClockSyncConfig(
                 historyCapacity: 32,

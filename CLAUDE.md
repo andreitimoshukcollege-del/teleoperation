@@ -144,7 +144,20 @@ each box may *change*.
 - **One branch per machine.** Never check out or commit to a branch the other box is working on;
   reach `main` through a PR instead. Two machines committing to one branch diverge, and
   untangling that costs more than the PR ever does.
-- Pull `main` before starting work, on either box.
+- **Check for incoming work before starting anything, on either box.** Not "pull if you happen to
+  think of it" — actually look, every time, before the first edit:
+
+  ```bash
+  git fetch && git log --oneline HEAD..origin/main   # empty == nothing incoming; otherwise pull
+  ```
+
+  The two boxes commit independently and neither sees the other's work until it reaches `main`, so
+  a stale tree is the normal state here, not the exception. Starting on one means either rebuilding
+  something that already landed, or writing a change against code that has since moved — and the
+  Windows box will not notice the second case until Unity recompiles, because
+  `unity/TeleopVR/Packages/manifest.json` links Core by relative path and picks up whatever is on
+  disk. If something *is* incoming, pull it and skim what changed before starting; a merge conflict
+  found now costs a minute, and the same one found at PR time costs an afternoon.
 - The real conflict surface is the files neither box exclusively owns: root `CLAUDE.md`,
   `justfile`, `.claude/`, `docs/metrics.md`, `Registry/Registries.cs`. Editing one is fine;
   editing one while the other box is mid-change is what hurts. Keep those changes small and merge

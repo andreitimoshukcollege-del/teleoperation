@@ -13,6 +13,24 @@ I/O-free is what makes replay bit-deterministic.
 |---|---|---|
 | loopback | `LoopbackTransport.cs` | zero-impairment baseline: fixed-capacity FIFO ring, `arrivalTicks == sendTicks`, full ring returns false |
 | emulated | `EmulatedTransport.cs` | decorator: applies a caller-supplied set of `INetworkImpairment` objects, each with its own seeded substream |
+| measured | `MeasuredTransport.cs` | transparent decorator feeding `NetworkObserver`; the docs/metrics.md §3 vantage. **Must be outermost** — inside the emulator it never sees a lost datagram |
+| bottleneck | `BottleneckTransport.cs` | finite-rate link plus finite FIFO queue, tail drop at `Send`; the fixture that makes send-rate control measurable. Belongs *inside* the emulator: an access link serializes and queues, then the path adds delay and loss |
+| rate-limited | `RateLimitedTransport.cs` | sender-side token-bucket admission; an open-loop oracle that must be told the link's rate |
+| backlog-backoff | `BacklogBackoffTransport.cs` | sender-side AIMD admission on the `Send`-false signal. Kept as a measured negative — see "Tried and rejected" |
+
+The last four are deliberately unregistered, for the reason the `EmulatedTransport` paragraph below
+already gives: they are decorators with four different constructor shapes, and forcing them into
+`Transports`' `(maxPayloadBytes, capacity)` signature would be worse than leaving them out. Note
+`Teleop.Eval -- audit` cannot notice the omission — `RegistryCompletenessAxes` excludes
+`Transports` on purpose — so **this table is the only thing that surfaces them.** `ls` plus this
+table is the axis's discovery mechanism; keep it current.
+
+**Composition order is load-bearing and is not a free choice.** Outermost to innermost:
+`measured` → sender policy (`rate-limited` / `backlog-backoff`) → `emulated` → `bottleneck` →
+`loopback`. Two of those placements are argued in the classes' own docs, and one is unresolved: a
+sender policy inside `measured` has its deliberate withholding counted as `net_*_dropped`, and
+outside it the withholding is invisible. That is a metrics-semantics decision nobody has taken, and
+it has to be taken before a sweep can select these by name.
 
 `loopback` has a `Registry/Registries.cs` entry (`Transports["loopback"]`). `EmulatedTransport`
 deliberately does not: it is a decorator over another `ITransport` plus an impairment set and a
@@ -94,6 +112,25 @@ Other consequences worth knowing:
   `NetworkProfileCatalog.cs`. That is this axis's substitute for a `Registries.cs` entry, and it
   doubles as an IL2CPP reachability check.
 
+## Tried and rejected
+
+Record failures here with a link to the `results/` directory.
+
+- **Loss-signalled sender-side congestion control (`backlog-backoff`).** Rejected **on
+  measurement**, not on argument. It converges on the correct send rate but recovers only 9.7 ms of
+  the 180 ms of self-inflicted queuing delay available at a saturated bottleneck, because a full
+  buffer plus a matched rate produces no refusals to learn from — the classic bufferbloat
+  equilibrium. On a lossy profile it is actively harmful: loss and queue-full are the same bit
+  through `ITransport.Send`, so it backs off for losses that are not congestion, costing ~4% of
+  delivered commands and doubling the worst inter-delivery gap. The diagnosis is sharper than "the
+  signal is weak" — one bit per datagram encodes the *rate* exactly (it finds 49.5/s against a
+  greedy sender's 49.2/s) but cannot encode queue *depth*, and depth is what a standing queue is.
+  A delay signal is what would work, and `ITransport` does not carry one to the sender. The code is
+  kept as the measured negative and as the honest ceiling of what this seam supports. Detail:
+  `docs/research-log/2026-09-09-bottleneck-sender.md`. **No `results/` directory**, because the
+  sweep cannot select a transport: the numbers live in
+  `Teleop.Core.Tests/Transport/SenderAgainstBottleneckExperimentTests.cs` and are not citable.
+
 ## Codecs
 
 `ICommandCodec` turns a `CommandFrame` into bytes. Genuinely underrated lever — the wire
@@ -117,6 +154,11 @@ crosses a bounded datagram on the per-frame hot path and is never committed or d
 the disk.
 
 ## Network profiles
+
+**No profile has a bottleneck, and adding one is not a `/new-impl`.** A new impairment kind, a new
+named profile, and a new transport are three separate questions; `bottleneck` is the third, and
+putting it into the frozen suite would change benchmark identity and needs its own ADR against
+`docs/adr/0004-network-profile-suite.md`.
 
 Frozen in `core/testdata/traces/`. **Do not edit or add to the standard set** without an ADR;
 changing the benchmark suite destroys comparability with every result already recorded.

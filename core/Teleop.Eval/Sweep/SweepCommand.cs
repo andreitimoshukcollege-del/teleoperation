@@ -444,6 +444,99 @@ namespace Teleop.Eval.Sweep
                 sink.Record("prediction_position_error_mm", positionErrorMm, now);
                 sink.Record("prediction_orientation_error_deg", orientationErrorDeg, now);
             }
+
+            DrainInFlight(operatorEndpoint, robotEndpoint, clock, namedProfile, config);
+        }
+
+        /// <summary>
+        /// Runs the loop with the operator silent until everything still on the wire has arrived.
+        ///
+        /// <b>Without this, a trial ends mid-flight and the truncation is delay-correlated across
+        /// profiles</b> — exactly the axis most figures compare. Roughly
+        /// <c>baseDelay / stepInterval</c> datagrams per direction are stranded: 1 on <c>lan</c>,
+        /// 28 uplink and 31 downlink on <c>300ms-60j-2loss-bursty</c>, which is 11.8% of that
+        /// profile's round trips. The consequence that matters is not the lost samples but the
+        /// broken denominator: docs/metrics.md §3 defines loss rate as "fraction of sent datagrams
+        /// never received", and read that way a truncated trial reported <b>6.8% downlink loss on a
+        /// profile whose real loss is 1.6%</b>, and 0.2% on <c>lan</c> where the truth is zero.
+        ///
+        /// <b>Deliberately not a continuation of the trial.</b> No <c>SubmitCommand</c>, no
+        /// <see cref="OperatorEndpoint.EstimateRobotState"/>, and no <c>prediction_*</c> samples:
+        /// the operator has stopped, so a prediction scored against a plant nobody is commanding
+        /// any more measures the plant coasting, not the predictor. What the drain does record is
+        /// what it exists for — the arrival-side metrics of round trips that were already in
+        /// flight when the operator stopped, plus the <c>correction_magnitude_*</c> that
+        /// <c>ObserveRobotState</c> emits for them. Those are observations of real deliveries and
+        /// belong in the trial.
+        /// </summary>
+        private static void DrainInFlight(
+            OperatorEndpoint operatorEndpoint,
+            RobotEndpoint robotEndpoint,
+            ManualClock clock,
+            NamedProfile namedProfile,
+            ExperimentConfig config)
+        {
+            long drainSteps = DrainSteps(namedProfile, config);
+
+            for (long step = 0; step < drainSteps; step++)
+            {
+                clock.AdvanceTicks(config.StepIntervalTicks);
+                long now = clock.NowTicks;
+
+                robotEndpoint.Step(now);
+
+                while (operatorEndpoint.TryReceiveState(now, out _))
+                {
+                }
+
+                while (operatorEndpoint.TryPlayoutState(now, out _))
+                {
+                }
+            }
+        }
+
+        /// <summary>
+        /// How long the drain has to run: a full round trip at the profile's <i>worst</i> one-way
+        /// delay in each direction, plus the longest a playout policy may hold a sample, plus two
+        /// steps of slack.
+        ///
+        /// Worst case rather than mean, because a drain that is too short truncates exactly the
+        /// slowest trips — reintroducing the delay-correlated censoring in miniature. Too long is
+        /// nearly free: once the wire is empty the loop only advances a clock.
+        /// </summary>
+        private static long DrainSteps(NamedProfile namedProfile, ExperimentConfig config)
+        {
+            long maxOneWayTicks = MaxOneWayDelayTicks(namedProfile);
+            long playoutHoldTicks = MillisecondsToTicks(
+                Math.Max(config.PlayoutBudgetMs, config.PlayoutMaxBudgetMs));
+
+            long drainTicks = (2 * maxOneWayTicks) + playoutHoldTicks;
+            return (drainTicks / config.StepIntervalTicks) + 2;
+        }
+
+        /// <summary>
+        /// The largest delay one datagram can experience on this profile. Jitter is bounded
+        /// uniform and reorder adds a fixed extra hold, so the parametric worst case is exact
+        /// rather than a quantile; a trace profile's worst case is the largest sample in it.
+        /// </summary>
+        private static long MaxOneWayDelayTicks(NamedProfile namedProfile)
+        {
+            if (namedProfile.TraceTicks != null && namedProfile.TraceTicks.Length > 0)
+            {
+                long worst = 0;
+                foreach (long ticks in namedProfile.TraceTicks)
+                {
+                    if (ticks > worst)
+                    {
+                        worst = ticks;
+                    }
+                }
+
+                return worst;
+            }
+
+            NetworkProfile profile = namedProfile.Profile;
+            return profile.BaseDelayTicks + profile.JitterTicks + profile.ReorderDelayTicks;
         }
 
         /// <summary>

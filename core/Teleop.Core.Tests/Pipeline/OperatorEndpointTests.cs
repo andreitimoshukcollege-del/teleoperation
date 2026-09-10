@@ -52,7 +52,7 @@ public class OperatorEndpointTests
             new PassthroughPredictor(DefaultPredictorConfig),
             new SnapReconciler(DefaultReconcilerConfig, metrics, operatorClock),
             TestPlayout.Immediate(metrics, operatorClock),
-            inFlightCapacity: 8);
+            inFlightCapacity: 8, inFlightMaxAgeTicks: long.MaxValue / 4);
     }
 
     [Fact]
@@ -407,7 +407,7 @@ public class OperatorEndpointTests
             var endpoint = new OperatorEndpoint(
                 new RawPoseCodec(), new RobotStateFrameCodec(), uplink, downlink,
                 clock, metrics, clockSync, predictor, reconciler,
-                TestPlayout.Immediate(metrics, clock), inFlightCapacity: 8);
+                TestPlayout.Immediate(metrics, clock), inFlightCapacity: 8, inFlightMaxAgeTicks: long.MaxValue / 4);
 
             LatencyTrace opened = endpoint.SubmitCommand(Pose.Identity, Vector3.Zero, Vector3.Zero, 0f, nowTicks: 100);
             opened.TryGetUplinkSendTicks(out long uplinkSendTicks);

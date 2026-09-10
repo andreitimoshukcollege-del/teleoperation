@@ -66,7 +66,7 @@ public class LoopbackPipelineIntegrationTests
         var operatorEndpoint = new OperatorEndpoint(
             new RawPoseCodec(), new RobotStateFrameCodec(), uplink, downlink,
             clock, metrics, clockSync, MakePredictor(), MakeReconciler(metrics, clock),
-            TestPlayout.Immediate(metrics, clock), inFlightCapacity: 8);
+            TestPlayout.Immediate(metrics, clock), inFlightCapacity: 8, inFlightMaxAgeTicks: long.MaxValue / 4);
         var robotEndpoint = new RobotEndpoint(
             plant, new RawPoseCodec(), new RobotStateFrameCodec(), uplink, downlink, clock);
 
@@ -136,7 +136,7 @@ public class LoopbackPipelineIntegrationTests
         var operatorEndpoint = new OperatorEndpoint(
             new RawPoseCodec(), new RobotStateFrameCodec(), uplink, downlink,
             clock, metrics, clockSync, MakePredictor(), MakeReconciler(metrics, clock),
-            TestPlayout.Immediate(metrics, clock), inFlightCapacity: 8);
+            TestPlayout.Immediate(metrics, clock), inFlightCapacity: 8, inFlightMaxAgeTicks: long.MaxValue / 4);
         var robotEndpoint = new RobotEndpoint(
             plant, new RawPoseCodec(), new RobotStateFrameCodec(), uplink, downlink, clock);
 
@@ -165,7 +165,7 @@ public class LoopbackPipelineIntegrationTests
             var operatorEndpoint = new OperatorEndpoint(
                 new RawPoseCodec(), new RobotStateFrameCodec(), uplink, downlink,
                 clock, metrics, clockSync, MakePredictor(), MakeReconciler(metrics, clock),
-                TestPlayout.Immediate(metrics, clock), inFlightCapacity: 8);
+                TestPlayout.Immediate(metrics, clock), inFlightCapacity: 8, inFlightMaxAgeTicks: long.MaxValue / 4);
             var robotEndpoint = new RobotEndpoint(
                 plant, new RawPoseCodec(), new RobotStateFrameCodec(), uplink, downlink, clock);
 
@@ -215,7 +215,7 @@ public class LoopbackPipelineIntegrationTests
         var operatorEndpoint = new OperatorEndpoint(
             new RawPoseCodec(), new RobotStateFrameCodec(), uplink, downlink,
             clock, metrics, clockSync, MakePredictor(), MakeReconciler(metrics, clock),
-            TestPlayout.Immediate(metrics, clock), inFlightCapacity: 8);
+            TestPlayout.Immediate(metrics, clock), inFlightCapacity: 8, inFlightMaxAgeTicks: long.MaxValue / 4);
         var robotEndpoint = new RobotEndpoint(
             plant, new RawPoseCodec(), new RobotStateFrameCodec(), uplink, downlink, clock);
 

@@ -23,7 +23,15 @@ namespace Teleop.Eval.Sweep
     public static class SweepCommand
     {
         private const long TicksPerSecond = 10_000_000;
-        private const int InFlightCapacity = 64;
+        /// <summary>
+        /// Open latency traces held at once. Raised from 64 when free-slot reuse landed: with
+        /// reuse the bound is "round trips concurrently outstanding", which on
+        /// <c>300ms-60j-2loss-bursty</c> is up to 720 ms / 10 ms = 72 -- already above the old 64,
+        /// so that profile would still have displaced live traces even with the ring fixed. 256
+        /// clears every frozen profile with room to spare; <c>latency_trace_evicted</c> is what
+        /// catches it if a future profile does not fit.
+        /// </summary>
+        private const int InFlightCapacity = 256;
         private const int MaxDatagramsPerStep = 64;
         private const int TransportCapacity = 64;
 
@@ -387,6 +395,7 @@ namespace Teleop.Eval.Sweep
             var operatorEndpoint = new OperatorEndpoint(
                 new RawPoseCodec(), new RobotStateFrameCodec(), uplink, downlink,
                 clock, sink, clockSync, predictor, reconciler, playoutPolicy, InFlightCapacity,
+                InFlightMaxAgeTicks(namedProfile, config),
                 downlinkSequencedObserver);
             var robotEndpoint = new RobotEndpoint(
                 plant, new RawPoseCodec(), new RobotStateFrameCodec(), uplink, downlink, clock, MaxDatagramsPerStep);
@@ -504,6 +513,18 @@ namespace Teleop.Eval.Sweep
         /// slowest trips — reintroducing the delay-correlated censoring in miniature. Too long is
         /// nearly free: once the wire is empty the loop only advances a clock.
         /// </summary>
+        /// <summary>
+        /// How long a latency trace waits for a reply before its slot is reclaimed. Twice the
+        /// worst-case round trip plus the longest playout hold: generous on purpose, because
+        /// expiring early discards a trace whose reply was still coming — the delay-correlated
+        /// censoring this whole change exists to remove — while expiring late only costs a slot,
+        /// and <see cref="InFlightCapacity"/> has slots to spare.
+        /// </summary>
+        private static long InFlightMaxAgeTicks(NamedProfile namedProfile, ExperimentConfig config) =>
+            (4 * MaxOneWayDelayTicks(namedProfile))
+            + MillisecondsToTicks(Math.Max(config.PlayoutBudgetMs, config.PlayoutMaxBudgetMs))
+            + config.StepIntervalTicks;
+
         private static long DrainSteps(NamedProfile namedProfile, ExperimentConfig config)
         {
             long maxOneWayTicks = MaxOneWayDelayTicks(namedProfile);

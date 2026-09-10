@@ -89,7 +89,10 @@ namespace Teleop.Eval.MoveArm
 
             var operatorEndpoint = new OperatorEndpoint(
                 new RawPoseCodec(), new RobotStateFrameCodec(), transport, transport,
-                clock, sink, clockSync, predictor, reconciler, playoutPolicy, InFlightCapacity);
+                clock, sink, clockSync, predictor, reconciler, playoutPolicy, InFlightCapacity,
+                // Five seconds: the measured Tailscale round trip to the Jetson is 61-110ms
+                // (robot/README.md), so this only ever reclaims a slot whose reply the link lost.
+                inFlightMaxAgeTicks: clock.TicksPerSecond * 5);
 
             Console.WriteLine(
                 $"[move-arm] sending {targetPosition} (gripper={a.Gripper:0.##}) to {remoteEndPoint} at " +

@@ -349,16 +349,45 @@ namespace Teleop.Eval.Sweep
             // Separate CreateImpairments() calls, not one shared array: an impairment owns mutable
             // model state and one RNG substream and may be bound to exactly one transport. The two
             // directions are decorrelated by the seed (seed, seed + 1), as before.
-            ITransport uplink = new EmulatedTransport(
-                uplinkInner, namedProfile.CreateImpairments(), seed, TransportCapacity);
-            ITransport downlink = new EmulatedTransport(
-                downlinkInner, namedProfile.CreateImpairments(), unchecked(seed + 1), TransportCapacity);
+            // MeasuredTransport wraps OUTSIDE the emulator, which is the only placement that
+            // measures docs/metrics.md §3's loss: GilbertElliottLossImpairment drops at the Send
+            // stage, so a dropped datagram never reaches the wrapped transport and only the
+            // outermost decorator sees Send return false. Inside the emulator this would see the
+            // loopback's queue and never a lost datagram at all. It forwards every call verbatim
+            // and changes no behaviour -- same RNG draws, same arrival ticks, same trial.
+            //
+            // One decorator per direction, and each sees both vantages of its direction: the
+            // operator endpoint sends on `uplink` and the robot endpoint receives from that same
+            // object, so net_uplink_sent and net_uplink_received come from one instance and their
+            // difference is loss inflicted after acceptance.
+            var uplinkObserver = NetworkObserver.ForUplink(sink, clock);
+            var downlinkObserver = NetworkObserver.ForDownlink(sink, clock);
+            ITransport uplink = new MeasuredTransport(
+                new EmulatedTransport(
+                    uplinkInner, namedProfile.CreateImpairments(), seed, TransportCapacity),
+                uplinkObserver);
+            ITransport downlink = new MeasuredTransport(
+                new EmulatedTransport(
+                    downlinkInner, namedProfile.CreateImpairments(), unchecked(seed + 1), TransportCapacity),
+                downlinkObserver);
+
+            // The sequenced vantage: reordering and RFC 3550 jitter need a decoded frame's
+            // sequence and its sender's raw send stamp, which no ITransport exposes. Only the
+            // downlink has one -- the uplink's decoded frames exist only at RobotEndpoint, and
+            // uplink jitter is underivable there in any case because CommandFrame carries no
+            // operator TicksPerSecond (docs/adr/0008). Deliberately a SECOND observer for the same
+            // direction rather than reusing `downlinkObserver`: the two emit disjoint metric names
+            // from different vantages, and sharing one would silently make the transport's arrival
+            // count and the endpoint's decode count the same number by construction, which is
+            // exactly the cross-check worth keeping.
+            var downlinkSequencedObserver = NetworkObserver.ForDownlink(sink, clock);
 
             var plant = new RigidBodyPlant(Pose.Identity, TicksPerSecond);
 
             var operatorEndpoint = new OperatorEndpoint(
                 new RawPoseCodec(), new RobotStateFrameCodec(), uplink, downlink,
-                clock, sink, clockSync, predictor, reconciler, playoutPolicy, InFlightCapacity);
+                clock, sink, clockSync, predictor, reconciler, playoutPolicy, InFlightCapacity,
+                downlinkSequencedObserver);
             var robotEndpoint = new RobotEndpoint(
                 plant, new RawPoseCodec(), new RobotStateFrameCodec(), uplink, downlink, clock, MaxDatagramsPerStep);
 

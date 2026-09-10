@@ -97,3 +97,32 @@ the only policy in the set that behaves sensibly on all five profiles without be
   every existing `results/` directory means.
 - **`unity/` still does not compile** until the two bridges are updated on the Windows box (from the
   previous PR). This change adds one argument to the `PlayoutPolicyConfig` in that proposal.
+
+## Addendum, 2026-09-10: re-verified after ADR 0013
+
+`docs/adr/0013-composable-network-impairments.md` rebuilt the impairment pipeline in Core and
+warns that "two runs of `300ms-60j-2loss-bursty` at the same seed, one before and one after this
+change, produce different per-datagram outcomes." Every number above was measured before it.
+
+The ADR reasons that this comparability break is "worth zero today, because no recorded result
+exists" -- true of the repository, since `results/` is gitignored, but **not** true of this log,
+which cites numbers from runs that exist only on the Linux box. That gap is invisible from the
+machine that wrote the ADR. So the experiments were re-run rather than assumed to hold.
+
+**Every conclusion survives, and the drift is exactly the shape the ADR predicts.**
+
+- `lan` and `synthetic-burst` are **identical to the digit**, before and after. Neither consumes a
+  parametric impairment draw -- `lan` has no impairment at all, and `synthetic-burst` is
+  trace-driven with base delay, jitter, loss and reorder all zeroed (which is also why the network
+  survey found its five seeds inert). There is no realization for the rewrite to change.
+- The three parametric profiles moved by under one percentage point of loss and under 0.3 ms of
+  mean buffering delay: `immediate` on `50ms-5j` 2.78% -> 3.20%, on `150ms-20j-0.5loss`
+  22.08% -> 22.72%, on `300ms-60j-2loss-bursty` 57.06% -> 56.63%; `percentile` 3.32% -> 2.84% and
+  8.63% -> 8.44% at unchanged delay. Same distribution, different realization.
+- Every **structural** claim holds unchanged, because none of them depended on a realization:
+  `fixed` at 40 ms is still byte-identical to `immediate` wherever the budget is below the link's
+  one-way delay, and the matched-loss headline rests on `synthetic-burst`, which did not move.
+
+Nothing here is retracted. The one thing worth carrying forward: the ADR's "worth zero exactly
+once" only stays true if local, gitignored results are counted, and from the other machine they
+cannot be seen. A committed number is a recorded result even when the run behind it is not.

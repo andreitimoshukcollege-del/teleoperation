@@ -50,6 +50,11 @@ Both halves were predicted. The transport survey said a bounded-uniform profile 
 constant `Base + J` and nothing to estimate; the bounds analysis said a trace with persistent burst
 structure is trackable. Each was right about its own half, and neither is right about the other.
 
+Re-verified after `docs/adr/0013-composable-network-impairments.md` rebuilt the impairment
+pipeline: `synthetic-burst` and `lan` are identical to the digit (neither consumes a parametric
+draw), and the three parametric profiles moved by under one percentage point of loss. The
+conclusions are unchanged — see the addenda in both Buffering decision records for the numbers.
+
 **The case for `percentile` is transferability, not dominance.** The `fixed` budgets that beat it
 were each chosen by sweeping 15 budgets against that one profile, and the winner on
 `150ms-20j-0.5loss` (160 ms) is catastrophic on `300ms-60j-2loss-bursty`, which needs 350 ms.

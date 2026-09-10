@@ -12,8 +12,14 @@ REPO_ROOT = ANALYSIS_DIR.parent
 RUN_DIR = REPO_ROOT / "results" / "exp-001-predictor-baseline" / "20260804-020431Z"
 
 
+# Guards on the manifest, not the directory. `results/` is gitignored except for its CLAUDE.md, so
+# a checkout can end up with `results/exp-001-predictor-baseline/<run>/` present but holding only an
+# empty `figures/` -- which is exactly the state this repo is in. A directory-existence guard let
+# the test run against that and fail on a missing manifest, which reads as a regression in the CLI
+# rather than as an absent fixture. `results/CLAUDE.md` is explicit that a run without a manifest is
+# not a result, so that is the right thing to test for.
 @pytest.mark.skipif(
-    not RUN_DIR.exists(),
+    not (RUN_DIR / "manifest.json").is_file(),
     reason="committed exp-001-predictor-baseline result is not present in this checkout",
 )
 def test_cli_end_to_end_matches_hand_computed_percentile():

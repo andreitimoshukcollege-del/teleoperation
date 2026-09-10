@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using Teleop.Core.Contracts;
 using Teleop.Core.Transport;
 using Teleop.Core.Transport.Impairments;
@@ -80,6 +81,68 @@ namespace Teleop.Core.Tests.Transport
                 "combo__delay-100ms__delay-200ms", TicksPerSecond, out _, out _);
 
             Assert.False(ok);
+        }
+
+        /// <summary>
+        /// Every name <see cref="NetworkProfileCatalog.NamedProfiles"/> advertises must actually
+        /// resolve. Without this, the list is just a second hardcoded copy that can drift from the
+        /// resolver -- which is the exact failure it exists to prevent downstream.
+        /// </summary>
+        [Fact]
+        public void NamedProfiles_EveryAdvertisedNameResolves()
+        {
+            Assert.NotEmpty(NetworkProfileCatalog.NamedProfiles);
+
+            foreach (string name in NetworkProfileCatalog.NamedProfiles)
+            {
+                Assert.True(
+                    NetworkProfileCatalog.TryResolveParametric(name, TicksPerSecond, out _, out string? error),
+                    $"NamedProfiles advertises '{name}' but the resolver rejects it: {error}");
+            }
+        }
+
+        /// <summary>
+        /// Every isolated axis must resolve at a representative value, using the unit suffix the
+        /// axis itself declares. Catches an axis added to the list without a matching regex, and an
+        /// axis whose unit is wrong (which would silently build unresolvable profile names in every
+        /// tool that trusts this list).
+        /// </summary>
+        [Fact]
+        public void IsolatedAxes_EveryAdvertisedAxisResolvesAtItsOwnUnit()
+        {
+            Assert.NotEmpty(NetworkProfileCatalog.IsolatedAxes);
+
+            foreach (NetworkProfileCatalog.IsolatedAxis axis in NetworkProfileCatalog.IsolatedAxes)
+            {
+                string profileName = axis.ProfileName("2");
+
+                Assert.True(
+                    NetworkProfileCatalog.TryResolveParametric(
+                        profileName, TicksPerSecond, out _, out string? error),
+                    $"IsolatedAxes advertises '{axis.Name}' with unit '{axis.UnitSuffix}', " +
+                    $"but '{profileName}' does not resolve: {error}");
+            }
+        }
+
+        /// <summary>
+        /// The advertised axes must also compose into a `combo__` name, since that is the other
+        /// thing a caller builds from this list.
+        /// </summary>
+        [Fact]
+        public void IsolatedAxes_ComposeIntoAResolvableCombinedProfile()
+        {
+            var segments = new List<string>();
+            foreach (NetworkProfileCatalog.IsolatedAxis axis in NetworkProfileCatalog.IsolatedAxes)
+            {
+                segments.Add(axis.ProfileName("1"));
+            }
+
+            string combined = "combo__" + string.Join("__", segments);
+
+            Assert.True(
+                NetworkProfileCatalog.TryResolveParametric(
+                    combined, TicksPerSecond, out _, out string? error),
+                $"'{combined}' built from IsolatedAxes does not resolve: {error}");
         }
 
         [Fact]

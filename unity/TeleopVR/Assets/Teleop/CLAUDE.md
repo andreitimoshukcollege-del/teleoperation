@@ -44,12 +44,9 @@ leaking out of Core, and every leaked line is a line the headless sweeps can no 
 Lets an operator switch lag, jitter, loss and reordering on and off during Play mode, so "what does
 200ms feel like?" can be answered in a headset instead of argued about.
 
-- `NetworkImpairment` + `Impairments/*.cs` — the axis contract and one file per axis. See the file
-  layout section below.
-- `NetworkImpairmentSettings` — the aggregate: one axis per field, and a
-  `ToProfile(ticksPerSecond)` that folds the enabled ones into Core's `NetworkProfile`. Same
-  category as `RobotArmProfileData` — a Unity-serializable surface feeding a constructor-only Core
-  struct.
+- `NetworkImpairmentSettings` — the sliders and checkboxes, and a `CreateImpairments` that builds
+  the Core impairment objects from them. Same category as `RobotArmProfileData`: a Unity-serializable
+  surface feeding types Unity cannot serialize itself.
 - `NetworkProfilePresets` — loads a frozen profile's values into the axes (see below).
 - `DelayTraceLoader` — reads a recorded `.trace`, since Core cannot do I/O.
 - `SwappableTransport : ITransport` — installs and removes an `EmulatedTransport` over its inner
@@ -59,50 +56,34 @@ Lets an operator switch lag, jitter, loss and reordering on and off during Play 
 - `NetworkImpairmentController` — the MonoBehaviour holding the checkboxes, wired to
   `TeleopOperatorBridge`'s two transports.
 
-**That is a lot of files in a folder whose rule above is that growth is a warning sign, so the
-justification matters.** None of them impair anything. Every delay, drop and reorder decision is
+**Four files in a folder whose rule above is that growth is a warning sign, so the justification
+matters.** None of them impair anything. Every delay, drop and reorder decision is
 made by Core's `EmulatedTransport` from a Core `NetworkProfile`; what these add is a serializable
 surface for it and one level of indirection so it can be swapped at runtime. The count is spread
 across small single-purpose files precisely so each stays a description rather than a computation.
 If a coefficient, a distribution, or a drop decision ever appears in any of them, that is the leak
 this section's rule is about and it belongs back in Core.
 
-### File layout: one file per impairment
+### Where the impairments actually live
 
-`NetworkImpairmentSettings` is the aggregate; each axis is its own file under `Impairments/`
-(`DelayImpairment`, `JitterImpairment`, `LossImpairment`, `ReorderImpairment`,
-`DelayTraceImpairment`), all deriving from `NetworkImpairment`.
+**In Core**, one file each: `core/Teleop.Core/Transport/Impairments/`. That is where a new kind of
+disturbance is added, and it is the only place any impairment model exists.
 
-**Adding an axis** is a new file plus a field and an array entry in the aggregate — `ToProfile`,
-`Describe`, `ValueEquals` and `CopyTo` are flat loops over `AllAxes`, so none of them need editing.
-Existing axes are untouched.
+Nothing under `Bridge/` mirrors that structure, deliberately. Unity uses Core directly all over —
+`EmulatedTransport`, `OperatorEndpoint`, `ClockSync`, and the Core impairments themselves are all
+constructed here. **There is exactly one thing Unity cannot do with a Core object: draw it in the
+Inspector and save it into a scene.** Unity's serializer only persists public mutable fields, and
+Core's impairments keep their parameters private and readonly so they can be validated once at
+construction and never be wrong afterwards.
 
-`NetworkProfileDraft` is gone: it existed only because `NetworkProfile` was a flat six-argument
-struct that five objects could not each build part of. Axes now construct Core impairments directly,
-and Core owns the clamping.
+So `NetworkImpairmentSettings` is a flat block of sliders and checkboxes — the boxes an operator
+types into — with one `CreateImpairments` that builds the Core objects. That is the whole Unity
+side. There was briefly a per-axis class hierarchy under `Bridge/Impairments/` mirroring Core's
+layout; it was removed, because a plain number does not need its own class or file, and the
+duplicated shape read as though the impairments had never moved to Core at all.
 
-A delay trace no longer supersedes delay and jitter — with separate impairments they compose, so
-enabling all three means a recorded link plus an extra fixed hop, and the delays sum. That is a
-legal configuration, not a contradiction to validate away.
-
-`AllAxes` is an explicitly-built array, never reflection: IL2CPP strips what nothing references and
-has no runtime codegen (invariant 5), so a reflective scan would work in the Editor and fail on
-device — the same reasoning behind `Registry/Registries.cs`.
-
-**The impairments themselves now live in Core** (`docs/adr/0013`). `Impairments/*.cs` here are
-serializable *authoring shells*: Inspector fields plus one `ToCoreImpairment` that constructs the
-real `Teleop.Core.Transport.Impairments` object. Every parameter clamp and every model decision is
-Core's.
-
-This layer survives rather than being deleted because Unity serialization needs parameterless
-constructors and mutable public fields, while Core validates at construction and holds its
-parameters readonly; `[Range]`/`[Min]`/`[Tooltip]` are `UnityEngine` and can never appear in Core;
-and `[SerializeReference]` loses managed references on a type rename, so binding scene data to Core
-type identities would make a later Core refactor a silent data-loss event here. `RobotArmProfileData`
-exists for the same reasons.
-
-Adding a new *kind* of disturbance is now a new Core file plus one shell here — no longer a
-widening of a fixed six-field struct and an edit at every construction site.
+**Adding an axis:** a new file in Core implementing `Contracts/INetworkImpairment.cs`, plus a field
+and one `if` in `NetworkImpairmentSettings.CreateImpairments`.
 
 ### Presets, and how this relates to the sweeps
 

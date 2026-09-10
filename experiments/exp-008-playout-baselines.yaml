@@ -11,7 +11,7 @@
 # One budget, not a curve. Reading a winner out of a single budget would be reading one arbitrary
 # point off a curve; sweeping playoutBudgetMs across runs is what produces the curve an adaptive
 # policy's claim is stated against.
-id: exp-003-playout-baselines
+id: exp-008-playout-baselines
 seeds: [1, 2, 3, 4, 5]
 predictors:
   - none

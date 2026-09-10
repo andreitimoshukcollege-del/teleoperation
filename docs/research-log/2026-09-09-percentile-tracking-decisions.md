@@ -3,7 +3,7 @@
 **Organizer:** none — built directly in the main session, by user instruction ("now build
 percentile"). **HEAD at start:** `967069c`. Implementation:
 `core/Teleop.Core/Buffering/PercentileTrackingPlayout.cs`. Runs:
-`results/exp-004-percentile-tracking/`, plus 15 scratch `fixed`-budget runs and two scratch window
+`results/exp-009-percentile-tracking/`, plus 15 scratch `fixed`-budget runs and two scratch window
 runs under `results/scratch-*` (left in place — `results/` is append-only).
 
 ## The question

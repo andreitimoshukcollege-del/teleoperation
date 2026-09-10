@@ -17,7 +17,7 @@ first making `IPlayoutPolicy` reachable from `Pipeline/`.
 ## What was built, and what deliberately was not
 
 `immediate` and `fixed` — the two baselines — over one shared `PlayoutSampleBuffer`, plus the
-two-phase receive they need, five metric names, sweep support, and `exp-003-playout-baselines`.
+two-phase receive they need, five metric names, sweep support, and `exp-008-playout-baselines`.
 
 **`percentile`/`adaptive` were not built, and that is the whole point of stopping here.** An
 adaptive policy's claim is "same loss, less delay" — a *comparison*, whose denominator is the best
@@ -66,7 +66,7 @@ policy's y-axis.
 
 ## What the first sweep actually said
 
-`exp-003-playout-baselines`, 2 predictors x 2 policies x 5 profiles x 5 seeds, 40 ms budget.
+`exp-008-playout-baselines`, 2 predictors x 2 policies x 5 profiles x 5 seeds, 40 ms budget.
 
 **The mechanism works and is measured.** On `synthetic-burst`, `fixed` played out 2355 samples
 against `immediate`'s 1885 — it recovers 470 reordered samples `immediate` must discard — and

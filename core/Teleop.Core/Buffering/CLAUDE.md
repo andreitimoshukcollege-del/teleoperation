@@ -37,7 +37,7 @@ Keep this table current — it once overclaimed all six rows as implemented.
 | `pareto` | `LatencyLossOptimizingPlayout.cs` | explicit operating point on the latency/loss curve |
 
 **The offline 47-61% is now confirmed in the pipeline, and it is confirmed only where it should
-be.** `exp-004-percentile-tracking` puts `percentile` at `p = 1.0, w = 64` against a 15-point
+be.** `exp-009-percentile-tracking` puts `percentile` at `p = 1.0, w = 64` against a 15-point
 `fixed` budget curve at matched loss
 (`docs/research-log/2026-09-09-percentile-tracking-decisions.md`):
 
@@ -80,8 +80,8 @@ Record failures here with a link to the `results/` directory.
   `fixed` is the baseline and stays -- but rejected as an answer. A budget is measured from
   capture, so one value cannot serve profiles with different base delays: at 40 ms it is
   byte-identical to `immediate` on every profile whose one-way delay exceeds it
-  (`exp-003-playout-baselines`), and the per-profile optima found by sweeping 15 budgets range from
-  60 ms to 350 ms across four profiles (`exp-004-percentile-tracking`).
+  (`exp-008-playout-baselines`), and the per-profile optima found by sweeping 15 budgets range from
+  60 ms to 350 ms across four profiles (`exp-009-percentile-tracking`).
 
 ## Requirements
 

@@ -231,7 +231,7 @@ namespace Teleop.Bridge
             if (preset == NetworkProfilePreset.Custom)
             {
                 _hasPresetBaseline = false;
-                settings.DelayTrace.Enabled = false;
+                settings.EnableDelayTrace = false;
                 return;
             }
 
@@ -240,14 +240,14 @@ namespace Teleop.Bridge
                 // The trace supplies delay, so the parametric delay axes are switched off rather
                 // than left on and silently ignored -- ToProfile would zero them anyway, and an
                 // Inspector showing a ticked "Enable Delay" that does nothing is a lie.
-                settings.DelayTrace.Enabled = true;
-                settings.DelayTrace.TraceName = NetworkProfilePresets.CatalogName(preset);
-                settings.Delay.Enabled = false;
-                settings.Jitter.Enabled = false;
+                settings.EnableDelayTrace = true;
+                settings.TraceName = NetworkProfilePresets.CatalogName(preset);
+                settings.EnableDelay = false;
+                settings.EnableJitter = false;
             }
             else
             {
-                settings.DelayTrace.Enabled = false;
+                settings.EnableDelayTrace = false;
                 if (!NetworkProfilePresets.TryApply(preset, _clock.TicksPerSecond, settings, out string error))
                 {
                     Debug.LogError($"NetworkImpairmentController: could not load preset '{preset}': {error}", this);
@@ -271,7 +271,7 @@ namespace Teleop.Bridge
         private bool ToggleStateChanged()
         {
             return !settings.EnabledStateEquals(_applied)
-                || settings.DelayTrace.TraceName != _applied.DelayTrace.TraceName;
+                || settings.TraceName != _applied.TraceName;
         }
 
         /// <summary>
@@ -293,7 +293,7 @@ namespace Teleop.Bridge
                 // The trace is the delay source; without it, applying loss and reorder alone would
                 // be a different experiment than the one asked for, silently. Refusing is the
                 // honest outcome, and the loader has already logged why.
-                settings.DelayTrace.Enabled = false;
+                settings.EnableDelayTrace = false;
                 impair = settings.AnyEnabled;
             }
 
@@ -356,12 +356,12 @@ namespace Teleop.Bridge
                 return true;
             }
 
-            if (_traceTicks != null && _loadedTraceName == settings.DelayTrace.TraceName)
+            if (_traceTicks != null && _loadedTraceName == settings.TraceName)
             {
                 return true;
             }
 
-            _traceTicks = DelayTraceLoader.TryLoad(settings.DelayTrace.TraceName, _clock.TicksPerSecond, out string error);
+            _traceTicks = DelayTraceLoader.TryLoad(settings.TraceName, _clock.TicksPerSecond, out string error);
             if (_traceTicks == null)
             {
                 _loadedTraceName = null;
@@ -370,7 +370,7 @@ namespace Teleop.Bridge
                 return false;
             }
 
-            _loadedTraceName = settings.DelayTrace.TraceName;
+            _loadedTraceName = settings.TraceName;
             return true;
         }
 
@@ -379,61 +379,56 @@ namespace Teleop.Bridge
 
         public void SetDelayEnabled(bool value)
         {
-            settings.Delay.Enabled = value;
+            settings.EnableDelay = value;
             Apply();
         }
 
         public void SetJitterEnabled(bool value)
         {
-            settings.Jitter.Enabled = value;
+            settings.EnableJitter = value;
             Apply();
         }
 
         public void SetLossEnabled(bool value)
         {
-            settings.Loss.Enabled = value;
+            settings.EnableLoss = value;
             Apply();
         }
 
         public void SetBurstLossEnabled(bool value)
         {
-            settings.Loss.Bursty = value;
+            settings.EnableBurstLoss = value;
             Apply();
         }
 
         public void SetReorderEnabled(bool value)
         {
-            settings.Reorder.Enabled = value;
+            settings.EnableReorder = value;
             Apply();
         }
 
         public void SetBaseDelayMs(float value)
         {
-            settings.Delay.BaseDelayMs = value;
+            settings.BaseDelayMs = value;
             Apply();
         }
 
         public void SetJitterMs(float value)
         {
-            settings.Jitter.JitterMs = value;
+            settings.JitterMs = value;
             Apply();
         }
 
         public void SetLossPercent(float value)
         {
-            settings.Loss.LossPercent = value;
+            settings.LossPercent = value;
             Apply();
         }
 
         /// <summary>Turns every axis off in one call -- the "back to a clean link" button.</summary>
         public void ClearAll()
         {
-            NetworkImpairment[] axes = settings.AllAxes;
-            for (int i = 0; i < axes.Length; i++)
-            {
-                axes[i].Enabled = false;
-            }
-
+            settings.ClearAll();
             Apply();
         }
     }

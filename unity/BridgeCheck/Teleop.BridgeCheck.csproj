@@ -52,12 +52,6 @@
     <BridgeSource Include="JetRoverOperatorBridge.cs" />
     <BridgeSource Include="JetRoverArmConfig.cs" />
     <BridgeSource Include="RobotArmProfileData.cs" />
-    <BridgeSource Include="NetworkImpairment.cs" />
-    <BridgeSource Include="Impairments/DelayImpairment.cs" />
-    <BridgeSource Include="Impairments/JitterImpairment.cs" />
-    <BridgeSource Include="Impairments/LossImpairment.cs" />
-    <BridgeSource Include="Impairments/ReorderImpairment.cs" />
-    <BridgeSource Include="Impairments/DelayTraceImpairment.cs" />
     <BridgeSource Include="NetworkImpairmentSettings.cs" />
     <BridgeSource Include="SwappableTransport.cs" />
     <BridgeSource Include="NetworkProfilePresets.cs" />

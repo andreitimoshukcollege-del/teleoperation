@@ -109,33 +109,33 @@ namespace Teleop.Bridge
                 return false;
             }
 
-            target.DelayTrace.Enabled = false;
+            target.EnableDelayTrace = false;
 
-            target.Delay.Enabled = profile.BaseDelayTicks > 0;
-            target.Delay.BaseDelayMs = ImpairmentUnits.TicksToMs(profile.BaseDelayTicks, ticksPerSecond);
+            target.EnableDelay = profile.BaseDelayTicks > 0;
+            target.BaseDelayMs = NetworkImpairmentSettings.TicksToMs(profile.BaseDelayTicks, ticksPerSecond);
 
-            target.Jitter.Enabled = profile.JitterTicks > 0;
-            target.Jitter.JitterMs = ImpairmentUnits.TicksToMs(profile.JitterTicks, ticksPerSecond);
+            target.EnableJitter = profile.JitterTicks > 0;
+            target.JitterMs = NetworkImpairmentSettings.TicksToMs(profile.JitterTicks, ticksPerSecond);
 
-            target.Loss.Enabled = profile.LossProbabilityAfterDelivered > 0.0;
-            target.Loss.LossPercent = (float)(profile.LossProbabilityAfterDelivered * 100.0);
+            target.EnableLoss = profile.LossProbabilityAfterDelivered > 0.0;
+            target.LossPercent = (float)(profile.LossProbabilityAfterDelivered * 100.0);
 
             // Equal after-delivered/after-lost is the degenerate Bernoulli case (docs/adr/0004's
             // note on `150ms-20j-0.5loss`), so it round-trips to "bursty off" rather than to a
             // burst chain that happens to behave like Bernoulli. Unequal means a real chain.
-            target.Loss.Bursty =
+            target.EnableBurstLoss =
                 profile.LossProbabilityAfterLost != profile.LossProbabilityAfterDelivered;
-            if (target.Loss.Bursty)
+            if (target.EnableBurstLoss)
             {
-                target.Loss.BurstContinuationPercent = (float)(profile.LossProbabilityAfterLost * 100.0);
+                target.BurstContinuationPercent = (float)(profile.LossProbabilityAfterLost * 100.0);
             }
 
-            target.Reorder.Enabled = profile.ReorderProbability > 0.0;
-            target.Reorder.ReorderPercent = (float)(profile.ReorderProbability * 100.0);
+            target.EnableReorder = profile.ReorderProbability > 0.0;
+            target.ReorderPercent = (float)(profile.ReorderProbability * 100.0);
             if (profile.ReorderDelayTicks > 0)
             {
-                target.Reorder.ReorderDelayMs =
-                    ImpairmentUnits.TicksToMs(profile.ReorderDelayTicks, ticksPerSecond);
+                target.ReorderDelayMs =
+                    NetworkImpairmentSettings.TicksToMs(profile.ReorderDelayTicks, ticksPerSecond);
             }
 
             error = null;

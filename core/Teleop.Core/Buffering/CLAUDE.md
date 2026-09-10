@@ -50,6 +50,12 @@ Both halves were predicted. The transport survey said a bounded-uniform profile 
 constant `Base + J` and nothing to estimate; the bounds analysis said a trace with persistent burst
 structure is trackable. Each was right about its own half, and neither is right about the other.
 
+The reordering that `immediate`'s late-arrival rate measures is largely a harness artifact on the
+parametric profiles -- at the 10 ms step, `50ms-5j`'s 13.0% is *entirely* `RobotEndpoint` batching
+its replies, with neither transit leg inverting anything. `synthetic-burst`, which the headline
+rests on, is driven by a ~230 ms delay step instead and is unaffected. See the addenda in both
+Buffering decision records.
+
 Re-verified after `docs/adr/0013-composable-network-impairments.md` rebuilt the impairment
 pipeline: `synthetic-burst` and `lan` are identical to the digit (neither consumes a parametric
 draw), and the three parametric profiles moved by under one percentage point of loss. The

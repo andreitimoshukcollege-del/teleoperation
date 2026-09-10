@@ -219,7 +219,8 @@ namespace Teleop.Core.Pipeline
                         stateFrame.Sequence,
                         stateFrame.DownlinkSendTicks,
                         stateFrame.TicksPerSecond,
-                        arrivalTicks);
+                        arrivalTicks,
+                        stateFrame.RobotRecvTicks);
                 }
 
                 // A reply with no matching in-flight trace still carries valid robot state, and it

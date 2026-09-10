@@ -31,6 +31,7 @@ from teleop_analysis.figures import (
     latency_distribution,
     stack_comparison,
 )
+from teleop_analysis import catalog
 from teleop_analysis.manifest import Manifest
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -39,17 +40,20 @@ CORE_EVAL_DIR = REPO_ROOT / "core" / "Teleop.Eval"
 EXPERIMENTS_DIR = REPO_ROOT / "experiments"
 GENERATED_YAML_PATH = EXPERIMENTS_DIR / "exp-gui-sweep.yaml"
 
-# Registry/Registries.cs's Predictors keys -- hardcoded the same way labels.py's
-# FRIENDLY_STACK_NAMES already is (no runtime way to query the C# registry from Python). Update
-# both places by hand when a new predictor is registered.
-PREDICTORS = ("none", "const-vel", "double-exp")
-
-# Defaults match experiments/exp-002-impairment-sensitivity.yaml's current density.
+# Per-axis slider defaults, matching experiments/exp-002-impairment-sensitivity.yaml's density.
+# Keyed by the axis names Core advertises; an axis Core adds that has no entry here still appears,
+# with the generic fallback below, so a new impairment family is usable the day it lands rather
+# than after someone remembers to edit this file.
 AXIS_DEFAULTS = {
-    "jitter": {"min": "0", "max": "60", "step": "1", "unit": "ms"},
-    "delay": {"min": "0", "max": "300", "step": "1", "unit": "ms"},
-    "loss": {"min": "0", "max": "5", "step": "0.1", "unit": "%"},
+    "jitter": {"min": "0", "max": "60", "step": "1"},
+    "delay": {"min": "0", "max": "300", "step": "1"},
+    "loss": {"min": "0", "max": "5", "step": "0.1"},
 }
+
+AXIS_FALLBACK_DEFAULTS = {"min": "0", "max": "10", "step": "1"}
+
+# How a unit suffix from Core reads in the UI. Anything unlisted is shown verbatim.
+UNIT_LABELS = {"ms": "ms", "pct": "%"}
 
 
 def discover_runs(results_dir: Path = RESULTS_DIR) -> List[Path]:
@@ -276,6 +280,13 @@ class PickerApp:
         self.output_queue: "queue.Queue" = queue.Queue()
         self._sweep_running = False
 
+        # What Core actually registers, read once at startup. Deliberately not wrapped in a
+        # try/except that falls back to a hardcoded list: a stale list presented as current is the
+        # exact failure this replaced, so a catalog that cannot be read stops the GUI with an
+        # explanation instead of quietly offering the wrong algorithms.
+        self.catalog = catalog.load()
+
+        self.algorithm_vars: Dict[str, Dict[str, tk.BooleanVar]] = {}
         self.predictor_vars: Dict[str, tk.BooleanVar] = {}
         self.axis_enabled_vars: Dict[str, tk.BooleanVar] = {}
         self.axis_entries: Dict[str, Dict[str, ttk.Entry]] = {}
@@ -310,15 +321,31 @@ class PickerApp:
         container = ttk.Frame(notebook, padding=8)
 
         ttk.Label(container, text="Algorithms", font=("TkDefaultFont", 10, "bold")).pack(anchor="w")
-        algo_row = ttk.Frame(container)
-        algo_row.pack(anchor="w", pady=(0, 8))
-        for predictor in PREDICTORS:
-            var = tk.BooleanVar(value=True)
-            self.predictor_vars[predictor] = var
-            ttk.Checkbutton(algo_row, text=predictor, variable=var).pack(side=tk.LEFT, padx=(0, 12))
 
-        ttk.Label(container, text="Impairments", font=("TkDefaultFont", 10, "bold")).pack(anchor="w")
-        for axis, defaults in AXIS_DEFAULTS.items():
+        # One row per algorithm axis, built from what Core actually registers. Nothing here is a
+        # hardcoded list, so a new predictor/reconciler/playout policy appears on the next launch.
+        # Only `predictor` starts fully checked: `sweep` varies one axis at a time
+        # (experiments/CLAUDE.md rule 1), so pre-selecting every reconciler as well would generate
+        # a config whose results cannot be attributed.
+        for axis_name, options in self.catalog.algorithm_axes.items():
+            row = ttk.Frame(container)
+            row.pack(anchor="w", pady=1, fill=tk.X)
+            ttk.Label(row, text=axis_name, width=10).pack(side=tk.LEFT)
+
+            axis_vars: Dict[str, tk.BooleanVar] = {}
+            for i, option in enumerate(options):
+                var = tk.BooleanVar(value=(axis_name == "predictor") or i == 0)
+                axis_vars[option] = var
+                ttk.Checkbutton(row, text=option, variable=var).pack(side=tk.LEFT, padx=(0, 10))
+            self.algorithm_vars[axis_name] = axis_vars
+
+        self.predictor_vars = self.algorithm_vars.get("predictor", {})
+
+        ttk.Label(container, text="Impairments", font=("TkDefaultFont", 10, "bold")).pack(
+            anchor="w", pady=(8, 0))
+        for axis_spec in self.catalog.isolated_axes:
+            axis = axis_spec.name
+            defaults = AXIS_DEFAULTS.get(axis, AXIS_FALLBACK_DEFAULTS)
             row = ttk.Frame(container)
             row.pack(anchor="w", pady=2, fill=tk.X)
 
@@ -333,7 +360,8 @@ class PickerApp:
                 entry.insert(0, defaults[field])
                 entry.pack(side=tk.LEFT)
                 entries[field] = entry
-            ttk.Label(row, text=defaults["unit"]).pack(side=tk.LEFT, padx=(4, 0))
+            ttk.Label(row, text=UNIT_LABELS.get(axis_spec.unit_suffix, axis_spec.unit_suffix)).pack(
+                side=tk.LEFT, padx=(4, 0))
             self.axis_entries[axis] = entries
 
         ttk.Label(
@@ -355,7 +383,8 @@ class PickerApp:
                 entry.insert(0, defaults[field])
                 entry.pack(side=tk.LEFT)
                 entries[field] = entry
-            ttk.Label(row, text=defaults["unit"]).pack(side=tk.LEFT, padx=(4, 0))
+            ttk.Label(row, text=UNIT_LABELS.get(axis_spec.unit_suffix, axis_spec.unit_suffix)).pack(
+                side=tk.LEFT, padx=(4, 0))
             self.combined_axis_entries[axis] = entries
 
         settings_row = ttk.Frame(container)
@@ -391,8 +420,12 @@ class PickerApp:
         self.output.see(tk.END)
         self.output.configure(state=tk.DISABLED)
 
+    def _selected(self, axis_name: str) -> List[str]:
+        """Checked options for one algorithm axis, in the order the catalog listed them."""
+        return [name for name, var in self.algorithm_vars.get(axis_name, {}).items() if var.get()]
+
     def _selected_predictors(self) -> List[str]:
-        return [p for p, var in self.predictor_vars.items() if var.get()]
+        return self._selected("predictor")
 
     def _build_profiles(self) -> Tuple[Optional[List[str]], Optional[str]]:
         """(profiles, None) on success, or (None, error message) -- never both/neither."""
@@ -477,8 +510,22 @@ class PickerApp:
             self.sweep_status.config(text="At least one seed is required.")
             return
 
+        reconcilers = self._selected("reconciler")
+        if not reconcilers:
+            self.sweep_status.config(text="Select at least one reconciler.")
+            return
+
+        playout_policies = self._selected("playout")
+
         experiment_id = self.experiment_id_entry.get().strip() or "exp-gui-sweep"
-        yaml_text = experiment_builder.build_experiment_yaml(experiment_id, predictors, seeds, profiles)
+        yaml_text = experiment_builder.build_experiment_yaml(
+            experiment_id,
+            predictors,
+            seeds,
+            profiles,
+            reconcilers=reconcilers,
+            playout_policies=playout_policies,
+        )
         GENERATED_YAML_PATH.write_text(yaml_text)
 
         self.run_sweep_button.config(state=tk.DISABLED)
@@ -488,7 +535,8 @@ class PickerApp:
         self.output.delete("1.0", tk.END)
         self.output.configure(state=tk.DISABLED)
         self._append_output(
-            f"Running: {len(predictors)} algorithm(s) x {len(profiles)} profile(s) x "
+            f"Running: {len(predictors)} predictor(s) x {len(reconcilers)} reconciler(s) x "
+            f"{max(len(playout_policies), 1)} playout policy(ies) x {len(profiles)} profile(s) x "
             f"{len(seeds)} seed(s)...\n\n"
         )
 

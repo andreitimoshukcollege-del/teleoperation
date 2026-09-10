@@ -10,7 +10,7 @@ run_tests.py/test_gui.py outside that package.
 """
 from __future__ import annotations
 
-from typing import List, Sequence
+from typing import Optional, List, Sequence
 
 _POINT_EPSILON = 1e-9
 
@@ -106,10 +106,23 @@ def build_experiment_yaml(
     seeds: List[int],
     profiles: List[str],
     reconciler: str = "snap",
+    reconcilers: Optional[List[str]] = None,
+    playout_policies: Optional[List[str]] = None,
     trial_steps: int = 500,
     step_interval_ticks: int = 100000,
 ) -> str:
-    """Returns YAML text matching experiments/CLAUDE.md's schema, ready to write to a file."""
+    """Returns YAML text matching experiments/CLAUDE.md's schema, ready to write to a file.
+
+    `reconcilers` and `playout_policies` are lists because the sweep can vary those axes, and the
+    GUI now offers every registered implementation rather than a hardcoded three. When a list has
+    one entry the singular key is emitted instead, which is what every hand-written config in
+    experiments/ uses and what keeps a GUI-generated file diffable against them.
+
+    Note experiments/CLAUDE.md's rule 1: vary one axis at a time. Nothing here enforces it -- a
+    caller can select several predictors *and* several reconcilers and get a config whose results
+    nobody can attribute. That is deliberately left to the human, the same way `sweep` itself
+    leaves it, but it is worth knowing the guard rail does not exist.
+    """
     if not predictors:
         raise ValueError("at least one predictor is required")
     if not profiles:
@@ -122,10 +135,24 @@ def build_experiment_yaml(
         f"seeds: [{', '.join(str(s) for s in seeds)}]",
         "predictors:",
         *(f"  - {p}" for p in predictors),
-        f"reconciler: {reconciler}",
+    ]
+
+    lines.extend(_axis_lines("reconciler", "reconcilers", reconcilers or [reconciler]))
+
+    if playout_policies:
+        lines.extend(_axis_lines("playoutPolicy", "playoutPolicies", playout_policies))
+
+    lines.extend([
         "networkProfiles:",
         *(f"  - {p}" for p in profiles),
         f"trialSteps: {trial_steps}",
         f"stepIntervalTicks: {step_interval_ticks}",
-    ]
+    ])
     return "\n".join(lines) + "\n"
+
+
+def _axis_lines(singular_key: str, plural_key: str, values: List[str]) -> List[str]:
+    """`key: value` for one entry, a `keys:` list for several -- ExperimentConfig accepts both."""
+    if len(values) == 1:
+        return [f"{singular_key}: {values[0]}"]
+    return [f"{plural_key}:", *(f"  - {v}" for v in values)]

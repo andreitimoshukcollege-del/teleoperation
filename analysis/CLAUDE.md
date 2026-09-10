@@ -40,9 +40,30 @@ disagree, and you will trust the wrong one.
   it doesn't change with the picker below.
 - `./.venv/Scripts/python.exe run_tests.py` (or `just experiment-gui`) opens a **GUI window**
   (`test_gui.py`, plain tkinter — no extra dependency, ships with Python) for configuring and
-  running a sweep — check which algorithms (raw predictor registry keys) and which impairments
-  (jitter/delay/loss, each with its own min/max/step, independently combinable into one sweep)
-  to include. A separate "Combined impairments" section below that uses the same per-axis
+  running a sweep — check which algorithms and which impairments to include.
+
+  **Both lists are read from Core at startup, never hardcoded here.** `teleop_analysis/catalog.py`
+  runs `Teleop.Eval catalog`, which prints the live `Registries` tables and
+  `NetworkProfileCatalog` contents as JSON. Register a predictor, reconciler or playout policy in
+  `Registry/Registries.cs` and it appears in the GUI on the next launch with no Python change; the
+  same holds for an isolated-impairment axis added to `NetworkProfileCatalog.IsolatedAxes`. This
+  replaced a hardcoded `PREDICTORS` tuple whose own comment said to "update both places by hand" —
+  by the time it was replaced, Core had 15 registered implementations and the GUI offered 3,
+  silently hiding every reconciler and playout policy from anyone configuring a sweep.
+
+  There is deliberately **no fallback list**: if the catalog cannot be read the GUI stops with the
+  reason, because a stale list presented as current is the failure being fixed. That does mean the
+  GUI needs a working `dotnet` even to open, and a cold build makes the first launch slow.
+
+  Algorithm axes are one checkbox row each (predictor / reconciler / playout). Only `predictor`
+  starts fully checked — `sweep` varies one axis at a time (`experiments/CLAUDE.md` rule 1), so
+  pre-selecting every reconciler too would generate a config whose results cannot be attributed.
+  Nothing enforces that rule; it is left to the human, the same way `sweep` itself leaves it.
+
+  Impairment axes (jitter/delay/loss today) each get their own min/max/step, independently
+  combinable into one sweep. Per-axis slider defaults live in `AXIS_DEFAULTS`; an axis Core adds
+  without an entry there still appears, using a generic fallback range, so a new impairment family
+  is usable the day it lands. A separate "Combined impairments" section below that uses the same per-axis
   min/max/step controls to generate `combo__delay-<N>ms__jitter-<N>ms__loss-<N>pct`-style
   profiles (docs/adr/0006-combined-impairment-profiles.md) — a **lockstep** walk across whichever
   axes are checked (point *i* takes the i-th value of every checked axis, so a 4-point delay

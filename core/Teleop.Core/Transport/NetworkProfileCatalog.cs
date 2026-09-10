@@ -249,6 +249,64 @@ namespace Teleop.Core.Transport
             return true;
         }
 
+
+        /// <summary>
+        /// One isolated-impairment axis family (docs/adr/0005): the axis name and the unit suffix
+        /// its profile names use, so a caller can build <c>delay-100ms</c> or <c>loss-1pct</c>
+        /// without knowing which axis takes which unit.
+        /// </summary>
+        public readonly struct IsolatedAxis
+        {
+            public readonly string Name;
+            public readonly string UnitSuffix;
+
+            public IsolatedAxis(string name, string unitSuffix)
+            {
+                Name = name;
+                UnitSuffix = unitSuffix;
+            }
+
+            /// <summary>The profile name for a value on this axis, e.g. <c>delay-100ms</c>.</summary>
+            public string ProfileName(string value) => Name + "-" + value + UnitSuffix;
+        }
+
+        /// <summary>
+        /// The isolated-axis families this catalog resolves, as data rather than as three regexes
+        /// only the resolver knows about.
+        ///
+        /// Exists so a tool can *enumerate* what the suite supports instead of hardcoding its own
+        /// copy of the list and drifting. The experiment GUI did exactly that and fell three
+        /// predictors and every reconciler behind before anyone noticed, which is the failure mode
+        /// this closes.
+        ///
+        /// <b>Adding an entry here does not add a family.</b> The regexes above are what actually
+        /// resolve, and docs/adr/0005 requires a new ADR for a genuinely new family (different fixed
+        /// companions, or reintroducing burst shape on the loss axis). A test asserts every entry
+        /// here resolves, so this list cannot claim support the resolver does not have.
+        /// </summary>
+        public static readonly IsolatedAxis[] IsolatedAxes =
+        {
+            new IsolatedAxis("delay", "ms"),
+            new IsolatedAxis("jitter", "ms"),
+            new IsolatedAxis("loss", "pct"),
+        };
+
+        /// <summary>
+        /// The four frozen parametric profile names from docs/adr/0004, in the order that ADR lists
+        /// them. Same purpose as <see cref="IsolatedAxes"/>: enumerable rather than hardcoded
+        /// downstream. A test asserts every entry resolves.
+        ///
+        /// Deliberately excludes <c>synthetic-burst</c> (trace-driven, needs file I/O, so
+        /// <c>Teleop.Eval</c> owns it) and the three names reserved pending a real capture.
+        /// </summary>
+        public static readonly string[] NamedProfiles =
+        {
+            "lan",
+            "50ms-5j",
+            "150ms-20j-0.5loss",
+            "300ms-60j-2loss-bursty",
+        };
+
         /// <summary>
         /// Turns a <see cref="NetworkProfile"/> into the impairment set that reproduces it.
         ///

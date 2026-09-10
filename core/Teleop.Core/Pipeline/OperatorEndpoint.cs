@@ -87,7 +87,16 @@ namespace Teleop.Core.Pipeline
         private readonly uint[] _inFlightSequences;
         private readonly LatencyTrace[] _inFlightTraces;
         private readonly bool[] _inFlightOccupied;
-        private int _inFlightNextIndex;
+        private readonly long[] _inFlightOpenedTicks;
+
+        /// <summary>
+        /// How long a trace may sit unclaimed before its slot is reusable. The ring's real bound
+        /// has always been a <i>time</i> bound; expressing it as a slot count is what produced the
+        /// defect this field fixes, because a count only equals a time window under a fixed submit
+        /// cadence. A trace older than this belongs to a datagram the link lost or delayed past
+        /// any hope of completing, and reclaiming it is free.
+        /// </summary>
+        private readonly long _inFlightMaxAgeTicks;
 
         private uint _nextSequence;
         private uint _lastAckSequence;
@@ -104,6 +113,7 @@ namespace Teleop.Core.Pipeline
             IReconciler<Pose> robotStateReconciler,
             IPlayoutPolicy<Pose> playoutPolicy,
             int inFlightCapacity,
+            long inFlightMaxAgeTicks,
             NetworkObserver? downlinkNetworkObserver = null)
         {
             if (commandCodec.MaxEncodedBytes > uplinkTransport.MaxPayloadBytes)
@@ -127,9 +137,19 @@ namespace Teleop.Core.Pipeline
             _sendBuffer = new byte[commandCodec.MaxEncodedBytes];
             _recvBuffer = new byte[downlinkTransport.MaxPayloadBytes];
 
+            if (inFlightMaxAgeTicks <= 0)
+            {
+                throw new ArgumentException(
+                    "inFlightMaxAgeTicks must be positive -- it is how long a trace may wait for a " +
+                    "reply before its slot is reclaimed, and a non-positive value reclaims every " +
+                    "trace immediately.", nameof(inFlightMaxAgeTicks));
+            }
+
+            _inFlightMaxAgeTicks = inFlightMaxAgeTicks;
             _inFlightSequences = new uint[inFlightCapacity];
             _inFlightTraces = new LatencyTrace[inFlightCapacity];
             _inFlightOccupied = new bool[inFlightCapacity];
+            _inFlightOpenedTicks = new long[inFlightCapacity];
         }
 
         /// <summary>
@@ -156,7 +176,7 @@ namespace Teleop.Core.Pipeline
                 .WithCaptureTicks(nowTicks)
                 .WithUplinkSendTicks(nowTicks);
 
-            InsertInFlight(sequence, trace);
+            InsertInFlight(sequence, trace, nowTicks);
             return trace;
         }
 
@@ -380,12 +400,67 @@ namespace Teleop.Core.Pipeline
 
         private double TicksToMilliseconds(long ticks) => ticks * 1000.0 / _ticksPerSecond;
 
-        private void InsertInFlight(uint sequence, LatencyTrace trace)
+        /// <summary>
+        /// Opens a slot for a trace, preferring one that is free, then one whose trace is too old
+        /// to complete, and only then displacing a live one.
+        ///
+        /// <b>This used to be an unconditional round-robin write, and that was a measurement
+        /// defect, not an inefficiency.</b> It never reused a slot freed by
+        /// <see cref="TryTakeInFlight"/>, so the ring did not bound "traces outstanding" — it
+        /// bounded "submissions in the last <c>capacity</c> calls", a fixed time window from
+        /// capture under a fixed cadence. Any round trip slower than that window was silently
+        /// discarded, and since the discarded ones were exactly the slow ones the censoring was
+        /// <b>delay-correlated</b>: it removed the tail of the very distribution
+        /// <c>owd_downlink_ms</c> is reported as. On <c>300ms-60j-2loss-bursty</c> at 64 slots and
+        /// a 10 ms step the window was 640 ms against a 480-720 ms round trip, and 31.4% of
+        /// arriving replies lost their trace — while every other frozen profile lost none. A
+        /// cliff, not a gradient.
+        ///
+        /// <b>Free-slot reuse alone would have been a trap.</b> A trace whose datagram the link
+        /// dropped is never claimed by <see cref="TryTakeInFlight"/>, so reuse without an age
+        /// bound converts a delay-correlated censor into a loss-correlated leak: on a lossy link
+        /// the ring fills with traces for replies that are never coming and starts displacing live
+        /// ones again. Both halves are needed.
+        ///
+        /// Displacing a live trace is still possible if the ring is genuinely too small, and is
+        /// counted rather than silent — see <c>latency_trace_evicted</c>. Three separate agents
+        /// inferred the 31% from <c>received − owd_count</c> because there was no in-band way to
+        /// see it.
+        /// </summary>
+        private void InsertInFlight(uint sequence, LatencyTrace trace, long nowTicks)
         {
-            _inFlightSequences[_inFlightNextIndex] = sequence;
-            _inFlightTraces[_inFlightNextIndex] = trace;
-            _inFlightOccupied[_inFlightNextIndex] = true;
-            _inFlightNextIndex = (_inFlightNextIndex + 1) % _inFlightSequences.Length;
+            int slot = -1;
+            int oldest = 0;
+            long oldestOpenedTicks = long.MaxValue;
+
+            for (int i = 0; i < _inFlightSequences.Length; i++)
+            {
+                if (!_inFlightOccupied[i] || nowTicks - _inFlightOpenedTicks[i] > _inFlightMaxAgeTicks)
+                {
+                    slot = i;
+                    break;
+                }
+
+                if (_inFlightOpenedTicks[i] < oldestOpenedTicks)
+                {
+                    oldestOpenedTicks = _inFlightOpenedTicks[i];
+                    oldest = i;
+                }
+            }
+
+            if (slot < 0)
+            {
+                // Every slot holds a trace still young enough that its reply could arrive, so this
+                // displaces a round trip that was going to complete. That is the defect above, and
+                // the only honest response is to make the denominator visible.
+                slot = oldest;
+                _metrics.Record("latency_trace_evicted", 1.0, nowTicks);
+            }
+
+            _inFlightSequences[slot] = sequence;
+            _inFlightTraces[slot] = trace;
+            _inFlightOccupied[slot] = true;
+            _inFlightOpenedTicks[slot] = nowTicks;
         }
 
         /// <summary>
@@ -436,8 +511,8 @@ namespace Teleop.Core.Pipeline
         {
             _nextSequence = 0;
             _lastAckSequence = 0;
-            _inFlightNextIndex = 0;
             Array.Clear(_inFlightOccupied, 0, _inFlightOccupied.Length);
+            Array.Clear(_inFlightOpenedTicks, 0, _inFlightOpenedTicks.Length);
         }
     }
 }

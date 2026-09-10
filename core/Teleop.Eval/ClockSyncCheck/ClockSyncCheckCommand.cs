@@ -127,7 +127,10 @@ namespace Teleop.Eval.ClockSyncCheck
 
             var operatorEndpoint = new OperatorEndpoint(
                 new RawPoseCodec(), new RobotStateFrameCodec(), transport, transport,
-                clock, sink, clockSync, predictor, reconciler, playoutPolicy, InFlightCapacity);
+                clock, sink, clockSync, predictor, reconciler, playoutPolicy, InFlightCapacity,
+                // Five seconds: the measured Tailscale round trip to the Jetson is 61-110ms
+                // (robot/README.md), so this only ever reclaims a slot whose reply the link lost.
+                inFlightMaxAgeTicks: clock.TicksPerSecond * 5);
 
             Console.WriteLine(
                 $"[clocksync-check] sending a fixed CommandFrame to {remoteEndPoint} at {a.RateHz:0.#} Hz " +

@@ -159,7 +159,11 @@ namespace Teleop.Bridge
                 _predictor,
                 _reconciler,
                 _playoutPolicy,
-                inFlightCapacity: 64);
+                inFlightCapacity: 64,
+                // In-process loopback: a reply that has not arrived within a second is never
+                // arriving. Only ever reclaims a slot; nothing here can be slow enough to be
+                // displaced (docs/metrics.md, latency_trace_evicted).
+                inFlightMaxAgeTicks: _clock.TicksPerSecond);
         }
 
         private void OnEnable() => Application.onBeforeRender += HandleBeforeRender;

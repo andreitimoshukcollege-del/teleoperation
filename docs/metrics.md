@@ -41,6 +41,19 @@ reply), both in milliseconds, both already converted into the operator's canonic
 via `ClockSync` before the subtraction (`docs/adr/0002-latency-trace.md`). First emitted by
 `Pipeline/OperatorEndpoint.cs`.
 
+**Latency-trace eviction** — the denominator correction for everything above. `OperatorEndpoint`
+holds an open `LatencyTrace` per submitted command in a fixed-capacity ring; if the ring is too
+small for the round trip in flight, a trace is displaced before its reply arrives and that round
+trip contributes to no `owd_*` sample at all. Because the displaced ones are the slowest, the
+censoring is **delay-correlated** — it removes the tail of the distribution being reported.
+
+Metric name: `latency_trace_evicted`, one sample of value 1 per displaced trace, stamped at the
+displacing submission. Emitted by `Pipeline/OperatorEndpoint.cs`. **A run with any of these has
+understated `owd_*` percentiles and the shortfall is not random**; the fix is a larger ring or a
+longer `inFlightMaxAgeTicks`, not a caveat in the writeup. Expiry of a trace whose reply the link
+lost is *not* counted here — that slot is reclaimed rather than displaced, and no completing round
+trip is lost.
+
 **Motion-to-photon (M2P)** — `t_photon(displayed) − t_capture(operator motion)`. The headline
 number. Validate the software estimate against a physical rig at least once — LED plus
 photodiode, or a high-speed camera on a spinning marker — then trust the software estimate and

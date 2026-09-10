@@ -246,7 +246,10 @@ namespace Teleop.Bridge
             _operatorEndpoint = new OperatorEndpoint(
                 new RawPoseCodec(), new RobotStateFrameCodec(), _cartesianTransport, _cartesianTransport,
                 _clock, _metricSink, _clockSync, _predictor, _reconciler, _playoutPolicy,
-                inFlightCapacity: 32);
+                inFlightCapacity: 32,
+                // Five seconds against a measured 61-110ms Tailscale round trip
+                // (robot/README.md), so this only reclaims slots whose replies the link lost.
+                inFlightMaxAgeTicks: _clock.TicksPerSecond * 5);
         }
 
         private void OnEnable() => Application.onBeforeRender += HandleBeforeRender;

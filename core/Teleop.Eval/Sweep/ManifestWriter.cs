@@ -59,6 +59,15 @@ namespace Teleop.Eval.Sweep
                 maxCorrectionAngularSpeedRadiansPerSecond = config.MaxCorrectionAngularSpeedRadiansPerSecond,
                 trialSteps = config.TrialSteps,
                 stepIntervalTicks = config.StepIntervalTicks,
+
+                // Whether the trial drained the wire before stopping. Recorded because it changes
+                // what every count-based denominator means: without it, `1 - received/sent` reads
+                // a profile's base delay as loss. A reader comparing a run from either side of
+                // this change needs to know which shape it has, and results/CLAUDE.md requires the
+                // manifest to be self-contained about anything that changes a number's meaning.
+                // The per-profile drain length is derived from the profile's worst-case one-way
+                // delay, so it is not a single value for the run.
+                drainsInFlightAtTrialEnd = true,
                 configPath,
                 machine = Environment.MachineName,
                 command = commandLine,

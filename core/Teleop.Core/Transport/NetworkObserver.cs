@@ -80,6 +80,16 @@ namespace Teleop.Core.Transport
         private bool _hasHighestSequence;
         private uint _highestSequence;
 
+        /// <summary>
+        /// The robot's own uplink-arrival stamp for the highest-sequence frame seen so far, and
+        /// the largest downlink send stamp seen. Together with <see cref="_highestSequence"/> these
+        /// are what let one observed inversion be attributed to a leg instead of reported as a
+        /// single conflated number.
+        /// </summary>
+        private long _highestSequenceSenderRecvTicks;
+        private long _maxSenderSendTicks;
+        private bool _hasMaxSenderSendTicks;
+
         private bool _hasPreviousArrival;
         private long _previousArrivalTicks;
         private long _previousSenderSendTicks;
@@ -152,7 +162,7 @@ namespace Teleop.Core.Transport
                 "net_downlink_dropped",
                 "net_downlink_loss_burst",
                 "net_downlink_received",
-                "net_downlink_reorder_displacement",
+                "net_roundtrip_reorder_displacement",
                 "net_downlink_jitter_ms");
 
         /// <summary>Whether <see cref="OnSequencedArrival"/> may be called on this instance.</summary>
@@ -275,8 +285,15 @@ namespace Teleop.Core.Transport
         /// <c>t_recv</c> on this observer's own timebase, as reported by
         /// <see cref="ITransport.TryReceive"/>.
         /// </param>
+        /// <param name="senderRecvTicks">
+        /// When the sender received the datagram this one replies to, in the sender's timebase and
+        /// epoch — <c>RobotStateFrame.RobotRecvTicks</c>. Only its ordering is used, never its
+        /// magnitude, so no clock correction applies and none is wanted: comparing two of the
+        /// robot's own stamps is exactly the operation <c>ClockSync</c> exists to avoid needing.
+        /// </param>
         public void OnSequencedArrival(
-            uint sequence, long senderSendTicks, long senderTicksPerSecond, long arrivalTicks)
+            uint sequence, long senderSendTicks, long senderTicksPerSecond, long arrivalTicks,
+            long senderRecvTicks)
         {
             if (_reorderDisplacementName == null)
             {
@@ -294,16 +311,57 @@ namespace Teleop.Core.Transport
                 if (relative > 0)
                 {
                     _highestSequence = sequence;
+                    _highestSequenceSenderRecvTicks = senderRecvTicks;
                 }
                 else
                 {
+                    // The end-to-end total, unchanged in meaning and only renamed: this frame was
+                    // sent before one that already arrived. Which leg did it is the next question,
+                    // and the three below answer it rather than leaving it to argument.
                     _metrics.Record(_reorderDisplacementName, -relative, arrivalTicks);
+
+                    // Uplink: it reached the *robot* after a later-sent command did. Sequence order
+                    // is submit order by construction, so a robotRecvTicks that runs the other way
+                    // is the uplink inverting them. Compared against the high-water frame only,
+                    // matching how the total above is computed.
+                    if (senderRecvTicks > _highestSequenceSenderRecvTicks)
+                    {
+                        _metrics.Record("net_uplink_reorder_displacement", -relative, arrivalTicks);
+                    }
+
+                    // Downlink: the robot emitted it strictly before a frame that already arrived,
+                    // so the inversion happened after the robot let go of it. Strictly, because
+                    // frames sharing a send stamp were emitted together and the downlink cannot be
+                    // blamed for their order.
+                    if (_hasMaxSenderSendTicks && senderSendTicks < _maxSenderSendTicks)
+                    {
+                        _metrics.Record("net_downlink_reorder_displacement", -relative, arrivalTicks);
+                    }
                 }
             }
             else
             {
                 _highestSequence = sequence;
+                _highestSequenceSenderRecvTicks = senderRecvTicks;
                 _hasHighestSequence = true;
+            }
+
+            // The robot's own contribution, and it is not a transit effect at all: RobotEndpoint
+            // replies to every command drained in one Step with the same nowTicks, so a batch
+            // leaves with identical send stamps and independent downlink jitter then shuffles it.
+            // Counted per frame that shares a send stamp with the arrival before it.
+            //
+            // Undercounts when the downlink separates a batch's members -- which is itself
+            // informative, since it means the batch mostly survived in order.
+            if (_hasPreviousArrival && senderSendTicks == _previousSenderSendTicks)
+            {
+                _metrics.Record("net_robot_reply_batched", 1.0, arrivalTicks);
+            }
+
+            if (!_hasMaxSenderSendTicks || senderSendTicks > _maxSenderSendTicks)
+            {
+                _maxSenderSendTicks = senderSendTicks;
+                _hasMaxSenderSendTicks = true;
             }
 
             if (_hasPreviousArrival && _jitterName != null &&
@@ -339,6 +397,9 @@ namespace Teleop.Core.Transport
         {
             _openLossRunLength = 0;
             _hasHighestSequence = false;
+            _highestSequenceSenderRecvTicks = 0;
+            _maxSenderSendTicks = 0;
+            _hasMaxSenderSendTicks = false;
             _highestSequence = 0;
             _hasPreviousArrival = false;
             _previousArrivalTicks = 0;

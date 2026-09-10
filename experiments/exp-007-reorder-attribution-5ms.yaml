@@ -28,6 +28,10 @@
 #
 # This experiment CANNOT settle what a real network reorders. It settles only whether this
 # repo's measured figure is a fact about the emulator or a fact about the harness's poll schedule.
+# Shares its number with exp-007-reorder-attribution-20ms on purpose: these are two arms
+# of one experiment, differing only in stepIntervalTicks, and the comparison between them
+# IS the result. Not an ID collision -- the full ids differ, and neither means anything
+# without the other.
 id: exp-007-reorder-attribution-5ms
 seeds: [1, 2, 3, 4, 5]
 predictors:

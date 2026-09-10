@@ -15,6 +15,10 @@
 # from the batching argument, which predicts more batching at a longer step. The two mechanisms
 # are separable precisely because they disagree here, which is what makes this arm worth running
 # rather than assuming.
+# Shares its number with exp-007-reorder-attribution-5ms on purpose: these are two arms
+# of one experiment, differing only in stepIntervalTicks, and the comparison between them
+# IS the result. Not an ID collision -- the full ids differ, and neither means anything
+# without the other.
 id: exp-007-reorder-attribution-20ms
 seeds: [1, 2, 3, 4, 5]
 predictors:

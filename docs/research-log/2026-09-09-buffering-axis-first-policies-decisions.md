@@ -17,7 +17,7 @@ first making `IPlayoutPolicy` reachable from `Pipeline/`.
 ## What was built, and what deliberately was not
 
 `immediate` and `fixed` — the two baselines — over one shared `PlayoutSampleBuffer`, plus the
-two-phase receive they need, five metric names, sweep support, and `exp-003-playout-baselines`.
+two-phase receive they need, five metric names, sweep support, and `exp-008-playout-baselines`.
 
 **`percentile`/`adaptive` were not built, and that is the whole point of stopping here.** An
 adaptive policy's claim is "same loss, less delay" — a *comparison*, whose denominator is the best
@@ -66,7 +66,7 @@ policy's y-axis.
 
 ## What the first sweep actually said
 
-`exp-003-playout-baselines`, 2 predictors x 2 policies x 5 profiles x 5 seeds, 40 ms budget.
+`exp-008-playout-baselines`, 2 predictors x 2 policies x 5 profiles x 5 seeds, 40 ms budget.
 
 **The mechanism works and is measured.** On `synthetic-burst`, `fixed` played out 2355 samples
 against `immediate`'s 1885 — it recovers 470 reordered samples `immediate` must discard — and
@@ -129,33 +129,47 @@ Nothing here is retracted. The one thing worth carrying forward: the ADR's "wort
 once" only stays true if local, gitignored results are counted, and from the other machine they
 cannot be seen. A committed number is a recorded result even when the run behind it is not.
 
-## Addendum, 2026-09-10: the reordering these numbers rest on is partly a harness artifact
+## Addendum, 2026-09-10: the reordering these numbers rest on is a harness artifact — and I first
+## described the mechanism wrongly
 
-`docs/research-log/2026-09-09-network-efficiency-decisions.md` instrumented `docs/metrics.md` §3
-and found that **reordering is a joint property of jitter width and the sweep's poll interval, not
-a property of the link.** On `jitter-5ms`, the same ±5 ms jitter produces a 19.7% / 13.0% / 0.0%
-reorder rate at 5 / 10 / 20 ms steps: at a poll coarser than the jitter width, no two datagrams can
-swap across a boundary at all.
+**Correction first.** An earlier version of this addendum said reordering is "a joint property of
+jitter width and the harness's poll schedule", implying the polling permutes delivery. That is
+wrong. `EmulatedTransport` delivers in synthetic-arrival order at *any* poll rate; a coarser poll
+batches arrivals into one drain but the heap still pops them in arrival order. Polling reorders
+nothing at the transport.
 
-That lands directly on this axis, because `immediate`'s late-arrival rate **is** the stream's
-out-of-order rate by construction — that is how the policy is defined here. So on the parametric
-jitter profiles, `immediate`'s measured loss is inflated by the 10 ms step this sweep happens to
-use, and an operator running at a different frame rate would not see the same figure:
+The mechanism is one layer up and is now **measured rather than argued**.
+`net_roundtrip_reorder_displacement` was split into three attributed quantities
+(`docs/research-log/2026-09-10-harness-repair-decisions.md`), and on `jitter-5ms` at the 10 ms step
+this sweep uses:
 
-| profile | reorder rate at the 10 ms step | driven by |
+| | total | uplink | downlink | batched |
+|---|---|---|---|---|
+| `jitter-5ms`, 10 ms step | 327 | **0** | **0** | 620 |
+
+Neither leg inverted a single datagram. Every inversion came from `RobotEndpoint.Step` replying to
+every command drained in one poll with the same `nowTicks`: a batch leaves with identical send
+stamps and independent downlink jitter then shuffles it. (620 frames shared a send stamp with the
+arrival before them; 327 of those pairs actually came out inverted.) At a 20 ms step nothing lands
+in the same poll and all four counts are zero, which is why the rate looked poll-dependent.
+
+**What this means for the numbers above is unchanged from the earlier addendum, and the reason is
+now firmer.** `immediate`'s late-arrival rate *is* the stream's out-of-order rate by construction,
+so on the parametric jitter profiles its measured loss is inflated by an artifact of the harness's
+reply batching, not by anything the link did:
+
+| profile | reorder rate at the 10 ms step | attributable to |
 |---|---|---|
-| `50ms-5j` | 13.0% | ±5 ms jitter vs the poll — vanishes at a 20 ms step |
-| `150ms-20j-0.5loss` | 43.9% | ±20 ms jitter vs the poll |
-| `300ms-60j-2loss-bursty` | 70.1% | ±60 ms jitter vs the poll |
+| `50ms-5j` | 13.0% | robot reply batching, entirely |
+| `150ms-20j-0.5loss` | 43.5% | batching plus both transit legs |
+| `300ms-60j-2loss-bursty` | 70.1% | batching plus both transit legs |
 | `synthetic-burst` | 28.1% | the trace's 20 ms → 250 ms delay step |
 
-**The headline is unaffected and the qualification is real.** The 56-59% matched-loss result rests
-on `synthetic-burst`, where reordering comes from a ~230 ms delay step that inverts arrival order at
-any poll interval, not from jitter narrower than the poll. What is qualified is the *size* of
-`immediate`'s loss on the three parametric profiles — the conclusion there was that `fixed` at 40 ms
-is byte-identical to `immediate` and that a tuned `fixed` budget beats `percentile`, and none of
-that depends on the absolute rate.
+**The 56-59% headline is unaffected.** It rests on `synthetic-burst`, where a ~230 ms delay step
+inverts arrival order regardless of poll interval or batching. What is qualified is the *size* of
+`immediate`'s loss on the three parametric profiles — and the conclusion there was that `fixed` at
+40 ms is byte-identical to `immediate` and that a tuned `fixed` budget beats `percentile`, neither
+of which depends on the absolute rate.
 
-Stated as a limit rather than a fix: step size was swept on `jitter-*`, not on `synthetic-burst`, so
-"poll-independent" is an argument about the mechanism here, not a measurement. Sweeping it would
-settle it.
+Step size was swept on `jitter-*`, not on `synthetic-burst`, so poll-independence there remains an
+argument about the mechanism rather than a measurement.

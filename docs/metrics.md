@@ -89,13 +89,74 @@ sample. Occupancy pinned at 1.0 means the capacity, not the policy, is deciding 
 - RFC 3550 interarrival jitter (smoothed; comparable to the streaming literature)
 - IQR of one-way delay (distribution-level; what the playout policy actually has to absorb)
 
+Metric name for the first: `net_downlink_jitter_ms`, milliseconds, one sample per received
+datagram after the first, stamped at that datagram's `t_recv`. RFC 3550 A.8 exactly —
+`D(i−1,i) = (R_i − R_{i−1}) − (S_i − S_{i−1})`, `J += (|D| − J)/16` — computed from the sender's
+**raw** stamp and the sender's own tick rate, never from a `ClockSync`-corrected stamp: `D` is a
+difference of differences, so a constant clock offset cancels and feeding a corrected stamp would
+report the movement of the offset estimate as network jitter. First emitted by
+`Transport/NetworkObserver.cs`, fed from `Pipeline/OperatorEndpoint.cs`.
+
+There is deliberately **no `net_uplink_jitter_ms`.** The only vantage holding an uplink datagram's
+sender stamp is the robot, and `D`'s difference-of-differences cancels a clock *offset* but not a
+clock *rate*; `CommandFrame` carries no operator `TicksPerSecond`, and
+`docs/adr/0008-clocksync-cross-rate-normalization.md` records that omission as deliberate
+("conversion is operator-side only, so the robot never needs the operator's rate"). Computing it
+would mean assuming the two ends tick alike, which is the exact bug that ADR was written for.
+Emitting it therefore needs a wire-format change, not an implementation.
+
+The second is **derived at analysis time from `owd_uplink_ms` / `owd_downlink_ms`** and is not
+separately emitted — it is a reduction of samples that already exist, and a second emitter for it
+could only disagree with them.
+
 **Loss rate** — fraction of sent datagrams never received.
+
+Metric names: `net_uplink_sent` / `net_downlink_sent`, one sample of value 1 per datagram the
+sending transport accepted, and `net_uplink_dropped` / `net_downlink_dropped`, one sample of value
+1 per datagram it refused, both stamped at the send. Counts rather than a rate, following
+`playout_late` below: a direction that loses nothing emits nothing rather than a stream of zeroes.
+The rate is `count(dropped) / (count(sent) + count(dropped))`, computed by the analyst.
+
+Also `net_uplink_received` / `net_downlink_received`, one sample of value 1 per datagram the
+receiving transport delivered, stamped at its `t_recv`. Measured at the transport boundary, so it
+counts what the link delivered including a datagram a codec later fails to decode.
+`count(sent) − count(received)` is loss inflicted *after* acceptance, which no impairment in
+`Transport/Impairments/` models and which should therefore be zero — it is emitted so that "should
+be zero" can be checked rather than assumed.
+
+All four are observed at `ITransport.Send`/`TryReceive`, which is what keeps this quantity
+structurally incapable of absorbing the buffer's discards: no buffer exists at that boundary. See
+the sharp warning under **Late-arrival (induced) loss** below. First emitted by
+`Transport/NetworkObserver.cs`, fed from `Transport/MeasuredTransport.cs`.
 
 **Loss burst-length distribution** — histogram of consecutive-loss run lengths. Report this
 alongside the rate always. A 2% loss rate in bursts of 20 and a 2% rate of isolated drops
 break a jitter buffer in completely different ways, and the rate alone cannot distinguish them.
 
+Metric names: `net_uplink_loss_burst` / `net_downlink_loss_burst`, one sample per completed run of
+consecutive refused sends, value = the run's length in datagrams, stamped at the acceptance that
+ended the run. The histogram §3 asks for is the distribution of these samples, so its percentiles
+and its maximum are read the same way as every other metric here, and
+`sum(loss_burst) == count(dropped)` is an identity worth asserting in analysis. A run still open
+when the observer is reset is discarded rather than emitted — the reset carries no tick to stamp
+it at — so the distribution is censored by at most one run per trial, on count and not on shape.
+First emitted by `Transport/NetworkObserver.cs`.
+
 **Reordering rate** — fraction arriving out of sequence, plus max displacement.
+
+Metric name: `net_downlink_reorder_displacement`, dimensionless, one sample per out-of-order
+arrival, value = `highestSequenceSeen − thisSequence` (wrap-safe), stamped at that datagram's
+`t_recv`. One metric answers both halves of the definition: the rate is
+`count(net_downlink_reorder_displacement) / count(net_downlink_received)` and the max displacement
+is the maximum of the same samples, so the two can never disagree about what counted as a
+reordering. A sequence *gap* is not a reordering and is not counted, or this would just re-report
+the loss rate. First emitted by `Transport/NetworkObserver.cs`, fed from
+`Pipeline/OperatorEndpoint.cs`.
+
+There is no `net_uplink_reorder_displacement` today: it needs a vantage that has decoded a
+`CommandFrame`, which only `Pipeline/RobotEndpoint.cs` has, and nothing observes there. Unlike
+uplink jitter this is merely unwired, not structurally impossible — the sequence is already on the
+wire.
 
 **Late-arrival (induced) loss** — samples the network delivered but the playout policy discarded
 as too late to play in capture order. **This is not network loss and must never be added to it:**
@@ -119,6 +180,15 @@ lossy trace: `IPlayoutPolicy` clause 3 requires this pushed to `IMetricSink`, be
 degradation is what the caller does with an underrun, not a reason to stop counting it.
 
 **Goodput** — application-useful bytes/s, excluding redundancy and retransmission.
+
+No metric name, and that is a statement about the system rather than an omission: nothing here
+retransmits (`ITransport` callers are forbidden to retry on a refusal) and no shipped codec sends
+redundancy, so there is nothing for the definition to exclude and goodput degenerates to
+`count(net_<dir>_received) × <codec frame size> / <trial duration>`, derivable at analysis time
+from metrics that already exist. It stops being degenerate the moment a redundant or
+variable-length codec exists, and that change is where a real emitter belongs — measured as
+delivered *useful* bytes, not as bytes on the wire, or the redundancy would count as goodput and
+the metric would reward exactly what it is defined to exclude.
 
 ## 4. Prediction quality
 

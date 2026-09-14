@@ -1,0 +1,33 @@
+# The 20 ms arm of the reorder-attribution test. See
+# experiments/exp-007-reorder-attribution-5ms.yaml for the full statement of the question, the
+# confound being tested, and the prediction registered before either arm was run.
+#
+# In brief: exp-006 measured reordering rising with jitter width on profiles with
+# reorderProbability = 0.0, and the methodology review attributed much of it to RobotEndpoint
+# replying to a whole step's batch of commands at one shared send tick rather than to the link.
+# If that is right, LENGTHENING the step to 20 ms should batch MORE commands per step and so
+# increase measured reordering relative to the 10 ms baseline -- while a link property would not
+# move at all.
+#
+# The methodology review's own prediction for this arm was that jitter-5ms reordering "collapses
+# toward zero" at 20 ms steps, on the reasoning that a 20 ms send spacing is far outside a
+# +/-5 ms jitter window and so nothing can invert. Note that this pulls in the opposite direction
+# from the batching argument, which predicts more batching at a longer step. The two mechanisms
+# are separable precisely because they disagree here, which is what makes this arm worth running
+# rather than assuming.
+id: exp-007-reorder-attribution-20ms
+seeds: [1, 2, 3, 4, 5]
+predictors:
+  - none
+reconciler: snap
+playoutPolicy: immediate
+networkProfiles:
+  - jitter-0ms
+  - jitter-5ms
+  - jitter-20ms
+  - jitter-40ms
+trialSteps: 500
+stepIntervalTicks: 200000
+convergenceBudgetMs: 100
+maxCorrectionLinearSpeedMetersPerSecond: 5
+maxCorrectionAngularSpeedRadiansPerSecond: 10

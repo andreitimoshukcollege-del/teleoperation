@@ -1,0 +1,56 @@
+# Characterization of the frozen network-profile suite, using the docs/metrics.md §3
+# instrumentation added in the same change (Transport/NetworkObserver.cs + MeasuredTransport.cs).
+#
+# READ before citing anything from this run:
+#   docs/research-log/2026-09-09-network-observability.md
+#
+# This is NOT an algorithm comparison and no algorithm claim may be drawn from it. The varying
+# axis is the network profile; predictor, reconciler and playout policy are pinned to the
+# baselines (`none`, `snap`, `immediate`) and are present only because the pipeline requires
+# them -- every metric this run is about is emitted by the transport layer and by
+# OperatorEndpoint's arrival path, none of which any of the three can influence. That also makes
+# this run compliant with docs/metrics.md §8 rule 1 in the only sense available to it: the
+# baseline row is the ONLY row.
+#
+# The profile list is chosen to make specific claims falsifiable rather than to be exhaustive:
+#
+#   lan / 50ms-5j / 150ms-20j-0.5loss / 300ms-60j-2loss-bursty / synthetic-burst
+#       the frozen five (docs/adr/0004). 300ms-60j-2loss-bursty is the suite's only bursty-loss
+#       profile, so it is the only place a measured burst-length distribution can be compared to
+#       a declared one. synthetic-burst is the "is its loss really zero, and are its seeds really
+#       inert?" case.
+#   jitter-0ms / jitter-5ms / jitter-20ms / jitter-40ms
+#       the reordering ladder (docs/adr/0005). reorderProbability is 0.0 on every one of them, so
+#       any measured reordering can only come from EmulatedTransport delivering by earliest
+#       synthetic arrival. jitter-0ms is the control that must show exactly zero.
+#   loss-0pct / loss-1pct / loss-5pct
+#       the memoryless-loss ladder (docs/adr/0005), whose declared expected burst length is ~1 at
+#       every point. Contrast against 300ms-60j-2loss-bursty is the whole point: same order of
+#       loss rate, deliberately different burst shape.
+#
+# Everything else is copied from exp-003-playout-baselines' operating point so the trial length
+# and cadence match previously recorded runs.
+id: exp-006-network-observability
+seeds: [1, 2, 3, 4, 5]
+predictors:
+  - none
+reconciler: snap
+playoutPolicy: immediate
+networkProfiles:
+  - lan
+  - 50ms-5j
+  - 150ms-20j-0.5loss
+  - 300ms-60j-2loss-bursty
+  - synthetic-burst
+  - jitter-0ms
+  - jitter-5ms
+  - jitter-20ms
+  - jitter-40ms
+  - loss-0pct
+  - loss-1pct
+  - loss-5pct
+trialSteps: 500
+stepIntervalTicks: 100000
+convergenceBudgetMs: 100
+maxCorrectionLinearSpeedMetersPerSecond: 5
+maxCorrectionAngularSpeedRadiansPerSecond: 10

@@ -1,0 +1,46 @@
+# Is the measured reordering a property of the LINK, or of the poll schedule?
+#
+# exp-006 measured "reordering" rising monotonically with jitter width on profiles whose
+# reorderProbability is 0.0 -- 0.0% at jitter-0ms up to 70.1% on 300ms-60j-2loss-bursty -- and
+# read that as EmulatedTransport delivering by earliest synthetic arrival.
+#
+# The methodology review of that run showed the reading is confounded. At J = 5 ms the downlink
+# link CANNOT invert two datagrams sent 10 ms apart (it needs a swing beyond +/-10 ms from a
+# variate bounded at +/-10). Yet 13.0% was measured. The mechanism it identified instead:
+# RobotEndpoint.Step drains every uplink arrival for the step and replies to all of them stamped
+# at the SAME nowTicks, so uplink jitter plus 10 ms poll quantization batches two commands into
+# one step and the batch's arrival order is then a tie-break, not a transit outcome. It attributed
+# 97% of the jitter-5ms effect and ~35% of the jitter-40ms effect to that batching.
+#
+# THE DISCRIMINATING PREDICTION, stated before the run: if reordering is a link property it is
+# invariant to the step interval. If it is poll quantization plus reply batching, it moves
+# strongly and in a known direction -- shrinking the step to 5 ms should REDUCE batching (fewer
+# commands share a step) and so reduce measured reordering, most visibly at jitter-5ms.
+#
+# This file is the 5 ms arm. exp-007-reorder-attribution-20ms.yaml is the 20 ms arm; exp-006's
+# jitter ladder at 100000 ticks (10 ms) is the middle point. Nothing else differs between the
+# three: same profiles, same seeds, same trialSteps, same pinned none/snap/immediate stack.
+#
+# trialSteps is held at 500 rather than at constant wall-clock duration, so that the reorder RATE
+# (a per-arrival fraction) is computed over the same number of arrivals in every arm. The three
+# arms therefore cover different durations (2.5 s / 5 s / 10 s), which is deliberate and matters
+# only for the burst-count-dependent quantities, none of which this experiment reads.
+#
+# This experiment CANNOT settle what a real network reorders. It settles only whether this
+# repo's measured figure is a fact about the emulator or a fact about the harness's poll schedule.
+id: exp-007-reorder-attribution-5ms
+seeds: [1, 2, 3, 4, 5]
+predictors:
+  - none
+reconciler: snap
+playoutPolicy: immediate
+networkProfiles:
+  - jitter-0ms
+  - jitter-5ms
+  - jitter-20ms
+  - jitter-40ms
+trialSteps: 500
+stepIntervalTicks: 50000
+convergenceBudgetMs: 100
+maxCorrectionLinearSpeedMetersPerSecond: 5
+maxCorrectionAngularSpeedRadiansPerSecond: 10

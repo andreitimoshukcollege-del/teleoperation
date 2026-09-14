@@ -128,3 +128,34 @@ machine that wrote the ADR. So the experiments were re-run rather than assumed t
 Nothing here is retracted. The one thing worth carrying forward: the ADR's "worth zero exactly
 once" only stays true if local, gitignored results are counted, and from the other machine they
 cannot be seen. A committed number is a recorded result even when the run behind it is not.
+
+## Addendum, 2026-09-10: the reordering these numbers rest on is partly a harness artifact
+
+`docs/research-log/2026-09-09-network-efficiency-decisions.md` instrumented `docs/metrics.md` §3
+and found that **reordering is a joint property of jitter width and the sweep's poll interval, not
+a property of the link.** On `jitter-5ms`, the same ±5 ms jitter produces a 19.7% / 13.0% / 0.0%
+reorder rate at 5 / 10 / 20 ms steps: at a poll coarser than the jitter width, no two datagrams can
+swap across a boundary at all.
+
+That lands directly on this axis, because `immediate`'s late-arrival rate **is** the stream's
+out-of-order rate by construction — that is how the policy is defined here. So on the parametric
+jitter profiles, `immediate`'s measured loss is inflated by the 10 ms step this sweep happens to
+use, and an operator running at a different frame rate would not see the same figure:
+
+| profile | reorder rate at the 10 ms step | driven by |
+|---|---|---|
+| `50ms-5j` | 13.0% | ±5 ms jitter vs the poll — vanishes at a 20 ms step |
+| `150ms-20j-0.5loss` | 43.9% | ±20 ms jitter vs the poll |
+| `300ms-60j-2loss-bursty` | 70.1% | ±60 ms jitter vs the poll |
+| `synthetic-burst` | 28.1% | the trace's 20 ms → 250 ms delay step |
+
+**The headline is unaffected and the qualification is real.** The 56-59% matched-loss result rests
+on `synthetic-burst`, where reordering comes from a ~230 ms delay step that inverts arrival order at
+any poll interval, not from jitter narrower than the poll. What is qualified is the *size* of
+`immediate`'s loss on the three parametric profiles — the conclusion there was that `fixed` at 40 ms
+is byte-identical to `immediate` and that a tuned `fixed` budget beats `percentile`, and none of
+that depends on the absolute rate.
+
+Stated as a limit rather than a fix: step size was swept on `jitter-*`, not on `synthetic-burst`, so
+"poll-independent" is an argument about the mechanism here, not a measurement. Sweeping it would
+settle it.

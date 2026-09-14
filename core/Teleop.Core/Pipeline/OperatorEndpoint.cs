@@ -2,6 +2,7 @@ using System;
 using System.Numerics;
 using Teleop.Core.Contracts;
 using Teleop.Core.Time;
+using Teleop.Core.Transport;
 using Teleop.Core.Types;
 
 // C# 9: block-scoped namespace only. File-scoped namespaces (namespace X;) are C# 10
@@ -69,6 +70,17 @@ namespace Teleop.Core.Pipeline
         private readonly IReconciler<Pose> _robotStateReconciler;
         private readonly IPlayoutPolicy<Pose> _playoutPolicy;
 
+        /// <summary>
+        /// Optional, and null in every configuration that does not ask for it. The one
+        /// <c>docs/metrics.md</c> §3 vantage that exists nowhere else: reordering and RFC 3550
+        /// interarrival jitter need a decoded frame's sequence number and its sender's raw send
+        /// stamp for the <b>same</b> datagram, and <see cref="ITransport"/> deliberately exposes
+        /// neither (<c>DatagramFate</c> documents the absence of a sequence field as intentional).
+        /// The loss half of §3 does not come through here — it is observed at the transport
+        /// boundary by <c>MeasuredTransport</c>, which needs no decode.
+        /// </summary>
+        private readonly NetworkObserver? _downlinkNetworkObserver;
+
         private readonly byte[] _sendBuffer;
         private readonly byte[] _recvBuffer;
 
@@ -91,7 +103,8 @@ namespace Teleop.Core.Pipeline
             IPredictor<Pose> robotStatePredictor,
             IReconciler<Pose> robotStateReconciler,
             IPlayoutPolicy<Pose> playoutPolicy,
-            int inFlightCapacity)
+            int inFlightCapacity,
+            NetworkObserver? downlinkNetworkObserver = null)
         {
             if (commandCodec.MaxEncodedBytes > uplinkTransport.MaxPayloadBytes)
             {
@@ -109,6 +122,7 @@ namespace Teleop.Core.Pipeline
             _robotStatePredictor = robotStatePredictor;
             _robotStateReconciler = robotStateReconciler;
             _playoutPolicy = playoutPolicy;
+            _downlinkNetworkObserver = downlinkNetworkObserver;
 
             _sendBuffer = new byte[commandCodec.MaxEncodedBytes];
             _recvBuffer = new byte[downlinkTransport.MaxPayloadBytes];
@@ -164,6 +178,28 @@ namespace Teleop.Core.Pipeline
                 if (!_stateCodec.TryDecode(_recvBuffer.AsSpan(0, byteCount), out RobotStateFrame stateFrame))
                 {
                     continue;
+                }
+
+                // docs/metrics.md §3, and nothing else: purely additive, no control flow, no RNG,
+                // no existing metric touched. Placed here, immediately after decode and before any
+                // branch, so it observes every reply the link actually delivered -- including a
+                // duplicate and including one whose in-flight trace has been evicted. Deliberately
+                // NOT placed on the trace-completion path: InsertInFlight still overwrites an
+                // occupied ring slot without checking, and that eviction is delay-correlated, so
+                // any network statistic computed from completed traces would be censored hardest
+                // exactly where the link is worst.
+                //
+                // Raw robot ticks and the robot's own rate go in, not the ClockSync-corrected
+                // stamps computed below: RFC 3550's estimator differences out a clock offset by
+                // construction, so feeding it a corrected stamp would report the movement of the
+                // offset estimate as network jitter.
+                if (_downlinkNetworkObserver != null)
+                {
+                    _downlinkNetworkObserver.OnSequencedArrival(
+                        stateFrame.Sequence,
+                        stateFrame.DownlinkSendTicks,
+                        stateFrame.TicksPerSecond,
+                        arrivalTicks);
                 }
 
                 // A reply with no matching in-flight trace still carries valid robot state, and it

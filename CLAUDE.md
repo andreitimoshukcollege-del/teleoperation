@@ -8,6 +8,20 @@ The consequence that shapes every decision: **an algorithm that cannot be evalua
 headlessly does not count.** If a change can only be verified by putting on a headset, it is
 either in the wrong folder or built the wrong way.
 
+**Direction, not yet architecture.** The intended next step is prediction that understands the
+*physical situation* rather than only the trajectory — world models and other physical-AI models
+that can say the arm is about to reach a wall and will stop there, or that a mass now in the
+gripper has changed how it accelerates. It is meant to combine with the latency work above, not
+replace it: those axes decide when a sample is shown and how its correction is absorbed, while a
+model of the world improves what is shown at all.
+
+Treat this paragraph as intent and nothing more. **Nothing in this system observes the environment
+today** — the robot reports a pose and nothing else (57 fixed bytes, no field for anything sensed),
+there is no camera, depth or contact signal anywhere, and `Plant/` is kinematic by deliberate
+choice. Like `view synthesis` in the sentence above, this has no `Contracts/` interface, no folder
+and no ADR. Giving it any of those is an architecture change under "Where new code goes", so the
+ADR comes first. Do not write code against this paragraph.
+
 ## The one law
 
 Dependencies point one direction. `Teleop.Core` sits at the bottom and depends on nothing.

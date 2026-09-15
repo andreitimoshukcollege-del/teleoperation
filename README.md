@@ -16,6 +16,29 @@ product. A result here looks like:
 > loss rate as the best possible fixed buffer while adding **56–59% less delay**. On a steady link,
 > a hand-tuned fixed buffer beats it. The crossover is the finding.
 
+## Where this is going: predictions that understand the scene
+
+Every predictor here extrapolates from the robot's own recent motion and nothing else. It is a
+dead-reckoner. It does not know there is a wall in front of the arm, and it does not know the
+gripper just closed on something heavy — so it will happily predict the arm sailing through the
+wall, or moving as briskly loaded as it did empty.
+
+The next direction is to give the prediction a model of the **physical situation**, not just the
+trajectory: world models and other physical-AI models that understand the environment well enough
+to say *the arm is about to reach that wall and will stop there*, or *there is now a mass in the
+gripper, so it accelerates differently.* Simulate what the arm is about to do, and show that,
+instead of extrapolating where it was heading.
+
+**This combines with the network work rather than replacing it.** The existing axes decide *when* a
+sample is shown and how the correction is absorbed; a better model of the world improves *what* is
+shown in the first place. The two multiply: a prediction that is right more often leaves less
+correction to hide and needs less buffering to cover.
+
+**Nothing in the system observes the environment yet, and the how is genuinely open.** The robot
+reports a pose and nothing else — 57 bytes, no field for anything sensed. There is no camera feed,
+no depth, no contact signal; the plant is deliberately kinematic, with no mass and no collision.
+This is a direction, not a design.
+
 **New here? → [`ONBOARDING.md`](ONBOARDING.md)** — setup, in order, with what to expect at each
 step. This file is the day-to-day command reference.
 

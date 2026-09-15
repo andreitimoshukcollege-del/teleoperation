@@ -11,10 +11,19 @@ namespace Teleop.Core.Contracts
     /// chosen at Phase 7 and supplied by the host — ONNX Runtime headless, whatever ships
     /// on-device for the Quest — behind this interface.
     ///
-    /// The one consumer today is <c>Prediction/SequenceModelPredictor.cs</c>, which calls this
-    /// and never an ONNX library directly. Because that runs inside <c>Predict</c>, inference
-    /// must be repeatable without allocating: the model is loaded once at construction and
-    /// every call reads and writes caller-owned spans over preallocated buffers.
+    /// <b>There are no consumers and no implementations today.</b> This comment used to name
+    /// <c>Prediction/SequenceModelPredictor.cs</c> as "the one consumer today"; that file has
+    /// never existed — <c>seq-model</c> is a "planned, not built" row in
+    /// <c>Prediction/CLAUDE.md</c>, deferred because it depends on a Phase-7 backend decision
+    /// nobody has made. Corrected because this was the only place in the repo asserting it in
+    /// the present tense, and anyone following the world-model direction in root
+    /// <c>CLAUDE.md</c> would come here first.
+    ///
+    /// The intended consumer still shapes the contract, and the requirement it implies is real:
+    /// a predictor calls this from inside <c>Predict</c>, never an ONNX library directly, so
+    /// inference must be repeatable without allocating — the model is loaded once at
+    /// construction and every call reads and writes caller-owned spans over preallocated
+    /// buffers.
     ///
     /// A backend must be deterministic for a fixed input, or results from it are not
     /// comparable across runs. Backends that are not (nondeterministic GPU reductions) must say

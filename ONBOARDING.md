@@ -33,6 +33,49 @@ A real result from this repo looks like:
 
 Not "adaptive buffering is better." A number, a condition, and the case where it fails.
 
+### Where the project is heading
+
+Worth knowing on day one, because it reframes what "prediction" means here.
+
+Every predictor built so far extrapolates from the robot's **own recent motion and nothing else**.
+`IPredictor.Observe` takes a timestamped pose and has no second input channel — so the predictor is
+a dead-reckoner. It has no idea there is a wall in front of the arm, and no idea the gripper just
+closed on something with weight. Ask it where the arm will be in 300 ms and it will cheerfully
+answer with a position inside the wall, or with the light-and-empty trajectory for an arm that is
+now carrying a load.
+
+The next direction is to give the prediction a model of the **physical situation** rather than just
+the trajectory — world models and other physical-AI models that understand the environment well
+enough to simulate what is about to happen:
+
+- the arm is approaching a wall, so predict it **stopping there**, and show that before the real
+  arm has arrived;
+- the gripper has picked up a ball with mass, so the dynamics have changed — predict accordingly.
+
+**It combines with the network work rather than replacing it,** and that is the point of doing both.
+The existing axes decide *when* a sample is shown and how its correction is absorbed. A model of the
+world improves *what* gets shown. The two multiply: a prediction that is right more often leaves
+less correction to hide and needs less buffer to cover.
+
+**Now the honest part, because otherwise this reads like a description of something that exists.**
+It does not. Nothing in this system observes the environment — at any layer:
+
+- The robot reports a pose and nothing else. `RobotStateFrame` is 57 fixed bytes: 28 of pose, 29 of
+  clock bookkeeping, and no field for anything sensed. The uplink is 73 fixed bytes. Neither has an
+  extension point.
+- There is no camera feed, no depth, no contact sensing. What the operator sees is a stick-figure
+  rig posed from the numbers they themselves just sent. The real JetRover *has* a camera; its driver
+  was deliberately left out when the robot side was ported.
+- The plant is kinematic on purpose — `Plant/CLAUDE.md`: *"no mass, no forces, no inertia, no
+  contact, no joint limits, no actuator dynamics."*
+- The one piece of environment-awareness in the whole project is a single hard-coded number that
+  stops the arm driving into its own base plate, calibrated by a human watching it strain.
+
+So: a direction, not a design. Nobody has decided how the environment gets sensed, how it reaches
+Core without breaking the no-I/O invariant, or what the model actually is. If you are looking for
+the perception layer, there isn't one yet — and finding that out from this paragraph is cheaper than
+finding it out by grepping.
+
 ---
 
 ## 2. What do you need installed?
@@ -302,6 +345,12 @@ because breaking it destroys something specific:
 4. **A sweep** → `results/<id>/<timestamp>/` with a `manifest.json` recording the git SHA.
 5. **A written verdict** in `docs/research-log/` — including the negatives. **A finished negative
    result beats three unfinished positive ones.**
+
+Two things named in §1 have no folder in that list and so no home in this loop yet: the
+world-model direction, and the *view synthesis* the root `CLAUDE.md` scope sentence has always
+claimed. Both would be a new `Contracts/` interface plus a new folder plus `Pipeline/` learning to
+wire it — which root `CLAUDE.md` calls an architecture change and requires an ADR for, **before**
+the code. Nobody has written that ADR.
 
 ### Where things live
 

@@ -33,6 +33,13 @@ contact, no joint limits, no actuator dynamics. `Command` snaps the pose one-to-
 commanded setpoint; `Step` integrates position and orientation forward on the last commanded
 velocity.
 
+**This is the sentence the world-model direction in root `CLAUDE.md` runs into first.** A model
+that knows the arm will stop at a wall, or that a mass in the gripper has changed how it
+accelerates, is a plant with dynamics — and the rule below already says where one goes: beside
+this one, with its own registry key, never as an edit to this one. Nothing has been decided beyond
+that; there is no contract, no folder and no ADR, and nothing in the system senses an environment
+for such a plant to react to.
+
 That is a deliberate choice, not a simplification to be fixed later. Phase 4 (docs/setup.md) is
 the explicit **zero-mitigation baseline**, and any damped or spring/PD tracking scheme is itself
 a smoothing behaviour: it would absorb part of every correction the reconciler is being measured

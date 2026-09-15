@@ -35,28 +35,28 @@ Not "adaptive buffering is better." A number, a condition, and the case where it
 
 ---
 
-## 2. Which machine do you need?
+## 2. What do you need installed?
 
-The project spans two development machines with **deliberately opposite rules**, plus the robot.
-Most work needs only the first.
+Depends on what you want to work on. Most work needs only the first row.
 
-| You want to work on | You need | Setup time |
+| You want to work on | Set up | Time |
 |---|---|---|
-| Algorithms, experiments, analysis (`core/`, `analysis/`) | **Linux box** — track A | ~30 min |
-| VR scenes, headset builds, rendering (`unity/`) | **Windows box** — track B | ~2 h incl. Unity install |
-| The physical robot arm | Windows box + supervised access — track C | read first, act later |
+| Algorithms, experiments, analysis (`core/`, `analysis/`) | track A | ~30 min |
+| VR scenes, headset builds, rendering (`unity/`) | track A **+** B | ~2 h incl. Unity install |
+| The physical robot arm | A + B + supervised access — track C | read first, act later |
 
 If you're unsure, do **track A**. It covers every research axis, runs the whole test suite, and
-produces real results without any hardware.
+produces real results without Unity and without any hardware.
 
-> **Why two machines and not one?** Unity is a Windows application that cannot open a project
-> stored inside WSL, and the `dotnet` SDK on the Windows box is the *Windows* SDK even when you
-> invoke it from a Linux-looking shell. Trying to do both jobs on one box means two SDKs fighting
-> over one `build/` directory. Root `CLAUDE.md`'s "Environment" section is the full reference.
+> **Why is Unity separate?** It's a Windows application and cannot open a project stored inside
+> WSL, so the Unity checkout lives on NTFS. On that machine `dotnet` is the *Windows* SDK even from
+> a WSL shell. That's a fact about what runs where, not a rule about who may edit what — every
+> directory in this repo is editable from anywhere. Root `CLAUDE.md`'s "Environment" section is the
+> full reference.
 
 ---
 
-## Track A — the algorithm box (Linux)
+## Track A — algorithms and experiments (Linux or WSL)
 
 ### A1. Install the toolchain
 
@@ -112,10 +112,10 @@ just test
 
 The skips are the GUI tests. They need `tkinter`, which is a separate system package and is absent
 on a headless box — skipping is correct, not a gap. The GUI is a human-facing convenience on the
-Windows box; the scriptable path that CI uses has never needed a display. If you do want it:
+Windows side; the scriptable path that CI uses has never needed a display. If you do want it:
 `sudo apt install python3-tk`.
 
-`just analysis-setup` auto-detects the right interpreter for whichever box you're on, so you do not
+`just analysis-setup` auto-detects the right interpreter for whichever machine you're on, so you do not
 need to configure a path.
 
 <details>
@@ -183,18 +183,18 @@ just experiment-gui
 
 ---
 
-## Track B — the Unity box (Windows)
+## Track B — Unity and the headset (Windows)
 
 Only needed for VR scenes, rendering, or headset builds.
 
-### B1. What's different about this box
+### B1. What's different here
 
 - The repo must live on **NTFS** (`C:\Users\<you>\Projects\teleoperation`), reached from WSL as
   `/mnt/c/...`. Unity cannot open a project over `\\wsl$\`.
 - `dotnet` is the **Windows** SDK even from a WSL shell. It does not resolve WSL-native absolute
   paths passed as arguments — only the working directory is translated. **Pass relative paths**, or
   wrap with `$(wslpath -w <path>)`.
-- **Do not install the Linux .NET SDK on this box.** Two SDKs sharing one `build/`/`obj/` tree
+- **Do not install the Linux .NET SDK on this machine.** Two SDKs sharing one `build/`/`obj/` tree
   churn each other and produce restore errors that look like corruption.
 
 ### B2. Install
@@ -207,7 +207,7 @@ Only needed for VR scenes, rendering, or headset builds.
 
 Open `unity/TeleopVR/` in Unity Hub. Core is linked by **relative path** —
 `Packages/manifest.json` has `"com.teleop.core": "file:../../../core/Teleop.Core"` — so the C#
-algorithms are the *same files* the Linux box tests. There is no copy and no sync step.
+algorithms are the *same files* `dotnet test` runs against. There is no copy and no sync step.
 
 The consequence: **pull `main` before opening the editor.** A Core change that landed since your
 last pull changes the Unity build immediately.
@@ -346,7 +346,7 @@ A good first change is a new algorithm on an existing axis — it touches one fo
 well-worn path:
 
 ```bash
-git switch -c my-change            # never commit to main; both machines share it
+git switch -c my-change            # work on a branch; reach main through a PR
 /new-impl reconciler my-idea       # scaffolds file + test + registry entry + benchmark row
 just check                         # all gates
 ```
@@ -355,8 +355,8 @@ Then write up what you found in `docs/research-log/`, **including if it didn't w
 
 Two rules worth stating explicitly because they surprise people:
 
-- **One branch per machine.** Never check out a branch the other box is working on. Reach `main`
-  through a PR instead.
+- **`results/` is append-only.** Write new directories; never edit or delete an old one. A recorded
+  run is evidence, even a bad one.
 - **Never rebase, amend, or rewrite history.** Merge instead.
 
 ## 8. Where to read next

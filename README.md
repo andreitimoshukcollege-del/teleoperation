@@ -84,21 +84,22 @@ just experiment-gui                           # configure, run and plot in one w
 Every run writes a `manifest.json` with the git SHA that produced it. See `experiments/CLAUDE.md`
 to write a new config and `results/CLAUDE.md` for the manifest convention.
 
-## Two machines, opposite rules
+## Working across two environments
 
-Development is split across a **Linux box** (`core/`, `analysis/` — algorithms and experiments) and
-a **Windows box** (`unity/`, Quest builds, hardware). This isn't a preference: Unity can't open a
-project stored inside WSL, and the Windows box's `dotnet` is the Windows SDK even from a WSL shell,
-so one shared tree would have two SDKs fighting over `build/`.
+`core/`, `analysis/`, `experiments/` and `docs/` can be developed and verified anywhere. Unity, the
+Quest and the JetRover need the Windows side — not as a rule about who may edit what, but because
+of what each environment can actually run:
 
-Practical consequences:
-
-- **One branch per machine.** Never check out a branch the other box is working on — reach `main`
-  through a PR.
-- **Pull `main` before opening Unity.** Core is linked by relative path, so a Core change on `main`
-  changes the Unity build immediately.
+- **Unity cannot open a project stored inside WSL**, so the Windows checkout lives on NTFS
+  (`C:\Users\...`) and is reached from WSL as `/mnt/c/...`.
+- On that machine `dotnet` is the **Windows** SDK even from a WSL shell, and it does not resolve
+  WSL-native absolute paths passed as arguments — pass relative paths. Don't add the Linux SDK
+  there either; two SDKs sharing one `build/` tree churn each other.
+- **Pull before opening Unity.** Core is linked by relative path, so a Core change on `main`
+  changes the Unity build the moment it's on disk.
 - Core's C# 9 / `netstandard2.1` limit comes from Unity but **binds everywhere** — code can pass
-  `dotnet test` on Linux and still break the Quest build.
+  `dotnet test` on Linux and still break the Quest build. `just bridge-check` catches signature
+  breaks; only an IL2CPP build catches the rest.
 
 Full reference: root `CLAUDE.md`'s "Environment" section.
 
@@ -133,8 +134,10 @@ to be repeats.
 
 ## Contributing
 
-Read root `CLAUDE.md` first, especially "Boundaries for agents": free rein in `core/`, `analysis/`,
-`experiments/` and `docs/`; anything under `unity/` needs human review; `results/` is append-only.
+Read root `CLAUDE.md` first, especially "Boundaries for agents". The short version: free rein
+almost everywhere, `results/` is append-only, and changes under `unity/.../Bridge/` want human
+review — that code touches real I/O, XR devices and hardware, and `bridge-check` compiles against
+stubs so it can't catch scenes, prefabs or rendering.
 
 Write up what you find in `docs/research-log/` — **including the things that didn't work.** A
 finished negative result beats three unfinished positive ones, and a rejected idea that nobody

@@ -92,7 +92,7 @@ before claiming a task is done. Never report success on the basis of a successfu
 
 **If you changed a Core signature, also run `just bridge-check`** (or `cd unity/BridgeCheck &&
 dotnet build`). It compiles `unity/`'s `Bridge/` against Core headlessly, at Unity's own
-`netstandard2.1`/C# 9 settings, and needs no Unity — so the Linux box can run it too. This exists
+`netstandard2.1`/C# 9 settings, and needs no Unity — so it runs on Linux too. This exists
 because a Core interface change breaks `unity/` *silently*: nothing in `core/` references Bridge,
 so all three gates above stay green while the editor no longer compiles. That happened twice on
 2026-09-09 (ADR 0012 added a required `IPlayoutPolicy<Pose>` to `OperatorEndpoint`; both bridges
@@ -121,98 +121,57 @@ commands got lost otherwise.
 
 ## Boundaries for agents
 
-**Scope follows the machine, and the two are worked on at the same time.** Ownership is by
-directory and is not advisory: an edit made on the wrong box is a merge conflict waiting to
-happen, not a style violation. "Environment" below says what each box can *build*; this says what
-each box may *change*.
-
-### On the Linux box — `core/` and backend
-
-- Free rein: `core/`, `analysis/`, `experiments/`, `docs/`.
-- **Never edit `unity/`. Propose instead** — describe the change and let it be applied on Windows,
-  where an editor can actually verify it. This is deliberately stricter than "ask first": Unity
-  rewrites scenes, prefabs, `.asset` and `.meta` files by itself while it is open, so an edit made
-  here can collide with a live editor session there. That is true even for plain C# under
-  `Bridge/`, because saving it makes Unity recompile and touch adjacent files.
-  - **One carve-out: `unity/BridgeCheck/` is yours to edit and run.** Unity opens only
-    `unity/TeleopVR/`, so that folder is invisible to the editor and the collision the rule above
-    guards against cannot happen there. Run `just bridge-check` after any Core signature change,
-    and add a stub to `UnityStubs.cs` when it needs one — that is maintenance of your own gate, not
-    a Unity change. Editing anything under `unity/TeleopVR/` is still off-limits, including when
-    `bridge-check` is what revealed the problem: report the breakage, propose the fix.
-- `robot/` is documentation-only: ask first, and never command real hardware from this box (see
-  "Testing the real robot").
-
-### On the Windows box — Unity, Quest, hardware
-
-- Free rein: `unity/`.
-- Core changes belong on the Linux box, including Core problems *discovered* here. The standing
-  exception is the `.meta` files Unity writes into `core/Teleop.Core/` — Unity is their author,
-  they are tracked on purpose, and committing them from Windows is correct.
-- `unity/TeleopVR/Packages/manifest.json` links Core by relative path, so Core edits landing on
-  `main` change the Unity build immediately. Pull before opening the editor, or you will debug a
-  mismatch that git already resolved.
-
-### Both
-
-- Never touch: `results/` (append-only — write new directories, never edit old ones),
+- **Free rein:** `core/`, `analysis/`, `experiments/`, `docs/`, `unity/`.
+- **Never touch:** `results/` (append-only — write new directories, never edit old ones),
   `unity/TeleopVR/Library/`, `build/`, anything gitignored.
-- **One branch per machine.** Never check out or commit to a branch the other box is working on;
-  reach `main` through a PR instead. Two machines committing to one branch diverge, and
-  untangling that costs more than the PR ever does.
-- **Check for incoming work before starting anything, on either box.** Not "pull if you happen to
-  think of it" — actually look, every time, before the first edit:
+- `robot/` is documentation-only: ask first, and never command real hardware without a human
+  watching (see "Testing the real robot").
+- **Changes under `unity/TeleopVR/Assets/Teleop/Runtime/Bridge/` want human review** — not because
+  of where they are edited, but because that is where real I/O, XR devices and hardware live, and
+  `just bridge-check` compiles against stubs so it cannot catch anything about scenes, prefabs or
+  rendering. An IL2CPP build is the only real check.
+- **Pull before starting, and before opening Unity.** `unity/TeleopVR/Packages/manifest.json` links
+  Core by relative path, so a Core change on `main` changes the Unity build the moment it is on
+  disk — open the editor against a stale tree and you will debug a mismatch git already resolved.
 
   ```bash
-  git fetch && git log --oneline HEAD..origin/main   # empty == nothing incoming; otherwise pull
+  git fetch && git log --oneline HEAD..origin/main   # empty == nothing incoming
   ```
-
-  The two boxes commit independently and neither sees the other's work until it reaches `main`, so
-  a stale tree is the normal state here, not the exception. Starting on one means either rebuilding
-  something that already landed, or writing a change against code that has since moved — and the
-  Windows box will not notice the second case until Unity recompiles, because
-  `unity/TeleopVR/Packages/manifest.json` links Core by relative path and picks up whatever is on
-  disk. If something *is* incoming, pull it and skim what changed before starting; a merge conflict
-  found now costs a minute, and the same one found at PR time costs an afternoon.
-- The real conflict surface is the files neither box exclusively owns: root `CLAUDE.md`,
-  `justfile`, `.claude/`, `docs/metrics.md`, `Registry/Registries.cs`. Editing one is fine;
-  editing one while the other box is mid-change is what hurts. Keep those changes small and merge
-  them promptly rather than parking them on a long-lived branch.
-- Never `git commit --amend`, rebase, or rewrite history. Do not `git push`, open a PR, or tag
-  unless asked — when asked, that request is sufficient authority and no further confirmation is
-  needed.
+- Work on a branch and reach `main` through a PR. Never `git commit --amend`, rebase, or rewrite
+  history. Do not `git push`, open a PR, or tag unless asked — when asked, that request is
+  sufficient authority and no further confirmation is needed.
 
 ## Environment
 
-**Two machines, two jobs.** A change to `core/` or `analysis/` can be developed and verified
-entirely on the Linux box. Anything involving Unity, the Quest, or the JetRover needs the
-Windows one. Check which box you are on before trusting a path or a `dotnet` invocation — the
-two have opposite rules.
+**Two environments, and a path or a `dotnet` invocation that works in one may not work in the
+other.** `core/` and `analysis/` can be developed and verified anywhere; Unity, the Quest and the
+JetRover need the Windows side. This section is about what each environment can *do* — it is not an
+ownership rule, and there is no longer a restriction on where any directory may be edited.
 
-### Linux box — `core/`, `analysis/` (primary for algorithm work)
+### Linux — `core/`, `analysis/`
 
 - Native Ubuntu on ext4, its own clone at `~/Projects/teleoperation`. Shell is zsh. There is no
-  `/mnt/c`, no WSL interop, and no Unity.
-- `dotnet` here is the **Linux** SDK, installed normally. The Windows box's "never install the
+  `/mnt/c`, no WSL interop, and no Unity — so `unity/` can be *edited* here but not opened, and a
+  change to it is unverified until an editor sees it.
+- `dotnet` here is the **Linux** SDK, installed normally. The Windows side's "never install the
   Linux SDK" rule does not apply: that rule exists because two SDKs sharing one working tree's
   `build/`/`obj/` churn each other, and this clone is never touched by a Windows `dotnet`.
   Absolute paths work; none of the `wslpath` handling below applies.
 - `git-lfs` must be installed before any working-tree-modifying git command, or LFS-tracked
   binaries get written as pointer text files. The LFS payloads are Unity assets only, so leaving
   them unfetched here is fine — but the filter has to exist.
-- `unity/` changes are proposed here and built and reviewed on Windows; Unity cannot open this
-  clone and is not expected to.
 - `core/Teleop.RobotHost.Tests`' Unix-domain-socket tests are gated by `LinuxOnlyFactAttribute`,
   so they **run here and skip on Windows**. This is the only box that exercises them.
 
-### Windows box — Unity, Quest, hardware testing
+### Windows — Unity, Quest, hardware testing
 
 - Repo lives on NTFS at `C:\Users\andre\Projects\teleoperation` (required — Unity is a
   Windows app and cannot open a project over `\\wsl$\`). Reached from WSL as
   `/mnt/c/Users/andre/Projects/teleoperation`.
 - Shell is zsh under WSL, but `dotnet` is the **Windows** SDK, reached via a wrapper at
   `~/.local/bin/dotnet`. Never install the Linux SDK *on this machine* — two SDKs sharing
-  `build/` and `obj/` cause rebuild churn and restore errors. Pass relative paths only; WSL
+  `build/` and `obj/` cause rebuild churn and restore errors. That is a constraint on this
+  machine's shared tree, not a rule about who may change what. Pass relative paths only; WSL
   translates the CWD for Windows processes but not arguments. Use
   `$(wslpath -w <path>)` if an absolute path is unavoidable.
 - Unity, `adb`, and Unity CLI builds run on the Windows side. `git` and `git-lfs` are
@@ -224,12 +183,11 @@ two have opposite rules.
 
 ### Both
 
-- CI runs on Linux and paths are case-sensitive there, as they are on the Linux box. NTFS is
+- CI runs on Linux and paths are case-sensitive there, as they are on native Linux. NTFS is
   not, so a casing mismatch may work in Unity and fail everywhere else. Match on-disk casing
   exactly.
-- Core's `netstandard2.1`/C# 9 constraint (invariant 6) comes from the Windows box's Unity
-  editor and binds **everywhere**. Code written on the Linux box can compile and test green
-  under the Linux SDK and still break the Quest build; `audit` plus invariant 6's
+- Core's `netstandard2.1`/C# 9 constraint (invariant 6) comes from the Unity editor and binds
+  **everywhere**. Code can compile and test green under the Linux SDK and still break the Quest build; `audit` plus invariant 6's
   banned-feature list is the headless approximation, not a guarantee. An IL2CPP build is the
   only real check.
 

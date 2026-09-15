@@ -9,6 +9,13 @@ import pytest
 from teleop_analysis import io_utils
 from teleop_analysis.figures import combined_response, impairment_response
 
+# The GUI needs tkinter, which is a separate system package on Debian/Ubuntu and absent on a
+# headless box. Skipping the module is right rather than requiring the package: these tests cover
+# GUI helper logic, and analysis/CLAUDE.md scopes the GUI to the Windows box. Without this the
+# import below raises during *collection*, which aborts the whole suite instead of skipping one
+# file -- see analysis/conftest.py.
+pytest.importorskip("tkinter", reason="tkinter is not installed; the analysis GUI is optional")
+
 # test_gui.py lives at analysis/ (one level above tests/), not inside the teleop_analysis
 # package -- add it to sys.path explicitly rather than making it importable as a package module.
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))

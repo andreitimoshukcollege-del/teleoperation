@@ -41,6 +41,19 @@ reply), both in milliseconds, both already converted into the operator's canonic
 via `ClockSync` before the subtraction (`docs/adr/0002-latency-trace.md`). First emitted by
 `Pipeline/OperatorEndpoint.cs`.
 
+**Latency-trace eviction** — the denominator correction for everything above. `OperatorEndpoint`
+holds an open `LatencyTrace` per submitted command in a fixed-capacity ring; if the ring is too
+small for the round trip in flight, a trace is displaced before its reply arrives and that round
+trip contributes to no `owd_*` sample at all. Because the displaced ones are the slowest, the
+censoring is **delay-correlated** — it removes the tail of the distribution being reported.
+
+Metric name: `latency_trace_evicted`, one sample of value 1 per displaced trace, stamped at the
+displacing submission. Emitted by `Pipeline/OperatorEndpoint.cs`. **A run with any of these has
+understated `owd_*` percentiles and the shortfall is not random**; the fix is a larger ring or a
+longer `inFlightMaxAgeTicks`, not a caveat in the writeup. Expiry of a trace whose reply the link
+lost is *not* counted here — that slot is reclaimed rather than displaced, and no completing round
+trip is lost.
+
 **Motion-to-photon (M2P)** — `t_photon(displayed) − t_capture(operator motion)`. The headline
 number. Validate the software estimate against a physical rig at least once — LED plus
 photodiode, or a high-speed camera on a spinning marker — then trust the software estimate and
@@ -144,19 +157,49 @@ First emitted by `Transport/NetworkObserver.cs`.
 
 **Reordering rate** — fraction arriving out of sequence, plus max displacement.
 
-Metric name: `net_downlink_reorder_displacement`, dimensionless, one sample per out-of-order
+**Measured as a total plus a three-way attribution, because a single number here was actively
+misleading.** The observed sequence is the operator's, echoed back by the robot, so an inversion
+seen at the operator can have been caused by any of three things. Reported under one
+downlink-sounding name, it invited exactly the wrong conclusion: a headline "70% reordering on
+`300ms-60j-2loss-bursty`" was quoted as a property of the link, and it is not one. On `jitter-5ms`
+at a 10 ms step, distinct downlink send instants are ≥10 ms apart against a ±5 ms jitter range, so
+the downlink *provably cannot* invert anything — yet 13.0% was measured.
+
+The total: `net_roundtrip_reorder_displacement`, dimensionless, one sample per out-of-order
 arrival, value = `highestSequenceSeen − thisSequence` (wrap-safe), stamped at that datagram's
 `t_recv`. One metric answers both halves of the definition: the rate is
-`count(net_downlink_reorder_displacement) / count(net_downlink_received)` and the max displacement
+`count(net_roundtrip_reorder_displacement) / count(net_downlink_received)` and the max displacement
 is the maximum of the same samples, so the two can never disagree about what counted as a
 reordering. A sequence *gap* is not a reordering and is not counted, or this would just re-report
-the loss rate. First emitted by `Transport/NetworkObserver.cs`, fed from
-`Pipeline/OperatorEndpoint.cs`.
+the loss rate. This is the quantity previously called `net_downlink_reorder_displacement`; only
+the name changed, to stop it claiming a leg it never measured.
 
-There is no `net_uplink_reorder_displacement` today: it needs a vantage that has decoded a
-`CommandFrame`, which only `Pipeline/RobotEndpoint.cs` has, and nothing observes there. Unlike
-uplink jitter this is merely unwired, not structurally impossible — the sequence is already on the
-wire.
+The attribution, all emitted alongside it and all sharing its displacement value:
+
+- `net_uplink_reorder_displacement` — the datagram reached the **robot** after a later-sent command
+  did. Sequence order is submit order by construction, so a `RobotRecvTicks` running the other way
+  is the uplink inverting them. This is the metric that "needs a vantage which has decoded a
+  `CommandFrame`" — it turns out not to: the robot echoes its own receive stamp on every reply, so
+  the operator can order two of the robot's stamps without any clock correction.
+- `net_downlink_reorder_displacement` — the robot emitted it **strictly** before a frame that had
+  already arrived, so the inversion happened after the robot let go of it. Strictly, because frames
+  sharing a send stamp left together and the downlink cannot be blamed for their order.
+- `net_robot_reply_batched` — value 1 per frame sharing a send stamp with the arrival before it.
+  Not a transit effect at all: `RobotEndpoint` replies to every command drained in one `Step` with
+  the same `nowTicks`, so a batch leaves with identical stamps and independent downlink jitter
+  shuffles it. Undercounts when the downlink separates a batch's members, which is itself
+  informative — it means the batch mostly survived in order.
+
+The three need not sum to the total: a frame can be inverted on both legs, and one inverted purely
+by batching is attributed by the third rather than the first two.
+
+**A residual limit no instrumentation removes.** A sequence-based reorder rate is defined relative
+to send spacing, so it is never a cadence-free constant: halving the step doubles a fixed jitter
+window's exposure. Measured directly — same ±5 ms jitter, 19.7% / 13.0% / 0.0% at 5 / 10 / 20 ms
+steps. Always state the step interval alongside a reordering figure, the way §8 rule 4 requires the
+network profile.
+
+First emitted by `Transport/NetworkObserver.cs`, fed from `Pipeline/OperatorEndpoint.cs`.
 
 **Late-arrival (induced) loss** — samples the network delivered but the playout policy discarded
 as too late to play in capture order. **This is not network loss and must never be added to it:**

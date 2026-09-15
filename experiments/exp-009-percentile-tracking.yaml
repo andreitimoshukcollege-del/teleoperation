@@ -22,7 +22,7 @@
 # loss comparison came from 15 scratch sweeps rather than from this run; and `playoutBudgetMs`
 # doubles as `percentile`'s pre-window warm-up value, where 40 ms is badly wrong for a 300 ms link
 # and accounts for most of its measured loss on those profiles.
-id: exp-004-percentile-tracking
+id: exp-009-percentile-tracking
 seeds: [1, 2, 3, 4, 5]
 predictors:
   - none

@@ -28,7 +28,7 @@
 #       every point. Contrast against 300ms-60j-2loss-bursty is the whole point: same order of
 #       loss rate, deliberately different burst shape.
 #
-# Everything else is copied from exp-003-playout-baselines' operating point so the trial length
+# Everything else is copied from exp-008-playout-baselines' operating point so the trial length
 # and cadence match previously recorded runs.
 id: exp-006-network-observability
 seeds: [1, 2, 3, 4, 5]

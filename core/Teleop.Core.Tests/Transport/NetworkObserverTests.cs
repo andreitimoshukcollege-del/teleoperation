@@ -68,14 +68,21 @@ public class NetworkObserverTests
         observer.OnSendResult(accepted: false, nowTicks: 10);
         observer.OnSendResult(accepted: true, nowTicks: 20);
         observer.OnDelivery(arrivalTicks: 30);
-        observer.OnSequencedArrival(5, senderSendTicks: 0, senderTicksPerSecond: ReceiverTicksPerSecond, arrivalTicks: 40);
-        observer.OnSequencedArrival(4, senderSendTicks: Ms(1), senderTicksPerSecond: ReceiverTicksPerSecond, arrivalTicks: 50);
+        observer.OnSequencedArrival(5, senderSendTicks: 0, senderTicksPerSecond: ReceiverTicksPerSecond, arrivalTicks: 40, senderRecvTicks: 0);
+        observer.OnSequencedArrival(4, senderSendTicks: Ms(1), senderTicksPerSecond: ReceiverTicksPerSecond, arrivalTicks: 50, senderRecvTicks: Ms(1));
 
         Assert.Equal(
             new[]
             {
                 "net_downlink_dropped", "net_downlink_loss_burst", "net_downlink_sent",
-                "net_downlink_received", "net_downlink_reorder_displacement", "net_downlink_jitter_ms",
+                "net_downlink_received",
+
+                // The end-to-end total, then its attribution. Sequence 4 arrives after 5, and its
+                // robot-receive stamp is the later of the two, so the uplink is what inverted them
+                // -- the downlink saw them in the order the robot sent them.
+                "net_roundtrip_reorder_displacement", "net_uplink_reorder_displacement",
+
+                "net_downlink_jitter_ms",
             },
             sink.Samples.Select(s => s.Name).ToArray());
     }
@@ -206,10 +213,10 @@ public class NetworkObserverTests
 
         for (uint seq = 0; seq < 20; seq++)
         {
-            observer.OnSequencedArrival(seq, senderSendTicks: Ms(seq * 10), ReceiverTicksPerSecond, arrivalTicks: Ms(100 + seq * 10));
+            observer.OnSequencedArrival(seq, senderSendTicks: Ms(seq * 10), ReceiverTicksPerSecond, arrivalTicks: Ms(100 + seq * 10), senderRecvTicks: Ms(seq * 10));
         }
 
-        Assert.Equal(0, sink.CountOf("net_downlink_reorder_displacement"));
+        Assert.Equal(0, sink.CountOf("net_roundtrip_reorder_displacement"));
     }
 
     [Fact]
@@ -223,10 +230,10 @@ public class NetworkObserverTests
         uint[] arrivals = { 0, 1, 3, 2, 4, 6, 5 };
         for (int i = 0; i < arrivals.Length; i++)
         {
-            observer.OnSequencedArrival(arrivals[i], senderSendTicks: Ms(i * 10), ReceiverTicksPerSecond, arrivalTicks: Ms(100 + i * 10));
+            observer.OnSequencedArrival(arrivals[i], senderSendTicks: Ms(i * 10), ReceiverTicksPerSecond, arrivalTicks: Ms(100 + i * 10), senderRecvTicks: Ms(i * 10));
         }
 
-        Assert.Equal(new[] { 1.0, 1.0 }, sink.ValuesOf("net_downlink_reorder_displacement").ToArray());
+        Assert.Equal(new[] { 1.0, 1.0 }, sink.ValuesOf("net_roundtrip_reorder_displacement").ToArray());
     }
 
     [Fact]
@@ -241,10 +248,10 @@ public class NetworkObserverTests
         uint[] arrivals = { 0, 5, 1 };
         for (int i = 0; i < arrivals.Length; i++)
         {
-            observer.OnSequencedArrival(arrivals[i], senderSendTicks: Ms(i * 10), ReceiverTicksPerSecond, arrivalTicks: Ms(100 + i * 10));
+            observer.OnSequencedArrival(arrivals[i], senderSendTicks: Ms(i * 10), ReceiverTicksPerSecond, arrivalTicks: Ms(100 + i * 10), senderRecvTicks: Ms(i * 10));
         }
 
-        Assert.Equal(new[] { 4.0 }, sink.ValuesOf("net_downlink_reorder_displacement").ToArray());
+        Assert.Equal(new[] { 4.0 }, sink.ValuesOf("net_roundtrip_reorder_displacement").ToArray());
     }
 
     [Fact]
@@ -258,10 +265,10 @@ public class NetworkObserverTests
         uint[] arrivals = { 0, 1, 4, 5 };
         for (int i = 0; i < arrivals.Length; i++)
         {
-            observer.OnSequencedArrival(arrivals[i], senderSendTicks: Ms(i * 10), ReceiverTicksPerSecond, arrivalTicks: Ms(100 + i * 10));
+            observer.OnSequencedArrival(arrivals[i], senderSendTicks: Ms(i * 10), ReceiverTicksPerSecond, arrivalTicks: Ms(100 + i * 10), senderRecvTicks: Ms(i * 10));
         }
 
-        Assert.Equal(0, sink.CountOf("net_downlink_reorder_displacement"));
+        Assert.Equal(0, sink.CountOf("net_roundtrip_reorder_displacement"));
     }
 
     [Fact]
@@ -276,10 +283,10 @@ public class NetworkObserverTests
         uint[] arrivals = { uint.MaxValue - 2, uint.MaxValue - 1, uint.MaxValue, 0, 1, 2 };
         for (int i = 0; i < arrivals.Length; i++)
         {
-            observer.OnSequencedArrival(arrivals[i], senderSendTicks: Ms(i * 10), ReceiverTicksPerSecond, arrivalTicks: Ms(100 + i * 10));
+            observer.OnSequencedArrival(arrivals[i], senderSendTicks: Ms(i * 10), ReceiverTicksPerSecond, arrivalTicks: Ms(100 + i * 10), senderRecvTicks: Ms(i * 10));
         }
 
-        Assert.Equal(0, sink.CountOf("net_downlink_reorder_displacement"));
+        Assert.Equal(0, sink.CountOf("net_roundtrip_reorder_displacement"));
     }
 
     [Fact]
@@ -290,10 +297,10 @@ public class NetworkObserverTests
 
         // 0 then uint.MaxValue: the latter is the sequence immediately *before* 0, so it is one
         // step out of order, not 4294967295 steps.
-        observer.OnSequencedArrival(0, Ms(10), ReceiverTicksPerSecond, Ms(110));
-        observer.OnSequencedArrival(uint.MaxValue, Ms(0), ReceiverTicksPerSecond, Ms(120));
+        observer.OnSequencedArrival(0, Ms(10), ReceiverTicksPerSecond, Ms(110), Ms(10));
+        observer.OnSequencedArrival(uint.MaxValue, Ms(0), ReceiverTicksPerSecond, Ms(120), Ms(0));
 
-        Assert.Equal(new[] { 1.0 }, sink.ValuesOf("net_downlink_reorder_displacement").ToArray());
+        Assert.Equal(new[] { 1.0 }, sink.ValuesOf("net_roundtrip_reorder_displacement").ToArray());
     }
 
     // ---------------------------------------------------------------------------------------
@@ -306,7 +313,7 @@ public class NetworkObserverTests
         var sink = new RecordingSink();
         NetworkObserver observer = Downlink(sink);
 
-        observer.OnSequencedArrival(0, Ms(0), ReceiverTicksPerSecond, Ms(100));
+        observer.OnSequencedArrival(0, Ms(0), ReceiverTicksPerSecond, Ms(100), Ms(0));
 
         Assert.Equal(0, sink.CountOf("net_downlink_jitter_ms"));
     }
@@ -322,7 +329,7 @@ public class NetworkObserverTests
         for (uint seq = 0; seq < 10; seq++)
         {
             observer.OnSequencedArrival(
-                seq, senderSendTicks: Ms(seq * 10), ReceiverTicksPerSecond, arrivalTicks: Ms(300 + seq * 10));
+                seq, senderSendTicks: Ms(seq * 10), ReceiverTicksPerSecond, arrivalTicks: Ms(300 + seq * 10), senderRecvTicks: Ms(seq * 10));
         }
 
         Assert.All(sink.ValuesOf("net_downlink_jitter_ms"), v => Assert.Equal(0.0, v, 12));
@@ -344,7 +351,7 @@ public class NetworkObserverTests
         for (uint i = 0; i < stream.Length; i++)
         {
             observer.OnSequencedArrival(
-                i, Ms(stream[i].S), ReceiverTicksPerSecond, Ms(stream[i].R));
+                i, Ms(stream[i].S), ReceiverTicksPerSecond, Ms(stream[i].R), Ms(stream[i].S));
         }
 
         double[] jitter = sink.ValuesOf("net_downlink_jitter_ms").ToArray();
@@ -372,7 +379,7 @@ public class NetworkObserverTests
                 seq,
                 senderSendTicks: Ms(seq * 10, SenderTicksPerSecond),
                 senderTicksPerSecond: SenderTicksPerSecond,
-                arrivalTicks: Ms(50 + seq * 10));
+                arrivalTicks: Ms(50 + seq * 10), senderRecvTicks: Ms(seq * 10, SenderTicksPerSecond));
         }
 
         Assert.Equal(7, sink.CountOf("net_downlink_jitter_ms"));
@@ -396,8 +403,8 @@ public class NetworkObserverTests
 
         for (uint i = 0; i < sendMs.Length; i++)
         {
-            a.OnSequencedArrival(i, Ms(sendMs[i]), ReceiverTicksPerSecond, Ms(arrivalMs[i]));
-            b.OnSequencedArrival(i, Ms(sendMs[i] + OffsetMs), ReceiverTicksPerSecond, Ms(arrivalMs[i]));
+            a.OnSequencedArrival(i, Ms(sendMs[i]), ReceiverTicksPerSecond, Ms(arrivalMs[i]), Ms(sendMs[i]));
+            b.OnSequencedArrival(i, Ms(sendMs[i] + OffsetMs), ReceiverTicksPerSecond, Ms(arrivalMs[i]), Ms(sendMs[i] + OffsetMs));
         }
 
         Assert.Equal(
@@ -414,12 +421,12 @@ public class NetworkObserverTests
         var sink = new RecordingSink();
         NetworkObserver observer = Downlink(sink);
 
-        observer.OnSequencedArrival(0, Ms(0), senderTicksPerSecond: 0, arrivalTicks: Ms(100));
-        observer.OnSequencedArrival(2, Ms(20), senderTicksPerSecond: 0, arrivalTicks: Ms(120));
-        observer.OnSequencedArrival(1, Ms(10), senderTicksPerSecond: 0, arrivalTicks: Ms(130));
+        observer.OnSequencedArrival(0, Ms(0), senderTicksPerSecond: 0, arrivalTicks: Ms(100), Ms(0));
+        observer.OnSequencedArrival(2, Ms(20), senderTicksPerSecond: 0, arrivalTicks: Ms(120), Ms(20));
+        observer.OnSequencedArrival(1, Ms(10), senderTicksPerSecond: 0, arrivalTicks: Ms(130), Ms(10));
 
         Assert.Equal(0, sink.CountOf("net_downlink_jitter_ms"));
-        Assert.Equal(new[] { 1.0 }, sink.ValuesOf("net_downlink_reorder_displacement").ToArray());
+        Assert.Equal(new[] { 1.0 }, sink.ValuesOf("net_roundtrip_reorder_displacement").ToArray());
     }
 
     [Fact]
@@ -428,8 +435,8 @@ public class NetworkObserverTests
         var sink = new RecordingSink();
         NetworkObserver observer = Downlink(sink);
 
-        observer.OnSequencedArrival(0, Ms(0), ReceiverTicksPerSecond, Ms(100));
-        observer.OnSequencedArrival(1, Ms(10), ReceiverTicksPerSecond, Ms(117));
+        observer.OnSequencedArrival(0, Ms(0), ReceiverTicksPerSecond, Ms(100), Ms(0));
+        observer.OnSequencedArrival(1, Ms(10), ReceiverTicksPerSecond, Ms(117), Ms(10));
 
         (string Name, double Value, long Ticks) sample =
             sink.Samples.Single(s => s.Name == "net_downlink_jitter_ms");
@@ -448,7 +455,7 @@ public class NetworkObserverTests
 
         Assert.False(observer.SupportsSequencedArrival);
         Assert.Throws<InvalidOperationException>(
-            () => observer.OnSequencedArrival(0, 0, ReceiverTicksPerSecond, 0));
+            () => observer.OnSequencedArrival(0, 0, ReceiverTicksPerSecond, 0, 0));
         Assert.Empty(sink.Samples);
     }
 
@@ -477,14 +484,14 @@ public class NetworkObserverTests
             for (uint i = 0; i < arrivals.Length; i++)
             {
                 observer.OnSequencedArrival(
-                    arrivals[i], Ms(i * 10), ReceiverTicksPerSecond, Ms(100 + i * 17));
+                    arrivals[i], Ms(i * 10), ReceiverTicksPerSecond, Ms(100 + i * 17), Ms(i * 10));
             }
         }
 
         // Give the reused observer a completely different history first, then reset it.
         reused.OnSendResult(accepted: false, nowTicks: 900);
-        reused.OnSequencedArrival(4_000, Ms(5000), ReceiverTicksPerSecond, Ms(9000));
-        reused.OnSequencedArrival(4_001, Ms(5010), ReceiverTicksPerSecond, Ms(9100));
+        reused.OnSequencedArrival(4_000, Ms(5000), ReceiverTicksPerSecond, Ms(9000), Ms(5000));
+        reused.OnSequencedArrival(4_001, Ms(5010), ReceiverTicksPerSecond, Ms(9100), Ms(5010));
         reused.Reset();
         second.Samples.Clear();
 
@@ -538,9 +545,112 @@ public class NetworkObserverTests
             observer.OnDelivery(tick);
             // Every third arrival is out of order, so the reorder-emitting branch is measured too.
             uint seq = sequence % 3 == 2 ? sequence - 1 : sequence;
-            observer.OnSequencedArrival(seq, tick, ReceiverTicksPerSecond, tick);
+            observer.OnSequencedArrival(seq, tick, ReceiverTicksPerSecond, tick, tick);
             sequence++;
             tick += 100_000;
         });
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // Attributing a reordering to a leg (docs/metrics.md §3).
+    //
+    // The observed sequence is the operator's, echoed by the robot, so an inversion seen at the
+    // operator could have been caused by the uplink, by the robot batching its replies, or by the
+    // downlink. Reported as one number it was read as a property of the link, and it is not one.
+    // Each test below builds exactly one of the three causes and asserts the other two stay quiet.
+    // ---------------------------------------------------------------------------------------
+
+    [Fact]
+    public void AnInversionTheUplinkCausedIsAttributedToTheUplinkAlone()
+    {
+        var sink = new RecordingSink();
+        NetworkObserver observer = Downlink(sink);
+
+        // Sequence 1 reached the robot *after* sequence 2 did (recv 30 vs 20), so the uplink
+        // inverted them. The robot then replied in the order it received them and the downlink
+        // preserved that order -- send stamps and arrivals both ascend.
+        observer.OnSequencedArrival(0, senderSendTicks: Ms(10), ReceiverTicksPerSecond, arrivalTicks: Ms(110), senderRecvTicks: Ms(5));
+        observer.OnSequencedArrival(2, senderSendTicks: Ms(20), ReceiverTicksPerSecond, arrivalTicks: Ms(120), senderRecvTicks: Ms(20));
+        observer.OnSequencedArrival(1, senderSendTicks: Ms(30), ReceiverTicksPerSecond, arrivalTicks: Ms(130), senderRecvTicks: Ms(30));
+
+        Assert.Equal(new[] { 1.0 }, sink.ValuesOf("net_roundtrip_reorder_displacement").ToArray());
+        Assert.Equal(new[] { 1.0 }, sink.ValuesOf("net_uplink_reorder_displacement").ToArray());
+        Assert.Equal(0, sink.CountOf("net_downlink_reorder_displacement"));
+        Assert.Equal(0, sink.CountOf("net_robot_reply_batched"));
+    }
+
+    [Fact]
+    public void AnInversionTheDownlinkCausedIsAttributedToTheDownlinkAlone()
+    {
+        var sink = new RecordingSink();
+        NetworkObserver observer = Downlink(sink);
+
+        // The robot received and replied in sequence order -- recv and send stamps both ascend
+        // with the sequence -- but sequence 1's reply overtook nothing while sequence 2's arrived
+        // first. The inversion happened after the robot let go of them.
+        observer.OnSequencedArrival(0, senderSendTicks: Ms(10), ReceiverTicksPerSecond, arrivalTicks: Ms(110), senderRecvTicks: Ms(5));
+        observer.OnSequencedArrival(2, senderSendTicks: Ms(30), ReceiverTicksPerSecond, arrivalTicks: Ms(120), senderRecvTicks: Ms(25));
+        observer.OnSequencedArrival(1, senderSendTicks: Ms(20), ReceiverTicksPerSecond, arrivalTicks: Ms(130), senderRecvTicks: Ms(15));
+
+        Assert.Equal(new[] { 1.0 }, sink.ValuesOf("net_roundtrip_reorder_displacement").ToArray());
+        Assert.Equal(new[] { 1.0 }, sink.ValuesOf("net_downlink_reorder_displacement").ToArray());
+        Assert.Equal(0, sink.CountOf("net_uplink_reorder_displacement"));
+    }
+
+    [Fact]
+    public void RepliesSharingASendStampAreCountedAsBatchedAndBlamedOnNeitherLeg()
+    {
+        var sink = new RecordingSink();
+        NetworkObserver observer = Downlink(sink);
+
+        // RobotEndpoint.Step replies to everything it drained in one poll with the same nowTicks.
+        // Sequences 1 and 2 leave together at Ms(20); the downlink delivers 2 first. The downlink
+        // must not be blamed -- it was never given an order to preserve.
+        observer.OnSequencedArrival(0, senderSendTicks: Ms(10), ReceiverTicksPerSecond, arrivalTicks: Ms(110), senderRecvTicks: Ms(5));
+        observer.OnSequencedArrival(2, senderSendTicks: Ms(20), ReceiverTicksPerSecond, arrivalTicks: Ms(120), senderRecvTicks: Ms(18));
+        observer.OnSequencedArrival(1, senderSendTicks: Ms(20), ReceiverTicksPerSecond, arrivalTicks: Ms(121), senderRecvTicks: Ms(16));
+
+        Assert.Equal(new[] { 1.0 }, sink.ValuesOf("net_roundtrip_reorder_displacement").ToArray());
+        Assert.Equal(new[] { 1.0 }, sink.ValuesOf("net_robot_reply_batched").ToArray());
+        Assert.Equal(0, sink.CountOf("net_downlink_reorder_displacement"));
+        Assert.Equal(0, sink.CountOf("net_uplink_reorder_displacement"));
+    }
+
+    [Fact]
+    public void AnInOrderStreamAttributesNothingToAnyLeg()
+    {
+        var sink = new RecordingSink();
+        NetworkObserver observer = Downlink(sink);
+
+        for (uint seq = 0; seq < 10; seq++)
+        {
+            observer.OnSequencedArrival(
+                seq, senderSendTicks: Ms(seq * 10), ReceiverTicksPerSecond,
+                arrivalTicks: Ms(100 + seq * 10), senderRecvTicks: Ms(seq * 10 - 2));
+        }
+
+        Assert.Equal(0, sink.CountOf("net_roundtrip_reorder_displacement"));
+        Assert.Equal(0, sink.CountOf("net_uplink_reorder_displacement"));
+        Assert.Equal(0, sink.CountOf("net_downlink_reorder_displacement"));
+        Assert.Equal(0, sink.CountOf("net_robot_reply_batched"));
+    }
+
+    [Fact]
+    public void ResetForgetsTheAttributionState()
+    {
+        var sink = new RecordingSink();
+        NetworkObserver observer = Downlink(sink);
+
+        observer.OnSequencedArrival(0, senderSendTicks: Ms(10), ReceiverTicksPerSecond, arrivalTicks: Ms(110), senderRecvTicks: Ms(5));
+        observer.OnSequencedArrival(9, senderSendTicks: Ms(90), ReceiverTicksPerSecond, arrivalTicks: Ms(190), senderRecvTicks: Ms(85));
+        observer.Reset();
+
+        // A high-water mark of 9 surviving Reset would make this first post-Reset arrival look
+        // like a displacement-9 inversion. Sweeps reuse observers across trials.
+        observer.OnSequencedArrival(0, senderSendTicks: Ms(10), ReceiverTicksPerSecond, arrivalTicks: Ms(110), senderRecvTicks: Ms(5));
+        observer.OnSequencedArrival(1, senderSendTicks: Ms(20), ReceiverTicksPerSecond, arrivalTicks: Ms(120), senderRecvTicks: Ms(15));
+
+        Assert.Equal(0, sink.CountOf("net_roundtrip_reorder_displacement"));
+        Assert.Equal(0, sink.CountOf("net_robot_reply_batched"));
     }
 }

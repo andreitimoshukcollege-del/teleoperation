@@ -1,141 +1,141 @@
 # Teleop Research Platform
 
-VR teleoperation of a remote robot (Meta Quest + Unity), built to produce measured, reproducible
-results about latency mitigation: prediction, reconciliation, jitter buffering, autonomy
-arbitration, view synthesis. This is a research platform, not a product — see root `CLAUDE.md`
-for the architecture, invariants, and rules this repo is built around (required reading before
-changing `core/`). `docs/adr/` has the design history behind every non-obvious decision.
+Controlling a robot arm from a VR headset, over the internet, where the round trip takes 50–300 ms
+and varies unpredictably. You move your hand; the robot moves a third of a second later. That is
+hard to work with and makes some people motion-sick.
 
-This file is the human "how do I actually run this" quickstart. It doesn't repeat `CLAUDE.md`'s
-rules or `robot/README.md`'s hardware incident log — it points at both.
+You can't make the internet faster. You *can* hide the delay — predict where the robot will be and
+draw that, then correct smoothly when the truth arrives. Every technique for doing so trades one
+bad thing for another: predict harder and you're wrong more often, correct faster and the picture
+jumps.
 
-## Prerequisites
+**This repo measures those trades instead of arguing about them.** It is a research platform, not a
+product. A result here looks like:
 
-- **.NET SDK 8** — the Linux SDK on the Linux box, the Windows SDK on the Windows box
-  (see "Environment notes" below — the two are not interchangeable).
-- **Python 3** — for `analysis/`, via a venv `just` sets up automatically.
-- **[`just`](https://github.com/casey/just)** — optional but recommended; every command below has
-  a `just` recipe. Run `just --list` any time for the full, current list — this README doesn't
-  duplicate it.
-- **Unity 2022.3.46f1** — only needed for the VR side (`unity/TeleopVR/`).
+> On a link with bursty delay, a playout buffer that adapts to recent conditions holds the same
+> loss rate as the best possible fixed buffer while adding **56–59% less delay**. On a steady link,
+> a hand-tuned fixed buffer beats it. The crossover is the finding.
 
-## Build & test
+**New here? → [`ONBOARDING.md`](ONBOARDING.md)** — setup, in order, with what to expect at each
+step. This file is the day-to-day command reference.
 
-```bash
-cd core && dotnet test          # unit + allocation tests
-just core-check                 # the same, plus `verify` (determinism) and `audit` (invariants)
-just check                      # core-check + the analysis/ python test suite
-```
+---
 
-Never trust a green build alone — `core-check`'s `verify`/`audit` steps catch things unit tests
-miss (see root `CLAUDE.md`'s "Verify your work"). `docs/metrics.md` defines every metric these
-tools report.
-
-## Running a sweep
+## Quick start
 
 ```bash
+git lfs install                 # BEFORE cloning -- see ONBOARDING.md
+git clone https://github.com/andreitimoshukcollege-del/teleoperation.git
+cd teleoperation
+
+cd core && dotnet test          # ~800 tests, a few seconds
+just check                      # every gate in the repo
 just sweep experiments/exp-001-predictor-baseline.yaml
-just report results/exp-001-predictor-baseline/<timestamp>     # figures + summary table
-just experiment-gui                                            # GUI to configure/run/view instead
 ```
 
-See `experiments/CLAUDE.md` for writing a new experiment config and `results/CLAUDE.md` for the
-manifest convention every run produces.
+Needs .NET SDK 8, Python 3 (with `python3-venv` on Debian/Ubuntu), `git-lfs`, and optionally
+[`just`](https://github.com/casey/just). Unity 2022.3.46f1 only for the VR side; `python3-tk` only
+if you want `analysis/`'s GUI.
 
-## Controlling the real JetRover arm
+## Where things are
 
-This platform's one physical robot today is a Hiwonder JetRover, reachable over Tailscale, whose
-ROS 2 side lives in a **separate** repo
-([`jetrover-teleop-ros`](https://github.com/andreitimoshukcollege-del/jetrover-teleop-ros)) on its
-Jetson Nano — see `robot/README.md` for the full architecture diagram and hardware incident
-history. The steps below are everything needed to go from a clean checkout to actually moving the
-arm.
+| Path | What it holds |
+|---|---|
+| `core/Teleop.Core/` | every algorithm — one copy, compiled by both `dotnet` and Unity |
+| `core/Teleop.Eval/` | headless CLI: `sweep`, `verify`, `audit` |
+| `unity/TeleopVR/` | scenes, XR, rendering, real I/O |
+| `analysis/` | Python — reads `results/`, produces figures |
+| `experiments/` | one YAML per experiment |
+| `results/` | **append-only.** New directories only; never edit an old one |
+| `docs/metrics.md` | every metric is defined here |
+| `docs/research-log/` | what was tried, what happened, what was rejected |
+| `docs/adr/` | why the architecture looks the way it does |
 
-### 1. The robot side auto-starts — nothing to do after a Jetson reboot
+Most directories have a `CLAUDE.md` with the working rules for that directory. They record
+decisions that were expensive to learn — read the one for anything you're about to change.
 
-`Teleop.RobotHost`, `teleop_relay`'s `relay_node`, and `jetrover_arm_control`'s
-`robot_controller_manager` all run as systemd services (`robot/systemd/`), enabled on boot and
-auto-restarted on crash. As long as the Jetson is powered on, they're already up — including right
-after a reboot, with zero manual SSH step — so Unity's UDP sends (which start unconditionally the
-moment Play begins) actually land the instant the Jetson is reachable. `just robot-status` gives a
-one-line health check of all three without a manual SSH session. See `robot/systemd/README.md` if
-you need to (re)install these on a fresh Jetson image.
-
-### 2. Redeploy `Teleop.RobotHost` after a code change
+## Everyday commands
 
 ```bash
-just deploy-robothost                          # defaults: Jetson at 100.112.90.72, user jetson
-just deploy-robothost 100.112.90.72 jetson      # explicit
+just --list          # the full, current list -- this file doesn't duplicate it
 ```
 
-This publishes for `linux-arm64`, copies the build over, and restarts `teleop-robothost.service` —
-it prints the service's own startup banner (profile name, joint count, `MaxDirectionMagnitude`) so
-you can confirm it landed correctly. It does **not** touch the two ROS services from step 1. If
-you don't have passwordless SSH to the Jetson set up, run the `dotnet publish` line from the
-recipe by hand and copy the output over yourself.
-
-### 3. Drive the arm
-
-Headless, from a dev machine:
+**Verifying a change**
 
 ```bash
-just move-arm 0.15 0 0.08                       # Cartesian target (wrist frame, meters), holds
-just clocksync-check                            # Phase-3 cross-machine ClockSync diagnostic
-just build-profile                              # interactively author a new RobotArmProfile JSON
+just core-check      # dotnet test + verify (determinism) + audit (invariants)
+just bridge-check    # does a Core API change break the Unity side?
+just check           # all of the above plus the analysis/ test suite
 ```
 
-**A human must be watching the physical hardware and have confirmed clearance before running any
-of these** — each one commands real motion (`--confirm-hardware-motion` is baked into the recipe).
-See `robot/README.md`'s supervised-hardware-test discipline.
+A green `dotnet test` alone is **not** enough. `verify` replays a recorded session twice and
+requires byte-identical output; `audit` inspects the built assembly for invariant violations. Both
+exist because unit tests here have repeatedly missed the kind of bug that invalidates a
+measurement.
 
-From Unity (VR drag-target path): open `unity/TeleopVR/`, set `RemoteHost`/ports in
-`Assets/Teleop/Runtime/Bridge/Resources/jetrover_connection.json` to match your `Teleop.RobotHost`
-instance, set `ConfirmHardwareMotion: true` only once clearance is confirmed, and press Play.
-`JetRoverArmConfig.CommandRateHz` there controls how often real hardware commands are sent — see
-that field's own doc comment before changing it, it's tuned against a real, documented servo
-cooldown constraint, not an arbitrary number. `JetRoverOperatorBridge` starts sending the moment
-Play begins, with no separate "connect" step (UDP has no handshake) — if a
-`JetRoverConnectionHud` is wired into the scene (`Bridge/JetRoverConnectionHud.cs`, reads
-`JetRoverOperatorBridge.Status`), it shows "connected"/"no connection yet"/"connection lost" so
-you don't have to watch the arm move or SSH into Jetson logs to tell whether it actually reached
-the robot.
+**Running experiments**
 
-### Reference
+```bash
+just sweep experiments/<config>.yaml          # run it
+just report results/<experiment>/<timestamp>  # figures + summary table
+just experiment-gui                           # configure, run and plot in one window
+```
 
-- `core/RobotProfiles/*.json` — robot topology/geometry profiles (docs/adr/0011).
-- `core/Teleop.RobotHost/RobotHostArgs.cs` — the process's full CLI flag reference.
-- `robot/systemd/README.md` — the three auto-start services and how to (re)install them.
-- `robot/README.md` — architecture diagram, hardware status, and the incident log (servo faults,
-  calibration findings, rate-dependent command loss) worth reading before debugging anything that
-  looks like a repeat of a solved problem.
+Every run writes a `manifest.json` with the git SHA that produced it. See `experiments/CLAUDE.md`
+to write a new config and `results/CLAUDE.md` for the manifest convention.
 
-## Environment notes
+## Two machines, opposite rules
 
-This project is developed across **two machines with opposite rules**. Root `CLAUDE.md`'s
-"Environment" section is the full reference; the short version:
+Development is split across a **Linux box** (`core/`, `analysis/` — algorithms and experiments) and
+a **Windows box** (`unity/`, Quest builds, hardware). This isn't a preference: Unity can't open a
+project stored inside WSL, and the Windows box's `dotnet` is the Windows SDK even from a WSL shell,
+so one shared tree would have two SDKs fighting over `build/`.
 
-**Linux box** — `core/` and `analysis/` work. Native Ubuntu on ext4, its own clone, the Linux
-.NET SDK, absolute paths fine, no WSL interop. Unity cannot open this clone. The
-Unix-domain-socket tests in `core/Teleop.RobotHost.Tests` only run here.
+Practical consequences:
 
-**Windows box** — Unity, Quest builds, and JetRover hardware testing.
+- **One branch per machine.** Never check out a branch the other box is working on — reach `main`
+  through a PR.
+- **Pull `main` before opening Unity.** Core is linked by relative path, so a Core change on `main`
+  changes the Unity build immediately.
+- Core's C# 9 / `netstandard2.1` limit comes from Unity but **binds everywhere** — code can pass
+  `dotnet test` on Linux and still break the Quest build.
 
-- Repo lives on NTFS (`C:\Users\...`), reached from WSL — Unity requires this, it can't open a
-  project over `\\wsl$\`.
-- `dotnet` is the **Windows** SDK even when invoked from a WSL shell. It does not resolve
-  WSL-native absolute paths (e.g. from `mktemp -d`) passed as arguments — only the current
-  directory gets translated. Use relative paths for anything `dotnet` needs to read or write.
-- Do not add the Linux SDK *on this box* — two SDKs sharing one working tree's `build/`/`obj/`
-  churn each other. That constraint is specific to this box's shared tree.
+Full reference: root `CLAUDE.md`'s "Environment" section.
 
-**Both** — `git-lfs` must be installed before any working-tree-modifying git command, or
-LFS-tracked binaries get written as pointer text files. And Core's C# 9 / `netstandard2.1`
-constraint comes from Unity on the Windows box but binds everywhere: code can test green under
-the Linux SDK and still break the Quest build.
+## The real robot
+
+A Hiwonder JetRover with a Jetson Nano, over Tailscale. Its ROS 2 side is a separate repo
+([`jetrover-teleop-ros`](https://github.com/andreitimoshukcollege-del/jetrover-teleop-ros)).
+
+> **A human must be watching the arm with clearance confirmed before any of these run.** Each one
+> commands real motion.
+
+```bash
+just robot-status                 # health of all three Jetson services
+just deploy-robothost             # redeploy Teleop.RobotHost after a Core change
+just move-arm 0.15 0 0.08         # Cartesian target, metres, wrist frame -- MOVES THE ARM
+just clocksync-check              # cross-machine clock-sync diagnostic
+```
+
+The Jetson's services auto-start on boot, so there's nothing to do after a reboot. Drive hardware
+through a `just` recipe, never by hand-typing the underlying command — if what you need has no
+recipe and is reusable, add one.
+
+From Unity: open `Assets/Scenes/JetRoverControl.unity`, set the host and ports in
+`Assets/Teleop/Runtime/Bridge/Resources/jetrover_connection.json`, set
+`ConfirmHardwareMotion: true` only once clearance is confirmed, and press Play. The connection HUD
+reports connected / no connection yet / connection lost, so you don't have to watch the arm or read
+Jetson logs to tell whether packets are landing.
+
+**Read `robot/README.md` before any hardware work.** Its incident log covers real servo faults,
+calibration findings and a rate-dependent command-loss bug — most "new" hardware problems turn out
+to be repeats.
 
 ## Contributing
 
-Read root `CLAUDE.md` first — in particular the "Boundaries for agents" section (free rein in
-`core/`/`analysis/`/`experiments/`/`docs/`; anything under `unity/` needs human review; `results/`
-is append-only). `docs/adr/` explains why the architecture looks the way it does before you change
-it.
+Read root `CLAUDE.md` first, especially "Boundaries for agents": free rein in `core/`, `analysis/`,
+`experiments/` and `docs/`; anything under `unity/` needs human review; `results/` is append-only.
+
+Write up what you find in `docs/research-log/` — **including the things that didn't work.** A
+finished negative result beats three unfinished positive ones, and a rejected idea that nobody
+recorded gets proposed again next quarter.

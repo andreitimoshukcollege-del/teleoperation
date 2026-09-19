@@ -60,6 +60,35 @@ One question, decomposed once, taken all the way to a recorded verdict. **A fini
 result beats three unfinished positive ones**, and that applies to the whole run as much as to any
 single candidate.
 
+## Survey runs
+
+Everything below assumes candidates that produce code and a sweep to rank them. Some runs do not:
+a feasibility survey, or a literature review, where the deliverable is an argument or a map of
+prior work rather than an implementation. Two runs have already worked this way and each had to
+justify improvising in its own decision record, so it is written down here instead.
+
+**Your brief says which kind of run it is.** If it is a survey, these are the differences and
+nothing else changes:
+
+- **No implementation, so no assembly and no `just core-check` on an assembled tree.** Researchers
+  write prose. The anti-collision scope below reduces to *one file per researcher, named in its
+  brief*, and the shared-file prohibition still applies in full.
+- **No panel.** `judge-admissibility` needs an implementation, `judge-verdict` needs a sweep with a
+  baseline row, and neither exists. **Do not run a judge with nothing to judge** — it emits noise
+  that later readers mistake for evidence. `judge-methodology` may still be worth running if the
+  survey makes a claim about a measurement, but it needs a `manifest.json` to work against, so
+  usually it is not.
+- **More than four researchers is fine** when the areas do not compete. The two-to-four rule exists
+  because candidates must be distinguishable by a measurement; survey areas are partitioned by
+  subject and collide only if two are given the same file.
+- **Report step 3 still happens.** Pass `--chosen "survey only"` or similar, `--results ""`, and
+  put the finding in `--why`. A survey that concluded something is a result the document carries.
+- **Worktrees are optional.** They exist to isolate builds. Prose researchers writing to distinct
+  files do not need one, and skipping them saves ~75 MB and the whole teardown risk. If you do skip
+  them, say so in the report, since Report step 1 then has nothing to copy.
+
+Everything else — hard stops, the decision record, the honesty rules — is unchanged.
+
 ## Decomposition
 
 1. **Read the axis first.** Its `CLAUDE.md` "Implemented", "Planned, not yet implemented" and
@@ -212,12 +241,16 @@ Read `docs/research-log/CLAUDE.md` for what belongs in the first two.
 
    Only once all of that holds:
 
+   **Remove only the worktrees you created, by name.** The loop that used to be here globbed
+   `.claude/worktrees/*/` and so removed every worktree present, including any a human or another
+   session had open — the opposite of the heading above it, and a way to destroy work this run
+   never touched.
+
    ```bash
-   for d in .claude/worktrees/*/; do
-     p=$(cd "$d" && pwd)
-     git worktree unlock "$p" 2>/dev/null
-     git worktree remove --force "$p"
-   done
+   # One line per worktree you created, using the path you were given when you created it.
+   p=$(cd .claude/worktrees/<the-one-you-created> && pwd)
+   git worktree unlock "$p" 2>/dev/null
+   git worktree remove --force "$p"
    git worktree prune
    ```
 

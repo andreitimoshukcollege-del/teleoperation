@@ -58,8 +58,19 @@ install-traces:
 sweep config:
     cd core && dotnet run --project Teleop.Eval -- sweep ../{{config}}
 
+# ---- JetRover hardware (a human must be watching anything that moves the arm) ----
+
+# Where the JetRover and this operator machine are reachable from here. The defaults are their
+# Tailscale addresses. For a direct LAN path (both machines on the same Wi-Fi), export
+# JETROVER_HOST and OPERATOR_HOST in your shell (`just` parameters are positional, so `remote_host=`
+# on the command line does not work).
+# The ssh/scp recipes accept IPv6 literals, but WSL's default NAT networking has no IPv6 route and
+# the UDP transports in Teleop.RobotHost and Teleop.Eval are IPv4-only, so use IPv4 for now.
+default_jetrover_host := env_var_or_default("JETROVER_HOST", "100.112.90.72")
+default_operator_host := env_var_or_default("OPERATOR_HOST", "100.82.140.80")
+
 # Move the real JetRover arm to a Cartesian target (wrist frame, meters) and hold, e.g. `just move-arm 0.15 0 0.08` -- requires Teleop.RobotHost running on the Jetson and a human watching the hardware
-move-arm x y z gripper="0" remote_host="100.112.90.72" remote_port="6000" local_port="6001":
+move-arm x y z gripper="0" remote_host=default_jetrover_host remote_port="6000" local_port="6001":
     cd core && dotnet run --project Teleop.Eval -- move-arm \
         --x {{x}} --y {{y}} --z {{z}} --gripper {{gripper}} \
         --remote-host {{remote_host}} --remote-port {{remote_port}} --local-port {{local_port}} \
@@ -72,14 +83,14 @@ build-profile output="" force="false":
         {{ if force == "true" { "--force" } else { "" } }}
 
 # Phase-3 cross-machine ClockSync diagnostic against an already-running Teleop.RobotHost -- moves the real arm once and holds; a human must be watching the hardware
-clocksync-check remote_host="100.112.90.72" remote_port="6000" local_port="6001" rate_hz="20" duration_seconds="20":
+clocksync-check remote_host=default_jetrover_host remote_port="6000" local_port="6001" rate_hz="20" duration_seconds="20":
     cd core && dotnet run --project Teleop.Eval -- clocksync-check \
         --remote-host {{remote_host}} --remote-port {{remote_port}} --local-port {{local_port}} \
         --rate-hz {{rate_hz}} --duration-seconds {{duration_seconds}} \
         --confirm-hardware-motion
 
 # Publish Teleop.RobotHost for the Jetson (linux-arm64), copy it over, and restart its systemd service -- needs passwordless ssh/scp; does NOT touch the Jetson's ROS 2 nodes, see robot/systemd/README.md
-deploy-robothost remote_host="100.112.90.72" remote_user="jetson" operator_host="100.82.140.80" max_direction_magnitude="" profile_path="":
+deploy-robothost remote_host=default_jetrover_host remote_user="jetson" operator_host=default_operator_host max_direction_magnitude="" profile_path="":
     #!/usr/bin/env bash
     set -euo pipefail
     cd core
@@ -97,7 +108,9 @@ deploy-robothost remote_host="100.112.90.72" remote_user="jetson" operator_host=
     dotnet publish Teleop.RobotHost -c Release -r linux-arm64 --self-contained false -f net8.0 -o "$publish_dir"
     tar czf "$archive" -C "$publish_dir" .
     echo "Copying to {{remote_user}}@{{remote_host}}:~/${remote_dir}..." >&2
-    scp -o StrictHostKeyChecking=accept-new "$archive" "{{remote_user}}@{{remote_host}}:/tmp/${remote_dir}.tar.gz"
+    # scp, unlike ssh, needs an IPv6 literal in brackets to tell the address from the path.
+    case "{{remote_host}}" in *:*) scp_dest="{{remote_user}}@[{{remote_host}}]" ;; *) scp_dest="{{remote_user}}@{{remote_host}}" ;; esac
+    scp -o StrictHostKeyChecking=accept-new "$archive" "${scp_dest}:/tmp/${remote_dir}.tar.gz"
     extra_args=""
     if [ -n "{{max_direction_magnitude}}" ]; then extra_args="$extra_args --max-direction-magnitude {{max_direction_magnitude}}"; fi
     if [ -n "{{profile_path}}" ]; then extra_args="$extra_args --profile-path {{profile_path}}"; fi
@@ -128,9 +141,174 @@ deploy-robothost remote_host="100.112.90.72" remote_user="jetson" operator_host=
     "
 
 # SSH in and print systemctl status for all three Jetson-side services (teleop-robothost, jetrover-relay, jetrover-arm-control) in one shot -- see robot/systemd/README.md
-robot-status remote_host="100.112.90.72" remote_user="jetson":
+robot-status remote_host=default_jetrover_host remote_user="jetson":
     ssh -o StrictHostKeyChecking=accept-new "{{remote_user}}@{{remote_host}}" \
         "systemctl status teleop-robothost jetrover-relay jetrover-arm-control --no-pager -n 5"
+
+# Read-only: the Jetson's Wi-Fi profiles, visible networks, IPv4/IPv6 addresses, routes and Tailscale state -- moves nothing; run before and after `robot-wifi-join`
+robot-net-status remote_host=default_jetrover_host remote_user="jetson":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    ssh -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new "{{remote_user}}@{{remote_host}}" 'bash -s' <<'REMOTE'
+    echo "== $(hostname): network profiles (name:type:device:autoconnect:priority)"
+    nmcli -t -f NAME,TYPE,DEVICE,AUTOCONNECT,AUTOCONNECT-PRIORITY connection show 2>&1 || echo "nmcli unavailable"
+    echo "== visible Wi-Fi (* = in use; in-use:ssid:signal:security)"
+    nmcli -t -f IN-USE,SSID,SIGNAL,SECURITY device wifi list 2>&1 | head -20 || true
+    echo "== IPv4"; ip -4 -brief addr show
+    echo "== IPv6"; ip -6 -brief addr show
+    echo "== default routes"; ip route show default; ip -6 route show default
+    echo "== tailscale"; tailscale status 2>&1 | head -5 || true
+    echo "== services that may manage Wi-Fi"
+    systemctl list-units --type=service --no-pager --plain 2>/dev/null | grep -i -E 'wifi|hotspot|hostapd|wpa_supplicant|NetworkManager|tailscale' || true
+    REMOTE
+
+# Read-only: list the Jetson's cameras, grab one frame from `device`, copy it here and print where it went -- moves nothing; exits non-zero if no frame was captured
+robot-camera-check device="/dev/video0" remote_host=default_jetrover_host remote_user="jetson":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    target="{{remote_user}}@{{remote_host}}"
+    case "{{remote_host}}" in *:*) scp_src="{{remote_user}}@[{{remote_host}}]" ;; *) scp_src="$target" ;; esac
+    remote_file=/tmp/jetrover-camera-check.jpg
+    ssh -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new "$target" "bash -s -- '{{device}}' '$remote_file'" <<'REMOTE'
+    dev="$1"; out="$2"
+    rm -f "$out"
+    echo "== cameras on $(hostname)"
+    if command -v v4l2-ctl >/dev/null 2>&1; then v4l2-ctl --list-devices 2>&1; else ls -l /dev/video* 2>&1 || true; fi
+    echo "== USB devices"; lsusb 2>&1 || true
+    if [ ! -e "$dev" ]; then
+        echo "error: $dev does not exist; pass device=/dev/videoN from the list above" >&2
+        exit 1
+    fi
+    if command -v fuser >/dev/null 2>&1 && fuser "$dev" >/dev/null 2>&1; then
+        echo "warning: $dev is already open by another process (a ROS camera node?), so capture may fail:" >&2
+        fuser -v "$dev" 2>&1 || true
+    fi
+    echo "== capturing one frame from $dev"
+    # Every capture command reads from /dev/null: this script itself arrives on stdin (`bash -s`), and
+    # a tool that reads stdin (ffmpeg does by default) would swallow the rest of it.
+    # A CSI camera sits behind the Jetson ISP and needs nvarguscamerasrc; USB (UVC) cameras take plain V4L2.
+    if command -v v4l2-ctl >/dev/null 2>&1 && v4l2-ctl -d "$dev" --info 2>/dev/null | grep -qi 'vi-output'; then
+        gst-launch-1.0 -q nvarguscamerasrc num-buffers=1 ! 'video/x-raw(memory:NVMM),width=1280,height=720' ! nvjpegenc ! filesink location="$out" </dev/null 2>&1 || true
+    fi
+    if [ ! -s "$out" ] && command -v ffmpeg >/dev/null 2>&1; then
+        ffmpeg -nostdin -hide_banner -loglevel error -f v4l2 -i "$dev" -frames:v 1 -y "$out" 2>&1 || true
+    fi
+    if [ ! -s "$out" ] && command -v gst-launch-1.0 >/dev/null 2>&1; then
+        gst-launch-1.0 -q v4l2src device="$dev" num-buffers=1 ! videoconvert ! jpegenc ! filesink location="$out" </dev/null 2>&1 || true
+    fi
+    if [ ! -s "$out" ] && python3 -c 'import cv2' >/dev/null 2>&1; then
+        python3 - "$dev" "$out" <<'PY' 2>&1 || true
+    import sys, cv2
+    cap = cv2.VideoCapture(sys.argv[1])
+    ok, frame = False, None
+    for _ in range(10):  # let auto-exposure settle before keeping a frame
+        ok, frame = cap.read()
+    cap.release()
+    if ok:
+        cv2.imwrite(sys.argv[2], frame)
+    PY
+    fi
+    if [ ! -s "$out" ]; then
+        echo "error: no frame captured from $dev (tried whichever of nvarguscamerasrc, ffmpeg, GStreamer and OpenCV exist)" >&2
+        exit 1
+    fi
+    ls -l "$out"
+    REMOTE
+    local_file="${TMPDIR:-/tmp}/jetrover-camera-$(date +%Y%m%d-%H%M%S).jpg"
+    scp -q -o StrictHostKeyChecking=accept-new "${scp_src}:${remote_file}" "$local_file"
+    echo "frame saved to $local_file"
+    if command -v wslpath >/dev/null 2>&1; then echo "Windows path: $(wslpath -w "$local_file")"; fi
+
+# NOT YET RUN AGAINST THE ROBOT. Join the Jetson to another Wi-Fi network, e.g. `just robot-wifi-join "SINRG WIFI"`. The password comes from JETROVER_WIFI_PASSWORD or a prompt, never the command line. The current network stays as an automatic fallback in `revert_minutes` unless `just robot-wifi-confirm` runs first. Changes the robot's network: have someone near the robot
+robot-wifi-join ssid revert_minutes="5" remote_host=default_jetrover_host remote_user="jetson":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    password="${JETROVER_WIFI_PASSWORD:-}"
+    if [ -z "$password" ]; then
+        read -r -s -p "Wi-Fi password for '{{ssid}}': " password
+        echo
+    fi
+    target="{{remote_user}}@{{remote_host}}"
+    # The script holds no secret. The password reaches it on stdin and is written into a root-only
+    # NetworkManager keyfile through `sudo tee`, so it never appears in an argv, `ps`, or sudo's log.
+    ssh -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new "$target" 'cat > /tmp/jetrover-wifi-join.sh' <<'REMOTE'
+    set -euo pipefail
+    ssid="$1"; revert_minutes="$2"
+    IFS= read -r psk || true
+    if [ -z "$psk" ]; then echo "error: no password received" >&2; exit 1; fi
+    if ! sudo -n true 2>/dev/null; then echo "error: this needs passwordless sudo on $(hostname)" >&2; exit 1; fi
+    if ! nmcli -t general status >/dev/null 2>&1; then
+        echo "error: NetworkManager is not running on $(hostname); not switching" >&2
+        exit 1
+    fi
+    dev=$(nmcli -t -f DEVICE,TYPE device status | awk -F: '$2 == "wifi" { print $1; exit }')
+    if [ -z "$dev" ]; then echo "error: no Wi-Fi device on $(hostname)" >&2; exit 1; fi
+    if [ "$(nmcli -t -f DEVICE,STATE device status | awk -F: -v d="$dev" '$1 == d { print $2; exit }')" = "unmanaged" ]; then
+        echo "error: NetworkManager does not manage $dev on $(hostname) (another Wi-Fi manager owns it); not switching" >&2
+        exit 1
+    fi
+    current=$(nmcli -t -f NAME,DEVICE connection show --active | awk -F: -v d="$dev" '$2 == d { print $1; exit }')
+    if [ "$current" = "$ssid" ]; then echo "$(hostname) is already on '$ssid'"; exit 0; fi
+    sudo nmcli device wifi rescan ifname "$dev" >/dev/null 2>&1 || true
+    sleep 3
+    if ! nmcli -t -f SSID device wifi list ifname "$dev" | grep -Fxq "$ssid"; then
+        echo "error: '$ssid' is not visible from $(hostname) right now; not switching" >&2
+        exit 1
+    fi
+    if nmcli -t -f NAME connection show | grep -Fxq "$ssid"; then sudo nmcli connection delete id "$ssid" >/dev/null; fi
+    file="/etc/NetworkManager/system-connections/${ssid}.nmconnection"
+    sudo tee "$file" >/dev/null <<KEYFILE
+    [connection]
+    id=${ssid}
+    uuid=$(cat /proc/sys/kernel/random/uuid)
+    type=wifi
+    interface-name=${dev}
+    autoconnect=true
+    autoconnect-priority=10
+
+    [wifi]
+    mode=infrastructure
+    ssid=${ssid}
+
+    [wifi-security]
+    key-mgmt=wpa-psk
+    psk=${psk}
+
+    [ipv4]
+    method=auto
+
+    [ipv6]
+    method=auto
+    KEYFILE
+    sudo chown root:root "$file"
+    sudo chmod 600 "$file"
+    sudo nmcli connection reload
+    # Both steps run as transient systemd units so they finish after this ssh session drops.
+    sudo systemctl stop jetrover-wifi-revert.timer >/dev/null 2>&1 || true
+    sudo systemctl reset-failed jetrover-wifi-revert.timer jetrover-wifi-revert.service jetrover-wifi-join.service >/dev/null 2>&1 || true
+    if [ -n "$current" ]; then
+        sudo systemd-run --unit=jetrover-wifi-revert --on-active="${revert_minutes}min" /usr/bin/nmcli connection up id "$current" >/dev/null
+        echo "fallback: $(hostname) goes back to '$current' in ${revert_minutes} min unless 'just robot-wifi-confirm' runs first"
+    fi
+    sudo systemd-run --unit=jetrover-wifi-join /usr/bin/nmcli connection up id "$ssid" ifname "$dev" >/dev/null
+    echo "switching $(hostname) from '${current:-nothing}' to '$ssid' now; this ssh session will drop"
+    REMOTE
+    set +e
+    printf '%s\n' "$password" | ssh -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new "$target" \
+        "bash /tmp/jetrover-wifi-join.sh $(printf '%q' "{{ssid}}") {{revert_minutes}}; status=\$?; rm -f /tmp/jetrover-wifi-join.sh; exit \$status"
+    status=$?
+    set -e
+    if [ "$status" -eq 255 ]; then
+        echo "(ssh dropped, which is expected once the robot leaves its old network)" >&2
+    elif [ "$status" -ne 0 ]; then
+        exit "$status"
+    fi
+    echo "Next: wait ~30 s, run 'just robot-net-status' (over Tailscale) to read the robot's new address, then 'JETROVER_HOST=<new address> just robot-wifi-confirm' to keep it." >&2
+
+# NOT YET RUN AGAINST THE ROBOT. Keep the Wi-Fi network `robot-wifi-join` switched to, cancelling its scheduled fallback -- run it over the new path once that path works, e.g. `JETROVER_HOST=<new address> just robot-wifi-confirm`
+robot-wifi-confirm remote_host=default_jetrover_host remote_user="jetson":
+    ssh -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new "{{remote_user}}@{{remote_host}}" \
+        "if systemctl is-active --quiet jetrover-wifi-revert.timer; then sudo systemctl stop jetrover-wifi-revert.timer && echo 'fallback cancelled; staying on this network'; else echo 'no fallback pending'; fi"
 
 # ---- analysis/ (python: figures, percentile tables) ----
 

@@ -19,6 +19,8 @@ drift. That property is the reason the project is laid out this way — protect 
   Two deliberate mutable-struct exceptions, each documenting why: `SeededRng` and `DatagramFate`.
 - `Time/` — `ITimeAuthority` and its implementations. Nothing else reads a clock.
 - `Pipeline/` — composition. The wiring diagram, expressed in code.
+- `Camera/` — the pure half of the camera downlink (docs/adr/0014): chunk wire format and
+  newest-wins frame reassembly. No contract and no registry entry yet; see its `CLAUDE.md`.
 - `Registry/Registries.cs` — static `string -> factory` tables. Hand-maintained.
 - `Recording/` — versioned `.tlog` format, reader and writer.
 - `Metrics/` — trackers and sinks. Definitions live in `docs/metrics.md`.

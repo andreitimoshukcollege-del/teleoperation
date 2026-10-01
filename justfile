@@ -179,6 +179,8 @@ robot-camera-check device="/dev/video0" remote_host=default_jetrover_host remote
         echo "error: $dev does not exist; pass device=/dev/videoN from the list above" >&2
         exit 1
     fi
+    echo "== formats $dev offers (pixel format, sizes, frame rates)"
+    if command -v v4l2-ctl >/dev/null 2>&1; then v4l2-ctl -d "$dev" --list-formats-ext 2>&1; else echo "v4l2-ctl missing (apt install v4l-utils)"; fi
     if command -v fuser >/dev/null 2>&1 && fuser "$dev" >/dev/null 2>&1; then
         echo "warning: $dev is already open by another process (a ROS camera node?), so capture may fail:" >&2
         fuser -v "$dev" 2>&1 || true

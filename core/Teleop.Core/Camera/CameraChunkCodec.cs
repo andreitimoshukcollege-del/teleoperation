@@ -95,7 +95,9 @@ namespace Teleop.Core.Camera
         /// <summary>
         /// Decodes one datagram. Rejects, without partial output, anything that is not exactly a
         /// well-formed chunk: wrong magic or version, an index outside the count, a payload length that
-        /// disagrees with the datagram's size, or a non-final chunk that is not full.
+        /// disagrees with the datagram's size, a non-final chunk that is not full, or a stamp no real
+        /// frame could carry (a non-positive clock rate, which would later divide by zero in the
+        /// <c>ClockSync</c> conversion, or a zero width or height).
         /// <paramref name="payload"/> aliases <paramref name="datagram"/>.
         /// </summary>
         public bool TryDecode(ReadOnlySpan<byte> datagram, out CameraChunkHeader header, out ReadOnlySpan<byte> payload)
@@ -123,7 +125,8 @@ namespace Teleop.Core.Camera
             if (chunkCount == 0 || chunkIndex >= chunkCount ||
                 payloadBytes == 0 || payloadBytes > MaxPayloadBytes ||
                 datagram.Length != HeaderSize + payloadBytes ||
-                (!isLast && payloadBytes != MaxPayloadBytes))
+                (!isLast && payloadBytes != MaxPayloadBytes) ||
+                ticksPerSecond <= 0 || width == 0 || height == 0)
             {
                 return false;
             }

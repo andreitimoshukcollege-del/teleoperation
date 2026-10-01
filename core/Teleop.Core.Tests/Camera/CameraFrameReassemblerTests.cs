@@ -211,6 +211,27 @@ public sealed class CameraFrameReassemblerTests
     }
 
     [Fact]
+    public void AFrameExactlyAtTheMaximum_Fits_WhileOneByteMoreDoesNot()
+    {
+        // 2.5 chunks' worth, so the maximum chunk count (3) has a short last chunk and full non-last ones.
+        int max = 2 * CameraChunkCodec.MaxPayloadBytes + CameraChunkCodec.MaxPayloadBytes / 2;
+        var r = new CameraFrameReassembler(slotCount: 2, maxFrameBytes: max);
+
+        List<byte[]> exact = Chunks(80, length: max);
+        Assert.Equal(CameraChunkCodec.ChunkCountFor(max), exact.Count);
+        foreach (byte[] chunk in exact) Assert.NotEqual(CameraChunkOutcome.TooLarge, r.Accept(chunk, 0));
+        Assert.True(r.TryTakeLatest(out CameraFrameInfo info, out ReadOnlySpan<byte> jpeg));
+        Assert.Equal(max, info.ByteCount);
+        Assert.Equal(JpegFor(80, max), jpeg.ToArray());
+
+        // Same chunk count, one byte longer: only the last chunk reveals it, and it is refused.
+        List<byte[]> over = Chunks(81, length: max + 1);
+        Assert.Equal(exact.Count, over.Count);
+        Assert.Equal(CameraChunkOutcome.Stored, r.Accept(over[0], 0));
+        Assert.Equal(CameraChunkOutcome.TooLarge, r.Accept(over[^1], 0));
+    }
+
+    [Fact]
     public void Garbage_IsCountedAsMalformed()
     {
         var r = New();

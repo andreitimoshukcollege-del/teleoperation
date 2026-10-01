@@ -107,6 +107,10 @@ public sealed class CameraChunkCodecTests
         yield return new object[] { "payload length disagrees", (Func<byte[], byte[]>)(d => { BinaryPrimitives.WriteUInt16LittleEndian(d.AsSpan(39), 99); return d; }) };
         yield return new object[] { "trailing byte", (Func<byte[], byte[]>)(d => d.Append((byte)0).ToArray()) };
         yield return new object[] { "short non-final chunk", (Func<byte[], byte[]>)(d => { BinaryPrimitives.WriteUInt16LittleEndian(d.AsSpan(9), 2); return d; }) };
+        yield return new object[] { "zero clock rate", (Func<byte[], byte[]>)(d => { BinaryPrimitives.WriteInt64LittleEndian(d.AsSpan(27), 0); return d; }) };
+        yield return new object[] { "negative clock rate", (Func<byte[], byte[]>)(d => { BinaryPrimitives.WriteInt64LittleEndian(d.AsSpan(27), -1); return d; }) };
+        yield return new object[] { "zero width", (Func<byte[], byte[]>)(d => { BinaryPrimitives.WriteUInt16LittleEndian(d.AsSpan(35), 0); return d; }) };
+        yield return new object[] { "zero height", (Func<byte[], byte[]>)(d => { BinaryPrimitives.WriteUInt16LittleEndian(d.AsSpan(37), 0); return d; }) };
     }
 
     [Theory]

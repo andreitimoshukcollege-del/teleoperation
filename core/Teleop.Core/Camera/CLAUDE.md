@@ -32,3 +32,20 @@ day there is a second way to choose a frame (a jitter buffer for video, say), th
   that frame's stamp and chunk count; one that does not is rejected rather than merged.
 - **No metric names are emitted here.** The diagnostics struct counts; the host that owns the
   display turns those into `camera_*` metrics, defined in `docs/metrics.md` in the same PR.
+
+## What the sender and viewer must do (found by review, not yet built)
+
+- **Newest wins forever, so a sender restart freezes the view.** The reassembler only moves
+  forward: if the sender restarts its frame ids at 0 after the viewer has shown frame 5000, every
+  new frame is `Late` until the counter passes 5000 again (minutes at 30 fps). One forged
+  far-future frame id does the same, and a forged incomplete one can hold a slot. The fix belongs
+  to the hosts: the viewer calls `Reset()` whenever it (re)subscribes or sees a long run of `Late`,
+  and the sender does not restart at a fixed id. The protocol has no authentication, like the pose
+  path, so forged datagrams are a known limit rather than something this folder can stop.
+- **Every chunk of a frame carries the same stamp, `sendTicks` included.** `sendTicks` is when the
+  frame's first chunk was handed to the socket (ADR 0014 §3), not each chunk's own send time. A
+  sender that stamps chunks individually gets every chunk after the first rejected as
+  `Inconsistent`.
+- **`Teleop.Core.Camera` shadows `UnityEngine.Camera`** for code inside a `Teleop.Core.*`
+  namespace. Bridge code lives in `Teleop.Bridge`, so a bare `Camera.main` resolves normally there;
+  keep it that way, or qualify it.

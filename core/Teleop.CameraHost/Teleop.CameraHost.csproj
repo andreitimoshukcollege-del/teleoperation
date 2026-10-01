@@ -10,6 +10,11 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <!-- The chunk codec and reassembler (docs/adr/0014 §6) are Core's; this host only does I/O. -->
+    <ProjectReference Include="..\Teleop.Core\Teleop.Core.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
     <InternalsVisibleTo Include="Teleop.CameraHost.Tests" />
   </ItemGroup>
 

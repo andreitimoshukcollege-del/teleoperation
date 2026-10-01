@@ -247,6 +247,94 @@ camera-timestamp-spike frames="150" fps="30" device="/dev/video0" remote_host=de
     set -e
     exit "$status"
 
+# Run the camera streaming sender (docs/adr/0014) on the Jetson in the foreground for `seconds`, then delete it again -- uses the camera, opens UDP :6003, touches no service, moves nothing. Pair with `just camera-probe` from this machine. Not a systemd service yet
+camera-serve seconds="30" fps="30" device="/dev/video0" remote_host=default_jetrover_host remote_user="jetson":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cd core
+    publish_dir="_scratch_camserve"
+    archive=$(mktemp -u --suffix=.tar.gz)
+    trap 'rm -f "$archive"; rm -rf "$publish_dir"' EXIT
+    rm -rf "$publish_dir"
+    echo "Publishing Teleop.CameraHost for linux-arm64..." >&2
+    dotnet publish Teleop.CameraHost -c Release -r linux-arm64 --self-contained false -f net8.0 -o "$publish_dir" --nologo -v quiet
+    tar czf "$archive" -C "$publish_dir" .
+    target="{{remote_user}}@{{remote_host}}"
+    case "{{remote_host}}" in *:*) scp_dest="{{remote_user}}@[{{remote_host}}]" ;; *) scp_dest="$target" ;; esac
+    scp -q -o StrictHostKeyChecking=accept-new "$archive" "${scp_dest}:/tmp/camserve.tar.gz"
+    set +e
+    ssh -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new "$target" "
+        rm -rf /tmp/camserve && mkdir -p /tmp/camserve && tar xzf /tmp/camserve.tar.gz -C /tmp/camserve &&
+        /home/jetson/.dotnet/dotnet /tmp/camserve/Teleop.CameraHost.dll serve \
+            --device {{device}} --fps {{fps}} --seconds {{seconds}}
+        status=\$?; rm -rf /tmp/camserve /tmp/camserve.tar.gz; exit \$status"
+    status=$?
+    set -e
+    exit "$status"
+
+# Subscribe to the camera sender from this machine for `seconds` and report what arrives (frames, rate, sizes, reassembly drops); `save` writes the last frame to a path the (Windows) dotnet can resolve. Exit 1 if no frame arrived -- usually the sender is not running or this machine's firewall blocks inbound UDP on 6004
+camera-probe seconds="10" max_fps="0" save="" remote_host=default_jetrover_host:
+    cd core && dotnet run --project Teleop.CameraHost -c Release -- probe --host {{remote_host}} \
+        --seconds {{seconds}} --max-fps {{max_fps}} {{ if save != "" { "--save '" + save + "'" } else { "" } }}
+
+# Publish Teleop.CameraHost for the Jetson, copy it over, write ~/camerahost-run.sh and restart teleop-camerahost if it is installed (see robot/systemd/README.md) -- moves nothing; does not touch teleop-robothost or the ROS nodes
+deploy-camerahost fps="30" device="/dev/video0" remote_host=default_jetrover_host remote_user="jetson":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cd core
+    stamp=$(date +%Y%m%d-%H%M%S)
+    remote_dir="camerahost_deploy_${stamp}"
+    publish_dir="_scratch_camerahost"
+    archive=$(mktemp -u --suffix=.tar.gz)
+    trap 'rm -f "$archive"; rm -rf "$publish_dir"' EXIT
+    rm -rf "$publish_dir"
+    echo "Publishing Teleop.CameraHost for linux-arm64..." >&2
+    dotnet publish Teleop.CameraHost -c Release -r linux-arm64 --self-contained false -f net8.0 -o "$publish_dir" --nologo -v quiet
+    tar czf "$archive" -C "$publish_dir" .
+    target="{{remote_user}}@{{remote_host}}"
+    case "{{remote_host}}" in *:*) scp_dest="{{remote_user}}@[{{remote_host}}]" ;; *) scp_dest="$target" ;; esac
+    scp -q -o StrictHostKeyChecking=accept-new "$archive" "${scp_dest}:/tmp/${remote_dir}.tar.gz"
+    # Stable wrapper the unit's ExecStart points at, rewritten on every deploy (same pattern as
+    # deploy-robothost), so a redeploy needs only a restart. `exec` so SIGTERM reaches the sender.
+    ssh -o StrictHostKeyChecking=accept-new "$target" "cat > /home/jetson/camerahost-run.sh" <<EOF
+    #!/bin/bash
+    exec /home/jetson/.dotnet/dotnet /home/jetson/camerahost_current/Teleop.CameraHost.dll serve \
+        --device {{device}} --fps {{fps}} --port 6003
+    EOF
+    ssh -o StrictHostKeyChecking=accept-new "$target" "
+        set -e
+        mkdir -p ~/${remote_dir}
+        tar xzf /tmp/${remote_dir}.tar.gz -C ~/${remote_dir}
+        rm -f /tmp/${remote_dir}.tar.gz
+        ln -sfn ~/${remote_dir} ~/camerahost_current
+        chmod +x ~/camerahost-run.sh
+        if systemctl list-unit-files teleop-camerahost.service | grep -q teleop-camerahost; then
+            sudo systemctl restart teleop-camerahost
+            sleep 2
+            systemctl status teleop-camerahost --no-pager -n 5
+        else
+            echo 'Deployed, but teleop-camerahost.service is not installed yet: run just install-camerahost-service.'
+        fi
+    "
+
+# One-time: copy robot/systemd/teleop-camerahost.service to the Jetson, enable it at boot and start it -- run `just deploy-camerahost` first so the wrapper script exists
+install-camerahost-service remote_host=default_jetrover_host remote_user="jetson":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    target="{{remote_user}}@{{remote_host}}"
+    case "{{remote_host}}" in *:*) scp_dest="{{remote_user}}@[{{remote_host}}]" ;; *) scp_dest="$target" ;; esac
+    scp -q -o StrictHostKeyChecking=accept-new robot/systemd/teleop-camerahost.service "${scp_dest}:/tmp/teleop-camerahost.service"
+    ssh -o StrictHostKeyChecking=accept-new "$target" "
+        set -e
+        test -x ~/camerahost-run.sh || { echo 'error: ~/camerahost-run.sh missing; run just deploy-camerahost first' >&2; exit 1; }
+        sudo cp /tmp/teleop-camerahost.service /etc/systemd/system/teleop-camerahost.service
+        rm -f /tmp/teleop-camerahost.service
+        sudo systemctl daemon-reload
+        sudo systemctl enable --now teleop-camerahost
+        sleep 2
+        systemctl status teleop-camerahost --no-pager -n 5
+    "
+
 # NOT YET RUN AGAINST THE ROBOT. Join the Jetson to another Wi-Fi network, e.g. `just robot-wifi-join "SINRG WIFI"`. The password comes from JETROVER_WIFI_PASSWORD or a prompt, never the command line. The current network stays as an automatic fallback in `revert_minutes` unless `just robot-wifi-confirm` runs first. Changes the robot's network: have someone near the robot
 robot-wifi-join ssid revert_minutes="5" remote_host=default_jetrover_host remote_user="jetson":
     #!/usr/bin/env bash

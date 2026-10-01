@@ -1,0 +1,21 @@
+[Unit]
+Description=Teleop.CameraHost -- JetRover camera frame sender (docs/adr/0014-camera-frame-downlink.md)
+# Best-effort ordering, as for teleop-robothost: the sender binds a local port and only sends to
+# whoever subscribes, so it starts cleanly before the network is up. Independent of
+# teleop-robothost on purpose (ADR 0014, Consequences): a camera fault must not stop arm control,
+# and arm control must not stop the camera.
+After=network-online.target tailscaled.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=jetson
+# Same pattern as teleop-robothost: `just deploy-camerahost` rewrites this wrapper with the run's
+# exact args on every deploy, so a redeploy needs only `systemctl restart`, never a reinstall of
+# this unit. The sender stops cleanly on the SIGTERM systemd sends.
+ExecStart=/home/jetson/camerahost-run.sh
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

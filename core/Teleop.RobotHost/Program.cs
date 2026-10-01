@@ -47,8 +47,11 @@ namespace Teleop.RobotHost
             RobotHostArgs a = parsed.Value;
 
             var clock = new MonotonicClock();
-            var remoteEndPoint = new IPEndPoint(a.RemoteHost, a.RemotePort);
-            var transport = new UdpTransport(a.LocalPort, remoteEndPoint, MaxDatagramBytes, clock);
+            IPEndPoint? remoteEndPoint = a.RemoteHost != null
+                ? new IPEndPoint(a.RemoteHost, a.RemotePort!.Value)
+                : null;
+            var transport = new UdpTransport(
+                a.LocalPort, remoteEndPoint, MaxDatagramBytes, clock, replyToSender: a.ReplyToSender);
 
             using var relay = new UdsRelayClient(a.LocalRelaySocketPath, a.RelaySocketPath);
 
@@ -90,16 +93,21 @@ namespace Teleop.RobotHost
             // belief/staleness tracker -- see the ADR's documented limitation about running both
             // paths against the same robot process at the same time.
             using var jointTransport = a.JointLocalPort.HasValue
-                ? new UdpTransport(a.JointLocalPort.Value, remoteEndPoint, MaxJointDatagramBytes, clock)
+                // Uplink-only, so it never sends; reply-to-sender mode just lets it run without a
+                // configured peer.
+                ? new UdpTransport(a.JointLocalPort.Value, remoteEndPoint, MaxJointDatagramBytes, clock, replyToSender: true)
                 : null;
             byte[]? jointRecvBuffer = jointTransport != null ? new byte[MaxJointDatagramBytes] : null;
             JointTarget[]? jointTargetsBuffer = jointTransport != null
                 ? new JointTarget[JointCommandCodec.MaxJointsPerMessage]
                 : null;
 
+            string replyDescription = a.ReplyToSender
+                ? $"the sender of each command (before the first one: {remoteEndPoint?.ToString() ?? "nobody"})"
+                : remoteEndPoint!.ToString();
             Console.WriteLine(
                 $"Teleop.RobotHost listening on UDP :{a.LocalPort}, replying to " +
-                $"{remoteEndPoint}, relay socket {a.RelaySocketPath}. Ctrl+C to stop.");
+                $"{replyDescription}, relay socket {a.RelaySocketPath}. Ctrl+C to stop.");
             Console.WriteLine(
                 $"[clock] TicksPerSecond={clock.TicksPerSecond}, stamped on every RobotStateFrame reply so " +
                 "the operator can normalize for a mismatched rate automatically " +
@@ -121,6 +129,7 @@ namespace Teleop.RobotHost
                 stop.Set();
             };
 
+            EndPoint? loggedReplyTarget = transport.CurrentRemoteEndPoint;
             while (!stop.IsSet)
             {
                 if (jointTransport != null)
@@ -137,6 +146,16 @@ namespace Teleop.RobotHost
                 }
 
                 endpoint.Step(clock.NowTicks);
+
+                // Logged once per change, not per datagram: a moved operator is worth a line in
+                // the service journal, a steady one is not.
+                EndPoint? replyTarget = transport.CurrentRemoteEndPoint;
+                if (!Equals(replyTarget, loggedReplyTarget))
+                {
+                    Console.WriteLine($"[net] replying to {replyTarget} (was {loggedReplyTarget?.ToString() ?? "nobody"})");
+                    loggedReplyTarget = replyTarget;
+                }
+
                 Thread.Sleep(5);
             }
 

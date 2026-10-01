@@ -8,10 +8,21 @@ namespace Teleop.RobotHost.Net
     /// <summary>
     /// The first real, socket-backed <c>ITransport</c> in this project -- everything before this
     /// (Phase 4's whole loopback baseline) ran operator and robot logic in one process over
-    /// <c>LoopbackTransport</c>. This is a fixed point-to-point link to exactly one peer (the
-    /// operator's Tailscale address, given at construction), not a listening server that learns
-    /// its peer from traffic -- matching how a plant is constructed directly by the host that
-    /// knows which one it wants, rather than discovered.
+    /// <c>LoopbackTransport</c>. A point-to-point link to one peer at a time, in one of two modes:
+    /// <list type="bullet">
+    /// <item><b>Fixed</b> (<c>replyToSender: false</c>): always sends to the endpoint given at
+    /// construction -- the original behaviour.</item>
+    /// <item><b>Reply to sender</b> (<c>replyToSender: true</c>): sends to the source address and
+    /// port of the most recently received datagram, so the operator can change address (DHCP,
+    /// another Wi-Fi, a Quest instead of a PC) without this host being redeployed. This is also
+    /// the NAT-correct reply target: it is the address the operator's packets actually arrived
+    /// from, including any port a NAT rewrote, so it cannot point at a port nothing listens on
+    /// (robot/README.md records that happening once with a hand-configured target). The endpoint
+    /// given at construction, if any, is only the target until the first datagram arrives.
+    /// The command protocol has no authentication, so whoever last sent a datagram receives the
+    /// replies -- no new exposure, since anyone who can reach the port can already command the
+    /// arm, but two operators sending at once would steal each other's replies.</item>
+    /// </list>
     ///
     /// One instance is meant to be passed as <b>both</b> the uplink and downlink transport to
     /// <c>RobotEndpoint</c>'s constructor. The loopback baseline uses two separate instances
@@ -41,13 +52,25 @@ namespace Teleop.RobotHost.Net
     public sealed class UdpTransport : ITransport, IDisposable
     {
         private readonly Socket _socket;
-        private readonly EndPoint _remoteEndPoint;
+        private readonly bool _replyToSender;
         private readonly ITimeAuthority _clock;
+
+        // The current reply target. Fixed mode never changes it; reply-to-sender mode replaces it
+        // whenever a datagram arrives from somewhere else. Null until known.
+        private EndPoint? _remoteEndPoint;
+
+        // Scratch for ReceiveFrom's source address. Reused while the sender is unchanged, so the
+        // steady state (one operator) allocates nothing per datagram.
+        private EndPoint _senderScratch = new IPEndPoint(IPAddress.Any, 0);
         private readonly int _maxPayloadBytes;
         private readonly byte[] _receiveScratch;
 
         /// <param name="localPort">Port this host listens on.</param>
-        /// <param name="remoteEndPoint">The one peer this transport ever sends to.</param>
+        /// <param name="remoteEndPoint">
+        /// Fixed mode: the one peer this transport ever sends to (required). Reply-to-sender mode:
+        /// where to send before any datagram has arrived; may be null, in which case
+        /// <see cref="Send"/> returns false until the first datagram names a sender.
+        /// </param>
         /// <param name="maxPayloadBytes">
         /// Largest datagram this transport carries. A received datagram larger than this is a
         /// contract violation by the sender (every codec here must not produce more than this)
@@ -61,7 +84,10 @@ namespace Teleop.RobotHost.Net
         /// <see cref="ITimeAuthority"/> instance driving this host's own step loop, so every
         /// tick value stays on one timebase.
         /// </param>
-        public UdpTransport(int localPort, IPEndPoint remoteEndPoint, int maxPayloadBytes, ITimeAuthority clock)
+        /// <param name="replyToSender">See the class doc. False keeps the original fixed behaviour.</param>
+        public UdpTransport(
+            int localPort, IPEndPoint? remoteEndPoint, int maxPayloadBytes, ITimeAuthority clock,
+            bool replyToSender = false)
         {
             if (maxPayloadBytes <= 0)
             {
@@ -69,7 +95,14 @@ namespace Teleop.RobotHost.Net
                     nameof(maxPayloadBytes), maxPayloadBytes, "Max payload bytes must be positive.");
             }
 
-            _remoteEndPoint = remoteEndPoint ?? throw new ArgumentNullException(nameof(remoteEndPoint));
+            if (remoteEndPoint is null && !replyToSender)
+            {
+                throw new ArgumentNullException(
+                    nameof(remoteEndPoint), "A fixed-mode transport needs the one peer it sends to.");
+            }
+
+            _remoteEndPoint = remoteEndPoint;
+            _replyToSender = replyToSender;
             _clock = clock ?? throw new ArgumentNullException(nameof(clock));
             _maxPayloadBytes = maxPayloadBytes;
             _receiveScratch = new byte[maxPayloadBytes];
@@ -83,7 +116,14 @@ namespace Teleop.RobotHost.Net
         public int MaxPayloadBytes => _maxPayloadBytes;
 
         /// <summary>
-        /// Sends to the single peer given at construction. Returns false on any socket-level
+        /// Where <see cref="Send"/> currently goes, or null if no target is known yet. Exposed so
+        /// the host can log when the operator's address changes.
+        /// </summary>
+        public EndPoint? CurrentRemoteEndPoint => _remoteEndPoint;
+
+        /// <summary>
+        /// Sends to the current reply target (see the class doc). Returns false when no target is
+        /// known yet, and on any socket-level
         /// failure (e.g. the peer's address is momentarily unreachable) rather than throwing --
         /// same "false is an ordinary outcome, not an error" contract <see cref="ITransport"/>
         /// documents for emulated loss, now backed by a real, occasionally-actually-lossy link.
@@ -92,14 +132,15 @@ namespace Teleop.RobotHost.Net
         {
             _ = nowTicks; // no virtual schedule here -- see class doc.
 
-            if (payload.Length > _maxPayloadBytes)
+            EndPoint? target = _remoteEndPoint;
+            if (payload.Length > _maxPayloadBytes || target is null)
             {
                 return false;
             }
 
             try
             {
-                _socket.SendTo(payload, SocketFlags.None, _remoteEndPoint);
+                _socket.SendTo(payload, SocketFlags.None, target);
                 return true;
             }
             catch (SocketException)
@@ -129,7 +170,9 @@ namespace Teleop.RobotHost.Net
             int received;
             try
             {
-                received = _socket.Receive(_receiveScratch, SocketFlags.None);
+                received = _replyToSender
+                    ? _socket.ReceiveFrom(_receiveScratch, SocketFlags.None, ref _senderScratch)
+                    : _socket.Receive(_receiveScratch, SocketFlags.None);
             }
             catch (SocketException)
             {
@@ -150,6 +193,15 @@ namespace Teleop.RobotHost.Net
                 return false;
             }
 
+            if (_replyToSender && !_senderScratch.Equals(_remoteEndPoint))
+            {
+                // Only a datagram this transport actually delivers moves the reply target; an
+                // oversized one (rejected above) does not. Hand the scratch object over and start
+                // a fresh one, so the stored target is never overwritten in place.
+                _remoteEndPoint = _senderScratch;
+                _senderScratch = new IPEndPoint(IPAddress.Any, 0);
+            }
+
             _receiveScratch.AsSpan(0, received).CopyTo(destination);
             byteCount = received;
             return true;
@@ -159,7 +211,8 @@ namespace Teleop.RobotHost.Net
         /// Drains any datagrams already buffered in the socket's receive queue -- the closest a
         /// real socket can get to <c>LoopbackTransport</c>'s "nothing queued" guarantee. There is
         /// no equivalent for "nothing in flight": unlike a virtual queue, a real packet already
-        /// sent onto the wire cannot be recalled.
+        /// sent onto the wire cannot be recalled. A learned reply target survives a reset: it is
+        /// where the operator is, not something queued.
         /// </summary>
         public void Reset()
         {

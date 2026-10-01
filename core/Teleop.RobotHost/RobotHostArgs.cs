@@ -7,8 +7,24 @@ namespace Teleop.RobotHost
     internal readonly struct RobotHostArgs
     {
         public readonly int LocalPort;
-        public readonly IPAddress RemoteHost;
-        public readonly int RemotePort;
+
+        /// <summary>
+        /// Where replies go before any command has arrived (and always, when
+        /// <see cref="ReplyToSender"/> is false). Optional in sender mode: <c>RobotEndpoint</c>
+        /// only replies to a received datagram, so in practice nothing is sent before the first
+        /// command tells the transport where the operator is. Null when not given.
+        /// </summary>
+        public readonly IPAddress? RemoteHost;
+        public readonly int? RemotePort;
+
+        /// <summary>
+        /// <c>--reply-to sender</c> (the default): reply to the source address and port of the most
+        /// recent command, so the operator's address can change (DHCP, a different Wi-Fi, a Quest
+        /// instead of a PC, a NAT rewriting the source port) without redeploying this host.
+        /// <c>--reply-to fixed</c>: the original behaviour, always replying to
+        /// <see cref="RemoteHost"/>:<see cref="RemotePort"/>, which are then required.
+        /// </summary>
+        public readonly bool ReplyToSender;
         public readonly string RelaySocketPath;
         public readonly string LocalRelaySocketPath;
         public readonly float? MaxDirectionMagnitude;
@@ -36,9 +52,12 @@ namespace Teleop.RobotHost
         public readonly string? ProfilePath;
 
         public const string Usage =
-            "Usage: Teleop.RobotHost --local-port <port> --remote-host <ip> --remote-port <port> " +
-            "--relay-socket <path> --local-relay-socket <path> [--max-direction-magnitude <n>] " +
-            "[--joint-local-port <port>] [--profile-path <path>]\n" +
+            "Usage: Teleop.RobotHost --local-port <port> [--remote-host <ip> --remote-port <port>] " +
+            "[--reply-to sender|fixed] --relay-socket <path> --local-relay-socket <path> " +
+            "[--max-direction-magnitude <n>] [--joint-local-port <port>] [--profile-path <path>]\n" +
+            "  --reply-to sender (default) replies to wherever the latest command came from;\n" +
+            "  --remote-host/--remote-port are then only the target before the first command.\n" +
+            "  --reply-to fixed always replies to --remote-host:--remote-port, which it requires.\n" +
             "  --max-direction-magnitude overrides GenericArmPlantConfig.Default's clamp (5) on how far\n" +
             "  a single accepted command may move a joint's belief -- lower it (e.g. 1-2) for a\n" +
             "  visibly slower, gentler arm; omit it to keep the default.\n" +
@@ -53,13 +72,14 @@ namespace Teleop.RobotHost
             "  always used for the JetRover.";
 
         private RobotHostArgs(
-            int localPort, IPAddress remoteHost, int remotePort,
+            int localPort, IPAddress? remoteHost, int? remotePort, bool replyToSender,
             string relaySocketPath, string localRelaySocketPath, float? maxDirectionMagnitude,
             int? jointLocalPort, string? profilePath)
         {
             LocalPort = localPort;
             RemoteHost = remoteHost;
             RemotePort = remotePort;
+            ReplyToSender = replyToSender;
             RelaySocketPath = relaySocketPath;
             LocalRelaySocketPath = localRelaySocketPath;
             MaxDirectionMagnitude = maxDirectionMagnitude;
@@ -77,6 +97,7 @@ namespace Teleop.RobotHost
             float? maxDirectionMagnitude = null;
             int? jointLocalPort = null;
             string? profilePath = null;
+            string replyTo = "sender";
 
             for (int i = 0; i < args.Length; i++)
             {
@@ -90,6 +111,9 @@ namespace Teleop.RobotHost
                         break;
                     case "--remote-port" when i + 1 < args.Length:
                         remotePort = ParseIntOrNull(args[++i]);
+                        break;
+                    case "--reply-to" when i + 1 < args.Length:
+                        replyTo = args[++i];
                         break;
                     case "--relay-socket" when i + 1 < args.Length:
                         relaySocketPath = args[++i];
@@ -112,8 +136,7 @@ namespace Teleop.RobotHost
                 }
             }
 
-            if (localPort is null || remoteHost is null || remotePort is null ||
-                relaySocketPath is null || localRelaySocketPath is null ||
+            if (localPort is null || relaySocketPath is null || localRelaySocketPath is null ||
                 maxDirectionMagnitude is <= 0f || jointLocalPort is <= 0)
             {
                 error = "Missing or invalid required argument (--max-direction-magnitude and " +
@@ -121,9 +144,30 @@ namespace Teleop.RobotHost
                 return null;
             }
 
+            if (replyTo != "sender" && replyTo != "fixed")
+            {
+                error = $"--reply-to must be 'sender' or 'fixed', not '{replyTo}'.";
+                return null;
+            }
+
+            // A host without a port (or the reverse) is a typo, not a choice -- reject it rather
+            // than silently replying nowhere until the first command arrives.
+            if ((remoteHost is null) != (remotePort is null))
+            {
+                error = "--remote-host and --remote-port must be given together (and the host must be an IP address).";
+                return null;
+            }
+
+            bool replyToSender = replyTo == "sender";
+            if (!replyToSender && remoteHost is null)
+            {
+                error = "--reply-to fixed needs --remote-host and --remote-port.";
+                return null;
+            }
+
             error = null;
             return new RobotHostArgs(
-                localPort.Value, remoteHost, remotePort.Value, relaySocketPath, localRelaySocketPath,
+                localPort.Value, remoteHost, remotePort, replyToSender, relaySocketPath, localRelaySocketPath,
                 maxDirectionMagnitude, jointLocalPort, profilePath);
         }
 

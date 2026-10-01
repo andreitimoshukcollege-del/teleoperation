@@ -103,7 +103,9 @@ dropped rather than displayed. For a live view, a late frame is worse than no fr
 on 2026-10-01 as offering `MJPG` at 640×480 through 1920×1080, every size at 5–30 fps (and raw
 `YUYV` only at 640×480 for anything above 5 fps). The sender therefore forwards the camera's own
 compressed frames without decoding or re-encoding them: there is no encode stage on the Nano to cost
-CPU or add latency. The default is **640×480 at 15 fps**, chosen on bandwidth, not capability.
+CPU or add latency. The default is **640×480 at 30 fps**. The timestamp spike (resolved question 1) showed the
+camera's own latency is about one frame period, so 30 fps halves it (32 ms against 68 ms at 15 fps)
+for twice the bandwidth, which the lab LAN carries easily.
 UVC cameras sometimes omit the Huffman tables (`DHT`) from MJPEG frames, which some decoders refuse.
 An early acceptance check is that a raw frame from the device decodes in `Texture2D.LoadImage` on
 the Quest; if it does not, the sender inserts the standard tables, which is a byte-level splice and
@@ -112,10 +114,9 @@ not a re-encode.
 JPEG rather than H.264/WebRTC because every frame is independently decodable, so one lost chunk
 costs one frame and not a group of pictures. Each frame also carries its own timestamps, and the
 receiving side is `Texture2D.LoadImage` in Unity with no plugin or Android codec negotiation. The
-price is bandwidth: at 640×480 a JPEG is roughly 30–50 KB, so about 4–6 Mbit/s at 15 fps. That
-range is a typical figure for this size, not a measurement of this camera, whose encoder quality is
-fixed by its firmware; the sender reports bytes per frame from the first run. That is
-fine on the lab LAN and is the reason H.264 stays an option for later (see "Not decided here").
+price is bandwidth: this camera's frames measured about 42 KB at 640×480, so about 10 Mbit/s at
+30 fps (5 Mbit/s at 15 fps). That is fine on the lab LAN and is the reason H.264 stays an option
+for later (see "Not decided here").
 
 ### 4. The capture stamp is the driver's buffer timestamp, or it is unset
 
@@ -213,6 +214,22 @@ Decided 2026-10-01 by the project owner.
    the Jetson** and that they agree with `Stopwatch.GetTimestamp()` (§4). If the spike fails, §4
    still holds: the sender ships with `captureTicks` unset, and this decision is revisited rather
    than worked around with a read-time stamp.
+
+   **Spike result, 2026-10-01: passed** (`just camera-timestamp-spike`, on the Jetson over the LAN):
+   - `Stopwatch.Frequency` is 1 GHz, and a direct `clock_gettime(CLOCK_MONOTONIC)` fell between two
+     `Stopwatch` reads in 1000 of 1000 samples: Stopwatch is `CLOCK_MONOTONIC` on this machine.
+   - Every frame (`uvcvideo`, "Orbbec DaBai DCW RGB Camera") carried
+     `V4L2_BUF_FLAG_TIMESTAMP_MONOTONIC` with source **start of exposure**.
+   - Age at dequeue (Stopwatch now minus driver stamp) is about **one frame period**: p50 68 ms at
+     15 fps, p50 32 ms at 30 fps. Because the stamp marks the start of exposure, that age is the
+     camera's own exposure, readout and USB transfer, before any software sees the frame. The
+     camera, not the network, is the first and largest stage of the breakdown in §9, and it
+     shrinks with frame rate.
+   - Measured frame interval 68 ms at 15 fps and 32–36 ms at 30 fps; one dropped frame per run, at
+     stream start.
+   - Frames are about **42 KB** at 640×480 at either rate (about 5 Mbit/s at 15 fps, 10 Mbit/s at
+     30 fps), and **every frame includes Huffman tables**, so §3's DHT-splice fallback is not needed
+     for this camera.
 2. **The panel sits beside the arm proxy**, world-locked, at roughly the proxy's height. The
    backdrop layout (delayed video behind the proxy, predicted arm on top, the classical predictive
    display) is deferred. It needs the camera's extrinsic calibration to line up with the proxy, and
@@ -243,7 +260,7 @@ Decided 2026-10-01 by the project owner.
   deploy recipe, independent of `Teleop.RobotHost` so that a camera fault cannot stop arm control.
 - The video stream's latency is only measurable while the pose path is synced (§5). A session that
   only watches the camera has no latency numbers by design.
-- Bandwidth is about 4–6 Mbit/s at the defaults. Fine on the lab LAN; poor through a Tailscale DERP
+- Bandwidth is about 10 Mbit/s at the defaults (640×480, 30 fps); a viewer can request less (§2). Fine on the lab LAN; poor through a Tailscale DERP
   relay. Camera latency figures must record which path they used, as pose figures already must.
 - `Bridge/CameraFeedBridge.cs` is new code under human review, and only an IL2CPP Quest build
   verifies it.

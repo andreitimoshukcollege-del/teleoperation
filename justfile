@@ -221,6 +221,32 @@ robot-camera-check device="/dev/video0" remote_host=default_jetrover_host remote
     echo "frame saved to $local_file"
     if command -v wslpath >/dev/null 2>&1; then echo "Windows path: $(wslpath -w "$local_file")"; fi
 
+# Read-only: publish Teleop.CameraHost, run its timestamp-spike on the Jetson (docs/adr/0014, resolved question 1) and delete it again -- uses the camera for a few seconds, touches no service, moves nothing; exits with the spike's code (0 pass, 1 fail, 2 setup error)
+camera-timestamp-spike frames="150" fps="30" device="/dev/video0" remote_host=default_jetrover_host remote_user="jetson":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cd core
+    # Relative output path for the Windows dotnet, as in deploy-robothost.
+    publish_dir="_scratch_camspike"
+    archive=$(mktemp -u --suffix=.tar.gz)
+    trap 'rm -f "$archive"; rm -rf "$publish_dir"' EXIT
+    rm -rf "$publish_dir"
+    echo "Publishing Teleop.CameraHost for linux-arm64..." >&2
+    dotnet publish Teleop.CameraHost -c Release -r linux-arm64 --self-contained false -f net8.0 -o "$publish_dir" --nologo -v quiet
+    tar czf "$archive" -C "$publish_dir" .
+    target="{{remote_user}}@{{remote_host}}"
+    case "{{remote_host}}" in *:*) scp_dest="{{remote_user}}@[{{remote_host}}]" ;; *) scp_dest="$target" ;; esac
+    scp -q -o StrictHostKeyChecking=accept-new "$archive" "${scp_dest}:/tmp/camspike.tar.gz"
+    set +e
+    ssh -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new "$target" "
+        rm -rf /tmp/camspike && mkdir -p /tmp/camspike && tar xzf /tmp/camspike.tar.gz -C /tmp/camspike &&
+        /home/jetson/.dotnet/dotnet /tmp/camspike/Teleop.CameraHost.dll timestamp-spike \
+            --device {{device}} --fps {{fps}} --frames {{frames}}
+        status=\$?; rm -rf /tmp/camspike /tmp/camspike.tar.gz; exit \$status"
+    status=$?
+    set -e
+    exit "$status"
+
 # NOT YET RUN AGAINST THE ROBOT. Join the Jetson to another Wi-Fi network, e.g. `just robot-wifi-join "SINRG WIFI"`. The password comes from JETROVER_WIFI_PASSWORD or a prompt, never the command line. The current network stays as an automatic fallback in `revert_minutes` unless `just robot-wifi-confirm` runs first. Changes the robot's network: have someone near the robot
 robot-wifi-join ssid revert_minutes="5" remote_host=default_jetrover_host remote_user="jetson":
     #!/usr/bin/env bash

@@ -310,6 +310,39 @@ robot-wifi-confirm remote_host=default_jetrover_host remote_user="jetson":
     ssh -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new "{{remote_user}}@{{remote_host}}" \
         "if systemctl is-active --quiet jetrover-wifi-revert.timer; then sudo systemctl stop jetrover-wifi-revert.timer && echo 'fallback cancelled; staying on this network'; else echo 'no fallback pending'; fi"
 
+# Pin the Jetson's wired IPv4 address instead of taking it from DHCP, e.g. `just robot-static-ip 10.188.57.2/21 10.188.56.1`. Keeps the DNS servers DHCP gave it. Reverts to DHCP in `revert_minutes` unless `just robot-static-ip-confirm` runs first. Only use an address the network admin has approved; DHCP does not know about it
+robot-static-ip address gateway connection="Wired connection 1" revert_minutes="5" remote_host=default_jetrover_host remote_user="jetson":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    ssh -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new "{{remote_user}}@{{remote_host}}" \
+        "bash -s -- $(printf '%q' '{{connection}}') {{address}} {{gateway}} {{revert_minutes}}" <<'REMOTE'
+    set -euo pipefail
+    con="$1"; address="$2"; gateway="$3"; revert_minutes="$4"
+    if ! sudo -n true 2>/dev/null; then echo "error: this needs passwordless sudo on $(hostname)" >&2; exit 1; fi
+    if ! nmcli -t -f NAME connection show | grep -Fxq "$con"; then
+        echo "error: no NetworkManager profile named '$con' on $(hostname)" >&2
+        exit 1
+    fi
+    dev=$(nmcli -g connection.interface-name connection show "$con")
+    if [ -z "$dev" ]; then dev=$(nmcli -g GENERAL.DEVICES connection show "$con" 2>/dev/null || true); fi
+    if [ -z "$dev" ]; then echo "error: '$con' is not bound to a device; not changing it" >&2; exit 1; fi
+    dns=$(nmcli -g IP4.DNS device show "$dev" | tr '|' ' ' | xargs || true)
+    echo "$(hostname): '$con' on $dev is currently ipv4.method=$(nmcli -g ipv4.method connection show "$con"), DNS: ${dns:-none}"
+    # Fallback first, as a transient timer, so it fires even if the change below cuts this session off.
+    sudo systemctl stop jetrover-static-ip-revert.timer >/dev/null 2>&1 || true
+    sudo systemctl reset-failed jetrover-static-ip-revert.timer jetrover-static-ip-revert.service jetrover-static-ip-apply.service >/dev/null 2>&1 || true
+    sudo systemd-run --unit=jetrover-static-ip-revert --on-active="${revert_minutes}min" /bin/sh -c \
+        "nmcli connection modify '$con' ipv4.method auto ipv4.addresses '' ipv4.gateway '' ipv4.dns '' && nmcli connection up '$con'" >/dev/null
+    sudo nmcli connection modify "$con" ipv4.method manual ipv4.addresses "$address" ipv4.gateway "$gateway" ipv4.dns "$dns"
+    sudo systemd-run --unit=jetrover-static-ip-apply /usr/bin/nmcli connection up "$con" >/dev/null
+    echo "applying $address via $gateway on $dev now; back to DHCP in ${revert_minutes} min unless 'just robot-static-ip-confirm' runs first"
+    REMOTE
+
+# Keep the static address `robot-static-ip` set, cancelling its scheduled return to DHCP -- run it once the robot answers on that address
+robot-static-ip-confirm remote_host=default_jetrover_host remote_user="jetson":
+    ssh -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new "{{remote_user}}@{{remote_host}}" \
+        "if systemctl is-active --quiet jetrover-static-ip-revert.timer; then sudo systemctl stop jetrover-static-ip-revert.timer && echo 'fallback cancelled; static address kept'; else echo 'no fallback pending'; fi; nmcli -g ipv4.method,ipv4.addresses connection show 'Wired connection 1'"
+
 # ---- analysis/ (python: figures, percentile tables) ----
 
 # Internal: create analysis/.venv if it doesn't exist yet (fast no-op otherwise). `.venv/` is

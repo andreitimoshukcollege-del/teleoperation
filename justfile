@@ -120,6 +120,9 @@ deploy-robothost remote_host=default_jetrover_host remote_user="jetson" operator
     # daemon-reload` or touching the unit file itself, only `systemctl restart`. This also sidesteps
     # the earlier pkill+nohup approach's self-inflicted-signal bug entirely (systemd owns the
     # process lifecycle instead of a hand-rolled pkill matching its own ancestor shell).
+    # --remote-host is only where replies go before the first command arrives: Teleop.RobotHost
+    # defaults to --reply-to sender and then replies to wherever each command came from, so a
+    # changed operator address no longer needs a redeploy. Add `--reply-to fixed` to pin it.
     ssh -o StrictHostKeyChecking=accept-new "{{remote_user}}@{{remote_host}}" "cat > /home/jetson/robothost-run.sh" <<EOF
     #!/bin/bash
     exec /home/jetson/.dotnet/dotnet /home/jetson/robothost_current/Teleop.RobotHost.dll \

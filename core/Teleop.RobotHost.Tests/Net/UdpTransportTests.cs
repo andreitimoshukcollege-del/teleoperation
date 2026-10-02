@@ -49,6 +49,99 @@ namespace Teleop.RobotHost.Tests.Net
             Assert.True(arrivalTicks > 0);
         }
 
+        private static bool PollReceive(UdpTransport transport, MonotonicClock clock, byte[] destination, out int byteCount)
+        {
+            for (int attempt = 0; attempt < 50; attempt++)
+            {
+                if (transport.TryReceive(clock.NowTicks, destination, out byteCount, out _))
+                {
+                    return true;
+                }
+
+                Thread.Sleep(10);
+            }
+
+            byteCount = 0;
+            return false;
+        }
+
+        [Fact]
+        public void ReplyToSender_SendsToWhicheverPeerSentMostRecently()
+        {
+            int portRobot = GetFreeUdpPort();
+            int portA = GetFreeUdpPort();
+            int portC = GetFreeUdpPort();
+            var clock = new MonotonicClock();
+            var robotEndPoint = new IPEndPoint(IPAddress.Loopback, portRobot);
+
+            using var robot = new UdpTransport(portRobot, remoteEndPoint: null, maxPayloadBytes: 64, clock, replyToSender: true);
+            using var operatorA = new UdpTransport(portA, robotEndPoint, maxPayloadBytes: 64, clock);
+            using var operatorC = new UdpTransport(portC, robotEndPoint, maxPayloadBytes: 64, clock);
+            var buffer = new byte[64];
+
+            Assert.True(operatorA.Send(new byte[] { 1 }, clock.NowTicks));
+            Assert.True(PollReceive(robot, clock, buffer, out _));
+            Assert.Equal(new IPEndPoint(IPAddress.Loopback, portA), robot.CurrentRemoteEndPoint);
+            Assert.True(robot.Send(new byte[] { 10 }, clock.NowTicks));
+            Assert.True(PollReceive(operatorA, clock, buffer, out int countA));
+            Assert.Equal(10, buffer[0]);
+            Assert.Equal(1, countA);
+
+            // The operator moves (a new address, a new device): the very next reply follows it.
+            Assert.True(operatorC.Send(new byte[] { 2 }, clock.NowTicks));
+            Assert.True(PollReceive(robot, clock, buffer, out _));
+            Assert.Equal(new IPEndPoint(IPAddress.Loopback, portC), robot.CurrentRemoteEndPoint);
+            Assert.True(robot.Send(new byte[] { 20 }, clock.NowTicks));
+            Assert.True(PollReceive(operatorC, clock, buffer, out _));
+            Assert.Equal(20, buffer[0]);
+
+            // ...and the old address hears nothing more.
+            Thread.Sleep(50);
+            Assert.False(operatorA.TryReceive(clock.NowTicks, buffer, out _, out _));
+        }
+
+        [Fact]
+        public void ReplyToSender_WithNoConfiguredPeer_SendFailsUntilADatagramArrives()
+        {
+            var clock = new MonotonicClock();
+            using var robot = new UdpTransport(GetFreeUdpPort(), remoteEndPoint: null, maxPayloadBytes: 64, clock, replyToSender: true);
+
+            Assert.Null(robot.CurrentRemoteEndPoint);
+            Assert.False(robot.Send(new byte[] { 1 }, clock.NowTicks));
+        }
+
+        [Fact]
+        public void FixedMode_KeepsReplyingToTheConfiguredPeer_WhoeverSends()
+        {
+            int portRobot = GetFreeUdpPort();
+            int portA = GetFreeUdpPort();
+            int portC = GetFreeUdpPort();
+            var clock = new MonotonicClock();
+            var robotEndPoint = new IPEndPoint(IPAddress.Loopback, portRobot);
+            var configured = new IPEndPoint(IPAddress.Loopback, portA);
+
+            using var robot = new UdpTransport(portRobot, configured, maxPayloadBytes: 64, clock);
+            using var operatorA = new UdpTransport(portA, robotEndPoint, maxPayloadBytes: 64, clock);
+            using var operatorC = new UdpTransport(portC, robotEndPoint, maxPayloadBytes: 64, clock);
+            var buffer = new byte[64];
+
+            Assert.True(operatorC.Send(new byte[] { 3 }, clock.NowTicks));
+            Assert.True(PollReceive(robot, clock, buffer, out _));
+            Assert.Equal(configured, robot.CurrentRemoteEndPoint);
+
+            Assert.True(robot.Send(new byte[] { 30 }, clock.NowTicks));
+            Assert.True(PollReceive(operatorA, clock, buffer, out _));
+            Assert.Equal(30, buffer[0]);
+        }
+
+        [Fact]
+        public void FixedMode_WithoutAPeer_IsRejectedAtConstruction()
+        {
+            var clock = new MonotonicClock();
+            Assert.Throws<ArgumentNullException>(() =>
+                new UdpTransport(GetFreeUdpPort(), remoteEndPoint: null, maxPayloadBytes: 64, clock));
+        }
+
         [Fact]
         public void TryReceive_ReturnsFalse_WhenNothingHasArrived()
         {

@@ -51,7 +51,7 @@ so one unrelated new Bridge file cannot turn a clean run into a wall of stub err
 
 Covered today: `TeleopOperatorBridge`, `TeleopRobotBridge`, `JetRoverOperatorBridge`,
 `JetRoverArmConfig`, `RobotArmProfileData`, `NetworkImpairmentSettings`, `SwappableTransport`,
-`NetworkImpairmentController` — i.e. every Bridge file that constructs or calls into Core, which is
+`NetworkImpairmentController`, `CameraFeedBridge` — i.e. every Bridge file that constructs or calls into Core, which is
 where this class of breakage lands.
 
 Not covered: `LatencyHud` and `JetRoverConnectionHud` (TextMeshPro, display-only, no Core

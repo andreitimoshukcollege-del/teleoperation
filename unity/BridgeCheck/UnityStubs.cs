@@ -23,21 +23,59 @@ using Teleop.Core.Types;
 
 namespace UnityEngine
 {
-    public class Object { }
+    public class Object
+    {
+        public static void Destroy(Object obj) { }
+    }
+
     public class Transform : Object
     {
         public Vector3 position { get; set; }
+        public Vector3 localScale { get; set; }
         public Quaternion rotation { get; set; }
         public Vector3 InverseTransformPoint(Vector3 p) => default;
     }
-    public struct Vector3 { public float x, y, z; }
+    public struct Vector3
+    {
+        public float x, y, z;
+        public Vector3(float x, float y, float z) { this.x = x; this.y = y; this.z = z; }
+        public static Vector3 operator +(Vector3 a, Vector3 b) => default;
+    }
     public struct Quaternion
     {
         public static Quaternion Inverse(Quaternion q) => default;
         public static Quaternion operator *(Quaternion a, Quaternion b) => default;
     }
 
-    public class Component : Object { public T GetComponent<T>() where T : class => null; }
+    public class Component : Object
+    {
+        public Transform transform => null;
+        public T GetComponent<T>() where T : class => null;
+    }
+
+    // CameraFeedBridge: texture decode and the panel it is drawn on.
+    public class Texture : Object
+    {
+        public virtual int width { get; set; }
+        public virtual int height { get; set; }
+    }
+
+    public enum TextureFormat { RGB24 = 3 }
+
+    public sealed class Texture2D : Texture
+    {
+        public Texture2D(int width, int height, TextureFormat textureFormat, bool mipChain) { }
+    }
+
+    // UnityEngine.ImageConversion (ImageConversionModule): LoadImage is an extension method in 2022.3.
+    public static class ImageConversion
+    {
+        public static bool LoadImage(this Texture2D tex, byte[] data, bool markNonReadable) => false;
+        public static bool LoadImage(this Texture2D tex, byte[] data) => false;
+    }
+
+    public class Material : Object { public Texture mainTexture { get; set; } }
+    public class Renderer : Component { public Material material { get; set; } }
     public class Behaviour : Component { public bool enabled { get; set; } }
     public class MonoBehaviour : Behaviour { }
 

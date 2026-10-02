@@ -1,0 +1,19 @@
+{
+  "name": "Teleop.Editor",
+  "rootNamespace": "Teleop.Editor",
+  "references": [
+    "Teleop.Bridge",
+    "Unity.TextMeshPro"
+  ],
+  "includePlatforms": [
+    "Editor"
+  ],
+  "excludePlatforms": [],
+  "allowUnsafeCode": false,
+  "overrideReferences": false,
+  "precompiledReferences": [],
+  "autoReferenced": false,
+  "defineConstraints": [],
+  "versionDefines": [],
+  "noEngineReferences": false
+}

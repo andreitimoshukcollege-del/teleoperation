@@ -462,6 +462,40 @@ robot-static-ip-confirm remote_host=default_jetrover_host remote_user="jetson":
     ssh -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new "{{remote_user}}@{{remote_host}}" \
         "if systemctl is-active --quiet jetrover-static-ip-revert.timer; then sudo systemctl stop jetrover-static-ip-revert.timer && echo 'fallback cancelled; static address kept'; else echo 'no fallback pending'; fi; nmcli -g ipv4.method,ipv4.addresses connection show 'Wired connection 1'"
 
+# Rename the Jetson (hostname, /etc/hosts, its mDNS name <name>.local, and its Tailscale machine name) -- moves nothing. docs/adr/0015 finds the robot by this name, so it must be unique on the LAN
+robot-set-hostname name remote_host=default_jetrover_host remote_user="jetson":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if ! printf '%s' '{{name}}' | grep -Eq '^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$'; then
+        echo "error: '{{name}}' is not a valid hostname (lowercase letters, digits, inner hyphens, at most 63)" >&2
+        exit 1
+    fi
+    ssh -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new "{{remote_user}}@{{remote_host}}" "bash -s -- {{name}}" <<'REMOTE'
+    set -euo pipefail
+    new="$1"; old=$(hostname)
+    if ! sudo -n true 2>/dev/null; then echo "error: this needs passwordless sudo on $old" >&2; exit 1; fi
+    if [ "$old" = "$new" ]; then echo "already named $new"; else
+        sudo hostnamectl set-hostname "$new"
+        # sudo resolves its own hostname through /etc/hosts; a stale 127.0.1.1 line makes every sudo warn.
+        if grep -q '^127\.0\.1\.1[[:space:]]' /etc/hosts; then
+            sudo sed -i "s/^127\.0\.1\.1[[:space:]].*/127.0.1.1\t$new/" /etc/hosts
+        else
+            printf '127.0.1.1\t%s\n' "$new" | sudo tee -a /etc/hosts >/dev/null
+        fi
+        echo "renamed $old -> $new"
+    fi
+    if systemctl is-active --quiet avahi-daemon; then
+        sudo systemctl restart avahi-daemon
+        echo "mDNS: avahi-daemon restarted, now announcing $(avahi-resolve -4 -n "$new.local" 2>/dev/null || echo "$new.local")"
+    else
+        echo "warning: avahi-daemon is not running, so $new.local will not resolve on the LAN" >&2
+    fi
+    if command -v tailscale >/dev/null; then
+        sudo tailscale set --hostname="$new" 2>/dev/null && echo "Tailscale machine name: $new" \
+            || echo "note: this tailscale cannot 'set --hostname'; rename the machine in the admin console" >&2
+    fi
+    REMOTE
+
 # ---- analysis/ (python: figures, percentile tables) ----
 
 # Internal: create analysis/.venv if it doesn't exist yet (fast no-op otherwise). `.venv/` is

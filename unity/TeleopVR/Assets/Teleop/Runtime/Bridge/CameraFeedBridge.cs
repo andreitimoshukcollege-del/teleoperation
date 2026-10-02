@@ -96,8 +96,9 @@ namespace Teleop.Bridge
                 panel.transform.position = armRig.BaseAnchor.position + offsetFromArmBase;
             }
 
+            // Not assigned to the panel until the first frame decodes, so whatever the scene shows
+            // there (a "no signal" card, say) stays up until there is a picture to replace it.
             _texture = new Texture2D(2, 2, TextureFormat.RGB24, false);
-            panel.material.mainTexture = _texture;
         }
 
         private void OnEnable()
@@ -160,10 +161,14 @@ namespace Teleop.Bridge
 
                 if (decoded)
                 {
-                    if (_framesShown == 0 && info.Frame.Height > 0)
+                    if (_framesShown == 0)
                     {
-                        float aspect = info.Frame.Width / (float)info.Frame.Height;
-                        panel.transform.localScale = new Vector3(panelHeightMeters * aspect, panelHeightMeters, 1f);
+                        panel.material.mainTexture = _texture;
+                        if (info.Frame.Height > 0)
+                        {
+                            float aspect = info.Frame.Width / (float)info.Frame.Height;
+                            panel.transform.localScale = new Vector3(panelHeightMeters * aspect, panelHeightMeters, 1f);
+                        }
                     }
 
                     _framesShown++;

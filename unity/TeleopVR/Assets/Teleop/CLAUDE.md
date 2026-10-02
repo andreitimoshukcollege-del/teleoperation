@@ -254,8 +254,41 @@ Shows the JetRover's camera beside the arm proxy. Hand-wired in the Editor, like
    11.1 ms, lower **Max Frames Per Second** (the sender then thins frames by capture time) before
    anything else.
 
-No `camera_*` metrics are recorded yet: putting capture and arrival on one clock needs the pose
-path's `ClockSync`, and the metrics are defined in `docs/metrics.md` by the PR that emits them.
+No `camera_*` metrics are recorded yet. They are defined in `docs/metrics.md` §9 and computed by
+Core's `CameraLatencyRecorder`; wiring it here needs the pose path's `ClockSync` and a `t_render`
+stamp, and is a follow-up.
+
+## Lab scene (`JetRoverLab.unity`, built by **Teleop → Build Lab Scene**)
+
+A lab room with the JetRover's virtual twin on a bench and the camera feed on a monitor to its
+right. **The scene is generated, not hand-made**: `Assets/Teleop/Editor/LabSceneBuilder.cs` builds it
+through the Editor API, so Unity's serializer is still the only thing writing scene YAML. To change
+the lab, change the builder and rerun it (it asks before replacing the scene). Do not hand-edit or
+merge `JetRoverLab.unity`; it is a few hundred objects of set dressing and would merge badly.
+
+What the builder does, in order:
+
+1. Copies `JetRoverControl.unity`, so the XR rig, arm rig, drag target, `JetRoverOperatorBridge`
+   and HUD arrive with their working wiring. **None of them is moved or edited**; the room is
+   placed around the arm's base where that scene puts it.
+2. Adds set dressing under a static `Lab` root: an 8 x 8 x 3 m room, a bench with a taped workcell,
+   a chassis under the arm (visual only, never driven, not under any pivot), shelving, a desk, a
+   whiteboard. Primitives only; colliders removed so nothing catches the XR ray meant for the drag
+   target; the room shell casts no shadows (the ceiling would otherwise shadow the whole room).
+3. Builds `CameraMonitor` on the bench, turned to face the operator, with a `CameraScreen` quad
+   using the `CameraScreen` material asset (`Unlit/Texture`, see step 1 of the camera panel above).
+   It shows colour bars until the first frame decodes, so "no feed yet" differs from "black feed".
+4. Adds `CameraFeedBridge` to the `JetRoverOperatorBridge` object with **Panel** set to the screen
+   and **Arm Rig** deliberately empty: with an arm rig it would move the screen out of its monitor.
+5. Sets Trilight ambient, no skybox, and retunes the one directional light. No baked lighting.
+
+Materials and the colour-bar texture are written to `Assets/Teleop/Lab/`. Commit them and the
+scene with their `.meta` files after building. To run it on the Quest, add the scene in **Build
+Settings** (above `JetRoverControl` to make it the one that loads).
+
+The builder is compiled by Unity's `Teleop.Editor` assembly (Editor-only, references `Teleop.Bridge`
+and TextMeshPro, never Core), so it is not in any player build. `just bridge-check` does not cover
+it: it needs the real `UnityEditor` API, which the stubs do not provide.
 
 ## Known-broken: `XRI Default Input Actions.inputactions`
 

@@ -248,16 +248,13 @@ Shows the JetRover's camera beside the arm proxy. Hand-wired in the Editor, like
    `just install-camerahost-service`) or `just camera-serve` for a one-off.
 4. Press Play. Within a second or two the panel shows the feed, and every 10 s the Console logs
    `[camera] ...: received N frames, shown N, ... last decode X ms`. In the Editor, Windows Firewall
-   has to let Unity receive. **On SINRG WIFI it does not by default**: Windows classes that network
-   as Public, and the "Unity 2022.3.46f1 Editor" rule it created on first run *blocks* inbound on
-   Public. That drops the camera frames (UDP 6004) and the robot's state replies (UDP 6001) while
-   outbound keepalives and commands are untouched. Expect the sender to see a subscriber and send,
-   while Unity logs `received 0 frames` (rule found 2026-10-02). `just camera-probe` still works, because `dotnet` has its own
-   rule, which is a quick way to tell a firewall problem from a robot one. Fix it from an admin
-   PowerShell by disabling that Public block rule and allowing only these two ports for the
-   Unity editor:
-   `Get-NetFirewallRule -DisplayName 'Unity 2022.3.46f1 Editor' | ? Action -eq Block | Disable-NetFirewallRule`, then
-   `New-NetFirewallRule -DisplayName 'Teleop Unity UDP 6001,6004' -Direction Inbound -Action Allow -Protocol UDP -LocalPort 6001,6004 -Program 'C:\Program Files\Unity\Hub\Editor\2022.3.46f1\Editor\Unity.exe'`.
+   does not get in the way, even though it could seem to: on SINRG WIFI (classed as Public) the
+   "Unity 2022.3.46f1 Editor" rule *blocks* inbound. That rule only stops traffic Unity has not
+   asked for. The frames come back from exactly the address and port the keepalive went to
+   (`robot:6003` → local 6004, every second), and the firewall lets those in as replies. The
+   robot's state replies come back the same way (`robot:6000` → local 6001). Confirmed working on
+   2026-10-02 with the block rule in place. It would break only if a sender answered from a
+   different port, or if the keepalive stopped for long enough that the firewall forgot it.
 5. **On the Quest, watch `last decode`.** `Texture2D.LoadImage` decodes on the main thread and is
    the one cost here that can take frame time from the 90 Hz loop. If it is a meaningful share of
    11.1 ms, lower **Max Frames Per Second** (the sender then thins frames by capture time) before

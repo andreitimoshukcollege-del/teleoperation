@@ -5,8 +5,11 @@ headlessly. It exists because `unity/` silently stopped compiling against `main`
 2026-09-09 — Core changed an interface, nothing failed, and the breakage was only discoverable by
 opening the Unity editor.
 
-This folder is **not** part of the Unity project. Unity only opens `unity/TeleopVR/`, so a sibling
-directory here is invisible to it and cannot affect an editor session or a Quest build.
+This folder is **not** part of either Unity project. Unity only opens `unity/TeleopVR/` and
+`unity/TeleopXR/`, so a sibling directory here is invisible to both and cannot affect an editor
+session or a build. The sources it compiles are the shared package's, `unity/Teleop.Bridge/Runtime/`
+(docs/adr/0016). It checks them against Core and stubs only; compiling them against each editor's
+real assemblies is described in `unity/CLAUDE.md`.
 
 ## What it proves
 
@@ -68,8 +71,9 @@ pre-`dd0cee1` `TeleopOperatorBridge.cs` and confirming it exits non-zero with
 significant change to this project:
 
 ```bash
-F=unity/TeleopVR/Assets/Teleop/Runtime/Bridge/TeleopOperatorBridge.cs
-git show f7cf9b7:$F > "$F.tmp" && mv "$F.tmp" "$F"
+OLD=unity/TeleopVR/Assets/Teleop/Runtime/Bridge/TeleopOperatorBridge.cs   # its path at f7cf9b7
+F=unity/Teleop.Bridge/Runtime/TeleopOperatorBridge.cs                    # its path now (ADR 0016)
+git show f7cf9b7:$OLD > "$F.tmp" && mv "$F.tmp" "$F"
 just bridge-check          # must FAIL, non-zero
 git checkout -- "$F"
 just bridge-check          # must pass again

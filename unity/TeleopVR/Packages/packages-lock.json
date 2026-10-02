@@ -15,6 +15,15 @@
       },
       "url": "https://packages.unity.com"
     },
+    "com.teleop.bridge": {
+      "version": "file:../../Teleop.Bridge",
+      "depth": 0,
+      "source": "local",
+      "dependencies": {
+        "com.teleop.core": "0.1.0",
+        "com.teleop.robotarm": "0.1.0"
+      }
+    },
     "com.teleop.core": {
       "version": "file:../../../core/Teleop.Core",
       "depth": 0,

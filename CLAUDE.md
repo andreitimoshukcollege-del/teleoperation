@@ -27,9 +27,10 @@ ADR comes first. Do not write code against this paragraph.
 Dependencies point one direction. `Teleop.Core` sits at the bottom and depends on nothing.
 
 ```
-analysis/  ──reads──>  results/  <──writes──  Teleop.Eval ──┐
-                                                            ├──> Teleop.Core
-                                            unity/TeleopVR ─┘     (depends on NOTHING)
+analysis/  ──reads──>  results/  <──writes──  Teleop.Eval ──────────────┐
+                                                                        ├──> Teleop.Core
+                     unity/TeleopVR ─┬──> unity/Teleop.Bridge ──────────┘     (depends on NOTHING)
+                     unity/TeleopXR ─┘
 ```
 
 Core must never reference `UnityEngine` and must never know Unity exists. Unity supplies
@@ -43,15 +44,18 @@ capabilities to Core by **implementing interfaces that Core declares** (`IRobotP
 | `core/Teleop.Core/` | **both** `dotnet` and Unity | all algorithms; one copy, two compilers |
 | `core/Teleop.Core.Tests/` | `dotnet` | xUnit; must stay green |
 | `core/Teleop.Eval/` | `dotnet` | headless CLI: replay, sweep, compare |
-| `unity/TeleopVR/` | Unity | scenes, XR, rendering, real I/O |
+| `unity/TeleopVR/` | Unity 2022.3 | Quest: scenes, XR, rendering; the measured baseline (ADR 0001) |
+| `unity/TeleopXR/` | Unity 6.3 | Galaxy XR: hand tracking, URP (ADR 0016) |
+| `unity/Teleop.Bridge/` | both Unity projects | shared UPM package: the only Unity code that touches Core; real I/O |
 | `robot/` | colcon (ROS 2) | independent; does not interact with the above builds |
 | `analysis/` | nothing | Python; reads `results/`, exports `.onnx` |
 | `experiments/` | — | one YAML per experiment |
 | `results/` | — | append-only; every run has a `manifest.json` |
 
 `core/Teleop.Core/` is a local UPM package (`package.json` + `.asmdef`) *and* a .NET project
-(`.csproj`) in the same folder. Unity resolves it via a relative `file:` path in
-`unity/TeleopVR/Packages/manifest.json`. Do not duplicate, copy, or vendor it.
+(`.csproj`) in the same folder. Each Unity project resolves it, and `unity/Teleop.Bridge`, via
+relative `file:` paths in its `Packages/manifest.json`. Do not duplicate, copy, or vendor any of
+them.
 
 ## Invariants — do not violate, do not "improve"
 
@@ -66,8 +70,8 @@ capabilities to Core by **implementing interfaces that Core declares** (`IRobotP
    nothing references directly, and there is no runtime codegen. Add entries to the tables in
    `Registry/Registries.cs` by hand. No `Activator.CreateInstance`, no `Expression.Compile`,
    no `Reflection.Emit`.
-6. **Core targets `netstandard2.1` with `LangVersion 9.0`.** This editor is Unity 2022.3,
-   which is C# 9. Do not retarget to `net8.0` and do not raise `LangVersion`. Banned because
+6. **Core targets `netstandard2.1` with `LangVersion 9.0`.** Both editors are C# 9: Unity
+   2022.3 (TeleopVR) and Unity 6.3 (TeleopXR). Do not retarget to `net8.0` and do not raise `LangVersion`. Banned because
    they compile under `dotnet` and break the Quest build while `dotnet test` stays green:
    file-scoped namespaces (`namespace X;` — use block-scoped), `global using`, collection
    expressions (`[1, 2]`), `required` members, primary constructors on classes.
@@ -87,8 +91,9 @@ capabilities to Core by **implementing interfaces that Core declares** (`IRobotP
   registry entry + test. Nothing else changes.
 - New question entirely → new interface in `Contracts/`, new folder, `Pipeline/` learns to
   wire it. This is an architecture change: write an ADR in `docs/adr/` first.
-- Needs a `Transform`, `GameObject`, GPU, XR device, socket, or file → `unity/TeleopVR/
-  Assets/Teleop/Runtime/Bridge/`. **Requires human review.**
+- Needs a `Transform`, `GameObject`, GPU, XR device, socket, or file → `unity/Teleop.Bridge/
+  Runtime/` (shared by both Unity projects; must compile under both editors, see
+  `unity/CLAUDE.md`). **Requires human review.**
 - Reads a `metrics.csv` → `analysis/`, in Python.
 - Is a number that will appear in a paper → it came from `results/` and it has a manifest.
 
@@ -137,15 +142,15 @@ commands got lost otherwise.
 
 - **Free rein:** `core/`, `analysis/`, `experiments/`, `docs/`, `unity/`.
 - **Never touch:** `results/` (append-only — write new directories, never edit old ones),
-  `unity/TeleopVR/Library/`, `build/`, anything gitignored.
+  `unity/TeleopVR/Library/`, `unity/TeleopXR/Library/`, `build/`, anything gitignored.
 - `robot/` is documentation-only: ask first, and never command real hardware without a human
   watching (see "Testing the real robot").
-- **Changes under `unity/TeleopVR/Assets/Teleop/Runtime/Bridge/` want human review** — not because
+- **Changes under `unity/Teleop.Bridge/` want human review** — not because
   of where they are edited, but because that is where real I/O, XR devices and hardware live, and
   `just bridge-check` compiles against stubs so it cannot catch anything about scenes, prefabs or
   rendering. An IL2CPP build is the only real check.
-- **Pull before starting, and before opening Unity.** `unity/TeleopVR/Packages/manifest.json` links
-  Core by relative path, so a Core change on `main` changes the Unity build the moment it is on
+- **Pull before starting, and before opening Unity.** Each project's `Packages/manifest.json` links
+  Core and Bridge by relative path, so a Core change on `main` changes the Unity build the moment it is on
   disk — open the editor against a stale tree and you will debug a mismatch git already resolved.
 
   ```bash
@@ -191,9 +196,14 @@ ownership rule, and there is no longer a restriction on where any directory may 
 - Unity, `adb`, and Unity CLI builds run on the Windows side. `git` and `git-lfs` are
   installed in WSL; never run a working-tree-modifying git command from a shell
   without `git-lfs`, or LFS-tracked binaries get written as pointer text files.
-- **Unity 2022.3.46f1** — C# 9, API Compatibility Level `.NET Standard 2.1`. Sentis
+- **Unity 2022.3.46f1** (TeleopVR) — C# 9, API Compatibility Level `.NET Standard 2.1`. Sentis
   requires 2023.2+, so on-device ML inference goes through `IInferenceBackend` with a
-  backend chosen at Phase 7; do not write `using Unity.Sentis` anywhere.
+  backend chosen at Phase 7; do not write `using Unity.Sentis` anywhere (the Unity 6 project
+  included, until that Phase 7 ADR).
+- **Unity 6.3 LTS** (TeleopXR, ≥ 6000.3.5f2, ADR 0016) — also C# 9 / .NET Standard 2.1. Galaxy XR
+  is tested from the editor with Android XR **Direct Preview** over USB-C (Windows 11), the Link
+  equivalent. Each `just` recipe that runs Unity names its editor and refuses while that
+  project's editor is open.
 
 ### Both
 

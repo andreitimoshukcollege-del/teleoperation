@@ -146,7 +146,8 @@ through a `just` recipe, never by hand-typing the underlying command — if what
 recipe and is reusable, add one.
 
 From Unity: open `Assets/Scenes/JetRoverControl.unity`, set the host and ports in
-`Assets/Teleop/Runtime/Bridge/Resources/jetrover_connection.json`, set
+`unity/Teleop.Bridge/Runtime/Resources/jetrover_connection.json` (or a per-machine override of the
+whole file in `Application.persistentDataPath`), set
 `ConfirmHardwareMotion: true` only once clearance is confirmed, and press Play. The connection HUD
 reports connected / no connection yet / connection lost, so you don't have to watch the arm or read
 Jetson logs to tell whether packets are landing.

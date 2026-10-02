@@ -168,7 +168,12 @@ namespace Teleop.Bridge
             {
                 _propertyBlock ??= new MaterialPropertyBlock();
                 reachWarningRenderer.GetPropertyBlock(_propertyBlock);
-                _propertyBlock.SetColor("_Color", wasClamped ? clampedColor : normalColor);
+                Color color = wasClamped ? clampedColor : normalColor;
+                // Both names, because this rig runs under both pipelines (docs/adr/0016 §3): the
+                // built-in shaders read _Color, URP's Lit and Unlit read _BaseColor and ignore
+                // _Color. Setting the one a shader lacks is harmless.
+                _propertyBlock.SetColor("_Color", color);
+                _propertyBlock.SetColor("_BaseColor", color);
                 reachWarningRenderer.SetPropertyBlock(_propertyBlock);
             }
         }

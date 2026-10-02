@@ -54,6 +54,46 @@ install-traces:
     done
     echo "$count trace(s) installed."
 
+# ---- unity/ headless runs (docs/adr/0016: TeleopVR = Quest on 2022.3, TeleopXR = Galaxy XR on 6.3) ----
+
+# Internal: run one Unity project's editor headless with -executeMethod; picks the editor version the project pins, refuses while that project is open in an editor, prints the log's verdict lines
+_unity-batch project method extra="":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    proj="unity/{{project}}"
+    ver=$(sed -n 's/^m_EditorVersion: //p' "$proj/ProjectSettings/ProjectVersion.txt" | tr -d '\r')
+    exe="/mnt/c/Program Files/Unity/Hub/Editor/$ver/Editor/Unity.exe"
+    if [ ! -x "$exe" ]; then
+        echo "error: $proj pins Unity $ver, which is not installed ($exe). Install it from Unity Hub." >&2
+        exit 1
+    fi
+    winproj=$(wslpath -w "$proj")
+    # An open editor holds the project lock and batch mode would fail on it, so check first. Match
+    # on the command line: the asset-import workers of *another* project must not block this one.
+    open=$(powershell.exe -NoProfile -Command "Get-CimInstance Win32_Process -Filter \"name='Unity.exe'\" | Where-Object { \$_.CommandLine -like '*{{project}}*' -and \$_.CommandLine -notlike '*AssetImportWorker*' } | Measure-Object | Select-Object -ExpandProperty Count" | tr -d '\r')
+    if [ "${open:-0}" != "0" ]; then
+        echo "error: a Unity editor has $proj open. Close it first: batch mode needs the project lock." >&2
+        exit 1
+    fi
+    tmp=$(wslpath -u "$(cmd.exe /c 'echo %TEMP%' 2>/dev/null | tr -d '\r\n')")/teleop-unity
+    mkdir -p "$tmp"
+    log="$tmp/{{project}}-$(date +%Y%m%d-%H%M%S).log"
+    echo "Unity $ver, headless: {{project}} -> {{method}} (log: $log)" >&2
+    set +e
+    "$exe" -batchmode -nographics -quit -projectPath "$winproj" -executeMethod {{method}} \
+        -logFile "$(wslpath -w "$log")" {{extra}}
+    code=$?
+    set -e
+    grep -a -E '^\[(scene-check|xr-setup|xr-scene|build)\]|error CS[0-9]+' "$log" | sed 's/\r$//' | tail -40 || true
+    if [ "$code" -ne 0 ]; then
+        echo "Unity exited $code. Full log: $log" >&2
+    fi
+    exit "$code"
+
+# Headless check of unity/TeleopVR (Unity 2022.3): compiles, and every JetRover scene opens with no missing scripts and its Bridge wiring intact -- moves nothing; close that project's editor first
+unity-check-vr:
+    just _unity-batch TeleopVR Teleop.Editor.SceneIntegrityCheck.Run
+
 # Run an experiment sweep, e.g. `just sweep experiments/exp-001-predictor-baseline.yaml`
 sweep config:
     cd core && dotnet run --project Teleop.Eval -- sweep ../{{config}}

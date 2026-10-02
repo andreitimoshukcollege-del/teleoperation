@@ -24,10 +24,13 @@ namespace Teleop.Core.Camera
         public readonly int FramesAssembling;
         public readonly bool FrameReady;
 
+        /// <summary>Times a run of late chunks made the reassembler forget its history (sender restart).</summary>
+        public readonly long Resyncs;
+
         public CameraReassemblerDiagnostics(
             long framesCompleted, long framesTaken, long droppedIncomplete, long droppedSuperseded,
             long lateChunks, long duplicateChunks, long malformedDatagrams, long inconsistentChunks,
-            long tooLargeChunks, int framesAssembling, bool frameReady)
+            long tooLargeChunks, int framesAssembling, bool frameReady, long resyncs)
         {
             FramesCompleted = framesCompleted;
             FramesTaken = framesTaken;
@@ -40,6 +43,7 @@ namespace Teleop.Core.Camera
             TooLargeChunks = tooLargeChunks;
             FramesAssembling = framesAssembling;
             FrameReady = frameReady;
+            Resyncs = resyncs;
         }
     }
 }

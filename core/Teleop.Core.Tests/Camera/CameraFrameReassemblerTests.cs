@@ -232,6 +232,69 @@ public sealed class CameraFrameReassemblerTests
     }
 
     [Fact]
+    public void ASenderRestartingItsIds_FreezesTheViewWithoutResync()
+    {
+        var r = New();
+        foreach (byte[] chunk in Chunks(5000)) r.Accept(chunk, 0);
+        AssertTakes(r, 5000);
+
+        foreach (uint id in new uint[] { 0, 1, 2 })
+            foreach (byte[] chunk in Chunks(id)) Assert.Equal(CameraChunkOutcome.Late, r.Accept(chunk, 0));
+
+        Assert.False(r.TryTakeLatest(out _, out _));
+        Assert.Equal(0, r.Diagnostics.Resyncs);
+    }
+
+    [Fact]
+    public void ARunOfLateChunks_Resyncs_SoARestartedSenderIsShownAgain()
+    {
+        var r = new CameraFrameReassembler(slotCount: 3, MaxFrameBytes, lateChunksBeforeResync: 5);
+        foreach (byte[] chunk in Chunks(5000)) r.Accept(chunk, 0);
+        AssertTakes(r, 5000);
+        long completedBefore = r.Diagnostics.FramesCompleted;
+
+        // The restarted sender's first frame: its first five chunks are late, the fifth triggers the
+        // resync, and frame 0 is assembled from the next frame onward.
+        foreach (byte[] chunk in Chunks(0)) r.Accept(chunk, 0);
+        foreach (byte[] chunk in Chunks(1)) r.Accept(chunk, 0);
+
+        AssertTakes(r, 1);
+        CameraReassemblerDiagnostics d = r.Diagnostics;
+        Assert.Equal(1, d.Resyncs);
+        Assert.Equal(completedBefore + 1, d.FramesCompleted); // counters survive a resync
+        Assert.True(d.LateChunks >= 5);
+    }
+
+    [Fact]
+    public void OrdinaryReordering_NeverAccumulatesARunLongEnoughToResync()
+    {
+        var r = new CameraFrameReassembler(slotCount: 3, MaxFrameBytes, lateChunksBeforeResync: 5);
+        for (uint id = 100; id < 110; id++)
+        {
+            List<byte[]> chunks = Chunks(id);
+            foreach (byte[] chunk in chunks) r.Accept(chunk, 0);
+            r.Accept(chunks[0], 0); // one stray straggler per frame
+            r.TryTakeLatest(out _, out _);
+        }
+
+        Assert.Equal(0, r.Diagnostics.Resyncs);
+        Assert.Equal(10, r.Diagnostics.FramesTaken);
+    }
+
+    [Fact]
+    public void Reset_ClearsTheResyncCount_ButAResyncDoesNot()
+    {
+        var r = new CameraFrameReassembler(slotCount: 3, MaxFrameBytes, lateChunksBeforeResync: 2);
+        foreach (byte[] chunk in Chunks(10)) r.Accept(chunk, 0);
+        foreach (byte[] chunk in Chunks(1)) r.Accept(chunk, 0);
+        Assert.Equal(1, r.Diagnostics.Resyncs);
+
+        r.Reset();
+        Assert.Equal(0, r.Diagnostics.Resyncs);
+        Assert.Throws<ArgumentOutOfRangeException>(() => new CameraFrameReassembler(3, MaxFrameBytes, -1));
+    }
+
+    [Fact]
     public void Garbage_IsCountedAsMalformed()
     {
         var r = New();
@@ -249,7 +312,7 @@ public sealed class CameraFrameReassemblerTests
 
         r.Reset();
 
-        Assert.Equal(new CameraReassemblerDiagnostics(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, false), r.Diagnostics);
+        Assert.Equal(new CameraReassemblerDiagnostics(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, false, 0), r.Diagnostics);
         Assert.False(r.TryTakeLatest(out _, out _));
 
         // A frame older than the pre-reset ones is accepted: nothing was remembered.

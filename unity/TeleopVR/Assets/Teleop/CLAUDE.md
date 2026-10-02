@@ -25,8 +25,9 @@ omission is deliberate: it makes "XR code reaches into a predictor" a compile er
 
 **Adapters** — drive Core from Unity callbacks: `TeleopOperatorBridge`, `TeleopRobotBridge`,
 `CoordConversion`, `ConfigLoader`, `XrDisplayTimeProvider`, `LatencyHud` (display only, reads the
-metric sink and writes nothing back). `DisplayCalibrationConfig` is the plain data type
-`ConfigLoader` loads, not an adapter itself.
+metric sink and writes nothing back), `CameraFeedBridge` (the robot camera on a world-locked panel,
+docs/adr/0014; every reassembly decision is Core's `CameraFrameReassembler`).
+`DisplayCalibrationConfig` is the plain data type `ConfigLoader` loads, not an adapter itself.
 
 **Implementations of Core interfaces** — the direction inverts here. Core declares, Unity
 provides: `UnityRobotPlant : IRobotPlant` (not yet built — Phase 4 reuses Core's own
@@ -230,6 +231,31 @@ own serializer should be the only thing writing scene YAML.
    change. Unticking it should restore the previous feel immediately. If ticking a box changes the
    HUD but not the motion, or vice versa, something is wired wrong — both come off the same
    transport.
+
+## Camera feed panel (`CameraFeedBridge`, docs/adr/0014)
+
+Shows the JetRover's camera beside the arm proxy. Hand-wired in the Editor, like everything above.
+
+1. Create a **Quad** named `CameraPanel` and give it a **material asset** using `Unlit/Texture`
+   (built-in pipeline). Use a material asset rather than relying on `Shader.Find`: a shader nothing
+   references is stripped from IL2CPP builds, and the panel then renders pink on the Quest only.
+2. Add a `CameraFeedBridge` component, for example on the GameObject that holds
+   `JetRoverOperatorBridge`. Set **Panel** to the quad's MeshRenderer. Set **Arm Rig** to the
+   `JetRoverArmRig` to have the panel placed at **Offset From Arm Base** at start; leave it empty to
+   keep the quad where you put it. Never parent the panel to `Main Camera` (ADR 0014 §7).
+3. The robot address comes from the same `jetrover_connection` config as `JetRoverOperatorBridge`.
+   The robot must be running the sender: `teleop-camerahost.service` (`just deploy-camerahost`,
+   `just install-camerahost-service`) or `just camera-serve` for a one-off.
+4. Press Play. Within a second or two the panel shows the feed, and every 10 s the Console logs
+   `[camera] ...: received N frames, shown N, ... last decode X ms`. In the Editor, Windows Firewall
+   may ask once whether Unity may receive on UDP 6004; nothing arrives until it is allowed.
+5. **On the Quest, watch `last decode`.** `Texture2D.LoadImage` decodes on the main thread and is
+   the one cost here that can take frame time from the 90 Hz loop. If it is a meaningful share of
+   11.1 ms, lower **Max Frames Per Second** (the sender then thins frames by capture time) before
+   anything else.
+
+No `camera_*` metrics are recorded yet: putting capture and arrival on one clock needs the pose
+path's `ClockSync`, and the metrics are defined in `docs/metrics.md` by the PR that emits them.
 
 ## Known-broken: `XRI Default Input Actions.inputactions`
 

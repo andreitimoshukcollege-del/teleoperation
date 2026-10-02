@@ -57,6 +57,7 @@
     <BridgeSource Include="NetworkProfilePresets.cs" />
     <BridgeSource Include="DelayTraceLoader.cs" />
     <BridgeSource Include="NetworkImpairmentController.cs" />
+    <BridgeSource Include="CameraFeedBridge.cs" />
 
     <Compile Include="@(BridgeSource->'../TeleopVR/Assets/Teleop/Runtime/Bridge/%(Identity)')"
              Link="Bridge/%(Identity)" />

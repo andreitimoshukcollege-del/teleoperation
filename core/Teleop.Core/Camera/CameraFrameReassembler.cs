@@ -24,6 +24,15 @@ namespace Teleop.Core.Camera
     /// <b>inconsistent</b> and ignored. A chunk can never corrupt a frame it does not belong to.</item>
     /// </list>
     ///
+    /// <para><b>Recovering from a sender restart.</b> Newest wins forever, so a sender that restarts
+    /// its frame ids below the newest one shown would be ignored until its counter caught up. With
+    /// <c>lateChunksBeforeResync</c> set, that many consecutive late chunks (nothing stored in between)
+    /// make the reassembler forget its frame history and start again from the next chunk. This is a
+    /// <b>resync</b>, counted in <see cref="CameraReassemblerDiagnostics.Resyncs"/>; unlike
+    /// <see cref="Reset"/> it keeps every counter. The price: having forgotten what it showed, the
+    /// reassembler can let one frame older than the last one shown through right after a resync, if
+    /// reordering was ever severe enough to make a whole frame's chunks late in a row.</para>
+    ///
     /// Frame ids wrap; ordering uses serial-number arithmetic, so a wrap is not mistaken for an old
     /// frame. All storage is preallocated: <see cref="Accept"/> and <see cref="TryTakeLatest"/> are
     /// allocation-free. Time is a parameter (the host's arrival stamp), never read here.
@@ -37,6 +46,9 @@ namespace Teleop.Core.Camera
         private readonly CameraChunkCodec _codec = new CameraChunkCodec();
         private readonly int _maxFrameBytes;
         private readonly int _maxChunks;
+        private readonly int _lateChunksBeforeResync;
+        private int _lateRun;
+        private long _resyncs;
 
         private readonly byte[] _state;
         private readonly CameraFrameStamp[] _frame;
@@ -67,8 +79,21 @@ namespace Teleop.Core.Camera
         /// enough for a link that reorders by less than a frame interval.
         /// </param>
         /// <param name="maxFrameBytes">Largest frame accepted; ADR 0014 §6 sizes it at 256 KB.</param>
-        public CameraFrameReassembler(int slotCount, int maxFrameBytes)
+        /// <param name="lateChunksBeforeResync">
+        /// Consecutive late chunks that trigger a resync (see the class doc); 0, the default, never
+        /// resyncs. A viewer of a live stream wants it on: about one frame's worth of chunks (a 640x480
+        /// frame is ~37) is enough to tell a restarted sender from ordinary reordering.
+        /// </param>
+        public CameraFrameReassembler(int slotCount, int maxFrameBytes, int lateChunksBeforeResync = 0)
         {
+            if (lateChunksBeforeResync < 0)
+            {
+                throw new ArgumentOutOfRangeException(
+                    nameof(lateChunksBeforeResync), lateChunksBeforeResync, "Must be 0 (never) or positive.");
+            }
+
+            _lateChunksBeforeResync = lateChunksBeforeResync;
+
             if (slotCount < 2)
             {
                 throw new ArgumentOutOfRangeException(
@@ -116,7 +141,7 @@ namespace Teleop.Core.Camera
 
                 return new CameraReassemblerDiagnostics(
                     _completed, _taken, _droppedIncomplete, _droppedSuperseded, _late, _duplicate,
-                    _malformed, _inconsistent, _tooLarge, assembling, _readySlot >= 0);
+                    _malformed, _inconsistent, _tooLarge, assembling, _readySlot >= 0, _resyncs);
             }
         }
 
@@ -152,8 +177,7 @@ namespace Teleop.Core.Camera
                     return CameraChunkOutcome.Duplicate;
                 }
 
-                _late++;
-                return CameraChunkOutcome.Late;
+                return Late();
             }
 
             int slot = FindAssembling(id);
@@ -162,8 +186,7 @@ namespace Teleop.Core.Camera
                 slot = ClaimSlot(id);
                 if (slot < 0)
                 {
-                    _late++;
-                    return CameraChunkOutcome.Late;
+                    return Late();
                 }
 
                 _state[slot] = Assembling;
@@ -186,6 +209,7 @@ namespace Teleop.Core.Camera
                 return CameraChunkOutcome.Duplicate;
             }
 
+            _lateRun = 0;
             payload.CopyTo(new Span<byte>(_data[slot], header.ChunkIndex * CameraChunkCodec.MaxPayloadBytes, payload.Length));
             _seen[slot][header.ChunkIndex] = true;
             _received[slot]++;
@@ -231,10 +255,8 @@ namespace Teleop.Core.Camera
         /// <summary>Back to the as-constructed state. Buffers are kept, not reallocated.</summary>
         public void Reset()
         {
-            Array.Clear(_state, 0, _state.Length);
-            _readySlot = -1;
-            _hasCompleted = false;
-            _newestCompletedId = 0;
+            ForgetFrames();
+            _resyncs = 0;
             _completed = 0;
             _taken = 0;
             _droppedIncomplete = 0;
@@ -244,6 +266,29 @@ namespace Teleop.Core.Camera
             _malformed = 0;
             _inconsistent = 0;
             _tooLarge = 0;
+        }
+
+        private CameraChunkOutcome Late()
+        {
+            _late++;
+            _lateRun++;
+            if (_lateChunksBeforeResync > 0 && _lateRun >= _lateChunksBeforeResync)
+            {
+                ForgetFrames();
+                _resyncs++;
+            }
+
+            return CameraChunkOutcome.Late;
+        }
+
+        /// <summary>Frame state back to empty; counters untouched (shared by Reset and resync).</summary>
+        private void ForgetFrames()
+        {
+            Array.Clear(_state, 0, _state.Length);
+            _readySlot = -1;
+            _hasCompleted = false;
+            _newestCompletedId = 0;
+            _lateRun = 0;
         }
 
         private void Complete(int slot, uint id)

@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed.
+Accepted. The two questions left open in the first draft are recorded under "Resolved questions".
 
 ## Context
 
@@ -34,19 +34,23 @@ Facts measured on 2026-10-02 that shape the decision:
 
 - **The campus DNS does not know the robot.** `nslookup nano` against `dns1.neu.edu` returns
   NXDOMAIN, and there is no reverse entry for `10.188.57.2`.
-- **The robot already advertises itself over mDNS.** `ping nano.local` from the Windows PC resolves
+- **The robot already advertises itself over mDNS.** `ping nano.local` (its name until Resolved question 1) from the Windows PC resolves
   to `10.188.57.2`. The Jetson's mDNS responder needs nothing installed or configured, and SINRG
   passes link-local multicast between the PC's WiFi and the robot's wired port.
 - **The robot answers a query straight back to the asking port.** A hand-built query from an
   ephemeral port to `224.0.0.251:5353` came back as a unicast reply to that port, from
   `10.188.57.2:5353`, in 7 ms. RFC 6762 §6.7 calls this a "legacy unicast" query. The reply had ID
-  echoed, flags `0x8400`, one A record, TTL 10 s, value `10.188.57.2`. Its 44 bytes are the test
-  fixture below.
+  echoed, flags `0x8400`, one A record, TTL 10 s, value `10.188.57.2`. That 44-byte reply, and the
+  54-byte one for `jetrover-sinrg.local` after the rename (Resolved question 1), are the test
+  fixtures below.
+- **The robot has more than one IPv4 address, but the LAN sees only one.** It also has Docker's
+  bridge, `172.17.0.1`, and asking the robot itself for its own name returns that address. A query
+  arriving over the LAN gets exactly one A record, the address of the interface it arrived on.
 - **Which interface sends the query matters.** The same query from a socket bound to `0.0.0.0` got
   no reply: Windows routed the multicast out of a virtual adapter (WSL's `vEthernet` or Tailscale).
   Bound to the WiFi address, it worked.
 - **`.local` resolution through the OS is uneven.** Windows' resolver handles it, so
-  `Dns.GetHostAddresses("nano.local")` would work in the Editor. Android's stub resolver does not
+  `Dns.GetHostAddresses("jetrover-sinrg.local")` would work in the Editor. Android's stub resolver does not
   reliably, and the Quest is Android. Receiving *multicast* on Android also needs a
   `WifiManager.MulticastLock`, which a unicast reply does not.
 
@@ -54,7 +58,7 @@ Facts measured on 2026-10-02 that shape the decision:
 
 ### 1. The robot is configured by name. The literal address becomes the fallback.
 
-`JetRoverArmConfig` gains `RemoteHostName`, default `"nano.local"`. `RemoteHost` stays, keeps its
+`JetRoverArmConfig` gains `RemoteHostName`, default `"jetrover-sinrg.local"`. `RemoteHost` stays, keeps its
 meaning as a literal IPv4, and becomes the fallback used when the name does not resolve. Its
 committed default stays the Tailscale address, which works from off the LAN.
 
@@ -66,7 +70,9 @@ escape hatch for a network that blocks multicast.
 The host sends one standard DNS query for `<name>` (type A, class IN, non-zero ID) to
 `224.0.0.251:5353` from an ephemeral port, then waits for the unicast reply. It accepts the first
 response that echoes the query's ID, answers the question, and carries at least one A record for
-that name.
+that name. If a response carries several A records, the resolver prefers one on the same subnet as
+the interface that asked, and otherwise takes the first. Today the LAN only ever gets one (Context),
+but the robot does have a second address, Docker's.
 
 Using our own query rather than `Dns.GetHostAddresses` gives:
 
@@ -101,9 +107,10 @@ socket bound to `0.0.0.0`. On the Quest that is the WiFi interface, because ther
 - **Switching is in place.** The `UdpTransport`s gain a settable remote endpoint instead of being
   rebuilt. `ClockSync`, the predictor history and the recording carry on: the robot's clock did not
   change, only its address. This mirrors why `SwappableTransport` exists (Unity `CLAUDE.md`).
-- **Every switch is logged** with its tick and both addresses, e.g.
-  `[net] nano.local -> 10.188.57.9 (was 10.188.57.2)`. The HUD shows which address and which path
-  is in use (`LAN via nano.local`, or `fallback 100.112.90.72`).
+- **Every switch is logged** to the Console with its tick and both addresses, e.g.
+  `[net] jetrover-sinrg.local -> 10.188.57.9 (was 10.188.57.2)`. It is not written to the `.tlog`
+  (Resolved question 2). The HUD shows which address and which path
+  is in use (`LAN via jetrover-sinrg.local`, or `fallback 100.112.90.72`).
 
 The robot needs no change. `Teleop.RobotHost` replies to the source of the latest command (#57),
 and `Teleop.CameraHost` streams to the source of the latest keepalive, so both follow the operator
@@ -135,7 +142,7 @@ change under root `CLAUDE.md`, which is why this ADR exists.
 ### 6. The command line follows later, as its own step
 
 `Teleop.Eval`'s hardware verbs and the `just` recipes would benefit from the same lookup, so that
-`JETROVER_HOST` could default to `nano.local`. They are not part of the first implementation. Unity
+`JETROVER_HOST` could default to `jetrover-sinrg.local`. They are not part of the first implementation. Unity
 is where the failure bit, and `ssh`/`scp` in the recipes already resolve `.local` through the OS on
 Windows.
 
@@ -144,16 +151,17 @@ Windows.
 - **Unity reconnects by itself after a DHCP renumbering**, in about 5 s plus one round trip, with a
   log line saying what happened. Today it stays silently disconnected.
 - **A run can move between paths mid-session** (LAN to Tailscale fallback, or the reverse), and the
-  paths have different latency. The switch is logged and shown on the HUD, but it is not yet in the
-  `.tlog` (open question 2). Until it is, a citable run must be checked for switches by hand.
+  paths have different latency. The switch is logged to the Console and shown on the HUD, but not
+  written to the `.tlog`. A citable run therefore has to be checked for `[net]` lines by hand, or
+  run with `RemoteHostName` empty so that no switch can happen.
 - **mDNS is unauthenticated,** like the command and camera protocols themselves. A device on the
-  same LAN could answer for `nano.local` and draw the operator's commands away from the robot. It
+  same LAN could answer for `jetrover-sinrg.local` and draw the operator's commands away from the robot. It
   cannot command the robot that way, but it could fake one. This is the same trust level the
   project already accepts on this network, and it is written down here so it is a known limit rather
   than a surprise.
-- **The name has to be unique on the LAN.** If a second device claims `nano`, mDNS conflict
-  resolution renames one of them (`nano-2.local`), and which one keeps `nano` depends on boot
-  order. "nano" is a plausible default for other Jetsons in a robotics lab (open question 1).
+- **The name has to be unique on the LAN.** If a second device claimed the same name, mDNS conflict
+  resolution would rename one of them (`<name>-2.local`), and which one keeps the name would depend
+  on boot order. That is why the robot was renamed from the generic `nano` (Resolved question 1).
 - **A DHCP reservation is still worth having.** Discovery makes a changed address survivable. It
   does not make it stop changing, and the `just` recipes still take a literal until §6 is done.
   `robot-static-ip` should be retired whatever happens here: on SINRG it breaks the network a day
@@ -167,22 +175,24 @@ Windows.
 - **Tailscale only (MagicDNS name or the 100.x address).** It works from anywhere, but it logs out
   on key expiry (which happened), and it can take a relay path whose latency is not the LAN's. It
   stays as the fallback, not the primary path.
-- **The OS resolver (`Dns.GetHostAddresses("nano.local")`).** Simplest in the Editor, but unreliable
+- **The OS resolver (`Dns.GetHostAddresses("jetrover-sinrg.local")`).** Simplest in the Editor, but unreliable
   on the Quest (Context). It also hides which interface asked, and on this PC that is what decides
   whether an answer comes back at all.
 - **A robot-side UDP broadcast responder.** It would need a new datagram type in `Teleop.RobotHost`
   and a protocol change, and it would rely on broadcast crossing WiFi to wired. Multicast already
   crosses, and the responder already exists.
 
-## Open questions
+## Resolved questions
 
-1. **Rename the robot?** A unique hostname (e.g. `jetrover-sinrg`) would remove the "second
-   `nano`" risk at the cost of one robot-side change, which needs the user's go-ahead (`robot/` is
-   ask-first).
-2. **Record path changes in the `.tlog`?** A new tag carrying the tick, the old and new address and
-   the source (`mdns` or `fallback`) would make mid-session path switches visible to `analysis/`.
-   Readers skip unknown tags (`Recording/CLAUDE.md`), so this is forward-compatible. It is
-   left for the implementation PR to decide with the recording owner.
+1. **The robot is renamed to `jetrover-sinrg`** (user decision, 2026-10-02), because "nano" is a
+   likely name for other Jetsons in a robotics lab. Done with `just robot-set-hostname
+   jetrover-sinrg`, which sets the hostname and `/etc/hosts`, restarts avahi and renames the Tailscale
+   machine. Afterwards, from the PC:
+   - `jetrover-sinrg.local` answers the legacy-unicast query with `10.188.57.2`;
+   - `nano.local` no longer answers;
+   - Tailscale lists `jetrover-sinrg` at the same `100.112.90.72`.
+2. **Address switches are not recorded in the `.tlog`** (user decision, 2026-10-02). The Console line
+   and the HUD are enough for interactive use. Consequences says what that means for citable runs.
 
 ## Verification
 
@@ -191,7 +201,7 @@ Windows.
 - **Bridge:** `just bridge-check` compiles the resolver and the endpoint change against Core.
 - **Editor, by hand:**
   - set the override's `RemoteHost` to a wrong address and confirm Unity still connects through
-    `nano.local`;
+    `jetrover-sinrg.local`;
   - with `RemoteHostName` empty, confirm today's behaviour;
   - unplug and replug the robot and confirm the `[net]` line and the reconnect.
 - **Quest:** confirm the lookup gets an answer on the headset (the log line), since that is where

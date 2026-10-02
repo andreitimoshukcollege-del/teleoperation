@@ -336,3 +336,50 @@ before collecting anything.
 5. Report negative and inconclusive results. They are what stop an idea from being retried
    indefinitely — record them in the relevant folder's `CLAUDE.md` "Tried and rejected"
    section with a link to the results directory.
+
+## 9. Camera
+
+The robot's camera frames (docs/adr/0014-camera-frame-downlink.md). Emitted by
+`Camera/CameraLatencyRecorder.cs`, once per frame that reaches the screen, every sample stamped at
+that frame's `t_render` (operator domain). The host supplies the stamps and the pose path's
+`ClockSync`; the recorder never updates the estimate, because a one-way video stream has no round
+trips of its own (ADR 0014 §5).
+
+Per-frame stamps, in order:
+
+| Stamp | Clock | Meaning |
+|---|---|---|
+| `t_capture` | robot | the camera driver's buffer timestamp, CLOCK_MONOTONIC, taken at **start of exposure** on the JetRover's camera (ADR 0014 §4). Unset when the driver gave none, never substituted |
+| `t_send` | robot | the frame's first chunk handed to the socket; every chunk carries the same value |
+| `t_recv_first`, `t_recv` | operator | first and last chunk dequeued from the socket, on the network thread (§1) |
+| `t_decode_start`, `t_decode_end` | operator | the host's JPEG decode |
+| `t_render` | operator | host-defined, as for M2P: in Unity, `Application.onBeforeRender` of the first frame drawn after the decoded texture was uploaded |
+
+| Metric | Unit | Definition | Needs `ClockSync` |
+|---|---|---|---|
+| `camera_capture_to_send_ms` | ms | `t_send − t_capture`, both robot domain. The camera's exposure, readout and USB transfer, plus the sender's own handling. Not emitted when `t_capture` is unset | no |
+| `camera_owd_ms` | ms | `t_recv − t_send`, `t_send` converted to the operator's clock. The whole frame's transfer, first chunk sent to last chunk received | yes |
+| `camera_reassembly_ms` | ms | `t_recv − t_recv_first`. **Part of `camera_owd_ms`, not added to it**: the spread of one frame's chunks on arrival | no |
+| `camera_handoff_ms` | ms | `t_decode_start − t_recv`: waiting for the display thread | no |
+| `camera_decode_ms` | ms | `t_decode_end − t_decode_start`. In Unity this is `Texture2D.LoadImage` on the main thread, and it competes with the 11.1 ms frame budget | no |
+| `camera_decode_to_render_ms` | ms | `t_render − t_decode_end` | no |
+| `camera_capture_to_render_ms` | ms | `t_render − t_capture`, `t_capture` converted to the operator's clock. **The headline camera figure**, the video counterpart of M2P without `DisplayOffset` | yes, and `t_capture` set |
+| `camera_frame_dropped` | count | one sample of value 1 per frame that completed nowhere on screen: given up as incomplete, superseded before it was taken, or replaced before the display thread decoded it. As with `latency_trace_evicted`, the denominator correction for everything above | no |
+
+Rules specific to these:
+
+- **The stages sum exactly.** `capture_to_send + owd + handoff + decode + decode_to_render =
+  capture_to_render`, to within one operator tick of conversion rounding, because each stage is the
+  difference of adjacent stamps. This is the §2 stage-breakdown requirement met by construction;
+  a frame whose stamps are out of order records nothing at all rather than a negative stage.
+- **Cross-clock metrics exist only while `ClockSyncDiagnostics.IsSynced`.** A session that only
+  watches the camera, with no pose traffic, has `camera_owd_ms` and `camera_capture_to_render_ms`
+  missing by design, not by fault. Their accuracy is the sync estimate's: report its uncertainty
+  alongside them.
+- **`camera_capture_to_render_ms` gets one physical validation before it is cited** (ADR 0014 §9):
+  the camera films a millisecond counter drawn by the operator's display, and the photographed
+  difference is compared with the software figure, as M2P is validated against a photodiode
+  (ADR 0003).
+- **The capture stamp is start of exposure.** On the JetRover's camera `camera_capture_to_send_ms`
+  is about one frame period (32 ms at 30 fps, 68 ms at 15 fps, measured by
+  `just camera-timestamp-spike` on 2026-10-01) before the network is involved at all.

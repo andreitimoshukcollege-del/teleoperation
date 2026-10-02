@@ -248,7 +248,13 @@ Shows the JetRover's camera beside the arm proxy. Hand-wired in the Editor, like
    `just install-camerahost-service`) or `just camera-serve` for a one-off.
 4. Press Play. Within a second or two the panel shows the feed, and every 10 s the Console logs
    `[camera] ...: received N frames, shown N, ... last decode X ms`. In the Editor, Windows Firewall
-   may ask once whether Unity may receive on UDP 6004; nothing arrives until it is allowed.
+   does not get in the way, even though it could seem to: on SINRG WIFI (classed as Public) the
+   "Unity 2022.3.46f1 Editor" rule *blocks* inbound. That rule only stops traffic Unity has not
+   asked for. The frames come back from exactly the address and port the keepalive went to
+   (`robot:6003` → local 6004, every second), and the firewall lets those in as replies. The
+   robot's state replies come back the same way (`robot:6000` → local 6001). Confirmed working on
+   2026-10-02 with the block rule in place. It would break only if a sender answered from a
+   different port, or if the keepalive stopped for long enough that the firewall forgot it.
 5. **On the Quest, watch `last decode`.** `Texture2D.LoadImage` decodes on the main thread and is
    the one cost here that can take frame time from the 90 Hz loop. If it is a meaningful share of
    11.1 ms, lower **Max Frames Per Second** (the sender then thins frames by capture time) before
@@ -261,12 +267,20 @@ stamp, and is a follow-up.
 ## Lab scene (`JetRoverLab.unity`, built by **Teleop → Build Lab Scene**)
 
 A lab room with the JetRover's virtual twin on a bench and the camera feed on a monitor to its
-right. **The scene is generated, not hand-made**: `Assets/Teleop/Editor/LabSceneBuilder.cs` builds it
-through the Editor API, so Unity's serializer is still the only thing writing scene YAML. To change
-the lab, change the builder and rerun it (it asks before replacing the scene). Do not hand-edit or
-merge `JetRoverLab.unity`; it is a few hundred objects of set dressing and would merge badly.
+right. `Assets/Teleop/Editor/LabSceneBuilder.cs` made the first version through the Editor API.
 
-What the builder does, in order:
+**Since then, the scene itself is the source of truth.** Change the lab by editing `JetRoverLab.unity`
+in the Unity editor and saving it. The builder does not read those edits back, so it refuses to run
+while the scene exists, and it never changes a material that is already in `Assets/Teleop/Lab/`.
+Rerun it only to start a fresh lab, after renaming or deleting the scene. Two things still hold:
+
+- Edit the scene in the editor, never as text. The scene is a few hundred objects and Unity YAML
+  merges badly, so avoid two people (or two branches) editing it at once.
+- The rules the builder followed are the scene's rules too. Keep colliders off set dressing, keep
+  the monitor world-locked (never under `Main Camera`), and keep **Arm Rig** empty on
+  `CameraFeedBridge`, or it moves the screen out of the monitor at start.
+
+What the builder did, in order:
 
 1. Copies `JetRoverControl.unity`, so the XR rig, arm rig, drag target, `JetRoverOperatorBridge`
    and HUD arrive with their working wiring. **None of them is moved or edited**; the room is
@@ -282,8 +296,8 @@ What the builder does, in order:
    and **Arm Rig** deliberately empty: with an arm rig it would move the screen out of its monitor.
 5. Sets Trilight ambient, no skybox, and retunes the one directional light. No baked lighting.
 
-Materials and the colour-bar texture are written to `Assets/Teleop/Lab/`. Commit them and the
-scene with their `.meta` files after building. To run it on the Quest, add the scene in **Build
+Materials and the colour-bar texture are in `Assets/Teleop/Lab/`. Commit them with their `.meta`
+files whenever they change. To run it on the Quest, add the scene in **Build
 Settings** (above `JetRoverControl` to make it the one that loads).
 
 The builder is compiled by Unity's `Teleop.Editor` assembly (Editor-only, references `Teleop.Bridge`

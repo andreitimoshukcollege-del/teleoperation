@@ -17,7 +17,13 @@ namespace Teleop.Editor
     /// <para><b>Why a builder and not a scene file.</b> Unity's own serializer should be the only thing
     /// writing scene YAML (unity/TeleopVR/Assets/Teleop/CLAUDE.md), so this script does what a human
     /// would do in the editor, through the editor's API, and the scene it saves is ordinary Unity
-    /// output. Rerunning it replaces the lab scene with a fresh build.</para>
+    /// output.</para>
+    ///
+    /// <para><b>It only ever creates; it never overwrites.</b> Once built, the scene is edited by hand
+    /// in the editor, and those edits exist nowhere else: this script does not read them back. So it
+    /// refuses to run while <c>JetRoverLab.unity</c> exists, and it leaves any material asset that is
+    /// already in <c>Assets/Teleop/Lab/</c> exactly as it is. To start a fresh lab, rename or delete
+    /// the scene first.</para>
     ///
     /// <para><b>What is reused, untouched.</b> The lab starts as a copy of
     /// <c>JetRoverControl.unity</c>, so the XR rig, the arm rig and its pivots, the drag target,
@@ -71,15 +77,17 @@ namespace Teleop.Editor
 
             if (AssetDatabase.LoadAssetAtPath<SceneAsset>(LabScenePath) != null)
             {
-                if (!Application.isBatchMode && !EditorUtility.DisplayDialog(
-                        "Rebuild the lab scene?",
-                        $"{LabScenePath} already exists. Replace it with a fresh copy of {SourceScenePath} plus the lab?",
-                        "Replace", "Cancel"))
+                string message =
+                    $"{LabScenePath} already exists and is edited by hand in the editor now; the builder never " +
+                    "overwrites it, because those edits exist nowhere else. To start a fresh lab, rename or " +
+                    "delete the scene first.";
+                Debug.LogWarning($"[lab] {message}");
+                if (!Application.isBatchMode)
                 {
-                    return;
+                    EditorUtility.DisplayDialog("Lab scene already exists", message, "OK");
                 }
 
-                AssetDatabase.DeleteAsset(LabScenePath);
+                return;
             }
 
             if (!AssetDatabase.CopyAsset(SourceScenePath, LabScenePath))
@@ -428,17 +436,26 @@ namespace Teleop.Editor
             };
 
             // The screen is unlit: the camera image should look like the camera, not like a lit surface.
-            p.Screen = LoadOrCreate("CameraScreen", Shader.Find("Unlit/Texture"));
-            p.Screen.mainTexture = NoSignalTexture();
-            EditorUtility.SetDirty(p.Screen);
+            p.Screen = LoadOrCreate("CameraScreen", Shader.Find("Unlit/Texture"), out bool created);
+            if (created)
+            {
+                p.Screen.mainTexture = NoSignalTexture();
+                EditorUtility.SetDirty(p.Screen);
+            }
 
             AssetDatabase.SaveAssets();
             return p;
         }
 
+        /// <summary>A Standard material, configured only when it is first created; an existing one is left as edited.</summary>
         private static Material Standard(string name, Color color, float smoothness, float metallic = 0f, Color? emission = null)
         {
-            Material m = LoadOrCreate(name, Shader.Find("Standard"));
+            Material m = LoadOrCreate(name, Shader.Find("Standard"), out bool created);
+            if (!created)
+            {
+                return m;
+            }
+
             m.color = color;
             m.SetFloat("_Glossiness", smoothness);
             m.SetFloat("_Metallic", metallic);
@@ -457,18 +474,15 @@ namespace Teleop.Editor
             return m;
         }
 
-        private static Material LoadOrCreate(string name, Shader shader)
+        private static Material LoadOrCreate(string name, Shader shader, out bool created)
         {
             string path = $"{MaterialFolder}/{name}.mat";
             Material m = AssetDatabase.LoadAssetAtPath<Material>(path);
-            if (m == null)
+            created = m == null;
+            if (created)
             {
                 m = new Material(shader);
                 AssetDatabase.CreateAsset(m, path);
-            }
-            else
-            {
-                m.shader = shader;
             }
 
             return m;

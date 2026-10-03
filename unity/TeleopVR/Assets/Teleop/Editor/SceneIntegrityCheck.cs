@@ -68,6 +68,9 @@ namespace Teleop.Editor
             EditorApplication.Exit(problems.Count == 0 ? 0 : 1);
         }
 
+        /// <summary>The check itself, for callers that decide what to do with the result (QuestBuild).</summary>
+        public static List<string> CheckScenes() => Check();
+
         private static List<string> Check()
         {
             var problems = new List<string>();

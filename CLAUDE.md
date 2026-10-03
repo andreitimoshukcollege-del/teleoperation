@@ -45,7 +45,7 @@ capabilities to Core by **implementing interfaces that Core declares** (`IRobotP
 | `core/Teleop.Core.Tests/` | `dotnet` | xUnit; must stay green |
 | `core/Teleop.Eval/` | `dotnet` | headless CLI: replay, sweep, compare |
 | `unity/TeleopVR/` | Unity 2022.3 | Quest: scenes, XR, rendering; the measured baseline (ADR 0001) |
-| `unity/TeleopXR/` | Unity 6.3 | Galaxy XR: hand tracking, URP (ADR 0016) |
+| `unity/TeleopXR/` | Unity 6.6 | Galaxy XR: hand tracking, URP (ADR 0016) |
 | `unity/Teleop.Bridge/` | both Unity projects | shared UPM package: the only Unity code that touches Core; real I/O |
 | `robot/` | colcon (ROS 2) | independent; does not interact with the above builds |
 | `analysis/` | nothing | Python; reads `results/`, exports `.onnx` |
@@ -71,7 +71,7 @@ them.
    `Registry/Registries.cs` by hand. No `Activator.CreateInstance`, no `Expression.Compile`,
    no `Reflection.Emit`.
 6. **Core targets `netstandard2.1` with `LangVersion 9.0`.** Both editors are C# 9: Unity
-   2022.3 (TeleopVR) and Unity 6.3 (TeleopXR). Do not retarget to `net8.0` and do not raise `LangVersion`. Banned because
+   2022.3 (TeleopVR) and Unity 6.6 (TeleopXR). Do not retarget to `net8.0` and do not raise `LangVersion`. Banned because
    they compile under `dotnet` and break the Quest build while `dotnet test` stays green:
    file-scoped namespaces (`namespace X;` — use block-scoped), `global using`, collection
    expressions (`[1, 2]`), `required` members, primary constructors on classes.
@@ -121,7 +121,10 @@ serialization, scene wiring, or IL2CPP. See `unity/BridgeCheck/README.md`.
 If [`just`](https://github.com/casey/just) is installed, the repo-root `justfile` wraps the
 above plus `analysis/`'s test suite: `just core-check` runs all three `core/` gates,
 `just bridge-check` compiles `Bridge/` against Core, `just test` runs `analysis/`'s pytest suite,
-`just check` runs everything. `just --list` shows every
+`just check` runs everything. For the two Unity projects (they need the Windows side, and the
+project's editor closed): `just unity-check-vr` / `just unity-check-xr` open their scenes headless
+and fail on missing scripts or broken wiring, and `just build-quest` / `just build-galaxy` build the
+two APKs. `just --list` shows every
 recipe (`sweep`, `report`, `analysis-setup`, `experiment-gui`, ...). This is a convenience wrapper,
 not a new source of truth — the raw commands above and in `analysis/CLAUDE.md` still work
 unchanged and are what CI/agents without `just` should fall back to.
@@ -200,7 +203,8 @@ ownership rule, and there is no longer a restriction on where any directory may 
   requires 2023.2+, so on-device ML inference goes through `IInferenceBackend` with a
   backend chosen at Phase 7; do not write `using Unity.Sentis` anywhere (the Unity 6 project
   included, until that Phase 7 ADR).
-- **Unity 6.3 LTS** (TeleopXR, ≥ 6000.3.5f2, ADR 0016) — also C# 9 / .NET Standard 2.1. Galaxy XR
+- **Unity 6000.6.4f1** (TeleopXR, ADR 0016; Android XR needs ≥ 6000.3.6f1) — also C# 9 / .NET
+  Standard 2.1 (`-langversion:9.0` confirmed in its build). Galaxy XR
   is tested from the editor with Android XR **Direct Preview** over USB-C (Windows 11), the Link
   equivalent. Each `just` recipe that runs Unity names its editor and refuses while that
   project's editor is open.

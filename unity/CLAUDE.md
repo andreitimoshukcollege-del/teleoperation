@@ -5,7 +5,7 @@ There are two Unity projects and one shared Unity package (docs/adr/0016):
 | Path | Editor | Headset | Pipeline | Notes |
 |---|---|---|---|---|
 | `unity/TeleopVR/` | 2022.3.46f1 | Meta Quest (Link from the editor, or APK) | built-in | the measured baseline; ADR 0001 pins its editor. Rules in `TeleopVR/Assets/Teleop/CLAUDE.md` |
-| `unity/TeleopXR/` | Unity 6.3 LTS (≥ 6000.3.5f2) | Samsung Galaxy XR (Direct Preview over USB-C, or APK) | URP | hand tracking, no Meta SDK. Rules in `TeleopXR/CLAUDE.md` |
+| `unity/TeleopXR/` | 6000.6.4f1 (Android XR needs ≥ 6000.3.6f1) | Samsung Galaxy XR (Direct Preview over USB-C, or APK) | URP | hand tracking, no Meta SDK. Rules in `TeleopXR/CLAUDE.md` |
 | `unity/Teleop.Bridge/` | both | — | either | the shared UPM package (`com.teleop.bridge`); rules in its `CLAUDE.md` |
 
 Both projects reference `core/Teleop.Core`, `core/Teleop.RobotArm` and `unity/Teleop.Bridge` by
@@ -35,7 +35,7 @@ omission is deliberate: it makes "XR code reaches into a predictor" a compile er
 
 ## Shared code compiles under both editors
 
-`Teleop.Bridge` is compiled by Unity 2022.3 *and* Unity 6.3. Both are C# 9 against .NET Standard
+`Teleop.Bridge` is compiled by Unity 2022.3 *and* Unity 6.6. Both are C# 9 against .NET Standard
 2.1, so root CLAUDE.md invariant 6 is the same rule twice. Beyond the language level:
 
 - **The Unity API used must exist, and not be obsolete, in both.** For example, use

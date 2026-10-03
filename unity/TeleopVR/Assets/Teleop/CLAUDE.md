@@ -5,6 +5,12 @@ Rules shared by every Unity project are in `unity/CLAUDE.md`. Bridge (`com.teleo
 package at `unity/Teleop.Bridge/`) has its own `CLAUDE.md`. The Galaxy XR project is
 `unity/TeleopXR/`.
 
+Headless, with this project's editor closed:
+- `just unity-check-vr` opens every scene and fails on a missing script or broken JetRover wiring
+  (`Assets/Teleop/Editor/SceneIntegrityCheck.cs`, also **Teleop → Check Scenes**).
+- `just build-quest` runs that check, then builds the enabled Build Settings scenes into
+  `Builds/TeleopVR-Quest.apk`. The first Android build after Link work re-imports assets for Android.
+
 ## Quest specifics
 
 - OpenXR with the Meta feature group; Meta XR SDK (`com.meta.xr.sdk.core`).

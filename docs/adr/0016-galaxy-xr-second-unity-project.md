@@ -1,4 +1,4 @@
-# 16. Galaxy XR runs from a second Unity project on Unity 6.3, sharing Core and Bridge
+# 16. Galaxy XR runs from a second Unity project on Unity 6, sharing Core and Bridge
 
 ## Status
 
@@ -41,9 +41,11 @@ What the existing code makes easy:
 
 ## Decision
 
-### 1. A second Unity project, `unity/TeleopXR`, on Unity 6.3 LTS
+### 1. A second Unity project, `unity/TeleopXR`, on Unity 6
 
-`unity/TeleopXR` uses the newest Unity 6000.3 LTS patch, and at least 6000.3.5f2 for Direct Preview.
+`unity/TeleopXR` needs Unity 6000.3.6f1 or newer, which covers Direct Preview (6000.3.5f2+) and
+Google's Extensions v1.4.0 (6000.3.6f1+). It was created on **6000.6.4f1** (Unity 6.6, a Supported
+release), which the user had installed; 6.3 LTS would also have qualified.
 The exact version is recorded in its `ProjectSettings/ProjectVersion.txt`.
 
 `unity/TeleopVR` stays on 2022.3.46f1, so ADR 0001 still governs it and the Quest baseline stays

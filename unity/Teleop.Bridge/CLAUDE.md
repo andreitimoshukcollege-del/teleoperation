@@ -1,7 +1,7 @@
 # Teleop.Bridge — the shared Unity package (`com.teleop.bridge`)
 
 The only place Unity and Core meet. Shared by `unity/TeleopVR` (Quest, Unity 2022.3, built-in
-pipeline) and `unity/TeleopXR` (Galaxy XR, Unity 6.3, URP) per docs/adr/0016, so **every change
+pipeline) and `unity/TeleopXR` (Galaxy XR, Unity 6.6, URP) per docs/adr/0016, so **every change
 here must compile and behave under both editors and both pipelines**. See `unity/CLAUDE.md` for
 how that is checked. Changes here want human review: this is where real I/O lives.
 

@@ -54,7 +54,7 @@ install-traces:
     done
     echo "$count trace(s) installed."
 
-# ---- unity/ headless runs (docs/adr/0016: TeleopVR = Quest on 2022.3, TeleopXR = Galaxy XR on 6.3) ----
+# ---- unity/ headless runs (docs/adr/0016: TeleopVR = Quest on 2022.3, TeleopXR = Galaxy XR on 6.6) ----
 
 # Internal: run one Unity project's editor headless with -executeMethod; picks the editor version the project pins, refuses while that project is open in an editor, prints the log's verdict lines
 _unity-batch project method extra="":
@@ -93,6 +93,61 @@ _unity-batch project method extra="":
 # Headless check of unity/TeleopVR (Unity 2022.3): compiles, and every JetRover scene opens with no missing scripts and its Bridge wiring intact -- moves nothing; close that project's editor first
 unity-check-vr:
     just _unity-batch TeleopVR Teleop.Editor.SceneIntegrityCheck.Run
+
+# Configure unity/TeleopXR (Galaxy XR, Unity 6.6) from code: XRI/XR Hands samples, URP, Android player settings, OpenXR for Android and Direct Preview. Idempotent; the first run imports samples, so run it twice on a fresh clone. Close that project's editor first
+unity-setup-xr:
+    just _unity-batch TeleopXR Teleop.XR.Editor.XrProjectSetup.Run
+
+# Build unity/TeleopXR's Galaxy XR scene (JetRoverLabXR) from code: hands rig, arm, pinch-grab target, camera panel. Create-only; rebuild=true replaces it, discarding hand edits. Run unity-setup-xr first
+unity-scene-xr rebuild="false":
+    just _unity-batch TeleopXR Teleop.XR.Editor.XrLabSceneBuilder.Run {{ if rebuild == "true" { "-teleopRebuildScene" } else { "" } }}
+
+# Headless check of unity/TeleopXR's scene: no missing scripts, Bridge wiring intact, pinch-grab settings safe for a real arm (no pull-to-hand, no snap, no smoothing, no throw), hands only
+unity-check-xr:
+    just _unity-batch TeleopXR Teleop.XR.Editor.XrSceneCheck.Run
+
+# Build the Galaxy XR APK (unity/TeleopXR, Unity 6.6) after its scene check -> unity/TeleopXR/Builds/TeleopXR.apk. Close that project's editor first
+build-galaxy:
+    just _unity-batch TeleopXR Teleop.XR.Editor.XrBuild.Run "-buildTarget Android"
+
+# Build the Quest APK (unity/TeleopVR, Unity 2022.3) from its Build Settings scenes after its scene check -> unity/TeleopVR/Builds/TeleopVR-Quest.apk. The first Android build re-imports assets; close that project's editor first
+build-quest:
+    just _unity-batch TeleopVR Teleop.Editor.QuestBuild.Run "-buildTarget Android"
+
+# Internal: the adb that ships with the Unity editor unity/TeleopXR pins (or $ADB), run on the Windows side
+_adb *args:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    ver=$(sed -n 's/^m_EditorVersion: //p' unity/TeleopXR/ProjectSettings/ProjectVersion.txt | tr -d '\r')
+    adb="${ADB:-/mnt/c/Program Files/Unity/Hub/Editor/$ver/Editor/Data/PlaybackEngines/AndroidPlayer/SDK/platform-tools/adb.exe}"
+    [ -x "$adb" ] || { echo "error: adb not found at $adb (install Unity $ver's Android SDK module, or set ADB)" >&2; exit 1; }
+    "$adb" {{args}}
+
+# Install the Galaxy XR APK on the headset over USB (developer mode and USB debugging on; accept the prompt in the headset)
+install-galaxy:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    apk=unity/TeleopXR/Builds/TeleopXR.apk
+    [ -f "$apk" ] || { echo "error: $apk not found; run just build-galaxy first" >&2; exit 1; }
+    just _adb devices -l
+    just _adb install -r "$(wslpath -w "$apk")"
+
+# Point the Galaxy XR app at the robot without a rebuild: pushes a full jetrover_connection.json override (the Bridge default with RemoteHost replaced) to the app's files directory. On SINRG use the robot's LAN address, e.g. JETROVER_HOST=10.188.57.2
+push-galaxy-config host=default_jetrover_host:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    tmp=$(mktemp --suffix=.json)
+    trap 'rm -f "$tmp"' EXIT
+    python3 - "$tmp" "{{host}}" <<'PY'
+    import json, sys
+    cfg = json.load(open("unity/Teleop.Bridge/Runtime/Resources/jetrover_connection.json", encoding="utf-8"))
+    cfg["RemoteHost"] = sys.argv[2]
+    json.dump(cfg, open(sys.argv[1], "w"), indent=2)
+    PY
+    dest=/sdcard/Android/data/com.teleop.jetroverxr/files
+    just _adb shell mkdir -p "$dest"
+    just _adb push "$(wslpath -w "$tmp")" "$dest/jetrover_connection.json"
+    echo "Galaxy XR app now targets {{host}}; restart the app to pick it up."
 
 # Run an experiment sweep, e.g. `just sweep experiments/exp-001-predictor-baseline.yaml`
 sweep config:

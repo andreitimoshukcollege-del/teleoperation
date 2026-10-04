@@ -73,6 +73,7 @@ build-galaxy` refuses to build, if any of them changes:
 | Rigidbody | kinematic, no gravity | the target moves only when grabbed |
 | Hand smoothing filter | inactive | as above, at the joint level |
 | Modality manager controllers | none | hands only |
+| Active Input Handling (Player Settings) | Both | the pinch is read through Input System actions; without them hands track but nothing grabs |
 
 What the check cannot see:
 
@@ -89,28 +90,46 @@ What the check cannot see:
 
 ## Testing on the Galaxy XR
 
-**Direct Preview** (Play mode streamed to the headset, the Link equivalent):
+**Once per headset: developer mode and USB debugging.** The menu names below are from ManageXR's
+Galaxy XR guide and may differ slightly between headset software versions.
 
-1. Windows 11 and a GPU with Vulkan video encoding (this PC: RTX 4060 Laptop).
-2. Install Google's **Android XR Engine Hub** and its Android XR Streaming runtime.
-3. Turn on developer mode on the headset and connect it with a good USB-C cable.
-4. In the editor, open **Project Settings → XR Plug-in Management → Project Validation** and apply
-   *Android XR Streaming runtime selected*. This sets the machine's active OpenXR runtime, which is
-   why it isn't in the setup code.
-5. Press Play.
+1. **Settings → About device**: tap **Build number** seven times and enter the PIN.
+2. **Settings → System → Developer options**: turn on **USB debugging**.
+3. Connect it with a data-capable USB-C cable. In the headset, allow USB debugging for this
+   computer, and tick *always allow*.
+4. `just _adb devices -l` should list the headset as `device`. If it shows `unauthorized`, the
+   prompt in step 3 is still waiting.
 
-**APK:**
+**Direct Preview** (Play mode streamed to the headset, the Link equivalent). It needs Windows 11
+and a GPU with Vulkan video encoding (this PC: RTX 4060 Laptop).
+
+1. **Once per PC:** install Google's **Android XR Engine Hub**. Close the Unity editor and open the
+   Engine Hub. Pick the headset in the device drop-down, click **Install Stream Client**, then
+   click **Set** next to **Active OpenXR Runtime**. That runtime is a setting of the machine, not
+   the project, which is why the setup code doesn't make it.
+2. **Once per clone:** `just unity-setup-xr` (or **Teleop → XR → Configure Project**) sets the
+   editor up the way Android XR Streaming requires: Vulkan only on Windows, multi-pass, 24-bit
+   depth, legacy foveation. The editor changes graphics API only when it restarts, so reopen it;
+   its title bar then ends in `<Vulkan>`. **Project Settings → XR Plug-in Management → Project
+   Validation**, Standalone tab, should list no `[OpenXR]` or `[Android XR Streaming]` errors.
+3. `just unity-robot-host` points Play mode at the robot's current address.
+4. Connect the headset over USB-C and press Play. The stream starts by itself.
+
+**APK** (the headset alone, over Wi-Fi):
 
 1. `just build-galaxy` produces `Builds/TeleopXR.apk`. It runs the scene check first and refuses
    to build if the check fails.
 2. `just install-galaxy` installs it over USB.
 3. `just push-galaxy-config` points the app at the robot's current LAN address without a
-   rebuild. It finds the robot itself (`just robot-ip`); pass an address to override. It pushes a full `jetrover_connection.json` override to the app's files directory;
-   restart the app afterwards.
+   rebuild. It finds the robot itself (`just robot-ip`); pass an address to override. It pushes a
+   full `jetrover_connection.json` override to the app's files directory; restart the app
+   afterwards.
+4. The headset must be on the robot's network. Accept the hand-tracking permission on the first
+   launch.
 
-**The robot must reply to the headset.** Make sure the Jetson runs the reply-to-sender RobotHost:
-`just deploy-robothost`. The camera sender already answers whoever sends
-the keepalive.
+**The robot must reply to the headset.** This applies to the APK; in Direct Preview the PC is the
+sender. Make sure the Jetson runs the reply-to-sender RobotHost: `just deploy-robothost`. The
+camera sender already answers whoever sends the keepalive.
 
 **M2P on Galaxy XR is relative only** until its `DisplayOffset` has been measured with the photodiode
 rig and pushed as a per-device `display_calibration.json` (ADR 0016 §6).

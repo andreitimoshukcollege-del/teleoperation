@@ -43,6 +43,11 @@ namespace Teleop.XR.Editor
     /// passthrough, faces) is left off: none is used, and each costs runtime work and permissions.</item>
     /// <item><b>OpenXR on Windows</b> (Direct Preview: Play mode streamed to the headset): the same,
     /// plus Android XR's session features and Google's Android XR Streaming feature.</item>
+    /// <item><b>The Windows editor, for Direct Preview:</b> Vulkan only, multi-pass, 24-bit depth and
+    /// the legacy foveation API. The streaming feature's Project Validation fails without the first
+    /// three, and Google's setup guide asks for all four. They apply to Windows only; the Android
+    /// build keeps single-pass instanced and URP foveation. The editor changes graphics API only
+    /// when it restarts.</item>
     /// </list>
     /// </summary>
     public static class XrProjectSetup
@@ -123,9 +128,32 @@ namespace Teleop.XR.Editor
             ConfigureXr(BuildTargetGroup.Android, AndroidFeatures);
             ConfigureXr(BuildTargetGroup.Standalone, StandaloneFeatures);
             OpenXRSettings.GetSettingsForBuildTargetGroup(BuildTargetGroup.Android).renderMode = OpenXRSettings.RenderMode.SinglePassInstanced;
+            ConfigureDirectPreview();
             AssetDatabase.SaveAssets();
             Debug.Log("[xr-setup] PASS: samples, URP, Android player settings and OpenXR (Android + Windows/Direct Preview) configured");
             return imported;
+        }
+
+        /// <summary>
+        /// The Windows editor settings Direct Preview needs. Google's <c>XRStreamingFeature</c>
+        /// validation rules require an explicit Windows graphics API list, multi-pass and 24-bit depth.
+        /// Google's guide asks for Vulkan only and the legacy foveation API.
+        /// </summary>
+        private static void ConfigureDirectPreview()
+        {
+            var vulkan = new[] { GraphicsDeviceType.Vulkan };
+            if (PlayerSettings.GetUseDefaultGraphicsAPIs(BuildTarget.StandaloneWindows64)
+                || !PlayerSettings.GetGraphicsAPIs(BuildTarget.StandaloneWindows64).SequenceEqual(vulkan))
+            {
+                PlayerSettings.SetUseDefaultGraphicsAPIs(BuildTarget.StandaloneWindows64, false);
+                PlayerSettings.SetGraphicsAPIs(BuildTarget.StandaloneWindows64, vulkan);
+            }
+
+            OpenXRSettings editor = OpenXRSettings.GetSettingsForBuildTargetGroup(BuildTargetGroup.Standalone);
+            editor.renderMode = OpenXRSettings.RenderMode.MultiPass;
+            editor.depthSubmissionMode = OpenXRSettings.DepthSubmissionMode.Depth24Bit;
+            editor.foveatedRenderingApi = OpenXRSettings.BackendFovationApi.Legacy;
+            EditorUtility.SetDirty(editor);
         }
 
         private static int ImportSamples()

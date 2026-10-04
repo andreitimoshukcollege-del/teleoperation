@@ -25,7 +25,9 @@ namespace Teleop.XR.Editor
     /// <item>any drift in the settings that make pinch-grabbing safe to drive a real arm: no
     /// pull-to-hand, no snap, no smoothing, no throw, a kinematic body, and the hand smoothing filter
     /// off;</item>
-    /// <item>controllers left in the modality manager.</item>
+    /// <item>controllers left in the modality manager;</item>
+    /// <item>Active Input Handling without the Input System, which leaves hands that track but cannot
+    /// pinch.</item>
     /// </list>
     /// Those settings are easy to change by accident in an Inspector and invisible until the robot
     /// jumps. Read-only; exits non-zero when it finds a problem or cannot look (invariant 10).
@@ -152,6 +154,14 @@ namespace Teleop.XR.Editor
             }
 
             CheckDragTarget(bridge, problems);
+
+#if !ENABLE_INPUT_SYSTEM
+            // The hands rig reads the pinch through Input System actions (ReleaseThresholdButtonReader
+            // on XRI's hand interaction actions). With Active Input Handling on the old Input Manager
+            // alone, hands are drawn but nothing can be grabbed. The project was committed like that
+            // once, because batch mode never shows the dialog that offers to switch it.
+            problems.Add("Player Settings > Active Input Handling excludes the Input System: hands would track but never pinch-grab (set it to Both, as in TeleopVR)");
+#endif
 
             var modality = Object.FindAnyObjectByType<XRInputModalityManager>(FindObjectsInactive.Include);
             if (modality == null)

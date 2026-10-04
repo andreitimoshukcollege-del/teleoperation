@@ -118,7 +118,7 @@ build-galaxy:
 build-quest:
     just _unity-batch TeleopVR Teleop.Editor.QuestBuild.Run "-buildTarget Android"
 
-# Internal: the adb that ships with the Unity editor unity/TeleopXR pins (or $ADB), run on the Windows side
+# Internal: the adb that ships with the Unity editor unity/TeleopXR pins (or $ADB), run on the Windows side. Arguments are re-split by the shell, so pass Windows paths as `wslpath -m` (forward slashes): backslashes would be eaten
 _adb *args:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -134,7 +134,7 @@ install-galaxy:
     apk=unity/TeleopXR/Builds/TeleopXR.apk
     [ -f "$apk" ] || { echo "error: $apk not found; run just build-galaxy first" >&2; exit 1; }
     just _adb devices -l
-    just _adb install -r "$(wslpath -w "$apk")"
+    just _adb install -r "$(wslpath -m "$apk")"
 
 # Point the Galaxy XR app at the robot without a rebuild: pushes a full jetrover_connection.json override (the Bridge default with RemoteHost replaced) to the app's files directory. Finds the robot itself (`just robot-ip`); pass an address to override
 push-galaxy-config host=default_jetrover_host:
@@ -151,7 +151,7 @@ push-galaxy-config host=default_jetrover_host:
     PY
     dest=/sdcard/Android/data/com.teleop.jetroverxr/files
     just _adb shell mkdir -p "$dest"
-    just _adb push "$(wslpath -w "$tmp")" "$dest/jetrover_connection.json"
+    just _adb push "$(wslpath -m "$tmp")" "$dest/jetrover_connection.json"
     echo "Galaxy XR app now targets $host; restart the app to pick it up."
 
 # Run an experiment sweep, e.g. `just sweep experiments/exp-001-predictor-baseline.yaml`

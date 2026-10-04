@@ -44,8 +44,9 @@ by the next run, and nobody can review it.
 ## The scene (`JetRoverLabXR`) and its safety settings
 
 `XrLabSceneBuilder` (**Teleop → XR → Build Lab Scene**, or `just unity-scene-xr`) made it, and it is
-create-only, like TeleopVR's lab. From now on it is edited by hand in the editor.
-`rebuild=true` replaces it and discards those edits. Contents:
+create-only, like TeleopVR's lab. It dresses the lab as it builds (see *The lab* below). From now on
+the scene is edited by hand in the editor. `rebuild=true` replaces it and discards those edits.
+Contents:
 
 - **XRI's `XR Origin Hands (XR Rig)`.**
   - Its modality manager has **no controllers**, so the scene is hands only.
@@ -114,9 +115,53 @@ the keepalive.
 **M2P on Galaxy XR is relative only** until its `DisplayOffset` has been measured with the photodiode
 rig and pushed as a per-device `display_calibration.json` (ADR 0016 §6).
 
+## The lab: room, twin and display are generated
+
+The night-shift lab around the arm is built by code in `Assets/Teleop/Editor/Lab/`:
+
+- the room: sign wall, window skyline, desks, racks, shelving, a taped workcell with a status ring,
+  a mobile-robot test area, motion-capture cameras;
+- the JetRover twin: chassis, mecanum wheels, lidar, 7-inch screen, and arm visuals on the rig's
+  pivots;
+- the 1.2 × 0.9 m camera display on a stand, with a live status strip.
+
+It goes into the scene under one `LabDressing` root. The meshes, textures, materials and lighting
+settings it generates go to `Assets/Teleop/Lab/Generated/`.
+
+- **Review it headless:** `just unity-lab-xr`, or the **Teleop → XR** menu: *Rebuild Lab Dressing*,
+  *Bake Lab Lighting*, *Capture Lab Previews*. It rebuilds the dressing and bakes the lighting (the
+  bake takes under a minute on the RTX 4060; the whole run takes a few minutes). It then renders nine
+  fixed views and a contact sheet to `%TEMP%\teleop-lab\<time>\`, with a `report.txt` of triangles,
+  renderers, materials and lightmaps. Look there before putting on a headset. `bake=false` skips
+  the bake. Close the editor first.
+- **Regenerated, never hand-edited.**
+  - A rebuild deletes and recreates `LabDressing` and the twin's `TwinVisual` children. It also
+    deletes the builder's original placeholder roots, `Room`, `CameraPanel` and `ConnectionStatus`.
+  - It rewrites the generated assets in place, so their GUIDs stay stable.
+  - It resets the directional light, the scene's lighting settings and the wiring below.
+  - Hand edits anywhere else in the scene survive. To change the look, change the code and rerun.
+- **It rewires three things, and `just unity-check-xr` guards both safety-relevant ones:**
+  - `CameraFeedBridge.panel` becomes the display's screen, with `armRig` left empty. With an arm
+    rig set, the bridge would move the screen out of the display at start.
+  - `JetRoverArmRig.reachWarningRenderer` becomes the LED ring on the twin's wrist. The old segment
+    cubes are hidden, not deleted, and the check fails if the warning renderer isn't drawn.
+  - `CameraStatusBar` drives the display's strip, and `LinkStatusLamp` the workcell ring. These
+    are display-only and reference Bridge only.
+- **Lighting is baked.**
+  - Subtractive mode: area lights under and over the pendant fixtures, cove lines, light probes
+    where the arm moves, and one box-projected reflection probe.
+  - The single Mixed directional light gives the moving arm a real-time shadow on the bench, which
+    tells the operator how high the gripper is.
+  - The cove lines and fixture diffusers have HDR colours. The screen clamps them, but the
+    reflection probe keeps the full value, so the glossy floor reflects them.
+  - Bake output (`Assets/Scenes/JetRoverLabXR/`) and the mesh library are LFS-tracked.
+- **The twin is our own geometry**, from Hiwonder's published dimensions and the repo's measured
+  arm. No vendor files (the repo is public).
+- **TextMesh Pro's essential resources are committed** in `Assets/TextMesh Pro/`; the lab's labels
+  need them. Batch mode cannot import them, because the import is asynchronous and `-quit` ends the
+  run first. `just unity-setup-xr` only checks that they are there.
+
 ## Not here yet
 
-- The lab visuals: the night-shift room, detailed JetRover twin and big display, planned for URP in
-  this project.
 - Controllers, passthrough and eye tracking (ADR 0016 *Out of scope*).
 - Robot discovery by name (ADR 0015).

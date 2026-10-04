@@ -2,7 +2,6 @@ using System;
 using System.IO;
 using System.Linq;
 using Teleop.Bridge;
-using TMPro;
 using Unity.XR.CoreUtils;
 using UnityEditor;
 using UnityEditor.SceneManagement;
@@ -31,9 +30,9 @@ namespace Teleop.XR.Editor
     /// including the pinch pose that becomes the robot's target, which ADR 0016 rules out.</item>
     /// <item>The same arm rig, pivots and values as TeleopVR's <c>JetRoverControl</c>.</item>
     /// <item>The same <c>DragTarget</c> start pose, now grabbed by pinch.</item>
-    /// <item><c>JetRoverOperatorBridge</c> and <c>CameraFeedBridge</c> wired to them.</item>
-    /// <item>A world-locked camera panel and a status line.</item>
-    /// <item>A plain floor and bench. The lab visuals come later.</item>
+    /// <item><c>JetRoverOperatorBridge</c>, <c>CameraFeedBridge</c> and <c>HandTrackingSession</c>.</item>
+    /// <item>Then <see cref="LabDressing"/>: the night-shift room, the JetRover twin, the camera display
+    /// (which <c>CameraFeedBridge</c> is pointed at), and the lighting, left unbaked.</item>
     /// </list>
     ///
     /// <para><b>The target's grab settings are safety settings, not taste.</b></para>
@@ -64,9 +63,6 @@ namespace Teleop.XR.Editor
         private static readonly Vector3 DragTargetStart = new Vector3(0.169f, 1.293f, 0.492f);
         private const float DragTargetDiameter = 0.05f;
 
-        // Camera panel: 640x480 stream, 0.36 m tall; CameraFeedBridge places it beside the arm's base.
-        private const float PanelHeight = 0.36f;
-        private const float PanelAspect = 640f / 480f;
 
         [MenuItem("Teleop/XR/Build Lab Scene")]
         public static void BuildFromMenu()
@@ -125,10 +121,7 @@ namespace Teleop.XR.Editor
 
             Material linkMat = LitMaterial("ArmLink", new Color(0.82f, 0.83f, 0.85f), 0.45f);
             Material targetMat = LitMaterial("DragTarget", new Color(0.1f, 0.75f, 0.95f), 0.6f);
-            Material floorMat = LitMaterial("Floor", new Color(0.18f, 0.19f, 0.21f), 0.3f);
-            Material benchMat = LitMaterial("Bench", new Color(0.12f, 0.13f, 0.15f), 0.4f);
-            Material chassisMat = LitMaterial("Chassis", new Color(0.08f, 0.08f, 0.09f), 0.35f);
-            Material panelMat = PanelMaterial();
+            PanelMaterial(); // the camera display's screen material; LabDressing uses it
 
             BuildLighting();
             GameObject rig = BuildHandsRig(rigPrefab);
@@ -136,23 +129,18 @@ namespace Teleop.XR.Editor
 
             JetRoverArmRig armRig = BuildArmRig(linkMat, out Transform baseAnchor);
             XRGrabInteractable target = BuildDragTarget(targetMat);
-            Renderer panel = BuildCameraPanel(panelMat);
-            BuildRoom(floorMat, benchMat, chassisMat);
 
             var operatorObject = new GameObject("JetRoverOperator");
             var bridge = operatorObject.AddComponent<JetRoverOperatorBridge>();
             SetReference(bridge, "dragTarget", target.transform);
             SetReference(bridge, "armRig", armRig);
 
-            var feed = operatorObject.AddComponent<CameraFeedBridge>();
-            var feedSo = new SerializedObject(feed);
-            feedSo.FindProperty("panel").objectReferenceValue = panel;
-            feedSo.FindProperty("panelHeightMeters").floatValue = PanelHeight;
-            feedSo.FindProperty("armRig").objectReferenceValue = armRig; // places the panel beside the arm's base at start
-            feedSo.ApplyModifiedPropertiesWithoutUndo();
-
+            operatorObject.AddComponent<CameraFeedBridge>(); // LabDressing points it at the display's screen
             operatorObject.AddComponent<HandTrackingSession>();
-            BuildStatusLine(bridge);
+
+            // The room, the twin, the display and the lighting (LabDressing). Not baked here: a bake
+            // takes minutes; `just unity-lab-xr` (or Teleop > XR > Bake Lab Lighting) does it.
+            LabDressing.Apply(scene);
 
             EditorSceneManager.SaveScene(scene, ScenePath);
             EditorBuildSettings.scenes = new[] { new EditorBuildSettingsScene(ScenePath, true) };
@@ -279,56 +267,6 @@ namespace Teleop.XR.Editor
             return grab;
         }
 
-        // ---- camera panel, status, room -------------------------------------------------------
-
-        private static Renderer BuildCameraPanel(Material mat)
-        {
-            GameObject quad = GameObject.CreatePrimitive(PrimitiveType.Quad);
-            quad.name = "CameraPanel";
-            Object.DestroyImmediate(quad.GetComponent<Collider>());
-            quad.transform.position = ArmBase + new Vector3(0.35f, 0.25f, 0f); // CameraFeedBridge's default offset
-            quad.transform.localScale = new Vector3(PanelHeight * PanelAspect, PanelHeight, 1f);
-            var renderer = quad.GetComponent<Renderer>();
-            renderer.sharedMaterial = mat;
-            renderer.shadowCastingMode = ShadowCastingMode.Off;
-            return renderer;
-        }
-
-        private static void BuildStatusLine(JetRoverOperatorBridge bridge)
-        {
-            var go = new GameObject("ConnectionStatus");
-            var text = go.AddComponent<TextMeshPro>();
-            go.transform.position = ArmBase + new Vector3(-0.35f, 0.32f, 0.1f);
-            text.text = "Robot: not connected";
-            text.fontSize = 0.35f; // a 3D TextMeshPro line is about fontSize / 10 metres
-            text.alignment = TextAlignmentOptions.Center;
-            text.textWrappingMode = TextWrappingModes.NoWrap;
-            text.rectTransform.sizeDelta = new Vector2(0.5f, 0.06f);
-
-            var hud = go.AddComponent<JetRoverConnectionHud>();
-            SetReference(hud, "operatorBridge", bridge);
-            SetReference(hud, "label", text);
-        }
-
-        private static void BuildRoom(Material floorMat, Material benchMat, Material chassisMat)
-        {
-            var room = new GameObject("Room").transform;
-
-            GameObject floor = GameObject.CreatePrimitive(PrimitiveType.Plane);
-            floor.name = "Floor";
-            floor.transform.SetParent(room, false);
-            floor.transform.localScale = new Vector3(1.2f, 1f, 1.2f);
-            floor.GetComponent<Renderer>().sharedMaterial = floorMat;
-            Object.DestroyImmediate(floor.GetComponent<Collider>());
-
-            // Placeholder chassis under the arm's base and a bench under it; the lab visuals replace both.
-            const float chassisHeight = 0.075f, benchTop = 0.94f;
-            Box("Chassis", room, new Vector3(ArmBase.x, ArmBase.y - chassisHeight / 2f, ArmBase.z - 0.03f),
-                new Vector3(0.20f, chassisHeight, 0.28f), chassisMat);
-            Box("Bench", room, new Vector3(ArmBase.x + 0.26f, benchTop / 2f, ArmBase.z + 0.21f),
-                new Vector3(1.9f, benchTop, 0.8f), benchMat);
-        }
-
         private static void BuildLighting()
         {
             var lightObject = new GameObject("Directional Light");
@@ -368,17 +306,6 @@ namespace Teleop.XR.Editor
             var renderer = cube.GetComponent<Renderer>();
             renderer.sharedMaterial = mat;
             return renderer;
-        }
-
-        private static void Box(string name, Transform parent, Vector3 centre, Vector3 size, Material mat)
-        {
-            GameObject cube = GameObject.CreatePrimitive(PrimitiveType.Cube);
-            cube.name = name;
-            Object.DestroyImmediate(cube.GetComponent<Collider>());
-            cube.transform.SetParent(parent, false);
-            cube.transform.position = centre;
-            cube.transform.localScale = size;
-            cube.GetComponent<Renderer>().sharedMaterial = mat;
         }
 
         private static void SetReference(Object component, string field, Object value)

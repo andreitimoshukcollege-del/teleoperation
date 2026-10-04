@@ -2,6 +2,8 @@
   "name": "Teleop.XR",
   "rootNamespace": "Teleop.XR",
   "references": [
+    "Teleop.Bridge",
+    "Unity.TextMeshPro",
     "Unity.XR.Interaction.Toolkit"
   ],
   "includePlatforms": [],

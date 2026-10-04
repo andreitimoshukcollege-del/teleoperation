@@ -56,8 +56,8 @@ install-traces:
 
 # ---- unity/ headless runs (docs/adr/0016: TeleopVR = Quest on 2022.3, TeleopXR = Galaxy XR on 6.6) ----
 
-# Internal: run one Unity project's editor headless with -executeMethod; picks the editor version the project pins, refuses while that project is open in an editor, prints the log's verdict lines
-_unity-batch project method extra="":
+# Internal: run one Unity project's editor headless with -executeMethod; picks the editor version the project pins, refuses while that project is open in an editor, prints the log's verdict lines. graphics=true keeps the GPU (baking, screenshots)
+_unity-batch project method extra="" graphics="false":
     #!/usr/bin/env bash
     set -euo pipefail
     proj="unity/{{project}}"
@@ -80,11 +80,11 @@ _unity-batch project method extra="":
     log="$tmp/{{project}}-$(date +%Y%m%d-%H%M%S).log"
     echo "Unity $ver, headless: {{project}} -> {{method}} (log: $log)" >&2
     set +e
-    "$exe" -batchmode -nographics -quit -projectPath "$winproj" -executeMethod {{method}} \
+    "$exe" -batchmode {{ if graphics == "true" { "" } else { "-nographics" } }} -quit -projectPath "$winproj" -executeMethod {{method}} \
         -logFile "$(wslpath -w "$log")" {{extra}}
     code=$?
     set -e
-    grep -a -E '^\[(scene-check|xr-setup|xr-scene|build)\]|error CS[0-9]+' "$log" | sed 's/\r$//' | tail -40 || true
+    grep -a -E '^\[(scene-check|xr-setup|xr-scene|build|lab)\]|error CS[0-9]+' "$log" | sed 's/\r$//' | tail -40 || true
     if [ "$code" -ne 0 ]; then
         echo "Unity exited $code. Full log: $log" >&2
     fi
@@ -101,6 +101,10 @@ unity-setup-xr:
 # Build unity/TeleopXR's Galaxy XR scene (JetRoverLabXR) from code: hands rig, arm, pinch-grab target, camera panel. Create-only; rebuild=true replaces it, discarding hand edits. Run unity-setup-xr first
 unity-scene-xr rebuild="false":
     just _unity-batch TeleopXR Teleop.XR.Editor.XrLabSceneBuilder.Run {{ if rebuild == "true" { "-teleopRebuildScene" } else { "" } }}
+
+# Rebuild unity/TeleopXR's lab (night-shift room, JetRover twin, camera display, lighting), bake the lighting, and render preview screenshots to the Windows temp folder; prints the contact sheet's path. bake=false skips the multi-minute bake. Close that project's editor first
+unity-lab-xr bake="true":
+    just _unity-batch TeleopXR Teleop.XR.Editor.LabDressing.Run "-labCapture {{ if bake == "true" { "-labBake" } else { "" } }}" true
 
 # Headless check of unity/TeleopXR's scene: no missing scripts, Bridge wiring intact, pinch-grab settings safe for a real arm (no pull-to-hand, no snap, no smoothing, no throw), hands only
 unity-check-xr:

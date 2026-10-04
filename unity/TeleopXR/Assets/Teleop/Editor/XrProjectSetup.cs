@@ -117,7 +117,7 @@ namespace Teleop.XR.Editor
 
         private static int ConfigureAll()
         {
-            int imported = ImportSamples();
+            int imported = ImportSamples() + ImportTextMeshProEssentials();
             ConfigureUrp();
             ConfigurePlayer();
             ConfigureXr(BuildTargetGroup.Android, AndroidFeatures);
@@ -161,6 +161,26 @@ namespace Teleop.XR.Editor
             }
 
             return imported;
+        }
+
+        /// <summary>
+        /// TextMesh Pro's default font and settings live in <c>Assets/TextMesh Pro</c>, committed like
+        /// TeleopVR's. On Unity 6 they come from com.unity.ugui's "TMP Essential Resources" package, which
+        /// the editor offers to import the first time a TMP object appears. Batch mode never offers, and
+        /// imports packages asynchronously after <c>-quit</c> has already exited, so this only checks.
+        /// Without them every label in the lab renders as nothing.
+        /// </summary>
+        private static int ImportTextMeshProEssentials()
+        {
+            const string settings = "Assets/TextMesh Pro/Resources/TMP Settings.asset";
+            if (AssetDatabase.LoadMainAssetAtPath(settings) == null)
+            {
+                throw new InvalidOperationException(
+                    $"{settings} is missing. Restore Assets/TextMesh Pro from git, or in the editor run " +
+                    "Window > TextMeshPro > Import TMP Essential Resources.");
+            }
+
+            return 0;
         }
 
         private static void ConfigureUrp()

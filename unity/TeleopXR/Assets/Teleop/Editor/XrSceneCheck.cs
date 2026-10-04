@@ -123,6 +123,14 @@ namespace Teleop.XR.Editor
                 {
                     RequireReference(so, field, problems);
                 }
+
+                // The reach warning only warns if it can be seen: the lab hides the old segment cubes,
+                // so it must point at a renderer that is still drawn (the wrist LED).
+                if (so.FindProperty("reachWarningRenderer").objectReferenceValue is Renderer warning
+                    && (!warning.enabled || !warning.gameObject.activeInHierarchy))
+                {
+                    problems.Add($"JetRoverArmRig.reachWarningRenderer ('{warning.name}') is not drawn, so a clamped target would show nothing");
+                }
             }
 
             var feed = Object.FindAnyObjectByType<CameraFeedBridge>(FindObjectsInactive.Include);
@@ -132,7 +140,15 @@ namespace Teleop.XR.Editor
             }
             else
             {
-                RequireReference(new SerializedObject(feed), "panel", problems);
+                var feedSo = new SerializedObject(feed);
+                RequireReference(feedSo, "panel", problems);
+                // With an arm rig set, CameraFeedBridge moves its panel beside the arm at start, which
+                // would pull the lab display's screen out of its bezel.
+                if (feedSo.FindProperty("panel").objectReferenceValue is Renderer panel && panel.GetComponentInParent<CameraStatusBar>() != null
+                    && feedSo.FindProperty("armRig").objectReferenceValue != null)
+                {
+                    problems.Add("CameraFeedBridge.armRig is set while its panel is the lab display's screen; it would move the screen out of the display");
+                }
             }
 
             CheckDragTarget(bridge, problems);

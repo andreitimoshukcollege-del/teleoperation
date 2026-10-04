@@ -132,7 +132,7 @@ install-galaxy:
     just _adb devices -l
     just _adb install -r "$(wslpath -w "$apk")"
 
-# Point the Galaxy XR app at the robot without a rebuild: pushes a full jetrover_connection.json override (the Bridge default with RemoteHost replaced) to the app's files directory. On SINRG use the robot's LAN address, e.g. JETROVER_HOST=10.188.57.2
+# Point the Galaxy XR app at the robot without a rebuild: pushes a full jetrover_connection.json override (the Bridge default with RemoteHost replaced) to the app's files directory. Finds the robot itself (`just robot-ip`); pass an address to override
 push-galaxy-config host=default_jetrover_host:
     #!/usr/bin/env bash
     set -euo pipefail

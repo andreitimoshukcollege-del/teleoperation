@@ -146,6 +146,17 @@ change under root `CLAUDE.md`, which is why this ADR exists.
 is where the failure bit, and `ssh`/`scp` in the recipes already resolve `.local` through the OS on
 Windows.
 
+
+**Update, 2026-10-04: the `just` recipes now do this.** Every robot recipe defaults to `auto` and looks
+the robot up when it runs (`just robot-ip`):
+1. first `jetrover-sinrg.local` through the OS resolver (Windows' resolver under WSL, since multicast
+   does not cross WSL's NAT);
+2. then Tailscale's direct LAN path, or its 100.x address if it has no direct path.
+
+`JETROVER_HOST` still pins an address. `just unity-robot-host` writes the current address into both
+Unity editors' config overrides, which covers the gap until §4's in-Unity lookup exists. The same day
+the robot's DHCP address moved from `10.188.57.2` to `10.188.60.3`, which is the case this is for.
+`Teleop.Eval` still takes a literal address; the recipes resolve it first.
 ## Consequences
 
 - **Unity reconnects by itself after a DHCP renumbering**, in about 5 s plus one round trip, with a

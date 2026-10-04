@@ -141,6 +141,11 @@ or human) should not have to reinvent or reverse-engineer a deploy/test step tha
 worked out once. `robot/README.md`'s incident log exists precisely because ad hoc hardware
 commands got lost otherwise.
 
+The robot is on DHCP and its address changes. **Never hard-code it:** the recipes look it up when
+they run (`just robot-ip`, by its mDNS name `jetrover-sinrg.local`, then Tailscale), `JETROVER_HOST`
+pins one, and `just unity-robot-host` / `just push-galaxy-config` hand the current address to the
+Unity editors and the Galaxy headset.
+
 ## Boundaries for agents
 
 - **Free rein:** `core/`, `analysis/`, `experiments/`, `docs/`, `unity/`.

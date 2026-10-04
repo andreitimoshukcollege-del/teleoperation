@@ -103,12 +103,12 @@ What the check cannot see:
 1. `just build-galaxy` produces `Builds/TeleopXR.apk`. It runs the scene check first and refuses
    to build if the check fails.
 2. `just install-galaxy` installs it over USB.
-3. `just push-galaxy-config 10.188.57.2` points the app at the robot's LAN address without a
-   rebuild. It pushes a full `jetrover_connection.json` override to the app's files directory;
+3. `just push-galaxy-config` points the app at the robot's current LAN address without a
+   rebuild. It finds the robot itself (`just robot-ip`); pass an address to override. It pushes a full `jetrover_connection.json` override to the app's files directory;
    restart the app afterwards.
 
 **The robot must reply to the headset.** Make sure the Jetson runs the reply-to-sender RobotHost:
-`JETROVER_HOST=10.188.57.2 just deploy-robothost`. The camera sender already answers whoever sends
+`just deploy-robothost`. The camera sender already answers whoever sends
 the keepalive.
 
 **M2P on Galaxy XR is relative only** until its `DisplayOffset` has been measured with the photodiode

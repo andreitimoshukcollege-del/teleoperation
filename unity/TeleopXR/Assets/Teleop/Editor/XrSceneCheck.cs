@@ -155,6 +155,8 @@ namespace Teleop.XR.Editor
 
             CheckDragTarget(bridge, problems);
 
+            CheckAndroidOpenXR(problems);
+
 #if !ENABLE_INPUT_SYSTEM
             // The hands rig reads the pinch through Input System actions (ReleaseThresholdButtonReader
             // on XRI's hand interaction actions). With Active Input Handling on the old Input Manager
@@ -175,6 +177,30 @@ namespace Teleop.XR.Editor
 
             Debug.Log($"[scene-check] {path}: {problems.Count} problem(s)");
             return problems;
+        }
+
+        /// <summary>
+        /// Android XR Support is what makes Unity's Android XR package mark the launcher activity
+        /// immersive (PROPERTY_XR_ACTIVITY_START_MODE). Without it the headset starts the app as a
+        /// 2D panel, refuses the OpenXR session ("Activity does not support immersive OpenXR
+        /// sessions") and Unity aborts. Hand Tracking also brings the HAND_TRACKING permission.
+        /// An editor once regenerated the OpenXR settings with both of them off.
+        /// </summary>
+        private static void CheckAndroidOpenXR(List<string> problems)
+        {
+            var settings = UnityEngine.XR.OpenXR.OpenXRSettings.GetSettingsForBuildTargetGroup(BuildTargetGroup.Android);
+            if (settings == null)
+            {
+                problems.Add("no OpenXR settings for Android (run `just unity-setup-xr`)");
+                return;
+            }
+
+            var axr = settings.GetFeature<UnityEngine.XR.OpenXR.Features.Android.AndroidXRSupportFeature>();
+            if (axr == null || !axr.enabled)
+                problems.Add("OpenXR (Android): Android XR Support is off, so the APK would launch as a 2D panel and crash on session creation (run `just unity-setup-xr`)");
+            var hands = settings.GetFeature<UnityEngine.XR.Hands.OpenXR.HandTracking>();
+            if (hands == null || !hands.enabled)
+                problems.Add("OpenXR (Android): Hand Tracking is off, so no hands and no HAND_TRACKING permission (run `just unity-setup-xr`)");
         }
 
         private static void CheckDragTarget(JetRoverOperatorBridge bridge, List<string> problems)

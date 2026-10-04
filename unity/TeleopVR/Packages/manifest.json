@@ -1,6 +1,7 @@
 {
   "dependencies": {
     "com.meta.xr.sdk.core": "201.0.0",
+    "com.teleop.bridge": "file:../../Teleop.Bridge",
     "com.teleop.core": "file:../../../core/Teleop.Core",
     "com.teleop.robotarm": "file:../../../core/Teleop.RobotArm",
     "com.unity.collab-proxy": "2.12.4",

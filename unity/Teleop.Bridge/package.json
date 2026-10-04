@@ -1,0 +1,11 @@
+{
+  "name": "com.teleop.bridge",
+  "version": "0.1.0",
+  "displayName": "Teleop Bridge",
+  "description": "The only place Unity and Core meet: MonoBehaviour adapters that drive Teleop.Core, and Unity implementations of Core's interfaces. Shared by unity/TeleopVR (Quest, Unity 2022.3) and unity/TeleopXR (Galaxy XR, Unity 6.6) per docs/adr/0016, so it must compile under both editors. TextMeshPro is supplied by each project (com.unity.textmeshpro on 2022.3, com.unity.ugui 2.x on Unity 6).",
+  "unity": "2022.3",
+  "dependencies": {
+    "com.teleop.core": "0.1.0",
+    "com.teleop.robotarm": "0.1.0"
+  }
+}

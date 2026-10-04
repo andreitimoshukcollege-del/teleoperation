@@ -59,7 +59,7 @@
     <BridgeSource Include="NetworkImpairmentController.cs" />
     <BridgeSource Include="CameraFeedBridge.cs" />
 
-    <Compile Include="@(BridgeSource->'../TeleopVR/Assets/Teleop/Runtime/Bridge/%(Identity)')"
+    <Compile Include="@(BridgeSource->'../Teleop.Bridge/Runtime/%(Identity)')"
              Link="Bridge/%(Identity)" />
   </ItemGroup>
 

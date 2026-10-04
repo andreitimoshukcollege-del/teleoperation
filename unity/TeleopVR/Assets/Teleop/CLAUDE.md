@@ -1,186 +1,24 @@
-# Unity — TeleopVR
+# Unity — TeleopVR (Meta Quest, Unity 2022.3.46f1, built-in pipeline)
 
-**Everything under `unity/` requires human review before merge.** Scene wiring, XR rig
-behavior, and rendering cannot be verified headlessly, so CI cannot catch mistakes here.
-Propose changes and explain them; do not merge them.
+The Quest project, and the one the recorded baseline was measured on (ADR 0001 pins its editor).
+Rules shared by every Unity project are in `unity/CLAUDE.md`. Bridge (`com.teleop.bridge`, the shared
+package at `unity/Teleop.Bridge/`) has its own `CLAUDE.md`. The Galaxy XR project is
+`unity/TeleopXR/`.
 
-Unity's job is to **host and drive** Core. It is never a participant. Every MonoBehaviour is a
-thin adapter. If a file here contains a filter coefficient, a blend curve, or a buffering
-decision, that logic belongs in Core and this is a bug.
+Headless, with this project's editor closed:
+- `just unity-check-vr` opens every scene and fails on a missing script or broken JetRover wiring
+  (`Assets/Teleop/Editor/SceneIntegrityCheck.cs`, also **Teleop → Check Scenes**).
+- `just build-quest` runs that check, then builds the enabled Build Settings scenes into
+  `Builds/TeleopVR-Quest.apk`. The first Android build after Link work re-imports assets for Android.
 
-## Assembly boundaries — these are enforced by the compiler
+## Quest specifics
 
-```
-Teleop.Core      (noEngineReferences: true)   <-- structurally blind to Unity
-     ^
-Teleop.Bridge    references Teleop.Core       <-- the ONLY place both worlds appear
-     ^
-Operator / RobotSim / Diagnostics             <-- reference Bridge ONLY, never Core
-```
-
-Do not add `Teleop.Core` to the references of `Operator.asmdef` or `RobotSim.asmdef`. The
-omission is deliberate: it makes "XR code reaches into a predictor" a compile error.
-
-## Bridge/ contains exactly two kinds of file
-
-**Adapters** — drive Core from Unity callbacks: `TeleopOperatorBridge`, `TeleopRobotBridge`,
-`CoordConversion`, `ConfigLoader`, `XrDisplayTimeProvider`, `LatencyHud` (display only, reads the
-metric sink and writes nothing back), `CameraFeedBridge` (the robot camera on a world-locked panel,
-docs/adr/0014; every reassembly decision is Core's `CameraFrameReassembler`).
-`DisplayCalibrationConfig` is the plain data type `ConfigLoader` loads, not an adapter itself.
-
-**Implementations of Core interfaces** — the direction inverts here. Core declares, Unity
-provides: `UnityRobotPlant : IRobotPlant` (not yet built — Phase 4 reuses Core's own
-`RigidBodyPlant` directly instead, see `Plant/CLAUDE.md`), `UdpTransport : ITransport` (not yet
-built — Phase 4 is in-process only), `UnityMetricSink : IMetricSink` (built),
-`UnityMonotonicClock : ITimeAuthority` (built; every Core component Bridge constructs needs one,
-the same reasoning `Time/CLAUDE.md` gives for why `Teleop.Eval` has its own `MonotonicClock`),
-and eventually an `IInferenceBackend` (see Sentis note below).
-
-Bridge should stay small: roughly a dozen files, mostly under 100 lines. Growth means logic is
-leaking out of Core, and every leaked line is a line the headless sweeps can no longer test.
-
-## Network impairment: the checkbox panel
-
-Lets an operator switch lag, jitter, loss and reordering on and off during Play mode, so "what does
-200ms feel like?" can be answered in a headset instead of argued about.
-
-- `NetworkImpairmentSettings` — the sliders and checkboxes, and a `CreateImpairments` that builds
-  the Core impairment objects from them. Same category as `RobotArmProfileData`: a Unity-serializable
-  surface feeding types Unity cannot serialize itself.
-- `NetworkProfilePresets` — loads a frozen profile's values into the axes (see below).
-- `DelayTraceLoader` — reads a recorded `.trace`, since Core cannot do I/O.
-- `SwappableTransport : ITransport` — installs and removes an `EmulatedTransport` over its inner
-  transport while running. Needed because the endpoints take their transports once, in their
-  constructors, so without it every settings change would rebuild the endpoint stack and throw away
-  `ClockSync`'s convergence and the recording with it.
-- `NetworkImpairmentController` — the MonoBehaviour holding the checkboxes, wired to
-  `TeleopOperatorBridge`'s two transports.
-
-**Four files in a folder whose rule above is that growth is a warning sign, so the justification
-matters.** None of them impair anything. Every delay, drop and reorder decision is
-made by Core's `EmulatedTransport` from a Core `NetworkProfile`; what these add is a serializable
-surface for it and one level of indirection so it can be swapped at runtime. The count is spread
-across small single-purpose files precisely so each stays a description rather than a computation.
-If a coefficient, a distribution, or a drop decision ever appears in any of them, that is the leak
-this section's rule is about and it belongs back in Core.
-
-### Where the impairments actually live
-
-**In Core**, one file each: `core/Teleop.Core/Transport/Impairments/`. That is where a new kind of
-disturbance is added, and it is the only place any impairment model exists.
-
-Nothing under `Bridge/` mirrors that structure, deliberately. Unity uses Core directly all over —
-`EmulatedTransport`, `OperatorEndpoint`, `ClockSync`, and the Core impairments themselves are all
-constructed here. **There is exactly one thing Unity cannot do with a Core object: draw it in the
-Inspector and save it into a scene.** Unity's serializer only persists public mutable fields, and
-Core's impairments keep their parameters private and readonly so they can be validated once at
-construction and never be wrong afterwards.
-
-So `NetworkImpairmentSettings` is a flat block of sliders and checkboxes — the boxes an operator
-types into — with one `CreateImpairments` that builds the Core objects. That is the whole Unity
-side. There was briefly a per-axis class hierarchy under `Bridge/Impairments/` mirroring Core's
-layout; it was removed, because a plain number does not need its own class or file, and the
-duplicated shape read as though the impairments had never moved to Core at all.
-
-**Adding an axis:** a new file in Core implementing `Contracts/INetworkImpairment.cs`, plus a field
-and one `if` in `NetworkImpairmentSettings.CreateImpairments`.
-
-### Presets, and how this relates to the sweeps
-
-The impairment runs through the identical `EmulatedTransport` the sweeps use — same Gilbert-Elliott
-loss chain, same uniform jitter draw, both directions, decorrelated seeds. `SweepCommand` and
-`TeleopOperatorBridge` build structurally identical stacks. **The mechanism was never the
-difference; only how the numbers were authored was.**
-
-`NetworkProfilePresets` closes that in the safe direction. A preset dropdown loads a frozen
-profile's exact values — read from `NetworkProfileCatalog`, never duplicated here — into the
-per-axis fields. So "feel what `300ms-60j-2loss-bursty` is like" uses the numbers the sweep citing
-that name used. Every axis then stays independently editable, because "start from that profile and
-halve the jitter" is a real question a preset list can't enumerate.
-
-The moment any axis differs from what the preset loaded, the HUD/log says `<name> (modified)`. The
-settings genuinely are no longer that profile, and a summary that kept the bare name would make a
-recording look comparable to a sweep it isn't comparable to.
-
-**The frozen suite is never authored from here.** ADR 0004 records its numbers so a manifest and
-the documentation can't drift; a preset reads that suite, it does not write it.
-
-`synthetic-burst` is reachable too, via the `DelayTrace` axis — its bursts live in recorded samples and
-are not expressible as base+jitter, which is exactly why it matters (the Buffering result rests on
-it). `DelayTraceLoader` reads the file, since Core cannot do I/O. Two things about it:
-
-- **No copy of the trace is committed under `unity/`.** `core/testdata/traces/` is the one source;
-  `just install-traces` copies it to `Application.persistentDataPath` for the Editor, and `adb
-  push` does the same on device. A tracked duplicate would drift silently.
-- **The loader rescales samples between tick rates, and that is not cosmetic.** The header records
-  the writing machine's rate (10,000,000 on Windows, 1,000,000,000 on Linux ARM64). Replaying a
-  Windows-written trace on a Quest unrescaled would inflate every delay 100× while each individual
-  number still looked plausible — the exact failure already recorded in `robot/README.md`'s
-  ClockSync finding.
-
-In trace mode the delay and jitter axes are switched off rather than left ticked and ignored:
-`EmulatedTransport`'s trace constructor rejects a profile carrying either, on the grounds that
-synthetic jitter on an already-recorded delay double-models the same variance.
-
-Two things that are deliberate rather than incidental:
-
-- **Only the loopback path is wired.** `TeleopOperatorBridge` owns both directions in-process, so
-  impairing them is honest. `JetRoverOperatorBridge` is deliberately left out: `EmulatedTransport`
-  impairs on the *receiving* side, so impairing what the real robot receives means wrapping
-  `Teleop.RobotHost`'s transport on the Jetson. Wiring it there anyway would give a checkbox that
-  moves the HUD's numbers while the physical arm behaves identically — worse than no checkbox.
-- **Changing conditions mid-session invalidates the recording.** The impairment state is not
-  recoverable from a `.tlog`, so every change is logged with its tick. This control is for feeling
-  out the parameter space and for demos. Citable numbers come from `Teleop.Eval` sweeps against the
-  frozen, *named* profile suite (`docs/adr/0004`–`0006`) — which is also why this composes an
-  ad-hoc profile instead of making that suite mutable.
-
-## Callback placement is a latency decision
-
-| Callback | What belongs there |
-|---|---|
-| network thread | `TryReceive`, stamp arrival, push to a lock-free queue |
-| `FixedUpdate` | digital-twin physics only |
-| `Update` | capture controller poses -> `SubmitCommand`; drain `TryReceiveState`, **then** drain `TryPlayoutState` |
-| `Application.onBeforeRender` | `EstimateRobotState` -> write Transforms |
-
-State estimation goes in `onBeforeRender`, not `Update`: it is the last hook before rendering,
-so the prediction target sits as close as possible to photon emission. Moving it to `Update`
-adds a frame of avoidable staleness to the one number this project exists to measure. Do not
-"simplify" it into `Update`.
-
-**The two drains are one step, not two.** `TryReceiveState` does the arrival work -- `ClockSync`,
-`owd_uplink_ms`/`owd_downlink_ms` -- and hands the sample to the injected `IPlayoutPolicy`;
-`TryPlayoutState` is what stamps `t_playout`, folds the sample into the predictor and reconciler,
-and returns the completed `LatencyTrace`
-(`docs/adr/0012-playout-policy-wiring.md`). A bridge that drains only the first compiles, runs, and
-is wrong in two ways at once: the ghost robot freezes, because nothing reaches the predictor any
-more, and every recorded `.tlog` silently loses `t_playout`. Neither failure raises anything.
-
-## Quest / IL2CPP constraints
-
-- Editor is **Unity 2022.3.46f1**. ARM64 + IL2CPP + Vulkan; OpenXR with the Meta feature group.
-- API Compatibility Level stays `.NET Standard 2.1`. Scripting backend stays IL2CPP (Mono has
-  no ARM64 Android backend).
+- OpenXR with the Meta feature group; Meta XR SDK (`com.meta.xr.sdk.core`).
 - **Sentis is unavailable on 2022.3** (it needs 2023.2+), and Barracuda is deprecated. So
   `IInferenceBackend` has no Unity implementation yet — that is deliberate and blocks nothing
   until Phase 7. Do not add `using Unity.Sentis`.
-- No reflection-based construction anywhere in the runtime path — the stripper removes what
-  nothing references and AOT has no runtime codegen. Failures appear on device only.
-- Managed Stripping Level stays `Low` while baselines are being established.
-- `Internet Access` must be `Require`; auto-detection is unreliable with custom socket code.
-- No arbitrary filesystem paths. Defaults load from `Resources` as a `TextAsset`; overrides
-  from `Application.persistentDataPath` (pushed with `adb push`, no rebuild).
-- No `Debug.Log` in the hot path — it allocates and is slow. Route diagnostics through the
-  preallocated ring buffer that the recorder drains.
-
-## Time
-
-`Stopwatch.GetTimestamp()` via `MonotonicClock`, never `Time.time` (frame-quantized, resets on
-scene load, stops in a paused editor). `clock.DisplayOffset` is time-until-photons; it comes
-from OpenXR `predictedDisplayTime` where available, otherwise a per-headset calibrated
-constant measured with the photodiode rig.
+  ADR 0001's ban on `using Unity.Sentis` holds repo-wide, Unity 6 project included, until a Phase 7
+  ADR decides the inference backend.
 
 ## Scenes
 
@@ -232,37 +70,18 @@ own serializer should be the only thing writing scene YAML.
    HUD but not the motion, or vice versa, something is wired wrong — both come off the same
    transport.
 
-## Camera feed panel (`CameraFeedBridge`, docs/adr/0014)
+## Camera feed panel (scene wiring in this project)
 
 Shows the JetRover's camera beside the arm proxy. Hand-wired in the Editor, like everything above.
+The component's rules (material asset, never under the camera, firewall, decode cost) are in
+`unity/Teleop.Bridge/CLAUDE.md`.
 
-1. Create a **Quad** named `CameraPanel` and give it a **material asset** using `Unlit/Texture`
-   (built-in pipeline). Use a material asset rather than relying on `Shader.Find`: a shader nothing
-   references is stripped from IL2CPP builds, and the panel then renders pink on the Quest only.
+1. Create a **Quad** named `CameraPanel` and give it a **material asset** using `Unlit/Texture`.
 2. Add a `CameraFeedBridge` component, for example on the GameObject that holds
    `JetRoverOperatorBridge`. Set **Panel** to the quad's MeshRenderer. Set **Arm Rig** to the
    `JetRoverArmRig` to have the panel placed at **Offset From Arm Base** at start; leave it empty to
-   keep the quad where you put it. Never parent the panel to `Main Camera` (ADR 0014 §7).
-3. The robot address comes from the same `jetrover_connection` config as `JetRoverOperatorBridge`.
-   The robot must be running the sender: `teleop-camerahost.service` (`just deploy-camerahost`,
-   `just install-camerahost-service`) or `just camera-serve` for a one-off.
-4. Press Play. Within a second or two the panel shows the feed, and every 10 s the Console logs
-   `[camera] ...: received N frames, shown N, ... last decode X ms`. In the Editor, Windows Firewall
-   does not get in the way, even though it could seem to: on SINRG WIFI (classed as Public) the
-   "Unity 2022.3.46f1 Editor" rule *blocks* inbound. That rule only stops traffic Unity has not
-   asked for. The frames come back from exactly the address and port the keepalive went to
-   (`robot:6003` → local 6004, every second), and the firewall lets those in as replies. The
-   robot's state replies come back the same way (`robot:6000` → local 6001). Confirmed working on
-   2026-10-02 with the block rule in place. It would break only if a sender answered from a
-   different port, or if the keepalive stopped for long enough that the firewall forgot it.
-5. **On the Quest, watch `last decode`.** `Texture2D.LoadImage` decodes on the main thread and is
-   the one cost here that can take frame time from the 90 Hz loop. If it is a meaningful share of
-   11.1 ms, lower **Max Frames Per Second** (the sender then thins frames by capture time) before
-   anything else.
-
-No `camera_*` metrics are recorded yet. They are defined in `docs/metrics.md` §9 and computed by
-Core's `CameraLatencyRecorder`; wiring it here needs the pose path's `ClockSync` and a `t_render`
-stamp, and is a follow-up.
+   keep the quad where you put it.
+3. Press Play. Within a second or two the panel shows the feed.
 
 ## Lab scene (`JetRoverLab.unity`, built by **Teleop → Build Lab Scene**)
 

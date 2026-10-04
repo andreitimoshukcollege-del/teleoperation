@@ -54,26 +54,210 @@ install-traces:
     done
     echo "$count trace(s) installed."
 
+# ---- unity/ headless runs (docs/adr/0016: TeleopVR = Quest on 2022.3, TeleopXR = Galaxy XR on 6.6) ----
+
+# Internal: run one Unity project's editor headless with -executeMethod; picks the editor version the project pins, refuses while that project is open in an editor, prints the log's verdict lines. graphics=true keeps the GPU (baking, screenshots)
+_unity-batch project method extra="" graphics="false":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    proj="unity/{{project}}"
+    ver=$(sed -n 's/^m_EditorVersion: //p' "$proj/ProjectSettings/ProjectVersion.txt" | tr -d '\r')
+    exe="/mnt/c/Program Files/Unity/Hub/Editor/$ver/Editor/Unity.exe"
+    if [ ! -x "$exe" ]; then
+        echo "error: $proj pins Unity $ver, which is not installed ($exe). Install it from Unity Hub." >&2
+        exit 1
+    fi
+    winproj=$(wslpath -w "$proj")
+    # An open editor holds the project lock and batch mode would fail on it, so check first. Match
+    # on the command line: the asset-import workers of *another* project must not block this one.
+    open=$(powershell.exe -NoProfile -Command "Get-CimInstance Win32_Process -Filter \"name='Unity.exe'\" | Where-Object { \$_.CommandLine -like '*{{project}}*' -and \$_.CommandLine -notlike '*AssetImportWorker*' } | Measure-Object | Select-Object -ExpandProperty Count" | tr -d '\r')
+    if [ "${open:-0}" != "0" ]; then
+        echo "error: a Unity editor has $proj open. Close it first: batch mode needs the project lock." >&2
+        exit 1
+    fi
+    tmp=$(wslpath -u "$(cmd.exe /c 'echo %TEMP%' 2>/dev/null | tr -d '\r\n')")/teleop-unity
+    mkdir -p "$tmp"
+    log="$tmp/{{project}}-$(date +%Y%m%d-%H%M%S).log"
+    echo "Unity $ver, headless: {{project}} -> {{method}} (log: $log)" >&2
+    set +e
+    "$exe" -batchmode {{ if graphics == "true" { "" } else { "-nographics" } }} -quit -projectPath "$winproj" -executeMethod {{method}} \
+        -logFile "$(wslpath -w "$log")" {{extra}}
+    code=$?
+    set -e
+    grep -a -E '^\[(scene-check|xr-setup|xr-scene|build|lab)\]|error CS[0-9]+' "$log" | sed 's/\r$//' | tail -40 || true
+    if [ "$code" -ne 0 ]; then
+        echo "Unity exited $code. Full log: $log" >&2
+    fi
+    exit "$code"
+
+# Headless check of unity/TeleopVR (Unity 2022.3): compiles, and every JetRover scene opens with no missing scripts and its Bridge wiring intact -- moves nothing; close that project's editor first
+unity-check-vr:
+    just _unity-batch TeleopVR Teleop.Editor.SceneIntegrityCheck.Run
+
+# Configure unity/TeleopXR (Galaxy XR, Unity 6.6) from code: XRI/XR Hands samples, URP, Android player settings, OpenXR for Android and Direct Preview. Idempotent; the first run imports samples, so run it twice on a fresh clone. Close that project's editor first
+unity-setup-xr:
+    just _unity-batch TeleopXR Teleop.XR.Editor.XrProjectSetup.Run
+
+# Build unity/TeleopXR's Galaxy XR scene (JetRoverLabXR) from code: hands rig, arm, pinch-grab target, camera panel. Create-only; rebuild=true replaces it, discarding hand edits. Run unity-setup-xr first
+unity-scene-xr rebuild="false":
+    just _unity-batch TeleopXR Teleop.XR.Editor.XrLabSceneBuilder.Run {{ if rebuild == "true" { "-teleopRebuildScene" } else { "" } }}
+
+# Rebuild unity/TeleopXR's lab (night-shift room, JetRover twin, camera display, lighting), bake the lighting, and render preview screenshots to the Windows temp folder; prints the contact sheet's path. bake=false skips the multi-minute bake. Close that project's editor first
+unity-lab-xr bake="true":
+    just _unity-batch TeleopXR Teleop.XR.Editor.LabDressing.Run "-labCapture {{ if bake == "true" { "-labBake" } else { "" } }}" true
+
+# Headless check of unity/TeleopXR's scene: no missing scripts, Bridge wiring intact, pinch-grab settings safe for a real arm (no pull-to-hand, no snap, no smoothing, no throw), hands only
+unity-check-xr:
+    just _unity-batch TeleopXR Teleop.XR.Editor.XrSceneCheck.Run
+
+# Build the Galaxy XR APK (unity/TeleopXR, Unity 6.6) after its scene check -> unity/TeleopXR/Builds/TeleopXR.apk. Close that project's editor first
+build-galaxy:
+    just _unity-batch TeleopXR Teleop.XR.Editor.XrBuild.Run "-buildTarget Android"
+
+# Build the Quest APK (unity/TeleopVR, Unity 2022.3) from its Build Settings scenes after its scene check -> unity/TeleopVR/Builds/TeleopVR-Quest.apk. The first Android build re-imports assets; close that project's editor first
+build-quest:
+    just _unity-batch TeleopVR Teleop.Editor.QuestBuild.Run "-buildTarget Android"
+
+# Internal: the adb that ships with the Unity editor unity/TeleopXR pins (or $ADB), run on the Windows side. Arguments are re-split by the shell, so pass Windows paths as `wslpath -m` (forward slashes): backslashes would be eaten
+_adb *args:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    ver=$(sed -n 's/^m_EditorVersion: //p' unity/TeleopXR/ProjectSettings/ProjectVersion.txt | tr -d '\r')
+    adb="${ADB:-/mnt/c/Program Files/Unity/Hub/Editor/$ver/Editor/Data/PlaybackEngines/AndroidPlayer/SDK/platform-tools/adb.exe}"
+    [ -x "$adb" ] || { echo "error: adb not found at $adb (install Unity $ver's Android SDK module, or set ADB)" >&2; exit 1; }
+    "$adb" {{args}}
+
+# Install the Galaxy XR APK on the headset over USB (developer mode and USB debugging on; accept the prompt in the headset)
+install-galaxy:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    apk=unity/TeleopXR/Builds/TeleopXR.apk
+    [ -f "$apk" ] || { echo "error: $apk not found; run just build-galaxy first" >&2; exit 1; }
+    just _adb devices -l
+    just _adb install -r "$(wslpath -m "$apk")"
+
+# Point the Galaxy XR app at the robot without a rebuild: pushes a full jetrover_connection.json override (the Bridge default with RemoteHost replaced) to the app's files directory. Finds the robot itself (`just robot-ip`); pass an address to override
+push-galaxy-config host=default_jetrover_host:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    host=$(just _robot-host "{{host}}")
+    tmp=$(mktemp --suffix=.json)
+    trap 'rm -f "$tmp"' EXIT
+    python3 - "$tmp" "$host" <<'PY'
+    import json, sys
+    cfg = json.load(open("unity/Teleop.Bridge/Runtime/Resources/jetrover_connection.json", encoding="utf-8"))
+    cfg["RemoteHost"] = sys.argv[2]
+    json.dump(cfg, open(sys.argv[1], "w"), indent=2)
+    PY
+    dest=/sdcard/Android/data/com.teleop.jetroverxr/files
+    just _adb shell mkdir -p "$dest"
+    just _adb push "$(wslpath -m "$tmp")" "$dest/jetrover_connection.json"
+    echo "Galaxy XR app now targets $host; restart the app to pick it up."
+
 # Run an experiment sweep, e.g. `just sweep experiments/exp-001-predictor-baseline.yaml`
 sweep config:
     cd core && dotnet run --project Teleop.Eval -- sweep ../{{config}}
 
 # ---- JetRover hardware (a human must be watching anything that moves the arm) ----
 
-# Where the JetRover and this operator machine are reachable from here. The defaults are their
-# Tailscale addresses. For a direct LAN path (both machines on the same Wi-Fi), export
-# JETROVER_HOST and OPERATOR_HOST in your shell (`just` parameters are positional, so `remote_host=`
-# on the command line does not work).
+# Where the JetRover and this operator machine are reachable from here.
+# The robot defaults to "auto": every recipe that talks to it looks it up when it runs (`just
+# robot-ip`), because its DHCP address can change. Export JETROVER_HOST to pin an address instead
+# (`just` parameters are positional, so `remote_host=` on the command line does not work).
+# OPERATOR_HOST is where RobotHost replies before its first command arrives; after that it replies
+# to the command's source (#57).
 # The ssh/scp recipes accept IPv6 literals, but WSL's default NAT networking has no IPv6 route and
 # the UDP transports in Teleop.RobotHost and Teleop.Eval are IPv4-only, so use IPv4 for now.
-default_jetrover_host := env_var_or_default("JETROVER_HOST", "100.112.90.72")
+default_jetrover_host := env_var_or_default("JETROVER_HOST", "auto")
 default_operator_host := env_var_or_default("OPERATOR_HOST", "100.82.140.80")
+# The robot's hostname, which it announces over mDNS as <name>.local (`just robot-set-hostname`).
+robot_mdns_name := env_var_or_default("JETROVER_NAME", "jetrover-sinrg")
+
+# Print the robot's current IPv4 address and how it was found -- moves nothing. Tries its mDNS name (jetrover-sinrg.local, on the lab LAN), then Tailscale (the direct LAN path if it has one, else the 100.x address). Every robot recipe does this lookup itself unless JETROVER_HOST is set
+robot-ip:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if [ -n "${JETROVER_HOST:-}" ]; then
+        echo "note: JETROVER_HOST=$JETROVER_HOST is set, so recipes use that instead of the address below" >&2
+    fi
+    just _robot-host auto
+
+# Internal: resolve a robot address. "auto" looks the robot up; anything else is printed back unchanged
+_robot-host host="auto":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if [ "{{host}}" != "auto" ]; then echo "{{host}}"; exit 0; fi
+    name="{{robot_mdns_name}}"
+    # The robot's own Docker bridge (172.17.x) and link-local addresses are never the way to reach it.
+    first_usable() { while read -r a; do case "$a" in 127.*|169.254.*|172.17.*|"") ;; *.*.*.*) echo "$a"; return ;; esac; done; }
+    is_private() { case "$1" in 10.*|192.168.*|172.1[6-9].*|172.2[0-9].*|172.3[01].*) return 0 ;; *) return 1 ;; esac; }
+
+    # 1. mDNS, through the OS resolver. Under WSL that has to be Windows' resolver: multicast does not
+    #    cross WSL's NAT, so Linux-side lookups of .local names never get an answer.
+    ip=""
+    if command -v powershell.exe >/dev/null 2>&1; then
+        ip=$(powershell.exe -NoProfile -Command "try { [System.Net.Dns]::GetHostAddresses('$name.local') | Where-Object { \$_.AddressFamily -eq 'InterNetwork' } | ForEach-Object { \$_.IPAddressToString } } catch { }" 2>/dev/null | tr -d '\r' | first_usable || true)
+    elif command -v getent >/dev/null 2>&1; then
+        ip=$(getent ahostsv4 "$name.local" 2>/dev/null | awk '{print $1}' | first_usable || true)
+    fi
+    if [ -n "$ip" ]; then
+        echo "robot: $ip (mDNS $name.local)" >&2
+        echo "$ip"
+        exit 0
+    fi
+
+    # 2. Tailscale. A ping makes it establish (and report) its best path: "via <lan-ip>:<port>" when
+    #    the two machines can reach each other directly, "via DERP(...)" when only a relay works.
+    ts=$(command -v tailscale.exe || command -v tailscale || true)
+    if [ -n "$ts" ]; then
+        pong=$("$ts" ping -c 1 --timeout 3s "$name" 2>/dev/null | tr -d '\r' | grep -m1 '^pong' || true)
+        tsip=$(printf '%s' "$pong" | sed -n 's/^pong from [^ ]* (\([0-9.]*\)).*/\1/p')
+        via=$(printf '%s' "$pong" | sed -n 's/.* via \([0-9.]*\):[0-9]* .*/\1/p')
+        if [ -n "$via" ] && is_private "$via"; then
+            echo "robot: $via (Tailscale's direct path to $name; mDNS did not answer)" >&2
+            echo "$via"
+            exit 0
+        fi
+        if [ -n "$tsip" ]; then
+            echo "robot: $tsip (Tailscale address of $name: no direct LAN path, so traffic may be relayed)" >&2
+            echo "$tsip"
+            exit 0
+        fi
+    fi
+
+    echo "error: could not find the robot. Nothing answered for $name.local on this network, and Tailscale could not reach '$name'. Check it is powered and online (cat /sys/class/net/eth0/carrier, tailscale status on the robot), or set JETROVER_HOST to an address." >&2
+    exit 1
+
+# Point both Unity editors' Play mode at the robot's current address: updates RemoteHost in each project's per-machine jetrover_connection.json override (created from the Bridge default if missing) -- no rebuild. Windows side only. The Galaxy headset gets the same with `just push-galaxy-config`
+unity-robot-host host=default_jetrover_host:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    host=$(just _robot-host "{{host}}")
+    winuser=$(cmd.exe /c 'echo %USERNAME%' 2>/dev/null | tr -d '\r\n')
+    for proj in TeleopVR TeleopXR; do
+        settings=unity/$proj/ProjectSettings/ProjectSettings.asset
+        company=$(grep -m1 'companyName:' "$settings" | sed 's/.*companyName: *//' | tr -d '\r')
+        product=$(grep -m1 'productName:' "$settings" | sed 's/.*productName: *//' | tr -d '\r')
+        dir="/mnt/c/Users/$winuser/AppData/LocalLow/$company/$product"
+        mkdir -p "$dir"
+        python3 - "$dir/jetrover_connection.json" "$host" "$proj" <<'PY'
+    import json, os, sys
+    path, host, proj = sys.argv[1:4]
+    # The override replaces the whole config, so keep an existing one's other fields.
+    src = path if os.path.exists(path) else "unity/Teleop.Bridge/Runtime/Resources/jetrover_connection.json"
+    cfg = json.load(open(src, encoding="utf-8"))
+    old = cfg.get("RemoteHost")
+    cfg["RemoteHost"] = host
+    json.dump(cfg, open(path, "w", encoding="utf-8"), indent=2)
+    print(f"{proj}: RemoteHost {old} -> {host}  ({path})")
+    PY
+    done
 
 # Move the real JetRover arm to a Cartesian target (wrist frame, meters) and hold, e.g. `just move-arm 0.15 0 0.08` -- requires Teleop.RobotHost running on the Jetson and a human watching the hardware
 move-arm x y z gripper="0" remote_host=default_jetrover_host remote_port="6000" local_port="6001":
     cd core && dotnet run --project Teleop.Eval -- move-arm \
         --x {{x}} --y {{y}} --z {{z}} --gripper {{gripper}} \
-        --remote-host {{remote_host}} --remote-port {{remote_port}} --local-port {{local_port}} \
+        --remote-host $(just _robot-host "{{remote_host}}") --remote-port {{remote_port}} --local-port {{local_port}} \
         --confirm-hardware-motion
 
 # Interactively author a new RobotArmProfile JSON (docs/adr/0011); answers prompts from the terminal, e.g. `just build-profile`
@@ -85,7 +269,7 @@ build-profile output="" force="false":
 # Phase-3 cross-machine ClockSync diagnostic against an already-running Teleop.RobotHost -- moves the real arm once and holds; a human must be watching the hardware
 clocksync-check remote_host=default_jetrover_host remote_port="6000" local_port="6001" rate_hz="20" duration_seconds="20":
     cd core && dotnet run --project Teleop.Eval -- clocksync-check \
-        --remote-host {{remote_host}} --remote-port {{remote_port}} --local-port {{local_port}} \
+        --remote-host $(just _robot-host "{{remote_host}}") --remote-port {{remote_port}} --local-port {{local_port}} \
         --rate-hz {{rate_hz}} --duration-seconds {{duration_seconds}} \
         --confirm-hardware-motion
 
@@ -93,6 +277,7 @@ clocksync-check remote_host=default_jetrover_host remote_port="6000" local_port=
 deploy-robothost remote_host=default_jetrover_host remote_user="jetson" operator_host=default_operator_host max_direction_magnitude="" profile_path="":
     #!/usr/bin/env bash
     set -euo pipefail
+    host=$(just _robot-host "{{remote_host}}")
     cd core
     stamp=$(date +%Y%m%d-%H%M%S)
     remote_dir="robothost_deploy_${stamp}"
@@ -107,9 +292,9 @@ deploy-robothost remote_host=default_jetrover_host remote_user="jetson" operator
     echo "Publishing Teleop.RobotHost for linux-arm64..." >&2
     dotnet publish Teleop.RobotHost -c Release -r linux-arm64 --self-contained false -f net8.0 -o "$publish_dir"
     tar czf "$archive" -C "$publish_dir" .
-    echo "Copying to {{remote_user}}@{{remote_host}}:~/${remote_dir}..." >&2
+    echo "Copying to {{remote_user}}@$host:~/${remote_dir}..." >&2
     # scp, unlike ssh, needs an IPv6 literal in brackets to tell the address from the path.
-    case "{{remote_host}}" in *:*) scp_dest="{{remote_user}}@[{{remote_host}}]" ;; *) scp_dest="{{remote_user}}@{{remote_host}}" ;; esac
+    case "$host" in *:*) scp_dest="{{remote_user}}@[$host]" ;; *) scp_dest="{{remote_user}}@$host" ;; esac
     scp -o StrictHostKeyChecking=accept-new "$archive" "${scp_dest}:/tmp/${remote_dir}.tar.gz"
     extra_args=""
     if [ -n "{{max_direction_magnitude}}" ]; then extra_args="$extra_args --max-direction-magnitude {{max_direction_magnitude}}"; fi
@@ -123,14 +308,14 @@ deploy-robothost remote_host=default_jetrover_host remote_user="jetson" operator
     # --remote-host is only where replies go before the first command arrives: Teleop.RobotHost
     # defaults to --reply-to sender and then replies to wherever each command came from, so a
     # changed operator address no longer needs a redeploy. Add `--reply-to fixed` to pin it.
-    ssh -o StrictHostKeyChecking=accept-new "{{remote_user}}@{{remote_host}}" "cat > /home/jetson/robothost-run.sh" <<EOF
+    ssh -o StrictHostKeyChecking=accept-new "{{remote_user}}@$host" "cat > /home/jetson/robothost-run.sh" <<EOF
     #!/bin/bash
     exec /home/jetson/.dotnet/dotnet /home/jetson/robothost_current/Teleop.RobotHost.dll \
         --local-port 6000 --remote-host {{operator_host}} --remote-port 6001 \
         --relay-socket /tmp/jetrover_relay.sock --local-relay-socket /tmp/teleop_robot_host.sock \
         --joint-local-port 6002 ${extra_args}
     EOF
-    ssh -o StrictHostKeyChecking=accept-new "{{remote_user}}@{{remote_host}}" "
+    ssh -o StrictHostKeyChecking=accept-new "{{remote_user}}@$host" "
         set -e
         mkdir -p ~/${remote_dir}
         tar xzf /tmp/${remote_dir}.tar.gz -C ~/${remote_dir}
@@ -145,14 +330,15 @@ deploy-robothost remote_host=default_jetrover_host remote_user="jetson" operator
 
 # SSH in and print systemctl status for all three Jetson-side services (teleop-robothost, jetrover-relay, jetrover-arm-control) in one shot -- see robot/systemd/README.md
 robot-status remote_host=default_jetrover_host remote_user="jetson":
-    ssh -o StrictHostKeyChecking=accept-new "{{remote_user}}@{{remote_host}}" \
+    ssh -o StrictHostKeyChecking=accept-new "{{remote_user}}@$(just _robot-host "{{remote_host}}")" \
         "systemctl status teleop-robothost jetrover-relay jetrover-arm-control --no-pager -n 5"
 
 # Read-only: the Jetson's Wi-Fi profiles, visible networks, IPv4/IPv6 addresses, routes and Tailscale state -- moves nothing; run before and after `robot-wifi-join`
 robot-net-status remote_host=default_jetrover_host remote_user="jetson":
     #!/usr/bin/env bash
     set -euo pipefail
-    ssh -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new "{{remote_user}}@{{remote_host}}" 'bash -s' <<'REMOTE'
+    host=$(just _robot-host "{{remote_host}}")
+    ssh -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new "{{remote_user}}@$host" 'bash -s' <<'REMOTE'
     echo "== $(hostname): network profiles (name:type:device:autoconnect:priority)"
     nmcli -t -f NAME,TYPE,DEVICE,AUTOCONNECT,AUTOCONNECT-PRIORITY connection show 2>&1 || echo "nmcli unavailable"
     echo "== visible Wi-Fi (* = in use; in-use:ssid:signal:security)"
@@ -169,8 +355,9 @@ robot-net-status remote_host=default_jetrover_host remote_user="jetson":
 robot-camera-check device="/dev/video0" remote_host=default_jetrover_host remote_user="jetson":
     #!/usr/bin/env bash
     set -euo pipefail
-    target="{{remote_user}}@{{remote_host}}"
-    case "{{remote_host}}" in *:*) scp_src="{{remote_user}}@[{{remote_host}}]" ;; *) scp_src="$target" ;; esac
+    host=$(just _robot-host "{{remote_host}}")
+    target="{{remote_user}}@$host"
+    case "$host" in *:*) scp_src="{{remote_user}}@[$host]" ;; *) scp_src="$target" ;; esac
     remote_file=/tmp/jetrover-camera-check.jpg
     ssh -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new "$target" "bash -s -- '{{device}}' '$remote_file'" <<'REMOTE'
     dev="$1"; out="$2"
@@ -228,6 +415,7 @@ robot-camera-check device="/dev/video0" remote_host=default_jetrover_host remote
 camera-timestamp-spike frames="150" fps="30" device="/dev/video0" remote_host=default_jetrover_host remote_user="jetson":
     #!/usr/bin/env bash
     set -euo pipefail
+    host=$(just _robot-host "{{remote_host}}")
     cd core
     # Relative output path for the Windows dotnet, as in deploy-robothost.
     publish_dir="_scratch_camspike"
@@ -237,8 +425,8 @@ camera-timestamp-spike frames="150" fps="30" device="/dev/video0" remote_host=de
     echo "Publishing Teleop.CameraHost for linux-arm64..." >&2
     dotnet publish Teleop.CameraHost -c Release -r linux-arm64 --self-contained false -f net8.0 -o "$publish_dir" --nologo -v quiet
     tar czf "$archive" -C "$publish_dir" .
-    target="{{remote_user}}@{{remote_host}}"
-    case "{{remote_host}}" in *:*) scp_dest="{{remote_user}}@[{{remote_host}}]" ;; *) scp_dest="$target" ;; esac
+    target="{{remote_user}}@$host"
+    case "$host" in *:*) scp_dest="{{remote_user}}@[$host]" ;; *) scp_dest="$target" ;; esac
     scp -q -o StrictHostKeyChecking=accept-new "$archive" "${scp_dest}:/tmp/camspike.tar.gz"
     set +e
     ssh -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new "$target" "
@@ -254,6 +442,7 @@ camera-timestamp-spike frames="150" fps="30" device="/dev/video0" remote_host=de
 camera-serve seconds="30" fps="30" device="/dev/video0" remote_host=default_jetrover_host remote_user="jetson":
     #!/usr/bin/env bash
     set -euo pipefail
+    host=$(just _robot-host "{{remote_host}}")
     cd core
     publish_dir="_scratch_camserve"
     archive=$(mktemp -u --suffix=.tar.gz)
@@ -262,8 +451,8 @@ camera-serve seconds="30" fps="30" device="/dev/video0" remote_host=default_jetr
     echo "Publishing Teleop.CameraHost for linux-arm64..." >&2
     dotnet publish Teleop.CameraHost -c Release -r linux-arm64 --self-contained false -f net8.0 -o "$publish_dir" --nologo -v quiet
     tar czf "$archive" -C "$publish_dir" .
-    target="{{remote_user}}@{{remote_host}}"
-    case "{{remote_host}}" in *:*) scp_dest="{{remote_user}}@[{{remote_host}}]" ;; *) scp_dest="$target" ;; esac
+    target="{{remote_user}}@$host"
+    case "$host" in *:*) scp_dest="{{remote_user}}@[$host]" ;; *) scp_dest="$target" ;; esac
     scp -q -o StrictHostKeyChecking=accept-new "$archive" "${scp_dest}:/tmp/camserve.tar.gz"
     set +e
     ssh -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new "$target" "
@@ -277,13 +466,14 @@ camera-serve seconds="30" fps="30" device="/dev/video0" remote_host=default_jetr
 
 # Subscribe to the camera sender from this machine for `seconds` and report what arrives (frames, rate, sizes, reassembly drops); `save` writes the last frame to a path the (Windows) dotnet can resolve. Exit 1 if no frame arrived -- usually the sender is not running or this machine's firewall blocks inbound UDP on 6004
 camera-probe seconds="10" max_fps="0" save="" remote_host=default_jetrover_host:
-    cd core && dotnet run --project Teleop.CameraHost -c Release -- probe --host {{remote_host}} \
+    cd core && dotnet run --project Teleop.CameraHost -c Release -- probe --host $(just _robot-host "{{remote_host}}") \
         --seconds {{seconds}} --max-fps {{max_fps}} {{ if save != "" { "--save '" + save + "'" } else { "" } }}
 
 # Publish Teleop.CameraHost for the Jetson, copy it over, write ~/camerahost-run.sh and restart teleop-camerahost if it is installed (see robot/systemd/README.md) -- moves nothing; does not touch teleop-robothost or the ROS nodes
 deploy-camerahost fps="30" device="/dev/video0" remote_host=default_jetrover_host remote_user="jetson":
     #!/usr/bin/env bash
     set -euo pipefail
+    host=$(just _robot-host "{{remote_host}}")
     cd core
     stamp=$(date +%Y%m%d-%H%M%S)
     remote_dir="camerahost_deploy_${stamp}"
@@ -294,8 +484,8 @@ deploy-camerahost fps="30" device="/dev/video0" remote_host=default_jetrover_hos
     echo "Publishing Teleop.CameraHost for linux-arm64..." >&2
     dotnet publish Teleop.CameraHost -c Release -r linux-arm64 --self-contained false -f net8.0 -o "$publish_dir" --nologo -v quiet
     tar czf "$archive" -C "$publish_dir" .
-    target="{{remote_user}}@{{remote_host}}"
-    case "{{remote_host}}" in *:*) scp_dest="{{remote_user}}@[{{remote_host}}]" ;; *) scp_dest="$target" ;; esac
+    target="{{remote_user}}@$host"
+    case "$host" in *:*) scp_dest="{{remote_user}}@[$host]" ;; *) scp_dest="$target" ;; esac
     scp -q -o StrictHostKeyChecking=accept-new "$archive" "${scp_dest}:/tmp/${remote_dir}.tar.gz"
     # Stable wrapper the unit's ExecStart points at, rewritten on every deploy (same pattern as
     # deploy-robothost), so a redeploy needs only a restart. `exec` so SIGTERM reaches the sender.
@@ -324,8 +514,9 @@ deploy-camerahost fps="30" device="/dev/video0" remote_host=default_jetrover_hos
 install-camerahost-service remote_host=default_jetrover_host remote_user="jetson":
     #!/usr/bin/env bash
     set -euo pipefail
-    target="{{remote_user}}@{{remote_host}}"
-    case "{{remote_host}}" in *:*) scp_dest="{{remote_user}}@[{{remote_host}}]" ;; *) scp_dest="$target" ;; esac
+    host=$(just _robot-host "{{remote_host}}")
+    target="{{remote_user}}@$host"
+    case "$host" in *:*) scp_dest="{{remote_user}}@[$host]" ;; *) scp_dest="$target" ;; esac
     scp -q -o StrictHostKeyChecking=accept-new robot/systemd/teleop-camerahost.service "${scp_dest}:/tmp/teleop-camerahost.service"
     ssh -o StrictHostKeyChecking=accept-new "$target" "
         set -e
@@ -342,12 +533,13 @@ install-camerahost-service remote_host=default_jetrover_host remote_user="jetson
 robot-wifi-join ssid revert_minutes="5" remote_host=default_jetrover_host remote_user="jetson":
     #!/usr/bin/env bash
     set -euo pipefail
+    host=$(just _robot-host "{{remote_host}}")
     password="${JETROVER_WIFI_PASSWORD:-}"
     if [ -z "$password" ]; then
         read -r -s -p "Wi-Fi password for '{{ssid}}': " password
         echo
     fi
-    target="{{remote_user}}@{{remote_host}}"
+    target="{{remote_user}}@$host"
     # The script holds no secret. The password reaches it on stdin and is written into a root-only
     # NetworkManager keyfile through `sudo tee`, so it never appears in an argv, `ps`, or sudo's log.
     ssh -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new "$target" 'cat > /tmp/jetrover-wifi-join.sh' <<'REMOTE'
@@ -426,14 +618,15 @@ robot-wifi-join ssid revert_minutes="5" remote_host=default_jetrover_host remote
 
 # NOT YET RUN AGAINST THE ROBOT. Keep the Wi-Fi network `robot-wifi-join` switched to, cancelling its scheduled fallback -- run it over the new path once that path works, e.g. `JETROVER_HOST=<new address> just robot-wifi-confirm`
 robot-wifi-confirm remote_host=default_jetrover_host remote_user="jetson":
-    ssh -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new "{{remote_user}}@{{remote_host}}" \
+    ssh -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new "{{remote_user}}@$(just _robot-host "{{remote_host}}")" \
         "if systemctl is-active --quiet jetrover-wifi-revert.timer; then sudo systemctl stop jetrover-wifi-revert.timer && echo 'fallback cancelled; staying on this network'; else echo 'no fallback pending'; fi"
 
 # Pin the Jetson's wired IPv4 address instead of taking it from DHCP, e.g. `just robot-static-ip 10.188.57.2/21 10.188.56.1`. Keeps the DNS servers DHCP gave it. Reverts to DHCP in `revert_minutes` unless `just robot-static-ip-confirm` runs first. Only use an address the network admin has approved; DHCP does not know about it
 robot-static-ip address gateway connection="Wired connection 1" revert_minutes="5" remote_host=default_jetrover_host remote_user="jetson":
     #!/usr/bin/env bash
     set -euo pipefail
-    ssh -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new "{{remote_user}}@{{remote_host}}" \
+    host=$(just _robot-host "{{remote_host}}")
+    ssh -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new "{{remote_user}}@$host" \
         "bash -s -- $(printf '%q' '{{connection}}') {{address}} {{gateway}} {{revert_minutes}}" <<'REMOTE'
     set -euo pipefail
     con="$1"; address="$2"; gateway="$3"; revert_minutes="$4"
@@ -459,18 +652,19 @@ robot-static-ip address gateway connection="Wired connection 1" revert_minutes="
 
 # Keep the static address `robot-static-ip` set, cancelling its scheduled return to DHCP -- run it once the robot answers on that address
 robot-static-ip-confirm remote_host=default_jetrover_host remote_user="jetson":
-    ssh -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new "{{remote_user}}@{{remote_host}}" \
+    ssh -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new "{{remote_user}}@$(just _robot-host "{{remote_host}}")" \
         "if systemctl is-active --quiet jetrover-static-ip-revert.timer; then sudo systemctl stop jetrover-static-ip-revert.timer && echo 'fallback cancelled; static address kept'; else echo 'no fallback pending'; fi; nmcli -g ipv4.method,ipv4.addresses connection show 'Wired connection 1'"
 
 # Rename the Jetson (hostname, /etc/hosts, its mDNS name <name>.local, and its Tailscale machine name) -- moves nothing. docs/adr/0015 finds the robot by this name, so it must be unique on the LAN
 robot-set-hostname name remote_host=default_jetrover_host remote_user="jetson":
     #!/usr/bin/env bash
     set -euo pipefail
+    host=$(just _robot-host "{{remote_host}}")
     if ! printf '%s' '{{name}}' | grep -Eq '^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$'; then
         echo "error: '{{name}}' is not a valid hostname (lowercase letters, digits, inner hyphens, at most 63)" >&2
         exit 1
     fi
-    ssh -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new "{{remote_user}}@{{remote_host}}" "bash -s -- {{name}}" <<'REMOTE'
+    ssh -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new "{{remote_user}}@$host" "bash -s -- {{name}}" <<'REMOTE'
     set -euo pipefail
     new="$1"; old=$(hostname)
     if ! sudo -n true 2>/dev/null; then echo "error: this needs passwordless sudo on $old" >&2; exit 1; fi

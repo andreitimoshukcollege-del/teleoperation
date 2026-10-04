@@ -45,3 +45,10 @@
 *.wav   filter=lfs diff=lfs merge=lfs -text
 *.onnx  filter=lfs diff=lfs merge=lfs -text
 *.unitypackage filter=lfs diff=lfs merge=lfs -text
+
+# Generated lab content (unity/TeleopXR). Lightmaps are EXR; LightingData.asset is binary even under
+# Force Text, and the *.asset text rule above would rewrite its line endings and corrupt it. The mesh
+# library is megabytes of generated vertex data that no one diffs.
+*.exr filter=lfs diff=lfs merge=lfs -text
+LightingData.asset filter=lfs diff=lfs merge=lfs -text
+unity/TeleopXR/Assets/Teleop/Lab/Generated/LabMeshes.asset filter=lfs diff=lfs merge=lfs -text

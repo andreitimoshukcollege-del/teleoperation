@@ -136,23 +136,25 @@ install-galaxy:
     just _adb devices -l
     just _adb install -r "$(wslpath -m "$apk")"
 
-# Point the Galaxy XR app at the robot without a rebuild: pushes a full jetrover_connection.json override (the Bridge default with RemoteHost replaced) to the app's files directory. Finds the robot itself (`just robot-ip`); pass an address to override
-push-galaxy-config host=default_jetrover_host:
+# Point the Galaxy XR app at the robot without a rebuild: pushes a full jetrover_connection.json override (the Bridge default with RemoteHost replaced) to the app's files directory. Finds the robot itself (`just robot-ip`); pass an address to override. motion=false sends nothing to the arm (ConfirmHardwareMotion off): only the virtual arm moves, for a first try of the controls
+push-galaxy-config host=default_jetrover_host motion="true":
     #!/usr/bin/env bash
     set -euo pipefail
+    case "{{motion}}" in true|false) ;; *) echo "error: motion must be true or false, got '{{motion}}'" >&2; exit 1 ;; esac
     host=$(just _robot-host "{{host}}")
     tmp=$(mktemp --suffix=.json)
     trap 'rm -f "$tmp"' EXIT
-    python3 - "$tmp" "$host" <<'PY'
+    python3 - "$tmp" "$host" "{{motion}}" <<'PY'
     import json, sys
     cfg = json.load(open("unity/Teleop.Bridge/Runtime/Resources/jetrover_connection.json", encoding="utf-8"))
     cfg["RemoteHost"] = sys.argv[2]
+    cfg["ConfirmHardwareMotion"] = sys.argv[3] == "true"
     json.dump(cfg, open(sys.argv[1], "w"), indent=2)
     PY
     dest=/sdcard/Android/data/com.teleop.jetroverxr/files
     just _adb shell mkdir -p "$dest"
     just _adb push "$(wslpath -m "$tmp")" "$dest/jetrover_connection.json"
-    echo "Galaxy XR app now targets $host; restart the app to pick it up."
+    echo "Galaxy XR app now targets $host, hardware motion {{ if motion == "true" { "ON" } else { "OFF (virtual arm only)" } }}; restart the app to pick it up."
 
 # Run an experiment sweep, e.g. `just sweep experiments/exp-001-predictor-baseline.yaml`
 sweep config:

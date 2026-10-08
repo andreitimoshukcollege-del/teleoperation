@@ -123,5 +123,22 @@ namespace Teleop.Bridge
 
         public double PlayoutTargetPercentile = 1.0;
         public int PlayoutDelayWindowSamples = 64;
+
+        // Galaxy XR operator input (docs/adr/0017-galaxy-xr-clutch-and-gripper.md). Read by the
+        // TeleopXR project's clutch driver; TeleopVR's controllers ignore them.
+        //
+        // Hand motion -> arm motion while the clutch is engaged: 0.5 means 10 cm of hand moves the
+        // wrist 5 cm. The arm reaches about 26 cm, so 1:1 makes an ordinary hand movement a large arm
+        // movement.
+        public float ClutchScale = 0.5f;
+
+        // The lowest the clutch may put the wrist, metres in the arm-base frame (Z up, 0 = the
+        // base-yaw pivot). The arm has no floor limit of its own; tune this on the hardware.
+        public float ClutchMinHeightMeters = -0.05f;
+
+        // The gripper hand's thumb-to-index distance: this wide or wider is open (0), this narrow or
+        // narrower is closed (1), linear in between.
+        public float GripperPinchOpenMeters = 0.08f;
+        public float GripperPinchClosedMeters = 0.015f;
     }
 }

@@ -129,6 +129,81 @@ namespace Teleop.RobotArm.Kinematics
         }
 
         /// <summary>
+        /// The nearest point to <paramref name="target"/> that the arm can actually reach and that
+        /// is not below <paramref name="minHeight"/> (Z, in the same base frame), so an operator
+        /// input that keeps pushing past the edge stays at the edge instead of wandering off
+        /// (docs/adr/0017-galaxy-xr-clutch-and-gripper.md). The reach limits are
+        /// <see cref="TryInverse"/>'s own, measured from the shoulder (the base-yaw axis at
+        /// <see cref="RobotArmProfile.BaseHeight"/>), and the azimuth is kept. A point inside the
+        /// reach envelope and above the floor is returned unchanged. If the floor is above
+        /// everything the arm can reach, the highest reachable point straight above the shoulder's
+        /// azimuth wins.
+        /// </summary>
+        public static Vector3 ProjectToWorkspace(in RobotArmProfile profile, Vector3 target, float minHeight)
+        {
+            // Twice TryInverse's own margin, so a projected point is never clamped again there by
+            // float round-off.
+            const float epsilon = 2e-4f;
+            float maxReach = profile.ProximalLinkLength + profile.DistalLinkLength - epsilon;
+            float minReach = MathF.Abs(profile.ProximalLinkLength - profile.DistalLinkLength) + epsilon;
+            float shoulderZ = profile.BaseHeight;
+
+            float r = MathF.Sqrt(target.X * target.X + target.Y * target.Y);
+            // Azimuth as a unit vector; straight overhead (or a fixed base) has none, so use +X.
+            float ux = 1f, uy = 0f;
+            if (profile.HasRotatingBase && r > 1e-6f)
+            {
+                ux = target.X / r;
+                uy = target.Y / r;
+            }
+            else if (!profile.HasRotatingBase)
+            {
+                // A fixed base works in its X-Z plane only, as Forward does.
+                r = MathF.Max(0f, target.X);
+            }
+
+            float z = MathF.Max(target.Z, minHeight);
+            float dz = z - shoulderZ;
+            float reach = MathF.Sqrt(r * r + dz * dz);
+
+            if (reach > maxReach || reach < minReach)
+            {
+                float clamped = Math.Clamp(reach, minReach, maxReach);
+                if (reach > 1e-6f)
+                {
+                    float k = clamped / reach;
+                    r *= k;
+                    dz *= k;
+                }
+                else
+                {
+                    r = clamped;
+                    dz = 0f;
+                }
+
+                z = shoulderZ + dz;
+                if (z < minHeight)
+                {
+                    // Pulled under the floor by the reach clamp: slide along the reach sphere up
+                    // to the floor, keeping the azimuth.
+                    float floorDz = minHeight - shoulderZ;
+                    if (floorDz >= maxReach)
+                    {
+                        r = 0f;
+                        z = shoulderZ + maxReach;
+                    }
+                    else
+                    {
+                        r = MathF.Sqrt(MathF.Max(0f, clamped * clamped - floorDz * floorDz));
+                        z = minHeight;
+                    }
+                }
+            }
+
+            return new Vector3(ux * r, uy * r, z);
+        }
+
+        /// <summary>
         /// Extracts "pitch" from a commanded orientation the same gimbal-lock-free way regardless
         /// of roll or yaw -- unchanged from <c>FourDofArmKinematics</c>, this math has no per-robot
         /// dependency at all.

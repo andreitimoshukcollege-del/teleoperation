@@ -9,7 +9,7 @@ namespace Teleop.XR
     /// <item><b>Asks for hand tracking.</b> Android XR gates hand data behind a runtime permission.
     /// The Unity Android XR package adds the manifest entry when its hand-tracking feature is
     /// enabled; the user still has to grant it. Until they do, the hands simply do not appear and
-    /// nothing can grab the target, so the robot cannot be commanded at all.</item>
+    /// the clutch cannot engage, so the robot cannot be commanded at all.</item>
     /// <item><b>Records the input modality.</b> Hand tracking reaches the robot through the same IK and
     /// command stream as controller motion, but with its own jitter and dropouts, so a session's
     /// numbers depend on it (docs/adr/0016 §5). One log line states it, and that no smoothing is
@@ -30,7 +30,7 @@ namespace Teleop.XR
                 UnityEngine.Android.Permission.RequestUserPermission(HandTrackingPermission);
             }
 #endif
-            Debug.Log("[xr] input modality: hands (pinch-grab, near and far); hand smoothing off, target smoothing off");
+            Debug.Log("[xr] input modality: hands (clutch on one hand, gripper on the other; docs/adr/0017); hand smoothing off");
         }
     }
 }

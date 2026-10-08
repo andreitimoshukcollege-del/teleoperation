@@ -29,8 +29,11 @@ namespace Teleop.Bridge
     /// <c>ClockSync</c> bookkeeping and latency recording -- this is where a chosen
     /// predictor/reconciler/network profile becomes visible in recorded metrics, exactly like
     /// <see cref="TeleopOperatorBridge"/>'s ghost robot shows reconciliation against its own
-    /// simulated robot. <b>This connection's command is never what drives the real arm, and its
-    /// <c>EstimateRobotState</c> is never what drives <see cref="armRig"/></b> -- see below.</item>
+    /// simulated robot. <b>Its <c>EstimateRobotState</c> is never what drives <see cref="armRig"/></b>
+    /// -- see below. Its command does reach the robot: <c>Teleop.RobotHost</c> runs its own IK on
+    /// every Cartesian frame and drives the same plant, which tracks the two paths' staleness
+    /// separately (docs/adr/0009). Both carry the same raw pose and <see cref="GripperFraction"/>,
+    /// so they agree.</item>
     /// <item>A separate, plain <c>UdpTransport</c>-backed channel (<c>_jointTransport</c>) that
     /// sends already-computed joint targets (<see cref="JointCommandCodec"/>, one
     /// <see cref="JointTarget"/> per <see cref="RobotArmProfile"/> joint) built
@@ -105,6 +108,50 @@ namespace Teleop.Bridge
         private const float StaleAfterSeconds = 1f;
 
         private long _lastStateReceivedTicks;
+
+        private float _gripperFraction;
+
+        /// <summary>
+        /// The gripper command, 0 = open to 1 = closed, sent with every command on both paths.
+        /// Set by an input component (TeleopXR's off-hand pinch, docs/adr/0017); nothing sets it
+        /// in TeleopVR, so it stays 0 there, which is what this bridge always sent. Clamped; NaN is
+        /// ignored, so an untracked hand can never turn into "open".
+        /// </summary>
+        public float GripperFraction
+        {
+            get => _gripperFraction;
+            set
+            {
+                if (!float.IsNaN(value))
+                {
+                    _gripperFraction = Math.Clamp(value, 0f, 1f);
+                }
+            }
+        }
+
+        /// <summary>The loaded connection config, for input components that read its operator-input fields.</summary>
+        public JetRoverArmConfig Config => _config;
+
+        private JetRoverClutch _clutch;
+
+        /// <summary>
+        /// Clutch control over this bridge's drag target (docs/adr/0017), created on first use after
+        /// <c>Awake</c> from the config's <c>ClutchScale</c> and <c>ClutchMinHeightMeters</c>. Null
+        /// until the bridge is awake, or when the drag target or arm rig is not wired. An input
+        /// component drives it; TeleopVR's controllers never touch it.
+        /// </summary>
+        public JetRoverClutch Clutch
+        {
+            get
+            {
+                if (_clutch == null && _config != null && dragTarget != null && armRig != null)
+                {
+                    _clutch = new JetRoverClutch(armRig.BaseAnchor, dragTarget, _profile, _config.ClutchScale, _config.ClutchMinHeightMeters);
+                }
+
+                return _clutch;
+            }
+        }
 
         /// <summary>True once at least one downlink reply has ever been received -- a simple, cheap signal that Teleop.RobotHost is actually reachable, mirroring MoveArmCommand's own everObservedAnyState diagnostic.</summary>
         public bool HasReceivedAnyState { get; private set; }
@@ -340,13 +387,11 @@ namespace Teleop.Bridge
             // Raw, unreconciled target -- SubmitCommand feeds ClockSync/OWD accounting on the
             // Cartesian connection (recorded metrics only -- see this class's own doc), matching
             // TeleopOperatorBridge.Update's own "always send the raw captured pose" precedent.
-            _operatorEndpoint.SubmitCommand(capturedPose, CoreVec.Zero, CoreVec.Zero, gripper: 0f, now);
+            _operatorEndpoint.SubmitCommand(capturedPose, CoreVec.Zero, CoreVec.Zero, gripper: _gripperFraction, now);
 
-            // gripper: 0f -- this bridge has never driven the gripper (matches the pre-
-            // generalization behavior, which also hardcoded gripper: 0f here).
             Span<JointTarget> jointTargets = stackalloc JointTarget[_profile.JointCount];
             int targetCount = ArmKinematics.MapAnglesToJointTargets(
-                _profile, baseYaw, proximalPitch, distalPitch, wristPitches, gripperFraction: 0f, jointTargets);
+                _profile, baseYaw, proximalPitch, distalPitch, wristPitches, gripperFraction: _gripperFraction, jointTargets);
 
             Span<byte> buffer = stackalloc byte[JointCommandCodec.EncodedSize(targetCount)];
             if (JointCommandCodec.TryEncode(_jointSequence++, now, jointTargets.Slice(0, targetCount), buffer, out int bytesWritten))

@@ -28,5 +28,9 @@
   "ClockSyncSmoothingAlpha": 0.2,
   "MaxAcceptableRttMs": 2000.0,
   "OutlierRttMultiple": 3.0,
-  "MinSamplesBeforeTrusted": 3
+  "MinSamplesBeforeTrusted": 3,
+  "ClutchScale": 0.5,
+  "ClutchMinHeightMeters": -0.05,
+  "GripperPinchOpenMeters": 0.08,
+  "GripperPinchClosedMeters": 0.015
 }

@@ -15,7 +15,9 @@ the projects' scenes reference, so never regenerate or delete them.
 **Adapters** — drive Core from Unity callbacks: `TeleopOperatorBridge`, `TeleopRobotBridge`,
 `CoordConversion`, `ConfigLoader`, `XrDisplayTimeProvider`, `LatencyHud` (display only, reads the
 metric sink and writes nothing back), `CameraFeedBridge` (the robot camera on a world-locked panel,
-docs/adr/0014; every reassembly decision is Core's `CameraFrameReassembler`).
+docs/adr/0014; every reassembly decision is Core's `CameraFrameReassembler`), `JetRoverClutch`
+(clutch control over the drag target, docs/adr/0017; the mapping is `Teleop.RobotArm`'s
+`ClutchMapping`, this only converts frames and writes the Transform).
 `DisplayCalibrationConfig` is the plain data type `ConfigLoader` loads, not an adapter itself.
 
 **Implementations of Core interfaces** — the direction inverts here. Core declares, Unity

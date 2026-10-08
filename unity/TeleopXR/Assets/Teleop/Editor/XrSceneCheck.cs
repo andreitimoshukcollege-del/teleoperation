@@ -6,7 +6,6 @@ using UnityEditor;
 using UnityEditor.SceneManagement;
 using UnityEngine;
 using UnityEngine.SceneManagement;
-using UnityEngine.XR.Interaction.Toolkit.Attachment;
 using UnityEngine.XR.Interaction.Toolkit.Inputs;
 using UnityEngine.XR.Interaction.Toolkit.Interactables;
 using Object = UnityEngine.Object;
@@ -22,12 +21,12 @@ namespace Teleop.XR.Editor
     /// <list type="bullet">
     /// <item>any missing script;</item>
     /// <item>broken Bridge wiring;</item>
-    /// <item>any drift in the settings that make pinch-grabbing safe to drive a real arm: no
-    /// pull-to-hand, no snap, no smoothing, no throw, a kinematic body, and the hand smoothing filter
-    /// off;</item>
+    /// <item>clutch control not set up safely (docs/adr/0017): the target still grabbable, the
+    /// clutch driver missing or unwired, a scale above 1, or the hand smoothing filter on (it filters
+    /// the hand joints the clutch reads);</item>
     /// <item>controllers left in the modality manager;</item>
-    /// <item>Active Input Handling without the Input System, which leaves hands that track but cannot
-    /// pinch.</item>
+    /// <item>Active Input Handling without the Input System, which breaks XRI's hand interactions;</item>
+    /// <item>Android XR Support or Hand Tracking off for Android.</item>
     /// </list>
     /// Those settings are easy to change by accident in an Inspector and invisible until the robot
     /// jumps. Read-only; exits non-zero when it finds a problem or cannot look (invariant 10).
@@ -153,16 +152,16 @@ namespace Teleop.XR.Editor
                 }
             }
 
-            CheckDragTarget(bridge, problems);
+            CheckClutch(bridge, problems);
 
             CheckAndroidOpenXR(problems);
 
 #if !ENABLE_INPUT_SYSTEM
-            // The hands rig reads the pinch through Input System actions (ReleaseThresholdButtonReader
-            // on XRI's hand interaction actions). With Active Input Handling on the old Input Manager
-            // alone, hands are drawn but nothing can be grabbed. The project was committed like that
-            // once, because batch mode never shows the dialog that offers to switch it.
-            problems.Add("Player Settings > Active Input Handling excludes the Input System: hands would track but never pinch-grab (set it to Both, as in TeleopVR)");
+            // XRI's hands rig reads its pinch and poke through Input System actions. With Active Input
+            // Handling on the old Input Manager alone, hands are drawn but none of XRI's hand
+            // interactions work. The project was committed like that once, because batch mode never
+            // shows the dialog that offers to switch it. (The clutch reads XR Hands directly.)
+            problems.Add("Player Settings > Active Input Handling excludes the Input System: XRI's hand interactions would not work (set it to Both, as in TeleopVR)");
 #endif
 
             var modality = Object.FindAnyObjectByType<XRInputModalityManager>(FindObjectsInactive.Include);
@@ -203,7 +202,13 @@ namespace Teleop.XR.Editor
                 problems.Add("OpenXR (Android): Hand Tracking is off, so no hands and no HAND_TRACKING permission (run `just unity-setup-xr`)");
         }
 
-        private static void CheckDragTarget(JetRoverOperatorBridge bridge, List<string> problems)
+        /// <summary>
+        /// Clutch control (docs/adr/0017) in place of the old pinch-grab. The target must no longer be
+        /// grabbable: an interactable left on it would let a far pinch move it, and the robot, outside
+        /// the clutch's scaling and workspace limits. The driver must be wired, and the config's
+        /// scale must make the arm move no more than the hand does.
+        /// </summary>
+        private static void CheckClutch(JetRoverOperatorBridge bridge, List<string> problems)
         {
             if (bridge == null)
             {
@@ -211,32 +216,45 @@ namespace Teleop.XR.Editor
             }
 
             var target = new SerializedObject(bridge).FindProperty("dragTarget")?.objectReferenceValue as Transform;
-            if (target == null)
+            if (target != null && target.GetComponent<XRBaseInteractable>() != null)
             {
-                return; // already reported
+                problems.Add("DragTarget still has an XR interactable: a pinch could grab it and move the robot outside the clutch's scale and workspace limits (run Teleop > XR > Set Up Clutch Control)");
             }
 
-            var grab = target.GetComponent<XRGrabInteractable>();
-            if (grab == null)
+            var driver = Object.FindAnyObjectByType<HandClutchDriver>(FindObjectsInactive.Include);
+            if (driver == null)
             {
-                problems.Add("DragTarget has no XRGrabInteractable");
+                problems.Add("no HandClutchDriver: nothing drives the arm (run Teleop > XR > Set Up Clutch Control)");
+            }
+            else
+            {
+                var so = new SerializedObject(driver);
+                foreach (string field in new[] { "bridge", "armRig", "origin" })
+                {
+                    RequireReference(so, field, problems);
+                }
+
+                if (so.FindProperty("bridge").objectReferenceValue != bridge)
+                    problems.Add("HandClutchDriver.bridge is not the scene's JetRoverOperatorBridge");
+                if (!(so.FindProperty("engageBelowMeters").floatValue < so.FindProperty("releaseAboveMeters").floatValue))
+                    problems.Add("HandClutchDriver: engageBelowMeters must be below releaseAboveMeters, or the clutch chatters on and off");
+                if (!driver.enabled)
+                    problems.Add("HandClutchDriver is disabled");
+            }
+
+            var json = Resources.Load<TextAsset>("jetrover_connection");
+            if (json == null)
+            {
+                problems.Add("Resources/jetrover_connection.json not found (Teleop.Bridge)");
                 return;
             }
 
-            if (grab.farAttachMode != InteractableFarAttachMode.Far)
-                problems.Add($"DragTarget farAttachMode is {grab.farAttachMode}, must be Far: a far pinch would pull the target, and the robot, to the hand");
-            if (!grab.useDynamicAttach)
-                problems.Add("DragTarget useDynamicAttach is off: grabbing would snap the target's centre to the fingers");
-            if (grab.smoothPosition || grab.smoothRotation)
-                problems.Add("DragTarget smoothing is on: the operator's intent must be sent raw (ADR 0016 §5)");
-            if (grab.throwOnDetach)
-                problems.Add("DragTarget throwOnDetach is on: releasing must leave the target where it was let go");
-            if (grab.movementType != XRBaseInteractable.MovementType.Instantaneous)
-                problems.Add($"DragTarget movementType is {grab.movementType}, must be Instantaneous (no physics-step delay)");
-
-            var body = target.GetComponent<Rigidbody>();
-            if (body == null || !body.isKinematic || body.useGravity)
-                problems.Add("DragTarget needs a kinematic Rigidbody without gravity");
+            var config = new JetRoverArmConfig();
+            JsonUtility.FromJsonOverwrite(json.text, config);
+            if (!(config.ClutchScale > 0f && config.ClutchScale <= 1f))
+                problems.Add($"jetrover_connection.json: ClutchScale {config.ClutchScale} must be in (0, 1]; above 1 the arm moves further than the hand");
+            if (!(config.GripperPinchOpenMeters > config.GripperPinchClosedMeters))
+                problems.Add("jetrover_connection.json: GripperPinchOpenMeters must be greater than GripperPinchClosedMeters");
         }
 
         private static void RequireReference(SerializedObject so, string field, List<string> problems)
@@ -252,7 +270,7 @@ namespace Teleop.XR.Editor
         {
             if (problems.Count == 0)
             {
-                Debug.Log("[scene-check] PASS: JetRoverLabXR has no missing scripts, intact wiring, and safe pinch-grab settings");
+                Debug.Log("[scene-check] PASS: JetRoverLabXR has no missing scripts, intact wiring, and clutch control set up safely");
                 return;
             }
 

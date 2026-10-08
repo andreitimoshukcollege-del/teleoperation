@@ -4,6 +4,8 @@
   "references": [
     "Teleop.Bridge",
     "Unity.TextMeshPro",
+    "Unity.XR.CoreUtils",
+    "Unity.XR.Hands",
     "Unity.XR.Interaction.Toolkit"
   ],
   "includePlatforms": [],

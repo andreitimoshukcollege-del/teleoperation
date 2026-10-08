@@ -54,6 +54,7 @@ namespace Teleop.Bridge
         [SerializeField] private Renderer reachWarningRenderer;
         [SerializeField] private Color normalColor = Color.white;
         [SerializeField] private Color clampedColor = Color.red;
+        [SerializeField] private Color highlightColor = new Color(0.2f, 0.85f, 1f);
 
         [Header("Axis sign flips -- flip via Inspector after empirically checking against the real arm, not by editing code")]
         [SerializeField] private float baseYawSign = -1f; // Core's right-handed +Z yaw vs. Unity's left-handed +Y rotation
@@ -138,6 +139,13 @@ namespace Teleop.Bridge
 #endif
 
         /// <summary>
+        /// Shows <see cref="highlightColor"/> on the reach warning renderer while not clamped: an input
+        /// component's "you are driving the arm" cue (TeleopXR's clutch, docs/adr/0017). The clamp
+        /// warning still wins. Nothing sets it in TeleopVR.
+        /// </summary>
+        public bool Highlighted { get; set; }
+
+        /// <summary>
         /// Applies one set of joint angles (radians, Core convention) to the rig's pivots and
         /// updates the reach-clamp warning color. Called from <see cref="JetRoverOperatorBridge"/>
         /// right after it computes these same angles for the command it's about to send.
@@ -168,7 +176,7 @@ namespace Teleop.Bridge
             {
                 _propertyBlock ??= new MaterialPropertyBlock();
                 reachWarningRenderer.GetPropertyBlock(_propertyBlock);
-                Color color = wasClamped ? clampedColor : normalColor;
+                Color color = wasClamped ? clampedColor : Highlighted ? highlightColor : normalColor;
                 // Both names, because this rig runs under both pipelines (docs/adr/0016 §3): the
                 // built-in shaders read _Color, URP's Lit and Unlit read _BaseColor and ignore
                 // _Color. Setting the one a shader lacks is harmless.

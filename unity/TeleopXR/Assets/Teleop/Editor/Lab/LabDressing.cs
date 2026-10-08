@@ -179,6 +179,9 @@ namespace Teleop.XR.Editor
             rigSo.FindProperty("reachWarningRenderer").objectReferenceValue = wristLed;
             rigSo.ApplyModifiedPropertiesWithoutUndo();
 
+            // The twin's fingers were just rebuilt, so the gripper display and the clutch need rewiring.
+            XrControlSetup.Apply(scene);
+
             EditorSceneManager.MarkSceneDirty(scene);
             Debug.Log($"[lab] dressing built: {LabMeshLibrary.Triangles} generated triangles");
         }

@@ -28,6 +28,12 @@ namespace Teleop.XR.Editor
     {
         public const string VisualName = "TwinVisual";
 
+        /// <summary>The two finger groups under the wrist's visual: <c>TwinFingerL</c> and <c>TwinFingerR</c>.</summary>
+        public const string FingerName = "TwinFinger";
+
+        /// <summary>How far each finger slides inward from open to closed (m): until the pads meet.</summary>
+        public const float FingerTravel = 0.0165f;
+
         private const float WheelY = -0.12f;     // wheel centre relative to the arm base
         private const float WheelX = 0.1225f;
         private const float FrontWheelZ = 0.045f, RearWheelZ = -0.145f;
@@ -203,7 +209,6 @@ namespace Teleop.XR.Editor
             var black = new LabMesh();
             var servo = new LabMesh();
             var alu = new LabMesh();
-            var pads = new LabMesh();
             var glass = new LabMesh();
 
             alu.Cylinder(Vector3.zero, Vector3.right, 0.012f, 0.054f, 20, 0.002f);
@@ -216,10 +221,13 @@ namespace Teleop.XR.Editor
             servo.Chamfer(new Vector3(0f, 0f, 0.064f), new Vector3(0.032f, 0.032f, 0.03f), 0.004f);   // wrist roll
             black.Chamfer(new Vector3(0f, 0f, 0.088f), new Vector3(0.058f, 0.02f, 0.018f), 0.003f);  // gripper palm
             servo.Chamfer(new Vector3(0.012f, 0.019f, 0.086f), new Vector3(0.026f, 0.018f, 0.03f), 0.003f); // gripper servo
+            // Each finger is its own child, so TwinGripper can slide it by the gripper command.
             foreach (int s in new[] { -1, 1 })
             {
-                alu.Chamfer(new Vector3(s * 0.022f, 0f, 0.117f), new Vector3(0.005f, 0.014f, 0.046f), 0.0015f);
-                pads.Chamfer(new Vector3(s * 0.0185f, 0f, 0.13f), new Vector3(0.0025f, 0.012f, 0.016f), 0.0008f);
+                string side = s < 0 ? "L" : "R";
+                Transform finger = LabParts.Group(FingerName + side, visual).transform;
+                LabParts.Part($"Arm/Wrist/Finger{side}", finger, new LabMesh().Chamfer(new Vector3(s * 0.022f, 0f, 0.117f), new Vector3(0.005f, 0.014f, 0.046f), 0.0015f), p.Aluminium, PartKind.Dynamic);
+                LabParts.Part($"Arm/Wrist/Pad{side}", finger, new LabMesh().Chamfer(new Vector3(s * 0.0185f, 0f, 0.13f), new Vector3(0.0025f, 0.012f, 0.016f), 0.0008f), p.Rubber, PartKind.Dynamic);
             }
 
             // The DaBai DCW on a short bracket above the wrist, looking along the gripper.
@@ -236,7 +244,6 @@ namespace Teleop.XR.Editor
             LabParts.Part("Arm/Wrist/Brackets", visual, black, p.AnodizedBlack, PartKind.Dynamic);
             LabParts.Part("Arm/Wrist/Servos", visual, servo, p.ServoBlack, PartKind.Dynamic);
             LabParts.Part("Arm/Wrist/Metal", visual, alu, p.Aluminium, PartKind.Dynamic);
-            LabParts.Part("Arm/Wrist/Pads", visual, pads, p.Rubber, PartKind.Dynamic);
             LabParts.Part("Arm/Wrist/CameraGlass", visual, glass, p.Glass, PartKind.Emitter);
 
             // The reach warning: its own renderer, because JetRoverArmRig recolours a whole renderer.

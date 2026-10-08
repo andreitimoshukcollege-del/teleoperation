@@ -58,6 +58,7 @@
     <BridgeSource Include="DelayTraceLoader.cs" />
     <BridgeSource Include="NetworkImpairmentController.cs" />
     <BridgeSource Include="CameraFeedBridge.cs" />
+    <BridgeSource Include="JetRoverClutch.cs" />
 
     <Compile Include="@(BridgeSource->'../Teleop.Bridge/Runtime/%(Identity)')"
              Link="Bridge/%(Identity)" />

@@ -53,37 +53,62 @@ Contents:
   - Tracking origin is **Floor**.
   - Its **One Euro hand-smoothing filter (`HandsOneEuroFilterPostProcessor`) is disabled.** It
     filters every hand joint, including the pinch pose that becomes the robot's target.
-- **The arm rig, `DragTarget` start pose, `JetRoverOperatorBridge` and `CameraFeedBridge`.** Values
-  are identical to TeleopVR's `JetRoverControl`, so the IK sees the same arm in both projects.
+- **The arm rig, `JetRoverOperatorBridge` and `CameraFeedBridge`.** Values are identical to
+  TeleopVR's `JetRoverControl`, so the IK sees the same arm in both projects.
 - **`HandTrackingSession`.** It asks for the `HAND_TRACKING` runtime permission and logs the session's
   input modality once.
-- **`GrabHighlight` on the target:** cyan when idle, yellow when a pinch now would grab it, green when
-  grabbed. With hands there is no trigger to feel.
+- **Clutch control and the gripper (docs/adr/0017), from `XrControlSetup`** (**Teleop → XR → Set Up
+  Clutch Control**; a lab rebuild reruns it):
+  - **`HandClutchDriver`** on `JetRoverOperator`.
+    - The **right hand's pinch is the clutch**: pinch anywhere and the arm's wrist follows your
+      hand's motion from there, scaled by `ClutchScale` (0.5). Release and the arm holds, so you
+      can re-pinch somewhere comfortable.
+    - The **left hand's pinch is the gripper**: thumb and index 8 cm apart or more is open,
+      1.5 cm or less is closed, linear in between.
+    - It reads hand joints from XR Hands directly. The mapping is Core's (`Teleop.RobotArm`'s
+      `ClutchMapping` and `GripperMapping`), reached through Bridge's `JetRoverClutch`.
+    - Feedback: the wrist LED ring turns cyan while clutched, and red still means out of reach.
+      The display's caption line reads `CLUTCH ON · gripper N%`.
+  - **`DragTarget`** is no longer grabbable. It is a 2 cm marker showing the commanded wrist
+    position, and the bridge still reads it.
+  - **`TwinGripper`** on the wrist slides the twin's fingers by the gripper command. It shows what
+    is sent; the real gripper has no feedback.
+  - Tune these with `just push-galaxy-config`, no rebuild: `ClutchScale`, `ClutchMinHeightMeters`
+    (the wrist never goes lower, default −0.05 m below the base pivot), `GripperPinchOpenMeters` and
+    `GripperPinchClosedMeters`. Edit them in `unity/Teleop.Bridge/Runtime/Resources/jetrover_connection.json`
+    first; the recipe pushes that file.
 
-**The target's grab settings are safety settings.** `just unity-check-xr` fails, and `just
-build-galaxy` refuses to build, if any of them changes:
+**These are safety settings.** `just unity-check-xr` fails, and `just build-galaxy` refuses to
+build, if any of them changes:
 
 | Setting | Value | Because |
 |---|---|---|
-| Far attach mode | Far | a far pinch must not pull the target, and with it the robot, to the hand |
-| Dynamic attach | on | grabbing must not snap the target's centre to the fingers |
-| Movement type | Instantaneous | no physics-step delay between pinch and command |
-| Smooth position / rotation | off | the operator's intent is sent raw (ADR 0016 §5) |
-| Throw on detach | off | releasing leaves the target, and the robot, where it was let go |
-| Rigidbody | kinematic, no gravity | the target moves only when grabbed |
-| Hand smoothing filter | inactive | as above, at the joint level |
+| `DragTarget` interactable | none | a pinch could grab it and move the robot outside the clutch's scale and workspace limits |
+| `HandClutchDriver` | present, wired to the bridge, rig and XR Origin, enabled | nothing else drives the arm |
+| Clutch engage / release distance | engage below release (1.5 / 3 cm) | otherwise the clutch chatters on and off |
+| `ClutchScale` | in (0, 1] | above 1 the arm moves further than the hand |
+| Gripper pinch range | open distance > closed distance | otherwise the mapping is inverted |
+| Hand smoothing filter | inactive | it filters the hand joints the clutch reads; intent is sent raw (ADR 0016 §5) |
 | Modality manager controllers | none | hands only |
-| Active Input Handling (Player Settings) | Both | the pinch is read through Input System actions; without them hands track but nothing grabs |
+| Active Input Handling (Player Settings) | Both | XRI's hand interactions read the Input System |
+| Android XR Support, Hand Tracking (OpenXR, Android) | on | without them the APK launches as a 2D panel and crashes |
+
+The clutch is safe by construction, not just by settings:
+- **Releasing, or losing tracking of the clutch hand,** disengages, and the arm holds.
+- **The target is projected onto the reachable workspace every frame,** above
+  `ClutchMinHeightMeters`. Pushing past the edge leaves the arm at the edge, and moving back moves
+  it immediately.
+- **Losing tracking of the gripper hand holds the gripper.** It never opens on its own.
 
 What the check cannot see:
 
-- **Releasing on tracking loss** is XRI's behaviour when a hand's interactor goes away. Verify it on
-  the headset before relying on it.
-- **Far grabs follow XRI's aim ray.** The rig includes `XRTransformStabilizer` components for ray
-  aiming, and whether they smooth a hand's far grab is not verified. Near grabs (pinching on the
-  sphere) follow the pinch pose directly, so prefer them for anything citable.
-- **Hand jitter and dropouts reach the robot** through the same IK and 48 Hz command stream as
-  controller motion does. Filtering them would be a Core research axis with its own ADR, never a
+- **The gripper's pulse range is uncalibrated** on the robot (`GenericArmPlantConfig.GripperOpenPulse`
+  and `GripperClosedPulse`). Measure it with `just move-arm 0.15 0 0.08 gripper=…` while you
+  watch the robot, before the headset drives the gripper.
+- **Whether the palm's pitch feels right for the wrist** is a headset question. `followPitch` on
+  `HandClutchDriver` turns it off.
+- **Hand jitter and dropouts reach the robot**, scaled by `ClutchScale`, through the same IK and
+  48 Hz command stream. Filtering them would be a Core research axis with its own ADR, never a
   smoothing checkbox here.
 - The base rig also carries locomotion providers (move, turn, teleport, climb, grab-move). All of
   them are driven by controller input actions, so with no controllers they do nothing.
@@ -121,7 +146,8 @@ and a GPU with Vulkan video encoding (this PC: RTX 4060 Laptop).
    to build if the check fails.
 2. `just install-galaxy` installs it over USB.
 3. `just push-galaxy-config` points the app at the robot's current LAN address without a
-   rebuild. It finds the robot itself (`just robot-ip`); pass an address to override. It pushes a
+   rebuild. Use `just push-galaxy-config auto false` the first time you try the controls: the
+   virtual arm moves and the real one doesn't. It finds the robot itself (`just robot-ip`); pass an address to override. It pushes a
    full `jetrover_connection.json` override to the app's files directory; restart the app
    afterwards.
 4. The headset must be on the robot's network. Accept the hand-tracking permission on the first

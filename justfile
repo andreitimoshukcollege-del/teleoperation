@@ -381,6 +381,17 @@ robot-set-feedback-ids ids="1, 2, 3, 4, 5, 10" remote_host=default_jetrover_host
     "
     echo "Check it with: just joint-probe (motors {{ids}} should read 'sensed yes')"
 
+# Read-only: the battery reading jetrover-arm-control publishes (millivolts, from the Hiwonder board), plus the Jetson's own supply rails. A continuous beep from the robot is usually the board's low-battery alarm: check this first
+robot-battery remote_host=default_jetrover_host remote_user="jetson":
+    ssh -o StrictHostKeyChecking=accept-new "{{remote_user}}@$(just _robot-host "{{remote_host}}")" \
+        "f=/home/jetson/projects/jetrover-teleop-ros/src/jetrover_arm_control/jetrover_arm_control/robot_controller_node.py; \
+         topic=\$(grep -o -E \"create_publisher\\(Int32, *['\\\"][^'\\\"]+\" \$f | head -1 | sed -E \"s/.*['\\\"]//\"); \
+         echo \"battery topic: \${topic:-not found}\"; grep -n -E 'create_timer|def getBattery|getBattery\\(' \$f /home/jetson/projects/jetrover-teleop-ros/src/jetrover_arm_control/jetrover_arm_control/*.py 2>/dev/null | grep -i -E 'batter|timer' | head -6; \
+         source /opt/ros/foxy/setup.bash; export ROS_LOCALHOST_ONLY=1; \
+         echo '--- battery messages for 6 s (published every 5 s; none means the board did not answer, or ROS discovery was too slow):'; [ -n \"\$topic\" ] && (timeout 6 ros2 topic echo \"\$topic\" 2>&1 | head -4); \
+         echo '--- Jetson supply (mV, mA):'; for d in /sys/bus/i2c/drivers/ina3221x/*/iio:device*; do \
+           for c in 0 1 2; do n=\$(cat \$d/rail_name_\$c 2>/dev/null) && echo \"\$n: \$(cat \$d/in_voltage\${c}_input 2>/dev/null) mV, \$(cat \$d/in_current\${c}_input 2>/dev/null) mA\"; done; done; true"
+
 robot-status remote_host=default_jetrover_host remote_user="jetson":
     ssh -o StrictHostKeyChecking=accept-new "{{remote_user}}@$(just _robot-host "{{remote_host}}")" \
         "systemctl status teleop-robothost jetrover-relay jetrover-arm-control --no-pager -n 5"

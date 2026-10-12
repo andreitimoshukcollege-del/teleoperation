@@ -109,6 +109,21 @@ Contents:
   - **Finding the right arm.** Editor tools find the commanded arm through the bridge's `armRig`
     (`XrControlSetup.CommandedRig`), never "any rig": the scene holds three.
 
+- **The arm-speed slider** (`SpeedSlider`) on the bench's left, left of the motion button.
+  - Slide an index fingertip along it: near you is slow (0.5 rad/s), far is fast (6). It starts at
+    3.8.
+  - It sets `JetRoverOperatorBridge.SpeedRadPerSec`, which rides in every joint command's `Speed`
+    field.
+  - RobotHost turns it into the servo speed for both command paths, never faster than its deployed
+    `pulses_per_second` (default 2200, about 9 rad/s).
+  - The predictor replays each command at that same speed, capped at `JointModelSpeedRadPerSec` (6,
+    the servo-limit guess).
+- **Moving the camera display.** Pinch the cyan bar on top of the display with the right hand and
+  walk it. The display slides over the floor and keeps facing you. Where a pinch starts decides
+  what it holds: on the bar it is the display, anywhere else the clutch, so moving the display
+  never moves the robot. The display's stand and bezel are dynamic, lit by light probes, so they
+  move with it. Its position is not saved between sessions.
+
 **These are safety settings.** `just unity-check-xr` fails, and `just build-galaxy` refuses to
 build, if any of them changes:
 

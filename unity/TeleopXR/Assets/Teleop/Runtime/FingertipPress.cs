@@ -89,7 +89,7 @@ namespace Teleop.XR
             }
         }
 
-        private static XRHandSubsystem FindHands()
+        internal static XRHandSubsystem FindHands()
         {
             SubsystemManager.GetSubsystems(s_Subsystems);
             foreach (XRHandSubsystem subsystem in s_Subsystems)

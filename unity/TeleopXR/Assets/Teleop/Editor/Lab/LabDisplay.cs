@@ -53,7 +53,9 @@ namespace Teleop.XR.Editor
 
             stand.Chamfer(new Vector3(0f, (0.09f + LabLayout.ScreenCentreHeight) / 2f, standZ), new Vector3(0.08f, LabLayout.ScreenCentreHeight - 0.09f, 0.05f), 0.01f);
             stand.Chamfer(new Vector3(0f, LabLayout.ScreenCentreHeight - 0.05f, 0.05f), new Vector3(0.32f, 0.26f, 0.05f), 0.01f);
-            LabParts.Part("Display/Stand", root, stand, p.SteelDark, PartKind.Static, 1f);
+            // Dynamic, not Static: the operator can move the display (DisplayMover), and static-batched or
+            // lightmapped parts would stay behind. Light probes light it instead.
+            LabParts.Part("Display/Stand", root, stand, p.SteelDark, PartKind.Dynamic);
 
             Transform panel = LabParts.Group("Panel", root).transform;
             panel.localPosition = new Vector3(0f, LabLayout.ScreenCentreHeight, 0f);
@@ -63,7 +65,7 @@ namespace Teleop.XR.Editor
             float top = ScreenHeight / 2f + margin, bottom = -ScreenHeight / 2f - 0.012f - stripHeight - margin;
             var bezel = new LabMesh();
             bezel.Chamfer(new Vector3(0f, (top + bottom) / 2f, 0f), new Vector3(ScreenWidth + 2 * margin, top - bottom, 0.045f), 0.012f);
-            LabParts.Part("Display/Bezel", panel, bezel, p.Bezel, PartKind.Static, 2f);
+            LabParts.Part("Display/Bezel", panel, bezel, p.Bezel, PartKind.Dynamic);
 
             // The screen: a unit quad, scaled. Facing -z, toward the operator.
             var quad = new LabMesh();

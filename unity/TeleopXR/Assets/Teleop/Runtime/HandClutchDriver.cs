@@ -37,6 +37,8 @@ namespace Teleop.XR
         [SerializeField] private float releaseAboveMeters = 0.03f;
         [Tooltip("Off: the wrist keeps the pitch it had when the clutch engaged.")]
         [SerializeField] private bool followPitch = true;
+        [Tooltip("Optional: the camera display's grab bar. A pinch that starts on it moves the display instead of the arm.")]
+        [SerializeField] private DisplayMover displayMover;
         [Tooltip("Optional: a line of text that shows whether the clutch is on and the gripper command.")]
         [SerializeField] private TMP_Text statusLabel;
 
@@ -77,22 +79,38 @@ namespace Teleop.XR
             XRHand driving = clutchHand == Handedness.Right ? _hands.rightHand : _hands.leftHand;
             XRHand gripping = clutchHand == Handedness.Right ? _hands.leftHand : _hands.rightHand;
 
+            bool moving = displayMover != null && displayMover.IsMoving;
             if (TryPinch(driving, space, out Vector3 point, out Quaternion rotation, out _, out float distance))
             {
-                if (!clutch.IsEngaged && distance < engageBelowMeters)
+                if (!clutch.IsEngaged && !moving && distance < engageBelowMeters)
                 {
-                    clutch.Engage(point, rotation);
+                    // Where the pinch starts decides what it holds: the display's bar, or the arm.
+                    if (displayMover != null && displayMover.Contains(point))
+                    {
+                        displayMover.Begin(point);
+                        moving = true;
+                    }
+                    else
+                    {
+                        clutch.Engage(point, rotation);
+                    }
                 }
-                else if (clutch.IsEngaged && distance > releaseAboveMeters)
+                else if ((clutch.IsEngaged || moving) && distance > releaseAboveMeters)
                 {
                     clutch.Release();
+                    if (displayMover != null) displayMover.End();
+                    moving = false;
                 }
 
-                clutch.Follow(point, rotation, followPitch);
+                if (moving)
+                    displayMover.Drag(point);
+                else
+                    clutch.Follow(point, rotation, followPitch);
             }
-            else if (clutch.IsEngaged)
+            else
             {
-                clutch.Release();
+                if (clutch.IsEngaged) clutch.Release();
+                if (moving) displayMover.End();
             }
 
             if (TryPinch(gripping, space, out _, out Quaternion gripRotation, out bool hasPalm, out float gripDistance))

@@ -41,7 +41,7 @@ namespace Teleop.Core.Prediction
             _lastHorizon = 0;
         }
 
-        public void ObserveCommand(long effectiveTicks, ReadOnlySpan<JointSample> targets)
+        public void ObserveCommand(long effectiveTicks, ReadOnlySpan<JointSample> targets, float speedRadPerSec)
         {
         }
 

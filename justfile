@@ -276,7 +276,7 @@ clocksync-check remote_host=default_jetrover_host remote_port="6000" local_port=
         --confirm-hardware-motion
 
 # Publish Teleop.RobotHost for the Jetson (linux-arm64), copy it over, and restart its systemd service -- needs passwordless ssh/scp; does NOT touch the Jetson's ROS 2 nodes, see robot/systemd/README.md
-deploy-robothost remote_host=default_jetrover_host remote_user="jetson" operator_host=default_operator_host max_direction_magnitude="" profile_path="" pulses_per_second="900":
+deploy-robothost remote_host=default_jetrover_host remote_user="jetson" operator_host=default_operator_host max_direction_magnitude="" profile_path="" pulses_per_second="":
     #!/usr/bin/env bash
     set -euo pipefail
     host=$(just _robot-host "{{remote_host}}")
@@ -301,9 +301,9 @@ deploy-robothost remote_host=default_jetrover_host remote_user="jetson" operator
     extra_args=""
     if [ -n "{{max_direction_magnitude}}" ]; then extra_args="$extra_args --max-direction-magnitude {{max_direction_magnitude}}"; fi
     if [ -n "{{profile_path}}" ]; then extra_args="$extra_args --profile-path {{profile_path}}"; fi
-    # Servo speed. 900 (about 3.8 rad/s commanded, tested clean on 2026-08-22) is slower than the
-    # code default 2200, so the twin's prediction is easy to see; keep the headset's
-    # JointModelSpeedRadPerSec in step with it. pulses_per_second="" restores the code default.
+    # The fastest the servos may be told to move (pulses/s; the code default is 2200, about 9 rad/s).
+    # The headset's speed slider asks for slower moves with every joint command, and RobotHost caps
+    # those requests at this. Lower it to cap the slider; leave it empty to keep the default.
     if [ -n "{{pulses_per_second}}" ]; then extra_args="$extra_args --pulses-per-second {{pulses_per_second}}"; fi
     # robothost-run.sh is the stable script teleop-robothost.service's ExecStart points at
     # (robot/systemd/teleop-robothost.service) -- regenerated on every deploy with this run's exact

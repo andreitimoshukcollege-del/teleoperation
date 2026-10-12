@@ -141,13 +141,15 @@ namespace Teleop.Bridge
         public void OnJointCommandSent(long sendTicks, ReadOnlySpan<JointTarget> targets)
         {
             int n = Math.Min(targets.Length, MaxJoints);
+            float speed = 0f;
             for (int i = 0; i < n; i++)
             {
                 _command[i] = new JointSample(targets[i].MotorId, targets[i].Angle, sensed: false);
+                if (targets[i].Speed > speed) speed = targets[i].Speed;
             }
 
             long uplink = IsSynced ? _clockSync.Diagnostics.OffsetUncertaintyTicks : 0;
-            _predictor.ObserveCommand(sendTicks + uplink, _command.AsSpan(0, n));
+            _predictor.ObserveCommand(sendTicks + uplink, _command.AsSpan(0, n), speed);
         }
 
         /// <summary>The newest measured joints, as received.</summary>

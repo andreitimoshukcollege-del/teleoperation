@@ -119,7 +119,108 @@ namespace Teleop.XR.Editor
             }
 
             BuildTwinArms(scene, bridge, rig, origin);
+            BuildSpeedSlider(scene, bridge, origin);
+            BuildDisplayHandle(scene, driver);
             EditorSceneManager.MarkSceneDirty(scene);
+        }
+
+        public const string SpeedSliderName = "SpeedSlider", DisplayHandleName = "MoveHandle";
+
+        /// <summary>
+        /// The arm-speed slider (docs/adr/0018): a track on the bench's left, running away from the
+        /// operator (near = slow, far = fast), with a knob and a readout. Rebuilt on every run.
+        /// </summary>
+        private static void BuildSpeedSlider(Scene scene, JetRoverOperatorBridge bridge, XROrigin origin)
+        {
+            foreach (GameObject root in scene.GetRootGameObjects().Where(r => r.name == SpeedSliderName).ToList())
+            {
+                Object.DestroyImmediate(root);
+            }
+
+            float top = LabLayout.BenchTop;
+            const float length = 0.26f, height = 0.012f;
+            var slider = new GameObject(SpeedSliderName).transform;
+            slider.position = new Vector3(LabLayout.ArmBase.x - 0.70f, top, LabLayout.BenchNearZ + 0.05f);
+
+            GameObject track = GameObject.CreatePrimitive(PrimitiveType.Cube);
+            track.name = "Track";
+            track.transform.SetParent(slider, false);
+            track.transform.localPosition = new Vector3(0f, height / 2f, length / 2f);
+            track.transform.localScale = new Vector3(0.022f, height, length);
+            track.GetComponent<Renderer>().sharedMaterial = LabMaterials.Lit("MotionButtonPlinth", new Color(0.06f, 0.062f, 0.068f), 0.6f, 0.5f);
+
+            var start = new GameObject("SlowEnd").transform;
+            start.SetParent(slider, false);
+            start.localPosition = new Vector3(0f, height, 0.01f);
+            var end = new GameObject("FastEnd").transform;
+            end.SetParent(slider, false);
+            end.localPosition = new Vector3(0f, height, length - 0.01f);
+
+            GameObject knob = GameObject.CreatePrimitive(PrimitiveType.Cylinder);
+            knob.name = "Knob";
+            knob.transform.SetParent(slider, false);
+            knob.transform.localScale = new Vector3(0.03f, 0.006f, 0.03f);
+            knob.transform.localPosition = new Vector3(0f, height, length * 0.6f);
+            knob.GetComponent<Renderer>().sharedMaterial = LabMaterials.Unlit("SpeedKnob", new Color(0.35f, 0.85f, 1f));
+            foreach (Collider collider in slider.GetComponentsInChildren<Collider>()) Object.DestroyImmediate(collider);
+
+            TextMeshPro label = LabParts.Label("Label", slider, new Vector3(0f, 0.006f, -0.03f), Quaternion.Euler(60f, 0f, 0f),
+                "ARM SPEED", 0.11f, new Color(0.7f, 0.85f, 1f), new Vector2(0.2f, 0.02f), TextAlignmentOptions.Center, FontStyles.Bold);
+
+            var component = slider.gameObject.AddComponent<SpeedSlider>();
+            var so = new SerializedObject(component);
+            so.FindProperty("bridge").objectReferenceValue = bridge;
+            so.FindProperty("origin").objectReferenceValue = origin;
+            so.FindProperty("trackStart").objectReferenceValue = start;
+            so.FindProperty("trackEnd").objectReferenceValue = end;
+            so.FindProperty("knob").objectReferenceValue = knob.transform;
+            so.FindProperty("label").objectReferenceValue = label;
+            so.ApplyModifiedPropertiesWithoutUndo();
+        }
+
+        /// <summary>
+        /// A grab bar on top of the camera display, and the <see cref="DisplayMover"/> that walks the
+        /// display when the clutch hand pinches it. Rebuilt on every run; the display itself is the
+        /// lab's (LabDisplay).
+        /// </summary>
+        private static void BuildDisplayHandle(Scene scene, HandClutchDriver driver)
+        {
+            Transform display = scene.GetRootGameObjects()
+                .SelectMany(r => r.GetComponentsInChildren<Transform>(true))
+                .FirstOrDefault(t => t.name == "CameraDisplay");
+            if (display == null)
+            {
+                Debug.LogWarning("[xr-scene] no CameraDisplay in the scene; the display cannot be moved (rebuild the lab)");
+                return;
+            }
+
+            Transform old = display.Find(DisplayHandleName);
+            if (old != null) Object.DestroyImmediate(old.gameObject);
+
+            Bounds bounds = default;
+            bool any = false;
+            foreach (Renderer r in display.GetComponentsInChildren<Renderer>(true))
+            {
+                if (!any) { bounds = r.bounds; any = true; } else bounds.Encapsulate(r.bounds);
+            }
+
+            GameObject handle = GameObject.CreatePrimitive(PrimitiveType.Cylinder);
+            handle.name = DisplayHandleName;
+            handle.transform.SetParent(display, false);
+            handle.transform.position = new Vector3(bounds.center.x, bounds.max.y + 0.05f, bounds.center.z);
+            handle.transform.localRotation = Quaternion.Euler(0f, 0f, 90f); // along the display's width
+            handle.transform.localScale = new Vector3(0.025f, 0.16f, 0.025f);
+            handle.GetComponent<Renderer>().sharedMaterial = LabMaterials.Unlit("DisplayHandle", new Color(0.35f, 0.85f, 1f));
+            Object.DestroyImmediate(handle.GetComponent<Collider>());
+
+            DisplayMover mover = display.GetComponent<DisplayMover>() ?? display.gameObject.AddComponent<DisplayMover>();
+            var so = new SerializedObject(mover);
+            so.FindProperty("handle").objectReferenceValue = handle.GetComponent<Renderer>();
+            so.ApplyModifiedPropertiesWithoutUndo();
+
+            var driverSo = new SerializedObject(driver);
+            driverSo.FindProperty("displayMover").objectReferenceValue = mover;
+            driverSo.ApplyModifiedPropertiesWithoutUndo();
         }
 
         public const string PredictedArmName = "PredictedArm", MeasuredArmName = "MeasuredArm", TwinSwitchesName = "TwinSwitches";

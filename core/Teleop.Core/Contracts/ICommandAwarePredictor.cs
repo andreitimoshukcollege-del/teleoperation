@@ -19,8 +19,12 @@ namespace Teleop.Core.Contracts
     /// </summary>
     public interface ICommandAwarePredictor
     {
-        /// <summary>A command took (or will take) effect at <paramref name="effectiveTicks"/>.</summary>
-        void ObserveCommand(long effectiveTicks, ReadOnlySpan<JointSample> targets);
+        /// <summary>
+        /// A command took (or will take) effect at <paramref name="effectiveTicks"/>.
+        /// <paramref name="speedRadPerSec"/> is the speed the robot was asked to move at; 0 means it
+        /// was not asked, so it moves at the robot's own default.
+        /// </summary>
+        void ObserveCommand(long effectiveTicks, ReadOnlySpan<JointSample> targets, float speedRadPerSec);
 
         /// <summary>The robot's joints as measured at <paramref name="sensedTicks"/>.</summary>
         void ObserveState(long sensedTicks, ReadOnlySpan<JointSample> joints);

@@ -96,6 +96,10 @@ namespace Teleop.RobotHost.Plant
         // whichever command lost the race -- found via real-hardware testing (2026-08-12).
         private long _lastAcceptedCartesianCaptureTicks;
         private long _lastAcceptedJointCaptureTicks;
+
+        // The servo speed actually sent to the relay (pulses/s): the joint path's latest requested
+        // speed, never above GenericArmPlantConfig.PulsesPerSecond (docs/adr/0018). Both paths use it.
+        private float _pulsesPerSecond;
         private long _stateTicks;
 
         // Per-joint state, indexed the same way RobotArmProfile.Joints is.
@@ -231,6 +235,7 @@ namespace Teleop.RobotHost.Plant
 
             _lastAcceptedJointCaptureTicks = captureTicks;
             SeedBeliefsFromSensedIfNeeded();
+            _pulsesPerSecond = RequestedPulsesPerSecond(targets);
 
             ApplyJointTargets(targets);
         }
@@ -311,7 +316,7 @@ namespace Teleop.RobotHost.Plant
                     _targetPulse[index] += direction * _config.StepSizePulses;
                 }
 
-                outgoing[outgoingCount++] = new JointTarget(joint.MotorId, _targetPulse[index], _config.PulsesPerSecond);
+                outgoing[outgoingCount++] = new JointTarget(joint.MotorId, _targetPulse[index], _pulsesPerSecond);
             }
 
             _relay.Send(outgoing.Slice(0, outgoingCount));
@@ -395,6 +400,7 @@ namespace Teleop.RobotHost.Plant
             }
 
             LastFeedbackTicks = 0;
+            _pulsesPerSecond = _config.PulsesPerSecond;
         }
 
         /// <summary>
@@ -408,6 +414,35 @@ namespace Teleop.RobotHost.Plant
         /// consistent with <see cref="ArmKinematics.Forward"/>'s own handling of a missing
         /// base-yaw joint.
         /// </summary>
+        /// <summary>The servo speed currently sent with every move, pulses/s.</summary>
+        public float CurrentPulsesPerSecond => _pulsesPerSecond;
+
+        /// <summary>
+        /// The speed a joint command asks for: <see cref="JointTarget.Speed"/> on its arm joints is a
+        /// joint speed in rad/s (docs/adr/0018), 0 for "the robot's default". The fastest request
+        /// wins, and it is never above <see cref="GenericArmPlantConfig.PulsesPerSecond"/>, which is
+        /// what the robot was deployed to allow.
+        /// </summary>
+        private float RequestedPulsesPerSecond(ReadOnlySpan<JointTarget> targets)
+        {
+            float requested = 0f;
+            foreach (JointTarget target in targets)
+            {
+                int index = FindJointIndexByMotorId(target.MotorId);
+                if (index >= 0 && _profile.Joints[index].Role != JointRole.GripperMain && target.Speed > requested)
+                {
+                    requested = target.Speed;
+                }
+            }
+
+            if (!(requested > 0f))
+            {
+                return _config.PulsesPerSecond;
+            }
+
+            return Math.Min(requested * _config.PulsePerRadian, _config.PulsesPerSecond);
+        }
+
         /// <summary>
         /// When the relay last reported a valid joint (robot clock), the time
         /// <see cref="ReadJointState"/>'s sensed values were read. 0 until any feedback arrives.

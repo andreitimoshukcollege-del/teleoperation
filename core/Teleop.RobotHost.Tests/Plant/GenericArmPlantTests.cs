@@ -316,6 +316,29 @@ namespace Teleop.RobotHost.Tests.Plant
         }
 
         [Fact]
+        public void AJointCommandsRequestedSpeed_SetsTheServoSpeed_CappedAtTheConfiguredMaximum()
+        {
+            var relay = new FakeRelayClient();
+            var plant = new GenericArmPlant(Config, relay);
+            JointTarget[] Targets(float speed) => JointAnglesFor(JetRover, 0.1f, 0.2f, 0.3f, 0f)
+                .Select(t => new JointTarget(t.MotorId, t.Angle, speed)).ToArray();
+
+            plant.CommandJointAngles(Targets(2f), 10);
+            Assert.Equal(2f * Config.PulsePerRadian, relay.SentCommands[0][0].Speed, 1);
+
+            plant.CommandJointAngles(Targets(1000f), 20);
+            Assert.Equal(Config.PulsesPerSecond, relay.SentCommands[1][0].Speed, 1);
+
+            plant.CommandJointAngles(Targets(0f), 30);
+            Assert.Equal(Config.PulsesPerSecond, relay.SentCommands[2][0].Speed, 1);
+
+            // The Cartesian path moves at the joint path's latest request too.
+            plant.CommandJointAngles(Targets(1f), 40);
+            plant.Command(Frame(captureTicks: 50, position: ReachableTarget));
+            Assert.Equal(1f * Config.PulsePerRadian, relay.SentCommands[4][0].Speed, 1);
+        }
+
+        [Fact]
         public void Command_RejectsStaleOrDuplicateFramesWhole()
         {
             var relay = new FakeRelayClient();

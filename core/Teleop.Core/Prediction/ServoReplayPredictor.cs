@@ -9,9 +9,10 @@ namespace Teleop.Core.Prediction
     /// <summary>
     /// <c>servo-replay</c> (docs/adr/0018): predicts a servo arm's joints by starting from the last
     /// measurement and replaying every command that has taken effect since. Each arm joint moves
-    /// toward its latest effective target at no more than
-    /// <see cref="JointPredictorConfig.MaxJointSpeedRadPerSec"/>; an instant joint (a gripper) takes
-    /// its target as soon as the command takes effect.
+    /// toward its latest effective target at the speed that command asked for, capped at
+    /// <see cref="JointPredictorConfig.MaxJointSpeedRadPerSec"/> (the servo's own limit; a command
+    /// that asked for no speed moves at that limit). An instant joint (a gripper) takes its target as
+    /// soon as the command takes effect.
     ///
     /// <para><b>Model.</b> A bus servo given a position target drives to it at a bounded speed and
     /// stops. That one speed is the whole model, and it is a parameter to be fitted from recordings.
@@ -42,6 +43,7 @@ namespace Teleop.Core.Prediction
 
         // The command history: a ring of (effective ticks, targets).
         private readonly long[] _commandTicks;
+        private readonly float[] _commandSpeed;
         private readonly int[] _commandCounts;
         private readonly byte[] _commandIds;
         private readonly float[] _commandValues;
@@ -53,6 +55,7 @@ namespace Teleop.Core.Prediction
         private readonly float[] _work;
         private readonly float[] _target;
         private readonly bool[] _hasTarget;
+        private float _speed;
 
         private int _accepted;
         private int _rejected;
@@ -68,6 +71,7 @@ namespace Teleop.Core.Prediction
             _sensed = new bool[_maxJoints];
             _instant = new bool[_maxJoints];
             _commandTicks = new long[_capacity];
+            _commandSpeed = new float[_capacity];
             _commandCounts = new int[_capacity];
             _commandIds = new byte[_capacity * _maxJoints];
             _commandValues = new float[_capacity * _maxJoints];
@@ -93,7 +97,7 @@ namespace Teleop.Core.Prediction
             _lastHorizon = 0;
         }
 
-        public void ObserveCommand(long effectiveTicks, ReadOnlySpan<JointSample> targets)
+        public void ObserveCommand(long effectiveTicks, ReadOnlySpan<JointSample> targets, float speedRadPerSec)
         {
             if (effectiveTicks < _lastCommandTicks)
             {
@@ -112,6 +116,9 @@ namespace Teleop.Core.Prediction
             }
 
             _commandTicks[slot] = effectiveTicks;
+            _commandSpeed[slot] = speedRadPerSec > 0f && speedRadPerSec < _config.MaxJointSpeedRadPerSec
+                ? speedRadPerSec
+                : _config.MaxJointSpeedRadPerSec;
             _commandCounts[slot] = n;
             _commandHead = (_commandHead + 1) % _capacity;
             if (_commandSize < _capacity) _commandSize++;
@@ -160,6 +167,8 @@ namespace Teleop.Core.Prediction
                 _hasTarget[j] = false;
             }
 
+            _speed = _config.MaxJointSpeedRadPerSec;
+
             long cursor = _stateTicks;
             int oldest = (_commandHead - _commandSize + _capacity) % _capacity;
             for (int k = 0; k < _commandSize; k++)
@@ -195,6 +204,7 @@ namespace Teleop.Core.Prediction
         private void ApplyTargets(int slot)
         {
             int baseIndex = slot * _maxJoints;
+            _speed = _commandSpeed[slot];
             for (int i = 0; i < _commandCounts[slot]; i++)
             {
                 int j = IndexOf(_commandIds[baseIndex + i]);
@@ -220,7 +230,7 @@ namespace Teleop.Core.Prediction
                 return;
             }
 
-            float step = _config.MaxJointSpeedRadPerSec * (float)((double)(to - from) / _config.TicksPerSecond);
+            float step = _speed * (float)((double)(to - from) / _config.TicksPerSecond);
             for (int j = 0; j < _jointCount; j++)
             {
                 if (!_hasTarget[j] || _instant[j])

@@ -135,7 +135,7 @@ namespace Teleop.Eval.JointBench
                     if (rng.NextDouble() < 0.01) gripper = gripper > 0.5 ? 0 : 1;
                     targets[ArmJoints] = gripper;
                     for (int j = 0; j <= ArmJoints; j++) command[j] = new JointSample(Id(j), (float)targets[j], false);
-                    predictor.ObserveCommand(t + profile.BaseDelayTicks, command);
+                    predictor.ObserveCommand(t + profile.BaseDelayTicks, command, 0f);
                     if (!Lost(ref rng, profile)) uplink.Add((t + Delay(ref rng, profile), targets));
                 }
 

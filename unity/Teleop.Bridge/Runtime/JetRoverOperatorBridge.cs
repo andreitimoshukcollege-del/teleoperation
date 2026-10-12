@@ -149,6 +149,20 @@ namespace Teleop.Bridge
         /// </summary>
         public JetRoverJointStateLink JointState => _jointStateLink;
 
+        private float _speedRadPerSec;
+
+        /// <summary>
+        /// The joint speed (rad/s) asked of the robot with every joint command, or 0 for the robot's
+        /// own default, which is what this bridge always sent. RobotHost caps it at its deployed
+        /// <c>--pulses-per-second</c>; the joint predictor replays commands at the same speed. Set by
+        /// TeleopXR's speed slider; TeleopVR leaves it at 0.
+        /// </summary>
+        public float SpeedRadPerSec
+        {
+            get => _speedRadPerSec;
+            set => _speedRadPerSec = float.IsNaN(value) ? 0f : Math.Max(0f, value);
+        }
+
         /// <summary>This bridge's clock, for asking <see cref="JointState"/> for a prediction "now".</summary>
         public long NowTicks => _clock != null ? _clock.NowTicks : 0;
 
@@ -436,6 +450,15 @@ namespace Teleop.Bridge
             Span<JointTarget> jointTargets = stackalloc JointTarget[_profile.JointCount];
             int targetCount = ArmKinematics.MapAnglesToJointTargets(
                 _profile, baseYaw, proximalPitch, distalPitch, wristPitches, gripperFraction: _gripperFraction, gripperRollRadians: desiredRoll, jointTargets);
+            if (_speedRadPerSec > 0f)
+            {
+                // The requested joint speed rides in every arm joint's Speed field (docs/adr/0018);
+                // RobotHost caps it at what it was deployed to allow.
+                for (int i = 0; i < targetCount; i++)
+                {
+                    jointTargets[i] = new JointTarget(jointTargets[i].MotorId, jointTargets[i].Angle, _speedRadPerSec);
+                }
+            }
 
             Span<byte> buffer = stackalloc byte[JointCommandCodec.EncodedSize(targetCount)];
             if (JointCommandCodec.TryEncode(_jointSequence++, now, jointTargets.Slice(0, targetCount), buffer, out int bytesWritten))

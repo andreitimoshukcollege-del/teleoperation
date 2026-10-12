@@ -346,14 +346,18 @@ camera-logs lines="200" remote_host=default_jetrover_host remote_user="jetson":
 joint-probe seconds="3" remote_host=default_jetrover_host:
     cd core && dotnet run --project Teleop.Eval -- joint-probe --remote-host $(just _robot-host "{{remote_host}}") --seconds {{seconds}}
 
-# Read-only: which servo ids the Jetson's ROS relay reads position feedback from (FEEDBACK_MOTOR_IDS in jetrover-teleop-ros's robot_controller_node.py, docs/adr/0011). A motor missing here is reported as a commanded belief, never measured (just joint-probe shows the effect)
+# Read-only: which servo ids the Jetson's ROS relay reads position feedback from (FEEDBACK_MOTOR_IDS in jetrover-teleop-ros's robot_controller_node.py, docs/adr/0011), the loop that reads them (a servo that does not answer is silently skipped), and where relay_node.py tracks them. A motor missing or silent here is reported as a commanded belief, never measured (just joint-probe shows the effect)
 robot-feedback-ids remote_host=default_jetrover_host remote_user="jetson":
     ssh -o StrictHostKeyChecking=accept-new "{{remote_user}}@$(just _robot-host "{{remote_host}}")" \
         "systemctl cat jetrover-arm-control --no-pager 2>/dev/null | grep -E '^(ExecStart|WorkingDirectory)=' ; \
          echo '--- FEEDBACK_MOTOR_IDS (file:line):'; \
          grep -rn --include='*.py' -E 'FEEDBACK_MOTOR_IDS *=' /home/jetson 2>/dev/null | grep -v -E '/(build|install|\.cache)/' ; \
          echo '--- where the list is used:'; \
-         grep -rn --include='*.py' 'FEEDBACK_MOTOR_IDS' /home/jetson 2>/dev/null | grep -v -E '/(build|install|\.cache)/' | grep -v -E 'FEEDBACK_MOTOR_IDS *=' | head -10"
+         grep -rn --include='*.py' 'FEEDBACK_MOTOR_IDS' /home/jetson 2>/dev/null | grep -v -E '/(build|install|\.cache)/' | grep -v -E 'FEEDBACK_MOTOR_IDS *=' | head -10; \
+         echo '--- the feedback loop:'; f=/home/jetson/projects/jetrover-teleop-ros/src/jetrover_arm_control/jetrover_arm_control/robot_controller_node.py; \
+         n=\$(grep -n 'for motor_id in FEEDBACK_MOTOR_IDS' \$f | head -1 | cut -d: -f1); [ -n \"\$n\" ] && sed -n \"\$((n-12)),\$((n+25))p\" \$f; \
+         echo '--- relay_node.py, where feedback ids are tracked:'; \\
+         grep -n -E 'StaleTracked|motor_id|FEEDBACK|_ids|MOTOR' \$(ls /home/jetson/projects/jetrover-teleop-ros/src/*/*/relay_node.py 2>/dev/null | head -1) | head -30"
 
 # Set which servo ids the Jetson's relay reads feedback from (FEEDBACK_MOTOR_IDS, see robot-feedback-ids), rebuild jetrover_arm_control and restart jetrover-arm-control. Adds motors 5 (wrist roll) and 10 (gripper) by default so they are measured like the arm. Edits the Jetson's working copy only (it is not pushed anywhere) and keeps a .bak; restarting the controller interrupts the arm, so someone must be at the robot
 robot-set-feedback-ids ids="1, 2, 3, 4, 5, 10" remote_host=default_jetrover_host remote_user="jetson":

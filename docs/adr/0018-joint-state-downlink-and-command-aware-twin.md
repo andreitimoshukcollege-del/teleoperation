@@ -153,6 +153,13 @@ simulated benchmark row exists.
     non-instant joint across measurements, instead of snapping to the belief. So the roll moves
     at servo speed there too.
   - **The measured arm:** it hides its gripper while the roll is unsensed.
+- **Verified on the robot (2026-10-12).** With `just robot-set-feedback-ids`, the relay reads
+  motors 1–5 and 10, and `just joint-probe` then shows motor 5 (wrist roll) measured.
+  - **Motor 10 is the gripper, but it is never measured.** A `just move-arm … gripper=1` / `=0`
+    closed and opened it, so the mapping is right. Its servo does not answer position reads: the
+    relay's `getRawPos` returns nothing, and the read is skipped.
+  - **So the gripper stays a commanded belief.** The predictor moves it at servo speed (a scaled
+    joint), and the measured arm shows it only alongside the measured roll.
 - **Added delay.** `JetRoverJointStateLink.AddedDelayMs`, a headset slider from 0 to 400 ms, holds
   frames back before they become the measured arm and reach the predictor.
   - Clock sync uses the real arrival, and commands are not delayed.

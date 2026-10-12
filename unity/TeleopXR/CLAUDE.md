@@ -121,9 +121,11 @@ Contents:
     nothing for prediction to hide. With, say, 200 ms added, the measured arm visibly trails the
     command and the predicted arm should keep up with it.
   - **Recordings:** anything recorded with a delay set is not a real-network measurement.
-- **What the robot measures:** `just joint-probe` prints which motors have servo feedback. On
-  2026-10-12 that was motors 1–4 but **not 5 (roll) or 10 (gripper)**: the relay reports
-  nothing for them, so their values are only what RobotHost last commanded.
+- **What the robot measures:** `just joint-probe` prints which motors have servo feedback.
+  - **Motors 1–5 are measured** since `just robot-set-feedback-ids` (2026-10-12). Before that the
+    relay only read 1–4.
+  - **Motor 10 (the gripper) never is.** Commanding it works (it closes and opens), but its servo
+    does not answer position reads, so its value is only what RobotHost last commanded.
   - **On the measured arm:** it hides its gripper while the roll is unmeasured.
   - **On the predicted arm:** the predictor keeps its own estimate of an unmeasured joint,
     moving at servo speed, instead of copying the belief. The gripper takes its command.

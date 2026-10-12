@@ -346,6 +346,15 @@ camera-logs lines="200" remote_host=default_jetrover_host remote_user="jetson":
 joint-probe seconds="3" remote_host=default_jetrover_host:
     cd core && dotnet run --project Teleop.Eval -- joint-probe --remote-host $(just _robot-host "{{remote_host}}") --seconds {{seconds}}
 
+# Read-only: which servo ids the Jetson's ROS relay reads position feedback from (FEEDBACK_MOTOR_IDS in jetrover-teleop-ros's robot_controller_node.py, docs/adr/0011). A motor missing here is reported as a commanded belief, never measured (just joint-probe shows the effect)
+robot-feedback-ids remote_host=default_jetrover_host remote_user="jetson":
+    ssh -o StrictHostKeyChecking=accept-new "{{remote_user}}@$(just _robot-host "{{remote_host}}")" \
+        "systemctl cat jetrover-arm-control --no-pager 2>/dev/null | grep -E '^(ExecStart|WorkingDirectory)=' ; \
+         echo '--- FEEDBACK_MOTOR_IDS (file:line):'; \
+         grep -rn --include='*.py' -E 'FEEDBACK_MOTOR_IDS *=' /home/jetson 2>/dev/null | grep -v -E '/(build|install|\.cache)/' ; \
+         echo '--- where the list is used:'; \
+         grep -rn --include='*.py' 'FEEDBACK_MOTOR_IDS' /home/jetson 2>/dev/null | grep -v -E '/(build|install|\.cache)/' | grep -v -E 'FEEDBACK_MOTOR_IDS *=' | head -10"
+
 robot-status remote_host=default_jetrover_host remote_user="jetson":
     ssh -o StrictHostKeyChecking=accept-new "{{remote_user}}@$(just _robot-host "{{remote_host}}")" \
         "systemctl status teleop-robothost jetrover-relay jetrover-arm-control --no-pager -n 5"

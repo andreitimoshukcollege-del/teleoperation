@@ -63,6 +63,17 @@ namespace Teleop.Core.Registry
         /// <c>IReconciler{TState}.Observe</c>'s own doc mandates it, specifically so the
         /// per-frame <c>Reconcile</c> signature stays allocation-free.
         /// </summary>
+        /// <summary>
+        /// Joint-space predictors that also see the commands sent (docs/adr/0018). A separate table
+        /// from <see cref="Predictors"/>: a different state type and a different contract.
+        /// </summary>
+        public static readonly IReadOnlyDictionary<string, Func<JointPredictorConfig, ICommandAwarePredictor>> JointPredictors =
+            new Dictionary<string, Func<JointPredictorConfig, ICommandAwarePredictor>>(StringComparer.Ordinal)
+            {
+                ["hold-last"] = config => new HoldLastJointPredictor(config),
+                ["servo-replay"] = config => new ServoReplayPredictor(config),
+            };
+
         public static readonly IReadOnlyDictionary<string, Func<ReconcilerConfig, IMetricSink, ITimeAuthority, IReconciler<Pose>>> Reconcilers =
             new Dictionary<string, Func<ReconcilerConfig, IMetricSink, ITimeAuthority, IReconciler<Pose>>>(StringComparer.Ordinal)
             {

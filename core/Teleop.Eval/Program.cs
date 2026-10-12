@@ -35,6 +35,8 @@ namespace Teleop.Eval
                     return BuildProfileCommand.Run(args);
                 case "catalog":
                     return Tooling.CatalogCommand.Run();
+                case "joint-predict-bench":
+                    return JointBench.JointPredictBenchCommand.Run(args);
                 case "replay":
                 case "compare":
                     Console.Error.WriteLine($"'{cmd}' is NOT IMPLEMENTED. " +
@@ -43,7 +45,7 @@ namespace Teleop.Eval
                 default:
                     Console.Error.WriteLine(
                         "usage: verify | audit | sweep | replay | compare | gen-golden | gen-trace | " +
-                        "clocksync-check | move-arm | build-profile | catalog");
+                        "clocksync-check | move-arm | build-profile | catalog | joint-predict-bench");
                     return 64;   // EX_USAGE
             }
         }

@@ -288,6 +288,34 @@ namespace Teleop.RobotHost.Tests.Plant
         }
 
         [Fact]
+        public void ReadJointState_ReportsSensedAnglesWithoutTheMountingOffset_AndTheCommandedGripper()
+        {
+            var relay = new FakeRelayClient();
+            var plant = new GenericArmPlant(Config, relay);
+            plant.Command(Frame(captureTicks: 10, position: ReachableTarget, gripper: 0.5f));
+
+            float proximalPulse = Config.ZeroPulse + 0.4f * Config.PulsePerRadian;
+            relay.EnqueueFeedback(new JointFeedbackEntry(ProximalMotorId, true, proximalPulse));
+            plant.Step(1234);
+
+            var joints = new JointSample[JetRover.JointCount];
+            int count = plant.ReadJointState(joints);
+            Assert.Equal(JetRover.JointCount, count);
+            Assert.Equal(1234, plant.LastFeedbackTicks);
+
+            JointSample proximal = joints.First(j => j.MotorId == ProximalMotorId);
+            Assert.True(proximal.Sensed);
+            float offset = JetRover.Joints.First(j => j.MotorId == ProximalMotorId).ZeroOffsetRadians;
+            Assert.Equal(0.4f - offset, proximal.Value, 4);
+
+            JointSample gripper = joints.First(j => j.MotorId == GripperMotorId);
+            Assert.False(gripper.Sensed);
+            Assert.Equal(0.5f, gripper.Value, 4);
+
+            Assert.False(joints.First(j => j.MotorId == DistalMotorId).Sensed);
+        }
+
+        [Fact]
         public void Command_RejectsStaleOrDuplicateFramesWhole()
         {
             var relay = new FakeRelayClient();

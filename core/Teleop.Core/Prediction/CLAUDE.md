@@ -34,6 +34,33 @@ Keep this table current — it is how the next session avoids reimplementing som
 previously overclaimed `const-accel`/`ekf`/`seq-model` as implemented; they are **planned, not
 built** — see below.
 
+### Joint space, command-aware (`ICommandAwarePredictor`, `Registries.JointPredictors`; docs/adr/0018)
+
+These see the commands sent as well as the stale measurement. Their state is joint values
+(`JointSample`), not a `Pose`.
+
+| Name (registry key) | File | Notes |
+|---|---|---|
+| `hold-last` | `HoldLastJointPredictor.cs` | the last measured joints, unchanged; the joint-space baseline |
+| `servo-replay` | `ServoReplayPredictor.cs` | replays the commands sent since the measurement through a bounded-speed servo model (one parameter, `MaxJointSpeedRadPerSec`) |
+
+Benchmark: `dotnet run --project Teleop.Eval -- joint-predict-bench`, which is deterministic. Its
+simulation and assumptions are stated in `JointPredictBenchCommand`'s doc. On 2026-10-12, with 5
+seeds × 20 s, a true speed of 4 rad/s and a model speed of 5 rad/s, the p95 joint error in degrees
+was:
+
+| Profile | `hold-last` | `servo-replay` |
+|---|---|---|
+| `lan` | 1.56 | 0.17 |
+| `50ms-5j` | 6.05 | 0.63 |
+| `150ms-20j-0.5loss` | 15.38 | 1.50 |
+| `300ms-60j-2loss-bursty` | 26.73 | 3.70 |
+
+**Read these as a check that the predictor's logic works, not as a result.** The simulated servo
+matches the model's own assumption apart from its speed, and the operator's clock is perfect.
+What the real robot does is measured from recordings (docs/metrics.md
+`joint_prediction_error_deg`).
+
 ## Planned, not yet implemented
 
 | Name (registry key) | File | Notes |

@@ -354,6 +354,7 @@ namespace Teleop.RobotHost.Plant
 
                 _sensedPulse[index] = entry.Pulse;
                 _sensed[index] = true;
+                LastFeedbackTicks = nowTicks;
             }
         }
 
@@ -392,6 +393,8 @@ namespace Teleop.RobotHost.Plant
                 _sensed[i] = false;
                 _sensedPulse[i] = _config.ZeroPulse;
             }
+
+            LastFeedbackTicks = 0;
         }
 
         /// <summary>
@@ -405,6 +408,43 @@ namespace Teleop.RobotHost.Plant
         /// consistent with <see cref="ArmKinematics.Forward"/>'s own handling of a missing
         /// base-yaw joint.
         /// </summary>
+        /// <summary>
+        /// When the relay last reported a valid joint (robot clock), the time
+        /// <see cref="ReadJointState"/>'s sensed values were read. 0 until any feedback arrives.
+        /// </summary>
+        public long LastFeedbackTicks { get; private set; }
+
+        /// <summary>
+        /// Every joint as this plant knows it, for the joint-state downlink (docs/adr/0018), in the
+        /// profile's order. Arm joints and the wrist roll are radians, with the mounting
+        /// <see cref="JointHardwareSpec.ZeroOffsetRadians"/> removed, as <see cref="State"/> does.
+        /// They are sensed where the relay reported the joint, and the commanded belief otherwise. The
+        /// gripper is the commanded 0..1 fraction, never sensed (it is open-loop). Returns the
+        /// count written. Allocation-free.
+        /// </summary>
+        public int ReadJointState(Span<JointSample> output)
+        {
+            int count = Math.Min(_profile.JointCount, output.Length);
+            for (int i = 0; i < count; i++)
+            {
+                JointHardwareSpec joint = _profile.Joints[i];
+                if (joint.Role == JointRole.GripperMain)
+                {
+                    float span = _config.GripperClosedPulse - _config.GripperOpenPulse;
+                    float fraction = span != 0f ? (_targetPulse[i] - _config.GripperOpenPulse) / span : 0f;
+                    output[i] = new JointSample(joint.MotorId, Math.Clamp(fraction, 0f, 1f), sensed: false);
+                }
+                else
+                {
+                    float pulse = _sensed[i] ? _sensedPulse[i] : _targetPulse[i];
+                    float angle = (pulse - _config.ZeroPulse) / _config.PulsePerRadian - joint.ZeroOffsetRadians;
+                    output[i] = new JointSample(joint.MotorId, angle, _sensed[i]);
+                }
+            }
+
+            return count;
+        }
+
         private float GetBeliefAngle(JointRole role)
         {
             int index = _profile.TryGetJointIndex(role);

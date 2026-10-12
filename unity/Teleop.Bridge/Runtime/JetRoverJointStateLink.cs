@@ -21,10 +21,14 @@ namespace Teleop.Bridge
         /// <summary>True when every arm joint in it came from servo feedback, not a commanded belief.</summary>
         public readonly bool ArmSensed;
 
-        public JetRoverJointPose(float baseYaw, float proximal, float distal, float wristPitch, float wristRoll, float gripper, bool armSensed)
+        /// <summary>Whether the wrist roll and the gripper were measured. Without servo feedback they are only the last command.</summary>
+        public readonly bool RollSensed, GripperSensed;
+
+        public JetRoverJointPose(float baseYaw, float proximal, float distal, float wristPitch, float wristRoll, float gripper,
+            bool armSensed, bool rollSensed = false, bool gripperSensed = false)
         {
             BaseYaw = baseYaw; Proximal = proximal; Distal = distal; WristPitch = wristPitch;
-            WristRoll = wristRoll; Gripper = gripper; ArmSensed = armSensed;
+            WristRoll = wristRoll; Gripper = gripper; ArmSensed = armSensed; RollSensed = rollSensed; GripperSensed = gripperSensed;
         }
     }
 
@@ -117,25 +121,77 @@ namespace Teleop.Bridge
 
                 FramesReceived++;
                 _lastFrameArrivalTicks = arrival;
-                _received.AsSpan(0, jointCount).CopyTo(_measured);
-                _measuredCount = jointCount;
 
-                // One round trip per keepalive: the frames after it repeat the same echo.
+                // ClockSync sees the real arrival: an added delay must not bias the clock offset.
                 if (echoOperator != _lastEchoOperatorTicks)
                 {
                     _lastEchoOperatorTicks = echoOperator;
                     _clockSync.AddRoundTrip(echoOperator, _clock.TicksPerSecond, echoRobotRecv, robotSend, robotTps, arrival);
                 }
 
-                if (IsSynced)
+                // No feedback yet means the values are beliefs from the moment of sending.
+                long robotTime = sensed != 0 ? sensed : robotSend;
+                long sensedOperator = IsSynced ? _clockSync.ToOperatorTicks(robotTime, robotTps, _clock.TicksPerSecond) : long.MinValue;
+                Enqueue(arrival + AddedDelayTicks, sensedOperator, jointCount);
+            }
+
+            // Frames become the measurement, and reach the predictor, once their added delay is over.
+            while (_queueSize > 0 && _queueRelease[_queueHead] <= now)
+            {
+                int slot = _queueHead;
+                int count = _queueCounts[slot];
+                Array.Copy(_queueJoints, slot * MaxJoints, _measured, 0, count);
+                _measuredCount = count;
+                if (_queueSensed[slot] != long.MinValue)
                 {
-                    // No feedback yet means the values are beliefs from the moment of sending.
-                    long robotTime = sensed != 0 ? sensed : robotSend;
-                    _predictor.ObserveState(_clockSync.ToOperatorTicks(robotTime, robotTps, _clock.TicksPerSecond),
-                        _measured.AsSpan(0, _measuredCount));
+                    _predictor.ObserveState(_queueSensed[slot], _measured.AsSpan(0, _measuredCount));
                 }
+
+                _queueHead = (_queueHead + 1) % QueueCapacity;
+                _queueSize--;
             }
         }
+
+        private const int QueueCapacity = 128;
+        private readonly long[] _queueRelease = new long[QueueCapacity];
+        private readonly long[] _queueSensed = new long[QueueCapacity];
+        private readonly int[] _queueCounts = new int[QueueCapacity];
+        private readonly JointSample[] _queueJoints = new JointSample[QueueCapacity * MaxJoints];
+        private int _queueHead, _queueSize;
+
+        private void Enqueue(long releaseTicks, long sensedOperatorTicks, int jointCount)
+        {
+            if (_queueSize == QueueCapacity)
+            {
+                // Full (an added delay longer than 2.5 s at 50 Hz): drop the oldest.
+                _queueHead = (_queueHead + 1) % QueueCapacity;
+                _queueSize--;
+            }
+
+            int slot = (_queueHead + _queueSize) % QueueCapacity;
+            _queueRelease[slot] = releaseTicks;
+            _queueSensed[slot] = sensedOperatorTicks;
+            _queueCounts[slot] = jointCount;
+            Array.Copy(_received, 0, _queueJoints, slot * MaxJoints, jointCount);
+            _queueSize++;
+        }
+
+        private double _addedDelayMs;
+
+        /// <summary>
+        /// An artificial delay on the robot's state reports (ms), for seeing the prediction work on a
+        /// fast LAN: frames are held back this long before they become the measured arm and reach the
+        /// predictor, as if the downlink were that slow. Commands are not delayed, and clock sync
+        /// sees the real arrival. 0 (the default) adds nothing. Anything recorded with a delay set is
+        /// not a real-network measurement.
+        /// </summary>
+        public double AddedDelayMs
+        {
+            get => _addedDelayMs;
+            set => _addedDelayMs = double.IsNaN(value) ? 0 : Math.Max(0, Math.Min(2000, value));
+        }
+
+        private long AddedDelayTicks => (long)(_addedDelayMs / 1000.0 * _clock.TicksPerSecond);
 
         /// <summary>A joint command was just sent; the predictor replays it from when it reaches the robot.</summary>
         public void OnJointCommandSent(long sendTicks, ReadOnlySpan<JointTarget> targets)
@@ -173,7 +229,7 @@ namespace Teleop.Bridge
         private JetRoverJointPose ToPose(JointSample[] joints, int count)
         {
             float yaw = 0f, proximal = 0f, distal = 0f, pitch = 0f, roll = 0f, gripper = 0f;
-            bool sensed = true;
+            bool sensed = true, rollSensed = false, gripperSensed = false;
             for (int i = 0; i < count; i++)
             {
                 int index = IndexOf(joints[i].MotorId);
@@ -186,12 +242,12 @@ namespace Teleop.Bridge
                     case JointRole.Proximal: proximal = v; sensed &= joints[i].Sensed; break;
                     case JointRole.Distal: distal = v; sensed &= joints[i].Sensed; break;
                     case JointRole.Wrist: if (spec.WristIndex == 0) { pitch = v; sensed &= joints[i].Sensed; } break;
-                    case JointRole.GripperRotate: roll = v; break;
-                    case JointRole.GripperMain: gripper = v; break;
+                    case JointRole.GripperRotate: roll = v; rollSensed = joints[i].Sensed; break;
+                    case JointRole.GripperMain: gripper = v; gripperSensed = joints[i].Sensed; break;
                 }
             }
 
-            return new JetRoverJointPose(yaw, proximal, distal, pitch, roll, gripper, sensed);
+            return new JetRoverJointPose(yaw, proximal, distal, pitch, roll, gripper, sensed, rollSensed, gripperSensed);
         }
 
         private int IndexOf(byte motorId)

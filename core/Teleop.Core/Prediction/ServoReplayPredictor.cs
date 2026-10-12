@@ -20,6 +20,11 @@ namespace Teleop.Core.Prediction
     /// effect at or before the measurement; if that command has already left the history ring, the
     /// joint holds until the next one.</para>
     ///
+    /// <para><b>Joints the robot does not measure</b> (<see cref="JointSample.Sensed"/> false, such as a
+    /// wrist roll without servo feedback) report only their last command. For those this model keeps
+    /// its own replayed estimate across measurements instead of snapping to that belief, so they too
+    /// move at servo speed. Instant joints (grippers) still take their command.</para>
+    ///
     /// <para><b>Robustness.</b> A measurement older than the current one is rejected; a command older
     /// than the newest one is rejected (both counted in <see cref="Diagnostics"/>). A prediction is
     /// never earlier than the measurement, and never more than
@@ -56,6 +61,11 @@ namespace Teleop.Core.Prediction
         private readonly float[] _target;
         private readonly bool[] _hasTarget;
         private float _speed;
+        private readonly JointSample[] _carried;
+        private readonly byte[] _scratchIds;
+        private readonly float[] _scratchValues;
+        private readonly bool[] _sensedScratch;
+        private readonly bool[] _instantScratch;
 
         private int _accepted;
         private int _rejected;
@@ -78,6 +88,11 @@ namespace Teleop.Core.Prediction
             _work = new float[_maxJoints];
             _target = new float[_maxJoints];
             _hasTarget = new bool[_maxJoints];
+            _carried = new JointSample[_maxJoints];
+            _scratchIds = new byte[_maxJoints];
+            _scratchValues = new float[_maxJoints];
+            _sensedScratch = new bool[_maxJoints];
+            _instantScratch = new bool[_maxJoints];
             Reset();
         }
 
@@ -133,13 +148,42 @@ namespace Teleop.Core.Prediction
                 return;
             }
 
+            // A joint the robot does not measure reports only what it was last told, which is where
+            // the servo is going, not where it is. For those, keep this model's own estimate, replayed
+            // up to this measurement's time, rather than snap to the belief.
+            bool carry = _hasState;
+            if (carry)
+            {
+                TryPredict(sensedTicks, _carried, out _);
+            }
+
             int n = Math.Min(joints.Length, _maxJoints);
             for (int i = 0; i < n; i++)
             {
-                _ids[i] = joints[i].MotorId;
-                _measured[i] = joints[i].Value;
-                _sensed[i] = joints[i].Sensed;
-                _instant[i] = IsInstant(joints[i].MotorId);
+                byte id = joints[i].MotorId;
+                bool instant = IsInstant(id);
+                float value = joints[i].Value;
+                if (carry && !joints[i].Sensed && !instant)
+                {
+                    int previous = IndexOf(id);
+                    if (previous >= 0)
+                    {
+                        value = _carried[previous].Value;
+                    }
+                }
+
+                _scratchIds[i] = id;
+                _scratchValues[i] = value;
+                _sensedScratch[i] = joints[i].Sensed;
+                _instantScratch[i] = instant;
+            }
+
+            for (int i = 0; i < n; i++)
+            {
+                _ids[i] = _scratchIds[i];
+                _measured[i] = _scratchValues[i];
+                _sensed[i] = _sensedScratch[i];
+                _instant[i] = _instantScratch[i];
             }
 
             _jointCount = n;

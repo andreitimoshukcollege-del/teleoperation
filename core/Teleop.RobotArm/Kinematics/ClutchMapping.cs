@@ -146,5 +146,32 @@ namespace Teleop.RobotArm.Kinematics
             float roll = (sign < 0f ? -1f : 1f) * handRollRadians;
             return float.IsNaN(roll) ? float.NaN : Math.Clamp(roll, -limitRadians, limitRadians);
         }
+
+        /// <summary>
+        /// The relative form, used while the clutch is engaged: the wrist roll at engage plus how far
+        /// the hand has twisted since (wrapped to ±π, times <c>sign</c>), clamped to ±<c>limit</c>.
+        /// Relative, so how the hand happens to be held, and how the hand-tracking runtime defines a
+        /// palm's "up", do not matter. Only the twist does. NaN stays NaN.
+        /// </summary>
+        public static float FromHandRollDelta(float handRollRadians, float handRollAtEngageRadians, float rollAtEngageRadians,
+            float sign, float limitRadians)
+        {
+            if (!(limitRadians >= 0f))
+            {
+                throw new ArgumentOutOfRangeException(nameof(limitRadians), limitRadians, "limit must be zero or positive");
+            }
+
+            float delta = handRollRadians - handRollAtEngageRadians;
+            if (float.IsNaN(delta) || float.IsNaN(rollAtEngageRadians))
+            {
+                return float.NaN;
+            }
+
+            const float twoPi = 2f * MathF.PI;
+            delta %= twoPi;
+            if (delta > MathF.PI) delta -= twoPi;
+            else if (delta < -MathF.PI) delta += twoPi;
+            return Math.Clamp(rollAtEngageRadians + (sign < 0f ? -1f : 1f) * delta, -limitRadians, limitRadians);
+        }
     }
 }

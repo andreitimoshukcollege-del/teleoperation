@@ -145,6 +145,23 @@ to `jetrover-joints-<stamp>.csv`, next to the session's `.tlog`. This gives the 
 *t* and the measurement sensed at *t*. Scoring real sessions is a follow-up. Until then, only the
 simulated benchmark row exists.
 
+### 6. Amendment (2026-10-12): unmeasured joints, an added-delay control, and the speed request
+
+- **The first stream showed motors 5 (wrist roll) and 10 (gripper) unsensed.** `just joint-probe`
+  found that the relay sends no feedback for them. Their values are RobotHost's commanded belief.
+  - **The predicted arm:** `servo-replay` keeps its own replayed estimate for an unsensed,
+    non-instant joint across measurements, instead of snapping to the belief. So the roll moves
+    at servo speed there too.
+  - **The measured arm:** it hides its gripper while the roll is unsensed.
+- **Added delay.** `JetRoverJointStateLink.AddedDelayMs`, a headset slider from 0 to 400 ms, holds
+  frames back before they become the measured arm and reach the predictor.
+  - Clock sync uses the real arrival, and commands are not delayed.
+  - It exists because the LAN round trip is about 2 ms, which leaves prediction nothing visible to
+    do. A session recorded with a delay set is not a real-network measurement.
+- **Speed.** Joint commands carry a requested joint speed in their per-joint `Speed` field.
+  - RobotHost caps it at its deployed maximum and uses it for both command paths.
+  - `ICommandAwarePredictor.ObserveCommand` receives the same speed.
+
 ## Consequences
 
 - **RobotHost must be redeployed** (`just deploy-robothost`). An older RobotHost ignores the

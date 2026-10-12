@@ -26,6 +26,18 @@ namespace Teleop.XR
 
         private float _gripper, _roll;
 
+        /// <summary>
+        /// Shows or hides everything past the roll servo. The measured arm hides it when the robot
+        /// does not measure the roll, rather than drawing a commanded value as if it were measured.
+        /// </summary>
+        public void SetGripperVisible(bool visible)
+        {
+            if (rollPivot != null && rollPivot.gameObject.activeSelf != visible)
+            {
+                rollPivot.gameObject.SetActive(visible);
+            }
+        }
+
         /// <summary>Sets what an arm with no bridge shows: the gripper fraction and the wrist roll (radians).</summary>
         public void Show(float gripperFraction, float wristRollRadians)
         {

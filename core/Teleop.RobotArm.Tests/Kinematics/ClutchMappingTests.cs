@@ -240,5 +240,22 @@ namespace Teleop.RobotArm.Tests.Kinematics
         {
             Assert.True(float.IsNaN(WristRollMapping.FromHandRoll(float.NaN, 1f, 1.5f)));
         }
+
+        [Fact]
+        public void Delta_FollowsTheTwistSinceEngage_NotTheAbsoluteRoll()
+        {
+            // The hand reads -1.6 rad at engage (a runtime whose palm "up" is off by 90°); the wrist was at 0.2.
+            Assert.Equal(0.2f, WristRollMapping.FromHandRollDelta(-1.6f, -1.6f, 0.2f, 1f, 1.5f), 5);
+            Assert.Equal(0.5f, WristRollMapping.FromHandRollDelta(-1.3f, -1.6f, 0.2f, 1f, 1.5f), 5);
+            Assert.Equal(-0.1f, WristRollMapping.FromHandRollDelta(-1.3f, -1.6f, 0.2f, -1f, 1.5f), 5);
+        }
+
+        [Fact]
+        public void Delta_WrapsAcrossPi_AndClamps()
+        {
+            // From 3.0 to -3.0 is a small +0.28 twist, not -6.
+            Assert.Equal(0.283f, WristRollMapping.FromHandRollDelta(-3.0f, 3.0f, 0f, 1f, 1.5f), 2);
+            Assert.Equal(1.5f, WristRollMapping.FromHandRollDelta(2.5f, 0f, 0f, 1f, 1.5f), 5);
+        }
     }
 }

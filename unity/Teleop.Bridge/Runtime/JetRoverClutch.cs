@@ -71,22 +71,47 @@ namespace Teleop.Bridge
         /// <summary>The wrist roll in the target (radians, Core convention), held until set again.</summary>
         public float Roll { get; private set; }
 
+        private float _handRollAtAnchor = float.NaN, _rollAtAnchor;
+
         /// <summary>
-        /// Sets the wrist roll from the gripper hand's rotation in world space (docs/adr/0017): the
-        /// hand's roll about its pointing direction in the arm-base frame, times
-        /// <paramref name="sign"/>, clamped to ±<paramref name="limitDegrees"/>. Palm down is 0.
-        /// Call it only while that hand is tracked; between calls the roll holds.
+        /// Starts relative wrist roll from the gripper hand's current rotation: from now on
+        /// <see cref="FollowRoll"/> turns the wrist by how far that hand twists. Call it when the
+        /// clutch engages, or on the first tracked frame after.
         /// </summary>
-        public void SetRollFromHand(Quaternion handRotation, float sign, float limitDegrees)
+        public void AnchorRoll(Quaternion handRotation)
         {
-            float handRoll = ArmKinematics.ExtractRollRadians((Quaternion.Inverse(_armBase.rotation) * handRotation).ToCore());
-            float roll = WristRollMapping.FromHandRoll(handRoll, sign, limitDegrees * (MathF.PI / 180f));
+            _handRollAtAnchor = HandRoll(handRotation);
+            _rollAtAnchor = Roll;
+        }
+
+        public bool HasRollAnchor => !float.IsNaN(_handRollAtAnchor);
+
+        /// <summary>Forgets the roll anchor (the clutch released); the roll holds.</summary>
+        public void ReleaseRoll() => _handRollAtAnchor = float.NaN;
+
+        /// <summary>
+        /// The wrist roll follows the gripper hand's twist since <see cref="AnchorRoll"/> (docs/adr/0017
+        /// amendment 2026-10-12): relative, so the hand-tracking runtime's idea of a palm's "up" does
+        /// not matter, only the twist does.
+        /// </summary>
+        public void FollowRoll(Quaternion handRotation, float sign, float limitDegrees)
+        {
+            if (!HasRollAnchor)
+            {
+                return;
+            }
+
+            float roll = WristRollMapping.FromHandRollDelta(HandRoll(handRotation), _handRollAtAnchor, _rollAtAnchor,
+                sign, limitDegrees * (MathF.PI / 180f));
             if (!float.IsNaN(roll))
             {
                 Roll = roll;
                 WriteTarget();
             }
         }
+
+        private float HandRoll(Quaternion handRotation) =>
+            ArmKinematics.ExtractRollRadians((Quaternion.Inverse(_armBase.rotation) * handRotation).ToCore());
 
         /// <summary>
         /// A thumb-to-index distance (m) as a gripper command, 0 open to 1 closed, by the config's

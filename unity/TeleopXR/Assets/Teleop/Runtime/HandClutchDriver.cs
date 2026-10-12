@@ -18,9 +18,10 @@ namespace Teleop.XR
     /// motion from there. It engages under <see cref="engageBelowMeters"/> thumb-to-index distance and
     /// releases over <see cref="releaseAboveMeters"/>, so a borderline pinch doesn't chatter. Releasing,
     /// or losing tracking of that hand, disengages, and the arm holds.</item>
-    /// <item><b>Gripper hand</b>: how tightly it pinches is how far the gripper closes, and how far it
-    /// twists from palm-down is the wrist roll. Losing tracking of that hand holds both; the gripper
-    /// never opens on its own.</item>
+    /// <item><b>Gripper hand</b>, only while the clutch hand is pinched: how tightly it pinches is how
+    /// far the gripper closes, and how far it twists since the clutch began is how far the wrist
+    /// rolls. Releasing the clutch, or losing tracking of that hand, holds both; the gripper never
+    /// opens on its own.</item>
     /// </list>
     /// Runs before <see cref="JetRoverOperatorBridge"/> each frame, so the target the bridge sends is
     /// this frame's.
@@ -136,12 +137,22 @@ namespace Teleop.XR
             if (displayMover != null) displayMover.Hovered = pointing || moving;
             ShowPointer(pointing || moving, point, ray, moving ? -1f : hitDistance);
 
-            if (TryPinch(gripping, space, out _, out Quaternion gripRotation, out bool hasPalm, out float gripDistance))
+            // The gripper hand only acts while the clutch hand is pinched, like the arm: let go with the
+            // right hand and the gripper and its roll hold. The roll is relative, from the left
+            // hand's twist when this clutch began (anchored on the first tracked frame).
+            if (!clutch.IsEngaged)
+            {
+                clutch.ReleaseRoll();
+            }
+            else if (TryPinch(gripping, space, out _, out Quaternion gripRotation, out bool hasPalm, out float gripDistance))
             {
                 bridge.GripperFraction = JetRoverClutch.GripperFromPinchDistance(gripDistance, bridge.Config);
                 if (hasPalm)
                 {
-                    clutch.SetRollFromHand(gripRotation, bridge.Config.GripperRollSign, bridge.Config.GripperRollLimitDegrees);
+                    if (!clutch.HasRollAnchor)
+                        clutch.AnchorRoll(gripRotation);
+                    else
+                        clutch.FollowRoll(gripRotation, bridge.Config.GripperRollSign, bridge.Config.GripperRollLimitDegrees);
                 }
             }
 

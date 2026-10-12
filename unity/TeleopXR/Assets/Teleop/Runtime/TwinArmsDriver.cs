@@ -63,9 +63,19 @@ namespace Teleop.XR
             JetRoverJointStateLink link = bridge != null ? bridge.JointState : null;
             bool hasState = link != null && link.HasState;
 
-            JetRoverJointPose pose;
-            bool predicted = hasState && link.TryGetPredicted(bridge.NowTicks, out pose) ? Drive(predictedRig, predictedGripper, pose) : false;
-            bool measured = hasState && link.TryGetMeasured(out pose) && Drive(measuredRig, measuredGripper, pose);
+            bool predicted = false, measured = false;
+            if (hasState && link.TryGetPredicted(bridge.NowTicks, out JetRoverJointPose predictedPose))
+            {
+                predicted = Drive(predictedRig, predictedGripper, predictedPose);
+            }
+
+            if (hasState && link.TryGetMeasured(out JetRoverJointPose measuredPose))
+            {
+                measured = Drive(measuredRig, measuredGripper, measuredPose);
+                // The robot measures neither the wrist roll nor the gripper today (no servo feedback):
+                // the measured arm then shows no gripper rather than the last command dressed as a reading.
+                if (measuredGripper != null) measuredGripper.SetGripperVisible(measuredPose.RollSensed);
+            }
 
             SetVisible(predictedRig, showPredicted && predicted);
             SetVisible(measuredRig, showMeasured && measured);

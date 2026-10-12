@@ -342,6 +342,10 @@ camera-logs lines="200" remote_host=default_jetrover_host remote_user="jetson":
          echo '--- video devices'; ls -l /dev/video* 2>&1; ls -l /dev/v4l/by-id/ 2>&1; v4l2-ctl --list-devices 2>&1 | head -20; \
          echo '--- kernel USB/camera events (newest last)'; journalctl -k --no-pager -n 3000 | grep -iE 'usb|uvc|video' | tail -40"
 
+# Read-only: subscribe to RobotHost's joint-state stream (docs/adr/0018) for a few seconds and print the frame rate, round trip, and per motor whether it is sensed (servo feedback) or only a commanded belief. Sends a keepalive, never a command: nothing moves
+joint-probe seconds="3" remote_host=default_jetrover_host:
+    cd core && dotnet run --project Teleop.Eval -- joint-probe --remote-host $(just _robot-host "{{remote_host}}") --seconds {{seconds}}
+
 robot-status remote_host=default_jetrover_host remote_user="jetson":
     ssh -o StrictHostKeyChecking=accept-new "{{remote_user}}@$(just _robot-host "{{remote_host}}")" \
         "systemctl status teleop-robothost jetrover-relay jetrover-arm-control --no-pager -n 5"

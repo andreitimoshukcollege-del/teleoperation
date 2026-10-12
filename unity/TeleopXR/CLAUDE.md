@@ -63,10 +63,15 @@ Contents:
     - The **right hand's pinch is the clutch**: pinch anywhere and the arm's wrist follows your
       hand's motion from there, scaled by `ClutchScale` (0.5). Release and the arm holds, so you
       can re-pinch somewhere comfortable.
-    - The **left hand's pinch is the gripper** (motor 10): thumb and index 8 cm apart or more
-      is open, 1.5 cm or less is closed, linear in between.
-    - The **left hand's twist is the wrist roll** (motor 5): palm down is 0, clamped to ±90°.
-      `GripperRollSign` flips the direction.
+    - **The left hand acts only while the right hand is pinched**, like the arm. Releasing the
+      right hand holds the gripper and the roll.
+      - Its **pinch is the gripper** (motor 10): thumb and index 8 cm apart or more is open,
+        1.5 cm or less is closed, linear in between.
+      - Its **twist is the wrist roll** (motor 5), relative: the wrist turns by how far the left
+        hand twists after the right hand pinches, from wherever it was. It is clamped to ±90°.
+        `GripperRollSign` flips the direction.
+      - Relative because XR Hands' palm "up" is not where an absolute mapping assumed: a flat hand
+        read −90° and pinned the gripper vertical.
     - It reads hand joints from XR Hands directly. The mapping is Core's (`Teleop.RobotArm`'s
       `ClutchMapping` and `GripperMapping`), reached through Bridge's `JetRoverClutch`.
     - Feedback: the wrist LED ring turns cyan while clutched, and red still means out of reach.
@@ -109,6 +114,19 @@ Contents:
   - **Finding the right arm.** Editor tools find the commanded arm through the bridge's `armRig`
     (`XrControlSetup.CommandedRig`), never "any rig": the scene holds three.
 
+- **The added-delay slider** (orange, beside the speed slider): 0–400 ms held back on the robot's
+  state reports before they become the measured arm and reach the predictor. Commands are not
+  delayed, and clock sync sees the real arrival.
+  - **Why:** on the LAN the robot answers in about 2 ms (`just joint-probe`), so there is almost
+    nothing for prediction to hide. With, say, 200 ms added, the measured arm visibly trails the
+    command and the predicted arm should keep up with it.
+  - **Recordings:** anything recorded with a delay set is not a real-network measurement.
+- **What the robot measures:** `just joint-probe` prints which motors have servo feedback. On
+  2026-10-12 that was motors 1–4 but **not 5 (roll) or 10 (gripper)**: the relay reports
+  nothing for them, so their values are only what RobotHost last commanded.
+  - **On the measured arm:** it hides its gripper while the roll is unmeasured.
+  - **On the predicted arm:** the predictor keeps its own estimate of an unmeasured joint,
+    moving at servo speed, instead of copying the belief. The gripper takes its command.
 - **The arm-speed slider** (`SpeedSlider`) on the bench's left, left of the motion button.
   - Slide an index fingertip along it: near you is slow (0.5 rad/s), far is fast (6). It starts at
     3.8.

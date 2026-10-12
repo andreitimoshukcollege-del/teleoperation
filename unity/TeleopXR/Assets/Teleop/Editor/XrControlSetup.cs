@@ -132,15 +132,25 @@ namespace Teleop.XR.Editor
         /// </summary>
         private static void BuildSpeedSlider(Scene scene, JetRoverOperatorBridge bridge, XROrigin origin)
         {
-            foreach (GameObject root in scene.GetRootGameObjects().Where(r => r.name == SpeedSliderName).ToList())
+            foreach (GameObject root in scene.GetRootGameObjects().Where(r => r.name == SpeedSliderName || r.name == DelaySliderName).ToList())
             {
                 Object.DestroyImmediate(root);
             }
 
+            BuildSlider(SpeedSliderName, 0f, SpeedSlider.Setting.ArmSpeed, 0.5f, 6f, 3.8f, "ARM SPEED", bridge, origin);
+            // Beside it: an added delay on the robot's reports (0-400 ms), to see the prediction lead on a fast LAN.
+            BuildSlider(DelaySliderName, -0.07f, SpeedSlider.Setting.AddedDelay, 0f, 400f, 0f, "ADDED DELAY", bridge, origin);
+        }
+
+        public const string DelaySliderName = "DelaySlider";
+
+        private static void BuildSlider(string name, float xOffset, SpeedSlider.Setting setting, float min, float max, float start,
+            string caption, JetRoverOperatorBridge bridge, XROrigin origin)
+        {
             float top = LabLayout.BenchTop;
             const float length = 0.26f, height = 0.012f;
-            var slider = new GameObject(SpeedSliderName).transform;
-            slider.position = new Vector3(LabLayout.ArmBase.x - 0.70f, top, LabLayout.BenchNearZ + 0.05f);
+            var slider = new GameObject(name).transform;
+            slider.position = new Vector3(LabLayout.ArmBase.x - 0.70f + xOffset, top, LabLayout.BenchNearZ + 0.05f);
 
             GameObject track = GameObject.CreatePrimitive(PrimitiveType.Cube);
             track.name = "Track";
@@ -149,32 +159,39 @@ namespace Teleop.XR.Editor
             track.transform.localScale = new Vector3(0.022f, height, length);
             track.GetComponent<Renderer>().sharedMaterial = LabMaterials.Lit("MotionButtonPlinth", new Color(0.06f, 0.062f, 0.068f), 0.6f, 0.5f);
 
-            var start = new GameObject("SlowEnd").transform;
-            start.SetParent(slider, false);
-            start.localPosition = new Vector3(0f, height, 0.01f);
-            var end = new GameObject("FastEnd").transform;
-            end.SetParent(slider, false);
-            end.localPosition = new Vector3(0f, height, length - 0.01f);
+            var slow = new GameObject("NearEnd").transform;
+            slow.SetParent(slider, false);
+            slow.localPosition = new Vector3(0f, height, 0.01f);
+            var fast = new GameObject("FarEnd").transform;
+            fast.SetParent(slider, false);
+            fast.localPosition = new Vector3(0f, height, length - 0.01f);
 
             GameObject knob = GameObject.CreatePrimitive(PrimitiveType.Cylinder);
             knob.name = "Knob";
             knob.transform.SetParent(slider, false);
             knob.transform.localScale = new Vector3(0.03f, 0.006f, 0.03f);
-            knob.transform.localPosition = new Vector3(0f, height, length * 0.6f);
-            knob.GetComponent<Renderer>().sharedMaterial = LabMaterials.Unlit("SpeedKnob", new Color(0.35f, 0.85f, 1f));
+            knob.transform.localPosition = new Vector3(0f, height, 0.01f);
+            Color knobColor = setting == SpeedSlider.Setting.ArmSpeed ? new Color(0.35f, 0.85f, 1f) : new Color(1f, 0.72f, 0.3f);
+            knob.GetComponent<Renderer>().sharedMaterial = LabMaterials.Unlit(setting == SpeedSlider.Setting.ArmSpeed ? "SpeedKnob" : "DelayKnob", knobColor);
             foreach (Collider collider in slider.GetComponentsInChildren<Collider>()) Object.DestroyImmediate(collider);
 
-            TextMeshPro label = LabParts.Label("Label", slider, new Vector3(0f, 0.006f, -0.03f), Quaternion.Euler(60f, 0f, 0f),
-                "ARM SPEED", 0.11f, new Color(0.7f, 0.85f, 1f), new Vector2(0.2f, 0.02f), TextAlignmentOptions.Center, FontStyles.Bold);
+            // Labels stand at the slider's near end, tilted toward the operator; the two sliders' labels alternate depth so they never overlap.
+            float labelZ = setting == SpeedSlider.Setting.ArmSpeed ? -0.03f : -0.055f;
+            TextMeshPro label = LabParts.Label("Label", slider, new Vector3(0f, 0.006f, labelZ), Quaternion.Euler(60f, 0f, 0f),
+                caption, 0.1f, knobColor, new Vector2(0.2f, 0.02f), TextAlignmentOptions.Center, FontStyles.Bold);
 
             var component = slider.gameObject.AddComponent<SpeedSlider>();
             var so = new SerializedObject(component);
+            so.FindProperty("setting").enumValueIndex = (int)setting;
             so.FindProperty("bridge").objectReferenceValue = bridge;
             so.FindProperty("origin").objectReferenceValue = origin;
-            so.FindProperty("trackStart").objectReferenceValue = start;
-            so.FindProperty("trackEnd").objectReferenceValue = end;
+            so.FindProperty("trackStart").objectReferenceValue = slow;
+            so.FindProperty("trackEnd").objectReferenceValue = fast;
             so.FindProperty("knob").objectReferenceValue = knob.transform;
             so.FindProperty("label").objectReferenceValue = label;
+            so.FindProperty("minRadPerSec").floatValue = min;
+            so.FindProperty("maxRadPerSec").floatValue = max;
+            so.FindProperty("startRadPerSec").floatValue = start;
             so.ApplyModifiedPropertiesWithoutUndo();
         }
 

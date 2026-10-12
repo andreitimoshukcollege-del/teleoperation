@@ -103,6 +103,28 @@ public class ServoReplayPredictorTests
     }
 
     [Fact]
+    public void AnUnmeasuredJoint_KeepsTheModelsEstimate_NotTheCommandedBelief()
+    {
+        var p = new ServoReplayPredictor(Config());
+        p.ObserveState(0, new[] { new JointSample(Arm, 0f, false) });
+        p.ObserveCommand(0, Command(1f, 0f), 0f);
+        // The robot already "believes" the target (1.0), but the joint is not measured.
+        p.ObserveState(100, new[] { new JointSample(Arm, 1f, false) });
+        Assert.Equal(0.2f, Predict(p, 100, Arm), 4);    // 100 ms at 2 rad/s, not 1.0
+        Assert.Equal(0.4f, Predict(p, 200, Arm), 4);
+    }
+
+    [Fact]
+    public void AMeasuredJoint_StillSnapsToTheMeasurement()
+    {
+        var p = new ServoReplayPredictor(Config());
+        p.ObserveState(0, new[] { new JointSample(Arm, 0f, true) });
+        p.ObserveCommand(0, Command(1f, 0f), 0f);
+        p.ObserveState(100, new[] { new JointSample(Arm, 0.05f, true) });
+        Assert.Equal(0.05f, Predict(p, 100, Arm), 4);
+    }
+
+    [Fact]
     public void TheGripper_FollowsItsCommandAtOnce()
     {
         var p = new ServoReplayPredictor(Config());

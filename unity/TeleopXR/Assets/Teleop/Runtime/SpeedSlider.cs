@@ -16,6 +16,17 @@ namespace Teleop.XR
     /// </summary>
     public sealed class SpeedSlider : MonoBehaviour
     {
+        /// <summary>What the slider sets.</summary>
+        public enum Setting
+        {
+            /// <summary>The arm's joint speed, rad/s (<see cref="JetRoverOperatorBridge.SpeedRadPerSec"/>).</summary>
+            ArmSpeed,
+
+            /// <summary>An artificial delay on the robot's state reports, ms (<see cref="JetRoverJointStateLink.AddedDelayMs"/>), to see the prediction work on a fast LAN.</summary>
+            AddedDelay,
+        }
+
+        [SerializeField] private Setting setting = Setting.ArmSpeed;
         [SerializeField] private JetRoverOperatorBridge bridge;
         [SerializeField] private XROrigin origin;
         [Tooltip("The slow end of the track (its top surface, centre line).")]
@@ -24,6 +35,7 @@ namespace Teleop.XR
         [SerializeField] private Transform trackEnd;
         [SerializeField] private Transform knob;
         [SerializeField] private TMP_Text label;
+        [Tooltip("The value at the near end, the far end, and at start (rad/s for speed, ms for delay).")]
         [SerializeField] private float minRadPerSec = 0.5f;
         [SerializeField] private float maxRadPerSec = 6f;
         [SerializeField] private float startRadPerSec = 3.8f;
@@ -56,7 +68,8 @@ namespace Teleop.XR
             if (_hands != null && (TryTouch(_hands.rightHand, space, out float t) || TryTouch(_hands.leftHand, space, out t)))
             {
                 // Tenths of a rad/s, so the value settles instead of trembling with the fingertip.
-                _value = Mathf.Round(Mathf.Lerp(minRadPerSec, maxRadPerSec, t) * 10f) / 10f;
+                float step = setting == Setting.AddedDelay ? 10f : 0.1f;
+                _value = Mathf.Round(Mathf.Lerp(minRadPerSec, maxRadPerSec, t) / step) * step;
             }
 
             Apply();
@@ -93,7 +106,10 @@ namespace Teleop.XR
         {
             if (bridge != null)
             {
-                bridge.SpeedRadPerSec = _value;
+                if (setting == Setting.ArmSpeed)
+                    bridge.SpeedRadPerSec = _value;
+                else if (bridge.JointState != null)
+                    bridge.JointState.AddedDelayMs = _value;
             }
 
             int shown = Mathf.RoundToInt(_value * 10f);
@@ -111,7 +127,10 @@ namespace Teleop.XR
 
             if (label != null)
             {
-                label.SetText("ARM SPEED  {0:1} rad/s", _value);
+                if (setting == Setting.ArmSpeed)
+                    label.SetText("ARM SPEED  {0:1} rad/s", _value);
+                else
+                    label.SetText("ADDED DELAY  {0:0} ms", _value);
             }
         }
     }

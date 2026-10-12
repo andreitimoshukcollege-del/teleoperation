@@ -27,6 +27,7 @@ namespace Teleop.XR.Editor
     /// <item>controllers left in the modality manager;</item>
     /// <item>Active Input Handling without the Input System, which breaks XRI's hand interactions;</item>
     /// <item>the robot's start/stop button missing or unwired, or the scene starting with motion on;</item>
+    /// <item>the twin's arms driver missing, unwired, or pointed at the commanded arm;</item>
     /// <item>Android XR Support or Hand Tracking off for Android.</item>
     /// </list>
     /// Those settings are easy to change by accident in an Inspector and invisible until the robot
@@ -113,7 +114,7 @@ namespace Teleop.XR.Editor
                 }
             }
 
-            var rig = Object.FindAnyObjectByType<JetRoverArmRig>(FindObjectsInactive.Include);
+            var rig = XrControlSetup.CommandedRig();
             if (rig == null)
             {
                 problems.Add("no JetRoverArmRig");
@@ -261,6 +262,27 @@ namespace Teleop.XR.Editor
 
                 if (!toggle.enabled || !toggle.gameObject.activeInHierarchy)
                     problems.Add("MotionToggleButton is disabled or inactive: the robot could not be stopped from the headset");
+            }
+
+            // The twin's predicted and measured arms (docs/adr/0018): display only, but a miswired
+            // driver would draw the robot's state on the commanded arm, which is worse than nothing.
+            var arms = Object.FindAnyObjectByType<TwinArmsDriver>(FindObjectsInactive.Include);
+            if (arms == null)
+            {
+                problems.Add("no TwinArmsDriver: the twin shows only the command, never the robot (run Teleop > XR > Set Up Clutch Control)");
+            }
+            else
+            {
+                var armsSo = new SerializedObject(arms);
+                foreach (string field in new[] { "bridge", "predictedRig", "measuredRig" })
+                {
+                    RequireReference(armsSo, field, problems);
+                }
+
+                Object commanded = new SerializedObject(bridge).FindProperty("armRig").objectReferenceValue;
+                if (commanded != null && (armsSo.FindProperty("predictedRig").objectReferenceValue == commanded
+                                          || armsSo.FindProperty("measuredRig").objectReferenceValue == commanded))
+                    problems.Add("TwinArmsDriver drives the commanded arm: the robot's state would overwrite the command's display");
             }
 
             var json = Resources.Load<TextAsset>("jetrover_connection");

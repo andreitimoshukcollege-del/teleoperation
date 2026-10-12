@@ -23,7 +23,9 @@ namespace Teleop.XR.Editor
     /// <item><see cref="TwinGripper"/> is added on the wrist's twin visual and wired to its fingers and
     /// its roll group;</item>
     /// <item>the robot's start/stop button (<see cref="MotionToggleButton"/>) is built on the bench's
-    /// front-left corner, and the bridge is set to start with motion <b>off</b>.</item>
+    /// front-left corner, and the bridge is set to start with motion <b>off</b>;</item>
+    /// <item>the twin's predicted and last-measured arms, the commanded arm's ghost appearance, and
+    /// three switches that show or hide each arm (docs/adr/0018).</item>
     /// </list>
     /// <see cref="LabDressing.Apply"/> calls it after every rebuild, because a rebuild replaces the twin.
     /// <b>Teleop → XR → Set Up Clutch Control</b>, or headless:
@@ -57,11 +59,26 @@ namespace Teleop.XR.Editor
             }
         }
 
+        /// <summary>
+        /// The arm the clutch commands: the bridge's own <c>armRig</c>. The scene also holds the
+        /// predicted and measured twin arms, which are rigs too, so "any rig" is not good enough.
+        /// </summary>
+        public static JetRoverArmRig CommandedRig()
+        {
+            var bridge = Object.FindAnyObjectByType<JetRoverOperatorBridge>(FindObjectsInactive.Include);
+            if (bridge != null && new SerializedObject(bridge).FindProperty("armRig").objectReferenceValue is JetRoverArmRig rig)
+            {
+                return rig;
+            }
+
+            return Object.FindAnyObjectByType<JetRoverArmRig>(FindObjectsInactive.Include);
+        }
+
         public static void Apply(Scene scene)
         {
             var bridge = Object.FindAnyObjectByType<JetRoverOperatorBridge>(FindObjectsInactive.Include)
                 ?? throw new InvalidOperationException("the scene has no JetRoverOperatorBridge");
-            var rig = Object.FindAnyObjectByType<JetRoverArmRig>(FindObjectsInactive.Include)
+            var rig = CommandedRig()
                 ?? throw new InvalidOperationException("the scene has no JetRoverArmRig");
             var origin = Object.FindAnyObjectByType<XROrigin>(FindObjectsInactive.Include)
                 ?? throw new InvalidOperationException("the scene has no XR Origin");
@@ -101,7 +118,127 @@ namespace Teleop.XR.Editor
                 twinSo.ApplyModifiedPropertiesWithoutUndo();
             }
 
+            BuildTwinArms(scene, bridge, rig, origin);
             EditorSceneManager.MarkSceneDirty(scene);
+        }
+
+        public const string PredictedArmName = "PredictedArm", MeasuredArmName = "MeasuredArm", TwinSwitchesName = "TwinSwitches";
+
+        /// <summary>
+        /// The predicted and last-measured arms (docs/adr/0018): copies of the commanded arm's
+        /// hierarchy, made after its twin visuals are built, so each is a full JetRover arm on the
+        /// same base anchor. Their gripper display is fed by <see cref="TwinArmsDriver"/>, not the
+        /// bridge. The commanded arm turns into a ghost and the measured one turns faint at runtime
+        /// (<see cref="ArmAppearance"/>). Three fingertip switches beside the motion button show or
+        /// hide each arm. Everything here is rebuilt on every run.
+        /// </summary>
+        private static void BuildTwinArms(Scene scene, JetRoverOperatorBridge bridge, JetRoverArmRig rig, XROrigin origin)
+        {
+            foreach (GameObject root in scene.GetRootGameObjects()
+                         .Where(r => r.name == PredictedArmName || r.name == MeasuredArmName || r.name == TwinSwitchesName).ToList())
+            {
+                Object.DestroyImmediate(root);
+            }
+
+            // The commanded arm keeps its reach-warning LED red-capable; everything else turns ghostly.
+            var rigSo = new SerializedObject(rig);
+            var reachLed = rigSo.FindProperty("reachWarningRenderer").objectReferenceValue as Renderer;
+            SetAppearance(rig.gameObject, LabMaterials.Transparent("TwinGhost", new Color(0.35f, 0.85f, 1f, 0.22f)), reachLed);
+
+            JetRoverArmRig predicted = CloneArm(rig, PredictedArmName, out TwinGripper predictedGripper);
+            Object.DestroyImmediate(predicted.GetComponent<ArmAppearance>());
+            JetRoverArmRig measured = CloneArm(rig, MeasuredArmName, out TwinGripper measuredGripper);
+            SetAppearance(measured.gameObject, LabMaterials.Transparent("TwinMeasured", new Color(1f, 0.72f, 0.3f, 0.3f)), null);
+
+            ArmDriverFor(bridge, out TwinArmsDriver driver);
+            var so = new SerializedObject(driver);
+            so.FindProperty("bridge").objectReferenceValue = bridge;
+            so.FindProperty("predictedRig").objectReferenceValue = predicted;
+            so.FindProperty("predictedGripper").objectReferenceValue = predictedGripper;
+            so.FindProperty("measuredRig").objectReferenceValue = measured;
+            so.FindProperty("measuredGripper").objectReferenceValue = measuredGripper;
+            GameObject[] visuals = rig.GetComponentsInChildren<Transform>(true)
+                .Where(t => t.name == JetRoverTwin.VisualName).Select(t => t.gameObject).ToArray();
+            SerializedProperty array = so.FindProperty("commandedVisuals");
+            array.arraySize = visuals.Length;
+            for (int i = 0; i < visuals.Length; i++) array.GetArrayElementAtIndex(i).objectReferenceValue = visuals[i];
+
+            // The switches: a row to the right of the motion button, with the stream's status above.
+            float top = LabLayout.BenchTop;
+            var switches = new GameObject(TwinSwitchesName).transform;
+            switches.position = new Vector3(LabLayout.ArmBase.x - 0.5f + 0.13f, top, LabLayout.BenchNearZ + 0.12f);
+            Material capMaterial = LabMaterials.Unlit("TwinSwitchCap", Color.white);
+            Material plinthMaterial = LabMaterials.Lit("MotionButtonPlinth", new Color(0.06f, 0.062f, 0.068f), 0.6f, 0.5f);
+            var arms = new[] { (TwinVisibilityButton.Arm.Predicted, "PREDICTED"), (TwinVisibilityButton.Arm.Commanded, "COMMANDED"), (TwinVisibilityButton.Arm.Measured, "MEASURED") };
+            for (int i = 0; i < arms.Length; i++)
+            {
+                var button = new GameObject(arms[i].Item2).transform;
+                button.SetParent(switches, false);
+                button.localPosition = new Vector3(i * 0.09f, 0f, 0f);
+                GameObject plinth = GameObject.CreatePrimitive(PrimitiveType.Cube);
+                plinth.name = "Plinth";
+                plinth.transform.SetParent(button, false);
+                plinth.transform.localPosition = new Vector3(0f, 0.01f, 0f);
+                plinth.transform.localScale = new Vector3(0.06f, 0.02f, 0.06f);
+                plinth.GetComponent<Renderer>().sharedMaterial = plinthMaterial;
+                GameObject cap = GameObject.CreatePrimitive(PrimitiveType.Cylinder);
+                cap.name = "Cap";
+                cap.transform.SetParent(button, false);
+                cap.transform.localPosition = new Vector3(0f, 0.025f, 0f);
+                cap.transform.localScale = new Vector3(0.036f, 0.005f, 0.036f);
+                cap.GetComponent<Renderer>().sharedMaterial = capMaterial;
+                foreach (Collider collider in button.GetComponentsInChildren<Collider>()) Object.DestroyImmediate(collider);
+                // In front of the button, tilted up toward the operator, so neighbouring labels never overlap.
+                TextMeshPro label = LabParts.Label("Label", button, new Vector3(0f, 0.006f, -0.042f), Quaternion.Euler(60f, 0f, 0f),
+                    arms[i].Item2, 0.11f, Color.white, new Vector2(0.085f, 0.02f), TextAlignmentOptions.Center, FontStyles.Bold);
+
+                var toggle = button.gameObject.AddComponent<TwinVisibilityButton>();
+                var toggleSo = new SerializedObject(toggle);
+                toggleSo.FindProperty("arms").objectReferenceValue = driver;
+                toggleSo.FindProperty("arm").enumValueIndex = (int)arms[i].Item1;
+                toggleSo.FindProperty("origin").objectReferenceValue = origin;
+                toggleSo.FindProperty("cap").objectReferenceValue = cap.GetComponent<Renderer>();
+                toggleSo.FindProperty("label").objectReferenceValue = label;
+                toggleSo.ApplyModifiedPropertiesWithoutUndo();
+            }
+
+            TextMeshPro status = LabParts.Label("Status", switches, new Vector3(0.09f, 0.075f, 0.05f), Quaternion.Euler(15f, 0f, 0f),
+                "NO ROBOT STATE", 0.13f, new Color(0.7f, 0.85f, 1f), new Vector2(0.45f, 0.03f), TextAlignmentOptions.Center);
+            so.FindProperty("statusLabel").objectReferenceValue = status;
+            so.ApplyModifiedPropertiesWithoutUndo();
+        }
+
+        private static JetRoverArmRig CloneArm(JetRoverArmRig rig, string name, out TwinGripper gripper)
+        {
+            GameObject copy = Object.Instantiate(rig.gameObject);
+            copy.name = name;
+            copy.transform.SetPositionAndRotation(rig.transform.position, rig.transform.rotation);
+            gripper = copy.GetComponentInChildren<TwinGripper>(true);
+            if (gripper != null)
+            {
+                var so = new SerializedObject(gripper);
+                so.FindProperty("bridge").objectReferenceValue = null; // fed by TwinArmsDriver
+                so.ApplyModifiedPropertiesWithoutUndo();
+            }
+
+            copy.SetActive(false); // TwinArmsDriver shows it once the robot's state arrives
+            return copy.GetComponent<JetRoverArmRig>();
+        }
+
+        private static void SetAppearance(GameObject arm, Material material, Renderer keep)
+        {
+            ArmAppearance appearance = arm.GetComponent<ArmAppearance>() ?? arm.AddComponent<ArmAppearance>();
+            var so = new SerializedObject(appearance);
+            so.FindProperty("material").objectReferenceValue = material;
+            SerializedProperty keepArray = so.FindProperty("keep");
+            keepArray.arraySize = keep != null ? 1 : 0;
+            if (keep != null) keepArray.GetArrayElementAtIndex(0).objectReferenceValue = keep;
+            so.ApplyModifiedPropertiesWithoutUndo();
+        }
+
+        private static void ArmDriverFor(JetRoverOperatorBridge bridge, out TwinArmsDriver driver)
+        {
+            driver = bridge.GetComponent<TwinArmsDriver>() ?? bridge.gameObject.AddComponent<TwinArmsDriver>();
         }
 
         public const string MotionButtonName = "MotionButton";

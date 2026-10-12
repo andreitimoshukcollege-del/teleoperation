@@ -107,7 +107,7 @@ namespace Teleop.XR.Editor
         /// <summary>Builds the dressing into <paramref name="scene"/>, replacing a previous one.</summary>
         public static void Apply(Scene scene)
         {
-            JetRoverArmRig rig = Object.FindAnyObjectByType<JetRoverArmRig>(FindObjectsInactive.Include)
+            JetRoverArmRig rig = XrControlSetup.CommandedRig()
                 ?? throw new InvalidOperationException("the scene has no JetRoverArmRig; build it with `just unity-scene-xr` first");
             JetRoverOperatorBridge robot = Object.FindAnyObjectByType<JetRoverOperatorBridge>(FindObjectsInactive.Include)
                 ?? throw new InvalidOperationException("the scene has no JetRoverOperatorBridge");

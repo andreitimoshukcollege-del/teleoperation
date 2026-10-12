@@ -85,6 +85,30 @@ Contents:
     `GripperPinchClosedMeters`. Edit them in `unity/Teleop.Bridge/Runtime/Resources/jetrover_connection.json`
     first; the recipe pushes that file.
 
+- **The twin's three arms (docs/adr/0018), built by the same `XrControlSetup`:**
+  - **Predicted, solid** (`PredictedArm`): where the robot most likely is right now. It is the
+    newest joint-state frame from the robot, rolled forward by the joint predictor through the
+    commands sent since. `JointPredictorName` is `servo-replay` (default) or `hold-last` (no
+    prediction). `JointModelSpeedRadPerSec` is the servo speed the model assumes, a guess until
+    it is fitted from recordings.
+  - **Commanded, ghost**: the clutch's arm, where you told it to go.
+  - **Measured, faint amber** (`MeasuredArm`): the newest frame exactly as received, about one
+    network trip old.
+  - **Switches.** Three fingertip switches next to the motion button (PREDICTED, COMMANDED,
+    MEASURED) show or hide each arm, and are lit when it is shown. The line above them says
+    whether the robot's state is arriving: `NO ROBOT STATE` means RobotHost is too old for the
+    stream; otherwise it shows `live · rtt N ms`.
+  - **Mechanics.** `TwinArmsDriver` (on `JetRoverOperator`) drives the predicted and measured
+    arms in `onBeforeRender` from Bridge's `JetRoverJointStateLink`. That link sends the
+    keepalive on the joint socket, receives the frames, runs its own `ClockSync`, and feeds the
+    Core predictor. The arms are hidden until the first frame arrives, and the predicted one
+    until the clocks are synced.
+  - **See-through only on device.** `ArmAppearance` makes an arm see-through at runtime only, so
+    editor previews show all three solid. The predicted and measured arms start inactive, so
+    previews show only the commanded arm.
+  - **Finding the right arm.** Editor tools find the commanded arm through the bridge's `armRig`
+    (`XrControlSetup.CommandedRig`), never "any rig": the scene holds three.
+
 **These are safety settings.** `just unity-check-xr` fails, and `just build-galaxy` refuses to
 build, if any of them changes:
 
@@ -97,6 +121,7 @@ build, if any of them changes:
 | Gripper pinch range | open distance > closed distance | otherwise the mapping is inverted |
 | `JetRoverOperatorBridge.motionEnabledAtStart` | off | the robot must not move at launch, before anyone presses the button |
 | `MotionToggleButton` | present, wired, enabled | the only way to start, and stop, the robot from the headset |
+| `TwinArmsDriver` | present, wired, not driving the commanded arm | the robot's state must never overwrite the display of the command |
 | Hand smoothing filter | inactive | it filters the hand joints the clutch reads; intent is sent raw (ADR 0016 §5) |
 | Modality manager controllers | none | hands only |
 | Active Input Handling (Player Settings) | Both | XRI's hand interactions read the Input System |

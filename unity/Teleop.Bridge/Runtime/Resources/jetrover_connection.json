@@ -34,5 +34,7 @@
   "GripperPinchOpenMeters": 0.08,
   "GripperPinchClosedMeters": 0.015,
   "GripperRollSign": 1.0,
-  "GripperRollLimitDegrees": 90.0
+  "GripperRollLimitDegrees": 90.0,
+  "JointPredictorName": "servo-replay",
+  "JointModelSpeedRadPerSec": 5.0
 }

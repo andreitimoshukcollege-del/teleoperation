@@ -60,7 +60,7 @@ namespace Teleop.XR.Editor
                 text.ForceMeshUpdate(true, true);
             }
 
-            JetRoverArmRig rig = UnityEngine.Object.FindAnyObjectByType<JetRoverArmRig>();
+            JetRoverArmRig rig = XrControlSetup.CommandedRig();
             Transform[] pivots = rig == null ? new Transform[0] : PivotsOf(rig);
             Quaternion[] saved = pivots.Select(t => t.localRotation).ToArray();
 

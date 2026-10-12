@@ -94,6 +94,7 @@ namespace Teleop.Bridge
         private UnityMetricSink _metricSink;
 
         private uint _jointSequence;
+        private JetRoverJointStateLink _jointStateLink;
         private long _lastJointSendTicks;
         private bool _hasSentJointCommand;
         private long _sendIntervalTicks;
@@ -141,6 +142,15 @@ namespace Teleop.Bridge
 
         /// <summary>True when the config lets this bridge command the robot at all (<c>ConfirmHardwareMotion</c>).</summary>
         public bool HardwareMotionAllowed => _config != null && _config.ConfirmHardwareMotion;
+
+        /// <summary>
+        /// The joint-state downlink (docs/adr/0018): the robot's measured joints and the predictor's
+        /// estimate of them now. Null until <c>Awake</c>.
+        /// </summary>
+        public JetRoverJointStateLink JointState => _jointStateLink;
+
+        /// <summary>This bridge's clock, for asking <see cref="JointState"/> for a prediction "now".</summary>
+        public long NowTicks => _clock != null ? _clock.NowTicks : 0;
 
         /// <summary>The wrist-roll angle (radians) in the current target, as sent to the gripper's rotation motor.</summary>
         public float WristRollRadians { get; private set; }
@@ -303,6 +313,20 @@ namespace Teleop.Bridge
                 lossWeight: 0.5);
 
             _clockSync = new ClockSync(clockSyncConfig);
+            // The joint-state downlink rides the joint socket: the robot streams to whoever last sent
+            // on that port, so the keepalive must come from the same socket as the commands.
+            try
+            {
+                _jointStateLink = new JetRoverJointStateLink(_jointTransport, _clock, _profile, clockSyncConfig,
+                    _config.JointPredictorName, _config.JointModelSpeedRadPerSec, _config.MaxHorizonMs);
+            }
+            catch (ArgumentException e)
+            {
+                // A mistyped predictor name must not take the command path down with it.
+                Debug.LogError($"[twin] {e.Message}; falling back to hold-last (no prediction)");
+                _jointStateLink = new JetRoverJointStateLink(_jointTransport, _clock, _profile, clockSyncConfig,
+                    "hold-last", _config.JointModelSpeedRadPerSec, _config.MaxHorizonMs);
+            }
             _predictor = predictorFactory(predictorConfig, _clock);
             _reconciler = reconcilerFactory(reconcilerConfig, _metricSink, _clock);
             _playoutPolicy = playoutFactory(playoutConfig, _metricSink, _clock);
@@ -323,6 +347,7 @@ namespace Teleop.Bridge
         private void Update()
         {
             long now = _clock.NowTicks;
+            _jointStateLink?.Tick(now);
 
             while (_operatorEndpoint.TryReceiveState(now, out _))
             {
@@ -416,6 +441,7 @@ namespace Teleop.Bridge
             if (JointCommandCodec.TryEncode(_jointSequence++, now, jointTargets.Slice(0, targetCount), buffer, out int bytesWritten))
             {
                 _jointTransport.Send(buffer.Slice(0, bytesWritten), now);
+                _jointStateLink.OnJointCommandSent(now, jointTargets.Slice(0, targetCount));
             }
         }
 

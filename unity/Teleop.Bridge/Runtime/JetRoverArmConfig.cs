@@ -146,5 +146,12 @@ namespace Teleop.Bridge
         // the other way. The limit keeps the command inside what a wrist can comfortably do.
         public float GripperRollSign = 1f;
         public float GripperRollLimitDegrees = 90f;
+
+        // The joint-state twin (docs/adr/0018): which Registries.JointPredictors entry predicts the
+        // robot's joints now (servo-replay, or hold-last for no prediction), and the servo speed its
+        // model assumes, rad/s. That speed is a guess until it is fitted from recordings. The
+        // prediction horizon is capped by MaxHorizonMs above.
+        public string JointPredictorName = "servo-replay";
+        public float JointModelSpeedRadPerSec = 5f;
     }
 }

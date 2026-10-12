@@ -133,7 +133,10 @@ results to the predicted and measured rigs.
 
 The roll pivot and finger transforms are optional fields, so TeleopVR is unaffected.
 
-### 5. Recording
+### 5. Recording (decided, not yet built)
+
+**Not in the first implementation (2026-10-12).** Until it exists, real-robot prediction error
+cannot be scored, only the simulated benchmark.
 
 The Bridge appends every received frame, every sent joint command and every displayed prediction
 to `jetrover-joints-<stamp>.csv`, next to the session's `.tlog`. This gives the offline scoring in

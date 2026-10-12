@@ -19,7 +19,7 @@ namespace Teleop.Eval.Tests.BuildProfile
         }
 
         // Exactly reproduces RobotArmProfile.JetRoverMeasuredDefault through the interactive
-        // prompt sequence, joint by joint (BaseYaw, Proximal, Distal, Wrist#0, GripperMain) --
+        // prompt sequence, joint by joint (BaseYaw, Proximal, Distal, Wrist#0, GripperMain, GripperRotate) --
         // the regression check that the wizard can express the one real profile this codebase has
         // always run, not just structurally simpler ones.
         private static readonly string JetRoverTranscript = string.Join("\n", new[]
@@ -31,7 +31,7 @@ namespace Teleop.Eval.Tests.BuildProfile
             "0.13",           // distal link length
             "1",               // wrist joint count
             "y",              // has gripper
-            "n",              // gripper rotates
+            "y",              // gripper rotates (motor 5, the wrist roll)
             "1",              // BaseYaw motor id
             "n",              // BaseYaw wants min
             "n",              // BaseYaw wants max
@@ -50,7 +50,8 @@ namespace Teleop.Eval.Tests.BuildProfile
             "n",              // Wrist#0 wants min
             "n",              // Wrist#0 wants max
             "n",              // Wrist#0 wants zero-offset
-            "5",              // GripperMain motor id (no limit/offset prompts for gripper roles)
+            "10",             // GripperMain motor id (no limit/offset prompts for gripper roles)
+            "5",              // GripperRotate motor id (the wrist roll)
             "y",              // confirm write
         }) + "\n";
 

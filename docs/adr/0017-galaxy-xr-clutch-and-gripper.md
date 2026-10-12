@@ -68,6 +68,54 @@ Only `JetRoverOperatorBridge` hardcoded `0`.
 `GripperPinchClosedMeters` live in `jetrover_connection.json`. They can be changed per device with
 `just push-galaxy-config`, with no rebuild.
 
+### 4. Amendment (2026-10-12): the wrist roll, the motor ids, and a start/stop button
+
+The user tried the gripper on the robot, and pinching **rotated the gripper instead of closing it**.
+
+**Cause.** The JetRover profile called motor 5 the gripper. Hiwonder documents motor 5 as the
+**wrist roll** and motor 10 as the **gripper**.
+
+**The profile now maps them that way everywhere:**
+- `core/RobotProfiles/jetrover.json`;
+- `RobotArmProfile.JetRoverMeasuredDefault`;
+- Bridge's `RobotArmProfileData`.
+
+That is motor 10 `GripperMain`, motor 5 `GripperRotate`, and `gripperCanRotate: true`.
+`GripperRotate` is now an **angle in radians**, converted and stepped like an arm joint. It was a
+0–1 fraction before, which no caller ever used.
+
+**The left hand's twist is the wrist roll.**
+- **The mapping.** The hand's roll about its pointing direction, in the arm-base frame, palm down = 0.
+  It is multiplied by `GripperRollSign` and clamped to ±`GripperRollLimitDegrees` (90°).
+- **Where it goes.** The roll is part of the target's orientation, so both command paths extract the
+  same value with `ArmKinematics.ExtractRollRadians`:
+  - the joint stream, from the bridge;
+  - the Cartesian path, from `GenericArmPlant.Command`.
+- **The twin's gripper rolls with it.** The palm, the gripper servo and the fingers turn about the
+  link axis.
+- **Losing the hand holds the roll.**
+- **Wrist pitch still follows the right hand.**
+
+**A start/stop button on the bench gates the robot.**
+- **What it gates.** `MotionToggleButton` is pressed down with an index fingertip. It toggles
+  `JetRoverOperatorBridge.MotionEnabled`, which sits on top of `ConfirmHardwareMotion`.
+- **Off at every launch.** The scene sets `motionEnabledAtStart` to off, and the scene check fails if
+  it is on. Nothing reaches the robot until someone presses the button, and pressing it again stops
+  sending; the robot holds its last command. The virtual arm follows the hands either way.
+- **Only a fingertip presses it.** It reads fingertips from XR Hands, not XRI, so no ray or far
+  pinch can press it. It must be released and re-approached between presses.
+- **When the config forbids motion, the button shows LOCKED and does nothing.**
+
+**Consequences of the amendment:**
+- **RobotHost must be redeployed before the new app is allowed to move the robot**
+  (`just deploy-robothost`). The deployed RobotHost still believes motor 5 is the gripper, so it
+  would read the new roll angle as a gripper fraction.
+- **Motor 10 has never been commanded by this codebase.** The Jetson relay is id-keyed (ADR 0011),
+  but that it accepts id 10 is unverified.
+- **The roll's direction against the real servo is unverified.** `GripperRollSign` flips it, with
+  no rebuild.
+- **`IsFullySensed` still ignores both gripper motors.**
+
 ## Consequences
 
 - **A Galaxy XR command is now a scaled, clutched intent.** The `.tlog` records the target that

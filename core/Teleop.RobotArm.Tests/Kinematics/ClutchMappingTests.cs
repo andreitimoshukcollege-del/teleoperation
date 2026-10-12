@@ -223,4 +223,22 @@ namespace Teleop.RobotArm.Tests.Kinematics
             Assert.Throws<ArgumentException>(() => GripperMapping.FromPinchDistance(0.05f, 0.01f, 0.08f));
         }
     }
+
+    public class WristRollMappingTests
+    {
+        [Fact]
+        public void AppliesTheSignAndClamps()
+        {
+            Assert.Equal(0.5f, WristRollMapping.FromHandRoll(0.5f, 1f, 1.5f), 5);
+            Assert.Equal(-0.5f, WristRollMapping.FromHandRoll(0.5f, -1f, 1.5f), 5);
+            Assert.Equal(1.5f, WristRollMapping.FromHandRoll(3f, 1f, 1.5f), 5);
+            Assert.Equal(-1.5f, WristRollMapping.FromHandRoll(-3f, 1f, 1.5f), 5);
+        }
+
+        [Fact]
+        public void AnUntrackedHand_StaysNaN()
+        {
+            Assert.True(float.IsNaN(WristRollMapping.FromHandRoll(float.NaN, 1f, 1.5f)));
+        }
+    }
 }

@@ -216,6 +216,31 @@ namespace Teleop.RobotArm.Kinematics
         }
 
         /// <summary>
+        /// The commanded end effector's roll: the rotation about its own forward axis (the rotated
+        /// +X), right-handed, measured from the "level" orientation whose up vector lies in the
+        /// vertical plane through forward. 0 means the gripper's jaws sit side by side; positive
+        /// rolls its left side (+Y) up. Independent of pitch and yaw, so a rotation composed as
+        /// yaw · pitch · roll gives the roll back. Returns 0 when forward is within ~0.6° of
+        /// vertical, where "level" has no meaning.
+        /// </summary>
+        public static float ExtractRollRadians(Quaternion rotation)
+        {
+            Vector3 forward = Vector3.Transform(Vector3.UnitX, rotation);
+            Vector3 up = Vector3.Transform(Vector3.UnitZ, rotation);
+            Vector3 levelUp = Vector3.UnitZ - Vector3.Dot(Vector3.UnitZ, forward) * forward;
+            float levelLength = levelUp.Length();
+            if (levelLength < 1e-2f)
+            {
+                return 0f;
+            }
+
+            levelUp /= levelLength;
+            float sin = Vector3.Dot(Vector3.Cross(levelUp, up), forward);
+            float cos = Vector3.Dot(levelUp, up);
+            return MathF.Atan2(sin, cos);
+        }
+
+        /// <summary>
         /// Turns <see cref="TryInverse"/>'s output into one <see cref="JointTarget"/> per joint in
         /// <paramref name="profile"/>, in <see cref="RobotArmProfile.Joints"/>'s own order -- the
         /// step that makes IK output wire-ready for either hop (a caller converts angle/fraction to
@@ -228,10 +253,9 @@ namespace Teleop.RobotArm.Kinematics
         /// 1=closed) -- the same two-unit-space split <c>JetRoverPlant.ApplyJointTargets</c> always
         /// had (gripper was never in the same angle space as the arm joints), just keyed by role
         /// now instead of by which named field it was.
-        /// <see cref="JointRole.GripperRotate"/> is always 0 -- no operator input yet computes an
-        /// independent gripper-rotation command (no <c>CommandFrame</c>/<c>JointCommandFrame</c>
-        /// field exists for it); the profile can describe a rotating gripper structurally, but
-        /// driving one end to end is a follow-up, not part of this generalization.
+        /// <see cref="JointRole.GripperRotate"/> is <paramref name="gripperRollRadians"/>, radians
+        /// like the arm joints (docs/adr/0017). A Cartesian caller takes it from the commanded
+        /// orientation with <see cref="ExtractRollRadians"/>, so both command paths agree.
         /// <see cref="JointTarget.Speed"/> is always 0 here -- filled in by whichever codec/plant
         /// step actually knows the configured speed for this hop.
         /// </summary>
@@ -239,6 +263,14 @@ namespace Teleop.RobotArm.Kinematics
             in RobotArmProfile profile,
             float baseYaw, float proximalPitch, float distalPitch,
             ReadOnlySpan<float> wristPitches, float gripperFraction,
+            Span<JointTarget> output)
+            => MapAnglesToJointTargets(profile, baseYaw, proximalPitch, distalPitch, wristPitches, gripperFraction, 0f, output);
+
+        /// <inheritdoc cref="MapAnglesToJointTargets(in RobotArmProfile, float, float, float, ReadOnlySpan{float}, float, Span{JointTarget})"/>
+        public static int MapAnglesToJointTargets(
+            in RobotArmProfile profile,
+            float baseYaw, float proximalPitch, float distalPitch,
+            ReadOnlySpan<float> wristPitches, float gripperFraction, float gripperRollRadians,
             Span<JointTarget> output)
         {
             if (output.Length < profile.JointCount)
@@ -258,7 +290,7 @@ namespace Teleop.RobotArm.Kinematics
                     JointRole.Distal => distalPitch,
                     JointRole.Wrist => wristPitches[joint.WristIndex],
                     JointRole.GripperMain => gripperFraction,
-                    JointRole.GripperRotate => 0f,
+                    JointRole.GripperRotate => gripperRollRadians,
                     _ => 0f,
                 };
                 output[count++] = new JointTarget(joint.MotorId, angle, speed: 0f);

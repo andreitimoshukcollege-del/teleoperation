@@ -1,6 +1,7 @@
 using System.Numerics;
 using Teleop.RobotArm.Kinematics;
 using Teleop.RobotArm.Types;
+using Teleop.RobotArm.Wire;
 
 namespace Teleop.RobotArm.Tests.Kinematics
 {
@@ -262,6 +263,48 @@ namespace Teleop.RobotArm.Tests.Kinematics
             Assert.Equal(desired, proximalPitch + distalPitch + wristPitches[0], 4);
             Assert.Equal(0f, wristPitches[1]);
             Assert.Equal(0f, wristPitches[2]);
+        }
+
+        [Theory]
+        [InlineData(0f, 0f, 0f)]
+        [InlineData(0.7f, 0f, 0f)]
+        [InlineData(-1.2f, 0.4f, 0f)]
+        [InlineData(0.5f, -0.6f, 1.1f)]
+        [InlineData(2.5f, 0.3f, -2.0f)]
+        public void ExtractRollRadians_RecoversRoll_RegardlessOfPitchAndYaw(float roll, float pitch, float yaw)
+        {
+            // yaw about Z, then pitch (forward tilts up: a negative turn about Y), then roll about X.
+            Quaternion q = Quaternion.CreateFromAxisAngle(Vector3.UnitZ, yaw)
+                * Quaternion.CreateFromAxisAngle(Vector3.UnitY, -pitch)
+                * Quaternion.CreateFromAxisAngle(Vector3.UnitX, roll);
+
+            Assert.Equal(roll, ArmKinematics.ExtractRollRadians(q), 3);
+            Assert.Equal(pitch, ArmKinematics.ExtractPitchRadians(q), 3);
+        }
+
+        [Fact]
+        public void ExtractRollRadians_IsZeroWhenPointingStraightUp()
+        {
+            Quaternion q = Quaternion.CreateFromAxisAngle(Vector3.UnitY, -MathF.PI / 2f) * Quaternion.CreateFromAxisAngle(Vector3.UnitX, 0.8f);
+            Assert.Equal(0f, ArmKinematics.ExtractRollRadians(q));
+        }
+
+        [Fact]
+        public void MapAnglesToJointTargets_SendsRollToTheGripperRotateMotor_AndTheGripperToMotor10()
+        {
+            Span<float> wrist = stackalloc float[JetRover.WristJointCount];
+            Span<JointTarget> output = stackalloc JointTarget[JetRover.JointCount];
+            int n = ArmKinematics.MapAnglesToJointTargets(JetRover, 0f, 0f, 0f, wrist, gripperFraction: 0.75f, gripperRollRadians: 0.3f, output);
+
+            float gripper = float.NaN, roll = float.NaN;
+            for (int i = 0; i < n; i++)
+            {
+                if (output[i].MotorId == 10) gripper = output[i].Angle;
+                if (output[i].MotorId == 5) roll = output[i].Angle;
+            }
+
+            Assert.Equal(0.75f, gripper);
+            Assert.Equal(0.3f, roll);
         }
     }
 }

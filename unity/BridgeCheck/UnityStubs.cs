@@ -42,6 +42,7 @@ namespace UnityEngine
         public Vector3(float x, float y, float z) { this.x = x; this.y = y; this.z = z; }
         public static Vector3 operator +(Vector3 a, Vector3 b) => default;
         public static Vector3 right => default;
+        public static Vector3 forward => default;
     }
     public struct Quaternion
     {

@@ -15,7 +15,7 @@ namespace Teleop.RobotHost.Tests.Plant
         private static readonly RobotArmProfile JetRover = Config.Profile;
 
         // JetRoverMeasuredDefault's own motor ids -- see RobotArmProfile.JetRoverMeasuredDefault.
-        private const byte BaseMotorId = 1, ProximalMotorId = 2, DistalMotorId = 3, WristMotorId = 4, GripperMotorId = 5;
+        private const byte BaseMotorId = 1, ProximalMotorId = 2, DistalMotorId = 3, WristMotorId = 4, GripperMotorId = 10, WristRollMotorId = 5;
 
         private static CommandFrame Frame(long captureTicks, Vector3 position, Quaternion? rotation = null, float gripper = 0f) =>
             new CommandFrame(
@@ -257,6 +257,34 @@ namespace Teleop.RobotHost.Tests.Plant
             Assert.Equal(Config.GripperOpenPulse, Pulse(relay.SentCommands[0], GripperMotorId), 3);
             Assert.Equal(Config.GripperClosedPulse, Pulse(relay.SentCommands[1], GripperMotorId), 3);
             Assert.Equal((Config.GripperOpenPulse + Config.GripperClosedPulse) / 2f, Pulse(relay.SentCommands[2], GripperMotorId), 3);
+        }
+
+        [Fact]
+        public void Command_DrivesTheWristRollFromTheCommandedOrientation_AsASteppedAngle()
+        {
+            var relay = new FakeRelayClient();
+            var plant = new GenericArmPlant(Config, relay);
+
+            // A small roll the step limit allows in one go, then a level orientation.
+            float roll = 0.1f;
+            plant.Command(Frame(captureTicks: 10, position: ReachableTarget, rotation: Quaternion.CreateFromAxisAngle(Vector3.UnitX, roll)));
+            float rolled = Pulse(relay.SentCommands[0], WristRollMotorId);
+            Assert.Equal(Config.ZeroPulse + roll * Config.PulsePerRadian, rolled, 1);
+
+            plant.Command(Frame(captureTicks: 20, position: ReachableTarget));
+            Assert.Equal(Config.ZeroPulse, Pulse(relay.SentCommands[1], WristRollMotorId), 1);
+        }
+
+        [Fact]
+        public void TheGripperCommand_GoesToMotor10_NotTheWristRoll()
+        {
+            var relay = new FakeRelayClient();
+            var plant = new GenericArmPlant(Config, relay);
+
+            plant.Command(Frame(captureTicks: 10, position: ReachableTarget, gripper: 1f));
+
+            Assert.Equal(Config.GripperClosedPulse, Pulse(relay.SentCommands[0], GripperMotorId), 3);
+            Assert.Equal(Config.ZeroPulse, Pulse(relay.SentCommands[0], WristRollMotorId), 1);
         }
 
         [Fact]

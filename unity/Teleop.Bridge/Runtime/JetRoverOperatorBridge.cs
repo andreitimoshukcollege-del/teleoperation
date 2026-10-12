@@ -75,6 +75,9 @@ namespace Teleop.Bridge
         [SerializeField] private Transform dragTarget;
         [SerializeField] private JetRoverArmRig armRig;
 
+        [Tooltip("Whether commands reach the robot from the start. Off means nothing is sent until something sets MotionEnabled (TeleopXR's motion button, docs/adr/0017). TeleopVR leaves it on, as it always behaved.")]
+        [SerializeField] private bool motionEnabledAtStart = true;
+
         private JetRoverArmConfig _config;
         private RobotArmProfile _profile;
         private UnityMonotonicClock _clock;
@@ -128,6 +131,19 @@ namespace Teleop.Bridge
                 }
             }
         }
+
+        /// <summary>
+        /// Whether commands are sent to the robot at all, on top of the config's
+        /// <c>ConfirmHardwareMotion</c>. Starts as the scene's <c>motionEnabledAtStart</c>. Off stops
+        /// sending, and the robot holds its last command; the virtual arm keeps following either way.
+        /// </summary>
+        public bool MotionEnabled { get; set; }
+
+        /// <summary>True when the config lets this bridge command the robot at all (<c>ConfirmHardwareMotion</c>).</summary>
+        public bool HardwareMotionAllowed => _config != null && _config.ConfirmHardwareMotion;
+
+        /// <summary>The wrist-roll angle (radians) in the current target, as sent to the gripper's rotation motor.</summary>
+        public float WristRollRadians { get; private set; }
 
         /// <summary>The loaded connection config, for input components that read its operator-input fields.</summary>
         public JetRoverArmConfig Config => _config;
@@ -194,6 +210,7 @@ namespace Teleop.Bridge
 
         private void Awake()
         {
+            MotionEnabled = motionEnabledAtStart;
             _config = ConfigLoader.Load("jetrover_connection", "jetrover_connection.json", new JetRoverArmConfig());
             _profile = ConfigLoader.Load(
                 "jetrover_arm_profile", "jetrover_arm_profile.json", new RobotArmProfileData()).ToProfile();
@@ -353,6 +370,8 @@ namespace Teleop.Bridge
             CorePose capturedPose = new CorePose(localPosition.ToCore(), localRotation.ToCore());
 
             float desiredPitch = ArmKinematics.ExtractPitchRadians(capturedPose.Rotation);
+            float desiredRoll = ArmKinematics.ExtractRollRadians(capturedPose.Rotation);
+            WristRollRadians = desiredRoll;
             Span<float> wristPitches = stackalloc float[_profile.WristJointCount];
             ArmKinematics.TryInverse(
                 _profile, capturedPose.Position, desiredPitch,
@@ -371,7 +390,7 @@ namespace Teleop.Bridge
                 armRig.ApplyAngles(baseYaw, proximalPitch, distalPitch, upperPitch, wasClamped);
             }
 
-            if (!_config.ConfirmHardwareMotion)
+            if (!_config.ConfirmHardwareMotion || !MotionEnabled)
             {
                 return;
             }
@@ -391,7 +410,7 @@ namespace Teleop.Bridge
 
             Span<JointTarget> jointTargets = stackalloc JointTarget[_profile.JointCount];
             int targetCount = ArmKinematics.MapAnglesToJointTargets(
-                _profile, baseYaw, proximalPitch, distalPitch, wristPitches, gripperFraction: _gripperFraction, jointTargets);
+                _profile, baseYaw, proximalPitch, distalPitch, wristPitches, gripperFraction: _gripperFraction, gripperRollRadians: desiredRoll, jointTargets);
 
             Span<byte> buffer = stackalloc byte[JointCommandCodec.EncodedSize(targetCount)];
             if (JointCommandCodec.TryEncode(_jointSequence++, now, jointTargets.Slice(0, targetCount), buffer, out int bytesWritten))

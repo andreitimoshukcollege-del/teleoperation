@@ -140,5 +140,11 @@ namespace Teleop.Bridge
         // narrower is closed (1), linear in between.
         public float GripperPinchOpenMeters = 0.08f;
         public float GripperPinchClosedMeters = 0.015f;
+
+        // The gripper hand's twist drives the wrist roll (motor 5), 1:1 from palm-down. Sign is +1
+        // or -1, to match how the servo is mounted: flip it if twisting your hand turns the gripper
+        // the other way. The limit keeps the command inside what a wrist can comfortably do.
+        public float GripperRollSign = 1f;
+        public float GripperRollLimitDegrees = 90f;
     }
 }

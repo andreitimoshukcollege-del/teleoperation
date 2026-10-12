@@ -18,8 +18,9 @@ namespace Teleop.XR
     /// motion from there. It engages under <see cref="engageBelowMeters"/> thumb-to-index distance and
     /// releases over <see cref="releaseAboveMeters"/>, so a borderline pinch doesn't chatter. Releasing,
     /// or losing tracking of that hand, disengages, and the arm holds.</item>
-    /// <item><b>Gripper hand</b>: how tightly it pinches is how far the gripper closes. Losing
-    /// tracking of that hand holds the last value; it never opens on its own.</item>
+    /// <item><b>Gripper hand</b>: how tightly it pinches is how far the gripper closes, and how far it
+    /// twists from palm-down is the wrist roll. Losing tracking of that hand holds both; the gripper
+    /// never opens on its own.</item>
     /// </list>
     /// Runs before <see cref="JetRoverOperatorBridge"/> each frame, so the target the bridge sends is
     /// this frame's.
@@ -76,7 +77,7 @@ namespace Teleop.XR
             XRHand driving = clutchHand == Handedness.Right ? _hands.rightHand : _hands.leftHand;
             XRHand gripping = clutchHand == Handedness.Right ? _hands.leftHand : _hands.rightHand;
 
-            if (TryPinch(driving, space, out Vector3 point, out Quaternion rotation, out float distance))
+            if (TryPinch(driving, space, out Vector3 point, out Quaternion rotation, out _, out float distance))
             {
                 if (!clutch.IsEngaged && distance < engageBelowMeters)
                 {
@@ -94,9 +95,13 @@ namespace Teleop.XR
                 clutch.Release();
             }
 
-            if (TryPinch(gripping, space, out _, out _, out float gripDistance))
+            if (TryPinch(gripping, space, out _, out Quaternion gripRotation, out bool hasPalm, out float gripDistance))
             {
                 bridge.GripperFraction = JetRoverClutch.GripperFromPinchDistance(gripDistance, bridge.Config);
+                if (hasPalm)
+                {
+                    clutch.SetRollFromHand(gripRotation, bridge.Config.GripperRollSign, bridge.Config.GripperRollLimitDegrees);
+                }
             }
 
             if (armRig != null)
@@ -108,10 +113,11 @@ namespace Teleop.XR
         }
 
         /// <summary>The pinch point (midway between thumb and index tips), the palm's rotation, and the tip distance, in world space.</summary>
-        private static bool TryPinch(XRHand hand, Transform space, out Vector3 point, out Quaternion rotation, out float distance)
+        private static bool TryPinch(XRHand hand, Transform space, out Vector3 point, out Quaternion rotation, out bool hasPalm, out float distance)
         {
             point = default;
             rotation = Quaternion.identity;
+            hasPalm = false;
             distance = float.NaN;
             if (!hand.isTracked
                 || !hand.GetJoint(XRHandJointID.ThumbTip).TryGetPose(out Pose thumb)
@@ -124,7 +130,9 @@ namespace Teleop.XR
             point = space.TransformPoint((thumb.position + index.position) * 0.5f);
             if (hand.GetJoint(XRHandJointID.Palm).TryGetPose(out Pose palm))
             {
+                // XR Hands' palm: forward toward the fingertips, up out of the back of the hand.
                 rotation = space.rotation * palm.rotation;
+                hasPalm = true;
             }
 
             return true;
@@ -138,17 +146,25 @@ namespace Teleop.XR
             }
 
             int percent = Mathf.RoundToInt(bridge.GripperFraction * 100f);
-            int state = (clutch.IsEngaged ? 1000 : 0) + percent;
+            int degrees = Mathf.RoundToInt(bridge.WristRollRadians * Mathf.Rad2Deg);
+            int motion = !bridge.HardwareMotionAllowed ? 2 : bridge.MotionEnabled ? 1 : 0;
+            int state = ((motion * 2 + (clutch.IsEngaged ? 1 : 0)) * 1000 + percent) * 1000 + degrees + 500;
             if (state == _shownState)
             {
                 return;
             }
 
             _shownState = state;
-            if (clutch.IsEngaged)
-                statusLabel.SetText("CLUTCH ON   ·   gripper {0:0}%", percent);
-            else
-                statusLabel.SetText("pinch to drive   ·   gripper {0:0}%", percent);
+            // Allocation-free SetText needs a fixed format string per case.
+            switch (motion * 2 + (clutch.IsEngaged ? 1 : 0))
+            {
+                case 0: statusLabel.SetText("ROBOT OFF  ·  pinch to drive  ·  grip {0:0}%  roll {1:0}°", (float)percent, (float)degrees); break;
+                case 1: statusLabel.SetText("ROBOT OFF  ·  CLUTCH ON  ·  grip {0:0}%  roll {1:0}°", (float)percent, (float)degrees); break;
+                case 2: statusLabel.SetText("ROBOT ON  ·  pinch to drive  ·  grip {0:0}%  roll {1:0}°", (float)percent, (float)degrees); break;
+                case 3: statusLabel.SetText("ROBOT ON  ·  CLUTCH ON  ·  grip {0:0}%  roll {1:0}°", (float)percent, (float)degrees); break;
+                case 4: statusLabel.SetText("ROBOT LOCKED (config)  ·  pinch to drive  ·  grip {0:0}%  roll {1:0}°", (float)percent, (float)degrees); break;
+                default: statusLabel.SetText("ROBOT LOCKED (config)  ·  CLUTCH ON  ·  grip {0:0}%  roll {1:0}°", (float)percent, (float)degrees); break;
+            }
         }
 
         private static XRHandSubsystem FindHands()

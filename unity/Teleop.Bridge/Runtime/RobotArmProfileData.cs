@@ -50,7 +50,7 @@ namespace Teleop.Bridge
         public float DistalLinkLength = 0.13f;
         public int WristJointCount = 1;
         public bool HasGripper = true;
-        public bool GripperCanRotate = false;
+        public bool GripperCanRotate = true;
 
         public JointHardwareSpecData[] Joints =
         {
@@ -63,7 +63,9 @@ namespace Teleop.Bridge
             },
             new JointHardwareSpecData { MotorId = 3, Role = JointRole.Distal },
             new JointHardwareSpecData { MotorId = 4, Role = JointRole.Wrist, WristIndex = 0 },
-            new JointHardwareSpecData { MotorId = 5, Role = JointRole.GripperMain },
+            // Motor 10 is the gripper, motor 5 the wrist roll (Hiwonder's numbering; docs/adr/0017).
+            new JointHardwareSpecData { MotorId = 10, Role = JointRole.GripperMain },
+            new JointHardwareSpecData { MotorId = 5, Role = JointRole.GripperRotate },
         };
 
         public RobotArmProfile ToProfile()

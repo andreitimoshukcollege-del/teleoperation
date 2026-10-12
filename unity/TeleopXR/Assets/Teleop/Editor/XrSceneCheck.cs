@@ -26,6 +26,7 @@ namespace Teleop.XR.Editor
     /// the hand joints the clutch reads);</item>
     /// <item>controllers left in the modality manager;</item>
     /// <item>Active Input Handling without the Input System, which breaks XRI's hand interactions;</item>
+    /// <item>the robot's start/stop button missing or unwired, or the scene starting with motion on;</item>
     /// <item>Android XR Support or Hand Tracking off for Android.</item>
     /// </list>
     /// Those settings are easy to change by accident in an Inspector and invisible until the robot
@@ -240,6 +241,26 @@ namespace Teleop.XR.Editor
                     problems.Add("HandClutchDriver: engageBelowMeters must be below releaseAboveMeters, or the clutch chatters on and off");
                 if (!driver.enabled)
                     problems.Add("HandClutchDriver is disabled");
+            }
+
+            // The robot's start/stop switch: present, wired, and the scene starts with motion off.
+            if (new SerializedObject(bridge).FindProperty("motionEnabledAtStart") is SerializedProperty startOn && startOn.boolValue)
+                problems.Add("JetRoverOperatorBridge.motionEnabledAtStart is on: the robot would move at launch, before anyone presses the motion button (docs/adr/0017)");
+            var toggle = Object.FindAnyObjectByType<MotionToggleButton>(FindObjectsInactive.Include);
+            if (toggle == null)
+            {
+                problems.Add("no MotionToggleButton: there would be no way to start or stop the robot from the headset (run Teleop > XR > Set Up Clutch Control)");
+            }
+            else
+            {
+                var toggleSo = new SerializedObject(toggle);
+                foreach (string field in new[] { "bridge", "origin", "cap" })
+                {
+                    RequireReference(toggleSo, field, problems);
+                }
+
+                if (!toggle.enabled || !toggle.gameObject.activeInHierarchy)
+                    problems.Add("MotionToggleButton is disabled or inactive: the robot could not be stopped from the headset");
             }
 
             var json = Resources.Load<TextAsset>("jetrover_connection");

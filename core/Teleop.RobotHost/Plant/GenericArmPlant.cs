@@ -106,7 +106,7 @@ namespace Teleop.RobotHost.Plant
 
         // Resolved once at construction from each joint's optional per-joint override
         // (falling back to the config's global MinPulse/MaxPulse), or from the gripper's own
-        // open/closed range for gripper roles -- see the constructor.
+        // open/closed range for the gripper's open/close role -- see the constructor.
         private readonly float[] _minPulse;
         private readonly float[] _maxPulse;
 
@@ -134,7 +134,7 @@ namespace Teleop.RobotHost.Plant
             for (int i = 0; i < n; i++)
             {
                 JointHardwareSpec joint = _profile.Joints[i];
-                if (joint.Role == JointRole.GripperMain || joint.Role == JointRole.GripperRotate)
+                if (joint.Role == JointRole.GripperMain)
                 {
                     _minPulse[i] = MathF.Min(_config.GripperOpenPulse, _config.GripperClosedPulse);
                     _maxPulse[i] = MathF.Max(_config.GripperOpenPulse, _config.GripperClosedPulse);
@@ -161,6 +161,9 @@ namespace Teleop.RobotHost.Plant
                 for (int i = 0; i < _profile.JointCount; i++)
                 {
                     JointRole role = _profile.Joints[i].Role;
+                    // The wrist roll stays out too, as it always was: whether the relay reports
+                    // feedback for it has never been checked on the hardware, and requiring it
+                    // could block a robot that worked before.
                     if (role == JointRole.GripperMain || role == JointRole.GripperRotate)
                     {
                         continue;
@@ -193,6 +196,7 @@ namespace Teleop.RobotHost.Plant
             SeedBeliefsFromSensedIfNeeded();
 
             float desiredPitch = ArmKinematics.ExtractPitchRadians(command.Pose.Rotation);
+            float desiredRoll = ArmKinematics.ExtractRollRadians(command.Pose.Rotation);
             Span<float> wristPitches = stackalloc float[_profile.WristJointCount];
             ArmKinematics.TryInverse(
                 _profile, command.Pose.Position, desiredPitch,
@@ -200,7 +204,7 @@ namespace Teleop.RobotHost.Plant
 
             Span<JointTarget> ikTargets = stackalloc JointTarget[_profile.JointCount];
             int count = ArmKinematics.MapAnglesToJointTargets(
-                _profile, baseYaw, proximalPitch, distalPitch, wristPitches, command.Gripper, ikTargets);
+                _profile, baseYaw, proximalPitch, distalPitch, wristPitches, command.Gripper, desiredRoll, ikTargets);
 
             ApplyJointTargets(ikTargets.Slice(0, count));
         }
@@ -257,8 +261,8 @@ namespace Teleop.RobotHost.Plant
         /// <summary>
         /// Converts each incoming target into a pulse value, clamps to that joint's resolved
         /// range, advances this plant's own optimistic target belief by no more than
-        /// <see cref="GenericArmPlantConfig.MaxDirectionMagnitude"/> per call (gripper roles
-        /// excepted -- open-loop, sent directly with no stepping, same as before), and sends the
+        /// <see cref="GenericArmPlantConfig.MaxDirectionMagnitude"/> per call (the gripper's
+        /// open/close role excepted -- open-loop, sent directly with no stepping, same as before), and sends the
         /// resulting absolute pulse targets -- the shared tail of both <see cref="Command"/> and
         /// <see cref="CommandJointAngles"/>, so there is exactly one place this logic lives
         /// regardless of which entry point supplied the angles.
@@ -278,7 +282,10 @@ namespace Teleop.RobotHost.Plant
 
                 JointHardwareSpec joint = _profile.Joints[index];
 
-                if (joint.Role == JointRole.GripperMain || joint.Role == JointRole.GripperRotate)
+                // Only the open/close actuator is a fraction. GripperRotate (the wrist roll) is an
+                // angle and goes through the arm-joint path below, stepped like any other joint, so
+                // a sudden twist does not slam the servo (docs/adr/0017).
+                if (joint.Role == JointRole.GripperMain)
                 {
                     float fraction = Math.Clamp(incoming.Angle, 0f, 1f);
                     float gripperPulse = Math.Clamp(

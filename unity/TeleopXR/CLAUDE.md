@@ -63,16 +63,23 @@ Contents:
     - The **right hand's pinch is the clutch**: pinch anywhere and the arm's wrist follows your
       hand's motion from there, scaled by `ClutchScale` (0.5). Release and the arm holds, so you
       can re-pinch somewhere comfortable.
-    - The **left hand's pinch is the gripper**: thumb and index 8 cm apart or more is open,
-      1.5 cm or less is closed, linear in between.
+    - The **left hand's pinch is the gripper** (motor 10): thumb and index 8 cm apart or more
+      is open, 1.5 cm or less is closed, linear in between.
+    - The **left hand's twist is the wrist roll** (motor 5): palm down is 0, clamped to ±90°.
+      `GripperRollSign` flips the direction.
     - It reads hand joints from XR Hands directly. The mapping is Core's (`Teleop.RobotArm`'s
       `ClutchMapping` and `GripperMapping`), reached through Bridge's `JetRoverClutch`.
     - Feedback: the wrist LED ring turns cyan while clutched, and red still means out of reach.
       The display's caption line reads `CLUTCH ON · gripper N%`.
   - **`DragTarget`** is no longer grabbable. It is a 2 cm marker showing the commanded wrist
     position, and the bridge still reads it.
-  - **`TwinGripper`** on the wrist slides the twin's fingers by the gripper command. It shows what
-    is sent; the real gripper has no feedback.
+  - **`TwinGripper`** on the wrist slides the twin's fingers by the gripper command and rolls the
+    gripper by the wrist roll. It shows what is sent; the real gripper has no feedback.
+  - **`MotionToggleButton`, the robot's start/stop switch, on the bench's front-left corner.** It
+    is red when off (`ROBOT OFF`) and green when on, and **off at every launch**. Press it down
+    with a fingertip. Only a fingertip counts; no ray or far pinch can press it. Off means nothing
+    is sent and the robot holds still, while the virtual arm still follows your hands. It shows
+    LOCKED when `ConfirmHardwareMotion` is off in the config.
   - Tune these with `just push-galaxy-config`, no rebuild: `ClutchScale`, `ClutchMinHeightMeters`
     (the wrist never goes lower, default −0.05 m below the base pivot), `GripperPinchOpenMeters` and
     `GripperPinchClosedMeters`. Edit them in `unity/Teleop.Bridge/Runtime/Resources/jetrover_connection.json`
@@ -88,6 +95,8 @@ build, if any of them changes:
 | Clutch engage / release distance | engage below release (1.5 / 3 cm) | otherwise the clutch chatters on and off |
 | `ClutchScale` | in (0, 1] | above 1 the arm moves further than the hand |
 | Gripper pinch range | open distance > closed distance | otherwise the mapping is inverted |
+| `JetRoverOperatorBridge.motionEnabledAtStart` | off | the robot must not move at launch, before anyone presses the button |
+| `MotionToggleButton` | present, wired, enabled | the only way to start, and stop, the robot from the headset |
 | Hand smoothing filter | inactive | it filters the hand joints the clutch reads; intent is sent raw (ADR 0016 §5) |
 | Modality manager controllers | none | hands only |
 | Active Input Handling (Player Settings) | Both | XRI's hand interactions read the Input System |

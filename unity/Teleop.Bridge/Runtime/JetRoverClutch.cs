@@ -68,6 +68,26 @@ namespace Teleop.Bridge
 
         public void Release() => _mapping.Release();
 
+        /// <summary>The wrist roll in the target (radians, Core convention), held until set again.</summary>
+        public float Roll { get; private set; }
+
+        /// <summary>
+        /// Sets the wrist roll from the gripper hand's rotation in world space (docs/adr/0017): the
+        /// hand's roll about its pointing direction in the arm-base frame, times
+        /// <paramref name="sign"/>, clamped to ±<paramref name="limitDegrees"/>. Palm down is 0.
+        /// Call it only while that hand is tracked; between calls the roll holds.
+        /// </summary>
+        public void SetRollFromHand(Quaternion handRotation, float sign, float limitDegrees)
+        {
+            float handRoll = ArmKinematics.ExtractRollRadians((Quaternion.Inverse(_armBase.rotation) * handRotation).ToCore());
+            float roll = WristRollMapping.FromHandRoll(handRoll, sign, limitDegrees * (MathF.PI / 180f));
+            if (!float.IsNaN(roll))
+            {
+                Roll = roll;
+                WriteTarget();
+            }
+        }
+
         /// <summary>
         /// A thumb-to-index distance (m) as a gripper command, 0 open to 1 closed, by the config's
         /// <c>GripperPinchOpenMeters</c> and <c>GripperPinchClosedMeters</c>. NaN stays NaN, which
@@ -85,9 +105,13 @@ namespace Teleop.Bridge
         private void WriteTarget()
         {
             _target.position = _armBase.TransformPoint(_mapping.Target.ToUnity());
-            // Only pitch reaches the arm (ArmKinematics drops roll and yaw). Core pitch tilts +X
-            // (Unity +Z, forward) toward +Z (Unity +Y, up): a negative turn about Unity's +X.
-            _target.rotation = _armBase.rotation * Quaternion.AngleAxis(-_mapping.Pitch * Mathf.Rad2Deg, Vector3.right);
+            // Pitch, then roll; yaw is the base's job. Core pitch tilts +X (Unity +Z, forward) toward
+            // +Z (Unity +Y, up): a negative turn about Unity's +X. Core roll lifts +Y (Unity's left,
+            // -X) toward up: a negative turn about Unity's +Z. ArmKinematics.ExtractPitchRadians and
+            // ExtractRollRadians give both back, so the bridge and the robot read what was written.
+            _target.rotation = _armBase.rotation
+                * Quaternion.AngleAxis(-_mapping.Pitch * Mathf.Rad2Deg, Vector3.right)
+                * Quaternion.AngleAxis(-Roll * Mathf.Rad2Deg, Vector3.forward);
         }
     }
 }

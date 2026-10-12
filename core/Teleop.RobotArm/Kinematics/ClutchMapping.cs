@@ -127,4 +127,24 @@ namespace Teleop.RobotArm.Kinematics
             return Math.Clamp(t, 0f, 1f);
         }
     }
+
+    /// <summary>
+    /// The off hand's twist as the wrist-roll command (docs/adr/0017): the hand's roll about its
+    /// pointing direction, in the arm-base frame (<see cref="ArmKinematics.ExtractRollRadians"/>),
+    /// times <c>sign</c> (+1 or -1, matching the servo's mounting), clamped to ±<c>limit</c>. Palm
+    /// down is 0, jaws side by side. NaN stays NaN, so the host can hold the last value.
+    /// </summary>
+    public static class WristRollMapping
+    {
+        public static float FromHandRoll(float handRollRadians, float sign, float limitRadians)
+        {
+            if (!(limitRadians >= 0f))
+            {
+                throw new ArgumentOutOfRangeException(nameof(limitRadians), limitRadians, "limit must be zero or positive");
+            }
+
+            float roll = (sign < 0f ? -1f : 1f) * handRollRadians;
+            return float.IsNaN(roll) ? float.NaN : Math.Clamp(roll, -limitRadians, limitRadians);
+        }
+    }
 }

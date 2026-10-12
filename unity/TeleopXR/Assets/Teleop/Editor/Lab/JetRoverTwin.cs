@@ -28,7 +28,10 @@ namespace Teleop.XR.Editor
     {
         public const string VisualName = "TwinVisual";
 
-        /// <summary>The two finger groups under the wrist's visual: <c>TwinFingerL</c> and <c>TwinFingerR</c>.</summary>
+        /// <summary>The group under the wrist's visual that turns with the wrist roll.</summary>
+        public const string RollName = "TwinRoll";
+
+        /// <summary>The two finger groups under <see cref="RollName"/>: <c>TwinFingerL</c> and <c>TwinFingerR</c>.</summary>
         public const string FingerName = "TwinFinger";
 
         /// <summary>How far each finger slides inward from open to closed (m): until the pads meet.</summary>
@@ -219,13 +222,16 @@ namespace Teleop.XR.Editor
 
             black.Chamfer(new Vector3(0f, 0f, 0.046f), new Vector3(0.054f, 0.03f, 0.004f), 0.0012f);
             servo.Chamfer(new Vector3(0f, 0f, 0.064f), new Vector3(0.032f, 0.032f, 0.03f), 0.004f);   // wrist roll
-            black.Chamfer(new Vector3(0f, 0f, 0.088f), new Vector3(0.058f, 0.02f, 0.018f), 0.003f);  // gripper palm
-            servo.Chamfer(new Vector3(0.012f, 0.019f, 0.086f), new Vector3(0.026f, 0.018f, 0.03f), 0.003f); // gripper servo
+            // Everything past the roll servo turns with the wrist roll (motor 5): the gripper palm, its
+            // servo and the fingers, under one group on the link's own axis, so TwinGripper rolls it.
+            Transform roll = LabParts.Group(RollName, visual).transform;
+            LabParts.Part("Arm/Wrist/GripperPalm", roll, new LabMesh().Chamfer(new Vector3(0f, 0f, 0.088f), new Vector3(0.058f, 0.02f, 0.018f), 0.003f), p.AnodizedBlack, PartKind.Dynamic);
+            LabParts.Part("Arm/Wrist/GripperServo", roll, new LabMesh().Chamfer(new Vector3(0.012f, 0.019f, 0.086f), new Vector3(0.026f, 0.018f, 0.03f), 0.003f), p.ServoBlack, PartKind.Dynamic);
             // Each finger is its own child, so TwinGripper can slide it by the gripper command.
             foreach (int s in new[] { -1, 1 })
             {
                 string side = s < 0 ? "L" : "R";
-                Transform finger = LabParts.Group(FingerName + side, visual).transform;
+                Transform finger = LabParts.Group(FingerName + side, roll).transform;
                 LabParts.Part($"Arm/Wrist/Finger{side}", finger, new LabMesh().Chamfer(new Vector3(s * 0.022f, 0f, 0.117f), new Vector3(0.005f, 0.014f, 0.046f), 0.0015f), p.Aluminium, PartKind.Dynamic);
                 LabParts.Part($"Arm/Wrist/Pad{side}", finger, new LabMesh().Chamfer(new Vector3(s * 0.0185f, 0f, 0.13f), new Vector3(0.0025f, 0.012f, 0.016f), 0.0008f), p.Rubber, PartKind.Dynamic);
             }

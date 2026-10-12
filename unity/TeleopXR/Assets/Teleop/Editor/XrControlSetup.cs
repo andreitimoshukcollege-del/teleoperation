@@ -20,7 +20,10 @@ namespace Teleop.XR.Editor
     /// shrinks to a marker. It stays the bridge's input; the clutch moves it now;</item>
     /// <item><see cref="HandClutchDriver"/> is added next to <see cref="JetRoverOperatorBridge"/> and
     /// wired to the arm rig, the XR Origin and the display's caption line;</item>
-    /// <item><see cref="TwinGripper"/> is added on the wrist's twin visual and wired to its fingers.</item>
+    /// <item><see cref="TwinGripper"/> is added on the wrist's twin visual and wired to its fingers and
+    /// its roll group;</item>
+    /// <item>the robot's start/stop button (<see cref="MotionToggleButton"/>) is built on the bench's
+    /// front-left corner, and the bridge is set to start with motion <b>off</b>.</item>
     /// </list>
     /// <see cref="LabDressing.Apply"/> calls it after every rebuild, because a rebuild replaces the twin.
     /// <b>Teleop → XR → Set Up Clutch Control</b>, or headless:
@@ -77,6 +80,12 @@ namespace Teleop.XR.Editor
             driverSo.FindProperty("statusLabel").objectReferenceValue = caption;
             driverSo.ApplyModifiedPropertiesWithoutUndo();
 
+            // Off until the button is pressed: nothing reaches the robot at launch.
+            var bridgeSo = new SerializedObject(bridge);
+            bridgeSo.FindProperty("motionEnabledAtStart").boolValue = false;
+            bridgeSo.ApplyModifiedPropertiesWithoutUndo();
+            BuildMotionButton(scene, bridge, origin);
+
             var upper = new SerializedObject(rig).FindProperty("upperPitchPivot").objectReferenceValue as Transform;
             Transform visual = upper != null ? upper.Find(JetRoverTwin.VisualName) : null;
             if (visual != null)
@@ -84,13 +93,63 @@ namespace Teleop.XR.Editor
                 TwinGripper twin = visual.GetComponent<TwinGripper>() ?? visual.gameObject.AddComponent<TwinGripper>();
                 var twinSo = new SerializedObject(twin);
                 twinSo.FindProperty("bridge").objectReferenceValue = bridge;
-                twinSo.FindProperty("leftFinger").objectReferenceValue = visual.Find(JetRoverTwin.FingerName + "L");
-                twinSo.FindProperty("rightFinger").objectReferenceValue = visual.Find(JetRoverTwin.FingerName + "R");
+                Transform roll = visual.Find(JetRoverTwin.RollName);
+                twinSo.FindProperty("rollPivot").objectReferenceValue = roll;
+                twinSo.FindProperty("leftFinger").objectReferenceValue = roll != null ? roll.Find(JetRoverTwin.FingerName + "L") : null;
+                twinSo.FindProperty("rightFinger").objectReferenceValue = roll != null ? roll.Find(JetRoverTwin.FingerName + "R") : null;
                 twinSo.FindProperty("travelMeters").floatValue = JetRoverTwin.FingerTravel;
                 twinSo.ApplyModifiedPropertiesWithoutUndo();
             }
 
             EditorSceneManager.MarkSceneDirty(scene);
+        }
+
+        public const string MotionButtonName = "MotionButton";
+
+        /// <summary>
+        /// A red/green push button on the bench's front-left corner, out of the arm's reach and to the
+        /// left of where the right hand clutches, with a label behind it. Rebuilt on every run.
+        /// </summary>
+        private static void BuildMotionButton(Scene scene, JetRoverOperatorBridge bridge, XROrigin origin)
+        {
+            foreach (GameObject root in scene.GetRootGameObjects().Where(r => r.name == MotionButtonName).ToList())
+            {
+                Object.DestroyImmediate(root);
+            }
+
+            float top = LabLayout.BenchTop;
+            var button = new GameObject(MotionButtonName).transform;
+            button.position = new Vector3(LabLayout.ArmBase.x - 0.5f, top, LabLayout.BenchNearZ + 0.12f);
+
+            GameObject plinth = GameObject.CreatePrimitive(PrimitiveType.Cube);
+            plinth.name = "Plinth";
+            plinth.transform.SetParent(button, false);
+            plinth.transform.localPosition = new Vector3(0f, 0.015f, 0f);
+            plinth.transform.localScale = new Vector3(0.11f, 0.03f, 0.11f);
+            plinth.GetComponent<Renderer>().sharedMaterial = LabMaterials.Lit("MotionButtonPlinth", new Color(0.06f, 0.062f, 0.068f), 0.6f, 0.5f);
+
+            GameObject cap = GameObject.CreatePrimitive(PrimitiveType.Cylinder);
+            cap.name = "Cap";
+            cap.transform.SetParent(button, false);
+            cap.transform.localPosition = new Vector3(0f, 0.038f, 0f);
+            cap.transform.localScale = new Vector3(0.06f, 0.008f, 0.06f); // a cylinder primitive is 2 units tall
+            cap.GetComponent<Renderer>().sharedMaterial = LabMaterials.Unlit("MotionButtonCap", new Color(0.9f, 0.12f, 0.1f)); // red = off; recoloured at runtime
+
+            foreach (Collider collider in button.GetComponentsInChildren<Collider>())
+            {
+                Object.DestroyImmediate(collider); // no XRI interactor may press it; the fingertip check does
+            }
+
+            TextMeshPro label = LabParts.Label("Label", button, new Vector3(0f, 0.11f, 0.075f), Quaternion.Euler(15f, 0f, 0f),
+                "ROBOT OFF", 0.45f, Color.white, new Vector2(0.3f, 0.1f), TextAlignmentOptions.Center, FontStyles.Bold);
+
+            var toggle = button.gameObject.AddComponent<MotionToggleButton>();
+            var so = new SerializedObject(toggle);
+            so.FindProperty("bridge").objectReferenceValue = bridge;
+            so.FindProperty("origin").objectReferenceValue = origin;
+            so.FindProperty("cap").objectReferenceValue = cap.GetComponent<Renderer>();
+            so.FindProperty("label").objectReferenceValue = label;
+            so.ApplyModifiedPropertiesWithoutUndo();
         }
 
         /// <summary>Removes everything that made the target grabbable, dependents first.</summary>

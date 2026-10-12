@@ -29,7 +29,13 @@ namespace Teleop.RobotArm.Types
         /// <summary>The gripper's open/close actuator. Present iff <see cref="RobotArmProfile.HasGripper"/>.</summary>
         GripperMain = 4,
 
-        /// <summary>The gripper's independent rotation actuator. Present iff <see cref="RobotArmProfile.GripperCanRotate"/>.</summary>
+        /// <summary>
+        /// The gripper's independent rotation actuator: the wrist roll, about the gripper's own
+        /// forward axis. Present iff <see cref="RobotArmProfile.GripperCanRotate"/>. Unlike
+        /// <see cref="GripperMain"/>'s 0..1 fraction, its command is an angle in radians (0 = jaws
+        /// side by side, right-handed about forward), converted to pulses like an arm joint
+        /// (docs/adr/0017).
+        /// </summary>
         GripperRotate = 5,
     }
 
@@ -271,6 +277,11 @@ namespace Teleop.RobotArm.Types
         /// kinematically "correct" 90 degrees produced a real pose noticeably short of true
         /// vertical, and +7 degrees was needed to reach it for this joint's actual servo-horn
         /// mounting -- see docs/adr/0011-generic-robot-arm-profiles.md.
+        ///
+        /// <para><b>Motor 5 is the wrist roll and motor 10 the gripper</b>, as Hiwonder documents
+        /// the JetRover's bus servos. Until 2026-10-12 this profile called motor 5 the gripper, so
+        /// every gripper command rotated the wrist instead; the Galaxy XR headset's left-hand pinch
+        /// made that visible (docs/adr/0017).</para>
         /// </summary>
         public static RobotArmProfile JetRoverMeasuredDefault
         {
@@ -290,7 +301,7 @@ namespace Teleop.RobotArm.Types
                     distalLinkLength: 0.13f,
                     wristJointCount: 1,
                     hasGripper: true,
-                    gripperCanRotate: false,
+                    gripperCanRotate: true,
                     joints: new[]
                     {
                         new JointHardwareSpec(motorId: 1, role: JointRole.BaseYaw),
@@ -299,7 +310,8 @@ namespace Teleop.RobotArm.Types
                             zeroOffsetRadians: proximalZeroOffsetRadians),
                         new JointHardwareSpec(motorId: 3, role: JointRole.Distal),
                         new JointHardwareSpec(motorId: 4, role: JointRole.Wrist, wristIndex: 0),
-                        new JointHardwareSpec(motorId: 5, role: JointRole.GripperMain),
+                        new JointHardwareSpec(motorId: 10, role: JointRole.GripperMain),
+                        new JointHardwareSpec(motorId: 5, role: JointRole.GripperRotate),
                     });
             }
         }

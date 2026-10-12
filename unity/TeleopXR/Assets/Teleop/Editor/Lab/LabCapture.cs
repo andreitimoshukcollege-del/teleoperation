@@ -47,6 +47,7 @@ namespace Teleop.XR.Editor
             yield return new View("6_display", new Vector3(0.25f, 1.58f, 0.15f), screen, 58f);
             yield return new View("7_room_corner", new Vector3(4.3f, 2.5f, -2.5f), new Vector3(-0.8f, 0.9f, 2.2f), 78f);
             yield return new View("8_room_window", new Vector3(3.4f, 1.7f, 4.3f), new Vector3(-3.5f, 1.2f, 0.4f), 78f);
+            yield return new View("10_motion_button", new Vector3(-0.2f, 1.45f, -0.1f), new Vector3(-0.514f, 0.92f, 0.22f), 50f);
             yield return new View("9_floor_low", new Vector3(-0.9f, 0.32f, -0.9f), new Vector3(1.2f, 0.7f, 3.5f), 70f);
         }
 

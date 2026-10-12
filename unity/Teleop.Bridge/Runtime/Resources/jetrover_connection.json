@@ -32,5 +32,7 @@
   "ClutchScale": 0.5,
   "ClutchMinHeightMeters": -0.05,
   "GripperPinchOpenMeters": 0.08,
-  "GripperPinchClosedMeters": 0.015
+  "GripperPinchClosedMeters": 0.015,
+  "GripperRollSign": 1.0,
+  "GripperRollLimitDegrees": 90.0
 }

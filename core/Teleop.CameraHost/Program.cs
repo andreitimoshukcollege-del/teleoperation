@@ -15,7 +15,7 @@ namespace Teleop.CameraHost
 
         private const string Usage =
             "Usage:\n" +
-            "  Teleop.CameraHost serve [--device /dev/video0] [--width 640] [--height 480] [--fps 30]\n" +
+            "  Teleop.CameraHost serve [--device auto|/dev/videoN] [--width 640] [--height 480] [--fps 30]\n" +
             "                          [--port 6003] [--subscriber-timeout 3] [--seconds 0]\n" +
             "      Stream native MJPEG frames to the latest subscriber (docs/adr/0014). --seconds 0 runs\n" +
             "      until Ctrl+C or SIGTERM. Linux only.\n" +

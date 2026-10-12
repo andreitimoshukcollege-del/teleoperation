@@ -502,22 +502,14 @@ deploy-camerahost fps="30" device="auto" remote_host=default_jetrover_host remot
     scp -q -o StrictHostKeyChecking=accept-new "$archive" "${scp_dest}:/tmp/${remote_dir}.tar.gz"
     # Stable wrapper the unit's ExecStart points at, rewritten on every deploy (same pattern as
     # deploy-robothost), so a redeploy needs only a restart. `exec` so SIGTERM reaches the sender.
-    # device=auto finds the DaBai's RGB camera by its stable USB name on every start. The camera
-    # drops off the USB bus now and then and comes back under a different /dev/videoN; a fixed
-    # /dev/video0 then fails forever (2026-10-12: 168 restarts), while systemd's restart plus this
-    # lookup picks the camera up again within seconds.
+    # device=auto: the sender finds the DaBai's RGB camera by its stable /dev/v4l/by-id name, and
+    # when the camera drops off the USB bus (it does, now and then, coming back as another
+    # /dev/videoN) it waits for it and reopens it, instead of exiting until systemd gives up
+    # (2026-10-12). Pass a /dev/videoN to pin a device.
     ssh -o StrictHostKeyChecking=accept-new "$target" "cat > /home/jetson/camerahost-run.sh" <<EOF
     #!/bin/bash
-    device="{{device}}"
-    if [ "\$device" = auto ]; then
-        device=\$(ls /dev/v4l/by-id/*DaBai*RGB*-video-index0 2>/dev/null | head -n 1)
-        if [ -z "\$device" ]; then
-            echo "error: no Orbbec DaBai RGB camera under /dev/v4l/by-id (unplugged, or still re-enumerating)" >&2
-            exit 2
-        fi
-    fi
     exec /home/jetson/.dotnet/dotnet /home/jetson/camerahost_current/Teleop.CameraHost.dll serve \
-        --device "\$device" --fps {{fps}} --port 6003
+        --device {{device}} --fps {{fps}} --port 6003
     EOF
     ssh -o StrictHostKeyChecking=accept-new "$target" "
         set -e

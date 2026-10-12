@@ -30,6 +30,13 @@ namespace Teleop.RobotHost
         public readonly float? MaxDirectionMagnitude;
 
         /// <summary>
+        /// Optional override of <c>GenericArmPlantConfig.Default.PulsesPerSecond</c>: how fast every
+        /// servo is told to move (the relay turns a move into <c>pulseDelta / this</c> seconds). Lower
+        /// is slower. Null keeps the default.
+        /// </summary>
+        public readonly float? PulsesPerSecond;
+
+        /// <summary>
         /// Optional second listener for pre-computed joint-angle commands
         /// (docs/adr/0009-jetrover-operator-side-inverse-kinematics.md) -- null (the default)
         /// disables it entirely, so existing deployments/scripts that only know about
@@ -54,13 +61,15 @@ namespace Teleop.RobotHost
         public const string Usage =
             "Usage: Teleop.RobotHost --local-port <port> [--remote-host <ip> --remote-port <port>] " +
             "[--reply-to sender|fixed] --relay-socket <path> --local-relay-socket <path> " +
-            "[--max-direction-magnitude <n>] [--joint-local-port <port>] [--profile-path <path>]\n" +
+            "[--max-direction-magnitude <n>] [--pulses-per-second <n>] [--joint-local-port <port>] [--profile-path <path>]\n" +
             "  --reply-to sender (default) replies to wherever the latest command came from;\n" +
             "  --remote-host/--remote-port are then only the target before the first command.\n" +
             "  --reply-to fixed always replies to --remote-host:--remote-port, which it requires.\n" +
             "  --max-direction-magnitude overrides GenericArmPlantConfig.Default's clamp (5) on how far\n" +
             "  a single accepted command may move a joint's belief -- lower it (e.g. 1-2) for a\n" +
             "  visibly slower, gentler arm; omit it to keep the default.\n" +
+            "  --pulses-per-second overrides how fast every servo is told to move (default 2200,\n" +
+            "  about 9 rad/s commanded; 900 is about 3.8 rad/s). Lower is slower.\n" +
             "  --joint-local-port opens a second, optional listener for pre-computed joint-angle\n" +
             "  commands (GenericArmPlant.CommandJointAngles) instead of the default Cartesian-target\n" +
             "  path -- see docs/adr/0009-jetrover-operator-side-inverse-kinematics.md. Omit it to\n" +
@@ -74,7 +83,7 @@ namespace Teleop.RobotHost
         private RobotHostArgs(
             int localPort, IPAddress? remoteHost, int? remotePort, bool replyToSender,
             string relaySocketPath, string localRelaySocketPath, float? maxDirectionMagnitude,
-            int? jointLocalPort, string? profilePath)
+            int? jointLocalPort, string? profilePath, float? pulsesPerSecond = null)
         {
             LocalPort = localPort;
             RemoteHost = remoteHost;
@@ -83,6 +92,7 @@ namespace Teleop.RobotHost
             RelaySocketPath = relaySocketPath;
             LocalRelaySocketPath = localRelaySocketPath;
             MaxDirectionMagnitude = maxDirectionMagnitude;
+            PulsesPerSecond = pulsesPerSecond;
             JointLocalPort = jointLocalPort;
             ProfilePath = profilePath;
         }
@@ -95,6 +105,7 @@ namespace Teleop.RobotHost
             string? relaySocketPath = null;
             string? localRelaySocketPath = null;
             float? maxDirectionMagnitude = null;
+            float? pulsesPerSecond = null;
             int? jointLocalPort = null;
             string? profilePath = null;
             string replyTo = "sender";
@@ -127,6 +138,16 @@ namespace Teleop.RobotHost
                             maxDirectionMagnitude = parsedMagnitude;
                         }
                         break;
+                    case "--pulses-per-second" when i + 1 < args.Length:
+                        if (float.TryParse(args[++i], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out float parsedPps))
+                        {
+                            pulsesPerSecond = parsedPps;
+                        }
+                        else
+                        {
+                            pulsesPerSecond = -1f; // rejected below
+                        }
+                        break;
                     case "--joint-local-port" when i + 1 < args.Length:
                         jointLocalPort = ParseIntOrNull(args[++i]);
                         break;
@@ -137,10 +158,10 @@ namespace Teleop.RobotHost
             }
 
             if (localPort is null || relaySocketPath is null || localRelaySocketPath is null ||
-                maxDirectionMagnitude is <= 0f || jointLocalPort is <= 0)
+                maxDirectionMagnitude is <= 0f || jointLocalPort is <= 0 || pulsesPerSecond is <= 0f)
             {
-                error = "Missing or invalid required argument (--max-direction-magnitude and " +
-                    "--joint-local-port, if given, must be positive).";
+                error = "Missing or invalid required argument (--max-direction-magnitude, " +
+                    "--pulses-per-second and --joint-local-port, if given, must be positive).";
                 return null;
             }
 
@@ -168,7 +189,7 @@ namespace Teleop.RobotHost
             error = null;
             return new RobotHostArgs(
                 localPort.Value, remoteHost, remotePort, replyToSender, relaySocketPath, localRelaySocketPath,
-                maxDirectionMagnitude, jointLocalPort, profilePath);
+                maxDirectionMagnitude, jointLocalPort, profilePath, pulsesPerSecond);
         }
 
         private static int? ParseIntOrNull(string s) => int.TryParse(s, out int value) ? value : null;

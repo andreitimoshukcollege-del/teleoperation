@@ -149,9 +149,11 @@ namespace Teleop.Bridge
 
         // The joint-state twin (docs/adr/0018): which Registries.JointPredictors entry predicts the
         // robot's joints now (servo-replay, or hold-last for no prediction), and the servo speed its
-        // model assumes, rad/s. That speed is a guess until it is fitted from recordings. The
+        // model assumes, rad/s. It follows the robot's commanded servo speed: deploy-robothost's
+        // pulses_per_second (900 by default) × 240°/1000 pulses = 216°/s ≈ 3.8 rad/s. Change both
+        // together. The real servo may be slower than commanded, which recordings will show. The
         // prediction horizon is capped by MaxHorizonMs above.
         public string JointPredictorName = "servo-replay";
-        public float JointModelSpeedRadPerSec = 5f;
+        public float JointModelSpeedRadPerSec = 3.8f;
     }
 }

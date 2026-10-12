@@ -67,7 +67,7 @@ namespace Teleop.RobotHost
             var plantConfig = new GenericArmPlantConfig(
                 profile: profile,
                 pulsePerRadian: defaults.PulsePerRadian,
-                pulsesPerSecond: defaults.PulsesPerSecond,
+                pulsesPerSecond: a.PulsesPerSecond ?? defaults.PulsesPerSecond,
                 stepSizePulses: defaults.StepSizePulses,
                 maxDirectionMagnitude: a.MaxDirectionMagnitude ?? defaults.MaxDirectionMagnitude,
                 zeroPulse: defaults.ZeroPulse,
@@ -121,7 +121,7 @@ namespace Teleop.RobotHost
                 "(docs/adr/0008-clocksync-cross-rate-normalization.md).");
             Console.WriteLine(
                 $"[plant] profile={profile.Name} JointCount={profile.JointCount} " +
-                $"MaxDirectionMagnitude={plantConfig.MaxDirectionMagnitude:0.##}");
+                $"MaxDirectionMagnitude={plantConfig.MaxDirectionMagnitude:0.##} PulsesPerSecond={plantConfig.PulsesPerSecond:0.##}");
             if (jointTransport != null)
             {
                 Console.WriteLine(

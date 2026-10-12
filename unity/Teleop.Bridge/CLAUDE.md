@@ -141,6 +141,12 @@ CLAUDE.md. These rules hold for both:
 - **Robot address:** the same `jetrover_connection` config as `JetRoverOperatorBridge`. The robot
   must be running the sender: `teleop-camerahost.service` (`just deploy-camerahost`,
   `just install-camerahost-service`) or `just camera-serve` for a one-off.
+- **When the feed freezes or cuts out, run `just camera-logs` first.** It shows the sender's
+  journal, the video devices and the kernel's USB events. On 2026-10-12 the cause was the robot,
+  not the network: the DaBai camera dropped off the USB bus and came back as `/dev/video1`, and a
+  sender pinned to `/dev/video0` failed from then on. `deploy-camerahost` now defaults to
+  `device=auto`, which finds the camera by its stable `/dev/v4l/by-id` name on every start. The
+  USB drop itself is a hardware question (power, cable, hub).
 - **Logging:** every 10 s the Console logs `[camera] ...: received N frames, shown N, ... last decode X ms`.
   **On a headset, watch `last decode`.** `Texture2D.LoadImage` decodes on the main thread, and it is
   the one cost here that can take frame time from the render loop. If it is a meaningful share of

@@ -276,7 +276,7 @@ clocksync-check remote_host=default_jetrover_host remote_port="6000" local_port=
         --confirm-hardware-motion
 
 # Publish Teleop.RobotHost for the Jetson (linux-arm64), copy it over, and restart its systemd service -- needs passwordless ssh/scp; does NOT touch the Jetson's ROS 2 nodes, see robot/systemd/README.md
-deploy-robothost remote_host=default_jetrover_host remote_user="jetson" operator_host=default_operator_host max_direction_magnitude="" profile_path="":
+deploy-robothost remote_host=default_jetrover_host remote_user="jetson" operator_host=default_operator_host max_direction_magnitude="" profile_path="" pulses_per_second="900":
     #!/usr/bin/env bash
     set -euo pipefail
     host=$(just _robot-host "{{remote_host}}")
@@ -301,6 +301,10 @@ deploy-robothost remote_host=default_jetrover_host remote_user="jetson" operator
     extra_args=""
     if [ -n "{{max_direction_magnitude}}" ]; then extra_args="$extra_args --max-direction-magnitude {{max_direction_magnitude}}"; fi
     if [ -n "{{profile_path}}" ]; then extra_args="$extra_args --profile-path {{profile_path}}"; fi
+    # Servo speed. 900 (about 3.8 rad/s commanded, tested clean on 2026-08-22) is slower than the
+    # code default 2200, so the twin's prediction is easy to see; keep the headset's
+    # JointModelSpeedRadPerSec in step with it. pulses_per_second="" restores the code default.
+    if [ -n "{{pulses_per_second}}" ]; then extra_args="$extra_args --pulses-per-second {{pulses_per_second}}"; fi
     # robothost-run.sh is the stable script teleop-robothost.service's ExecStart points at
     # (robot/systemd/teleop-robothost.service) -- regenerated on every deploy with this run's exact
     # args (including any optional extra_args), so redeploying never needs `systemctl
@@ -331,6 +335,13 @@ deploy-robothost remote_host=default_jetrover_host remote_user="jetson" operator
     "
 
 # SSH in and print systemctl status for all three Jetson-side services (teleop-robothost, jetrover-relay, jetrover-arm-control) in one shot -- see robot/systemd/README.md
+# Read-only: the camera sender's recent journal (teleop-camerahost.service) with its per-10 s [stats] lines, the video devices present, and the kernel's recent USB/camera events. Use it when the headset's feed freezes or cuts out
+camera-logs lines="200" remote_host=default_jetrover_host remote_user="jetson":
+    ssh -o StrictHostKeyChecking=accept-new "{{remote_user}}@$(just _robot-host "{{remote_host}}")" \
+        "systemctl status teleop-camerahost --no-pager -n 0; journalctl -u teleop-camerahost --no-pager -n {{lines}}; \
+         echo '--- video devices'; ls -l /dev/video* 2>&1; ls -l /dev/v4l/by-id/ 2>&1; v4l2-ctl --list-devices 2>&1 | head -20; \
+         echo '--- kernel USB/camera events (newest last)'; journalctl -k --no-pager -n 3000 | grep -iE 'usb|uvc|video' | tail -40"
+
 robot-status remote_host=default_jetrover_host remote_user="jetson":
     ssh -o StrictHostKeyChecking=accept-new "{{remote_user}}@$(just _robot-host "{{remote_host}}")" \
         "systemctl status teleop-robothost jetrover-relay jetrover-arm-control --no-pager -n 5"
@@ -472,7 +483,7 @@ camera-probe seconds="10" max_fps="0" save="" remote_host=default_jetrover_host:
         --seconds {{seconds}} --max-fps {{max_fps}} {{ if save != "" { "--save '" + save + "'" } else { "" } }}
 
 # Publish Teleop.CameraHost for the Jetson, copy it over, write ~/camerahost-run.sh and restart teleop-camerahost if it is installed (see robot/systemd/README.md) -- moves nothing; does not touch teleop-robothost or the ROS nodes
-deploy-camerahost fps="30" device="/dev/video0" remote_host=default_jetrover_host remote_user="jetson":
+deploy-camerahost fps="30" device="auto" remote_host=default_jetrover_host remote_user="jetson":
     #!/usr/bin/env bash
     set -euo pipefail
     host=$(just _robot-host "{{remote_host}}")
@@ -491,10 +502,22 @@ deploy-camerahost fps="30" device="/dev/video0" remote_host=default_jetrover_hos
     scp -q -o StrictHostKeyChecking=accept-new "$archive" "${scp_dest}:/tmp/${remote_dir}.tar.gz"
     # Stable wrapper the unit's ExecStart points at, rewritten on every deploy (same pattern as
     # deploy-robothost), so a redeploy needs only a restart. `exec` so SIGTERM reaches the sender.
+    # device=auto finds the DaBai's RGB camera by its stable USB name on every start. The camera
+    # drops off the USB bus now and then and comes back under a different /dev/videoN; a fixed
+    # /dev/video0 then fails forever (2026-10-12: 168 restarts), while systemd's restart plus this
+    # lookup picks the camera up again within seconds.
     ssh -o StrictHostKeyChecking=accept-new "$target" "cat > /home/jetson/camerahost-run.sh" <<EOF
     #!/bin/bash
+    device="{{device}}"
+    if [ "\$device" = auto ]; then
+        device=\$(ls /dev/v4l/by-id/*DaBai*RGB*-video-index0 2>/dev/null | head -n 1)
+        if [ -z "\$device" ]; then
+            echo "error: no Orbbec DaBai RGB camera under /dev/v4l/by-id (unplugged, or still re-enumerating)" >&2
+            exit 2
+        fi
+    fi
     exec /home/jetson/.dotnet/dotnet /home/jetson/camerahost_current/Teleop.CameraHost.dll serve \
-        --device {{device}} --fps {{fps}} --port 6003
+        --device "\$device" --fps {{fps}} --port 6003
     EOF
     ssh -o StrictHostKeyChecking=accept-new "$target" "
         set -e

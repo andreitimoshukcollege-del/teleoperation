@@ -118,11 +118,18 @@ Contents:
     `pulses_per_second` (default 2200, about 9 rad/s).
   - The predictor replays each command at that same speed, capped at `JointModelSpeedRadPerSec` (6,
     the servo-limit guess).
-- **Moving the camera display.** Pinch the cyan bar on top of the display with the right hand and
-  walk it. The display slides over the floor and keeps facing you. Where a pinch starts decides
-  what it holds: on the bar it is the display, anywhere else the clutch, so moving the display
-  never moves the robot. The display's stand and bezel are dynamic, lit by light probes, so they
-  move with it. Its position is not saved between sessions.
+- **Moving the camera display, only while robot motion is off.**
+  - Point at the display with your right hand. The ray runs from about your shoulder through
+    your pinch point, as Android XR's hand rays do. When it is on the display, a yellow line
+    appears and the bar on top turns yellow.
+  - Pinch to grab, and the bar turns green. Move your hand to sweep the display around you. It
+    slides over the floor and keeps facing you.
+  - Where a pinch starts decides what it holds: the display under the ray, or else the clutch.
+  - With motion on, the display is never offered, and switching motion on mid-move lets go of
+    it. A pinch therefore can never drive a live robot while you meant to move the display, or
+    the reverse.
+  - The display's stand and bezel are dynamic, lit by light probes, so they move with it. Its
+    position is not saved between sessions.
 
 **These are safety settings.** `just unity-check-xr` fails, and `just build-galaxy` refuses to
 build, if any of them changes:

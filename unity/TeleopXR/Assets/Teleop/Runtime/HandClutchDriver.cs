@@ -37,8 +37,12 @@ namespace Teleop.XR
         [SerializeField] private float releaseAboveMeters = 0.03f;
         [Tooltip("Off: the wrist keeps the pitch it had when the clutch engaged.")]
         [SerializeField] private bool followPitch = true;
-        [Tooltip("Optional: the camera display's grab bar. A pinch that starts on it moves the display instead of the arm.")]
+        [Tooltip("Optional: the camera display. While robot motion is off, a pinch that starts with the hand's ray on it moves the display instead of the arm.")]
         [SerializeField] private DisplayMover displayMover;
+        [Tooltip("Optional: drawn from the hand to the display while the ray is on it.")]
+        [SerializeField] private LineRenderer pointer;
+        [Tooltip("Where the hand's ray starts relative to the head, before the pinch point: about the shoulder (x is mirrored for the left hand).")]
+        [SerializeField] private Vector3 shoulderFromHead = new Vector3(0.17f, -0.17f, 0f);
         [Tooltip("Optional: a line of text that shows whether the clutch is on and the gripper command.")]
         [SerializeField] private TMP_Text statusLabel;
 
@@ -80,14 +84,23 @@ namespace Teleop.XR
             XRHand gripping = clutchHand == Handedness.Right ? _hands.leftHand : _hands.rightHand;
 
             bool moving = displayMover != null && displayMover.IsMoving;
+            // The display is only offered while the robot cannot move, so a pinch meant for it can
+            // never become a clutch on a live arm, and the reverse.
+            bool displayOffered = displayMover != null && !(bridge.MotionEnabled && bridge.HardwareMotionAllowed);
+            bool pointing = false;
+            Ray ray = default;
+            float hitDistance = 0f;
             if (TryPinch(driving, space, out Vector3 point, out Quaternion rotation, out _, out float distance))
             {
+                ray = HandRay(point);
+                pointing = displayOffered && !clutch.IsEngaged && displayMover.TryHit(ray, out hitDistance);
+
                 if (!clutch.IsEngaged && !moving && distance < engageBelowMeters)
                 {
-                    // Where the pinch starts decides what it holds: the display's bar, or the arm.
-                    if (displayMover != null && displayMover.Contains(point))
+                    // Where the pinch starts decides what it holds: the display under the ray, or the arm.
+                    if (pointing)
                     {
-                        displayMover.Begin(point);
+                        displayMover.Begin(ray, hitDistance);
                         moving = true;
                     }
                     else
@@ -102,8 +115,14 @@ namespace Teleop.XR
                     moving = false;
                 }
 
-                if (moving)
-                    displayMover.Drag(point);
+                if (moving && displayOffered)
+                    displayMover.Drag(ray);
+                else if (moving)
+                {
+                    // Motion was switched on mid-move: let go of the display.
+                    displayMover.End();
+                    moving = false;
+                }
                 else
                     clutch.Follow(point, rotation, followPitch);
             }
@@ -111,7 +130,11 @@ namespace Teleop.XR
             {
                 if (clutch.IsEngaged) clutch.Release();
                 if (moving) displayMover.End();
+                moving = false;
             }
+
+            if (displayMover != null) displayMover.Hovered = pointing || moving;
+            ShowPointer(pointing || moving, point, ray, moving ? -1f : hitDistance);
 
             if (TryPinch(gripping, space, out _, out Quaternion gripRotation, out bool hasPalm, out float gripDistance))
             {
@@ -128,6 +151,46 @@ namespace Teleop.XR
             }
 
             Show(clutch);
+        }
+
+        /// <summary>
+        /// The hand's pointing ray: from about the shoulder through the pinch point, the way Android
+        /// XR and Quest aim hand rays. It is steadier than the hand's own orientation, and it is
+        /// where people expect a pinch to point.
+        /// </summary>
+        private Ray HandRay(Vector3 pinchPoint)
+        {
+            Camera eye = Camera.main;
+            if (eye == null)
+            {
+                return new Ray(pinchPoint, Vector3.forward);
+            }
+
+            Transform head = eye.transform;
+            Vector3 flatRight = Vector3.ProjectOnPlane(head.right, Vector3.up).normalized;
+            float side = clutchHand == Handedness.Right ? 1f : -1f;
+            Vector3 shoulder = head.position + flatRight * (shoulderFromHead.x * side) + Vector3.up * shoulderFromHead.y;
+            Vector3 direction = pinchPoint - shoulder;
+            return new Ray(pinchPoint, direction.sqrMagnitude > 1e-6f ? direction.normalized : head.forward);
+        }
+
+        private void ShowPointer(bool visible, Vector3 from, Ray ray, float distance)
+        {
+            if (pointer == null)
+            {
+                return;
+            }
+
+            if (pointer.enabled != visible) pointer.enabled = visible;
+            if (!visible)
+            {
+                return;
+            }
+
+            // While holding, the line runs to the display's grab point; while aiming, to where the ray hits it.
+            Vector3 to = distance >= 0f ? ray.GetPoint(distance) : displayMover.GrabPoint(ray);
+            pointer.SetPosition(0, from);
+            pointer.SetPosition(1, to);
         }
 
         /// <summary>The pinch point (midway between thumb and index tips), the palm's rotation, and the tip distance, in world space.</summary>

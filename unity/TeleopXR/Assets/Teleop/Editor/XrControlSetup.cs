@@ -179,8 +179,8 @@ namespace Teleop.XR.Editor
         }
 
         /// <summary>
-        /// A grab bar on top of the camera display, and the <see cref="DisplayMover"/> that walks the
-        /// display when the clutch hand pinches it. Rebuilt on every run; the display itself is the
+        /// A bar on top of the camera display, the <see cref="DisplayMover"/> that moves the display
+        /// when the clutch hand points at it and pinches (robot motion off only), and the pointer line. Rebuilt on every run; the display itself is the
         /// lab's (LabDisplay).
         /// </summary>
         private static void BuildDisplayHandle(Scene scene, HandClutchDriver driver)
@@ -216,10 +216,27 @@ namespace Teleop.XR.Editor
             DisplayMover mover = display.GetComponent<DisplayMover>() ?? display.gameObject.AddComponent<DisplayMover>();
             var so = new SerializedObject(mover);
             so.FindProperty("handle").objectReferenceValue = handle.GetComponent<Renderer>();
+            so.FindProperty("grabMargin").floatValue = 0.05f;
             so.ApplyModifiedPropertiesWithoutUndo();
+
+            // The pointer line, drawn from the hand to the display while the ray is on it.
+            Transform oldPointer = driver.transform.Find("DisplayPointer");
+            if (oldPointer != null) Object.DestroyImmediate(oldPointer.gameObject);
+            var pointerObject = new GameObject("DisplayPointer");
+            pointerObject.transform.SetParent(driver.transform, false);
+            var line = pointerObject.AddComponent<LineRenderer>();
+            line.useWorldSpace = true;
+            line.positionCount = 2;
+            line.startWidth = 0.004f;
+            line.endWidth = 0.002f;
+            line.sharedMaterial = LabMaterials.Transparent("DisplayPointer", new Color(1f, 0.85f, 0.25f, 0.8f));
+            line.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
+            line.receiveShadows = false;
+            line.enabled = false;
 
             var driverSo = new SerializedObject(driver);
             driverSo.FindProperty("displayMover").objectReferenceValue = mover;
+            driverSo.FindProperty("pointer").objectReferenceValue = line;
             driverSo.ApplyModifiedPropertiesWithoutUndo();
         }
 

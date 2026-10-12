@@ -332,14 +332,14 @@ namespace Teleop.Bridge
             try
             {
                 _jointStateLink = new JetRoverJointStateLink(_jointTransport, _clock, _profile, clockSyncConfig,
-                    _config.JointPredictorName, _config.JointModelSpeedRadPerSec, _config.MaxHorizonMs);
+                    _config.JointPredictorName, _config.JointModelSpeedRadPerSec, _config.MaxHorizonMs, _config.GripperFractionPerRadian);
             }
             catch (ArgumentException e)
             {
                 // A mistyped predictor name must not take the command path down with it.
                 Debug.LogError($"[twin] {e.Message}; falling back to hold-last (no prediction)");
                 _jointStateLink = new JetRoverJointStateLink(_jointTransport, _clock, _profile, clockSyncConfig,
-                    "hold-last", _config.JointModelSpeedRadPerSec, _config.MaxHorizonMs);
+                    "hold-last", _config.JointModelSpeedRadPerSec, _config.MaxHorizonMs, _config.GripperFractionPerRadian);
             }
             _predictor = predictorFactory(predictorConfig, _clock);
             _reconciler = reconcilerFactory(reconcilerConfig, _metricSink, _clock);

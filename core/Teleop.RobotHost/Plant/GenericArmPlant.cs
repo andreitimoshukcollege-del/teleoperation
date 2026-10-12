@@ -454,7 +454,7 @@ namespace Teleop.RobotHost.Plant
         /// profile's order. Arm joints and the wrist roll are radians, with the mounting
         /// <see cref="JointHardwareSpec.ZeroOffsetRadians"/> removed, as <see cref="State"/> does.
         /// They are sensed where the relay reported the joint, and the commanded belief otherwise. The
-        /// gripper is the commanded 0..1 fraction, never sensed (it is open-loop). Returns the
+        /// gripper is a 0..1 fraction, likewise sensed when the relay reads it back. Returns the
         /// count written. Allocation-free.
         /// </summary>
         public int ReadJointState(Span<JointSample> output)
@@ -465,9 +465,13 @@ namespace Teleop.RobotHost.Plant
                 JointHardwareSpec joint = _profile.Joints[i];
                 if (joint.Role == JointRole.GripperMain)
                 {
+                    // Measured when the relay reads the gripper servo back (FEEDBACK_MOTOR_IDS on the
+                    // Jetson), otherwise the commanded fraction. A sensed value short of the command
+                    // means the fingers stopped on something.
                     float span = _config.GripperClosedPulse - _config.GripperOpenPulse;
-                    float fraction = span != 0f ? (_targetPulse[i] - _config.GripperOpenPulse) / span : 0f;
-                    output[i] = new JointSample(joint.MotorId, Math.Clamp(fraction, 0f, 1f), sensed: false);
+                    float pulse = _sensed[i] ? _sensedPulse[i] : _targetPulse[i];
+                    float fraction = span != 0f ? (pulse - _config.GripperOpenPulse) / span : 0f;
+                    output[i] = new JointSample(joint.MotorId, Math.Clamp(fraction, 0f, 1f), _sensed[i]);
                 }
                 else
                 {

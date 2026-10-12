@@ -36,5 +36,6 @@
   "GripperRollSign": 1.0,
   "GripperRollLimitDegrees": 90.0,
   "JointPredictorName": "servo-replay",
-  "JointModelSpeedRadPerSec": 6.0
+  "JointModelSpeedRadPerSec": 6.0,
+  "GripperFractionPerRadian": 0.358
 }

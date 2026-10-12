@@ -66,6 +66,8 @@ namespace Teleop.Core.Prediction
         private readonly float[] _scratchValues;
         private readonly bool[] _sensedScratch;
         private readonly bool[] _instantScratch;
+        private readonly float[] _scale;
+        private readonly float[] _scaleScratch;
 
         private int _accepted;
         private int _rejected;
@@ -93,6 +95,8 @@ namespace Teleop.Core.Prediction
             _scratchValues = new float[_maxJoints];
             _sensedScratch = new bool[_maxJoints];
             _instantScratch = new bool[_maxJoints];
+            _scale = new float[_maxJoints];
+            _scaleScratch = new float[_maxJoints];
             Reset();
         }
 
@@ -176,6 +180,7 @@ namespace Teleop.Core.Prediction
                 _scratchValues[i] = value;
                 _sensedScratch[i] = joints[i].Sensed;
                 _instantScratch[i] = instant;
+                _scaleScratch[i] = SpeedScale(id);
             }
 
             for (int i = 0; i < n; i++)
@@ -184,6 +189,7 @@ namespace Teleop.Core.Prediction
                 _measured[i] = _scratchValues[i];
                 _sensed[i] = _sensedScratch[i];
                 _instant[i] = _instantScratch[i];
+                _scale[i] = _scaleScratch[i];
             }
 
             _jointCount = n;
@@ -283,7 +289,8 @@ namespace Teleop.Core.Prediction
                 }
 
                 float delta = _target[j] - _work[j];
-                _work[j] = Math.Abs(delta) <= step ? _target[j] : _work[j] + Math.Sign(delta) * step;
+                float jointStep = step * _scale[j];
+                _work[j] = Math.Abs(delta) <= jointStep ? _target[j] : _work[j] + Math.Sign(delta) * jointStep;
             }
         }
 
@@ -295,6 +302,17 @@ namespace Teleop.Core.Prediction
             }
 
             return -1;
+        }
+
+        private float SpeedScale(byte motorId)
+        {
+            byte[] ids = _config.ScaledMotorIds;
+            for (int i = 0; i < ids.Length; i++)
+            {
+                if (ids[i] == motorId) return _config.SpeedScales[i];
+            }
+
+            return 1f;
         }
 
         private bool IsInstant(byte motorId)

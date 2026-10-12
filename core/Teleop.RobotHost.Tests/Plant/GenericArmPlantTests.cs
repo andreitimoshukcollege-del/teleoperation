@@ -312,6 +312,16 @@ namespace Teleop.RobotHost.Tests.Plant
             Assert.False(gripper.Sensed);
             Assert.Equal(0.5f, gripper.Value, 4);
 
+            // Once the relay reads the gripper back, its measured position is reported, here stopped
+            // short of the commanded half-closed (it has hit something).
+            float stoppedPulse = Config.GripperOpenPulse + 0.3f * (Config.GripperClosedPulse - Config.GripperOpenPulse);
+            relay.EnqueueFeedback(new JointFeedbackEntry(GripperMotorId, true, stoppedPulse));
+            plant.Step(2000);
+            plant.ReadJointState(joints);
+            gripper = joints.First(j => j.MotorId == GripperMotorId);
+            Assert.True(gripper.Sensed);
+            Assert.Equal(0.3f, gripper.Value, 4);
+
             Assert.False(joints.First(j => j.MotorId == DistalMotorId).Sensed);
         }
 

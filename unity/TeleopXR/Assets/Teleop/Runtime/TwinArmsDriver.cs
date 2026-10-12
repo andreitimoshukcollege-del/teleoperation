@@ -72,9 +72,9 @@ namespace Teleop.XR
             if (hasState && link.TryGetMeasured(out JetRoverJointPose measuredPose))
             {
                 measured = Drive(measuredRig, measuredGripper, measuredPose);
-                // The robot measures neither the wrist roll nor the gripper today (no servo feedback):
-                // the measured arm then shows no gripper rather than the last command dressed as a reading.
-                if (measuredGripper != null) measuredGripper.SetGripperVisible(measuredPose.RollSensed);
+                // Unless the relay reads the wrist roll or the gripper back (just robot-feedback-ids), the
+                // measured arm shows no gripper rather than the last command dressed as a reading.
+                if (measuredGripper != null) measuredGripper.SetGripperVisible(measuredPose.RollSensed || measuredPose.GripperSensed);
             }
 
             SetVisible(predictedRig, showPredicted && predicted);

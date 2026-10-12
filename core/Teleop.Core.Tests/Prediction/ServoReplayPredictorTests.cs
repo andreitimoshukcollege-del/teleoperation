@@ -125,6 +125,17 @@ public class ServoReplayPredictorTests
     }
 
     [Fact]
+    public void AScaledJoint_LikeAGripperInFractions_MovesAtTheServoSpeedTimesItsScale()
+    {
+        var config = new JointPredictorConfig(6, 64, Speed, new byte[0], 500, Tps,
+            scaledMotorIds: new[] { Gripper }, speedScales: new[] { 0.5f });
+        var p = new ServoReplayPredictor(config);
+        p.ObserveState(0, State(0f, 0f));
+        p.ObserveCommand(0, Command(0f, 1f), 0f);
+        Assert.Equal(0.1f, Predict(p, 100, Gripper), 4);   // 100 ms × 2 rad/s × 0.5 per rad
+    }
+
+    [Fact]
     public void TheGripper_FollowsItsCommandAtOnce()
     {
         var p = new ServoReplayPredictor(Config());

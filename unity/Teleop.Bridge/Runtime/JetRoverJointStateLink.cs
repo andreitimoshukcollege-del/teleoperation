@@ -78,7 +78,8 @@ namespace Teleop.Bridge
             FramesReceived == 0 ? float.PositiveInfinity : (_clock.NowTicks - _lastFrameArrivalTicks) / (float)_clock.TicksPerSecond;
 
         public JetRoverJointStateLink(UdpTransport transport, ITimeAuthority clock, in RobotArmProfile profile,
-            ClockSyncConfig clockSyncConfig, string predictorName, float maxJointSpeedRadPerSec, double maxHorizonMs)
+            ClockSyncConfig clockSyncConfig, string predictorName, float maxJointSpeedRadPerSec, double maxHorizonMs,
+            float gripperFractionPerRadian = 0.358f)
         {
             _transport = transport ?? throw new ArgumentNullException(nameof(transport));
             _clock = clock ?? throw new ArgumentNullException(nameof(clock));
@@ -94,8 +95,11 @@ namespace Teleop.Bridge
             PredictorName = predictorName;
             _predictor = factory(new JointPredictorConfig(
                 maxJoints: MaxJoints, commandHistoryCapacity: 64, maxJointSpeedRadPerSec: maxJointSpeedRadPerSec,
-                instantMotorIds: GripperIds(profile), maxHorizonTicks: (long)(maxHorizonMs / 1000.0 * clock.TicksPerSecond),
-                ticksPerSecond: clock.TicksPerSecond));
+                instantMotorIds: new byte[0], maxHorizonTicks: (long)(maxHorizonMs / 1000.0 * clock.TicksPerSecond),
+                ticksPerSecond: clock.TicksPerSecond,
+                // The gripper moves like the other joints, at the servo's speed, in its own units
+                // (a 0..1 fraction): fraction per radian of servo travel.
+                scaledMotorIds: GripperIds(profile), speedScales: Repeat(gripperFractionPerRadian, GripperIds(profile).Length)));
         }
 
         /// <summary>Sends a keepalive when one is due, and takes in every frame that has arrived.</summary>
@@ -258,6 +262,13 @@ namespace Teleop.Bridge
             }
 
             return -1;
+        }
+
+        private static float[] Repeat(float value, int count)
+        {
+            var values = new float[count];
+            for (int i = 0; i < count; i++) values[i] = value;
+            return values;
         }
 
         private static byte[] GripperIds(in RobotArmProfile profile)

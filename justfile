@@ -355,6 +355,28 @@ robot-feedback-ids remote_host=default_jetrover_host remote_user="jetson":
          echo '--- where the list is used:'; \
          grep -rn --include='*.py' 'FEEDBACK_MOTOR_IDS' /home/jetson 2>/dev/null | grep -v -E '/(build|install|\.cache)/' | grep -v -E 'FEEDBACK_MOTOR_IDS *=' | head -10"
 
+# Set which servo ids the Jetson's relay reads feedback from (FEEDBACK_MOTOR_IDS, see robot-feedback-ids), rebuild jetrover_arm_control and restart jetrover-arm-control. Adds motors 5 (wrist roll) and 10 (gripper) by default so they are measured like the arm. Edits the Jetson's working copy only (it is not pushed anywhere) and keeps a .bak; restarting the controller interrupts the arm, so someone must be at the robot
+robot-set-feedback-ids ids="1, 2, 3, 4, 5, 10" remote_host=default_jetrover_host remote_user="jetson":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    case "{{ids}}" in *[!0-9,\ ]*|"") echo "error: ids must be a comma-separated list of motor ids, got '{{ids}}'" >&2; exit 1 ;; esac
+    host=$(just _robot-host "{{remote_host}}")
+    ssh -o StrictHostKeyChecking=accept-new "{{remote_user}}@$host" "
+        set -e
+        cd /home/jetson/projects/jetrover-teleop-ros
+        f=src/jetrover_arm_control/jetrover_arm_control/robot_controller_node.py
+        grep -q -E '^FEEDBACK_MOTOR_IDS *= *\[' \$f || { echo 'error: FEEDBACK_MOTOR_IDS line not found in '\$f >&2; exit 1; }
+        cp \$f \$f.bak
+        sed -i -E 's/^FEEDBACK_MOTOR_IDS *= *\[.*\]/FEEDBACK_MOTOR_IDS = [{{ids}}]/' \$f
+        echo '--- now:'; grep -n -E '^FEEDBACK_MOTOR_IDS' \$f
+        source /opt/ros/foxy/setup.bash
+        colcon build --packages-select jetrover_arm_control 2>&1 | tail -3
+        sudo systemctl restart jetrover-arm-control
+        sleep 3
+        systemctl status jetrover-arm-control --no-pager -n 5
+    "
+    echo "Check it with: just joint-probe (motors {{ids}} should read 'sensed yes')"
+
 robot-status remote_host=default_jetrover_host remote_user="jetson":
     ssh -o StrictHostKeyChecking=accept-new "{{remote_user}}@$(just _robot-host "{{remote_host}}")" \
         "systemctl status teleop-robothost jetrover-relay jetrover-arm-control --no-pager -n 5"

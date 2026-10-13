@@ -347,6 +347,11 @@ robothost-logs lines="200" remote_host=default_jetrover_host remote_user="jetson
     ssh -o StrictHostKeyChecking=accept-new "{{remote_user}}@$(just _robot-host "{{remote_host}}")" \
         "systemctl status teleop-robothost --no-pager -n 0; journalctl -u teleop-robothost --no-pager -n {{lines}}"
 
+# Read-only: the ROS side's recent journals, the servo bus driver (jetrover-arm-control) and the relay between it and RobotHost (jetrover-relay). Python buffers their stdout, so a quiet log is not proof of a quiet driver
+arm-logs lines="100" remote_host=default_jetrover_host remote_user="jetson":
+    ssh -o StrictHostKeyChecking=accept-new "{{remote_user}}@$(just _robot-host "{{remote_host}}")" \
+        "for u in jetrover-arm-control jetrover-relay; do echo \"=== \$u\"; journalctl -u \$u --no-pager -n {{lines}}; done"
+
 # Read-only: the servo controller board's serial link. Lists the serial devices present, the ones jetrover-arm-control holds open (a "(deleted)" one means the board re-enumerated after a reset or brown-out and the driver still holds the dead port), and the kernel's recent serial USB events. Use it when commands arrive but the arm doesn't move
 robot-serial remote_host=default_jetrover_host remote_user="jetson":
     ssh -o StrictHostKeyChecking=accept-new "{{remote_user}}@$(just _robot-host "{{remote_host}}")" \

@@ -598,6 +598,44 @@ namespace Teleop.RobotHost.Tests.Plant
         }
 
         [Fact]
+        public void RestartJointCommandOrdering_AcceptsANewSendersLowerClock()
+        {
+            // A headset that rebooted stamps from near zero again (found on hardware 2026-10-13).
+            var relay = new FakeRelayClient();
+            var plant = new GenericArmPlant(Config, relay);
+            plant.CommandJointAngles(JointAnglesFor(JetRover, 0.3f, 0.2f, -0.1f, 0f), captureTicks: 1_000_000);
+            int afterFirst = relay.SentCommands.Count;
+
+            plant.CommandJointAngles(JointAnglesFor(JetRover, 0.5f, 0.4f, -0.3f, 0f), captureTicks: 10);
+            Assert.Equal(afterFirst, relay.SentCommands.Count);
+
+            plant.RestartJointCommandOrdering();
+            plant.CommandJointAngles(JointAnglesFor(JetRover, 0.5f, 0.4f, -0.3f, 0f), captureTicks: 10);
+            Assert.Equal(afterFirst + 1, relay.SentCommands.Count);
+
+            // Still ordered within the new sender.
+            plant.CommandJointAngles(JointAnglesFor(JetRover, 0.5f, 0.4f, -0.3f, 0f), captureTicks: 5);
+            Assert.Equal(afterFirst + 1, relay.SentCommands.Count);
+        }
+
+        [Fact]
+        public void RestartCartesianCommandOrdering_AcceptsANewSendersLowerClock_AndLeavesTheJointPathAlone()
+        {
+            var relay = new FakeRelayClient();
+            var plant = new GenericArmPlant(Config, relay);
+            plant.Command(Frame(captureTicks: 1_000_000, position: new Vector3(0.2f, 0f, 0.1f)));
+            plant.CommandJointAngles(JointAnglesFor(JetRover, 0.3f, 0.2f, -0.1f, 0f), captureTicks: 1_000_000);
+            int before = relay.SentCommands.Count;
+
+            plant.RestartCartesianCommandOrdering();
+            plant.Command(Frame(captureTicks: 10, position: new Vector3(0.18f, 0f, 0.1f)));
+            Assert.Equal(before + 1, relay.SentCommands.Count);
+
+            plant.CommandJointAngles(JointAnglesFor(JetRover, 0.5f, 0.4f, -0.3f, 0f), captureTicks: 10);
+            Assert.Equal(before + 1, relay.SentCommands.Count);
+        }
+
+        [Fact]
         public void CommandJointAngles_ProximalJointNeverGoesBelowConfiguredFloor()
         {
             // Mirrors Command_ProximalJointNeverGoesBelowConfiguredFloor, but supplies the

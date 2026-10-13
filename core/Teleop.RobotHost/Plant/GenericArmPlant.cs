@@ -184,6 +184,19 @@ namespace Teleop.RobotHost.Plant
         }
 
         /// <summary>
+        /// A new sender on the Cartesian path: the staleness check starts over. CaptureTicks are the
+        /// sender's own clock, so another machine's, or the same machine's after a reboot, are not
+        /// comparable with the last sender's. Without this, an operator whose clock reads lower than
+        /// the previous one had every command dropped as stale until RobotHost restarted (found on
+        /// hardware 2026-10-13: the Galaxy XR rebooted mid-session and the arm froze). Reordered
+        /// datagrams from one sender are still dropped. Moves nothing.
+        /// </summary>
+        public void RestartCartesianCommandOrdering() => _lastAcceptedCartesianCaptureTicks = long.MinValue;
+
+        /// <summary>A new sender on the joint path: as <see cref="RestartCartesianCommandOrdering"/>.</summary>
+        public void RestartJointCommandOrdering() => _lastAcceptedJointCaptureTicks = long.MinValue;
+
+        /// <summary>
         /// Runs inverse kinematics against <paramref name="command"/>'s pose, then applies the
         /// result exactly as <see cref="CommandJointAngles"/> does. Stale or duplicate frames (by
         /// <see cref="CommandFrame.CaptureTicks"/>) are rejected whole, never partially applied,

@@ -138,6 +138,7 @@ namespace Teleop.RobotHost
             };
 
             EndPoint? loggedReplyTarget = transport.CurrentRemoteEndPoint;
+            EndPoint? jointCommander = null;
             while (!stop.IsSet)
             {
                 if (jointTransport != null)
@@ -159,6 +160,16 @@ namespace Teleop.RobotHost
                             jointRecvBuffer.AsSpan(0, byteCount), out uint _, out long captureTicks,
                             jointTargetsBuffer!, out int targetCount))
                         {
+                            // A new sender's capture stamps are another clock's: start the
+                            // staleness check over, or a rebooted headset is ignored for good.
+                            EndPoint? sender = jointTransport.CurrentRemoteEndPoint;
+                            if (!Equals(sender, jointCommander))
+                            {
+                                plant.RestartJointCommandOrdering();
+                                Console.WriteLine($"[joint] commands from {sender} (was {jointCommander?.ToString() ?? "nobody"}); staleness check restarted");
+                                jointCommander = sender;
+                            }
+
                             plant.CommandJointAngles(jointTargetsBuffer!.AsSpan(0, targetCount), captureTicks);
                         }
                     }
@@ -185,7 +196,11 @@ namespace Teleop.RobotHost
                 EndPoint? replyTarget = transport.CurrentRemoteEndPoint;
                 if (!Equals(replyTarget, loggedReplyTarget))
                 {
-                    Console.WriteLine($"[net] replying to {replyTarget} (was {loggedReplyTarget?.ToString() ?? "nobody"})");
+                    // A new Cartesian sender: as on the joint path, its stamps are another clock's.
+                    // Its first command was judged against the old sender's and may have been
+                    // dropped; the next one is not.
+                    plant.RestartCartesianCommandOrdering();
+                    Console.WriteLine($"[net] replying to {replyTarget} (was {loggedReplyTarget?.ToString() ?? "nobody"}); staleness check restarted");
                     loggedReplyTarget = replyTarget;
                 }
 

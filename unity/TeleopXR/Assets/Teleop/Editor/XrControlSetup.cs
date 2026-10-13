@@ -171,7 +171,8 @@ namespace Teleop.XR.Editor
             knob.transform.SetParent(slider, false);
             knob.transform.localScale = new Vector3(0.03f, 0.006f, 0.03f);
             knob.transform.localPosition = new Vector3(0f, height, 0.01f);
-            Color knobColor = setting == SpeedSlider.Setting.ArmSpeed ? new Color(0.35f, 0.85f, 1f) : new Color(1f, 0.72f, 0.3f);
+            // Neutral white: blue, green and amber belong to the twin's arms (TwinColors).
+            Color knobColor = new Color(0.88f, 0.9f, 0.93f);
             knob.GetComponent<Renderer>().sharedMaterial = LabMaterials.Unlit(setting == SpeedSlider.Setting.ArmSpeed ? "SpeedKnob" : "DelayKnob", knobColor);
             foreach (Collider collider in slider.GetComponentsInChildren<Collider>()) Object.DestroyImmediate(collider);
 
@@ -278,12 +279,24 @@ namespace Teleop.XR.Editor
             // The commanded arm keeps its reach-warning LED red-capable; everything else turns ghostly.
             var rigSo = new SerializedObject(rig);
             var reachLed = rigSo.FindProperty("reachWarningRenderer").objectReferenceValue as Renderer;
-            SetAppearance(rig.gameObject, LabMaterials.Transparent("TwinGhost", new Color(0.35f, 0.85f, 1f, 0.22f)), reachLed);
+            Color ghost = TwinColors.Commanded;
+            ghost.a = 0.25f;
+            SetAppearance(rig.gameObject, LabMaterials.Transparent("TwinGhost", ghost), reachLed);
+            // The clutch's "you are driving" cue on the commanded arm's wrist LED is its colour too.
+            var commandedRigSo = new SerializedObject(rig);
+            commandedRigSo.FindProperty("highlightColor").colorValue = TwinColors.Commanded;
+            commandedRigSo.ApplyModifiedPropertiesWithoutUndo();
+            TintTarget(bridge);
 
             JetRoverArmRig predicted = CloneArm(rig, PredictedArmName, out TwinGripper predictedGripper);
             Object.DestroyImmediate(predicted.GetComponent<ArmAppearance>());
             JetRoverArmRig measured = CloneArm(rig, MeasuredArmName, out TwinGripper measuredGripper);
-            SetAppearance(measured.gameObject, LabMaterials.Transparent("TwinMeasured", new Color(1f, 0.72f, 0.3f, 0.3f)), null);
+            Color faint = TwinColors.Measured;
+            faint.a = 0.3f;
+            SetAppearance(measured.gameObject, LabMaterials.Transparent("TwinMeasured", faint), null);
+            // Each arm's wrist LED rests in its own colour, so even the solid predicted arm is marked.
+            SetLedColor(predicted, TwinColors.Predicted);
+            SetLedColor(measured, TwinColors.Measured);
 
             ArmDriverFor(bridge, out TwinArmsDriver driver);
             var so = new SerializedObject(driver);
@@ -305,6 +318,7 @@ namespace Teleop.XR.Editor
             Material capMaterial = LabMaterials.Unlit("TwinSwitchCap", Color.white);
             Material plinthMaterial = LabMaterials.Lit("MotionButtonPlinth", new Color(0.06f, 0.062f, 0.068f), 0.6f, 0.5f);
             var arms = new[] { (TwinVisibilityButton.Arm.Predicted, "PREDICTED"), (TwinVisibilityButton.Arm.Commanded, "COMMANDED"), (TwinVisibilityButton.Arm.Measured, "MEASURED") };
+            Color[] armColors = { TwinColors.Predicted, TwinColors.Commanded, TwinColors.Measured };
             for (int i = 0; i < arms.Length; i++)
             {
                 var button = new GameObject(arms[i].Item2).transform;
@@ -325,7 +339,7 @@ namespace Teleop.XR.Editor
                 foreach (Collider collider in button.GetComponentsInChildren<Collider>()) Object.DestroyImmediate(collider);
                 // In front of the button, tilted up toward the operator, so neighbouring labels never overlap.
                 TextMeshPro label = LabParts.Label("Label", button, new Vector3(0f, 0.006f, -0.042f), Quaternion.Euler(60f, 0f, 0f),
-                    arms[i].Item2, 0.11f, Color.white, new Vector2(0.085f, 0.02f), TextAlignmentOptions.Center, FontStyles.Bold);
+                    arms[i].Item2, 0.11f, armColors[i], new Vector2(0.085f, 0.02f), TextAlignmentOptions.Center, FontStyles.Bold);
 
                 var toggle = button.gameObject.AddComponent<TwinVisibilityButton>();
                 var toggleSo = new SerializedObject(toggle);
@@ -334,6 +348,8 @@ namespace Teleop.XR.Editor
                 toggleSo.FindProperty("origin").objectReferenceValue = origin;
                 toggleSo.FindProperty("cap").objectReferenceValue = cap.GetComponent<Renderer>();
                 toggleSo.FindProperty("label").objectReferenceValue = label;
+                toggleSo.FindProperty("onColor").colorValue = armColors[i];
+                toggleSo.FindProperty("offColor").colorValue = armColors[i] * 0.18f;
                 toggleSo.ApplyModifiedPropertiesWithoutUndo();
             }
 
@@ -341,6 +357,41 @@ namespace Teleop.XR.Editor
                 "NO ROBOT STATE", 0.13f, new Color(0.7f, 0.85f, 1f), new Vector2(0.45f, 0.03f), TextAlignmentOptions.Center);
             so.FindProperty("statusLabel").objectReferenceValue = status;
             so.ApplyModifiedPropertiesWithoutUndo();
+        }
+
+        /// <summary>The twin's colour code (docs/adr/0018): each arm, its switch, and the target share one colour.</summary>
+        internal static class TwinColors
+        {
+            /// <summary>Where you told it to go: the target marker, the ghost arm, the clutch cue.</summary>
+            public static readonly Color Commanded = new Color(0.25f, 0.55f, 1f);
+
+            /// <summary>Where the robot most likely is now: the solid arm, in the robot's own green.</summary>
+            public static readonly Color Predicted = new Color(0.2f, 0.9f, 0.4f);
+
+            /// <summary>The robot's last report, as received: the faint arm.</summary>
+            public static readonly Color Measured = new Color(1f, 0.72f, 0.3f);
+        }
+
+        private static void SetLedColor(JetRoverArmRig rig, Color color)
+        {
+            var so = new SerializedObject(rig);
+            so.FindProperty("normalColor").colorValue = color;
+            so.ApplyModifiedPropertiesWithoutUndo();
+        }
+
+        /// <summary>The target marker takes the commanded colour; its material is the scene builder's asset.</summary>
+        private static void TintTarget(JetRoverOperatorBridge bridge)
+        {
+            var target = new SerializedObject(bridge).FindProperty("dragTarget").objectReferenceValue as Transform;
+            Renderer r = target != null ? target.GetComponent<Renderer>() : null;
+            if (r == null || r.sharedMaterial == null)
+            {
+                return;
+            }
+
+            r.sharedMaterial.SetColor("_BaseColor", TwinColors.Commanded);
+            r.sharedMaterial.SetColor("_Color", TwinColors.Commanded);
+            EditorUtility.SetDirty(r.sharedMaterial);
         }
 
         private static JetRoverArmRig CloneArm(JetRoverArmRig rig, string name, out TwinGripper gripper)

@@ -8,7 +8,8 @@ namespace Teleop.XR
     /// <summary>
     /// A fingertip switch on the bench that shows or hides one of the twin's arms (docs/adr/0018).
     /// The same press as the motion button (<see cref="FingertipPress"/>): only a fingertip on the cap
-    /// counts. Lit when that arm is shown, dark when hidden.
+    /// counts. Lit in that arm's colour when the arm is shown, dim when hidden; the colours are the
+    /// twin's code (commanded blue, predicted green, measured amber).
     /// </summary>
     public sealed class TwinVisibilityButton : MonoBehaviour
     {

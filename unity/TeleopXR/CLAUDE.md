@@ -99,8 +99,15 @@ Contents:
   - **Commanded, ghost**: the clutch's arm, where you told it to go.
   - **Measured, faint amber** (`MeasuredArm`): the newest frame exactly as received, about one
     network trip old.
+  - **Colour code** (`XrControlSetup.TwinColors`): each arm, its switch and its wrist LED share one
+    colour.
+    - **Commanded, blue:** the target marker, the ghost arm, and the clutch cue.
+    - **Predicted, green:** the robot's own green; the arm itself stays solid.
+    - **Measured, amber.**
+    - The sliders are neutral white.
   - **Switches.** Three fingertip switches next to the motion button (PREDICTED, COMMANDED,
-    MEASURED) show or hide each arm, and are lit when it is shown. The line above them says
+    MEASURED) show or hide each arm. Each is lit in its colour when the arm is shown, and dim when
+    it is hidden. The line above them says
     whether the robot's state is arriving: `NO ROBOT STATE` means RobotHost is too old for the
     stream; otherwise it shows `live · rtt N ms`.
   - **Mechanics.** `TwinArmsDriver` (on `JetRoverOperator`) drives the predicted and measured

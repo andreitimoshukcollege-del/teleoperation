@@ -117,7 +117,7 @@ namespace Teleop.XR.Editor
             Scene scene = EditorSceneManager.NewScene(NewSceneSetup.EmptyScene, NewSceneMode.Single);
 
             Material linkMat = LitMaterial("ArmLink", new Color(0.82f, 0.83f, 0.85f), 0.45f);
-            Material targetMat = LitMaterial("DragTarget", new Color(0.1f, 0.75f, 0.95f), 0.6f);
+            Material targetMat = LitMaterial("DragTarget", XrControlSetup.TwinColors.Commanded, 0.6f);
             PanelMaterial(); // the camera display's screen material; LabDressing uses it
 
             BuildLighting();

@@ -17,9 +17,10 @@ namespace Teleop.XR.Editor
 
         public const float MinX = -5f, MaxX = 5f, MinZ = -3f, MaxZ = 5f, Height = 3.2f, WallThickness = 0.15f;
 
-        // The robot's wheels stand on the bench: arm base -> wheel centre -> wheel radius.
+        // The robot's wheels stand on the bench: arm base -> wheel centre -> wheel radius. From the
+        // robot's CAD (JetRoverCad): the wheel bottoms are 0.1962 m under the arm's yaw pivot.
         public const float WheelRadius = 0.0485f;
-        public const float WheelCentreBelowArmBase = 0.12f;
+        public const float WheelCentreBelowArmBase = JetRoverCad.WheelBottomBelowYawPivot - WheelRadius;
         public static float BenchTop => ArmBase.y - WheelCentreBelowArmBase - WheelRadius;
 
         public const float BenchHalfWidth = 0.8f, BenchNearZ = 0.1f, BenchDepth = 0.8f;

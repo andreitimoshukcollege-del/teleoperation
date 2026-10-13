@@ -114,6 +114,12 @@ namespace Teleop.XR.Editor
                 twinSo.FindProperty("rollPivot").objectReferenceValue = roll;
                 twinSo.FindProperty("leftFinger").objectReferenceValue = roll != null ? roll.Find(JetRoverTwin.FingerName + "L") : null;
                 twinSo.FindProperty("rightFinger").objectReferenceValue = roll != null ? roll.Find(JetRoverTwin.FingerName + "R") : null;
+                // The CAD gripper's hinged jaws (JetRoverCad), when that is the model.
+                Transform Find(string n) => roll == null ? null : roll.GetComponentsInChildren<Transform>(true).FirstOrDefault(t => t.name == n);
+                twinSo.FindProperty("leftJaw").objectReferenceValue = Find(JetRoverCad.JawLeft);
+                twinSo.FindProperty("leftJawOuter").objectReferenceValue = Find(JetRoverCad.JawLeftOuter);
+                twinSo.FindProperty("rightJaw").objectReferenceValue = Find(JetRoverCad.JawRight);
+                twinSo.FindProperty("rightJawOuter").objectReferenceValue = Find(JetRoverCad.JawRightOuter);
                 twinSo.FindProperty("travelMeters").floatValue = JetRoverTwin.FingerTravel;
                 twinSo.ApplyModifiedPropertiesWithoutUndo();
             }

@@ -4,8 +4,8 @@ using UnityEngine;
 namespace Teleop.XR.Editor
 {
     /// <summary>
-    /// The JetRover's virtual twin, as our own geometry: no Hiwonder files are used or committed (the
-    /// repository is public). Proportions come from what is published or measured:
+    /// The JetRover's virtual twin as procedural geometry: the fallback when the robot's CAD
+    /// (<see cref="JetRoverCad"/>) is not in the project. Proportions come from what is published or measured:
     /// <list type="bullet">
     /// <item>Hiwonder's specs: mecanum M1 is 324 × 260 mm; HTD-35H servos are 51.1 × 20.14 × 40 mm.</item>
     /// <item>The repo's measured arm: shoulder 3.5 cm above the yaw axis, two 13 cm links.</item>

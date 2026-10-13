@@ -78,7 +78,7 @@ Contents:
       The display's caption line reads `CLUTCH ON · gripper N%`.
   - **`DragTarget`** is no longer grabbable. It is a 2 cm marker showing the commanded wrist
     position, and the bridge still reads it.
-  - **`TwinGripper`** on the wrist slides the twin's fingers by the gripper command and rolls the
+  - **`TwinGripper`** on the wrist closes the twin's jaws by the gripper command and rolls the
     gripper by the wrist roll. It shows what is sent; the real gripper has no feedback.
   - **`MotionToggleButton`, the robot's start/stop switch, on the bench's front-left corner.** It
     is red when off (`ROBOT OFF`) and green when on, and **off at every launch**. Press it down
@@ -249,7 +249,7 @@ The night-shift lab around the arm is built by code in `Assets/Teleop/Editor/Lab
 
 - the room: sign wall, window skyline, desks, racks, shelving, a taped workcell with a status ring,
   a mobile-robot test area, motion-capture cameras;
-- the JetRover twin: chassis, mecanum wheels, lidar, 7-inch screen, and arm visuals on the rig's
+- the JetRover twin, from the robot's CAD (below), with the arm parts on the rig's
   pivots;
 - the 1.2 × 0.9 m camera display on a stand, with a live status strip.
 
@@ -283,8 +283,24 @@ settings it generates go to `Assets/Teleop/Lab/Generated/`.
   - The cove lines and fixture diffusers have HDR colours. The screen clamps them, but the
     reflection probe keeps the full value, so the glossy floor reflects them.
   - Bake output (`Assets/Scenes/JetRoverLabXR/`) and the mesh library are LFS-tracked.
-- **The twin is our own geometry**, from Hiwonder's published dimensions and the repo's measured
-  arm. No vendor files (the repo is public).
+- **The twin is the robot's own CAD** (`JetRoverCad`): one FBX per URDF link in
+  `Assets/Teleop/Lab/RobotModel/` (Body, Base, LowerArm, CenterArm, UpperArm, Gripper). The user
+  modelled it and it is free to share; it is LFS-tracked.
+  - The files come from Blender at 4.4435 units per metre, with the arm standing straight up and the
+    robot facing −z. Base.fbx lacks the 270° X rotation the other parts have. `JetRoverCad` corrects
+    all three and snaps each arm part onto its rig pivot, so the IK's 13 cm links are what moves.
+    The CAD's links are 13.04 and 12.91 cm.
+  - The CAD puts the shoulder on the yaw axis, so the rebuild zeroes the rig's old 14 mm sideways
+    shoulder offset. That offset was only visual; the IK never used it.
+  - The bench is set from the CAD: the wheel bottoms are 19.62 cm under the yaw pivot.
+  - The gripper keeps the URDF's joints. Each jaw link's origin is its hinge, so `TwinGripper` turns
+    `l_link`/`r_link` by up to 37° (the tips meet) and their fingers back by the same, which keeps
+    the pads parallel, as the real linkage does.
+  - **The meshes are dense:** about 170k vertices per arm, three arms, plus 33k for the chassis.
+    If the headset drops frames, decimate them in Blender first.
+  - `RobotModelInspector.Run` reports how they imported, and `Render` draws each part alone, to
+    `%TEMP%`. Previews 11 and 12 of `just unity-lab-xr` show the gripper open and closed.
+  - Without the files, the rebuild falls back to `JetRoverTwin`'s procedural model.
 - **TextMesh Pro's essential resources are committed** in `Assets/TextMesh Pro/`; the lab's labels
   need them. Batch mode cannot import them, because the import is asynchronous and `-quit` ends the
   run first. `just unity-setup-xr` only checks that they are there.

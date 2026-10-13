@@ -352,6 +352,15 @@ arm-logs lines="100" remote_host=default_jetrover_host remote_user="jetson":
     ssh -o StrictHostKeyChecking=accept-new "{{remote_user}}@$(just _robot-host "{{remote_host}}")" \
         "for u in jetrover-arm-control jetrover-relay; do echo \"=== \$u\"; journalctl -u \$u --no-pager -n {{lines}}; done"
 
+# Read-only: the ROS link between the relay and the servo driver. The topics each side publishes and subscribes to, the services' environment (the CLI runs with ROS_LOCALHOST_ONLY=1 as they do; a mismatch makes it see no messages), the live topic list, and for a few seconds each how often messages actually flow. Use it when RobotHost logs commands but the arm doesn't move
+ros-check seconds="4" remote_host=default_jetrover_host remote_user="jetson":
+    ssh -o StrictHostKeyChecking=accept-new "{{remote_user}}@$(just _robot-host "{{remote_host}}")" \
+        "src=/home/jetson/projects/jetrover-teleop-ros/src; echo '--- topics in the source'; grep -rn -E 'create_publisher|create_subscription' \$src --include=*.py | sed \"s|\$src/||\" | head -30; \
+         echo '--- service environment'; for u in jetrover-arm-control jetrover-relay; do echo \"\$u: \$(systemctl show -p Environment --value \$u)\"; grep -h -E 'ExecStart|Environment' /etc/systemd/system/\$u.service; done; \
+         source /opt/ros/foxy/setup.bash; export ROS_LOCALHOST_ONLY=1; echo \"--- this CLI (as the services): ROS_LOCALHOST_ONLY=\$ROS_LOCALHOST_ONLY ROS_DOMAIN_ID=\${ROS_DOMAIN_ID:-unset}\"; \
+         echo '--- live topics'; timeout 10 ros2 topic list 2>&1; \
+         for t in \$(timeout 10 ros2 topic list 2>/dev/null | grep -v -E '^/(rosout|parameter_events)\$'); do echo \"--- \$t\"; timeout {{seconds}} ros2 topic hz \$t 2>&1 | tail -2; done; true"
+
 # Read-only: the servo controller board's serial link. Lists the serial devices present, the ones jetrover-arm-control holds open (a "(deleted)" one means the board re-enumerated after a reset or brown-out and the driver still holds the dead port), and the kernel's recent serial USB events. Use it when commands arrive but the arm doesn't move
 robot-serial remote_host=default_jetrover_host remote_user="jetson":
     ssh -o StrictHostKeyChecking=accept-new "{{remote_user}}@$(just _robot-host "{{remote_host}}")" \
@@ -397,6 +406,12 @@ robot-set-feedback-ids ids="1, 2, 3, 4, 5, 10" remote_host=default_jetrover_host
         systemctl status jetrover-arm-control --no-pager -n 5
     "
     echo "Check it with: just joint-probe (motors {{ids}} should read 'sensed yes')"
+
+# Restart the servo bus driver (jetrover-arm-control), which reopens its serial link to the Hiwonder board. For when the board stopped answering (just ros-check shows no feedback_array or battery messages) after a brown-out or a reset. It interrupts the arm, and the shoulder may sag while the driver comes back (seen 2026-10-12), so someone must be at the robot. Afterwards the feedback should flow again
+restart-arm-driver remote_host=default_jetrover_host remote_user="jetson":
+    ssh -o StrictHostKeyChecking=accept-new "{{remote_user}}@$(just _robot-host "{{remote_host}}")" \
+        "sudo systemctl restart jetrover-arm-control; sleep 5; systemctl status jetrover-arm-control --no-pager -n 8"
+    just ros-check 4
 
 # Read-only: the battery reading jetrover-arm-control publishes (millivolts, from the Hiwonder board), plus the Jetson's own supply rails. A continuous beep from the robot is usually the board's low-battery alarm: check this first
 robot-battery remote_host=default_jetrover_host remote_user="jetson":

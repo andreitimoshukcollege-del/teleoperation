@@ -256,7 +256,7 @@ The night-shift lab around the arm is built by code in `Assets/Teleop/Editor/Lab
 - the JetRover twin, from the robot's CAD (below), with the arm parts on the rig's
   pivots;
 - the 1.2 × 0.9 m camera display on a stand, with a live status strip and, under it, the group's
-  nameplate (SPATIAL INTELLIGENCE RESEARCH GROUP).
+  nameplate (SPATIAL INTELLIGENCE RESEARCH GROUP, in red).
 
 It goes into the scene under one `LabDressing` root. The meshes, textures, materials and lighting
 settings it generates go to `Assets/Teleop/Lab/Generated/`.

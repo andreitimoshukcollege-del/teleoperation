@@ -103,6 +103,16 @@ namespace Teleop.XR.Editor
             LabParts.Label("DisplayCaption", panel, new Vector3(ScreenWidth / 2f - 0.33f, stripY - 0.022f, textZ), Quaternion.identity,
                 "robot camera  ·  Orbbec DaBai DCW", 0.2f, new Color(0.45f, 0.5f, 0.58f), new Vector2(0.6f, 0.04f), TextAlignmentOptions.Right);
 
+            // The group's nameplate, hung under the bezel so it moves with the display.
+            const float plateHeight = 0.07f, plateWidth = 0.86f;
+            float plateY = bottom - 0.014f - plateHeight / 2f;
+            var plate = new LabMesh();
+            plate.Chamfer(new Vector3(0f, plateY, 0.004f), new Vector3(plateWidth, plateHeight, 0.02f), 0.008f);
+            LabParts.Part("Display/Nameplate", panel, plate, p.Bezel, PartKind.Dynamic);
+            LabParts.Label("NameplateText", panel, new Vector3(0f, plateY, -0.0075f), Quaternion.identity,
+                "SPATIAL INTELLIGENCE RESEARCH GROUP", 0.3f, new Color(0.55f, 0.92f, 1f), new Vector2(plateWidth - 0.04f, plateHeight),
+                TextAlignmentOptions.Center, FontStyles.Bold);
+
             var bar = root.gameObject.AddComponent<CameraStatusBar>();
             var so = new SerializedObject(bar);
             so.FindProperty("feed").objectReferenceValue = feed;

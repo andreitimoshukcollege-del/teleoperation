@@ -127,6 +127,18 @@ _adb *args:
     [ -x "$adb" ] || { echo "error: adb not found at $adb (install Unity $ver's Android SDK module, or set ADB)" >&2; exit 1; }
     "$adb" {{args}}
 
+# Mirror the Galaxy XR's view into a window on this PC over USB, with scrcpy (install it once: `winget install Genymobile.scrcpy`). Uses Unity's adb, as every recipe here does, so two adb versions never fight over the server. Extra flags pass through, e.g. `just mirror-galaxy --record=session.mp4`. Close the window to stop
+mirror-galaxy *args:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    ver=$(sed -n 's/^m_EditorVersion: //p' unity/TeleopXR/ProjectSettings/ProjectVersion.txt | tr -d '\r')
+    adb="${ADB:-/mnt/c/Program Files/Unity/Hub/Editor/$ver/Editor/Data/PlaybackEngines/AndroidPlayer/SDK/platform-tools/adb.exe}"
+    [ -x "$adb" ] || { echo "error: adb not found at $adb (install Unity $ver's Android SDK module, or set ADB)" >&2; exit 1; }
+    scrcpy=$(ls -d /mnt/c/Users/*/AppData/Local/Microsoft/WinGet/Packages/Genymobile.scrcpy_*/scrcpy-win64-*/scrcpy.exe 2>/dev/null | sort -V | tail -1 || true)
+    [ -n "$scrcpy" ] || { echo "error: scrcpy not found; install it with: winget install Genymobile.scrcpy" >&2; exit 1; }
+    # ADB reaches the Windows process through WSLENV, as the Windows path scrcpy expects.
+    ADB="$(wslpath -w "$adb")" WSLENV="${WSLENV:+$WSLENV:}ADB" "$scrcpy" --no-audio --max-size 1920 --window-title=GalaxyXR {{args}}
+
 # Install the Galaxy XR APK on the headset over USB (developer mode and USB debugging on; accept the prompt in the headset)
 install-galaxy:
     #!/usr/bin/env bash

@@ -236,6 +236,10 @@ and a GPU with Vulkan video encoding (this PC: RTX 4060 Laptop).
 4. The headset must be on the robot's network. Accept the hand-tracking permission on the first
    launch.
 
+**Watching the headset from the PC:** `just mirror-galaxy` mirrors what the wearer sees into a
+window on this PC over USB, with scrcpy (`winget install Genymobile.scrcpy` once). Extra flags pass
+through to scrcpy, e.g. `just mirror-galaxy --record=session.mp4`.
+
 **The robot must reply to the headset.** This applies to the APK; in Direct Preview the PC is the
 sender. Make sure the Jetson runs the reply-to-sender RobotHost: `just deploy-robothost`. The
 camera sender already answers whoever sends the keepalive.
@@ -251,7 +255,8 @@ The night-shift lab around the arm is built by code in `Assets/Teleop/Editor/Lab
   a mobile-robot test area, motion-capture cameras;
 - the JetRover twin, from the robot's CAD (below), with the arm parts on the rig's
   pivots;
-- the 1.2 × 0.9 m camera display on a stand, with a live status strip.
+- the 1.2 × 0.9 m camera display on a stand, with a live status strip and, under it, the group's
+  nameplate (SPATIAL INTELLIGENCE RESEARCH GROUP).
 
 It goes into the scene under one `LabDressing` root. The meshes, textures, materials and lighting
 settings it generates go to `Assets/Teleop/Lab/Generated/`.

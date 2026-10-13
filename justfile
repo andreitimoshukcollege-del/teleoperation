@@ -342,6 +342,18 @@ camera-logs lines="200" remote_host=default_jetrover_host remote_user="jetson":
          echo '--- video devices'; ls -l /dev/video* 2>&1; ls -l /dev/v4l/by-id/ 2>&1; v4l2-ctl --list-devices 2>&1 | head -20; \
          echo '--- kernel USB/camera events (newest last)'; journalctl -k --no-pager -n 3000 | grep -iE 'usb|uvc|video' | tail -40"
 
+# Read-only: RobotHost's recent journal (teleop-robothost.service): who it streams joint state to, the commands it receives and acts on, and anything it rejects. Use it when the headset connects but the arm doesn't move
+robothost-logs lines="200" remote_host=default_jetrover_host remote_user="jetson":
+    ssh -o StrictHostKeyChecking=accept-new "{{remote_user}}@$(just _robot-host "{{remote_host}}")" \
+        "systemctl status teleop-robothost --no-pager -n 0; journalctl -u teleop-robothost --no-pager -n {{lines}}"
+
+# Read-only: the servo controller board's serial link. Lists the serial devices present, the ones jetrover-arm-control holds open (a "(deleted)" one means the board re-enumerated after a reset or brown-out and the driver still holds the dead port), and the kernel's recent serial USB events. Use it when commands arrive but the arm doesn't move
+robot-serial remote_host=default_jetrover_host remote_user="jetson":
+    ssh -o StrictHostKeyChecking=accept-new "{{remote_user}}@$(just _robot-host "{{remote_host}}")" \
+        "echo '--- serial devices'; ls -l /dev/ttyUSB* /dev/ttyACM* /dev/ttyTHS* /dev/serial/by-id/ 2>&1; \
+         echo '--- serial ports held by jetrover-arm-control and its children'; for p in \$(systemctl show -p MainPID --value jetrover-arm-control) \$(pgrep -f robot_controller_manager); do ls -l /proc/\$p/fd 2>/dev/null | grep -E 'tty|serial' | sed \"s/^/pid \$p: /\"; done; \
+         echo '--- kernel serial USB events (newest last)'; journalctl -k --no-pager -n 5000 | grep -iE 'ch34|cdc_acm|ttyUSB|ttyACM|cp210|ftdi' | grep -v 'Modules linked in' | tail -30"
+
 # Read-only: subscribe to RobotHost's joint-state stream (docs/adr/0018) for a few seconds and print the frame rate, round trip, and per motor whether it is sensed (servo feedback) or only a commanded belief. Sends a keepalive, never a command: nothing moves
 joint-probe seconds="3" remote_host=default_jetrover_host:
     cd core && dotnet run --project Teleop.Eval -- joint-probe --remote-host $(just _robot-host "{{remote_host}}") --seconds {{seconds}}

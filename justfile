@@ -419,6 +419,12 @@ robot-set-feedback-ids ids="1, 2, 3, 4, 5, 10" remote_host=default_jetrover_host
     "
     echo "Check it with: just joint-probe (motors {{ids}} should read 'sensed yes')"
 
+# Read-only: what the Hiwonder controller board can be told to do. Finds the board library jetrover-arm-control uses (its set_buzzer, board commands and function codes) and lists every function, plus anything about the buzzer, battery or alarm. Nothing is sent to the board
+robot-board-commands remote_host=default_jetrover_host remote_user="jetson":
+    ssh -o StrictHostKeyChecking=accept-new "{{remote_user}}@$(just _robot-host "{{remote_host}}")" \
+        "files=\$(grep -rl --include=*.py -E 'def set_buzzer|PACKET_FUNC|BOARD_' /home/jetson /opt 2>/dev/null | grep -v -E '/build/|/install/|site-packages/(numpy|scipy)' | sort -u | head -8); \
+         for f in \$files; do echo \"=== \$f\"; grep -n -E '^ *def |PACKET_FUNC|FUNC_|= *0x' \$f | head -60; echo '--- buzzer / battery / alarm:'; grep -n -i -E 'buzz|batt|alarm|volt|warn|beep' \$f | head -30; done"
+
 # Restart the servo bus driver (jetrover-arm-control), which reopens its serial link to the Hiwonder board. For when the board stopped answering (just ros-check shows no feedback_array or battery messages) after a brown-out or a reset. It interrupts the arm, and the shoulder may sag while the driver comes back (seen 2026-10-12), so someone must be at the robot. Afterwards the feedback should flow again
 restart-arm-driver remote_host=default_jetrover_host remote_user="jetson":
     ssh -o StrictHostKeyChecking=accept-new "{{remote_user}}@$(just _robot-host "{{remote_host}}")" \

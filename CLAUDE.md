@@ -1,7 +1,7 @@
 # Teleop Research Platform
 
-VR teleoperation of a remote robot (Meta Quest + Unity). This is a **research platform, not
-a product.** The deliverable is measured, reproducible results about latency mitigation:
+VR teleoperation of a remote robot (Samsung Galaxy XR + Unity; the Meta Quest project is
+parked). This is a **research platform, not a product.** The deliverable is measured, reproducible results about latency mitigation:
 prediction, reconciliation, jitter buffering, autonomy arbitration, view synthesis.
 
 The consequence that shapes every decision: **an algorithm that cannot be evaluated
@@ -15,11 +15,12 @@ gripper has changed how it accelerates. It is meant to combine with the latency 
 replace it: those axes decide when a sample is shown and how its correction is absorbed, while a
 model of the world improves what is shown at all.
 
-Treat this paragraph as intent and nothing more. **Nothing in this system observes the environment
-today** — the robot reports a pose and nothing else (57 fixed bytes, no field for anything sensed),
-there is no camera, depth or contact signal anywhere, and `Plant/` is kinematic by deliberate
-choice. Like `view synthesis` in the sentence above, this has no `Contracts/` interface, no folder
-and no ADR. Giving it any of those is an architecture change under "Where new code goes", so the
+Treat this paragraph as intent and nothing more. **Nothing in this system models the environment
+today.** The robot reports only its own body: the 57-byte wrist pose, and the joint-state stream
+(ADR 0018). Its camera streams colour video to the headset (ADR 0014), but only for the operator's
+eyes: nothing interprets the image, no depth is streamed, there is no contact signal, and `Plant/`
+is kinematic by deliberate choice. Like `view synthesis` in the sentence above, this has no
+`Contracts/` interface, no folder and no ADR. Giving it any of those is an architecture change under "Where new code goes", so the
 ADR comes first. Do not write code against this paragraph.
 
 ## The one law
@@ -44,10 +45,11 @@ capabilities to Core by **implementing interfaces that Core declares** (`IRobotP
 | `core/Teleop.Core/` | **both** `dotnet` and Unity | all algorithms; one copy, two compilers |
 | `core/Teleop.Core.Tests/` | `dotnet` | xUnit; must stay green |
 | `core/Teleop.Eval/` | `dotnet` | headless CLI: replay, sweep, compare |
-| `unity/TeleopVR/` | Unity 2022.3 | Quest: scenes, XR, rendering; the measured baseline (ADR 0001) |
-| `unity/TeleopXR/` | Unity 6.6 | Galaxy XR: hand tracking, URP (ADR 0016) |
+| `unity/TeleopXR/` | Unity 6.6 | **the operator app.** Galaxy XR: hand tracking, URP (ADR 0016) |
+| `unity/TeleopVR/` | Unity 2022.3 | Quest: **parked** since 2026-10-15. Kept, not developed or tested; its Bridge use must still compile. ADR 0001's measured baseline |
 | `unity/Teleop.Bridge/` | both Unity projects | shared UPM package: the only Unity code that touches Core; real I/O |
-| `robot/` | colcon (ROS 2) | independent; does not interact with the above builds |
+| `core/Teleop.RobotArm/`, `core/Teleop.RobotHost/`, `core/Teleop.CameraHost/` | `dotnet` | arm kinematics and wire formats; what runs on the robot's Jetson |
+| `robot/ros/` | colcon (ROS 2), on the Jetson | the servo board driver and relay (ADR 0019); independent of the builds above; `just deploy-ros` |
 | `analysis/` | nothing | Python; reads `results/`, exports `.onnx` |
 | `experiments/` | — | one YAML per experiment |
 | `results/` | — | append-only; every run has a `manifest.json` |
@@ -72,7 +74,7 @@ them.
    no `Reflection.Emit`.
 6. **Core targets `netstandard2.1` with `LangVersion 9.0`.** Both editors are C# 9: Unity
    2022.3 (TeleopVR) and Unity 6.6 (TeleopXR). Do not retarget to `net8.0` and do not raise `LangVersion`. Banned because
-   they compile under `dotnet` and break the Quest build while `dotnet test` stays green:
+   they compile under `dotnet` and break the headset build while `dotnet test` stays green:
    file-scoped namespaces (`namespace X;` — use block-scoped), `global using`, collection
    expressions (`[1, 2]`), `required` members, primary constructors on classes.
 7. **Zero NuGet dependencies in Core.** Need a library? Declare an interface in Core and
@@ -148,11 +150,12 @@ Unity editors and the Galaxy headset.
 
 ## Boundaries for agents
 
-- **Free rein:** `core/`, `analysis/`, `experiments/`, `docs/`, `unity/`.
+- **Free rein:** `core/`, `analysis/`, `experiments/`, `docs/`, `unity/`, `robot/`.
 - **Never touch:** `results/` (append-only — write new directories, never edit old ones),
   `unity/TeleopVR/Library/`, `unity/TeleopXR/Library/`, `build/`, anything gitignored.
-- `robot/` is documentation-only: ask first, and never command real hardware without a human
-  watching (see "Testing the real robot").
+- `robot/ros/` is code like any other, but deploying it (`just deploy-ros`) restarts the servo
+  driver, and `RelayProtocol.cs` and `relay_protocol.py` must change together. Never command real
+  hardware without a human watching (see "Testing the real robot").
 - **Changes under `unity/Teleop.Bridge/` want human review** — not because
   of where they are edited, but because that is where real I/O, XR devices and hardware live, and
   `just bridge-check` compiles against stubs so it cannot catch anything about scenes, prefabs or
@@ -171,7 +174,7 @@ Unity editors and the Galaxy headset.
 ## Environment
 
 **Two environments, and a path or a `dotnet` invocation that works in one may not work in the
-other.** `core/` and `analysis/` can be developed and verified anywhere; Unity, the Quest and the
+other.** `core/` and `analysis/` can be developed and verified anywhere; Unity, the headset and the
 JetRover need the Windows side. This section is about what each environment can *do* — it is not an
 ownership rule, and there is no longer a restriction on where any directory may be edited.
 
@@ -190,7 +193,7 @@ ownership rule, and there is no longer a restriction on where any directory may 
 - `core/Teleop.RobotHost.Tests`' Unix-domain-socket tests are gated by `LinuxOnlyFactAttribute`,
   so they **run here and skip on Windows**. This is the only box that exercises them.
 
-### Windows — Unity, Quest, hardware testing
+### Windows — Unity, the headset, hardware testing
 
 - Repo lives on NTFS at `C:\Users\andre\Projects\teleoperation` (required — Unity is a
   Windows app and cannot open a project over `\\wsl$\`). Reached from WSL as
@@ -220,7 +223,7 @@ ownership rule, and there is no longer a restriction on where any directory may 
   not, so a casing mismatch may work in Unity and fail everywhere else. Match on-disk casing
   exactly.
 - Core's `netstandard2.1`/C# 9 constraint (invariant 6) comes from the Unity editor and binds
-  **everywhere**. Code can compile and test green under the Linux SDK and still break the Quest build; `audit` plus invariant 6's
+  **everywhere**. Code can compile and test green under the Linux SDK and still break the headset build; `audit` plus invariant 6's
   banned-feature list is the headless approximation, not a guarantee. An IL2CPP build is the
   only real check.
 

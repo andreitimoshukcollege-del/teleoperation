@@ -7,8 +7,8 @@ step required (see root `README.md`'s JetRover section for the full picture).
 | Unit | Runs |
 |---|---|
 | `teleop-robothost.service` | `Teleop.RobotHost` via `/home/jetson/robothost-run.sh` (a stable wrapper `just deploy-robothost` regenerates on every deploy — see that recipe) |
-| `jetrover-relay.service` | `teleop_relay`'s `relay_node` |
-| `jetrover-arm-control.service` | `jetrover_arm_control`'s `robot_controller_manager` |
+| `jetrover-relay.service` | `teleop_relay`'s `relay_node`, from `~/teleop_ros_current` (`robot/ros`, which `just deploy-ros` builds and installs) |
+| `jetrover-arm-control.service` | `jetrover_arm_control`'s `robot_controller_manager`, from the same |
 | `teleop-camerahost.service` | `Teleop.CameraHost serve`, the camera frame sender (docs/adr/0014), via `/home/jetson/camerahost-run.sh`, which `just deploy-camerahost` regenerates |
 
 All four: `Restart=on-failure`, `RestartSec=2`, `WantedBy=multi-user.target` (enabled = starts on
@@ -17,6 +17,10 @@ systemd bypasses `.bashrc` entirely — do not rely on the Jetson's own `.bashrc
 sources a different, stale path from an unrelated earlier project.
 
 ## Installing (one-time per Jetson, or after a fresh flash)
+
+**The two ROS units are installed by `just deploy-ros`,** which also builds the workspace they
+source. On a fresh Jetson, run it before the step below, and leave the two ROS units out of the copy.
+The steps below are for `teleop-robothost.service`.
 
 ```bash
 scp robot/systemd/*.service jetson@<jetson-ip>:/tmp/

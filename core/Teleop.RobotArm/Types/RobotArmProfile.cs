@@ -266,7 +266,7 @@ namespace Teleop.RobotArm.Types
         /// <summary>
         /// The exact JetRover arm this codebase has always driven, expressed as a profile instead
         /// of hardcoded fields -- preserves every number <c>ArmLinkLengths.Measured</c> and the old
-        /// <c>SERVO_ENUM</c> (jetrover-teleop-ros) had, so default behavior is unchanged by this
+        /// <c>SERVO_ENUM</c> (robot/ros) had, so default behavior is unchanged by this
         /// generalization. <see cref="JointHardwareSpec.MinAngleRadians"/> on the proximal joint is
         /// the old <c>LowerArmMinPulse</c> (50) re-derived exactly in angle space --
         /// (50 - ZeroPulse=500) / PulsePerRadian -- a real collision-safety number

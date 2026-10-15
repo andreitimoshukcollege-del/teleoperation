@@ -1,10 +1,11 @@
 # Unity — shared rules for every project under `unity/`
 
-There are two Unity projects and one shared Unity package (docs/adr/0016):
+There are two Unity projects and one shared Unity package (docs/adr/0016). The Galaxy XR project is
+the one in use; the Quest project is kept in case it is wanted again.
 
 | Path | Editor | Headset | Pipeline | Notes |
 |---|---|---|---|---|
-| `unity/TeleopVR/` | 2022.3.46f1 | Meta Quest (Link from the editor, or APK) | built-in | the measured baseline; ADR 0001 pins its editor. Rules in `TeleopVR/Assets/Teleop/CLAUDE.md` |
+| `unity/TeleopVR/` | 2022.3.46f1 | Meta Quest (Link from the editor, or APK) | built-in | **parked** since 2026-10-15: kept, not developed or tested. ADR 0001 pins its editor. Rules in `TeleopVR/Assets/Teleop/CLAUDE.md` |
 | `unity/TeleopXR/` | 6000.6.4f1 (Android XR needs ≥ 6000.3.6f1) | Samsung Galaxy XR (Direct Preview over USB-C, or APK) | URP | hand tracking, no Meta SDK. Rules in `TeleopXR/CLAUDE.md` |
 | `unity/Teleop.Bridge/` | both | — | either | the shared UPM package (`com.teleop.bridge`); rules in its `CLAUDE.md` |
 

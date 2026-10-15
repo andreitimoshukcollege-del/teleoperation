@@ -60,12 +60,13 @@ less correction to hide and needs less buffer to cover.
 **Now the honest part, because otherwise this reads like a description of something that exists.**
 It does not. Nothing in this system observes the environment — at any layer:
 
-- The robot reports a pose and nothing else. `RobotStateFrame` is 57 fixed bytes: 28 of pose, 29 of
-  clock bookkeeping, and no field for anything sensed. The uplink is 73 fixed bytes. Neither has an
-  extension point.
-- There is no camera feed, no depth, no contact sensing. What the operator sees is a stick-figure
-  rig posed from the numbers they themselves just sent. The real JetRover *has* a camera; its driver
-  was deliberately left out when the robot side was ported.
+- What the robot reports is its **own body**, never its surroundings:
+  - `RobotStateFrame`, 57 fixed bytes: the wrist pose plus clock bookkeeping.
+  - The joint-state stream (docs/adr/0018): each servo's angle, and whether it was measured or only
+    commanded.
+- There is a **camera feed** (docs/adr/0014): the arm's Orbbec DaBai streams colour video, shown on
+  the display in the headset. It goes to the operator's eyes only. Nothing interprets the image,
+  the depth sensor is not streamed, and there is no contact sensing.
 - The plant is kinematic on purpose — `Plant/CLAUDE.md`: *"no mass, no forces, no inertia, no
   contact, no joint limits, no actuator dynamics."*
 - The one piece of environment-awareness in the whole project is a single hard-coded number that
@@ -230,6 +231,11 @@ just experiment-gui
 
 Only needed for VR scenes, rendering, or headset builds.
 
+**The headset is the Samsung Galaxy XR** (`unity/TeleopXR`, Unity 6000.6.4f1, hand tracking,
+docs/adr/0016). The Meta Quest project (`unity/TeleopVR`, Unity 2022.3.46f1) is parked: kept in the
+repo in case it is wanted again, but no longer developed or tested. Its shared code still has to
+compile under both editors (`unity/CLAUDE.md`).
+
 ### B1. What's different here
 
 - The repo must live on **NTFS** (`C:\Users\<you>\Projects\teleoperation`), reached from WSL as
@@ -242,28 +248,34 @@ Only needed for VR scenes, rendering, or headset builds.
 
 ### B2. Install
 
-1. **Unity 2022.3.46f1** — this exact version. Not 2022.3.x-something-else.
-2. Add the **Android** build support module (for the Quest) during installation.
-3. `git` and `git-lfs` inside WSL. Same warning as track A: LFS first, then clone.
+1. **Unity 6000.6.4f1**, this exact version, with the **Android** build support module (OpenJDK,
+   SDK and NDK).
+2. `git` and `git-lfs` inside WSL. Same warning as track A: LFS first, then clone. The lab's
+   lighting, its mesh library and the robot's CAD model are all LFS.
+3. For Direct Preview (Play mode streamed to the headset), Google's **Android XR Engine Hub**, once
+   per PC. `unity/TeleopXR/CLAUDE.md` has the steps.
 
 ### B3. Open it
 
-Open `unity/TeleopVR/` in Unity Hub. Core is linked by **relative path** —
-`Packages/manifest.json` has `"com.teleop.core": "file:../../../core/Teleop.Core"` — so the C#
-algorithms are the *same files* `dotnet test` runs against. There is no copy and no sync step.
+Run `just unity-setup-xr` **twice** before the first open (it imports XR samples that are not
+committed, and they compile only after the first run ends). Then open `unity/TeleopXR/` in Unity
+Hub. Core, RobotArm and the shared Bridge are linked by **relative path** from
+`Packages/manifest.json`, so the C# algorithms are the *same files* `dotnet test` runs against.
+There is no copy and no sync step.
 
 The consequence: **pull `main` before opening the editor.** A Core change that landed since your
 last pull changes the Unity build immediately.
 
-Two scenes matter:
+The scene is `Assets/Scenes/JetRoverLabXR.unity`: a generated lab with the robot's digital twin, the
+camera display, and hand-tracked clutch control of the arm. `unity/TeleopXR/CLAUDE.md` describes
+every part of it, its safety settings, and how to put it on the headset:
 
-| Scene | What it is |
-|---|---|
-| `Assets/Scenes/SampleScene.unity` | the loopback baseline — everything in-process, no network, no hardware |
-| `Assets/Scenes/JetRoverControl.unity` | the real-robot path (track C) |
-
-Start with `SampleScene`. Press Play; you should see a "ghost" robot tracking a target, with a
-latency figure on the HUD.
+```bash
+just build-galaxy          # the APK, after the scene's safety check
+just install-galaxy        # over USB
+just push-galaxy-config    # point it at the robot's current address; restart the app
+just mirror-galaxy         # watch the headset's view on the PC (scrcpy)
+```
 
 ### B4. Verify before you commit
 
@@ -271,17 +283,26 @@ latency figure on the HUD.
 just bridge-check        # compiles Bridge/ against Core headlessly
 ```
 
-This catches signature breaks fast, but it is **not a substitute for opening the editor** — it
-compiles against UnityEngine stubs, so it cannot catch anything about scenes, prefabs or rendering.
-An IL2CPP build for the Quest is the only real check that Core's C# 9 constraint holds.
+```bash
+just unity-check-xr      # opens the scene headless: missing scripts, broken wiring, safety settings
+just unity-lab-xr        # rebuilds the generated lab and renders preview images to %TEMP%
+```
+
+`bridge-check` catches signature breaks fast, but it is **not a substitute for opening the
+editor**: it compiles against UnityEngine stubs, so it cannot catch anything about scenes, prefabs
+or rendering. An IL2CPP build of the headset app (`just build-galaxy`) is the only real check that
+Core's C# 9 constraint holds.
 
 ---
 
 ## Track C — the physical robot (read this before touching anything)
 
-The robot is a Hiwonder JetRover with a Jetson Nano, reachable over Tailscale. Its ROS 2 side lives
-in a **separate repository**
-([`jetrover-teleop-ros`](https://github.com/andreitimoshukcollege-del/jetrover-teleop-ros)).
+The robot is a Hiwonder JetRover with a Jetson Nano. On the lab network it is found by its mDNS
+name, `jetrover-sinrg.local`, with Tailscale as the fallback; its address changes (DHCP), so never
+hard-code it (`just robot-ip`). Everything that runs on it is in this repository:
+- `core/Teleop.RobotHost` and `core/Teleop.CameraHost` (.NET);
+- the ROS 2 workspace in `robot/ros/` that drives the servo board (docs/adr/0019);
+- the systemd units in `robot/systemd/`.
 
 **Rules, not suggestions:**
 
@@ -296,10 +317,18 @@ in a **separate repository**
 The robot-side services auto-start on boot, so after a Jetson reboot there is nothing to do:
 
 ```bash
-just robot-status              # health of all three Jetson services, no manual SSH
+just robot-status              # the Jetson services, no manual SSH
+just joint-probe               # read-only: is joint state arriving, and which motors are measured
+just robot-battery             # read-only: battery voltage
 just deploy-robothost          # redeploy Teleop.RobotHost after a Core change
+just deploy-ros                # redeploy robot/ros/ (restarts the servo driver: someone at the robot)
 just move-arm 0.15 0 0.08      # Cartesian target in metres -- MOVES REAL HARDWARE
 ```
+
+**Low battery looks like a software fault.** When the 3-cell pack runs low (it was at 9.25 V the
+first time, 2026-10-14; full is 12.6 V), the servo board stops answering. The arm ignores commands, the joint values freeze, the camera drops off USB, and the
+board beeps. Charge it with the robot switched off: running, it draws more than the charger
+supplies.
 
 ---
 
@@ -313,9 +342,10 @@ Setup is the easy part. This is the part that makes the repo make sense.
 not Unity, not the network, not the filesystem, not even a clock.
 
 ```
-analysis/  ──reads──>  results/  <──writes──  Teleop.Eval ──┐
-                                                            ├──> Teleop.Core
-                                            unity/TeleopVR ─┘     (depends on NOTHING)
+analysis/  ──reads──>  results/  <──writes──  Teleop.Eval ───────────────┐
+                                                                         ├──> Teleop.Core
+                      unity/TeleopXR ─┬──> unity/Teleop.Bridge ──────────┘     (depends on NOTHING)
+                      unity/TeleopVR ─┘
 ```
 
 Unity gives Core capabilities by **implementing interfaces Core declares**, never by Core importing
@@ -330,10 +360,11 @@ because breaking it destroys something specific:
 
 - **No clock reads** → time arrives as a parameter → the same input replays to the same output →
   `verify` can prove determinism, and a latency measurement means something.
-- **No reflection** → the Quest's ahead-of-time compiler strips code nothing references directly,
-  so reflection compiles fine on your desktop and crashes on the headset.
-- **C# 9 / netstandard2.1** → Unity 2022.3's compiler. Newer syntax passes `dotnet test` on Linux
-  and breaks the headset build silently.
+- **No reflection** → the headset build's ahead-of-time compiler (IL2CPP) strips code nothing
+  references directly, so reflection compiles fine on your desktop and crashes on the headset.
+- **C# 9 / netstandard2.1** → both Unity editors' compiler (Unity 6.6 for the Galaxy XR, 2022.3 for
+  the parked Quest project). Newer syntax passes `dotnet test` on Linux and breaks the headset
+  build silently.
 
 ### The research loop
 
@@ -358,6 +389,12 @@ the code. Nobody has written that ADR.
 |---|---|
 | `core/Teleop.Core/` | every algorithm; one copy compiled by both `dotnet` and Unity |
 | `core/Teleop.Eval/` | the headless CLI: `sweep`, `verify`, `audit` |
+| `core/Teleop.RobotArm/` | arm kinematics, the clutch and gripper mappings, joint wire formats |
+| `core/Teleop.RobotHost/`, `core/Teleop.CameraHost/` | what runs on the robot's Jetson (.NET) |
+| `unity/TeleopXR/` | the Galaxy XR operator app (the headset in use) |
+| `unity/Teleop.Bridge/` | the only Unity code that touches Core; shared by both Unity projects |
+| `unity/TeleopVR/` | the Meta Quest operator app (parked) |
+| `robot/ros/` | the robot's ROS 2 workspace: servo board driver and relay |
 | `analysis/` | Python: reads `results/`, makes figures |
 | `experiments/` | one YAML per experiment |
 | `results/` | **append-only** — write new directories, never edit old ones |
@@ -381,7 +418,8 @@ Every one of these has actually happened here.
 |---|---|---|
 | Unity can't read an asset; file looks like 3 lines of text | cloned without `git-lfs` | `git lfs install && git lfs pull` |
 | `No module named pip` from anything Python | `python3-venv` missing when the venv was made | `sudo apt install python3-venv`, delete `analysis/.venv`, re-run |
-| Builds on your desktop, breaks on the Quest | newer C# than 9, or reflection | `just bridge-check`, then an actual IL2CPP build |
+| Builds on your desktop, breaks on the headset | newer C# than 9, or reflection | `just bridge-check`, then an actual IL2CPP build (`just build-galaxy`) |
+| Robot arm ignores commands, camera keeps dropping, robot beeps | battery low | charge it with the robot switched off; `just robot-battery` |
 | Duplicate type definitions in Unity | a DLL got written inside `core/Teleop.Core/` | delete it; don't add output paths to the csproj |
 | Works locally, fails in CI | filename case — Linux and CI are case-sensitive, NTFS isn't | match on-disk casing exactly |
 | Prediction looks subtly wrong | coordinate conversion done twice | conversion happens **only** in `Bridge/CoordConversion.cs` |
@@ -417,6 +455,7 @@ Two rules worth stating explicitly because they surprise people:
 | `docs/research-log/*-decisions.md` | to find out whether your idea was already tried |
 | `docs/adr/` | when something looks oddly designed — the reason is here |
 | `robot/README.md` | before any hardware work |
+| `unity/TeleopXR/CLAUDE.md` | before working on the headset app |
 
 If something in this guide was wrong or missing, fix it — you are the last person who will ever see
 it with fresh eyes.

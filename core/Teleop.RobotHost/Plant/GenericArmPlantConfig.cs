@@ -31,7 +31,7 @@ namespace Teleop.RobotHost.Plant
         /// <summary>
         /// Move speed sent to the relay for every joint, pulses/second -- replaces the old
         /// Python-side hardcoded <c>PULSES_PER_SECOND</c> module constant
-        /// (jetrover-teleop-ros/servo_controller.py) with one centrally configured value sent
+        /// (robot/ros's servo_controller.py) with one centrally configured value sent
         /// explicitly over the wire (docs/adr/0011), so the two independently-maintained
         /// deployments no longer have to be kept in sync by hand for this number.
         ///

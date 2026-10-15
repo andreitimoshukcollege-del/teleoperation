@@ -175,9 +175,10 @@ just robot-status                 # health of the Jetson services (read-only)
 just joint-probe                  # read-only: joint state arriving, which motors are measured
 just ros-check                    # read-only: is the servo board answering the ROS driver
 just robot-battery                # read-only: battery voltage
-just deploy-robothost             # redeploy Teleop.RobotHost after a Core change
-just deploy-camerahost            # redeploy the camera sender
-just deploy-ros                   # redeploy robot/ros/ -- restarts the servo driver
+just deploy-robot                 # redeploy everything (gates, ROS, RobotHost, camera) and check it
+just deploy-robothost             # ...or one piece: Teleop.RobotHost after a Core change
+just deploy-camerahost            # the camera sender
+just deploy-ros                   # robot/ros/ -- restarts the servo driver
 just move-arm 0.15 0 0.08         # Cartesian target, metres, wrist frame -- MOVES THE ARM
 ```
 

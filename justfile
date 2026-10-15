@@ -8,25 +8,31 @@ default:
 # ---- core/ (dotnet: algorithms, unit tests, sweep) ----
 
 # Unit + allocation tests for Teleop.Core
+[group('checks')]
 core-test:
     cd core && dotnet test
 
 # Replay the golden .tlog twice, assert identical (determinism gate)
+[group('checks')]
 core-verify:
     cd core && dotnet run --project Teleop.Eval -- verify
 
 # Invariant + registry-completeness check over the built assembly
+[group('checks')]
 core-audit:
     cd core && dotnet run --project Teleop.Eval -- audit
 
 # Run all three core/ gates -- "Verify your work" in root CLAUDE.md
+[group('checks')]
 core-check: core-test core-verify core-audit
 
 # Compile Bridge/ against Core headlessly -- catches a Core API change silently breaking unity/. NOT a substitute for opening the editor; see unity/BridgeCheck/README.md
+[group('checks')]
 bridge-check:
     cd unity/BridgeCheck && dotnet build --nologo
 
 # Copy core/testdata/traces/*.trace where Unity's Editor can read them (Application.persistentDataPath), for NetworkImpairmentController's trace mode. On device, `adb push` them to the same place instead.
+[group('experiments')]
 install-traces:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -91,30 +97,37 @@ _unity-batch project method extra="" graphics="false":
     exit "$code"
 
 # Headless check of unity/TeleopVR (Unity 2022.3): compiles, and every JetRover scene opens with no missing scripts and its Bridge wiring intact -- moves nothing; close that project's editor first
+[group('quest (parked)')]
 unity-check-vr:
     just _unity-batch TeleopVR Teleop.Editor.SceneIntegrityCheck.Run
 
 # Configure unity/TeleopXR (Galaxy XR, Unity 6.6) from code: XRI/XR Hands samples, URP, Android player settings, OpenXR for Android and Direct Preview. Idempotent; the first run imports samples, so run it twice on a fresh clone. Close that project's editor first
+[group('headset (Galaxy XR)')]
 unity-setup-xr:
     just _unity-batch TeleopXR Teleop.XR.Editor.XrProjectSetup.Run
 
 # Build unity/TeleopXR's Galaxy XR scene (JetRoverLabXR) from code: hands rig, arm, pinch-grab target, camera panel. Create-only; rebuild=true replaces it, discarding hand edits. Run unity-setup-xr first
+[group('headset (Galaxy XR)')]
 unity-scene-xr rebuild="false":
     just _unity-batch TeleopXR Teleop.XR.Editor.XrLabSceneBuilder.Run {{ if rebuild == "true" { "-teleopRebuildScene" } else { "" } }}
 
 # Rebuild unity/TeleopXR's lab (night-shift room, JetRover twin, camera display, lighting), bake the lighting, and render preview screenshots to the Windows temp folder; prints the contact sheet's path. bake=false skips the multi-minute bake. Close that project's editor first
+[group('headset (Galaxy XR)')]
 unity-lab-xr bake="true":
     just _unity-batch TeleopXR Teleop.XR.Editor.LabDressing.Run "-labCapture {{ if bake == "true" { "-labBake" } else { "" } }}" true
 
 # Headless check of unity/TeleopXR's scene: no missing scripts, Bridge wiring intact, pinch-grab settings safe for a real arm (no pull-to-hand, no snap, no smoothing, no throw), hands only
+[group('headset (Galaxy XR)')]
 unity-check-xr:
     just _unity-batch TeleopXR Teleop.XR.Editor.XrSceneCheck.Run
 
 # Build the Galaxy XR APK (unity/TeleopXR, Unity 6.6) after its scene check -> unity/TeleopXR/Builds/TeleopXR.apk. Close that project's editor first
+[group('headset (Galaxy XR)')]
 build-galaxy:
     just _unity-batch TeleopXR Teleop.XR.Editor.XrBuild.Run "-buildTarget Android"
 
 # Build the Quest APK (unity/TeleopVR, Unity 2022.3) from its Build Settings scenes after its scene check -> unity/TeleopVR/Builds/TeleopVR-Quest.apk. The first Android build re-imports assets; close that project's editor first
+[group('quest (parked)')]
 build-quest:
     just _unity-batch TeleopVR Teleop.Editor.QuestBuild.Run "-buildTarget Android"
 
@@ -128,6 +141,7 @@ _adb *args:
     "$adb" {{args}}
 
 # Mirror the Galaxy XR's view into a window on this PC over USB, with scrcpy (install it once: `winget install Genymobile.scrcpy`). Uses Unity's adb, as every recipe here does, so two adb versions never fight over the server. Extra flags pass through, e.g. `just mirror-galaxy --record=session.mp4`. Close the window to stop
+[group('headset (Galaxy XR)')]
 mirror-galaxy *args:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -140,6 +154,7 @@ mirror-galaxy *args:
     ADB="$(wslpath -w "$adb")" WSLENV="${WSLENV:+$WSLENV:}ADB" "$scrcpy" --no-audio --max-size 1920 --window-title=GalaxyXR {{args}}
 
 # Install the Galaxy XR APK on the headset over USB (developer mode and USB debugging on; accept the prompt in the headset)
+[group('headset (Galaxy XR)')]
 install-galaxy:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -149,6 +164,7 @@ install-galaxy:
     just _adb install -r "$(wslpath -m "$apk")"
 
 # Point the Galaxy XR app at the robot without a rebuild: pushes a full jetrover_connection.json override (the Bridge default with RemoteHost replaced) to the app's files directory. Finds the robot itself (`just robot-ip`); pass an address to override. motion=false sends nothing to the arm (ConfirmHardwareMotion off): only the virtual arm moves, for a first try of the controls
+[group('headset (Galaxy XR)')]
 push-galaxy-config host=default_jetrover_host motion="true":
     #!/usr/bin/env bash
     set -euo pipefail
@@ -169,6 +185,7 @@ push-galaxy-config host=default_jetrover_host motion="true":
     echo "Galaxy XR app now targets $host, hardware motion {{ if motion == "true" { "ON" } else { "OFF (virtual arm only)" } }}; restart the app to pick it up."
 
 # Run an experiment sweep, e.g. `just sweep experiments/exp-001-predictor-baseline.yaml`
+[group('experiments')]
 sweep config:
     cd core && dotnet run --project Teleop.Eval -- sweep ../{{config}}
 
@@ -188,6 +205,7 @@ default_operator_host := env_var_or_default("OPERATOR_HOST", "100.82.140.80")
 robot_mdns_name := env_var_or_default("JETROVER_NAME", "jetrover-sinrg")
 
 # Print the robot's current IPv4 address and how it was found -- moves nothing. Tries its mDNS name (jetrover-sinrg.local, on the lab LAN), then Tailscale (the direct LAN path if it has one, else the 100.x address). Every robot recipe does this lookup itself unless JETROVER_HOST is set
+[group('robot: checks and diagnostics (nothing moves)')]
 robot-ip:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -243,6 +261,7 @@ _robot-host host="auto":
     exit 1
 
 # Point both Unity editors' Play mode at the robot's current address: updates RemoteHost in each project's per-machine jetrover_connection.json override (created from the Bridge default if missing) -- no rebuild. Windows side only. The Galaxy headset gets the same with `just push-galaxy-config`
+[group('headset (Galaxy XR)')]
 unity-robot-host host=default_jetrover_host:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -268,6 +287,7 @@ unity-robot-host host=default_jetrover_host:
     done
 
 # Move the real JetRover arm to a Cartesian target (wrist frame, meters) and hold, e.g. `just move-arm 0.15 0 0.08` -- requires Teleop.RobotHost running on the Jetson and a human watching the hardware
+[group('robot: moves the arm (someone watching)')]
 move-arm x y z gripper="0" remote_host=default_jetrover_host remote_port="6000" local_port="6001":
     cd core && dotnet run --project Teleop.Eval -- move-arm \
         --x {{x}} --y {{y}} --z {{z}} --gripper {{gripper}} \
@@ -275,19 +295,38 @@ move-arm x y z gripper="0" remote_host=default_jetrover_host remote_port="6000" 
         --confirm-hardware-motion
 
 # Interactively author a new RobotArmProfile JSON (docs/adr/0011); answers prompts from the terminal, e.g. `just build-profile`
+[group('robot: profiles')]
 build-profile output="" force="false":
     cd core && dotnet run --project Teleop.Eval -- build-profile \
         {{ if output != "" { "--output " + output } else { "" } }} \
         {{ if force == "true" { "--force" } else { "" } }}
 
 # Phase-3 cross-machine ClockSync diagnostic against an already-running Teleop.RobotHost -- moves the real arm once and holds; a human must be watching the hardware
+[group('robot: moves the arm (someone watching)')]
 clocksync-check remote_host=default_jetrover_host remote_port="6000" local_port="6001" rate_hz="20" duration_seconds="20":
     cd core && dotnet run --project Teleop.Eval -- clocksync-check \
         --remote-host $(just _robot-host "{{remote_host}}") --remote-port {{remote_port}} --local-port {{local_port}} \
         --rate-hz {{rate_hz}} --duration-seconds {{duration_seconds}} \
         --confirm-hardware-motion
 
+# Redeploy everything on the robot from this checkout, in one go, and check it came up: Core's gates (checks=false skips them), robot/ros (built and tested on the Jetson before its two services restart), RobotHost (after the ROS services, so it connects to the fresh relay), the camera sender, then robot-ros-diff, joint-probe and robot-status. Stops at the first failure. Restarts the servo driver, so someone must be at the robot
+[group('robot: deploy and restart (someone at the robot)')]
+deploy-robot checks="true":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    case "{{checks}}" in true|false) ;; *) echo "error: checks must be true or false, got '{{checks}}'" >&2; exit 1 ;; esac
+    step() { echo; echo "=== $*"; }
+    if [ "{{checks}}" = "true" ]; then step "1/5 Core's gates (test, verify, audit)"; just core-check; fi
+    # Resolve the robot once, so every step talks to the same address.
+    export JETROVER_HOST="$(just _robot-host "${JETROVER_HOST:-auto}")"
+    step "2/5 ROS workspace (robot/ros): build and test on the Jetson, then switch and restart"; just deploy-ros
+    step "3/5 Teleop.RobotHost"; just deploy-robothost
+    step "4/5 Teleop.CameraHost"; just deploy-camerahost
+    step "5/5 Checks"; just robot-ros-diff; just joint-probe; just robot-status
+    echo; echo "Robot redeployed from $(git rev-parse --short HEAD) at $JETROVER_HOST."
+
 # Publish Teleop.RobotHost for the Jetson (linux-arm64), copy it over, and restart its systemd service -- needs passwordless ssh/scp; does NOT touch the Jetson's ROS 2 nodes, see robot/systemd/README.md
+[group('robot: deploy and restart (someone at the robot)')]
 deploy-robothost remote_host=default_jetrover_host remote_user="jetson" operator_host=default_operator_host max_direction_magnitude="" profile_path="" pulses_per_second="":
     #!/usr/bin/env bash
     set -euo pipefail
@@ -347,6 +386,7 @@ deploy-robothost remote_host=default_jetrover_host remote_user="jetson" operator
     "
 
 # Read-only: the camera sender's recent journal (teleop-camerahost.service) with its per-10 s [stats] lines, the video devices present, and the kernel's recent USB/camera events. Use it when the headset's feed freezes or cuts out
+[group('robot: checks and diagnostics (nothing moves)')]
 camera-logs lines="200" remote_host=default_jetrover_host remote_user="jetson":
     ssh -o StrictHostKeyChecking=accept-new "{{remote_user}}@$(just _robot-host "{{remote_host}}")" \
         "systemctl status teleop-camerahost --no-pager -n 0; journalctl -u teleop-camerahost --no-pager -n {{lines}}; \
@@ -354,16 +394,19 @@ camera-logs lines="200" remote_host=default_jetrover_host remote_user="jetson":
          echo '--- kernel USB/camera events (newest last)'; journalctl -k --no-pager -n 3000 | grep -iE 'usb|uvc|video' | tail -40"
 
 # Read-only: RobotHost's recent journal (teleop-robothost.service): who it streams joint state to, the commands it receives and acts on, and anything it rejects. Use it when the headset connects but the arm doesn't move
+[group('robot: checks and diagnostics (nothing moves)')]
 robothost-logs lines="200" remote_host=default_jetrover_host remote_user="jetson":
     ssh -o StrictHostKeyChecking=accept-new "{{remote_user}}@$(just _robot-host "{{remote_host}}")" \
         "systemctl status teleop-robothost --no-pager -n 0; journalctl -u teleop-robothost --no-pager -n {{lines}}"
 
 # Read-only: the ROS side's recent journals, the servo bus driver (jetrover-arm-control) and the relay between it and RobotHost (jetrover-relay). Python buffers their stdout, so a quiet log is not proof of a quiet driver
+[group('robot: checks and diagnostics (nothing moves)')]
 arm-logs lines="100" remote_host=default_jetrover_host remote_user="jetson":
     ssh -o StrictHostKeyChecking=accept-new "{{remote_user}}@$(just _robot-host "{{remote_host}}")" \
         "for u in jetrover-arm-control jetrover-relay; do echo \"=== \$u\"; journalctl -u \$u --no-pager -n {{lines}}; done"
 
 # Read-only: the ROS link between the relay and the servo driver. The topics each side publishes and subscribes to, the services' environment (the CLI runs with ROS_LOCALHOST_ONLY=1 as they do; a mismatch makes it see no messages), the live topic list, and for a few seconds each how often messages actually flow. Use it when RobotHost logs commands but the arm doesn't move
+[group('robot: checks and diagnostics (nothing moves)')]
 ros-check seconds="4" remote_host=default_jetrover_host remote_user="jetson":
     ssh -o StrictHostKeyChecking=accept-new "{{remote_user}}@$(just _robot-host "{{remote_host}}")" \
         "r=/home/jetson/teleop_ros_current; [ -d \$r/src ] || r=/home/jetson/projects/jetrover-teleop-ros; src=\$r/src; echo \"--- topics in the source (\$r)\"; grep -rn -E 'create_publisher|create_subscription' \$src --include=*.py | sed \"s|\$src/||\" | head -30; \
@@ -373,6 +416,7 @@ ros-check seconds="4" remote_host=default_jetrover_host remote_user="jetson":
          for t in \$(timeout 10 ros2 topic list 2>/dev/null | grep -v -E '^/(rosout|parameter_events)\$'); do echo \"--- \$t\"; timeout {{seconds}} ros2 topic hz \$t 2>&1 | tail -2; done; true"
 
 # Read-only: the servo controller board's serial link. Lists the serial devices present, the ones jetrover-arm-control holds open (a "(deleted)" one means the board re-enumerated after a reset or brown-out and the driver still holds the dead port), and the kernel's recent serial USB events. Use it when commands arrive but the arm doesn't move
+[group('robot: checks and diagnostics (nothing moves)')]
 robot-serial remote_host=default_jetrover_host remote_user="jetson":
     ssh -o StrictHostKeyChecking=accept-new "{{remote_user}}@$(just _robot-host "{{remote_host}}")" \
         "echo '--- serial devices'; ls -l /dev/ttyUSB* /dev/ttyACM* /dev/ttyTHS* /dev/serial/by-id/ 2>&1; \
@@ -380,10 +424,12 @@ robot-serial remote_host=default_jetrover_host remote_user="jetson":
          echo '--- kernel serial USB events (newest last)'; journalctl -k --no-pager -n 5000 | grep -iE 'ch34|cdc_acm|ttyUSB|ttyACM|cp210|ftdi' | grep -v 'Modules linked in' | tail -30"
 
 # Read-only: subscribe to RobotHost's joint-state stream (docs/adr/0018) for a few seconds and print the frame rate, round trip, and per motor whether it is sensed (servo feedback) or only a commanded belief. Sends a keepalive, never a command: nothing moves
+[group('robot: checks and diagnostics (nothing moves)')]
 joint-probe seconds="3" remote_host=default_jetrover_host:
     cd core && dotnet run --project Teleop.Eval -- joint-probe --remote-host $(just _robot-host "{{remote_host}}") --seconds {{seconds}}
 
 # Read-only: which servo ids the Jetson's ROS relay reads position feedback from (FEEDBACK_MOTOR_IDS in robot/ros's robot_controller_node.py, docs/adr/0011; change it there and run just deploy-ros), the loop that reads them (a servo that does not answer is silently skipped), and where relay_node.py tracks them. A motor missing or silent here is reported as a commanded belief, never measured (just joint-probe shows the effect)
+[group('robot: checks and diagnostics (nothing moves)')]
 robot-feedback-ids remote_host=default_jetrover_host remote_user="jetson":
     ssh -o StrictHostKeyChecking=accept-new "{{remote_user}}@$(just _robot-host "{{remote_host}}")" \
         "systemctl cat jetrover-arm-control --no-pager 2>/dev/null | grep -E '^(ExecStart|WorkingDirectory)=' ; \
@@ -397,6 +443,7 @@ robot-feedback-ids remote_host=default_jetrover_host remote_user="jetson":
          grep -n -E 'StaleTracked|motor_id|FEEDBACK|_ids|MOTOR' \$(ls \$r/src/*/*/relay_node.py 2>/dev/null | head -1) | head -30"
 
 # Read-only: the Jetson's git checkout of the ROS code (~/projects/jetrover-teleop-ros): its branch and remote, how it compares with GitHub, uncommitted changes in full, and untracked files. Fetches, never pulls or resets
+[group('robot: checks and diagnostics (nothing moves)')]
 robot-ros-status remote_host=default_jetrover_host remote_user="jetson":
     ssh -o StrictHostKeyChecking=accept-new "{{remote_user}}@$(just _robot-host "{{remote_host}}")" \
         "cd /home/jetson/projects/jetrover-teleop-ros && git remote -v | head -2 && git status -sb | head -1 && \
@@ -405,6 +452,7 @@ robot-ros-status remote_host=default_jetrover_host remote_user="jetson":
          echo '--- untracked, outside build/install/log:' && git ls-files --others --exclude-standard | grep -v -E '^(build|install|log)/' | head -30"
 
 # Read-only: is the ROS code on the Jetson the same as robot/ros/? Compares a checksum of every source file under robot/ros/src (build output, caches and .bak files left out) with the Jetson's active copy (~/teleop_ros_current, or the old checkout before the first deploy-ros). Prints only the files that differ or exist on one side, then a verdict
+[group('robot: checks and diagnostics (nothing moves)')]
 robot-ros-diff remote_host=default_jetrover_host remote_user="jetson":
     #!/usr/bin/env bash
     set -euo pipefail
@@ -418,6 +466,7 @@ robot-ros-diff remote_host=default_jetrover_host remote_user="jetson":
     if [ -z "$d" ]; then echo "robot/ros/src matches the Jetson: $(echo "$here" | wc -l) files"; else echo "$d" | sed 's/^</  repo  /; s/^>/  robot /' | grep -E '^  (repo|robot)'; echo "DIFFERS"; exit 1; fi
 
 # Copy everything the Jetson's ROS checkout holds that GitHub may not, into <dest>: a git bundle of all its refs (commits never pushed included), the uncommitted diff against HEAD, and a tarball of its untracked source files (build/, install/ and log/ left out). How robot/ros/ was first imported (docs/adr/0019); also a backup. Writes only /tmp on the robot; changes nothing there
+[group('robot: checks and diagnostics (nothing moves)')]
 robot-ros-fetch dest remote_host=default_jetrover_host remote_user="jetson":
     #!/usr/bin/env bash
     set -euo pipefail
@@ -437,18 +486,21 @@ robot-ros-fetch dest remote_host=default_jetrover_host remote_user="jetson":
     ls -la "{{dest}}"
 
 # Read-only: what the Hiwonder controller board can be told to do. Finds the board library jetrover-arm-control uses (its set_buzzer, board commands and function codes) and lists every function, plus anything about the buzzer, battery or alarm. Nothing is sent to the board
+[group('robot: checks and diagnostics (nothing moves)')]
 robot-board-commands remote_host=default_jetrover_host remote_user="jetson":
     ssh -o StrictHostKeyChecking=accept-new "{{remote_user}}@$(just _robot-host "{{remote_host}}")" \
         "files=\$(grep -rl --include=*.py -E 'def set_buzzer|PACKET_FUNC|BOARD_' /home/jetson /opt 2>/dev/null | grep -v -E '/build/|/install/|site-packages/(numpy|scipy)' | sort -u | head -8); \
          for f in \$files; do echo \"=== \$f\"; grep -n -E '^ *def |PACKET_FUNC|FUNC_|= *0x' \$f | head -60; echo '--- buzzer / battery / alarm:'; grep -n -i -E 'buzz|batt|alarm|volt|warn|beep' \$f | head -30; done"
 
 # Restart the servo bus driver (jetrover-arm-control), which reopens its serial link to the Hiwonder board. For when the board stopped answering (just ros-check shows no feedback_array or battery messages) after a brown-out or a reset. It interrupts the arm, and the shoulder may sag while the driver comes back (seen 2026-10-12), so someone must be at the robot. Afterwards the feedback should flow again
+[group('robot: deploy and restart (someone at the robot)')]
 restart-arm-driver remote_host=default_jetrover_host remote_user="jetson":
     ssh -o StrictHostKeyChecking=accept-new "{{remote_user}}@$(just _robot-host "{{remote_host}}")" \
         "sudo systemctl restart jetrover-arm-control; sleep 5; systemctl status jetrover-arm-control --no-pager -n 8"
     just ros-check 4
 
 # Read-only: the battery reading jetrover-arm-control publishes (millivolts, from the Hiwonder board), plus the Jetson's own supply rails. A continuous beep from the robot is usually the board's low-battery alarm: check this first
+[group('robot: checks and diagnostics (nothing moves)')]
 robot-battery remote_host=default_jetrover_host remote_user="jetson":
     ssh -o StrictHostKeyChecking=accept-new "{{remote_user}}@$(just _robot-host "{{remote_host}}")" \
         "r=/home/jetson/teleop_ros_current; [ -d \$r/src ] || r=/home/jetson/projects/jetrover-teleop-ros; f=\$r/src/jetrover_arm_control/jetrover_arm_control/robot_controller_node.py; \
@@ -460,6 +512,7 @@ robot-battery remote_host=default_jetrover_host remote_user="jetson":
            for c in 0 1 2; do n=\$(cat \$d/rail_name_\$c 2>/dev/null) && echo \"\$n: \$(cat \$d/in_voltage\${c}_input 2>/dev/null) mV, \$(cat \$d/in_current\${c}_input 2>/dev/null) mA\"; done; done; true"
 
 # Build the ROS 2 workspace in robot/ros/ on the Jetson and switch the two ROS services to it (docs/adr/0019): copies the sources to a new ~/teleop_ros_deploy_<time>/, builds it there with colcon, runs its plain-Python tests there, then points ~/teleop_ros_current at it, installs robot/systemd's two ROS units (they source ~/teleop_ros_current) and restarts them. activate=false only uploads and builds, touching nothing that runs. Restarting interrupts the arm (the shoulder may sag), so someone must be at the robot. Roll back by pointing ~/teleop_ros_current at an earlier deploy and restarting the two services
+[group('robot: deploy and restart (someone at the robot)')]
 deploy-ros activate="true" remote_host=default_jetrover_host remote_user="jetson":
     #!/usr/bin/env bash
     set -euo pipefail
@@ -502,11 +555,13 @@ deploy-ros activate="true" remote_host=default_jetrover_host remote_user="jetson
     just ros-check 4
 
 # Print systemctl status for the Jetson-side services (teleop-robothost, jetrover-relay, jetrover-arm-control) in one shot -- see robot/systemd/README.md
+[group('robot: checks and diagnostics (nothing moves)')]
 robot-status remote_host=default_jetrover_host remote_user="jetson":
     ssh -o StrictHostKeyChecking=accept-new "{{remote_user}}@$(just _robot-host "{{remote_host}}")" \
         "systemctl status teleop-robothost jetrover-relay jetrover-arm-control --no-pager -n 5"
 
 # Read-only: the Jetson's Wi-Fi profiles, visible networks, IPv4/IPv6 addresses, routes and Tailscale state -- moves nothing; run before and after `robot-wifi-join`
+[group('robot: checks and diagnostics (nothing moves)')]
 robot-net-status remote_host=default_jetrover_host remote_user="jetson":
     #!/usr/bin/env bash
     set -euo pipefail
@@ -525,6 +580,7 @@ robot-net-status remote_host=default_jetrover_host remote_user="jetson":
     REMOTE
 
 # Read-only: list the Jetson's cameras, grab one frame from `device`, copy it here and print where it went -- moves nothing; exits non-zero if no frame was captured
+[group('robot: checks and diagnostics (nothing moves)')]
 robot-camera-check device="/dev/video0" remote_host=default_jetrover_host remote_user="jetson":
     #!/usr/bin/env bash
     set -euo pipefail
@@ -585,6 +641,7 @@ robot-camera-check device="/dev/video0" remote_host=default_jetrover_host remote
     if command -v wslpath >/dev/null 2>&1; then echo "Windows path: $(wslpath -w "$local_file")"; fi
 
 # Read-only: publish Teleop.CameraHost, run its timestamp-spike on the Jetson (docs/adr/0014, resolved question 1) and delete it again -- uses the camera for a few seconds, touches no service, moves nothing; exits with the spike's code (0 pass, 1 fail, 2 setup error)
+[group('robot: checks and diagnostics (nothing moves)')]
 camera-timestamp-spike frames="150" fps="30" device="/dev/video0" remote_host=default_jetrover_host remote_user="jetson":
     #!/usr/bin/env bash
     set -euo pipefail
@@ -612,6 +669,7 @@ camera-timestamp-spike frames="150" fps="30" device="/dev/video0" remote_host=de
     exit "$status"
 
 # Run the camera streaming sender (docs/adr/0014) on the Jetson in the foreground for `seconds`, then delete it again -- uses the camera, opens UDP :6003, touches no service, moves nothing. Pair with `just camera-probe` from this machine. Not a systemd service yet
+[group('robot: checks and diagnostics (nothing moves)')]
 camera-serve seconds="30" fps="30" device="/dev/video0" remote_host=default_jetrover_host remote_user="jetson":
     #!/usr/bin/env bash
     set -euo pipefail
@@ -638,11 +696,13 @@ camera-serve seconds="30" fps="30" device="/dev/video0" remote_host=default_jetr
     exit "$status"
 
 # Subscribe to the camera sender from this machine for `seconds` and report what arrives (frames, rate, sizes, reassembly drops); `save` writes the last frame to a path the (Windows) dotnet can resolve. Exit 1 if no frame arrived -- usually the sender is not running or this machine's firewall blocks inbound UDP on 6004
+[group('robot: checks and diagnostics (nothing moves)')]
 camera-probe seconds="10" max_fps="0" save="" remote_host=default_jetrover_host:
     cd core && dotnet run --project Teleop.CameraHost -c Release -- probe --host $(just _robot-host "{{remote_host}}") \
         --seconds {{seconds}} --max-fps {{max_fps}} {{ if save != "" { "--save '" + save + "'" } else { "" } }}
 
 # Publish Teleop.CameraHost for the Jetson, copy it over, write ~/camerahost-run.sh and restart teleop-camerahost if it is installed (see robot/systemd/README.md) -- moves nothing; does not touch teleop-robothost or the ROS nodes
+[group('robot: deploy and restart (someone at the robot)')]
 deploy-camerahost fps="30" device="auto" remote_host=default_jetrover_host remote_user="jetson":
     #!/usr/bin/env bash
     set -euo pipefail
@@ -688,6 +748,7 @@ deploy-camerahost fps="30" device="auto" remote_host=default_jetrover_host remot
     "
 
 # One-time: copy robot/systemd/teleop-camerahost.service to the Jetson, enable it at boot and start it -- run `just deploy-camerahost` first so the wrapper script exists
+[group('robot: deploy and restart (someone at the robot)')]
 install-camerahost-service remote_host=default_jetrover_host remote_user="jetson":
     #!/usr/bin/env bash
     set -euo pipefail
@@ -707,6 +768,7 @@ install-camerahost-service remote_host=default_jetrover_host remote_user="jetson
     "
 
 # NOT YET RUN AGAINST THE ROBOT. Join the Jetson to another Wi-Fi network, e.g. `just robot-wifi-join "SINRG WIFI"`. The password comes from JETROVER_WIFI_PASSWORD or a prompt, never the command line. The current network stays as an automatic fallback in `revert_minutes` unless `just robot-wifi-confirm` runs first. Changes the robot's network: have someone near the robot
+[group('robot: network setup')]
 robot-wifi-join ssid revert_minutes="5" remote_host=default_jetrover_host remote_user="jetson":
     #!/usr/bin/env bash
     set -euo pipefail
@@ -794,11 +856,13 @@ robot-wifi-join ssid revert_minutes="5" remote_host=default_jetrover_host remote
     echo "Next: wait ~30 s, run 'just robot-net-status' (over Tailscale) to read the robot's new address, then 'JETROVER_HOST=<new address> just robot-wifi-confirm' to keep it." >&2
 
 # NOT YET RUN AGAINST THE ROBOT. Keep the Wi-Fi network `robot-wifi-join` switched to, cancelling its scheduled fallback -- run it over the new path once that path works, e.g. `JETROVER_HOST=<new address> just robot-wifi-confirm`
+[group('robot: network setup')]
 robot-wifi-confirm remote_host=default_jetrover_host remote_user="jetson":
     ssh -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new "{{remote_user}}@$(just _robot-host "{{remote_host}}")" \
         "if systemctl is-active --quiet jetrover-wifi-revert.timer; then sudo systemctl stop jetrover-wifi-revert.timer && echo 'fallback cancelled; staying on this network'; else echo 'no fallback pending'; fi"
 
 # Pin the Jetson's wired IPv4 address instead of taking it from DHCP, e.g. `just robot-static-ip 10.188.57.2/21 10.188.56.1`. Keeps the DNS servers DHCP gave it. Reverts to DHCP in `revert_minutes` unless `just robot-static-ip-confirm` runs first. Only use an address the network admin has approved; DHCP does not know about it
+[group('robot: network setup')]
 robot-static-ip address gateway connection="Wired connection 1" revert_minutes="5" remote_host=default_jetrover_host remote_user="jetson":
     #!/usr/bin/env bash
     set -euo pipefail
@@ -828,11 +892,13 @@ robot-static-ip address gateway connection="Wired connection 1" revert_minutes="
     REMOTE
 
 # Keep the static address `robot-static-ip` set, cancelling its scheduled return to DHCP -- run it once the robot answers on that address
+[group('robot: network setup')]
 robot-static-ip-confirm remote_host=default_jetrover_host remote_user="jetson":
     ssh -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new "{{remote_user}}@$(just _robot-host "{{remote_host}}")" \
         "if systemctl is-active --quiet jetrover-static-ip-revert.timer; then sudo systemctl stop jetrover-static-ip-revert.timer && echo 'fallback cancelled; static address kept'; else echo 'no fallback pending'; fi; nmcli -g ipv4.method,ipv4.addresses connection show 'Wired connection 1'"
 
 # Rename the Jetson (hostname, /etc/hosts, its mDNS name <name>.local, and its Tailscale machine name) -- moves nothing. docs/adr/0015 finds the robot by this name, so it must be unique on the LAN
+[group('robot: network setup')]
 robot-set-hostname name remote_host=default_jetrover_host remote_user="jetson":
     #!/usr/bin/env bash
     set -euo pipefail
@@ -895,6 +961,7 @@ _analysis-venv:
 
 # One-time analysis/ venv setup (host python auto-detected per box -- see analysis/CLAUDE.md).
 # Also called automatically by test/experiment-gui/report if analysis/.venv doesn't exist yet.
+[group('checks')]
 analysis-setup:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -918,6 +985,7 @@ analysis-setup:
     "$PY" -m pip install -e . --no-build-isolation
 
 # Run the analysis/ pytest suite -- scriptable, use this for CI/agent verification
+[group('checks')]
 test: _analysis-venv
     #!/usr/bin/env bash
     set -euo pipefail
@@ -926,6 +994,7 @@ test: _analysis-venv
     "$PY" -m pytest -v
 
 # Opens a GUI window to configure and run a sweep, then view its figures (needs a real display)
+[group('experiments')]
 experiment-gui: _analysis-venv
     #!/usr/bin/env bash
     set -euo pipefail
@@ -934,6 +1003,7 @@ experiment-gui: _analysis-venv
     "$PY" run_tests.py
 
 # Generate figures + summary table for a run, e.g. `just report results/exp-001-predictor-baseline/20260804-020431Z`
+[group('experiments')]
 report run_dir: _analysis-venv
     #!/usr/bin/env bash
     set -euo pipefail
@@ -944,4 +1014,5 @@ report run_dir: _analysis-venv
 # ---- everything ----
 
 # Every verification gate in the repo: core/ dotnet tests + Bridge/-vs-Core compile + analysis/ python tests
+[group('checks')]
 check: core-check bridge-check test

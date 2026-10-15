@@ -320,8 +320,9 @@ The robot-side services auto-start on boot, so after a Jetson reboot there is no
 just robot-status              # the Jetson services, no manual SSH
 just joint-probe               # read-only: is joint state arriving, and which motors are measured
 just robot-battery             # read-only: battery voltage
-just deploy-robothost          # redeploy Teleop.RobotHost after a Core change
-just deploy-ros                # redeploy robot/ros/ (restarts the servo driver: someone at the robot)
+just deploy-robot              # redeploy everything on the robot and check it (someone at the robot)
+just deploy-robothost          # ...or one piece: Teleop.RobotHost after a Core change
+just deploy-ros                # robot/ros/ only (restarts the servo driver)
 just move-arm 0.15 0 0.08      # Cartesian target in metres -- MOVES REAL HARDWARE
 ```
 

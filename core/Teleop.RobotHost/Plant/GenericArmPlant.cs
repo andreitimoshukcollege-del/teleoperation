@@ -96,6 +96,10 @@ namespace Teleop.RobotHost.Plant
         // whichever command lost the race -- found via real-hardware testing (2026-08-12).
         private long _lastAcceptedCartesianCaptureTicks;
         private long _lastAcceptedJointCaptureTicks;
+
+        // The servo speed actually sent to the relay (pulses/s): the joint path's latest requested
+        // speed, never above GenericArmPlantConfig.PulsesPerSecond (docs/adr/0018). Both paths use it.
+        private float _pulsesPerSecond;
         private long _stateTicks;
 
         // Per-joint state, indexed the same way RobotArmProfile.Joints is.
@@ -106,7 +110,7 @@ namespace Teleop.RobotHost.Plant
 
         // Resolved once at construction from each joint's optional per-joint override
         // (falling back to the config's global MinPulse/MaxPulse), or from the gripper's own
-        // open/closed range for gripper roles -- see the constructor.
+        // open/closed range for the gripper's open/close role -- see the constructor.
         private readonly float[] _minPulse;
         private readonly float[] _maxPulse;
 
@@ -134,7 +138,7 @@ namespace Teleop.RobotHost.Plant
             for (int i = 0; i < n; i++)
             {
                 JointHardwareSpec joint = _profile.Joints[i];
-                if (joint.Role == JointRole.GripperMain || joint.Role == JointRole.GripperRotate)
+                if (joint.Role == JointRole.GripperMain)
                 {
                     _minPulse[i] = MathF.Min(_config.GripperOpenPulse, _config.GripperClosedPulse);
                     _maxPulse[i] = MathF.Max(_config.GripperOpenPulse, _config.GripperClosedPulse);
@@ -161,6 +165,9 @@ namespace Teleop.RobotHost.Plant
                 for (int i = 0; i < _profile.JointCount; i++)
                 {
                     JointRole role = _profile.Joints[i].Role;
+                    // The wrist roll stays out too, as it always was: whether the relay reports
+                    // feedback for it has never been checked on the hardware, and requiring it
+                    // could block a robot that worked before.
                     if (role == JointRole.GripperMain || role == JointRole.GripperRotate)
                     {
                         continue;
@@ -175,6 +182,19 @@ namespace Teleop.RobotHost.Plant
                 return true;
             }
         }
+
+        /// <summary>
+        /// A new sender on the Cartesian path: the staleness check starts over. CaptureTicks are the
+        /// sender's own clock, so another machine's, or the same machine's after a reboot, are not
+        /// comparable with the last sender's. Without this, an operator whose clock reads lower than
+        /// the previous one had every command dropped as stale until RobotHost restarted (found on
+        /// hardware 2026-10-13: the Galaxy XR rebooted mid-session and the arm froze). Reordered
+        /// datagrams from one sender are still dropped. Moves nothing.
+        /// </summary>
+        public void RestartCartesianCommandOrdering() => _lastAcceptedCartesianCaptureTicks = long.MinValue;
+
+        /// <summary>A new sender on the joint path: as <see cref="RestartCartesianCommandOrdering"/>.</summary>
+        public void RestartJointCommandOrdering() => _lastAcceptedJointCaptureTicks = long.MinValue;
 
         /// <summary>
         /// Runs inverse kinematics against <paramref name="command"/>'s pose, then applies the
@@ -193,6 +213,7 @@ namespace Teleop.RobotHost.Plant
             SeedBeliefsFromSensedIfNeeded();
 
             float desiredPitch = ArmKinematics.ExtractPitchRadians(command.Pose.Rotation);
+            float desiredRoll = ArmKinematics.ExtractRollRadians(command.Pose.Rotation);
             Span<float> wristPitches = stackalloc float[_profile.WristJointCount];
             ArmKinematics.TryInverse(
                 _profile, command.Pose.Position, desiredPitch,
@@ -200,7 +221,7 @@ namespace Teleop.RobotHost.Plant
 
             Span<JointTarget> ikTargets = stackalloc JointTarget[_profile.JointCount];
             int count = ArmKinematics.MapAnglesToJointTargets(
-                _profile, baseYaw, proximalPitch, distalPitch, wristPitches, command.Gripper, ikTargets);
+                _profile, baseYaw, proximalPitch, distalPitch, wristPitches, command.Gripper, desiredRoll, ikTargets);
 
             ApplyJointTargets(ikTargets.Slice(0, count));
         }
@@ -227,6 +248,7 @@ namespace Teleop.RobotHost.Plant
 
             _lastAcceptedJointCaptureTicks = captureTicks;
             SeedBeliefsFromSensedIfNeeded();
+            _pulsesPerSecond = RequestedPulsesPerSecond(targets);
 
             ApplyJointTargets(targets);
         }
@@ -257,8 +279,8 @@ namespace Teleop.RobotHost.Plant
         /// <summary>
         /// Converts each incoming target into a pulse value, clamps to that joint's resolved
         /// range, advances this plant's own optimistic target belief by no more than
-        /// <see cref="GenericArmPlantConfig.MaxDirectionMagnitude"/> per call (gripper roles
-        /// excepted -- open-loop, sent directly with no stepping, same as before), and sends the
+        /// <see cref="GenericArmPlantConfig.MaxDirectionMagnitude"/> per call (the gripper's
+        /// open/close role excepted -- open-loop, sent directly with no stepping, same as before), and sends the
         /// resulting absolute pulse targets -- the shared tail of both <see cref="Command"/> and
         /// <see cref="CommandJointAngles"/>, so there is exactly one place this logic lives
         /// regardless of which entry point supplied the angles.
@@ -278,7 +300,10 @@ namespace Teleop.RobotHost.Plant
 
                 JointHardwareSpec joint = _profile.Joints[index];
 
-                if (joint.Role == JointRole.GripperMain || joint.Role == JointRole.GripperRotate)
+                // Only the open/close actuator is a fraction. GripperRotate (the wrist roll) is an
+                // angle and goes through the arm-joint path below, stepped like any other joint, so
+                // a sudden twist does not slam the servo (docs/adr/0017).
+                if (joint.Role == JointRole.GripperMain)
                 {
                     float fraction = Math.Clamp(incoming.Angle, 0f, 1f);
                     float gripperPulse = Math.Clamp(
@@ -304,7 +329,7 @@ namespace Teleop.RobotHost.Plant
                     _targetPulse[index] += direction * _config.StepSizePulses;
                 }
 
-                outgoing[outgoingCount++] = new JointTarget(joint.MotorId, _targetPulse[index], _config.PulsesPerSecond);
+                outgoing[outgoingCount++] = new JointTarget(joint.MotorId, _targetPulse[index], _pulsesPerSecond);
             }
 
             _relay.Send(outgoing.Slice(0, outgoingCount));
@@ -347,6 +372,7 @@ namespace Teleop.RobotHost.Plant
 
                 _sensedPulse[index] = entry.Pulse;
                 _sensed[index] = true;
+                LastFeedbackTicks = nowTicks;
             }
         }
 
@@ -385,6 +411,9 @@ namespace Teleop.RobotHost.Plant
                 _sensed[i] = false;
                 _sensedPulse[i] = _config.ZeroPulse;
             }
+
+            LastFeedbackTicks = 0;
+            _pulsesPerSecond = _config.PulsesPerSecond;
         }
 
         /// <summary>
@@ -398,6 +427,76 @@ namespace Teleop.RobotHost.Plant
         /// consistent with <see cref="ArmKinematics.Forward"/>'s own handling of a missing
         /// base-yaw joint.
         /// </summary>
+        /// <summary>The servo speed currently sent with every move, pulses/s.</summary>
+        public float CurrentPulsesPerSecond => _pulsesPerSecond;
+
+        /// <summary>
+        /// The speed a joint command asks for: <see cref="JointTarget.Speed"/> on its arm joints is a
+        /// joint speed in rad/s (docs/adr/0018), 0 for "the robot's default". The fastest request
+        /// wins, and it is never above <see cref="GenericArmPlantConfig.PulsesPerSecond"/>, which is
+        /// what the robot was deployed to allow.
+        /// </summary>
+        private float RequestedPulsesPerSecond(ReadOnlySpan<JointTarget> targets)
+        {
+            float requested = 0f;
+            foreach (JointTarget target in targets)
+            {
+                int index = FindJointIndexByMotorId(target.MotorId);
+                if (index >= 0 && _profile.Joints[index].Role != JointRole.GripperMain && target.Speed > requested)
+                {
+                    requested = target.Speed;
+                }
+            }
+
+            if (!(requested > 0f))
+            {
+                return _config.PulsesPerSecond;
+            }
+
+            return Math.Min(requested * _config.PulsePerRadian, _config.PulsesPerSecond);
+        }
+
+        /// <summary>
+        /// When the relay last reported a valid joint (robot clock), the time
+        /// <see cref="ReadJointState"/>'s sensed values were read. 0 until any feedback arrives.
+        /// </summary>
+        public long LastFeedbackTicks { get; private set; }
+
+        /// <summary>
+        /// Every joint as this plant knows it, for the joint-state downlink (docs/adr/0018), in the
+        /// profile's order. Arm joints and the wrist roll are radians, with the mounting
+        /// <see cref="JointHardwareSpec.ZeroOffsetRadians"/> removed, as <see cref="State"/> does.
+        /// They are sensed where the relay reported the joint, and the commanded belief otherwise. The
+        /// gripper is a 0..1 fraction, likewise sensed when the relay reads it back. Returns the
+        /// count written. Allocation-free.
+        /// </summary>
+        public int ReadJointState(Span<JointSample> output)
+        {
+            int count = Math.Min(_profile.JointCount, output.Length);
+            for (int i = 0; i < count; i++)
+            {
+                JointHardwareSpec joint = _profile.Joints[i];
+                if (joint.Role == JointRole.GripperMain)
+                {
+                    // Measured when the relay reads the gripper servo back (FEEDBACK_MOTOR_IDS on the
+                    // Jetson), otherwise the commanded fraction. A sensed value short of the command
+                    // means the fingers stopped on something.
+                    float span = _config.GripperClosedPulse - _config.GripperOpenPulse;
+                    float pulse = _sensed[i] ? _sensedPulse[i] : _targetPulse[i];
+                    float fraction = span != 0f ? (pulse - _config.GripperOpenPulse) / span : 0f;
+                    output[i] = new JointSample(joint.MotorId, Math.Clamp(fraction, 0f, 1f), _sensed[i]);
+                }
+                else
+                {
+                    float pulse = _sensed[i] ? _sensedPulse[i] : _targetPulse[i];
+                    float angle = (pulse - _config.ZeroPulse) / _config.PulsePerRadian - joint.ZeroOffsetRadians;
+                    output[i] = new JointSample(joint.MotorId, angle, _sensed[i]);
+                }
+            }
+
+            return count;
+        }
+
         private float GetBeliefAngle(JointRole role)
         {
             int index = _profile.TryGetJointIndex(role);

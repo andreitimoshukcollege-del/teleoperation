@@ -232,6 +232,7 @@ namespace Teleop.Eval.Verification
         private static readonly (string InterfaceFullName, string RegistryPropertyName)[] RegistryCompletenessAxes =
         {
             ("Teleop.Core.Contracts.IPredictor`1", "Predictors"),
+            ("Teleop.Core.Contracts.ICommandAwarePredictor", "JointPredictors"),
             ("Teleop.Core.Contracts.IReconciler`1", "Reconcilers"),
             ("Teleop.Core.Contracts.ICommandCodec", "Codecs"),
             ("Teleop.Core.Contracts.IPlayoutPolicy`1", "PlayoutPolicies"),

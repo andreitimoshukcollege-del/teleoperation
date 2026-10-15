@@ -264,6 +264,19 @@ true in the meantime, honestly labeled as a stand-in rather than silently presen
 thing. Replace it with the counterfactual scorer's output, don't add around it, once that scorer
 exists.
 
+**`joint_prediction_error_deg`** (docs/adr/0018): joint-space prediction error, in degrees,
+for an `ICommandAwarePredictor`.
+- **Definition:** the absolute difference between the predicted value of an arm joint for time
+  *t* and that joint's value at *t*, pooled over the arm joints. Grippers are excluded, because
+  they are fractions and open-loop.
+- **Reporting:** percentiles (p50/p95/p99/max), never a mean.
+- **In the benchmark:** `Teleop.Eval joint-predict-bench` computes it against a simulated servo
+  arm's ground truth, at every 90 Hz display frame after a 1 s warm-up. That makes it a
+  benchmark of the predictor under a stated simulation, not a measurement of the robot.
+- **On real sessions:** the truth at *t* is the measured joint whose sensed time is *t*,
+  interpolated between frames. It is computed offline from the `jetrover-joints-*.csv`
+  recordings, never on the headset.
+
 ## 5. Correction cost
 
 The counterweight to prediction accuracy, and the reason accuracy alone is never a result.

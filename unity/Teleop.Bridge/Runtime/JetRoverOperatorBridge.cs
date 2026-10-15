@@ -29,8 +29,11 @@ namespace Teleop.Bridge
     /// <c>ClockSync</c> bookkeeping and latency recording -- this is where a chosen
     /// predictor/reconciler/network profile becomes visible in recorded metrics, exactly like
     /// <see cref="TeleopOperatorBridge"/>'s ghost robot shows reconciliation against its own
-    /// simulated robot. <b>This connection's command is never what drives the real arm, and its
-    /// <c>EstimateRobotState</c> is never what drives <see cref="armRig"/></b> -- see below.</item>
+    /// simulated robot. <b>Its <c>EstimateRobotState</c> is never what drives <see cref="armRig"/></b>
+    /// -- see below. Its command does reach the robot: <c>Teleop.RobotHost</c> runs its own IK on
+    /// every Cartesian frame and drives the same plant, which tracks the two paths' staleness
+    /// separately (docs/adr/0009). Both carry the same raw pose and <see cref="GripperFraction"/>,
+    /// so they agree.</item>
     /// <item>A separate, plain <c>UdpTransport</c>-backed channel (<c>_jointTransport</c>) that
     /// sends already-computed joint targets (<see cref="JointCommandCodec"/>, one
     /// <see cref="JointTarget"/> per <see cref="RobotArmProfile"/> joint) built
@@ -72,6 +75,9 @@ namespace Teleop.Bridge
         [SerializeField] private Transform dragTarget;
         [SerializeField] private JetRoverArmRig armRig;
 
+        [Tooltip("Whether commands reach the robot from the start. Off means nothing is sent until something sets MotionEnabled (TeleopXR's motion button, docs/adr/0017). TeleopVR leaves it on, as it always behaved.")]
+        [SerializeField] private bool motionEnabledAtStart = true;
+
         private JetRoverArmConfig _config;
         private RobotArmProfile _profile;
         private UnityMonotonicClock _clock;
@@ -88,6 +94,7 @@ namespace Teleop.Bridge
         private UnityMetricSink _metricSink;
 
         private uint _jointSequence;
+        private JetRoverJointStateLink _jointStateLink;
         private long _lastJointSendTicks;
         private bool _hasSentJointCommand;
         private long _sendIntervalTicks;
@@ -105,6 +112,86 @@ namespace Teleop.Bridge
         private const float StaleAfterSeconds = 1f;
 
         private long _lastStateReceivedTicks;
+
+        private float _gripperFraction;
+
+        /// <summary>
+        /// The gripper command, 0 = open to 1 = closed, sent with every command on both paths.
+        /// Set by an input component (TeleopXR's off-hand pinch, docs/adr/0017); nothing sets it
+        /// in TeleopVR, so it stays 0 there, which is what this bridge always sent. Clamped; NaN is
+        /// ignored, so an untracked hand can never turn into "open".
+        /// </summary>
+        public float GripperFraction
+        {
+            get => _gripperFraction;
+            set
+            {
+                if (!float.IsNaN(value))
+                {
+                    _gripperFraction = Math.Clamp(value, 0f, 1f);
+                }
+            }
+        }
+
+        /// <summary>
+        /// Whether commands are sent to the robot at all, on top of the config's
+        /// <c>ConfirmHardwareMotion</c>. Starts as the scene's <c>motionEnabledAtStart</c>. Off stops
+        /// sending, and the robot holds its last command; the virtual arm keeps following either way.
+        /// </summary>
+        public bool MotionEnabled { get; set; }
+
+        /// <summary>True when the config lets this bridge command the robot at all (<c>ConfirmHardwareMotion</c>).</summary>
+        public bool HardwareMotionAllowed => _config != null && _config.ConfirmHardwareMotion;
+
+        /// <summary>
+        /// The joint-state downlink (docs/adr/0018): the robot's measured joints and the predictor's
+        /// estimate of them now. Null until <c>Awake</c>.
+        /// </summary>
+        public JetRoverJointStateLink JointState => _jointStateLink;
+
+        private float _speedRadPerSec;
+
+        /// <summary>
+        /// The joint speed (rad/s) asked of the robot with every joint command, or 0 for the robot's
+        /// own default, which is what this bridge always sent. RobotHost caps it at its deployed
+        /// <c>--pulses-per-second</c>; the joint predictor replays commands at the same speed. Set by
+        /// TeleopXR's speed slider; TeleopVR leaves it at 0.
+        /// </summary>
+        public float SpeedRadPerSec
+        {
+            get => _speedRadPerSec;
+            set => _speedRadPerSec = float.IsNaN(value) ? 0f : Math.Max(0f, value);
+        }
+
+        /// <summary>This bridge's clock, for asking <see cref="JointState"/> for a prediction "now".</summary>
+        public long NowTicks => _clock != null ? _clock.NowTicks : 0;
+
+        /// <summary>The wrist-roll angle (radians) in the current target, as sent to the gripper's rotation motor.</summary>
+        public float WristRollRadians { get; private set; }
+
+        /// <summary>The loaded connection config, for input components that read its operator-input fields.</summary>
+        public JetRoverArmConfig Config => _config;
+
+        private JetRoverClutch _clutch;
+
+        /// <summary>
+        /// Clutch control over this bridge's drag target (docs/adr/0017), created on first use after
+        /// <c>Awake</c> from the config's <c>ClutchScale</c> and <c>ClutchMinHeightMeters</c>. Null
+        /// until the bridge is awake, or when the drag target or arm rig is not wired. An input
+        /// component drives it; TeleopVR's controllers never touch it.
+        /// </summary>
+        public JetRoverClutch Clutch
+        {
+            get
+            {
+                if (_clutch == null && _config != null && dragTarget != null && armRig != null)
+                {
+                    _clutch = new JetRoverClutch(armRig.BaseAnchor, dragTarget, _profile, _config.ClutchScale, _config.ClutchMinHeightMeters);
+                }
+
+                return _clutch;
+            }
+        }
 
         /// <summary>True once at least one downlink reply has ever been received -- a simple, cheap signal that Teleop.RobotHost is actually reachable, mirroring MoveArmCommand's own everObservedAnyState diagnostic.</summary>
         public bool HasReceivedAnyState { get; private set; }
@@ -147,6 +234,7 @@ namespace Teleop.Bridge
 
         private void Awake()
         {
+            MotionEnabled = motionEnabledAtStart;
             _config = ConfigLoader.Load("jetrover_connection", "jetrover_connection.json", new JetRoverArmConfig());
             _profile = ConfigLoader.Load(
                 "jetrover_arm_profile", "jetrover_arm_profile.json", new RobotArmProfileData()).ToProfile();
@@ -239,6 +327,20 @@ namespace Teleop.Bridge
                 lossWeight: 0.5);
 
             _clockSync = new ClockSync(clockSyncConfig);
+            // The joint-state downlink rides the joint socket: the robot streams to whoever last sent
+            // on that port, so the keepalive must come from the same socket as the commands.
+            try
+            {
+                _jointStateLink = new JetRoverJointStateLink(_jointTransport, _clock, _profile, clockSyncConfig,
+                    _config.JointPredictorName, _config.JointModelSpeedRadPerSec, _config.MaxHorizonMs, _config.GripperFractionPerRadian);
+            }
+            catch (ArgumentException e)
+            {
+                // A mistyped predictor name must not take the command path down with it.
+                Debug.LogError($"[twin] {e.Message}; falling back to hold-last (no prediction)");
+                _jointStateLink = new JetRoverJointStateLink(_jointTransport, _clock, _profile, clockSyncConfig,
+                    "hold-last", _config.JointModelSpeedRadPerSec, _config.MaxHorizonMs, _config.GripperFractionPerRadian);
+            }
             _predictor = predictorFactory(predictorConfig, _clock);
             _reconciler = reconcilerFactory(reconcilerConfig, _metricSink, _clock);
             _playoutPolicy = playoutFactory(playoutConfig, _metricSink, _clock);
@@ -259,6 +361,7 @@ namespace Teleop.Bridge
         private void Update()
         {
             long now = _clock.NowTicks;
+            _jointStateLink?.Tick(now);
 
             while (_operatorEndpoint.TryReceiveState(now, out _))
             {
@@ -306,6 +409,8 @@ namespace Teleop.Bridge
             CorePose capturedPose = new CorePose(localPosition.ToCore(), localRotation.ToCore());
 
             float desiredPitch = ArmKinematics.ExtractPitchRadians(capturedPose.Rotation);
+            float desiredRoll = ArmKinematics.ExtractRollRadians(capturedPose.Rotation);
+            WristRollRadians = desiredRoll;
             Span<float> wristPitches = stackalloc float[_profile.WristJointCount];
             ArmKinematics.TryInverse(
                 _profile, capturedPose.Position, desiredPitch,
@@ -324,7 +429,7 @@ namespace Teleop.Bridge
                 armRig.ApplyAngles(baseYaw, proximalPitch, distalPitch, upperPitch, wasClamped);
             }
 
-            if (!_config.ConfirmHardwareMotion)
+            if (!_config.ConfirmHardwareMotion || !MotionEnabled)
             {
                 return;
             }
@@ -340,18 +445,26 @@ namespace Teleop.Bridge
             // Raw, unreconciled target -- SubmitCommand feeds ClockSync/OWD accounting on the
             // Cartesian connection (recorded metrics only -- see this class's own doc), matching
             // TeleopOperatorBridge.Update's own "always send the raw captured pose" precedent.
-            _operatorEndpoint.SubmitCommand(capturedPose, CoreVec.Zero, CoreVec.Zero, gripper: 0f, now);
+            _operatorEndpoint.SubmitCommand(capturedPose, CoreVec.Zero, CoreVec.Zero, gripper: _gripperFraction, now);
 
-            // gripper: 0f -- this bridge has never driven the gripper (matches the pre-
-            // generalization behavior, which also hardcoded gripper: 0f here).
             Span<JointTarget> jointTargets = stackalloc JointTarget[_profile.JointCount];
             int targetCount = ArmKinematics.MapAnglesToJointTargets(
-                _profile, baseYaw, proximalPitch, distalPitch, wristPitches, gripperFraction: 0f, jointTargets);
+                _profile, baseYaw, proximalPitch, distalPitch, wristPitches, gripperFraction: _gripperFraction, gripperRollRadians: desiredRoll, jointTargets);
+            if (_speedRadPerSec > 0f)
+            {
+                // The requested joint speed rides in every arm joint's Speed field (docs/adr/0018);
+                // RobotHost caps it at what it was deployed to allow.
+                for (int i = 0; i < targetCount; i++)
+                {
+                    jointTargets[i] = new JointTarget(jointTargets[i].MotorId, jointTargets[i].Angle, _speedRadPerSec);
+                }
+            }
 
             Span<byte> buffer = stackalloc byte[JointCommandCodec.EncodedSize(targetCount)];
             if (JointCommandCodec.TryEncode(_jointSequence++, now, jointTargets.Slice(0, targetCount), buffer, out int bytesWritten))
             {
                 _jointTransport.Send(buffer.Slice(0, bytesWritten), now);
+                _jointStateLink.OnJointCommandSent(now, jointTargets.Slice(0, targetCount));
             }
         }
 

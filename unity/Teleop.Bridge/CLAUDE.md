@@ -15,7 +15,9 @@ the projects' scenes reference, so never regenerate or delete them.
 **Adapters** — drive Core from Unity callbacks: `TeleopOperatorBridge`, `TeleopRobotBridge`,
 `CoordConversion`, `ConfigLoader`, `XrDisplayTimeProvider`, `LatencyHud` (display only, reads the
 metric sink and writes nothing back), `CameraFeedBridge` (the robot camera on a world-locked panel,
-docs/adr/0014; every reassembly decision is Core's `CameraFrameReassembler`).
+docs/adr/0014; every reassembly decision is Core's `CameraFrameReassembler`), `JetRoverClutch`
+(clutch control over the drag target, docs/adr/0017; the mapping is `Teleop.RobotArm`'s
+`ClutchMapping`, this only converts frames and writes the Transform).
 `DisplayCalibrationConfig` is the plain data type `ConfigLoader` loads, not an adapter itself.
 
 **Implementations of Core interfaces** — the direction inverts here. Core declares, Unity
@@ -139,6 +141,12 @@ CLAUDE.md. These rules hold for both:
 - **Robot address:** the same `jetrover_connection` config as `JetRoverOperatorBridge`. The robot
   must be running the sender: `teleop-camerahost.service` (`just deploy-camerahost`,
   `just install-camerahost-service`) or `just camera-serve` for a one-off.
+- **When the feed freezes or cuts out, run `just camera-logs` first.** It shows the sender's
+  journal, the video devices and the kernel's USB events. On 2026-10-12 the cause was the robot,
+  not the network: the DaBai camera dropped off the USB bus and came back as `/dev/video1`, and a
+  sender pinned to `/dev/video0` failed from then on. `deploy-camerahost` now defaults to
+  `device=auto`, which finds the camera by its stable `/dev/v4l/by-id` name on every start. The
+  USB drop itself is a hardware question (power, cable, hub).
 - **Logging:** every 10 s the Console logs `[camera] ...: received N frames, shown N, ... last decode X ms`.
   **On a headset, watch `last decode`.** `Texture2D.LoadImage` decodes on the main thread, and it is
   the one cost here that can take frame time from the render loop. If it is a meaningful share of

@@ -53,7 +53,9 @@ namespace Teleop.XR.Editor
 
             stand.Chamfer(new Vector3(0f, (0.09f + LabLayout.ScreenCentreHeight) / 2f, standZ), new Vector3(0.08f, LabLayout.ScreenCentreHeight - 0.09f, 0.05f), 0.01f);
             stand.Chamfer(new Vector3(0f, LabLayout.ScreenCentreHeight - 0.05f, 0.05f), new Vector3(0.32f, 0.26f, 0.05f), 0.01f);
-            LabParts.Part("Display/Stand", root, stand, p.SteelDark, PartKind.Static, 1f);
+            // Dynamic, not Static: the operator can move the display (DisplayMover), and static-batched or
+            // lightmapped parts would stay behind. Light probes light it instead.
+            LabParts.Part("Display/Stand", root, stand, p.SteelDark, PartKind.Dynamic);
 
             Transform panel = LabParts.Group("Panel", root).transform;
             panel.localPosition = new Vector3(0f, LabLayout.ScreenCentreHeight, 0f);
@@ -63,7 +65,7 @@ namespace Teleop.XR.Editor
             float top = ScreenHeight / 2f + margin, bottom = -ScreenHeight / 2f - 0.012f - stripHeight - margin;
             var bezel = new LabMesh();
             bezel.Chamfer(new Vector3(0f, (top + bottom) / 2f, 0f), new Vector3(ScreenWidth + 2 * margin, top - bottom, 0.045f), 0.012f);
-            LabParts.Part("Display/Bezel", panel, bezel, p.Bezel, PartKind.Static, 2f);
+            LabParts.Part("Display/Bezel", panel, bezel, p.Bezel, PartKind.Dynamic);
 
             // The screen: a unit quad, scaled. Facing -z, toward the operator.
             var quad = new LabMesh();
@@ -100,6 +102,16 @@ namespace Teleop.XR.Editor
                 "0 fps   decode 0.0 ms   0x0", 0.22f, new Color(0.6f, 0.66f, 0.74f), new Vector2(0.6f, 0.04f), TextAlignmentOptions.Left);
             LabParts.Label("DisplayCaption", panel, new Vector3(ScreenWidth / 2f - 0.33f, stripY - 0.022f, textZ), Quaternion.identity,
                 "robot camera  ·  Orbbec DaBai DCW", 0.2f, new Color(0.45f, 0.5f, 0.58f), new Vector2(0.6f, 0.04f), TextAlignmentOptions.Right);
+
+            // The group's nameplate, hung under the bezel so it moves with the display.
+            const float plateHeight = 0.14f, plateWidth = 1.56f;
+            float plateY = bottom - 0.014f - plateHeight / 2f;
+            var plate = new LabMesh();
+            plate.Chamfer(new Vector3(0f, plateY, 0.004f), new Vector3(plateWidth, plateHeight, 0.02f), 0.008f);
+            LabParts.Part("Display/Nameplate", panel, plate, p.Bezel, PartKind.Dynamic);
+            LabParts.Label("NameplateText", panel, new Vector3(0f, plateY, -0.0075f), Quaternion.identity,
+                "SPATIAL INTELLIGENCE RESEARCH GROUP", 0.6f, new Color(1f, 0.16f, 0.14f), new Vector2(plateWidth - 0.06f, plateHeight),
+                TextAlignmentOptions.Center, FontStyles.Bold);
 
             var bar = root.gameObject.AddComponent<CameraStatusBar>();
             var so = new SerializedObject(bar);

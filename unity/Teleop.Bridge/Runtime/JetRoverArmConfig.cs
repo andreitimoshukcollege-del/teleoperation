@@ -123,5 +123,43 @@ namespace Teleop.Bridge
 
         public double PlayoutTargetPercentile = 1.0;
         public int PlayoutDelayWindowSamples = 64;
+
+        // Galaxy XR operator input (docs/adr/0017-galaxy-xr-clutch-and-gripper.md). Read by the
+        // TeleopXR project's clutch driver; TeleopVR's controllers ignore them.
+        //
+        // Hand motion -> arm motion while the clutch is engaged: 0.5 means 10 cm of hand moves the
+        // wrist 5 cm. The arm reaches about 26 cm, so 1:1 makes an ordinary hand movement a large arm
+        // movement.
+        public float ClutchScale = 0.5f;
+
+        // The lowest the clutch may put the wrist, metres in the arm-base frame (Z up, 0 = the
+        // base-yaw pivot). The arm has no floor limit of its own; tune this on the hardware.
+        public float ClutchMinHeightMeters = -0.05f;
+
+        // The gripper hand's thumb-to-index distance: this wide or wider is open (0), this narrow or
+        // narrower is closed (1), linear in between.
+        public float GripperPinchOpenMeters = 0.08f;
+        public float GripperPinchClosedMeters = 0.015f;
+
+        // The gripper hand's twist drives the wrist roll (motor 5), 1:1 from palm-down. Sign is +1
+        // or -1, to match how the servo is mounted: flip it if twisting your hand turns the gripper
+        // the other way. The limit keeps the command inside what a wrist can comfortably do.
+        public float GripperRollSign = 1f;
+        public float GripperRollLimitDegrees = 90f;
+
+        // The joint-state twin (docs/adr/0018): which Registries.JointPredictors entry predicts the
+        // robot's joints now (servo-replay, or hold-last for no prediction), and the servo speed its
+        // model allows at most, rad/s: the servo's own limit. Each command is replayed at the speed it
+        // asked for (the headset's speed slider), capped at this. The real limit is unmeasured, so 6 is
+        // a guess for these servos, and recordings will show it. The prediction horizon is capped by
+        // MaxHorizonMs above.
+        public string JointPredictorName = "servo-replay";
+        public float JointModelSpeedRadPerSec = 6f;
+
+        // How fast the gripper's 0..1 fraction moves per radian of servo travel, so the predictor
+        // moves it at servo speed like the other joints: RobotHost's PulsePerRadian (1000/240°,
+        // 238.7) over its open-to-closed pulse span (833.3 - 166.7 = 666.7). Change it with
+        // GenericArmPlantConfig.GripperOpenPulse/GripperClosedPulse.
+        public float GripperFractionPerRadian = 0.358f;
     }
 }

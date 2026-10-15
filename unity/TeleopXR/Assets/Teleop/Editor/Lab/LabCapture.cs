@@ -28,10 +28,12 @@ namespace Teleop.XR.Editor
             public readonly Vector3 From, To;
             public readonly float VerticalFov;
             public readonly bool Clamped;
+            /// <summary>For a gripper close-up: the gripper fraction, else negative.</summary>
+            public readonly float Gripper;
 
-            public View(string name, Vector3 from, Vector3 to, float fov, bool clamped = false)
+            public View(string name, Vector3 from, Vector3 to, float fov, bool clamped = false, float gripper = -1f)
             {
-                Name = name; From = from; To = to; VerticalFov = fov; Clamped = clamped;
+                Name = name; From = from; To = to; VerticalFov = fov; Clamped = clamped; Gripper = gripper;
             }
         }
 
@@ -47,7 +49,32 @@ namespace Teleop.XR.Editor
             yield return new View("6_display", new Vector3(0.25f, 1.58f, 0.15f), screen, 58f);
             yield return new View("7_room_corner", new Vector3(4.3f, 2.5f, -2.5f), new Vector3(-0.8f, 0.9f, 2.2f), 78f);
             yield return new View("8_room_window", new Vector3(3.4f, 1.7f, 4.3f), new Vector3(-3.5f, 1.2f, 0.4f), 78f);
+            yield return new View("10_motion_button", new Vector3(-0.2f, 1.45f, -0.1f), new Vector3(-0.514f, 0.92f, 0.22f), 50f);
             yield return new View("9_floor_low", new Vector3(-0.9f, 0.32f, -0.9f), new Vector3(1.2f, 0.7f, 3.5f), 70f);
+            // Square onto the commanded arm's gripper, along the jaws' hinge axis; placed in Capture.
+            yield return new View("11_gripper_open", Vector3.zero, Vector3.zero, 30f, gripper: 0f);
+            yield return new View("12_gripper_closed", Vector3.zero, Vector3.zero, 30f, gripper: 1f);
+        }
+
+        /// <summary>
+        /// The shown arm's gripper: between its two jaw hinges, and the hinge axis, toward the room's +x
+        /// side. Previews show only the commanded arm; the other two start inactive.
+        /// </summary>
+        private static bool GripperShot(out Vector3 centre, out Vector3 axis, out Vector3 fingers)
+        {
+            centre = axis = fingers = Vector3.zero;
+            Transform[] all = UnityEngine.Object.FindObjectsByType<Transform>(FindObjectsInactive.Exclude);
+            Transform left = all.FirstOrDefault(t => t.name == JetRoverCad.JawLeft);
+            Transform right = all.FirstOrDefault(t => t.name == JetRoverCad.JawRight);
+            if (left == null || right == null) return false;
+            Transform leftOuter = all.FirstOrDefault(t => t.name == JetRoverCad.JawLeftOuter);
+            Transform rightOuter = all.FirstOrDefault(t => t.name == JetRoverCad.JawRightOuter);
+            if (leftOuter == null || rightOuter == null) return false;
+            centre = 0.5f * (left.position + right.position);
+            fingers = (0.5f * (leftOuter.position + rightOuter.position) - centre).normalized;
+            // Seen from above, or from the operator's side when the hinge axis lies flat.
+            axis = Vector3.Dot(left.right, new Vector3(0.3f, 1f, -0.3f)) >= 0f ? left.right : -left.right;
+            return true;
         }
 
         public static string Capture(string outDir)
@@ -59,9 +86,10 @@ namespace Teleop.XR.Editor
                 text.ForceMeshUpdate(true, true);
             }
 
-            JetRoverArmRig rig = UnityEngine.Object.FindAnyObjectByType<JetRoverArmRig>();
+            JetRoverArmRig rig = XrControlSetup.CommandedRig();
             Transform[] pivots = rig == null ? new Transform[0] : PivotsOf(rig);
             Quaternion[] saved = pivots.Select(t => t.localRotation).ToArray();
+            TwinGripper[] grippers = UnityEngine.Object.FindObjectsByType<TwinGripper>(FindObjectsInactive.Exclude);
 
             var cameraObject = new GameObject("LabCaptureCamera") { hideFlags = HideFlags.HideAndDontSave };
             var cam = cameraObject.AddComponent<Camera>();
@@ -89,8 +117,21 @@ namespace Teleop.XR.Editor
                         rig.ApplyAngles(0.35f, 0.75f, -1.25f, 0.3f, view.Clamped);
                     }
 
-                    cam.transform.position = view.From;
-                    cam.transform.rotation = Quaternion.LookRotation(view.To - view.From, Vector3.up);
+                    // The reach-warning view also shows the gripper closed and rolled.
+                    float gripper = view.Gripper >= 0f ? view.Gripper : view.Clamped ? 1f : 0f;
+                    foreach (TwinGripper g in grippers) g.Show(gripper, view.Clamped ? 0.6f : 0f);
+
+                    Vector3 from = view.From, to = view.To, up = Vector3.up;
+                    if (view.Gripper >= 0f && GripperShot(out Vector3 centre, out Vector3 axis, out Vector3 fingers))
+                    {
+                        // Fingers up in the frame.
+                        to = centre + fingers * 0.02f;
+                        from = to + axis * 0.32f;
+                        up = fingers;
+                    }
+
+                    cam.transform.position = from;
+                    cam.transform.rotation = Quaternion.LookRotation(to - from, up);
                     cam.fieldOfView = view.VerticalFov;
 
                     Texture2D full = Render(cam, fullW, fullH);
@@ -114,6 +155,7 @@ namespace Teleop.XR.Editor
             finally
             {
                 for (int i = 0; i < pivots.Length; i++) pivots[i].localRotation = saved[i];
+                foreach (TwinGripper g in grippers) g.Show(0f, 0f);
                 if (rig != null)
                 {
                     var so = new SerializedObject(rig);

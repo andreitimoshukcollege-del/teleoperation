@@ -9,9 +9,7 @@ using UnityEngine;
 using UnityEngine.Rendering;
 using UnityEngine.SceneManagement;
 using UnityEngine.XR.Interaction.Toolkit;
-using UnityEngine.XR.Interaction.Toolkit.Attachment;
 using UnityEngine.XR.Interaction.Toolkit.Inputs;
-using UnityEngine.XR.Interaction.Toolkit.Interactables;
 using Object = UnityEngine.Object;
 
 // C# 9: block-scoped namespace only, like the rest of unity/.
@@ -29,7 +27,7 @@ namespace Teleop.XR.Editor
     /// <item>The rig's One Euro hand-smoothing post-processor switched off: it filters every hand joint,
     /// including the pinch pose that becomes the robot's target, which ADR 0016 rules out.</item>
     /// <item>The same arm rig, pivots and values as TeleopVR's <c>JetRoverControl</c>.</item>
-    /// <item>The same <c>DragTarget</c> start pose, now grabbed by pinch.</item>
+    /// <item>The same <c>DragTarget</c> start pose, now a marker the clutch moves (docs/adr/0017).</item>
     /// <item><c>JetRoverOperatorBridge</c>, <c>CameraFeedBridge</c> and <c>HandTrackingSession</c>.</item>
     /// <item>Then <see cref="LabDressing"/>: the night-shift room, the JetRover twin, the camera display
     /// (which <c>CameraFeedBridge</c> is pointed at), and the lighting, left unbaked.</item>
@@ -61,7 +59,6 @@ namespace Teleop.XR.Editor
         private const float LinkLength = 0.13f;
         private const float LinkThickness = 0.03f;
         private static readonly Vector3 DragTargetStart = new Vector3(0.169f, 1.293f, 0.492f);
-        private const float DragTargetDiameter = 0.05f;
 
 
         [MenuItem("Teleop/XR/Build Lab Scene")]
@@ -120,7 +117,7 @@ namespace Teleop.XR.Editor
             Scene scene = EditorSceneManager.NewScene(NewSceneSetup.EmptyScene, NewSceneMode.Single);
 
             Material linkMat = LitMaterial("ArmLink", new Color(0.82f, 0.83f, 0.85f), 0.45f);
-            Material targetMat = LitMaterial("DragTarget", new Color(0.1f, 0.75f, 0.95f), 0.6f);
+            Material targetMat = LitMaterial("DragTarget", XrControlSetup.TwinColors.Commanded, 0.6f);
             PanelMaterial(); // the camera display's screen material; LabDressing uses it
 
             BuildLighting();
@@ -128,11 +125,11 @@ namespace Teleop.XR.Editor
             new GameObject("XR Interaction Manager").AddComponent<XRInteractionManager>();
 
             JetRoverArmRig armRig = BuildArmRig(linkMat, out Transform baseAnchor);
-            XRGrabInteractable target = BuildDragTarget(targetMat);
+            Transform target = BuildDragTarget(targetMat);
 
             var operatorObject = new GameObject("JetRoverOperator");
             var bridge = operatorObject.AddComponent<JetRoverOperatorBridge>();
-            SetReference(bridge, "dragTarget", target.transform);
+            SetReference(bridge, "dragTarget", target);
             SetReference(bridge, "armRig", armRig);
 
             operatorObject.AddComponent<CameraFeedBridge>(); // LabDressing points it at the display's screen
@@ -239,32 +236,19 @@ namespace Teleop.XR.Editor
             return rig;
         }
 
-        private static XRGrabInteractable BuildDragTarget(Material mat)
+        /// <summary>
+        /// The commanded wrist position, as a small marker. The bridge reads it; the clutch moves it
+        /// (docs/adr/0017). Not grabbable, and no collider, so no XRI interactor can touch it.
+        /// </summary>
+        private static Transform BuildDragTarget(Material mat)
         {
             GameObject target = GameObject.CreatePrimitive(PrimitiveType.Sphere);
             target.name = "DragTarget";
             target.transform.position = DragTargetStart;
-            target.transform.localScale = Vector3.one * DragTargetDiameter;
+            target.transform.localScale = Vector3.one * XrControlSetup.MarkerDiameter;
             target.GetComponent<Renderer>().sharedMaterial = mat;
-
-            var body = target.AddComponent<Rigidbody>();
-            body.isKinematic = true;
-            body.useGravity = false;
-
-            var grab = target.AddComponent<XRGrabInteractable>();
-            grab.movementType = XRBaseInteractable.MovementType.Instantaneous;
-            grab.trackPosition = true;
-            grab.trackRotation = true; // the wrist's pitch follows the hand's
-            grab.trackScale = false;
-            grab.throwOnDetach = false;
-            grab.smoothPosition = false;
-            grab.smoothRotation = false;
-            grab.useDynamicAttach = true;
-            grab.farAttachMode = InteractableFarAttachMode.Far;
-
-            var highlight = target.AddComponent<GrabHighlight>();
-            SetReference(highlight, "target", target.GetComponent<Renderer>());
-            return grab;
+            Object.DestroyImmediate(target.GetComponent<Collider>());
+            return target.transform;
         }
 
         private static void BuildLighting()
@@ -299,7 +283,7 @@ namespace Teleop.XR.Editor
         {
             GameObject cube = GameObject.CreatePrimitive(PrimitiveType.Cube);
             cube.name = name;
-            Object.DestroyImmediate(cube.GetComponent<Collider>()); // nothing on the arm may push the target's rigidbody
+            Object.DestroyImmediate(cube.GetComponent<Collider>()); // the arm has no colliders
             cube.transform.SetParent(pivot, false);
             cube.transform.localPosition = new Vector3(0f, 0f, LinkLength / 2f);
             cube.transform.localScale = new Vector3(LinkThickness, LinkThickness, LinkLength);

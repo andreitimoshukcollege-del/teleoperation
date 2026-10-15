@@ -129,6 +129,81 @@ namespace Teleop.RobotArm.Kinematics
         }
 
         /// <summary>
+        /// The nearest point to <paramref name="target"/> that the arm can actually reach and that
+        /// is not below <paramref name="minHeight"/> (Z, in the same base frame), so an operator
+        /// input that keeps pushing past the edge stays at the edge instead of wandering off
+        /// (docs/adr/0017-galaxy-xr-clutch-and-gripper.md). The reach limits are
+        /// <see cref="TryInverse"/>'s own, measured from the shoulder (the base-yaw axis at
+        /// <see cref="RobotArmProfile.BaseHeight"/>), and the azimuth is kept. A point inside the
+        /// reach envelope and above the floor is returned unchanged. If the floor is above
+        /// everything the arm can reach, the highest reachable point straight above the shoulder's
+        /// azimuth wins.
+        /// </summary>
+        public static Vector3 ProjectToWorkspace(in RobotArmProfile profile, Vector3 target, float minHeight)
+        {
+            // Twice TryInverse's own margin, so a projected point is never clamped again there by
+            // float round-off.
+            const float epsilon = 2e-4f;
+            float maxReach = profile.ProximalLinkLength + profile.DistalLinkLength - epsilon;
+            float minReach = MathF.Abs(profile.ProximalLinkLength - profile.DistalLinkLength) + epsilon;
+            float shoulderZ = profile.BaseHeight;
+
+            float r = MathF.Sqrt(target.X * target.X + target.Y * target.Y);
+            // Azimuth as a unit vector; straight overhead (or a fixed base) has none, so use +X.
+            float ux = 1f, uy = 0f;
+            if (profile.HasRotatingBase && r > 1e-6f)
+            {
+                ux = target.X / r;
+                uy = target.Y / r;
+            }
+            else if (!profile.HasRotatingBase)
+            {
+                // A fixed base works in its X-Z plane only, as Forward does.
+                r = MathF.Max(0f, target.X);
+            }
+
+            float z = MathF.Max(target.Z, minHeight);
+            float dz = z - shoulderZ;
+            float reach = MathF.Sqrt(r * r + dz * dz);
+
+            if (reach > maxReach || reach < minReach)
+            {
+                float clamped = Math.Clamp(reach, minReach, maxReach);
+                if (reach > 1e-6f)
+                {
+                    float k = clamped / reach;
+                    r *= k;
+                    dz *= k;
+                }
+                else
+                {
+                    r = clamped;
+                    dz = 0f;
+                }
+
+                z = shoulderZ + dz;
+                if (z < minHeight)
+                {
+                    // Pulled under the floor by the reach clamp: slide along the reach sphere up
+                    // to the floor, keeping the azimuth.
+                    float floorDz = minHeight - shoulderZ;
+                    if (floorDz >= maxReach)
+                    {
+                        r = 0f;
+                        z = shoulderZ + maxReach;
+                    }
+                    else
+                    {
+                        r = MathF.Sqrt(MathF.Max(0f, clamped * clamped - floorDz * floorDz));
+                        z = minHeight;
+                    }
+                }
+            }
+
+            return new Vector3(ux * r, uy * r, z);
+        }
+
+        /// <summary>
         /// Extracts "pitch" from a commanded orientation the same gimbal-lock-free way regardless
         /// of roll or yaw -- unchanged from <c>FourDofArmKinematics</c>, this math has no per-robot
         /// dependency at all.
@@ -138,6 +213,31 @@ namespace Teleop.RobotArm.Kinematics
             Vector3 forward = Vector3.Transform(Vector3.UnitX, rotation);
             float horizontal = MathF.Sqrt(forward.X * forward.X + forward.Y * forward.Y);
             return MathF.Atan2(forward.Z, horizontal);
+        }
+
+        /// <summary>
+        /// The commanded end effector's roll: the rotation about its own forward axis (the rotated
+        /// +X), right-handed, measured from the "level" orientation whose up vector lies in the
+        /// vertical plane through forward. 0 means the gripper's jaws sit side by side; positive
+        /// rolls its left side (+Y) up. Independent of pitch and yaw, so a rotation composed as
+        /// yaw · pitch · roll gives the roll back. Returns 0 when forward is within ~0.6° of
+        /// vertical, where "level" has no meaning.
+        /// </summary>
+        public static float ExtractRollRadians(Quaternion rotation)
+        {
+            Vector3 forward = Vector3.Transform(Vector3.UnitX, rotation);
+            Vector3 up = Vector3.Transform(Vector3.UnitZ, rotation);
+            Vector3 levelUp = Vector3.UnitZ - Vector3.Dot(Vector3.UnitZ, forward) * forward;
+            float levelLength = levelUp.Length();
+            if (levelLength < 1e-2f)
+            {
+                return 0f;
+            }
+
+            levelUp /= levelLength;
+            float sin = Vector3.Dot(Vector3.Cross(levelUp, up), forward);
+            float cos = Vector3.Dot(levelUp, up);
+            return MathF.Atan2(sin, cos);
         }
 
         /// <summary>
@@ -153,10 +253,9 @@ namespace Teleop.RobotArm.Kinematics
         /// 1=closed) -- the same two-unit-space split <c>JetRoverPlant.ApplyJointTargets</c> always
         /// had (gripper was never in the same angle space as the arm joints), just keyed by role
         /// now instead of by which named field it was.
-        /// <see cref="JointRole.GripperRotate"/> is always 0 -- no operator input yet computes an
-        /// independent gripper-rotation command (no <c>CommandFrame</c>/<c>JointCommandFrame</c>
-        /// field exists for it); the profile can describe a rotating gripper structurally, but
-        /// driving one end to end is a follow-up, not part of this generalization.
+        /// <see cref="JointRole.GripperRotate"/> is <paramref name="gripperRollRadians"/>, radians
+        /// like the arm joints (docs/adr/0017). A Cartesian caller takes it from the commanded
+        /// orientation with <see cref="ExtractRollRadians"/>, so both command paths agree.
         /// <see cref="JointTarget.Speed"/> is always 0 here -- filled in by whichever codec/plant
         /// step actually knows the configured speed for this hop.
         /// </summary>
@@ -164,6 +263,14 @@ namespace Teleop.RobotArm.Kinematics
             in RobotArmProfile profile,
             float baseYaw, float proximalPitch, float distalPitch,
             ReadOnlySpan<float> wristPitches, float gripperFraction,
+            Span<JointTarget> output)
+            => MapAnglesToJointTargets(profile, baseYaw, proximalPitch, distalPitch, wristPitches, gripperFraction, 0f, output);
+
+        /// <inheritdoc cref="MapAnglesToJointTargets(in RobotArmProfile, float, float, float, ReadOnlySpan{float}, float, Span{JointTarget})"/>
+        public static int MapAnglesToJointTargets(
+            in RobotArmProfile profile,
+            float baseYaw, float proximalPitch, float distalPitch,
+            ReadOnlySpan<float> wristPitches, float gripperFraction, float gripperRollRadians,
             Span<JointTarget> output)
         {
             if (output.Length < profile.JointCount)
@@ -183,7 +290,7 @@ namespace Teleop.RobotArm.Kinematics
                     JointRole.Distal => distalPitch,
                     JointRole.Wrist => wristPitches[joint.WristIndex],
                     JointRole.GripperMain => gripperFraction,
-                    JointRole.GripperRotate => 0f,
+                    JointRole.GripperRotate => gripperRollRadians,
                     _ => 0f,
                 };
                 output[count++] = new JointTarget(joint.MotorId, angle, speed: 0f);

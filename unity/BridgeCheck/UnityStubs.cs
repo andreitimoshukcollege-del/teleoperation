@@ -34,16 +34,20 @@ namespace UnityEngine
         public Vector3 localScale { get; set; }
         public Quaternion rotation { get; set; }
         public Vector3 InverseTransformPoint(Vector3 p) => default;
+        public Vector3 TransformPoint(Vector3 p) => default;
     }
     public struct Vector3
     {
         public float x, y, z;
         public Vector3(float x, float y, float z) { this.x = x; this.y = y; this.z = z; }
         public static Vector3 operator +(Vector3 a, Vector3 b) => default;
+        public static Vector3 right => default;
+        public static Vector3 forward => default;
     }
     public struct Quaternion
     {
         public static Quaternion Inverse(Quaternion q) => default;
+        public static Quaternion AngleAxis(float angle, Vector3 axis) => default;
         public static Quaternion operator *(Quaternion a, Quaternion b) => default;
     }
 
@@ -85,7 +89,11 @@ namespace UnityEngine
     [AttributeUsage(AttributeTargets.Field)] public sealed class MinAttribute : Attribute { public MinAttribute(float m) { } }
     [AttributeUsage(AttributeTargets.Field)] public sealed class RangeAttribute : Attribute { public RangeAttribute(float a, float b) { } }
 
-    public static class Mathf { public static bool Approximately(float a, float b) => a == b; }
+    public static class Mathf
+    {
+        public const float Rad2Deg = 57.29578f;
+        public static bool Approximately(float a, float b) => a == b;
+    }
     public static class Time { public static float unscaledTime => 0f; }
 
     public static class Debug
@@ -142,6 +150,7 @@ namespace Teleop.Bridge
     public static class CoordConversion
     {
         public static System.Numerics.Vector3 ToCore(this UnityEngine.Vector3 v) => default;
+        public static UnityEngine.Vector3 ToUnity(this System.Numerics.Vector3 v) => default;
         public static System.Numerics.Quaternion ToCore(this UnityEngine.Quaternion q) => default;
         public static Pose ToCorePose(this UnityEngine.Transform t) => Pose.Identity;
         public static void ApplyTo(this Pose p, UnityEngine.Transform t) { }

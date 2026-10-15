@@ -4,6 +4,7 @@ using System.Threading;
 using Teleop.Core.Pipeline;
 using Teleop.Core.Transport;
 using Teleop.RobotArm.Types;
+using Teleop.Core.Types;
 using Teleop.RobotArm.Wire;
 using Teleop.RobotHost.Net;
 using Teleop.RobotHost.Plant;
@@ -66,7 +67,7 @@ namespace Teleop.RobotHost
             var plantConfig = new GenericArmPlantConfig(
                 profile: profile,
                 pulsePerRadian: defaults.PulsePerRadian,
-                pulsesPerSecond: defaults.PulsesPerSecond,
+                pulsesPerSecond: a.PulsesPerSecond ?? defaults.PulsesPerSecond,
                 stepSizePulses: defaults.StepSizePulses,
                 maxDirectionMagnitude: a.MaxDirectionMagnitude ?? defaults.MaxDirectionMagnitude,
                 zeroPulse: defaults.ZeroPulse,
@@ -101,6 +102,12 @@ namespace Teleop.RobotHost
             JointTarget[]? jointTargetsBuffer = jointTransport != null
                 ? new JointTarget[JointCommandCodec.MaxJointsPerMessage]
                 : null;
+            // The joint-state downlink (docs/adr/0018): streams to whoever last sent a keepalive on
+            // this same port, at 50 Hz, whether or not commands are arriving.
+            var jointStreamer = new JointStateStreamer(clock.TicksPerSecond);
+            byte[] jointStateBuffer = new byte[MaxJointDatagramBytes];
+            Func<JointSample[], int> readJoints = buffer => plant.ReadJointState(buffer);
+            bool loggedSubscriber = false;
 
             string replyDescription = a.ReplyToSender
                 ? $"the sender of each command (before the first one: {remoteEndPoint?.ToString() ?? "nobody"})"
@@ -114,12 +121,13 @@ namespace Teleop.RobotHost
                 "(docs/adr/0008-clocksync-cross-rate-normalization.md).");
             Console.WriteLine(
                 $"[plant] profile={profile.Name} JointCount={profile.JointCount} " +
-                $"MaxDirectionMagnitude={plantConfig.MaxDirectionMagnitude:0.##}");
+                $"MaxDirectionMagnitude={plantConfig.MaxDirectionMagnitude:0.##} PulsesPerSecond={plantConfig.PulsesPerSecond:0.##}");
             if (jointTransport != null)
             {
                 Console.WriteLine(
                     $"[joint] listening on UDP :{a.JointLocalPort} for pre-computed joint-angle " +
-                    "commands (docs/adr/0009-jetrover-operator-side-inverse-kinematics.md), uplink-only.");
+                    "commands (docs/adr/0009-jetrover-operator-side-inverse-kinematics.md), and streaming " +
+                    "joint state at 50 Hz to whoever sends it a keepalive (docs/adr/0018).");
             }
 
             using var stop = new ManualResetEventSlim(initialState: false);
@@ -130,16 +138,38 @@ namespace Teleop.RobotHost
             };
 
             EndPoint? loggedReplyTarget = transport.CurrentRemoteEndPoint;
+            EndPoint? jointCommander = null;
             while (!stop.IsSet)
             {
                 if (jointTransport != null)
                 {
-                    while (jointTransport.TryReceive(clock.NowTicks, jointRecvBuffer!, out int byteCount, out long _))
+                    while (jointTransport.TryReceive(clock.NowTicks, jointRecvBuffer!, out int byteCount, out long arrivalTicks))
                     {
+                        if (jointStreamer.TryHandleSubscribe(jointRecvBuffer.AsSpan(0, byteCount), arrivalTicks))
+                        {
+                            if (!loggedSubscriber)
+                            {
+                                Console.WriteLine($"[joint] streaming joint state to {jointTransport.CurrentRemoteEndPoint}");
+                                loggedSubscriber = true;
+                            }
+
+                            continue;
+                        }
+
                         if (JointCommandCodec.TryDecode(
                             jointRecvBuffer.AsSpan(0, byteCount), out uint _, out long captureTicks,
                             jointTargetsBuffer!, out int targetCount))
                         {
+                            // A new sender's capture stamps are another clock's: start the
+                            // staleness check over, or a rebooted headset is ignored for good.
+                            EndPoint? sender = jointTransport.CurrentRemoteEndPoint;
+                            if (!Equals(sender, jointCommander))
+                            {
+                                plant.RestartJointCommandOrdering();
+                                Console.WriteLine($"[joint] commands from {sender} (was {jointCommander?.ToString() ?? "nobody"}); staleness check restarted");
+                                jointCommander = sender;
+                            }
+
                             plant.CommandJointAngles(jointTargetsBuffer!.AsSpan(0, targetCount), captureTicks);
                         }
                     }
@@ -147,12 +177,30 @@ namespace Teleop.RobotHost
 
                 endpoint.Step(clock.NowTicks);
 
+                if (jointTransport != null)
+                {
+                    long now = clock.NowTicks;
+                    if (jointStreamer.TryBuildFrame(now, readJoints, plant.LastFeedbackTicks, jointStateBuffer, out int stateBytes))
+                    {
+                        jointTransport.Send(jointStateBuffer.AsSpan(0, stateBytes), now);
+                    }
+                    else if (loggedSubscriber && !jointStreamer.IsSubscribed(now))
+                    {
+                        Console.WriteLine("[joint] keepalive stopped; joint-state stream paused");
+                        loggedSubscriber = false;
+                    }
+                }
+
                 // Logged once per change, not per datagram: a moved operator is worth a line in
                 // the service journal, a steady one is not.
                 EndPoint? replyTarget = transport.CurrentRemoteEndPoint;
                 if (!Equals(replyTarget, loggedReplyTarget))
                 {
-                    Console.WriteLine($"[net] replying to {replyTarget} (was {loggedReplyTarget?.ToString() ?? "nobody"})");
+                    // A new Cartesian sender: as on the joint path, its stamps are another clock's.
+                    // Its first command was judged against the old sender's and may have been
+                    // dropped; the next one is not.
+                    plant.RestartCartesianCommandOrdering();
+                    Console.WriteLine($"[net] replying to {replyTarget} (was {loggedReplyTarget?.ToString() ?? "nobody"}); staleness check restarted");
                     loggedReplyTarget = replyTarget;
                 }
 

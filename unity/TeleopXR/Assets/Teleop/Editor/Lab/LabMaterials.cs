@@ -61,6 +61,31 @@ namespace Teleop.XR.Editor
             return m;
         }
 
+        /// <summary>
+        /// A see-through, unlit colour (alpha from <paramref name="color"/>), for the twin's ghost and
+        /// faint arms (docs/adr/0018): URP Unlit with the transparent surface type, alpha blending and
+        /// no depth write, set by hand because a material made in code never runs the Inspector's
+        /// surface-type setup.
+        /// </summary>
+        public static Material Transparent(string name, Color color)
+        {
+            Material m = Load(name, UnlitShader);
+            m.SetColor("_BaseColor", color);
+            m.SetFloat("_Surface", 1f);
+            m.SetFloat("_Blend", 0f);
+            m.SetFloat("_SrcBlend", (float)UnityEngine.Rendering.BlendMode.SrcAlpha);
+            m.SetFloat("_DstBlend", (float)UnityEngine.Rendering.BlendMode.OneMinusSrcAlpha);
+            m.SetFloat("_SrcBlendAlpha", (float)UnityEngine.Rendering.BlendMode.One);
+            m.SetFloat("_DstBlendAlpha", (float)UnityEngine.Rendering.BlendMode.OneMinusSrcAlpha);
+            m.SetFloat("_ZWrite", 0f);
+            m.EnableKeyword("_SURFACE_TYPE_TRANSPARENT");
+            m.SetOverrideTag("RenderType", "Transparent");
+            m.renderQueue = (int)UnityEngine.Rendering.RenderQueue.Transparent;
+            m.globalIlluminationFlags = MaterialGlobalIlluminationFlags.EmissiveIsBlack;
+            EditorUtility.SetDirty(m);
+            return m;
+        }
+
         private static void SetTexture(Material m, Texture2D texture, float tiling)
         {
             m.SetTexture("_BaseMap", texture);

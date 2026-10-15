@@ -21,6 +21,11 @@
   </ItemGroup>
 
   <ItemGroup>
+    <!-- Shared with Teleop.Core.Tests rather than copied: the one allocation harness (invariant 8). -->
+    <Compile Include="..\Teleop.Core.Tests\TestSupport\AllocationAssert.cs" Link="TestSupport\AllocationAssert.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
     <ProjectReference Include="..\Teleop.Core\Teleop.Core.csproj" />
     <ProjectReference Include="..\Teleop.RobotArm\Teleop.RobotArm.csproj" />
   </ItemGroup>

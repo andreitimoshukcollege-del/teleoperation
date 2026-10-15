@@ -12,4 +12,8 @@
     <Nullable>enable</Nullable>
   </PropertyGroup>
 
+  <ItemGroup>
+    <!-- RobotHostArgs is internal; its tests live next door. -->
+    <InternalsVisibleTo Include="Teleop.RobotHost.Tests" />
+  </ItemGroup>
 </Project>

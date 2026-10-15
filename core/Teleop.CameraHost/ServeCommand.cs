@@ -1,3 +1,4 @@
+using System.Linq;
 using System.Diagnostics;
 using System.Net;
 using System.Net.Sockets;
@@ -19,20 +20,18 @@ namespace Teleop.CameraHost
     {
         private const int StatsIntervalSeconds = 10;
 
+        /// <summary>How long a camera that delivers nothing is trusted before it is reopened.</summary>
+        private const double StallSeconds = 3;
+
+        /// <summary>How often a missing camera is looked for again.</summary>
+        private const int RetryMilliseconds = 1000;
+
         public static int Run(string device, uint width, uint height, uint fps, int port, double subscriberTimeoutSeconds, double seconds)
         {
-            V4l2Capture capture;
-            try
-            {
-                capture = new V4l2Capture(device, width, height, fps);
-            }
-            catch (Exception e)
-            {
-                Console.Error.WriteLine($"error: could not start capture on {device}: {e.Message}");
-                return 2;
-            }
-
-            using (capture)
+            // The camera is opened, and reopened, inside the loop: the DaBai drops off the USB bus now
+            // and then and comes back, sometimes under another /dev/videoN (2026-10-12). Exiting on that,
+            // and leaving it to systemd, ended with systemd giving up for good, so the sender waits for
+            // the camera instead and keeps answering keepalives meanwhile.
             using (var socket = new Socket(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp))
             using (var stop = new ManualResetEventSlim(false))
             {
@@ -53,65 +52,173 @@ namespace Teleop.CameraHost
                     (long)(subscriberTimeoutSeconds * ticksPerSecond), firstFrameId);
 
                 Console.WriteLine(
-                    $"Teleop.CameraHost serving {device} ({capture.Card}) {capture.Width}x{capture.Height} MJPEG at " +
-                    $"{capture.FramesPerSecondNumerator}/{capture.FramesPerSecondDenominator} fps on UDP :{port}; " +
-                    $"subscribers time out after {subscriberTimeoutSeconds:0.#} s; first frame id {firstFrameId}.");
+                    $"Teleop.CameraHost on UDP :{port}, camera {device}; subscribers time out after " +
+                    $"{subscriberTimeoutSeconds:0.#} s; first frame id {firstFrameId}.");
 
                 var receive = new byte[64];
                 EndPoint from = new IPEndPoint(IPAddress.Any, 0);
                 long started = Stopwatch.GetTimestamp();
                 long nextStats = started + (StatsIntervalSeconds * ticksPerSecond);
                 long deadline = seconds > 0 ? started + (long)(seconds * ticksPerSecond) : long.MaxValue;
-                long captured = 0, unstamped = 0;
+                long stallTicks = (long)(StallSeconds * ticksPerSecond);
+                long captured = 0, unstamped = 0, reopened = 0;
+                V4l2Capture? capture = null;
+                long lastFrameTicks = 0, nextOpenTicks = 0;
+                string? lastOpenError = null;
 
-                while (!stop.IsSet && Stopwatch.GetTimestamp() < deadline)
+                try
                 {
-                    while (socket.Available > 0)
+                    while (!stop.IsSet && Stopwatch.GetTimestamp() < deadline)
                     {
-                        int n;
+                        while (socket.Available > 0)
+                        {
+                            int n;
+                            try
+                            {
+                                n = socket.ReceiveFrom(receive, ref from);
+                            }
+                            catch (SocketException)
+                            {
+                                break;
+                            }
+
+                            if (streamer.HandleDatagram(receive.AsSpan(0, n), from, Stopwatch.GetTimestamp()))
+                            {
+                                Console.WriteLine($"[net] streaming to {from}");
+                            }
+                        }
+
+                        long now = Stopwatch.GetTimestamp();
+                        if (now >= nextStats)
+                        {
+                            PrintStats(streamer, captured, unstamped, reopened, capture != null);
+                            nextStats = now + (StatsIntervalSeconds * ticksPerSecond);
+                        }
+
+                        if (capture == null)
+                        {
+                            if (now < nextOpenTicks)
+                            {
+                                stop.Wait(50);
+                                continue;
+                            }
+
+                            capture = TryOpen(device, width, height, fps, ref lastOpenError);
+                            if (capture == null)
+                            {
+                                nextOpenTicks = now + (RetryMilliseconds * ticksPerSecond / 1000);
+                                continue;
+                            }
+
+                            reopened++;
+                            lastFrameTicks = now;
+                        }
+
                         try
                         {
-                            n = socket.ReceiveFrom(receive, ref from);
+                            if (!capture.TryDequeue(100, out CapturedFrame frame))
+                            {
+                                if (Stopwatch.GetTimestamp() - lastFrameTicks > stallTicks)
+                                {
+                                    Console.WriteLine($"[camera] no frame for {StallSeconds:0} s; reopening");
+                                    capture.Dispose();
+                                    capture = null;
+                                }
+
+                                continue;
+                            }
+
+                            captured++;
+                            lastFrameTicks = Stopwatch.GetTimestamp();
+                            long captureTicks = CaptureTicks(frame, ticksPerSecond);
+                            if (captureTicks == LatencyTrace.Unset)
+                            {
+                                unstamped++;
+                            }
+
+                            streamer.OfferFrame(
+                                capture.FrameBytes(frame), captureTicks, (ushort)capture.Width, (ushort)capture.Height,
+                                Stopwatch.GetTimestamp());
+                            capture.Requeue(frame);
                         }
-                        catch (SocketException)
+                        catch (Exception e)
                         {
-                            break;
+                            // Typically ENODEV: the camera left the USB bus. Wait for it to come back.
+                            Console.WriteLine($"[camera] lost the camera ({e.Message}); waiting for it to come back");
+                            try { capture?.Dispose(); } catch (Exception) { }
+                            capture = null;
+                            nextOpenTicks = Stopwatch.GetTimestamp() + (RetryMilliseconds * ticksPerSecond / 1000);
                         }
-
-                        if (streamer.HandleDatagram(receive.AsSpan(0, n), from, Stopwatch.GetTimestamp()))
-                        {
-                            Console.WriteLine($"[net] streaming to {from}");
-                        }
-                    }
-
-                    if (!capture.TryDequeue(100, out CapturedFrame frame))
-                    {
-                        continue;
-                    }
-
-                    captured++;
-                    long captureTicks = CaptureTicks(frame, ticksPerSecond);
-                    if (captureTicks == LatencyTrace.Unset)
-                    {
-                        unstamped++;
-                    }
-
-                    streamer.OfferFrame(
-                        capture.FrameBytes(frame), captureTicks, (ushort)capture.Width, (ushort)capture.Height,
-                        Stopwatch.GetTimestamp());
-                    capture.Requeue(frame);
-
-                    long now = Stopwatch.GetTimestamp();
-                    if (now >= nextStats)
-                    {
-                        PrintStats(streamer, captured, unstamped);
-                        nextStats = now + (StatsIntervalSeconds * ticksPerSecond);
                     }
                 }
+                finally
+                {
+                    capture?.Dispose();
+                }
 
-                PrintStats(streamer, captured, unstamped);
+                PrintStats(streamer, captured, unstamped, reopened, capture != null);
                 return 0;
             }
+        }
+
+        /// <summary>
+        /// Opens the camera, resolving <c>auto</c> to the DaBai's RGB camera by its stable
+        /// <c>/dev/v4l/by-id</c> name, which follows it to whatever /dev/videoN it gets. A failure
+        /// is logged once per distinct message, not once a second.
+        /// </summary>
+        private static V4l2Capture? TryOpen(string device, uint width, uint height, uint fps, ref string? lastError)
+        {
+            string? path = device == "auto" ? FindCamera() : device;
+            string error;
+            if (path == null)
+            {
+                error = "no Orbbec DaBai RGB camera under /dev/v4l/by-id (unplugged, or still re-enumerating)";
+            }
+            else
+            {
+                try
+                {
+                    var capture = new V4l2Capture(path, width, height, fps);
+                    Console.WriteLine(
+                        $"[camera] capturing {path} ({capture.Card}) {capture.Width}x{capture.Height} MJPEG at " +
+                        $"{capture.FramesPerSecondNumerator}/{capture.FramesPerSecondDenominator} fps");
+                    lastError = null;
+                    return capture;
+                }
+                catch (Exception e)
+                {
+                    error = $"could not start capture on {path}: {e.Message}";
+                }
+            }
+
+            if (error != lastError)
+            {
+                Console.WriteLine($"[camera] {error}; retrying every {RetryMilliseconds / 1000.0:0.#} s");
+                lastError = error;
+            }
+
+            return null;
+        }
+
+        private static string? FindCamera()
+        {
+            const string byId = "/dev/v4l/by-id";
+            if (!Directory.Exists(byId))
+            {
+                return null;
+            }
+
+            foreach (string link in Directory.GetFiles(byId).OrderBy(p => p, StringComparer.Ordinal))
+            {
+                string name = Path.GetFileName(link);
+                if (name.Contains("DaBai", StringComparison.Ordinal) && name.Contains("RGB", StringComparison.Ordinal)
+                    && name.EndsWith("-video-index0", StringComparison.Ordinal))
+                {
+                    return link;
+                }
+            }
+
+            return null;
         }
 
         /// <summary>
@@ -131,9 +238,9 @@ namespace Teleop.CameraHost
                 : (long)(frame.TimestampNanoseconds * (ticksPerSecond / 1e9));
         }
 
-        private static void PrintStats(CameraStreamer s, long captured, long unstamped) =>
+        private static void PrintStats(CameraStreamer s, long captured, long unstamped, long opened, bool cameraOpen) =>
             Console.WriteLine(
-                $"[stats] captured {captured} (unstamped {unstamped}); sent {s.FramesSent} frames, {s.ChunksSent} chunks, " +
+                $"[stats] camera {(cameraOpen ? "open" : "MISSING")}, opened {opened}x; captured {captured} (unstamped {unstamped}); sent {s.FramesSent} frames, {s.ChunksSent} chunks, " +
                 $"{s.BytesSent / 1024} KiB; no subscriber {s.FramesWithoutSubscriber}, paced {s.FramesPaced}, " +
                 $"failed {s.FramesFailed}; keepalives {s.SubscribesAccepted}, ignored {s.DatagramsIgnored}; " +
                 $"subscriber {s.LastSubscriber?.ToString() ?? "none yet"}");

@@ -15,7 +15,7 @@ namespace Teleop.RobotHost.Tests.Plant
         private static readonly RobotArmProfile JetRover = Config.Profile;
 
         // JetRoverMeasuredDefault's own motor ids -- see RobotArmProfile.JetRoverMeasuredDefault.
-        private const byte BaseMotorId = 1, ProximalMotorId = 2, DistalMotorId = 3, WristMotorId = 4, GripperMotorId = 5;
+        private const byte BaseMotorId = 1, ProximalMotorId = 2, DistalMotorId = 3, WristMotorId = 4, GripperMotorId = 10, WristRollMotorId = 5;
 
         private static CommandFrame Frame(long captureTicks, Vector3 position, Quaternion? rotation = null, float gripper = 0f) =>
             new CommandFrame(
@@ -257,6 +257,95 @@ namespace Teleop.RobotHost.Tests.Plant
             Assert.Equal(Config.GripperOpenPulse, Pulse(relay.SentCommands[0], GripperMotorId), 3);
             Assert.Equal(Config.GripperClosedPulse, Pulse(relay.SentCommands[1], GripperMotorId), 3);
             Assert.Equal((Config.GripperOpenPulse + Config.GripperClosedPulse) / 2f, Pulse(relay.SentCommands[2], GripperMotorId), 3);
+        }
+
+        [Fact]
+        public void Command_DrivesTheWristRollFromTheCommandedOrientation_AsASteppedAngle()
+        {
+            var relay = new FakeRelayClient();
+            var plant = new GenericArmPlant(Config, relay);
+
+            // A small roll the step limit allows in one go, then a level orientation.
+            float roll = 0.1f;
+            plant.Command(Frame(captureTicks: 10, position: ReachableTarget, rotation: Quaternion.CreateFromAxisAngle(Vector3.UnitX, roll)));
+            float rolled = Pulse(relay.SentCommands[0], WristRollMotorId);
+            Assert.Equal(Config.ZeroPulse + roll * Config.PulsePerRadian, rolled, 1);
+
+            plant.Command(Frame(captureTicks: 20, position: ReachableTarget));
+            Assert.Equal(Config.ZeroPulse, Pulse(relay.SentCommands[1], WristRollMotorId), 1);
+        }
+
+        [Fact]
+        public void TheGripperCommand_GoesToMotor10_NotTheWristRoll()
+        {
+            var relay = new FakeRelayClient();
+            var plant = new GenericArmPlant(Config, relay);
+
+            plant.Command(Frame(captureTicks: 10, position: ReachableTarget, gripper: 1f));
+
+            Assert.Equal(Config.GripperClosedPulse, Pulse(relay.SentCommands[0], GripperMotorId), 3);
+            Assert.Equal(Config.ZeroPulse, Pulse(relay.SentCommands[0], WristRollMotorId), 1);
+        }
+
+        [Fact]
+        public void ReadJointState_ReportsSensedAnglesWithoutTheMountingOffset_AndTheCommandedGripper()
+        {
+            var relay = new FakeRelayClient();
+            var plant = new GenericArmPlant(Config, relay);
+            plant.Command(Frame(captureTicks: 10, position: ReachableTarget, gripper: 0.5f));
+
+            float proximalPulse = Config.ZeroPulse + 0.4f * Config.PulsePerRadian;
+            relay.EnqueueFeedback(new JointFeedbackEntry(ProximalMotorId, true, proximalPulse));
+            plant.Step(1234);
+
+            var joints = new JointSample[JetRover.JointCount];
+            int count = plant.ReadJointState(joints);
+            Assert.Equal(JetRover.JointCount, count);
+            Assert.Equal(1234, plant.LastFeedbackTicks);
+
+            JointSample proximal = joints.First(j => j.MotorId == ProximalMotorId);
+            Assert.True(proximal.Sensed);
+            float offset = JetRover.Joints.First(j => j.MotorId == ProximalMotorId).ZeroOffsetRadians;
+            Assert.Equal(0.4f - offset, proximal.Value, 4);
+
+            JointSample gripper = joints.First(j => j.MotorId == GripperMotorId);
+            Assert.False(gripper.Sensed);
+            Assert.Equal(0.5f, gripper.Value, 4);
+
+            // Once the relay reads the gripper back, its measured position is reported, here stopped
+            // short of the commanded half-closed (it has hit something).
+            float stoppedPulse = Config.GripperOpenPulse + 0.3f * (Config.GripperClosedPulse - Config.GripperOpenPulse);
+            relay.EnqueueFeedback(new JointFeedbackEntry(GripperMotorId, true, stoppedPulse));
+            plant.Step(2000);
+            plant.ReadJointState(joints);
+            gripper = joints.First(j => j.MotorId == GripperMotorId);
+            Assert.True(gripper.Sensed);
+            Assert.Equal(0.3f, gripper.Value, 4);
+
+            Assert.False(joints.First(j => j.MotorId == DistalMotorId).Sensed);
+        }
+
+        [Fact]
+        public void AJointCommandsRequestedSpeed_SetsTheServoSpeed_CappedAtTheConfiguredMaximum()
+        {
+            var relay = new FakeRelayClient();
+            var plant = new GenericArmPlant(Config, relay);
+            JointTarget[] Targets(float speed) => JointAnglesFor(JetRover, 0.1f, 0.2f, 0.3f, 0f)
+                .Select(t => new JointTarget(t.MotorId, t.Angle, speed)).ToArray();
+
+            plant.CommandJointAngles(Targets(2f), 10);
+            Assert.Equal(2f * Config.PulsePerRadian, relay.SentCommands[0][0].Speed, 1);
+
+            plant.CommandJointAngles(Targets(1000f), 20);
+            Assert.Equal(Config.PulsesPerSecond, relay.SentCommands[1][0].Speed, 1);
+
+            plant.CommandJointAngles(Targets(0f), 30);
+            Assert.Equal(Config.PulsesPerSecond, relay.SentCommands[2][0].Speed, 1);
+
+            // The Cartesian path moves at the joint path's latest request too.
+            plant.CommandJointAngles(Targets(1f), 40);
+            plant.Command(Frame(captureTicks: 50, position: ReachableTarget));
+            Assert.Equal(1f * Config.PulsePerRadian, relay.SentCommands[4][0].Speed, 1);
         }
 
         [Fact]
@@ -506,6 +595,44 @@ namespace Teleop.RobotHost.Tests.Plant
             plant.CommandJointAngles(JointAnglesFor(JetRover, 0.5f, 0.4f, -0.3f, 0f), captureTicks: 50);  // stale
 
             Assert.Equal(afterFirst, relay.SentCommands.Count);
+        }
+
+        [Fact]
+        public void RestartJointCommandOrdering_AcceptsANewSendersLowerClock()
+        {
+            // A headset that rebooted stamps from near zero again (found on hardware 2026-10-13).
+            var relay = new FakeRelayClient();
+            var plant = new GenericArmPlant(Config, relay);
+            plant.CommandJointAngles(JointAnglesFor(JetRover, 0.3f, 0.2f, -0.1f, 0f), captureTicks: 1_000_000);
+            int afterFirst = relay.SentCommands.Count;
+
+            plant.CommandJointAngles(JointAnglesFor(JetRover, 0.5f, 0.4f, -0.3f, 0f), captureTicks: 10);
+            Assert.Equal(afterFirst, relay.SentCommands.Count);
+
+            plant.RestartJointCommandOrdering();
+            plant.CommandJointAngles(JointAnglesFor(JetRover, 0.5f, 0.4f, -0.3f, 0f), captureTicks: 10);
+            Assert.Equal(afterFirst + 1, relay.SentCommands.Count);
+
+            // Still ordered within the new sender.
+            plant.CommandJointAngles(JointAnglesFor(JetRover, 0.5f, 0.4f, -0.3f, 0f), captureTicks: 5);
+            Assert.Equal(afterFirst + 1, relay.SentCommands.Count);
+        }
+
+        [Fact]
+        public void RestartCartesianCommandOrdering_AcceptsANewSendersLowerClock_AndLeavesTheJointPathAlone()
+        {
+            var relay = new FakeRelayClient();
+            var plant = new GenericArmPlant(Config, relay);
+            plant.Command(Frame(captureTicks: 1_000_000, position: new Vector3(0.2f, 0f, 0.1f)));
+            plant.CommandJointAngles(JointAnglesFor(JetRover, 0.3f, 0.2f, -0.1f, 0f), captureTicks: 1_000_000);
+            int before = relay.SentCommands.Count;
+
+            plant.RestartCartesianCommandOrdering();
+            plant.Command(Frame(captureTicks: 10, position: new Vector3(0.18f, 0f, 0.1f)));
+            Assert.Equal(before + 1, relay.SentCommands.Count);
+
+            plant.CommandJointAngles(JointAnglesFor(JetRover, 0.5f, 0.4f, -0.3f, 0f), captureTicks: 10);
+            Assert.Equal(before + 1, relay.SentCommands.Count);
         }
 
         [Fact]

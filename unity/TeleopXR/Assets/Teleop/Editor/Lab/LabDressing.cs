@@ -107,7 +107,7 @@ namespace Teleop.XR.Editor
         /// <summary>Builds the dressing into <paramref name="scene"/>, replacing a previous one.</summary>
         public static void Apply(Scene scene)
         {
-            JetRoverArmRig rig = Object.FindAnyObjectByType<JetRoverArmRig>(FindObjectsInactive.Include)
+            JetRoverArmRig rig = XrControlSetup.CommandedRig()
                 ?? throw new InvalidOperationException("the scene has no JetRoverArmRig; build it with `just unity-scene-xr` first");
             JetRoverOperatorBridge robot = Object.FindAnyObjectByType<JetRoverOperatorBridge>(FindObjectsInactive.Include)
                 ?? throw new InvalidOperationException("the scene has no JetRoverOperatorBridge");
@@ -152,7 +152,21 @@ namespace Teleop.XR.Editor
 
             LabRoom.Result room = LabRoom.Build(dressing, palette);
             Transform shoulder = lower.parent;
-            Renderer wristLed = JetRoverTwin.Build(dressing, palette, yaw, lower, middle, upper, shoulder.localPosition);
+            Renderer wristLed;
+            if (JetRoverCad.Available)
+            {
+                // The robot's own CAD. It has the shoulder on the yaw axis, so the rig's old 14 mm
+                // visual-only sideways shoulder offset goes; the IK never used it. Pivots go to rest,
+                // the pose the parts are fitted in.
+                shoulder.localPosition = new Vector3(0f, shoulder.localPosition.y, 0f);
+                EditorUtility.SetDirty(shoulder);
+                foreach (Transform pivot in new[] { yaw, lower, middle, upper }) pivot.localRotation = Quaternion.identity;
+                wristLed = JetRoverCad.Build(dressing, palette, yaw, lower, middle, upper);
+            }
+            else
+            {
+                wristLed = JetRoverTwin.Build(dressing, palette, yaw, lower, middle, upper, shoulder.localPosition);
+            }
             LabDisplay.Result display = LabDisplay.Build(dressing, palette, screenMaterial, feed, robot);
 
             var lamp = room.StatusRing.gameObject.AddComponent<LinkStatusLamp>();
@@ -178,6 +192,9 @@ namespace Teleop.XR.Editor
             feedSo.ApplyModifiedPropertiesWithoutUndo();
             rigSo.FindProperty("reachWarningRenderer").objectReferenceValue = wristLed;
             rigSo.ApplyModifiedPropertiesWithoutUndo();
+
+            // The twin's fingers were just rebuilt, so the gripper display and the clutch need rewiring.
+            XrControlSetup.Apply(scene);
 
             EditorSceneManager.MarkSceneDirty(scene);
             Debug.Log($"[lab] dressing built: {LabMeshLibrary.Triangles} generated triangles");

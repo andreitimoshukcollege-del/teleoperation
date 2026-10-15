@@ -1,23 +1,24 @@
 """Bridges Teleop.RobotHost (a .NET process, the real IRobotPlant/ITransport endpoint -- see
-teleoperation's docs/adr/0007-jetrover-plant-and-robot-host.md) to jetrover_arm_control's
-existing ROS topics, over a local Unix domain socket (relay_protocol.py). Deliberately thin: no
-staleness/sequencing/gap-policy logic here at all -- that's JetRoverPlant's job, upstream of this
-socket. This node only ever translates "here are the current absolute pulse/gripper targets" into
-the ROS topic calls jetrover_arm_control already exposes, and relays servo feedback back the same
-way.
+teleoperation's docs/adr/0007-jetrover-plant-and-robot-host.md) to jetrover_arm_control, over a
+local Unix domain socket (relay_protocol.py). Deliberately thin: no staleness/sequencing/
+gap-policy logic here at all -- that's GenericArmPlant's job, upstream of this socket. This node
+only ever translates "here are the current per-motor-id pulse/speed targets" into one ROS topic
+carrying the whole array, and relays servo feedback back the same way.
 
-Wire v3 (teleoperation's docs/adr/0010-absolute-joint-targets-over-local-relay.md): base/lower/
-middle/upper joints are absolute pulse targets (0-1000, matching what ServoController.setPos now
-applies directly), not relative "direction" deltas as in earlier versions of this protocol. The
-gripper (absolute degrees, matching setGripperPos) is unchanged. Gripper feedback is not relayed
--- Teleop.RobotHost's JetRoverPlant sends the gripper open-loop, with no belief tracking that
-would need it.
+Wire v4 (teleoperation's docs/adr/0011-generic-robot-arm-profiles.md): a count-prefixed array of
+(motor_id, pulse_target, pulses_per_second) tuples, replacing the old fixed 4-joint-plus-gripper
+struct entirely. This node is now genuinely profile-agnostic -- it never looks up a joint name,
+only forwards whatever motor ids show up on the wire. The internal hop to
+jetrover_arm_control uses a plain std_msgs/Float32MultiArray (not a new custom .msg type) to
+avoid introducing rosidl message-generation build machinery for a purely internal, single-hop
+array -- see this module's own encode/decode helpers below for the exact layout, which mirrors
+relay_protocol.py's own tuple shapes.
 
-Each joint's feedback validity is time-boxed (StaleTrackedValue), not "has a reading ever
-arrived": a joint whose real feedback silently stops (e.g. the middle-arm servo's reads, which
-robot_controller_node.py's own comment says never succeed) must eventually report invalid again,
-not keep replaying its one lucky reading forever -- a real bug found via move-arm 0.1 0.1 0.1
-no longer converging on 2026-08-08/09, even though JetRoverPlant's belief tracking was correct.
+Each motor id's feedback validity is time-boxed (StaleTrackedValue), not "has a reading ever
+arrived": a joint whose real feedback silently stops (e.g. a servo whose reads never succeed) must
+eventually report invalid again, not keep replaying its one lucky reading forever -- a real bug
+found via move-arm 0.1 0.1 0.1 no longer converging on 2026-08-08/09, even though the .NET side's
+belief tracking was correct.
 """
 
 import os
@@ -26,7 +27,7 @@ import time
 
 import rclpy
 from rclpy.node import Node
-from std_msgs.msg import Float32, Int32
+from std_msgs.msg import Float32MultiArray
 
 from teleop_relay import relay_protocol
 from teleop_relay.stale_tracked_value import StaleTrackedValue
@@ -43,6 +44,36 @@ _FEEDBACK_SEND_PERIOD_SECONDS = 0.05  # 20 Hz
 _STALENESS_TIMEOUT_SECONDS = 0.2
 
 
+def _encode_command_array(targets) -> Float32MultiArray:
+    """[count, motor_id_0, pulse_0, speed_0, motor_id_1, ...] -- a plain std_msgs array instead of
+    a custom .msg type, see this module's own doc for why."""
+    msg = Float32MultiArray()
+    data = [float(len(targets))]
+    for motor_id, pulse, speed in targets:
+        data.extend([float(motor_id), float(pulse), float(speed)])
+    msg.data = data
+    return msg
+
+
+def _decode_feedback_array(msg: Float32MultiArray):
+    """Inverse of robot_controller_node.py's own feedback_array encoding: [count, motor_id_0,
+    pulse_0, motor_id_1, pulse_1, ...]. Returns a list of (motor_id, pulse) pairs, tolerating a
+    malformed/truncated array by simply stopping rather than raising."""
+    data = msg.data
+    if len(data) < 1:
+        return []
+
+    count = int(data[0])
+    readings = []
+    offset = 1
+    for _ in range(count):
+        if offset + 1 >= len(data):
+            break
+        readings.append((int(data[offset]), data[offset + 1]))
+        offset += 2
+    return readings
+
+
 class TeleopRelayNode(Node):
     def __init__(self):
         super().__init__("teleop_relay_node")
@@ -56,21 +87,13 @@ class TeleopRelayNode(Node):
         self._socket.bind(LOCAL_RELAY_SOCKET)
         self._socket.setblocking(False)
 
-        self._base_pub = self.create_publisher(Float32, "/arm/servo/base", 1)
-        self._lower_pub = self.create_publisher(Float32, "/arm/servo/joint/lower", 1)
-        self._middle_pub = self.create_publisher(Float32, "/arm/servo/joint/middle", 1)
-        self._upper_pub = self.create_publisher(Float32, "/arm/servo/joint/upper", 1)
-        self._gripper_main_pub = self.create_publisher(Float32, "/arm/servo/gripper/main", 1)
+        self._command_pub = self.create_publisher(Float32MultiArray, "/arm/servo/command_array", 3)
+        self.create_subscription(
+            Float32MultiArray, "/unity/robot/servo/feedback_array", self._on_feedback_array, 1)
 
-        self.create_subscription(Int32, "/unity/robot/servo/base", self._on_base_feedback, 1)
-        self.create_subscription(Int32, "/unity/robot/servo/joint/lower", self._on_lower_feedback, 1)
-        self.create_subscription(Int32, "/unity/robot/servo/joint/middle", self._on_middle_feedback, 1)
-        self.create_subscription(Int32, "/unity/robot/servo/joint/upper", self._on_upper_feedback, 1)
-
-        self._base_feedback = StaleTrackedValue(_STALENESS_TIMEOUT_SECONDS)
-        self._lower_feedback = StaleTrackedValue(_STALENESS_TIMEOUT_SECONDS)
-        self._middle_feedback = StaleTrackedValue(_STALENESS_TIMEOUT_SECONDS)
-        self._upper_feedback = StaleTrackedValue(_STALENESS_TIMEOUT_SECONDS)
+        # Motor-id-keyed, created lazily per id the first time it's seen -- this node no longer
+        # needs a fixed, hand-maintained list of joint names to track feedback for.
+        self._feedback_by_motor_id = {}
 
         self.create_timer(_COMMAND_POLL_PERIOD_SECONDS, self._poll_local_socket)
         self.create_timer(_FEEDBACK_SEND_PERIOD_SECONDS, self._send_feedback)
@@ -79,17 +102,14 @@ class TeleopRelayNode(Node):
             f"Relay listening on {LOCAL_RELAY_SOCKET}, forwarding feedback to {HOST_SOCKET}"
         )
 
-    def _on_base_feedback(self, msg: Int32) -> None:
-        self._base_feedback.update(msg.data, time.monotonic())
-
-    def _on_lower_feedback(self, msg: Int32) -> None:
-        self._lower_feedback.update(msg.data, time.monotonic())
-
-    def _on_middle_feedback(self, msg: Int32) -> None:
-        self._middle_feedback.update(msg.data, time.monotonic())
-
-    def _on_upper_feedback(self, msg: Int32) -> None:
-        self._upper_feedback.update(msg.data, time.monotonic())
+    def _on_feedback_array(self, msg: Float32MultiArray) -> None:
+        now = time.monotonic()
+        for motor_id, pulse in _decode_feedback_array(msg):
+            tracked = self._feedback_by_motor_id.get(motor_id)
+            if tracked is None:
+                tracked = StaleTrackedValue(_STALENESS_TIMEOUT_SECONDS)
+                self._feedback_by_motor_id[motor_id] = tracked
+            tracked.update(pulse, now)
 
     def _poll_local_socket(self) -> None:
         # Drain every pending datagram but act only on the most recent -- IRelayClient's
@@ -97,44 +117,30 @@ class TeleopRelayNode(Node):
         # backlog here (this node briefly starved of CPU) must not replay stale commands once
         # it catches up.
         latest = None
+        max_size = relay_protocol.command_encoded_size(relay_protocol.MAX_JOINTS_PER_MESSAGE)
         while True:
             try:
-                latest, _ = self._socket.recvfrom(relay_protocol.ARM_COMMAND_SIZE)
+                latest, _ = self._socket.recvfrom(max_size)
             except BlockingIOError:
                 break
 
         if latest is None:
             return
 
-        decoded = relay_protocol.decode_arm_command(latest)
-        if decoded is None:
+        targets = relay_protocol.decode_arm_command(latest)
+        if targets is None:
             return
-        base_pulse, lower_pulse, middle_pulse, upper_pulse, gripper_degrees = decoded
 
-        self._publish_float(self._base_pub, base_pulse)
-        self._publish_float(self._lower_pub, lower_pulse)
-        self._publish_float(self._middle_pub, middle_pulse)
-        self._publish_float(self._upper_pub, upper_pulse)
-        self._publish_float(self._gripper_main_pub, gripper_degrees)
-
-    @staticmethod
-    def _publish_float(publisher, value: float) -> None:
-        msg = Float32()
-        msg.data = value
-        publisher.publish(msg)
+        self._command_pub.publish(_encode_command_array(targets))
 
     def _send_feedback(self) -> None:
         now = time.monotonic()
-        base_valid, base_degrees = self._base_feedback.read(now)
-        lower_valid, lower_degrees = self._lower_feedback.read(now)
-        middle_valid, middle_degrees = self._middle_feedback.read(now)
-        upper_valid, upper_degrees = self._upper_feedback.read(now)
-        payload = relay_protocol.encode_feedback(
-            base_valid=base_valid, base_degrees=base_degrees,
-            lower_valid=lower_valid, lower_degrees=lower_degrees,
-            middle_valid=middle_valid, middle_degrees=middle_degrees,
-            upper_valid=upper_valid, upper_degrees=upper_degrees,
-        )
+        entries = []
+        for motor_id, tracked in self._feedback_by_motor_id.items():
+            valid, pulse = tracked.read(now)
+            entries.append((motor_id, valid, pulse))
+
+        payload = relay_protocol.encode_feedback(entries)
         try:
             self._socket.sendto(payload, HOST_SOCKET)
         except OSError:

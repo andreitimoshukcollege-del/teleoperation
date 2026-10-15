@@ -34,10 +34,11 @@ sample is shown and how the correction is absorbed; a better model of the world 
 shown in the first place. The two multiply: a prediction that is right more often leaves less
 correction to hide and needs less buffering to cover.
 
-**Nothing in the system observes the environment yet, and the how is genuinely open.** The robot
-reports a pose and nothing else — 57 bytes, no field for anything sensed. There is no camera feed,
-no depth, no contact signal; the plant is deliberately kinematic, with no mass and no collision.
-This is a direction, not a design.
+**Nothing in the system models the environment yet, and the how is genuinely open.** The robot
+reports its own body: a wrist pose, and each joint's angle (docs/adr/0018). Its camera streams to
+the operator's headset (docs/adr/0014), but only for their eyes: nothing interprets the image, the
+depth sensor is not streamed, and there is no contact signal. The plant is deliberately kinematic,
+with no mass and no collision. This is a direction, not a design.
 
 **New here? → [`ONBOARDING.md`](ONBOARDING.md)** — setup, in order, with what to expect at each
 step. This file is the day-to-day command reference.
@@ -51,14 +52,14 @@ git lfs install                 # BEFORE cloning -- see ONBOARDING.md
 git clone https://github.com/andreitimoshukcollege-del/teleoperation.git
 cd teleoperation
 
-cd core && dotnet test          # ~800 tests, a few seconds
+cd core && dotnet test          # ~970 tests, a few seconds
 just check                      # every gate in the repo
 just sweep experiments/exp-001-predictor-baseline.yaml
 ```
 
 Needs .NET SDK 8, Python 3 (with `python3-venv` on Debian/Ubuntu), `git-lfs`, and optionally
-[`just`](https://github.com/casey/just). Unity 2022.3.46f1 only for the VR side; `python3-tk` only
-if you want `analysis/`'s GUI.
+[`just`](https://github.com/casey/just). Unity 6000.6.4f1 only for the headset side; `python3-tk`
+only if you want `analysis/`'s GUI.
 
 ## Where things are
 
@@ -66,7 +67,13 @@ if you want `analysis/`'s GUI.
 |---|---|
 | `core/Teleop.Core/` | every algorithm — one copy, compiled by both `dotnet` and Unity |
 | `core/Teleop.Eval/` | headless CLI: `sweep`, `verify`, `audit` |
-| `unity/TeleopVR/` | scenes, XR, rendering, real I/O |
+| `core/Teleop.RobotArm/` | arm kinematics, the clutch and gripper mappings, joint wire formats |
+| `core/Teleop.RobotHost/`, `core/Teleop.CameraHost/` | what runs on the robot's Jetson (.NET) |
+| `unity/TeleopXR/` | **the operator app**, Samsung Galaxy XR: hand tracking, the lab, the digital twin |
+| `unity/Teleop.Bridge/` | the only Unity code that touches Core: real I/O, shared by both Unity projects |
+| `unity/TeleopVR/` | the Meta Quest operator app, parked (kept, no longer developed) |
+| `robot/ros/` | the robot's ROS 2 workspace: the servo board driver and the relay to RobotHost |
+| `robot/systemd/` | the Jetson's services |
 | `analysis/` | Python — reads `results/`, produces figures |
 | `experiments/` | one YAML per experiment |
 | `results/` | **append-only.** New directories only; never edit an old one |
@@ -110,7 +117,7 @@ to write a new config and `results/CLAUDE.md` for the manifest convention.
 ## Working across two environments
 
 `core/`, `analysis/`, `experiments/` and `docs/` can be developed and verified anywhere. Unity, the
-Quest and the JetRover need the Windows side — not as a rule about who may edit what, but because
+headset and the JetRover need the Windows side — not as a rule about who may edit what, but because
 of what each environment can actually run:
 
 - **Unity cannot open a project stored inside WSL**, so the Windows checkout lives on NTFS
@@ -121,39 +128,70 @@ of what each environment can actually run:
 - **Pull before opening Unity.** Core is linked by relative path, so a Core change on `main`
   changes the Unity build the moment it's on disk.
 - Core's C# 9 / `netstandard2.1` limit comes from Unity but **binds everywhere** — code can pass
-  `dotnet test` on Linux and still break the Quest build. `just bridge-check` catches signature
-  breaks; only an IL2CPP build catches the rest.
+  `dotnet test` on Linux and still break the headset build. `just bridge-check` catches signature
+  breaks; only an IL2CPP build (`just build-galaxy`) catches the rest.
 
 Full reference: root `CLAUDE.md`'s "Environment" section.
 
-## The real robot
+## The headset
 
-A Hiwonder JetRover with a Jetson Nano, over Tailscale. Its ROS 2 side is a separate repo
-([`jetrover-teleop-ros`](https://github.com/andreitimoshukcollege-del/jetrover-teleop-ros)).
+The operator wears a **Samsung Galaxy XR** (`unity/TeleopXR`, docs/adr/0016). You drive the arm
+with your hands:
+- **Pinch with the right hand** and the arm's wrist follows your hand, at half scale. Release and it
+  holds (docs/adr/0017).
+- **The left hand works the gripper**, while the right is pinched: pinch to close, twist to roll.
+- **A button on the bench starts and stops the robot.** It is off at every launch.
 
-> **A human must be watching the arm with clearance confirmed before any of these run.** Each one
-> commands real motion.
+The lab around you shows the robot's camera on a movable display and a digital twin built from the
+robot's own CAD, in three switchable versions (docs/adr/0018):
+- **commanded** (blue), what you asked for;
+- **measured** (amber), what the robot last reported;
+- **predicted** (green), where it most likely is now.
 
 ```bash
-just robot-status                 # health of all three Jetson services
+just build-galaxy          # the APK, after the scene's safety check
+just install-galaxy        # onto the headset over USB
+just push-galaxy-config    # point it at the robot's current address, then restart the app
+just mirror-galaxy         # watch what the wearer sees, on the PC
+```
+
+`unity/TeleopXR/CLAUDE.md` is the full guide: setup, the scene, its safety settings, Direct
+Preview from the editor. The Meta Quest app (`unity/TeleopVR`) is still here but parked.
+
+## The real robot
+
+A Hiwonder JetRover with a Jetson Nano. On the lab network it is found by its mDNS name
+(`jetrover-sinrg.local`), with Tailscale as the fallback. Its address moves, so the recipes look it
+up every time (`just robot-ip`). Everything that runs on it is in this repo:
+- RobotHost and CameraHost (`core/`);
+- the ROS 2 servo driver and relay (`robot/ros/`, docs/adr/0019);
+- the services (`robot/systemd/`).
+
+> **A human must be watching the arm with clearance confirmed before any of the moving or
+> restarting recipes run.**
+
+```bash
+just robot-status                 # health of the Jetson services (read-only)
+just joint-probe                  # read-only: joint state arriving, which motors are measured
+just ros-check                    # read-only: is the servo board answering the ROS driver
+just robot-battery                # read-only: battery voltage
 just deploy-robothost             # redeploy Teleop.RobotHost after a Core change
+just deploy-camerahost            # redeploy the camera sender
+just deploy-ros                   # redeploy robot/ros/ -- restarts the servo driver
 just move-arm 0.15 0 0.08         # Cartesian target, metres, wrist frame -- MOVES THE ARM
-just clocksync-check              # cross-machine clock-sync diagnostic
 ```
 
 The Jetson's services auto-start on boot, so there's nothing to do after a reboot. Drive hardware
-through a `just` recipe, never by hand-typing the underlying command — if what you need has no
+through a `just` recipe, never by hand-typing the underlying command. If what you need has no
 recipe and is reusable, add one.
 
-From Unity: open `Assets/Scenes/JetRoverControl.unity`, set the host and ports in
-`unity/Teleop.Bridge/Runtime/Resources/jetrover_connection.json` (or a per-machine override of the
-whole file in `Application.persistentDataPath`), set
-`ConfirmHardwareMotion: true` only once clearance is confirmed, and press Play. The connection HUD
-reports connected / no connection yet / connection lost, so you don't have to watch the arm or read
-Jetson logs to tell whether packets are landing.
+**When the arm ignores commands but the camera still streams,** check the battery first
+(`just robot-battery`, `just ros-check`). A low pack makes the servo board stop answering, freezes
+the joint values, drops the camera off USB and sets off the board's alarm. Charge it with the robot
+switched off.
 
 **Read `robot/README.md` before any hardware work.** Its incident log covers real servo faults,
-calibration findings and a rate-dependent command-loss bug — most "new" hardware problems turn out
+calibration findings and a rate-dependent command-loss bug. Most "new" hardware problems turn out
 to be repeats.
 
 ## Contributing

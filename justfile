@@ -346,7 +346,6 @@ deploy-robothost remote_host=default_jetrover_host remote_user="jetson" operator
         systemctl status teleop-robothost --no-pager -n 10
     "
 
-# SSH in and print systemctl status for all three Jetson-side services (teleop-robothost, jetrover-relay, jetrover-arm-control) in one shot -- see robot/systemd/README.md
 # Read-only: the camera sender's recent journal (teleop-camerahost.service) with its per-10 s [stats] lines, the video devices present, and the kernel's recent USB/camera events. Use it when the headset's feed freezes or cuts out
 camera-logs lines="200" remote_host=default_jetrover_host remote_user="jetson":
     ssh -o StrictHostKeyChecking=accept-new "{{remote_user}}@$(just _robot-host "{{remote_host}}")" \
@@ -367,7 +366,7 @@ arm-logs lines="100" remote_host=default_jetrover_host remote_user="jetson":
 # Read-only: the ROS link between the relay and the servo driver. The topics each side publishes and subscribes to, the services' environment (the CLI runs with ROS_LOCALHOST_ONLY=1 as they do; a mismatch makes it see no messages), the live topic list, and for a few seconds each how often messages actually flow. Use it when RobotHost logs commands but the arm doesn't move
 ros-check seconds="4" remote_host=default_jetrover_host remote_user="jetson":
     ssh -o StrictHostKeyChecking=accept-new "{{remote_user}}@$(just _robot-host "{{remote_host}}")" \
-        "src=/home/jetson/projects/jetrover-teleop-ros/src; echo '--- topics in the source'; grep -rn -E 'create_publisher|create_subscription' \$src --include=*.py | sed \"s|\$src/||\" | head -30; \
+        "r=/home/jetson/teleop_ros_current; [ -d \$r/src ] || r=/home/jetson/projects/jetrover-teleop-ros; src=\$r/src; echo \"--- topics in the source (\$r)\"; grep -rn -E 'create_publisher|create_subscription' \$src --include=*.py | sed \"s|\$src/||\" | head -30; \
          echo '--- service environment'; for u in jetrover-arm-control jetrover-relay; do echo \"\$u: \$(systemctl show -p Environment --value \$u)\"; grep -h -E 'ExecStart|Environment' /etc/systemd/system/\$u.service; done; \
          source /opt/ros/foxy/setup.bash; export ROS_LOCALHOST_ONLY=1; echo \"--- this CLI (as the services): ROS_LOCALHOST_ONLY=\$ROS_LOCALHOST_ONLY ROS_DOMAIN_ID=\${ROS_DOMAIN_ID:-unset}\"; \
          echo '--- live topics'; timeout 10 ros2 topic list 2>&1; \
@@ -384,7 +383,7 @@ robot-serial remote_host=default_jetrover_host remote_user="jetson":
 joint-probe seconds="3" remote_host=default_jetrover_host:
     cd core && dotnet run --project Teleop.Eval -- joint-probe --remote-host $(just _robot-host "{{remote_host}}") --seconds {{seconds}}
 
-# Read-only: which servo ids the Jetson's ROS relay reads position feedback from (FEEDBACK_MOTOR_IDS in jetrover-teleop-ros's robot_controller_node.py, docs/adr/0011), the loop that reads them (a servo that does not answer is silently skipped), and where relay_node.py tracks them. A motor missing or silent here is reported as a commanded belief, never measured (just joint-probe shows the effect)
+# Read-only: which servo ids the Jetson's ROS relay reads position feedback from (FEEDBACK_MOTOR_IDS in robot/ros's robot_controller_node.py, docs/adr/0011; change it there and run just deploy-ros), the loop that reads them (a servo that does not answer is silently skipped), and where relay_node.py tracks them. A motor missing or silent here is reported as a commanded belief, never measured (just joint-probe shows the effect)
 robot-feedback-ids remote_host=default_jetrover_host remote_user="jetson":
     ssh -o StrictHostKeyChecking=accept-new "{{remote_user}}@$(just _robot-host "{{remote_host}}")" \
         "systemctl cat jetrover-arm-control --no-pager 2>/dev/null | grep -E '^(ExecStart|WorkingDirectory)=' ; \
@@ -392,32 +391,37 @@ robot-feedback-ids remote_host=default_jetrover_host remote_user="jetson":
          grep -rn --include='*.py' -E 'FEEDBACK_MOTOR_IDS *=' /home/jetson 2>/dev/null | grep -v -E '/(build|install|\.cache)/' ; \
          echo '--- where the list is used:'; \
          grep -rn --include='*.py' 'FEEDBACK_MOTOR_IDS' /home/jetson 2>/dev/null | grep -v -E '/(build|install|\.cache)/' | grep -v -E 'FEEDBACK_MOTOR_IDS *=' | head -10; \
-         echo '--- the feedback loop:'; f=/home/jetson/projects/jetrover-teleop-ros/src/jetrover_arm_control/jetrover_arm_control/robot_controller_node.py; \
+         echo '--- the feedback loop:'; r=/home/jetson/teleop_ros_current; [ -d \$r/src ] || r=/home/jetson/projects/jetrover-teleop-ros; f=\$r/src/jetrover_arm_control/jetrover_arm_control/robot_controller_node.py; \
          n=\$(grep -n 'for motor_id in FEEDBACK_MOTOR_IDS' \$f | head -1 | cut -d: -f1); [ -n \"\$n\" ] && sed -n \"\$((n-12)),\$((n+25))p\" \$f; \
          echo '--- relay_node.py, where feedback ids are tracked:'; \\
-         grep -n -E 'StaleTracked|motor_id|FEEDBACK|_ids|MOTOR' \$(ls /home/jetson/projects/jetrover-teleop-ros/src/*/*/relay_node.py 2>/dev/null | head -1) | head -30"
+         grep -n -E 'StaleTracked|motor_id|FEEDBACK|_ids|MOTOR' \$(ls \$r/src/*/*/relay_node.py 2>/dev/null | head -1) | head -30"
 
-# Set which servo ids the Jetson's relay reads feedback from (FEEDBACK_MOTOR_IDS, see robot-feedback-ids), rebuild jetrover_arm_control and restart jetrover-arm-control. Adds motors 5 (wrist roll) and 10 (gripper) by default so they are measured like the arm. Edits the Jetson's working copy only (it is not pushed anywhere) and keeps a .bak; restarting the controller interrupts the arm, so someone must be at the robot
-robot-set-feedback-ids ids="1, 2, 3, 4, 5, 10" remote_host=default_jetrover_host remote_user="jetson":
+# Read-only: the Jetson's git checkout of the ROS code (~/projects/jetrover-teleop-ros): its branch and remote, how it compares with GitHub, uncommitted changes in full, and untracked files. Fetches, never pulls or resets
+robot-ros-status remote_host=default_jetrover_host remote_user="jetson":
+    ssh -o StrictHostKeyChecking=accept-new "{{remote_user}}@$(just _robot-host "{{remote_host}}")" \
+        "cd /home/jetson/projects/jetrover-teleop-ros && git remote -v | head -2 && git status -sb | head -1 && \
+         (timeout 20 git fetch -q 2>&1 || echo 'fetch failed (offline?)') && echo '--- vs its upstream (behind / ahead):' && git rev-list --left-right --count @{u}...HEAD 2>&1 && \
+         echo '--- last commits:' && git log --oneline -5 && echo '--- uncommitted:' && git status --short && git diff && \
+         echo '--- untracked, outside build/install/log:' && git ls-files --others --exclude-standard | grep -v -E '^(build|install|log)/' | head -30"
+
+# Copy everything the Jetson's ROS checkout holds that GitHub may not, into <dest>: a git bundle of all its refs (commits never pushed included), the uncommitted diff against HEAD, and a tarball of its untracked source files (build/, install/ and log/ left out). How robot/ros/ was first imported (docs/adr/0019); also a backup. Writes only /tmp on the robot; changes nothing there
+robot-ros-fetch dest remote_host=default_jetrover_host remote_user="jetson":
     #!/usr/bin/env bash
     set -euo pipefail
-    case "{{ids}}" in *[!0-9,\ ]*|"") echo "error: ids must be a comma-separated list of motor ids, got '{{ids}}'" >&2; exit 1 ;; esac
     host=$(just _robot-host "{{remote_host}}")
+    mkdir -p "{{dest}}"
     ssh -o StrictHostKeyChecking=accept-new "{{remote_user}}@$host" "
-        set -e
-        cd /home/jetson/projects/jetrover-teleop-ros
-        f=src/jetrover_arm_control/jetrover_arm_control/robot_controller_node.py
-        grep -q -E '^FEEDBACK_MOTOR_IDS *= *\[' \$f || { echo 'error: FEEDBACK_MOTOR_IDS line not found in '\$f >&2; exit 1; }
-        cp \$f \$f.bak
-        sed -i -E 's/^FEEDBACK_MOTOR_IDS *= *\[.*\]/FEEDBACK_MOTOR_IDS = [{{ids}}]/' \$f
-        echo '--- now:'; grep -n -E '^FEEDBACK_MOTOR_IDS' \$f
-        source /opt/ros/foxy/setup.bash
-        colcon build --packages-select jetrover_arm_control 2>&1 | tail -3
-        sudo systemctl restart jetrover-arm-control
-        sleep 3
-        systemctl status jetrover-arm-control --no-pager -n 5
+        set -e; cd /home/jetson/projects/jetrover-teleop-ros
+        echo \"branch: \$(git rev-parse --abbrev-ref HEAD)  HEAD: \$(git rev-parse HEAD)\"
+        git bundle create /tmp/ros-import.bundle --all 2>&1 | tail -1
+        git diff HEAD > /tmp/ros-import-worktree.diff
+        git ls-files --others --exclude-standard | grep -v -E '^(build|install|log)/' > /tmp/ros-import-untracked.txt || true
+        tar czf /tmp/ros-import-untracked.tgz -T /tmp/ros-import-untracked.txt
+        echo \"uncommitted diff: \$(wc -l < /tmp/ros-import-worktree.diff) lines; untracked files: \$(wc -l < /tmp/ros-import-untracked.txt)\"
     "
-    echo "Check it with: just joint-probe (motors {{ids}} should read 'sensed yes')"
+    scp -q -o StrictHostKeyChecking=accept-new "{{remote_user}}@$host:/tmp/ros-import.bundle" "{{remote_user}}@$host:/tmp/ros-import-worktree.diff" \
+        "{{remote_user}}@$host:/tmp/ros-import-untracked.txt" "{{remote_user}}@$host:/tmp/ros-import-untracked.tgz" "{{dest}}/"
+    ls -la "{{dest}}"
 
 # Read-only: what the Hiwonder controller board can be told to do. Finds the board library jetrover-arm-control uses (its set_buzzer, board commands and function codes) and lists every function, plus anything about the buzzer, battery or alarm. Nothing is sent to the board
 robot-board-commands remote_host=default_jetrover_host remote_user="jetson":
@@ -434,14 +438,52 @@ restart-arm-driver remote_host=default_jetrover_host remote_user="jetson":
 # Read-only: the battery reading jetrover-arm-control publishes (millivolts, from the Hiwonder board), plus the Jetson's own supply rails. A continuous beep from the robot is usually the board's low-battery alarm: check this first
 robot-battery remote_host=default_jetrover_host remote_user="jetson":
     ssh -o StrictHostKeyChecking=accept-new "{{remote_user}}@$(just _robot-host "{{remote_host}}")" \
-        "f=/home/jetson/projects/jetrover-teleop-ros/src/jetrover_arm_control/jetrover_arm_control/robot_controller_node.py; \
+        "r=/home/jetson/teleop_ros_current; [ -d \$r/src ] || r=/home/jetson/projects/jetrover-teleop-ros; f=\$r/src/jetrover_arm_control/jetrover_arm_control/robot_controller_node.py; \
          topic=\$(grep -o -E \"create_publisher\\(Int32, *['\\\"][^'\\\"]+\" \$f | head -1 | sed -E \"s/.*['\\\"]//\"); \
-         echo \"battery topic: \${topic:-not found}\"; grep -n -E 'create_timer|def getBattery|getBattery\\(' \$f /home/jetson/projects/jetrover-teleop-ros/src/jetrover_arm_control/jetrover_arm_control/*.py 2>/dev/null | grep -i -E 'batter|timer' | head -6; \
+         echo \"battery topic: \${topic:-not found}\"; grep -n -E 'create_timer|def getBattery|getBattery\\(' \$f \$r/src/jetrover_arm_control/jetrover_arm_control/*.py 2>/dev/null | grep -i -E 'batter|timer' | head -6; \
          source /opt/ros/foxy/setup.bash; export ROS_LOCALHOST_ONLY=1; \
          echo '--- battery messages for 6 s (published every 5 s; none means the board did not answer, or ROS discovery was too slow):'; [ -n \"\$topic\" ] && (timeout 6 ros2 topic echo \"\$topic\" 2>&1 | head -4); \
          echo '--- Jetson supply (mV, mA):'; for d in /sys/bus/i2c/drivers/ina3221x/*/iio:device*; do \
            for c in 0 1 2; do n=\$(cat \$d/rail_name_\$c 2>/dev/null) && echo \"\$n: \$(cat \$d/in_voltage\${c}_input 2>/dev/null) mV, \$(cat \$d/in_current\${c}_input 2>/dev/null) mA\"; done; done; true"
 
+# Build the ROS 2 workspace in robot/ros/ on the Jetson and switch the two ROS services to it (docs/adr/0019): copies the sources to a new ~/teleop_ros_deploy_<time>/, builds it there with colcon, then points ~/teleop_ros_current at it, installs robot/systemd's two ROS units (they source ~/teleop_ros_current) and restarts them. activate=false only uploads and builds, touching nothing that runs. Restarting interrupts the arm (the shoulder may sag), so someone must be at the robot. Roll back by pointing ~/teleop_ros_current at an earlier deploy and restarting the two services
+deploy-ros activate="true" remote_host=default_jetrover_host remote_user="jetson":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    case "{{activate}}" in true|false) ;; *) echo "error: activate must be true or false, got '{{activate}}'" >&2; exit 1 ;; esac
+    host=$(just _robot-host "{{remote_host}}")
+    target="{{remote_user}}@$host"
+    case "$host" in *:*) scp_dest="{{remote_user}}@[$host]" ;; *) scp_dest="$target" ;; esac
+    remote_dir="teleop_ros_deploy_$(date +%Y%m%d-%H%M%S)"
+    archive=$(mktemp -u --suffix=.tar.gz)
+    trap 'rm -f "$archive"' EXIT
+    tar czf "$archive" -C robot/ros --exclude=build --exclude=install --exclude=log --exclude='__pycache__' .
+    scp -q -o StrictHostKeyChecking=accept-new "$archive" "${scp_dest}:/tmp/${remote_dir}.tar.gz"
+    scp -q -o StrictHostKeyChecking=accept-new robot/systemd/jetrover-relay.service robot/systemd/jetrover-arm-control.service "${scp_dest}:/tmp/"
+    echo "Building in ~/${remote_dir} (a few minutes on the Jetson)..." >&2
+    ssh -o StrictHostKeyChecking=accept-new "$target" "
+        set -e
+        mkdir -p ~/${remote_dir} && tar xzf /tmp/${remote_dir}.tar.gz -C ~/${remote_dir} && rm -f /tmp/${remote_dir}.tar.gz
+        cd ~/${remote_dir} && source /opt/ros/foxy/setup.bash && colcon build 2>&1 | tail -4
+        test -f ~/${remote_dir}/install/setup.bash
+    "
+    if [ "{{activate}}" != "true" ]; then
+        echo "Built ~/${remote_dir}; nothing running was changed. Activate it with: just deploy-ros"
+        exit 0
+    fi
+    ssh -o StrictHostKeyChecking=accept-new "$target" "
+        set -e
+        ln -sfn ~/${remote_dir} ~/teleop_ros_current
+        sudo cp /tmp/jetrover-relay.service /tmp/jetrover-arm-control.service /etc/systemd/system/
+        rm -f /tmp/jetrover-relay.service /tmp/jetrover-arm-control.service
+        sudo systemctl daemon-reload
+        sudo systemctl restart jetrover-arm-control jetrover-relay
+        sleep 6
+        systemctl status jetrover-arm-control jetrover-relay --no-pager -n 4
+    "
+    just ros-check 4
+
+# Print systemctl status for the Jetson-side services (teleop-robothost, jetrover-relay, jetrover-arm-control) in one shot -- see robot/systemd/README.md
 robot-status remote_host=default_jetrover_host remote_user="jetson":
     ssh -o StrictHostKeyChecking=accept-new "{{remote_user}}@$(just _robot-host "{{remote_host}}")" \
         "systemctl status teleop-robothost jetrover-relay jetrover-arm-control --no-pager -n 5"

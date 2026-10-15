@@ -1,47 +1,74 @@
 # robot/
 
-Documentation only — no colcon workspace lives here. The root `CLAUDE.md` directory table's
-promise that `robot/` "does not interact with the above builds" is kept literally: the actual
-ROS 2 code for the physical JetRover lives in its own repo, built and run on the Jetson, never
-referenced by `core/`'s or `unity/`'s build.
+Everything that runs on the JetRover's Jetson that is not .NET:
 
-## Where the real code lives
+| Path | What |
+|---|---|
+| `ros/` | the ROS 2 (Foxy) colcon workspace: `jetrover_arm_control` (the Hiwonder board's serial protocol, the servo bus, the battery) and `teleop_relay` (the bridge to RobotHost) |
+| `systemd/` | the Jetson's four services, and how to install them |
 
-**[`jetrover-teleop-ros`](https://github.com/andreitimoshukcollege-del/jetrover-teleop-ros)** —
-a ROS 2 (Foxy) colcon workspace with one package, `jetrover_arm_control`, wrapping the Hiwonder
-JetRover's STM32 board serial protocol and exposing its 4-DOF arm + gripper as ROS topics. Ported
-and trimmed from `SINRG-Lab/industryxr-robot`'s `sinrg_robot_sdk` — see that repo's README for
-what was kept and what was left behind (camera/perception code, `ros_tcp_endpoint`, etc.).
+`ros/` came in from the separate
+[`jetrover-teleop-ros`](https://github.com/andreitimoshukcollege-del/jetrover-teleop-ros) repository
+on 2026-10-15, with its history (docs/adr/0019). It was imported from the Jetson's own checkout,
+because that was the copy that ran: the ROS side of ADR 0011 and later settings had never been
+pushed. The old repository is left as it was. This directory is now the source of truth.
 
-Runs on the JetRover's Jetson Nano, reachable over Tailscale.
+The workspace was ported and trimmed from `SINRG-Lab/industryxr-robot`'s `sinrg_robot_sdk`; that
+repository's README says what was kept and what was left behind. Every repository involved is
+public and MIT-licensed, including the Hiwonder board library inside `jetrover_arm_control`.
 
-## How it connects to this repo
+Nothing in `core/` or `unity/` builds or references `ros/`. They meet only at the relay's wire
+format.
+
+## Deploying
+
+```bash
+just deploy-ros activate=false   # copy to the Jetson and build there; nothing running changes
+just deploy-ros                  # ...then switch the two ROS services to it and restart them
+```
+
+Each deploy builds into a new `~/teleop_ros_deploy_<time>/`, and `~/teleop_ros_current` points at
+the active one. The services source `~/teleop_ros_current/install/setup.bash`. Rolling back is
+repointing that link and restarting `jetrover-arm-control` and `jetrover-relay`.
+
+**Restarting the servo driver interrupts the arm** (the shoulder has sagged during a restart), so
+someone must be at the robot. Before the first `deploy-ros`, the Jetson ran the old checkout at
+`~/projects/jetrover-teleop-ros`, which stays there untouched as a fallback.
+
+Read-only checks:
+- `just robot-status`: the services;
+- `just ros-check`: is the board answering the driver;
+- `just robot-feedback-ids`: which servos report position;
+- `just robot-battery`: battery voltage;
+- `just robot-board-commands`: what the board accepts.
+
+## How it connects to the rest of the repo
 
 `IRobotPlant` (`core/Teleop.Core/Contracts/IRobotPlant.cs`) is Core's contract for "the robot
 being commanded." A real hardware implementation, `GenericArmPlant` (originally `JetRoverPlant`,
 generalized to a configurable `RobotArmProfile` by docs/adr/0011-generic-robot-arm-profiles.md —
 the "Status" log below still says `JetRoverPlant` where that was the correct name at the time),
-lives in a new sibling .NET project, `core/Teleop.RobotHost/` — **not** in `unity/`'s `Bridge/`
-and **not** in this directory. See `docs/adr/0007-jetrover-plant-and-robot-host.md` for the
-original architecture and why, and `docs/adr/0011` for the later generalization.
+lives in `core/Teleop.RobotHost/`, **not** in `unity/`'s `Bridge/` and **not** in this directory.
+See `docs/adr/0007-jetrover-plant-and-robot-host.md` for the original architecture and why, and
+`docs/adr/0011` for the later generalization.
 
 ```
-Teleop.RobotHost (on the Jetson)          jetrover-teleop-ros (on the Jetson)
-  UdpTransport : ITransport   <-- real UDP over Tailscale, from the operator side
-  RobotEndpoint (Core, unmodified)
+Teleop.RobotHost (on the Jetson)                    robot/ros (on the Jetson)
+  UdpTransport : ITransport   <-- UDP from the operator (LAN, or Tailscale)
+  RobotEndpoint (Core, unmodified), joint-command and joint-state ports
   GenericArmPlant : IRobotPlant
       |
-      | Unix domain socket, local only, tiny fixed struct (Relay/RelayProtocol.cs /
-      | teleop_relay/relay_protocol.py -- must match exactly, kept in sync by hand)
+      | Unix domain socket, local only (Relay/RelayProtocol.cs here, and
+      | ros/src/teleop_relay/teleop_relay/relay_protocol.py -- must match exactly; change both in one PR)
       v
-  teleop_relay (ROS 2 node) ──────────────────────────────────────────>  jetrover_arm_control
-                                                                          (base/lower/middle/upper
-                                                                           joints + gripper)
+  teleop_relay (ROS 2 node) ──────────────────────────────────────>  jetrover_arm_control
+                                                                      (per-motor targets and feedback:
+                                                                       base, shoulder, elbow, wrist,
+                                                                       wrist roll, gripper)
 ```
 
-`teleop_relay` is a real, working ROS 2 package in `jetrover-teleop-ros` (not planned anymore) --
-a thin node with no staleness/sequencing/gap-policy logic of its own, translating the local wire
-protocol above into calls against `jetrover_arm_control`'s existing topics.
+`teleop_relay` is a thin node with no staleness, sequencing or gap-policy logic of its own. It
+translates the local wire protocol above into calls against `jetrover_arm_control`'s topics.
 
 ## Status
 
@@ -258,3 +285,26 @@ protocol above into calls against `jetrover_arm_control`'s existing topics.
   - Three real hardware strain incidents happened across this session's `move-arm` work, each
     resolved with a manual corrective command (`ros2 topic pub` directly to `/arm/servo/joint/lower`)
     confirmed by the operator watching the hardware before continuing. No damage occurred.
+
+### 2026-10 (Galaxy XR sessions)
+
+- **A rebooted headset froze the arm, silently.** RobotHost dropped every joint command whose
+  capture stamp was not newer than the last one it had accepted. The stamps are the operator's own
+  clock, which restarts near zero at a reboot. So after the Galaxy XR rebooted, every command was
+  "stale" until RobotHost restarted. The camera and the joint-state stream kept working, which made
+  it look like a connection problem. Fixed: a new sender address restarts the check
+  (`GenericArmPlant.RestartJointCommandOrdering`).
+- **A low battery looks like a software fault.** At 9.25 V (3-cell pack, full is 12.6 V):
+  - the servo board stopped answering, so the arm ignored commands and the joint values froze;
+  - no battery readings came back;
+  - the camera kept dropping off USB, 31 reopens;
+  - the board's alarm beeped, even on the charger, because the robot running draws more than the
+    charger supplies.
+
+  Charge it switched off. The voltage also sagged steadily under use, so the pack may be worn.
+- **`/robot/buzzer` crashes the servo driver.** Its handler, `robot_val.py`'s `setBuzzerCbk(self)`,
+  takes no message argument, so any message raises a `TypeError` and `jetrover-arm-control` exits
+  (systemd restarts it 2 s later). Even when called, it only plays one short beep: there is no
+  setting that mutes the low-battery alarm, which is the board firmware's. Fixed in `ros/` on import.
+- **Motor ids:** motor 5 is the wrist roll and motor 10 the gripper. Motors 1–5 report position.
+  Motor 10 moves but never answers position reads, so the gripper is always a commanded belief.

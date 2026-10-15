@@ -50,7 +50,7 @@ namespace Teleop.Bridge
         // which is the actual hard ceiling on this path: sending faster than that cannot be
         // noticed any sooner on the Jetson side, so this is close to the practical maximum this
         // knob alone can deliver. Breaking past 50Hz for real would mean raising
-        // _COMMAND_POLL_PERIOD_SECONDS itself, on the Jetson's separate jetrover-teleop-ros repo --
+        // _COMMAND_POLL_PERIOD_SECONDS itself, in robot/ros (docs/adr/0019) --
         // not done here, a bigger cross-repo change that needs its own explicit go-ahead. Watch
         // the next real-hardware pass for jerkiness/buzzing/strain; fall back toward 40.0/20.0 if
         // it shows any of that.

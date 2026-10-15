@@ -400,9 +400,22 @@ robot-feedback-ids remote_host=default_jetrover_host remote_user="jetson":
 robot-ros-status remote_host=default_jetrover_host remote_user="jetson":
     ssh -o StrictHostKeyChecking=accept-new "{{remote_user}}@$(just _robot-host "{{remote_host}}")" \
         "cd /home/jetson/projects/jetrover-teleop-ros && git remote -v | head -2 && git status -sb | head -1 && \
-         (timeout 20 git fetch -q 2>&1 || echo 'fetch failed (offline?)') && echo '--- vs its upstream (behind / ahead):' && git rev-list --left-right --count @{u}...HEAD 2>&1 && \
+         (timeout 20 git fetch -q 2>&1 || echo 'fetch failed (offline?)') && echo '--- vs its upstream (behind / ahead):' && (git rev-list --left-right --count @{u}...HEAD 2>/dev/null || echo 'no upstream: this branch was never pushed') && \
          echo '--- last commits:' && git log --oneline -5 && echo '--- uncommitted:' && git status --short && git diff && \
          echo '--- untracked, outside build/install/log:' && git ls-files --others --exclude-standard | grep -v -E '^(build|install|log)/' | head -30"
+
+# Read-only: is the ROS code on the Jetson the same as robot/ros/? Compares a checksum of every source file under robot/ros/src (build output, caches and .bak files left out) with the Jetson's active copy (~/teleop_ros_current, or the old checkout before the first deploy-ros). Prints only the files that differ or exist on one side, then a verdict
+robot-ros-diff remote_host=default_jetrover_host remote_user="jetson":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    host=$(just _robot-host "{{remote_host}}")
+    filter='/(build|install|log|__pycache__|\.pytest_cache)/|\.pyc$|\.bak$'
+    here=$(cd robot/ros && find src -type f | grep -v -E "$filter" | sort | xargs sha256sum)
+    there=$(ssh -o StrictHostKeyChecking=accept-new "{{remote_user}}@$host" \
+        "r=/home/jetson/teleop_ros_current; [ -d \$r/src ] || r=/home/jetson/projects/jetrover-teleop-ros; echo \"# \$r\" >&2; \
+         cd \$r && find src -type f | grep -v -E '$filter' | sort | xargs sha256sum")
+    d=$(diff <(echo "$here") <(echo "$there") || true)
+    if [ -z "$d" ]; then echo "robot/ros/src matches the Jetson: $(echo "$here" | wc -l) files"; else echo "$d" | sed 's/^</  repo  /; s/^>/  robot /' | grep -E '^  (repo|robot)'; echo "DIFFERS"; exit 1; fi
 
 # Copy everything the Jetson's ROS checkout holds that GitHub may not, into <dest>: a git bundle of all its refs (commits never pushed included), the uncommitted diff against HEAD, and a tarball of its untracked source files (build/, install/ and log/ left out). How robot/ros/ was first imported (docs/adr/0019); also a backup. Writes only /tmp on the robot; changes nothing there
 robot-ros-fetch dest remote_host=default_jetrover_host remote_user="jetson":
@@ -446,7 +459,7 @@ robot-battery remote_host=default_jetrover_host remote_user="jetson":
          echo '--- Jetson supply (mV, mA):'; for d in /sys/bus/i2c/drivers/ina3221x/*/iio:device*; do \
            for c in 0 1 2; do n=\$(cat \$d/rail_name_\$c 2>/dev/null) && echo \"\$n: \$(cat \$d/in_voltage\${c}_input 2>/dev/null) mV, \$(cat \$d/in_current\${c}_input 2>/dev/null) mA\"; done; done; true"
 
-# Build the ROS 2 workspace in robot/ros/ on the Jetson and switch the two ROS services to it (docs/adr/0019): copies the sources to a new ~/teleop_ros_deploy_<time>/, builds it there with colcon, then points ~/teleop_ros_current at it, installs robot/systemd's two ROS units (they source ~/teleop_ros_current) and restarts them. activate=false only uploads and builds, touching nothing that runs. Restarting interrupts the arm (the shoulder may sag), so someone must be at the robot. Roll back by pointing ~/teleop_ros_current at an earlier deploy and restarting the two services
+# Build the ROS 2 workspace in robot/ros/ on the Jetson and switch the two ROS services to it (docs/adr/0019): copies the sources to a new ~/teleop_ros_deploy_<time>/, builds it there with colcon, runs its plain-Python tests there, then points ~/teleop_ros_current at it, installs robot/systemd's two ROS units (they source ~/teleop_ros_current) and restarts them. activate=false only uploads and builds, touching nothing that runs. Restarting interrupts the arm (the shoulder may sag), so someone must be at the robot. Roll back by pointing ~/teleop_ros_current at an earlier deploy and restarting the two services
 deploy-ros activate="true" remote_host=default_jetrover_host remote_user="jetson":
     #!/usr/bin/env bash
     set -euo pipefail
@@ -466,6 +479,11 @@ deploy-ros activate="true" remote_host=default_jetrover_host remote_user="jetson
         mkdir -p ~/${remote_dir} && tar xzf /tmp/${remote_dir}.tar.gz -C ~/${remote_dir} && rm -f /tmp/${remote_dir}.tar.gz
         cd ~/${remote_dir} && source /opt/ros/foxy/setup.bash && colcon build 2>&1 | tail -4
         test -f ~/${remote_dir}/install/setup.bash
+        echo '--- the plain-Python tests (relay protocol, stale tracking, servo controller):'
+        PYTHONPATH=src/teleop_relay:src/jetrover_arm_control python3 -m pytest -q -p no:cacheprovider \
+            src/teleop_relay/test/test_relay_protocol.py src/teleop_relay/test/test_stale_tracked_value.py \
+            src/jetrover_arm_control/test/test_servo_controller.py 2>&1 | tail -6
+        exit \${PIPESTATUS[0]}
     "
     if [ "{{activate}}" != "true" ]; then
         echo "Built ~/${remote_dir}; nothing running was changed. Activate it with: just deploy-ros"

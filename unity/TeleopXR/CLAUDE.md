@@ -95,9 +95,10 @@ Contents:
 - **The twin's three arms (docs/adr/0018), built by the same `XrControlSetup`:**
   - **Predicted, solid** (`PredictedArm`): where the robot most likely is right now. It is the
     newest joint-state frame from the robot, rolled forward by the joint predictor through the
-    commands sent since. `JointPredictorName` is `servo-replay` (default) or `hold-last` (no
-    prediction). `JointModelSpeedRadPerSec` is the servo speed the model assumes, a guess until
-    it is fitted from recordings.
+    commands sent since. `JointPredictorName` is `relay-replay` (default since 2026-10-20: it
+    models the relay's paced servo writes, and `JointReadingAge*` says how much older than its
+    stamp each motor's reading is), `servo-replay` (the earlier model; it snapped back on every
+    fresh reading) or `hold-last` (no prediction).
   - **Commanded, ghost**: the clutch's arm, where you told it to go.
   - **Measured, faint amber** (`MeasuredArm`): the newest frame exactly as received, about one
     network trip old.

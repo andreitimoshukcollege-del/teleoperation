@@ -38,6 +38,14 @@ class ServoController:
     real hardware pacing (the STM32 firmware paces the physical move itself via the commanded
     duration, so a new command arriving before the previous one's move has finished is coalesced
     rather than queued) and predates this class's belief-tracking history entirely.
+
+    Coalesced means the newest target wins (2026-10-20). A command that arrives during the
+    cooldown is kept as that servo's pending target, replacing any older one, and
+    `flushPending()` writes it once the cooldown has expired. Before, it was dropped. On the
+    single-threaded executor, commands are handled in bursts between feedback polls, so the
+    first command of each burst, the oldest, was the one written; the target the servo chased
+    was up to a poll cycle stale, and a final correction inside the cooldown was lost
+    (robot/README.md has the earlier incident).
     """
 
     def __init__(self, boardMgr: BoardManager):
@@ -53,6 +61,8 @@ class ServoController:
         # the next real write for that servo is due.
         self._lastSentPulse = {}
         self._nextAllowedWriteAt = {}
+        # The newest target that arrived during a servo's cooldown: servoID -> (pulse, speed).
+        self._pending = {}
 
         # Hardcoded motor ids for this JetRover's bulk diagnostic reads (temp/volt/torque) only --
         # servo_id_enum.SERVO_ENUM is gone (docs/adr/0011: motor ids now arrive directly on the
@@ -77,15 +87,33 @@ class ServoController:
             pulses_per_second (float) - this move's speed; must be > 0
         """
         now = time.monotonic()
-        if now < self._nextAllowedWriteAt.get(servoID, 0.0):
-            # Still cooling down from this servo's last real move -- coalesces a burst of
-            # commands into one physical move instead of blocking the ROS executor on a
-            # redundant serial round trip for each one. See class doc.
-            return
-
         nextPos = int(direction)
         nextPos = 0 if nextPos < 0 else 1000 if nextPos > 1000 else nextPos
+        if now < self._nextAllowedWriteAt.get(servoID, 0.0):
+            # Still cooling down from this servo's last real move: keep it as the pending target,
+            # newest wins, for flushPending to write when the cooldown ends. See class doc.
+            self._pending[servoID] = (nextPos, pulses_per_second)
+            return
 
+        self._pending.pop(servoID, None)
+        self._write(servoID, nextPos, pulses_per_second, now)
+
+    def flushPending(self):
+        """Writes every pending target whose servo's cooldown has expired. Cheap when nothing is
+        pending; robot_controller_node.py calls it between feedback reads, since on the
+        single-threaded executor no command callback runs while the feedback poll does."""
+        if not self._pending:
+            return
+
+        now = time.monotonic()
+        for servoID in list(self._pending):
+            if now < self._nextAllowedWriteAt.get(servoID, 0.0):
+                continue
+            nextPos, pulses_per_second = self._pending.pop(servoID)
+            self._write(servoID, nextPos, pulses_per_second, now)
+
+    def _write(self, servoID: int, nextPos: int, pulses_per_second: float, now: float):
+        """One physical move, unless it is within the write gate of what was last sent."""
         lastSent = self._lastSentPulse.get(servoID)
         if lastSent is not None and abs(nextPos - lastSent) < MIN_MEANINGFUL_PULSE_DELTA:
             # Not a correctness concern (see MIN_MEANINGFUL_PULSE_DELTA's own comment) -- just
@@ -107,6 +135,8 @@ class ServoController:
         self._nextAllowedWriteAt[servoID] = now + duration
 
     def resetArm(self):
+        # A reset overrides whatever was still waiting to be written.
+        self._pending.clear()
 
         self.board.bus_servo_set_position(1, ((10, 500), (5, 500), (4, 500 ), (3, 500), (2, 500), (1, 500)))
         sleep(0.02)

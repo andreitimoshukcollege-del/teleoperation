@@ -169,6 +169,25 @@ simulated benchmark row exists.
   - RobotHost caps it at its deployed maximum and uses it for both command paths.
   - `ICommandAwarePredictor.ObserveCommand` receives the same speed.
 
+### 7. Amendment (2026-10-20): the predicted arm snapped back 20 times a second
+
+- **What the headset showed:** with `servo-replay`, the predicted arm jittered while the arm moved.
+- **Why:** the relay does not obey each command at once. A servo is written only when its last move
+  (at least 50 ms) has finished, and the feedback readings are 5 to 45 ms older than their frame's
+  stamp (motors are read one after another). `servo-replay` ran ahead of the arm, and each fresh
+  reading pulled it back. `joint-predict-bench --robot relay` reproduces it: on `lan`, correction
+  p95 3.7°, max 14°.
+- **Two changes:**
+  - **The relay keeps the newest command.** A command that arrived during a servo's cooldown was
+    dropped, so of each burst the executor handled between feedback polls, the oldest was the one
+    written. It is now kept as the pending target, newest wins, and written between feedback reads
+    once the cooldown ends (`servo_controller.py`, `flushPending`).
+  - **A new predictor, `relay-replay`, is the headset default.** It replays the commands through a
+    model of that gate, and takes each motor's reading as older than its stamp. Under the same
+    bench it gives correction p95 0.35°.
+- **Still no joint-space reconciler.** The question moves to recordings: whether what remains on the
+  robot needs one.
+
 ## Consequences
 
 - **RobotHost must be redeployed** (`just deploy-robothost`). An older RobotHost ignores the

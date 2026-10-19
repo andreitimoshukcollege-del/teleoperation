@@ -277,6 +277,29 @@ for an `ICommandAwarePredictor`.
   interpolated between frames. It is computed offline from the `jetrover-joints-*.csv`
   recordings, never on the headset.
 
+**`joint_correction_deg`** (docs/adr/0018): the joint-space correction cost of an
+`ICommandAwarePredictor`, in degrees: how far the predicted arm jumps when a measurement arrives.
+Report it alongside `joint_prediction_error_deg`, always (§8 rule 2).
+- **Definition:** at each `ObserveState` that brings a new measurement, at the instant *t* it is
+  observed, the absolute difference per arm joint between `TryPredict(t)` immediately before
+  and immediately after the observation, pooled over the arm joints. Grippers are excluded, as
+  above. "Brings a new measurement" means the frame's sensed stamp is later than that of every
+  frame observed before it. Frames that repeat an earlier stamp are excluded, and so are
+  out-of-order frames, which the predictor rejects. Both would only add zeros. A reading that
+  repeats the previous values under a new stamp still counts, because the predictor re-anchors
+  on it.
+- **Reporting:** percentiles (p50/p95/p99/max), never a mean. It is a per-event magnitude, not a
+  rate: the measured arm's update rate sets how often it happens.
+- **Not the same as `correction_magnitude_*`** (§5): there is no reconciler in the joint-space
+  path, so this is the jump the operator would see, undamped. It is the joint-space counterpart
+  of predicted-at-capture minus authoritative, taken at the arrival instant rather than at the
+  capture time.
+- **In the benchmark:** `Teleop.Eval joint-predict-bench` reports it next to the error, after the
+  same 1 s warm-up, under the same stated simulation.
+- **On real sessions:** not yet computed. It needs both predictions at each arrival, so either a
+  replay of the recorded commands and frames through the predictor, offline, or a headset log
+  of both values.
+
 ## 5. Correction cost
 
 The counterweight to prediction accuracy, and the reason accuracy alone is never a result.

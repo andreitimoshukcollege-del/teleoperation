@@ -207,10 +207,9 @@ def test_a_change_below_the_write_gate_threshold_does_not_write(monkeypatch):
     assert len(board.written) == 1
 
 
-def test_cooldown_suppresses_a_second_setpos_within_the_window(monkeypatch):
-    """Calling setPos again before the servo's cooldown expires is a no-op: no write at all --
-    the safe coalesce fix-servo-command-rate-loss relies on. Unrelated to and unaffected by the
-    wire v3/v4 belief-removal or constant-speed changes."""
+def test_cooldown_defers_a_second_setpos_within_the_window(monkeypatch):
+    """Calling setPos again before the servo's cooldown expires writes nothing yet -- the
+    coalesce fix-servo-command-rate-loss relies on. The target is kept for flushPending."""
     board = StubBoard()
     controller, clock = make_controller(monkeypatch, board)
 
@@ -243,3 +242,100 @@ def test_getRawPos_has_no_effect_on_setPos_write_gating_or_duration(monkeypatch)
     # gated.
     controller.setPos(servoID=SERVO_ID, direction=503, pulses_per_second=PULSES_PER_SECOND)
     assert len(board.written) == 1
+
+
+def test_flush_writes_the_pending_target_once_the_cooldown_ends(monkeypatch):
+    board = StubBoard()
+    controller, clock = make_controller(monkeypatch, board)
+
+    controller.setPos(servoID=SERVO_ID, direction=500, pulses_per_second=PULSES_PER_SECOND)  # cooldown 0.05s
+    clock.now += 0.01
+    controller.setPos(servoID=SERVO_ID, direction=530, pulses_per_second=PULSES_PER_SECOND)
+    controller.flushPending()
+    assert len(board.written) == 1  # still cooling down
+
+    clock.now += 0.05
+    controller.flushPending()
+    assert board.written[-1] == (pytest.approx(30 / PULSES_PER_SECOND), [[SERVO_ID, 530]])
+
+    controller.flushPending()
+    assert len(board.written) == 2  # written once, not again
+
+
+def test_the_newest_command_in_a_cooldown_wins(monkeypatch):
+    """On the single-threaded executor commands arrive in bursts; the servo must chase the
+    newest of them, not the first."""
+    board = StubBoard()
+    controller, clock = make_controller(monkeypatch, board)
+
+    controller.setPos(servoID=SERVO_ID, direction=500, pulses_per_second=PULSES_PER_SECOND)
+    clock.now += 0.01
+    for target in (510, 520, 540):
+        controller.setPos(servoID=SERVO_ID, direction=target, pulses_per_second=PULSES_PER_SECOND)
+
+    clock.now += 0.05
+    controller.flushPending()
+    assert [positions for _, positions in board.written] == [
+        [[SERVO_ID, 500]],
+        [[SERVO_ID, 540]],
+    ]
+
+
+def test_a_direct_write_supersedes_the_pending_target(monkeypatch):
+    board = StubBoard()
+    controller, clock = make_controller(monkeypatch, board)
+
+    controller.setPos(servoID=SERVO_ID, direction=500, pulses_per_second=PULSES_PER_SECOND)
+    clock.now += 0.01
+    controller.setPos(servoID=SERVO_ID, direction=520, pulses_per_second=PULSES_PER_SECOND)  # pending
+    clock.now += 0.05
+    controller.setPos(servoID=SERVO_ID, direction=560, pulses_per_second=PULSES_PER_SECOND)  # cooldown over: written
+    clock.now += 10.0
+    controller.flushPending()
+
+    assert [positions for _, positions in board.written] == [
+        [[SERVO_ID, 500]],
+        [[SERVO_ID, 560]],
+    ]
+
+
+def test_pending_targets_are_per_servo(monkeypatch):
+    board = StubBoard()
+    controller, clock = make_controller(monkeypatch, board)
+
+    controller.setPos(servoID=1, direction=500, pulses_per_second=PULSES_PER_SECOND)
+    controller.setPos(servoID=2, direction=500, pulses_per_second=PULSES_PER_SECOND)
+    clock.now += 0.01
+    controller.setPos(servoID=1, direction=530, pulses_per_second=PULSES_PER_SECOND)
+    controller.setPos(servoID=2, direction=470, pulses_per_second=PULSES_PER_SECOND)
+    clock.now += 0.05
+    controller.flushPending()
+
+    assert sorted(positions[0][0:2] for _, positions in board.written[2:]) == [[1, 530], [2, 470]]
+
+
+def test_a_pending_target_within_the_write_gate_is_not_written(monkeypatch):
+    board = StubBoard()
+    controller, clock = make_controller(monkeypatch, board)
+
+    controller.setPos(servoID=SERVO_ID, direction=500, pulses_per_second=PULSES_PER_SECOND)
+    clock.now += 0.01
+    controller.setPos(servoID=SERVO_ID, direction=503, pulses_per_second=PULSES_PER_SECOND)
+    clock.now += 0.05
+    controller.flushPending()
+
+    assert len(board.written) == 1
+
+
+def test_reset_drops_pending_targets(monkeypatch):
+    board = StubBoard()
+    controller, clock = make_controller(monkeypatch, board)
+
+    controller.setPos(servoID=SERVO_ID, direction=500, pulses_per_second=PULSES_PER_SECOND)
+    clock.now += 0.01
+    controller.setPos(servoID=SERVO_ID, direction=600, pulses_per_second=PULSES_PER_SECOND)
+    controller.resetArm()
+    clock.now += 10.0
+    controller.flushPending()
+
+    assert all(positions != [[SERVO_ID, 600]] for _, positions in board.written)

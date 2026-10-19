@@ -337,17 +337,20 @@ namespace Teleop.Bridge
             _clockSync = new ClockSync(clockSyncConfig);
             // The joint-state downlink rides the joint socket: the robot streams to whoever last sent
             // on that port, so the keepalive must come from the same socket as the commands.
+            ReadingAges(_config, out byte[] readingAgeIds, out float[] readingAgeSeconds);
             try
             {
                 _jointStateLink = new JetRoverJointStateLink(_jointTransport, _clock, _profile, clockSyncConfig,
-                    _config.JointPredictorName, _config.JointModelSpeedRadPerSec, _config.MaxHorizonMs, _config.GripperFractionPerRadian);
+                    _config.JointPredictorName, _config.JointModelSpeedRadPerSec, _config.MaxHorizonMs, _config.GripperFractionPerRadian,
+                    readingAgeIds, readingAgeSeconds);
             }
             catch (ArgumentException e)
             {
                 // A mistyped predictor name must not take the command path down with it.
                 Debug.LogError($"[twin] {e.Message}; falling back to hold-last (no prediction)");
                 _jointStateLink = new JetRoverJointStateLink(_jointTransport, _clock, _profile, clockSyncConfig,
-                    "hold-last", _config.JointModelSpeedRadPerSec, _config.MaxHorizonMs, _config.GripperFractionPerRadian);
+                    "hold-last", _config.JointModelSpeedRadPerSec, _config.MaxHorizonMs, _config.GripperFractionPerRadian,
+                    readingAgeIds, readingAgeSeconds);
             }
             _predictor = predictorFactory(predictorConfig, _clock);
             _reconciler = reconcilerFactory(reconcilerConfig, _metricSink, _clock);
@@ -528,5 +531,27 @@ namespace Teleop.Bridge
         }
 
         private long MillisecondsToTicks(double ms) => (long)(ms / 1000.0 * _clock.TicksPerSecond);
+
+        /// <summary>The config's per-motor reading ages, as the predictor takes them. Mismatched lengths give none, with an error.</summary>
+        private static void ReadingAges(JetRoverArmConfig config, out byte[] ids, out float[] seconds)
+        {
+            int[] configIds = config.JointReadingAgeMotorIds ?? new int[0];
+            float[] configMs = config.JointReadingAgeMs ?? new float[0];
+            if (configIds.Length != configMs.Length)
+            {
+                Debug.LogError($"[twin] JointReadingAgeMotorIds has {configIds.Length} entries and JointReadingAgeMs {configMs.Length}; using no reading ages");
+                ids = new byte[0];
+                seconds = new float[0];
+                return;
+            }
+
+            ids = new byte[configIds.Length];
+            seconds = new float[configIds.Length];
+            for (int i = 0; i < configIds.Length; i++)
+            {
+                ids[i] = (byte)configIds[i];
+                seconds[i] = Math.Max(0f, configMs[i]) / 1000f;
+            }
+        }
     }
 }

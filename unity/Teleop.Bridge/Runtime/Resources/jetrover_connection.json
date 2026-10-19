@@ -35,7 +35,9 @@
   "GripperPinchClosedMeters": 0.015,
   "GripperRollSign": 1.0,
   "GripperRollLimitDegrees": 90.0,
-  "JointPredictorName": "servo-replay",
+  "JointPredictorName": "relay-replay",
   "JointModelSpeedRadPerSec": 6.0,
+  "JointReadingAgeMotorIds": [1, 2, 3, 4, 5],
+  "JointReadingAgeMs": [45.0, 35.0, 25.0, 15.0, 5.0],
   "GripperFractionPerRadian": 0.358
 }

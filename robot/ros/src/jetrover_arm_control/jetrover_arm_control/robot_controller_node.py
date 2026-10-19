@@ -88,10 +88,15 @@ class RobotController(Node):
         """
         readings = []
         for motor_id in FEEDBACK_MOTOR_IDS:
+            # A command callback cannot run during this poll (single-threaded executor), so write
+            # any target whose servo's cooldown has just ended here, between reads.
+            self.servoController.flushPending()
             pulse = self.servoController.getRawPos(motor_id)
             if pulse is None:
                 continue
             readings.append((motor_id, pulse))
+
+        self.servoController.flushPending()
 
         msg = Float32MultiArray()
         data = [float(len(readings))]

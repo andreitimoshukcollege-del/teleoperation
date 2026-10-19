@@ -148,13 +148,20 @@ namespace Teleop.Bridge
         public float GripperRollLimitDegrees = 90f;
 
         // The joint-state twin (docs/adr/0018): which Registries.JointPredictors entry predicts the
-        // robot's joints now (servo-replay, or hold-last for no prediction), and the servo speed its
-        // model allows at most, rad/s: the servo's own limit. Each command is replayed at the speed it
-        // asked for (the headset's speed slider), capped at this. The real limit is unmeasured, so 6 is
-        // a guess for these servos, and recordings will show it. The prediction horizon is capped by
-        // MaxHorizonMs above.
-        public string JointPredictorName = "servo-replay";
+        // robot's joints now. relay-replay (the default since 2026-10-20) models the JetRover relay's
+        // paced servo writes; servo-replay assumed every command is obeyed at once and snapped back on
+        // each fresh reading (core/Teleop.Core/Prediction/CLAUDE.md has the benchmark); hold-last is
+        // no prediction. JointModelSpeedRadPerSec is servo-replay's servo speed, rad/s. The prediction
+        // horizon is capped by MaxHorizonMs above.
+        public string JointPredictorName = "relay-replay";
         public float JointModelSpeedRadPerSec = 6f;
+
+        // How much older than its frame's stamp each motor's reading is, ms, for relay-replay. The
+        // robot reads motors 1-5 one after another, about 10 ms each, and RobotHost stamps the frame
+        // when it arrives, about 5 ms after the last read (robot/ros robot_controller_node.py).
+        // Measured cycle: 20 Hz (just joint-probe). Same length and order as the ids.
+        public int[] JointReadingAgeMotorIds = { 1, 2, 3, 4, 5 };
+        public float[] JointReadingAgeMs = { 45f, 35f, 25f, 15f, 5f };
 
         // How fast the gripper's 0..1 fraction moves per radian of servo travel, so the predictor
         // moves it at servo speed like the other joints: RobotHost's PulsePerRadian (1000/240°,

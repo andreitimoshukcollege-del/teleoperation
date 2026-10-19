@@ -322,6 +322,8 @@ translates the local wire protocol above into calls against `jetrover_arm_contro
   - The node handles commands on the same thread, so commands queued behind the stall too: the
     real arm moved in jerks.
   - The relay marks a reading stale after about 0.2 s, so the measured arm kept flickering.
-  - Fixed in `robot/ros`: motor 10 is off the list, and a read waits at most 50 ms.
+  - Fixed in `robot/ros`: motor 10 is off the list.
+  - **Don't shorten the read timeout below 1 s.** Cutting it to 50 ms at the same time stopped all
+    servo feedback and the arm, so this board's answers can take longer than that. Reverted.
 - **Motor ids:** motor 5 is the wrist roll and motor 10 the gripper. Motors 1–5 report position.
   Motor 10 moves but never answers position reads, so the gripper is always a commanded belief.

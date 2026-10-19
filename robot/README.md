@@ -316,5 +316,12 @@ translates the local wire protocol above into calls against `jetrover_arm_contro
     (the model allows −30°). The robot has gone lower before: the validated `move-arm` target used
     −36° with the old IK. Measure where the lower arm really touches before trusting either
     number near the base.
+- **Feedback came about once a second, and commands stalled behind it (fixed 2026-10-20).**
+  - Each bus-servo position read waited up to 1 s for an answer, and the gripper (motor 10), which
+    never answers, was on the feedback list. Every feedback cycle stalled a full second on it.
+  - The node handles commands on the same thread, so commands queued behind the stall too: the
+    real arm moved in jerks.
+  - The relay marks a reading stale after about 0.2 s, so the measured arm kept flickering.
+  - Fixed in `robot/ros`: motor 10 is off the list, and a read waits at most 50 ms.
 - **Motor ids:** motor 5 is the wrist roll and motor 10 the gripper. Motors 1–5 report position.
   Motor 10 moves but never answers position reads, so the gripper is always a commanded belief.

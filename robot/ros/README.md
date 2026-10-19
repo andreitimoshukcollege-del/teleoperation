@@ -17,7 +17,8 @@ to arm control were left behind (the camera is now served by `core/Teleop.Camera
   - it publishes servo feedback on `/unity/robot/servo/feedback_array` and the battery level on
     `/robot/battery` (millivolts).
   - **`FEEDBACK_MOTOR_IDS`** in `robot_controller_node.py` lists the servos it reads back. That is
-    1–5. Motor 10, the gripper, is in the list but never answers.
+    1–5. Motor 10, the gripper, is left out: it never answers, and each read of it used to stall
+    the loop for a second.
   - `board_manager/robot_controller_sdk.py` is Hiwonder's board library. `just robot-board-commands`
     lists what the board accepts.
 - **`teleop_relay`** bridges RobotHost to the driver over a Unix socket

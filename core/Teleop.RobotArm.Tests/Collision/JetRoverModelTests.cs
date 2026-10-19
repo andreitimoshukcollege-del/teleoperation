@@ -69,6 +69,46 @@ namespace Teleop.RobotArm.Tests.Collision
         }
 
         [Fact]
+        public void SweepingTheTargetRoundBehindTheScreen_NeverSwingsAJointFar()
+        {
+            // The hand moves from in front, round the side, to above and behind the screen: the base
+            // turns past its ±120° there. No solve may move any joint more than the cap, so the arm
+            // never swings half round in one go (the "360" seen on the headset, 2026-10-20).
+            var solver = new ArmSolver();
+            solver.Reset(Arm, Model.Home);
+            ArmSolution previous = solver.Solve(Arm, new Vector3(0.18f, 0f, 0.12f), 0f, 0f);
+            for (int i = 1; i <= 360; i++)
+            {
+                float azimuth = i * MathF.PI / 360f; // 0 to 180 degrees round
+                var target = new Vector3(0.18f * MathF.Cos(azimuth), 0.18f * MathF.Sin(azimuth), 0.12f + 0.08f * i / 360f);
+                ArmSolution s = solver.Solve(Arm, target, 0f, 0f);
+                float jump = previous.Pose.MaxJointDelta(s.Pose);
+                Assert.True(jump <= ArmSolver.MaxJumpPerSolve + 1e-4f, $"step {i}: a joint moved {jump / Deg:0} deg");
+                Assert.True(ArmCollision.IsValid(Arm, Model, s.Pose));
+                previous = s;
+            }
+        }
+
+        [Fact]
+        public void PastTheBasesLimit_TheArmStops_RatherThanSwingingRound()
+        {
+            // Round the side and on past the base's 120 degrees, level: the only way there is the
+            // base half round. The arm must stop near the limit, not travel 180 degrees to get there.
+            var solver = new ArmSolver();
+            solver.Reset(Arm, Model.Home);
+            float maxYaw = 0f;
+            for (int i = 0; i <= 200; i++)
+            {
+                float azimuth = i * (170f * Deg) / 200f;
+                ArmSolution s = solver.Solve(Arm, new Vector3(0.18f * MathF.Cos(azimuth), 0.18f * MathF.Sin(azimuth), 0.08f), 0f, 0f);
+                maxYaw = MathF.Max(maxYaw, s.Pose.BaseYaw);
+                Assert.True(s.Pose.BaseYaw > -10f * Deg, $"step {i}: the base swung round to {s.Pose.BaseYaw / Deg:0} deg");
+            }
+
+            Assert.True(maxYaw > 100f * Deg, $"the base only reached {maxYaw / Deg:0} deg");
+        }
+
+        [Fact]
         public void EveryResult_IsValid_AndTheCostIsLogged()
         {
             var random = new Random(9);

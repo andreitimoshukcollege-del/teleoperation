@@ -441,7 +441,10 @@ namespace Teleop.Bridge
             float upperPitch = wristPitches[0];
             LastSolveStatus = solution.Status;
 
-            if (snapTargetToReachable && (solution.Status != ArmSolveStatus.Exact || solution.ReachClamped))
+            // Not while approaching: the arm is still on its way to the target, and moving the target
+            // to the arm would stop it there.
+            if (snapTargetToReachable && solution.Status != ArmSolveStatus.Approaching &&
+                (solution.Status != ArmSolveStatus.Exact || solution.ReachClamped))
             {
                 // The target follows what the arm can reach, so the marker sits on the ghost's wrist
                 // and a clutch re-engaged from here starts where the arm really is.

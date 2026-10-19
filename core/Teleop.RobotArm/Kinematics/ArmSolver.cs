@@ -16,6 +16,12 @@ namespace Teleop.RobotArm.Kinematics
 
         /// <summary>The target is blocked: the arm stopped at the last collision-free point toward it.</summary>
         Blocked = 2,
+
+        /// <summary>
+        /// The target is reachable but further than one solve may move a joint: this pose is a step
+        /// along the shortest joint path to it, and the next solves carry on.
+        /// </summary>
+        Approaching = 3,
     }
 
     /// <summary>The joint angles a solve chose, where they put the wrist, and how that relates to the request.</summary>
@@ -62,11 +68,12 @@ namespace Teleop.RobotArm.Kinematics
     /// either facing the target or turned half round reaching over the top), each with the pitch
     /// tilted by 0, ±5°, … ±<see cref="MaxPitchTilt"/>. The previous branch goes first with every
     /// tilt before any other branch is tried, so a small target move never flips the arm.</item>
-    /// <item>A candidate far from the previous pose (a branch switch) must also have a clear
-    /// straight joint-space path to it, since that is roughly how the servos travel.</item>
+    /// <item>No joint moves more than <see cref="MaxJumpPerSolve"/> in one solve. A candidate
+    /// beyond a few degrees away (a branch switch) must also have a clear straight joint-space path
+    /// to it, since that is roughly how the servos travel.</item>
     /// <item>If nothing reaches the target, the target is bisected along the segment from the
-    /// last pose reached, on the current branch, and the arm stops at the furthest point it can
-    /// reach.</item>
+    /// last pose reached, and the arm stops at the furthest point it can reach. Repeated solves
+    /// carry it on from there, so a target further than one step away is reached over several.</item>
     /// </list>
     /// A profile without a collision model gets the plain closed-form solve, as before.
     ///
@@ -87,6 +94,23 @@ namespace Teleop.RobotArm.Kinematics
         /// <summary>Joint-space path samples are at most this far apart (radians, 4°).</summary>
         public const float PathStep = 4f * MathF.PI / 180f;
 
+        /// <summary>
+        /// The most any joint may move in one solve (radians, 30°). A candidate further away is not
+        /// taken: the arm moves toward it over several solves instead, or stops. This is what keeps a
+        /// branch switch (the base half round to reach over the top) from becoming one huge swing
+        /// when the target crosses the base's ±120° limit. Over the top is still reachable, by
+        /// moving there continuously, where that switch is a small step.
+        /// </summary>
+        public const float MaxJumpPerSolve = 30f * MathF.PI / 180f;
+
+        /// <summary>
+        /// The furthest a target's pose may be from the current one (any joint, radians, 90°) for the
+        /// solver to travel there on its own. Beyond it, reaching the target would mean swinging the
+        /// base half round or flipping the elbow, which nobody asked for: the arm stops instead.
+        /// Over the top from near vertical stays within it.
+        /// </summary>
+        public const float MaxApproach = 90f * MathF.PI / 180f;
+
         private const int BisectionSteps = 8;
 
         /// <summary>
@@ -98,6 +122,7 @@ namespace Teleop.RobotArm.Kinematics
 
         private int _checks;
         private bool _lastValid;
+        private bool _lastMadeProgress;
         private const int BranchCount = 4;
 
         private ArmPose _last;
@@ -159,7 +184,10 @@ namespace Teleop.RobotArm.Kinematics
                 Reset(profile, model.Home);
             }
 
-            if (_hasLastSolution && target == _lastTarget && desiredPitch == _lastDesiredPitch && roll == _lastRoll)
+            // A held target is answered without searching again, unless the arm is still on its way
+            // there: a blocked answer that moved the arm moves it further on the next call.
+            if (_hasLastSolution && target == _lastTarget && desiredPitch == _lastDesiredPitch && roll == _lastRoll &&
+                !_lastMadeProgress)
             {
                 return _lastSolution;
             }
@@ -173,13 +201,44 @@ namespace Teleop.RobotArm.Kinematics
             // judged on its own.
             _lastValid = ArmCollision.IsValid(profile, model, _last);
             float clampedRoll = model.Roll.Clamp(roll);
-            if (TryReach(profile, model, projected, desiredPitch, clampedRoll, BranchCount, out ArmPose pose, out int branch, out float tilt))
+
+            // 1. The valid pose at the target that is closest to where the arm is: the shortest
+            //    joint path there.
+            if (ClosestAt(profile, model, projected, desiredPitch, clampedRoll, out ArmPose goal, out int branch, out float tilt) &&
+                (!_lastValid || _last.MaxJointDelta(goal) <= MaxApproach))
             {
-                var exact = new ArmSolution(pose, projected, desiredPitch + tilt,
-                    tilt == 0f ? ArmSolveStatus.Exact : ArmSolveStatus.PitchAdjusted, reachClamped, branch);
-                Remember(exact);
-                return exact;
+                float jump = _last.MaxJointDelta(goal);
+                if (!_lastValid || jump <= MaxJumpPerSolve)
+                {
+                    if (PathClear(profile, model, _last, goal))
+                    {
+                        var exact = new ArmSolution(goal, projected, desiredPitch + tilt,
+                            tilt == 0f ? ArmSolveStatus.Exact : ArmSolveStatus.PitchAdjusted, reachClamped, branch);
+                        Remember(exact);
+                        _lastMadeProgress = false;
+                        return exact;
+                    }
+                }
+                else
+                {
+                    // 2. Too far for one solve: a step of at most the cap along the straight joint
+                    //    path to it. The next solves carry on, so the arm gets there over a few
+                    //    frames without ever swinging round, and without the dead ends a straight
+                    //    line in space can hit (one passing over the shoulder, inside the reach the
+                    //    elbow's range allows).
+                    ArmPose step = ArmPose.Lerp(_last, goal, MaxJumpPerSolve / jump);
+                    if (Valid(profile, model, step) && PathClear(profile, model, _last, step))
+                    {
+                        Vector3 at = ArmKinematics.Forward(profile, step.BaseYaw, step.Proximal, step.Distal);
+                        var approaching = new ArmSolution(step, at, PitchOf(step), ArmSolveStatus.Approaching, reachClamped, branch);
+                        Remember(approaching);
+                        _lastMadeProgress = true;
+                        return approaching;
+                    }
+                }
             }
+
+            // 3. Nothing at the target can be reached from here: stop as close as possible.
 
             // Blocked: the furthest point toward the target, from the last pose reached.
             Vector3 from = _lastPosition;
@@ -203,9 +262,10 @@ namespace Teleop.RobotArm.Kinematics
             {
                 float mid = 0.5f * (lo + hi);
                 Vector3 point = Vector3.Lerp(from, projected, mid);
-                // Points on the way stay on the current branch: a branch switch is only worth it
-                // for the target itself, and skipping the others keeps a blocked solve cheap.
-                if (TryReach(profile, model, point, desiredPitch, clampedRoll, 1, out ArmPose midPose, out int midBranch, out float midTilt))
+                // Points on the way may switch branch too: the cap keeps any switch a small step, so
+                // the arm can go on over the top (straight overhead, the base-facing and the
+                // leaning-back branches meet). The current branch is still tried first.
+                if (TryReach(profile, model, point, desiredPitch, clampedRoll, BranchCount, out ArmPose midPose, out int midBranch, out float midTilt))
                 {
                     lo = mid;
                     bestPose = midPose;
@@ -221,7 +281,65 @@ namespace Teleop.RobotArm.Kinematics
 
             var blocked = new ArmSolution(bestPose, bestPosition, bestPitch, ArmSolveStatus.Blocked, reachClamped, bestBranch);
             Remember(blocked);
+            _lastMadeProgress = lo > 0f;
             return blocked;
+        }
+
+        /// <summary>
+        /// The valid pose at <paramref name="point"/> closest to the last one: the least joint
+        /// motion, counting each radian of pitch tilt as one radian of motion, so an exact pitch
+        /// wins unless keeping it would cost a bigger swing. The current branch untilted is taken at
+        /// once when it is within a few degrees, the everyday case of a hand moving smoothly.
+        /// </summary>
+        private bool ClosestAt(in RobotArmProfile profile, ArmCollisionModel model, Vector3 point, float desiredPitch, float roll,
+            out ArmPose best, out int bestBranch, out float bestTilt)
+        {
+            best = default;
+            bestBranch = 0;
+            bestTilt = 0f;
+            if (!WithinElbowReach(profile, model, point))
+            {
+                return false;
+            }
+
+            if (Closed(profile, point, desiredPitch, roll, _lastBranch, out ArmPose quick) &&
+                _last.MaxJointDelta(quick) <= PathCheckThreshold && Valid(profile, model, quick))
+            {
+                best = quick;
+                bestBranch = _lastBranch;
+                return true;
+            }
+
+            float bestCost = float.MaxValue;
+            for (int candidate = 0; candidate < BranchCount; candidate++)
+            {
+                for (int t = 0; ; t++)
+                {
+                    float offset = TiltAt(t);
+                    if (MathF.Abs(offset) > MaxPitchTilt + 1e-6f)
+                    {
+                        break;
+                    }
+
+                    if (!Closed(profile, point, desiredPitch + offset, roll, candidate, out ArmPose pose))
+                    {
+                        continue;
+                    }
+
+                    float cost = _last.MaxJointDelta(pose) + MathF.Abs(offset);
+                    if (cost >= bestCost || !Valid(profile, model, pose))
+                    {
+                        continue;
+                    }
+
+                    bestCost = cost;
+                    best = pose;
+                    bestBranch = candidate;
+                    bestTilt = offset;
+                }
+            }
+
+            return bestCost < float.MaxValue;
         }
 
         private bool TryReach(in RobotArmProfile profile, ArmCollisionModel model, Vector3 point, float desiredPitch, float roll,
@@ -248,6 +366,7 @@ namespace Teleop.RobotArm.Kinematics
                     }
 
                     if (Closed(profile, point, desiredPitch + offset, roll, candidate, out pose) &&
+                        (!_lastValid || _last.MaxJointDelta(pose) <= MaxJumpPerSolve) &&
                         Valid(profile, model, pose) &&
                         PathClear(profile, model, _last, pose))
                     {

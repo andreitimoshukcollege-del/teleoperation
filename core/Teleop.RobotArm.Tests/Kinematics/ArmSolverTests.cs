@@ -67,15 +67,22 @@ namespace Teleop.RobotArm.Tests.Kinematics
         }
 
         [Fact]
-        public void TargetBehindTheRobot_KeepsTheBaseInsideItsRange()
+        public void TargetBehindTheRobot_StopsWithoutSwinging()
         {
+            // Behind the robot is out of reach without swinging the base half round or flipping the
+            // elbow (the shoulder's and wrist's ±120 degrees rule out the rest). Neither may happen
+            // on its own: the arm stops, valid, with the base and the elbow where they were.
             var solver = new ArmSolver();
             solver.Reset(Arm, Model.Home);
-            ArmSolution s = solver.Solve(Arm, new Vector3(-0.06f, 0.0f, 0.20f), 0.5f, 0f);
+            ArmSolution s = default;
+            for (int i = 0; i < 40; i++)
+            {
+                s = solver.Solve(Arm, new Vector3(-0.06f, 0.0f, 0.20f), 0.5f, 0f);
+            }
 
-            Assert.True(MathF.Abs(s.Pose.BaseYaw) <= 120f * Deg + 1e-4f, $"yaw {s.Pose.BaseYaw}");
             Assert.True(ArmCollision.IsValid(Arm, Model, s.Pose));
-            Assert.NotEqual(ArmSolveStatus.Blocked, s.Status);
+            Assert.True(MathF.Abs(s.Pose.BaseYaw) < 30f * Deg, $"the base swung to {s.Pose.BaseYaw / Deg:0} deg");
+            Assert.True(s.Pose.Distal < 0f, "the elbow flipped");
         }
 
         [Fact]
@@ -121,14 +128,37 @@ namespace Teleop.RobotArm.Tests.Kinematics
                 float angle = i * 0.01f;
                 var target = new Vector3(0.15f * MathF.Cos(angle), 0.15f * MathF.Sin(angle), 0.10f + 0.03f * MathF.Sin(3f * angle));
                 ArmSolution s = solver.Solve(Arm, target, 0f, 0f);
-                if (s.Status != ArmSolveStatus.Blocked && previous.Status != ArmSolveStatus.Blocked)
+                if (s.Status == ArmSolveStatus.Exact && previous.Status == ArmSolveStatus.Exact)
                 {
-                    Assert.Equal(previous.Branch, s.Branch);
+                    Assert.True(previous.Branch == s.Branch, $"step {i}: branch {previous.Branch} -> {s.Branch} ({previous.Status} -> {s.Status}), " +
+                        $"prox {previous.Pose.Proximal:0.00}->{s.Pose.Proximal:0.00} dist {previous.Pose.Distal:0.00}->{s.Pose.Distal:0.00} " +
+                        $"wrist {previous.Pose.Wrist:0.00}->{s.Pose.Wrist:0.00} pitch {previous.Pitch:0.00}->{s.Pitch:0.00}");
                     Assert.True(previous.Pose.MaxJointDelta(s.Pose) < 0.2f, $"step {i}: jump {previous.Pose.MaxJointDelta(s.Pose)}");
                 }
 
                 previous = s;
             }
+        }
+
+        [Fact]
+        public void AHeldTarget_FarAway_IsReachedOverSeveralSolves_NotLeftHalfway()
+        {
+            var solver = new ArmSolver();
+            solver.Reset(Arm, Model.Home);
+            // The base turns about 80 degrees: more than one solve's 30, within the 90 per joint
+            // the solver travels to on its own.
+            var target = new Vector3(0.03f, 0.17f, 0.10f);
+            ArmSolution s = default;
+            int solves = 0;
+            do
+            {
+                s = solver.Solve(Arm, target, 0f, 0f);
+                solves++;
+            }
+            while ((s.Status == ArmSolveStatus.Blocked || s.Status == ArmSolveStatus.Approaching) && solves < 40);
+
+            Assert.True(s.Status == ArmSolveStatus.Exact || s.Status == ArmSolveStatus.PitchAdjusted, $"ended {s.Status}");
+            Assert.True(solves > 1, "the test should need more than one solve to mean anything");
         }
 
         [Fact]

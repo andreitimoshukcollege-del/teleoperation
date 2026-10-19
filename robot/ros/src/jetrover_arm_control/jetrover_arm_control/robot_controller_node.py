@@ -13,7 +13,10 @@ from jetrover_arm_control.servo_controller.servo_controller import ServoControll
 # Matches JetRover's four arm joints (base/lower/middle/upper, motor ids 1-4); gripper feedback
 # stays disabled, same as before this generalization -- GenericArmPlant sends the gripper
 # open-loop, with no belief tracking that would need it.
-FEEDBACK_MOTOR_IDS = [1, 2, 3, 4, 5, 10]
+# Motor 10 (the gripper) is not read: its servo never answers position reads, and every read
+# waits for its timeout, which held each feedback cycle (and every command behind it, on this one
+# thread) for a second. The headset models the gripper from its commands (docs/adr/0018).
+FEEDBACK_MOTOR_IDS = [1, 2, 3, 4, 5]
 
 
 class RobotController(Node):

@@ -64,6 +64,10 @@ crc8_table = [
     116, 42, 200, 150, 21, 75, 169, 247, 182, 232, 10, 84, 215, 137, 107, 53
 ]
 
+# Seconds to wait for a bus servo's answer to a read (see bus_servo_read_and_unpack).
+BUS_SERVO_READ_TIMEOUT = 0.05
+
+
 def checksum_crc8(data):
     # (check)
     check = 0
@@ -440,7 +444,10 @@ class Board:
                 pass
             self.buf_write(PacketFunction.PACKET_FUNC_BUS_SERVO, [cmd, servo_id])
             try:
-                data = self.bus_servo_queue.get(block=True, timeout=1)
+                # A servo answers within a few milliseconds. The old 1 s let one silent servo stall
+                # the whole feedback loop, and every command queued behind it on the node's thread;
+                # a late answer is still discarded by the clear above on the next read.
+                data = self.bus_servo_queue.get(block=True, timeout=BUS_SERVO_READ_TIMEOUT)
             except queue.Empty:
                 # See pwm_servo_read_and_unpack's identical comment -- an uncaught queue.Empty
                 # here previously crashed the whole node the first time the board was slow to

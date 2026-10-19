@@ -65,16 +65,28 @@ the body exactly. What was missing is a model of it that Core can evaluate.
    - The editor assembly references `Teleop.RobotArm` for this. That is editor tooling, not the
      runtime boundary unity/CLAUDE.md guards.
 3. **`ArmSolver` replaces direct `TryInverse` calls in the operator bridge and RobotHost's Cartesian
-   path.** Its search order is deterministic:
-   1. reach projection;
-   2. pitch offsets ordered by size (0, ±5°, … ±90°), within the previous solution's branch;
-   3. the other branches: elbow mirror, and base yaw ±π reaching over the top within the yaw range;
-   4. if nothing is valid, bisection along the segment from the last valid pose toward the target.
+   path.** Its search is deterministic:
+   1. The target is pulled into reach.
+   2. Of every valid pose at the target, it takes the one closest to the current pose. The
+      candidates are four closed-form branches (elbow either way; base facing the target or half
+      round, reaching over the top), each with the pitch tilted by 0, ±5°, … ±90°. Closest means
+      the least joint motion, counting each radian of tilt as one radian of motion, so an exact
+      pitch wins unless keeping it costs a bigger swing.
+   3. No joint moves more than **30° per solve**. A goal further than that is approached along the
+      straight joint path, 30° per solve, each step checked. A target held still is reached over a
+      few frames. This avoids the dead ends a straight line in space hits, for example passing
+      over the shoulder inside the reach the elbow's range allows.
+   4. A goal more than **90° away in any joint** is not approached on its own. Reaching it would
+      mean swinging the base half round or flipping the elbow; on the headset (2026-10-20) that
+      looked like the arm doing a full turn when the hand passed the base's ±120°. The arm stops
+      instead.
+   5. If no valid pose at the target can be reached that way, the arm stops at the furthest point
+      toward it: bisection along the segment from the last pose reached.
 
-   - **Status:** `Exact`, `PitchAdjusted` or `Blocked`.
-   - **A large joint jump** (a branch switch) also requires the straight joint-space path to it to
-     be collision-free, unless the arm starts in a pose the model already calls colliding (for
-     example folded at rest), when the next pose is judged on its own.
+   - **Status:** `Exact`, `PitchAdjusted`, `Approaching` (on the way, not compromised) or `Blocked`.
+   - **A joint jump beyond 8°** also requires the straight joint path to it to be collision-free,
+     unless the arm starts in a pose the model already calls colliding (for example folded at
+     rest), when the next pose is judged on its own.
    - **At most 600 collision checks per solve.** Past that, the arm holds its best valid answer. A
      count rather than a time, so the result is the same on every machine.
    - **`TryInverse` stays** as the closed-form inner step.
@@ -86,7 +98,8 @@ the body exactly. What was missing is a model of it that Core can evaluate.
 5. **The headset shows the result truthfully.**
    - The wrist LED is red when blocked or out of reach, and amber when the pitch was adjusted.
    - With `snapTargetToReachable` (on in TeleopXR, off in the parked TeleopVR), the drag target
-     moves to the pose the arm actually reaches. The blue marker then sits on the ghost's wrist, and
+     moves to the pose the arm actually reaches, except while approaching, when the arm is still
+     on its way. The blue marker then sits on the ghost's wrist, and
      re-engaging the clutch starts from there.
 
 ## Consequences

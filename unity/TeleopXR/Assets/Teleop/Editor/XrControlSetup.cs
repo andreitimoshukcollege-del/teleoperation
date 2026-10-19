@@ -100,6 +100,9 @@ namespace Teleop.XR.Editor
             // Off until the button is pressed: nothing reaches the robot at launch.
             var bridgeSo = new SerializedObject(bridge);
             bridgeSo.FindProperty("motionEnabledAtStart").boolValue = false;
+            // The marker follows what the collision-aware IK reaches, so it never sits inside the
+            // robot and the clutch re-engages from the arm (docs/adr/0020).
+            bridgeSo.FindProperty("snapTargetToReachable").boolValue = true;
             bridgeSo.ApplyModifiedPropertiesWithoutUndo();
             BuildMotionButton(scene, bridge, origin);
 

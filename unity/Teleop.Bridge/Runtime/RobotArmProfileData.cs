@@ -57,8 +57,8 @@ namespace Teleop.Bridge
             new JointHardwareSpecData { MotorId = 1, Role = JointRole.BaseYaw },
             new JointHardwareSpecData
             {
+                // No angle floor: the collision model keeps it off the body (docs/adr/0020).
                 MotorId = 2, Role = JointRole.Proximal,
-                HasMinAngleRadians = true, MinAngleRadians = -1.8851179f,
                 ZeroOffsetRadians = 0.12217305f, // +7 degrees, calibrated 2026-08-17 against real hardware
             },
             new JointHardwareSpecData { MotorId = 3, Role = JointRole.Distal },
@@ -81,9 +81,11 @@ namespace Teleop.Bridge
                     j.ZeroOffsetRadians);
             }
 
+            // The collision model comes by name, never from the file (docs/adr/0020).
             return new RobotArmProfile(
                 Name, HasRotatingBase, BaseHeight, ProximalLinkLength, DistalLinkLength,
-                WristJointCount, HasGripper, GripperCanRotate, joints);
+                WristJointCount, HasGripper, GripperCanRotate, joints,
+                Teleop.RobotArm.Collision.ArmCollisionModels.ForProfile(Name));
         }
     }
 }

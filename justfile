@@ -111,6 +111,11 @@ unity-setup-xr:
 unity-scene-xr rebuild="false":
     just _unity-batch TeleopXR Teleop.XR.Editor.XrLabSceneBuilder.Run {{ if rebuild == "true" { "-teleopRebuildScene" } else { "" } }}
 
+# Build the arm's collision model from the robot's CAD (docs/adr/0020) and write core/Teleop.RobotArm/Collision/JetRoverCollisionModel.g.cs: fits capsules to each link and boxes to the body, decides which joint-local pairs to skip, and validates (every surface sample covered, Core's frames match the Unity rig) before writing anything. Report and preview images go to %TEMP%\teleop-collision. Rerun whenever the CAD changes. Needs the lab built with the CAD; close TeleopXR's editor first
+[group('headset (Galaxy XR)')]
+robot-collision-model:
+    just _unity-batch TeleopXR Teleop.XR.Editor.RobotCollisionExtractor.Run "" true
+
 # Rebuild unity/TeleopXR's lab (night-shift room, JetRover twin, camera display, lighting), bake the lighting, and render preview screenshots to the Windows temp folder; prints the contact sheet's path. bake=false skips the multi-minute bake. Close that project's editor first
 [group('headset (Galaxy XR)')]
 unity-lab-xr bake="true":

@@ -141,6 +141,27 @@ namespace Teleop.RobotArm.Tests.Kinematics
         }
 
         [Fact]
+        public void Rebase_WhileReleased_IsWhereTheNextEngageStarts()
+        {
+            var clutch = new ClutchMapping(0.5f, Floor, Start, 0f);
+            var reached = new Vector3(0.12f, 0.02f, 0.05f);
+            clutch.Rebase(reached, 0.3f);
+            clutch.Engage(JetRover, Vector3.Zero, 0f);
+            clutch.Update(JetRover, Vector3.Zero, 0f);
+            AssertClose(reached, clutch.Target);
+            Assert.Equal(0.3f, clutch.Pitch, 5);
+        }
+
+        [Fact]
+        public void Rebase_WhileEngaged_IsIgnored()
+        {
+            var clutch = new ClutchMapping(0.5f, Floor, Start, 0f);
+            clutch.Engage(JetRover, Vector3.Zero, 0f);
+            clutch.Rebase(new Vector3(0.12f, 0.02f, 0.05f), 0.3f);
+            AssertClose(Start, clutch.Target);
+        }
+
+        [Fact]
         public void Update_AllocatesNothing()
         {
             var clutch = new ClutchMapping(0.5f, Floor, Start, 0f);

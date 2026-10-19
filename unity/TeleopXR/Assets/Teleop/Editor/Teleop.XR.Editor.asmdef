@@ -3,6 +3,7 @@
   "rootNamespace": "Teleop.XR.Editor",
   "references": [
     "Teleop.Bridge",
+    "Teleop.RobotArm",
     "Teleop.XR",
     "Unity.XR.Management",
     "Unity.XR.Management.Editor",

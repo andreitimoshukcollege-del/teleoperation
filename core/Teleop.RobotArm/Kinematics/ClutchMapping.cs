@@ -90,6 +90,23 @@ namespace Teleop.RobotArm.Kinematics
                 : _targetPitchAtEngage + WrapAngle(handPitch - _handPitchAtEngage);
         }
 
+        /// <summary>
+        /// Replaces the held target and pitch while released: what the arm actually reached, when the
+        /// collision-aware IK stopped short of the last target (docs/adr/0020). The next
+        /// <see cref="Engage"/> then starts from there instead of from inside the obstacle. Ignored
+        /// while engaged, where the hand decides.
+        /// </summary>
+        public void Rebase(Vector3 target, float pitch)
+        {
+            if (IsEngaged)
+            {
+                return;
+            }
+
+            Target = target;
+            Pitch = pitch;
+        }
+
         /// <summary>Stops following. The target and pitch hold where they are.</summary>
         public void Release()
         {

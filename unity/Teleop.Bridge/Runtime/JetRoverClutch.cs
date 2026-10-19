@@ -42,9 +42,16 @@ namespace Teleop.Bridge
         public bool IsEngaged => _mapping.IsEngaged;
         public float Scale => _mapping.Scale;
 
-        /// <summary>Starts following the hand from its current pose.</summary>
+        /// <summary>
+        /// Starts following the hand from its current pose. The target first takes up wherever the
+        /// drag target is now: the bridge moves it to what the arm reached when the IK stopped short
+        /// (docs/adr/0020), and the clutch must start from there, not from inside the obstacle.
+        /// </summary>
         public void Engage(Vector3 handPosition, Quaternion handRotation)
         {
+            ToBase(_target.position, _target.rotation, out var held, out float heldPitch);
+            _mapping.Rebase(held, heldPitch);
+            Roll = ArmKinematics.ExtractRollRadians((Quaternion.Inverse(_armBase.rotation) * _target.rotation).ToCore());
             ToBase(handPosition, handRotation, out var position, out float pitch);
             _mapping.Engage(_profile, position, pitch);
             WriteTarget();

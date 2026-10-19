@@ -307,5 +307,14 @@ translates the local wire protocol above into calls against `jetrover_arm_contro
   takes no message argument, so any message raises a `TypeError` and `jetrover-arm-control` exits
   (systemd restarts it 2 s later). Even when called, it only plays one short beep: there is no
   setting that mutes the low-battery alarm, which is the board firmware's. Fixed in `ros/` on import.
+- **The hand-tuned shoulder floor is gone (2026-10-19).** `minAngleRadians -1.885` on motor 2 ("the
+  plate", `LowerArmMinPulse` 50) was replaced by a collision model generated from the robot's CAD
+  (docs/adr/0020). The headset's IK and RobotHost's Cartesian path never ask for a pose that hits
+  the body, and RobotHost refuses one on the joint path, logging `[plant] refused N joint
+  command(s)` with the pair that would collide.
+  - **Open question:** the CAD puts first contact between the lower arm and the turntable at −33°
+    (the model allows −30°). The robot has gone lower before: the validated `move-arm` target used
+    −36° with the old IK. Measure where the lower arm really touches before trusting either
+    number near the base.
 - **Motor ids:** motor 5 is the wrist roll and motor 10 the gripper. Motors 1–5 report position.
   Motor 10 moves but never answers position reads, so the gripper is always a commanded belief.

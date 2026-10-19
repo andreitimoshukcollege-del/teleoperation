@@ -37,8 +37,7 @@ namespace Teleop.Eval.Tests.BuildProfile
             "n",              // BaseYaw wants max
             "n",              // BaseYaw wants zero-offset
             "2",              // Proximal motor id
-            "y",              // Proximal wants min
-            "-1.8851179",     // Proximal min angle
+            "n",              // Proximal wants min (the collision model replaced the floor, docs/adr/0020)
             "n",              // Proximal wants max
             "y",              // Proximal wants zero-offset
             "0.12217305",     // Proximal zero-offset (7 degrees, real calibrated mounting correction)

@@ -2,6 +2,7 @@ using System;
 using System.Numerics;
 using Teleop.Core.Contracts;
 using Teleop.Core.Types;
+using Teleop.RobotArm.Collision;
 using Teleop.RobotArm.Kinematics;
 using Teleop.RobotArm.Types;
 using Teleop.RobotArm.Wire;
@@ -96,6 +97,11 @@ namespace Teleop.RobotHost.Plant
         // whichever command lost the race -- found via real-hardware testing (2026-08-12).
         private long _lastAcceptedCartesianCaptureTicks;
         private long _lastAcceptedJointCaptureTicks;
+
+        // The Cartesian path's IK (docs/adr/0020): collision-aware when the profile has a model,
+        // seeded from this plant's belief the first time it is used.
+        private ArmSolver _solver;
+        private bool _solverSeeded;
 
         // The servo speed actually sent to the relay (pulses/s): the joint path's latest requested
         // speed, never above GenericArmPlantConfig.PulsesPerSecond (docs/adr/0018). Both paths use it.
@@ -215,9 +221,30 @@ namespace Teleop.RobotHost.Plant
             float desiredPitch = ArmKinematics.ExtractPitchRadians(command.Pose.Rotation);
             float desiredRoll = ArmKinematics.ExtractRollRadians(command.Pose.Rotation);
             Span<float> wristPitches = stackalloc float[_profile.WristJointCount];
-            ArmKinematics.TryInverse(
-                _profile, command.Pose.Position, desiredPitch,
-                out float baseYaw, out float proximalPitch, out float distalPitch, wristPitches, out _);
+            float baseYaw, proximalPitch, distalPitch;
+            if (_profile.Collision != null && _profile.WristJointCount == 1)
+            {
+                // The same solver the headset uses: it never asks for a pose that hits the robot,
+                // and stops at the body instead (docs/adr/0020).
+                if (!_solverSeeded)
+                {
+                    _solver.Reset(_profile, BeliefPose());
+                    _solverSeeded = true;
+                }
+
+                ArmSolution solution = _solver.Solve(_profile, command.Pose.Position, desiredPitch, desiredRoll);
+                baseYaw = solution.Pose.BaseYaw;
+                proximalPitch = solution.Pose.Proximal;
+                distalPitch = solution.Pose.Distal;
+                wristPitches[0] = solution.Pose.Wrist;
+                desiredRoll = solution.Pose.Roll;
+            }
+            else
+            {
+                ArmKinematics.TryInverse(
+                    _profile, command.Pose.Position, desiredPitch,
+                    out baseYaw, out proximalPitch, out distalPitch, wristPitches, out _);
+            }
 
             Span<JointTarget> ikTargets = stackalloc JointTarget[_profile.JointCount];
             int count = ArmKinematics.MapAnglesToJointTargets(
@@ -248,10 +275,61 @@ namespace Teleop.RobotHost.Plant
 
             _lastAcceptedJointCaptureTicks = captureTicks;
             SeedBeliefsFromSensedIfNeeded();
-            _pulsesPerSecond = RequestedPulsesPerSecond(targets);
 
+            // The backstop (docs/adr/0020): the same collision model the headset's IK uses. A pose
+            // that would hit the robot is refused whole and the arm holds. The headset never sends
+            // one, so this only ever catches a bug or another tool.
+            if (_profile.Collision != null)
+            {
+                CollisionHit hit = ArmCollision.Check(_profile, _profile.Collision, CommandedPose(targets));
+                if (hit.IsHit)
+                {
+                    RefusedJointCommands++;
+                    LastRefusal = hit;
+                    return;
+                }
+            }
+
+            _pulsesPerSecond = RequestedPulsesPerSecond(targets);
             ApplyJointTargets(targets);
         }
+
+        /// <summary>Joint commands refused because the pose would collide (docs/adr/0020), since construction.</summary>
+        public int RefusedJointCommands { get; private set; }
+
+        /// <summary>Why the most recent refused joint command was refused.</summary>
+        public CollisionHit LastRefusal { get; private set; }
+
+        /// <summary>A readable reason for <see cref="LastRefusal"/>, for the log. Allocates.</summary>
+        public string DescribeLastRefusal() =>
+            _profile.Collision != null ? LastRefusal.Describe(_profile.Collision) : "no collision model";
+
+        /// <summary>The pose a joint command asks for: its angles, and this plant's belief for any joint it leaves out.</summary>
+        private ArmPose CommandedPose(ReadOnlySpan<JointTarget> targets)
+        {
+            ArmPose belief = BeliefPose();
+            float yaw = belief.BaseYaw, proximal = belief.Proximal, distal = belief.Distal, wrist = belief.Wrist, roll = belief.Roll;
+            foreach (JointTarget target in targets)
+            {
+                int index = FindJointIndexByMotorId(target.MotorId);
+                if (index < 0) continue;
+                JointHardwareSpec joint = _profile.Joints[index];
+                switch (joint.Role)
+                {
+                    case JointRole.BaseYaw: yaw = target.Angle; break;
+                    case JointRole.Proximal: proximal = target.Angle; break;
+                    case JointRole.Distal: distal = target.Angle; break;
+                    case JointRole.Wrist when joint.WristIndex == 0: wrist = target.Angle; break;
+                    case JointRole.GripperRotate: roll = target.Angle; break;
+                }
+            }
+
+            return new ArmPose(yaw, proximal, distal, wrist, roll);
+        }
+
+        private ArmPose BeliefPose() => new ArmPose(
+            GetBeliefAngle(JointRole.BaseYaw), GetBeliefAngle(JointRole.Proximal), GetBeliefAngle(JointRole.Distal),
+            GetBeliefAngle(JointRole.Wrist), GetBeliefAngle(JointRole.GripperRotate));
 
         /// <summary>
         /// One-time seed from real sensed feedback, the first time each joint's belief is ever
@@ -414,6 +492,7 @@ namespace Teleop.RobotHost.Plant
 
             LastFeedbackTicks = 0;
             _pulsesPerSecond = _config.PulsesPerSecond;
+            _solverSeeded = false;
         }
 
         /// <summary>

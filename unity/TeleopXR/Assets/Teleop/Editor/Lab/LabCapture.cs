@@ -30,10 +30,13 @@ namespace Teleop.XR.Editor
             public readonly bool Clamped;
             /// <summary>For a gripper close-up: the gripper fraction, else negative.</summary>
             public readonly float Gripper;
+            /// <summary>For an IK preview: the target to solve for (arm base frame, Core axes), else null.</summary>
+            public readonly System.Numerics.Vector3? SolveFor;
 
-            public View(string name, Vector3 from, Vector3 to, float fov, bool clamped = false, float gripper = -1f)
+            public View(string name, Vector3 from, Vector3 to, float fov, bool clamped = false, float gripper = -1f,
+                System.Numerics.Vector3? solveFor = null)
             {
-                Name = name; From = from; To = to; VerticalFov = fov; Clamped = clamped; Gripper = gripper;
+                Name = name; From = from; To = to; VerticalFov = fov; Clamped = clamped; Gripper = gripper; SolveFor = solveFor;
             }
         }
 
@@ -54,6 +57,10 @@ namespace Teleop.XR.Editor
             // Square onto the commanded arm's gripper, along the jaws' hinge axis; placed in Capture.
             yield return new View("11_gripper_open", Vector3.zero, Vector3.zero, 30f, gripper: 0f);
             yield return new View("12_gripper_closed", Vector3.zero, Vector3.zero, 30f, gripper: 1f);
+            // The collision-aware IK asked for a point inside the chassis, in front of the turntable
+            // and below the deck: the arm stops on the body instead (docs/adr/0020).
+            yield return new View("13_ik_blocked", new Vector3(-0.55f, 1.15f, 0.55f), arm + new Vector3(0f, -0.03f, 0.05f), 46f,
+                solveFor: new System.Numerics.Vector3(0.06f, 0f, -0.07f));
         }
 
         /// <summary>
@@ -111,7 +118,18 @@ namespace Teleop.XR.Editor
                 for (int i = 0; i < views.Count; i++)
                 {
                     View view = views[i];
-                    if (rig != null)
+                    if (rig != null && view.SolveFor is System.Numerics.Vector3 solveTarget)
+                    {
+                        var profile = Teleop.RobotArm.Types.RobotArmProfile.JetRoverMeasuredDefault;
+                        var solver = new Teleop.RobotArm.Kinematics.ArmSolver();
+                        solver.Reset(profile, profile.Collision.Home);
+                        solver.Solve(profile, new System.Numerics.Vector3(0.15f, 0f, 0.08f), -0.6f, 0f);
+                        var s = solver.Solve(profile, solveTarget, -0.6f, 0f);
+                        rig.ApplyAngles(s.Pose.BaseYaw, s.Pose.Proximal, s.Pose.Distal, s.Pose.Wrist, s.IsCompromised,
+                            s.Status == Teleop.RobotArm.Kinematics.ArmSolveStatus.PitchAdjusted);
+                        report.AppendLine($"13_ik_blocked: {s.Status}, stopped at {s.Position} for target {solveTarget}");
+                    }
+                    else if (rig != null)
                     {
                         // A reaching pose: base turned a little, shoulder up, elbow folded down, wrist level.
                         rig.ApplyAngles(0.35f, 0.75f, -1.25f, 0.3f, view.Clamped);
@@ -167,7 +185,7 @@ namespace Teleop.XR.Editor
             }
         }
 
-        private static Texture2D Render(Camera cam, int width, int height)
+        internal static Texture2D Render(Camera cam, int width, int height)
         {
             var msaa = new RenderTexture(width, height, 24, RenderTextureFormat.ARGB32, RenderTextureReadWrite.sRGB) { antiAliasing = 4 };
             var resolved = new RenderTexture(width, height, 0, RenderTextureFormat.ARGB32, RenderTextureReadWrite.sRGB);

@@ -127,10 +127,8 @@ namespace Teleop.RobotHost.Plant
         /// <summary>
         /// The exact JetRover configuration this codebase has always run, expressed against
         /// <see cref="RobotArmProfile.JetRoverMeasuredDefault"/> instead of hardcoded per-joint
-        /// fields -- <see cref="RobotArmProfile.JetRoverMeasuredDefault"/>'s own
-        /// <c>MinAngleRadians</c> on the proximal joint already carries the old
-        /// <c>LowerArmMinPulse</c> (50) safety floor, so nothing further needs to be re-applied
-        /// here. <c>GripperOpenPulse</c>/<c>GripperClosedPulse</c> are the old 30/150-degree
+        /// fields. The old <c>LowerArmMinPulse</c> (50) shoulder floor is gone: the profile's collision
+        /// model (docs/adr/0020) keeps the arm off the plate and the rest of the body. <c>GripperOpenPulse</c>/<c>GripperClosedPulse</c> are the old 30/150-degree
         /// defaults converted once (<c>degrees/180*1000</c>).
         /// </summary>
         public static GenericArmPlantConfig Default => new GenericArmPlantConfig(

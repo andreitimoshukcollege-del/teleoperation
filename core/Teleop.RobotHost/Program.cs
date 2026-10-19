@@ -139,6 +139,8 @@ namespace Teleop.RobotHost
 
             EndPoint? loggedReplyTarget = transport.CurrentRemoteEndPoint;
             EndPoint? jointCommander = null;
+            int loggedRefusals = 0;
+            long lastRefusalLogTicks = long.MinValue;
             while (!stop.IsSet)
             {
                 if (jointTransport != null)
@@ -176,6 +178,16 @@ namespace Teleop.RobotHost
                 }
 
                 endpoint.Step(clock.NowTicks);
+
+                // Refused joint commands (a pose that would collide, docs/adr/0020), at most one line
+                // every 2 s while they keep coming.
+                if (plant.RefusedJointCommands != loggedRefusals && clock.NowTicks - lastRefusalLogTicks >= 2 * clock.TicksPerSecond)
+                {
+                    Console.WriteLine($"[plant] refused {plant.RefusedJointCommands - loggedRefusals} joint command(s): the pose would collide " +
+                        $"({plant.DescribeLastRefusal()}); the arm holds");
+                    loggedRefusals = plant.RefusedJointCommands;
+                    lastRefusalLogTicks = clock.NowTicks;
+                }
 
                 if (jointTransport != null)
                 {

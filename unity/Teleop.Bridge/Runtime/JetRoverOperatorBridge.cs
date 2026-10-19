@@ -6,6 +6,7 @@ using Teleop.Core.Registry;
 using Teleop.Core.Time;
 using Teleop.Core.Transport;
 using Teleop.Core.Types;
+using Teleop.RobotArm.Collision;
 using Teleop.RobotArm.Kinematics;
 using Teleop.RobotArm.Types;
 using Teleop.RobotArm.Wire;
@@ -75,6 +76,8 @@ namespace Teleop.Bridge
         [SerializeField] private Transform dragTarget;
         [SerializeField] private JetRoverArmRig armRig;
 
+        [Tooltip("When the IK cannot reach the target exactly (blocked by the robot's body, out of reach, or the pitch tilted to keep clear), move the drag target to what the arm does reach. TeleopXR turns it on, so the marker stays on the arm's wrist and the clutch re-engages from there (docs/adr/0020). Off by default, so a grabbed target (TeleopVR) is never pulled out of the hand.")]
+        [SerializeField] private bool snapTargetToReachable;
         [Tooltip("Whether commands reach the robot from the start. Off means nothing is sent until something sets MotionEnabled (TeleopXR's motion button, docs/adr/0017). TeleopVR leaves it on, as it always behaved.")]
         [SerializeField] private bool motionEnabledAtStart = true;
 
@@ -97,6 +100,8 @@ namespace Teleop.Bridge
         private JetRoverJointStateLink _jointStateLink;
         private long _lastJointSendTicks;
         private bool _hasSentJointCommand;
+        private ArmSolver _solver;
+        private bool _solverSeededFromRobot;
         private long _sendIntervalTicks;
 
         private LatencyTrace _pendingTrace;
@@ -148,6 +153,9 @@ namespace Teleop.Bridge
         /// estimate of them now. Null until <c>Awake</c>.
         /// </summary>
         public JetRoverJointStateLink JointState => _jointStateLink;
+
+        /// <summary>How the last IK solve related to the target: exact, pitch tilted, or blocked by the robot's body (docs/adr/0020).</summary>
+        public ArmSolveStatus LastSolveStatus { get; private set; }
 
         private float _speedRadPerSec;
 
@@ -410,12 +418,38 @@ namespace Teleop.Bridge
 
             float desiredPitch = ArmKinematics.ExtractPitchRadians(capturedPose.Rotation);
             float desiredRoll = ArmKinematics.ExtractRollRadians(capturedPose.Rotation);
+
+            // The collision-aware IK (docs/adr/0020): never a pose that hits the robot, the same
+            // model RobotHost enforces. It starts from the robot's own measured pose when one has
+            // arrived before anything was sent, and otherwise from the model's home pose.
+            if (!_solverSeededFromRobot && !_hasSentJointCommand && _jointStateLink != null &&
+                _jointStateLink.TryGetMeasured(out JetRoverJointPose measured) && measured.ArmSensed)
+            {
+                _solver.Reset(_profile, new ArmPose(measured.BaseYaw, measured.Proximal, measured.Distal, measured.WristPitch,
+                    measured.RollSensed ? measured.WristRoll : 0f));
+                _solverSeededFromRobot = true;
+            }
+
+            ArmSolution solution = _solver.Solve(_profile, capturedPose.Position, desiredPitch, desiredRoll);
+            Span<float> wristPitches = stackalloc float[Math.Max(1, _profile.WristJointCount)];
+            float baseYaw = solution.Pose.BaseYaw, proximalPitch = solution.Pose.Proximal, distalPitch = solution.Pose.Distal;
+            wristPitches[0] = solution.Pose.Wrist;
+            desiredRoll = solution.Pose.Roll;
             WristRollRadians = desiredRoll;
-            Span<float> wristPitches = stackalloc float[_profile.WristJointCount];
-            ArmKinematics.TryInverse(
-                _profile, capturedPose.Position, desiredPitch,
-                out float baseYaw, out float proximalPitch, out float distalPitch, wristPitches, out bool wasClamped);
-            float upperPitch = wristPitches.Length > 0 ? wristPitches[0] : 0f;
+            bool wasClamped = solution.IsCompromised;
+            bool pitchAdjusted = solution.Status == ArmSolveStatus.PitchAdjusted;
+            float upperPitch = wristPitches[0];
+            LastSolveStatus = solution.Status;
+
+            if (snapTargetToReachable && (solution.Status != ArmSolveStatus.Exact || solution.ReachClamped))
+            {
+                // The target follows what the arm can reach, so the marker sits on the ghost's wrist
+                // and a clutch re-engaged from here starts where the arm really is.
+                dragTarget.position = armBase.TransformPoint(solution.Position.ToUnity());
+                dragTarget.rotation = armBase.rotation
+                    * Quaternion.AngleAxis(-solution.Pitch * Mathf.Rad2Deg, Vector3.right)
+                    * Quaternion.AngleAxis(-desiredRoll * Mathf.Rad2Deg, Vector3.forward);
+            }
 
             // Applied every frame, unconditionally -- see this class's own doc for why this is
             // deliberately not gated on ConfirmHardwareMotion or rate-limited: the rig needs to
@@ -426,7 +460,7 @@ namespace Teleop.Bridge
             // work, not part of this pass).
             if (armRig != null)
             {
-                armRig.ApplyAngles(baseYaw, proximalPitch, distalPitch, upperPitch, wasClamped);
+                armRig.ApplyAngles(baseYaw, proximalPitch, distalPitch, upperPitch, wasClamped, pitchAdjusted);
             }
 
             if (!_config.ConfirmHardwareMotion || !MotionEnabled)

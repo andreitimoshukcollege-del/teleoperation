@@ -74,8 +74,10 @@ Contents:
         read −90° and pinned the gripper vertical.
     - It reads hand joints from XR Hands directly. The mapping is Core's (`Teleop.RobotArm`'s
       `ClutchMapping` and `GripperMapping`), reached through Bridge's `JetRoverClutch`.
-    - Feedback: the wrist LED ring turns cyan while clutched, and red still means out of reach.
-      The display's caption line reads `CLUTCH ON · gripper N%`.
+    - Feedback: the wrist LED ring turns cyan while clutched. **Orange** means the IK tilted the
+      wrist to keep clear of the robot, and **red** means the target is out of reach or blocked by
+      the robot's body, so the arm has stopped short (docs/adr/0020). The display's caption line
+      reads `CLUTCH ON · gripper N%`.
   - **`DragTarget`** is no longer grabbable. It is a 2 cm marker showing the commanded wrist
     position, and the bridge still reads it.
   - **`TwinGripper`** on the wrist closes the twin's jaws by the gripper command and rolls the
@@ -169,6 +171,7 @@ build, if any of them changes:
 | `ClutchScale` | in (0, 1] | above 1 the arm moves further than the hand |
 | Gripper pinch range | open distance > closed distance | otherwise the mapping is inverted |
 | `JetRoverOperatorBridge.motionEnabledAtStart` | off | the robot must not move at launch, before anyone presses the button |
+| `JetRoverOperatorBridge.snapTargetToReachable` | on | when the IK stops at the robot's body, the marker moves to where the arm stopped, so it never sits inside the robot and the clutch re-engages from the arm (docs/adr/0020) |
 | `MotionToggleButton` | present, wired, enabled | the only way to start, and stop, the robot from the headset |
 | `TwinArmsDriver` | present, wired, not driving the commanded arm | the robot's state must never overwrite the display of the command |
 | Hand smoothing filter | inactive | it filters the hand joints the clutch reads; intent is sent raw (ADR 0016 §5) |
@@ -181,6 +184,12 @@ The clutch is safe by construction, not just by settings:
 - **The target is projected onto the reachable workspace every frame,** above
   `ClutchMinHeightMeters`. Pushing past the edge leaves the arm at the edge, and moving back moves
   it immediately.
+- **The IK never asks for a pose that hits the robot** (docs/adr/0020). It knows the robot's body
+  and joint ranges from a collision model generated from the CAD (`just robot-collision-model`).
+  - It tilts the wrist first to reach the target exactly.
+  - Failing that, it stops the arm at the body, and the marker follows.
+  - RobotHost enforces the same model and refuses any colliding pose, so a bug or another tool
+    can't drive the arm into the chassis either.
 - **Losing tracking of the gripper hand holds the gripper.** It never opens on its own.
 
 What the check cannot see:

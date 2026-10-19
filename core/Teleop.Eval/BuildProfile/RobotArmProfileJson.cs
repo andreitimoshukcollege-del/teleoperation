@@ -73,9 +73,11 @@ namespace Teleop.Eval.BuildProfile
                     j.MotorId, j.Role, j.WristIndex, j.MinAngleRadians, j.MaxAngleRadians, j.ZeroOffsetRadians);
             }
 
+            // The collision model comes by name, never from the file (docs/adr/0020).
             return new RobotArmProfile(
                 Name, HasRotatingBase, BaseHeight, ProximalLinkLength, DistalLinkLength,
-                WristJointCount, HasGripper, GripperCanRotate, joints);
+                WristJointCount, HasGripper, GripperCanRotate, joints,
+                Teleop.RobotArm.Collision.ArmCollisionModels.ForProfile(Name));
         }
 
         public static RobotArmProfileFile FromProfile(in RobotArmProfile profile)

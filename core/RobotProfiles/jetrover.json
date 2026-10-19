@@ -9,7 +9,7 @@
   "gripperCanRotate": true,
   "joints": [
     { "motorId": 1, "role": "BaseYaw" },
-    { "motorId": 2, "role": "Proximal", "minAngleRadians": -1.8851179, "zeroOffsetRadians": 0.12217305 },
+    { "motorId": 2, "role": "Proximal", "zeroOffsetRadians": 0.12217305 },
     { "motorId": 3, "role": "Distal" },
     { "motorId": 4, "role": "Wrist", "wristIndex": 0 },
     { "motorId": 10, "role": "GripperMain" },

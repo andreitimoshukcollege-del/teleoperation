@@ -199,6 +199,36 @@ namespace Teleop.RobotHost.Tests.Plant
             }
         }
 
+        [Fact]
+        public void WhileJointCommandsArrive_CartesianCommandsDoNotMoveTheArm()
+        {
+            var relay = new FakeRelayClient();
+            var plant = new GenericArmPlant(Config, relay) { JointPrecedenceTicks = 500 };
+            plant.Step(1000);
+            plant.CommandJointAngles(AllJoints(JetRover.Collision!.Home), captureTicks: 10);
+            Assert.Single(relay.SentCommands);
+
+            plant.Step(1200); // within the precedence window
+            plant.Command(Frame(captureTicks: 20, position: new Vector3(0.15f, 0f, 0.08f)));
+            Assert.Single(relay.SentCommands);
+            Assert.Equal(1, plant.IgnoredCartesianCommands);
+
+            plant.Step(1600); // past it: the joint sender went quiet, the Cartesian path drives again
+            plant.Command(Frame(captureTicks: 30, position: new Vector3(0.15f, 0f, 0.08f)));
+            Assert.Equal(2, relay.SentCommands.Count);
+        }
+
+        [Fact]
+        public void WithoutJointCommands_TheCartesianPathDrivesAsBefore()
+        {
+            var relay = new FakeRelayClient();
+            var plant = new GenericArmPlant(Config, relay) { JointPrecedenceTicks = 500 };
+            plant.Step(1000);
+            plant.Command(Frame(captureTicks: 10, position: new Vector3(0.15f, 0f, 0.08f)));
+            Assert.Single(relay.SentCommands);
+            Assert.Equal(0, plant.IgnoredCartesianCommands);
+        }
+
         private static byte MotorOf(JointRole role) => JetRover.Joints[JetRover.TryGetJointIndex(role)].MotorId;
 
         private static float Angle(JointTarget[] sent, byte motorId, JointRole role)

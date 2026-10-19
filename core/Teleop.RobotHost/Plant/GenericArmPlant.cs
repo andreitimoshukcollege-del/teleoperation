@@ -103,6 +103,11 @@ namespace Teleop.RobotHost.Plant
         private ArmSolver _solver;
         private bool _solverSeeded;
 
+        // When the joint path last delivered a command (this plant's clock), for the joint path's
+        // precedence over the Cartesian one (see JointPrecedenceTicks).
+        private long _lastJointCommandStateTicks;
+        private bool _hadJointCommand;
+
         // The servo speed actually sent to the relay (pulses/s): the joint path's latest requested
         // speed, never above GenericArmPlantConfig.PulsesPerSecond (docs/adr/0018). Both paths use it.
         private float _pulsesPerSecond;
@@ -216,6 +221,17 @@ namespace Teleop.RobotHost.Plant
             }
 
             _lastAcceptedCartesianCaptureTicks = command.CaptureTicks;
+
+            // The headset sends both paths: its own IK's joint angles, and the Cartesian target for
+            // timing. Each side's solver remembers its own history (docs/adr/0020), so the two can
+            // pick different poses, and the arm would alternate between them. While joint commands
+            // arrive, they alone move the arm.
+            if (JointPrecedenceTicks > 0 && _hadJointCommand && _stateTicks - _lastJointCommandStateTicks < JointPrecedenceTicks)
+            {
+                IgnoredCartesianCommands++;
+                return;
+            }
+
             SeedBeliefsFromSensedIfNeeded();
 
             float desiredPitch = ArmKinematics.ExtractPitchRadians(command.Pose.Rotation);
@@ -274,6 +290,8 @@ namespace Teleop.RobotHost.Plant
             }
 
             _lastAcceptedJointCaptureTicks = captureTicks;
+            _lastJointCommandStateTicks = _stateTicks;
+            _hadJointCommand = true;
             SeedBeliefsFromSensedIfNeeded();
 
             // The backstop (docs/adr/0020): the same collision model the headset's IK uses. A pose
@@ -293,6 +311,16 @@ namespace Teleop.RobotHost.Plant
             _pulsesPerSecond = RequestedPulsesPerSecond(targets);
             ApplyJointTargets(targets);
         }
+
+        /// <summary>
+        /// How long after a joint command a Cartesian command is not applied (this plant's clock
+        /// ticks; 0, the default, applies both). Program sets half a second. Cartesian commands still
+        /// get their state replies, which is what the headset sends them for (ClockSync, latency).
+        /// </summary>
+        public long JointPrecedenceTicks { get; set; }
+
+        /// <summary>Cartesian commands not applied because joint commands had precedence, since construction.</summary>
+        public int IgnoredCartesianCommands { get; private set; }
 
         /// <summary>Joint commands refused because the pose would collide (docs/adr/0020), since construction.</summary>
         public int RefusedJointCommands { get; private set; }
@@ -481,6 +509,7 @@ namespace Teleop.RobotHost.Plant
             _lastAcceptedCartesianCaptureTicks = long.MinValue;
             _lastAcceptedJointCaptureTicks = long.MinValue;
             _stateTicks = 0;
+            _hadJointCommand = false;
 
             for (int i = 0; i < _profile.JointCount; i++)
             {

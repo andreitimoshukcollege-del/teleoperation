@@ -95,7 +95,14 @@ the body exactly. What was missing is a model of it that Core can evaluate.
    solves with `ArmSolver`. The servo-range pulse clamp stays, since it is physical. **The
    hand-tuned shoulder floor is removed** from `jetrover.json` and `JetRoverMeasuredDefault`. The
    generic `Min/MaxAngleRadians` mechanism stays, unused by the shipped profile.
-5. **The headset shows the result truthfully.**
+5. **While joint commands arrive, they alone move the arm.** The headset sends both its IK's joint
+   angles and, for ClockSync and latency, the Cartesian target. RobotHost used to apply both, which
+   was harmless while both ends ran the same stateless closed form. With a stateful solver on each
+   end, the two can choose different poses, and the robot alternated between them, doing things
+   the ghost did not show (2026-10-20). `GenericArmPlant` therefore ignores a Cartesian command for
+   motion within half a second of a joint command, while still replying to it. `move-arm`, which
+   sends Cartesian commands only, is unaffected.
+6. **The headset shows the result truthfully.**
    - The wrist LED is red when blocked or out of reach, and amber when the pitch was adjusted.
    - With `snapTargetToReachable` (on in TeleopXR, off in the parked TeleopVR), the drag target
      moves to the pose the arm actually reaches, except while approaching, when the arm is still

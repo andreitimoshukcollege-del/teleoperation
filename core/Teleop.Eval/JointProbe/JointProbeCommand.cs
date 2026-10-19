@@ -53,6 +53,9 @@ namespace Teleop.Eval.JointProbe
             long frequency = Stopwatch.Frequency, start = Stopwatch.GetTimestamp(), nextKeepalive = 0;
             long end = start + (long)(seconds * frequency);
             int frames = 0;
+            int freshReadings = 0;
+            long lastSensedAt = 0;
+            double maxReadingGapMs = 0;
             double minRttMs = double.MaxValue;
             long lastEcho = long.MinValue;
 
@@ -77,13 +80,25 @@ namespace Teleop.Eval.JointProbe
                 }
 
                 long arrival = Stopwatch.GetTimestamp();
-                if (!JointStateCodec.TryDecode(buffer.AsSpan(0, received), out _, out long robotSend, out _, out long echoOp,
+                if (!JointStateCodec.TryDecode(buffer.AsSpan(0, received), out _, out long robotSend, out long sensedAt, out long echoOp,
                         out long echoRecv, out long robotTps, joints, out int count))
                 {
                     continue;
                 }
 
                 frames++;
+                // A fresh servo reading is a new sensed time: the stream repeats the last one at 50 Hz
+                // in between, so this, not the frame rate, is how often the arm is really measured.
+                if (sensedAt != 0 && sensedAt != lastSensedAt)
+                {
+                    if (lastSensedAt != 0)
+                    {
+                        maxReadingGapMs = Math.Max(maxReadingGapMs, (sensedAt - lastSensedAt) * 1000.0 / robotTps);
+                    }
+
+                    lastSensedAt = sensedAt;
+                    freshReadings++;
+                }
                 if (echoOp != lastEcho)
                 {
                     lastEcho = echoOp;
@@ -110,6 +125,9 @@ namespace Teleop.Eval.JointProbe
             }
 
             Console.WriteLine($"joint-probe: {frames} frames from {robot} in {elapsed:0.0} s ({frames / elapsed:0.0} Hz), min round trip {minRttMs:0.0} ms");
+            Console.WriteLine(freshReadings == 0
+                ? "servo feedback: no fresh readings at all (the board is not answering, or no motor is fed back)"
+                : $"servo feedback: {freshReadings} fresh readings ({freshReadings / elapsed:0.0} Hz), largest gap between them {maxReadingGapMs:0} ms");
             Console.WriteLine($"{"motor",6} {"sensed",8} {"last",9} {"min",9} {"max",9}");
             foreach (var (id, s) in seen)
             {

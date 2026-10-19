@@ -175,6 +175,17 @@ push-galaxy-config host=default_jetrover_host motion="true":
     set -euo pipefail
     case "{{motion}}" in true|false) ;; *) echo "error: motion must be true or false, got '{{motion}}'" >&2; exit 1 ;; esac
     host=$(just _robot-host "{{host}}")
+    # The headset has no Tailscale. When this PC can only reach the robot through it (it is on
+    # another network), ask the robot for its own lab-network address and give the headset that.
+    case "$host" in 100.*)
+        lan=$(ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 "jetson@$host"             "ip -4 -o addr show scope global | grep -v -E ' (tailscale0|docker0|lo) ' | awk '{print \$4}' | cut -d/ -f1 | head -1" || true)
+        if [ -z "$lan" ]; then
+            echo "error: the robot is only reachable here over Tailscale ($host), which the headset cannot use, and it reported no LAN address. Pass the robot's LAN address: just push-galaxy-config <address>" >&2
+            exit 1
+        fi
+        echo "robot: $host is its Tailscale address; giving the headset its LAN address, $lan, instead" >&2
+        host=$lan ;;
+    esac
     tmp=$(mktemp --suffix=.json)
     trap 'rm -f "$tmp"' EXIT
     python3 - "$tmp" "$host" "{{motion}}" <<'PY'

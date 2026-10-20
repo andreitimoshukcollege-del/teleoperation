@@ -364,3 +364,9 @@ translates the local wire protocol above into calls against `jetrover_arm_contro
   1.3 Hz under motion" while the headset got everything. The probe now warns when it sees far fewer
   than 50 frames a second. Measure with motion off, or read the driver's and relay's statistics
   lines in `just arm-logs`.
+- **The board's torque codes are swapped (found 2026-10-21).** Hiwonder's SDK sends 0x0B for
+  torque on and 0x0C for off. On this board, 0x0C leaves a servo stiff (its torque-state read, 0x0D,
+  stays 1), and 0x0B makes it limp (reads 0). The driver's `/arm/servo/set/torque` topic was
+  therefore always inverted. `robot_controller_sdk.py` is corrected, and goes live with the next
+  `just deploy-ros`. `just robot-measure-joint-limits` sends 0x0B itself, so it does not depend on
+  the deployed version, and checks the read-back before telling anyone to move the arm.

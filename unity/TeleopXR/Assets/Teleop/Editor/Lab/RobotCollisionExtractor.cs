@@ -221,6 +221,11 @@ namespace Teleop.XR.Editor
             AngleRange wristRange = Sweep("wrist", Of(ArmLink.Distal).Points, wristAndGripper,
                 new Vector3(profile.DistalLinkLength, 0f, 0f), Range(JointRole.Wrist), sweepLog);
 
+            // Where the robot was measured going further than the CAD allows, the measurement wins.
+            proximalRange = Measured("proximal", proximalRange, Range(JointRole.Proximal), sweepLog);
+            distalRange = Measured("distal", distalRange, Range(JointRole.Distal), sweepLog);
+            wristRange = Measured("wrist", wristRange, Range(JointRole.Wrist), sweepLog);
+
             // 3. Skip list: pairs overlapping in nearly every pose.
             var draft = Build(bodies, boxes, floorZ, yawRange, proximalRange, distalRange, wristRange, rollRange, default,
                 Array.Empty<(int, int)>(), Array.Empty<(int, int)>(), "draft");
@@ -586,6 +591,42 @@ namespace Teleop.XR.Editor
         }
 
         // ---- joint ranges ----------------------------------------------------------------------
+
+        /// <summary>
+        /// Physical stops measured on the robot by hand, in the IK's angles (`just
+        /// robot-measure-joint-limits`: torque off, the joint moved until it touched). Each replaces
+        /// the CAD sweep's end on that side, less <see cref="MeasuredMarginDegrees"/>, within the
+        /// servo range. Only real measurements go here, with when they were taken: the CAD's answer
+        /// stands wherever nobody has measured.
+        /// </summary>
+        private static readonly (string joint, bool lowerEnd, float stopDegrees, string measured)[] MeasuredStops =
+        {
+            // The wrist folded down against the forearm: -115.2 and -114.7 deg in two runs (the nearer
+            // is used), where the CAD's sweep stopped at -106. Folded up and back: +119.0, where the CAD
+            // stopped at +118. Measured 2026-10-21. The shoulder stopped near -14 deg in both runs, but
+            // that was the gripper meeting the deck (a contact the boxes model), not the lower arm and
+            // the turntable, so the CAD's -30 stands until that is measured with the gripper clear.
+            ("wrist", true, -114.7f, "2026-10-21"),
+            ("wrist", false, 119.0f, "2026-10-21"),
+        };
+
+        private const float MeasuredMarginDegrees = 2f;
+
+        private static AngleRange Measured(string joint, AngleRange swept, AngleRange servo, StringBuilder log)
+        {
+            float lo = swept.Min, hi = swept.Max;
+            foreach (var stop in MeasuredStops.Where(m => m.joint == joint))
+            {
+                float limit = (stop.stopDegrees + (stop.lowerEnd ? MeasuredMarginDegrees : -MeasuredMarginDegrees)) * Deg;
+                if (stop.lowerEnd) lo = Mathf.Max(servo.Min, limit);
+                else hi = Mathf.Min(servo.Max, limit);
+                log.Append($"\n  {joint}: {(stop.lowerEnd ? "lower" : "upper")} end {(stop.lowerEnd ? lo : hi) / Deg:0.0} deg from the robot " +
+                    $"(measured stop {stop.stopDegrees:0.0} deg on {stop.measured}, less {MeasuredMarginDegrees:0} deg), replacing the CAD's " +
+                    $"{(stop.lowerEnd ? swept.Min : swept.Max) / Deg:0.0}");
+            }
+
+            return new AngleRange(lo, hi);
+        }
 
         private const float ContactDistance = 0.0035f; // surfaces this close are touching (samples are 2.5 mm apart)
         private const float AxisExclusion = 0.015f;    // around the joint axis, the horn and bracket touch by design

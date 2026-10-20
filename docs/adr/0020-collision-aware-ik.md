@@ -139,6 +139,28 @@ clutch's flow, 2 of 1,998 frames were blocked with the target swinging past vert
 from near the body needs the wrist past its −103° limit, or the gripper's tip passes through the
 deck between two tilts. A replay in a scratch script, not a benchmark row.
 
+### Amendment (2026-10-21): joint stops measured on the robot
+
+The CAD's sweep gives each joint's range, but where the robot was measured going further, the
+measurement now wins. `just robot-measure-joint-limits` switches off the torque on chosen servos;
+someone moves each joint by hand until it touches, and the furthest angles reached are printed and
+saved on the robot. The generator's `MeasuredStops` table records each stop with its date. That end
+of the range becomes the stop less 2°, within the servo's range. Everything else is still the CAD.
+
+| Joint | CAD sweep | Measured (2026-10-21) | Now |
+|---|---|---|---|
+| Wrist down | −103° (contact −106°) | −115.2°, −114.7° | −112.7° |
+| Wrist up | +115° (contact +118°) | +119.0° | +117° |
+| Shoulder down | −30° (contact −33°) | not reached | −30° |
+
+The shoulder stopped near −14° both times, but that was the gripper meeting the deck, which the
+boxes model. It was not the lower arm meeting the turntable, which is what the joint's range covers.
+So the shoulder's −30° is still the CAD's, and still unverified. Measure it with the elbow straight
+and the gripper clear of the deck.
+
+On this board the torque codes are the other way round from Hiwonder's SDK: 0x0B switches the
+torque off and 0x0C on (read back with 0x0D). The SDK in `robot/ros` is corrected.
+
 ## Consequences
 
 - **The ghost and the robot agree by construction:** one model, one solver, both sides.

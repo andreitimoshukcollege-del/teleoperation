@@ -561,6 +561,94 @@ robot-journal-persist remote_host=default_jetrover_host remote_user="jetson":
     echo "--- boots the journal knows:"; journalctl --list-boots --no-pager | tail -3
     REMOTE
 
+# Measure how far joints really go, by hand: stops the servo driver, switches off torque on the given servos (default 2, the shoulder, and 4, the wrist pitch), then for `seconds` prints their angles live while someone moves each one by hand to where it physically touches, and records the furthest each reached. Angles are the IK's (RobotHost's conversion: (pulse - 500) / 238.7 per radian, minus jetrover.json's zeroOffsetRadians). At the end each servo is commanded to hold where it is (so nothing snaps back), and the driver starts again. With the shoulder's torque off the whole arm falls: someone must hold it the entire time. docs/adr/0020: these numbers, less a margin, replace the CAD's joint ranges
+[group('robot: deploy and restart (someone at the robot)')]
+robot-measure-joint-limits ids="2 4" seconds="90" remote_host=default_jetrover_host remote_user="jetson":
+    #!/usr/bin/env bash
+    set -uo pipefail
+    ssh -o StrictHostKeyChecking=accept-new "{{remote_user}}@$(just _robot-host "{{remote_host}}")" "IDS='{{ids}}' SECONDS_TO_MEASURE={{seconds}} bash -s" <<'REMOTE'
+    sudo systemctl stop jetrover-arm-control
+    sdk=$(ls -d /home/jetson/teleop_ros_current/install/jetrover_arm_control/lib/python3*/site-packages | head -1)
+    PYTHONUNBUFFERED=1 PYTHONPATH="$sdk" python3 - <<'PY'
+    import math, os, time
+    from jetrover_arm_control.board_manager.robot_controller_sdk import Board, PacketFunction
+
+    ids = [int(i) for i in os.environ["IDS"].split()]
+    seconds = float(os.environ["SECONDS_TO_MEASURE"])
+    names = {1: "base yaw", 2: "shoulder", 3: "elbow", 4: "wrist pitch", 5: "wrist roll"}
+    zero_offset = {2: 0.12217305}  # core/RobotProfiles/jetrover.json
+    pulse_per_radian = 1000.0 / math.radians(240.0)
+
+    def angle(servo, pulse):
+        return math.degrees((pulse - 500) / pulse_per_radian - zero_offset.get(servo, 0.0))
+
+    def read(board, servo):
+        got = board.bus_servo_read_position(servo)
+        return got[0] if got else None
+
+    def torque(i):
+        got = board.bus_servo_read_torque_state(i)
+        return got[0] if got else None
+
+    board = Board()
+    board.enable_reception()
+    time.sleep(0.5)
+    lo, hi, last = {}, {}, {}
+    try:
+        for n in (5, 4, 3, 2, 1):
+            print(f"torque off on {', '.join(names.get(i, str(i)) for i in ids)} in {n} s: hold the arm", flush=True)
+            time.sleep(1)
+        for i in ids:
+            # Torque off is sub-command 0x0B on this board (the opposite of Hiwonder's published SDK,
+            # measured 2026-10-21). Sent raw, so it does not depend on which SDK version is deployed.
+            board.buf_write(PacketFunction.PACKET_FUNC_BUS_SERVO, [0x0B, i])
+            time.sleep(0.02)
+            state = torque(i)
+            print(f"  {names.get(i, i)} (motor {i}): torque now {state} (0 = off)", flush=True)
+            if state != 0:
+                raise RuntimeError(f"motor {i} did not switch its torque off; stopping")
+        print(f"TORQUE OFF. Move each joint slowly to where it touches, both ways. {seconds:.0f} s.", flush=True)
+        end, shown = time.time() + seconds, 0.0
+        while time.time() < end:
+            for i in ids:
+                p = read(board, i)
+                if p is not None:
+                    a = angle(i, p)
+                    last[i] = p
+                    lo[i] = min(lo.get(i, a), a)
+                    hi[i] = max(hi.get(i, a), a)
+            if time.time() - shown >= 0.5:
+                shown = time.time()
+                print("  " + "   ".join(
+                    f"{names.get(i, i)} {angle(i, last[i]):7.1f} deg (seen {lo[i]:6.1f} to {hi[i]:6.1f})" if i in last else f"{names.get(i, i)} no reading"
+                    for i in ids) + f"   {end - time.time():3.0f} s left", flush=True)
+        for n in (5, 4, 3, 2, 1):
+            print(f"holding in {n} s: put the arm where it should stay", flush=True)
+            time.sleep(1)
+    finally:
+        # Command each servo to where it is now, which turns its torque back on there.
+        for i in ids:
+            p = read(board, i)
+            if p is None:
+                p = last.get(i)
+            if p is not None:
+                board.bus_servo_set_position(1.0, [[i, int(p)]])
+            print(f"  {names.get(i, i)} (motor {i}): holding at pulse {p}, torque {torque(i)}", flush=True)
+        print("TORQUE ON (holding).", flush=True)
+        lines = [f"  {names.get(i, i)} (motor {i}): {lo[i]:.1f} to {hi[i]:.1f} deg" if i in lo else f"  {names.get(i, i)} (motor {i}): no reading"
+                 for i in ids]
+        stamp = time.strftime("%Y%m%d-%H%M%S")
+        path = os.path.expanduser(f"~/joint-limits-{stamp}.txt")
+        with open(path, "w") as f:
+            f.write("\n".join(lines) + "\n")
+        print(f"--- measured, in the IK's angles (also saved to {path}):")
+        print("\n".join(lines))
+    PY
+    sudo systemctl start jetrover-arm-control
+    sleep 5
+    systemctl is-active jetrover-arm-control
+    REMOTE
+
 # Experiment, for a board that has stopped answering (just robot-board-diagnose: 0 bytes read): try to bring it back from the Jetson instead of the power switch. Stops the servo driver, opens the board's serial port itself, and asks servo 1 for its position: with both control lines released, then after a 100 ms DTR pulse, then after a 100 ms RTS pulse, stopping at the first that gets an answer. It prints which one worked, then starts the driver again and checks the feedback. First run, 2026-10-20: none did, so these lines do not reset the board (only the power switch did). A pulse that resets the board's controller can drop the servos' torque, so someone must hold the arm
 [group('robot: deploy and restart (someone at the robot)')]
 robot-board-reset remote_host=default_jetrover_host remote_user="jetson":

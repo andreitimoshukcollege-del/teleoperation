@@ -439,6 +439,38 @@ robot-serial remote_host=default_jetrover_host remote_user="jetson":
          echo '--- serial ports held by jetrover-arm-control and its children'; for p in \$(systemctl show -p MainPID --value jetrover-arm-control) \$(pgrep -f robot_controller_manager); do ls -l /proc/\$p/fd 2>/dev/null | grep -E 'tty|serial' | sed \"s/^/pid \$p: /\"; done; \
          echo '--- kernel serial USB events (newest last)'; journalctl -k --no-pager -n 5000 | grep -iE 'ch34|cdc_acm|ttyUSB|ttyACM|cp210|ftdi' | grep -v 'Modules linked in' | tail -30"
 
+# Read-only: when the board has stopped answering (just joint-probe shows every motor sensed NO), find out which side is dead, without opening the serial port (opening it can reset the board and erase the evidence). Shows: the robot's uptime; the kernel's power and USB alarms since boot; the driver's threads and what each waits on; whether any bytes reach the driver over a few seconds; how often the board's own battery report and the servo feedback still arrive; and any receive errors in the driver's log. Run it while the fault is present, before any restart
+[group('robot: checks and diagnostics (nothing moves)')]
+robot-board-diagnose seconds="6" remote_host=default_jetrover_host remote_user="jetson":
+    #!/usr/bin/env bash
+    set -uo pipefail
+    ssh -o StrictHostKeyChecking=accept-new "{{remote_user}}@$(just _robot-host "{{remote_host}}")" "SECONDS_TO_WATCH={{seconds}} bash -s" <<'REMOTE'
+    echo "--- uptime: $(uptime)"
+    echo '--- kernel: power, thermal and USB alarms since boot (newest last)'
+    journalctl -k -b --no-pager | grep -iE 'soctherm|oc alarm|under.?volt|brown|throttl|over.?current|usb [0-9.-]+: (reset|disconnect|device descriptor|cannot|error)|cdc_acm.*(error|-71|-110|-32)|ttyACM' | grep -v -E 'Modules linked in|trip temperature|thermtrip|throttrip|parse_throttle|cooling device registered|probe successful|failed to register sensor' | tail -25
+    echo '--- Jetson input power rails (ina3221, if present)'
+    for f in /sys/bus/i2c/drivers/ina3221*/*/iio:device*/in_voltage*_input /sys/bus/i2c/drivers/ina3221*/*/iio:device*/rail_name_*; do [ -r "$f" ] && echo "$(basename "$f"): $(cat "$f")"; done 2>/dev/null | head -12
+    echo '--- every start of the servo driver over the last three boots (each start reopens the serial port)'
+    for b in -2 -1 0; do journalctl -b "$b" -u jetrover-arm-control --no-pager -o short 2>/dev/null | grep -E 'Started|-- Logs begin' | grep Started | sed "s/^/boot $b: /"; done | tail -30
+    pid=$(pgrep -f 'lib/jetrover_arm_control/robot_controller_manager' | head -1)
+    if [ -z "$pid" ]; then echo '--- the driver is not running'; exit 0; fi
+    echo "--- driver pid $pid, started $(ps -o lstart= -p "$pid")"
+    echo '--- its threads: name, state, kernel wait'
+    for t in /proc/$pid/task/*; do printf '%-8s %-16s %s %s\n' "$(basename "$t")" "$(cat "$t/comm")" "$(awk '{print $3}' "$t/stat")" "$(cat "$t/wchan" 2>/dev/null)"; done
+    echo "--- bytes the driver read and wrote over ${SECONDS_TO_WATCH} s (all its fds: serial and ROS sockets together)"
+    read -r r1 w1 c1 < <(awk '/^rchar|^wchar|^syscr/{printf "%s ", $2}' /proc/$pid/io); sleep "$SECONDS_TO_WATCH"
+    read -r r2 w2 c2 < <(awk '/^rchar|^wchar|^syscr/{printf "%s ", $2}' /proc/$pid/io)
+    echo "read $((r2 - r1)) bytes, wrote $((w2 - w1)) bytes, $((c2 - c1)) read calls"
+    source /opt/ros/foxy/setup.bash; export ROS_LOCALHOST_ONLY=1
+    echo "--- messages in ${SECONDS_TO_WATCH} s: servo feedback, then the board's battery report (every 5 s when the board answers)"
+    timeout "$SECONDS_TO_WATCH" ros2 topic echo /unity/robot/servo/feedback_array 2>/dev/null | grep -c '^data:' || true
+    timeout "$SECONDS_TO_WATCH" ros2 topic echo /robot/battery 2>/dev/null | grep '^data:' | tail -2 || true
+    echo '--- receive errors in the driver log since it started'
+    journalctl -u jetrover-arm-control --no-pager --since "$(date -d "$(ps -o lstart= -p "$pid")" '+%Y-%m-%d %H:%M:%S')" | grep -iE 'verificatio|traceback|error|exception|END\.\.\.' | tail -15
+    echo '--- py-spy stack of every driver thread (only if py-spy is installed)'
+    command -v py-spy >/dev/null && py-spy dump --pid "$pid" 2>&1 | head -60 || echo 'py-spy not installed'
+    REMOTE
+
 # Read-only: subscribe to RobotHost's joint-state stream (docs/adr/0018) for a few seconds and print the frame rate, round trip, and per motor whether it is sensed (servo feedback) or only a commanded belief. Sends a keepalive, never a command: nothing moves
 [group('robot: checks and diagnostics (nothing moves)')]
 joint-probe seconds="3" remote_host=default_jetrover_host:

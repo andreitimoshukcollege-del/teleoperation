@@ -17,6 +17,7 @@ import pytest
 from jetrover_arm_control.servo_controller import servo_controller as servo_controller_module
 from jetrover_arm_control.servo_controller.servo_controller import (
     MIN_MOVE_DURATION_SECONDS,
+    WRITE_SETTLE_SECONDS,
     ServoController,
 )
 
@@ -311,7 +312,7 @@ def test_pending_targets_are_per_servo(monkeypatch):
     clock.now += 0.05
     controller.flushPending()
 
-    assert sorted(positions[0][0:2] for _, positions in board.written[2:]) == [[1, 530], [2, 470]]
+    assert board.written[2:] == [(pytest.approx(30 / PULSES_PER_SECOND), [[1, 530], [2, 470]])]  # one packet
 
 
 def test_a_pending_target_within_the_write_gate_is_not_written(monkeypatch):
@@ -339,3 +340,46 @@ def test_reset_drops_pending_targets(monkeypatch):
     controller.flushPending()
 
     assert all(positions != [[SERVO_ID, 600]] for _, positions in board.written)
+
+
+def test_servos_that_move_together_share_one_packet(monkeypatch):
+    """With the headset streaming, one packet per servo then a read lost the read; servos that
+    may move at the same moment, with the same duration, go out together."""
+    board = StubBoard()
+    controller, clock = make_controller(monkeypatch, board)
+
+    written = controller.setPositions([(1, 500, PULSES_PER_SECOND), (2, 600, PULSES_PER_SECOND), (3, 700, PULSES_PER_SECOND)])
+
+    assert written == 1
+    assert board.written == [(MIN_MOVE_DURATION_SECONDS, [[1, 500], [2, 600], [3, 700]])]
+
+
+def test_different_durations_go_in_separate_packets(monkeypatch):
+    board = StubBoard()
+    controller, clock = make_controller(monkeypatch, board)
+    controller.setPositions([(1, 500, PULSES_PER_SECOND), (2, 500, PULSES_PER_SECOND)])
+    clock.now += 10.0
+
+    written = controller.setPositions([(1, 800, PULSES_PER_SECOND), (2, 510, PULSES_PER_SECOND)])
+
+    assert written == 2
+    packets = {positions[0][0]: (duration, positions) for duration, positions in board.written[1:]}
+    assert packets[1] == (pytest.approx(300 / PULSES_PER_SECOND), [[1, 800]])
+    assert packets[2] == (MIN_MOVE_DURATION_SECONDS, [[2, 510]])
+
+
+def test_a_read_waits_for_the_settle_time_after_a_write(monkeypatch):
+    board = StubBoard()
+    board.read_return = 500
+    controller, clock = make_controller(monkeypatch, board)
+    slept = []
+    monkeypatch.setattr(servo_controller_module.time, "sleep", slept.append)
+
+    controller.setPos(servoID=SERVO_ID, direction=500, pulses_per_second=PULSES_PER_SECOND)
+    clock.now += 0.001
+    controller.getRawPos(servoID=SERVO_ID)
+    assert slept == [pytest.approx(WRITE_SETTLE_SECONDS - 0.001)]
+
+    clock.now += 1.0
+    controller.getRawPos(servoID=SERVO_ID)
+    assert len(slept) == 1  # long after the write: no wait

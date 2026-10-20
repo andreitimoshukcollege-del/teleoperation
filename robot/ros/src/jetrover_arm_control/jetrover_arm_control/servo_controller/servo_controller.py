@@ -17,6 +17,11 @@ MIN_MEANINGFUL_PULSE_DELTA = 5
 # sync by hand.
 MIN_MOVE_DURATION_SECONDS = 0.05
 
+# How long a position read waits after the last move packet, seconds. With the headset streaming
+# (2026-10-20), a read sent straight after a burst of move packets often got no answer, costing
+# the read's whole 1 s timeout: feedback fell from 20 Hz to under 2 Hz.
+WRITE_SETTLE_SECONDS = 0.003
+
 
 class ServoController:
     """setPos (wire v4, docs/adr/0011-generic-robot-arm-profiles.md) receives an already-resolved
@@ -46,6 +51,9 @@ class ServoController:
     first command of each burst, the oldest, was the one written; the target the servo chased
     was up to a poll cycle stale, and a final correction inside the cooldown was lost
     (robot/README.md has the earlier incident).
+
+    The servos that may move at the same moment go out in one board packet (per move duration),
+    and a position read waits WRITE_SETTLE_SECONDS after the last packet.
     """
 
     def __init__(self, boardMgr: BoardManager):
@@ -63,6 +71,9 @@ class ServoController:
         self._nextAllowedWriteAt = {}
         # The newest target that arrived during a servo's cooldown: servoID -> (pulse, speed).
         self._pending = {}
+        # When the last move packet went out (time.monotonic()); getRawPos waits
+        # WRITE_SETTLE_SECONDS after it.
+        self._lastWriteAt = None
 
         # Hardcoded motor ids for this JetRover's bulk diagnostic reads (temp/volt/torque) only --
         # servo_id_enum.SERVO_ENUM is gone (docs/adr/0011: motor ids now arrive directly on the
@@ -86,34 +97,48 @@ class ServoController:
                 pre-wire-v3 relative-delta protocol
             pulses_per_second (float) - this move's speed; must be > 0
         """
-        now = time.monotonic()
-        nextPos = int(direction)
-        nextPos = 0 if nextPos < 0 else 1000 if nextPos > 1000 else nextPos
-        if now < self._nextAllowedWriteAt.get(servoID, 0.0):
-            # Still cooling down from this servo's last real move: keep it as the pending target,
-            # newest wins, for flushPending to write when the cooldown ends. See class doc.
-            self._pending[servoID] = (nextPos, pulses_per_second)
-            return
+        self.setPositions([(servoID, direction, pulses_per_second)])
 
-        self._pending.pop(servoID, None)
-        self._write(servoID, nextPos, pulses_per_second, now)
+    def setPositions(self, targets):
+        """setPos for several servos at once: every servo that may move now moves in one board
+        packet per move duration, rather than one packet each. targets is a list of
+        (servoID, absolute pulse target, pulses_per_second). Returns the packets written."""
+        now = time.monotonic()
+        moves = []
+        for servoID, direction, pulses_per_second in targets:
+            nextPos = int(direction)
+            nextPos = 0 if nextPos < 0 else 1000 if nextPos > 1000 else nextPos
+            if now < self._nextAllowedWriteAt.get(servoID, 0.0):
+                # Still cooling down from this servo's last real move: keep it as the pending
+                # target, newest wins, for flushPending to write when the cooldown ends.
+                self._pending[servoID] = (nextPos, pulses_per_second)
+                continue
+
+            self._pending.pop(servoID, None)
+            self._plan(servoID, nextPos, pulses_per_second, now, moves)
+
+        return self._send(moves)
 
     def flushPending(self):
-        """Writes every pending target whose servo's cooldown has expired. Cheap when nothing is
-        pending; robot_controller_node.py calls it between feedback reads, since on the
-        single-threaded executor no command callback runs while the feedback poll does."""
+        """Writes every pending target whose servo's cooldown has expired, batched like
+        setPositions. Cheap when nothing is pending; robot_controller_node.py calls it between
+        feedback reads, since on the single-threaded executor no command callback runs while the
+        feedback poll does. Returns the packets written."""
         if not self._pending:
-            return
+            return 0
 
         now = time.monotonic()
+        moves = []
         for servoID in list(self._pending):
             if now < self._nextAllowedWriteAt.get(servoID, 0.0):
                 continue
             nextPos, pulses_per_second = self._pending.pop(servoID)
-            self._write(servoID, nextPos, pulses_per_second, now)
+            self._plan(servoID, nextPos, pulses_per_second, now, moves)
 
-    def _write(self, servoID: int, nextPos: int, pulses_per_second: float, now: float):
-        """One physical move, unless it is within the write gate of what was last sent."""
+        return self._send(moves)
+
+    def _plan(self, servoID: int, nextPos: int, pulses_per_second: float, now: float, moves):
+        """Adds one move to moves, unless it is within the write gate of what was last sent."""
         lastSent = self._lastSentPulse.get(servoID)
         if lastSent is not None and abs(nextPos - lastSent) < MIN_MEANINGFUL_PULSE_DELTA:
             # Not a correctness concern (see MIN_MEANINGFUL_PULSE_DELTA's own comment) -- just
@@ -126,13 +151,24 @@ class ServoController:
         pulseDelta = abs(nextPos - lastSent) if lastSent is not None else 0
         duration = max(MIN_MOVE_DURATION_SECONDS, pulseDelta / pulses_per_second)
 
-        self.board.bus_servo_set_position(duration, [[servoID, nextPos]])
-
         # The STM32 firmware paces the physical move itself via duration (the parameter
         # bus_servo_set_position encodes into the packet) -- no need to block this thread waiting
         # for it. Track when the next write may go out instead.
         self._lastSentPulse[servoID] = nextPos
         self._nextAllowedWriteAt[servoID] = now + duration
+        moves.append((duration, servoID, nextPos))
+
+    def _send(self, moves):
+        """One board packet per distinct duration (the packet carries one duration for all its
+        servos). Returns the packets written."""
+        byDuration = {}
+        for duration, servoID, nextPos in moves:
+            byDuration.setdefault(duration, []).append([servoID, nextPos])
+        for duration, positions in byDuration.items():
+            self.board.bus_servo_set_position(duration, positions)
+        if byDuration:
+            self._lastWriteAt = time.monotonic()
+        return len(byDuration)
 
     def resetArm(self):
         # A reset overrides whatever was still waiting to be written.
@@ -145,6 +181,10 @@ class ServoController:
         sleep(0.02)
 
     def getRawPos(self, servoID: int):
+        if self._lastWriteAt is not None:
+            wait = self._lastWriteAt + WRITE_SETTLE_SECONDS - time.monotonic()
+            if wait > 0:
+                time.sleep(wait)
         if(servoID):
             readPos = self.board.bus_servo_read_position(servo_id= servoID)
             if(readPos):

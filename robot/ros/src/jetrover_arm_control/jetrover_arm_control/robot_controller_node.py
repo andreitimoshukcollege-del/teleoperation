@@ -1,3 +1,5 @@
+import time
+
 import rclpy
 from rclpy.node import Node
 from std_msgs.msg import Bool, Float32, Float32MultiArray, Int32
@@ -18,6 +20,11 @@ from jetrover_arm_control.servo_controller.servo_controller import ServoControll
 # thread) for a second. The headset models the gripper from its commands (docs/adr/0018).
 FEEDBACK_MOTOR_IDS = [1, 2, 3, 4, 5]
 
+# How often the node logs its feedback-loop statistics and the battery, seconds. When the board
+# stops answering (robot/README.md), the journal then shows when the reads started failing and the
+# voltage just before.
+STATS_PERIOD_SECONDS = 5.0
+
 
 class RobotController(Node):
 
@@ -35,6 +42,11 @@ class RobotController(Node):
         # timer below -- both need the same underlying board connection.
         self.servoController = ServoController(boardMgr = self.boardMgr)
         self.servoSubManager = ServoSubscriberCallback(servoController = self.servoController)
+        self._resetStats(time.monotonic())
+        self._lastCycleEnd = None
+        # The board's last battery report, mV, for the stats line: when the board goes silent, the
+        # journal then shows the voltage just before it did.
+        self._lastBatteryMv = None
 
         # Subscribers
         self.get_logger().info("Initializing Servo Subscribers...")
@@ -50,7 +62,7 @@ class RobotController(Node):
         # input after the operator stops sending, hence keeping this shallow rather than
         # removing the limit.
         self.armCommandSub = self.create_subscription(
-            Float32MultiArray, "/arm/servo/command_array", self.servoSubManager.armCommandArrayCbk, 3)
+            Float32MultiArray, "/arm/servo/command_array", self._timedCommandCbk, 3)
 
         self.buzzerSub = self.create_subscription(Bool, "/robot/buzzer", self.robotData.setBuzzerCbk, 1)
         self.torqueState = self.create_subscription(Int32, "/arm/servo/set/torque", self.servoSubManager.setServoTorqueCbk, 1)
@@ -75,6 +87,39 @@ class RobotController(Node):
 
         self.get_logger().info("Servo Data Manager initialized.")
 
+    # --------------------Statistics--------------------------- #
+
+    def _resetStats(self, now):
+        self._statsSince = now
+        self._cycles = 0
+        self._readOk = {m: 0 for m in FEEDBACK_MOTOR_IDS}
+        self._readMissed = {m: 0 for m in FEEDBACK_MOTOR_IDS}
+        self._slowestReadMs = {m: 0.0 for m in FEEDBACK_MOTOR_IDS}
+        self._slowestCycleMs = 0.0
+        self._longestGapMs = 0.0
+        self._commands = 0
+        self._slowestCommandMs = 0.0
+        self._packets = 0
+
+    def _timedCommandCbk(self, msg):
+        start = time.monotonic()
+        self._packets += self.servoSubManager.armCommandArrayCbk(msg) or 0
+        self._commands += 1
+        self._slowestCommandMs = max(self._slowestCommandMs, (time.monotonic() - start) * 1000.0)
+
+    def _logStats(self, now):
+        if now - self._statsSince < STATS_PERIOD_SECONDS:
+            return
+        seconds = now - self._statsSince
+        reads = " ".join(
+            f"{m}:{self._readOk[m]}/{self._readMissed[m]}/{self._slowestReadMs[m]:.0f}ms" for m in FEEDBACK_MOTOR_IDS)
+        self.get_logger().info(
+            f"[stats {seconds:.1f}s] cycles {self._cycles} ({self._cycles / seconds:.1f} Hz), slowest cycle "
+            f"{self._slowestCycleMs:.0f} ms, longest gap between cycles {self._longestGapMs:.0f} ms; "
+            f"reads ok/missed/slowest {reads}; commands {self._commands} (slowest {self._slowestCommandMs:.1f} ms); "
+            f"move packets {self._packets}; battery {self._lastBatteryMv if self._lastBatteryMv is not None else '?'} mV")
+        self._resetStats(now)
+
     # --------------------Publishers--------------------------- #
 
     def feedbackPublisher(self):
@@ -86,17 +131,28 @@ class RobotController(Node):
         fails this cycle is simply omitted, not published as a fabricated zero -- relay_node.py's
         own StaleTrackedValue is what turns "missing" into "invalid," not this method.
         """
+        cycleStart = time.monotonic()
+        self._logStats(cycleStart)
+        if self._lastCycleEnd is not None:
+            self._longestGapMs = max(self._longestGapMs, (cycleStart - self._lastCycleEnd) * 1000.0)
         readings = []
         for motor_id in FEEDBACK_MOTOR_IDS:
             # A command callback cannot run during this poll (single-threaded executor), so write
-            # any target whose servo's cooldown has just ended here, between reads.
-            self.servoController.flushPending()
+            # any target whose servo's cooldown has just ended here, between reads. getRawPos
+            # then waits a few ms after the packet before it asks.
+            self._packets += self.servoController.flushPending()
+            readStart = time.monotonic()
             pulse = self.servoController.getRawPos(motor_id)
+            self._slowestReadMs[motor_id] = max(self._slowestReadMs[motor_id], (time.monotonic() - readStart) * 1000.0)
             if pulse is None:
+                self._readMissed[motor_id] += 1
                 continue
+            self._readOk[motor_id] += 1
             readings.append((motor_id, pulse))
 
-        self.servoController.flushPending()
+        self._cycles += 1
+        self._lastCycleEnd = time.monotonic()
+        self._slowestCycleMs = max(self._slowestCycleMs, (self._lastCycleEnd - cycleStart) * 1000.0)
 
         msg = Float32MultiArray()
         data = [float(len(readings))]
@@ -109,6 +165,7 @@ class RobotController(Node):
         data = self.robotData.getBattery()
         if data is None:
             return
+        self._lastBatteryMv = data
         msg = Int32()
         msg.data = data
 

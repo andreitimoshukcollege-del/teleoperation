@@ -125,6 +125,14 @@ namespace Teleop.Eval.JointProbe
             }
 
             Console.WriteLine($"joint-probe: {frames} frames from {robot} in {elapsed:0.0} s ({frames / elapsed:0.0} Hz), min round trip {minRttMs:0.0} ms");
+            if (frames / elapsed < 40)
+            {
+                // RobotHost streams to whoever last sent on the joint port (ADR 0018). A headset
+                // sending joint commands takes the stream back at 48 Hz, and this probe sees only
+                // scraps: on 2026-10-20 that read as "1.3 Hz feedback" while the headset got all of it.
+                Console.WriteLine("joint-probe: WARNING: far below RobotHost's 50 Hz stream. If the headset is sending joint commands, " +
+                    "it is taking the stream from this probe, and the rates below are this probe's, not the robot's. Turn motion off to measure.");
+            }
             Console.WriteLine(freshReadings == 0
                 ? "servo feedback: no fresh readings at all (the board is not answering, or no motor is fed back)"
                 : $"servo feedback: {freshReadings} fresh readings ({freshReadings / elapsed:0.0} Hz), largest gap between them {maxReadingGapMs:0} ms");

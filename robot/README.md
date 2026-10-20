@@ -327,3 +327,37 @@ translates the local wire protocol above into calls against `jetrover_arm_contro
     servo feedback and the arm, so this board's answers can take longer than that. Reverted.
 - **Motor ids:** motor 5 is the wrist roll and motor 10 the gripper. Motors 1–5 report position.
   Motor 10 moves but never answers position reads, so the gripper is always a commanded belief.
+- **The servo board goes silent, and only the power switch brings it back (open, 2026-10-20).**
+  - **What it looks like:** the camera streams, but the arm ignores commands. `just joint-probe`
+    shows every motor `sensed NO`, and there is no battery reading.
+  - **What `just robot-board-diagnose` showed while it was happening** (read-only, and it never
+    opens the port):
+    - the driver read **0 bytes** from the board and wrote one position request a second (each
+      read waits its 1 s timeout);
+    - its receive thread was alive;
+    - the USB serial chip stayed connected, and the kernel logged no USB errors and no
+      undervoltage.
+
+    So the board's controller stops replying while the chip in front of it stays up.
+  - **Ruled out:**
+    - a fresh driver process (a redeploy) does not revive it;
+    - a DTR or RTS pulse on the port does not either (`just robot-board-reset`).
+  - **Not the trigger on their own:** three driver restarts with the headset idle, one with the
+    headset streaming, three deploys, and a build on the Jetson (`just deploy-ros false`). The
+    board kept answering through all of them.
+  - **Earlier cases:**
+    - after the read-timeout deploy above, which is probably why "50 ms stopped all feedback" was
+      blamed on the timeout;
+    - after the redeploy of 2026-10-20 01:51;
+    - during the low-battery incident. Each followed a driver restart, but the restart alone did
+      not reproduce it.
+  - **Evidence now kept:** every 5 s the driver logs its read statistics and the last battery
+    voltage (`just arm-logs`), so the journal shows when the reads started failing and the
+    voltage just before. But the journal is wiped at every boot, and a power-cycle is a boot.
+    Read `just arm-logs` and run `just robot-board-diagnose` **before** switching off.
+- **A measurement trap: `just joint-probe` while the headset streams.** RobotHost sends the
+  joint-state stream to whoever last sent on the joint port. A headset sending joint commands takes
+  it back 48 times a second, so the probe gets scraps. On 2026-10-20 that read as "feedback falls to
+  1.3 Hz under motion" while the headset got everything. The probe now warns when it sees far fewer
+  than 50 frames a second. Measure with motion off, or read the driver's and relay's statistics
+  lines in `just arm-logs`.

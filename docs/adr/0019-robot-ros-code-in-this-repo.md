@@ -42,7 +42,7 @@ A change to either half could not be reviewed, tested or rolled back together wi
      there.
    - It points `~/teleop_ros_current` at it, installs `robot/systemd`'s two ROS units (they now
      source `~/teleop_ros_current/install/setup.bash`), and restarts them.
-   - `activate=false` only builds.
+   - `just deploy-ros false` only builds.
    - Rollback is repointing the link. The Jetson needs no git checkout, and never clones this
      repository (its Unity assets are large and LFS).
 4. **The old repository stays as it is.** It is not archived and not pushed to. It is history; this
@@ -58,7 +58,7 @@ A change to either half could not be reviewed, tested or rolled back together wi
 - **No CI coverage for the ROS code.** CI builds .NET only. Building the ROS code needs ROS 2 Foxy
   on Ubuntu 20.04 (the Jetson's). Its pure-Python tests (the relay protocol, the stale-value
   tracker) can run under plain `pytest` and could be added to CI later. Until then, `just
-  deploy-ros activate=false` is the build check, and it runs on the Jetson.
+  deploy-ros false` is the build check, and it runs on the Jetson.
 - **Settings once changed on the Jetson by hand, such as `FEEDBACK_MOTOR_IDS`,** are now edits here
   followed by `just deploy-ros`. `just robot-set-feedback-ids`, which edited the Jetson's checkout
   in place, is removed.

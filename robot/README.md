@@ -24,7 +24,7 @@ format.
 
 ```bash
 just deploy-robot                # everything: gates, this workspace, RobotHost, CameraHost, checks
-just deploy-ros activate=false   # this workspace only: copy to the Jetson and build there; nothing running changes
+just deploy-ros false            # this workspace only: copy to the Jetson and build there; nothing running changes
 just deploy-ros                  # ...then switch the two ROS services to it and restart them
 ```
 

@@ -33,7 +33,7 @@ to arm control were left behind (the camera is now served by `core/Teleop.Camera
 From the repository root, never by hand on the Jetson:
 
 ```bash
-just deploy-ros activate=false   # copy to the Jetson, build it there, run the Python tests
+just deploy-ros false            # copy to the Jetson, build it there, run the Python tests
 just deploy-ros                  # ...and switch the two ROS services to it (someone at the robot)
 just robot-ros-diff              # read-only: is the Jetson running exactly what is here?
 ```

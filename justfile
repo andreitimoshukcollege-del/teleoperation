@@ -540,6 +540,56 @@ robot-board-commands remote_host=default_jetrover_host remote_user="jetson":
         "files=\$(grep -rl --include=*.py -E 'def set_buzzer|PACKET_FUNC|BOARD_' /home/jetson /opt 2>/dev/null | grep -v -E '/build/|/install/|site-packages/(numpy|scipy)' | sort -u | head -8); \
          for f in \$files; do echo \"=== \$f\"; grep -n -E '^ *def |PACKET_FUNC|FUNC_|= *0x' \$f | head -60; echo '--- buzzer / battery / alarm:'; grep -n -i -E 'buzz|batt|alarm|volt|warn|beep' \$f | head -30; done"
 
+# Experiment, for a board that has stopped answering (just robot-board-diagnose: 0 bytes read): try to bring it back from the Jetson instead of the power switch. Stops the servo driver, opens the board's serial port itself, and asks servo 1 for its position: with both control lines released, then after a 100 ms DTR pulse, then after a 100 ms RTS pulse, stopping at the first that gets an answer. It prints which one worked, then starts the driver again and checks the feedback. First run, 2026-10-20: none did, so these lines do not reset the board (only the power switch did). A pulse that resets the board's controller can drop the servos' torque, so someone must hold the arm
+[group('robot: deploy and restart (someone at the robot)')]
+robot-board-reset remote_host=default_jetrover_host remote_user="jetson":
+    #!/usr/bin/env bash
+    set -uo pipefail
+    ssh -o StrictHostKeyChecking=accept-new "{{remote_user}}@$(just _robot-host "{{remote_host}}")" "bash -s" <<'REMOTE'
+    sudo systemctl stop jetrover-arm-control
+    sdk=$(ls -d /home/jetson/teleop_ros_current/install/jetrover_arm_control/lib/python3*/site-packages | head -1)
+    PYTHONPATH="$sdk" python3 - <<'PY'
+    import time
+    import serial
+    from jetrover_arm_control.board_manager.robot_controller_sdk import checksum_crc8
+
+    def request():
+        buf = [0xAA, 0x55, 5, 2, 0x05, 1]  # bus servo (5): read position (0x05) of servo 1
+        return bytes(buf + [checksum_crc8(bytes(buf[2:]))])
+
+    def answer(port, seconds):
+        port.reset_input_buffer()
+        port.write(request())
+        got, end = b"", time.time() + seconds
+        while time.time() < end:
+            got += port.read(64)
+        return got
+
+    port = serial.Serial(None, 1000000, timeout=0.1)
+    port.rts = False
+    port.dtr = False
+    port.port = "/dev/ttyACM0"
+    port.open()
+    time.sleep(0.5)
+    got = answer(port, 1.5)
+    print(f"lines released: {len(got)} bytes back {got[:24].hex()}")
+    for line in ("dtr", "rts"):
+        if got:
+            break
+        setattr(port, line, True)
+        time.sleep(0.1)
+        setattr(port, line, False)
+        time.sleep(1.5)  # the controller boots
+        got = answer(port, 2.0)
+        print(f"after a {line.upper()} pulse: {len(got)} bytes back {got[:24].hex()}")
+    port.close()
+    print("RESULT: the board answers" if got else "RESULT: still silent; only the power switch is left")
+    PY
+    sudo systemctl start jetrover-arm-control
+    sleep 6
+    REMOTE
+    just joint-probe 3
+
 # Restart the servo bus driver (jetrover-arm-control), which reopens its serial link to the Hiwonder board. For when the board stopped answering (just ros-check shows no feedback_array or battery messages) after a brown-out or a reset. It interrupts the arm, and the shoulder may sag while the driver comes back (seen 2026-10-12), so someone must be at the robot. Afterwards the feedback should flow again
 [group('robot: deploy and restart (someone at the robot)')]
 restart-arm-driver remote_host=default_jetrover_host remote_user="jetson":

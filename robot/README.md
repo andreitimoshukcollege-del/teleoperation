@@ -353,8 +353,11 @@ translates the local wire protocol above into calls against `jetrover_arm_contro
       not reproduce it.
   - **Evidence now kept:** every 5 s the driver logs its read statistics and the last battery
     voltage (`just arm-logs`), so the journal shows when the reads started failing and the
-    voltage just before. But the journal is wiped at every boot, and a power-cycle is a boot.
-    Read `just arm-logs` and run `just robot-board-diagnose` **before** switching off.
+    voltage just before. Since 2026-10-21 the journal survives reboots (`just robot-journal-persist`,
+    capped at 200 MB; the card had 1.7 GB free), so a power-cycle no longer wipes it. Still run
+    `just robot-board-diagnose` **before** switching off: it needs the fault present. After a reboot,
+    the previous boot's lines are on the robot under `journalctl -b -1 -u jetrover-arm-control`.
+    Entries before the clock syncs at boot carry a 2023 date: the Jetson has no clock battery.
 - **A measurement trap: `just joint-probe` while the headset streams.** RobotHost sends the
   joint-state stream to whoever last sent on the joint port. A headset sending joint commands takes
   it back 48 times a second, so the probe gets scraps. On 2026-10-20 that read as "feedback falls to

@@ -540,6 +540,27 @@ robot-board-commands remote_host=default_jetrover_host remote_user="jetson":
         "files=\$(grep -rl --include=*.py -E 'def set_buzzer|PACKET_FUNC|BOARD_' /home/jetson /opt 2>/dev/null | grep -v -E '/build/|/install/|site-packages/(numpy|scipy)' | sort -u | head -8); \
          for f in \$files; do echo \"=== \$f\"; grep -n -E '^ *def |PACKET_FUNC|FUNC_|= *0x' \$f | head -60; echo '--- buzzer / battery / alarm:'; grep -n -i -E 'buzz|batt|alarm|volt|warn|beep' \$f | head -30; done"
 
+# Make the robot's journal survive reboots, once: without it a power-cycle (the only cure when the servo board goes silent, robot/README.md) wipes the driver's statistics that show when it went silent and at what voltage. Creates /var/log/journal, caps the journal at 200 MB (a drop-in in /etc/systemd/journald.conf.d/, so it cannot fill the card), and flushes the running journal to disk. It does not restart systemd-journald, which on older systemd can cut the running services' log streams. The cap applies from the next boot. Safe to run again. Afterwards `journalctl --list-boots` on the robot lists earlier boots
+[group('robot: deploy and restart (someone at the robot)')]
+robot-journal-persist remote_host=default_jetrover_host remote_user="jetson":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    ssh -o StrictHostKeyChecking=accept-new "{{remote_user}}@$(just _robot-host "{{remote_host}}")" "bash -s" <<'REMOTE'
+    set -euo pipefail
+    echo "--- systemd $(systemctl --version | head -1 | awk '{print $2}'); Storage setting: $(grep -hE '^\s*Storage=' /etc/systemd/journald.conf /etc/systemd/journald.conf.d/*.conf 2>/dev/null | tail -1 || true)"
+    echo "--- free space on /var: $(df -h /var | awk 'NR==2 {print $4 " of " $2}')"
+    if grep -hqE '^\s*Storage=(volatile|none)' /etc/systemd/journald.conf /etc/systemd/journald.conf.d/*.conf 2>/dev/null; then
+        echo "journald is set to keep nothing on disk (Storage=volatile or none). Changing that needs a journald restart; not doing it here." >&2
+        exit 1
+    fi
+    sudo mkdir -p /var/log/journal /etc/systemd/journald.conf.d
+    sudo systemd-tmpfiles --create --prefix /var/log/journal
+    printf '[Journal]\nStorage=persistent\nSystemMaxUse=200M\n' | sudo tee /etc/systemd/journald.conf.d/teleop-persistent.conf >/dev/null
+    sudo journalctl --flush
+    echo "--- on disk now:"; sudo du -sh /var/log/journal
+    echo "--- boots the journal knows:"; journalctl --list-boots --no-pager | tail -3
+    REMOTE
+
 # Experiment, for a board that has stopped answering (just robot-board-diagnose: 0 bytes read): try to bring it back from the Jetson instead of the power switch. Stops the servo driver, opens the board's serial port itself, and asks servo 1 for its position: with both control lines released, then after a 100 ms DTR pulse, then after a 100 ms RTS pulse, stopping at the first that gets an answer. It prints which one worked, then starts the driver again and checks the feedback. First run, 2026-10-20: none did, so these lines do not reset the board (only the power switch did). A pulse that resets the board's controller can drop the servos' torque, so someone must hold the arm
 [group('robot: deploy and restart (someone at the robot)')]
 robot-board-reset remote_host=default_jetrover_host remote_user="jetson":

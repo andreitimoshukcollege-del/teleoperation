@@ -111,6 +111,16 @@ namespace Teleop.RobotArm.Kinematics
         /// </summary>
         public const float MaxApproach = 90f * MathF.PI / 180f;
 
+        /// <summary>
+        /// The most the wrist roll may turn in one solve (radians, 30°): it moves toward what is
+        /// asked at up to this rate, and never stops the arm by itself. Before (2026-10-21) the roll
+        /// counted against <see cref="MaxJumpPerSolve"/> and <see cref="MaxApproach"/> like the arm
+        /// joints, so one frame of a jumpy roll reading (a hand pointing straight down) reported a
+        /// reachable target as blocked and froze the arm. Kept equal to MaxJumpPerSolve, so a roll
+        /// step on its own always fits within the other joints' caps.
+        /// </summary>
+        public const float MaxRollPerSolve = MaxJumpPerSolve;
+
         private const int BisectionSteps = 8;
 
         /// <summary>
@@ -200,7 +210,11 @@ namespace Teleop.RobotArm.Kinematics
             // start in a pose the model calls colliding (folded at rest); then the next pose is
             // judged on its own.
             _lastValid = ArmCollision.IsValid(profile, model, _last);
-            float clampedRoll = model.Roll.Clamp(roll);
+            // The roll turns toward the request at a bounded rate rather than in one jump; every
+            // candidate below uses this solve's step of it.
+            float requestedRoll = model.Roll.Clamp(roll);
+            float clampedRoll = model.Roll.Clamp(_last.Roll + Math.Clamp(requestedRoll - _last.Roll, -MaxRollPerSolve, MaxRollPerSolve));
+            bool rollCatchingUp = clampedRoll != requestedRoll;
 
             // 1. The valid pose at the target that is closest to where the arm is: the shortest
             //    joint path there.
@@ -215,7 +229,8 @@ namespace Teleop.RobotArm.Kinematics
                         var exact = new ArmSolution(goal, projected, desiredPitch + tilt,
                             tilt == 0f ? ArmSolveStatus.Exact : ArmSolveStatus.PitchAdjusted, reachClamped, branch);
                         Remember(exact);
-                        _lastMadeProgress = false;
+                        // Still turning toward the asked roll: solve again next time, not from the cache.
+                        _lastMadeProgress = rollCatchingUp;
                         return exact;
                     }
                 }
@@ -281,7 +296,7 @@ namespace Teleop.RobotArm.Kinematics
 
             var blocked = new ArmSolution(bestPose, bestPosition, bestPitch, ArmSolveStatus.Blocked, reachClamped, bestBranch);
             Remember(blocked);
-            _lastMadeProgress = lo > 0f;
+            _lastMadeProgress = lo > 0f || rollCatchingUp;
             return blocked;
         }
 

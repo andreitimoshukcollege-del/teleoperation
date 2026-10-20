@@ -165,6 +165,24 @@ namespace Teleop.RobotArm.Kinematics
         }
 
         /// <summary>
+        /// How far <paramref name="now"/> has twisted about its own forward axis (+X) since
+        /// <paramref name="anchor"/>, radians, ±π: the twist part of a swing-twist split of the
+        /// rotation between them. Unlike a difference of two <see cref="ArmKinematics.ExtractRollRadians"/>
+        /// it has no trouble when the hand points straight up or down. There heading and roll are
+        /// the same turn, so a small wobble of a downward-pointing hand read as a large roll and
+        /// made the IK stop (2026-10-21). Undefined only for a half-turn swing between the two.
+        /// </summary>
+        public static float TwistRadians(Quaternion anchor, Quaternion now)
+        {
+            Quaternion relative = Quaternion.Conjugate(anchor) * now;
+            float twist = 2f * MathF.Atan2(relative.X, relative.W);
+            const float twoPi = 2f * MathF.PI;
+            if (twist > MathF.PI) twist -= twoPi;
+            else if (twist < -MathF.PI) twist += twoPi;
+            return twist;
+        }
+
+        /// <summary>
         /// The relative form, used while the clutch is engaged: the wrist roll at engage plus how far
         /// the hand has twisted since (wrapped to ±π, times <c>sign</c>), clamped to ±<c>limit</c>.
         /// Relative, so how the hand happens to be held, and how the hand-tracking runtime defines a

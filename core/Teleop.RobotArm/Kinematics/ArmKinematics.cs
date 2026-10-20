@@ -220,8 +220,14 @@ namespace Teleop.RobotArm.Kinematics
         /// +X), right-handed, measured from the "level" orientation whose up vector lies in the
         /// vertical plane through forward. 0 means the gripper's jaws sit side by side; positive
         /// rolls its left side (+Y) up. Independent of pitch and yaw, so a rotation composed as
-        /// yaw · pitch · roll gives the roll back. Returns 0 when forward is within ~0.6° of
-        /// vertical, where "level" has no meaning.
+        /// yaw · pitch · roll gives the roll back.
+        ///
+        /// <para>Within ~0.6° of vertical, where "level" has no meaning of its own (heading and roll
+        /// are then the same turn), it is measured from the level orientation of heading 0, the
+        /// frame's +X. That is exact for a rotation composed as pitch · roll, which is how
+        /// <c>JetRoverClutch</c> writes the target, and continuous with the general case there.
+        /// It used to return 0, so a target pointing straight down lost its roll for a frame
+        /// (2026-10-21), and the IK saw the roll jump.</para>
         /// </summary>
         public static float ExtractRollRadians(Quaternion rotation)
         {
@@ -231,13 +237,64 @@ namespace Teleop.RobotArm.Kinematics
             float levelLength = levelUp.Length();
             if (levelLength < 1e-2f)
             {
-                return 0f;
+                // Heading 0's level up, perpendicular to forward in the X-Z plane.
+                levelUp = Vector3.Cross(forward, Vector3.UnitY);
+                levelLength = levelUp.Length();
+                if (levelLength < 1e-6f)
+                {
+                    return 0f;
+                }
             }
 
             levelUp /= levelLength;
             float sin = Vector3.Dot(Vector3.Cross(levelUp, up), forward);
             float cos = Vector3.Dot(levelUp, up);
             return MathF.Atan2(sin, cos);
+        }
+
+        /// <summary>
+        /// Pitch and roll of <paramref name="rotation"/>, read as whichever of its two readings is
+        /// nearer (<paramref name="nearPitch"/>, <paramref name="nearRoll"/>), the caller's previous
+        /// values. Past straight up or down, one orientation has two readings: <see cref="ExtractPitchRadians"/>'s
+        /// pitch within ±90° with the roll a half turn round and the heading reversed, or the pitch
+        /// carried on past ±90°. Heading is the base's job, so the IK cannot tell them apart, and only
+        /// the second is the one the operator moved to. The clutch's pitch is relative and passes
+        /// ±90° easily (start at −60°, then point the hand down). Read back plainly, the roll turned
+        /// half round and the IK stopped (2026-10-21). Pitch and roll come back wrapped to ±π.
+        /// </summary>
+        public static void ExtractPitchRollNear(Quaternion rotation, float nearPitch, float nearRoll, out float pitch, out float roll)
+        {
+            float p = ExtractPitchRadians(rotation);
+            float r = ExtractRollRadians(rotation);
+            Vector3 forward = Vector3.Transform(Vector3.UnitX, rotation);
+            if (forward.X * forward.X + forward.Y * forward.Y < 1e-4f)
+            {
+                // Within ~0.6° of vertical the roll is measured at heading 0 (ExtractRollRadians), so
+                // the pitch must be too, past ±90° if forward leans back, or the pair disagrees.
+                p = MathF.Atan2(forward.Z, forward.X);
+            }
+
+            float twinPitch = WrapToPi((p >= 0f ? MathF.PI : -MathF.PI) - p);
+            float twinRoll = WrapToPi(r + MathF.PI);
+            float direct = MathF.Abs(WrapToPi(p - nearPitch)) + MathF.Abs(WrapToPi(r - nearRoll));
+            float twin = MathF.Abs(WrapToPi(twinPitch - nearPitch)) + MathF.Abs(WrapToPi(twinRoll - nearRoll));
+            if (twin < direct)
+            {
+                p = twinPitch;
+                r = twinRoll;
+            }
+
+            pitch = p;
+            roll = r;
+        }
+
+        private static float WrapToPi(float radians)
+        {
+            const float twoPi = 2f * MathF.PI;
+            radians %= twoPi;
+            if (radians > MathF.PI) radians -= twoPi;
+            else if (radians < -MathF.PI) radians += twoPi;
+            return radians;
         }
 
         /// <summary>

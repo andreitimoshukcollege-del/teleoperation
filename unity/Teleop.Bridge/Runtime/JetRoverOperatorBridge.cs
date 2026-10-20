@@ -419,8 +419,22 @@ namespace Teleop.Bridge
             Quaternion localRotation = Quaternion.Inverse(armBase.rotation) * dragTarget.rotation;
             CorePose capturedPose = new CorePose(localPosition.ToCore(), localRotation.ToCore());
 
-            float desiredPitch = ArmKinematics.ExtractPitchRadians(capturedPose.Rotation);
-            float desiredRoll = ArmKinematics.ExtractRollRadians(capturedPose.Rotation);
+            // Read near last frame's values, so a target past straight down keeps its pitch instead
+            // of reading as the same orientation with the roll half a turn round (docs/adr/0020).
+            float desiredPitch, desiredRoll;
+            if (_hasTargetOrientation)
+            {
+                ArmKinematics.ExtractPitchRollNear(capturedPose.Rotation, _targetPitch, _targetRoll, out desiredPitch, out desiredRoll);
+            }
+            else
+            {
+                desiredPitch = ArmKinematics.ExtractPitchRadians(capturedPose.Rotation);
+                desiredRoll = ArmKinematics.ExtractRollRadians(capturedPose.Rotation);
+            }
+
+            _targetPitch = desiredPitch;
+            _targetRoll = desiredRoll;
+            _hasTargetOrientation = true;
 
             // The collision-aware IK (docs/adr/0020): never a pose that hits the robot, the same
             // model RobotHost enforces. It starts from the robot's own measured pose when one has
@@ -529,6 +543,10 @@ namespace Teleop.Bridge
             _jointTransport?.Dispose();
             _metricSink?.Dispose();
         }
+
+        // The drag target's pitch and roll as last read (Core convention, radians).
+        private bool _hasTargetOrientation;
+        private float _targetPitch, _targetRoll;
 
         private long MillisecondsToTicks(double ms) => (long)(ms / 1000.0 * _clock.TicksPerSecond);
 

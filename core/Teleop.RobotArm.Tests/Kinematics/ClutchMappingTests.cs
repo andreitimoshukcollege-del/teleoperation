@@ -247,6 +247,46 @@ namespace Teleop.RobotArm.Tests.Kinematics
 
     public class WristRollMappingTests
     {
+        private static Quaternion Rot(Vector3 axis, double degrees) => Quaternion.CreateFromAxisAngle(axis, (float)(degrees * System.Math.PI / 180.0));
+
+        [Theory]
+        [InlineData(0.0, 0.0, 30.0)]
+        [InlineData(40.0, -20.0, -45.0)]
+        [InlineData(10.0, 88.0, 60.0)]
+        [InlineData(-30.0, 90.0, -80.0)]
+        public void TwistRadians_RecoversTheTwist_WhereverTheHandPoints(double heading, double down, double twist)
+        {
+            // A hand pointing anywhere, straight down included, twisted about its own forward axis.
+            Quaternion anchor = Rot(Vector3.UnitZ, heading) * Rot(Vector3.UnitY, down);
+            Quaternion now = anchor * Rot(Vector3.UnitX, twist);
+            Assert.Equal((float)(twist * System.Math.PI / 180.0), WristRollMapping.TwistRadians(anchor, now), 4);
+        }
+
+        [Fact]
+        public void TwistRadians_OfAHandPointingDown_IgnoresItsWobble()
+        {
+            // Pointing straight down and wobbling 3° either way, no twist. The old reading (a difference of
+            // absolute rolls) turned exactly this into a large roll, because heading and roll are the same
+            // turn there.
+            Quaternion anchor = Rot(Vector3.UnitY, 90.0);
+            foreach (Vector3 axis in new[] { Vector3.UnitY, Vector3.UnitZ, Vector3.Normalize(new Vector3(0f, 1f, 1f)) })
+            {
+                foreach (double wobble in new[] { -3.0, 3.0 })
+                {
+                    Quaternion now = anchor * Rot(axis, wobble);
+                    Assert.True(System.Math.Abs(WristRollMapping.TwistRadians(anchor, now)) < 0.002f,
+                        $"wobble {wobble}° about {axis} read as twist {WristRollMapping.TwistRadians(anchor, now)}");
+                }
+            }
+        }
+
+        [Fact]
+        public void TwistRadians_WrapsToHalfATurn()
+        {
+            Quaternion anchor = Quaternion.Identity;
+            Assert.Equal((float)(-170.0 * System.Math.PI / 180.0), WristRollMapping.TwistRadians(anchor, Rot(Vector3.UnitX, 190.0)), 4);
+        }
+
         [Fact]
         public void AppliesTheSignAndClamps()
         {

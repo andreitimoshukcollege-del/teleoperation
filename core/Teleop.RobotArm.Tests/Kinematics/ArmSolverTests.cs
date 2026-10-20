@@ -35,6 +35,30 @@ namespace Teleop.RobotArm.Tests.Kinematics
         }
 
         [Fact]
+        public void ARollJump_NeverBlocksAReachableTarget_TheRollTurnsAtABoundedRate()
+        {
+            // 2026-10-21: one frame of a jumpy roll reading (a hand pointing straight down) counted
+            // against the joint caps and reported this free target blocked.
+            var solver = new ArmSolver();
+            solver.Reset(Arm, Model.Home);
+            var target = new Vector3(0.15f, 0.03f, 0.10f);
+            Assert.Equal(ArmSolveStatus.Exact, solver.Solve(Arm, target, 0f, 0f).Status);
+
+            float asked = Model.Roll.Clamp(1.9f);
+            float previous = 0f;
+            for (int i = 0; i < 8; i++)
+            {
+                ArmSolution s = solver.Solve(Arm, target, 0f, 1.9f);
+                Assert.Equal(ArmSolveStatus.Exact, s.Status);
+                Assert.True(s.Pose.Roll - previous <= ArmSolver.MaxRollPerSolve + 1e-5f, $"roll jumped {s.Pose.Roll - previous}");
+                previous = s.Pose.Roll;
+            }
+
+            // The target was held still the whole time: the roll still got all the way there.
+            Assert.Equal(asked, previous, 4);
+        }
+
+        [Fact]
         public void TargetInsideTheDeck_StopsAtAValidPoseShortOfIt()
         {
             var solver = new ArmSolver();

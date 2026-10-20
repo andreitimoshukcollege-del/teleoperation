@@ -109,6 +109,36 @@ the body exactly. What was missing is a model of it that Core can evaluate.
      on its way. The blue marker then sits on the ghost's wrist, and
      re-engaging the clutch starts from there.
 
+### Amendment (2026-10-21): a jumpy roll no longer stops the arm
+
+The headset reported reachable targets as blocked, mostly with the gripper pointing down. A headless
+replay of the solver along hand paths found three roll faults, none of them the collision model's:
+
+1. **A target past straight down read back with its roll half a turn round.** The clutch's pitch is
+   relative (the target's at engage, plus the hand's change since), so it passes −90° easily. The
+   bridge reads pitch and roll back from the drag target's rotation, and past vertical the plain
+   reading is the same orientation at pitch within ±90° with the roll turned 180° and the heading
+   reversed. The IK ignores heading, so to it that was a different pose. Re-engaging the clutch read
+   its roll back the same way. Both now use `ArmKinematics.ExtractPitchRollNear`, which takes the
+   reading nearer the previous frame's.
+2. **Within 0.6° of vertical the roll read 0.** `ExtractRollRadians` now measures it from heading 0
+   there, which is exact for the clutch's pitch · roll target.
+3. **The gripper hand's roll was a difference of two absolute rolls,** which swings wildly when the
+   hand points straight down (heading and roll are the same turn there). It is now the hand's twist
+   about its own pointing axis since the anchor (`WristRollMapping.TwistRadians`).
+
+**The solver also stops letting the roll block the arm.** The roll counted against the 30° per-solve
+and 90° approach caps like an arm joint, so one frame of a jumpy roll froze the arm. It now turns
+toward the request at up to `MaxRollPerSolve` (30°) per solve and is otherwise just part of the pose
+that is checked.
+
+Over random hand paths in clearly free space (targets at least 15 cm up), with the gripper pointing
+down through vertical: before, 424 of 2,109 frames were blocked (raw orientation). After, in the
+clutch's flow, 2 of 1,998 frames were blocked with the target swinging past vertical, and 46 of
+1,760 hovering at straight down with a 60° roll. What remains is real: pointing straight down
+from near the body needs the wrist past its −103° limit, or the gripper's tip passes through the
+deck between two tilts. A replay in a scratch script, not a benchmark row.
+
 ## Consequences
 
 - **The ghost and the robot agree by construction:** one model, one solver, both sides.

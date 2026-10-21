@@ -1,0 +1,45 @@
+# The trainer as one Apptainer image, for a Slurm cluster (the H200s).
+#
+# Build it where you have network access and either root or --fakeroot (a login node often allows
+# fakeroot; otherwise build on any Linux machine and copy the .sif over):
+#   apptainer build --build-arg TORCH_INDEX=cu130 --build-arg TORCH_VERSION=2.14.1 armpred.sif slurm/apptainer.def
+# The .sif carries the package and its libraries; the host's NVIDIA driver comes in through
+# `apptainer exec --nv`. Use TORCH_INDEX=cu128 TORCH_VERSION=2.11.0 if the cluster's driver is
+# older than CUDA 13.0 (an H200 runs either).
+
+Bootstrap: docker
+From: python:3.12-slim
+
+%arguments
+    TORCH_INDEX=cu130
+    TORCH_VERSION=2.14.1
+
+# %files: build from an unpacked `just pack-trainer` file. It carries VERSION (the trainer's git
+# SHA), which every model card records. Listed one by one so a venv or runs/ never ends up inside.
+%files
+    armpred /opt/armpred/armpred
+    contract /opt/armpred/contract
+    configs /opt/armpred/configs
+    tests /opt/armpred/tests
+    pyproject.toml /opt/armpred/pyproject.toml
+    requirements.txt /opt/armpred/requirements.txt
+    VERSION /opt/armpred/VERSION
+
+%post
+    export PIP_NO_CACHE_DIR=1
+    python -m pip install --upgrade pip
+    python -m pip install -r /opt/armpred/requirements.txt
+    python -m pip install torch=={{ TORCH_VERSION }} --index-url https://download.pytorch.org/whl/{{ TORCH_INDEX }}
+    python -m pip install --no-deps -e /opt/armpred
+
+%environment
+    export PYTHONUNBUFFERED=1
+
+%runscript
+    exec armpred "$@"
+
+%test
+    armpred --help >/dev/null
+
+%labels
+    org.teleop.purpose JetRover arm-state predictor trainer (docs/adr/0021)

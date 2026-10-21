@@ -21,6 +21,8 @@ namespace Teleop.Eval
                     return RunGenGolden(args);
                 case "gen-trace":
                     return RunGenTrace(args);
+                case "gen-trainer-golden":
+                    return RunGenTrainerGolden(args);
                 case "verify":
                     return VerifyCommand.Run();
                 case "audit":
@@ -46,7 +48,7 @@ namespace Teleop.Eval
                     return 70;   // EX_SOFTWARE
                 default:
                     Console.Error.WriteLine(
-                        "usage: verify | audit | sweep | replay | compare | gen-golden | gen-trace | " +
+                        "usage: verify | audit | sweep | replay | compare | gen-golden | gen-trace | gen-trainer-golden | " +
                         "clocksync-check | move-arm | build-profile | catalog | joint-predict-bench | joint-probe");
                     return 64;   // EX_USAGE
             }
@@ -90,6 +92,23 @@ namespace Teleop.Eval
             SyntheticTraceBuilder.Build(fullPath);
 
             Console.WriteLine($"Wrote synthetic trace to {fullPath}");
+            return 0;
+        }
+
+        // Same discipline as gen-golden: the trainer's golden files (docs/adr/0021 decision 5) are
+        // generated from Core, never hand-authored. Run from core/: the defaults are relative to it.
+        private static int RunGenTrainerGolden(string[] args)
+        {
+            string outputDirectory = Path.GetFullPath(args.Length > 1 ? args[1] : Path.Combine("..", "trainer", "contract", "golden"));
+            string tracePath = Path.GetFullPath(args.Length > 2 ? args[2] : Path.Combine("testdata", "traces", "synthetic-burst.trace"));
+            if (!File.Exists(tracePath))
+            {
+                Console.Error.WriteLine($"trace not found at {tracePath} -- run from core/, or pass its path as the second argument");
+                return 66; // EX_NOINPUT
+            }
+
+            TrainerGoldenBuilder.Write(outputDirectory, tracePath);
+            Console.WriteLine($"Wrote the trainer's golden files to {outputDirectory}");
             return 0;
         }
     }

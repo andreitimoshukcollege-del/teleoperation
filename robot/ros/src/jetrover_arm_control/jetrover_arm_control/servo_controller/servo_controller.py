@@ -2,6 +2,7 @@ import time
 from time import sleep
 
 from jetrover_arm_control.board_manager.robot_board_manager import BoardManager
+from jetrover_arm_control.session_log import NullSessionLog
 
 # setPos's write-gate threshold, in pulse units. A bus-traffic optimization only (skip a physical
 # write that wouldn't move the servo perceptibly) -- see docs/adr/0010-absolute-joint-targets-over-local-relay.md
@@ -56,9 +57,12 @@ class ServoController:
     and a position read waits WRITE_SETTLE_SECONDS after the last packet.
     """
 
-    def __init__(self, boardMgr: BoardManager):
+    def __init__(self, boardMgr: BoardManager, sessionLog=None):
 
         self.boardMgr = boardMgr
+        # The driver's half of a recorded session (session_log.py, teleoperation docs/adr/0021):
+        # every read, gate decision and board packet, on CLOCK_MONOTONIC. A no-op unless recording.
+        self._log = sessionLog if sessionLog is not None else NullSessionLog()
         self.board = self.getBoard()
 
         self.pwm_min = 0
@@ -104,14 +108,20 @@ class ServoController:
         packet per move duration, rather than one packet each. targets is a list of
         (servoID, absolute pulse target, pulses_per_second). Returns the packets written."""
         now = time.monotonic()
+        logged = self._log.now()
         moves = []
+        resolved = []
         for servoID, direction, pulses_per_second in targets:
             nextPos = int(direction)
             nextPos = 0 if nextPos < 0 else 1000 if nextPos > 1000 else nextPos
+            resolved.append((servoID, nextPos, pulses_per_second))
+        self._log.record("CI", logged, [(i, p, float(pps)) for i, p, pps in resolved])
+        for servoID, nextPos, pulses_per_second in resolved:
             if now < self._nextAllowedWriteAt.get(servoID, 0.0):
                 # Still cooling down from this servo's last real move: keep it as the pending
                 # target, newest wins, for flushPending to write when the cooldown ends.
                 self._pending[servoID] = (nextPos, pulses_per_second)
+                self._log.record("GP", logged, servoID, nextPos)
                 continue
 
             self._pending.pop(servoID, None)
@@ -143,6 +153,7 @@ class ServoController:
         if lastSent is not None and abs(nextPos - lastSent) < MIN_MEANINGFUL_PULSE_DELTA:
             # Not a correctness concern (see MIN_MEANINGFUL_PULSE_DELTA's own comment) -- just
             # skips a physical write that wouldn't move the servo perceptibly.
+            self._log.record("GD", self._log.now(), servoID, nextPos)
             return
 
         # No prior sent value for this servo (its very first move) -- there is no real distance
@@ -165,6 +176,7 @@ class ServoController:
         for duration, servoID, nextPos in moves:
             byDuration.setdefault(duration, []).append([servoID, nextPos])
         for duration, positions in byDuration.items():
+            self._log.record("WR", self._log.now(), int(duration * 1000), [(i, p) for i, p in positions])
             self.board.bus_servo_set_position(duration, positions)
         if byDuration:
             self._lastWriteAt = time.monotonic()
@@ -186,7 +198,11 @@ class ServoController:
             if wait > 0:
                 time.sleep(wait)
         if(servoID):
+            requested = self._log.now()
             readPos = self.board.bus_servo_read_position(servo_id= servoID)
+            # The truth the trainer learns from: when each servo was read, and what it said (a miss
+            # is logged too, ending when the read gave up).
+            self._log.record("RD", requested, self._log.now(), servoID, readPos[0] if readPos else None)
             if(readPos):
                 # setPos no longer tracks a position belief for this to correct -- see class doc.
                 # This read is purely for robot_controller_node.py's own feedback-polling loop now,

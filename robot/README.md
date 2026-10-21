@@ -43,6 +43,50 @@ Read-only checks:
 - `just robot-battery`: battery voltage;
 - `just robot-board-commands`: what the board accepts.
 
+## Recording sessions for the trainer (docs/adr/0021)
+
+The learned joint predictor (`trainer/`) learns from what the robot itself recorded: every servo read
+and write (the driver's `driver.jlog`) and every command, relay message and frame (RobotHost's
+`robothost.jlog`), all on the Jetson's CLOCK_MONOTONIC. The format is
+`trainer/contract/SESSION_FORMAT.md`. Recording moves nothing and restarts nothing: both processes
+watch `~/recordings/.active` and write while it names a session directory.
+
+Once, with someone at the robot (the ROS deploy restarts the servo driver):
+
+```bash
+just deploy-ros                   # the driver's session log
+just deploy-robothost             # RobotHost with --record-control and --uplink-control
+just jetson-clock-check           # both logs really are on one clock
+```
+
+Each session, with someone watching the arm as for any teleop:
+
+```bash
+just record-start teleop-2p5-none 2.5                  # label, slider (rad/s or varied); load=none
+just record-start payload-100g 2.5 load=payload payload_g=100
+just record-start hand-1 3.8 load=hand
+just record-start live-150 2.5 network=150ms-20j-0.5loss   # the uplink impaired on the robot, for real
+just record-mark "payload on"                          # a moment worth aligning on, on the Jetson's clock
+just record-stop
+just robot-recordings                                  # what is on the robot, and whether each log closed
+```
+
+Then, back at the repo: `just fetch-recordings` (copies the new sessions into the gitignored
+`recordings/jetrover/` and checks them), and `just pack-dataset recordings/jetrover/<id> ...` for the
+one file the GPU machine needs (`dist/jetrover-data-<UTC>.tar`). `just recording-check` fails a
+session with dropped records, a missing trailer, logs that do not share a clock, or a read gap over
+500 ms (`allow_gaps=true` keeps the gaps, annotated). Archive the sessions to a GitHub Release; they
+are not committed.
+
+- **`network=<profile>`** makes the arm really receive late, jittery, lossy commands (Core's
+  `EmulatedTransport` on RobotHost's receive side; frames to the headset are untouched).
+  `just uplink-impair none` turns it off; `record-stop` does so too.
+- **Never run `just joint-probe` during a session.** Anything sending on UDP 6002 takes the
+  joint-state stream, and the check fails the session for its second subscriber.
+- **Hand resistance stays light:** a stall of at most 2 s, contact for at most 20% of a session. Stop
+  at a servo above 60 °C or a pack below 11.0 V. If the board goes silent, run `just arm-logs` and
+  `just robot-board-diagnose` before the power switch.
+
 ## How it connects to the rest of the repo
 
 `IRobotPlant` (`core/Teleop.Core/Contracts/IRobotPlant.cs`) is Core's contract for "the robot

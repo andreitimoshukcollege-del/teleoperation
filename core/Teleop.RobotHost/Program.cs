@@ -1,4 +1,5 @@
 using System;
+using System.IO;
 using System.Net;
 using System.Threading;
 using Teleop.Core.Pipeline;
@@ -8,6 +9,7 @@ using Teleop.Core.Types;
 using Teleop.RobotArm.Wire;
 using Teleop.RobotHost.Net;
 using Teleop.RobotHost.Plant;
+using Teleop.RobotHost.Recording;
 using Teleop.RobotHost.Relay;
 using Teleop.RobotHost.Time;
 
@@ -37,6 +39,11 @@ namespace Teleop.RobotHost
 
         private static int Main(string[] args)
         {
+            if (args.Length == 1 && args[0] == "--clock-echo")
+            {
+                return ClockEcho();
+            }
+
             RobotHostArgs? parsed = RobotHostArgs.TryParse(args, out string? error);
             if (parsed is null)
             {
@@ -55,6 +62,11 @@ namespace Teleop.RobotHost
                 a.LocalPort, remoteEndPoint, MaxDatagramBytes, clock, replyToSender: a.ReplyToSender);
 
             using var relay = new UdsRelayClient(a.LocalRelaySocketPath, a.RelaySocketPath);
+
+            // Recording (docs/adr/0021): robothost.jlog into the session directory the control file
+            // names, while it exists. Off without --record-control; costs nothing while no session is open.
+            using var recorder = a.RecordControlPath != null ? new SessionRecorder(a.RecordControlPath, clock.TicksPerSecond) : null;
+            IRelayClient plantRelay = recorder != null ? new RecordingRelayClient(relay, recorder, clock) : relay;
 
             // a.ProfilePath omitted falls back to RobotArmProfile.JetRoverMeasuredDefault, the
             // exact configuration this codebase has always run -- see RobotHostArgs.ProfilePath's
@@ -77,7 +89,7 @@ namespace Teleop.RobotHost
                 gripperClosedPulse: defaults.GripperClosedPulse);
             // The headset sends its IK's joint angles and, for timing, the Cartesian target; only the
             // joint angles move the arm while they arrive (docs/adr/0020).
-            var plant = new GenericArmPlant(plantConfig, relay) { JointPrecedenceTicks = clock.TicksPerSecond / 2 };
+            var plant = new GenericArmPlant(plantConfig, plantRelay) { JointPrecedenceTicks = clock.TicksPerSecond / 2 };
 
             var endpoint = new RobotEndpoint(
                 plant,
@@ -101,6 +113,11 @@ namespace Teleop.RobotHost
                 ? new UdpTransport(a.JointLocalPort.Value, remoteEndPoint, MaxJointDatagramBytes, clock, replyToSender: true)
                 : null;
             byte[]? jointRecvBuffer = jointTransport != null ? new byte[MaxJointDatagramBytes] : null;
+            // A physically impaired uplink for recorded sessions (docs/adr/0021): off unless the uplink
+            // control file names a profile. Receive side only, so frames to the headset are untouched.
+            var uplink = jointTransport != null ? new UplinkImpairedReceiver(jointTransport, clock.TicksPerSecond, MaxJointDatagramBytes) : null;
+            string? uplinkRequest = null;
+            long nextUplinkPollTicks = long.MinValue;
             JointTarget[]? jointTargetsBuffer = jointTransport != null
                 ? new JointTarget[JointCommandCodec.MaxJointsPerMessage]
                 : null;
@@ -110,6 +127,8 @@ namespace Teleop.RobotHost
             byte[] jointStateBuffer = new byte[MaxJointDatagramBytes];
             Func<JointSample[], int> readJoints = buffer => plant.ReadJointState(buffer);
             bool loggedSubscriber = false;
+            JointSample[] recordedJoints = new JointSample[JointStateCodec.MaxJointsPerMessage];
+            EndPoint? recordedSubscriber = null;
 
             string replyDescription = a.ReplyToSender
                 ? $"the sender of each command (before the first one: {remoteEndPoint?.ToString() ?? "nobody"})"
@@ -148,10 +167,46 @@ namespace Teleop.RobotHost
             {
                 if (jointTransport != null)
                 {
-                    while (jointTransport.TryReceive(clock.NowTicks, jointRecvBuffer!, out int byteCount, out long arrivalTicks))
+                    if (a.UplinkControlPath != null && clock.NowTicks >= nextUplinkPollTicks)
+                    {
+                        nextUplinkPollTicks = clock.NowTicks + clock.TicksPerSecond / 2;
+                        string? request = File.Exists(a.UplinkControlPath) ? File.ReadAllText(a.UplinkControlPath).Trim() : null;
+                        if (request?.Length == 0) request = null;
+                        if (request != uplinkRequest)
+                        {
+                            uplinkRequest = request;
+                            string[] parts = (request ?? "none 0").Split(' ', StringSplitOptions.RemoveEmptyEntries);
+                            ulong uplinkSeed = parts.Length > 1 && ulong.TryParse(parts[1], out ulong parsedSeed) ? parsedSeed : 1UL;
+                            try
+                            {
+                                uplink!.SetProfile(parts[0], uplinkSeed);
+                                Console.WriteLine($"[uplink] joint commands now through '{uplink.Profile}' (seed {uplinkSeed})");
+                                if (recorder != null && recorder.IsActive) recorder.Record(SessionLines.Uplink(clock.NowTicks, uplink.Profile, uplinkSeed));
+                            }
+                            catch (ArgumentException e)
+                            {
+                                Console.Error.WriteLine($"[uplink] ignoring '{request}': {e.Message}; still '{uplink!.Profile}'");
+                            }
+                        }
+                    }
+
+                    while (uplink!.TryReceive(clock.NowTicks, jointRecvBuffer!, out int byteCount, out long socketTicks, out long arrivalTicks))
                     {
                         if (jointStreamer.TryHandleSubscribe(jointRecvBuffer.AsSpan(0, byteCount), arrivalTicks))
                         {
+                            if (recorder != null && recorder.IsActive &&
+                                JointStateCodec.TryDecodeSubscribe(jointRecvBuffer.AsSpan(0, byteCount), out long operatorTicks, out long operatorTps))
+                            {
+                                EndPoint? subscriber = jointTransport.CurrentRemoteEndPoint;
+                                if (!Equals(subscriber, recordedSubscriber))
+                                {
+                                    recorder.Record(SessionLines.Subscriber(arrivalTicks, subscriber?.ToString() ?? "?"));
+                                    recordedSubscriber = subscriber;
+                                }
+
+                                recorder.Record(SessionLines.Keepalive(arrivalTicks, operatorTicks, operatorTps));
+                            }
+
                             if (!loggedSubscriber)
                             {
                                 Console.WriteLine($"[joint] streaming joint state to {jointTransport.CurrentRemoteEndPoint}");
@@ -162,7 +217,7 @@ namespace Teleop.RobotHost
                         }
 
                         if (JointCommandCodec.TryDecode(
-                            jointRecvBuffer.AsSpan(0, byteCount), out uint _, out long captureTicks,
+                            jointRecvBuffer.AsSpan(0, byteCount), out uint commandSequence, out long captureTicks,
                             jointTargetsBuffer!, out int targetCount))
                         {
                             // A new sender's capture stamps are another clock's: start the
@@ -173,9 +228,16 @@ namespace Teleop.RobotHost
                                 plant.RestartJointCommandOrdering();
                                 Console.WriteLine($"[joint] commands from {sender} (was {jointCommander?.ToString() ?? "nobody"}); staleness check restarted");
                                 jointCommander = sender;
+                                if (recorder != null && recorder.IsActive) recorder.Record(SessionLines.Sender(arrivalTicks, sender?.ToString() ?? "?"));
                             }
 
-                            plant.CommandJointAngles(jointTargetsBuffer!.AsSpan(0, targetCount), captureTicks);
+                            JointCommandOutcome outcome = plant.CommandJointAngles(jointTargetsBuffer!.AsSpan(0, targetCount), captureTicks);
+                            if (recorder != null && recorder.IsActive)
+                            {
+                                // Read from the socket at socketTicks; reached the plant now (later only when the uplink is impaired).
+                                recorder.Record(SessionLines.JointCommand(socketTicks, arrivalTicks, commandSequence, captureTicks, outcome,
+                                    jointTargetsBuffer.AsSpan(0, targetCount)));
+                            }
                         }
                     }
                 }
@@ -204,6 +266,14 @@ namespace Teleop.RobotHost
                     if (jointStreamer.TryBuildFrame(now, readJoints, plant.LastFeedbackTicks, jointStateBuffer, out int stateBytes))
                     {
                         jointTransport.Send(jointStateBuffer.AsSpan(0, stateBytes), now);
+                        // The frame as it went out, decoded from its own bytes.
+                        if (recorder != null && recorder.IsActive &&
+                            JointStateCodec.TryDecode(jointStateBuffer.AsSpan(0, stateBytes), out uint frameSequence, out long robotSend,
+                                out long sensed, out long echoOperator, out long echoRobotRecv, out _, recordedJoints, out int frameJoints))
+                        {
+                            recorder.Record(SessionLines.Frame(now, frameSequence, robotSend, sensed, echoOperator, echoRobotRecv,
+                                recordedJoints.AsSpan(0, frameJoints)));
+                        }
                     }
                     else if (loggedSubscriber && !jointStreamer.IsSubscribed(now))
                     {
@@ -229,6 +299,26 @@ namespace Teleop.RobotHost
             }
 
             Console.WriteLine("Stopped.");
+            return 0;
+        }
+
+        /// <summary>
+        /// <c>--clock-echo</c> (<c>just jetson-clock-check</c>, docs/adr/0021): for each line on stdin,
+        /// print this process's clock (<c>Stopwatch</c> ticks and their rate) and flush. A caller that
+        /// reads CLOCK_MONOTONIC just before writing and just after reading brackets the reply within
+        /// a fraction of a millisecond, which proves (or disproves) that RobotHost and the driver
+        /// stamp their logs on the same clock.
+        /// </summary>
+        private static int ClockEcho()
+        {
+            string? line;
+            while ((line = Console.In.ReadLine()) != null)
+            {
+                long ticks = System.Diagnostics.Stopwatch.GetTimestamp();
+                Console.Out.WriteLine($"{ticks} {System.Diagnostics.Stopwatch.Frequency}");
+                Console.Out.Flush();
+            }
+
             return 0;
         }
     }

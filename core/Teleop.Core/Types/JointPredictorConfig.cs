@@ -34,11 +34,68 @@ namespace Teleop.Core.Types
 
         public long TicksPerSecond { get; }
 
+        // The JetRover relay's gate (robot/ros servo_controller.py setPos, and
+        // Teleop.RobotHost GenericArmPlantConfig.Default), as the defaults for relay-replay. Core
+        // cannot reference either, so the numbers are restated here, once, with where they come from.
+
+        /// <summary>The JetRover's pulse units per radian: 1000 pulses span 240 degrees (GenericArmPlantConfig.PulsePerRadian).</summary>
+        public const double JetRoverPulsesPerRadian = 1000.0 / (240.0 * System.Math.PI / 180.0);
+
+        /// <summary>setPos's MIN_MOVE_DURATION_SECONDS.</summary>
+        public const float DefaultRelayMinMoveSeconds = 0.05f;
+
+        /// <summary>setPos's MIN_MEANINGFUL_PULSE_DELTA (5 pulses), in radians: about 0.021.</summary>
+        public const float DefaultRelayDeadbandRad = (float)(5.0 / JetRoverPulsesPerRadian);
+
+        /// <summary>GenericArmPlantConfig.Default.PulsesPerSecond (2200), in rad/s: about 9.2.</summary>
+        public const float DefaultRelayMoveSpeedRadPerSec = (float)(2200.0 / JetRoverPulsesPerRadian);
+
+        /// <summary>
+        /// relay-replay: the shortest move the relay writes (s). Every move lasts
+        /// max(this, distance / <see cref="RelayMoveSpeedRadPerSec"/>), and the servo takes no new
+        /// command for that long (its write cooldown).
+        /// </summary>
+        public float RelayMinMoveSeconds { get; }
+
+        /// <summary>relay-replay: a target nearer than this (rad) to the last one written is dropped.</summary>
+        public float RelayDeadbandRad { get; }
+
+        /// <summary>
+        /// relay-replay: the speed (rad/s) the relay sizes a move's duration by, when a command asks
+        /// for none or for more. Distance is from the last target written, not from where the servo is.
+        /// </summary>
+        public float RelayMoveSpeedRadPerSec { get; }
+
+        /// <summary>
+        /// relay-replay: how much older than its frame's sensed stamp each joint's reading is, because
+        /// the robot reads its servos one after another and stamps the frame after the last read.
+        /// Parallel arrays; empty (the default) takes every reading as of its stamp. Seconds.
+        /// </summary>
+        public byte[] SensedAgeMotorIds { get; }
+
+        public float[] SensedAgeSeconds { get; }
+
         public JointPredictorConfig(
             int maxJoints, int commandHistoryCapacity, float maxJointSpeedRadPerSec,
             byte[] instantMotorIds, long maxHorizonTicks, long ticksPerSecond,
-            byte[] scaledMotorIds = null, float[] speedScales = null)
+            byte[]? scaledMotorIds = null, float[]? speedScales = null,
+            float relayMinMoveSeconds = DefaultRelayMinMoveSeconds,
+            float relayDeadbandRad = DefaultRelayDeadbandRad,
+            float relayMoveSpeedRadPerSec = DefaultRelayMoveSpeedRadPerSec,
+            byte[]? sensedAgeMotorIds = null, float[]? sensedAgeSeconds = null)
         {
+            sensedAgeMotorIds ??= new byte[0];
+            sensedAgeSeconds ??= new float[0];
+            if (sensedAgeMotorIds.Length != sensedAgeSeconds.Length) throw new System.ArgumentException("sensedAgeMotorIds and sensedAgeSeconds must be the same length");
+            foreach (float age in sensedAgeSeconds)
+            {
+                if (!(age >= 0f)) throw new System.ArgumentOutOfRangeException(nameof(sensedAgeSeconds), "every sensed age must be zero or positive");
+            }
+
+            if (!(relayMinMoveSeconds >= 0f)) throw new System.ArgumentOutOfRangeException(nameof(relayMinMoveSeconds));
+            if (!(relayDeadbandRad >= 0f)) throw new System.ArgumentOutOfRangeException(nameof(relayDeadbandRad));
+            if (!(relayMoveSpeedRadPerSec > 0f)) throw new System.ArgumentOutOfRangeException(nameof(relayMoveSpeedRadPerSec));
+
             scaledMotorIds ??= new byte[0];
             speedScales ??= new float[0];
             if (scaledMotorIds.Length != speedScales.Length) throw new System.ArgumentException("scaledMotorIds and speedScales must be the same length");
@@ -61,6 +118,11 @@ namespace Teleop.Core.Types
             SpeedScales = (float[])speedScales.Clone();
             MaxHorizonTicks = maxHorizonTicks;
             TicksPerSecond = ticksPerSecond;
+            RelayMinMoveSeconds = relayMinMoveSeconds;
+            RelayDeadbandRad = relayDeadbandRad;
+            RelayMoveSpeedRadPerSec = relayMoveSpeedRadPerSec;
+            SensedAgeMotorIds = (byte[])sensedAgeMotorIds.Clone();
+            SensedAgeSeconds = (float[])sensedAgeSeconds.Clone();
         }
     }
 }

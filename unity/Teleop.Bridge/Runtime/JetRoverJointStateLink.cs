@@ -79,7 +79,7 @@ namespace Teleop.Bridge
 
         public JetRoverJointStateLink(UdpTransport transport, ITimeAuthority clock, in RobotArmProfile profile,
             ClockSyncConfig clockSyncConfig, string predictorName, float maxJointSpeedRadPerSec, double maxHorizonMs,
-            float gripperFractionPerRadian = 0.358f)
+            float gripperFractionPerRadian = 0.358f, byte[] sensedAgeMotorIds = null, float[] sensedAgeSeconds = null)
         {
             _transport = transport ?? throw new ArgumentNullException(nameof(transport));
             _clock = clock ?? throw new ArgumentNullException(nameof(clock));
@@ -99,7 +99,9 @@ namespace Teleop.Bridge
                 ticksPerSecond: clock.TicksPerSecond,
                 // The gripper moves like the other joints, at the servo's speed, in its own units
                 // (a 0..1 fraction): fraction per radian of servo travel.
-                scaledMotorIds: GripperIds(profile), speedScales: Repeat(gripperFractionPerRadian, GripperIds(profile).Length)));
+                scaledMotorIds: GripperIds(profile), speedScales: Repeat(gripperFractionPerRadian, GripperIds(profile).Length),
+                // How much older than the frame's stamp each motor's reading is (relay-replay only).
+                sensedAgeMotorIds: sensedAgeMotorIds, sensedAgeSeconds: sensedAgeSeconds));
         }
 
         /// <summary>Sends a keepalive when one is due, and takes in every frame that has arrived.</summary>

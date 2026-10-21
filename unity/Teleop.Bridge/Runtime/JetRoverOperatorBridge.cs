@@ -6,6 +6,7 @@ using Teleop.Core.Registry;
 using Teleop.Core.Time;
 using Teleop.Core.Transport;
 using Teleop.Core.Types;
+using Teleop.RobotArm.Collision;
 using Teleop.RobotArm.Kinematics;
 using Teleop.RobotArm.Types;
 using Teleop.RobotArm.Wire;
@@ -75,6 +76,8 @@ namespace Teleop.Bridge
         [SerializeField] private Transform dragTarget;
         [SerializeField] private JetRoverArmRig armRig;
 
+        [Tooltip("When the IK cannot reach the target exactly (blocked by the robot's body, out of reach, or the pitch tilted to keep clear), move the drag target to what the arm does reach. TeleopXR turns it on, so the marker stays on the arm's wrist and the clutch re-engages from there (docs/adr/0020). Off by default, so a grabbed target (TeleopVR) is never pulled out of the hand.")]
+        [SerializeField] private bool snapTargetToReachable;
         [Tooltip("Whether commands reach the robot from the start. Off means nothing is sent until something sets MotionEnabled (TeleopXR's motion button, docs/adr/0017). TeleopVR leaves it on, as it always behaved.")]
         [SerializeField] private bool motionEnabledAtStart = true;
 
@@ -97,6 +100,8 @@ namespace Teleop.Bridge
         private JetRoverJointStateLink _jointStateLink;
         private long _lastJointSendTicks;
         private bool _hasSentJointCommand;
+        private ArmSolver _solver;
+        private bool _solverSeededFromRobot;
         private long _sendIntervalTicks;
 
         private LatencyTrace _pendingTrace;
@@ -148,6 +153,9 @@ namespace Teleop.Bridge
         /// estimate of them now. Null until <c>Awake</c>.
         /// </summary>
         public JetRoverJointStateLink JointState => _jointStateLink;
+
+        /// <summary>How the last IK solve related to the target: exact, pitch tilted, or blocked by the robot's body (docs/adr/0020).</summary>
+        public ArmSolveStatus LastSolveStatus { get; private set; }
 
         private float _speedRadPerSec;
 
@@ -329,17 +337,20 @@ namespace Teleop.Bridge
             _clockSync = new ClockSync(clockSyncConfig);
             // The joint-state downlink rides the joint socket: the robot streams to whoever last sent
             // on that port, so the keepalive must come from the same socket as the commands.
+            ReadingAges(_config, out byte[] readingAgeIds, out float[] readingAgeSeconds);
             try
             {
                 _jointStateLink = new JetRoverJointStateLink(_jointTransport, _clock, _profile, clockSyncConfig,
-                    _config.JointPredictorName, _config.JointModelSpeedRadPerSec, _config.MaxHorizonMs, _config.GripperFractionPerRadian);
+                    _config.JointPredictorName, _config.JointModelSpeedRadPerSec, _config.MaxHorizonMs, _config.GripperFractionPerRadian,
+                    readingAgeIds, readingAgeSeconds);
             }
             catch (ArgumentException e)
             {
                 // A mistyped predictor name must not take the command path down with it.
                 Debug.LogError($"[twin] {e.Message}; falling back to hold-last (no prediction)");
                 _jointStateLink = new JetRoverJointStateLink(_jointTransport, _clock, _profile, clockSyncConfig,
-                    "hold-last", _config.JointModelSpeedRadPerSec, _config.MaxHorizonMs, _config.GripperFractionPerRadian);
+                    "hold-last", _config.JointModelSpeedRadPerSec, _config.MaxHorizonMs, _config.GripperFractionPerRadian,
+                    readingAgeIds, readingAgeSeconds);
             }
             _predictor = predictorFactory(predictorConfig, _clock);
             _reconciler = reconcilerFactory(reconcilerConfig, _metricSink, _clock);
@@ -408,14 +419,57 @@ namespace Teleop.Bridge
             Quaternion localRotation = Quaternion.Inverse(armBase.rotation) * dragTarget.rotation;
             CorePose capturedPose = new CorePose(localPosition.ToCore(), localRotation.ToCore());
 
-            float desiredPitch = ArmKinematics.ExtractPitchRadians(capturedPose.Rotation);
-            float desiredRoll = ArmKinematics.ExtractRollRadians(capturedPose.Rotation);
+            // Read near last frame's values, so a target past straight down keeps its pitch instead
+            // of reading as the same orientation with the roll half a turn round (docs/adr/0020).
+            float desiredPitch, desiredRoll;
+            if (_hasTargetOrientation)
+            {
+                ArmKinematics.ExtractPitchRollNear(capturedPose.Rotation, _targetPitch, _targetRoll, out desiredPitch, out desiredRoll);
+            }
+            else
+            {
+                desiredPitch = ArmKinematics.ExtractPitchRadians(capturedPose.Rotation);
+                desiredRoll = ArmKinematics.ExtractRollRadians(capturedPose.Rotation);
+            }
+
+            _targetPitch = desiredPitch;
+            _targetRoll = desiredRoll;
+            _hasTargetOrientation = true;
+
+            // The collision-aware IK (docs/adr/0020): never a pose that hits the robot, the same
+            // model RobotHost enforces. It starts from the robot's own measured pose when one has
+            // arrived before anything was sent, and otherwise from the model's home pose.
+            if (!_solverSeededFromRobot && !_hasSentJointCommand && _jointStateLink != null &&
+                _jointStateLink.TryGetMeasured(out JetRoverJointPose measured) && measured.ArmSensed)
+            {
+                _solver.Reset(_profile, new ArmPose(measured.BaseYaw, measured.Proximal, measured.Distal, measured.WristPitch,
+                    measured.RollSensed ? measured.WristRoll : 0f));
+                _solverSeededFromRobot = true;
+            }
+
+            ArmSolution solution = _solver.Solve(_profile, capturedPose.Position, desiredPitch, desiredRoll);
+            Span<float> wristPitches = stackalloc float[Math.Max(1, _profile.WristJointCount)];
+            float baseYaw = solution.Pose.BaseYaw, proximalPitch = solution.Pose.Proximal, distalPitch = solution.Pose.Distal;
+            wristPitches[0] = solution.Pose.Wrist;
+            desiredRoll = solution.Pose.Roll;
             WristRollRadians = desiredRoll;
-            Span<float> wristPitches = stackalloc float[_profile.WristJointCount];
-            ArmKinematics.TryInverse(
-                _profile, capturedPose.Position, desiredPitch,
-                out float baseYaw, out float proximalPitch, out float distalPitch, wristPitches, out bool wasClamped);
-            float upperPitch = wristPitches.Length > 0 ? wristPitches[0] : 0f;
+            bool wasClamped = solution.IsCompromised;
+            bool pitchAdjusted = solution.Status == ArmSolveStatus.PitchAdjusted;
+            float upperPitch = wristPitches[0];
+            LastSolveStatus = solution.Status;
+
+            // Not while approaching: the arm is still on its way to the target, and moving the target
+            // to the arm would stop it there.
+            if (snapTargetToReachable && solution.Status != ArmSolveStatus.Approaching &&
+                (solution.Status != ArmSolveStatus.Exact || solution.ReachClamped))
+            {
+                // The target follows what the arm can reach, so the marker sits on the ghost's wrist
+                // and a clutch re-engaged from here starts where the arm really is.
+                dragTarget.position = armBase.TransformPoint(solution.Position.ToUnity());
+                dragTarget.rotation = armBase.rotation
+                    * Quaternion.AngleAxis(-solution.Pitch * Mathf.Rad2Deg, Vector3.right)
+                    * Quaternion.AngleAxis(-desiredRoll * Mathf.Rad2Deg, Vector3.forward);
+            }
 
             // Applied every frame, unconditionally -- see this class's own doc for why this is
             // deliberately not gated on ConfirmHardwareMotion or rate-limited: the rig needs to
@@ -426,7 +480,7 @@ namespace Teleop.Bridge
             // work, not part of this pass).
             if (armRig != null)
             {
-                armRig.ApplyAngles(baseYaw, proximalPitch, distalPitch, upperPitch, wasClamped);
+                armRig.ApplyAngles(baseYaw, proximalPitch, distalPitch, upperPitch, wasClamped, pitchAdjusted);
             }
 
             if (!_config.ConfirmHardwareMotion || !MotionEnabled)
@@ -490,6 +544,32 @@ namespace Teleop.Bridge
             _metricSink?.Dispose();
         }
 
+        // The drag target's pitch and roll as last read (Core convention, radians).
+        private bool _hasTargetOrientation;
+        private float _targetPitch, _targetRoll;
+
         private long MillisecondsToTicks(double ms) => (long)(ms / 1000.0 * _clock.TicksPerSecond);
+
+        /// <summary>The config's per-motor reading ages, as the predictor takes them. Mismatched lengths give none, with an error.</summary>
+        private static void ReadingAges(JetRoverArmConfig config, out byte[] ids, out float[] seconds)
+        {
+            int[] configIds = config.JointReadingAgeMotorIds ?? new int[0];
+            float[] configMs = config.JointReadingAgeMs ?? new float[0];
+            if (configIds.Length != configMs.Length)
+            {
+                Debug.LogError($"[twin] JointReadingAgeMotorIds has {configIds.Length} entries and JointReadingAgeMs {configMs.Length}; using no reading ages");
+                ids = new byte[0];
+                seconds = new float[0];
+                return;
+            }
+
+            ids = new byte[configIds.Length];
+            seconds = new float[configIds.Length];
+            for (int i = 0; i < configIds.Length; i++)
+            {
+                ids[i] = (byte)configIds[i];
+                seconds[i] = Math.Max(0f, configMs[i]) / 1000f;
+            }
+        }
     }
 }

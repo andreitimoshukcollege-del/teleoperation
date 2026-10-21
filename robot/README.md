@@ -24,7 +24,7 @@ format.
 
 ```bash
 just deploy-robot                # everything: gates, this workspace, RobotHost, CameraHost, checks
-just deploy-ros activate=false   # this workspace only: copy to the Jetson and build there; nothing running changes
+just deploy-ros false            # this workspace only: copy to the Jetson and build there; nothing running changes
 just deploy-ros                  # ...then switch the two ROS services to it and restart them
 ```
 
@@ -307,5 +307,66 @@ translates the local wire protocol above into calls against `jetrover_arm_contro
   takes no message argument, so any message raises a `TypeError` and `jetrover-arm-control` exits
   (systemd restarts it 2 s later). Even when called, it only plays one short beep: there is no
   setting that mutes the low-battery alarm, which is the board firmware's. Fixed in `ros/` on import.
+- **The hand-tuned shoulder floor is gone (2026-10-19).** `minAngleRadians -1.885` on motor 2 ("the
+  plate", `LowerArmMinPulse` 50) was replaced by a collision model generated from the robot's CAD
+  (docs/adr/0020). The headset's IK and RobotHost's Cartesian path never ask for a pose that hits
+  the body, and RobotHost refuses one on the joint path, logging `[plant] refused N joint
+  command(s)` with the pair that would collide.
+  - **Open question:** the CAD puts first contact between the lower arm and the turntable at −33°
+    (the model allows −30°). The robot has gone lower before: the validated `move-arm` target used
+    −36° with the old IK. Measure where the lower arm really touches before trusting either
+    number near the base.
+- **Feedback came about once a second, and commands stalled behind it (fixed 2026-10-20).**
+  - Each bus-servo position read waited up to 1 s for an answer, and the gripper (motor 10), which
+    never answers, was on the feedback list. Every feedback cycle stalled a full second on it.
+  - The node handles commands on the same thread, so commands queued behind the stall too: the
+    real arm moved in jerks.
+  - The relay marks a reading stale after about 0.2 s, so the measured arm kept flickering.
+  - Fixed in `robot/ros`: motor 10 is off the list.
+  - **Don't shorten the read timeout below 1 s.** Cutting it to 50 ms at the same time stopped all
+    servo feedback and the arm, so this board's answers can take longer than that. Reverted.
 - **Motor ids:** motor 5 is the wrist roll and motor 10 the gripper. Motors 1–5 report position.
   Motor 10 moves but never answers position reads, so the gripper is always a commanded belief.
+- **The servo board goes silent, and only the power switch brings it back (open, 2026-10-20).**
+  - **What it looks like:** the camera streams, but the arm ignores commands. `just joint-probe`
+    shows every motor `sensed NO`, and there is no battery reading.
+  - **What `just robot-board-diagnose` showed while it was happening** (read-only, and it never
+    opens the port):
+    - the driver read **0 bytes** from the board and wrote one position request a second (each
+      read waits its 1 s timeout);
+    - its receive thread was alive;
+    - the USB serial chip stayed connected, and the kernel logged no USB errors and no
+      undervoltage.
+
+    So the board's controller stops replying while the chip in front of it stays up.
+  - **Ruled out:**
+    - a fresh driver process (a redeploy) does not revive it;
+    - a DTR or RTS pulse on the port does not either (`just robot-board-reset`).
+  - **Not the trigger on their own:** three driver restarts with the headset idle, one with the
+    headset streaming, three deploys, and a build on the Jetson (`just deploy-ros false`). The
+    board kept answering through all of them.
+  - **Earlier cases:**
+    - after the read-timeout deploy above, which is probably why "50 ms stopped all feedback" was
+      blamed on the timeout;
+    - after the redeploy of 2026-10-20 01:51;
+    - during the low-battery incident. Each followed a driver restart, but the restart alone did
+      not reproduce it.
+  - **Evidence now kept:** every 5 s the driver logs its read statistics and the last battery
+    voltage (`just arm-logs`), so the journal shows when the reads started failing and the
+    voltage just before. Since 2026-10-21 the journal survives reboots (`just robot-journal-persist`,
+    capped at 200 MB; the card had 1.7 GB free), so a power-cycle no longer wipes it. Still run
+    `just robot-board-diagnose` **before** switching off: it needs the fault present. After a reboot,
+    the previous boot's lines are on the robot under `journalctl -b -1 -u jetrover-arm-control`.
+    Entries before the clock syncs at boot carry a 2023 date: the Jetson has no clock battery.
+- **A measurement trap: `just joint-probe` while the headset streams.** RobotHost sends the
+  joint-state stream to whoever last sent on the joint port. A headset sending joint commands takes
+  it back 48 times a second, so the probe gets scraps. On 2026-10-20 that read as "feedback falls to
+  1.3 Hz under motion" while the headset got everything. The probe now warns when it sees far fewer
+  than 50 frames a second. Measure with motion off, or read the driver's and relay's statistics
+  lines in `just arm-logs`.
+- **The board's torque codes are swapped (found 2026-10-21).** Hiwonder's SDK sends 0x0B for
+  torque on and 0x0C for off. On this board, 0x0C leaves a servo stiff (its torque-state read, 0x0D,
+  stays 1), and 0x0B makes it limp (reads 0). The driver's `/arm/servo/set/torque` topic was
+  therefore always inverted. `robot_controller_sdk.py` is corrected, and goes live with the next
+  `just deploy-ros`. `just robot-measure-joint-limits` sends 0x0B itself, so it does not depend on
+  the deployed version, and checks the read-back before telling anyone to move the arm.

@@ -283,10 +283,62 @@ namespace Teleop.RobotArm.Tests.Kinematics
         }
 
         [Fact]
-        public void ExtractRollRadians_IsZeroWhenPointingStraightUp()
+        public void ExtractRollRadians_PointingStraightUp_IsMeasuredFromHeadingZero()
         {
             Quaternion q = Quaternion.CreateFromAxisAngle(Vector3.UnitY, -MathF.PI / 2f) * Quaternion.CreateFromAxisAngle(Vector3.UnitX, 0.8f);
-            Assert.Equal(0f, ArmKinematics.ExtractRollRadians(q));
+            Assert.Equal(0.8f, ArmKinematics.ExtractRollRadians(q), 3);
+        }
+
+        [Theory]
+        [InlineData(-120.0, 40.0)]
+        [InlineData(-95.0, -60.0)]
+        [InlineData(-170.0, 10.0)]
+        [InlineData(110.0, 80.0)]
+        [InlineData(-60.0, 40.0)]
+        [InlineData(30.0, -100.0)]
+        public void ExtractPitchRollNear_ReadsBackWhatWasWritten_PastVerticalToo(double pitchDegrees, double rollDegrees)
+        {
+            // JetRoverClutch writes pitch · roll, heading 0, and its pitch may be past ±90°. Read back
+            // near the previous frame's values, the pitch carries on rather than flipping the roll.
+            float pitch = (float)(pitchDegrees * Math.PI / 180.0), roll = (float)(rollDegrees * Math.PI / 180.0);
+            Quaternion q = Quaternion.CreateFromAxisAngle(Vector3.UnitY, -pitch) * Quaternion.CreateFromAxisAngle(Vector3.UnitX, roll);
+
+            ArmKinematics.ExtractPitchRollNear(q, pitch + 0.05f, roll - 0.05f, out float readPitch, out float readRoll);
+
+            Assert.Equal(pitch, readPitch, 3);
+            Assert.Equal(roll, readRoll, 3);
+        }
+
+        [Fact]
+        public void ExtractPitchRollNear_ThroughStraightDown_IsContinuous()
+        {
+            float previousPitch = (float)(-80.0 * Math.PI / 180.0), previousRoll = 0.6f;
+            for (double degrees = -80.0; degrees >= -130.0; degrees -= 0.5)
+            {
+                float pitch = (float)(degrees * Math.PI / 180.0);
+                Quaternion q = Quaternion.CreateFromAxisAngle(Vector3.UnitY, -pitch) * Quaternion.CreateFromAxisAngle(Vector3.UnitX, 0.6f);
+                ArmKinematics.ExtractPitchRollNear(q, previousPitch, previousRoll, out float readPitch, out float readRoll);
+                Assert.True(MathF.Abs(readPitch - previousPitch) < 0.02f && MathF.Abs(readRoll - 0.6f) < 1e-3f,
+                    $"at {degrees}°: read pitch {readPitch * 180 / Math.PI:0.0}° roll {readRoll * 180 / Math.PI:0.0}°");
+                previousPitch = readPitch;
+                previousRoll = readRoll;
+            }
+        }
+
+        [Theory]
+        [InlineData(-85.0)]
+        [InlineData(-89.0)]
+        [InlineData(-89.5)]
+        [InlineData(-89.9)]
+        [InlineData(-90.0)]
+        [InlineData(89.7)]
+        public void ExtractRollRadians_KeepsTheRoll_ThroughVertical(double pitchDegrees)
+        {
+            // JetRoverClutch writes the target as pitch · roll, heading 0. Within 0.6° of vertical the
+            // roll used to read 0, so a target pointing straight down lost it for a frame (2026-10-21).
+            float pitch = (float)(pitchDegrees * Math.PI / 180.0);
+            Quaternion q = Quaternion.CreateFromAxisAngle(Vector3.UnitY, -pitch) * Quaternion.CreateFromAxisAngle(Vector3.UnitX, 0.7f);
+            Assert.Equal(0.7f, ArmKinematics.ExtractRollRadians(q), 3);
         }
 
         [Fact]

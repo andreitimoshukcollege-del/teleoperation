@@ -43,6 +43,11 @@ _FEEDBACK_SEND_PERIOD_SECONDS = 0.05  # 20 Hz
 # fraction of a second instead of never.
 _STALENESS_TIMEOUT_SECONDS = 0.2
 
+# How often the node logs its statistics, seconds (2026-10-20: while the headset streamed
+# commands, RobotHost got a valid reading only about once a second although the driver published
+# 50 a second; these say where they are lost).
+_STATS_PERIOD_SECONDS = 5.0
+
 
 def _encode_command_array(targets) -> Float32MultiArray:
     """[count, motor_id_0, pulse_0, speed_0, motor_id_1, ...] -- a plain std_msgs array instead of
@@ -101,37 +106,75 @@ class TeleopRelayNode(Node):
         self.get_logger().info(
             f"Relay listening on {LOCAL_RELAY_SOCKET}, forwarding feedback to {HOST_SOCKET}"
         )
+        self._reset_stats(time.monotonic())
+        self._last_feedback_at = None
+
+    def _reset_stats(self, now):
+        self._stats_since = now
+        self._feedback_msgs = 0
+        self._longest_feedback_gap_ms = 0.0
+        self._sends = 0
+        self._sends_all_valid = 0
+        self._send_failures = 0
+        self._datagrams = 0
+        self._commands = 0
+        self._slowest_callback_ms = 0.0
+
+    def _note_callback(self, start):
+        self._slowest_callback_ms = max(self._slowest_callback_ms, (time.monotonic() - start) * 1000.0)
+        if start - self._stats_since < _STATS_PERIOD_SECONDS:
+            return
+        seconds = start - self._stats_since
+        self.get_logger().info(
+            f"[stats {seconds:.1f}s] feedback messages {self._feedback_msgs} "
+            f"({self._feedback_msgs / seconds:.1f} Hz), longest gap {self._longest_feedback_gap_ms:.0f} ms; "
+            f"feedback sent {self._sends}, all readings valid in {self._sends_all_valid}, "
+            f"send failures {self._send_failures}; "
+            f"command datagrams {self._datagrams}, commands published {self._commands}; "
+            f"slowest callback {self._slowest_callback_ms:.1f} ms")
+        self._reset_stats(start)
 
     def _on_feedback_array(self, msg: Float32MultiArray) -> None:
         now = time.monotonic()
+        self._feedback_msgs += 1
+        if self._last_feedback_at is not None:
+            self._longest_feedback_gap_ms = max(self._longest_feedback_gap_ms, (now - self._last_feedback_at) * 1000.0)
+        self._last_feedback_at = now
         for motor_id, pulse in _decode_feedback_array(msg):
             tracked = self._feedback_by_motor_id.get(motor_id)
             if tracked is None:
                 tracked = StaleTrackedValue(_STALENESS_TIMEOUT_SECONDS)
                 self._feedback_by_motor_id[motor_id] = tracked
             tracked.update(pulse, now)
+        self._note_callback(now)
 
     def _poll_local_socket(self) -> None:
         # Drain every pending datagram but act only on the most recent -- IRelayClient's
         # contract is "here is the current setpoint," not a queue of every one ever sent, so a
         # backlog here (this node briefly starved of CPU) must not replay stale commands once
         # it catches up.
+        start = time.monotonic()
         latest = None
         max_size = relay_protocol.command_encoded_size(relay_protocol.MAX_JOINTS_PER_MESSAGE)
         while True:
             try:
                 latest, _ = self._socket.recvfrom(max_size)
+                self._datagrams += 1
             except BlockingIOError:
                 break
 
         if latest is None:
+            self._note_callback(start)
             return
 
         targets = relay_protocol.decode_arm_command(latest)
         if targets is None:
+            self._note_callback(start)
             return
 
         self._command_pub.publish(_encode_command_array(targets))
+        self._commands += 1
+        self._note_callback(start)
 
     def _send_feedback(self) -> None:
         now = time.monotonic()
@@ -140,10 +183,14 @@ class TeleopRelayNode(Node):
             valid, pulse = tracked.read(now)
             entries.append((motor_id, valid, pulse))
 
+        self._sends += 1
+        if entries and all(valid for _, valid, _ in entries):
+            self._sends_all_valid += 1
         payload = relay_protocol.encode_feedback(entries)
         try:
             self._socket.sendto(payload, HOST_SOCKET)
         except OSError:
+            self._send_failures += 1
             # Teleop.RobotHost isn't up yet, or has restarted -- fire-and-forget, matching
             # UdsRelayClient.Send's own tolerance for the mirror-image case.
             pass

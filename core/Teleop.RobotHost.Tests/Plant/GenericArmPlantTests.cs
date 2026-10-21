@@ -1,6 +1,7 @@
 using System.Linq;
 using System.Numerics;
 using Teleop.Core.Types;
+using Teleop.RobotArm.Collision;
 using Teleop.RobotArm.Kinematics;
 using Teleop.RobotArm.Types;
 using Teleop.RobotArm.Wire;
@@ -132,6 +133,109 @@ namespace Teleop.RobotHost.Tests.Plant
                 JetRover, Config.PulsePerRadian, Config.PulsesPerSecond, Config.StepSizePulses,
                 magnitude, Config.ZeroPulse, Config.MinPulse, Config.MaxPulse,
                 Config.GripperOpenPulse, Config.GripperClosedPulse);
+
+        private static GenericArmPlantConfig ConfigWithoutCollisionModel() =>
+            new GenericArmPlantConfig(
+                JetRover.WithCollision(null), Config.PulsePerRadian, Config.PulsesPerSecond, Config.StepSizePulses,
+                Config.MaxDirectionMagnitude, Config.ZeroPulse, Config.MinPulse, Config.MaxPulse,
+                Config.GripperOpenPulse, Config.GripperClosedPulse);
+
+        // ---- the collision backstop (docs/adr/0020) ----------------------------------------
+
+        private static JointTarget[] AllJoints(ArmPose pose) => new[]
+        {
+            new JointTarget(BaseMotorId, pose.BaseYaw, 0f),
+            new JointTarget(JetRover.Joints[JetRover.TryGetJointIndex(JointRole.Proximal)].MotorId, pose.Proximal, 0f),
+            new JointTarget(JetRover.Joints[JetRover.TryGetJointIndex(JointRole.Distal)].MotorId, pose.Distal, 0f),
+            new JointTarget(JetRover.Joints[JetRover.TryGetJointIndex(JointRole.Wrist)].MotorId, pose.Wrist, 0f),
+            new JointTarget(WristRollMotorId, pose.Roll, 0f),
+        };
+
+        [Fact]
+        public void CommandJointAngles_RefusesAPoseThatWouldHitTheRobot()
+        {
+            var relay = new FakeRelayClient();
+            var plant = new GenericArmPlant(Config, relay);
+            // The shoulder driven down into the plate.
+            plant.CommandJointAngles(AllJoints(new ArmPose(0f, -1.7f, 1.0f, 0f, 0f)), captureTicks: 10);
+
+            Assert.Empty(relay.SentCommands);
+            Assert.Equal(1, plant.RefusedJointCommands);
+            Assert.False(string.IsNullOrEmpty(plant.DescribeLastRefusal()));
+        }
+
+        [Fact]
+        public void CommandJointAngles_PassesAPoseTheModelAllows()
+        {
+            var relay = new FakeRelayClient();
+            var plant = new GenericArmPlant(Config, relay);
+            plant.CommandJointAngles(AllJoints(JetRover.Collision!.Home), captureTicks: 10);
+
+            Assert.Single(relay.SentCommands);
+            Assert.Equal(0, plant.RefusedJointCommands);
+        }
+
+        [Fact]
+        public void Command_NeverSendsAPoseThatWouldHitTheRobot()
+        {
+            // Cartesian targets inside the chassis, under the deck and behind the screen: whatever
+            // the solver sends, the pose it sends is one the model allows.
+            var relay = new FakeRelayClient();
+            var plant = new GenericArmPlant(Config, relay);
+            var targets = new[] { new Vector3(0.15f, 0f, 0.08f), new Vector3(0.05f, 0f, -0.08f), new Vector3(-0.15f, 0f, 0.02f), new Vector3(0.10f, 0.05f, -0.15f) };
+            long ticks = 10;
+            foreach (Vector3 target in targets)
+            {
+                plant.Command(Frame(captureTicks: ticks++, position: target));
+            }
+
+            Assert.NotEmpty(relay.SentCommands);
+            foreach (var sent in relay.SentCommands)
+            {
+                var pose = new ArmPose(Angle(sent, BaseMotorId, JointRole.BaseYaw), Angle(sent, MotorOf(JointRole.Proximal), JointRole.Proximal),
+                    Angle(sent, MotorOf(JointRole.Distal), JointRole.Distal), Angle(sent, MotorOf(JointRole.Wrist), JointRole.Wrist),
+                    Angle(sent, WristRollMotorId, JointRole.GripperRotate));
+                Assert.True(ArmCollision.IsValid(JetRover, JetRover.Collision!, pose), ArmCollision.Check(JetRover, JetRover.Collision!, pose).Describe(JetRover.Collision!));
+            }
+        }
+
+        [Fact]
+        public void WhileJointCommandsArrive_CartesianCommandsDoNotMoveTheArm()
+        {
+            var relay = new FakeRelayClient();
+            var plant = new GenericArmPlant(Config, relay) { JointPrecedenceTicks = 500 };
+            plant.Step(1000);
+            plant.CommandJointAngles(AllJoints(JetRover.Collision!.Home), captureTicks: 10);
+            Assert.Single(relay.SentCommands);
+
+            plant.Step(1200); // within the precedence window
+            plant.Command(Frame(captureTicks: 20, position: new Vector3(0.15f, 0f, 0.08f)));
+            Assert.Single(relay.SentCommands);
+            Assert.Equal(1, plant.IgnoredCartesianCommands);
+
+            plant.Step(1600); // past it: the joint sender went quiet, the Cartesian path drives again
+            plant.Command(Frame(captureTicks: 30, position: new Vector3(0.15f, 0f, 0.08f)));
+            Assert.Equal(2, relay.SentCommands.Count);
+        }
+
+        [Fact]
+        public void WithoutJointCommands_TheCartesianPathDrivesAsBefore()
+        {
+            var relay = new FakeRelayClient();
+            var plant = new GenericArmPlant(Config, relay) { JointPrecedenceTicks = 500 };
+            plant.Step(1000);
+            plant.Command(Frame(captureTicks: 10, position: new Vector3(0.15f, 0f, 0.08f)));
+            Assert.Single(relay.SentCommands);
+            Assert.Equal(0, plant.IgnoredCartesianCommands);
+        }
+
+        private static byte MotorOf(JointRole role) => JetRover.Joints[JetRover.TryGetJointIndex(role)].MotorId;
+
+        private static float Angle(JointTarget[] sent, byte motorId, JointRole role)
+        {
+            float pulse = Pulse(sent, motorId);
+            return (pulse - Config.ZeroPulse) / Config.PulsePerRadian - JetRover.Joints[JetRover.TryGetJointIndex(role)].ZeroOffsetRadians;
+        }
 
         private static GenericArmPlantConfig ConfigWithProximalFloor(float floorPulse)
         {
@@ -688,8 +792,10 @@ namespace Teleop.RobotHost.Tests.Plant
         [Fact]
         public void UnknownMotorId_InCommandJointAngles_IsIgnoredNotThrown()
         {
+            // No collision model: the partial command's other joints come from a fresh plant's
+            // belief, which the JetRover model would rightly refuse. This test is about ids.
             var relay = new FakeRelayClient();
-            var plant = new GenericArmPlant(Config, relay);
+            var plant = new GenericArmPlant(ConfigWithoutCollisionModel(), relay);
 
             var targetsWithAForeignId = new[]
             {

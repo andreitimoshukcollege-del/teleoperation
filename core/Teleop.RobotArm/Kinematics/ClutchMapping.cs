@@ -90,6 +90,23 @@ namespace Teleop.RobotArm.Kinematics
                 : _targetPitchAtEngage + WrapAngle(handPitch - _handPitchAtEngage);
         }
 
+        /// <summary>
+        /// Replaces the held target and pitch while released: what the arm actually reached, when the
+        /// collision-aware IK stopped short of the last target (docs/adr/0020). The next
+        /// <see cref="Engage"/> then starts from there instead of from inside the obstacle. Ignored
+        /// while engaged, where the hand decides.
+        /// </summary>
+        public void Rebase(Vector3 target, float pitch)
+        {
+            if (IsEngaged)
+            {
+                return;
+            }
+
+            Target = target;
+            Pitch = pitch;
+        }
+
         /// <summary>Stops following. The target and pitch hold where they are.</summary>
         public void Release()
         {
@@ -145,6 +162,24 @@ namespace Teleop.RobotArm.Kinematics
 
             float roll = (sign < 0f ? -1f : 1f) * handRollRadians;
             return float.IsNaN(roll) ? float.NaN : Math.Clamp(roll, -limitRadians, limitRadians);
+        }
+
+        /// <summary>
+        /// How far <paramref name="now"/> has twisted about its own forward axis (+X) since
+        /// <paramref name="anchor"/>, radians, ±π: the twist part of a swing-twist split of the
+        /// rotation between them. Unlike a difference of two <see cref="ArmKinematics.ExtractRollRadians"/>
+        /// it has no trouble when the hand points straight up or down. There heading and roll are
+        /// the same turn, so a small wobble of a downward-pointing hand read as a large roll and
+        /// made the IK stop (2026-10-21). Undefined only for a half-turn swing between the two.
+        /// </summary>
+        public static float TwistRadians(Quaternion anchor, Quaternion now)
+        {
+            Quaternion relative = Quaternion.Conjugate(anchor) * now;
+            float twist = 2f * MathF.Atan2(relative.X, relative.W);
+            const float twoPi = 2f * MathF.PI;
+            if (twist > MathF.PI) twist -= twoPi;
+            else if (twist < -MathF.PI) twist += twoPi;
+            return twist;
         }
 
         /// <summary>

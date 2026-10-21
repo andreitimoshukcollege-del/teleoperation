@@ -247,6 +247,8 @@ namespace Teleop.XR.Editor
             // The robot's start/stop switch: present, wired, and the scene starts with motion off.
             if (new SerializedObject(bridge).FindProperty("motionEnabledAtStart") is SerializedProperty startOn && startOn.boolValue)
                 problems.Add("JetRoverOperatorBridge.motionEnabledAtStart is on: the robot would move at launch, before anyone presses the motion button (docs/adr/0017)");
+            if (new SerializedObject(bridge).FindProperty("snapTargetToReachable") is SerializedProperty snap && !snap.boolValue)
+                problems.Add("JetRoverOperatorBridge.snapTargetToReachable is off: when the IK stops at the robot's body, the marker would stay inside it and the clutch would re-engage from there (docs/adr/0020)");
             var toggle = Object.FindAnyObjectByType<MotionToggleButton>(FindObjectsInactive.Include);
             if (toggle == null)
             {

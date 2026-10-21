@@ -17,7 +17,8 @@ to arm control were left behind (the camera is now served by `core/Teleop.Camera
   - it publishes servo feedback on `/unity/robot/servo/feedback_array` and the battery level on
     `/robot/battery` (millivolts).
   - **`FEEDBACK_MOTOR_IDS`** in `robot_controller_node.py` lists the servos it reads back. That is
-    1–5. Motor 10, the gripper, is in the list but never answers.
+    1–5. Motor 10, the gripper, is left out: it never answers, and each read of it used to stall
+    the loop for a second.
   - `board_manager/robot_controller_sdk.py` is Hiwonder's board library. `just robot-board-commands`
     lists what the board accepts.
 - **`teleop_relay`** bridges RobotHost to the driver over a Unix socket
@@ -32,7 +33,7 @@ to arm control were left behind (the camera is now served by `core/Teleop.Camera
 From the repository root, never by hand on the Jetson:
 
 ```bash
-just deploy-ros activate=false   # copy to the Jetson, build it there, run the Python tests
+just deploy-ros false            # copy to the Jetson, build it there, run the Python tests
 just deploy-ros                  # ...and switch the two ROS services to it (someone at the robot)
 just robot-ros-diff              # read-only: is the Jetson running exactly what is here?
 ```

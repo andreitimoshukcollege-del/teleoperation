@@ -164,6 +164,7 @@ namespace Teleop.Bridge
     {
         public UnityEngine.Transform BaseAnchor => null;
         public void ApplyAngles(float baseYaw, float proximalPitch, float distalPitch, float upperPitch, bool wasClamped) { }
+        public void ApplyAngles(float baseYaw, float proximalPitch, float distalPitch, float upperPitch, bool wasClamped, bool pitchAdjusted) { }
     }
 
     public sealed class UdpTransport : Teleop.Core.Contracts.ITransport

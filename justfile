@@ -111,6 +111,11 @@ unity-setup-xr:
 unity-scene-xr rebuild="false":
     just _unity-batch TeleopXR Teleop.XR.Editor.XrLabSceneBuilder.Run {{ if rebuild == "true" { "-teleopRebuildScene" } else { "" } }}
 
+# Build the arm's collision model from the robot's CAD (docs/adr/0020) and write core/Teleop.RobotArm/Collision/JetRoverCollisionModel.g.cs: fits capsules to each link and boxes to the body, decides which joint-local pairs to skip, and validates (every surface sample covered, Core's frames match the Unity rig) before writing anything. Report and preview images go to %TEMP%\teleop-collision. Rerun whenever the CAD changes. Needs the lab built with the CAD; close TeleopXR's editor first
+[group('headset (Galaxy XR)')]
+robot-collision-model:
+    just _unity-batch TeleopXR Teleop.XR.Editor.RobotCollisionExtractor.Run "" true
+
 # Rebuild unity/TeleopXR's lab (night-shift room, JetRover twin, camera display, lighting), bake the lighting, and render preview screenshots to the Windows temp folder; prints the contact sheet's path. bake=false skips the multi-minute bake. Close that project's editor first
 [group('headset (Galaxy XR)')]
 unity-lab-xr bake="true":
@@ -170,6 +175,17 @@ push-galaxy-config host=default_jetrover_host motion="true":
     set -euo pipefail
     case "{{motion}}" in true|false) ;; *) echo "error: motion must be true or false, got '{{motion}}'" >&2; exit 1 ;; esac
     host=$(just _robot-host "{{host}}")
+    # The headset has no Tailscale. When this PC can only reach the robot through it (it is on
+    # another network), ask the robot for its own lab-network address and give the headset that.
+    case "$host" in 100.*)
+        lan=$(ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 "jetson@$host"             "ip -4 -o addr show scope global | grep -v -E ' (tailscale0|docker0|lo) ' | awk '{print \$4}' | cut -d/ -f1 | head -1" || true)
+        if [ -z "$lan" ]; then
+            echo "error: the robot is only reachable here over Tailscale ($host), which the headset cannot use, and it reported no LAN address. Pass the robot's LAN address: just push-galaxy-config <address>" >&2
+            exit 1
+        fi
+        echo "robot: $host is its Tailscale address; giving the headset its LAN address, $lan, instead" >&2
+        host=$lan ;;
+    esac
     tmp=$(mktemp --suffix=.json)
     trap 'rm -f "$tmp"' EXIT
     python3 - "$tmp" "$host" "{{motion}}" <<'PY'
@@ -423,6 +439,38 @@ robot-serial remote_host=default_jetrover_host remote_user="jetson":
          echo '--- serial ports held by jetrover-arm-control and its children'; for p in \$(systemctl show -p MainPID --value jetrover-arm-control) \$(pgrep -f robot_controller_manager); do ls -l /proc/\$p/fd 2>/dev/null | grep -E 'tty|serial' | sed \"s/^/pid \$p: /\"; done; \
          echo '--- kernel serial USB events (newest last)'; journalctl -k --no-pager -n 5000 | grep -iE 'ch34|cdc_acm|ttyUSB|ttyACM|cp210|ftdi' | grep -v 'Modules linked in' | tail -30"
 
+# Read-only: when the board has stopped answering (just joint-probe shows every motor sensed NO), find out which side is dead, without opening the serial port (opening it can reset the board and erase the evidence). Shows: the robot's uptime; the kernel's power and USB alarms since boot; the driver's threads and what each waits on; whether any bytes reach the driver over a few seconds; how often the board's own battery report and the servo feedback still arrive; and any receive errors in the driver's log. Run it while the fault is present, before any restart
+[group('robot: checks and diagnostics (nothing moves)')]
+robot-board-diagnose seconds="6" remote_host=default_jetrover_host remote_user="jetson":
+    #!/usr/bin/env bash
+    set -uo pipefail
+    ssh -o StrictHostKeyChecking=accept-new "{{remote_user}}@$(just _robot-host "{{remote_host}}")" "SECONDS_TO_WATCH={{seconds}} bash -s" <<'REMOTE'
+    echo "--- uptime: $(uptime)"
+    echo '--- kernel: power, thermal and USB alarms since boot (newest last)'
+    journalctl -k -b --no-pager | grep -iE 'soctherm|oc alarm|under.?volt|brown|throttl|over.?current|usb [0-9.-]+: (reset|disconnect|device descriptor|cannot|error)|cdc_acm.*(error|-71|-110|-32)|ttyACM' | grep -v -E 'Modules linked in|trip temperature|thermtrip|throttrip|parse_throttle|cooling device registered|probe successful|failed to register sensor' | tail -25
+    echo '--- Jetson input power rails (ina3221, if present)'
+    for f in /sys/bus/i2c/drivers/ina3221*/*/iio:device*/in_voltage*_input /sys/bus/i2c/drivers/ina3221*/*/iio:device*/rail_name_*; do [ -r "$f" ] && echo "$(basename "$f"): $(cat "$f")"; done 2>/dev/null | head -12
+    echo '--- every start of the servo driver over the last three boots (each start reopens the serial port)'
+    for b in -2 -1 0; do journalctl -b "$b" -u jetrover-arm-control --no-pager -o short 2>/dev/null | grep -E 'Started|-- Logs begin' | grep Started | sed "s/^/boot $b: /"; done | tail -30
+    pid=$(pgrep -f 'lib/jetrover_arm_control/robot_controller_manager' | head -1)
+    if [ -z "$pid" ]; then echo '--- the driver is not running'; exit 0; fi
+    echo "--- driver pid $pid, started $(ps -o lstart= -p "$pid")"
+    echo '--- its threads: name, state, kernel wait'
+    for t in /proc/$pid/task/*; do printf '%-8s %-16s %s %s\n' "$(basename "$t")" "$(cat "$t/comm")" "$(awk '{print $3}' "$t/stat")" "$(cat "$t/wchan" 2>/dev/null)"; done
+    echo "--- bytes the driver read and wrote over ${SECONDS_TO_WATCH} s (all its fds: serial and ROS sockets together)"
+    read -r r1 w1 c1 < <(awk '/^rchar|^wchar|^syscr/{printf "%s ", $2}' /proc/$pid/io); sleep "$SECONDS_TO_WATCH"
+    read -r r2 w2 c2 < <(awk '/^rchar|^wchar|^syscr/{printf "%s ", $2}' /proc/$pid/io)
+    echo "read $((r2 - r1)) bytes, wrote $((w2 - w1)) bytes, $((c2 - c1)) read calls"
+    source /opt/ros/foxy/setup.bash; export ROS_LOCALHOST_ONLY=1
+    echo "--- messages in ${SECONDS_TO_WATCH} s: servo feedback, then the board's battery report (every 5 s when the board answers)"
+    timeout "$SECONDS_TO_WATCH" ros2 topic echo /unity/robot/servo/feedback_array 2>/dev/null | grep -c '^data:' || true
+    timeout "$SECONDS_TO_WATCH" ros2 topic echo /robot/battery 2>/dev/null | grep '^data:' | tail -2 || true
+    echo '--- receive errors in the driver log since it started'
+    journalctl -u jetrover-arm-control --no-pager --since "$(date -d "$(ps -o lstart= -p "$pid")" '+%Y-%m-%d %H:%M:%S')" | grep -iE 'verificatio|traceback|error|exception|END\.\.\.' | tail -15
+    echo '--- py-spy stack of every driver thread (only if py-spy is installed)'
+    command -v py-spy >/dev/null && py-spy dump --pid "$pid" 2>&1 | head -60 || echo 'py-spy not installed'
+    REMOTE
+
 # Read-only: subscribe to RobotHost's joint-state stream (docs/adr/0018) for a few seconds and print the frame rate, round trip, and per motor whether it is sensed (servo feedback) or only a commanded belief. Sends a keepalive, never a command: nothing moves
 [group('robot: checks and diagnostics (nothing moves)')]
 joint-probe seconds="3" remote_host=default_jetrover_host:
@@ -492,6 +540,165 @@ robot-board-commands remote_host=default_jetrover_host remote_user="jetson":
         "files=\$(grep -rl --include=*.py -E 'def set_buzzer|PACKET_FUNC|BOARD_' /home/jetson /opt 2>/dev/null | grep -v -E '/build/|/install/|site-packages/(numpy|scipy)' | sort -u | head -8); \
          for f in \$files; do echo \"=== \$f\"; grep -n -E '^ *def |PACKET_FUNC|FUNC_|= *0x' \$f | head -60; echo '--- buzzer / battery / alarm:'; grep -n -i -E 'buzz|batt|alarm|volt|warn|beep' \$f | head -30; done"
 
+# Make the robot's journal survive reboots, once: without it a power-cycle (the only cure when the servo board goes silent, robot/README.md) wipes the driver's statistics that show when it went silent and at what voltage. Creates /var/log/journal, caps the journal at 200 MB (a drop-in in /etc/systemd/journald.conf.d/, so it cannot fill the card), and flushes the running journal to disk. It does not restart systemd-journald, which on older systemd can cut the running services' log streams. The cap applies from the next boot. Safe to run again. Afterwards `journalctl --list-boots` on the robot lists earlier boots
+[group('robot: deploy and restart (someone at the robot)')]
+robot-journal-persist remote_host=default_jetrover_host remote_user="jetson":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    ssh -o StrictHostKeyChecking=accept-new "{{remote_user}}@$(just _robot-host "{{remote_host}}")" "bash -s" <<'REMOTE'
+    set -euo pipefail
+    echo "--- systemd $(systemctl --version | head -1 | awk '{print $2}'); Storage setting: $(grep -hE '^\s*Storage=' /etc/systemd/journald.conf /etc/systemd/journald.conf.d/*.conf 2>/dev/null | tail -1 || true)"
+    echo "--- free space on /var: $(df -h /var | awk 'NR==2 {print $4 " of " $2}')"
+    if grep -hqE '^\s*Storage=(volatile|none)' /etc/systemd/journald.conf /etc/systemd/journald.conf.d/*.conf 2>/dev/null; then
+        echo "journald is set to keep nothing on disk (Storage=volatile or none). Changing that needs a journald restart; not doing it here." >&2
+        exit 1
+    fi
+    sudo mkdir -p /var/log/journal /etc/systemd/journald.conf.d
+    sudo systemd-tmpfiles --create --prefix /var/log/journal
+    printf '[Journal]\nStorage=persistent\nSystemMaxUse=200M\n' | sudo tee /etc/systemd/journald.conf.d/teleop-persistent.conf >/dev/null
+    sudo journalctl --flush
+    echo "--- on disk now:"; sudo du -sh /var/log/journal
+    echo "--- boots the journal knows:"; journalctl --list-boots --no-pager | tail -3
+    REMOTE
+
+# Measure how far joints really go, by hand: stops the servo driver, switches off torque on the given servos (default 2, the shoulder, and 4, the wrist pitch), then for `seconds` prints their angles live while someone moves each one by hand to where it physically touches, and records the furthest each reached. Angles are the IK's (RobotHost's conversion: (pulse - 500) / 238.7 per radian, minus jetrover.json's zeroOffsetRadians). At the end each servo is commanded to hold where it is (so nothing snaps back), and the driver starts again. With the shoulder's torque off the whole arm falls: someone must hold it the entire time. docs/adr/0020: these numbers, less a margin, replace the CAD's joint ranges
+[group('robot: deploy and restart (someone at the robot)')]
+robot-measure-joint-limits ids="2 4" seconds="90" remote_host=default_jetrover_host remote_user="jetson":
+    #!/usr/bin/env bash
+    set -uo pipefail
+    ssh -o StrictHostKeyChecking=accept-new "{{remote_user}}@$(just _robot-host "{{remote_host}}")" "IDS='{{ids}}' SECONDS_TO_MEASURE={{seconds}} bash -s" <<'REMOTE'
+    sudo systemctl stop jetrover-arm-control
+    sdk=$(ls -d /home/jetson/teleop_ros_current/install/jetrover_arm_control/lib/python3*/site-packages | head -1)
+    PYTHONUNBUFFERED=1 PYTHONPATH="$sdk" python3 - <<'PY'
+    import math, os, time
+    from jetrover_arm_control.board_manager.robot_controller_sdk import Board, PacketFunction
+
+    ids = [int(i) for i in os.environ["IDS"].split()]
+    seconds = float(os.environ["SECONDS_TO_MEASURE"])
+    names = {1: "base yaw", 2: "shoulder", 3: "elbow", 4: "wrist pitch", 5: "wrist roll"}
+    zero_offset = {2: 0.12217305}  # core/RobotProfiles/jetrover.json
+    pulse_per_radian = 1000.0 / math.radians(240.0)
+
+    def angle(servo, pulse):
+        return math.degrees((pulse - 500) / pulse_per_radian - zero_offset.get(servo, 0.0))
+
+    def read(board, servo):
+        got = board.bus_servo_read_position(servo)
+        return got[0] if got else None
+
+    def torque(i):
+        got = board.bus_servo_read_torque_state(i)
+        return got[0] if got else None
+
+    board = Board()
+    board.enable_reception()
+    time.sleep(0.5)
+    lo, hi, last = {}, {}, {}
+    try:
+        for n in (5, 4, 3, 2, 1):
+            print(f"torque off on {', '.join(names.get(i, str(i)) for i in ids)} in {n} s: hold the arm", flush=True)
+            time.sleep(1)
+        for i in ids:
+            # Torque off is sub-command 0x0B on this board (the opposite of Hiwonder's published SDK,
+            # measured 2026-10-21). Sent raw, so it does not depend on which SDK version is deployed.
+            board.buf_write(PacketFunction.PACKET_FUNC_BUS_SERVO, [0x0B, i])
+            time.sleep(0.02)
+            state = torque(i)
+            print(f"  {names.get(i, i)} (motor {i}): torque now {state} (0 = off)", flush=True)
+            if state != 0:
+                raise RuntimeError(f"motor {i} did not switch its torque off; stopping")
+        print(f"TORQUE OFF. Move each joint slowly to where it touches, both ways. {seconds:.0f} s.", flush=True)
+        end, shown = time.time() + seconds, 0.0
+        while time.time() < end:
+            for i in ids:
+                p = read(board, i)
+                if p is not None:
+                    a = angle(i, p)
+                    last[i] = p
+                    lo[i] = min(lo.get(i, a), a)
+                    hi[i] = max(hi.get(i, a), a)
+            if time.time() - shown >= 0.5:
+                shown = time.time()
+                print("  " + "   ".join(
+                    f"{names.get(i, i)} {angle(i, last[i]):7.1f} deg (seen {lo[i]:6.1f} to {hi[i]:6.1f})" if i in last else f"{names.get(i, i)} no reading"
+                    for i in ids) + f"   {end - time.time():3.0f} s left", flush=True)
+        for n in (5, 4, 3, 2, 1):
+            print(f"holding in {n} s: put the arm where it should stay", flush=True)
+            time.sleep(1)
+    finally:
+        # Command each servo to where it is now, which turns its torque back on there.
+        for i in ids:
+            p = read(board, i)
+            if p is None:
+                p = last.get(i)
+            if p is not None:
+                board.bus_servo_set_position(1.0, [[i, int(p)]])
+            print(f"  {names.get(i, i)} (motor {i}): holding at pulse {p}, torque {torque(i)}", flush=True)
+        print("TORQUE ON (holding).", flush=True)
+        lines = [f"  {names.get(i, i)} (motor {i}): {lo[i]:.1f} to {hi[i]:.1f} deg" if i in lo else f"  {names.get(i, i)} (motor {i}): no reading"
+                 for i in ids]
+        stamp = time.strftime("%Y%m%d-%H%M%S")
+        path = os.path.expanduser(f"~/joint-limits-{stamp}.txt")
+        with open(path, "w") as f:
+            f.write("\n".join(lines) + "\n")
+        print(f"--- measured, in the IK's angles (also saved to {path}):")
+        print("\n".join(lines))
+    PY
+    sudo systemctl start jetrover-arm-control
+    sleep 5
+    systemctl is-active jetrover-arm-control
+    REMOTE
+
+# Experiment, for a board that has stopped answering (just robot-board-diagnose: 0 bytes read): try to bring it back from the Jetson instead of the power switch. Stops the servo driver, opens the board's serial port itself, and asks servo 1 for its position: with both control lines released, then after a 100 ms DTR pulse, then after a 100 ms RTS pulse, stopping at the first that gets an answer. It prints which one worked, then starts the driver again and checks the feedback. First run, 2026-10-20: none did, so these lines do not reset the board (only the power switch did). A pulse that resets the board's controller can drop the servos' torque, so someone must hold the arm
+[group('robot: deploy and restart (someone at the robot)')]
+robot-board-reset remote_host=default_jetrover_host remote_user="jetson":
+    #!/usr/bin/env bash
+    set -uo pipefail
+    ssh -o StrictHostKeyChecking=accept-new "{{remote_user}}@$(just _robot-host "{{remote_host}}")" "bash -s" <<'REMOTE'
+    sudo systemctl stop jetrover-arm-control
+    sdk=$(ls -d /home/jetson/teleop_ros_current/install/jetrover_arm_control/lib/python3*/site-packages | head -1)
+    PYTHONPATH="$sdk" python3 - <<'PY'
+    import time
+    import serial
+    from jetrover_arm_control.board_manager.robot_controller_sdk import checksum_crc8
+
+    def request():
+        buf = [0xAA, 0x55, 5, 2, 0x05, 1]  # bus servo (5): read position (0x05) of servo 1
+        return bytes(buf + [checksum_crc8(bytes(buf[2:]))])
+
+    def answer(port, seconds):
+        port.reset_input_buffer()
+        port.write(request())
+        got, end = b"", time.time() + seconds
+        while time.time() < end:
+            got += port.read(64)
+        return got
+
+    port = serial.Serial(None, 1000000, timeout=0.1)
+    port.rts = False
+    port.dtr = False
+    port.port = "/dev/ttyACM0"
+    port.open()
+    time.sleep(0.5)
+    got = answer(port, 1.5)
+    print(f"lines released: {len(got)} bytes back {got[:24].hex()}")
+    for line in ("dtr", "rts"):
+        if got:
+            break
+        setattr(port, line, True)
+        time.sleep(0.1)
+        setattr(port, line, False)
+        time.sleep(1.5)  # the controller boots
+        got = answer(port, 2.0)
+        print(f"after a {line.upper()} pulse: {len(got)} bytes back {got[:24].hex()}")
+    port.close()
+    print("RESULT: the board answers" if got else "RESULT: still silent; only the power switch is left")
+    PY
+    sudo systemctl start jetrover-arm-control
+    sleep 6
+    REMOTE
+    just joint-probe 3
+
 # Restart the servo bus driver (jetrover-arm-control), which reopens its serial link to the Hiwonder board. For when the board stopped answering (just ros-check shows no feedback_array or battery messages) after a brown-out or a reset. It interrupts the arm, and the shoulder may sag while the driver comes back (seen 2026-10-12), so someone must be at the robot. Afterwards the feedback should flow again
 [group('robot: deploy and restart (someone at the robot)')]
 restart-arm-driver remote_host=default_jetrover_host remote_user="jetson":
@@ -511,7 +718,7 @@ robot-battery remote_host=default_jetrover_host remote_user="jetson":
          echo '--- Jetson supply (mV, mA):'; for d in /sys/bus/i2c/drivers/ina3221x/*/iio:device*; do \
            for c in 0 1 2; do n=\$(cat \$d/rail_name_\$c 2>/dev/null) && echo \"\$n: \$(cat \$d/in_voltage\${c}_input 2>/dev/null) mV, \$(cat \$d/in_current\${c}_input 2>/dev/null) mA\"; done; done; true"
 
-# Build the ROS 2 workspace in robot/ros/ on the Jetson and switch the two ROS services to it (docs/adr/0019): copies the sources to a new ~/teleop_ros_deploy_<time>/, builds it there with colcon, runs its plain-Python tests there, then points ~/teleop_ros_current at it, installs robot/systemd's two ROS units (they source ~/teleop_ros_current) and restarts them. activate=false only uploads and builds, touching nothing that runs. Restarting interrupts the arm (the shoulder may sag), so someone must be at the robot. Roll back by pointing ~/teleop_ros_current at an earlier deploy and restarting the two services
+# Build the ROS 2 workspace in robot/ros/ on the Jetson and switch the two ROS services to it (docs/adr/0019): copies the sources to a new ~/teleop_ros_deploy_<time>/, builds it there with colcon, runs its plain-Python tests there, then points ~/teleop_ros_current at it, installs robot/systemd's two ROS units (they source ~/teleop_ros_current) and restarts them. `just deploy-ros false` only uploads and builds, touching nothing that runs. Restarting interrupts the arm (the shoulder may sag), so someone must be at the robot. Roll back by pointing ~/teleop_ros_current at an earlier deploy and restarting the two services
 [group('robot: deploy and restart (someone at the robot)')]
 deploy-ros activate="true" remote_host=default_jetrover_host remote_user="jetson":
     #!/usr/bin/env bash

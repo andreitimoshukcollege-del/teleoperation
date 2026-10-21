@@ -75,7 +75,9 @@ namespace Teleop.RobotHost
                 maxPulse: defaults.MaxPulse,
                 gripperOpenPulse: defaults.GripperOpenPulse,
                 gripperClosedPulse: defaults.GripperClosedPulse);
-            var plant = new GenericArmPlant(plantConfig, relay);
+            // The headset sends its IK's joint angles and, for timing, the Cartesian target; only the
+            // joint angles move the arm while they arrive (docs/adr/0020).
+            var plant = new GenericArmPlant(plantConfig, relay) { JointPrecedenceTicks = clock.TicksPerSecond / 2 };
 
             var endpoint = new RobotEndpoint(
                 plant,
@@ -139,6 +141,9 @@ namespace Teleop.RobotHost
 
             EndPoint? loggedReplyTarget = transport.CurrentRemoteEndPoint;
             EndPoint? jointCommander = null;
+            int loggedRefusals = 0;
+            bool loggedPrecedence = false;
+            long lastRefusalLogTicks = long.MinValue;
             while (!stop.IsSet)
             {
                 if (jointTransport != null)
@@ -176,6 +181,22 @@ namespace Teleop.RobotHost
                 }
 
                 endpoint.Step(clock.NowTicks);
+
+                if (!loggedPrecedence && plant.IgnoredCartesianCommands > 0)
+                {
+                    Console.WriteLine("[plant] joint commands are arriving: they alone move the arm; Cartesian commands only get state replies");
+                    loggedPrecedence = true;
+                }
+
+                // Refused joint commands (a pose that would collide, docs/adr/0020), at most one line
+                // every 2 s while they keep coming.
+                if (plant.RefusedJointCommands != loggedRefusals && clock.NowTicks - lastRefusalLogTicks >= 2 * clock.TicksPerSecond)
+                {
+                    Console.WriteLine($"[plant] refused {plant.RefusedJointCommands - loggedRefusals} joint command(s): the pose would collide " +
+                        $"({plant.DescribeLastRefusal()}); the arm holds");
+                    loggedRefusals = plant.RefusedJointCommands;
+                    lastRefusalLogTicks = clock.NowTicks;
+                }
 
                 if (jointTransport != null)
                 {

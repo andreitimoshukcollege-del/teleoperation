@@ -64,6 +64,13 @@ crc8_table = [
     116, 42, 200, 150, 21, 75, 169, 247, 182, 232, 10, 84, 215, 137, 107, 53
 ]
 
+# Seconds to wait for a bus servo's answer to a read (see bus_servo_read_and_unpack). 1 s, as the
+# library always had: cutting it to 50 ms (2026-10-20) stopped all servo feedback on the JetRover,
+# so this board's answers can take longer than that. The one-second stall that change targeted
+# came from motor 10, which never answers; it is off FEEDBACK_MOTOR_IDS instead.
+BUS_SERVO_READ_TIMEOUT = 1.0
+
+
 def checksum_crc8(data):
     # (check)
     check = 0
@@ -380,10 +387,13 @@ class Board:
         return self.pwm_servo_read_and_unpack(servo_id, 0x05, "<BBH")
 
     def bus_servo_enable_torque(self, servo_id, enable):
+        # On this JetRover's board the two codes are the other way round from Hiwonder's published
+        # SDK: 0x0B switches the torque off and 0x0C on. Measured 2026-10-21 with the torque-state
+        # read (0x0D): after 0x0C a servo still read 1, after 0x0B it read 0 and went limp.
         if enable:
-            data = struct.pack("<BB", 0x0B, servo_id)
-        else:
             data = struct.pack("<BB", 0x0C, servo_id)
+        else:
+            data = struct.pack("<BB", 0x0B, servo_id)
         self.buf_write(PacketFunction.PACKET_FUNC_BUS_SERVO, data)
         time.sleep(0.02)
 
@@ -440,7 +450,7 @@ class Board:
                 pass
             self.buf_write(PacketFunction.PACKET_FUNC_BUS_SERVO, [cmd, servo_id])
             try:
-                data = self.bus_servo_queue.get(block=True, timeout=1)
+                data = self.bus_servo_queue.get(block=True, timeout=BUS_SERVO_READ_TIMEOUT)
             except queue.Empty:
                 # See pwm_servo_read_and_unpack's identical comment -- an uncaught queue.Empty
                 # here previously crashed the whole node the first time the board was slow to

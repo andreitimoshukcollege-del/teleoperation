@@ -42,9 +42,20 @@ namespace Teleop.Bridge
         public bool IsEngaged => _mapping.IsEngaged;
         public float Scale => _mapping.Scale;
 
-        /// <summary>Starts following the hand from its current pose.</summary>
+        /// <summary>
+        /// Starts following the hand from its current pose. The target first takes up wherever the
+        /// drag target is now: the bridge moves it to what the arm reached when the IK stopped short
+        /// (docs/adr/0020), and the clutch must start from there, not from inside the obstacle.
+        /// </summary>
         public void Engage(Vector3 handPosition, Quaternion handRotation)
         {
+            // Read near the clutch's own pitch and roll: past straight down, the plain reading is the
+            // same orientation with the roll half a turn round (ArmKinematics.ExtractPitchRollNear).
+            var held = _armBase.InverseTransformPoint(_target.position).ToCore();
+            ArmKinematics.ExtractPitchRollNear((Quaternion.Inverse(_armBase.rotation) * _target.rotation).ToCore(),
+                _mapping.Pitch, Roll, out float heldPitch, out float heldRoll);
+            _mapping.Rebase(held, heldPitch);
+            Roll = heldRoll;
             ToBase(handPosition, handRotation, out var position, out float pitch);
             _mapping.Engage(_profile, position, pitch);
             WriteTarget();
@@ -71,7 +82,10 @@ namespace Teleop.Bridge
         /// <summary>The wrist roll in the target (radians, Core convention), held until set again.</summary>
         public float Roll { get; private set; }
 
-        private float _handRollAtAnchor = float.NaN, _rollAtAnchor;
+        // The gripper hand's rotation (arm base frame, Core convention) when the roll was anchored.
+        private System.Numerics.Quaternion _handAtAnchor;
+        private bool _hasRollAnchor;
+        private float _rollAtAnchor;
 
         /// <summary>
         /// Starts relative wrist roll from the gripper hand's current rotation: from now on
@@ -80,14 +94,15 @@ namespace Teleop.Bridge
         /// </summary>
         public void AnchorRoll(Quaternion handRotation)
         {
-            _handRollAtAnchor = HandRoll(handRotation);
+            _handAtAnchor = HandInBase(handRotation);
+            _hasRollAnchor = true;
             _rollAtAnchor = Roll;
         }
 
-        public bool HasRollAnchor => !float.IsNaN(_handRollAtAnchor);
+        public bool HasRollAnchor => _hasRollAnchor;
 
         /// <summary>Forgets the roll anchor (the clutch released); the roll holds.</summary>
-        public void ReleaseRoll() => _handRollAtAnchor = float.NaN;
+        public void ReleaseRoll() => _hasRollAnchor = false;
 
         /// <summary>
         /// The wrist roll follows the gripper hand's twist since <see cref="AnchorRoll"/> (docs/adr/0017
@@ -101,7 +116,10 @@ namespace Teleop.Bridge
                 return;
             }
 
-            float roll = WristRollMapping.FromHandRollDelta(HandRoll(handRotation), _handRollAtAnchor, _rollAtAnchor,
+            // The twist about the hand's own pointing axis since the anchor: no trouble when the hand
+            // points straight down, unlike a difference of two absolute roll readings.
+            float twist = WristRollMapping.TwistRadians(_handAtAnchor, HandInBase(handRotation));
+            float roll = WristRollMapping.FromHandRollDelta(twist, 0f, _rollAtAnchor,
                 sign, limitDegrees * (MathF.PI / 180f));
             if (!float.IsNaN(roll))
             {
@@ -110,8 +128,8 @@ namespace Teleop.Bridge
             }
         }
 
-        private float HandRoll(Quaternion handRotation) =>
-            ArmKinematics.ExtractRollRadians((Quaternion.Inverse(_armBase.rotation) * handRotation).ToCore());
+        private System.Numerics.Quaternion HandInBase(Quaternion handRotation) =>
+            (Quaternion.Inverse(_armBase.rotation) * handRotation).ToCore();
 
         /// <summary>
         /// A thumb-to-index distance (m) as a gripper command, 0 open to 1 closed, by the config's

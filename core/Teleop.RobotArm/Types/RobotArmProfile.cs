@@ -1,4 +1,5 @@
 using System;
+using Teleop.RobotArm.Collision;
 
 namespace Teleop.RobotArm.Types
 {
@@ -134,10 +135,20 @@ namespace Teleop.RobotArm.Types
         /// <summary>Every joint this profile has, ordered base-to-tip. Length must equal <see cref="ExpectedJointCount"/> -- see <see cref="Validate"/>.</summary>
         public readonly JointHardwareSpec[] Joints;
 
+        /// <summary>
+        /// The robot's own body and joint ranges (docs/adr/0020-collision-aware-ik.md), or null for
+        /// a profile without one. With it, <c>ArmSolver</c> never returns a pose that collides, and
+        /// <c>GenericArmPlant</c> refuses one. Attached by name from
+        /// <see cref="ArmCollisionModels.ForProfile"/> by every loader, so a JSON profile never
+        /// carries geometry of its own.
+        /// </summary>
+        public readonly ArmCollisionModel? Collision;
+
         public RobotArmProfile(
             string name, bool hasRotatingBase, float baseHeight,
             float proximalLinkLength, float distalLinkLength, int wristJointCount,
-            bool hasGripper, bool gripperCanRotate, JointHardwareSpec[] joints)
+            bool hasGripper, bool gripperCanRotate, JointHardwareSpec[] joints,
+            ArmCollisionModel? collision = null)
         {
             Name = name;
             HasRotatingBase = hasRotatingBase;
@@ -148,7 +159,13 @@ namespace Teleop.RobotArm.Types
             HasGripper = hasGripper;
             GripperCanRotate = gripperCanRotate;
             Joints = joints;
+            Collision = collision;
         }
+
+        /// <summary>This profile with <paramref name="collision"/> attached (or removed, with null).</summary>
+        public RobotArmProfile WithCollision(ArmCollisionModel? collision) => new RobotArmProfile(
+            Name, HasRotatingBase, BaseHeight, ProximalLinkLength, DistalLinkLength, WristJointCount,
+            HasGripper, GripperCanRotate, Joints, collision);
 
         /// <summary>Actual joint count -- <see cref="Joints"/>'s own length is authoritative; use <see cref="Validate"/> to catch it drifting from <see cref="ExpectedJointCount"/>.</summary>
         public int JointCount => Joints.Length;
@@ -266,17 +283,17 @@ namespace Teleop.RobotArm.Types
         /// <summary>
         /// The exact JetRover arm this codebase has always driven, expressed as a profile instead
         /// of hardcoded fields -- preserves every number <c>ArmLinkLengths.Measured</c> and the old
-        /// <c>SERVO_ENUM</c> (robot/ros) had, so default behavior is unchanged by this
-        /// generalization. <see cref="JointHardwareSpec.MinAngleRadians"/> on the proximal joint is
-        /// the old <c>LowerArmMinPulse</c> (50) re-derived exactly in angle space --
-        /// (50 - ZeroPulse=500) / PulsePerRadian -- a real collision-safety number
-        /// (robot/README.md), not eyeballed; <c>RobotArmProfileTests</c> checks this conversion
-        /// against the original pulse-space arithmetic. The proximal joint's
+        /// <c>SERVO_ENUM</c> (robot/ros) had. The proximal joint's
         /// <see cref="JointHardwareSpec.ZeroOffsetRadians"/> (+7 degrees) is a real, empirically
         /// calibrated mounting correction (2026-08-17, live-hardware testing): commanding the
         /// kinematically "correct" 90 degrees produced a real pose noticeably short of true
         /// vertical, and +7 degrees was needed to reach it for this joint's actual servo-horn
         /// mounting -- see docs/adr/0011-generic-robot-arm-profiles.md.
+        ///
+        /// <para><b>Its collision model is attached</b> (<see cref="JetRoverCollisionModel"/>,
+        /// generated from the CAD, docs/adr/0020). That replaced the hand-tuned shoulder floor this
+        /// profile used to carry (<c>MinAngleRadians</c> from <c>LowerArmMinPulse</c> 50, "the
+        /// plate"): the model knows where the plate is, and every other part of the body too.</para>
         ///
         /// <para><b>Motor 5 is the wrist roll and motor 10 the gripper</b>, as Hiwonder documents
         /// the JetRover's bus servos. Until 2026-10-12 this profile called motor 5 the gripper, so
@@ -287,10 +304,6 @@ namespace Teleop.RobotArm.Types
         {
             get
             {
-                const float pulsePerRadian = 1000f / (240f * MathF.PI / 180f);
-                const int zeroPulse = 500;
-                const int lowerArmMinPulse = 50;
-                float proximalMinAngleRadians = (lowerArmMinPulse - zeroPulse) / pulsePerRadian;
                 const float proximalZeroOffsetRadians = 7f * MathF.PI / 180f;
 
                 return new RobotArmProfile(
@@ -305,14 +318,13 @@ namespace Teleop.RobotArm.Types
                     joints: new[]
                     {
                         new JointHardwareSpec(motorId: 1, role: JointRole.BaseYaw),
-                        new JointHardwareSpec(
-                            motorId: 2, role: JointRole.Proximal, minAngleRadians: proximalMinAngleRadians,
-                            zeroOffsetRadians: proximalZeroOffsetRadians),
+                        new JointHardwareSpec(motorId: 2, role: JointRole.Proximal, zeroOffsetRadians: proximalZeroOffsetRadians),
                         new JointHardwareSpec(motorId: 3, role: JointRole.Distal),
                         new JointHardwareSpec(motorId: 4, role: JointRole.Wrist, wristIndex: 0),
                         new JointHardwareSpec(motorId: 10, role: JointRole.GripperMain),
                         new JointHardwareSpec(motorId: 5, role: JointRole.GripperRotate),
-                    });
+                    },
+                    collision: JetRoverCollisionModel.Instance);
             }
         }
     }

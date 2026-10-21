@@ -23,18 +23,18 @@ class ServoSubscriberCallback:
         """
         data = msg.data
         if len(data) < 1:
-            return
+            return 0
 
         count = int(data[0])
         offset = 1
+        targets = []
         for _ in range(count):
             if offset + 2 >= len(data):
                 break
-            motor_id = int(data[offset])
-            pulse = data[offset + 1]
-            speed = data[offset + 2]
+            targets.append((int(data[offset]), data[offset + 1], data[offset + 2]))
             offset += 3
-            self.servoController.setPos(servoID=motor_id, direction=pulse, pulses_per_second=speed)
+        # One board packet for every servo that may move now, rather than one each.
+        return self.servoController.setPositions(targets)
 
     def setServoTorqueCbk(self, msg):
         data = msg.data

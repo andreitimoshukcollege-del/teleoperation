@@ -54,6 +54,8 @@ namespace Teleop.Bridge
         [SerializeField] private Renderer reachWarningRenderer;
         [SerializeField] private Color normalColor = Color.white;
         [SerializeField] private Color clampedColor = Color.red;
+        [Tooltip("The warning's colour while the IK tilts the wrist to keep clear of the robot (docs/adr/0020).")]
+        [SerializeField] private Color adjustedColor = new Color(1f, 0.55f, 0.1f);
         [SerializeField] private Color highlightColor = new Color(0.2f, 0.85f, 1f);
 
         [Header("Axis sign flips -- flip via Inspector after empirically checking against the real arm, not by editing code")]
@@ -151,6 +153,14 @@ namespace Teleop.Bridge
         /// right after it computes these same angles for the command it's about to send.
         /// </summary>
         public void ApplyAngles(float baseYaw, float lowerPitch, float middlePitch, float upperPitch, bool wasClamped)
+            => ApplyAngles(baseYaw, lowerPitch, middlePitch, upperPitch, wasClamped, pitchAdjusted: false);
+
+        /// <summary>
+        /// As above, and <paramref name="pitchAdjusted"/> shows <see cref="adjustedColor"/>: the IK
+        /// reached the target but tilted the wrist to keep clear of the robot (docs/adr/0020). The
+        /// clamp warning still wins.
+        /// </summary>
+        public void ApplyAngles(float baseYaw, float lowerPitch, float middlePitch, float upperPitch, bool wasClamped, bool pitchAdjusted)
         {
             if (baseYawPivot != null)
             {
@@ -176,7 +186,7 @@ namespace Teleop.Bridge
             {
                 _propertyBlock ??= new MaterialPropertyBlock();
                 reachWarningRenderer.GetPropertyBlock(_propertyBlock);
-                Color color = wasClamped ? clampedColor : Highlighted ? highlightColor : normalColor;
+                Color color = wasClamped ? clampedColor : pitchAdjusted ? adjustedColor : Highlighted ? highlightColor : normalColor;
                 // Both names, because this rig runs under both pipelines (docs/adr/0016 §3): the
                 // built-in shaders read _Color, URP's Lit and Unlit read _BaseColor and ignore
                 // _Color. Setting the one a shader lacks is harmless.

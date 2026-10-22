@@ -19,7 +19,8 @@ namespace Teleop.Eval.Tooling
     ///
     /// <para>The trainer (<c>trainer/</c>) runs on a GPU machine with no .NET, so it carries its own
     /// copies of <see cref="SeededRng"/>, the impairments and <see cref="EmulatedTransport"/>'s
-    /// ordering, the profile catalog, <see cref="ClockSync"/> and <see cref="RelayReplayPredictor"/>.
+    /// ordering, the profile catalog, <see cref="ClockSync"/> and <see cref="RelayReplayPredictor"/>,
+    /// and the golden file for a copy of <see cref="RelayReplayServoPredictor"/> to come.
     /// These files are what Core actually produced for fixed inputs; the trainer's tests replay the
     /// same inputs and must match them exactly, and <c>TrainerGoldenFilesTests</c> fails here if Core
     /// stops reproducing them. Regenerate after any change to those classes, inspect the diff, and
@@ -41,6 +42,7 @@ namespace Teleop.Eval.Tooling
                 ("impairments-v1.json", Impairments(syntheticBurstTracePath)),
                 ("clocksync-v1.json", ClockSyncCases()),
                 ("relay-replay-v1.json", RelayReplay()),
+                ("relay-replay-servo.json", RelayReplayServo()),
             };
         }
 
@@ -294,10 +296,65 @@ namespace Teleop.Eval.Tooling
             w.WriteEndObject();
         }
 
-        // ---------------------------------------------------------------- relay-replay
+        // ---------------------------------------------------------------- relay-replay and relay-replay-servo
 
         private static readonly byte[] ArmMotors = { 1, 2, 3, 4, 5 };
         private const byte Gripper = 10;
+        private const long RelayTps = 1_000_000_000L;
+
+        /// <summary>A servo for relay-replay-servo; relay-replay ignores it, and its golden file does not record it.</summary>
+        private readonly struct Servo
+        {
+            public readonly string Name;
+            public readonly float MaxSpeedRadPerSec, LagSeconds, PipelineDelaySeconds, StepSeconds;
+            public readonly bool FirstMoveFromMeasured;
+
+            public Servo(string name, float maxSpeedRadPerSec, float lagSeconds, float pipelineDelaySeconds, bool firstMoveFromMeasured, float stepSeconds)
+            {
+                Name = name;
+                MaxSpeedRadPerSec = maxSpeedRadPerSec;
+                LagSeconds = lagSeconds;
+                PipelineDelaySeconds = pipelineDelaySeconds;
+                FirstMoveFromMeasured = firstMoveFromMeasured;
+                StepSeconds = stepSeconds;
+            }
+        }
+
+        private static readonly Servo DefaultServo = new Servo("defaults",
+            JointPredictorConfig.DefaultServoMaxSpeedRadPerSec, JointPredictorConfig.DefaultServoLagSeconds,
+            JointPredictorConfig.DefaultServoPipelineDelaySeconds, JointPredictorConfig.DefaultServoFirstMoveFromMeasured,
+            JointPredictorConfig.DefaultServoStepSeconds);
+
+        /// <summary>
+        /// relay-replay-servo's three parameter sets: neutral (no cap, no lag, no delay, first move off),
+        /// where it must equal relay-replay bit for bit; <see cref="JointPredictorConfig"/>'s defaults; and
+        /// a set away from both, with a step that is not the default.
+        /// </summary>
+        private static readonly Servo[] ServoSets =
+        {
+            new Servo("neutral", float.PositiveInfinity, 0f, 0f, false, JointPredictorConfig.DefaultServoStepSeconds),
+            DefaultServo,
+            new Servo("custom", 3f, 0.04f, 0.015f, true, 0.003f),
+        };
+
+        /// <summary>The headset's config (JetRoverJointStateLink with JetRoverArmConfig's defaults).</summary>
+        private static JointPredictorConfig HeadsetConfig(Servo servo) => new JointPredictorConfig(
+            maxJoints: 13, commandHistoryCapacity: 64, maxJointSpeedRadPerSec: 6f,
+            instantMotorIds: new byte[0], maxHorizonTicks: 500L * RelayTps / 1000L, ticksPerSecond: RelayTps,
+            scaledMotorIds: new byte[] { Gripper }, speedScales: new[] { 0.358f },
+            sensedAgeMotorIds: ArmMotors, sensedAgeSeconds: new[] { 0.045f, 0.035f, 0.025f, 0.015f, 0.005f },
+            servoMaxSpeedRadPerSec: servo.MaxSpeedRadPerSec, servoLagSeconds: servo.LagSeconds,
+            servoPipelineDelaySeconds: servo.PipelineDelaySeconds, servoFirstMoveFromMeasured: servo.FirstMoveFromMeasured,
+            servoStepSeconds: servo.StepSeconds);
+
+        /// <summary>A small ring, an instant gripper and no reading ages: the ring wraps, the instant path runs.</summary>
+        private static JointPredictorConfig SmallConfig(Servo servo) => new JointPredictorConfig(
+            maxJoints: 6, commandHistoryCapacity: 8, maxJointSpeedRadPerSec: 5f,
+            instantMotorIds: new[] { Gripper }, maxHorizonTicks: 300L * RelayTps / 1000L, ticksPerSecond: RelayTps,
+            relayMinMoveSeconds: 0.04f, relayDeadbandRad: 0.01f, relayMoveSpeedRadPerSec: 7f,
+            servoMaxSpeedRadPerSec: servo.MaxSpeedRadPerSec, servoLagSeconds: servo.LagSeconds,
+            servoPipelineDelaySeconds: servo.PipelineDelaySeconds, servoFirstMoveFromMeasured: servo.FirstMoveFromMeasured,
+            servoStepSeconds: servo.StepSeconds);
 
         private static string RelayReplay()
         {
@@ -305,29 +362,58 @@ namespace Teleop.Eval.Tooling
             {
                 w.WriteString("about", "RelayReplayPredictor outputs on fixed call sequences (TrainerGoldenBuilder).");
                 w.WriteStartArray("cases");
-                const long tps = 1_000_000_000L;
-                // The headset's config (JetRoverJointStateLink with JetRoverArmConfig's defaults).
-                var headset = new JointPredictorConfig(
-                    maxJoints: 13, commandHistoryCapacity: 64, maxJointSpeedRadPerSec: 6f,
-                    instantMotorIds: new byte[0], maxHorizonTicks: 500L * tps / 1000L, ticksPerSecond: tps,
-                    scaledMotorIds: new byte[] { Gripper }, speedScales: new[] { 0.358f },
-                    sensedAgeMotorIds: ArmMotors, sensedAgeSeconds: new[] { 0.045f, 0.035f, 0.025f, 0.015f, 0.005f });
-                // A small ring, an instant gripper and no reading ages: the ring wraps, the instant path runs.
-                var small = new JointPredictorConfig(
-                    maxJoints: 6, commandHistoryCapacity: 8, maxJointSpeedRadPerSec: 5f,
-                    instantMotorIds: new[] { Gripper }, maxHorizonTicks: 300L * tps / 1000L, ticksPerSecond: tps,
-                    relayMinMoveSeconds: 0.04f, relayDeadbandRad: 0.01f, relayMoveSpeedRadPerSec: 7f);
-                WriteRelayCase(w, "headset-blind", headset, tps, seed: 21, speedMode: 0);
-                WriteRelayCase(w, "headset-speeds", headset, tps, seed: 22, speedMode: 1);
-                WriteRelayCase(w, "small-ring-instant-gripper", small, tps, seed: 23, speedMode: 1);
+                JointPredictorConfig headset = HeadsetConfig(DefaultServo), small = SmallConfig(DefaultServo);
+                WriteRelayCase(w, "headset-blind", headset, RelayTps, seed: 21, speedMode: 0);
+                WriteRelayCase(w, "headset-speeds", headset, RelayTps, seed: 22, speedMode: 1);
+                WriteRelayCase(w, "small-ring-instant-gripper", small, RelayTps, seed: 23, speedMode: 1);
                 w.WriteEndArray();
             });
         }
 
-        private static void WriteRelayCase(Utf8JsonWriter w, string name, JointPredictorConfig config, long tps,
-            ulong seed, int speedMode)
+        /// <summary>
+        /// relay-replay-servo on relay-replay's three call sequences (the same configs, seeds and calls),
+        /// once per servo parameter set. A case is named <c>set/sequence</c>, so <c>neutral/headset-blind</c>
+        /// must reproduce relay-replay-v1.json's <c>headset-blind</c> call for call.
+        /// </summary>
+        private static string RelayReplayServo()
         {
-            var predictor = new RelayReplayPredictor(config);
+            return Json(w =>
+            {
+                w.WriteString("about",
+                    "RelayReplayServoPredictor outputs on the call sequences of relay-replay-v1.json, for the neutral, default and one custom " +
+                    "set of servo parameters (TrainerGoldenBuilder). A float that is not finite has its readable value as a string.");
+                w.WriteStartArray("cases");
+                foreach (Servo servo in ServoSets)
+                {
+                    JointPredictorConfig headset = HeadsetConfig(servo), small = SmallConfig(servo);
+                    WriteRelayCase(w, servo.Name + "/headset-blind", headset, RelayTps, seed: 21, speedMode: 0, servo: true);
+                    WriteRelayCase(w, servo.Name + "/headset-speeds", headset, RelayTps, seed: 22, speedMode: 1, servo: true);
+                    WriteRelayCase(w, servo.Name + "/small-ring-instant-gripper", small, RelayTps, seed: 23, speedMode: 1, servo: true);
+                }
+
+                w.WriteEndArray();
+            });
+        }
+
+        /// <summary>One fixed call sequence through relay-replay, or with <paramref name="servo"/> through relay-replay-servo.</summary>
+        private static void WriteRelayCase(Utf8JsonWriter w, string name, JointPredictorConfig config, long tps,
+            ulong seed, int speedMode, bool servo = false)
+        {
+            ICommandAwarePredictor predictor;
+            Func<RelayReplayPredictor.GateCounts> gateCounts;
+            if (servo)
+            {
+                var withServo = new RelayReplayServoPredictor(config);
+                predictor = withServo;
+                gateCounts = () => withServo.Gate;
+            }
+            else
+            {
+                var relay = new RelayReplayPredictor(config);
+                predictor = relay;
+                gateCounts = () => relay.Gate;
+            }
+
             var rng = new SeededRng(seed);
             var output = new JointSample[config.MaxJoints];
             var targets = new JointSample[ArmMotors.Length + 1];
@@ -337,7 +423,7 @@ namespace Teleop.Eval.Tooling
 
             w.WriteStartObject();
             w.WriteString("name", name);
-            WriteConfig(w, config);
+            WriteConfig(w, config, servo);
             w.WriteStartArray("calls");
 
             long start = 5_000L * tps;
@@ -417,7 +503,7 @@ namespace Teleop.Eval.Tooling
             }
 
             w.WriteEndArray();
-            RelayReplayPredictor.GateCounts gate = predictor.Gate;
+            RelayReplayPredictor.GateCounts gate = gateCounts();
             w.WriteStartObject("gate");
             w.WriteNumber("written", gate.Written);
             w.WriteNumber("deadbandDrops", gate.DeadbandDrops);
@@ -426,7 +512,8 @@ namespace Teleop.Eval.Tooling
             w.WriteEndObject();
         }
 
-        private static void WriteConfig(Utf8JsonWriter w, JointPredictorConfig c)
+        /// <summary>The config; with <paramref name="servo"/>, relay-replay-servo's five parameters after relay-replay's.</summary>
+        private static void WriteConfig(Utf8JsonWriter w, JointPredictorConfig c, bool servo)
         {
             w.WriteStartObject("config");
             w.WriteNumber("maxJoints", c.MaxJoints);
@@ -442,6 +529,15 @@ namespace Teleop.Eval.Tooling
             WriteFloat(w, "relayMoveSpeedRadPerSec", c.RelayMoveSpeedRadPerSec);
             WriteBytes(w, "sensedAgeMotorIds", c.SensedAgeMotorIds);
             WriteFloats(w, "sensedAgeSeconds", c.SensedAgeSeconds);
+            if (servo)
+            {
+                WriteFloat(w, "servoMaxSpeedRadPerSec", c.ServoMaxSpeedRadPerSec);
+                WriteFloat(w, "servoLagSeconds", c.ServoLagSeconds);
+                WriteFloat(w, "servoPipelineDelaySeconds", c.ServoPipelineDelaySeconds);
+                w.WriteBoolean("servoFirstMoveFromMeasured", c.ServoFirstMoveFromMeasured);
+                WriteFloat(w, "servoStepSeconds", c.ServoStepSeconds);
+            }
+
             w.WriteEndObject();
         }
 
@@ -480,10 +576,12 @@ namespace Teleop.Eval.Tooling
             w.WriteEndArray();
         }
 
+        /// <summary>[readable value, IEEE bits]. JSON has no infinity, so a value that is not finite is readable as a string.</summary>
         private static void WriteFloat(Utf8JsonWriter w, string name, float value)
         {
             w.WriteStartArray(name);
-            w.WriteNumberValue(value);
+            if (float.IsFinite(value)) w.WriteNumberValue(value);
+            else w.WriteStringValue(value.ToString(System.Globalization.CultureInfo.InvariantCulture));
             w.WriteNumberValue(BitConverter.SingleToInt32Bits(value));
             w.WriteEndArray();
         }

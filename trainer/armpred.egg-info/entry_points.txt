@@ -1,0 +1,2 @@
+[console_scripts]
+armpred = armpred.cli:main

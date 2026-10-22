@@ -1,0 +1,9 @@
+numpy>=1.26
+
+[dev]
+pytest>=8
+
+[train]
+torch>=2.7
+onnx>=1.16
+onnxruntime>=1.18

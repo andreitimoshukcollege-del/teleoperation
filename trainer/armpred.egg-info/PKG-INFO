@@ -1,0 +1,12 @@
+Metadata-Version: 2.4
+Name: armpred
+Version: 0.1.0
+Summary: JetRover arm-state prediction: simulator, network synthesis, training and ONNX export (docs/adr/0021). Self-contained: imports nothing from the teleoperation repo.
+Requires-Python: >=3.11
+Requires-Dist: numpy>=1.26
+Provides-Extra: train
+Requires-Dist: torch>=2.7; extra == "train"
+Requires-Dist: onnx>=1.16; extra == "train"
+Requires-Dist: onnxruntime>=1.18; extra == "train"
+Provides-Extra: dev
+Requires-Dist: pytest>=8; extra == "dev"

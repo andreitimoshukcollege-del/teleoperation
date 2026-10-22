@@ -66,6 +66,7 @@ just record-start teleop-2p5-none 2.5                  # label, slider (rad/s or
 just record-start payload-100g 2.5 load=payload payload_g=100
 just record-start hand-1 3.8 load=hand
 just record-start live-150 2.5 network=150ms-20j-0.5loss   # the uplink impaired on the robot, for real
+just record-start live-sched 2.5 "network=schedule:lan@0;150ms-20j-0.5loss@45;lan@90;50ms-5j@135"  # and changing
 just record-mark "payload on"                          # a moment worth aligning on, on the Jetson's clock
 just record-stop
 just robot-recordings                                  # what is on the robot, and whether each log closed
@@ -81,6 +82,11 @@ are not committed.
 - **`network=<profile>`** makes the arm really receive late, jittery, lossy commands (Core's
   `EmulatedTransport` on RobotHost's receive side; frames to the headset are untouched).
   `just uplink-impair none` turns it off; `record-stop` does so too.
+- **`network=schedule:<profile>@<s>;...`** (`just uplink-schedule`) changes the uplink mid-session,
+  switched by RobotHost on time and logged as `UP` at each switch (docs/adr/0021 decision 13). These
+  are the sessions where a network forecast could matter: the arm executes commands that arrive later
+  than the headset assumed. At a scheduled switch, what the previous profile held still arrives; a
+  hand switch (`uplink-impair`) drops it.
 - **Never run `just joint-probe` during a session.** Anything sending on UDP 6002 takes the
   joint-state stream, and the check fails the session for its second subscriber.
 - **Hand resistance stays light:** a stall of at most 2 s, contact for at most 20% of a session. Stop

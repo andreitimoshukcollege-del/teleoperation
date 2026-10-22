@@ -48,6 +48,41 @@ namespace Teleop.RobotHost.Tests.Net
         }
 
         [Fact]
+        public void AScheduledSwitch_DeliversWhatThePreviousProfileHeld()
+        {
+            var (socket, receiver) = Make();
+            receiver.SetProfile("delay-100ms", 7);
+            socket.Send(new byte[] { 4 }, 0);
+            var buffer = new byte[64];
+            Assert.False(receiver.TryReceive(10, buffer, out _, out _, out _)); // read, held by the profile
+            receiver.SetProfile("none", 8, drainPrevious: true);
+            Assert.Equal(1, receiver.DrainingCount);
+            socket.Send(new byte[] { 5 }, 20);
+            Assert.True(receiver.TryReceive(20, buffer, out _, out long readNew, out _)); // the new profile passes through
+            Assert.Equal(5, buffer[0]);
+            Assert.Equal(20, readNew);
+            Assert.False(receiver.TryReceive(50, buffer, out _, out _, out _));
+            Assert.True(receiver.TryReceive(110, buffer, out _, out long read, out long delivered)); // the old one, when due
+            Assert.Equal(4, buffer[0]);
+            Assert.Equal(0, read);
+            Assert.Equal(110, delivered);
+            Assert.False(receiver.TryReceive(200, buffer, out _, out _, out _));
+            Assert.Equal(0, receiver.DrainingCount);
+        }
+
+        [Fact]
+        public void AHandSwitch_DropsWhatThePreviousProfileHeld()
+        {
+            var (socket, receiver) = Make();
+            receiver.SetProfile("delay-100ms", 7);
+            socket.Send(new byte[] { 4 }, 0);
+            var buffer = new byte[64];
+            Assert.False(receiver.TryReceive(10, buffer, out _, out _, out _));
+            receiver.SetProfile("none", 8);
+            Assert.False(receiver.TryReceive(200, buffer, out _, out _, out _));
+        }
+
+        [Fact]
         public void ALossyProfile_DropsSomeCommands()
         {
             var (socket, receiver) = Make();

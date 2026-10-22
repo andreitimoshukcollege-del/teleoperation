@@ -118,6 +118,11 @@ namespace Teleop.RobotHost
             var uplink = jointTransport != null ? new UplinkImpairedReceiver(jointTransport, clock.TicksPerSecond, MaxJointDatagramBytes) : null;
             string? uplinkRequest = null;
             long nextUplinkPollTicks = long.MinValue;
+            // A schedule in the control file (docs/adr/0021 decision 13): switched here, on time,
+            // rather than by whoever edits the file.
+            UplinkSchedule? uplinkSchedule = null;
+            long uplinkScheduleStart = 0;
+            int uplinkScheduleIndex = -1;
             JointTarget[]? jointTargetsBuffer = jointTransport != null
                 ? new JointTarget[JointCommandCodec.MaxJointsPerMessage]
                 : null;
@@ -172,9 +177,25 @@ namespace Teleop.RobotHost
                         nextUplinkPollTicks = clock.NowTicks + clock.TicksPerSecond / 2;
                         string? request = File.Exists(a.UplinkControlPath) ? File.ReadAllText(a.UplinkControlPath).Trim() : null;
                         if (request?.Length == 0) request = null;
-                        if (request != uplinkRequest)
+                        if (request != uplinkRequest && UplinkSchedule.IsSchedule(request))
                         {
                             uplinkRequest = request;
+                            if (UplinkSchedule.TryParse(request!, clock.TicksPerSecond, out UplinkSchedule? schedule, out string? why))
+                            {
+                                uplinkSchedule = schedule;
+                                uplinkScheduleStart = clock.NowTicks;
+                                uplinkScheduleIndex = -1;
+                                Console.WriteLine($"[uplink] schedule '{schedule!.Spec}' (seed {schedule.Seed}) from now");
+                            }
+                            else
+                            {
+                                Console.Error.WriteLine($"[uplink] ignoring '{request}': {why}; still '{uplink!.Profile}'");
+                            }
+                        }
+                        else if (request != uplinkRequest)
+                        {
+                            uplinkRequest = request;
+                            uplinkSchedule = null;
                             string[] parts = (request ?? "none 0").Split(' ', StringSplitOptions.RemoveEmptyEntries);
                             ulong uplinkSeed = parts.Length > 1 && ulong.TryParse(parts[1], out ulong parsedSeed) ? parsedSeed : 1UL;
                             try
@@ -187,6 +208,19 @@ namespace Teleop.RobotHost
                             {
                                 Console.Error.WriteLine($"[uplink] ignoring '{request}': {e.Message}; still '{uplink!.Profile}'");
                             }
+                        }
+                    }
+
+                    if (uplinkSchedule != null)
+                    {
+                        int index = uplinkSchedule.IndexAt((clock.NowTicks - uplinkScheduleStart) / (double)clock.TicksPerSecond);
+                        if (index != uplinkScheduleIndex)
+                        {
+                            uplinkScheduleIndex = index;
+                            ulong segmentSeed = uplinkSchedule.Seed + (ulong)index;
+                            uplink!.SetProfile(uplinkSchedule.ProfileOf(index), segmentSeed, drainPrevious: true);
+                            Console.WriteLine($"[uplink] schedule segment {index}: joint commands now through '{uplink.Profile}' (seed {segmentSeed})");
+                            if (recorder != null && recorder.IsActive) recorder.Record(SessionLines.Uplink(clock.NowTicks, uplink.Profile, segmentSeed));
                         }
                     }
 

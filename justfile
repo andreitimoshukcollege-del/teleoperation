@@ -1295,7 +1295,7 @@ pack-trainer:
 
 robot_recordings := "/home/jetson/recordings"
 
-# Start recording on the robot -- moves nothing. Writes session.json (the conditions describe the session for splits and stratification, never the model's inputs) and the control file RobotHost and the driver both watch, then checks both logs are growing. load: none, payload or hand; slider: rad/s or varied; network: the robot-side uplink profile, lan for none
+# Start recording on the robot -- moves nothing. Writes session.json (the conditions describe the session for splits and stratification, never the model's inputs) and the control file RobotHost and the driver both watch, then checks both logs are growing. load: none, payload or hand; slider: rad/s or varied; network: the robot-side uplink profile, lan for none, or schedule:<profile>@<s>;... for one that changes mid-session (just uplink-schedule)
 [group('robot: recording (docs/adr/0021)')]
 record-start label slider load="none" payload_g="0" network="lan" added_delay_ms="0" motion="teleop" operator="A" notes="" remote_host=default_jetrover_host remote_user="jetson":
     #!/usr/bin/env bash
@@ -1316,13 +1316,16 @@ record-start label slider load="none" payload_g="0" network="lan" added_delay_ms
     sid, label, slider, load, grams, network, added, motion, operator, notes, profile_sha = sys.argv[1:]
     lines = [l for l in os.environ["BUILDS"].splitlines() if l.strip()]
     builds = [json.loads(l) for l in lines] + [{}, {}]
+    uplink = {"uplinkProfile": network, "uplinkSeed": 0, "addedDelayMs": float(added)}
+    if network.startswith("schedule:"):
+        uplink.update({"uplinkProfile": "schedule", "uplinkSchedule": network[len("schedule:"):], "uplinkSeed": 1})
     print(json.dumps({
         "format": "jetrover-session", "version": 1, "id": sid, "source": "robot", "label": label,
         "startedUtc": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "conditions": {
             "speedSliderRadPerSec": slider if slider == "varied" else float(slider),
             "load": {"kind": load, "payloadGrams": float(grams)},
-            "network": {"uplinkProfile": network, "uplinkSeed": 0, "addedDelayMs": float(added)},
+            "network": uplink,
             "motion": motion, "operator": operator,
         },
         "builds": {"robothost": builds[0], "driver": builds[1]},
@@ -1340,9 +1343,13 @@ record-start label slider load="none" payload_g="0" network="lan" added_delay_ms
     case "$sizes" in *"robothost.jlog"*" 0"|*"robothost.jlog'"*|*"No such file"*robothost*) echo "warning: RobotHost is not recording -- redeploy it (just deploy-robothost) so it runs with --record-control" >&2; ok=false ;; esac
     case "$sizes" in *"driver.jlog'"*|*"No such file"*driver*) echo "warning: the driver is not recording -- just deploy-ros (someone watching: it restarts the servo driver)" >&2; ok=false ;; esac
     $ok || exit 1
-    if [ "{{network}}" != "lan" ] && [ "{{network}}" != "none" ]; then
+    network='{{network}}'
+    if [ "${network#schedule:}" != "$network" ]; then
+        # A schedule starts once the logs are open, so robothost.jlog records every change (UP).
+        just uplink-schedule "${network#schedule:}" 1 "{{remote_host}}" "{{remote_user}}"
+    elif [ "$network" != "lan" ] && [ "$network" != "none" ]; then
         # The uplink changes once the logs are open, so robothost.jlog records the change (UP).
-        just uplink-impair "{{network}}" 1 "{{remote_host}}" "{{remote_user}}"
+        just uplink-impair "$network" 1 "{{remote_host}}" "{{remote_user}}"
     fi
     echo "recording $id"
 
@@ -1388,6 +1395,18 @@ uplink-impair profile seed="1" remote_host=default_jetrover_host remote_user="je
     fi
     sleep 1
     ssh "$target" "journalctl -u teleop-robothost --no-pager -n 20 | grep '\[uplink\]' | tail -2" || true
+
+# Impair the robot's uplink on a schedule that changes by itself (docs/adr/0021 decision 13), e.g. `just uplink-schedule "lan@0;150ms-20j-0.5loss@45;lan@90;50ms-5j@135"`: Core profiles from offsets in seconds, switched by RobotHost on time (what a profile held still arrives), each switch logged as UP. The arm then really receives late and lossy commands, so someone watches. `just uplink-impair none` stops it. RobotHost must have been deployed with --uplink-control (just deploy-robothost)
+[group('robot: recording (docs/adr/0021)')]
+uplink-schedule spec seed="1" remote_host=default_jetrover_host remote_user="jetson":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    case '{{spec}}' in *[!A-Za-z0-9.@\;_-]*|"") echo "error: spec is <profile>@<seconds>;... (named Core profiles)" >&2; exit 1 ;; esac
+    case '{{seed}}' in *[!0-9]*|"") echo "error: seed is a whole number" >&2; exit 1 ;; esac
+    target="{{remote_user}}@$(just _robot-host "{{remote_host}}")"
+    ssh "$target" "mkdir -p {{robot_recordings}} && printf '%s %s %s\n' schedule '{{seed}}' '{{spec}}' > {{robot_recordings}}/.uplink"
+    sleep 1
+    ssh "$target" "journalctl -u teleop-robothost --no-pager -n 20 | grep '\[uplink\]' | tail -3" || true
 
 # Mark a moment in the running session (e.g. `just record-mark "payload on"`) -- moves nothing. Written over SSH on the Jetson's own clock: anything sending on UDP 6002 would steal the joint-state stream
 [group('robot: recording (docs/adr/0021)')]

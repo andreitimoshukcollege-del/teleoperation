@@ -1,5 +1,6 @@
 using System;
 using System.Buffers.Binary;
+using System.Collections.Generic;
 using Teleop.Core.Contracts;
 using Teleop.Core.Transport;
 
@@ -18,8 +19,13 @@ namespace Teleop.RobotHost.Net
     /// out when the profile releases them; frames still go out through the socket untouched.</para>
     ///
     /// <para>Off (the default, or the profile <c>none</c> / <c>lan</c>), every datagram passes straight
-    /// through, read and delivered at the same tick. Changing the profile drops whatever the previous
-    /// one was still holding: a profile switch is an outage, as on a real link that changes.</para>
+    /// through, read and delivered at the same tick. Changing the profile by hand drops whatever the
+    /// previous one was still holding: a profile switch is an outage, as on a real link that changes.
+    /// A schedule's switch (<see cref="UplinkSchedule"/>, docs/adr/0021 decision 13) instead lets the
+    /// previous profile deliver what it holds, when it is due: a datagram's fate is decided by the
+    /// profile it was read under, which is how the trainer's simulator and its true conditions see a
+    /// schedule, so a scheduled session has no outage at its switches that nothing else would
+    /// have.</para>
     /// </summary>
     public sealed class UplinkImpairedReceiver
     {
@@ -31,6 +37,7 @@ namespace Teleop.RobotHost.Net
         private readonly int _maxDatagramBytes;
         private readonly byte[] _scratch;
         private EmulatedTransport? _emulator;
+        private readonly List<EmulatedTransport> _draining = new List<EmulatedTransport>();
 
         public UplinkImpairedReceiver(ITransport socket, long ticksPerSecond, int maxDatagramBytes)
         {
@@ -46,12 +53,22 @@ namespace Teleop.RobotHost.Net
 
         public ulong Seed { get; private set; }
 
+        /// <summary>Profiles switched away from that still hold datagrams.</summary>
+        public int DrainingCount => _draining.Count;
+
         /// <summary>
         /// Switches the impairment. <c>none</c> or <c>lan</c> turns it off. Throws on a name Core's
         /// catalog does not know, so a typo never silently records an unimpaired session as impaired.
+        /// With <paramref name="drainPrevious"/>, what the previous profile holds is still delivered
+        /// when due; without it, it is dropped.
         /// </summary>
-        public void SetProfile(string name, ulong seed)
+        public void SetProfile(string name, ulong seed, bool drainPrevious = false)
         {
+            if (drainPrevious && _emulator != null && _emulator.InFlightCount > 0)
+            {
+                _draining.Add(_emulator);
+            }
+
             if (name == "none" || name == "lan")
             {
                 _emulator = null;
@@ -77,6 +94,21 @@ namespace Teleop.RobotHost.Net
         /// </summary>
         public bool TryReceive(long nowTicks, Span<byte> destination, out int byteCount, out long socketTicks, out long deliverTicks)
         {
+            // Datagrams a previous profile still holds come out when due, before anything newer.
+            for (int i = 0; i < _draining.Count; i++)
+            {
+                if (TryTake(_draining[i], nowTicks, destination, out byteCount, out socketTicks, out deliverTicks))
+                {
+                    return true;
+                }
+
+                if (_draining[i].InFlightCount == 0)
+                {
+                    _draining.RemoveAt(i);
+                    i--;
+                }
+            }
+
             if (_emulator == null)
             {
                 bool got = _socket.TryReceive(nowTicks, destination, out byteCount, out long arrival);
@@ -91,9 +123,15 @@ namespace Teleop.RobotHost.Net
                 _emulator.Send(_scratch.AsSpan(0, StampBytes + count), arrival);
             }
 
+            return TryTake(_emulator, nowTicks, destination, out byteCount, out socketTicks, out deliverTicks);
+        }
+
+        private bool TryTake(EmulatedTransport emulator, long nowTicks, Span<byte> destination, out int byteCount,
+                             out long socketTicks, out long deliverTicks)
+        {
             byteCount = 0;
             socketTicks = deliverTicks = 0;
-            if (!_emulator.TryReceive(nowTicks, _scratch, out int stamped, out long due) || stamped < StampBytes)
+            if (!emulator.TryReceive(nowTicks, _scratch, out int stamped, out long _) || stamped < StampBytes)
             {
                 return false;
             }

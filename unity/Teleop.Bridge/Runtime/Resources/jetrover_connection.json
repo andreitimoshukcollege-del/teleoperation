@@ -39,5 +39,9 @@
   "JointModelSpeedRadPerSec": 6.0,
   "JointReadingAgeMotorIds": [1, 2, 3, 4, 5],
   "JointReadingAgeMs": [45.0, 35.0, 25.0, 15.0, 5.0],
+  "JointServoMaxSpeedRadPerSec": 5.0,
+  "JointServoLagMs": 20.0,
+  "JointServoPipelineDelayMs": 20.0,
+  "JointServoFirstMoveFromMeasured": true,
   "GripperFractionPerRadian": 0.358
 }

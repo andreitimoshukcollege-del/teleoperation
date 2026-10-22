@@ -342,7 +342,8 @@ namespace Teleop.Bridge
             {
                 _jointStateLink = new JetRoverJointStateLink(_jointTransport, _clock, _profile, clockSyncConfig,
                     _config.JointPredictorName, _config.JointModelSpeedRadPerSec, _config.MaxHorizonMs, _config.GripperFractionPerRadian,
-                    readingAgeIds, readingAgeSeconds);
+                    readingAgeIds, readingAgeSeconds, _config.JointServoMaxSpeedRadPerSec, _config.JointServoLagMs / 1000f,
+                    _config.JointServoPipelineDelayMs / 1000f, _config.JointServoFirstMoveFromMeasured);
             }
             catch (ArgumentException e)
             {

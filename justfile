@@ -310,6 +310,18 @@ move-arm x y z gripper="0" remote_host=default_jetrover_host remote_port="6000" 
         --remote-host $(just _robot-host "{{remote_host}}") --remote-port {{remote_port}} --local-port {{local_port}} \
         --confirm-hardware-motion
 
+# Drive the real arm through a scripted session of joint moves, the way the headset does but with no headset (docs/adr/0021's joint-drive), e.g. `just joint-drive steps 6 120`: script waypoints (smooth, teleop-like moves with pauses) or steps (one joint at a time jumps and holds: what sysid needs to see the servo's speed limit and lag), at speed rad/s (the headset slider's range, up to 6), for seconds. Limits: the IK's joint ranges less margin_deg at each end, and every pose is checked against the collision model before anything moves; it starts by moving slowly from wherever the arm is to the model's home, and ends there. It holds the arm where it is and exits non-zero when you press Enter (Ctrl+C does not reach the Windows dotnet under WSL), on a stall, or on a lost or stolen joint-state stream. Close the headset app first: two senders on the joint port fight. To record it, use just record-drive. Someone watches the arm, with the space around it clear (the model knows only the robot's own body and the floor)
+[group('robot: moves the arm (someone watching)')]
+joint-drive script speed seconds="300" seed="1" margin_deg="15" remote_host=default_jetrover_host:
+    cd core && dotnet run --project Teleop.Eval -- joint-drive --script {{script}} --speed {{speed}} --seconds {{seconds}} \
+        --seed {{seed}} --margin-deg {{margin_deg}} --remote-host $(just _robot-host "{{remote_host}}") --confirm-hardware-motion
+
+# What just joint-drive would do, planned from the model's home pose -- sends nothing, needs no robot: the envelope (the IK's joint ranges less margin_deg), the moves, the range of targets and the fastest commanded motion
+[group('robot: checks and diagnostics (nothing moves)')]
+joint-drive-preview script speed seconds="300" seed="1" margin_deg="15":
+    cd core && dotnet run --project Teleop.Eval -- joint-drive --script {{script}} --speed {{speed}} --seconds {{seconds}} \
+        --seed {{seed}} --margin-deg {{margin_deg}} --dry-run
+
 # Interactively author a new RobotArmProfile JSON (docs/adr/0011); answers prompts from the terminal, e.g. `just build-profile`
 [group('robot: profiles')]
 build-profile output="" force="false":
@@ -1310,15 +1322,25 @@ pack-trainer:
 
 robot_recordings := "/home/jetson/recordings"
 
-# Start recording on the robot -- moves nothing. Writes session.json (the conditions describe the session for splits and stratification, never the model's inputs) and the control file RobotHost and the driver both watch, then checks both logs are growing. load: none, payload or hand; slider: rad/s or varied; network: the robot-side uplink profile, lan for none, or schedule:<profile>@<s>;... for one that changes mid-session (just uplink-schedule)
+# Start recording on the robot -- moves nothing. Writes session.json (the conditions describe the session for splits and stratification, never the model's inputs) and the control file RobotHost and the driver both watch, then checks both logs are growing. After the label and the slider (rad/s, or varied), options as key=value, e.g. `just record-start payload-100g 2.5 load=payload payload_g=100`: load (none, payload or hand), payload_g, network (the robot-side uplink profile: lan for none, or "schedule:<profile>@<s>;..." for one that changes mid-session, quoted for the ;), added_delay_ms, motion (teleop, or joint-drive:<script>), operator, notes, remote_host, remote_user
 [group('robot: recording (docs/adr/0021)')]
-record-start label slider load="none" payload_g="0" network="lan" added_delay_ms="0" motion="teleop" operator="A" notes="" remote_host=default_jetrover_host remote_user="jetson":
+[positional-arguments]
+record-start label slider *options:
     #!/usr/bin/env bash
     set -euo pipefail
-    case "{{load}}" in none|payload|hand) ;; *) echo "error: load must be none, payload or hand" >&2; exit 1 ;; esac
+    load=none payload_g=0 network=lan added_delay_ms=0 motion=teleop operator=A notes="" remote_host="{{default_jetrover_host}}" remote_user=jetson
+    # just has no keyword arguments: `load=payload` would arrive as the next positional value, so options are parsed here.
+    for opt in "${@:3}"; do
+        case "$opt" in
+            load=*|payload_g=*|network=*|added_delay_ms=*|motion=*|operator=*|notes=*|remote_host=*|remote_user=*) printf -v "${opt%%=*}" '%s' "${opt#*=}" ;;
+            *) echo "error: unknown option '$opt' (load= payload_g= network= added_delay_ms= motion= operator= notes= remote_host= remote_user=)" >&2; exit 1 ;;
+        esac
+    done
+    case "$load" in none|payload|hand) ;; *) echo "error: load must be none, payload or hand" >&2; exit 1 ;; esac
     case "{{label}}" in *[!A-Za-z0-9._-]*) echo "error: label may hold only letters, digits, . _ -" >&2; exit 1 ;; esac
-    host=$(just _robot-host "{{remote_host}}")
-    target="{{remote_user}}@$host"
+    case "$notes" in *"|"*) echo "error: notes may not hold |" >&2; exit 1 ;; esac
+    host=$(just _robot-host "$remote_host")
+    target="$remote_user@$host"
     id="$(date -u +%Y%m%dT%H%M%SZ)-{{label}}"
     dir="{{robot_recordings}}/jetrover/$id"
     if ssh -o StrictHostKeyChecking=accept-new "$target" "test -s {{robot_recordings}}/.active"; then
@@ -1326,7 +1348,7 @@ record-start label slider load="none" payload_g="0" network="lan" added_delay_ms
         exit 1
     fi
     builds=$(ssh "$target" "cat ~/robothost_current/BUILD_INFO 2>/dev/null || echo '{}'; cat ~/teleop_ros_current/BUILD_INFO 2>/dev/null || echo '{}'")
-    meta=$(BUILDS="$builds" python3 - "$id" "{{label}}" "{{slider}}" "{{load}}" "{{payload_g}}" "{{network}}" "{{added_delay_ms}}" "{{motion}}" "{{operator}}" "{{notes}}" "$(sha256sum core/RobotProfiles/jetrover.json | cut -d' ' -f1)" <<'PY'
+    meta=$(BUILDS="$builds" python3 - "$id" "{{label}}" "{{slider}}" "$load" "$payload_g" "$network" "$added_delay_ms" "$motion" "$operator" "$notes" "$(sha256sum core/RobotProfiles/jetrover.json | cut -d' ' -f1)" <<'PY'
     import datetime, json, os, sys
     sid, label, slider, load, grams, network, added, motion, operator, notes, profile_sha = sys.argv[1:]
     lines = [l for l in os.environ["BUILDS"].splitlines() if l.strip()]
@@ -1358,13 +1380,12 @@ record-start label slider load="none" payload_g="0" network="lan" added_delay_ms
     case "$sizes" in *"robothost.jlog"*" 0"|*"robothost.jlog'"*|*"No such file"*robothost*) echo "warning: RobotHost is not recording -- redeploy it (just deploy-robothost) so it runs with --record-control" >&2; ok=false ;; esac
     case "$sizes" in *"driver.jlog'"*|*"No such file"*driver*) echo "warning: the driver is not recording -- just deploy-ros (someone watching: it restarts the servo driver)" >&2; ok=false ;; esac
     $ok || exit 1
-    network='{{network}}'
     if [ "${network#schedule:}" != "$network" ]; then
         # A schedule starts once the logs are open, so robothost.jlog records every change (UP).
-        just uplink-schedule "${network#schedule:}" 1 "{{remote_host}}" "{{remote_user}}"
+        just uplink-schedule "${network#schedule:}" 1 "$host" "$remote_user"
     elif [ "$network" != "lan" ] && [ "$network" != "none" ]; then
         # The uplink changes once the logs are open, so robothost.jlog records the change (UP).
-        just uplink-impair "$network" 1 "{{remote_host}}" "{{remote_user}}"
+        just uplink-impair "$network" 1 "$host" "$remote_user"
     fi
     echo "recording $id"
 
@@ -1396,6 +1417,66 @@ record-stop remote_host=default_jetrover_host remote_user="jetson":
     for f in *.jlog; do printf '%-16s %s\n' "$f" "$(tail -n 1 "$f")"; done
     echo "stopped $(basename "$dir")"
     SH
+
+# Record one session the arm drives itself (moves the arm; someone watching), e.g. `just record-drive steps-6 steps 6 seconds=300`: just record-start with motion=joint-drive:<script>, then just joint-drive, then its operator.jlog (every command it sent) into the session, then just record-stop. Press Enter to stop the arm where it is. The session is stopped and closed even when the drive stops early, and the recipe then exits with the drive's code. Options as key=value: seconds (300), seed (1), margin_deg (15), and any of record-start's (load, payload_g, network, notes, remote_host, remote_user). Close the headset app first
+[group('robot: recording (docs/adr/0021)')]
+[positional-arguments]
+record-drive label script speed *options:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    seconds=300 seed=1 margin_deg=15 remote_host="{{default_jetrover_host}}" remote_user=jetson
+    pass=()
+    for opt in "${@:4}"; do
+        case "$opt" in
+            seconds=*|seed=*|margin_deg=*) printf -v "${opt%%=*}" '%s' "${opt#*=}" ;;
+            remote_host=*|remote_user=*) printf -v "${opt%%=*}" '%s' "${opt#*=}" ;;
+            motion=*|operator=*) echo "error: record-drive sets $opt itself (motion=joint-drive:<script>)" >&2; exit 1 ;;
+            *) pass+=("$opt") ;;
+        esac
+    done
+    case "{{script}}" in waypoints|steps) ;; *) echo "error: script must be waypoints or steps" >&2; exit 1 ;; esac
+    host=$(just _robot-host "$remote_host")
+    target="$remote_user@$host"
+    # Built before the session opens, so the recording does not start with a compile.
+    (cd core && dotnet build Teleop.Eval -nologo -v q > /dev/null)
+    just record-start "{{label}}" "{{speed}}" "${pass[@]}" motion="joint-drive:{{script}}" operator=joint-drive remote_host="$host" remote_user="$remote_user"
+    id=$(ssh "$target" 'basename "$(cat {{robot_recordings}}/.active)"')
+    mkdir -p "recordings/.drive/$id"
+    # Enter stops joint-drive, which holds the arm and exits; this script then closes the session. A Ctrl+C
+    # that kills this script instead is caught here too, so the session is still closed.
+    trap 'echo "interrupted: closing the session"' INT
+    status=0
+    (cd core && dotnet run --no-build --project Teleop.Eval -- joint-drive --script "{{script}}" --speed "{{speed}}" --seconds "$seconds" \
+        --seed "$seed" --margin-deg "$margin_deg" --remote-host "$host" --confirm-hardware-motion \
+        --operator-log "../recordings/.drive/$id/operator.jlog" --session-id "$id") || status=$?
+    trap - INT
+    if [ -s "recordings/.drive/$id/operator.jlog" ]; then
+        scp -q "recordings/.drive/$id/operator.jlog" "$target:{{robot_recordings}}/jetrover/$id/operator.jlog"
+    fi
+    just record-stop "$host" "$remote_user"
+    [ "$status" -eq 0 ] || echo "joint-drive exited $status; the session is recorded up to there" >&2
+    exit "$status"
+
+# The battery voltage (mV) in the newest recorded session's driver log -- moves nothing. Empty when the log has no battery report
+[group('robot: recording (docs/adr/0021)')]
+recording-battery remote_host=default_jetrover_host remote_user="jetson":
+    @ssh -o StrictHostKeyChecking=accept-new "{{remote_user}}@$(just _robot-host "{{remote_host}}")" \
+        'd=$(ls -td {{robot_recordings}}/jetrover/*/ 2>/dev/null | head -1); [ -n "$d" ] && grep "^BV|" "$d/driver.jlog" 2>/dev/null | tail -1 | cut -d"|" -f3 || true'
+
+# Record a list of sessions one after another (moves the arm; someone watching the whole time): robot/pilot/pilot-v1.txt by default, the ADR 0021 pilot hour. For each it says what a person does first (headset on, a slider value, a payload, close the app), waits for Enter, and records it with record-start/record-stop (teleop, timed) or record-drive (the arm drives itself). It stops below 11.0 V and ends with just fetch-recordings. Options as key=value: plan=<file>, from=<label> to resume there, remote_host
+[group('robot: recording (docs/adr/0021)')]
+[positional-arguments]
+pilot *options:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    plan=robot/pilot/pilot-v1.txt from="" remote_host="{{default_jetrover_host}}"
+    for opt in "$@"; do
+        case "$opt" in
+            plan=*|from=*|remote_host=*) printf -v "${opt%%=*}" '%s' "${opt#*=}" ;;
+            *) echo "error: unknown option '$opt' (plan= from= remote_host=)" >&2; exit 1 ;;
+        esac
+    done
+    python3 robot/pilot/pilot.py "$plan" --from "$from" --host "$remote_host"
 
 # Impair the robot's uplink: joint commands reach the arm through a Core network profile (e.g. `just uplink-impair 150ms-20j-0.5loss`), or `none` to stop. The arm then really receives late and lossy commands, so someone watches. RobotHost must have been deployed with --uplink-control (just deploy-robothost)
 [group('robot: recording (docs/adr/0021)')]

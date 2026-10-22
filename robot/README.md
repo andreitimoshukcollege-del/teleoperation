@@ -72,6 +72,39 @@ just record-stop
 just robot-recordings                                  # what is on the robot, and whether each log closed
 ```
 
+`record-start`'s options are `key=value` after the label and the slider, in any order (just itself has
+no keyword arguments; before 2026-10-22 these examples bound positionally and failed).
+
+**The arm can drive itself** (`joint-drive`, docs/adr/0021's data-collection tool): scripted joint
+moves sent the way the headset sends them, with no headset. `waypoints` is smooth, teleop-like motion
+with pauses; `steps` moves one joint at a time by 0.15–0.8 rad and holds, which is what `armpred
+sysid` needs to measure the servo's speed limit and lag. The limits are the IK's joint ranges (the
+collision model, docs/adr/0020) less 15° at each end, and every pose is checked against the collision
+model before anything moves. That model knows the robot's own body and the floor, nothing else, so
+clear the space around the arm. It starts by moving slowly from wherever the arm is to the model's
+home pose, and refuses if that path is not clear (`just move-arm 0.15 0 0.08` first). **Press Enter to
+stop it**: the arm holds where it is. Ctrl+C does not reach the Windows `dotnet` under WSL. It also
+stops by itself on a stall (a joint over 0.25 rad from its command and not moving for 1 s), on a
+gap of 1 s in the joint-state stream, and when the stream drops below 30 Hz, which means the headset
+app (or `joint-probe`) is on the joint port too. Close the headset app first.
+
+```bash
+just joint-drive-preview steps 6           # sends nothing: the envelope and what it would do
+just record-drive steps-6 steps 6 seconds=300                 # one recorded session (motion=joint-drive:steps)
+just record-drive wp-payload waypoints 2.5 load=payload payload_g=100
+just pilot                                 # robot/pilot/pilot-v1.txt: the whole pilot hour, session by session
+just pilot from=drive-wp-5                 # resume there
+```
+
+`just pilot` reads a plan (`robot/pilot/pilot-v1.txt`, one session per line), says before each
+session what a person has to do (headset on, a slider value, a payload, close the app), waits for
+Enter, and records it: `record-start`/`record-stop` around a timed teleop session, or `record-drive`.
+After each it reads the battery from that session's log and stops below 11.0 V. Nothing reports servo
+temperature, so feel the servos between sessions. At the end it runs `just fetch-recordings`.
+`record-drive` copies `joint-drive`'s `operator.jlog` (every command it sent, on the laptop's clock)
+into the session before `record-stop` checksums it, and closes the session even when the drive stops
+early.
+
 Then, back at the repo: `just fetch-recordings` (copies the new sessions into the gitignored
 `recordings/jetrover/` and checks them), and `just pack-dataset recordings/jetrover/<id> ...` for the
 one file the GPU machine needs (`dist/jetrover-data-<UTC>.tar`). `just recording-check` fails a

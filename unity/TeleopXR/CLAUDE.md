@@ -196,7 +196,7 @@ The clutch is safe by construction, not just by settings:
 What the check cannot see:
 
 - **The gripper's pulse range is uncalibrated** on the robot (`GenericArmPlantConfig.GripperOpenPulse`
-  and `GripperClosedPulse`). Measure it with `just move-arm 0.15 0 0.08 gripper=…` while you
+  and `GripperClosedPulse`). Measure it with `just move-arm 0.15 0 0.08 <gripper 0..1>` while you
   watch the robot, before the headset drives the gripper.
 - **Whether the palm's pitch feels right for the wrist** is a headset question. `followPitch` on
   `HandClutchDriver` turns it off.

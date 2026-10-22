@@ -33,7 +33,9 @@ val_share = 0.15
 # absent = 0.10
 
 [sample]
-queries_per_s = 20.0
+# 10 a second per view, not 20: neighbouring queries are nearly the same sample, and the 1,360 views
+# (each its own network schedule and forecast level) carry the variety. About 8M samples, 12 GB.
+queries_per_s = 10.0
 event_share = 0.25
 pair_share = 0.2
 delta_max_ms = 60.0

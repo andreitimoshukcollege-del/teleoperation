@@ -558,8 +558,12 @@ def cmd_selftest(args) -> int:
             name = torch.cuda.get_device_name(0)
             cap = torch.cuda.get_device_capability(0)
             print(f"GPU 0: {name}, compute capability {cap[0]}.{cap[1]}, built for {torch.cuda.get_arch_list()}")
-            if f"sm_{cap[0]}{cap[1]}" not in torch.cuda.get_arch_list():
-                print(f"FAIL: this torch build has no kernels for sm_{cap[0]}{cap[1]} (a 5090 needs a CUDA 12.8+ build)")
+            # A cubin runs on its own major version at an equal or higher minor (sm_86 runs on an
+            # sm_89 card), so an exact match is not required; a 5090 (sm_120) needs sm_120 itself.
+            archs = [a for a in torch.cuda.get_arch_list() if a.startswith("sm_")]
+            usable = [a for a in archs if int(a[3:]) // 10 == cap[0] and int(a[3:]) % 10 <= cap[1]]
+            if not usable:
+                print(f"FAIL: this torch build has no kernels that run on sm_{cap[0]}{cap[1]} (a 5090 needs a CUDA 12.8+ build)")
                 ok = False
             x = torch.randn(4096, 190, device="cuda")
             lin = torch.nn.Linear(190, 2).cuda()

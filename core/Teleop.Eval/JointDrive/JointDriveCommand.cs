@@ -35,6 +35,10 @@ namespace Teleop.Eval.JointDrive
     /// <c>dotnet</c> does not receive a signal sent to it (checked 2026-10-22: a SIGINT left it running),
     /// while its standard input arrives through the pipe like any other.</para>
     ///
+    /// <para><c>--stop-file</c> names a file whose appearance stops it as Enter does, for a run with no
+    /// terminal (<c>robot/pilot/onboard.py</c> on the robot, stopped by <c>just pilot-stop</c>); it
+    /// refuses to start while that file exists.</para>
+    ///
     /// <para><c>--dry-run</c> plans from home, prints the envelope and what the session would do, and
     /// sends nothing; with <c>--operator-log</c> it writes the commands it would send, stamped on a
     /// simulated clock, to check the format.</para>
@@ -49,7 +53,7 @@ namespace Teleop.Eval.JointDrive
         private const string Usage =
             "usage: joint-drive --script waypoints|steps --speed <rad/s> [--seconds 300] [--seed 1] [--margin-deg 15] [--rate-hz 48]\n" +
             "                   (--dry-run | --remote-host <ip> [--remote-port 6002] --confirm-hardware-motion)\n" +
-            "                   [--operator-log <path> [--session-id <id>]]";
+            "                   [--operator-log <path> [--session-id <id>]] [--stop-file <path>]";
 
         public static int Run(string[] args)
         {
@@ -57,7 +61,7 @@ namespace Teleop.Eval.JointDrive
             float speed = 0f;
             double seconds = 300, marginDeg = 15, rateHz = 48;
             ulong seed = 1;
-            string? host = null, logPath = null, sessionId = null;
+            string? host = null, logPath = null, sessionId = null, stopFile = null;
             int port = 6002;
             bool dryRun = false, confirmed = false;
             try
@@ -82,6 +86,7 @@ namespace Teleop.Eval.JointDrive
                         case "--remote-port": port = int.Parse(Next(), CultureInfo.InvariantCulture); break;
                         case "--operator-log": logPath = Next(); break;
                         case "--session-id": sessionId = Next(); break;
+                        case "--stop-file": stopFile = Next(); break;
                         case "--dry-run": dryRun = true; break;
                         case "--confirm-hardware-motion": confirmed = true; break;
                         default: throw new ArgumentException($"unknown argument '{args[i]}'");
@@ -123,7 +128,13 @@ namespace Teleop.Eval.JointDrive
                 return 64;
             }
 
-            return Drive(script.Value, profile, envelope, speed, seconds, seed, rateHz, new IPEndPoint(address, port), logPath, sessionId ?? "joint-drive");
+            if (stopFile != null && File.Exists(stopFile))
+            {
+                Console.Error.WriteLine($"joint-drive: the stop file {stopFile} exists; nothing was sent. Remove it to run.");
+                return 130;
+            }
+
+            return Drive(script.Value, profile, envelope, speed, seconds, seed, rateHz, new IPEndPoint(address, port), logPath, sessionId ?? "joint-drive", stopFile);
         }
 
         private static void PrintEnvelope(in DriveEnvelope envelope, double marginDeg)
@@ -212,7 +223,7 @@ namespace Teleop.Eval.JointDrive
         }
 
         private static int Drive(DriveScript script, RobotArmProfile profile, DriveEnvelope envelope, float speed, double seconds, ulong seed,
-            double rateHz, IPEndPoint robot, string? logPath, string sessionId)
+            double rateHz, IPEndPoint robot, string? logPath, string sessionId, string? stopFile)
         {
             long tps = Stopwatch.Frequency;
             using var socket = new Socket(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp);
@@ -231,6 +242,18 @@ namespace Teleop.Eval.JointDrive
                 if (Console.In.ReadLine() != null) stop.Set();
             }) { IsBackground = true };
             input.Start();
+            // And so does the stop file appearing: the stop for a run with no terminal (just pilot-stop).
+            if (stopFile != null)
+            {
+                new Thread(() =>
+                {
+                    while (!stop.IsSet)
+                    {
+                        if (File.Exists(stopFile)) stop.Set();
+                        Thread.Sleep(100);
+                    }
+                }) { IsBackground = true }.Start();
+            }
 
             // Nothing moves before every arm joint has been read from its servo.
             Console.WriteLine($"[joint-drive] subscribing to {robot}'s joint-state stream; waiting for a sensed reading of every arm joint");

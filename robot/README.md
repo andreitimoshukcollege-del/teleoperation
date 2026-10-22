@@ -102,6 +102,24 @@ session what a person has to do (headset on, a slider value, a payload, close th
 Enter, and records it: `record-start`/`record-stop` around a timed teleop session, or `record-drive`.
 After each it reads the battery from that session's log and stops below 11.0 V. Nothing reports servo
 temperature, so feel the servos between sessions. At the end it runs `just fetch-recordings`.
+**Without the laptop** (someone still watches the arm the whole time): `just deploy-joint-drive` puts
+`joint-drive` on the Jetson, and `just pilot-on-robot` starts `robot/pilot/onboard.py` there, detached,
+which records every `drive:` session of the plan back to back, talking to RobotHost over loopback (those
+sessions have no Wi-Fi in them, and their notes say so). It rests the servos between sessions
+(`rest_s=60`), stops below 11.0 V, and starts no further session after one that ended early. Stop it
+with `just pilot-stop` from any machine (joint-drive holds the arm at once), or with the power switch
+(the arm goes limp). Watch it with `just pilot-status`; collect with `just fetch-recordings`. The
+teleop sessions still need the laptop: `just pilot only=teleop`. `onboard.py` writes session.json and
+closes sessions itself, as `record-start`/`record-stop` do, and must be kept the same as them.
+
+```bash
+just deploy-joint-drive          # once, and after joint-drive changes; moves nothing
+just pilot only=teleop           # the headset sessions, from the laptop
+just pilot-on-robot              # the drive sessions, on the robot; the laptop can close
+just pilot-status                # from any machine with the repo
+just pilot-stop
+```
+
 `record-drive` copies `joint-drive`'s `operator.jlog` (every command it sent, on the laptop's clock)
 into the session before `record-stop` checksums it, and closes the session even when the drive stops
 early.

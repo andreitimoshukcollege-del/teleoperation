@@ -1463,20 +1463,90 @@ recording-battery remote_host=default_jetrover_host remote_user="jetson":
     @ssh -o StrictHostKeyChecking=accept-new "{{remote_user}}@$(just _robot-host "{{remote_host}}")" \
         'd=$(ls -td {{robot_recordings}}/jetrover/*/ 2>/dev/null | head -1); [ -n "$d" ] && grep "^BV|" "$d/driver.jlog" 2>/dev/null | tail -1 | cut -d"|" -f3 || true'
 
-# Record a list of sessions one after another (moves the arm; someone watching the whole time): robot/pilot/pilot-v1.txt by default, the ADR 0021 pilot hour. For each it says what a person does first (headset on, a slider value, a payload, close the app), waits for Enter, and records it with record-start/record-stop (teleop, timed) or record-drive (the arm drives itself). It stops below 11.0 V and ends with just fetch-recordings. Options as key=value: plan=<file>, from=<label> to resume there, remote_host
+# Record a list of sessions one after another (moves the arm; someone watching the whole time): robot/pilot/pilot-v1.txt by default, the ADR 0021 pilot hour. For each it says what a person does first (headset on, a slider value, a payload, close the app), waits for Enter, and records it with record-start/record-stop (teleop, timed) or record-drive (the arm drives itself). It stops below 11.0 V and ends with just fetch-recordings. Options as key=value: plan=<file>, from=<label> to resume there, only=teleop|drive (only=teleop, then just pilot-on-robot for the drive sessions without the laptop), remote_host
 [group('robot: recording (docs/adr/0021)')]
 [positional-arguments]
 pilot *options:
     #!/usr/bin/env bash
     set -euo pipefail
-    plan=robot/pilot/pilot-v1.txt from="" remote_host="{{default_jetrover_host}}"
+    plan=robot/pilot/pilot-v1.txt from="" only=all remote_host="{{default_jetrover_host}}"
     for opt in "$@"; do
         case "$opt" in
-            plan=*|from=*|remote_host=*) printf -v "${opt%%=*}" '%s' "${opt#*=}" ;;
-            *) echo "error: unknown option '$opt' (plan= from= remote_host=)" >&2; exit 1 ;;
+            plan=*|from=*|only=*|remote_host=*) printf -v "${opt%%=*}" '%s' "${opt#*=}" ;;
+            *) echo "error: unknown option '$opt' (plan= from= only= remote_host=)" >&2; exit 1 ;;
         esac
     done
-    python3 robot/pilot/pilot.py "$plan" --from "$from" --host "$remote_host"
+    python3 robot/pilot/pilot.py "$plan" --from "$from" --only "$only" --host "$remote_host"
+
+# Publish joint-drive (Teleop.Eval, linux-arm64) to the Jetson as ~/jointdrive_current, for just pilot-on-robot -- moves nothing and restarts nothing: RobotHost and the driver keep running. Ends with a dry run on the robot to show it starts
+[group('robot: deploy and restart (someone at the robot)')]
+deploy-joint-drive remote_host=default_jetrover_host remote_user="jetson":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    host=$(just _robot-host "{{remote_host}}")
+    target="{{remote_user}}@$host"
+    cd core
+    remote_dir="jointdrive_deploy_$(date +%Y%m%d-%H%M%S)"
+    # Relative, as deploy-robothost's: the Windows dotnet does not resolve a WSL absolute path.
+    publish_dir="_scratch_publish"
+    archive=$(mktemp -u --suffix=.tar.gz)
+    trap 'rm -f "$archive"; rm -rf "$publish_dir"' EXIT
+    rm -rf "$publish_dir"
+    echo "Publishing Teleop.Eval (joint-drive) for linux-arm64..." >&2
+    dotnet publish Teleop.Eval -c Release -r linux-arm64 --self-contained false -f net8.0 -o "$publish_dir" -nologo -v q
+    printf '{"sha": "%s", "dirty": %s}\n' "$(git rev-parse HEAD)" "$([ -n "$(git status --porcelain --untracked-files=no -- .)" ] && echo true || echo false)" > "$publish_dir/BUILD_INFO"
+    tar czf "$archive" -C "$publish_dir" .
+    scp -q -o StrictHostKeyChecking=accept-new "$archive" "$target:/tmp/$remote_dir.tar.gz"
+    ssh "$target" "mkdir -p ~/$remote_dir && tar xzf /tmp/$remote_dir.tar.gz -C ~/$remote_dir && rm /tmp/$remote_dir.tar.gz && ln -sfn ~/$remote_dir ~/jointdrive_current && \
+        echo \"jointdrive_current -> $remote_dir: \$(cat ~/jointdrive_current/BUILD_INFO)\" && \
+        ~/.dotnet/dotnet ~/jointdrive_current/Teleop.Eval.dll joint-drive --script steps --speed 1 --seconds 10 --dry-run | tail -1"
+
+# Record a plan's drive sessions on the robot itself, so the laptop can close (moves the arm; someone watches it the WHOLE time): copies robot/pilot (and the robot profile record-start uses) to the Jetson and starts robot/pilot/onboard.py there, detached. It runs every drive: session back to back, joint-drive talking to RobotHost over loopback (so no Wi-Fi in these sessions; their notes say so), rests rest_s between sessions, stops below 11.0 V and after any session that ends early. Teleop sessions need the laptop: just pilot only=teleop. Stop: just pilot-stop from any machine, or the robot's power switch. Watch: just pilot-status. Needs just deploy-joint-drive first. Options as key=value: plan=<file>, from=<label>, rest_s (60), start_delay_s (30), remote_host
+[group('robot: recording (docs/adr/0021)')]
+[positional-arguments]
+pilot-on-robot *options:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    plan=robot/pilot/pilot-v1.txt from="" rest_s=60 start_delay_s=30 remote_host="{{default_jetrover_host}}"
+    for opt in "$@"; do
+        case "$opt" in
+            plan=*|from=*|rest_s=*|start_delay_s=*|remote_host=*) printf -v "${opt%%=*}" '%s' "${opt#*=}" ;;
+            *) echo "error: unknown option '$opt' (plan= from= rest_s= start_delay_s= remote_host=)" >&2; exit 1 ;;
+        esac
+    done
+    host=$(just _robot-host "$remote_host")
+    target="jetson@$host"
+    built=$(ssh "$target" 'cat ~/jointdrive_current/BUILD_INFO 2>/dev/null' || true)
+    [ -n "$built" ] || { echo "error: joint-drive is not on the robot: just deploy-joint-drive" >&2; exit 1; }
+    case "$built" in *"$(git rev-parse HEAD)"*) ;; *) echo "warning: the robot's joint-drive ($built) is not this checkout's $(git rev-parse --short HEAD): just deploy-joint-drive to update it" >&2 ;; esac
+    if ssh "$target" 'p=$(cat ~/recordings/.pilot-onboard.pid 2>/dev/null) && kill -0 "$p" 2>/dev/null'; then
+        echo "error: an onboard pilot is already running: just pilot-status, or just pilot-stop" >&2; exit 1
+    fi
+    dest="pilot_$(date +%Y%m%d-%H%M%S)"
+    ssh "$target" "mkdir -p ~/$dest ~/recordings && rm -f ~/recordings/.pilot-stop"
+    scp -q robot/pilot/pilot.py robot/pilot/onboard.py "$plan" core/RobotProfiles/jetrover.json "$target:$dest/"
+    ssh "$target" "cd ~/$dest && setsid nohup python3 -u onboard.py '$(basename "$plan")' --profile jetrover.json --from '$from' \
+        --rest '$rest_s' --start-delay '$start_delay_s' > ~/recordings/pilot-onboard.log 2>&1 < /dev/null & echo \$! > ~/recordings/.pilot-onboard.pid"
+    sleep 3
+    ssh "$target" 'cat ~/recordings/pilot-onboard.log'
+    echo
+    echo "Running on the robot ($host), detached: the laptop can close. Someone stays with the arm."
+    echo "  watch: just pilot-status     stop: just pilot-stop (or the power switch)     afterwards: just fetch-recordings"
+
+# What the onboard pilot is doing -- moves nothing: whether it runs, the end of its log, and what is recording
+[group('robot: recording (docs/adr/0021)')]
+pilot-status lines="25" remote_host=default_jetrover_host:
+    @ssh "jetson@$(just _robot-host "{{remote_host}}")" 'p=$(cat ~/recordings/.pilot-onboard.pid 2>/dev/null); \
+        if [ -n "$p" ] && kill -0 "$p" 2>/dev/null; then echo "onboard pilot: running (pid $p)"; else echo "onboard pilot: not running"; fi; \
+        echo "recording now: $(cat ~/recordings/.active 2>/dev/null || echo nothing)"; echo; tail -n {{lines}} ~/recordings/pilot-onboard.log 2>/dev/null || echo "(no log yet)"'
+
+# Stop the onboard pilot: joint-drive holds the arm where it is at once, the session is closed, and no other starts. Waits up to 30 s for it to finish, then shows its log
+[group('robot: recording (docs/adr/0021)')]
+pilot-stop remote_host=default_jetrover_host:
+    @ssh "jetson@$(just _robot-host "{{remote_host}}")" 'touch ~/recordings/.pilot-stop; p=$(cat ~/recordings/.pilot-onboard.pid 2>/dev/null); \
+        for i in $(seq 1 60); do { [ -n "$p" ] && kill -0 "$p" 2>/dev/null; } || break; sleep 0.5; done; \
+        if [ -n "$p" ] && kill -0 "$p" 2>/dev/null; then echo "still running after 30 s: just pilot-status"; else echo "stopped"; fi; \
+        tail -n 8 ~/recordings/pilot-onboard.log 2>/dev/null; rm -f ~/recordings/.pilot-stop'
 
 # Impair the robot's uplink: joint commands reach the arm through a Core network profile (e.g. `just uplink-impair 150ms-20j-0.5loss`), or `none` to stop. The arm then really receives late and lossy commands, so someone watches. RobotHost must have been deployed with --uplink-control (just deploy-robothost)
 [group('robot: recording (docs/adr/0021)')]

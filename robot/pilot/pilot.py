@@ -104,9 +104,13 @@ def main() -> int:
     parser.add_argument("plan")
     parser.add_argument("--from", dest="start", default="", help="resume at this label")
     parser.add_argument("--host", default="auto")
+    parser.add_argument("--only", choices=("all", "teleop", "drive"), default="all",
+                        help="teleop: leave the drive sessions to just pilot-on-robot")
     args = parser.parse_args()
 
     sessions = read_plan(args.plan)
+    if args.only != "all":
+        sessions = [s for s in sessions if (s.motion == "teleop") == (args.only == "teleop")]
     if args.start:
         labels = [s.label for s in sessions]
         if args.start not in labels:

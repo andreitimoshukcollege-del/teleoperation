@@ -234,6 +234,22 @@ namespace Teleop.Eval.Tests.JointDrive
             Assert.All(targets.Take(count), t => Assert.Equal(3f, t.Speed));
         }
 
+        [Fact]
+        public void AStopFileThatAlreadyExists_SendsNothing()
+        {
+            string stop = Path.GetTempFileName();
+            try
+            {
+                int code = JointDriveCommand.Run(new[] { "joint-drive", "--script", "steps", "--speed", "1", "--remote-host", "127.0.0.1",
+                    "--remote-port", "9", "--confirm-hardware-motion", "--stop-file", stop });
+                Assert.Equal(130, code);
+            }
+            finally
+            {
+                File.Delete(stop);
+            }
+        }
+
         private sealed class NonClosing : Stream
         {
             private readonly Stream _inner;

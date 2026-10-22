@@ -84,9 +84,10 @@ model before anything moves. That model knows the robot's own body and the floor
 clear the space around the arm. It starts by moving slowly from wherever the arm is to the model's
 home pose, and refuses if that path is not clear (`just move-arm 0.15 0 0.08` first). **Press Enter to
 stop it**: the arm holds where it is. Ctrl+C does not reach the Windows `dotnet` under WSL. It also
-stops by itself on a stall (a joint over 0.25 rad from its command and not moving for 1 s), on a
-gap of 1 s in the joint-state stream, and when the stream drops below 30 Hz, which means the headset
-app (or `joint-probe`) is on the joint port too. Close the headset app first.
+stops by itself on a stall (a joint over 0.25 rad from its command and not moving for 1 s), and when
+the joint-state stream has been missing or below 30 Hz for 3 s of any 10 s: the robot is gone, or the
+headset app (or `joint-probe`) is on the joint port too. Close the headset app first. A shorter gap,
+such as a Wi-Fi stall, only pauses it: the arm holds, and the script resumes from the same pose.
 
 ```bash
 just joint-drive-preview steps 6           # sends nothing: the envelope and what it would do

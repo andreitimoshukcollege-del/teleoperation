@@ -11,11 +11,17 @@ namespace Teleop.Eval.JointDrive
         /// <summary>A joint is far from its command and not moving toward it: it has hit something, or something holds it.</summary>
         Stall,
 
-        /// <summary>No joint-state frame for too long: the robot, the network or RobotHost is gone.</summary>
+        /// <summary>No joint-state frame for <see cref="DriveWatchdog.MaxDegradedSeconds"/>: the robot, the network or RobotHost is gone.</summary>
         FrameGap,
 
-        /// <summary>Frames arrive far below RobotHost's 50 Hz: someone else (a headset, joint-probe) is taking the stream, and so is sending on the joint port too.</summary>
-        StreamTaken,
+        /// <summary>
+        /// Frames kept arriving, but the stream was unhealthy for <see cref="DriveWatchdog.MaxDegradedSeconds"/> of the last
+        /// <see cref="DriveWatchdog.DegradedWindowSeconds"/>: the Wi-Fi is losing them, or someone else (a headset, joint-probe)
+        /// is taking the stream, and so is on the joint port too. A second subscriber makes the stream alternate between the
+        /// two every keepalive, so it is never unhealthy for long at a stretch, only often.
+        /// The robot's log tells the two apart (one <c>SS</c> line means one subscriber).
+        /// </summary>
+        StreamDegraded,
     }
 
     /// <summary>
@@ -28,15 +34,30 @@ namespace Teleop.Eval.JointDrive
     /// reading has moved less than <see cref="StallSpeedRadPerSec"/> over the last half second, for
     /// <see cref="StallSeconds"/> in a row. A moving arm is never a stall, however far behind, and an
     /// arm that has arrived is never far, so the limits need not know the speed or the latency.</para>
+    ///
+    /// <para><b>A degraded stream pauses; only a long one stops.</b> <see cref="IsHealthy"/> is false
+    /// while the newest frame is over <see cref="PauseGapSeconds"/> old or the last second carried
+    /// under <see cref="MinFrameRateHz"/> frames, and <c>joint-drive</c> then holds its plan where it
+    /// is. Lab Wi-Fi stalls for a second or two in both directions now and then (2026-10-22's first
+    /// recorded drive: commands reached the robot up to 341 ms apart while both ends sent steadily),
+    /// and the robot holds its last target meanwhile, which is safe. It is a fault when the stream
+    /// has been unhealthy for <see cref="MaxDegradedSeconds"/> in all within the last
+    /// <see cref="DegradedWindowSeconds"/>, whether in one stretch or in many short ones: a second
+    /// subscriber (the headset left on) toggles it every half second, and must stop the drive.</para>
     /// </summary>
     public sealed class DriveWatchdog
     {
         public const double StallErrorRadians = 0.25;
         public const double StallSpeedRadPerSec = 0.1;
         public const double StallSeconds = 1.0;
-        public const double MaxFrameGapSeconds = 1.0;
+        public const double PauseGapSeconds = 0.25;
         public const double MinFrameRateHz = 30.0;
-        public const double FrameRateWindowSeconds = 2.0;
+        public const double FrameRateWindowSeconds = 1.0;
+        public const double MaxDegradedSeconds = 3.0;
+        public const double DegradedWindowSeconds = 10.0;
+
+        /// <summary>The degraded time is kept in buckets this long.</summary>
+        private const double BucketSeconds = 0.1;
 
         /// <summary>How far back a reading's speed is measured.</summary>
         private const double SpeedWindowSeconds = 0.5;
@@ -54,6 +75,9 @@ namespace Teleop.Eval.JointDrive
         private int _frameNext;
         private double _firstFrame = double.NaN;
         private double _lastFrame = double.NaN;
+        private readonly double[] _degradedBuckets = new double[(int)(DegradedWindowSeconds / BucketSeconds)];
+        private long _bucket = long.MinValue;
+        private double _lastHealthCheck = double.NaN;
 
         public DriveWatchdog()
         {
@@ -97,11 +121,16 @@ namespace Teleop.Eval.JointDrive
             _readingCount = Math.Min(_readingCount + 1, ReadingCapacity);
         }
 
-        public DriveFault Check(double now)
+        /// <summary>
+        /// Whether the stream is good enough to move on: a frame within <see cref="PauseGapSeconds"/>,
+        /// and at least <see cref="MinFrameRateHz"/> over the last <see cref="FrameRateWindowSeconds"/>
+        /// (once that much has passed). Call it once per loop: it also adds up how long the stream has
+        /// been degraded, for <see cref="Check"/>.
+        /// </summary>
+        public bool IsHealthy(double now)
         {
-            if (StalledJoint >= 0) return DriveFault.Stall;
-            if (double.IsNaN(_lastFrame) || now - _lastFrame > MaxFrameGapSeconds) return DriveFault.FrameGap;
-            if (now - _firstFrame >= FrameRateWindowSeconds)
+            bool healthy = !double.IsNaN(_lastFrame) && now - _lastFrame <= PauseGapSeconds;
+            if (healthy && now - _firstFrame >= FrameRateWindowSeconds)
             {
                 int recent = 0;
                 for (int i = 0; i < _frameCount; i++)
@@ -109,10 +138,42 @@ namespace Teleop.Eval.JointDrive
                     if (_frameTimes[i] > now - FrameRateWindowSeconds) recent++;
                 }
 
-                if (recent < MinFrameRateHz * FrameRateWindowSeconds) return DriveFault.StreamTaken;
+                healthy = recent >= MinFrameRateHz * FrameRateWindowSeconds;
             }
 
-            return DriveFault.None;
+            double dt = double.IsNaN(_lastHealthCheck) ? 0 : Math.Max(0, now - _lastHealthCheck);
+            _lastHealthCheck = now;
+            AdvanceBuckets(now);
+            if (!healthy) _degradedBuckets[(int)(_bucket % _degradedBuckets.Length)] += dt;
+            return healthy;
+        }
+
+        public DriveFault Check(double now)
+        {
+            if (StalledJoint >= 0) return DriveFault.Stall;
+            AdvanceBuckets(now);
+            double degraded = 0;
+            foreach (double d in _degradedBuckets) degraded += d;
+            if (degraded < MaxDegradedSeconds) return DriveFault.None;
+            return double.IsNaN(_lastFrame) || now - _lastFrame >= MaxDegradedSeconds ? DriveFault.FrameGap : DriveFault.StreamDegraded;
+        }
+
+        /// <summary>Moves the bucket ring to <paramref name="now"/>, emptying the buckets it passes.</summary>
+        private void AdvanceBuckets(double now)
+        {
+            long bucket = (long)Math.Floor(now / BucketSeconds);
+            if (_bucket == long.MinValue)
+            {
+                _bucket = bucket;
+                return;
+            }
+
+            for (long b = _bucket + 1; b <= bucket && b <= _bucket + _degradedBuckets.Length; b++)
+            {
+                _degradedBuckets[(int)(b % _degradedBuckets.Length)] = 0;
+            }
+
+            if (bucket > _bucket) _bucket = bucket;
         }
 
         /// <summary>The newest reading taken at or before <paramref name="t"/>.</summary>

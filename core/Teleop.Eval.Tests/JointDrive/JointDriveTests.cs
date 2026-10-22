@@ -144,20 +144,63 @@ namespace Teleop.Eval.Tests.JointDrive
         }
 
         [Fact]
-        public void TheWatchdog_StopsOnAGap_AndOnAStreamSomeoneElseTook()
+        public void AShortGap_OnlyPauses_AndTheStreamComingBackResumes()
+        {
+            var w = new DriveWatchdog();
+            // Frames every 20 ms, except a 1.5 s Wi-Fi stall from 2 s, as on 2026-10-22's first recorded drive.
+            for (double t = 0; t < 12; t += 0.01)
+            {
+                bool stalled = t >= 2.0 && t < 3.5;
+                if (!stalled && Math.Round(t * 100) % 2 == 0) w.OnFrame(t);
+                bool healthy = w.IsHealthy(t);
+                if (t > 2.3 && t < 3.5) Assert.False(healthy);
+                // Healthy again once the last second holds 30 frames: 0.6 s after they return.
+                if (t > 4.15) Assert.True(healthy);
+                Assert.Equal(DriveFault.None, w.Check(t));
+            }
+        }
+
+        [Fact]
+        public void ALongGap_ALongThinStream_OrAStreamThatKeepsDropping_Stops()
         {
             var gap = new DriveWatchdog();
-            gap.OnFrame(0);
-            Assert.Equal(DriveFault.None, gap.Check(0.5));
-            Assert.Equal(DriveFault.FrameGap, gap.Check(1.5));
+            for (double t = 0; t < 1; t += 0.02) gap.OnFrame(t);
+            for (double t = 1.3; t < 4.5; t += 0.01) Assert.False(gap.IsHealthy(t)); // frames stopped at 0.98 s
+            Assert.Equal(DriveFault.FrameGap, gap.Check(4.5));
 
-            var taken = new DriveWatchdog();
-            for (double t = 0; t < 3; t += 0.1) taken.OnFrame(t); // 10 Hz: the rest of the 50 Hz went to another subscriber
-            Assert.Equal(DriveFault.StreamTaken, taken.Check(2.95));
+            // 10 Hz: the Wi-Fi losing most frames.
+            var thin = new DriveWatchdog();
+            for (double t = 0; t < 5; t += 0.01)
+            {
+                if (Math.Round(t * 100) % 10 == 0) thin.OnFrame(t);
+                thin.IsHealthy(t);
+            }
+
+            Assert.Equal(DriveFault.StreamDegraded, thin.Check(5.0));
+
+            // A second subscriber: the stream alternates between the two every half second.
+            var shared = new DriveWatchdog();
+            DriveFault fault = DriveFault.None;
+            double at = 0;
+            for (double t = 0; t < 12 && fault == DriveFault.None; t += 0.01)
+            {
+                if ((int)(t / 0.5) % 2 == 0 && Math.Round(t * 100) % 2 == 0) shared.OnFrame(t);
+                shared.IsHealthy(t);
+                fault = shared.Check(t);
+                at = t;
+            }
+
+            Assert.Equal(DriveFault.StreamDegraded, fault);
+            // Alternating halves average 25 Hz, under 30 throughout once the 1 s rate window fills: 3 s later it stops.
+            Assert.InRange(at, 3.0, 5.0);
 
             var full = new DriveWatchdog();
-            for (double t = 0; t < 3; t += 0.02) full.OnFrame(t);
-            Assert.Equal(DriveFault.None, full.Check(2.99));
+            for (double t = 0; t < 12; t += 0.01)
+            {
+                if (Math.Round(t * 100) % 2 == 0) full.OnFrame(t);
+                Assert.True(full.IsHealthy(t));
+                Assert.Equal(DriveFault.None, full.Check(t));
+            }
         }
 
         [Fact]

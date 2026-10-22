@@ -25,9 +25,11 @@ namespace Teleop.Eval.JointDrive
     /// <c>--margin-deg</c>, and every pose is checked before anything moves (<see cref="DrivePlan"/>).
     /// RobotHost also refuses any command whose pose would collide.</para>
     ///
-    /// <para><b>It stops the arm</b>, by commanding the last measured pose, on Enter or Ctrl+C, on a stall, on
-    /// a gap in the joint-state stream, or when the stream drops below 30 Hz, which means someone
-    /// else is taking it (<see cref="DriveWatchdog"/>). Nothing is sent before every arm joint has a
+    /// <para><b>It stops the arm</b>, by commanding the last measured pose, on Enter or Ctrl+C, on a stall,
+    /// or when the joint-state stream has been missing or below 30 Hz for 3 s of any 10 s
+    /// (<see cref="DriveWatchdog"/>): a lost robot, or a second subscriber such as the headset app. Less
+    /// than that only pauses the plan: Wi-Fi stalls happen, and the robot holds its last target
+    /// through them. Nothing is sent before every arm joint has a
     /// sensed reading. The first move is the approach from the measured pose to the model's home at
     /// 0.5 rad/s, and the session ends back there. Enter is the stop to rely on: under WSL the Windows
     /// <c>dotnet</c> does not receive a signal sent to it (checked 2026-10-22: a SIGINT left it running),
@@ -292,18 +294,38 @@ namespace Teleop.Eval.JointDrive
                 }
             }
 
+            // The plan's own clock: it runs only while the stream is healthy, so a Wi-Fi stall holds the
+            // commanded pose where it is and the plan resumes from there, without a jump.
+            double planTime = 0;
+            long lastLoop = t0;
+            bool paused = false;
+            int pauses = 0;
+            double pausedSeconds = 0;
             while (true)
             {
                 long now = Stopwatch.GetTimestamp();
-                double elapsed = (now - t0) / (double)tps;
+                double dt = (now - lastLoop) / (double)tps;
+                lastLoop = now;
                 link.Pump(now, watchdog, commanded);
                 maxError = Math.Max(maxError, link.Measured.MaxJointDelta(commanded));
+                bool healthy = watchdog.IsHealthy(now / (double)tps);
                 fault = watchdog.Check(now / (double)tps);
-                if (fault != DriveFault.None || stop.IsSet || elapsed > plan.TotalSeconds + 0.5) break;
+                if (fault != DriveFault.None || stop.IsSet || planTime > plan.TotalSeconds + 0.5) break;
+
+                if (healthy) planTime += dt;
+                else pausedSeconds += dt;
+                if (healthy == paused)
+                {
+                    paused = !healthy;
+                    if (paused) pauses++;
+                    Console.WriteLine(paused
+                        ? FormattableString.Invariant($"[joint-drive] {planTime,5:0} s: joint-state frames are not arriving (Wi-Fi?); holding until they do (it stops after {DriveWatchdog.MaxDegradedSeconds:0} s of this in {DriveWatchdog.DegradedWindowSeconds:0} s)")
+                        : FormattableString.Invariant($"[joint-drive] {planTime,5:0} s: frames are back; going on"));
+                }
 
                 if (now >= nextSend)
                 {
-                    commanded = plan.Sample(elapsed);
+                    commanded = plan.Sample(planTime);
                     Send(now, commanded);
                     nextSend += interval;
                     if (nextSend < now) nextSend = now + interval;
@@ -312,7 +334,7 @@ namespace Teleop.Eval.JointDrive
                 if (now >= nextReport)
                 {
                     Console.WriteLine(FormattableString.Invariant(
-                        $"[joint-drive] {elapsed,5:0} / {plan.TotalSeconds:0} s, {link.Frames} frames, largest gap commanded-measured so far {maxError * 180 / Math.PI:0} deg"));
+                        $"[joint-drive] {planTime,5:0} / {plan.TotalSeconds:0} s, {link.Frames} frames, largest gap commanded-measured so far {maxError * 180 / Math.PI:0} deg"));
                     nextReport += 10 * tps;
                 }
 
@@ -331,7 +353,9 @@ namespace Teleop.Eval.JointDrive
             }
 
             log?.Close();
-            Console.WriteLine($"[joint-drive] sent {sequence} commands, received {link.Frames} frames" + (logPath != null ? $"; commands logged to {logPath}" : ""));
+            Console.WriteLine($"[joint-drive] sent {sequence} commands, received {link.Frames} frames" +
+                (pauses > 0 ? FormattableString.Invariant($", paused {pauses} time(s) for {pausedSeconds:0.0} s in all") : "") +
+                (logPath != null ? $"; commands logged to {logPath}" : ""));
             switch (fault)
             {
                 case DriveFault.Stall:
@@ -340,11 +364,14 @@ namespace Teleop.Eval.JointDrive
                         "it now holds where it is. Check what it touched before going on.");
                     return 2;
                 case DriveFault.FrameGap:
-                    Console.Error.WriteLine($"joint-drive: STOPPED: no joint-state frame for {DriveWatchdog.MaxFrameGapSeconds} s; sent a hold to the last measured pose.");
+                    Console.Error.WriteLine($"joint-drive: STOPPED: no joint-state frame for {DriveWatchdog.MaxDegradedSeconds} s (the robot, RobotHost or the network is gone); " +
+                        "sent a hold to the last measured pose.");
                     return 3;
-                case DriveFault.StreamTaken:
-                    Console.Error.WriteLine($"joint-drive: STOPPED: the joint-state stream fell below {DriveWatchdog.MinFrameRateHz} Hz, so something else " +
-                        "(the headset app, joint-probe) is sending on the joint port. Close it and run again.");
+                case DriveFault.StreamDegraded:
+                    Console.Error.WriteLine($"joint-drive: STOPPED: the joint-state stream was missing or below {DriveWatchdog.MinFrameRateHz} Hz for {DriveWatchdog.MaxDegradedSeconds} s " +
+                        $"of the last {DriveWatchdog.DegradedWindowSeconds} s. " +
+                        "Either the Wi-Fi is losing frames, or something else (the headset app, joint-probe) is on the joint port: " +
+                        "two SS lines in the session's robothost.jlog mean the second. Sent a hold to the last measured pose.");
                     return 3;
             }
 

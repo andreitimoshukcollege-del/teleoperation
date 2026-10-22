@@ -10,6 +10,13 @@
 # pypi.org and download.pytorch.org. On a Slurm cluster without either, use slurm/apptainer.def.
 set -euo pipefail
 
+# Per this package's isolation rule (trainer/CLAUDE.md): nothing here may depend on what else is
+# on this machine. A leaked PYTHONPATH (e.g. a sourced ROS setup.bash) survives venv creation and
+# is on sys.path ahead of the venv's own site-packages, so pytest's plugin autoloader can pick up
+# an unrelated package's pytest11 entry point (ROS's launch_testing) and fail importing pytest
+# itself with an unrelated ModuleNotFoundError.
+unset PYTHONPATH
+
 cd "$(dirname "$0")"
 VENV="${ARMPRED_VENV:-.venv}"
 PYTHON="${PYTHON:-python3}"

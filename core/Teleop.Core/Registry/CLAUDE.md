@@ -17,7 +17,7 @@ type," so the mapping survives whatever IL2CPP strips.
 | Property | Axis | Entries |
 |---|---|---|
 | `Predictors` | `Prediction/` | `none`, `const-vel`, `double-exp` |
-| `JointPredictors` | `Prediction/` (`ICommandAwarePredictor`, docs/adr/0018) | `hold-last`, `servo-replay`, `relay-replay` |
+| `JointPredictors` | `Prediction/` (`ICommandAwarePredictor`, docs/adr/0018) | `hold-last`, `servo-replay`, `relay-replay`, `relay-replay-servo` |
 | `Reconcilers` | `Reconciliation/` | `snap` |
 | `Codecs` | `Transport/` (`ICommandCodec`) | `raw` |
 | `Transports` | `Transport/` (`ITransport`) | `loopback` |

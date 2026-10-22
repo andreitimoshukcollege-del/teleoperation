@@ -73,6 +73,7 @@ namespace Teleop.Core.Registry
                 ["hold-last"] = config => new HoldLastJointPredictor(config),
                 ["servo-replay"] = config => new ServoReplayPredictor(config),
                 ["relay-replay"] = config => new RelayReplayPredictor(config),
+                ["relay-replay-servo"] = config => new RelayReplayServoPredictor(config),
             };
 
         public static readonly IReadOnlyDictionary<string, Func<ReconcilerConfig, IMetricSink, ITimeAuthority, IReconciler<Pose>>> Reconcilers =

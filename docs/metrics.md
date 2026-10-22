@@ -300,6 +300,56 @@ Report it alongside `joint_prediction_error_deg`, always (§8 rule 2).
   replay of the recorded commands and frames through the predictor, offline, or a headset log
   of both values.
 
+**Amendment (2026-10-21, docs/adr/0021):** on recorded sessions (session v1, `trainer/contract/`) the
+truth for `joint_prediction_error_deg` is each successful driver read, at the midpoint of its bus
+transaction, and errors are scored only at those read instants; `joint_correction_deg` is computed by
+replaying the session's view (the headset's calls) through the predictor, offline. The trainer's
+evaluation (`trainer/armpred/evaluate.py`) computes every metric below this way. The trainer's numbers
+are not results (ADR 0021 decision 8); they decide whether the C# consumer is built.
+
+**`joint_display_jitter_deg`** (docs/adr/0021): how much the predicted arm shakes, frame to frame.
+- **Definition:** per arm joint and 90 Hz display tick k, |p_k − 2 p_(k−1) + p_(k−2)| in degrees (the
+  second difference of the prediction), pooled over the arm joints, over a stretch of display ticks.
+- **Reporting:** percentiles. Compared against a baseline, never alone: a predictor that tracks a
+  moving arm has some by construction.
+
+**`joint_event_error_deg`** (docs/adr/0021): `joint_prediction_error_deg` aligned on an event.
+- **Events:** a downlink switch (`network`), a slider change, a hand on or off, a payload, an uplink
+  change (`uplink`), a mark. An `uplink-change` is an `uplink` event across which the uplink's one-way
+  p50 delay moved by at least 50 ms (0.5 s after against 0.5 s before, from the view's true
+  conditions).
+- **t_info:** the first moment the headset's data could show the event. A downlink switch shows at
+  once. For anything the robot side does, t_info is when the first frame sensed after it reaches the
+  predictor.
+- **Windows:** [t_e − 2 s, t_e) before the event; the information-limited stretch [t_e, t_info); then
+  0–100, 100–250, 250–500, 500–1000 and 1000–2000 ms after t_info.
+- **Forecast gate window (ADR 0021 decision 14):** [t_e, t_info + 1 s) after each `uplink-change`, pooled.
+- **Reporting:** percentiles per window. Only predictions whose target time falls in the window count.
+
+**`joint_recovery_time_ms`** (docs/adr/0021): from t_info until the 100 ms trailing median of the
+error stays below 1.5° for 250 ms. Capped at 3000 ms, and a never-recovered event is reported at the
+cap. Reporting: percentiles over events of one kind.
+
+**`joint_prediction_lead_ms`** (docs/adr/0021 decision 14): how far ahead of the arm the prediction
+runs. It measures directly the symptom that prompted that decision, a predicted arm that "goes
+straight to the target".
+- **Definition:** take the 90 Hz display ticks of a view, and the truth between driver reads,
+  linear between them. A *motion segment* is a run of ticks where one arm joint's true speed exceeds
+  0.3 rad/s for at least 0.5 s. For each segment, the lead is the shift τ in [−300, +300] ms, in
+  5 ms steps, that minimises the median over the segment of |prediction(t) − truth(t + τ)|. Shifts
+  that leave the truth's range for more than 20% of the segment are not considered.
+- **Sign:** positive means the prediction shows where the arm will be (it runs ahead); negative means
+  where it was (it lags).
+- **Reporting:** p5, p50 and p95 over segments, and the share of segments at the ±300 ms edge (the
+  search hit its bound, so the true lead may be larger).
+
+**`joint_predictor_fallback`** (docs/adr/0021): for a learned joint predictor, the share of calls in
+which it fell back to its prior: no fresh reading yet, the newest reading more than 1 s old, an output
+that is not finite, or the backend failing. Reported as a count and a rate.
+
+**`joint_inference_us`** (docs/adr/0021): a learned joint predictor's inference time per call, in
+microseconds, with the device, the runtime and the thread count stated. Percentiles; the gate uses p99.
+
 ## 5. Correction cost
 
 The counterweight to prediction accuracy, and the reason accuracy alone is never a result.

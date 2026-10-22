@@ -22,8 +22,8 @@ namespace Teleop.Eval.JointBench
     /// <list type="bullet">
     /// <item>Five arm joints and an instant gripper. The gripper is excluded from both metrics.</item>
     /// <item>The operator sends at 48 Hz. Targets follow a seeded random path, with a new waypoint
-    /// every 0.5–1.5 s and linear motion between them, within ±1 rad. The gripper steps between
-    /// open and closed. No command asks for a speed.</item>
+    /// every 0.5–1.5 s (times <c>--leg-scale</c>, default 1) and linear motion between them, within
+    /// ±1 rad. The gripper steps between open and closed. No command asks for a speed.</item>
     /// <item>Each direction gets the profile's base delay plus uniform jitter, and independent
     /// Bernoulli loss at the profile's after-delivered rate. Burst structure is ignored, and so is
     /// clock-sync error: the operator knows the robot's clock exactly.</item>
@@ -60,8 +60,16 @@ namespace Teleop.Eval.JointBench
     /// written. Otherwise it writes a move lasting max(<c>--relay-min-move-ms</c> (50),
     /// |target − last written| / <c>--relay-pps</c> (2200)), which is also the cooldown. A servo's
     /// first write lasts the minimum.</item>
-    /// <item>The servo follows each move exactly: linear, from where it is to the target, over the
-    /// move's duration. No dynamics, overshoot, load or stall.</item>
+    /// <item>The relay's setpoint follows each move exactly: linear, from where it is to the target,
+    /// over the move's duration. By default the servo is that setpoint: no dynamics, overshoot, load
+    /// or stall. <c>--servo-max-speed</c> (rad/s, default none) and <c>--servo-lag-ms</c> (default 0)
+    /// put a servo behind it: a first-order lag and a symmetric speed cap, stepped at the bench's 1 ms
+    /// step with the setpoint sampled at each step's end, which is <c>relay-replay-servo</c>'s scheme.
+    /// Each move still starts from the setpoint, not from the lagging servo. Still no overshoot, load
+    /// or stall.</item>
+    /// <item><c>--pipeline-ms</c> (default 0) delays every arrived command by that constant, before the
+    /// staleness check and the gate: RobotHost's loop, the relay's poll and the driver's cycle, which
+    /// on the robot vary rather than stay constant.</item>
     /// <item>Feedback reads motors 1..5 one after another, <c>--read-ms</c> (10) each, back to back,
     /// so a cycle is 50 ms (20 Hz fresh readings), at a seeded phase. Each reading is the servo's
     /// position then, rounded to a whole pulse. The frame's sensed stamp is <c>--stamp-ms</c> (5)
@@ -72,7 +80,13 @@ namespace Teleop.Eval.JointBench
     /// headset's configured value. <c>relay-replay</c> is given the relay's own gate parameters
     /// (speed <c>--model-relay-pps</c>, default the true one) and, unless
     /// <c>--model-sensed-age off</c>, each motor's true reading age.</item>
+    /// <item><c>relay-replay-servo</c> is given all of that and the simulation's true servo: its speed
+    /// cap, lag and pipeline delay, and no first move sized from the measurement (the simulated relay's
+    /// first write lasts the minimum). With the servo options off it is relay-replay, row for row.</item>
     /// </list>
+    /// <para>Under <c>--robot ideal</c>, <c>relay-replay-servo</c> runs with <see cref="JointPredictorConfig"/>'s
+    /// servo defaults, as <c>relay-replay</c> runs with its gate defaults: models of a robot that this one
+    /// is not.</para>
     /// </summary>
     public static class JointPredictBenchCommand
     {
@@ -94,6 +108,13 @@ namespace Teleop.Eval.JointBench
             public double StampMs = 5;
             public double? ModelPulsesPerSecond;
             public bool ModelSensedAge = true;
+
+            // The servo behind the relay, and the pipeline before it. The defaults are none.
+            public double ServoMaxSpeedRadPerSec = double.PositiveInfinity;
+            public double ServoLagMs;
+            public double PipelineMs;
+
+            public bool HasServoDynamics => !double.IsPositiveInfinity(ServoMaxSpeedRadPerSec) || ServoLagMs > 0;
         }
 
         /// <summary>One seeded run's pooled samples, in degrees.</summary>
@@ -101,12 +122,16 @@ namespace Teleop.Eval.JointBench
         {
             public readonly List<double> Errors = new List<double>();
             public readonly List<double> Corrections = new List<double>();
+
+            /// <summary>The simulated servos' 1 ms steps, and how many of them the speed cap bound (relay, with a servo only).</summary>
+            public long ServoSteps;
+            public long ServoCappedSteps;
         }
 
         public static int Run(string[] args)
         {
             int seeds = 5;
-            double seconds = 20, trueSpeed = 4.0;
+            double seconds = 20, trueSpeed = 4.0, legScale = 1.0;
             double? modelSpeed = null;
             string robot = "ideal";
             var relay = new RelayOptions();
@@ -128,6 +153,10 @@ namespace Teleop.Eval.JointBench
                     case "--read-ms": relay.ReadMs = D(); break;
                     case "--stamp-ms": relay.StampMs = D(); break;
                     case "--model-relay-pps": relay.ModelPulsesPerSecond = D(); break;
+                    case "--servo-max-speed": relay.ServoMaxSpeedRadPerSec = D(); break;
+                    case "--servo-lag-ms": relay.ServoLagMs = D(); break;
+                    case "--pipeline-ms": relay.PipelineMs = D(); break;
+                    case "--leg-scale": legScale = D(); break;
                     case "--model-sensed-age":
                         string age = Next();
                         if (age != "on" && age != "off") return Usage();
@@ -143,6 +172,12 @@ namespace Teleop.Eval.JointBench
                 return Usage();
             }
 
+            if (!(relay.ServoMaxSpeedRadPerSec > 0) || !(relay.ServoLagMs >= 0) || !(relay.PipelineMs >= 0) || !(legScale > 0))
+            {
+                Console.Error.WriteLine("joint-predict-bench: --servo-max-speed and --leg-scale must be positive, --servo-lag-ms and --pipeline-ms zero or positive");
+                return 64;
+            }
+
             bool isRelay = robot == "relay";
             double servoModelSpeed = modelSpeed ?? (isRelay ? 6.0 : 5.0);
             if (isRelay)
@@ -151,15 +186,27 @@ namespace Teleop.Eval.JointBench
                     $"joint-predict-bench: robot relay, {seeds} seeds x {seconds:0} s, relay {relay.PulsesPerSecond:0} pulses/s ({relay.PulsesPerSecond / PulsesPerRadian:0.##} rad/s), " +
                     $"min move {relay.MinMoveMs:0} ms, deadband {relay.DeadbandPulses} pulses, reads {relay.ReadMs:0} ms each, stamp +{relay.StampMs:0} ms; " +
                     $"servo-replay model speed {servoModelSpeed:0.##} rad/s, relay-replay {relay.ModelPulsesPerSecond ?? relay.PulsesPerSecond:0} pulses/s, sensed age {(relay.ModelSensedAge ? "on" : "off")} (docs/adr/0018)");
+                if (relay.HasServoDynamics || relay.PipelineMs > 0)
+                {
+                    string cap = double.IsPositiveInfinity(relay.ServoMaxSpeedRadPerSec) ? "none" : $"{relay.ServoMaxSpeedRadPerSec:0.##} rad/s";
+                    Console.WriteLine($"  servo: speed cap {cap}, lag {relay.ServoLagMs:0.##} ms; pipeline {relay.PipelineMs:0.##} ms; relay-replay-servo is given these");
+                }
             }
             else
             {
                 Console.WriteLine($"joint-predict-bench: robot ideal, {seeds} seeds x {seconds:0} s, true speed {trueSpeed:0.##} rad/s, model speed {servoModelSpeed:0.##} rad/s (docs/adr/0018)");
             }
 
+            if (legScale != 1.0)
+            {
+                Console.WriteLine($"  waypoint legs x{legScale:0.##}: {0.5 * legScale:0.###} to {1.5 * legScale:0.###} s");
+            }
+
             Console.WriteLine("joint_prediction_error_deg (error) and joint_correction_deg (correction), docs/metrics.md §4");
+            int nameWidth = Math.Max("predictor".Length, Registries.JointPredictors.Keys.Max(k => k.Length));
             Console.WriteLine(
-                $"{"profile",-24} {"predictor",-14} {"err p50",8} {"err p95",8} {"err p99",8} {"err max",8} {"cor p50",8} {"cor p95",8} {"cor p99",8} {"cor max",8}");
+                $"{"profile",-24} {"predictor".PadRight(nameWidth)} {"err p50",8} {"err p95",8} {"err p99",8} {"err max",8} {"cor p50",8} {"cor p95",8} {"cor p99",8} {"cor max",8}");
+            long servoSteps = 0, servoCappedSteps = 0;
             foreach (string profileName in NetworkProfileCatalog.NamedProfiles)
             {
                 if (!NetworkProfileCatalog.TryResolveParametric(profileName, Tps, out NetworkProfile profile, out _))
@@ -168,6 +215,7 @@ namespace Teleop.Eval.JointBench
                     return 1;
                 }
 
+                bool firstPredictor = true;
                 foreach (string predictorName in Registries.JointPredictors.Keys.OrderBy(k => k, StringComparer.Ordinal))
                 {
                     var errors = new List<double>();
@@ -175,18 +223,33 @@ namespace Teleop.Eval.JointBench
                     for (int seed = 1; seed <= seeds; seed++)
                     {
                         Samples s = isRelay
-                            ? SimulateRelay(profile, predictorName, (ulong)seed, seconds, servoModelSpeed, relay)
-                            : SimulateIdeal(profile, predictorName, (ulong)seed, seconds, trueSpeed, servoModelSpeed);
+                            ? SimulateRelay(profile, predictorName, (ulong)seed, seconds, servoModelSpeed, relay, legScale)
+                            : SimulateIdeal(profile, predictorName, (ulong)seed, seconds, trueSpeed, servoModelSpeed, legScale);
                         errors.AddRange(s.Errors);
                         corrections.AddRange(s.Corrections);
+
+                        // The robot does not depend on the predictor, so its servo is counted once per profile and seed.
+                        if (firstPredictor)
+                        {
+                            servoSteps += s.ServoSteps;
+                            servoCappedSteps += s.ServoCappedSteps;
+                        }
                     }
+
+                    firstPredictor = false;
 
                     errors.Sort();
                     corrections.Sort();
                     Console.WriteLine(
-                        $"{profileName,-24} {predictorName,-14} {Pct(errors, 0.50),8:0.00} {Pct(errors, 0.95),8:0.00} {Pct(errors, 0.99),8:0.00} {Max(errors),8:0.00} " +
+                        $"{profileName,-24} {predictorName.PadRight(nameWidth)} {Pct(errors, 0.50),8:0.00} {Pct(errors, 0.95),8:0.00} {Pct(errors, 0.99),8:0.00} {Max(errors),8:0.00} " +
                         $"{Pct(corrections, 0.50),8:0.00} {Pct(corrections, 0.95),8:0.00} {Pct(corrections, 0.99),8:0.00} {Max(corrections),8:0.00}");
                 }
+            }
+
+            if (servoSteps > 0)
+            {
+                Console.WriteLine(
+                    $"simulated servo: the speed cap bound in {servoCappedSteps} of {servoSteps} joint-steps of 1 ms ({100.0 * servoCappedSteps / servoSteps:0.##}%), all profiles and seeds");
             }
 
             return 0;
@@ -198,7 +261,9 @@ namespace Teleop.Eval.JointBench
                 "usage: joint-predict-bench [--robot ideal|relay] [--seeds N] [--seconds S] [--model-speed rad/s]\n" +
                 "  ideal: [--true-speed rad/s]\n" +
                 "  relay: [--relay-pps P] [--relay-min-move-ms MS] [--relay-deadband-pulses N] [--read-ms MS] [--stamp-ms MS]\n" +
-                "         [--model-relay-pps P] [--model-sensed-age on|off]");
+                "         [--servo-max-speed rad/s] [--servo-lag-ms MS] [--pipeline-ms MS]\n" +
+                "         [--model-relay-pps P] [--model-sensed-age on|off]\n" +
+                "  both:  [--leg-scale F] (waypoint legs last F times 0.5-1.5 s)");
             return 64;
         }
 
@@ -207,7 +272,8 @@ namespace Teleop.Eval.JointBench
             SimulateIdeal(profile, predictorName, seed, seconds, trueSpeed, modelSpeed).Errors;
 
         /// <summary>One seeded run of the ideal robot (see the class doc).</summary>
-        public static Samples SimulateIdeal(NetworkProfile profile, string predictorName, ulong seed, double seconds, double trueSpeed, double modelSpeed)
+        public static Samples SimulateIdeal(NetworkProfile profile, string predictorName, ulong seed, double seconds, double trueSpeed, double modelSpeed,
+            double legScale = 1.0)
         {
             var rng = new SeededRng(seed);
             var config = new JointPredictorConfig(
@@ -223,7 +289,7 @@ namespace Teleop.Eval.JointBench
             var to = new double[ArmJoints];
             var legStart = new long[ArmJoints];
             var legEnd = new long[ArmJoints];
-            for (int j = 0; j < ArmJoints; j++) NewLeg(ref rng, j, 0, from, to, legStart, legEnd);
+            for (int j = 0; j < ArmJoints; j++) NewLeg(ref rng, j, 0, from, to, legStart, legEnd, legScale);
             double gripper = 0;
 
             var truth = new double[ArmJoints + 1];
@@ -243,7 +309,7 @@ namespace Teleop.Eval.JointBench
                 if (t >= nextCommand)
                 {
                     nextCommand += commandInterval;
-                    double[] targets = NextTargets(ref rng, t, from, to, legStart, legEnd, ref gripper);
+                    double[] targets = NextTargets(ref rng, t, from, to, legStart, legEnd, ref gripper, legScale);
                     for (int j = 0; j <= ArmJoints; j++) command[j] = new JointSample(Id(j), (float)targets[j], false);
                     predictor.ObserveCommand(t + profile.BaseDelayTicks, command, 0f);
                     if (!Lost(ref rng, profile)) uplink.Add((t + Delay(ref rng, profile), targets));
@@ -308,7 +374,8 @@ namespace Teleop.Eval.JointBench
         }
 
         /// <summary>One seeded run of the paced-relay robot (see the class doc).</summary>
-        public static Samples SimulateRelay(NetworkProfile profile, string predictorName, ulong seed, double seconds, double modelSpeed, RelayOptions relay)
+        public static Samples SimulateRelay(NetworkProfile profile, string predictorName, ulong seed, double seconds, double modelSpeed, RelayOptions relay,
+            double legScale = 1.0)
         {
             var rng = new SeededRng(seed);
             long readTicks = (long)(relay.ReadMs / 1000.0 * Tps);
@@ -331,7 +398,12 @@ namespace Teleop.Eval.JointBench
                 relayMinMoveSeconds: (float)(relay.MinMoveMs / 1000.0),
                 relayDeadbandRad: (float)(relay.DeadbandPulses / PulsesPerRadian),
                 relayMoveSpeedRadPerSec: (float)((relay.ModelPulsesPerSecond ?? relay.PulsesPerSecond) / PulsesPerRadian),
-                sensedAgeMotorIds: ageIds, sensedAgeSeconds: ageSeconds);
+                sensedAgeMotorIds: ageIds, sensedAgeSeconds: ageSeconds,
+                // relay-replay-servo is given the simulation's true servo; no other predictor reads these.
+                servoMaxSpeedRadPerSec: (float)relay.ServoMaxSpeedRadPerSec,
+                servoLagSeconds: (float)(relay.ServoLagMs / 1000.0),
+                servoPipelineDelaySeconds: (float)(relay.PipelineMs / 1000.0),
+                servoFirstMoveFromMeasured: false);
             ICommandAwarePredictor predictor = Registries.JointPredictors[predictorName](config);
 
             long end = (long)(seconds * Tps), step = Tps / 1000;
@@ -341,11 +413,21 @@ namespace Teleop.Eval.JointBench
             var to = new double[ArmJoints];
             var legStart = new long[ArmJoints];
             var legEnd = new long[ArmJoints];
-            for (int j = 0; j < ArmJoints; j++) NewLeg(ref rng, j, 0, from, to, legStart, legEnd);
+            for (int j = 0; j < ArmJoints; j++) NewLeg(ref rng, j, 0, from, to, legStart, legEnd, legScale);
             double gripper = 0;
 
             var servos = new RelayServo[ArmJoints];
             for (int j = 0; j < ArmJoints; j++) servos[j] = new RelayServo(ZeroPulse);
+            long pipelineTicks = (long)(relay.PipelineMs / 1000.0 * Tps);
+
+            // The servo behind each relay output, when there is one; otherwise the servo is the setpoint.
+            ServoResponse[]? response = null;
+            if (relay.HasServoDynamics)
+            {
+                response = new ServoResponse[ArmJoints];
+                double cap = relay.ServoMaxSpeedRadPerSec * PulsesPerRadian;
+                for (int j = 0; j < ArmJoints; j++) response[j] = new ServoResponse(ZeroPulse, relay.ServoLagMs / 1000.0, cap);
+            }
             double gripperTarget = 0;
             long newestAcceptedSend = long.MinValue;
 
@@ -374,10 +456,10 @@ namespace Teleop.Eval.JointBench
                 if (t >= nextCommand)
                 {
                     nextCommand += commandInterval;
-                    double[] targets = NextTargets(ref rng, t, from, to, legStart, legEnd, ref gripper);
+                    double[] targets = NextTargets(ref rng, t, from, to, legStart, legEnd, ref gripper, legScale);
                     for (int j = 0; j <= ArmJoints; j++) command[j] = new JointSample(Id(j), (float)targets[j], false);
                     predictor.ObserveCommand(t + profile.BaseDelayTicks, command, 0f);
-                    if (!Lost(ref rng, profile)) uplink.Add((t + Delay(ref rng, profile), t, targets));
+                    if (!Lost(ref rng, profile)) uplink.Add((t + Delay(ref rng, profile) + pipelineTicks, t, targets));
                 }
 
                 // Robot: commands that have arrived, in arrival order; older than the newest taken are dropped.
@@ -402,11 +484,20 @@ namespace Teleop.Eval.JointBench
                 // Robot: pending targets whose cooldown has ended are written then.
                 for (int j = 0; j < ArmJoints; j++) servos[j].Flush(t, relay, minMoveTicks);
 
+                // Robot: the servos follow their setpoints to now.
+                if (response != null)
+                {
+                    for (int j = 0; j < ArmJoints; j++) response[j].Advance(t, servos[j].PositionAt(t));
+                }
+
                 // Robot: sequential feedback reads; a cycle's last read finishes it.
                 while (cycleStart + (nextRead + 1) * readTicks <= t)
                 {
                     long readAt = cycleStart + (nextRead + 1) * readTicks;
-                    reading[nextRead] = (Math.Round(servos[nextRead].PositionAt(readAt)) - ZeroPulse) / PulsesPerRadian;
+                    double position = response == null
+                        ? servos[nextRead].PositionAt(readAt)
+                        : response[nextRead].At(readAt, servos[nextRead].PositionAt(readAt));
+                    reading[nextRead] = (Math.Round(position) - ZeroPulse) / PulsesPerRadian;
                     nextRead++;
                     if (nextRead == ArmJoints)
                     {
@@ -455,13 +546,79 @@ namespace Teleop.Eval.JointBench
                     nextDisplay += displayInterval;
                     for (int j = 0; j < Math.Min(count, ArmJoints); j++)
                     {
-                        double truth = (servos[j].PositionAt(t) - ZeroPulse) / PulsesPerRadian;
+                        double truth = ((response == null ? servos[j].PositionAt(t) : response[j].Now) - ZeroPulse) / PulsesPerRadian;
                         samples.Errors.Add(Math.Abs(predicted[j].Value - truth) * 180.0 / Math.PI);
                     }
                 }
             }
 
+            if (response != null)
+            {
+                foreach (ServoResponse r in response)
+                {
+                    samples.ServoSteps += r.Steps;
+                    samples.ServoCappedSteps += r.CappedSteps;
+                }
+            }
+
             return samples;
+        }
+
+        /// <summary>
+        /// The servo behind one relay output, in pulses: it follows the relay's setpoint through a
+        /// first-order lag and a symmetric speed cap, stepped at the bench's 1 ms step with the setpoint
+        /// sampled at each step's end, which is relay-replay-servo's scheme. A read inside the last step
+        /// takes a partial step from that step's start.
+        /// </summary>
+        private sealed class ServoResponse
+        {
+            private readonly double _lagSeconds;
+            private readonly double _maxPulsesPerSecond;
+            private long _t, _previousT;
+            private double _p, _previousP;
+
+            public long Steps { get; private set; }
+            public long CappedSteps { get; private set; }
+
+            public ServoResponse(double restPulse, double lagSeconds, double maxPulsesPerSecond)
+            {
+                _p = _previousP = restPulse;
+                _lagSeconds = lagSeconds;
+                _maxPulsesPerSecond = maxPulsesPerSecond;
+            }
+
+            /// <summary>Where the servo is as of the last <see cref="Advance"/>.</summary>
+            public double Now => _p;
+
+            public void Advance(long t, double setpoint)
+            {
+                if (t <= _t) return;
+                _previousT = _t;
+                _previousP = _p;
+                _p = Step(_previousP, setpoint, (t - _t) / (double)Tps, out bool capped);
+                _t = t;
+                Steps++;
+                if (capped) CappedSteps++;
+            }
+
+            /// <summary>Where the servo was at <paramref name="when"/>, inside the last step, the setpoint then being <paramref name="setpoint"/>.</summary>
+            public double At(long when, double setpoint)
+            {
+                if (when >= _t) return _p;
+                if (when <= _previousT) return _previousP;
+                return Step(_previousP, setpoint, (when - _previousT) / (double)Tps, out _);
+            }
+
+            private double Step(double p, double c, double dt, out bool capped)
+            {
+                capped = false;
+                double lagged = _lagSeconds > 0 ? c + (p - c) * Math.Exp(-dt / _lagSeconds) : c;
+                if (double.IsPositiveInfinity(_maxPulsesPerSecond)) return lagged;
+                double limit = _maxPulsesPerSecond * dt;
+                double step = lagged - p;
+                capped = step > limit || step < -limit;
+                return step > limit ? p + limit : step < -limit ? p - limit : lagged;
+            }
         }
 
         /// <summary>One servo behind the paced relay: its gate, and the linear move it is in.</summary>
@@ -592,12 +749,13 @@ namespace Teleop.Eval.JointBench
             }
         }
 
-        private static double[] NextTargets(ref SeededRng rng, long t, double[] from, double[] to, long[] legStart, long[] legEnd, ref double gripper)
+        private static double[] NextTargets(ref SeededRng rng, long t, double[] from, double[] to, long[] legStart, long[] legEnd, ref double gripper,
+            double legScale)
         {
             var targets = new double[ArmJoints + 1];
             for (int j = 0; j < ArmJoints; j++)
             {
-                if (t >= legEnd[j]) NewLeg(ref rng, j, t, from, to, legStart, legEnd);
+                if (t >= legEnd[j]) NewLeg(ref rng, j, t, from, to, legStart, legEnd, legScale);
                 double u = (double)(t - legStart[j]) / (legEnd[j] - legStart[j]);
                 targets[j] = from[j] + (to[j] - from[j]) * u;
             }
@@ -615,12 +773,13 @@ namespace Teleop.Eval.JointBench
 
         private static byte Id(int j) => j < ArmJoints ? (byte)(j + 1) : GripperId;
 
-        private static void NewLeg(ref SeededRng rng, int j, long t, double[] from, double[] to, long[] start, long[] end)
+        /// <summary>A new waypoint leg, lasting 0.5–1.5 s times <paramref name="legScale"/>; at 1 the arithmetic is the original's, bit for bit.</summary>
+        private static void NewLeg(ref SeededRng rng, int j, long t, double[] from, double[] to, long[] start, long[] end, double legScale)
         {
             from[j] = to[j];
             to[j] = (rng.NextDouble() * 2 - 1);
             start[j] = t;
-            end[j] = t + (long)((0.5 + rng.NextDouble()) * Tps);
+            end[j] = t + (long)((0.5 + rng.NextDouble()) * legScale * Tps);
         }
 
         private static long Delay(ref SeededRng rng, NetworkProfile p) =>

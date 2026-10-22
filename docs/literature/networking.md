@@ -48,6 +48,7 @@ under conditions Y; only a sweep in `results/` says anything about this codebase
 13. [Searches that found nothing](#13-searches-that-found-nothing)
 14. [Sources that could not be retrieved](#14-sources-that-could-not-be-retrieved)
 15. [What this file argues should change elsewhere](#15-what-this-file-argues-should-change-elsewhere)
+16. [Network-condition predictors: what they output (2026-10-21)](#16-network-condition-predictors-what-they-output-2026-10-21)
 
 ## 1. The delay-versus-loss tradeoff curve — the central object
 
@@ -1716,3 +1717,153 @@ not changes, and none of them is settled by literature alone.
      the same question available to it, and answering it costs one extra column. That would be a
      new metric needing a definition in `docs/metrics.md` in the same change — not a redefinition
      of an existing one.
+
+## 16. Network-condition predictors: what they output (2026-10-21)
+
+Added for docs/adr/0021's amendment (decisions 11 and 12). A separate network model, built later by
+someone else, is to tell the learned joint predictor what the network is doing and is about to do.
+The question here is narrower than this file's: **not** how to set a playout delay, but **in what
+form lightweight predictors report network conditions**, so that the joint predictor's input
+(`trainer/contract/FORECAST_FORMAT.md`) can take what such a model would produce. The classical
+estimators are already in this file and are not repeated:
+- RFC 3550 jitter (§2);
+- NetEQ's quantile of a forgetting histogram (§6);
+- GARCH playout's inverse CDF at 1 − target loss (§4);
+- LEDBAT's base delay plus queuing delay, Copa, and BBR's path model of `max_bw` and `min_rtt` (§8);
+- GCC's delay-gradient trend and its over-use / normal / under-use signal (§8);
+- Sprout's cautious low-percentile forecast (§8).
+
+> **W3C WebRTC Working Group, "Identifiers for WebRTC's Statistics API"**, Candidate Recommendation
+> Draft, 25 September 2025. <https://www.w3.org/TR/webrtc-stats/> (accessed 2026-10-21).
+> *Proposes:* the statistics a shipping real-time stack exposes:
+> - `currentRoundTripTime`, "the latest round trip time measured in seconds";
+> - `jitter` (RFC 3550, seconds) and `fractionLost`;
+> - `jitterBufferDelay`, `jitterBufferTargetDelay` and `jitterBufferMinimumDelay`, the last "purely
+>   based on the network characteristics such as jitter and packet loss";
+> - `availableOutgoingBitrate`, from the congestion controller, in bit/s over a 1 s window.
+>
+> *Claims:* none; a specification.
+> *Conditions:* read in part, the definitions above. It is a working draft.
+> *Transfers as vocabulary.* This is what "lightweight, deployed" looks like: every field is a point
+> estimate of the present, per direction, with no look-ahead and no uncertainty. A forecast format
+> built only from these could say "lag is 300 ms now" but never "lag in 500 ms".
+
+> **Gomes & Wang, "HRRC on the Farm: Quantile Forecasting for Highly-Reliable Remote Control via LEO
+> Networks"**, arXiv:2608.04326 (5 August 2026), accepted for IEEE Globecom 2026.
+> <https://arxiv.org/abs/2608.04326> (accessed 2026-10-21).
+> *Proposes:* a two-layer MLP (256 units each) that takes the reliability level α as an input and
+> returns the α-quantile of the **maximum RTT over the next 1 s**.
+> - Its inputs are 10 s of SINR statistics and derivatives, RTT average, minimum and maximum, and
+>   a queuing delay of latest RTT − window minimum.
+> - It is trained with pinball loss, α drawn from a Beta mixture anchored at 0.9 and 0.99.
+>
+> *Claims:* it meets its reliability target across α ∈ [0.9, 0.99] where uniform-α and
+> unconditional baselines fall short near α = 1. A remote-controlled vehicle using it could drive
+> 19%, 37.6% and 138.6% faster than with the unconditional estimator at α = 0.9, 0.95 and 0.99.
+> *Conditions:* read in full (HTML).
+> - OneWeb traces from Ames, Iowa, to a point of presence in Ashburn, Virginia, February to April
+>   2025, split by month for train, validation and test.
+> - RTT sampled at 71 Hz and SINR at 5 Hz, aggregated to 1 s steps.
+> - A satellite link, not Wi-Fi. No inference cost is reported.
+>
+> *Transfers as a format, and as the closest precedent.* It is a small network that forecasts a
+> tail quantile over a horizon window for remote control, the same use as here. Its output is one
+> quantile of one window at a chosen α. This project's format is the same idea on a grid: several
+> quantiles at several horizons, per direction.
+
+> **Yan, Ayers, Zhu, Fouladi, Hong, Zhang, Levis & Winstein, "Learning in situ: a randomized
+> experiment in video streaming"** (Fugu), USENIX NSDI '20, pp. 495-511.
+> <https://www.usenix.org/conference/nsdi20/presentation/yan> (accessed 2026-10-21).
+> *Proposes:* "a probabilistic predictor of upcoming chunk transmission times", trained "in situ,
+> with data from the real deployment environment", whose output "informs a classical control
+> policy (model predictive control)". The authors limit machine learning "only to making
+> predictions that can be checked soon after".
+> *Claims:* the predictor, not the controller, is where learning paid off (abstract).
+> *Conditions:* **abstract only.** The PDF's text layer could not be extracted here (see §16's
+> retrieval notes). The binned form of the distribution and its horizon are commonly described, but
+> were not read here, and are not asserted.
+> *Transfers as a principle, twice.* First, predict a distribution and let a classical controller
+> act on it. Second, keep the learned part to something checkable soon after. A network forecast
+> qualifies: its truth arrives one round trip later.
+
+> **Meng, Guo, Sun, Wang, Sherry, Liu & Xu, "Achieving consistent low latency for wireless real-time
+> communications with the shortest control loop"** (Zhuge), Proceedings of ACM SIGCOMM 2022.
+> <https://doi.org/10.1145/3544216.3544225> (registered title and authors confirmed at
+> <https://api.crossref.org/works/10.1145/3544216.3544225>, accessed 2026-10-21).
+> *Proposes:* a solution on the Wi-Fi access point alone. Its "Fortune Teller" estimates each packet's
+> wireless latency as it arrives at the access point. A "Feedback Updater" turns that into feedback
+> and sends it straight back to the sender, without waiting behind the congested queue.
+> *Claims:* 17% to 95% less large tail latency and RTC degradation, in trace-driven and real-world
+> evaluation (from the abstract as summarised by a talk listing, <https://talks.cam.ac.uk/talk/index/176612>).
+> *Conditions:* **abstract level only.** The ACM page returned HTTP 403, and LibKey does not index
+> the proceedings.
+> *Transfers as a form.* It is a per-packet delay prediction made where the queue is, for packets
+> already in flight. That is the negative-horizon half of this project's format. It also says where
+> such a model can run: at the bottleneck, not the endpoint. The headset is an endpoint, which is
+> why the format allows the network model to live anywhere that can reach the headset.
+
+> **3GPP TS 23.288, "Architecture enhancements for 5G System (5GS) to support network data analytics
+> services"**, clause 6.9.3, QoS Sustainability output analytics (as shown for Rel-20).
+> <https://itecspec.com/3gpp/23.288/s/6.9.3> (accessed 2026-10-21).
+> *Proposes:* an NWDAF output that, for a future target period, is a **prediction** with these
+> fields:
+> - Applicable Area;
+> - Applicable Time Period;
+> - Crossed Reporting Threshold(s), "the reporting threshold(s) that the statistic or expected QoS
+>   KPI value meets, exceeds, or crosses";
+> - Confidence, whose meaning "is defined by the SLA".
+>
+> *Claims:* none; a specification.
+> *Conditions:* read from a third-party rendering of the clause; the standard's tables themselves
+> were not opened.
+> *Transfers as a special case.* "This threshold will be crossed in this window, with this
+> confidence" is the event form of "there will be lag in 500 ms". A quantile grid over horizons
+> carries it, which is why the format does not need an event type.
+
+> **5G Automotive Association, "5GAA Releases White Paper on Making 5G Proactive and Predictive for
+> the Automotive Industry"**, 8 January 2020.
+> <https://5gaa.org/5gaa-releases-white-paper-on-making-5g-proactive-and-predictive-for-the-automotive-industry/>
+> (accessed 2026-10-21).
+> *Proposes:* predictive QoS, "a mechanism enabling mobile networks to provide advance notifications
+> about predicted QoS changes to interested consumers", so that applications can "adjust application
+> behaviour before the predicted QoS change takes effect". Remote driving is the motivating case.
+> *Claims:* none quantitative.
+> *Conditions:* an announcement page; the white paper itself was not read.
+> *Transfers as the use case:* a network that warns a teleoperation application ahead of time,
+> which is this amendment's premise.
+
+> **Rusek, Suárez-Varela, Almasan, Barlet-Ros & Cabellos-Aparicio, "RouteNet: Leveraging Graph Neural
+> Networks for Network Modeling and Optimization in SDN"**, IEEE JSAC 38(10):2260-2270, October
+> 2020. <https://doi.org/10.1109/JSAC.2020.3000405>; preprint <https://arxiv.org/abs/1910.01508>
+> (accessed 2026-10-21).
+> *Proposes:* a graph neural network that, from topology, routing and offered traffic, estimates
+> "the per-source/destination per-packet delay distribution and loss" (mean delay, jitter, loss).
+> *Claims:* a worst-case mean relative error of 15.4% on topologies, routing and traffic not seen in
+> training.
+> *Conditions:* abstract read; wired, simulated networks per later surveys. It is not lightweight
+> in the headset's sense: it models a whole network from its configuration.
+> *Transfers as a format only.* Several impairments reported together, per path. That is the per
+> direction, per field layout of this project's format.
+
+**What this section changes elsewhere** (an argument, not a change):
+- **Forecasts that drive a controller are distributions, indexed by horizon.** That holds for
+  Sprout's percentile, NetEQ's quantile, GARCH's inverse CDF, HRRC's tail quantile and Fugu's
+  distribution.
+- **Floor plus queue separates propagation from buffering,** as in BBR and LEDBAT.
+- **The 3GPP event notice is a special case of a horizon-indexed quantile grid.**
+
+`trainer/contract/FORECAST_FORMAT.md` is that grid. The format, and the decision to measure the
+benefit against forecasts of known quality before anyone builds the network model, are ADR 0021's
+amendment; this section is only why.
+
+**Searches that found nothing usable (2026-10-21):**
+- `"Wi-Fi latency spike prediction machine learning PHY MAC features real-time applications"`:
+  surveys of ML for 802.11 (arXiv 2109.04786, 2001.04561) cover throughput prediction from PHY
+  features, not latency-spike forecasting.
+- Lumos5G (IMC '20, <https://networking.umn.edu/lumos5g>): its project page does not say whether
+  its throughput prediction is regression or classification, or what horizon it uses. Not used.
+- Schippers, Schüler, Sliwa & Wietfeld, arXiv 2201.11432: predictive QoS for tele-operated driving,
+  but it predicts end-to-end *data rate* from radio environmental maps, not latency.
+
+**Retrieval notes:** the Sprout and Fugu PDFs (USENIX) downloaded, but their text layers could not be
+extracted in this environment (no `pdftotext`); the ACM page for Zhuge returned HTTP 403.

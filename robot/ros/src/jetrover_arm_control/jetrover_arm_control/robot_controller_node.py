@@ -6,6 +6,7 @@ from std_msgs.msg import Bool, Float32, Float32MultiArray, Int32
 
 from jetrover_arm_control.board_manager.robot_board_manager import BoardManager
 from jetrover_arm_control.robot_data.robot_val import RobotVal
+from jetrover_arm_control import session_log
 from jetrover_arm_control.servo_controller.servo_sub_callback import ServoSubscriberCallback
 from jetrover_arm_control.servo_controller.servo_controller import ServoController
 
@@ -40,7 +41,10 @@ class RobotController(Node):
         self.robotData = RobotVal(boardMgr = self.boardMgr)
         # One shared ServoController for both writes (via servoSubManager) and the feedback-poll
         # timer below -- both need the same underlying board connection.
-        self.servoController = ServoController(boardMgr = self.boardMgr)
+        # Recording (teleoperation docs/adr/0021): driver.jlog into whichever session directory the
+        # control file (~/recordings/.active) names, started and stopped without a restart.
+        self.sessionLog = session_log.from_environment()
+        self.servoController = ServoController(boardMgr = self.boardMgr, sessionLog = self.sessionLog)
         self.servoSubManager = ServoSubscriberCallback(servoController = self.servoController)
         self._resetStats(time.monotonic())
         self._lastCycleEnd = None
@@ -132,6 +136,7 @@ class RobotController(Node):
         own StaleTrackedValue is what turns "missing" into "invalid," not this method.
         """
         cycleStart = time.monotonic()
+        cycleStartNs = self.sessionLog.now()
         self._logStats(cycleStart)
         if self._lastCycleEnd is not None:
             self._longestGapMs = max(self._longestGapMs, (cycleStart - self._lastCycleEnd) * 1000.0)
@@ -152,6 +157,7 @@ class RobotController(Node):
 
         self._cycles += 1
         self._lastCycleEnd = time.monotonic()
+        self.sessionLog.record("CY", cycleStartNs, self.sessionLog.now())
         self._slowestCycleMs = max(self._slowestCycleMs, (self._lastCycleEnd - cycleStart) * 1000.0)
 
         msg = Float32MultiArray()
@@ -166,6 +172,7 @@ class RobotController(Node):
         if data is None:
             return
         self._lastBatteryMv = data
+        self.sessionLog.record("BV", self.sessionLog.now(), data)
         msg = Int32()
         msg.data = data
 
@@ -182,6 +189,7 @@ def main():
         robot_controller.get_logger().info("Node interrupted by user keyboard")
     finally:
         robot_controller.get_logger().info("Shutting Down ROS Subscriber Node")
+        robot_controller.sessionLog.close()
         robot_controller.destroy_node()
         rclpy.shutdown()
 

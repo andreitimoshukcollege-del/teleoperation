@@ -75,6 +75,84 @@ namespace Teleop.Core.Types
 
         public float[] SensedAgeSeconds { get; }
 
+        // The servo behind the relay's gate, for relay-replay-servo only: no other predictor reads
+        // these. Every default is a guess until it is fitted from recordings (trainer
+        // `armpred sysid`, docs/adr/0021).
+
+        /// <summary>
+        /// relay-replay-servo only: ADR 0018's guess of the unloaded servo's speed, about the HTD-35H's
+        /// no-load speed (rad/s). A guess until fitted from recordings (trainer <c>armpred sysid</c>,
+        /// docs/adr/0021).
+        /// </summary>
+        public const float DefaultServoMaxSpeedRadPerSec = 5.0f;
+
+        /// <summary>
+        /// relay-replay-servo only: the servo's lag behind its setpoint (s). A guess until fitted from
+        /// recordings (trainer <c>armpred sysid</c>, docs/adr/0021).
+        /// </summary>
+        public const float DefaultServoLagSeconds = 0.02f;
+
+        /// <summary>
+        /// relay-replay-servo only: the time between a command's estimated arrival and the relay offering
+        /// it to a servo (s): RobotHost's loop (about 2.5 ms on average), relay_node's poll (about 10 ms)
+        /// and the driver's cycle (about 10 ms). A guess until fitted from recordings (trainer
+        /// <c>armpred sysid</c>, docs/adr/0021).
+        /// </summary>
+        public const float DefaultServoPipelineDelaySeconds = 0.02f;
+
+        /// <summary>
+        /// relay-replay-servo only: the driver remembers its last pulse, so a servo's first move is sized
+        /// from where it was measured. A guess until checked against recordings (trainer <c>armpred sysid</c>,
+        /// docs/adr/0021).
+        /// </summary>
+        public const bool DefaultServoFirstMoveFromMeasured = true;
+
+        /// <summary>
+        /// relay-replay-servo only: the servo filter's step (s), a tenth of the default lag. A numerical
+        /// choice rather than a property of the servo, and a guess too: whether it is fine enough depends
+        /// on the lag, which is a guess until fitted from recordings (trainer <c>armpred sysid</c>,
+        /// docs/adr/0021).
+        /// </summary>
+        public const float DefaultServoStepSeconds = 0.002f;
+
+        /// <summary>
+        /// relay-replay-servo only: the fastest the servo moves toward the relay's setpoint (rad/s,
+        /// times a scaled joint's <see cref="SpeedScales"/> entry). Positive; +infinity is no cap. The
+        /// default is a guess until fitted from recordings (trainer <c>armpred sysid</c>, docs/adr/0021).
+        /// </summary>
+        public float ServoMaxSpeedRadPerSec { get; }
+
+        /// <summary>
+        /// relay-replay-servo only: the time constant of the servo's first-order lag behind the relay's
+        /// setpoint (s). Zero or positive, finite; zero is no lag. The default is a guess until fitted
+        /// from recordings (trainer <c>armpred sysid</c>, docs/adr/0021).
+        /// </summary>
+        public float ServoLagSeconds { get; }
+
+        /// <summary>
+        /// relay-replay-servo only: how long after its effective time a command reaches the relay's gate
+        /// (s), a delay the host's send + RTT/2 does not see. Zero or positive, finite. The default is a
+        /// guess until fitted from recordings (trainer <c>armpred sysid</c>, docs/adr/0021).
+        /// </summary>
+        public float ServoPipelineDelaySeconds { get; }
+
+        /// <summary>
+        /// relay-replay-servo only: when true, a servo with no target written yet takes its sensed
+        /// measurement as the last target written, so the deadband and the first move's duration are
+        /// measured from it; when false, or with no sensed measurement, the first move lasts the minimum,
+        /// as in relay-replay. Whether the real driver behaves so is a guess until checked against
+        /// recordings (trainer <c>armpred sysid</c>, docs/adr/0021).
+        /// </summary>
+        public bool ServoFirstMoveFromMeasured { get; }
+
+        /// <summary>
+        /// relay-replay-servo only: the step the servo filter is integrated at (s), rounded to whole
+        /// ticks, at least one. Positive, finite. A numerical choice; whether the default is fine enough
+        /// depends on the lag, a guess until fitted from recordings (trainer <c>armpred sysid</c>,
+        /// docs/adr/0021).
+        /// </summary>
+        public float ServoStepSeconds { get; }
+
         public JointPredictorConfig(
             int maxJoints, int commandHistoryCapacity, float maxJointSpeedRadPerSec,
             byte[] instantMotorIds, long maxHorizonTicks, long ticksPerSecond,
@@ -82,8 +160,18 @@ namespace Teleop.Core.Types
             float relayMinMoveSeconds = DefaultRelayMinMoveSeconds,
             float relayDeadbandRad = DefaultRelayDeadbandRad,
             float relayMoveSpeedRadPerSec = DefaultRelayMoveSpeedRadPerSec,
-            byte[]? sensedAgeMotorIds = null, float[]? sensedAgeSeconds = null)
+            byte[]? sensedAgeMotorIds = null, float[]? sensedAgeSeconds = null,
+            float servoMaxSpeedRadPerSec = DefaultServoMaxSpeedRadPerSec,
+            float servoLagSeconds = DefaultServoLagSeconds,
+            float servoPipelineDelaySeconds = DefaultServoPipelineDelaySeconds,
+            bool servoFirstMoveFromMeasured = DefaultServoFirstMoveFromMeasured,
+            float servoStepSeconds = DefaultServoStepSeconds)
         {
+            if (!(servoMaxSpeedRadPerSec > 0f)) throw new System.ArgumentOutOfRangeException(nameof(servoMaxSpeedRadPerSec), "the servo speed must be positive (+infinity is no cap)");
+            if (!(servoLagSeconds >= 0f) || float.IsInfinity(servoLagSeconds)) throw new System.ArgumentOutOfRangeException(nameof(servoLagSeconds), "the servo lag must be zero or positive, and finite");
+            if (!(servoPipelineDelaySeconds >= 0f) || float.IsInfinity(servoPipelineDelaySeconds)) throw new System.ArgumentOutOfRangeException(nameof(servoPipelineDelaySeconds), "the pipeline delay must be zero or positive, and finite");
+            if (!(servoStepSeconds > 0f) || float.IsInfinity(servoStepSeconds)) throw new System.ArgumentOutOfRangeException(nameof(servoStepSeconds), "the servo step must be positive and finite");
+
             sensedAgeMotorIds ??= new byte[0];
             sensedAgeSeconds ??= new float[0];
             if (sensedAgeMotorIds.Length != sensedAgeSeconds.Length) throw new System.ArgumentException("sensedAgeMotorIds and sensedAgeSeconds must be the same length");
@@ -123,6 +211,11 @@ namespace Teleop.Core.Types
             RelayMoveSpeedRadPerSec = relayMoveSpeedRadPerSec;
             SensedAgeMotorIds = (byte[])sensedAgeMotorIds.Clone();
             SensedAgeSeconds = (float[])sensedAgeSeconds.Clone();
+            ServoMaxSpeedRadPerSec = servoMaxSpeedRadPerSec;
+            ServoLagSeconds = servoLagSeconds;
+            ServoPipelineDelaySeconds = servoPipelineDelaySeconds;
+            ServoFirstMoveFromMeasured = servoFirstMoveFromMeasured;
+            ServoStepSeconds = servoStepSeconds;
         }
     }
 }

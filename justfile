@@ -360,6 +360,8 @@ deploy-robothost remote_host=default_jetrover_host remote_user="jetson" operator
     rm -rf "$publish_dir"
     echo "Publishing Teleop.RobotHost for linux-arm64..." >&2
     dotnet publish Teleop.RobotHost -c Release -r linux-arm64 --self-contained false -f net8.0 -o "$publish_dir"
+    # The build every recorded session's session.json names (docs/adr/0021): ~/robothost_current/BUILD_INFO.
+    printf '{"sha": "%s", "dirty": %s}\n' "$(git rev-parse HEAD)" "$([ -n "$(git status --porcelain --untracked-files=no -- .)" ] && echo true || echo false)" > "$publish_dir/BUILD_INFO"
     tar czf "$archive" -C "$publish_dir" .
     echo "Copying to {{remote_user}}@$host:~/${remote_dir}..." >&2
     # scp, unlike ssh, needs an IPv6 literal in brackets to tell the address from the path.
@@ -386,7 +388,8 @@ deploy-robothost remote_host=default_jetrover_host remote_user="jetson" operator
     exec /home/jetson/.dotnet/dotnet /home/jetson/robothost_current/Teleop.RobotHost.dll \
         --local-port 6000 --remote-host {{operator_host}} --remote-port 6001 \
         --relay-socket /tmp/jetrover_relay.sock --local-relay-socket /tmp/teleop_robot_host.sock \
-        --joint-local-port 6002 ${extra_args}
+        --joint-local-port 6002 --record-control /home/jetson/recordings/.active \
+        --uplink-control /home/jetson/recordings/.uplink ${extra_args}
     EOF
     ssh -o StrictHostKeyChecking=accept-new "{{remote_user}}@$host" "
         set -e
@@ -739,12 +742,16 @@ deploy-ros activate="true" remote_host=default_jetrover_host remote_user="jetson
         mkdir -p ~/${remote_dir} && tar xzf /tmp/${remote_dir}.tar.gz -C ~/${remote_dir} && rm -f /tmp/${remote_dir}.tar.gz
         cd ~/${remote_dir} && source /opt/ros/foxy/setup.bash && colcon build 2>&1 | tail -4
         test -f ~/${remote_dir}/install/setup.bash
-        echo '--- the plain-Python tests (relay protocol, stale tracking, servo controller):'
+        echo '--- the plain-Python tests (relay protocol, stale tracking, servo controller, session log):'
         PYTHONPATH=src/teleop_relay:src/jetrover_arm_control python3 -m pytest -q -p no:cacheprovider \
             src/teleop_relay/test/test_relay_protocol.py src/teleop_relay/test/test_stale_tracked_value.py \
-            src/jetrover_arm_control/test/test_servo_controller.py 2>&1 | tail -6
+            src/jetrover_arm_control/test/test_servo_controller.py \
+            src/jetrover_arm_control/test/test_session_log.py 2>&1 | tail -6
         exit \${PIPESTATUS[0]}
     "
+    # The build every recorded session's session.json names (docs/adr/0021): ~/teleop_ros_current/BUILD_INFO.
+    printf '{"sha": "%s", "dirty": %s}\n' "$(git rev-parse HEAD)" "$([ -n "$(git status --porcelain --untracked-files=no -- robot/ros)" ] && echo true || echo false)" \
+        | ssh -o StrictHostKeyChecking=accept-new "$target" "cat > ~/${remote_dir}/BUILD_INFO"
     if [ "{{activate}}" != "true" ]; then
         echo "Built ~/${remote_dir}; nothing running was changed. Activate it with: just deploy-ros"
         exit 0
@@ -1217,6 +1224,301 @@ report run_dir: _analysis-venv
     cd analysis
     PY=$([ -f .venv/Scripts/python.exe ] && echo .venv/Scripts/python.exe || echo .venv/bin/python)
     "$PY" -m teleop_analysis.cli ../{{run_dir}}
+
+# ---- trainer/ (docs/adr/0021: the learned joint predictor's trainer, packed to one file) ----
+
+# Internal: the trainer's local python (CPU), same host detection as analysis-setup
+_trainer-python:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cd trainer
+    for py in .venv-win/Scripts/python.exe .venv/bin/python; do
+        if [ -f "$py" ] && "$py" -c "import numpy, pytest" 2>/dev/null; then echo "trainer/$py"; exit 0; fi
+    done
+    echo "error: no trainer venv -- run 'just trainer-setup' (add torch=true to also train and export locally)" >&2
+    exit 1
+
+# Simulated pretraining on this machine's GPU, straight from the repo (Linux; docs/adr/0021): the first time, trainer/setup.sh builds trainer/.venv with the torch build this NVIDIA driver needs and runs the selftest; then armpred sim-pretrain. config: smoke, medium or sim-pretrain. The run goes to trainer/runs/<name> (gitignored); re-running the same name reuses what it already simulated and built. Extra args pass through, e.g. `just train-sim sim-pretrain sim1 --skip-eval`
+[group('trainer')]
+train-sim config="sim-pretrain" name="" *args:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cd trainer
+    [ -f "configs/{{config}}.toml" ] || { echo "error: no trainer/configs/{{config}}.toml" >&2; exit 1; }
+    if [ ! -x .venv/bin/armpred ]; then ./setup.sh; fi
+    name="{{name}}"
+    if [ -z "$name" ]; then name="{{config}}-$(git rev-parse --short HEAD)"; fi
+    echo "run: trainer/runs/$name (log: trainer/runs/$name/log.txt)"
+    .venv/bin/armpred sim-pretrain --config "configs/{{config}}.toml" --out "runs/$name" {{args}}
+
+# One-time local trainer venv, CPU only: the contract, the checker, the simulator and the tests (torch=true adds the CPU torch build, for smoke training and export). GPU machines use trainer/setup.sh from the packed file instead
+[group('trainer')]
+trainer-setup torch="false":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cd trainer
+    WIN_PY=/mnt/c/Users/andre/AppData/Local/Microsoft/WindowsApps/python.exe
+    if [ -f "$WIN_PY" ]; then
+        "$WIN_PY" -m venv .venv-win
+        PY=./.venv-win/Scripts/python.exe
+    else
+        python3 -m venv .venv || { echo "python3 -m venv failed: sudo apt install python3-venv" >&2; exit 1; }
+        PY=./.venv/bin/python
+    fi
+    "$PY" -m pip install --quiet -r requirements.txt
+    if [ "{{torch}}" = "true" ]; then
+        "$PY" -m pip install --quiet torch==2.14.1 --index-url https://download.pytorch.org/whl/cpu
+    fi
+    "$PY" -c "import numpy; print('trainer venv ready, numpy', numpy.__version__)"
+
+# The trainer's tests (the golden-file checks of its copies of Core included). Needs `just trainer-setup`
+[group('checks')]
+trainer-test:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    PY=$(just _trainer-python)
+    cd trainer
+    "../$PY" -m pytest -q -p no:cacheprovider
+
+# Regenerate trainer/contract/golden from Core (after changing SeededRng, the impairments, the profile catalog, ClockSync or relay-replay); then fix the trainer's copies until `just trainer-test` passes
+[group('trainer')]
+gen-trainer-golden:
+    cd core && dotnet run --project Teleop.Eval -- gen-trainer-golden
+
+# Pack trainer/ into the one file the GPU machine needs: dist/armpred-<sha>.tar.gz, with a VERSION file naming the commit (and whether the tree was dirty). Unpack it there and run ./setup.sh (trainer/README.md)
+[group('trainer')]
+pack-trainer:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    sha=$(git rev-parse HEAD)
+    dirty=false
+    if [ -n "$(git status --porcelain -- trainer)" ]; then dirty=true; echo "warning: trainer/ has uncommitted changes; VERSION records dirty=true" >&2; fi
+    stage=$(mktemp -d)
+    trap 'rm -rf "$stage"' EXIT
+    mkdir -p "$stage/armpred" dist
+    (cd trainer && tar cf - --exclude='__pycache__' --exclude='*.pyc' \
+        armpred contract configs tests slurm pyproject.toml requirements.txt setup.sh README.md CLAUDE.md) \
+        | (cd "$stage/armpred" && tar xf -)
+    printf '{"sha": "%s", "dirty": %s, "source": "pack-trainer", "packedUtc": "%s"}\n' "$sha" "$dirty" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$stage/armpred/VERSION"
+    suffix=""; if [ "$dirty" = true ]; then suffix="-dirty"; fi
+    out="dist/armpred-${sha:0:12}${suffix}.tar.gz"
+    tar czf "$out" -C "$stage" armpred
+    echo "$out ($(du -h "$out" | cut -f1))"
+
+# ---- recording sessions for the trainer (docs/adr/0021; trainer/contract/SESSION_FORMAT.md) ----
+
+robot_recordings := "/home/jetson/recordings"
+
+# Start recording on the robot -- moves nothing. Writes session.json (the conditions describe the session for splits and stratification, never the model's inputs) and the control file RobotHost and the driver both watch, then checks both logs are growing. load: none, payload or hand; slider: rad/s or varied; network: the robot-side uplink profile, lan for none, or schedule:<profile>@<s>;... for one that changes mid-session (just uplink-schedule)
+[group('robot: recording (docs/adr/0021)')]
+record-start label slider load="none" payload_g="0" network="lan" added_delay_ms="0" motion="teleop" operator="A" notes="" remote_host=default_jetrover_host remote_user="jetson":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    case "{{load}}" in none|payload|hand) ;; *) echo "error: load must be none, payload or hand" >&2; exit 1 ;; esac
+    case "{{label}}" in *[!A-Za-z0-9._-]*) echo "error: label may hold only letters, digits, . _ -" >&2; exit 1 ;; esac
+    host=$(just _robot-host "{{remote_host}}")
+    target="{{remote_user}}@$host"
+    id="$(date -u +%Y%m%dT%H%M%SZ)-{{label}}"
+    dir="{{robot_recordings}}/jetrover/$id"
+    if ssh -o StrictHostKeyChecking=accept-new "$target" "test -s {{robot_recordings}}/.active"; then
+        echo "error: a session is already recording ($(ssh "$target" cat {{robot_recordings}}/.active)) -- just record-stop first" >&2
+        exit 1
+    fi
+    builds=$(ssh "$target" "cat ~/robothost_current/BUILD_INFO 2>/dev/null || echo '{}'; cat ~/teleop_ros_current/BUILD_INFO 2>/dev/null || echo '{}'")
+    meta=$(BUILDS="$builds" python3 - "$id" "{{label}}" "{{slider}}" "{{load}}" "{{payload_g}}" "{{network}}" "{{added_delay_ms}}" "{{motion}}" "{{operator}}" "{{notes}}" "$(sha256sum core/RobotProfiles/jetrover.json | cut -d' ' -f1)" <<'PY'
+    import datetime, json, os, sys
+    sid, label, slider, load, grams, network, added, motion, operator, notes, profile_sha = sys.argv[1:]
+    lines = [l for l in os.environ["BUILDS"].splitlines() if l.strip()]
+    builds = [json.loads(l) for l in lines] + [{}, {}]
+    uplink = {"uplinkProfile": network, "uplinkSeed": 0, "addedDelayMs": float(added)}
+    if network.startswith("schedule:"):
+        uplink.update({"uplinkProfile": "schedule", "uplinkSchedule": network[len("schedule:"):], "uplinkSeed": 1})
+    print(json.dumps({
+        "format": "jetrover-session", "version": 1, "id": sid, "source": "robot", "label": label,
+        "startedUtc": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "conditions": {
+            "speedSliderRadPerSec": slider if slider == "varied" else float(slider),
+            "load": {"kind": load, "payloadGrams": float(grams)},
+            "network": uplink,
+            "motion": motion, "operator": operator,
+        },
+        "builds": {"robothost": builds[0], "driver": builds[1]},
+        "robotProfileSha256": profile_sha, "notes": notes,
+    }, indent=2))
+    PY
+    )
+    ssh "$target" "mkdir -p $dir && cat > $dir/session.json" <<< "$meta"
+    scp -q core/RobotProfiles/jetrover.json "$target:$dir/robot-profile.json"
+    ssh "$target" "printf '%s\n' $dir > {{robot_recordings}}/.active"
+    sleep 2.5
+    sizes=$(ssh "$target" "stat -c '%n %s' $dir/robothost.jlog $dir/driver.jlog 2>&1 || true")
+    echo "$sizes"
+    ok=true
+    case "$sizes" in *"robothost.jlog"*" 0"|*"robothost.jlog'"*|*"No such file"*robothost*) echo "warning: RobotHost is not recording -- redeploy it (just deploy-robothost) so it runs with --record-control" >&2; ok=false ;; esac
+    case "$sizes" in *"driver.jlog'"*|*"No such file"*driver*) echo "warning: the driver is not recording -- just deploy-ros (someone watching: it restarts the servo driver)" >&2; ok=false ;; esac
+    $ok || exit 1
+    network='{{network}}'
+    if [ "${network#schedule:}" != "$network" ]; then
+        # A schedule starts once the logs are open, so robothost.jlog records every change (UP).
+        just uplink-schedule "${network#schedule:}" 1 "{{remote_host}}" "{{remote_user}}"
+    elif [ "$network" != "lan" ] && [ "$network" != "none" ]; then
+        # The uplink changes once the logs are open, so robothost.jlog records the change (UP).
+        just uplink-impair "$network" 1 "{{remote_host}}" "{{remote_user}}"
+    fi
+    echo "recording $id"
+
+# Stop the robot's recording -- moves nothing. Removes the control file, waits for both logs' END trailers, stamps stoppedUtc and writes files.sha256
+[group('robot: recording (docs/adr/0021)')]
+record-stop remote_host=default_jetrover_host remote_user="jetson":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    target="{{remote_user}}@$(just _robot-host "{{remote_host}}")"
+    ssh "$target" 'bash -s' <<'SH'
+    set -euo pipefail
+    control={{robot_recordings}}/.active
+    [ -s "$control" ] || { echo "nothing is recording" >&2; exit 1; }
+    if [ -e {{robot_recordings}}/.uplink ]; then rm -f {{robot_recordings}}/.uplink; sleep 1; fi
+    dir=$(cat "$control"); rm -f "$control"
+    for i in $(seq 1 60); do
+        done=true
+        for f in robothost driver; do tail -n 1 "$dir/$f.jlog" 2>/dev/null | grep -q '^END|' || done=false; done
+        $done && break; sleep 0.25
+    done
+    python3 - "$dir" <<'PY'
+    import datetime, json, sys
+    path = sys.argv[1] + "/session.json"
+    meta = json.load(open(path))
+    meta["stoppedUtc"] = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    json.dump(meta, open(path, "w"), indent=2)
+    PY
+    cd "$dir" && sha256sum session.json robot-profile.json *.jlog > files.sha256
+    for f in *.jlog; do printf '%-16s %s\n' "$f" "$(tail -n 1 "$f")"; done
+    echo "stopped $(basename "$dir")"
+    SH
+
+# Impair the robot's uplink: joint commands reach the arm through a Core network profile (e.g. `just uplink-impair 150ms-20j-0.5loss`), or `none` to stop. The arm then really receives late and lossy commands, so someone watches. RobotHost must have been deployed with --uplink-control (just deploy-robothost)
+[group('robot: recording (docs/adr/0021)')]
+uplink-impair profile seed="1" remote_host=default_jetrover_host remote_user="jetson":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    target="{{remote_user}}@$(just _robot-host "{{remote_host}}")"
+    if [ "{{profile}}" = "none" ] || [ "{{profile}}" = "lan" ]; then
+        ssh "$target" "rm -f {{robot_recordings}}/.uplink"
+    else
+        ssh "$target" "mkdir -p {{robot_recordings}} && printf '%s %s\n' '{{profile}}' '{{seed}}' > {{robot_recordings}}/.uplink"
+    fi
+    sleep 1
+    ssh "$target" "journalctl -u teleop-robothost --no-pager -n 20 | grep '\[uplink\]' | tail -2" || true
+
+# Impair the robot's uplink on a schedule that changes by itself (docs/adr/0021 decision 13), e.g. `just uplink-schedule "lan@0;150ms-20j-0.5loss@45;lan@90;50ms-5j@135"`: Core profiles from offsets in seconds, switched by RobotHost on time (what a profile held still arrives), each switch logged as UP. The arm then really receives late and lossy commands, so someone watches. `just uplink-impair none` stops it. RobotHost must have been deployed with --uplink-control (just deploy-robothost)
+[group('robot: recording (docs/adr/0021)')]
+uplink-schedule spec seed="1" remote_host=default_jetrover_host remote_user="jetson":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    case '{{spec}}' in *[!A-Za-z0-9.@\;_-]*|"") echo "error: spec is <profile>@<seconds>;... (named Core profiles)" >&2; exit 1 ;; esac
+    case '{{seed}}' in *[!0-9]*|"") echo "error: seed is a whole number" >&2; exit 1 ;; esac
+    target="{{remote_user}}@$(just _robot-host "{{remote_host}}")"
+    ssh "$target" "mkdir -p {{robot_recordings}} && printf '%s %s %s\n' schedule '{{seed}}' '{{spec}}' > {{robot_recordings}}/.uplink"
+    sleep 1
+    ssh "$target" "journalctl -u teleop-robothost --no-pager -n 20 | grep '\[uplink\]' | tail -3" || true
+
+# Mark a moment in the running session (e.g. `just record-mark "payload on"`) -- moves nothing. Written over SSH on the Jetson's own clock: anything sending on UDP 6002 would steal the joint-state stream
+[group('robot: recording (docs/adr/0021)')]
+record-mark text remote_host=default_jetrover_host remote_user="jetson":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    target="{{remote_user}}@$(just _robot-host "{{remote_host}}")"
+    ssh "$target" "python3 - '{{text}}'" <<'PY'
+    import hashlib, os, sys, time
+    text = sys.argv[1].replace("|", "/").replace("\n", " ")
+    now = time.monotonic_ns()
+    control = "{{robot_recordings}}/.active"
+    directory = open(control).read().strip() if os.path.exists(control) else ""
+    if not directory:
+        sys.exit("nothing is recording")
+    path = os.path.join(directory, "marks.jlog")
+    lines = []
+    if os.path.exists(path):
+        lines = open(path).read().splitlines()[:-1]  # drop the trailer; it is rewritten below
+    else:
+        lines = ["JSES|1|marks|1000000000|CLOCK_MONOTONIC|" + os.path.basename(directory.rstrip("/"))]
+    lines.append("MK|%d|%s" % (now, text))
+    body = "".join(l + "\n" for l in lines).encode("ascii")
+    with open(path + ".tmp", "wb") as f:
+        f.write(body + ("END|%d|0|%s\n" % (len(lines) - 1, hashlib.sha256(body).hexdigest())).encode("ascii"))
+    os.replace(path + ".tmp", path)
+    print("marked:", text)
+    PY
+
+# List the sessions on the robot, their sizes, and whether each log was closed -- moves nothing
+[group('robot: recording (docs/adr/0021)')]
+robot-recordings remote_host=default_jetrover_host remote_user="jetson":
+    ssh -o StrictHostKeyChecking=accept-new "{{remote_user}}@$(just _robot-host "{{remote_host}}")" \
+        'echo "recording now: $(cat {{robot_recordings}}/.active 2>/dev/null || echo nothing)"; \
+         for d in {{robot_recordings}}/jetrover/*/; do [ -d "$d" ] || continue; \
+           closed=$(for f in "$d"*.jlog; do tail -n 1 "$f" | grep -q "^END|" && echo -n "+" || echo -n "-"; done); \
+           printf "%-60s %6s  logs closed: %s\n" "$(basename "$d")" "$(du -sh "$d" | cut -f1)" "$closed"; done; \
+         df -h {{robot_recordings}} | tail -1'
+
+# Copy new sessions from the robot into recordings/jetrover/ (gitignored; archive them to a GitHub Release), never overwriting one already here, then check each new one
+[group('robot: recording (docs/adr/0021)')]
+fetch-recordings remote_host=default_jetrover_host remote_user="jetson":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    host=$(just _robot-host "{{remote_host}}")
+    mkdir -p recordings/jetrover
+    before=$(ls recordings/jetrover)
+    rsync -a --ignore-existing -e "ssh -o StrictHostKeyChecking=accept-new" "{{remote_user}}@$host:{{robot_recordings}}/jetrover/" recordings/jetrover/
+    new=$(comm -13 <(echo "$before" | sort) <(ls recordings/jetrover | sort) || true)
+    if [ -z "$new" ]; then echo "nothing new"; exit 0; fi
+    echo "fetched: $new"
+    just recording-check $(for s in $new; do echo "recordings/jetrover/$s"; done)
+
+# Is a recorded session fit to train or test on? Exits non-zero on drops, a missing trailer, clock-causality failures or read gaps over 500 ms (allow_gaps=true keeps gaps, annotated). Writes check.json into each session
+[group('robot: recording (docs/adr/0021)')]
+recording-check +sessions:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    PY=$(just _trainer-python)
+    cd trainer
+    args=()
+    for s in {{sessions}}; do case "$s" in allow_gaps=true) args+=(--allow-read-gaps) ;; /*) args+=("$s") ;; *) args+=("../$s") ;; esac; done
+    "../$PY" -m armpred check-session --json "${args[@]}"
+
+# Prove RobotHost and the driver stamp their logs on one clock -- moves nothing. RobotHost (--clock-echo) answers Stopwatch readings that must fall between CLOCK_MONOTONIC reads taken just before and after each question
+[group('robot: recording (docs/adr/0021)')]
+jetson-clock-check remote_host=default_jetrover_host remote_user="jetson":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    ssh -o StrictHostKeyChecking=accept-new "{{remote_user}}@$(just _robot-host "{{remote_host}}")" "python3 -" <<'PY'
+    import subprocess, sys, time
+    p = subprocess.Popen(["/home/jetson/.dotnet/dotnet", "/home/jetson/robothost_current/Teleop.RobotHost.dll", "--clock-echo"],
+                         stdin=subprocess.PIPE, stdout=subprocess.PIPE, universal_newlines=True, bufsize=1)
+    print("python:", time.get_clock_info("monotonic"))
+    worst, bad = 0, 0
+    for i in range(50):
+        before = time.monotonic_ns(); p.stdin.write("t\n"); p.stdin.flush()
+        ticks, freq = (int(x) for x in p.stdout.readline().split()); after = time.monotonic_ns()
+        ns = ticks * 1000000000 // freq
+        if not before <= ns <= after: bad += 1
+        worst = max(worst, after - before)
+    p.stdin.close(); p.wait()
+    print("Stopwatch frequency %d; %d of 50 readings outside their bracket; widest bracket %.3f ms" % (freq, bad, worst / 1e6))
+    sys.exit("FAIL: RobotHost and the driver are not on the same clock" if bad else 0)
+    PY
+
+# Pack checked sessions into the one file the trainer needs: dist/jetrover-data-<UTC>.tar, with an index, the robot profile and this commit (the format: trainer/armpred/contract/bundle.py). Refuses a session whose check.json is missing or failed (run just recording-check first)
+[group('robot: recording (docs/adr/0021)')]
+pack-dataset +sessions:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    PY=$(just _trainer-python)
+    mkdir -p dist
+    out="dist/jetrover-data-$(date -u +%Y%m%dT%H%M%SZ).tar"
+    args=()
+    for s in {{sessions}}; do case "$s" in /*) args+=("$s") ;; *) args+=("../$s") ;; esac; done
+    cd trainer
+    "../$PY" -m armpred pack-dataset --out "../$out" --profile ../core/RobotProfiles/jetrover.json --repo-sha "$(git rev-parse HEAD)" "${args[@]}"
 
 # ---- everything ----
 

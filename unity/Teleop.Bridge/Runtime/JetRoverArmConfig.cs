@@ -152,9 +152,20 @@ namespace Teleop.Bridge
         // paced servo writes; servo-replay assumed every command is obeyed at once and snapped back on
         // each fresh reading (core/Teleop.Core/Prediction/CLAUDE.md has the benchmark); hold-last is
         // no prediction. JointModelSpeedRadPerSec is servo-replay's servo speed, rad/s. The prediction
-        // horizon is capped by MaxHorizonMs above.
+        // horizon is capped by MaxHorizonMs above. relay-replay-servo (docs/adr/0021 decision 15) is
+        // relay-replay with a servo behind the gate (the JointServo* fields below); it is not the
+        // default until it has beaten relay-replay on recordings.
         public string JointPredictorName = "relay-replay";
         public float JointModelSpeedRadPerSec = 6f;
+
+        // relay-replay-servo's servo: a speed cap (rad/s), a first-order lag, a fixed pipeline delay
+        // from RobotHost's socket to the driver's gate, and each servo's first move sized from its
+        // measurement. Core's defaults, which are guesses until `armpred sysid` fits them from
+        // recordings (its prior.json, relayReplayServo); only relay-replay-servo reads them.
+        public float JointServoMaxSpeedRadPerSec = 5f;
+        public float JointServoLagMs = 20f;
+        public float JointServoPipelineDelayMs = 20f;
+        public bool JointServoFirstMoveFromMeasured = true;
 
         // How much older than its frame's stamp each motor's reading is, ms, for relay-replay. The
         // robot reads motors 1-5 one after another, about 10 ms each, and RobotHost stamps the frame

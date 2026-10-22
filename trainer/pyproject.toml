@@ -1,0 +1,26 @@
+[project]
+name = "armpred"
+version = "0.1.0"
+description = "JetRover arm-state prediction: simulator, network synthesis, training and ONNX export (docs/adr/0021). Self-contained: imports nothing from the teleoperation repo."
+requires-python = ">=3.11"
+# The contract module and the session checker need numpy only, so `just recording-check` runs
+# without torch. Training needs the [train] extra; setup.sh installs the right torch build.
+dependencies = ["numpy>=1.26"]
+
+[project.optional-dependencies]
+train = ["torch>=2.7", "onnx>=1.16", "onnxruntime>=1.18"]
+dev = ["pytest>=8"]
+
+[project.scripts]
+armpred = "armpred.cli:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["armpred*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]

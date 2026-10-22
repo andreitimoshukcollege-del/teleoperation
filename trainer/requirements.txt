@@ -1,0 +1,8 @@
+# Pinned, so a run on the 5090 and a run on the H200 cluster use the same libraries.
+# torch is NOT here: setup.sh installs the build that matches the machine's driver
+# (CUDA 13.0: torch 2.14.1+cu130; CUDA 12.8-12.9: torch 2.11.0+cu128, which still has the
+# Blackwell sm_120 kernels a 5090 needs; no GPU: the CPU build).
+numpy==2.4.6
+onnx==1.23.2
+onnxruntime==1.31.0
+pytest==9.1.1

@@ -196,14 +196,8 @@ disagree, and you will trust the wrong one.
 
 ## Model training
 
-- Training data comes from committed or archived `.tlog` recordings, loaded via
-  `teleop_analysis/tlog.py` — which must stay compatible with `Recording/RecordFormat.cs`.
-  If the format version bumps, update the loader in the same PR.
-- Export to ONNX with a fixed opset and static shapes. Dynamic shapes are a problem for
-  on-device inference.
-- Verify parity after export: the ONNX model and the training-framework model must agree to
-  tolerance on a held-out batch. Log the tolerance actually achieved.
-- Only commit a model when a result depends on it. Checkpoints stay out of git — binary
-  weights don't delta-compress and every retrain adds a permanent full copy.
-- A model is not a result until `Teleop.Eval` has scored it through `SequenceModelPredictor`
-  against the same traces as the analytic baselines. Held-out loss is not a result.
+Not here. Training, the arm simulator and ONNX export live in `trainer/`, which is
+self-contained and packed to one file for the GPU machine (docs/adr/0021). Its rules, including
+the ONNX export and parity rules this section used to hold, are in `trainer/CLAUDE.md`. A model
+is still not a result until `Teleop.Eval` has scored it against the same data as the analytic
+baselines; held-out loss is not a result.

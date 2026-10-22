@@ -37,6 +37,12 @@ analysis/training/checkpoints/
 *.pt
 *.pth
 
+# The trainer (docs/adr/0021): its runs and environment stay on the machine that made them, and
+# `just pack-trainer` / `just pack-dataset` write their one-file outputs to dist/.
+trainer/runs/
+trainer/.venv*/
+dist/
+
 # OS
 .DS_Store
 Thumbs.db

@@ -1,0 +1,9 @@
+# The ablation grid on one prepared dataset (ADR 0021): every combination is one Slurm array task.
+# `armpred grid --grid configs/grid.toml --list` prints them. The speed-aware model needs its own
+# prepared data (its window has one more input), so it is a second prepare, not an axis here.
+# Forecast quality is not an axis either: every run's evaluation sweeps all the levels (ADR 0021
+# decision 12), and the forecast-blind model is a prepare with [forecast] level = "absent".
+[axes]
+"train.arch" = ["mlp", "conv"]
+"train.consistency" = [0.0, 0.25, 1.0]
+"train.seed" = [1, 2, 3, 4, 5]

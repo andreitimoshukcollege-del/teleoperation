@@ -2,10 +2,9 @@
 name: analyst
 description: >
   Use for Python analysis of experiment output: loading results/*/metrics.csv, statistics,
-  plots and figures, training sequence models on .tlog recordings, and exporting ONNX for
-  on-device inference. Use PROACTIVELY when the user asks for a plot, a figure, a statistical
-  comparison, a distribution, or model training. Works only in analysis/ and never touches
-  C# source.
+  plots and figures. Use PROACTIVELY when the user asks for a plot, a figure, a statistical
+  comparison, or a distribution. Model training is NOT this agent's job: it lives in trainer/
+  (docs/adr/0021). Works only in analysis/ and never touches C# source.
 tools: Read, Write, Edit, Glob, Grep, Bash
 model: sonnet
 ---
@@ -34,15 +33,11 @@ You may edit: `analysis/**`. You may read: everything. You may not edit: `core/`
 
 ## Model training
 
-- Load recordings via `teleop_analysis/tlog.py`, which must stay in sync with
-  `core/Teleop.Core/Recording/RecordFormat.cs`. If the format version changed, say so instead
-  of guessing at the layout.
-- Export ONNX with a fixed opset and static shapes; dynamic shapes are a problem on device.
-- Verify parity after export against a held-out batch and report the tolerance achieved.
-- A trained model is **not a result** until `Teleop.Eval` has scored it through
-  `SequenceModelPredictor` against the same traces as the analytic baselines. Held-out loss is
-  not a result. Say this plainly if asked to report training metrics as an outcome.
-- Do not commit checkpoints. Only commit a model a published result depends on.
+Not in `analysis/`. Training, the simulator and ONNX export live in `trainer/` (docs/adr/0021),
+which has its own `CLAUDE.md`. If asked to train a model, say so and stop. A trained model is
+**not a result** until `Teleop.Eval` has scored it against the same data as the analytic
+baselines; held-out loss is not a result. Say this plainly if asked to report training metrics as
+an outcome.
 
 ## Reporting
 

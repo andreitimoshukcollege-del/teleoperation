@@ -79,7 +79,11 @@ namespace Teleop.Bridge
 
         public JetRoverJointStateLink(UdpTransport transport, ITimeAuthority clock, in RobotArmProfile profile,
             ClockSyncConfig clockSyncConfig, string predictorName, float maxJointSpeedRadPerSec, double maxHorizonMs,
-            float gripperFractionPerRadian = 0.358f, byte[] sensedAgeMotorIds = null, float[] sensedAgeSeconds = null)
+            float gripperFractionPerRadian = 0.358f, byte[] sensedAgeMotorIds = null, float[] sensedAgeSeconds = null,
+            float servoMaxSpeedRadPerSec = JointPredictorConfig.DefaultServoMaxSpeedRadPerSec,
+            float servoLagSeconds = JointPredictorConfig.DefaultServoLagSeconds,
+            float servoPipelineDelaySeconds = JointPredictorConfig.DefaultServoPipelineDelaySeconds,
+            bool servoFirstMoveFromMeasured = JointPredictorConfig.DefaultServoFirstMoveFromMeasured)
         {
             _transport = transport ?? throw new ArgumentNullException(nameof(transport));
             _clock = clock ?? throw new ArgumentNullException(nameof(clock));
@@ -101,7 +105,10 @@ namespace Teleop.Bridge
                 // (a 0..1 fraction): fraction per radian of servo travel.
                 scaledMotorIds: GripperIds(profile), speedScales: Repeat(gripperFractionPerRadian, GripperIds(profile).Length),
                 // How much older than the frame's stamp each motor's reading is (relay-replay only).
-                sensedAgeMotorIds: sensedAgeMotorIds, sensedAgeSeconds: sensedAgeSeconds));
+                sensedAgeMotorIds: sensedAgeMotorIds, sensedAgeSeconds: sensedAgeSeconds,
+                // relay-replay-servo's servo (docs/adr/0021 decision 15); the others ignore it.
+                servoMaxSpeedRadPerSec: servoMaxSpeedRadPerSec, servoLagSeconds: servoLagSeconds,
+                servoPipelineDelaySeconds: servoPipelineDelaySeconds, servoFirstMoveFromMeasured: servoFirstMoveFromMeasured));
         }
 
         /// <summary>Sends a keepalive when one is due, and takes in every frame that has arrived.</summary>

@@ -1,0 +1,57 @@
+# Pretraining on the simulator (docs/adr/0021, Track A step T7). On a 5090 this is a few hours, most
+# of it CPU simulation; the H200 array runs the ablation grid (slurm/train-array.sbatch).
+# The sim's servo ranges (armpred/sim/params.py SimRanges) are wide guesses until `sysid` narrows
+# them on the pilot recordings; override any of them in a [ranges] table.
+seed = 1
+views_per_session = 8
+val_views = 2
+
+[matrix]
+sliders = [1.0, 2.5, 3.8, 6.0, "varied"]
+loads = ["none", "payload-light", "payload-heavy", "hand"]
+sessions_per_cell = 8
+test_sessions_per_cell = 2
+minutes = 10.0
+# ADR 0021 decision 13: half the sessions' physical uplink changes mid-session (random schedules for
+# training, the named TEST_UPLINK_CYCLE for test), so a network forecast has something to tell.
+uplink_schedule_share = 0.5
+test_uplink_schedule_share = 0.5
+uplink_impaired_share = 0.0
+val_share = 0.15
+
+# The network forecast each view is built at (ADR 0021 decision 12). Without this table, every view
+# draws a level from the decision's mixture; `level = "absent"` trains the forecast-blind model.
+# [forecast]
+# level = "absent"
+# [forecast.mixture]
+# oracle = 0.10
+# good = 0.20
+# fair = 0.20
+# poor = 0.15
+# persistence = 0.15
+# "rtt-half" = 0.10
+# absent = 0.10
+
+[sample]
+queries_per_s = 20.0
+event_share = 0.25
+pair_share = 0.2
+delta_max_ms = 60.0
+
+[train]
+arch = "mlp"
+aware = false
+steps = 150000
+batch = 8192
+lr = 2e-3
+lr_min = 2e-5
+warmup = 2000
+weight_decay = 0.01
+clip = 1.0
+ema = 0.999
+huber_deg = 0.3
+nll_weight = 0.1
+consistency = 0.0
+forecast_dropout = 0.1
+val_every = 2000
+seed = 1

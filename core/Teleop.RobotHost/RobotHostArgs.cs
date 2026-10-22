@@ -58,10 +58,27 @@ namespace Teleop.RobotHost
         /// </summary>
         public readonly string? ProfilePath;
 
+        /// <summary>
+        /// The recording control file (docs/adr/0021): while it exists, RobotHost writes
+        /// <c>robothost.jlog</c> into the session directory it names. Null (the default) never records.
+        /// <c>just deploy-robothost</c> passes <c>~/recordings/.active</c>; <c>just record-start</c> and
+        /// <c>record-stop</c> write and remove it, so recording needs no restart.
+        /// </summary>
+        public readonly string? RecordControlPath;
+
+        /// <summary>
+        /// The uplink control file (docs/adr/0021): while it holds <c>profile seed</c>, joint commands and
+        /// keepalives pass through that Core network profile on their way to the plant
+        /// (<see cref="Net.UplinkImpairedReceiver"/>). Absent, or <c>none</c>, impairs nothing. Null (the
+        /// default) never impairs. <c>just uplink-impair</c> writes it.
+        /// </summary>
+        public readonly string? UplinkControlPath;
+
         public const string Usage =
             "Usage: Teleop.RobotHost --local-port <port> [--remote-host <ip> --remote-port <port>] " +
             "[--reply-to sender|fixed] --relay-socket <path> --local-relay-socket <path> " +
-            "[--max-direction-magnitude <n>] [--pulses-per-second <n>] [--joint-local-port <port>] [--profile-path <path>]\n" +
+            "[--max-direction-magnitude <n>] [--pulses-per-second <n>] [--joint-local-port <port>] [--profile-path <path>] " +
+            "[--record-control <path>] [--uplink-control <path>]\n" +
             "  --reply-to sender (default) replies to wherever the latest command came from;\n" +
             "  --remote-host/--remote-port are then only the target before the first command.\n" +
             "  --reply-to fixed always replies to --remote-host:--remote-port, which it requires.\n" +
@@ -78,12 +95,18 @@ namespace Teleop.RobotHost
             "  the robot's topology and per-joint safety limits -- see\n" +
             "  docs/adr/0011-generic-robot-arm-profiles.md. Omit it to run against\n" +
             "  RobotArmProfile.JetRoverMeasuredDefault, the exact configuration this codebase has\n" +
-            "  always used for the JetRover.";
+            "  always used for the JetRover.\n" +
+            "  --record-control names the recording control file (docs/adr/0021): while it exists,\n" +
+            "  robothost.jlog is written into the session directory it names. Omit it to never record.\n" +
+            "  --uplink-control names the uplink control file (docs/adr/0021): while it holds a Core\n" +
+            "  network profile and a seed, joint commands reach the plant through that profile. Omit it\n" +
+            "  to never impair the uplink.";
 
         private RobotHostArgs(
             int localPort, IPAddress? remoteHost, int? remotePort, bool replyToSender,
             string relaySocketPath, string localRelaySocketPath, float? maxDirectionMagnitude,
-            int? jointLocalPort, string? profilePath, float? pulsesPerSecond = null)
+            int? jointLocalPort, string? profilePath, float? pulsesPerSecond = null, string? recordControlPath = null,
+            string? uplinkControlPath = null)
         {
             LocalPort = localPort;
             RemoteHost = remoteHost;
@@ -95,6 +118,8 @@ namespace Teleop.RobotHost
             PulsesPerSecond = pulsesPerSecond;
             JointLocalPort = jointLocalPort;
             ProfilePath = profilePath;
+            RecordControlPath = recordControlPath;
+            UplinkControlPath = uplinkControlPath;
         }
 
         public static RobotHostArgs? TryParse(string[] args, out string? error)
@@ -108,6 +133,8 @@ namespace Teleop.RobotHost
             float? pulsesPerSecond = null;
             int? jointLocalPort = null;
             string? profilePath = null;
+            string? recordControlPath = null;
+            string? uplinkControlPath = null;
             string replyTo = "sender";
 
             for (int i = 0; i < args.Length; i++)
@@ -154,6 +181,12 @@ namespace Teleop.RobotHost
                     case "--profile-path" when i + 1 < args.Length:
                         profilePath = args[++i];
                         break;
+                    case "--record-control" when i + 1 < args.Length:
+                        recordControlPath = args[++i];
+                        break;
+                    case "--uplink-control" when i + 1 < args.Length:
+                        uplinkControlPath = args[++i];
+                        break;
                 }
             }
 
@@ -189,7 +222,7 @@ namespace Teleop.RobotHost
             error = null;
             return new RobotHostArgs(
                 localPort.Value, remoteHost, remotePort, replyToSender, relaySocketPath, localRelaySocketPath,
-                maxDirectionMagnitude, jointLocalPort, profilePath, pulsesPerSecond);
+                maxDirectionMagnitude, jointLocalPort, profilePath, pulsesPerSecond, recordControlPath, uplinkControlPath);
         }
 
         private static int? ParseIntOrNull(string s) => int.TryParse(s, out int value) ? value : null;

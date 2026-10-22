@@ -1,0 +1,7 @@
+# The pre-registered split of the recorded sessions (ADR 0021): written BEFORE training on them, and
+# committed. Every session in a bundle must be listed exactly once; `armpred finetune` refuses
+# anything else. The test sessions are recorded only after the model is frozen.
+[splits]
+train = []
+val = []
+test = []

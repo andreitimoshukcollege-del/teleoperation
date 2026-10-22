@@ -1,0 +1,22 @@
+# Fine-tuning on recorded sessions (ADR 0021 step D3), from a simulation-pretrained run:
+#   armpred finetune --data jetrover-data-<UTC>.tar --split configs/split-v1.toml \
+#     --config configs/real-finetune.toml --init runs/sim1 --out runs/real1
+# Real sessions are scarce next to simulated ones, so each is replayed through more network views.
+seed = 1
+views_per_session = 16
+val_views = 4
+
+[sample]
+queries_per_s = 20.0
+event_share = 0.25
+pair_share = 0.2
+
+[train]
+arch = "mlp"
+aware = false
+steps = 30000
+batch = 8192
+lr = 5e-4
+lr_min = 1e-5
+warmup = 500
+val_every = 1000

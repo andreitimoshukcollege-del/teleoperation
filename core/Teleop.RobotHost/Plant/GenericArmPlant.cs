@@ -282,11 +282,11 @@ namespace Teleop.RobotHost.Plant
         /// duplicate <paramref name="captureTicks"/> rejected whole, same one-time seed-from-sensed
         /// behavior, same clamp/belief-tracking tail.
         /// </summary>
-        public void CommandJointAngles(ReadOnlySpan<JointTarget> targets, long captureTicks)
+        public JointCommandOutcome CommandJointAngles(ReadOnlySpan<JointTarget> targets, long captureTicks)
         {
             if (captureTicks <= _lastAcceptedJointCaptureTicks)
             {
-                return;
+                return JointCommandOutcome.Stale;
             }
 
             _lastAcceptedJointCaptureTicks = captureTicks;
@@ -304,12 +304,13 @@ namespace Teleop.RobotHost.Plant
                 {
                     RefusedJointCommands++;
                     LastRefusal = hit;
-                    return;
+                    return JointCommandOutcome.Refused;
                 }
             }
 
             _pulsesPerSecond = RequestedPulsesPerSecond(targets);
             ApplyJointTargets(targets);
+            return JointCommandOutcome.Accepted;
         }
 
         /// <summary>

@@ -50,7 +50,8 @@ capabilities to Core by **implementing interfaces that Core declares** (`IRobotP
 | `unity/Teleop.Bridge/` | both Unity projects | shared UPM package: the only Unity code that touches Core; real I/O |
 | `core/Teleop.RobotArm/`, `core/Teleop.RobotHost/`, `core/Teleop.CameraHost/` | `dotnet` | arm kinematics and wire formats; what runs on the robot's Jetson |
 | `robot/ros/` | colcon (ROS 2), on the Jetson | the servo board driver and relay (ADR 0019); independent of the builds above; `just deploy-ros` |
-| `analysis/` | nothing | Python; reads `results/`, exports `.onnx` |
+| `analysis/` | nothing | Python; reads `results/` |
+| `trainer/` | its own Python env, on the GPU machine | the arm simulator and model training (ADR 0021); imports nothing from the repo, packed to one file by `just pack-trainer`; exports `.onnx` |
 | `experiments/` | — | one YAML per experiment |
 | `results/` | — | append-only; every run has a `manifest.json` |
 
@@ -150,7 +151,7 @@ Unity editors and the Galaxy headset.
 
 ## Boundaries for agents
 
-- **Free rein:** `core/`, `analysis/`, `experiments/`, `docs/`, `unity/`, `robot/`.
+- **Free rein:** `core/`, `analysis/`, `trainer/`, `experiments/`, `docs/`, `unity/`, `robot/`.
 - **Never touch:** `results/` (append-only — write new directories, never edit old ones),
   `unity/TeleopVR/Library/`, `unity/TeleopXR/Library/`, `build/`, anything gitignored.
 - `robot/ros/` is code like any other, but deploying it (`just deploy-ros`) restarts the servo

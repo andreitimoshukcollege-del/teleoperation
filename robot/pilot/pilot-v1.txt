@@ -16,8 +16,8 @@ payload-100g | 2.5 | 5 | teleop | load=payload payload_g=100 | Close the gripper
 hand-1       | 2.5 | 4 | teleop | load=hand | Slider at 2.5. A second person gently resists the arm by hand now and then: at most 2 s at a time, contact at most a fifth of the session.
 live-150     | 2.5 | 5 | teleop | network=150ms-20j-0.5loss | Slider at 2.5. The robot now delays its own commands by ~150 ms with jitter and loss: teleoperate as usual.
 live-sched   | 2.5 | 4 | teleop | "network=schedule:lan@0;150ms-20j-0.5loss@45;lan@90;50ms-5j@135" | Slider at 2.5. The delay changes by itself during the session: teleoperate as usual.
-drive-steps-6   | 6.0 | 5 | drive:steps     | | Close the headset app (or leave it with motion off). Stand clear of the arm: it moves by itself now.
-drive-steps-2p5 | 2.5 | 4 | drive:steps     | | Stay clear of the arm.
+drive-steps-2p5 | 2.5 | 4 | drive:steps     | | Close the headset app (or leave it with motion off). Stand clear of the arm: it moves by itself now.
+drive-steps-6   | 6.0 | 5 | drive:steps     | | Stay clear of the arm: these steps are fast.
 drive-wp-2p5    | 2.5 | 5 | drive:waypoints | | Stay clear of the arm.
 drive-wp-5      | 5.0 | 5 | drive:waypoints | | Stay clear of the arm.
 drive-wp-sched  | 2.5 | 4 | drive:waypoints | "network=schedule:lan@0;150ms-20j-0.5loss@45;lan@90;50ms-5j@135" | Stay clear of the arm.

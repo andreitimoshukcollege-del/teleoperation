@@ -1287,7 +1287,8 @@ pack-trainer:
         armpred contract configs tests slurm pyproject.toml requirements.txt setup.sh README.md CLAUDE.md) \
         | (cd "$stage/armpred" && tar xf -)
     printf '{"sha": "%s", "dirty": %s, "source": "pack-trainer", "packedUtc": "%s"}\n' "$sha" "$dirty" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$stage/armpred/VERSION"
-    out="dist/armpred-${sha:0:12}$([ "$dirty" = true ] && echo -dirty).tar.gz"
+    suffix=""; if [ "$dirty" = true ]; then suffix="-dirty"; fi
+    out="dist/armpred-${sha:0:12}${suffix}.tar.gz"
     tar czf "$out" -C "$stage" armpred
     echo "$out ($(du -h "$out" | cut -f1))"
 

@@ -24,7 +24,7 @@ from . import MODEL_FORMAT_VERSION, SESSION_FORMAT_VERSION, VIEW_FORMAT_VERSION,
 from .contract.check import check_session_dir
 from .data.build import BuildConfig, ViewPlan, build, load_shards
 from .data.dataset import SampleConfig
-from .data.schedule import RandomScheduleConfig
+from .data.schedule import RandomScheduleConfig, Schedule, Segment, random_uplink_schedule
 from .sim.params import SimRanges, sample_params
 from .sim.robot import simulate_session, write_session
 
@@ -41,6 +41,17 @@ TEST_SCHEDULES = (
     "synthetic-burst@0",
     "lan@0;150ms-20j-0.5loss@120;lan@300",
 )
+# The forecast-quality sweep runs on these (each level re-runs the model, so not on every schedule).
+FORECAST_SWEEP_SCHEDULES = ("lan@0", "150ms-20j-0.5loss@0")
+# A test session's physical uplink, when it has one: named training profiles, switching every 45 s.
+TEST_UPLINK_CYCLE = ("lan", "150ms-20j-0.5loss", "lan", "50ms-5j")
+TEST_UPLINK_DWELL_S = 45.0
+
+
+def test_uplink_schedule(duration_s: float) -> Schedule:
+    n = int(duration_s // TEST_UPLINK_DWELL_S) + 1
+    return Schedule(segments=tuple(Segment(k * TEST_UPLINK_DWELL_S, TEST_UPLINK_CYCLE[k % len(TEST_UPLINK_CYCLE)], True)
+                                   for k in range(n)))
 
 
 def trainer_version() -> Dict[str, object]:
@@ -65,8 +76,12 @@ class MatrixConfig:
     sliders: Tuple[object, ...] = (1.0, 2.5, 3.8, 6.0, "varied")
     loads: Tuple[str, ...] = ("none", "payload-light", "payload-heavy", "hand")
     sessions_per_cell: int = 4
-    uplink_impaired_share: float = 0.15
+    uplink_impaired_share: float = 0.0  # one Core profile for the whole session
     uplink_profiles: Tuple[str, ...] = ("50ms-5j", "150ms-20j-0.5loss")
+    # ADR 0021 decision 13: a physical uplink that changes mid-session. Training sessions get random
+    # schedules (trainer-only segments allowed); test sessions the named TEST_UPLINK_CYCLE.
+    uplink_schedule_share: float = 0.5
+    test_uplink_schedule_share: float = 0.5
     minutes: float = 10.0
     # Held out of training entirely (ADR 0021): a slider value and a payload in between.
     held_out_slider: float = 5.0
@@ -99,7 +114,15 @@ def plan_sim_sessions(m: MatrixConfig, seed: int) -> Dict[str, List[dict]]:
             for k in range(m.sessions_per_cell + m.test_sessions_per_cell):
                 next_seed += 1
                 split = "test" if k >= m.sessions_per_cell else ("val" if rng.random() < m.val_share else "train")
-                uplink = str(rng.choice(m.uplink_profiles)) if rng.random() < m.uplink_impaired_share else "lan"
+                r = rng.random()
+                if split == "test":
+                    uplink = "schedule:test" if r < m.test_uplink_schedule_share else "lan"
+                elif r < m.uplink_schedule_share:
+                    uplink = "schedule:random"
+                elif r < m.uplink_schedule_share + m.uplink_impaired_share:
+                    uplink = str(rng.choice(m.uplink_profiles))
+                else:
+                    uplink = "lan"
                 out[split].append({"seed": next_seed, "slider": slider, "load": load, "uplink": uplink})
     for load in ("none", "payload-held-out", "hand"):
         next_seed += 1
@@ -109,10 +132,20 @@ def plan_sim_sessions(m: MatrixConfig, seed: int) -> Dict[str, List[dict]]:
     return out
 
 
+def _uplink_kw(spec: dict, duration_s: float) -> Dict[str, str]:
+    uplink = spec["uplink"]
+    if uplink == "schedule:random":
+        rng = np.random.default_rng(np.random.PCG64([spec["seed"], 0x0091]))
+        return {"uplink_profile": "lan", "uplink_schedule": random_uplink_schedule(duration_s, rng).to_json()}
+    if uplink == "schedule:test":
+        return {"uplink_profile": "lan", "uplink_schedule": test_uplink_schedule(duration_s).to_json()}
+    return {"uplink_profile": uplink}
+
+
 def _simulate_one(args) -> str:
     spec, m, ranges, directory = args
     params = sample_params(spec["seed"], ranges, duration_s=m.minutes * 60.0, slider=spec["slider"],
-                           uplink_profile=spec["uplink"], **_load_kw(spec["load"], m))
+                           **_uplink_kw(spec, m.minutes * 60.0), **_load_kw(spec["load"], m))
     write_session(simulate_session(params), directory)
     report = check_session_dir(directory, allow_read_gaps=True)
     if not report.ok:

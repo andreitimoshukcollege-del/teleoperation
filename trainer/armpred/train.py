@@ -8,6 +8,9 @@ Loss, per labelled joint (ADR 0021 / the methodology review):
   before-prediction is pulled toward the (detached) after-prediction, which trades error for a
   smaller jump on the display.
 
+The network block of the arm row is zeroed for ``forecast_dropout`` of each batch (ADR 0021 decision
+12), on top of the views built with no forecast at all, so the model never depends on one arriving.
+
 Each speed x load cell carries equal weight. The model is selected on validation p95 error, not on
 loss, because the tail is what the operator sees.
 """
@@ -27,6 +30,7 @@ import torch
 from torch import nn
 
 from .data.build import Dataset
+from .features import layout as L
 from .models.net import build
 
 DEG = 180.0 / math.pi
@@ -47,6 +51,7 @@ class TrainConfig:
     huber_deg: float = 0.3
     nll_weight: float = 0.1
     consistency: float = 0.0
+    forecast_dropout: float = 0.1
     pair_batch: int = 1024
     val_every: int = 2_000
     seed: int = 1
@@ -152,7 +157,12 @@ def train(train_ds: Dataset, val_ds: Dataset, cfg: TrainConfig, out_dir: str, lo
             g["lr"] = lr
         model.train()
         idx = torch.multinomial(weights, cfg.batch, replacement=True)
-        y = model(tr["joint"][idx], tr["arm"][idx])
+        arm = tr["arm"][idx]
+        if cfg.forecast_dropout > 0.0:
+            drop = torch.rand(arm.shape[0], device=device) < cfg.forecast_dropout
+            arm = arm.clone()
+            arm[drop, L.BASE_ARM_FEATURES:L.BASE_ARM_FEATURES + L.NETWORK_FEATURES] = 0.0
+        y = model(tr["joint"][idx], arm)
         residual = y[:, 0] - tr["target"][idx]
         loss = huber(residual * DEG, torch.zeros_like(residual))
         b = torch.exp(y[:, 1])

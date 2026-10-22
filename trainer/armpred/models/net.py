@@ -23,7 +23,7 @@ def _head(raw: torch.Tensor) -> torch.Tensor:
 
 
 class JointMLP(nn.Module):
-    """A: [joint row | arm row] -> 128 -> 128 -> 64 -> 2, ReLU. About 48k parameters."""
+    """A: [joint row | arm row] -> 128 -> 128 -> 64 -> 2, ReLU. About 70k parameters (layout v2)."""
 
     name = "mlp"
 
@@ -49,9 +49,8 @@ def _slices():
     """Where each part of a joint row sits (features/layout.py's table)."""
     k = 0
     out = {}
-    for name, width in (("prior", 2), ("commands", L.N_COMMANDS * 3), ("bins", L.N_BINS * 2),
-                        ("readings", L.N_READINGS * 3), ("innovations", L.N_INNOVATIONS * 4),
-                        ("identity", len(L.ARM_MOTORS)), ("angle", 2)):
+    for name, width in (("prior", 2), ("path", L.N_PATH * 2), ("readings", L.N_READINGS * 3),
+                        ("innovations", L.N_INNOVATIONS * 4), ("identity", len(L.ARM_MOTORS)), ("angle", 2)):
         out[name] = (k, k + width)
         k += width
     assert k == L.JOINT_FEATURES
@@ -83,20 +82,19 @@ class _Stream(nn.Module):
 
 
 class JointConv(nn.Module):
-    """B: each sequence (commands, readings, innovations, bins) through ``_Stream``, then 64 -> 2.
-    About 8k parameters."""
+    """B: each sequence (the commanded path, readings, innovations) through ``_Stream``, then the
+    pooled streams, the joint's scalars and the arm row (network block included) -> 64 -> 2."""
 
     name = "conv"
 
     def __init__(self, arm_features: int = L.ARM_FEATURES, width: int = 16):
         super().__init__()
         self.s = _slices()
-        self.commands = _Stream(3, width)
+        self.path = _Stream(2, width)
         self.readings = _Stream(3, width)
         self.innovations = _Stream(4, width)
-        self.bins = _Stream(2, width)
         scalars = 2 + len(L.ARM_MOTORS) + 2 + arm_features
-        self.head = nn.Sequential(nn.Linear(4 * width + scalars, 64), nn.ReLU(), nn.Linear(64, 2))
+        self.head = nn.Sequential(nn.Linear(3 * width + scalars, 64), nn.ReLU(), nn.Linear(64, 2))
         nn.init.normal_(self.head[-1].weight, std=1e-3)
         nn.init.zeros_(self.head[-1].bias)
 
@@ -105,12 +103,11 @@ class JointConv(nn.Module):
         return row[..., a:b].reshape(row.shape[0], -1, channels)
 
     def forward(self, joint_row: torch.Tensor, arm_row: torch.Tensor) -> torch.Tensor:
-        # Bins have no time channel: (mean, mask) is already the right shape for _Stream(2).
+        # The path's points sit on a fixed grid, so (target, mask) needs no time channel.
         pooled = [
-            self.commands(self._part(joint_row, "commands", 3)),
+            self.path(self._part(joint_row, "path", 2)),
             self.readings(self._part(joint_row, "readings", 3)),
             self.innovations(self._part(joint_row, "innovations", 4)),
-            self.bins(self._part(joint_row, "bins", 2)),
         ]
         a, b = self.s["prior"]
         i0, i1 = self.s["identity"]

@@ -7,7 +7,16 @@ nothing from the teleoperation repo; the only things it shares with it are in `c
 **What it learns:** where the arm really is now, from the joint targets the headset sent and the
 joint readings that have arrived, adapting without being told to the arm's speed, the network, and
 resistance (a payload, a hand). The prediction is `relay-replay` (run speed-blind) plus a learned
-correction; `contract/MODEL_FORMAT.md` has the exact input window.
+correction; `contract/MODEL_FORMAT.md` has the exact input window (layout v2: the commanded path on
+a fixed grid, and a network-forecast block).
+
+**Network forecasts** (ADR 0021 decisions 11-14): a separate network model, built later by someone
+else, will tell this one how late the network is and is about to be (`contract/FORECAST_FORMAT.md`).
+Until it exists, every view is built with a forecast at one of the fixed quality levels
+(`oracle`/`good`/`fair`/`poor`, and `persistence`/`rtt-half`/`absent` from what the headset sees
+today), and every evaluation sweeps them all. The report's "By network forecast quality" table is the
+curve that tells the network model's builders how good a forecast has to be, and gate F1 says whether a
+forecast is worth having at all.
 
 ## 1. Pack it (on the machine with the repo)
 
@@ -81,7 +90,7 @@ From each `runs/<name>/`:
 
 | File | What it is |
 |---|---|
-| `model.onnx` | the model (model format v1) |
+| `model.onnx` | the model (model format v1, layout v2) |
 | `model-card.json` | what made it: trainer SHA, data hashes, config, parity, validation numbers |
 | `eval/report.md`, `eval/report.json` | the trainer's own evaluation and the trainer gate |
 | `log.txt`, `train-summary.json` | the run's log and learning curve |
@@ -102,7 +111,7 @@ it (ADR 0021 decision 8), and that C# side is built only once the trainer gate p
 | `armpred sim-pretrain --config c --out run` | prepare and train-run in one directory |
 | `armpred grid ... --index i` | one grid combination (a Slurm array task) |
 | `armpred evaluate --run run --sessions dir` | the trainer gate's numbers on any directory of sessions |
-| `armpred make-views <sessions> --schedule s --out d` | named-profile views for the repo's official scoring |
+| `armpred make-views <sessions> --schedule s --out d [--forecast-level l]` | named-profile views (version 2) for the repo's official scoring, optionally carrying a forecast stream |
 | `armpred pack-dataset <sessions> --out f --profile p` | checked sessions into one data bundle (`just pack-dataset` runs it) |
 | `armpred finetune --data f --split s --config c [--init run] --out run` | train on a real bundle, from a pretrained run |
 | `armpred sysid <sessions> \| --data f --out d` | what the recordings say: bus timing, reading ages, servo lag and speed; writes `sysid.toml` (a `[ranges]` table for the next `sim-pretrain`) and `prior.json` (the fitted reading ages) |

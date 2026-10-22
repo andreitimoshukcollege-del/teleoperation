@@ -72,3 +72,68 @@ def test_samples_are_finite_and_the_prior_beats_hold_last_on_a_slow_link(sim_ses
     prior = np.percentile(np.abs(d.prior - d.truth)[ok], 50)
     hold = np.percentile(np.abs(d.newest - d.truth)[ok], 50)
     assert prior < hold
+
+
+def test_a_scheduled_uplink_is_logged_and_every_send_is_in_the_operator_log(tmp_path):
+    from armpred.contract.check import check_session_dir
+    from armpred.contract.session import load_session
+    from armpred.sim.robot import write_session
+
+    up = S.parse("lan@0;150ms-20j-0.5loss@4;lan@8")
+    p = sample_params(31, duration_s=12.0, slider=2.5, payload_grams=0.0, hand_events_per_min=0.0,
+                      uplink_schedule=up.to_json())
+    out = simulate_session(p)
+    ups = [r for r in out.robothost if r[0] == "UP"]
+    assert [r[2] for r in ups] == ["none", "150ms-20j-0.5loss", "none"]
+    d = str(tmp_path / "s")
+    write_session(out, d)
+    assert check_session_dir(d, allow_read_gaps=True).ok
+    s = load_session(d)
+    assert len(s.operator_commands) >= len(s.commands) and len(s.uplink_changes) == 3
+    v = synthesize(s, JETROVER, S.parse("lan@0"), seed=1, traces_dir=TRACES)
+    assert len(v.cmd_t) == len(s.operator_commands)
+    assert int(v.cmd_lost.sum()) == len(s.operator_commands) - len(set(s.commands.seq.tolist()))
+    assert sum(k == "uplink" for k in v.events_kind) == 3
+
+
+def test_a_queue_fills_and_an_outage_holds_then_bursts():
+    from armpred.net.profiles import NetworkProfile
+
+    tps = 1_000_000_000
+    queue = S.Segment(0.0, "queue", False, profile=NetworkProfile(10_000_000, 0, 0.0, 0.0),
+                      queue_peak_ms=200.0, queue_fill_ms_per_s=400.0)
+    outage = S.Segment(10.0, "outage", False, profile=NetworkProfile(10_000_000, 0, 0.0, 0.0),
+                       outage_at_s=12.0, outage_s=1.0)
+    sched = S.Schedule(segments=(queue, outage))
+    send_s = np.arange(0.0, 20.0, 0.02)
+    send = (send_s * tps).astype(np.int64)
+    delivered, arrival, _ = S.build_link(sched, send, send_s, seed=3, tps=tps, traces_dir=None)
+    delay_ms = (arrival - send) / 1e6
+    in_queue = (send_s < 10.0) & delivered
+    assert delay_ms[in_queue].max() > 180.0 and delay_ms[in_queue].min() < 20.0  # the sawtooth
+    assert 0.0 < 1.0 - delivered[send_s < 10.0].mean() < 0.1  # tail drop near the top only
+    held = (send_s >= 12.0) & (send_s < 13.0) & delivered
+    assert np.all(arrival[held] >= 13.0 * tps)  # nothing arrives before the outage ends
+    assert np.all(delay_ms[(send_s > 14.0) & delivered] < 20.0)
+
+
+def test_a_version_1_view_still_loads(sim_session, tmp_path):
+    import json
+
+    v = synthesize(sim_session, JETROVER, S.parse("lan@0"), seed=2, traces_dir=TRACES)
+    arrays = {name: getattr(v, name) for name in ("cmd_t", "cmd_eff", "cmd_speed", "cmd_count", "cmd_motor", "cmd_value",
+                                                  "st_t", "st_sensed", "st_count", "st_motor", "st_value", "st_flags",
+                                                  "tr_t", "tr_motor", "tr_value", "frame_send", "frame_delivered",
+                                                  "frame_arrival", "frame_segment", "sync_t", "sync_offset",
+                                                  "sync_uncertainty", "sync_accepted", "events_t")}
+    meta = {k: v.meta[k] for k in ("session", "source", "schedule", "namedOnly", "seed", "operatorTicksPerSecond",
+                                   "robotTicksPerSecond", "operatorUptimeNs", "operatorDriftPpm", "conditions")}
+    meta.update({"format": "jetrover-view", "version": 1})
+    arrays["meta_json"] = np.frombuffer(json.dumps(meta).encode("utf-8"), dtype=np.uint8)
+    arrays["events_kind"] = np.array(v.events_kind, dtype="U32")
+    arrays["events_detail"] = np.array(v.events_detail, dtype="U64")
+    path = str(tmp_path / "v1.npz")
+    np.savez(path, **arrays)
+    w = load_view(path)
+    assert w.meta["version"] == 1 and not w.cmd_lost.any() and (w.cmd_true_uplink == -1).all()
+    assert np.array_equal(w.cmd_eff, v.cmd_eff)

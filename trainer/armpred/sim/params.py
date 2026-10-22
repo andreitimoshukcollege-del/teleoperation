@@ -55,8 +55,11 @@ class SimParams:
     # Load
     payload_grams: float = 0.0
     hand_events_per_min: float = 0.0  # 0: no hand resistance in this session
-    # The network the robot actually saw (ADR 0021 decision 4: the uplink is physical here)
+    # The network the robot actually saw (ADR 0021 decisions 4 and 13: the uplink is physical here).
+    # ``uplink_schedule`` (a schedule's JSON, seconds from the session start) changes mid-session and
+    # wins over ``uplink_profile``, one Core profile for the whole session.
     uplink_profile: str = "lan"
+    uplink_schedule: str = ""
     uplink_seed: int = 0
     lan_one_way_ms: float = 2.0
     lan_jitter_ms: float = 1.0
@@ -90,7 +93,7 @@ def _u(rng: np.random.Generator, lo_hi: Tuple[float, float]) -> float:
 def sample_params(seed: int, ranges: SimRanges = SimRanges(), duration_s: float = 600.0,
                   slider: Optional[object] = None, payload_grams: Optional[float] = None,
                   hand_events_per_min: Optional[float] = None, uplink_profile: Optional[str] = None,
-                  slider_values: Tuple[float, ...] = TRAIN_SLIDER_VALUES) -> SimParams:
+                  slider_values: Tuple[float, ...] = TRAIN_SLIDER_VALUES, uplink_schedule: str = "") -> SimParams:
     """One session's parameters. Anything passed explicitly is fixed (to build a session matrix
     like the real protocol's); everything else is drawn from ``ranges``."""
     rng = np.random.default_rng(np.random.PCG64(seed))
@@ -116,6 +119,7 @@ def sample_params(seed: int, ranges: SimRanges = SimRanges(), duration_s: float 
         payload_grams=payload_grams,
         hand_events_per_min=hand_events_per_min,
         uplink_profile=uplink_profile,
+        uplink_schedule=uplink_schedule,
         uplink_seed=int(rng.integers(1, 2**31)),
         lan_one_way_ms=_u(rng, ranges.lan_one_way_ms),
         lan_jitter_ms=_u(rng, ranges.lan_jitter_ms),

@@ -1,30 +1,41 @@
-"""Layout v1: what the model sees for one prediction, built from nothing but the predictor's calls.
+"""Layout v2: what the model sees for one prediction, built from nothing but the predictor's calls.
 
 ``FeatureState`` takes the same calls an ``ICommandAwarePredictor`` takes (``observe_command``,
-``observe_state``) and, for a target time, returns one row per arm joint plus an arm-wide row.
+``observe_state``), plus the network forecasts the host passes on (``observe_forecast``, ADR 0021
+decision 11), and for a target time returns one row per arm joint plus an arm-wide row.
 
-Per arm joint (``JOINT_FEATURES`` = 177), every time relative to the target T and divided by
+Per arm joint (``JOINT_FEATURES`` = 249), every time relative to the target T and divided by
 ``TIME_SCALE_S``, every angle relative to the joint's newest fresh reading ``v`` and squashed by
 ``asinh(x / ANGLE_SCALE_RAD)``:
 
 | Part | Count | Content |
 |---|---|---|
 | prior | 2 | the speed-blind relay-replay prediction at T; its slope over the last 40 ms |
-| commands | 24 x 3 | newest first: time, target, mask |
-| command bins | 8 x 2 | 100 ms bins from T-0.5 s back to T-1.3 s: mean target, mask |
+| commanded path | 80 x 2 | newest first, every 20 ms of effective time from T + 0.2 s back to T - 1.38 s: the target in force (the newest command whose effective time is not later), mask |
 | readings | 16 x 3 | the newest fresh readings: time, value, mask |
 | innovations | 8 x 4 | the prior's error on each fresh reading before it arrived: time, error, horizon, mask |
 | identity | 5 | which joint (one-hot, motors 1-5) |
 | angle | 2 | sin, cos of ``v`` |
 
-Arm-wide (``ARM_FEATURES`` = 13): sin/cos of the newest proximal, distal and wrist-pitch readings
-(gravity), staleness, readings in the last second, the longest gap between readings in the last two
-seconds, the newest command's effective time, the gripper command and its change over 0.5 s, and how
-full the command window is. The speed-aware ablation (``aware=True``) adds the newest command's
-requested speed (layout ``v1-aware``).
+The commanded path replaces layout v1's 24 newest commands and its 100 ms bins (ADR 0021 decision
+10): it is anchored on T, not on the newest command, so it covers every command executing between
+the last reading and T at any delay up to the 1 s staleness fallback. It runs over *effective* time,
+the only time the predictor is told; with a forecast that is the send plus the forecast's uplink
+delay, so the path is laid out as the robot would receive it.
 
-**Never in the window:** the requested speed (except ``v1-aware``), any network profile or delay,
-the hold-back, the payload, or anything else not passed through the predictor's calls.
+Arm-wide (``ARM_FEATURES`` = 114): the 13 of v1 -- sin/cos of the newest proximal, distal and
+wrist-pitch readings (gravity), staleness, readings in the last second, the longest gap between
+readings in the last two seconds, the newest command's effective time, the gripper command and its
+change over 0.5 s, how full the command window is -- then the **network block** (101): per direction
+(uplink, downlink) and horizon (``forecast.HORIZONS_MS``), the delay quantiles p10/p50/p90/p99 as
+``asinh(ms / 100)`` and P(loss); per direction the floor (``asinh(ms / 100)``) and P(outage); six
+validity flags (quantiles, loss, outage, per direction); and the forecast's age / 0.5 s. With no
+forecast the block is zeros with every flag 0. The speed-aware ablation (``aware=True``) appends the
+newest command's requested speed (layout ``v2-aware``).
+
+**Never in the window:** the requested speed (except ``v2-aware``), the network profile, schedule or
+true delays (a forecast is an estimate, at a stated quality, ADR 0021 decision 11), the hold-back,
+the payload, or anything else not passed through the predictor's calls.
 """
 
 from __future__ import annotations
@@ -38,30 +49,39 @@ import numpy as np
 
 from ..baselines.relay_replay import RelayReplayPredictor
 from ..baselines.types import JointPredictorConfig, JointSample
+from ..net import forecast as FC
 
-LAYOUT_ID = "v1"
+LAYOUT_ID = "v2"
 ARM_MOTORS: Tuple[int, ...] = (1, 2, 3, 4, 5)
 GRAVITY_MOTORS: Tuple[int, ...] = (2, 3, 4)
 GRIPPER_MOTOR = 10
 
-N_COMMANDS = 24
-N_BINS = 8
-BIN_S = 0.1
-BINS_FROM_S = 0.5
+N_PATH = 80
+PATH_STEP_S = 0.02
+PATH_AHEAD_S = 0.2  # the newest point, past T: a command may land sooner than its estimate says
 N_READINGS = 16
 N_INNOVATIONS = 8
 TIME_SCALE_S = 0.5
 ANGLE_SCALE_RAD = 0.2
 INNOVATION_SCALE_RAD = 0.05
+DELAY_SCALE_MS = 100.0
 SLOPE_WINDOW_S = 0.04
 SLOPE_SCALE_RAD_S = 2.0
 SPEED_SCALE_RAD_S = 6.0
-COMMAND_RING = 64  # JointPredictorConfig.CommandHistoryCapacity on the headset
+COMMAND_RING = 96  # about 2 s at 48 Hz: the path's span and some
+WINDOW_FULL = 64
 MAX_CORRECTION_RAD = math.radians(15.0)
 FALLBACK_STALENESS_S = 1.0
 
-JOINT_FEATURES = 2 + N_COMMANDS * 3 + N_BINS * 2 + N_READINGS * 3 + N_INNOVATIONS * 4 + len(ARM_MOTORS) + 2
-ARM_FEATURES = 13
+JOINT_FEATURES = 2 + N_PATH * 2 + N_READINGS * 3 + N_INNOVATIONS * 4 + len(ARM_MOTORS) + 2
+N_HORIZONS = len(FC.HORIZONS_MS)
+NETWORK_FEATURES = 2 * N_HORIZONS * (len(FC.QUANTILES) + 1) + 2 + 2 + 6 + 1
+BASE_ARM_FEATURES = 13
+ARM_FEATURES = BASE_ARM_FEATURES + NETWORK_FEATURES
+
+
+def layout_id(aware: bool) -> str:
+    return LAYOUT_ID + ("-aware" if aware else "")
 
 
 def arm_features(aware: bool) -> int:
@@ -104,6 +124,7 @@ class FeatureState:
         self.last_fresh = None
         self.newest: Dict[int, float] = {}
         self.last_command_eff = None
+        self.forecast: Optional[Tuple[int, np.ndarray]] = None  # (issued at, the encoded block without its age)
 
     # -- the predictor's calls -----------------------------------------------------------------
 
@@ -134,6 +155,13 @@ class FeatureState:
             self.fresh_times.append(int(sensed_ticks))
         self.prior.observe_state(sensed_ticks, joints)
 
+    def observe_forecast(self, stream: "FC.ForecastStream", index: int) -> None:
+        """The host passes on the network model's newest forecast (ADR 0021 decision 11)."""
+        self.forecast = (int(stream.t[index]), encode_forecast(stream, index))
+
+    def clear_forecast(self) -> None:
+        self.forecast = None
+
     # -- the window ----------------------------------------------------------------------------
 
     def window(self, target_ticks: int) -> Window:
@@ -151,6 +179,10 @@ class FeatureState:
         p_before = {s.motor_id: s.value for s in before}
         staleness = (target_ticks - self.last_fresh) / tps
         cmds = list(self.commands)
+        effs = np.array([c[0] for c in cmds], dtype=np.int64)
+        # The commanded path's grid, newest first: T + PATH_AHEAD_S, then back every PATH_STEP_S.
+        grid = target_ticks + int(round(PATH_AHEAD_S * tps)) - np.round(np.arange(N_PATH) * PATH_STEP_S * tps).astype(np.int64)
+        in_force = np.searchsorted(effs, grid, side="right") - 1 if len(effs) else np.full(N_PATH, -1)
         for row, m in enumerate(ARM_MOTORS):
             v = self.newest[m]
             prior[row] = p_now.get(m, v)
@@ -160,20 +192,17 @@ class FeatureState:
             f[k] = _sq(prior[row] - v, ANGLE_SCALE_RAD)
             f[k + 1] = (prior[row] - p_before.get(m, prior[row])) / SLOPE_WINDOW_S / SLOPE_SCALE_RAD_S
             k += 2
-            recent = [c for c in reversed(cmds) if m in c[1]][:N_COMMANDS]
-            for i in range(N_COMMANDS):
-                if i < len(recent):
-                    t_eff, values, _ = recent[i]
-                    f[k] = (t_eff - target_ticks) / tps / TIME_SCALE_S
-                    f[k + 1] = _sq(values[m] - v, ANGLE_SCALE_RAD)
-                    f[k + 2] = 1.0
-                k += 3
-            for b in range(N_BINS):
-                hi = target_ticks - (BINS_FROM_S + BIN_S * b) * tps
-                lo = target_ticks - (BINS_FROM_S + BIN_S * (b + 1)) * tps
-                inside = [c[1][m] for c in cmds if m in c[1] and lo <= c[0] < hi]
-                if inside:
-                    f[k] = _sq(sum(inside) / len(inside) - v, ANGLE_SCALE_RAD)
+            # The target in force for this motor: the newest command at or before each grid point
+            # that carried one (every command carries every joint on the JetRover).
+            last_index, last_value = -2, 0.0
+            for i in range(N_PATH):
+                c = int(in_force[i])
+                while c >= 0 and m not in cmds[c][1]:
+                    c -= 1
+                if c >= 0:
+                    if c != last_index:
+                        last_index, last_value = c, _sq(cmds[c][1][m] - v, ANGLE_SCALE_RAD)
+                    f[k] = last_value
                     f[k + 1] = 1.0
                 k += 2
             reads = list(self.readings[m])[::-1]
@@ -215,11 +244,48 @@ class FeatureState:
                 arm[k + 4] = gripper[-1]
                 old = [c[1][GRIPPER_MOTOR] for c in cmds if GRIPPER_MOTOR in c[1] and c[0] <= target_ticks - 0.5 * tps]
                 arm[k + 5] = gripper[-1] - (old[-1] if old else gripper[0])
-            arm[k + 6] = min(len(cmds), N_COMMANDS) / N_COMMANDS
-            if self.aware:
-                arm[k + 7] = cmds[-1][2] / SPEED_SCALE_RAD_S
+            arm[k + 6] = min(len(cmds), WINDOW_FULL) / WINDOW_FULL
+        k = BASE_ARM_FEATURES
+        if self.forecast is not None:
+            issued, block = self.forecast
+            arm[k:k + NETWORK_FEATURES - 1] = block
+            arm[k + NETWORK_FEATURES - 1] = (target_ticks - issued) / tps / TIME_SCALE_S
+        if self.aware and cmds:
+            arm[BASE_ARM_FEATURES + NETWORK_FEATURES] = cmds[-1][2] / SPEED_SCALE_RAD_S
         valid = staleness <= FALLBACK_STALENESS_S
         return Window(joints, arm, prior, newest, valid, staleness, "" if valid else "stale")
+
+
+def encode_forecast(stream: "FC.ForecastStream", index: int) -> np.ndarray:
+    """One forecast as the network block's first ``NETWORK_FEATURES - 1`` floats (its age is added at
+    the window): per direction, per horizon, asinh(quantile ms / 100) and P(loss); the floors; the
+    outage probabilities; the six validity flags. An invalid field is zero, and its flag says so."""
+    out = np.zeros(NETWORK_FEATURES - 1, dtype=np.float32)
+    k = 0
+    for d in (FC.UP, FC.DOWN):
+        vq, vl = bool(stream.valid_q[index, d]), bool(stream.valid_loss[index, d])
+        for h in range(N_HORIZONS):
+            if vq:
+                out[k:k + len(FC.QUANTILES)] = np.arcsinh(stream.q_ms[index, d, h] / DELAY_SCALE_MS)
+            k += len(FC.QUANTILES)
+            if vl:
+                out[k] = stream.loss[index, d, h]
+            k += 1
+    for d in (FC.UP, FC.DOWN):
+        if stream.valid_q[index, d]:
+            out[k] = math.asinh(float(stream.floor_ms[index, d]) / DELAY_SCALE_MS)
+        k += 1
+    for d in (FC.UP, FC.DOWN):
+        if stream.valid_outage[index, d]:
+            out[k] = stream.outage[index, d]
+        k += 1
+    for d in (FC.UP, FC.DOWN):
+        out[k] = float(stream.valid_q[index, d])
+        out[k + 1] = float(stream.valid_loss[index, d])
+        out[k + 2] = float(stream.valid_outage[index, d])
+        k += 3
+    assert k == NETWORK_FEATURES - 1
+    return out
 
 
 def correction(raw: np.ndarray) -> np.ndarray:

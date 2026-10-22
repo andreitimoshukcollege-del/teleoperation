@@ -11,6 +11,10 @@ Three kinds of query, mixed by ``SampleConfig``:
   off, a payload, an uplink change), so adaptation is not drowned by steady state;
 - **pairs**: the same read instant asked just before and just after a fresh reading arrives, for the
   consistency term that trades error against the jump the operator would see.
+
+A view's samples are built at one network forecast level (``armpred.net.forecast``): the forecasts
+reach the window as calls of their own, and with a forecast the commands' effective times are the
+forecast's (ADR 0021 decisions 11 and 12). ``absent`` is the headset as it is today.
 """
 
 from __future__ import annotations
@@ -22,9 +26,11 @@ import numpy as np
 
 from ..baselines.types import JointPredictorConfig, JointSample, headset_joint_config
 from ..features.layout import ARM_MOTORS, FeatureState, arm_features, JOINT_FEATURES
-from .views import View
+from ..net import forecast as FC
+from .views import View, view_observations, view_truths
 
 EVENT_KINDS = ("network", "uplink", "slider", "hand-on", "hand-off", "payload", "mark")
+CALL_COMMAND, CALL_STATE, CALL_FORECAST = 0, 1, 2
 
 
 @dataclass(frozen=True)
@@ -50,6 +56,7 @@ class Samples:
     since_event_s: np.ndarray  # float32 [N]: time since the newest event before T (inf if none)
     staleness_s: np.ndarray  # float32 [N]
     kind: np.ndarray  # int8 [N]: 0 base, 1 event, 2 pair
+    level: np.ndarray  # int8 [N]: the forecast level, an index into forecast.LEVELS
 
     def __len__(self) -> int:
         return int(self.truth.shape[0])
@@ -60,12 +67,27 @@ class Samples:
         return Samples(**{name: np.concatenate([getattr(p, name) for p in parts]) for name in fields})
 
 
-def call_stream(view: View) -> List[Tuple[int, int, int]]:
-    """Every predictor call in order: (time, 0 command / 1 state, index). A command and a state at
-    the same tick: the command first (VIEW_FORMAT.md)."""
-    calls = [(int(t), 0, i) for i, t in enumerate(view.cmd_t)] + [(int(t), 1, i) for i, t in enumerate(view.st_t)]
+def call_stream(view: View, forecasts: Optional[FC.ForecastStream] = None) -> List[Tuple[int, int, int]]:
+    """Every predictor call in order: (time, CALL_*, index). A command and a state at the same tick:
+    the command first (VIEW_FORMAT.md); a forecast issued at that tick comes after both."""
+    calls = [(int(t), CALL_COMMAND, i) for i, t in enumerate(view.cmd_t)] + \
+            [(int(t), CALL_STATE, i) for i, t in enumerate(view.st_t)]
+    if forecasts is not None and forecasts.level != "absent":
+        calls += [(int(t), CALL_FORECAST, i) for i, t in enumerate(forecasts.t)]
     calls.sort()
     return calls
+
+
+def view_forecasts(view: View, level: str, seed: int) -> Tuple[Optional[FC.ForecastStream], np.ndarray]:
+    """The forecast stream at ``level`` for a view, and the effective times the host would then pass.
+    ``absent`` is None and the view's own effective times (RTT/2, as the headset does today)."""
+    if level == "absent":
+        return None, view.cmd_eff
+    first = min(int(view.cmd_t[0]) if len(view.cmd_t) else 0, int(view.st_t[0]) if len(view.st_t) else 0)
+    last = max(int(view.cmd_t[-1]) if len(view.cmd_t) else 0, int(view.st_t[-1]) if len(view.st_t) else 0)
+    truths = view_truths(view) if level in FC.DEGRADED else None
+    stream = FC.make_forecasts(level, FC.issue_times(first, last, view.tps), truths, view_observations(view), seed)
+    return stream, FC.effective_times(view.cmd_t, view.cmd_eff, stream, view.tps)
 
 
 def command_samples(view: View, i: int) -> List[JointSample]:
@@ -140,7 +162,8 @@ def _fresh_state_times(view: View) -> np.ndarray:
 
 
 def view_samples(view: View, rng: np.random.Generator, cfg: SampleConfig = SampleConfig(),
-                 prior_config: Optional[JointPredictorConfig] = None, aware: bool = False) -> Samples:
+                 prior_config: Optional[JointPredictorConfig] = None, aware: bool = False,
+                 level: str = "absent", forecast_seed: int = 0) -> Samples:
     prior_config = prior_config or headset_joint_config(view.tps)
     queries = _queries(view, rng, cfg)
     n = len(queries)
@@ -151,21 +174,24 @@ def view_samples(view: View, rng: np.random.Generator, cfg: SampleConfig = Sampl
         truth=np.zeros(n), prior=np.zeros(n), newest=np.zeros(n),
         valid=np.zeros(n, dtype=bool), pair=np.full(n, -1, dtype=np.int32),
         since_event_s=np.full(n, np.inf, dtype=np.float32), staleness_s=np.zeros(n, dtype=np.float32),
-        kind=np.zeros(n, dtype=np.int8),
+        kind=np.zeros(n, dtype=np.int8), level=np.full(n, FC.LEVELS.index(level), dtype=np.int8),
     )
     if n == 0:
         return out
+    forecasts, eff = view_forecasts(view, level, forecast_seed)
     state = FeatureState(prior_config, aware=aware)
-    calls = call_stream(view)
+    calls = call_stream(view, forecasts)
     ci = 0
     event_t = np.array([t for t, k in zip(view.events_t, view.events_kind) if k in EVENT_KINDS], dtype=np.int64)
     for qi, (t_now, target, j, truth, pair, kind) in enumerate(queries):
         while ci < len(calls) and calls[ci][0] <= t_now:
             _, what, i = calls[ci]
-            if what == 0:
-                state.observe_command(int(view.cmd_eff[i]), command_samples(view, i), float(view.cmd_speed[i]))
-            else:
+            if what == CALL_COMMAND:
+                state.observe_command(int(eff[i]), command_samples(view, i), float(view.cmd_speed[i]))
+            elif what == CALL_STATE:
                 state.observe_state(int(view.st_sensed[i]), state_samples(view, i))
+            else:
+                state.observe_forecast(forecasts, i)
             ci += 1
         w = state.window(target)
         out.joints[qi] = w.joints[j]

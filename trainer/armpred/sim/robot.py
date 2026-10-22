@@ -5,8 +5,10 @@ What happens, in the order the real code does it (file and function named for ea
 - **The headset** (Bridge ``JetRoverOperatorBridge``/``JetRoverJointStateLink``) renders at about
   90 Hz; on a frame it sends a joint command if 1/48 s has passed since the last, and a keepalive
   every 0.5 s. Commands carry the slider speed for every joint.
-- **The uplink** delivers both through a LAN link and, when the session is "live impaired", a Core
-  profile on the robot side (``UplinkImpairedReceiver``), so ``JC`` gets ``t`` and ``tDeliver``.
+- **The uplink** delivers both through a LAN link and, when the session is "live impaired", the
+  robot side's impairment (``UplinkImpairedReceiver``): one Core profile, or a schedule that changes
+  mid-session (ADR 0021 decision 13), each change logged as ``UP``. ``JC`` gets ``t`` and
+  ``tDeliver``. Every command the headset sends is also written to ``operator.jlog``, lost or not.
 - **RobotHost** (``Program.cs``) runs a loop every ~5 ms: it reads what has arrived (keepalives feed
   the streamer's echo; commands go through ``GenericArmPlant.CommandJointAngles``: the staleness
   check, pulse conversion, the step clamp, ``RequestedPulsesPerSecond``), polls relay feedback, and
@@ -37,8 +39,9 @@ import numpy as np
 
 from ..contract.jlog import JlogWriter, join_items
 from ..contract.profile import JETROVER, RobotProfile
+from ..data.schedule import Schedule, ScheduledLink, parse
 from ..net.impairments import EmulatedLink, FixedDelay, UniformJitter
-from ..net.profiles import ms_to_ticks, resolve_impairments
+from ..net.profiles import ms_to_ticks
 from . import operator as op_motion
 from .params import ARM_MOTORS, GRIPPER_MOTOR, SimParams
 
@@ -50,6 +53,9 @@ G = 9.81
 # Masses and lever arms for payload gravity (guesses; sysid's job is the servo response, not these).
 LINK1_KG, LINK2_KG, WRIST_KG = 0.08, 0.12, 0.15
 WRIST_TO_COM_M, WRIST_TO_PAYLOAD_M = 0.05, 0.10
+
+# Robot-side uplink profiles that impair nothing (UplinkImpairedReceiver passes them through).
+PASSTHROUGH_PROFILES = ("lan", "none")
 
 # Real timing constants, from the code that has them.
 HEADSET_FRAME_NS = int(NS / 90)
@@ -107,6 +113,7 @@ class SimOutput:
     params: SimParams
     robothost: List[Tuple] = field(default_factory=list)
     driver: List[Tuple] = field(default_factory=list)
+    operator: List[Tuple] = field(default_factory=list)
     latents: List[Tuple] = field(default_factory=list)
     start_ns: int = 0
     end_ns: int = 0
@@ -127,12 +134,17 @@ class _Sim:
         self._seq = 0
         # Profile order, as RobotHost reads and sends joints.
         self.joint_order = [j.motor_id for j in profile.joints]
-        # Uplink: the LAN, then (live-impaired sessions) a Core profile on the robot side.
+        # Uplink: the LAN, then (live-impaired sessions) the robot side's impairment, a schedule (one
+        # Core profile is a one-segment schedule).
         lan = [FixedDelay(ms_to_ticks(params.lan_one_way_ms, NS)), UniformJitter(ms_to_ticks(params.lan_jitter_ms, NS))]
         self.lan = EmulatedLink(lan, params.uplink_seed)
-        self.uplink_profile = None
-        if params.uplink_profile not in ("lan", "none"):
-            self.uplink_profile = EmulatedLink(resolve_impairments(params.uplink_profile, NS), params.uplink_seed + 1)
+        self.uplink_schedule: Optional[Schedule] = None
+        if params.uplink_schedule:
+            self.uplink_schedule = Schedule.from_json(params.uplink_schedule)
+        elif params.uplink_profile not in PASSTHROUGH_PROFILES:
+            self.uplink_schedule = parse(f"{params.uplink_profile}@0")
+        self.uplink_link = (ScheduledLink(self.uplink_schedule, params.uplink_seed + 1, NS, None)
+                            if self.uplink_schedule is not None else None)
         # Headset state
         self.op_seq = 0
         self.last_cmd_op: Optional[int] = None
@@ -301,6 +313,7 @@ class _Sim:
                 else:
                     targets.append((m, float(np.float32(arm[ARM_MOTORS.index(m)])), float(np.float32(slider))))
             self._send_uplink(t, "JC", (self.op_seq, op_now, targets))
+            self.out.operator.append(("OC", op_now, self.op_seq, op_now, join_items(targets)))
             self.op_seq += 1
         jitter = int(self.rng.normal(0, 0.4 * MS))
         self._push(t + HEADSET_FRAME_NS + jitter, "headset")
@@ -310,10 +323,14 @@ class _Sim:
         if not ok:
             return
         deliver = at_socket
-        if self.uplink_profile is not None:
-            ok, deliver = self.uplink_profile.transmit_one(at_socket)
+        if self.uplink_link is not None:
+            ok, deliver, k = self.uplink_link.transmit_one(at_socket, (at_socket - self.start) / NS)
             if not ok:
                 return
+            segment = self.uplink_schedule.segments[k]
+            if segment.named and segment.name in PASSTHROUGH_PROFILES:
+                deliver = at_socket
+            deliver = max(deliver, at_socket)
         self._seq += 1
         heapq.heappush(self.inbox, (deliver, self._seq, kind, (at_socket, payload)))
 
@@ -325,7 +342,7 @@ class _Sim:
             # UdpTransport stamps arrival when the loop reads the socket, so without a robot-side
             # impairment both of JC's times are this iteration. With one, the socket was read on an
             # earlier iteration (about when it arrived) and the emulator released it now.
-            if self.uplink_profile is None:
+            if self.uplink_link is None:
                 t_socket = t
             else:
                 t_socket = min(t, at_socket + int(self.rng.uniform(0.0, self.p.robothost_loop_ms) * MS))
@@ -555,9 +572,13 @@ class _Sim:
             self.out.latents.append(("EV", b, "board-back", ""))
         if self.p.payload_grams:
             self.out.latents.append(("EV", self.start, "payload", repr(self.p.payload_grams)))
-        if self.uplink_profile is not None:
-            self.out.robothost.append(("UP", self.start, self.p.uplink_profile, self.p.uplink_seed + 1))
-            self.out.latents.append(("EV", self.start, "uplink", self.p.uplink_profile))
+        if self.uplink_schedule is not None:
+            for seg in self.uplink_schedule.segments:
+                at = self.start + int(seg.start_s * NS)
+                if at < self.end:
+                    name = "none" if seg.named and seg.name in PASSTHROUGH_PROFILES else seg.name
+                    self._push(at, "uplink_change", name)
+                    self.out.latents.append(("EV", at, "uplink", name))
         while self._events:
             t, _, kind, payload = heapq.heappop(self._events)
             if t >= self.end:
@@ -577,6 +598,8 @@ class _Sim:
             elif kind == "relay_update":
                 for motor, pulse in payload:
                     self.relay_latest[motor] = (t, pulse)
+            elif kind == "uplink_change":
+                self.out.robothost.append(("UP", t, payload, self.p.uplink_seed + 1))
             elif kind == "battery":
                 self.out.driver.append(("BV", t, int(self.battery_mv(t))))
                 self._push(t + 5 * NS, "battery")
@@ -601,6 +624,9 @@ def write_session(out: SimOutput, directory: str, profile_json: Optional[dict] =
     with JlogWriter(os.path.join(directory, "driver.jlog"), "driver", NS, "CLOCK_MONOTONIC", session_id) as w:
         for rec in driver:
             w.record(*rec)
+    with JlogWriter(os.path.join(directory, "operator.jlog"), "operator", p.operator_tps, "OPERATOR", session_id) as w:
+        for rec in out.operator:
+            w.record(*rec)
     with JlogWriter(os.path.join(directory, "latents.jlog"), "latents", NS, "CLOCK_MONOTONIC", session_id) as w:
         for key, value in p.as_latent_params().items():
             w.record("LP", key, value)
@@ -617,7 +643,8 @@ def write_session(out: SimOutput, directory: str, profile_json: Optional[dict] =
         "conditions": {
             "speedSliderRadPerSec": p.slider,
             "load": load,
-            "network": {"uplinkProfile": p.uplink_profile, "uplinkSeed": p.uplink_seed, "addedDelayMs": 0},
+            "network": {"uplinkProfile": "schedule" if p.uplink_schedule else p.uplink_profile,
+                        "uplinkSeed": p.uplink_seed, "addedDelayMs": 0},
             "motion": "sim",
             "operator": "sim",
         },

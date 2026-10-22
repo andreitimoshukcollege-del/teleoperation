@@ -5,7 +5,14 @@ Every predictor receives the same calls a view records, and is asked:
 - just before and just after each **fresh reading** reaches it: ``joint_correction_deg``;
 - at every **90 Hz display tick** over a stretch of each view: ``joint_display_jitter_deg``;
 - around **events**, aligned on t_info (the first moment data could show the change):
-  ``joint_event_error_deg`` and ``joint_recovery_time_ms``.
+  ``joint_event_error_deg`` and ``joint_recovery_time_ms``;
+- over the display ticks' **motion segments**: ``joint_prediction_lead_ms``, how far ahead of (or
+  behind) the arm the prediction runs.
+
+A network forecast (ADR 0021 decisions 11 and 12) reaches only the predictors that take one
+(``uses_forecast``), with the effective times the host would then pass; everything else sees the view
+as the headset does today. The forecast-quality sweep runs the forecast-taking predictors once per
+level, named ``<predictor>@<level>``.
 
 This decides whether the repo's C# consumer gets built. It is not a result: a citable number comes
 only from ``Teleop.Eval`` scoring the exported model on views (decision 8).
@@ -27,21 +34,31 @@ from .baselines.adaptive import RelayReplayAdaptive
 from .baselines.hold_last import HoldLastJointPredictor
 from .baselines.relay_replay import RelayReplayPredictor
 from .baselines.types import JointPredictorConfig, JointSample, headset_joint_config
-from .data.dataset import EVENT_KINDS, call_stream, command_samples, state_samples
-from .data.views import View
+from .data.dataset import CALL_COMMAND, CALL_FORECAST, CALL_STATE, EVENT_KINDS, call_stream, command_samples, state_samples
+from .data.views import View, view_truths
 from .features import layout as L
+from .net import forecast as FC
 
 DEG = 180.0 / math.pi
 ARM = L.ARM_MOTORS
 EVENT_WINDOWS_MS = ((-2000, 0), (0, 100), (100, 250), (250, 500), (500, 1000), (1000, 2000))
+UPLINK_CHANGE = "uplink-change"  # an uplink event that moved the one-way delay by at least:
+UPLINK_CHANGE_MS = 50.0  # ADR 0021 decision 14
+# joint_prediction_lead_ms (docs/metrics.md section 4)
+LEAD_SPEED_RAD_S = 0.3
+LEAD_MIN_SEGMENT_S = 0.5
+LEAD_MAX_MS = 300
+LEAD_STEP_MS = 5
 
 
 class Predictor:
     name = "?"
+    uses_forecast = False
 
     def reset(self) -> None: ...
     def observe_command(self, eff: int, targets: Sequence[JointSample], speed: float) -> None: ...
     def observe_state(self, sensed: int, joints: Sequence[JointSample]) -> None: ...
+    def observe_forecast(self, stream: FC.ForecastStream, index: int) -> None: ...
 
     def predict(self, target: int) -> Tuple[Optional[np.ndarray], bool]:
         """Arm joints in ARM order, and whether this was a fallback."""
@@ -51,8 +68,11 @@ class Predictor:
 class Baseline(Predictor):
     """hold-last or relay-replay, speed-aware (as the headset runs it) or blind (the host passes 0)."""
 
-    def __init__(self, name: str, impl, blind: bool):
+    def __init__(self, name: str, impl, blind: bool, uses_forecast: bool = False):
         self.name, self.impl, self.blind = name, impl, blind
+        # A forecast-fed baseline sees only the forecast's effective times; it has no window to put
+        # the forecast itself in.
+        self.uses_forecast = uses_forecast
 
     def reset(self) -> None:
         self.impl.reset()
@@ -75,6 +95,8 @@ class Baseline(Predictor):
 
 class ModelPredictor(Predictor):
     """seq-model as the C# predictor will run it: the window, the exported graph, the fallback."""
+
+    uses_forecast = True
 
     def __init__(self, onnx_path: str, prior_config: JointPredictorConfig, aware: bool, name: str = "seq-model"):
         import onnxruntime as ort
@@ -99,6 +121,9 @@ class ModelPredictor(Predictor):
 
     def observe_state(self, sensed, joints):
         self.state.observe_state(sensed, joints)
+
+    def observe_forecast(self, stream, index):
+        self.state.observe_forecast(stream, index)
 
     def predict(self, target):
         self.calls += 1
@@ -131,11 +156,31 @@ class ViewResult:
     fallbacks: Dict[str, Tuple[int, int]] = field(default_factory=dict)
     inference_us: Dict[str, np.ndarray] = field(default_factory=dict)
     events: List[Tuple[int, str, int]] = field(default_factory=list)  # (t_event, kind, t_info)
+    lead_ms: Dict[str, np.ndarray] = field(default_factory=dict)  # per motion segment
+
+    def merge(self, other: "ViewResult") -> None:
+        """Adds another run's predictors over the same view (the forecast sweep)."""
+        for name in ("errors", "corrections", "jitter", "fallbacks", "inference_us", "lead_ms"):
+            getattr(self, name).update(getattr(other, name))
+
+
+def _uplink_change_ms(view: View, t_event: int) -> float:
+    """How far the uplink's one-way delay (p50) moved across an event: 0.5 s after against 0.5 s before."""
+    try:
+        up, _ = view_truths(view)
+    except (ValueError, KeyError):
+        return 0.0
+    half = int(0.5 * view.tps)
+    p50 = FC.QUANTILES.index(0.50)
+    after = up.value(up.segment_at(t_event + half), t_event + half)[0][p50]
+    before = up.value(up.segment_at(t_event - half), t_event - half)[0][p50]
+    return float(abs(after - before))
 
 
 def _t_info(view: View) -> List[Tuple[int, str, int]]:
     """t_info per event: a downlink switch shows up at once; anything the robot does (load, hand,
-    slider, uplink) shows up in the first frame sensed after it, when that frame reaches the headset."""
+    slider, uplink) shows up in the first frame sensed after it, when that frame reaches the headset.
+    An uplink event that moved the delay by at least ``UPLINK_CHANGE_MS`` is also an ``uplink-change``."""
     out = []
     fresh_t, fresh_s, newest = [], [], None
     for t, s in zip(view.st_t, view.st_sensed):
@@ -153,16 +198,59 @@ def _t_info(view: View) -> List[Tuple[int, str, int]]:
         k = np.searchsorted(fresh_s, int(t), side="left") if fresh_s.size else 0
         if k < fresh_s.size:
             out.append((int(t), kind, int(fresh_t[k])))
+            if kind == "uplink" and _uplink_change_ms(view, int(t)) >= UPLINK_CHANGE_MS:
+                out.append((int(t), UPLINK_CHANGE, int(fresh_t[k])))
     return out
 
 
+def lead_times_ms(view: View, ticks: np.ndarray, predictions: np.ndarray) -> np.ndarray:
+    """``joint_prediction_lead_ms`` for one predictor: per motion segment of each arm joint (the true
+    speed above ``LEAD_SPEED_RAD_S`` for at least ``LEAD_MIN_SEGMENT_S``, on the display ticks), the
+    shift tau in [-LEAD_MAX_MS, LEAD_MAX_MS] that minimises the median |prediction(t) - truth(t + tau)|.
+    Positive: the prediction shows where the arm will be (it runs ahead). The truth between reads is
+    linear between them."""
+    tps = view.tps
+    out = []
+    shifts = np.arange(-LEAD_MAX_MS, LEAD_MAX_MS + 1, LEAD_STEP_MS)
+    for j, m in enumerate(ARM):
+        sel = view.tr_motor == m
+        tt, tv = view.tr_t[sel].astype(np.float64), view.tr_value[sel]
+        if tt.size < 4:
+            continue
+        truth = np.interp(ticks.astype(np.float64), tt, tv, left=np.nan, right=np.nan)
+        speed = np.abs(np.gradient(truth, ticks.astype(np.float64) / tps)) if ticks.size > 2 else np.zeros(ticks.size)
+        moving = np.isfinite(speed) & (speed > LEAD_SPEED_RAD_S) & np.isfinite(predictions[:, j])
+        # Contiguous runs of motion, long enough to align.
+        edges = np.flatnonzero(np.diff(np.concatenate([[0], moving.astype(np.int8), [0]])))
+        for a, b in zip(edges[0::2], edges[1::2]):
+            if (ticks[b - 1] - ticks[a]) / tps < LEAD_MIN_SEGMENT_S:
+                continue
+            seg_t = ticks[a:b].astype(np.float64)
+            pred = predictions[a:b, j]
+            best, best_err = None, np.inf
+            for tau in shifts:
+                shifted = np.interp(seg_t + tau / 1000.0 * tps, tt, tv, left=np.nan, right=np.nan)
+                ok = np.isfinite(shifted)
+                if ok.sum() < 0.8 * ok.size:
+                    continue
+                err = float(np.median(np.abs(pred[ok] - shifted[ok])))
+                if err < best_err:
+                    best, best_err = float(tau), err
+            if best is not None:
+                out.append(best)
+    return np.array(out, dtype=np.float64)
+
+
 def evaluate_view(view: View, predictors: List[Predictor], reads_per_s: float = 20.0, jitter_s: float = 20.0,
-                  warmup_s: float = 2.0, seed: int = 0) -> ViewResult:
+                  warmup_s: float = 2.0, seed: int = 0, forecasts: Optional[FC.ForecastStream] = None,
+                  eff_forecast: Optional[np.ndarray] = None) -> ViewResult:
     rng = np.random.default_rng(seed)
     tps = view.tps
     for p in predictors:
         p.reset()
-    calls = call_stream(view)
+    calls = call_stream(view, forecasts)
+    takers = [p for p in predictors if p.uses_forecast]
+    eff_of = {p.name: (eff_forecast if (p.uses_forecast and eff_forecast is not None) else view.cmd_eff) for p in predictors}
     first_state = int(view.st_t[0]) if len(view.st_t) else 0
     arm_reads = np.nonzero(np.isin(view.tr_motor, ARM) & (view.tr_t >= first_state + int(warmup_s * tps)))[0]
     duration = (int(view.tr_t[arm_reads[-1]]) - int(view.tr_t[arm_reads[0]])) / tps if arm_reads.size else 0.0
@@ -172,7 +260,7 @@ def evaluate_view(view: View, predictors: List[Predictor], reads_per_s: float = 
     fresh_calls = set()
     newest = None
     for idx, (t, what, i) in enumerate(calls):
-        if what == 1:
+        if what == CALL_STATE:
             s = int(view.st_sensed[i])
             if newest is None or s > newest:
                 newest = s
@@ -195,10 +283,13 @@ def evaluate_view(view: View, predictors: List[Predictor], reads_per_s: float = 
         next_q_t = queries[qi][0] if qi < len(queries) else None
         if next_call_t is not None and (next_q_t is None or next_call_t <= next_q_t):
             t, what, i = calls[ci]
-            if what == 0:
+            if what == CALL_COMMAND:
                 targets = command_samples(view, i)
                 for p in predictors:
-                    p.observe_command(int(view.cmd_eff[i]), targets, float(view.cmd_speed[i]))
+                    p.observe_command(int(eff_of[p.name][i]), targets, float(view.cmd_speed[i]))
+            elif what == CALL_FORECAST:
+                for p in takers:
+                    p.observe_forecast(forecasts, i)
             else:
                 joints = state_samples(view, i)
                 fresh = ci in fresh_calls
@@ -230,6 +321,7 @@ def evaluate_view(view: View, predictors: List[Predictor], reads_per_s: float = 
         res.corrections[p.name] = np.concatenate(corr[p.name]) if corr[p.name] else np.zeros(0)
         d = np.array(disp[p.name], dtype=np.float64)
         res.jitter[p.name] = np.abs(d[2:] - 2 * d[1:-1] + d[:-2]).reshape(-1) * DEG if len(d) > 2 else np.zeros(0)
+        res.lead_ms[p.name] = lead_times_ms(view, jitter_ticks, d.reshape(-1, len(ARM))) if len(d) else np.zeros(0)
         if isinstance(p, ModelPredictor):
             res.fallbacks[p.name] = (p.fallbacks, p.calls)
             res.inference_us[p.name] = np.array(p.inference_s) * 1e6
@@ -318,23 +410,63 @@ def condition_key(conditions: dict) -> str:
     return label + (f" uplink={uplink}" if uplink not in ("lan", "none") else "")
 
 
+def _names(results: Sequence[ViewResult]) -> List[str]:
+    """Every predictor any view has, in first-seen order (the sweep's run only on some schedules)."""
+    out: List[str] = []
+    for r in results:
+        for n in r.errors:
+            if n not in out:
+                out.append(n)
+    return out
+
+
+def _cat(arrays: List[np.ndarray]) -> np.ndarray:
+    return np.concatenate(arrays) if arrays else np.zeros(0)
+
+
+def window_errors(results: Sequence[ViewResult], name: str, kind: str, after_info_ms: float = 1000.0) -> Dict[str, np.ndarray]:
+    """Per view: the errors of ``name`` with target time in [t_event, t_info + after_info_ms) after each
+    event of ``kind`` -- the information-limited stretch and what follows it (ADR 0021 decision 14)."""
+    out: Dict[str, List[np.ndarray]] = {}
+    for r in results:
+        e = r.errors.get(name)
+        if e is None or e.size == 0:
+            continue
+        for t_event, k, t_info in r.events:
+            if k != kind:
+                continue
+            sel = (e[:, 0] >= t_event) & (e[:, 0] < t_info + after_info_ms / 1000.0 * r.tps)
+            out.setdefault(r.view, []).append(e[sel, 2])
+    return {v: _cat(a) for v, a in out.items()}
+
+
+def is_live_impaired(conditions: dict) -> bool:
+    return conditions.get("network", {}).get("uplinkProfile", "lan") not in ("lan", "none")
+
+
 def summarize(results: Sequence[ViewResult]) -> Dict[str, object]:
-    names = list(results[0].errors) if results else []
+    names = _names(results)
+
+    def stats(rs: Sequence[ViewResult], n: str) -> Dict[str, Dict[str, float]]:
+        rs = [r for r in rs if n in r.errors]
+        return {
+            "joint_prediction_error_deg": percentiles(_cat([r.errors[n][:, 2] for r in rs])),
+            "joint_correction_deg": percentiles(_cat([r.corrections[n] for r in rs])),
+            "joint_display_jitter_deg": percentiles(_cat([r.jitter[n] for r in rs])),
+        }
+
     by_schedule: Dict[str, Dict[str, object]] = {}
     for sched in sorted({r.schedule for r in results}):
         rs = [r for r in results if r.schedule == sched]
-        by_schedule[sched] = {n: {
-            "joint_prediction_error_deg": percentiles(np.concatenate([r.errors[n][:, 2] for r in rs])),
-            "joint_correction_deg": percentiles(np.concatenate([r.corrections[n] for r in rs])),
-            "joint_display_jitter_deg": percentiles(np.concatenate([r.jitter[n] for r in rs])),
-        } for n in names}
-    overall = {n: {
-        "joint_prediction_error_deg": percentiles(np.concatenate([r.errors[n][:, 2] for r in results])),
-        "joint_correction_deg": percentiles(np.concatenate([r.corrections[n] for r in results])),
-        "joint_display_jitter_deg": percentiles(np.concatenate([r.jitter[n] for r in results])),
-        "joint_event_error_deg": {k: event_windows(results, n, [k]) for k in ("network", "hand-on", "slider", "payload")},
-        "joint_recovery_time_ms": {k: percentiles(recovery_times_ms(results, n, [k])) for k in ("network", "hand-on", "slider")},
-    } for n in names}
+        by_schedule[sched] = {n: stats(rs, n) for n in names if any(n in r.errors for r in rs)}
+    overall = {}
+    for n in names:
+        o = stats(results, n)
+        o["joint_event_error_deg"] = {k: event_windows(results, n, [k]) for k in ("network", "hand-on", "slider", "payload", UPLINK_CHANGE)}
+        o["joint_recovery_time_ms"] = {k: percentiles(recovery_times_ms(results, n, [k])) for k in ("network", "hand-on", "slider", UPLINK_CHANGE)}
+        o["joint_prediction_lead_ms"] = percentiles_signed(_cat([r.lead_ms.get(n, np.zeros(0)) for r in results]))
+        o["uplink_change_window_deg"] = percentiles(_cat(list(window_errors(results, n, UPLINK_CHANGE).values())))
+        overall[n] = o
     fallback = {}
     inference = {}
     for r in results:
@@ -346,24 +478,58 @@ def summarize(results: Sequence[ViewResult]) -> Dict[str, object]:
     by_condition: Dict[str, Dict[str, object]] = {}
     for cond in sorted({condition_key(r.conditions) for r in results}):
         rs = [r for r in results if condition_key(r.conditions) == cond]
-        by_condition[cond] = {n: {
-            "joint_prediction_error_deg": percentiles(np.concatenate([r.errors[n][:, 2] for r in rs])),
-        } for n in names}
+        by_condition[cond] = {n: {"joint_prediction_error_deg": percentiles(_cat([r.errors[n][:, 2] for r in rs if n in r.errors]))}
+                              for n in names if any(n in r.errors for r in rs)}
+    live = [r for r in results if is_live_impaired(r.conditions)]
     return {
         "views": len(results),
         "by_schedule": by_schedule,
         "by_condition": by_condition,
+        "live_impaired": {n: stats(live, n) for n in names if any(n in r.errors for r in live)},
         "overall": overall,
         "joint_predictor_fallback": {n: {"fallbacks": f, "calls": c, "rate": f / c if c else float("nan")} for n, (f, c) in fallback.items()},
         "joint_inference_us": {n: percentiles(np.concatenate(v)) for n, v in inference.items()},
     }
 
 
+def percentiles_signed(x: np.ndarray) -> Dict[str, float]:
+    """A signed quantity's spread (the lead): p5, p50, p95 and the share of segments at the search's edge."""
+    x = np.asarray(x, dtype=np.float64)
+    x = x[np.isfinite(x)]
+    if x.size == 0:
+        return {"p5": float("nan"), "p50": float("nan"), "p95": float("nan"), "edge": float("nan"), "n": 0}
+    return {"p5": float(np.percentile(x, 5)), "p50": float(np.percentile(x, 50)), "p95": float(np.percentile(x, 95)),
+            "edge": float(np.mean(np.abs(x) >= LEAD_MAX_MS)), "n": int(x.size)}
+
+
+def bootstrap_window_p95_difference(results: Sequence[ViewResult], a: str, b: str, kind: str = UPLINK_CHANGE,
+                                    n: int = 2000, seed: int = 0) -> Dict[str, float]:
+    """The session bootstrap of decision 9, on the errors inside ``window_errors`` windows."""
+    wa, wb = window_errors(results, a, kind), window_errors(results, b, kind)
+    sessions = sorted(set(wa) & set(wb))
+    if not sessions:
+        return {"diff": float("nan"), "lo": float("nan"), "hi": float("nan"), "sessions": 0}
+    rng = np.random.default_rng(seed)
+
+    def diff(chosen) -> float:
+        ea = _cat([wa[s] for s in chosen])
+        eb = _cat([wb[s] for s in chosen])
+        if ea.size == 0 or eb.size == 0:
+            return float("nan")
+        return float(np.percentile(ea, 95) - np.percentile(eb, 95))
+
+    point = diff(sessions)
+    draws = np.array([diff(rng.choice(sessions, size=len(sessions), replace=True)) for _ in range(n)])
+    draws = draws[np.isfinite(draws)]
+    return {"diff": point, "lo": float(np.percentile(draws, 2.5)) if draws.size else float("nan"),
+            "hi": float(np.percentile(draws, 97.5)) if draws.size else float("nan"), "sessions": len(sessions)}
+
+
 def bootstrap_p95_difference(results: Sequence[ViewResult], a: str, b: str, schedule: Optional[str] = None,
                              n: int = 2000, seed: int = 0) -> Dict[str, float]:
     """Paired session bootstrap of p95(a) - p95(b): sessions are the unit, not samples (methodology
     review: queries are autocorrelated and sessions dominate the variance)."""
-    rs = [r for r in results if schedule is None or r.schedule == schedule]
+    rs = [r for r in results if (schedule is None or r.schedule == schedule) and a in r.errors and b in r.errors]
     sessions = sorted({r.view for r in rs})
     if not sessions:
         return {"diff": float("nan"), "lo": float("nan"), "hi": float("nan")}
@@ -400,3 +566,38 @@ def default_predictors(onnx_path: Optional[str], tps: int, prior_config: Optiona
     if onnx_path:
         out.append(ModelPredictor(onnx_path, config, aware))
     return out
+
+
+# The forecast-quality sweep (ADR 0021 decisions 12 and 14): every level but absent, which is the
+# base run itself.
+SWEEP_LEVELS: Tuple[str, ...] = tuple(level for level in FC.LEVELS if level != "absent")
+
+
+def forecast_predictors(onnx_path: Optional[str], tps: int, level: str, prior_config: Optional[JointPredictorConfig] = None,
+                        aware: bool = False) -> List[Predictor]:
+    """The predictors a forecast reaches, at one level: relay-replay as the headset runs it but fed the
+    forecast's effective times (decision 14's F3 baseline), and the model."""
+    config = prior_config or headset_joint_config(tps)
+    out: List[Predictor] = [Baseline(f"relay-replay-fc@{level}", RelayReplayPredictor(headset_joint_config(tps)),
+                                     blind=False, uses_forecast=True)]
+    if onnx_path:
+        out.append(ModelPredictor(onnx_path, config, aware, name=f"seq-model@{level}"))
+    return out
+
+
+def evaluate_with_sweep(view: View, onnx_path: Optional[str], aware: bool = False,
+                        sensed_ages_ms: Optional[Sequence[float]] = None, levels: Sequence[str] = SWEEP_LEVELS,
+                        seed: int = 0, jitter_s: float = 20.0) -> ViewResult:
+    """The base run (no forecast: the headset today, and every baseline), then one run per forecast
+    level for the predictors a forecast reaches, merged into one result."""
+    from .data.dataset import view_forecasts
+
+    base = evaluate_view(view, default_predictors(onnx_path, view.tps, aware=aware, sensed_ages_ms=sensed_ages_ms),
+                         seed=seed, jitter_s=jitter_s)
+    config = headset_joint_config(view.tps, sensed_ages_ms=tuple(sensed_ages_ms)) if sensed_ages_ms else None
+    for level in levels:
+        forecasts, eff = view_forecasts(view, level, seed ^ 0x5F0CA57)
+        run = evaluate_view(view, forecast_predictors(onnx_path, view.tps, level, prior_config=config, aware=aware),
+                            seed=seed, jitter_s=jitter_s, forecasts=forecasts, eff_forecast=eff)
+        base.merge(run)
+    return base

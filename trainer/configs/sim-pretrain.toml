@@ -12,8 +12,25 @@ loads = ["none", "payload-light", "payload-heavy", "hand"]
 sessions_per_cell = 8
 test_sessions_per_cell = 2
 minutes = 10.0
-uplink_impaired_share = 0.15
+# ADR 0021 decision 13: half the sessions' physical uplink changes mid-session (random schedules for
+# training, the named TEST_UPLINK_CYCLE for test), so a network forecast has something to tell.
+uplink_schedule_share = 0.5
+test_uplink_schedule_share = 0.5
+uplink_impaired_share = 0.0
 val_share = 0.15
+
+# The network forecast each view is built at (ADR 0021 decision 12). Without this table, every view
+# draws a level from the decision's mixture; `level = "absent"` trains the forecast-blind model.
+# [forecast]
+# level = "absent"
+# [forecast.mixture]
+# oracle = 0.10
+# good = 0.20
+# fair = 0.20
+# poor = 0.15
+# persistence = 0.15
+# "rtt-half" = 0.10
+# absent = 0.10
 
 [sample]
 queries_per_s = 20.0
@@ -35,5 +52,6 @@ ema = 0.999
 huber_deg = 0.3
 nll_weight = 0.1
 consistency = 0.0
+forecast_dropout = 0.1
 val_every = 2000
 seed = 1

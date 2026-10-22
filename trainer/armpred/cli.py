@@ -75,10 +75,25 @@ def _prior_ages(config: dict) -> Optional[tuple]:
     return None
 
 
+def _forecast_cfg(config: dict):
+    """``[forecast] level = "good"`` (every view), or ``[forecast.mixture]`` shares (a draw per view);
+    the default is ADR 0021 decision 12's mixture."""
+    from .data.build import ForecastConfig
+
+    section = config.get("forecast", {})
+    kw = {}
+    if "level" in section:
+        kw["level"] = str(section["level"])
+    if "mixture" in section:
+        kw["mixture"] = tuple(sorted((str(k), float(v)) for k, v in section["mixture"].items()))
+    return ForecastConfig(**kw)
+
+
 def _prepare(config: dict, data_dir: str, workers: int, log) -> dict:
     """Simulate the session matrix and build the train/val shards into ``data_dir``, once: every
     training run of a grid then reads the same shards (and the same test sessions)."""
     from .data.build import BuildConfig
+    from .features import layout as L
     from .data.dataset import SampleConfig
     from .data.schedule import RandomScheduleConfig
     from .pipeline import TRACES, MatrixConfig, build_splits, simulate_matrix
@@ -91,12 +106,20 @@ def _prepare(config: dict, data_dir: str, workers: int, log) -> dict:
                             schedules=RandomScheduleConfig(**{k: tuple(v) if isinstance(v, list) else v
                                                              for k, v in config.get("schedules", {}).items()}),
                             aware=bool(config.get("train", {}).get("aware", False)), traces_dir=TRACES, workers=workers,
-                            sensed_ages_ms=_prior_ages(config))
+                            sensed_ages_ms=_prior_ages(config), forecast=_forecast_cfg(config))
+    prepared_path = os.path.join(data_dir, "prepared.json")
+    if os.path.exists(prepared_path):
+        with open(prepared_path, "r", encoding="utf-8") as f:
+            old = json.load(f).get("layout", "v1")
+        if old != L.layout_id(build_cfg.aware):
+            raise SystemExit(f"{data_dir} holds shards for layout {old}; this trainer builds {L.layout_id(build_cfg.aware)}. "
+                             "Prepare into a new directory.")
     dirs = simulate_matrix(matrix, ranges, seed, data_dir, workers=workers, log=log)
     paths = build_splits(dirs, data_dir, int(config.get("views_per_session", 8)), int(config.get("val_views", 2)),
                          build_cfg, seed, log=log)
-    with open(os.path.join(data_dir, "prepared.json"), "w", encoding="utf-8") as f:
-        json.dump({"dirs": dirs, "paths": paths, "aware": build_cfg.aware, "sensedAgesMs": build_cfg.sensed_ages_ms}, f, indent=2)
+    with open(prepared_path, "w", encoding="utf-8") as f:
+        json.dump({"dirs": dirs, "paths": paths, "aware": build_cfg.aware, "sensedAgesMs": build_cfg.sensed_ages_ms,
+                   "layout": L.layout_id(build_cfg.aware), "forecast": asdict(build_cfg.forecast)}, f, indent=2)
     return {"dirs": dirs, "paths": paths}
 
 
@@ -126,6 +149,7 @@ def _apply_sets(config: dict, sets: List[str]) -> dict:
 
 def _train_run(config: dict, data_dir: str, out: str, workers: int, log, steps: int = 0, skip_eval: bool = False) -> int:
     from .data.build import load_shards
+    from .features import layout as L
     from .pipeline import trainer_version
     from .train import train
 
@@ -136,7 +160,11 @@ def _train_run(config: dict, data_dir: str, out: str, workers: int, log, steps: 
         cfg = replace(cfg, steps=steps, val_every=max(1, min(cfg.val_every, steps)))
     if cfg.aware != prepared["aware"]:
         raise SystemExit(f"the shards in {data_dir} were built with aware={prepared['aware']}, the run asks aware={cfg.aware}")
-    train_ds, val_ds = load_shards([prepared["paths"]["train"]]), load_shards([prepared["paths"]["val"]])
+    layout = L.layout_id(cfg.aware)
+    if prepared.get("layout", "v1") != layout:
+        raise SystemExit(f"the shards in {data_dir} are layout {prepared.get('layout', 'v1')}, this trainer is {layout}: prepare again")
+    train_ds = load_shards([prepared["paths"]["train"]], layout=layout)
+    val_ds = load_shards([prepared["paths"]["val"]], layout=layout)
     log(f"armpred {__version__} train-run -> {out} (trainer {trainer_version()}); data {data_dir}")
     log(f"training {cfg.arch} on {len(train_ds)} samples ({len(val_ds)} val), {cfg.steps} steps, batch {cfg.batch}")
     summary = train(train_ds, val_ds, cfg, out, log=log)
@@ -222,8 +250,10 @@ def _sha(path: str) -> str:
 
 
 def _export_run(out: str, cfg, val_ds, data_hashes: dict, log, source: str, sensed_ages_ms=None) -> dict:
+    from . import FORECAST_FORMAT_VERSION
     from .export import export_onnx, flat_inputs
     from .features import layout as L
+    from .net import forecast as FC
     from .pipeline import trainer_version
     from .train import load_best
 
@@ -246,13 +276,17 @@ def _export_run(out: str, cfg, val_ds, data_hashes: dict, log, source: str, sens
         "format": "jetrover-model-card", "version": MODEL_FORMAT_VERSION,
         "model": {"path": "model.onnx", "sha256": info["sha256"], "opset": info["opset"], "ops": info["ops"],
                   "inputLength": info["input_length"], "outputLength": 10, "layout": info["metadata"]["teleop.layout_id"]},
+        "forecast": {"format": FORECAST_FORMAT_VERSION, "horizonsMs": list(FC.HORIZONS_MS), "quantiles": list(FC.QUANTILES),
+                     "trainingDropout": cfg.forecast_dropout,
+                     "levels": "ADR 0021 decision 12 mixture unless the run's [forecast] says otherwise"},
         "prior": {"predictor": "relay-replay", "speed": "aware" if cfg.aware else "blind",
                   "config": "headset" if not sensed_ages_ms else "headset+fitted-ages",
                   "sensedAgeMotorIds": [1, 2, 3, 4, 5],
                   "sensedAgeMs": list(sensed_ages_ms) if sensed_ages_ms else [45.0, 35.0, 25.0, 15.0, 5.0]},
         "parity": {"maxAbsRad": info["parity_max_abs"], "rows": info["parity_rows"], "toleranceRad": 1e-5},
         "trainer": {"version": __version__, **version},
-        "formats": {"session": SESSION_FORMAT_VERSION, "views": VIEW_FORMAT_VERSION, "model": MODEL_FORMAT_VERSION},
+        "formats": {"session": SESSION_FORMAT_VERSION, "views": VIEW_FORMAT_VERSION, "model": MODEL_FORMAT_VERSION,
+                    "forecast": FORECAST_FORMAT_VERSION},
         "data": data_hashes,
         "source": source,
         "training": {k: summary[k] for k in ("config", "best", "val_prior", "val_hold_last", "train_samples", "val_samples", "device", "torch")},
@@ -269,8 +303,8 @@ def _evaluate_one(args):
     from .contract.session import load_session
     from .data.schedule import parse
     from .data.views import synthesize
-    from .evaluate import default_predictors, evaluate_view
-    from .pipeline import TRACES
+    from .evaluate import default_predictors, evaluate_view, evaluate_with_sweep
+    from .pipeline import FORECAST_SWEEP_SCHEDULES, TRACES
 
     from .contract.profile import load_profile
 
@@ -278,6 +312,8 @@ def _evaluate_one(args):
     session = load_session(session_dir)
     profile = load_profile(profile_path) if profile_path else JETROVER
     view = synthesize(session, profile, parse(schedule), seed=seed, traces_dir=TRACES)
+    if schedule in FORECAST_SWEEP_SCHEDULES:
+        return evaluate_with_sweep(view, onnx_path, aware=aware, sensed_ages_ms=ages, seed=seed)
     return evaluate_view(view, default_predictors(onnx_path, view.tps, aware=aware, sensed_ages_ms=ages), seed=seed)
 
 
@@ -285,7 +321,7 @@ def _evaluate_run(out: str, test_dirs: List[str], cfg, log, workers: int = 0, si
                   profile_path: Optional[str] = None, sensed_ages_ms=None) -> dict:
     from concurrent.futures import ProcessPoolExecutor
 
-    from .evaluate import bootstrap_p95_difference, summarize
+    from .evaluate import bootstrap_p95_difference, bootstrap_window_p95_difference, is_live_impaired, summarize
     from .pipeline import TEST_SCHEDULES
     from .report import write_report
 
@@ -302,10 +338,14 @@ def _evaluate_run(out: str, test_dirs: List[str], cfg, log, workers: int = 0, si
     summary["deterministic"] = all(
         np.array_equal(results[0].errors[n], again.errors[n]) and np.array_equal(results[0].corrections[n], again.corrections[n])
         for n in results[0].errors)
-    rows = [b for b in ("relay-replay", "relay-replay-blind", "relay-replay-adaptive", "relay-replay-fitted")
-            if b in results[0].errors]
+    rows = [b for b in ("relay-replay", "relay-replay-blind", "relay-replay-adaptive", "relay-replay-fitted",
+                        "relay-replay-servo") if b in results[0].errors]
     summary["bootstrap"] = {s: {b: bootstrap_p95_difference(results, "seq-model", b, schedule=s) for b in rows}
                             for s in sorted({r.schedule for r in results})}
+    live = [r for r in results if is_live_impaired(r.conditions)]
+    summary["bootstrap_live"] = {b: bootstrap_p95_difference(live, "seq-model", b) for b in rows}
+    fed = sorted({n for r in results for n in r.errors if n.endswith("@good") and not n.startswith("seq-model")})
+    summary["bootstrap_forecast"] = {b: bootstrap_window_p95_difference(results, "seq-model@good", b) for b in fed}
     summary["simulated"] = simulated
     os.makedirs(os.path.join(out, "eval"), exist_ok=True)
     with open(os.path.join(out, "eval", "report.json"), "w", encoding="utf-8") as f:
@@ -331,6 +371,7 @@ def cmd_evaluate(args) -> int:
 def cmd_make_views(args) -> int:
     from .contract.profile import JETROVER, load_profile
     from .contract.session import load_session
+    from .data.dataset import view_forecasts
     from .data.schedule import parse
     from .data.views import save_view, synthesize
     from .pipeline import TRACES
@@ -346,7 +387,10 @@ def cmd_make_views(args) -> int:
                 return 2
             for seed in args.seeds:
                 view = synthesize(session, profile, schedule, seed=seed, traces_dir=TRACES)
-                name = f"{session.id}__{spec.replace(';', '+').replace('@', '-at-')}__seed{seed}.npz"
+                if args.forecast_level != "absent":
+                    view.forecasts, _ = view_forecasts(view, args.forecast_level, seed ^ 0x5F0CA57)
+                level = "" if args.forecast_level == "absent" else f"__fc-{args.forecast_level}"
+                name = f"{session.id}__{spec.replace(';', '+').replace('@', '-at-')}__seed{seed}{level}.npz"
                 save_view(view, os.path.join(args.out, name))
                 written += 1
     print(f"wrote {written} views to {args.out}")
@@ -426,7 +470,8 @@ def cmd_finetune(args) -> int:
     build_cfg = BuildConfig(sample=SampleConfig(**config.get("sample", {})),
                             schedules=RandomScheduleConfig(**{k: tuple(v) if isinstance(v, list) else v
                                                              for k, v in config.get("schedules", {}).items()}),
-                            aware=cfg.aware, traces_dir=TRACES, workers=args.workers, sensed_ages_ms=_prior_ages(config))
+                            aware=cfg.aware, traces_dir=TRACES, workers=args.workers, sensed_ages_ms=_prior_ages(config),
+                            forecast=_forecast_cfg(config))
     seed = int(config.get("seed", 1))
     paths = {}
     for name, n_views in (("train", int(config.get("views_per_session", 16))), ("val", int(config.get("val_views", 4)))):
@@ -438,7 +483,10 @@ def cmd_finetune(args) -> int:
         if not os.path.exists(paths[name]):
             info = build(plans, build_cfg, paths[name])
             log(f"{name}: {info['samples']} samples from {len(plans)} views")
-    train_ds, val_ds = load_shards([paths["train"]]), load_shards([paths["val"]])
+    from .features import layout as L
+
+    layout = L.layout_id(cfg.aware)
+    train_ds, val_ds = load_shards([paths["train"]], layout=layout), load_shards([paths["val"]], layout=layout)
     log(f"armpred {__version__} finetune -> {out} (trainer {trainer_version()}), {len(train_ds)} samples")
     summary = train(train_ds, val_ds, cfg, out, log=log, init_state=init_state)
     log(f"best val p95 {summary['best']['p95']:.3f} deg (prior {summary['val_prior']['p95']:.3f}, hold-last {summary['val_hold_last']['p95']:.3f})")
@@ -592,6 +640,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     p.add_argument("--schedule", action="append", required=True)
     p.add_argument("--seeds", type=int, nargs="+", default=[1, 2, 3, 4, 5])
     p.add_argument("--profile")
+    p.add_argument("--forecast-level", default="absent", help="attach a network forecast stream at this level (VIEW_FORMAT.md v2)")
     p.add_argument("--out", required=True)
     p.set_defaults(func=cmd_make_views)
 

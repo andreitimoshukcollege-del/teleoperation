@@ -18,6 +18,8 @@ import numpy as np
 from ..baselines.types import headset_joint_config
 from ..contract.profile import JETROVER, RobotProfile, load_profile
 from ..contract.session import load_session
+from ..features import layout as L
+from ..net import forecast as FC
 from .dataset import SampleConfig, Samples, view_samples
 from .schedule import RandomScheduleConfig, Schedule, parse, random_schedule
 from .views import synthesize
@@ -32,6 +34,21 @@ class ViewPlan:
 
 
 @dataclass(frozen=True)
+class ForecastConfig:
+    """Which network forecast level each view's samples are built at (ADR 0021 decision 12): one
+    ``level`` for every view, or a draw per view from ``mixture``."""
+
+    level: Optional[str] = None
+    mixture: Tuple[Tuple[str, float], ...] = tuple(sorted(FC.TRAINING_MIXTURE.items()))
+
+    def pick(self, seed: int) -> str:
+        if self.level is not None:
+            return self.level
+        # Its own stream, so the schedule and the queries do not depend on the level.
+        return FC.draw_level(np.random.default_rng(np.random.PCG64([int(seed) & 0xFFFFFFFF, 0x1E7E1])), dict(self.mixture))
+
+
+@dataclass(frozen=True)
 class BuildConfig:
     sample: SampleConfig = SampleConfig()
     schedules: RandomScheduleConfig = RandomScheduleConfig()
@@ -41,6 +58,7 @@ class BuildConfig:
     # The prior's per-motor reading ages (ms, motors 1-5): None is the headset's 45/35/25/15/5;
     # `armpred sysid` fits them from recordings (its prior.json).
     sensed_ages_ms: Optional[Tuple[float, ...]] = None
+    forecast: ForecastConfig = ForecastConfig()
 
 
 def condition_tags(meta: dict) -> Dict[str, float]:
@@ -64,9 +82,11 @@ def _one(plan: ViewPlan, cfg: BuildConfig) -> Tuple[Samples, Dict[str, object]]:
     schedule = parse(plan.schedule) if plan.schedule else random_schedule(duration, rng, cfg.schedules)
     view = synthesize(session, profile, schedule, seed=plan.seed, traces_dir=cfg.traces_dir)
     prior = headset_joint_config(view.tps, sensed_ages_ms=cfg.sensed_ages_ms) if cfg.sensed_ages_ms else None
-    samples = view_samples(view, rng, cfg.sample, prior_config=prior, aware=cfg.aware)
+    level = cfg.forecast.pick(plan.seed)
+    samples = view_samples(view, rng, cfg.sample, prior_config=prior, aware=cfg.aware, level=level,
+                           forecast_seed=plan.seed ^ 0x5F0CA57)
     info = {"session": session.id, "schedule": schedule.describe(), "namedOnly": schedule.only_named,
-            "seed": plan.seed, "samples": len(samples), **condition_tags(session.meta)}
+            "seed": plan.seed, "samples": len(samples), "forecastLevel": level, **condition_tags(session.meta)}
     return samples, info
 
 
@@ -101,7 +121,7 @@ def build(plans: Sequence[ViewPlan], cfg: BuildConfig, out_path: str) -> Dict[st
     np.savez(out_path, view=np.concatenate(view_index) if view_index else np.zeros(0, np.int32), **arrays,
              **{f"tag_{k}": v for k, v in tags.items()})
     index = {"views": infos, "samples": int(sum(len(p) for p in parts)), "aware": cfg.aware,
-             "sample": asdict(cfg.sample)}
+             "layout": L.layout_id(cfg.aware), "sample": asdict(cfg.sample), "forecast": asdict(cfg.forecast)}
     with open(os.path.splitext(out_path)[0] + ".json", "w", encoding="utf-8") as f:
         json.dump(index, f, indent=2)
     return index
@@ -118,10 +138,16 @@ class Dataset:
         return len(self.samples)
 
 
-def load_shards(paths: Sequence[str]) -> Dataset:
+def load_shards(paths: Sequence[str], layout: Optional[str] = None) -> Dataset:
+    """Shards into one dataset. With ``layout``, a shard built for another layout is refused: its
+    rows would be read as columns they are not (a v1 shard has no layout id at all)."""
     parts, views, tags, index = [], [], {}, []
     view_offset = 0
     for path in paths:
+        with open(os.path.splitext(path)[0] + ".json", "r", encoding="utf-8") as f:
+            built = json.load(f).get("layout")
+        if layout is not None and built != layout:
+            raise ValueError(f"{path} was built for layout {built or 'v1'}, not {layout}: prepare it again")
         with np.load(path) as z:
             parts.append(Samples(**{name: z[name] for name in Samples.__dataclass_fields__}))
             views.append(z["view"] + view_offset)

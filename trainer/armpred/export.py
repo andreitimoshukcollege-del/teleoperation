@@ -58,7 +58,7 @@ def export_onnx(model: torch.nn.Module, aware: bool, path: str, metadata: Dict[s
     outside = [op for op in ops if op not in ALLOWED_OPS]
     if outside:
         raise RuntimeError(f"exported graph uses ops outside the allowlist: {outside}")
-    meta = {"teleop.layout_id": L.LAYOUT_ID + ("-aware" if aware else ""),
+    meta = {"teleop.layout_id": L.layout_id(aware),
             "teleop.model_format": str(MODEL_FORMAT_VERSION),
             "teleop.trainer_version": __version__,
             "teleop.input_length": str(n_in),

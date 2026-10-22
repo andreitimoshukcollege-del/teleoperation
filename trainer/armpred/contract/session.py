@@ -40,6 +40,24 @@ class Commands:
 
 
 @dataclass
+class OperatorCommands:
+    """``OC`` (``operator.jlog``): every joint command the headset sent, on its own clock, whether or
+    not it reached the robot."""
+
+    t: np.ndarray  # int64, operator ticks
+    seq: np.ndarray  # int64
+    capture: np.ndarray  # int64, the capture stamp it carried (operator ticks)
+    count: np.ndarray  # int16
+    motor: np.ndarray  # int16 [n, MAX_JOINTS]
+    angle: np.ndarray  # float32 [n, MAX_JOINTS]
+    speed: np.ndarray  # float32 [n, MAX_JOINTS]
+    ticks_per_second: int = 1_000_000_000
+
+    def __len__(self) -> int:
+        return int(self.t.shape[0])
+
+
+@dataclass
 class Frames:
     """``FR``: joint-state frames as RobotHost sent them."""
 
@@ -115,6 +133,7 @@ class Session:
     uplink_changes: List[Tuple[int, str, int]] = field(default_factory=list)
     marks: List[Tuple[int, str]] = field(default_factory=list)
     latents: Optional["Latents"] = None
+    operator_commands: Optional[OperatorCommands] = None
     files: Dict[str, Jlog] = field(default_factory=dict)
 
     @property
@@ -205,6 +224,20 @@ def parse_commands(rows: List[List[str]]) -> Commands:
     )
 
 
+def parse_operator_commands(rows: List[List[str]], ticks_per_second: int) -> OperatorCommands:
+    count, (motor, angle, speed) = _joint_list(rows, 3, 3)
+    return OperatorCommands(
+        t=_i64(rows, 0),
+        seq=_i64(rows, 1),
+        capture=_i64(rows, 2),
+        count=count,
+        motor=motor.astype(np.int16),
+        angle=angle.astype(np.float32),
+        speed=speed.astype(np.float32),
+        ticks_per_second=int(ticks_per_second),
+    )
+
+
 def parse_frames(rows: List[List[str]]) -> Frames:
     count, (motor, flags, value) = _joint_list(rows, 6, 3)
     return Frames(
@@ -261,6 +294,13 @@ def load_session(directory: str) -> Session:
         files["marks"] = marks_log
         marks = [(int(r[0]), r[1]) for r in marks_log.tag("MK")]
 
+    operator_commands = None
+    operator_path = os.path.join(directory, "operator.jlog")
+    if os.path.exists(operator_path):
+        operator_log = read_jlog(operator_path, "operator")
+        files["operator"] = operator_log
+        operator_commands = parse_operator_commands(operator_log.tag("OC"), operator_log.header.ticks_per_second)
+
     latents = None
     latents_path = os.path.join(directory, "latents.jlog")
     if os.path.exists(latents_path):
@@ -293,5 +333,6 @@ def load_session(directory: str) -> Session:
         uplink_changes=[(int(r[0]), r[1], int(r[2]) if r[2] != "" else 0) for r in host.tag("UP")],
         marks=marks,
         latents=latents,
+        operator_commands=operator_commands,
         files=files,
     )

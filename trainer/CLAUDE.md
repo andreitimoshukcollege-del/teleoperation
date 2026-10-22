@@ -10,8 +10,9 @@ after the gate, runs what it exports.
 
 - **Nothing here imports anything from the rest of the repo**, and nothing in the repo imports this.
   The packed file must work on a machine that has never seen the repo: no .NET, no Unity, no LFS.
-- **The only shared surface is `contract/`**: the three file-format specs (`SESSION_FORMAT.md`,
-  `VIEW_FORMAT.md`, `MODEL_FORMAT.md`) and `golden/`. A format change bumps its version, changes the
+- **The only shared surface is `contract/`**: the file-format specs (`SESSION_FORMAT.md`,
+  `VIEW_FORMAT.md`, `MODEL_FORMAT.md`, and `FORECAST_FORMAT.md`, the network model's output) and
+  `golden/`. A format change bumps its version, changes the
   spec and both sides in the same commit, and keeps the old version readable until no recording
   uses it.
 - **`golden/` is written by the repo, never by hand**: `cd core && dotnet run --project Teleop.Eval
@@ -31,10 +32,20 @@ uses `trunc_div`, never `//`, wherever C# divides a `long` that can be negative.
 
 At prediction time the model gets only what `ICommandAwarePredictor` gets on the headset: the
 commands sent (with their effective times), the measurements received (with their sensed times),
-and the target time. It is **never** given the requested speed (except the speed-aware ablation),
-the network profile or schedule, true delays, `AddedDelayMs`, the payload, or anything in a
-simulated session's `latents`. Latents exist only to stratify results and for oracles, which are
-diagnostics and never results.
+and the target time. It also gets the **network forecast** the host passes on (ADR 0021 decision 11,
+`contract/FORECAST_FORMAT.md`): an *estimate* from a separate network model, at a stated quality. In
+training and evaluation that forecast comes from `armpred/net/forecast.py` at one of decision 12's
+fixed levels. It is built from the view's true schedule only through those levels' declared
+errors, and the `oracle` level is a ceiling for the benefit curve.
+
+It is **never** given:
+- the requested speed (except the speed-aware ablation);
+- the network profile or schedule, or the true delays;
+- `AddedDelayMs`;
+- the payload;
+- anything in a simulated session's `latents`.
+
+Latents exist only to stratify results and for oracles, which are diagnostics and never results.
 
 ## Results
 
@@ -65,11 +76,11 @@ sha256 in the model card.
 | Path | Holds |
 |---|---|
 | `armpred/contract/` | session, view and bundle readers and writers, the session checker. numpy only, so `just recording-check` and `just pack-dataset` run without torch |
-| `armpred/net/` | the copies of Core: `SeededRng`, impairments, `EmulatedTransport`'s ordering, the profile catalog, `ClockSync`, the headset's feed; and schedules |
+| `armpred/net/` | the copies of Core: `SeededRng`, impairments, `EmulatedTransport`'s ordering, the profile catalog, `ClockSync`; and `forecast.py`, network forecast v1 and the forecasters of known quality (not a copy) |
 | `armpred/baselines/` | `hold-last`, `relay-replay` (copies of Core), `relay-replay-adaptive` (a dev baseline: online lag and droop, speed-blind) |
 | `armpred/sim/` | the simulator: operator motion, RobotHost, the relay gate, the servos, the reads |
-| `armpred/data/` | turning a session plus a schedule and a seed into what the headset would have seen |
-| `armpred/features/` | the model's input window (layout v1, `contract/MODEL_FORMAT.md`) |
+| `armpred/data/` | schedules, and turning a session plus a schedule and a seed into what the headset would have seen (views v2) |
+| `armpred/features/` | the model's input window (layout v2, `contract/MODEL_FORMAT.md`) |
 | `armpred/models/`, `train.py`, `export.py`, `evaluate.py`, `report.py` | torch models, training, ONNX export, the evaluation and the trainer gate |
 | `armpred/sysid.py` | what the recordings say about the robot: the simulator's ranges and the prior's fitted reading ages |
 | `armpred/pipeline.py`, `armpred/cli.py` | the session matrix, `prepare`, `train-run`, `sim-pretrain`, `grid`, `finetune`, `sysid` |

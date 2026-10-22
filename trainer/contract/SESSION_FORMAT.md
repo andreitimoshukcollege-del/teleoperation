@@ -95,7 +95,7 @@ All times are RobotHost `Stopwatch` ticks on the Jetson (`CLOCK_MONOTONIC`, ns).
 | `FR` | `t` `seq` `robotSendTicks` `sensedTicks` `echoOperatorTicks` `echoRobotRecvTicks` `joints` | A joint-state frame sent, decoded from the bytes that went out. `joints` is `motor:flags:value;...` |
 | `SS` | `t` `endpoint` | The joint-state stream's subscriber changed |
 | `JS` | `t` `endpoint` | The joint-command sender changed, so the staleness check restarted |
-| `UP` | `t` `profile` `seed` | The robot-side uplink impairment changed (`profile` `none` is off): from then on, `JC`'s `tDeliver` is when that Core profile released the command, `t` when the socket was read. Keepalives go through it too |
+| `UP` | `t` `profile` `seed` | The robot-side uplink impairment changed (`profile` `none` is off): from then on, `JC`'s `tDeliver` is when that Core profile released the command, `t` when the socket was read. Keepalives go through it too. A schedule (ADR 0021 decision 13) writes one `UP` per change; a simulated session's trainer-only segments name themselves (`param:...`, `queue:...`, `outage:...`) and its `latents.jlog` `LP uplink_schedule` holds their parameters |
 
 ## Driver records (`driver.jlog`)
 
@@ -110,6 +110,15 @@ All times are `time.monotonic_ns()` on the Jetson.
 | `GD` | `t` `motor` `pulse` | The gate dropped a target: within the deadband of the last one written |
 | `CY` | `t` `tEnd` | One feedback cycle (all reads) ran from `t` to `tEnd` |
 | `BV` | `t` `millivolts` | A battery report |
+
+## Operator records (`operator.jlog`)
+
+On the operator's own clock (the header says `OPERATOR`). Written by the simulator, and by
+`joint-drive` and (later) the Bridge.
+
+| Tag | Fields after the tag | Meaning |
+|---|---|---|
+| `OC` | `t` `seq` `captureTicks` `targets` | The headset sent joint command `seq` at `t`, stamped `captureTicks`, with `targets` `motor:angleRad:speedRadPerSec;...`: every command, whether or not it reached the robot. A `JC` with the same `seq` is its arrival |
 
 ## Marks (`marks.jlog`)
 

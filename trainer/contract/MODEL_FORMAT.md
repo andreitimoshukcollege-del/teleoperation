@@ -9,7 +9,7 @@ does, and refuses a model whose layout id or lengths it does not know.
 
 | | Name | Shape | |
 |---|---|---|---|
-| input | `x` | float32 [1, 898] (`v1`), [1, 899] (`v1-aware`) | the five joint rows, motors 1-5 in order, then the arm row |
+| input | `x` | float32 [1, 1359] (`v2`), [1, 1360] (`v2-aware`); [1, 898] / [1, 899] for v1 | the five joint rows, motors 1-5 in order, then the arm row |
 | output | `y` | float32 [1, 10] | per joint, motors 1-5: the correction in rad (already bounded to +-15 degrees), then the Laplace log-scale (log rad) |
 
 - **Static shapes, opset 17,** and only the ops in `armpred/export.py`'s `ALLOWED_OPS`, so whichever
@@ -25,15 +25,41 @@ does, and refuses a model whose layout id or lengths it does not know.
 
 | Key | Value |
 |---|---|
-| `teleop.layout_id` | `v1` or `v1-aware` |
+| `teleop.layout_id` | `v2` or `v2-aware` (`v1`, `v1-aware` before 2026-10-21) |
 | `teleop.model_format` | `1` |
-| `teleop.input_length`, `teleop.output_length` | `898` (or `899`), `10` |
+| `teleop.input_length`, `teleop.output_length` | `1359` (or `1360`), `10` |
 | `teleop.arch` | `mlp` or `conv` |
 | `teleop.trainer_version`, `teleop.trainer_sha`, `teleop.trainer_dirty` | the trainer that made it |
 | `teleop.data_sha256` | JSON: the sha256 of every shard it was trained and selected on |
 | `teleop.source` | `sim`, `real` or `sim+real` |
 
-## Layout v1 (the input window)
+## Layout v2 (the input window, docs/adr/0021 decisions 10 and 11)
+
+Per arm joint, 249 floats; then 114 arm-wide floats (115 for `v2-aware`). Conventions as v1 below.
+
+| Part | Floats | Content |
+|---|---|---|
+| prior | 2 | as v1 |
+| commanded path | 80 x 2 | newest first, at effective times `T + 0.2 s - 0.02 s * i` (i = 0..79): `asinh((target in force - v) / 0.2)`, 1 if any command had taken effect by then. The target in force is the newest command (with this joint) whose effective time is not later |
+| readings | 16 x 3 | as v1 |
+| innovations | 8 x 4 | as v1 |
+| identity | 5 | as v1 |
+| angle | 2 | as v1 |
+
+Arm-wide: v1's 13 (the last, "how full", is now `min(commands, 64) / 64`), then the **network block**,
+101 floats, from the newest forecast the host passed (`FORECAST_FORMAT.md`):
+- for the uplink then the downlink, for each of the 9 horizons: `asinh(q / 100 ms)` for p10, p50, p90,
+  p99, then P(loss) (90);
+- `asinh(floor / 100 ms)` uplink, downlink (2); P(outage) uplink, downlink (2);
+- the validity flags, uplink then downlink, each quantiles, loss, outage (6);
+- the forecast's age, `(T - issued) / 0.5` (1).
+
+An invalid field is 0 and its flag 0; with no forecast the whole block is 0. For `v2-aware` the newest
+command's speed / 6 rad/s follows the block. The host computes every command's effective time from the
+forecast when it has one (`FORECAST_FORMAT.md`, "What the host does with it"), which also moves the
+commanded path.
+
+## Layout v1 (the input window, superseded)
 
 Per arm joint, 177 floats; then 13 arm-wide floats (14 for `v1-aware`). Times are relative to the
 target time T and divided by 0.5 s. Angles are relative to the joint's newest fresh reading `v` and

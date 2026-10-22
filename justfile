@@ -1238,7 +1238,7 @@ _trainer-python:
     echo "error: no trainer venv -- run 'just trainer-setup' (add torch=true to also train and export locally)" >&2
     exit 1
 
-# Simulated pretraining on this machine's GPU, straight from the repo (Linux; docs/adr/0021): the first time, trainer/setup.sh builds trainer/.venv with the torch build this NVIDIA driver needs and runs the selftest; then armpred sim-pretrain. config: smoke, medium or sim-pretrain. The run goes to trainer/runs/<name> (gitignored); re-running the same name reuses what it already simulated and built. Extra args pass through, e.g. `just train-sim sim-pretrain sim1 --skip-eval`
+# Simulated pretraining on this machine's GPU, straight from the repo (Linux; docs/adr/0021): the first time, trainer/setup.sh builds trainer/.venv with the torch build this NVIDIA driver needs and runs the selftest; then armpred sim-pretrain. config: smoke, medium or sim-pretrain. The run goes to trainer/runs/<name> (gitignored); re-running the same name reuses what it already simulated and built. Extra args pass through, e.g. `just train-sim sim-pretrain sim1 --skip-eval`. The full sim-pretrain wants about 32 GB of RAM and 25 GB of disk, and takes 3-4 h (mostly CPU); run it under tmux or nohup so a dropped SSH session does not stop it
 [group('trainer')]
 train-sim config="sim-pretrain" name="" *args:
     #!/usr/bin/env bash

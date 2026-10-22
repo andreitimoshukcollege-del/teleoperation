@@ -77,11 +77,27 @@ def cell_weights(ds: Dataset) -> np.ndarray:
 
 def _tensors(ds: Dataset, device: torch.device) -> Dict[str, torch.Tensor]:
     s = ds.samples
+    as32 = lambda a: torch.from_numpy(np.ascontiguousarray(a, dtype=np.float32))  # noqa: E731  (no copy if already float32)
     return {
-        "joint": torch.from_numpy(s.joints.astype(np.float32)).to(device),
-        "arm": torch.from_numpy(s.arm.astype(np.float32)).to(device),
-        "target": torch.from_numpy((s.truth - s.prior).astype(np.float32)).to(device),  # what the correction must be
+        "joint": as32(s.joints).to(device),
+        "arm": as32(s.arm).to(device),
+        "target": as32(s.truth - s.prior).to(device),  # what the correction must be
     }
+
+
+def data_device(datasets, device: torch.device, log=print) -> torch.device:
+    """Where to keep the samples: on the GPU when they fit in 70% of its free memory (the fast case),
+    otherwise in host memory with each batch copied over, so a big dataset runs slower rather than
+    failing hours into a run."""
+    if device.type != "cuda":
+        return device
+    need = sum(len(d) * (d.samples.joints.shape[1] + d.samples.arm.shape[1] + 1) * 4 for d in datasets)
+    free, total = torch.cuda.mem_get_info(device)
+    if need < 0.7 * free:
+        log(f"data on the GPU: {need / 2**30:.1f} GiB of {free / 2**30:.1f} GiB free")
+        return device
+    log(f"data in host memory, batches streamed: {need / 2**30:.1f} GiB would not fit in {free / 2**30:.1f} GiB free on the GPU")
+    return torch.device("cpu")
 
 
 def _pairs(ds: Dataset) -> Optional[np.ndarray]:
@@ -107,10 +123,11 @@ def evaluate_errors(model: nn.Module, t: Dict[str, torch.Tensor], valid: np.ndar
     """|prior + correction - truth| in degrees, for every sample (NaN where the predictor falls back)."""
     model.eval()
     out = np.full(t["target"].shape[0], np.nan)
+    device = next(model.parameters()).device
     with torch.no_grad():
         for a in range(0, t["target"].shape[0], batch):
-            y = model(t["joint"][a:a + batch], t["arm"][a:a + batch])
-            out[a:a + batch] = (torch.abs(y[:, 0] - t["target"][a:a + batch]) * DEG).cpu().numpy()
+            y = model(t["joint"][a:a + batch].to(device), t["arm"][a:a + batch].to(device))
+            out[a:a + batch] = (torch.abs(y[:, 0] - t["target"][a:a + batch].to(device)) * DEG).cpu().numpy()
     out[~valid] = np.nan
     return out
 
@@ -135,11 +152,13 @@ def train(train_ds: Dataset, val_ds: Dataset, cfg: TrainConfig, out_dir: str, lo
     for p in ema.parameters():
         p.requires_grad_(False)
     opt = torch.optim.AdamW(model.parameters(), lr=cfg.lr, weight_decay=cfg.weight_decay)
-    tr = _tensors(train_ds, device)
-    va = _tensors(val_ds, device)
-    weights = torch.from_numpy(cell_weights(train_ds)).to(device)
+    store = data_device((train_ds, val_ds), device, log)
+    tr = _tensors(train_ds, store)
+    va = _tensors(val_ds, store)
+    weights = torch.from_numpy(cell_weights(train_ds)).to(store)
     pairs = _pairs(train_ds) if cfg.consistency > 0 else None
-    pairs_t = torch.from_numpy(pairs).to(device) if pairs is not None else None
+    pairs_t = torch.from_numpy(pairs).to(store) if pairs is not None else None
+    on = lambda x: x.to(device, non_blocking=True)  # noqa: E731  (a no-op when the data is on the GPU)
     huber = nn.HuberLoss(delta=cfg.huber_deg, reduction="mean")
     os.makedirs(os.path.join(out_dir, "checkpoints"), exist_ok=True)
 
@@ -157,23 +176,23 @@ def train(train_ds: Dataset, val_ds: Dataset, cfg: TrainConfig, out_dir: str, lo
             g["lr"] = lr
         model.train()
         idx = torch.multinomial(weights, cfg.batch, replacement=True)
-        arm = tr["arm"][idx]
+        arm = on(tr["arm"][idx])
         if cfg.forecast_dropout > 0.0:
             drop = torch.rand(arm.shape[0], device=device) < cfg.forecast_dropout
             arm = arm.clone()
             arm[drop, L.BASE_ARM_FEATURES:L.BASE_ARM_FEATURES + L.NETWORK_FEATURES] = 0.0
-        y = model(tr["joint"][idx], arm)
-        residual = y[:, 0] - tr["target"][idx]
+        y = model(on(tr["joint"][idx]), arm)
+        residual = y[:, 0] - on(tr["target"][idx])
         loss = huber(residual * DEG, torch.zeros_like(residual))
         b = torch.exp(y[:, 1])
         nll = (torch.abs(residual.detach()) / b + torch.log(2 * b)).mean()
         loss = loss + cfg.nll_weight * nll
         if pairs_t is not None:
-            sel = pairs_t[torch.randint(0, pairs_t.shape[0], (cfg.pair_batch,), device=device)]
-            before = model(tr["joint"][sel[:, 0]], tr["arm"][sel[:, 0]])[:, 0]
-            after = model(tr["joint"][sel[:, 1]], tr["arm"][sel[:, 1]])[:, 0].detach()
+            sel = pairs_t[torch.randint(0, pairs_t.shape[0], (cfg.pair_batch,), device=store)]
+            before = model(on(tr["joint"][sel[:, 0]]), on(tr["arm"][sel[:, 0]]))[:, 0]
+            after = model(on(tr["joint"][sel[:, 1]]), on(tr["arm"][sel[:, 1]]))[:, 0].detach()
             # Both share the label's time; their priors differ, so compare the full predictions.
-            prior_gap = (tr["target"][sel[:, 0]] - tr["target"][sel[:, 1]])  # (truth - prior_b) - (truth - prior_a)
+            prior_gap = on(tr["target"][sel[:, 0]] - tr["target"][sel[:, 1]])  # (truth - prior_b) - (truth - prior_a)
             jump = (before - prior_gap) - after
             loss = loss + cfg.consistency * huber(jump * DEG, torch.zeros_like(jump))
         opt.zero_grad(set_to_none=True)

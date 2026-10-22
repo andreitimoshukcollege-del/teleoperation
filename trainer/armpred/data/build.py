@@ -158,5 +158,7 @@ def load_shards(paths: Sequence[str], layout: Optional[str] = None) -> Dataset:
             info = json.load(f)
         index += info["views"]
         view_offset += len(info["views"])
-    return Dataset(samples=Samples.concat(parts), view=np.concatenate(views),
+    # One shard (the usual case) is used as loaded: concatenating would copy every sample once more.
+    samples = parts[0] if len(parts) == 1 else Samples.concat(parts)
+    return Dataset(samples=samples, view=views[0] if len(views) == 1 else np.concatenate(views),
                    tags={k: np.concatenate(v) for k, v in tags.items()}, index=index)

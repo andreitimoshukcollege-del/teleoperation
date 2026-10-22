@@ -1238,6 +1238,19 @@ _trainer-python:
     echo "error: no trainer venv -- run 'just trainer-setup' (add torch=true to also train and export locally)" >&2
     exit 1
 
+# Simulated pretraining on this machine's GPU, straight from the repo (Linux; docs/adr/0021): the first time, trainer/setup.sh builds trainer/.venv with the torch build this NVIDIA driver needs and runs the selftest; then armpred sim-pretrain. config: smoke, medium or sim-pretrain. The run goes to trainer/runs/<name> (gitignored); re-running the same name reuses what it already simulated and built. Extra args pass through, e.g. `just train-sim sim-pretrain sim1 --skip-eval`
+[group('trainer')]
+train-sim config="sim-pretrain" name="" *args:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cd trainer
+    [ -f "configs/{{config}}.toml" ] || { echo "error: no trainer/configs/{{config}}.toml" >&2; exit 1; }
+    if [ ! -x .venv/bin/armpred ]; then ./setup.sh; fi
+    name="{{name}}"
+    if [ -z "$name" ]; then name="{{config}}-$(git rev-parse --short HEAD)"; fi
+    echo "run: trainer/runs/$name (log: trainer/runs/$name/log.txt)"
+    .venv/bin/armpred sim-pretrain --config "configs/{{config}}.toml" --out "runs/$name" {{args}}
+
 # One-time local trainer venv, CPU only: the contract, the checker, the simulator and the tests (torch=true adds the CPU torch build, for smoke training and export). GPU machines use trainer/setup.sh from the packed file instead
 [group('trainer')]
 trainer-setup torch="false":

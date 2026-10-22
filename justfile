@@ -1243,6 +1243,7 @@ _trainer-python:
 train-sim config="sim-pretrain" name="" *args:
     #!/usr/bin/env bash
     set -euo pipefail
+    unset PYTHONPATH  # trainer/.venv is isolated from the rest of this machine; see trainer/setup.sh
     cd trainer
     [ -f "configs/{{config}}.toml" ] || { echo "error: no trainer/configs/{{config}}.toml" >&2; exit 1; }
     if [ ! -x .venv/bin/armpred ]; then ./setup.sh; fi

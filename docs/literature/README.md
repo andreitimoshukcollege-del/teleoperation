@@ -55,7 +55,7 @@ that sentence. It is one line in an existing log and this run did not touch it.
 | `learned-predictive-display.md` | The learned version: RNN/LSTM/Transformer hand and head prediction, intent prediction, generative video as a display, cloud-gaming latency hiding | 26 |
 | `world-models.md` | World models and learned dynamics for manipulation: Dreamer/PlaNet lineage, LaDi-WM, GE-Act, AHEAD, the 2026 surveys — organised around measured inference cost | 51 |
 | `human-factors.md` | What operators actually perceive: latency JNDs, motion-to-photon, cybersickness and SSQ, sensory conflict, Fitts under delay **(incomplete — see below)** | 30 |
-| `networking.md` | Adaptive playout and delay-based control: Ramjee, Moon/Kurose/Towsley, NetEQ as shipped, GARCH playout, LEDBAT/Copa/BBR/GCC, the delay-vs-loss curve | 53 |
+| `networking.md` | Adaptive playout and delay-based control: Ramjee, Moon/Kurose/Towsley, NetEQ as shipped, GARCH playout, LEDBAT/Copa/BBR/GCC, the delay-vs-loss curve; network-condition predictors and their output forms (§16) | 60 |
 
 `human-factors.md` is **marked "Status: in progress" by its own author and is genuinely
 unfinished.** It ends inside question (c); its fourth question — whether a tail statistic or a

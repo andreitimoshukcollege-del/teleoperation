@@ -55,8 +55,8 @@ layout v2 does not read them.
 
 ### Why this shape
 
-A survey of lightweight network predictors (2026-10-21, for ADR 0021's amendment) found that every
-one that drives a controller reports a distribution indexed by horizon: quantiles
+The survey behind it is `docs/literature/networking.md` §16 (2026-10-21). Every predictor there
+that drives a controller reports a distribution indexed by horizon: quantiles
 (NetEQ's target delay, Sprout's cautious forecast, a quantile-regression RTT forecaster) or bins
 (Fugu's transmission-time predictor), because a controller acts on the risk of being late, not on
 the mean. Separating a floor from a queue is the BBR/LEDBAT path model. And a 3GPP-style notice,

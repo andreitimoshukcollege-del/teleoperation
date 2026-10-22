@@ -34,6 +34,12 @@ JETROVER_PULSES_PER_RADIAN = 1000.0 / (240.0 * math.pi / 180.0)
 DEFAULT_RELAY_MIN_MOVE_SECONDS = f32(0.05)
 DEFAULT_RELAY_DEADBAND_RAD = f32(5.0 / JETROVER_PULSES_PER_RADIAN)
 DEFAULT_RELAY_MOVE_SPEED_RAD_PER_SEC = f32(2200.0 / JETROVER_PULSES_PER_RADIAN)
+# relay-replay-servo's servo (JointPredictorConfig.DefaultServo*): guesses until sysid fits them.
+DEFAULT_SERVO_MAX_SPEED_RAD_PER_SEC = f32(5.0)
+DEFAULT_SERVO_LAG_SECONDS = f32(0.02)
+DEFAULT_SERVO_PIPELINE_DELAY_SECONDS = f32(0.02)
+DEFAULT_SERVO_FIRST_MOVE_FROM_MEASURED = True
+DEFAULT_SERVO_STEP_SECONDS = f32(0.002)
 
 
 @dataclass(frozen=True)
@@ -51,6 +57,11 @@ class JointPredictorConfig:
     relay_move_speed_rad_per_sec: float = DEFAULT_RELAY_MOVE_SPEED_RAD_PER_SEC
     sensed_age_motor_ids: Tuple[int, ...] = ()
     sensed_age_seconds: Tuple[float, ...] = ()
+    servo_max_speed_rad_per_sec: float = DEFAULT_SERVO_MAX_SPEED_RAD_PER_SEC  # math.inf: no cap
+    servo_lag_seconds: float = DEFAULT_SERVO_LAG_SECONDS
+    servo_pipeline_delay_seconds: float = DEFAULT_SERVO_PIPELINE_DELAY_SECONDS
+    servo_first_move_from_measured: bool = DEFAULT_SERVO_FIRST_MOVE_FROM_MEASURED
+    servo_step_seconds: float = DEFAULT_SERVO_STEP_SECONDS
 
     def __post_init__(self) -> None:
         if len(self.sensed_age_motor_ids) != len(self.sensed_age_seconds):
@@ -73,6 +84,13 @@ class JointPredictorConfig:
             raise ValueError("max_joint_speed_rad_per_sec")
         if self.max_horizon_ticks < 0 or self.ticks_per_second <= 0:
             raise ValueError("max_horizon_ticks / ticks_per_second")
+        if not (self.servo_max_speed_rad_per_sec > 0.0):
+            raise ValueError("servo_max_speed_rad_per_sec")
+        for name in ("servo_lag_seconds", "servo_pipeline_delay_seconds"):
+            if not (getattr(self, name) >= 0.0) or math.isinf(getattr(self, name)):
+                raise ValueError(name)
+        if not (self.servo_step_seconds > 0.0) or math.isinf(self.servo_step_seconds):
+            raise ValueError("servo_step_seconds")
         # Every float field is a C# float: store it rounded, so arithmetic matches.
         object.__setattr__(self, "max_joint_speed_rad_per_sec", f32(self.max_joint_speed_rad_per_sec))
         object.__setattr__(self, "speed_scales", tuple(f32(s) for s in self.speed_scales))
@@ -80,6 +98,10 @@ class JointPredictorConfig:
         object.__setattr__(self, "relay_deadband_rad", f32(self.relay_deadband_rad))
         object.__setattr__(self, "relay_move_speed_rad_per_sec", f32(self.relay_move_speed_rad_per_sec))
         object.__setattr__(self, "sensed_age_seconds", tuple(f32(a) for a in self.sensed_age_seconds))
+        object.__setattr__(self, "servo_max_speed_rad_per_sec", f32(self.servo_max_speed_rad_per_sec))
+        object.__setattr__(self, "servo_lag_seconds", f32(self.servo_lag_seconds))
+        object.__setattr__(self, "servo_pipeline_delay_seconds", f32(self.servo_pipeline_delay_seconds))
+        object.__setattr__(self, "servo_step_seconds", f32(self.servo_step_seconds))
 
 
 def headset_joint_config(ticks_per_second: int, max_horizon_ms: float = 500.0,

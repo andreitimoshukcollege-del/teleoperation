@@ -23,5 +23,14 @@ def test_sysid_recovers_the_simulators_lag_ages_and_bus(tmp_path):
     assert ages[0] > ages[-1] > 0.0
     assert abs(result["bus"]["read_ms"] - params.read_ms) < 1.5
     assert abs(result["robothostLoopMs"] - params.robothost_loop_ms) < 0.2
+    # The simulator's pipeline: half a ~5.2 ms loop, the relay's 20 ms poll (10 ms on average), the
+    # driver's queue: tens of milliseconds, never more.
+    assert 0.003 < result["pipelineDelayS"] < 0.05, result["pipelineDelayS"]
+    servo = result["relayReplayServo"]
+    assert abs(servo["servoLagSeconds"] - float(np.median(true_lag))) <= max(0.006, 0.35 * float(np.median(true_lag)))
     js, tm = sysid.write(result, str(tmp_path / "out"))
     assert "[ranges]" in open(tm).read()
+    import json
+
+    prior = json.load(open(str(tmp_path / "out" / "prior.json")))
+    assert prior["relayReplayServo"]["servoPipelineDelaySeconds"] == servo["servoPipelineDelaySeconds"]

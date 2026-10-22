@@ -33,6 +33,7 @@ import numpy as np
 from .baselines.adaptive import RelayReplayAdaptive
 from .baselines.hold_last import HoldLastJointPredictor
 from .baselines.relay_replay import RelayReplayPredictor
+from .baselines.relay_replay_servo import RelayReplayServoPredictor
 from .baselines.types import JointPredictorConfig, JointSample, headset_joint_config
 from .data.dataset import CALL_COMMAND, CALL_FORECAST, CALL_STATE, EVENT_KINDS, call_stream, command_samples, state_samples
 from .data.views import View, view_truths
@@ -547,9 +548,11 @@ def bootstrap_p95_difference(results: Sequence[ViewResult], a: str, b: str, sche
 
 
 def default_predictors(onnx_path: Optional[str], tps: int, prior_config: Optional[JointPredictorConfig] = None,
-                       aware: bool = False, sensed_ages_ms: Optional[Sequence[float]] = None) -> List[Predictor]:
+                       aware: bool = False, sensed_ages_ms: Optional[Sequence[float]] = None,
+                       servo: Optional[Dict[str, float]] = None) -> List[Predictor]:
     """The ladder (ADR 0021): hold-last, relay-replay as the headset runs it, relay-replay blind,
-    relay-replay-adaptive, and the model; with fitted reading ages (``armpred sysid``), also
+    relay-replay-adaptive, relay-replay-servo (decision 15, its servo parameters the C# defaults
+    until sysid fits them), and the model; with fitted reading ages (``armpred sysid``), also
     relay-replay-fitted (speed-aware, as the headset runs it, with the fitted ages), and the blind,
     adaptive and model rows use those ages too."""
     if prior_config is None and sensed_ages_ms:
@@ -560,12 +563,25 @@ def default_predictors(onnx_path: Optional[str], tps: int, prior_config: Optiona
         Baseline("relay-replay", RelayReplayPredictor(headset_joint_config(tps)), blind=False),
         Baseline("relay-replay-blind", RelayReplayPredictor(config), blind=True),
         Baseline("relay-replay-adaptive", RelayReplayAdaptive(config), blind=True),
+        Baseline("relay-replay-servo", RelayReplayServoPredictor(headset_joint_config(tps)), blind=False),
     ]
     if sensed_ages_ms:
         out.append(Baseline("relay-replay-fitted", RelayReplayPredictor(config), blind=False))
+    if servo:
+        out.append(Baseline("relay-replay-servo-fitted", RelayReplayServoPredictor(servo_config(config, servo)), blind=False))
     if onnx_path:
         out.append(ModelPredictor(onnx_path, config, aware))
     return out
+
+
+def servo_config(config: JointPredictorConfig, servo: Dict[str, float]) -> JointPredictorConfig:
+    """A config with ``armpred sysid``'s fitted relay-replay-servo parameters (prior.json's
+    ``relayReplayServo``); what it did not fit keeps the C# default."""
+    import dataclasses
+
+    names = {"servoLagSeconds": "servo_lag_seconds", "servoMaxSpeedRadPerSec": "servo_max_speed_rad_per_sec",
+             "servoPipelineDelaySeconds": "servo_pipeline_delay_seconds"}
+    return dataclasses.replace(config, **{names[k]: float(v) for k, v in servo.items() if k in names})
 
 
 # The forecast-quality sweep (ADR 0021 decisions 12 and 14): every level but absent, which is the
@@ -575,10 +591,12 @@ SWEEP_LEVELS: Tuple[str, ...] = tuple(level for level in FC.LEVELS if level != "
 
 def forecast_predictors(onnx_path: Optional[str], tps: int, level: str, prior_config: Optional[JointPredictorConfig] = None,
                         aware: bool = False) -> List[Predictor]:
-    """The predictors a forecast reaches, at one level: relay-replay as the headset runs it but fed the
-    forecast's effective times (decision 14's F3 baseline), and the model."""
+    """The predictors a forecast reaches, at one level: relay-replay and relay-replay-servo as the
+    headset runs them but fed the forecast's effective times (decision 14's F3 baselines), and the model."""
     config = prior_config or headset_joint_config(tps)
     out: List[Predictor] = [Baseline(f"relay-replay-fc@{level}", RelayReplayPredictor(headset_joint_config(tps)),
+                                     blind=False, uses_forecast=True),
+                            Baseline(f"relay-replay-servo-fc@{level}", RelayReplayServoPredictor(headset_joint_config(tps)),
                                      blind=False, uses_forecast=True)]
     if onnx_path:
         out.append(ModelPredictor(onnx_path, config, aware, name=f"seq-model@{level}"))
@@ -587,13 +605,13 @@ def forecast_predictors(onnx_path: Optional[str], tps: int, level: str, prior_co
 
 def evaluate_with_sweep(view: View, onnx_path: Optional[str], aware: bool = False,
                         sensed_ages_ms: Optional[Sequence[float]] = None, levels: Sequence[str] = SWEEP_LEVELS,
-                        seed: int = 0, jitter_s: float = 20.0) -> ViewResult:
+                        seed: int = 0, jitter_s: float = 20.0, servo: Optional[Dict[str, float]] = None) -> ViewResult:
     """The base run (no forecast: the headset today, and every baseline), then one run per forecast
     level for the predictors a forecast reaches, merged into one result."""
     from .data.dataset import view_forecasts
 
-    base = evaluate_view(view, default_predictors(onnx_path, view.tps, aware=aware, sensed_ages_ms=sensed_ages_ms),
-                         seed=seed, jitter_s=jitter_s)
+    base = evaluate_view(view, default_predictors(onnx_path, view.tps, aware=aware, sensed_ages_ms=sensed_ages_ms,
+                                                  servo=servo), seed=seed, jitter_s=jitter_s)
     config = headset_joint_config(view.tps, sensed_ages_ms=tuple(sensed_ages_ms)) if sensed_ages_ms else None
     for level in levels:
         forecasts, eff = view_forecasts(view, level, seed ^ 0x5F0CA57)

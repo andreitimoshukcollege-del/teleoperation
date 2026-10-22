@@ -10,6 +10,13 @@ prior (ADR 0021 step D1). Everything here is measured from the session logs alon
   (a timed linear setpoint from where the servo is, followed with a first-order lag under a speed
   limit; no load) from every recorded write, over a grid of (lag, speed), against every recorded
   read. Sessions with a payload or a hand bias this, so only ``load: none`` sessions are used.
+- **The pipeline delay:** how long a command takes from RobotHost's socket to the driver's gate (half
+  a RobotHost loop waiting to be read, then the relay's poll and the driver's queue): what
+  ``relay-replay-servo`` adds to every effective time (ADR 0021 decision 15).
+
+``prior.json`` carries the fitted reading ages and, under ``relayReplayServo``, the servo lag, speed
+limit (only when identified) and pipeline delay, for ``relay-replay-fitted`` and
+``relay-replay-servo-fitted``.
 
 The output is ``sysid.json`` (every estimate, with how much data it rests on) and ``sysid.toml``: a
 ``[ranges]`` table that drops into a ``sim-pretrain`` config, each range the fitted spread widened by
@@ -74,6 +81,26 @@ def robothost_loop_ms(sessions: Sequence[Session]) -> float:
     med = float(np.median(intervals))
     loops = max(1, round(med / 5.2))
     return med / loops
+
+
+def pipeline_delay_s(sessions: Sequence[Session], loop_ms: float) -> float:
+    """From RobotHost's socket to the driver's gate: half a RobotHost loop (a datagram waits for the
+    loop to read it), then each command array's time from RobotHost's relay send (``RO``) to the
+    driver's gate (``CI``), the median over every array."""
+    deltas = []
+    for s in sessions:
+        ro = np.unique(s.relay_out.t)
+        ci = np.unique(s.gate_in.t)
+        if ro.size == 0 or ci.size == 0:
+            continue
+        k = np.searchsorted(ro, ci, side="right") - 1
+        ok = k >= 0
+        d = (ci[ok] - ro[k[ok]]) / NS
+        deltas.append(d[d < 0.5])  # anything slower is a gap in the stream, not the pipeline
+    d = np.concatenate(deltas) if deltas else np.zeros(0)
+    if d.size == 0 or not np.isfinite(loop_ms):
+        return float("nan")
+    return float(np.median(d)) + 0.5 * loop_ms / 1000.0
 
 
 def battery(sessions: Sequence[Session]) -> Dict[str, float]:
@@ -211,6 +238,7 @@ def identify(session_dirs: Sequence[str], profile: RobotProfile = JETROVER, serv
     out: Dict[str, object] = {"sessions": [s.id for s in sessions], "servoSessions": [s.id for s in unloaded]}
     out["bus"] = bus_timing(sessions)
     out["robothostLoopMs"] = robothost_loop_ms(sessions)
+    out["pipelineDelayS"] = pipeline_delay_s(sessions, out["robothostLoopMs"])
     out["battery"] = battery(sessions)
     out["readingAgesS"] = {str(m): a for m, a in reading_ages_s(sessions, profile).items()}
     fits: Dict[int, List[ServoFit]] = {m: [] for m in ARM}
@@ -231,6 +259,15 @@ def identify(session_dirs: Sequence[str], profile: RobotProfile = JETROVER, serv
     else:
         out["servoSpeedNote"] = ("no session moved faster than the servo allows, so its speed limit is not identified "
                                  "and the simulator keeps its default range; record some fast-slider sessions")
+    # relay-replay-servo's parameters (one servo model for every joint, as the C# class has).
+    servo: Dict[str, float] = {}
+    if lags:
+        servo["servoLagSeconds"] = float(np.median(lags))
+    if len(speeds) >= MIN_SPEED_FITS:
+        servo["servoMaxSpeedRadPerSec"] = float(np.median(speeds))
+    if np.isfinite(out["pipelineDelayS"]):
+        servo["servoPipelineDelaySeconds"] = out["pipelineDelayS"]
+    out["relayReplayServo"] = servo
     if np.isfinite(bus["read_ms"]):
         ranges["read_ms"] = (max(1.0, bus["read_ms"] - 2 * bus["read_jitter_ms"]), bus["read_ms"] + 2 * bus["read_jitter_ms"])
         ranges["read_jitter_ms"] = (0.5 * bus["read_jitter_ms"], 1.5 * bus["read_jitter_ms"] + 0.1)
@@ -255,7 +292,7 @@ def write(result: Dict[str, object], out_dir: str) -> Tuple[str, str]:
     if all(str(m) in ages for m in ARM):
         with open(os.path.join(out_dir, "prior.json"), "w", encoding="utf-8") as f:
             json.dump({"sensedAgeMotorIds": list(ARM), "sensedAgeMs": [round(ages[str(m)] * 1000.0, 2) for m in ARM],
-                       "from": result["sessions"]}, f, indent=2)
+                       "relayReplayServo": result.get("relayReplayServo", {}), "from": result["sessions"]}, f, indent=2)
     tm = os.path.join(out_dir, "sysid.toml")
     with open(tm, "w", encoding="utf-8", newline="\n") as f:
         f.write("# From `armpred sysid` on " + ", ".join(result["sessions"]) + "\n")

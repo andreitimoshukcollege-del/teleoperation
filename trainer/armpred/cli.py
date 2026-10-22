@@ -89,6 +89,15 @@ def _forecast_cfg(config: dict):
     return ForecastConfig(**kw)
 
 
+def _prior_servo(config: dict) -> Optional[dict]:
+    """``[prior] file = "<sysid out>/prior.json"``'s fitted relay-replay-servo parameters, if any."""
+    prior = config.get("prior", {})
+    if "file" in prior:
+        with open(prior["file"], "r", encoding="utf-8") as f:
+            return json.load(f).get("relayReplayServo") or None
+    return None
+
+
 def _prepare(config: dict, data_dir: str, workers: int, log) -> dict:
     """Simulate the session matrix and build the train/val shards into ``data_dir``, once: every
     training run of a grid then reads the same shards (and the same test sessions)."""
@@ -174,7 +183,8 @@ def _train_run(config: dict, data_dir: str, out: str, workers: int, log, steps: 
     _export_run(out, cfg, val_ds, data_hashes={k: _sha(v) for k, v in prepared["paths"].items()}, log=log, source="sim",
                 sensed_ages_ms=ages)
     if not skip_eval:
-        _evaluate_run(out, prepared["dirs"]["test"], cfg, log=log, workers=workers, simulated=True, sensed_ages_ms=ages)
+        _evaluate_run(out, prepared["dirs"]["test"], cfg, log=log, workers=workers, simulated=True, sensed_ages_ms=ages,
+                      servo=_prior_servo(config))
     return 0
 
 
@@ -308,17 +318,17 @@ def _evaluate_one(args):
 
     from .contract.profile import load_profile
 
-    session_dir, schedule, seed, onnx_path, aware, profile_path, ages = args
+    session_dir, schedule, seed, onnx_path, aware, profile_path, ages, servo = args
     session = load_session(session_dir)
     profile = load_profile(profile_path) if profile_path else JETROVER
     view = synthesize(session, profile, parse(schedule), seed=seed, traces_dir=TRACES)
     if schedule in FORECAST_SWEEP_SCHEDULES:
-        return evaluate_with_sweep(view, onnx_path, aware=aware, sensed_ages_ms=ages, seed=seed)
-    return evaluate_view(view, default_predictors(onnx_path, view.tps, aware=aware, sensed_ages_ms=ages), seed=seed)
+        return evaluate_with_sweep(view, onnx_path, aware=aware, sensed_ages_ms=ages, seed=seed, servo=servo)
+    return evaluate_view(view, default_predictors(onnx_path, view.tps, aware=aware, sensed_ages_ms=ages, servo=servo), seed=seed)
 
 
 def _evaluate_run(out: str, test_dirs: List[str], cfg, log, workers: int = 0, simulated: bool = True,
-                  profile_path: Optional[str] = None, sensed_ages_ms=None) -> dict:
+                  profile_path: Optional[str] = None, sensed_ages_ms=None, servo: Optional[dict] = None) -> dict:
     from concurrent.futures import ProcessPoolExecutor
 
     from .evaluate import bootstrap_p95_difference, bootstrap_window_p95_difference, is_live_impaired, summarize
@@ -326,7 +336,7 @@ def _evaluate_run(out: str, test_dirs: List[str], cfg, log, workers: int = 0, si
     from .report import write_report
 
     jobs = [(d, s, 7 + i, os.path.join(out, "model.onnx"), cfg.aware, profile_path,
-             tuple(sensed_ages_ms) if sensed_ages_ms else None)
+             tuple(sensed_ages_ms) if sensed_ages_ms else None, servo)
             for i, d in enumerate(test_dirs) for s in TEST_SCHEDULES]
     log(f"evaluating {len(jobs)} views ({len(test_dirs)} test sessions x {len(TEST_SCHEDULES)} schedules)")
     t0 = time.time()
@@ -339,7 +349,7 @@ def _evaluate_run(out: str, test_dirs: List[str], cfg, log, workers: int = 0, si
         np.array_equal(results[0].errors[n], again.errors[n]) and np.array_equal(results[0].corrections[n], again.corrections[n])
         for n in results[0].errors)
     rows = [b for b in ("relay-replay", "relay-replay-blind", "relay-replay-adaptive", "relay-replay-fitted",
-                        "relay-replay-servo") if b in results[0].errors]
+                        "relay-replay-servo", "relay-replay-servo-fitted") if b in results[0].errors]
     summary["bootstrap"] = {s: {b: bootstrap_p95_difference(results, "seq-model", b, schedule=s) for b in rows}
                             for s in sorted({r.schedule for r in results})}
     live = [r for r in results if is_live_impaired(r.conditions)]
@@ -497,7 +507,8 @@ def cmd_finetune(args) -> int:
                 sensed_ages_ms=ages)
     if split["test"]:
         _evaluate_run(out, [os.path.join(bundle_dir, "sessions", sid) for sid in split["test"]], cfg, log=log,
-                      workers=args.workers, simulated=False, profile_path=profile_path, sensed_ages_ms=ages)
+                      workers=args.workers, simulated=False, profile_path=profile_path, sensed_ages_ms=ages,
+                      servo=_prior_servo(config))
     else:
         log("no test sessions in the split: record them after freezing this model, then `armpred evaluate --real`")
     return 0

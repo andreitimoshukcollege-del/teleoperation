@@ -10,7 +10,8 @@ from __future__ import annotations
 import math
 from typing import Dict, List, Optional, Sequence
 
-NON_LEARNED = ("relay-replay", "relay-replay-blind", "relay-replay-fitted", "relay-replay-adaptive", "relay-replay-servo")
+NON_LEARNED = ("relay-replay", "relay-replay-blind", "relay-replay-fitted", "relay-replay-adaptive", "relay-replay-servo",
+               "relay-replay-servo-fitted")
 MODEL = "seq-model"
 FORECAST_LEVELS = ("oracle", "good", "fair", "poor", "persistence", "rtt-half")
 UPLINK_WINDOW = "uplink_change_window_deg"

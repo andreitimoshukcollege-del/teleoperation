@@ -219,6 +219,8 @@ default_jetrover_host := env_var_or_default("JETROVER_HOST", "auto")
 default_operator_host := env_var_or_default("OPERATOR_HOST", "100.82.140.80")
 # The robot's hostname, which it announces over mDNS as <name>.local (`just robot-set-hostname`).
 robot_mdns_name := env_var_or_default("JETROVER_NAME", "jetrover-sinrg")
+# The GPU machine for trainer runs (just gpu-train, gpu-status, gpu-fetch): an account with this repo's SSH key.
+gpu_host := env_var_or_default("GPU_HOST", "andrei@10.188.58.164")
 
 # Print the robot's current IPv4 address and how it was found -- moves nothing. Tries its mDNS name (jetrover-sinrg.local, on the lab LAN), then Tailscale (the direct LAN path if it has one, else the 100.x address). Every robot recipe does this lookup itself unless JETROVER_HOST is set
 [group('robot: checks and diagnostics (nothing moves)')]
@@ -1458,16 +1460,58 @@ _trainer-python:
 # Simulated pretraining on this machine's GPU, straight from the repo (Linux; docs/adr/0021): the first time, trainer/setup.sh builds trainer/.venv with the torch build this NVIDIA driver needs and runs the selftest; then armpred sim-pretrain. config: smoke, medium or sim-pretrain. The run goes to trainer/runs/<name> (gitignored); re-running the same name reuses what it already simulated and built. Extra args pass through, e.g. `just train-sim sim-pretrain sim1 --skip-eval`. The full sim-pretrain wants about 32 GB of RAM and 25 GB of disk, and takes 3-4 h (mostly CPU); run it under tmux or nohup so a dropped SSH session does not stop it
 [group('trainer')]
 train-sim config="sim-pretrain" name="" *args:
+    trainer/train-sim.sh "{{config}}" "{{name}}" {{args}}
+
+# Start `just train-sim <config>` on the GPU machine ($GPU_HOST, default andrei@10.188.58.164), detached, so this machine and the SSH session can go (docs/adr/0021). Clones the repo into ~/teleoperation there the first time and pulls main every time; refuses while a run of ours is going there, or while the GPU is busy (over 2 GB in use: someone else's job). The run is trainer/runs/<config>-<commit> there; the log ~/train-sim-<config>.log. Watch it with just gpu-status; bring it back with just gpu-fetch
+[group('trainer')]
+gpu-train config="sim-pretrain-pilot1":
     #!/usr/bin/env bash
     set -euo pipefail
-    unset PYTHONPATH  # trainer/.venv is isolated from the rest of this machine; see trainer/setup.sh
-    cd trainer
-    [ -f "configs/{{config}}.toml" ] || { echo "error: no trainer/configs/{{config}}.toml" >&2; exit 1; }
-    if [ ! -x .venv/bin/armpred ]; then ./setup.sh; fi
-    name="{{name}}"
-    if [ -z "$name" ]; then name="{{config}}-$(git rev-parse --short HEAD)"; fi
-    echo "run: trainer/runs/$name (log: trainer/runs/$name/log.txt)"
-    .venv/bin/armpred sim-pretrain --config "configs/{{config}}.toml" --out "runs/$name" {{args}}
+    case "{{config}}" in *[!A-Za-z0-9._-]*) echo "error: config is a trainer/configs name" >&2; exit 1 ;; esac
+    [ -f "trainer/configs/{{config}}.toml" ] || { echo "error: no trainer/configs/{{config}}.toml here" >&2; exit 1; }
+    ssh -o ConnectTimeout=10 "{{gpu_host}}" "CONFIG='{{config}}' bash -s" <<'REMOTE'
+    set -euo pipefail
+    if [ -f ~/train-sim.pid ] && kill -0 "$(cat ~/train-sim.pid)" 2>/dev/null; then
+        echo "error: a run is already going (pid $(cat ~/train-sim.pid)): just gpu-status" >&2; exit 1
+    fi
+    used=$(nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits | head -1 | tr -d ' ')
+    if [ "${used:-0}" -gt 2048 ]; then
+        echo "error: the GPU has ${used} MiB in use: someone else's job. Not starting." >&2
+        nvidia-smi --query-compute-apps=pid,process_name,used_memory --format=csv >&2 || true
+        exit 1
+    fi
+    [ -d ~/teleoperation ] || git clone -q https://github.com/andreitimoshukcollege-del/teleoperation.git ~/teleoperation
+    cd ~/teleoperation && git checkout -q main && git pull -q --ff-only
+    echo "repo at $(git log --oneline -1)"
+    log=~/train-sim-$CONFIG.log
+    # The script, not `just train-sim`: a GPU machine's `just` may be too old for this justfile.
+    nohup setsid trainer/train-sim.sh "$CONFIG" > "$log" 2>&1 < /dev/null &
+    echo $! > ~/train-sim.pid
+    echo "started (pid $!), run trainer/runs/$CONFIG-$(git rev-parse --short HEAD), log $log"
+    sleep 15; tail -5 "$log"
+    REMOTE
+
+# The GPU machine's run -- touches nothing: whether ours is still going, the GPU, and the end of its log
+[group('trainer')]
+gpu-status config="sim-pretrain-pilot1" lines="8":
+    @ssh -o ConnectTimeout=10 "{{gpu_host}}" 'p=$(cat ~/train-sim.pid 2>/dev/null); \
+        if [ -n "$p" ] && kill -0 "$p" 2>/dev/null; then echo "run: going (pid $p)"; else echo "run: not going"; fi; \
+        nvidia-smi --query-gpu=name,memory.used,memory.total,utilization.gpu --format=csv,noheader; \
+        echo; tail -n {{lines}} ~/train-sim-{{config}}.log 2>/dev/null || echo "(no log ~/train-sim-{{config}}.log)"'
+
+# Bring a GPU run back here, e.g. `just gpu-fetch sim-pretrain-pilot1-24901ef`: packs trainer/runs/<run> there without its checkpoints or training data, copies it to dist/, and unpacks it into trainer/runs/<run> (refusing to overwrite one already here)
+[group('trainer')]
+gpu-fetch run:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    case "{{run}}" in *[!A-Za-z0-9._-]*|"") echo "error: run is a trainer/runs name" >&2; exit 1 ;; esac
+    [ ! -e "trainer/runs/{{run}}" ] || { echo "error: trainer/runs/{{run}} is already here" >&2; exit 1; }
+    ssh -o ConnectTimeout=10 "{{gpu_host}}" "cd ~/teleoperation/trainer/runs && [ -d '{{run}}' ] && tar czf ~/'{{run}}'.tgz --exclude='{{run}}/checkpoints' --exclude='{{run}}/data' '{{run}}' && ls -la ~/'{{run}}'.tgz"
+    mkdir -p dist trainer/runs
+    scp -q "{{gpu_host}}:{{run}}.tgz" "dist/{{run}}.tgz"
+    tar xzf "dist/{{run}}.tgz" -C trainer/runs
+    echo "trainer/runs/{{run}}:"; ls trainer/runs/{{run}}
+    [ -f "trainer/runs/{{run}}/eval/report.md" ] && sed -n '1,20p' "trainer/runs/{{run}}/eval/report.md" || true
 
 # One-time local trainer venv, CPU only: the contract, the checker, the simulator and the tests (torch=true adds the CPU torch build, for smoke training and export). GPU machines use trainer/setup.sh from the packed file instead
 [group('trainer')]

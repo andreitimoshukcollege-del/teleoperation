@@ -203,10 +203,15 @@ simulated benchmark row exists.
   RobotHost already turns a sensed gripper pulse into its 0–1 fraction with `sensed` set
   (`GenericArmPlant.ReadJointState`), and every read is already in `driver.jlog` (`RD`). The
   predictors then correct the gripper against a measurement, as they do the other joints.
-- **Its open and closed pulses are still uncalibrated** (`GenericArmPlantConfig`: 167 and 833, from
-  30° and 150°). On 2026-10-25 the open gripper sat at pulse 176 against a target of 167, at 72 °C:
-  very likely held against its own open stop. `just robot-measure-gripper` finds its stops by driving it
-  there slowly (it cannot be moved by hand: with its torque off its gearing still holds it).
+- **Its open and closed pulses are calibrated (2026-10-25).** `just robot-measure-gripper` drove it to
+  its stops (it cannot be moved by hand: with its torque off its gearing still holds it) and found
+  **106 open, 655 closed**. `GenericArmPlantConfig` now asks for 116 and 645, 10 inside each. The old
+  167/833 (from 30°/150°) asked for 178 pulses past the closed stop at every full close, and opened it
+  only part way. The headset's `GripperFractionPerRadian`, which is RobotHost's pulses per radian
+  over that span, becomes 238.7 / 529 = 0.4513 (was 0.358).
+- **It runs hot even at rest** (72 °C, then 64 °C, on 2026-10-25). It is stiff to drive: it trails its
+  target by 10-20 pulses while moving and settles up to 20 short of it, and the servo keeps pushing to
+  close that gap. Correct stops end the hard push into the closed stop, not this.
 
 ## Consequences
 

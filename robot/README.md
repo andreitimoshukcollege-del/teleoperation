@@ -434,9 +434,11 @@ translates the local wire protocol above into calls against `jetrover_arm_contro
   reads it again, and now skips any servo for 2 s after a read it does not answer, so a silent
   servo can no longer stall every cycle (docs/adr/0018 §8). The same probe found the gripper at
   **72 °C** and the base at 66 °C, over this README's 60 °C limit. The open gripper sat at pulse 176
-  against a target of 167, very likely straining against its open stop: its open and closed pulses
-  have never been calibrated. `just robot-measure-gripper` finds the stops by driving it there
-  slowly; it cannot be moved by hand, since with its torque off its gearing still holds it.
+  against a target of 167. `just robot-measure-gripper` (it drives the gripper to its stops; with its
+  torque off its gearing still holds it, so not by hand) found **106 open, 655 closed**: RobotHost now
+  asks for 116 and 645 instead of 167 and 833, which was 178 pulses past the closed stop, and the
+  headset's `GripperFractionPerRadian` is 0.4513 (was 0.358). It still runs hot at rest (64 °C):
+  it settles up to 20 pulses short of its target and keeps pushing.
 - **The servo board goes silent, and only the power switch brings it back (open, 2026-10-20).**
   - **What it looks like:** the camera streams, but the arm ignores commands. `just joint-probe`
     shows every motor `sensed NO`, and there is no battery reading.

@@ -927,11 +927,14 @@ camera-probe seconds="10" max_fps="0" save="" remote_host=default_jetrover_host:
     cd core && dotnet run --project Teleop.CameraHost -c Release -- probe --host $(just _robot-host "{{remote_host}}") \
         --seconds {{seconds}} --max-fps {{max_fps}} {{ if save != "" { "--save '" + save + "'" } else { "" } }}
 
-# Publish Teleop.CameraHost for the Jetson, copy it over, write ~/camerahost-run.sh and restart teleop-camerahost if it is installed (see robot/systemd/README.md) -- moves nothing; does not touch teleop-robothost or the ROS nodes
+# Publish Teleop.CameraHost for the Jetson, copy it over, write ~/camerahost-run.sh and restart teleop-camerahost if it is installed (see robot/systemd/README.md) -- moves nothing; does not touch teleop-robothost or the ROS nodes. size is the capture size, WIDTHxHEIGHT, e.g. `just deploy-camerahost 1280x720`. The default 640x360 is the camera's whole width (its 4:3 sizes, 640x480 included, are the middle 76% of its 16:9 sensor; docs/adr/0014, 2026-10-25). The camera offers MJPEG at 320x180, 320x240, 640x360, 640x480, 1280x720, 1280x960, 1440x1080 and 1920x1080; the receivers take frames up to 256 KB
 [group('robot: deploy and restart (someone at the robot)')]
-deploy-camerahost fps="30" device="auto" remote_host=default_jetrover_host remote_user="jetson":
+deploy-camerahost size="640x360" fps="30" device="auto" remote_host=default_jetrover_host remote_user="jetson":
     #!/usr/bin/env bash
     set -euo pipefail
+    case "{{size}}" in [1-9]*x[1-9]*) ;; *) echo "error: size is WIDTHxHEIGHT, e.g. 1280x720 (got '{{size}}')" >&2; exit 1 ;; esac
+    width="{{size}}"; width="${width%x*}"; height="{{size}}"; height="${height#*x}"
+    case "$width$height" in *[!0-9]*) echo "error: size is WIDTHxHEIGHT, e.g. 1280x720 (got '{{size}}')" >&2; exit 1 ;; esac
     host=$(just _robot-host "{{remote_host}}")
     cd core
     stamp=$(date +%Y%m%d-%H%M%S)
@@ -955,7 +958,7 @@ deploy-camerahost fps="30" device="auto" remote_host=default_jetrover_host remot
     ssh -o StrictHostKeyChecking=accept-new "$target" "cat > /home/jetson/camerahost-run.sh" <<EOF
     #!/bin/bash
     exec /home/jetson/.dotnet/dotnet /home/jetson/camerahost_current/Teleop.CameraHost.dll serve \
-        --device {{device}} --fps {{fps}} --port 6003
+        --device {{device}} --width $width --height $height --fps {{fps}} --port 6003
     EOF
     ssh -o StrictHostKeyChecking=accept-new "$target" "
         set -e

@@ -15,14 +15,14 @@ namespace Teleop.CameraHost
 
         private const string Usage =
             "Usage:\n" +
-            "  Teleop.CameraHost serve [--device auto|/dev/videoN] [--width 640] [--height 480] [--fps 30]\n" +
+            "  Teleop.CameraHost serve [--device auto|/dev/videoN] [--width 640] [--height 360] [--fps 30]\n" +
             "                          [--port 6003] [--subscriber-timeout 3] [--seconds 0]\n" +
             "      Stream native MJPEG frames to the latest subscriber (docs/adr/0014). --seconds 0 runs\n" +
             "      until Ctrl+C or SIGTERM. Linux only.\n" +
             "  Teleop.CameraHost probe --host <robot ip> [--port 6003] [--local-port 6004] [--seconds 10]\n" +
             "                          [--max-fps 0] [--save <path.jpg>]\n" +
             "      Subscribe, reassemble and report what arrives. Exit 0 if a frame arrived, else 1.\n" +
-            "  Teleop.CameraHost timestamp-spike [--device /dev/video0] [--width 640] [--height 480]\n" +
+            "  Teleop.CameraHost timestamp-spike [--device /dev/video0] [--width 640] [--height 360]\n" +
             "                          [--fps 30] [--frames 150]\n" +
             "      Check the driver's capture timestamps against Stopwatch. Linux only.\n" +
             "Exit codes: 0 success, 1 check failed, 2 usage or setup error.";
@@ -44,7 +44,8 @@ namespace Teleop.CameraHost
 
             string device = "/dev/video0", host = string.Empty;
             string? save = null;
-            uint width = 640, height = 480, fps = 30;
+            // 640x360, not 640x480: the DaBai's 4:3 modes are the middle of its 16:9 sensor (docs/adr/0014, 2026-10-25).
+            uint width = 640, height = 360, fps = 30;
             int frames = 150, port = 6003, localPort = 6004;
             double seconds = verb == "probe" ? 10 : 0, subscriberTimeout = 3;
             ushort maxFps = 0;

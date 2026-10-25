@@ -2,7 +2,9 @@
 
 ## Status
 
-Accepted. The two questions left open in the first draft are recorded under "Resolved questions".
+Accepted. **Superseded in part by ADR 0022 (2026-10-25):** the headset asks through Tailscale first
+and uses this ADR's mDNS query (§2, §3) only when Tailscale is not available; §1, §4 and §5 as written
+here were never built in Unity. §6 (the recipes' lookup) stands. The two questions left open in the first draft are recorded under "Resolved questions".
 
 ## Context
 

@@ -6,6 +6,7 @@
   "JointLocalPort": 0,
   "DiscoverRobot": true,
   "RobotTailscaleHost": "100.112.90.72",
+  "RemoteHostName": "jetrover-sinrg.local",
   "DiscoveryPort": 6005,
   "CommandRateHz": 48.0,
   "ConfirmHardwareMotion": true,

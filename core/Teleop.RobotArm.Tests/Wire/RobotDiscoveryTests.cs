@@ -58,15 +58,22 @@ namespace Teleop.RobotArm.Tests.Wire
 
         /// <summary>Runs the resolver against a scripted robot: who answers, after how long, from where.</summary>
         private static RobotAddressResolver Run(IPAddress? tailscale, IPAddress? configured,
-            Func<IPAddress, IPAddress?> answersFrom, Func<IPAddress, IPAddress[]>? reports = null, double replyDelay = 0.02)
+            Func<IPAddress, IPAddress?> answersFrom, Func<IPAddress, IPAddress[]>? reports = null, double replyDelay = 0.02,
+            string? mdnsName = null, IPAddress? mdnsAnswer = null)
         {
             const uint nonce = 1234;
-            var r = new RobotAddressResolver(tailscale, configured, nonce);
+            var r = new RobotAddressResolver(tailscale, configured, mdnsName, nonce);
             var pending = new System.Collections.Generic.List<(double at, IPAddress from, byte[] bytes)>();
             for (double t = 0; t < 5 && r.Source == RobotAddressSource.Pending; t += 0.005)
             {
-                while (r.NextQuery(t, out IPAddress to))
+                while (r.NextQuery(t, out IPAddress to, out RobotQueryKind kind))
                 {
+                    if (kind == RobotQueryKind.Mdns)
+                    {
+                        if (mdnsAnswer != null) pending.Add((t + replyDelay, mdnsAnswer, MdnsCodecTests.Answer(r.MdnsId, mdnsName!, mdnsAnswer)));
+                        continue;
+                    }
+
                     IPAddress? from = answersFrom(to);
                     if (from != null) pending.Add((t + replyDelay, from, Reply(nonce, reports?.Invoke(from) ?? new[] { Lan })));
                 }
@@ -103,12 +110,21 @@ namespace Teleop.RobotArm.Tests.Wire
         }
 
         [Fact]
-        public void WithoutTailscale_TheBroadcastFindsTheNewLease()
+        public void WithoutTailscale_MdnsFindsTheNewLease()
         {
-            // The configured address is yesterday's lease; the robot answers the broadcast from today's.
-            RobotAddressResolver r = Run(Tailscale, OldLan, to => to.Equals(IPAddress.Broadcast) ? Lan : null);
+            // The configured address is yesterday's lease; the robot's mDNS responder gives today's.
+            RobotAddressResolver r = Run(Tailscale, OldLan, _ => null, mdnsName: "jetrover-sinrg.local", mdnsAnswer: Lan);
             Assert.Equal(RobotAddressSource.Lan, r.Source);
             Assert.Equal(Lan, r.Address);
+            Assert.Contains(r.Log, line => line.Contains("mDNS"));
+        }
+
+        [Fact]
+        public void AnMdnsAnswerWithDockersAddress_IsNotTaken()
+        {
+            RobotAddressResolver r = Run(null, OldLan, _ => null, mdnsName: "jetrover-sinrg.local", mdnsAnswer: IPAddress.Parse("172.17.0.1"));
+            Assert.Equal(RobotAddressSource.Configured, r.Source);
+            Assert.Equal(OldLan, r.Address);
         }
 
         [Fact]
@@ -127,7 +143,7 @@ namespace Teleop.RobotArm.Tests.Wire
             Assert.Equal(OldLan, r.Address);
             Assert.Contains(r.Log, line => line.Contains("no answer through Tailscale"));
 
-            RobotAddressResolver none = Run(null, null, _ => null);
+            RobotAddressResolver none = Run(null, null, _ => null, mdnsName: "jetrover-sinrg.local");
             Assert.Equal(RobotAddressSource.NotFound, none.Source);
             Assert.Null(none.Address);
         }
@@ -142,24 +158,24 @@ namespace Teleop.RobotArm.Tests.Wire
         [Fact]
         public void RepliesWithTheWrongNonce_OrFromElsewhere_AreIgnored()
         {
-            var r = new RobotAddressResolver(Tailscale, null, nonce: 5);
-            Assert.True(r.NextQuery(0, out IPAddress to));
+            var r = new RobotAddressResolver(Tailscale, null, null, nonce: 5);
+            Assert.True(r.NextQuery(0, out IPAddress to, out _));
             Assert.Equal(Tailscale, to);
             r.OnDatagram(0.01, Tailscale, Reply(6, Lan));
             r.OnDatagram(0.01, Lan, Reply(5, Lan));
             Assert.Equal(RobotAddressSource.Pending, r.Source);
             r.OnDatagram(0.02, Tailscale, Reply(5, Lan));
             Assert.Equal(RobotAddressSource.Pending, r.Source); // now probing the LAN address
-            Assert.True(r.NextQuery(0.03, out to));
+            Assert.True(r.NextQuery(0.03, out to, out _));
             Assert.Equal(Lan, to);
         }
 
         [Fact]
-        public void TheWorstCase_TakesAboutTwoSeconds()
+        public void TheWorstCase_TakesAboutTwoAndAHalfSeconds()
         {
-            var r = new RobotAddressResolver(Tailscale, OldLan, 1);
+            var r = new RobotAddressResolver(Tailscale, OldLan, "jetrover-sinrg.local", 1);
             double t = 0;
-            for (; r.Source == RobotAddressSource.Pending; t += 0.005) r.NextQuery(t, out _);
+            for (; r.Source == RobotAddressSource.Pending; t += 0.005) r.NextQuery(t, out _, out _);
             Assert.InRange(t, RobotAddressResolver.TailscaleSeconds + RobotAddressResolver.LocalSearchSeconds,
                 RobotAddressResolver.TailscaleSeconds + RobotAddressResolver.LocalSearchSeconds + 0.05);
         }

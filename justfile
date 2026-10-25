@@ -669,6 +669,61 @@ robot-measure-joint-limits ids="2 4" seconds="90" remote_host=default_jetrover_h
     systemctl is-active jetrover-arm-control
     REMOTE
 
+# Ask servos what they will report, one question at a time -- sends no move and no torque command, but stops the servo driver for a few seconds (restarting it has made the shoulder sag: someone holds the arm). For each id: its id, position, input voltage and temperature, each read on its own with a 2 s wait, saying whether the servo answered with a value, answered with an error code, or did not answer, and how long it took; the position five times. The board library folds an error and silence into the same None, so the driver cannot tell them apart; this can. Then it starts the driver again and checks it came back
+[group('robot: deploy and restart (someone at the robot)')]
+robot-servo-probe ids="1 5 10" remote_host=default_jetrover_host remote_user="jetson":
+    #!/usr/bin/env bash
+    set -uo pipefail
+    ssh -o StrictHostKeyChecking=accept-new "{{remote_user}}@$(just _robot-host "{{remote_host}}")" "IDS='{{ids}}' bash -s" <<'REMOTE'
+    sudo systemctl stop jetrover-arm-control
+    sdk=$(ls -d /home/jetson/teleop_ros_current/install/jetrover_arm_control/lib/python3*/site-packages | head -1)
+    PYTHONUNBUFFERED=1 PYTHONPATH="$sdk" python3 - <<'PY'
+    import os, queue, struct, time
+    from jetrover_arm_control.board_manager.robot_controller_sdk import Board, PacketFunction
+
+    QUESTIONS = [("id", 0x12, "<BBbB"), ("position", 0x05, "<BBbh"), ("voltage mV", 0x07, "<BBbH"), ("temperature C", 0x09, "<BBbB")]
+
+    def ask(board, servo, cmd, unpack, wait=2.0):
+        # As Board.bus_servo_read_and_unpack, but keeping what it throws away: the error code, and silence apart from it.
+        with board.servo_read_lock:
+            try:
+                board.bus_servo_queue.get_nowait()
+            except queue.Empty:
+                pass
+            start = time.monotonic()
+            board.buf_write(PacketFunction.PACKET_FUNC_BUS_SERVO, [cmd, servo])
+            try:
+                data = board.bus_servo_queue.get(block=True, timeout=wait)
+            except queue.Empty:
+                return f"NO ANSWER in {wait:.0f} s"
+            ms = (time.monotonic() - start) * 1000
+            try:
+                sid, rcmd, success, *info = struct.unpack(unpack, data)
+            except struct.error:
+                return f"answered {ms:.0f} ms, unreadable reply {bytes(data).hex()}"
+            if rcmd != cmd or sid != servo:
+                return f"answered {ms:.0f} ms, but for servo {sid} question {rcmd:#x}: {bytes(data).hex()}"
+            if success != 0:
+                return f"answered {ms:.0f} ms with ERROR code {success}: {bytes(data).hex()}"
+            return f"{info[0] if len(info) == 1 else info} ({ms:.0f} ms)"
+
+    board = Board()
+    board.enable_reception()
+    time.sleep(0.5)
+    for servo in [int(i) for i in os.environ["IDS"].split()]:
+        print(f"--- servo {servo}", flush=True)
+        for name, cmd, unpack in QUESTIONS:
+            print(f"  {name:14} {ask(board, servo, cmd, unpack)}", flush=True)
+            time.sleep(0.05)
+        for n in range(4):
+            print(f"  {'position':14} {ask(board, servo, 0x05, '<BBbh')}", flush=True)
+            time.sleep(0.05)
+    PY
+    sudo systemctl start jetrover-arm-control
+    sleep 5
+    echo "--- driver: $(systemctl is-active jetrover-arm-control)"
+    REMOTE
+
 # Experiment, for a board that has stopped answering (just robot-board-diagnose: 0 bytes read): try to bring it back from the Jetson instead of the power switch. Stops the servo driver, opens the board's serial port itself, and asks servo 1 for its position: with both control lines released, then after a 100 ms DTR pulse, then after a 100 ms RTS pulse, stopping at the first that gets an answer. It prints which one worked, then starts the driver again and checks the feedback. First run, 2026-10-20: none did, so these lines do not reset the board (only the power switch did). A pulse that resets the board's controller can drop the servos' torque, so someone must hold the arm
 [group('robot: deploy and restart (someone at the robot)')]
 robot-board-reset remote_host=default_jetrover_host remote_user="jetson":

@@ -1,6 +1,9 @@
-# The pilot hour (docs/adr/0021): what `just pilot` records, in order. About 70 minutes of recording.
+# The pilot hour (docs/adr/0021): what `just pilot` records, in order. About 57 minutes of recording.
 # Its job is to measure the real robot (`armpred sysid`: servo speed limit, lag, pipeline delay,
 # reading ages) and to score relay-replay-servo against relay-replay on real recordings.
+#
+# Left out for now (2026-10-25, the user's call): the payload and hand-resistance sessions, commented
+# out below. Uncomment them to record them.
 #
 # One session per line, fields separated by |:
 #   label | slider rad/s | minutes | motion | record-start options | what a person does first
@@ -12,8 +15,8 @@ teleop-2p5   | 2.5 | 8 | teleop | | Headset on, slider at 2.5. Teleoperate as us
 teleop-1p5   | 1.5 | 6 | teleop | | Slider at 1.5. Teleoperate as usual.
 teleop-4     | 4.0 | 6 | teleop | | Slider at 4.0. Teleoperate as usual.
 teleop-fast  | 6.0 | 5 | teleop | | Slider at its top (6.0). Large, quick moves across the whole reach: this is what shows the servo's speed limit.
-payload-100g | 2.5 | 5 | teleop | load=payload payload_g=100 | Close the gripper on a ~100 g object (weigh it; if it is not 100 g, edit payload_g here first). Slider at 2.5.
-hand-1       | 2.5 | 4 | teleop | load=hand | Slider at 2.5. A second person gently resists the arm by hand now and then: at most 2 s at a time, contact at most a fifth of the session.
+# payload-100g | 2.5 | 5 | teleop | load=payload payload_g=100 | Close the gripper on a ~100 g object (weigh it; if it is not 100 g, edit payload_g here first). Slider at 2.5.
+# hand-1       | 2.5 | 4 | teleop | load=hand | Slider at 2.5. A second person gently resists the arm by hand now and then: at most 2 s at a time, contact at most a fifth of the session.
 live-150     | 2.5 | 5 | teleop | network=150ms-20j-0.5loss | Slider at 2.5. The robot now delays its own commands by ~150 ms with jitter and loss: teleoperate as usual.
 live-sched   | 2.5 | 4 | teleop | "network=schedule:lan@0;150ms-20j-0.5loss@45;lan@90;50ms-5j@135" | Slider at 2.5. The delay changes by itself during the session: teleoperate as usual.
 drive-steps-2p5 | 2.5 | 4 | drive:steps     | | Close the headset app (or leave it with motion off). Stand clear of the arm: it moves by itself now.

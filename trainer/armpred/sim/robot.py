@@ -43,7 +43,7 @@ from ..data.schedule import Schedule, ScheduledLink, parse
 from ..net.impairments import EmulatedLink, FixedDelay, UniformJitter
 from ..net.profiles import ms_to_ticks
 from . import operator as op_motion
-from .params import ARM_MOTORS, GRIPPER_MOTOR, SimParams
+from .params import ARM_MOTORS, GRIPPER_MOTOR, READ_MOTORS, SimParams
 
 NS = 1_000_000_000
 MS = 1_000_000
@@ -64,7 +64,7 @@ KEEPALIVE_NS = NS // 2
 FRAME_INTERVAL_NS = int(NS / 50.0)  # JointStateStreamer: (long)(ticksPerSecond / rateHz)
 SUBSCRIPTION_TIMEOUT_NS = 3 * NS
 RELAY_POLL_NS = 20 * MS
-RELAY_FEEDBACK_NS = 50 * MS
+RELAY_FEEDBACK_NS = 20 * MS  # relay_node.py _FEEDBACK_SEND_PERIOD_SECONDS, 50 Hz since 2026-10-25
 RELAY_STALE_NS = 200 * MS
 DRIVER_TIMER_NS = 20 * MS
 DRIVER_QUEUE_DEPTH = 3
@@ -166,6 +166,7 @@ class _Sim:
         self.rh_feedback_inbox: List[Tuple[int, list]] = []
         # Relay state
         self.relay_latest: Dict[int, Tuple[int, int]] = {}  # motor -> (t, pulse)
+        self.relay_fresh = False  # a reading arrived since the last relay feedback send
         # Driver state
         self.driver_queue: Deque[Tuple[int, list]] = deque(maxlen=DRIVER_QUEUE_DEPTH)
         self.driver_busy_until = self.start
@@ -377,7 +378,12 @@ class _Sim:
             joints = []
             for m in self.joint_order:
                 j = self.profile.joint(m)
-                if m in self.sensed_pulse:
+                if m == GRIPPER_MOTOR and m in self.sensed_pulse:
+                    # GenericArmPlant.ReadJointState: the sensed pulse as the open..closed fraction, clamped.
+                    span = self.profile.pulse.gripper_closed_pulse - self.profile.pulse.gripper_open_pulse
+                    fraction = (self.sensed_pulse[m] - self.profile.pulse.gripper_open_pulse) / span if span else 0.0
+                    value, flags = min(max(fraction, 0.0), 1.0), 1
+                elif m in self.sensed_pulse:
                     value = (self.sensed_pulse[m] - self.profile.pulse.zero_pulse) / self.ppr - j.zero_offset_radians
                     flags = 1
                 elif m == GRIPPER_MOTOR:
@@ -427,6 +433,11 @@ class _Sim:
         self._push(t + RELAY_POLL_NS, "relay_poll")
 
     def relay_feedback(self, t: int) -> None:
+        # As relay_node.py: a send only when a reading arrived since the last one.
+        if not self.relay_fresh:
+            self._push(t + RELAY_FEEDBACK_NS, "relay_feedback")
+            return
+        self.relay_fresh = False
         entries = []
         for motor in sorted(self.relay_latest):
             at, pulse = self.relay_latest[motor]
@@ -528,7 +539,7 @@ class _Sim:
     def _feedback_cycle(self, t: int) -> int:
         start = t
         published = []
-        for motor in ARM_MOTORS:
+        for motor in READ_MOTORS:
             self._flush_pending(t)
             if self.last_write_ns is not None and t < self.last_write_ns + WRITE_SETTLE_NS:
                 t = self.last_write_ns + WRITE_SETTLE_NS
@@ -598,6 +609,7 @@ class _Sim:
             elif kind == "relay_update":
                 for motor, pulse in payload:
                     self.relay_latest[motor] = (t, pulse)
+                    self.relay_fresh = True
             elif kind == "uplink_change":
                 self.out.robothost.append(("UP", t, payload, self.p.uplink_seed + 1))
             elif kind == "battery":

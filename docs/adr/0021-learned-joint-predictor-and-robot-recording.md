@@ -157,13 +157,22 @@ Two limits shape what can be claimed, and are stated here so no result implies o
   them fails CI on the repo side, and its golden files must be regenerated in the same change.
 - **Recording adds two writer threads on the robot** and touches the driver, so `just deploy-ros`
   (which restarts the servo driver) is needed once, with someone watching.
-- **The truth has a noise floor**: about 20 readings a second per motor, in 0.24° steps, each taken at
+- **The truth has a noise floor**: about 20 readings a second per motor (about 44 since 2026-10-25: see
+  the note below), in 0.24° steps, each taken at
   some instant inside a bus transaction. Errors are scored only at logged read instants, the floor is
   measured on the pilot recordings, and no difference below one pulse is claimed.
 - **Test data must be recorded after the model is frozen**, so the robot is needed twice: once for
   training data and once for the test set.
 - **`analysis/` stays what it was.** It never trains; `analysis/CLAUDE.md` and the analyst agent now
   point at `trainer/`.
+
+- **Note (2026-10-25): faster feedback, and the simulator's driver re-centred.** Three recordings
+  measured a servo read at 2.9 ms (p10 2.7, p90 3.8), not the 4-11 ms the simulator drew, and a
+  driver cycle at 44-50 Hz. The relay forwarded only 20 Hz of that, so it now sends at 50 Hz, and only
+  when a new reading has arrived: RobotHost stamps each arrival as the reading's time, so a repeat
+  made an old reading look new. The driver reads the gripper again (ADR 0018 §8). The simulator copies
+  all three, and its gripper pulses are the measured 116/645. The headset's per-motor reading ages
+  (45, 35, 25, 15, 5 ms) were estimated from 10 ms reads; `armpred sysid` refits them from recordings.
 
 ## Alternatives considered
 

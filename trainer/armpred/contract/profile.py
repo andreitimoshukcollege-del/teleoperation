@@ -35,8 +35,9 @@ class PulseSpace:
     min_pulse: int = 0
     max_pulse: int = 1000
     default_pulses_per_second: float = 2200.0
-    gripper_open_pulse: float = float(np.float32(30.0) / np.float32(180.0) * np.float32(1000.0))
-    gripper_closed_pulse: float = float(np.float32(150.0) / np.float32(180.0) * np.float32(1000.0))
+    # Measured on the robot on 2026-10-25 (stops 106 and 655, 10 inside each; docs/adr/0018 §8).
+    gripper_open_pulse: float = 116.0
+    gripper_closed_pulse: float = 645.0
 
 
 @dataclass(frozen=True)

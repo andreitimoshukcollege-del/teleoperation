@@ -196,8 +196,9 @@ simulated benchmark row exists.
   5 were. Why it did not answer on 2026-10-12 and 2026-10-20 is not known. The board library returns
   the same `None` for silence and for an error code; the probe tells them apart.
 - **The driver reads it again** (`FEEDBACK_MOTOR_IDS = [1, 2, 3, 4, 5, 10]`), with a guard
-  (`robot/ros`, `read_backoff.py`): after a read that is not answered, that servo is skipped for 2 s,
-  then asked again. A servo that stops answering costs the loop one second now and then, not every
+  (`robot/ros`, `read_backoff.py`): after a read that waits out the one-second timeout, that servo is
+  skipped for 2 s, then asked again. A read that fails fast (an error answer, 17 ms) is simply
+  retried: backing off from one hid the wrist roll for 2 s on the first deploy. A servo that stops answering costs the loop one second now and then, not every
   cycle, which is what took motor 10 off the list on 2026-10-20. The stats line reports skips.
 - **Nothing else changes on the wire.** The relay forwards whichever motors the driver reports.
   RobotHost already turns a sensed gripper pulse into its 0–1 fraction with `sensed` set

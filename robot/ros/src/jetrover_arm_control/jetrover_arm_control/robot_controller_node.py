@@ -21,7 +21,7 @@ from jetrover_arm_control.servo_controller.read_backoff import ReadBackoff
 # did not answer, and every unanswered read held each feedback cycle (and every command behind it,
 # on this one thread) for the library's one-second timeout. On 2026-10-25 it answered its id,
 # position, voltage and temperature within 3-9 ms (`just robot-servo-probe`). ReadBackoff now skips
-# any servo for a while after a miss, so one that stops answering costs a second now and then, not
+# any servo for a while after a miss that waited out the timeout (a fast error is just retried), so one that stops answering costs a second now and then, not
 # every cycle. RobotHost turns its pulse into the gripper fraction it streams (GenericArmPlant).
 FEEDBACK_MOTOR_IDS = [1, 2, 3, 4, 5, 10]
 
@@ -158,7 +158,8 @@ class RobotController(Node):
             if not self._readBackoff.should_read(motor_id, readStart):
                 continue
             pulse = self.servoController.getRawPos(motor_id)
-            self._readBackoff.result(motor_id, pulse is not None, time.monotonic())
+            readEnd = time.monotonic()
+            self._readBackoff.result(motor_id, pulse is not None, readEnd, readEnd - readStart)
             self._slowestReadMs[motor_id] = max(self._slowestReadMs[motor_id], (time.monotonic() - readStart) * 1000.0)
             if pulse is None:
                 self._readMissed[motor_id] += 1

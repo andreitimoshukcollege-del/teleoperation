@@ -431,7 +431,8 @@ translates the local wire protocol above into calls against `jetrover_arm_contro
   Motor 10 did not answer position reads until 2026-10-25 (next entry).
 - **The gripper answers after all, and is read again (2026-10-25).** `just robot-servo-probe` asked
   motor 10 for its id, position, voltage and temperature: each answered within 3–9 ms. The driver
-  reads it again, and now skips any servo for 2 s after a read it does not answer, so a silent
+  reads it again, and now skips any servo for 2 s after a read that waits out the timeout (a fast
+  error is retried next cycle), so a silent
   servo can no longer stall every cycle (docs/adr/0018 §8). The same probe found the gripper at
   **72 °C** and the base at 66 °C, over this README's 60 °C limit. The open gripper sat at pulse 176
   against a target of 167. `just robot-measure-gripper` (it drives the gripper to its stops; with its

@@ -205,7 +205,8 @@ simulated benchmark row exists.
   predictors then correct the gripper against a measurement, as they do the other joints.
 - **Its open and closed pulses are still uncalibrated** (`GenericArmPlantConfig`: 167 and 833, from
   30° and 150°). On 2026-10-25 the open gripper sat at pulse 176 against a target of 167, at 72 °C:
-  very likely held against its own open stop. `just robot-measure-gripper` measures where it stops.
+  very likely held against its own open stop. `just robot-measure-gripper` finds its stops by driving it
+  there slowly (it cannot be moved by hand: with its torque off its gearing still holds it).
 
 ## Consequences
 

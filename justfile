@@ -669,72 +669,84 @@ robot-measure-joint-limits ids="2 4" seconds="90" remote_host=default_jetrover_h
     systemctl is-active jetrover-arm-control
     REMOTE
 
-# Measure where the gripper (motor 10) physically stops, by hand: stops the servo driver, switches off the gripper's torque only (the arm keeps holding), then for `seconds` prints its pulse live while someone opens it fully and closes it fully, by hand, a few times, and records the furthest each way. Suggests GripperOpenPulse/GripperClosedPulse `margin` pulses inside those stops, so the gripper is never commanded past a stop and left straining there (on 2026-10-25 it sat at pulse 176 against a target of 167, at 72 C). At the end the gripper holds where it is and the driver starts again. Nothing else moves; restarting the driver has made the shoulder sag before, so someone watches the arm
+# Find where the gripper (motor 10) physically stops, by driving it there slowly (moves the gripper only; someone watches it, and keeps it empty: anything in it reads as a stop). It cannot be measured by hand: with its torque off it still does not move (2026-10-25, its gearing holds it). Stops the servo driver, then steps the gripper `step` pulses at a time toward open and reads where it is after each step; once it lags its target by more than `lag` pulses on two reads in a row it has reached the stop, which is recorded, and the gripper is backed off `margin` pulses at once so it never sits straining there. Then the same toward closed. Suggests GripperOpenPulse/GripperClosedPulse `margin` inside the stops (on 2026-10-25 it sat at pulse 176 against an open target of 167, at 72 C). Ends with the gripper open, just inside its stop, and the driver started again
 [group('robot: deploy and restart (someone at the robot)')]
-robot-measure-gripper seconds="45" margin="10" remote_host=default_jetrover_host remote_user="jetson":
+robot-measure-gripper step="10" lag="20" margin="10" remote_host=default_jetrover_host remote_user="jetson":
     #!/usr/bin/env bash
     set -uo pipefail
-    ssh -o StrictHostKeyChecking=accept-new "{{remote_user}}@$(just _robot-host "{{remote_host}}")" "SECONDS_TO_MEASURE={{seconds}} MARGIN={{margin}} bash -s" <<'REMOTE'
+    ssh -o StrictHostKeyChecking=accept-new "{{remote_user}}@$(just _robot-host "{{remote_host}}")" "STEP={{step}} LAG={{lag}} MARGIN={{margin}} bash -s" <<'REMOTE'
     sudo systemctl stop jetrover-arm-control
     sdk=$(ls -d /home/jetson/teleop_ros_current/install/jetrover_arm_control/lib/python3*/site-packages | head -1)
     PYTHONUNBUFFERED=1 PYTHONPATH="$sdk" python3 - <<'PY'
     import os, time
-    from jetrover_arm_control.board_manager.robot_controller_sdk import Board, PacketFunction
+    from jetrover_arm_control.board_manager.robot_controller_sdk import Board
 
     GRIPPER = 10
-    seconds = float(os.environ["SECONDS_TO_MEASURE"])
-    margin = int(os.environ["MARGIN"])
-    # GenericArmPlantConfig.Default, core/Teleop.RobotHost/Plant/GenericArmPlantConfig.cs.
+    step, lag_limit, margin = int(os.environ["STEP"]), int(os.environ["LAG"]), int(os.environ["MARGIN"])
+    STEP_SECONDS = 0.12
+    # GenericArmPlantConfig.Default, core/Teleop.RobotHost/Plant/GenericArmPlantConfig.cs: open is the smaller pulse.
     current_open, current_closed = 30 / 180 * 1000, 150 / 180 * 1000
 
     def read(board):
         got = board.bus_servo_read_position(GRIPPER)
         return got[0] if got else None
 
-    def torque(board):
-        got = board.bus_servo_read_torque_state(GRIPPER)
-        return got[0] if got else None
+    def move(board, pulse, seconds=STEP_SECONDS):
+        board.bus_servo_set_position(seconds, [[GRIPPER, int(max(0, min(1000, pulse)))]])
+
+    def find_stop(board, start, direction, name):
+        """Steps from `start` in `direction` (-1 toward open, +1 toward closed) until the gripper stops following."""
+        target, behind, last = start, 0, start
+        while 0 < target < 1000:
+            target += direction * step
+            move(board, target)
+            time.sleep(STEP_SECONDS + 0.03)
+            p = read(board)
+            if p is None:
+                continue
+            last = p
+            lag = (target - p) * direction
+            print(f"  {name}: target {target:4d}  at {p:4d}  lag {lag:4d}", flush=True)
+            behind = behind + 1 if lag > lag_limit else 0
+            if behind >= 2:
+                # The stop: back off at once, so it does not strain there.
+                move(board, p - direction * margin, 0.3)
+                time.sleep(0.4)
+                return p
+        return last
 
     board = Board()
     board.enable_reception()
     time.sleep(0.5)
     start = read(board)
-    print(f"gripper now at pulse {start}, temperature {(board.bus_servo_read_temp(GRIPPER) or ['?'])[0]} C", flush=True)
     if start is None:
-        raise SystemExit("the gripper did not answer a position read; nothing changed")
-    lo = hi = last = start
+        raise SystemExit("the gripper did not answer a position read; nothing moved")
+    print(f"gripper at pulse {start}, temperature {(board.bus_servo_read_temp(GRIPPER) or ['?'])[0]} C", flush=True)
+    for n in (3, 2, 1):
+        print(f"the gripper moves in {n} s: keep it empty and keep fingers out", flush=True)
+        time.sleep(1)
+    open_stop = closed_stop = None
     try:
-        # Torque off is sub-command 0x0B on this board (measured 2026-10-21, robot-measure-joint-limits).
-        board.buf_write(PacketFunction.PACKET_FUNC_BUS_SERVO, [0x0B, GRIPPER])
-        time.sleep(0.05)
-        state = torque(board)
-        if state != 0:
-            raise RuntimeError(f"the gripper's torque did not switch off (state {state}); stopping")
-        print(f"GRIPPER TORQUE OFF. Open it fully, then close it fully, by hand, a few times. {seconds:.0f} s.", flush=True)
-        end, shown = time.time() + seconds, 0.0
-        while time.time() < end:
-            p = read(board)
-            if p is not None:
-                last, lo, hi = p, min(lo, p), max(hi, p)
-            if time.time() - shown >= 0.5:
-                shown = time.time()
-                print(f"  pulse {last:4d}   seen {lo:4d} to {hi:4d}   {end - time.time():3.0f} s left", flush=True)
-        for n in (3, 2, 1):
-            print(f"holding in {n} s: leave the gripper where it should stay", flush=True)
-            time.sleep(1)
+        # Take hold where it is first, so the first step is a small one from here.
+        move(board, start, 0.2)
+        time.sleep(0.3)
+        open_stop = find_stop(board, start, -1, "open")
+        here = read(board) or open_stop + margin
+        closed_stop = find_stop(board, here, +1, "close")
     finally:
-        p = read(board)
-        p = p if p is not None else last
-        board.bus_servo_set_position(1.0, [[GRIPPER, int(p)]])
-        time.sleep(0.1)
-        print(f"GRIPPER HOLDING at pulse {p}, torque {torque(board)}", flush=True)
-    # Which end is "open" is the current config's: its open pulse is the smaller one.
-    open_stop, closed_stop = (lo, hi) if current_open < current_closed else (hi, lo)
-    step = margin if closed_stop > open_stop else -margin
+        rest = (open_stop + margin) if open_stop is not None else start
+        move(board, rest, 1.0)
+        # Wait until it is there (up to 4 s), not a fixed time: it may move slower than it is told.
+        for _ in range(40):
+            time.sleep(0.1)
+            p = read(board)
+            if p is not None and abs(p - rest) <= 5:
+                break
+        print(f"gripper left open at pulse {read(board)} (just inside the open stop), temperature {(board.bus_servo_read_temp(GRIPPER) or ['?'])[0]} C", flush=True)
     lines = [
-        f"stops by hand: {lo} to {hi} pulses ({hi - lo} wide)",
+        f"stops: open {open_stop}, closed {closed_stop} ({closed_stop - open_stop} pulses apart)",
         f"current config: open {current_open:.0f}, closed {current_closed:.0f}",
-        f"suggested ({margin} inside each stop): GripperOpenPulse {open_stop + step}, GripperClosedPulse {closed_stop - step}",
+        f"suggested ({margin} inside each stop): GripperOpenPulse {open_stop + margin}, GripperClosedPulse {closed_stop - margin}",
     ]
     path = os.path.expanduser(time.strftime("~/gripper-stops-%Y%m%d-%H%M%S.txt"))
     with open(path, "w") as f:

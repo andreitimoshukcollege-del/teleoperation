@@ -180,6 +180,7 @@ just deploy-robothost             # ...or one piece: Teleop.RobotHost after a Co
 just deploy-camerahost            # the camera sender
 just deploy-ros                   # robot/ros/ -- restarts the servo driver
 just move-arm 0.15 0 0.08         # Cartesian target, metres, wrist frame -- MOVES THE ARM
+just robot-shutdown               # servos limp (hold the arm), services stopped, Jetson halted; then the switch
 ```
 
 The Jetson's services auto-start on boot, so there's nothing to do after a reboot. Drive hardware

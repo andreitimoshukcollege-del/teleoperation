@@ -877,6 +877,52 @@ restart-arm-driver remote_host=default_jetrover_host remote_user="jetson":
         "sudo systemctl restart jetrover-arm-control; sleep 5; systemctl status jetrover-arm-control --no-pager -n 8"
     just ros-check 4
 
+# Switch off as much of the robot as software can, then halt the Jetson (the arm goes limp: someone holds it and lowers it). Stops an onboard pilot run and every service (RobotHost, CameraHost, relay, servo driver) so nothing commands the arm, switches off torque on every arm servo (1-5 and the gripper, 10; 0x0B, read back) and stops the wheel motors, then `sudo poweroff`, so the SD card is not cut mid-write. Nothing in the board's protocol powers the board itself off, so the board, the servos' own electronics and its low-battery alarm stay on battery until someone flips the power switch; with torque off they draw little. If the servo board has gone silent, run just robot-board-diagnose first (it needs the fault present): torque cannot be switched off then, and the shutdown says so and halts the Jetson anyway
+[group('robot: deploy and restart (someone at the robot)')]
+robot-shutdown remote_host=default_jetrover_host remote_user="jetson":
+    #!/usr/bin/env bash
+    set -uo pipefail
+    target="{{remote_user}}@$(just _robot-host "{{remote_host}}")"
+    echo "This switches off torque on every arm servo: the ARM FALLS. Someone must hold it and lower it."
+    read -r -p "Someone is holding the arm? Enter to shut down, Ctrl+C to abort " _
+    ssh -o StrictHostKeyChecking=accept-new "$target" "bash -s" <<'REMOTE'
+    touch ~/recordings/.pilot-stop 2>/dev/null
+    p=$(cat ~/recordings/.pilot-onboard.pid 2>/dev/null)
+    for i in $(seq 1 20); do { [ -n "$p" ] && kill -0 "$p" 2>/dev/null; } || break; sleep 0.5; done
+    rm -f ~/recordings/.pilot-stop
+    sudo systemctl stop teleop-robothost teleop-camerahost jetrover-relay jetrover-arm-control
+    sdk=$(ls -d /home/jetson/teleop_ros_current/install/jetrover_arm_control/lib/python3*/site-packages | head -1)
+    PYTHONUNBUFFERED=1 PYTHONPATH="$sdk" timeout 30 python3 - <<'PY'
+    import time
+    from jetrover_arm_control.board_manager.robot_controller_sdk import Board, PacketFunction
+
+    names = {1: "base yaw", 2: "shoulder", 3: "elbow", 4: "wrist pitch", 5: "wrist roll", 10: "gripper"}
+    board = Board()
+    board.enable_reception()
+    time.sleep(0.5)
+    board.set_motor_speed([[m, 0.0] for m in (1, 2, 3, 4)])
+    for n in (5, 4, 3, 2, 1):
+        print(f"torque off in {n} s: hold the arm", flush=True)
+        time.sleep(1)
+    still_on = []
+    for i in names:
+        # Torque off is sub-command 0x0B on this board (the opposite of Hiwonder's published SDK,
+        # measured 2026-10-21). Sent raw, so it does not depend on which SDK version is deployed.
+        board.buf_write(PacketFunction.PACKET_FUNC_BUS_SERVO, [0x0B, i])
+        time.sleep(0.02)
+        got = board.bus_servo_read_torque_state(i)
+        state = got[0] if got else None
+        print(f"  {names[i]} (motor {i}): torque {'off' if state == 0 else 'NO ANSWER' if state is None else 'STILL ON'}", flush=True)
+        if state != 0:
+            still_on.append(names[i])
+    print("TORQUE OFF on every arm servo." if not still_on else
+          f"NOT CONFIRMED OFF: {', '.join(still_on)} (board silent? just robot-board-diagnose before the switch)", flush=True)
+    PY
+    echo "--- halting the Jetson"
+    sudo poweroff
+    REMOTE
+    echo "Jetson halting (allow ~20 s). The board, the servos' electronics and the low-battery alarm are still on battery: flip the power switch."
+
 # Read-only: the battery reading jetrover-arm-control publishes (millivolts, from the Hiwonder board), plus the Jetson's own supply rails. A continuous beep from the robot is usually the board's low-battery alarm: check this first
 [group('robot: checks and diagnostics (nothing moves)')]
 robot-battery remote_host=default_jetrover_host remote_user="jetson":

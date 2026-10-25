@@ -174,6 +174,17 @@ Two limits shape what can be claimed, and are stated here so no result implies o
   all three, and its gripper pulses are the measured 116/645. The headset's per-motor reading ages
   (45, 35, 25, 15, 5 ms) were estimated from 10 ms reads; `armpred sysid` refits them from recordings.
 
+- **Note (2026-10-25): the model predicts the gripper too.** The gripper (motor 10) is read again (ADR
+  0018 §8), so it has exact truth, and the model now predicts it as a sixth joint (layout v3, model
+  format 2, `trainer/contract/MODEL_FORMAT.md`). Inside the model the gripper is in servo radians of
+  travel (its 0..1 fraction / 0.4513), so every radian scale means the same physical thing on every row;
+  its correction may reach 90 servo degrees, against the arm's 15, because a gripper command is one jump
+  across its travel and the speed-blind prior times it badly. **Decision 9's gate is unchanged and
+  scored on the five arm joints only**, and the best checkpoint is chosen on them; the gripper is
+  reported on its own, in servo degrees and as a fraction. The simulator's gripper gains a drawn lag
+  (30-120 ms) and a deadband (0-20 pulses), from how the real one moved (`just robot-measure-gripper`).
+  Views are version 3: the gripper's truth is its fraction.
+
 ## Alternatives considered
 
 - **Simulate, synthesise and export in `Teleop.Eval`, and train in `analysis/`.** One copy of the

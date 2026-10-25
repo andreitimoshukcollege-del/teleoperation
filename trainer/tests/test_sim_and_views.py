@@ -68,10 +68,17 @@ def test_samples_are_finite_and_the_prior_beats_hold_last_on_a_slow_link(sim_ses
     d = view_samples(v, np.random.default_rng(0), SampleConfig(queries_per_s=40.0))
     assert len(d) > 200
     assert np.isfinite(d.joints).all() and np.isfinite(d.arm).all()
-    ok = d.valid
+    # The arm joints: a still gripper's exact zeros would otherwise set both medians.
+    arm = d.joint < 5
+    ok = d.valid & arm
     prior = np.percentile(np.abs(d.prior - d.truth)[ok], 50)
     hold = np.percentile(np.abs(d.newest - d.truth)[ok], 50)
     assert prior < hold
+    # The gripper is labelled too (layout v3), in servo radians: 0 open .. 1 / GRIPPER_FRACTION_PER_RAD closed.
+    from armpred.features.layout import GRIPPER_FRACTION_PER_RAD
+    g = d.joint == 5
+    assert g.sum() > 20
+    assert (d.truth[g] >= -1e-9).all() and (d.truth[g] <= 1.0 / GRIPPER_FRACTION_PER_RAD + 1e-9).all()
 
 
 def test_a_scheduled_uplink_is_logged_and_every_send_is_in_the_operator_log(tmp_path):

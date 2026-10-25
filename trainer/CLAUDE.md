@@ -79,8 +79,8 @@ sha256 in the model card.
 | `armpred/net/` | the copies of Core: `SeededRng`, impairments, `EmulatedTransport`'s ordering, the profile catalog, `ClockSync`; and `forecast.py`, network forecast v1 and the forecasters of known quality (not a copy) |
 | `armpred/baselines/` | `hold-last`, `relay-replay` (copies of Core), `relay-replay-adaptive` (a dev baseline: online lag and droop, speed-blind) |
 | `armpred/sim/` | the simulator: operator motion, RobotHost, the relay gate, the servos, the reads |
-| `armpred/data/` | schedules, and turning a session plus a schedule and a seed into what the headset would have seen (views v2) |
-| `armpred/features/` | the model's input window (layout v2, `contract/MODEL_FORMAT.md`) |
+| `armpred/data/` | schedules, and turning a session plus a schedule and a seed into what the headset would have seen (views v3) |
+| `armpred/features/` | the model's input window (layout v3: the arm and the gripper, `contract/MODEL_FORMAT.md`) |
 | `armpred/models/`, `train.py`, `export.py`, `evaluate.py`, `report.py` | torch models, training, ONNX export, the evaluation and the trainer gate |
 | `armpred/sysid.py` | what the recordings say about the robot: the simulator's ranges and the prior's fitted reading ages |
 | `armpred/pipeline.py`, `armpred/cli.py` | the session matrix, `prepare`, `train-run`, `sim-pretrain`, `grid`, `finetune`, `sysid` |

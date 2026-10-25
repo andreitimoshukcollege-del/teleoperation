@@ -7,7 +7,8 @@ nothing from the teleoperation repo; the only things it shares with it are in `c
 **What it learns:** where the arm really is now, from the joint targets the headset sent and the
 joint readings that have arrived, adapting without being told to the arm's speed, the network, and
 resistance (a payload, a hand). The prediction is `relay-replay` (run speed-blind) plus a learned
-correction; `contract/MODEL_FORMAT.md` has the exact input window (layout v2: the commanded path on
+correction; `contract/MODEL_FORMAT.md` has the exact input window (layout v3, v2's with the gripper as a sixth
+joint; v2: the commanded path on
 a fixed grid, and a network-forecast block).
 
 **Network forecasts** (ADR 0021 decisions 11-14): a separate network model, built later by someone
@@ -91,7 +92,7 @@ From each `runs/<name>/`:
 
 | File | What it is |
 |---|---|
-| `model.onnx` | the model (model format v1, layout v2) |
+| `model.onnx` | the model (model format v2, layout v3: the five arm joints and the gripper) |
 | `model-card.json` | what made it: trainer SHA, data hashes, config, parity, validation numbers |
 | `eval/report.md`, `eval/report.json` | the trainer's own evaluation and the trainer gate |
 | `log.txt`, `train-summary.json` | the run's log and learning curve |

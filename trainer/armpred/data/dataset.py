@@ -25,7 +25,7 @@ from typing import Dict, List, Optional, Tuple
 import numpy as np
 
 from ..baselines.types import JointPredictorConfig, JointSample, headset_joint_config
-from ..features.layout import ARM_MOTORS, FeatureState, arm_features, JOINT_FEATURES
+from ..features.layout import PREDICTED_MOTORS, FeatureState, arm_features, JOINT_FEATURES, to_model
 from ..net import forecast as FC
 from .views import View, view_observations, view_truths
 
@@ -47,8 +47,8 @@ class SampleConfig:
 class Samples:
     joints: np.ndarray  # float32 [N, JOINT_FEATURES] the labelled joint's row
     arm: np.ndarray  # float32 [N, ARM_FEATURES(+1)]
-    joint: np.ndarray  # int8 [N] index into ARM_MOTORS
-    truth: np.ndarray  # float64 [N] rad
+    joint: np.ndarray  # int8 [N] index into PREDICTED_MOTORS (the arm, then the gripper)
+    truth: np.ndarray  # float64 [N] in model units (layout.to_model): rad, the gripper's servo rad
     prior: np.ndarray  # float64 [N] the prior's prediction for that joint
     newest: np.ndarray  # float64 [N] that joint's newest fresh reading (hold-last)
     valid: np.ndarray  # bool [N]: False -> the predictor would fall back
@@ -103,7 +103,7 @@ def state_samples(view: View, i: int) -> List[JointSample]:
 def _queries(view: View, rng: np.random.Generator, cfg: SampleConfig) -> List[Tuple[int, int, int, float, int, int]]:
     """(t_now, T, joint index, truth, pair id, kind), sorted by t_now."""
     tps = view.tps
-    arm = np.isin(view.tr_motor, ARM_MOTORS)
+    arm = np.isin(view.tr_motor, PREDICTED_MOTORS)
     first_state = int(view.st_t[0]) if len(view.st_t) else None
     if first_state is None:
         return []
@@ -116,12 +116,13 @@ def _queries(view: View, rng: np.random.Generator, cfg: SampleConfig) -> List[Tu
     n_event = int(n_total * cfg.event_share)
     n_pair = int(n_total * cfg.pair_share) // 2
     n_base = max(0, n_total - n_event - 2 * n_pair)
-    motor_index = {m: k for k, m in enumerate(ARM_MOTORS)}
+    motor_index = {m: k for k, m in enumerate(PREDICTED_MOTORS)}
+    truth_of = lambda r: to_model(int(view.tr_motor[r]), float(view.tr_value[r]))  # noqa: E731
     delta = lambda: int(rng.uniform(0.0, cfg.delta_max_ms) / 1000.0 * tps)  # noqa: E731
     out = []
     for r in rng.choice(idx, size=min(n_base, idx.size), replace=False):
         t = int(view.tr_t[r])
-        out.append((t - delta(), t, motor_index[int(view.tr_motor[r])], float(view.tr_value[r]), -1, 0))
+        out.append((t - delta(), t, motor_index[int(view.tr_motor[r])], truth_of(r), -1, 0))
     event_t = np.array([t for t, k in zip(view.events_t, view.events_kind) if k in EVENT_KINDS], dtype=np.int64)
     if event_t.size and n_event:
         near = np.zeros(idx.size, dtype=bool)
@@ -132,7 +133,7 @@ def _queries(view: View, rng: np.random.Generator, cfg: SampleConfig) -> List[Tu
         if cand.size:
             for r in rng.choice(cand, size=min(n_event, cand.size), replace=False):
                 t = int(view.tr_t[r])
-                out.append((t - delta(), t, motor_index[int(view.tr_motor[r])], float(view.tr_value[r]), -1, 1))
+                out.append((t - delta(), t, motor_index[int(view.tr_motor[r])], truth_of(r), -1, 1))
     # Pairs: a read instant within 100 ms after a fresh reading's arrival, asked just before and after it.
     fresh = _fresh_state_times(view)
     if fresh.size and n_pair:
@@ -145,8 +146,8 @@ def _queries(view: View, rng: np.random.Generator, cfg: SampleConfig) -> List[Tu
             r = int(rng.choice(cand))
             t = int(view.tr_t[r])
             j = motor_index[int(view.tr_motor[r])]
-            out.append((a - 1, t, j, float(view.tr_value[r]), p, 2))
-            out.append((a, t, j, float(view.tr_value[r]), p, 2))
+            out.append((a - 1, t, j, truth_of(r), p, 2))
+            out.append((a, t, j, truth_of(r), p, 2))
     out.sort(key=lambda q: (q[0], q[4], q[1]))
     return out
 

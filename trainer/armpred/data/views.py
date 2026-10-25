@@ -41,7 +41,10 @@ from .schedule import Schedule, Segment, build_downlink
 
 NS = 1_000_000_000
 HEADSET_TICK_NS = NS / 90.0
-VIEW_VERSION = 2
+# 3 (2026-10-25): the gripper's truth (motor 10) is its 0..1 fraction, as its frames and commands carry
+# it, not the arm's angle formula. Older views are read with their gripper truth dropped.
+VIEW_VERSION = 3
+GRIPPER_TRUTH_MOTOR = 10  # the JetRover's gripper (robot profile role GripperMain)
 PASSTHROUGH_PROFILES = ("lan", "none")
 # A recorded session's LAN under the robot-side impairment (the clock fit assumes 0.5 ms minimum).
 RECORDED_LAN_BASE_MS, RECORDED_LAN_JITTER_MS = 1.0, 0.5
@@ -321,7 +324,7 @@ def synthesize(session: Session, profile: RobotProfile, schedule: Schedule, seed
     pulses = session.reads.pulse[ok]
     for m in np.unique(tr_motor):
         sel = tr_motor == m
-        tr_value[sel] = profile.pulse_to_angle(int(m), pulses[sel])
+        tr_value[sel] = profile.pulse_to_value(int(m), pulses[sel])
     events = _events(session, schedule, t0, op)
     meta = {
         "format": "jetrover-view",
@@ -514,9 +517,14 @@ def load_view(path: str) -> View:
     with np.load(path, allow_pickle=False) as z:
         meta = json.loads(bytes(z["meta_json"]).decode("utf-8"))
         version = int(meta.get("version", 0))
-        if meta.get("format") != "jetrover-view" or version not in (1, 2):
-            raise ValueError(f"{path}: not a version-1 or version-2 view")
+        if meta.get("format") != "jetrover-view" or version not in (1, 2, 3):
+            raise ValueError(f"{path}: not a version-1, -2 or -3 view")
         kw = {name: z[name] for name in _ARRAYS_V1}
+        if version < 3 and "tr_motor" in kw:
+            # Before v3 a gripper read went through the arm's angle formula: not a value anything predicts.
+            keep = kw["tr_motor"] != GRIPPER_TRUTH_MOTOR
+            for name in [n for n in kw if n.startswith("tr_")]:
+                kw[name] = kw[name][keep]
         if version >= 2:
             kw.update({name: z[name] for name in _ARRAYS_V2})
         forecasts = None

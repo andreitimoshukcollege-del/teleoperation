@@ -286,7 +286,10 @@ class _Sim:
                 self.speed_scale[m] = battery * free
                 self.load_nm[m] = load
             g = self.servos[GRIPPER_MOTOR]
-            g.pulse += (g.setpoint(now) - g.pulse) * min(1.0, dt_s / 0.04)
+            # A first-order lag that stops correcting within the deadband (the real one settled short).
+            gap = g.setpoint(now) - g.pulse
+            if abs(gap) > self.p.gripper_deadband_pulses:
+                g.pulse += gap * min(1.0, dt_s / max(self.p.gripper_lag_s, 1e-3))
             self.physics_t = now
             if now >= self.next_latent_ns:
                 for m in ARM_MOTORS:

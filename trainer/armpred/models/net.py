@@ -12,12 +12,18 @@ from torch import nn
 from ..features import layout as L
 
 MAX_CORRECTION = L.MAX_CORRECTION_RAD
+GRIPPER_MAX_CORRECTION = L.GRIPPER_MAX_CORRECTION_RAD
 LOG_SCALE_MIN, LOG_SCALE_MAX = math.log(1e-4), math.log(0.5)
+# Where the gripper's identity flag sits in a joint row (the identity block's last entry, layout v3).
+_GRIPPER_FLAG = 2 + L.N_PATH * 2 + L.N_READINGS * 3 + L.N_INNOVATIONS * 4 + L.PREDICTED_MOTORS.index(L.GRIPPER_MOTOR)
 
 
-def _head(raw: torch.Tensor) -> torch.Tensor:
-    """[..., 2] raw -> [..., 2]: the correction bounded to +-15 degrees, the log-scale clamped."""
-    corr = MAX_CORRECTION * torch.tanh(raw[..., 0])
+def _head(raw: torch.Tensor, joint_row: torch.Tensor) -> torch.Tensor:
+    """[..., 2] raw -> [..., 2]: the correction bounded to +-15 degrees (+-90 servo degrees on the
+    gripper's row, picked by its identity flag), the log-scale clamped."""
+    flag = joint_row[..., _GRIPPER_FLAG]
+    cap = MAX_CORRECTION + (GRIPPER_MAX_CORRECTION - MAX_CORRECTION) * flag
+    corr = cap * torch.tanh(raw[..., 0])
     log_b = torch.clamp(raw[..., 1], LOG_SCALE_MIN, LOG_SCALE_MAX)
     return torch.stack([corr, log_b], dim=-1)
 
@@ -42,7 +48,7 @@ class JointMLP(nn.Module):
         nn.init.zeros_(self.net[-1].bias)
 
     def forward(self, joint_row: torch.Tensor, arm_row: torch.Tensor) -> torch.Tensor:
-        return _head(self.net(torch.cat([joint_row, arm_row], dim=-1)))
+        return _head(self.net(torch.cat([joint_row, arm_row], dim=-1)), joint_row)
 
 
 def _slices():
@@ -50,7 +56,8 @@ def _slices():
     k = 0
     out = {}
     for name, width in (("prior", 2), ("path", L.N_PATH * 2), ("readings", L.N_READINGS * 3),
-                        ("innovations", L.N_INNOVATIONS * 4), ("identity", len(L.ARM_MOTORS)), ("angle", 2)):
+                        ("innovations", L.N_INNOVATIONS * 4), ("identity", len(L.PREDICTED_MOTORS)), ("angle", 2),
+                        ("reference", 1)):
         out[name] = (k, k + width)
         k += width
     assert k == L.JOINT_FEATURES
@@ -93,7 +100,7 @@ class JointConv(nn.Module):
         self.path = _Stream(2, width)
         self.readings = _Stream(3, width)
         self.innovations = _Stream(4, width)
-        scalars = 2 + len(L.ARM_MOTORS) + 2 + arm_features
+        scalars = 2 + len(L.PREDICTED_MOTORS) + 2 + 1 + arm_features
         self.head = nn.Sequential(nn.Linear(3 * width + scalars, 64), nn.ReLU(), nn.Linear(64, 2))
         nn.init.normal_(self.head[-1].weight, std=1e-3)
         nn.init.zeros_(self.head[-1].bias)
@@ -112,8 +119,9 @@ class JointConv(nn.Module):
         a, b = self.s["prior"]
         i0, i1 = self.s["identity"]
         g0, g1 = self.s["angle"]
-        scalars = torch.cat([joint_row[..., a:b], joint_row[..., i0:i1], joint_row[..., g0:g1], arm_row], dim=-1)
-        return _head(self.head(torch.cat(pooled + [scalars], dim=-1)))
+        r0, r1 = self.s["reference"]
+        scalars = torch.cat([joint_row[..., a:b], joint_row[..., i0:i1], joint_row[..., g0:g1], joint_row[..., r0:r1], arm_row], dim=-1)
+        return _head(self.head(torch.cat(pooled + [scalars], dim=-1)), joint_row)
 
 
 def build(name: str, aware: bool = False) -> nn.Module:
@@ -126,9 +134,10 @@ def build(name: str, aware: bool = False) -> nn.Module:
 
 
 class FlatExport(nn.Module):
-    """The graph the repo runs: one input ``x`` [1, 5 * JOINT_FEATURES + ARM_FEATURES(+1)] (the five
-    joint rows, motors 1-5 in order, then the arm row) and one output ``y`` [1, 10] (per joint: the
-    correction in rad, then the log-scale). ``IInferenceBackend`` reads and writes one flat span."""
+    """The graph the repo runs: one input ``x`` [1, 6 * JOINT_FEATURES + ARM_FEATURES(+1)] (the six
+    joint rows, motors 1-5 then the gripper (10), then the arm row) and one output ``y`` [1, 12] (per
+    joint: the correction in model units -- rad, the gripper's servo rad -- then the log-scale).
+    ``IInferenceBackend`` reads and writes one flat span."""
 
     def __init__(self, model: nn.Module, arm_features: int):
         super().__init__()
@@ -136,7 +145,7 @@ class FlatExport(nn.Module):
         self.arm_features = arm_features
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        n = len(L.ARM_MOTORS)
+        n = len(L.PREDICTED_MOTORS)
         joints = x[:, : n * L.JOINT_FEATURES].reshape(n, L.JOINT_FEATURES)
         arm = x[:, n * L.JOINT_FEATURES:]
         # Static shapes, so a plain Concat rather than expand (which exports shape arithmetic).

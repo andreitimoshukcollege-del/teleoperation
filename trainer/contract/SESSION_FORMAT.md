@@ -144,7 +144,9 @@ The simulator's hidden values. **Never a model input**: they stratify results an
 The truth for motor `m` is its successful `RD` reads, never the frames:
 - **value:** `(pulse - zeroPulse) / pulsesPerRadian - zeroOffsetRadians(m)`, with the robot profile's
   numbers (on the JetRover: `zeroPulse` 500, `pulsesPerRadian` 1000 per 240°, and the profile's
-  per-joint `zeroOffsetRadians`);
+  per-joint `zeroOffsetRadians`). For the gripper (motor 10, read since 2026-10-25): its open..closed
+  fraction `(pulse - gripperOpenPulse) / (gripperClosedPulse - gripperOpenPulse)`, clamped to 0..1, as
+  RobotHost reports it (on the JetRover: 116 and 645);
 - **time:** `(tReq + tResp) / 2`.
 
 ## Versioning

@@ -1,0 +1,29 @@
+{
+  "sensedAgeMotorIds": [
+    1,
+    2,
+    3,
+    4,
+    5
+  ],
+  "sensedAgeMs": [
+    30.2,
+    25.34,
+    22.63,
+    20.06,
+    17.15
+  ],
+  "relayReplayServo": {
+    "servoLagSeconds": 0.05,
+    "servoPipelineDelaySeconds": 0.01676489
+  },
+  "from": [
+    "20261022T232400Z-test-1",
+    "20261022T233258Z-test-2",
+    "20261025T185652Z-teleop-2p5",
+    "20261025T195448Z-ghost-check",
+    "20261025T200659Z-ghost-check-2",
+    "20261025T200935Z-teleop-2p5",
+    "20261025T202026Z-teleop-2p5"
+  ]
+}

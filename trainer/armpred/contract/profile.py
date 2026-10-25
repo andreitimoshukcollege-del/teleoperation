@@ -78,6 +78,19 @@ class RobotProfile:
         j = self.joint(motor_id)
         return (np.asarray(pulse, dtype=np.float64) - self.pulse.zero_pulse) / self.pulse.pulses_per_radian - j.zero_offset_radians
 
+    def pulse_to_gripper_fraction(self, pulse: np.ndarray) -> np.ndarray:
+        """A gripper pulse as RobotHost reports it (GenericArmPlant.ReadJointState): open..closed as 0..1, clamped."""
+        span = self.pulse.gripper_closed_pulse - self.pulse.gripper_open_pulse
+        fraction = (np.asarray(pulse, dtype=np.float64) - self.pulse.gripper_open_pulse) / span
+        return np.clip(fraction, 0.0, 1.0)
+
+    def pulse_to_value(self, motor_id: int, pulse: np.ndarray) -> np.ndarray:
+        """The truth conversion for any motor: an arm joint's angle (rad), or the gripper's 0..1 fraction
+        (contract/SESSION_FORMAT.md, "The truth")."""
+        if motor_id == self.gripper_motor_id:
+            return self.pulse_to_gripper_fraction(pulse)
+        return self.pulse_to_angle(motor_id, pulse)
+
     def angle_to_pulse(self, motor_id: int, angle: np.ndarray) -> np.ndarray:
         """RobotHost's command conversion: zeroPulse + (angle + zeroOffset) * pulsesPerRadian, before its clamp."""
         j = self.joint(motor_id)

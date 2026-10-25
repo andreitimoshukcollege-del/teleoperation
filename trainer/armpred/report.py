@@ -213,6 +213,24 @@ def _window_p95(overall: dict, kind: str) -> Optional[tuple]:
     return (p95_first_second(MODEL), min(best)) if best else None
 
 
+def _gripper_section(base: dict) -> list:
+    """The gripper (layout v3), on its own: in servo degrees, the model's unit for it, and as the 0..1
+    fraction the operator commands (servo radians x GRIPPER_FRACTION_PER_RAD)."""
+    from .features.layout import GRIPPER_FRACTION_PER_RAD
+
+    rows = [(n, m["gripper_prediction_error_deg"], m["gripper_correction_deg"]) for n, m in base.items()
+            if m.get("gripper_prediction_error_deg", {}).get("n", 0)]
+    out = ["## The gripper (motor 10, not in the gate)", ""]
+    if not rows:
+        return out + ["No gripper reads in these sessions (it is read since 2026-10-25).", ""]
+    to_fraction = GRIPPER_FRACTION_PER_RAD * math.pi / 180.0
+    out += ["| Predictor | error p50 | p95 | p99 | max | p95 as a fraction | correction p95 | reads |", "|---|---|---|---|---|---|---|---|"]
+    for name, e, c in rows:
+        out.append(f"| {name} | {_f(e['p50'])} | {_f(e['p95'])} | {_f(e['p99'])} | {_f(e['max'])} | "
+                   f"{_f(e['p95'] * to_fraction, 3)} | {_f(c['p95'])} | {e['n']} |")
+    return out + ["", "Servo degrees of the gripper's travel, at its read instants; the fraction is of open..closed.", ""]
+
+
 def write_report(summary: dict, path: str, simulated: bool, card: Optional[dict] = None) -> None:
     lines = []
     if simulated:
@@ -231,8 +249,11 @@ def write_report(summary: dict, path: str, simulated: bool, card: Optional[dict]
         e, c, j = m["joint_prediction_error_deg"], m["joint_correction_deg"], m["joint_display_jitter_deg"]
         lines.append(f"| {name} | {_f(e['p50'])} | {_f(e['p95'])} | {_f(e['p99'])} | {_f(e['max'])} | {_f(c['p95'])} | "
                      f"{_f(c['max'])} | {_f(j['p95'], 3)} |")
-    lines += ["", "Degrees, at driver read instants (exact truth). Correction: the jump when a reading arrives. "
-              "Jitter: |p_k - 2p_k-1 + p_k-2| per 90 Hz frame.", "", "## By schedule (error p95, degrees)", ""]
+    lines += ["", "Degrees, at driver read instants (exact truth), over the five arm joints: the gripper is scored "
+              "on its own, below, and is not in the gate. Correction: the jump when a reading arrives. "
+              "Jitter: |p_k - 2p_k-1 + p_k-2| per 90 Hz frame.", ""]
+    lines += _gripper_section(base)
+    lines += ["## By schedule (error p95, degrees)", ""]
     names = list(base)
     cell = lambda stats, n: _f(stats[n]["joint_prediction_error_deg"]["p95"]) if n in stats else "—"  # noqa: E731
     lines += ["| Schedule | " + " | ".join(names) + " |", "|---|" + "---|" * len(names)]

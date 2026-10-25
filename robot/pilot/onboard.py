@@ -155,6 +155,7 @@ def close_session(directory: str) -> None:
     with open(path) as f:
         meta = json.load(f)
     meta["stoppedUtc"] = utc_now()
+    slider_from_commands(directory, meta)
     with open(path, "w") as f:
         json.dump(meta, f, indent=2)
     names = ["session.json", "robot-profile.json"] + sorted(n for n in os.listdir(directory) if n.endswith(".jlog"))
@@ -163,6 +164,27 @@ def close_session(directory: str) -> None:
             f.write(f"{sha256_file(os.path.join(directory, n))}  {n}\n")
     for n in names[2:]:
         log(f"  {n:16} {trailer(os.path.join(directory, n))}")
+
+
+def slider_from_commands(directory: str, meta: dict) -> None:
+    """The slider is what the commands carried (as `just record-stop` reads it; keep the two the same)."""
+    speeds = set()
+    with open(os.path.join(directory, "robothost.jlog")) as f:
+        for line in f:
+            if line.startswith("JC|"):
+                for target in line.rstrip("\n").split("|")[6].split(";"):
+                    motor, _, speed = target.split(":")
+                    if motor != "10" and float(speed) > 0:
+                        speeds.add(round(float(speed), 2))
+    if not speeds:
+        return
+    asked = meta["conditions"]["speedSliderRadPerSec"]
+    measured = next(iter(speeds)) if len(speeds) == 1 else "varied"
+    meta["conditions"]["speedSliderRadPerSec"] = measured
+    if measured != asked:
+        note = f"slider from the commands: {measured}; the plan said {asked}"
+        meta["notes"] = (meta["notes"] + "; " if meta.get("notes") else "") + note
+        log(f"WARNING: the slider was {measured}, not {asked}")
 
 
 def trailer(path: str) -> str:

@@ -1548,7 +1548,7 @@ record-start label slider *options:
     fi
     echo "recording $id"
 
-# Stop the robot's recording -- moves nothing. Removes the control file, waits for both logs' END trailers, stamps stoppedUtc and writes files.sha256
+# Stop the robot's recording -- moves nothing. Removes the control file, waits for both logs' END trailers, stamps stoppedUtc, sets the session's slider from the speed its joint commands actually carried (warning when that is not what record-start was told), and writes files.sha256
 [group('robot: recording (docs/adr/0021)')]
 record-stop remote_host=default_jetrover_host remote_user="jetson":
     #!/usr/bin/env bash
@@ -1570,6 +1570,29 @@ record-stop remote_host=default_jetrover_host remote_user="jetson":
     path = sys.argv[1] + "/session.json"
     meta = json.load(open(path))
     meta["stoppedUtc"] = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    # The slider is what the commands carried, not what record-start was told: the headset's slider
+    # rides in every joint command's speed field (motor 10, the gripper, aside; 0 means none was sent).
+    # Same reading as robot/pilot/onboard.py and just recording-set-slider.
+    speeds = set()
+    with open(sys.argv[1] + "/robothost.jlog") as f:
+        for line in f:
+            if line.startswith("JC|"):
+                for target in line.rstrip("\n").split("|")[6].split(";"):
+                    motor, _, speed = target.split(":")
+                    if motor != "10" and float(speed) > 0:
+                        speeds.add(round(float(speed), 2))
+    asked = meta["conditions"]["speedSliderRadPerSec"]
+    if speeds:
+        measured = next(iter(speeds)) if len(speeds) == 1 else "varied"
+        meta["conditions"]["speedSliderRadPerSec"] = measured
+        if measured != asked:
+            note = f"slider from the commands: {measured} ({', '.join(str(s) for s in sorted(speeds))} rad/s); record-start was told {asked}"
+            meta["notes"] = (meta["notes"] + "; " if meta.get("notes") else "") + note
+            print(f"WARNING: the slider was {measured}, not {asked}: session.json says {measured}")
+        else:
+            print(f"slider {measured} rad/s, as asked")
+    else:
+        print(f"no joint commands: the slider stays {asked}, as record-start was told")
     json.dump(meta, open(path, "w"), indent=2)
     PY
     cd "$dir" && sha256sum session.json robot-profile.json *.jlog > files.sha256

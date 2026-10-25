@@ -669,7 +669,7 @@ robot-measure-joint-limits ids="2 4" seconds="90" remote_host=default_jetrover_h
     systemctl is-active jetrover-arm-control
     REMOTE
 
-# Find where the gripper (motor 10) physically stops, by driving it there slowly (moves the gripper only; someone watches it, and keeps it empty: anything in it reads as a stop). It cannot be measured by hand: with its torque off it still does not move (2026-10-25, its gearing holds it). Stops the servo driver, then steps the gripper `step` pulses at a time toward open and reads where it is after each step; once it lags its target by more than `lag` pulses on two reads in a row it has reached the stop, which is recorded, and the gripper is backed off `margin` pulses at once so it never sits straining there. Then the same toward closed. Suggests GripperOpenPulse/GripperClosedPulse `margin` inside the stops (on 2026-10-25 it sat at pulse 176 against an open target of 167, at 72 C). Ends with the gripper open, just inside its stop, and the driver started again
+# Find where the gripper (motor 10) physically stops, by driving it there slowly (moves the gripper only; someone watches it, and keeps it empty: anything in it reads as a stop). It cannot be measured by hand: with its torque off it still does not move (2026-10-25, its gearing holds it). Stops the servo driver, then steps the gripper `step` pulses at a time toward open and reads where it is after each step; once it has stopped moving (under 3 pulses of progress over two steps, lagging its target by more than `lag`; or lagging by over 60) it has reached the stop, which is recorded, and the gripper is backed off `margin` pulses at once so it never sits straining there. Then the same toward closed. Suggests GripperOpenPulse/GripperClosedPulse `margin` inside the stops (on 2026-10-25 it sat at pulse 176 against an open target of 167, at 72 C). Ends with the gripper open, just inside its stop, and the driver started again
 [group('robot: deploy and restart (someone at the robot)')]
 robot-measure-gripper step="10" lag="20" margin="10" remote_host=default_jetrover_host remote_user="jetson":
     #!/usr/bin/env bash
@@ -684,6 +684,7 @@ robot-measure-gripper step="10" lag="20" margin="10" remote_host=default_jetrove
     GRIPPER = 10
     step, lag_limit, margin = int(os.environ["STEP"]), int(os.environ["LAG"]), int(os.environ["MARGIN"])
     STEP_SECONDS = 0.12
+    STILL, MAX_LAG = 3, 60
     # GenericArmPlantConfig.Default, core/Teleop.RobotHost/Plant/GenericArmPlantConfig.cs: open is the smaller pulse.
     current_open, current_closed = 30 / 180 * 1000, 150 / 180 * 1000
 
@@ -695,8 +696,13 @@ robot-measure-gripper step="10" lag="20" margin="10" remote_host=default_jetrove
         board.bus_servo_set_position(seconds, [[GRIPPER, int(max(0, min(1000, pulse)))]])
 
     def find_stop(board, start, direction, name):
-        """Steps from `start` in `direction` (-1 toward open, +1 toward closed) until the gripper stops following."""
-        target, behind, last = start, 0, start
+        """Steps from `start` in `direction` (-1 toward open, +1 toward closed) until the gripper stops moving.
+
+        Lag alone is not a stop: it follows its target 10-20 pulses behind all the way (2026-10-25), and
+        is slow to start. A stop is where it no longer moves: under `STILL` pulses of progress over two
+        steps while its target went on, with it lagging by more than `lag`. `MAX_LAG` is a backstop.
+        """
+        target, history = start, [start]
         while 0 < target < 1000:
             target += direction * step
             move(board, target)
@@ -704,16 +710,16 @@ robot-measure-gripper step="10" lag="20" margin="10" remote_host=default_jetrove
             p = read(board)
             if p is None:
                 continue
-            last = p
+            history.append(p)
             lag = (target - p) * direction
-            print(f"  {name}: target {target:4d}  at {p:4d}  lag {lag:4d}", flush=True)
-            behind = behind + 1 if lag > lag_limit else 0
-            if behind >= 2:
+            progress = (p - history[-3]) * direction if len(history) >= 3 else step
+            print(f"  {name}: target {target:4d}  at {p:4d}  lag {lag:4d}  moved {progress:4d} over two steps", flush=True)
+            if (lag > lag_limit and progress < STILL) or lag > MAX_LAG:
                 # The stop: back off at once, so it does not strain there.
                 move(board, p - direction * margin, 0.3)
                 time.sleep(0.4)
                 return p
-        return last
+        return history[-1]
 
     board = Board()
     board.enable_reception()

@@ -162,10 +162,13 @@ def train(train_ds: Dataset, val_ds: Dataset, cfg: TrainConfig, out_dir: str, lo
     huber = nn.HuberLoss(delta=cfg.huber_deg, reduction="mean")
     os.makedirs(os.path.join(out_dir, "checkpoints"), exist_ok=True)
 
+    # The checkpoint is chosen on the arm joints alone, as the trainer gate scores them; the gripper (the
+    # last row, layout v3) is logged beside it, in servo degrees.
+    val_arm = val_ds.samples.joint < len(L.ARM_MOTORS)
     val_prior = np.abs(val_ds.samples.prior - val_ds.samples.truth) * DEG
-    val_prior[~val_ds.samples.valid] = np.nan
+    val_prior[~val_ds.samples.valid | ~val_arm] = np.nan
     val_hold = np.abs(val_ds.samples.newest - val_ds.samples.truth) * DEG
-    val_hold[~val_ds.samples.valid] = np.nan
+    val_hold[~val_ds.samples.valid | ~val_arm] = np.nan
     history = []
     best = {"p95": float("inf"), "step": -1}
     t0 = time.time()
@@ -204,11 +207,14 @@ def train(train_ds: Dataset, val_ds: Dataset, cfg: TrainConfig, out_dir: str, lo
                 pe.mul_(cfg.ema).add_(pm.detach(), alpha=1.0 - cfg.ema)
         if step % cfg.val_every == 0 or step == cfg.steps:
             e = evaluate_errors(ema, va, val_ds.samples.valid)
-            stats = _percentiles(e)
-            row = {"step": step, "loss": float(loss.item()), "lr": lr, "val": stats, "seconds": round(time.time() - t0, 1)}
+            stats = _percentiles(e[val_arm])
+            gripper = _percentiles(e[~val_arm])
+            row = {"step": step, "loss": float(loss.item()), "lr": lr, "val": stats, "val_gripper": gripper,
+                   "seconds": round(time.time() - t0, 1)}
             history.append(row)
             log(f"step {step:7d} loss {row['loss']:.4f} val p50/p95/p99 {stats['p50']:.3f}/{stats['p95']:.3f}/{stats['p99']:.3f} deg "
-                f"(prior p95 {np.nanpercentile(val_prior, 95):.3f}, hold-last {np.nanpercentile(val_hold, 95):.3f}) {row['seconds']}s")
+                f"(prior p95 {np.nanpercentile(val_prior, 95):.3f}, hold-last {np.nanpercentile(val_hold, 95):.3f}); "
+                f"gripper p95 {gripper['p95']:.3f} servo deg {row['seconds']}s")
             if stats["p95"] < best["p95"]:
                 best = {"p95": stats["p95"], "step": step, "val": stats}
                 torch.save(ema.state_dict(), os.path.join(out_dir, "checkpoints", "best.pt"))

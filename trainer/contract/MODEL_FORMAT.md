@@ -1,4 +1,4 @@
-# Model format, version 1
+# Model format, version 2
 
 What the trainer hands back to the repo (docs/adr/0021 decision 2): one `model.onnx` and its
 `model-card.json`. The C# predictor that runs it (`SequenceModelJointPredictor`, built only after the
@@ -9,8 +9,14 @@ does, and refuses a model whose layout id or lengths it does not know.
 
 | | Name | Shape | |
 |---|---|---|---|
-| input | `x` | float32 [1, 1359] (`v2`), [1, 1360] (`v2-aware`); [1, 898] / [1, 899] for v1 | the five joint rows, motors 1-5 in order, then the arm row |
-| output | `y` | float32 [1, 10] | per joint, motors 1-5: the correction in rad (already bounded to +-15 degrees), then the Laplace log-scale (log rad) |
+| input | `x` | float32 [1, 1620] (`v3`), [1, 1621] (`v3-aware`); [1, 1359] / [1, 1360] for v2, [1, 898] / [1, 899] for v1 | the six joint rows, motors 1-5 then the gripper (10), then the arm row |
+| output | `y` | float32 [1, 12] (v3; [1, 10] before) | per joint, in row order: the correction in model units (already bounded: +-15 degrees, +-90 servo degrees on the gripper's row), then the Laplace log-scale (log, model units) |
+
+**Model units (version 2, layout v3).** An arm joint is in radians. The gripper, whose value on the
+wire is its 0..1 open..closed fraction, is in **servo radians of travel**: fraction / 0.4513, the
+headset's `GripperFractionPerRadian` (RobotHost's pulses per radian over its 116..645 pulse span). The
+host converts the gripper's prior and readings into that unit to build the window, and the prediction
+back: `fraction = (prior + y[2j]) * 0.4513`. The card states the factor (`model.gripperFractionPerRadian`).
 
 - **Static shapes, opset 17,** and only the ops in `armpred/export.py`'s `ALLOWED_OPS`, so whichever
   on-device runtime the Phase 7 ADR picks is not blocked by an exotic op.
@@ -25,15 +31,29 @@ does, and refuses a model whose layout id or lengths it does not know.
 
 | Key | Value |
 |---|---|
-| `teleop.layout_id` | `v2` or `v2-aware` (`v1`, `v1-aware` before 2026-10-21) |
-| `teleop.model_format` | `1` |
-| `teleop.input_length`, `teleop.output_length` | `1359` (or `1360`), `10` |
+| `teleop.layout_id` | `v3` or `v3-aware` (`v2`, `v2-aware` before 2026-10-25; `v1`, `v1-aware` before 2026-10-21) |
+| `teleop.model_format` | `2` (`1` before 2026-10-25) |
+| `teleop.input_length`, `teleop.output_length` | `1620` (or `1621`), `12` |
 | `teleop.arch` | `mlp` or `conv` |
 | `teleop.trainer_version`, `teleop.trainer_sha`, `teleop.trainer_dirty` | the trainer that made it |
 | `teleop.data_sha256` | JSON: the sha256 of every shard it was trained and selected on |
 | `teleop.source` | `sim`, `real` or `sim+real` |
 
-## Layout v2 (the input window, docs/adr/0021 decisions 10 and 11)
+## Layout v3 (the input window; 2026-10-25)
+
+Layout v2's window, with a sixth joint row for the gripper (motor 10), after motors 1-5. Per joint, 251
+floats: v2's, with a six-wide identity (motors 1, 2, 3, 4, 5, 10) and one more float at the end, the
+**reference** flag: 1 when `v` is the joint's newest fresh reading, 0 when it has none yet and `v` is
+the prior's prediction at T (the gripper, in a recording from before it was read, 2026-10-25). Every
+value in the gripper's row (prior, commanded path, readings, innovations, `v`) is in its model unit,
+servo radians, so v2's radian scales apply unchanged. The window falls back only when an **arm** joint
+has no reading. The arm-wide row is v2's, 114 floats (115 for `v3-aware`), and still carries the
+gripper's newest command as its 0..1 fraction.
+
+The trainer gate (ADR 0021 decision 9) is scored on the five arm joints; the gripper is reported on
+its own.
+
+## Layout v2 (the input window, docs/adr/0021 decisions 10 and 11; superseded)
 
 Per arm joint, 249 floats; then 114 arm-wide floats (115 for `v2-aware`). Conventions as v1 below.
 
@@ -88,9 +108,10 @@ than the newest is dropped, as `relay-replay` drops it.
 
 ```json
 {
-  "format": "jetrover-model-card", "version": 1,
+  "format": "jetrover-model-card", "version": 2,
   "model": { "path": "model.onnx", "sha256": "...", "opset": 17, "ops": ["Gemm", "..."],
-             "inputLength": 898, "outputLength": 10, "layout": "v1" },
+             "inputLength": 1620, "outputLength": 12, "joints": [1, 2, 3, 4, 5, 10],
+             "gripperFractionPerRadian": 0.4513, "layout": "v3" },
   "prior": { "predictor": "relay-replay", "speed": "blind", "config": "headset" },
   "parity": { "maxAbsRad": 9.3e-10, "rows": 64, "toleranceRad": 1e-5 },
   "trainer": { "version": "0.1.0", "sha": "...", "dirty": false },
@@ -102,5 +123,6 @@ than the newest is dropped, as `relay-replay` drops it.
 }
 ```
 
-`prior.config` is `headset` (the `JetRoverArmConfig` defaults: reading ages 45/35/25/15/5 ms, the
-relay's gate) until `sysid` fits one, when it becomes the fitted values themselves.
+`prior.config` is `headset` (the reading ages 45/35/25/15/5 ms, the relay's gate) until `sysid` fits
+one, when it becomes the fitted values themselves (since 2026-10-25 the headset's own defaults are
+`sysid`'s fit: 30.2/25.3/22.6/20.1/17.1 ms).

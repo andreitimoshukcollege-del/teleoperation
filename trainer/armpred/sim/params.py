@@ -39,6 +39,11 @@ class SimRanges:
     battery_start_mv: Tuple[float, float] = (11400.0, 12600.0)
     battery_drop_mv_per_min: Tuple[float, float] = (2.0, 25.0)
     robothost_loop_ms: Tuple[float, float] = (5.05, 5.6)  # Thread.Sleep(5) on the Jetson
+    # The gripper (2026-10-25, just robot-measure-gripper): it trailed a slow target 10-20 pulses behind
+    # and settled up to 20 short of where it was told, then held there. A first-order lag, and a deadband
+    # inside which it stops correcting.
+    gripper_lag_s: Tuple[float, float] = (0.03, 0.12)
+    gripper_deadband_pulses: Tuple[float, float] = (0.0, 20.0)
     lan_one_way_ms: Tuple[float, float] = (0.8, 4.0)
     lan_jitter_ms: Tuple[float, float] = (0.2, 2.0)
     operator_clock_drift_ppm: Tuple[float, float] = (-50.0, 50.0)
@@ -69,7 +74,7 @@ class SimParams:
     uplink_seed: int = 0
     lan_one_way_ms: float = 2.0
     lan_jitter_ms: float = 1.0
-    # The servos, per arm motor (motors 1-5); the gripper follows its command after a fixed lag
+    # The servos, per arm motor (motors 1-5); the gripper has its own lag and deadband, below
     servo_speed_rad_s: Tuple[float, ...] = (6.0,) * 5
     servo_lag_s: Tuple[float, ...] = (0.015,) * 5
     servo_stiffness_nm_per_rad: Tuple[float, ...] = (15.0,) * 5
@@ -83,6 +88,9 @@ class SimParams:
     battery_drop_mv_per_min: float = 8.0
     robothost_loop_ms: float = 5.2
     robot_boot_ns: int = 3_600 * 1_000_000_000
+    # The gripper: a first-order lag toward its setpoint, and a deadband (pulses) inside which it holds.
+    gripper_lag_s: float = 0.04
+    gripper_deadband_pulses: float = 0.0
 
     def as_latent_params(self) -> Dict[str, str]:
         out = {}
@@ -141,6 +149,9 @@ def sample_params(seed: int, ranges: SimRanges = SimRanges(), duration_s: float 
         battery_drop_mv_per_min=_u(rng, ranges.battery_drop_mv_per_min),
         robothost_loop_ms=_u(rng, ranges.robothost_loop_ms),
         robot_boot_ns=int(rng.uniform(0.2, 48.0) * 3600e9),
+        # Drawn last, so every draw before them is what it was before the gripper had them.
+        gripper_lag_s=_u(rng, ranges.gripper_lag_s),
+        gripper_deadband_pulses=_u(rng, ranges.gripper_deadband_pulses),
     )
 
 

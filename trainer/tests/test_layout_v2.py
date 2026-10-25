@@ -18,10 +18,32 @@ NS = 1_000_000_000
 
 
 def test_widths():
-    assert L.JOINT_FEATURES == 2 + 80 * 2 + 16 * 3 + 8 * 4 + 5 + 2 == 249
+    # v3: six joint rows (motors 1-5, then the gripper), each with a six-wide identity and a reference flag.
+    assert L.PREDICTED_MOTORS == (1, 2, 3, 4, 5, 10)
+    assert L.JOINT_FEATURES == 2 + 80 * 2 + 16 * 3 + 8 * 4 + 6 + 2 + 1 == 251
     assert L.NETWORK_FEATURES == 2 * 9 * 5 + 2 + 2 + 6 + 1 == 101
     assert L.ARM_FEATURES == 13 + 101 and L.arm_features(True) == L.ARM_FEATURES + 1
-    assert L.layout_id(False) == "v2" and L.layout_id(True) == "v2-aware"
+    assert L.layout_id(False) == "v3" and L.layout_id(True) == "v3-aware"
+
+
+def test_the_gripper_row_is_in_servo_radians_and_needs_no_reading():
+    state = L.FeatureState(headset_joint_config(NS))
+    for k in range(48):
+        targets = [JointSample(m, 0.1, False) for m in L.ARM_MOTORS] + [JointSample(L.GRIPPER_MOTOR, 0.5, False)]
+        state.observe_command(int(k / 48.0 * NS), targets, 0.0)
+    # The arm read, the gripper not: as in a recording from before it was read. The window is still valid.
+    state.observe_state(int(0.9 * NS), [JointSample(m, 0.1, True) for m in L.ARM_MOTORS] + [JointSample(L.GRIPPER_MOTOR, 0.5, False)])
+    w = state.window(int(1.0 * NS))
+    g = L.PREDICTED_MOTORS.index(L.GRIPPER_MOTOR)
+    assert w.valid and w.joints.shape == (6, L.JOINT_FEATURES)
+    assert w.joints[g, -1] == 0.0 and w.joints[0, -1] == 1.0  # the reference flag
+    assert w.newest[g] == w.prior[g]  # no reading: referenced to the prior
+    # Once the gripper is read, its row is in servo radians (fraction / GRIPPER_FRACTION_PER_RAD).
+    state.observe_state(int(0.95 * NS), [JointSample(m, 0.1, True) for m in L.ARM_MOTORS] + [JointSample(L.GRIPPER_MOTOR, 0.45, True)])
+    w = state.window(int(1.0 * NS))
+    assert w.joints[g, -1] == 1.0
+    assert abs(w.newest[g] - 0.45 / L.GRIPPER_FRACTION_PER_RAD) < 1e-9
+    assert L.to_wire(L.GRIPPER_MOTOR, L.to_model(L.GRIPPER_MOTOR, 0.45)) == 0.45 and L.to_model(1, 0.3) == 0.3
 
 
 def _state_with_commands(uplink_s: float, send_period_s: float = 1 / 48.0):
@@ -82,4 +104,4 @@ def test_a_shard_built_for_another_layout_is_refused(tmp_path):
     np.savez(path, view=np.zeros(0, np.int32))
     (tmp_path / "train.json").write_text(json.dumps({"views": [], "samples": 0, "aware": False}))
     with pytest.raises(ValueError, match="layout v1"):
-        load_shards([str(path)], layout="v2")
+        load_shards([str(path)], layout="v3")

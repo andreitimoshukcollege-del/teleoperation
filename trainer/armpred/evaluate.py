@@ -42,6 +42,12 @@ from .net import forecast as FC
 
 DEG = 180.0 / math.pi
 ARM = L.ARM_MOTORS
+# What a predictor returns: the arm joints, then the gripper (layout v3), in model units (layout.to_model:
+# rad, the gripper's servo rad). Every arm metric and the trainer gate use the first len(ARM) columns
+# only; the gripper is scored on its own (gripper_errors), in servo degrees.
+PREDICTED = L.PREDICTED_MOTORS
+N_ARM = len(ARM)
+GRIPPER_COL = PREDICTED.index(L.GRIPPER_MOTOR)
 EVENT_WINDOWS_MS = ((-2000, 0), (0, 100), (100, 250), (250, 500), (500, 1000), (1000, 2000))
 UPLINK_CHANGE = "uplink-change"  # an uplink event that moved the one-way delay by at least:
 UPLINK_CHANGE_MS = 50.0  # ADR 0021 decision 14
@@ -62,7 +68,7 @@ class Predictor:
     def observe_forecast(self, stream: FC.ForecastStream, index: int) -> None: ...
 
     def predict(self, target: int) -> Tuple[Optional[np.ndarray], bool]:
-        """Arm joints in ARM order, and whether this was a fallback."""
+        """The joints in PREDICTED order, in model units (the gripper NaN if it has none), and whether this was a fallback."""
         raise NotImplementedError
 
 
@@ -91,7 +97,7 @@ class Baseline(Predictor):
         by = {s.motor_id: s.value for s in out}
         if any(m not in by for m in ARM):
             return None, False
-        return np.array([by[m] for m in ARM], dtype=np.float64), False
+        return np.array([L.to_model(m, by[m]) if m in by else np.nan for m in PREDICTED], dtype=np.float64), False
 
 
 class ModelPredictor(Predictor):
@@ -150,8 +156,11 @@ class ViewResult:
     schedule: str
     conditions: dict
     tps: int = 1_000_000_000
-    # per predictor: arrays of (time, joint index, error deg)
+    # per predictor: arrays of (time, joint index, error deg), arm joints only
     errors: Dict[str, np.ndarray] = field(default_factory=dict)
+    # per predictor, the gripper: (time, error in servo degrees), and its corrections (servo degrees)
+    gripper_errors: Dict[str, np.ndarray] = field(default_factory=dict)
+    gripper_corrections: Dict[str, np.ndarray] = field(default_factory=dict)
     corrections: Dict[str, np.ndarray] = field(default_factory=dict)
     jitter: Dict[str, np.ndarray] = field(default_factory=dict)
     fallbacks: Dict[str, Tuple[int, int]] = field(default_factory=dict)
@@ -161,7 +170,7 @@ class ViewResult:
 
     def merge(self, other: "ViewResult") -> None:
         """Adds another run's predictors over the same view (the forecast sweep)."""
-        for name in ("errors", "corrections", "jitter", "fallbacks", "inference_us", "lead_ms"):
+        for name in ("errors", "corrections", "jitter", "fallbacks", "inference_us", "lead_ms", "gripper_errors", "gripper_corrections"):
             getattr(self, name).update(getattr(other, name))
 
 
@@ -257,6 +266,11 @@ def evaluate_view(view: View, predictors: List[Predictor], reads_per_s: float = 
     duration = (int(view.tr_t[arm_reads[-1]]) - int(view.tr_t[arm_reads[0]])) / tps if arm_reads.size else 0.0
     keep = min(arm_reads.size, int(reads_per_s * duration))
     chosen = np.sort(rng.choice(arm_reads, size=keep, replace=False)) if keep else np.zeros(0, dtype=np.int64)
+    # The gripper's reads, drawn after the arm's (so the arm's draw is as it always was), at one joint's share.
+    grip_reads = np.nonzero((view.tr_motor == L.GRIPPER_MOTOR) & (view.tr_t >= first_state + int(warmup_s * tps)))[0]
+    g_duration = (int(view.tr_t[grip_reads[-1]]) - int(view.tr_t[grip_reads[0]])) / tps if grip_reads.size else 0.0
+    g_keep = min(grip_reads.size, int(reads_per_s / N_ARM * g_duration))
+    g_chosen = np.sort(rng.choice(grip_reads, size=g_keep, replace=False)) if g_keep else np.zeros(0, dtype=np.int64)
     # Fresh-state calls: where the correction is measured.
     fresh_calls = set()
     newest = None
@@ -268,13 +282,16 @@ def evaluate_view(view: View, predictors: List[Predictor], reads_per_s: float = 
                 fresh_calls.add(idx)
     jitter_from = first_state + int(warmup_s * tps)
     jitter_ticks = jitter_from + np.round(np.arange(int(jitter_s * 90)) * tps / 90.0).astype(np.int64)
-    queries = [(int(view.tr_t[r]), 0, r) for r in chosen] + [(int(t), 1, k) for k, t in enumerate(jitter_ticks)]
+    queries = [(int(view.tr_t[r]), 0, r) for r in chosen] + [(int(t), 1, k) for k, t in enumerate(jitter_ticks)] + \
+              [(int(view.tr_t[r]), 2, r) for r in g_chosen]
     queries.sort()
     res = ViewResult(view=view.meta["session"], schedule=view.meta["schedule"], conditions=view.meta.get("conditions", {}),
                      tps=tps)
     err = {p.name: [] for p in predictors}
     corr = {p.name: [] for p in predictors}
     disp = {p.name: [] for p in predictors}
+    g_err = {p.name: [] for p in predictors}
+    g_corr = {p.name: [] for p in predictors}
     motor_index = {m: k for k, m in enumerate(ARM)}
     ci = 0
     qi = 0
@@ -301,7 +318,10 @@ def evaluate_view(view: View, predictors: List[Predictor], reads_per_s: float = 
                     for p, b in zip(predictors, before):
                         a, _ = p.predict(t)
                         if a is not None and b is not None:
-                            corr[p.name].append(np.abs(a - b) * DEG)
+                            corr[p.name].append(np.abs(a[:N_ARM] - b[:N_ARM]) * DEG)
+                            jump = abs(a[GRIPPER_COL] - b[GRIPPER_COL])
+                            if np.isfinite(jump):
+                                g_corr[p.name].append(jump * DEG)
             ci += 1
             continue
         t, kind, k = queries[qi]
@@ -313,16 +333,24 @@ def evaluate_view(view: View, predictors: List[Predictor], reads_per_s: float = 
                 pred, _ = p.predict(t)
                 if pred is not None:
                     err[p.name].append((t, j, abs(pred[j] - truth) * DEG))
+        elif kind == 2:
+            truth = L.to_model(L.GRIPPER_MOTOR, float(view.tr_value[k]))
+            for p in predictors:
+                pred, _ = p.predict(t)
+                if pred is not None and np.isfinite(pred[GRIPPER_COL]):
+                    g_err[p.name].append((t, abs(pred[GRIPPER_COL] - truth) * DEG))
         else:
             for p in predictors:
                 pred, _ = p.predict(t)
-                disp[p.name].append(pred if pred is not None else np.full(len(ARM), np.nan))
+                disp[p.name].append(pred[:N_ARM] if pred is not None else np.full(N_ARM, np.nan))
     for p in predictors:
         res.errors[p.name] = np.array(err[p.name], dtype=np.float64).reshape(-1, 3)
         res.corrections[p.name] = np.concatenate(corr[p.name]) if corr[p.name] else np.zeros(0)
         d = np.array(disp[p.name], dtype=np.float64)
         res.jitter[p.name] = np.abs(d[2:] - 2 * d[1:-1] + d[:-2]).reshape(-1) * DEG if len(d) > 2 else np.zeros(0)
-        res.lead_ms[p.name] = lead_times_ms(view, jitter_ticks, d.reshape(-1, len(ARM))) if len(d) else np.zeros(0)
+        res.lead_ms[p.name] = lead_times_ms(view, jitter_ticks, d.reshape(-1, N_ARM)) if len(d) else np.zeros(0)
+        res.gripper_errors[p.name] = np.array(g_err[p.name], dtype=np.float64).reshape(-1, 2)
+        res.gripper_corrections[p.name] = np.array(g_corr[p.name], dtype=np.float64)
         if isinstance(p, ModelPredictor):
             res.fallbacks[p.name] = (p.fallbacks, p.calls)
             res.inference_us[p.name] = np.array(p.inference_s) * 1e6
@@ -467,6 +495,9 @@ def summarize(results: Sequence[ViewResult]) -> Dict[str, object]:
         o["joint_recovery_time_ms"] = {k: percentiles(recovery_times_ms(results, n, [k])) for k in ("network", "hand-on", "slider", UPLINK_CHANGE)}
         o["joint_prediction_lead_ms"] = percentiles_signed(_cat([r.lead_ms.get(n, np.zeros(0)) for r in results]))
         o["uplink_change_window_deg"] = percentiles(_cat(list(window_errors(results, n, UPLINK_CHANGE).values())))
+        # The gripper on its own (layout v3), in servo degrees; never in the gate.
+        o["gripper_prediction_error_deg"] = percentiles(_cat([r.gripper_errors[n][:, 1] for r in results if n in r.gripper_errors]))
+        o["gripper_correction_deg"] = percentiles(_cat([r.gripper_corrections[n] for r in results if n in r.gripper_corrections]))
         overall[n] = o
     fallback = {}
     inference = {}

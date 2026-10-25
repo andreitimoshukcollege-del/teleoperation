@@ -268,9 +268,10 @@ def _export_run(out: str, cfg, val_ds, data_hashes: dict, log, source: str, sens
     from .train import load_best
 
     model = load_best(out, cfg)
-    # Parity on real windows: rebuild full five-joint windows from validation rows is not possible
+    # Parity on real windows: rebuild full six-joint windows from validation rows is not possible
     # from per-joint rows, so tile one row per joint; every value is a real feature value.
-    rows = val_ds.samples.joints[: 64 * 5].reshape(-1, 5, L.JOINT_FEATURES) if len(val_ds) >= 320 else None
+    n_joints = len(L.PREDICTED_MOTORS)
+    rows = val_ds.samples.joints[: 64 * n_joints].reshape(-1, n_joints, L.JOINT_FEATURES) if len(val_ds) >= 64 * n_joints else None
     arms = val_ds.samples.arm[: rows.shape[0]] if rows is not None else None
     parity = flat_inputs(rows, arms) if rows is not None else None
     version = trainer_version()
@@ -285,7 +286,9 @@ def _export_run(out: str, cfg, val_ds, data_hashes: dict, log, source: str, sens
     card = {
         "format": "jetrover-model-card", "version": MODEL_FORMAT_VERSION,
         "model": {"path": "model.onnx", "sha256": info["sha256"], "opset": info["opset"], "ops": info["ops"],
-                  "inputLength": info["input_length"], "outputLength": 10, "layout": info["metadata"]["teleop.layout_id"]},
+                  "inputLength": info["input_length"], "outputLength": 2 * len(L.PREDICTED_MOTORS),
+                  "joints": list(L.PREDICTED_MOTORS), "gripperFractionPerRadian": L.GRIPPER_FRACTION_PER_RAD,
+                  "layout": info["metadata"]["teleop.layout_id"]},
         "forecast": {"format": FORECAST_FORMAT_VERSION, "horizonsMs": list(FC.HORIZONS_MS), "quantiles": list(FC.QUANTILES),
                      "trainingDropout": cfg.forecast_dropout,
                      "levels": "ADR 0021 decision 12 mixture unless the run's [forecast] says otherwise"},

@@ -1,11 +1,13 @@
-# View format, version 2
+# View format, version 3
 
 A *view* is one session replayed through one network schedule and one seed: exactly the calls the
 headset's predictor would have received, plus the truth. Version 2 (docs/adr/0021 decision 13) adds
 what a network forecast needs: every command the headset sent (lost ones too), each command's true
 uplink delay, the headset's estimate of each frame's send time, every keepalive round trip, enough in
 `meta_json` to rebuild both directions' true conditions, and optionally one forecast stream.
-Readers keep reading version 1; its version-2 arrays take the defaults below. The trainer writes views
+Version 3 (2026-10-25) changes only what `tr_value` means for the gripper (below). Readers keep reading
+versions 1 and 2: version 1's version-2 arrays take the defaults below, and a version-1 or -2 view's
+gripper truth is dropped, since it went through the arm's angle formula. The trainer writes views
 (`armpred make-views`). The repo's `joint-score` (built only after the trainer gate, ADR 0021
 decision 8) replays them through every C# joint predictor, so both sides score identical inputs.
 
@@ -28,7 +30,7 @@ An uncompressed NumPy `.npz` (`numpy.savez`): a zip of `.npy` arrays, readable f
 | `st_count`, `st_motor`, `st_value`, `st_flags` | | [m], [m, 13] | The frame's joints; `st_flags` bit 0 = sensed |
 | `tr_t` | int64 | [r] | Truth: each successful driver read's midpoint, on the operator's clock |
 | `tr_motor` | int16 | [r] | Its motor |
-| `tr_value` | float64 | [r] | Its angle (rad), by the session format's truth conversion |
+| `tr_value` | float64 | [r] | Its angle (rad), by the session format's truth conversion; for the gripper (motor 10), its 0..1 open..closed fraction, clamped, as RobotHost reports it (version 3) |
 | `frame_send`, `frame_delivered`, `frame_arrival`, `frame_segment` | | [f] | What the downlink did to every frame sent |
 | `sync_t`, `sync_offset`, `sync_uncertainty`, `sync_accepted` | | [s] | Every round trip offered to `ClockSync`, and its state after |
 | `events_t`, `events_kind`, `events_detail` | int64, U32, U64 | [e] | What metrics may align on: `network` switches, `uplink` changes (the robot side's `UP` records, and the view's slow shift as `shift:<ms>`), and the session's own events |
@@ -46,7 +48,7 @@ issued at that tick comes after both.
 
 ```json
 {
-  "format": "jetrover-view", "version": 2,
+  "format": "jetrover-view", "version": 3,
   "session": "<session id>", "source": "robot" | "sim",
   "schedule": "lan@0;150ms-20j-0.5loss@60", "namedOnly": true,
   "seed": 3,

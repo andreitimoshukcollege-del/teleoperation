@@ -11,5 +11,5 @@ __version__ = "0.2.0"
 # The versions of the file formats this package reads and writes (trainer/contract/*.md).
 SESSION_FORMAT_VERSION = 1
 VIEW_FORMAT_VERSION = 2
-MODEL_FORMAT_VERSION = 1
+MODEL_FORMAT_VERSION = 2  # 2 (2026-10-25): six joints, the gripper last in servo radians (layout v3)
 FORECAST_FORMAT_VERSION = 1

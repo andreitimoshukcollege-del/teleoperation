@@ -35,7 +35,7 @@ def sha256(path: str) -> str:
 
 
 def input_length(aware: bool) -> int:
-    return len(L.ARM_MOTORS) * L.JOINT_FEATURES + L.arm_features(aware)
+    return len(L.PREDICTED_MOTORS) * L.JOINT_FEATURES + L.arm_features(aware)
 
 
 def export_onnx(model: torch.nn.Module, aware: bool, path: str, metadata: Dict[str, str],
@@ -62,7 +62,7 @@ def export_onnx(model: torch.nn.Module, aware: bool, path: str, metadata: Dict[s
             "teleop.model_format": str(MODEL_FORMAT_VERSION),
             "teleop.trainer_version": __version__,
             "teleop.input_length": str(n_in),
-            "teleop.output_length": str(2 * len(L.ARM_MOTORS)), **metadata}
+            "teleop.output_length": str(2 * len(L.PREDICTED_MOTORS)), **metadata}
     for key, value in meta.items():
         entry = proto.metadata_props.add()
         entry.key, entry.value = key, value
@@ -91,5 +91,5 @@ def export_onnx(model: torch.nn.Module, aware: bool, path: str, metadata: Dict[s
 
 
 def flat_inputs(joint_rows: np.ndarray, arm_rows: np.ndarray) -> np.ndarray:
-    """[N, 5, J] and [N, A] windows -> [N, 5 * J + A], the order FlatExport reads."""
+    """[N, 6, J] and [N, A] windows -> [N, 6 * J + A], the order FlatExport reads."""
     return np.concatenate([joint_rows.reshape(joint_rows.shape[0], -1), arm_rows], axis=1).astype(np.float32)

@@ -1,10 +1,19 @@
-"""Layout v2: what the model sees for one prediction, built from nothing but the predictor's calls.
+"""Layout v3: what the model sees for one prediction, built from nothing but the predictor's calls.
 
 ``FeatureState`` takes the same calls an ``ICommandAwarePredictor`` takes (``observe_command``,
 ``observe_state``), plus the network forecasts the host passes on (``observe_forecast``, ADR 0021
-decision 11), and for a target time returns one row per arm joint plus an arm-wide row.
+decision 11), and for a target time returns one row per predicted joint plus an arm-wide row.
 
-Per arm joint (``JOINT_FEATURES`` = 249), every time relative to the target T and divided by
+**v3 (2026-10-25) predicts the gripper** (motor 10) as a sixth joint, after the five arm joints
+(``PREDICTED_MOTORS``). Its value on the wire is a 0..1 fraction (open..closed); inside the window,
+and in the model's output, it is in *servo radians of travel*: fraction / ``GRIPPER_FRACTION_PER_RAD``
+(RobotHost's pulses per radian over its open..closed span, the headset's GripperFractionPerRadian).
+So every radian scale below means the same physical thing for every row, and a gripper error reads
+in servo degrees. ``to_model`` and ``to_wire`` convert. A row whose joint has no sensed reading yet
+(the gripper in a recording from before it was read) is referenced to the prior instead, and says so
+(its last feature); only the arm joints need a reading for the window to be valid.
+
+Per joint (``JOINT_FEATURES`` = 251), every time relative to the target T and divided by
 ``TIME_SCALE_S``, every angle relative to the joint's newest fresh reading ``v`` and squashed by
 ``asinh(x / ANGLE_SCALE_RAD)``:
 
@@ -14,8 +23,9 @@ Per arm joint (``JOINT_FEATURES`` = 249), every time relative to the target T an
 | commanded path | 80 x 2 | newest first, every 20 ms of effective time from T + 0.2 s back to T - 1.38 s: the target in force (the newest command whose effective time is not later), mask |
 | readings | 16 x 3 | the newest fresh readings: time, value, mask |
 | innovations | 8 x 4 | the prior's error on each fresh reading before it arrived: time, error, horizon, mask |
-| identity | 5 | which joint (one-hot, motors 1-5) |
+| identity | 6 | which joint (one-hot, motors 1-5, 10) |
 | angle | 2 | sin, cos of ``v`` |
+| reference | 1 | 1 when ``v`` is a reading, 0 when no reading has arrived and ``v`` is the prior |
 
 The commanded path replaces layout v1's 24 newest commands and its 100 ms bins (ADR 0021 decision
 10): it is anchored on T, not on the newest command, so it covers every command executing between
@@ -31,9 +41,9 @@ change over 0.5 s, how full the command window is -- then the **network block** 
 ``asinh(ms / 100)`` and P(loss); per direction the floor (``asinh(ms / 100)``) and P(outage); six
 validity flags (quantiles, loss, outage, per direction); and the forecast's age / 0.5 s. With no
 forecast the block is zeros with every flag 0. The speed-aware ablation (``aware=True``) appends the
-newest command's requested speed (layout ``v2-aware``).
+newest command's requested speed (layout ``v3-aware``).
 
-**Never in the window:** the requested speed (except ``v2-aware``), the network profile, schedule or
+**Never in the window:** the requested speed (except ``v3-aware``), the network profile, schedule or
 true delays (a forecast is an estimate, at a stated quality, ADR 0021 decision 11), the hold-back,
 the payload, or anything else not passed through the predictor's calls.
 """
@@ -51,10 +61,17 @@ from ..baselines.relay_replay import RelayReplayPredictor
 from ..baselines.types import JointPredictorConfig, JointSample
 from ..net import forecast as FC
 
-LAYOUT_ID = "v2"
+LAYOUT_ID = "v3"
 ARM_MOTORS: Tuple[int, ...] = (1, 2, 3, 4, 5)
 GRAVITY_MOTORS: Tuple[int, ...] = (2, 3, 4)
 GRIPPER_MOTOR = 10
+# The joints the model predicts, in row order: the arm, then the gripper. The trainer gate (ADR 0021
+# decision 9) is scored on ARM_MOTORS only; the gripper is reported on its own.
+PREDICTED_MOTORS: Tuple[int, ...] = ARM_MOTORS + (GRIPPER_MOTOR,)
+# The gripper's 0..1 fraction per radian of servo travel: RobotHost's PulsePerRadian (1000 per 240
+# degrees) over its open..closed span (645 - 116 = 529 pulses, measured 2026-10-25). The headset's
+# JetRoverArmConfig.GripperFractionPerRadian and the trainer's headset_joint_config use the same.
+GRIPPER_FRACTION_PER_RAD = 0.4513
 
 N_PATH = 80
 PATH_STEP_S = 0.02
@@ -71,9 +88,13 @@ SPEED_SCALE_RAD_S = 6.0
 COMMAND_RING = 96  # about 2 s at 48 Hz: the path's span and some
 WINDOW_FULL = 64
 MAX_CORRECTION_RAD = math.radians(15.0)
+# The gripper's row may correct further: a gripper command is one jump across its travel (about 127 servo
+# degrees), and the speed-blind prior gets its timing badly wrong (2026-10-25 smoke run: the blind prior
+# 13.4 servo degrees p95, hold-last 9.1), which a 15-degree cap could not undo.
+GRIPPER_MAX_CORRECTION_RAD = math.radians(90.0)
 FALLBACK_STALENESS_S = 1.0
 
-JOINT_FEATURES = 2 + N_PATH * 2 + N_READINGS * 3 + N_INNOVATIONS * 4 + len(ARM_MOTORS) + 2
+JOINT_FEATURES = 2 + N_PATH * 2 + N_READINGS * 3 + N_INNOVATIONS * 4 + len(PREDICTED_MOTORS) + 2 + 1
 N_HORIZONS = len(FC.HORIZONS_MS)
 NETWORK_FEATURES = 2 * N_HORIZONS * (len(FC.QUANTILES) + 1) + 2 + 2 + 6 + 1
 BASE_ARM_FEATURES = 13
@@ -92,14 +113,25 @@ def _sq(x: float, scale: float) -> float:
     return math.asinh(x / scale)
 
 
+def to_model(motor: int, value: float) -> float:
+    """A joint value as the wire carries it (rad; the gripper's 0..1 fraction) in the model's units (rad;
+    the gripper's servo radians)."""
+    return value / GRIPPER_FRACTION_PER_RAD if motor == GRIPPER_MOTOR else value
+
+
+def to_wire(motor: int, value: float) -> float:
+    """The inverse of ``to_model``."""
+    return value * GRIPPER_FRACTION_PER_RAD if motor == GRIPPER_MOTOR else value
+
+
 @dataclass
 class Window:
     """One prediction's inputs and what the model is corrected against."""
 
-    joints: np.ndarray  # float32 [5, JOINT_FEATURES]
+    joints: np.ndarray  # float32 [6, JOINT_FEATURES], rows in PREDICTED_MOTORS order
     arm: np.ndarray  # float32 [ARM_FEATURES (+1)]
-    prior: np.ndarray  # float64 [5] the prior's prediction at T
-    newest: np.ndarray  # float64 [5] each joint's newest fresh reading
+    prior: np.ndarray  # float64 [6] the prior's prediction at T, in model units (to_model)
+    newest: np.ndarray  # float64 [6] each joint's newest fresh reading (the prior where it has none), model units
     valid: bool  # False: the predictor falls back to the prior
     staleness_s: float
     reason: str = ""
@@ -118,8 +150,9 @@ class FeatureState:
     def reset(self) -> None:
         self.prior.reset()
         self.commands: Deque[Tuple[int, Dict[int, float], float]] = deque(maxlen=COMMAND_RING)
-        self.readings: Dict[int, Deque[Tuple[int, float]]] = {m: deque(maxlen=N_READINGS) for m in ARM_MOTORS}
-        self.innovations: Dict[int, Deque[Tuple[int, float, int]]] = {m: deque(maxlen=N_INNOVATIONS) for m in ARM_MOTORS}
+        # Kept in model units (to_model), as the window uses them.
+        self.readings: Dict[int, Deque[Tuple[int, float]]] = {m: deque(maxlen=N_READINGS) for m in PREDICTED_MOTORS}
+        self.innovations: Dict[int, Deque[Tuple[int, float, int]]] = {m: deque(maxlen=N_INNOVATIONS) for m in PREDICTED_MOTORS}
         self.fresh_times: Deque[int] = deque(maxlen=64)
         self.last_fresh = None
         self.newest: Dict[int, float] = {}
@@ -146,11 +179,13 @@ class FeatureState:
                 for j in joints:
                     if j.motor_id in self.innovations and j.sensed and j.motor_id in by_motor:
                         horizon = sensed_ticks - prior_state if prior_state is not None else 0
-                        self.innovations[j.motor_id].append((int(sensed_ticks), float(j.value) - by_motor[j.motor_id], int(horizon)))
+                        error = to_model(j.motor_id, float(j.value)) - to_model(j.motor_id, by_motor[j.motor_id])
+                        self.innovations[j.motor_id].append((int(sensed_ticks), error, int(horizon)))
             for j in joints:
                 if j.motor_id in self.readings and j.sensed:
-                    self.readings[j.motor_id].append((int(sensed_ticks), float(j.value)))
-                    self.newest[j.motor_id] = float(j.value)
+                    value = to_model(j.motor_id, float(j.value))
+                    self.readings[j.motor_id].append((int(sensed_ticks), value))
+                    self.newest[j.motor_id] = value
             self.last_fresh = int(sensed_ticks)
             self.fresh_times.append(int(sensed_ticks))
         self.prior.observe_state(sensed_ticks, joints)
@@ -167,24 +202,27 @@ class FeatureState:
     def window(self, target_ticks: int) -> Window:
         tps = float(self.tps)
         n_arm = arm_features(self.aware)
-        joints = np.zeros((len(ARM_MOTORS), JOINT_FEATURES), dtype=np.float32)
+        joints = np.zeros((len(PREDICTED_MOTORS), JOINT_FEATURES), dtype=np.float32)
         arm = np.zeros(n_arm, dtype=np.float32)
-        prior = np.zeros(len(ARM_MOTORS))
-        newest = np.zeros(len(ARM_MOTORS))
+        prior = np.zeros(len(PREDICTED_MOTORS))
+        newest = np.zeros(len(PREDICTED_MOTORS))
         ok, predicted = self.prior.try_predict(target_ticks)
         if not ok or self.last_fresh is None or any(m not in self.newest for m in ARM_MOTORS):
             return Window(joints, arm, prior, newest, False, float("inf"), "no fresh reading yet")
-        p_now = {s.motor_id: s.value for s in predicted}
+        p_now = {s.motor_id: to_model(s.motor_id, s.value) for s in predicted}
         _, before = self.prior.try_predict(target_ticks - int(SLOPE_WINDOW_S * tps))
-        p_before = {s.motor_id: s.value for s in before}
+        p_before = {s.motor_id: to_model(s.motor_id, s.value) for s in before}
         staleness = (target_ticks - self.last_fresh) / tps
         cmds = list(self.commands)
         effs = np.array([c[0] for c in cmds], dtype=np.int64)
         # The commanded path's grid, newest first: T + PATH_AHEAD_S, then back every PATH_STEP_S.
         grid = target_ticks + int(round(PATH_AHEAD_S * tps)) - np.round(np.arange(N_PATH) * PATH_STEP_S * tps).astype(np.int64)
         in_force = np.searchsorted(effs, grid, side="right") - 1 if len(effs) else np.full(N_PATH, -1)
-        for row, m in enumerate(ARM_MOTORS):
-            v = self.newest[m]
+        for row, m in enumerate(PREDICTED_MOTORS):
+            sensed = m in self.newest
+            # A joint with no reading yet (the gripper, in a recording made before it was read) is
+            # referenced to the prior, and its reference feature says so.
+            v = self.newest[m] if sensed else p_now.get(m, 0.0)
             prior[row] = p_now.get(m, v)
             newest[row] = v
             f = joints[row]
@@ -201,7 +239,7 @@ class FeatureState:
                     c -= 1
                 if c >= 0:
                     if c != last_index:
-                        last_index, last_value = c, _sq(cmds[c][1][m] - v, ANGLE_SCALE_RAD)
+                        last_index, last_value = c, _sq(to_model(m, cmds[c][1][m]) - v, ANGLE_SCALE_RAD)
                     f[k] = last_value
                     f[k + 1] = 1.0
                 k += 2
@@ -223,9 +261,10 @@ class FeatureState:
                     f[k + 3] = 1.0
                 k += 4
             f[k + row] = 1.0
-            k += len(ARM_MOTORS)
+            k += len(PREDICTED_MOTORS)
             f[k] = math.sin(v)
             f[k + 1] = math.cos(v)
+            f[k + 2] = 1.0 if sensed else 0.0
         k = 0
         for m in GRAVITY_MOTORS:
             arm[k], arm[k + 1] = math.sin(self.newest[m]), math.cos(self.newest[m])
@@ -288,6 +327,6 @@ def encode_forecast(stream: "FC.ForecastStream", index: int) -> np.ndarray:
     return out
 
 
-def correction(raw: np.ndarray) -> np.ndarray:
-    """The model's first output per joint, as a bounded correction to the prior (rad)."""
-    return MAX_CORRECTION_RAD * np.tanh(raw)
+def correction(raw: np.ndarray, motor: int = 1) -> np.ndarray:
+    """The model's first output for one joint, as a bounded correction to the prior (rad; the gripper's servo rad)."""
+    return (GRIPPER_MAX_CORRECTION_RAD if motor == GRIPPER_MOTOR else MAX_CORRECTION_RAD) * np.tanh(raw)

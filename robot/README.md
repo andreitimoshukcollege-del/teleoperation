@@ -72,6 +72,58 @@ just record-stop
 just robot-recordings                                  # what is on the robot, and whether each log closed
 ```
 
+`record-start`'s options are `key=value` after the label and the slider, in any order (just itself has
+no keyword arguments; before 2026-10-22 these examples bound positionally and failed).
+
+**The arm can drive itself** (`joint-drive`, docs/adr/0021's data-collection tool): scripted joint
+moves sent the way the headset sends them, with no headset. `waypoints` is smooth, teleop-like motion
+with pauses; `steps` moves one joint at a time by 0.15–0.8 rad and holds, which is what `armpred
+sysid` needs to measure the servo's speed limit and lag. The limits are the IK's joint ranges (the
+collision model, docs/adr/0020) less 15° at each end, and every pose is checked against the collision
+model before anything moves. That model knows the robot's own body and the floor, nothing else, so
+clear the space around the arm. It starts by moving slowly from wherever the arm is to the model's
+home pose, and refuses if that path is not clear (`just move-arm 0.15 0 0.08` first). **Press Enter to
+stop it**: the arm holds where it is. Ctrl+C does not reach the Windows `dotnet` under WSL. It also
+stops by itself on a stall (a joint over 0.25 rad from its command and not moving for 1 s), and when
+the joint-state stream has been missing or below 30 Hz for 3 s of any 10 s: the robot is gone, or the
+headset app (or `joint-probe`) is on the joint port too. Close the headset app first. A shorter gap,
+such as a Wi-Fi stall, only pauses it: the arm holds, and the script resumes from the same pose.
+
+```bash
+just joint-drive-preview steps 6           # sends nothing: the envelope and what it would do
+just record-drive steps-6 steps 6 seconds=300                 # one recorded session (motion=joint-drive:steps)
+just record-drive wp-payload waypoints 2.5 load=payload payload_g=100
+just pilot                                 # robot/pilot/pilot-v1.txt: the whole pilot hour, session by session
+just pilot from=drive-wp-5                 # resume there
+```
+
+`just pilot` reads a plan (`robot/pilot/pilot-v1.txt`, one session per line), says before each
+session what a person has to do (headset on, a slider value, a payload, close the app), waits for
+Enter, and records it: `record-start`/`record-stop` around a timed teleop session, or `record-drive`.
+After each it reads the battery from that session's log and stops below 11.0 V. Nothing reports servo
+temperature, so feel the servos between sessions. At the end it runs `just fetch-recordings`.
+**Without the laptop** (someone still watches the arm the whole time): `just deploy-joint-drive` puts
+`joint-drive` on the Jetson, and `just pilot-on-robot` starts `robot/pilot/onboard.py` there, detached,
+which records every `drive:` session of the plan back to back, talking to RobotHost over loopback (those
+sessions have no Wi-Fi in them, and their notes say so). It rests the servos between sessions
+(`rest_s=60`), stops below 11.0 V, and starts no further session after one that ended early. Stop it
+with `just pilot-stop` from any machine (joint-drive holds the arm at once), or with the power switch
+(the arm goes limp). Watch it with `just pilot-status`; collect with `just fetch-recordings`. The
+teleop sessions still need the laptop: `just pilot only=teleop`. `onboard.py` writes session.json and
+closes sessions itself, as `record-start`/`record-stop` do, and must be kept the same as them.
+
+```bash
+just deploy-joint-drive          # once, and after joint-drive changes; moves nothing
+just pilot only=teleop           # the headset sessions, from the laptop
+just pilot-on-robot              # the drive sessions, on the robot; the laptop can close
+just pilot-status                # from any machine with the repo
+just pilot-stop
+```
+
+`record-drive` copies `joint-drive`'s `operator.jlog` (every command it sent, on the laptop's clock)
+into the session before `record-stop` checksums it, and closes the session even when the drive stops
+early.
+
 Then, back at the repo: `just fetch-recordings` (copies the new sessions into the gitignored
 `recordings/jetrover/` and checks them), and `just pack-dataset recordings/jetrover/<id> ...` for the
 one file the GPU machine needs (`dist/jetrover-data-<UTC>.tar`). `just recording-check` fails a
@@ -376,7 +428,18 @@ translates the local wire protocol above into calls against `jetrover_arm_contro
   - **Don't shorten the read timeout below 1 s.** Cutting it to 50 ms at the same time stopped all
     servo feedback and the arm, so this board's answers can take longer than that. Reverted.
 - **Motor ids:** motor 5 is the wrist roll and motor 10 the gripper. Motors 1–5 report position.
-  Motor 10 moves but never answers position reads, so the gripper is always a commanded belief.
+  Motor 10 did not answer position reads until 2026-10-25 (next entry).
+- **The gripper answers after all, and is read again (2026-10-25).** `just robot-servo-probe` asked
+  motor 10 for its id, position, voltage and temperature: each answered within 3–9 ms. The driver
+  reads it again, and now skips any servo for 2 s after a read that waits out the timeout (a fast
+  error is retried next cycle), so a silent
+  servo can no longer stall every cycle (docs/adr/0018 §8). The same probe found the gripper at
+  **72 °C** and the base at 66 °C, over this README's 60 °C limit. The open gripper sat at pulse 176
+  against a target of 167. `just robot-measure-gripper` (it drives the gripper to its stops; with its
+  torque off its gearing still holds it, so not by hand) found **106 open, 655 closed**: RobotHost now
+  asks for 116 and 645 instead of 167 and 833, which was 178 pulses past the closed stop, and the
+  headset's `GripperFractionPerRadian` is 0.4513 (was 0.358). It still runs hot at rest (64 °C):
+  it settles up to 20 pulses short of its target and keeps pushing.
 - **The servo board goes silent, and only the power switch brings it back (open, 2026-10-20).**
   - **What it looks like:** the camera streams, but the arm ignores commands. `just joint-probe`
     shows every motor `sensed NO`, and there is no battery reading.

@@ -373,8 +373,14 @@ def cmd_evaluate(args) -> int:
     cfg = TrainConfig(aware=args.aware)
     log = _log_to(os.path.join(args.run, "log.txt"))
     dirs = sorted(glob.glob(os.path.join(args.sessions, "*", "session.json")))
+    # --prior: armpred sysid's prior.json, for the fitted rows (relay-replay-fitted, relay-replay-servo-fitted)
+    # and the fitted reading ages; without it every row runs on the headset's defaults.
+    prior = {"file": args.prior} if args.prior else {}
+    ages, servo = _prior_ages({"prior": prior}), _prior_servo({"prior": prior})
+    if args.prior:
+        log(f"prior {args.prior}: reading ages {ages} ms, relay-replay-servo {servo}")
     _evaluate_run(args.run, [os.path.dirname(d) for d in dirs], cfg, log=log, workers=args.workers,
-                  simulated=not args.real, profile_path=args.profile)
+                  simulated=not args.real, profile_path=args.profile, sensed_ages_ms=ages, servo=servo)
     return 0
 
 
@@ -534,6 +540,8 @@ def cmd_sysid(args) -> int:
           f"misses {result['bus']['read_miss_probability']:.2%}, silences {result['bus']['board_silence_per_hour']:.2f}/h")
     if "servoSpeedNote" in result:
         print("note:", result["servoSpeedNote"])
+    if "servoLagNote" in result:
+        print("note:", result["servoLagNote"])
     print(f"wrote {js} and {tm}")
     return 0
 
@@ -646,6 +654,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     p.add_argument("--sessions", required=True)
     p.add_argument("--aware", action="store_true")
     p.add_argument("--real", action="store_true", help="the sessions are recordings, not simulations")
+    p.add_argument("--prior", help="armpred sysid's prior.json: adds the fitted rows, and the fitted reading ages")
     p.add_argument("--profile", help="the robot profile the sessions were recorded with (a bundle's robot-profile.json)")
     p.add_argument("--workers", type=int, default=0)
     p.set_defaults(func=cmd_evaluate)

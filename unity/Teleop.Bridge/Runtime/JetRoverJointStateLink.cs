@@ -79,7 +79,7 @@ namespace Teleop.Bridge
 
         public JetRoverJointStateLink(UdpTransport transport, ITimeAuthority clock, in RobotArmProfile profile,
             ClockSyncConfig clockSyncConfig, string predictorName, float maxJointSpeedRadPerSec, double maxHorizonMs,
-            float gripperFractionPerRadian = 0.358f, byte[] sensedAgeMotorIds = null, float[] sensedAgeSeconds = null,
+            float gripperFractionPerRadian = 0.4513f, byte[] sensedAgeMotorIds = null, float[] sensedAgeSeconds = null,
             float servoMaxSpeedRadPerSec = JointPredictorConfig.DefaultServoMaxSpeedRadPerSec,
             float servoLagSeconds = JointPredictorConfig.DefaultServoLagSeconds,
             float servoPipelineDelaySeconds = JointPredictorConfig.DefaultServoPipelineDelaySeconds,

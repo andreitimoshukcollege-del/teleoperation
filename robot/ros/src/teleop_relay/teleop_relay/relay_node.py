@@ -36,7 +36,11 @@ LOCAL_RELAY_SOCKET = "/tmp/jetrover_relay.sock"
 HOST_SOCKET = "/tmp/teleop_robot_host.sock"
 
 _COMMAND_POLL_PERIOD_SECONDS = 0.02  # 50 Hz
-_FEEDBACK_SEND_PERIOD_SECONDS = 0.05  # 20 Hz
+# 50 Hz, above the driver's ~42-49 Hz feedback cycle (2026-10-25), so nearly every reading it takes
+# reaches RobotHost: at 20 Hz (0.05) more than half were never forwarded. A send happens only when a
+# reading has arrived since the last one (_send_feedback): RobotHost stamps each arrival as the time
+# of the reading, so a repeat would make an old reading look new.
+_FEEDBACK_SEND_PERIOD_SECONDS = 0.02
 
 # ~10x robot_controller_node.py's 50Hz feedback poll rate -- generous enough to absorb normal
 # jitter or an occasional dropped read, tight enough to flag a genuinely dead servo within a
@@ -99,6 +103,8 @@ class TeleopRelayNode(Node):
         # Motor-id-keyed, created lazily per id the first time it's seen -- this node no longer
         # needs a fixed, hand-maintained list of joint names to track feedback for.
         self._feedback_by_motor_id = {}
+        # Whether a reading has arrived since the last feedback send (_send_feedback).
+        self._fresh = False
 
         self.create_timer(_COMMAND_POLL_PERIOD_SECONDS, self._poll_local_socket)
         self.create_timer(_FEEDBACK_SEND_PERIOD_SECONDS, self._send_feedback)
@@ -146,6 +152,7 @@ class TeleopRelayNode(Node):
                 tracked = StaleTrackedValue(_STALENESS_TIMEOUT_SECONDS)
                 self._feedback_by_motor_id[motor_id] = tracked
             tracked.update(pulse, now)
+            self._fresh = True
         self._note_callback(now)
 
     def _poll_local_socket(self) -> None:
@@ -177,6 +184,11 @@ class TeleopRelayNode(Node):
         self._note_callback(start)
 
     def _send_feedback(self) -> None:
+        # Nothing new since the last send: say nothing. RobotHost stamps each arrival as the time of
+        # the reading, so resending the same pulses would make them look newer than they are.
+        if not self._fresh:
+            return
+        self._fresh = False
         now = time.monotonic()
         entries = []
         for motor_id, tracked in self._feedback_by_motor_id.items():

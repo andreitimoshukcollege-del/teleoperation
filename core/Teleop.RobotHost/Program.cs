@@ -135,6 +135,10 @@ namespace Teleop.RobotHost
             JointSample[] recordedJoints = new JointSample[JointStateCodec.MaxJointsPerMessage];
             EndPoint? recordedSubscriber = null;
 
+            // Discovery (docs/adr/0022): the headset asks here where the robot is, so a new DHCP lease
+            // needs no config push. Its own port: a query on the joint port would take the joint stream.
+            using var discovery = a.DiscoveryPort.HasValue ? new DiscoveryResponder(a.DiscoveryPort.Value) : null;
+
             string replyDescription = a.ReplyToSender
                 ? $"the sender of each command (before the first one: {remoteEndPoint?.ToString() ?? "nobody"})"
                 : remoteEndPoint!.ToString();
@@ -154,6 +158,13 @@ namespace Teleop.RobotHost
                     $"[joint] listening on UDP :{a.JointLocalPort} for pre-computed joint-angle " +
                     "commands (docs/adr/0009-jetrover-operator-side-inverse-kinematics.md), and streaming " +
                     "joint state at 50 Hz to whoever sends it a keepalive (docs/adr/0018).");
+            }
+
+            if (discovery != null)
+            {
+                Console.WriteLine(
+                    $"[discovery] answering on UDP :{discovery.Port} with this machine's LAN addresses " +
+                    $"(now {string.Join(", ", DiscoveryResponder.LanAddresses())}) (docs/adr/0022)");
             }
 
             using var stop = new ManualResetEventSlim(initialState: false);
@@ -277,6 +288,7 @@ namespace Teleop.RobotHost
                 }
 
                 endpoint.Step(clock.NowTicks);
+                discovery?.Poll();
 
                 if (!loggedPrecedence && plant.IgnoredCartesianCommands > 0)
                 {

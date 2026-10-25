@@ -128,8 +128,9 @@ namespace Teleop.RobotHost.Plant
         /// The exact JetRover configuration this codebase has always run, expressed against
         /// <see cref="RobotArmProfile.JetRoverMeasuredDefault"/> instead of hardcoded per-joint
         /// fields. The old <c>LowerArmMinPulse</c> (50) shoulder floor is gone: the profile's collision
-        /// model (docs/adr/0020) keeps the arm off the plate and the rest of the body. <c>GripperOpenPulse</c>/<c>GripperClosedPulse</c> are the old 30/150-degree
-        /// defaults converted once (<c>degrees/180*1000</c>).
+        /// model (docs/adr/0020) keeps the arm off the plate and the rest of the body. <c>GripperOpenPulse</c>/<c>GripperClosedPulse</c> are 10 pulses
+        /// inside the gripper's stops, measured on the robot on 2026-10-25 (<c>just robot-measure-gripper</c>: 106 open, 655
+        /// closed; docs/adr/0018 §8). The old 30/150-degree defaults (167/833) asked for 180 pulses past the closed stop.
         /// </summary>
         public static GenericArmPlantConfig Default => new GenericArmPlantConfig(
             profile: RobotArmProfile.JetRoverMeasuredDefault,
@@ -140,7 +141,7 @@ namespace Teleop.RobotHost.Plant
             zeroPulse: 500,
             minPulse: 0,
             maxPulse: 1000,
-            gripperOpenPulse: 30f / 180f * 1000f,
-            gripperClosedPulse: 150f / 180f * 1000f);
+            gripperOpenPulse: 116f,
+            gripperClosedPulse: 645f);
     }
 }

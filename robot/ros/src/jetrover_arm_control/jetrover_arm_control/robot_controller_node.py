@@ -9,6 +9,7 @@ from jetrover_arm_control.robot_data.robot_val import RobotVal
 from jetrover_arm_control import session_log
 from jetrover_arm_control.servo_controller.servo_sub_callback import ServoSubscriberCallback
 from jetrover_arm_control.servo_controller.servo_controller import ServoController
+from jetrover_arm_control.servo_controller.read_backoff import ReadBackoff
 
 # Which motor ids to poll for feedback -- Jetson-local, deliberately separate from the
 # operator-side RobotArmProfile (docs/adr/0011-generic-robot-arm-profiles.md): this node no
@@ -16,10 +17,13 @@ from jetrover_arm_control.servo_controller.servo_controller import ServoControll
 # Matches JetRover's four arm joints (base/lower/middle/upper, motor ids 1-4); gripper feedback
 # stays disabled, same as before this generalization -- GenericArmPlant sends the gripper
 # open-loop, with no belief tracking that would need it.
-# Motor 10 (the gripper) is not read: its servo never answers position reads, and every read
-# waits for its timeout, which held each feedback cycle (and every command behind it, on this one
-# thread) for a second. The headset models the gripper from its commands (docs/adr/0018).
-FEEDBACK_MOTOR_IDS = [1, 2, 3, 4, 5]
+# Motor 10 (the gripper) is read again since 2026-10-25: it was taken off on 2026-10-20 because it
+# did not answer, and every unanswered read held each feedback cycle (and every command behind it,
+# on this one thread) for the library's one-second timeout. On 2026-10-25 it answered its id,
+# position, voltage and temperature within 3-9 ms (`just robot-servo-probe`). ReadBackoff now skips
+# any servo for a while after a miss that waited out the timeout (a fast error is just retried), so one that stops answering costs a second now and then, not
+# every cycle. RobotHost turns its pulse into the gripper fraction it streams (GenericArmPlant).
+FEEDBACK_MOTOR_IDS = [1, 2, 3, 4, 5, 10]
 
 # How often the node logs its feedback-loop statistics and the battery, seconds. When the board
 # stops answering (robot/README.md), the journal then shows when the reads started failing and the
@@ -46,6 +50,7 @@ class RobotController(Node):
         self.sessionLog = session_log.from_environment()
         self.servoController = ServoController(boardMgr = self.boardMgr, sessionLog = self.sessionLog)
         self.servoSubManager = ServoSubscriberCallback(servoController = self.servoController)
+        self._readBackoff = ReadBackoff()
         self._resetStats(time.monotonic())
         self._lastCycleEnd = None
         # The board's last battery report, mV, for the stats line: when the board goes silent, the
@@ -117,6 +122,9 @@ class RobotController(Node):
         seconds = now - self._statsSince
         reads = " ".join(
             f"{m}:{self._readOk[m]}/{self._readMissed[m]}/{self._slowestReadMs[m]:.0f}ms" for m in FEEDBACK_MOTOR_IDS)
+        skipped = self._readBackoff.take_skipped()
+        if skipped:
+            reads += " (skipped after a miss: " + " ".join(f"{m}:{n}" for m, n in sorted(skipped.items())) + ")"
         self.get_logger().info(
             f"[stats {seconds:.1f}s] cycles {self._cycles} ({self._cycles / seconds:.1f} Hz), slowest cycle "
             f"{self._slowestCycleMs:.0f} ms, longest gap between cycles {self._longestGapMs:.0f} ms; "
@@ -147,7 +155,11 @@ class RobotController(Node):
             # then waits a few ms after the packet before it asks.
             self._packets += self.servoController.flushPending()
             readStart = time.monotonic()
+            if not self._readBackoff.should_read(motor_id, readStart):
+                continue
             pulse = self.servoController.getRawPos(motor_id)
+            readEnd = time.monotonic()
+            self._readBackoff.result(motor_id, pulse is not None, readEnd, readEnd - readStart)
             self._slowestReadMs[motor_id] = max(self._slowestReadMs[motor_id], (time.monotonic() - readStart) * 1000.0)
             if pulse is None:
                 self._readMissed[motor_id] += 1

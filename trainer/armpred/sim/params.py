@@ -13,6 +13,9 @@ import numpy as np
 
 ARM_MOTORS: Tuple[int, ...] = (1, 2, 3, 4, 5)
 GRIPPER_MOTOR = 10
+# What the driver reads each cycle, in order: robot/ros robot_controller_node.py FEEDBACK_MOTOR_IDS. The
+# gripper was off the list until 2026-10-25 (it did not answer); it answers now.
+READ_MOTORS: Tuple[int, ...] = ARM_MOTORS + (GRIPPER_MOTOR,)
 
 # The headset's speed slider values the protocol trains on; 5.0 is held out (ADR 0021 protocol).
 TRAIN_SLIDER_VALUES = (1.0, 2.5, 3.8, 6.0)
@@ -26,8 +29,11 @@ class SimRanges:
     servo_lag_s: Tuple[float, float] = (0.004, 0.035)
     servo_stiffness_nm_per_rad: Tuple[float, float] = (8.0, 30.0)  # position-loop stiffness (droop)
     stall_torque_nm: Tuple[float, float] = (2.5, 3.6)  # HTD-35H: about 3.4 N m at 12 V
-    read_ms: Tuple[float, float] = (4.0, 11.0)
-    read_jitter_ms: Tuple[float, float] = (0.2, 2.5)
+    # Measured on three recordings (2026-10-22, 2026-10-25): a read took 2.9 ms at the median, 2.7 at
+    # p10, 3.8 at p90. The 4-11 ms guessed before any recording made the simulated driver cycle at
+    # 20 Hz against the robot's 44-50.
+    read_ms: Tuple[float, float] = (2.6, 3.4)
+    read_jitter_ms: Tuple[float, float] = (0.2, 0.8)
     read_miss_probability: Tuple[float, float] = (0.0, 0.0005)  # each miss blinds every motor for the 1 s timeout
     board_silence_per_hour: Tuple[float, float] = (0.0, 1.0)
     battery_start_mv: Tuple[float, float] = (11400.0, 12600.0)
@@ -69,8 +75,8 @@ class SimParams:
     servo_stiffness_nm_per_rad: Tuple[float, ...] = (15.0,) * 5
     stall_torque_nm: Tuple[float, ...] = (3.4,) * 5
     # The board
-    read_ms: float = 7.0
-    read_jitter_ms: float = 1.0
+    read_ms: float = 2.9
+    read_jitter_ms: float = 0.4
     read_miss_probability: float = 0.001
     board_silence_per_hour: float = 0.0
     battery_start_mv: float = 12300.0

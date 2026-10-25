@@ -160,6 +160,7 @@ simulated benchmark row exists.
     relay's `getRawPos` returns nothing, and the read is skipped.
   - **So the gripper stays a commanded belief.** The predictor moves it at servo speed (a scaled
     joint), and the measured arm shows it only alongside the measured roll.
+  - **Superseded (2026-10-25): the gripper is measured.** See §8.
 - **Added delay.** `JetRoverJointStateLink.AddedDelayMs`, a headset slider from 0 to 400 ms, holds
   frames back before they become the measured arm and reach the predictor.
   - Clock sync uses the real arrival, and commands are not delayed.
@@ -187,6 +188,31 @@ simulated benchmark row exists.
     bench it gives correction p95 0.35°.
 - **Still no joint-space reconciler.** The question moves to recordings: whether what remains on the
   robot needs one.
+
+### 8. Amendment (2026-10-25): the gripper is measured
+
+- **Motor 10 answers.** `just robot-servo-probe` (2026-10-25) asked it for its id, position,
+  voltage and temperature, one question at a time: each was answered within 3–9 ms, as motors 1 and
+  5 were. Why it did not answer on 2026-10-12 and 2026-10-20 is not known. The board library returns
+  the same `None` for silence and for an error code; the probe tells them apart.
+- **The driver reads it again** (`FEEDBACK_MOTOR_IDS = [1, 2, 3, 4, 5, 10]`), with a guard
+  (`robot/ros`, `read_backoff.py`): after a read that waits out the one-second timeout, that servo is
+  skipped for 2 s, then asked again. A read that fails fast (an error answer, 17 ms) is simply
+  retried: backing off from one hid the wrist roll for 2 s on the first deploy. A servo that stops answering costs the loop one second now and then, not every
+  cycle, which is what took motor 10 off the list on 2026-10-20. The stats line reports skips.
+- **Nothing else changes on the wire.** The relay forwards whichever motors the driver reports.
+  RobotHost already turns a sensed gripper pulse into its 0–1 fraction with `sensed` set
+  (`GenericArmPlant.ReadJointState`), and every read is already in `driver.jlog` (`RD`). The
+  predictors then correct the gripper against a measurement, as they do the other joints.
+- **Its open and closed pulses are calibrated (2026-10-25).** `just robot-measure-gripper` drove it to
+  its stops (it cannot be moved by hand: with its torque off its gearing still holds it) and found
+  **106 open, 655 closed**. `GenericArmPlantConfig` now asks for 116 and 645, 10 inside each. The old
+  167/833 (from 30°/150°) asked for 178 pulses past the closed stop at every full close, and opened it
+  only part way. The headset's `GripperFractionPerRadian`, which is RobotHost's pulses per radian
+  over that span, becomes 238.7 / 529 = 0.4513 (was 0.358).
+- **It runs hot even at rest** (72 °C, then 64 °C, on 2026-10-25). It is stiff to drive: it trails its
+  target by 10-20 pulses while moving and settles up to 20 short of it, and the servo keeps pushing to
+  close that gap. Correct stops end the hard push into the closed stop, not this.
 
 ## Consequences
 

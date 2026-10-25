@@ -196,7 +196,7 @@ The clutch is safe by construction, not just by settings:
 What the check cannot see:
 
 - **The gripper's pulse range is uncalibrated** on the robot (`GenericArmPlantConfig.GripperOpenPulse`
-  and `GripperClosedPulse`). Measure it with `just move-arm 0.15 0 0.08 gripper=…` while you
+  and `GripperClosedPulse`). Measure it with `just move-arm 0.15 0 0.08 <gripper 0..1>` while you
   watch the robot, before the headset drives the gripper.
 - **Whether the palm's pitch feels right for the wrist** is a headset question. `followPitch` on
   `HandClutchDriver` turns it off.
@@ -243,8 +243,14 @@ and a GPU with Vulkan video encoding (this PC: RTX 4060 Laptop).
    virtual arm moves and the real one doesn't. It finds the robot itself (`just robot-ip`); pass an address to override. It pushes a
    full `jetrover_connection.json` override to the app's files directory; restart the app
    afterwards.
-4. The headset must be on the robot's network. Accept the hand-tracking permission on the first
-   launch.
+4. The headset must be on the robot's network, or run Tailscale. **It finds the robot itself at
+   start** (docs/adr/0022): it asks through the robot's Tailscale address for its LAN addresses and
+   uses the LAN when the robot answers there, or asks for `jetrover-sinrg.local` over mDNS when
+   Tailscale is not running on the headset, so a new DHCP lease needs no config push. The pushed `RemoteHost` is the
+   fallback when nothing answers. The Console logs each `[discovery]` step. `DiscoverRobot: false`
+   in the config turns it off. RobotHost must answer (`--discovery-port`, `just deploy-robothost`);
+   `just robot-discover` runs the same lookup from the PC. Accept the hand-tracking permission on the
+   first launch.
 
 **Watching the headset from the PC:** `just mirror-galaxy` mirrors what the wearer sees into a
 window on this PC over USB, with scrcpy (`winget install Genymobile.scrcpy` once). Extra flags pass

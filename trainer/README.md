@@ -82,7 +82,8 @@ real: `armpred sysid --data jetrover-data-<UTC>.tar --out runs/sysid1`, then pas
 "runs/sysid1/prior.json"`, so the model's prior uses the robot's measured reading ages. With a
 fitted prior, every evaluation also scores `relay-replay-fitted`. The servo's speed limit shows only
 when a move asks for more than the servo can give: record a few sessions at the fastest slider with
-large, quick moves, or `sysid` leaves the speed range wide and says so.
+large, quick moves, or `sysid` leaves the speed range wide and says so. `just pilot`'s `teleop-fast`
+and `drive-steps-6` sessions are those (`just record-drive steps-6 steps 6` records one by itself).
 
 ## 3. What to bring back
 

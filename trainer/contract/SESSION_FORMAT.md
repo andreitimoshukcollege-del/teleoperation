@@ -48,6 +48,9 @@ session and a recorded one travel the same path. Written by RobotHost (C#), by t
 
 - `source` is `robot` or `sim`.
 - `conditions.speedSliderRadPerSec` is a number, or `"varied"` when it was moved during the session.
+  Since 2026-10-25 `just record-stop` takes it from the speed the session's joint commands carried
+  (the headset's slider rides in each command's speed field), not from what `record-start` was told;
+  a difference is noted in `notes`. `just recording-set-slider` corrects a session stopped before then.
 - `conditions.load.kind` is `none`, `payload` or `hand`.
 - `conditions.network.uplinkProfile` is a profile name from Core's catalog. `lan` means the robot
   impaired nothing.

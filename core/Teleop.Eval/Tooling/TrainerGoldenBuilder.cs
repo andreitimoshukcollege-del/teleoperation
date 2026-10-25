@@ -341,7 +341,7 @@ namespace Teleop.Eval.Tooling
         private static JointPredictorConfig HeadsetConfig(Servo servo) => new JointPredictorConfig(
             maxJoints: 13, commandHistoryCapacity: 64, maxJointSpeedRadPerSec: 6f,
             instantMotorIds: new byte[0], maxHorizonTicks: 500L * RelayTps / 1000L, ticksPerSecond: RelayTps,
-            scaledMotorIds: new byte[] { Gripper }, speedScales: new[] { 0.358f },
+            scaledMotorIds: new byte[] { Gripper }, speedScales: new[] { 0.4513f },
             sensedAgeMotorIds: ArmMotors, sensedAgeSeconds: new[] { 0.045f, 0.035f, 0.025f, 0.015f, 0.005f },
             servoMaxSpeedRadPerSec: servo.MaxSpeedRadPerSec, servoLagSeconds: servo.LagSeconds,
             servoPipelineDelaySeconds: servo.PipelineDelaySeconds, servoFirstMoveFromMeasured: servo.FirstMoveFromMeasured,

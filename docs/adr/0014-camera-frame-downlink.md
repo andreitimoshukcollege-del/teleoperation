@@ -264,3 +264,33 @@ Decided 2026-10-01 by the project owner.
   relay. Camera latency figures must record which path they used, as pose figures already must.
 - `Bridge/CameraFeedBridge.cs` is new code under human review, and only an IL2CPP Quest build
   verifies it.
+
+## Amendment (2026-10-25): the default capture size is 640×360
+
+**640×480 was cutting off the sides of the picture.** The robot's camera reports itself as the Orbbec
+DaBai **DCW** RGB Camera, and its sensor is 16:9. Its 4:3 sizes are the middle of that sensor, not
+the whole of it squeezed. On 2026-10-25 the same scene was saved at 640×480, 1280×720 and 640×360
+(`just deploy-camerahost <size>`, then `just camera-probe 5 0 <file>`; the frames are in the
+gitignored `recordings/camera-check/`). Landmarks visible in both 640×480 and 1280×720 sit 335 and
+510 px apart, a scale of 1.52. So 640×480 spans 640 × 1.52 ≈ 973 of the 1280 px in width, about
+**76%**, but the full height. 640×360 shows the same scene as 1280×720. If the DCW's colour camera
+is as wide as the plain DaBai's published 71° (a third-party figure; none was found for the DCW),
+640×480 showed about 56° of it.
+
+**The default is now 640×360 at 30 fps:**
+- `Teleop.CameraHost serve`'s own default;
+- `just deploy-camerahost`, whose `size` parameter (`WIDTHxHEIGHT`) is new.
+
+A 640×360 frame measured 42 KB against 48 KB at 640×480 (about 10 Mbit/s at 30 fps), so the whole
+width costs nothing extra. The price is detail: 640 pixels across the full width instead of about
+842, so about 24% fewer pixels per degree. 1280×720 has the full width and 1.5× the detail of
+640×480, but measured 120 KB a frame (about 29 Mbit/s), and the headset decodes every frame on its
+main thread. It was left as an option, for after the headset's `last decode` time has been checked
+at that size.
+
+The camera's MJPEG sizes, as `just robot-camera-check` lists them on 2026-10-25: 320×180, 320×240,
+640×360, 640×480, 1280×720, 1280×960, 1440×1080 and 1920×1080. Both receivers already accept a
+16:9 frame. `CameraFeedBridge` sizes its panel by the frame's aspect, so it becomes about 43 × 24 cm
+instead of 32 × 24 cm, and both receivers take frames up to 256 KB with 4 MB socket buffers. Camera
+latency figures recorded before this date were at 640×480.
+

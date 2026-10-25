@@ -230,6 +230,11 @@ robot-ip:
     fi
     just _robot-host auto
 
+# Find the robot as the Galaxy XR headset does at start (docs/adr/0022): ask through its Tailscale address for its LAN addresses and try those, else broadcast on this network -- sends only discovery queries, moves nothing. Says which address the headset would use and why. Needs RobotHost deployed with --discovery-port (just deploy-robothost); tailscale=none skips Tailscale, as on a headset without it
+[group('robot: checks and diagnostics (nothing moves)')]
+robot-discover tailscale="100.112.90.72" configured="":
+    cd core && dotnet run --project Teleop.Eval -- discover-robot --tailscale {{tailscale}} {{ if configured != "" { "--configured " + configured } else { "" } }}
+
 # Internal: resolve a robot address. "auto" looks the robot up; anything else is printed back unchanged
 _robot-host host="auto":
     #!/usr/bin/env bash
@@ -401,7 +406,7 @@ deploy-robothost remote_host=default_jetrover_host remote_user="jetson" operator
         --local-port 6000 --remote-host {{operator_host}} --remote-port 6001 \
         --relay-socket /tmp/jetrover_relay.sock --local-relay-socket /tmp/teleop_robot_host.sock \
         --joint-local-port 6002 --record-control /home/jetson/recordings/.active \
-        --uplink-control /home/jetson/recordings/.uplink ${extra_args}
+        --uplink-control /home/jetson/recordings/.uplink --discovery-port 6005 ${extra_args}
     EOF
     ssh -o StrictHostKeyChecking=accept-new "{{remote_user}}@$host" "
         set -e

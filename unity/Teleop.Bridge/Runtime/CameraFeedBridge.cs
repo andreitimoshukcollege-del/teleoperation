@@ -104,7 +104,8 @@ namespace Teleop.Bridge
         private void OnEnable()
         {
             JetRoverArmConfig config = ConfigLoader.Load("jetrover_connection", "jetrover_connection.json", new JetRoverArmConfig());
-            _robot = new IPEndPoint(IPAddress.Parse(config.RemoteHost), robotPort);
+            // The same discovered address as the operator bridge's (docs/adr/0022).
+            _robot = new IPEndPoint(RobotAddressDiscovery.Resolve(config), robotPort);
 
             _socket = new Socket(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp);
             _socket.ReceiveBufferSize = 4 << 20;

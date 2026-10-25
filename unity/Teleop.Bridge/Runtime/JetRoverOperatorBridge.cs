@@ -249,7 +249,8 @@ namespace Teleop.Bridge
             _clock = new UnityMonotonicClock();
             _sendIntervalTicks = (long)(_clock.TicksPerSecond / _config.CommandRateHz);
 
-            IPAddress remoteHost = IPAddress.Parse(_config.RemoteHost);
+            // Discovered at start (docs/adr/0022), so a new DHCP lease needs no config push.
+            IPAddress remoteHost = RobotAddressDiscovery.Resolve(_config);
 
             _cartesianUdp = new UdpTransport(
                 _config.LocalPort, new IPEndPoint(remoteHost, _config.RemotePort), MaxDatagramBytes, _clock);

@@ -147,7 +147,9 @@ commands got lost otherwise.
 The robot is on DHCP and its address changes. **Never hard-code it:** the recipes look it up when
 they run (`just robot-ip`, by its mDNS name `jetrover-sinrg.local`, then Tailscale), `JETROVER_HOST`
 pins one, and `just unity-robot-host` / `just push-galaxy-config` hand the current address to the
-Unity editors and the Galaxy headset.
+Unity editors and the Galaxy headset. The headset also finds the robot itself at start
+(docs/adr/0022: a discovery query through Tailscale, then a LAN broadcast; `just robot-discover`
+runs the same lookup from the PC), so the pushed address is its fallback.
 
 ## Boundaries for agents
 

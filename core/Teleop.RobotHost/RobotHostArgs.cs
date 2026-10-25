@@ -74,11 +74,18 @@ namespace Teleop.RobotHost
         /// </summary>
         public readonly string? UplinkControlPath;
 
+        /// <summary>
+        /// The discovery port (docs/adr/0022-robot-discovery.md): RobotHost answers the headset's
+        /// "where are you?" there with its hostname and LAN addresses. Null (the default) never answers.
+        /// <c>just deploy-robothost</c> passes 6005.
+        /// </summary>
+        public readonly int? DiscoveryPort;
+
         public const string Usage =
             "Usage: Teleop.RobotHost --local-port <port> [--remote-host <ip> --remote-port <port>] " +
             "[--reply-to sender|fixed] --relay-socket <path> --local-relay-socket <path> " +
             "[--max-direction-magnitude <n>] [--pulses-per-second <n>] [--joint-local-port <port>] [--profile-path <path>] " +
-            "[--record-control <path>] [--uplink-control <path>]\n" +
+            "[--record-control <path>] [--uplink-control <path>] [--discovery-port <port>]\n" +
             "  --reply-to sender (default) replies to wherever the latest command came from;\n" +
             "  --remote-host/--remote-port are then only the target before the first command.\n" +
             "  --reply-to fixed always replies to --remote-host:--remote-port, which it requires.\n" +
@@ -100,13 +107,15 @@ namespace Teleop.RobotHost
             "  robothost.jlog is written into the session directory it names. Omit it to never record.\n" +
             "  --uplink-control names the uplink control file (docs/adr/0021): while it holds a Core\n" +
             "  network profile and a seed, joint commands reach the plant through that profile. Omit it\n" +
-            "  to never impair the uplink.";
+            "  to never impair the uplink.\n" +
+            "  --discovery-port answers the headset's discovery query there with this machine's name and\n" +
+            "  LAN addresses (docs/adr/0022). Omit it to not answer.";
 
         private RobotHostArgs(
             int localPort, IPAddress? remoteHost, int? remotePort, bool replyToSender,
             string relaySocketPath, string localRelaySocketPath, float? maxDirectionMagnitude,
             int? jointLocalPort, string? profilePath, float? pulsesPerSecond = null, string? recordControlPath = null,
-            string? uplinkControlPath = null)
+            string? uplinkControlPath = null, int? discoveryPort = null)
         {
             LocalPort = localPort;
             RemoteHost = remoteHost;
@@ -120,6 +129,7 @@ namespace Teleop.RobotHost
             ProfilePath = profilePath;
             RecordControlPath = recordControlPath;
             UplinkControlPath = uplinkControlPath;
+            DiscoveryPort = discoveryPort;
         }
 
         public static RobotHostArgs? TryParse(string[] args, out string? error)
@@ -135,6 +145,7 @@ namespace Teleop.RobotHost
             string? profilePath = null;
             string? recordControlPath = null;
             string? uplinkControlPath = null;
+            int? discoveryPort = null;
             string replyTo = "sender";
 
             for (int i = 0; i < args.Length; i++)
@@ -187,14 +198,17 @@ namespace Teleop.RobotHost
                     case "--uplink-control" when i + 1 < args.Length:
                         uplinkControlPath = args[++i];
                         break;
+                    case "--discovery-port" when i + 1 < args.Length:
+                        discoveryPort = ParseIntOrNull(args[++i]) ?? -1;
+                        break;
                 }
             }
 
             if (localPort is null || relaySocketPath is null || localRelaySocketPath is null ||
-                maxDirectionMagnitude is <= 0f || jointLocalPort is <= 0 || pulsesPerSecond is <= 0f)
+                maxDirectionMagnitude is <= 0f || jointLocalPort is <= 0 || pulsesPerSecond is <= 0f || discoveryPort is <= 0 or > 65535)
             {
                 error = "Missing or invalid required argument (--max-direction-magnitude, " +
-                    "--pulses-per-second and --joint-local-port, if given, must be positive).";
+                    "--pulses-per-second, --joint-local-port and --discovery-port, if given, must be positive).";
                 return null;
             }
 
@@ -222,7 +236,7 @@ namespace Teleop.RobotHost
             error = null;
             return new RobotHostArgs(
                 localPort.Value, remoteHost, remotePort, replyToSender, relaySocketPath, localRelaySocketPath,
-                maxDirectionMagnitude, jointLocalPort, profilePath, pulsesPerSecond, recordControlPath, uplinkControlPath);
+                maxDirectionMagnitude, jointLocalPort, profilePath, pulsesPerSecond, recordControlPath, uplinkControlPath, discoveryPort);
         }
 
         private static int? ParseIntOrNull(string s) => int.TryParse(s, out int value) ? value : null;

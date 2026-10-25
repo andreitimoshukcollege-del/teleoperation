@@ -43,6 +43,8 @@ namespace Teleop.Eval
                     return JointProbe.JointProbeCommand.Run(args);
                 case "joint-drive":
                     return JointDrive.JointDriveCommand.Run(args);
+                case "discover-robot":
+                    return DiscoverRobotCommand.Run(args);
                 case "replay":
                 case "compare":
                     Console.Error.WriteLine($"'{cmd}' is NOT IMPLEMENTED. " +
@@ -51,7 +53,7 @@ namespace Teleop.Eval
                 default:
                     Console.Error.WriteLine(
                         "usage: verify | audit | sweep | replay | compare | gen-golden | gen-trace | gen-trainer-golden | " +
-                        "clocksync-check | move-arm | build-profile | catalog | joint-predict-bench | joint-probe | joint-drive");
+                        "clocksync-check | move-arm | build-profile | catalog | joint-predict-bench | joint-probe | joint-drive | discover-robot");
                     return 64;   // EX_USAGE
             }
         }

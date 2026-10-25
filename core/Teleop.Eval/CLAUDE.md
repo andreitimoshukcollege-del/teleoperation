@@ -31,6 +31,7 @@ wall clock, do real file I/O, and take NuGet dependencies (`YamlDotNet`, so far)
 | `clocksync-check` | real, not one of the five documented subcommands — Phase 3 of the JetRover integration (`docs/adr/0007-jetrover-plant-and-robot-host.md`); a real cross-machine `ClockSync` diagnostic against an already-running `Teleop.RobotHost`, see `ClockSyncCheck/ClockSyncCheckCommand.cs`'s own doc comment |
 | `move-arm` | real, not one of the five documented subcommands — sends a fixed `CommandFrame` to an already-running `Teleop.RobotHost`, repeated until the robot's own reported position converges within `--position-tolerance-meters` of `--x --y --z` (or `--timeout-seconds` elapses, exit non-zero) — never claims success on a fixed duration alone; see `MoveArm/MoveArmCommand.cs`'s own doc comment |
 | `joint-drive` | real, not one of the five documented subcommands — drives the real JetRover through a planned session of joint moves (docs/adr/0021): every pose checked against the collision model first, the IK's ranges less a margin, a stall and stream watchdog, Enter to stop; writes `operator.jlog`. `--dry-run` plans and sends nothing. See `JointDrive/JointDriveCommand.cs`'s own doc comment |
+| `discover-robot` | real, not one of the five documented subcommands — finds the robot as the headset does at start (docs/adr/0022), with the same `RobotAddressResolver`; `just robot-discover`. Sends only discovery queries |
 | `replay` | stub, exits 70 (`EX_SOFTWARE`) — not built yet |
 | `compare` | stub, exits 70 — not built yet |
 

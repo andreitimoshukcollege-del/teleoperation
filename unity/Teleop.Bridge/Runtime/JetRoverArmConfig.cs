@@ -27,6 +27,14 @@ namespace Teleop.Bridge
         public int JointRemotePort = 6002; // Teleop.RobotHost's --joint-local-port
         public int JointLocalPort = 0; // 0 = OS-assigned ephemeral port; this channel only ever sends
 
+        // Finding the robot at start (docs/adr/0022): ask through RobotTailscaleHost for its LAN addresses,
+        // use the LAN when it answers there, Tailscale when not, a LAN broadcast when Tailscale is not
+        // running here; RemoteHost (what just push-galaxy-config writes) when nothing answers. False uses
+        // RemoteHost alone, as before. DiscoveryPort is RobotHost's --discovery-port.
+        public bool DiscoverRobot = true;
+        public string RobotTailscaleHost = "100.112.90.72";
+        public int DiscoveryPort = 6005;
+
         [Header("Safety -- see JetRoverOperatorBridge's own doc for why these exist")]
         // MoveArmArgs.DefaultRateHz's own comment describes a real ~300ms-cooldown incident, but
         // that number was specific to move-arm/ClockSyncCheckCommand's one-shot-target use case at

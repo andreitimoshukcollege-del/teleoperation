@@ -160,6 +160,7 @@ simulated benchmark row exists.
     relay's `getRawPos` returns nothing, and the read is skipped.
   - **So the gripper stays a commanded belief.** The predictor moves it at servo speed (a scaled
     joint), and the measured arm shows it only alongside the measured roll.
+  - **Superseded (2026-10-25): the gripper is measured.** See §8.
 - **Added delay.** `JetRoverJointStateLink.AddedDelayMs`, a headset slider from 0 to 400 ms, holds
   frames back before they become the measured arm and reach the predictor.
   - Clock sync uses the real arrival, and commands are not delayed.
@@ -187,6 +188,24 @@ simulated benchmark row exists.
     bench it gives correction p95 0.35°.
 - **Still no joint-space reconciler.** The question moves to recordings: whether what remains on the
   robot needs one.
+
+### 8. Amendment (2026-10-25): the gripper is measured
+
+- **Motor 10 answers.** `just robot-servo-probe` (2026-10-25) asked it for its id, position,
+  voltage and temperature, one question at a time: each was answered within 3–9 ms, as motors 1 and
+  5 were. Why it did not answer on 2026-10-12 and 2026-10-20 is not known. The board library returns
+  the same `None` for silence and for an error code; the probe tells them apart.
+- **The driver reads it again** (`FEEDBACK_MOTOR_IDS = [1, 2, 3, 4, 5, 10]`), with a guard
+  (`robot/ros`, `read_backoff.py`): after a read that is not answered, that servo is skipped for 2 s,
+  then asked again. A servo that stops answering costs the loop one second now and then, not every
+  cycle, which is what took motor 10 off the list on 2026-10-20. The stats line reports skips.
+- **Nothing else changes on the wire.** The relay forwards whichever motors the driver reports.
+  RobotHost already turns a sensed gripper pulse into its 0–1 fraction with `sensed` set
+  (`GenericArmPlant.ReadJointState`), and every read is already in `driver.jlog` (`RD`). The
+  predictors then correct the gripper against a measurement, as they do the other joints.
+- **Its open and closed pulses are still uncalibrated** (`GenericArmPlantConfig`: 167 and 833, from
+  30° and 150°). On 2026-10-25 the open gripper sat at pulse 176 against a target of 167, at 72 °C:
+  very likely held against its own open stop. `just robot-measure-gripper` measures where it stops.
 
 ## Consequences
 

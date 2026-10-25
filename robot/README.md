@@ -428,7 +428,14 @@ translates the local wire protocol above into calls against `jetrover_arm_contro
   - **Don't shorten the read timeout below 1 s.** Cutting it to 50 ms at the same time stopped all
     servo feedback and the arm, so this board's answers can take longer than that. Reverted.
 - **Motor ids:** motor 5 is the wrist roll and motor 10 the gripper. Motors 1–5 report position.
-  Motor 10 moves but never answers position reads, so the gripper is always a commanded belief.
+  Motor 10 did not answer position reads until 2026-10-25 (next entry).
+- **The gripper answers after all, and is read again (2026-10-25).** `just robot-servo-probe` asked
+  motor 10 for its id, position, voltage and temperature: each answered within 3–9 ms. The driver
+  reads it again, and now skips any servo for 2 s after a read it does not answer, so a silent
+  servo can no longer stall every cycle (docs/adr/0018 §8). The same probe found the gripper at
+  **72 °C** and the base at 66 °C, over this README's 60 °C limit. The open gripper sat at pulse 176
+  against a target of 167, very likely straining against its open stop: its open and closed pulses
+  have never been calibrated. Measure them with `just robot-measure-gripper`.
 - **The servo board goes silent, and only the power switch brings it back (open, 2026-10-20).**
   - **What it looks like:** the camera streams, but the arm ignores commands. `just joint-probe`
     shows every motor `sensed NO`, and there is no battery reading.

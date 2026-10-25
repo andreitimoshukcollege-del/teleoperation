@@ -669,6 +669,84 @@ robot-measure-joint-limits ids="2 4" seconds="90" remote_host=default_jetrover_h
     systemctl is-active jetrover-arm-control
     REMOTE
 
+# Measure where the gripper (motor 10) physically stops, by hand: stops the servo driver, switches off the gripper's torque only (the arm keeps holding), then for `seconds` prints its pulse live while someone opens it fully and closes it fully, by hand, a few times, and records the furthest each way. Suggests GripperOpenPulse/GripperClosedPulse `margin` pulses inside those stops, so the gripper is never commanded past a stop and left straining there (on 2026-10-25 it sat at pulse 176 against a target of 167, at 72 C). At the end the gripper holds where it is and the driver starts again. Nothing else moves; restarting the driver has made the shoulder sag before, so someone watches the arm
+[group('robot: deploy and restart (someone at the robot)')]
+robot-measure-gripper seconds="45" margin="10" remote_host=default_jetrover_host remote_user="jetson":
+    #!/usr/bin/env bash
+    set -uo pipefail
+    ssh -o StrictHostKeyChecking=accept-new "{{remote_user}}@$(just _robot-host "{{remote_host}}")" "SECONDS_TO_MEASURE={{seconds}} MARGIN={{margin}} bash -s" <<'REMOTE'
+    sudo systemctl stop jetrover-arm-control
+    sdk=$(ls -d /home/jetson/teleop_ros_current/install/jetrover_arm_control/lib/python3*/site-packages | head -1)
+    PYTHONUNBUFFERED=1 PYTHONPATH="$sdk" python3 - <<'PY'
+    import os, time
+    from jetrover_arm_control.board_manager.robot_controller_sdk import Board, PacketFunction
+
+    GRIPPER = 10
+    seconds = float(os.environ["SECONDS_TO_MEASURE"])
+    margin = int(os.environ["MARGIN"])
+    # GenericArmPlantConfig.Default, core/Teleop.RobotHost/Plant/GenericArmPlantConfig.cs.
+    current_open, current_closed = 30 / 180 * 1000, 150 / 180 * 1000
+
+    def read(board):
+        got = board.bus_servo_read_position(GRIPPER)
+        return got[0] if got else None
+
+    def torque(board):
+        got = board.bus_servo_read_torque_state(GRIPPER)
+        return got[0] if got else None
+
+    board = Board()
+    board.enable_reception()
+    time.sleep(0.5)
+    start = read(board)
+    print(f"gripper now at pulse {start}, temperature {(board.bus_servo_read_temp(GRIPPER) or ['?'])[0]} C", flush=True)
+    if start is None:
+        raise SystemExit("the gripper did not answer a position read; nothing changed")
+    lo = hi = last = start
+    try:
+        # Torque off is sub-command 0x0B on this board (measured 2026-10-21, robot-measure-joint-limits).
+        board.buf_write(PacketFunction.PACKET_FUNC_BUS_SERVO, [0x0B, GRIPPER])
+        time.sleep(0.05)
+        state = torque(board)
+        if state != 0:
+            raise RuntimeError(f"the gripper's torque did not switch off (state {state}); stopping")
+        print(f"GRIPPER TORQUE OFF. Open it fully, then close it fully, by hand, a few times. {seconds:.0f} s.", flush=True)
+        end, shown = time.time() + seconds, 0.0
+        while time.time() < end:
+            p = read(board)
+            if p is not None:
+                last, lo, hi = p, min(lo, p), max(hi, p)
+            if time.time() - shown >= 0.5:
+                shown = time.time()
+                print(f"  pulse {last:4d}   seen {lo:4d} to {hi:4d}   {end - time.time():3.0f} s left", flush=True)
+        for n in (3, 2, 1):
+            print(f"holding in {n} s: leave the gripper where it should stay", flush=True)
+            time.sleep(1)
+    finally:
+        p = read(board)
+        p = p if p is not None else last
+        board.bus_servo_set_position(1.0, [[GRIPPER, int(p)]])
+        time.sleep(0.1)
+        print(f"GRIPPER HOLDING at pulse {p}, torque {torque(board)}", flush=True)
+    # Which end is "open" is the current config's: its open pulse is the smaller one.
+    open_stop, closed_stop = (lo, hi) if current_open < current_closed else (hi, lo)
+    step = margin if closed_stop > open_stop else -margin
+    lines = [
+        f"stops by hand: {lo} to {hi} pulses ({hi - lo} wide)",
+        f"current config: open {current_open:.0f}, closed {current_closed:.0f}",
+        f"suggested ({margin} inside each stop): GripperOpenPulse {open_stop + step}, GripperClosedPulse {closed_stop - step}",
+    ]
+    path = os.path.expanduser(time.strftime("~/gripper-stops-%Y%m%d-%H%M%S.txt"))
+    with open(path, "w") as f:
+        f.write("\n".join(lines) + "\n")
+    print("--- measured (also saved to " + path + "):")
+    print("\n".join(lines))
+    PY
+    sudo systemctl start jetrover-arm-control
+    sleep 5
+    echo "--- driver: $(systemctl is-active jetrover-arm-control)"
+    REMOTE
+
 # Ask servos what they will report, one question at a time -- sends no move and no torque command, but stops the servo driver for a few seconds (restarting it has made the shoulder sag: someone holds the arm). For each id: its id, position, input voltage and temperature, each read on its own with a 2 s wait, saying whether the servo answered with a value, answered with an error code, or did not answer, and how long it took; the position five times. The board library folds an error and silence into the same None, so the driver cannot tell them apart; this can. Then it starts the driver again and checks it came back
 [group('robot: deploy and restart (someone at the robot)')]
 robot-servo-probe ids="1 5 10" remote_host=default_jetrover_host remote_user="jetson":
@@ -814,10 +892,10 @@ deploy-ros activate="true" remote_host=default_jetrover_host remote_user="jetson
         mkdir -p ~/${remote_dir} && tar xzf /tmp/${remote_dir}.tar.gz -C ~/${remote_dir} && rm -f /tmp/${remote_dir}.tar.gz
         cd ~/${remote_dir} && source /opt/ros/foxy/setup.bash && colcon build 2>&1 | tail -4
         test -f ~/${remote_dir}/install/setup.bash
-        echo '--- the plain-Python tests (relay protocol, stale tracking, servo controller, session log):'
+        echo '--- the plain-Python tests (relay protocol, stale tracking, servo controller, read backoff, session log):'
         PYTHONPATH=src/teleop_relay:src/jetrover_arm_control python3 -m pytest -q -p no:cacheprovider \
             src/teleop_relay/test/test_relay_protocol.py src/teleop_relay/test/test_stale_tracked_value.py \
-            src/jetrover_arm_control/test/test_servo_controller.py \
+            src/jetrover_arm_control/test/test_servo_controller.py src/jetrover_arm_control/test/test_read_backoff.py \
             src/jetrover_arm_control/test/test_session_log.py 2>&1 | tail -6
         exit \${PIPESTATUS[0]}
     "

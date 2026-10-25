@@ -47,5 +47,5 @@
   "JointServoLagMs": 20.0,
   "JointServoPipelineDelayMs": 20.0,
   "JointServoFirstMoveFromMeasured": true,
-  "GripperFractionPerRadian": 0.358
+  "GripperFractionPerRadian": 0.4513
 }

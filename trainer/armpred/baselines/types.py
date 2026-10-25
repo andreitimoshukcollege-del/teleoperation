@@ -107,7 +107,7 @@ class JointPredictorConfig:
 def headset_joint_config(ticks_per_second: int, max_horizon_ms: float = 500.0,
                          sensed_ages_ms: Sequence[float] = (45.0, 35.0, 25.0, 15.0, 5.0)) -> JointPredictorConfig:
     """The predictor config the headset builds (Bridge JetRoverJointStateLink + JetRoverArmConfig):
-    13 joints, a 64-command ring, the gripper (motor 10) scaled at 0.358 per radian, and the
+    13 joints, a 64-command ring, the gripper (motor 10) scaled at 0.4513 per radian (529 pulses, 2026-10-25), and the
     per-motor reading ages for motors 1-5."""
     return JointPredictorConfig(
         max_joints=13,
@@ -117,7 +117,7 @@ def headset_joint_config(ticks_per_second: int, max_horizon_ms: float = 500.0,
         max_horizon_ticks=int(max_horizon_ms / 1000.0 * ticks_per_second),
         ticks_per_second=ticks_per_second,
         scaled_motor_ids=(10,),
-        speed_scales=(0.358,),
+        speed_scales=(0.4513,),
         sensed_age_motor_ids=(1, 2, 3, 4, 5),
         sensed_age_seconds=tuple(f32(ms / 1000.0) for ms in sensed_ages_ms),
     )

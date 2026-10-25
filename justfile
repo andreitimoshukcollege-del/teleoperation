@@ -686,7 +686,7 @@ robot-measure-gripper step="10" lag="20" margin="10" remote_host=default_jetrove
     STEP_SECONDS = 0.12
     STILL, MAX_LAG = 3, 60
     # GenericArmPlantConfig.Default, core/Teleop.RobotHost/Plant/GenericArmPlantConfig.cs: open is the smaller pulse.
-    current_open, current_closed = 30 / 180 * 1000, 150 / 180 * 1000
+    current_open, current_closed = 116, 645
 
     def read(board):
         got = board.bus_servo_read_position(GRIPPER)

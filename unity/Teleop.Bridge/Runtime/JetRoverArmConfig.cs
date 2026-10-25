@@ -186,8 +186,8 @@ namespace Teleop.Bridge
 
         // How fast the gripper's 0..1 fraction moves per radian of servo travel, so the predictor
         // moves it at servo speed like the other joints: RobotHost's PulsePerRadian (1000/240°,
-        // 238.7) over its open-to-closed pulse span (833.3 - 166.7 = 666.7). Change it with
-        // GenericArmPlantConfig.GripperOpenPulse/GripperClosedPulse.
-        public float GripperFractionPerRadian = 0.358f;
+        // 238.7) over its open-to-closed pulse span (645 - 116 = 529, measured 2026-10-25; it was
+        // 666.7 and 0.358 before). Change it with GenericArmPlantConfig.GripperOpenPulse/GripperClosedPulse.
+        public float GripperFractionPerRadian = 0.4513f;
     }
 }

@@ -163,26 +163,32 @@ namespace Teleop.Bridge
         // each fresh reading (core/Teleop.Core/Prediction/CLAUDE.md has the benchmark); hold-last is
         // no prediction. JointModelSpeedRadPerSec is servo-replay's servo speed, rad/s. The prediction
         // horizon is capped by MaxHorizonMs above. relay-replay-servo (docs/adr/0021 decision 15) is
-        // relay-replay with a servo behind the gate (the JointServo* fields below); it is not the
-        // default until it has beaten relay-replay on recordings.
-        public string JointPredictorName = "relay-replay";
+        // relay-replay with a servo behind the gate (the JointServo* fields below). It is the default
+        // since 2026-10-25: on the first recordings (7 pilot sessions, trainer/runs/eval-pilot1), with
+        // the servo fitted by `armpred sysid`, its error p95 was 3.80 deg against relay-replay's 7.03,
+        // and it ran 5 ms ahead of the arm against relay-replay's 100. It was worse on 300 ms bursty
+        // jitter (8.16 against 4.08) and corrects a little more; set relay-replay to go back.
+        public string JointPredictorName = "relay-replay-servo";
         public float JointModelSpeedRadPerSec = 6f;
 
         // relay-replay-servo's servo: a speed cap (rad/s), a first-order lag, a fixed pipeline delay
         // from RobotHost's socket to the driver's gate, and each servo's first move sized from its
-        // measurement. Core's defaults, which are guesses until `armpred sysid` fits them from
-        // recordings (its prior.json, relayReplayServo); only relay-replay-servo reads them.
+        // measurement. Lag and pipeline delay are `armpred sysid`'s fit on the 2026-10-25 pilot
+        // (trainer/runs/sysid-pilot1b/prior.json, relayReplayServo: 50 ms and 16.8 ms). The speed cap
+        // is still Core's guess: no recording yet moved faster than the servo allows. Only
+        // relay-replay-servo reads these.
         public float JointServoMaxSpeedRadPerSec = 5f;
-        public float JointServoLagMs = 20f;
-        public float JointServoPipelineDelayMs = 20f;
+        public float JointServoLagMs = 50f;
+        public float JointServoPipelineDelayMs = 16.8f;
         public bool JointServoFirstMoveFromMeasured = true;
 
-        // How much older than its frame's stamp each motor's reading is, ms, for relay-replay. The
-        // robot reads motors 1-5 one after another, about 10 ms each, and RobotHost stamps the frame
-        // when it arrives, about 5 ms after the last read (robot/ros robot_controller_node.py).
-        // Measured cycle: 20 Hz (just joint-probe). Same length and order as the ids.
+        // How much older than its frame's stamp each motor's reading is, ms, for relay-replay and
+        // relay-replay-servo: `armpred sysid`'s fit on the 2026-10-25 pilot. The robot reads motors 1-5
+        // (then the gripper) one after another, about 3 ms each, and the relay forwards each cycle at up
+        // to 50 Hz. The 45/35/25/15/5 these replaced assumed 10 ms reads and a 20 Hz relay. Same length
+        // and order as the ids.
         public int[] JointReadingAgeMotorIds = { 1, 2, 3, 4, 5 };
-        public float[] JointReadingAgeMs = { 45f, 35f, 25f, 15f, 5f };
+        public float[] JointReadingAgeMs = { 30.2f, 25.3f, 22.6f, 20.1f, 17.1f };
 
         // How fast the gripper's 0..1 fraction moves per radian of servo travel, so the predictor
         // moves it at servo speed like the other joints: RobotHost's PulsePerRadian (1000/240°,

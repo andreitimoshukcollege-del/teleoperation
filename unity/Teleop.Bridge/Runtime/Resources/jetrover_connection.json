@@ -39,13 +39,13 @@
   "GripperPinchClosedMeters": 0.015,
   "GripperRollSign": 1.0,
   "GripperRollLimitDegrees": 90.0,
-  "JointPredictorName": "relay-replay",
+  "JointPredictorName": "relay-replay-servo",
   "JointModelSpeedRadPerSec": 6.0,
   "JointReadingAgeMotorIds": [1, 2, 3, 4, 5],
-  "JointReadingAgeMs": [45.0, 35.0, 25.0, 15.0, 5.0],
+  "JointReadingAgeMs": [30.2, 25.3, 22.6, 20.1, 17.1],
   "JointServoMaxSpeedRadPerSec": 5.0,
-  "JointServoLagMs": 20.0,
-  "JointServoPipelineDelayMs": 20.0,
+  "JointServoLagMs": 50.0,
+  "JointServoPipelineDelayMs": 16.8,
   "JointServoFirstMoveFromMeasured": true,
   "GripperFractionPerRadian": 0.4513
 }

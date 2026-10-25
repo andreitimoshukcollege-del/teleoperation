@@ -1818,6 +1818,56 @@ jetson-clock-check remote_host=default_jetrover_host remote_user="jetson":
     sys.exit("FAIL: RobotHost and the driver are not on the same clock" if bad else 0)
     PY
 
+# Correct a fetched session's slider label (its conditions.speedSliderRadPerSec), e.g. `just recording-set-slider recordings/jetrover/20261025T200935Z-teleop-2p5 3.8` -- the local copy only; the robot's copy keeps the old label. Checks the value against the speed every joint command in the session actually carried (the headset's slider rides in each command's speed field) and refuses if they disagree, unless the value is `varied` and they did vary. Notes the change in session.json, rewrites files.sha256, and reruns just recording-check. The model never sees the label; splits and stratification do
+[group('robot: recording (docs/adr/0021)')]
+recording-set-slider session value:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    python3 -I - "{{session}}" "{{value}}" <<'PY'
+    import datetime, hashlib, json, os, sys
+    d, value = sys.argv[1], sys.argv[2]
+    speeds = set()
+    with open(os.path.join(d, "robothost.jlog")) as f:
+        for line in f:
+            if line.startswith("JC|"):
+                for target in line.rstrip("\n").split("|")[6].split(";"):
+                    motor, _, speed = target.split(":")
+                    if motor != "10":
+                        speeds.add(round(float(speed), 2))
+    if not speeds:
+        sys.exit(f"{d}: no joint commands, so nothing to check the label against")
+    if value == "varied":
+        if len(speeds) < 2:
+            sys.exit(f"{d}: every command carried {speeds.pop()} rad/s; it did not vary")
+        new = "varied"
+    else:
+        new = float(value)
+        if speeds != {round(new, 2)}:
+            sys.exit(f"{d}: the commands carried {sorted(speeds)} rad/s, not only {new}; pass one of those, or varied")
+    path = os.path.join(d, "session.json")
+    meta = json.load(open(path))
+    old = meta["conditions"]["speedSliderRadPerSec"]
+    if old == new:
+        print(f"{d}: already {new}")
+        sys.exit(0)
+    meta["conditions"]["speedSliderRadPerSec"] = new
+    note = (f"slider relabelled {old} -> {new} on {datetime.date.today().isoformat()}: the joint commands carried "
+            f"{', '.join(str(s) for s in sorted(speeds))} rad/s")
+    meta["notes"] = (meta.get("notes") + "; " if meta.get("notes") else "") + note
+    with open(path, "w") as f:
+        json.dump(meta, f, indent=2)
+    sums = os.path.join(d, "files.sha256")
+    lines = []
+    for line in open(sums):
+        digest, name = line.rstrip("\n").split("  ", 1)
+        if name == "session.json":
+            digest = hashlib.sha256(open(path, "rb").read()).hexdigest()
+        lines.append(f"{digest}  {name}")
+    open(sums, "w").write("\n".join(lines) + "\n")
+    print(f"{d}: {note}")
+    PY
+    just recording-check "{{session}}" | tail -3
+
 # Pack checked sessions into the one file the trainer needs: dist/jetrover-data-<UTC>.tar, with an index, the robot profile and this commit (the format: trainer/armpred/contract/bundle.py). Refuses a session whose check.json is missing or failed (run just recording-check first)
 [group('robot: recording (docs/adr/0021)')]
 pack-dataset +sessions:

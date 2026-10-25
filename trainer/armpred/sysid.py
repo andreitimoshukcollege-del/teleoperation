@@ -39,7 +39,10 @@ from .contract.session import Session, load_session
 ARM = (1, 2, 3, 4, 5)
 NS = 1_000_000_000
 WIDEN = 0.15  # each fitted range is widened by this fraction either side
-LAGS_S = np.array([0.002, 0.004, 0.006, 0.008, 0.010, 0.013, 0.016, 0.020, 0.025, 0.030, 0.040, 0.050])
+# Up to 0.2 s: the first robot fit (2026-10-25, the pilot) put most servos at 0.05 s, the old grid's top, so the
+# lag was pinned there rather than fitted. A fit at either end of the grid is reported (servoLagNote).
+LAGS_S = np.array([0.002, 0.004, 0.006, 0.008, 0.010, 0.013, 0.016, 0.020, 0.025, 0.030, 0.040, 0.050,
+                   0.060, 0.075, 0.090, 0.110, 0.130, 0.160, 0.200])
 SPEEDS_RAD_S = np.arange(2.0, 12.01, 0.5)
 # A speed counts as fitted only if it beats the fastest candidate clearly; a nearly flat error says
 # the limit never bound. And a range narrows only with enough fitted speeds behind it.
@@ -254,6 +257,10 @@ def identify(session_dirs: Sequence[str], profile: RobotProfile = JETROVER, serv
     ranges: Dict[str, Tuple[float, float]] = {}
     if lags:
         ranges["servo_lag_s"] = _range(lags, 0.001)
+        pinned = sum(1 for x in lags if x in (float(LAGS_S[0]), float(LAGS_S[-1])))
+        if pinned:
+            out["servoLagNote"] = (f"{pinned} of {len(lags)} servo fits are at the end of the lag grid "
+                                   f"({LAGS_S[0]:g} or {LAGS_S[-1]:g} s), so the lag may lie beyond it: widen LAGS_S")
     if len(speeds) >= MIN_SPEED_FITS:
         ranges["servo_speed_rad_s"] = _range(speeds, 0.5)
     else:

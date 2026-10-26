@@ -1131,6 +1131,12 @@ camera-probe seconds="10" max_fps="0" save="" remote_host=default_jetrover_host:
     cd core && dotnet run --project Teleop.CameraHost -c Release -- probe --host $(just _robot-host "{{remote_host}}") \
         --seconds {{seconds}} --max-fps {{max_fps}} {{ if save != "" { "--save '" + save + "'" } else { "" } }}
 
+# Show the robot's camera live in a window on this machine until Enter -- moves nothing, touches no service: subscribes as the headset does and serves the frames to a browser window at http://localhost:<http_port>/ (Edge's app window when it can). The sender streams to its newest subscriber only, so while this runs the headset loses the feed (close one of the two). Needs the camera sender running (just camera-logs) and inbound UDP on 6004 allowed by this machine's firewall. seconds=0 runs until Enter
+[group('robot: checks and diagnostics (nothing moves)')]
+camera-view seconds="0" max_fps="0" http_port="8090" remote_host=default_jetrover_host:
+    cd core && dotnet run --project Teleop.CameraHost -c Release -- view --host $(just _robot-host "{{remote_host}}") \
+        --seconds {{seconds}} --max-fps {{max_fps}} --http-port {{http_port}}
+
 # Publish Teleop.CameraHost for the Jetson, copy it over, write ~/camerahost-run.sh and restart teleop-camerahost if it is installed (see robot/systemd/README.md) -- moves nothing; does not touch teleop-robothost or the ROS nodes. size is the capture size, WIDTHxHEIGHT, e.g. `just deploy-camerahost 1280x720`. The default 640x360 is the camera's whole width (its 4:3 sizes, 640x480 included, are the middle 76% of its 16:9 sensor; docs/adr/0014, 2026-10-25). The camera offers MJPEG at 320x180, 320x240, 640x360, 640x480, 1280x720, 1280x960, 1440x1080 and 1920x1080; the receivers take frames up to 256 KB
 [group('robot: deploy and restart (someone at the robot)')]
 deploy-camerahost size="640x360" fps="30" device="auto" remote_host=default_jetrover_host remote_user="jetson":

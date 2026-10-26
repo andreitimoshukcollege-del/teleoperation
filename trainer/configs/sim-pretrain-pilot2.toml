@@ -1,0 +1,80 @@
+# Pretraining on the simulator re-centred on the robot, second fit (2026-10-26). As
+# sim-pretrain-pilot1.toml, with the simulator's ranges and the predictors' prior from `armpred sysid` on
+# twelve sessions (dist/jetrover-data-20261026T211226Z.tar; trainer/runs/sysid-pilot2): the seven pilot
+# sessions plus five joint-drive sessions (steps and waypoints at up to 6 rad/s, robot-side network
+# schedules). The step sessions identify the servo's speed limit for the first time: 2.5-3.5 rad/s per
+# joint at a 6 rad/s command, so servo_speed_rad_s now comes from the fit instead of SimRanges' default.
+# configs/priors/pilot2-prior.json is that run's prior.json: the fitted reading ages, and
+# relay-replay-servo's lag (40 ms), speed limit (3.25 rad/s) and pipeline delay (13.8 ms). Fitted on the
+# drive sessions alone and scored on the seven pilot sessions, that prior beat the headset's current
+# relay-replay-servo settings by 20% at arm p95 (trainer evaluation, not a result).
+seed = 1
+views_per_session = 8
+val_views = 2
+
+[matrix]
+sliders = [1.0, 2.5, 3.8, 6.0, "varied"]
+loads = ["none", "payload-light", "payload-heavy", "hand"]
+sessions_per_cell = 8
+test_sessions_per_cell = 2
+minutes = 10.0
+# ADR 0021 decision 13: half the sessions' physical uplink changes mid-session (random schedules for
+# training, the named TEST_UPLINK_CYCLE for test), so a network forecast has something to tell.
+uplink_schedule_share = 0.5
+test_uplink_schedule_share = 0.5
+uplink_impaired_share = 0.0
+val_share = 0.15
+
+# The network forecast each view is built at (ADR 0021 decision 12). Without this table, every view
+# draws a level from the decision's mixture; `level = "absent"` trains the forecast-blind model.
+# [forecast]
+# level = "absent"
+# [forecast.mixture]
+# oracle = 0.10
+# good = 0.20
+# fair = 0.20
+# poor = 0.15
+# persistence = 0.15
+# "rtt-half" = 0.10
+# absent = 0.10
+
+[sample]
+# 10 a second per view, not 20: neighbouring queries are nearly the same sample, and the 1,360 views
+# (each its own network schedule and forecast level) carry the variety. About 8M samples, 12 GB.
+queries_per_s = 10.0
+event_share = 0.25
+pair_share = 0.2
+delta_max_ms = 60.0
+
+[train]
+arch = "mlp"
+aware = false
+steps = 150000
+batch = 8192
+lr = 2e-3
+lr_min = 2e-5
+warmup = 2000
+weight_decay = 0.01
+clip = 1.0
+ema = 0.999
+huber_deg = 0.3
+nll_weight = 0.1
+consistency = 0.0
+forecast_dropout = 0.1
+val_every = 2000
+seed = 1
+
+# From `armpred sysid` (trainer/runs/sysid-pilot2/sysid.toml).
+[ranges]
+servo_lag_s = [0.01875, 0.093]
+servo_speed_rad_s = [1.6525, 5.6925]
+read_ms = [1.0, 5.705952]
+read_jitter_ms = [0.706562, 2.219687]
+read_miss_probability = [0.0, 0.000642]
+board_silence_per_hour = [0.0, 0.05]
+robothost_loop_ms = [5.092892, 5.300765]
+battery_start_mv = [10683.0, 11283.0]
+battery_drop_mv_per_min = [1.966468, 6.899405]
+
+[prior]
+file = "configs/priors/pilot2-prior.json"

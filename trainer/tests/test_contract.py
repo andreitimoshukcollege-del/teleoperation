@@ -60,3 +60,37 @@ def test_logs_from_two_different_sessions_fail_clock_causality(sim_session_dir, 
     report = check_session_dir(mixed, allow_read_gaps=True)
     assert not report.ok
     assert any("causality" in f for f in report.failures) or any("session" in f for f in report.failures)
+
+
+def test_an_automatic_session_with_unknown_conditions_is_read_and_checked(sim_session_dir, tmp_path):
+    # What RobotHost writes for a session it opened itself (docs/adr/0023 decision 4): label and
+    # motion "auto", load "unknown", the sender's address, and nulls for what nobody on the robot knows.
+    import json
+
+    from armpred.data.build import condition_tags
+    from armpred.evaluate import condition_key
+
+    auto = str(tmp_path / "20261026T120000Z-auto")
+    shutil.copytree(sim_session_dir, auto)
+    meta_path = os.path.join(auto, "session.json")
+    with open(meta_path) as f:
+        meta = json.load(f)
+    meta.update({
+        "id": "20261026T120000Z-auto", "source": "robot", "label": "auto", "stoppedUtc": "2026-10-26T12:30:00Z",
+        "builds": {"robothost": {"sha": "abc", "dirty": False}, "driver": {"sha": "def", "dirty": False}},
+    })
+    meta["conditions"].update({
+        "speedSliderRadPerSec": "unknown", "load": {"kind": "unknown", "payloadGrams": None},
+        "network": {"uplinkProfile": "lan", "uplinkSeed": 0, "addedDelayMs": None},
+        "motion": "auto", "operator": "auto 10.0.0.5:6002",
+    })
+    with open(meta_path, "w") as f:
+        json.dump(meta, f, indent=2)
+    report = check_session_dir(auto, allow_read_gaps=True)
+    assert report.ok, report.lines()
+    tags = condition_tags(meta)
+    assert tags["slider"] == -1.0 and tags["payload_g"] == 0.0 and tags["hand"] == 0.0 and tags["added_delay_ms"] == 0.0
+    assert condition_key(meta["conditions"]) == "slider=unknown load=unknown"
+    meta["conditions"]["speedSliderRadPerSec"] = 2.5  # set from the commands' speeds on close
+    meta["conditions"]["network"]["uplinkProfile"] = "varied"  # the robot-side uplink changed during it
+    assert condition_tags(meta)["slider"] == 2.5 and condition_tags(meta)["uplink_impaired"] == 1.0

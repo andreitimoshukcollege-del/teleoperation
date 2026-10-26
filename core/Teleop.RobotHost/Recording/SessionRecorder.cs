@@ -213,6 +213,7 @@ namespace Teleop.RobotHost.Recording
 
         public void Dispose()
         {
+            if (_stop) return;
             _stop = true;
             _signal.Set();
             _thread.Join(TimeSpan.FromSeconds(10));

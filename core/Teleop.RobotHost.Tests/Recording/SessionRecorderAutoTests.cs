@@ -101,7 +101,20 @@ namespace Teleop.RobotHost.Tests.Recording
                 File.WriteAllText(Path.Combine(directory, "driver.jlog"), body + "END|1|0|" + Sha(Encoding.ASCII.GetBytes(body)) + "\n");
             }
 
-            public void Dispose() => Recorder?.Dispose();
+            public void Dispose()
+            {
+                Recorder?.Dispose();
+                try
+                {
+                    Directory.Delete(Root, recursive: true);
+                }
+                catch (IOException)
+                {
+                }
+                catch (UnauthorizedAccessException)
+                {
+                }
+            }
         }
 
         private static (string[] Lines, string[] Trailer) ReadLog(string path)
@@ -417,12 +430,12 @@ namespace Teleop.RobotHost.Tests.Recording
         [Fact]
         public void Disposing_ClosesAndCompletesAnOpenAutomaticSession()
         {
-            var rig = new Rig(driverWaitSeconds: 0.2);
+            using var rig = new Rig(driverWaitSeconds: 0.2);
             rig.Begin();
             rig.Recorder.Record("JC|1|1|0|0|A|1:0.1:2.5");
             string dir = rig.AutoDir();
             Assert.True(WaitFor(() => File.Exists(rig.Control)));
-            rig.Dispose();
+            rig.Recorder.Dispose(); // as RobotHost does when it stops
             Assert.True(File.Exists(Path.Combine(dir, "files.sha256")));
             Assert.False(File.Exists(rig.Control));
             Assert.Equal("1", ReadLog(Path.Combine(dir, "robothost.jlog")).Trailer[1]);

@@ -160,6 +160,22 @@ Precedence and robustness:
 - **Retention:** `just fetch-recordings`, then `just robot-prune-recordings true`, which deletes only
   sessions this machine holds with identical sha256s.
 
+Where the implementation (2026-10-26) departs from the text above, and why:
+- **A second split within 5 s does not happen** (`--auto-record-min-split-seconds`). Two endpoints
+  taking turns on the joint port (the headset and `joint-probe`) would otherwise open a session per
+  datagram. That session records both, and the trainer's check rejects it.
+- **A restart during a manual session cannot open a new session**, because the manual session's owner
+  holds `.active`. The restarted writer keeps the first log as it was and continues in
+  `robothost.2.jlog` (or `driver.2.jlog`), which readers ignore. An automatic session that an earlier
+  RobotHost left open is closed and completed, and the next command opens a new one, as above.
+- **Reopening after a disk-space close:** after a close for low disk space, the next command opens a
+  session once 2 GB are free again, without waiting for an idle gap. When a manual session ends while
+  commands keep coming, the automatic recorder waits for the next 30 s gap, as the rule says.
+- **The marker** is a sibling file, `~/recordings/.active-auto`, holding the same directory as
+  `.active`. `.active` stays one line, so the deployed driver and `record-mark` read it unchanged.
+- **Values on close:** the slider is `"unknown"` until the commands' speeds set it. The uplink is
+  written as `varied` if RobotHost's own impairment changed during the session.
+
 ## Consequences
 
 - The headset can compare predictors under the same live conditions, switch between them without a

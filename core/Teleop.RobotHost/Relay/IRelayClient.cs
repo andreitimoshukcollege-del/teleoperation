@@ -25,6 +25,13 @@ namespace Teleop.RobotHost.Relay
         void Send(ReadOnlySpan<JointTarget> targets);
 
         /// <summary>
+        /// Switches the torque of every servo the driver drives on or off (docs/adr/0023 decision 5).
+        /// Fire-and-forget like <see cref="Send"/>: nothing confirms it, and while the servo board is
+        /// silent it reaches no servo.
+        /// </summary>
+        void SendTorque(bool on);
+
+        /// <summary>
         /// Non-blocking; returns false when no feedback has arrived since the last call (the
         /// common case, not an error). <paramref name="entriesBuffer"/> is caller-supplied
         /// (typically <c>stackalloc</c>), keeping this allocation-free.

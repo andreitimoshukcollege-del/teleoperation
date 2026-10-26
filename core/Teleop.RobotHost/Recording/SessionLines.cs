@@ -91,6 +91,9 @@ namespace Teleop.RobotHost.Recording
             return b.ToString();
         }
 
+        /// <summary>A torque switch sent to the relay (docs/adr/0023 decision 5): 1 on, 0 off.</summary>
+        public static string Torque(long t, bool on) => "TQ|" + I(t) + "|" + (on ? '1' : '0');
+
         public static string Subscriber(long t, string endpoint) => "SS|" + I(t) + "|" + Clean(endpoint);
 
         public static string Sender(long t, string endpoint) => "JS|" + I(t) + "|" + Clean(endpoint);

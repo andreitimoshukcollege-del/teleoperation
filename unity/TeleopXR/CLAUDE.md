@@ -131,12 +131,16 @@ Contents:
     on the same stream (Core's `JointPredictorBank`), so switching is instant and keeps history; one
     turned on again starts from nothing and shows `warming up` until its first reading. The drawing
     one cannot be turned off.
-  - **Back row, network disturbances**, applied on the headset to the joint link in both directions
-    (`JointLinkDisturbance`): off, `50ms-5j`, `150ms-20j-0.5loss`, `300ms-60j-2loss-bursty`, 500 ms of
-    pure delay, 10% loss. The selected one lights amber, the panel and the twin's status line say
-    `NETWORK DISTURBED`, and each change is logged with its seed. Anything recorded with one on is
-    not a real-network measurement.
-  - **The panel** behind the rows: for every predictor that is on, error p50/p95, correction p95 and
+  - **Behind it, three amber network sliders**: LAG (one-way, 0–1000 ms), JITTER (0–200 ms) and LOSS
+    (0–30%), applied together on the headset to the joint link in both directions
+    (`JointLinkDisturbance`) once they stop moving for 0.4 s; all at zero is off. While one is on,
+    the panel and the twin's status line say `NETWORK DISTURBED`, and each change is logged with its
+    seed. Anything recorded with one on is not a real-network measurement. The bridge's caps
+    (`DisturbanceMaxDelayMs`, `DisturbanceMaxLossPercent`) bound them.
+  - **Servo board silent.** When frames keep arriving but the servo readings stop advancing for 3 s,
+    the twin's status line and the panel say `SERVO BOARD NOT ANSWERING · power-cycle the robot`
+    (`JetRoverJointStateLink.BoardSilent`; robot/README.md's incident log has the fault).
+  - **The panel**, raised above the sliders: each preset's one-line `Description` from the config, and for every predictor that is on, error p50/p95, correction p95 and
     jitter p95 (degrees, arm joints) and the gripper's error p95 (servo degrees), over the last 30 s,
     four times a second (Core's `LiveJointScorer`, docs/metrics.md §4's live variants). Diagnostics,
     never results.

@@ -140,7 +140,8 @@ namespace Teleop.XR.Editor
         /// The operator console (docs/adr/0023) on the bench's left, behind the motion button and the
         /// twin switches: a row of predictor slots (a cap that draws the twin with that predictor and
         /// a small one beside it that turns it on or off), a row of network disturbances, and the live
-        /// numbers standing behind them, tilted toward the operator. The slots' labels come from the
+        /// numbers standing behind them, tilted toward the operator. The network is three sliders (lag,
+        /// jitter, loss) behind the predictor row. The slots' labels come from the
         /// config at runtime, so the scene does not change when the presets do. Rebuilt on every run.
         /// </summary>
         private static void BuildConsole(Scene scene, JetRoverOperatorBridge bridge, XROrigin origin)
@@ -177,18 +178,23 @@ namespace Teleop.XR.Editor
                 Wire(toggle, null, console, ConsoleButton.Kind.TogglePredictor, i, origin);
             }
 
-            for (int i = 0; i < 6; i++)
+            // The network disturbance: three sliders behind the predictor row, running away from the
+            // operator (near = none), applied together by the console once they settle.
+            var network = new[]
             {
-                float x = left + i * spacing;
-                Renderer cap = Cap(root, $"Network{i}", new Vector3(x + 0.012f, 0f, networkZ), 0.032f, capMaterial, plinthMaterial);
-                TextMeshPro label = LabParts.Label("Label", cap.transform.parent, new Vector3(0f, 0.006f, -0.034f), Quaternion.Euler(60f, 0f, 0f),
-                    OperatorConsole.DefaultNetworkLabels[i], 0.085f, new Color(1f, 0.75f, 0.45f), new Vector2(0.068f, 0.016f), TextAlignmentOptions.Center, FontStyles.Bold);
-                Wire(cap, label, console, ConsoleButton.Kind.Network, i, origin);
+                (SpeedSlider.Setting.NetworkLag, "NetworkLag", "LAG", 1000f),
+                (SpeedSlider.Setting.NetworkJitter, "NetworkJitter", "JITTER", 200f),
+                (SpeedSlider.Setting.NetworkLoss, "NetworkLoss", "LOSS", 30f),
+            };
+            for (int i = 0; i < network.Length; i++)
+            {
+                BuildSlider(network[i].Item2, 0f, network[i].Item1, 0f, network[i].Item4, 0f, network[i].Item3, bridge, origin,
+                    parent: root, at: new Vector3(left + 0.01f + i * 0.1f, top, networkZ), console: console, length: 0.24f);
             }
 
             // Standing nearly upright behind the network row, big enough to read from where the operator stands.
-            TextMeshPro panel = LabParts.Label("Panel", root, new Vector3(left + 0.21f, 0.2f, networkZ + 0.09f), Quaternion.Euler(12f, -39f, 0f), // turned toward the operator at x = 0
-                "<mspace=0.55em><b>PREDICTOR          ERR p50   p95   CORR p95  JIT p95  GRIP p95     n</b>\n(live numbers here once the robot's state arrives)\nnetwork: off", 0.125f, text, new Vector2(0.52f, 0.2f), TextAlignmentOptions.TopLeft);
+            TextMeshPro panel = LabParts.Label("Panel", root, new Vector3(left + 0.23f, 0.33f, networkZ + 0.14f), Quaternion.Euler(22f, -32f, 0f), // raised above the sliders, tilted and turned toward the operator at x = 0
+                "<mspace=0.55em><b>PREDICTOR          ERR p50   p95   CORR p95  JIT p95  GRIP p95     n</b>\n(live numbers here once the robot's state arrives)\nnetwork: off</mspace>", 0.125f, text, new Vector2(0.56f, 0.26f), TextAlignmentOptions.TopLeft);
             panel.richText = true;
 
             var so = new SerializedObject(console);
@@ -253,12 +259,14 @@ namespace Teleop.XR.Editor
         public const string DelaySliderName = "DelaySlider";
 
         private static void BuildSlider(string name, float xOffset, SpeedSlider.Setting setting, float min, float max, float start,
-            string caption, JetRoverOperatorBridge bridge, XROrigin origin)
+            string caption, JetRoverOperatorBridge bridge, XROrigin origin, Transform parent = null, Vector3? at = null,
+            OperatorConsole console = null, float length = 0.26f)
         {
             float top = LabLayout.BenchTop;
-            const float length = 0.26f, height = 0.012f;
+            const float height = 0.012f;
             var slider = new GameObject(name).transform;
-            slider.position = new Vector3(LabLayout.ArmBase.x - 0.70f + xOffset, top, LabLayout.BenchNearZ + 0.05f);
+            if (parent != null) slider.SetParent(parent, false);
+            slider.position = at ?? new Vector3(LabLayout.ArmBase.x - 0.70f + xOffset, top, LabLayout.BenchNearZ + 0.05f);
 
             GameObject track = GameObject.CreatePrimitive(PrimitiveType.Cube);
             track.name = "Track";
@@ -281,11 +289,14 @@ namespace Teleop.XR.Editor
             knob.transform.localPosition = new Vector3(0f, height, 0.01f);
             // Neutral white: blue, green and amber belong to the twin's arms (TwinColors).
             Color knobColor = new Color(0.88f, 0.9f, 0.93f);
-            knob.GetComponent<Renderer>().sharedMaterial = LabMaterials.Unlit(setting == SpeedSlider.Setting.ArmSpeed ? "SpeedKnob" : "DelayKnob", knobColor);
+            bool network = setting == SpeedSlider.Setting.NetworkLag || setting == SpeedSlider.Setting.NetworkJitter || setting == SpeedSlider.Setting.NetworkLoss;
+            if (network) knobColor = new Color(1f, 0.62f, 0.15f); // the console's disturbance amber
+            knob.GetComponent<Renderer>().sharedMaterial = LabMaterials.Unlit(
+                setting == SpeedSlider.Setting.ArmSpeed ? "SpeedKnob" : network ? "NetworkKnob" : "DelayKnob", knobColor);
             foreach (Collider collider in slider.GetComponentsInChildren<Collider>()) Object.DestroyImmediate(collider);
 
             // Labels stand at the slider's near end, tilted toward the operator; the two sliders' labels alternate depth so they never overlap.
-            float labelZ = setting == SpeedSlider.Setting.ArmSpeed ? -0.03f : -0.055f;
+            float labelZ = setting == SpeedSlider.Setting.ArmSpeed || network ? -0.03f : -0.055f;
             TextMeshPro label = LabParts.Label("Label", slider, new Vector3(0f, 0.006f, labelZ), Quaternion.Euler(60f, 0f, 0f),
                 caption, 0.1f, knobColor, new Vector2(0.2f, 0.02f), TextAlignmentOptions.Center, FontStyles.Bold);
 
@@ -293,6 +304,7 @@ namespace Teleop.XR.Editor
             var so = new SerializedObject(component);
             so.FindProperty("setting").enumValueIndex = (int)setting;
             so.FindProperty("bridge").objectReferenceValue = bridge;
+            so.FindProperty("console").objectReferenceValue = console;
             so.FindProperty("origin").objectReferenceValue = origin;
             so.FindProperty("trackStart").objectReferenceValue = slow;
             so.FindProperty("trackEnd").objectReferenceValue = fast;

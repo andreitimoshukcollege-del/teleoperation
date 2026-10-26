@@ -306,7 +306,7 @@ namespace Teleop.XR.Editor
 
         /// <summary>
         /// The operator console (docs/adr/0023): present, wired to this scene's bridge and its panel, with
-        /// a select and an on/off cap for every predictor slot and at least one network cap. Not a safety
+        /// a select and an on/off cap for every predictor slot and the lag, jitter and loss sliders. Not a safety
         /// setting -- the console moves nothing -- but an unwired one would silently show nothing.
         /// </summary>
         private static void CheckConsole(JetRoverOperatorBridge bridge, List<string> problems)
@@ -327,8 +327,14 @@ namespace Teleop.XR.Editor
             int toggles = buttons.Count(b => b.ButtonKind == ConsoleButton.Kind.TogglePredictor);
             if (selects != OperatorConsole.MaxPredictors || toggles != OperatorConsole.MaxPredictors)
                 problems.Add($"OperatorConsole: {selects} predictor and {toggles} on/off caps, expected {OperatorConsole.MaxPredictors} of each");
-            if (!buttons.Any(b => b.ButtonKind == ConsoleButton.Kind.Network))
-                problems.Add("OperatorConsole: no network caps");
+            SpeedSlider[] sliders = Object.FindObjectsByType<SpeedSlider>(FindObjectsInactive.Include, FindObjectsSortMode.None);
+            foreach (string name in new[] { "NetworkLag", "NetworkJitter", "NetworkLoss" })
+            {
+                SpeedSlider slider = sliders.FirstOrDefault(x => x.name == name);
+                if (slider == null) problems.Add($"OperatorConsole: no {name} slider");
+                else if (new SerializedObject(slider).FindProperty("console").objectReferenceValue != console)
+                    problems.Add($"{name} slider is not wired to the console");
+            }
             foreach (ConsoleButton b in buttons)
             {
                 var bso = new SerializedObject(b);

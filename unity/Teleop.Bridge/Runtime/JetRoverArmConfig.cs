@@ -220,6 +220,8 @@ namespace Teleop.Bridge
     public sealed class JointPredictorPresetData
     {
         public string Label = "";
+        // One line the operator console shows beside the label: what this predictor assumes.
+        public string Description = "";
         public string Predictor = "hold-last";
         public bool Enabled = true;
 
@@ -248,19 +250,32 @@ namespace Teleop.Bridge
             float[] ages1026 = { 29.5f, 25.1f, 22.2f, 19.7f, 17.7f };
             return new[]
             {
-                new JointPredictorPresetData { Label = "hold-last", Predictor = "hold-last" },
-                new JointPredictorPresetData { Label = "relay-replay", Predictor = "relay-replay", ReadingAgeMs = ages1025 },
+                new JointPredictorPresetData
+                {
+                    Label = "hold-last", Predictor = "hold-last", Description = "no prediction: the last reading as it arrived (the baseline)",
+                },
+                new JointPredictorPresetData
+                {
+                    Label = "relay-replay", Predictor = "relay-replay", ReadingAgeMs = ages1025,
+                    Description = "replays your commands through the relay's paced servo writes; no servo lag",
+                },
                 new JointPredictorPresetData
                 {
                     Label = "servo 10-25", Predictor = "relay-replay-servo", ServoMaxSpeedRadPerSec = 5f, ServoLagMs = 50f,
+                    Description = "relay-replay plus a servo: 50 ms lag, 17 ms pipeline (10-25 fit, speed limit guessed)",
                     ServoPipelineDelayMs = 16.8f, ReadingAgeMs = ages1025,
                 },
                 new JointPredictorPresetData
                 {
                     Label = "servo 10-26", Predictor = "relay-replay-servo", ServoMaxSpeedRadPerSec = 3.25f, ServoLagMs = 40f,
+                    Description = "relay-replay plus a servo: 40 ms lag, 3.25 rad/s limit, 14 ms pipeline (10-26 fit)",
                     ServoPipelineDelayMs = 13.8f, ReadingAgeMs = ages1026,
                 },
-                new JointPredictorPresetData { Label = "servo-replay", Predictor = "servo-replay", ModelSpeedRadPerSec = 6f, Enabled = false },
+                new JointPredictorPresetData
+                {
+                    Label = "servo-replay", Predictor = "servo-replay", ModelSpeedRadPerSec = 6f, Enabled = false,
+                    Description = "the first model: every command obeyed at once at 6 rad/s; snaps back on each reading",
+                },
             };
         }
     }

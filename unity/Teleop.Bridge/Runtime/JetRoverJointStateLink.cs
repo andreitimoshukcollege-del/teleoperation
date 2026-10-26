@@ -79,6 +79,7 @@ namespace Teleop.Bridge
         private readonly RobotArmProfile _profile;
         private readonly ClockSync _clockSync;
         private readonly JointPredictorBank _bank;
+        private readonly string[] _descriptions;
         private readonly LiveJointScorer _scorer;
         private readonly long _keepaliveIntervalTicks;
         private readonly byte[] _buffer = new byte[128];
@@ -90,6 +91,8 @@ namespace Teleop.Bridge
         private long _lastKeepaliveTicks = long.MinValue;
         private long _lastEchoOperatorTicks = long.MinValue;
         private long _lastFrameArrivalTicks;
+        private long _lastFreshArrivalTicks = long.MinValue;
+        private long _lastSensedRobotTicks = long.MinValue;
 
         /// <summary>The label of the preset drawing the twin.</summary>
         public string PredictorName => _bank.ActiveLabel;
@@ -97,6 +100,23 @@ namespace Teleop.Bridge
         public bool IsSynced => _clockSync.Diagnostics.IsSynced;
         public long FramesReceived { get; private set; }
         public float RoundTripMilliseconds => _clockSync.Diagnostics.LastRttTicks * 1000f / _clock.TicksPerSecond;
+
+        /// <summary>
+        /// Seconds since a frame last brought a <i>fresh</i> servo reading (a sensed stamp later than
+        /// every earlier one); infinity before the first. Frames keep coming from RobotHost when the
+        /// servo board stops answering, but their readings stop advancing: this is how the headset
+        /// sees the board go silent (robot/README.md's incident log).
+        /// </summary>
+        public float SecondsSinceFreshReading =>
+            _lastFreshArrivalTicks == long.MinValue ? float.PositiveInfinity : (_clock.NowTicks - _lastFreshArrivalTicks) / (float)_clock.TicksPerSecond;
+
+        /// <summary>
+        /// Frames are arriving but no fresh servo reading has for <see cref="BoardSilentSeconds"/>: the
+        /// servo board has stopped answering (only a power cycle has ever brought it back).
+        /// </summary>
+        public bool BoardSilent => SecondsSinceLastFrame < 1f && _lastFreshArrivalTicks != long.MinValue && SecondsSinceFreshReading > BoardSilentSeconds;
+
+        public const float BoardSilentSeconds = 3f;
 
         /// <summary>Seconds since the last frame arrived; infinity before the first.</summary>
         public float SecondsSinceLastFrame =>
@@ -143,6 +163,8 @@ namespace Teleop.Bridge
 
             if (active < 0) active = firstEnabled >= 0 ? firstEnabled : 0;
             _bank = JointPredictorBank.Create(corePresets, active);
+            _descriptions = new string[presets.Length];
+            for (int i = 0; i < presets.Length; i++) _descriptions[i] = presets[i].Description ?? "";
             for (int i = 0; i < presets.Length; i++)
             {
                 if (!presets[i].Enabled && i != active) _bank.TrySetEnabled(i, false);
@@ -159,6 +181,9 @@ namespace Teleop.Bridge
         public int ActivePredictorIndex => _bank.ActiveIndex;
 
         public string PredictorLabel(int index) => _bank.LabelAt(index);
+
+        /// <summary>The preset's one-line description from the config ("" when it has none).</summary>
+        public string PredictorDescription(int index) => _descriptions[index];
 
         public bool IsPredictorEnabled(int index) => _bank.IsEnabled(index);
 
@@ -231,6 +256,14 @@ namespace Teleop.Bridge
                 {
                     _lastEchoOperatorTicks = echoOperator;
                     _clockSync.AddRoundTrip(echoOperator, _clock.TicksPerSecond, echoRobotRecv, robotSend, robotTps, arrival);
+                }
+
+                // A reading newer than any before: the servo board is answering. A stamp more than 10 s
+                // older is a restarted robot clock, not a stale reading.
+                if (sensed != 0 && (sensed > _lastSensedRobotTicks || sensed < _lastSensedRobotTicks - 10 * robotTps))
+                {
+                    _lastSensedRobotTicks = sensed;
+                    _lastFreshArrivalTicks = arrival;
                 }
 
                 // No feedback yet means the values are beliefs from the moment of sending.

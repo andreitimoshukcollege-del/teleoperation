@@ -12,7 +12,7 @@ namespace Teleop.XR
     /// </summary>
     public sealed class ConsoleButton : MonoBehaviour
     {
-        public enum Kind { SelectPredictor, TogglePredictor, Network }
+        public enum Kind { SelectPredictor, TogglePredictor }
 
         [SerializeField] private OperatorConsole console;
         [SerializeField] private Kind kind;

@@ -16,8 +16,8 @@ namespace Teleop.XR
     /// <item><b>Predictor row:</b> pressing a predictor's big cap draws the twin with it (turning it
     /// on first if it was off, so it warms up from the next reading). The small cap beside it turns it
     /// on or off; the drawing one cannot be turned off.</item>
-    /// <item><b>Network row:</b> one cap per disturbance, applied to the joint socket in both
-    /// directions; the first is off.</item>
+    /// <item><b>Network sliders:</b> lag, jitter and loss, applied together to the joint socket in
+    /// both directions once they have stopped moving for a moment; all at zero is off.</item>
     /// <item><b>The panel:</b> per running predictor, error p50/p95, correction p95, jitter p95 and the
     /// gripper's error p95 over the last 30 s, refreshed four times a second. Diagnostics, never
     /// results.</item>
@@ -30,33 +30,38 @@ namespace Teleop.XR
         [SerializeField] private JetRoverOperatorBridge bridge;
         [SerializeField] private TMP_Text panel;
 
-        /// <summary>The default network row: Core <c>NetworkProfileCatalog</c> names ("lan" is off), and what the caps say.</summary>
-        public static readonly string[] DefaultNetworkProfiles = { "lan", "50ms-5j", "150ms-20j-0.5loss", "300ms-60j-2loss-bursty", "delay-500ms", "loss-10pct" };
-        public static readonly string[] DefaultNetworkLabels = { "NET OFF", "50 ms", "150 ms", "300 ms", "+500 ms", "10% LOSS" };
-
-        [SerializeField] private string[] networkProfiles = (string[])DefaultNetworkProfiles.Clone();
-        [SerializeField] private string[] networkLabels = (string[])DefaultNetworkLabels.Clone();
-
         private static readonly Color Active = new Color(0.2f, 0.9f, 0.4f);    // the predicted arm's green
         private static readonly Color Running = new Color(0.75f, 0.78f, 0.82f);
         private static readonly Color Off = new Color(0.13f, 0.13f, 0.15f);
-        private static readonly Color Network = new Color(1f, 0.62f, 0.15f);
 
-        private readonly StringBuilder _text = new StringBuilder(1024);
-        private int _network;
-        private string _networkError;
+        private readonly StringBuilder _text = new StringBuilder(2048);
         private float _nextRefresh;
+
+        // The network sliders' values, applied together once they have settled (docs/adr/0023 decision 3).
+        private float _lagMs, _jitterMs, _lossPercent;
+        private float _appliedLag = -1f, _appliedJitter = -1f, _appliedLoss = -1f;
+        private float _changedAt = -1f;
+        private const float SettleSeconds = 0.4f;
+
+        /// <summary>A network slider moved: remembered now, applied once the sliders have settled.</summary>
+        public void SetNetwork(SpeedSlider.Setting setting, float value)
+        {
+            float before = setting == SpeedSlider.Setting.NetworkLag ? _lagMs : setting == SpeedSlider.Setting.NetworkJitter ? _jitterMs : _lossPercent;
+            if (before == value) return;
+            if (setting == SpeedSlider.Setting.NetworkLag) _lagMs = value;
+            else if (setting == SpeedSlider.Setting.NetworkJitter) _jitterMs = value;
+            else _lossPercent = value;
+            _changedAt = Time.unscaledTime;
+        }
 
         public bool IsVisible(ConsoleButton.Kind kind, int index)
         {
-            if (kind == ConsoleButton.Kind.Network) return index < networkProfiles.Length;
             JetRoverJointStateLink link = Link;
             return link != null && index < link.PredictorCount;
         }
 
         public string LabelFor(ConsoleButton.Kind kind, int index)
         {
-            if (kind == ConsoleButton.Kind.Network) return index < networkLabels.Length ? networkLabels[index] : "";
             if (kind == ConsoleButton.Kind.TogglePredictor) return "";
             JetRoverJointStateLink link = Link;
             return link != null && index < link.PredictorCount ? link.PredictorLabel(index) : "";
@@ -64,7 +69,6 @@ namespace Teleop.XR
 
         public Color ColorFor(ConsoleButton.Kind kind, int index)
         {
-            if (kind == ConsoleButton.Kind.Network) return index == _network ? (index == 0 ? Running : Network) : Off;
             JetRoverJointStateLink link = Link;
             if (link == null || index >= link.PredictorCount) return Off;
             if (kind == ConsoleButton.Kind.TogglePredictor) return link.IsPredictorEnabled(index) ? Running : Off;
@@ -86,20 +90,6 @@ namespace Teleop.XR
                     if (link == null || index >= link.PredictorCount) return;
                     link.TrySetPredictorEnabled(index, !link.IsPredictorEnabled(index));
                     break;
-                case ConsoleButton.Kind.Network:
-                    if (bridge == null || index >= networkProfiles.Length) return;
-                    if (bridge.TryApplyDisturbance(networkProfiles[index], out string error))
-                    {
-                        _network = index;
-                        _networkError = null;
-                    }
-                    else
-                    {
-                        _networkError = error;
-                        Debug.LogWarning($"[console] {networkProfiles[index]}: {error}");
-                    }
-
-                    break;
             }
 
             _nextRefresh = 0f;
@@ -109,6 +99,7 @@ namespace Teleop.XR
 
         private void Update()
         {
+            ApplyNetworkWhenSettled();
             if (panel == null || Time.unscaledTime < _nextRefresh)
             {
                 return;
@@ -122,6 +113,13 @@ namespace Teleop.XR
                 _text.Append("no joint link");
                 panel.SetText(_text);
                 return;
+            }
+
+            // The servo board going silent is the one thing on this panel that needs a person.
+            if (link.BoardSilent)
+            {
+                _text.Append("<color=#FF5050><b>SERVO BOARD NOT ANSWERING</b> for ").Append(Mathf.RoundToInt(link.SecondsSinceFreshReading))
+                    .Append(" s: frames arrive, readings do not. Power-cycle the robot.</color>\n");
             }
 
             // Monospaced, so the columns line up in TextMeshPro's proportional font.
@@ -158,10 +156,29 @@ namespace Teleop.XR
             _text.Append(disturbance != null && disturbance.IsActive ? "<color=#FF9E26>NETWORK DISTURBED: " : "network: ");
             _text.Append(disturbance != null ? disturbance.Description : "off");
             if (disturbance != null && disturbance.IsActive) _text.Append("  (seed ").Append(disturbance.Seed).Append(")</color>");
-            if (_networkError != null) _text.Append("\n<color=#FF5050>").Append(_networkError).Append("</color>");
-            _text.Append("\nlast 30 s, degrees (gripper: servo degrees); diagnostics, not results");
-            _text.Append("\n<color=#A0A6AE>front row: predictors (cap draws the twin, dot turns it on/off)  ·  back row: network</color>");
+            _text.Append("\nlast 30 s, degrees (gripper: servo degrees); diagnostics, not results\n");
+            _text.Append("</mspace><color=#A0A6AE>");
+            for (int i = 0; i < link.PredictorCount; i++)
+            {
+                string description = link.PredictorDescription(i);
+                if (description.Length == 0) continue;
+                _text.Append('\n').Append(link.PredictorLabel(i)).Append(": ").Append(description);
+            }
+
+            _text.Append("\ncaps: draw the twin with one  ·  dots: turn one on or off  ·  sliders: lag, jitter, loss</color>");
             panel.SetText(_text);
+        }
+
+        private void ApplyNetworkWhenSettled()
+        {
+            if (_changedAt < 0f || Time.unscaledTime - _changedAt < SettleSeconds || bridge == null) return;
+            _changedAt = -1f;
+            if (_lagMs == _appliedLag && _jitterMs == _appliedJitter && _lossPercent == _appliedLoss) return;
+            _appliedLag = _lagMs;
+            _appliedJitter = _jitterMs;
+            _appliedLoss = _lossPercent;
+            bridge.ApplyCustomDisturbance(_lagMs, _jitterMs, _lossPercent);
+            _nextRefresh = 0f;
         }
 
         private void Pad(string s, int width)

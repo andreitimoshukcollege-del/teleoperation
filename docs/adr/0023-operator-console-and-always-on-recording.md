@@ -160,6 +160,24 @@ Precedence and robustness:
 - **Retention:** `just fetch-recordings`, then `just robot-prune-recordings true`, which deletes only
   sessions this machine holds with identical sha256s.
 
+### Amendment (2026-10-26, the user's requests after a first look)
+
+- **Sliders, not presets, for the disturbance.** Lag, jitter and loss sliders replace the network caps;
+  the console applies the three together (`ApplyCustomDisturbance`) once they have settled.
+- **A one-line description per preset**, from the config, listed on the panel.
+- **The servo board going silent is shown.** The headset already sees it: frames keep arriving from
+  RobotHost while their readings stop advancing. After 3 s the status line and the panel say so and
+  ask for a power cycle (robot/README.md's incident log).
+- **5. Park, then relax (decided, not built yet).** A console button moves the arm slowly to a
+  supported rest pose, waits until the readings say it is there, then switches every arm servo's
+  torque off; turning ROBOT ON switches torque back on before any command is forwarded. The user
+  suspects that holding torque for a long time causes the board's silences (2026-10-26: silent after
+  77 idle minutes with torque on). It needs a new message from the headset to RobotHost (an ADR 0018
+  wire amendment), RobotHost logic and a relay message to the driver's existing
+  `/arm/servo/set/torque` (`RelayProtocol.cs` and `relay_protocol.py` together), and a rest pose
+  measured on the robot (the arm placed by hand with torque off, its readings taken). While the
+  board is silent no torque command can reach the servos, so this can only prevent the next silence.
+
 ## Consequences
 
 - The headset can compare predictors under the same live conditions, switch between them without a

@@ -214,6 +214,38 @@ simulated benchmark row exists.
   target by 10-20 pulses while moving and settles up to 20 short of it, and the servo keeps pushing to
   close that gap. Correct stops end the hard push into the closed stop, not this.
 
+### 9. Amendment (2026-10-26): arm-power messages on the joint port
+
+docs/adr/0023 decision 5 ("park, then relax") needs the headset to ask RobotHost to switch the servos'
+torque off and on, and to hear back what RobotHost did. Two messages join the joint port
+(`Teleop.RobotArm.Wire.ArmPowerCodec`), little-endian, each with its own tag byte and a version:
+
+```
+request (headset -> robot, 15 bytes):
+  u8 0x81 | u8 version (1) | u8 request (1 relax, 2 hold) | u32 sequence | i64 operatorSendTicks
+
+status (robot -> headset, 28 bytes):
+  u8 0x82 | u8 version (1) | u8 state (0 holding, 1 parking, 2 relaxed) | u8 reason
+  | u32 echoSequence | i64 echoOperatorTicks | i64 robotSendTicks | f32 remainingDeg
+```
+
+- **Relax** parks the arm at the configured rest pose and then switches torque off. **Hold** switches
+  torque on and lets joint commands through again.
+- **Reasons:** 0 none, 1 no rest pose configured, 2 the path to it collides, 3 the park timed out,
+  4 the servo board is not answering, 5 no collision model, 6 an unknown request byte, 7 a hold
+  stopped the park. A status in *holding* with a reason other than none is a refused relax.
+- **`echoSequence`/`echoOperatorTicks`** are the latest request's, so the headset knows which request a
+  status answers. **`remainingDeg`** is the largest arm joint's distance from the rest pose by the
+  latest reading (NaN when not known), for the panel.
+- **When a status is sent:** in answer to every request; on every change of state; and once a second
+  while the state is not *holding*. It goes where the joint-state frames go (the joint port's latest
+  sender), so a headset that starts while the arm is relaxed learns it within a second.
+- **No collision with the port's other messages.** Their first bytes are 0x02 (command, version 2),
+  0x01 (frame, version 1) and 0x80 (subscribe). Every decoder on the port checks its first byte
+  exactly, so each ignores the others. An older RobotHost ignores a request, and an older headset
+  ignores a status; the headset then sees no status at all and says so.
+- **Unchanged:** the command, the frame and the keepalive.
+
 ## Consequences
 
 - **RobotHost must be redeployed** (`just deploy-robothost`). An older RobotHost ignores the

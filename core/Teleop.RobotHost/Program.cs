@@ -1,6 +1,7 @@
 using System;
 using System.IO;
 using System.Net;
+using System.Runtime.InteropServices;
 using System.Threading;
 using Teleop.Core.Pipeline;
 using Teleop.Core.Transport;
@@ -65,7 +66,12 @@ namespace Teleop.RobotHost
 
             // Recording (docs/adr/0021): robothost.jlog into the session directory the control file
             // names, while it exists. Off without --record-control; costs nothing while no session is open.
-            using var recorder = a.RecordControlPath != null ? new SessionRecorder(a.RecordControlPath, clock.TicksPerSecond) : null;
+            // With --auto-record, RobotHost also opens sessions itself while it is commanded (docs/adr/0023).
+            using var recorder = a.RecordControlPath != null
+                ? new SessionRecorder(a.RecordControlPath, clock.TicksPerSecond, auto: a.AutoRecord)
+                : null;
+            // What this session's file already says about the subscriber, the sender and the uplink.
+            var sessionState = recorder != null ? new SessionStateLines(recorder.Record) : null;
             IRelayClient plantRelay = recorder != null ? new RecordingRelayClient(relay, recorder, clock) : relay;
 
             // a.ProfilePath omitted falls back to RobotArmProfile.JetRoverMeasuredDefault, the
@@ -123,6 +129,7 @@ namespace Teleop.RobotHost
             UplinkSchedule? uplinkSchedule = null;
             long uplinkScheduleStart = 0;
             int uplinkScheduleIndex = -1;
+            ulong uplinkSeedNow = 0;
             JointTarget[]? jointTargetsBuffer = jointTransport != null
                 ? new JointTarget[JointCommandCodec.MaxJointsPerMessage]
                 : null;
@@ -133,7 +140,41 @@ namespace Teleop.RobotHost
             Func<JointSample[], int> readJoints = buffer => plant.ReadJointState(buffer);
             bool loggedSubscriber = false;
             JointSample[] recordedJoints = new JointSample[JointStateCodec.MaxJointsPerMessage];
-            EndPoint? recordedSubscriber = null;
+            EndPoint? currentSubscriber = null;
+            string? currentSubscriberText = null;
+            bool subscriberLapsed = false;
+            string? jointCommanderText = null;
+            long lastJointCommandTicks = long.MinValue;
+
+            // Recording whenever the robot is commanded (docs/adr/0023 decision 4).
+            AutoSessionRecorder? auto = null;
+            if (recorder != null && a.AutoRecord != null && jointTransport != null)
+            {
+                string autoRoot = recorder.AutoRoot;
+                Directory.CreateDirectory(autoRoot);
+                auto = new AutoSessionRecorder(a.AutoRecord, recorder, clock.TicksPerSecond, () => DateTime.UtcNow,
+                    () => FreeBytes(autoRoot),
+                    () => uplinkSchedule != null
+                        ? new UplinkCondition(uplink!.Profile, uplinkSchedule.Seed, uplinkSchedule.Spec)
+                        : new UplinkCondition(uplink!.Profile, uplinkSeedNow),
+                    Console.WriteLine);
+                long? freeNow = FreeBytes(autoRoot);
+                Console.WriteLine($"[record] automatic sessions into {autoRoot} while commanded ({a.AutoRecord}); " +
+                    (freeNow.HasValue ? $"{freeNow.Value / 1073741824.0:0.00} GB free now" : "free space unknown"));
+            }
+
+            // The start of every session's file: the state it would otherwise only learn on a change.
+            void StartSessionState(long now)
+            {
+                sessionState!.Reset();
+                if (currentSubscriberText != null && jointStreamer.IsSubscribed(now)) sessionState.Subscriber(now, currentSubscriberText);
+                if (jointCommanderText != null && lastJointCommandTicks != long.MinValue && now - lastJointCommandTicks <= 3 * clock.TicksPerSecond)
+                {
+                    sessionState.Sender(now, jointCommanderText);
+                }
+
+                sessionState.Uplink(now, uplink?.Profile ?? "none", uplinkSeedNow);
+            }
 
             // Discovery (docs/adr/0022): the headset asks here where the robot is, so a new DHCP lease
             // needs no config push. Its own port: a query on the joint port would take the joint stream.
@@ -173,6 +214,19 @@ namespace Teleop.RobotHost
                 cancelArgs.Cancel = true;
                 stop.Set();
             };
+            // systemctl stop/restart: leave the loop as Ctrl+C does, so an open session gets its trailer.
+            PosixSignalRegistration? sigterm = null;
+            try
+            {
+                sigterm = PosixSignalRegistration.Create(PosixSignal.SIGTERM, context =>
+                {
+                    context.Cancel = true;
+                    stop.Set();
+                });
+            }
+            catch (PlatformNotSupportedException)
+            {
+            }
 
             EndPoint? loggedReplyTarget = transport.CurrentRemoteEndPoint;
             EndPoint? jointCommander = null;
@@ -181,6 +235,9 @@ namespace Teleop.RobotHost
             long lastRefusalLogTicks = long.MinValue;
             while (!stop.IsSet)
             {
+                auto?.Tick(clock.NowTicks);
+                if (recorder != null && recorder.TakePreambleOwed()) StartSessionState(clock.NowTicks);
+
                 if (jointTransport != null)
                 {
                     if (a.UplinkControlPath != null && clock.NowTicks >= nextUplinkPollTicks)
@@ -212,8 +269,9 @@ namespace Teleop.RobotHost
                             try
                             {
                                 uplink!.SetProfile(parts[0], uplinkSeed);
+                                uplinkSeedNow = uplinkSeed;
                                 Console.WriteLine($"[uplink] joint commands now through '{uplink.Profile}' (seed {uplinkSeed})");
-                                if (recorder != null && recorder.IsActive) recorder.Record(SessionLines.Uplink(clock.NowTicks, uplink.Profile, uplinkSeed));
+                                if (recorder != null && recorder.IsActive) sessionState!.Uplink(clock.NowTicks, uplink.Profile, uplinkSeed);
                             }
                             catch (ArgumentException e)
                             {
@@ -230,8 +288,9 @@ namespace Teleop.RobotHost
                             uplinkScheduleIndex = index;
                             ulong segmentSeed = uplinkSchedule.Seed + (ulong)index;
                             uplink!.SetProfile(uplinkSchedule.ProfileOf(index), segmentSeed, drainPrevious: true);
+                            uplinkSeedNow = segmentSeed;
                             Console.WriteLine($"[uplink] schedule segment {index}: joint commands now through '{uplink.Profile}' (seed {segmentSeed})");
-                            if (recorder != null && recorder.IsActive) recorder.Record(SessionLines.Uplink(clock.NowTicks, uplink.Profile, segmentSeed));
+                            if (recorder != null && recorder.IsActive) sessionState!.Uplink(clock.NowTicks, uplink.Profile, segmentSeed);
                         }
                     }
 
@@ -239,16 +298,20 @@ namespace Teleop.RobotHost
                     {
                         if (jointStreamer.TryHandleSubscribe(jointRecvBuffer.AsSpan(0, byteCount), arrivalTicks))
                         {
+                            EndPoint? subscriber = jointTransport.CurrentRemoteEndPoint;
+                            if (!Equals(subscriber, currentSubscriber) || subscriberLapsed)
+                            {
+                                // A new subscriber splits an automatic session (docs/adr/0023): one per session.
+                                currentSubscriber = subscriber;
+                                currentSubscriberText = subscriber?.ToString() ?? "?";
+                                subscriberLapsed = false;
+                                auto?.OnSubscriber(arrivalTicks, currentSubscriberText);
+                            }
+
                             if (recorder != null && recorder.IsActive &&
                                 JointStateCodec.TryDecodeSubscribe(jointRecvBuffer.AsSpan(0, byteCount), out long operatorTicks, out long operatorTps))
                             {
-                                EndPoint? subscriber = jointTransport.CurrentRemoteEndPoint;
-                                if (!Equals(subscriber, recordedSubscriber))
-                                {
-                                    recorder.Record(SessionLines.Subscriber(arrivalTicks, subscriber?.ToString() ?? "?"));
-                                    recordedSubscriber = subscriber;
-                                }
-
+                                sessionState!.Subscriber(arrivalTicks, currentSubscriberText);
                                 recorder.Record(SessionLines.Keepalive(arrivalTicks, operatorTicks, operatorTps));
                             }
 
@@ -268,12 +331,22 @@ namespace Teleop.RobotHost
                             // A new sender's capture stamps are another clock's: start the
                             // staleness check over, or a rebooted headset is ignored for good.
                             EndPoint? sender = jointTransport.CurrentRemoteEndPoint;
-                            if (!Equals(sender, jointCommander))
+                            if (!Equals(sender, jointCommander) || jointCommanderText == null)
                             {
                                 plant.RestartJointCommandOrdering();
                                 Console.WriteLine($"[joint] commands from {sender} (was {jointCommander?.ToString() ?? "nobody"}); staleness check restarted");
                                 jointCommander = sender;
-                                if (recorder != null && recorder.IsActive) recorder.Record(SessionLines.Sender(arrivalTicks, sender?.ToString() ?? "?"));
+                                jointCommanderText = sender?.ToString() ?? "?";
+                            }
+
+                            // Before the plant takes it: the command may open the session it belongs in
+                            // (docs/adr/0023), and its relay output (RO) is recorded inside the plant.
+                            lastJointCommandTicks = arrivalTicks;
+                            auto?.OnJointCommand(arrivalTicks, jointCommanderText);
+                            if (recorder != null)
+                            {
+                                if (recorder.TakePreambleOwed()) StartSessionState(arrivalTicks);
+                                if (recorder.IsActive) sessionState!.Sender(arrivalTicks, jointCommanderText);
                             }
 
                             JointCommandOutcome outcome = plant.CommandJointAngles(jointTargetsBuffer!.AsSpan(0, targetCount), captureTicks);
@@ -325,6 +398,8 @@ namespace Teleop.RobotHost
                     {
                         Console.WriteLine("[joint] keepalive stopped; joint-state stream paused");
                         loggedSubscriber = false;
+                        subscriberLapsed = true;
+                        auto?.OnSubscriber(now, null);
                     }
                 }
 
@@ -344,8 +419,22 @@ namespace Teleop.RobotHost
                 Thread.Sleep(5);
             }
 
+            sigterm?.Dispose();
             Console.WriteLine("Stopped.");
             return 0;
+        }
+
+        /// <summary>Free space where the recordings go, or null when it cannot be read.</summary>
+        private static long? FreeBytes(string path)
+        {
+            try
+            {
+                return new DriveInfo(path).AvailableFreeSpace;
+            }
+            catch (Exception e) when (e is IOException || e is UnauthorizedAccessException || e is ArgumentException)
+            {
+                return null;
+            }
         }
 
         /// <summary>

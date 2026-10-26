@@ -1,5 +1,7 @@
 using System;
+using System.Globalization;
 using System.Net;
+using Teleop.RobotHost.Recording;
 
 namespace Teleop.RobotHost
 {
@@ -81,11 +83,23 @@ namespace Teleop.RobotHost
         /// </summary>
         public readonly int? DiscoveryPort;
 
+        /// <summary>
+        /// <c>--auto-record</c> (docs/adr/0023 decision 4): RobotHost opens a session itself on the first
+        /// joint command after an idle spell, and closes it when the commands stop, the sender or
+        /// subscriber changes, an hour has passed, or the disk runs low. Every threshold has its own
+        /// <c>--auto-record-*</c> argument; <see cref="AutoRecordOptions"/> holds the defaults. Needs
+        /// <c>--record-control</c> and <c>--joint-local-port</c>. Null (the default) never opens a session.
+        /// </summary>
+        public readonly AutoRecordOptions? AutoRecord;
+
         public const string Usage =
             "Usage: Teleop.RobotHost --local-port <port> [--remote-host <ip> --remote-port <port>] " +
             "[--reply-to sender|fixed] --relay-socket <path> --local-relay-socket <path> " +
             "[--max-direction-magnitude <n>] [--pulses-per-second <n>] [--joint-local-port <port>] [--profile-path <path>] " +
             "[--record-control <path>] [--uplink-control <path>] [--discovery-port <port>]\n" +
+            "  [--auto-record [--auto-record-idle-seconds <s>] [--auto-record-max-minutes <min>] [--auto-record-stop-free-gb <gb>]\n" +
+            "   [--auto-record-start-free-gb <gb>] [--auto-record-driver-wait-seconds <s>] [--auto-record-min-split-seconds <s>]\n" +
+            "   [--auto-record-root <dir>] [--auto-record-profile <path>] [--build-info-robothost <path>] [--build-info-driver <path>]]\n" +
             "  --reply-to sender (default) replies to wherever the latest command came from;\n" +
             "  --remote-host/--remote-port are then only the target before the first command.\n" +
             "  --reply-to fixed always replies to --remote-host:--remote-port, which it requires.\n" +
@@ -109,13 +123,22 @@ namespace Teleop.RobotHost
             "  network profile and a seed, joint commands reach the plant through that profile. Omit it\n" +
             "  to never impair the uplink.\n" +
             "  --discovery-port answers the headset's discovery query there with this machine's name and\n" +
-            "  LAN addresses (docs/adr/0022). Omit it to not answer.";
+            "  LAN addresses (docs/adr/0022). Omit it to not answer.\n" +
+            "  --auto-record opens a session whenever the robot is commanded (docs/adr/0023): on the first joint\n" +
+            "  command after --auto-record-idle-seconds (30) without one, unless the control file names a manual\n" +
+            "  session or under --auto-record-start-free-gb (2) is free; closed after the same idle time, when the\n" +
+            "  sender or subscriber changes (not again within --auto-record-min-split-seconds, 5), after\n" +
+            "  --auto-record-max-minutes (60), or under --auto-record-stop-free-gb (1). Completed (slider,\n" +
+            "  stoppedUtc, files.sha256) after the driver's END trailer, waiting at most --auto-record-driver-wait-seconds\n" +
+            "  (15). Sessions go into --auto-record-root (default: jetrover/ beside the control file), with a copy of\n" +
+            "  --auto-record-profile (default: --profile-path) and the builds from --build-info-robothost (default:\n" +
+            "  BUILD_INFO beside this program) and --build-info-driver. Needs --record-control and --joint-local-port.";
 
         private RobotHostArgs(
             int localPort, IPAddress? remoteHost, int? remotePort, bool replyToSender,
             string relaySocketPath, string localRelaySocketPath, float? maxDirectionMagnitude,
             int? jointLocalPort, string? profilePath, float? pulsesPerSecond = null, string? recordControlPath = null,
-            string? uplinkControlPath = null, int? discoveryPort = null)
+            string? uplinkControlPath = null, int? discoveryPort = null, AutoRecordOptions? autoRecord = null)
         {
             LocalPort = localPort;
             RemoteHost = remoteHost;
@@ -130,6 +153,7 @@ namespace Teleop.RobotHost
             RecordControlPath = recordControlPath;
             UplinkControlPath = uplinkControlPath;
             DiscoveryPort = discoveryPort;
+            AutoRecord = autoRecord;
         }
 
         public static RobotHostArgs? TryParse(string[] args, out string? error)
@@ -147,6 +171,21 @@ namespace Teleop.RobotHost
             string? uplinkControlPath = null;
             int? discoveryPort = null;
             string replyTo = "sender";
+            bool autoRecord = false;
+            var auto = new AutoRecordOptions();
+            string? autoError = null;
+
+            double Number(string name, string text)
+            {
+                if (double.TryParse(text, NumberStyles.Float, CultureInfo.InvariantCulture, out double value) && !double.IsNaN(value) &&
+                    !double.IsInfinity(value))
+                {
+                    return value;
+                }
+
+                autoError ??= $"{name} must be a number, not '{text}'.";
+                return double.NaN;
+            }
 
             for (int i = 0; i < args.Length; i++)
             {
@@ -201,6 +240,39 @@ namespace Teleop.RobotHost
                     case "--discovery-port" when i + 1 < args.Length:
                         discoveryPort = ParseIntOrNull(args[++i]) ?? -1;
                         break;
+                    case "--auto-record":
+                        autoRecord = true;
+                        break;
+                    case "--auto-record-idle-seconds" when i + 1 < args.Length:
+                        auto.IdleSeconds = Number(args[i], args[++i]);
+                        break;
+                    case "--auto-record-max-minutes" when i + 1 < args.Length:
+                        auto.MaxMinutes = Number(args[i], args[++i]);
+                        break;
+                    case "--auto-record-stop-free-gb" when i + 1 < args.Length:
+                        auto.StopFreeGigabytes = Number(args[i], args[++i]);
+                        break;
+                    case "--auto-record-start-free-gb" when i + 1 < args.Length:
+                        auto.StartFreeGigabytes = Number(args[i], args[++i]);
+                        break;
+                    case "--auto-record-driver-wait-seconds" when i + 1 < args.Length:
+                        auto.DriverWaitSeconds = Number(args[i], args[++i]);
+                        break;
+                    case "--auto-record-min-split-seconds" when i + 1 < args.Length:
+                        auto.MinSplitSeconds = Number(args[i], args[++i]);
+                        break;
+                    case "--auto-record-root" when i + 1 < args.Length:
+                        auto.RecordingsRoot = args[++i];
+                        break;
+                    case "--auto-record-profile" when i + 1 < args.Length:
+                        auto.ProfilePath = args[++i];
+                        break;
+                    case "--build-info-robothost" when i + 1 < args.Length:
+                        auto.RobotHostBuildInfoPath = args[++i];
+                        break;
+                    case "--build-info-driver" when i + 1 < args.Length:
+                        auto.DriverBuildInfoPath = args[++i];
+                        break;
                 }
             }
 
@@ -233,10 +305,34 @@ namespace Teleop.RobotHost
                 return null;
             }
 
+            if (autoError != null)
+            {
+                error = autoError;
+                return null;
+            }
+
+            if (autoRecord)
+            {
+                if (recordControlPath is null || jointLocalPort is null)
+                {
+                    error = "--auto-record needs --record-control and --joint-local-port.";
+                    return null;
+                }
+
+                auto.ProfilePath ??= profilePath;
+                string? invalid = auto.Validate();
+                if (invalid != null)
+                {
+                    error = invalid + ".";
+                    return null;
+                }
+            }
+
             error = null;
             return new RobotHostArgs(
                 localPort.Value, remoteHost, remotePort, replyToSender, relaySocketPath, localRelaySocketPath,
-                maxDirectionMagnitude, jointLocalPort, profilePath, pulsesPerSecond, recordControlPath, uplinkControlPath, discoveryPort);
+                maxDirectionMagnitude, jointLocalPort, profilePath, pulsesPerSecond, recordControlPath, uplinkControlPath, discoveryPort,
+                autoRecord ? auto : null);
         }
 
         private static int? ParseIntOrNull(string s) => int.TryParse(s, out int value) ? value : null;

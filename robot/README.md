@@ -66,13 +66,16 @@ The learned joint predictor (`trainer/`) learns from what the robot itself recor
 and write (the driver's `driver.jlog`) and every command, relay message and frame (RobotHost's
 `robothost.jlog`), all on the Jetson's CLOCK_MONOTONIC. The format is
 `trainer/contract/SESSION_FORMAT.md`. Recording moves nothing and restarts nothing: both processes
-watch `~/recordings/.active` and write while it names a session directory.
+watch `~/recordings/.active` and write while it names a session directory. Since docs/adr/0023,
+RobotHost also opens sessions itself whenever the robot is commanded ([automatic
+sessions](#automatic-sessions-docsadr0023-decision-4), below); the recipes here are for sessions with
+known conditions, and they take precedence.
 
 Once, with someone at the robot (the ROS deploy restarts the servo driver):
 
 ```bash
 just deploy-ros                   # the driver's session log
-just deploy-robothost             # RobotHost with --record-control and --uplink-control
+just deploy-robothost             # RobotHost with --record-control, --uplink-control and --auto-record
 just jetson-clock-check           # both logs really are on one clock
 ```
 
@@ -161,6 +164,56 @@ are not committed.
 - **Hand resistance stays light:** a stall of at most 2 s, contact for at most 20% of a session. Stop
   at a servo above 60 °C or a pack below 11.0 V. If the board goes silent, run `just arm-logs` and
   `just robot-board-diagnose` before the power switch.
+
+### Automatic sessions (docs/adr/0023 decision 4)
+
+RobotHost records whenever the robot is commanded, with nobody running `record-start`
+(`--auto-record`, which `just deploy-robothost` passes; `auto_record=false` leaves it out):
+
+- **It opens a session** on the first joint command after at least 30 s without one (or since
+  RobotHost started), into `~/recordings/jetrover/<UTC>-auto/` (`-auto-2`, ... when one second holds
+  two). It writes `session.json` itself (label and motion `auto`, load `unknown`, operator
+  `auto <sender ip:port>`, the robot-side uplink as RobotHost has it, the builds from
+  `~/robothost_current/BUILD_INFO` and `~/teleop_ros_current/BUILD_INFO`), a copy of the robot profile
+  (`~/robothost_current/robot-profile.json`, which `deploy-robothost` copies from
+  `core/RobotProfiles/jetrover.json`), the marker `~/recordings/.active-auto`, and then `.active`, which
+  the driver follows as for any session. `.active-auto` holding the same directory as `.active` is what
+  makes a session automatic; anything else is manual.
+- **It closes it** after 30 s without a command; at once, opening the next one, when the joint-command
+  sender or the joint-state subscriber changes (the check allows one of each per session; a second
+  change within 5 s does not split again, so two endpoints taking turns on the joint port make one
+  failing session, not hundreds); after 60 minutes (about 200 MB), the next command opening the next
+  one; and when less than 1 GB is free. **No session opens with less than 2 GB free**, and RobotHost's
+  journal says so (`just robothost-logs`).
+- **On close it completes the session** as `record-stop` does: it waits for the driver's `END` trailer
+  (15 s at most; the notes say when it gave up), stamps `stoppedUtc`, sets the slider from the speeds
+  the commands carried (`"unknown"` if none carried one), marks the uplink `varied` if RobotHost's own
+  impairment changed during the session (its `UP` records say when), and writes `files.sha256`.
+- **What nobody on the robot knows** stays unknown: the load (`unknown`, so `armpred sysid`, which
+  takes only load `none`, leaves these sessions out), the operator, and any disturbance added on the
+  headset (`addedDelayMs` is null; a headset-side uplink delay still shows in the `JC` timing).
+  Relabel on the laptop once fetched, as `just recording-set-slider` does for the slider.
+- **Manual sessions win.** `record-start` and the onboard pilot first close an automatic session (clear
+  `.active`, wait for RobotHost to complete it), then take the control file, with a hard link that fails
+  if RobotHost opened another one meanwhile. While `.active` names a manual session, the automatic
+  recorder stays out; when a manual session ends and commands keep coming, the next automatic session
+  opens only after the next 30 s without a command. `just record-stop` on an automatic session only
+  closes it (RobotHost completes it).
+- **Restarts and full disks lose nothing already written.** Neither writer truncates a log that exists:
+  when RobotHost or the driver restarts during a manual session, the session's first log is kept as it
+  was (cut off, without a trailer, so the check fails it) and the writer continues in
+  `robothost.2.jlog` / `driver.2.jlog`. An automatic session an earlier RobotHost left open is closed and
+  completed by the next one, and the next command opens a new session. RobotHost now handles
+  `systemctl restart` (SIGTERM) as Ctrl+C, so a session open at a redeploy gets its trailer. An I/O
+  error closes the session, with its trailer if the disk still takes it, instead of killing RobotHost
+  or silently stopping the driver's writer thread.
+- **Retention:** recordings stay on the robot until copied. `just fetch-recordings` (it skips the session
+  recording now and automatic ones not completed yet), then `just robot-prune-recordings true`, which
+  deletes only sessions this machine holds with identical sha256s. `just robot-recordings` and
+  `just robot-disk` show what is there. Each threshold is a RobotHost argument
+  (`--auto-record-idle-seconds`, `--auto-record-max-minutes`, `--auto-record-stop-free-gb`,
+  `--auto-record-start-free-gb`, `--auto-record-driver-wait-seconds`, `--auto-record-min-split-seconds`;
+  `Teleop.RobotHost`'s usage text lists them all).
 
 ## How it connects to the rest of the repo
 

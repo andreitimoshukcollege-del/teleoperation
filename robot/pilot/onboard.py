@@ -10,7 +10,9 @@ sessions are skipped; they need the headset and `just pilot only=teleop`.
 
 **The session format is written by two writers, kept the same by hand:** session.json here must match
 `just record-start`'s, and closing must match `just record-stop`'s. `just recording-check` checks
-what both produce, on fetch.
+what both produce, on fetch. Like `record-start`, it first closes an automatic session RobotHost is
+recording (docs/adr/0023 decision 4: manual sessions win; `close_auto_session` matches
+`just _close-auto-session`), and takes the control file only if it does not exist.
 
 **Someone watches the arm the whole time** (root CLAUDE.md). Nothing here watches servo temperature, a
 silent board or the space around the arm. The stops are:
@@ -41,6 +43,8 @@ from pilot import read_plan  # noqa: E402  (the plan format is pilot.py's)
 HOME = os.path.expanduser("~")
 RECORDINGS = os.path.join(HOME, "recordings")
 ACTIVE = os.path.join(RECORDINGS, ".active")
+# Names the same directory as ACTIVE while the session is one RobotHost opened itself (docs/adr/0023).
+ACTIVE_AUTO = os.path.join(RECORDINGS, ".active-auto")
 UPLINK = os.path.join(RECORDINGS, ".uplink")
 STOP = os.path.join(RECORDINGS, ".pilot-stop")
 DOTNET = os.path.join(HOME, ".dotnet", "dotnet")
@@ -120,8 +124,7 @@ def open_session(session, profile_path: str) -> str:
         json.dump(session_json(sid, session, o, sha256_file(profile_path)), f, indent=2)
     with open(profile_path, "rb") as src, open(os.path.join(directory, "robot-profile.json"), "wb") as dst:
         dst.write(src.read())
-    with open(ACTIVE, "w") as f:
-        f.write(directory + "\n")
+    take_control_file(directory)
     time.sleep(2.5)
     for name in ("robothost.jlog", "driver.jlog"):
         path = os.path.join(directory, name)
@@ -138,6 +141,57 @@ def open_session(session, profile_path: str) -> str:
         with open(UPLINK, "w") as f:
             f.write(f"{network} 1\n")
     return directory
+
+
+def read_text(path: str) -> str:
+    try:
+        with open(path) as f:
+            return f.read().strip()
+    except OSError:
+        return ""
+
+
+def close_auto_session() -> None:
+    """Manual sessions win (docs/adr/0023 decision 4): if RobotHost is recording a session of its own,
+    clear the control file and wait until RobotHost has completed it (END trailers, session.json,
+    files.sha256). A manual session, or none, is left alone. As `just _close-auto-session` does (keep
+    the two the same)."""
+    directory = read_text(ACTIVE)
+    if not directory or read_text(ACTIVE_AUTO) != directory:
+        return
+    log(f"closing the automatic session {os.path.basename(directory)} first (manual sessions win)")
+    try:
+        os.remove(ACTIVE)
+    except FileNotFoundError:
+        pass
+    for _ in range(120):
+        if os.path.exists(os.path.join(directory, "files.sha256")):
+            break
+        time.sleep(0.25)
+    else:
+        raise SystemExit(f"RobotHost did not complete {os.path.basename(directory)} within 30 s: journalctl -u teleop-robothost")
+    for n in sorted(n for n in os.listdir(directory) if n.endswith(".jlog")):
+        log(f"  {n:16} {trailer(os.path.join(directory, n))}")
+
+
+def take_control_file(directory: str) -> None:
+    """Writes ACTIVE only if it does not exist (a hard link fails if it does), as `just record-start`
+    does: RobotHost may open an automatic session at any moment, and it is then closed again."""
+    for _ in range(3):
+        close_auto_session()
+        if os.path.exists(ACTIVE) and os.path.getsize(ACTIVE) == 0:
+            os.remove(ACTIVE)
+        temp = ACTIVE + ".start"
+        with open(temp, "w") as f:
+            f.write(directory + "\n")
+        try:
+            os.link(temp, ACTIVE)
+            return
+        except FileExistsError:
+            continue
+        finally:
+            os.remove(temp)
+    raise SystemExit(f"could not take the control file ({read_text(ACTIVE)}): just record-stop first")
 
 
 def close_session(directory: str) -> None:
@@ -240,6 +294,7 @@ def main() -> int:
         sessions = sessions[labels.index(args.start):]
     for s in sessions:
         options(s)
+    close_auto_session()
     if os.path.exists(ACTIVE) and open(ACTIVE).read().strip():
         raise SystemExit(f"a session is already recording ({open(ACTIVE).read().strip()}): just record-stop first")
     if not os.path.exists(JOINT_DRIVE):

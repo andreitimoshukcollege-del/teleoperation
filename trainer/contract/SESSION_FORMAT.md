@@ -7,17 +7,29 @@ session and a recorded one travel the same path. Written by RobotHost (C#), by t
 
 ## A session is a directory
 
-`recordings/jetrover/<UTC>-<label>/` (gitignored; archived to a GitHub Release):
+`recordings/jetrover/<UTC>-<label>/` (gitignored; archived to a GitHub Release). A session RobotHost
+opened itself (docs/adr/0023 decision 4) is `<UTC>-auto/`, or `<UTC>-auto-<n>/` when one second holds
+two; its `label` is still `auto`.
 
 | File | Written by | Required |
 |---|---|---|
-| `session.json` | `just record-start`, completed by `just record-stop` | yes |
+| `session.json` | `just record-start`, completed by `just record-stop`; for an automatic session, RobotHost (both steps) | yes |
 | `robothost.jlog` | RobotHost | yes |
 | `driver.jlog` | the ROS driver (`jetrover_arm_control/session_log.py`) | yes |
+| `robothost.<n>.jlog`, `driver.<n>.jlog` | the same writer, after it restarted during the session (n = 2, 3, ...) | no; not read |
 | `marks.jlog` | `just record-mark` | no |
 | `operator.jlog` | `joint-drive` (later, the Bridge) | no |
 | `latents.jlog` | the simulator only | sim only |
-| `files.sha256` | `just record-stop` (`sha256sum` format) | yes, for a packed session |
+| `files.sha256` | `just record-stop`, or RobotHost for an automatic session (`sha256sum` format) | yes, for a packed session |
+
+**A log that exists is never truncated.** A writer that restarts while the control file still names
+the session leaves `<writer>.jlog` as it was (cut off, without a trailer: the session fails the check)
+and writes a complete file of its own, `<writer>.2.jlog`. Readers read only `<writer>.jlog`; the
+segments keep what was recorded after the restart, for a person to look at.
+
+**Automatic sessions** are marked on the robot, not in the session: while `~/recordings/.active-auto`
+holds the same directory as the control file `~/recordings/.active`, RobotHost opened that session
+and closes and completes it. In the session they are recognised by `label` and `motion` `auto`.
 
 ## `session.json`
 
@@ -47,14 +59,24 @@ session and a recorded one travel the same path. Written by RobotHost (C#), by t
 ```
 
 - `source` is `robot` or `sim`.
-- `conditions.speedSliderRadPerSec` is a number, or `"varied"` when it was moved during the session.
+- `conditions.speedSliderRadPerSec` is a number, or `"varied"` when it was moved during the session,
+  or `"unknown"` in an automatic session whose commands carried no speed (readers treat it as
+  `varied`: not a number).
   Since 2026-10-25 `just record-stop` takes it from the speed the session's joint commands carried
   (the headset's slider rides in each command's speed field), not from what `record-start` was told;
   a difference is noted in `notes`. `just recording-set-slider` corrects a session stopped before then.
-- `conditions.load.kind` is `none`, `payload` or `hand`.
+- `conditions.load.kind` is `none`, `payload` or `hand`, or `unknown` in an automatic session, whose
+  `payloadGrams` is then `null`. `armpred sysid` uses only `none`.
 - `conditions.network.uplinkProfile` is a profile name from Core's catalog. `lan` means the robot
-  impaired nothing.
-- `conditions.motion` is `teleop`, or `joint-drive:<script>`.
+  impaired nothing. `schedule` comes with `uplinkSchedule` (docs/adr/0021 decision 13). `varied`, in
+  an automatic session, means RobotHost's own impairment changed during it; its `UP` records say
+  when. `addedDelayMs` (the headset's added delay) is `null` in an automatic session: the robot does
+  not know it.
+- `conditions.motion` is `teleop`, `joint-drive:<script>`, or `auto` (an automatic session).
+- `conditions.operator` is a name, `joint-drive@robot`, or `auto <ip:port>` (the joint-command sender
+  of an automatic session).
+- These values were added without a version change: they are new values of existing fields, and
+  every reader already handles them (`trainer/tests/test_contract.py`).
 - `conditions` describe the session for stratification and splits. **A model never sees them.**
 
 ## Lines
@@ -96,9 +118,9 @@ All times are RobotHost `Stopwatch` ticks on the Jetson (`CLOCK_MONOTONIC`, ns).
 | `RO` | `t` `targets` | Targets sent to the relay: `motor:pulse:pulsesPerSecond;...` (the pulse as sent, a float) |
 | `RI` | `t` `entries` | A relay feedback datagram taken by the plant: `motor:valid:pulse;...`, `valid` 0 or 1 |
 | `FR` | `t` `seq` `robotSendTicks` `sensedTicks` `echoOperatorTicks` `echoRobotRecvTicks` `joints` | A joint-state frame sent, decoded from the bytes that went out. `joints` is `motor:flags:value;...` |
-| `SS` | `t` `endpoint` | The joint-state stream's subscriber changed |
-| `JS` | `t` `endpoint` | The joint-command sender changed, so the staleness check restarted |
-| `UP` | `t` `profile` `seed` | The robot-side uplink impairment changed (`profile` `none` is off): from then on, `JC`'s `tDeliver` is when that Core profile released the command, `t` when the socket was read. Keepalives go through it too. A schedule (ADR 0021 decision 13) writes one `UP` per change; a simulated session's trainer-only segments name themselves (`param:...`, `queue:...`, `outage:...`) and its `latents.jlog` `LP uplink_schedule` holds their parameters |
+| `SS` | `t` `endpoint` | The joint-state stream's subscriber: written at the start of every session while one is subscribed, then when it changes |
+| `JS` | `t` `endpoint` | The joint-command sender: written at the start of every session while one is commanding, or at the session's first command, then when it changes (the staleness check restarted) |
+| `UP` | `t` `profile` `seed` | The robot-side uplink impairment, at the start of every session when it is not `none` (since 2026-10-26), then whenever it changes (`profile` `none` is off): from then on, `JC`'s `tDeliver` is when that Core profile released the command, `t` when the socket was read. Keepalives go through it too. A schedule (ADR 0021 decision 13) writes one `UP` per change; a simulated session's trainer-only segments name themselves (`param:...`, `queue:...`, `outage:...`) and its `latents.jlog` `LP uplink_schedule` holds their parameters |
 
 ## Driver records (`driver.jlog`)
 

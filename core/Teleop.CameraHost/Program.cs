@@ -6,6 +6,7 @@ namespace Teleop.CameraHost
     /// <list type="bullet">
     /// <item><c>serve</c>: stream the camera to whoever subscribes (Linux, on the Jetson).</item>
     /// <item><c>probe</c>: subscribe and report what arrives (any OS; the operator's machine).</item>
+    /// <item><c>view</c>: subscribe and show the feed in a browser window (any OS; the operator's machine).</item>
     /// <item><c>timestamp-spike</c>: the ADR's first implementation step (Linux).</item>
     /// </list>
     /// </summary>
@@ -22,6 +23,11 @@ namespace Teleop.CameraHost
             "  Teleop.CameraHost probe --host <robot ip> [--port 6003] [--local-port 6004] [--seconds 10]\n" +
             "                          [--max-fps 0] [--save <path.jpg>]\n" +
             "      Subscribe, reassemble and report what arrives. Exit 0 if a frame arrived, else 1.\n" +
+            "  Teleop.CameraHost view --host <robot ip> [--port 6003] [--local-port 6004] [--seconds 0]\n" +
+            "                          [--max-fps 0] [--http-port 8090] [--no-open]\n" +
+            "      Subscribe and show the feed live at http://localhost:<http-port>/, in a window it opens.\n" +
+            "      --seconds 0 runs until Enter. Takes the feed from the headset while it runs.\n" +
+            "      Exit 0 if a frame arrived, else 1.\n" +
             "  Teleop.CameraHost timestamp-spike [--device /dev/video0] [--width 640] [--height 360]\n" +
             "                          [--fps 30] [--frames 150]\n" +
             "      Check the driver's capture timestamps against Stopwatch. Linux only.\n" +
@@ -30,13 +36,13 @@ namespace Teleop.CameraHost
         private static int Main(string[] args)
         {
             string verb = args.Length > 0 ? args[0] : string.Empty;
-            if (verb != "serve" && verb != "probe" && verb != "timestamp-spike")
+            if (verb != "serve" && verb != "probe" && verb != "view" && verb != "timestamp-spike")
             {
                 Console.Error.WriteLine(Usage);
                 return 2;
             }
 
-            if (verb != "probe" && !OperatingSystem.IsLinux())
+            if (verb != "probe" && verb != "view" && !OperatingSystem.IsLinux())
             {
                 Console.Error.WriteLine($"error: {verb} needs V4L2, so Linux; run it on the Jetson.");
                 return 2;
@@ -46,12 +52,19 @@ namespace Teleop.CameraHost
             string? save = null;
             // 640x360, not 640x480: the DaBai's 4:3 modes are the middle of its 16:9 sensor (docs/adr/0014, 2026-10-25).
             uint width = 640, height = 360, fps = 30;
-            int frames = 150, port = 6003, localPort = 6004;
+            int frames = 150, port = 6003, localPort = 6004, httpPort = 8090;
+            bool open = true;
             double seconds = verb == "probe" ? 10 : 0, subscriberTimeout = 3;
             ushort maxFps = 0;
 
             for (int i = 1; i < args.Length; i++)
             {
+                if (args[i] == "--no-open")
+                {
+                    open = false;
+                    continue;
+                }
+
                 bool hasValue = i + 1 < args.Length;
                 string value = hasValue ? args[i + 1] : string.Empty;
                 bool ok = args[i] switch
@@ -65,6 +78,7 @@ namespace Teleop.CameraHost
                     "--frames" when hasValue => int.TryParse(value, out frames),
                     "--port" when hasValue => int.TryParse(value, out port),
                     "--local-port" when hasValue => int.TryParse(value, out localPort),
+                    "--http-port" when hasValue => int.TryParse(value, out httpPort),
                     "--seconds" when hasValue => double.TryParse(value, out seconds),
                     "--subscriber-timeout" when hasValue => double.TryParse(value, out subscriberTimeout),
                     "--max-fps" when hasValue => ushort.TryParse(value, out maxFps),
@@ -81,7 +95,7 @@ namespace Teleop.CameraHost
                 i++;
             }
 
-            if (width == 0 || height == 0 || fps == 0 || port is <= 0 or > 65535 || localPort is <= 0 or > 65535 ||
+            if (width == 0 || height == 0 || fps == 0 || port is <= 0 or > 65535 || localPort is <= 0 or > 65535 || httpPort is <= 0 or > 65535 ||
                 seconds < 0 || subscriberTimeout <= 0)
             {
                 Console.Error.WriteLine("error: sizes, fps, ports and the subscriber timeout must be positive; seconds must not be negative.");
@@ -100,6 +114,14 @@ namespace Teleop.CameraHost
                     }
 
                     return ProbeCommand.Run(host, port, localPort, seconds, maxFps, save);
+                case "view":
+                    if (host.Length == 0)
+                    {
+                        Console.Error.WriteLine("error: view needs --host.");
+                        return 2;
+                    }
+
+                    return ViewCommand.Run(host, port, localPort, seconds, maxFps, httpPort, open);
                 default:
                     if (frames <= WarmUp)
                     {

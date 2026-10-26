@@ -33,7 +33,8 @@ the active one. The services source `~/teleop_ros_current/install/setup.bash`. R
 repointing that link and restarting `jetrover-arm-control` and `jetrover-relay`.
 
 **Restarting the servo driver interrupts the arm** (the shoulder has sagged during a restart), so
-someone must be at the robot. Before the first `deploy-ros`, the Jetson ran the old checkout at
+check first that the arm can sag safely; with nobody at the robot, confirm that with the user
+before restarting it. Before the first `deploy-ros`, the Jetson ran the old checkout at
 `~/projects/jetrover-teleop-ros`, which stays there untouched as a fallback.
 
 Read-only checks:
@@ -471,6 +472,50 @@ translates the local wire protocol above into calls against `jetrover_arm_contro
     `just robot-board-diagnose` **before** switching off: it needs the fault present. After a reboot,
     the previous boot's lines are on the robot under `journalctl -b -1 -u jetrover-arm-control`.
     Entries before the clock syncs at boot carry a 2023 date: the Jetson has no clock battery.
+  - **2026-10-26: it cannot be recovered from the Jetson with the current wiring.** Six hours with
+    the fault present, everything short of a power cycle, every step a `just` recipe:
+    - **History** (`just robot-driver-stats`, 10 boots): silent in 5 of 13 driver runs, after
+      127k-2.06M reads, with 0-40k commands, at 10.3-11.6 V; never recovers by itself. Always
+      preceded by sporadic single 1 s misses (~1.5e-4 per read). No CRC error was ever logged
+      (`PYTHONUNBUFFERED=1` is set, so the SDK's "Board Verificatio Failed" would show): the board
+      leaves replies out, it does not garble them. No battery dip after the misses, so the controller
+      does not reboot in the mild form. Camera-hub USB drops do not line up with it
+      (`just robot-usb-events`). No journal event at any onset (`just robot-journal-around`).
+    - **The link** (`just robot-board-usb`): usbmon shows every request reaching the board's USB
+      chip (a WCH CH9102, `1a86:55d4`) and nothing coming back; only the driver has the port; no
+      autosuspend; no line errors (`just robot-board-line`); silent at every baud from 9600 to 3M.
+    - **The controller executes nothing:** a base move written straight to it did not happen on
+      camera (`just robot-board-servo-test`), and buzzer commands were not heard by the robot's own
+      microphones while control tones from its speaker were (`just robot-board-audio-test`).
+    - **Nothing revives it:** a USB reset of the chip (`robot-board-usb-reset`), a real 10 s power
+      cut of its hub port with the port claimed (`robot-hub-port-test 2 10`; the same cut on the
+      touchscreen's port drops it within 0.5 s, so the hub does switch), DTR/RTS pulses of every
+      kind, and the STM32 ROM-bootloader entry of Hiwonder's auto-download circuit in both wirings
+      (`robot-board-bootloader`), on this port and on both other USB serial ports.
+    - **Why there is no remote reset:** Hiwonder's full-size board has two USB serial ports. Port 1
+      ("burning download") carries the one-click DTR/RTS-to-BOOT0/NRST circuit and the firmware's
+      debug prints; port 2 is host communication, and it is the only one cabled to the Jetson.
+      `ttyUSB0` is an unrelated, silent CH340; `ttyUSB1` is the iFlytek microphone array
+      (`a5 01` frames); the header UART `ttyTHS1` (nvgetty's) is silent; no Bluetooth module is on
+      the board (`just robot-ble-scan`). The firmware (FreeRTOS, `osWaitForever` waits) documents no
+      watchdog.
+    - **In person, in this order:** press the board's RST button (not the power switch) -- if the
+      board comes back, it was a firmware wedge and a reset line fixes it for good; if not, the state
+      survives a controller reset (an IMU holding its I2C bus, the servo bus, the board's supply) and
+      needs the power switch. After either, run `just robot-board-audio-test`: on a working board the
+      buzzer must show up, which proves the test can tell. Then cable the board's port 1 to the
+      Jetson: with it, the driver can reset the controller itself when it goes silent, and the next
+      occurrence can be read out (the bootloader: reset causes, I2C pin levels; the debug prints).
+    - **The power cycle, 2026-10-26 21:27** (`just robot-shutdown`, then the main switch): the board
+      answered at 49 Hz straight away, with no beep at power-up. `just robot-board-audio-test` then
+      heard all three buzzer bursts (+34 to +48 dB, against none the night before), so the test does
+      tell a working board from a silent one. The board is screwed inside the chassis: its RST button
+      and port 1 cannot be reached without taking the robot apart, so the RST test and the second
+      cable wait for the next time it is opened.
+    - **Traps found on the way:** numpy on the Nano needs `OPENBLAS_CORETYPE=ARMV8` (else SIGILL);
+      a hub port power cut without claiming the port is undone by the kernel, and a device that
+      enumerates while its port is claimed is left unconfigured (no `ttyACM0`) until its
+      `bConfigurationValue` is set; `date -d "<time> - 150 sec"` reads the `-150` as a time zone.
 - **A measurement trap: `just joint-probe` while the headset streams.** RobotHost sends the
   joint-state stream to whoever last sent on the joint port. A headset sending joint commands takes
   it back 48 times a second, so the probe gets scraps. On 2026-10-20 that read as "feedback falls to

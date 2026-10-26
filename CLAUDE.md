@@ -157,8 +157,10 @@ runs the same lookup from the PC), so the pushed address is its fallback.
 - **Never touch:** `results/` (append-only — write new directories, never edit old ones),
   `unity/TeleopVR/Library/`, `unity/TeleopXR/Library/`, `build/`, anything gitignored.
 - `robot/ros/` is code like any other, but deploying it (`just deploy-ros`) restarts the servo
-  driver, and `RelayProtocol.cs` and `relay_protocol.py` must change together. Never command real
-  hardware without a human watching (see "Testing the real robot").
+  driver, and `RelayProtocol.cs` and `relay_protocol.py` must change together. Nobody being at the
+  robot does not by itself block commanding real hardware (moving the arm, restarting the servo
+  driver), but double-check first: say what will move and how far, and get the user's confirmation
+  that the arm's workspace is clear before sending it (see "Testing the real robot").
 - **Changes under `unity/Teleop.Bridge/` want human review** — not because
   of where they are edited, but because that is where real I/O, XR devices and hardware live, and
   `just bridge-check` compiles against stubs so it cannot catch anything about scenes, prefabs or

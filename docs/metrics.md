@@ -307,6 +307,14 @@ replaying the session's view (the headset's calls) through the predictor, offlin
 evaluation (`trainer/armpred/evaluate.py`) computes every metric below this way. The trainer's numbers
 are not results (ADR 0021 decision 8); they decide whether the C# consumer is built.
 
+**Live variants on the headset (docs/adr/0023, 2026-10-26).** `Core/Metrics/LiveJointScorer` computes
+`joint_prediction_error_deg`, `joint_correction_deg` and `joint_display_jitter_deg` on the headset, for
+every enabled predictor at once, over a rolling 30 s window, and the console shows their p50/p95. The
+definitions are the ones in this section; the read instant is a fresh frame's sensed stamp converted
+by the link's `ClockSync`, so the truth is the frame itself rather than a driver read, and percentiles
+are nearest-rank. They are diagnostics, **never results**: they are not recorded with a manifest, and
+their clock-sync error is in them.
+
 **`joint_display_jitter_deg`** (docs/adr/0021): how much the predicted arm shakes, frame to frame.
 - **Definition:** per arm joint and 90 Hz display tick k, |p_k − 2 p_(k−1) + p_(k−2)| in degrees (the
   second difference of the prediction), pooled over the arm joints, over a stretch of display ticks.

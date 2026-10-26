@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed (2026-10-26). Nothing here is built yet.
+Accepted (2026-10-26).
 
 The user asked for four things:
 - the headset shows which joint predictor draws the twin, and lets the operator switch it;

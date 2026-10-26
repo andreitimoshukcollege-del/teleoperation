@@ -46,6 +46,12 @@ These see the commands sent as well as the stale measurement. Their state is joi
 | `relay-replay` | `RelayReplayPredictor.cs` | replays the commands through a model of the JetRover relay's per-servo gate: newest-wins pending target during the write cooldown, deadband, timed linear moves of max(min, distance/speed); re-anchors mid-move from the measurement to that move's target; optional per-joint reading age (`Relay*`, `SensedAge*` in `JointPredictorConfig`, defaults the JetRover's gate and no age) |
 | `relay-replay-servo` | `RelayReplayServoPredictor.cs` | `relay-replay`'s gate and replay as the servo's setpoint, with every command reaching the gate a constant pipeline delay late and a servo's first move sized from its sensed measurement; then a servo filter run from the anchor: first-order lag and speed cap (times a joint's speed scale), fixed steps plus a last partial one, in double (`Servo*` in `JointPredictorConfig`; the defaults, 5 rad/s, 20 ms, 20 ms, on, 2 ms, are guesses until fitted). Neutral parameters (no cap, no lag, no delay, first move off) reproduce `relay-replay` bit for bit. The exact model is in the class doc; `trainer/contract/golden/relay-replay-servo.json` pins it for a Python copy |
 
+**Not a predictor: `JointPredictorBank.cs`** (docs/adr/0023). Several presets (a label, a registry
+key and a config) fed the same commands and readings, one of them answering; switching keeps every
+member's history, enabling a member resets it. The headset uses it to compare and switch predictors
+live. It deliberately does not implement `ICommandAwarePredictor` (it is a container, and `audit`
+requires every implementation to be registered), so it has no registry entry or benchmark row.
+
 Benchmark: `dotnet run --project Teleop.Eval -- joint-predict-bench`, which is deterministic. Its
 simulation and assumptions are stated in `JointPredictBenchCommand`'s doc. On 2026-10-12, with 5
 seeds × 20 s, a true speed of 4 rad/s and a model speed of 5 rad/s, the p95 joint error in degrees

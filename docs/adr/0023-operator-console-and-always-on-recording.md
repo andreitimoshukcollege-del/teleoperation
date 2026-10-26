@@ -260,6 +260,10 @@ Where this departs from the decision, and why:
   pose touch exactly the fixed boxes the rest pose touches, with the same link, and nothing else; at
   10° the park from the model's home pose is allowed (`ArmPowerControllerTests`). Turning it on is a
   decision for the user (`JETROVER_PARK_CONTACT_DEG`).
+  - *Superseded the same day:* the user placed the arm again. That placing read −1.20°, 91.16°,
+    −78.48°, −114.00°, 5.76°. The wrist was 1.3° past its measured range (−112.7° to 117.0°, ADR 0020),
+    so the deployed pose pulls it in to −112.0°. That pose is clear by the model, and the strict check
+    parks it from home. `--park-contact-deg` stays off.
 - **Every operator message is answered**, heartbeats included, not only requests: the headset then
   knows the state within a second of starting.
 - **No torque acknowledgement.** Nothing reads the torque state back; the relaxed state means the

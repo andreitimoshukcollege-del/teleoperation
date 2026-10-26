@@ -15,10 +15,17 @@ namespace Teleop.RobotHost.Tests.Power
         private const float Deg = MathF.PI / 180f;
 
         /// <summary>
-        /// The rest pose the user placed the arm in and measured with just joint-probe on 2026-10-26
-        /// (motors 1-5, degrees, the profile's zero offsets applied): the justfile's deployed default.
+        /// The rest pose the user placed the arm in the second time on 2026-10-26 and measured with just
+        /// joint-probe (motors 1-5, degrees, the profile's zero offsets applied), with the wrist pulled in
+        /// from -114.0 to -112.0, inside its range: the justfile's deployed default.
         /// </summary>
-        private static readonly double[] MeasuredRestDeg = { -0.72, 92.12, -93.12, -95.28, 5.76 };
+        private static readonly double[] MeasuredRestDeg = { -1.20, 91.16, -78.48, -112.0, 5.76 };
+
+        /// <summary>That placing as read, wrist -114.0: 1.3 degrees past the wrist's measured range.</summary>
+        private static readonly double[] PlacedRestDeg = { -1.20, 91.16, -78.48, -114.0, 5.76 };
+
+        /// <summary>The first placing, 2026-10-26: the gripper lies on the body (Body.7) by the model.</summary>
+        private static readonly double[] BodyContactRestDeg = { -0.72, 92.12, -93.12, -95.28, 5.76 };
 
         /// <summary>A rest pose the model calls clear, with a clear straight path from home: most tests park here.</summary>
         private static readonly double[] ClearRestDeg = { 0.0, 80.0, -100.0, -40.0, 0.0 };
@@ -132,15 +139,54 @@ namespace Teleop.RobotHost.Tests.Power
         }
 
         [Fact]
-        public void TheMeasuredRestPose_IsInsideTheJointLimits_ButTheModelHasTheGripperOnTheBody()
+        public void TheMeasuredRestPose_IsInsideTheJointLimits_AndClearByTheModel()
+        {
+            RobotArmProfile profile = RobotArmProfile.JetRoverMeasuredDefault;
+            ArmCollisionModel model = profile.Collision!;
+            ArmPose rest = Pose(MeasuredRestDeg);
+            Assert.True(model.BaseYaw.Contains(rest.BaseYaw) && model.Proximal.Contains(rest.Proximal) && model.Distal.Contains(rest.Distal) &&
+                model.Wrist.Contains(rest.Wrist) && model.Roll.Contains(rest.Roll));
+            Assert.False(ArmCollision.Check(profile, model, rest).IsHit);
+        }
+
+        [Fact]
+        public void TheMeasuredRestPose_ParksFromHome_WithTheStrictCheck()
+        {
+            var rig = new Rig(restDeg: MeasuredRestDeg);
+            Assert.Null(rig.Power.RestPoseNote);
+            rig.Request(ArmPowerRequest.Relax, 1);
+            Assert.Equal(ArmPowerState.Parking, rig.Power.State);
+            rig.Run(30);
+            Assert.Equal(ArmPowerState.Relaxed, rig.Power.State);
+            // The furthest joint is the wrist, 142 degrees: about 5 s at 0.5 rad/s, plus the settle.
+            Assert.InRange(rig.Arm.Torque.Single().T / (double)Tps, 4.5, 7.0);
+            for (int i = 0; i < 5; i++) Assert.InRange(rig.Arm.Angles[i] - (float)MeasuredRestDeg[i] * Deg, -3f * Deg, 3f * Deg);
+        }
+
+        [Fact]
+        public void ThePoseAsPlaced_IsRefused_TheWristIsOutsideItsRange()
+        {
+            var rig = new Rig(restDeg: PlacedRestDeg);
+            Assert.Contains("joint wrist outside its range", rig.Power.RestPoseNote);
+            rig.Request(ArmPowerRequest.Relax, 1);
+            Assert.Equal(ArmPowerState.Holding, rig.Power.State);
+            Assert.Equal(ArmPowerReason.PathCollides, rig.Arm.Statuses[^1].Reason);
+            Assert.Empty(rig.Arm.Commands);
+        }
+
+        private static ArmPose Pose(double[] d) =>
+            new ArmPose((float)d[0] * Deg, (float)d[1] * Deg, (float)d[2] * Deg, (float)d[3] * Deg, (float)d[4] * Deg);
+
+        [Fact]
+        public void ABodyContactRestPose_IsInsideTheJointLimits_ButTheModelHasTheGripperOnTheBody()
         {
             // Asked for: inside the joint limits and collision-free. It is inside the limits. It is not
             // collision-free by the model: the gripper lies on the body (Body.7) within the model's 1 cm
             // margin, which is what supports it there. Nothing else touches.
             RobotArmProfile profile = RobotArmProfile.JetRoverMeasuredDefault;
             ArmCollisionModel model = profile.Collision!;
-            var rest = new ArmPose((float)MeasuredRestDeg[0] * Deg, (float)MeasuredRestDeg[1] * Deg, (float)MeasuredRestDeg[2] * Deg,
-                (float)MeasuredRestDeg[3] * Deg, (float)MeasuredRestDeg[4] * Deg);
+            var rest = new ArmPose((float)BodyContactRestDeg[0] * Deg, (float)BodyContactRestDeg[1] * Deg, (float)BodyContactRestDeg[2] * Deg,
+                (float)BodyContactRestDeg[3] * Deg, (float)BodyContactRestDeg[4] * Deg);
             Assert.True(model.BaseYaw.Contains(rest.BaseYaw) && model.Proximal.Contains(rest.Proximal) && model.Distal.Contains(rest.Distal) &&
                 model.Wrist.Contains(rest.Wrist) && model.Roll.Contains(rest.Roll));
             CollisionHit hit = ArmCollision.Check(profile, model, rest);
@@ -150,9 +196,9 @@ namespace Teleop.RobotHost.Tests.Power
         }
 
         [Fact]
-        public void TheMeasuredRestPose_IsRefused_ByTheStrictCheck()
+        public void ABodyContactRestPose_IsRefused_ByTheStrictCheck()
         {
-            var rig = new Rig(restDeg: MeasuredRestDeg);
+            var rig = new Rig(restDeg: BodyContactRestDeg);
             Assert.Contains("every relax will be refused", rig.Power.RestPoseNote);
             rig.Request(ArmPowerRequest.Relax, 1);
             Assert.Equal(ArmPowerState.Holding, rig.Power.State);
@@ -162,11 +208,11 @@ namespace Teleop.RobotHost.Tests.Power
         }
 
         [Fact]
-        public void TheMeasuredRestPose_ParksFromHome_WhenItsOwnContactIsAllowedNearTheEnd()
+        public void ABodyContactRestPose_ParksFromHome_WhenItsOwnContactIsAllowedNearTheEnd()
         {
             // --park-contact-deg 10: within 10 degrees of the rest pose the gripper may touch what it rests
             // on (Body.7); every sample further away is still strict.
-            var rig = new Rig(restDeg: MeasuredRestDeg, options: new ArmPowerOptions { RestContactDegrees = 10 });
+            var rig = new Rig(restDeg: BodyContactRestDeg, options: new ArmPowerOptions { RestContactDegrees = 10 });
             Assert.Contains("Gripper on Body.7", rig.Power.RestPoseNote);
             rig.Request(ArmPowerRequest.Relax, 1);
             Assert.Equal(ArmPowerState.Parking, rig.Power.State);
@@ -174,7 +220,7 @@ namespace Teleop.RobotHost.Tests.Power
             Assert.Equal(ArmPowerState.Relaxed, rig.Power.State);
             // The furthest joint is the wrist, 125 degrees: about 4.4 s at 0.5 rad/s, plus the settle.
             Assert.InRange(rig.Arm.Torque.Single().T / (double)Tps, 4.0, 6.0);
-            for (int i = 0; i < 5; i++) Assert.InRange(rig.Arm.Angles[i] - (float)MeasuredRestDeg[i] * Deg, -3f * Deg, 3f * Deg);
+            for (int i = 0; i < 5; i++) Assert.InRange(rig.Arm.Angles[i] - (float)BodyContactRestDeg[i] * Deg, -3f * Deg, 3f * Deg);
         }
 
         [Fact]
@@ -395,7 +441,7 @@ namespace Teleop.RobotHost.Tests.Power
         [Fact]
         public void TheRestPoseParser()
         {
-            Assert.True(ArmPowerOptions.TryParseRestPose("-0.72,92.12, -93.12,-95.28,5.76", out double[]? d, out _));
+            Assert.True(ArmPowerOptions.TryParseRestPose("-1.20,91.16, -78.48,-112.0,5.76", out double[]? d, out _));
             Assert.Equal(MeasuredRestDeg, d);
             Assert.True(ArmPowerOptions.TryParseRestPose("", out d, out _));
             Assert.Null(d);

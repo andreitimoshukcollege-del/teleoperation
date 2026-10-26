@@ -72,7 +72,7 @@ namespace Teleop.RobotHost.Power
         }
 
         /// <summary>
-        /// Parses <c>--rest-pose-deg</c>: comma-separated degrees, e.g. <c>-0.72,92.12,-93.12,-95.28,5.76</c>.
+        /// Parses <c>--rest-pose-deg</c>: comma-separated degrees, e.g. <c>-1.20,91.16,-78.48,-112.0,5.76</c>.
         /// Empty (or only spaces) is no rest pose. False, with a reason, for anything else that is not a
         /// list of numbers.
         /// </summary>

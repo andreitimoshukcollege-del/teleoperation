@@ -138,12 +138,12 @@ namespace Teleop.RobotHost.Tests
         {
             var parsed = RobotHostArgs.TryParse(Base.Concat(new[]
             {
-                "--rest-pose-deg", "-0.72,92.12,-93.12,-95.28,5.76", "--park-speed-rad-per-sec", "0.3", "--park-tolerance-deg", "2",
+                "--rest-pose-deg", "-1.20,91.16,-78.48,-112.0,5.76", "--park-speed-rad-per-sec", "0.3", "--park-tolerance-deg", "2",
                 "--park-timeout-seconds", "30", "--park-contact-deg", "10",
             }).ToArray(), out string? error);
             Assert.Null(error);
             var power = parsed!.Value.ArmPower;
-            Assert.Equal(new[] { -0.72, 92.12, -93.12, -95.28, 5.76 }, power.RestPoseDegrees);
+            Assert.Equal(new[] { -1.20, 91.16, -78.48, -112.0, 5.76 }, power.RestPoseDegrees);
             Assert.Equal(0.3, power.ParkSpeedRadPerSec);
             Assert.Equal(2, power.ToleranceDegrees);
             Assert.Equal(30, power.ParkTimeoutSeconds);

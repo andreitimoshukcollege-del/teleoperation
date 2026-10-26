@@ -234,7 +234,10 @@ torque as it is. What RobotHost does, step by step, is in the ADR; `just robotho
   `just deploy-robothost` passes as `--rest-pose-deg`: degrees, motors 1-5 (base yaw, shoulder, elbow,
   wrist pitch, wrist roll), in the joint angles `just joint-probe` prints (the profile's zero offsets
   applied). The gripper is not moved. Empty refuses every relax. The default is the pose the user
-  placed and measured on 2026-10-26: −0.72, 92.12, −93.12, −95.28, 5.76.
+  placed and measured on 2026-10-26 (the second placing): −1.20, 91.16, −78.48, −112.0, 5.76. It read
+  −114.0 on the wrist, 1.3° past the wrist's measured range (−112.7 to 117.0, docs/adr/0020), so the
+  wrist is pulled in to −112.0; at −114 every relax would be refused. Re-measure with the wrist inside
+  its range.
 - **To measure it again:** place the arm on its support (by hand with the torque off, for example
   during `just robot-measure-joint-limits`, or drive it there slowly with the headset), take the
   readings with `just joint-probe` while the headset's motion is off, write the five sensed angles
@@ -242,11 +245,12 @@ torque as it is. What RobotHost does, step by step, is in the ADR; `just robotho
 - **The collision check still decides.** RobotHost samples the straight joint path from where the arm
   is to the rest pose against its collision model (docs/adr/0020) and refuses the relax if any sample
   collides; the headset shows the reason. A pose the arm *rests on* something in touches the model's
-  body boxes by definition: the 2026-10-26 pose has the gripper on `Body.7`, so with the strict check
-  every relax is refused, and RobotHost logs a note saying so at start. `--park-contact-deg`
-  (`JETROVER_PARK_CONTACT_DEG`, empty: off) allows exactly that contact within so many degrees of the
-  rest pose and nothing else; 10 lets the park from the model's home pose through. Whether to turn it
-  on is the user's decision.
+  body boxes by definition; RobotHost logs a note at start when the rest pose collides or is outside a
+  joint's range. The current pose is clear by the model and parks from home with the strict check.
+  The first 2026-10-26 pose (−0.72, 92.12, −93.12, −95.28, 5.76) had the gripper on `Body.7` and
+  was refused. For a pose like that, `--park-contact-deg` (`JETROVER_PARK_CONTACT_DEG`, empty: off)
+  allows exactly that contact within so many degrees of the rest pose and nothing else; 10 let that
+  pose park from the model's home pose. It is off, and the current pose does not need it.
 - **Relay wire v5.** The torque switch travels RobotHost → relay → `/arm/servo/set/torque`
   (`std_msgs/Int32`, 1 on, 0 off). RobotHost and the ROS side must be deployed together
   (`just deploy-robot`, or `just deploy-ros` then `just deploy-robothost`); against an older relay,

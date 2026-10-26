@@ -2337,6 +2337,7 @@ gpu-status config="sim-pretrain-pilot1" lines="8":
     @ssh -o ConnectTimeout=10 "{{gpu_host}}" 'p=$(cat ~/train-sim.pid 2>/dev/null); \
         if [ -n "$p" ] && kill -0 "$p" 2>/dev/null; then echo "run: going (pid $p)"; else echo "run: not going"; fi; \
         nvidia-smi --query-gpu=name,memory.used,memory.total,utilization.gpu --format=csv,noheader; \
+        echo "its clock: $(date +%H:%M:%S); load: $(cut -d" " -f1-3 /proc/loadavg) on $(nproc) cores; trainer processes: $(pgrep -fc "armpred" || true)"; \
         echo; tail -n {{lines}} ~/train-sim-{{config}}.log 2>/dev/null || echo "(no log ~/train-sim-{{config}}.log)"'
 
 # Bring a GPU run back here, e.g. `just gpu-fetch sim-pretrain-pilot1-24901ef`: packs trainer/runs/<run> there without its checkpoints or training data, copies it to dist/, and unpacks it into trainer/runs/<run> (refusing to overwrite one already here)

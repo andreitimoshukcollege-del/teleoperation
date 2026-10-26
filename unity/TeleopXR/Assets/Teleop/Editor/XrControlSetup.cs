@@ -129,8 +129,107 @@ namespace Teleop.XR.Editor
 
             BuildTwinArms(scene, bridge, rig, origin);
             BuildSpeedSlider(scene, bridge, origin);
+            BuildConsole(scene, bridge, origin);
             BuildDisplayHandle(scene, driver);
             EditorSceneManager.MarkSceneDirty(scene);
+        }
+
+        public const string ConsoleName = "OperatorConsole";
+
+        /// <summary>
+        /// The operator console (docs/adr/0023) on the bench's left, behind the motion button and the
+        /// twin switches: a row of predictor slots (a cap that draws the twin with that predictor and
+        /// a small one beside it that turns it on or off), a row of network disturbances, and the live
+        /// numbers standing behind them, tilted toward the operator. The slots' labels come from the
+        /// config at runtime, so the scene does not change when the presets do. Rebuilt on every run.
+        /// </summary>
+        private static void BuildConsole(Scene scene, JetRoverOperatorBridge bridge, XROrigin origin)
+        {
+            foreach (GameObject old in scene.GetRootGameObjects().Where(r => r.name == ConsoleName).ToList())
+            {
+                Object.DestroyImmediate(old);
+            }
+
+            float top = LabLayout.BenchTop;
+            // Far enough back that the motion button's tall label does not hide the rows from eye height
+            // (anything nearer than about 0.45 m sits behind it), and left of the arm's workcell grid.
+            const float left = -0.76f, spacing = 0.068f;
+            const float predictorZ = LabLayout.BenchNearZ + 0.36f, networkZ = LabLayout.BenchNearZ + 0.48f;
+            var root = new GameObject(ConsoleName).transform;
+            root.position = new Vector3(0f, top, 0f);
+            var console = root.gameObject.AddComponent<OperatorConsole>();
+
+            Material capMaterial = LabMaterials.Unlit("ConsoleCap", Color.white);
+            Material plinthMaterial = LabMaterials.Lit("MotionButtonPlinth", new Color(0.06f, 0.062f, 0.068f), 0.6f, 0.5f);
+            Color text = new Color(0.82f, 0.86f, 0.9f);
+            // Edit-time labels from the default config, so previews show the console; the runtime
+            // replaces them with whatever presets the pushed config has.
+            JointPredictorPresetData[] presets = new JetRoverArmConfig().JointPredictorPresets;
+
+            for (int i = 0; i < OperatorConsole.MaxPredictors; i++)
+            {
+                float x = left + i * spacing;
+                Renderer select = Cap(root, $"Predictor{i}", new Vector3(x, 0f, predictorZ), 0.032f, capMaterial, plinthMaterial);
+                TextMeshPro label = LabParts.Label("Label", select.transform.parent, new Vector3(0.012f, 0.006f, -0.034f), Quaternion.Euler(60f, 0f, 0f),
+                    i < presets.Length ? presets[i].Label : "", 0.085f, text, new Vector2(0.068f, 0.016f), TextAlignmentOptions.Center, FontStyles.Bold);
+                Wire(select, label, console, ConsoleButton.Kind.SelectPredictor, i, origin);
+                Renderer toggle = Cap(root, $"PredictorOnOff{i}", new Vector3(x + 0.03f, 0f, predictorZ), 0.016f, capMaterial, plinthMaterial);
+                Wire(toggle, null, console, ConsoleButton.Kind.TogglePredictor, i, origin);
+            }
+
+            for (int i = 0; i < 6; i++)
+            {
+                float x = left + i * spacing;
+                Renderer cap = Cap(root, $"Network{i}", new Vector3(x + 0.012f, 0f, networkZ), 0.032f, capMaterial, plinthMaterial);
+                TextMeshPro label = LabParts.Label("Label", cap.transform.parent, new Vector3(0f, 0.006f, -0.034f), Quaternion.Euler(60f, 0f, 0f),
+                    OperatorConsole.DefaultNetworkLabels[i], 0.085f, new Color(1f, 0.75f, 0.45f), new Vector2(0.068f, 0.016f), TextAlignmentOptions.Center, FontStyles.Bold);
+                Wire(cap, label, console, ConsoleButton.Kind.Network, i, origin);
+            }
+
+            // Standing nearly upright behind the network row, big enough to read from where the operator stands.
+            TextMeshPro panel = LabParts.Label("Panel", root, new Vector3(left + 0.21f, 0.2f, networkZ + 0.09f), Quaternion.Euler(12f, -39f, 0f), // turned toward the operator at x = 0
+                "<mspace=0.55em><b>PREDICTOR          ERR p50   p95   CORR p95  JIT p95  GRIP p95     n</b>\n(live numbers here once the robot's state arrives)\nnetwork: off", 0.125f, text, new Vector2(0.52f, 0.2f), TextAlignmentOptions.TopLeft);
+            panel.richText = true;
+
+            var so = new SerializedObject(console);
+            so.FindProperty("bridge").objectReferenceValue = bridge;
+            so.FindProperty("panel").objectReferenceValue = panel;
+            so.ApplyModifiedPropertiesWithoutUndo();
+        }
+
+        /// <summary>A level cap on a small plinth, under a child of <paramref name="parent"/>; returns the cap's renderer.</summary>
+        private static Renderer Cap(Transform parent, string name, Vector3 position, float diameter, Material capMaterial, Material plinthMaterial)
+        {
+            var button = new GameObject(name).transform;
+            button.SetParent(parent, false);
+            button.localPosition = position;
+            GameObject plinth = GameObject.CreatePrimitive(PrimitiveType.Cube);
+            plinth.name = "Plinth";
+            plinth.transform.SetParent(button, false);
+            plinth.transform.localPosition = new Vector3(0f, 0.008f, 0f);
+            plinth.transform.localScale = new Vector3(diameter + 0.014f, 0.016f, diameter + 0.014f);
+            plinth.GetComponent<Renderer>().sharedMaterial = plinthMaterial;
+            GameObject cap = GameObject.CreatePrimitive(PrimitiveType.Cylinder);
+            cap.name = "Cap";
+            cap.transform.SetParent(button, false);
+            cap.transform.localPosition = new Vector3(0f, 0.019f, 0f);
+            cap.transform.localScale = new Vector3(diameter, 0.004f, diameter); // a cylinder primitive is 2 units tall
+            cap.GetComponent<Renderer>().sharedMaterial = capMaterial;
+            foreach (Collider collider in button.GetComponentsInChildren<Collider>()) Object.DestroyImmediate(collider);
+            return cap.GetComponent<Renderer>();
+        }
+
+        private static void Wire(Renderer cap, TMP_Text label, OperatorConsole console, ConsoleButton.Kind kind, int index, XROrigin origin)
+        {
+            var button = cap.transform.parent.gameObject.AddComponent<ConsoleButton>();
+            var so = new SerializedObject(button);
+            so.FindProperty("console").objectReferenceValue = console;
+            so.FindProperty("kind").enumValueIndex = (int)kind;
+            so.FindProperty("index").intValue = index;
+            so.FindProperty("origin").objectReferenceValue = origin;
+            so.FindProperty("cap").objectReferenceValue = cap;
+            so.FindProperty("label").objectReferenceValue = label;
+            so.ApplyModifiedPropertiesWithoutUndo();
         }
 
         public const string SpeedSliderName = "SpeedSlider", DisplayHandleName = "MoveHandle";

@@ -95,10 +95,9 @@ Contents:
 - **The twin's three arms (docs/adr/0018), built by the same `XrControlSetup`:**
   - **Predicted, solid** (`PredictedArm`): where the robot most likely is right now. It is the
     newest joint-state frame from the robot, rolled forward by the joint predictor through the
-    commands sent since. `JointPredictorName` is `relay-replay` (default since 2026-10-20: it
-    models the relay's paced servo writes, and `JointReadingAge*` says how much older than its
-    stamp each motor's reading is), `servo-replay` (the earlier model; it snapped back on every
-    fresh reading) or `hold-last` (no prediction).
+    commands sent since. Which predictor does it is chosen on the operator console (below), from
+    the config's `JointPredictorPresets`; `JointPredictorActive` names the one drawing at launch
+    (`servo 10-25`, relay-replay-servo with the 2026-10-25 fit).
   - **Commanded, ghost**: the clutch's arm, where you told it to go.
   - **Measured, faint amber** (`MeasuredArm`): the newest frame exactly as received, about one
     network trip old.
@@ -124,6 +123,26 @@ Contents:
   - **Finding the right arm.** Editor tools find the commanded arm through the bridge's `armRig`
     (`XrControlSetup.CommandedRig`), never "any rig": the scene holds three.
 
+- **The operator console (docs/adr/0023)**, on the bench's left behind the motion button, built by
+  `XrControlSetup.BuildConsole`:
+  - **Front row, predictors.** One slot per `JointPredictorPresets` entry (up to six; labels come from
+    the config at runtime). Press a slot's cap to draw the twin with that predictor; it lights green.
+    The small dot beside it turns the predictor on or off. Every predictor that is on runs side by side
+    on the same stream (Core's `JointPredictorBank`), so switching is instant and keeps history; one
+    turned on again starts from nothing and shows `warming up` until its first reading. The drawing
+    one cannot be turned off.
+  - **Back row, network disturbances**, applied on the headset to the joint link in both directions
+    (`JointLinkDisturbance`): off, `50ms-5j`, `150ms-20j-0.5loss`, `300ms-60j-2loss-bursty`, 500 ms of
+    pure delay, 10% loss. The selected one lights amber, the panel and the twin's status line say
+    `NETWORK DISTURBED`, and each change is logged with its seed. Anything recorded with one on is
+    not a real-network measurement.
+  - **The panel** behind the rows: for every predictor that is on, error p50/p95, correction p95 and
+    jitter p95 (degrees, arm joints) and the gripper's error p95 (servo degrees), over the last 30 s,
+    four times a second (Core's `LiveJointScorer`, docs/metrics.md §4's live variants). Diagnostics,
+    never results.
+  - New presets need no rebuild: edit `JointPredictorPresets` in the Resources JSON and
+    `just push-galaxy-config`. `just unity-check-xr` checks the console's wiring (not a safety
+    setting: it moves nothing).
 - **The added-delay slider** (orange, beside the speed slider): 0–400 ms held back on the robot's
   state reports before they become the measured arm and reach the predictor. Commands are not
   delayed, and clock sync sees the real arrival.

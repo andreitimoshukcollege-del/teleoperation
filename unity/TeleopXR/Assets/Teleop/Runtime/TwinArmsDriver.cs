@@ -116,7 +116,9 @@ namespace Teleop.XR
             else if (link.SecondsSinceLastFrame > 1f) state = 2;
             else state = link.IsSynced ? 4 : 3;
             int rtt = link != null ? Mathf.RoundToInt(link.RoundTripMilliseconds) : 0;
-            int key = state * 10000 + Mathf.Clamp(rtt, 0, 9999);
+            // A console disturbance (docs/adr/0023) is named on this line too, so nobody mistakes it for the real network.
+            bool disturbed = bridge != null && bridge.JointDisturbance != null && bridge.JointDisturbance.IsActive;
+            int key = (disturbed ? 100000 : 0) + state * 10000 + Mathf.Clamp(rtt, 0, 9999);
             if (key == _shownStatus)
             {
                 return;
@@ -129,7 +131,10 @@ namespace Teleop.XR
                 case 1: statusLabel.SetText("NO ROBOT STATE  ·  RobotHost needs the joint-state stream (ADR 0018)"); break;
                 case 2: statusLabel.SetText("ROBOT STATE STALE  ·  no frame for over a second"); break;
                 case 3: statusLabel.SetText("robot state live  ·  syncing clocks…"); break;
-                default: statusLabel.SetText("robot state live  ·  rtt {0:0} ms", rtt); break;
+                default:
+                    if (disturbed) statusLabel.SetText("robot state live  ·  rtt {0:0} ms  ·  NETWORK DISTURBED", rtt);
+                    else statusLabel.SetText("robot state live  ·  rtt {0:0} ms", rtt);
+                    break;
             }
         }
     }

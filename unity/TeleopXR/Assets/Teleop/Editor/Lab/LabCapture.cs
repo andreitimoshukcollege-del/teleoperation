@@ -53,6 +53,8 @@ namespace Teleop.XR.Editor
             yield return new View("7_room_corner", new Vector3(4.3f, 2.5f, -2.5f), new Vector3(-0.8f, 0.9f, 2.2f), 78f);
             yield return new View("8_room_window", new Vector3(3.4f, 1.7f, 4.3f), new Vector3(-3.5f, 1.2f, 0.4f), 78f);
             yield return new View("10_motion_button", new Vector3(-0.2f, 1.45f, -0.1f), new Vector3(-0.514f, 0.92f, 0.22f), 50f);
+            // The operator console (docs/adr/0023), from where the operator stands.
+            yield return new View("14_console", new Vector3(-0.35f, 1.6f, -0.05f), new Vector3(-0.56f, 0.95f, 0.55f), 52f);
             yield return new View("9_floor_low", new Vector3(-0.9f, 0.32f, -0.9f), new Vector3(1.2f, 0.7f, 3.5f), 70f);
             // Square onto the commanded arm's gripper, along the jaws' hinge axis; placed in Capture.
             yield return new View("11_gripper_open", Vector3.zero, Vector3.zero, 30f, gripper: 0f);

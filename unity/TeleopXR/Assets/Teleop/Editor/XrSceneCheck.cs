@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Text;
 using Teleop.Bridge;
 using UnityEditor;
@@ -155,6 +156,7 @@ namespace Teleop.XR.Editor
             }
 
             CheckClutch(bridge, problems);
+            CheckConsole(bridge, problems);
 
             CheckAndroidOpenXR(problems);
 
@@ -300,6 +302,40 @@ namespace Teleop.XR.Editor
                 problems.Add($"jetrover_connection.json: ClutchScale {config.ClutchScale} must be in (0, 1]; above 1 the arm moves further than the hand");
             if (!(config.GripperPinchOpenMeters > config.GripperPinchClosedMeters))
                 problems.Add("jetrover_connection.json: GripperPinchOpenMeters must be greater than GripperPinchClosedMeters");
+        }
+
+        /// <summary>
+        /// The operator console (docs/adr/0023): present, wired to this scene's bridge and its panel, with
+        /// a select and an on/off cap for every predictor slot and at least one network cap. Not a safety
+        /// setting -- the console moves nothing -- but an unwired one would silently show nothing.
+        /// </summary>
+        private static void CheckConsole(JetRoverOperatorBridge bridge, List<string> problems)
+        {
+            var console = Object.FindAnyObjectByType<OperatorConsole>(FindObjectsInactive.Include);
+            if (console == null)
+            {
+                problems.Add("no OperatorConsole (run `just unity-lab-xr`, or Teleop > XR > Set Up Clutch Control)");
+                return;
+            }
+
+            var so = new SerializedObject(console);
+            RequireReference(so, "panel", problems);
+            if (so.FindProperty("bridge").objectReferenceValue != bridge)
+                problems.Add("OperatorConsole.bridge is not this scene's JetRoverOperatorBridge");
+            ConsoleButton[] buttons = Object.FindObjectsByType<ConsoleButton>(FindObjectsInactive.Include, FindObjectsSortMode.None);
+            int selects = buttons.Count(b => b.ButtonKind == ConsoleButton.Kind.SelectPredictor);
+            int toggles = buttons.Count(b => b.ButtonKind == ConsoleButton.Kind.TogglePredictor);
+            if (selects != OperatorConsole.MaxPredictors || toggles != OperatorConsole.MaxPredictors)
+                problems.Add($"OperatorConsole: {selects} predictor and {toggles} on/off caps, expected {OperatorConsole.MaxPredictors} of each");
+            if (!buttons.Any(b => b.ButtonKind == ConsoleButton.Kind.Network))
+                problems.Add("OperatorConsole: no network caps");
+            foreach (ConsoleButton b in buttons)
+            {
+                var bso = new SerializedObject(b);
+                if (bso.FindProperty("console").objectReferenceValue != console) problems.Add($"ConsoleButton '{b.name}' is not wired to the console");
+                RequireReference(bso, "cap", problems);
+                RequireReference(bso, "origin", problems);
+            }
         }
 
         private static void RequireReference(SerializedObject so, string field, List<string> problems)

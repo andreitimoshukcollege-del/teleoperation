@@ -360,11 +360,12 @@ deploy-robot checks="true":
     step "5/5 Checks"; just robot-ros-diff; just joint-probe; just robot-status
     echo; echo "Robot redeployed from $(git rev-parse --short HEAD) at $JETROVER_HOST."
 
-# Publish Teleop.RobotHost for the Jetson (linux-arm64), copy it over, and restart its systemd service -- needs passwordless ssh/scp; does NOT touch the Jetson's ROS 2 nodes, see robot/systemd/README.md
+# Publish Teleop.RobotHost for the Jetson (linux-arm64), copy it over, and restart its systemd service -- needs passwordless ssh/scp; does NOT touch the Jetson's ROS 2 nodes, see robot/systemd/README.md. It runs recording whenever the robot is commanded (--auto-record, docs/adr/0023; robot/README.md) unless auto_record=false
 [group('robot: deploy and restart (someone at the robot)')]
-deploy-robothost remote_host=default_jetrover_host remote_user="jetson" operator_host=default_operator_host max_direction_magnitude="" profile_path="" pulses_per_second="":
+deploy-robothost remote_host=default_jetrover_host remote_user="jetson" operator_host=default_operator_host max_direction_magnitude="" profile_path="" pulses_per_second="" auto_record="true":
     #!/usr/bin/env bash
     set -euo pipefail
+    case "{{auto_record}}" in true|false) ;; *) echo "error: auto_record must be true or false, got '{{auto_record}}'" >&2; exit 1 ;; esac
     host=$(just _robot-host "{{remote_host}}")
     cd core
     stamp=$(date +%Y%m%d-%H%M%S)
@@ -381,6 +382,9 @@ deploy-robothost remote_host=default_jetrover_host remote_user="jetson" operator
     dotnet publish Teleop.RobotHost -c Release -r linux-arm64 --self-contained false -f net8.0 -o "$publish_dir"
     # The build every recorded session's session.json names (docs/adr/0021): ~/robothost_current/BUILD_INFO.
     printf '{"sha": "%s", "dirty": %s}\n' "$(git rev-parse HEAD)" "$([ -n "$(git status --porcelain --untracked-files=no -- .)" ] && echo true || echo false)" > "$publish_dir/BUILD_INFO"
+    # The profile every automatic session copies (docs/adr/0023 decision 4), as record-start copies
+    # core/RobotProfiles/jetrover.json: ~/robothost_current/robot-profile.json.
+    cp RobotProfiles/jetrover.json "$publish_dir/robot-profile.json"
     tar czf "$archive" -C "$publish_dir" .
     echo "Copying to {{remote_user}}@$host:~/${remote_dir}..." >&2
     # scp, unlike ssh, needs an IPv6 literal in brackets to tell the address from the path.
@@ -393,6 +397,16 @@ deploy-robothost remote_host=default_jetrover_host remote_user="jetson" operator
     # The headset's speed slider asks for slower moves with every joint command, and RobotHost caps
     # those requests at this. Lower it to cap the slider; leave it empty to keep the default.
     if [ -n "{{pulses_per_second}}" ]; then extra_args="$extra_args --pulses-per-second {{pulses_per_second}}"; fi
+    # Recording whenever the robot is commanded (docs/adr/0023 decision 4; robot/README.md): RobotHost
+    # opens a session on the first joint command after 30 s without one and closes it after 30 s
+    # without; manual sessions (record-start, the onboard pilot) win. The thresholds keep their
+    # defaults (--auto-record-idle-seconds 30, --auto-record-max-minutes 60, --auto-record-stop-free-gb 1,
+    # --auto-record-start-free-gb 2, --auto-record-driver-wait-seconds 15, --auto-record-min-split-seconds 5).
+    # auto_record=false turns it off. With profile_path, the sessions copy that profile instead.
+    if [ "{{auto_record}}" = "true" ]; then
+        extra_args="$extra_args --auto-record --build-info-robothost /home/jetson/robothost_current/BUILD_INFO --build-info-driver /home/jetson/teleop_ros_current/BUILD_INFO"
+        if [ -z "{{profile_path}}" ]; then extra_args="$extra_args --auto-record-profile /home/jetson/robothost_current/robot-profile.json"; fi
+    fi
     # robothost-run.sh is the stable script teleop-robothost.service's ExecStart points at
     # (robot/systemd/teleop-robothost.service) -- regenerated on every deploy with this run's exact
     # args (including any optional extra_args), so redeploying never needs `systemctl
@@ -2525,7 +2539,24 @@ pack-trainer:
 
 robot_recordings := "/home/jetson/recordings"
 
-# Start recording on the robot -- moves nothing. Writes session.json (the conditions describe the session for splits and stratification, never the model's inputs) and the control file RobotHost and the driver both watch, then checks both logs are growing. After the label and the slider (rad/s, or varied), options as key=value, e.g. `just record-start payload-100g 2.5 load=payload payload_g=100`: load (none, payload or hand), payload_g, network (the robot-side uplink profile: lan for none, or "schedule:<profile>@<s>;..." for one that changes mid-session, quoted for the ;), added_delay_ms, motion (teleop, or joint-drive:<script>), operator, notes, remote_host, remote_user
+# Internal: if the robot is recording an automatic session (RobotHost opened it: ~/recordings/.active-auto names the same directory as .active, docs/adr/0023 decision 4), close it and wait until RobotHost has completed it (END trailers, session.json, files.sha256). A manual session, or none, is left alone. Same steps as robot/pilot/onboard.py's close_auto_session (keep the two the same). Moves nothing
+_close-auto-session host remote_user="jetson":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    ssh -o StrictHostKeyChecking=accept-new "{{remote_user}}@{{host}}" 'bash -s' <<'SH'
+    set -euo pipefail
+    r={{robot_recordings}}
+    dir=$(cat "$r/.active" 2>/dev/null || true)
+    [ -n "$dir" ] || exit 0
+    [ "$(cat "$r/.active-auto" 2>/dev/null || true)" = "$dir" ] || exit 0
+    echo "closing the automatic session $(basename "$dir") first (manual sessions win)" >&2
+    rm -f "$r/.active"
+    for i in $(seq 1 120); do [ -f "$dir/files.sha256" ] && break; sleep 0.25; done
+    [ -f "$dir/files.sha256" ] || { echo "error: RobotHost did not complete $(basename "$dir") within 30 s -- just robothost-logs" >&2; exit 1; }
+    for f in "$dir"/*.jlog; do printf '  %-16s %s\n' "$(basename "$f")" "$(tail -n 1 "$f")" >&2; done
+    SH
+
+# Start recording on the robot -- moves nothing. Closes an automatic session RobotHost opened first, if one is open (manual sessions win, docs/adr/0023). Writes session.json (the conditions describe the session for splits and stratification, never the model's inputs) and the control file RobotHost and the driver both watch, then checks both logs are growing. After the label and the slider (rad/s, or varied), options as key=value, e.g. `just record-start payload-100g 2.5 load=payload payload_g=100`: load (none, payload or hand), payload_g, network (the robot-side uplink profile: lan for none, or "schedule:<profile>@<s>;..." for one that changes mid-session, quoted for the ;), added_delay_ms, motion (teleop, or joint-drive:<script>), operator, notes, remote_host, remote_user
 [group('robot: recording (docs/adr/0021)')]
 [positional-arguments]
 record-start label slider *options:
@@ -2546,6 +2577,8 @@ record-start label slider *options:
     target="$remote_user@$host"
     id="$(date -u +%Y%m%dT%H%M%SZ)-{{label}}"
     dir="{{robot_recordings}}/jetrover/$id"
+    # Manual sessions win (docs/adr/0023 decision 4): an automatic one RobotHost opened is closed first.
+    just _close-auto-session "$host" "$remote_user"
     if ssh -o StrictHostKeyChecking=accept-new "$target" "test -s {{robot_recordings}}/.active"; then
         echo "error: a session is already recording ($(ssh "$target" cat {{robot_recordings}}/.active)) -- just record-stop first" >&2
         exit 1
@@ -2575,7 +2608,19 @@ record-start label slider *options:
     )
     ssh "$target" "mkdir -p $dir && cat > $dir/session.json" <<< "$meta"
     scp -q core/RobotProfiles/jetrover.json "$target:$dir/robot-profile.json"
-    ssh "$target" "printf '%s\n' $dir > {{robot_recordings}}/.active"
+    # The control file is created only if it does not exist (a hard link, which fails if it does):
+    # RobotHost may have opened an automatic session since the check above, and then it is closed again.
+    opened=false
+    for attempt in 1 2 3; do
+        if ssh "$target" "[ -s {{robot_recordings}}/.active ] || rm -f {{robot_recordings}}/.active; printf '%s\n' $dir > {{robot_recordings}}/.active.start && ln {{robot_recordings}}/.active.start {{robot_recordings}}/.active; s=\$?; rm -f {{robot_recordings}}/.active.start; exit \$s" 2>/dev/null; then
+            opened=true; break
+        fi
+        just _close-auto-session "$host" "$remote_user"
+    done
+    if ! $opened; then
+        echo "error: could not take the control file ($(ssh "$target" cat {{robot_recordings}}/.active 2>/dev/null)) -- just record-stop first" >&2
+        exit 1
+    fi
     sleep 2.5
     sizes=$(ssh "$target" "stat -c '%n %s' $dir/robothost.jlog $dir/driver.jlog 2>&1 || true")
     echo "$sizes"
@@ -2592,7 +2637,7 @@ record-start label slider *options:
     fi
     echo "recording $id"
 
-# Stop the robot's recording -- moves nothing. Removes the control file, waits for both logs' END trailers, stamps stoppedUtc, sets the session's slider from the speed its joint commands actually carried (warning when that is not what record-start was told), and writes files.sha256
+# Stop the robot's recording -- moves nothing. An automatic session (docs/adr/0023) is only closed: RobotHost completes it. Otherwise removes the control file, waits for both logs' END trailers, stamps stoppedUtc, sets the session's slider from the speed its joint commands actually carried (warning when that is not what record-start was told), and writes files.sha256
 [group('robot: recording (docs/adr/0021)')]
 record-stop remote_host=default_jetrover_host remote_user="jetson":
     #!/usr/bin/env bash
@@ -2602,6 +2647,16 @@ record-stop remote_host=default_jetrover_host remote_user="jetson":
     set -euo pipefail
     control={{robot_recordings}}/.active
     [ -s "$control" ] || { echo "nothing is recording" >&2; exit 1; }
+    if [ "$(cat {{robot_recordings}}/.active-auto 2>/dev/null || true)" = "$(cat "$control")" ]; then
+        # An automatic session (docs/adr/0023): RobotHost completes it itself, and leaves its own uplink alone.
+        dir=$(cat "$control"); rm -f "$control"
+        echo "stopping the automatic session $(basename "$dir"); RobotHost completes it (the next one opens on a command after 30 s without one)"
+        for i in $(seq 1 120); do [ -f "$dir/files.sha256" ] && break; sleep 0.25; done
+        [ -f "$dir/files.sha256" ] || { echo "error: RobotHost did not complete it within 30 s -- just robothost-logs" >&2; exit 1; }
+        for f in "$dir"/*.jlog; do printf '%-16s %s\n' "$(basename "$f")" "$(tail -n 1 "$f")"; done
+        echo "stopped $(basename "$dir")"
+        exit 0
+    fi
     if [ -e {{robot_recordings}}/.uplink ]; then rm -f {{robot_recordings}}/.uplink; sleep 1; fi
     dir=$(cat "$control"); rm -f "$control"
     for i in $(seq 1 60); do
@@ -2846,7 +2901,13 @@ fetch-recordings remote_host=default_jetrover_host remote_user="jetson":
     host=$(just _robot-host "{{remote_host}}")
     mkdir -p recordings/jetrover
     before=$(ls recordings/jetrover)
-    rsync -a --ignore-existing -e "ssh -o StrictHostKeyChecking=accept-new" "{{remote_user}}@$host:{{robot_recordings}}/jetrover/" recordings/jetrover/
+    # Not the session recording now, nor an automatic one RobotHost has closed but not yet completed
+    # (docs/adr/0023): --ignore-existing would keep their half-written files here for good.
+    skip=$(ssh -o StrictHostKeyChecking=accept-new "{{remote_user}}@$host" 'r={{robot_recordings}}; a=$(cat $r/.active 2>/dev/null); [ -n "$a" ] && basename "$a";
+        for d in $r/jetrover/*/; do [ -d "$d" ] || continue; [ -f "$d/files.sha256" ] || ! grep -q "\"label\": \"auto\"" "$d/session.json" 2>/dev/null || basename "$d"; done; true' | sort -u)
+    excludes=()
+    for s in $skip; do excludes+=(--exclude "/$s/"); echo "skipping $s: recording, or not completed yet" >&2; done
+    rsync -a --ignore-existing ${excludes[@]+"${excludes[@]}"} -e "ssh -o StrictHostKeyChecking=accept-new" "{{remote_user}}@$host:{{robot_recordings}}/jetrover/" recordings/jetrover/
     new=$(comm -13 <(echo "$before" | sort) <(ls recordings/jetrover | sort) || true)
     if [ -z "$new" ]; then echo "nothing new"; exit 0; fi
     echo "fetched: $new"

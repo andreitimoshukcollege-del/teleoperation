@@ -559,6 +559,50 @@ robot-driver-stats boots="6" remote_host=default_jetrover_host remote_user="jets
         'for b in $(seq -$(( {{boots}} - 1 )) 0); do journalctl -b "$b" --no-pager -o short-iso -u jetrover-arm-control 2>/dev/null | \
             grep -E "\[stats|Started|Stopping|Stopped" | sed "s/^/boot $b /"; journalctl -b "$b" --no-pager -o short-iso -n 1 2>/dev/null | sed "s/^/boot $b LAST /"; done'
 
+# Read-only: everything the robot logged (every unit and the kernel) from `before` seconds before to `after` seconds after a moment of a past boot -- `at` is the robot's local time as journalctl prints it (e.g. "2026-10-25 22:58:18"), `boot` the boot offset (0 this boot, -1 the one before; just robot-driver-stats prints both). The driver's and relay's 5 s stats lines are left out unless stats=true
+[group('robot: checks and diagnostics (nothing moves)')]
+robot-journal-around at boot="0" before="120" after="20" stats="false" remote_host=default_jetrover_host remote_user="jetson":
+    @ssh -o StrictHostKeyChecking=accept-new "{{remote_user}}@$(just _robot-host "{{remote_host}}")" \
+        'journalctl -b {{boot}} --no-pager -o short-iso --since "@$(( $(date -d "{{at}}" +%s) - {{before}} ))" --until "@$(( $(date -d "{{at}}" +%s) + {{after}} ))" | \
+            { if [ "{{stats}}" = true ]; then cat; else grep -v -E "\[stats [0-9.]+s\]"; fi; } | cut -c1-240'
+
+# Nearly read-only: the board's serial line as its USB chip reports it, from the kernel's cdc_acm counters (TIOCGICOUNT) twice, `seconds` apart: framing, parity and overrun errors and breaks the chip has signalled since it enumerated, and the modem lines. A board whose transmit line is held low (unpowered, or a crashed controller) shows breaks and framing errors; an idle-high line shows none. Opening the port a second time asserts DTR and RTS, which this puts back (cleared) straight away; it sends nothing and does not disturb the driver's own open
+[group('robot: checks and diagnostics (nothing moves)')]
+robot-board-line seconds="5" remote_host=default_jetrover_host remote_user="jetson":
+    #!/usr/bin/env bash
+    set -uo pipefail
+    ssh -o StrictHostKeyChecking=accept-new "{{remote_user}}@$(just _robot-host "{{remote_host}}")" "sudo python3 - {{seconds}}" <<'PY'
+    import fcntl, os, struct, sys, time
+    TIOCMGET, TIOCMBIC, TIOCGICOUNT = 0x5415, 0x5417, 0x545D
+    TIOCM = {"DTR": 0x002, "RTS": 0x004, "CTS": 0x020, "CD": 0x040, "RI": 0x080, "DSR": 0x100}
+    NAMES = ("cts", "dsr", "rng", "dcd", "rx", "tx", "frame", "overrun", "parity", "brk", "buf_overrun")
+
+    def icount(fd):
+        raw = fcntl.ioctl(fd, TIOCGICOUNT, bytes(80))
+        return dict(zip(NAMES, struct.unpack("11i", raw[:44])))
+
+    def lines(fd):
+        bits = struct.unpack("i", fcntl.ioctl(fd, TIOCMGET, bytes(4)))[0]
+        return " ".join(f"{k} {int(bool(bits & v))}" for k, v in TIOCM.items())
+
+    fd = os.open("/dev/ttyACM0", os.O_RDONLY | os.O_NONBLOCK | os.O_NOCTTY)
+    try:
+        print(f"modem lines just after opening: {lines(fd)}  (cdc_acm always reports CTS set)")
+        fcntl.ioctl(fd, TIOCMBIC, struct.pack("i", TIOCM["DTR"] | TIOCM["RTS"]))
+        print(f"after clearing DTR and RTS again: {lines(fd)}")
+        try:
+            first = icount(fd)
+        except OSError as e:
+            print(f"TIOCGICOUNT: {e} (this kernel's cdc_acm does not count line events)")
+            sys.exit(0)
+        print("counters since the chip enumerated: " + ", ".join(f"{k} {v}" for k, v in first.items()))
+        time.sleep(float(sys.argv[1]))
+        second = icount(fd)
+        print(f"change over {sys.argv[1]} s: " + (", ".join(f"{k} +{second[k] - first[k]}" for k in NAMES if second[k] != first[k]) or "none"))
+    finally:
+        os.close(fd)
+    PY
+
 # Read-only: subscribe to RobotHost's joint-state stream (docs/adr/0018) for a few seconds and print the frame rate, round trip, and per motor whether it is sensed (servo feedback) or only a commanded belief. Sends a keepalive, never a command: nothing moves
 [group('robot: checks and diagnostics (nothing moves)')]
 joint-probe seconds="3" remote_host=default_jetrover_host:
@@ -1181,6 +1225,34 @@ robot-board-beep remote_host=default_jetrover_host remote_user="jetson":
     print(f"{time.strftime('%T')} the board sent {len(got)} bytes meanwhile {got[:24].hex()}")
     PY
     sudo systemctl start jetrover-arm-control
+    REMOTE
+
+# Moves ONE servo, the base (motor 1) or the gripper (motor 10): is a silent board's controller still executing commands? Writes the given pulses straight to the board's serial port with the SDK's bus_servo_set_position, one every 3 s, each over 1.5 s, beside the running driver (no driver restart, so the shoulder cannot sag), and prints the robot's clock at each so camera frames (just camera-view) can be matched to it. The camera sees the base turn the whole arm; it cannot see the gripper. Limits: the base within 440..560 (+-14 degrees of its centre, 500), the gripper within its open..closed 116..645. Nothing else moves. If the servo moves while the board sends nothing back, its controller receives and runs and only its transmit path is dead. Confirm the arm is clear before running
+[group('robot: deploy and restart (someone at the robot)')]
+robot-board-servo-test motor pulses remote_host=default_jetrover_host remote_user="jetson":
+    #!/usr/bin/env bash
+    set -uo pipefail
+    case "{{motor}}" in 1) lo=440 hi=560 ;; 10) lo=116 hi=645 ;; *) echo "error: motor {{motor}}: only the base (1) or the gripper (10)" >&2; exit 2 ;; esac
+    pulses=$(echo "{{pulses}}" | tr ',' ' ')
+    for p in $pulses; do
+        if ! [[ "$p" =~ ^[0-9]+$ ]] || [ "$p" -lt $lo ] || [ "$p" -gt $hi ]; then echo "error: pulse $p for motor {{motor}} is outside $lo..$hi" >&2; exit 2; fi
+    done
+    ssh -o StrictHostKeyChecking=accept-new "{{remote_user}}@$(just _robot-host "{{remote_host}}")" "bash -s" <<REMOTE
+    sdk=\$(ls -d /home/jetson/teleop_ros_current/install/jetrover_arm_control/lib/python3*/site-packages | head -1)
+    PYTHONUNBUFFERED=1 PYTHONPATH="\$sdk" python3 - {{motor}} $pulses <<'PY'
+    import sys, time
+    from jetrover_arm_control.board_manager.robot_controller_sdk import Board
+    board = Board(device="/dev/ttyACM0", timeout=0.05)
+    motor, got = int(sys.argv[1]), b""
+    for pulse in map(int, sys.argv[2:]):
+        print(f"{time.strftime('%T')} motor {motor} to pulse {pulse} over 1.5 s")
+        board.bus_servo_set_position(1.5, [[motor, pulse]])
+        end = time.time() + 3
+        while time.time() < end:
+            got += board.port.read(256)
+    board.port.close()
+    print(f"{time.strftime('%T')} the board sent {len(got)} bytes meanwhile {got[:24].hex()}")
+    PY
     REMOTE
 
 # Restart the servo bus driver (jetrover-arm-control), which reopens its serial link to the Hiwonder board. For when the board stopped answering (just ros-check shows no feedback_array or battery messages) after a brown-out or a reset. It interrupts the arm, and the shoulder may sag while the driver comes back (seen 2026-10-12), so someone must be at the robot. Afterwards the feedback should flow again

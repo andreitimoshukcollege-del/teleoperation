@@ -24,7 +24,9 @@ to arm control were left behind (the camera is now served by `core/Teleop.Camera
 - **`teleop_relay`** bridges RobotHost to the driver over a Unix socket
   (`/tmp/jetrover_relay.sock`):
   - `relay_protocol.py` is the wire format. It must match `core/Teleop.RobotHost/Relay/RelayProtocol.cs`
-    exactly, so change both in the same PR.
+    exactly, so change both in the same PR, and deploy both together. Version 5 (2026-10-26) adds a
+    kind byte and a torque message, which the relay publishes on the driver's `/arm/servo/set/torque`
+    (docs/adr/0023 decision 5).
   - `stale_tracked_value.py` stops a servo that stopped answering from being reported as measured
     forever.
 

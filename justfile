@@ -603,6 +603,139 @@ robot-board-line seconds="5" remote_host=default_jetrover_host remote_user="jets
         os.close(fd)
     PY
 
+# Read-only: what the robot is made of, for hardware debugging -- the Jetson model and kernel, the USB tree, sound capture devices, where each network interface sits on the buses (a Wi-Fi behind the board's USB hub drops with it), how the servo driver's service is started (its environment: without PYTHONUNBUFFERED the board SDK's own prints, such as "Board Verificatio Failed", sit in a buffer and may never reach the journal), and every receive error, traceback or thread exit the driver logged over the last `boots` boots
+[group('robot: checks and diagnostics (nothing moves)')]
+robot-hw-inventory boots="10" remote_host=default_jetrover_host remote_user="jetson":
+    #!/usr/bin/env bash
+    set -uo pipefail
+    ssh -o StrictHostKeyChecking=accept-new "{{remote_user}}@$(just _robot-host "{{remote_host}}")" "BOOTS={{boots}} bash -s" <<'REMOTE'
+    echo "--- model: $(tr -d '\0' < /proc/device-tree/model 2>/dev/null); kernel $(uname -r); $(head -1 /etc/nv_tegra_release 2>/dev/null)"
+    echo '--- USB tree'; lsusb -t 2>/dev/null
+    echo '--- USB devices'; lsusb 2>/dev/null
+    echo '--- sound capture devices'; arecord -l 2>/dev/null || echo '(arecord not installed)'; cat /proc/asound/cards 2>/dev/null
+    echo '--- sound playback devices'; aplay -l 2>/dev/null | grep -E '^card' || echo '(aplay not installed)'
+    echo "--- python3 numpy: $(python3 -c 'import numpy; print(numpy.__version__)' 2>/dev/null || echo missing)"
+    echo '--- serial ports: by-id and by-path names, the USB device behind each, who has it open'
+    ls -l /dev/serial/by-id/ /dev/serial/by-path/ 2>/dev/null | grep -- '->' | sed 's/.* \([^ ]* -> .*\)/  \1/'
+    for t in /dev/ttyUSB* /dev/ttyACM*; do
+        [ -e "$t" ] || continue
+        d=$(readlink -f "/sys/class/tty/$(basename "$t")/device/.." 2>/dev/null); [ -f "$d/idVendor" ] || d=$(dirname "$d")
+        users=$(sudo -n fuser "$t" 2>/dev/null | tr -s ' ')
+        echo "  $t: usb $(basename "$d") $(cat "$d/idVendor" 2>/dev/null):$(cat "$d/idProduct" 2>/dev/null) '$(cat "$d/product" 2>/dev/null)' serial '$(cat "$d/serial" 2>/dev/null)'; open by:${users:- nobody}"
+        for p in $users; do echo "      pid $p: $(tr '\0' ' ' < /proc/$p/cmdline 2>/dev/null | cut -c1-120)"; done
+    done
+    echo '--- the vendor image: robot configuration (machine and lidar type) and what its launch files open'
+    grep -hsE '^\s*export\s+(MACHINE_TYPE|LIDAR_TYPE|DEPTH_CAMERA_TYPE|CAMERA_TYPE|ASR_|LIDAR)' ~/.typerc ~/.bashrc ~/.zshrc /etc/environment 2>/dev/null | sed 's/^/  /'
+    for ws in ~/ros2_ws ~/ros_ws ~/jetrover_ws; do [ -d "$ws/src" ] && grep -rhoE "/dev/(ttyUSB[0-9]|ttyACM[0-9]|ttyTHS[0-9]|[a-z_]*lidar[a-z_]*|rrc[a-z_]*)" "$ws/src" --include='*.py' --include='*.launch*' --include='*.yaml' 2>/dev/null | sort | uniq -c | sed "s|^|  $ws: |"; done
+    echo "  home: $(ls ~ | tr '\n' ' ' | cut -c1-300)"
+    grep -lsE 'LIDAR_TYPE|MACHINE_TYPE' ~/.[a-z]*rc ~/.profile /etc/profile.d/* 2>/dev/null | sed 's/^/  set in: /'
+    echo '  kernel, this boot:'; journalctl -k -b --no-pager | grep -E 'ch341|ttyUSB' | tail -6 | sed 's/^/    /'
+    echo '--- udev rules that name serial devices'
+    grep -hsE 'ttyUSB|ttyACM|1a86|SYMLINK' /etc/udev/rules.d/*.rules 2>/dev/null | grep -v '^#' | cut -c1-200 | head -20
+    echo '--- network interfaces and where they sit'
+    for n in /sys/class/net/*; do printf '  %-12s %s\n' "$(basename "$n")" "$(readlink -f "$n/device" 2>/dev/null || echo virtual)"; done
+    echo '--- the servo driver service'
+    systemctl cat jetrover-arm-control --no-pager 2>/dev/null | grep -E '^(ExecStart|Environment|User|WorkingDirectory|StandardOutput)'
+    pid=$(pgrep -f 'lib/jetrover_arm_control/robot_controller_manager' | head -1)
+    [ -n "$pid" ] && echo "  running pid $pid, its PYTHONUNBUFFERED: $(sudo -n cat /proc/$pid/environ 2>/dev/null | tr '\0' '\n' | grep -E '^PYTHONUNBUFFERED=' || echo unset)"
+    echo "--- receive errors, tracebacks and thread exits the driver logged, last $BOOTS boots"
+    for b in $(seq -$((BOOTS - 1)) 0); do
+        journalctl -b "$b" -u jetrover-arm-control --no-pager -o short-iso 2>/dev/null | grep -iE 'verificatio|traceback|exception in thread|END\.\.\.|serialexception|error' | sed "s/^/boot $b: /" | cut -c1-200 | tail -8
+    done
+    echo '(end)'
+    REMOTE
+
+# Nearly read-only: listen on one of the Jetson's serial ports (`dev`, e.g. /dev/ttyUSB0) at each of `bauds` for `seconds` each and show what arrives: byte count, the first bytes in hex, and the text when it is mostly printable -- to tell a lidar (a steady binary stream), a board's debug console (text) and a silent port apart. Sends nothing. Opening a port makes Linux assert DTR and RTS; this releases RTS first and then DTR, the order in which Hiwonder's auto-download circuit (RTS -> BOOT0, RTS asserted with DTR released -> reset) never resets the controller. Refuses a port another process has open
+[group('robot: checks and diagnostics (nothing moves)')]
+robot-serial-sniff dev bauds="115200,230400" seconds="2" remote_host=default_jetrover_host remote_user="jetson":
+    #!/usr/bin/env bash
+    set -uo pipefail
+    ssh -o StrictHostKeyChecking=accept-new "{{remote_user}}@$(just _robot-host "{{remote_host}}")" "sudo python3 - '{{dev}}' '{{bauds}}' '{{seconds}}'" <<'PY'
+    import fcntl, os, struct, subprocess, sys, termios, time
+    dev, bauds, seconds = sys.argv[1], [int(b) for b in sys.argv[2].split(",")], float(sys.argv[3])
+    users = subprocess.run(["fuser", dev], capture_output=True, text=True).stdout.split()
+    if users:
+        sys.exit(f"{dev} is open by pid {' '.join(users)}: not touching it")
+    TIOCMBIC, DTR, RTS = 0x5417, 0x002, 0x004
+    fd = os.open(dev, os.O_RDWR | os.O_NOCTTY | os.O_NONBLOCK)
+    fcntl.ioctl(fd, TIOCMBIC, struct.pack("i", RTS))  # BOOT0 low first ...
+    fcntl.ioctl(fd, TIOCMBIC, struct.pack("i", DTR))  # ... then DTR: no reset on the way
+    try:
+        for baud in bauds:
+            attrs = termios.tcgetattr(fd)
+            speed = getattr(termios, f"B{baud}")
+            attrs[0] = 0                                    # iflag: raw
+            attrs[1] = 0                                    # oflag
+            attrs[2] = termios.CS8 | termios.CREAD | termios.CLOCAL
+            attrs[3] = 0                                    # lflag: no echo, not canonical
+            attrs[4] = attrs[5] = speed
+            termios.tcsetattr(fd, termios.TCSANOW, attrs)
+            termios.tcflush(fd, termios.TCIFLUSH)
+            got, end = b"", time.time() + seconds
+            while time.time() < end:
+                try:
+                    got += os.read(fd, 4096)
+                except BlockingIOError:
+                    time.sleep(0.01)
+            printable = sum(32 <= b < 127 or b in (9, 10, 13) for b in got) / max(1, len(got))
+            print(f"{dev} at {baud} 8N1, {seconds:g} s: {len(got)} bytes ({len(got) / seconds:.0f}/s), {printable:.0%} printable")
+            if got:
+                print(f"  first bytes: {got[:48].hex(' ')}")
+                if printable > 0.8:
+                    print("  text: " + got[:400].decode("ascii", "replace").replace("\r", "").replace("\n", " | "))
+    finally:
+        os.close(fd)
+    PY
+
+# Read-only: every USB connect, disconnect, reset and over-current the kernel logged over the last `boots` boots, oldest first, each line prefixed by its boot offset -- to line up USB trouble (the camera's hub dropping off, a device re-enumerating) against the times the servo board went silent (just robot-driver-stats)
+[group('robot: checks and diagnostics (nothing moves)')]
+robot-usb-events boots="10" remote_host=default_jetrover_host remote_user="jetson":
+    @ssh -o StrictHostKeyChecking=accept-new "{{remote_user}}@$(just _robot-host "{{remote_host}}")" \
+        'for b in $(seq -$(( {{boots}} - 1 )) 0); do journalctl -b "$b" -k --no-pager -o short-iso 2>/dev/null | \
+            grep -E "USB disconnect|new (full|high|low|super)-speed USB device|reset (full|high|low|super)-speed USB device|over-current|overcurrent|cannot enable|device descriptor read|unable to enumerate|Under-voltage|throttl" | \
+            sed "s/^/boot $b /" | cut -c1-170; done'
+
+# Read-only: Bluetooth devices advertising right next to the robot (signal at least `min_rssi` dBm, so roughly within a metre; nearby people's devices are only counted, never named) -- to find a Bluetooth module on the servo board, which its firmware's Bluetooth task (UART2) talks through independently of the USB link. Runs the Jetson's own discovery (btmgmt find, LE and classic) for about 10 s
+[group('robot: checks and diagnostics (nothing moves)')]
+robot-ble-scan min_rssi="-75" remote_host=default_jetrover_host remote_user="jetson":
+    #!/usr/bin/env bash
+    set -uo pipefail
+    ssh -o StrictHostKeyChecking=accept-new "{{remote_user}}@$(just _robot-host "{{remote_host}}")" "MIN_RSSI={{min_rssi}} bash -s" <<'REMOTE'
+    echo "--- adapter: $(hciconfig 2>/dev/null | head -3 | tr -s ' \t' ' ' | tr '\n' ' ')"
+    systemctl is-active bluetooth >/dev/null 2>&1 || echo '(bluetoothd is not running)'
+    command -v btmgmt >/dev/null || { echo 'btmgmt not installed'; exit 0; }
+    sudo -n btmgmt power on >/dev/null 2>&1
+    # btmgmt prints nothing without a terminal on this BlueZ: give it one (script), and name the adapter.
+    out=$(sudo -n script -qfc 'timeout -s INT 14 btmgmt --index 0 find' /dev/null < /dev/null 2>&1 | tr -d '\r')  # stdin: this script
+    echo "$out" | python3 -c '
+    import os, re, sys
+    min_rssi = int(os.environ["MIN_RSSI"])
+    near, far, cur = [], 0, None
+    for line in sys.stdin:
+        m = re.search(r"dev_found: (\S+) type (.+?) rssi (-?\d+)", line)
+        if m:
+            cur = {"addr": m.group(1), "type": m.group(2), "rssi": int(m.group(3)), "name": ""}
+            (near.append(cur) if cur["rssi"] >= min_rssi else None)
+            far += cur["rssi"] < min_rssi
+            continue
+        m = re.search(r"name (.+)$", line.strip())
+        if m and cur is not None:
+            cur["name"] = m.group(1)
+    print(f"--- within {min_rssi} dBm: {len(near)} device(s); farther away: {far}")
+    if not near and not far:
+        print("  (btmgmt reported nothing it found; its output began:)")
+    module = re.compile(r"(?i)hiwonder|^bt|ble|hc-?0|jdy|^hm-?1|dx-?bt|spp|cc41|mlt|esp|robot|rrc|^xfm")
+    named = [d for d in near if module.search(d["name"])]
+    unnamed = sum(1 for d in near if not d["name"])
+    print("  of those, named like a hardware module (others are counted, not shown): {}; unnamed: {}".format(len(named), unnamed))
+    for d in sorted(named, key=lambda d: -d["rssi"]):
+        print("  {}  {:<16} rssi {:>4}  {}".format(d["addr"], d["type"], d["rssi"], d["name"]))
+    strongest = sorted(d["rssi"] for d in near)[-3:]
+    print(f"  strongest signals within range: {strongest}")
+    '
+    echo "$out" | grep -q dev_found || echo "$out" | head -8 | sed 's/^/    /'
+    REMOTE
+
 # Read-only: subscribe to RobotHost's joint-state stream (docs/adr/0018) for a few seconds and print the frame rate, round trip, and per motor whether it is sensed (servo feedback) or only a commanded belief. Sends a keepalive, never a command: nothing moves
 [group('robot: checks and diagnostics (nothing moves)')]
 joint-probe seconds="3" remote_host=default_jetrover_host:
@@ -1253,6 +1386,119 @@ robot-board-servo-test motor pulses remote_host=default_jetrover_host remote_use
     board.port.close()
     print(f"{time.strftime('%T')} the board sent {len(got)} bytes meanwhile {got[:24].hex()}")
     PY
+    REMOTE
+
+# Experiment, for a silent board: start the STM32's ROM bootloader through the board's USB-serial port with the auto-download sequence of Hiwonder's circuit (RTS asserted -> BOOT0 high; RTS asserted with DTR released -> reset; from the RRC Lite schematic), and if it answers, read -- never write or erase -- the controller's chip id, its reset-cause flags (RCC_CSR) and the live levels of its IMU I2C pins (PB10 SCL, PB11 SDA) and bus-servo pins (PC7 RX, PG6 TX, PE7), then reset it back into its firmware and listen for it. Readout Unprotect, Write and Erase are never sent. Stops the servo driver for the duration and starts it again; the controller's reset may drop the servos' torque, so confirm the arm may sag before running
+[group('robot: deploy and restart (someone at the robot)')]
+robot-board-bootloader dev="/dev/ttyACM0" remote_host=default_jetrover_host remote_user="jetson":
+    #!/usr/bin/env bash
+    set -uo pipefail
+    ssh -o StrictHostKeyChecking=accept-new "{{remote_user}}@$(just _robot-host "{{remote_host}}")" "bash -s" <<'REMOTE'
+    sudo systemctl stop jetrover-arm-control
+    sudo python3 - "{{dev}}" <<'PY'
+    import fcntl, os, struct, sys, termios, time
+    dev = sys.argv[1]
+    TIOCMSET, DTR, RTS = 0x5418, 0x002, 0x004
+    ACK, NACK = 0x79, 0x1F
+
+    def say(text):
+        print(f"{time.strftime('%T')} {text}", flush=True)
+
+    def lines(dtr, rts):  # both at once, so no half-step resets the controller by accident
+        fcntl.ioctl(fd, TIOCMSET, struct.pack("i", (DTR if dtr else 0) | (RTS if rts else 0)))
+
+    def mode(baud, even):
+        a = termios.tcgetattr(fd)
+        a[0] = a[1] = a[3] = 0
+        a[2] = termios.CS8 | termios.CREAD | termios.CLOCAL | (termios.PARENB if even else 0)
+        a[4] = a[5] = getattr(termios, f"B{baud}")
+        a[6][termios.VMIN], a[6][termios.VTIME] = 0, 0
+        termios.tcsetattr(fd, termios.TCSANOW, a)
+        termios.tcflush(fd, termios.TCIOFLUSH)
+
+    def read(n, seconds=1.0):
+        got, end = b"", time.time() + seconds
+        while len(got) < n and time.time() < end:
+            try:
+                got += os.read(fd, n - len(got))
+            except BlockingIOError:
+                time.sleep(0.002)
+        return got
+
+    def command(code):
+        os.write(fd, bytes([code, code ^ 0xFF]))
+        return read(1)
+
+    def read_word(address):
+        if command(0x11) != bytes([ACK]):
+            return None, "READ MEMORY refused (read protection?)"
+        a = struct.pack(">I", address)
+        os.write(fd, a + bytes([a[0] ^ a[1] ^ a[2] ^ a[3]]))
+        if read(1) != bytes([ACK]):
+            return None, "address refused"
+        os.write(fd, bytes([3, 3 ^ 0xFF]))
+        if read(1) != bytes([ACK]):
+            return None, "length refused"
+        data = read(4)
+        return (struct.unpack("<I", data)[0], "") if len(data) == 4 else (None, f"short read {data.hex()}")
+
+    fd = os.open(dev, os.O_RDWR | os.O_NOCTTY | os.O_NONBLOCK)  # opening asserts DTR and RTS: BOOT0 high, no reset
+    try:
+        say("entry: reset with BOOT0 high (RTS, DTR released), then release the reset (DTR) and wait")
+        lines(dtr=False, rts=True)
+        time.sleep(0.1)
+        lines(dtr=True, rts=True)
+        time.sleep(0.3)
+        mode(115200, even=True)
+        os.write(fd, b"\x7f")
+        first = read(1)
+        say(f"0x7F -> {first.hex() or 'nothing'}" + ("  (ACK: the ROM bootloader is running)" if first == bytes([ACK]) else ""))
+        if first in (bytes([ACK]), bytes([NACK])):
+            if command(0x00) == bytes([ACK]):
+                n = read(1)
+                body = read(n[0] + 1) if n else b""
+                read(1)
+                say(f"GET: bootloader version {body[:1].hex()}, commands {body[1:].hex(' ')}")
+            if command(0x02) == bytes([ACK]):
+                n = read(1)
+                pid = read(n[0] + 1) if n else b""
+                read(1)
+                say(f"GET ID: product 0x{pid.hex()} (0x0413 is the STM32F405/407)")
+            names = [("RCC_CSR", 0x40023874), ("GPIOB_IDR", 0x40020410), ("GPIOC_IDR", 0x40020810),
+                     ("GPIOD_IDR", 0x40020C10), ("GPIOE_IDR", 0x40021010), ("GPIOG_IDR", 0x40021810)]
+            words = {}
+            for name, address in names:
+                value, why = read_word(address)
+                words[name] = value
+                say(f"{name} @0x{address:08x}: " + (f"0x{value:08x}" if value is not None else why))
+                if value is None:
+                    break
+            if words.get("RCC_CSR") is not None:
+                flags = {31: "low-power", 30: "window watchdog", 29: "independent watchdog", 28: "software",
+                         27: "power-on/down", 26: "reset pin", 25: "brown-out"}
+                csr = words["RCC_CSR"]
+                say("reset causes recorded since they were last cleared: " + ", ".join(v for b, v in flags.items() if csr >> b & 1))
+            bit = lambda name, n: None if words.get(name) is None else (words[name] >> n) & 1
+            if bit("GPIOB_IDR", 10) is not None:
+                say(f"IMU I2C: SCL (PB10) {bit('GPIOB_IDR', 10)}, SDA (PB11) {bit('GPIOB_IDR', 11)}  (idle both 1; SDA 0 = a sensor holding the bus)")
+            if bit("GPIOC_IDR", 7) is not None:
+                say(f"bus servo: RX (PC7) {bit('GPIOC_IDR', 7)}, TX (PG6) {bit('GPIOG_IDR', 6)}, PE7 {bit('GPIOE_IDR', 7)}  (an idle bus reads 1)")
+            if bit("GPIOD_IDR", 9) is not None:
+                say(f"host UART3 pins: PD8 {bit('GPIOD_IDR', 8)}, PD9 {bit('GPIOD_IDR', 9)}")
+        say("exit: reset with BOOT0 low -- reset (RTS, DTR released), then release both")
+        lines(dtr=False, rts=True)
+        time.sleep(0.1)
+        lines(dtr=False, rts=False)
+        mode(1000000, even=False)
+        got = read(4096, 8.0)
+        say(f"firmware, 8 s after the reset: {len(got)} bytes {got[:24].hex()}")
+    finally:
+        lines(dtr=False, rts=False)
+        os.close(fd)
+    PY
+    sudo systemctl start jetrover-arm-control
+    sleep 12
+    journalctl -u jetrover-arm-control --no-pager -n 40 | grep '\[stats' | tail -1 | cut -c1-260
     REMOTE
 
 # Restart the servo bus driver (jetrover-arm-control), which reopens its serial link to the Hiwonder board. For when the board stopped answering (just ros-check shows no feedback_array or battery messages) after a brown-out or a reset. It interrupts the arm, and the shoulder may sag while the driver comes back (seen 2026-10-12), so someone must be at the robot. Afterwards the feedback should flow again

@@ -120,7 +120,8 @@
       "Bash(gh release:*)",
       "Bash(gh auth:*)",
       "Bash(gh secret:*)",
-      "Bash(gh api:*)"
+      "Bash(gh api:*)",
+      "Bash(just move-arm:*)"
     ],
     "deny": [
       "Edit(results/**)",
@@ -135,7 +136,6 @@
       "Bash(git push --force:*)",
       "Bash(ssh:*)",
       "Bash(scp:*)",
-      "Bash(just move-arm:*)",
       "Bash(just clocksync-check:*)",
       "Bash(just deploy-robothost:*)",
       "Bash(curl:*)",

@@ -47,5 +47,17 @@
   "JointServoLagMs": 50.0,
   "JointServoPipelineDelayMs": 16.8,
   "JointServoFirstMoveFromMeasured": true,
-  "GripperFractionPerRadian": 0.4513
+  "GripperFractionPerRadian": 0.4513,
+  "JointPredictorPresets": [
+    { "Label": "hold-last", "Predictor": "hold-last", "Enabled": true },
+    { "Label": "relay-replay", "Predictor": "relay-replay", "Enabled": true, "ReadingAgeMs": [30.2, 25.3, 22.6, 20.1, 17.1] },
+    { "Label": "servo 10-25", "Predictor": "relay-replay-servo", "Enabled": true, "ServoMaxSpeedRadPerSec": 5.0, "ServoLagMs": 50.0,
+      "ServoPipelineDelayMs": 16.8, "ServoFirstMoveFromMeasured": true, "ReadingAgeMs": [30.2, 25.3, 22.6, 20.1, 17.1] },
+    { "Label": "servo 10-26", "Predictor": "relay-replay-servo", "Enabled": true, "ServoMaxSpeedRadPerSec": 3.25, "ServoLagMs": 40.0,
+      "ServoPipelineDelayMs": 13.8, "ServoFirstMoveFromMeasured": true, "ReadingAgeMs": [29.5, 25.1, 22.2, 19.7, 17.7] },
+    { "Label": "servo-replay", "Predictor": "servo-replay", "Enabled": false, "ModelSpeedRadPerSec": 6.0 }
+  ],
+  "JointPredictorActive": "servo 10-25",
+  "DisturbanceMaxDelayMs": 2000.0,
+  "DisturbanceMaxLossPercent": 50.0
 }

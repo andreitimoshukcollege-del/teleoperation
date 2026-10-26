@@ -82,11 +82,19 @@ Contents:
     position, and the bridge still reads it.
   - **`TwinGripper`** on the wrist closes the twin's jaws by the gripper command and rolls the
     gripper by the wrist roll. It shows what is sent; the real gripper has no feedback.
-  - **`MotionToggleButton`, the robot's start/stop switch, on the bench's front-left corner.** It
-    is red when off (`ROBOT OFF`) and green when on, and **off at every launch**. Press it down
-    with a fingertip. Only a fingertip counts; no ray or far pinch can press it. Off means nothing
-    is sent and the robot holds still, while the virtual arm still follows your hands. It shows
-    LOCKED when `ConfirmHardwareMotion` is off in the config.
+  - **`MotionToggleButton`, the robot's power and pause buttons, on the bench's front-left corner**
+    (docs/adr/0023 decision 5). Press them down with a fingertip. Only a fingertip counts; no ray or
+    far pinch can press them. The robot is **off at every launch**.
+    - **Power (the big one): red `ROBOT OFF`, green `ROBOT ON`.** On switches the arm's torque on, and
+      no command goes until RobotHost reports the arm holding (`STARTING`). Off parks the arm at its
+      rest pose and then switches torque off (`PARKING N°`, then `relaxed`). If RobotHost refuses the
+      park, the label says why, and the arm keeps its torque where it stopped.
+    - **PAUSE (the small one to its left), amber when paused.** It works only while the robot is on.
+      Paused sends nothing and keeps torque on, so the arm holds where it is; press PAUSE or power to
+      go on again. Use it instead of power when you do not want the arm to relax.
+    - Off and paused both send nothing while the virtual arm still follows your hands, and both
+      offer the camera display for moving. Both buttons show LOCKED when `ConfirmHardwareMotion` is
+      off in the config.
   - Tune these with `just push-galaxy-config`, no rebuild: `ClutchScale`, `ClutchMinHeightMeters`
     (the wrist never goes lower, default −0.05 m below the base pivot), `GripperPinchOpenMeters` and
     `GripperPinchClosedMeters`. Edit them in `unity/Teleop.Bridge/Runtime/Resources/jetrover_connection.json`
@@ -196,7 +204,7 @@ build, if any of them changes:
 | Gripper pinch range | open distance > closed distance | otherwise the mapping is inverted |
 | `JetRoverOperatorBridge.motionEnabledAtStart` | off | the robot must not move at launch, before anyone presses the button |
 | `JetRoverOperatorBridge.snapTargetToReachable` | on | when the IK stops at the robot's body, the marker moves to where the arm stopped, so it never sits inside the robot and the clutch re-engages from the arm (docs/adr/0020) |
-| `MotionToggleButton` | present, wired, enabled | the only way to start, and stop, the robot from the headset |
+| `MotionToggleButton` | one Power and one Pause, each present, wired, enabled | power is the only way to start, and stop, the robot from the headset |
 | `TwinArmsDriver` | present, wired, not driving the commanded arm | the robot's state must never overwrite the display of the command |
 | Hand smoothing filter | inactive | it filters the hand joints the clutch reads; intent is sent raw (ADR 0016 §5) |
 | Modality manager controllers | none | hands only |

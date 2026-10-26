@@ -251,21 +251,33 @@ namespace Teleop.XR.Editor
                 problems.Add("JetRoverOperatorBridge.motionEnabledAtStart is on: the robot would move at launch, before anyone presses the motion button (docs/adr/0017)");
             if (new SerializedObject(bridge).FindProperty("snapTargetToReachable") is SerializedProperty snap && !snap.boolValue)
                 problems.Add("JetRoverOperatorBridge.snapTargetToReachable is off: when the IK stops at the robot's body, the marker would stay inside it and the clutch would re-engage from there (docs/adr/0020)");
-            var toggle = Object.FindAnyObjectByType<MotionToggleButton>(FindObjectsInactive.Include);
-            if (toggle == null)
+            // The power button starts the robot and stops it (park, then relax); the pause button holds it
+            // with torque on (docs/adr/0023 decision 5). Power is the one the operator must always have.
+            MotionToggleButton[] toggles = Object.FindObjectsByType<MotionToggleButton>(FindObjectsInactive.Include, FindObjectsSortMode.None);
+            foreach (MotionToggleButton.Role role in new[] { MotionToggleButton.Role.Power, MotionToggleButton.Role.Pause })
             {
-                problems.Add("no MotionToggleButton: there would be no way to start or stop the robot from the headset (run Teleop > XR > Set Up Clutch Control)");
-            }
-            else
-            {
-                var toggleSo = new SerializedObject(toggle);
-                foreach (string field in new[] { "bridge", "origin", "cap" })
+                MotionToggleButton[] matching = toggles.Where(t => t.ButtonRole == role).ToArray();
+                if (matching.Length == 0)
                 {
-                    RequireReference(toggleSo, field, problems);
+                    problems.Add(role == MotionToggleButton.Role.Power
+                        ? "no MotionToggleButton with the Power role: there would be no way to start or stop the robot from the headset (run Teleop > XR > Set Up Clutch Control)"
+                        : "no MotionToggleButton with the Pause role: the robot could only be stopped by parking and relaxing it (run Teleop > XR > Set Up Clutch Control)");
+                    continue;
                 }
 
-                if (!toggle.enabled || !toggle.gameObject.activeInHierarchy)
-                    problems.Add("MotionToggleButton is disabled or inactive: the robot could not be stopped from the headset");
+                if (matching.Length > 1)
+                    problems.Add($"{matching.Length} MotionToggleButtons with the {role} role: rerun Teleop > XR > Set Up Clutch Control");
+                foreach (MotionToggleButton toggle in matching)
+                {
+                    var toggleSo = new SerializedObject(toggle);
+                    foreach (string field in new[] { "bridge", "origin", "cap" })
+                    {
+                        RequireReference(toggleSo, field, problems);
+                    }
+
+                    if (!toggle.enabled || !toggle.gameObject.activeInHierarchy)
+                        problems.Add($"the {role} MotionToggleButton is disabled or inactive: the robot could not be {(role == MotionToggleButton.Role.Power ? "started or stopped" : "paused")} from the headset");
+                }
             }
 
             // The twin's predicted and measured arms (docs/adr/0018): display only, but a miswired

@@ -22,8 +22,8 @@ namespace Teleop.XR.Editor
     /// wired to the arm rig, the XR Origin and the display's caption line;</item>
     /// <item><see cref="TwinGripper"/> is added on the wrist's twin visual and wired to its fingers and
     /// its roll group;</item>
-    /// <item>the robot's start/stop button (<see cref="MotionToggleButton"/>) is built on the bench's
-    /// front-left corner, and the bridge is set to start with motion <b>off</b>;</item>
+    /// <item>the robot's power and pause buttons (<see cref="MotionToggleButton"/>) are built on the
+    /// bench's front-left corner, and the bridge is set to start with motion <b>off</b>;</item>
     /// <item>the twin's predicted and last-measured arms, the commanded arm's ghost appearance, and
     /// three switches that show or hide each arm (docs/adr/0018).</item>
     /// </list>
@@ -547,52 +547,74 @@ namespace Teleop.XR.Editor
             driver = bridge.GetComponent<TwinArmsDriver>() ?? bridge.gameObject.AddComponent<TwinArmsDriver>();
         }
 
-        public const string MotionButtonName = "MotionButton";
+        public const string MotionButtonName = "MotionButton", PauseButtonName = "PauseButton";
 
         /// <summary>
-        /// A red/green push button on the bench's front-left corner, out of the arm's reach and to the
-        /// left of where the right hand clutches, with a label behind it. Rebuilt on every run.
+        /// The robot's power button (red off, green on) on the bench's front-left corner, out of the arm's
+        /// reach and to the left of where the right hand clutches, with a label behind it; and the smaller
+        /// PAUSE button to its left, between it and the speed sliders, labelled in front (docs/adr/0023
+        /// decision 5). Both are rebuilt on every run.
         /// </summary>
         private static void BuildMotionButton(Scene scene, JetRoverOperatorBridge bridge, XROrigin origin)
         {
-            foreach (GameObject root in scene.GetRootGameObjects().Where(r => r.name == MotionButtonName).ToList())
+            foreach (GameObject root in scene.GetRootGameObjects().Where(r => r.name == MotionButtonName || r.name == PauseButtonName).ToList())
             {
                 Object.DestroyImmediate(root);
             }
 
-            float top = LabLayout.BenchTop;
-            var button = new GameObject(MotionButtonName).transform;
-            button.position = new Vector3(LabLayout.ArmBase.x - 0.5f, top, LabLayout.BenchNearZ + 0.12f);
+            float z = LabLayout.BenchNearZ + 0.12f;
+            Transform power = BuildButton(MotionButtonName, new Vector3(LabLayout.ArmBase.x - 0.5f, LabLayout.BenchTop, z), 0.11f, 0.06f,
+                "MotionButtonCap", new Color(0.9f, 0.12f, 0.1f), out Renderer powerCap); // red = off; recoloured at runtime
+            TextMeshPro powerLabel = LabParts.Label("Label", power, new Vector3(0f, 0.11f, 0.075f), Quaternion.Euler(15f, 0f, 0f),
+                "ROBOT OFF", 0.45f, Color.white, new Vector2(0.3f, 0.1f), TextAlignmentOptions.Center, FontStyles.Bold);
+            WireButton(power, MotionToggleButton.Role.Power, powerCap, powerLabel, 0.03f);
 
-            GameObject plinth = GameObject.CreatePrimitive(PrimitiveType.Cube);
-            plinth.name = "Plinth";
-            plinth.transform.SetParent(button, false);
-            plinth.transform.localPosition = new Vector3(0f, 0.015f, 0f);
-            plinth.transform.localScale = new Vector3(0.11f, 0.03f, 0.11f);
-            plinth.GetComponent<Renderer>().sharedMaterial = LabMaterials.Lit("MotionButtonPlinth", new Color(0.06f, 0.062f, 0.068f), 0.6f, 0.5f);
+            Transform pause = BuildButton(PauseButtonName, new Vector3(LabLayout.ArmBase.x - 0.62f, LabLayout.BenchTop, z), 0.07f, 0.04f,
+                "PauseButtonCap", new Color(0.35f, 0.36f, 0.4f), out Renderer pauseCap); // grey until the robot is on
+            TextMeshPro pauseLabel = LabParts.Label("Label", pause, new Vector3(0f, 0.006f, -0.05f), Quaternion.Euler(60f, 0f, 0f),
+                "PAUSE", 0.13f, Color.white, new Vector2(0.1f, 0.035f), TextAlignmentOptions.Center, FontStyles.Bold);
+            WireButton(pause, MotionToggleButton.Role.Pause, pauseCap, pauseLabel, 0.02f);
 
-            GameObject cap = GameObject.CreatePrimitive(PrimitiveType.Cylinder);
-            cap.name = "Cap";
-            cap.transform.SetParent(button, false);
-            cap.transform.localPosition = new Vector3(0f, 0.038f, 0f);
-            cap.transform.localScale = new Vector3(0.06f, 0.008f, 0.06f); // a cylinder primitive is 2 units tall
-            cap.GetComponent<Renderer>().sharedMaterial = LabMaterials.Unlit("MotionButtonCap", new Color(0.9f, 0.12f, 0.1f)); // red = off; recoloured at runtime
-
-            foreach (Collider collider in button.GetComponentsInChildren<Collider>())
+            Transform BuildButton(string name, Vector3 at, float plinthSize, float capSize, string capMaterial, Color capColor, out Renderer cap)
             {
-                Object.DestroyImmediate(collider); // no XRI interactor may press it; the fingertip check does
+                var button = new GameObject(name).transform;
+                button.position = at;
+
+                GameObject plinth = GameObject.CreatePrimitive(PrimitiveType.Cube);
+                plinth.name = "Plinth";
+                plinth.transform.SetParent(button, false);
+                plinth.transform.localPosition = new Vector3(0f, 0.015f, 0f);
+                plinth.transform.localScale = new Vector3(plinthSize, 0.03f, plinthSize);
+                plinth.GetComponent<Renderer>().sharedMaterial = LabMaterials.Lit("MotionButtonPlinth", new Color(0.06f, 0.062f, 0.068f), 0.6f, 0.5f);
+
+                GameObject capObject = GameObject.CreatePrimitive(PrimitiveType.Cylinder);
+                capObject.name = "Cap";
+                capObject.transform.SetParent(button, false);
+                capObject.transform.localPosition = new Vector3(0f, 0.038f, 0f);
+                capObject.transform.localScale = new Vector3(capSize, 0.008f, capSize); // a cylinder primitive is 2 units tall
+                capObject.GetComponent<Renderer>().sharedMaterial = LabMaterials.Unlit(capMaterial, capColor);
+
+                foreach (Collider collider in button.GetComponentsInChildren<Collider>())
+                {
+                    Object.DestroyImmediate(collider); // no XRI interactor may press it; the fingertip check does
+                }
+
+                cap = capObject.GetComponent<Renderer>();
+                return button;
             }
 
-            TextMeshPro label = LabParts.Label("Label", button, new Vector3(0f, 0.11f, 0.075f), Quaternion.Euler(15f, 0f, 0f),
-                "ROBOT OFF", 0.45f, Color.white, new Vector2(0.3f, 0.1f), TextAlignmentOptions.Center, FontStyles.Bold);
-
-            var toggle = button.gameObject.AddComponent<MotionToggleButton>();
-            var so = new SerializedObject(toggle);
-            so.FindProperty("bridge").objectReferenceValue = bridge;
-            so.FindProperty("origin").objectReferenceValue = origin;
-            so.FindProperty("cap").objectReferenceValue = cap.GetComponent<Renderer>();
-            so.FindProperty("label").objectReferenceValue = label;
-            so.ApplyModifiedPropertiesWithoutUndo();
+            void WireButton(Transform button, MotionToggleButton.Role role, Renderer cap, TextMeshPro label, float radius)
+            {
+                var toggle = button.gameObject.AddComponent<MotionToggleButton>();
+                var so = new SerializedObject(toggle);
+                so.FindProperty("role").enumValueIndex = (int)role;
+                so.FindProperty("bridge").objectReferenceValue = bridge;
+                so.FindProperty("origin").objectReferenceValue = origin;
+                so.FindProperty("cap").objectReferenceValue = cap;
+                so.FindProperty("label").objectReferenceValue = label;
+                so.FindProperty("radiusMeters").floatValue = radius;
+                so.ApplyModifiedPropertiesWithoutUndo();
+            }
         }
 
         /// <summary>Removes everything that made the target grabbable, dependents first.</summary>

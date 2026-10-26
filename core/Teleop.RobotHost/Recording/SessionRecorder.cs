@@ -448,7 +448,7 @@ namespace Teleop.RobotHost.Recording
 
             string? profileSha = null;
             var notes = new StringBuilder("opened automatically by RobotHost (docs/adr/0023 decision 4): " + spec.Reason +
-                "; load, operator and any headset-side network disturbance are unknown");
+                "; load and any headset-side network disturbance are unknown; the operator is the headset at " + spec.Sender);
             if (o.ProfilePath != null && File.Exists(o.ProfilePath))
             {
                 byte[] profile = File.ReadAllBytes(o.ProfilePath);
@@ -475,7 +475,8 @@ namespace Teleop.RobotHost.Recording
                     ["load"] = new JsonObject { ["kind"] = "unknown", ["payloadGrams"] = null },
                     ["network"] = network,
                     ["motion"] = AutoLabel,
-                    ["operator"] = "auto " + spec.Sender,
+                    // Only a headset opens one (docs/adr/0023 decision 4, 2026-10-26): its address.
+                    ["operator"] = "headset " + spec.Sender,
                 },
                 ["builds"] = new JsonObject
                 {

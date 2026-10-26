@@ -6,11 +6,41 @@ namespace Teleop.RobotArm.Wire
     /// <summary>What the operator asks of the arm's servo torque (docs/adr/0023 decision 5).</summary>
     public enum ArmPowerRequest : byte
     {
+        /// <summary>Nothing: a heartbeat, which says who is sending and in which mode.</summary>
+        None = 0,
+
         /// <summary>Park slowly at the rest pose, wait until the readings say it is there, then switch torque off.</summary>
         Relax = 1,
 
         /// <summary>Switch torque on (or keep it on), and take joint commands again.</summary>
         Hold = 2,
+    }
+
+    /// <summary>
+    /// Who sends the operator message. Only a <see cref="Headset"/>'s joint commands open automatic
+    /// recordings (docs/adr/0023 decision 4). Unity's editor running the Bridge (Direct Preview) is a
+    /// headset too, by design.
+    /// </summary>
+    public enum OperatorClientKind : byte
+    {
+        /// <summary>A laptop tool, or anything that does not say.</summary>
+        Tool = 0,
+
+        /// <summary>The Bridge: someone operating with the headset.</summary>
+        Headset = 1,
+    }
+
+    /// <summary>The operator's motion mode (docs/adr/0023 decision 5), as the headset's buttons set it.</summary>
+    public enum OperatorMotionMode : byte
+    {
+        /// <summary>No commands; the arm is to park and relax (or is about to be asked to).</summary>
+        Off = 0,
+
+        /// <summary>No commands; the torque stays as it is.</summary>
+        Paused = 1,
+
+        /// <summary>Commands are sent while the robot holds.</summary>
+        On = 2,
     }
 
     /// <summary>The arm's power state as RobotHost reports it.</summary>
@@ -58,17 +88,21 @@ namespace Teleop.RobotArm.Wire
     }
 
     /// <summary>
-    /// The arm-power messages on the joint port (docs/adr/0018 amendment 2026-10-26, docs/adr/0023
-    /// decision 5), little-endian.
+    /// The operator message and the arm-power status on the joint port (docs/adr/0018 amendment
+    /// 2026-10-26; docs/adr/0023 decisions 4 and 5), little-endian.
     ///
-    /// <para><b>Request</b> (operator → robot, 15 bytes): <c>u8 0x81 | u8 version (1) | u8 request |
-    /// u32 sequence | i64 operatorSendTicks</c>.</para>
+    /// <para><b>Operator message</b> (operator → robot, 17 bytes): <c>u8 0x81 | u8 version (1) |
+    /// u8 clientKind | u8 mode | u8 request | u32 sequence | i64 operatorSendTicks</c>. A heartbeat
+    /// (request <see cref="ArmPowerRequest.None"/>) goes once a second whatever the mode; a relax or
+    /// hold request is the same message with the request set. <c>clientKind</c> is
+    /// <see cref="OperatorClientKind"/> (only a headset's commands open automatic recordings);
+    /// <c>mode</c> is <see cref="OperatorMotionMode"/>.</para>
     ///
     /// <para><b>Status</b> (robot → operator, 28 bytes): <c>u8 0x82 | u8 version (1) | u8 state |
     /// u8 reason | u32 echoSequence | i64 echoOperatorTicks | i64 robotSendTicks |
-    /// f32 remainingDeg</c>. <c>echoSequence</c> and <c>echoOperatorTicks</c> are the latest request's
-    /// (0 before any); <c>remainingDeg</c> is the largest arm joint's distance to the rest pose by the
-    /// last reading, NaN when unknown.</para>
+    /// f32 remainingDeg</c>. <c>echoSequence</c> and <c>echoOperatorTicks</c> are the latest operator
+    /// message's (0 before any); <c>remainingDeg</c> is the largest arm joint's distance to the rest
+    /// pose by the last reading, NaN when unknown.</para>
     ///
     /// <para>The tags share the joint port with <see cref="JointCommandCodec"/> (first byte 2),
     /// <see cref="JointStateCodec"/>'s frame (first byte 1) and its subscribe (0x80). Every decoder on
@@ -81,7 +115,7 @@ namespace Teleop.RobotArm.Wire
         public const byte StatusTag = 0x82;
         public const byte Version = 1;
 
-        public const int RequestSize = 1 + 1 + 1 + 4 + 8;
+        public const int RequestSize = 1 + 1 + 1 + 1 + 1 + 4 + 8;
         public const int StatusSize = 1 + 1 + 1 + 1 + 4 + 8 + 8 + 4;
 
         public static bool IsRequest(ReadOnlySpan<byte> source) => source.Length >= 1 && source[0] == RequestTag;
@@ -89,11 +123,12 @@ namespace Teleop.RobotArm.Wire
         public static bool IsStatus(ReadOnlySpan<byte> source) => source.Length >= 1 && source[0] == StatusTag;
 
         /// <summary>
-        /// Writes a request. False, writing nothing, when <paramref name="destination"/> is too short.
-        /// The request byte is written as given, so a test can send one this build does not define.
+        /// Writes an operator message. False, writing nothing, when <paramref name="destination"/> is too
+        /// short. The kind and request bytes are written as given, so a test can send ones this build does
+        /// not define.
         /// </summary>
-        public static bool TryEncodeRequest(ArmPowerRequest request, uint sequence, long operatorSendTicks,
-            Span<byte> destination, out int bytesWritten)
+        public static bool TryEncodeRequest(OperatorClientKind clientKind, OperatorMotionMode mode, ArmPowerRequest request,
+            uint sequence, long operatorSendTicks, Span<byte> destination, out int bytesWritten)
         {
             bytesWritten = RequestSize;
             if (destination.Length < RequestSize)
@@ -103,35 +138,43 @@ namespace Teleop.RobotArm.Wire
 
             destination[0] = RequestTag;
             destination[1] = Version;
-            destination[2] = (byte)request;
-            BinaryPrimitives.WriteUInt32LittleEndian(destination.Slice(3), sequence);
-            BinaryPrimitives.WriteInt64LittleEndian(destination.Slice(7), operatorSendTicks);
+            destination[2] = (byte)clientKind;
+            destination[3] = (byte)mode;
+            destination[4] = (byte)request;
+            BinaryPrimitives.WriteUInt32LittleEndian(destination.Slice(5), sequence);
+            BinaryPrimitives.WriteInt64LittleEndian(destination.Slice(9), operatorSendTicks);
             return true;
         }
 
         /// <summary>
-        /// Reads a request. False for a short record, another tag or another version. The request byte is
-        /// returned raw, so the receiver can answer an unknown one (<see cref="ArmPowerReason.UnknownRequest"/>);
+        /// Reads an operator message. False for a short record, another tag or version, or a mode this
+        /// build does not define. The kind and request bytes are returned raw: an unknown kind is not a
+        /// headset, and an unknown request is answered (<see cref="ArmPowerReason.UnknownRequest"/>);
         /// <see cref="IsKnown(ArmPowerRequest)"/> says whether it is one.
         /// </summary>
-        public static bool TryDecodeRequest(ReadOnlySpan<byte> source, out ArmPowerRequest request, out uint sequence,
-            out long operatorSendTicks)
+        public static bool TryDecodeRequest(ReadOnlySpan<byte> source, out OperatorClientKind clientKind, out OperatorMotionMode mode,
+            out ArmPowerRequest request, out uint sequence, out long operatorSendTicks)
         {
-            request = 0;
+            clientKind = OperatorClientKind.Tool;
+            mode = OperatorMotionMode.Off;
+            request = ArmPowerRequest.None;
             sequence = 0;
             operatorSendTicks = 0;
-            if (source.Length < RequestSize || source[0] != RequestTag || source[1] != Version)
+            if (source.Length < RequestSize || source[0] != RequestTag || source[1] != Version || source[3] > (byte)OperatorMotionMode.On)
             {
                 return false;
             }
 
-            request = (ArmPowerRequest)source[2];
-            sequence = BinaryPrimitives.ReadUInt32LittleEndian(source.Slice(3));
-            operatorSendTicks = BinaryPrimitives.ReadInt64LittleEndian(source.Slice(7));
+            clientKind = (OperatorClientKind)source[2];
+            mode = (OperatorMotionMode)source[3];
+            request = (ArmPowerRequest)source[4];
+            sequence = BinaryPrimitives.ReadUInt32LittleEndian(source.Slice(5));
+            operatorSendTicks = BinaryPrimitives.ReadInt64LittleEndian(source.Slice(9));
             return true;
         }
 
-        public static bool IsKnown(ArmPowerRequest request) => request == ArmPowerRequest.Relax || request == ArmPowerRequest.Hold;
+        public static bool IsKnown(ArmPowerRequest request) =>
+            request == ArmPowerRequest.None || request == ArmPowerRequest.Relax || request == ArmPowerRequest.Hold;
 
         public static bool TryEncodeStatus(ArmPowerState state, ArmPowerReason reason, uint echoSequence, long echoOperatorTicks,
             long robotSendTicks, float remainingDeg, Span<byte> destination, out int bytesWritten)

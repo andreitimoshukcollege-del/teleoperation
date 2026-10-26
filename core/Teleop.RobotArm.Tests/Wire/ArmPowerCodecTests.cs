@@ -10,13 +10,16 @@ namespace Teleop.RobotArm.Tests.Wire
         public void Request_RoundTripsExactly()
         {
             var buffer = new byte[ArmPowerCodec.RequestSize];
-            Assert.True(ArmPowerCodec.TryEncodeRequest(ArmPowerRequest.Relax, 0xDEADBEEF, -123456789012, buffer, out int written));
-            Assert.Equal(15, written);
+            Assert.True(ArmPowerCodec.TryEncodeRequest(OperatorClientKind.Headset, OperatorMotionMode.Off, ArmPowerRequest.Relax,
+                0xDEADBEEF, -123456789012, buffer, out int written));
+            Assert.Equal(17, written);
             Assert.True(ArmPowerCodec.IsRequest(buffer));
             Assert.False(ArmPowerCodec.IsStatus(buffer));
 
-            Assert.True(ArmPowerCodec.TryDecodeRequest(buffer, out ArmPowerRequest request, out uint seq, out long ticks));
-            Assert.Equal((ArmPowerRequest.Relax, 0xDEADBEEFu, -123456789012L), (request, seq, ticks));
+            Assert.True(ArmPowerCodec.TryDecodeRequest(buffer, out OperatorClientKind kind, out OperatorMotionMode mode,
+                out ArmPowerRequest request, out uint seq, out long ticks));
+            Assert.Equal((OperatorClientKind.Headset, OperatorMotionMode.Off, ArmPowerRequest.Relax, 0xDEADBEEFu, -123456789012L),
+                (kind, mode, request, seq, ticks));
             Assert.True(ArmPowerCodec.IsKnown(request));
         }
 
@@ -24,8 +27,24 @@ namespace Teleop.RobotArm.Tests.Wire
         public void Request_LayoutIsFixed()
         {
             var buffer = new byte[ArmPowerCodec.RequestSize];
-            Assert.True(ArmPowerCodec.TryEncodeRequest(ArmPowerRequest.Hold, 1, 2, buffer, out _));
-            Assert.Equal(new byte[] { 0x81, 1, 2, 1, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0 }, buffer);
+            Assert.True(ArmPowerCodec.TryEncodeRequest(OperatorClientKind.Headset, OperatorMotionMode.On, ArmPowerRequest.Hold, 1, 2, buffer, out _));
+            Assert.Equal(new byte[] { 0x81, 1, 1, 2, 2, 1, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0 }, buffer);
+        }
+
+        [Fact]
+        public void Heartbeat_IsARequestOfNone_FromAToolOrAHeadset()
+        {
+            var buffer = new byte[ArmPowerCodec.RequestSize];
+            Assert.True(ArmPowerCodec.TryEncodeRequest(OperatorClientKind.Tool, OperatorMotionMode.Paused, ArmPowerRequest.None, 9, 10, buffer, out _));
+            Assert.True(ArmPowerCodec.TryDecodeRequest(buffer, out OperatorClientKind kind, out OperatorMotionMode mode,
+                out ArmPowerRequest request, out _, out _));
+            Assert.Equal((OperatorClientKind.Tool, OperatorMotionMode.Paused, ArmPowerRequest.None), (kind, mode, request));
+            Assert.True(ArmPowerCodec.IsKnown(request));
+
+            // An unknown client kind decodes raw: the receiver treats it as not a headset.
+            buffer[2] = 7;
+            Assert.True(ArmPowerCodec.TryDecodeRequest(buffer, out kind, out _, out _, out _, out _));
+            Assert.NotEqual(OperatorClientKind.Headset, kind);
         }
 
         [Fact]
@@ -58,7 +77,7 @@ namespace Teleop.RobotArm.Tests.Wire
         public void ShortBuffers_AreRefused_WithoutWriting()
         {
             var shortBuffer = new byte[ArmPowerCodec.RequestSize - 1];
-            Assert.False(ArmPowerCodec.TryEncodeRequest(ArmPowerRequest.Relax, 1, 1, shortBuffer, out _));
+            Assert.False(ArmPowerCodec.TryEncodeRequest(OperatorClientKind.Headset, OperatorMotionMode.Off, ArmPowerRequest.Relax, 1, 1, shortBuffer, out _));
             Assert.All(shortBuffer, b => Assert.Equal(0, b));
             Assert.False(ArmPowerCodec.TryEncodeStatus(ArmPowerState.Relaxed, 0, 1, 1, 1, 0f, new byte[ArmPowerCodec.StatusSize - 1], out _));
         }
@@ -67,17 +86,21 @@ namespace Teleop.RobotArm.Tests.Wire
         public void Malformed_IsRejected()
         {
             var request = new byte[ArmPowerCodec.RequestSize];
-            ArmPowerCodec.TryEncodeRequest(ArmPowerRequest.Relax, 1, 1, request, out _);
-            Assert.False(ArmPowerCodec.TryDecodeRequest(request.AsSpan(0, ArmPowerCodec.RequestSize - 1), out _, out _, out _));
-            Assert.False(ArmPowerCodec.TryDecodeRequest(ReadOnlySpan<byte>.Empty, out _, out _, out _));
+            ArmPowerCodec.TryEncodeRequest(OperatorClientKind.Headset, OperatorMotionMode.Off, ArmPowerRequest.Relax, 1, 1, request, out _);
+            Assert.False(ArmPowerCodec.TryDecodeRequest(request.AsSpan(0, ArmPowerCodec.RequestSize - 1), out _, out _, out _, out _, out _));
+            Assert.False(ArmPowerCodec.TryDecodeRequest(ReadOnlySpan<byte>.Empty, out _, out _, out _, out _, out _));
+
+            byte[] badMode = (byte[])request.Clone();
+            badMode[3] = 3;
+            Assert.False(ArmPowerCodec.TryDecodeRequest(badMode, out _, out _, out _, out _, out _));
 
             byte[] wrongVersion = (byte[])request.Clone();
             wrongVersion[1] = ArmPowerCodec.Version + 1;
-            Assert.False(ArmPowerCodec.TryDecodeRequest(wrongVersion, out _, out _, out _));
+            Assert.False(ArmPowerCodec.TryDecodeRequest(wrongVersion, out _, out _, out _, out _, out _));
 
             byte[] wrongTag = (byte[])request.Clone();
             wrongTag[0] = ArmPowerCodec.StatusTag;
-            Assert.False(ArmPowerCodec.TryDecodeRequest(wrongTag, out _, out _, out _));
+            Assert.False(ArmPowerCodec.TryDecodeRequest(wrongTag, out _, out _, out _, out _, out _));
 
             var status = new byte[ArmPowerCodec.StatusSize];
             ArmPowerCodec.TryEncodeStatus(ArmPowerState.Relaxed, 0, 1, 1, 1, 0f, status, out _);
@@ -94,8 +117,8 @@ namespace Teleop.RobotArm.Tests.Wire
         public void UnknownRequestByte_DecodesRaw_SoItCanBeAnswered()
         {
             var buffer = new byte[ArmPowerCodec.RequestSize];
-            Assert.True(ArmPowerCodec.TryEncodeRequest((ArmPowerRequest)9, 5, 6, buffer, out _));
-            Assert.True(ArmPowerCodec.TryDecodeRequest(buffer, out ArmPowerRequest request, out _, out _));
+            Assert.True(ArmPowerCodec.TryEncodeRequest(OperatorClientKind.Headset, OperatorMotionMode.On, (ArmPowerRequest)9, 5, 6, buffer, out _));
+            Assert.True(ArmPowerCodec.TryDecodeRequest(buffer, out _, out _, out ArmPowerRequest request, out _, out _));
             Assert.False(ArmPowerCodec.IsKnown(request));
         }
 
@@ -103,7 +126,7 @@ namespace Teleop.RobotArm.Tests.Wire
         public void TheJointPortsOtherDecoders_IgnoreBoth()
         {
             var request = new byte[ArmPowerCodec.RequestSize];
-            ArmPowerCodec.TryEncodeRequest(ArmPowerRequest.Relax, 1, 1, request, out _);
+            ArmPowerCodec.TryEncodeRequest(OperatorClientKind.Headset, OperatorMotionMode.Off, ArmPowerRequest.Relax, 1, 1, request, out _);
             var status = new byte[ArmPowerCodec.StatusSize];
             ArmPowerCodec.TryEncodeStatus(ArmPowerState.Relaxed, 0, 1, 1, 1, 0f, status, out _);
 
@@ -124,7 +147,7 @@ namespace Teleop.RobotArm.Tests.Wire
             JointStateCodec.TryEncode(1, 1, 1, 1, 1, 1, new[] { new JointSample(1, 0f, true) }, frame, out int frameBytes);
             foreach (byte[] other in new[] { subscribe, command, frame.AsSpan(0, frameBytes).ToArray() })
             {
-                Assert.False(ArmPowerCodec.TryDecodeRequest(other, out _, out _, out _));
+                Assert.False(ArmPowerCodec.TryDecodeRequest(other, out _, out _, out _, out _, out _));
                 Assert.False(ArmPowerCodec.TryDecodeStatus(other, out _, out _, out _, out _, out _, out _));
             }
         }

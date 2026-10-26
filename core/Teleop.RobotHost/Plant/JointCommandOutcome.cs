@@ -14,5 +14,8 @@ namespace Teleop.RobotHost.Plant
 
         /// <summary>Dropped: the pose would collide (docs/adr/0020); the arm holds.</summary>
         Refused,
+
+        /// <summary>Dropped: the arm was parking or relaxed (docs/adr/0023 decision 5); nothing reached the plant.</summary>
+        Parked,
     }
 }

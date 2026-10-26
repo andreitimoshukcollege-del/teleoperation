@@ -10,6 +10,7 @@ using Teleop.Core.Types;
 using Teleop.RobotArm.Wire;
 using Teleop.RobotHost.Net;
 using Teleop.RobotHost.Plant;
+using Teleop.RobotHost.Power;
 using Teleop.RobotHost.Recording;
 using Teleop.RobotHost.Relay;
 using Teleop.RobotHost.Time;
@@ -133,6 +134,32 @@ namespace Teleop.RobotHost
             JointTarget[]? jointTargetsBuffer = jointTransport != null
                 ? new JointTarget[JointCommandCodec.MaxJointsPerMessage]
                 : null;
+            // "Park, then relax" (docs/adr/0023 decision 5): the headset's arm-power requests on the joint
+            // port. While the arm parks or is relaxed, no operator command (joint or Cartesian) reaches it.
+            ArmPowerController? power = null;
+            if (jointTransport != null)
+            {
+                try
+                {
+                    power = new ArmPowerController(profile, a.ArmPower, clock.TicksPerSecond,
+                        new PlantArmPowerPort(plant, profile, plantRelay, jointTransport, recorder, Console.WriteLine));
+                }
+                catch (ArgumentException e)
+                {
+                    Console.Error.WriteLine($"[power] {e.Message}");
+                    return 1;
+                }
+
+                ArmPowerController gate = power;
+                plant.CartesianGate = () => gate.AcceptOperatorCommand(clock.NowTicks);
+            }
+
+            int loggedIgnored = 0;
+            long lastIgnoredLogTicks = long.MinValue;
+            // The latest operator message's sender, client kind and mode (docs/adr/0018 §9).
+            string? operatorText = null, operatorKind = null, operatorMode = null;
+            long lastOperatorTicks = long.MinValue;
+
             // The joint-state downlink (docs/adr/0018): streams to whoever last sent a keepalive on
             // this same port, at 50 Hz, whether or not commands are arriving.
             var jointStreamer = new JointStateStreamer(clock.TicksPerSecond);
@@ -174,6 +201,10 @@ namespace Teleop.RobotHost
                 }
 
                 sessionState.Uplink(now, uplink?.Profile ?? "none", uplinkSeedNow);
+                if (operatorText != null && now - lastOperatorTicks <= 3 * clock.TicksPerSecond)
+                {
+                    sessionState.Operator(now, operatorKind!, operatorMode!, operatorText);
+                }
             }
 
             // Discovery (docs/adr/0022): the headset asks here where the robot is, so a new DHCP lease
@@ -199,6 +230,13 @@ namespace Teleop.RobotHost
                     $"[joint] listening on UDP :{a.JointLocalPort} for pre-computed joint-angle " +
                     "commands (docs/adr/0009-jetrover-operator-side-inverse-kinematics.md), and streaming " +
                     "joint state at 50 Hz to whoever sends it a keepalive (docs/adr/0018).");
+            }
+
+            if (power != null)
+            {
+                Console.WriteLine($"[power] relax requests park, then switch torque off (docs/adr/0023 decision 5): {a.ArmPower}" +
+                    (power.HasRestPose ? $"; motors {string.Join(", ", power.ArmMotorIds.ToArray())}" : "; every relax is refused (no --rest-pose-deg)"));
+                if (power.RestPoseNote != null) Console.WriteLine($"[power] note: {power.RestPoseNote}");
             }
 
             if (discovery != null)
@@ -324,6 +362,42 @@ namespace Teleop.RobotHost
                             continue;
                         }
 
+                        // The operator message (docs/adr/0018 §9): a heartbeat once a second, which says who
+                        // sends (only a headset is recorded automatically, docs/adr/0023 decision 4) and in
+                        // which mode, or the same message carrying a relax or hold request (decision 5).
+                        if (power != null && ArmPowerCodec.TryDecodeRequest(jointRecvBuffer.AsSpan(0, byteCount),
+                                out OperatorClientKind clientKind, out OperatorMotionMode clientMode,
+                                out ArmPowerRequest powerRequest, out uint powerSequence, out long powerOperatorTicks))
+                        {
+                            string clientText = jointTransport.CurrentRemoteEndPoint?.ToString() ?? "?";
+                            string kindName = SessionLines.KindName(clientKind), modeName = SessionLines.ModeName(clientMode);
+                            if (clientKind == OperatorClientKind.Headset) auto?.OnHeadset(arrivalTicks, clientText);
+                            if (clientText != operatorText || kindName != operatorKind || modeName != operatorMode)
+                            {
+                                Console.WriteLine($"[operator] {kindName} at {clientText}, motion {modeName}");
+                            }
+
+                            operatorText = clientText;
+                            operatorKind = kindName;
+                            operatorMode = modeName;
+                            lastOperatorTicks = arrivalTicks;
+                            if (recorder != null && recorder.IsActive) sessionState!.Operator(arrivalTicks, kindName, modeName, clientText);
+
+                            if (powerRequest != ArmPowerRequest.None)
+                            {
+                                if (recorder != null && recorder.IsActive)
+                                {
+                                    recorder.Record(SessionLines.PowerRequest(arrivalTicks, powerSequence, powerRequest, powerOperatorTicks));
+                                }
+
+                                Console.WriteLine($"[power] {SessionLines.RequestName(powerRequest)} request {powerSequence} from " +
+                                    $"{clientText} (now {SessionLines.StateName(power.State)})");
+                            }
+
+                            power.OnRequest(powerRequest, powerSequence, powerOperatorTicks, arrivalTicks);
+                            continue;
+                        }
+
                         if (JointCommandCodec.TryDecode(
                             jointRecvBuffer.AsSpan(0, byteCount), out uint commandSequence, out long captureTicks,
                             jointTargetsBuffer!, out int targetCount))
@@ -349,7 +423,11 @@ namespace Teleop.RobotHost
                                 if (recorder.IsActive) sessionState!.Sender(arrivalTicks, jointCommanderText);
                             }
 
-                            JointCommandOutcome outcome = plant.CommandJointAngles(jointTargetsBuffer!.AsSpan(0, targetCount), captureTicks);
+                            // Parking or relaxed: ignored (counted, and recorded as P). The first one after start-up
+                            // switches the torque on before it is applied.
+                            JointCommandOutcome outcome = power == null || power.AcceptOperatorCommand(arrivalTicks)
+                                ? plant.CommandJointAngles(jointTargetsBuffer!.AsSpan(0, targetCount), captureTicks)
+                                : JointCommandOutcome.Parked;
                             if (recorder != null && recorder.IsActive)
                             {
                                 // Read from the socket at socketTicks; reached the plant now (later only when the uplink is impaired).
@@ -362,6 +440,15 @@ namespace Teleop.RobotHost
 
                 endpoint.Step(clock.NowTicks);
                 discovery?.Poll();
+                power?.Tick(clock.NowTicks);
+
+                if (power != null && power.IgnoredCommands != loggedIgnored && clock.NowTicks - lastIgnoredLogTicks >= 2 * clock.TicksPerSecond)
+                {
+                    Console.WriteLine($"[power] ignored {power.IgnoredCommands - loggedIgnored} operator command(s): the arm is " +
+                        $"{SessionLines.StateName(power.State)}; a hold request (ROBOT ON) lets them through");
+                    loggedIgnored = power.IgnoredCommands;
+                    lastIgnoredLogTicks = clock.NowTicks;
+                }
 
                 if (!loggedPrecedence && plant.IgnoredCartesianCommands > 0)
                 {

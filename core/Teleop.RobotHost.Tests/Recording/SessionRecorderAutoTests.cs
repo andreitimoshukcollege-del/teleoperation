@@ -161,7 +161,7 @@ namespace Teleop.RobotHost.Tests.Recording
             Assert.Equal("50ms-5j", (string)c["network"]!["uplinkProfile"]!);
             Assert.Equal(3UL, (ulong)c["network"]!["uplinkSeed"]!);
             Assert.Equal("auto", (string)c["motion"]!);
-            Assert.Equal("auto 10.0.0.5:6002", (string)c["operator"]!);
+            Assert.Equal("headset 10.0.0.5:6002", (string)c["operator"]!);
             Assert.Equal("abc123", (string)meta["builds"]!["robothost"]!["sha"]!);
             Assert.False((bool)meta["builds"]!["robothost"]!["dirty"]!);
             Assert.Equal("def456", (string)meta["builds"]!["driver"]!["sha"]!);
@@ -221,7 +221,7 @@ namespace Teleop.RobotHost.Tests.Recording
             Assert.Contains("no END trailer", (string)ma["notes"]!); // no driver in this test
             JsonNode mb = JsonNode.Parse(File.ReadAllText(Path.Combine(b, "session.json")))!;
             Assert.Equal("unknown", (string)mb["conditions"]!["speedSliderRadPerSec"]!); // no command carried a speed
-            Assert.Equal("auto 10.0.0.5:40000", (string)mb["conditions"]!["operator"]!);
+            Assert.Equal("headset 10.0.0.5:40000", (string)mb["conditions"]!["operator"]!);
             Assert.Equal("lan", (string)mb["conditions"]!["network"]!["uplinkProfile"]!);
         }
 

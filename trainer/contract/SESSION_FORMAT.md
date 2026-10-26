@@ -73,8 +73,10 @@ and closes and completes it. In the session they are recognised by `label` and `
   when. `addedDelayMs` (the headset's added delay) is `null` in an automatic session: the robot does
   not know it.
 - `conditions.motion` is `teleop`, `joint-drive:<script>`, or `auto` (an automatic session).
-- `conditions.operator` is a name, `joint-drive@robot`, or `auto <ip:port>` (the joint-command sender
-  of an automatic session).
+- `conditions.operator` is a name, `joint-drive@robot`, or, in an automatic session, `headset <ip:port>`
+  (the joint-command sender, which only a headset can be since 2026-10-26: RobotHost records only a
+  sender that sends the headset heartbeat, docs/adr/0023 decision 4). Automatic sessions recorded
+  before then say `auto <ip:port>`.
 - These values were added without a version change: they are new values of existing fields, and
   every reader already handles them (`trainer/tests/test_contract.py`).
 - `conditions` describe the session for stratification and splits. **A model never sees them.**
@@ -114,13 +116,21 @@ All times are RobotHost `Stopwatch` ticks on the Jetson (`CLOCK_MONOTONIC`, ns).
 | Tag | Fields after the tag | Meaning |
 |---|---|---|
 | `KA` | `t` `opTicks` `opTps` | A keepalive arrived at `t`. `opTicks`/`opTps` are the operator stamp and rate it carried |
-| `JC` | `t` `tDeliver` `seq` `captureTicks` `outcome` `targets` | A joint command arrived at the socket at `t` and reached the plant at `tDeliver` (equal unless the uplink is impaired on the robot). `captureTicks` is on the sender's clock. `outcome` is `A` accepted, `S` stale (capture not newer than the last accepted), `R` refused (the pose would collide, ADR 0020). `targets` is `motor:angleRad:speedRadPerSec;...` as decoded |
+| `JC` | `t` `tDeliver` `seq` `captureTicks` `outcome` `targets` | A joint command arrived at the socket at `t` and reached the plant at `tDeliver` (equal unless the uplink is impaired on the robot). `captureTicks` is on the sender's clock. `outcome` is `A` accepted, `S` stale (capture not newer than the last accepted), `R` refused (the pose would collide, ADR 0020), `P` ignored because the arm was parking or relaxed (ADR 0023 decision 5, since 2026-10-26; it reached no plant). `targets` is `motor:angleRad:speedRadPerSec;...` as decoded |
 | `RO` | `t` `targets` | Targets sent to the relay: `motor:pulse:pulsesPerSecond;...` (the pulse as sent, a float) |
 | `RI` | `t` `entries` | A relay feedback datagram taken by the plant: `motor:valid:pulse;...`, `valid` 0 or 1 |
 | `FR` | `t` `seq` `robotSendTicks` `sensedTicks` `echoOperatorTicks` `echoRobotRecvTicks` `joints` | A joint-state frame sent, decoded from the bytes that went out. `joints` is `motor:flags:value;...` |
 | `SS` | `t` `endpoint` | The joint-state stream's subscriber: written at the start of every session while one is subscribed, then when it changes |
 | `JS` | `t` `endpoint` | The joint-command sender: written at the start of every session while one is commanding, or at the session's first command, then when it changes (the staleness check restarted) |
 | `UP` | `t` `profile` `seed` | The robot-side uplink impairment, at the start of every session when it is not `none` (since 2026-10-26), then whenever it changes (`profile` `none` is off): from then on, `JC`'s `tDeliver` is when that Core profile released the command, `t` when the socket was read. Keepalives go through it too. A schedule (ADR 0021 decision 13) writes one `UP` per change; a simulated session's trainer-only segments name themselves (`param:...`, `queue:...`, `outage:...`) and its `latents.jlog` `LP uplink_schedule` holds their parameters |
+| `OM` | `t` `kind` `mode` `endpoint` | The operator message's sender (docs/adr/0018 §9): its client `kind` (`headset`, or `tool`) and motion `mode` (`on`, `paused`, `off`; the headset's ROBOT buttons), written at the start of every session while one is heard, then when any of the three changes. Since 2026-10-26 |
+| `PQ` | `t` `seq` `request` `opTicks` | An arm-power request arrived (docs/adr/0023 decision 5): `request` `relax` (park, then torque off) or `hold` (torque on), `?<n>` for an unknown one; `opTicks` on the sender's clock. Heartbeats (no request) are not written |
+| `PS` | `t` `state` `reason` | The arm-power state after a change, `holding`, `parking` or `relaxed`, and why: `none`, `no-rest-pose`, `path-collides`, `park-timed-out`, `board-not-answering`, `no-collision-model`, `unknown-request` or `hold-requested`. A refused relax is `holding` with its reason. From `parking` to `relaxed` or `holding`, no joint command reached the plant: those that arrived are `JC` with outcome `P` |
+| `PK` | `t` `targets` | A park waypoint given to the plant (its relay output is the `RO` that follows): `motor:angleRad:speedRadPerSec;...`, the arm joints only |
+| `TQ` | `t` `on` | A torque switch sent to the relay for every servo: `1` on, `0` off. Nothing confirms it; with the servo board silent it reaches no servo |
+
+Readers ignore the tags they do not use; `OM`, `PQ`, `PS`, `PK` and `TQ` were added without a version
+change, and a session with them reads and checks as before (`trainer/tests/test_contract.py`).
 
 ## Driver records (`driver.jlog`)
 
@@ -135,6 +145,7 @@ All times are `time.monotonic_ns()` on the Jetson.
 | `GD` | `t` `motor` `pulse` | The gate dropped a target: within the deadband of the last one written |
 | `CY` | `t` `tEnd` | One feedback cycle (all reads) ran from `t` to `tEnd` |
 | `BV` | `t` `millivolts` | A battery report |
+| `TQ` | `t` `on` | The torque topic switched every servo (1, 2, 3, 4, 5 and 10): `1` on, `0` off, written after the board packets went out (docs/adr/0023 decision 5, since 2026-10-26). Pending targets were dropped with it |
 
 ## Operator records (`operator.jlog`)
 

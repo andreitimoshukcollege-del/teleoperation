@@ -23,6 +23,7 @@ namespace Teleop.RobotHost.Recording
             JointCommandOutcome.Accepted => 'A',
             JointCommandOutcome.Stale => 'S',
             JointCommandOutcome.Refused => 'R',
+            JointCommandOutcome.Parked => 'P',
             _ => '?',
         };
 
@@ -93,6 +94,77 @@ namespace Teleop.RobotHost.Recording
 
         /// <summary>A torque switch sent to the relay (docs/adr/0023 decision 5): 1 on, 0 off.</summary>
         public static string Torque(long t, bool on) => "TQ|" + I(t) + "|" + (on ? '1' : '0');
+
+        /// <summary>An arm-power request from the headset (docs/adr/0023 decision 5).</summary>
+        public static string PowerRequest(long t, uint sequence, ArmPowerRequest request, long operatorTicks) =>
+            "PQ|" + I(t) + "|" + sequence.ToString(CultureInfo.InvariantCulture) + "|" + RequestName(request) + "|" + I(operatorTicks);
+
+        /// <summary>The arm-power state after a change, or a refused relax (holding with a reason).</summary>
+        public static string PowerState(long t, ArmPowerState state, ArmPowerReason reason) =>
+            "PS|" + I(t) + "|" + StateName(state) + "|" + ReasonName(reason);
+
+        /// <summary>A park waypoint as given to the plant: <c>motor:angleRad:speedRadPerSec;...</c>.</summary>
+        public static string Park(long t, ReadOnlySpan<JointTarget> targets)
+        {
+            var b = new StringBuilder(16 + targets.Length * 24);
+            b.Append("PK|").Append(I(t)).Append('|');
+            for (int i = 0; i < targets.Length; i++)
+            {
+                if (i > 0) b.Append(';');
+                b.Append(targets[i].MotorId.ToString(CultureInfo.InvariantCulture)).Append(':').Append(F(targets[i].Angle))
+                    .Append(':').Append(F(targets[i].Speed));
+            }
+
+            return b.ToString();
+        }
+
+        /// <summary>The operator's client kind and motion mode, from its heartbeat.</summary>
+        public static string OperatorMode(long t, string kind, string mode, string endpoint) =>
+            "OM|" + I(t) + "|" + Clean(kind) + "|" + Clean(mode) + "|" + Clean(endpoint);
+
+        public static string KindName(OperatorClientKind kind) => kind switch
+        {
+            OperatorClientKind.Headset => "headset",
+            OperatorClientKind.Tool => "tool",
+            _ => "?" + ((byte)kind).ToString(CultureInfo.InvariantCulture),
+        };
+
+        public static string ModeName(OperatorMotionMode mode) => mode switch
+        {
+            OperatorMotionMode.Off => "off",
+            OperatorMotionMode.Paused => "paused",
+            OperatorMotionMode.On => "on",
+            _ => "?",
+        };
+
+        public static string RequestName(ArmPowerRequest request) => request switch
+        {
+            ArmPowerRequest.None => "none",
+            ArmPowerRequest.Relax => "relax",
+            ArmPowerRequest.Hold => "hold",
+            _ => "?" + ((byte)request).ToString(CultureInfo.InvariantCulture),
+        };
+
+        public static string StateName(ArmPowerState state) => state switch
+        {
+            ArmPowerState.Holding => "holding",
+            ArmPowerState.Parking => "parking",
+            ArmPowerState.Relaxed => "relaxed",
+            _ => "?",
+        };
+
+        public static string ReasonName(ArmPowerReason reason) => reason switch
+        {
+            ArmPowerReason.None => "none",
+            ArmPowerReason.NoRestPose => "no-rest-pose",
+            ArmPowerReason.PathCollides => "path-collides",
+            ArmPowerReason.ParkTimedOut => "park-timed-out",
+            ArmPowerReason.BoardNotAnswering => "board-not-answering",
+            ArmPowerReason.NoCollisionModel => "no-collision-model",
+            ArmPowerReason.UnknownRequest => "unknown-request",
+            ArmPowerReason.HoldRequested => "hold-requested",
+            _ => "?" + ((byte)reason).ToString(CultureInfo.InvariantCulture),
+        };
 
         public static string Subscriber(long t, string endpoint) => "SS|" + I(t) + "|" + Clean(endpoint);
 

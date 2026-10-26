@@ -8,6 +8,11 @@ namespace Teleop.RobotHost.Recording
     /// opens and closes a session of its own. Pure logic, called from the main loop with that loop's
     /// clock; the <see cref="IAutoSessionSink"/> (the <see cref="SessionRecorder"/>) does the files.
     ///
+    /// <para><b>Only a headset is recorded</b> (2026-10-26): a joint command counts only when its sender
+    /// sent a headset heartbeat (<see cref="OnHeadset"/>) within <see cref="AutoRecordOptions.HeadsetSeconds"/>.
+    /// Anyone else's commands (<c>joint-drive</c>, <c>move-arm</c>, ...) open no session and keep none
+    /// open, and close an open one as any sender change does. Below, "joint command" means a headset's.</para>
+    ///
     /// <para><b>Opens</b> on the first joint command after at least <see cref="AutoRecordOptions.IdleSeconds"/>
     /// without one (or since start-up), unless the control file names a manual session (manual
     /// sessions win: the automatic recorder stays out) or the disk has less than
@@ -59,6 +64,11 @@ namespace Teleop.RobotHost.Recording
         private bool _loggedBusy;
         private bool _loggedLowDisk;
         private bool _loggedSplitHold;
+        private readonly long _headsetWindowTicks;
+        private string? _headset;
+        private long _headsetTicks;
+        private bool _loggedNotHeadset;
+        private string? _loggedNotHeadsetSender;
 
         public AutoSessionRecorder(AutoRecordOptions options, IAutoSessionSink sink, long ticksPerSecond, Func<DateTime> utcNow,
             Func<long?> freeBytes, Func<UplinkCondition> uplink, Action<string>? log = null)
@@ -76,6 +86,7 @@ namespace Teleop.RobotHost.Recording
             _idleTicks = Ticks(options.IdleSeconds);
             _maxTicks = Ticks(options.MaxMinutes * 60);
             _minSplitTicks = Ticks(options.MinSplitSeconds);
+            _headsetWindowTicks = Ticks(options.HeadsetSeconds);
             _diskCheckTicks = Ticks(DiskCheckSeconds);
             _stopBytes = options.BytesFromGigabytes(options.StopFreeGigabytes);
             _startBytes = options.BytesFromGigabytes(options.StartFreeGigabytes);
@@ -115,7 +126,26 @@ namespace Teleop.RobotHost.Recording
             TrySplit(nowTicks, $"the joint-state subscriber changed from {_sessionSubscriber} to {endpoint}");
         }
 
-        /// <summary>A joint command from <paramref name="sender"/> reached RobotHost. Call before it is recorded: it may open the session it belongs to.</summary>
+        /// <summary>
+        /// A headset heartbeat (the operator message with client kind headset, docs/adr/0018 §9) arrived
+        /// from <paramref name="endpoint"/>. Its joint commands count as a headset's for
+        /// <see cref="AutoRecordOptions.HeadsetSeconds"/> from now.
+        /// </summary>
+        public void OnHeadset(long nowTicks, string endpoint)
+        {
+            _headset = endpoint ?? throw new ArgumentNullException(nameof(endpoint));
+            _headsetTicks = nowTicks;
+        }
+
+        /// <summary>True when <paramref name="sender"/> sent the latest headset heartbeat, at most <see cref="AutoRecordOptions.HeadsetSeconds"/> ago.</summary>
+        public bool IsHeadset(long nowTicks, string sender) =>
+            _headset != null && string.Equals(sender, _headset, StringComparison.Ordinal) && nowTicks - _headsetTicks <= _headsetWindowTicks;
+
+        /// <summary>
+        /// A joint command from <paramref name="sender"/> reached RobotHost. Call before it is recorded: it
+        /// may open the session it belongs to. Only a headset's commands open a session or keep one open
+        /// (2026-10-26); another sender's close an open session, as any sender change does, and open none.
+        /// </summary>
         public void OnJointCommand(long nowTicks, string sender)
         {
             if (sender == null) throw new ArgumentNullException(nameof(sender));
@@ -125,12 +155,26 @@ namespace Teleop.RobotHost.Recording
                 TrySplit(nowTicks, $"the joint-command sender changed from {_sessionSender} to {sender}");
             }
 
+            if (!IsHeadset(nowTicks, sender))
+            {
+                if (!_loggedNotHeadset || !string.Equals(sender, _loggedNotHeadsetSender, StringComparison.Ordinal))
+                {
+                    _log($"[record] joint commands from {sender}, which is not a headset (no headset heartbeat within " +
+                        $"{Seconds(_options.HeadsetSeconds)}): not recorded automatically");
+                    _loggedNotHeadset = true;
+                    _loggedNotHeadsetSender = sender;
+                }
+
+                return;
+            }
+
+            _loggedNotHeadset = false;
             if (_generation == 0)
             {
                 bool idleGap = !_haveCommand || nowTicks - _lastCommandTicks >= _idleTicks;
                 if (idleGap || _reopen)
                 {
-                    TryOpen(nowTicks, sender, idleGap ? "first joint command after " + Seconds(_options.IdleSeconds) + " without one" : _reopenReason);
+                    TryOpen(nowTicks, sender, idleGap ? "first headset joint command after " + Seconds(_options.IdleSeconds) + " without one" : _reopenReason);
                 }
             }
 

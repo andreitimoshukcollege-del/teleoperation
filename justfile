@@ -461,7 +461,7 @@ robot-serial remote_host=default_jetrover_host remote_user="jetson":
          echo '--- serial ports held by jetrover-arm-control and its children'; for p in \$(systemctl show -p MainPID --value jetrover-arm-control) \$(pgrep -f robot_controller_manager); do ls -l /proc/\$p/fd 2>/dev/null | grep -E 'tty|serial' | sed \"s/^/pid \$p: /\"; done; \
          echo '--- kernel serial USB events (newest last)'; journalctl -k --no-pager -n 5000 | grep -iE 'ch34|cdc_acm|ttyUSB|ttyACM|cp210|ftdi' | grep -v 'Modules linked in' | tail -30"
 
-# Read-only: when the board has stopped answering (just joint-probe shows every motor sensed NO), find out which side is dead, without opening the serial port (opening it can reset the board and erase the evidence). Shows: the robot's uptime; the kernel's power and USB alarms since boot; the driver's threads and what each waits on; whether any bytes reach the driver over a few seconds; how often the board's own battery report and the servo feedback still arrive; and any receive errors in the driver's log. Run it while the fault is present, before any restart
+# Read-only: when the board has stopped answering (just joint-probe shows every motor sensed NO), find out which side is dead, without opening the serial port (opening it can reset the board and erase the evidence). Shows: the robot's uptime; the kernel's power and USB alarms since boot; the driver's threads and what each waits on; whether any bytes reach the driver over a few seconds; how often the board's own battery report and the servo feedback still arrive; and any receive errors in the driver's log. Run it while the fault is present, before any restart; then just robot-board-usb for the USB link below the driver
 [group('robot: checks and diagnostics (nothing moves)')]
 robot-board-diagnose seconds="6" remote_host=default_jetrover_host remote_user="jetson":
     #!/usr/bin/env bash
@@ -492,6 +492,72 @@ robot-board-diagnose seconds="6" remote_host=default_jetrover_host remote_user="
     echo '--- py-spy stack of every driver thread (only if py-spy is installed)'
     command -v py-spy >/dev/null && py-spy dump --pid "$pid" 2>&1 | head -60 || echo 'py-spy not installed'
     REMOTE
+
+# Read-only, for a board that has stopped answering (run it while the fault is present, after just robot-board-diagnose): looks below the driver, at the USB link to the board, without opening the serial port. Shows: when the fault began and what the whole robot logged in the 90 s before it, the battery and read times leading up to it; every process that has the board's port open (a second reader steals its bytes); ModemManager, brltty and serial gettys, which probe new ttyACM ports; the board's USB identity, speed and power management (autosuspend); its URB count over a few seconds; and, with usbmon, what actually crosses the wire: whether the board still accepts the driver's requests (bulk OUT completing) and whether it sends anything back (bulk IN). Needs passwordless sudo on the Jetson for the last two
+[group('robot: checks and diagnostics (nothing moves)')]
+robot-board-usb seconds="5" remote_host=default_jetrover_host remote_user="jetson":
+    #!/usr/bin/env bash
+    set -uo pipefail
+    ssh -o StrictHostKeyChecking=accept-new "{{remote_user}}@$(just _robot-host "{{remote_host}}")" "SECONDS_TO_WATCH={{seconds}} bash -s" <<'REMOTE'
+    tty=/dev/ttyACM0
+    echo "--- uptime: $(uptime)"
+    echo '--- the fault: the first driver [stats] line of this boot where motor 1 read nothing'
+    stats=$(journalctl -b -u jetrover-arm-control --no-pager -o short-iso | grep 'robot_controller_node.*\[stats')
+    onset_line=$(echo "$stats" | grep -m1 'reads ok/missed/slowest 1:0/')
+    if [ -z "$onset_line" ]; then
+        echo 'none: every stats line this boot has motor 1 answering (the fault is not present, or began before the driver logged)'
+    else
+        onset=$(echo "$onset_line" | awk '{print $1}')
+        echo "$onset_line" | cut -c1-260
+        echo '--- the 12 stats lines before it: cycle rate, slowest reads, battery'
+        echo "$stats" | grep -B12 -m1 'reads ok/missed/slowest 1:0/' | head -12 | \
+            sed -E 's/.*\] \[stats ([0-9.]+s)\] cycles [0-9]+ \(([0-9.]+ Hz)\).*reads ok\/missed\/slowest (.*); commands ([0-9]+).*battery ([0-9]+ mV).*/\1 \2 | \3 | cmds \4 | \5/' | sed "s/^/  /"
+        echo '--- every unit and the kernel, 90 s before the onset to 15 s after (driver and relay stats lines left out)'
+        journalctl -b --no-pager -o short-iso --since "$(date -d "$onset - 90 sec" '+%Y-%m-%d %H:%M:%S')" --until "$(date -d "$onset + 15 sec" '+%Y-%m-%d %H:%M:%S')" | \
+            grep -v -E '\[stats [0-9.]+s\]' | cut -c1-220 | tail -60
+    fi
+    echo "--- processes with $tty open (two readers on a tty split its bytes between them)"
+    sudo -n true 2>/dev/null && SUDO='sudo -n' || { SUDO=''; echo '(no passwordless sudo: only this user'"'"'s processes are visible)'; }
+    $SUDO find /proc/[0-9]*/fd -lname "$tty" 2>/dev/null | cut -d/ -f3 | sort -u | while read -r p; do echo "  pid $p: $(tr '\0' ' ' < /proc/$p/cmdline | cut -c1-150)"; done
+    echo '--- services that probe or claim serial ports'
+    for u in ModemManager brltty serial-getty@ttyACM0 nvgetty; do printf '  %-24s %s\n' "$u" "$(systemctl is-active "$u" 2>/dev/null)"; done
+    echo "--- the board's USB device"
+    intf=$(readlink -f /sys/class/tty/ttyACM0/device 2>/dev/null)
+    if [ -z "$intf" ]; then echo "  $tty has no device in sysfs: it is not enumerated"; exit 0; fi
+    dev=$(dirname "$intf")
+    for f in idVendor idProduct manufacturer product serial speed busnum devnum version bMaxPower; do printf '  %-14s %s\n' "$f" "$(cat "$dev/$f" 2>/dev/null)"; done
+    for f in control runtime_status autosuspend_delay_ms runtime_active_time runtime_suspended_time; do printf '  power/%-22s %s\n' "$f" "$(cat "$dev/power/$f" 2>/dev/null)"; done
+    echo "  usbcore autosuspend default: $(cat /sys/module/usbcore/parameters/autosuspend 2>/dev/null) s"
+    hub=$(dirname "$dev"); echo "  parent: $(basename "$hub") $(cat "$hub/product" 2>/dev/null), power/control $(cat "$hub/power/control" 2>/dev/null), runtime_status $(cat "$hub/power/runtime_status" 2>/dev/null)"
+    echo "  configuration bmAttributes $(cat "$dev/bmAttributes" 2>/dev/null) (0x80: powered from USB, 0xc0: self-powered)"
+    hubdesc=$(sudo -n lsusb -v -s "$(cat "$hub/busnum"):$(cat "$hub/devnum")" 2>/dev/null | grep -iE 'power switching|Ganged|Per-port|No power switching|wHubCharacteristic' | tr -s ' ' | tr '\n' ';')
+    echo "  hub power switching: ${hubdesc:-unknown (no lsusb, or no sudo)}"
+    echo "  siblings on that hub: $(for d in "$hub"/*-*; do [ -f "$d/idVendor" ] && printf '%s(%s) ' "$(basename "$d")" "$(cat "$d/product" 2>/dev/null)"; done)"
+    u1=$(cat "$dev/urbnum"); sleep "$SECONDS_TO_WATCH"; u2=$(cat "$dev/urbnum")
+    echo "  URBs submitted to it in ${SECONDS_TO_WATCH} s: $((u2 - u1)) (the driver writes ~120 requests/s when the board answers, ~1/s when every read times out)"
+    echo "--- usbmon: ${SECONDS_TO_WATCH} s of the wire to bus $(cat "$dev/busnum") device $(cat "$dev/devnum")"
+    if [ -z "$SUDO" ]; then echo '  skipped: needs sudo'; exit 0; fi
+    $SUDO modprobe usbmon 2>/dev/null
+    mountpoint -q /sys/kernel/debug || $SUDO mount -t debugfs none /sys/kernel/debug 2>/dev/null
+    mon=/sys/kernel/debug/usb/usbmon/$(cat "$dev/busnum")u
+    if ! $SUDO test -r "$mon"; then echo "  skipped: $mon is not there (usbmon not in this kernel?)"; exit 0; fi
+    addr=$(printf ':%d:%03d:' "$(cat "$dev/busnum")" "$(cat "$dev/devnum")") # usbmon's text: Bo:1:005:2
+    cap=$(mktemp); $SUDO timeout "$SECONDS_TO_WATCH" cat "$mon" > "$cap" 2>/dev/null
+    grep -F "$addr" "$cap" > "$cap.dev"
+    echo "  lines for this device: $(wc -l < "$cap.dev") (of $(wc -l < "$cap") on the bus)"
+    awk '{ split($4, a, ":"); k = $3 " " a[1]; n[k]++; if ($3 == "C") { st[a[1] " status " $5]++; if ($5 == 0) bytes[a[1]] += $6 } }
+         END { for (k in n) printf "  %-6s %d\n", k, n[k]; for (k in st) printf "  %s: %d\n", k, st[k]; for (k in bytes) printf "  %s bytes completed: %d\n", k, bytes[k] }' "$cap.dev" | sort
+    echo '  (S = submitted, C = completed; Bo = to the board, Bi = from it, Ci/Co/Ii = control/interrupt. A Bi submitted and never completed means the board sends nothing; Bo never completing means it no longer accepts data)'
+    echo '  first 12 lines:'; head -12 "$cap.dev" | cut -c1-140 | sed 's/^/    /'
+    rm -f "$cap" "$cap.dev"
+    REMOTE
+
+# Read-only: the servo driver's [stats] lines (every 5 s: cycle rate, reads ok/missed/slowest per motor, commands, battery) and its starts, for each of the last `boots` boots, oldest first, each line prefixed by its boot offset. The journal persists across reboots (just robot-journal-persist), so this is the history to look for a pattern in the board going silent: uptime, read count, commands, battery at each onset
+[group('robot: checks and diagnostics (nothing moves)')]
+robot-driver-stats boots="6" remote_host=default_jetrover_host remote_user="jetson":
+    @ssh -o StrictHostKeyChecking=accept-new "{{remote_user}}@$(just _robot-host "{{remote_host}}")" \
+        'for b in $(seq -$(( {{boots}} - 1 )) 0); do journalctl -b "$b" --no-pager -o short-iso -u jetrover-arm-control 2>/dev/null | \
+            grep -E "\[stats|Started|Stopping|Stopped" | sed "s/^/boot $b /"; journalctl -b "$b" --no-pager -o short-iso -n 1 2>/dev/null | sed "s/^/boot $b LAST /"; done'
 
 # Read-only: subscribe to RobotHost's joint-state stream (docs/adr/0018) for a few seconds and print the frame rate, round trip, and per motor whether it is sensed (servo feedback) or only a commanded belief. Sends a keepalive, never a command: nothing moves
 [group('robot: checks and diagnostics (nothing moves)')]
@@ -871,6 +937,251 @@ robot-board-reset remote_host=default_jetrover_host remote_user="jetson":
     sleep 6
     REMOTE
     just joint-probe 3
+
+# Experiment, for a board that has stopped answering (just robot-board-usb: bulk OUT completes, nothing comes back): reset only the board's USB-serial chip (the CH9102, 1a86:55d4) at the USB level, as unplugging and replugging it would, without cutting its power or the robot's. Stops the servo driver, issues USBDEVFS_RESET to the chip, waits for /dev/ttyACM0 to come back, asks servo 1 for its position as robot-board-reset does, then starts the driver and shows its first stats. A driver restart already pulses DTR (which seems to reset the board's controller) and never revived a silent board (2026-10-20), so an answer here means the chip's USB side was what was stuck. The shoulder may sag while the driver is down, so someone must be at the robot
+[group('robot: deploy and restart (someone at the robot)')]
+robot-board-usb-reset remote_host=default_jetrover_host remote_user="jetson":
+    #!/usr/bin/env bash
+    set -uo pipefail
+    ssh -o StrictHostKeyChecking=accept-new "{{remote_user}}@$(just _robot-host "{{remote_host}}")" "bash -s" <<'REMOTE'
+    dev=$(dirname "$(readlink -f /sys/class/tty/ttyACM0/device)")
+    node=$(printf '/dev/bus/usb/%03d/%03d' "$(cat "$dev/busnum")" "$(cat "$dev/devnum")")
+    echo "--- the board's chip: $(basename "$dev") $(cat "$dev/idVendor"):$(cat "$dev/idProduct") $(cat "$dev/product"), $node"
+    sudo systemctl stop jetrover-arm-control
+    since=$(date '+%Y-%m-%d %H:%M:%S')
+    sudo python3 - "$node" <<'PY'
+    import fcntl, os, sys
+    USBDEVFS_RESET = 0x5514  # _IO('U', 20)
+    fd = os.open(sys.argv[1], os.O_WRONLY)
+    try:
+        fcntl.ioctl(fd, USBDEVFS_RESET, 0)
+        print("USBDEVFS_RESET: done")
+    except OSError as e:
+        print(f"USBDEVFS_RESET failed: {e}")
+    finally:
+        os.close(fd)
+    PY
+    for i in $(seq 1 40); do [ -e /dev/ttyACM0 ] && break; sleep 0.25; done
+    sleep 1
+    echo "--- kernel since the reset"; journalctl -k --no-pager --since "$since" | tail -12
+    echo "--- serial ports now: $(ls /dev/ttyACM* 2>/dev/null | tr '\n' ' ')"
+    sdk=$(ls -d /home/jetson/teleop_ros_current/install/jetrover_arm_control/lib/python3*/site-packages | head -1)
+    PYTHONPATH="$sdk" python3 - <<'PY'
+    import time
+    import serial
+    from jetrover_arm_control.board_manager.robot_controller_sdk import checksum_crc8
+    buf = [0xAA, 0x55, 5, 2, 0x05, 1]  # bus servo (5): read position (0x05) of servo 1
+    request = bytes(buf + [checksum_crc8(bytes(buf[2:]))])
+    port = serial.Serial(None, 1000000, timeout=0.1)
+    port.rts = False
+    port.dtr = False
+    port.port = "/dev/ttyACM0"
+    port.open()
+    time.sleep(1.5)  # opening pulses DTR; give the controller time to boot if that reset it
+    got = port.read(4096)
+    print(f"unprompted in 1.5 s (a battery report comes every 5 s): {len(got)} bytes {got[:24].hex()}")
+    port.write(request)
+    end = time.time() + 2.0
+    while time.time() < end:
+        got += port.read(64)
+    port.close()
+    print("RESULT: the board answers after a USB reset of its chip" if got else "RESULT: still silent after a USB reset of its chip")
+    PY
+    sudo systemctl start jetrover-arm-control
+    sleep 12
+    echo "--- the driver's first stats"; journalctl -u jetrover-arm-control --no-pager --since "$since" | grep '\[stats' | tail -2 | cut -c1-300
+    REMOTE
+
+# Experiment, for a board that has stopped answering and survived robot-board-usb-reset: is the board's controller alive, and can the Jetson reset it? Stops the servo driver, then with the port open: listens 8 s after a DTR pulse, an RTS pulse and a pulse of both (asking servo 1 for its position half way), and tries both wirings of the usual auto-boot circuit to start the STM32's ROM bootloader (BOOT0 held, reset pulsed, then 0x7F at 115200 8E1, which a live STM32 answers with 0x79 and GET with its command list). Nothing is written to flash; it ends with a plain reset into the firmware, listens again and starts the driver. Each step prints the robot's clock, so a beep from the board can be matched to it. A reset of the controller can drop the servos' torque, so someone must hold the arm
+[group('robot: deploy and restart (someone at the robot)')]
+robot-board-boot-probe remote_host=default_jetrover_host remote_user="jetson":
+    #!/usr/bin/env bash
+    set -uo pipefail
+    ssh -o StrictHostKeyChecking=accept-new "{{remote_user}}@$(just _robot-host "{{remote_host}}")" "bash -s" <<'REMOTE'
+    sudo systemctl stop jetrover-arm-control
+    sdk=$(ls -d /home/jetson/teleop_ros_current/install/jetrover_arm_control/lib/python3*/site-packages | head -1)
+    PYTHONUNBUFFERED=1 PYTHONPATH="$sdk" python3 - <<'PY'
+    import time
+    import serial
+    from jetrover_arm_control.board_manager.robot_controller_sdk import checksum_crc8
+
+    buf = [0xAA, 0x55, 5, 2, 0x05, 1]  # bus servo (5): read position (0x05) of servo 1
+    REQUEST = bytes(buf + [checksum_crc8(bytes(buf[2:]))])
+
+    def say(text):
+        print(f"{time.strftime('%H:%M:%S')} {text}")
+
+    def modem(port):
+        return f"CTS {int(port.cts)} DSR {int(port.dsr)} RI {int(port.ri)} CD {int(port.cd)}"
+
+    def listen(port, seconds, ask_at=None):
+        got, start, asked = b"", time.time(), False
+        while time.time() - start < seconds:
+            if ask_at is not None and not asked and time.time() - start >= ask_at:
+                port.write(REQUEST)
+                asked = True
+            got += port.read(256)
+        return got
+
+    def firmware_mode(port):
+        port.baudrate, port.parity = 1000000, serial.PARITY_NONE
+
+    def pulse(port, lines):
+        for line in lines:
+            setattr(port, line, True)
+        time.sleep(0.1)
+        for line in lines:
+            setattr(port, line, False)
+
+    port = serial.Serial(None, 1000000, timeout=0.05)
+    port.rts = False
+    port.dtr = False
+    port.port = "/dev/ttyACM0"
+    port.open()
+    say(f"port open, lines released; inputs: {modem(port)}")
+    got = listen(port, 6, ask_at=1)
+    say(f"no pulse, 6 s: {len(got)} bytes {got[:24].hex()}")
+    for lines in (["dtr"], ["rts"], ["dtr", "rts"]):
+        say(f"pulse {'+'.join(l.upper() for l in lines)} 100 ms")
+        pulse(port, lines)
+        got = listen(port, 8, ask_at=4)
+        say(f"  then 8 s: {len(got)} bytes {got[:24].hex()}; inputs: {modem(port)}")
+    for boot0, reset in (("rts", "dtr"), ("dtr", "rts")):
+        say(f"bootloader try: {boot0.upper()} held as BOOT0, {reset.upper()} pulsed as reset")
+        setattr(port, boot0, True)
+        time.sleep(0.05)
+        pulse(port, [reset])
+        time.sleep(0.3)
+        port.baudrate, port.parity = 115200, serial.PARITY_EVEN
+        port.reset_input_buffer()
+        port.write(b"\x7f")
+        ack = listen(port, 1)
+        line = f"  0x7F -> {ack[:16].hex() or 'nothing'}"
+        if ack[-1:] == b"\x79" or ack[-1:] == b"\x1f":
+            port.write(b"\x00\xff")  # GET: version and supported commands
+            line += f"; GET -> {listen(port, 1)[:20].hex() or 'nothing'}"
+        say(line)
+        setattr(port, boot0, False)
+        firmware_mode(port)
+        if ack:
+            break
+    say("plain reset into the firmware (DTR pulse, then RTS pulse)")
+    pulse(port, ["dtr"])
+    time.sleep(0.5)
+    pulse(port, ["rts"])
+    got = listen(port, 10, ask_at=5)
+    say(f"  then 10 s: {len(got)} bytes {got[:24].hex()}")
+    port.close()
+    PY
+    sudo systemctl start jetrover-arm-control
+    sleep 12
+    echo "--- the driver's first stats"; journalctl -u jetrover-arm-control --no-pager -n 40 | grep '\[stats' | tail -1 | cut -c1-300
+    REMOTE
+
+# Experiment, for a board that has stopped answering and survived robot-board-usb-reset: cut the USB port power of only the board's USB-serial chip for `off_s` seconds and restore it -- a real power reset of the chip (it is powered from USB, bmAttributes 0xa0), while the board's controller and the servos stay on battery. Uses the hub's per-port power switching (ClearPortFeature/SetPortFeature PORT_POWER), as uhubctl does. Runs detached on the Jetson, so the port comes back on even if the hub turns out to switch every port together and the Wi-Fi drops with it; the log is ~/board-port-power.log. Stops the servo driver first and starts it again after, so someone must be at the robot
+[group('robot: deploy and restart (someone at the robot)')]
+robot-board-usb-power-cycle off_s="3" remote_host=default_jetrover_host remote_user="jetson":
+    #!/usr/bin/env bash
+    set -uo pipefail
+    target="{{remote_user}}@$(just _robot-host "{{remote_host}}")"
+    ssh -o StrictHostKeyChecking=accept-new "$target" "cat > /tmp/board-port-power.sh" <<'REMOTE'
+    set -u
+    off_s=$1
+    dev=$(dirname "$(readlink -f /sys/class/tty/ttyACM0/device)")
+    name=$(basename "$dev"); hub=$(dirname "$dev"); port=${name##*.}
+    hubnode=$(printf '/dev/bus/usb/%03d/%03d' "$(cat "$hub/busnum")" "$(cat "$hub/devnum")")
+    echo "$(date +%T) chip $name ($(cat "$dev/idVendor"):$(cat "$dev/idProduct")) on port $port of hub $(basename "$hub") ($hubnode)"
+    for n in /sys/class/net/*; do p=$(readlink -f "$n/device" 2>/dev/null); case "$p" in *"/$(basename "$hub")/"*|*"/$(basename "$hub").") echo "$(date +%T) note: $(basename "$n") is behind the same hub ($p)";; esac; done
+    systemctl stop jetrover-arm-control
+    feature() {  # $1: 1 = ClearPortFeature, 3 = SetPortFeature; PORT_POWER = 8
+        python3 - "$hubnode" "$1" "$port" <<'PY'
+    import ctypes, fcntl, os, sys
+    class Ctrl(ctypes.Structure):
+        _fields_ = [("bRequestType", ctypes.c_uint8), ("bRequest", ctypes.c_uint8), ("wValue", ctypes.c_uint16),
+                    ("wIndex", ctypes.c_uint16), ("wLength", ctypes.c_uint16), ("timeout", ctypes.c_uint32), ("data", ctypes.c_void_p)]
+    USBDEVFS_CONTROL = (3 << 30) | (ctypes.sizeof(Ctrl) << 16) | (ord("U") << 8) | 0
+    c = Ctrl(0x23, int(sys.argv[2]), 8, int(sys.argv[3]), 0, 1000, None)
+    fd = os.open(sys.argv[1], os.O_RDWR)
+    try:
+        fcntl.ioctl(fd, USBDEVFS_CONTROL, c)
+        print("ok")
+    except OSError as e:
+        print(f"failed: {e}")
+    finally:
+        os.close(fd)
+    PY
+    }
+    echo "$(date +%T) port power off: $(feature 1)"
+    sleep "$off_s"
+    echo "$(date +%T) after ${off_s} s: chip in sysfs: $([ -e "$dev/idVendor" ] && echo yes || echo no); ttyACM: $(ls /dev/ttyACM* 2>/dev/null | tr '\n' ' ')"
+    echo "$(date +%T) port power on: $(feature 3)"
+    for i in $(seq 1 40); do [ -e /dev/ttyACM0 ] && break; sleep 0.25; done
+    sleep 1
+    echo "$(date +%T) ttyACM now: $(ls /dev/ttyACM* 2>/dev/null | tr '\n' ' ')"
+    journalctl -k --no-pager --since "-$((off_s + 15)) s" | grep -E "usb 1-|cdc_acm|ttyACM" | tail -8
+    sdk=$(ls -d /home/jetson/teleop_ros_current/install/jetrover_arm_control/lib/python3*/site-packages | head -1)
+    PYTHONPATH="$sdk" python3 - <<'PY'
+    import time
+    import serial
+    from jetrover_arm_control.board_manager.robot_controller_sdk import checksum_crc8
+    buf = [0xAA, 0x55, 5, 2, 0x05, 1]
+    request = bytes(buf + [checksum_crc8(bytes(buf[2:]))])
+    port = serial.Serial(None, 1000000, timeout=0.1)
+    port.rts = False
+    port.dtr = False
+    port.port = "/dev/ttyACM0"
+    port.open()
+    got = b""
+    end = time.time() + 6.0
+    while time.time() < end:
+        got += port.read(256)
+    unprompted = len(got)
+    port.write(request)
+    end = time.time() + 2.0
+    while time.time() < end:
+        got += port.read(256)
+    port.close()
+    print(f"{time.strftime('%T')} unprompted in 6 s: {unprompted} bytes; with the request: {len(got)} bytes {got[:24].hex()}")
+    print(f"{time.strftime('%T')} RESULT: " + ("the board answers after a power reset of its USB chip" if got else "still silent after a power reset of its USB chip"))
+    PY
+    systemctl start jetrover-arm-control
+    sleep 12
+    journalctl -u jetrover-arm-control --no-pager -n 40 | grep '\[stats' | tail -1 | cut -c1-300
+    echo "$(date +%T) done"
+    REMOTE
+    ssh "$target" "rm -f ~/board-port-power.log; sudo setsid nohup bash /tmp/board-port-power.sh {{off_s}} > ~/board-port-power.log 2>&1 < /dev/null &"
+    for i in $(seq 1 30); do
+        sleep 2
+        if out=$(ssh -o ConnectTimeout=5 "$target" 'cat ~/board-port-power.log' 2>/dev/null) && grep -q " done$" <<<"$out"; then echo "$out"; exit 0; fi
+    done
+    echo "no 'done' in ~/board-port-power.log after 60 s; what it has so far:"; ssh -o ConnectTimeout=5 "$target" 'cat ~/board-port-power.log' || echo "(the robot is unreachable: the Wi-Fi may be behind that hub; it powers the port back on by itself)"
+    exit 1
+
+# Is the board's controller still receiving and executing commands, whatever it sends back? Stops the servo driver, then three times, 4 s apart: three short beeps (2 kHz) and a fast blink of the board's LED, sent with the SDK's own set_buzzer/set_led straight to the serial port (not the /robot/buzzer topic, which crashes the driver), and prints any bytes the board sends meanwhile. Someone at the robot listens: beeps mean the controller runs and receives, so a silent board's fault is in its transmit path. Starts the driver again after, so someone must be at the robot
+[group('robot: deploy and restart (someone at the robot)')]
+robot-board-beep remote_host=default_jetrover_host remote_user="jetson":
+    #!/usr/bin/env bash
+    set -uo pipefail
+    ssh -o StrictHostKeyChecking=accept-new "{{remote_user}}@$(just _robot-host "{{remote_host}}")" "bash -s" <<'REMOTE'
+    sudo systemctl stop jetrover-arm-control
+    sdk=$(ls -d /home/jetson/teleop_ros_current/install/jetrover_arm_control/lib/python3*/site-packages | head -1)
+    PYTHONUNBUFFERED=1 PYTHONPATH="$sdk" python3 - <<'PY'
+    import time
+    from jetrover_arm_control.board_manager.robot_controller_sdk import Board
+    board = Board(device="/dev/ttyACM0", timeout=0.05)
+    got = b""
+    for n in range(3):
+        print(f"{time.strftime('%T')} beep {n + 1}/3: three short beeps, LED blinking")
+        board.set_buzzer(2000, 0.12, 0.12, 3)
+        board.set_led(0.1, 0.1, 10)
+        end = time.time() + 4
+        while time.time() < end:
+            got += board.port.read(256)
+    board.port.close()
+    print(f"{time.strftime('%T')} the board sent {len(got)} bytes meanwhile {got[:24].hex()}")
+    PY
+    sudo systemctl start jetrover-arm-control
+    REMOTE
 
 # Restart the servo bus driver (jetrover-arm-control), which reopens its serial link to the Hiwonder board. For when the board stopped answering (just ros-check shows no feedback_array or battery messages) after a brown-out or a reset. It interrupts the arm, and the shoulder may sag while the driver comes back (seen 2026-10-12), so someone must be at the robot. Afterwards the feedback should flow again
 [group('robot: deploy and restart (someone at the robot)')]

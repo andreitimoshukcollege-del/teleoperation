@@ -33,7 +33,8 @@ the active one. The services source `~/teleop_ros_current/install/setup.bash`. R
 repointing that link and restarting `jetrover-arm-control` and `jetrover-relay`.
 
 **Restarting the servo driver interrupts the arm** (the shoulder has sagged during a restart), so
-someone must be at the robot. Before the first `deploy-ros`, the Jetson ran the old checkout at
+check first that the arm can sag safely; with nobody at the robot, confirm that with the user
+before restarting it. Before the first `deploy-ros`, the Jetson ran the old checkout at
 `~/projects/jetrover-teleop-ros`, which stays there untouched as a fallback.
 
 Read-only checks:

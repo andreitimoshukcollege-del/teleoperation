@@ -764,6 +764,119 @@ robot-usb-device path="1-2.2" remote_host=default_jetrover_host remote_user="jet
     sudo -n lsusb -v -s "$(cat "$d/busnum"):$(cat "$d/devnum")" 2>/dev/null | grep -E 'bcdUSB|bDeviceClass|bInterfaceClass|bInterfaceNumber|bEndpointAddress|wMaxPacketSize|iInterface|bmAttributes|MaxPower|CDC|bcdCDC|Call Management|ACM' | sed 's/^/  /' | head -40
     REMOTE
 
+# Read-only: what fills the Jetson's disk -- free space, the largest things in the home directory, how many old deploy directories each component has left behind (every deploy writes a new one and repoints a *_current link) and their size, the recordings, the journal, and the usual system caches. Deletes nothing
+[group('robot: checks and diagnostics (nothing moves)')]
+robot-disk remote_host=default_jetrover_host remote_user="jetson":
+    #!/usr/bin/env bash
+    set -uo pipefail
+    ssh -o StrictHostKeyChecking=accept-new "{{remote_user}}@$(just _robot-host "{{remote_host}}")" "bash -s" <<'REMOTE'
+    echo "--- the root file system: $(df -h / | tail -1 | awk '{print $3 " used of " $2 ", " $4 " free (" $5 ")"}')"
+    echo '--- the largest things in the home directory'
+    du -sh ~/* ~/.cache ~/.local ~/.ros ~/.nuget ~/.dotnet 2>/dev/null | sort -rh | head -20 | sed 's/^/  /'
+    echo '--- deploy directories (the *_current link points at the live one)'
+    for link in ~/*_current; do
+        [ -L "$link" ] || continue
+        live=$(basename "$(readlink -f "$link")"); prefix=${live%_*}; prefix=${prefix%_*}
+        n=$(ls -d ~/"${prefix}"_* 2>/dev/null | grep -v _current | wc -l)
+        size=$(du -sch $(ls -d ~/"${prefix}"_* | grep -v _current) 2>/dev/null | tail -1 | cut -f1)
+        echo "  $(basename "$link") -> $live; $n directories named ${prefix}_*, $size in all"
+    done
+    echo "--- recordings: $(du -sh ~/recordings 2>/dev/null | cut -f1) in $(ls ~/recordings/jetrover 2>/dev/null | wc -l) sessions"
+    echo "--- the journal: $(journalctl --disk-usage 2>/dev/null | grep -oE '[0-9.]+[KMGT]')"
+    echo '--- system caches'
+    sudo -n du -sh /var/cache/apt /var/log /tmp /var/crash 2>/dev/null | sed 's/^/  /'
+    command -v docker >/dev/null && sudo -n docker system df 2>/dev/null | sed 's/^/  /'
+    echo '--- the whole disk, two levels deep (this file system only)'
+    sudo -n du -xh --max-depth=2 / 2>/dev/null | sort -rh | head -30 | sed 's/^/  /'
+    echo '--- the largest installed packages (MB)'
+    dpkg-query -Wf '${Installed-Size}\t${Package}\n' 2>/dev/null | sort -rn | head -15 | awk '{printf "  %6.0f  %s\n", $1/1024, $2}'
+    echo "--- swap files: $(swapon --show=NAME,SIZE --noheadings 2>/dev/null | tr '\n' ' ')"
+    REMOTE
+
+# Free space on the Jetson (its 26 GB card ran 95% full on 2026-10-26). Dry run unless apply=true: prints what would go and apt's own simulation of the package removals, then changes nothing. What it removes: the apt cache; root's pip cache; the CUDA and VisionWorks offline installer repos (the toolkits themselves stay installed); CUDA/TensorRT/VisionWorks samples and the CUDA documentation; the CUDA/cuDNN/TensorRT/VisionWorks -dev packages (headers and static libraries, needed only to compile CUDA code on the robot, which nothing of ours does); Chromium, Firefox and Thunderbird; and every old deploy directory except the live one and the two newest before it. It never runs apt autoremove (with the CUDA metapackages gone, that would take the CUDA runtime libraries too), and never touches recordings (just robot-prune-recordings) or the journal
+[group('robot: deploy and restart (someone at the robot)')]
+robot-disk-cleanup apply="false" remote_host=default_jetrover_host remote_user="jetson":
+    #!/usr/bin/env bash
+    set -uo pipefail
+    ssh -o StrictHostKeyChecking=accept-new "{{remote_user}}@$(just _robot-host "{{remote_host}}")" "APPLY={{apply}} bash -s" <<'REMOTE'
+    set -uo pipefail
+    echo "--- before: $(df -h / | tail -1 | awk '{print $4 " free of " $2 " (" $5 " used)"}')"
+    installed() { dpkg-query -Wf '${Package}\n' 2>/dev/null | grep -E "$1" | sort -u; }
+    mb() { dpkg-query -Wf '${Installed-Size}\n' "$@" 2>/dev/null | awk '{s+=$1} END {printf "%.0f MB", s/1024}'; }
+    repos=$( { installed '^cuda-repo-l4t-.*-local$'; dpkg -S /var/visionworks-repo /var/visionworks-sfm-repo 2>/dev/null | cut -d: -f1 | tr ', ' '\n'; } | grep -v '^$' | sort -u)
+    samples=$(installed '^(cuda-samples-|cuda-documentation-|libnvinfer-samples|libvisionworks-samples|libvisionworks-sfm-samples|libvisionworks-tracking-samples|vpi.*-samples)')
+    dev=$(installed '^(libcudnn[0-9]*-dev|libnvinfer(-plugin)?-dev|libnvonnxparsers-dev|libnvparsers-dev|python3-libnvinfer-dev|libvisionworks(-sfm|-tracking)?-dev|vpi[0-9]*-dev|cuda-[a-z0-9-]*-dev-10-2|libcu[a-z0-9]*-dev-10-2|libnpp[a-z0-9]*-dev-10-2)$')
+    apps=$(installed '^(chromium-browser|chromium-browser-l10n|chromium-codecs-ffmpeg-extra|firefox|firefox-locale-.*|thunderbird|thunderbird-locale-.*|thunderbird-gnome-support)$')
+    for group in repos samples dev apps; do
+        list=${!group}
+        echo "--- $group ($(echo $list | wc -w) packages, $( [ -n "$list" ] && mb $list || echo '0 MB')): $(echo $list | tr '\n' ' ')"
+    done
+    all=$(echo $repos $samples $dev $apps)
+    echo '--- apt would remove (simulation; any line here not in the lists above is pulled in by them):'
+    [ -n "$all" ] && sudo -n apt-get -s purge $all 2>/dev/null | grep -E '^Purg|^Remv' | awk '{print "  " $2}' | sort | tr '\n' ' ' | fold -w 160 -s; echo
+    echo "--- caches: apt $(sudo -n du -sh /var/cache/apt 2>/dev/null | cut -f1), root's pip $(sudo -n du -sh /root/.cache/pip 2>/dev/null | cut -f1)"
+    old=()
+    for link in ~/*_current; do
+        [ -L "$link" ] || continue
+        live=$(readlink -f "$link"); prefix=$(basename "$live"); prefix=${prefix%_*}; prefix=${prefix%_*}
+        keep=$(ls -d ~/"${prefix}"_* 2>/dev/null | grep -v _current | grep -vx "$live" | sort | tail -2)
+        for d in $(ls -d ~/"${prefix}"_* 2>/dev/null | grep -v _current | grep -vx "$live" | sort); do
+            echo "$keep" | grep -qx "$d" || old+=("$d")
+        done
+    done
+    echo "--- old deploy directories to delete: ${#old[@]} ($( [ ${#old[@]} -gt 0 ] && du -sch "${old[@]}" | tail -1 | cut -f1 || echo 0))"
+    if [ "$APPLY" != true ]; then echo; echo "dry run: nothing changed. just robot-disk-cleanup true applies it"; exit 0; fi
+    echo '--- applying'
+    [ -n "$all" ] && sudo -n DEBIAN_FRONTEND=noninteractive apt-get purge -y -q $all 2>&1 | grep -E '^(Removing|Purging)|^E:' | sed 's/^/  /' | tail -60
+    sudo -n apt-get clean
+    sudo -n rm -rf /root/.cache/pip
+    [ ${#old[@]} -gt 0 ] && rm -rf "${old[@]}"
+    echo "--- after: $(df -h / | tail -1 | awk '{print $4 " free of " $2 " (" $5 " used)"}')"
+    REMOTE
+
+# Delete recordings from the robot that this machine already holds, verified: a session goes only when every file in it on the robot has a copy under recordings/jetrover/<id>/ here with the same sha256. Never the session that is recording (named in ~/recordings/.active) or one whose logs are not closed yet (no END trailer). Dry run unless apply=true. Run just fetch-recordings first to copy what is missing
+[group('robot: recording (docs/adr/0021)')]
+robot-prune-recordings apply="false" remote_host=default_jetrover_host remote_user="jetson":
+    #!/usr/bin/env bash
+    set -uo pipefail
+    target="{{remote_user}}@$(just _robot-host "{{remote_host}}")"
+    remote=$(ssh -o StrictHostKeyChecking=accept-new "$target" 'active=$(cat ~/recordings/.active 2>/dev/null); cd ~/recordings/jetrover 2>/dev/null || exit 0
+        for d in */; do d=${d%/}
+            [ -n "$active" ] && [ "$(basename "$active")" = "$d" ] && { echo "SKIP $d recording now"; continue; }
+            open=0; for j in "$d"/*.jlog; do [ -f "$j" ] && { tail -c 300 "$j" | grep -q "END|" || open=1; }; done
+            [ $open = 1 ] && { echo "SKIP $d a log is not closed"; continue; }
+            find "$d" -type f -print0 | xargs -0 sha256sum | sed "s|^|FILE |"
+        done')
+    echo "$remote" | grep '^SKIP' | sed 's/^SKIP /  keeping /'
+    verified=$(echo "$remote" | grep '^FILE ' | python3 -c '
+    import hashlib, os, sys, collections
+    files = collections.defaultdict(list)
+    for line in sys.stdin:
+        _, sha, path = line.rstrip("\n").split(None, 2)
+        files[path.split("/", 1)[0]].append((path, sha))
+    for sid, entries in sorted(files.items()):
+        bad = []
+        for path, sha in entries:
+            local = os.path.join("recordings", "jetrover", path)
+            if not os.path.isfile(local):
+                bad.append(f"{path} missing here")
+                continue
+            with open(local, "rb") as f:
+                if hashlib.sha256(f.read()).hexdigest() != sha:
+                    bad.append(f"{path} differs")
+        if bad:
+            print(f"keeping {sid}: " + "; ".join(bad[:3]), file=sys.stderr)
+        else:
+            print(sid)
+    ')
+    n=$(echo "$verified" | grep -c . || true)
+    echo "--- verified on this machine and deletable on the robot: $n session(s)"
+    echo "$verified" | grep . | sed 's/^/  /'
+    if [ "{{apply}}" != true ] || [ "$n" = 0 ]; then [ "{{apply}}" != true ] && echo "dry run: nothing deleted. just robot-prune-recordings true deletes them"; exit 0; fi
+    ids=$(echo "$verified" | grep -E '^[0-9]{8}T[0-9]{6}Z-[A-Za-z0-9._-]+$' | tr '\n' ' ')
+    ssh "$target" "cd ~/recordings/jetrover && for d in $ids; do rm -rf -- \"\$d\" && echo \"  deleted \$d\"; done; echo \"--- free now: \$(df -h / | tail -1 | awk '{print \$4}')\""
+    REMOTE_DONE=1
+
 # Read-only: subscribe to RobotHost's joint-state stream (docs/adr/0018) for a few seconds and print the frame rate, round trip, and per motor whether it is sensed (servo feedback) or only a commanded belief. Sends a keepalive, never a command: nothing moves
 [group('robot: checks and diagnostics (nothing moves)')]
 joint-probe seconds="3" remote_host=default_jetrover_host:

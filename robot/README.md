@@ -42,7 +42,23 @@ Read-only checks:
 - `just ros-check`: is the board answering the driver;
 - `just robot-feedback-ids`: which servos report position;
 - `just robot-battery`: battery voltage;
-- `just robot-board-commands`: what the board accepts.
+- `just robot-board-commands`: what the board accepts;
+- `just robot-disk`: what fills the card.
+
+**Disk space.** The Jetson's card is 26 GB, and the system takes about 18 GB of it. On 2026-10-26 it
+was 95% full (1.3 GB free). `just robot-disk-cleanup true` took it to 6.4 GB free by removing:
+- the CUDA and VisionWorks offline installer repos, the samples and the CUDA documentation;
+- the CUDA/cuDNN/TensorRT -dev packages, `nvcc` included (nothing here compiles CUDA on the
+  robot);
+- Chromium, Firefox and Thunderbird;
+- the apt and pip caches, and old deploy directories (it keeps the live one and the two before it).
+
+The CUDA, cuDNN and TensorRT runtimes stay installed. Never run `apt autoremove` here: with the
+CUDA metapackages gone, it would remove the runtime libraries too.
+
+Every deploy leaves a directory behind, so run the cleanup now and then. Recordings come off the
+robot with `just fetch-recordings`, then `just robot-prune-recordings true`: it deletes only
+sessions this machine holds byte for byte (sha256).
 
 ## Recording sessions for the trainer (docs/adr/0021)
 

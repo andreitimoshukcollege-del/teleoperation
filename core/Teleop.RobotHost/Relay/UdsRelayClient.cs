@@ -68,6 +68,19 @@ namespace Teleop.RobotHost.Relay
             }
         }
 
+        /// <summary>Fire-and-forget, like <see cref="Send"/>.</summary>
+        public void SendTorque(bool on)
+        {
+            int n = RelayProtocol.EncodeTorque(on, _sendBuffer);
+            try
+            {
+                _socket.SendTo(_sendBuffer.AsSpan(0, n), SocketFlags.None, _peerEndPoint);
+            }
+            catch (SocketException)
+            {
+            }
+        }
+
         public bool TryReceiveFeedback(Span<JointFeedbackEntry> entriesBuffer, out int entryCount)
         {
             entryCount = 0;

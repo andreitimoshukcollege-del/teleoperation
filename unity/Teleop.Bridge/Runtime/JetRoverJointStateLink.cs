@@ -4,6 +4,7 @@ using Teleop.Core.Metrics;
 using Teleop.Core.Prediction;
 using Teleop.Core.Time;
 using Teleop.Core.Types;
+using Teleop.RobotArm.Power;
 using Teleop.RobotArm.Types;
 using Teleop.RobotArm.Wire;
 
@@ -31,6 +32,28 @@ namespace Teleop.Bridge
             BaseYaw = baseYaw; Proximal = proximal; Distal = distal; WristPitch = wristPitch;
             WristRoll = wristRoll; Gripper = gripper; ArmSensed = armSensed; RollSensed = rollSensed; GripperSensed = gripperSensed;
         }
+    }
+
+    /// <summary>
+    /// The operator's motion mode (docs/adr/0023 decision 5), Unity-free so the XR buttons can set it:
+    /// <see cref="On"/> sends joint commands while the robot holds (a hold first when it is relaxed);
+    /// <see cref="Paused"/> sends none and leaves the torque as it is; <see cref="Off"/> sends none and
+    /// asks the robot to park and switch its torque off.
+    /// </summary>
+    public enum JetRoverMotionMode
+    {
+        Off,
+        Paused,
+        On,
+    }
+
+    /// <summary>The robot's arm-power state by its latest status (docs/adr/0023 decision 5); Unknown before one, or from an older RobotHost.</summary>
+    public enum JetRoverArmPower
+    {
+        Unknown,
+        Holding,
+        Parking,
+        Relaxed,
     }
 
     /// <summary>
@@ -64,6 +87,9 @@ namespace Teleop.Bridge
     /// (half the smoothed round trip). The bank's active preset draws the twin; the others run
     /// beside it, and the console switches and toggles them.</item>
     /// <item>Scores every enabled preset live (<see cref="LiveJointScorer"/>, a rolling 30 s window).</item>
+    /// <item>Carries the operator message (docs/adr/0018 §9, docs/adr/0023 decisions 4 and 5): a
+    /// headset heartbeat once a second with the motion mode, and the relax and hold requests that
+    /// <see cref="OperatorArmPower"/> decides; and takes in RobotHost's arm-power status.</item>
     /// </list>
     /// Plain C#, allocation-free after construction. Every decision about the robot's motion is
     /// the predictor's (Core).
@@ -83,6 +109,8 @@ namespace Teleop.Bridge
         private readonly LiveJointScorer _scorer;
         private readonly long _keepaliveIntervalTicks;
         private readonly byte[] _buffer = new byte[128];
+        private readonly byte[] _powerBuffer = new byte[ArmPowerCodec.RequestSize];
+        private readonly OperatorArmPower _power;
         private readonly JointSample[] _received = new JointSample[MaxJoints];
         private readonly JointSample[] _measured = new JointSample[MaxJoints];
         private readonly JointSample[] _command = new JointSample[MaxJoints];
@@ -138,6 +166,7 @@ namespace Teleop.Bridge
             _profile = profile;
             _clockSync = new ClockSync(clockSyncConfig);
             _keepaliveIntervalTicks = (long)(KeepaliveSeconds * clock.TicksPerSecond);
+            _power = new OperatorArmPower(clock.TicksPerSecond);
 
             byte[] gripperIds = GripperIds(profile);
             var corePresets = new JointPredictorPreset[presets.Length];
@@ -173,6 +202,69 @@ namespace Teleop.Bridge
             _scorer = new LiveJointScorer(_bank, (long)(ScoreWindowSeconds * clock.TicksPerSecond), MaxJoints, gripperIds,
                 gripperFractionPerRadian);
         }
+
+        // ---- Park, then relax (docs/adr/0023 decision 5). Every decision is OperatorArmPower's. ----
+
+        private JetRoverMotionMode _mode = JetRoverMotionMode.Off;
+
+        /// <summary>The motion mode the operator message reports; JetRoverOperatorBridge.MotionMode sets it.</summary>
+        public JetRoverMotionMode MotionMode => _mode;
+
+        /// <summary>
+        /// Sets the mode: <see cref="JetRoverMotionMode.Off"/> asks for a relax (even when it already was
+        /// Off), <see cref="JetRoverMotionMode.On"/> a hold first when the robot is relaxed or parking.
+        /// </summary>
+        public void SetMotionMode(JetRoverMotionMode mode, long now)
+        {
+            _mode = mode;
+            _power.SetMode(ToWire(mode), now);
+        }
+
+        /// <summary>False: heartbeats only, never a relax or hold request (the config does not allow commanding the robot).</summary>
+        public bool PowerRequestsAllowed
+        {
+            get => _power.RequestsAllowed;
+            set => _power.RequestsAllowed = value;
+        }
+
+        /// <summary>Whether joint commands may go now: the mode is On and the robot holds (or does not say).</summary>
+        public bool MayCommand(long now) => _power.MayCommand(now);
+
+        /// <summary>True once each time the robot holds again after parking or relaxing.</summary>
+        public bool TakeResumedFromRelaxed() => _power.TakeResumed();
+
+        /// <summary>The robot's arm-power state by its latest status.</summary>
+        public JetRoverArmPower ArmPower
+        {
+            get
+            {
+                switch (_power.RobotState(_clock.NowTicks))
+                {
+                    case OperatorArmState.Holding: return JetRoverArmPower.Holding;
+                    case OperatorArmState.Parking: return JetRoverArmPower.Parking;
+                    case OperatorArmState.Relaxed: return JetRoverArmPower.Relaxed;
+                    default: return JetRoverArmPower.Unknown;
+                }
+            }
+        }
+
+        /// <summary>
+        /// Why the last relax was refused or ended back in holding ("the path to the rest pose is not
+        /// collision-free", "the park timed out ...", ...); "" when there is nothing to say.
+        /// </summary>
+        public string ArmPowerReasonText => ArmPowerCodec.Describe(_power.Reason);
+
+        /// <summary>The largest arm joint's distance from the rest pose, degrees, by the latest status; NaN when unknown.</summary>
+        public float ArmPowerRemainingDeg => _power.RemainingDeg;
+
+        /// <summary>A relax or hold request is out and not answered yet.</summary>
+        public bool ArmPowerRequestPending => _power.RequestPending;
+
+        /// <summary>Seconds since RobotHost's last arm-power status; infinity before the first (an older RobotHost never sends one).</summary>
+        public float SecondsSinceArmPowerStatus => _power.SecondsSinceStatus(_clock.NowTicks);
+
+        private static OperatorMotionMode ToWire(JetRoverMotionMode mode) =>
+            mode == JetRoverMotionMode.On ? OperatorMotionMode.On : mode == JetRoverMotionMode.Paused ? OperatorMotionMode.Paused : OperatorMotionMode.Off;
 
         // ---- The console's view of the bank (docs/adr/0023): indexes are the presets' order. ----
 
@@ -240,8 +332,23 @@ namespace Teleop.Bridge
                 _lastKeepaliveTicks = now;
             }
 
+            // The operator message: a heartbeat once a second, or a relax or hold request while one is
+            // unanswered (docs/adr/0018 §9).
+            if (_power.TryTakeMessage(now, out ArmPowerRequest request, out uint sequence) &&
+                ArmPowerCodec.TryEncodeRequest(OperatorClientKind.Headset, ToWire(_mode), request, sequence, now, _powerBuffer, out int powerBytes))
+            {
+                _transport.Send(_powerBuffer.AsSpan(0, powerBytes), now);
+            }
+
             while (_transport.TryReceive(now, _buffer, out int count, out long arrival))
             {
+                if (ArmPowerCodec.TryDecodeStatus(_buffer.AsSpan(0, count), out ArmPowerState powerState, out ArmPowerReason powerReason,
+                        out uint echoSequence, out _, out _, out float remainingDeg))
+                {
+                    _power.OnStatus(powerState, powerReason, echoSequence, remainingDeg, arrival);
+                    continue;
+                }
+
                 if (!JointStateCodec.TryDecode(_buffer.AsSpan(0, count), out _, out long robotSend, out long sensed,
                         out long echoOperator, out long echoRobotRecv, out long robotTps, _received, out int jointCount))
                 {

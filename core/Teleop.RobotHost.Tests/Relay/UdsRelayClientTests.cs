@@ -91,6 +91,33 @@ namespace Teleop.RobotHost.Tests.Relay
         }
 
         [LinuxOnlyFact]
+        public void SendTorque_DeliversATorqueMessageToPeerSocket()
+        {
+            string hostPath = TempSocketPath();
+            string relayPath = TempSocketPath();
+
+            try
+            {
+                using var relaySocket = new Socket(AddressFamily.Unix, SocketType.Dgram, ProtocolType.Unspecified);
+                relaySocket.Bind(new UnixDomainSocketEndPoint(relayPath));
+                relaySocket.Blocking = false;
+
+                using var client = new UdsRelayClient(hostPath, relayPath);
+                client.SendTorque(false);
+
+                byte[] buffer = new byte[16];
+                int received = PollReceive(relaySocket, buffer);
+                Assert.True(RelayProtocol.TryDecodeTorque(buffer.AsSpan(0, received), out bool on));
+                Assert.False(on);
+            }
+            finally
+            {
+                TryDelete(hostPath);
+                TryDelete(relayPath);
+            }
+        }
+
+        [LinuxOnlyFact]
         public void Construction_RemovesStaleSocketFileLeftBehindByACrashedPreviousRun()
         {
             string hostPath = TempSocketPath();

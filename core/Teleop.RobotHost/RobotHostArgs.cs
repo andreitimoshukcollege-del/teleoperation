@@ -1,6 +1,7 @@
 using System;
 using System.Globalization;
 using System.Net;
+using Teleop.RobotHost.Power;
 using Teleop.RobotHost.Recording;
 
 namespace Teleop.RobotHost
@@ -92,6 +93,14 @@ namespace Teleop.RobotHost
         /// </summary>
         public readonly AutoRecordOptions? AutoRecord;
 
+        /// <summary>
+        /// "Park, then relax" (docs/adr/0023 decision 5): <c>--rest-pose-deg</c> (comma-separated degrees,
+        /// one per arm joint in the profile's order; absent or empty refuses every relax),
+        /// <c>--park-speed-rad-per-sec</c> (0.5), <c>--park-tolerance-deg</c> (3) and
+        /// <c>--park-timeout-seconds</c> (20). Never null; Program checks the pose's length against the profile.
+        /// </summary>
+        public readonly ArmPowerOptions ArmPower;
+
         public const string Usage =
             "Usage: Teleop.RobotHost --local-port <port> [--remote-host <ip> --remote-port <port>] " +
             "[--reply-to sender|fixed] --relay-socket <path> --local-relay-socket <path> " +
@@ -99,7 +108,10 @@ namespace Teleop.RobotHost
             "[--record-control <path>] [--uplink-control <path>] [--discovery-port <port>]\n" +
             "  [--auto-record [--auto-record-idle-seconds <s>] [--auto-record-max-minutes <min>] [--auto-record-stop-free-gb <gb>]\n" +
             "   [--auto-record-start-free-gb <gb>] [--auto-record-driver-wait-seconds <s>] [--auto-record-min-split-seconds <s>]\n" +
+            "   [--auto-record-headset-seconds <s>]\n" +
             "   [--auto-record-root <dir>] [--auto-record-profile <path>] [--build-info-robothost <path>] [--build-info-driver <path>]]\n" +
+            "  [--rest-pose-deg <d1,d2,...>] [--park-speed-rad-per-sec <r>] [--park-tolerance-deg <d>] [--park-timeout-seconds <s>]\n" +
+            "  [--park-contact-deg <d>]\n" +
             "  --reply-to sender (default) replies to wherever the latest command came from;\n" +
             "  --remote-host/--remote-port are then only the target before the first command.\n" +
             "  --reply-to fixed always replies to --remote-host:--remote-port, which it requires.\n" +
@@ -124,7 +136,9 @@ namespace Teleop.RobotHost
             "  to never impair the uplink.\n" +
             "  --discovery-port answers the headset's discovery query there with this machine's name and\n" +
             "  LAN addresses (docs/adr/0022). Omit it to not answer.\n" +
-            "  --auto-record opens a session whenever the robot is commanded (docs/adr/0023): on the first joint\n" +
+            "  --auto-record opens a session whenever the headset commands the robot (docs/adr/0023): only joint\n" +
+            "  commands whose sender sent a headset heartbeat within --auto-record-headset-seconds (5) count, so\n" +
+            "  joint-drive, move-arm and other tools are never recorded automatically. It opens on the first such\n" +
             "  command after --auto-record-idle-seconds (30) without one, unless the control file names a manual\n" +
             "  session or under --auto-record-start-free-gb (2) is free; closed after the same idle time, when the\n" +
             "  sender or subscriber changes (not again within --auto-record-min-split-seconds, 5), after\n" +
@@ -132,13 +146,22 @@ namespace Teleop.RobotHost
             "  stoppedUtc, files.sha256) after the driver's END trailer, waiting at most --auto-record-driver-wait-seconds\n" +
             "  (15). Sessions go into --auto-record-root (default: jetrover/ beside the control file), with a copy of\n" +
             "  --auto-record-profile (default: --profile-path) and the builds from --build-info-robothost (default:\n" +
-            "  BUILD_INFO beside this program) and --build-info-driver. Needs --record-control and --joint-local-port.";
+            "  BUILD_INFO beside this program) and --build-info-driver. Needs --record-control and --joint-local-port.\n" +
+            "  --rest-pose-deg is where the headset's relax request parks the arm before its torque goes off\n" +
+            "  (docs/adr/0023 decision 5): degrees, one per arm joint (every joint but the gripper) in the profile's\n" +
+            "  order, as just joint-probe prints them. Without it every relax is refused. The park moves the furthest\n" +
+            "  joint at --park-speed-rad-per-sec (0.5), is there when every reading is within --park-tolerance-deg (3)\n" +
+            "  and gives up, holding, after --park-timeout-seconds (20). The straight joint path there is checked\n" +
+            "  against the collision model, every sample, the rest pose included; --park-contact-deg (0: off) lets\n" +
+            "  the samples within that many degrees of the rest pose touch the fixed boxes the rest pose itself\n" +
+            "  rests on, and nothing else.";
 
         private RobotHostArgs(
             int localPort, IPAddress? remoteHost, int? remotePort, bool replyToSender,
             string relaySocketPath, string localRelaySocketPath, float? maxDirectionMagnitude,
             int? jointLocalPort, string? profilePath, float? pulsesPerSecond = null, string? recordControlPath = null,
-            string? uplinkControlPath = null, int? discoveryPort = null, AutoRecordOptions? autoRecord = null)
+            string? uplinkControlPath = null, int? discoveryPort = null, AutoRecordOptions? autoRecord = null,
+            ArmPowerOptions? armPower = null)
         {
             LocalPort = localPort;
             RemoteHost = remoteHost;
@@ -154,6 +177,7 @@ namespace Teleop.RobotHost
             UplinkControlPath = uplinkControlPath;
             DiscoveryPort = discoveryPort;
             AutoRecord = autoRecord;
+            ArmPower = armPower ?? new ArmPowerOptions();
         }
 
         public static RobotHostArgs? TryParse(string[] args, out string? error)
@@ -173,6 +197,7 @@ namespace Teleop.RobotHost
             string replyTo = "sender";
             bool autoRecord = false;
             var auto = new AutoRecordOptions();
+            var power = new ArmPowerOptions();
             string? autoError = null;
 
             double Number(string name, string text)
@@ -261,6 +286,9 @@ namespace Teleop.RobotHost
                     case "--auto-record-min-split-seconds" when i + 1 < args.Length:
                         auto.MinSplitSeconds = Number(args[i], args[++i]);
                         break;
+                    case "--auto-record-headset-seconds" when i + 1 < args.Length:
+                        auto.HeadsetSeconds = Number(args[i], args[++i]);
+                        break;
                     case "--auto-record-root" when i + 1 < args.Length:
                         auto.RecordingsRoot = args[++i];
                         break;
@@ -272,6 +300,29 @@ namespace Teleop.RobotHost
                         break;
                     case "--build-info-driver" when i + 1 < args.Length:
                         auto.DriverBuildInfoPath = args[++i];
+                        break;
+                    case "--rest-pose-deg" when i + 1 < args.Length:
+                        if (ArmPowerOptions.TryParseRestPose(args[++i], out double[]? rest, out string? restError))
+                        {
+                            power.RestPoseDegrees = rest;
+                        }
+                        else
+                        {
+                            autoError ??= restError + ".";
+                        }
+
+                        break;
+                    case "--park-speed-rad-per-sec" when i + 1 < args.Length:
+                        power.ParkSpeedRadPerSec = Number(args[i], args[++i]);
+                        break;
+                    case "--park-tolerance-deg" when i + 1 < args.Length:
+                        power.ToleranceDegrees = Number(args[i], args[++i]);
+                        break;
+                    case "--park-contact-deg" when i + 1 < args.Length:
+                        power.RestContactDegrees = Number(args[i], args[++i]);
+                        break;
+                    case "--park-timeout-seconds" when i + 1 < args.Length:
+                        power.ParkTimeoutSeconds = Number(args[i], args[++i]);
                         break;
                 }
             }
@@ -328,11 +379,18 @@ namespace Teleop.RobotHost
                 }
             }
 
+            string? powerInvalid = power.Validate();
+            if (powerInvalid != null)
+            {
+                error = powerInvalid + ".";
+                return null;
+            }
+
             error = null;
             return new RobotHostArgs(
                 localPort.Value, remoteHost, remotePort, replyToSender, relaySocketPath, localRelaySocketPath,
                 maxDirectionMagnitude, jointLocalPort, profilePath, pulsesPerSecond, recordControlPath, uplinkControlPath, discoveryPort,
-                autoRecord ? auto : null);
+                autoRecord ? auto : null, power);
         }
 
         private static int? ParseIntOrNull(string s) => int.TryParse(s, out int value) ? value : null;

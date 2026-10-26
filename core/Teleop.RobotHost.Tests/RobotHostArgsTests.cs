@@ -67,6 +67,7 @@ namespace Teleop.RobotHost.Tests
             Assert.Equal(2, auto.StartFreeGigabytes);
             Assert.Equal(15, auto.DriverWaitSeconds);
             Assert.Equal(5, auto.MinSplitSeconds);
+            Assert.Equal(5, auto.HeadsetSeconds);
             Assert.Null(auto.RecordingsRoot);
             Assert.Equal("/p/jetrover.json", auto.ProfilePath); // the profile RobotHost loaded, unless told otherwise
             Assert.Null(auto.RobotHostBuildInfoPath);
@@ -80,7 +81,7 @@ namespace Teleop.RobotHost.Tests
             {
                 "--auto-record", "--auto-record-idle-seconds", "12.5", "--auto-record-max-minutes", "30", "--auto-record-stop-free-gb", "0.5",
                 "--auto-record-start-free-gb", "1.5", "--auto-record-driver-wait-seconds", "4", "--auto-record-min-split-seconds", "0",
-                "--auto-record-root", "/r", "--auto-record-profile", "/a.json", "--build-info-robothost", "/b1", "--build-info-driver", "/b2",
+                "--auto-record-headset-seconds", "2.5", "--auto-record-root", "/r", "--auto-record-profile", "/a.json", "--build-info-robothost", "/b1", "--build-info-driver", "/b2",
             }).ToArray(), out string? error);
             Assert.Null(error);
             var auto = parsed!.Value.AutoRecord!;
@@ -90,6 +91,7 @@ namespace Teleop.RobotHost.Tests
             Assert.Equal(1.5, auto.StartFreeGigabytes);
             Assert.Equal(4, auto.DriverWaitSeconds);
             Assert.Equal(0, auto.MinSplitSeconds);
+            Assert.Equal(2.5, auto.HeadsetSeconds);
             Assert.Equal("/r", auto.RecordingsRoot);
             Assert.Equal("/a.json", auto.ProfilePath);
             Assert.Equal("/b1", auto.RobotHostBuildInfoPath);
@@ -104,6 +106,7 @@ namespace Teleop.RobotHost.Tests
         [InlineData("--auto-record-start-free-gb", "0.5")] // below the stop threshold (1)
         [InlineData("--auto-record-driver-wait-seconds", "NaN")]
         [InlineData("--auto-record-min-split-seconds", "-2")]
+        [InlineData("--auto-record-headset-seconds", "0")]
         public void AutoRecord_RefusesAnUnusableThreshold(string flag, string value)
         {
             Assert.Null(RobotHostArgs.TryParse(Base.Concat(Recording).Concat(new[] { "--auto-record", flag, value }).ToArray(), out string? error));
@@ -117,6 +120,56 @@ namespace Teleop.RobotHost.Tests
             Assert.Contains("--record-control", e1);
             Assert.Null(RobotHostArgs.TryParse(Base.Concat(new[] { "--auto-record", "--record-control", "/x" }).ToArray(), out string? e2));
             Assert.Contains("--joint-local-port", e2);
+        }
+
+        [Fact]
+        public void ArmPower_HasTheDecidedDefaults_AndNoRestPose()
+        {
+            var power = RobotHostArgs.TryParse(Base, out _)!.Value.ArmPower;
+            Assert.Null(power.RestPoseDegrees);
+            Assert.Equal(0.5, power.ParkSpeedRadPerSec);
+            Assert.Equal(3, power.ToleranceDegrees);
+            Assert.Equal(20, power.ParkTimeoutSeconds);
+            Assert.Equal(0, power.RestContactDegrees);
+        }
+
+        [Fact]
+        public void ArmPower_EveryValue_IsAnArgument()
+        {
+            var parsed = RobotHostArgs.TryParse(Base.Concat(new[]
+            {
+                "--rest-pose-deg", "-0.72,92.12,-93.12,-95.28,5.76", "--park-speed-rad-per-sec", "0.3", "--park-tolerance-deg", "2",
+                "--park-timeout-seconds", "30", "--park-contact-deg", "10",
+            }).ToArray(), out string? error);
+            Assert.Null(error);
+            var power = parsed!.Value.ArmPower;
+            Assert.Equal(new[] { -0.72, 92.12, -93.12, -95.28, 5.76 }, power.RestPoseDegrees);
+            Assert.Equal(0.3, power.ParkSpeedRadPerSec);
+            Assert.Equal(2, power.ToleranceDegrees);
+            Assert.Equal(30, power.ParkTimeoutSeconds);
+            Assert.Equal(10, power.RestContactDegrees);
+        }
+
+        [Fact]
+        public void ArmPower_AnEmptyRestPose_IsNone()
+        {
+            var parsed = RobotHostArgs.TryParse(Base.Concat(new[] { "--rest-pose-deg", "" }).ToArray(), out string? error);
+            Assert.Null(error);
+            Assert.Null(parsed!.Value.ArmPower.RestPoseDegrees);
+        }
+
+        [Theory]
+        [InlineData("--rest-pose-deg", "1,two,3")]
+        [InlineData("--rest-pose-deg", "0,400,0,0,0")]
+        [InlineData("--park-speed-rad-per-sec", "0")]
+        [InlineData("--park-speed-rad-per-sec", "10")]
+        [InlineData("--park-tolerance-deg", "-1")]
+        [InlineData("--park-timeout-seconds", "never")]
+        [InlineData("--park-contact-deg", "90")]
+        public void ArmPower_RefusesAnUnusableValue(string flag, string value)
+        {
+            Assert.Null(RobotHostArgs.TryParse(Base.Concat(new[] { flag, value }).ToArray(), out string? error));
+            Assert.NotNull(error);
         }
     }
 }

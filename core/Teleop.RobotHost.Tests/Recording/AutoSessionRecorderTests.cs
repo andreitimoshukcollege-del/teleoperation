@@ -61,12 +61,23 @@ namespace Teleop.RobotHost.Tests.Recording
                     () => { DiskReads++; return Free; }, () => Uplink, Log.Add);
             }
 
-            /// <summary>Commands from <paramref name="sender"/> every 20 ms over [from, to) seconds, ticking as the main loop does.</summary>
-            public void Command(double from, double to, string sender = "10.0.0.5:6002")
+            /// <summary>
+            /// Commands from <paramref name="sender"/> every 20 ms over [from, to) seconds, ticking as the
+            /// main loop does. With <paramref name="heartbeat"/>, the sender is a headset: it sends a headset
+            /// heartbeat at the start and once a second, as the Bridge does.
+            /// </summary>
+            public void Command(double from, double to, string sender = "10.0.0.5:6002", bool heartbeat = true)
             {
+                double lastBeat = double.NegativeInfinity;
                 for (double t = from; t < to; t += 0.02)
                 {
                     Auto.Tick(T(t));
+                    if (heartbeat && t - lastBeat >= 1.0)
+                    {
+                        Auto.OnHeadset(T(t), sender);
+                        lastBeat = t;
+                    }
+
                     Auto.OnJointCommand(T(t), sender);
                 }
             }
@@ -84,6 +95,7 @@ namespace Teleop.RobotHost.Tests.Recording
         {
             var rig = new Rig();
             rig.Uplink = new UplinkCondition("50ms-5j", 7);
+            rig.Auto.OnHeadset(T(1), "10.0.0.5:6002");
             rig.Auto.OnJointCommand(T(1), "10.0.0.5:6002");
             Assert.True(rig.Auto.IsOpen);
             AutoSessionSpec spec = Assert.Single(rig.Sink.Begun);
@@ -107,7 +119,7 @@ namespace Teleop.RobotHost.Tests.Recording
             Assert.Contains("no joint command for 30 s", rig.Sink.Ended.Single());
             rig.Command(41, 45);
             Assert.Equal(2, rig.Sink.Begun.Count);
-            Assert.StartsWith("first joint command after 30 s", rig.Sink.Begun[1].Reason);
+            Assert.StartsWith("first headset joint command after 30 s", rig.Sink.Begun[1].Reason);
         }
 
         [Fact]
@@ -279,8 +291,69 @@ namespace Teleop.RobotHost.Tests.Recording
         }
 
         [Fact]
+        public void AHeadsetSender_IsRecorded()
+        {
+            var rig = new Rig();
+            rig.Command(0, 3, "10.0.0.5:6002", heartbeat: true);
+            Assert.True(rig.Auto.IsOpen);
+            Assert.True(rig.Auto.IsHeadset(T(3), "10.0.0.5:6002"));
+            Assert.Equal("10.0.0.5:6002", Assert.Single(rig.Sink.Begun).Sender);
+        }
+
+        [Fact]
+        public void AJointDriveLikeSender_WithNoHeartbeat_IsNeverRecorded()
+        {
+            var rig = new Rig();
+            rig.Command(0, 60, "10.0.0.7:51234", heartbeat: false);
+            Assert.False(rig.Auto.IsOpen);
+            Assert.Empty(rig.Sink.Begun);
+            Assert.Single(rig.Log, l => l.Contains("not a headset"));
+        }
+
+        [Fact]
+        public void AnotherEndpointsHeartbeat_DoesNotMakeAToolAHeadset()
+        {
+            var rig = new Rig();
+            rig.Auto.OnHeadset(T(0), "10.0.0.5:6002"); // the headset is connected, motion off
+            rig.Command(0, 10, "10.0.0.7:51234", heartbeat: false); // joint-drive from the laptop
+            Assert.Empty(rig.Sink.Begun);
+        }
+
+        [Fact]
+        public void TheHeartbeatExpiring_StopsNewSessions()
+        {
+            var rig = new Rig();
+            rig.Auto.OnHeadset(T(0), "10.0.0.5:6002");
+            rig.Command(0, 4, "10.0.0.5:6002", heartbeat: false); // within 5 s of the heartbeat
+            Assert.True(rig.Auto.IsOpen);
+            rig.Command(4, 10, "10.0.0.5:6002", heartbeat: false); // the heartbeat is now too old
+            rig.Idle(10, 40);
+            Assert.False(rig.Auto.IsOpen); // its commands no longer kept the session open
+            Assert.Contains("no joint command for 30 s", rig.Sink.Ended.Single());
+            rig.Command(40, 45, "10.0.0.5:6002", heartbeat: false);
+            Assert.Single(rig.Sink.Begun); // no new session without a fresh heartbeat
+            rig.Command(45, 46, "10.0.0.5:6002", heartbeat: true);
+            Assert.Equal(2, rig.Sink.Begun.Count);
+        }
+
+        [Fact]
+        public void AToolDuringAHeadsetSession_ClosesIt_OpensNone_AndTheHeadsetReopens()
+        {
+            var rig = new Rig();
+            rig.Command(0, 10, "10.0.0.5:6002");
+            rig.Command(10, 12, "10.0.0.7:51234", heartbeat: false);
+            Assert.False(rig.Auto.IsOpen);
+            Assert.Contains("sender changed from 10.0.0.5:6002 to 10.0.0.7:51234", rig.Sink.Ended.Single());
+            Assert.Single(rig.Sink.Begun);
+            rig.Command(12, 13, "10.0.0.5:6002");
+            Assert.Equal(2, rig.Sink.Begun.Count);
+            Assert.Equal("10.0.0.5:6002", rig.Sink.Begun[1].Sender);
+        }
+
+        [Fact]
         public void InvalidOptions_AreRefused()
         {
+            Assert.Throws<ArgumentException>(() => new Rig(new AutoRecordOptions { HeadsetSeconds = 0 }));
             Assert.Throws<ArgumentException>(() => new Rig(new AutoRecordOptions { IdleSeconds = 0 }));
             Assert.Throws<ArgumentException>(() => new Rig(new AutoRecordOptions { StartFreeGigabytes = 1, StopFreeGigabytes = 2 }));
         }

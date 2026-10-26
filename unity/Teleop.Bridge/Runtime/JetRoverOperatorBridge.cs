@@ -140,12 +140,52 @@ namespace Teleop.Bridge
             }
         }
 
+        private JetRoverMotionMode _motionMode = JetRoverMotionMode.Off;
+        private bool _motionModeSet;
+
         /// <summary>
-        /// Whether commands are sent to the robot at all, on top of the config's
-        /// <c>ConfirmHardwareMotion</c>. Starts as the scene's <c>motionEnabledAtStart</c>. Off stops
-        /// sending, and the robot holds its last command; the virtual arm keeps following either way.
+        /// The operator's motion mode (docs/adr/0023 decision 5), on top of the config's
+        /// <c>ConfirmHardwareMotion</c>. The virtual arm keeps following in every mode.
+        /// <list type="bullet">
+        /// <item><see cref="JetRoverMotionMode.On"/>: joint commands go while the robot holds. If it
+        /// reports parking or relaxed, a hold request goes first (repeated, a few a second) and no joint
+        /// command until a status says holding.</item>
+        /// <item><see cref="JetRoverMotionMode.Paused"/>: no commands; the robot holds its last one with
+        /// torque on, or stays relaxed if it was: pausing never powers the servos.</item>
+        /// <item><see cref="JetRoverMotionMode.Off"/>: no commands, and a relax request (park slowly at
+        /// the rest pose, then torque off), repeated until the status says parking or relaxed, or refused
+        /// (<see cref="JetRoverJointStateLink.ArmPowerReasonText"/>). Setting Off again retries.</item>
+        /// </list>
+        /// At launch the mode is Off with nothing requested (the arm may already be resting), or On when
+        /// the scene's <c>motionEnabledAtStart</c> is set (TeleopVR).
         /// </summary>
-        public bool MotionEnabled { get; set; }
+        public JetRoverMotionMode MotionMode
+        {
+            get => _motionMode;
+            set
+            {
+                _motionMode = value;
+                _motionModeSet = true;
+                _jointStateLink?.SetMotionMode(value, NowTicks);
+            }
+        }
+
+        /// <summary>
+        /// The two-way switch the motion button has always used: true is <see cref="JetRoverMotionMode.On"/>,
+        /// false is <see cref="JetRoverMotionMode.Paused"/> (commands stop, the torque stays on). Reads true
+        /// only in On.
+        /// </summary>
+        public bool MotionEnabled
+        {
+            get => _motionMode == JetRoverMotionMode.On;
+            set => MotionMode = value ? JetRoverMotionMode.On : JetRoverMotionMode.Paused;
+        }
+
+        /// <summary>
+        /// The mode is On but joint commands are held back: a hold request is waiting for the robot to say
+        /// it holds again (docs/adr/0023 decision 5).
+        /// </summary>
+        public bool WaitingForHold => _motionMode == JetRoverMotionMode.On && _jointStateLink != null && !_jointStateLink.MayCommand(NowTicks);
 
         /// <summary>True when the config lets this bridge command the robot at all (<c>ConfirmHardwareMotion</c>).</summary>
         public bool HardwareMotionAllowed => _config != null && _config.ConfirmHardwareMotion;
@@ -325,7 +365,6 @@ namespace Teleop.Bridge
 
         private void Awake()
         {
-            MotionEnabled = motionEnabledAtStart;
             _config = ConfigLoader.Load("jetrover_connection", "jetrover_connection.json", new JetRoverArmConfig());
             _profile = ConfigLoader.Load(
                 "jetrover_arm_profile", "jetrover_arm_profile.json", new RobotArmProfileData()).ToProfile();
@@ -438,6 +477,13 @@ namespace Teleop.Bridge
                     new[] { new JointPredictorPresetData { Label = "hold-last", Predictor = "hold-last" } }, "hold-last",
                     _config.MaxHorizonMs, _config.GripperFractionPerRadian, new byte[0]);
             }
+
+            // Park, then relax (docs/adr/0023 decision 5). Requests only when the robot may be commanded at
+            // all; the heartbeat goes either way. At launch: Off with nothing requested, unless the scene
+            // starts with motion on (TeleopVR) or something set a mode before Awake.
+            _jointStateLink.PowerRequestsAllowed = _config.ConfirmHardwareMotion;
+            if (_motionModeSet) _jointStateLink.SetMotionMode(_motionMode, _clock.NowTicks);
+            else if (motionEnabledAtStart) MotionMode = JetRoverMotionMode.On;
             _predictor = predictorFactory(predictorConfig, _clock);
             _reconciler = reconcilerFactory(reconcilerConfig, _metricSink, _clock);
             _playoutPolicy = playoutFactory(playoutConfig, _metricSink, _clock);
@@ -533,6 +579,17 @@ namespace Teleop.Bridge
                 _solverSeededFromRobot = true;
             }
 
+            // Holding again after a park and relax (docs/adr/0023 decision 5): the arm is at the rest
+            // pose, or wherever it was moved while limp, not where the ghost was. The solver starts over
+            // from the measured pose, so the first commands approach the target from there along checked
+            // joint paths instead of jumping straight to it.
+            if (_jointStateLink != null && _jointStateLink.TakeResumedFromRelaxed() &&
+                _jointStateLink.TryGetMeasured(out JetRoverJointPose resumed) && resumed.ArmSensed)
+            {
+                _solver.Reset(_profile, new ArmPose(resumed.BaseYaw, resumed.Proximal, resumed.Distal, resumed.WristPitch,
+                    resumed.RollSensed ? resumed.WristRoll : 0f));
+            }
+
             ArmSolution solution = _solver.Solve(_profile, capturedPose.Position, desiredPitch, desiredRoll);
             Span<float> wristPitches = stackalloc float[Math.Max(1, _profile.WristJointCount)];
             float baseYaw = solution.Pose.BaseYaw, proximalPitch = solution.Pose.Proximal, distalPitch = solution.Pose.Distal;
@@ -569,7 +626,8 @@ namespace Teleop.Bridge
                 armRig.ApplyAngles(baseYaw, proximalPitch, distalPitch, upperPitch, wasClamped, pitchAdjusted);
             }
 
-            if (!_config.ConfirmHardwareMotion || !MotionEnabled)
+            // On, and the robot holds (or an older RobotHost that does not say): docs/adr/0023 decision 5.
+            if (!_config.ConfirmHardwareMotion || !_jointStateLink.MayCommand(now))
             {
                 return;
             }

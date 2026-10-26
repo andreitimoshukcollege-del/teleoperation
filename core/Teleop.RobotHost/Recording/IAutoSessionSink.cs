@@ -36,7 +36,7 @@ namespace Teleop.RobotHost.Recording
 
         public DateTime StartedUtc { get; }
 
-        /// <summary>The joint-command sender, <c>ip:port</c>; <c>conditions.operator</c> is <c>auto &lt;sender&gt;</c>.</summary>
+        /// <summary>The joint-command sender, <c>ip:port</c>; <c>conditions.operator</c> is <c>headset &lt;sender&gt;</c> (only a headset opens one).</summary>
         public string Sender { get; }
 
         public UplinkCondition Uplink { get; }

@@ -221,6 +221,20 @@ default_operator_host := env_var_or_default("OPERATOR_HOST", "100.82.140.80")
 robot_mdns_name := env_var_or_default("JETROVER_NAME", "jetrover-sinrg")
 # The GPU machine for trainer runs (just gpu-train, gpu-status, gpu-fetch): an account with this repo's SSH key.
 gpu_host := env_var_or_default("GPU_HOST", "andrei@10.188.58.164")
+# Where ROBOT OFF parks the arm before its torque goes off (docs/adr/0023 decision 5), passed by
+# deploy-robothost as --rest-pose-deg: degrees, motors 1-5 (base yaw, shoulder, elbow, wrist pitch,
+# wrist roll; the gripper is left as it is), in RobotHost's joint angles as `just joint-probe` prints
+# them (the profile's zero offsets applied). Placed by the user and measured with joint-probe on
+# 2026-10-26. To re-measure (robot/README.md, "Park, then relax"): place the arm by hand on its
+# support, or drive it there slowly with the headset; run `just joint-probe` with the headset's motion
+# off and copy the five sensed angles here (or export JETROVER_REST_POSE_DEG), then
+# `just deploy-robothost`. Empty refuses every relax.
+# RobotHost's own collision check still decides each park: by the model this pose has the gripper on
+# the body (Body.7, its support), so with the strict check (park contact 0) every relax is refused,
+# and RobotHost says so at start. JETROVER_PARK_CONTACT_DEG (e.g. 10) allows that contact within so
+# many degrees of the rest pose and nothing else; it is empty (strict) until someone decides.
+jetrover_rest_pose_deg := env_var_or_default("JETROVER_REST_POSE_DEG", "-0.72,92.12,-93.12,-95.28,5.76")
+jetrover_park_contact_deg := env_var_or_default("JETROVER_PARK_CONTACT_DEG", "")
 
 # Print the robot's current IPv4 address and how it was found -- moves nothing. Tries its mDNS name (jetrover-sinrg.local, on the lab LAN), then Tailscale (the direct LAN path if it has one, else the 100.x address). Every robot recipe does this lookup itself unless JETROVER_HOST is set
 [group('robot: checks and diagnostics (nothing moves)')]
@@ -360,9 +374,9 @@ deploy-robot checks="true":
     step "5/5 Checks"; just robot-ros-diff; just joint-probe; just robot-status
     echo; echo "Robot redeployed from $(git rev-parse --short HEAD) at $JETROVER_HOST."
 
-# Publish Teleop.RobotHost for the Jetson (linux-arm64), copy it over, and restart its systemd service -- needs passwordless ssh/scp; does NOT touch the Jetson's ROS 2 nodes, see robot/systemd/README.md. It runs recording whenever the robot is commanded (--auto-record, docs/adr/0023; robot/README.md) unless auto_record=false
+# Publish Teleop.RobotHost for the Jetson (linux-arm64), copy it over, and restart its systemd service -- needs passwordless ssh/scp; does NOT touch the Jetson's ROS 2 nodes, see robot/systemd/README.md. It runs recording whenever the headset commands the robot (--auto-record, docs/adr/0023; robot/README.md) unless auto_record=false, and parks then relaxes the arm on the headset's ROBOT OFF at rest_pose_deg (default jetrover_rest_pose_deg, docs/adr/0023 decision 5). Relay wire v5: deploy the ROS side too (just deploy-ros, or just deploy-robot for both)
 [group('robot: deploy and restart (someone at the robot)')]
-deploy-robothost remote_host=default_jetrover_host remote_user="jetson" operator_host=default_operator_host max_direction_magnitude="" profile_path="" pulses_per_second="" auto_record="true":
+deploy-robothost remote_host=default_jetrover_host remote_user="jetson" operator_host=default_operator_host max_direction_magnitude="" profile_path="" pulses_per_second="" auto_record="true" rest_pose_deg=jetrover_rest_pose_deg park_contact_deg=jetrover_park_contact_deg:
     #!/usr/bin/env bash
     set -euo pipefail
     case "{{auto_record}}" in true|false) ;; *) echo "error: auto_record must be true or false, got '{{auto_record}}'" >&2; exit 1 ;; esac
@@ -397,12 +411,22 @@ deploy-robothost remote_host=default_jetrover_host remote_user="jetson" operator
     # The headset's speed slider asks for slower moves with every joint command, and RobotHost caps
     # those requests at this. Lower it to cap the slider; leave it empty to keep the default.
     if [ -n "{{pulses_per_second}}" ]; then extra_args="$extra_args --pulses-per-second {{pulses_per_second}}"; fi
-    # Recording whenever the robot is commanded (docs/adr/0023 decision 4; robot/README.md): RobotHost
-    # opens a session on the first joint command after 30 s without one and closes it after 30 s
-    # without; manual sessions (record-start, the onboard pilot) win. The thresholds keep their
-    # defaults (--auto-record-idle-seconds 30, --auto-record-max-minutes 60, --auto-record-stop-free-gb 1,
-    # --auto-record-start-free-gb 2, --auto-record-driver-wait-seconds 15, --auto-record-min-split-seconds 5).
+    # Recording whenever the headset commands the robot (docs/adr/0023 decision 4; robot/README.md): RobotHost
+    # opens a session on the first headset joint command after 30 s without one and closes it after 30 s
+    # without; only a sender whose headset heartbeat is at most 5 s old counts, so joint-drive, move-arm
+    # and other tools are never recorded automatically; manual sessions (record-start, the onboard pilot)
+    # win. The thresholds keep their defaults (--auto-record-idle-seconds 30, --auto-record-max-minutes 60,
+    # --auto-record-stop-free-gb 1, --auto-record-start-free-gb 2, --auto-record-driver-wait-seconds 15,
+    # --auto-record-min-split-seconds 5, --auto-record-headset-seconds 5).
     # auto_record=false turns it off. With profile_path, the sessions copy that profile instead.
+    # Park, then relax (docs/adr/0023 decision 5): ROBOT OFF on the headset parks the arm at the rest pose
+    # (jetrover_rest_pose_deg above) at 0.5 rad/s, waits until every reading is within 3 degrees, then
+    # switches torque off; --park-speed-rad-per-sec, --park-tolerance-deg and --park-timeout-seconds (20)
+    # keep their defaults. An empty rest pose refuses every relax.
+    rest_pose='{{rest_pose_deg}}'
+    case "$rest_pose" in *[!0-9.,-]*) echo "error: rest_pose_deg must be comma-separated degrees, got '$rest_pose'" >&2; exit 1 ;; esac
+    if [ -n "$rest_pose" ]; then extra_args="$extra_args --rest-pose-deg $rest_pose"; fi
+    if [ -n "{{park_contact_deg}}" ]; then extra_args="$extra_args --park-contact-deg {{park_contact_deg}}"; fi
     if [ "{{auto_record}}" = "true" ]; then
         extra_args="$extra_args --auto-record --build-info-robothost /home/jetson/robothost_current/BUILD_INFO --build-info-driver /home/jetson/teleop_ros_current/BUILD_INFO"
         if [ -z "{{profile_path}}" ]; then extra_args="$extra_args --auto-record-profile /home/jetson/robothost_current/robot-profile.json"; fi

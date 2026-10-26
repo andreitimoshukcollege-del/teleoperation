@@ -6,7 +6,7 @@ using Teleop.RobotHost.Relay;
 namespace Teleop.RobotHost.Recording
 {
     /// <summary>
-    /// The relay client the plant sees while recording is possible: every target sent (<c>RO</c>) and
+    /// The relay client the plant sees while recording is possible: every target sent (<c>RO</c>), every torque switch (<c>TQ</c>) and
     /// every feedback datagram taken (<c>RI</c>) goes to the <see cref="SessionRecorder"/>, then
     /// straight through to the real client. It changes nothing the plant does, and costs a string
     /// only while a session is open.
@@ -28,6 +28,12 @@ namespace Teleop.RobotHost.Recording
         {
             if (_recorder.IsActive) _recorder.Record(SessionLines.RelayOut(_clock.NowTicks, targets));
             _inner.Send(targets);
+        }
+
+        public void SendTorque(bool on)
+        {
+            if (_recorder.IsActive) _recorder.Record(SessionLines.Torque(_clock.NowTicks, on));
+            _inner.SendTorque(on);
         }
 
         public bool TryReceiveFeedback(Span<JointFeedbackEntry> entriesBuffer, out int entryCount)

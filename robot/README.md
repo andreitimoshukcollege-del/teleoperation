@@ -167,13 +167,19 @@ are not committed.
 
 ### Automatic sessions (docs/adr/0023 decision 4)
 
-RobotHost records whenever the robot is commanded, with nobody running `record-start`
+RobotHost records whenever **the headset** commands the robot, with nobody running `record-start`
 (`--auto-record`, which `just deploy-robothost` passes; `auto_record=false` leaves it out):
 
-- **It opens a session** on the first joint command after at least 30 s without one (or since
+- **Only the headset (since 2026-10-26).** The Bridge sends a headset heartbeat once a second on the
+  joint port (docs/adr/0018 §9). A joint command counts only when its sender sent one within
+  `--auto-record-headset-seconds` (5). `joint-drive`, `move-arm`, `joint-probe` and other tools send
+  none, so they are never recorded automatically (use `record-start` or `record-drive`); their commands
+  during a headset session close it, as any sender change does. Unity's editor with Direct Preview
+  runs the same Bridge, so it counts as the headset.
+- **It opens a session** on the first headset joint command after at least 30 s without one (or since
   RobotHost started), into `~/recordings/jetrover/<UTC>-auto/` (`-auto-2`, ... when one second holds
   two). It writes `session.json` itself (label and motion `auto`, load `unknown`, operator
-  `auto <sender ip:port>`, the robot-side uplink as RobotHost has it, the builds from
+  `headset <sender ip:port>` (`auto <ip:port>` in sessions recorded before 2026-10-26), the robot-side uplink as RobotHost has it, the builds from
   `~/robothost_current/BUILD_INFO` and `~/teleop_ros_current/BUILD_INFO`), a copy of the robot profile
   (`~/robothost_current/robot-profile.json`, which `deploy-robothost` copies from
   `core/RobotProfiles/jetrover.json`), the marker `~/recordings/.active-auto`, and then `.active`, which
@@ -212,8 +218,44 @@ RobotHost records whenever the robot is commanded, with nobody running `record-s
   deletes only sessions this machine holds with identical sha256s. `just robot-recordings` and
   `just robot-disk` show what is there. Each threshold is a RobotHost argument
   (`--auto-record-idle-seconds`, `--auto-record-max-minutes`, `--auto-record-stop-free-gb`,
-  `--auto-record-start-free-gb`, `--auto-record-driver-wait-seconds`, `--auto-record-min-split-seconds`;
-  `Teleop.RobotHost`'s usage text lists them all).
+  `--auto-record-start-free-gb`, `--auto-record-driver-wait-seconds`, `--auto-record-min-split-seconds`,
+  `--auto-record-headset-seconds`; `Teleop.RobotHost`'s usage text lists them all).
+
+## Park, then relax (docs/adr/0023 decision 5)
+
+Turning the robot **OFF** on the headset parks the arm slowly at a supported rest pose and then
+switches every servo's torque off (the gripper's too), because holding torque for a long time may be
+what makes the servo board go silent (2026-10-26: silent after 77 idle minutes with torque on).
+**ON** switches the torque back on before any command is forwarded; **PAUSE** stops commands with the
+torque as it is. What RobotHost does, step by step, is in the ADR; `just robothost-logs` shows each
+`[power]` line, and recorded sessions carry `PQ`, `PS`, `PK` and `TQ` records.
+
+- **The rest pose** is `jetrover_rest_pose_deg` at the top of the `justfile`, which
+  `just deploy-robothost` passes as `--rest-pose-deg`: degrees, motors 1-5 (base yaw, shoulder, elbow,
+  wrist pitch, wrist roll), in the joint angles `just joint-probe` prints (the profile's zero offsets
+  applied). The gripper is not moved. Empty refuses every relax. The default is the pose the user
+  placed and measured on 2026-10-26: −0.72, 92.12, −93.12, −95.28, 5.76.
+- **To measure it again:** place the arm on its support (by hand with the torque off, for example
+  during `just robot-measure-joint-limits`, or drive it there slowly with the headset), take the
+  readings with `just joint-probe` while the headset's motion is off, write the five sensed angles
+  into `jetrover_rest_pose_deg` (or export `JETROVER_REST_POSE_DEG`), and `just deploy-robothost`.
+- **The collision check still decides.** RobotHost samples the straight joint path from where the arm
+  is to the rest pose against its collision model (docs/adr/0020) and refuses the relax if any sample
+  collides; the headset shows the reason. A pose the arm *rests on* something in touches the model's
+  body boxes by definition: the 2026-10-26 pose has the gripper on `Body.7`, so with the strict check
+  every relax is refused, and RobotHost logs a note saying so at start. `--park-contact-deg`
+  (`JETROVER_PARK_CONTACT_DEG`, empty: off) allows exactly that contact within so many degrees of the
+  rest pose and nothing else; 10 lets the park from the model's home pose through. Whether to turn it
+  on is the user's decision.
+- **Relay wire v5.** The torque switch travels RobotHost → relay → `/arm/servo/set/torque`
+  (`std_msgs/Int32`, 1 on, 0 off). RobotHost and the ROS side must be deployed together
+  (`just deploy-robot`, or `just deploy-ros` then `just deploy-robothost`); against an older relay,
+  either end rejects the other's messages, the arm does not move and the headset shows the board silent.
+- **While the board is silent no torque command reaches the servos**, and no reading arrives: a relax
+  is refused (`board not answering`), and a park in progress ends holding. Relaxing can only prevent the
+  next silence, never end one; that still needs the power switch (incident log below).
+- **Nothing confirms the torque switch.** The driver does not read the torque state back, so "relaxed"
+  means the torque-off was sent. `just robot-shutdown` (which does read it back) is the check.
 
 ## How it connects to the rest of the repo
 
@@ -597,3 +639,10 @@ translates the local wire protocol above into calls against `jetrover_arm_contro
   therefore always inverted. `robot_controller_sdk.py` is corrected, and goes live with the next
   `just deploy-ros`. `just robot-measure-joint-limits` sends 0x0B itself, so it does not depend on
   the deployed version, and checks the read-back before telling anyone to move the arm.
+- **The torque topic missed the shoulder (found 2026-10-26).** `/arm/servo/set/torque` calls
+  `ServoController.setTorqueState`, which looped over a hardcoded `servoList = [1, 3, 4, 5, 10]`: no
+  motor 2. A torque-off through the topic would have left the shoulder holding while the rest went
+  limp, and a torque-on would never have re-enabled it. Nothing used the topic until park-and-relax
+  (docs/adr/0023 decision 5); `robot-shutdown` and `robot-measure-joint-limits` address the servos
+  themselves. The list is now `ARM_MOTOR_IDS = (1, 2, 3, 4, 5, 10)` (`test_servo_controller.py` checks
+  all six); the swapped board codes above are unchanged.

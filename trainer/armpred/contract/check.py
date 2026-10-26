@@ -100,6 +100,9 @@ def check_session(session: Session, allow_read_gaps: bool = False) -> CheckRepor
         report.stats["command_outcomes"] = outcomes
         if outcomes.get("R", 0):
             report.warnings.append(f"{outcomes['R']} joint command(s) refused as colliding (ADR 0020)")
+        if outcomes.get("P", 0):
+            report.warnings.append(
+                f"{outcomes['P']} joint command(s) ignored while the arm was parking or relaxed (ADR 0023 decision 5)")
     per_motor = {}
     for m in np.unique(session.reads.motor):
         sel = session.reads.motor == m

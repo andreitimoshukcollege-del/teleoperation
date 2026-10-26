@@ -214,6 +214,53 @@ simulated benchmark row exists.
   target by 10-20 pulses while moving and settles up to 20 short of it, and the servo keeps pushing to
   close that gap. Correct stops end the hard push into the closed stop, not this.
 
+### 9. Amendment (2026-10-26): the operator message and the arm-power status on the joint port
+
+Two needs, one message. docs/adr/0023 decision 5 ("park, then relax") needs the headset to ask
+RobotHost to switch the servos' torque off and on, and to hear back what RobotHost did. Decision 4's
+automatic recording must record only someone operating with the headset, never `joint-drive`,
+`move-arm`, `joint-probe` or another tool, and RobotHost cannot tell those apart by address. So the
+headset identifies itself. Two messages join the joint port (`Teleop.RobotArm.Wire.ArmPowerCodec`),
+little-endian, each with its own tag byte and a version:
+
+```
+operator message (headset -> robot, 17 bytes):
+  u8 0x81 | u8 version (1) | u8 clientKind (0 tool, 1 headset) | u8 mode (0 off, 1 paused, 2 on)
+  | u8 request (0 none, 1 relax, 2 hold) | u32 sequence | i64 operatorSendTicks
+
+status (robot -> headset, 28 bytes):
+  u8 0x82 | u8 version (1) | u8 state (0 holding, 1 parking, 2 relaxed) | u8 reason
+  | u32 echoSequence | i64 echoOperatorTicks | i64 robotSendTicks | f32 remainingDeg
+```
+
+- **A heartbeat** is the operator message with request *none*. The Bridge sends one **once a second,
+  whatever the mode**, from the joint socket, with client kind *headset* and its motion mode (On,
+  Paused, Off: the headset's ROBOT buttons). Unity's editor running the Bridge (Direct Preview) is a
+  headset too, which is intended. RobotHost remembers the endpoint that last sent a headset heartbeat,
+  and when; only that endpoint's joint commands open or keep an automatic session, while the heartbeat
+  is at most `--auto-record-headset-seconds` (5) old.
+- **A request** is the same message with request *relax* (park at the configured rest pose, then
+  switch torque off) or *hold* (switch torque on and let joint commands through again). The Bridge
+  repeats it about three times a second until a status answers it.
+- **Reasons:** 0 none, 1 no rest pose configured, 2 the path to it collides, 3 the park timed out,
+  4 the servo board is not answering, 5 no collision model, 6 an unknown request byte, 7 a hold
+  stopped the park. A status in *holding* with a reason other than none is a refused relax.
+- **`echoSequence`/`echoOperatorTicks`** are the latest operator message's, so the headset knows which
+  request a status answers (every message, heartbeats too, takes the next sequence number).
+  **`remainingDeg`** is the largest arm joint's distance from the rest pose by the latest reading (NaN
+  when not known), for the panel.
+- **When a status is sent:** in answer to every operator message, heartbeats included (so the headset
+  knows the state within a second of starting); on every change of state; and once a second while the
+  state is not *holding*. It goes where the joint-state frames go (the joint port's latest sender).
+- **Fail closed:** a message with another tag or version, or a mode or state byte this build does not
+  know, is not decoded. An unknown client kind is not a headset; an unknown request is answered with
+  reason 6 and does nothing.
+- **No collision with the port's other messages.** Their first bytes are 0x02 (command, version 2),
+  0x01 (frame, version 1) and 0x80 (subscribe). Every decoder on the port checks its first byte
+  exactly, so each ignores the others. An older RobotHost ignores a request, and an older headset
+  ignores a status; the headset then sees no status at all and says so.
+- **Unchanged:** the command, the frame and the keepalive.
+
 ## Consequences
 
 - **RobotHost must be redeployed** (`just deploy-robothost`). An older RobotHost ignores the

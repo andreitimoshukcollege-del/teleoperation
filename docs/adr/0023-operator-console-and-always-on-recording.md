@@ -175,6 +175,17 @@ Where the implementation (2026-10-26) departs from the text above, and why:
   `.active`. `.active` stays one line, so the deployed driver and `record-mark` read it unchanged.
 - **Values on close:** the slider is `"unknown"` until the commands' speeds set it. The uplink is
   written as `varied` if RobotHost's own impairment changed during the session.
+- **Only the headset is recorded (2026-10-26, the user).** "The first joint command" above means a
+  headset's: a sender counts only while the headset heartbeat it sends once a second (the operator
+  message, ADR 0018 §9) is at most `--auto-record-headset-seconds` (5) old. `joint-drive`, `move-arm`,
+  `joint-probe` and other tools send none, so their commands never open a session or keep one open;
+  record those with `record-start` (or `record-drive`). Another sender's commands during a headset
+  session close it, as any sender change does, and open none; the headset's next command opens the
+  next one. Unity's editor running the Bridge (Direct Preview) is a headset, by design.
+  `conditions.operator` is now `headset <ip:port>`, and the session records the headset's client kind
+  and motion mode (`OM`, on every change). Tests: `AutoSessionRecorderTests` (a headset records, a
+  sender with no heartbeat never does, an expired heartbeat opens nothing new, a tool closes a headset
+  session).
 
 ### Amendment (2026-10-26, the user's requests after a first look)
 
@@ -184,7 +195,7 @@ Where the implementation (2026-10-26) departs from the text above, and why:
 - **The servo board going silent is shown.** The headset already sees it: frames keep arriving from
   RobotHost while their readings stop advancing. After 3 s the status line and the panel say so and
   ask for a power cycle (robot/README.md's incident log).
-- **5. Park, then relax (decided, not built yet).** A console button moves the arm slowly to a
+- **5. Park, then relax (decided; built 2026-10-26, below).** The arm moves slowly to a
   supported rest pose, waits until the readings say it is there, then switches every arm servo's
   torque off; turning ROBOT ON switches torque back on before any command is forwarded. The user
   suspects that holding torque for a long time causes the board's silences (2026-10-26: silent after
@@ -193,6 +204,69 @@ Where the implementation (2026-10-26) departs from the text above, and why:
   `/arm/servo/set/torque` (`RelayProtocol.cs` and `relay_protocol.py` together), and a rest pose
   measured on the robot (the arm placed by hand with torque off, its readings taken). While the
   board is silent no torque command can reach the servos, so this can only prevent the next silence.
+
+### 5. Park, then relax: built (2026-10-26)
+
+**Three motion modes, not a separate button** (the user's choice): turning the robot OFF on the
+headset always parks and relaxes, and a new PAUSE does what motion-off did before.
+`JetRoverOperatorBridge.MotionMode` (Bridge, `JetRoverMotionMode`):
+- **On:** joint commands go while the robot holds. If its status says parking or relaxed, the bridge
+  sends a *hold* request first, about three times a second until a status says holding, and no joint
+  command until then. After a relax the IK solver restarts from the measured pose, so the arm
+  approaches the target along checked joint paths rather than jumping from the rest pose.
+- **Paused:** no commands; the torque stays as it is. A relaxed arm stays relaxed: pausing never powers
+  the servos.
+- **Off:** no commands, and a *relax* request, repeated until the status says parking or relaxed, or
+  refused (the reason is shown). Setting Off again retries.
+- **At launch** the mode is Off with nothing requested (the arm may already be resting); only the
+  heartbeat goes. `MotionEnabled` stays and maps to On (true) and Paused (false), so the motion button
+  and `XrSceneCheck` work unchanged until the XR buttons are rewired. The decisions are
+  `Teleop.RobotArm.Power.OperatorArmPower`'s (Unity-free, unit-tested); the link
+  (`JetRoverJointStateLink`) sends the messages and exposes `ArmPower`, `ArmPowerReasonText`,
+  `ArmPowerRemainingDeg`, `ArmPowerRequestPending` and `SecondsSinceArmPowerStatus`.
+
+**RobotHost** (`Teleop.RobotHost/Power/ArmPowerController`, pure, time and I/O injected):
+- **Holding → parking:** a relax is refused without `--rest-pose-deg`, without a collision model, or
+  without a fresh reading (0.5 s) of every arm joint. Within `--park-tolerance-deg` (3) of the rest
+  pose already, the torque goes off at once. Otherwise the straight joint-space path from the measured
+  pose to the rest pose is sampled every 2° against the model RobotHost enforces (ADR 0020), start
+  and end included; one collision refuses it.
+- **Parking:** waypoints along that path every 50 ms, the furthest joint at `--park-speed-rad-per-sec`
+  (0.5), through `GenericArmPlant.CommandJointAngles` like any joint command, with that speed in each
+  target. Operator commands, joint and Cartesian, are ignored and counted (`JC` outcome `P`). When
+  every arm joint's reading taken since the park began is within the tolerance, nothing more is sent
+  for 0.3 s; still there, the torque goes off for every servo, the gripper too: **relaxed**. After
+  `--park-timeout-seconds` (20), or 2 s without any reading, it ends in **holding**, refused, where the
+  arm is.
+- **Relaxed → holding:** on a hold, torque on through the relay, then holding. A relax while relaxed
+  is answered relaxed; a hold while parking stops the park.
+- **After a restart** RobotHost cannot know whether the arm is relaxed, so the first operator command
+  it passes switches the torque on first.
+- **The relay** (wire v5, a kind byte and a torque message) publishes `std_msgs/Int32` 1 or 0 on
+  `/arm/servo/set/torque`, in order, never lost behind a coalesced command. The driver's
+  `setTorqueState` switched motors 1, 3, 4, 5 and 10 until now, never the shoulder (2); it now switches
+  all six, drops pending targets first, and times the next move from the last reading (a limp arm may
+  have been moved). The board codes stay the corrected SDK's (0x0C on, 0x0B off).
+- **Recorded:** `PQ` (request), `PS` (state and reason), `PK` (park waypoints), `TQ` (torque, in both
+  logs), `OM` (the operator's kind and mode); trainer/contract/SESSION_FORMAT.md.
+
+Where this departs from the decision, and why:
+- **The measured rest pose collides by the model.** The pose the user placed and measured on
+  2026-10-26 (motors 1-5: −0.72°, 92.12°, −93.12°, −95.28°, 5.76°) is inside every joint range, but the
+  model has the gripper on the body (`gripper.1 against Body.7`): that contact is what supports it,
+  and the model's 1 cm margin calls it a collision. With the strict check the decision asks for, every
+  relax to it is refused at the end of its path, and RobotHost says so at start. `--park-contact-deg`
+  (0, off, by default and in `deploy-robothost`) lets the samples within that many degrees of the rest
+  pose touch exactly the fixed boxes the rest pose touches, with the same link, and nothing else; at
+  10° the park from the model's home pose is allowed (`ArmPowerControllerTests`). Turning it on is a
+  decision for the user (`JETROVER_PARK_CONTACT_DEG`).
+- **Every operator message is answered**, heartbeats included, not only requests: the headset then
+  knows the state within a second of starting.
+- **No torque acknowledgement.** Nothing reads the torque state back; the relaxed state means the
+  torque-off was sent. Position reads continue while relaxed, so a silent board still shows.
+- **Not verified on the robot:** the park itself, the torque switch through the relay, the gripper's
+  behaviour with torque off, and whether a position write re-enables torque on these servos (RobotHost
+  sends none while relaxed).
 
 ## Consequences
 

@@ -30,6 +30,14 @@ namespace Teleop.RobotHost.Recording
         /// </summary>
         public double MinSplitSeconds { get; set; } = 5;
 
+        /// <summary>
+        /// Only a headset's joint commands open or keep a session (2026-10-26): a sender counts as one
+        /// while its last headset heartbeat (the operator message, docs/adr/0018 §9) is at most this old.
+        /// <c>joint-drive</c>, <c>move-arm</c> and other tools send none, so they are never recorded
+        /// automatically.
+        /// </summary>
+        public double HeadsetSeconds { get; set; } = 5;
+
         /// <summary>Where automatic sessions go: <c>&lt;root&gt;/&lt;UTC&gt;-auto/</c>. Null: <c>jetrover/</c> beside the control file.</summary>
         public string? RecordingsRoot { get; set; }
 
@@ -53,12 +61,13 @@ namespace Teleop.RobotHost.Recording
             if (!(StartFreeGigabytes >= StopFreeGigabytes)) return "--auto-record-start-free-gb must be at least --auto-record-stop-free-gb";
             if (!(DriverWaitSeconds >= 0)) return "--auto-record-driver-wait-seconds must be zero or more";
             if (!(MinSplitSeconds >= 0)) return "--auto-record-min-split-seconds must be zero or more";
+            if (!(HeadsetSeconds > 0)) return "--auto-record-headset-seconds must be positive";
             return null;
         }
 
         public override string ToString() =>
             FormattableString.Invariant(
                 $"idle {IdleSeconds} s, rotate at {MaxMinutes} min, stop below {StopFreeGigabytes} GB free, start only above {StartFreeGigabytes} GB, ") +
-            FormattableString.Invariant($"driver wait {DriverWaitSeconds} s, min split {MinSplitSeconds} s");
+            FormattableString.Invariant($"driver wait {DriverWaitSeconds} s, min split {MinSplitSeconds} s, headset only (heartbeat within {HeadsetSeconds} s)");
     }
 }

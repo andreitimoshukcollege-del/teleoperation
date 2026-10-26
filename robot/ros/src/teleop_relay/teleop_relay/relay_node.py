@@ -7,7 +7,10 @@ carrying the whole array, and relays servo feedback back the same way.
 
 Wire v4 (teleoperation's docs/adr/0011-generic-robot-arm-profiles.md): a count-prefixed array of
 (motor_id, pulse_target, pulses_per_second) tuples, replacing the old fixed 4-joint-plus-gripper
-struct entirely. This node is now genuinely profile-agnostic -- it never looks up a joint name,
+struct entirely. Wire v5 (docs/adr/0023 decision 5) adds a kind byte and a torque message, which this
+node publishes on the driver's /arm/servo/set/torque: std_msgs/Int32 1 switches every servo's torque
+on, 0 off (servo_controller.py's setTorqueState; the board SDK there sends the board's own, swapped
+codes). This node is now genuinely profile-agnostic -- it never looks up a joint name,
 only forwards whatever motor ids show up on the wire. The internal hop to
 jetrover_arm_control uses a plain std_msgs/Float32MultiArray (not a new custom .msg type) to
 avoid introducing rosidl message-generation build machinery for a purely internal, single-hop
@@ -27,7 +30,7 @@ import time
 
 import rclpy
 from rclpy.node import Node
-from std_msgs.msg import Float32MultiArray
+from std_msgs.msg import Float32MultiArray, Int32
 
 from teleop_relay import relay_protocol
 from teleop_relay.stale_tracked_value import StaleTrackedValue
@@ -97,6 +100,9 @@ class TeleopRelayNode(Node):
         self._socket.setblocking(False)
 
         self._command_pub = self.create_publisher(Float32MultiArray, "/arm/servo/command_array", 3)
+        # Torque switches from RobotHost (docs/adr/0023 decision 5): 1 on, 0 off. Depth 5, so a quick
+        # off-then-on is not collapsed into one.
+        self._torque_pub = self.create_publisher(Int32, "/arm/servo/set/torque", 5)
         self.create_subscription(
             Float32MultiArray, "/unity/robot/servo/feedback_array", self._on_feedback_array, 1)
 
@@ -124,6 +130,8 @@ class TeleopRelayNode(Node):
         self._send_failures = 0
         self._datagrams = 0
         self._commands = 0
+        self._torque_switches = 0
+        self._rejected = 0
         self._slowest_callback_ms = 0.0
 
     def _note_callback(self, start):
@@ -136,7 +144,8 @@ class TeleopRelayNode(Node):
             f"({self._feedback_msgs / seconds:.1f} Hz), longest gap {self._longest_feedback_gap_ms:.0f} ms; "
             f"feedback sent {self._sends}, all readings valid in {self._sends_all_valid}, "
             f"send failures {self._send_failures}; "
-            f"command datagrams {self._datagrams}, commands published {self._commands}; "
+            f"command datagrams {self._datagrams}, commands published {self._commands}, "
+            f"torque switches {self._torque_switches}, rejected {self._rejected}; "
             f"slowest callback {self._slowest_callback_ms:.1f} ms")
         self._reset_stats(start)
 
@@ -156,31 +165,33 @@ class TeleopRelayNode(Node):
         self._note_callback(now)
 
     def _poll_local_socket(self) -> None:
-        # Drain every pending datagram but act only on the most recent -- IRelayClient's
+        # Drain every pending datagram but act only on the most recent command -- IRelayClient's
         # contract is "here is the current setpoint," not a queue of every one ever sent, so a
         # backlog here (this node briefly starved of CPU) must not replay stale commands once
-        # it catches up.
+        # it catches up. Every torque switch is published, in order (relay_protocol.sort_datagrams).
         start = time.monotonic()
-        latest = None
+        datagrams = []
         max_size = relay_protocol.command_encoded_size(relay_protocol.MAX_JOINTS_PER_MESSAGE)
         while True:
             try:
-                latest, _ = self._socket.recvfrom(max_size)
+                data, _ = self._socket.recvfrom(max_size)
+                datagrams.append(data)
                 self._datagrams += 1
             except BlockingIOError:
                 break
 
-        if latest is None:
-            self._note_callback(start)
-            return
-
-        targets = relay_protocol.decode_arm_command(latest)
-        if targets is None:
-            self._note_callback(start)
-            return
-
-        self._command_pub.publish(_encode_command_array(targets))
-        self._commands += 1
+        actions, rejected = relay_protocol.sort_datagrams(datagrams)
+        self._rejected += rejected
+        for kind, value in actions:
+            if kind == "torque":
+                msg = Int32()
+                msg.data = 1 if value else 0
+                self._torque_pub.publish(msg)
+                self._torque_switches += 1
+                self.get_logger().info(f"torque {'on' if value else 'off'} for every servo (from RobotHost)")
+            else:
+                self._command_pub.publish(_encode_command_array(value))
+                self._commands += 1
         self._note_callback(start)
 
     def _send_feedback(self) -> None:

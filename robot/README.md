@@ -506,6 +506,12 @@ translates the local wire protocol above into calls against `jetrover_arm_contro
       buzzer must show up, which proves the test can tell. Then cable the board's port 1 to the
       Jetson: with it, the driver can reset the controller itself when it goes silent, and the next
       occurrence can be read out (the bootloader: reset causes, I2C pin levels; the debug prints).
+    - **The power cycle, 2026-10-26 21:27** (`just robot-shutdown`, then the main switch): the board
+      answered at 49 Hz straight away, with no beep at power-up. `just robot-board-audio-test` then
+      heard all three buzzer bursts (+34 to +48 dB, against none the night before), so the test does
+      tell a working board from a silent one. The board is screwed inside the chassis: its RST button
+      and port 1 cannot be reached without taking the robot apart, so the RST test and the second
+      cable wait for the next time it is opened.
     - **Traps found on the way:** numpy on the Nano needs `OPENBLAS_CORETYPE=ARMV8` (else SIGILL);
       a hub port power cut without claiming the port is undone by the kernel, and a device that
       enumerates while its port is claimed is left unconfigured (no `ttyACM0`) until its

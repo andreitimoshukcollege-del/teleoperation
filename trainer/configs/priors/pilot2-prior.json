@@ -1,0 +1,35 @@
+{
+  "sensedAgeMotorIds": [
+    1,
+    2,
+    3,
+    4,
+    5
+  ],
+  "sensedAgeMs": [
+    29.49,
+    25.09,
+    22.23,
+    19.73,
+    17.66
+  ],
+  "relayReplayServo": {
+    "servoLagSeconds": 0.04,
+    "servoMaxSpeedRadPerSec": 3.25,
+    "servoPipelineDelaySeconds": 0.013780231125
+  },
+  "from": [
+    "20261022T232400Z-test-1",
+    "20261022T233258Z-test-2",
+    "20261025T185652Z-teleop-2p5",
+    "20261025T195448Z-ghost-check",
+    "20261025T200659Z-ghost-check-2",
+    "20261025T200935Z-teleop-2p5",
+    "20261025T202026Z-teleop-2p5",
+    "20261026T204223Z-drive-steps-2p5",
+    "20261026T204737Z-drive-steps-6",
+    "20261026T205353Z-drive-wp-2p5",
+    "20261026T210007Z-drive-wp-5",
+    "20261026T210625Z-drive-wp-sched"
+  ]
+}

@@ -340,6 +340,16 @@ unity-robot-host host=default_jetrover_host:
     PY
     done
 
+# The headset's ROBOT OFF from the PC (docs/adr/0023 decision 5): RobotHost parks the arm at its rest pose (jetrover_rest_pose_deg, along its own collision-checked path at its park speed, a few seconds) and then switches torque off, so it rests unpowered. Prints the park's progress; exits non-zero if RobotHost refuses (the reason is printed: a silent servo board, a path that would collide, ...). THE ARM MOVES: someone watching, its workspace clear. Turn the headset off first, or it asks for torque back. Needs a RobotHost with park and relax (just deploy-robothost)
+[group('robot: moves the arm (someone watching)')]
+robot-off remote_host=default_jetrover_host:
+    cd core && dotnet run --project Teleop.Eval -- arm-power --request relax --remote-host $(just _robot-host "{{remote_host}}")
+
+# Torque back on, the arm holding where it is (the counterpart of just robot-off; the headset's ROBOT ON does the same before its first command). Nothing moves, but the servos stiffen: an arm resting on its support stays there
+[group('robot: moves the arm (someone watching)')]
+robot-on remote_host=default_jetrover_host:
+    cd core && dotnet run --project Teleop.Eval -- arm-power --request hold --remote-host $(just _robot-host "{{remote_host}}")
+
 # Move the real JetRover arm to a Cartesian target (wrist frame, meters) and hold, e.g. `just move-arm 0.15 0 0.08` -- requires Teleop.RobotHost running on the Jetson and a human watching the hardware
 [group('robot: moves the arm (someone watching)')]
 move-arm x y z gripper="0" remote_host=default_jetrover_host remote_port="6000" local_port="6001":

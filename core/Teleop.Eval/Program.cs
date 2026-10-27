@@ -41,6 +41,8 @@ namespace Teleop.Eval
                     return JointBench.JointPredictBenchCommand.Run(args);
                 case "joint-probe":
                     return JointProbe.JointProbeCommand.Run(args);
+                case "arm-power":
+                    return ArmPower.ArmPowerCommand.Run(args);
                 case "joint-drive":
                     return JointDrive.JointDriveCommand.Run(args);
                 case "discover-robot":
@@ -53,7 +55,7 @@ namespace Teleop.Eval
                 default:
                     Console.Error.WriteLine(
                         "usage: verify | audit | sweep | replay | compare | gen-golden | gen-trace | gen-trainer-golden | " +
-                        "clocksync-check | move-arm | build-profile | catalog | joint-predict-bench | joint-probe | joint-drive | discover-robot");
+                        "clocksync-check | move-arm | build-profile | catalog | joint-predict-bench | joint-probe | arm-power | joint-drive | discover-robot");
                     return 64;   // EX_USAGE
             }
         }

@@ -243,6 +243,10 @@ what makes the servo board go silent (2026-10-26: silent after 77 idle minutes w
 torque as it is. What RobotHost does, step by step, is in the ADR; `just robothost-logs` shows each
 `[power]` line, and recorded sessions carry `PQ`, `PS`, `PK` and `TQ` records.
 
+- **From the PC:** `just robot-off` does what the headset's ROBOT OFF does (park at the rest pose, then
+  torque off) and prints the park's progress; `just robot-on` switches torque back on where the arm is.
+  They send the operator message as a tool, so they open no automatic recording. Turn the headset off
+  first: a headset that is on asks for torque back as soon as it sees the arm parked.
 - **The rest pose** is `jetrover_rest_pose_deg` at the top of the `justfile`, which
   `just deploy-robothost` passes as `--rest-pose-deg`: degrees, motors 1-5 (base yaw, shoulder, elbow,
   wrist pitch, wrist roll), in the joint angles `just joint-probe` prints (the profile's zero offsets

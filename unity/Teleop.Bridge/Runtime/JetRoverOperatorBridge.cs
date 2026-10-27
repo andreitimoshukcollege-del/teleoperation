@@ -647,7 +647,8 @@ namespace Teleop.Bridge
                 bool robotReady = _motionMode == JetRoverMotionMode.On && _config.ConfirmHardwareMotion && _jointStateLink.MayCommand(now);
                 bool disturbed = (_jointTransport != null && _jointTransport.IsActive) || _jointStateLink.AddedDelayMs > 0;
                 _training.Update(now, solution.Position, _gripperFraction, robotReady, disturbed);
-                _jointStateLink.SetTraining(_training.State);
+                // Only once the course has run (its id is set by Start): a headset that never uses it sends nothing new.
+                if (_training.CourseId != 0) _jointStateLink.SetTraining(_training.State);
             }
 
             // On, and the robot holds (or an older RobotHost that does not say): docs/adr/0023 decision 5.

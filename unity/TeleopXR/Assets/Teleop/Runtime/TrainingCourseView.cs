@@ -182,7 +182,11 @@ namespace Teleop.XR
         {
             StringBuilder b = _text;
             b.Clear();
-            b.Append("<b>TRAINING COURSE</b>  ").Append(course.Test ? "<color=#FF9E26>TEST DATA (held out)</color>" : "train data").Append('\n');
+            // The running round keeps the purpose it started with; a press of TRAIN/TEST applies from the next.
+            bool roundTest = phase != JetRoverCoursePhase.Stopped ? course.RoundIsTest : course.Test;
+            b.Append("<b>TRAINING COURSE</b>  ").Append(roundTest ? "<color=#FF9E26>TEST DATA (held out)</color>" : "train data");
+            if (roundTest != course.Test) b.Append(" · next rounds: ").Append(course.Test ? "test" : "train");
+            b.Append('\n');
             if (phase == JetRoverCoursePhase.Stopped)
             {
                 b.Append("Press START. Targets appear around the arm:\n");

@@ -329,7 +329,8 @@ hundreds of ms.
    `pack-dataset` never takes it.
 4. **Sessions from before the report are judged from the robot's side** (`armpred check-disturbance`,
    `just recordings-disturbed`): reordering, loss and delay in RobotHost's `JC` records. Altered ones are
-   moved to `recordings/disturbed/`, here and on the robot, not deleted. The ADDED DELAY slider leaves no
+   moved to `recordings/disturbed/`, here and on the robot. The 13 of 2026-10-27 were then deleted, at
+   the user's request. The ADDED DELAY slider leaves no
    mark there; from now on `HD` records it.
 5. **The training course keeps them at zero**: selecting TRAIN resets LAG, JITTER, LOSS and ADDED DELAY
    to zero, and a running course holds them there (docs/adr/0024 decision 8 still flags any round

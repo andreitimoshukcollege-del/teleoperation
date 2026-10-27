@@ -203,8 +203,9 @@ RobotHost records whenever **the headset** commands the robot, with nobody runni
   session with any of them on fails `just recording-check` and is never packed for training. For
   sessions from before 2026-10-27, `just recordings-disturbed` judges them from the reordering, loss
   and delay in their `JC` records, and `just recordings-disturbed true` moves the altered ones to
-  `recordings/disturbed/` here and on the robot (done 2026-10-27: 12 automatic sessions, plus one too
-  short to judge, recorded with the sliders on).
+  `recordings/disturbed/` here and on the robot (2026-10-27: 12 automatic sessions, plus one too short
+  to judge, recorded with the sliders on; deleted on the user's request the same day, as they served
+  no other purpose).
 - **The headset's training course labels its rounds** (docs/adr/0024): the task, phase, speed level,
   score, train/test purpose and whether the headset's disturbance was on, as `TK` records in
   `robothost.jlog`, written on each change and again at the start of every session while a round is

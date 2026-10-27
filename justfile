@@ -819,6 +819,26 @@ robot-usb-device path="1-2.2" remote_host=default_jetrover_host remote_user="jet
     sudo -n lsusb -v -s "$(cat "$d/busnum"):$(cat "$d/devnum")" 2>/dev/null | grep -E 'bcdUSB|bDeviceClass|bInterfaceClass|bInterfaceNumber|bEndpointAddress|wMaxPacketSize|iInterface|bmAttributes|MaxPower|CDC|bcdCDC|Call Management|ACM' | sed 's/^/  /' | head -40
     REMOTE
 
+# The board-silence experiment (robot/README.md, "The servo board goes silent"; servo_controller/idle_keepalive.py): what the servo driver does while nobody commands the arm. `write` flashes the board's LED once a second after 5 s idle (the theory that the board needs writes); `slow-poll` reads at 10 Hz instead of 50 after 30 s idle, back to full rate on the first command (the theory that each read risks a wedge); `off` is neither. No argument shows the current mode. Nothing moves; the driver picks the change up within 5 s, no restart (it needs a driver deployed with the experiment: just deploy-ros). Compare the time to silence per mode with just robot-driver-stats
+[group('robot: checks and diagnostics (nothing moves)')]
+robot-keepalive mode="" remote_host=default_jetrover_host remote_user="jetson":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    case "{{mode}}" in ""|off|write|slow-poll) ;; *) echo "error: mode is off, write or slow-poll, got '{{mode}}'" >&2; exit 1 ;; esac
+    ssh -o StrictHostKeyChecking=accept-new "{{remote_user}}@$(just _robot-host "{{remote_host}}")" "MODE='{{mode}}' bash -s" <<'REMOTE'
+    set -euo pipefail
+    f=~/.teleop/arm-keepalive
+    if [ -n "$MODE" ]; then
+        mkdir -p ~/.teleop
+        was=$(cat "$f" 2>/dev/null || echo off)
+        echo "$MODE" > "$f"
+        echo "idle keep-alive: $was -> $MODE ($(date -Is)); the driver switches within 5 s"
+    else
+        echo "idle keep-alive: $(cat "$f" 2>/dev/null || echo 'off (no file)')"
+    fi
+    journalctl -u jetrover-arm-control --since "-15 s" --no-pager -o cat 2>/dev/null | grep -o "keep-alive [a-z-]* (idle [^)]*)" | tail -1 || true
+    REMOTE
+
 # Read-only: what fills the Jetson's disk -- free space, the largest things in the home directory, how many old deploy directories each component has left behind (every deploy writes a new one and repoints a *_current link) and their size, the recordings, the journal, and the usual system caches. Deletes nothing
 [group('robot: checks and diagnostics (nothing moves)')]
 robot-disk remote_host=default_jetrover_host remote_user="jetson":

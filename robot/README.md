@@ -636,6 +636,25 @@ translates the local wire protocol above into calls against `jetrover_arm_contro
       a hub port power cut without claiming the port is undone by the kernel, and a device that
       enumerates while its port is claimed is left unconfigured (no `ttyACM0`) until its
       `bConfigurationValue` is set; `date -d "<time> - 150 sec"` reads the `-150` as a time zone.
+  - **2026-10-27: torque is not it, and neither is idle communication.** Silent from 07:39, 6.5 h after
+    the 01:08 power-on, with **no command and torque off the whole run**: not the motors holding. The
+    driver reads about 250 times a second whether or not anyone operates, so the board is never
+    without traffic. The onsets (`just robot-driver-stats 8`):
+
+    | Board on | Silent | Commands before |
+    |---|---|---|
+    | 10-25 19:28 | 10-25 21:55 | 2,561 in the 10 min before; the last 1.7 min before |
+    | 10-25 22:48 | 10-25 22:58 | none that run |
+    | 10-26 21:28 | 10-26 23:27 | the last 77 min before |
+    | 10-27 01:08 | 10-27 07:39 | none that run |
+
+    It has not gone silent *during* commanding, but once 1.7 min after it. What idle lacks is writes;
+    what every run has is reads. Two experiments, one at a time (`just robot-keepalive <mode>`, no
+    driver restart; `servo_controller/idle_keepalive.py`): `write`, a 5 ms flash of the board's LED
+    each second after 5 s idle; `slow-poll`, 10 Hz reads instead of 50 after 30 s idle (above the
+    relay's 0.2 s staleness limit). Each `[stats]` line names the mode. Run one for a few days of
+    normal use, then the other, and compare the time to silence. The headset now also reports a board
+    that was silent before the app started (it did not, so the arm sat still with no warning).
 - **A measurement trap: `just joint-probe` while the headset streams.** RobotHost sends the
   joint-state stream to whoever last sent on the joint port. A headset sending joint commands takes
   it back 48 times a second, so the probe gets scraps. On 2026-10-20 that read as "feedback falls to

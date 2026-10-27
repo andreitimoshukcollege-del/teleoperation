@@ -10,6 +10,8 @@ from jetrover_arm_control import session_log
 from jetrover_arm_control.servo_controller.servo_sub_callback import ServoSubscriberCallback
 from jetrover_arm_control.servo_controller.servo_controller import ServoController
 from jetrover_arm_control.servo_controller.read_backoff import ReadBackoff
+from jetrover_arm_control.servo_controller import idle_keepalive
+from jetrover_arm_control.servo_controller.idle_keepalive import IdleKeepalive
 
 # Which motor ids to poll for feedback -- Jetson-local, deliberately separate from the
 # operator-side RobotArmProfile (docs/adr/0011-generic-robot-arm-profiles.md): this node no
@@ -51,6 +53,13 @@ class RobotController(Node):
         self.servoController = ServoController(boardMgr = self.boardMgr, sessionLog = self.sessionLog)
         self.servoSubManager = ServoSubscriberCallback(servoController = self.servoController)
         self._readBackoff = ReadBackoff()
+        # The board-silence experiment (idle_keepalive.py): what to do while nobody commands the arm,
+        # from a file on the robot, re-read with every stats line.
+        mode, problem = idle_keepalive.read_mode()
+        if problem:
+            self.get_logger().warning(f"[keep-alive] {problem}")
+        self._keepalive = IdleKeepalive(time.monotonic(), mode)
+        self.get_logger().info(f"[keep-alive] idle mode {mode} ({idle_keepalive.MODE_FILE})")
         self._resetStats(time.monotonic())
         self._lastCycleEnd = None
         # The board's last battery report, mV, for the stats line: when the board goes silent, the
@@ -74,7 +83,7 @@ class RobotController(Node):
             Float32MultiArray, "/arm/servo/command_array", self._timedCommandCbk, 3)
 
         self.buzzerSub = self.create_subscription(Bool, "/robot/buzzer", self.robotData.setBuzzerCbk, 1)
-        self.torqueState = self.create_subscription(Int32, "/arm/servo/set/torque", self.servoSubManager.setServoTorqueCbk, 1)
+        self.torqueState = self.create_subscription(Int32, "/arm/servo/set/torque", self._torqueCbk, 1)
 
         self.get_logger().info("Servo Subscribers initialized.")
 
@@ -110,8 +119,14 @@ class RobotController(Node):
         self._slowestCommandMs = 0.0
         self._packets = 0
 
+    def _torqueCbk(self, msg):
+        # A torque switch is operating the arm too (park, then relax): never slowed or idled through.
+        self._keepalive.on_command(time.monotonic())
+        self.servoSubManager.setServoTorqueCbk(msg)
+
     def _timedCommandCbk(self, msg):
         start = time.monotonic()
+        self._keepalive.on_command(start)
         self._packets += self.servoSubManager.armCommandArrayCbk(msg) or 0
         self._commands += 1
         self._slowestCommandMs = max(self._slowestCommandMs, (time.monotonic() - start) * 1000.0)
@@ -125,11 +140,20 @@ class RobotController(Node):
         skipped = self._readBackoff.take_skipped()
         if skipped:
             reads += " (skipped after a miss: " + " ".join(f"{m}:{n}" for m, n in sorted(skipped.items())) + ")"
+        mode, problem = idle_keepalive.read_mode()
+        if mode != self._keepalive.mode:
+            self.get_logger().info(f"[keep-alive] idle mode {self._keepalive.mode} -> {mode}")
+            self._keepalive.set_mode(mode)
+        elif problem:
+            self.get_logger().warning(f"[keep-alive] {problem}")
+        writes, slow, skippedCycles = self._keepalive.take_counts()
         self.get_logger().info(
             f"[stats {seconds:.1f}s] cycles {self._cycles} ({self._cycles / seconds:.1f} Hz), slowest cycle "
             f"{self._slowestCycleMs:.0f} ms, longest gap between cycles {self._longestGapMs:.0f} ms; "
             f"reads ok/missed/slowest {reads}; commands {self._commands} (slowest {self._slowestCommandMs:.1f} ms); "
-            f"move packets {self._packets}; battery {self._lastBatteryMv if self._lastBatteryMv is not None else '?'} mV")
+            f"move packets {self._packets}; battery {self._lastBatteryMv if self._lastBatteryMv is not None else '?'} mV; "
+            f"keep-alive {self._keepalive.mode} (idle {self._keepalive.idle_seconds(now):.0f} s, writes {writes}, "
+            f"slow cycles {slow}, skipped {skippedCycles})")
         self._resetStats(now)
 
     # --------------------Publishers--------------------------- #
@@ -144,8 +168,16 @@ class RobotController(Node):
         own StaleTrackedValue is what turns "missing" into "invalid," not this method.
         """
         cycleStart = time.monotonic()
-        cycleStartNs = self.sessionLog.now()
         self._logStats(cycleStart)
+        if self._keepalive.should_write(cycleStart):
+            try:
+                # The keep-alive write: a 5 ms flash of the board's own LED; no servo is touched.
+                self.board.set_led(idle_keepalive.LED_FLASH_SECONDS, 0, 1)
+            except Exception as e:  # never let the experiment take the feedback loop down
+                self.get_logger().warning(f"[keep-alive] LED write failed: {e}")
+        if not self._keepalive.should_poll(cycleStart):
+            return
+        cycleStartNs = self.sessionLog.now()
         if self._lastCycleEnd is not None:
             self._longestGapMs = max(self._longestGapMs, (cycleStart - self._lastCycleEnd) * 1000.0)
         readings = []

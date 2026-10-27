@@ -1,0 +1,29 @@
+# A DIAGNOSTIC split, as split-heldout-early7.toml, with the sessions recorded since (2026-10-27): the
+# held-out test set is the same seven earlier sessions, so the numbers compare with
+# runs/finetune-pilot2-early7. Train adds a headset teleop session left out of the first bundle for its
+# read gaps (kept, annotated) and the first training-course session (REACH rounds with gripper targets);
+# validation adds the second course session, so the checkpoint is chosen on headset driving too.
+# Still not fully independent: the simulator's ranges and pilot2-prior.json were fitted on all twelve
+# sessions of sysid-pilot2, the test seven among them.
+[splits]
+train = [
+    "20261026T204223Z-drive-steps-2p5",
+    "20261026T204737Z-drive-steps-6",
+    "20261026T210007Z-drive-wp-5",
+    "20261026T210625Z-drive-wp-sched",
+    "20261025T192710Z-teleop-2p5",
+    "20261027T224623Z-auto",
+]
+val = [
+    "20261026T205353Z-drive-wp-2p5",
+    "20261027T225507Z-auto",
+]
+test = [
+    "20261022T232400Z-test-1",
+    "20261022T233258Z-test-2",
+    "20261025T185652Z-teleop-2p5",
+    "20261025T195448Z-ghost-check",
+    "20261025T200659Z-ghost-check-2",
+    "20261025T200935Z-teleop-2p5",
+    "20261025T202026Z-teleop-2p5",
+]

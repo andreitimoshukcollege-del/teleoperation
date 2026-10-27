@@ -203,7 +203,7 @@ namespace Teleop.Bridge
         // supersede JointPredictorName and the JointServo*/JointReadingAge*/JointModelSpeed fields
         // above, which are read only when this list is empty.
         public JointPredictorPresetData[] JointPredictorPresets = JointPredictorPresetData.Defaults();
-        public string JointPredictorActive = "servo 10-25";
+        public string JointPredictorActive = "learned";
 
         // Network disturbances the console can switch on (docs/adr/0023 decision 3), applied on the
         // headset to the joint socket in both directions. Caps on what any setting may add.
@@ -235,11 +235,16 @@ namespace Teleop.Bridge
         public bool ServoFirstMoveFromMeasured = true;
 
         // Each motor's reading age, ms, for JetRoverArmConfig.JointReadingAgeMotorIds (relay-replay and
-        // relay-replay-servo); empty for none.
+        // relay-replay-servo, and learned's prior: its model card's sensedAgeMs); empty for none.
         public float[] ReadingAgeMs = new float[0];
 
+        // learned's model (docs/adr/0025): a name, found as persistentDataPath/models/<Model>.weights,
+        // else Resources/models/<Model>.bytes (Bridge's LearnedModels).
+        public string Model = "";
+
         /// <summary>
-        /// The defaults: no prediction; relay-replay; relay-replay-servo with the 2026-10-25 fit
+        /// The defaults: the learned model (docs/adr/0025: the default, because it is what this work builds);
+        /// no prediction; relay-replay; relay-replay-servo with the 2026-10-25 fit
         /// (trainer/runs/sysid-pilot1b: lag 50 ms, pipeline delay 16.8 ms, no speed limit identified)
         /// and with the 2026-10-26 fit (runs/sysid-pilot2: 40 ms, 13.8 ms, 3.25 rad/s, which beat the
         /// first by 20% at arm p95 on held-out sessions, trainer evaluation); and servo-replay, off.
@@ -248,8 +253,15 @@ namespace Teleop.Bridge
         {
             float[] ages1025 = { 30.2f, 25.3f, 22.6f, 20.1f, 17.1f };
             float[] ages1026 = { 29.5f, 25.1f, 22.2f, 19.7f, 17.7f };
+            // finetune-pilot2-early7's model card: its prior's reading ages (docs/adr/0025).
+            float[] agesLearned = { 29.49f, 25.09f, 22.23f, 19.73f, 17.66f };
             return new[]
             {
+                new JointPredictorPresetData
+                {
+                    Label = "learned", Predictor = "learned", Model = "finetune-pilot2-early7", ReadingAgeMs = agesLearned,
+                    Description = "the trained model (finetune-pilot2-early7) correcting relay-replay; its gripper is not learned yet",
+                },
                 new JointPredictorPresetData
                 {
                     Label = "hold-last", Predictor = "hold-last", Description = "no prediction: the last reading as it arrived (the baseline)",

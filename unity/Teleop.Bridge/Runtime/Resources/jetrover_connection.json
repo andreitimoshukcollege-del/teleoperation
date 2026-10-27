@@ -49,6 +49,8 @@
   "JointServoFirstMoveFromMeasured": true,
   "GripperFractionPerRadian": 0.4513,
   "JointPredictorPresets": [
+    { "Label": "learned", "Description": "the trained model (finetune-pilot2-early7) correcting relay-replay; its gripper is not learned yet", "Predictor": "learned", "Enabled": true,
+      "Model": "finetune-pilot2-early7", "ReadingAgeMs": [29.49, 25.09, 22.23, 19.73, 17.66] },
     { "Label": "hold-last", "Description": "no prediction: the last reading as it arrived (the baseline)", "Predictor": "hold-last", "Enabled": true },
     { "Label": "relay-replay", "Description": "replays your commands through the relay's paced servo writes; no servo lag", "Predictor": "relay-replay", "Enabled": true, "ReadingAgeMs": [30.2, 25.3, 22.6, 20.1, 17.1] },
     { "Label": "servo 10-25", "Description": "relay-replay plus a servo: 50 ms lag, 17 ms pipeline (10-25 fit, speed limit guessed)", "Predictor": "relay-replay-servo", "Enabled": true, "ServoMaxSpeedRadPerSec": 5.0, "ServoLagMs": 50.0,
@@ -57,7 +59,7 @@
       "ServoPipelineDelayMs": 13.8, "ServoFirstMoveFromMeasured": true, "ReadingAgeMs": [29.5, 25.1, 22.2, 19.7, 17.7] },
     { "Label": "servo-replay", "Description": "the first model: every command obeyed at once at 6 rad/s; snaps back on each reading", "Predictor": "servo-replay", "Enabled": false, "ModelSpeedRadPerSec": 6.0 }
   ],
-  "JointPredictorActive": "servo 10-25",
+  "JointPredictorActive": "learned",
   "DisturbanceMaxDelayMs": 2000.0,
   "DisturbanceMaxLossPercent": 50.0
 }

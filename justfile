@@ -200,6 +200,20 @@ push-galaxy-config host=default_jetrover_host motion="true":
     just _adb push "$(wslpath -m "$tmp")" "$dest/jetrover_connection.json"
     echo "Galaxy XR app now targets $host, hardware motion {{ if motion == "true" { "ON" } else { "OFF (virtual arm only)" } }}; restart the app to pick it up."
 
+# Put a learned joint model on the Galaxy XR without a rebuild (docs/adr/0025): exports trainer/runs/<run>'s model.onnx as weights (checked against it on the golden's real windows) and pushes them to the app's files/models/<run>.weights, which the `learned` preset named <run> loads in place of the build's Resources copy. Point a preset at it with "Model": "<run>" (just push-galaxy-config pushes the presets); restart the app
+[group('headset (Galaxy XR)')]
+push-galaxy-model run:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    case "{{run}}" in *[!A-Za-z0-9._-]*|"") echo "error: run is a trainer/runs name" >&2; exit 1 ;; esac
+    [ -f "trainer/runs/{{run}}/model.onnx" ] || { echo "error: no trainer/runs/{{run}}/model.onnx (just gpu-fetch it)" >&2; exit 1; }
+    mkdir -p dist
+    ( cd trainer && .venv-win-cuda/Scripts/armpred.exe export-weights --run "runs/{{run}}" --golden ../core/testdata/learned/golden-v3.json --out "../dist/{{run}}.weights" )
+    dest=/sdcard/Android/data/com.teleop.jetroverxr/files/models
+    just _adb shell mkdir -p "$dest"
+    just _adb push "dist/{{run}}.weights" "$dest/{{run}}.weights"
+    echo "the headset has model {{run}}; a preset with \"Model\": \"{{run}}\" runs it after the app restarts"
+
 # Run an experiment sweep, e.g. `just sweep experiments/exp-001-predictor-baseline.yaml`
 [group('experiments')]
 sweep config:

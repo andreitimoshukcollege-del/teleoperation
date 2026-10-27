@@ -100,9 +100,10 @@ namespace Teleop.RobotHost.Recording
 
             var speeds = new SortedSet<double>();
             var uplinks = new SortedSet<string>(StringComparer.Ordinal);
+            bool headsetDisturbed = false;
             foreach (string log1 in LogFiles(directory, "robothost"))
             {
-                ScanRobotHostLog(log1, speeds, uplinks);
+                headsetDisturbed |= ScanRobotHostLog(log1, speeds, uplinks);
             }
 
             var notes = new List<string>();
@@ -123,6 +124,13 @@ namespace Teleop.RobotHost.Recording
                     network["uplinkProfile"] = "varied";
                     notes.Add("the robot-side uplink changed during the session (" + string.Join(", ", new[] { openedName }.Concat(uplinks).Distinct()) + "); its UP records say when");
                 }
+            }
+
+            // The headset's own disturbance or added delay (HD records, docs/adr/0023 amendment).
+            if (network != null)
+            {
+                network["headsetDisturbed"] = headsetDisturbed;
+                if (headsetDisturbed) notes.Add("the headset's network disturbance or added delay was on during the session (HD records): not a real-network measurement");
             }
 
             if (!driverClosed)
@@ -209,8 +217,10 @@ namespace Teleop.RobotHost.Recording
             }
         }
 
-        private static void ScanRobotHostLog(string path, SortedSet<double> speeds, SortedSet<string> uplinks)
+        /// <summary>Collects the speeds and uplinks; true when an HD record had anything on.</summary>
+        private static bool ScanRobotHostLog(string path, SortedSet<double> speeds, SortedSet<string> uplinks)
         {
+            bool disturbed = false;
             using var reader = new StreamReader(new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite), Encoding.ASCII);
             string? line;
             while ((line = reader.ReadLine()) != null)
@@ -234,7 +244,21 @@ namespace Teleop.RobotHost.Recording
                     string[] fields = line.Split('|');
                     if (fields.Length >= 3) uplinks.Add(fields[2]);
                 }
+                else if (line.StartsWith("HD|", StringComparison.Ordinal))
+                {
+                    string[] fields = line.Split('|');
+                    for (int i = 2; i <= 5 && i < fields.Length; i++)
+                    {
+                        // NaN (a named profile) and any positive value are on.
+                        if (!double.TryParse(fields[i], NumberStyles.Float, CultureInfo.InvariantCulture, out double v) || double.IsNaN(v) || v > 0)
+                        {
+                            disturbed = true;
+                        }
+                    }
+                }
             }
+
+            return disturbed;
         }
     }
 }

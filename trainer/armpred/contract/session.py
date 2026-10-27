@@ -132,6 +132,8 @@ class Session:
     sender_changes: List[Tuple[int, str]] = field(default_factory=list)
     uplink_changes: List[Tuple[int, str, int]] = field(default_factory=list)
     rounds: List["CourseLabel"] = field(default_factory=list)
+    # The headset's disturbance and added delay (HD records): (t, lag ms, jitter ms, loss %, added delay ms, seed).
+    headset: List[Tuple[int, float, float, float, float, int]] = field(default_factory=list)
     marks: List[Tuple[int, str]] = field(default_factory=list)
     latents: Optional["Latents"] = None
     operator_commands: Optional[OperatorCommands] = None
@@ -286,6 +288,16 @@ class CourseLabel:
     disturbed: bool
 
 
+def headset_disturbed(session: "Session") -> bool:
+    """Whether the headset's network disturbance or added delay was on at any point (an HD record with
+    any value on, a NaN lag being a named profile), or session.json says so: not a real-network
+    measurement, never training data (docs/adr/0023 amendment)."""
+    network = session.meta.get("conditions", {}).get("network", {}) or {}
+    if network.get("headsetDisturbed") is True:
+        return True
+    return any(v != v or v > 0 for (_, lag, jitter, loss, added, _) in session.headset for v in (lag, jitter, loss, added))
+
+
 def parse_course_label(r: List[str]) -> CourseLabel:
     if len(r) < 9:
         raise JlogError(f"TK record with {len(r)} fields, want 9")
@@ -358,6 +370,7 @@ def load_session(directory: str) -> Session:
         sender_changes=[(int(r[0]), r[1]) for r in host.tag("JS")],
         uplink_changes=[(int(r[0]), r[1], int(r[2]) if r[2] != "" else 0) for r in host.tag("UP")],
         rounds=[parse_course_label(r) for r in host.tag("TK")],
+        headset=[(int(r[0]), float(r[1]), float(r[2]), float(r[3]), float(r[4]), int(r[5])) for r in host.tag("HD")],
         marks=marks,
         latents=latents,
         operator_commands=operator_commands,

@@ -239,6 +239,7 @@ namespace Teleop.Bridge
             if (string.IsNullOrEmpty(profileName) || profileName == "lan" || profileName == "none")
             {
                 _jointTransport.Clear();
+                _disturbance = (0f, 0f, 0f);
                 Debug.Log("[network] disturbance off");
                 return true;
             }
@@ -259,6 +260,10 @@ namespace Teleop.Bridge
                 return false;
             }
 
+            _disturbance = Teleop.Core.Transport.NetworkProfileCatalog.TryResolveParametric(profileName, _clock.TicksPerSecond, out NetworkProfile named, out _)
+                ? ((float)(named.BaseDelayTicks * 1000.0 / _clock.TicksPerSecond), (float)(named.JitterTicks * 1000.0 / _clock.TicksPerSecond),
+                    (float)(named.LossProbabilityAfterDelivered * 100.0))
+                : (float.NaN, 0f, 0f); // a recorded trace: the recording says only that it is on
             ApplyDisturbance(up, down, profileName + " both ways");
             return true;
         }
@@ -273,6 +278,7 @@ namespace Teleop.Bridge
             delayMs = Math.Min(Math.Max(delayMs, 0f), _config.DisturbanceMaxDelayMs);
             jitterMs = Math.Min(Math.Max(jitterMs, 0f), Math.Max(0f, _config.DisturbanceMaxDelayMs - delayMs));
             lossPercent = Math.Min(Math.Max(lossPercent, 0f), _config.DisturbanceMaxLossPercent);
+            _disturbance = (delayMs, jitterMs, lossPercent);
             if (delayMs <= 0f && jitterMs <= 0f && lossPercent <= 0f)
             {
                 _jointTransport.Clear();
@@ -289,6 +295,9 @@ namespace Teleop.Bridge
             ApplyDisturbance(settings.CreateImpairments(_clock.TicksPerSecond, null), settings.CreateImpairments(_clock.TicksPerSecond, null),
                 $"{delayMs:0} ms ± {jitterMs:0} ms, {lossPercent:0.#}% loss both ways");
         }
+
+        // What the disturbance is now (lag, jitter, loss), for the robot's recording; NaN lag for a trace.
+        private (float Lag, float Jitter, float Loss) _disturbance;
 
         private void ApplyDisturbance(INetworkImpairment[] up, INetworkImpairment[] down, string description)
         {
@@ -662,6 +671,10 @@ namespace Teleop.Bridge
             {
                 armRig.ApplyAngles(baseYaw, proximalPitch, distalPitch, upperPitch, wasClamped, pitchAdjusted);
             }
+
+            // What the headset does to its link and view, for the robot's recording (docs/adr/0023 amendment).
+            _jointStateLink.SetHeadsetConditions(new HeadsetConditions(_disturbance.Lag, _disturbance.Jitter, _disturbance.Loss,
+                (float)_jointStateLink.AddedDelayMs, _jointTransport != null && _jointTransport.IsActive ? _jointTransport.Seed : 0UL));
 
             // The course scores the commanded wrist, and its clock runs only while commands reach a
             // holding robot (docs/adr/0024 decisions 1 and 5).

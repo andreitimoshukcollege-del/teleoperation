@@ -164,3 +164,54 @@ def test_a_session_with_course_labels_reads_its_rounds(sim_session_dir, tmp_path
     assert session.rounds[2].level is None and session.rounds[2].disturbed
     report = check_session_dir(d, allow_read_gaps=True)
     assert report.ok, report.lines()
+
+
+def test_a_session_the_headset_disturbed_fails_the_check(sim_session_dir, tmp_path):
+    # docs/adr/0023 amendment: HD records with anything on make a session not a real-network
+    # measurement; the check fails it, so pack-dataset never takes it. All off is fine.
+    from armpred.contract.session import headset_disturbed, load_session
+
+    clean = str(tmp_path / "clean")
+    shutil.copytree(sim_session_dir, clean)
+    host = os.path.join(clean, "robothost.jlog")
+    jc = [line for line in open(host, encoding="ascii").read().split("\n") if line.startswith("JC|")]
+    t = int(jc[-1].split("|")[2]) + 1
+    _rewrite_with(host, [("HD", t, "0", "0", "0", "0", 0)])
+    assert not headset_disturbed(load_session(clean))
+    assert check_session_dir(clean, allow_read_gaps=True).ok
+
+    for values in (("150", "0", "0", "0"), ("0", "0", "0", "200"), ("NaN", "0", "0", "0")):
+        d = str(tmp_path / ("disturbed-" + "-".join(values)))
+        shutil.copytree(sim_session_dir, d)
+        host = os.path.join(d, "robothost.jlog")
+        _rewrite_with(host, [("HD", t, *values, 4), ("HD", t + 1, "0", "0", "0", "0", 4)])
+        assert headset_disturbed(load_session(d))
+        report = check_session_dir(d, allow_read_gaps=True)
+        assert not report.ok and any("not a real-network measurement" in f for f in report.failures)
+
+
+def test_the_disturbance_detector_sees_reordering_loss_and_delay(sim_session_dir):
+    # contract/disturbance.py: a simulated session over the LAN is clean; the same commands reordered,
+    # thinned and delayed, as the headset's LAG/JITTER/LOSS would leave them, are altered.
+    import dataclasses
+
+    import numpy as np
+
+    from armpred.contract.disturbance import uplink_report
+    from armpred.contract.session import load_session
+
+    s = load_session(sim_session_dir)
+    clean = uplink_report(s)
+    assert clean is not None and not clean.disturbed, clean.reasons
+
+    c = s.commands
+    rng = np.random.default_rng(0)
+    keep = rng.random(len(c)) > 0.1  # 10% lost
+    delay = (rng.uniform(0, 200e6, len(c)) + 150e6).astype(np.int64)  # 150 ms lag, 200 ms jitter
+    t = c.t + delay
+    order = np.argsort(t[keep], kind="stable")
+    sub = {f.name: getattr(c, f.name)[keep][order] for f in dataclasses.fields(c) if f.name != "t"}
+    altered = dataclasses.replace(s, commands=dataclasses.replace(c, t=t[keep][order], **sub))
+    r = uplink_report(altered)
+    assert r is not None and r.disturbed
+    assert r.reorder > 0.05 and r.loss > 0.05

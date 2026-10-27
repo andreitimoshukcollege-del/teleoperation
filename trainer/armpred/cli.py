@@ -595,6 +595,45 @@ def cmd_selftest(args) -> int:
     return 0 if ok else 1
 
 
+def cmd_check_disturbance(args) -> int:
+    """Which sessions the headset's network disturbance altered, judged from RobotHost's JC records
+    (contract/disturbance.py). Prints one line per session; --list prints only the altered ones' ids."""
+    import glob
+
+    from .contract.disturbance import compare_neighbours, uplink_report
+    from .contract.session import headset_disturbed, load_session
+
+    dirs = sorted(d for pattern in args.sessions for d in glob.glob(pattern) if os.path.isdir(d))
+    reports, marked = [], {}
+    for d in dirs:
+        try:
+            s = load_session(d)
+        except Exception as e:  # an unreadable session is the checker's business, not this one's
+            if not args.list:
+                print(f"{os.path.basename(os.path.normpath(d))}: unreadable ({e})")
+            continue
+        r = uplink_report(s)
+        if r is None:
+            if not args.list:
+                print(f"{os.path.basename(os.path.normpath(d))}: too few commands to say")
+            continue
+        r.session = d
+        reports.append(r)
+        marked[d] = headset_disturbed(s)
+    compare_neighbours(reports)
+    for r in reports:
+        altered = r.disturbed or marked[r.session]
+        if args.list:
+            if altered:
+                print(os.path.basename(os.path.normpath(r.session)))
+            continue
+        verdict = ("ALTERED: " + "; ".join(r.reasons + (["HD records say so"] if marked[r.session] else []))) if altered else \
+            ("robot-side impairment (intended): " + "; ".join(r.reasons) if r.robot_side and r.reasons else "clean")
+        print(f"{os.path.basename(os.path.normpath(r.session))}: {r.commands} commands, {r.reorder:.1%} reordered, {r.loss:.1%} lost, "
+              f"delay p95 {r.excess_p95_ms:.0f} ms above its best -> {verdict}")
+    return 0
+
+
 def cmd_export_weights(args) -> int:
     from .golden_learned import copy_weights
 
@@ -667,6 +706,11 @@ def main(argv: Optional[List[str]] = None) -> int:
     p.add_argument("--workers", type=int, default=0)
     p.add_argument("--steps", type=int, default=0)
     p.set_defaults(func=cmd_grid)
+
+    p = sub.add_parser("check-disturbance", help="which sessions the headset's network disturbance altered (from RobotHost's JC records)")
+    p.add_argument("sessions", nargs="+", help="session directories or glob patterns")
+    p.add_argument("--list", action="store_true", help="print only the altered sessions' ids")
+    p.set_defaults(func=cmd_check_disturbance)
 
     p = sub.add_parser("export-weights", help="a run's .onnx as the C# backend's weights file (docs/adr/0025)")
     p.add_argument("--run", required=True)

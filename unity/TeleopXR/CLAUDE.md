@@ -153,7 +153,10 @@ Contents:
     (0–30%), applied together on the headset to the joint link in both directions
     (`JointLinkDisturbance`) once they stop moving for 0.4 s; all at zero is off. While one is on,
     the panel and the twin's status line say `NETWORK DISTURBED`, and each change is logged with its
-    seed. Anything recorded with one on is not a real-network measurement. The bridge's caps
+    seed. Anything recorded with one on is not a real-network measurement: the headset reports the
+    settings to RobotHost, which writes `HD` records and marks the session, and the trainer refuses it
+    (docs/adr/0023 amendment). Selecting TRAIN on the training course resets them, and ADDED DELAY, to
+    zero, and a running course holds them there (`· COURSE`). The bridge's caps
     (`DisturbanceMaxDelayMs`, `DisturbanceMaxLossPercent`) bound them.
   - **Servo board silent.** When frames keep arriving but the servo readings stop advancing for 3 s,
     the twin's status line and the panel say `SERVO BOARD NOT ANSWERING · power-cycle the robot`

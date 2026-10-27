@@ -132,6 +132,15 @@ namespace Teleop.RobotHost.Recording
             "|" + TrainingTaskCodec.Name(s.Task) + "|" + TrainingTaskCodec.Name(s.Phase) + "|" + TrainingTaskCodec.Name(s.Purpose) +
             "|" + (float.IsNaN(s.SpeedLevel) ? "varied" : F(s.SpeedLevel)) + "|" + F(s.Score) + "|" + (s.Disturbed ? "1" : "0");
 
+        /// <summary>
+        /// What the headset does to its own link and view (docs/adr/0023 amendment):
+        /// <c>HD|t|lagMs|jitterMs|lossPercent|addedDelayMs|seed</c>, the lag <c>NaN</c> for a named profile.
+        /// Any non-zero value means the session is not a real-network measurement.
+        /// </summary>
+        public static string HeadsetConditions(long t, in HeadsetConditions c) =>
+            "HD|" + I(t) + "|" + F(c.LagMs) + "|" + F(c.JitterMs) + "|" + F(c.LossPercent) + "|" + F(c.AddedDelayMs) + "|" +
+            c.Seed.ToString(CultureInfo.InvariantCulture);
+
         public static string KindName(OperatorClientKind kind) => kind switch
         {
             OperatorClientKind.Headset => "headset",

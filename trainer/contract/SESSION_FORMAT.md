@@ -130,7 +130,9 @@ All times are RobotHost `Stopwatch` ticks on the Jetson (`CLOCK_MONOTONIC`, ns).
 | `TQ` | `t` `on` | A torque switch sent to the relay for every servo: `1` on, `0` off. Nothing confirms it; with the servo board silent it reaches no servo |
 | `TK` | `t` `course` `round` `task` `phase` `purpose` `level` `score` `disturbed` | The headset's training course (docs/adr/0024), written when its label changes and at the start of every session while a round is going. `course` is the course's seed, `round` counts from 1 within it. `task` `reach`, `trace`, `shuttle` or `none`; `phase` `idle` (announced, or stopped), `active`, `suspended` (the robot not ready: nothing counts) or `done` (the final `score`); `purpose` `train` or `test` (held out: never train on it); `level` the round's speed in rad/s, or `varied`; `score` targets reached, touches, or percent of time on the trace's bead; `disturbed` `1` when the headset's network disturbance or added delay was on during the round (not a real-network measurement) |
 
-Readers ignore the tags they do not use; `OM`, `PQ`, `PS`, `PK`, `TQ` and `TK` were added without a version
+| `HD` | `t` `lagMs` `jitterMs` `lossPercent` `addedDelayMs` `seed` | The headset's own network disturbance on the joint link (both ways; `lagMs` `NaN` for a named profile or trace) and its added delay on the robot's state reports (its view only), written when they change and at the start of every session while anything is on. Any non-zero value makes the session not a real-network measurement: `armpred check-session` fails it, so it is never packed for training. RobotHost also sets `conditions.network.headsetDisturbed` in `session.json` when it completes an automatic session. Absent in sessions recorded before 2026-10-27 or with an older headset |
+
+Readers ignore the tags they do not use; `OM`, `PQ`, `PS`, `PK`, `TQ`, `TK` and `HD` were added without a version
 change, and a session with them reads and checks as before (`trainer/tests/test_contract.py`).
 
 ## Driver records (`driver.jlog`)

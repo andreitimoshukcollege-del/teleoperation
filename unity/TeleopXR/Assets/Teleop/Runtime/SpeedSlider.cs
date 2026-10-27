@@ -57,6 +57,7 @@ namespace Teleop.XR
         private float _value;
         private int _shown = -1;
         private bool _course;
+        private bool _wasTest;
 
         private void Start()
         {
@@ -79,6 +80,22 @@ namespace Teleop.XR
                 _course = true;
                 Apply();
                 return;
+            }
+
+            // Training data must be real-network data (docs/adr/0024 decision 8): selecting TRAIN puts
+            // the disturbance and the added delay back to zero, and a running course holds them there.
+            if (setting != Setting.ArmSpeed && bridge.Training != null)
+            {
+                bool test = bridge.Training.Test;
+                if (_wasTest && !test) _value = 0f;
+                _wasTest = test;
+                if (bridge.Training.Running)
+                {
+                    _value = 0f;
+                    _course = true;
+                    Apply();
+                    return;
+                }
             }
 
             _course = false;
@@ -159,10 +176,10 @@ namespace Teleop.XR
                     case Setting.ArmSpeed:
                         label.SetText(_course ? "ARM SPEED  {0:1} rad/s · COURSE" : "ARM SPEED  {0:1} rad/s", _value);
                         break;
-                    case Setting.AddedDelay: label.SetText("ADDED DELAY  {0:0} ms", _value); break;
-                    case Setting.NetworkLag: label.SetText("LAG  {0:0} ms", _value); break;
-                    case Setting.NetworkJitter: label.SetText("JITTER  {0:0} ms", _value); break;
-                    default: label.SetText("LOSS  {0:0} %", _value); break;
+                    case Setting.AddedDelay: label.SetText(_course ? "ADDED DELAY  {0:0} ms · COURSE" : "ADDED DELAY  {0:0} ms", _value); break;
+                    case Setting.NetworkLag: label.SetText(_course ? "LAG  {0:0} ms · COURSE" : "LAG  {0:0} ms", _value); break;
+                    case Setting.NetworkJitter: label.SetText(_course ? "JITTER  {0:0} ms · COURSE" : "JITTER  {0:0} ms", _value); break;
+                    default: label.SetText(_course ? "LOSS  {0:0} % · COURSE" : "LOSS  {0:0} %", _value); break;
                 }
             }
         }

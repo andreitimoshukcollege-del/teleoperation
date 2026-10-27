@@ -129,6 +129,7 @@ namespace Teleop.Bridge
         private long _lastEchoOperatorTicks = long.MinValue;
         private long _lastFrameArrivalTicks;
         private long _lastFreshArrivalTicks = long.MinValue;
+        private long _firstFrameArrivalTicks = long.MinValue;
         private long _lastSensedRobotTicks = long.MinValue;
 
         /// <summary>The label of the preset drawing the twin.</summary>
@@ -149,9 +150,13 @@ namespace Teleop.Bridge
 
         /// <summary>
         /// Frames are arriving but no fresh servo reading has for <see cref="BoardSilentSeconds"/>: the
-        /// servo board has stopped answering (only a power cycle has ever brought it back).
+        /// servo board has stopped answering (only a power cycle has ever brought it back). Counted from
+        /// the first frame when no reading has ever arrived, so a board that was already silent when the
+        /// app started is reported too (2026-10-27: it was not, and the arm sat still with no warning).
         /// </summary>
-        public bool BoardSilent => SecondsSinceLastFrame < 1f && _lastFreshArrivalTicks != long.MinValue && SecondsSinceFreshReading > BoardSilentSeconds;
+        public bool BoardSilent =>
+            SecondsSinceLastFrame < 1f && _firstFrameArrivalTicks != long.MinValue &&
+            (_clock.NowTicks - (_lastFreshArrivalTicks != long.MinValue ? _lastFreshArrivalTicks : _firstFrameArrivalTicks)) / (double)_clock.TicksPerSecond > BoardSilentSeconds;
 
         public const float BoardSilentSeconds = 3f;
 
@@ -413,6 +418,7 @@ namespace Teleop.Bridge
 
                 FramesReceived++;
                 _lastFrameArrivalTicks = arrival;
+                if (_firstFrameArrivalTicks == long.MinValue) _firstFrameArrivalTicks = arrival;
 
                 // ClockSync sees the real arrival: an added delay must not bias the clock offset.
                 if (echoOperator != _lastEchoOperatorTicks)

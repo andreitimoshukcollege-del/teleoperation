@@ -647,6 +647,7 @@ translates the local wire protocol above into calls against `jetrover_arm_contro
     | 10-25 22:48 | 10-25 22:58 | none that run |
     | 10-26 21:28 | 10-26 23:27 | the last 77 min before |
     | 10-27 01:08 | 10-27 07:39 | none that run |
+    | 10-27 21:46 (driver redeployed 22:06) | 10-27 22:45 | 5,141 in the 10 min before; the last 3.6 min before; **keep-alive `write` on** |
 
     It has not gone silent *during* commanding, but once 1.7 min after it. What idle lacks is writes;
     what every run has is reads. Two experiments, one at a time (`just robot-keepalive <mode>`, no
@@ -655,6 +656,13 @@ translates the local wire protocol above into calls against `jetrover_arm_contro
     relay's 0.2 s staleness limit). Each `[stats]` line names the mode. Run one for a few days of
     normal use, then the other, and compare the time to silence. The headset now also reports a board
     that was silent before the app started (it did not, so the arm sat still with no warning).
+  - **2026-10-27 22:45: `write` did not prevent it.** The first silence under an experiment: the LED
+    write went out every second from 5 s idle (5 per stats line) with every read answered, until about
+    210 s idle, then the reads stopped within one stats period; battery 12.28 V, no dip. The arm had been
+    left holding (torque on) since 22:39:33, when the headset stopped at 22:41:39 (the build that turns
+    the robot off when the headset comes off was not installed yet). `just robot-board-diagnose`
+    showed the same picture as before: 429 bytes written in 6 s, 6 read, no battery report. One case,
+    but a clean one against the write theory; next, `slow-poll`.
 - **A measurement trap: `just joint-probe` while the headset streams.** RobotHost sends the
   joint-state stream to whoever last sent on the joint port. A headset sending joint commands takes
   it back 48 times a second, so the probe gets scraps. On 2026-10-20 that read as "feedback falls to

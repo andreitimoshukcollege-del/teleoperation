@@ -11,6 +11,9 @@ drift. That property is the reason the project is laid out this way — protect 
   "what are the swappable parts of this system?"
 - `Prediction/`, `Reconciliation/`, `Buffering/`, `Transport/`, `Autonomy/` — implementations
   of exactly one contract each. `ls` answers "what have we tried on this axis?"
+- `Inference/` — `IInferenceBackend` implementations, pure arithmetic: `MlpBackend` (the learned joint
+  model's graph in plain C#) and `MlpWeights` (parses the trainer's `model.weights` bytes; the host
+  reads the file). docs/adr/0025.
 - `Plant/` — the Core-side `IRobotPlant` sweeps run against. Kinematic, not physics; the Unity
   and hardware plants live in `Bridge/`.
 - `Transport/Impairments/` — one file per network-impairment axis, composed into a set the

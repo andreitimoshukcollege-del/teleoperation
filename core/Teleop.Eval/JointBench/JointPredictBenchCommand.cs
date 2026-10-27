@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Globalization;
 using System.Linq;
 using Teleop.Core.Contracts;
+using Teleop.Core.Inference;
 using Teleop.Core.Registry;
 using Teleop.Core.Transport;
 using Teleop.Core.Types;
@@ -128,8 +129,37 @@ namespace Teleop.Eval.JointBench
             public long ServoCappedSteps;
         }
 
+        /// <summary>The model the <c>learned</c> row runs (docs/adr/0025), from <c>--learned-model</c>.</summary>
+        private static IInferenceBackend? s_learnedModel;
+
+        public const string DefaultLearnedModel = "testdata/learned/finetune-pilot2-early7.weights";
+
+        /// <summary>A registry predictor for the bench; <c>learned</c> is given the loaded model.</summary>
+        private static ICommandAwarePredictor Build(string predictorName, JointPredictorConfig config) =>
+            Registries.JointPredictors[predictorName](predictorName == "learned" ? config.WithModel(s_learnedModel) : config);
+
+        /// <summary>Loads <paramref name="path"/> as the learned row's model; false, with the reason printed, when it cannot.</summary>
+        public static bool LoadLearnedModel(string path)
+        {
+            if (!System.IO.File.Exists(path))
+            {
+                Console.Error.WriteLine($"joint-predict-bench: no learned model at {path} (run from core/, or pass --learned-model)");
+                return false;
+            }
+
+            if (!MlpWeights.TryParse(System.IO.File.ReadAllBytes(path), out MlpWeights? weights, out string error))
+            {
+                Console.Error.WriteLine($"joint-predict-bench: {path}: {error}");
+                return false;
+            }
+
+            s_learnedModel = new MlpBackend(weights!);
+            return true;
+        }
+
         public static int Run(string[] args)
         {
+            string learnedModel = DefaultLearnedModel;
             int seeds = 5;
             double seconds = 20, trueSpeed = 4.0, legScale = 1.0;
             double? modelSpeed = null;
@@ -157,6 +187,7 @@ namespace Teleop.Eval.JointBench
                     case "--servo-lag-ms": relay.ServoLagMs = D(); break;
                     case "--pipeline-ms": relay.PipelineMs = D(); break;
                     case "--leg-scale": legScale = D(); break;
+                    case "--learned-model": learnedModel = Next(); break;
                     case "--model-sensed-age":
                         string age = Next();
                         if (age != "on" && age != "off") return Usage();
@@ -178,6 +209,12 @@ namespace Teleop.Eval.JointBench
                 return 64;
             }
 
+            if (!LoadLearnedModel(learnedModel))
+            {
+                return 1;
+            }
+
+            Console.WriteLine($"  learned: {s_learnedModel!.ModelId} ({learnedModel}); trained on the real robot's relay, so off the bench's simulated one it says little");
             bool isRelay = robot == "relay";
             double servoModelSpeed = modelSpeed ?? (isRelay ? 6.0 : 5.0);
             if (isRelay)
@@ -263,7 +300,7 @@ namespace Teleop.Eval.JointBench
                 "  relay: [--relay-pps P] [--relay-min-move-ms MS] [--relay-deadband-pulses N] [--read-ms MS] [--stamp-ms MS]\n" +
                 "         [--servo-max-speed rad/s] [--servo-lag-ms MS] [--pipeline-ms MS]\n" +
                 "         [--model-relay-pps P] [--model-sensed-age on|off]\n" +
-                "  both:  [--leg-scale F] (waypoint legs last F times 0.5-1.5 s)");
+                "  both:  [--leg-scale F] (waypoint legs last F times 0.5-1.5 s) [--learned-model F] (the learned row's model.weights)");
             return 64;
         }
 
@@ -279,7 +316,7 @@ namespace Teleop.Eval.JointBench
             var config = new JointPredictorConfig(
                 maxJoints: ArmJoints + 1, commandHistoryCapacity: 64, maxJointSpeedRadPerSec: (float)modelSpeed,
                 instantMotorIds: new[] { GripperId }, maxHorizonTicks: Tps, ticksPerSecond: Tps);
-            ICommandAwarePredictor predictor = Registries.JointPredictors[predictorName](config);
+            ICommandAwarePredictor predictor = Build(predictorName, config);
 
             long end = (long)(seconds * Tps), step = Tps / 1000;
             long commandInterval = Tps / 48, stateInterval = Tps / 50, displayInterval = Tps / 90, warmup = Tps;
@@ -404,7 +441,7 @@ namespace Teleop.Eval.JointBench
                 servoLagSeconds: (float)(relay.ServoLagMs / 1000.0),
                 servoPipelineDelaySeconds: (float)(relay.PipelineMs / 1000.0),
                 servoFirstMoveFromMeasured: false);
-            ICommandAwarePredictor predictor = Registries.JointPredictors[predictorName](config);
+            ICommandAwarePredictor predictor = Build(predictorName, config);
 
             long end = (long)(seconds * Tps), step = Tps / 1000;
             long commandInterval = Tps / 48, frameInterval = Tps / 50, displayInterval = Tps / 90, warmup = Tps;

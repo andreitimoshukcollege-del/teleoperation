@@ -104,6 +104,24 @@ last 0.5 s; `min(commands, 24) / 24`; and for `v1-aware`, the newest command's s
 A *fresh* reading is a state whose sensed stamp is later than every earlier one. A command older
 than the newest is dropped, as `relay-replay` drops it.
 
+## Weights (`model.weights`, docs/adr/0025)
+
+The repo runs architecture A (`mlp`) in plain C# (`core/Teleop.Core/Inference/MlpBackend.cs`), not
+through an ONNX runtime. `armpred export-weights` (or `armpred golden-learned`, which writes them
+beside its golden) reads the four Gemm layers out of the scored `model.onnx` itself, checks a NumPy
+forward pass against onnxruntime on real windows to `PARITY_TOLERANCE_RAD`, and writes, little-endian:
+
+`"TLMW" | u32 version (1) | u32 jointFeatures (251) | u32 armFeatures (114) | u32 joints (6) |
+u32 layers (4) | layers × { u32 inputs | u32 outputs | f32 weight[outputs × inputs] (row-major, one row
+per output, as torch's Linear and the graph's Gemm with transB) | f32 bias[outputs] } | 32 bytes: the
+.onnx's sha256 | u32 n | n bytes: the model id (UTF-8, `<run> <sha256[:12]>`)`
+
+The head is not in the file; it is the graph's, fixed by this format: on each joint's row, the
+correction is `(flag · float32(90° − 15°) + float32(15°)) · tanh(raw₀)`, `flag` the row's gripper
+identity entry (index 247), and the log-scale is `raw₁` clipped to [ln 1e-4, ln 0.5]. A change to the
+head, the layers or the window is a format change: the golden (`core/testdata/learned/`) is regenerated
+and the C# changed in the same commit.
+
 ## The card (`model-card.json`)
 
 ```json

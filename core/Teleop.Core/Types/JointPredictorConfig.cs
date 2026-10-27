@@ -165,7 +165,8 @@ namespace Teleop.Core.Types
             float servoLagSeconds = DefaultServoLagSeconds,
             float servoPipelineDelaySeconds = DefaultServoPipelineDelaySeconds,
             bool servoFirstMoveFromMeasured = DefaultServoFirstMoveFromMeasured,
-            float servoStepSeconds = DefaultServoStepSeconds)
+            float servoStepSeconds = DefaultServoStepSeconds,
+            Contracts.IInferenceBackend? model = null)
         {
             if (!(servoMaxSpeedRadPerSec > 0f)) throw new System.ArgumentOutOfRangeException(nameof(servoMaxSpeedRadPerSec), "the servo speed must be positive (+infinity is no cap)");
             if (!(servoLagSeconds >= 0f) || float.IsInfinity(servoLagSeconds)) throw new System.ArgumentOutOfRangeException(nameof(servoLagSeconds), "the servo lag must be zero or positive, and finite");
@@ -216,6 +217,20 @@ namespace Teleop.Core.Types
             ServoPipelineDelaySeconds = servoPipelineDelaySeconds;
             ServoFirstMoveFromMeasured = servoFirstMoveFromMeasured;
             ServoStepSeconds = servoStepSeconds;
+            Model = model;
         }
+
+        /// <summary>
+        /// The learned model a <c>learned</c> predictor runs (docs/adr/0025); null for every other
+        /// predictor. Loaded once by the host and shared, never reloaded on the frame path.
+        /// </summary>
+        public Contracts.IInferenceBackend? Model { get; }
+
+        /// <summary>This config with <paramref name="model"/> as its <see cref="Model"/>; every other value the same.</summary>
+        public JointPredictorConfig WithModel(Contracts.IInferenceBackend? model) =>
+            new JointPredictorConfig(MaxJoints, CommandHistoryCapacity, MaxJointSpeedRadPerSec, InstantMotorIds, MaxHorizonTicks,
+                TicksPerSecond, ScaledMotorIds, SpeedScales, RelayMinMoveSeconds, RelayDeadbandRad, RelayMoveSpeedRadPerSec,
+                SensedAgeMotorIds, SensedAgeSeconds, ServoMaxSpeedRadPerSec, ServoLagSeconds, ServoPipelineDelaySeconds,
+                ServoFirstMoveFromMeasured, ServoStepSeconds, model);
     }
 }

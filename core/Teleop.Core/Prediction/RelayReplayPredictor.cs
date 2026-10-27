@@ -166,6 +166,12 @@ namespace Teleop.Core.Prediction
         public PredictorDiagnostics Diagnostics =>
             new PredictorDiagnostics(_lastHorizon, _hasState ? _stateTicks : 0, _accepted, _rejected);
 
+        /// <summary>Whether a state has been observed, and when it was sensed: the learned predictor's window
+        /// measures this model's error against each new reading from it (docs/adr/0025).</summary>
+        public bool HasState => _hasState;
+
+        public long StateTicks => _stateTicks;
+
         /// <summary>The gate's counts: moves written, deadband drops, coalesced targets.</summary>
         public GateCounts Gate => new GateCounts(_written, _deadbandDrops, _coalesced);
 

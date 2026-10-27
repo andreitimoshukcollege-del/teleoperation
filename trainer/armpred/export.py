@@ -5,7 +5,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
+import struct
 from typing import Dict, List, Optional
 
 import numpy as np
@@ -93,3 +95,82 @@ def export_onnx(model: torch.nn.Module, aware: bool, path: str, metadata: Dict[s
 def flat_inputs(joint_rows: np.ndarray, arm_rows: np.ndarray) -> np.ndarray:
     """[N, 6, J] and [N, A] windows -> [N, 6 * J + A], the order FlatExport reads."""
     return np.concatenate([joint_rows.reshape(joint_rows.shape[0], -1), arm_rows], axis=1).astype(np.float32)
+
+
+# -- the weights file (contract/MODEL_FORMAT.md, "Weights"; docs/adr/0025) ----------------------------
+
+WEIGHTS_MAGIC = b"TLMW"
+WEIGHTS_VERSION = 1
+MLP_LAYERS = ("model.net.0", "model.net.2", "model.net.4", "model.net.6")
+
+
+def mlp_layers_from_onnx(onnx_path: str):
+    """The architecture-A (mlp) graph's four Gemm layers, as [(W [out, in] float32, b [out] float32)]."""
+    import onnx
+    from onnx import numpy_helper
+
+    proto = onnx.load(onnx_path)
+    init = {i.name: numpy_helper.to_array(i) for i in proto.graph.initializer}
+    expected = {f"{p}.{k}" for p in MLP_LAYERS for k in ("weight", "bias")}
+    if set(init) != expected:
+        raise ValueError(f"{onnx_path}: not an mlp export (initializers {sorted(init)})")
+    gemms = [n for n in proto.graph.node if n.op_type == "Gemm"]
+    for n, prefix in zip(gemms, MLP_LAYERS):
+        attrs = {a.name: a for a in n.attribute}
+        if list(n.input[1:]) != [f"{prefix}.weight", f"{prefix}.bias"] or attrs["transB"].i != 1:
+            raise ValueError(f"{onnx_path}: unexpected Gemm {n.name}")
+    return [(init[f"{p}.weight"].astype(np.float32), init[f"{p}.bias"].astype(np.float32)) for p in MLP_LAYERS]
+
+
+def mlp_forward(layers, x: np.ndarray) -> np.ndarray:
+    """FlatExport's arithmetic in NumPy float32: x [N, 1620] -> y [N, 12]. What the C# backend does."""
+    n = len(L.PREDICTED_MOTORS)
+    rows = []
+    for row in x.astype(np.float32):
+        joints = row[: n * L.JOINT_FEATURES].reshape(n, L.JOINT_FEATURES)
+        arm = row[n * L.JOINT_FEATURES:]
+        h = np.concatenate([joints, np.repeat(arm[None, :], n, axis=0)], axis=1)
+        for k, (w, b) in enumerate(layers):
+            h = h @ w.T + b
+            if k < len(layers) - 1:
+                h = np.maximum(h, 0.0)
+        flag = joints[:, L.JOINT_FEATURES - 3 - 1]  # the identity block's last entry: the gripper
+        cap = flag * np.float32(L.GRIPPER_MAX_CORRECTION_RAD - L.MAX_CORRECTION_RAD) + np.float32(L.MAX_CORRECTION_RAD)
+        corr = cap * np.tanh(h[:, 0])
+        log_b = np.clip(h[:, 1], np.float32(math.log(1e-4)), np.float32(math.log(0.5)))
+        rows.append(np.stack([corr, log_b], axis=1).reshape(-1))
+    return np.array(rows, dtype=np.float32)
+
+
+def write_weights(onnx_path: str, out_path: str, model_id: str, check_inputs: np.ndarray) -> Dict[str, object]:
+    """Writes ``model.weights`` from the scored ``.onnx``, after checking the NumPy forward pass against
+    onnxruntime on ``check_inputs``: real windows (the golden's), held to ``PARITY_TOLERANCE_RAD``."""
+    import onnxruntime as ort
+
+    layers = mlp_layers_from_onnx(onnx_path)
+    if layers[0][0].shape[1] != L.JOINT_FEATURES + L.ARM_FEATURES:
+        raise ValueError(f"{onnx_path}: first layer takes {layers[0][0].shape[1]}, layout v3 is {L.JOINT_FEATURES + L.ARM_FEATURES}")
+    if check_inputs is None or len(check_inputs) == 0:
+        raise ValueError("write_weights needs real windows to check against")
+    session = ort.InferenceSession(onnx_path, providers=["CPUExecutionProvider"])
+    worst = 0.0
+    for row in check_inputs:
+        a = session.run(["y"], {"x": row.reshape(1, -1).astype(np.float32)})[0].reshape(-1)
+        b = mlp_forward(layers, row.reshape(1, -1))[0]
+        worst = max(worst, float(np.abs(a - b).max()))
+    if worst > PARITY_TOLERANCE_RAD:
+        raise RuntimeError(f"the weights' forward pass and the .onnx disagree by {worst:.3g}")
+    digest = bytes.fromhex(sha256(onnx_path))
+    ident = model_id.encode("utf-8")
+    with open(out_path, "wb") as f:
+        f.write(WEIGHTS_MAGIC)
+        f.write(struct.pack("<IIIII", WEIGHTS_VERSION, L.JOINT_FEATURES, L.ARM_FEATURES, len(L.PREDICTED_MOTORS), len(layers)))
+        for w, b in layers:
+            f.write(struct.pack("<II", w.shape[1], w.shape[0]))
+            f.write(np.ascontiguousarray(w, dtype="<f4").tobytes())
+            f.write(np.ascontiguousarray(b, dtype="<f4").tobytes())
+        f.write(digest)
+        f.write(struct.pack("<I", len(ident)))
+        f.write(ident)
+    return {"path": out_path, "sha256": sha256(out_path), "onnxSha256": digest.hex(), "parityMaxAbs": worst,
+            "modelId": model_id}

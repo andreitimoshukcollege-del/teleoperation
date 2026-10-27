@@ -92,6 +92,12 @@ Contents:
     - **PAUSE (the small one to its left), amber when paused.** It works only while the robot is on.
       Paused sends nothing and keeps torque on, so the arm holds where it is; press PAUSE or power to
       go on again. Use it instead of power when you do not want the arm to relax.
+    - **Taking the headset off is ROBOT OFF** (`HeadsetRemovalGuard`, the user's choice, 2026-10-27):
+      the arm parks and relaxes. When Android pauses the app or it loses focus, the relax request goes
+      out three times before the app stops; where the runtime reports user presence, it also turns off
+      after 0.5 s without you. Putting the headset back on does not turn it on again, so the arm never
+      jumps to wherever your hands are. The power label then says why it is off. Builds only for
+      pause and focus: the editor loses focus whenever another window is clicked.
     - Off and paused both send nothing while the virtual arm still follows your hands, and both
       offer the camera display for moving. Both buttons show LOCKED when `ConfirmHardwareMotion` is
       off in the config.
@@ -231,6 +237,7 @@ build, if any of them changes:
 | `JetRoverOperatorBridge.motionEnabledAtStart` | off | the robot must not move at launch, before anyone presses the button |
 | `JetRoverOperatorBridge.snapTargetToReachable` | on | when the IK stops at the robot's body, the marker moves to where the arm stopped, so it never sits inside the robot and the clutch re-engages from the arm (docs/adr/0020) |
 | `MotionToggleButton` | one Power and one Pause, each present, wired, enabled | power is the only way to start, and stop, the robot from the headset |
+| `HeadsetRemovalGuard` | present, wired to the bridge, enabled | taking the headset off must turn the robot off: nobody is operating it then |
 | `TwinArmsDriver` | present, wired, not driving the commanded arm | the robot's state must never overwrite the display of the command |
 | Hand smoothing filter | inactive | it filters the hand joints the clutch reads; intent is sent raw (ADR 0016 §5) |
 | Modality manager controllers | none | hands only |

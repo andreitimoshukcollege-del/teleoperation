@@ -82,9 +82,10 @@ namespace Teleop.XR
             JetRoverMotionMode mode = bridge.MotionMode;
             int remaining = link != null ? Mathf.RoundToInt(link.ArmPowerRemainingDeg) : 0;
             string reason = link != null ? link.ArmPowerReasonText : "";
+            string offReason = bridge.MotionOffReason;
             int key = !bridge.HardwareMotionAllowed ? -2
                 : (((int)mode * 10 + (int)power) * 2 + (bridge.WaitingForHold ? 1 : 0)) * 1000 + Mathf.Clamp(remaining, 0, 999)
-                  + (reason.Length > 0 ? 1_000_000 + reason.Length : 0);
+                  + (reason.Length > 0 ? 1_000_000 + reason.Length : 0) + (offReason.Length > 0 ? 10_000_000 : 0);
             if (key == _shown)
             {
                 return;
@@ -119,6 +120,7 @@ namespace Teleop.XR
             {
                 color = offColor;
                 text = power == JetRoverArmPower.Parking ? $"PARKING\n<size=60%>{remaining}° to the rest pose</size>"
+                    : offReason.Length > 0 && power == JetRoverArmPower.Relaxed ? $"ROBOT OFF\n<size=60%>{offReason} · press to start</size>"
                     : power == JetRoverArmPower.Relaxed ? "ROBOT OFF\n<size=60%>relaxed · press to start</size>"
                     : reason.Length > 0 ? $"ROBOT OFF\n<size=60%>not parked: {reason}</size>"
                     : "ROBOT OFF\n<size=60%>press to start</size>";

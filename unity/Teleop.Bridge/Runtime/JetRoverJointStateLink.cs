@@ -371,6 +371,20 @@ namespace Teleop.Bridge
             _hasTraining = true;
         }
 
+        /// <summary>
+        /// Sends the operator message now, <paramref name="copies"/> times, instead of waiting for the next
+        /// <see cref="Tick"/>: for a mode change that must leave before the app is suspended (the headset
+        /// taken off), when nothing will be there to repeat it. Nothing is sent if no message is due.
+        /// </summary>
+        internal void FlushOperatorMessage(long now, int copies)
+        {
+            if (_power.TryTakeMessage(now, out ArmPowerRequest request, out uint sequence) &&
+                ArmPowerCodec.TryEncodeRequest(OperatorClientKind.Headset, ToWire(_mode), request, sequence, now, _powerBuffer, out int powerBytes))
+            {
+                for (int i = 0; i < copies; i++) _transport.Send(_powerBuffer.AsSpan(0, powerBytes), now);
+            }
+        }
+
         /// <summary>Sends a keepalive when one is due, and takes in every frame that has arrived.</summary>
         public void Tick(long now)
         {

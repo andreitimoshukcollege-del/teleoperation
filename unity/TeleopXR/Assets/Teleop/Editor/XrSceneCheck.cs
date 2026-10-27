@@ -248,6 +248,15 @@ namespace Teleop.XR.Editor
                     problems.Add("HandClutchDriver is disabled");
             }
 
+            // Taking the headset off turns the robot off: nobody can be operating it then.
+            var guard = Object.FindAnyObjectByType<HeadsetRemovalGuard>(FindObjectsInactive.Include);
+            if (guard == null)
+                problems.Add("no HeadsetRemovalGuard: taking the headset off would leave the robot on (run Teleop > XR > Set Up Clutch Control)");
+            else if (new SerializedObject(guard).FindProperty("bridge").objectReferenceValue != bridge)
+                problems.Add("HeadsetRemovalGuard.bridge is not the scene's JetRoverOperatorBridge");
+            else if (!guard.enabled || !guard.gameObject.activeInHierarchy)
+                problems.Add("HeadsetRemovalGuard is disabled or inactive: taking the headset off would leave the robot on");
+
             // The robot's start/stop switch: present, wired, and the scene starts with motion off.
             if (new SerializedObject(bridge).FindProperty("motionEnabledAtStart") is SerializedProperty startOn && startOn.boolValue)
                 problems.Add("JetRoverOperatorBridge.motionEnabledAtStart is on: the robot would move at launch, before anyone presses the motion button (docs/adr/0017)");

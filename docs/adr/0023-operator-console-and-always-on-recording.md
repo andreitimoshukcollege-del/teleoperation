@@ -311,3 +311,27 @@ Where this departs from the decision, and why:
   never left the robot. Not chosen.
 - **Recording continuously, idle time included.** That is about 1.2 GB a day of the driver's idle
   reads, and of little use for training. Not chosen: sessions open on commands.
+
+## Amendment, 2026-10-27: the recordings know what the headset did
+
+Automatic recording (decision 4) records whatever the headset sends, and the console's LAG, JITTER and
+LOSS (decision 3) act on the uplink before the real send. Sessions recorded with them on looked like
+clean LAN data: `session.json` names only the robot's own uplink. On 2026-10-27, 12 of the 16 automatic
+sessions had been recorded that way, with 5-53% of commands reordered, 6-16% lost and delays of
+hundreds of ms.
+
+1. **The headset reports its conditions** (tag `0x84` on the joint port, `HeadsetConditionsCodec` in
+   `Teleop.RobotArm`): lag, jitter, loss, the added delay and the disturbance's seed, once a second and
+   at every change, off included.
+2. **RobotHost records them** as `HD` records (on change, and at a session's start while anything is
+   on), and sets `conditions.network.headsetDisturbed` when it completes an automatic session.
+3. **The trainer refuses them**: `armpred check-session` fails a session with anything on, so
+   `pack-dataset` never takes it.
+4. **Sessions from before the report are judged from the robot's side** (`armpred check-disturbance`,
+   `just recordings-disturbed`): reordering, loss and delay in RobotHost's `JC` records. Altered ones are
+   moved to `recordings/disturbed/`, here and on the robot, not deleted. The ADDED DELAY slider leaves no
+   mark there; from now on `HD` records it.
+5. **The training course keeps them at zero**: selecting TRAIN resets LAG, JITTER, LOSS and ADDED DELAY
+   to zero, and a running course holds them there (docs/adr/0024 decision 8 still flags any round
+   recorded otherwise).
+

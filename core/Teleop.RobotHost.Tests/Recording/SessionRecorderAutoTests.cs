@@ -226,6 +226,28 @@ namespace Teleop.RobotHost.Tests.Recording
         }
 
         [Fact]
+        public void ASessionWithTheHeadsetDisturbed_IsMarked_AndOneWithout_IsMarkedClean()
+        {
+            using var rig = new Rig(driverWaitSeconds: 0.2);
+            int first = rig.Begin();
+            rig.Recorder.Record("JC|1|1|0|0|A|1:0.1:2.5");
+            rig.Recorder.Record("HD|2|150|0|0|0|4");
+            rig.Recorder.Record("HD|3|0|0|0|0|4");
+            rig.Recorder.EndAuto(first, "the joint-command sender changed");
+            int second = rig.Begin("10.0.0.5:40000");
+            rig.Recorder.Record("JC|4|4|1|1|A|1:0.1:2.5");
+            rig.Recorder.EndAuto(second, "no joint command for 30 s");
+
+            string a = rig.AutoDir(), b = rig.AutoDir("20261026T120000Z-auto-2");
+            Assert.True(WaitFor(() => File.Exists(Path.Combine(a, "files.sha256")) && File.Exists(Path.Combine(b, "files.sha256"))), string.Join("\n", rig.Log));
+            JsonNode ma = JsonNode.Parse(File.ReadAllText(Path.Combine(a, "session.json")))!;
+            Assert.True((bool)ma["conditions"]!["network"]!["headsetDisturbed"]!);
+            Assert.Contains("not a real-network measurement", (string)ma["notes"]!);
+            JsonNode mb = JsonNode.Parse(File.ReadAllText(Path.Combine(b, "session.json")))!;
+            Assert.False((bool)mb["conditions"]!["network"]!["headsetDisturbed"]!);
+        }
+
+        [Fact]
         public void AManualSession_TakesOver_AndTheAutomaticRecorderStaysOutWhileItRuns()
         {
             using var rig = new Rig(driverWaitSeconds: 0.2);

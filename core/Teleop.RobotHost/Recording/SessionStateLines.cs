@@ -23,6 +23,7 @@ namespace Teleop.RobotHost.Recording
         private ulong _uplinkSeed;
         private string? _operator;
         private TrainingState? _training;
+        private HeadsetConditions? _headset;
 
         public SessionStateLines(Action<string> record)
         {
@@ -38,6 +39,22 @@ namespace Teleop.RobotHost.Recording
             _uplinkSeed = 0;
             _operator = null;
             _training = null;
+            _headset = null;
+        }
+
+        /// <summary>
+        /// The headset's disturbance and added delay: written when they change, and at the start of a
+        /// session whenever anything is on (all off is the format's starting state).
+        /// </summary>
+        public void Headset(long t, in HeadsetConditions conditions)
+        {
+            if (_headset.HasValue ? _headset.Value.Equals(conditions) : !conditions.Disturbed)
+            {
+                return;
+            }
+
+            _headset = conditions;
+            _record(SessionLines.HeadsetConditions(t, conditions));
         }
 
         /// <summary>

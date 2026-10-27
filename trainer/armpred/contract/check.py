@@ -74,6 +74,11 @@ def check_session(session: Session, allow_read_gaps: bool = False) -> CheckRepor
 
     if len(session.commands) == 0:
         report.warnings.append("no joint commands")
+    from .session import headset_disturbed
+
+    if headset_disturbed(session):
+        report.failures.append("the headset's network disturbance or added delay was on (HD records or "
+                               "headsetDisturbed): not a real-network measurement, not training data")
     if len(session.frames) == 0:
         report.failures.append("no joint-state frames")
     if len(session.reads) == 0:

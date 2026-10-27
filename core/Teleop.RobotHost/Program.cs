@@ -160,6 +160,8 @@ namespace Teleop.RobotHost
             string? operatorText = null, operatorKind = null, operatorMode = null;
             long lastOperatorTicks = long.MinValue;
             TrainingState? lastTraining = null;
+            HeadsetConditions? lastHeadset = null;
+            long lastHeadsetTicks = long.MinValue;
             long lastTrainingTicks = long.MinValue;
 
             // The joint-state downlink (docs/adr/0018): streams to whoever last sent a keepalive on
@@ -211,6 +213,11 @@ namespace Teleop.RobotHost
                 if (lastTraining.HasValue && now - lastTrainingTicks <= 3 * clock.TicksPerSecond)
                 {
                     sessionState.Training(now, lastTraining.Value);
+                }
+
+                if (lastHeadset.HasValue && now - lastHeadsetTicks <= 3 * clock.TicksPerSecond)
+                {
+                    sessionState.Headset(now, lastHeadset.Value);
                 }
             }
 
@@ -402,6 +409,24 @@ namespace Teleop.RobotHost
                             }
 
                             power.OnRequest(powerRequest, powerSequence, powerOperatorTicks, arrivalTicks);
+                            continue;
+                        }
+
+                        // What the headset does to its own link and view (docs/adr/0023 amendment): state, once
+                        // a second and at every change. A recording made with any of it on is not a
+                        // real-network measurement.
+                        if (HeadsetConditionsCodec.TryDecode(jointRecvBuffer.AsSpan(0, byteCount), out HeadsetConditions headset, out _, out _))
+                        {
+                            if (!lastHeadset.HasValue || !lastHeadset.Value.Equals(headset))
+                            {
+                                Console.WriteLine(headset.Disturbed
+                                    ? FormattableString.Invariant($"[headset] disturbed: lag {headset.LagMs} ms, jitter {headset.JitterMs} ms, loss {headset.LossPercent}%, added delay {headset.AddedDelayMs} ms (seed {headset.Seed}); recordings are marked")
+                                    : "[headset] no disturbance, no added delay");
+                            }
+
+                            lastHeadset = headset;
+                            lastHeadsetTicks = arrivalTicks;
+                            if (recorder != null && recorder.IsActive) sessionState!.Headset(arrivalTicks, headset);
                             continue;
                         }
 

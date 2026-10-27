@@ -62,5 +62,27 @@ namespace Teleop.RobotHost.Tests.Recording
             state.Training(20, new TrainingState(TrainingTask.Trace, TrainingPhase.Active, TrainingPurpose.Test, true, 77, 2, float.NaN, 40f));
             Assert.Equal(new[] { "TK|20|77|2|trace|active|test|varied|40|1" }, lines);
         }
+
+        [Fact]
+        public void TheHeadsetConditions_AreWrittenOnChange_AndAtASessionStartOnlyWhenOn()
+        {
+            var lines = new List<string>();
+            var state = new SessionStateLines(lines.Add);
+            state.Headset(1, new HeadsetConditions(0f, 0f, 0f, 0f, 0)); // all off: the starting state
+            state.Headset(2, new HeadsetConditions(150f, 20f, 0f, 0f, 4));
+            state.Headset(3, new HeadsetConditions(150f, 20f, 0f, 0f, 4));
+            state.Headset(4, new HeadsetConditions(0f, 0f, 0f, 200f, 4));
+            state.Headset(5, new HeadsetConditions(float.NaN, 0f, 0f, 0f, 6));
+            state.Headset(6, new HeadsetConditions(0f, 0f, 0f, 0f, 6));
+            Assert.Equal(new[] { "HD|2|150|20|0|0|4", "HD|4|0|0|0|200|4", "HD|5|NaN|0|0|0|6", "HD|6|0|0|0|0|6" }, lines);
+
+            lines.Clear();
+            state.Reset();
+            state.Headset(10, new HeadsetConditions(0f, 0f, 0f, 0f, 6));
+            Assert.Empty(lines);
+            state.Reset();
+            state.Headset(11, new HeadsetConditions(0f, 0f, 5f, 0f, 8));
+            Assert.Equal(new[] { "HD|11|0|0|5|0|8" }, lines);
+        }
     }
 }

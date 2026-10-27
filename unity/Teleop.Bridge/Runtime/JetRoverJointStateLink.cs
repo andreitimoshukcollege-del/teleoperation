@@ -114,6 +114,11 @@ namespace Teleop.Bridge
         private readonly byte[] _buffer = new byte[128];
         private readonly byte[] _powerBuffer = new byte[ArmPowerCodec.RequestSize];
         private readonly byte[] _trainingBuffer = new byte[TrainingTaskCodec.Size];
+        private readonly byte[] _headsetBuffer = new byte[HeadsetConditionsCodec.Size];
+        private HeadsetConditions _headset;
+        private bool _headsetChanged = true;
+        private long _lastHeadsetSentTicks;
+        private uint _headsetSequence;
         private TrainingState _training;
         private bool _hasTraining;
         private bool _trainingChanged;
@@ -364,6 +369,12 @@ namespace Teleop.Bridge
         /// next <see cref="Tick"/> when its label changed, and once a second. Nothing is sent before the
         /// first call, so a headset that never runs the course sends nothing new.
         /// </summary>
+        internal void SetHeadsetConditions(in HeadsetConditions conditions)
+        {
+            if (!_headset.Equals(conditions)) _headsetChanged = true;
+            _headset = conditions;
+        }
+
         internal void SetTraining(in TrainingState state)
         {
             if (!_hasTraining || !_training.SameLabel(state)) _trainingChanged = true;
@@ -404,6 +415,16 @@ namespace Teleop.Bridge
                 ArmPowerCodec.TryEncodeRequest(OperatorClientKind.Headset, ToWire(_mode), request, sequence, now, _powerBuffer, out int powerBytes))
             {
                 _transport.Send(_powerBuffer.AsSpan(0, powerBytes), now);
+            }
+
+            // The headset's disturbance and added delay (docs/adr/0023 amendment): at every change and
+            // once a second, off included, so the robot's recording says which sessions are clean.
+            if ((_headsetChanged || now - _lastHeadsetSentTicks >= _clock.TicksPerSecond) &&
+                HeadsetConditionsCodec.TryEncode(_headset, ++_headsetSequence, now, _headsetBuffer, out int headsetBytes))
+            {
+                _transport.Send(_headsetBuffer.AsSpan(0, headsetBytes), now);
+                _headsetChanged = false;
+                _lastHeadsetSentTicks = now;
             }
 
             // The training course (docs/adr/0024): state, at every change of its label and once a second.

@@ -909,6 +909,41 @@ robot-disk-cleanup apply="false" remote_host=default_jetrover_host remote_user="
     echo "--- after: $(df -h / | tail -1 | awk '{print $4 " free of " $2 " (" $5 " used)"}')"
     REMOTE
 
+# Which recordings the headset's network disturbance altered (LAG/JITTER/LOSS act on the uplink before the real send, so RobotHost's JC records show the reordering, loss and delay; trainer/armpred/contract/disturbance.py; HD records too, since 2026-10-27), over recordings/jetrover/ here. apply=true sets them aside: moves each into recordings/disturbed/ here and ~/recordings/disturbed/ on the robot (never the session recording now), so nothing fetches, packs or trains on them; nothing is deleted. extra="id1 id2" sets aside sessions too short to judge. Fetch first (just fetch-recordings) so every session is judged
+[group('robot: recording (docs/adr/0021)')]
+recordings-disturbed apply="false" extra="" remote_host=default_jetrover_host remote_user="jetson":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    case "{{apply}}" in true|false) ;; *) echo "error: apply must be true or false" >&2; exit 1 ;; esac
+    cd trainer
+    PY=$([ -f .venv-win/Scripts/python.exe ] && echo .venv-win/Scripts/python.exe || echo .venv/bin/python)
+    "$PY" -m armpred check-disturbance "../recordings/jetrover/*"
+    ids=$("$PY" -m armpred check-disturbance --list "../recordings/jetrover/*" | tr -d '\r')
+    for e in {{extra}}; do
+        case "$e" in *[!A-Za-z0-9._-]*) echo "error: '$e' is not a session id" >&2; exit 1 ;; esac
+        ids="$ids $e"
+    done
+    ids=$(echo $ids | tr ' ' '\n' | sort -u | tr '\n' ' ')
+    if [ -z "${ids// /}" ]; then echo "no altered sessions"; exit 0; fi
+    echo; echo "altered (or named in extra): $ids"
+    if [ "{{apply}}" != "true" ]; then echo "dry run: just recordings-disturbed true to set them aside"; exit 0; fi
+    cd ..
+    mkdir -p recordings/disturbed
+    for id in $ids; do
+        if [ -d "recordings/jetrover/$id" ]; then mv "recordings/jetrover/$id" "recordings/disturbed/$id" && echo "here: $id -> recordings/disturbed/"; fi
+    done
+    ssh -o StrictHostKeyChecking=accept-new "{{remote_user}}@$(just _robot-host "{{remote_host}}")" "IDS='$ids' bash -s" <<'REMOTE'
+    set -euo pipefail
+    active=$(cat ~/recordings/.active 2>/dev/null || true)
+    mkdir -p ~/recordings/disturbed
+    for id in $IDS; do
+        d=~/recordings/jetrover/$id
+        [ -d "$d" ] || { echo "robot: $id not there"; continue; }
+        case "$active" in *"$id"*) echo "robot: $id is recording now; left alone"; continue ;; esac
+        mv "$d" ~/recordings/disturbed/ && echo "robot: $id -> ~/recordings/disturbed/"
+    done
+    REMOTE
+
 # Delete recordings from the robot that this machine already holds, verified: a session goes only when every file in it on the robot has a copy under recordings/jetrover/<id>/ here with the same sha256. Never the session that is recording (named in ~/recordings/.active) or one whose logs are not closed yet (no END trailer). Dry run unless apply=true. Run just fetch-recordings first to copy what is missing
 [group('robot: recording (docs/adr/0021)')]
 robot-prune-recordings apply="false" remote_host=default_jetrover_host remote_user="jetson":

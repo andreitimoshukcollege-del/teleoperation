@@ -1,11 +1,13 @@
 using System;
+using Teleop.RobotArm.Wire;
 
 namespace Teleop.RobotHost.Recording
 {
     /// <summary>
     /// The state records of one session's <c>robothost.jlog</c>: <c>SS</c> (the joint-state
     /// subscriber), <c>JS</c> (the joint-command sender), <c>UP</c> (the robot-side uplink) and <c>OM</c>
-    /// (the operator's client kind and motion mode, from its heartbeat), each
+    /// (the operator's client kind and motion mode, from its heartbeat) and <c>TK</c> (the headset's
+    /// training course, docs/adr/0024), each
     /// written when it differs from what <i>this session's</i> file already says. <see cref="Reset"/>
     /// at the start of every session, then the current state, makes every file self-contained
     /// (docs/adr/0023 decision 4): a session that opens while the headset is already connected still
@@ -20,6 +22,7 @@ namespace Teleop.RobotHost.Recording
         private string _uplink = "none";
         private ulong _uplinkSeed;
         private string? _operator;
+        private TrainingState? _training;
 
         public SessionStateLines(Action<string> record)
         {
@@ -34,6 +37,23 @@ namespace Teleop.RobotHost.Recording
             _uplink = "none";
             _uplinkSeed = 0;
             _operator = null;
+            _training = null;
+        }
+
+        /// <summary>
+        /// The course state from the headset: written when its label changes (the running score aside;
+        /// the final score comes with phase done). A new session's file starts with nothing, so a course
+        /// that is stopped (no task, idle) is written only as a change.
+        /// </summary>
+        public void Training(long t, in TrainingState state)
+        {
+            if (_training.HasValue ? _training.Value.SameLabel(state) : state.Task == TrainingTask.None && state.Phase == TrainingPhase.Idle)
+            {
+                return;
+            }
+
+            _training = state;
+            _record(SessionLines.Training(t, state));
         }
 
         /// <summary>The operator message's client kind and mode from <paramref name="endpoint"/> (docs/adr/0023 decisions 4 and 5).</summary>

@@ -128,8 +128,9 @@ All times are RobotHost `Stopwatch` ticks on the Jetson (`CLOCK_MONOTONIC`, ns).
 | `PS` | `t` `state` `reason` | The arm-power state after a change, `holding`, `parking` or `relaxed`, and why: `none`, `no-rest-pose`, `path-collides`, `park-timed-out`, `board-not-answering`, `no-collision-model`, `unknown-request` or `hold-requested`. A refused relax is `holding` with its reason. From `parking` to `relaxed` or `holding`, no joint command reached the plant: those that arrived are `JC` with outcome `P` |
 | `PK` | `t` `targets` | A park waypoint given to the plant (its relay output is the `RO` that follows): `motor:angleRad:speedRadPerSec;...`, the arm joints only |
 | `TQ` | `t` `on` | A torque switch sent to the relay for every servo: `1` on, `0` off. Nothing confirms it; with the servo board silent it reaches no servo |
+| `TK` | `t` `course` `round` `task` `phase` `purpose` `level` `score` `disturbed` | The headset's training course (docs/adr/0024), written when its label changes and at the start of every session while a round is going. `course` is the course's seed, `round` counts from 1 within it. `task` `reach`, `trace`, `shuttle` or `none`; `phase` `idle` (announced, or stopped), `active`, `suspended` (the robot not ready: nothing counts) or `done` (the final `score`); `purpose` `train` or `test` (held out: never train on it); `level` the round's speed in rad/s, or `varied`; `score` targets reached, touches, or percent of time on the trace's bead; `disturbed` `1` when the headset's network disturbance or added delay was on during the round (not a real-network measurement) |
 
-Readers ignore the tags they do not use; `OM`, `PQ`, `PS`, `PK` and `TQ` were added without a version
+Readers ignore the tags they do not use; `OM`, `PQ`, `PS`, `PK`, `TQ` and `TK` were added without a version
 change, and a session with them reads and checks as before (`trainer/tests/test_contract.py`).
 
 ## Driver records (`driver.jlog`)

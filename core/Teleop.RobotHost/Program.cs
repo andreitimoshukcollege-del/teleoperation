@@ -159,6 +159,8 @@ namespace Teleop.RobotHost
             // The latest operator message's sender, client kind and mode (docs/adr/0018 §9).
             string? operatorText = null, operatorKind = null, operatorMode = null;
             long lastOperatorTicks = long.MinValue;
+            TrainingState? lastTraining = null;
+            long lastTrainingTicks = long.MinValue;
 
             // The joint-state downlink (docs/adr/0018): streams to whoever last sent a keepalive on
             // this same port, at 50 Hz, whether or not commands are arriving.
@@ -204,6 +206,11 @@ namespace Teleop.RobotHost
                 if (operatorText != null && now - lastOperatorTicks <= 3 * clock.TicksPerSecond)
                 {
                     sessionState.Operator(now, operatorKind!, operatorMode!, operatorText);
+                }
+
+                if (lastTraining.HasValue && now - lastTrainingTicks <= 3 * clock.TicksPerSecond)
+                {
+                    sessionState.Training(now, lastTraining.Value);
                 }
             }
 
@@ -395,6 +402,22 @@ namespace Teleop.RobotHost
                             }
 
                             power.OnRequest(powerRequest, powerSequence, powerOperatorTicks, arrivalTicks);
+                            continue;
+                        }
+
+                        // The headset's training course (docs/adr/0024): state, once a second and at every
+                        // change. A label for the recording only; it moves nothing.
+                        if (TrainingTaskCodec.TryDecode(jointRecvBuffer.AsSpan(0, byteCount), out TrainingState training, out _, out _))
+                        {
+                            if (!lastTraining.HasValue || !lastTraining.Value.SameLabel(training))
+                            {
+                                Console.WriteLine($"[course] {TrainingTaskCodec.Name(training.Task)} round {training.Round} " +
+                                    $"{TrainingTaskCodec.Name(training.Phase)} ({TrainingTaskCodec.Name(training.Purpose)}, course {training.CourseId})");
+                            }
+
+                            lastTraining = training;
+                            lastTrainingTicks = arrivalTicks;
+                            if (recorder != null && recorder.IsActive) sessionState!.Training(arrivalTicks, training);
                             continue;
                         }
 

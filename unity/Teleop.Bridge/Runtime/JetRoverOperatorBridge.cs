@@ -294,6 +294,15 @@ namespace Teleop.Bridge
             set => _speedRadPerSec = float.IsNaN(value) ? 0f : Math.Max(0f, value);
         }
 
+        private JetRoverTrainingCourse _training;
+
+        /// <summary>
+        /// The training course over the robot's workspace (docs/adr/0024), or null without an arm rig or
+        /// a collision model. While it runs it sets the speed every joint command carries, in place of
+        /// <see cref="SpeedRadPerSec"/>.
+        /// </summary>
+        public JetRoverTrainingCourse Training => _training;
+
         /// <summary>This bridge's clock, for asking <see cref="JointState"/> for a prediction "now".</summary>
         public long NowTicks => _clock != null ? _clock.NowTicks : 0;
 
@@ -478,6 +487,11 @@ namespace Teleop.Bridge
                     _config.MaxHorizonMs, _config.GripperFractionPerRadian, new byte[0]);
             }
 
+            if (armRig != null && _profile.Collision != null)
+            {
+                _training = new JetRoverTrainingCourse(_profile, _config.ClutchMinHeightMeters, armRig.BaseAnchor, _clock);
+            }
+
             // Park, then relax (docs/adr/0023 decision 5). Requests only when the robot may be commanded at
             // all; the heartbeat goes either way. At launch: Off with nothing requested, unless the scene
             // starts with motion on (TeleopVR) or something set a mode before Awake.
@@ -626,6 +640,16 @@ namespace Teleop.Bridge
                 armRig.ApplyAngles(baseYaw, proximalPitch, distalPitch, upperPitch, wasClamped, pitchAdjusted);
             }
 
+            // The course scores the commanded wrist, and its clock runs only while commands reach a
+            // holding robot (docs/adr/0024 decisions 1 and 5).
+            if (_training != null)
+            {
+                bool robotReady = _motionMode == JetRoverMotionMode.On && _config.ConfirmHardwareMotion && _jointStateLink.MayCommand(now);
+                bool disturbed = (_jointTransport != null && _jointTransport.IsActive) || _jointStateLink.AddedDelayMs > 0;
+                _training.Update(now, solution.Position, _gripperFraction, robotReady, disturbed);
+                _jointStateLink.SetTraining(_training.State);
+            }
+
             // On, and the robot holds (or an older RobotHost that does not say): docs/adr/0023 decision 5.
             if (!_config.ConfirmHardwareMotion || !_jointStateLink.MayCommand(now))
             {
@@ -648,13 +672,14 @@ namespace Teleop.Bridge
             Span<JointTarget> jointTargets = stackalloc JointTarget[_profile.JointCount];
             int targetCount = ArmKinematics.MapAnglesToJointTargets(
                 _profile, baseYaw, proximalPitch, distalPitch, wristPitches, gripperFraction: _gripperFraction, gripperRollRadians: desiredRoll, jointTargets);
-            if (_speedRadPerSec > 0f)
+            float speed = _training != null && _training.Running ? _training.SpeedRadPerSec : _speedRadPerSec;
+            if (speed > 0f)
             {
                 // The requested joint speed rides in every arm joint's Speed field (docs/adr/0018);
-                // RobotHost caps it at what it was deployed to allow.
+                // RobotHost caps it at what it was deployed to allow. The course's, while it runs.
                 for (int i = 0; i < targetCount; i++)
                 {
-                    jointTargets[i] = new JointTarget(jointTargets[i].MotorId, jointTargets[i].Angle, _speedRadPerSec);
+                    jointTargets[i] = new JointTarget(jointTargets[i].MotorId, jointTargets[i].Angle, speed);
                 }
             }
 

@@ -157,6 +157,7 @@ namespace Teleop.XR.Editor
 
             CheckClutch(bridge, problems);
             CheckConsole(bridge, problems);
+            CheckCourse(bridge, problems);
 
             CheckAndroidOpenXR(problems);
 
@@ -354,6 +355,35 @@ namespace Teleop.XR.Editor
                 RequireReference(bso, "cap", problems);
                 RequireReference(bso, "origin", problems);
             }
+        }
+
+        // The training course (docs/adr/0024): wiring only, not a safety setting. It moves nothing the
+        // clutch does not; it labels the recording and sets the speed the slider would.
+        private static void CheckCourse(JetRoverOperatorBridge bridge, List<string> problems)
+        {
+            var view = Object.FindAnyObjectByType<TrainingCourseView>(FindObjectsInactive.Include);
+            if (view == null)
+            {
+                problems.Add("no TrainingCourseView (run `just unity-lab-xr`, or Teleop > XR > Set Up Clutch Control)");
+                return;
+            }
+
+            var so = new SerializedObject(view);
+            if (so.FindProperty("bridge").objectReferenceValue != bridge)
+                problems.Add("TrainingCourseView.bridge is not this scene's JetRoverOperatorBridge");
+            foreach (string field in new[] { "origin", "startCap", "purposeCap", "panel", "goalLabel", "bead", "path" })
+            {
+                RequireReference(so, field, problems);
+            }
+
+            SerializedProperty targets = so.FindProperty("targets");
+            int wired = 0;
+            for (int i = 0; targets != null && i < targets.arraySize; i++)
+            {
+                if (targets.GetArrayElementAtIndex(i).objectReferenceValue != null) wired++;
+            }
+
+            if (wired < 8) problems.Add($"TrainingCourseView: {wired} target spheres wired, a reach round needs 8");
         }
 
         private static void RequireReference(SerializedObject so, string field, List<string> problems)

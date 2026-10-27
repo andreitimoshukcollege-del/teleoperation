@@ -198,6 +198,11 @@ RobotHost records whenever **the headset** commands the robot, with nobody runni
 - **What nobody on the robot knows** stays unknown: the load (`unknown`, so `armpred sysid`, which
   takes only load `none`, leaves these sessions out), the operator, and any disturbance added on the
   headset (`addedDelayMs` is null; a headset-side uplink delay still shows in the `JC` timing).
+- **The headset's training course labels its rounds** (docs/adr/0024): the task, phase, speed level,
+  score, train/test purpose and whether the headset's disturbance was on, as `TK` records in
+  `robothost.jlog`, written on each change and again at the start of every session while a round is
+  going. RobotHost's journal logs each change as `[course] ...`. The trainer reads them as
+  `Session.rounds`.
   Relabel on the laptop once fetched, as `just recording-set-slider` does for the slider.
 - **Manual sessions win.** `record-start` and the onboard pilot first close an automatic session (clear
   `.active`, wait for RobotHost to complete it), then take the control file, with a hard link that fails

@@ -55,6 +55,8 @@ namespace Teleop.XR.Editor
             yield return new View("10_motion_button", new Vector3(-0.2f, 1.45f, -0.1f), new Vector3(-0.514f, 0.92f, 0.22f), 50f);
             // The operator console (docs/adr/0023), from where the operator stands.
             yield return new View("14_console", new Vector3(-0.3f, 1.6f, -0.1f), new Vector3(-0.55f, 1.02f, 0.62f), 60f);
+            // The training course's caps and panel (docs/adr/0024), on the bench's right.
+            yield return new View("15_course", new Vector3(0.25f, 1.6f, -0.1f), new Vector3(0.5f, 1.02f, 0.5f), 60f);
             yield return new View("9_floor_low", new Vector3(-0.9f, 0.32f, -0.9f), new Vector3(1.2f, 0.7f, 3.5f), 70f);
             // Square onto the commanded arm's gripper, along the jaws' hinge axis; placed in Capture.
             yield return new View("11_gripper_open", Vector3.zero, Vector3.zero, 30f, gripper: 0f);

@@ -110,6 +110,12 @@ namespace Teleop.Bridge
         private readonly long _keepaliveIntervalTicks;
         private readonly byte[] _buffer = new byte[128];
         private readonly byte[] _powerBuffer = new byte[ArmPowerCodec.RequestSize];
+        private readonly byte[] _trainingBuffer = new byte[TrainingTaskCodec.Size];
+        private TrainingState _training;
+        private bool _hasTraining;
+        private bool _trainingChanged;
+        private long _lastTrainingSentTicks;
+        private uint _trainingSequence;
         private readonly OperatorArmPower _power;
         private readonly JointSample[] _received = new JointSample[MaxJoints];
         private readonly JointSample[] _measured = new JointSample[MaxJoints];
@@ -319,6 +325,18 @@ namespace Teleop.Bridge
             return seconds;
         }
 
+        /// <summary>
+        /// The training course's state, for the robot's recording (docs/adr/0024 decision 7): sent at the
+        /// next <see cref="Tick"/> when its label changed, and once a second. Nothing is sent before the
+        /// first call, so a headset that never runs the course sends nothing new.
+        /// </summary>
+        internal void SetTraining(in TrainingState state)
+        {
+            if (!_hasTraining || !_training.SameLabel(state)) _trainingChanged = true;
+            _training = state;
+            _hasTraining = true;
+        }
+
         /// <summary>Sends a keepalive when one is due, and takes in every frame that has arrived.</summary>
         public void Tick(long now)
         {
@@ -338,6 +356,15 @@ namespace Teleop.Bridge
                 ArmPowerCodec.TryEncodeRequest(OperatorClientKind.Headset, ToWire(_mode), request, sequence, now, _powerBuffer, out int powerBytes))
             {
                 _transport.Send(_powerBuffer.AsSpan(0, powerBytes), now);
+            }
+
+            // The training course (docs/adr/0024): state, at every change of its label and once a second.
+            if (_hasTraining && (_trainingChanged || now - _lastTrainingSentTicks >= _clock.TicksPerSecond) &&
+                TrainingTaskCodec.TryEncode(_training, ++_trainingSequence, now, _trainingBuffer, out int trainingBytes))
+            {
+                _transport.Send(_trainingBuffer.AsSpan(0, trainingBytes), now);
+                _trainingChanged = false;
+                _lastTrainingSentTicks = now;
             }
 
             while (_transport.TryReceive(now, _buffer, out int count, out long arrival))

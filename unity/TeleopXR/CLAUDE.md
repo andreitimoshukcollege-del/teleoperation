@@ -155,6 +155,28 @@ Contents:
   - New presets need no rebuild: edit `JointPredictorPresets` in the Resources JSON and
     `just push-galaxy-config`. `just unity-check-xr` checks the console's wiring (not a safety
     setting: it moves nothing).
+- **The training course (docs/adr/0024)**, on the bench's right, built by `XrControlSetup.BuildTrainingCourse`
+  (`TrainingCourseView`; the logic is `Teleop.RobotArm`'s `TrainingCourse`, reached through Bridge's
+  `JetRoverTrainingCourse`). Something to do while the robot records data for the learned predictor:
+  - **START/STOP** runs rounds in turn: **REACH** (eight magenta targets, one at a time; hold the
+    marker on each for 0.4 s, and some ask for the gripper OPEN or CLOSE), **TRACE** (keep the marker
+    on a bead moving round a closed curve, 45 s) and **SHUTTLE** (touch two targets in turn, fast, 30 s).
+    Each is announced for 3 s and its score shown for 3 s.
+  - **The course sets the arm speed** for each round (1.0, 2.5, 3.8, 6.0 rad/s, or varied), the level
+    with the fewest minutes so far; the speed slider follows it and reads `· COURSE`. The minutes per
+    level are kept on the headset (`PlayerPrefs`) and shown on the panel.
+  - **TRAIN/TEST** labels the next rounds' data; TEST (amber) is held out, for sessions recorded after
+    a model is frozen.
+  - A round's clock runs only while the robot is on and holding; paused or off, it waits
+    (`suspended`). What scores is the commanded wrist, not the robot.
+  - Every target and every point of a trace is one the headset's IK reaches from home, above the
+    clutch's floor. A round is drawn when it is announced: up to about 14 ms for a trace on the PC,
+    likely a few times that on the headset, so watch for a dropped frame then.
+  - The headset sends the course state to RobotHost, which writes `TK` records into the session
+    (`trainer/contract/SESSION_FORMAT.md`). That needs a RobotHost from this change
+    (`just deploy-robothost`); an older one ignores it.
+  - Wiring is checked by `just unity-check-xr` (not a safety setting: it moves nothing the clutch
+    does not). Preview 15 of `just unity-lab-xr` shows the caps and panel.
 - **The added-delay slider** (orange, beside the speed slider): 0–400 ms held back on the robot's
   state reports before they become the measured arm and reach the predictor. Commands are not
   delayed, and clock sync sees the real arrival.

@@ -130,8 +130,108 @@ namespace Teleop.XR.Editor
             BuildTwinArms(scene, bridge, rig, origin);
             BuildSpeedSlider(scene, bridge, origin);
             BuildConsole(scene, bridge, origin);
+            BuildTrainingCourse(scene, bridge, origin);
             BuildDisplayHandle(scene, driver);
             EditorSceneManager.MarkSceneDirty(scene);
+        }
+
+        public const string CourseName = "TrainingCourse";
+
+        /// <summary>
+        /// The training course (docs/adr/0024) on the bench's right, away from the robot controls on its
+        /// left: START/STOP and TRAIN/TEST caps at the front, the panel standing behind them, and the
+        /// targets, bead and curve it draws in the workspace (inactive until a round shows them; their
+        /// positions are set at runtime). Rebuilt on every run.
+        /// </summary>
+        private static void BuildTrainingCourse(Scene scene, JetRoverOperatorBridge bridge, XROrigin origin)
+        {
+            foreach (GameObject old in scene.GetRootGameObjects().Where(r => r.name == CourseName).ToList())
+            {
+                Object.DestroyImmediate(old);
+            }
+
+            float top = LabLayout.BenchTop;
+            var root = new GameObject(CourseName).transform;
+            root.position = new Vector3(0f, top, 0f);
+            var view = root.gameObject.AddComponent<TrainingCourseView>();
+
+            Material capMaterial = LabMaterials.Unlit("CourseCap", Color.white);
+            Material plinthMaterial = LabMaterials.Lit("MotionButtonPlinth", new Color(0.06f, 0.062f, 0.068f), 0.6f, 0.5f);
+            Color text = new Color(0.82f, 0.86f, 0.9f);
+            float frontZ = LabLayout.BenchNearZ + 0.12f;
+            Renderer start = Cap(root, "Start", new Vector3(LabLayout.ArmBase.x + 0.42f, 0f, frontZ), 0.045f, capMaterial, plinthMaterial);
+            TextMeshPro startLabel = LabParts.Label("Label", start.transform.parent, new Vector3(0f, 0.006f, -0.048f), Quaternion.Euler(60f, 0f, 0f),
+                "START\n<size=60%>course</size>", 0.13f, Color.white, new Vector2(0.1f, 0.04f), TextAlignmentOptions.Center, FontStyles.Bold);
+            Renderer purpose = Cap(root, "Purpose", new Vector3(LabLayout.ArmBase.x + 0.54f, 0f, frontZ), 0.032f, capMaterial, plinthMaterial);
+            TextMeshPro purposeLabel = LabParts.Label("Label", purpose.transform.parent, new Vector3(0f, 0.006f, -0.042f), Quaternion.Euler(60f, 0f, 0f),
+                "TRAIN\n<size=60%>data</size>", 0.13f, Color.white, new Vector2(0.1f, 0.04f), TextAlignmentOptions.Center, FontStyles.Bold);
+
+            // Standing behind the caps, tilted back and turned toward the operator at x = 0, as the console's panel is on the left.
+            TextMeshPro panel = LabParts.Label("Panel", root, new Vector3(LabLayout.ArmBase.x + 0.5f, 0.22f, LabLayout.BenchNearZ + 0.3f),
+                Quaternion.Euler(28f, 35f, 0f), "<b>TRAINING COURSE</b>  train data\nPress START.", 0.24f, text, new Vector2(0.56f, 0.34f),
+                TextAlignmentOptions.TopLeft);
+            panel.richText = true;
+
+            // What a round draws: magenta, which no arm or control uses (TwinColors).
+            Color magenta = new Color(1f, 0.2f, 0.85f);
+            Material targetMaterial = LabMaterials.Unlit("CourseTarget", magenta);
+            var shapes = new GameObject("Shapes").transform;
+            shapes.SetParent(root, false);
+            var targets = new Renderer[8];
+            for (int i = 0; i < targets.Length; i++)
+            {
+                GameObject t = GameObject.CreatePrimitive(PrimitiveType.Sphere);
+                t.name = $"Target{i}";
+                t.transform.SetParent(shapes, false);
+                t.transform.localScale = Vector3.one * 0.035f;
+                Object.DestroyImmediate(t.GetComponent<Collider>());
+                Renderer r = t.GetComponent<Renderer>();
+                r.sharedMaterial = targetMaterial;
+                r.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
+                t.SetActive(false);
+                targets[i] = r;
+            }
+
+            GameObject bead = GameObject.CreatePrimitive(PrimitiveType.Sphere);
+            bead.name = "Bead";
+            bead.transform.SetParent(shapes, false);
+            bead.transform.localScale = Vector3.one * 0.03f;
+            Object.DestroyImmediate(bead.GetComponent<Collider>());
+            bead.GetComponent<Renderer>().sharedMaterial = targetMaterial;
+            bead.GetComponent<Renderer>().shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
+            bead.SetActive(false);
+
+            var pathObject = new GameObject("Path");
+            pathObject.transform.SetParent(shapes, false);
+            var line = pathObject.AddComponent<LineRenderer>();
+            line.sharedMaterial = LabMaterials.Unlit("CoursePath", magenta * 0.8f);
+            line.useWorldSpace = true;
+            line.loop = true;
+            line.widthMultiplier = 0.004f;
+            line.positionCount = 0;
+            line.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
+            line.receiveShadows = false;
+            pathObject.SetActive(false);
+
+            TextMeshPro goal = LabParts.Label("GoalLabel", shapes, Vector3.zero, Quaternion.identity, "OPEN", 0.12f, Color.white,
+                new Vector2(0.12f, 0.04f), TextAlignmentOptions.Center, FontStyles.Bold);
+            goal.gameObject.SetActive(false);
+
+            var so = new SerializedObject(view);
+            so.FindProperty("bridge").objectReferenceValue = bridge;
+            so.FindProperty("origin").objectReferenceValue = origin;
+            so.FindProperty("startCap").objectReferenceValue = start;
+            so.FindProperty("startLabel").objectReferenceValue = startLabel;
+            so.FindProperty("purposeCap").objectReferenceValue = purpose;
+            so.FindProperty("purposeLabel").objectReferenceValue = purposeLabel;
+            so.FindProperty("panel").objectReferenceValue = panel;
+            SerializedProperty array = so.FindProperty("targets");
+            array.arraySize = targets.Length;
+            for (int i = 0; i < targets.Length; i++) array.GetArrayElementAtIndex(i).objectReferenceValue = targets[i];
+            so.FindProperty("goalLabel").objectReferenceValue = goal;
+            so.FindProperty("bead").objectReferenceValue = bead.GetComponent<Renderer>();
+            so.FindProperty("path").objectReferenceValue = line;
+            so.ApplyModifiedPropertiesWithoutUndo();
         }
 
         public const string ConsoleName = "OperatorConsole";

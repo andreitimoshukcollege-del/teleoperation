@@ -20,7 +20,9 @@ docs/adr/0014; every reassembly decision is Core's `CameraFrameReassembler`), `J
 (clutch control over the drag target, docs/adr/0017; the mapping is `Teleop.RobotArm`'s
 `ClutchMapping`, this only converts frames and writes the Transform), `RobotAddressDiscovery`
 (the robot's address at start, docs/adr/0022; every decision is `Teleop.RobotArm`'s
-`RobotAddressResolver`, this owns only the socket).
+`RobotAddressResolver`, this owns only the socket). `JetRoverTrainingCourse` (the headset's training course,
+docs/adr/0024; every decision is `Teleop.RobotArm`'s `TrainingCourse`, this converts its arm-frame
+positions into the scene and gives TeleopXR plain types).
 `DisplayCalibrationConfig` is the plain data type `ConfigLoader` loads, not an adapter itself.
 
 **Implementations of Core interfaces** — the direction inverts here. Core declares, Unity

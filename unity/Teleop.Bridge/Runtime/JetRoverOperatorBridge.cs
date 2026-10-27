@@ -476,7 +476,8 @@ namespace Teleop.Bridge
             try
             {
                 _jointStateLink = new JetRoverJointStateLink(_jointTransport, _clock, _profile, clockSyncConfig, presets,
-                    _config.JointPredictorActive, _config.MaxHorizonMs, _config.GripperFractionPerRadian, readingAgeIds);
+                    _config.JointPredictorActive, _config.MaxHorizonMs, _config.GripperFractionPerRadian, readingAgeIds,
+                    LearnedModels.TryLoad);
             }
             catch (ArgumentException e)
             {

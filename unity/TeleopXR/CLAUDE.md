@@ -104,8 +104,12 @@ Contents:
   - **Predicted, solid** (`PredictedArm`): where the robot most likely is right now. It is the
     newest joint-state frame from the robot, rolled forward by the joint predictor through the
     commands sent since. Which predictor does it is chosen on the operator console (below), from
-    the config's `JointPredictorPresets`; `JointPredictorActive` names the one drawing at launch
-    (`servo 10-25`, relay-replay-servo with the 2026-10-25 fit).
+    the config's `JointPredictorPresets`; `JointPredictorActive` names the one drawing at launch:
+    **`learned`, the trained model** (docs/adr/0025; `finetune-pilot2-early7`, shipped in Bridge's
+    `Resources/models/`), with the conventional presets beside it on the console. Its gripper is not
+    learned yet (worse than `servo 10-25`'s). `just push-galaxy-model <run>` puts a newer model on the
+    headset without a rebuild; name it in a preset's `Model` and `just push-galaxy-config`.
+    `just unity-check-xr` (and so `build-galaxy`) fails if a `learned` preset's model does not load and run.
   - **Commanded, ghost**: the clutch's arm, where you told it to go.
   - **Measured, faint amber** (`MeasuredArm`): the newest frame exactly as received, about one
     network trip old.

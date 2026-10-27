@@ -158,6 +158,7 @@ namespace Teleop.XR.Editor
             CheckClutch(bridge, problems);
             CheckConsole(bridge, problems);
             CheckCourse(bridge, problems);
+            CheckLearnedModels(problems);
 
             CheckAndroidOpenXR(problems);
 
@@ -384,6 +385,22 @@ namespace Teleop.XR.Editor
             }
 
             if (wired < 8) problems.Add($"TrainingCourseView: {wired} target spheres wired, a reach round needs 8");
+        }
+
+        // Every learned preset the shipped config names must find its model in the build, parse and run
+        // (docs/adr/0025): the twin's default is one, and without its model it would fall back silently.
+        private static void CheckLearnedModels(List<string> problems)
+        {
+            var asset = Resources.Load<TextAsset>("jetrover_connection");
+            JetRoverArmConfig config = asset != null ? JsonUtility.FromJson<JetRoverArmConfig>(asset.text) : new JetRoverArmConfig();
+            foreach (JointPredictorPresetData p in config.JointPredictorPresets ?? new JointPredictorPresetData[0])
+            {
+                if (p == null || p.Predictor != "learned") continue;
+                if (!LearnedModels.Check(p.Model, out string modelId, out string error))
+                    problems.Add($"preset '{p.Label}': {error}");
+                else
+                    Debug.Log($"[scene-check] preset '{p.Label}' runs {modelId}");
+            }
         }
 
         private static void RequireReference(SerializedObject so, string field, List<string> problems)

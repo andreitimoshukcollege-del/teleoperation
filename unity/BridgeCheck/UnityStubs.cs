@@ -110,7 +110,7 @@ namespace UnityEngine
         public static event Action onBeforeRender { add { } remove { } }
     }
 
-    public class TextAsset : Object { public string text => string.Empty; }
+    public class TextAsset : Object { public string text => string.Empty; public byte[] bytes => new byte[0]; }
 
     public static class Resources
     {

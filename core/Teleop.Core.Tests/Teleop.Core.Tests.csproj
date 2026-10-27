@@ -29,6 +29,9 @@
          an Include outside the project directory ("..") does not reliably preserve the
          "testdata/golden/" structure under the output directory otherwise. -->
     <None Include="..\testdata\golden\basic-session.tlog" CopyToOutputDirectory="PreserveNewest" Link="testdata\golden\basic-session.tlog" />
+    <!-- The learned predictor's golden (docs/adr/0025), written by the trainer's `armpred golden-learned`. -->
+    <None Include="..\testdata\learned\golden-v3.json" CopyToOutputDirectory="PreserveNewest" Link="testdata\learned\golden-v3.json" />
+    <None Include="..\testdata\learned\finetune-pilot2-early7.weights" CopyToOutputDirectory="PreserveNewest" Link="testdata\learned\finetune-pilot2-early7.weights" />
   </ItemGroup>
 
 </Project>

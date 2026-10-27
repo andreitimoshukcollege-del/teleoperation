@@ -1,0 +1,27 @@
+# Fine-tuning sim-pretrain-pilot2 on recorded sessions (ADR 0021 step D3), as real-finetune.toml with
+# that run's prior. First used 2026-10-27 with the diagnostic split-heldout-early7:
+#   just gpu-finetune dist/jetrover-data-20261026T211226Z.tar split-heldout-early7 real-finetune-pilot2 \
+#     sim-pretrain-pilot2-69a8261 finetune-pilot2-early7
+# Real sessions are scarce next to simulated ones, so each is replayed through more network views.
+seed = 1
+views_per_session = 16
+val_views = 4
+
+[sample]
+queries_per_s = 20.0
+event_share = 0.25
+pair_share = 0.2
+
+[train]
+arch = "mlp"
+aware = false
+steps = 30000
+batch = 8192
+lr = 5e-4
+lr_min = 1e-5
+warmup = 500
+val_every = 1000
+
+# The prior sim-pretrain-pilot2 was trained with: the model's baseline must be the one it learned to correct.
+[prior]
+file = "configs/priors/pilot2-prior.json"

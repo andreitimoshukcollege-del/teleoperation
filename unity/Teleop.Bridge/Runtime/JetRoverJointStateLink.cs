@@ -94,6 +94,9 @@ namespace Teleop.Bridge
     /// Plain C#, allocation-free after construction. Every decision about the robot's motion is
     /// the predictor's (Core).
     /// </summary>
+    /// <summary>Finds a learned model by name for a <c>learned</c> preset (Bridge's <see cref="LearnedModels.TryLoad"/>).</summary>
+    public delegate bool LearnedModelLoader(string name, out IInferenceBackend model, out string error);
+
     public sealed class JetRoverJointStateLink
     {
         private const double KeepaliveSeconds = 0.5;
@@ -164,7 +167,7 @@ namespace Teleop.Bridge
         /// </summary>
         public JetRoverJointStateLink(ITransport transport, ITimeAuthority clock, in RobotArmProfile profile,
             ClockSyncConfig clockSyncConfig, JointPredictorPresetData[] presets, string activeLabel, double maxHorizonMs,
-            float gripperFractionPerRadian, byte[] readingAgeMotorIds)
+            float gripperFractionPerRadian, byte[] readingAgeMotorIds, LearnedModelLoader loadModel = null)
         {
             _transport = transport ?? throw new ArgumentNullException(nameof(transport));
             _clock = clock ?? throw new ArgumentNullException(nameof(clock));
@@ -176,11 +179,12 @@ namespace Teleop.Bridge
 
             byte[] gripperIds = GripperIds(profile);
             var corePresets = new JointPredictorPreset[presets.Length];
+            var unavailable = new string[presets.Length];
             int active = -1, firstEnabled = -1;
             for (int i = 0; i < presets.Length; i++)
             {
                 JointPredictorPresetData p = presets[i] ?? throw new ArgumentException($"preset {i} is null");
-                corePresets[i] = new JointPredictorPreset(p.Label, p.Predictor, new JointPredictorConfig(
+                var config = new JointPredictorConfig(
                     maxJoints: MaxJoints, commandHistoryCapacity: 64, maxJointSpeedRadPerSec: p.ModelSpeedRadPerSec,
                     instantMotorIds: new byte[0], maxHorizonTicks: (long)(maxHorizonMs / 1000.0 * clock.TicksPerSecond),
                     ticksPerSecond: clock.TicksPerSecond,
@@ -191,18 +195,43 @@ namespace Teleop.Bridge
                     sensedAgeMotorIds: ReadingAgeIds(p, readingAgeMotorIds), sensedAgeSeconds: ReadingAgeSeconds(p, readingAgeMotorIds),
                     // relay-replay-servo's servo (docs/adr/0021 decision 15); the others ignore it.
                     servoMaxSpeedRadPerSec: p.ServoMaxSpeedRadPerSec, servoLagSeconds: p.ServoLagMs / 1000f,
-                    servoPipelineDelaySeconds: p.ServoPipelineDelayMs / 1000f, servoFirstMoveFromMeasured: p.ServoFirstMoveFromMeasured));
-                if (p.Label == activeLabel) active = i;
-                if (p.Enabled && firstEnabled < 0) firstEnabled = i;
+                    servoPipelineDelaySeconds: p.ServoPipelineDelayMs / 1000f, servoFirstMoveFromMeasured: p.ServoFirstMoveFromMeasured);
+                string key = p.Predictor;
+                if (key == "learned")
+                {
+                    // The model is loaded once, here (docs/adr/0025). One that does not load leaves its
+                    // preset on the console, off, saying why; it never takes the other predictors down.
+                    IInferenceBackend model = null;
+                    string error = "no model loader";
+                    if (loadModel != null && loadModel(p.Model, out model, out error))
+                    {
+                        config = config.WithModel(model);
+                    }
+                    else
+                    {
+                        unavailable[i] = error;
+                        UnityEngine.Debug.LogError($"[twin] preset '{p.Label}': {unavailable[i]}; it is off");
+                        key = "hold-last";
+                    }
+                }
+
+                corePresets[i] = new JointPredictorPreset(p.Label, key, config);
+                bool usable = p.Enabled && unavailable[i] == null;
+                if (p.Label == activeLabel && unavailable[i] == null) active = i;
+                if (usable && firstEnabled < 0) firstEnabled = i;
             }
 
             if (active < 0) active = firstEnabled >= 0 ? firstEnabled : 0;
             _bank = JointPredictorBank.Create(corePresets, active);
             _descriptions = new string[presets.Length];
-            for (int i = 0; i < presets.Length; i++) _descriptions[i] = presets[i].Description ?? "";
             for (int i = 0; i < presets.Length; i++)
             {
-                if (!presets[i].Enabled && i != active) _bank.TrySetEnabled(i, false);
+                _descriptions[i] = unavailable[i] != null ? "NOT AVAILABLE: " + unavailable[i] : presets[i].Description ?? "";
+            }
+
+            for (int i = 0; i < presets.Length; i++)
+            {
+                if ((!presets[i].Enabled || unavailable[i] != null) && i != active) _bank.TrySetEnabled(i, false);
             }
 
             _scorer = new LiveJointScorer(_bank, (long)(ScoreWindowSeconds * clock.TicksPerSecond), MaxJoints, gripperIds,

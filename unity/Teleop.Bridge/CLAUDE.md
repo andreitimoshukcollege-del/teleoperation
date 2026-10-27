@@ -22,7 +22,9 @@ docs/adr/0014; every reassembly decision is Core's `CameraFrameReassembler`), `J
 (the robot's address at start, docs/adr/0022; every decision is `Teleop.RobotArm`'s
 `RobotAddressResolver`, this owns only the socket). `JetRoverTrainingCourse` (the headset's training course,
 docs/adr/0024; every decision is `Teleop.RobotArm`'s `TrainingCourse`, this converts its arm-frame
-positions into the scene and gives TeleopXR plain types).
+positions into the scene and gives TeleopXR plain types). `LearnedModels` (a `learned` preset's model,
+docs/adr/0025: reads `persistentDataPath/models/<name>.weights` or `Resources/models/<name>.bytes`; the
+parse and the forward pass are Core's `MlpWeights` and `MlpBackend`).
 `DisplayCalibrationConfig` is the plain data type `ConfigLoader` loads, not an adapter itself.
 
 **Implementations of Core interfaces** — the direction inverts here. Core declares, Unity

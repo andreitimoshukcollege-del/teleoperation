@@ -45,6 +45,7 @@ These see the commands sent as well as the stale measurement. Their state is joi
 | `servo-replay` | `ServoReplayPredictor.cs` | replays the commands sent since the measurement through a bounded-speed servo model (one parameter, `MaxJointSpeedRadPerSec`) |
 | `relay-replay` | `RelayReplayPredictor.cs` | replays the commands through a model of the JetRover relay's per-servo gate: newest-wins pending target during the write cooldown, deadband, timed linear moves of max(min, distance/speed); re-anchors mid-move from the measurement to that move's target; optional per-joint reading age (`Relay*`, `SensedAge*` in `JointPredictorConfig`, defaults the JetRover's gate and no age) |
 | `relay-replay-servo` | `RelayReplayServoPredictor.cs` | `relay-replay`'s gate and replay as the servo's setpoint, with every command reaching the gate a constant pipeline delay late and a servo's first move sized from its sensed measurement; then a servo filter run from the anchor: first-order lag and speed cap (times a joint's speed scale), fixed steps plus a last partial one, in double (`Servo*` in `JointPredictorConfig`; the defaults, 5 rad/s, 20 ms, 20 ms, on, 2 ms, are guesses until fitted). Neutral parameters (no cap, no lag, no delay, first move off) reproduce `relay-replay` bit for bit. The exact model is in the class doc; `trainer/contract/golden/relay-replay-servo.json` pins it for a Python copy |
+| `learned` | `LearnedJointPredictor.cs`, `LearnedJointWindow.cs` | the trainer's model (docs/adr/0021, 0025) correcting a speed-blind `relay-replay`: the layout-v3 window (a C# copy of `trainer/armpred/features/layout.py`), the host's model (`JointPredictorConfig.Model`, an `IInferenceBackend`; `Inference/MlpBackend.cs` today), `prior + correction` for motors 1-5 and the gripper. Falls back to the prior with no fresh reading of every arm joint, a reading over 1 s old, or a failing or non-finite model. `core/testdata/learned/golden-v3.json` (written by `armpred golden-learned`) pins the window, the outputs and the predictions to the trainer's |
 
 **Not a predictor: `JointPredictorBank.cs`** (docs/adr/0023). Several presets (a label, a registry
 key and a config) fed the same commands and readings, one of them answering; switching keeps every
@@ -231,13 +232,31 @@ What these say, within the simulation:
   cap, a different lag or cap per joint or per direction, and load. The servo's parameters are guesses
   until fitted from recordings (trainer `armpred sysid`, docs/adr/0021).
 
+#### 2026-10-27: the learned row (`learned`)
+
+`joint-predict-bench` runs `learned` with `--learned-model` (default
+`testdata/learned/finetune-pilot2-early7.weights`, so run it from `core/`). That model was trained on
+the real robot's recordings, so on the bench's simulated robots it measures only that the predictor
+runs end to end, never how good it is: there `relay-replay` is handed the simulation's exact gate. 5
+seeds × 20 s, degrees, error p95 / correction p95:
+
+| profile | `--robot ideal`: `learned` | `relay-replay-servo` | `--robot relay`: `learned` | `relay-replay` |
+|---|---|---|---|---|
+| `lan` | 2.65 / 1.87 | 3.33 / 4.14 | 3.12 / 2.93 | 0.76 / 0.35 |
+| `50ms-5j` | 3.74 / 2.05 | 7.88 / 1.02 | 4.20 / 2.73 | 0.82 / 0.07 |
+| `150ms-20j-0.5loss` | 8.81 / 3.94 | 8.12 / 0.03 | 6.54 / 1.70 | 1.19 / 0.00 |
+| `300ms-60j-2loss-bursty` | 12.68 / 3.43 | 7.28 / 0.00 | 9.43 / 1.58 | 2.95 / 0.00 |
+
+How good it is on the robot comes from the trainer's evaluation on recordings (finetune-pilot2-early7:
+arm p95 4.26° on seven held-out sessions, against 4.98° for the headset's `servo 10-25`), and a result
+only from `Teleop.Eval` scoring it into `results/`.
+
 ## Planned, not yet implemented
 
 | Name (registry key) | File | Notes |
 |---|---|---|
 | `const-accel` | `ConstantAccelPredictor.cs` | second-order; overshoots on direction reversal |
 | `ekf` | `ExtendedKalmanPredictor.cs` | reports covariance; the reconciler can use it |
-| `seq-model` | `SequenceModelPredictor.cs` | uses `IInferenceBackend`, never an ONNX library directly |
 
 Move a row up to "Implemented" only once its file, tests, and `Registry/Registries.cs` entry
 all actually exist — `Teleop.Eval -- audit`'s registry-completeness check will catch a row that

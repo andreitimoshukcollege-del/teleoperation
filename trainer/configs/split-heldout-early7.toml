@@ -1,0 +1,23 @@
+# A DIAGNOSTIC split, not the pre-registered one (split-v1.toml stays empty until sessions are
+# recorded after a model is frozen). Fine-tune on four of the 2026-10-26 joint-drive sessions,
+# validate on the fifth, and score on the seven earlier sessions (2026-10-22 drives, 2026-10-25
+# headset teleop) that the fine-tune never sees. They are not fully independent: the pretrained
+# simulator's ranges and configs/priors/pilot2-prior.json were fitted on all twelve (sysid-pilot2).
+# Same held-out set as runs/eval-heldout-early7, so the numbers compare.
+[splits]
+train = [
+    "20261026T204223Z-drive-steps-2p5",
+    "20261026T204737Z-drive-steps-6",
+    "20261026T210007Z-drive-wp-5",
+    "20261026T210625Z-drive-wp-sched",
+]
+val = ["20261026T205353Z-drive-wp-2p5"]
+test = [
+    "20261022T232400Z-test-1",
+    "20261022T233258Z-test-2",
+    "20261025T185652Z-teleop-2p5",
+    "20261025T195448Z-ghost-check",
+    "20261025T200659Z-ghost-check-2",
+    "20261025T200935Z-teleop-2p5",
+    "20261025T202026Z-teleop-2p5",
+]

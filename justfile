@@ -200,6 +200,20 @@ push-galaxy-config host=default_jetrover_host motion="true":
     just _adb push "$(wslpath -m "$tmp")" "$dest/jetrover_connection.json"
     echo "Galaxy XR app now targets $host, hardware motion {{ if motion == "true" { "ON" } else { "OFF (virtual arm only)" } }}; restart the app to pick it up."
 
+# Put a learned joint model on the Galaxy XR without a rebuild (docs/adr/0025): exports trainer/runs/<run>'s model.onnx as weights (checked against it on the golden's real windows) and pushes them to the app's files/models/<run>.weights, which the `learned` preset named <run> loads in place of the build's Resources copy. Point a preset at it with "Model": "<run>" (just push-galaxy-config pushes the presets); restart the app
+[group('headset (Galaxy XR)')]
+push-galaxy-model run:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    case "{{run}}" in *[!A-Za-z0-9._-]*|"") echo "error: run is a trainer/runs name" >&2; exit 1 ;; esac
+    [ -f "trainer/runs/{{run}}/model.onnx" ] || { echo "error: no trainer/runs/{{run}}/model.onnx (just gpu-fetch it)" >&2; exit 1; }
+    mkdir -p dist
+    ( cd trainer && .venv-win-cuda/Scripts/armpred.exe export-weights --run "runs/{{run}}" --golden ../core/testdata/learned/golden-v3.json --out "../dist/{{run}}.weights" )
+    dest=/sdcard/Android/data/com.teleop.jetroverxr/files/models
+    just _adb shell mkdir -p "$dest"
+    just _adb push "dist/{{run}}.weights" "$dest/{{run}}.weights"
+    echo "the headset has model {{run}}; a preset with \"Model\": \"{{run}}\" runs it after the app restarts"
+
 # Run an experiment sweep, e.g. `just sweep experiments/exp-001-predictor-baseline.yaml`
 [group('experiments')]
 sweep config:
@@ -2482,6 +2496,51 @@ gpu-train config="sim-pretrain-pilot1":
     nohup setsid trainer/train-sim.sh "$CONFIG" > "$log" 2>&1 < /dev/null &
     echo $! > ~/train-sim.pid
     echo "started (pid $!), run trainer/runs/$CONFIG-$(git rev-parse --short HEAD), log $log"
+    sleep 15; tail -5 "$log"
+    REMOTE
+
+# Fine-tune a GPU run on a real data bundle there (ADR 0021 step D3), detached: `just gpu-finetune <bundle .tar> <split> <config> <init run> <out>`, e.g. `just gpu-finetune dist/jetrover-data-20261026T211226Z.tar split-heldout-early7 real-finetune-pilot2 sim-pretrain-pilot2-69a8261 finetune-pilot2-early7`. The init run's checkpoint never leaves that machine, so the fine-tune runs there: this copies the bundle (the robot's recordings; the user allowed them on that machine on 2026-10-27) and the two trainer/configs files up into ~/finetune-inputs (the configs need not be on main; anything they name, such as a prior, must be), pulls main, and starts `armpred finetune`, which scores the split's test sessions itself. Same guards as gpu-train (one run at a time, the GPU not busy). Watch with `just gpu-status <out>`; fetch with `just gpu-fetch <out>`
+[group('trainer')]
+gpu-finetune bundle split config init out:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    for v in "{{split}}" "{{config}}" "{{init}}" "{{out}}"; do
+        case "$v" in *[!A-Za-z0-9._-]*|"") echo "error: '$v': split and config are trainer/configs names, init and out trainer/runs names" >&2; exit 1 ;; esac
+    done
+    [ -f "{{bundle}}" ] || { echo "error: no bundle {{bundle}} here (just pack-dataset)" >&2; exit 1; }
+    for f in "trainer/configs/{{split}}.toml" "trainer/configs/{{config}}.toml"; do [ -f "$f" ] || { echo "error: no $f" >&2; exit 1; }; done
+    name=$(basename "{{bundle}}")
+    case "$name" in *[!A-Za-z0-9._-]*) echo "error: the bundle's file name must be plain" >&2; exit 1 ;; esac
+    ssh -o ConnectTimeout=10 "{{gpu_host}}" "INIT='{{init}}' OUT='{{out}}' bash -s" <<'REMOTE'
+    set -euo pipefail
+    if [ -f ~/train-sim.pid ] && kill -0 "$(cat ~/train-sim.pid)" 2>/dev/null; then
+        echo "error: a run is already going (pid $(cat ~/train-sim.pid)): just gpu-status" >&2; exit 1
+    fi
+    used=$(nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits | head -1 | tr -d ' ')
+    if [ "${used:-0}" -gt 2048 ]; then
+        echo "error: the GPU has ${used} MiB in use: someone else's job. Not starting." >&2
+        nvidia-smi --query-compute-apps=pid,process_name,used_memory --format=csv >&2 || true
+        exit 1
+    fi
+    [ -f ~/teleoperation/trainer/runs/"$INIT"/checkpoints/best.pt ] || { echo "error: no runs/$INIT/checkpoints/best.pt there" >&2; exit 1; }
+    [ ! -e ~/teleoperation/trainer/runs/"$OUT" ] || { echo "error: runs/$OUT already exists there" >&2; exit 1; }
+    mkdir -p ~/finetune-inputs/"$OUT"
+    chmod 700 ~/finetune-inputs
+    REMOTE
+    scp -q "{{bundle}}" "{{gpu_host}}:finetune-inputs/$name"
+    scp -q "trainer/configs/{{split}}.toml" "{{gpu_host}}:finetune-inputs/{{out}}/split.toml"
+    scp -q "trainer/configs/{{config}}.toml" "{{gpu_host}}:finetune-inputs/{{out}}/config.toml"
+    ssh -o ConnectTimeout=10 "{{gpu_host}}" "INIT='{{init}}' OUT='{{out}}' NAME='$name' bash -s" <<'REMOTE'
+    set -euo pipefail
+    cd ~/teleoperation && git checkout -q main && git pull -q --ff-only
+    echo "repo at $(git log --oneline -1)"
+    cd trainer
+    unset PYTHONPATH  # as train-sim.sh: a sourced ROS setup.bash breaks the venv
+    log=~/train-sim-$OUT.log
+    nohup setsid .venv/bin/armpred finetune --data ~/finetune-inputs/"$NAME" --split ~/finetune-inputs/"$OUT"/split.toml \
+        --config ~/finetune-inputs/"$OUT"/config.toml --init runs/"$INIT" --out runs/"$OUT" > "$log" 2>&1 < /dev/null &
+    echo $! > ~/train-sim.pid
+    echo "started (pid $!), run trainer/runs/$OUT, log $log"
     sleep 15; tail -5 "$log"
     REMOTE
 

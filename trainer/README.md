@@ -116,6 +116,8 @@ it (ADR 0021 decision 8), and that C# side is built only once the trainer gate p
 | `armpred make-views <sessions> --schedule s --out d [--forecast-level l]` | named-profile views (version 2) for the repo's official scoring, optionally carrying a forecast stream |
 | `armpred pack-dataset <sessions> --out f --profile p` | checked sessions into one data bundle (`just pack-dataset` runs it) |
 | `armpred finetune --data f --split s --config c [--init run] --out run` | train on a real bundle, from a pretrained run |
+| `armpred golden-learned --run r --session s --profile p --out core/testdata/learned` | the C# learned predictor's golden and the run's `model.weights` (docs/adr/0025) |
+| `armpred export-weights --run r --golden g --out f` | only a run's `model.weights`, checked on a golden's real windows (e.g. into Bridge's `Resources`) |
 | `armpred sysid <sessions> \| --data f --out d` | what the recordings say: bus timing, reading ages, servo lag and speed; writes `sysid.toml` (a `[ranges]` table for the next `sim-pretrain`) and `prior.json` (the fitted reading ages) |
 
 `--set key=value` overrides any config value, e.g. `--set train.arch=conv --set train.steps=50000`.

@@ -595,6 +595,22 @@ def cmd_selftest(args) -> int:
     return 0 if ok else 1
 
 
+def cmd_export_weights(args) -> int:
+    from .golden_learned import copy_weights
+
+    info = copy_weights(args.run, args.out, args.golden)
+    print(f"weights {info['path']} ({info['modelId']}; sha256 {info['sha256'][:12]}..., parity with the .onnx {info['parityMaxAbs']:.2e})")
+    return 0
+
+
+def cmd_golden_learned(args) -> int:
+    from .golden_learned import write_golden
+
+    write_golden(args.run, args.session, args.profile, args.out, schedule=args.schedule, seed=args.seed,
+                 start_s=args.start, seconds=args.seconds)
+    return 0
+
+
 def main(argv: Optional[List[str]] = None) -> int:
     parser = argparse.ArgumentParser(prog="armpred", description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
@@ -651,6 +667,23 @@ def main(argv: Optional[List[str]] = None) -> int:
     p.add_argument("--workers", type=int, default=0)
     p.add_argument("--steps", type=int, default=0)
     p.set_defaults(func=cmd_grid)
+
+    p = sub.add_parser("export-weights", help="a run's .onnx as the C# backend's weights file (docs/adr/0025)")
+    p.add_argument("--run", required=True)
+    p.add_argument("--out", required=True)
+    p.add_argument("--golden", required=True, help="a golden-learned file whose real windows the weights are checked on")
+    p.set_defaults(func=cmd_export_weights)
+
+    p = sub.add_parser("golden-learned", help="the C# learned predictor's golden fixture, from a run and a real session (docs/adr/0025)")
+    p.add_argument("--run", required=True)
+    p.add_argument("--session", required=True)
+    p.add_argument("--profile", required=True)
+    p.add_argument("--out", required=True)
+    p.add_argument("--schedule", default="lan@0")
+    p.add_argument("--seed", type=int, default=7)
+    p.add_argument("--start", type=float, default=60.0, help="seconds into the view")
+    p.add_argument("--seconds", type=float, default=8.0)
+    p.set_defaults(func=cmd_golden_learned)
 
     p = sub.add_parser("evaluate", help="the trainer gate's numbers for a run, on a directory of sessions")
     p.add_argument("--run", required=True)

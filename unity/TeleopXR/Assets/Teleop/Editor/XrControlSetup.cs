@@ -97,6 +97,12 @@ namespace Teleop.XR.Editor
             driverSo.FindProperty("statusLabel").objectReferenceValue = caption;
             driverSo.ApplyModifiedPropertiesWithoutUndo();
 
+            // Taking the headset off turns the robot off (park, then relax).
+            HeadsetRemovalGuard guard = bridge.GetComponent<HeadsetRemovalGuard>() ?? bridge.gameObject.AddComponent<HeadsetRemovalGuard>();
+            var guardSo = new SerializedObject(guard);
+            guardSo.FindProperty("bridge").objectReferenceValue = bridge;
+            guardSo.ApplyModifiedPropertiesWithoutUndo();
+
             // Off until the button is pressed: nothing reaches the robot at launch.
             var bridgeSo = new SerializedObject(bridge);
             bridgeSo.FindProperty("motionEnabledAtStart").boolValue = false;

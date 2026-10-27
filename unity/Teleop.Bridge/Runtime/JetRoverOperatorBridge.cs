@@ -166,8 +166,30 @@ namespace Teleop.Bridge
             {
                 _motionMode = value;
                 _motionModeSet = true;
+                MotionOffReason = "";
                 _jointStateLink?.SetMotionMode(value, NowTicks);
             }
+        }
+
+        /// <summary>Why the robot was last turned off by something other than its button; empty otherwise.</summary>
+        public string MotionOffReason { get; private set; } = "";
+
+        /// <summary>
+        /// ROBOT OFF without the button (the headset taken off; docs/adr/0023 decision 5): park, then relax.
+        /// The relax request goes out at once, three times, in case the app is about to be suspended and
+        /// cannot repeat it. Does nothing when already off.
+        /// </summary>
+        public void TurnOffNow(string reason)
+        {
+            if (_motionMode == JetRoverMotionMode.Off)
+            {
+                return;
+            }
+
+            MotionMode = JetRoverMotionMode.Off;
+            MotionOffReason = reason ?? "";
+            _jointStateLink?.FlushOperatorMessage(NowTicks, 3);
+            Debug.Log($"[xr] robot motion -> Off: {MotionOffReason}");
         }
 
         /// <summary>

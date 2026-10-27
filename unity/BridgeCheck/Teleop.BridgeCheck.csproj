@@ -60,6 +60,7 @@
     <BridgeSource Include="CameraFeedBridge.cs" />
     <BridgeSource Include="JetRoverClutch.cs" />
     <BridgeSource Include="JetRoverJointStateLink.cs" />
+    <BridgeSource Include="JointLinkDisturbance.cs" />
     <BridgeSource Include="RobotAddressDiscovery.cs" />
 
     <Compile Include="@(BridgeSource->'../Teleop.Bridge/Runtime/%(Identity)')"

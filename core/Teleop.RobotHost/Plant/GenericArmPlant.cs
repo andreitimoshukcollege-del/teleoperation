@@ -118,6 +118,8 @@ namespace Teleop.RobotHost.Plant
         private readonly bool[] _targetSeeded;
         private readonly bool[] _sensed;
         private readonly float[] _sensedPulse;
+        // When each joint was last sensed (this plant's clock), long.MinValue never: how fresh a reading is (docs/adr/0023 decision 5).
+        private readonly long[] _sensedTicks;
 
         // Resolved once at construction from each joint's optional per-joint override
         // (falling back to the config's global MinPulse/MaxPulse), or from the gripper's own
@@ -143,6 +145,7 @@ namespace Teleop.RobotHost.Plant
             _targetSeeded = new bool[n];
             _sensed = new bool[n];
             _sensedPulse = new float[n];
+            _sensedTicks = new long[n];
             _minPulse = new float[n];
             _maxPulse = new float[n];
 
@@ -221,6 +224,12 @@ namespace Teleop.RobotHost.Plant
             }
 
             _lastAcceptedCartesianCaptureTicks = command.CaptureTicks;
+
+            // Parking or relaxed (docs/adr/0023 decision 5): the arm takes no operator command.
+            if (CartesianGate != null && !CartesianGate())
+            {
+                return;
+            }
 
             // The headset sends both paths: its own IK's joint angles, and the Cartesian target for
             // timing. Each side's solver remembers its own history (docs/adr/0020), so the two can
@@ -319,6 +328,13 @@ namespace Teleop.RobotHost.Plant
         /// get their state replies, which is what the headset sends them for (ClockSync, latency).
         /// </summary>
         public long JointPrecedenceTicks { get; set; }
+
+        /// <summary>
+        /// Asked before a Cartesian command is applied; false ignores it. Program wires it to the
+        /// arm-power state (docs/adr/0023 decision 5), so a parking or relaxed arm takes no Cartesian
+        /// command either. Null (the default) applies every one.
+        /// </summary>
+        public Func<bool>? CartesianGate { get; set; }
 
         /// <summary>Cartesian commands not applied because joint commands had precedence, since construction.</summary>
         public int IgnoredCartesianCommands { get; private set; }
@@ -479,6 +495,7 @@ namespace Teleop.RobotHost.Plant
 
                 _sensedPulse[index] = entry.Pulse;
                 _sensed[index] = true;
+                _sensedTicks[index] = nowTicks;
                 LastFeedbackTicks = nowTicks;
             }
         }
@@ -518,6 +535,7 @@ namespace Teleop.RobotHost.Plant
                 _targetSeeded[i] = false;
                 _sensed[i] = false;
                 _sensedPulse[i] = _config.ZeroPulse;
+                _sensedTicks[i] = long.MinValue;
             }
 
             LastFeedbackTicks = 0;
@@ -603,6 +621,18 @@ namespace Teleop.RobotHost.Plant
                 }
             }
 
+            return count;
+        }
+
+        /// <summary>
+        /// When each joint was last sensed (this plant's clock, the <see cref="Step"/> that took the
+        /// reading), in the profile's order; <see cref="long.MinValue"/> for one never sensed. Returns the
+        /// count written. With <see cref="ReadJointState"/>, how fresh each reading is.
+        /// </summary>
+        public int ReadSensedTicks(Span<long> output)
+        {
+            int count = Math.Min(_profile.JointCount, output.Length);
+            for (int i = 0; i < count; i++) output[i] = _sensedTicks[i];
             return count;
         }
 

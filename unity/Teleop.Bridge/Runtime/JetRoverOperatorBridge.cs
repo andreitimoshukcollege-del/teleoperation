@@ -86,7 +86,9 @@ namespace Teleop.Bridge
         private UnityMonotonicClock _clock;
 
         private UdpTransport _cartesianUdp;
-        private UdpTransport _jointTransport;
+        private UdpTransport _jointUdp;
+        private JointLinkDisturbance _jointTransport;
+        private ulong _disturbanceSeed;
         private ITransport _cartesianTransport;
 
         private ClockSync _clockSync;
@@ -138,12 +140,52 @@ namespace Teleop.Bridge
             }
         }
 
+        private JetRoverMotionMode _motionMode = JetRoverMotionMode.Off;
+        private bool _motionModeSet;
+
         /// <summary>
-        /// Whether commands are sent to the robot at all, on top of the config's
-        /// <c>ConfirmHardwareMotion</c>. Starts as the scene's <c>motionEnabledAtStart</c>. Off stops
-        /// sending, and the robot holds its last command; the virtual arm keeps following either way.
+        /// The operator's motion mode (docs/adr/0023 decision 5), on top of the config's
+        /// <c>ConfirmHardwareMotion</c>. The virtual arm keeps following in every mode.
+        /// <list type="bullet">
+        /// <item><see cref="JetRoverMotionMode.On"/>: joint commands go while the robot holds. If it
+        /// reports parking or relaxed, a hold request goes first (repeated, a few a second) and no joint
+        /// command until a status says holding.</item>
+        /// <item><see cref="JetRoverMotionMode.Paused"/>: no commands; the robot holds its last one with
+        /// torque on, or stays relaxed if it was: pausing never powers the servos.</item>
+        /// <item><see cref="JetRoverMotionMode.Off"/>: no commands, and a relax request (park slowly at
+        /// the rest pose, then torque off), repeated until the status says parking or relaxed, or refused
+        /// (<see cref="JetRoverJointStateLink.ArmPowerReasonText"/>). Setting Off again retries.</item>
+        /// </list>
+        /// At launch the mode is Off with nothing requested (the arm may already be resting), or On when
+        /// the scene's <c>motionEnabledAtStart</c> is set (TeleopVR).
         /// </summary>
-        public bool MotionEnabled { get; set; }
+        public JetRoverMotionMode MotionMode
+        {
+            get => _motionMode;
+            set
+            {
+                _motionMode = value;
+                _motionModeSet = true;
+                _jointStateLink?.SetMotionMode(value, NowTicks);
+            }
+        }
+
+        /// <summary>
+        /// The two-way switch the motion button has always used: true is <see cref="JetRoverMotionMode.On"/>,
+        /// false is <see cref="JetRoverMotionMode.Paused"/> (commands stop, the torque stays on). Reads true
+        /// only in On.
+        /// </summary>
+        public bool MotionEnabled
+        {
+            get => _motionMode == JetRoverMotionMode.On;
+            set => MotionMode = value ? JetRoverMotionMode.On : JetRoverMotionMode.Paused;
+        }
+
+        /// <summary>
+        /// The mode is On but joint commands are held back: a hold request is waiting for the robot to say
+        /// it holds again (docs/adr/0023 decision 5).
+        /// </summary>
+        public bool WaitingForHold => _motionMode == JetRoverMotionMode.On && _jointStateLink != null && !_jointStateLink.MayCommand(NowTicks);
 
         /// <summary>True when the config lets this bridge command the robot at all (<c>ConfirmHardwareMotion</c>).</summary>
         public bool HardwareMotionAllowed => _config != null && _config.ConfirmHardwareMotion;
@@ -153,6 +195,87 @@ namespace Teleop.Bridge
         /// estimate of them now. Null until <c>Awake</c>.
         /// </summary>
         public JetRoverJointStateLink JointState => _jointStateLink;
+
+        /// <summary>
+        /// The network disturbance on the joint socket (docs/adr/0023 decision 3): whether one is on,
+        /// what it is, and its seed. Null until <c>Awake</c>. Set it with <see cref="TryApplyDisturbance"/>
+        /// or <see cref="ApplyCustomDisturbance"/>.
+        /// </summary>
+        public JointLinkDisturbance JointDisturbance => _jointTransport;
+
+        /// <summary>
+        /// Disturbs the joint socket in both directions with a named profile from Core's
+        /// <c>NetworkProfileCatalog</c> (<c>lan</c> or empty for none, <c>50ms-5j</c>,
+        /// <c>150ms-20j-0.5loss</c>, <c>300ms-60j-2loss-bursty</c>, <c>delay-500ms</c>, <c>loss-10pct</c>,
+        /// ...). Each direction gets the profile's impairments on its own substream. False, with the
+        /// reason, when the name does not resolve or exceeds the config's caps.
+        /// </summary>
+        public bool TryApplyDisturbance(string profileName, out string error)
+        {
+            error = null;
+            if (_jointTransport == null) { error = "not started"; return false; }
+            if (string.IsNullOrEmpty(profileName) || profileName == "lan" || profileName == "none")
+            {
+                _jointTransport.Clear();
+                Debug.Log("[network] disturbance off");
+                return true;
+            }
+
+            if (!Teleop.Core.Transport.NetworkProfileCatalog.TryResolveImpairments(profileName, _clock.TicksPerSecond,
+                    out INetworkImpairment[] up, out error)
+                || !Teleop.Core.Transport.NetworkProfileCatalog.TryResolveImpairments(profileName, _clock.TicksPerSecond,
+                    out INetworkImpairment[] down, out error))
+            {
+                return false;
+            }
+
+            if (Teleop.Core.Transport.NetworkProfileCatalog.TryResolveParametric(profileName, _clock.TicksPerSecond, out NetworkProfile profile, out _)
+                && ((profile.BaseDelayTicks + profile.JitterTicks) * 1000.0 / _clock.TicksPerSecond > _config.DisturbanceMaxDelayMs
+                    || profile.LossProbabilityAfterDelivered * 100.0 > _config.DisturbanceMaxLossPercent))
+            {
+                error = $"'{profileName}' exceeds the caps ({_config.DisturbanceMaxDelayMs} ms, {_config.DisturbanceMaxLossPercent}% loss)";
+                return false;
+            }
+
+            ApplyDisturbance(up, down, profileName + " both ways");
+            return true;
+        }
+
+        /// <summary>
+        /// Disturbs the joint socket in both directions with a one-way delay, a uniform jitter and a
+        /// random loss, clamped to the config's caps; all zero switches it off.
+        /// </summary>
+        public void ApplyCustomDisturbance(float delayMs, float jitterMs, float lossPercent)
+        {
+            if (_jointTransport == null) return;
+            delayMs = Math.Min(Math.Max(delayMs, 0f), _config.DisturbanceMaxDelayMs);
+            jitterMs = Math.Min(Math.Max(jitterMs, 0f), Math.Max(0f, _config.DisturbanceMaxDelayMs - delayMs));
+            lossPercent = Math.Min(Math.Max(lossPercent, 0f), _config.DisturbanceMaxLossPercent);
+            if (delayMs <= 0f && jitterMs <= 0f && lossPercent <= 0f)
+            {
+                _jointTransport.Clear();
+                Debug.Log("[network] disturbance off");
+                return;
+            }
+
+            var settings = new NetworkImpairmentSettings
+            {
+                EnableDelay = delayMs > 0f, BaseDelayMs = delayMs,
+                EnableJitter = jitterMs > 0f, JitterMs = jitterMs,
+                EnableLoss = lossPercent > 0f, LossPercent = lossPercent,
+            };
+            ApplyDisturbance(settings.CreateImpairments(_clock.TicksPerSecond, null), settings.CreateImpairments(_clock.TicksPerSecond, null),
+                $"{delayMs:0} ms ± {jitterMs:0} ms, {lossPercent:0.#}% loss both ways");
+        }
+
+        private void ApplyDisturbance(INetworkImpairment[] up, INetworkImpairment[] down, string description)
+        {
+            _disturbanceSeed += 2;
+            _jointTransport.Set(up, down, _disturbanceSeed, description);
+            // Every change is logged with its seed and time: a run with a disturbance on is not a
+            // real-network measurement, and its draws can be reproduced from this line.
+            Debug.Log($"[network] disturbance: {description}, seed {_disturbanceSeed}, at {_clock.NowTicks} ticks");
+        }
 
         /// <summary>How the last IK solve related to the target: exact, pitch tilted, or blocked by the robot's body (docs/adr/0020).</summary>
         public ArmSolveStatus LastSolveStatus { get; private set; }
@@ -242,7 +365,6 @@ namespace Teleop.Bridge
 
         private void Awake()
         {
-            MotionEnabled = motionEnabledAtStart;
             _config = ConfigLoader.Load("jetrover_connection", "jetrover_connection.json", new JetRoverArmConfig());
             _profile = ConfigLoader.Load(
                 "jetrover_arm_profile", "jetrover_arm_profile.json", new RobotArmProfileData()).ToProfile();
@@ -275,8 +397,11 @@ namespace Teleop.Bridge
                 }
             }
 
-            _jointTransport = new UdpTransport(
+            _jointUdp = new UdpTransport(
                 _config.JointLocalPort, new IPEndPoint(remoteHost, _config.JointRemotePort), MaxDatagramBytes, _clock);
+            // Off until the console switches one on; commands, keepalives and frames all pass through.
+            _jointTransport = new JointLinkDisturbance(_jointUdp);
+            _disturbanceSeed = unchecked((ulong)DateTime.UtcNow.Ticks) & ~1UL;
 
             if (!Registries.Predictors.TryGetValue(_config.PredictorName, out var predictorFactory))
             {
@@ -338,22 +463,27 @@ namespace Teleop.Bridge
             _clockSync = new ClockSync(clockSyncConfig);
             // The joint-state downlink rides the joint socket: the robot streams to whoever last sent
             // on that port, so the keepalive must come from the same socket as the commands.
-            ReadingAges(_config, out byte[] readingAgeIds, out float[] readingAgeSeconds);
+            JointPredictorPresetData[] presets = JointPresets(_config, out byte[] readingAgeIds);
             try
             {
-                _jointStateLink = new JetRoverJointStateLink(_jointTransport, _clock, _profile, clockSyncConfig,
-                    _config.JointPredictorName, _config.JointModelSpeedRadPerSec, _config.MaxHorizonMs, _config.GripperFractionPerRadian,
-                    readingAgeIds, readingAgeSeconds, _config.JointServoMaxSpeedRadPerSec, _config.JointServoLagMs / 1000f,
-                    _config.JointServoPipelineDelayMs / 1000f, _config.JointServoFirstMoveFromMeasured);
+                _jointStateLink = new JetRoverJointStateLink(_jointTransport, _clock, _profile, clockSyncConfig, presets,
+                    _config.JointPredictorActive, _config.MaxHorizonMs, _config.GripperFractionPerRadian, readingAgeIds);
             }
             catch (ArgumentException e)
             {
-                // A mistyped predictor name must not take the command path down with it.
+                // A mistyped predictor or a bad preset must not take the command path down with it.
                 Debug.LogError($"[twin] {e.Message}; falling back to hold-last (no prediction)");
                 _jointStateLink = new JetRoverJointStateLink(_jointTransport, _clock, _profile, clockSyncConfig,
-                    "hold-last", _config.JointModelSpeedRadPerSec, _config.MaxHorizonMs, _config.GripperFractionPerRadian,
-                    readingAgeIds, readingAgeSeconds);
+                    new[] { new JointPredictorPresetData { Label = "hold-last", Predictor = "hold-last" } }, "hold-last",
+                    _config.MaxHorizonMs, _config.GripperFractionPerRadian, new byte[0]);
             }
+
+            // Park, then relax (docs/adr/0023 decision 5). Requests only when the robot may be commanded at
+            // all; the heartbeat goes either way. At launch: Off with nothing requested, unless the scene
+            // starts with motion on (TeleopVR) or something set a mode before Awake.
+            _jointStateLink.PowerRequestsAllowed = _config.ConfirmHardwareMotion;
+            if (_motionModeSet) _jointStateLink.SetMotionMode(_motionMode, _clock.NowTicks);
+            else if (motionEnabledAtStart) MotionMode = JetRoverMotionMode.On;
             _predictor = predictorFactory(predictorConfig, _clock);
             _reconciler = reconcilerFactory(reconcilerConfig, _metricSink, _clock);
             _playoutPolicy = playoutFactory(playoutConfig, _metricSink, _clock);
@@ -449,6 +579,17 @@ namespace Teleop.Bridge
                 _solverSeededFromRobot = true;
             }
 
+            // Holding again after a park and relax (docs/adr/0023 decision 5): the arm is at the rest
+            // pose, or wherever it was moved while limp, not where the ghost was. The solver starts over
+            // from the measured pose, so the first commands approach the target from there along checked
+            // joint paths instead of jumping straight to it.
+            if (_jointStateLink != null && _jointStateLink.TakeResumedFromRelaxed() &&
+                _jointStateLink.TryGetMeasured(out JetRoverJointPose resumed) && resumed.ArmSensed)
+            {
+                _solver.Reset(_profile, new ArmPose(resumed.BaseYaw, resumed.Proximal, resumed.Distal, resumed.WristPitch,
+                    resumed.RollSensed ? resumed.WristRoll : 0f));
+            }
+
             ArmSolution solution = _solver.Solve(_profile, capturedPose.Position, desiredPitch, desiredRoll);
             Span<float> wristPitches = stackalloc float[Math.Max(1, _profile.WristJointCount)];
             float baseYaw = solution.Pose.BaseYaw, proximalPitch = solution.Pose.Proximal, distalPitch = solution.Pose.Distal;
@@ -485,7 +626,8 @@ namespace Teleop.Bridge
                 armRig.ApplyAngles(baseYaw, proximalPitch, distalPitch, upperPitch, wasClamped, pitchAdjusted);
             }
 
-            if (!_config.ConfirmHardwareMotion || !MotionEnabled)
+            // On, and the robot holds (or an older RobotHost that does not say): docs/adr/0023 decision 5.
+            if (!_config.ConfirmHardwareMotion || !_jointStateLink.MayCommand(now))
             {
                 return;
             }
@@ -542,7 +684,7 @@ namespace Teleop.Bridge
         private void OnDestroy()
         {
             _cartesianUdp?.Dispose();
-            _jointTransport?.Dispose();
+            _jointUdp?.Dispose();
             _metricSink?.Dispose();
         }
 
@@ -552,26 +694,32 @@ namespace Teleop.Bridge
 
         private long MillisecondsToTicks(double ms) => (long)(ms / 1000.0 * _clock.TicksPerSecond);
 
-        /// <summary>The config's per-motor reading ages, as the predictor takes them. Mismatched lengths give none, with an error.</summary>
-        private static void ReadingAges(JetRoverArmConfig config, out byte[] ids, out float[] seconds)
+        /// <summary>
+        /// The config's predictor presets and the motors their reading ages are for. An empty preset
+        /// list falls back to the older single-predictor fields (JointPredictorName, JointServo*,
+        /// JointReadingAge*), as one preset that is also the active one.
+        /// </summary>
+        private static JointPredictorPresetData[] JointPresets(JetRoverArmConfig config, out byte[] readingAgeIds)
         {
             int[] configIds = config.JointReadingAgeMotorIds ?? new int[0];
-            float[] configMs = config.JointReadingAgeMs ?? new float[0];
-            if (configIds.Length != configMs.Length)
+            readingAgeIds = new byte[configIds.Length];
+            for (int i = 0; i < configIds.Length; i++) readingAgeIds[i] = (byte)configIds[i];
+            if (config.JointPredictorPresets != null && config.JointPredictorPresets.Length > 0)
             {
-                Debug.LogError($"[twin] JointReadingAgeMotorIds has {configIds.Length} entries and JointReadingAgeMs {configMs.Length}; using no reading ages");
-                ids = new byte[0];
-                seconds = new float[0];
-                return;
+                return config.JointPredictorPresets;
             }
 
-            ids = new byte[configIds.Length];
-            seconds = new float[configIds.Length];
-            for (int i = 0; i < configIds.Length; i++)
+            config.JointPredictorActive = config.JointPredictorName;
+            return new[]
             {
-                ids[i] = (byte)configIds[i];
-                seconds[i] = Math.Max(0f, configMs[i]) / 1000f;
-            }
+                new JointPredictorPresetData
+                {
+                    Label = config.JointPredictorName, Predictor = config.JointPredictorName, ModelSpeedRadPerSec = config.JointModelSpeedRadPerSec,
+                    ServoMaxSpeedRadPerSec = config.JointServoMaxSpeedRadPerSec, ServoLagMs = config.JointServoLagMs,
+                    ServoPipelineDelayMs = config.JointServoPipelineDelayMs, ServoFirstMoveFromMeasured = config.JointServoFirstMoveFromMeasured,
+                    ReadingAgeMs = config.JointReadingAgeMs ?? new float[0],
+                },
+            };
         }
     }
 }

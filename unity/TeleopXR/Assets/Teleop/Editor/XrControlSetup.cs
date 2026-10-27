@@ -22,8 +22,8 @@ namespace Teleop.XR.Editor
     /// wired to the arm rig, the XR Origin and the display's caption line;</item>
     /// <item><see cref="TwinGripper"/> is added on the wrist's twin visual and wired to its fingers and
     /// its roll group;</item>
-    /// <item>the robot's start/stop button (<see cref="MotionToggleButton"/>) is built on the bench's
-    /// front-left corner, and the bridge is set to start with motion <b>off</b>;</item>
+    /// <item>the robot's power and pause buttons (<see cref="MotionToggleButton"/>) are built on the
+    /// bench's front-left corner, and the bridge is set to start with motion <b>off</b>;</item>
     /// <item>the twin's predicted and last-measured arms, the commanded arm's ghost appearance, and
     /// three switches that show or hide each arm (docs/adr/0018).</item>
     /// </list>
@@ -129,8 +129,113 @@ namespace Teleop.XR.Editor
 
             BuildTwinArms(scene, bridge, rig, origin);
             BuildSpeedSlider(scene, bridge, origin);
+            BuildConsole(scene, bridge, origin);
             BuildDisplayHandle(scene, driver);
             EditorSceneManager.MarkSceneDirty(scene);
+        }
+
+        public const string ConsoleName = "OperatorConsole";
+
+        /// <summary>
+        /// The operator console (docs/adr/0023) on the bench's left, behind the motion button and the
+        /// twin switches: a row of predictor slots (a cap that draws the twin with that predictor and
+        /// a small one beside it that turns it on or off), a row of network disturbances, and the live
+        /// numbers standing behind them, tilted toward the operator. The network is three sliders (lag,
+        /// jitter, loss) behind the predictor row. The slots' labels come from the
+        /// config at runtime, so the scene does not change when the presets do. Rebuilt on every run.
+        /// </summary>
+        private static void BuildConsole(Scene scene, JetRoverOperatorBridge bridge, XROrigin origin)
+        {
+            foreach (GameObject old in scene.GetRootGameObjects().Where(r => r.name == ConsoleName).ToList())
+            {
+                Object.DestroyImmediate(old);
+            }
+
+            float top = LabLayout.BenchTop;
+            // Far enough back that the motion button's tall label does not hide the rows from eye height
+            // (anything nearer than about 0.45 m sits behind it), and left of the arm's workcell grid.
+            const float left = -0.76f, spacing = 0.068f;
+            const float predictorZ = LabLayout.BenchNearZ + 0.36f, networkZ = LabLayout.BenchNearZ + 0.48f;
+            var root = new GameObject(ConsoleName).transform;
+            root.position = new Vector3(0f, top, 0f);
+            var console = root.gameObject.AddComponent<OperatorConsole>();
+
+            Material capMaterial = LabMaterials.Unlit("ConsoleCap", Color.white);
+            Material plinthMaterial = LabMaterials.Lit("MotionButtonPlinth", new Color(0.06f, 0.062f, 0.068f), 0.6f, 0.5f);
+            Color text = new Color(0.82f, 0.86f, 0.9f);
+            // Edit-time labels from the default config, so previews show the console; the runtime
+            // replaces them with whatever presets the pushed config has.
+            JointPredictorPresetData[] presets = new JetRoverArmConfig().JointPredictorPresets;
+
+            for (int i = 0; i < OperatorConsole.MaxPredictors; i++)
+            {
+                float x = left + i * spacing;
+                Renderer select = Cap(root, $"Predictor{i}", new Vector3(x, 0f, predictorZ), 0.032f, capMaterial, plinthMaterial);
+                TextMeshPro label = LabParts.Label("Label", select.transform.parent, new Vector3(0.012f, 0.006f, -0.034f), Quaternion.Euler(60f, 0f, 0f),
+                    i < presets.Length ? presets[i].Label : "", 0.085f, text, new Vector2(0.068f, 0.016f), TextAlignmentOptions.Center, FontStyles.Bold);
+                Wire(select, label, console, ConsoleButton.Kind.SelectPredictor, i, origin);
+                Renderer toggle = Cap(root, $"PredictorOnOff{i}", new Vector3(x + 0.03f, 0f, predictorZ), 0.016f, capMaterial, plinthMaterial);
+                Wire(toggle, null, console, ConsoleButton.Kind.TogglePredictor, i, origin);
+            }
+
+            // The network disturbance: three sliders behind the predictor row, running away from the
+            // operator (near = none), applied together by the console once they settle.
+            var network = new[]
+            {
+                (SpeedSlider.Setting.NetworkLag, "NetworkLag", "LAG", 1000f),
+                (SpeedSlider.Setting.NetworkJitter, "NetworkJitter", "JITTER", 200f),
+                (SpeedSlider.Setting.NetworkLoss, "NetworkLoss", "LOSS", 30f),
+            };
+            for (int i = 0; i < network.Length; i++)
+            {
+                BuildSlider(network[i].Item2, 0f, network[i].Item1, 0f, network[i].Item4, 0f, network[i].Item3, bridge, origin,
+                    parent: root, at: new Vector3(left + 0.01f + i * 0.1f, top, networkZ), console: console, length: 0.24f);
+            }
+
+            // Standing nearly upright behind the network row, big enough to read from where the operator stands.
+            TextMeshPro panel = LabParts.Label("Panel", root, new Vector3(left + 0.23f, 0.33f, networkZ + 0.14f), Quaternion.Euler(22f, -32f, 0f), // raised above the sliders, tilted and turned toward the operator at x = 0
+                "<mspace=0.55em><b>PREDICTOR          ERR p50   p95   CORR p95  JIT p95  GRIP p95     n</b>\n(live numbers here once the robot's state arrives)\nnetwork: off</mspace>", 0.125f, text, new Vector2(0.56f, 0.26f), TextAlignmentOptions.TopLeft);
+            panel.richText = true;
+
+            var so = new SerializedObject(console);
+            so.FindProperty("bridge").objectReferenceValue = bridge;
+            so.FindProperty("panel").objectReferenceValue = panel;
+            so.ApplyModifiedPropertiesWithoutUndo();
+        }
+
+        /// <summary>A level cap on a small plinth, under a child of <paramref name="parent"/>; returns the cap's renderer.</summary>
+        private static Renderer Cap(Transform parent, string name, Vector3 position, float diameter, Material capMaterial, Material plinthMaterial)
+        {
+            var button = new GameObject(name).transform;
+            button.SetParent(parent, false);
+            button.localPosition = position;
+            GameObject plinth = GameObject.CreatePrimitive(PrimitiveType.Cube);
+            plinth.name = "Plinth";
+            plinth.transform.SetParent(button, false);
+            plinth.transform.localPosition = new Vector3(0f, 0.008f, 0f);
+            plinth.transform.localScale = new Vector3(diameter + 0.014f, 0.016f, diameter + 0.014f);
+            plinth.GetComponent<Renderer>().sharedMaterial = plinthMaterial;
+            GameObject cap = GameObject.CreatePrimitive(PrimitiveType.Cylinder);
+            cap.name = "Cap";
+            cap.transform.SetParent(button, false);
+            cap.transform.localPosition = new Vector3(0f, 0.019f, 0f);
+            cap.transform.localScale = new Vector3(diameter, 0.004f, diameter); // a cylinder primitive is 2 units tall
+            cap.GetComponent<Renderer>().sharedMaterial = capMaterial;
+            foreach (Collider collider in button.GetComponentsInChildren<Collider>()) Object.DestroyImmediate(collider);
+            return cap.GetComponent<Renderer>();
+        }
+
+        private static void Wire(Renderer cap, TMP_Text label, OperatorConsole console, ConsoleButton.Kind kind, int index, XROrigin origin)
+        {
+            var button = cap.transform.parent.gameObject.AddComponent<ConsoleButton>();
+            var so = new SerializedObject(button);
+            so.FindProperty("console").objectReferenceValue = console;
+            so.FindProperty("kind").enumValueIndex = (int)kind;
+            so.FindProperty("index").intValue = index;
+            so.FindProperty("origin").objectReferenceValue = origin;
+            so.FindProperty("cap").objectReferenceValue = cap;
+            so.FindProperty("label").objectReferenceValue = label;
+            so.ApplyModifiedPropertiesWithoutUndo();
         }
 
         public const string SpeedSliderName = "SpeedSlider", DisplayHandleName = "MoveHandle";
@@ -154,12 +259,14 @@ namespace Teleop.XR.Editor
         public const string DelaySliderName = "DelaySlider";
 
         private static void BuildSlider(string name, float xOffset, SpeedSlider.Setting setting, float min, float max, float start,
-            string caption, JetRoverOperatorBridge bridge, XROrigin origin)
+            string caption, JetRoverOperatorBridge bridge, XROrigin origin, Transform parent = null, Vector3? at = null,
+            OperatorConsole console = null, float length = 0.26f)
         {
             float top = LabLayout.BenchTop;
-            const float length = 0.26f, height = 0.012f;
+            const float height = 0.012f;
             var slider = new GameObject(name).transform;
-            slider.position = new Vector3(LabLayout.ArmBase.x - 0.70f + xOffset, top, LabLayout.BenchNearZ + 0.05f);
+            if (parent != null) slider.SetParent(parent, false);
+            slider.position = at ?? new Vector3(LabLayout.ArmBase.x - 0.70f + xOffset, top, LabLayout.BenchNearZ + 0.05f);
 
             GameObject track = GameObject.CreatePrimitive(PrimitiveType.Cube);
             track.name = "Track";
@@ -182,11 +289,14 @@ namespace Teleop.XR.Editor
             knob.transform.localPosition = new Vector3(0f, height, 0.01f);
             // Neutral white: blue, green and amber belong to the twin's arms (TwinColors).
             Color knobColor = new Color(0.88f, 0.9f, 0.93f);
-            knob.GetComponent<Renderer>().sharedMaterial = LabMaterials.Unlit(setting == SpeedSlider.Setting.ArmSpeed ? "SpeedKnob" : "DelayKnob", knobColor);
+            bool network = setting == SpeedSlider.Setting.NetworkLag || setting == SpeedSlider.Setting.NetworkJitter || setting == SpeedSlider.Setting.NetworkLoss;
+            if (network) knobColor = new Color(1f, 0.62f, 0.15f); // the console's disturbance amber
+            knob.GetComponent<Renderer>().sharedMaterial = LabMaterials.Unlit(
+                setting == SpeedSlider.Setting.ArmSpeed ? "SpeedKnob" : network ? "NetworkKnob" : "DelayKnob", knobColor);
             foreach (Collider collider in slider.GetComponentsInChildren<Collider>()) Object.DestroyImmediate(collider);
 
             // Labels stand at the slider's near end, tilted toward the operator; the two sliders' labels alternate depth so they never overlap.
-            float labelZ = setting == SpeedSlider.Setting.ArmSpeed ? -0.03f : -0.055f;
+            float labelZ = setting == SpeedSlider.Setting.ArmSpeed || network ? -0.03f : -0.055f;
             TextMeshPro label = LabParts.Label("Label", slider, new Vector3(0f, 0.006f, labelZ), Quaternion.Euler(60f, 0f, 0f),
                 caption, 0.1f, knobColor, new Vector2(0.2f, 0.02f), TextAlignmentOptions.Center, FontStyles.Bold);
 
@@ -194,6 +304,7 @@ namespace Teleop.XR.Editor
             var so = new SerializedObject(component);
             so.FindProperty("setting").enumValueIndex = (int)setting;
             so.FindProperty("bridge").objectReferenceValue = bridge;
+            so.FindProperty("console").objectReferenceValue = console;
             so.FindProperty("origin").objectReferenceValue = origin;
             so.FindProperty("trackStart").objectReferenceValue = slow;
             so.FindProperty("trackEnd").objectReferenceValue = fast;
@@ -436,52 +547,74 @@ namespace Teleop.XR.Editor
             driver = bridge.GetComponent<TwinArmsDriver>() ?? bridge.gameObject.AddComponent<TwinArmsDriver>();
         }
 
-        public const string MotionButtonName = "MotionButton";
+        public const string MotionButtonName = "MotionButton", PauseButtonName = "PauseButton";
 
         /// <summary>
-        /// A red/green push button on the bench's front-left corner, out of the arm's reach and to the
-        /// left of where the right hand clutches, with a label behind it. Rebuilt on every run.
+        /// The robot's power button (red off, green on) on the bench's front-left corner, out of the arm's
+        /// reach and to the left of where the right hand clutches, with a label behind it; and the smaller
+        /// PAUSE button to its left, between it and the speed sliders, labelled in front (docs/adr/0023
+        /// decision 5). Both are rebuilt on every run.
         /// </summary>
         private static void BuildMotionButton(Scene scene, JetRoverOperatorBridge bridge, XROrigin origin)
         {
-            foreach (GameObject root in scene.GetRootGameObjects().Where(r => r.name == MotionButtonName).ToList())
+            foreach (GameObject root in scene.GetRootGameObjects().Where(r => r.name == MotionButtonName || r.name == PauseButtonName).ToList())
             {
                 Object.DestroyImmediate(root);
             }
 
-            float top = LabLayout.BenchTop;
-            var button = new GameObject(MotionButtonName).transform;
-            button.position = new Vector3(LabLayout.ArmBase.x - 0.5f, top, LabLayout.BenchNearZ + 0.12f);
+            float z = LabLayout.BenchNearZ + 0.12f;
+            Transform power = BuildButton(MotionButtonName, new Vector3(LabLayout.ArmBase.x - 0.5f, LabLayout.BenchTop, z), 0.11f, 0.06f,
+                "MotionButtonCap", new Color(0.9f, 0.12f, 0.1f), out Renderer powerCap); // red = off; recoloured at runtime
+            TextMeshPro powerLabel = LabParts.Label("Label", power, new Vector3(0f, 0.11f, 0.075f), Quaternion.Euler(15f, 0f, 0f),
+                "ROBOT OFF", 0.45f, Color.white, new Vector2(0.3f, 0.1f), TextAlignmentOptions.Center, FontStyles.Bold);
+            WireButton(power, MotionToggleButton.Role.Power, powerCap, powerLabel, 0.03f);
 
-            GameObject plinth = GameObject.CreatePrimitive(PrimitiveType.Cube);
-            plinth.name = "Plinth";
-            plinth.transform.SetParent(button, false);
-            plinth.transform.localPosition = new Vector3(0f, 0.015f, 0f);
-            plinth.transform.localScale = new Vector3(0.11f, 0.03f, 0.11f);
-            plinth.GetComponent<Renderer>().sharedMaterial = LabMaterials.Lit("MotionButtonPlinth", new Color(0.06f, 0.062f, 0.068f), 0.6f, 0.5f);
+            Transform pause = BuildButton(PauseButtonName, new Vector3(LabLayout.ArmBase.x - 0.62f, LabLayout.BenchTop, z), 0.07f, 0.04f,
+                "PauseButtonCap", new Color(0.35f, 0.36f, 0.4f), out Renderer pauseCap); // grey until the robot is on
+            TextMeshPro pauseLabel = LabParts.Label("Label", pause, new Vector3(0f, 0.006f, -0.05f), Quaternion.Euler(60f, 0f, 0f),
+                "PAUSE", 0.13f, Color.white, new Vector2(0.1f, 0.035f), TextAlignmentOptions.Center, FontStyles.Bold);
+            WireButton(pause, MotionToggleButton.Role.Pause, pauseCap, pauseLabel, 0.02f);
 
-            GameObject cap = GameObject.CreatePrimitive(PrimitiveType.Cylinder);
-            cap.name = "Cap";
-            cap.transform.SetParent(button, false);
-            cap.transform.localPosition = new Vector3(0f, 0.038f, 0f);
-            cap.transform.localScale = new Vector3(0.06f, 0.008f, 0.06f); // a cylinder primitive is 2 units tall
-            cap.GetComponent<Renderer>().sharedMaterial = LabMaterials.Unlit("MotionButtonCap", new Color(0.9f, 0.12f, 0.1f)); // red = off; recoloured at runtime
-
-            foreach (Collider collider in button.GetComponentsInChildren<Collider>())
+            Transform BuildButton(string name, Vector3 at, float plinthSize, float capSize, string capMaterial, Color capColor, out Renderer cap)
             {
-                Object.DestroyImmediate(collider); // no XRI interactor may press it; the fingertip check does
+                var button = new GameObject(name).transform;
+                button.position = at;
+
+                GameObject plinth = GameObject.CreatePrimitive(PrimitiveType.Cube);
+                plinth.name = "Plinth";
+                plinth.transform.SetParent(button, false);
+                plinth.transform.localPosition = new Vector3(0f, 0.015f, 0f);
+                plinth.transform.localScale = new Vector3(plinthSize, 0.03f, plinthSize);
+                plinth.GetComponent<Renderer>().sharedMaterial = LabMaterials.Lit("MotionButtonPlinth", new Color(0.06f, 0.062f, 0.068f), 0.6f, 0.5f);
+
+                GameObject capObject = GameObject.CreatePrimitive(PrimitiveType.Cylinder);
+                capObject.name = "Cap";
+                capObject.transform.SetParent(button, false);
+                capObject.transform.localPosition = new Vector3(0f, 0.038f, 0f);
+                capObject.transform.localScale = new Vector3(capSize, 0.008f, capSize); // a cylinder primitive is 2 units tall
+                capObject.GetComponent<Renderer>().sharedMaterial = LabMaterials.Unlit(capMaterial, capColor);
+
+                foreach (Collider collider in button.GetComponentsInChildren<Collider>())
+                {
+                    Object.DestroyImmediate(collider); // no XRI interactor may press it; the fingertip check does
+                }
+
+                cap = capObject.GetComponent<Renderer>();
+                return button;
             }
 
-            TextMeshPro label = LabParts.Label("Label", button, new Vector3(0f, 0.11f, 0.075f), Quaternion.Euler(15f, 0f, 0f),
-                "ROBOT OFF", 0.45f, Color.white, new Vector2(0.3f, 0.1f), TextAlignmentOptions.Center, FontStyles.Bold);
-
-            var toggle = button.gameObject.AddComponent<MotionToggleButton>();
-            var so = new SerializedObject(toggle);
-            so.FindProperty("bridge").objectReferenceValue = bridge;
-            so.FindProperty("origin").objectReferenceValue = origin;
-            so.FindProperty("cap").objectReferenceValue = cap.GetComponent<Renderer>();
-            so.FindProperty("label").objectReferenceValue = label;
-            so.ApplyModifiedPropertiesWithoutUndo();
+            void WireButton(Transform button, MotionToggleButton.Role role, Renderer cap, TextMeshPro label, float radius)
+            {
+                var toggle = button.gameObject.AddComponent<MotionToggleButton>();
+                var so = new SerializedObject(toggle);
+                so.FindProperty("role").enumValueIndex = (int)role;
+                so.FindProperty("bridge").objectReferenceValue = bridge;
+                so.FindProperty("origin").objectReferenceValue = origin;
+                so.FindProperty("cap").objectReferenceValue = cap;
+                so.FindProperty("label").objectReferenceValue = label;
+                so.FindProperty("radiusMeters").floatValue = radius;
+                so.ApplyModifiedPropertiesWithoutUndo();
+            }
         }
 
         /// <summary>Removes everything that made the target grabbable, dependents first.</summary>

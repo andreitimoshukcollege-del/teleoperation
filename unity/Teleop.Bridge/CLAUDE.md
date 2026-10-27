@@ -119,11 +119,19 @@ synthetic jitter on an already-recorded delay double-models the same variance.
 
 Two things that are deliberate rather than incidental:
 
-- **Only the loopback path is wired.** `TeleopOperatorBridge` owns both directions in-process, so
-  impairing them is honest. `JetRoverOperatorBridge` is deliberately left out: `EmulatedTransport`
-  impairs on the *receiving* side, so impairing what the real robot receives means wrapping
-  `Teleop.RobotHost`'s transport on the Jetson. Wiring it there anyway would give a checkbox that
-  moves the HUD's numbers while the physical arm behaves identically — worse than no checkbox.
+- **This panel drives only the loopback path.** `TeleopOperatorBridge` owns both directions
+  in-process, so impairing them is honest. `EmulatedTransport` impairs on the *receiving* side, so
+  wrapping `JetRoverOperatorBridge`'s socket in it would only delay what the headset receives: a
+  checkbox that moves the HUD's numbers while the physical arm behaves identically.
+- **The real robot's joint link has its own disturbance, `JointLinkDisturbance`** (docs/adr/0023
+  decision 3; the XR operator console switches it). It answers that objection by routing the
+  *uplink* through a Core emulator over a loopback before the real send, the pass-through RobotHost's
+  `UplinkImpairedReceiver` uses on the robot, so the arm really receives commands late or not at all;
+  the downlink goes through a second emulator after the real receive. Joint commands, keepalives
+  (ClockSync's round trips) and frames all pass through it. It is a router, not a model: every delay
+  and drop is Core's, built by `NetworkProfileCatalog` or `NetworkImpairmentSettings`. Caps
+  (`DisturbanceMaxDelayMs`, `DisturbanceMaxLossPercent`) bound it, and every change is logged with its
+  seed. The Cartesian path keeps its fixed `NetworkProfileName` emulator, as before.
 - **Changing conditions mid-session invalidates the recording.** The impairment state is not
   recoverable from a `.tlog`, so every change is logged with its tick. This control is for feeling
   out the parameter space and for demos. Citable numbers come from `Teleop.Eval` sweeps against the

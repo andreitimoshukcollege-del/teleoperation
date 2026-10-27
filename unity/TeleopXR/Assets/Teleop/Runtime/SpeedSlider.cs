@@ -24,10 +24,21 @@ namespace Teleop.XR
 
             /// <summary>An artificial delay on the robot's state reports, ms (<see cref="JetRoverJointStateLink.AddedDelayMs"/>), to see the prediction work on a fast LAN.</summary>
             AddedDelay,
+
+            /// <summary>The console's network disturbance (docs/adr/0023): one-way lag, ms, both ways.</summary>
+            NetworkLag,
+
+            /// <summary>The console's network disturbance: uniform jitter, ms, both ways.</summary>
+            NetworkJitter,
+
+            /// <summary>The console's network disturbance: random loss, percent, both ways.</summary>
+            NetworkLoss,
         }
 
         [SerializeField] private Setting setting = Setting.ArmSpeed;
         [SerializeField] private JetRoverOperatorBridge bridge;
+        [Tooltip("The operator console the network settings go to (they are applied together, there).")]
+        [SerializeField] private OperatorConsole console;
         [SerializeField] private XROrigin origin;
         [Tooltip("The slow end of the track (its top surface, centre line).")]
         [SerializeField] private Transform trackStart;
@@ -68,7 +79,7 @@ namespace Teleop.XR
             if (_hands != null && (TryTouch(_hands.rightHand, space, out float t) || TryTouch(_hands.leftHand, space, out t)))
             {
                 // Tenths of a rad/s, so the value settles instead of trembling with the fingertip.
-                float step = setting == Setting.AddedDelay ? 10f : 0.1f;
+                float step = setting == Setting.ArmSpeed ? 0.1f : setting == Setting.NetworkLoss ? 1f : setting == Setting.NetworkJitter ? 5f : 10f;
                 _value = Mathf.Round(Mathf.Lerp(minRadPerSec, maxRadPerSec, t) / step) * step;
             }
 
@@ -108,8 +119,12 @@ namespace Teleop.XR
             {
                 if (setting == Setting.ArmSpeed)
                     bridge.SpeedRadPerSec = _value;
-                else if (bridge.JointState != null)
-                    bridge.JointState.AddedDelayMs = _value;
+                else if (setting == Setting.AddedDelay)
+                {
+                    if (bridge.JointState != null) bridge.JointState.AddedDelayMs = _value;
+                }
+                else if (console != null)
+                    console.SetNetwork(setting, _value);
             }
 
             int shown = Mathf.RoundToInt(_value * 10f);
@@ -127,10 +142,14 @@ namespace Teleop.XR
 
             if (label != null)
             {
-                if (setting == Setting.ArmSpeed)
-                    label.SetText("ARM SPEED  {0:1} rad/s", _value);
-                else
-                    label.SetText("ADDED DELAY  {0:0} ms", _value);
+                switch (setting)
+                {
+                    case Setting.ArmSpeed: label.SetText("ARM SPEED  {0:1} rad/s", _value); break;
+                    case Setting.AddedDelay: label.SetText("ADDED DELAY  {0:0} ms", _value); break;
+                    case Setting.NetworkLag: label.SetText("LAG  {0:0} ms", _value); break;
+                    case Setting.NetworkJitter: label.SetText("JITTER  {0:0} ms", _value); break;
+                    default: label.SetText("LOSS  {0:0} %", _value); break;
+                }
             }
         }
     }

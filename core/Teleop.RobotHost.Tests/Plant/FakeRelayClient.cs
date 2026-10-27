@@ -20,6 +20,11 @@ namespace Teleop.RobotHost.Tests.Plant
 
         public void Send(ReadOnlySpan<JointTarget> targets) => SentCommands.Add(targets.ToArray());
 
+        /// <summary>Every torque switch, in order: true on, false off.</summary>
+        public List<bool> SentTorque { get; } = new List<bool>();
+
+        public void SendTorque(bool on) => SentTorque.Add(on);
+
         public void EnqueueFeedback(params JointFeedbackEntry[] entries) => _pendingFeedback.Enqueue(entries);
 
         public bool TryReceiveFeedback(System.Span<JointFeedbackEntry> entriesBuffer, out int entryCount)

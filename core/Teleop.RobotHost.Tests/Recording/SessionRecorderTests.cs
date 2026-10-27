@@ -124,6 +124,39 @@ namespace Teleop.RobotHost.Tests.Recording
         }
 
         [Fact]
+        public void TheArmPowerLineFormats_AreTheSessionFormats()
+        {
+            // docs/adr/0023 decisions 4 and 5.
+            Assert.Equal("JC|1|1|0|0|P|", SessionLines.JointCommand(1, 1, 0, 0, JointCommandOutcome.Parked, ReadOnlySpan<JointTarget>.Empty));
+            Assert.Equal("PQ|10|4|relax|99", SessionLines.PowerRequest(10, 4, ArmPowerRequest.Relax, 99));
+            Assert.Equal("PQ|10|5|hold|100", SessionLines.PowerRequest(10, 5, ArmPowerRequest.Hold, 100));
+            Assert.Equal("PS|11|parking|none", SessionLines.PowerState(11, ArmPowerState.Parking, ArmPowerReason.None));
+            Assert.Equal("PS|12|holding|path-collides", SessionLines.PowerState(12, ArmPowerState.Holding, ArmPowerReason.PathCollides));
+            Assert.Equal("PS|13|relaxed|none", SessionLines.PowerState(13, ArmPowerState.Relaxed, ArmPowerReason.None));
+            Assert.Equal("TQ|14|0", SessionLines.Torque(14, false));
+            Assert.Equal("TQ|15|1", SessionLines.Torque(15, true));
+            Assert.Equal("PK|16|1:0.5:0.5;2:1.25:0.5", SessionLines.Park(16, new[] { new JointTarget(1, 0.5f, 0.5f), new JointTarget(2, 1.25f, 0.5f) }));
+            Assert.Equal("OM|17|headset|paused|10.0.0.5:6002",
+                SessionLines.OperatorMode(17, SessionLines.KindName(OperatorClientKind.Headset), SessionLines.ModeName(OperatorMotionMode.Paused), "10.0.0.5:6002"));
+            Assert.Equal("tool", SessionLines.KindName(OperatorClientKind.Tool));
+            Assert.Equal("off", SessionLines.ModeName(OperatorMotionMode.Off));
+            Assert.Equal("on", SessionLines.ModeName(OperatorMotionMode.On));
+        }
+
+        [Fact]
+        public void TheOperatorMode_IsWrittenOnlyWhenItChanges_AndAgainInEachSession()
+        {
+            var lines = new System.Collections.Generic.List<string>();
+            var state = new SessionStateLines(lines.Add);
+            state.Operator(1, "headset", "off", "a:1");
+            state.Operator(2, "headset", "off", "a:1");
+            state.Operator(3, "headset", "on", "a:1");
+            state.Reset();
+            state.Operator(4, "headset", "on", "a:1");
+            Assert.Equal(new[] { "OM|1|headset|off|a:1", "OM|3|headset|on|a:1", "OM|4|headset|on|a:1" }, lines);
+        }
+
+        [Fact]
         public void TheRecordingRelayClient_RecordsWhatPassesAndChangesNothing()
         {
             string root = TempDir();

@@ -9,6 +9,7 @@ Definitions for every metric name ever passed to `Record` live in `docs/metrics.
 |---|---|---|
 | — | `NullMetricSink.cs` | discards everything; inject where a sink is required but unused |
 | — | `InMemoryMetricTracker.cs` | fixed-capacity ring buffer; test/inspection aid, not a full-run historian |
+| — | `LiveJointScorer.cs` | scores every enabled member of a `JointPredictorBank` over a rolling window, at the headset (docs/adr/0023): `joint_prediction_error_deg` at each fresh reading, `joint_correction_deg`, `joint_display_jitter_deg`, the gripper apart in servo degrees; nearest-rank p50/p95; fixed-capacity rings. **A display aid, never a result**: results are scored offline (Prediction/CLAUDE.md) |
 
 **`CsvMetricSink` deliberately does not live here.** Writing a `metrics.csv` is I/O, and I/O is
 not Core's — per `Contracts/IMetricSink.cs`'s own doc comment, that implementation lives in the

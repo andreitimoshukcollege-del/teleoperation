@@ -165,6 +165,36 @@ namespace Teleop.RobotHost.Tests.Plant
         }
 
         [Fact]
+        public void TheCartesianGate_IgnoresCartesianCommands_WhileItSaysNo()
+        {
+            // docs/adr/0023 decision 5: a parking or relaxed arm takes no Cartesian command either.
+            var relay = new FakeRelayClient();
+            bool open = false;
+            var plant = new GenericArmPlant(Config, relay) { CartesianGate = () => open };
+            plant.Command(Frame(captureTicks: 10, position: ReachableTarget));
+            Assert.Empty(relay.SentCommands);
+            open = true;
+            plant.Command(Frame(captureTicks: 11, position: ReachableTarget));
+            Assert.Single(relay.SentCommands);
+        }
+
+        [Fact]
+        public void ReadSensedTicks_SaysWhenEachJointWasLastRead()
+        {
+            var relay = new FakeRelayClient();
+            var plant = new GenericArmPlant(Config, relay);
+            var ticks = new long[JetRover.JointCount];
+            plant.ReadSensedTicks(ticks);
+            Assert.All(ticks, t => Assert.Equal(long.MinValue, t));
+
+            relay.EnqueueFeedback(new JointFeedbackEntry(BaseMotorId, true, 500f), new JointFeedbackEntry(WristRollMotorId, false, 0f));
+            plant.Step(100);
+            plant.ReadSensedTicks(ticks);
+            Assert.Equal(100, ticks[JetRover.TryGetJointIndex(JointRole.BaseYaw)]);
+            Assert.Equal(long.MinValue, ticks[JetRover.TryGetJointIndex(JointRole.GripperRotate)]); // not valid: not sensed
+        }
+
+        [Fact]
         public void CommandJointAngles_PassesAPoseTheModelAllows()
         {
             var relay = new FakeRelayClient();

@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Text;
 using Teleop.Bridge;
 using UnityEditor;
@@ -155,6 +156,7 @@ namespace Teleop.XR.Editor
             }
 
             CheckClutch(bridge, problems);
+            CheckConsole(bridge, problems);
 
             CheckAndroidOpenXR(problems);
 
@@ -249,21 +251,33 @@ namespace Teleop.XR.Editor
                 problems.Add("JetRoverOperatorBridge.motionEnabledAtStart is on: the robot would move at launch, before anyone presses the motion button (docs/adr/0017)");
             if (new SerializedObject(bridge).FindProperty("snapTargetToReachable") is SerializedProperty snap && !snap.boolValue)
                 problems.Add("JetRoverOperatorBridge.snapTargetToReachable is off: when the IK stops at the robot's body, the marker would stay inside it and the clutch would re-engage from there (docs/adr/0020)");
-            var toggle = Object.FindAnyObjectByType<MotionToggleButton>(FindObjectsInactive.Include);
-            if (toggle == null)
+            // The power button starts the robot and stops it (park, then relax); the pause button holds it
+            // with torque on (docs/adr/0023 decision 5). Power is the one the operator must always have.
+            MotionToggleButton[] toggles = Object.FindObjectsByType<MotionToggleButton>(FindObjectsInactive.Include, FindObjectsSortMode.None);
+            foreach (MotionToggleButton.Role role in new[] { MotionToggleButton.Role.Power, MotionToggleButton.Role.Pause })
             {
-                problems.Add("no MotionToggleButton: there would be no way to start or stop the robot from the headset (run Teleop > XR > Set Up Clutch Control)");
-            }
-            else
-            {
-                var toggleSo = new SerializedObject(toggle);
-                foreach (string field in new[] { "bridge", "origin", "cap" })
+                MotionToggleButton[] matching = toggles.Where(t => t.ButtonRole == role).ToArray();
+                if (matching.Length == 0)
                 {
-                    RequireReference(toggleSo, field, problems);
+                    problems.Add(role == MotionToggleButton.Role.Power
+                        ? "no MotionToggleButton with the Power role: there would be no way to start or stop the robot from the headset (run Teleop > XR > Set Up Clutch Control)"
+                        : "no MotionToggleButton with the Pause role: the robot could only be stopped by parking and relaxing it (run Teleop > XR > Set Up Clutch Control)");
+                    continue;
                 }
 
-                if (!toggle.enabled || !toggle.gameObject.activeInHierarchy)
-                    problems.Add("MotionToggleButton is disabled or inactive: the robot could not be stopped from the headset");
+                if (matching.Length > 1)
+                    problems.Add($"{matching.Length} MotionToggleButtons with the {role} role: rerun Teleop > XR > Set Up Clutch Control");
+                foreach (MotionToggleButton toggle in matching)
+                {
+                    var toggleSo = new SerializedObject(toggle);
+                    foreach (string field in new[] { "bridge", "origin", "cap" })
+                    {
+                        RequireReference(toggleSo, field, problems);
+                    }
+
+                    if (!toggle.enabled || !toggle.gameObject.activeInHierarchy)
+                        problems.Add($"the {role} MotionToggleButton is disabled or inactive: the robot could not be {(role == MotionToggleButton.Role.Power ? "started or stopped" : "paused")} from the headset");
+                }
             }
 
             // The twin's predicted and measured arms (docs/adr/0018): display only, but a miswired
@@ -300,6 +314,46 @@ namespace Teleop.XR.Editor
                 problems.Add($"jetrover_connection.json: ClutchScale {config.ClutchScale} must be in (0, 1]; above 1 the arm moves further than the hand");
             if (!(config.GripperPinchOpenMeters > config.GripperPinchClosedMeters))
                 problems.Add("jetrover_connection.json: GripperPinchOpenMeters must be greater than GripperPinchClosedMeters");
+        }
+
+        /// <summary>
+        /// The operator console (docs/adr/0023): present, wired to this scene's bridge and its panel, with
+        /// a select and an on/off cap for every predictor slot and the lag, jitter and loss sliders. Not a safety
+        /// setting -- the console moves nothing -- but an unwired one would silently show nothing.
+        /// </summary>
+        private static void CheckConsole(JetRoverOperatorBridge bridge, List<string> problems)
+        {
+            var console = Object.FindAnyObjectByType<OperatorConsole>(FindObjectsInactive.Include);
+            if (console == null)
+            {
+                problems.Add("no OperatorConsole (run `just unity-lab-xr`, or Teleop > XR > Set Up Clutch Control)");
+                return;
+            }
+
+            var so = new SerializedObject(console);
+            RequireReference(so, "panel", problems);
+            if (so.FindProperty("bridge").objectReferenceValue != bridge)
+                problems.Add("OperatorConsole.bridge is not this scene's JetRoverOperatorBridge");
+            ConsoleButton[] buttons = Object.FindObjectsByType<ConsoleButton>(FindObjectsInactive.Include, FindObjectsSortMode.None);
+            int selects = buttons.Count(b => b.ButtonKind == ConsoleButton.Kind.SelectPredictor);
+            int toggles = buttons.Count(b => b.ButtonKind == ConsoleButton.Kind.TogglePredictor);
+            if (selects != OperatorConsole.MaxPredictors || toggles != OperatorConsole.MaxPredictors)
+                problems.Add($"OperatorConsole: {selects} predictor and {toggles} on/off caps, expected {OperatorConsole.MaxPredictors} of each");
+            SpeedSlider[] sliders = Object.FindObjectsByType<SpeedSlider>(FindObjectsInactive.Include, FindObjectsSortMode.None);
+            foreach (string name in new[] { "NetworkLag", "NetworkJitter", "NetworkLoss" })
+            {
+                SpeedSlider slider = sliders.FirstOrDefault(x => x.name == name);
+                if (slider == null) problems.Add($"OperatorConsole: no {name} slider");
+                else if (new SerializedObject(slider).FindProperty("console").objectReferenceValue != console)
+                    problems.Add($"{name} slider is not wired to the console");
+            }
+            foreach (ConsoleButton b in buttons)
+            {
+                var bso = new SerializedObject(b);
+                if (bso.FindProperty("console").objectReferenceValue != console) problems.Add($"ConsoleButton '{b.name}' is not wired to the console");
+                RequireReference(bso, "cap", problems);
+                RequireReference(bso, "origin", problems);
+            }
         }
 
         private static void RequireReference(SerializedObject so, string field, List<string> problems)

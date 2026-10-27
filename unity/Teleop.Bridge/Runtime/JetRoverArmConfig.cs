@@ -195,5 +195,88 @@ namespace Teleop.Bridge
         // 238.7) over its open-to-closed pulse span (645 - 116 = 529, measured 2026-10-25; it was
         // 666.7 and 0.358 before). Change it with GenericArmPlantConfig.GripperOpenPulse/GripperClosedPulse.
         public float GripperFractionPerRadian = 0.4513f;
+
+        // The operator console's predictor bank (docs/adr/0023 decision 1): every preset listed here
+        // runs side by side on the same stream, and JointPredictorActive (a Label) draws the twin. The
+        // console switches the drawn one and turns the others on and off at runtime; a preset that
+        // starts with Enabled false costs nothing until it is turned on. Since 2026-10-26 these
+        // supersede JointPredictorName and the JointServo*/JointReadingAge*/JointModelSpeed fields
+        // above, which are read only when this list is empty.
+        public JointPredictorPresetData[] JointPredictorPresets = JointPredictorPresetData.Defaults();
+        public string JointPredictorActive = "servo 10-25";
+
+        // Network disturbances the console can switch on (docs/adr/0023 decision 3), applied on the
+        // headset to the joint socket in both directions. Caps on what any setting may add.
+        public float DisturbanceMaxDelayMs = 2000f;
+        public float DisturbanceMaxLossPercent = 50f;
+    }
+
+    /// <summary>
+    /// One entry of <see cref="JetRoverArmConfig.JointPredictorPresets"/>: a label the console shows,
+    /// a <c>Registries.JointPredictors</c> key, and that predictor's parameters. Two presets may share a
+    /// key and differ only in their parameters (two fits of relay-replay-servo).
+    /// </summary>
+    [Serializable]
+    public sealed class JointPredictorPresetData
+    {
+        public string Label = "";
+        // One line the operator console shows beside the label: what this predictor assumes.
+        public string Description = "";
+        public string Predictor = "hold-last";
+        public bool Enabled = true;
+
+        // servo-replay's servo speed, rad/s.
+        public float ModelSpeedRadPerSec = 6f;
+
+        // relay-replay-servo's servo (see JetRoverArmConfig.JointServo* above for what each is).
+        public float ServoMaxSpeedRadPerSec = 5f;
+        public float ServoLagMs = 50f;
+        public float ServoPipelineDelayMs = 16.8f;
+        public bool ServoFirstMoveFromMeasured = true;
+
+        // Each motor's reading age, ms, for JetRoverArmConfig.JointReadingAgeMotorIds (relay-replay and
+        // relay-replay-servo); empty for none.
+        public float[] ReadingAgeMs = new float[0];
+
+        /// <summary>
+        /// The defaults: no prediction; relay-replay; relay-replay-servo with the 2026-10-25 fit
+        /// (trainer/runs/sysid-pilot1b: lag 50 ms, pipeline delay 16.8 ms, no speed limit identified)
+        /// and with the 2026-10-26 fit (runs/sysid-pilot2: 40 ms, 13.8 ms, 3.25 rad/s, which beat the
+        /// first by 20% at arm p95 on held-out sessions, trainer evaluation); and servo-replay, off.
+        /// </summary>
+        public static JointPredictorPresetData[] Defaults()
+        {
+            float[] ages1025 = { 30.2f, 25.3f, 22.6f, 20.1f, 17.1f };
+            float[] ages1026 = { 29.5f, 25.1f, 22.2f, 19.7f, 17.7f };
+            return new[]
+            {
+                new JointPredictorPresetData
+                {
+                    Label = "hold-last", Predictor = "hold-last", Description = "no prediction: the last reading as it arrived (the baseline)",
+                },
+                new JointPredictorPresetData
+                {
+                    Label = "relay-replay", Predictor = "relay-replay", ReadingAgeMs = ages1025,
+                    Description = "replays your commands through the relay's paced servo writes; no servo lag",
+                },
+                new JointPredictorPresetData
+                {
+                    Label = "servo 10-25", Predictor = "relay-replay-servo", ServoMaxSpeedRadPerSec = 5f, ServoLagMs = 50f,
+                    Description = "relay-replay plus a servo: 50 ms lag, 17 ms pipeline (10-25 fit, speed limit guessed)",
+                    ServoPipelineDelayMs = 16.8f, ReadingAgeMs = ages1025,
+                },
+                new JointPredictorPresetData
+                {
+                    Label = "servo 10-26", Predictor = "relay-replay-servo", ServoMaxSpeedRadPerSec = 3.25f, ServoLagMs = 40f,
+                    Description = "relay-replay plus a servo: 40 ms lag, 3.25 rad/s limit, 14 ms pipeline (10-26 fit)",
+                    ServoPipelineDelayMs = 13.8f, ReadingAgeMs = ages1026,
+                },
+                new JointPredictorPresetData
+                {
+                    Label = "servo-replay", Predictor = "servo-replay", ModelSpeedRadPerSec = 6f, Enabled = false,
+                    Description = "the first model: every command obeyed at once at 6 rad/s; snaps back on each reading",
+                },
+            };
+        }
     }
 }

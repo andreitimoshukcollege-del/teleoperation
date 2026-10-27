@@ -221,6 +221,23 @@ default_operator_host := env_var_or_default("OPERATOR_HOST", "100.82.140.80")
 robot_mdns_name := env_var_or_default("JETROVER_NAME", "jetrover-sinrg")
 # The GPU machine for trainer runs (just gpu-train, gpu-status, gpu-fetch): an account with this repo's SSH key.
 gpu_host := env_var_or_default("GPU_HOST", "andrei@10.188.58.164")
+# Where ROBOT OFF parks the arm before its torque goes off (docs/adr/0023 decision 5), passed by
+# deploy-robothost as --rest-pose-deg: degrees, motors 1-5 (base yaw, shoulder, elbow, wrist pitch,
+# wrist roll; the gripper is left as it is), in RobotHost's joint angles as `just joint-probe` prints
+# them (the profile's zero offsets applied). Placed by the user and measured with joint-probe on
+# 2026-10-26 (the second placing): -1.20, 91.16, -78.48, -114.00, 5.76, with the wrist pulled in to
+# -112.0, 0.7 deg inside its measured range (-112.7 to 117.0, docs/adr/0020); at -114 every relax would
+# be refused as outside it. To re-measure (robot/README.md, "Park, then relax"): place the arm by hand on its
+# support, or drive it there slowly with the headset; run `just joint-probe` with the headset's motion
+# off and copy the five sensed angles here (or export JETROVER_REST_POSE_DEG), then
+# `just deploy-robothost`. Empty refuses every relax.
+# RobotHost's own collision check still decides each park, and a pose outside a joint's range is
+# refused. This pose is clear by the model and parks from home with the strict check, so
+# JETROVER_PARK_CONTACT_DEG stays empty. That option is for a rest pose that lies on the body (the
+# first 2026-10-26 pose had the gripper on Body.7): it allows that contact within so many degrees of
+# the rest pose and nothing else.
+jetrover_rest_pose_deg := env_var_or_default("JETROVER_REST_POSE_DEG", "-1.20,91.16,-78.48,-112.0,5.76")
+jetrover_park_contact_deg := env_var_or_default("JETROVER_PARK_CONTACT_DEG", "")
 
 # Print the robot's current IPv4 address and how it was found -- moves nothing. Tries its mDNS name (jetrover-sinrg.local, on the lab LAN), then Tailscale (the direct LAN path if it has one, else the 100.x address). Every robot recipe does this lookup itself unless JETROVER_HOST is set
 [group('robot: checks and diagnostics (nothing moves)')]
@@ -360,11 +377,12 @@ deploy-robot checks="true":
     step "5/5 Checks"; just robot-ros-diff; just joint-probe; just robot-status
     echo; echo "Robot redeployed from $(git rev-parse --short HEAD) at $JETROVER_HOST."
 
-# Publish Teleop.RobotHost for the Jetson (linux-arm64), copy it over, and restart its systemd service -- needs passwordless ssh/scp; does NOT touch the Jetson's ROS 2 nodes, see robot/systemd/README.md
+# Publish Teleop.RobotHost for the Jetson (linux-arm64), copy it over, and restart its systemd service -- needs passwordless ssh/scp; does NOT touch the Jetson's ROS 2 nodes, see robot/systemd/README.md. It runs recording whenever the headset commands the robot (--auto-record, docs/adr/0023; robot/README.md) unless auto_record=false, and parks then relaxes the arm on the headset's ROBOT OFF at rest_pose_deg (default jetrover_rest_pose_deg, docs/adr/0023 decision 5). Relay wire v5: deploy the ROS side too (just deploy-ros, or just deploy-robot for both)
 [group('robot: deploy and restart (someone at the robot)')]
-deploy-robothost remote_host=default_jetrover_host remote_user="jetson" operator_host=default_operator_host max_direction_magnitude="" profile_path="" pulses_per_second="":
+deploy-robothost remote_host=default_jetrover_host remote_user="jetson" operator_host=default_operator_host max_direction_magnitude="" profile_path="" pulses_per_second="" auto_record="true" rest_pose_deg=jetrover_rest_pose_deg park_contact_deg=jetrover_park_contact_deg:
     #!/usr/bin/env bash
     set -euo pipefail
+    case "{{auto_record}}" in true|false) ;; *) echo "error: auto_record must be true or false, got '{{auto_record}}'" >&2; exit 1 ;; esac
     host=$(just _robot-host "{{remote_host}}")
     cd core
     stamp=$(date +%Y%m%d-%H%M%S)
@@ -381,6 +399,9 @@ deploy-robothost remote_host=default_jetrover_host remote_user="jetson" operator
     dotnet publish Teleop.RobotHost -c Release -r linux-arm64 --self-contained false -f net8.0 -o "$publish_dir"
     # The build every recorded session's session.json names (docs/adr/0021): ~/robothost_current/BUILD_INFO.
     printf '{"sha": "%s", "dirty": %s}\n' "$(git rev-parse HEAD)" "$([ -n "$(git status --porcelain --untracked-files=no -- .)" ] && echo true || echo false)" > "$publish_dir/BUILD_INFO"
+    # The profile every automatic session copies (docs/adr/0023 decision 4), as record-start copies
+    # core/RobotProfiles/jetrover.json: ~/robothost_current/robot-profile.json.
+    cp RobotProfiles/jetrover.json "$publish_dir/robot-profile.json"
     tar czf "$archive" -C "$publish_dir" .
     echo "Copying to {{remote_user}}@$host:~/${remote_dir}..." >&2
     # scp, unlike ssh, needs an IPv6 literal in brackets to tell the address from the path.
@@ -393,6 +414,26 @@ deploy-robothost remote_host=default_jetrover_host remote_user="jetson" operator
     # The headset's speed slider asks for slower moves with every joint command, and RobotHost caps
     # those requests at this. Lower it to cap the slider; leave it empty to keep the default.
     if [ -n "{{pulses_per_second}}" ]; then extra_args="$extra_args --pulses-per-second {{pulses_per_second}}"; fi
+    # Recording whenever the headset commands the robot (docs/adr/0023 decision 4; robot/README.md): RobotHost
+    # opens a session on the first headset joint command after 30 s without one and closes it after 30 s
+    # without; only a sender whose headset heartbeat is at most 5 s old counts, so joint-drive, move-arm
+    # and other tools are never recorded automatically; manual sessions (record-start, the onboard pilot)
+    # win. The thresholds keep their defaults (--auto-record-idle-seconds 30, --auto-record-max-minutes 60,
+    # --auto-record-stop-free-gb 1, --auto-record-start-free-gb 2, --auto-record-driver-wait-seconds 15,
+    # --auto-record-min-split-seconds 5, --auto-record-headset-seconds 5).
+    # auto_record=false turns it off. With profile_path, the sessions copy that profile instead.
+    # Park, then relax (docs/adr/0023 decision 5): ROBOT OFF on the headset parks the arm at the rest pose
+    # (jetrover_rest_pose_deg above) at 0.5 rad/s, waits until every reading is within 3 degrees, then
+    # switches torque off; --park-speed-rad-per-sec, --park-tolerance-deg and --park-timeout-seconds (20)
+    # keep their defaults. An empty rest pose refuses every relax.
+    rest_pose='{{rest_pose_deg}}'
+    case "$rest_pose" in *[!0-9.,-]*) echo "error: rest_pose_deg must be comma-separated degrees, got '$rest_pose'" >&2; exit 1 ;; esac
+    if [ -n "$rest_pose" ]; then extra_args="$extra_args --rest-pose-deg $rest_pose"; fi
+    if [ -n "{{park_contact_deg}}" ]; then extra_args="$extra_args --park-contact-deg {{park_contact_deg}}"; fi
+    if [ "{{auto_record}}" = "true" ]; then
+        extra_args="$extra_args --auto-record --build-info-robothost /home/jetson/robothost_current/BUILD_INFO --build-info-driver /home/jetson/teleop_ros_current/BUILD_INFO"
+        if [ -z "{{profile_path}}" ]; then extra_args="$extra_args --auto-record-profile /home/jetson/robothost_current/robot-profile.json"; fi
+    fi
     # robothost-run.sh is the stable script teleop-robothost.service's ExecStart points at
     # (robot/systemd/teleop-robothost.service) -- regenerated on every deploy with this run's exact
     # args (including any optional extra_args), so redeploying never needs `systemctl
@@ -763,6 +804,119 @@ robot-usb-device path="1-2.2" remote_host=default_jetrover_host remote_user="jet
     echo '--- lsusb -v'
     sudo -n lsusb -v -s "$(cat "$d/busnum"):$(cat "$d/devnum")" 2>/dev/null | grep -E 'bcdUSB|bDeviceClass|bInterfaceClass|bInterfaceNumber|bEndpointAddress|wMaxPacketSize|iInterface|bmAttributes|MaxPower|CDC|bcdCDC|Call Management|ACM' | sed 's/^/  /' | head -40
     REMOTE
+
+# Read-only: what fills the Jetson's disk -- free space, the largest things in the home directory, how many old deploy directories each component has left behind (every deploy writes a new one and repoints a *_current link) and their size, the recordings, the journal, and the usual system caches. Deletes nothing
+[group('robot: checks and diagnostics (nothing moves)')]
+robot-disk remote_host=default_jetrover_host remote_user="jetson":
+    #!/usr/bin/env bash
+    set -uo pipefail
+    ssh -o StrictHostKeyChecking=accept-new "{{remote_user}}@$(just _robot-host "{{remote_host}}")" "bash -s" <<'REMOTE'
+    echo "--- the root file system: $(df -h / | tail -1 | awk '{print $3 " used of " $2 ", " $4 " free (" $5 ")"}')"
+    echo '--- the largest things in the home directory'
+    du -sh ~/* ~/.cache ~/.local ~/.ros ~/.nuget ~/.dotnet 2>/dev/null | sort -rh | head -20 | sed 's/^/  /'
+    echo '--- deploy directories (the *_current link points at the live one)'
+    for link in ~/*_current; do
+        [ -L "$link" ] || continue
+        live=$(basename "$(readlink -f "$link")"); prefix=${live%_*}; prefix=${prefix%_*}
+        n=$(ls -d ~/"${prefix}"_* 2>/dev/null | grep -v _current | wc -l)
+        size=$(du -sch $(ls -d ~/"${prefix}"_* | grep -v _current) 2>/dev/null | tail -1 | cut -f1)
+        echo "  $(basename "$link") -> $live; $n directories named ${prefix}_*, $size in all"
+    done
+    echo "--- recordings: $(du -sh ~/recordings 2>/dev/null | cut -f1) in $(ls ~/recordings/jetrover 2>/dev/null | wc -l) sessions"
+    echo "--- the journal: $(journalctl --disk-usage 2>/dev/null | grep -oE '[0-9.]+[KMGT]')"
+    echo '--- system caches'
+    sudo -n du -sh /var/cache/apt /var/log /tmp /var/crash 2>/dev/null | sed 's/^/  /'
+    command -v docker >/dev/null && sudo -n docker system df 2>/dev/null | sed 's/^/  /'
+    echo '--- the whole disk, two levels deep (this file system only)'
+    sudo -n du -xh --max-depth=2 / 2>/dev/null | sort -rh | head -30 | sed 's/^/  /'
+    echo '--- the largest installed packages (MB)'
+    dpkg-query -Wf '${Installed-Size}\t${Package}\n' 2>/dev/null | sort -rn | head -15 | awk '{printf "  %6.0f  %s\n", $1/1024, $2}'
+    echo "--- swap files: $(swapon --show=NAME,SIZE --noheadings 2>/dev/null | tr '\n' ' ')"
+    REMOTE
+
+# Free space on the Jetson (its 26 GB card ran 95% full on 2026-10-26). Dry run unless apply=true: prints what would go and apt's own simulation of the package removals, then changes nothing. What it removes: the apt cache; root's pip cache; the CUDA and VisionWorks offline installer repos (the toolkits themselves stay installed); CUDA/TensorRT/VisionWorks samples and the CUDA documentation; the CUDA/cuDNN/TensorRT/VisionWorks -dev packages (headers and static libraries, needed only to compile CUDA code on the robot, which nothing of ours does); Chromium, Firefox and Thunderbird; and every old deploy directory except the live one and the two newest before it. It never runs apt autoremove (with the CUDA metapackages gone, that would take the CUDA runtime libraries too), and never touches recordings (just robot-prune-recordings) or the journal
+[group('robot: deploy and restart (someone at the robot)')]
+robot-disk-cleanup apply="false" remote_host=default_jetrover_host remote_user="jetson":
+    #!/usr/bin/env bash
+    set -uo pipefail
+    ssh -o StrictHostKeyChecking=accept-new "{{remote_user}}@$(just _robot-host "{{remote_host}}")" "APPLY={{apply}} bash -s" <<'REMOTE'
+    set -uo pipefail
+    echo "--- before: $(df -h / | tail -1 | awk '{print $4 " free of " $2 " (" $5 " used)"}')"
+    installed() { dpkg-query -Wf '${Package}\n' 2>/dev/null | grep -E "$1" | sort -u; }
+    mb() { dpkg-query -Wf '${Installed-Size}\n' "$@" 2>/dev/null | awk '{s+=$1} END {printf "%.0f MB", s/1024}'; }
+    repos=$( { installed '^cuda-repo-l4t-.*-local$'; dpkg -S /var/visionworks-repo /var/visionworks-sfm-repo 2>/dev/null | cut -d: -f1 | tr ', ' '\n'; } | grep -v '^$' | sort -u)
+    samples=$(installed '^(cuda-samples-|cuda-documentation-|libnvinfer-samples|libvisionworks-samples|libvisionworks-sfm-samples|libvisionworks-tracking-samples|vpi.*-samples)')
+    dev=$(installed '^(libcudnn[0-9]*-dev|libnvinfer(-plugin)?-dev|libnvonnxparsers-dev|libnvparsers-dev|python3-libnvinfer-dev|libvisionworks(-sfm|-tracking)?-dev|vpi[0-9]*-dev|cuda-[a-z0-9-]*-dev-10-2|libcu[a-z0-9]*-dev-10-2|libnpp[a-z0-9]*-dev-10-2)$')
+    apps=$(installed '^(chromium-browser|chromium-browser-l10n|chromium-codecs-ffmpeg-extra|firefox|firefox-locale-.*|thunderbird|thunderbird-locale-.*|thunderbird-gnome-support)$')
+    for group in repos samples dev apps; do
+        list=${!group}
+        echo "--- $group ($(echo $list | wc -w) packages, $( [ -n "$list" ] && mb $list || echo '0 MB')): $(echo $list | tr '\n' ' ')"
+    done
+    all=$(echo $repos $samples $dev $apps)
+    echo '--- apt would remove (simulation; any line here not in the lists above is pulled in by them):'
+    [ -n "$all" ] && sudo -n apt-get -s purge $all 2>/dev/null | grep -E '^Purg|^Remv' | awk '{print "  " $2}' | sort | tr '\n' ' ' | fold -w 160 -s; echo
+    echo "--- caches: apt $(sudo -n du -sh /var/cache/apt 2>/dev/null | cut -f1), root's pip $(sudo -n du -sh /root/.cache/pip 2>/dev/null | cut -f1)"
+    old=()
+    for link in ~/*_current; do
+        [ -L "$link" ] || continue
+        live=$(readlink -f "$link"); prefix=$(basename "$live"); prefix=${prefix%_*}; prefix=${prefix%_*}
+        keep=$(ls -d ~/"${prefix}"_* 2>/dev/null | grep -v _current | grep -vx "$live" | sort | tail -2)
+        for d in $(ls -d ~/"${prefix}"_* 2>/dev/null | grep -v _current | grep -vx "$live" | sort); do
+            echo "$keep" | grep -qx "$d" || old+=("$d")
+        done
+    done
+    echo "--- old deploy directories to delete: ${#old[@]} ($( [ ${#old[@]} -gt 0 ] && du -sch "${old[@]}" | tail -1 | cut -f1 || echo 0))"
+    if [ "$APPLY" != true ]; then echo; echo "dry run: nothing changed. just robot-disk-cleanup true applies it"; exit 0; fi
+    echo '--- applying'
+    [ -n "$all" ] && sudo -n DEBIAN_FRONTEND=noninteractive apt-get purge -y -q $all 2>&1 | grep -E '^(Removing|Purging)|^E:' | sed 's/^/  /' | tail -60
+    sudo -n apt-get clean
+    sudo -n rm -rf /root/.cache/pip
+    [ ${#old[@]} -gt 0 ] && rm -rf "${old[@]}"
+    echo "--- after: $(df -h / | tail -1 | awk '{print $4 " free of " $2 " (" $5 " used)"}')"
+    REMOTE
+
+# Delete recordings from the robot that this machine already holds, verified: a session goes only when every file in it on the robot has a copy under recordings/jetrover/<id>/ here with the same sha256. Never the session that is recording (named in ~/recordings/.active) or one whose logs are not closed yet (no END trailer). Dry run unless apply=true. Run just fetch-recordings first to copy what is missing
+[group('robot: recording (docs/adr/0021)')]
+robot-prune-recordings apply="false" remote_host=default_jetrover_host remote_user="jetson":
+    #!/usr/bin/env bash
+    set -uo pipefail
+    target="{{remote_user}}@$(just _robot-host "{{remote_host}}")"
+    remote=$(ssh -o StrictHostKeyChecking=accept-new "$target" 'active=$(cat ~/recordings/.active 2>/dev/null); cd ~/recordings/jetrover 2>/dev/null || exit 0
+        for d in */; do d=${d%/}
+            [ -n "$active" ] && [ "$(basename "$active")" = "$d" ] && { echo "SKIP $d recording now"; continue; }
+            open=0; for j in "$d"/*.jlog; do [ -f "$j" ] && { tail -c 300 "$j" | grep -q "END|" || open=1; }; done
+            [ $open = 1 ] && { echo "SKIP $d a log is not closed"; continue; }
+            find "$d" -type f -print0 | xargs -0 sha256sum | sed "s|^|FILE |"
+        done')
+    echo "$remote" | grep '^SKIP' | sed 's/^SKIP /  keeping /'
+    verified=$(echo "$remote" | grep '^FILE ' | python3 -c '
+    import hashlib, os, sys, collections
+    files = collections.defaultdict(list)
+    for line in sys.stdin:
+        _, sha, path = line.rstrip("\n").split(None, 2)
+        files[path.split("/", 1)[0]].append((path, sha))
+    for sid, entries in sorted(files.items()):
+        bad = []
+        for path, sha in entries:
+            local = os.path.join("recordings", "jetrover", path)
+            if not os.path.isfile(local):
+                bad.append(f"{path} missing here")
+                continue
+            with open(local, "rb") as f:
+                if hashlib.sha256(f.read()).hexdigest() != sha:
+                    bad.append(f"{path} differs")
+        if bad:
+            print(f"keeping {sid}: " + "; ".join(bad[:3]), file=sys.stderr)
+        else:
+            print(sid)
+    ')
+    n=$(echo "$verified" | grep -c . || true)
+    echo "--- verified on this machine and deletable on the robot: $n session(s)"
+    echo "$verified" | grep . | sed 's/^/  /'
+    if [ "{{apply}}" != true ] || [ "$n" = 0 ]; then [ "{{apply}}" != true ] && echo "dry run: nothing deleted. just robot-prune-recordings true deletes them"; exit 0; fi
+    ids=$(echo "$verified" | grep -E '^[0-9]{8}T[0-9]{6}Z-[A-Za-z0-9._-]+$' | tr '\n' ' ')
+    ssh "$target" "cd ~/recordings/jetrover && for d in $ids; do rm -rf -- \"\$d\" && echo \"  deleted \$d\"; done; echo \"--- free now: \$(df -h / | tail -1 | awk '{print \$4}')\""
+    REMOTE_DONE=1
 
 # Read-only: subscribe to RobotHost's joint-state stream (docs/adr/0018) for a few seconds and print the frame rate, round trip, and per motor whether it is sensed (servo feedback) or only a commanded belief. Sends a keepalive, never a command: nothing moves
 [group('robot: checks and diagnostics (nothing moves)')]
@@ -2412,7 +2566,24 @@ pack-trainer:
 
 robot_recordings := "/home/jetson/recordings"
 
-# Start recording on the robot -- moves nothing. Writes session.json (the conditions describe the session for splits and stratification, never the model's inputs) and the control file RobotHost and the driver both watch, then checks both logs are growing. After the label and the slider (rad/s, or varied), options as key=value, e.g. `just record-start payload-100g 2.5 load=payload payload_g=100`: load (none, payload or hand), payload_g, network (the robot-side uplink profile: lan for none, or "schedule:<profile>@<s>;..." for one that changes mid-session, quoted for the ;), added_delay_ms, motion (teleop, or joint-drive:<script>), operator, notes, remote_host, remote_user
+# Internal: if the robot is recording an automatic session (RobotHost opened it: ~/recordings/.active-auto names the same directory as .active, docs/adr/0023 decision 4), close it and wait until RobotHost has completed it (END trailers, session.json, files.sha256). A manual session, or none, is left alone. Same steps as robot/pilot/onboard.py's close_auto_session (keep the two the same). Moves nothing
+_close-auto-session host remote_user="jetson":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    ssh -o StrictHostKeyChecking=accept-new "{{remote_user}}@{{host}}" 'bash -s' <<'SH'
+    set -euo pipefail
+    r={{robot_recordings}}
+    dir=$(cat "$r/.active" 2>/dev/null || true)
+    [ -n "$dir" ] || exit 0
+    [ "$(cat "$r/.active-auto" 2>/dev/null || true)" = "$dir" ] || exit 0
+    echo "closing the automatic session $(basename "$dir") first (manual sessions win)" >&2
+    rm -f "$r/.active"
+    for i in $(seq 1 120); do [ -f "$dir/files.sha256" ] && break; sleep 0.25; done
+    [ -f "$dir/files.sha256" ] || { echo "error: RobotHost did not complete $(basename "$dir") within 30 s -- just robothost-logs" >&2; exit 1; }
+    for f in "$dir"/*.jlog; do printf '  %-16s %s\n' "$(basename "$f")" "$(tail -n 1 "$f")" >&2; done
+    SH
+
+# Start recording on the robot -- moves nothing. Closes an automatic session RobotHost opened first, if one is open (manual sessions win, docs/adr/0023). Writes session.json (the conditions describe the session for splits and stratification, never the model's inputs) and the control file RobotHost and the driver both watch, then checks both logs are growing. After the label and the slider (rad/s, or varied), options as key=value, e.g. `just record-start payload-100g 2.5 load=payload payload_g=100`: load (none, payload or hand), payload_g, network (the robot-side uplink profile: lan for none, or "schedule:<profile>@<s>;..." for one that changes mid-session, quoted for the ;), added_delay_ms, motion (teleop, or joint-drive:<script>), operator, notes, remote_host, remote_user
 [group('robot: recording (docs/adr/0021)')]
 [positional-arguments]
 record-start label slider *options:
@@ -2433,6 +2604,8 @@ record-start label slider *options:
     target="$remote_user@$host"
     id="$(date -u +%Y%m%dT%H%M%SZ)-{{label}}"
     dir="{{robot_recordings}}/jetrover/$id"
+    # Manual sessions win (docs/adr/0023 decision 4): an automatic one RobotHost opened is closed first.
+    just _close-auto-session "$host" "$remote_user"
     if ssh -o StrictHostKeyChecking=accept-new "$target" "test -s {{robot_recordings}}/.active"; then
         echo "error: a session is already recording ($(ssh "$target" cat {{robot_recordings}}/.active)) -- just record-stop first" >&2
         exit 1
@@ -2462,7 +2635,19 @@ record-start label slider *options:
     )
     ssh "$target" "mkdir -p $dir && cat > $dir/session.json" <<< "$meta"
     scp -q core/RobotProfiles/jetrover.json "$target:$dir/robot-profile.json"
-    ssh "$target" "printf '%s\n' $dir > {{robot_recordings}}/.active"
+    # The control file is created only if it does not exist (a hard link, which fails if it does):
+    # RobotHost may have opened an automatic session since the check above, and then it is closed again.
+    opened=false
+    for attempt in 1 2 3; do
+        if ssh "$target" "[ -s {{robot_recordings}}/.active ] || rm -f {{robot_recordings}}/.active; printf '%s\n' $dir > {{robot_recordings}}/.active.start && ln {{robot_recordings}}/.active.start {{robot_recordings}}/.active; s=\$?; rm -f {{robot_recordings}}/.active.start; exit \$s" 2>/dev/null; then
+            opened=true; break
+        fi
+        just _close-auto-session "$host" "$remote_user"
+    done
+    if ! $opened; then
+        echo "error: could not take the control file ($(ssh "$target" cat {{robot_recordings}}/.active 2>/dev/null)) -- just record-stop first" >&2
+        exit 1
+    fi
     sleep 2.5
     sizes=$(ssh "$target" "stat -c '%n %s' $dir/robothost.jlog $dir/driver.jlog 2>&1 || true")
     echo "$sizes"
@@ -2479,7 +2664,7 @@ record-start label slider *options:
     fi
     echo "recording $id"
 
-# Stop the robot's recording -- moves nothing. Removes the control file, waits for both logs' END trailers, stamps stoppedUtc, sets the session's slider from the speed its joint commands actually carried (warning when that is not what record-start was told), and writes files.sha256
+# Stop the robot's recording -- moves nothing. An automatic session (docs/adr/0023) is only closed: RobotHost completes it. Otherwise removes the control file, waits for both logs' END trailers, stamps stoppedUtc, sets the session's slider from the speed its joint commands actually carried (warning when that is not what record-start was told), and writes files.sha256
 [group('robot: recording (docs/adr/0021)')]
 record-stop remote_host=default_jetrover_host remote_user="jetson":
     #!/usr/bin/env bash
@@ -2489,6 +2674,16 @@ record-stop remote_host=default_jetrover_host remote_user="jetson":
     set -euo pipefail
     control={{robot_recordings}}/.active
     [ -s "$control" ] || { echo "nothing is recording" >&2; exit 1; }
+    if [ "$(cat {{robot_recordings}}/.active-auto 2>/dev/null || true)" = "$(cat "$control")" ]; then
+        # An automatic session (docs/adr/0023): RobotHost completes it itself, and leaves its own uplink alone.
+        dir=$(cat "$control"); rm -f "$control"
+        echo "stopping the automatic session $(basename "$dir"); RobotHost completes it (the next one opens on a command after 30 s without one)"
+        for i in $(seq 1 120); do [ -f "$dir/files.sha256" ] && break; sleep 0.25; done
+        [ -f "$dir/files.sha256" ] || { echo "error: RobotHost did not complete it within 30 s -- just robothost-logs" >&2; exit 1; }
+        for f in "$dir"/*.jlog; do printf '%-16s %s\n' "$(basename "$f")" "$(tail -n 1 "$f")"; done
+        echo "stopped $(basename "$dir")"
+        exit 0
+    fi
     if [ -e {{robot_recordings}}/.uplink ]; then rm -f {{robot_recordings}}/.uplink; sleep 1; fi
     dir=$(cat "$control"); rm -f "$control"
     for i in $(seq 1 60); do
@@ -2733,7 +2928,13 @@ fetch-recordings remote_host=default_jetrover_host remote_user="jetson":
     host=$(just _robot-host "{{remote_host}}")
     mkdir -p recordings/jetrover
     before=$(ls recordings/jetrover)
-    rsync -a --ignore-existing -e "ssh -o StrictHostKeyChecking=accept-new" "{{remote_user}}@$host:{{robot_recordings}}/jetrover/" recordings/jetrover/
+    # Not the session recording now, nor an automatic one RobotHost has closed but not yet completed
+    # (docs/adr/0023): --ignore-existing would keep their half-written files here for good.
+    skip=$(ssh -o StrictHostKeyChecking=accept-new "{{remote_user}}@$host" 'r={{robot_recordings}}; a=$(cat $r/.active 2>/dev/null); [ -n "$a" ] && basename "$a";
+        for d in $r/jetrover/*/; do [ -d "$d" ] || continue; [ -f "$d/files.sha256" ] || ! grep -q "\"label\": \"auto\"" "$d/session.json" 2>/dev/null || basename "$d"; done; true' | sort -u)
+    excludes=()
+    for s in $skip; do excludes+=(--exclude "/$s/"); echo "skipping $s: recording, or not completed yet" >&2; done
+    rsync -a --ignore-existing ${excludes[@]+"${excludes[@]}"} -e "ssh -o StrictHostKeyChecking=accept-new" "{{remote_user}}@$host:{{robot_recordings}}/jetrover/" recordings/jetrover/
     new=$(comm -13 <(echo "$before" | sort) <(ls recordings/jetrover | sort) || true)
     if [ -z "$new" ]; then echo "nothing new"; exit 0; fi
     echo "fetched: $new"

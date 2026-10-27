@@ -383,3 +383,79 @@ def test_a_read_waits_for_the_settle_time_after_a_write(monkeypatch):
     clock.now += 1.0
     controller.getRawPos(servoID=SERVO_ID)
     assert len(slept) == 1  # long after the write: no wait
+
+
+class TorqueBoard(StubBoard):
+    """StubBoard that also records torque switches: (servo_id, enable) per call."""
+
+    def __init__(self):
+        super().__init__()
+        self.torque = []
+
+    def bus_servo_enable_torque(self, servo_id, enable):
+        self.torque.append((servo_id, enable))
+
+
+def test_torque_switch_covers_all_six_servos_the_shoulder_included(monkeypatch):
+    """/arm/servo/set/torque switched motors 1, 3, 4, 5 and 10 until 2026-10-26: never the shoulder."""
+    board = TorqueBoard()
+    controller, _ = make_controller(monkeypatch, board)
+
+    assert controller.setTorqueState(0) == 6
+    assert board.torque == [(1, 0), (2, 0), (3, 0), (4, 0), (5, 0), (10, 0)]
+
+    board.torque.clear()
+    controller.setTorqueState(1)
+    assert board.torque == [(1, 1), (2, 1), (3, 1), (4, 1), (5, 1), (10, 1)]
+    assert set(servo_controller_module.ARM_MOTOR_IDS) == {1, 2, 3, 4, 5, 10}
+
+
+def test_torque_on_only_for_exactly_1(monkeypatch):
+    """The topic's existing meaning, which the relay relies on: 1 is on, anything else is off."""
+    board = TorqueBoard()
+    controller, _ = make_controller(monkeypatch, board)
+
+    controller.setTorqueState(2)
+    assert {enable for _, enable in board.torque} == {0}
+
+
+def test_torque_switch_drops_pending_targets(monkeypatch):
+    """A target still in its cooldown must not be written after a torque-off: it could stiffen the servo."""
+    board = TorqueBoard()
+    controller, clock = make_controller(monkeypatch, board)
+
+    controller.setPos(servoID=SERVO_ID, direction=500, pulses_per_second=PULSES_PER_SECOND)
+    clock.now += 0.01
+    controller.setPos(servoID=SERVO_ID, direction=530, pulses_per_second=PULSES_PER_SECOND)  # pending
+    controller.setTorqueState(0)
+    clock.now += 1.0
+    controller.flushPending()
+    assert len(board.written) == 1
+
+
+def test_after_a_torque_switch_the_next_move_is_timed_from_the_last_reading(monkeypatch):
+    """A limp arm may have been moved: the next move's duration comes from where the servo was read,
+    not from the last target sent, or a long way would be covered in a short duration."""
+    board = TorqueBoard()
+    controller, clock = make_controller(monkeypatch, board)
+
+    controller.setPos(servoID=SERVO_ID, direction=500, pulses_per_second=PULSES_PER_SECOND)
+    clock.now += 1.0
+    board.read_return = 800  # the arm was pushed while limp
+    controller.getRawPos(servoID=SERVO_ID)
+    controller.setTorqueState(1)
+
+    controller.setPos(servoID=SERVO_ID, direction=510, pulses_per_second=PULSES_PER_SECOND)
+    assert board.written[-1] == (pytest.approx(290 / PULSES_PER_SECOND), [[SERVO_ID, 510]])
+
+
+def test_after_a_torque_switch_a_servo_never_read_starts_over(monkeypatch):
+    board = TorqueBoard()
+    controller, clock = make_controller(monkeypatch, board)
+
+    controller.setPos(servoID=SERVO_ID, direction=500, pulses_per_second=PULSES_PER_SECOND)
+    clock.now += 1.0
+    controller.setTorqueState(1)
+    controller.setPos(servoID=SERVO_ID, direction=503, pulses_per_second=PULSES_PER_SECOND)
+    # No reading and no last sent pulse: written (no write gate), at the minimum duration, as at start-up.
+    assert board.written[-1] == (MIN_MOVE_DURATION_SECONDS, [[SERVO_ID, 503]])

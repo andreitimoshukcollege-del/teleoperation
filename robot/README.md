@@ -42,7 +42,23 @@ Read-only checks:
 - `just ros-check`: is the board answering the driver;
 - `just robot-feedback-ids`: which servos report position;
 - `just robot-battery`: battery voltage;
-- `just robot-board-commands`: what the board accepts.
+- `just robot-board-commands`: what the board accepts;
+- `just robot-disk`: what fills the card.
+
+**Disk space.** The Jetson's card is 26 GB, and the system takes about 18 GB of it. On 2026-10-26 it
+was 95% full (1.3 GB free). `just robot-disk-cleanup true` took it to 6.4 GB free by removing:
+- the CUDA and VisionWorks offline installer repos, the samples and the CUDA documentation;
+- the CUDA/cuDNN/TensorRT -dev packages, `nvcc` included (nothing here compiles CUDA on the
+  robot);
+- Chromium, Firefox and Thunderbird;
+- the apt and pip caches, and old deploy directories (it keeps the live one and the two before it).
+
+The CUDA, cuDNN and TensorRT runtimes stay installed. Never run `apt autoremove` here: with the
+CUDA metapackages gone, it would remove the runtime libraries too.
+
+Every deploy leaves a directory behind, so run the cleanup now and then. Recordings come off the
+robot with `just fetch-recordings`, then `just robot-prune-recordings true`: it deletes only
+sessions this machine holds byte for byte (sha256).
 
 ## Recording sessions for the trainer (docs/adr/0021)
 
@@ -50,13 +66,16 @@ The learned joint predictor (`trainer/`) learns from what the robot itself recor
 and write (the driver's `driver.jlog`) and every command, relay message and frame (RobotHost's
 `robothost.jlog`), all on the Jetson's CLOCK_MONOTONIC. The format is
 `trainer/contract/SESSION_FORMAT.md`. Recording moves nothing and restarts nothing: both processes
-watch `~/recordings/.active` and write while it names a session directory.
+watch `~/recordings/.active` and write while it names a session directory. Since docs/adr/0023,
+RobotHost also opens sessions itself whenever the robot is commanded ([automatic
+sessions](#automatic-sessions-docsadr0023-decision-4), below); the recipes here are for sessions with
+known conditions, and they take precedence.
 
 Once, with someone at the robot (the ROS deploy restarts the servo driver):
 
 ```bash
 just deploy-ros                   # the driver's session log
-just deploy-robothost             # RobotHost with --record-control and --uplink-control
+just deploy-robothost             # RobotHost with --record-control, --uplink-control and --auto-record
 just jetson-clock-check           # both logs really are on one clock
 ```
 
@@ -145,6 +164,102 @@ are not committed.
 - **Hand resistance stays light:** a stall of at most 2 s, contact for at most 20% of a session. Stop
   at a servo above 60 °C or a pack below 11.0 V. If the board goes silent, run `just arm-logs` and
   `just robot-board-diagnose` before the power switch.
+
+### Automatic sessions (docs/adr/0023 decision 4)
+
+RobotHost records whenever **the headset** commands the robot, with nobody running `record-start`
+(`--auto-record`, which `just deploy-robothost` passes; `auto_record=false` leaves it out):
+
+- **Only the headset (since 2026-10-26).** The Bridge sends a headset heartbeat once a second on the
+  joint port (docs/adr/0018 §9). A joint command counts only when its sender sent one within
+  `--auto-record-headset-seconds` (5). `joint-drive`, `move-arm`, `joint-probe` and other tools send
+  none, so they are never recorded automatically (use `record-start` or `record-drive`); their commands
+  during a headset session close it, as any sender change does. Unity's editor with Direct Preview
+  runs the same Bridge, so it counts as the headset.
+- **It opens a session** on the first headset joint command after at least 30 s without one (or since
+  RobotHost started), into `~/recordings/jetrover/<UTC>-auto/` (`-auto-2`, ... when one second holds
+  two). It writes `session.json` itself (label and motion `auto`, load `unknown`, operator
+  `headset <sender ip:port>` (`auto <ip:port>` in sessions recorded before 2026-10-26), the robot-side uplink as RobotHost has it, the builds from
+  `~/robothost_current/BUILD_INFO` and `~/teleop_ros_current/BUILD_INFO`), a copy of the robot profile
+  (`~/robothost_current/robot-profile.json`, which `deploy-robothost` copies from
+  `core/RobotProfiles/jetrover.json`), the marker `~/recordings/.active-auto`, and then `.active`, which
+  the driver follows as for any session. `.active-auto` holding the same directory as `.active` is what
+  makes a session automatic; anything else is manual.
+- **It closes it** after 30 s without a command; at once, opening the next one, when the joint-command
+  sender or the joint-state subscriber changes (the check allows one of each per session; a second
+  change within 5 s does not split again, so two endpoints taking turns on the joint port make one
+  failing session, not hundreds); after 60 minutes (about 200 MB), the next command opening the next
+  one; and when less than 1 GB is free. **No session opens with less than 2 GB free**, and RobotHost's
+  journal says so (`just robothost-logs`).
+- **On close it completes the session** as `record-stop` does: it waits for the driver's `END` trailer
+  (15 s at most; the notes say when it gave up), stamps `stoppedUtc`, sets the slider from the speeds
+  the commands carried (`"unknown"` if none carried one), marks the uplink `varied` if RobotHost's own
+  impairment changed during the session (its `UP` records say when), and writes `files.sha256`.
+- **What nobody on the robot knows** stays unknown: the load (`unknown`, so `armpred sysid`, which
+  takes only load `none`, leaves these sessions out), the operator, and any disturbance added on the
+  headset (`addedDelayMs` is null; a headset-side uplink delay still shows in the `JC` timing).
+  Relabel on the laptop once fetched, as `just recording-set-slider` does for the slider.
+- **Manual sessions win.** `record-start` and the onboard pilot first close an automatic session (clear
+  `.active`, wait for RobotHost to complete it), then take the control file, with a hard link that fails
+  if RobotHost opened another one meanwhile. While `.active` names a manual session, the automatic
+  recorder stays out; when a manual session ends and commands keep coming, the next automatic session
+  opens only after the next 30 s without a command. `just record-stop` on an automatic session only
+  closes it (RobotHost completes it).
+- **Restarts and full disks lose nothing already written.** Neither writer truncates a log that exists:
+  when RobotHost or the driver restarts during a manual session, the session's first log is kept as it
+  was (cut off, without a trailer, so the check fails it) and the writer continues in
+  `robothost.2.jlog` / `driver.2.jlog`. An automatic session an earlier RobotHost left open is closed and
+  completed by the next one, and the next command opens a new session. RobotHost now handles
+  `systemctl restart` (SIGTERM) as Ctrl+C, so a session open at a redeploy gets its trailer. An I/O
+  error closes the session, with its trailer if the disk still takes it, instead of killing RobotHost
+  or silently stopping the driver's writer thread.
+- **Retention:** recordings stay on the robot until copied. `just fetch-recordings` (it skips the session
+  recording now and automatic ones not completed yet), then `just robot-prune-recordings true`, which
+  deletes only sessions this machine holds with identical sha256s. `just robot-recordings` and
+  `just robot-disk` show what is there. Each threshold is a RobotHost argument
+  (`--auto-record-idle-seconds`, `--auto-record-max-minutes`, `--auto-record-stop-free-gb`,
+  `--auto-record-start-free-gb`, `--auto-record-driver-wait-seconds`, `--auto-record-min-split-seconds`,
+  `--auto-record-headset-seconds`; `Teleop.RobotHost`'s usage text lists them all).
+
+## Park, then relax (docs/adr/0023 decision 5)
+
+Turning the robot **OFF** on the headset parks the arm slowly at a supported rest pose and then
+switches every servo's torque off (the gripper's too), because holding torque for a long time may be
+what makes the servo board go silent (2026-10-26: silent after 77 idle minutes with torque on).
+**ON** switches the torque back on before any command is forwarded; **PAUSE** stops commands with the
+torque as it is. What RobotHost does, step by step, is in the ADR; `just robothost-logs` shows each
+`[power]` line, and recorded sessions carry `PQ`, `PS`, `PK` and `TQ` records.
+
+- **The rest pose** is `jetrover_rest_pose_deg` at the top of the `justfile`, which
+  `just deploy-robothost` passes as `--rest-pose-deg`: degrees, motors 1-5 (base yaw, shoulder, elbow,
+  wrist pitch, wrist roll), in the joint angles `just joint-probe` prints (the profile's zero offsets
+  applied). The gripper is not moved. Empty refuses every relax. The default is the pose the user
+  placed and measured on 2026-10-26 (the second placing): −1.20, 91.16, −78.48, −112.0, 5.76. It read
+  −114.0 on the wrist, 1.3° past the wrist's measured range (−112.7 to 117.0, docs/adr/0020), so the
+  wrist is pulled in to −112.0; at −114 every relax would be refused. Re-measure with the wrist inside
+  its range.
+- **To measure it again:** place the arm on its support (by hand with the torque off, for example
+  during `just robot-measure-joint-limits`, or drive it there slowly with the headset), take the
+  readings with `just joint-probe` while the headset's motion is off, write the five sensed angles
+  into `jetrover_rest_pose_deg` (or export `JETROVER_REST_POSE_DEG`), and `just deploy-robothost`.
+- **The collision check still decides.** RobotHost samples the straight joint path from where the arm
+  is to the rest pose against its collision model (docs/adr/0020) and refuses the relax if any sample
+  collides; the headset shows the reason. A pose the arm *rests on* something in touches the model's
+  body boxes by definition; RobotHost logs a note at start when the rest pose collides or is outside a
+  joint's range. The current pose is clear by the model and parks from home with the strict check.
+  The first 2026-10-26 pose (−0.72, 92.12, −93.12, −95.28, 5.76) had the gripper on `Body.7` and
+  was refused. For a pose like that, `--park-contact-deg` (`JETROVER_PARK_CONTACT_DEG`, empty: off)
+  allows exactly that contact within so many degrees of the rest pose and nothing else; 10 let that
+  pose park from the model's home pose. It is off, and the current pose does not need it.
+- **Relay wire v5.** The torque switch travels RobotHost → relay → `/arm/servo/set/torque`
+  (`std_msgs/Int32`, 1 on, 0 off). RobotHost and the ROS side must be deployed together
+  (`just deploy-robot`, or `just deploy-ros` then `just deploy-robothost`); against an older relay,
+  either end rejects the other's messages, the arm does not move and the headset shows the board silent.
+- **While the board is silent no torque command reaches the servos**, and no reading arrives: a relax
+  is refused (`board not answering`), and a park in progress ends holding. Relaxing can only prevent the
+  next silence, never end one; that still needs the power switch (incident log below).
+- **Nothing confirms the torque switch.** The driver does not read the torque state back, so "relaxed"
+  means the torque-off was sent. `just robot-shutdown` (which does read it back) is the check.
 
 ## How it connects to the rest of the repo
 
@@ -528,3 +643,10 @@ translates the local wire protocol above into calls against `jetrover_arm_contro
   therefore always inverted. `robot_controller_sdk.py` is corrected, and goes live with the next
   `just deploy-ros`. `just robot-measure-joint-limits` sends 0x0B itself, so it does not depend on
   the deployed version, and checks the read-back before telling anyone to move the arm.
+- **The torque topic missed the shoulder (found 2026-10-26).** `/arm/servo/set/torque` calls
+  `ServoController.setTorqueState`, which looped over a hardcoded `servoList = [1, 3, 4, 5, 10]`: no
+  motor 2. A torque-off through the topic would have left the shoulder holding while the rest went
+  limp, and a torque-on would never have re-enabled it. Nothing used the topic until park-and-relax
+  (docs/adr/0023 decision 5); `robot-shutdown` and `robot-measure-joint-limits` address the servos
+  themselves. The list is now `ARM_MOTOR_IDS = (1, 2, 3, 4, 5, 10)` (`test_servo_controller.py` checks
+  all six); the swapped board codes above are unchanged.

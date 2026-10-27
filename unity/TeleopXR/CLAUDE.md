@@ -82,11 +82,19 @@ Contents:
     position, and the bridge still reads it.
   - **`TwinGripper`** on the wrist closes the twin's jaws by the gripper command and rolls the
     gripper by the wrist roll. It shows what is sent; the real gripper has no feedback.
-  - **`MotionToggleButton`, the robot's start/stop switch, on the bench's front-left corner.** It
-    is red when off (`ROBOT OFF`) and green when on, and **off at every launch**. Press it down
-    with a fingertip. Only a fingertip counts; no ray or far pinch can press it. Off means nothing
-    is sent and the robot holds still, while the virtual arm still follows your hands. It shows
-    LOCKED when `ConfirmHardwareMotion` is off in the config.
+  - **`MotionToggleButton`, the robot's power and pause buttons, on the bench's front-left corner**
+    (docs/adr/0023 decision 5). Press them down with a fingertip. Only a fingertip counts; no ray or
+    far pinch can press them. The robot is **off at every launch**.
+    - **Power (the big one): red `ROBOT OFF`, green `ROBOT ON`.** On switches the arm's torque on, and
+      no command goes until RobotHost reports the arm holding (`STARTING`). Off parks the arm at its
+      rest pose and then switches torque off (`PARKING N°`, then `relaxed`). If RobotHost refuses the
+      park, the label says why, and the arm keeps its torque where it stopped.
+    - **PAUSE (the small one to its left), amber when paused.** It works only while the robot is on.
+      Paused sends nothing and keeps torque on, so the arm holds where it is; press PAUSE or power to
+      go on again. Use it instead of power when you do not want the arm to relax.
+    - Off and paused both send nothing while the virtual arm still follows your hands, and both
+      offer the camera display for moving. Both buttons show LOCKED when `ConfirmHardwareMotion` is
+      off in the config.
   - Tune these with `just push-galaxy-config`, no rebuild: `ClutchScale`, `ClutchMinHeightMeters`
     (the wrist never goes lower, default −0.05 m below the base pivot), `GripperPinchOpenMeters` and
     `GripperPinchClosedMeters`. Edit them in `unity/Teleop.Bridge/Runtime/Resources/jetrover_connection.json`
@@ -95,10 +103,9 @@ Contents:
 - **The twin's three arms (docs/adr/0018), built by the same `XrControlSetup`:**
   - **Predicted, solid** (`PredictedArm`): where the robot most likely is right now. It is the
     newest joint-state frame from the robot, rolled forward by the joint predictor through the
-    commands sent since. `JointPredictorName` is `relay-replay` (default since 2026-10-20: it
-    models the relay's paced servo writes, and `JointReadingAge*` says how much older than its
-    stamp each motor's reading is), `servo-replay` (the earlier model; it snapped back on every
-    fresh reading) or `hold-last` (no prediction).
+    commands sent since. Which predictor does it is chosen on the operator console (below), from
+    the config's `JointPredictorPresets`; `JointPredictorActive` names the one drawing at launch
+    (`servo 10-25`, relay-replay-servo with the 2026-10-25 fit).
   - **Commanded, ghost**: the clutch's arm, where you told it to go.
   - **Measured, faint amber** (`MeasuredArm`): the newest frame exactly as received, about one
     network trip old.
@@ -124,6 +131,30 @@ Contents:
   - **Finding the right arm.** Editor tools find the commanded arm through the bridge's `armRig`
     (`XrControlSetup.CommandedRig`), never "any rig": the scene holds three.
 
+- **The operator console (docs/adr/0023)**, on the bench's left behind the motion button, built by
+  `XrControlSetup.BuildConsole`:
+  - **Front row, predictors.** One slot per `JointPredictorPresets` entry (up to six; labels come from
+    the config at runtime). Press a slot's cap to draw the twin with that predictor; it lights green.
+    The small dot beside it turns the predictor on or off. Every predictor that is on runs side by side
+    on the same stream (Core's `JointPredictorBank`), so switching is instant and keeps history; one
+    turned on again starts from nothing and shows `warming up` until its first reading. The drawing
+    one cannot be turned off.
+  - **Behind it, three amber network sliders**: LAG (one-way, 0–1000 ms), JITTER (0–200 ms) and LOSS
+    (0–30%), applied together on the headset to the joint link in both directions
+    (`JointLinkDisturbance`) once they stop moving for 0.4 s; all at zero is off. While one is on,
+    the panel and the twin's status line say `NETWORK DISTURBED`, and each change is logged with its
+    seed. Anything recorded with one on is not a real-network measurement. The bridge's caps
+    (`DisturbanceMaxDelayMs`, `DisturbanceMaxLossPercent`) bound them.
+  - **Servo board silent.** When frames keep arriving but the servo readings stop advancing for 3 s,
+    the twin's status line and the panel say `SERVO BOARD NOT ANSWERING · power-cycle the robot`
+    (`JetRoverJointStateLink.BoardSilent`; robot/README.md's incident log has the fault).
+  - **The panel**, raised above the sliders: each preset's one-line `Description` from the config, and for every predictor that is on, error p50/p95, correction p95 and
+    jitter p95 (degrees, arm joints) and the gripper's error p95 (servo degrees), over the last 30 s,
+    four times a second (Core's `LiveJointScorer`, docs/metrics.md §4's live variants). Diagnostics,
+    never results.
+  - New presets need no rebuild: edit `JointPredictorPresets` in the Resources JSON and
+    `just push-galaxy-config`. `just unity-check-xr` checks the console's wiring (not a safety
+    setting: it moves nothing).
 - **The added-delay slider** (orange, beside the speed slider): 0–400 ms held back on the robot's
   state reports before they become the measured arm and reach the predictor. Commands are not
   delayed, and clock sync sees the real arrival.
@@ -173,7 +204,7 @@ build, if any of them changes:
 | Gripper pinch range | open distance > closed distance | otherwise the mapping is inverted |
 | `JetRoverOperatorBridge.motionEnabledAtStart` | off | the robot must not move at launch, before anyone presses the button |
 | `JetRoverOperatorBridge.snapTargetToReachable` | on | when the IK stops at the robot's body, the marker moves to where the arm stopped, so it never sits inside the robot and the clutch re-engages from the arm (docs/adr/0020) |
-| `MotionToggleButton` | present, wired, enabled | the only way to start, and stop, the robot from the headset |
+| `MotionToggleButton` | one Power and one Pause, each present, wired, enabled | power is the only way to start, and stop, the robot from the headset |
 | `TwinArmsDriver` | present, wired, not driving the commanded arm | the robot's state must never overwrite the display of the command |
 | Hand smoothing filter | inactive | it filters the hand joints the clutch reads; intent is sent raw (ADR 0016 §5) |
 | Modality manager controllers | none | hands only |

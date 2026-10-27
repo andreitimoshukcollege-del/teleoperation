@@ -23,6 +23,13 @@ MIN_MOVE_DURATION_SECONDS = 0.05
 # the read's whole 1 s timeout: feedback fell from 20 Hz to under 2 Hz.
 WRITE_SETTLE_SECONDS = 0.003
 
+# Every servo this driver drives: the JetRover's base yaw (1), shoulder (2), elbow (3), wrist pitch
+# (4), wrist roll (5) and gripper (10), as in robot_controller_node.py's FEEDBACK_MOTOR_IDS and
+# core/RobotProfiles/jetrover.json. setTorqueState (the /arm/servo/set/torque topic) switches all of
+# them. Until 2026-10-26 its list was [1, 3, 4, 5, 10]: the shoulder was missing, so a torque-off
+# through the topic left it holding and a torque-on never re-enabled it (robot/README.md).
+ARM_MOTOR_IDS = (1, 2, 3, 4, 5, 10)
+
 
 class ServoController:
     """setPos (wire v4, docs/adr/0011-generic-robot-arm-profiles.md) receives an already-resolved
@@ -79,12 +86,13 @@ class ServoController:
         # WRITE_SETTLE_SECONDS after it.
         self._lastWriteAt = None
 
-        # Hardcoded motor ids for this JetRover's bulk diagnostic reads (temp/volt/torque) only --
-        # servo_id_enum.SERVO_ENUM is gone (docs/adr/0011: motor ids now arrive directly on the
-        # wire for position control, so nothing constructs a command by looking up a name
-        # anymore). These four numbers are what SERVO_ENUM.BASE_SERVO/MIDDLE_ARM/UPPER_ARM/
-        # GRIPPER_BASE/GRIPPER_MAIN used to resolve to.
-        self.servoList = [1, 3, 4, 5, 10]
+        # The servos for the bulk diagnostic reads (temp/volt/torque) and the torque switch: every
+        # one this driver drives (ARM_MOTOR_IDS). Position control needs no list: motor ids arrive on
+        # the wire (docs/adr/0011).
+        self.servoList = list(ARM_MOTOR_IDS)
+        # The last position each servo answered (pulse), from getRawPos. After a torque switch it
+        # replaces the last pulse sent, since a limp arm may have been moved (setTorqueState).
+        self._lastReadPulse = {}
 
     def getPos(self, servoID: int):
         return self.getRawPos(servoID=servoID)
@@ -204,6 +212,7 @@ class ServoController:
             # is logged too, ending when the read gave up).
             self._log.record("RD", requested, self._log.now(), servoID, readPos[0] if readPos else None)
             if(readPos):
+                self._lastReadPulse[servoID] = readPos[0]
                 # setPos no longer tracks a position belief for this to correct -- see class doc.
                 # This read is purely for robot_controller_node.py's own feedback-polling loop now,
                 # returned as raw pulse directly (no pulseToDeg conversion -- docs/adr/0011 moves
@@ -238,13 +247,24 @@ class ServoController:
         return torques
 
     def setTorqueState(self, state: int):
+        """The /arm/servo/set/torque topic (teleoperation docs/adr/0023 decision 5): 1 switches every
+        servo in servoList on, anything else off. bus_servo_enable_torque sends this board's own codes
+        (0x0C on, 0x0B off, the reverse of Hiwonder's SDK; robot/README.md, 2026-10-21).
 
+        Before the switch, every pending target is dropped: one written after a torque-off could
+        stiffen a servo again. After it, the last pulse sent is forgotten and the last one read takes
+        its place, because a limp arm may have been moved by hand or sagged: the next move's duration
+        is then worked out from where the servo really was, not from an old target (a short duration
+        over a long way would slam it). A servo never read has no last pulse, as at start-up.
+        Returns the number of servos switched."""
+        on = state == 1
+        self._pending.clear()
         for servoID in self.servoList:
-            if(state == 1):
-                self.board.bus_servo_enable_torque(servoID, 1)
-            else:
-                self.board.bus_servo_enable_torque(servoID, 0)
-
+            self.board.bus_servo_enable_torque(servoID, 1 if on else 0)
+        self._lastSentPulse = dict(self._lastReadPulse)
+        self._nextAllowedWriteAt.clear()
+        self._log.record("TQ", self._log.now(), 1 if on else 0)
+        return len(self.servoList)
 
     def getBoard(self):
         return self.boardMgr.getBoard()

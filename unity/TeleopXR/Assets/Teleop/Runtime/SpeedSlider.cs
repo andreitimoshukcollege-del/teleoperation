@@ -56,6 +56,7 @@ namespace Teleop.XR
         private XRHandSubsystem _hands;
         private float _value;
         private int _shown = -1;
+        private bool _course;
 
         private void Start()
         {
@@ -70,6 +71,17 @@ namespace Teleop.XR
                 return;
             }
 
+            // The training course sets the arm speed while it runs (docs/adr/0024 decision 4): the knob
+            // follows it and the slider cannot be moved.
+            if (setting == Setting.ArmSpeed && bridge.Training != null && bridge.Training.Running)
+            {
+                _value = Mathf.Clamp(bridge.Training.SpeedRadPerSec, minRadPerSec, maxRadPerSec);
+                _course = true;
+                Apply();
+                return;
+            }
+
+            _course = false;
             if (_hands == null || !_hands.running)
             {
                 _hands = FingertipPress.FindHands();
@@ -127,7 +139,7 @@ namespace Teleop.XR
                     console.SetNetwork(setting, _value);
             }
 
-            int shown = Mathf.RoundToInt(_value * 10f);
+            int shown = Mathf.RoundToInt(_value * 10f) * 2 + (_course ? 1 : 0);
             if (shown == _shown)
             {
                 return;
@@ -144,7 +156,9 @@ namespace Teleop.XR
             {
                 switch (setting)
                 {
-                    case Setting.ArmSpeed: label.SetText("ARM SPEED  {0:1} rad/s", _value); break;
+                    case Setting.ArmSpeed:
+                        label.SetText(_course ? "ARM SPEED  {0:1} rad/s · COURSE" : "ARM SPEED  {0:1} rad/s", _value);
+                        break;
                     case Setting.AddedDelay: label.SetText("ADDED DELAY  {0:0} ms", _value); break;
                     case Setting.NetworkLag: label.SetText("LAG  {0:0} ms", _value); break;
                     case Setting.NetworkJitter: label.SetText("JITTER  {0:0} ms", _value); break;

@@ -122,6 +122,16 @@ namespace Teleop.RobotHost.Recording
         public static string OperatorMode(long t, string kind, string mode, string endpoint) =>
             "OM|" + I(t) + "|" + Clean(kind) + "|" + Clean(mode) + "|" + Clean(endpoint);
 
+        /// <summary>
+        /// The headset's training course (docs/adr/0024 decision 7):
+        /// <c>TK|t|courseId|round|task|phase|purpose|speedLevel|score|disturbed</c>, the level in rad/s or
+        /// <c>varied</c>, the score as the headset counts it (final in phase <c>done</c>), disturbed 0 or 1.
+        /// </summary>
+        public static string Training(long t, in TrainingState s) =>
+            "TK|" + I(t) + "|" + s.CourseId.ToString(CultureInfo.InvariantCulture) + "|" + s.Round.ToString(CultureInfo.InvariantCulture) +
+            "|" + TrainingTaskCodec.Name(s.Task) + "|" + TrainingTaskCodec.Name(s.Phase) + "|" + TrainingTaskCodec.Name(s.Purpose) +
+            "|" + (float.IsNaN(s.SpeedLevel) ? "varied" : F(s.SpeedLevel)) + "|" + F(s.Score) + "|" + (s.Disturbed ? "1" : "0");
+
         public static string KindName(OperatorClientKind kind) => kind switch
         {
             OperatorClientKind.Headset => "headset",

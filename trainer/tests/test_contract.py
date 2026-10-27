@@ -139,3 +139,28 @@ def test_a_session_with_park_and_relax_records_is_read_and_checked(sim_session_d
     report = check_session_dir(d, allow_read_gaps=True)
     assert report.ok, report.lines()
     assert any("parking or relaxed" in w for w in report.warnings)
+
+
+def test_a_session_with_course_labels_reads_its_rounds(sim_session_dir, tmp_path):
+    # docs/adr/0024: RobotHost's TK records, the headset's training course. A new tag: the checker
+    # passes the session as before, and the reader gives the rounds.
+    from armpred.contract.session import load_session
+
+    d = str(tmp_path / "course")
+    shutil.copytree(sim_session_dir, d)
+    host = os.path.join(d, "robothost.jlog")
+    jc = [line for line in open(host, encoding="ascii").read().split("\n") if line.startswith("JC|")]
+    t = int(jc[-1].split("|")[2]) + 1
+    _rewrite_with(host, [
+        ("TK", t, 77, 1, "reach", "active", "train", "2.5", "0", 0),
+        ("TK", t + 1, 77, 1, "reach", "done", "train", "2.5", "8", 0),
+        ("TK", t + 2, 77, 2, "trace", "active", "test", "varied", "0", 1),
+    ])
+
+    session = load_session(d)
+    assert [(r.round, r.task, r.phase, r.purpose) for r in session.rounds] == [
+        (1, "reach", "active", "train"), (1, "reach", "done", "train"), (2, "trace", "active", "test")]
+    assert session.rounds[1].score == 8.0 and session.rounds[0].level == 2.5
+    assert session.rounds[2].level is None and session.rounds[2].disturbed
+    report = check_session_dir(d, allow_read_gaps=True)
+    assert report.ok, report.lines()

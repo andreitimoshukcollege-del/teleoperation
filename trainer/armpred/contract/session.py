@@ -131,6 +131,7 @@ class Session:
     subscriber_changes: List[Tuple[int, str]] = field(default_factory=list)
     sender_changes: List[Tuple[int, str]] = field(default_factory=list)
     uplink_changes: List[Tuple[int, str, int]] = field(default_factory=list)
+    rounds: List["CourseLabel"] = field(default_factory=list)
     marks: List[Tuple[int, str]] = field(default_factory=list)
     latents: Optional["Latents"] = None
     operator_commands: Optional[OperatorCommands] = None
@@ -269,6 +270,31 @@ def _pairs(rows: List[List[str]], parts: int) -> np.ndarray:
     return np.array([[int(x) for x in r[:parts]] for r in rows], dtype=np.int64)
 
 
+@dataclass(frozen=True)
+class CourseLabel:
+    """One ``TK`` record: the headset's training course changed label (docs/adr/0024). A round runs
+    from its ``active`` record to its ``done``; ``suspended`` stretches inside it are not driving."""
+
+    t: int
+    course: int
+    round: int
+    task: str
+    phase: str
+    purpose: str
+    level: Optional[float]  # rad/s; None for a varied round
+    score: float
+    disturbed: bool
+
+
+def parse_course_label(r: List[str]) -> CourseLabel:
+    if len(r) < 9:
+        raise JlogError(f"TK record with {len(r)} fields, want 9")
+    return CourseLabel(
+        t=int(r[0]), course=int(r[1]), round=int(r[2]), task=r[3], phase=r[4], purpose=r[5],
+        level=None if r[6] == "varied" else float(r[6]), score=float(r[7]), disturbed=r[8] == "1",
+    )
+
+
 def load_session(directory: str) -> Session:
     """Reads and validates every file of a session. Raises ``JlogError`` on anything malformed."""
     meta_path = os.path.join(directory, "session.json")
@@ -331,6 +357,7 @@ def load_session(directory: str) -> Session:
         subscriber_changes=[(int(r[0]), r[1]) for r in host.tag("SS")],
         sender_changes=[(int(r[0]), r[1]) for r in host.tag("JS")],
         uplink_changes=[(int(r[0]), r[1], int(r[2]) if r[2] != "" else 0) for r in host.tag("UP")],
+        rounds=[parse_course_label(r) for r in host.tag("TK")],
         marks=marks,
         latents=latents,
         operator_commands=operator_commands,

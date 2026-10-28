@@ -286,6 +286,7 @@ def main() -> int:
     parser.add_argument("--from", dest="start", default="")
     parser.add_argument("--rest", type=float, default=60, help="seconds between sessions, for the servos")
     parser.add_argument("--start-delay", type=float, default=30, help="seconds before the first session")
+    parser.add_argument("--no-relax", action="store_true", help="leave the arm holding at the end instead of parking it and switching torque off")
     parser.add_argument("--variant", default="", help="mixed into every drive session's seed: a new one draws new moves (pilot.py drive_seed)")
     args = parser.parse_args()
 
@@ -314,6 +315,7 @@ def main() -> int:
         return 130
 
     done = []
+    low_battery = False
     for index, s in enumerate(sessions, 1):
         log(f"=== [{index}/{len(sessions)}] {s.label}")
         seed = drive_seed(s, args.variant)
@@ -343,6 +345,7 @@ def main() -> int:
             log("joint-drive stopped early (read its lines above): not starting another session")
             break
         if mv is not None and mv < MIN_BATTERY_MV:
+            low_battery = True
             log(f"below {MIN_BATTERY_MV / 1000:.1f} V: stopping. Charge or swap the pack"
                 + (f", then just pilot-on-robot from={sessions[index].label}" if index < len(sessions) else ""))
             break
@@ -353,6 +356,17 @@ def main() -> int:
                 break
 
     log(f"done: {len(done)} of {len(sessions)} sessions completed ({' '.join(done)}). Copy them: just fetch-recordings")
+    # Rest the arm unpowered, as the headset's ROBOT OFF does (docs/adr/0023 decision 5): only after a
+    # clean end (every session, or a low battery). After a stall, a lost stream or just pilot-stop the arm
+    # holds where it is, for a person to look at first.
+    clean = (len(done) == len(sessions) or low_battery) and not os.path.exists(STOP)
+    if clean and not args.no_relax:
+        log("parking the arm at its rest pose and switching torque off (just robot-off)")
+        relax = subprocess.call([DOTNET, JOINT_DRIVE, "arm-power", "--remote-host", "127.0.0.1", "--request", "relax"],
+                                stdin=subprocess.DEVNULL)
+        log("relaxed" if relax == 0 else f"not relaxed (arm-power exited {relax}): the arm holds; just robot-off once it is clear")
+    elif not clean:
+        log("the arm holds where it is (the run did not end cleanly): look at it, then just robot-off")
     return 0
 
 

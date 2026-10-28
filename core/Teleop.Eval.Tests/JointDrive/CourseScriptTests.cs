@@ -98,5 +98,29 @@ namespace Teleop.Eval.Tests.JointDrive
             Assert.True(plan.Legs[^1].To.MaxJointDelta(Model.Home) < 0.01f);
             Assert.Equal(LegPhase.Return, plan.Legs[^1].Phase);
         }
+
+        [Theory]
+        [InlineData(0.0, 77.0, -102.0, -85.0, 0.0)]     // sagged onto its support, torque off (2026-10-28 01:51: refused then)
+        [InlineData(-1.2, 91.16, -78.48, -112.0, 5.76)] // the rest pose
+        public void FromARestingArm_TheApproachFreesItFirst_AndEveryLegIsClear(double yaw, double proximal, double distal, double wrist, double roll)
+        {
+            float D(double d) => (float)(d * Math.PI / 180.0);
+            var start = new ArmPose(D(yaw), D(proximal), D(distal), D(wrist), D(roll));
+            Assert.True(DrivePlan.TryBuild(DriveScript.Course, Profile, start, 6f, 120, 1, Envelope, out DrivePlan? plan, out string? error), error);
+            ArmCollisionModel? allowed = ArmContacts.AllowPoseContacts(Profile, Model, start, out _);
+            Assert.NotNull(allowed);
+            var approach = plan!.Legs.Where(l => l.Phase == LegPhase.Approach).ToList();
+            Assert.NotEmpty(approach);
+            Assert.True(approach[^1].To.MaxJointDelta(Model.Home) < 0.01f);
+            for (int i = 0; i < approach.Count; i++)
+            {
+                DriveLeg leg = approach[i];
+                // The first leg may start on the support (its own contacts allowed); every pose it ends on is clear.
+                ArmCollisionModel against = i == 0 && !ArmCollision.IsValid(Profile, Model, start) ? allowed! : Model;
+                Assert.True(DrivePlan.PathValid(Profile, against, null, leg.From, leg.To), $"approach leg {i}");
+                Assert.True(ArmCollision.IsValid(Profile, Model, leg.To), $"approach leg {i} ends in contact");
+                Assert.Equal(DrivePlan.ApproachSpeedRadPerSec, leg.Speed);
+            }
+        }
     }
 }

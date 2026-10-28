@@ -135,7 +135,21 @@ namespace Teleop.Eval.JointDrive
                 return 130;
             }
 
-            return Drive(script.Value, profile, envelope, speed, seconds, seed, rateHz, new IPEndPoint(address, port), logPath, sessionId ?? "joint-drive", stopFile);
+            // Torque on first (docs/adr/0023 decision 5): a relaxed arm ignores every command, and a parked
+            // one would stay parked. The arm stiffens where it rests; nothing moves.
+            var robotEndPoint = new IPEndPoint(address, port);
+            if (ArmPower.ArmPowerCommand.Request(robotEndPoint, ArmPowerRequest.Hold, 10, out bool answered) != 0)
+            {
+                if (answered)
+                {
+                    Console.Error.WriteLine("joint-drive: RobotHost did not switch torque on (above); nothing was sent");
+                    return 1;
+                }
+
+                Console.WriteLine("[joint-drive] RobotHost reports no arm power (older than park and relax): driving without asking for torque");
+            }
+
+            return Drive(script.Value, profile, envelope, speed, seconds, seed, rateHz, robotEndPoint, logPath, sessionId ?? "joint-drive", stopFile);
         }
 
         private static void PrintEnvelope(in DriveEnvelope envelope, double marginDeg)

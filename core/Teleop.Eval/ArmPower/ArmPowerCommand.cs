@@ -46,10 +46,20 @@ namespace Teleop.Eval.ArmPower
                 return Usage();
             }
 
-            bool relax = requestName == "relax";
-            ArmPowerRequest request = relax ? ArmPowerRequest.Relax : ArmPowerRequest.Hold;
+            return Request(new IPEndPoint(address, port), requestName == "relax" ? ArmPowerRequest.Relax : ArmPowerRequest.Hold,
+                timeoutSeconds, out _);
+        }
+
+        /// <summary>
+        /// Sends <paramref name="request"/> until RobotHost's status answers it (relaxed for a relax, holding
+        /// for a hold), printing the progress. 0 when it did; 1 on a refusal or a timeout.
+        /// <paramref name="answered"/> says whether any status came back at all (false: RobotHost is older
+        /// than park and relax, or not there).
+        /// </summary>
+        public static int Request(IPEndPoint robot, ArmPowerRequest request, double timeoutSeconds, out bool answered)
+        {
+            bool relax = request == ArmPowerRequest.Relax;
             OperatorMotionMode mode = relax ? OperatorMotionMode.Off : OperatorMotionMode.On;
-            var robot = new IPEndPoint(address, port);
             using var socket = new Socket(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp);
             socket.Bind(new IPEndPoint(IPAddress.Any, 0));
             socket.ReceiveTimeout = 100;
@@ -60,7 +70,7 @@ namespace Teleop.Eval.ArmPower
             uint sequence = 0, firstSequence = 0;
             ArmPowerState? lastState = null;
             int lastRemaining = int.MinValue;
-            bool answered = false;
+            answered = false;
             Console.WriteLine(relax
                 ? $"arm-power: asking RobotHost at {robot} to park the arm at its rest pose and switch torque off"
                 : $"arm-power: asking RobotHost at {robot} to switch torque on (the arm holds where it is)");

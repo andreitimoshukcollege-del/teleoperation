@@ -11,7 +11,7 @@
 # closed (two senders on the joint port fight). The gripper closes only to 75% and never for longer than
 # 1.5 s: its pulses are uncalibrated and it has run hot. The runners stop below 11.0 V.
 #
-# Run it on the robot (the laptop can close): just deploy-joint-drive, then
+# Run it on the robot (the laptop can close; every run draws new rounds): just deploy-joint-drive, then
 #   just pilot-on-robot plan=robot/pilot/pilot-v2.txt
 # Format as pilot-v1.txt: label | slider rad/s | minutes | motion | record-start options | what a person does first
 

@@ -2948,13 +2948,17 @@ deploy-joint-drive remote_host=default_jetrover_host remote_user="jetson":
 pilot-on-robot *options:
     #!/usr/bin/env bash
     set -euo pipefail
-    plan=robot/pilot/pilot-v1.txt from="" rest_s=60 start_delay_s=30 remote_host="{{default_jetrover_host}}"
+    # variant: mixed into every drive session's seed, so each run draws new moves; a new one every run
+    # (its start time) unless given, and variant=<one from a session's notes> repeats that run.
+    plan=robot/pilot/pilot-v1.txt from="" rest_s=60 start_delay_s=30 remote_host="{{default_jetrover_host}}" variant="$(date -u +%Y%m%dT%H%M%SZ)"
     for opt in "$@"; do
         case "$opt" in
-            plan=*|from=*|rest_s=*|start_delay_s=*|remote_host=*) printf -v "${opt%%=*}" '%s' "${opt#*=}" ;;
-            *) echo "error: unknown option '$opt' (plan= from= rest_s= start_delay_s= remote_host=)" >&2; exit 1 ;;
+            plan=*|from=*|rest_s=*|start_delay_s=*|remote_host=*|variant=*) printf -v "${opt%%=*}" '%s' "${opt#*=}" ;;
+            *) echo "error: unknown option '$opt' (plan= from= rest_s= start_delay_s= remote_host= variant=)" >&2; exit 1 ;;
         esac
     done
+    case "$variant" in *[!A-Za-z0-9._-]*|"") echo "error: variant must be letters, digits, . _ or -" >&2; exit 1 ;; esac
+    echo "pilot variant $variant (every session's moves are new; variant=$variant repeats them)"
     host=$(just _robot-host "$remote_host")
     target="jetson@$host"
     built=$(ssh "$target" 'cat ~/jointdrive_current/BUILD_INFO 2>/dev/null' || true)
@@ -2967,7 +2971,7 @@ pilot-on-robot *options:
     ssh "$target" "mkdir -p ~/$dest ~/recordings && rm -f ~/recordings/.pilot-stop"
     scp -q robot/pilot/pilot.py robot/pilot/onboard.py "$plan" core/RobotProfiles/jetrover.json "$target:$dest/"
     ssh "$target" "cd ~/$dest && setsid nohup python3 -u onboard.py '$(basename "$plan")' --profile jetrover.json --from '$from' \
-        --rest '$rest_s' --start-delay '$start_delay_s' > ~/recordings/pilot-onboard.log 2>&1 < /dev/null & echo \$! > ~/recordings/.pilot-onboard.pid"
+        --rest '$rest_s' --start-delay '$start_delay_s' --variant '$variant' > ~/recordings/pilot-onboard.log 2>&1 < /dev/null & echo \$! > ~/recordings/.pilot-onboard.pid"
     sleep 3
     ssh "$target" 'cat ~/recordings/pilot-onboard.log'
     echo

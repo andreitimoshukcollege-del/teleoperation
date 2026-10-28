@@ -140,6 +140,9 @@ target solved by the headset's IK and every path checked like any other script's
 closes only to 75% and only on arrival, for at most 1.5 s. Each session's rounds come from its label.
 They are `joint-drive:course` sessions: scripted, kept apart from headset driving
 (`just recordings-summary`). `just joint-drive-preview course 6` shows one without moving anything.
+**Every `just pilot-on-robot` run draws new moves:** it mixes a variant (the run's start time, UTC) into
+every drive session's seed, and each session's notes record the variant and its `joint-drive --seed`.
+`variant=<that>` repeats a run exactly. `just pilot` on the laptop takes no variant and repeats its plan.
 
 ```bash
 just deploy-joint-drive          # once, and after joint-drive changes; moves nothing

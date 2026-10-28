@@ -41,11 +41,15 @@ def drive_speed(session) -> str:
     return "6" if session.slider == "varied" else session.slider
 
 
-def drive_seed(session) -> str:
-    """joint-drive's --seed: the course script's rounds come from it, so each course session gets its own,
-    fixed by its label (reproducible); the other scripts keep joint-drive's default, as before."""
+def drive_seed(session, variant: str = "") -> str:
+    """joint-drive's --seed. A course session's comes from its label, so each draws its own rounds; with a
+    variant (just pilot-on-robot makes a new one every run) every drive session's comes from its label and
+    the variant, so each run draws new moves. Reproducible either way: the same label and variant give
+    the same seed. Without a variant the other scripts keep joint-drive's default, as before."""
     import zlib
 
+    if variant:
+        return str(zlib.crc32((session.label + "|" + variant).encode("utf-8")) + 1)
     return str(zlib.crc32(session.label.encode("utf-8")) + 1) if session.motion == "drive:course" else "1"
 
 

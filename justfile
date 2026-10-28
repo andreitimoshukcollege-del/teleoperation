@@ -2964,6 +2964,10 @@ pilot-on-robot *options:
     echo "pilot variant $variant (every session's moves are new; variant=$variant repeats them)"
     host=$(just _robot-host "$remote_host")
     target="jetson@$host"
+    # Fail fast when the robot is off or off the network, instead of waiting for TCP's own timeout.
+    if ! ssh -o ConnectTimeout=10 -o BatchMode=yes "$target" true 2>/dev/null; then
+        echo "error: the robot does not answer at $host (is it on, and on the network? just robot-ip): nothing was started" >&2; exit 1
+    fi
     built=$(ssh "$target" 'cat ~/jointdrive_current/BUILD_INFO 2>/dev/null' || true)
     [ -n "$built" ] || { echo "error: joint-drive is not on the robot: just deploy-joint-drive" >&2; exit 1; }
     case "$built" in *"$(git rev-parse HEAD)"*) ;; *) echo "warning: the robot's joint-drive ($built) is not this checkout's $(git rev-parse --short HEAD): just deploy-joint-drive to update it" >&2 ;; esac

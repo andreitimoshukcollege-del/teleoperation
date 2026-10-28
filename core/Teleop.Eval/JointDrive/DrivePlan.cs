@@ -14,6 +14,13 @@ namespace Teleop.Eval.JointDrive
 
         /// <summary>One joint at a time jumps and holds, so the relay moves it at the requested speed: what <c>armpred sysid</c> needs to see the servo's speed limit and lag.</summary>
         Steps,
+
+        /// <summary>
+        /// The headset's training course driven by the robot itself (<see cref="CourseScript"/>): REACH,
+        /// TRACE and SHUTTLE rounds on the course's own targets, solved by the headset's IK, at the
+        /// course's speed levels, with the gripper opened and closed. Scripted data shaped like teleop.
+        /// </summary>
+        Course,
     }
 
     /// <summary>
@@ -108,7 +115,17 @@ namespace Teleop.Eval.JointDrive
         public readonly ArmPose To;
         public readonly LegPhase Phase;
 
-        public DriveLeg(double start, double duration, double hold, ArmPose from, ArmPose to, LegPhase phase)
+        /// <summary>The speed the commands ask for during this leg, rad/s; NaN for the plan's own.</summary>
+        public readonly float Speed;
+
+        /// <summary>The gripper fraction at the leg's start and end (ramped between); NaN holds it as reported.</summary>
+        public readonly float GripperFrom, GripperTo;
+
+        /// <summary>A constant-speed leg (a trace's segment) instead of a minimum-jerk one.</summary>
+        public readonly bool Linear;
+
+        public DriveLeg(double start, double duration, double hold, ArmPose from, ArmPose to, LegPhase phase,
+            float speed = float.NaN, float gripperFrom = float.NaN, float gripperTo = float.NaN, bool linear = false)
         {
             Start = start;
             Duration = duration;
@@ -116,6 +133,10 @@ namespace Teleop.Eval.JointDrive
             From = from;
             To = to;
             Phase = phase;
+            Speed = speed;
+            GripperFrom = gripperFrom;
+            GripperTo = gripperTo;
+            Linear = linear;
         }
 
         public double End => Start + Duration + Hold;
@@ -216,7 +237,15 @@ namespace Teleop.Eval.JointDrive
             ArmPose current = home;
             double end = t + seconds;
             int stepJoint = 0;
-            while (t < end)
+            if (script == DriveScript.Course)
+            {
+                if (!CourseScript.Append(profile, model, envelope, ref current, ref t, end, ref rng, legs, out error))
+                {
+                    return false;
+                }
+            }
+
+            while (script != DriveScript.Course && t < end)
             {
                 DriveLeg leg;
                 string? why = script == DriveScript.Waypoints
@@ -259,8 +288,25 @@ namespace Teleop.Eval.JointDrive
             if (into <= 0) return leg.From;
             if (leg.Duration <= 0 || into >= leg.Duration) return leg.To;
             double u = into / leg.Duration;
-            double s = u * u * u * (10 - u * (15 - 6 * u));
+            double s = leg.Linear ? u : u * u * u * (10 - u * (15 - 6 * u));
             return ArmPose.Lerp(leg.From, leg.To, (float)s);
+        }
+
+        /// <summary>The speed the commands ask for at <paramref name="t"/>: the leg's, else the plan's.</summary>
+        public float SpeedAt(double t)
+        {
+            float s = LegAt(t).Speed;
+            return float.IsNaN(s) ? SpeedRadPerSec : s;
+        }
+
+        /// <summary>The gripper fraction to command at <paramref name="t"/>, ramped over the leg; NaN to hold it as reported.</summary>
+        public float GripperAt(double t)
+        {
+            DriveLeg leg = LegAt(t);
+            if (float.IsNaN(leg.GripperTo)) return float.NaN;
+            if (float.IsNaN(leg.GripperFrom) || leg.Duration <= 0) return leg.GripperTo;
+            double u = Math.Min(1.0, Math.Max(0.0, (t - leg.Start) / Math.Max(leg.Duration, CourseScript.GripperRampSeconds)));
+            return (float)(leg.GripperFrom + (leg.GripperTo - leg.GripperFrom) * u);
         }
 
         /// <summary>The leg in force at <paramref name="t"/>.</summary>
@@ -306,7 +352,7 @@ namespace Teleop.Eval.JointDrive
 
         private static double Deg(float radians) => radians * 180.0 / Math.PI;
 
-        private static double SmoothDuration(float distance, float peakSpeed) => Math.Max(0.3, MinJerkPeak * distance / peakSpeed);
+        internal static double SmoothDuration(float distance, float peakSpeed) => Math.Max(0.3, MinJerkPeak * distance / peakSpeed);
 
         /// <summary>
         /// A smooth move to a random pose: usually near the current one (each joint up to ±0.6 rad

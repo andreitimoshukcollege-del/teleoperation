@@ -77,6 +77,17 @@ armpred finetune --data jetrover-data-<UTC>.tar --split configs/split-v1.toml \
 out. Test sessions are recorded after the model is frozen and evaluated with
 `armpred evaluate --run runs/real1 --sessions <dir> --real --profile <bundle>/robot-profile.json`.
 
+**Human and scripted data.** Every recorded session has an operator kind
+(`armpred.contract.session.operator_kind`, from its `session.json`): **human** (someone in the
+headset: `teleop`, or an automatic session the headset opened) or **scripted** (the arm driving itself:
+`joint-drive:<script>`, the pilot). `just recordings-summary` (`armpred summarize-recordings`) gives
+each session's driving minutes, its kind, and whether it can train. A fine-tune chooses which kinds
+train with `[real] train_sources` in its config: `real-finetune-pilot2.toml` takes both while human
+driving is scarce, `real-finetune-pilot2-human.toml` only human, for when there is enough of it. Unset,
+every session trains. Test sessions are never filtered, and should be human: it is human driving the
+model serves. The course pilot (`robot/pilot/pilot-v2.txt`, joint-drive's `course` script) is the
+scripted data closest to human: the training course's own rounds, driven by the robot.
+
 **After the pilot hour (ADR 0021 step D1)**, fit the simulator to the robot before pretraining for
 real: `armpred sysid --data jetrover-data-<UTC>.tar --out runs/sysid1`, then paste
 `runs/sysid1/sysid.toml`'s `[ranges]` into the `sim-pretrain` config and add `[prior] file =

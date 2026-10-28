@@ -38,7 +38,7 @@ import sys
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from pilot import read_plan  # noqa: E402  (the plan format is pilot.py's)
+from pilot import drive_seed, drive_speed, read_plan  # noqa: E402  (the plan format is pilot.py's)
 
 HOME = os.path.expanduser("~")
 RECORDINGS = os.path.join(HOME, "recordings")
@@ -317,8 +317,8 @@ def main() -> int:
         status = 1
         try:
             status = subprocess.call(
-                [DOTNET, JOINT_DRIVE, "joint-drive", "--script", s.motion.split(":", 1)[1], "--speed", s.slider,
-                 "--seconds", f"{s.minutes * 60:.0f}", "--remote-host", "127.0.0.1", "--confirm-hardware-motion",
+                [DOTNET, JOINT_DRIVE, "joint-drive", "--script", s.motion.split(":", 1)[1], "--speed", drive_speed(s),
+                 "--seconds", f"{s.minutes * 60:.0f}", "--seed", drive_seed(s), "--remote-host", "127.0.0.1", "--confirm-hardware-motion",
                  "--operator-log", os.path.join(directory, "operator.jlog"), "--session-id", sid, "--stop-file", STOP],
                 stdin=subprocess.DEVNULL)
         finally:

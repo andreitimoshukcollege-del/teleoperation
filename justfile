@@ -919,6 +919,15 @@ robot-disk-cleanup apply="false" remote_host=default_jetrover_host remote_user="
     echo "--- after: $(df -h / | tail -1 | awk '{print $4 " free of " $2 " (" $5 " used)"}')"
     REMOTE
 
+# How much real data there is, by who drove it: human (the headset: teleop, or an automatic session it opened) or scripted (the pilot's joint-drive sessions), each session's driving minutes, and whether it can train (it passes the check and the headset did not disturb it). Over recordings/jetrover/ here; fetch first (just fetch-recordings)
+[group('robot: recording (docs/adr/0021)')]
+recordings-summary:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cd trainer
+    PY=$([ -f .venv-win/Scripts/python.exe ] && echo .venv-win/Scripts/python.exe || echo .venv/bin/python)
+    "$PY" -m armpred summarize-recordings "../recordings/jetrover/*"
+
 # Which recordings the headset's network disturbance altered (LAG/JITTER/LOSS act on the uplink before the real send, so RobotHost's JC records show the reordering, loss and delay; trainer/armpred/contract/disturbance.py; HD records too, since 2026-10-27), over recordings/jetrover/ here. apply=true sets them aside: moves each into recordings/disturbed/ here and ~/recordings/disturbed/ on the robot (never the session recording now), so nothing fetches, packs or trains on them; nothing is deleted. extra="id1 id2" sets aside sessions too short to judge. Fetch first (just fetch-recordings) so every session is judged
 [group('robot: recording (docs/adr/0021)')]
 recordings-disturbed apply="false" extra="" remote_host=default_jetrover_host remote_user="jetson":
@@ -2866,7 +2875,7 @@ record-drive label script speed *options:
             *) pass+=("$opt") ;;
         esac
     done
-    case "{{script}}" in waypoints|steps) ;; *) echo "error: script must be waypoints or steps" >&2; exit 1 ;; esac
+    case "{{script}}" in waypoints|steps|course) ;; *) echo "error: script must be waypoints, steps or course" >&2; exit 1 ;; esac
     host=$(just _robot-host "$remote_host")
     target="$remote_user@$host"
     # Built before the session opens, so the recording does not start with a compile.

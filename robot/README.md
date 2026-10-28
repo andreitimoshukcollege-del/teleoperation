@@ -132,8 +132,18 @@ with `just pilot-stop` from any machine (joint-drive holds the arm at once), or 
 teleop sessions still need the laptop: `just pilot only=teleop`. `onboard.py` writes session.json and
 closes sessions itself, as `record-start`/`record-stop` do, and must be kept the same as them.
 
+**The course pilot** (`robot/pilot/pilot-v2.txt`, 2026-10-28): six 10-minute sessions of joint-drive's
+`course` script, the headset's training course driven by the robot itself, for scripted data shaped like
+teleop while there is little teleop data. Each round is the course's own (REACH, TRACE, SHUTTLE), every
+target solved by the headset's IK and every path checked like any other script's, at the course's levels
+(1.0-6.0 rad/s, varied; no move faster than 6). The gripper opens and closes for REACH targets, but
+closes only to 75% and only on arrival, for at most 1.5 s. Each session's rounds come from its label.
+They are `joint-drive:course` sessions: scripted, kept apart from headset driving
+(`just recordings-summary`). `just joint-drive-preview course 6` shows one without moving anything.
+
 ```bash
 just deploy-joint-drive          # once, and after joint-drive changes; moves nothing
+just pilot-on-robot plan=robot/pilot/pilot-v2.txt   # the course pilot: about an hour, the arm and gripper move by themselves
 just pilot only=teleop           # the headset sessions, from the laptop
 just pilot-on-robot              # the drive sessions, on the robot; the laptop can close
 just pilot-status                # from any machine with the repo

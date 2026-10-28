@@ -215,3 +215,20 @@ def test_the_disturbance_detector_sees_reordering_loss_and_delay(sim_session_dir
     r = uplink_report(altered)
     assert r is not None and r.disturbed
     assert r.reorder > 0.05 and r.loss > 0.05
+
+
+def test_who_drove_a_session():
+    # Human (the headset) and scripted (the pilot) data are kept apart, so a fine-tune can train on
+    # human driving alone once there is enough of it ([real] train_sources).
+    from armpred.contract.session import operator_kind
+
+    def meta(motion, operator):
+        return {"conditions": {"motion": motion, "operator": operator}}
+
+    assert operator_kind(meta("teleop", "A")) == "human"
+    assert operator_kind(meta("auto", "headset 10.0.0.5:6001")) == "human"
+    assert operator_kind(meta("auto", "auto 10.0.0.5:6001")) == "human"  # automatic sessions before 2026-10-26
+    assert operator_kind(meta("joint-drive:course", "joint-drive@robot")) == "scripted"
+    assert operator_kind(meta("joint-drive:waypoints", "joint-drive")) == "scripted"
+    assert operator_kind(meta("auto", "tool 10.0.0.9:5000")) == "unknown"
+    assert operator_kind({}) == "unknown"

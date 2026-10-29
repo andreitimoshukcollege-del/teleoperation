@@ -52,3 +52,9 @@
 *.exr filter=lfs diff=lfs merge=lfs -text
 LightingData.asset filter=lfs diff=lfs merge=lfs -text
 unity/TeleopXR/Assets/Teleop/Lab/Generated/LabMeshes.asset filter=lfs diff=lfs merge=lfs -text
+
+# Robot description meshes (robot/franka/). Visual COLLADA meshes are tens of MB and only Unity reads
+# them -> LFS. Collision STLs are ~180 KB in all and are read headlessly (capsule fitting, on Linux
+# and in CI, where LFS payloads are not fetched), so they stay in git as plain binary.
+*.dae filter=lfs diff=lfs merge=lfs -text
+*.stl binary

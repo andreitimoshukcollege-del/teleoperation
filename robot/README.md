@@ -1,11 +1,12 @@
 # robot/
 
-Everything that runs on the JetRover's Jetson that is not .NET:
+Everything that runs on the JetRover's Jetson that is not .NET, and the robot descriptions:
 
 | Path | What |
 |---|---|
 | `ros/` | the ROS 2 (Foxy) colcon workspace: `jetrover_arm_control` (the Hiwonder board's serial protocol, the servo bus, the battery) and `teleop_relay` (the bridge to RobotHost) |
 | `systemd/` | the Jetson's four services, and how to install them |
+| `franka/fr3_duo/` | the FR3 Duo's robot description (Franka's URDF and meshes, vendored with provenance, docs/adr/0026). Nothing runs from it: it is the input to the FR3 profile and the Unity model |
 
 `ros/` came in from the separate
 [`jetrover-teleop-ros`](https://github.com/andreitimoshukcollege-del/jetrover-teleop-ros) repository

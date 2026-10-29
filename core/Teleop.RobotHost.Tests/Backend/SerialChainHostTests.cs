@@ -5,6 +5,7 @@ using Teleop.RobotArm.Types;
 using Teleop.RobotArm.Wire;
 using Teleop.RobotHost.Backend;
 using Teleop.RobotHost.Plant;
+using Teleop.RobotArm.Collision;
 
 namespace Teleop.RobotHost.Tests.Backend
 {
@@ -136,6 +137,28 @@ namespace Teleop.RobotHost.Tests.Backend
 
             plant.RestartJointCommandOrdering();
             Assert.Equal(JointCommandOutcome.Accepted, plant.CommandJointTargets(new[] { new JointTarget(11, -0.2f, 0f) }, captureTicks: 5, nowTicks: 2));
+        }
+
+        [Fact]
+        public void WithACollisionModel_ThePlantRefusesACollidingCommand_AndTakesTheNextClearOne()
+        {
+            (SerialChainProfile profile, TrajectoryShaperConfig shaper, Fr3SimBackend backend) = Sim();
+            var model = SerialChainProfileJson.LoadCollision(System.IO.Path.Combine(System.IO.Path.GetDirectoryName(SerialChainTestProfile.Path)!, "fr3-duo.collision.json"));
+            double[] start = SerialChainHost.StartPose(profile, shaper);
+            double[] byProfile = profile.Arms.SelectMany(a => a.Joints.Select(j => j.MotorId).Concat(a.HasGripper ? new[] { a.Gripper.MotorId } : new byte[0]))
+                .Select(id => start[shaper.IndexOf(id)]).ToArray();
+            var plant = new SerialChainPlant(profile, backend, model, byProfile);
+
+            // Both arms swung toward each other: the forearms meet between the bases.
+            JointTarget[] crash = new[] { -1.2, 0.6, 0, -1.6, 0, 2.0, 0.8 }.Select((q, j) => new JointTarget((byte)(j + 1), (float)q, 0f))
+                .Concat(new[] { 1.2, 0.6, 0, -1.6, 0, 2.0, -0.8 }.Select((q, j) => new JointTarget((byte)(j + 11), (float)q, 0f))).ToArray();
+            Assert.Equal(JointCommandOutcome.Refused, plant.CommandJointTargets(crash, captureTicks: 10, nowTicks: 0));
+            Assert.Equal(1, plant.RefusedCommands);
+            Assert.Contains("mm apart", plant.DescribeLastRefusal());
+            Assert.Equal(0, plant.LastSentCount);
+
+            // A small clear move is taken, even with an older-looking stamp than the refused one: refused stamps do not count.
+            Assert.Equal(JointCommandOutcome.Accepted, plant.CommandJointTargets(new[] { new JointTarget(1, 0.1f, 0f) }, captureTicks: 5, nowTicks: 1));
         }
 
         [Fact]

@@ -13,7 +13,7 @@ namespace Teleop.RobotHost
     internal sealed class SerialChainHostArgs
     {
         public const string Usage =
-            "Usage: Teleop.RobotHost --profile-path <serial-chain profile> --joint-local-port <port> --backend sim\n" +
+            "Usage: Teleop.RobotHost --profile-path <serial-chain profile> --joint-local-port <port> --backend sim [--collision-model <file>]\n" +
             "  [--sim-track-hz <hz>] [--sim-track-damping <z>] [--sim-noise-rad <rad>] [--sim-seed <n>]\n" +
             "  [--discovery-port <port>] [--uplink-control <path>] [--record-control <path>]\n" +
             "  [--auto-record [--auto-record-root <dir>] [--auto-record-idle-seconds <s>] [--auto-record-max-minutes <min>]\n" +
@@ -23,7 +23,8 @@ namespace Teleop.RobotHost
             "  no Cartesian path, no arm power (docs/adr/0027 decision 5). --backend sim is the simulated arm\n" +
             "  (Fr3SimBackend: Core's trajectory shaper at 1 kHz, then a second-order tracking lag of --sim-track-hz (20)\n" +
             "  and damping --sim-track-damping (1), readings with --sim-noise-rad (0) of seeded noise). It is the only\n" +
-            "  backend until the real arm's ADR. Sessions are teleop-session v2 with source sim-host\n" +
+            "  backend until the real arm's ADR. --collision-model (core/RobotProfiles/<profile>.collision.json, fit-capsules) refuses\n" +
+            "  every command whose pose would collide (docs/adr/0026 amendment). Sessions are teleop-session v2 with source sim-host\n" +
             "  (trainer/contract/SESSION_FORMAT.md).";
 
         public string ProfilePath = "";
@@ -33,6 +34,7 @@ namespace Teleop.RobotHost
         public int? DiscoveryPort;
         public string? UplinkControlPath;
         public string? RecordControlPath;
+        public string? CollisionModelPath;
         public AutoRecordOptions? AutoRecord;
 
         public static SerialChainHostArgs? TryParse(string[] args, out string error)
@@ -73,6 +75,7 @@ namespace Teleop.RobotHost
                     case "--discovery-port": a.DiscoveryPort = Port(value); break;
                     case "--uplink-control": a.UplinkControlPath = value; break;
                     case "--record-control": a.RecordControlPath = value; break;
+                    case "--collision-model": a.CollisionModelPath = value; break;
                     case "--auto-record-root": auto.RecordingsRoot = value; break;
                     case "--auto-record-idle-seconds": auto.IdleSeconds = Number(value); break;
                     case "--auto-record-max-minutes": auto.MaxMinutes = Number(value); break;

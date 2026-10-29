@@ -50,9 +50,15 @@ namespace Teleop.RobotHost
             }
 
             SerialChainProfile profile;
+            Teleop.RobotArm.Collision.SerialChainCollisionModel? collision = null;
             try
             {
                 profile = SerialChainProfileJson.Load(a.ProfilePath);
+                if (a.CollisionModelPath != null)
+                {
+                    collision = SerialChainProfileJson.LoadCollision(a.CollisionModelPath);
+                    if (collision.Profile != profile.Name) throw new InvalidDataException($"the collision model is for '{collision.Profile}', the profile is '{profile.Name}'");
+                }
             }
             catch (Exception e) when (e is IOException || e is InvalidDataException || e is UnauthorizedAccessException || e is System.Text.Json.JsonException)
             {
@@ -64,8 +70,9 @@ namespace Teleop.RobotHost
 
             var clock = new MonotonicClock();
             TrajectoryShaperConfig shaper = SerialChainShaping.ForProfile(profile);
-            var backend = new Fr3SimBackend(shaper, StartPose(profile, shaper), clock.TicksPerSecond, a.Sim);
-            var plant = new SerialChainPlant(profile, backend);
+            double[] start = StartPose(profile, shaper);
+            var backend = new Fr3SimBackend(shaper, start, clock.TicksPerSecond, a.Sim);
+            var plant = new SerialChainPlant(profile, backend, collision, ProfileOrder(profile, shaper, start));
 
             using var transport = new UdpTransport(a.JointLocalPort, null, JointDatagram.MaxBytes, clock, replyToSender: true);
             var uplink = new UplinkImpairedReceiver(transport, clock.TicksPerSecond, JointDatagram.MaxBytes);
@@ -131,7 +138,12 @@ namespace Teleop.RobotHost
             Console.WriteLine(
                 $"[backend] SIMULATED arm (Fr3SimBackend): the shaper at {1 / shaper.StepSeconds:0} Hz, tracking {a.Sim.TrackHz:0.##} Hz damping {a.Sim.TrackDamping:0.##}, " +
                 $"reading noise {a.Sim.NoiseRad} rad, seed {a.Sim.Seed}; starting at the ready pose. Nothing real moves.");
+            Console.WriteLine(collision != null
+                ? $"[collision] {collision.Capsules.Length} capsules, margin {collision.Margin * 1000:0} mm ({a.CollisionModelPath}): a colliding command is refused"
+                : "[collision] no collision model (--collision-model): nothing is checked; a simulated arm only");
             if (discovery != null) Console.WriteLine($"[discovery] answering on UDP :{discovery.Port} (docs/adr/0022)");
+            int loggedRefusals = 0;
+            long lastRefusalLog = long.MinValue;
             Console.WriteLine("Enter (or Ctrl+C) stops.");
 
             // Windows sleeps in 15.6 ms ticks unless asked for 1 ms: without this, frames leave at about 36 Hz, not 50.
@@ -299,6 +311,12 @@ namespace Teleop.RobotHost
 
                 discovery?.Poll();
                 now = clock.NowTicks;
+                if (plant.RefusedCommands != loggedRefusals && now - lastRefusalLog >= 2 * clock.TicksPerSecond)
+                {
+                    Console.WriteLine($"[plant] refused {plant.RefusedCommands - loggedRefusals} joint command(s): the pose would collide ({plant.DescribeLastRefusal()}); the arm holds");
+                    loggedRefusals = plant.RefusedCommands;
+                    lastRefusalLog = now;
+                }
 
                 backend.ReadTruth(now, Span<double>.Empty, out _);   // the simulation, and its truth records, up to now
 
@@ -325,7 +343,7 @@ namespace Teleop.RobotHost
 
             sigterm?.Dispose();
             if (raisedTimer) TimeEndPeriod(1);
-            Console.WriteLine($"Stopped. {plant.AcceptedCommands} joint command(s) taken, {plant.StaleCommands} stale, {plant.UnknownTargets} target(s) for unknown motors, " +
+            Console.WriteLine($"Stopped. {plant.AcceptedCommands} joint command(s) taken, {plant.StaleCommands} stale, {plant.RefusedCommands} refused (collision), {plant.UnknownTargets} target(s) for unknown motors, " +
                 $"{plant.ClampedTargets} clamped; simulated {backend.Steps} ms" + (backend.SkippedTicks > 0 ? $", skipped {backend.SkippedTicks * 1000.0 / clock.TicksPerSecond:0} ms of a stalled loop" : "") + ".");
             return 0;
         }
@@ -357,6 +375,20 @@ namespace Teleop.RobotHost
 
         [DllImport("winmm.dll", EntryPoint = "timeEndPeriod")]
         private static extern uint TimeEndPeriod(uint milliseconds);
+
+        /// <summary>The shaper's per-motor values in the profile's motor order (each arm's joints, then its hand), as the plant takes them.</summary>
+        private static double[] ProfileOrder(SerialChainProfile profile, TrajectoryShaperConfig shaper, double[] byShaper)
+        {
+            var out_ = new double[profile.MotorCount];
+            int k = 0;
+            foreach (ChainArm arm in profile.Arms)
+            {
+                foreach (ChainJoint j in arm.Joints) out_[k++] = byShaper[shaper.IndexOf(j.MotorId)];
+                if (arm.HasGripper) out_[k++] = byShaper[shaper.IndexOf(arm.Gripper.MotorId)];
+            }
+
+            return out_;
+        }
 
         private static long? FreeBytes(string path)
         {

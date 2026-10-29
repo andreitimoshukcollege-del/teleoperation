@@ -177,3 +177,47 @@ FR3 Duo has 16 (2 × 7 + 2 fingers): a command is 14 + 16·9 = 158 bytes and a s
 - **Denavit–Hartenberg parameters in the profile instead of URDF origins.** Rejected. DH cannot
   express the mount's tilted fixed frames without extra conventions, while the URDF is what Franka
   maintains. The DH table remains a test oracle.
+
+## Amendment (2026-10-29): inverse kinematics and collision for serial chains
+
+Decision 5 left these for later. They are needed before Unity drives the FR3 and before any real arm moves.
+
+1. **A collision model fitted headlessly to the URDF's own collision meshes.**
+   - **The verb:** `Teleop.Eval fit-capsules` reads the URDF and its STL collision meshes. ADR 0020's JetRover
+     extractor needs the Unity editor; this does not, so it runs on Linux and in CI, with the STLs in plain git.
+   - **The capsules:** one per link, each a segment and a radius that contain every vertex of the link's mesh:
+     - each arm's link 0 to link 7;
+     - the hand, with its fingers' boxes folded in;
+     - the mount, its cover and the head, on the robot's root.
+
+     Each is expressed in the frame of the joint that moves it (the arm's base for link 0).
+   - **The output:** `core/RobotProfiles/fr3-duo.collision.json`. A test re-fits it and requires the same bytes,
+     as decision 3 requires of the profile.
+2. **Which pairs are checked:**
+   - every pair of capsules from two different bodies (an arm, or the robot's fixed body), within a margin
+     (default 1 cm);
+   - except pairs joined by a joint (a link and its parent: the mount with each arm's link 0, and the two link 0s
+     on the mount);
+   - and except pairs the fit makes touch at the ready pose that the robot's geometry does not.
+
+   Those disabled pairs are listed in the file, with the reason, as the SRDF's would be.
+3. **`SerialChainCollision`** (`Teleop.RobotArm/Collision/`) checks one robot pose (every arm's joints)
+   against the model:
+   - joint ranges first, then self-collision, arm-to-arm and arm-to-body;
+   - segment-to-segment distances in double precision;
+   - allocation-free;
+   - it reports the first hit.
+4. **`SerialChainSolver`** (`Teleop.RobotArm/Kinematics/`) solves one arm's joints for a TCP pose (position and
+   orientation):
+   - damped least squares, a fixed number of iterations from the current joints;
+   - the null space pulled toward the current pose and away from the soft limits, so a 7-joint arm stays near
+     where it is rather than jumping elbow-side;
+   - each iterate clamped into the soft limits;
+   - it reports the residual and whether the answer collides.
+
+   It is deterministic and allocation-free. Like ADR 0020's `ArmSolver`, it runs on the headset: floating point
+   can differ between the headset's IL2CPP build and RobotHost's x64, so the robot does not re-solve.
+5. **RobotHost refuses a colliding command** (`SerialChainPlant`, outcome `R`, as `GenericArmPlant` does since
+   ADR 0020). It does so whenever the host has the profile's collision model, which `--collision-model` names.
+   `chain-drive` checks every planned pose with the same model and keeps only collision-free ones, but still runs
+   only against the simulated robot: the model's margin and pairs are fitted, not measured.

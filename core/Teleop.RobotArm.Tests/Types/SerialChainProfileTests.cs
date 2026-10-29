@@ -86,6 +86,30 @@ namespace Teleop.RobotArm.Tests.Types
         }
 
         [Fact]
+        public void LayoutV4sRowsAndGravity_AreTheTrainers()
+        {
+            // The trainer computes the same rows and gravity directions from its copy of the profile; its golden records them.
+            SerialChainProfile profile = Fr3Document().ToProfile();
+            Teleop.Core.Types.LearnedChainLayout layout = SerialChainShaping.LearnedLayout(profile);
+            using var golden = JsonDocument.Parse(File.ReadAllText(Path.Combine(SerialChainKinematicsTests.RepoRoot(), "core", "testdata", "learned", "golden-v4.json")));
+            JsonElement chain = golden.RootElement.GetProperty("chain");
+            int[] motors = chain.GetProperty("motors").EnumerateArray().Select(e => e.GetInt32()).ToArray();
+            int[] arms = chain.GetProperty("armOfRow").EnumerateArray().Select(e => e.GetInt32()).ToArray();
+            int[] identity = chain.GetProperty("identity").EnumerateArray().Select(e => e.GetInt32()).ToArray();
+            double[] gravity = chain.GetProperty("gravity").EnumerateArray().Select(e => e.GetDouble()).ToArray();
+            Assert.Equal(motors.Length, layout.Rows);
+            for (int r = 0; r < layout.Rows; r++)
+            {
+                Assert.Equal((motors[r], arms[r], identity[r]), ((int)layout.MotorOf(r), layout.ArmOf(r), layout.IdentityOf(r)));
+            }
+
+            for (int a = 0; a < layout.Arms; a++)
+            {
+                for (int k = 0; k < 3; k++) Assert.True(Math.Abs(gravity[3 * a + k] - layout.Gravity(a, k)) < 1e-12, $"arm {a} axis {k}");
+            }
+        }
+
+        [Fact]
         public void InverseUndoesATransformAndComposeAssociates()
         {
             var rng = new SeededRng(3);

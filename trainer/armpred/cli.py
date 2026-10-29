@@ -661,6 +661,13 @@ def cmd_golden_learned(args) -> int:
     return 0
 
 
+def cmd_golden_learned_v4(args) -> int:
+    from .golden_learned_v4 import write_golden_v4
+
+    write_golden_v4(args.run, args.session, args.out, schedule=args.schedule, seed=args.seed, start_s=args.start, seconds=args.seconds)
+    return 0
+
+
 def main(argv: Optional[List[str]] = None) -> int:
     parser = argparse.ArgumentParser(prog="armpred", description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
@@ -748,6 +755,16 @@ def main(argv: Optional[List[str]] = None) -> int:
     p.add_argument("--start", type=float, default=60.0, help="seconds into the view")
     p.add_argument("--seconds", type=float, default=8.0)
     p.set_defaults(func=cmd_golden_learned)
+
+    p = sub.add_parser("golden-learned-v4", help="layout v4's golden fixture for the C# copy, from an FR3 run and a (simulated) v2 session (docs/adr/0028)")
+    p.add_argument("--run", required=True)
+    p.add_argument("--session", required=True)
+    p.add_argument("--out", required=True)
+    p.add_argument("--schedule", default="50ms-5j@0")
+    p.add_argument("--seed", type=int, default=7)
+    p.add_argument("--start", type=float, default=30.0, help="seconds into the view")
+    p.add_argument("--seconds", type=float, default=6.0)
+    p.set_defaults(func=cmd_golden_learned_v4)
 
     p = sub.add_parser("evaluate", help="the trainer gate's numbers for a run, on a directory of sessions")
     p.add_argument("--run", required=True)

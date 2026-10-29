@@ -52,6 +52,44 @@ namespace Teleop.RobotArm.Types
                 limits.ToArray(), stepSeconds, velocityScale, accelerationScale, jerkScale, brakingScale, settleSeconds, positionMargin);
         }
 
+        /// <summary>
+        /// Layout v4's rows for <paramref name="profile"/> (docs/adr/0028): each arm's joints in order, then its hand. Each
+        /// row records its arm and its identity within the arm (a hand is <see cref="LearnedChainLayout.ArmJoints"/>), and
+        /// each arm has gravity's direction (root −z) in its mounted base frame. The trainer's <c>layout_v4._rows</c> and
+        /// <c>ChainArm.gravity_in_base</c> compute the same.
+        /// </summary>
+        public static LearnedChainLayout LearnedLayout(SerialChainProfile profile)
+        {
+            var motors = new List<byte>();
+            var arm = new List<int>();
+            var identity = new List<int>();
+            var gravity = new List<double>();
+            for (int a = 0; a < profile.Arms.Length; a++)
+            {
+                ChainArm chain = profile.Arms[a];
+                for (int j = 0; j < chain.Joints.Length; j++)
+                {
+                    motors.Add(chain.Joints[j].MotorId);
+                    arm.Add(a);
+                    identity.Add(j);
+                }
+
+                if (chain.HasGripper)
+                {
+                    motors.Add(chain.Gripper.MotorId);
+                    arm.Add(a);
+                    identity.Add(LearnedChainLayout.ArmJoints);
+                }
+
+                chain.Mount.Inverse().Rotate(0, 0, -1, out double gx, out double gy, out double gz);
+                gravity.Add(gx);
+                gravity.Add(gy);
+                gravity.Add(gz);
+            }
+
+            return new LearnedChainLayout(motors.ToArray(), arm.ToArray(), identity.ToArray(), gravity.ToArray());
+        }
+
         /// <summary>The motor ids of every gripper in <paramref name="profile"/>: what a predictor without a finger model treats as instant.</summary>
         public static byte[] GripperMotorIds(SerialChainProfile profile)
         {

@@ -438,7 +438,7 @@ namespace Teleop.Bridge
             }
 
             _jointUdp = new UdpTransport(
-                _config.JointLocalPort, new IPEndPoint(remoteHost, _config.JointRemotePort), MaxDatagramBytes, _clock);
+                _config.JointLocalPort, new IPEndPoint(remoteHost, _config.JointRemotePort), JointDatagram.MaxBytes, _clock);
             // Off until the console switches one on; commands, keepalives and frames all pass through.
             _jointTransport = new JointLinkDisturbance(_jointUdp);
             _disturbanceSeed = unchecked((ulong)DateTime.UtcNow.Ticks) & ~1UL;

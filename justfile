@@ -377,6 +377,73 @@ import-fr3-profile:
         --acceleration 10 --jerk 5000 \
         --upstream frankarobotics/franka_description@7aeeddc449edf8d62b594f9e36a81da53e7796f9
 
+# ---- the simulated FR3 Duo (docs/adr/0026, 0027): nothing real moves ----
+
+fr3_sim_recordings := "recordings/fr3-sim"
+
+# RobotHost on this PC against a SIMULATED FR3 Duo (docs/adr/0027): core/RobotProfiles/fr3-duo.json, Core's trajectory shaper at 1 kHz, a second-order tracking lag of track_hz, readings with noise_rad of seeded noise. Joint port 6002 and discovery 6005, as on the robot, so the headset and the Eval tools talk to it as they would to a robot (just fr3-sim-drive, just joint-probe remote_host=127.0.0.1). Sessions the headset commands are recorded automatically into recordings/fr3-sim (teleop-session v2, source sim-host); the uplink control file is recordings/fr3-sim/.uplink. Enter stops it. Moves nothing real
+[group('fr3 (simulated)')]
+fr3-sim-host track_hz="20" noise_rad="0" seed="1" port="6002" discovery_port="6005":
+    mkdir -p {{fr3_sim_recordings}}
+    cd core && dotnet run --project Teleop.RobotHost -- --profile-path RobotProfiles/fr3-duo.json --joint-local-port {{port}} --backend sim \
+        --sim-track-hz {{track_hz}} --sim-noise-rad {{noise_rad}} --sim-seed {{seed}} --discovery-port {{discovery_port}} \
+        --record-control ../{{fr3_sim_recordings}}/.active --auto-record --auto-record-root ../{{fr3_sim_recordings}} \
+        --uplink-control ../{{fr3_sim_recordings}}/.uplink
+
+# Drive the simulated FR3 Duo of a running just fr3-sim-host (in another terminal) through seeded joint-space waypoints at 48 Hz (Teleop.Eval chain-drive): every joint within +-amplitude rad of where it starts, the hands toggling; Enter stops it, back at the start. Simulated robots only: chain-drive refuses a real one until the serial-chain collision model exists (docs/adr/0026 decision 5)
+[group('fr3 (simulated)')]
+fr3-sim-drive seconds="60" seed="1" amplitude="0.5" remote_host="127.0.0.1":
+    cd core && dotnet run --project Teleop.Eval -- chain-drive --simulated-robot --remote-host {{remote_host}} \
+        --seconds {{seconds}} --seed {{seed}} --amplitude-rad {{amplitude}}
+
+# Record one scripted session on the simulated FR3 Duo (a running just fr3-sim-host): opens recordings/fr3-sim/<UTC>-<label>/ with a teleop-session v2 session.json (source sim-host) and the profile, runs chain-drive into its operator.jlog, then closes it (stoppedUtc, files.sha256). Its arm is simulated and is never the robot's (docs/adr/0027 decision 6)
+[group('fr3 (simulated)')]
+fr3-sim-record label seconds="60" seed="1" amplitude="0.5" network="lan":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    root={{fr3_sim_recordings}}
+    mkdir -p "$root"
+    [ -s "$root/.active" ] && { echo "error: a session is already recording ($(cat "$root/.active"))" >&2; exit 1; }
+    id="$(date -u +%Y%m%dT%H%M%SZ)-{{label}}"
+    dir="$root/$id"
+    mkdir -p "$dir"
+    cp core/RobotProfiles/fr3-duo.json "$dir/robot-profile.json"
+    python3 - "$dir/session.json" "$id" "{{label}}" "{{network}}" "{{seed}}" "{{amplitude}}" "$(sha256sum core/RobotProfiles/fr3-duo.json | cut -d' ' -f1)" "$(git rev-parse HEAD)" "$([ -n "$(git status --porcelain -- core)" ] && echo true || echo false)" <<'PY'
+    import datetime, json, sys
+    path, sid, label, network, seed, amplitude, profile_sha, sha, dirty = sys.argv[1:]
+    json.dump({
+        "format": "teleop-session", "version": 2, "id": sid, "source": "sim-host", "label": label,
+        "startedUtc": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "conditions": {
+            "speedSliderRadPerSec": "none",
+            "load": {"kind": "none", "payloadGrams": 0},
+            "network": {"uplinkProfile": network, "uplinkSeed": 0, "addedDelayMs": 0},
+            "motion": "chain-drive:waypoints", "operator": "chain-drive seed " + seed + " amplitude " + amplitude,
+        },
+        "builds": {"robothost": {"sha": sha, "dirty": dirty == "true"}},
+        "robotProfile": "fr3-duo", "robotProfileSha256": profile_sha,
+        "notes": "the simulated FR3 Duo (Fr3SimBackend, just fr3-sim-host); its arm is simulated and is never the robot's",
+    }, open(path, "w"), indent=2)
+    PY
+    if [ "{{network}}" != "lan" ]; then printf '%s 1\n' "{{network}}" > "$root/.uplink"; sleep 1; fi
+    printf '%s\n' "../$dir" > "$root/.active"
+    sleep 1
+    status=0
+    (cd core && dotnet run --project Teleop.Eval -- chain-drive --simulated-robot --seconds {{seconds}} --seed {{seed}} \
+        --amplitude-rad {{amplitude}} --operator-log "../$dir/operator.jlog" --session-id "$id") || status=$?
+    rm -f "$root/.active" "$root/.uplink"
+    for i in $(seq 1 40); do tail -n 1 "$dir/robothost.jlog" 2>/dev/null | grep -q '^END|' && break; sleep 0.25; done
+    python3 - "$dir/session.json" <<'PY'
+    import datetime, json, sys
+    meta = json.load(open(sys.argv[1]))
+    meta["stoppedUtc"] = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    json.dump(meta, open(sys.argv[1], "w"), indent=2)
+    PY
+    (cd "$dir" && sha256sum session.json robot-profile.json *.jlog > files.sha256)
+    for f in "$dir"/*.jlog; do printf '%-16s %8s lines  %s\n' "$(basename "$f")" "$(wc -l < "$f")" "$(tail -n 1 "$f" | cut -c1-60)"; done
+    echo "recorded $dir (chain-drive exit $status)"
+    exit $status
+
 # Phase-3 cross-machine ClockSync diagnostic against an already-running Teleop.RobotHost -- moves the real arm once and holds; a human must be watching the hardware
 [group('robot: moves the arm (someone watching)')]
 clocksync-check remote_host=default_jetrover_host remote_port="6000" local_port="6001" rate_hz="20" duration_seconds="20":

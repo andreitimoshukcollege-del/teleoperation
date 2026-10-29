@@ -196,6 +196,24 @@ switched off.
 calibration findings and a rate-dependent command-loss bug. Most "new" hardware problems turn out
 to be repeats.
 
+## The FR3 Duo (simulated, until it arrives)
+
+The platform is moving to Franka's FR3 Duo: two 7-joint arms with hands (docs/adr/0026–0028). The
+JetRover stays supported. The hardware is not here yet, so the FR3 runs as a simulated arm on the PC.
+Nothing real moves:
+
+```bash
+just fr3-sim-host                 # RobotHost against the simulated FR3 Duo (joint port 6002); Enter stops
+just fr3-sim-drive                # in a second terminal: seeded joint-space moves at 48 Hz
+just fr3-sim-record smoke 60      # ...or the same, recorded as a teleop-session v2 into recordings/fr3-sim/
+just import-fr3-profile           # regenerate core/RobotProfiles/fr3-duo.json from robot/franka/fr3_duo/
+cd core && dotnet run --project Teleop.Eval -- joint-predict-bench --robot fr3   # franka-replay vs the rest
+```
+
+The profile is generated from Franka's URDF and never hand-edited. The arm is shaped by Core's
+`JointTrajectoryShaper`, which the `franka-replay` predictor replays. Its sessions say `source:
+sim-host`, and their arm is never the robot's.
+
 ## Contributing
 
 Read root `CLAUDE.md` first, especially "Boundaries for agents". The short version: free rein

@@ -33,17 +33,25 @@ namespace Teleop.RobotHost
         /// <summary>
         /// Separate size budget for the joint-angle listener, distinct from the Cartesian path's
         /// own <see cref="MaxDatagramBytes"/> -- each <see cref="UdpTransport"/> owns its own
-        /// fixed receive buffer, so there is no reason the two hops must share one constant
-        /// (docs/adr/0011-generic-robot-arm-profiles.md). Numerically identical to
-        /// <see cref="MaxDatagramBytes"/> today only because nothing has needed to diverge yet.
+        /// fixed receive buffer (docs/adr/0011-generic-robot-arm-profiles.md). The joint port's one
+        /// constant, 256 bytes since the FR3 Duo (docs/adr/0026 decision 6).
         /// </summary>
-        private const int MaxJointDatagramBytes = 128;
+        private const int MaxJointDatagramBytes = JointDatagram.MaxBytes;
 
         private static int Main(string[] args)
         {
             if (args.Length == 1 && args[0] == "--clock-echo")
             {
                 return ClockEcho();
+            }
+
+            // A serial-chain profile (the FR3 Duo, docs/adr/0026) runs its own host loop (docs/adr/0027 decision 5);
+            // everything below is the JetRover's.
+            int profileFlag = Array.IndexOf(args, "--profile-path");
+            if (profileFlag >= 0 && profileFlag + 1 < args.Length && File.Exists(args[profileFlag + 1]) &&
+                SerialChainProfileJson.IsSerialChain(args[profileFlag + 1]))
+            {
+                return SerialChainHost.Run(args);
             }
 
             RobotHostArgs? parsed = RobotHostArgs.TryParse(args, out string? error);

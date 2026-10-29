@@ -44,6 +44,20 @@ namespace Teleop.RobotHost.Recording
         /// <summary>The robot profile copied into each session as <c>robot-profile.json</c>. Null: none is copied, and the session says so.</summary>
         public string? ProfilePath { get; set; }
 
+        /// <summary>
+        /// What the session's <c>session.json</c> says it is: <c>jetrover-session</c> v1 from the robot, or, for a
+        /// serial-chain robot (docs/adr/0027 decision 6), <c>teleop-session</c> v2 with its source (<c>robot</c>,
+        /// or <c>sim-host</c> from the simulated backend) and the profile's name.
+        /// </summary>
+        public string SessionFormat { get; set; } = "jetrover-session";
+
+        public int SessionVersion { get; set; } = 1;
+
+        public string Source { get; set; } = "robot";
+
+        /// <summary>The robot profile's name, written into a v2 <c>session.json</c>. Null for v1.</summary>
+        public string? ProfileName { get; set; }
+
         /// <summary>RobotHost's own <c>BUILD_INFO</c>. Null: <c>BUILD_INFO</c> beside the running assembly.</summary>
         public string? RobotHostBuildInfoPath { get; set; }
 

@@ -48,7 +48,8 @@ namespace Teleop.Eval.JointDrive
         /// <summary>The headset slider's top (TeleopXR's SpeedSlider).</summary>
         public const float MaxSpeedRadPerSec = 6f;
 
-        private const int MaxDatagramBytes = 128;
+        /// <summary>The joint port's budget (docs/adr/0026 decision 6): this tool only talks on the joint port.</summary>
+        private const int MaxDatagramBytes = Teleop.RobotArm.Wire.JointDatagram.MaxBytes;
 
         private const string Usage =
             "usage: joint-drive --script waypoints|steps --speed <rad/s> [--seconds 300] [--seed 1] [--margin-deg 15] [--rate-hz 48]\n" +

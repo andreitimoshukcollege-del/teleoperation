@@ -125,7 +125,11 @@ def _evaluate_one(args):
     from .data.views import synthesize
     from .evaluate_fr3 import LearnedV4, baselines, evaluate_view
     from .train import load_best
+    import torch
 
+    # One thread per worker: the model is tiny, and a pool of workers each running torch's default thread count
+    # oversubscribes the cores until the evaluation all but stops (fr3-sim-1's ran 9 h at ~5% CPU per worker).
+    torch.set_num_threads(1)
     session_dir, schedule, seed, out, cfg = args
     session = load_session(session_dir)
     view = synthesize(session, None, parse(schedule), seed=seed, traces_dir=TRACES)
@@ -180,6 +184,27 @@ def write_report(out: str, summary: dict, train_summary: dict, card: dict) -> st
     with open(path, "w", encoding="utf-8") as f:
         f.write("\n".join(lines) + "\n")
     return path
+
+
+def run_fr3_eval_only(config: dict, out: str, workers: int, log) -> int:
+    """Evaluate and report an already-trained ``fr3-sim-pretrain`` run from its ``prepared.json``, without simulating
+    or training again."""
+    from .train import TrainConfig
+
+    with open(os.path.join(out, "prepared.json"), encoding="utf-8") as f:
+        dirs = json.load(f)["dirs"]
+    with open(os.path.join(out, "train-summary.json"), encoding="utf-8") as f:
+        summary = json.load(f)
+    with open(os.path.join(out, "model-card.json"), encoding="utf-8") as f:
+        card = json.load(f)
+    cfg = TrainConfig(**{**config.get("train", {}), "layout": "v4"})
+    log(f"fr3-sim-pretrain --eval-only {out}: {len(dirs['test'])} test sessions")
+    result = evaluate_fr3_run(out, dirs["test"], cfg, workers, log=log)
+    report = write_report(out, result, summary, card)
+    log(f"report: {report}")
+    for row in result["gateDiagnostics"]:
+        log("  " + row)
+    return 0
 
 
 def run_fr3_sim_pretrain(config: dict, out: str, workers: int, log, steps: int = 0, skip_eval: bool = False) -> int:

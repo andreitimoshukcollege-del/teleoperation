@@ -1,0 +1,23 @@
+# The FR3 Duo's pipeline end to end in minutes (docs/adr/0028): it proves the pipeline runs, not that anything
+# was learned. `armpred fr3-sim-pretrain --config configs/fr3-smoke.toml --out runs/fr3-smoke`. SIMULATED.
+seed = 1
+views_per_session = 1
+val_views = 1
+
+[matrix]
+speeds = [1.0, "varied"]
+loads = ["none", "payload-changing"]
+sessions_per_cell = 2
+test_sessions_per_cell = 1
+minutes = 1.0
+val_share = 0.25
+
+[sample]
+queries_per_s = 10.0
+
+[train]
+arch = "mlp"
+steps = 300
+batch = 1024
+val_every = 100
+warmup = 50

@@ -16,7 +16,9 @@ import numpy as np
 
 from .jlog import Jlog, JlogError, read_jlog, split_items
 
-MAX_JOINTS = 13  # JointStateCodec.MaxJointsPerMessage / JointCommandCodec.MaxJointsPerMessage
+MAX_JOINTS = 13  # session v1: JointStateCodec.MaxJointsPerMessage at the old 128-byte budget (the JetRover)
+# Session v2 (a serial-chain robot, docs/adr/0027): the arrays are as wide as the robot profile has motors.
+SESSION_FORMATS = {("jetrover-session", 1), ("teleop-session", 2)}
 
 OUTCOME_ACCEPTED, OUTCOME_STALE, OUTCOME_REFUSED = ord("A"), ord("S"), ord("R")
 
@@ -84,6 +86,8 @@ class Reads:
     t_resp: np.ndarray
     motor: np.ndarray  # int16
     pulse: np.ndarray  # int32
+    # Session v2: the measured value itself (rad; a hand's 0..1 fraction), from QS; pulse is then 0. None in v1.
+    value: Optional[np.ndarray] = None
 
     @property
     def ok(self) -> np.ndarray:
@@ -138,6 +142,9 @@ class Session:
     latents: Optional["Latents"] = None
     operator_commands: Optional[OperatorCommands] = None
     files: Dict[str, Jlog] = field(default_factory=dict)
+    version: int = 1
+    # Session v2: the targets sent to the arm backend (AO), one row per motor.
+    arm_out: Optional["ServoRows"] = None
 
     @property
     def id(self) -> str:
@@ -159,15 +166,15 @@ def _i64(rows: List[List[str]], index: int) -> np.ndarray:
     return np.array([int(r[index]) for r in rows], dtype=np.int64)
 
 
-def _joint_list(rows: List[List[str]], index: int, parts: int) -> Tuple[np.ndarray, List[np.ndarray]]:
-    """A ``motor:a:b;...`` field into (count, [motor, a, b] as [n, MAX_JOINTS] arrays)."""
+def _joint_list(rows: List[List[str]], index: int, parts: int, width: int = MAX_JOINTS) -> Tuple[np.ndarray, List[np.ndarray]]:
+    """A ``motor:a:b;...`` field into (count, [motor, a, b] as [n, width] arrays)."""
     n = len(rows)
     count = np.zeros(n, dtype=np.int16)
-    columns = [np.zeros((n, MAX_JOINTS), dtype=np.float64) for _ in range(parts)]
+    columns = [np.zeros((n, width), dtype=np.float64) for _ in range(parts)]
     for i, r in enumerate(rows):
         items = split_items(r[index])
-        if len(items) > MAX_JOINTS:
-            raise JlogError(f"record has {len(items)} joints, more than {MAX_JOINTS}")
+        if len(items) > width:
+            raise JlogError(f"record has {len(items)} joints, more than {width}")
         count[i] = len(items)
         for k, item in enumerate(items):
             if len(item) != parts:
@@ -212,8 +219,8 @@ def _single_servo_rows(rows: List[List[str]]) -> ServoRows:
     )
 
 
-def parse_commands(rows: List[List[str]]) -> Commands:
-    count, (motor, angle, speed) = _joint_list(rows, 5, 3)
+def parse_commands(rows: List[List[str]], width: int = MAX_JOINTS) -> Commands:
+    count, (motor, angle, speed) = _joint_list(rows, 5, 3, width)
     return Commands(
         t=_i64(rows, 0),
         t_deliver=_i64(rows, 1),
@@ -227,8 +234,8 @@ def parse_commands(rows: List[List[str]]) -> Commands:
     )
 
 
-def parse_operator_commands(rows: List[List[str]], ticks_per_second: int) -> OperatorCommands:
-    count, (motor, angle, speed) = _joint_list(rows, 3, 3)
+def parse_operator_commands(rows: List[List[str]], ticks_per_second: int, width: int = MAX_JOINTS) -> OperatorCommands:
+    count, (motor, angle, speed) = _joint_list(rows, 3, 3, width)
     return OperatorCommands(
         t=_i64(rows, 0),
         seq=_i64(rows, 1),
@@ -241,8 +248,8 @@ def parse_operator_commands(rows: List[List[str]], ticks_per_second: int) -> Ope
     )
 
 
-def parse_frames(rows: List[List[str]]) -> Frames:
-    count, (motor, flags, value) = _joint_list(rows, 6, 3)
+def parse_frames(rows: List[List[str]], width: int = MAX_JOINTS) -> Frames:
+    count, (motor, flags, value) = _joint_list(rows, 6, 3, width)
     return Frames(
         t=_i64(rows, 0),
         seq=_i64(rows, 1),
@@ -264,6 +271,26 @@ def parse_reads(rows: List[List[str]]) -> Reads:
         motor=np.array([int(r[2]) for r in rows], dtype=np.int16),
         pulse=np.array([int(r[3]) if r[3] != "" else -1 for r in rows], dtype=np.int32),
     )
+
+
+def parse_controller_state(rows: List[List[str]]) -> Reads:
+    """``QS`` (session v2): the arm's measured state, as truth reads: one per motor per record, at its sensed time."""
+    t, motor, value = [], [], []
+    for r in rows:
+        sensed = int(r[1])
+        for item in split_items(r[2]):
+            if len(item) != 2:
+                raise JlogError(f"QS item {item!r} does not have 2 parts")
+            t.append(sensed)
+            motor.append(int(item[0]))
+            value.append(float(item[1]))
+    tt = np.array(t, dtype=np.int64)
+    return Reads(t_req=tt, t_resp=tt.copy(), motor=np.array(motor, dtype=np.int16),
+                 pulse=np.zeros(len(t), dtype=np.int32), value=np.array(value, dtype=np.float64))
+
+
+def _empty_rows() -> "ServoRows":
+    return ServoRows(np.zeros(0, np.int64), np.zeros(0, np.int16), np.zeros(0, np.float64), np.zeros(0, np.float64))
 
 
 def _pairs(rows: List[List[str]], parts: int) -> np.ndarray:
@@ -307,6 +334,74 @@ def parse_course_label(r: List[str]) -> CourseLabel:
     )
 
 
+def _optional_logs(directory: str, files: Dict[str, Jlog], width: int):
+    marks: List[Tuple[int, str]] = []
+    marks_path = os.path.join(directory, "marks.jlog")
+    if os.path.exists(marks_path):
+        marks_log = read_jlog(marks_path, "marks")
+        files["marks"] = marks_log
+        marks = [(int(r[0]), r[1]) for r in marks_log.tag("MK")]
+    operator_commands = None
+    operator_path = os.path.join(directory, "operator.jlog")
+    if os.path.exists(operator_path):
+        operator_log = read_jlog(operator_path, "operator")
+        files["operator"] = operator_log
+        operator_commands = parse_operator_commands(operator_log.tag("OC"), operator_log.header.ticks_per_second, width)
+    latents = None
+    latents_path = os.path.join(directory, "latents.jlog")
+    if os.path.exists(latents_path):
+        latents_log = read_jlog(latents_path, "latents")
+        files["latents"] = latents_log
+        latents = Latents(
+            params={r[0]: r[1] for r in latents_log.tag("LP")},
+            joints=np.array([[float(x) for x in r[:6]] for r in latents_log.tag("LJ")], dtype=np.float64).reshape(-1, 6),
+            events=[(int(r[0]), r[1], r[2] if len(r) > 2 else "") for r in latents_log.tag("EV")],
+        )
+    return marks, operator_commands, latents
+
+
+def session_width(directory: str) -> int:
+    """A v2 session's array width: its robot profile's motor count."""
+    from .chain_profile import load_chain_profile
+
+    path = os.path.join(directory, "robot-profile.json")
+    if not os.path.exists(path):
+        raise JlogError(f"{directory}: a v2 session needs its robot-profile.json")
+    return len(load_chain_profile(path).motors)
+
+
+def _load_session_v2(directory: str, meta: dict) -> Session:
+    """Session v2 (contract/SESSION_FORMAT.md): ``robothost.jlog`` holds the truth (``QS``); there is no driver."""
+    width = session_width(directory)
+    host = read_jlog(os.path.join(directory, "robothost.jlog"), "robothost")
+    files: Dict[str, Jlog] = {"robothost": host}
+    marks, operator_commands, latents = _optional_logs(directory, files, width)
+    empty = _empty_rows()
+    return Session(
+        path=directory,
+        meta=meta,
+        ticks_per_second=host.header.ticks_per_second,
+        commands=parse_commands(host.tag("JC"), width),
+        frames=parse_frames(host.tag("FR"), width),
+        reads=parse_controller_state(host.tag("QS")),
+        keepalives=_pairs(host.tag("KA"), 3),
+        relay_out=empty, relay_in=empty, gate_in=empty, gate_pending=empty, gate_dropped=empty, writes=empty,
+        cycles=np.zeros((0, 2), np.int64),
+        battery=np.zeros((0, 2), np.int64),
+        subscriber_changes=[(int(r[0]), r[1]) for r in host.tag("SS")],
+        sender_changes=[(int(r[0]), r[1]) for r in host.tag("JS")],
+        uplink_changes=[(int(r[0]), r[1], int(r[2]) if r[2] != "" else 0) for r in host.tag("UP")],
+        rounds=[parse_course_label(r) for r in host.tag("TK")],
+        headset=[(int(r[0]), float(r[1]), float(r[2]), float(r[3]), float(r[4]), int(r[5])) for r in host.tag("HD")],
+        marks=marks,
+        latents=latents,
+        operator_commands=operator_commands,
+        files=files,
+        version=2,
+        arm_out=_servo_rows(host.tag("AO"), 1, 2, None),
+    )
+
+
 def load_session(directory: str) -> Session:
     """Reads and validates every file of a session. Raises ``JlogError`` on anything malformed."""
     meta_path = os.path.join(directory, "session.json")
@@ -314,8 +409,11 @@ def load_session(directory: str) -> Session:
         raise JlogError(f"{directory}: no session.json")
     with open(meta_path, "r", encoding="utf-8") as f:
         meta = json.load(f)
-    if meta.get("format") != "jetrover-session" or int(meta.get("version", 0)) != 1:
-        raise JlogError(f"{meta_path}: not a version-1 jetrover session")
+    kind = (meta.get("format"), int(meta.get("version", 0)))
+    if kind not in SESSION_FORMATS:
+        raise JlogError(f"{meta_path}: not a session this trainer reads ({kind}; it reads {sorted(SESSION_FORMATS)})")
+    if kind == ("teleop-session", 2):
+        return _load_session_v2(directory, meta)
 
     host = read_jlog(os.path.join(directory, "robothost.jlog"), "robothost")
     driver = read_jlog(os.path.join(directory, "driver.jlog"), "driver")

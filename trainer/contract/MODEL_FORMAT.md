@@ -144,3 +144,61 @@ and the C# changed in the same commit.
 `prior.config` is `headset` (the reading ages 45/35/25/15/5 ms, the relay's gate) until `sysid` fits
 one, when it becomes the fitted values themselves (since 2026-10-25 the headset's own defaults are
 `sysid`'s fit: 30.2/25.3/22.6/20.1/17.1 ms).
+
+## Layout v4: the FR3 Duo (docs/adr/0028; 2026-10-29)
+
+`armpred/features/layout_v4.py`. It is a serial-chain robot's window: one row per motor in the robot profile's
+order (on the FR3 Duo, the left arm's joints 1-7 and hand 8, then the right arm's 11-17 and hand 18), and one arm
+block per arm. One MLP is shared by every row of every arm, and row r is paired with the block of its arm,
+`armOfRow[r]`. The prior is `franka-replay` (Core's `FrankaReplayPredictor`, copied in
+`baselines/franka_replay.py` and pinned by `golden/franka-replay-v1.json`).
+
+- **A row, `JOINT_FEATURES` = 253:** v3's prior (2), commanded path (80 × 2), readings (16 × 3) and
+  innovations (8 × 4), then an identity of 8 (joint 1-7 of its arm, then the hand: entry 7, input index 249),
+  sin/cos of `v` and the reference flag.
+  - The angle scale is 0.05 rad, and the innovation scale 0.005 rad.
+  - A hand's value is its 0..1 opening fraction × `HAND_MODEL_PER_FRACTION` (1.0) in model units.
+- **An arm block, `ARM_FEATURES` = 125:**
+  - sin/cos of the arm's seven newest readings (14);
+  - gravity's unit direction in the arm's mounted base frame (3, from the profile's mount);
+  - staleness / 0.5 s;
+  - fresh readings in the last second / 50;
+  - the longest gap between fresh readings in 2 s / 0.5 s;
+  - (newest command's effective time − T) / 0.5 s;
+  - the arm's hand command and its change over 0.5 s;
+  - `min(commands, 64) / 64`;
+  - then v3's network block (101).
+- **The graph:** `x` is [1, 16 × 253 + 2 × 125 = 4298] (every row, then each arm's block) and `y` is
+  [1, 32] (per row: the correction in model units, then the log-scale). `teleop.layout_id` is `v4`, and
+  `teleop.arm_of_row` lists each row's arm.
+- **The head, pre-registered before any FR3 training:**
+  - an arm row's correction is `float32(3°) · tanh(raw₀)`;
+  - a hand row's (its identity entry 7 set) is `0.5 · tanh(raw₀)`;
+  - the cap is `cap + (handCap − cap) · flag`, as v3 computes it;
+  - the log-scale is clipped as in v3.
+
+### Weights, version 2 (`model.weights` for layout v4)
+
+Written by `armpred.export_v4.write_weights_v2` after checking `mlp_forward_v4` against onnxruntime on real
+windows. Little-endian:
+
+`"TLMW" | u32 version (2) | u32 jointFeatures (253) | u32 armFeatures (125) | u32 rows (16) | u32 arms (2) |
+u32 layers (4) | u32 n | n bytes: the layout id (UTF-8, "v4") | rows bytes: each row's arm | u32 handFlagIndex
+(249) | f32 cap (3° in rad) | f32 handCap (0.5) | layers × { u32 inputs | u32 outputs | f32 weight[outputs ×
+inputs] | f32 bias[outputs] } | 32 bytes: the .onnx's sha256 | u32 n | n bytes: the model id`
+
+Version 1, layout v3's, is unchanged. A reader takes both and refuses any other version.
+
+### The card for layout v4
+
+`"format": "teleop-model-card"`, `"version": 3`. Its `model` object carries:
+- `layout` `v4`;
+- `joints` (the rows' motor ids) and `armOfRow`;
+- `handModelPerFraction`;
+- `caps`.
+
+Beside it, the card holds:
+- `robotProfile` (name and sha256 of `contract/profiles/fr3-duo.json`);
+- `prior` `franka-replay`;
+- `source`;
+- `notes`, which say SIMULATED while the model has seen no real FR3 session.

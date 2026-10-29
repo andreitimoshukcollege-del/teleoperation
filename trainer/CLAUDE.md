@@ -75,12 +75,14 @@ sha256 in the model card.
 
 | Path | Holds |
 |---|---|
-| `armpred/contract/` | session, view and bundle readers and writers, the session checker. numpy only, so `just recording-check` and `just pack-dataset` run without torch |
+| `armpred/contract/` | session (v1, the JetRover's; v2, a serial-chain robot's), view and bundle readers and writers, the session checker, the serial-chain profile (`chain_profile.py`). numpy only, so `just recording-check` and `just pack-dataset` run without torch |
 | `armpred/net/` | the copies of Core: `SeededRng`, impairments, `EmulatedTransport`'s ordering, the profile catalog, `ClockSync`; and `forecast.py`, network forecast v1 and the forecasters of known quality (not a copy) |
-| `armpred/baselines/` | `hold-last`, `relay-replay` (copies of Core), `relay-replay-adaptive` (a dev baseline: online lag and droop, speed-blind) |
-| `armpred/sim/` | the simulator: operator motion, RobotHost, the relay gate, the servos, the reads |
+| `armpred/baselines/` | `hold-last`, `relay-replay`, the trajectory shaper and `franka-replay` (copies of Core, golden-pinned), `relay-replay-adaptive` (a dev baseline: online lag and droop, speed-blind) |
+| `armpred/sim/` | the JetRover simulator (operator motion, RobotHost, the relay gate, the servos, the reads); `fr3.py`, the FR3 Duo's (the shaper, a tracking lag, a payload bias; session v2, docs/adr/0028) |
 | `armpred/data/` | schedules, and turning a session plus a schedule and a seed into what the headset would have seen (views v3) |
-| `armpred/features/` | the model's input window (layout v3: the arm and the gripper, `contract/MODEL_FORMAT.md`) |
+| `armpred/features/` | the model's input window (layout v3: the JetRover's arm and gripper; layout v4: the FR3 Duo's rows and per-arm blocks, `contract/MODEL_FORMAT.md`) |
+| `armpred/fr3_pipeline.py`, `export_v4.py`, `evaluate_fr3.py` | `armpred fr3-sim-pretrain`: the FR3's matrix, layout v4 shards, training, the v4 export (weights format 2) and its simulated evaluation (docs/adr/0028) |
+| `contract/profiles/` | `fr3-duo.json`, a byte-identical copy of `core/RobotProfiles/fr3-duo.json` (an Eval test holds them equal) |
 | `armpred/models/`, `train.py`, `export.py`, `evaluate.py`, `report.py` | torch models, training, ONNX export, the evaluation and the trainer gate |
 | `armpred/sysid.py` | what the recordings say about the robot: the simulator's ranges and the prior's fitted reading ages |
 | `armpred/pipeline.py`, `armpred/cli.py` | the session matrix, `prepare`, `train-run`, `sim-pretrain`, `grid`, `finetune`, `sysid` |

@@ -44,6 +44,17 @@ namespace Teleop.Eval.Tests.ImportUrdf
         }
 
         [Fact]
+        public void TheTrainersCopyOfTheProfileIsTheSameBytes()
+        {
+            // The trainer imports nothing from the repo, so it carries its own copy (trainer/contract/profiles).
+            string root = RepoRoot();
+            byte[] core = File.ReadAllBytes(Path.Combine(root, "core", "RobotProfiles", "fr3-duo.json"));
+            byte[] trainer = File.ReadAllBytes(Path.Combine(root, "trainer", "contract", "profiles", "fr3-duo.json"));
+            Assert.True(core.AsSpan().SequenceEqual(trainer),
+                "trainer/contract/profiles/fr3-duo.json is not core/RobotProfiles/fr3-duo.json; `just import-fr3-profile` copies it");
+        }
+
+        [Fact]
         public void TheCommittedProfileLoadsAndRecordsItsSource()
         {
             SerialChainProfile p = SerialChainProfileJson.Load(Path.Combine(RepoRoot(), "core", "RobotProfiles", "fr3-duo.json"));

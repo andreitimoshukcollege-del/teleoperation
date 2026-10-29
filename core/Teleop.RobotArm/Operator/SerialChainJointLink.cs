@@ -17,6 +17,10 @@ namespace Teleop.RobotArm.Operator
     /// <list type="bullet">
     /// <item>Sends the keepalive every half second, so the host streams joint-state frames even before a command.</item>
     /// <item>Runs its own <see cref="ClockSync"/> from the frames' keepalive echo.</item>
+    /// <item>Sends the operator heartbeat (docs/adr/0018 §9) once a second and at every change of <see cref="MotionOn"/>:
+    /// who is sending and in which mode, never a power request (a serial-chain host has no arm power). RobotHost
+    /// records sessions automatically only while a headset's heartbeat arrives, so the headset's sessions are the
+    /// ones recorded for training, and a tool's are not.</item>
     /// <item>Feeds a <see cref="JointPredictorBank"/> with every frame (once synced, at its reading's time on the
     /// operator clock) and every command sent (shifted by the clock's uncertainty, the estimated uplink delay, as the
     /// JetRover link does). The bank's active preset is the twin's estimate.</item>
@@ -36,7 +40,12 @@ namespace Teleop.RobotArm.Operator
         private readonly ClockSync _clockSync;
         private readonly JointPredictorBank _bank;
         private readonly long _keepaliveIntervalTicks;
+        private readonly OperatorClientKind _clientKind;
         private readonly byte[] _buffer = new byte[JointDatagram.MaxBytes];
+        private readonly byte[] _heartbeat = new byte[ArmPowerCodec.RequestSize];
+        private long _lastHeartbeatTicks = long.MinValue;
+        private uint _heartbeatSequence;
+        private bool _motionOn, _motionChanged = true;
         private readonly JointSample[] _received = new JointSample[MaxJoints];
         private readonly JointSample[] _measured = new JointSample[MaxJoints];
         private readonly JointSample[] _predicted = new JointSample[MaxJoints];
@@ -47,7 +56,7 @@ namespace Teleop.RobotArm.Operator
         private long _lastFrameArrivalTicks = long.MinValue;
 
         public SerialChainJointLink(ITransport transport, ITimeAuthority clock, SerialChainProfile profile, ClockSyncConfig clockSyncConfig,
-            IReadOnlyList<JointPredictorPreset> presets, int activePreset)
+            IReadOnlyList<JointPredictorPreset> presets, int activePreset, OperatorClientKind clientKind = OperatorClientKind.Headset)
         {
             _transport = transport ?? throw new ArgumentNullException(nameof(transport));
             _clock = clock ?? throw new ArgumentNullException(nameof(clock));
@@ -56,6 +65,19 @@ namespace Teleop.RobotArm.Operator
             _clockSync = new ClockSync(clockSyncConfig);
             _bank = JointPredictorBank.Create(presets, activePreset);
             _keepaliveIntervalTicks = (long)(KeepaliveSeconds * clock.TicksPerSecond);
+            _clientKind = clientKind;
+        }
+
+        /// <summary>The motion mode the heartbeat reports: on while commands are going, off otherwise.</summary>
+        public bool MotionOn
+        {
+            get => _motionOn;
+            set
+            {
+                if (value == _motionOn) return;
+                _motionOn = value;
+                _motionChanged = true;
+            }
         }
 
         /// <summary>
@@ -98,6 +120,15 @@ namespace Teleop.RobotArm.Operator
                 _lastKeepaliveTicks = now;
             }
 
+            if ((_motionChanged || _lastHeartbeatTicks == long.MinValue || now - _lastHeartbeatTicks >= _clock.TicksPerSecond) &&
+                ArmPowerCodec.TryEncodeRequest(_clientKind, _motionOn ? OperatorMotionMode.On : OperatorMotionMode.Off, ArmPowerRequest.None,
+                    ++_heartbeatSequence, now, _heartbeat, out int heartbeatBytes))
+            {
+                _transport.Send(_heartbeat.AsSpan(0, heartbeatBytes), now);
+                _lastHeartbeatTicks = now;
+                _motionChanged = false;
+            }
+
             while (_transport.TryReceive(now, _buffer, out int count, out long arrival))
             {
                 if (!JointStateCodec.TryDecode(_buffer.AsSpan(0, count), out _, out long robotSend, out long sensed,
@@ -116,11 +147,13 @@ namespace Teleop.RobotArm.Operator
 
                 Array.Copy(_received, _measured, jointCount);
                 _measuredCount = jointCount;
+                MeasuredOperatorTicks = long.MinValue;
                 if (IsSynced)
                 {
                     // No reading yet means the values are the host's beliefs from the moment of sending.
                     long robotTime = sensed != 0 ? sensed : robotSend;
-                    _bank.ObserveState(_clockSync.ToOperatorTicks(robotTime, robotTps, _clock.TicksPerSecond), _measured.AsSpan(0, jointCount));
+                    MeasuredOperatorTicks = _clockSync.ToOperatorTicks(robotTime, robotTps, _clock.TicksPerSecond);
+                    _bank.ObserveState(MeasuredOperatorTicks, _measured.AsSpan(0, jointCount));
                 }
             }
         }
@@ -137,6 +170,9 @@ namespace Teleop.RobotArm.Operator
             long uplink = IsSynced ? _clockSync.Diagnostics.OffsetUncertaintyTicks : 0;
             _bank.ObserveCommand(sendTicks + uplink, _command.AsSpan(0, n), 0f);
         }
+
+        /// <summary>When the newest frame's joints were read, on the operator's clock; <c>long.MinValue</c> before the clocks are synced.</summary>
+        public long MeasuredOperatorTicks { get; private set; } = long.MinValue;
 
         /// <summary>The newest frame's joints, exactly as received.</summary>
         public ReadOnlySpan<JointSample> Measured => _measured.AsSpan(0, _measuredCount);

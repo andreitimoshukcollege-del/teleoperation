@@ -102,6 +102,35 @@ namespace Teleop.RobotArm.Tests.Operator
         }
 
         [Fact]
+        public void TheHeartbeat_SaysWhoAndWhichMode_OnceASecond_AndAtOnceOnAChange()
+        {
+            SerialChainProfile profile = SerialChainKinematicsTests.LoadFr3Duo();
+            var socket = new FakeSocket();
+            var clock = new ManualClock(Tps);
+            SerialChainJointLink link = Link(profile, socket, clock);
+            var heard = new List<(long At, OperatorClientKind Kind, OperatorMotionMode Mode, ArmPowerRequest Request)>();
+            for (int ms = 0; ms <= 2500; ms += 10)
+            {
+                clock.SetTicks(ms * Tps / 1000);
+                if (ms == 1700) link.MotionOn = true;
+                int before = socket.Sent.Count;
+                link.Tick(clock.NowTicks);
+                foreach (byte[] b in socket.Sent.Skip(before))
+                {
+                    if (ArmPowerCodec.TryDecodeRequest(b, out OperatorClientKind kind, out OperatorMotionMode mode, out ArmPowerRequest request, out _, out _))
+                        heard.Add((ms, kind, mode, request));
+                }
+            }
+
+            // At once, a second later, at the change, and then not again until a second after it (2.7 s).
+            Assert.Equal(new long[] { 0, 1000, 1700 }, heard.Select(h => h.At).ToArray());
+            Assert.All(heard, h => Assert.Equal(OperatorClientKind.Headset, h.Kind));
+            Assert.All(heard, h => Assert.Equal(ArmPowerRequest.None, h.Request));
+            Assert.Equal(OperatorMotionMode.Off, heard[1].Mode);
+            Assert.Equal(OperatorMotionMode.On, heard[2].Mode);
+        }
+
+        [Fact]
         public void Frames_SyncTheClock_AndBecomeTheMeasuredAndPredictedArm()
         {
             SerialChainProfile profile = SerialChainKinematicsTests.LoadFr3Duo();

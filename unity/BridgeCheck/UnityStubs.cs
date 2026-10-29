@@ -35,12 +35,21 @@ namespace UnityEngine
         public Quaternion rotation { get; set; }
         public Vector3 InverseTransformPoint(Vector3 p) => default;
         public Vector3 TransformPoint(Vector3 p) => default;
+        // SerialChainArmRig and SerialChainOperatorBridge: the twin's joints and the target markers.
+        public Vector3 localPosition { get; set; }
+        public Quaternion localRotation { get; set; }
+        public GameObject gameObject => null;
+        public void SetPositionAndRotation(Vector3 position, Quaternion rotation) { }
+        public T GetComponentInChildren<T>() where T : class => null;
     }
+
+    public sealed class GameObject : Object { public void SetActive(bool value) { } }
     public struct Vector3
     {
         public float x, y, z;
         public Vector3(float x, float y, float z) { this.x = x; this.y = y; this.z = z; }
         public static Vector3 operator +(Vector3 a, Vector3 b) => default;
+        public static Vector3 operator *(Vector3 a, float d) => default;
         public static Vector3 right => default;
         public static Vector3 forward => default;
     }
@@ -49,12 +58,22 @@ namespace UnityEngine
         public static Quaternion Inverse(Quaternion q) => default;
         public static Quaternion AngleAxis(float angle, Vector3 axis) => default;
         public static Quaternion operator *(Quaternion a, Quaternion b) => default;
+        public static Vector3 operator *(Quaternion q, Vector3 v) => default;
+        public static Quaternion identity => default;
     }
+
+    // SerialChainOperatorBridge: the target markers' colour.
+    public struct Color { public Color(float r, float g, float b) { } }
+    public sealed class MaterialPropertyBlock { public void SetColor(string name, Color value) { } }
+    [AttributeUsage(AttributeTargets.Class)] public sealed class DefaultExecutionOrderAttribute : Attribute { public DefaultExecutionOrderAttribute(int order) { } }
+    public static class JsonUtility { public static T FromJson<T>(string json) => default; }
 
     public class Component : Object
     {
         public Transform transform => null;
         public T GetComponent<T>() where T : class => null;
+        public GameObject gameObject => null;
+        public T GetComponentInChildren<T>() where T : class => null;
     }
 
     // CameraFeedBridge: texture decode and the panel it is drawn on.
@@ -79,7 +98,7 @@ namespace UnityEngine
     }
 
     public class Material : Object { public Texture mainTexture { get; set; } }
-    public class Renderer : Component { public Material material { get; set; } }
+    public class Renderer : Component { public Material material { get; set; } public void SetPropertyBlock(MaterialPropertyBlock block) { } }
     public class Behaviour : Component { public bool enabled { get; set; } }
     public class MonoBehaviour : Behaviour { }
 
@@ -153,6 +172,7 @@ namespace Teleop.Bridge
         public static System.Numerics.Vector3 ToCore(this UnityEngine.Vector3 v) => default;
         public static UnityEngine.Vector3 ToUnity(this System.Numerics.Vector3 v) => default;
         public static System.Numerics.Quaternion ToCore(this UnityEngine.Quaternion q) => default;
+        public static UnityEngine.Quaternion ToUnity(this System.Numerics.Quaternion q) => default;
         public static Pose ToCorePose(this UnityEngine.Transform t) => Pose.Identity;
         public static void ApplyTo(this Pose p, UnityEngine.Transform t) { }
     }

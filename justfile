@@ -367,6 +367,16 @@ build-profile output="" force="false":
         {{ if output != "" { "--output " + output } else { "" } }} \
         {{ if force == "true" { "--force" } else { "" } }}
 
+# Regenerate core/RobotProfiles/fr3-duo.json from the vendored URDF (docs/adr/0026 decision 3) -- never edit that file by hand. Ids: left arm 1-7 + hand 8, right arm 11-17 + hand 18. The URDF has no acceleration or jerk limits, so Franka's published FR3 figures are given here (10 rad/s^2, 5000 rad/s^3); Teleop.Eval.Tests' ImportUrdfCommandTests repeats these arguments and requires the committed bytes, so change both together
+[group('robot: profiles')]
+import-fr3-profile:
+    cd core && dotnet run --project Teleop.Eval -- import-urdf \
+        --urdf ../robot/franka/fr3_duo/urdf/fr3_duo.urdf --out RobotProfiles/fr3-duo.json --name fr3-duo \
+        --arm left:left_fr3v2_hand_tcp:1 --arm right:right_fr3v2_hand_tcp:11 \
+        --gripper left:left_fr3v2_finger_joint1:8 --gripper right:right_fr3v2_finger_joint1:18 \
+        --acceleration 10 --jerk 5000 \
+        --upstream frankarobotics/franka_description@7aeeddc449edf8d62b594f9e36a81da53e7796f9
+
 # Phase-3 cross-machine ClockSync diagnostic against an already-running Teleop.RobotHost -- moves the real arm once and holds; a human must be watching the hardware
 [group('robot: moves the arm (someone watching)')]
 clocksync-check remote_host=default_jetrover_host remote_port="6000" local_port="6001" rate_hz="20" duration_seconds="20":

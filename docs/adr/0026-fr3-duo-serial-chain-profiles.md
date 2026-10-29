@@ -64,21 +64,29 @@ FR3 Duo has 16 (2 × 7 + 2 fingers): a command is 14 + 16·9 = 158 bytes and a s
      session. A profile has a name, a `kind` (`"serial-chain"`; a file without a `kind` is ADR 0011's
      planar profile, so `jetrover.json` is unchanged) and an ordered `arms[]`. Each arm has:
      - **a name** (`left`, `right`);
-     - **a mount**, the fixed transform from the robot's root frame to the arm's base. It is a
-       translation plus a unit quaternion, computed from the URDF's fixed-joint chain;
+     - **a mount**, the fixed transform from the robot's root frame to the arm's base;
      - **`joints[]`**, in chain order. Each joint carries:
        - the motor id;
        - the URDF joint name;
        - the type (`revolute` or `prismatic`);
-       - the origin (translation and quaternion from the parent frame);
+       - the origin (from the parent link's frame);
        - the unit axis;
        - the position limits and the soft limits;
        - the velocity, acceleration and jerk limits;
        - the position-based velocity limit (deceleration limit, velocity offset);
-       - an optional zero offset;
      - **a tool frame:** the fixed transform from the last joint to the TCP (flange + hand + TCP);
      - **an optional gripper:** its motor id, its travel (0–0.04 m per finger for the Franka Hand),
        its speed, and whether a second finger mimics the first.
+
+     **In the file, every frame is the URDF's own numbers.** The mount, each origin and the tool are
+     each a list of `{joint, xyz, rpy}`, one entry per URDF joint folded into it. The profile type
+     composes them at load. So the importer does no trigonometry, a re-import is the same bytes on
+     every platform, and each number can be checked against the URDF by eye.
+
+     **One document type is shared by every reader.** The file's form
+     (`Teleop.RobotArm/Types/SerialChainProfileDocument.cs`) has plain public fields named as the
+     JSON names them. RobotHost and Eval read it with `System.Text.Json` and Unity with `JsonUtility`.
+     Only the file handling is per host, unlike ADR 0011's per-host mirrors.
    - **`Validate()` fails loudly on:**
      - non-unit axes or quaternions;
      - duplicate ids across arms;
@@ -93,9 +101,13 @@ FR3 Duo has 16 (2 × 7 + 2 fingers): a command is 14 + 16·9 = 158 bytes and a s
    ids need no new predictor plumbing. On the wire the gripper keeps ADR 0011's convention: a 0..1
    opening fraction. For the Franka Hand, 0 is closed and 1 is 0.04 m per finger.
 3. **The FR3 Duo's profile is generated, never hand-edited.** A new verb, `Teleop.Eval import-urdf
-   <urdf> --ids <map> --out <json>`:
-   - reads the URDF (`System.Xml`, a host, so file I/O is fine);
-   - folds the fixed joints into mounts, origins and the tool frame;
+   --urdf <file> --out <file> --name <profile> --arm <name>:<tipLink>:<firstMotorId>...
+   --gripper <arm>:<fingerJoint>:<motorId>... --acceleration <a> --jerk <j> --upstream <repo@sha>`:
+   - reads the URDF (`System.Xml.Linq`, a host, so file I/O is fine);
+   - takes each arm as the URDF path from the root link to its tip link, and folds the fixed joints
+     before the first moving joint into the mount, those between moving joints into the next joint's
+     origin, and those after the last into the tool;
+   - refuses a `continuous`, `floating` or `planar` joint, or a mimic joint, on an arm's path;
    - writes `core/RobotProfiles/fr3-duo.json`.
 
    It records the URDF's sha256 and the upstream commit in the profile. A test re-imports the

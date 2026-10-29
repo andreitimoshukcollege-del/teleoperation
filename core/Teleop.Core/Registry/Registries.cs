@@ -74,6 +74,8 @@ namespace Teleop.Core.Registry
                 ["servo-replay"] = config => new ServoReplayPredictor(config),
                 ["relay-replay"] = config => new RelayReplayPredictor(config),
                 ["relay-replay-servo"] = config => new RelayReplayServoPredictor(config),
+                // Needs config.Shaper, the robot's trajectory shaper from its profile (docs/adr/0027); throws without one.
+                ["franka-replay"] = config => new FrankaReplayPredictor(config),
                 // Needs config.Model, the host-loaded model (docs/adr/0025); throws without one.
                 ["learned"] = config => new LearnedJointPredictor(config),
             };

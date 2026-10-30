@@ -32,6 +32,21 @@ namespace Teleop.RobotHost.Plant
             }
         }
 
+        /// <summary>Loads a serial-chain collision model (<c>fit-capsules</c>'s file, docs/adr/0026 amendment).</summary>
+        public static Teleop.RobotArm.Collision.SerialChainCollisionModel LoadCollision(string path)
+        {
+            try
+            {
+                var document = JsonSerializer.Deserialize<Teleop.RobotArm.Collision.SerialChainCollisionDocument>(File.ReadAllText(path), Options)
+                    ?? throw new InvalidDataException($"collision model at '{path}' deserialized to null");
+                return document.ToModel();
+            }
+            catch (FormatException e)
+            {
+                throw new InvalidDataException($"collision model at '{path}': {e.Message}", e);
+            }
+        }
+
         public static SerialChainProfile Load(string path)
         {
             try

@@ -367,7 +367,7 @@ build-profile output="" force="false":
         {{ if output != "" { "--output " + output } else { "" } }} \
         {{ if force == "true" { "--force" } else { "" } }}
 
-# Regenerate core/RobotProfiles/fr3-duo.json (and the trainer's byte-identical copy, trainer/contract/profiles/) from the vendored URDF (docs/adr/0026 decision 3) -- never edit that file by hand. Ids: left arm 1-7 + hand 8, right arm 11-17 + hand 18. The URDF has no acceleration or jerk limits, so Franka's published FR3 figures are given here (10 rad/s^2, 5000 rad/s^3); Teleop.Eval.Tests' ImportUrdfCommandTests repeats these arguments and requires the committed bytes, so change both together
+# Regenerate core/RobotProfiles/fr3-duo.json (and the trainer's byte-identical copy, trainer/contract/profiles/) and its collision model fr3-duo.collision.json (fit-capsules: one capsule per link from the URDF's collision meshes, docs/adr/0026 amendment) from the vendored URDF (docs/adr/0026 decision 3) -- never edit that file by hand. Ids: left arm 1-7 + hand 8, right arm 11-17 + hand 18. The URDF has no acceleration or jerk limits, so Franka's published FR3 figures are given here (10 rad/s^2, 5000 rad/s^3); Teleop.Eval.Tests' ImportUrdfCommandTests repeats these arguments and requires the committed bytes, so change both together
 [group('robot: profiles')]
 import-fr3-profile:
     cd core && dotnet run --project Teleop.Eval -- import-urdf \
@@ -377,6 +377,8 @@ import-fr3-profile:
         --acceleration 10 --jerk 5000 \
         --upstream frankarobotics/franka_description@7aeeddc449edf8d62b594f9e36a81da53e7796f9
     cp core/RobotProfiles/fr3-duo.json trainer/contract/profiles/fr3-duo.json
+    cd core && dotnet run --project Teleop.Eval -- fit-capsules --urdf ../robot/franka/fr3_duo/urdf/fr3_duo.urdf \
+        --profile RobotProfiles/fr3-duo.json --out RobotProfiles/fr3-duo.collision.json --margin 0.01
 
 # ---- the simulated FR3 Duo (docs/adr/0026, 0027): nothing real moves ----
 
@@ -388,6 +390,7 @@ fr3-sim-host track_hz="20" noise_rad="0" seed="1" port="6002" discovery_port="60
     mkdir -p {{fr3_sim_recordings}}
     cd core && dotnet run --project Teleop.RobotHost -- --profile-path RobotProfiles/fr3-duo.json --joint-local-port {{port}} --backend sim \
         --sim-track-hz {{track_hz}} --sim-noise-rad {{noise_rad}} --sim-seed {{seed}} --discovery-port {{discovery_port}} \
+        --collision-model RobotProfiles/fr3-duo.collision.json \
         --record-control ../{{fr3_sim_recordings}}/.active --auto-record --auto-record-root ../{{fr3_sim_recordings}} \
         --uplink-control ../{{fr3_sim_recordings}}/.uplink
 

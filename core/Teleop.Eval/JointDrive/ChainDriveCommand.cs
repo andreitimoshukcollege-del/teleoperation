@@ -34,12 +34,14 @@ namespace Teleop.Eval.JointDrive
     public static class ChainDriveCommand
     {
         private const string Usage =
-            "usage: chain-drive --simulated-robot [--profile RobotProfiles/fr3-duo.json] [--remote-host 127.0.0.1] [--remote-port 6002]\n" +
+            "usage: chain-drive --simulated-robot [--profile RobotProfiles/fr3-duo.json] [--collision-model <profile>.collision.json]\n" +
+            "                   [--remote-host 127.0.0.1] [--remote-port 6002]\n" +
             "                   [--seconds 60] [--seed 1] [--amplitude-rad 0.5] [--rate-hz 48] [--operator-log <path> [--session-id <id>]] [--dry-run]";
 
         public static int Run(string[] args)
         {
             string profilePath = "RobotProfiles/fr3-duo.json", host = "127.0.0.1";
+            string? collisionPath = null;
             int port = 6002;
             double seconds = 60, amplitude = 0.5, rateHz = 48;
             ulong seed = 1;
@@ -54,6 +56,7 @@ namespace Teleop.Eval.JointDrive
                     switch (args[i])
                     {
                         case "--profile": profilePath = Next(); break;
+                        case "--collision-model": collisionPath = Next(); break;
                         case "--remote-host": host = Next(); break;
                         case "--remote-port": port = int.Parse(Next(), CultureInfo.InvariantCulture); break;
                         case "--seconds": seconds = Number(); break;
@@ -88,18 +91,28 @@ namespace Teleop.Eval.JointDrive
             }
 
             SerialChainProfile profile;
+            Teleop.RobotArm.Collision.SerialChainCollisionModel? collision = null;
             try
             {
                 profile = ImportUrdf.SerialChainProfileJson.Load(profilePath);
+                // The profile's own model beside it, unless one is named: every pose sent is checked against it.
+                collisionPath ??= Path.ChangeExtension(profilePath, null) + ".collision.json";
+                if (File.Exists(collisionPath))
+                {
+                    var doc = System.Text.Json.JsonSerializer.Deserialize<Teleop.RobotArm.Collision.SerialChainCollisionDocument>(File.ReadAllText(collisionPath),
+                        new System.Text.Json.JsonSerializerOptions { IncludeFields = true });
+                    collision = doc?.ToModel();
+                }
             }
-            catch (Exception e) when (e is IOException || e is InvalidDataException || e is System.Text.Json.JsonException)
+            catch (Exception e) when (e is IOException || e is InvalidDataException || e is System.Text.Json.JsonException || e is FormatException)
             {
                 Console.Error.WriteLine($"chain-drive: {e.Message}");
                 return 1;
             }
 
-            var plan = new ChainDrivePlan(profile, amplitude, seed);
-            Console.WriteLine($"[chain-drive] {profile.Name}: {plan.Motors} motors; joints wander +-{amplitude:0.##} rad from their start, legs 0.5-1.5 s, hands toggle; {seconds:0} s at {rateHz:0} Hz");
+            var plan = new ChainDrivePlan(profile, amplitude, seed, collision);
+            Console.WriteLine($"[chain-drive] {profile.Name}: {plan.Motors} motors; joints wander +-{amplitude:0.##} rad from their start, legs 0.5-1.5 s, hands toggle; {seconds:0} s at {rateHz:0} Hz; " +
+                (collision != null ? $"every pose checked against {collisionPath}" : "no collision model: poses are not checked"));
             if (dryRun)
             {
                 plan.Start(SerialChainStartGuess(profile));
@@ -241,7 +254,7 @@ namespace Teleop.Eval.JointDrive
 
             log?.Close();
             Console.WriteLine(FormattableString.Invariant(
-                $"[chain-drive] done: {sequence} commands, {frames} frames, largest gap commanded-measured {maxGap * 180 / Math.PI:0.0} deg; back at the start pose") +
+                $"[chain-drive] done: {sequence} commands, {frames} frames, largest gap commanded-measured {maxGap * 180 / Math.PI:0.0} deg, {plan.Avoided} colliding poses avoided; back at the start pose") +
                 (logPath != null ? $"; operator log {logPath}" : ""));
             return stop.IsSet ? 130 : 0;
         }
@@ -270,9 +283,17 @@ namespace Teleop.Eval.JointDrive
         private SeededRng _rng;
         private double[] _start = Array.Empty<double>();
         private readonly double[] _from, _to, _legStart, _legEnd, _lo, _hi;
+        private readonly SerialChainProfile _profile;
+        private readonly Teleop.RobotArm.Collision.SerialChainCollisionModel? _collision;
+        private JointTarget[]? _lastSafe;
 
-        public ChainDrivePlan(SerialChainProfile profile, double amplitude, ulong seed)
+        /// <summary>Poses that would have collided, so were not sent (the last safe one was, and new legs drawn).</summary>
+        public int Avoided { get; private set; }
+
+        public ChainDrivePlan(SerialChainProfile profile, double amplitude, ulong seed, Teleop.RobotArm.Collision.SerialChainCollisionModel? collision = null)
         {
+            _profile = profile;
+            _collision = collision;
             var ids = new System.Collections.Generic.List<byte>();
             var hand = new System.Collections.Generic.List<bool>();
             var lower = new System.Collections.Generic.List<double>();
@@ -333,8 +354,35 @@ namespace Teleop.Eval.JointDrive
 
         private const double LimitMarginOf = 0.1;
 
-        /// <summary>The targets at plan time <paramref name="t"/> (s).</summary>
+        /// <summary>
+        /// The targets at plan time <paramref name="t"/> (s). With a collision model, a pose that would collide is not returned: the
+        /// last safe one is, and every joint draws a new leg from there.
+        /// </summary>
         public JointTarget[] Sample(double t)
+        {
+            JointTarget[] targets = Raw(t);
+            if (_collision == null) return targets;
+            var pose = new System.Collections.Generic.List<double>();
+            for (int m = 0; m < _ids.Length; m++) if (!_hand[m]) pose.Add(targets[m].Angle);
+            if (!Teleop.RobotArm.Collision.SerialChainCollision.Check(_profile, _collision, pose.ToArray()).IsHit)
+            {
+                _lastSafe = targets;
+                return targets;
+            }
+
+            Avoided++;
+            JointTarget[] safe = _lastSafe ?? Home();
+            for (int m = 0; m < _ids.Length; m++)
+            {
+                if (_hand[m]) continue;
+                _to[m] = safe[m].Angle;
+                NewLeg(m, t);
+            }
+
+            return safe;
+        }
+
+        private JointTarget[] Raw(double t)
         {
             var targets = new JointTarget[_ids.Length];
             for (int m = 0; m < _ids.Length; m++)

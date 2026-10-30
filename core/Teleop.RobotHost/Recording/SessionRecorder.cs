@@ -462,10 +462,10 @@ namespace Teleop.RobotHost.Recording
 
             var meta = new JsonObject
             {
-                ["format"] = "jetrover-session",
-                ["version"] = 1,
+                ["format"] = o.SessionFormat,
+                ["version"] = o.SessionVersion,
                 ["id"] = id,
-                ["source"] = "robot",
+                ["source"] = o.Source,
                 ["label"] = AutoLabel,
                 ["startedUtc"] = spec.StartedUtc.ToUniversalTime().ToString("yyyy-MM-dd'T'HH:mm:ss'Z'", CultureInfo.InvariantCulture),
                 ["conditions"] = new JsonObject
@@ -486,6 +486,8 @@ namespace Teleop.RobotHost.Recording
                 ["robotProfileSha256"] = profileSha,
                 ["notes"] = notes.ToString(),
             };
+            // Session v2 names its profile (trainer/contract/SESSION_FORMAT.md); v1's keys are left exactly as they were.
+            if (o.ProfileName != null) meta["robotProfile"] = o.ProfileName;
             SessionFinalizer.WriteJsonAtomically(Path.Combine(directory, "session.json"), meta);
         }
 

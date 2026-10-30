@@ -51,12 +51,12 @@ namespace Teleop.RobotArm.Wire
         private const int PerJointSize = MotorIdSize + FloatSize + FloatSize;
 
         /// <summary>
-        /// Upper bound on how many joints one record can carry, derived from this hop's own
-        /// datagram size budget (<c>Teleop.RobotHost.Program</c>'s <c>MaxJointDatagramBytes</c> =
-        /// 128, separate from the unrelated Cartesian path's own <c>MaxDatagramBytes</c> -- each
-        /// <c>UdpTransport</c> owns its own buffer): <c>(128 - HeaderSize) / PerJointSize</c>.
+        /// Upper bound on how many joints one record can carry, derived from the joint port's datagram
+        /// budget (<see cref="JointDatagram.MaxBytes"/>, separate from the Cartesian path's own
+        /// <c>MaxDatagramBytes</c>): <c>(MaxBytes - HeaderSize) / PerJointSize</c>, 26 since the FR3 Duo
+        /// (docs/adr/0026 decision 6; 12 at the old 128 bytes).
         /// </summary>
-        public const int MaxJointsPerMessage = (128 - HeaderSize) / PerJointSize;
+        public const int MaxJointsPerMessage = (JointDatagram.MaxBytes - HeaderSize) / PerJointSize;
 
         /// <summary>Exact size of an encoded record carrying exactly <paramref name="jointCount"/> joints.</summary>
         public static int EncodedSize(int jointCount) => HeaderSize + jointCount * PerJointSize;

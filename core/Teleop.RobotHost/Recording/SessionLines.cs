@@ -92,6 +92,41 @@ namespace Teleop.RobotHost.Recording
             return b.ToString();
         }
 
+        /// <summary>
+        /// Targets a serial-chain plant sent its arm backend (session v2, docs/adr/0027 decision 6):
+        /// <c>AO|t|motor:value;...</c>, radians for an arm joint, the 0..1 fraction for a hand, after the limits.
+        /// </summary>
+        public static string ArmOut(long t, ReadOnlySpan<JointSample> targets) => "AO|" + I(t) + "|" + Samples(targets);
+
+        /// <summary>
+        /// The arm's measured state as the backend reported it (session v2's truth): <c>QS|t|sensed|motor:value;...</c>,
+        /// <c>sensed</c> on the host's clock, written every few milliseconds rather than at the controller's 1 kHz.
+        /// </summary>
+        public static string ControllerState(long t, long sensedTicks, ReadOnlySpan<byte> motorIds, ReadOnlySpan<double> values)
+        {
+            var b = new StringBuilder(32 + values.Length * 22);
+            b.Append("QS|").Append(I(t)).Append('|').Append(I(sensedTicks)).Append('|');
+            for (int i = 0; i < values.Length; i++)
+            {
+                if (i > 0) b.Append(';');
+                b.Append(motorIds[i].ToString(CultureInfo.InvariantCulture)).Append(':').Append(values[i].ToString("R", CultureInfo.InvariantCulture));
+            }
+
+            return b.ToString();
+        }
+
+        private static string Samples(ReadOnlySpan<JointSample> samples)
+        {
+            var b = new StringBuilder(samples.Length * 16);
+            for (int i = 0; i < samples.Length; i++)
+            {
+                if (i > 0) b.Append(';');
+                b.Append(samples[i].MotorId.ToString(CultureInfo.InvariantCulture)).Append(':').Append(F(samples[i].Value));
+            }
+
+            return b.ToString();
+        }
+
         /// <summary>A torque switch sent to the relay (docs/adr/0023 decision 5): 1 on, 0 off.</summary>
         public static string Torque(long t, bool on) => "TQ|" + I(t) + "|" + (on ? '1' : '0');
 

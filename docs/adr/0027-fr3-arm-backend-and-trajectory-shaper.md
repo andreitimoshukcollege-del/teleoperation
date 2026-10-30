@@ -119,9 +119,11 @@ arrives: the headset, RobotHost, joint-state downlink, recording and the headles
      - keeps every robot-agnostic record (`KA`, `JC`, `FR`, `SS`, `JS`, `UP`, `OM`, `TK`, `HD`);
      - replaces the relay's `RO`/`RI` with `AO` (targets to the backend, radians) and `AS` (a backend
        state taken by the plant).
-   - **`controller.jlog`** replaces `driver.jlog`. It holds the shaper's accepted targets and the
-     measured state, decimated to a rate fixed in the spec (4 ms).
-   - **The truth** is the measured joint positions there, at the controller's own time stamps.
+   - **No `driver.jlog`:** RobotHost records the arm's measured state itself (`QS`, every 4 ms of the
+     backend's own steps), because the backend hands it the state, whether the simulated arm in-process
+     or later the real-time server over its socket. (Proposed as a separate `controller.jlog`; one
+     writer turned out simpler, 2026-10-29.)
+   - **The truth** is the `QS` values at their measured times.
    - **A `sim-host` session's simulated arm is never the robot's,** and the trainer reports it
      separately. Its operator command streams, from a real human on the headset over a real network,
      are real, and are the first human FR3 data.

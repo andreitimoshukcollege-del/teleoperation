@@ -28,7 +28,8 @@ namespace Teleop.RobotArm.Wire
         private const int PerJointSize = 1 + 1 + 4;
         private const byte SensedFlag = 0x01;
 
-        public const int MaxJointsPerMessage = (128 - HeaderSize) / PerJointSize;
+        /// <summary>The joint port's budget over a joint's 6 bytes: 35 since the FR3 Duo (docs/adr/0026 decision 6; 13 at the old 128 bytes).</summary>
+        public const int MaxJointsPerMessage = (JointDatagram.MaxBytes - HeaderSize) / PerJointSize;
 
         public static int EncodedSize(int jointCount) => HeaderSize + jointCount * PerJointSize;
 

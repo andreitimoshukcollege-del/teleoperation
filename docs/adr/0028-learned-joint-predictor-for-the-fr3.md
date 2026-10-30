@@ -124,3 +124,38 @@ relay.
   its golden were built on, for no JetRover benefit.
 - **Keeping ADR 0021's absolute thresholds.** Rejected. At FR3 noise levels, 0.25° is larger than the
   error that matters, so the gate would pass anything.
+
+## Implementation notes (2026-10-29)
+
+What the first build fixed, where this ADR left a number open:
+
+- **Layout v4's sizes** (`trainer/armpred/features/layout_v4.py`, `contract/MODEL_FORMAT.md`):
+  - a row has 253 features and an arm block 125, so the input is 16 × 253 + 2 × 125 = 4298 and the output 32;
+  - the angle and innovation scales are 0.05 rad and 0.005 rad;
+  - the hand is its fraction × 1.0.
+- **The caps:** 3° on an arm joint, 0.5 on a hand. The hand's identity entry sits at input index 249, and
+  the head reads it there, as v3's head reads the gripper's at 247.
+- **Weights format 2** adds:
+  - the layout id;
+  - the row and arm counts;
+  - each row's arm;
+  - the hand flag's index and both caps.
+- **The simulator** (`sim/fr3.py`) is ADR 0027's backend, an exact shaper copy behind golden files. Behind
+  it, the tracking is:
+  - a second-order lag per joint, 8–30 Hz and damping 0.7–1.2 drawn per session;
+  - a payload bias: the payload's weight at the TCP taken about each joint axis through the profile's
+    kinematics, divided by Franka's default impedance stiffness (600/600/600/600/250/150/50 N m/rad, scaled
+    0.5–2× per session).
+
+  The matrix is operator speed × load (none, 0.5 kg, 2 kg, and 1 kg switching on and off), with a speed and
+  a payload held out.
+- **The evaluation** (`evaluate_fr3.py`) asks `hold-last`, `franka-replay` and the learned model at 30 Hz.
+  It reads F1–F3 on the simulated views as a diagnostic, and its report is titled SIMULATED.
+- **The trainer's `franka-replay` keeps checkpoints of its replay**, every 10 steps from the anchor. It is
+  a speed-up with the same arithmetic, held to Core by the same golden files.
+- **What the first simulated run shows about the problem:** the FR3 follows a command within about 20–30 ms.
+  So when the display looks up to 60 ms past the newest command, the operator's next motion is most of the
+  error, and `franka-replay` is little better than `hold-last` there. When it predicts the instant it is
+  asked, `franka-replay` is several times better (0.23–0.35° against 1.2° p95 on `lan`, one 60 s session).
+  The learned correction's room is the first case.
+

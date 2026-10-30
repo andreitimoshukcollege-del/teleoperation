@@ -182,8 +182,9 @@ def _commands(session: Session) -> _Commands:
     if len(order):
         rows.append((int(order[-1]), None))
     n = len(rows)
-    out = _Commands(np.zeros(n, np.int64), np.zeros(n, np.int16), np.zeros((n, MAX_JOINTS), np.int16),
-                    np.zeros((n, MAX_JOINTS), np.float32), np.zeros((n, MAX_JOINTS), np.float32),
+    width = c.motor.shape[1] if c.motor.ndim == 2 else MAX_JOINTS
+    out = _Commands(np.zeros(n, np.int64), np.zeros(n, np.int16), np.zeros((n, width), np.int16),
+                    np.zeros((n, width), np.float32), np.zeros((n, width), np.float32),
                     np.full(n, -1, np.int64), np.zeros(n, bool), np.zeros(n, bool))
     for r, (a, fill) in enumerate(rows):
         out.count[r], out.motor[r], out.speed[r] = c.count[a], c.motor[a], c.speed[a]
@@ -320,11 +321,15 @@ def synthesize(session: Session, profile: RobotProfile, schedule: Schedule, seed
     st_idx = np.array([r[2] for r in st_rows], dtype=np.int64)
     ok = session.reads.ok
     tr_motor = session.reads.motor[ok]
-    tr_value = np.zeros(int(ok.sum()), dtype=np.float64)
-    pulses = session.reads.pulse[ok]
-    for m in np.unique(tr_motor):
-        sel = tr_motor == m
-        tr_value[sel] = profile.pulse_to_value(int(m), pulses[sel])
+    if session.reads.value is not None:
+        # Session v2: the truth is the measured value itself, in the profile's joint coordinates.
+        tr_value = session.reads.value[ok].astype(np.float64)
+    else:
+        tr_value = np.zeros(int(ok.sum()), dtype=np.float64)
+        pulses = session.reads.pulse[ok]
+        for m in np.unique(tr_motor):
+            sel = tr_motor == m
+            tr_value[sel] = profile.pulse_to_value(int(m), pulses[sel])
     events = _events(session, schedule, t0, op)
     meta = {
         "format": "jetrover-view",
@@ -357,9 +362,9 @@ def synthesize(session: Session, profile: RobotProfile, schedule: Schedule, seed
         st_t=np.array([r[0] for r in st_rows], dtype=np.int64),
         st_sensed=np.array([r[1] for r in st_rows], dtype=np.int64),
         st_count=f.count[st_idx].astype(np.int16) if len(st_idx) else np.zeros(0, np.int16),
-        st_motor=f.motor[st_idx].astype(np.int16) if len(st_idx) else np.zeros((0, MAX_JOINTS), np.int16),
-        st_value=f.value[st_idx].astype(np.float32) if len(st_idx) else np.zeros((0, MAX_JOINTS), np.float32),
-        st_flags=f.flags[st_idx].astype(np.uint8) if len(st_idx) else np.zeros((0, MAX_JOINTS), np.uint8),
+        st_motor=f.motor[st_idx].astype(np.int16) if len(st_idx) else np.zeros((0, f.motor.shape[1]), np.int16),
+        st_value=f.value[st_idx].astype(np.float32) if len(st_idx) else np.zeros((0, f.motor.shape[1]), np.float32),
+        st_flags=f.flags[st_idx].astype(np.uint8) if len(st_idx) else np.zeros((0, f.motor.shape[1]), np.uint8),
         tr_t=op(session.reads.t_mid[ok]),
         tr_motor=tr_motor.astype(np.int16),
         tr_value=tr_value,

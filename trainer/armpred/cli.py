@@ -188,6 +188,17 @@ def _train_run(config: dict, data_dir: str, out: str, workers: int, log, steps: 
     return 0
 
 
+def cmd_fr3_sim_pretrain(args) -> int:
+    """The FR3 Duo's simulated pretraining (docs/adr/0028): simulate, build layout v4, train, export, evaluate."""
+    from .fr3_pipeline import run_fr3_sim_pretrain
+    from .pipeline import load_config
+
+    config = _apply_sets(load_config(args.config), args.set)
+    _copy_config(args.config, args.out)
+    return run_fr3_sim_pretrain(config, args.out, args.workers, _log_to(os.path.join(args.out, "log.txt")),
+                                steps=args.steps, skip_eval=args.skip_eval)
+
+
 def cmd_prepare(args) -> int:
     from .pipeline import load_config
 
@@ -678,6 +689,15 @@ def main(argv: Optional[List[str]] = None) -> int:
     p.add_argument("--steps", type=int, default=0, help="override train.steps (smoke runs)")
     p.add_argument("--skip-eval", action="store_true")
     p.set_defaults(func=cmd_sim_pretrain)
+
+    p = sub.add_parser("fr3-sim-pretrain", help="the FR3 Duo: simulate (session v2), build layout v4, train, export, evaluate (SIMULATED)")
+    p.add_argument("--config", required=True)
+    p.add_argument("--out", required=True)
+    p.add_argument("--set", action="append", help="override a config value, e.g. train.steps=2000")
+    p.add_argument("--workers", type=int, default=0)
+    p.add_argument("--steps", type=int, default=0, help="override train.steps (smoke runs)")
+    p.add_argument("--skip-eval", action="store_true")
+    p.set_defaults(func=cmd_fr3_sim_pretrain)
 
     p = sub.add_parser("prepare", help="simulate the session matrix and build the shards, once")
     p.add_argument("--config", required=True)

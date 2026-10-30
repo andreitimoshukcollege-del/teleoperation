@@ -101,6 +101,22 @@ BASE_ARM_FEATURES = 13
 ARM_FEATURES = BASE_ARM_FEATURES + NETWORK_FEATURES
 
 
+def predicted_motors(profile=None) -> Tuple[int, ...]:
+    """The rows, in order (layout v4 has the same function, from its robot profile)."""
+    return PREDICTED_MOTORS
+
+
+def is_arm_row(profile=None) -> np.ndarray:
+    """Which rows the gate scores: the arm joints, not the gripper."""
+    return np.array([m in ARM_MOTORS for m in PREDICTED_MOTORS])
+
+
+def default_prior_config(tps: int, profile=None) -> JointPredictorConfig:
+    from ..baselines.types import headset_joint_config
+
+    return headset_joint_config(tps)
+
+
 def layout_id(aware: bool) -> str:
     return LAYOUT_ID + ("-aware" if aware else "")
 
@@ -135,6 +151,10 @@ class Window:
     valid: bool  # False: the predictor falls back to the prior
     staleness_s: float
     reason: str = ""
+
+    def arm_row(self, row: int) -> np.ndarray:
+        """The arm block for joint row ``row``: v3 has one for every row (layout v4 has one per arm)."""
+        return self.arm
 
 
 class FeatureState:

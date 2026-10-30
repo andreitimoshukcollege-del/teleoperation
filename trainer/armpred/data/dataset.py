@@ -25,7 +25,7 @@ from typing import Dict, List, Optional, Tuple
 import numpy as np
 
 from ..baselines.types import JointPredictorConfig, JointSample, headset_joint_config
-from ..features.layout import PREDICTED_MOTORS, FeatureState, arm_features, JOINT_FEATURES, to_model
+from ..features import layout as L3
 from ..net import forecast as FC
 from .views import View, view_observations, view_truths
 
@@ -100,9 +100,11 @@ def state_samples(view: View, i: int) -> List[JointSample]:
     return [JointSample(int(view.st_motor[i, k]), float(view.st_value[i, k]), bool(view.st_flags[i, k] & 1)) for k in range(n)]
 
 
-def _queries(view: View, rng: np.random.Generator, cfg: SampleConfig) -> List[Tuple[int, int, int, float, int, int]]:
+def _queries(view: View, rng: np.random.Generator, cfg: SampleConfig, layout=L3) -> List[Tuple[int, int, int, float, int, int]]:
     """(t_now, T, joint index, truth, pair id, kind), sorted by t_now."""
     tps = view.tps
+    PREDICTED_MOTORS = layout.predicted_motors()
+    to_model = layout.to_model
     arm = np.isin(view.tr_motor, PREDICTED_MOTORS)
     first_state = int(view.st_t[0]) if len(view.st_t) else None
     if first_state is None:
@@ -164,13 +166,14 @@ def _fresh_state_times(view: View) -> np.ndarray:
 
 def view_samples(view: View, rng: np.random.Generator, cfg: SampleConfig = SampleConfig(),
                  prior_config: Optional[JointPredictorConfig] = None, aware: bool = False,
-                 level: str = "absent", forecast_seed: int = 0) -> Samples:
-    prior_config = prior_config or headset_joint_config(view.tps)
-    queries = _queries(view, rng, cfg)
+                 level: str = "absent", forecast_seed: int = 0, layout=L3) -> Samples:
+    """A view's samples in ``layout`` (layout v3, the JetRover's, unless given; v4 is the FR3's)."""
+    prior_config = prior_config or layout.default_prior_config(view.tps)
+    queries = _queries(view, rng, cfg, layout)
     n = len(queries)
     out = Samples(
-        joints=np.zeros((n, JOINT_FEATURES), dtype=np.float32),
-        arm=np.zeros((n, arm_features(aware)), dtype=np.float32),
+        joints=np.zeros((n, layout.JOINT_FEATURES), dtype=np.float32),
+        arm=np.zeros((n, layout.arm_features(aware)), dtype=np.float32),
         joint=np.zeros(n, dtype=np.int8),
         truth=np.zeros(n), prior=np.zeros(n), newest=np.zeros(n),
         valid=np.zeros(n, dtype=bool), pair=np.full(n, -1, dtype=np.int32),
@@ -180,7 +183,7 @@ def view_samples(view: View, rng: np.random.Generator, cfg: SampleConfig = Sampl
     if n == 0:
         return out
     forecasts, eff = view_forecasts(view, level, forecast_seed)
-    state = FeatureState(prior_config, aware=aware)
+    state = layout.FeatureState(prior_config, aware=aware)
     calls = call_stream(view, forecasts)
     ci = 0
     event_t = np.array([t for t, k in zip(view.events_t, view.events_kind) if k in EVENT_KINDS], dtype=np.int64)
@@ -196,7 +199,7 @@ def view_samples(view: View, rng: np.random.Generator, cfg: SampleConfig = Sampl
             ci += 1
         w = state.window(target)
         out.joints[qi] = w.joints[j]
-        out.arm[qi] = w.arm
+        out.arm[qi] = w.arm_row(j)
         out.joint[qi] = j
         out.truth[qi] = truth
         out.prior[qi] = w.prior[j]

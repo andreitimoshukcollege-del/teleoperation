@@ -367,7 +367,7 @@ build-profile output="" force="false":
         {{ if output != "" { "--output " + output } else { "" } }} \
         {{ if force == "true" { "--force" } else { "" } }}
 
-# Regenerate core/RobotProfiles/fr3-duo.json from the vendored URDF (docs/adr/0026 decision 3) -- never edit that file by hand. Ids: left arm 1-7 + hand 8, right arm 11-17 + hand 18. The URDF has no acceleration or jerk limits, so Franka's published FR3 figures are given here (10 rad/s^2, 5000 rad/s^3); Teleop.Eval.Tests' ImportUrdfCommandTests repeats these arguments and requires the committed bytes, so change both together
+# Regenerate core/RobotProfiles/fr3-duo.json (and the trainer's byte-identical copy, trainer/contract/profiles/) from the vendored URDF (docs/adr/0026 decision 3) -- never edit that file by hand. Ids: left arm 1-7 + hand 8, right arm 11-17 + hand 18. The URDF has no acceleration or jerk limits, so Franka's published FR3 figures are given here (10 rad/s^2, 5000 rad/s^3); Teleop.Eval.Tests' ImportUrdfCommandTests repeats these arguments and requires the committed bytes, so change both together
 [group('robot: profiles')]
 import-fr3-profile:
     cd core && dotnet run --project Teleop.Eval -- import-urdf \
@@ -376,6 +376,7 @@ import-fr3-profile:
         --gripper left:left_fr3v2_finger_joint1:8 --gripper right:right_fr3v2_finger_joint1:18 \
         --acceleration 10 --jerk 5000 \
         --upstream frankarobotics/franka_description@7aeeddc449edf8d62b594f9e36a81da53e7796f9
+    cp core/RobotProfiles/fr3-duo.json trainer/contract/profiles/fr3-duo.json
 
 # ---- the simulated FR3 Duo (docs/adr/0026, 0027): nothing real moves ----
 
@@ -2601,6 +2602,23 @@ _trainer-python:
 [group('trainer')]
 train-sim config="sim-pretrain" name="" *args:
     trainer/train-sim.sh "{{config}}" "{{name}}" {{args}}
+
+# The FR3 Duo's simulated pretraining on this machine (docs/adr/0028): simulate the FR3 session matrix (session v2), build layout v4, train on top of franka-replay, export (weights format 2), evaluate, all into trainer/runs/<name>. On Linux it runs trainer/train-fr3-sim.sh (trainer/.venv, built the first time); under WSL it runs the Windows CUDA venv trainer/.venv-win-cuda. config: fr3-smoke (minutes) or fr3-sim-pretrain (hours). SIMULATED: the report says so, and it is never a gate verdict
+[group('trainer')]
+train-fr3-sim config="fr3-sim-pretrain" name="" *args:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    name="{{name}}"; [ -n "$name" ] || name="{{config}}-$(git rev-parse --short HEAD)"
+    # The Windows CUDA venv: this checkout's, or (in a git worktree) the main checkout's.
+    py=""
+    for v in trainer/.venv-win-cuda "$(dirname "$(git rev-parse --path-format=absolute --git-common-dir)")/trainer/.venv-win-cuda"; do
+        [ -x "$v/Scripts/python.exe" ] && { py="$(cd "$v" && pwd)/Scripts/python.exe"; break; }
+    done
+    if [ -n "$py" ] && grep -qi microsoft /proc/version 2>/dev/null; then
+        cd trainer && "$py" -m armpred fr3-sim-pretrain --config "configs/{{config}}.toml" --out "runs/$name" {{args}}
+    else
+        trainer/train-fr3-sim.sh "{{config}}" "$name" {{args}}
+    fi
 
 # Start `just train-sim <config>` on the GPU machine ($GPU_HOST, default andrei@10.188.58.164), detached, so this machine and the SSH session can go (docs/adr/0021). Clones the repo into ~/teleoperation there the first time and pulls main every time; refuses while a run of ours is going there, or while the GPU is busy (over 2 GB in use: someone else's job). The run is trainer/runs/<config>-<commit> there; the log ~/train-sim-<config>.log. Watch it with just gpu-status; bring it back with just gpu-fetch
 [group('trainer')]

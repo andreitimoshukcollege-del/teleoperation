@@ -190,8 +190,9 @@ The truth for motor `m` is its successful `RD` reads, never the frames:
 ## Version 2: a serial-chain robot (the FR3 Duo)
 
 Written by the serial-chain RobotHost (docs/adr/0027 decision 5), today only against the simulated arm
-(`just fr3-sim-host`, `just fr3-sim-record`). The trainer reads it from the FR3 phase on (docs/adr/0028);
-until then, its readers reject it as an unknown version, which is correct.
+(`just fr3-sim-host`, `just fr3-sim-record`), and by the trainer's FR3 simulator (`armpred/sim/fr3.py`,
+`source: sim`). `armpred/contract/session.py` reads it (docs/adr/0028): `QS` becomes the truth reads, at
+the profile's width (16 on the FR3 Duo), and the view synthesis takes their values as they are.
 
 **The directory** is `recordings/fr3-sim/<UTC>-<label>/` for the simulated arm (`<UTC>-auto/` for a
 session RobotHost opened itself). Its files:

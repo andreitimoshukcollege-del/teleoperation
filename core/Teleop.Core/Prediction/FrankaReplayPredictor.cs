@@ -106,6 +106,11 @@ namespace Teleop.Core.Prediction
         public PredictorDiagnostics Diagnostics =>
             new PredictorDiagnostics(_lastHorizon, _hasState ? _stateTicks : 0, _accepted, _rejected);
 
+        /// <summary>Whether a state has been observed, and when it was sensed: layout v4's window measures this prior's error against each new reading from it.</summary>
+        public bool HasState => _hasState;
+
+        public long StateTicks => _stateTicks;
+
         public void Reset()
         {
             _slotCount = 0;

@@ -137,9 +137,15 @@ namespace Teleop.Eval.JointBench
         /// <summary>The FR3's "ready" pose, Franka's usual start: each arm's joints wander around it.</summary>
         private static readonly double[] Fr3Home = { 0, -Math.PI / 4, 0, -3 * Math.PI / 4, 0, Math.PI / 2, Math.PI / 4 };
 
-        /// <summary>Whether a registry predictor has a row on this robot: franka-replay needs the FR3's shaper, and learned's layout v3 is the JetRover's.</summary>
+        /// <summary>
+        /// Whether a registry predictor has a row on this robot: franka-replay needs the FR3's shaper, and learned runs the
+        /// model loaded for this robot (layout v3 on the JetRover, layout v4 on the FR3), when there is one.
+        /// </summary>
         private static bool RunsOn(string robot, string predictorName) =>
-            robot == "fr3" ? predictorName != "learned" : predictorName != "franka-replay";
+            robot == "fr3" ? predictorName != "learned" || s_learnedModel != null : predictorName != "franka-replay";
+
+        /// <summary>The FR3's learned row, by default: the model layout v4's golden names (core/testdata/learned/golden-v4.json).</summary>
+        public const string Fr3LearnedGolden = "testdata/learned/golden-v4.json";
 
         /// <summary>One seeded run's pooled samples, in degrees.</summary>
         public sealed class Samples
@@ -156,6 +162,16 @@ namespace Teleop.Eval.JointBench
         private static IInferenceBackend? s_learnedModel;
 
         public const string DefaultLearnedModel = "testdata/learned/finetune-pilot2-early7.weights";
+
+        /// <summary>The weights file layout v4's golden names, beside it; null when there is none.</summary>
+        private static string? Fr3GoldenWeights()
+        {
+            if (!System.IO.File.Exists(Fr3LearnedGolden)) return null;
+            using var golden = System.Text.Json.JsonDocument.Parse(System.IO.File.ReadAllText(Fr3LearnedGolden));
+            string name = golden.RootElement.GetProperty("model").GetProperty("weights").GetString() ?? "";
+            string path = System.IO.Path.Combine(System.IO.Path.GetDirectoryName(Fr3LearnedGolden) ?? ".", name);
+            return System.IO.File.Exists(path) ? path : null;
+        }
 
         /// <summary>A registry predictor for the bench; <c>learned</c> is given the loaded model.</summary>
         private static ICommandAwarePredictor Build(string predictorName, JointPredictorConfig config) =>
@@ -183,6 +199,7 @@ namespace Teleop.Eval.JointBench
         public static int Run(string[] args)
         {
             string learnedModel = DefaultLearnedModel;
+            bool learnedExplicit = false;
             int seeds = 5;
             double seconds = 20, trueSpeed = 4.0, legScale = 1.0;
             double? modelSpeed = null;
@@ -211,7 +228,7 @@ namespace Teleop.Eval.JointBench
                     case "--servo-lag-ms": relay.ServoLagMs = D(); break;
                     case "--pipeline-ms": relay.PipelineMs = D(); break;
                     case "--leg-scale": legScale = D(); break;
-                    case "--learned-model": learnedModel = Next(); break;
+                    case "--learned-model": learnedModel = Next(); learnedExplicit = true; break;
                     case "--fr3-profile": fr3.ProfilePath = Next(); break;
                     case "--fr3-track-hz":
                         string hz = Next();
@@ -268,6 +285,19 @@ namespace Teleop.Eval.JointBench
                 }
 
                 Console.WriteLine($"  learned: {s_learnedModel!.ModelId} ({learnedModel}); trained on the real robot's relay, so off the bench's simulated one it says little");
+            }
+            else
+            {
+                string? fr3Model = learnedExplicit ? learnedModel : Fr3GoldenWeights();
+                if (fr3Model != null && LoadLearnedModel(fr3Model) && s_learnedModel is MlpBackend mlp && mlp.Weights.LayoutId == "v4")
+                {
+                    Console.WriteLine($"  learned: {s_learnedModel.ModelId} ({fr3Model}), layout v4; trained on the trainer's FR3 simulator, a different simulation from this bench's");
+                }
+                else
+                {
+                    s_learnedModel = null;
+                    Console.WriteLine("  learned: no layout v4 model (pass --learned-model <fr3 model.weights>); no learned row");
+                }
             }
 
             bool isRelay = robot == "relay", isFr3 = robot == "fr3";
@@ -681,6 +711,7 @@ namespace Teleop.Eval.JointBench
             var config = new JointPredictorConfig(
                 maxJoints: motors, commandHistoryCapacity: 96, maxJointSpeedRadPerSec: (float)modelSpeed,
                 instantMotorIds: hands, maxHorizonTicks: Tps, ticksPerSecond: Tps, shaper: shaper);
+            if (predictorName == "learned") config = config.WithChainLayout(Teleop.RobotArm.Types.SerialChainShaping.LearnedLayout(robot));
             ICommandAwarePredictor predictor = Build(predictorName, config);
 
             // The operator's intent: each arm joint wanders about the ready pose, inside its soft limits.

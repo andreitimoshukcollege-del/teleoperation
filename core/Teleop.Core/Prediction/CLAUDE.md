@@ -45,7 +45,8 @@ These see the commands sent as well as the stale measurement. Their state is joi
 | `servo-replay` | `ServoReplayPredictor.cs` | replays the commands sent since the measurement through a bounded-speed servo model (one parameter, `MaxJointSpeedRadPerSec`) |
 | `relay-replay` | `RelayReplayPredictor.cs` | replays the commands through a model of the JetRover relay's per-servo gate: newest-wins pending target during the write cooldown, deadband, timed linear moves of max(min, distance/speed); re-anchors mid-move from the measurement to that move's target; optional per-joint reading age (`Relay*`, `SensedAge*` in `JointPredictorConfig`, defaults the JetRover's gate and no age) |
 | `relay-replay-servo` | `RelayReplayServoPredictor.cs` | `relay-replay`'s gate and replay as the servo's setpoint, with every command reaching the gate a constant pipeline delay late and a servo's first move sized from its sensed measurement; then a servo filter run from the anchor: first-order lag and speed cap (times a joint's speed scale), fixed steps plus a last partial one, in double (`Servo*` in `JointPredictorConfig`; the defaults, 5 rad/s, 20 ms, 20 ms, on, 2 ms, are guesses until fitted). Neutral parameters (no cap, no lag, no delay, first move off) reproduce `relay-replay` bit for bit. The exact model is in the class doc; `trainer/contract/golden/relay-replay-servo.json` pins it for a Python copy |
-| `learned` | `LearnedJointPredictor.cs`, `LearnedJointWindow.cs` | the trainer's model (docs/adr/0021, 0025) correcting a speed-blind `relay-replay`: the layout-v3 window (a C# copy of `trainer/armpred/features/layout.py`), the host's model (`JointPredictorConfig.Model`, an `IInferenceBackend`; `Inference/MlpBackend.cs` today), `prior + correction` for motors 1-5 and the gripper. Falls back to the prior with no fresh reading of every arm joint, a reading over 1 s old, or a failing or non-finite model. `core/testdata/learned/golden-v3.json` (written by `armpred golden-learned`) pins the window, the outputs and the predictions to the trainer's |
+| `franka-replay` | `FrankaReplayPredictor.cs`, `JointTrajectoryShaper.cs` | the FR3's prior (docs/adr/0027 decision 4): replays the commands through `JointTrajectoryShaper`, the same shaper the robot's backend drives the arm with (1 ms steps within the profile's velocity, acceleration and jerk shares, position-based velocity limits and soft limits; a newest-wins gate at constant speed for a Franka Hand finger), from an anchor state re-anchored on each measurement's position, keeping the replayed velocity and acceleration; a last partial step interpolated. Needs `JointPredictorConfig.Shaper` (built from the profile by `Teleop.RobotArm`'s `SerialChainShaping.ForProfile`); motors it does not list are held. `trainer/contract/golden/joint-shaper-v1.json` and `franka-replay-v1.json` pin both for Python copies |
+| `learned` | `LearnedJointPredictor.cs`, `LearnedJointWindow.cs` | the trainer's model (docs/adr/0021, 0025) correcting a speed-blind `relay-replay`: the layout-v3 window (a C# copy of `trainer/armpred/features/layout.py`), the host's model (`JointPredictorConfig.Model`, an `IInferenceBackend`; `Inference/MlpBackend.cs` today), `prior + correction` for motors 1-5 and the gripper. Falls back to the prior with no fresh reading of every arm joint, a reading over 1 s old, or a failing or non-finite model. `core/testdata/learned/golden-v3.json` (written by `armpred golden-learned`) pins the window, the outputs and the predictions to the trainer's. **Layout v4** (the FR3 Duo, docs/adr/0028) when the config carries `ChainLayout` (from `SerialChainShaping.LearnedLayout`) and `Shaper`: `LearnedJointWindowV4.cs` on top of `franka-replay`, every row of every arm corrected, weights format 2 (`MlpWeights`/`MlpBackend` pair each row with its arm's block and read the head's caps from the file); `golden-v4.json` (`armpred golden-learned-v4`, a simulated view) pins it. A model of the other layout is refused |
 
 **Not a predictor: `JointPredictorBank.cs`** (docs/adr/0023). Several presets (a label, a registry
 key and a config) fed the same commands and readings, one of them answering; switching keeps every
@@ -250,6 +251,50 @@ seeds × 20 s, degrees, error p95 / correction p95:
 How good it is on the robot comes from the trainer's evaluation on recordings (finetune-pilot2-early7:
 arm p95 4.26° on seven held-out sessions, against 4.98° for the headset's `servo 10-25`), and a result
 only from `Teleop.Eval` scoring it into `results/`.
+
+#### 2026-10-28: the FR3 Duo (`franka-replay`)
+
+`joint-predict-bench --robot fr3` simulates the FR3 Duo of `core/RobotProfiles/fr3-duo.json`
+(docs/adr/0026, 0027): 14 arm joints and two hands, every joint wandering ±0.5 rad about Franka's ready
+pose on 0.5–1.5 s legs inside its soft limits, commands at 48 Hz through the network profile, the
+robot keeping the newest by send time, `JointTrajectoryShaper` at 1 ms with the profile's limits, and the
+arm tracking the shaped trajectory through a second-order lag (`--fr3-track-hz`, default 20 Hz, damping 1;
+`none` for no lag). Frames at 50 Hz carry the arm's position at the frame's time (the FR3 reports at
+1 kHz). The hands are commanded and predicted, not scored. `franka-replay` is given the true shaper and
+nothing about the tracking; `learned` has no row (layout v3 is the JetRover's), and the relay rows run on
+their JetRover defaults, models of a robot this one is not. 5 seeds × 20 s, degrees.
+**Read these as a check of logic under a stated simulation, not a result**: the simulated robot shapes
+with the predictor's own code, so the numbers measure the replay when it is right about the shaper and
+wrong only about the tracking and the network. That is all they measure (docs/adr/0028 decision 5).
+
+| profile | predictor | err p50 | err p95 | err p99 | err max | cor p50 | cor p95 | cor p99 | cor max |
+|---|---|---|---|---|---|---|---|---|---|
+| `lan` | `franka-replay` | 0.03 | 0.07 | 0.08 | 0.26 | 0.05 | 0.08 | 0.10 | 0.25 |
+| `lan` | `hold-last` | 0.15 | 0.64 | 0.93 | 2.04 | 0.30 | 0.84 | 1.20 | 1.86 |
+| `lan` | `relay-replay` | 0.12 | 1.96 | 4.51 | 16.45 | 0.17 | 2.19 | 4.84 | 15.33 |
+| `lan` | `relay-replay-servo` | 0.11 | 0.34 | 0.97 | 4.66 | 0.17 | 0.62 | 1.90 | 5.11 |
+| `lan` | `servo-replay` | 0.51 | 1.60 | 1.85 | 2.74 | 0.58 | 1.76 | 1.87 | 2.72 |
+| `50ms-5j` | `franka-replay` | 0.12 | 0.22 | 0.29 | 0.88 | 0.03 | 0.06 | 0.09 | 0.24 |
+| `50ms-5j` | `hold-last` | 0.89 | 2.58 | 3.62 | 6.37 | 0.30 | 0.84 | 1.20 | 1.86 |
+| `50ms-5j` | `relay-replay` | 0.37 | 3.32 | 7.03 | 16.50 | 0.00 | 0.19 | 0.52 | 12.43 |
+| `50ms-5j` | `relay-replay-servo` | 0.39 | 1.59 | 4.26 | 11.30 | 0.05 | 0.36 | 0.94 | 10.36 |
+| `50ms-5j` | `servo-replay` | 0.83 | 4.14 | 4.87 | 8.03 | 0.00 | 1.12 | 1.51 | 2.64 |
+| `150ms-20j-0.5loss` | `franka-replay` | 0.21 | 0.52 | 0.74 | 1.76 | 0.01 | 0.05 | 0.09 | 0.44 |
+| `150ms-20j-0.5loss` | `hold-last` | 2.43 | 6.91 | 9.46 | 15.67 | 0.34 | 1.05 | 1.60 | 3.45 |
+| `150ms-20j-0.5loss` | `relay-replay` | 0.49 | 3.37 | 6.71 | 15.88 | 0.00 | 0.07 | 0.26 | 10.31 |
+| `150ms-20j-0.5loss` | `relay-replay-servo` | 0.50 | 1.82 | 4.38 | 13.40 | 0.00 | 0.09 | 0.24 | 11.83 |
+| `150ms-20j-0.5loss` | `servo-replay` | 0.94 | 5.41 | 8.22 | 14.89 | 0.00 | 0.00 | 0.68 | 4.49 |
+| `300ms-60j-2loss-bursty` | `franka-replay` | 0.14 | 0.77 | 1.24 | 4.06 | 0.00 | 0.05 | 0.12 | 0.64 |
+| `300ms-60j-2loss-bursty` | `hold-last` | 4.21 | 12.67 | 17.27 | 27.66 | 0.47 | 2.04 | 3.17 | 7.87 |
+| `300ms-60j-2loss-bursty` | `relay-replay` | 0.50 | 3.32 | 6.63 | 17.22 | 0.00 | 0.03 | 0.22 | 12.27 |
+| `300ms-60j-2loss-bursty` | `relay-replay-servo` | 0.61 | 1.69 | 4.41 | 13.60 | 0.00 | 0.04 | 0.23 | 12.27 |
+| `300ms-60j-2loss-bursty` | `servo-replay` | 0.82 | 5.39 | 9.20 | 17.90 | 0.00 | 0.00 | 0.00 | 5.75 |
+
+With `--fr3-track-hz none` (the arm is the shaper), `franka-replay`'s error p95 is 0.01 / 0.04 / 0.19 /
+0.62 over the four profiles against `hold-last`'s 0.64 / 2.58 / 6.93 / 12.68: what is left is the
+uplink's jitter against the operator's send + base-delay estimate, and loss. The default rows' extra
+(0.07 on `lan`) is the 20 Hz tracking lag the predictor does not model, which is what a learned
+correction on top of this prior would have to learn (ADR 0028).
 
 ## Planned, not yet implemented
 

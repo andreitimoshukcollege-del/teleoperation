@@ -25,7 +25,13 @@ docs/adr/0024; every decision is `Teleop.RobotArm`'s `TrainingCourse`, this conv
 positions into the scene and gives TeleopXR plain types). `LearnedModels` (a `learned` preset's model,
 docs/adr/0025: reads `persistentDataPath/models/<name>.weights` or `Resources/models/<name>.bytes`; the
 parse and the forward pass are Core's `MlpWeights` and `MlpBackend`).
-`DisplayCalibrationConfig` is the plain data type `ConfigLoader` loads, not an adapter itself.
+`SerialChainOperatorBridge` and `SerialChainArmRig` (the FR3 Duo's two-hand operator and its twin, docs/adr/0029: every
+decision is `Teleop.RobotArm.Operator`'s `GrabGesture`, `SerialChainTeleop` and `SerialChainJointLink`; these convert the
+hands into the robot's root frame, own the socket and write Transforms). Their resources, `fr3_duo_profile.json`,
+`fr3_duo_collision.json` and `models/fr3-sim-1.bytes`, are copies of generated files that `BridgeResourcesTests` holds to
+`core/RobotProfiles/` and `core/testdata/learned/` (`just import-fr3-profile` refreshes them); `fr3_connection.json` is the
+operator's config. `DisplayCalibrationConfig` and `SerialChainConnectionConfig` are the plain data types `ConfigLoader`
+loads, not adapters themselves.
 
 **Implementations of Core interfaces** — the direction inverts here. Core declares, Unity
 provides: `UnityRobotPlant : IRobotPlant` (not yet built — Phase 4 reuses Core's own

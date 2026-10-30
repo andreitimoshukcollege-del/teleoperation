@@ -1,0 +1,743 @@
+{
+  "name": "fr3-duo",
+  "kind": "serial-chain",
+  "source": {
+    "urdf": "robot/franka/fr3_duo/urdf/fr3_duo.urdf",
+    "sha256": "5f1ab744deb0097f014163395aa828a7988edcc72526fd8e5cb0e6e6a6494162",
+    "upstream": "frankarobotics/franka_description@7aeeddc449edf8d62b594f9e36a81da53e7796f9"
+  },
+  "arms": [
+    {
+      "name": "left",
+      "mount": [
+        {
+          "joint": "mount_joint",
+          "xyz": [
+            0,
+            0,
+            0
+          ],
+          "rpy": [
+            0,
+            0,
+            0
+          ]
+        },
+        {
+          "joint": "fr3_duo_mount_origin_joint",
+          "xyz": [
+            0.037,
+            0,
+            0.05
+          ],
+          "rpy": [
+            0,
+            0,
+            0
+          ]
+        },
+        {
+          "joint": "fr3_duo_mount_left_joint",
+          "xyz": [
+            0,
+            0.05018,
+            0
+          ],
+          "rpy": [
+            -0.89334809,
+            -0.17456074,
+            -0.46334506
+          ]
+        },
+        {
+          "joint": "left_base_joint",
+          "xyz": [
+            0,
+            0,
+            0
+          ],
+          "rpy": [
+            0,
+            0,
+            0
+          ]
+        },
+        {
+          "joint": "left_fr3v2_left_base_joint",
+          "xyz": [
+            0,
+            0,
+            0
+          ],
+          "rpy": [
+            0,
+            0,
+            0
+          ]
+        }
+      ],
+      "joints": [
+        {
+          "motorId": 1,
+          "name": "left_fr3v2_joint1",
+          "type": "revolute",
+          "origin": [
+            {
+              "joint": "left_fr3v2_joint1",
+              "xyz": [
+                0,
+                0,
+                0.333
+              ],
+              "rpy": [
+                0,
+                0,
+                0
+              ]
+            }
+          ],
+          "axis": [
+            0,
+            0,
+            1
+          ],
+          "lower": -2.9007400166666666,
+          "upper": 2.9007400166666666,
+          "softLower": -2.9007400166666666,
+          "softUpper": 2.9007400166666666,
+          "velocity": 2.62,
+          "acceleration": 10,
+          "jerk": 5000,
+          "effort": 87,
+          "positionBasedDeceleration": 6,
+          "positionBasedVelocityOffset": 0.6520000381679385
+        },
+        {
+          "motorId": 2,
+          "name": "left_fr3v2_joint2",
+          "type": "revolute",
+          "origin": [
+            {
+              "joint": "left_fr3v2_joint2",
+              "xyz": [
+                0,
+                0,
+                0
+              ],
+              "rpy": [
+                -1.570796326794897,
+                0,
+                0
+              ]
+            }
+          ],
+          "axis": [
+            0,
+            0,
+            1
+          ],
+          "lower": -1.8360900166666667,
+          "upper": 1.8360900166666667,
+          "softLower": -1.8360900166666667,
+          "softUpper": 1.8360900166666667,
+          "velocity": 2.62,
+          "acceleration": 10,
+          "jerk": 5000,
+          "effort": 87,
+          "positionBasedDeceleration": 2.585,
+          "positionBasedVelocityOffset": 0.2499685851463105
+        },
+        {
+          "motorId": 3,
+          "name": "left_fr3v2_joint3",
+          "type": "revolute",
+          "origin": [
+            {
+              "joint": "left_fr3v2_joint3",
+              "xyz": [
+                0,
+                -0.316,
+                0
+              ],
+              "rpy": [
+                1.570796326794897,
+                0,
+                0
+              ]
+            }
+          ],
+          "axis": [
+            0,
+            0,
+            1
+          ],
+          "lower": -2.9007400166666666,
+          "upper": 2.9007400166666666,
+          "softLower": -2.9007400166666666,
+          "softUpper": 2.9007400166666666,
+          "velocity": 2.62,
+          "acceleration": 10,
+          "jerk": 5000,
+          "effort": 87,
+          "positionBasedDeceleration": 3.5,
+          "positionBasedVelocityOffset": 0.20053055661577582
+        },
+        {
+          "motorId": 4,
+          "name": "left_fr3v2_joint4",
+          "type": "revolute",
+          "origin": [
+            {
+              "joint": "left_fr3v2_joint4",
+              "xyz": [
+                0.0825,
+                0,
+                0
+              ],
+              "rpy": [
+                1.570796326794897,
+                0,
+                0
+              ]
+            }
+          ],
+          "axis": [
+            0,
+            0,
+            1
+          ],
+          "lower": -3.077020016666667,
+          "upper": -0.11693708333333333,
+          "softLower": -3.077020016666667,
+          "softUpper": -0.11693708333333333,
+          "velocity": 2.62,
+          "acceleration": 10,
+          "jerk": 5000,
+          "effort": 87,
+          "positionBasedDeceleration": 4,
+          "positionBasedVelocityOffset": 0.3542181933842238
+        },
+        {
+          "motorId": 5,
+          "name": "left_fr3v2_joint5",
+          "type": "revolute",
+          "origin": [
+            {
+              "joint": "left_fr3v2_joint5",
+              "xyz": [
+                -0.0825,
+                0.384,
+                0
+              ],
+              "rpy": [
+                -1.570796326794897,
+                0,
+                0
+              ]
+            }
+          ],
+          "axis": [
+            0,
+            0,
+            1
+          ],
+          "lower": -2.87630335,
+          "upper": 2.87630335,
+          "softLower": -2.87630335,
+          "softUpper": 2.87630335,
+          "velocity": 5.26,
+          "acceleration": 10,
+          "jerk": 5000,
+          "effort": 12,
+          "positionBasedDeceleration": 17,
+          "positionBasedVelocityOffset": 0.5738321197718637
+        },
+        {
+          "motorId": 6,
+          "name": "left_fr3v2_joint6",
+          "type": "revolute",
+          "origin": [
+            {
+              "joint": "left_fr3v2_joint6",
+              "xyz": [
+                0,
+                0,
+                0
+              ],
+              "rpy": [
+                1.570796326794897,
+                0,
+                0
+              ]
+            }
+          ],
+          "axis": [
+            0,
+            0,
+            1
+          ],
+          "lower": 0.43982265,
+          "upper": 4.62163335,
+          "softLower": 0.43982265,
+          "softUpper": 4.62163335,
+          "velocity": 4.18,
+          "acceleration": 10,
+          "jerk": 5000,
+          "effort": 12,
+          "positionBasedDeceleration": 5.5,
+          "positionBasedVelocityOffset": 0.4884649342105264
+        },
+        {
+          "motorId": 7,
+          "name": "left_fr3v2_joint7",
+          "type": "revolute",
+          "origin": [
+            {
+              "joint": "left_fr3v2_joint7",
+              "xyz": [
+                0.088,
+                0,
+                0
+              ],
+              "rpy": [
+                1.570796326794897,
+                0,
+                0
+              ]
+            }
+          ],
+          "axis": [
+            0,
+            0,
+            1
+          ],
+          "lower": -3.05083335,
+          "upper": 3.05083335,
+          "softLower": -3.05083335,
+          "softUpper": 3.05083335,
+          "velocity": 5.26,
+          "acceleration": 10,
+          "jerk": 5000,
+          "effort": 12,
+          "positionBasedDeceleration": 17,
+          "positionBasedVelocityOffset": 0.4591952376425851
+        }
+      ],
+      "tool": [
+        {
+          "joint": "left_fr3v2_joint8",
+          "xyz": [
+            0,
+            0,
+            0.107
+          ],
+          "rpy": [
+            0,
+            0,
+            0
+          ]
+        },
+        {
+          "joint": "left_fr3v2_hand_joint",
+          "xyz": [
+            0,
+            0,
+            0
+          ],
+          "rpy": [
+            0,
+            0,
+            -0.7853981633974483
+          ]
+        },
+        {
+          "joint": "left_fr3v2_hand_tcp_joint",
+          "xyz": [
+            0,
+            0,
+            0.1034
+          ],
+          "rpy": [
+            0,
+            0,
+            0
+          ]
+        }
+      ],
+      "hasGripper": true,
+      "gripper": {
+        "motorId": 8,
+        "name": "left_fr3v2_finger_joint1",
+        "fingerTravel": 0.04,
+        "speed": 0.2,
+        "secondFingerMimics": true
+      }
+    },
+    {
+      "name": "right",
+      "mount": [
+        {
+          "joint": "mount_joint",
+          "xyz": [
+            0,
+            0,
+            0
+          ],
+          "rpy": [
+            0,
+            0,
+            0
+          ]
+        },
+        {
+          "joint": "fr3_duo_mount_origin_joint",
+          "xyz": [
+            0.037,
+            0,
+            0.05
+          ],
+          "rpy": [
+            0,
+            0,
+            0
+          ]
+        },
+        {
+          "joint": "fr3_duo_mount_right_joint",
+          "xyz": [
+            0,
+            -0.05018,
+            0
+          ],
+          "rpy": [
+            0.89334809,
+            -0.17456074,
+            0.46334506
+          ]
+        },
+        {
+          "joint": "right_base_joint",
+          "xyz": [
+            0,
+            0,
+            0
+          ],
+          "rpy": [
+            0,
+            0,
+            0
+          ]
+        },
+        {
+          "joint": "right_fr3v2_right_base_joint",
+          "xyz": [
+            0,
+            0,
+            0
+          ],
+          "rpy": [
+            0,
+            0,
+            0
+          ]
+        }
+      ],
+      "joints": [
+        {
+          "motorId": 11,
+          "name": "right_fr3v2_joint1",
+          "type": "revolute",
+          "origin": [
+            {
+              "joint": "right_fr3v2_joint1",
+              "xyz": [
+                0,
+                0,
+                0.333
+              ],
+              "rpy": [
+                0,
+                0,
+                0
+              ]
+            }
+          ],
+          "axis": [
+            0,
+            0,
+            1
+          ],
+          "lower": -2.9007400166666666,
+          "upper": 2.9007400166666666,
+          "softLower": -2.9007400166666666,
+          "softUpper": 2.9007400166666666,
+          "velocity": 2.62,
+          "acceleration": 10,
+          "jerk": 5000,
+          "effort": 87,
+          "positionBasedDeceleration": 6,
+          "positionBasedVelocityOffset": 0.6520000381679385
+        },
+        {
+          "motorId": 12,
+          "name": "right_fr3v2_joint2",
+          "type": "revolute",
+          "origin": [
+            {
+              "joint": "right_fr3v2_joint2",
+              "xyz": [
+                0,
+                0,
+                0
+              ],
+              "rpy": [
+                -1.570796326794897,
+                0,
+                0
+              ]
+            }
+          ],
+          "axis": [
+            0,
+            0,
+            1
+          ],
+          "lower": -1.8360900166666667,
+          "upper": 1.8360900166666667,
+          "softLower": -1.8360900166666667,
+          "softUpper": 1.8360900166666667,
+          "velocity": 2.62,
+          "acceleration": 10,
+          "jerk": 5000,
+          "effort": 87,
+          "positionBasedDeceleration": 2.585,
+          "positionBasedVelocityOffset": 0.2499685851463105
+        },
+        {
+          "motorId": 13,
+          "name": "right_fr3v2_joint3",
+          "type": "revolute",
+          "origin": [
+            {
+              "joint": "right_fr3v2_joint3",
+              "xyz": [
+                0,
+                -0.316,
+                0
+              ],
+              "rpy": [
+                1.570796326794897,
+                0,
+                0
+              ]
+            }
+          ],
+          "axis": [
+            0,
+            0,
+            1
+          ],
+          "lower": -2.9007400166666666,
+          "upper": 2.9007400166666666,
+          "softLower": -2.9007400166666666,
+          "softUpper": 2.9007400166666666,
+          "velocity": 2.62,
+          "acceleration": 10,
+          "jerk": 5000,
+          "effort": 87,
+          "positionBasedDeceleration": 3.5,
+          "positionBasedVelocityOffset": 0.20053055661577582
+        },
+        {
+          "motorId": 14,
+          "name": "right_fr3v2_joint4",
+          "type": "revolute",
+          "origin": [
+            {
+              "joint": "right_fr3v2_joint4",
+              "xyz": [
+                0.0825,
+                0,
+                0
+              ],
+              "rpy": [
+                1.570796326794897,
+                0,
+                0
+              ]
+            }
+          ],
+          "axis": [
+            0,
+            0,
+            1
+          ],
+          "lower": -3.077020016666667,
+          "upper": -0.11693708333333333,
+          "softLower": -3.077020016666667,
+          "softUpper": -0.11693708333333333,
+          "velocity": 2.62,
+          "acceleration": 10,
+          "jerk": 5000,
+          "effort": 87,
+          "positionBasedDeceleration": 4,
+          "positionBasedVelocityOffset": 0.3542181933842238
+        },
+        {
+          "motorId": 15,
+          "name": "right_fr3v2_joint5",
+          "type": "revolute",
+          "origin": [
+            {
+              "joint": "right_fr3v2_joint5",
+              "xyz": [
+                -0.0825,
+                0.384,
+                0
+              ],
+              "rpy": [
+                -1.570796326794897,
+                0,
+                0
+              ]
+            }
+          ],
+          "axis": [
+            0,
+            0,
+            1
+          ],
+          "lower": -2.87630335,
+          "upper": 2.87630335,
+          "softLower": -2.87630335,
+          "softUpper": 2.87630335,
+          "velocity": 5.26,
+          "acceleration": 10,
+          "jerk": 5000,
+          "effort": 12,
+          "positionBasedDeceleration": 17,
+          "positionBasedVelocityOffset": 0.5738321197718637
+        },
+        {
+          "motorId": 16,
+          "name": "right_fr3v2_joint6",
+          "type": "revolute",
+          "origin": [
+            {
+              "joint": "right_fr3v2_joint6",
+              "xyz": [
+                0,
+                0,
+                0
+              ],
+              "rpy": [
+                1.570796326794897,
+                0,
+                0
+              ]
+            }
+          ],
+          "axis": [
+            0,
+            0,
+            1
+          ],
+          "lower": 0.43982265,
+          "upper": 4.62163335,
+          "softLower": 0.43982265,
+          "softUpper": 4.62163335,
+          "velocity": 4.18,
+          "acceleration": 10,
+          "jerk": 5000,
+          "effort": 12,
+          "positionBasedDeceleration": 5.5,
+          "positionBasedVelocityOffset": 0.4884649342105264
+        },
+        {
+          "motorId": 17,
+          "name": "right_fr3v2_joint7",
+          "type": "revolute",
+          "origin": [
+            {
+              "joint": "right_fr3v2_joint7",
+              "xyz": [
+                0.088,
+                0,
+                0
+              ],
+              "rpy": [
+                1.570796326794897,
+                0,
+                0
+              ]
+            }
+          ],
+          "axis": [
+            0,
+            0,
+            1
+          ],
+          "lower": -3.05083335,
+          "upper": 3.05083335,
+          "softLower": -3.05083335,
+          "softUpper": 3.05083335,
+          "velocity": 5.26,
+          "acceleration": 10,
+          "jerk": 5000,
+          "effort": 12,
+          "positionBasedDeceleration": 17,
+          "positionBasedVelocityOffset": 0.4591952376425851
+        }
+      ],
+      "tool": [
+        {
+          "joint": "right_fr3v2_joint8",
+          "xyz": [
+            0,
+            0,
+            0.107
+          ],
+          "rpy": [
+            0,
+            0,
+            0
+          ]
+        },
+        {
+          "joint": "right_fr3v2_hand_joint",
+          "xyz": [
+            0,
+            0,
+            0
+          ],
+          "rpy": [
+            0,
+            0,
+            -0.7853981633974483
+          ]
+        },
+        {
+          "joint": "right_fr3v2_hand_tcp_joint",
+          "xyz": [
+            0,
+            0,
+            0.1034
+          ],
+          "rpy": [
+            0,
+            0,
+            0
+          ]
+        }
+      ],
+      "hasGripper": true,
+      "gripper": {
+        "motorId": 18,
+        "name": "right_fr3v2_finger_joint1",
+        "fingerTravel": 0.04,
+        "speed": 0.2,
+        "secondFingerMimics": true
+      }
+    }
+  ]
+}

@@ -90,7 +90,7 @@ _unity-batch project method extra="" graphics="false":
         -logFile "$(wslpath -w "$log")" {{extra}}
     code=$?
     set -e
-    grep -a -E '^\[(scene-check|xr-setup|xr-scene|build|lab)\]|error CS[0-9]+' "$log" | sed 's/\r$//' | tail -40 || true
+    grep -a -E '^\[(scene-check|xr-setup|xr-scene|fr3-scene|fr3-check|build|lab)\]|error CS[0-9]+' "$log" | sed 's/\r$//' | tail -40 || true
     if [ "$code" -ne 0 ]; then
         echo "Unity exited $code. Full log: $log" >&2
     fi
@@ -130,6 +130,52 @@ unity-check-xr:
 [group('headset (Galaxy XR)')]
 build-galaxy:
     just _unity-batch TeleopXR Teleop.XR.Editor.XrBuild.Run "-buildTarget Android"
+
+# Build unity/TeleopXR's FR3 Duo scene (Fr3DuoXR, docs/adr/0029) from code: hands rig, a table, the FR3 Duo's twin from the vendored URDF's collision meshes, two target markers, the two-hand operator and its motion button. Create-only; rebuild=true replaces it, discarding hand edits. The JetRover scene is untouched. Run unity-setup-xr first; close that project's editor first
+[group('fr3 (simulated)')]
+unity-scene-fr3-xr rebuild="false":
+    just _unity-batch TeleopXR Teleop.XR.Editor.XrFr3SceneBuilder.Run {{ if rebuild == "true" { "-teleopRebuildScene" } else { "" } }}
+
+# Headless check of unity/TeleopXR's FR3 Duo scene: no missing scripts, wiring intact, motion off at launch, hands only and unsmoothed, the resources parse, and the twin's tool frames within 1 mm / 0.1 deg of Core's FK at 25 seeded poses per arm
+[group('fr3 (simulated)')]
+unity-check-fr3-xr:
+    just _unity-batch TeleopXR Teleop.XR.Editor.XrFr3SceneCheck.Run
+
+# Render unity/TeleopXR's FR3 Duo scene from four fixed viewpoints, the twin at Franka's ready pose, to the Windows temp folder (teleop-fr3\\<time>\\, with a report.txt of the twin's triangles): how its meshes are reviewed without a headset. Close that project's editor first
+[group('fr3 (simulated)')]
+unity-preview-fr3-xr:
+    just _unity-batch TeleopXR Teleop.XR.Editor.Fr3Capture.Run "" true
+
+# Build the FR3 Duo's Galaxy XR APK after its scene check -> unity/TeleopXR/Builds/TeleopXR-FR3.apk (the same app id as the JetRover's, so installing it replaces that one). Close that project's editor first
+[group('fr3 (simulated)')]
+build-galaxy-fr3:
+    just _unity-batch TeleopXR Teleop.XR.Editor.XrBuild.RunFr3 "-buildTarget Android"
+
+# Point the Galaxy XR app's FR3 operator at a just fr3-sim-host on this PC (or host=<address>) without a rebuild: pushes fr3_connection.json with RemoteHost replaced. The headset must reach the PC on the LAN; Direct Preview needs none of this (127.0.0.1 is the PC). motion=false sends only keepalives
+[group('fr3 (simulated)')]
+push-galaxy-fr3-config host="" motion="true":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    case "{{motion}}" in true|false) ;; *) echo "error: motion must be true or false, got '{{motion}}'" >&2; exit 1 ;; esac
+    host="{{host}}"
+    if [ -z "$host" ]; then
+        # This PC's own LAN address, as the Windows side sees it (the headset cannot reach WSL's).
+        host=$(powershell.exe -NoProfile -Command "(Get-NetIPConfiguration | Where-Object { \$_.IPv4DefaultGateway -ne \$null } | Select-Object -First 1).IPv4Address.IPAddress" | tr -d '\r')
+    fi
+    [ -n "$host" ] || { echo "error: no LAN address found for this PC; pass host=<address>" >&2; exit 1; }
+    tmp=$(mktemp --suffix=.json)
+    trap 'rm -f "$tmp"' EXIT
+    python3 - "$tmp" "$host" "{{motion}}" <<'PY'
+    import json, sys
+    cfg = json.load(open("unity/Teleop.Bridge/Runtime/Resources/fr3_connection.json", encoding="utf-8"))
+    cfg["RemoteHost"] = sys.argv[2]
+    cfg["AllowMotion"] = sys.argv[3] == "true"
+    json.dump(cfg, open(sys.argv[1], "w"), indent=2)
+    PY
+    dest=/sdcard/Android/data/com.teleop.jetroverxr/files
+    just _adb shell mkdir -p "$dest"
+    just _adb push "$(wslpath -m "$tmp")" "$dest/fr3_connection.json"
+    echo "the FR3 operator now targets $host:6002, motion {{ if motion == "true" { "allowed" } else { "LOCKED (keepalives only)" } }}; restart the app to pick it up."
 
 # Build the Quest APK (unity/TeleopVR, Unity 2022.3) from its Build Settings scenes after its scene check -> unity/TeleopVR/Builds/TeleopVR-Quest.apk. The first Android build re-imports assets; close that project's editor first
 [group('quest (parked)')]
@@ -366,6 +412,96 @@ build-profile output="" force="false":
     cd core && dotnet run --project Teleop.Eval -- build-profile \
         {{ if output != "" { "--output " + output } else { "" } }} \
         {{ if force == "true" { "--force" } else { "" } }}
+
+# Regenerate core/RobotProfiles/fr3-duo.json (and the byte-identical copies in trainer/contract/profiles/ and the headset's Bridge Resources) and its collision model fr3-duo.collision.json (fit-capsules: one capsule per link from the URDF's collision meshes, docs/adr/0026 amendment) from the vendored URDF (docs/adr/0026 decision 3) -- never edit that file by hand. Ids: left arm 1-7 + hand 8, right arm 11-17 + hand 18. The URDF has no acceleration or jerk limits, so Franka's published FR3 figures are given here (10 rad/s^2, 5000 rad/s^3); Teleop.Eval.Tests' ImportUrdfCommandTests repeats these arguments and requires the committed bytes, so change both together
+[group('robot: profiles')]
+import-fr3-profile:
+    cd core && dotnet run --project Teleop.Eval -- import-urdf \
+        --urdf ../robot/franka/fr3_duo/urdf/fr3_duo.urdf --out RobotProfiles/fr3-duo.json --name fr3-duo \
+        --arm left:left_fr3v2_hand_tcp:1 --arm right:right_fr3v2_hand_tcp:11 \
+        --gripper left:left_fr3v2_finger_joint1:8 --gripper right:right_fr3v2_finger_joint1:18 \
+        --acceleration 10 --jerk 5000 \
+        --upstream frankarobotics/franka_description@7aeeddc449edf8d62b594f9e36a81da53e7796f9
+    cp core/RobotProfiles/fr3-duo.json trainer/contract/profiles/fr3-duo.json
+    cd core && dotnet run --project Teleop.Eval -- fit-capsules --urdf ../robot/franka/fr3_duo/urdf/fr3_duo.urdf \
+        --profile RobotProfiles/fr3-duo.json --out RobotProfiles/fr3-duo.collision.json --margin 0.01
+    # The headset's copies (docs/adr/0029): Unity loads only what is under the project; BridgeResourcesTests holds them to these.
+    cp core/RobotProfiles/fr3-duo.json unity/Teleop.Bridge/Runtime/Resources/fr3_duo_profile.json
+    cp core/RobotProfiles/fr3-duo.collision.json unity/Teleop.Bridge/Runtime/Resources/fr3_duo_collision.json
+
+# ---- the simulated FR3 Duo (docs/adr/0026, 0027): nothing real moves ----
+
+fr3_sim_recordings := "recordings/fr3-sim"
+
+# RobotHost on this PC against a SIMULATED FR3 Duo (docs/adr/0027): core/RobotProfiles/fr3-duo.json, Core's trajectory shaper at 1 kHz, a second-order tracking lag of track_hz, readings with noise_rad of seeded noise. Joint port 6002 and discovery 6005, as on the robot, so the headset and the Eval tools talk to it as they would to a robot (just fr3-sim-drive, just joint-probe remote_host=127.0.0.1). Sessions the headset commands are recorded automatically into recordings/fr3-sim (teleop-session v2, source sim-host); the uplink control file is recordings/fr3-sim/.uplink. Enter stops it. Moves nothing real
+[group('fr3 (simulated)')]
+fr3-sim-host track_hz="20" noise_rad="0" seed="1" port="6002" discovery_port="6005":
+    mkdir -p {{fr3_sim_recordings}}
+    cd core && dotnet run --project Teleop.RobotHost -- --profile-path RobotProfiles/fr3-duo.json --joint-local-port {{port}} --backend sim \
+        --sim-track-hz {{track_hz}} --sim-noise-rad {{noise_rad}} --sim-seed {{seed}} --discovery-port {{discovery_port}} \
+        --collision-model RobotProfiles/fr3-duo.collision.json \
+        --record-control ../{{fr3_sim_recordings}}/.active --auto-record --auto-record-root ../{{fr3_sim_recordings}} \
+        --uplink-control ../{{fr3_sim_recordings}}/.uplink
+
+# Drive the simulated FR3 Duo of a running just fr3-sim-host (in another terminal) through seeded joint-space waypoints at 48 Hz (Teleop.Eval chain-drive): every joint within +-amplitude rad of where it starts, the hands toggling; Enter stops it, back at the start. Simulated robots only: chain-drive refuses a real one until the serial-chain collision model exists (docs/adr/0026 decision 5)
+[group('fr3 (simulated)')]
+fr3-sim-drive seconds="60" seed="1" amplitude="0.5" remote_host="127.0.0.1":
+    cd core && dotnet run --project Teleop.Eval -- chain-drive --simulated-robot --remote-host {{remote_host}} \
+        --seconds {{seconds}} --seed {{seed}} --amplitude-rad {{amplitude}}
+
+# The headset's two-hand operator (docs/adr/0029) with scripted hands, against a running just fr3-sim-host (another terminal): the same SerialChainJointLink and SerialChainTeleop the Galaxy XR runs, over the real socket. Grabs with both hands, moves them reach_m for 2 s, holds 2 s, and passes when each measured tool is within tolerance_mm of its clutch target, the left gripper closed, nothing blocked and the prediction within 1 deg at p95 (each reading against what the twin showed for its instant). headset=true says Headset in the heartbeat, so RobotHost records the session as it would the Galaxy XR's. Simulated robots only
+[group('fr3 (simulated)')]
+fr3-teleop-probe reach_m="0.08" tolerance_mm="3" predictor="franka-replay" headset="false" remote_host="127.0.0.1":
+    cd core && dotnet run --project Teleop.Eval -- chain-teleop-probe --simulated-robot --remote-host {{remote_host}} \
+        --reach-m {{reach_m}} --tolerance-mm {{tolerance_mm}} --predictor {{predictor}} {{ if headset == "true" { "--as-headset" } else { "" } }}
+
+# Record one scripted session on the simulated FR3 Duo (a running just fr3-sim-host): opens recordings/fr3-sim/<UTC>-<label>/ with a teleop-session v2 session.json (source sim-host) and the profile, runs chain-drive into its operator.jlog, then closes it (stoppedUtc, files.sha256). Its arm is simulated and is never the robot's (docs/adr/0027 decision 6)
+[group('fr3 (simulated)')]
+fr3-sim-record label seconds="60" seed="1" amplitude="0.5" network="lan":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    root={{fr3_sim_recordings}}
+    mkdir -p "$root"
+    [ -s "$root/.active" ] && { echo "error: a session is already recording ($(cat "$root/.active"))" >&2; exit 1; }
+    id="$(date -u +%Y%m%dT%H%M%SZ)-{{label}}"
+    dir="$root/$id"
+    mkdir -p "$dir"
+    cp core/RobotProfiles/fr3-duo.json "$dir/robot-profile.json"
+    python3 - "$dir/session.json" "$id" "{{label}}" "{{network}}" "{{seed}}" "{{amplitude}}" "$(sha256sum core/RobotProfiles/fr3-duo.json | cut -d' ' -f1)" "$(git rev-parse HEAD)" "$([ -n "$(git status --porcelain -- core)" ] && echo true || echo false)" <<'PY'
+    import datetime, json, sys
+    path, sid, label, network, seed, amplitude, profile_sha, sha, dirty = sys.argv[1:]
+    json.dump({
+        "format": "teleop-session", "version": 2, "id": sid, "source": "sim-host", "label": label,
+        "startedUtc": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "conditions": {
+            "speedSliderRadPerSec": "none",
+            "load": {"kind": "none", "payloadGrams": 0},
+            "network": {"uplinkProfile": network, "uplinkSeed": 0, "addedDelayMs": 0},
+            "motion": "chain-drive:waypoints", "operator": "chain-drive seed " + seed + " amplitude " + amplitude,
+        },
+        "builds": {"robothost": {"sha": sha, "dirty": dirty == "true"}},
+        "robotProfile": "fr3-duo", "robotProfileSha256": profile_sha,
+        "notes": "the simulated FR3 Duo (Fr3SimBackend, just fr3-sim-host); its arm is simulated and is never the robot's",
+    }, open(path, "w"), indent=2)
+    PY
+    if [ "{{network}}" != "lan" ]; then printf '%s 1\n' "{{network}}" > "$root/.uplink"; sleep 1; fi
+    printf '%s\n' "../$dir" > "$root/.active"
+    sleep 1
+    status=0
+    (cd core && dotnet run --project Teleop.Eval -- chain-drive --simulated-robot --seconds {{seconds}} --seed {{seed}} \
+        --amplitude-rad {{amplitude}} --operator-log "../$dir/operator.jlog" --session-id "$id") || status=$?
+    rm -f "$root/.active" "$root/.uplink"
+    for i in $(seq 1 40); do tail -n 1 "$dir/robothost.jlog" 2>/dev/null | grep -q '^END|' && break; sleep 0.25; done
+    python3 - "$dir/session.json" <<'PY'
+    import datetime, json, sys
+    meta = json.load(open(sys.argv[1]))
+    meta["stoppedUtc"] = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    json.dump(meta, open(sys.argv[1], "w"), indent=2)
+    PY
+    (cd "$dir" && sha256sum session.json robot-profile.json *.jlog > files.sha256)
+    for f in "$dir"/*.jlog; do printf '%-16s %8s lines  %s\n' "$(basename "$f")" "$(wc -l < "$f")" "$(tail -n 1 "$f" | cut -c1-60)"; done
+    echo "recorded $dir (chain-drive exit $status)"
+    exit $status
 
 # Phase-3 cross-machine ClockSync diagnostic against an already-running Teleop.RobotHost -- moves the real arm once and holds; a human must be watching the hardware
 [group('robot: moves the arm (someone watching)')]
@@ -2524,6 +2660,23 @@ _trainer-python:
 [group('trainer')]
 train-sim config="sim-pretrain" name="" *args:
     trainer/train-sim.sh "{{config}}" "{{name}}" {{args}}
+
+# The FR3 Duo's simulated pretraining on this machine (docs/adr/0028): simulate the FR3 session matrix (session v2), build layout v4, train on top of franka-replay, export (weights format 2), evaluate, all into trainer/runs/<name>. On Linux it runs trainer/train-fr3-sim.sh (trainer/.venv, built the first time); under WSL it runs the Windows CUDA venv trainer/.venv-win-cuda. config: fr3-smoke (minutes) or fr3-sim-pretrain (hours). SIMULATED: the report says so, and it is never a gate verdict
+[group('trainer')]
+train-fr3-sim config="fr3-sim-pretrain" name="" *args:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    name="{{name}}"; [ -n "$name" ] || name="{{config}}-$(git rev-parse --short HEAD)"
+    # The Windows CUDA venv: this checkout's, or (in a git worktree) the main checkout's.
+    py=""
+    for v in trainer/.venv-win-cuda "$(dirname "$(git rev-parse --path-format=absolute --git-common-dir)")/trainer/.venv-win-cuda"; do
+        [ -x "$v/Scripts/python.exe" ] && { py="$(cd "$v" && pwd)/Scripts/python.exe"; break; }
+    done
+    if [ -n "$py" ] && grep -qi microsoft /proc/version 2>/dev/null; then
+        cd trainer && "$py" -m armpred fr3-sim-pretrain --config "configs/{{config}}.toml" --out "runs/$name" {{args}}
+    else
+        trainer/train-fr3-sim.sh "{{config}}" "$name" {{args}}
+    fi
 
 # Start `just train-sim <config>` on the GPU machine ($GPU_HOST, default andrei@10.188.58.164), detached, so this machine and the SSH session can go (docs/adr/0021). Clones the repo into ~/teleoperation there the first time and pulls main every time; refuses while a run of ours is going there, or while the GPU is busy (over 2 GB in use: someone else's job). The run is trainer/runs/<config>-<commit> there; the log ~/train-sim-<config>.log. Watch it with just gpu-status; bring it back with just gpu-fetch
 [group('trainer')]

@@ -18,6 +18,7 @@ namespace Teleop.Eval.Tests.Tooling
         private static readonly string[] Expected =
         {
             "rng-v1.json", "impairments-v1.json", "clocksync-v1.json", "relay-replay-v1.json", "relay-replay-servo.json",
+            "joint-shaper-v1.json", "franka-replay-v1.json",
         };
 
         [Fact]

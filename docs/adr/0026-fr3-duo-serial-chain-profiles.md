@@ -64,21 +64,29 @@ FR3 Duo has 16 (2 × 7 + 2 fingers): a command is 14 + 16·9 = 158 bytes and a s
      session. A profile has a name, a `kind` (`"serial-chain"`; a file without a `kind` is ADR 0011's
      planar profile, so `jetrover.json` is unchanged) and an ordered `arms[]`. Each arm has:
      - **a name** (`left`, `right`);
-     - **a mount**, the fixed transform from the robot's root frame to the arm's base. It is a
-       translation plus a unit quaternion, computed from the URDF's fixed-joint chain;
+     - **a mount**, the fixed transform from the robot's root frame to the arm's base;
      - **`joints[]`**, in chain order. Each joint carries:
        - the motor id;
        - the URDF joint name;
        - the type (`revolute` or `prismatic`);
-       - the origin (translation and quaternion from the parent frame);
+       - the origin (from the parent link's frame);
        - the unit axis;
        - the position limits and the soft limits;
        - the velocity, acceleration and jerk limits;
        - the position-based velocity limit (deceleration limit, velocity offset);
-       - an optional zero offset;
      - **a tool frame:** the fixed transform from the last joint to the TCP (flange + hand + TCP);
      - **an optional gripper:** its motor id, its travel (0–0.04 m per finger for the Franka Hand),
        its speed, and whether a second finger mimics the first.
+
+     **In the file, every frame is the URDF's own numbers.** The mount, each origin and the tool are
+     each a list of `{joint, xyz, rpy}`, one entry per URDF joint folded into it. The profile type
+     composes them at load. So the importer does no trigonometry, a re-import is the same bytes on
+     every platform, and each number can be checked against the URDF by eye.
+
+     **One document type is shared by every reader.** The file's form
+     (`Teleop.RobotArm/Types/SerialChainProfileDocument.cs`) has plain public fields named as the
+     JSON names them. RobotHost and Eval read it with `System.Text.Json` and Unity with `JsonUtility`.
+     Only the file handling is per host, unlike ADR 0011's per-host mirrors.
    - **`Validate()` fails loudly on:**
      - non-unit axes or quaternions;
      - duplicate ids across arms;
@@ -93,9 +101,13 @@ FR3 Duo has 16 (2 × 7 + 2 fingers): a command is 14 + 16·9 = 158 bytes and a s
    ids need no new predictor plumbing. On the wire the gripper keeps ADR 0011's convention: a 0..1
    opening fraction. For the Franka Hand, 0 is closed and 1 is 0.04 m per finger.
 3. **The FR3 Duo's profile is generated, never hand-edited.** A new verb, `Teleop.Eval import-urdf
-   <urdf> --ids <map> --out <json>`:
-   - reads the URDF (`System.Xml`, a host, so file I/O is fine);
-   - folds the fixed joints into mounts, origins and the tool frame;
+   --urdf <file> --out <file> --name <profile> --arm <name>:<tipLink>:<firstMotorId>...
+   --gripper <arm>:<fingerJoint>:<motorId>... --acceleration <a> --jerk <j> --upstream <repo@sha>`:
+   - reads the URDF (`System.Xml.Linq`, a host, so file I/O is fine);
+   - takes each arm as the URDF path from the root link to its tip link, and folds the fixed joints
+     before the first moving joint into the mount, those between moving joints into the next joint's
+     origin, and those after the last into the tool;
+   - refuses a `continuous`, `floating` or `planar` joint, or a mimic joint, on an arm's path;
    - writes `core/RobotProfiles/fr3-duo.json`.
 
    It records the URDF's sha256 and the upstream commit in the profile. A test re-imports the
@@ -165,3 +177,47 @@ FR3 Duo has 16 (2 × 7 + 2 fingers): a command is 14 + 16·9 = 158 bytes and a s
 - **Denavit–Hartenberg parameters in the profile instead of URDF origins.** Rejected. DH cannot
   express the mount's tilted fixed frames without extra conventions, while the URDF is what Franka
   maintains. The DH table remains a test oracle.
+
+## Amendment (2026-10-29): inverse kinematics and collision for serial chains
+
+Decision 5 left these for later. They are needed before Unity drives the FR3 and before any real arm moves.
+
+1. **A collision model fitted headlessly to the URDF's own collision meshes.**
+   - **The verb:** `Teleop.Eval fit-capsules` reads the URDF and its STL collision meshes. ADR 0020's JetRover
+     extractor needs the Unity editor; this does not, so it runs on Linux and in CI, with the STLs in plain git.
+   - **The capsules:** one per link, each a segment and a radius that contain every vertex of the link's mesh:
+     - each arm's link 0 to link 7;
+     - the hand, with its fingers' boxes folded in;
+     - the mount, its cover and the head, on the robot's root.
+
+     Each is expressed in the frame of the joint that moves it (the arm's base for link 0).
+   - **The output:** `core/RobotProfiles/fr3-duo.collision.json`. A test re-fits it and requires the same bytes,
+     as decision 3 requires of the profile.
+2. **Which pairs are checked:**
+   - every pair of capsules from two different bodies (an arm, or the robot's fixed body), within a margin
+     (default 1 cm);
+   - except pairs joined by a joint (a link and its parent: the mount with each arm's link 0, and the two link 0s
+     on the mount);
+   - and except pairs the fit makes touch at the ready pose that the robot's geometry does not.
+
+   Those disabled pairs are listed in the file, with the reason, as the SRDF's would be.
+3. **`SerialChainCollision`** (`Teleop.RobotArm/Collision/`) checks one robot pose (every arm's joints)
+   against the model:
+   - joint ranges first, then self-collision, arm-to-arm and arm-to-body;
+   - segment-to-segment distances in double precision;
+   - allocation-free;
+   - it reports the first hit.
+4. **`SerialChainSolver`** (`Teleop.RobotArm/Kinematics/`) solves one arm's joints for a TCP pose (position and
+   orientation):
+   - damped least squares, a fixed number of iterations from the current joints;
+   - the null space pulled toward the current pose and away from the soft limits, so a 7-joint arm stays near
+     where it is rather than jumping elbow-side;
+   - each iterate clamped into the soft limits;
+   - it reports the residual and whether the answer collides.
+
+   It is deterministic and allocation-free. Like ADR 0020's `ArmSolver`, it runs on the headset: floating point
+   can differ between the headset's IL2CPP build and RobotHost's x64, so the robot does not re-solve.
+5. **RobotHost refuses a colliding command** (`SerialChainPlant`, outcome `R`, as `GenericArmPlant` does since
+   ADR 0020). It does so whenever the host has the profile's collision model, which `--collision-model` names.
+   `chain-drive` checks every planned pose with the same model and keeps only collision-free ones, but still runs
+   only against the simulated robot: the model's margin and pairs are fitted, not measured.

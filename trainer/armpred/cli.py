@@ -188,6 +188,19 @@ def _train_run(config: dict, data_dir: str, out: str, workers: int, log, steps: 
     return 0
 
 
+def cmd_fr3_sim_pretrain(args) -> int:
+    """The FR3 Duo's simulated pretraining (docs/adr/0028): simulate, build layout v4, train, export, evaluate."""
+    from .fr3_pipeline import run_fr3_eval_only, run_fr3_sim_pretrain
+    from .pipeline import load_config
+
+    config = _apply_sets(load_config(args.config), args.set)
+    if args.eval_only:
+        return run_fr3_eval_only(config, args.out, args.workers, _log_to(os.path.join(args.out, "log.txt")))
+    _copy_config(args.config, args.out)
+    return run_fr3_sim_pretrain(config, args.out, args.workers, _log_to(os.path.join(args.out, "log.txt")),
+                                steps=args.steps, skip_eval=args.skip_eval)
+
+
 def cmd_prepare(args) -> int:
     from .pipeline import load_config
 
@@ -650,6 +663,13 @@ def cmd_golden_learned(args) -> int:
     return 0
 
 
+def cmd_golden_learned_v4(args) -> int:
+    from .golden_learned_v4 import write_golden_v4
+
+    write_golden_v4(args.run, args.session, args.out, schedule=args.schedule, seed=args.seed, start_s=args.start, seconds=args.seconds)
+    return 0
+
+
 def main(argv: Optional[List[str]] = None) -> int:
     parser = argparse.ArgumentParser(prog="armpred", description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
@@ -678,6 +698,16 @@ def main(argv: Optional[List[str]] = None) -> int:
     p.add_argument("--steps", type=int, default=0, help="override train.steps (smoke runs)")
     p.add_argument("--skip-eval", action="store_true")
     p.set_defaults(func=cmd_sim_pretrain)
+
+    p = sub.add_parser("fr3-sim-pretrain", help="the FR3 Duo: simulate (session v2), build layout v4, train, export, evaluate (SIMULATED)")
+    p.add_argument("--config", required=True)
+    p.add_argument("--out", required=True)
+    p.add_argument("--set", action="append", help="override a config value, e.g. train.steps=2000")
+    p.add_argument("--workers", type=int, default=0)
+    p.add_argument("--steps", type=int, default=0, help="override train.steps (smoke runs)")
+    p.add_argument("--skip-eval", action="store_true")
+    p.add_argument("--eval-only", action="store_true", help="evaluate and report a trained run in --out again, without simulating or training")
+    p.set_defaults(func=cmd_fr3_sim_pretrain)
 
     p = sub.add_parser("prepare", help="simulate the session matrix and build the shards, once")
     p.add_argument("--config", required=True)
@@ -728,6 +758,16 @@ def main(argv: Optional[List[str]] = None) -> int:
     p.add_argument("--start", type=float, default=60.0, help="seconds into the view")
     p.add_argument("--seconds", type=float, default=8.0)
     p.set_defaults(func=cmd_golden_learned)
+
+    p = sub.add_parser("golden-learned-v4", help="layout v4's golden fixture for the C# copy, from an FR3 run and a (simulated) v2 session (docs/adr/0028)")
+    p.add_argument("--run", required=True)
+    p.add_argument("--session", required=True)
+    p.add_argument("--out", required=True)
+    p.add_argument("--schedule", default="50ms-5j@0")
+    p.add_argument("--seed", type=int, default=7)
+    p.add_argument("--start", type=float, default=30.0, help="seconds into the view")
+    p.add_argument("--seconds", type=float, default=6.0)
+    p.set_defaults(func=cmd_golden_learned_v4)
 
     p = sub.add_parser("evaluate", help="the trainer gate's numbers for a run, on a directory of sessions")
     p.add_argument("--run", required=True)

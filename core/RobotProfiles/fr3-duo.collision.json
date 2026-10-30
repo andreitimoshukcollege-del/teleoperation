@@ -1,0 +1,550 @@
+{
+  "profile": "fr3-duo",
+  "kind": "serial-chain-collision",
+  "margin": 0.01,
+  "urdf": "robot/franka/fr3_duo/urdf/fr3_duo.urdf",
+  "sha256": "5f1ab744deb0097f014163395aa828a7988edcc72526fd8e5cb0e6e6a6494162",
+  "capsules": [
+    {
+      "name": "fr3_duo_mount_mounting_point",
+      "arm": -1,
+      "frame": -1,
+      "a": [
+        -0.005856,
+        0.009497,
+        0.077463
+      ],
+      "b": [
+        -0.005856,
+        0.009497,
+        0.077463
+      ],
+      "radius": 0.189588
+    },
+    {
+      "name": "head_link",
+      "arm": -1,
+      "frame": -1,
+      "a": [
+        0.005935,
+        -0.000933,
+        0.210337
+      ],
+      "b": [
+        0.02094,
+        -0.013472,
+        0.369454
+      ],
+      "radius": 0.072077
+    },
+    {
+      "name": "left_fr3v2_link0",
+      "arm": 0,
+      "frame": -1,
+      "a": [
+        -0.043565,
+        -0.01544,
+        0.057817
+      ],
+      "b": [
+        -0.039253,
+        -0.01411,
+        0.059564
+      ],
+      "radius": 0.136101
+    },
+    {
+      "name": "left_fr3v2_link1",
+      "arm": 0,
+      "frame": 0,
+      "a": [
+        0.001879,
+        -0.00338,
+        -0.116447
+      ],
+      "b": [
+        0.000821,
+        -0.056719,
+        -0.030092
+      ],
+      "radius": 0.102446
+    },
+    {
+      "name": "left_fr3v2_link2",
+      "arm": 0,
+      "frame": 1,
+      "a": [
+        -0.002504,
+        -0.118186,
+        0.005483
+      ],
+      "b": [
+        -0.001563,
+        -0.031458,
+        0.057887
+      ],
+      "radius": 0.104403
+    },
+    {
+      "name": "left_fr3v2_link3",
+      "arm": 0,
+      "frame": 2,
+      "a": [
+        0.011785,
+        0.000119,
+        -0.060085
+      ],
+      "b": [
+        0.061052,
+        0.04629,
+        -0.018741
+      ],
+      "radius": 0.096356
+    },
+    {
+      "name": "left_fr3v2_link4",
+      "arm": 0,
+      "frame": 3,
+      "a": [
+        -0.069317,
+        0.059113,
+        0.003114
+      ],
+      "b": [
+        -0.023497,
+        0.021547,
+        0.04684
+      ],
+      "radius": 0.099
+    },
+    {
+      "name": "left_fr3v2_link5",
+      "arm": 0,
+      "frame": 4,
+      "a": [
+        0.000102,
+        0.019755,
+        -0.195213
+      ],
+      "b": [
+        0.000802,
+        0.075224,
+        -0.036782
+      ],
+      "radius": 0.103222
+    },
+    {
+      "name": "left_fr3v2_link6",
+      "arm": 0,
+      "frame": 5,
+      "a": [
+        0.039302,
+        0.009745,
+        0.008925
+      ],
+      "b": [
+        0.048344,
+        0.013108,
+        0.007255
+      ],
+      "radius": 0.105169
+    },
+    {
+      "name": "left_fr3v2_link7",
+      "arm": 0,
+      "frame": 6,
+      "a": [
+        0.003882,
+        0.000459,
+        0.083444
+      ],
+      "b": [
+        0.022604,
+        0.021198,
+        0.082383
+      ],
+      "radius": 0.062556
+    },
+    {
+      "name": "left_fr3v2_hand",
+      "arm": 0,
+      "frame": 6,
+      "a": [
+        -0.040149,
+        -0.040109,
+        0.128477
+      ],
+      "b": [
+        0.038256,
+        0.03738,
+        0.130905
+      ],
+      "radius": 0.059119
+    },
+    {
+      "name": "left_fr3v2_leftfinger",
+      "arm": 0,
+      "frame": 6,
+      "a": [
+        0.03718,
+        0.03718,
+        0.18282
+      ],
+      "b": [
+        0.035878,
+        0.035878,
+        0.20324
+      ],
+      "radius": 0.02389
+    },
+    {
+      "name": "left_fr3v2_rightfinger",
+      "arm": 0,
+      "frame": 6,
+      "a": [
+        -0.03718,
+        -0.03718,
+        0.18282
+      ],
+      "b": [
+        -0.035878,
+        -0.035878,
+        0.20324
+      ],
+      "radius": 0.02389
+    },
+    {
+      "name": "right_fr3v2_link0",
+      "arm": 1,
+      "frame": -1,
+      "a": [
+        -0.043565,
+        -0.01544,
+        0.057817
+      ],
+      "b": [
+        -0.039253,
+        -0.01411,
+        0.059564
+      ],
+      "radius": 0.136101
+    },
+    {
+      "name": "right_fr3v2_link1",
+      "arm": 1,
+      "frame": 0,
+      "a": [
+        0.001879,
+        -0.00338,
+        -0.116447
+      ],
+      "b": [
+        0.000821,
+        -0.056719,
+        -0.030092
+      ],
+      "radius": 0.102446
+    },
+    {
+      "name": "right_fr3v2_link2",
+      "arm": 1,
+      "frame": 1,
+      "a": [
+        -0.002504,
+        -0.118186,
+        0.005483
+      ],
+      "b": [
+        -0.001563,
+        -0.031458,
+        0.057887
+      ],
+      "radius": 0.104403
+    },
+    {
+      "name": "right_fr3v2_link3",
+      "arm": 1,
+      "frame": 2,
+      "a": [
+        0.011785,
+        0.000119,
+        -0.060085
+      ],
+      "b": [
+        0.061052,
+        0.04629,
+        -0.018741
+      ],
+      "radius": 0.096356
+    },
+    {
+      "name": "right_fr3v2_link4",
+      "arm": 1,
+      "frame": 3,
+      "a": [
+        -0.069317,
+        0.059113,
+        0.003114
+      ],
+      "b": [
+        -0.023497,
+        0.021547,
+        0.04684
+      ],
+      "radius": 0.099
+    },
+    {
+      "name": "right_fr3v2_link5",
+      "arm": 1,
+      "frame": 4,
+      "a": [
+        0.000102,
+        0.019755,
+        -0.195213
+      ],
+      "b": [
+        0.000802,
+        0.075224,
+        -0.036782
+      ],
+      "radius": 0.103222
+    },
+    {
+      "name": "right_fr3v2_link6",
+      "arm": 1,
+      "frame": 5,
+      "a": [
+        0.039302,
+        0.009745,
+        0.008925
+      ],
+      "b": [
+        0.048344,
+        0.013108,
+        0.007255
+      ],
+      "radius": 0.105169
+    },
+    {
+      "name": "right_fr3v2_link7",
+      "arm": 1,
+      "frame": 6,
+      "a": [
+        0.003882,
+        0.000459,
+        0.083444
+      ],
+      "b": [
+        0.022604,
+        0.021198,
+        0.082383
+      ],
+      "radius": 0.062556
+    },
+    {
+      "name": "right_fr3v2_hand",
+      "arm": 1,
+      "frame": 6,
+      "a": [
+        -0.040149,
+        -0.040109,
+        0.128477
+      ],
+      "b": [
+        0.038256,
+        0.03738,
+        0.130905
+      ],
+      "radius": 0.059119
+    },
+    {
+      "name": "right_fr3v2_leftfinger",
+      "arm": 1,
+      "frame": 6,
+      "a": [
+        0.03718,
+        0.03718,
+        0.18282
+      ],
+      "b": [
+        0.035878,
+        0.035878,
+        0.20324
+      ],
+      "radius": 0.02389
+    },
+    {
+      "name": "right_fr3v2_rightfinger",
+      "arm": 1,
+      "frame": 6,
+      "a": [
+        -0.03718,
+        -0.03718,
+        0.18282
+      ],
+      "b": [
+        -0.035878,
+        -0.035878,
+        0.20324
+      ],
+      "radius": 0.02389
+    }
+  ],
+  "disabled": [
+    {
+      "a": "fr3_duo_mount_mounting_point",
+      "b": "left_fr3v2_link0",
+      "reason": "adjacent"
+    },
+    {
+      "a": "fr3_duo_mount_mounting_point",
+      "b": "right_fr3v2_link0",
+      "reason": "adjacent"
+    },
+    {
+      "a": "head_link",
+      "b": "left_fr3v2_link0",
+      "reason": "adjacent"
+    },
+    {
+      "a": "head_link",
+      "b": "right_fr3v2_link0",
+      "reason": "adjacent"
+    },
+    {
+      "a": "left_fr3v2_link0",
+      "b": "left_fr3v2_link1",
+      "reason": "adjacent"
+    },
+    {
+      "a": "left_fr3v2_link0",
+      "b": "right_fr3v2_link0",
+      "reason": "adjacent"
+    },
+    {
+      "a": "left_fr3v2_link1",
+      "b": "left_fr3v2_link2",
+      "reason": "adjacent"
+    },
+    {
+      "a": "left_fr3v2_link2",
+      "b": "left_fr3v2_link3",
+      "reason": "adjacent"
+    },
+    {
+      "a": "left_fr3v2_link3",
+      "b": "left_fr3v2_link4",
+      "reason": "adjacent"
+    },
+    {
+      "a": "left_fr3v2_link4",
+      "b": "left_fr3v2_link5",
+      "reason": "adjacent"
+    },
+    {
+      "a": "left_fr3v2_link5",
+      "b": "left_fr3v2_link6",
+      "reason": "adjacent"
+    },
+    {
+      "a": "left_fr3v2_link6",
+      "b": "left_fr3v2_link7",
+      "reason": "adjacent"
+    },
+    {
+      "a": "left_fr3v2_link6",
+      "b": "left_fr3v2_hand",
+      "reason": "adjacent"
+    },
+    {
+      "a": "left_fr3v2_link6",
+      "b": "left_fr3v2_leftfinger",
+      "reason": "adjacent"
+    },
+    {
+      "a": "left_fr3v2_link6",
+      "b": "left_fr3v2_rightfinger",
+      "reason": "adjacent"
+    },
+    {
+      "a": "right_fr3v2_link0",
+      "b": "right_fr3v2_link1",
+      "reason": "adjacent"
+    },
+    {
+      "a": "right_fr3v2_link1",
+      "b": "right_fr3v2_link2",
+      "reason": "adjacent"
+    },
+    {
+      "a": "right_fr3v2_link2",
+      "b": "right_fr3v2_link3",
+      "reason": "adjacent"
+    },
+    {
+      "a": "right_fr3v2_link3",
+      "b": "right_fr3v2_link4",
+      "reason": "adjacent"
+    },
+    {
+      "a": "right_fr3v2_link4",
+      "b": "right_fr3v2_link5",
+      "reason": "adjacent"
+    },
+    {
+      "a": "right_fr3v2_link5",
+      "b": "right_fr3v2_link6",
+      "reason": "adjacent"
+    },
+    {
+      "a": "right_fr3v2_link6",
+      "b": "right_fr3v2_link7",
+      "reason": "adjacent"
+    },
+    {
+      "a": "right_fr3v2_link6",
+      "b": "right_fr3v2_hand",
+      "reason": "adjacent"
+    },
+    {
+      "a": "right_fr3v2_link6",
+      "b": "right_fr3v2_leftfinger",
+      "reason": "adjacent"
+    },
+    {
+      "a": "right_fr3v2_link6",
+      "b": "right_fr3v2_rightfinger",
+      "reason": "adjacent"
+    },
+    {
+      "a": "fr3_duo_mount_mounting_point",
+      "b": "left_fr3v2_link1",
+      "reason": "touching-at-ready"
+    },
+    {
+      "a": "fr3_duo_mount_mounting_point",
+      "b": "right_fr3v2_link1",
+      "reason": "touching-at-ready"
+    },
+    {
+      "a": "left_fr3v2_link5",
+      "b": "left_fr3v2_link7",
+      "reason": "touching-at-ready"
+    },
+    {
+      "a": "left_fr3v2_link5",
+      "b": "left_fr3v2_hand",
+      "reason": "touching-at-ready"
+    },
+    {
+      "a": "right_fr3v2_link5",
+      "b": "right_fr3v2_link7",
+      "reason": "touching-at-ready"
+    },
+    {
+      "a": "right_fr3v2_link5",
+      "b": "right_fr3v2_hand",
+      "reason": "touching-at-ready"
+    }
+  ]
+}

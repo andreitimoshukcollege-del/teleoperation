@@ -35,6 +35,10 @@ namespace Teleop.Eval
                     return MoveArmCommand.Run(args);
                 case "build-profile":
                     return BuildProfileCommand.Run(args);
+                case "import-urdf":
+                    return ImportUrdf.ImportUrdfCommand.Run(args);
+                case "fit-capsules":
+                    return ImportUrdf.FitCapsulesCommand.Run(args);
                 case "catalog":
                     return Tooling.CatalogCommand.Run();
                 case "joint-predict-bench":
@@ -43,6 +47,10 @@ namespace Teleop.Eval
                     return JointProbe.JointProbeCommand.Run(args);
                 case "joint-drive":
                     return JointDrive.JointDriveCommand.Run(args);
+                case "chain-drive":
+                    return JointDrive.ChainDriveCommand.Run(args);
+                case "chain-teleop-probe":
+                    return JointDrive.ChainTeleopProbeCommand.Run(args);
                 case "discover-robot":
                     return DiscoverRobotCommand.Run(args);
                 case "replay":
@@ -53,7 +61,7 @@ namespace Teleop.Eval
                 default:
                     Console.Error.WriteLine(
                         "usage: verify | audit | sweep | replay | compare | gen-golden | gen-trace | gen-trainer-golden | " +
-                        "clocksync-check | move-arm | build-profile | catalog | joint-predict-bench | joint-probe | joint-drive | discover-robot");
+                        "clocksync-check | move-arm | build-profile | import-urdf | fit-capsules | catalog | joint-predict-bench | joint-probe | joint-drive | chain-drive | chain-teleop-probe | discover-robot");
                     return 64;   // EX_USAGE
             }
         }

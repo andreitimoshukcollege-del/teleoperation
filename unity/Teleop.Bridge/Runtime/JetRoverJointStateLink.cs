@@ -111,7 +111,7 @@ namespace Teleop.Bridge
         private readonly string[] _descriptions;
         private readonly LiveJointScorer _scorer;
         private readonly long _keepaliveIntervalTicks;
-        private readonly byte[] _buffer = new byte[128];
+        private readonly byte[] _buffer = new byte[JointDatagram.MaxBytes];
         private readonly byte[] _powerBuffer = new byte[ArmPowerCodec.RequestSize];
         private readonly byte[] _trainingBuffer = new byte[TrainingTaskCodec.Size];
         private readonly byte[] _headsetBuffer = new byte[HeadsetConditionsCodec.Size];

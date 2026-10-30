@@ -4,6 +4,7 @@ using System.Globalization;
 using System.Linq;
 using Teleop.Core.Contracts;
 using Teleop.Core.Inference;
+using Teleop.Core.Prediction;
 using Teleop.Core.Registry;
 using Teleop.Core.Transport;
 using Teleop.Core.Types;
@@ -118,6 +119,34 @@ namespace Teleop.Eval.JointBench
             public bool HasServoDynamics => !double.IsPositiveInfinity(ServoMaxSpeedRadPerSec) || ServoLagMs > 0;
         }
 
+        /// <summary>The simulated FR3 Duo (<c>--robot fr3</c>, docs/adr/0027): its profile, and the arm's tracking behind the shaper.</summary>
+        public sealed class Fr3Options
+        {
+            public string ProfilePath = DefaultFr3Profile;
+            public double TrackHz = 20;
+            public double TrackDamping = 1.0;
+            public double PipelineMs;
+            public double AmplitudeRad = 0.5;
+        }
+
+        public const string DefaultFr3Profile = "RobotProfiles/fr3-duo.json";
+
+        /// <summary>The stiffest tracking the bench's 1 ms integration of it stays accurate for.</summary>
+        private const double MaxTrackHz = 80;
+
+        /// <summary>The FR3's "ready" pose, Franka's usual start: each arm's joints wander around it.</summary>
+        private static readonly double[] Fr3Home = { 0, -Math.PI / 4, 0, -3 * Math.PI / 4, 0, Math.PI / 2, Math.PI / 4 };
+
+        /// <summary>
+        /// Whether a registry predictor has a row on this robot: franka-replay needs the FR3's shaper, and learned runs the
+        /// model loaded for this robot (layout v3 on the JetRover, layout v4 on the FR3), when there is one.
+        /// </summary>
+        private static bool RunsOn(string robot, string predictorName) =>
+            robot == "fr3" ? predictorName != "learned" || s_learnedModel != null : predictorName != "franka-replay";
+
+        /// <summary>The FR3's learned row, by default: the model layout v4's golden names (core/testdata/learned/golden-v4.json).</summary>
+        public const string Fr3LearnedGolden = "testdata/learned/golden-v4.json";
+
         /// <summary>One seeded run's pooled samples, in degrees.</summary>
         public sealed class Samples
         {
@@ -133,6 +162,16 @@ namespace Teleop.Eval.JointBench
         private static IInferenceBackend? s_learnedModel;
 
         public const string DefaultLearnedModel = "testdata/learned/finetune-pilot2-early7.weights";
+
+        /// <summary>The weights file layout v4's golden names, beside it; null when there is none.</summary>
+        private static string? Fr3GoldenWeights()
+        {
+            if (!System.IO.File.Exists(Fr3LearnedGolden)) return null;
+            using var golden = System.Text.Json.JsonDocument.Parse(System.IO.File.ReadAllText(Fr3LearnedGolden));
+            string name = golden.RootElement.GetProperty("model").GetProperty("weights").GetString() ?? "";
+            string path = System.IO.Path.Combine(System.IO.Path.GetDirectoryName(Fr3LearnedGolden) ?? ".", name);
+            return System.IO.File.Exists(path) ? path : null;
+        }
 
         /// <summary>A registry predictor for the bench; <c>learned</c> is given the loaded model.</summary>
         private static ICommandAwarePredictor Build(string predictorName, JointPredictorConfig config) =>
@@ -160,11 +199,13 @@ namespace Teleop.Eval.JointBench
         public static int Run(string[] args)
         {
             string learnedModel = DefaultLearnedModel;
+            bool learnedExplicit = false;
             int seeds = 5;
             double seconds = 20, trueSpeed = 4.0, legScale = 1.0;
             double? modelSpeed = null;
             string robot = "ideal";
             var relay = new RelayOptions();
+            var fr3 = new Fr3Options();
             for (int i = 1; i < args.Length; i++)
             {
                 string a = args[i];
@@ -187,7 +228,15 @@ namespace Teleop.Eval.JointBench
                     case "--servo-lag-ms": relay.ServoLagMs = D(); break;
                     case "--pipeline-ms": relay.PipelineMs = D(); break;
                     case "--leg-scale": legScale = D(); break;
-                    case "--learned-model": learnedModel = Next(); break;
+                    case "--learned-model": learnedModel = Next(); learnedExplicit = true; break;
+                    case "--fr3-profile": fr3.ProfilePath = Next(); break;
+                    case "--fr3-track-hz":
+                        string hz = Next();
+                        fr3.TrackHz = hz == "none" ? double.PositiveInfinity : double.Parse(hz, CultureInfo.InvariantCulture);
+                        break;
+                    case "--fr3-track-damping": fr3.TrackDamping = D(); break;
+                    case "--fr3-pipeline-ms": fr3.PipelineMs = D(); break;
+                    case "--fr3-amplitude": fr3.AmplitudeRad = D(); break;
                     case "--model-sensed-age":
                         string age = Next();
                         if (age != "on" && age != "off") return Usage();
@@ -198,9 +247,28 @@ namespace Teleop.Eval.JointBench
                 }
             }
 
-            if (robot != "ideal" && robot != "relay")
+            if (robot != "ideal" && robot != "relay" && robot != "fr3")
             {
                 return Usage();
+            }
+
+            // Semi-implicit Euler at the bench's 1 ms is stable well below omega * dt = 1: 80 Hz is omega * dt = 0.5.
+            if (!(fr3.TrackHz > 0 && (fr3.TrackHz <= MaxTrackHz || double.IsPositiveInfinity(fr3.TrackHz))) || !(fr3.TrackDamping > 0) || !(fr3.PipelineMs >= 0) || !(fr3.AmplitudeRad > 0))
+            {
+                Console.Error.WriteLine($"joint-predict-bench: --fr3-track-hz must be in (0, {MaxTrackHz}] or none, --fr3-track-damping and --fr3-amplitude positive, --fr3-pipeline-ms zero or positive");
+                return 64;
+            }
+
+            Teleop.RobotArm.Types.SerialChainProfile? fr3Profile = null;
+            if (robot == "fr3")
+            {
+                if (!System.IO.File.Exists(fr3.ProfilePath))
+                {
+                    Console.Error.WriteLine($"joint-predict-bench: no FR3 profile at {fr3.ProfilePath} (run from core/, or pass --fr3-profile)");
+                    return 1;
+                }
+
+                fr3Profile = ImportUrdf.SerialChainProfileJson.Load(fr3.ProfilePath);
             }
 
             if (!(relay.ServoMaxSpeedRadPerSec > 0) || !(relay.ServoLagMs >= 0) || !(relay.PipelineMs >= 0) || !(legScale > 0))
@@ -209,15 +277,39 @@ namespace Teleop.Eval.JointBench
                 return 64;
             }
 
-            if (!LoadLearnedModel(learnedModel))
+            if (robot != "fr3")
             {
-                return 1;
+                if (!LoadLearnedModel(learnedModel))
+                {
+                    return 1;
+                }
+
+                Console.WriteLine($"  learned: {s_learnedModel!.ModelId} ({learnedModel}); trained on the real robot's relay, so off the bench's simulated one it says little");
+            }
+            else
+            {
+                string? fr3Model = learnedExplicit ? learnedModel : Fr3GoldenWeights();
+                if (fr3Model != null && LoadLearnedModel(fr3Model) && s_learnedModel is MlpBackend mlp && mlp.Weights.LayoutId == "v4")
+                {
+                    Console.WriteLine($"  learned: {s_learnedModel.ModelId} ({fr3Model}), layout v4; trained on the trainer's FR3 simulator, a different simulation from this bench's");
+                }
+                else
+                {
+                    s_learnedModel = null;
+                    Console.WriteLine("  learned: no layout v4 model (pass --learned-model <fr3 model.weights>); no learned row");
+                }
             }
 
-            Console.WriteLine($"  learned: {s_learnedModel!.ModelId} ({learnedModel}); trained on the real robot's relay, so off the bench's simulated one it says little");
-            bool isRelay = robot == "relay";
-            double servoModelSpeed = modelSpeed ?? (isRelay ? 6.0 : 5.0);
-            if (isRelay)
+            bool isRelay = robot == "relay", isFr3 = robot == "fr3";
+            double servoModelSpeed = modelSpeed ?? (isRelay ? 6.0 : isFr3 ? 2.0 : 5.0);
+            if (isFr3)
+            {
+                Console.WriteLine(
+                    $"joint-predict-bench: robot fr3 ({fr3Profile!.Name}, {fr3.ProfilePath}), simulated: {seeds} seeds x {seconds:0} s, the shaper at 1 kHz, " +
+                    $"tracking {(double.IsPositiveInfinity(fr3.TrackHz) ? "none" : $"{fr3.TrackHz:0.##} Hz damping {fr3.TrackDamping:0.##}")}, pipeline {fr3.PipelineMs:0.##} ms, joints +-{fr3.AmplitudeRad:0.##} rad about ready; " +
+                    $"servo-replay model speed {servoModelSpeed:0.##} rad/s; franka-replay given the true shaper and no tracking (docs/adr/0027)");
+            }
+            else if (isRelay)
             {
                 Console.WriteLine(
                     $"joint-predict-bench: robot relay, {seeds} seeds x {seconds:0} s, relay {relay.PulsesPerSecond:0} pulses/s ({relay.PulsesPerSecond / PulsesPerRadian:0.##} rad/s), " +
@@ -253,13 +345,15 @@ namespace Teleop.Eval.JointBench
                 }
 
                 bool firstPredictor = true;
-                foreach (string predictorName in Registries.JointPredictors.Keys.OrderBy(k => k, StringComparer.Ordinal))
+                foreach (string predictorName in Registries.JointPredictors.Keys.Where(k => RunsOn(robot, k)).OrderBy(k => k, StringComparer.Ordinal))
                 {
                     var errors = new List<double>();
                     var corrections = new List<double>();
                     for (int seed = 1; seed <= seeds; seed++)
                     {
-                        Samples s = isRelay
+                        Samples s = isFr3
+                            ? SimulateFr3(profile, predictorName, (ulong)seed, seconds, servoModelSpeed, fr3Profile!, fr3, legScale)
+                            : isRelay
                             ? SimulateRelay(profile, predictorName, (ulong)seed, seconds, servoModelSpeed, relay, legScale)
                             : SimulateIdeal(profile, predictorName, (ulong)seed, seconds, trueSpeed, servoModelSpeed, legScale);
                         errors.AddRange(s.Errors);
@@ -295,12 +389,13 @@ namespace Teleop.Eval.JointBench
         private static int Usage()
         {
             Console.Error.WriteLine(
-                "usage: joint-predict-bench [--robot ideal|relay] [--seeds N] [--seconds S] [--model-speed rad/s]\n" +
+                "usage: joint-predict-bench [--robot ideal|relay|fr3] [--seeds N] [--seconds S] [--model-speed rad/s]\n" +
                 "  ideal: [--true-speed rad/s]\n" +
                 "  relay: [--relay-pps P] [--relay-min-move-ms MS] [--relay-deadband-pulses N] [--read-ms MS] [--stamp-ms MS]\n" +
                 "         [--servo-max-speed rad/s] [--servo-lag-ms MS] [--pipeline-ms MS]\n" +
                 "         [--model-relay-pps P] [--model-sensed-age on|off]\n" +
-                "  both:  [--leg-scale F] (waypoint legs last F times 0.5-1.5 s) [--learned-model F] (the learned row's model.weights)");
+                "  fr3:   [--fr3-profile F] [--fr3-track-hz HZ|none] [--fr3-track-damping Z] [--fr3-pipeline-ms MS] [--fr3-amplitude rad]\n" +
+                "  all:   [--leg-scale F] (waypoint legs last F times 0.5-1.5 s) [--learned-model F] (the learned row's model.weights; not fr3)");
             return 64;
         }
 
@@ -602,6 +697,196 @@ namespace Teleop.Eval.JointBench
         }
 
         /// <summary>
+        /// One seeded run of the simulated FR3 Duo (<c>--robot fr3</c>; see the class doc). Every arm joint of every
+        /// arm is scored; the hands are commanded and predicted but not scored.
+        /// </summary>
+        public static Samples SimulateFr3(NetworkProfile profile, string predictorName, ulong seed, double seconds, double modelSpeed,
+            Teleop.RobotArm.Types.SerialChainProfile robot, Fr3Options fr3, double legScale = 1.0)
+        {
+            var rng = new SeededRng(seed);
+            TrajectoryShaperConfig shaper = Teleop.RobotArm.Types.SerialChainShaping.ForProfile(robot);
+            byte[] hands = Teleop.RobotArm.Types.SerialChainShaping.GripperMotorIds(robot);
+            int motors = shaper.Count;
+
+            var config = new JointPredictorConfig(
+                maxJoints: motors, commandHistoryCapacity: 96, maxJointSpeedRadPerSec: (float)modelSpeed,
+                instantMotorIds: hands, maxHorizonTicks: Tps, ticksPerSecond: Tps, shaper: shaper);
+            if (predictorName == "learned") config = config.WithChainLayout(Teleop.RobotArm.Types.SerialChainShaping.LearnedLayout(robot));
+            ICommandAwarePredictor predictor = Build(predictorName, config);
+
+            // The operator's intent: each arm joint wanders about the ready pose, inside its soft limits.
+            var ids = new byte[motors];
+            var isHand = new bool[motors];
+            var lo = new double[motors];
+            var hi = new double[motors];
+            var home = new double[motors];
+            for (int m = 0; m < motors; m++)
+            {
+                ShapedJointLimits l = shaper[m];
+                ids[m] = l.MotorId;
+                isHand[m] = l.IsFinger;
+                if (!l.IsFinger)
+                {
+                    int jointIndex = m - ShapedArmStart(shaper, m);
+                    double h = jointIndex < Fr3Home.Length ? Fr3Home[jointIndex] : 0;
+                    double margin = 0.1;
+                    lo[m] = Math.Max(l.SoftLower + margin, h - fr3.AmplitudeRad);
+                    hi[m] = Math.Min(l.SoftUpper - margin, h + fr3.AmplitudeRad);
+                    home[m] = Math.Min(Math.Max(h, lo[m]), hi[m]);
+                }
+            }
+
+            long end = (long)(seconds * Tps), step = Tps / 1000;
+            long commandInterval = Tps / 48, frameInterval = Tps / 50, displayInterval = Tps / 90, warmup = Tps;
+            long pipelineTicks = (long)(fr3.PipelineMs / 1000.0 * Tps);
+
+            var from = new double[motors];
+            var to = new double[motors];
+            var legStart = new long[motors];
+            var legEnd = new long[motors];
+            for (int m = 0; m < motors; m++)
+            {
+                to[m] = home[m];
+                if (!isHand[m]) NewFr3Leg(ref rng, m, 0, from, to, legStart, legEnd, lo, hi, legScale);
+            }
+
+            // The robot: the shaper's state, the arm's tracked position behind it, and the target in force.
+            var shaped = new ShapedJointState[motors];
+            var tracked = new double[motors];
+            var trackedVelocity = new double[motors];
+            var robotTarget = new double[motors];
+            for (int m = 0; m < motors; m++)
+            {
+                shaped[m] = ShapedJointState.AtRest(home[m]);
+                tracked[m] = home[m];
+                robotTarget[m] = home[m];
+            }
+
+            double omega = 2 * Math.PI * fr3.TrackHz, dt = 1.0 / 1000;
+            long newestAcceptedSend = long.MinValue;
+            var uplink = new List<(long arrive, long send, double[] targets)>();
+            var downlink = new List<(long arrive, long sensed, double[] joints)>();
+            var samples = new Samples();
+            var scorer = new CorrectionScorer(motors, warmup, hands);
+            var command = new JointSample[motors];
+            var state = new JointSample[motors];
+            var predicted = new JointSample[motors];
+            var intent = new double[motors];
+
+            long nextCommand = 0, nextFrame = Tps / 200, nextDisplay = warmup;
+            for (long t = 0; t <= end; t += step)
+            {
+                // Operator: send a command.
+                if (t >= nextCommand)
+                {
+                    nextCommand += commandInterval;
+                    for (int m = 0; m < motors; m++)
+                    {
+                        if (isHand[m])
+                        {
+                            if (rng.NextDouble() < 0.01) intent[m] = intent[m] > 0.5 ? 0 : 1;
+                        }
+                        else
+                        {
+                            if (t >= legEnd[m]) NewFr3Leg(ref rng, m, t, from, to, legStart, legEnd, lo, hi, legScale);
+                            double u = (double)(t - legStart[m]) / (legEnd[m] - legStart[m]);
+                            intent[m] = from[m] + (to[m] - from[m]) * u;
+                        }
+
+                        command[m] = new JointSample(ids[m], (float)intent[m], false);
+                    }
+
+                    predictor.ObserveCommand(t + profile.BaseDelayTicks, command, 0f);
+                    if (!Lost(ref rng, profile))
+                    {
+                        var targets = new double[motors];
+                        for (int m = 0; m < motors; m++) targets[m] = command[m].Value;
+                        uplink.Add((t + Delay(ref rng, profile) + pipelineTicks, t, targets));
+                    }
+                }
+
+                // Robot: arrived commands, in arrival order; older than the newest taken are dropped.
+                if (uplink.Count > 0)
+                {
+                    foreach (var c in uplink.Where(c => c.arrive <= t).OrderBy(c => c.arrive).ThenBy(c => c.send).ToList())
+                    {
+                        if (c.send <= newestAcceptedSend) continue;
+                        newestAcceptedSend = c.send;
+                        Array.Copy(c.targets, robotTarget, motors);
+                    }
+
+                    uplink.RemoveAll(c => c.arrive <= t);
+                }
+
+                // Robot: a 50 Hz frame of the arm's position now (the FR3 reports every joint at 1 kHz).
+                if (t >= nextFrame)
+                {
+                    nextFrame += frameInterval;
+                    if (!Lost(ref rng, profile)) downlink.Add((t + Delay(ref rng, profile), t, (double[])tracked.Clone()));
+                }
+
+                // Operator: arrived state frames, in arrival order.
+                if (downlink.Count > 0)
+                {
+                    foreach (var f in downlink.Where(f => f.arrive <= t).OrderBy(f => f.arrive).ToList())
+                    {
+                        for (int m = 0; m < motors; m++) state[m] = new JointSample(ids[m], (float)f.joints[m], true);
+                        scorer.Observe(predictor, t, f.sensed, state, samples.Corrections);
+                    }
+
+                    downlink.RemoveAll(f => f.arrive <= t);
+                }
+
+                // Operator: a display frame.
+                if (t >= nextDisplay && predictor.TryPredict(t, predicted, out int count))
+                {
+                    nextDisplay += displayInterval;
+                    for (int j = 0; j < count; j++)
+                    {
+                        int m = Array.IndexOf(ids, predicted[j].MotorId);
+                        if (m < 0 || isHand[m]) continue;
+                        samples.Errors.Add(Math.Abs(predicted[j].Value - tracked[m]) * 180.0 / Math.PI);
+                    }
+                }
+
+                // Robot: one 1 ms step of the shaper, and the arm tracking it (second order; the hands follow the gate exactly).
+                for (int m = 0; m < motors; m++)
+                {
+                    JointTrajectoryShaper.Step(ref shaped[m], robotTarget[m], shaper[m], shaper);
+                    if (isHand[m] || double.IsPositiveInfinity(fr3.TrackHz))
+                    {
+                        tracked[m] = shaped[m].Q;
+                        continue;
+                    }
+
+                    double accel = omega * omega * (shaped[m].Q - tracked[m]) - 2 * fr3.TrackDamping * omega * trackedVelocity[m];
+                    trackedVelocity[m] += accel * dt;
+                    tracked[m] += trackedVelocity[m] * dt;
+                }
+            }
+
+            return samples;
+        }
+
+        /// <summary>The index of the first motor of the arm motor <paramref name="m"/> belongs to: arms are contiguous runs of joints ended by a finger.</summary>
+        private static int ShapedArmStart(TrajectoryShaperConfig shaper, int m)
+        {
+            int start = m;
+            while (start > 0 && !shaper[start - 1].IsFinger) start--;
+            return start;
+        }
+
+        /// <summary>A new waypoint leg for an FR3 joint, inside its band, lasting 0.5-1.5 s times <paramref name="legScale"/>.</summary>
+        private static void NewFr3Leg(ref SeededRng rng, int m, long t, double[] from, double[] to, long[] start, long[] end,
+            double[] lo, double[] hi, double legScale)
+        {
+            from[m] = to[m];
+            to[m] = lo[m] + (hi[m] - lo[m]) * rng.NextDouble();
+            start[m] = t;
+            end[m] = t + (long)((0.5 + rng.NextDouble()) * legScale * Tps);
+        }
+
+        /// <summary>
         /// The servo behind one relay output, in pulses: it follows the relay's setpoint through a
         /// first-order lag and a symmetric speed cap, stepped at the bench's 1 ms step with the setpoint
         /// sampled at each step's end, which is relay-replay-servo's scheme. A read inside the last step
@@ -750,13 +1035,16 @@ namespace Teleop.Eval.JointBench
             private readonly JointSample[] _before;
             private readonly JointSample[] _after;
             private readonly long _warmup;
+            private readonly byte[] _excluded;
             private long _newestSensed = long.MinValue;
 
-            public CorrectionScorer(int joints, long warmup)
+            /// <param name="excluded">Motors left out of the metric (grippers); the JetRover's gripper by default.</param>
+            public CorrectionScorer(int joints, long warmup, byte[]? excluded = null)
             {
                 _before = new JointSample[joints];
                 _after = new JointSample[joints];
                 _warmup = warmup;
+                _excluded = excluded ?? new[] { GripperId };
             }
 
             public void Observe(ICommandAwarePredictor predictor, long now, long sensed, JointSample[] state, List<double> corrections)
@@ -773,7 +1061,7 @@ namespace Teleop.Eval.JointBench
 
                 for (int j = 0; j < afterCount; j++)
                 {
-                    if (_after[j].MotorId == GripperId) continue;
+                    if (Array.IndexOf(_excluded, _after[j].MotorId) >= 0) continue;
                     for (int i = 0; i < beforeCount; i++)
                     {
                         if (_before[i].MotorId == _after[j].MotorId)

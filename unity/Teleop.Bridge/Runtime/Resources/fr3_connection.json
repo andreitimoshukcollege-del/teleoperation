@@ -1,0 +1,23 @@
+{
+  "RemoteHost": "127.0.0.1",
+  "JointRemotePort": 6002,
+  "JointLocalPort": 6012,
+  "CommandRateHz": 48.0,
+  "MaxHorizonMs": 300.0,
+  "PositionScale": 1.0,
+  "MaxStepRadians": 0.1,
+  "GrabEngageBelowCurl": 1.25,
+  "GrabReleaseAboveCurl": 1.55,
+  "PinchOpenMeters": 0.08,
+  "PinchClosedMeters": 0.015,
+  "AllowMotion": true,
+  "JointPredictorActive": "franka-replay",
+  "JointPredictorPresets": [
+    { "Label": "franka-replay", "Predictor": "franka-replay", "Enabled": true, "ModelSpeedRadPerSec": 2.5,
+      "Description": "replays the commands through the FR3's trajectory shaper from the newest reading (docs/adr/0027)" },
+    { "Label": "hold-last", "Predictor": "hold-last", "Enabled": true, "ModelSpeedRadPerSec": 2.5,
+      "Description": "the newest reading, held: no prediction" },
+    { "Label": "learned (sim)", "Predictor": "learned", "Model": "fr3-sim-1", "Enabled": true, "ModelSpeedRadPerSec": 2.5,
+      "Description": "fr3-sim-1, layout v4, trained on the simulator only (docs/adr/0028): SIMULATED, never the robot's" }
+  ]
+}

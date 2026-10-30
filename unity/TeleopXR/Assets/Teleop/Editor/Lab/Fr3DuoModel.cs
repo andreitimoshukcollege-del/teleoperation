@@ -72,7 +72,9 @@ namespace Teleop.XR.Editor
         }
 
         /// <summary>Builds the twin under <paramref name="parent"/>: its root is the URDF's <c>base</c> link.</summary>
-        public static SerialChainArmRig Build(Transform parent, string name, Material links, Material body)
+        /// <param name="visualMeshes">The arms drawn with Franka's visual meshes (the solid twin); false keeps their low-poly collision shapes (the ghosts).</param>
+        /// <param name="fixedBody">Draw the mount and the head; false for a ghost twin, which would only draw them again on top of the solid one.</param>
+        public static SerialChainArmRig Build(Transform parent, string name, Material links, Material body, bool visualMeshes = true, bool fixedBody = true)
         {
             string urdfFile = Path.GetFullPath(UrdfPath);
             if (!File.Exists(urdfFile)) throw new FileNotFoundException($"the FR3 Duo's URDF is not at {urdfFile}");
@@ -102,8 +104,10 @@ namespace Teleop.XR.Editor
                 // The arms are drawn with their visual meshes (the user's choice, docs/adr/0029 amendment); their collision
                 // shapes are built too, under one container, to align the visuals against, and then removed. The mount and
                 // the head keep their collision shapes: decorative, and 395k triangles as visuals.
+                // A ghost twin draws no mount or head (only the frames the arms hang from): the solid twin draws them.
+                bool drawn = armLink || fixedBody;
                 Transform geometryParent = at;
-                if (armLink && visuals[link].Count > 0)
+                if (visualMeshes && armLink && visuals[link].Count > 0)
                 {
                     geometryParent = new GameObject("collision").transform;
                     geometryParent.SetParent(at, false);
@@ -112,7 +116,7 @@ namespace Teleop.XR.Editor
 
                 foreach (UrdfCollision c in collisions[link])
                 {
-                    AddGeometry(geometryParent, c, urdfDir, meshes, armLink ? links : body);
+                    if (drawn) AddGeometry(geometryParent, c, urdfDir, meshes, armLink ? links : body);
                 }
 
                 foreach (UrdfJoint j in joints.Where(j => j.Parent == link))

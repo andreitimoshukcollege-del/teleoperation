@@ -138,3 +138,78 @@ The robot is still simulated (`just fr3-sim-host`, ADR 0027), so nothing here mo
   FR3 has none.
 - **The real FR3 (P8) changes only the host's backend.** The headset's wire, gestures and checks stay
   as they are.
+
+## Amendment (2026-10-30): after the first headset session
+
+The user drove the simulated FR3 Duo on the Galaxy XR and asked for six changes. Each is recorded
+here with what it replaced.
+
+1. **Absolute hands: the robot anchored to the operator's body** (`BodyAnchoredMapping`). This
+   replaces decision 3's relative clutch, which stays as `HandMapping: "relative"`.
+   - **The body frame** is taken from the headset at RECENTRE (a blue button on the bench's
+     front-right) and whenever motion is switched on: its position, and its heading about the
+     vertical only.
+   - **Position, per arm:** a neutral hand maps onto the arm's neutral tool, and every centimetre
+     from there is a centimetre of tool. The neutral hand is 30 cm ahead of the head, 40 cm below it
+     and 20 cm to that hand's side. It is per arm because the FR3 Duo's shoulders are 0.6 m apart,
+     not a person's 0.4 m.
+   - **Orientation, absolute:** a flat hand pointing forward points the gripper forward, with its
+     fingers closing sideways.
+   - **The neutral tool** is 55 cm ahead of and 30 cm above each shoulder. A neutral at the ready
+     pose's tool reached only 6 of 54 nearby targets with the gripper pointing forward; this one
+     reaches 53 of 54 (`BodyAnchoredMappingTests`).
+   - **A grab slides the arm to the hand** over `ApproachSteps` (about a second) through checked
+     poses, so the arm never lunges. An open hand moves nothing, and its marker stays on the arm (the
+     user's call: a preview of where a grab would go read as the arm moving uncommanded).
+
+2. **A double curl locks an arm on, and another unlocks it** (`GrabToggle`, `GrabMode: "toggle"`).
+   This replaces holding the curl, which stays as `"hold"`, because tracking does not read a curled
+   hand as curled at every angle.
+   - **A click** is a curl held 40 ms to 0.6 s, and the second must start within 0.6 s.
+   - **Untracked frames say nothing,** so a dropout cannot fake a double click.
+   - **Losing the hand while locked holds the arm.** On return the arm slides back to the hand.
+
+3. **Collision pairs left to the joint limits** (`fit-capsules`, reason `joint-limited`). The
+   capsules could not keep three pairs per arm apart across the two joints between them:
+   `link2`/`link4`, `link3`/`link5`, and `link5` against both fingers. Checking them blocked the poses
+   the absolute mapping needs. The FR3's own limits are assumed to keep those links apart, as
+   Franka's controller does. **This must be checked on the robot before P8.**
+
+4. **The solid twin draws Franka's visual meshes** (about 510k triangles; the mount and head stay
+   low-poly), replacing decision 6's collision meshes. `Fr3DuoModel` imports the COLLADA files and
+   finds the importer's turn by laying every link over its collision shape: the worst link is 1.1 mm
+   off. The commanded and measured ghosts stay low-poly and draw no mount.
+
+5. **The same lab and the same controls as the JetRover's scene.** These replace the bare floor and
+   table.
+   - **One base class for both robots.** `OperatorBridgeBase` is now under both
+     `JetRoverOperatorBridge`, with no change in behaviour, and `SerialChainOperatorBridge`. The
+     console, network sliders, added-delay slider, power and pause, twin switches, headset guard,
+     status strip and status lamp are wired to it.
+   - **The FR3 scene is built by the JetRover's own code.** It reuses `LabRoom`, `LabDisplay`,
+     `LabLighting` and `XrControlSetup`'s builders.
+     - **Bench and probes:** a deeper bench, with the FR3 at its back so its arms clear the console
+       panel, and light probes over the FR3's workspace.
+     - **Mesh library:** its own generated-mesh library. The JetRover's would delete its robot's
+       meshes, because a build removes what it did not write.
+   - **Three twins and the status lines:** the twin has predicted, commanded and measured arms, as
+     the JetRover's does. The display's caption line carries the arms' state, and the switches carry
+     the link's.
+   - **The FR3 link grew what the console needs:**
+     - live per-predictor scoring (`LiveJointScorer`), with the gripper in percent of its opening;
+     - the added delay;
+     - reports of the disturbance and the delay to the recording (`HeadsetConditions`), so the
+       trainer refuses sessions that were not on the real network, as for the JetRover.
+   - **Off and paused both stop commanding.** The serial-chain host has no torque to keep or drop,
+     so the only difference is the label.
+   - **Not carried over:** the arm-speed slider (the FR3's shaper sets its own speed) and the
+     training course (built around the JetRover's single arm).
+
+6. **The checks.**
+   - **The FR3 scene check** also requires power and pause and the headset guard wired to this
+     bridge, the switches, the console and its sliders wired, and no arm-speed slider.
+   - **The JetRover scene check still passes,** which shows its saved references survived the move to
+     the base class.
+   - **The headless parts are tested:** `BodyAnchoredMappingTests`, `GrabToggleTests`, and the link's
+     delay, scoring and condition reports in `SerialChainJointLinkTests`.
+   - **The end-to-end probe** (`just fr3-teleop-probe`) passes on the new link.

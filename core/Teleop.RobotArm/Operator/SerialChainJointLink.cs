@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using Teleop.Core.Contracts;
+using Teleop.Core.Metrics;
 using Teleop.Core.Prediction;
 using Teleop.Core.Time;
 using Teleop.Core.Types;
@@ -24,6 +25,13 @@ namespace Teleop.RobotArm.Operator
     /// <item>Feeds a <see cref="JointPredictorBank"/> with every frame (once synced, at its reading's time on the
     /// operator clock) and every command sent (shifted by the clock's uncertainty, the estimated uplink delay, as the
     /// JetRover link does). The bank's active preset is the twin's estimate.</item>
+    /// <item>Scores every enabled preset live (<see cref="LiveJointScorer"/>, a rolling 30 s window), for the operator
+    /// console (docs/adr/0029 amendment): the grippers in percent of their opening.</item>
+    /// <item>Holds frames back by <see cref="AddedDelayMs"/> before they become the measured arm and reach the
+    /// predictors, as if the downlink were that slow; ClockSync sees the real arrival.</item>
+    /// <item>Reports what the headset does to its link and view (<see cref="SetHeadsetConditions"/>: a disturbance,
+    /// an added delay) at every change and once a second, as the JetRover link does (docs/adr/0023 amendment), so
+    /// RobotHost writes them into the recording and the trainer refuses sessions that were not on the real network.</item>
     /// </list>
     /// Plain C# behind <see cref="ITransport"/> and <see cref="ITimeAuthority"/>: no sockets, no clock reads of its
     /// own, nothing allocated after construction. A frame from another profile (a motor id this one does not have) is
@@ -32,13 +40,19 @@ namespace Teleop.RobotArm.Operator
     public sealed class SerialChainJointLink
     {
         private const double KeepaliveSeconds = 0.5;
+        private const double ScoreWindowSeconds = 30.0;
         private const int MaxJoints = JointStateCodec.MaxJointsPerMessage;
+        private const int QueueCapacity = 128;
+
+        /// <summary>The scorer's gripper unit: an opening fraction per "radian" of 0.573 reports its error in percent of the opening.</summary>
+        public const float GripperFractionPerRadian = 0.5729578f;
 
         private readonly ITransport _transport;
         private readonly ITimeAuthority _clock;
         private readonly SerialChainProfile _profile;
         private readonly ClockSync _clockSync;
         private readonly JointPredictorBank _bank;
+        private readonly LiveJointScorer _scorer;
         private readonly long _keepaliveIntervalTicks;
         private readonly OperatorClientKind _clientKind;
         private readonly byte[] _buffer = new byte[JointDatagram.MaxBytes];
@@ -46,6 +60,11 @@ namespace Teleop.RobotArm.Operator
         private long _lastHeartbeatTicks = long.MinValue;
         private uint _heartbeatSequence;
         private bool _motionOn, _motionChanged = true;
+        private readonly byte[] _headsetBuffer = new byte[HeadsetConditionsCodec.Size];
+        private HeadsetConditions _headset;
+        private bool _headsetChanged = true;
+        private long _lastHeadsetSentTicks = long.MinValue;
+        private uint _headsetSequence;
         private readonly JointSample[] _received = new JointSample[MaxJoints];
         private readonly JointSample[] _measured = new JointSample[MaxJoints];
         private readonly JointSample[] _predicted = new JointSample[MaxJoints];
@@ -54,6 +73,16 @@ namespace Teleop.RobotArm.Operator
         private long _lastKeepaliveTicks = long.MinValue;
         private long _lastEchoOperatorTicks = long.MinValue;
         private long _lastFrameArrivalTicks = long.MinValue;
+        private long _lastSensedRobotTicks = long.MinValue;
+        private long _lastFreshArrivalTicks = long.MinValue;
+        private double _addedDelayMs;
+
+        // Frames waiting out the added delay: when each is released, its reading's time (operator clock), and its joints.
+        private readonly long[] _queueRelease = new long[QueueCapacity];
+        private readonly long[] _queueSensed = new long[QueueCapacity];
+        private readonly int[] _queueCounts = new int[QueueCapacity];
+        private readonly JointSample[] _queueJoints = new JointSample[QueueCapacity * MaxJoints];
+        private int _queueHead, _queueSize;
 
         public SerialChainJointLink(ITransport transport, ITimeAuthority clock, SerialChainProfile profile, ClockSyncConfig clockSyncConfig,
             IReadOnlyList<JointPredictorPreset> presets, int activePreset, OperatorClientKind clientKind = OperatorClientKind.Headset)
@@ -64,6 +93,8 @@ namespace Teleop.RobotArm.Operator
             if (presets == null || presets.Count == 0) throw new ArgumentException("no joint predictor presets", nameof(presets));
             _clockSync = new ClockSync(clockSyncConfig);
             _bank = JointPredictorBank.Create(presets, activePreset);
+            _scorer = new LiveJointScorer(_bank, (long)(ScoreWindowSeconds * clock.TicksPerSecond), MaxJoints,
+                SerialChainShaping.GripperMotorIds(profile), GripperFractionPerRadian);
             _keepaliveIntervalTicks = (long)(KeepaliveSeconds * clock.TicksPerSecond);
             _clientKind = clientKind;
         }
@@ -81,6 +112,16 @@ namespace Teleop.RobotArm.Operator
         }
 
         /// <summary>
+        /// What the headset does to its link and view now (the console's disturbance, the added delay): sent at the next
+        /// <see cref="Tick"/> when it changed, and once a second whatever it is, off included.
+        /// </summary>
+        public void SetHeadsetConditions(in HeadsetConditions conditions)
+        {
+            if (!_headset.Equals(conditions)) _headsetChanged = true;
+            _headset = conditions;
+        }
+
+        /// <summary>
         /// The predictor config for <paramref name="profile"/>: the robot's trajectory shaper (<c>franka-replay</c>'s
         /// replay), the grippers moved at once on command, and the learned layout (<c>learned</c>, layout v4).
         /// </summary>
@@ -95,6 +136,24 @@ namespace Teleop.RobotArm.Operator
         }
 
         public JointPredictorBank Bank => _bank;
+
+        /// <summary>Every enabled preset's live numbers over the last 30 s (diagnostics, never results).</summary>
+        public LiveJointScorer Scorer => _scorer;
+
+        /// <summary>
+        /// An artificial delay on the robot's reports (ms, 0..2000), for seeing prediction work on a fast LAN: frames are
+        /// held back this long before they become the measured arm and reach the predictors. Commands are not delayed,
+        /// and ClockSync sees the real arrival. Anything recorded with a delay set is not a real-network measurement.
+        /// </summary>
+        public double AddedDelayMs
+        {
+            get => _addedDelayMs;
+            set => _addedDelayMs = double.IsNaN(value) ? 0 : Math.Max(0, Math.Min(2000, value));
+        }
+
+        /// <summary>Seconds since a frame last brought a fresh reading (a sensed stamp later than every earlier one); infinity before one.</summary>
+        public double SecondsSinceFreshReading(long now) =>
+            _lastFreshArrivalTicks == long.MinValue ? double.PositiveInfinity : (now - _lastFreshArrivalTicks) / (double)_clock.TicksPerSecond;
 
         public bool IsSynced => _clockSync.Diagnostics.IsSynced;
 
@@ -129,6 +188,14 @@ namespace Teleop.RobotArm.Operator
                 _motionChanged = false;
             }
 
+            if ((_headsetChanged || _lastHeadsetSentTicks == long.MinValue || now - _lastHeadsetSentTicks >= _clock.TicksPerSecond) &&
+                HeadsetConditionsCodec.TryEncode(_headset, ++_headsetSequence, now, _headsetBuffer, out int headsetBytes))
+            {
+                _transport.Send(_headsetBuffer.AsSpan(0, headsetBytes), now);
+                _headsetChanged = false;
+                _lastHeadsetSentTicks = now;
+            }
+
             while (_transport.TryReceive(now, _buffer, out int count, out long arrival))
             {
                 if (!JointStateCodec.TryDecode(_buffer.AsSpan(0, count), out _, out long robotSend, out long sensed,
@@ -145,17 +212,51 @@ namespace Teleop.RobotArm.Operator
                     _clockSync.AddRoundTrip(echoOperator, _clock.TicksPerSecond, echoRobotRecv, robotSend, robotTps, arrival);
                 }
 
-                Array.Copy(_received, _measured, jointCount);
-                _measuredCount = jointCount;
-                MeasuredOperatorTicks = long.MinValue;
-                if (IsSynced)
+                // A reading newer than any before is fresh. A stamp more than 10 s older is a restarted robot clock.
+                if (sensed != 0 && (_lastSensedRobotTicks == long.MinValue || sensed > _lastSensedRobotTicks || sensed < _lastSensedRobotTicks - 10 * robotTps))
                 {
-                    // No reading yet means the values are the host's beliefs from the moment of sending.
-                    long robotTime = sensed != 0 ? sensed : robotSend;
-                    MeasuredOperatorTicks = _clockSync.ToOperatorTicks(robotTime, robotTps, _clock.TicksPerSecond);
-                    _bank.ObserveState(MeasuredOperatorTicks, _measured.AsSpan(0, jointCount));
+                    _lastSensedRobotTicks = sensed;
+                    _lastFreshArrivalTicks = arrival;
                 }
+
+                // No reading yet means the values are the host's beliefs from the moment of sending.
+                long robotTime = sensed != 0 ? sensed : robotSend;
+                long sensedOperator = IsSynced ? _clockSync.ToOperatorTicks(robotTime, robotTps, _clock.TicksPerSecond) : long.MinValue;
+                Enqueue(arrival + (long)(_addedDelayMs / 1000.0 * _clock.TicksPerSecond), sensedOperator, jointCount);
             }
+
+            // Frames become the measurement, and reach the predictors (scored first), once their added delay is over.
+            while (_queueSize > 0 && _queueRelease[_queueHead] <= now)
+            {
+                int slot = _queueHead;
+                int jointCount = _queueCounts[slot];
+                Array.Copy(_queueJoints, slot * MaxJoints, _measured, 0, jointCount);
+                _measuredCount = jointCount;
+                MeasuredOperatorTicks = _queueSensed[slot];
+                if (MeasuredOperatorTicks != long.MinValue) _scorer.ObserveState(MeasuredOperatorTicks, now, _measured.AsSpan(0, jointCount));
+                _queueHead = (_queueHead + 1) % QueueCapacity;
+                _queueSize--;
+            }
+
+            // Once per tick: the jitter of each preset's estimate for now.
+            _scorer.OnDisplayTick(now, now);
+        }
+
+        private void Enqueue(long releaseTicks, long sensedOperatorTicks, int jointCount)
+        {
+            if (_queueSize == QueueCapacity)
+            {
+                // Full (a delay longer than 2.5 s at 50 Hz): the oldest goes.
+                _queueHead = (_queueHead + 1) % QueueCapacity;
+                _queueSize--;
+            }
+
+            int slot = (_queueHead + _queueSize) % QueueCapacity;
+            _queueRelease[slot] = releaseTicks;
+            _queueSensed[slot] = sensedOperatorTicks;
+            _queueCounts[slot] = jointCount;
+            Array.Copy(_received, 0, _queueJoints, slot * MaxJoints, jointCount);
+            _queueSize++;
         }
 
         /// <summary>A joint command was just sent; the predictors replay it from when it reaches the robot.</summary>

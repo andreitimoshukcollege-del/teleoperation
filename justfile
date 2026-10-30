@@ -131,17 +131,17 @@ unity-check-xr:
 build-galaxy:
     just _unity-batch TeleopXR Teleop.XR.Editor.XrBuild.Run "-buildTarget Android"
 
-# Build unity/TeleopXR's FR3 Duo scene (Fr3DuoXR, docs/adr/0029) from code: hands rig, a table, the FR3 Duo's twin from the vendored URDF's collision meshes, two target markers, the two-hand operator and its motion button. Create-only; rebuild=true replaces it, discarding hand edits. The JetRover scene is untouched. Run unity-setup-xr first; close that project's editor first
+# Build unity/TeleopXR's FR3 Duo scene (Fr3DuoXR, docs/adr/0029) from code: the JetRover's lab (room, camera display, status ring, baked lighting) around a deeper bench, the FR3 Duo at its back (the solid twin from Franka's visual meshes, commanded and measured ghosts), and the JetRover's controls where it has them (power and pause, the twin switches, the operator console with its network sliders, the added-delay slider) plus RECENTRE. Create-only; rebuild=true replaces it, discarding hand edits; bake=true (the default) bakes its lighting, about a minute. The JetRover scene is untouched. Run unity-setup-xr first; close that project's editor first
 [group('fr3 (simulated)')]
-unity-scene-fr3-xr rebuild="false":
-    just _unity-batch TeleopXR Teleop.XR.Editor.XrFr3SceneBuilder.Run {{ if rebuild == "true" { "-teleopRebuildScene" } else { "" } }}
+unity-scene-fr3-xr rebuild="false" bake="true":
+    just _unity-batch TeleopXR Teleop.XR.Editor.XrFr3SceneBuilder.Run "{{ if rebuild == "true" { "-teleopRebuildScene" } else { "" } }} {{ if bake == "true" { "-labBake" } else { "" } }}" {{ if bake == "true" { "true" } else { "false" } }}
 
 # Headless check of unity/TeleopXR's FR3 Duo scene: no missing scripts, wiring intact, motion off at launch, hands only and unsmoothed, the resources parse, and the twin's tool frames within 1 mm / 0.1 deg of Core's FK at 25 seeded poses per arm
 [group('fr3 (simulated)')]
 unity-check-fr3-xr:
     just _unity-batch TeleopXR Teleop.XR.Editor.XrFr3SceneCheck.Run
 
-# Render unity/TeleopXR's FR3 Duo scene from four fixed viewpoints, the twin at Franka's ready pose, to the Windows temp folder (teleop-fr3\\<time>\\, with a report.txt of the twin's triangles): how its meshes are reviewed without a headset. Close that project's editor first
+# Render unity/TeleopXR's FR3 Duo scene from six fixed viewpoints (the operator's, the console, front, left, above, the room), the twin at Franka's ready pose, to the Windows temp folder (teleop-fr3\\<time>\\, with a report.txt of the twin's triangles): how its meshes are reviewed without a headset. Close that project's editor first
 [group('fr3 (simulated)')]
 unity-preview-fr3-xr:
     just _unity-batch TeleopXR Teleop.XR.Editor.Fr3Capture.Run "" true

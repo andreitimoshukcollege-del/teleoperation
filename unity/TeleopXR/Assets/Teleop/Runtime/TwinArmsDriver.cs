@@ -20,7 +20,7 @@ namespace Teleop.XR
     /// The predicted and measured arms stay hidden until the robot's first frame arrives. A thin
     /// adapter: every decision about the robot's motion is the Core predictor's.
     /// </summary>
-    public sealed class TwinArmsDriver : MonoBehaviour
+    public sealed class TwinArmsDriver : MonoBehaviour, ITwinVisibility
     {
         [SerializeField] private JetRoverOperatorBridge bridge;
         [SerializeField] private JetRoverArmRig predictedRig;

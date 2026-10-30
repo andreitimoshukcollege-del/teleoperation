@@ -250,7 +250,11 @@ namespace Teleop.XR.Editor
         /// jitter, loss) behind the predictor row. The slots' labels come from the
         /// config at runtime, so the scene does not change when the presets do. Rebuilt on every run.
         /// </summary>
-        private static void BuildConsole(Scene scene, JetRoverOperatorBridge bridge, XROrigin origin)
+        private static void BuildConsole(Scene scene, JetRoverOperatorBridge bridge, XROrigin origin) =>
+            BuildConsole(scene, bridge, origin, new JetRoverArmConfig().JointPredictorPresets.Select(p => p.Label).ToArray());
+
+        /// <summary>The console for either robot (docs/adr/0029 amendment): <paramref name="labels"/> are the edit-time slot labels.</summary>
+        internal static void BuildConsole(Scene scene, OperatorBridgeBase bridge, XROrigin origin, string[] labels)
         {
             foreach (GameObject old in scene.GetRootGameObjects().Where(r => r.name == ConsoleName).ToList())
             {
@@ -269,16 +273,15 @@ namespace Teleop.XR.Editor
             Material capMaterial = LabMaterials.Unlit("ConsoleCap", Color.white);
             Material plinthMaterial = LabMaterials.Lit("MotionButtonPlinth", new Color(0.06f, 0.062f, 0.068f), 0.6f, 0.5f);
             Color text = new Color(0.82f, 0.86f, 0.9f);
-            // Edit-time labels from the default config, so previews show the console; the runtime
+            // Edit-time labels from the robot's default config, so previews show the console; the runtime
             // replaces them with whatever presets the pushed config has.
-            JointPredictorPresetData[] presets = new JetRoverArmConfig().JointPredictorPresets;
 
             for (int i = 0; i < OperatorConsole.MaxPredictors; i++)
             {
                 float x = left + i * spacing;
                 Renderer select = Cap(root, $"Predictor{i}", new Vector3(x, 0f, predictorZ), 0.032f, capMaterial, plinthMaterial);
                 TextMeshPro label = LabParts.Label("Label", select.transform.parent, new Vector3(0.012f, 0.006f, -0.034f), Quaternion.Euler(60f, 0f, 0f),
-                    i < presets.Length ? presets[i].Label : "", 0.085f, text, new Vector2(0.068f, 0.016f), TextAlignmentOptions.Center, FontStyles.Bold);
+                    i < labels.Length ? labels[i] : "", 0.085f, text, new Vector2(0.068f, 0.016f), TextAlignmentOptions.Center, FontStyles.Bold);
                 Wire(select, label, console, ConsoleButton.Kind.SelectPredictor, i, origin);
                 Renderer toggle = Cap(root, $"PredictorOnOff{i}", new Vector3(x + 0.03f, 0f, predictorZ), 0.016f, capMaterial, plinthMaterial);
                 Wire(toggle, null, console, ConsoleButton.Kind.TogglePredictor, i, origin);
@@ -364,8 +367,19 @@ namespace Teleop.XR.Editor
 
         public const string DelaySliderName = "DelaySlider";
 
+        /// <summary>The added-delay slider alone, where the JetRover has it (docs/adr/0029 amendment: the FR3 Duo's shaper sets its own speed, so it has no speed slider).</summary>
+        internal static void BuildDelaySlider(Scene scene, OperatorBridgeBase bridge, XROrigin origin)
+        {
+            foreach (GameObject root in scene.GetRootGameObjects().Where(r => r.name == DelaySliderName).ToList())
+            {
+                Object.DestroyImmediate(root);
+            }
+
+            BuildSlider(DelaySliderName, -0.07f, SpeedSlider.Setting.AddedDelay, 0f, 400f, 0f, "ADDED DELAY", bridge, origin);
+        }
+
         private static void BuildSlider(string name, float xOffset, SpeedSlider.Setting setting, float min, float max, float start,
-            string caption, JetRoverOperatorBridge bridge, XROrigin origin, Transform parent = null, Vector3? at = null,
+            string caption, OperatorBridgeBase bridge, XROrigin origin, Transform parent = null, Vector3? at = null,
             OperatorConsole console = null, float length = 0.26f)
         {
             float top = LabLayout.BenchTop;
@@ -537,7 +551,22 @@ namespace Teleop.XR.Editor
             array.arraySize = visuals.Length;
             for (int i = 0; i < visuals.Length; i++) array.GetArrayElementAtIndex(i).objectReferenceValue = visuals[i];
 
-            // The switches: a row to the right of the motion button, with the stream's status above.
+            TextMeshPro status = BuildTwinSwitches(scene, driver, origin);
+            so.FindProperty("statusLabel").objectReferenceValue = status;
+            so.ApplyModifiedPropertiesWithoutUndo();
+        }
+
+        /// <summary>
+        /// The twin's three switches (PREDICTED, COMMANDED, MEASURED), a row to the right of the motion button, with the
+        /// stream's status line above them; for either robot's twin (<see cref="ITwinVisibility"/>). Returns the status line.
+        /// </summary>
+        internal static TextMeshPro BuildTwinSwitches(Scene scene, MonoBehaviour twin, XROrigin origin)
+        {
+            foreach (GameObject old in scene.GetRootGameObjects().Where(r => r.name == TwinSwitchesName).ToList())
+            {
+                Object.DestroyImmediate(old);
+            }
+
             float top = LabLayout.BenchTop;
             var switches = new GameObject(TwinSwitchesName).transform;
             switches.position = new Vector3(LabLayout.ArmBase.x - 0.5f + 0.13f, top, LabLayout.BenchNearZ + 0.12f);
@@ -569,7 +598,7 @@ namespace Teleop.XR.Editor
 
                 var toggle = button.gameObject.AddComponent<TwinVisibilityButton>();
                 var toggleSo = new SerializedObject(toggle);
-                toggleSo.FindProperty("arms").objectReferenceValue = driver;
+                toggleSo.FindProperty("arms").objectReferenceValue = twin;
                 toggleSo.FindProperty("arm").enumValueIndex = (int)arms[i].Item1;
                 toggleSo.FindProperty("origin").objectReferenceValue = origin;
                 toggleSo.FindProperty("cap").objectReferenceValue = cap.GetComponent<Renderer>();
@@ -579,10 +608,8 @@ namespace Teleop.XR.Editor
                 toggleSo.ApplyModifiedPropertiesWithoutUndo();
             }
 
-            TextMeshPro status = LabParts.Label("Status", switches, new Vector3(0.09f, 0.075f, 0.05f), Quaternion.Euler(15f, 0f, 0f),
+            return LabParts.Label("Status", switches, new Vector3(0.09f, 0.075f, 0.05f), Quaternion.Euler(15f, 0f, 0f),
                 "NO ROBOT STATE", 0.13f, new Color(0.7f, 0.85f, 1f), new Vector2(0.45f, 0.03f), TextAlignmentOptions.Center);
-            so.FindProperty("statusLabel").objectReferenceValue = status;
-            so.ApplyModifiedPropertiesWithoutUndo();
         }
 
         /// <summary>The twin's colour code (docs/adr/0018): each arm, its switch, and the target share one colour.</summary>
@@ -637,7 +664,7 @@ namespace Teleop.XR.Editor
             return copy.GetComponent<JetRoverArmRig>();
         }
 
-        private static void SetAppearance(GameObject arm, Material material, Renderer keep)
+        internal static void SetAppearance(GameObject arm, Material material, Renderer keep)
         {
             ArmAppearance appearance = arm.GetComponent<ArmAppearance>() ?? arm.AddComponent<ArmAppearance>();
             var so = new SerializedObject(appearance);
@@ -661,7 +688,7 @@ namespace Teleop.XR.Editor
         /// PAUSE button to its left, between it and the speed sliders, labelled in front (docs/adr/0023
         /// decision 5). Both are rebuilt on every run.
         /// </summary>
-        private static void BuildMotionButton(Scene scene, JetRoverOperatorBridge bridge, XROrigin origin)
+        internal static void BuildMotionButton(Scene scene, OperatorBridgeBase bridge, XROrigin origin)
         {
             foreach (GameObject root in scene.GetRootGameObjects().Where(r => r.name == MotionButtonName || r.name == PauseButtonName).ToList())
             {

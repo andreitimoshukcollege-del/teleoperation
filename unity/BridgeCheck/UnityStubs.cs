@@ -43,7 +43,7 @@ namespace UnityEngine
         public T GetComponentInChildren<T>() where T : class => null;
     }
 
-    public sealed class GameObject : Object { public void SetActive(bool value) { } }
+    public sealed class GameObject : Object { public void SetActive(bool value) { } public bool activeSelf => false; }
 
     // SerialChainOperatorBridge.Recentre: the headset's pose.
     public sealed class Camera : Component { public static Camera main => null; }

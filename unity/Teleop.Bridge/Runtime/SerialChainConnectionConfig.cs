@@ -64,6 +64,10 @@ namespace Teleop.Bridge
         /// <summary>False: nothing is ever sent but keepalives; the twin follows the robot and the markers your hands.</summary>
         public bool AllowMotion = true;
 
+        /// <summary>The console's network sliders never go past these (ms of delay plus jitter, % loss), as the JetRover's.</summary>
+        public float DisturbanceMaxDelayMs = 2000f;
+        public float DisturbanceMaxLossPercent = 50f;
+
         public int ClockSyncHistoryCapacity = 32;
         public float ClockSyncSmoothingAlpha = 0.2f;
         public double MaxAcceptableRttMs = 2000.0;

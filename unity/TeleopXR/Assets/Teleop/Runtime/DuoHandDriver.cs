@@ -29,12 +29,15 @@ namespace Teleop.XR
         [SerializeField] private SerialChainOperatorBridge bridge;
         [Tooltip("The XR Origin whose tracking space the hand joints are reported in.")]
         [SerializeField] private XROrigin origin;
-        [Tooltip("Optional: a line of text with each arm's state and gripper, and the link's.")]
+        [Tooltip("Optional: the motion mode and each arm's state and gripper (the display's caption line, as the JetRover's clutch line).")]
         [SerializeField] private TMP_Text statusLabel;
+        [Tooltip("Optional: whether the robot's state is arriving (the line above the twin switches, as the JetRover's).")]
+        [SerializeField] private TMP_Text linkLabel;
 
         private static readonly List<XRHandSubsystem> s_Subsystems = new List<XRHandSubsystem>();
         private XRHandSubsystem _hands;
         private long _shown = long.MinValue;
+        private int _shownLink = int.MinValue;
 
         private void Update()
         {
@@ -99,6 +102,7 @@ namespace Teleop.XR
 
         private void Show()
         {
+            ShowLink();
             if (statusLabel == null)
             {
                 return;
@@ -109,10 +113,8 @@ namespace Teleop.XR
             if (bridge.IsLocked(true) && l == (int)DuoArmState.Idle) l = 4;
             if (bridge.IsLocked(false) && r == (int)DuoArmState.Idle) r = 4;
             int lp = Mathf.RoundToInt(bridge.Opening(true) * 100f), rp = Mathf.RoundToInt(bridge.Opening(false) * 100f);
-            int link = bridge.FramesReceived == 0 ? 0 : bridge.SecondsSinceLastFrame > 1f ? 1 : bridge.IsSynced ? 3 : 2;
-            int motion = !bridge.MotionAllowed ? 2 : bridge.MotionEnabled ? 1 : 0;
-            int rtt = Mathf.Clamp(Mathf.RoundToInt(bridge.RoundTripMilliseconds), 0, 999);
-            long key = ((((l * 5 + r) * 101L + lp) * 101 + rp) * 4 + link) * 3 + motion + rtt * 10_000_000L;
+            int motion = !bridge.MotionAllowed ? 3 : bridge.MotionMode == JetRoverMotionMode.On ? 1 : bridge.MotionMode == JetRoverMotionMode.Paused ? 2 : 0;
+            long key = (((l * 5 + r) * 101L + lp) * 101 + rp) * 4 + motion;
             if (key == _shown)
             {
                 return;
@@ -120,9 +122,39 @@ namespace Teleop.XR
 
             // A new string only when something shown has changed (a few times a second at most).
             _shown = key;
-            string linkText = link == 0 ? "NO ROBOT STATE · just fr3-sim-host" : link == 1 ? "ROBOT STATE STALE" : link == 2 ? "syncing clocks…" : $"live · rtt {rtt} ms · {bridge.ActivePredictor}";
-            string motionText = motion == 2 ? "MOTION LOCKED (config)" : motion == 1 ? "ROBOT ON" : "ROBOT OFF";
-            statusLabel.SetText($"{motionText}  ·  {linkText}\nLEFT {Arm(l)} grip {lp}%   ·   RIGHT {Arm(r)} grip {rp}%");
+            string motionText = motion == 3 ? "MOTION LOCKED (config)" : motion == 1 ? "ROBOT ON" : motion == 2 ? "PAUSED" : "ROBOT OFF";
+            statusLabel.SetText($"{motionText}  ·  LEFT {Arm(l)} grip {lp}%  ·  RIGHT {Arm(r)} grip {rp}%");
+        }
+
+        /// <summary>The line above the twin switches: whether the robot's state is arriving, and a disturbance when one is on.</summary>
+        private void ShowLink()
+        {
+            if (linkLabel == null)
+            {
+                return;
+            }
+
+            // 0 no frames, 1 stale, 2 live (unsynced), 3 live; the RTT and a disturbance change the text too.
+            int state = bridge.FramesReceived == 0 ? 0 : bridge.SecondsSinceLastFrame > 1f ? 1 : bridge.IsSynced ? 3 : 2;
+            int rtt = Mathf.Clamp(Mathf.RoundToInt(bridge.RoundTripMilliseconds), 0, 9999);
+            bool disturbed = bridge.JointDisturbance != null && bridge.JointDisturbance.IsActive;
+            int key = (disturbed ? 100000 : 0) + state * 10000 + rtt;
+            if (key == _shownLink)
+            {
+                return;
+            }
+
+            _shownLink = key;
+            switch (state)
+            {
+                case 0: linkLabel.SetText("NO ROBOT STATE  ·  start just fr3-sim-host"); break;
+                case 1: linkLabel.SetText("ROBOT STATE STALE  ·  no frame for over a second"); break;
+                case 2: linkLabel.SetText("robot state live  ·  syncing clocks…"); break;
+                default:
+                    if (disturbed) linkLabel.SetText("robot state live  ·  rtt {0:0} ms  ·  NETWORK DISTURBED", rtt);
+                    else linkLabel.SetText("robot state live  ·  rtt {0:0} ms", rtt);
+                    break;
+            }
         }
 
         private string Arm(int state) =>

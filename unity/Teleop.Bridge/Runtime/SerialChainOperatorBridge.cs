@@ -193,8 +193,8 @@ namespace Teleop.Bridge
 
         /// <summary>
         /// The absolute mapping: where the hand is (relative to your body) is where the gripper goes, and the palm's
-        /// orientation is the gripper's. While the hand is open its marker shows where a grab would send the arm; a grab
-        /// slides the arm there and then follows the hand.
+        /// orientation is the gripper's. While the hand is open nothing moves and the marker stays on the arm; a grab
+        /// slides the arm to where the hand maps and then follows the hand.
         /// </summary>
         private void SetHandAbsolute(int arm, bool held, bool tracked, Vector3 palmPosition, Quaternion palmRotation, float pinchMeters)
         {
@@ -204,13 +204,14 @@ namespace Teleop.Bridge
                 return;
             }
 
-            RigidTransform target = _mapping.Map(arm, ToWorld(palmPosition, palmRotation));
             if (!held)
             {
+                // An open hand moves nothing, its marker included: the marker stays on the arm until a grab (the user's call).
                 if (_teleop.IsEngaged(arm)) _teleop.Release(arm);
-                _teleop.Preview(arm, target);
                 return;
             }
+
+            RigidTransform target = _mapping.Map(arm, ToWorld(palmPosition, palmRotation));
 
             if (!_teleop.IsEngaged(arm))
             {

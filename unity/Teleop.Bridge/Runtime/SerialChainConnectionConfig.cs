@@ -43,6 +43,16 @@ namespace Teleop.Bridge
         /// <summary>The most a joint's command moves per frame (radians); a larger IK step is shortened.</summary>
         public double MaxStepRadians = 0.1;
 
+        /// <summary>
+        /// <c>toggle</c> (the default, docs/adr/0029 amendment): fold the middle, ring and little fingers twice quickly to
+        /// lock that arm onto the hand, and twice again to unlock it. <c>hold</c>: the arm follows only while the curl is held.
+        /// </summary>
+        public string GrabMode = "toggle";
+
+        /// <summary>The toggle's clicks: a curl held between these two lengths (s), the second starting within the longer of the first's end.</summary>
+        public double MinPressSeconds = 0.04;
+        public double DoubleClickSeconds = 0.6;
+
         /// <summary>The grab (middle, ring and little fingers curled) holds below this curl ratio and lets go above the release one.</summary>
         public float GrabEngageBelowCurl = 1.25f;
         public float GrabReleaseAboveCurl = 1.55f;

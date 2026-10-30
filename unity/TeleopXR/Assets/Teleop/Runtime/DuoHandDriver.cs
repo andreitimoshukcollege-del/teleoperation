@@ -104,12 +104,15 @@ namespace Teleop.XR
                 return;
             }
 
+            // 4: locked by a double curl but holding, because the hand is lost.
             int l = (int)bridge.ArmState(true), r = (int)bridge.ArmState(false);
+            if (bridge.IsLocked(true) && l == (int)DuoArmState.Idle) l = 4;
+            if (bridge.IsLocked(false) && r == (int)DuoArmState.Idle) r = 4;
             int lp = Mathf.RoundToInt(bridge.Opening(true) * 100f), rp = Mathf.RoundToInt(bridge.Opening(false) * 100f);
             int link = bridge.FramesReceived == 0 ? 0 : bridge.SecondsSinceLastFrame > 1f ? 1 : bridge.IsSynced ? 3 : 2;
             int motion = !bridge.MotionAllowed ? 2 : bridge.MotionEnabled ? 1 : 0;
             int rtt = Mathf.Clamp(Mathf.RoundToInt(bridge.RoundTripMilliseconds), 0, 999);
-            long key = ((((l * 4 + r) * 101L + lp) * 101 + rp) * 4 + link) * 3 + motion + rtt * 10_000_000L;
+            long key = ((((l * 5 + r) * 101L + lp) * 101 + rp) * 4 + link) * 3 + motion + rtt * 10_000_000L;
             if (key == _shown)
             {
                 return;
@@ -122,8 +125,9 @@ namespace Teleop.XR
             statusLabel.SetText($"{motionText}  ·  {linkText}\nLEFT {Arm(l)} grip {lp}%   ·   RIGHT {Arm(r)} grip {rp}%");
         }
 
-        private static string Arm(int state) =>
-            state == (int)DuoArmState.Following ? "<color=#33BFFF>HELD</color>"
+        private string Arm(int state) =>
+            state == 4 ? "<color=#33BFFF>LOCKED · hand lost</color>"
+            : state == (int)DuoArmState.Following ? (bridge.UsesToggle ? "<color=#33BFFF>LOCKED</color>" : "<color=#33BFFF>HELD</color>")
             : state == (int)DuoArmState.StoppedShort ? "<color=#FF9919>OUT OF REACH</color>"
             : state == (int)DuoArmState.Blocked ? "<color=#FF3333>BLOCKED</color>"
             : "free";

@@ -68,6 +68,8 @@ namespace Teleop.Bridge
         private GrabGestureConfig _grabConfig;
         private BodyAnchoredMapping _mapping;
         private GrabGesture[] _grab;
+        private GrabToggleConfig _toggleConfig;
+        private GrabToggle[] _toggle;
         private JointTarget[] _targets;
         private readonly byte[] _buffer = new byte[JointDatagram.MaxBytes];
         private long _sendIntervalTicks, _lastSendTicks = long.MinValue;
@@ -139,6 +141,16 @@ namespace Teleop.Bridge
         public float SecondsSinceLastFrame => _link != null ? (float)_link.SecondsSinceLastFrame(_clock.NowTicks) : float.PositiveInfinity;
         public string ActivePredictor => _link != null ? _link.Bank.ActiveLabel : "";
 
+        /// <summary>Whether a double curl locks the arm on (true) or the curl must be held (false).</summary>
+        public bool UsesToggle => _toggleConfig != null;
+
+        /// <summary>Whether this hand's arm is locked on by a double curl (toggle mode); it may still be holding, if the hand is lost.</summary>
+        public bool IsLocked(bool leftHand)
+        {
+            int arm = leftHand ? _left : _right;
+            return _toggle != null && arm >= 0 && _toggle[arm].IsLocked;
+        }
+
         public DuoArmState ArmState(bool leftHand)
         {
             int arm = leftHand ? _left : _right;
@@ -166,6 +178,14 @@ namespace Teleop.Bridge
             int arm = leftHand ? _left : _right;
             if (_teleop == null || arm < 0) return;
             bool held = _grab[arm].Update(_grabConfig, tracked, curlRatio);
+            if (_toggleConfig != null)
+            {
+                // A double curl locks the arm on and another unlocks it; while locked it follows the hand whether or not
+                // tracking reads the hand as curled, and holds while the hand is lost.
+                bool locked = _toggle[arm].Update(_toggleConfig, tracked, held, _clock.NowTicks / (double)_clock.TicksPerSecond);
+                held = locked && tracked;
+            }
+
             if (_mapping != null)
             {
                 SetHandAbsolute(arm, held, tracked, palmPosition, palmRotation, pinchMeters);
@@ -255,6 +275,16 @@ namespace Teleop.Bridge
             _left = _teleop.ArmIndex("left");
             _right = _teleop.ArmIndex("right");
             _grab = new GrabGesture[_teleop.ArmCount];
+            _toggle = new GrabToggle[_teleop.ArmCount];
+            if (_config.GrabMode == "toggle")
+            {
+                _toggleConfig = new GrabToggleConfig { MinPressSeconds = _config.MinPressSeconds, DoubleClickSeconds = _config.DoubleClickSeconds };
+                if (_toggleConfig.Validate() is string badToggle) throw new InvalidOperationException("fr3_connection: " + badToggle);
+            }
+            else if (_config.GrabMode != "hold")
+            {
+                throw new InvalidOperationException($"fr3_connection: GrabMode '{_config.GrabMode}' is neither 'toggle' nor 'hold'");
+            }
             _targets = new JointTarget[_teleop.MotorCount];
 
             _udp = new UdpTransport(_config.JointLocalPort, new IPEndPoint(Resolve(_config.RemoteHost), _config.JointRemotePort),
@@ -277,7 +307,7 @@ namespace Teleop.Bridge
 
             Debug.Log($"[fr3] {_profile.Name}: {_teleop.ArmCount} arms, {_teleop.MotorCount} motors; joint port " +
                       $"{_config.RemoteHost}:{_config.JointRemotePort} from local {_config.JointLocalPort}; twin drawn by '{_link.Bank.ActiveLabel}'; " +
-                      $"hands {_config.HandMapping}");
+                      $"hands {_config.HandMapping}, grab {_config.GrabMode}");
             if (motionEnabledAtStart) Debug.LogWarning("[fr3] motionEnabledAtStart is set; motion goes on with the first full frame");
         }
 
@@ -370,7 +400,11 @@ namespace Teleop.Bridge
 
         private void ResetGrabs()
         {
-            for (int a = 0; a < _grab.Length; a++) _grab[a].Reset();
+            for (int a = 0; a < _grab.Length; a++)
+            {
+                _grab[a].Reset();
+                _toggle[a].Reset();
+            }
         }
 
         private List<JointPredictorPreset> Presets(out int active)

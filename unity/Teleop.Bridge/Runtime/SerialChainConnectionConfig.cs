@@ -1,0 +1,52 @@
+using System;
+
+// C# 9: block-scoped namespace only, like the rest of unity/.
+namespace Teleop.Bridge
+{
+    /// <summary>
+    /// The FR3 Duo operator's settings (docs/adr/0029), loaded by <see cref="ConfigLoader"/> from
+    /// <c>persistentDataPath/fr3_connection.json</c>, else <c>Resources/fr3_connection.json</c>. Plain data, like
+    /// <see cref="JetRoverArmConfig"/>: every value is passed to <c>Teleop.RobotArm</c>'s operator, which decides what
+    /// it means. The robot profile and its collision model are not here: they are generated files
+    /// (<c>Resources/fr3_duo_profile.json</c>, <c>fr3_duo_collision.json</c>), copies a test holds to
+    /// <c>core/RobotProfiles/</c>.
+    /// </summary>
+    [Serializable]
+    public sealed class SerialChainConnectionConfig
+    {
+        /// <summary>The serial-chain RobotHost (<c>just fr3-sim-host</c>): an address or a host name. 127.0.0.1 is the PC itself, which is right for Direct Preview.</summary>
+        public string RemoteHost = "127.0.0.1";
+
+        public int JointRemotePort = 6002;
+        public int JointLocalPort = 6012;
+        public float CommandRateHz = 48f;
+        public double MaxHorizonMs = 300.0;
+
+        /// <summary>Hand motion → tool motion; 1 is one to one.</summary>
+        public double PositionScale = 1.0;
+
+        /// <summary>The most a joint's command moves per frame (radians); a larger IK step is shortened.</summary>
+        public double MaxStepRadians = 0.1;
+
+        /// <summary>The grab (middle, ring and little fingers curled) holds below this curl ratio and lets go above the release one.</summary>
+        public float GrabEngageBelowCurl = 1.25f;
+        public float GrabReleaseAboveCurl = 1.55f;
+
+        /// <summary>The thumb-index gap that is the gripper fully open, and fully closed (m).</summary>
+        public float PinchOpenMeters = 0.08f;
+        public float PinchClosedMeters = 0.015f;
+
+        /// <summary>False: nothing is ever sent but keepalives; the twin follows the robot and the markers your hands.</summary>
+        public bool AllowMotion = true;
+
+        public int ClockSyncHistoryCapacity = 32;
+        public float ClockSyncSmoothingAlpha = 0.2f;
+        public double MaxAcceptableRttMs = 2000.0;
+        public double OutlierRttMultiple = 3.0;
+        public int MinSamplesBeforeTrusted = 3;
+
+        /// <summary>The predictors the twin can draw with; <see cref="JointPredictorActive"/> names the one drawing at launch.</summary>
+        public JointPredictorPresetData[] JointPredictorPresets = new JointPredictorPresetData[0];
+        public string JointPredictorActive = "franka-replay";
+    }
+}

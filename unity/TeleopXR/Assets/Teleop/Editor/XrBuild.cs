@@ -15,13 +15,22 @@ namespace Teleop.XR.Editor
     public static class XrBuild
     {
         public const string ApkPath = "Builds/TeleopXR.apk";
+        public const string Fr3ApkPath = "Builds/TeleopXR-FR3.apk";
 
         /// <summary>Batch entry point: <c>-buildTarget Android -executeMethod Teleop.XR.Editor.XrBuild.Run</c>.</summary>
-        public static void Run()
+        public static void Run() => Build(XrSceneCheck.Check, XrLabSceneBuilder.ScenePath, ApkPath);
+
+        /// <summary>
+        /// The FR3 Duo's APK (docs/adr/0029, <c>just build-galaxy-fr3</c>): its own scene and its own check, beside
+        /// the JetRover's, which it leaves alone. Output: <c>Builds/TeleopXR-FR3.apk</c>.
+        /// </summary>
+        public static void RunFr3() => Build(XrFr3SceneCheck.Check, XrFr3SceneBuilder.ScenePath, Fr3ApkPath);
+
+        private static void Build(Func<System.Collections.Generic.List<string>> check, string scene, string apkPath)
         {
             try
             {
-                var problems = XrSceneCheck.Check();
+                var problems = check();
                 if (problems.Count > 0)
                 {
                     Debug.LogError("[build] scene check failed; not building:\n  - " + string.Join("\n  - ", problems));
@@ -34,11 +43,11 @@ namespace Teleop.XR.Editor
                     EditorUserBuildSettings.SwitchActiveBuildTarget(BuildTargetGroup.Android, BuildTarget.Android);
                 }
 
-                Directory.CreateDirectory(Path.GetDirectoryName(ApkPath));
+                Directory.CreateDirectory(Path.GetDirectoryName(apkPath));
                 BuildReport report = BuildPipeline.BuildPlayer(new BuildPlayerOptions
                 {
-                    scenes = new[] { XrLabSceneBuilder.ScenePath },
-                    locationPathName = ApkPath,
+                    scenes = new[] { scene },
+                    locationPathName = apkPath,
                     target = BuildTarget.Android,
                     options = BuildOptions.None,
                 });
@@ -51,7 +60,7 @@ namespace Teleop.XR.Editor
                     return;
                 }
 
-                Debug.Log($"[build] PASS: {ApkPath} ({new FileInfo(ApkPath).Length / (1024 * 1024)} MB on disk) in {summary.totalTime.TotalSeconds:0} s");
+                Debug.Log($"[build] PASS: {apkPath} ({new FileInfo(apkPath).Length / (1024 * 1024)} MB on disk) in {summary.totalTime.TotalSeconds:0} s");
                 EditorApplication.Exit(0);
             }
             catch (Exception e)

@@ -273,6 +273,62 @@ What the check cannot see:
 - The base rig also carries locomotion providers (move, turn, teleport, climb, grab-move). All of
   them are driven by controller input actions, so with no controllers they do nothing.
 
+## The FR3 Duo scene (`Fr3DuoXR`, docs/adr/0029)
+
+A second scene for the simulated FR3 Duo, beside the JetRover's lab, which it leaves alone. It is built by
+`XrFr3SceneBuilder` (**Teleop → XR → Build FR3 Duo Scene**, or `just unity-scene-fr3-xr`). Like the lab
+builder, it only creates the scene; pass `rebuild=true` to replace it.
+
+**Trying it, from the editor (Direct Preview):**
+
+1. Start the simulated robot on this PC with `just fr3-sim-host`. It listens on the joint port, 6002, and
+   records every session the headset commands into `recordings/fr3-sim/`.
+2. Open `Assets/Scenes/Fr3DuoXR.unity` and press Play. `fr3_connection.json`'s `RemoteHost` is 127.0.0.1,
+   which is this PC, so no push is needed.
+3. For the APK instead: `just build-galaxy-fr3` builds `Builds/TeleopXR-FR3.apk`, and installing it
+   replaces the JetRover app. Then run `just push-galaxy-fr3-config` to point the app at this PC's LAN
+   address.
+
+**Driving it.** Each hand drives its own arm: the left hand the left arm, the right hand the right arm.
+
+- **Grab** by curling your middle, ring and little fingers into the palm. That arm then follows your
+  palm, position and rotation, from where both were when you grabbed. Open the hand, or lose tracking
+  of it, and the arm holds. Grab again anywhere and it carries on from there.
+- **While a hand is grabbed, its thumb-index gap is that arm's gripper:** 8 cm or more is open, 1.5 cm
+  or less is closed. Letting go holds the gripper.
+- **The status line over the robot** shows `HELD`, `OUT OF REACH` (orange) or `BLOCKED` (red) for each
+  arm, with its grip. Blocked means the step would hit the other arm or the body, so the arm stays put.
+  The markers show where each hand is asking the tool to be, in the same colours.
+- **The motion button** is on the table's front-left. Press it with a fingertip. The scene starts
+  `ROBOT OFF`, and while it is off the markers still follow your hands. Switching it on takes the
+  robot's pose as the command first, so nothing jumps.
+- **The twin** shows the active predictor's estimate: `franka-replay` at launch, with `hold-last` and
+  `learned (sim)` also in `fr3_connection.json`. It is built from the URDF's collision meshes, a few
+  hundred triangles per link. The visual CAD is 59 MB.
+
+**Safety settings.** `just unity-check-fr3-xr` fails, and `just build-galaxy-fr3` refuses to build, if
+any of these changes:
+
+| Setting | Value | Because |
+|---|---|---|
+| `SerialChainOperatorBridge.motionEnabledAtStart` | off | nothing moves before someone presses the button |
+| `DuoHandDriver`, `Fr3MotionButton` | exactly one each, wired, enabled | nothing else drives the arms or starts them |
+| Grab engage / release curl | engage below release (1.25 / 1.55) | otherwise the clutch chatters |
+| Gripper pinch range | open > closed | otherwise the gripper is inverted |
+| `PositionScale` / `MaxStepRadians` | (0, 2] / (0, 0.2] | the arm moves no further than twice the hand, and never far between checked poses |
+| Hand smoothing, controllers | inactive, none | as in the JetRover scene |
+| The twin | its tool frames within 1 mm / 0.1° of Core's FK at 25 poses per arm | a twin that is not the robot looks exactly like prediction error |
+
+**Before the headset: `just fr3-teleop-probe`** runs this scene's link and teleop with scripted hands
+against a running `just fr3-sim-host`, over the real socket. It checks the whole path except the
+hands and Unity: sync, the first command, clutch, IK, collision, sending and the twin's prediction.
+`just unity-preview-fr3-xr` renders the scene, with the twin at the ready pose, to `%TEMP%\teleop-fr3\`.
+
+**What the check cannot see:** whether the grab thresholds suit your hands on this headset's
+tracking, whether the clutch's rotation feels right, and the frame time on the device. All three
+thresholds and both limits can be changed without a rebuild, with `just push-galaxy-fr3-config` after
+editing `unity/Teleop.Bridge/Runtime/Resources/fr3_connection.json`.
+
 ## Testing on the Galaxy XR
 
 **Once per headset: developer mode and USB debugging.** The menu names below are from ManageXR's

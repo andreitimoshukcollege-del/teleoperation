@@ -22,8 +22,23 @@ namespace Teleop.Bridge
         public float CommandRateHz = 48f;
         public double MaxHorizonMs = 300.0;
 
+        /// <summary>
+        /// <c>absolute</c> (the default, docs/adr/0029 amendment): the robot anchored to your body, so where your hand is and
+        /// which way your palm faces is where the gripper goes and faces. <c>relative</c>: the clutch, which moves the
+        /// gripper by how far your hand moves from where you grabbed.
+        /// </summary>
+        public string HandMapping = "absolute";
+
         /// <summary>Hand motion → tool motion; 1 is one to one.</summary>
         public double PositionScale = 1.0;
+
+        /// <summary>The absolute mapping's neutral hand, from the headset at recentre (m): forward, to each hand's side, down. There the arms are at their neutral tools.</summary>
+        public double NeutralForward = 0.30;
+        public double NeutralSide = 0.20;
+        public double NeutralDown = 0.40;
+
+        /// <summary>Frames a grab takes to slide the arm to where the hand maps (absolute mapping): about a second at 90 Hz.</summary>
+        public int ApproachSteps = 90;
 
         /// <summary>The most a joint's command moves per frame (radians); a larger IK step is shortened.</summary>
         public double MaxStepRadians = 0.1;

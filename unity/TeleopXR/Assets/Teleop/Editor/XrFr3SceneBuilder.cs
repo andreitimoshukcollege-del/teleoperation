@@ -26,8 +26,8 @@ namespace Teleop.XR.Editor
     /// facing away from the operator so each hand is on the side of its arm.</item>
     /// <item>Two target markers (where each clutch asks its tool to be), coloured by the clutch's state.</item>
     /// <item><c>Fr3Operator</c>: <see cref="SerialChainOperatorBridge"/>, <see cref="DuoHandDriver"/> and
-    /// <see cref="HandTrackingSession"/>; a status line over the robot; and the motion button
-    /// (<see cref="Fr3MotionButton"/>) on the table's front-left corner.</item>
+    /// <see cref="HandTrackingSession"/>; a status line over the robot; and on the table's front-left corner the motion
+    /// button and, beside it, RECENTRE (<see cref="Fr3MotionButton"/>).</item>
     /// </list>
     /// <para>Create-only, like the lab: once built it is edited by hand, so this refuses to overwrite it unless run
     /// headless with <c>-teleopRebuildScene</c>. <c>XrFr3SceneCheck</c> holds what must not change.</para>
@@ -43,6 +43,7 @@ namespace Teleop.XR.Editor
         private static readonly Vector3 TableSize = new Vector3(1.9f, TableHeight, 1.2f);
         private static readonly Vector3 TableCentre = new Vector3(0f, TableHeight / 2f, 1.05f);
         private static readonly Vector3 MotionButtonAt = new Vector3(-0.55f, TableHeight, 0.55f);
+        private static readonly Vector3 RecentreButtonAt = new Vector3(-0.38f, TableHeight, 0.55f);
 
         [MenuItem("Teleop/XR/Build FR3 Duo Scene")]
         public static void BuildFromMenu()
@@ -129,17 +130,18 @@ namespace Teleop.XR.Editor
             SetReference(driver, "statusLabel", Label("Status", null, new Vector3(0f, 1.8f, 1.6f), 0.5f, new Vector2(2.4f, 0.3f)));
             operatorObject.AddComponent<HandTrackingSession>();
 
-            BuildMotionButton(bridge, origin, button);
+            BuildMotionButton(bridge, origin, button, "MotionButton", MotionButtonAt, Fr3MotionButton.Role.Power);
+            BuildMotionButton(bridge, origin, LabMaterials.Lit("Fr3RecentreCap", new Color(0.25f, 0.55f, 1f), 0.5f), "RecentreButton", RecentreButtonAt, Fr3MotionButton.Role.Recentre);
 
             EditorSceneManager.SaveScene(scene, ScenePath);
             AssetDatabase.SaveAssets();
             Debug.Log($"[fr3-scene] built {ScenePath}: {twin.Joints.Length} moving joints on the twin");
         }
 
-        private static void BuildMotionButton(SerialChainOperatorBridge bridge, XROrigin origin, Material capMaterial)
+        private static void BuildMotionButton(SerialChainOperatorBridge bridge, XROrigin origin, Material capMaterial, string name, Vector3 at, Fr3MotionButton.Role role)
         {
-            var root = new GameObject("MotionButton").transform;
-            root.position = MotionButtonAt;
+            var root = new GameObject(name).transform;
+            root.position = at;
             GameObject cap = GameObject.CreatePrimitive(PrimitiveType.Cylinder);
             cap.name = "Cap";
             Object.DestroyImmediate(cap.GetComponent<Collider>());
@@ -155,6 +157,9 @@ namespace Teleop.XR.Editor
             SetReference(switchComponent, "origin", origin);
             SetReference(switchComponent, "cap", cap.GetComponent<Renderer>());
             SetReference(switchComponent, "label", label);
+            var so = new SerializedObject(switchComponent);
+            so.FindProperty("role").enumValueIndex = (int)role;
+            so.ApplyModifiedPropertiesWithoutUndo();
         }
 
         private static Transform Marker(string name, Material material)

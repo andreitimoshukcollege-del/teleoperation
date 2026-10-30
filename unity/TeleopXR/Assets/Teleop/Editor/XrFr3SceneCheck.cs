@@ -120,7 +120,8 @@ namespace Teleop.XR.Editor
             }
 
             Fr3MotionButton[] buttons = Object.FindObjectsByType<Fr3MotionButton>(FindObjectsInactive.Include, FindObjectsSortMode.None);
-            if (buttons.Length != 1) problems.Add($"{buttons.Length} Fr3MotionButton(s): exactly one starts and stops the robot");
+            int power = buttons.Count(b => b.ButtonRole == Fr3MotionButton.Role.Power);
+            if (power != 1) problems.Add($"{power} power button(s): exactly one starts and stops the robot");
             foreach (Fr3MotionButton b in buttons)
             {
                 if (!b.enabled) problems.Add("Fr3MotionButton is disabled");

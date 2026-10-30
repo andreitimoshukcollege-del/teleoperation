@@ -81,8 +81,10 @@ namespace Teleop.XR.Editor
                 Object.DestroyImmediate(cameraObject);
             }
 
-            int triangles = twin.GetComponentsInChildren<MeshFilter>(true).Where(f => f.sharedMesh != null).Sum(f => f.sharedMesh.triangles.Length / 3);
-            File.WriteAllText(Path.Combine(outDir, "report.txt"), $"FR3 Duo twin: {twin.Joints.Length} moving joints, {triangles} mesh triangles (boxes not counted)\n");
+            // Index counts, not the triangle arrays: the visual meshes are imported without Read/Write.
+            long triangles = twin.GetComponentsInChildren<MeshFilter>(true).Where(f => f.sharedMesh != null)
+                .Sum(f => Enumerable.Range(0, f.sharedMesh.subMeshCount).Sum(m => (long)f.sharedMesh.GetIndexCount(m)) / 3);
+            File.WriteAllText(Path.Combine(outDir, "report.txt"), $"FR3 Duo twin: {twin.Joints.Length} moving joints, {triangles} mesh triangles (boxes included)\n");
             return outDir;
         }
     }

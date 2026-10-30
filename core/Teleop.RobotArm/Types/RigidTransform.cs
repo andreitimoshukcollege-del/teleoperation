@@ -103,6 +103,39 @@ namespace Teleop.RobotArm.Types
             z += Z;
         }
 
+        /// <summary>
+        /// The pose a fraction <paramref name="t"/> (0..1) of the way from <paramref name="a"/> to <paramref name="b"/>: the position
+        /// along the straight line, the rotation along the shorter arc (slerp).
+        /// </summary>
+        public static RigidTransform Interpolate(in RigidTransform a, in RigidTransform b, double t)
+        {
+            t = t < 0 ? 0 : t > 1 ? 1 : t;
+            double bw = b.Qw, bx = b.Qx, by = b.Qy, bz = b.Qz;
+            double dot = a.Qw * bw + a.Qx * bx + a.Qy * by + a.Qz * bz;
+            if (dot < 0)
+            {
+                dot = -dot;
+                bw = -bw; bx = -bx; by = -by; bz = -bz;
+            }
+
+            double wa, wb;
+            if (dot > 0.9995)
+            {
+                wa = 1 - t;
+                wb = t;
+            }
+            else
+            {
+                double theta = Math.Acos(dot), sin = Math.Sin(theta);
+                wa = Math.Sin((1 - t) * theta) / sin;
+                wb = Math.Sin(t * theta) / sin;
+            }
+
+            double qw = wa * a.Qw + wb * bw, qx = wa * a.Qx + wb * bx, qy = wa * a.Qy + wb * by, qz = wa * a.Qz + wb * bz;
+            double n = Math.Sqrt(qw * qw + qx * qx + qy * qy + qz * qz);
+            return new RigidTransform(a.X + t * (b.X - a.X), a.Y + t * (b.Y - a.Y), a.Z + t * (b.Z - a.Z), qw / n, qx / n, qy / n, qz / n);
+        }
+
         public override string ToString() => $"[{X:F6}, {Y:F6}, {Z:F6} | {Qw:F6}, {Qx:F6}, {Qy:F6}, {Qz:F6}]";
     }
 }

@@ -21,6 +21,13 @@ namespace Teleop.RobotArm.Operator
         /// </summary>
         public double MaxStepRadians { get; set; } = 0.1;
 
+        /// <summary>
+        /// How many steps an <see cref="SerialChainTeleop.EngageAt"/> takes to slide the target from where the tool is to where the
+        /// hand maps (90: a second at the headset's frame rate). The arm never lunges at the hand, and the solver, warm-started
+        /// from the last command, follows a continuous path instead of jumping across the workspace.
+        /// </summary>
+        public int ApproachSteps { get; set; } = 90;
+
         /// <summary>The solver's settings; its defaults when null.</summary>
         public SerialChainSolverOptions? Solver { get; set; }
 
@@ -28,6 +35,7 @@ namespace Teleop.RobotArm.Operator
         {
             if (!(PositionScale > 0) || double.IsInfinity(PositionScale)) return $"PositionScale must be positive and finite ({PositionScale})";
             if (!(MaxStepRadians > 0) || double.IsInfinity(MaxStepRadians)) return $"MaxStepRadians must be positive and finite ({MaxStepRadians})";
+            if (ApproachSteps < 1) return $"ApproachSteps must be at least 1 ({ApproachSteps})";
             return null;
         }
     }
@@ -81,6 +89,10 @@ namespace Teleop.RobotArm.Operator
         private readonly double[] _candidate;
         private readonly double[] _solution;
         private readonly double[] _opening;
+        private readonly bool[] _absolute;
+        private readonly double[] _approach;
+        private readonly RigidTransform[] _approachFrom;
+        private readonly RigidTransform[] _handTarget;
 
         public SerialChainTeleop(SerialChainProfile profile, SerialChainCollisionModel? collision = null, SerialChainTeleopOptions? options = null)
         {
@@ -100,6 +112,10 @@ namespace Teleop.RobotArm.Operator
             _status = new ChainArmStatus[arms];
             _offset = new int[arms];
             _opening = new double[arms];
+            _absolute = new bool[arms];
+            _approach = new double[arms];
+            _approachFrom = new RigidTransform[arms];
+            _handTarget = new RigidTransform[arms];
             int joints = 0, widest = 0;
             for (int a = 0; a < arms; a++)
             {
@@ -175,6 +191,7 @@ namespace Teleop.RobotArm.Operator
                     _opening[a] = Math.Min(1.0, Math.Max(0.0, g));
                 }
 
+                _absolute[a] = false;
                 _clutches[a].Release();
                 _clutches[a].Hold(Tool(a));
                 _status[a] = ChainArmStatus.Idle;
@@ -196,9 +213,40 @@ namespace Teleop.RobotArm.Operator
         /// <summary>Moves arm <paramref name="arm"/>'s target with the hand; nothing while released. <see cref="Step"/> solves it.</summary>
         public void Follow(int arm, in RigidTransform hand) => _clutches[arm].Follow(hand);
 
+        /// <summary>
+        /// The absolute mapping (docs/adr/0029 amendment): starts arm <paramref name="arm"/> toward <paramref name="target"/>
+        /// (root frame), where the hand maps to, rather than from where the arm is. The arm still gets there no faster
+        /// than <see cref="SerialChainTeleopOptions.MaxStepRadians"/> per step, through checked poses. False before a pose.
+        /// </summary>
+        public bool EngageAt(int arm, in RigidTransform target)
+        {
+            if (!HasPose) return false;
+            RigidTransform tool = Tool(arm);
+            _clutches[arm].Engage(RigidTransform.Identity, tool);
+            _absolute[arm] = true;
+            _approach[arm] = 0;
+            _approachFrom[arm] = tool;
+            _handTarget[arm] = target;
+            _status[arm] = ChainArmStatus.Following;
+            return true;
+        }
+
+        /// <summary>Moves an <see cref="EngageAt"/> arm's target to <paramref name="target"/>; nothing while released.</summary>
+        public void Track(int arm, in RigidTransform target)
+        {
+            if (_clutches[arm].IsEngaged && _absolute[arm]) _handTarget[arm] = target;
+        }
+
+        /// <summary>
+        /// While arm <paramref name="arm"/> is released, shows where it would go: its target (the marker) becomes
+        /// <paramref name="target"/>, and nothing moves. The absolute mapping's preview.
+        /// </summary>
+        public void Preview(int arm, in RigidTransform target) => _clutches[arm].Hold(target);
+
         /// <summary>Stops arm <paramref name="arm"/> following; it holds its command, and its target moves to where the arm is.</summary>
         public void Release(int arm)
         {
+            _absolute[arm] = false;
             _clutches[arm].Release();
             _clutches[arm].Hold(Tool(arm));
             _status[arm] = ChainArmStatus.Idle;
@@ -236,6 +284,13 @@ namespace Teleop.RobotArm.Operator
                 {
                     _status[a] = ChainArmStatus.Idle;
                     continue;
+                }
+
+                if (_absolute[a])
+                {
+                    // Slide toward the hand over ApproachSteps, then follow it.
+                    if (_approach[a] < 1) _approach[a] = Math.Min(1.0, _approach[a] + 1.0 / _options.ApproachSteps);
+                    _clutches[a].Track(_approach[a] < 1 ? RigidTransform.Interpolate(_approachFrom[a], _handTarget[a], _approach[a]) : _handTarget[a]);
                 }
 
                 int n = _profile.Arms[a].Joints.Length;

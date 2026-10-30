@@ -44,12 +44,20 @@ namespace UnityEngine
     }
 
     public sealed class GameObject : Object { public void SetActive(bool value) { } }
+
+    // SerialChainOperatorBridge.Recentre: the headset's pose.
+    public sealed class Camera : Component { public static Camera main => null; }
     public struct Vector3
     {
         public float x, y, z;
         public Vector3(float x, float y, float z) { this.x = x; this.y = y; this.z = z; }
         public static Vector3 operator +(Vector3 a, Vector3 b) => default;
         public static Vector3 operator *(Vector3 a, float d) => default;
+        public static bool operator ==(Vector3 a, Vector3 b) => false;
+        public static bool operator !=(Vector3 a, Vector3 b) => true;
+        public override bool Equals(object o) => false;
+        public override int GetHashCode() => 0;
+        public static Vector3 zero => default;
         public static Vector3 right => default;
         public static Vector3 forward => default;
     }

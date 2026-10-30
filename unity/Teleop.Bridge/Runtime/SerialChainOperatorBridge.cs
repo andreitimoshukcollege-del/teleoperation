@@ -66,6 +66,7 @@ namespace Teleop.Bridge
         private SerialChainJointLink _link;
         private SerialChainTeleop _teleop;
         private GrabGestureConfig _grabConfig;
+        private BodyAnchoredMapping _mapping;
         private GrabGesture[] _grab;
         private JointTarget[] _targets;
         private readonly byte[] _buffer = new byte[JointDatagram.MaxBytes];
@@ -106,12 +107,31 @@ namespace Teleop.Bridge
                 }
 
                 ResetGrabs();
+                // Where you stand when you switch on is where the robot is anchored to you.
+                Recentre();
                 _motion = true;
                 _link.MotionOn = true;
             }
         }
 
         public bool MotionAllowed => _config != null && _config.AllowMotion;
+
+        /// <summary>Whether the hands map absolutely (the robot anchored to your body), rather than through the relative clutch.</summary>
+        public bool IsAbsolute => _mapping != null;
+
+        /// <summary>
+        /// Anchors the robot to your body as you stand now (docs/adr/0029 amendment): the headset's position and heading
+        /// become the body frame, and your neutral hands the arms' neutral tools. Also done when motion is switched on.
+        /// </summary>
+        public void Recentre()
+        {
+            if (_mapping == null) return;
+            Camera eye = Camera.main;
+            if (eye == null) return;
+            Transform head = eye.transform;
+            _mapping.Recentre(ToWorld(head.position, head.rotation));
+            Debug.Log("[fr3] recentred: the robot is anchored to where you stand and face");
+        }
 
         public bool IsSynced => _link != null && _link.IsSynced;
         public long FramesReceived => _link != null ? _link.FramesReceived : 0;
@@ -146,6 +166,12 @@ namespace Teleop.Bridge
             int arm = leftHand ? _left : _right;
             if (_teleop == null || arm < 0) return;
             bool held = _grab[arm].Update(_grabConfig, tracked, curlRatio);
+            if (_mapping != null)
+            {
+                SetHandAbsolute(arm, held, tracked, palmPosition, palmRotation, pinchMeters);
+                return;
+            }
+
             if (!held)
             {
                 if (_teleop.IsEngaged(arm)) _teleop.Release(arm);
@@ -160,6 +186,39 @@ namespace Teleop.Bridge
             else
             {
                 _teleop.Follow(arm, hand);
+            }
+
+            _teleop.SetOpening(arm, GrabGesture.Opening(_grabConfig, pinchMeters));
+        }
+
+        /// <summary>
+        /// The absolute mapping: where the hand is (relative to your body) is where the gripper goes, and the palm's
+        /// orientation is the gripper's. While the hand is open its marker shows where a grab would send the arm; a grab
+        /// slides the arm there and then follows the hand.
+        /// </summary>
+        private void SetHandAbsolute(int arm, bool held, bool tracked, Vector3 palmPosition, Quaternion palmRotation, float pinchMeters)
+        {
+            if (!tracked || !_mapping.IsCentred)
+            {
+                if (_teleop.IsEngaged(arm)) _teleop.Release(arm);
+                return;
+            }
+
+            RigidTransform target = _mapping.Map(arm, ToWorld(palmPosition, palmRotation));
+            if (!held)
+            {
+                if (_teleop.IsEngaged(arm)) _teleop.Release(arm);
+                _teleop.Preview(arm, target);
+                return;
+            }
+
+            if (!_teleop.IsEngaged(arm))
+            {
+                if (!_teleop.EngageAt(arm, target)) return;
+            }
+            else
+            {
+                _teleop.Track(arm, target);
             }
 
             _teleop.SetOpening(arm, GrabGesture.Opening(_grabConfig, pinchMeters));
@@ -180,7 +239,18 @@ namespace Teleop.Bridge
             };
             if (_grabConfig.Validate() is string badGrab) throw new InvalidOperationException("fr3_connection: " + badGrab);
             _teleop = new SerialChainTeleop(_profile, collision,
-                new SerialChainTeleopOptions { PositionScale = _config.PositionScale, MaxStepRadians = _config.MaxStepRadians });
+                new SerialChainTeleopOptions { PositionScale = _config.PositionScale, MaxStepRadians = _config.MaxStepRadians, ApproachSteps = Math.Max(1, _config.ApproachSteps) });
+            if (_config.HandMapping == "absolute")
+            {
+                _mapping = new BodyAnchoredMapping(_profile, BodyAnchoredMapping.NeutralTools(_profile), new BodyMappingOptions
+                {
+                    PositionScale = _config.PositionScale, NeutralForward = _config.NeutralForward, NeutralSide = _config.NeutralSide, NeutralDown = _config.NeutralDown,
+                });
+            }
+            else if (_config.HandMapping != "relative")
+            {
+                throw new InvalidOperationException($"fr3_connection: HandMapping '{_config.HandMapping}' is neither 'absolute' nor 'relative'");
+            }
             _left = _teleop.ArmIndex("left");
             _right = _teleop.ArmIndex("right");
             _grab = new GrabGesture[_teleop.ArmCount];
@@ -205,7 +275,8 @@ namespace Teleop.Bridge
             }
 
             Debug.Log($"[fr3] {_profile.Name}: {_teleop.ArmCount} arms, {_teleop.MotorCount} motors; joint port " +
-                      $"{_config.RemoteHost}:{_config.JointRemotePort} from local {_config.JointLocalPort}; twin drawn by '{_link.Bank.ActiveLabel}'");
+                      $"{_config.RemoteHost}:{_config.JointRemotePort} from local {_config.JointLocalPort}; twin drawn by '{_link.Bank.ActiveLabel}'; " +
+                      $"hands {_config.HandMapping}");
             if (motionEnabledAtStart) Debug.LogWarning("[fr3] motionEnabledAtStart is set; motion goes on with the first full frame");
         }
 
@@ -220,6 +291,8 @@ namespace Teleop.Bridge
             _link.Tick(now);
             if (!_teleop.HasPose && _link.FramesReceived > 0) _teleop.TryTakePose(_link.Measured);
             if (motionEnabledAtStart && !_motion && _teleop.HasPose) MotionEnabled = true;
+            // Anchored at launch too, once the headset is tracking, so the markers show where a grab would go.
+            if (_mapping != null && !_mapping.IsCentred && Camera.main != null && Camera.main.transform.position != Vector3.zero) Recentre();
 
             _teleop.Step();
             if (_motion && _teleop.HasPose && (_lastSendTicks == long.MinValue || now - _lastSendTicks >= _sendIntervalTicks))
@@ -275,6 +348,14 @@ namespace Teleop.Bridge
                 _markerColor.SetColor("_Color", c);
                 r.SetPropertyBlock(_markerColor);
             }
+        }
+
+        /// <summary>A world-space pose in Core's convention, still in the world (the absolute mapping's frame).</summary>
+        private static RigidTransform ToWorld(Vector3 position, Quaternion rotation)
+        {
+            CoreVec p = position.ToCore();
+            CoreQuat q = rotation.ToCore();
+            return new RigidTransform(p.X, p.Y, p.Z, q.W, q.X, q.Y, q.Z);
         }
 
         /// <summary>A world-space hand pose in the robot's root frame, Core's convention.</summary>

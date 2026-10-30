@@ -53,7 +53,17 @@ arrives: the headset, RobotHost, joint-state downlink, recording and the headles
    - **The finger:** a newest-wins gate. A new move starts when the hand is idle and the target is
      more than a deadband from the last move. While a move runs, only the newest target is kept
      pending, and the move runs at a fixed speed.
-   - **The exact arithmetic:** fixed by its tests, in double precision. It is an unregistered helper
+   - **Two refinements the tests forced** (2026-10-28):
+     - as in `limitRate`, the acceleration toward a velocity bound shrinks in proportion to the headroom
+       left. Without that, reaching the velocity limit cut the acceleration in one step, which breaks the
+       jerk limit;
+     - a stop is planned no harder than velocityScale² times the joint's position-based deceleration.
+       Joint 2's (2.585 rad/s²) is below the planned braking, and a reference above the position-based
+       curve ran the arm into a bound that shrinks as it moves, breaking the jerk limit again.
+
+     With both, a randomized test holds every step of all seven joints within their velocity,
+     acceleration, jerk and position limits (20 seeds).
+   - **The exact arithmetic:** in the class doc, fixed by its tests, in double precision. It is an unregistered helper
      like `LearnedJointWindow`, not an algorithm under comparison.
    - **Why Core:** it is pure arithmetic of (targets, time), and two things need the *same* copy:
      - the backend, below, which drives the arm with it;

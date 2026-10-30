@@ -166,7 +166,8 @@ namespace Teleop.Core.Types
             float servoPipelineDelaySeconds = DefaultServoPipelineDelaySeconds,
             bool servoFirstMoveFromMeasured = DefaultServoFirstMoveFromMeasured,
             float servoStepSeconds = DefaultServoStepSeconds,
-            Contracts.IInferenceBackend? model = null)
+            Contracts.IInferenceBackend? model = null,
+            TrajectoryShaperConfig? shaper = null)
         {
             if (!(servoMaxSpeedRadPerSec > 0f)) throw new System.ArgumentOutOfRangeException(nameof(servoMaxSpeedRadPerSec), "the servo speed must be positive (+infinity is no cap)");
             if (!(servoLagSeconds >= 0f) || float.IsInfinity(servoLagSeconds)) throw new System.ArgumentOutOfRangeException(nameof(servoLagSeconds), "the servo lag must be zero or positive, and finite");
@@ -218,6 +219,7 @@ namespace Teleop.Core.Types
             ServoFirstMoveFromMeasured = servoFirstMoveFromMeasured;
             ServoStepSeconds = servoStepSeconds;
             Model = model;
+            Shaper = shaper;
         }
 
         /// <summary>
@@ -226,11 +228,24 @@ namespace Teleop.Core.Types
         /// </summary>
         public Contracts.IInferenceBackend? Model { get; }
 
+        /// <summary>
+        /// The robot's trajectory shaper (docs/adr/0027 decision 1), for <c>franka-replay</c>; null for every
+        /// other predictor. The host builds it from the robot's profile, the same one its backend shapes with.
+        /// </summary>
+        public TrajectoryShaperConfig? Shaper { get; }
+
         /// <summary>This config with <paramref name="model"/> as its <see cref="Model"/>; every other value the same.</summary>
         public JointPredictorConfig WithModel(Contracts.IInferenceBackend? model) =>
             new JointPredictorConfig(MaxJoints, CommandHistoryCapacity, MaxJointSpeedRadPerSec, InstantMotorIds, MaxHorizonTicks,
                 TicksPerSecond, ScaledMotorIds, SpeedScales, RelayMinMoveSeconds, RelayDeadbandRad, RelayMoveSpeedRadPerSec,
                 SensedAgeMotorIds, SensedAgeSeconds, ServoMaxSpeedRadPerSec, ServoLagSeconds, ServoPipelineDelaySeconds,
-                ServoFirstMoveFromMeasured, ServoStepSeconds, model);
+                ServoFirstMoveFromMeasured, ServoStepSeconds, model, Shaper);
+
+        /// <summary>This config with <paramref name="shaper"/> as its <see cref="Shaper"/>; every other value the same.</summary>
+        public JointPredictorConfig WithShaper(TrajectoryShaperConfig? shaper) =>
+            new JointPredictorConfig(MaxJoints, CommandHistoryCapacity, MaxJointSpeedRadPerSec, InstantMotorIds, MaxHorizonTicks,
+                TicksPerSecond, ScaledMotorIds, SpeedScales, RelayMinMoveSeconds, RelayDeadbandRad, RelayMoveSpeedRadPerSec,
+                SensedAgeMotorIds, SensedAgeSeconds, ServoMaxSpeedRadPerSec, ServoLagSeconds, ServoPipelineDelaySeconds,
+                ServoFirstMoveFromMeasured, ServoStepSeconds, Model, shaper);
     }
 }

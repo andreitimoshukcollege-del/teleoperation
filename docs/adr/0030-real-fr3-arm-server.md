@@ -106,7 +106,8 @@ recording, discovery), but it cannot be the 1 kHz loop.
      there. It only moves toward targets RobotHost sent while enabled.
 
 4. **RobotHost runs on the real-time PC, beside the server, over a Unix datagram socket.** The new
-   backend is `FciArmServerClient : IArmBackend` (`--backend arm-server --arm-server-socket <path>`).
+   backend is `ArmServerClient : IArmBackend` (`--backend arm-server --arm-server-socket <path>`). It
+   was called `FciArmServerClient` here until it was built for Isaac first (ADR 0031).
    - **Same machine.** There is no network between the targets and the shaper. A garbage-collection
      pause in RobotHost only delays a target, and the shaper's gap policy absorbs that (ADR 0027
      decision 2).

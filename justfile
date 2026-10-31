@@ -151,7 +151,7 @@ unity-preview-fr3-xr:
 build-galaxy-fr3:
     just _unity-batch TeleopXR Teleop.XR.Editor.XrBuild.RunFr3 "-buildTarget Android"
 
-# Point the Galaxy XR app's FR3 operator at a just fr3-sim-host on this PC (or host=<address>) without a rebuild: pushes fr3_connection.json with RemoteHost replaced. The headset must reach the PC on the LAN; Direct Preview needs none of this (127.0.0.1 is the PC). motion=false sends only keepalives
+# Point the Galaxy XR app's FR3 operator at a just fr3-sim-host on this PC (or at the address given first, e.g. the GPU machine's for just isaac-host) without a rebuild: pushes fr3_connection.json with RemoteHost replaced. The headset must reach the PC on the LAN; Direct Preview needs none of this (127.0.0.1 is the PC). motion=false sends only keepalives
 [group('fr3 (simulated)')]
 push-galaxy-fr3-config host="" motion="true":
     #!/usr/bin/env bash
@@ -162,7 +162,7 @@ push-galaxy-fr3-config host="" motion="true":
         # This PC's own LAN address, as the Windows side sees it (the headset cannot reach WSL's).
         host=$(powershell.exe -NoProfile -Command "(Get-NetIPConfiguration | Where-Object { \$_.IPv4DefaultGateway -ne \$null } | Select-Object -First 1).IPv4Address.IPAddress" | tr -d '\r')
     fi
-    [ -n "$host" ] || { echo "error: no LAN address found for this PC; pass host=<address>" >&2; exit 1; }
+    [ -n "$host" ] || { echo "error: no LAN address found for this PC; pass one: just push-galaxy-fr3-config <address>" >&2; exit 1; }
     tmp=$(mktemp --suffix=.json)
     trap 'rm -f "$tmp"' EXIT
     python3 - "$tmp" "$host" "{{motion}}" <<'PY'
@@ -2816,7 +2816,7 @@ isaac-check seconds="5":
     ssh -o ConnectTimeout=10 "{{gpu_host}}" '[ -x ~/isaacsim/venv/bin/python ] && [ -f ~/isaacsim/VERSION ] || { echo "error: no Isaac Sim in our account there: just isaac-setup" >&2; exit 1; }; echo "GPU: $(nvidia-smi --query-gpu=name,driver_version,memory.used,memory.total --format=csv,noheader)"'
     ssh -o ConnectTimeout=10 "{{gpu_host}}" "~/isaacsim/venv/bin/python - --seconds '{{seconds}}'" < robot/isaac/check.py
 
-# The FR3 Duo in Isaac Sim on the GPU machine, behind a RobotHost there (docs/adr/0031): checks out this commit in ~/teleoperation-isaac (it must be on GitHub), builds RobotHost, starts the Isaac bridge (robot/isaac, log ~/isaacsim/bridge.log) and then RobotHost with --backend arm-server, joint port 6002 and discovery 6005 on that machine, recording headset sessions into ~/isaacsim/recordings. Enter stops both. Refuses while the GPU is busy with someone else's job (over 4 GB) or a training run of ours. Point the headset at it with just push-galaxy-fr3-config host=<GPU machine>; drive it headless with just fr3-teleop-probe remote_host=<GPU machine>
+# The FR3 Duo in Isaac Sim on the GPU machine, behind a RobotHost there (docs/adr/0031): checks out this commit in ~/teleoperation-isaac (it must be on GitHub), builds RobotHost, starts the Isaac bridge (robot/isaac, log ~/isaacsim/bridge.log) and then RobotHost with --backend arm-server, joint port 6002 and discovery 6005 on that machine, recording headset sessions into ~/isaacsim/recordings. Enter stops both. Refuses while the GPU is busy with someone else's job (over 4 GB) or a training run of ours. Point the headset at it with `just push-galaxy-fr3-config <GPU machine's address>`; drive it headless with `just fr3-teleop-probe 0.08 3 franka-replay false <GPU machine's address>` (just takes recipe arguments by position)
 [group('isaac')]
 isaac-host:
     #!/usr/bin/env bash

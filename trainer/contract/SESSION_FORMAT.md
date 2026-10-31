@@ -211,9 +211,11 @@ socket, so the session layout does not change when the robot arrives.
 
 **`session.json`** is version 1's, except:
 - `"format": "teleop-session"` and `"version": 2`;
-- `source` is `robot`, `sim-host` (the simulated arm, `Fr3SimBackend`) or `sim` (the trainer's
-  simulator). A `sim-host` session's operator commands are real; its arm is not, and it is never
-  reported as the robot's;
+- `source` is `robot`, `sim-host` (the simulated arm, `Fr3SimBackend`), `isaac` (the FR3 Duo in
+  Isaac Sim behind RobotHost, docs/adr/0031), `arm-server-sim` (the real arm server's simulate mode,
+  docs/adr/0030) or `sim` (the trainer's simulator). In a `sim-host` or `isaac` session the operator's
+  commands are real and the arm is not, so it is never reported as the robot's. Readers treat any
+  source but `robot` as not the robot;
 - `robotProfile` names the profile (`fr3-duo`), and `robotProfileSha256` hashes `robot-profile.json`;
 - `builds` has no `driver`.
 

@@ -19,6 +19,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import os
+import signal
 import socket
 import sys
 import time
@@ -207,6 +208,9 @@ def main(argv: Optional[List[str]] = None) -> int:
         sock.setblocking(False)
         print(f"[isaac] {description}; {n} DOFs; listening on {args.socket}", flush=True)
 
+        stopping = []  # SIGTERM or SIGINT (just isaac-host stopping): leave the loop, close the socket, say so
+        signal.signal(signal.SIGTERM, lambda *_: stopping.append(True))
+        signal.signal(signal.SIGINT, lambda *_: stopping.append(True))
         client = None
         enabled = True
         sequence = 0
@@ -217,7 +221,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         window_start, window_steps = next_tick, 0
         stop_at = next_tick + int(args.seconds * 1e9) if args.seconds > 0 else None
 
-        while stop_at is None or time.monotonic_ns() < stop_at:
+        while not stopping and (stop_at is None or time.monotonic_ns() < stop_at):
             while True:
                 try:
                     data, sender = sock.recvfrom(wire.MAX_BYTES)

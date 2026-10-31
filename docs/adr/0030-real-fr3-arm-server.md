@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed (2026-10-31), before the hardware. This is phase P8 of the FR3 Duo plan. At the start of the
+Accepted (2026-10-31), before the hardware. This is phase P8 of the FR3 Duo plan. At the start of the
 FR3 work the user chose to design the real robot's side ahead of the robot, so the day it arrives is
 spent testing, not designing.
 

@@ -6,6 +6,7 @@ using System.Threading;
 using Teleop.Core.Types;
 using Teleop.RobotArm.Types;
 using Teleop.RobotArm.Wire;
+using Teleop.RobotHost.ArmServer;
 using Teleop.RobotHost.Backend;
 using Teleop.RobotHost.Net;
 using Teleop.RobotHost.Plant;
@@ -70,8 +71,36 @@ namespace Teleop.RobotHost
 
             var clock = new MonotonicClock();
             TrajectoryShaperConfig shaper = SerialChainShaping.ForProfile(profile);
-            double[] start = StartPose(profile, shaper);
-            var backend = new Fr3SimBackend(shaper, start, clock.TicksPerSecond, a.Sim);
+            var motorIds = new byte[shaper.Count];
+            for (int m = 0; m < shaper.Count; m++) motorIds[m] = shaper[m].MotorId;
+            double[] start;
+            IArmBackend backend;
+            Fr3SimBackend? sim = null;
+            ArmServerClient? server = null;
+            if (a.Backend == "arm-server")
+            {
+                Console.WriteLine($"[backend] waiting up to {a.ArmServerTimeoutSeconds:0} s for the arm server at {a.ArmServerSocket} (from {a.ArmServerClientSocket})");
+                server = new ArmServerClient(new UdsArmServerLink(a.ArmServerSocket!, a.ArmServerClientSocket!), motorIds, clock.TicksPerSecond);
+                if (!server.Connect(() => clock.NowTicks, profile.Name, a.ArmServerTimeoutSeconds, ms => Thread.Sleep(ms), out string why))
+                {
+                    Console.Error.WriteLine($"[backend] {why}");
+                    server.Dispose();
+                    return 1;
+                }
+
+                start = new double[shaper.Count];
+                for (int m = 0; m < start.Length; m++) start[m] = server.Positions[m];
+                if (a.AutoRecord != null) a.AutoRecord.Source = SourceOf(server.Kind);
+                backend = server;
+            }
+            else
+            {
+                start = StartPose(profile, shaper);
+                sim = new Fr3SimBackend(shaper, start, clock.TicksPerSecond, a.Sim);
+                backend = sim;
+            }
+
+            using var serverLifetime = server;
             var plant = new SerialChainPlant(profile, backend, collision, ProfileOrder(profile, shaper, start));
 
             using var transport = new UdpTransport(a.JointLocalPort, null, JointDatagram.MaxBytes, clock, replyToSender: true);
@@ -94,12 +123,10 @@ namespace Teleop.RobotHost
                 Console.WriteLine($"[record] automatic sessions into {root} while the headset commands ({a.AutoRecord})");
             }
 
-            // The truth, from the backend's own steps rather than this loop's, so its spacing is exact.
-            var motorIds = new byte[shaper.Count];
-            for (int m = 0; m < shaper.Count; m++) motorIds[m] = shaper[m].MotorId;
+            // The truth, from the backend's own steps (or the server's reports) rather than this loop's, so its spacing is exact.
             if (recorder != null)
             {
-                backend.TruthEverySteps = TruthEverySteps;
+                if (sim != null) sim.TruthEverySteps = TruthEverySteps;
                 backend.TruthSink = (sensed, tracked) =>
                 {
                     if (recorder.IsActive) recorder.Record(SessionLines.ControllerState(clock.NowTicks, sensed, motorIds, tracked));
@@ -135,9 +162,11 @@ namespace Teleop.RobotHost
             Console.WriteLine(
                 $"Teleop.RobotHost (serial chain): profile {profile.Name} ({a.ProfilePath}), {profile.MotorCount} motors in {profile.Arms.Length} arm(s); " +
                 $"joint port UDP :{a.JointLocalPort}, frames at 50 Hz to whoever sends a keepalive (docs/adr/0027).");
-            Console.WriteLine(
-                $"[backend] SIMULATED arm (Fr3SimBackend): the shaper at {1 / shaper.StepSeconds:0} Hz, tracking {a.Sim.TrackHz:0.##} Hz damping {a.Sim.TrackDamping:0.##}, " +
-                $"reading noise {a.Sim.NoiseRad} rad, seed {a.Sim.Seed}; starting at the ready pose. Nothing real moves.");
+            Console.WriteLine(server != null
+                ? $"[backend] arm server: {server.Kind} ({server.Description}); starting where it reports the arm" +
+                  (server.Kind == ArmServerKind.Fci ? "." : ". Nothing real moves.")
+                : $"[backend] SIMULATED arm (Fr3SimBackend): the shaper at {1 / shaper.StepSeconds:0} Hz, tracking {a.Sim.TrackHz:0.##} Hz damping {a.Sim.TrackDamping:0.##}, " +
+                  $"reading noise {a.Sim.NoiseRad} rad, seed {a.Sim.Seed}; starting at the ready pose. Nothing real moves.");
             Console.WriteLine(collision != null
                 ? $"[collision] {collision.Capsules.Length} capsules, margin {collision.Margin * 1000:0} mm ({a.CollisionModelPath}): a colliding command is refused"
                 : "[collision] no collision model (--collision-model): nothing is checked; a simulated arm only");
@@ -318,7 +347,7 @@ namespace Teleop.RobotHost
                     lastRefusalLog = now;
                 }
 
-                backend.ReadTruth(now, Span<double>.Empty, out _);   // the simulation, and its truth records, up to now
+                backend.Poll(now);   // the simulation, or the server's reports, and their truth records, up to now
 
                 if (streamer.TryBuildFrame(now, readJoints, plant.LastFeedbackTicks, frame, out int frameBytes))
                 {
@@ -344,9 +373,18 @@ namespace Teleop.RobotHost
             sigterm?.Dispose();
             if (raisedTimer) TimeEndPeriod(1);
             Console.WriteLine($"Stopped. {plant.AcceptedCommands} joint command(s) taken, {plant.StaleCommands} stale, {plant.RefusedCommands} refused (collision), {plant.UnknownTargets} target(s) for unknown motors, " +
-                $"{plant.ClampedTargets} clamped; simulated {backend.Steps} ms" + (backend.SkippedTicks > 0 ? $", skipped {backend.SkippedTicks * 1000.0 / clock.TicksPerSecond:0} ms of a stalled loop" : "") + ".");
+                $"{plant.ClampedTargets} clamped; {backend.Summary}.");
             return 0;
         }
+
+        /// <summary>A session's <c>source</c> for what the arm server is (trainer/contract/SESSION_FORMAT.md).</summary>
+        public static string SourceOf(ArmServerKind kind) => kind switch
+        {
+            ArmServerKind.Isaac => "isaac",
+            ArmServerKind.Fci => "robot",
+            ArmServerKind.Simulate => "arm-server-sim",
+            _ => "unknown",
+        };
 
         /// <summary>Every motor's start, in the shaper's order: the ready pose for each arm (mirrored for every arm after the first), hands open.</summary>
         public static double[] StartPose(SerialChainProfile profile, TrajectoryShaperConfig shaper)

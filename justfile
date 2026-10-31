@@ -2816,6 +2816,64 @@ isaac-check seconds="5":
     ssh -o ConnectTimeout=10 "{{gpu_host}}" '[ -x ~/isaacsim/venv/bin/python ] && [ -f ~/isaacsim/VERSION ] || { echo "error: no Isaac Sim in our account there: just isaac-setup" >&2; exit 1; }; echo "GPU: $(nvidia-smi --query-gpu=name,driver_version,memory.used,memory.total --format=csv,noheader)"'
     ssh -o ConnectTimeout=10 "{{gpu_host}}" "~/isaacsim/venv/bin/python - --seconds '{{seconds}}'" < robot/isaac/check.py
 
+# The FR3 Duo in Isaac Sim on the GPU machine, behind a RobotHost there (docs/adr/0031): checks out this commit in ~/teleoperation-isaac (it must be on GitHub), builds RobotHost, starts the Isaac bridge (robot/isaac, log ~/isaacsim/bridge.log) and then RobotHost with --backend arm-server, joint port 6002 and discovery 6005 on that machine, recording headset sessions into ~/isaacsim/recordings. Enter stops both. Refuses while the GPU is busy with someone else's job (over 4 GB) or a training run of ours. Point the headset at it with just push-galaxy-fr3-config host=<GPU machine>; drive it headless with just fr3-teleop-probe remote_host=<GPU machine>
+[group('isaac')]
+isaac-host:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    commit=$(git rev-parse HEAD)
+    git fetch -q origin
+    [ -n "$(git branch -r --contains "$commit" 2>/dev/null)" ] || { echo "error: $commit is not on GitHub: push it first (the GPU machine runs what GitHub has)" >&2; exit 1; }
+    [ -z "$(git status --porcelain -- core robot/isaac)" ] || echo "warning: core/ or robot/isaac has uncommitted changes; the GPU machine runs $commit without them" >&2
+    remote=$(cat <<'REMOTE'
+    set -euo pipefail
+    repo=$HOME/teleoperation-isaac
+    [ -x "$HOME/isaacsim/venv/bin/python" ] || { echo "error: no Isaac Sim in our account here: just isaac-setup" >&2; exit 1; }
+    if [ -f "$HOME/train-sim.pid" ] && kill -0 "$(cat "$HOME/train-sim.pid")" 2>/dev/null; then echo "error: a training run of ours is going (just gpu-status)" >&2; exit 1; fi
+    used=$(nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits | head -1 | tr -d ' ')
+    if [ "${used:-0}" -gt 4096 ]; then
+        echo "error: the GPU has ${used} MiB in use: someone else's job. Not starting." >&2
+        nvidia-smi --query-compute-apps=pid,process_name,used_memory --format=csv >&2 || true
+        exit 1
+    fi
+    [ -d "$repo" ] || git clone -q https://github.com/andreitimoshukcollege-del/teleoperation.git "$repo"
+    cd "$repo" && git fetch -q origin && git checkout -q "$COMMIT" && echo "[isaac-host] repo at $(git log --oneline -1)"
+    dotnet build -c Release -v q -nologo core/Teleop.RobotHost/Teleop.RobotHost.csproj -o "$HOME/isaacsim/robothost" > "$HOME/isaacsim/robothost-build.log" 2>&1 \
+        || { tail -20 "$HOME/isaacsim/robothost-build.log" >&2; exit 1; }
+    sock=/tmp/teleop-isaac-$USER.sock
+    log=$HOME/isaacsim/bridge.log
+    (cd robot/isaac && exec "$HOME/isaacsim/venv/bin/python" -m teleop_isaac.bridge --socket "$sock") > "$log" 2>&1 &
+    bridge=$!
+    trap 'kill $bridge 2>/dev/null; wait $bridge 2>/dev/null || true' EXIT
+    echo "[isaac-host] bridge pid $bridge (log $log); waiting for Isaac to start"
+    for i in $(seq 1 180); do
+        grep -q "listening on" "$log" 2>/dev/null && break
+        kill -0 $bridge 2>/dev/null || { echo "error: the bridge stopped:" >&2; tail -30 "$log" >&2; exit 1; }
+        sleep 1
+    done
+    grep "^\[isaac\]" "$log" || { echo "error: the bridge did not start within 3 min" >&2; tail -30 "$log" >&2; exit 1; }
+    mkdir -p "$HOME/isaacsim/recordings"
+    dotnet "$HOME/isaacsim/robothost/Teleop.RobotHost.dll" --profile-path core/RobotProfiles/fr3-duo.json --joint-local-port 6002 \
+        --backend arm-server --arm-server-socket "$sock" --collision-model core/RobotProfiles/fr3-duo.collision.json \
+        --discovery-port 6005 --record-control "$HOME/isaacsim/recordings/.active" --auto-record --auto-record-root "$HOME/isaacsim/recordings"
+    REMOTE
+    )
+    ssh -o ConnectTimeout=10 "{{gpu_host}}" "COMMIT='$commit' bash -c $(printf '%q' "$remote")"
+
+# The Isaac bridge's plain-Python tests (robot/isaac/tests): its copies of the arm-server wire and the shaper against their golden files, and the profile's motor order. No Isaac needed. Needs `just trainer-setup` (its numpy and pytest)
+[group('isaac')]
+isaac-bridge-test:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    PY=$(just _trainer-python)
+    cd robot/isaac
+    "../../$PY" -m pytest -q -p no:cacheprovider tests
+
+# Rewrite robot/isaac/golden/arm-server-wire-v1.json from RobotHost's codec (after a deliberate change to ArmServerWire.cs); then change robot/isaac/teleop_isaac/wire.py until just isaac-bridge-test passes
+[group('isaac')]
+gen-arm-server-golden:
+    cd core && TELEOP_WRITE_GOLDEN=1 WSLENV="${WSLENV:+$WSLENV:}TELEOP_WRITE_GOLDEN" dotnet test Teleop.RobotHost.Tests --filter "FullyQualifiedName~ArmServerWireTests.TheIsaacBridgesGoldenFile_IsWhatThisCodecWrites"
+
 # How the GPU machine's Isaac Sim stands (docs/adr/0031): the version installed in our account, whether a setup is going and its log's last lines, and the GPU's load (it is shared)
 [group('isaac')]
 isaac-status lines="6":
@@ -2855,10 +2913,11 @@ trainer-test:
     cd trainer
     "../$PY" -m pytest -q -p no:cacheprovider
 
-# Regenerate trainer/contract/golden from Core (after changing SeededRng, the impairments, the profile catalog, ClockSync or relay-replay); then fix the trainer's copies until `just trainer-test` passes
+# Regenerate trainer/contract/golden from Core (after changing SeededRng, the impairments, the profile catalog, ClockSync, relay-replay or the shaper), and the Isaac bridge's copy of the shaper's (robot/isaac/golden); then fix the copies until `just trainer-test` and `just isaac-bridge-test` pass
 [group('trainer')]
 gen-trainer-golden:
     cd core && dotnet run --project Teleop.Eval -- gen-trainer-golden
+    cp trainer/contract/golden/joint-shaper-v1.json robot/isaac/golden/joint-shaper-v1.json
 
 # Pack trainer/ into the one file the GPU machine needs: dist/armpred-<sha>.tar.gz, with a VERSION file naming the commit (and whether the tree was dirty). Unpack it there and run ./setup.sh (trainer/README.md)
 [group('trainer')]

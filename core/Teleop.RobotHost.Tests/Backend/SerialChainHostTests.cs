@@ -197,8 +197,10 @@ namespace Teleop.RobotHost.Tests.Backend
         [Theory]
         [InlineData(new[] { "--joint-local-port", "6002", "--backend", "sim" }, "--profile-path")]
         [InlineData(new[] { "--profile-path", "p.json", "--backend", "sim" }, "--joint-local-port")]
-        [InlineData(new[] { "--profile-path", "p.json", "--joint-local-port", "6002" }, "--backend sim")]
-        [InlineData(new[] { "--profile-path", "p.json", "--joint-local-port", "6002", "--backend", "fci" }, "--backend sim")]
+        [InlineData(new[] { "--profile-path", "p.json", "--joint-local-port", "6002" }, "--backend is sim")]
+        [InlineData(new[] { "--profile-path", "p.json", "--joint-local-port", "6002", "--backend", "fci" }, "--backend is sim")]
+        [InlineData(new[] { "--profile-path", "p.json", "--joint-local-port", "6002", "--backend", "arm-server" }, "--arm-server-socket")]
+        [InlineData(new[] { "--profile-path", "p.json", "--joint-local-port", "6002", "--backend", "arm-server", "--arm-server-socket", "/tmp/s", "--arm-server-timeout", "0" }, "--arm-server-timeout")]
         [InlineData(new[] { "--profile-path", "p.json", "--joint-local-port", "6002", "--backend", "sim", "--relay-socket", "x" }, "unknown argument")]
         [InlineData(new[] { "--profile-path", "p.json", "--joint-local-port", "6002", "--backend", "sim", "--sim-track-hz", "500" }, "tracking frequency")]
         [InlineData(new[] { "--profile-path", "p.json", "--joint-local-port", "6002", "--backend", "sim", "--auto-record" }, "--record-control")]
@@ -224,6 +226,21 @@ namespace Teleop.RobotHost.Tests.Backend
             Assert.Equal("sim-host", a.AutoRecord.Source);
             Assert.Equal("p.json", a.AutoRecord.ProfilePath);
             Assert.Equal(0, a.AutoRecord.DriverWaitSeconds);
+        }
+
+        [Fact]
+        public void TheArmServerBackend_Parses_WithItsOwnSocketBesideTheServers_AndIsaacSessionsSaySo()
+        {
+            SerialChainHostArgs? a = SerialChainHostArgs.TryParse(new[]
+            {
+                "--profile-path", "p.json", "--joint-local-port", "6002", "--backend", "arm-server", "--arm-server-socket", "/tmp/teleop-isaac.sock",
+            }, out string error);
+
+            Assert.True(a != null, error);
+            Assert.Equal("/tmp/teleop-isaac.sock.robothost", a!.ArmServerClientSocket);
+            Assert.Equal(60, a.ArmServerTimeoutSeconds);
+            Assert.Equal("isaac", SerialChainHost.SourceOf(Teleop.RobotHost.ArmServer.ArmServerKind.Isaac));
+            Assert.Equal("robot", SerialChainHost.SourceOf(Teleop.RobotHost.ArmServer.ArmServerKind.Fci));
         }
 
         [Fact]

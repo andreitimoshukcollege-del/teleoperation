@@ -13,8 +13,9 @@ namespace Teleop.RobotHost
     internal sealed class SerialChainHostArgs
     {
         public const string Usage =
-            "Usage: Teleop.RobotHost --profile-path <serial-chain profile> --joint-local-port <port> --backend sim [--collision-model <file>]\n" +
+            "Usage: Teleop.RobotHost --profile-path <serial-chain profile> --joint-local-port <port> --backend sim|arm-server [--collision-model <file>]\n" +
             "  [--sim-track-hz <hz>] [--sim-track-damping <z>] [--sim-noise-rad <rad>] [--sim-seed <n>]\n" +
+            "  [--arm-server-socket <path> [--arm-server-client-socket <path>] [--arm-server-timeout <s>]]\n" +
             "  [--discovery-port <port>] [--uplink-control <path>] [--record-control <path>]\n" +
             "  [--auto-record [--auto-record-root <dir>] [--auto-record-idle-seconds <s>] [--auto-record-max-minutes <min>]\n" +
             "   [--auto-record-headset-seconds <s>] [--build-info-robothost <path>]]\n" +
@@ -22,15 +23,21 @@ namespace Teleop.RobotHost
             "  the joint port only (commands in, joint-state frames out at 50 Hz to whoever sends a keepalive), no relay,\n" +
             "  no Cartesian path, no arm power (docs/adr/0027 decision 5). --backend sim is the simulated arm\n" +
             "  (Fr3SimBackend: Core's trajectory shaper at 1 kHz, then a second-order tracking lag of --sim-track-hz (20)\n" +
-            "  and damping --sim-track-damping (1), readings with --sim-noise-rad (0) of seeded noise). It is the only\n" +
-            "  backend until the real arm's ADR. --collision-model (core/RobotProfiles/<profile>.collision.json, fit-capsules) refuses\n" +
-            "  every command whose pose would collide (docs/adr/0026 amendment). Sessions are teleop-session v2 with source sim-host\n" +
-            "  (trainer/contract/SESSION_FORMAT.md).";
+            "  and damping --sim-track-damping (1), readings with --sim-noise-rad (0) of seeded noise). --backend arm-server is\n" +
+            "  whatever owns the arm on this machine, over the Unix datagram socket --arm-server-socket (docs/adr/0030 decision 4):\n" +
+            "  the Isaac bridge (robot/isaac/, docs/adr/0031), later the real FR3's arm server. RobotHost waits up to\n" +
+            "  --arm-server-timeout (60) s for its welcome and first state, and starts from the pose it reports.\n" +
+            "  --collision-model (core/RobotProfiles/<profile>.collision.json, fit-capsules) refuses every command whose pose would\n" +
+            "  collide (docs/adr/0026 amendment). Sessions are teleop-session v2 with source sim-host, or what the arm server is:\n" +
+            "  isaac, or robot (trainer/contract/SESSION_FORMAT.md).";
 
         public string ProfilePath = "";
         public int JointLocalPort;
         public string Backend = "";
         public readonly Fr3SimOptions Sim = new Fr3SimOptions();
+        public string? ArmServerSocket;
+        public string? ArmServerClientSocket;
+        public double ArmServerTimeoutSeconds = 60;
         public int? DiscoveryPort;
         public string? UplinkControlPath;
         public string? RecordControlPath;
@@ -72,6 +79,9 @@ namespace Teleop.RobotHost
                         if (!ulong.TryParse(value, NumberStyles.None, CultureInfo.InvariantCulture, out ulong seed)) { error = $"--sim-seed '{value}' is not a whole number"; return null; }
                         a.Sim.Seed = seed;
                         break;
+                    case "--arm-server-socket": a.ArmServerSocket = value; break;
+                    case "--arm-server-client-socket": a.ArmServerClientSocket = value; break;
+                    case "--arm-server-timeout": a.ArmServerTimeoutSeconds = Number(value); break;
                     case "--discovery-port": a.DiscoveryPort = Port(value); break;
                     case "--uplink-control": a.UplinkControlPath = value; break;
                     case "--record-control": a.RecordControlPath = value; break;
@@ -89,7 +99,9 @@ namespace Teleop.RobotHost
 
             if (a.ProfilePath.Length == 0) error = "--profile-path is required";
             else if (jointPort is null || jointPort <= 0) error = "--joint-local-port is required (1-65535)";
-            else if (a.Backend != "sim") error = "--backend sim is required: the simulated arm is the only backend until the real arm's ADR (docs/adr/0027)";
+            else if (a.Backend != "sim" && a.Backend != "arm-server") error = "--backend is sim (the simulated arm) or arm-server (docs/adr/0030, 0031)";
+            else if (a.Backend == "arm-server" && string.IsNullOrEmpty(a.ArmServerSocket)) error = "--backend arm-server needs --arm-server-socket";
+            else if (a.Backend == "arm-server" && !(a.ArmServerTimeoutSeconds > 0)) error = "--arm-server-timeout must be a positive number of seconds";
             else if (a.DiscoveryPort.HasValue && a.DiscoveryPort <= 0) error = "--discovery-port must be 1-65535";
             else if (a.Sim.Validate() is string sim) error = "--sim: " + sim;
             else if (autoRecord && a.RecordControlPath == null) error = "--auto-record needs --record-control";
@@ -98,6 +110,7 @@ namespace Teleop.RobotHost
             if (error.Length > 0) return null;
 
             a.JointLocalPort = jointPort!.Value;
+            if (a.Backend == "arm-server" && string.IsNullOrEmpty(a.ArmServerClientSocket)) a.ArmServerClientSocket = a.ArmServerSocket + ".robothost";
             if (autoRecord)
             {
                 auto.ProfilePath = a.ProfilePath;

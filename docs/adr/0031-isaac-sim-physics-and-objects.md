@@ -2,16 +2,16 @@
 
 ## Status
 
-Proposed (2026-10-31). The user asked to connect Isaac Sim, which is installed on the lab's RTX 5090
+Accepted (2026-10-31). The user asked to connect Isaac Sim, which is installed on the lab's RTX 5090
 machine. For the first version they chose **physics, with objects shown in VR**, over arm physics
 alone or a camera feed.
 
 **This is the first part of the system that models the environment.** Root `CLAUDE.md`'s Direction
-paragraph says that is an architecture change, and that the ADR comes first. No code is written
-against this until it is accepted.
+paragraph says that is an architecture change, and that the ADR comes first. It was accepted before
+any bridge code was written.
 
-**It builds on ADR 0030** (proposed, PR #95): the arm-server wire protocol, and RobotHost beside the
-process that owns the arm. If ADR 0030 changes in review, this one follows it.
+**It builds on ADR 0030**, accepted the same day: the arm-server wire protocol, and RobotHost beside
+the process that owns the arm.
 
 ## Context
 

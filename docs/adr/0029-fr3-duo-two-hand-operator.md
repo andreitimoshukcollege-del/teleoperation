@@ -213,3 +213,77 @@ here with what it replaced.
    - **The headless parts are tested:** `BodyAnchoredMappingTests`, `GrabToggleTests`, and the link's
      delay, scoring and condition reports in `SerialChainJointLinkTests`.
    - **The end-to-end probe** (`just fr3-teleop-probe`) passes on the new link.
+
+## Amendment 2 (2026-10-31): the shortest-path step
+
+The user found the IK "glitchy" on the headset. It said it could not reach some poses, and it made
+huge rotations to reach others. They suggested moving the gripper along the shortest path. That is
+now the default, `ChainStepMode.CartesianPath`. The first way stays as `FullSolve`, kept so the two
+can be compared.
+
+**The first way.** Each frame solved all the way to the hand's target. The joints then moved
+straight toward that solution, cut to 0.1 rad per frame. A far target can solve on another branch,
+and the straight joint-space line to it swings the arm.
+
+1. **The step.** Each frame the gripper moves toward its target along the straight line and the
+   smaller rotation. It moves at most `MaxLinearSpeed` (1 m/s) and `MaxAngularSpeed` (3 rad/s), and
+   only that small step is solved, from where the arm is. The speed caps also handle the approach
+   to a newly grabbed hand, which `ApproachSteps` did before.
+
+2. **The spare joint, used every frame before the step is solved.** The FR3 has seven joints for a
+   six-number pose, which leaves one free motion (the elbow's swing). It is steered:
+   - **Off the joint limits.** A joint inside `LimitZone` (0.6 rad) of a limit is pushed back at up
+     to `LimitReliefSpeed` (2 rad/s). Without this, the forearm joint (5) drifted onto its limit
+     as the hand wandered. That joint was at its limit in 1,335 of 1,839 out-of-reach frames, and
+     the other joints swung to make up for it.
+   - **Away from what the arm is closing on.** The arm follows the gradient of its clearance from
+     `AvoidDistance` (4 cm) before the margin.
+
+   The step is then solved from the moved pose, so the gripper stays on its path. A step that would
+   collide is cut to its largest clear part (a half, then a quarter), or not taken.
+
+3. **Joint speed.** No joint moves faster than its velocity limit in the profile (`JointSpeedShare`
+   1). The whole arm's step is cut together, so the gripper keeps its path and only slows. A step
+   longer than 50 ms (`LongestStep`, a stall in the host) counts as 50 ms. The bridge and the probe
+   step by their real frame length, because Direct Preview runs below 90 Hz.
+
+4. **OUT OF REACH is reported only when it is true.** The solver's tolerance is 0.1 mm and 0.06°,
+   and missing it was enough to report `StoppedShort`. 30% of those frames were within 5 mm and 3°
+   of the target. Now an arm reports out of reach only when two things hold:
+   - it is stuck: the solve did not reach half of its small step;
+   - it is more than `ReachTolerance` (1 cm) or `ReachAngleTolerance` (5°) from its target.
+
+**Measured** by `SerialChainTeleopTrackingTests`, on the same synthetic hands for both. Each arm's
+hand wanders about ±15 cm with its palm ±35° in yaw, ±30° in pitch and ±70° in roll. Each run is
+30 s at 90 Hz, over five seeds:
+
+| | blocked | out of reach | off target¹ | false alarm² | error p95 | angle p95 | swing p99 / max | frames > 0.05 rad |
+|---|---|---|---|---|---|---|---|---|
+| FullSolve (before) | 5.3% | 7.4% | 8.2% | 5.0% | 36.6 mm | 16.7° | 0.066 / 0.100 rad | 415 |
+| CartesianPath (now) | 3.2% | 2.7% | 7.2% | 0.2% | 6.7 mm | 8.4° | 0.038 / 0.058 rad | 92 |
+
+¹ More than 1 cm or 5° from the target, whatever the arm reports. ² The arm reports a refusal
+within both.
+
+**Reading the table:**
+- **Swings.** Every remaining frame above 0.05 rad is joint 7 or joint 5 turning at its own
+  velocity limit.
+- **Refusals left.** The blocks are mostly the right upper arm (`link3`) touching the head capsule.
+  The out-of-reach frames are mostly wrist joints 6 and 5 at a limit, which are real.
+
+**Tried and rejected:**
+- **The gripper as the same grasp turned half a turn.** The arm aimed for whichever of the target
+  and its twin was nearer, switching after a 0.35 rad margin.
+  - Mid-motion switches never happened in the benchmark.
+  - The choice made at lock-on hurt. Aiming for the twin left the right arm blocked 1.6–13.9% of the
+    time, against 0–3.4% aiming for the target.
+  - A version that chose the twin by the wrist's remaining twist was worse still: 11.9% off target,
+    against 7.7% for the plain target.
+  - The gripper now follows the hand's roll exactly, and a wrist turned to its limit stops there.
+- **`AvoidDistance` of 6 or 8 cm.** The arm wandered (20% and 87% off target), so 4 cm stays.
+
+**Not done or not verified:**
+- **Label flicker.** The headset's label flickers on blocked spells of one to three frames (15 of
+  30 in the benchmark). This is not addressed.
+- **The headset.** How the change feels there is not yet tested.
+- **The real FR3.** Not yet tested (P8).

@@ -151,6 +151,16 @@ unity-preview-fr3-xr:
 build-galaxy-fr3:
     just _unity-batch TeleopXR Teleop.XR.Editor.XrBuild.RunFr3 "-buildTarget Android"
 
+# Install the FR3 Duo's Galaxy XR APK (just build-galaxy-fr3) on the headset over USB (developer mode and USB debugging on; accept the prompt in the headset). The same app id as the JetRover's: it replaces that app
+[group('fr3 (simulated)')]
+install-galaxy-fr3:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    apk=unity/TeleopXR/Builds/TeleopXR-FR3.apk
+    [ -f "$apk" ] || { echo "error: $apk not found; run just build-galaxy-fr3 first" >&2; exit 1; }
+    just _adb devices -l
+    just _adb install -r "$(wslpath -m "$apk")"
+
 # Point the Galaxy XR app's FR3 operator at a just fr3-sim-host on this PC (or host=<address>) without a rebuild: pushes fr3_connection.json with RemoteHost replaced. The headset must reach the PC on the LAN; Direct Preview needs none of this (127.0.0.1 is the PC). motion=false sends only keepalives
 [group('fr3 (simulated)')]
 push-galaxy-fr3-config host="" motion="true":

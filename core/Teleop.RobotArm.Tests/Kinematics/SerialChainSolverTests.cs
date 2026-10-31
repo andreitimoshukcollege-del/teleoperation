@@ -172,6 +172,39 @@ namespace Teleop.RobotArm.Tests.Kinematics
             SerialChainCollisionModel model = Collision();
             double[] pose = Ready.Concat(Ready.Select((q, j) => j % 2 == 0 ? -q : q)).ToArray();
             AllocationAssert.Zero(() => SerialChainCollision.Check(p, model, pose), iterations: 500);
+            AllocationAssert.Zero(() => SerialChainCollision.Clearance(p, model, pose, 0), iterations: 500);
+        }
+
+        [Fact]
+        public void TheClearance_AgreesWithTheCheck()
+        {
+            SerialChainProfile p = SerialChainKinematicsTests.LoadFr3Duo();
+            SerialChainCollisionModel model = Collision();
+            double[] ready = Ready.Concat(Ready.Select((q, j) => j % 2 == 0 ? -q : q)).ToArray();
+            Assert.True(SerialChainCollision.Clearance(p, model, ready, -1) > model.Margin, "the ready pose is no clearer than the margin");
+
+            // Clear and colliding poses alike: hit exactly when the clearance is under the margin, and the robot's clearance is its nearer arm's.
+            bool sawHit = false, sawClear = false;
+            foreach (double swing in new[] { -0.6, -0.3, 0.0, 0.3, 0.6, 1.0, 1.4 })
+            {
+                foreach (double shoulder in new[] { -0.785, 0.0, 0.6 })
+                {
+                    double[] pose = (double[])ready.Clone();
+                    pose[0] = -swing;
+                    pose[7] = swing;
+                    pose[1] = pose[8] = shoulder;
+                    ChainCollisionHit check = SerialChainCollision.Check(p, model, pose);
+                    if (check.IsHit && check.CapsuleA < 0) continue; // a joint off its range, which the clearance ignores
+                    double either = SerialChainCollision.Clearance(p, model, pose, -1);
+                    bool hit = check.IsHit;
+                    Assert.Equal(hit, either < model.Margin);
+                    Assert.Equal(either, Math.Min(SerialChainCollision.Clearance(p, model, pose, 0), SerialChainCollision.Clearance(p, model, pose, 1)), 12);
+                    sawHit |= hit;
+                    sawClear |= !hit;
+                }
+            }
+
+            Assert.True(sawHit && sawClear, "the poses did not cover both a hit and a clear pose");
         }
 
         [Fact]

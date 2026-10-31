@@ -143,6 +143,44 @@ namespace Teleop.RobotArm.Kinematics
             return new ChainSolveResult(converged, pos, rot, it);
         }
 
+        /// <summary>
+        /// The part of <paramref name="v"/> (a joint motion) that does not move the tool at <paramref name="q"/>, to first order:
+        /// <c>(I − J⁺ J) v</c>, with the solver's damped pseudo-inverse. A redundant arm's spare motion: what the teleop uses to
+        /// bend an elbow away from an obstacle while the gripper stays on its path. Allocation-free.
+        /// </summary>
+        public void ProjectToNullSpace(ReadOnlySpan<double> q, ReadOnlySpan<double> v, Span<double> result)
+        {
+            if (q.Length != _n || v.Length < _n || result.Length < _n) throw new ArgumentException($"the arm has {_n} joints");
+            for (int i = 0; i < _n; i++) _q[i] = q[i];
+            SerialChainKinematics.ComputeFrames(_arm, _q, _frames);
+            Jacobian();
+            for (int r = 0; r < 6; r++)
+            {
+                for (int c = 0; c < 6; c++)
+                {
+                    double sum = 0;
+                    for (int i = 0; i < _n; i++) sum += _j[r * _n + i] * _j[c * _n + i];
+                    _a[r * 6 + c] = sum + (r == c ? _o.Damping * _o.Damping : 0);
+                }
+            }
+
+            Cholesky(_a);
+            for (int r = 0; r < 6; r++)
+            {
+                double sum = 0;
+                for (int i = 0; i < _n; i++) sum += _j[r * _n + i] * v[i];
+                _w[r] = sum;
+            }
+
+            CholeskySolve(_a, _w);
+            for (int i = 0; i < _n; i++)
+            {
+                double sum = 0;
+                for (int r = 0; r < 6; r++) sum += _j[r * _n + i] * _w[r];
+                result[i] = v[i] - sum;
+            }
+        }
+
         /// <summary>The weighted 6-D error into <c>_e</c>: target position minus the TCP's, then the rotation vector taking the TCP's orientation to the target's.</summary>
         private void Error(in RigidTransform target, in RigidTransform tcp, out double pos, out double rot)
         {

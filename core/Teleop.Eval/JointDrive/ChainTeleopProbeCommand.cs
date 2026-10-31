@@ -135,7 +135,7 @@ namespace Teleop.Eval.JointDrive
             long shownCount = 0;
             uint sequence = 0;
             bool blocked = false;
-            long begin = clock.NowTicks, lastSend = long.MinValue, sendInterval = tps / 48;
+            long begin = clock.NowTicks, lastSend = long.MinValue, lastStep = begin, sendInterval = tps / 48;
             while (clock.NowTicks - begin < 4 * tps)
             {
                 long now = clock.NowTicks;
@@ -176,7 +176,8 @@ namespace Teleop.Eval.JointDrive
                 teleop.Follow(left, new RigidTransform(reach * s, 0, 0, turn.Qw, turn.Qx, turn.Qy, turn.Qz));
                 teleop.Follow(right, RigidTransform.Translation(0, 0, reach * s));
                 teleop.SetOpening(left, 1 - s);
-                teleop.Step();
+                teleop.Step((now - lastStep) / (double)tps); // the loop's real period, as the headset steps by its frame's
+                lastStep = now;
                 blocked |= teleop.Status(left) == ChainArmStatus.Blocked || teleop.Status(right) == ChainArmStatus.Blocked;
                 if (lastSend == long.MinValue || now - lastSend >= sendInterval)
                 {

@@ -93,7 +93,7 @@ namespace Teleop.Bridge
         private GrabToggle[] _toggle;
         private JointTarget[] _targets;
         private readonly byte[] _buffer = new byte[JointDatagram.MaxBytes];
-        private long _sendIntervalTicks, _lastSendTicks = long.MinValue;
+        private long _sendIntervalTicks, _lastSendTicks = long.MinValue, _lastStepTicks = long.MinValue;
         private uint _sequence;
         private int _left = -1, _right = -1;
         private JetRoverMotionMode _mode = JetRoverMotionMode.Off;
@@ -429,7 +429,9 @@ namespace Teleop.Bridge
             // Anchored at launch too, once the headset is tracking, so the markers show where a grab would go.
             if (_mapping != null && !_mapping.IsCentred && Camera.main != null && Camera.main.transform.position != Vector3.zero) Recentre();
 
-            _teleop.Step();
+            // A step as long as the frame, so the gripper's speed caps hold at any frame rate (Direct Preview runs below 90 Hz).
+            _teleop.Step(_lastStepTicks == long.MinValue ? 0 : (now - _lastStepTicks) / (double)_clock.TicksPerSecond);
+            _lastStepTicks = now;
             if (_mode == JetRoverMotionMode.On && _teleop.HasPose && (_lastSendTicks == long.MinValue || now - _lastSendTicks >= _sendIntervalTicks))
             {
                 int n = _teleop.WriteTargets(_targets);

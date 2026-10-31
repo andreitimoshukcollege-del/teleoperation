@@ -185,6 +185,55 @@ namespace Teleop.RobotArm.Collision
             return ChainCollisionHit.None;
         }
 
+        /// <summary>
+        /// The smallest surface-to-surface distance (m, negative when overlapping) between checked pairs that involve arm
+        /// <paramref name="arm"/>'s capsules (any arm's for -1), joint ranges ignored: how far that arm is from touching
+        /// anything the model checks. Infinity when no checked pair involves it. Allocation-free, as <see cref="Check"/>.
+        /// </summary>
+        public static double Clearance(SerialChainProfile profile, SerialChainCollisionModel model, ReadOnlySpan<double> pose, int arm)
+        {
+            int n = model.Capsules.Length;
+            if (n > MaxCapsules) throw new ArgumentException($"at most {MaxCapsules} capsules", nameof(model));
+            Span<double> world = stackalloc double[MaxCapsules * 6];
+            Span<RigidTransform> frames = stackalloc RigidTransform[MaxFramesPerArm];
+            int offset = 0;
+            for (int a = 0; a < profile.Arms.Length; a++)
+            {
+                ChainArm chain = profile.Arms[a];
+                if (pose.Length < offset + chain.Joints.Length) throw new ArgumentException("the pose has fewer values than the profile's arms have joints", nameof(pose));
+                SerialChainKinematics.ComputeFrames(chain, pose.Slice(offset, chain.Joints.Length), frames);
+                for (int i = 0; i < n; i++)
+                {
+                    ChainCapsule c = model.Capsules[i];
+                    if (c.Arm != a) continue;
+                    ToWorld(c.Frame < 0 ? chain.Mount : frames[c.Frame], c, world.Slice(i * 6, 6));
+                }
+
+                offset += chain.Joints.Length;
+            }
+
+            for (int i = 0; i < n; i++)
+            {
+                ChainCapsule c = model.Capsules[i];
+                if (c.Arm < 0) ToWorld(RigidTransform.Identity, c, world.Slice(i * 6, 6));
+            }
+
+            double best = double.PositiveInfinity;
+            for (int i = 0; i < n; i++)
+            {
+                for (int k = i + 1; k < n; k++)
+                {
+                    if (!model.IsChecked(i, k)) continue;
+                    if (arm >= 0 && model.Capsules[i].Arm != arm && model.Capsules[k].Arm != arm) continue;
+                    double d = Math.Sqrt(SegmentDistanceSquared(world.Slice(i * 6, 6), world.Slice(k * 6, 6)))
+                        - model.Capsules[i].Radius - model.Capsules[k].Radius;
+                    if (d < best) best = d;
+                }
+            }
+
+            return best;
+        }
+
         private static void ToWorld(in RigidTransform f, in ChainCapsule c, Span<double> out6)
         {
             f.TransformPoint(c.Ax, c.Ay, c.Az, out out6[0], out out6[1], out out6[2]);

@@ -2808,6 +2808,14 @@ isaac-setup version=isaac_version:
     echo "installing Isaac Sim $VERSION into $root on $(hostname) (pid $!); log $root/setup.log: just isaac-status"
     REMOTE
 
+# Isaac Sim's first check on the GPU machine (docs/adr/0031): launches it headless in our account, drops a cube on a ground with PhysX stepped at 1 kHz, and says whether Isaac starts on that GPU, the cube rests where it should, and the physics outruns the wall clock (robot/isaac/check.py, sent from here; nothing is written there but Isaac's own caches). Isaac's first launch builds its caches and takes minutes
+[group('isaac')]
+isaac-check seconds="5":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    ssh -o ConnectTimeout=10 "{{gpu_host}}" '[ -x ~/isaacsim/venv/bin/python ] && [ -f ~/isaacsim/VERSION ] || { echo "error: no Isaac Sim in our account there: just isaac-setup" >&2; exit 1; }; echo "GPU: $(nvidia-smi --query-gpu=name,driver_version,memory.used,memory.total --format=csv,noheader)"'
+    ssh -o ConnectTimeout=10 "{{gpu_host}}" "~/isaacsim/venv/bin/python - --seconds '{{seconds}}'" < robot/isaac/check.py
+
 # How the GPU machine's Isaac Sim stands (docs/adr/0031): the version installed in our account, whether a setup is going and its log's last lines, and the GPU's load (it is shared)
 [group('isaac')]
 isaac-status lines="6":

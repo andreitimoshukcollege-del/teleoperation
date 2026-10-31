@@ -38,7 +38,9 @@ It runs headless, scripted from Python (`SimulationApp`).
   refuses when more than 2 GB of the GPU is in use).
 - **The existing Isaac Sim install is not ours to use.** It is not in our account or in any shared
   directory. The other home directories are private, and only another user is in the `docker` group,
-  so it is probably theirs. The system Python is 3.12 only, and Isaac Sim's pip build needs 3.11.
+  so it is probably theirs.
+- **A pip install fits.** The system Python is 3.12, with `venv`, and that is what Isaac Sim 6.x's
+  pip wheels are built for. NVIDIA's index offers 6.0.0.1 to 6.2.0.0; 6.2.0.0 is the newest.
 
 **What latency research needs from a world.** The object poses the operator sees must cross the same
 network as the robot's state:
@@ -130,9 +132,11 @@ setup: it "completely removes the lag/network disturbance aspect".
      algorithm must be evaluable without a headset.
 
 7. **Recipes.** Everything goes through `just`, from the PC over SSH, as `gpu-train` does:
-   - **`isaac-setup`**, run once: installs the pinned Isaac Sim into our own account, in user space
-     with no `sudo`, on a Python 3.11 it also installs there. NVIDIA's licence must be accepted. The
-     user accepts it; this recipe never accepts it on their behalf.
+   - **`isaac-setup`**, run once: installs the pinned Isaac Sim (`isaac_version`, 6.2.0.0) into our
+     own account, in user space with no `sudo`. It makes a venv of the machine's Python 3.12 at
+     `~/isaacsim/venv` and installs NVIDIA's wheels into it, detached, with a log. NVIDIA's licence is
+     accepted at Isaac's first launch. The user accepts it; no recipe accepts it on their behalf.
+     `isaac-status` shows how the install is going.
    - **`isaac-host`**: starts the bridge and RobotHost on the 5090, streams their logs, and stops both
      on Enter.
      - **GPU sharing:** it refuses when another account's processes hold more than a threshold of
@@ -189,9 +193,8 @@ setup: it "completely removes the lag/network disturbance aspect".
 
 ## Open questions
 
-- **The Isaac Sim version** to pin: the current release supporting the RTX 5090, driver 580 and
-  Ubuntu 24.04. Also how it installs without `sudo`: the pip build on a Python 3.11 in user space, or
-  NVIDIA's standalone package.
+- **Isaac Sim 6.2.0.0 on this machine:** whether it runs on the RTX 5090 with driver 580. The first
+  headless launch will show it.
 - **The FR3 Duo's URDF in Isaac:** whether `fr3_duo` imports cleanly, with the hands' meshes and
   their mimic joints.
 - **Starting values:** drive gains (start from Isaac's own Franka example's), the hand's force limit,

@@ -281,6 +281,8 @@ default_operator_host := env_var_or_default("OPERATOR_HOST", "100.82.140.80")
 robot_mdns_name := env_var_or_default("JETROVER_NAME", "jetrover-sinrg")
 # The GPU machine for trainer runs (just gpu-train, gpu-status, gpu-fetch): an account with this repo's SSH key.
 gpu_host := env_var_or_default("GPU_HOST", "andrei@10.188.58.164")
+# The Isaac Sim installed in our own account on the GPU machine (docs/adr/0031): NVIDIA's pip build, whose 6.x wheels are for Python 3.12, the machine's own.
+isaac_version := env_var_or_default("ISAAC_VERSION", "6.2.0.0")
 # Where ROBOT OFF parks the arm before its torque goes off (docs/adr/0023 decision 5), passed by
 # deploy-robothost as --rest-pose-deg: degrees, motors 1-5 (base yaw, shoulder, elbow, wrist pitch,
 # wrist roll; the gripper is left as it is), in RobotHost's joint angles as `just joint-probe` prints
@@ -2774,6 +2776,47 @@ gpu-fetch run:
     tar xzf "dist/{{run}}.tgz" -C trainer/runs
     echo "trainer/runs/{{run}}:"; ls trainer/runs/{{run}}
     [ -f "trainer/runs/{{run}}/eval/report.md" ] && sed -n '1,20p' "trainer/runs/{{run}}/eval/report.md" || true
+
+# ---- Isaac Sim on the GPU machine (docs/adr/0031) ----
+
+# Install Isaac Sim into our own account on the GPU machine ($GPU_HOST), in user space with no sudo: a venv of the machine's Python 3.12 at ~/isaacsim/venv, and the pinned isaacsim wheels from NVIDIA's index. Detached (tens of GB to download), log ~/isaacsim/setup.log; watch it with just isaac-status. It accepts no licence: Isaac's first launch asks, and the user answers. The Isaac already on that machine is another account's and is left alone
+[group('isaac')]
+isaac-setup version=isaac_version:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    case "{{version}}" in *[!0-9.]*|"") echo "error: version is an isaacsim version, like 6.2.0.0" >&2; exit 1 ;; esac
+    ssh -o ConnectTimeout=10 "{{gpu_host}}" "VERSION='{{version}}' bash -s" <<'REMOTE'
+    set -euo pipefail
+    root=$HOME/isaacsim
+    mkdir -p "$root"
+    if [ -f "$root/setup.pid" ] && kill -0 "$(cat "$root/setup.pid")" 2>/dev/null; then
+        echo "error: an install is already going (pid $(cat "$root/setup.pid")): just isaac-status" >&2; exit 1
+    fi
+    if [ "$(cat "$root/VERSION" 2>/dev/null)" = "$VERSION" ]; then echo "Isaac Sim $VERSION is already installed in $root"; exit 0; fi
+    free=$(df -BG --output=avail "$HOME" | tail -1 | tr -dc 0-9)
+    [ "$free" -ge 80 ] || { echo "error: ${free} GB free in $HOME; the install wants about 80 with pip's cache" >&2; exit 1; }
+    # VERSION is written last, so it names only a finished install.
+    nohup setsid bash -c "set -euo pipefail
+        echo \"started \$(date -Is): isaacsim[all,extscache]==$VERSION\"
+        rm -f '$root/VERSION'
+        [ -x '$root/venv/bin/python' ] || /usr/bin/python3.12 -m venv '$root/venv'
+        '$root/venv/bin/python' -m pip install --upgrade pip
+        '$root/venv/bin/python' -m pip install 'isaacsim[all,extscache]==$VERSION' --extra-index-url https://pypi.nvidia.com
+        echo '$VERSION' > '$root/VERSION'
+        echo \"done \$(date -Is)\"" > "$root/setup.log" 2>&1 < /dev/null &
+    echo $! > "$root/setup.pid"
+    echo "installing Isaac Sim $VERSION into $root on $(hostname) (pid $!); log $root/setup.log: just isaac-status"
+    REMOTE
+
+# How the GPU machine's Isaac Sim stands (docs/adr/0031): the version installed in our account, whether a setup is going and its log's last lines, and the GPU's load (it is shared)
+[group('isaac')]
+isaac-status lines="6":
+    @ssh -o ConnectTimeout=10 "{{gpu_host}}" 'root=$HOME/isaacsim; \
+        echo "installed: $(cat $root/VERSION 2>/dev/null || echo nothing yet)"; \
+        p=$(cat $root/setup.pid 2>/dev/null); \
+        if [ -n "$p" ] && kill -0 "$p" 2>/dev/null; then echo "setup: going (pid $p), venv $(du -sh $root/venv 2>/dev/null | cut -f1)"; else echo "setup: not going"; fi; \
+        nvidia-smi --query-gpu=name,memory.used,memory.total,utilization.gpu --format=csv,noheader; \
+        echo; tail -n {{lines}} $root/setup.log 2>/dev/null || echo "(no setup log)"'
 
 # One-time local trainer venv, CPU only: the contract, the checker, the simulator and the tests (torch=true adds the CPU torch build, for smoke training and export). GPU machines use trainer/setup.sh from the packed file instead
 [group('trainer')]

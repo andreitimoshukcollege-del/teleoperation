@@ -7,6 +7,9 @@ research project ends up with numbers nobody can interpret six months later.
 Conventions used throughout:
 
 - Time in **milliseconds**, on the synced clock (`Time/ClockSync.cs`). Never a local clock.
+  Cross-clock figures from real cross-machine sessions recorded before 2026-10-31 may be a few
+  milliseconds off: the clock-offset estimate was stuck on a coarse grid (docs/adr/0008
+  amendment). The run's `manifest.json` SHA dates it.
 - Distances in **millimetres**, angles in **degrees**, both in ROS convention (right-handed,
   Z-up, X-forward).
 - Every distribution reported as **p50 / p95 / p99**, never a mean alone. These distributions

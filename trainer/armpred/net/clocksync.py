@@ -1,10 +1,14 @@
-"""Copy of ``Time/ClockSync.cs``, including its single-precision smoothing.
+"""Copy of ``Time/ClockSync.cs``.
 
 Two places where C# arithmetic is not Python's, reproduced deliberately:
 - ``long / 2`` truncates toward zero (``trunc_div``), where Python's ``//`` floors;
-- the EWMA is ``(long)(alpha * offsetSample + (1f - alpha) * smoothed)`` with a ``float`` alpha, so
-  C# converts both ``long`` operands to ``float`` and computes in single precision. With offsets of
-  hours to days in ticks that rounding is milliseconds, and the headset has it, so this copy has it.
+- the EWMA is ``smoothed += (long)Math.Round(alpha * (sample - smoothed))``, in double with the
+  config's ``float`` alpha widened to double (0.2f is 0.20000000298...), and ``Math.Round`` rounds
+  half to even, as Python's ``round`` does.
+
+Until 2026-10-31 Core blended the two ``long`` values in single precision, which froze the offset on
+a float32 grid of milliseconds (docs/adr/0008 amendment). Views built with a trainer from before then
+carry that error, as the headsets of the time did.
 """
 
 from __future__ import annotations
@@ -43,11 +47,6 @@ def headset_config(operator_tps: int) -> ClockSyncConfig:
         outlier_rtt_multiple=3.0,
         min_samples_before_trusted=3,
     )
-
-
-def _f32(x: int) -> np.float32:
-    # long -> float as C# converts it (direct int64 -> float32 rounding).
-    return np.array([x], dtype=np.int64).astype(np.float32)[0]
 
 
 class ClockSync:
@@ -102,13 +101,10 @@ class ClockSync:
             self.offset_ticks = offset_sample
             self.uncertainty_ticks = uncertainty_sample
         else:
-            alpha = np.float32(self.config.smoothing_alpha)
-            one_minus = np.float32(1.0) - alpha
-            with np.errstate(over="ignore"):
-                offset = alpha * _f32(offset_sample) + one_minus * _f32(self.offset_ticks)
-                uncertainty = alpha * _f32(uncertainty_sample) + one_minus * _f32(self.uncertainty_ticks)
-            self.offset_ticks = int(offset)  # (long) of a float: truncation toward zero
-            self.uncertainty_ticks = int(uncertainty)
+            alpha = float(np.float32(self.config.smoothing_alpha))  # C#: double alpha = <float>
+            # A long times a double: the difference is far below 2^53, so it widens exactly, as in C#.
+            self.offset_ticks += round_half_even(alpha * (offset_sample - self.offset_ticks))
+            self.uncertainty_ticks += round_half_even(alpha * (uncertainty_sample - self.uncertainty_ticks))
         self.last_rtt_ticks = rtt
         self.accepted += 1
         return True

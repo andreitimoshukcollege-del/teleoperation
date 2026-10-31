@@ -19,7 +19,10 @@ that project is a host and is allowed to touch a real clock.
 Estimates the offset between the operator's and the robot's `ITimeAuthority` domains from a
 round trip's four timestamps (operator-send, robot-recv, robot-send, operator-recv), via
 Cristian's algorithm: `offset = ((t0-t1')+(t3-t2'))/2`, `uncertainty ≈ rtt/2`. Smoothed across
-samples with an EWMA (`ClockSyncConfig.SmoothingAlpha`, same shape as `PredictorConfig`'s) plus
+samples with an EWMA (`ClockSyncConfig.SmoothingAlpha`, same shape as `PredictorConfig`'s), in double
+on the difference, `offset += round(alpha * (sample - offset))`. Never blend the offset itself in
+`float`: it is hours to days of ticks, and single precision froze it on a millisecond grid until
+2026-10-31 (ADR 0008 amendment). The EWMA comes with
 an NTP-style min-RTT outlier filter — a sample far slower than the best RTT seen so far is
 rejected rather than blended in, since a slow round trip bounds the offset less tightly.
 

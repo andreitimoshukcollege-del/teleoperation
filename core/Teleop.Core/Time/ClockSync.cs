@@ -62,7 +62,10 @@ namespace Teleop.Core.Time
     ///
     /// <b>Smoothing and outlier rejection.</b> A single round trip's offset is noisy. Accepted
     /// samples are folded into an EWMA (<see cref="ClockSyncConfig.SmoothingAlpha"/>, same shape
-    /// as <see cref="PredictorConfig.SmoothingAlpha"/>). Before that, a round trip is rejected —
+    /// as <see cref="PredictorConfig.SmoothingAlpha"/>), computed in double on the difference
+    /// between sample and estimate, <c>offset += round(alpha * (sample - offset))</c>, so its
+    /// precision does not depend on how large the offset is: it settles within <c>0.5 / alpha</c>
+    /// ticks of a steady sample (2.5 ticks at 0.2), at any offset. Before that, a round trip is rejected —
     /// counted, never silently dropped — if its RTT is negative (a physically invalid
     /// measurement), exceeds <see cref="ClockSyncConfig.MaxAcceptableRttTicks"/> (an absolute
     /// ceiling), or exceeds <see cref="ClockSyncConfig.OutlierRttMultiple"/> times the best RTT
@@ -172,9 +175,13 @@ namespace Teleop.Core.Time
             }
             else
             {
-                float alpha = _config.SmoothingAlpha;
-                _smoothedOffsetTicks = (long)(alpha * offsetSample + (1f - alpha) * _smoothedOffsetTicks);
-                _smoothedUncertaintyTicks = (long)(alpha * uncertaintySample + (1f - alpha) * _smoothedUncertaintyTicks);
+                // The EWMA moves the estimate by alpha of its difference from the sample, in double. The
+                // offset is the gap between two machines' boot times, hours to days of ticks; blending the
+                // two longs themselves in single precision, as this did until 2026-10-31, snapped the offset
+                // onto a float32 grid of 4-17 ms steps and held it there (docs/adr/0008 amendment).
+                double alpha = _config.SmoothingAlpha;
+                _smoothedOffsetTicks += (long)Math.Round(alpha * (offsetSample - _smoothedOffsetTicks));
+                _smoothedUncertaintyTicks += (long)Math.Round(alpha * (uncertaintySample - _smoothedUncertaintyTicks));
             }
 
             _lastRttTicks = rtt;

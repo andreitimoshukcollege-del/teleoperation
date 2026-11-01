@@ -199,6 +199,101 @@ namespace Teleop.RobotArm.Tests.Operator
         }
 
         [Fact]
+        public void AnAddedDelay_HoldsFramesBack_ButNotTheClock()
+        {
+            SerialChainProfile profile = SerialChainKinematicsTests.LoadFr3Duo();
+            var socket = new FakeSocket();
+            var clock = new ManualClock(Tps);
+            SerialChainJointLink link = Link(profile, socket, clock);
+            link.AddedDelayMs = 200;
+            float[] values = Enumerable.Repeat(0.25f, 16).ToArray();
+            uint sequence = 0;
+            for (int ms = 0; ms <= 2000; ms += 10)
+            {
+                clock.SetTicks(ms * Tps / 1000);
+                link.Tick(clock.NowTicks);
+                if (ms % 500 == 0) Answer(profile, socket, clock.NowTicks, values, ++sequence);
+            }
+
+            Assert.True(link.IsSynced); // the clock syncs on real arrivals
+
+            // A new frame (other values) arrives 4 ms after it is answered: nothing changes for 200 ms, then it is the measurement.
+            float[] next = Enumerable.Repeat(0.5f, 16).ToArray();
+            long start = clock.NowTicks;
+            Answer(profile, socket, start, next, ++sequence);
+            var inOrder = new float[16];
+            for (int ms = 0; ms <= 300; ms += 5)
+            {
+                clock.SetTicks(start + ms * Tps / 1000);
+                link.Tick(clock.NowTicks);
+                link.ToProfileOrder(link.Measured, inOrder);
+                if (ms < 200) Assert.Equal(0.25f, inOrder[0]);
+                else if (ms >= 210) Assert.Equal(0.5f, inOrder[0]);
+            }
+
+            link.AddedDelayMs = 5000;
+            Assert.Equal(2000, link.AddedDelayMs); // clamped to 2 s
+            link.AddedDelayMs = double.NaN;
+            Assert.Equal(0, link.AddedDelayMs);
+        }
+
+        [Fact]
+        public void EveryEnabledPreset_IsScoredLive_AndFreshReadingsAreTracked()
+        {
+            SerialChainProfile profile = SerialChainKinematicsTests.LoadFr3Duo();
+            var socket = new FakeSocket();
+            var clock = new ManualClock(Tps);
+            SerialChainJointLink link = Link(profile, socket, clock);
+            Assert.True(double.IsPositiveInfinity(link.SecondsSinceFreshReading(0)));
+            uint sequence = 0;
+            var values = new float[16];
+            for (int ms = 0; ms <= 6000; ms += 10)
+            {
+                clock.SetTicks(ms * Tps / 1000);
+                // The arm moves: each joint drifts, so the presets' errors are not all zero.
+                for (int i = 0; i < 16; i++) values[i] = i % 8 == 7 ? 1f : 0.1f * (float)Math.Sin(ms / 700.0 + i);
+                link.Tick(clock.NowTicks);
+                if (ms % 20 == 0) Answer(profile, socket, clock.NowTicks, values, ++sequence);
+            }
+
+            Assert.True(link.SecondsSinceFreshReading(clock.NowTicks) < 0.1);
+            for (int i = 0; i < link.Bank.Count; i++)
+            {
+                Assert.True(link.Scorer.TryGetStats(i, out Teleop.Core.Metrics.LiveJointStats stats));
+                Assert.True(stats.HasData, $"preset {link.Bank.LabelAt(i)} has no live numbers");
+                Assert.True(stats.Readings > 100);
+                Assert.False(float.IsNaN(stats.ErrorP95Deg));
+            }
+        }
+
+        [Fact]
+        public void TheHeadsetsConditions_GoAtOnceOnAChange_AndOnceASecond()
+        {
+            SerialChainProfile profile = SerialChainKinematicsTests.LoadFr3Duo();
+            var socket = new FakeSocket();
+            var clock = new ManualClock(Tps);
+            SerialChainJointLink link = Link(profile, socket, clock);
+            var heard = new List<(int Ms, HeadsetConditions Conditions)>();
+            for (int ms = 0; ms <= 2500; ms += 10)
+            {
+                clock.SetTicks(ms * Tps / 1000);
+                if (ms == 1300) link.SetHeadsetConditions(new HeadsetConditions(150f, 20f, 0.5f, 0f, 7UL));
+                int before = socket.Sent.Count;
+                link.Tick(clock.NowTicks);
+                foreach (byte[] b in socket.Sent.Skip(before))
+                {
+                    if (HeadsetConditionsCodec.TryDecode(b, out HeadsetConditions c, out _, out _)) heard.Add((ms, c));
+                }
+            }
+
+            // Off at once and a second later, the disturbance the moment it is set, then a second after that.
+            Assert.Equal(new[] { 0, 1000, 1300, 2300 }, heard.Select(h => h.Ms).ToArray());
+            Assert.Equal(0f, heard[1].Conditions.LagMs);
+            Assert.Equal(150f, heard[2].Conditions.LagMs);
+            Assert.Equal(7UL, heard[3].Conditions.Seed);
+        }
+
+        [Fact]
         public void TickingWithNothingArriving_AllocatesNothing()
         {
             SerialChainProfile profile = SerialChainKinematicsTests.LoadFr3Duo();

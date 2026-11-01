@@ -25,7 +25,9 @@ namespace Teleop.XR.Editor
     /// <list type="bullet">
     /// <item>No missing scripts; hand smoothing inactive; no controllers in the modality manager.</item>
     /// <item><see cref="SerialChainOperatorBridge"/> wired (root, twin, two markers), motion <b>off at launch</b>.</item>
-    /// <item><see cref="DuoHandDriver"/> and the <see cref="Fr3MotionButton"/> present, enabled, wired.</item>
+    /// <item><see cref="DuoHandDriver"/> present, enabled, wired; power and pause (<see cref="MotionToggleButton"/>) one each and the
+    /// headset guard, wired to this bridge, as in the JetRover scene; the twin's switches, the console and its sliders
+    /// wired (docs/adr/0029 amendment); and no arm-speed slider (the FR3's shaper sets its own speed).</item>
     /// <item>The resources parse: the profile, the collision model (for that profile), the config (a grab that cannot
     /// chatter, a gripper that is not inverted, a position scale in (0, 2], a step limit in (0, 0.2]); every learned
     /// preset's model loads and runs.</item>
@@ -119,16 +121,56 @@ namespace Teleop.XR.Editor
                 RequireReference(dso, "origin", problems);
             }
 
-            Fr3MotionButton[] buttons = Object.FindObjectsByType<Fr3MotionButton>(FindObjectsInactive.Include, FindObjectsSortMode.None);
-            if (buttons.Length != 1) problems.Add($"{buttons.Length} Fr3MotionButton(s): exactly one starts and stops the robot");
-            foreach (Fr3MotionButton b in buttons)
+            // Power and pause, as the JetRover's (MotionToggleButton): exactly one of each, wired to this bridge.
+            MotionToggleButton[] toggles = Object.FindObjectsByType<MotionToggleButton>(FindObjectsInactive.Include, FindObjectsSortMode.None);
+            foreach (MotionToggleButton.Role role in new[] { MotionToggleButton.Role.Power, MotionToggleButton.Role.Pause })
             {
-                if (!b.enabled) problems.Add("Fr3MotionButton is disabled");
-                var bso = new SerializedObject(b);
-                RequireReference(bso, "bridge", problems);
-                RequireReference(bso, "origin", problems);
-                RequireReference(bso, "cap", problems);
+                MotionToggleButton[] matching = toggles.Where(t => t.ButtonRole == role).ToArray();
+                if (matching.Length != 1) problems.Add($"{matching.Length} {role} button(s): exactly one {(role == MotionToggleButton.Role.Power ? "starts and stops the robot" : "pauses it")}");
+                foreach (MotionToggleButton toggle in matching)
+                {
+                    var tso = new SerializedObject(toggle);
+                    foreach (string field in new[] { "bridge", "origin", "cap" }) RequireReference(tso, field, problems);
+                    if (tso.FindProperty("bridge").objectReferenceValue != bridge) problems.Add($"the {role} button is not wired to this scene's bridge");
+                    if (!toggle.isActiveAndEnabled) problems.Add($"the {role} button is disabled or inactive");
+                }
             }
+
+            // RECENTRE (optional, the absolute mapping's): wired if present.
+            foreach (Fr3MotionButton b in Object.FindObjectsByType<Fr3MotionButton>(FindObjectsInactive.Include, FindObjectsSortMode.None))
+            {
+                if (b.ButtonRole == Fr3MotionButton.Role.Power) problems.Add("an Fr3MotionButton has the Power role: power is MotionToggleButton's, as in the JetRover scene");
+                var bso = new SerializedObject(b);
+                foreach (string field in new[] { "bridge", "origin", "cap" }) RequireReference(bso, field, problems);
+            }
+
+            // The headset guard: taking the headset off turns the robot off.
+            var guard = Object.FindAnyObjectByType<HeadsetRemovalGuard>(FindObjectsInactive.Include);
+            if (guard == null) problems.Add("no HeadsetRemovalGuard: taking the headset off would leave the robot on");
+            else if (new SerializedObject(guard).FindProperty("bridge").objectReferenceValue != bridge) problems.Add("HeadsetRemovalGuard.bridge is not this scene's bridge");
+            else if (!guard.isActiveAndEnabled) problems.Add("HeadsetRemovalGuard is disabled or inactive");
+
+            // The twin's switches, the console, the sliders: the JetRover's, wired to this bridge (not safety settings; they move nothing).
+            TwinVisibilityButton[] switches = Object.FindObjectsByType<TwinVisibilityButton>(FindObjectsInactive.Include, FindObjectsSortMode.None);
+            if (switches.Length != 3) problems.Add($"{switches.Length} twin switch(es), expected PREDICTED, COMMANDED and MEASURED");
+            foreach (TwinVisibilityButton sw in switches)
+            {
+                if (new SerializedObject(sw).FindProperty("arms").objectReferenceValue != bridge) problems.Add($"twin switch '{sw.name}' is not wired to this scene's bridge");
+            }
+
+            var console = Object.FindAnyObjectByType<OperatorConsole>(FindObjectsInactive.Include);
+            if (console == null) problems.Add("no OperatorConsole");
+            else if (new SerializedObject(console).FindProperty("bridge").objectReferenceValue != bridge) problems.Add("OperatorConsole.bridge is not this scene's bridge");
+            SpeedSlider[] sliders = Object.FindObjectsByType<SpeedSlider>(FindObjectsInactive.Include, FindObjectsSortMode.None);
+            foreach (string name in new[] { "NetworkLag", "NetworkJitter", "NetworkLoss", XrControlSetup.DelaySliderName })
+            {
+                SpeedSlider slider = sliders.FirstOrDefault(x => x.name == name);
+                if (slider == null) problems.Add($"no {name} slider");
+                else if (new SerializedObject(slider).FindProperty("bridge").objectReferenceValue != bridge) problems.Add($"the {name} slider is not wired to this scene's bridge");
+            }
+
+            if (sliders.Any(x => x.name == XrControlSetup.SpeedSliderName)) problems.Add("an arm-speed slider: the FR3's shaper sets its own speed, so it would move nothing");
+            foreach (string field in new[] { "commandedTwin", "measuredTwin" }) RequireReference(so, field, problems);
 
             var twin = so.FindProperty("twin")?.objectReferenceValue as SerialChainArmRig;
             var robotRoot = so.FindProperty("robotRoot")?.objectReferenceValue as Transform;

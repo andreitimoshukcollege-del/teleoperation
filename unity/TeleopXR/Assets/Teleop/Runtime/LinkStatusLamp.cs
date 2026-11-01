@@ -22,7 +22,7 @@ namespace Teleop.XR
         private static readonly int BaseColorId = Shader.PropertyToID("_BaseColor");
         private static readonly int ColorId = Shader.PropertyToID("_Color");
 
-        [SerializeField] private JetRoverOperatorBridge robot;
+        [SerializeField] private OperatorBridgeBase robot;
         [SerializeField] private Renderer[] lamps = new Renderer[0];
         [SerializeField] private Color connectedColor = new Color(0.1f, 0.85f, 1f);
         [SerializeField] private Color staleColor = new Color(1f, 0.6f, 0.08f);
@@ -33,7 +33,7 @@ namespace Teleop.XR
 
         private void Start()
         {
-            if (robot == null) robot = FindAnyObjectByType<JetRoverOperatorBridge>();
+            if (robot == null) robot = FindAnyObjectByType<OperatorBridgeBase>();
             _block = new MaterialPropertyBlock();
             if (robot == null)
             {
@@ -44,9 +44,9 @@ namespace Teleop.XR
 
         private void Update()
         {
-            JetRoverOperatorBridge.ConnectionStatus status = robot.Status;
-            Color color = status == JetRoverOperatorBridge.ConnectionStatus.Connected ? connectedColor
-                : status == JetRoverOperatorBridge.ConnectionStatus.Stale
+            OperatorBridgeBase.ConnectionStatus status = robot.Status;
+            Color color = status == OperatorBridgeBase.ConnectionStatus.Connected ? connectedColor
+                : status == OperatorBridgeBase.ConnectionStatus.Stale
                     ? (Stopwatch.GetTimestamp() / (Stopwatch.Frequency / 2) % 2 == 0 ? staleColor : staleColor * 0.25f)
                     : disconnectedColor;
             if (color != _shown)

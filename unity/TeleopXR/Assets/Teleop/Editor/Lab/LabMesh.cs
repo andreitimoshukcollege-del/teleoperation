@@ -316,11 +316,16 @@ namespace Teleop.XR.Editor
     /// <summary>
     /// Every generated mesh lives as a named sub-asset of one library asset, refilled in place on each
     /// rebuild, so scene references and asset IDs stay stable and the scene file stays small. Meshes
-    /// the current build did not produce are removed at <see cref="End"/>.
+    /// the current build did not produce are removed at <see cref="End"/>, which is why each scene has
+    /// its own library (<see cref="Begin"/>'s path): the FR3 Duo's lab builds no JetRover, so sharing
+    /// the JetRover's library would delete its robot's meshes.
     /// </summary>
     internal static class LabMeshLibrary
     {
-        public const string Path = LabPaths.Generated + "/LabMeshes.asset";
+        public const string DefaultPath = LabPaths.Generated + "/LabMeshes.asset";
+
+        /// <summary>The library this build writes (<see cref="Begin"/>'s path).</summary>
+        public static string Path { get; private set; } = DefaultPath;
 
         private static Dictionary<string, Mesh> s_existing = new Dictionary<string, Mesh>();
         private static readonly HashSet<string> s_written = new HashSet<string>();
@@ -328,8 +333,9 @@ namespace Teleop.XR.Editor
 
         public static int Triangles => s_triangles;
 
-        public static void Begin()
+        public static void Begin(string path = DefaultPath)
         {
+            Path = path;
             LabPaths.EnsureFolder(LabPaths.Generated);
             if (AssetDatabase.LoadMainAssetAtPath(Path) == null)
             {

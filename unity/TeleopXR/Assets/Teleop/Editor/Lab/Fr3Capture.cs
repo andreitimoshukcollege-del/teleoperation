@@ -22,10 +22,12 @@ namespace Teleop.XR.Editor
 
         private static readonly (string Name, Vector3 From, Vector3 To)[] Views =
         {
-            ("01-operator", new Vector3(0f, 1.62f, 0f), new Vector3(0f, 1.0f, 0.95f)),
-            ("02-front", new Vector3(0f, 1.3f, 2.4f), new Vector3(0f, 1.05f, 0.8f)),
-            ("03-left", new Vector3(-1.6f, 1.25f, 0.9f), new Vector3(0f, 1.05f, 0.85f)),
-            ("04-above", new Vector3(0f, 2.8f, 0.9f), new Vector3(0f, 0.8f, 0.95f)),
+            ("01-operator", new Vector3(0f, 1.62f, 0f), new Vector3(0f, 1.05f, 1.1f)),
+            ("02-console", new Vector3(-0.15f, 1.5f, -0.15f), new Vector3(-0.5f, 0.9f, 0.45f)),
+            ("03-front", new Vector3(0.3f, 1.5f, 3.2f), new Vector3(0f, 1.1f, 1.0f)),
+            ("04-left", new Vector3(-2.2f, 1.45f, 1.0f), new Vector3(0f, 1.05f, 1.0f)),
+            ("05-above", new Vector3(0f, 3.0f, 0.95f), new Vector3(0f, 0.8f, 1.0f)),
+            ("06-room", new Vector3(2.2f, 1.9f, -1.2f), new Vector3(0f, 1.0f, 1.0f)),
         };
 
         /// <summary>Batch entry point (with graphics): <c>-executeMethod Teleop.XR.Editor.Fr3Capture.Run</c>.</summary>
@@ -46,8 +48,11 @@ namespace Teleop.XR.Editor
         public static string Capture()
         {
             EditorSceneManager.OpenScene(XrFr3SceneBuilder.ScenePath, OpenSceneMode.Single);
-            var twin = Object.FindAnyObjectByType<SerialChainArmRig>(FindObjectsInactive.Include)
-                ?? throw new InvalidOperationException("no SerialChainArmRig in the FR3 scene");
+            // The solid twin, by the bridge's own reference: the scene also holds the two ghosts.
+            var bridge = Object.FindAnyObjectByType<SerialChainOperatorBridge>(FindObjectsInactive.Include)
+                ?? throw new InvalidOperationException("no SerialChainOperatorBridge in the FR3 scene");
+            var twin = new SerializedObject(bridge).FindProperty("twin").objectReferenceValue as SerialChainArmRig
+                ?? throw new InvalidOperationException("SerialChainOperatorBridge.twin is not assigned");
             for (int i = 0; i < twin.Joints.Length; i++)
             {
                 SerialChainRigJoint j = twin.Joints[i];
@@ -81,8 +86,10 @@ namespace Teleop.XR.Editor
                 Object.DestroyImmediate(cameraObject);
             }
 
-            int triangles = twin.GetComponentsInChildren<MeshFilter>(true).Where(f => f.sharedMesh != null).Sum(f => f.sharedMesh.triangles.Length / 3);
-            File.WriteAllText(Path.Combine(outDir, "report.txt"), $"FR3 Duo twin: {twin.Joints.Length} moving joints, {triangles} mesh triangles (boxes not counted)\n");
+            // Index counts, not the triangle arrays: the visual meshes are imported without Read/Write.
+            long triangles = twin.GetComponentsInChildren<MeshFilter>(true).Where(f => f.sharedMesh != null)
+                .Sum(f => Enumerable.Range(0, f.sharedMesh.subMeshCount).Sum(m => (long)f.sharedMesh.GetIndexCount(m)) / 3);
+            File.WriteAllText(Path.Combine(outDir, "report.txt"), $"FR3 Duo twin: {twin.Joints.Length} moving joints, {triangles} mesh triangles (boxes included)\n");
             return outDir;
         }
     }

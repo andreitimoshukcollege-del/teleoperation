@@ -72,7 +72,8 @@ namespace Teleop.RobotArm.Kinematics
         private readonly SerialChainSolverOptions _o;
         private readonly int _n;
         private readonly RigidTransform[] _frames;
-        private readonly double[] _q, _rest, _j, _a, _e, _dq, _v, _w, _lo, _hi;
+        private readonly double[] _q, _rest, _j, _a, _e, _dq, _v, _w, _lo, _hi, _h, _hf, _hg;
+        private readonly bool[] _locked;
 
         public SerialChainSolver(ChainArm arm, SerialChainSolverOptions? options = null)
         {
@@ -92,6 +93,10 @@ namespace Teleop.RobotArm.Kinematics
             _w = new double[6];
             _lo = new double[_n];
             _hi = new double[_n];
+            _h = new double[_n * _n];
+            _hf = new double[_n];
+            _hg = new double[_n];
+            _locked = new bool[_n];
             for (int i = 0; i < _n; i++)
             {
                 ChainJointLimits l = arm.Joints[i].Limits;
@@ -141,6 +146,150 @@ namespace Teleop.RobotArm.Kinematics
             for (int i = 0; i < _n; i++) solution[i] = _q[i];
             bool converged = pos <= _o.PositionTolerance && rot <= _o.OrientationTolerance;
             return new ChainSolveResult(converged, pos, rot, it);
+        }
+
+        /// <summary>
+        /// The part of <paramref name="v"/> (a joint motion) that does not move the tool at <paramref name="q"/>, to first order:
+        /// <c>(I − J⁺ J) v</c>, with the solver's damped pseudo-inverse. A redundant arm's spare motion: what the teleop uses to
+        /// bend an elbow away from an obstacle while the gripper stays on its path. Allocation-free.
+        /// </summary>
+        public void ProjectToNullSpace(ReadOnlySpan<double> q, ReadOnlySpan<double> v, Span<double> result)
+        {
+            if (q.Length != _n || v.Length < _n || result.Length < _n) throw new ArgumentException($"the arm has {_n} joints");
+            for (int i = 0; i < _n; i++) _q[i] = q[i];
+            SerialChainKinematics.ComputeFrames(_arm, _q, _frames);
+            Jacobian();
+            for (int r = 0; r < 6; r++)
+            {
+                for (int c = 0; c < 6; c++)
+                {
+                    double sum = 0;
+                    for (int i = 0; i < _n; i++) sum += _j[r * _n + i] * _j[c * _n + i];
+                    _a[r * 6 + c] = sum + (r == c ? _o.Damping * _o.Damping : 0);
+                }
+            }
+
+            Cholesky(_a);
+            for (int r = 0; r < 6; r++)
+            {
+                double sum = 0;
+                for (int i = 0; i < _n; i++) sum += _j[r * _n + i] * v[i];
+                _w[r] = sum;
+            }
+
+            CholeskySolve(_a, _w);
+            for (int i = 0; i < _n; i++)
+            {
+                double sum = 0;
+                for (int r = 0; r < 6; r++) sum += _j[r * _n + i] * _w[r];
+                result[i] = v[i] - sum;
+            }
+        }
+
+        /// <summary>
+        /// One damped least-squares step from <paramref name="q"/> toward <paramref name="target"/> that changes
+        /// <c>g · q</c> by exactly <paramref name="change"/> (to first order), into <paramref name="step"/>: the motion that
+        /// moves the tool most nearly as asked under one linear constraint, such as "no closer to what the arm is touching".
+        /// The correction is taken in the step's own metric (<c>JᵀJ + λ²I</c>), so it is spent first where it costs the tool
+        /// least: the arm's spare motion, then the smallest error in the tool's pose. A joint on its bound (the soft limit
+        /// less the margin) that the step would push past it is held there, and the step taken again by the others, so an
+        /// arm pinned at a limit can still slide. False when the free joints cannot change <c>g · q</c> at all.
+        /// Allocation-free.
+        /// </summary>
+        public bool ConstrainedStep(ReadOnlySpan<double> q, in RigidTransform target, ReadOnlySpan<double> g, double change, Span<double> step)
+        {
+            if (q.Length != _n || g.Length < _n || step.Length < _n) throw new ArgumentException($"the arm has {_n} joints");
+            for (int i = 0; i < _n; i++)
+            {
+                _q[i] = q[i];
+                _locked[i] = false;
+            }
+
+            SerialChainKinematics.ComputeFrames(_arm, _q, _frames);
+            Error(target, _frames[_n], out _, out _);
+            Jacobian();
+            // A joint on a bound that the step would push past it is held there, and the step is taken again by the others.
+            for (int pass = 0; pass <= _n; pass++)
+            {
+                // H = JᵀJ + λ²I over the free joints (a held joint's row and column are the identity), f = Jᵀe, both held at 0.
+                for (int r = 0; r < _n; r++)
+                {
+                    double f = 0;
+                    if (!_locked[r]) for (int k = 0; k < 6; k++) f += _j[k * _n + r] * _e[k];
+                    _hf[r] = f;
+                    _hg[r] = _locked[r] ? 0 : g[r];
+                    for (int c = 0; c < _n; c++)
+                    {
+                        double sum = 0;
+                        if (!_locked[r] && !_locked[c]) for (int k = 0; k < 6; k++) sum += _j[k * _n + r] * _j[k * _n + c];
+                        _h[r * _n + c] = sum + (r == c ? (_locked[r] ? 1.0 : _o.Damping * _o.Damping) : 0);
+                    }
+                }
+
+                CholeskyN(_h, _n);
+                CholeskySolveN(_h, _n, _hf);   // the unconstrained step
+                CholeskySolveN(_h, _n, _hg);   // H⁻¹ g
+                double gHg = 0, gStep = 0;
+                for (int i = 0; i < _n; i++)
+                {
+                    if (_locked[i]) continue;
+                    gHg += g[i] * _hg[i];
+                    gStep += g[i] * _hf[i];
+                }
+
+                if (!(gHg > 1e-300)) return false;
+                double mu = (change - gStep) / gHg;
+                bool held = false;
+                for (int i = 0; i < _n; i++)
+                {
+                    step[i] = _locked[i] ? 0 : _hf[i] + mu * _hg[i];
+                    if (!_locked[i] && ((_q[i] <= _lo[i] + 1e-9 && step[i] < 0) || (_q[i] >= _hi[i] - 1e-9 && step[i] > 0)))
+                    {
+                        _locked[i] = true;
+                        held = true;
+                    }
+                }
+
+                if (!held) break;
+            }
+
+            for (int i = 0; i < _n; i++) if (_locked[i]) step[i] = 0;
+            return true;
+        }
+
+        /// <summary>In place, the lower triangle of a symmetric positive-definite n×n.</summary>
+        private static void CholeskyN(double[] a, int n)
+        {
+            for (int j = 0; j < n; j++)
+            {
+                double d = a[j * n + j];
+                for (int k = 0; k < j; k++) d -= a[j * n + k] * a[j * n + k];
+                d = Math.Sqrt(d > 1e-300 ? d : 1e-300);
+                a[j * n + j] = d;
+                for (int i = j + 1; i < n; i++)
+                {
+                    double s = a[i * n + j];
+                    for (int k = 0; k < j; k++) s -= a[i * n + k] * a[j * n + k];
+                    a[i * n + j] = s / d;
+                }
+            }
+        }
+
+        private static void CholeskySolveN(double[] l, int n, double[] b)
+        {
+            for (int i = 0; i < n; i++)
+            {
+                double s = b[i];
+                for (int k = 0; k < i; k++) s -= l[i * n + k] * b[k];
+                b[i] = s / l[i * n + i];
+            }
+
+            for (int i = n - 1; i >= 0; i--)
+            {
+                double s = b[i];
+                for (int k = i + 1; k < n; k++) s -= l[k * n + i] * b[k];
+                b[i] = s / l[i * n + i];
+            }
         }
 
         /// <summary>The weighted 6-D error into <c>_e</c>: target position minus the TCP's, then the rotation vector taking the TCP's orientation to the target's.</summary>

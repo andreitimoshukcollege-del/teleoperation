@@ -25,7 +25,17 @@ namespace Teleop.XR.Editor
     {
         public const string SettingsPath = LabPaths.Generated + "/JetRoverLabXR.lighting";
 
-        public static void Build(Transform parent, Scene scene, Light keyLight)
+        /// <summary>Where a robot's arms move, for the light probes: a box (centre, half size) filled at a spacing.</summary>
+        public sealed class ProbeRegion
+        {
+            public Vector3 Centre;
+            public Vector3 HalfSize;
+            public float Spacing = 0.2f;
+        }
+
+        /// <param name="arms">Where the arms move; null is the JetRover's (7 × 7 × 4 around its arm base).</param>
+        /// <param name="benchDepth">The bench's depth, so no probe is buried in it.</param>
+        public static void Build(Transform parent, Scene scene, Light keyLight, ProbeRegion arms = null, float benchDepth = LabLayout.BenchDepth)
         {
             Transform root = LabParts.Group("Lighting", parent).transform;
 
@@ -67,7 +77,7 @@ namespace Teleop.XR.Editor
             Area(root, "WindowGlow", new Vector3(LabLayout.MinX + 0.05f, (LabLayout.WindowBottom + LabLayout.WindowTop) / 2f, (LabLayout.WindowMinZ + LabLayout.WindowMaxZ) / 2f),
                 Quaternion.Euler(0f, 90f, 0f), new Vector2(LabLayout.WindowMaxZ - LabLayout.WindowMinZ, LabLayout.WindowTop - LabLayout.WindowBottom), new Color(0.4f, 0.42f, 0.75f), 2.5f);
 
-            BuildProbes(root);
+            BuildProbes(root, arms, benchDepth);
             BuildReflectionProbe(root);
             ApplySceneSettings(scene);
         }
@@ -92,16 +102,33 @@ namespace Teleop.XR.Editor
             light.shadows = LightShadows.Soft;
         }
 
-        private static void BuildProbes(Transform root)
+        private static void BuildProbes(Transform root, ProbeRegion arms, float benchDepth)
         {
             var positions = new List<Vector3>();
             Vector3 b = LabLayout.ArmBase;
 
-            // Where the arm moves: 7 × 7 × 4 around the base, 15 cm apart.
-            for (int ix = -3; ix <= 3; ix++)
-                for (int iz = -3; iz <= 3; iz++)
-                    foreach (float dy in new[] { 0.06f, 0.2f, 0.34f, 0.48f })
-                        positions.Add(b + new Vector3(ix * 0.15f, dy, iz * 0.15f));
+            if (arms == null)
+            {
+                // Where the JetRover's arm moves: 7 × 7 × 4 around the base, 15 cm apart.
+                for (int ix = -3; ix <= 3; ix++)
+                    for (int iz = -3; iz <= 3; iz++)
+                        foreach (float dy in new[] { 0.06f, 0.2f, 0.34f, 0.48f })
+                            positions.Add(b + new Vector3(ix * 0.15f, dy, iz * 0.15f));
+            }
+            else
+            {
+                // Where another robot's arms move: its box, filled at its spacing.
+                int nx = Mathf.Max(1, Mathf.RoundToInt(2 * arms.HalfSize.x / arms.Spacing));
+                int ny = Mathf.Max(1, Mathf.RoundToInt(2 * arms.HalfSize.y / arms.Spacing));
+                int nz = Mathf.Max(1, Mathf.RoundToInt(2 * arms.HalfSize.z / arms.Spacing));
+                for (int ix = 0; ix <= nx; ix++)
+                    for (int iy = 0; iy <= ny; iy++)
+                        for (int iz = 0; iz <= nz; iz++)
+                        {
+                            var q = arms.Centre - arms.HalfSize + new Vector3(2 * arms.HalfSize.x * ix / nx, 2 * arms.HalfSize.y * iy / ny, 2 * arms.HalfSize.z * iz / nz);
+                            if (!InsideFurniture(q, benchDepth)) positions.Add(q);
+                        }
+            }
 
             // Just above the bench, around the chassis, for reaches down toward the mat.
             float benchY = LabLayout.BenchTop + 0.05f;
@@ -109,7 +136,7 @@ namespace Teleop.XR.Editor
                 for (int iz = -2; iz <= 3; iz++)
                 {
                     var q = new Vector3(b.x + ix * 0.2f, benchY, LabLayout.BenchNearZ + 0.05f + iz * 0.15f);
-                    if (Mathf.Abs(q.x - b.x) < 0.16f && q.z > b.z - 0.23f && q.z < b.z + 0.13f) continue; // inside the chassis
+                    if (arms == null && Mathf.Abs(q.x - b.x) < 0.16f && q.z > b.z - 0.23f && q.z < b.z + 0.13f) continue; // inside the chassis
                     positions.Add(q);
                 }
 
@@ -119,7 +146,7 @@ namespace Teleop.XR.Editor
                     foreach (float y in new[] { 0.4f, 1.4f, 2.5f })
                     {
                         var q = new Vector3(x, y, z);
-                        if (InsideFurniture(q)) continue;
+                        if (InsideFurniture(q, benchDepth)) continue;
                         positions.Add(q);
                     }
 
@@ -130,11 +157,11 @@ namespace Teleop.XR.Editor
             group.dering = true;
         }
 
-        private static bool InsideFurniture(Vector3 q)
+        private static bool InsideFurniture(Vector3 q, float benchDepth)
         {
             bool In(Vector3 c, Vector3 size) => Mathf.Abs(q.x - c.x) < size.x / 2f && Mathf.Abs(q.y - c.y) < size.y / 2f && Mathf.Abs(q.z - c.z) < size.z / 2f;
             float top = LabLayout.BenchTop;
-            return In(new Vector3(LabLayout.ArmBase.x, top / 2f, LabLayout.BenchCentreZ), new Vector3(1.7f, top + 0.05f, 0.9f))
+            return In(new Vector3(LabLayout.ArmBase.x, top / 2f, LabLayout.BenchNearZ + benchDepth / 2f), new Vector3(1.7f, top + 0.05f, benchDepth + 0.1f))
                 || In(new Vector3(3.8f, 1.0f, LabLayout.MaxZ - 0.62f), new Vector3(1.4f, 2.1f, 1.15f))
                 || In(new Vector3(LabLayout.MaxX - 0.28f, 1.0f, 1.5f), new Vector3(0.5f, 2.1f, 2.3f))
                 || In(new Vector3(LabLayout.MinX + 1.25f, 0.4f, 1.0f), new Vector3(0.8f, 0.85f, 3.8f));

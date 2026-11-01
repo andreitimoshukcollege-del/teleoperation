@@ -7,7 +7,8 @@ using UnityEngine;
 namespace Teleop.XR
 {
     /// <summary>
-    /// The FR3 Duo's motion switch (docs/adr/0029 decision 7): a button you press down with a fingertip
+    /// The FR3 Duo's buttons (docs/adr/0029 decision 7 and amendment): <b>Power</b>, the motion switch, and <b>Recentre</b>,
+    /// which anchors the robot to where you stand and face now (the absolute mapping). Each is a button you press down with a fingertip
     /// (<see cref="FingertipPress"/>, so no ray, pinch or grab elsewhere can press it). It sets
     /// <see cref="SerialChainOperatorBridge.MotionEnabled"/>: off sends nothing, and on first takes the robot's measured
     /// pose as the command and lets go of both arms, so nothing jumps to where the hands were. The scene starts off.
@@ -16,6 +17,9 @@ namespace Teleop.XR
     /// </summary>
     public sealed class Fr3MotionButton : MonoBehaviour
     {
+        public enum Role { Power, Recentre }
+
+        [SerializeField] private Role role = Role.Power;
         [SerializeField] private SerialChainOperatorBridge bridge;
         [SerializeField] private XROrigin origin;
         [Tooltip("The cap that is pressed, sitting level; its top face is the button's surface. Recoloured with the state.")]
@@ -32,6 +36,9 @@ namespace Teleop.XR
         private FingertipPress _press;
         private MaterialPropertyBlock _block;
         private int _shown = -1;
+        private float _flashUntil;
+
+        public Role ButtonRole => role;
 
         private void Update()
         {
@@ -41,7 +48,20 @@ namespace Teleop.XR
             }
 
             _press ??= new FingertipPress(radiusMeters, pressDepthMeters, rearmDistanceMeters, cooldownSeconds);
-            if (_press.Update(cap, origin) && bridge.MotionAllowed)
+            bool pressed = _press.Update(cap, origin);
+            if (role == Role.Recentre)
+            {
+                if (pressed && bridge.IsAbsolute)
+                {
+                    bridge.Recentre();
+                    _flashUntil = Time.unscaledTime + 0.6f;
+                }
+
+                ShowRecentre();
+                return;
+            }
+
+            if (pressed && bridge.MotionAllowed)
             {
                 bool before = bridge.MotionEnabled;
                 bridge.MotionEnabled = !before;
@@ -51,10 +71,29 @@ namespace Teleop.XR
             Show();
         }
 
+        private void ShowRecentre()
+        {
+            int state = !bridge.IsAbsolute ? 2 : Time.unscaledTime < _flashUntil ? 1 : 0;
+            if (state == _shown)
+            {
+                return;
+            }
+
+            _shown = state;
+            Color color = state == 1 ? onColor : state == 0 ? new Color(0.25f, 0.55f, 1f) : lockedColor;
+            string text = state == 2 ? "RECENTRE\n<size=60%>relative mapping: not used</size>" : "RECENTRE\n<size=60%>stand comfortably, press</size>";
+            _block ??= new MaterialPropertyBlock();
+            cap.GetPropertyBlock(_block);
+            _block.SetColor("_BaseColor", color);
+            _block.SetColor("_Color", color);
+            cap.SetPropertyBlock(_block);
+            if (label != null) label.SetText(text);
+        }
+
         private void OnApplicationFocus(bool focused)
         {
             // Builds only: the editor loses focus whenever another window is clicked. (Pausing is the bridge's.)
-            if (!focused && !Application.isEditor && bridge != null) bridge.MotionEnabled = false;
+            if (role == Role.Power && !focused && !Application.isEditor && bridge != null) bridge.MotionEnabled = false;
         }
 
         private void Show()

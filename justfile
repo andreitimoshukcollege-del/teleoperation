@@ -2816,7 +2816,7 @@ isaac-check seconds="5":
     ssh -o ConnectTimeout=10 "{{gpu_host}}" '[ -x ~/isaacsim/venv/bin/python ] && [ -f ~/isaacsim/VERSION ] || { echo "error: no Isaac Sim in our account there: just isaac-setup" >&2; exit 1; }; echo "GPU: $(nvidia-smi --query-gpu=name,driver_version,memory.used,memory.total --format=csv,noheader)"'
     ssh -o ConnectTimeout=10 "{{gpu_host}}" "~/isaacsim/venv/bin/python - --seconds '{{seconds}}'" < robot/isaac/check.py
 
-# The FR3 Duo in Isaac Sim on the GPU machine, behind a RobotHost there (docs/adr/0031): checks out this commit in ~/teleoperation-isaac (it must be on GitHub), builds RobotHost, starts the Isaac bridge (robot/isaac, log ~/isaacsim/bridge.log) and then RobotHost with --backend arm-server, joint port 6002 and discovery 6005 on that machine, recording headset sessions into ~/isaacsim/recordings. Enter stops both. Refuses while the GPU is busy with someone else's job (over 4 GB) or a training run of ours. Point the headset at it with `just push-galaxy-fr3-config <GPU machine's address>`; drive it headless with `just fr3-teleop-probe 0.08 3 franka-replay false <GPU machine's address>` (just takes recipe arguments by position)
+# The FR3 Duo in Isaac Sim on the GPU machine, behind a RobotHost there (docs/adr/0031): checks out this commit in ~/teleoperation-isaac (it must be on GitHub), builds RobotHost, starts the Isaac bridge (robot/isaac, log ~/isaacsim/bridge.log) and then RobotHost with --backend arm-server, joint port 6002 and discovery 6005 on that machine, recording headset sessions into ~/isaacsim/recordings. Enter stops both. Refuses while an Isaac host of ours is already running there, a training run of ours is going, or other people's GPU jobs hold over 2 GB. Point the headset at it with `just push-galaxy-fr3-config <GPU machine's address>`; drive it headless with `just fr3-teleop-probe 0.08 3 franka-replay false <GPU machine's address>` (just takes recipe arguments by position)
 [group('isaac')]
 isaac-host:
     #!/usr/bin/env bash
@@ -2830,9 +2830,21 @@ isaac-host:
     repo=$HOME/teleoperation-isaac
     [ -x "$HOME/isaacsim/venv/bin/python" ] || { echo "error: no Isaac Sim in our account here: just isaac-setup" >&2; exit 1; }
     if [ -f "$HOME/train-sim.pid" ] && kill -0 "$(cat "$HOME/train-sim.pid")" 2>/dev/null; then echo "error: a training run of ours is going (just gpu-status)" >&2; exit 1; fi
-    used=$(nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits | head -1 | tr -d ' ')
-    if [ "${used:-0}" -gt 4096 ]; then
-        echo "error: the GPU has ${used} MiB in use: someone else's job. Not starting." >&2
+    # [.]: the pattern must not match this script's own command line.
+    mine=$(pgrep -u "$USER" -f "teleop_isaac[.]bridge" | head -1 || true)
+    if [ -n "$mine" ]; then
+        echo "error: an Isaac host of ours is already running on $(hostname) (bridge pid $mine): use it, or stop it first (Enter where it was started)" >&2
+        exit 1
+    fi
+    # Other people's GPU jobs only: ours are not someone else's.
+    others=0
+    while IFS=, read -r pid mem; do
+        pid=${pid// /}; mem=${mem//[^0-9]/}
+        [ -n "$pid" ] || continue
+        [ "$(ps -o user= -p "$pid" 2>/dev/null | tr -d ' ')" = "$USER" ] || others=$((others + ${mem:-0}))
+    done < <(nvidia-smi --query-compute-apps=pid,used_memory --format=csv,noheader,nounits)
+    if [ "$others" -gt 2048 ]; then
+        echo "error: other people's GPU jobs hold ${others} MiB. Not starting." >&2
         nvidia-smi --query-compute-apps=pid,process_name,used_memory --format=csv >&2 || true
         exit 1
     fi

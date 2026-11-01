@@ -30,8 +30,10 @@ namespace Teleop.RobotArm.Operator
     /// pointing forward points the gripper forward, and where the hand is decides where the gripper goes, not how far
     /// it has moved since a grab.
     /// <list type="bullet">
-    /// <item><b>The body frame</b> is taken from the head at <see cref="Recentre"/>: its position, and its heading only
-    /// (yaw about the vertical), so looking down or tilting the head at that moment changes nothing.</item>
+    /// <item><b>The body frame</b> is taken from the pose given to <see cref="Recentre"/>: its position, and its heading
+    /// only (yaw about the vertical), so looking down or tilting the head changes nothing. The Galaxy XR passes the
+    /// headset's position with the robot's heading (docs/adr/0029 amendment 4), so where the operator happened to look
+    /// does not decide which way is forward.</item>
     /// <item><b>Position, per arm:</b> the neutral hand (<see cref="BodyMappingOptions"/>: forward, down, and to that
     /// hand's side) maps onto the arm's neutral tool; every centimetre from there, times
     /// <see cref="BodyMappingOptions.PositionScale"/>, is a centimetre of tool. Per arm, because the robot's shoulders

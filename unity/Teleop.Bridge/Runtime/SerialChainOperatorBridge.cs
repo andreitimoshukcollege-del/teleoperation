@@ -220,8 +220,11 @@ namespace Teleop.Bridge
         public bool IsAbsolute => _mapping != null;
 
         /// <summary>
-        /// Anchors the robot to your body as you stand now (docs/adr/0029 amendment): the headset's position and heading
-        /// become the body frame, and your neutral hands the arms' neutral tools. Also done when motion is switched on.
+        /// Anchors the robot to your body as you stand now (docs/adr/0029 amendments 1 and 4): the headset's position, with
+        /// the robot's heading, becomes the body frame, and your neutral hands the arms' neutral tools. Also done when
+        /// motion is switched on. The heading is the robot's, not the headset's: RECENTRE and Power are buttons you look at
+        /// to press, and taking the direction you looked as forward turned the gripper sideways from a hand pointing
+        /// forward (2026-11-01).
         /// </summary>
         public void Recentre()
         {
@@ -229,8 +232,9 @@ namespace Teleop.Bridge
             Camera eye = Camera.main;
             if (eye == null) return;
             Transform head = eye.transform;
-            _mapping.Recentre(ToWorld(head.position, head.rotation));
-            Debug.Log("[fr3] recentred: the robot is anchored to where you stand and face");
+            Transform facing = robotRoot != null ? robotRoot : head;
+            _mapping.Recentre(ToWorld(head.position, Quaternion.Euler(0f, facing.rotation.eulerAngles.y, 0f)));
+            Debug.Log($"[fr3] recentred: the robot is anchored where you stand, facing its way (you faced {Mathf.DeltaAngle(facing.rotation.eulerAngles.y, head.rotation.eulerAngles.y):0} deg off it)");
         }
 
         public bool IsSynced => _link != null && _link.IsSynced;

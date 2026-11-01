@@ -334,3 +334,21 @@ More frames go over 0.05 rad, and all of them are wrist joints at their own velo
   so it refused 19 of the headset's commands. They come into line when this branch reaches main.
 - **The refusal log.** RobotHost's periodic refusal line never printed: its first-time check
   overflowed. That fix is on the Isaac branch.
+
+## Amendment 4 (2026-11-01): forward is the robot's
+
+In Isaac, the user's hand pointed forward but the gripper pointed to the side.
+
+**The cause.** Amendment 1 takes the body frame from the headset, both its position and its heading,
+at RECENTRE and whenever motion is switched on. Both are buttons you look at to press. The
+headset's log showed a recentre at each press of Power (14:03:56 and 14:04:18), taken while the user
+faced the button. The direction of the button became forward, and every hand pose was turned by
+that angle.
+
+**The fix.** The body frame is now the headset's position with the robot's heading, which is the
+twin root's yaw.
+- **Why this is right:** the operator stands at the bench behind the robot, facing the way it faces,
+  so forward is the robot's forward wherever they look while pressing a button.
+- **What stays the same:** RECENTRE and Power still anchor the position to where the operator stands.
+- **The log:** the recentre line now says how far the headset faced off the robot.
+- **Code:** `BodyAnchoredMapping` is unchanged; only what the host passes to it changed.

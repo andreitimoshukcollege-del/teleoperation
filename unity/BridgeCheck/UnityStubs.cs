@@ -65,6 +65,8 @@ namespace UnityEngine
     {
         public static Quaternion Inverse(Quaternion q) => default;
         public static Quaternion AngleAxis(float angle, Vector3 axis) => default;
+        public static Quaternion Euler(float x, float y, float z) => default;
+        public Vector3 eulerAngles => default;
         public static Quaternion operator *(Quaternion a, Quaternion b) => default;
         public static Vector3 operator *(Quaternion q, Vector3 v) => default;
         public static Quaternion identity => default;
@@ -119,6 +121,7 @@ namespace UnityEngine
     public static class Mathf
     {
         public const float Rad2Deg = 57.29578f;
+        public static float DeltaAngle(float current, float target) => 0f;
         public static bool Approximately(float a, float b) => a == b;
     }
     public static class Time { public static float unscaledTime => 0f; }

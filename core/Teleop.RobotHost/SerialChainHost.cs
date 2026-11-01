@@ -340,7 +340,8 @@ namespace Teleop.RobotHost
 
                 discovery?.Poll();
                 now = clock.NowTicks;
-                if (plant.RefusedCommands != loggedRefusals && now - lastRefusalLog >= 2 * clock.TicksPerSecond)
+                // The first refusal logs at once: now - long.MinValue overflows, and the line never printed (2026-11-01, 19 refusals unseen).
+                if (plant.RefusedCommands != loggedRefusals && (lastRefusalLog == long.MinValue || now - lastRefusalLog >= 2 * clock.TicksPerSecond))
                 {
                     Console.WriteLine($"[plant] refused {plant.RefusedCommands - loggedRefusals} joint command(s): the pose would collide ({plant.DescribeLastRefusal()}); the arm holds");
                     loggedRefusals = plant.RefusedCommands;

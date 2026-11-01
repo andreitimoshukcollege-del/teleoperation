@@ -170,11 +170,16 @@ namespace Teleop.RobotHost.Recording
         /// <summary>
         /// What the headset does to its own link and view (docs/adr/0023 amendment):
         /// <c>HD|t|lagMs|jitterMs|lossPercent|addedDelayMs|seed</c>, the lag <c>NaN</c> for a named profile.
-        /// Any non-zero value means the session is not a real-network measurement.
+        /// Any non-zero value means the session is not a real-network measurement. When the headset reports its hand
+        /// filter (docs/adr/0029 amendment 7), four more fields follow:
+        /// <c>|handMinCutoffHz|handPositionBeta|handRotationBeta|handDerivativeCutoffHz</c>, the min cutoff 0 for raw hands.
         /// </summary>
         public static string HeadsetConditions(long t, in HeadsetConditions c) =>
             "HD|" + I(t) + "|" + F(c.LagMs) + "|" + F(c.JitterMs) + "|" + F(c.LossPercent) + "|" + F(c.AddedDelayMs) + "|" +
-            c.Seed.ToString(CultureInfo.InvariantCulture);
+            c.Seed.ToString(CultureInfo.InvariantCulture) +
+            (c.ReportsHandFilter
+                ? "|" + F(c.HandMinCutoffHz) + "|" + F(c.HandPositionBeta) + "|" + F(c.HandRotationBeta) + "|" + F(c.HandDerivativeCutoffHz)
+                : "");
 
         public static string KindName(OperatorClientKind kind) => kind switch
         {

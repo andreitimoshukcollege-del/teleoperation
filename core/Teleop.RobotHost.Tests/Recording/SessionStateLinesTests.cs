@@ -84,5 +84,18 @@ namespace Teleop.RobotHost.Tests.Recording
             state.Headset(11, new HeadsetConditions(0f, 0f, 5f, 0f, 8));
             Assert.Equal(new[] { "HD|11|0|0|5|0|8" }, lines);
         }
+
+        [Fact]
+        public void AReportedHandFilter_IsWrittenAtASessionStart_AndOnChange()
+        {
+            // docs/adr/0029 amendment 7: it shapes every command, so a session says it even with nothing disturbed.
+            var lines = new List<string>();
+            var state = new SessionStateLines(lines.Add);
+            state.Headset(1, new HeadsetConditions(0f, 0f, 0f, 0f, 0, 1f, 80f, 16f, 1f));
+            state.Headset(2, new HeadsetConditions(0f, 0f, 0f, 0f, 0, 1f, 80f, 16f, 1f));
+            state.Headset(3, new HeadsetConditions(0f, 0f, 0f, 0f, 0, 0f, 0f, 0f, 0f)); // switched off: the hands go raw
+            state.Headset(4, new HeadsetConditions(150f, 0f, 0f, 0f, 5, 0f, 0f, 0f, 0f));
+            Assert.Equal(new[] { "HD|1|0|0|0|0|0|1|80|16|1", "HD|3|0|0|0|0|0|0|0|0|0", "HD|4|150|0|0|0|5|0|0|0|0" }, lines);
+        }
     }
 }

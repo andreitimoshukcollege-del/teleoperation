@@ -401,3 +401,64 @@ takes the step again with the other joints (an active set).
 
 **One thing got worse:** the label changes state more often (0.43 times per arm-second), as an arm
 sliding near its target crosses the reach tolerances.
+
+## Amendment 7 (2026-11-01): the hands are filtered
+
+The user said: "in some positions it can feel a bit jittery, like I am not moving my hand and the
+robot is jittering between positions."
+
+**The cause is the hand, not the IK.**
+- **In the session:** `20261101T194606Z-auto` had 29 such windows on the right arm, each moving the
+  joints 0.25–1.17 rad in 0.5 s with 7–14 reversals.
+- **Headless:** a still target gives a still arm. A still hand as tracking reports it, up to 1.5 mm
+  and 0.6° of noise each frame, moved the joints 12.1 rad in 3 s.
+- **Why:** amendment 1's absolute mapping passes every millimetre of tracking noise to the tool, and
+  the IK follows it faithfully.
+
+**The fix: a One Euro filter on each palm before the mapping** (Casiez, Roussel and Vogel, CHI 2012;
+`HandPoseFilter` in `Teleop.RobotArm.Operator`). The user chose it over keeping the hands raw.
+- **The rule:** a low-pass whose cutoff is 1 Hz while the hand is still. The cutoff rises 80 Hz per m/s
+  of hand speed for position, and 16 Hz per rad/s of turning for orientation.
+- **The speed** is the difference of consecutive samples, low-passed at 1 Hz.
+- **Position:** one cutoff for all three axes, so the filter never bends a motion's direction.
+- **Orientation:** the same rule on the palm's angular velocity. The filtered rotation moves along the
+  shorter arc.
+- **When it runs:** every tracked frame, held or not, so it has settled by the time a grab takes it. A
+  lost hand, or a gap over 0.25 s, starts it again.
+- **Settings:** `HandFilter` (`one-euro` or `off`) and its four numbers in `fr3_connection.json`. They
+  can be pushed without a rebuild.
+
+**Measured** in `HandPoseFilterTests`, with that noise at 90 Hz:
+
+| | still hand: target noise (rms) | still hand: joint motion in 3 s | lag while moving | lag while turning |
+|---|---|---|---|---|
+| raw | 1.52 mm, 0.48° | 12.1 rad | none | none |
+| filtered | 0.36 mm, 0.11° | 1.4 rad | ≤ 2 mm | ≤ 0.6° |
+
+- **Lag as time:** 56 ms at 2 cm/s, 18 ms at 10 cm/s, 4 ms at 0.5 m/s. Turning: 38 ms at 0.2 rad/s,
+  9 ms at 1 rad/s.
+- **The cost, at a motion's start:** the speed estimate needs a moment to see a reach begin. Starting at
+  0.3 m/s, the target is up to 5.9 mm behind, and 4.5 mm behind 0.1 s in.
+
+**The recording knows** (extending ADR 0023's amendment):
+- **On the wire:** the headset's conditions record (`0x84`) gains the four settings, appended at the
+  same version. Older RobotHosts still read the first 40 bytes.
+- **In the session:** RobotHost adds them to the end of `HD` records, and writes an `HD` record at a
+  session's start whenever they are reported. A min cutoff of 0 means raw hands. No hand fields means a
+  headset that does not say, such as the JetRover's.
+- **Not a disturbance:** the session finalizer and the trainer read only the first fields, so a hand
+  filter does not mark a session disturbed.
+
+**This amends ADR 0016 §5 for the FR3.**
+- **What §5 said:** hands go raw because smoothing adds latency, and filtering hand jitter would be a
+  Core research axis with its own ADR.
+- **Why the balance changed:** with the absolute mapping, the jitter is visible as the arm shaking, and
+  the filter's lag while moving is a few milliseconds.
+- **How it meets §5's terms:** the filter is in Core, tested headlessly, can be switched off, and every
+  session records it. The user chose this amendment over a separate ADR.
+- **Unchanged:** the JetRover's operator still sends raw hands.
+
+**Open:**
+- **The noise is simulated.** The real tracker's noise has not been measured, so the settings are first
+  guesses to tune on the headset.
+- **The trainer** does not yet read the hand fields.

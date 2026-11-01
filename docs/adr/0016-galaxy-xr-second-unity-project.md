@@ -154,3 +154,12 @@ in `Application.persistentDataPath` already supports a value per headset.
 
 Passthrough, eye tracking, controllers on Galaxy XR, hand tracking on Quest (possible on 2022.3
 with XR Hands), robot discovery over mDNS (ADR 0015) and the lab visual upgrade.
+
+## Amendment (2026-11-01): the FR3 operator filters its hands
+
+§5 sends hands raw. The FR3 Duo's operator (ADR 0029) now runs each palm through a One Euro filter
+before the mapping (ADR 0029 amendment 7).
+- **Why:** its absolute mapping turned a still hand's tracking noise into the arm visibly shaking.
+- **§5's terms are met:** the filter is in Core (`HandPoseFilter`), tested headlessly, can be switched
+  off with `HandFilter: off` in `fr3_connection.json`, and every session records its settings.
+- **Unchanged:** the JetRover's operator still sends raw hands, and §5 still holds for it.

@@ -32,6 +32,18 @@ namespace Teleop.Bridge
         /// <summary>Hand motion → tool motion; 1 is one to one.</summary>
         public double PositionScale = 1.0;
 
+        /// <summary>
+        /// <c>one-euro</c> (the default, docs/adr/0029 amendment 7): a still hand's tracking jitter is filtered out before it
+        /// reaches the arms, and a moving hand barely lags. <c>off</c>: the hands go raw (docs/adr/0016 §5).
+        /// </summary>
+        public string HandFilter = "one-euro";
+
+        /// <summary>The hand filter's cutoff for a still hand (Hz), how fast it rises with the hand's speed (Hz per m/s) and turning (Hz per rad/s), and its speed estimate's cutoff (Hz).</summary>
+        public double HandFilterMinCutoffHz = 1.0;
+        public double HandFilterPositionBeta = 80.0;
+        public double HandFilterRotationBeta = 16.0;
+        public double HandFilterDerivativeCutoffHz = 1.0;
+
         /// <summary>The absolute mapping's neutral hand, from the headset at recentre (m): forward, to each hand's side, down. There the arms are at their neutral tools.</summary>
         public double NeutralForward = 0.30;
         public double NeutralSide = 0.20;

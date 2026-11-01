@@ -88,6 +88,8 @@ namespace Teleop.Bridge
         private SerialChainTeleop _teleop;
         private GrabGestureConfig _grabConfig;
         private BodyAnchoredMapping _mapping;
+        private HandFilterConfig _handFilterConfig;
+        private HandPoseFilter[] _handFilter;
         private GrabGesture[] _grab;
         private GrabToggleConfig _toggleConfig;
         private GrabToggle[] _toggle;
@@ -280,6 +282,11 @@ namespace Teleop.Bridge
         {
             int arm = leftHand ? _left : _right;
             if (_teleop == null || arm < 0) return;
+            // The hand filter (docs/adr/0029 amendment 7) sees every tracked frame, held or not, so it has settled when a
+            // grab takes it; a lost hand starts it again. Absolute hands are filtered in the world, relative ones in the root.
+            RigidTransform palm = default;
+            if (!tracked) _handFilter[arm].Reset();
+            else palm = Filtered(arm, _mapping != null ? ToWorld(palmPosition, palmRotation) : ToRoot(palmPosition, palmRotation));
             bool held = _grab[arm].Update(_grabConfig, tracked, curlRatio);
             if (_toggleConfig != null)
             {
@@ -291,7 +298,7 @@ namespace Teleop.Bridge
 
             if (_mapping != null)
             {
-                SetHandAbsolute(arm, held, tracked, palmPosition, palmRotation, pinchMeters);
+                SetHandAbsolute(arm, held, tracked, palm, pinchMeters);
                 return;
             }
 
@@ -301,14 +308,13 @@ namespace Teleop.Bridge
                 return;
             }
 
-            RigidTransform hand = ToRoot(palmPosition, palmRotation);
             if (!_teleop.IsEngaged(arm))
             {
-                if (!_teleop.Engage(arm, hand)) return;
+                if (!_teleop.Engage(arm, palm)) return;
             }
             else
             {
-                _teleop.Follow(arm, hand);
+                _teleop.Follow(arm, palm);
             }
 
             _teleop.SetOpening(arm, GrabGesture.Opening(_grabConfig, pinchMeters));
@@ -319,7 +325,7 @@ namespace Teleop.Bridge
         /// orientation is the gripper's. While the hand is open nothing moves and the marker stays on the arm; a grab
         /// slides the arm to where the hand maps and then follows the hand.
         /// </summary>
-        private void SetHandAbsolute(int arm, bool held, bool tracked, Vector3 palmPosition, Quaternion palmRotation, float pinchMeters)
+        private void SetHandAbsolute(int arm, bool held, bool tracked, in RigidTransform palm, float pinchMeters)
         {
             if (!tracked || !_mapping.IsCentred)
             {
@@ -334,7 +340,7 @@ namespace Teleop.Bridge
                 return;
             }
 
-            RigidTransform target = _mapping.Map(arm, ToWorld(palmPosition, palmRotation));
+            RigidTransform target = _mapping.Map(arm, palm);
 
             if (!_teleop.IsEngaged(arm))
             {
@@ -347,6 +353,11 @@ namespace Teleop.Bridge
 
             _teleop.SetOpening(arm, GrabGesture.Opening(_grabConfig, pinchMeters));
         }
+
+        /// <summary>The palm as the hand filter passes it on (unchanged with <c>HandFilter</c> off).</summary>
+        private RigidTransform Filtered(int arm, in RigidTransform palm) => _handFilterConfig == null
+            ? palm
+            : _handFilter[arm].Filter(_handFilterConfig, palm, _clock.NowTicks / (double)_clock.TicksPerSecond);
 
         private void Awake()
         {
@@ -375,8 +386,22 @@ namespace Teleop.Bridge
             {
                 throw new InvalidOperationException($"fr3_connection: HandMapping '{_config.HandMapping}' is neither 'absolute' nor 'relative'");
             }
+            if (_config.HandFilter == "one-euro")
+            {
+                _handFilterConfig = new HandFilterConfig
+                {
+                    MinCutoffHz = _config.HandFilterMinCutoffHz, PositionBeta = _config.HandFilterPositionBeta,
+                    RotationBeta = _config.HandFilterRotationBeta, DerivativeCutoffHz = _config.HandFilterDerivativeCutoffHz,
+                };
+                if (_handFilterConfig.Validate() is string badFilter) throw new InvalidOperationException("fr3_connection: " + badFilter);
+            }
+            else if (_config.HandFilter != "off")
+            {
+                throw new InvalidOperationException($"fr3_connection: HandFilter '{_config.HandFilter}' is neither 'one-euro' nor 'off'");
+            }
             _left = _teleop.ArmIndex("left");
             _right = _teleop.ArmIndex("right");
+            _handFilter = new HandPoseFilter[_teleop.ArmCount];
             _grab = new GrabGesture[_teleop.ArmCount];
             _toggle = new GrabToggle[_teleop.ArmCount];
             if (_config.GrabMode == "toggle")
@@ -415,7 +440,9 @@ namespace Teleop.Bridge
 
             Debug.Log($"[fr3] {_profile.Name}: {_teleop.ArmCount} arms, {_teleop.MotorCount} motors; joint port " +
                       $"{_config.RemoteHost}:{_config.JointRemotePort} from local {_config.JointLocalPort}; twin drawn by '{_link.Bank.ActiveLabel}'; " +
-                      $"hands {_config.HandMapping}, grab {_config.GrabMode}");
+                      $"hands {_config.HandMapping}, grab {_config.GrabMode}; hand filter " + (_handFilterConfig == null ? "off (raw hands)" :
+                      $"one-euro: {_handFilterConfig.MinCutoffHz} Hz still, +{_handFilterConfig.PositionBeta} Hz per m/s, " +
+                      $"+{_handFilterConfig.RotationBeta} Hz per rad/s, speed at {_handFilterConfig.DerivativeCutoffHz} Hz"));
             if (motionEnabledAtStart) Debug.LogWarning("[fr3] motionEnabledAtStart is set; motion goes on with the first full frame");
         }
 
@@ -451,9 +478,13 @@ namespace Teleop.Bridge
                 _lastSendTicks = now;
             }
 
-            // What the headset does to its link and view, for the robot's recording (docs/adr/0023 amendment).
+            // What the headset does to its link, its view and the hands, for the robot's recording (docs/adr/0023
+            // amendment, docs/adr/0029 amendment 7: a min cutoff of 0 is raw hands).
+            HandFilterConfig f = _handFilterConfig;
             _link.SetHeadsetConditions(new HeadsetConditions(_disturbance.Lag, _disturbance.Jitter, _disturbance.Loss,
-                (float)_link.AddedDelayMs, _transport.IsActive ? _transport.Seed : 0UL));
+                (float)_link.AddedDelayMs, _transport.IsActive ? _transport.Seed : 0UL,
+                f != null ? (float)f.MinCutoffHz : 0f, f != null ? (float)f.PositionBeta : 0f,
+                f != null ? (float)f.RotationBeta : 0f, f != null ? (float)f.DerivativeCutoffHz : 0f));
             ShowMarkers();
         }
 

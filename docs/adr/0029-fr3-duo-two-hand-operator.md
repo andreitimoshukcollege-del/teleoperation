@@ -352,3 +352,26 @@ twin root's yaw.
 - **What stays the same:** RECENTRE and Power still anchor the position to where the operator stands.
 - **The log:** the recentre line now says how far the headset faced off the robot.
 - **Code:** `BodyAnchoredMapping` is unchanged; only what the host passes to it changed.
+
+## Amendment 5 (2026-11-01): the anchor walks with you
+
+The user found that walking around moved the arm's target. Amendment 1's body frame was anchored
+where the operator stood at RECENTRE or Power, so a hand carried across the room by walking moved
+relative to that spot. The user chose, over a frame always centred on them, one that moves with them
+while they walk and stays put while they stand, so a lean still reaches further.
+
+**How it works** (`BodyAnchoredMapping.Follow`, called by the bridge every frame with the headset's
+position):
+- **Standing:** while the headset moves horizontally slower than `WalkSpeed` (0.35 m/s, smoothed over
+  0.1 s), the frame stays put. Sway, leaning and reaching are the hand's.
+- **Walking:** faster than that, and for 0.5 s after, the frame moves with the head. It also takes
+  over 0.25 s the motion from the walk's first steps, before its speed told, so the target ends where
+  it was.
+- **Motion that never became a walk** is forgotten over 1 s.
+- **Height and heading** stay as recentre set them (heading from the robot, amendment 4).
+
+**Measured** in `BodyAnchoredMappingTests`:
+- **Walking sideways at 1 m/s with the hand held:** the target strays up to 65 mm in the first steps,
+  then ends 5 mm from where it was.
+- **Ten seconds of standing,** with jitter and 2 cm of sway, move the frame less than 5 mm.
+- **A 15 cm lean over 1.5 s** reaches its full 15 cm.

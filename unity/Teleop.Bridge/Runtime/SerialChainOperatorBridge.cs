@@ -434,8 +434,11 @@ namespace Teleop.Bridge
             if (_mapping != null && !_mapping.IsCentred && Camera.main != null && Camera.main.transform.position != Vector3.zero) Recentre();
 
             // A step as long as the frame, so the gripper's speed caps hold at any frame rate (Direct Preview runs below 90 Hz).
-            _teleop.Step(_lastStepTicks == long.MinValue ? 0 : (now - _lastStepTicks) / (double)_clock.TicksPerSecond);
+            double frame = _lastStepTicks == long.MinValue ? 0 : (now - _lastStepTicks) / (double)_clock.TicksPerSecond;
             _lastStepTicks = now;
+            // The body frame walks with you (docs/adr/0029 amendment 5): standing it stays, walking it comes along.
+            if (_mapping != null && _mapping.IsCentred && Camera.main != null) _mapping.Follow(ToWorld(Camera.main.transform.position, Quaternion.identity), frame);
+            _teleop.Step(frame);
             if (_mode == JetRoverMotionMode.On && _teleop.HasPose && (_lastSendTicks == long.MinValue || now - _lastSendTicks >= _sendIntervalTicks))
             {
                 int n = _teleop.WriteTargets(_targets);

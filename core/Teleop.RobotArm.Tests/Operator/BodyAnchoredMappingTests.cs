@@ -162,6 +162,69 @@ namespace Teleop.RobotArm.Tests.Operator
             BodyAnchoredMapping m = Mapping(out _);
             RigidTransform hand = Hand(0.3, 0.2, -0.4);
             AllocationAssert.Zero(() => m.Map(0, hand), iterations: 1000);
+            AllocationAssert.Zero(() => m.Follow(RigidTransform.Identity, 1.0 / 90), iterations: 1000);
+        }
+
+        private static double Apart(in RigidTransform a, in RigidTransform b) =>
+            Math.Sqrt((a.X - b.X) * (a.X - b.X) + (a.Y - b.Y) * (a.Y - b.Y) + (a.Z - b.Z) * (a.Z - b.Z));
+
+        [Fact]
+        public void WalkingWithTheHandHeld_LeavesTheTargetWhereItWas()
+        {
+            // The operator walks 1.5 m to the side and on, reaching 1 m/s in half a second, hand held in front, then stands.
+            BodyAnchoredMapping m = Mapping(out _);
+            RigidTransform start = m.Map(1, Hand(0.3, -0.2, -0.4));
+            double worst = 0, x = 0, y = 0, v = 0;
+            const double dt = 1.0 / 90;
+            for (int k = 1; k <= 360; k++)
+            {
+                v = k <= 270 ? Math.Min(1.0, v + 2.0 * dt) : Math.Max(0.0, v - 4.0 * dt);
+                y -= v * dt;
+                x += 0.3 * v * dt;
+                m.Follow(new RigidTransform(x, y, 0, 1, 0, 0, 0), dt);
+                worst = Math.Max(worst, Apart(m.Map(1, Hand(x + 0.3, y - 0.2, -0.4)), start));
+            }
+
+            for (int k = 0; k < 90; k++) m.Follow(new RigidTransform(x, y, 0, 1, 0, 0, 0), dt);
+            double end = Apart(m.Map(1, Hand(x + 0.3, y - 0.2, -0.4)), start);
+            Assert.True(end < 0.01, $"after the walk the target is {1000 * end:0} mm from where it was");
+            Assert.True(worst < 0.12, $"the target strayed {1000 * worst:0} mm at the walk's start");
+        }
+
+        [Fact]
+        public void StandingSwayAndASlowLean_MoveNothing_TheLeanStillReaches()
+        {
+            BodyAnchoredMapping m = Mapping(out _);
+            var rng = new SeededRng(7);
+            const double dt = 1.0 / 90;
+            // Ten seconds of standing: tracking jitter of a few millimetres and a slow sway of 2 cm.
+            for (int k = 0; k < 900; k++)
+            {
+                double t = k * dt;
+                m.Follow(new RigidTransform(0.02 * Math.Sin(t) + 0.003 * (rng.NextDouble() - 0.5), 0.003 * (rng.NextDouble() - 0.5), 0, 1, 0, 0, 0), dt);
+            }
+
+            Assert.True(Apart(m.Body, RigidTransform.Identity) < 0.005, $"standing moved the body frame {1000 * Apart(m.Body, RigidTransform.Identity):0} mm");
+
+            // A lean of 15 cm over 1.5 s with the hand going with it: the frame stays, so the target goes 15 cm further.
+            RigidTransform before = m.Map(0, Hand(0.3, 0.2, -0.4));
+            for (int k = 1; k <= 135; k++) m.Follow(new RigidTransform(0.15 * k / 135.0, 0, 0, 1, 0, 0, 0), dt);
+            RigidTransform after = m.Map(0, Hand(0.45, 0.2, -0.4));
+            Assert.InRange(after.X - before.X, 0.13, 0.151);
+        }
+
+        [Fact]
+        public void Walking_CanBeTurnedOff_AndNothingFollowsBeforeARecentre()
+        {
+            SerialChainProfile profile = SerialChainKinematicsTests.LoadFr3Duo();
+            var unanchored = new BodyAnchoredMapping(profile, BodyAnchoredMapping.NeutralTools(profile));
+            unanchored.Follow(new RigidTransform(1, 0, 0, 1, 0, 0, 0), 0.5);
+            Assert.False(unanchored.IsCentred);
+
+            BodyAnchoredMapping off = Mapping(out _, new BodyMappingOptions { WalkSpeed = 0 });
+            for (int k = 1; k <= 90; k++) off.Follow(new RigidTransform(k / 90.0, 0, 0, 1, 0, 0, 0), 1.0 / 90);
+            Assert.Equal(0, Apart(off.Body, RigidTransform.Identity), 12);
+            Assert.NotNull(new BodyMappingOptions { WalkSpeed = -1 }.Validate());
         }
 
         private static JointSample[] ReadyMeasured(SerialChainProfile profile)

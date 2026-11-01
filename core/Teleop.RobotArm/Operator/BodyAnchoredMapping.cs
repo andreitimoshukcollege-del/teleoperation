@@ -16,10 +16,36 @@ namespace Teleop.RobotArm.Operator
         public double NeutralSide { get; set; } = 0.20;
         public double NeutralDown { get; set; } = 0.40;
 
+        /// <summary>
+        /// Walking carries the body frame (<see cref="BodyAnchoredMapping.Follow"/>, docs/adr/0029 amendment 5): a head
+        /// moving horizontally faster than this (m/s, smoothed over <see cref="WalkSpeedSeconds"/>) is walking, and the
+        /// frame then moves with it, so the target stays where it was. Slower is standing, sway or a lean to reach, and
+        /// the frame stays put, so that motion is the hand's. 0 turns it off.
+        /// </summary>
+        public double WalkSpeed { get; set; } = 0.35;
+
+        /// <summary>The time constant of the head speed compared with <see cref="WalkSpeed"/> (s): tracking jitter is not a step.</summary>
+        public double WalkSpeedSeconds { get; set; } = 0.1;
+
+        /// <summary>How long after the head slows below <see cref="WalkSpeed"/> it still counts as walking (s): the steps that stop a walk.</summary>
+        public double WalkLingerSeconds { get; set; } = 0.5;
+
+        /// <summary>
+        /// The head's motion not yet taken by the frame (the start of a walk, before its speed told) is taken over this
+        /// long once walking (s), so after a walk the target is back where it was; when no walk follows, that motion is
+        /// forgotten over <see cref="WalkForgetSeconds"/>.
+        /// </summary>
+        public double WalkCatchUpSeconds { get; set; } = 0.25;
+
+        public double WalkForgetSeconds { get; set; } = 1.0;
+
         public string? Validate()
         {
             if (!(PositionScale > 0) || double.IsInfinity(PositionScale)) return $"PositionScale must be positive and finite ({PositionScale})";
             if (double.IsNaN(NeutralForward + NeutralSide + NeutralDown) || double.IsInfinity(NeutralForward + NeutralSide + NeutralDown)) return "the neutral hand must be finite";
+            if (!(WalkSpeed >= 0) || double.IsInfinity(WalkSpeed)) return $"WalkSpeed must be 0 (off) or positive ({WalkSpeed})";
+            if (!(WalkSpeedSeconds > 0 && WalkLingerSeconds >= 0 && WalkCatchUpSeconds > 0 && WalkForgetSeconds > 0) ||
+                double.IsInfinity(WalkSpeedSeconds + WalkLingerSeconds + WalkCatchUpSeconds + WalkForgetSeconds)) return "the walking times must be positive and finite";
             return null;
         }
     }
@@ -59,6 +85,8 @@ namespace Teleop.RobotArm.Operator
         private readonly RigidTransform[] _neutralTool;
         private readonly double[] _neutralSide;
         private RigidTransform _bodyFromWorld = RigidTransform.Identity;
+        private double _bodyX, _bodyY, _bodyZ, _bodyYaw;
+        private double _headX, _headY, _headSpeed, _pendingX, _pendingY, _walking;
 
         /// <param name="neutralTools">Each arm's tool at the neutral hand, root frame; <see cref="NeutralTools"/> gives the FR3 Duo's.</param>
         public BodyAnchoredMapping(SerialChainProfile profile, RigidTransform[] neutralTools, BodyMappingOptions? options = null)
@@ -107,11 +135,65 @@ namespace Teleop.RobotArm.Operator
         public void Recentre(in RigidTransform head)
         {
             head.Rotate(1, 0, 0, out double fx, out double fy, out _);
-            double yaw = Math.Abs(fx) + Math.Abs(fy) > 1e-9 ? Math.Atan2(fy, fx) : 0;
-            RigidTransform heading = RigidTransform.Rotation(0, 0, 1, yaw);
-            var body = new RigidTransform(head.X, head.Y, head.Z, heading.Qw, heading.Qx, heading.Qy, heading.Qz);
-            _bodyFromWorld = body.Inverse();
+            _bodyYaw = Math.Abs(fx) + Math.Abs(fy) > 1e-9 ? Math.Atan2(fy, fx) : 0;
+            _bodyX = head.X;
+            _bodyY = head.Y;
+            _bodyZ = head.Z;
+            _headX = head.X;
+            _headY = head.Y;
+            _headSpeed = _pendingX = _pendingY = _walking = 0;
+            SetBody();
             IsCentred = true;
+        }
+
+        /// <summary>
+        /// The head now, every frame, <paramref name="seconds"/> after the last: the body frame walks with the operator
+        /// (docs/adr/0029 amendment 5). Standing (the head slower than <see cref="BodyMappingOptions.WalkSpeed"/>), the
+        /// frame stays put, so a lean or a reach is the hand's. Walking, and for <see cref="BodyMappingOptions.WalkLingerSeconds"/>
+        /// after, the frame moves with the head's horizontal motion, and also takes the motion from before the walk's speed
+        /// told, so the target ends where it was. Height and heading stay as <see cref="Recentre"/> set them. Before
+        /// <see cref="Recentre"/>, nothing.
+        /// </summary>
+        public void Follow(in RigidTransform head, double seconds)
+        {
+            if (!IsCentred) return;
+            double dx = head.X - _headX, dy = head.Y - _headY;
+            _headX = head.X;
+            _headY = head.Y;
+            if (!(seconds > 0) || double.IsInfinity(seconds) || !(_options.WalkSpeed > 0)) return;
+            double speed = Math.Sqrt(dx * dx + dy * dy) / seconds;
+            _headSpeed += (1 - Math.Exp(-seconds / _options.WalkSpeedSeconds)) * (speed - _headSpeed);
+            _walking = _headSpeed >= _options.WalkSpeed ? _options.WalkLingerSeconds + seconds : Math.Max(0, _walking - seconds);
+            _pendingX += dx;
+            _pendingY += dy;
+            if (_walking > 0)
+            {
+                // Take this frame's motion, and what was left over, a share each frame: the walk's start catches up.
+                double take = Math.Min(1.0, seconds / _options.WalkCatchUpSeconds);
+                double tx = dx + take * (_pendingX - dx), ty = dy + take * (_pendingY - dy);
+                _bodyX += tx;
+                _bodyY += ty;
+                _pendingX -= tx;
+                _pendingY -= ty;
+                SetBody();
+            }
+            else
+            {
+                // Standing: the motion is the hand's, and what no walk claimed is forgotten.
+                double keep = Math.Exp(-seconds / _options.WalkForgetSeconds);
+                _pendingX *= keep;
+                _pendingY *= keep;
+            }
+        }
+
+        /// <summary>The body frame's position in the world (its height and heading are the last recentre's).</summary>
+        public RigidTransform Body => new RigidTransform(_bodyX, _bodyY, _bodyZ,
+            Math.Cos(0.5 * _bodyYaw), 0, 0, Math.Sin(0.5 * _bodyYaw));
+
+        private void SetBody()
+        {
+            RigidTransform heading = RigidTransform.Rotation(0, 0, 1, _bodyYaw);
+            _bodyFromWorld = new RigidTransform(_bodyX, _bodyY, _bodyZ, heading.Qw, heading.Qx, heading.Qy, heading.Qz).Inverse();
         }
 
         /// <summary>Where arm <paramref name="arm"/>'s tool goes (root frame) for a hand at <paramref name="hand"/> (world).</summary>

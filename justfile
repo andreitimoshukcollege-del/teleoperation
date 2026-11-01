@@ -2830,8 +2830,11 @@ isaac-host:
     repo=$HOME/teleoperation-isaac
     [ -x "$HOME/isaacsim/venv/bin/python" ] || { echo "error: no Isaac Sim in our account here: just isaac-setup" >&2; exit 1; }
     if [ -f "$HOME/train-sim.pid" ] && kill -0 "$(cat "$HOME/train-sim.pid")" 2>/dev/null; then echo "error: a training run of ours is going (just gpu-status)" >&2; exit 1; fi
-    # [.]: the pattern must not match this script's own command line.
-    mine=$(pgrep -u "$USER" -f "teleop_isaac[.]bridge" | head -1 || true)
+    # A Python process only: this script's own shell, and its subshells, carry the bridge's command line in their text.
+    mine=""
+    for p in $(pgrep -u "$USER" -f "teleop_isaac[.]bridge" || true); do
+        case "$(readlink "/proc/$p/exe" 2>/dev/null)" in *python*) mine=$p; break ;; esac
+    done
     if [ -n "$mine" ]; then
         echo "error: an Isaac host of ours is already running on $(hostname) (bridge pid $mine): use it, or stop it first (Enter where it was started)" >&2
         exit 1

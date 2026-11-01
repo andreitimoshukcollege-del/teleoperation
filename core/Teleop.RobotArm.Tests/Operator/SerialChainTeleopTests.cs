@@ -264,6 +264,32 @@ namespace Teleop.RobotArm.Tests.Operator
         }
 
         [Fact]
+        public void AnArmPinnedAtALimit_AndAtTheMargin_StillSlides()
+        {
+            // The right arm at 4.8 s of the second 2026-11-01 Isaac session: the shoulder (joint 2) on its limit and the upper arm
+            // at the margin of the head, where moving the hand back (-x) went nowhere until the slide held the pinned joint.
+            double[] right = { -2.285058, -1.825766, 0.371091, -2.113097, 2.676057, 2.300988, -2.417915 };
+            SerialChainProfile profile = SerialChainKinematicsTests.LoadFr3Duo();
+            SerialChainCollisionModel collision = SerialChainSolverTests.Collision();
+            var teleop = new SerialChainTeleop(profile, collision);
+            Assert.True(teleop.TryTakePose(Measured(profile, LeftReady, right)));
+            ChainJointLimits shoulder = profile.Arms[1].Joints[1].Limits;
+            Assert.True(right[1] - shoulder.SoftLower < 0.02, "the shoulder is not on its limit");
+
+            RigidTransform start = teleop.Tool(1);
+            teleop.EngageAt(1, Moved(start, -0.06, 0, 0));
+            for (int k = 0; k < 180; k++)
+            {
+                teleop.Step(1.0 / 90.0);
+                Assert.False(SerialChainCollision.Check(profile, collision, Pose(teleop)).IsHit, $"step {k}: the committed pose collides");
+            }
+
+            RigidTransform end = teleop.Tool(1);
+            Assert.True(start.X - end.X > 0.04, $"the gripper moved {1000 * (start.X - end.X):0} mm of the 60 asked");
+            Assert.True(SerialChainTeleop.AngleBetween(start, end) < 0.02, "the slide turned the gripper");
+        }
+
+        [Fact]
         public void AnArmDrivenIntoTheOther_IsBlocked_AndEveryCommittedPoseIsClear()
         {
             SerialChainTeleop teleop = Teleop(out SerialChainProfile profile, out SerialChainCollisionModel collision);

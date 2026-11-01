@@ -375,3 +375,29 @@ position):
   then ends 5 mm from where it was.
 - **Ten seconds of standing,** with jitter and 2 cm of sway, move the frame less than 5 mm.
 - **A 15 cm lean over 1.5 s** reaches its full 15 cm.
+
+## Amendment 6 (2026-11-01): a slide holds a joint pinned at its limit
+
+With the collision models matched, the user still found the arm "gets stuck, won't follow".
+
+**The cause.** Every real stall in the session was the same corner: the right arm reaching high and
+out to the right, with its shoulder (joint 2) exactly on its limit and its upper arm at the head's
+margin. Amendment 3's slide asked for a step that took joint 2 past its limit. The cut put the arm
+back into the head's margin, so the slide was refused and the arm held. From those poses, moving the
+hand back, down or toward the robot went nowhere.
+
+**The fix.** `ConstrainedStep` now holds any joint on its bound that the step would push past it, and
+takes the step again with the other joints (an active set).
+
+**Measured.**
+- **From the stalls:** the moves that went nowhere now reach 48–56 mm of 60 back and down, and 27 mm
+  sideways. Moves into the head, or with joint 7 on its own limit, still stop, as they should.
+- **`SerialChainTeleopTests`** replays the pose from 4.8 s.
+
+| | blocked | out of reach | off target | false alarm | error p95 | angle p95 | frames > 0.05 rad | changes/s |
+|---|---|---|---|---|---|---|---|---|
+| amendment 3 | 2.9% | 2.6% | 6.1% | 0.4% | 4.0 mm | 6.5° | 120 | 0.30 |
+| joints held at limits | 2.2% | 2.2% | 5.0% | 0.2% | 3.9 mm | 4.2° | 82 | 0.43 |
+
+**One thing got worse:** the label changes state more often (0.43 times per arm-second), as an arm
+sliding near its target crosses the reach tolerances.

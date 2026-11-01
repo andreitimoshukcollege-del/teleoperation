@@ -73,6 +73,7 @@ namespace Teleop.RobotArm.Kinematics
         private readonly int _n;
         private readonly RigidTransform[] _frames;
         private readonly double[] _q, _rest, _j, _a, _e, _dq, _v, _w, _lo, _hi, _h, _hf, _hg;
+        private readonly bool[] _locked;
 
         public SerialChainSolver(ChainArm arm, SerialChainSolverOptions? options = null)
         {
@@ -95,6 +96,7 @@ namespace Teleop.RobotArm.Kinematics
             _h = new double[_n * _n];
             _hf = new double[_n];
             _hg = new double[_n];
+            _locked = new bool[_n];
             for (int i = 0; i < _n; i++)
             {
                 ChainJointLimits l = arm.Joints[i].Limits;
@@ -189,44 +191,69 @@ namespace Teleop.RobotArm.Kinematics
         /// <c>g · q</c> by exactly <paramref name="change"/> (to first order), into <paramref name="step"/>: the motion that
         /// moves the tool most nearly as asked under one linear constraint, such as "no closer to what the arm is touching".
         /// The correction is taken in the step's own metric (<c>JᵀJ + λ²I</c>), so it is spent first where it costs the tool
-        /// least: the arm's spare motion, then the smallest error in the tool's pose. False when <paramref name="g"/> is
-        /// zero. Allocation-free.
+        /// least: the arm's spare motion, then the smallest error in the tool's pose. A joint on its bound (the soft limit
+        /// less the margin) that the step would push past it is held there, and the step taken again by the others, so an
+        /// arm pinned at a limit can still slide. False when the free joints cannot change <c>g · q</c> at all.
+        /// Allocation-free.
         /// </summary>
         public bool ConstrainedStep(ReadOnlySpan<double> q, in RigidTransform target, ReadOnlySpan<double> g, double change, Span<double> step)
         {
             if (q.Length != _n || g.Length < _n || step.Length < _n) throw new ArgumentException($"the arm has {_n} joints");
-            for (int i = 0; i < _n; i++) _q[i] = q[i];
+            for (int i = 0; i < _n; i++)
+            {
+                _q[i] = q[i];
+                _locked[i] = false;
+            }
+
             SerialChainKinematics.ComputeFrames(_arm, _q, _frames);
             Error(target, _frames[_n], out _, out _);
             Jacobian();
-            // H = JᵀJ + λ²I, f = Jᵀe.
-            for (int r = 0; r < _n; r++)
+            // A joint on a bound that the step would push past it is held there, and the step is taken again by the others.
+            for (int pass = 0; pass <= _n; pass++)
             {
-                double f = 0;
-                for (int k = 0; k < 6; k++) f += _j[k * _n + r] * _e[k];
-                _hf[r] = f;
-                _hg[r] = g[r];
-                for (int c = 0; c < _n; c++)
+                // H = JᵀJ + λ²I over the free joints (a held joint's row and column are the identity), f = Jᵀe, both held at 0.
+                for (int r = 0; r < _n; r++)
                 {
-                    double sum = 0;
-                    for (int k = 0; k < 6; k++) sum += _j[k * _n + r] * _j[k * _n + c];
-                    _h[r * _n + c] = sum + (r == c ? _o.Damping * _o.Damping : 0);
+                    double f = 0;
+                    if (!_locked[r]) for (int k = 0; k < 6; k++) f += _j[k * _n + r] * _e[k];
+                    _hf[r] = f;
+                    _hg[r] = _locked[r] ? 0 : g[r];
+                    for (int c = 0; c < _n; c++)
+                    {
+                        double sum = 0;
+                        if (!_locked[r] && !_locked[c]) for (int k = 0; k < 6; k++) sum += _j[k * _n + r] * _j[k * _n + c];
+                        _h[r * _n + c] = sum + (r == c ? (_locked[r] ? 1.0 : _o.Damping * _o.Damping) : 0);
+                    }
                 }
+
+                CholeskyN(_h, _n);
+                CholeskySolveN(_h, _n, _hf);   // the unconstrained step
+                CholeskySolveN(_h, _n, _hg);   // H⁻¹ g
+                double gHg = 0, gStep = 0;
+                for (int i = 0; i < _n; i++)
+                {
+                    if (_locked[i]) continue;
+                    gHg += g[i] * _hg[i];
+                    gStep += g[i] * _hf[i];
+                }
+
+                if (!(gHg > 1e-300)) return false;
+                double mu = (change - gStep) / gHg;
+                bool held = false;
+                for (int i = 0; i < _n; i++)
+                {
+                    step[i] = _locked[i] ? 0 : _hf[i] + mu * _hg[i];
+                    if (!_locked[i] && ((_q[i] <= _lo[i] + 1e-9 && step[i] < 0) || (_q[i] >= _hi[i] - 1e-9 && step[i] > 0)))
+                    {
+                        _locked[i] = true;
+                        held = true;
+                    }
+                }
+
+                if (!held) break;
             }
 
-            CholeskyN(_h, _n);
-            CholeskySolveN(_h, _n, _hf);   // the unconstrained step
-            CholeskySolveN(_h, _n, _hg);   // H⁻¹ g
-            double gHg = 0, gStep = 0;
-            for (int i = 0; i < _n; i++)
-            {
-                gHg += g[i] * _hg[i];
-                gStep += g[i] * _hf[i];
-            }
-
-            if (!(gHg > 1e-300)) return false;
-            double mu = (change - gStep) / gHg;
-            for (int i = 0; i < _n; i++) step[i] = _hf[i] + mu * _hg[i];
+            for (int i = 0; i < _n; i++) if (_locked[i]) step[i] = 0;
             return true;
         }
 

@@ -145,8 +145,8 @@ namespace Teleop.RobotArm.Operator
     /// command is where the robot already is.</item>
     /// <item>A released arm holds its command. Re-engaging anywhere never jumps it (the clutch is relative).</item>
     /// <item>Every committed pose is inside the soft limits and, with a collision model, clear of the body and of the
-    /// other arm's command; a step that would collide is cut to its largest clear part, or not taken and the arm holds
-    /// where it was (<see cref="ChainArmStatus.Blocked"/>). RobotHost refuses the same poses on its side (docs/adr/0026 amendment).</item>
+    /// other arm's command; a step that would collide slides along what it would hit, or is cut to its largest clear part,
+    /// or is not taken and the arm holds where it was (<see cref="ChainArmStatus.Blocked"/>). RobotHost refuses the same poses on its side (docs/adr/0026 amendment).</item>
     /// <item>No joint's command moves more than <see cref="SerialChainTeleopOptions.MaxStepRadians"/> per step, nor faster than
     /// its share of the joint's velocity limit (<see cref="SerialChainTeleopOptions.JointSpeedShare"/>).</item>
     /// </list>
@@ -174,6 +174,9 @@ namespace Teleop.RobotArm.Operator
         private readonly double[] _stepped;
         private readonly double[] _gradient;
         private readonly double[] _nullStep;
+        private readonly double[] _probe;
+        private readonly double[] _slideGradient;
+        private readonly double[] _unslid;
 
         public SerialChainTeleop(SerialChainProfile profile, SerialChainCollisionModel? collision = null, SerialChainTeleopOptions? options = null)
         {
@@ -215,6 +218,9 @@ namespace Teleop.RobotArm.Operator
             _stepped = new double[joints];
             _gradient = new double[widest];
             _nullStep = new double[widest];
+            _probe = new double[joints];
+            _slideGradient = new double[widest];
+            _unslid = new double[widest];
             MotorCount = joints;
             for (int a = 0; a < arms; a++)
             {
@@ -423,11 +429,12 @@ namespace Teleop.RobotArm.Operator
                     _candidate[o + j] = from + shorten * (_candidate[o + j] - from);
                 }
 
-                bool collided = false;
+                bool collided = false, slid = false;
                 if (_collision != null && SerialChainCollision.Check(_profile, _collision, _candidate).IsHit)
                 {
                     collided = true;
-                    if (!LargestClearPart(a))
+                    slid = path && Slide(a, step, seconds);
+                    if (!slid && !LargestClearPart(a))
                     {
                         _status[a] = ChainArmStatus.Blocked;
                         continue;
@@ -435,7 +442,8 @@ namespace Teleop.RobotArm.Operator
                 }
 
                 Array.Copy(_candidate, o, _q, o, n);
-                if (collided) _status[a] = ChainArmStatus.Blocked;
+                // Sliding along an obstacle is blocked only while it keeps the tool off its target.
+                if (collided && !(slid && !OffTarget(a, goal))) _status[a] = ChainArmStatus.Blocked;
                 else if (!path) _status[a] = r.Converged || shorten < 1.0 ? ChainArmStatus.Following : ChainArmStatus.StoppedShort;
                 else _status[a] = stuck && OffTarget(a, goal) ? ChainArmStatus.StoppedShort : ChainArmStatus.Following;
             }
@@ -559,6 +567,61 @@ namespace Teleop.RobotArm.Operator
 
         private static double Distance(in RigidTransform a, in RigidTransform b) =>
             Math.Sqrt((a.X - b.X) * (a.X - b.X) + (a.Y - b.Y) * (a.Y - b.Y) + (a.Z - b.Z) * (a.Z - b.Z));
+
+        /// <summary>
+        /// Replaces arm <paramref name="a"/>'s colliding candidate with the step toward <paramref name="step"/> that comes no
+        /// closer to what the arm would hit (and backs out to <see cref="SlideClearance"/> when inside it), so the arm slides
+        /// along the obstacle instead of the whole step being refused. The step is the solver's
+        /// <see cref="SerialChainSolver.ConstrainedStep"/>: the elbow's spare motion takes the constraint first, then the
+        /// least error in the tool's pose. Without it an arm at the collision margin was held in every direction that came a
+        /// hair closer, and the operator felt it stick there (the 2026-11-01 Isaac session: the right upper arm against the
+        /// head). True when the slide is clear and still helps: the tool moves toward <paramref name="step"/> (sideways along
+        /// the obstacle too, never away) and turns no further from it. Otherwise the candidate is put back as it was, for the
+        /// cut to its largest clear part.
+        /// </summary>
+        private bool Slide(int a, in RigidTransform step, double seconds)
+        {
+            ChainArm arm = _profile.Arms[a];
+            int n = arm.Joints.Length, o = _offset[a];
+            Array.Copy(_candidate, o, _unslid, 0, n);
+            Array.Copy(_q, _probe, _q.Length);
+            double clearance = SerialChainCollision.Clearance(_profile, _collision!, _probe, a);
+            const double eps = 1e-4;
+            for (int j = 0; j < n; j++)
+            {
+                _probe[o + j] = _q[o + j] + eps;
+                _slideGradient[j] = (SerialChainCollision.Clearance(_profile, _collision!, _probe, a) - clearance) / eps;
+                _probe[o + j] = _q[o + j];
+            }
+
+            double change = Math.Max(0, _collision!.Margin + SlideClearance - clearance);
+            if (_solvers[a].ConstrainedStep(Commanded(a), step, _slideGradient.AsSpan(0, n), change, _nullStep.AsSpan(0, n)))
+            {
+                for (int j = 0; j < n; j++) _candidate[o + j] = _q[o + j] + _nullStep[j];
+                double shorten = Shorten(a, seconds);
+                for (int j = 0; j < n; j++)
+                {
+                    ChainJointLimits l = arm.Joints[j].Limits;
+                    double q = _q[o + j] + shorten * _nullStep[j];
+                    _candidate[o + j] = Math.Max(l.SoftLower, Math.Min(l.SoftUpper, q));
+                }
+
+                if (!SerialChainCollision.Check(_profile, _collision!, _candidate).IsHit)
+                {
+                    RigidTransform from = Tool(a), to = SerialChainKinematics.Tool(arm, _candidate.AsSpan(o, n));
+                    double toward = (to.X - from.X) * (step.X - from.X) + (to.Y - from.Y) * (step.Y - from.Y) + (to.Z - from.Z) * (step.Z - from.Z);
+                    bool moves = Distance(from, step) < 1e-4 || toward > 0;
+                    bool turns = AngleBetween(to, step) <= AngleBetween(from, step) + 0.01;
+                    if (moves && turns) return true;
+                }
+            }
+
+            Array.Copy(_unslid, 0, _candidate, o, n);
+            return false;
+        }
+
+        /// <summary>The gap above the collision margin a slide keeps (m): room for what the first-order cut misses.</summary>
+        private const double SlideClearance = 0.002;
 
         /// <summary>Cuts arm <paramref name="a"/>'s colliding candidate to the largest clear part of its step (a half, then a quarter); false when none is.</summary>
         private bool LargestClearPart(int a)

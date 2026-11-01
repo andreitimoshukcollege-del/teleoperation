@@ -287,3 +287,50 @@ within both.
   30 in the benchmark). This is not addressed.
 - **The headset.** How the change feels there is not yet tested.
 - **The real FR3.** Not yet tested (P8).
+
+## Amendment 3 (2026-11-01): the arm slides along what it touches
+
+The user drove the arms in Isaac (ADR 0031) with amendment 2's IK. It "feels a lot better", but in
+certain positions it felt stuck: once the arm got there, it was hard to move it on.
+
+**The cause, from the session's recording.** The right arm stalled seven times. Every stall from
+47 s on was at the collision margin (10–11 mm). In five of them the right upper arm (`link3`)
+touched the head capsule, and in one `link2` touched `link5`.
+
+From those poses, a headless replay asked the IK for a 6 cm move in each of the six directions.
+Two or three of the six went nowhere (0–14 mm in 2 s), each one a direction that would have
+brought the arm a hair closer to the obstacle. A step that collided was cut to a half or a quarter,
+or else not taken. So an arm at the margin was refused every step with any component toward the
+obstacle, and it stuck there.
+
+**The fix.** A step that would collide is replaced by the solver's `ConstrainedStep`.
+- **What it computes:** the damped least-squares step toward the same pose that keeps the arm
+  exactly as far from the obstacle, to first order, and backs out to 2 mm above the margin when
+  inside it.
+- **How it spends the constraint:** in the step's own metric (`JᵀJ + λ²I`), so the elbow's spare
+  motion takes it first, and then the smallest error in the gripper's pose.
+- **When a slide is taken:** only if it is clear, moves the gripper toward the hand (sideways along
+  the obstacle too, never away), and does not turn it further.
+- **Otherwise** the old cut to a half or a quarter applies.
+- **The label:** an arm sliding within the reach tolerances of its target reports following, not
+  blocked.
+
+From the seven stuck poses, the moves that went nowhere now reach the full 6 cm in a few frames. The
+exceptions are into the head, and at the two poses with joints 1 and 2 on their limits, which are
+real limits. `SerialChainTeleopTests` replays the 59.8 s pose.
+
+**Measured** by `SerialChainTeleopTrackingTests` (the same hands as amendment 2):
+
+| | blocked | out of reach | off target | false alarm | error p95 | angle p95 | frames > 0.05 rad | changes/s |
+|---|---|---|---|---|---|---|---|---|
+| amendment 2 | 3.2% | 2.7% | 7.2% | 0.2% | 6.7 mm | 8.4° | 92 | 0.32 |
+| sliding | 2.9% | 2.6% | 6.1% | 0.4% | 4.0 mm | 6.5° | 120 | 0.30 |
+
+More frames go over 0.05 rad, and all of them are wrist joints at their own velocity limit.
+
+**Also found:**
+- **Two collision models.** The headset (this branch) leaves the joint-limited pairs to the joint
+  limits (amendment 1, item 3). The Isaac session's RobotHost ran from main, which still checks them,
+  so it refused 19 of the headset's commands. They come into line when this branch reaches main.
+- **The refusal log.** RobotHost's periodic refusal line never printed: its first-time check
+  overflowed. That fix is on the Isaac branch.

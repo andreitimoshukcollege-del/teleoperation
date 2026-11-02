@@ -43,13 +43,21 @@ namespace UnityEngine
         public T GetComponentInChildren<T>() where T : class => null;
     }
 
-    public sealed class GameObject : Object { public void SetActive(bool value) { } }
+    public sealed class GameObject : Object { public void SetActive(bool value) { } public bool activeSelf => false; }
+
+    // SerialChainOperatorBridge.Recentre: the headset's pose.
+    public sealed class Camera : Component { public static Camera main => null; }
     public struct Vector3
     {
         public float x, y, z;
         public Vector3(float x, float y, float z) { this.x = x; this.y = y; this.z = z; }
         public static Vector3 operator +(Vector3 a, Vector3 b) => default;
         public static Vector3 operator *(Vector3 a, float d) => default;
+        public static bool operator ==(Vector3 a, Vector3 b) => false;
+        public static bool operator !=(Vector3 a, Vector3 b) => true;
+        public override bool Equals(object o) => false;
+        public override int GetHashCode() => 0;
+        public static Vector3 zero => default;
         public static Vector3 right => default;
         public static Vector3 forward => default;
     }
@@ -57,6 +65,8 @@ namespace UnityEngine
     {
         public static Quaternion Inverse(Quaternion q) => default;
         public static Quaternion AngleAxis(float angle, Vector3 axis) => default;
+        public static Quaternion Euler(float x, float y, float z) => default;
+        public Vector3 eulerAngles => default;
         public static Quaternion operator *(Quaternion a, Quaternion b) => default;
         public static Vector3 operator *(Quaternion q, Vector3 v) => default;
         public static Quaternion identity => default;
@@ -111,6 +121,7 @@ namespace UnityEngine
     public static class Mathf
     {
         public const float Rad2Deg = 57.29578f;
+        public static float DeltaAngle(float current, float target) => 0f;
         public static bool Approximately(float a, float b) => a == b;
     }
     public static class Time { public static float unscaledTime => 0f; }

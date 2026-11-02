@@ -29,7 +29,7 @@ namespace Teleop.XR
         public enum Role { Power, Pause }
 
         [SerializeField] private Role role = Role.Power;
-        [SerializeField] private JetRoverOperatorBridge bridge;
+        [SerializeField] private OperatorBridgeBase bridge;
         [SerializeField] private XROrigin origin;
         [Tooltip("The cap that is pressed, sitting level; its top face is the button's surface. Recoloured with the state.")]
         [SerializeField] private Renderer cap;
@@ -77,11 +77,10 @@ namespace Teleop.XR
 
         private void Show()
         {
-            JetRoverJointStateLink link = bridge.JointState;
-            JetRoverArmPower power = link != null ? link.ArmPower : JetRoverArmPower.Unknown;
+            JetRoverArmPower power = bridge.ArmPower;
             JetRoverMotionMode mode = bridge.MotionMode;
-            int remaining = link != null ? Mathf.RoundToInt(link.ArmPowerRemainingDeg) : 0;
-            string reason = link != null ? link.ArmPowerReasonText : "";
+            int remaining = Mathf.RoundToInt(bridge.ArmPowerRemainingDeg);
+            string reason = bridge.ArmPowerReasonText ?? "";
             string offReason = bridge.MotionOffReason;
             int key = !bridge.HardwareMotionAllowed ? -2
                 : (((int)mode * 10 + (int)power) * 2 + (bridge.WaitingForHold ? 1 : 0)) * 1000 + Mathf.Clamp(remaining, 0, 999)

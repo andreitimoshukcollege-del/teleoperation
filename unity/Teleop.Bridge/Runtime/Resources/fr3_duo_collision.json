@@ -527,6 +527,16 @@
       "reason": "touching-at-ready"
     },
     {
+      "a": "left_fr3v2_link2",
+      "b": "left_fr3v2_link4",
+      "reason": "joint-limited"
+    },
+    {
+      "a": "left_fr3v2_link3",
+      "b": "left_fr3v2_link5",
+      "reason": "joint-limited"
+    },
+    {
       "a": "left_fr3v2_link5",
       "b": "left_fr3v2_link7",
       "reason": "touching-at-ready"
@@ -537,6 +547,26 @@
       "reason": "touching-at-ready"
     },
     {
+      "a": "left_fr3v2_link5",
+      "b": "left_fr3v2_leftfinger",
+      "reason": "joint-limited"
+    },
+    {
+      "a": "left_fr3v2_link5",
+      "b": "left_fr3v2_rightfinger",
+      "reason": "joint-limited"
+    },
+    {
+      "a": "right_fr3v2_link2",
+      "b": "right_fr3v2_link4",
+      "reason": "joint-limited"
+    },
+    {
+      "a": "right_fr3v2_link3",
+      "b": "right_fr3v2_link5",
+      "reason": "joint-limited"
+    },
+    {
       "a": "right_fr3v2_link5",
       "b": "right_fr3v2_link7",
       "reason": "touching-at-ready"
@@ -545,6 +575,16 @@
       "a": "right_fr3v2_link5",
       "b": "right_fr3v2_hand",
       "reason": "touching-at-ready"
+    },
+    {
+      "a": "right_fr3v2_link5",
+      "b": "right_fr3v2_leftfinger",
+      "reason": "joint-limited"
+    },
+    {
+      "a": "right_fr3v2_link5",
+      "b": "right_fr3v2_rightfinger",
+      "reason": "joint-limited"
     }
   ]
 }

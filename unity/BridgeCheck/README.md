@@ -54,7 +54,7 @@ so one unrelated new Bridge file cannot turn a clean run into a wall of stub err
 
 Covered today: `TeleopOperatorBridge`, `TeleopRobotBridge`, `JetRoverOperatorBridge`,
 `JetRoverArmConfig`, `RobotArmProfileData`, `NetworkImpairmentSettings`, `SwappableTransport`,
-`NetworkImpairmentController`, `CameraFeedBridge`, and the FR3 Duo's `SerialChainOperatorBridge`,
+`NetworkImpairmentController`, `CameraFeedBridge`, `OperatorBridgeBase`, and the FR3 Duo's `SerialChainOperatorBridge`,
 `SerialChainArmRig` and `SerialChainConnectionConfig` (docs/adr/0029) — i.e. every Bridge file that constructs or calls into Core, which is
 where this class of breakage lands.
 

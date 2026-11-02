@@ -13,7 +13,7 @@ namespace Teleop.XR
     /// happen to be.
     /// <list type="bullet">
     /// <item><b>The app paused or lost focus</b> (Android suspends it when the headset is taken off): at
-    /// once, and the relax request goes out before the app stops (<see cref="JetRoverOperatorBridge.TurnOffNow"/>).
+    /// once, and the relax request goes out before the app stops (<see cref="OperatorBridgeBase.TurnOffNow"/>).
     /// Only in a build: the editor loses focus whenever another window is clicked.</item>
     /// <item><b>User presence</b> (the head device's <c>userPresence</c>, where the runtime reports it):
     /// after <see cref="absentSeconds"/> without the user, for a runtime that keeps the app running with
@@ -23,7 +23,7 @@ namespace Teleop.XR
     /// </summary>
     public sealed class HeadsetRemovalGuard : MonoBehaviour
     {
-        [SerializeField] private JetRoverOperatorBridge bridge;
+        [SerializeField] private OperatorBridgeBase bridge;
         [Tooltip("How long the headset must report no user before the robot is turned off, seconds.")]
         [SerializeField] private float absentSeconds = 0.5f;
 

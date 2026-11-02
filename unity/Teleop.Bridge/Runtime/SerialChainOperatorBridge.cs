@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Net;
 using Teleop.Core.Contracts;
+using Teleop.Core.Metrics;
 using Teleop.Core.Prediction;
 using Teleop.Core.Types;
 using Teleop.RobotArm.Collision;
@@ -34,14 +35,21 @@ namespace Teleop.Bridge
     /// <list type="bullet">
     /// <item><b>Update</b> (after TeleopXR's hand driver has called <see cref="SetHand"/>): drain the link, take the
     /// robot's pose once, step the clutches, send.</item>
-    /// <item><b>onBeforeRender</b>: the twin from the active predictor's estimate for now, else the newest frame.</item>
+    /// <item><b>onBeforeRender</b>: the twin's three arms (docs/adr/0018, as the JetRover's): <b>predicted</b>, the
+    /// active predictor's estimate for now (the newest frame before the clocks sync); <b>commanded</b>, where the
+    /// clutches tell the arms to go; <b>measured</b>, the newest frame as received. The bench's switches show or hide
+    /// each (<see cref="ITwinVisibility"/>).</item>
     /// </list>
-    /// <b>Motion is off at launch</b> (<see cref="MotionEnabled"/>): nothing but keepalives goes until the operator
-    /// switches it on, and switching it on first takes the robot's measured pose as the command and lets go of both
-    /// clutches, so the arms never jump to wherever the hands were while it was off.
+    /// The lab's controls drive it as they drive the JetRover's bridge (<see cref="OperatorBridgeBase"/>, docs/adr/0029
+    /// amendment): the console's predictors and network disturbance, the added delay, power and pause, and the headset
+    /// guard. <b>Motion is off at launch</b>: nothing but keepalives goes until the operator switches it on, and
+    /// switching it on first takes the robot's measured pose as the command and lets go of both clutches, so the arms
+    /// never jump to wherever the hands were while it was off or paused. Off and paused differ only in their labels: a
+    /// serial-chain host has no torque to keep or drop (docs/adr/0027 decision 5), so both stop commanding and the
+    /// robot's own shaper brings it to rest at its last target.
     /// </summary>
     [DefaultExecutionOrder(-40)]
-    public sealed class SerialChainOperatorBridge : MonoBehaviour
+    public sealed class SerialChainOperatorBridge : OperatorBridgeBase, ITwinVisibility
     {
         private const string ConfigResource = "fr3_connection";
         private const string ProfileResource = "fr3_duo_profile";
@@ -49,7 +57,15 @@ namespace Teleop.Bridge
 
         [Tooltip("The robot's root frame in the scene: the URDF's base link, where the twin is built.")]
         [SerializeField] private Transform robotRoot;
+        [Tooltip("The predicted arms, solid: the active predictor's estimate for now.")]
         [SerializeField] private SerialChainArmRig twin;
+        [Tooltip("Optional: the commanded arms, a ghost: where the clutches tell the arms to go.")]
+        [SerializeField] private SerialChainArmRig commandedTwin;
+        [Tooltip("Optional: the measured arms, faint: the robot's newest frame as received.")]
+        [SerializeField] private SerialChainArmRig measuredTwin;
+        [SerializeField] private bool showPredicted = true;
+        [SerializeField] private bool showCommanded = true;
+        [SerializeField] private bool showMeasured = true;
         [Tooltip("One marker per arm (left, right): where its clutch asks the tool to be.")]
         [SerializeField] private Transform[] targetMarkers = new Transform[0];
         [SerializeField] private bool motionEnabledAtStart;
@@ -63,61 +79,182 @@ namespace Teleop.Bridge
         private SerialChainProfile _profile;
         private UnityMonotonicClock _clock;
         private UdpTransport _udp;
+        private JointLinkDisturbance _transport;
+        private ulong _disturbanceSeed;
+        private (float Lag, float Jitter, float Loss) _disturbance;
         private SerialChainJointLink _link;
+        private LinkView _view;
+        private JointSample[] _commanded;
         private SerialChainTeleop _teleop;
         private GrabGestureConfig _grabConfig;
+        private BodyAnchoredMapping _mapping;
+        private HandFilterConfig _handFilterConfig;
+        private HandPoseFilter[] _handFilter;
         private GrabGesture[] _grab;
+        private GrabToggleConfig _toggleConfig;
+        private GrabToggle[] _toggle;
         private JointTarget[] _targets;
         private readonly byte[] _buffer = new byte[JointDatagram.MaxBytes];
-        private long _sendIntervalTicks, _lastSendTicks = long.MinValue;
+        private long _sendIntervalTicks, _lastSendTicks = long.MinValue, _lastStepTicks = long.MinValue;
         private uint _sequence;
         private int _left = -1, _right = -1;
-        private bool _motion;
+        private JetRoverMotionMode _mode = JetRoverMotionMode.Off;
+        private string _motionOffReason = "";
         private MaterialPropertyBlock _markerColor;
         private Renderer[] _markerRenderers;
         private int[] _shownMarkerState;
 
         public bool IsReady => _link != null;
 
-        /// <summary>Whether commands go to the robot. On takes the robot's measured pose first, and fails (stays off) before one has arrived.</summary>
+        /// <summary>The two-way switch: true is <see cref="JetRoverMotionMode.On"/>, false <see cref="JetRoverMotionMode.Off"/>; reads true only in On.</summary>
         public bool MotionEnabled
         {
-            get => _motion;
+            get => _mode == JetRoverMotionMode.On;
+            set => MotionMode = value ? JetRoverMotionMode.On : JetRoverMotionMode.Off;
+        }
+
+        /// <summary>
+        /// On: commands go, from the robot's measured pose (taken first; refused, staying as it was, before a complete
+        /// frame has arrived), with both clutches let go and the robot anchored to where you stand. Paused and Off: none.
+        /// </summary>
+        public override JetRoverMotionMode MotionMode
+        {
+            get => _mode;
             set
             {
-                if (value == _motion) return;
-                if (!value || _link == null)
+                if (value == _mode) return;
+                if (value == JetRoverMotionMode.On)
                 {
-                    _motion = false;
-                    if (_link != null) _link.MotionOn = false;
-                    return;
+                    if (_link == null) return;
+                    if (!_config.AllowMotion)
+                    {
+                        Debug.LogWarning("[fr3] motion stays off: AllowMotion is false in fr3_connection");
+                        return;
+                    }
+
+                    if (!_teleop.TryTakePose(_link.Measured))
+                    {
+                        Debug.LogWarning("[fr3] motion stays off: no complete joint-state frame from the robot yet");
+                        return;
+                    }
+
+                    ResetGrabs();
+                    // Where you stand when you switch on is where the robot is anchored to you.
+                    Recentre();
+                }
+                else
+                {
+                    // Nothing more is sent; the clutches let go, so the next start begins from the robot's pose.
+                    ResetGrabs();
                 }
 
-                if (!_config.AllowMotion)
-                {
-                    Debug.LogWarning("[fr3] motion stays off: AllowMotion is false in fr3_connection");
-                    return;
-                }
-
-                if (!_teleop.TryTakePose(_link.Measured))
-                {
-                    Debug.LogWarning("[fr3] motion stays off: no complete joint-state frame from the robot yet");
-                    return;
-                }
-
-                ResetGrabs();
-                _motion = true;
-                _link.MotionOn = true;
+                _mode = value;
+                _motionOffReason = "";
+                if (_link != null) _link.MotionOn = value == JetRoverMotionMode.On;
             }
         }
 
+        public override bool HardwareMotionAllowed => MotionAllowed;
+
+        public override string MotionOffReason => _motionOffReason;
+
+        /// <summary>ROBOT OFF without the button (the headset taken off): commanding stops at once.</summary>
+        public override void TurnOffNow(string reason)
+        {
+            if (_mode == JetRoverMotionMode.Off) return;
+            MotionMode = JetRoverMotionMode.Off;
+            _motionOffReason = reason ?? "";
+            Debug.Log($"[fr3] robot motion -> Off: {_motionOffReason}");
+        }
+
+        public override ConnectionStatus Status =>
+            _link == null || _link.FramesReceived == 0 ? ConnectionStatus.NeverConnected
+            : _link.SecondsSinceLastFrame(_clock.NowTicks) < 1.0 ? ConnectionStatus.Connected
+            : ConnectionStatus.Stale;
+
+        public override long NowTicks => _clock != null ? _clock.NowTicks : 0;
+
+        public override IOperatorJointLink Link => _view;
+
+        public override JointLinkDisturbance JointDisturbance => _transport;
+
+        public override string GripperErrorUnit => "% of the opening";
+
+        /// <summary>
+        /// Disturbs the joint socket in both directions with a one-way delay, a uniform jitter and a random loss, clamped
+        /// to the config's caps; all zero switches it off. The same router and impairments as the JetRover's
+        /// (<see cref="JointLinkDisturbance"/>, Core's <c>NetworkImpairmentSettings</c>), and every change is logged
+        /// with its seed and reported to the recording.
+        /// </summary>
+        public override void ApplyCustomDisturbance(float delayMs, float jitterMs, float lossPercent)
+        {
+            if (_transport == null) return;
+            delayMs = Math.Min(Math.Max(delayMs, 0f), _config.DisturbanceMaxDelayMs);
+            jitterMs = Math.Min(Math.Max(jitterMs, 0f), Math.Max(0f, _config.DisturbanceMaxDelayMs - delayMs));
+            lossPercent = Math.Min(Math.Max(lossPercent, 0f), _config.DisturbanceMaxLossPercent);
+            _disturbance = (delayMs, jitterMs, lossPercent);
+            if (delayMs <= 0f && jitterMs <= 0f && lossPercent <= 0f)
+            {
+                _transport.Clear();
+                Debug.Log("[network] disturbance off");
+                return;
+            }
+
+            var settings = new NetworkImpairmentSettings
+            {
+                EnableDelay = delayMs > 0f, BaseDelayMs = delayMs,
+                EnableJitter = jitterMs > 0f, JitterMs = jitterMs,
+                EnableLoss = lossPercent > 0f, LossPercent = lossPercent,
+            };
+            string description = $"{delayMs:0} ms ± {jitterMs:0} ms, {lossPercent:0.#}% loss both ways";
+            _disturbanceSeed += 2;
+            _transport.Set(settings.CreateImpairments(_clock.TicksPerSecond, null), settings.CreateImpairments(_clock.TicksPerSecond, null), _disturbanceSeed, description);
+            Debug.Log($"[network] disturbance: {description}, seed {_disturbanceSeed}, at {_clock.NowTicks} ticks");
+        }
+
+        public bool ShowPredicted { get => showPredicted; set => showPredicted = value; }
+        public bool ShowCommanded { get => showCommanded; set => showCommanded = value; }
+        public bool ShowMeasured { get => showMeasured; set => showMeasured = value; }
+
         public bool MotionAllowed => _config != null && _config.AllowMotion;
 
+        /// <summary>Whether the hands map absolutely (the robot anchored to your body), rather than through the relative clutch.</summary>
+        public bool IsAbsolute => _mapping != null;
+
+        /// <summary>
+        /// Anchors the robot to your body as you stand now (docs/adr/0029 amendments 1 and 4): the headset's position, with
+        /// the robot's heading, becomes the body frame, and your neutral hands the arms' neutral tools. Also done when
+        /// motion is switched on. The heading is the robot's, not the headset's: RECENTRE and Power are buttons you look at
+        /// to press, and taking the direction you looked as forward turned the gripper sideways from a hand pointing
+        /// forward (2026-11-01).
+        /// </summary>
+        public void Recentre()
+        {
+            if (_mapping == null) return;
+            Camera eye = Camera.main;
+            if (eye == null) return;
+            Transform head = eye.transform;
+            Transform facing = robotRoot != null ? robotRoot : head;
+            _mapping.Recentre(ToWorld(head.position, Quaternion.Euler(0f, facing.rotation.eulerAngles.y, 0f)));
+            Debug.Log($"[fr3] recentred: the robot is anchored where you stand, facing its way (you faced {Mathf.DeltaAngle(facing.rotation.eulerAngles.y, head.rotation.eulerAngles.y):0} deg off it)");
+        }
+
         public bool IsSynced => _link != null && _link.IsSynced;
+        public bool HasState => _link != null && !_link.Measured.IsEmpty;
         public long FramesReceived => _link != null ? _link.FramesReceived : 0;
         public float RoundTripMilliseconds => _link != null ? _link.RoundTripMilliseconds : 0f;
         public float SecondsSinceLastFrame => _link != null ? (float)_link.SecondsSinceLastFrame(_clock.NowTicks) : float.PositiveInfinity;
         public string ActivePredictor => _link != null ? _link.Bank.ActiveLabel : "";
+
+        /// <summary>Whether a double curl locks the arm on (true) or the curl must be held (false).</summary>
+        public bool UsesToggle => _toggleConfig != null;
+
+        /// <summary>Whether this hand's arm is locked on by a double curl (toggle mode); it may still be holding, if the hand is lost.</summary>
+        public bool IsLocked(bool leftHand)
+        {
+            int arm = leftHand ? _left : _right;
+            return _toggle != null && arm >= 0 && _toggle[arm].IsLocked;
+        }
 
         public DuoArmState ArmState(bool leftHand)
         {
@@ -145,25 +282,82 @@ namespace Teleop.Bridge
         {
             int arm = leftHand ? _left : _right;
             if (_teleop == null || arm < 0) return;
+            // The hand filter (docs/adr/0029 amendment 7) sees every tracked frame, held or not, so it has settled when a
+            // grab takes it; a lost hand starts it again. Absolute hands are filtered in the world, relative ones in the root.
+            RigidTransform palm = default;
+            if (!tracked) _handFilter[arm].Reset();
+            else palm = Filtered(arm, _mapping != null ? ToWorld(palmPosition, palmRotation) : ToRoot(palmPosition, palmRotation));
             bool held = _grab[arm].Update(_grabConfig, tracked, curlRatio);
+            if (_toggleConfig != null)
+            {
+                // A double curl locks the arm on and another unlocks it; while locked it follows the hand whether or not
+                // tracking reads the hand as curled, and holds while the hand is lost.
+                bool locked = _toggle[arm].Update(_toggleConfig, tracked, held, _clock.NowTicks / (double)_clock.TicksPerSecond);
+                held = locked && tracked;
+            }
+
+            if (_mapping != null)
+            {
+                SetHandAbsolute(arm, held, tracked, palm, pinchMeters);
+                return;
+            }
+
             if (!held)
             {
                 if (_teleop.IsEngaged(arm)) _teleop.Release(arm);
                 return;
             }
 
-            RigidTransform hand = ToRoot(palmPosition, palmRotation);
             if (!_teleop.IsEngaged(arm))
             {
-                if (!_teleop.Engage(arm, hand)) return;
+                if (!_teleop.Engage(arm, palm)) return;
             }
             else
             {
-                _teleop.Follow(arm, hand);
+                _teleop.Follow(arm, palm);
             }
 
             _teleop.SetOpening(arm, GrabGesture.Opening(_grabConfig, pinchMeters));
         }
+
+        /// <summary>
+        /// The absolute mapping: where the hand is (relative to your body) is where the gripper goes, and the palm's
+        /// orientation is the gripper's. While the hand is open nothing moves and the marker stays on the arm; a grab
+        /// slides the arm to where the hand maps and then follows the hand.
+        /// </summary>
+        private void SetHandAbsolute(int arm, bool held, bool tracked, in RigidTransform palm, float pinchMeters)
+        {
+            if (!tracked || !_mapping.IsCentred)
+            {
+                if (_teleop.IsEngaged(arm)) _teleop.Release(arm);
+                return;
+            }
+
+            if (!held)
+            {
+                // An open hand moves nothing, its marker included: the marker stays on the arm until a grab (the user's call).
+                if (_teleop.IsEngaged(arm)) _teleop.Release(arm);
+                return;
+            }
+
+            RigidTransform target = _mapping.Map(arm, palm);
+
+            if (!_teleop.IsEngaged(arm))
+            {
+                if (!_teleop.EngageAt(arm, target)) return;
+            }
+            else
+            {
+                _teleop.Track(arm, target);
+            }
+
+            _teleop.SetOpening(arm, GrabGesture.Opening(_grabConfig, pinchMeters));
+        }
+
+        /// <summary>The palm as the hand filter passes it on (unchanged with <c>HandFilter</c> off).</summary>
+        private RigidTransform Filtered(int arm, in RigidTransform palm) => _handFilterConfig == null
+            ? palm
+            : _handFilter[arm].Filter(_handFilterConfig, palm, _clock.NowTicks / (double)_clock.TicksPerSecond);
 
         private void Awake()
         {
@@ -180,20 +374,60 @@ namespace Teleop.Bridge
             };
             if (_grabConfig.Validate() is string badGrab) throw new InvalidOperationException("fr3_connection: " + badGrab);
             _teleop = new SerialChainTeleop(_profile, collision,
-                new SerialChainTeleopOptions { PositionScale = _config.PositionScale, MaxStepRadians = _config.MaxStepRadians });
+                new SerialChainTeleopOptions { PositionScale = _config.PositionScale, MaxStepRadians = _config.MaxStepRadians, ApproachSteps = Math.Max(1, _config.ApproachSteps) });
+            if (_config.HandMapping == "absolute")
+            {
+                _mapping = new BodyAnchoredMapping(_profile, BodyAnchoredMapping.NeutralTools(_profile), new BodyMappingOptions
+                {
+                    PositionScale = _config.PositionScale, NeutralForward = _config.NeutralForward, NeutralSide = _config.NeutralSide, NeutralDown = _config.NeutralDown,
+                });
+            }
+            else if (_config.HandMapping != "relative")
+            {
+                throw new InvalidOperationException($"fr3_connection: HandMapping '{_config.HandMapping}' is neither 'absolute' nor 'relative'");
+            }
+            if (_config.HandFilter == "one-euro")
+            {
+                _handFilterConfig = new HandFilterConfig
+                {
+                    MinCutoffHz = _config.HandFilterMinCutoffHz, PositionBeta = _config.HandFilterPositionBeta,
+                    RotationBeta = _config.HandFilterRotationBeta, DerivativeCutoffHz = _config.HandFilterDerivativeCutoffHz,
+                };
+                if (_handFilterConfig.Validate() is string badFilter) throw new InvalidOperationException("fr3_connection: " + badFilter);
+            }
+            else if (_config.HandFilter != "off")
+            {
+                throw new InvalidOperationException($"fr3_connection: HandFilter '{_config.HandFilter}' is neither 'one-euro' nor 'off'");
+            }
             _left = _teleop.ArmIndex("left");
             _right = _teleop.ArmIndex("right");
+            _handFilter = new HandPoseFilter[_teleop.ArmCount];
             _grab = new GrabGesture[_teleop.ArmCount];
+            _toggle = new GrabToggle[_teleop.ArmCount];
+            if (_config.GrabMode == "toggle")
+            {
+                _toggleConfig = new GrabToggleConfig { MinPressSeconds = _config.MinPressSeconds, DoubleClickSeconds = _config.DoubleClickSeconds };
+                if (_toggleConfig.Validate() is string badToggle) throw new InvalidOperationException("fr3_connection: " + badToggle);
+            }
+            else if (_config.GrabMode != "hold")
+            {
+                throw new InvalidOperationException($"fr3_connection: GrabMode '{_config.GrabMode}' is neither 'toggle' nor 'hold'");
+            }
             _targets = new JointTarget[_teleop.MotorCount];
 
             _udp = new UdpTransport(_config.JointLocalPort, new IPEndPoint(Resolve(_config.RemoteHost), _config.JointRemotePort),
                 JointDatagram.MaxBytes, _clock);
+            // Off until the console switches one on; commands, keepalives and frames all pass through it.
+            _transport = new JointLinkDisturbance(_udp);
+            _disturbanceSeed = unchecked((ulong)DateTime.UtcNow.Ticks) & ~1UL;
             var clockSync = new ClockSyncConfig(
                 historyCapacity: _config.ClockSyncHistoryCapacity, smoothingAlpha: _config.ClockSyncSmoothingAlpha,
                 maxAcceptableRttTicks: (long)(_config.MaxAcceptableRttMs / 1000.0 * _clock.TicksPerSecond),
                 outlierRttMultiple: _config.OutlierRttMultiple, minSamplesBeforeTrusted: _config.MinSamplesBeforeTrusted);
-            List<JointPredictorPreset> presets = Presets(out int active);
-            _link = new SerialChainJointLink(_udp, _clock, _profile, clockSync, presets, active);
+            List<JointPredictorPreset> presets = Presets(out int active, out string[] descriptions);
+            _link = new SerialChainJointLink(_transport, _clock, _profile, clockSync, presets, active);
+            _view = new LinkView(_link, descriptions, _clock);
+            _commanded = new JointSample[_teleop.MotorCount];
 
             _markerColor = new MaterialPropertyBlock();
             _markerRenderers = new Renderer[targetMarkers.Length];
@@ -205,7 +439,10 @@ namespace Teleop.Bridge
             }
 
             Debug.Log($"[fr3] {_profile.Name}: {_teleop.ArmCount} arms, {_teleop.MotorCount} motors; joint port " +
-                      $"{_config.RemoteHost}:{_config.JointRemotePort} from local {_config.JointLocalPort}; twin drawn by '{_link.Bank.ActiveLabel}'");
+                      $"{_config.RemoteHost}:{_config.JointRemotePort} from local {_config.JointLocalPort}; twin drawn by '{_link.Bank.ActiveLabel}'; " +
+                      $"hands {_config.HandMapping}, grab {_config.GrabMode}; hand filter " + (_handFilterConfig == null ? "off (raw hands)" :
+                      $"one-euro: {_handFilterConfig.MinCutoffHz} Hz still, +{_handFilterConfig.PositionBeta} Hz per m/s, " +
+                      $"+{_handFilterConfig.RotationBeta} Hz per rad/s, speed at {_handFilterConfig.DerivativeCutoffHz} Hz"));
             if (motionEnabledAtStart) Debug.LogWarning("[fr3] motionEnabledAtStart is set; motion goes on with the first full frame");
         }
 
@@ -219,36 +456,72 @@ namespace Teleop.Bridge
             long now = _clock.NowTicks;
             _link.Tick(now);
             if (!_teleop.HasPose && _link.FramesReceived > 0) _teleop.TryTakePose(_link.Measured);
-            if (motionEnabledAtStart && !_motion && _teleop.HasPose) MotionEnabled = true;
+            if (motionEnabledAtStart && _mode != JetRoverMotionMode.On && _teleop.HasPose) MotionEnabled = true;
+            // Anchored at launch too, once the headset is tracking, so the markers show where a grab would go.
+            if (_mapping != null && !_mapping.IsCentred && Camera.main != null && Camera.main.transform.position != Vector3.zero) Recentre();
 
-            _teleop.Step();
-            if (_motion && _teleop.HasPose && (_lastSendTicks == long.MinValue || now - _lastSendTicks >= _sendIntervalTicks))
+            // A step as long as the frame, so the gripper's speed caps hold at any frame rate (Direct Preview runs below 90 Hz).
+            double frame = _lastStepTicks == long.MinValue ? 0 : (now - _lastStepTicks) / (double)_clock.TicksPerSecond;
+            _lastStepTicks = now;
+            // The body frame walks with you (docs/adr/0029 amendment 5): standing it stays, walking it comes along.
+            if (_mapping != null && _mapping.IsCentred && Camera.main != null) _mapping.Follow(ToWorld(Camera.main.transform.position, Quaternion.identity), frame);
+            _teleop.Step(frame);
+            if (_mode == JetRoverMotionMode.On && _teleop.HasPose && (_lastSendTicks == long.MinValue || now - _lastSendTicks >= _sendIntervalTicks))
             {
                 int n = _teleop.WriteTargets(_targets);
                 if (JointCommandCodec.TryEncode(++_sequence, now, _targets.AsSpan(0, n), _buffer, out int written))
                 {
-                    _udp.Send(_buffer.AsSpan(0, written), now);
+                    _transport.Send(_buffer.AsSpan(0, written), now);
                     _link.OnCommandSent(now, _targets.AsSpan(0, n));
                 }
 
                 _lastSendTicks = now;
             }
 
+            // What the headset does to its link, its view and the hands, for the robot's recording (docs/adr/0023
+            // amendment, docs/adr/0029 amendment 7: a min cutoff of 0 is raw hands).
+            HandFilterConfig f = _handFilterConfig;
+            _link.SetHeadsetConditions(new HeadsetConditions(_disturbance.Lag, _disturbance.Jitter, _disturbance.Loss,
+                (float)_link.AddedDelayMs, _transport.IsActive ? _transport.Seed : 0UL,
+                f != null ? (float)f.MinCutoffHz : 0f, f != null ? (float)f.PositionBeta : 0f,
+                f != null ? (float)f.RotationBeta : 0f, f != null ? (float)f.DerivativeCutoffHz : 0f));
             ShowMarkers();
         }
 
         private void HandleBeforeRender()
         {
-            if (_link == null || twin == null) return;
-            ReadOnlySpan<JointSample> pose = _link.Predicted(_clock.NowTicks);
+            if (_link == null) return;
+
+            // Predicted, solid: the estimate for now, or the newest frame before the clocks sync. Stays where it was
+            // (and shown) before any frame, so the robot is never missing from the scene.
+            ReadOnlySpan<JointSample> pose = _link.IsSynced ? _link.Predicted(_clock.NowTicks) : ReadOnlySpan<JointSample>.Empty;
             if (pose.IsEmpty) pose = _link.Measured;
-            if (!pose.IsEmpty) twin.Apply(pose);
+            Drive(twin, showPredicted, pose);
+
+            // Measured, faint: the newest frame as received, once there is one.
+            Drive(measuredTwin, showMeasured && !_link.Measured.IsEmpty, _link.Measured);
+
+            // Commanded, a ghost: the clutches' command, once the robot's pose has been taken.
+            if (commandedTwin != null)
+            {
+                int n = _teleop.HasPose ? _teleop.WriteTargets(_targets) : 0;
+                for (int i = 0; i < n; i++) _commanded[i] = new JointSample(_targets[i].MotorId, _targets[i].Angle, false);
+                Drive(commandedTwin, showCommanded && n > 0, _commanded.AsSpan(0, n));
+            }
+        }
+
+        private static void Drive(SerialChainArmRig rig, bool visible, ReadOnlySpan<JointSample> pose)
+        {
+            if (rig == null) return;
+            if (rig.gameObject.activeSelf != visible) rig.gameObject.SetActive(visible);
+            if (visible && !pose.IsEmpty) rig.Apply(pose);
         }
 
         private void OnApplicationPause(bool paused)
         {
-            // Android pausing the app (the headset taken off, another app) stops the robot: nobody is operating it.
-            if (paused) MotionEnabled = false;
+            // Android pausing the app (the headset taken off, another app) stops the robot: nobody is operating it. The
+            // scene's HeadsetRemovalGuard does this too (and for user presence); this is the bridge's own second line.
+            if (paused) TurnOffNow("the app was paused");
         }
 
         private void OnDestroy() => _udp?.Dispose();
@@ -277,6 +550,14 @@ namespace Teleop.Bridge
             }
         }
 
+        /// <summary>A world-space pose in Core's convention, still in the world (the absolute mapping's frame).</summary>
+        private static RigidTransform ToWorld(Vector3 position, Quaternion rotation)
+        {
+            CoreVec p = position.ToCore();
+            CoreQuat q = rotation.ToCore();
+            return new RigidTransform(p.X, p.Y, p.Z, q.W, q.X, q.Y, q.Z);
+        }
+
         /// <summary>A world-space hand pose in the robot's root frame, Core's convention.</summary>
         private RigidTransform ToRoot(Vector3 position, Quaternion rotation)
         {
@@ -288,13 +569,18 @@ namespace Teleop.Bridge
 
         private void ResetGrabs()
         {
-            for (int a = 0; a < _grab.Length; a++) _grab[a].Reset();
+            for (int a = 0; a < _grab.Length; a++)
+            {
+                _grab[a].Reset();
+                _toggle[a].Reset();
+            }
         }
 
-        private List<JointPredictorPreset> Presets(out int active)
+        private List<JointPredictorPreset> Presets(out int active, out string[] descriptions)
         {
             JointPredictorConfig config = SerialChainJointLink.PredictorConfig(_profile, _clock.TicksPerSecond, _config.MaxHorizonMs, 2.5f);
             var presets = new List<JointPredictorPreset>();
+            var text = new List<string>();
             active = 0;
             foreach (JointPredictorPresetData p in _config.JointPredictorPresets ?? new JointPredictorPresetData[0])
             {
@@ -314,10 +600,60 @@ namespace Teleop.Bridge
 
                 if (p.Label == _config.JointPredictorActive) active = presets.Count;
                 presets.Add(new JointPredictorPreset(p.Label, p.Predictor, c));
+                text.Add(p.Description ?? "");
             }
 
-            if (presets.Count == 0) presets.Add(new JointPredictorPreset("franka-replay", "franka-replay", config));
+            if (presets.Count == 0)
+            {
+                presets.Add(new JointPredictorPreset("franka-replay", "franka-replay", config));
+                text.Add("");
+            }
+
+            descriptions = text.ToArray();
             return presets;
+        }
+
+        /// <summary>The console's view of the link: the bank's presets, the scorer's numbers, the added delay.</summary>
+        private sealed class LinkView : IOperatorJointLink
+        {
+            private readonly SerialChainJointLink _link;
+            private readonly string[] _descriptions;
+            private readonly UnityMonotonicClock _clock;
+
+            public LinkView(SerialChainJointLink link, string[] descriptions, UnityMonotonicClock clock)
+            {
+                _link = link;
+                _descriptions = descriptions;
+                _clock = clock;
+            }
+
+            public int PredictorCount => _link.Bank.Count;
+            public int ActivePredictorIndex => _link.Bank.ActiveIndex;
+            public string PredictorLabel(int index) => _link.Bank.LabelAt(index);
+            public string PredictorDescription(int index) => index < _descriptions.Length ? _descriptions[index] : "";
+            public bool IsPredictorEnabled(int index) => _link.Bank.IsEnabled(index);
+            public bool IsPredictorWarmingUp(int index) => _link.Bank.IsEnabled(index) && !_link.Bank.HasState(index);
+            public bool TrySelectPredictor(int index) => _link.Bank.TrySetActive(index);
+            public bool TrySetPredictorEnabled(int index, bool enabled) => _link.Bank.TrySetEnabled(index, enabled);
+
+            public bool TryGetPredictorStats(int index, out JetRoverPredictorStats stats)
+            {
+                stats = default;
+                if (!_link.Scorer.TryGetStats(index, out LiveJointStats s)) return false;
+                stats = new JetRoverPredictorStats(s.HasData, s.Readings, s.ErrorP50Deg, s.ErrorP95Deg, s.CorrectionP95Deg,
+                    s.JitterP95Deg, s.GripperErrorP95ServoDeg);
+                return true;
+            }
+
+            // The simulated FR3 has no servo board to fall silent.
+            public bool BoardSilent => false;
+            public float SecondsSinceFreshReading => (float)_link.SecondsSinceFreshReading(_clock.NowTicks);
+
+            public double AddedDelayMs
+            {
+                get => _link.AddedDelayMs;
+                set => _link.AddedDelayMs = value;
+            }
         }
 
         private static T LoadResource<T>(string name) where T : class

@@ -138,3 +138,327 @@ The robot is still simulated (`just fr3-sim-host`, ADR 0027), so nothing here mo
   FR3 has none.
 - **The real FR3 (P8) changes only the host's backend.** The headset's wire, gestures and checks stay
   as they are.
+
+## Amendment (2026-10-30): after the first headset session
+
+The user drove the simulated FR3 Duo on the Galaxy XR and asked for six changes. Each is recorded
+here with what it replaced.
+
+1. **Absolute hands: the robot anchored to the operator's body** (`BodyAnchoredMapping`). This
+   replaces decision 3's relative clutch, which stays as `HandMapping: "relative"`.
+   - **The body frame** is taken from the headset at RECENTRE (a blue button on the bench's
+     front-right) and whenever motion is switched on: its position, and its heading about the
+     vertical only.
+   - **Position, per arm:** a neutral hand maps onto the arm's neutral tool, and every centimetre
+     from there is a centimetre of tool. The neutral hand is 30 cm ahead of the head, 40 cm below it
+     and 20 cm to that hand's side. It is per arm because the FR3 Duo's shoulders are 0.6 m apart,
+     not a person's 0.4 m.
+   - **Orientation, absolute:** a flat hand pointing forward points the gripper forward, with its
+     fingers closing sideways.
+   - **The neutral tool** is 55 cm ahead of and 30 cm above each shoulder. A neutral at the ready
+     pose's tool reached only 6 of 54 nearby targets with the gripper pointing forward; this one
+     reaches 53 of 54 (`BodyAnchoredMappingTests`).
+   - **A grab slides the arm to the hand** over `ApproachSteps` (about a second) through checked
+     poses, so the arm never lunges. An open hand moves nothing, and its marker stays on the arm (the
+     user's call: a preview of where a grab would go read as the arm moving uncommanded).
+
+2. **A double curl locks an arm on, and another unlocks it** (`GrabToggle`, `GrabMode: "toggle"`).
+   This replaces holding the curl, which stays as `"hold"`, because tracking does not read a curled
+   hand as curled at every angle.
+   - **A click** is a curl held 40 ms to 0.6 s, and the second must start within 0.6 s.
+   - **Untracked frames say nothing,** so a dropout cannot fake a double click.
+   - **Losing the hand while locked holds the arm.** On return the arm slides back to the hand.
+
+3. **Collision pairs left to the joint limits** (`fit-capsules`, reason `joint-limited`). The
+   capsules could not keep three pairs per arm apart across the two joints between them:
+   `link2`/`link4`, `link3`/`link5`, and `link5` against both fingers. Checking them blocked the poses
+   the absolute mapping needs. The FR3's own limits are assumed to keep those links apart, as
+   Franka's controller does. **This must be checked on the robot before P8.**
+
+4. **The solid twin draws Franka's visual meshes** (about 510k triangles; the mount and head stay
+   low-poly), replacing decision 6's collision meshes. `Fr3DuoModel` imports the COLLADA files and
+   finds the importer's turn by laying every link over its collision shape: the worst link is 1.1 mm
+   off. The commanded and measured ghosts stay low-poly and draw no mount.
+
+5. **The same lab and the same controls as the JetRover's scene.** These replace the bare floor and
+   table.
+   - **One base class for both robots.** `OperatorBridgeBase` is now under both
+     `JetRoverOperatorBridge`, with no change in behaviour, and `SerialChainOperatorBridge`. The
+     console, network sliders, added-delay slider, power and pause, twin switches, headset guard,
+     status strip and status lamp are wired to it.
+   - **The FR3 scene is built by the JetRover's own code.** It reuses `LabRoom`, `LabDisplay`,
+     `LabLighting` and `XrControlSetup`'s builders.
+     - **Bench and probes:** a deeper bench, with the FR3 at its back so its arms clear the console
+       panel, and light probes over the FR3's workspace.
+     - **Mesh library:** its own generated-mesh library. The JetRover's would delete its robot's
+       meshes, because a build removes what it did not write.
+   - **Three twins and the status lines:** the twin has predicted, commanded and measured arms, as
+     the JetRover's does. The display's caption line carries the arms' state, and the switches carry
+     the link's.
+   - **The FR3 link grew what the console needs:**
+     - live per-predictor scoring (`LiveJointScorer`), with the gripper in percent of its opening;
+     - the added delay;
+     - reports of the disturbance and the delay to the recording (`HeadsetConditions`), so the
+       trainer refuses sessions that were not on the real network, as for the JetRover.
+   - **Off and paused both stop commanding.** The serial-chain host has no torque to keep or drop,
+     so the only difference is the label.
+   - **Not carried over:** the arm-speed slider (the FR3's shaper sets its own speed) and the
+     training course (built around the JetRover's single arm).
+
+6. **The checks.**
+   - **The FR3 scene check** also requires power and pause and the headset guard wired to this
+     bridge, the switches, the console and its sliders wired, and no arm-speed slider.
+   - **The JetRover scene check still passes,** which shows its saved references survived the move to
+     the base class.
+   - **The headless parts are tested:** `BodyAnchoredMappingTests`, `GrabToggleTests`, and the link's
+     delay, scoring and condition reports in `SerialChainJointLinkTests`.
+   - **The end-to-end probe** (`just fr3-teleop-probe`) passes on the new link.
+
+## Amendment 2 (2026-10-31): the shortest-path step
+
+The user found the IK "glitchy" on the headset. It said it could not reach some poses, and it made
+huge rotations to reach others. They suggested moving the gripper along the shortest path. That is
+now the default, `ChainStepMode.CartesianPath`. The first way stays as `FullSolve`, kept so the two
+can be compared.
+
+**The first way.** Each frame solved all the way to the hand's target. The joints then moved
+straight toward that solution, cut to 0.1 rad per frame. A far target can solve on another branch,
+and the straight joint-space line to it swings the arm.
+
+1. **The step.** Each frame the gripper moves toward its target along the straight line and the
+   smaller rotation. It moves at most `MaxLinearSpeed` (1 m/s) and `MaxAngularSpeed` (3 rad/s), and
+   only that small step is solved, from where the arm is. The speed caps also handle the approach
+   to a newly grabbed hand, which `ApproachSteps` did before.
+
+2. **The spare joint, used every frame before the step is solved.** The FR3 has seven joints for a
+   six-number pose, which leaves one free motion (the elbow's swing). It is steered:
+   - **Off the joint limits.** A joint inside `LimitZone` (0.6 rad) of a limit is pushed back at up
+     to `LimitReliefSpeed` (2 rad/s). Without this, the forearm joint (5) drifted onto its limit
+     as the hand wandered. That joint was at its limit in 1,335 of 1,839 out-of-reach frames, and
+     the other joints swung to make up for it.
+   - **Away from what the arm is closing on.** The arm follows the gradient of its clearance from
+     `AvoidDistance` (4 cm) before the margin.
+
+   The step is then solved from the moved pose, so the gripper stays on its path. A step that would
+   collide is cut to its largest clear part (a half, then a quarter), or not taken.
+
+3. **Joint speed.** No joint moves faster than its velocity limit in the profile (`JointSpeedShare`
+   1). The whole arm's step is cut together, so the gripper keeps its path and only slows. A step
+   longer than 50 ms (`LongestStep`, a stall in the host) counts as 50 ms. The bridge and the probe
+   step by their real frame length, because Direct Preview runs below 90 Hz.
+
+4. **OUT OF REACH is reported only when it is true.** The solver's tolerance is 0.1 mm and 0.06°,
+   and missing it was enough to report `StoppedShort`. 30% of those frames were within 5 mm and 3°
+   of the target. Now an arm reports out of reach only when two things hold:
+   - it is stuck: the solve did not reach half of its small step;
+   - it is more than `ReachTolerance` (1 cm) or `ReachAngleTolerance` (5°) from its target.
+
+**Measured** by `SerialChainTeleopTrackingTests`, on the same synthetic hands for both. Each arm's
+hand wanders about ±15 cm with its palm ±35° in yaw, ±30° in pitch and ±70° in roll. Each run is
+30 s at 90 Hz, over five seeds:
+
+| | blocked | out of reach | off target¹ | false alarm² | error p95 | angle p95 | swing p99 / max | frames > 0.05 rad |
+|---|---|---|---|---|---|---|---|---|
+| FullSolve (before) | 5.3% | 7.4% | 8.2% | 5.0% | 36.6 mm | 16.7° | 0.066 / 0.100 rad | 415 |
+| CartesianPath (now) | 3.2% | 2.7% | 7.2% | 0.2% | 6.7 mm | 8.4° | 0.038 / 0.058 rad | 92 |
+
+¹ More than 1 cm or 5° from the target, whatever the arm reports. ² The arm reports a refusal
+within both.
+
+**Reading the table:**
+- **Swings.** Every remaining frame above 0.05 rad is joint 7 or joint 5 turning at its own
+  velocity limit.
+- **Refusals left.** The blocks are mostly the right upper arm (`link3`) touching the head capsule.
+  The out-of-reach frames are mostly wrist joints 6 and 5 at a limit, which are real.
+
+**Tried and rejected:**
+- **The gripper as the same grasp turned half a turn.** The arm aimed for whichever of the target
+  and its twin was nearer, switching after a 0.35 rad margin.
+  - Mid-motion switches never happened in the benchmark.
+  - The choice made at lock-on hurt. Aiming for the twin left the right arm blocked 1.6–13.9% of the
+    time, against 0–3.4% aiming for the target.
+  - A version that chose the twin by the wrist's remaining twist was worse still: 11.9% off target,
+    against 7.7% for the plain target.
+  - The gripper now follows the hand's roll exactly, and a wrist turned to its limit stops there.
+- **`AvoidDistance` of 6 or 8 cm.** The arm wandered (20% and 87% off target), so 4 cm stays.
+
+**Not done or not verified:**
+- **Label flicker.** The headset's label flickers on blocked spells of one to three frames (15 of
+  30 in the benchmark). This is not addressed.
+- **The headset.** How the change feels there is not yet tested.
+- **The real FR3.** Not yet tested (P8).
+
+## Amendment 3 (2026-11-01): the arm slides along what it touches
+
+The user drove the arms in Isaac (ADR 0031) with amendment 2's IK. It "feels a lot better", but in
+certain positions it felt stuck: once the arm got there, it was hard to move it on.
+
+**The cause, from the session's recording.** The right arm stalled seven times. Every stall from
+47 s on was at the collision margin (10–11 mm). In five of them the right upper arm (`link3`)
+touched the head capsule, and in one `link2` touched `link5`.
+
+From those poses, a headless replay asked the IK for a 6 cm move in each of the six directions.
+Two or three of the six went nowhere (0–14 mm in 2 s), each one a direction that would have
+brought the arm a hair closer to the obstacle. A step that collided was cut to a half or a quarter,
+or else not taken. So an arm at the margin was refused every step with any component toward the
+obstacle, and it stuck there.
+
+**The fix.** A step that would collide is replaced by the solver's `ConstrainedStep`.
+- **What it computes:** the damped least-squares step toward the same pose that keeps the arm
+  exactly as far from the obstacle, to first order, and backs out to 2 mm above the margin when
+  inside it.
+- **How it spends the constraint:** in the step's own metric (`JᵀJ + λ²I`), so the elbow's spare
+  motion takes it first, and then the smallest error in the gripper's pose.
+- **When a slide is taken:** only if it is clear, moves the gripper toward the hand (sideways along
+  the obstacle too, never away), and does not turn it further.
+- **Otherwise** the old cut to a half or a quarter applies.
+- **The label:** an arm sliding within the reach tolerances of its target reports following, not
+  blocked.
+
+From the seven stuck poses, the moves that went nowhere now reach the full 6 cm in a few frames. The
+exceptions are into the head, and at the two poses with joints 1 and 2 on their limits, which are
+real limits. `SerialChainTeleopTests` replays the 59.8 s pose.
+
+**Measured** by `SerialChainTeleopTrackingTests` (the same hands as amendment 2):
+
+| | blocked | out of reach | off target | false alarm | error p95 | angle p95 | frames > 0.05 rad | changes/s |
+|---|---|---|---|---|---|---|---|---|
+| amendment 2 | 3.2% | 2.7% | 7.2% | 0.2% | 6.7 mm | 8.4° | 92 | 0.32 |
+| sliding | 2.9% | 2.6% | 6.1% | 0.4% | 4.0 mm | 6.5° | 120 | 0.30 |
+
+More frames go over 0.05 rad, and all of them are wrist joints at their own velocity limit.
+
+**Also found:**
+- **Two collision models.** The headset (this branch) leaves the joint-limited pairs to the joint
+  limits (amendment 1, item 3). The Isaac session's RobotHost ran from main, which still checks them,
+  so it refused 19 of the headset's commands. They come into line when this branch reaches main.
+- **The refusal log.** RobotHost's periodic refusal line never printed: its first-time check
+  overflowed. That fix is on the Isaac branch.
+
+## Amendment 4 (2026-11-01): forward is the robot's
+
+In Isaac, the user's hand pointed forward but the gripper pointed to the side.
+
+**The cause.** Amendment 1 takes the body frame from the headset, both its position and its heading,
+at RECENTRE and whenever motion is switched on. Both are buttons you look at to press. The
+headset's log showed a recentre at each press of Power (14:03:56 and 14:04:18), taken while the user
+faced the button. The direction of the button became forward, and every hand pose was turned by
+that angle.
+
+**The fix.** The body frame is now the headset's position with the robot's heading, which is the
+twin root's yaw.
+- **Why this is right:** the operator stands at the bench behind the robot, facing the way it faces,
+  so forward is the robot's forward wherever they look while pressing a button.
+- **What stays the same:** RECENTRE and Power still anchor the position to where the operator stands.
+- **The log:** the recentre line now says how far the headset faced off the robot.
+- **Code:** `BodyAnchoredMapping` is unchanged; only what the host passes to it changed.
+
+## Amendment 5 (2026-11-01): the anchor walks with you
+
+The user found that walking around moved the arm's target. Amendment 1's body frame was anchored
+where the operator stood at RECENTRE or Power, so a hand carried across the room by walking moved
+relative to that spot. The user chose, over a frame always centred on them, one that moves with them
+while they walk and stays put while they stand, so a lean still reaches further.
+
+**How it works** (`BodyAnchoredMapping.Follow`, called by the bridge every frame with the headset's
+position):
+- **Standing:** while the headset moves horizontally slower than `WalkSpeed` (0.35 m/s, smoothed over
+  0.1 s), the frame stays put. Sway, leaning and reaching are the hand's.
+- **Walking:** faster than that, and for 0.5 s after, the frame moves with the head. It also takes
+  over 0.25 s the motion from the walk's first steps, before its speed told, so the target ends where
+  it was.
+- **Motion that never became a walk** is forgotten over 1 s.
+- **Height and heading** stay as recentre set them (heading from the robot, amendment 4).
+
+**Measured** in `BodyAnchoredMappingTests`:
+- **Walking sideways at 1 m/s with the hand held:** the target strays up to 65 mm in the first steps,
+  then ends 5 mm from where it was.
+- **Ten seconds of standing,** with jitter and 2 cm of sway, move the frame less than 5 mm.
+- **A 15 cm lean over 1.5 s** reaches its full 15 cm.
+
+## Amendment 6 (2026-11-01): a slide holds a joint pinned at its limit
+
+With the collision models matched, the user still found the arm "gets stuck, won't follow".
+
+**The cause.** Every real stall in the session was the same corner: the right arm reaching high and
+out to the right, with its shoulder (joint 2) exactly on its limit and its upper arm at the head's
+margin. Amendment 3's slide asked for a step that took joint 2 past its limit. The cut put the arm
+back into the head's margin, so the slide was refused and the arm held. From those poses, moving the
+hand back, down or toward the robot went nowhere.
+
+**The fix.** `ConstrainedStep` now holds any joint on its bound that the step would push past it, and
+takes the step again with the other joints (an active set).
+
+**Measured.**
+- **From the stalls:** the moves that went nowhere now reach 48–56 mm of 60 back and down, and 27 mm
+  sideways. Moves into the head, or with joint 7 on its own limit, still stop, as they should.
+- **`SerialChainTeleopTests`** replays the pose from 4.8 s.
+
+| | blocked | out of reach | off target | false alarm | error p95 | angle p95 | frames > 0.05 rad | changes/s |
+|---|---|---|---|---|---|---|---|---|
+| amendment 3 | 2.9% | 2.6% | 6.1% | 0.4% | 4.0 mm | 6.5° | 120 | 0.30 |
+| joints held at limits | 2.2% | 2.2% | 5.0% | 0.2% | 3.9 mm | 4.2° | 82 | 0.43 |
+
+**One thing got worse:** the label changes state more often (0.43 times per arm-second), as an arm
+sliding near its target crosses the reach tolerances.
+
+## Amendment 7 (2026-11-01): the hands are filtered
+
+The user said: "in some positions it can feel a bit jittery, like I am not moving my hand and the
+robot is jittering between positions."
+
+**The cause is the hand, not the IK.**
+- **In the session:** `20261101T194606Z-auto` had 29 such windows on the right arm, each moving the
+  joints 0.25–1.17 rad in 0.5 s with 7–14 reversals.
+- **Headless:** a still target gives a still arm. A still hand as tracking reports it, up to 1.5 mm
+  and 0.6° of noise each frame, moved the joints 12.1 rad in 3 s.
+- **Why:** amendment 1's absolute mapping passes every millimetre of tracking noise to the tool, and
+  the IK follows it faithfully.
+
+**The fix: a One Euro filter on each palm before the mapping** (Casiez, Roussel and Vogel, CHI 2012;
+`HandPoseFilter` in `Teleop.RobotArm.Operator`). The user chose it over keeping the hands raw.
+- **The rule:** a low-pass whose cutoff is 1 Hz while the hand is still. The cutoff rises 80 Hz per m/s
+  of hand speed for position, and 16 Hz per rad/s of turning for orientation.
+- **The speed** is the difference of consecutive samples, low-passed at 1 Hz.
+- **Position:** one cutoff for all three axes, so the filter never bends a motion's direction.
+- **Orientation:** the same rule on the palm's angular velocity. The filtered rotation moves along the
+  shorter arc.
+- **When it runs:** every tracked frame, held or not, so it has settled by the time a grab takes it. A
+  lost hand, or a gap over 0.25 s, starts it again.
+- **Settings:** `HandFilter` (`one-euro` or `off`) and its four numbers in `fr3_connection.json`. They
+  can be pushed without a rebuild.
+
+**Measured** in `HandPoseFilterTests`, with that noise at 90 Hz:
+
+| | still hand: target noise (rms) | still hand: joint motion in 3 s | lag while moving | lag while turning |
+|---|---|---|---|---|
+| raw | 1.52 mm, 0.48° | 12.1 rad | none | none |
+| filtered | 0.36 mm, 0.11° | 1.4 rad | ≤ 2 mm | ≤ 0.6° |
+
+- **Lag as time:** 56 ms at 2 cm/s, 18 ms at 10 cm/s, 4 ms at 0.5 m/s. Turning: 38 ms at 0.2 rad/s,
+  9 ms at 1 rad/s.
+- **The cost, at a motion's start:** the speed estimate needs a moment to see a reach begin. Starting at
+  0.3 m/s, the target is up to 5.9 mm behind, and 4.5 mm behind 0.1 s in.
+
+**The recording knows** (extending ADR 0023's amendment):
+- **On the wire:** the headset's conditions record (`0x84`) gains the four settings, appended at the
+  same version. Older RobotHosts still read the first 40 bytes.
+- **In the session:** RobotHost adds them to the end of `HD` records, and writes an `HD` record at a
+  session's start whenever they are reported. A min cutoff of 0 means raw hands. No hand fields means a
+  headset that does not say, such as the JetRover's.
+- **Not a disturbance:** the session finalizer and the trainer read only the first fields, so a hand
+  filter does not mark a session disturbed.
+
+**This amends ADR 0016 §5 for the FR3.**
+- **What §5 said:** hands go raw because smoothing adds latency, and filtering hand jitter would be a
+  Core research axis with its own ADR.
+- **Why the balance changed:** with the absolute mapping, the jitter is visible as the arm shaking, and
+  the filter's lag while moving is a few milliseconds.
+- **How it meets §5's terms:** the filter is in Core, tested headlessly, can be switched off, and every
+  session records it. The user chose this amendment over a separate ADR.
+- **Unchanged:** the JetRover's operator still sends raw hands.
+
+**Open:**
+- **The noise is simulated.** The real tracker's noise has not been measured, so the settings are first
+  guesses to tune on the headset.
+- **The trainer** does not yet read the hand fields.

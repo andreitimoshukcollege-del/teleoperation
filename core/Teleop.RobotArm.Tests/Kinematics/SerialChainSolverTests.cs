@@ -124,6 +124,33 @@ namespace Teleop.RobotArm.Tests.Kinematics
         }
 
         [Fact]
+        public void TheConstrainedStep_MeetsItsConstraint_WithTheArmsSpareMotionFirst()
+        {
+            SerialChainProfile p = SerialChainKinematicsTests.LoadFr3Duo();
+            ChainArm arm = p.Arms[0];
+            var solver = new SerialChainSolver(arm);
+            RigidTransform tool = SerialChainKinematics.Tool(arm, Ready);
+            var target = new RigidTransform(tool.X + 0.01, tool.Y - 0.005, tool.Z + 0.008, tool.Qw, tool.Qx, tool.Qy, tool.Qz);
+            double[] g = { 0.3, -0.2, 0.5, 0.1, -0.4, 0.25, 0.05 };
+            double[] none = new double[7], some = new double[7];
+
+            Assert.True(solver.ConstrainedStep(Ready, target, g, 0.0, none));
+            Assert.True(solver.ConstrainedStep(Ready, target, g, 0.01, some));
+            Assert.Equal(0.0, g.Zip(none, (a, b) => a * b).Sum(), 12);
+            Assert.Equal(0.01, g.Zip(some, (a, b) => a * b).Sum(), 12);
+
+            // The extra 0.01 of g·q is taken by the 7-joint arm's spare motion: the joints differ, the tool's motion barely does.
+            Assert.True(none.Zip(some, (a, b) => Math.Abs(a - b)).Max() > 1e-3, "the constraint changed nothing");
+            RigidTransform a0 = SerialChainKinematics.Tool(arm, Ready.Zip(none, (q, d) => q + d).ToArray());
+            RigidTransform a1 = SerialChainKinematics.Tool(arm, Ready.Zip(some, (q, d) => q + d).ToArray());
+            double apart = Math.Sqrt((a0.X - a1.X) * (a0.X - a1.X) + (a0.Y - a1.Y) * (a0.Y - a1.Y) + (a0.Z - a1.Z) * (a0.Z - a1.Z));
+            Assert.True(apart < 1e-3, $"the constraint moved the tool by {1000 * apart:0.00} mm");
+
+            Assert.False(solver.ConstrainedStep(Ready, target, new double[7], 0.0, none));
+            AllocationAssert.Zero(() => solver.ConstrainedStep(Ready, target, g, 0.0, none), iterations: 200);
+        }
+
+        [Fact]
         public void TheReadyPose_IsCollisionFree()
         {
             SerialChainProfile p = SerialChainKinematicsTests.LoadFr3Duo();
@@ -172,6 +199,39 @@ namespace Teleop.RobotArm.Tests.Kinematics
             SerialChainCollisionModel model = Collision();
             double[] pose = Ready.Concat(Ready.Select((q, j) => j % 2 == 0 ? -q : q)).ToArray();
             AllocationAssert.Zero(() => SerialChainCollision.Check(p, model, pose), iterations: 500);
+            AllocationAssert.Zero(() => SerialChainCollision.Clearance(p, model, pose, 0), iterations: 500);
+        }
+
+        [Fact]
+        public void TheClearance_AgreesWithTheCheck()
+        {
+            SerialChainProfile p = SerialChainKinematicsTests.LoadFr3Duo();
+            SerialChainCollisionModel model = Collision();
+            double[] ready = Ready.Concat(Ready.Select((q, j) => j % 2 == 0 ? -q : q)).ToArray();
+            Assert.True(SerialChainCollision.Clearance(p, model, ready, -1) > model.Margin, "the ready pose is no clearer than the margin");
+
+            // Clear and colliding poses alike: hit exactly when the clearance is under the margin, and the robot's clearance is its nearer arm's.
+            bool sawHit = false, sawClear = false;
+            foreach (double swing in new[] { -0.6, -0.3, 0.0, 0.3, 0.6, 1.0, 1.4 })
+            {
+                foreach (double shoulder in new[] { -0.785, 0.0, 0.6 })
+                {
+                    double[] pose = (double[])ready.Clone();
+                    pose[0] = -swing;
+                    pose[7] = swing;
+                    pose[1] = pose[8] = shoulder;
+                    ChainCollisionHit check = SerialChainCollision.Check(p, model, pose);
+                    if (check.IsHit && check.CapsuleA < 0) continue; // a joint off its range, which the clearance ignores
+                    double either = SerialChainCollision.Clearance(p, model, pose, -1);
+                    bool hit = check.IsHit;
+                    Assert.Equal(hit, either < model.Margin);
+                    Assert.Equal(either, Math.Min(SerialChainCollision.Clearance(p, model, pose, 0), SerialChainCollision.Clearance(p, model, pose, 1)), 12);
+                    sawHit |= hit;
+                    sawClear |= !hit;
+                }
+            }
+
+            Assert.True(sawHit && sawClear, "the poses did not cover both a hit and a clear pose");
         }
 
         [Fact]

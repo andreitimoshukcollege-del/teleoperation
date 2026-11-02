@@ -43,12 +43,13 @@ namespace Teleop.RobotHost.Recording
         }
 
         /// <summary>
-        /// The headset's disturbance and added delay: written when they change, and at the start of a
-        /// session whenever anything is on (all off is the format's starting state).
+        /// The headset's disturbance, added delay and hand filter: written when they change, and at the start of a
+        /// session whenever anything is on or the hand filter is reported (all off and nothing said about the hands is
+        /// the format's starting state).
         /// </summary>
         public void Headset(long t, in HeadsetConditions conditions)
         {
-            if (_headset.HasValue ? _headset.Value.Equals(conditions) : !conditions.Disturbed)
+            if (_headset.HasValue ? _headset.Value.Equals(conditions) : !conditions.Disturbed && !conditions.ReportsHandFilter)
             {
                 return;
             }

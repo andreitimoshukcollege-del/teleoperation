@@ -236,6 +236,7 @@ namespace Teleop.RobotHost.Tests.Recording
             rig.Recorder.EndAuto(first, "the joint-command sender changed");
             int second = rig.Begin("10.0.0.5:40000");
             rig.Recorder.Record("JC|4|4|1|1|A|1:0.1:2.5");
+            rig.Recorder.Record("HD|5|0|0|0|0|0|1|80|16|1"); // a hand filter (docs/adr/0029 amendment 7) is not a disturbance
             rig.Recorder.EndAuto(second, "no joint command for 30 s");
 
             string a = rig.AutoDir(), b = rig.AutoDir("20261026T120000Z-auto-2");

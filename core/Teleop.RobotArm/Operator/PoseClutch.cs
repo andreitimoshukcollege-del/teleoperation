@@ -79,6 +79,15 @@ namespace Teleop.RobotArm.Operator
             Target = new RigidTransform(x, y, z, r.Qw / n, r.Qx / n, r.Qy / n, r.Qz / n);
         }
 
+        /// <summary>
+        /// Sets the target outright while engaged: the absolute mapping (docs/adr/0029 amendment), where the target is
+        /// where the hand maps to rather than how far it has moved. Does nothing while released.
+        /// </summary>
+        public void Track(in RigidTransform target)
+        {
+            if (IsEngaged) Target = target;
+        }
+
         /// <summary>Stops following; the target holds where it is.</summary>
         public void Release() => IsEngaged = false;
 

@@ -2826,7 +2826,7 @@ isaac-check seconds="5":
     ssh -o ConnectTimeout=10 "{{gpu_host}}" '[ -x ~/isaacsim/venv/bin/python ] && [ -f ~/isaacsim/VERSION ] || { echo "error: no Isaac Sim in our account there: just isaac-setup" >&2; exit 1; }; echo "GPU: $(nvidia-smi --query-gpu=name,driver_version,memory.used,memory.total --format=csv,noheader)"'
     ssh -o ConnectTimeout=10 "{{gpu_host}}" "~/isaacsim/venv/bin/python - --seconds '{{seconds}}'" < robot/isaac/check.py
 
-# The FR3 Duo in Isaac Sim on the GPU machine, behind a RobotHost there (docs/adr/0031): checks out this commit in ~/teleoperation-isaac (it must be on GitHub), builds RobotHost, starts the Isaac bridge (robot/isaac, log ~/isaacsim/bridge.log) and then RobotHost with --backend arm-server, joint port 6002 and discovery 6005 on that machine, recording headset sessions into ~/isaacsim/recordings. Enter stops both, as does `just isaac-stop` from any terminal. Refuses while an Isaac host of ours is already running there, a training run of ours is going, or other people's GPU jobs hold over 2 GB. Point the headset at it with `just push-galaxy-fr3-config <GPU machine's address>`; drive it headless with `just fr3-teleop-probe 0.08 3 franka-replay false <GPU machine's address>` (just takes recipe arguments by position)
+# The FR3 Duo in Isaac Sim on the GPU machine, behind a RobotHost there (docs/adr/0031): checks out this commit in ~/teleoperation-isaac (it must be on GitHub), builds RobotHost, starts the Isaac bridge (robot/isaac, log ~/isaacsim/bridge.log) and then RobotHost with --backend arm-server, joint port 6002 and discovery 6005 on that machine, recording headset sessions into ~/isaacsim/recordings. Enter stops both, as does `just isaac-stop` from any terminal. Refuses while an Isaac host of ours is already running there, or a training run of ours is going. Other people's GPU jobs do not stop it (the user's call, 2026-11-02): it says how much of the GPU they hold, since sharing it can make physics steps late. Point the headset at it with `just push-galaxy-fr3-config <GPU machine's address>`; drive it headless with `just fr3-teleop-probe 0.08 3 franka-replay false <GPU machine's address>` (just takes recipe arguments by position)
 [group('isaac')]
 isaac-host:
     #!/usr/bin/env bash
@@ -2856,10 +2856,8 @@ isaac-host:
         [ -n "$pid" ] || continue
         [ "$(ps -o user= -p "$pid" 2>/dev/null | tr -d ' ')" = "$USER" ] || others=$((others + ${mem:-0}))
     done < <(nvidia-smi --query-compute-apps=pid,used_memory --format=csv,noheader,nounits)
-    if [ "$others" -gt 2048 ]; then
-        echo "error: other people's GPU jobs hold ${others} MiB. Not starting." >&2
-        nvidia-smi --query-compute-apps=pid,process_name,used_memory --format=csv >&2 || true
-        exit 1
+    if [ "$others" -gt 0 ]; then
+        echo "[isaac-host] other people's GPU jobs hold ${others} MiB: starting anyway, sharing the GPU (late steps can come from them)"
     fi
     [ -d "$repo" ] || git clone -q https://github.com/andreitimoshukcollege-del/teleoperation.git "$repo"
     cd "$repo" && git fetch -q origin && git checkout -q "$COMMIT" && echo "[isaac-host] repo at $(git log --oneline -1)"

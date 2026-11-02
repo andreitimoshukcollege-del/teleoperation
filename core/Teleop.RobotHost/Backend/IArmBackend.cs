@@ -8,10 +8,10 @@ namespace Teleop.RobotHost.Backend
     /// (docs/adr/0027 decision 3). Local to RobotHost, like <c>IRelayClient</c> is for the JetRover: Core never
     /// learns that a robot, a socket or a real-time process exists.
     ///
-    /// <para>Two implementations are planned. <see cref="Fr3SimBackend"/> exists now: an in-process FR3 that
-    /// shapes with Core's <c>JointTrajectoryShaper</c>. A client of a separate real-time arm server comes later,
-    /// with its own ADR, when the robot arrives; it owns libfranka's 1 kHz callbacks and runs a golden-pinned
-    /// copy of the same shaper.</para>
+    /// <para>Two implementations. <see cref="Fr3SimBackend"/> is an in-process FR3 that shapes with Core's
+    /// <c>JointTrajectoryShaper</c>. <see cref="ArmServer.ArmServerClient"/> talks over a local socket to whatever owns the arm:
+    /// the Isaac bridge (docs/adr/0031), or later the real FR3's arm server (docs/adr/0030). Both of those run a
+    /// golden-pinned copy of the same shaper.</para>
     /// </summary>
     public interface IArmBackend
     {
@@ -31,5 +31,17 @@ namespace Teleop.RobotHost.Backend
         bool Enabled { get; }
 
         void SetEnabled(bool enabled, long hostTicks);
+
+        /// <summary>Brings the backend up to <paramref name="hostTicks"/>: the simulation's steps, or the server's reports received so far.</summary>
+        void Poll(long hostTicks);
+
+        /// <summary>
+        /// The recording's truth: each measured state, with its time on the host's clock, every motor in the shaper's order.
+        /// Called from <see cref="Poll"/> and the reads. Null: none.
+        /// </summary>
+        Action<long, double[]>? TruthSink { get; set; }
+
+        /// <summary>One line for the host's log when it stops.</summary>
+        string Summary { get; }
     }
 }

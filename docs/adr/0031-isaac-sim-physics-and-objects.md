@@ -142,7 +142,7 @@ setup: it "completely removes the lag/network disturbance aspect".
      - **GPU sharing:** it refuses when another account's processes hold more than a threshold of
        the GPU, and says whose they are.
      - **The headset** finds RobotHost through discovery, or through `just push-galaxy-fr3-config
-       host=<5090>`.
+       <the 5090's address>`.
    - **`isaac-status`**: the bridge's real-time factor, physics lag and GPU use.
 
 8. **Phases.** Each one is usable on its own:
@@ -202,3 +202,44 @@ setup: it "completely removes the lag/network disturbance aspect".
 - **The real-time factor** at 1 kHz physics with a few objects, on a shared GPU.
 - **World playout:** whether world frames share the joint link's playout or get their own. Version 1
   shares it.
+
+## Amendment (2026-10-31): phase 1 built and run
+
+The arms run in Isaac behind RobotHost. Two things on top of the decisions above came out of building
+it.
+
+**Built:**
+- **The wire.** `ArmServerWire` (RobotHost) and `robot/isaac/teleop_isaac/wire.py` are pinned to
+  each other byte for byte by `robot/isaac/golden/arm-server-wire-v1.json`. The C# tests write that
+  file (`just gen-arm-server-golden`).
+- **The backend.** `ArmServerClient` is ADR 0030's `FciArmServerClient`, renamed because it serves
+  Isaac as well.
+  - It refuses a server whose motors are not the profile's, in the profile's order, or whose clock
+    is more than 50 ms from RobotHost's.
+  - It starts from the pose the server reports.
+  - Sessions take the server's kind as their `source`.
+- **The bridge.** `robot/isaac/teleop_isaac/`. Its shaper is the trainer's copy, taken as text and
+  pinned to the same golden: an Eval test holds the two golden files equal.
+- **The recipes:** `just isaac-host`, `just isaac-bridge-test` and `just gen-arm-server-golden`.
+
+**What Isaac 6.2 needed, found on the 5090:**
+- **The PhysX variant.** The URDF importer writes the physics as a `Physics` variant set (`mujoco`,
+  `physics`, `physx`) and selects none. The bridge selects `physx`.
+- **Drive gains.** The importer leaves the joint drives at zero gain. The bridge sets 16000 Nm/rad
+  and 250 Nm·s/rad on the arm joints (about 20 Hz tracking), and 2000 N/m and 100 N·s/m on the
+  fingers.
+- **No results back to USD.** Writing physics results back to USD every step took 1.5 ms of each
+  1 ms step. With it off, a step that sets new targets costs 0.38 ms, 2.6 times real time.
+- **Robot gravity off,** as decided. With gravity on and no gains, the arms fell.
+
+**Measured end to end** on 2026-10-31. `just fr3-teleop-probe` ran from the PC against `just isaac-host`
+on the 5090, over the lab VPN (RTT 12.5 ms):
+- **The left tool** ended 0.07 mm and 0.01° from its target, with the gripper closed.
+- **The right tool** ended 0.07 mm from its target, with the gripper open.
+- **The twin (`franka-replay`)** was within 0.35° of each reading, at p95 over 2632 readings. That is
+  against 0.04° on the simulated host: `franka-replay` models the shaper exactly but not the PhysX
+  drives' lag.
+- **The bridge** kept real time (1.0×) for 56028 steps, with 13 late.
+
+**Not yet:** the forward-kinematics check against the profile, which decision 2 asks for. Only joint
+names and limits are checked so far. Phases 2 and 3 have not started.

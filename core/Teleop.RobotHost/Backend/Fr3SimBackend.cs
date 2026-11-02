@@ -147,6 +147,10 @@ namespace Teleop.RobotHost.Backend
             return n;
         }
 
+        public void Poll(long hostTicks) => Advance(hostTicks);
+
+        public string Summary => $"simulated {Steps} ms" + (SkippedTicks > 0 ? $", skipped {SkippedTicks} ticks of a stalled loop" : "");
+
         public void SetEnabled(bool enabled, long hostTicks)
         {
             Advance(hostTicks);

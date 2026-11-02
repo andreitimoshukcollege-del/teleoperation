@@ -50,6 +50,7 @@ capabilities to Core by **implementing interfaces that Core declares** (`IRobotP
 | `unity/Teleop.Bridge/` | both Unity projects | shared UPM package: the only Unity code that touches Core; real I/O |
 | `core/Teleop.RobotArm/`, `core/Teleop.RobotHost/`, `core/Teleop.CameraHost/` | `dotnet` | arm kinematics and wire formats; what runs on the robot's Jetson |
 | `robot/ros/` | colcon (ROS 2), on the Jetson | the servo board driver and relay (ADR 0019); independent of the builds above; `just deploy-ros` |
+| `robot/isaac/` | Isaac Sim's Python, on the GPU machine | the FR3 Duo in Isaac Sim behind RobotHost (ADR 0031); its copies of the arm-server wire and the shaper are golden-pinned; `just isaac-host`, `just isaac-bridge-test` |
 | `analysis/` | nothing | Python; reads `results/` |
 | `trainer/` | its own Python env, on the GPU machine | the arm simulator and model training (ADR 0021); imports nothing from the repo, packed to one file by `just pack-trainer`; exports `.onnx` |
 | `experiments/` | — | one YAML per experiment |

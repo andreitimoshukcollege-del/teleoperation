@@ -161,7 +161,7 @@ install-galaxy-fr3:
     just _adb devices -l
     just _adb install -r "$(wslpath -m "$apk")"
 
-# Point the Galaxy XR app's FR3 operator at a just fr3-sim-host on this PC (or host=<address>) without a rebuild: pushes fr3_connection.json with RemoteHost replaced. The headset must reach the PC on the LAN; Direct Preview needs none of this (127.0.0.1 is the PC). motion=false sends only keepalives
+# Point the Galaxy XR app's FR3 operator at a just fr3-sim-host on this PC (or at the address given first, e.g. the GPU machine's for just isaac-host) without a rebuild: pushes fr3_connection.json with RemoteHost replaced. The headset must reach the PC on the LAN; Direct Preview needs none of this (127.0.0.1 is the PC). motion=false sends only keepalives
 [group('fr3 (simulated)')]
 push-galaxy-fr3-config host="" motion="true":
     #!/usr/bin/env bash
@@ -172,7 +172,7 @@ push-galaxy-fr3-config host="" motion="true":
         # This PC's own LAN address, as the Windows side sees it (the headset cannot reach WSL's).
         host=$(powershell.exe -NoProfile -Command "(Get-NetIPConfiguration | Where-Object { \$_.IPv4DefaultGateway -ne \$null } | Select-Object -First 1).IPv4Address.IPAddress" | tr -d '\r')
     fi
-    [ -n "$host" ] || { echo "error: no LAN address found for this PC; pass host=<address>" >&2; exit 1; }
+    [ -n "$host" ] || { echo "error: no LAN address found for this PC; pass one: just push-galaxy-fr3-config <address>" >&2; exit 1; }
     tmp=$(mktemp --suffix=.json)
     trap 'rm -f "$tmp"' EXIT
     python3 - "$tmp" "$host" "{{motion}}" <<'PY'
@@ -2826,6 +2826,79 @@ isaac-check seconds="5":
     ssh -o ConnectTimeout=10 "{{gpu_host}}" '[ -x ~/isaacsim/venv/bin/python ] && [ -f ~/isaacsim/VERSION ] || { echo "error: no Isaac Sim in our account there: just isaac-setup" >&2; exit 1; }; echo "GPU: $(nvidia-smi --query-gpu=name,driver_version,memory.used,memory.total --format=csv,noheader)"'
     ssh -o ConnectTimeout=10 "{{gpu_host}}" "~/isaacsim/venv/bin/python - --seconds '{{seconds}}'" < robot/isaac/check.py
 
+# The FR3 Duo in Isaac Sim on the GPU machine, behind a RobotHost there (docs/adr/0031): checks out this commit in ~/teleoperation-isaac (it must be on GitHub), builds RobotHost, starts the Isaac bridge (robot/isaac, log ~/isaacsim/bridge.log) and then RobotHost with --backend arm-server, joint port 6002 and discovery 6005 on that machine, recording headset sessions into ~/isaacsim/recordings. Enter stops both. Refuses while an Isaac host of ours is already running there, a training run of ours is going, or other people's GPU jobs hold over 2 GB. Point the headset at it with `just push-galaxy-fr3-config <GPU machine's address>`; drive it headless with `just fr3-teleop-probe 0.08 3 franka-replay false <GPU machine's address>` (just takes recipe arguments by position)
+[group('isaac')]
+isaac-host:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    commit=$(git rev-parse HEAD)
+    git fetch -q origin
+    [ -n "$(git branch -r --contains "$commit" 2>/dev/null)" ] || { echo "error: $commit is not on GitHub: push it first (the GPU machine runs what GitHub has)" >&2; exit 1; }
+    [ -z "$(git status --porcelain -- core robot/isaac)" ] || echo "warning: core/ or robot/isaac has uncommitted changes; the GPU machine runs $commit without them" >&2
+    remote=$(cat <<'REMOTE'
+    set -euo pipefail
+    repo=$HOME/teleoperation-isaac
+    [ -x "$HOME/isaacsim/venv/bin/python" ] || { echo "error: no Isaac Sim in our account here: just isaac-setup" >&2; exit 1; }
+    if [ -f "$HOME/train-sim.pid" ] && kill -0 "$(cat "$HOME/train-sim.pid")" 2>/dev/null; then echo "error: a training run of ours is going (just gpu-status)" >&2; exit 1; fi
+    # A Python process only: this script's own shell, and its subshells, carry the bridge's command line in their text.
+    mine=""
+    for p in $(pgrep -u "$USER" -f "teleop_isaac[.]bridge" || true); do
+        case "$(readlink "/proc/$p/exe" 2>/dev/null)" in *python*) mine=$p; break ;; esac
+    done
+    if [ -n "$mine" ]; then
+        echo "error: an Isaac host of ours is already running on $(hostname) (bridge pid $mine): use it, or stop it first (Enter where it was started)" >&2
+        exit 1
+    fi
+    # Other people's GPU jobs only: ours are not someone else's.
+    others=0
+    while IFS=, read -r pid mem; do
+        pid=${pid// /}; mem=${mem//[^0-9]/}
+        [ -n "$pid" ] || continue
+        [ "$(ps -o user= -p "$pid" 2>/dev/null | tr -d ' ')" = "$USER" ] || others=$((others + ${mem:-0}))
+    done < <(nvidia-smi --query-compute-apps=pid,used_memory --format=csv,noheader,nounits)
+    if [ "$others" -gt 2048 ]; then
+        echo "error: other people's GPU jobs hold ${others} MiB. Not starting." >&2
+        nvidia-smi --query-compute-apps=pid,process_name,used_memory --format=csv >&2 || true
+        exit 1
+    fi
+    [ -d "$repo" ] || git clone -q https://github.com/andreitimoshukcollege-del/teleoperation.git "$repo"
+    cd "$repo" && git fetch -q origin && git checkout -q "$COMMIT" && echo "[isaac-host] repo at $(git log --oneline -1)"
+    dotnet build -c Release -v q -nologo core/Teleop.RobotHost/Teleop.RobotHost.csproj -o "$HOME/isaacsim/robothost" > "$HOME/isaacsim/robothost-build.log" 2>&1 \
+        || { tail -20 "$HOME/isaacsim/robothost-build.log" >&2; exit 1; }
+    sock=/tmp/teleop-isaac-$USER.sock
+    log=$HOME/isaacsim/bridge.log
+    (cd robot/isaac && exec "$HOME/isaacsim/venv/bin/python" -m teleop_isaac.bridge --socket "$sock") > "$log" 2>&1 &
+    bridge=$!
+    trap 'kill $bridge 2>/dev/null; wait $bridge 2>/dev/null || true' EXIT
+    echo "[isaac-host] bridge pid $bridge (log $log); waiting for Isaac to start"
+    for i in $(seq 1 180); do
+        grep -q "listening on" "$log" 2>/dev/null && break
+        kill -0 $bridge 2>/dev/null || { echo "error: the bridge stopped:" >&2; tail -30 "$log" >&2; exit 1; }
+        sleep 1
+    done
+    grep "^\[isaac\]" "$log" || { echo "error: the bridge did not start within 3 min" >&2; tail -30 "$log" >&2; exit 1; }
+    mkdir -p "$HOME/isaacsim/recordings"
+    dotnet "$HOME/isaacsim/robothost/Teleop.RobotHost.dll" --profile-path core/RobotProfiles/fr3-duo.json --joint-local-port 6002 \
+        --backend arm-server --arm-server-socket "$sock" --collision-model core/RobotProfiles/fr3-duo.collision.json \
+        --discovery-port 6005 --record-control "$HOME/isaacsim/recordings/.active" --auto-record --auto-record-root "$HOME/isaacsim/recordings"
+    REMOTE
+    )
+    ssh -o ConnectTimeout=10 "{{gpu_host}}" "COMMIT='$commit' bash -c $(printf '%q' "$remote")"
+
+# The Isaac bridge's plain-Python tests (robot/isaac/tests): its copies of the arm-server wire and the shaper against their golden files, and the profile's motor order. No Isaac needed. Needs `just trainer-setup` (its numpy and pytest)
+[group('isaac')]
+isaac-bridge-test:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    PY=$(just _trainer-python)
+    cd robot/isaac
+    "../../$PY" -m pytest -q -p no:cacheprovider tests
+
+# Rewrite robot/isaac/golden/arm-server-wire-v1.json from RobotHost's codec (after a deliberate change to ArmServerWire.cs); then change robot/isaac/teleop_isaac/wire.py until just isaac-bridge-test passes
+[group('isaac')]
+gen-arm-server-golden:
+    cd core && TELEOP_WRITE_GOLDEN=1 WSLENV="${WSLENV:+$WSLENV:}TELEOP_WRITE_GOLDEN" dotnet test Teleop.RobotHost.Tests --filter "FullyQualifiedName~ArmServerWireTests.TheIsaacBridgesGoldenFile_IsWhatThisCodecWrites"
+
 # How the GPU machine's Isaac Sim stands (docs/adr/0031): the version installed in our account, whether a setup is going and its log's last lines, and the GPU's load (it is shared)
 [group('isaac')]
 isaac-status lines="6":
@@ -2865,10 +2938,11 @@ trainer-test:
     cd trainer
     "../$PY" -m pytest -q -p no:cacheprovider
 
-# Regenerate trainer/contract/golden from Core (after changing SeededRng, the impairments, the profile catalog, ClockSync or relay-replay); then fix the trainer's copies until `just trainer-test` passes
+# Regenerate trainer/contract/golden from Core (after changing SeededRng, the impairments, the profile catalog, ClockSync, relay-replay or the shaper), and the Isaac bridge's copy of the shaper's (robot/isaac/golden); then fix the copies until `just trainer-test` and `just isaac-bridge-test` pass
 [group('trainer')]
 gen-trainer-golden:
     cd core && dotnet run --project Teleop.Eval -- gen-trainer-golden
+    cp trainer/contract/golden/joint-shaper-v1.json robot/isaac/golden/joint-shaper-v1.json
 
 # Pack trainer/ into the one file the GPU machine needs: dist/armpred-<sha>.tar.gz, with a VERSION file naming the commit (and whether the tree was dirty). Unpack it there and run ./setup.sh (trainer/README.md)
 [group('trainer')]

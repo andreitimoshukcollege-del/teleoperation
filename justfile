@@ -290,7 +290,7 @@ default_operator_host := env_var_or_default("OPERATOR_HOST", "100.82.140.80")
 # The robot's hostname, which it announces over mDNS as <name>.local (`just robot-set-hostname`).
 robot_mdns_name := env_var_or_default("JETROVER_NAME", "jetrover-sinrg")
 # The GPU machine for trainer runs (just gpu-train, gpu-status, gpu-fetch): an account with this repo's SSH key.
-gpu_host := env_var_or_default("GPU_HOST", "andrei@10.188.58.164")
+gpu_host := env_var_or_default("GPU_HOST", "andrei@10.188.58.133")
 # The Isaac Sim installed in our own account on the GPU machine (docs/adr/0031): NVIDIA's pip build, whose 6.x wheels are for Python 3.12, the machine's own.
 isaac_version := env_var_or_default("ISAAC_VERSION", "6.2.0.0")
 # Where ROBOT OFF parks the arm before its torque goes off (docs/adr/0023 decision 5), passed by
@@ -2690,7 +2690,7 @@ train-fr3-sim config="fr3-sim-pretrain" name="" *args:
         trainer/train-fr3-sim.sh "{{config}}" "$name" {{args}}
     fi
 
-# Start `just train-sim <config>` on the GPU machine ($GPU_HOST, default andrei@10.188.58.164), detached, so this machine and the SSH session can go (docs/adr/0021). Clones the repo into ~/teleoperation there the first time and pulls main every time; refuses while a run of ours is going there, or while the GPU is busy (over 2 GB in use: someone else's job). The run is trainer/runs/<config>-<commit> there; the log ~/train-sim-<config>.log. Watch it with just gpu-status; bring it back with just gpu-fetch
+# Start `just train-sim <config>` on the GPU machine ($GPU_HOST, default andrei@10.188.58.133), detached, so this machine and the SSH session can go (docs/adr/0021). Clones the repo into ~/teleoperation there the first time and pulls main every time; refuses while a run of ours is going there, or while the GPU is busy (over 2 GB in use: someone else's job). The run is trainer/runs/<config>-<commit> there; the log ~/train-sim-<config>.log. Watch it with just gpu-status; bring it back with just gpu-fetch
 [group('trainer')]
 gpu-train config="sim-pretrain-pilot1":
     #!/usr/bin/env bash
@@ -2826,7 +2826,7 @@ isaac-check seconds="5":
     ssh -o ConnectTimeout=10 "{{gpu_host}}" '[ -x ~/isaacsim/venv/bin/python ] && [ -f ~/isaacsim/VERSION ] || { echo "error: no Isaac Sim in our account there: just isaac-setup" >&2; exit 1; }; echo "GPU: $(nvidia-smi --query-gpu=name,driver_version,memory.used,memory.total --format=csv,noheader)"'
     ssh -o ConnectTimeout=10 "{{gpu_host}}" "~/isaacsim/venv/bin/python - --seconds '{{seconds}}'" < robot/isaac/check.py
 
-# The FR3 Duo in Isaac Sim on the GPU machine, behind a RobotHost there (docs/adr/0031): checks out this commit in ~/teleoperation-isaac (it must be on GitHub), builds RobotHost, starts the Isaac bridge (robot/isaac, log ~/isaacsim/bridge.log) and then RobotHost with --backend arm-server, joint port 6002 and discovery 6005 on that machine, recording headset sessions into ~/isaacsim/recordings. Enter stops both. Refuses while an Isaac host of ours is already running there, a training run of ours is going, or other people's GPU jobs hold over 2 GB. Point the headset at it with `just push-galaxy-fr3-config <GPU machine's address>`; drive it headless with `just fr3-teleop-probe 0.08 3 franka-replay false <GPU machine's address>` (just takes recipe arguments by position)
+# The FR3 Duo in Isaac Sim on the GPU machine, behind a RobotHost there (docs/adr/0031): checks out this commit in ~/teleoperation-isaac (it must be on GitHub), builds RobotHost, starts the Isaac bridge (robot/isaac, log ~/isaacsim/bridge.log) and then RobotHost with --backend arm-server, joint port 6002 and discovery 6005 on that machine, recording headset sessions into ~/isaacsim/recordings. Enter stops both, as does `just isaac-stop` from any terminal. Refuses while an Isaac host of ours is already running there, a training run of ours is going, or other people's GPU jobs hold over 2 GB. Point the headset at it with `just push-galaxy-fr3-config <GPU machine's address>`; drive it headless with `just fr3-teleop-probe 0.08 3 franka-replay false <GPU machine's address>` (just takes recipe arguments by position)
 [group('isaac')]
 isaac-host:
     #!/usr/bin/env bash
@@ -2846,7 +2846,7 @@ isaac-host:
         case "$(readlink "/proc/$p/exe" 2>/dev/null)" in *python*) mine=$p; break ;; esac
     done
     if [ -n "$mine" ]; then
-        echo "error: an Isaac host of ours is already running on $(hostname) (bridge pid $mine): use it, or stop it first (Enter where it was started)" >&2
+        echo "error: an Isaac host of ours is already running on $(hostname) (bridge pid $mine): use it, or stop it first (Enter where it was started, or just isaac-stop)" >&2
         exit 1
     fi
     # Other people's GPU jobs only: ours are not someone else's.
@@ -2884,6 +2884,46 @@ isaac-host:
     REMOTE
     )
     ssh -o ConnectTimeout=10 "{{gpu_host}}" "COMMIT='$commit' bash -c $(printf '%q' "$remote")"
+
+# Stop the Isaac host that `just isaac-host` started on the GPU machine (docs/adr/0031), from any terminal: what Enter does where it was started. RobotHost gets SIGTERM first, which it takes as Enter, so it closes its recording, and isaac-host then stops the bridge. Whatever still runs after 30 s gets SIGTERM, and after 60 s more, SIGKILL. Says which recording is newest and whether it is complete. Nothing running is not an error
+[group('isaac')]
+isaac-stop:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    remote=$(cat <<'REMOTE'
+    set -euo pipefail
+    # Real processes only, as in isaac-host: this script's own shell, and isaac-host's, carry both command lines in their text.
+    ours() { for p in $(pgrep -u "$USER" -f "$1" || true); do case "$(readlink "/proc/$p/exe" 2>/dev/null)" in *"$2"*) echo "$p" ;; esac; done; }
+    host=$(ours "isaacsim/robothost/Teleop[.]RobotHost[.]dll" dotnet)
+    bridge=$(ours "teleop_isaac[.]bridge" python)
+    if [ -z "$host$bridge" ]; then echo "[isaac-stop] no Isaac host of ours is running on $(hostname)"; exit 0; fi
+    alive() { for p in "$@"; do kill -0 "$p" 2>/dev/null && return 0; done; return 1; }
+    gone_within() { local seconds=$1; shift; for _ in $(seq 1 "$seconds"); do alive "$@" || return 0; sleep 1; done; ! alive "$@"; }
+    if [ -n "$host" ]; then
+        echo "[isaac-stop] RobotHost pid" $host "on $(hostname): stopping it; it closes its recording, then isaac-host stops the bridge"
+        kill -TERM $host 2>/dev/null || true
+    else
+        echo "[isaac-stop] the bridge, pid" $bridge ", runs without RobotHost on $(hostname): stopping it"
+        kill -TERM $bridge 2>/dev/null || true
+    fi
+    if ! gone_within 30 $host $bridge; then
+        echo "[isaac-stop] still running after 30 s: SIGTERM to all of it" >&2
+        kill -TERM $host $bridge 2>/dev/null || true
+        if ! gone_within 60 $host $bridge; then
+            echo "[isaac-stop] still running after 90 s: SIGKILL" >&2
+            kill -KILL $host $bridge 2>/dev/null || true
+            rm -f "/tmp/teleop-isaac-$USER.sock"
+        fi
+    fi
+    echo "[isaac-stop] stopped"
+    tail -n 2 "$HOME/isaacsim/bridge.log" 2>/dev/null | sed 's/^/[isaac-stop] bridge log: /' || true
+    last=$(ls -1td "$HOME"/isaacsim/recordings/*/ 2>/dev/null | head -1 || true)
+    if [ -n "$last" ] && [ -f "$last/files.sha256" ]; then echo "[isaac-stop] newest recording, complete: $last"
+    elif [ -n "$last" ]; then echo "[isaac-stop] newest recording has no files.sha256 (not completed): $last" >&2
+    fi
+    REMOTE
+    )
+    ssh -o ConnectTimeout=10 "{{gpu_host}}" "bash -c $(printf '%q' "$remote")"
 
 # The Isaac bridge's plain-Python tests (robot/isaac/tests): its copies of the arm-server wire and the shaper against their golden files, and the profile's motor order. No Isaac needed. Needs `just trainer-setup` (its numpy and pytest)
 [group('isaac')]

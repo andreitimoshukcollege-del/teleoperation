@@ -16,6 +16,7 @@ Push the commit you want to run, then:
 
 ```bash
 just isaac-host                       # Isaac and RobotHost on the GPU machine; Enter stops both
+just isaac-stop                       # stop them from any terminal (RobotHost closes its recording first)
 just fr3-teleop-probe 0.08 3 franka-replay false <GPU machine>   # drive it headless from here
 just push-galaxy-fr3-config <GPU machine>                        # point the headset at it
 ```

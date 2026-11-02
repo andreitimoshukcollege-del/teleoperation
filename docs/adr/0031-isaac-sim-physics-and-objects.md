@@ -138,7 +138,8 @@ setup: it "completely removes the lag/network disturbance aspect".
      accepted at Isaac's first launch. The user accepts it; no recipe accepts it on their behalf.
      `isaac-status` shows how the install is going.
    - **`isaac-host`**: starts the bridge and RobotHost on the 5090, streams their logs, and stops both
-     on Enter.
+     on Enter. `isaac-stop` does the same from any terminal (2026-11-02): SIGTERM to RobotHost, which
+     takes it as Enter.
      - **GPU sharing:** it refuses when another account's processes hold more than a threshold of
        the GPU, and says whose they are.
      - **The headset** finds RobotHost through discovery, or through `just push-galaxy-fr3-config

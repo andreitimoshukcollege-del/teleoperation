@@ -140,8 +140,9 @@ setup: it "completely removes the lag/network disturbance aspect".
    - **`isaac-host`**: starts the bridge and RobotHost on the 5090, streams their logs, and stops both
      on Enter. `isaac-stop` does the same from any terminal (2026-11-02): SIGTERM to RobotHost, which
      takes it as Enter.
-     - **GPU sharing:** it refuses when another account's processes hold more than a threshold of
-       the GPU, and says whose they are.
+     - **GPU sharing:** it says how much of the GPU other accounts' processes hold. It refused above
+       2 GB until 2026-11-02, when the user removed that limit: the 5090 has 32 GB and Isaac needs
+       about 4 GB, so the two share its compute. Late steps in the bridge's log can come from that.
      - **The headset** finds RobotHost through discovery, or through `just push-galaxy-fr3-config
        <the 5090's address>`.
    - **`isaac-status`**: the bridge's real-time factor, physics lag and GPU use.

@@ -141,6 +141,155 @@ namespace Teleop.RobotArm.Tests.Operator
         }
 
         [Fact]
+        public void NoJoint_MovesFasterThanItsVelocityLimit_EvenAcrossAHitch()
+        {
+            SerialChainTeleop teleop = Teleop(out SerialChainProfile profile, out _);
+            RigidTransform hand = RigidTransform.Identity;
+            teleop.Engage(0, hand);
+            RigidTransform turn = RigidTransform.Rotation(0, 0, 1, 1.2);
+            teleop.Follow(0, new RigidTransform(0.2, 0.1, -0.15, turn.Qw, turn.Qx, turn.Qy, turn.Qz)); // far, and turned
+            ChainJoint[] joints = profile.Arms[0].Joints;
+            foreach (double seconds in new[] { 1.0 / 90.0, 0.5 })
+            {
+                for (int k = 0; k < 40; k++)
+                {
+                    double[] before = teleop.Commanded(0).ToArray();
+                    teleop.Step(seconds);
+                    double[] after = teleop.Commanded(0).ToArray();
+                    double allowed = Math.Min(seconds, SerialChainTeleop.LongestStep);
+                    for (int j = 0; j < 7; j++)
+                    {
+                        double move = Math.Abs(after[j] - before[j]);
+                        Assert.True(move <= joints[j].Limits.Velocity * allowed + 1e-12, $"{seconds} s step {k} joint {j}: {move} rad");
+                    }
+                }
+            }
+        }
+
+        [Fact]
+        public void TheGripper_TravelsTheStraightLine_ToAFarTarget_AtMostItsSpeed()
+        {
+            var options = new SerialChainTeleopOptions();
+            SerialChainTeleop teleop = Teleop(out _, out _, options);
+            RigidTransform start = teleop.Tool(0);
+            teleop.Engage(0, RigidTransform.Identity);
+            teleop.Follow(0, Moved(RigidTransform.Identity, 0.12, -0.08, -0.10)); // 18 cm away, the same orientation
+            RigidTransform target = teleop.Target(0);
+            double dx = target.X - start.X, dy = target.Y - start.Y, dz = target.Z - start.Z;
+            double length = Math.Sqrt(dx * dx + dy * dy + dz * dz);
+            double travelled = 0, worst = 0;
+            RigidTransform last = start;
+            for (int k = 0; k < 120; k++)
+            {
+                teleop.Step(1.0 / 90.0);
+                RigidTransform tool = teleop.Tool(0);
+                double step = Math.Sqrt(Sq(tool.X - last.X) + Sq(tool.Y - last.Y) + Sq(tool.Z - last.Z));
+                Assert.True(step <= options.MaxLinearSpeed / 90.0 + 1e-4, $"step {k}: {step} m in a frame");
+                travelled += step;
+                // Off the line from start to target: |(p - start) x direction|.
+                double px = tool.X - start.X, py = tool.Y - start.Y, pz = tool.Z - start.Z;
+                double cx = py * dz - pz * dy, cy = pz * dx - px * dz, cz = px * dy - py * dx;
+                worst = Math.Max(worst, Math.Sqrt(cx * cx + cy * cy + cz * cz) / length);
+                last = tool;
+            }
+
+            Assert.Equal(ChainArmStatus.Following, teleop.Status(0));
+            Assert.True(Math.Sqrt(Sq(last.X - target.X) + Sq(last.Y - target.Y) + Sq(last.Z - target.Z)) < 1e-3, "it did not arrive");
+            Assert.True(worst < 1e-3, $"the gripper left the straight line by {1000 * worst:0.00} mm");
+            Assert.True(travelled < 1.01 * length, $"it travelled {travelled:0.000} m for {length:0.000} m");
+        }
+
+        [Fact]
+        public void AJointNearItsLimit_IsSteeredOff_WhileTheGripperHoldsStill()
+        {
+            double[] left = (double[])LeftReady.Clone();
+            left[4] = 2.7; // the forearm, inside the zone before its 2.876 rad limit
+            SerialChainProfile profile = SerialChainKinematicsTests.LoadFr3Duo();
+            var teleop = new SerialChainTeleop(profile, SerialChainSolverTests.Collision());
+            Assert.True(teleop.TryTakePose(Measured(profile, left, RightReady)));
+            RigidTransform held = teleop.Tool(0);
+            teleop.EngageAt(0, held);
+            for (int k = 0; k < 90; k++) teleop.Step(1.0 / 90.0);
+
+            double q5 = teleop.Commanded(0)[4];
+            Assert.True(q5 < 2.7 - 0.1, $"the forearm stayed at {q5:0.000} rad");
+            RigidTransform now = teleop.Tool(0);
+            Assert.True(Math.Sqrt(Sq(now.X - held.X) + Sq(now.Y - held.Y) + Sq(now.Z - held.Z)) < 1e-3, "the gripper moved");
+            Assert.True(SerialChainTeleop.AngleBetween(now, held) < 0.01, "the gripper turned");
+            Assert.Equal(ChainArmStatus.Following, teleop.Status(0));
+
+            // The spare motion, the clearance and the speed caps allocate nothing.
+            AllocationAssert.Zero(() => teleop.Step(1.0 / 90.0), iterations: 200);
+        }
+
+        [Fact]
+        public void AnUnreachableTarget_IsOutOfReach_OnlyBeyondTheReachTolerance()
+        {
+            foreach (double tolerance in new[] { 0.01, 1.0 })
+            {
+                SerialChainTeleop teleop = Teleop(out _, out _, new SerialChainTeleopOptions { ReachTolerance = tolerance });
+                teleop.Engage(0, RigidTransform.Identity);
+                teleop.Follow(0, Moved(RigidTransform.Identity, 0.3, 0.9, 0.3)); // a metre out, beyond the arm's reach
+                for (int k = 0; k < 400; k++) teleop.Step(1.0 / 90.0);
+                RigidTransform tool = teleop.Tool(0), target = teleop.Target(0);
+                double off = Math.Sqrt(Sq(tool.X - target.X) + Sq(tool.Y - target.Y) + Sq(tool.Z - target.Z));
+                Assert.InRange(off, 0.05, 0.9);
+                Assert.Equal(tolerance < off ? ChainArmStatus.StoppedShort : ChainArmStatus.Following, teleop.Status(0));
+            }
+        }
+
+        [Fact]
+        public void AnArmAtTheCollisionMargin_SlidesAlongTheObstacle_InsteadOfSticking()
+        {
+            // The right arm as the headset commanded it at 59.8 s of the 2026-11-01 Isaac session: its upper arm at the
+            // margin of the head, where moving the hand away (-x) went 3 mm in 2 s before the IK could slide.
+            double[] right = { -1.775942, -1.574056, -0.137502, -2.243987, -2.128081, 4.347246, 0.154379 };
+            SerialChainProfile profile = SerialChainKinematicsTests.LoadFr3Duo();
+            SerialChainCollisionModel collision = SerialChainSolverTests.Collision();
+            var teleop = new SerialChainTeleop(profile, collision);
+            Assert.True(teleop.TryTakePose(Measured(profile, LeftReady, right)));
+            Assert.InRange(SerialChainCollision.Clearance(profile, collision, Pose(teleop), 1), collision.Margin, collision.Margin + 0.002);
+
+            RigidTransform start = teleop.Tool(1);
+            teleop.EngageAt(1, Moved(start, -0.06, 0, 0));
+            for (int k = 0; k < 180; k++)
+            {
+                teleop.Step(1.0 / 90.0);
+                Assert.False(SerialChainCollision.Check(profile, collision, Pose(teleop)).IsHit, $"step {k}: the committed pose collides");
+            }
+
+            RigidTransform end = teleop.Tool(1);
+            Assert.True(start.X - end.X > 0.05, $"the gripper moved {1000 * (start.X - end.X):0} mm of the 60 asked");
+            Assert.True(SerialChainTeleop.AngleBetween(start, end) < 0.02, "the slide turned the gripper");
+        }
+
+        [Fact]
+        public void AnArmPinnedAtALimit_AndAtTheMargin_StillSlides()
+        {
+            // The right arm at 4.8 s of the second 2026-11-01 Isaac session: the shoulder (joint 2) on its limit and the upper arm
+            // at the margin of the head, where moving the hand back (-x) went nowhere until the slide held the pinned joint.
+            double[] right = { -2.285058, -1.825766, 0.371091, -2.113097, 2.676057, 2.300988, -2.417915 };
+            SerialChainProfile profile = SerialChainKinematicsTests.LoadFr3Duo();
+            SerialChainCollisionModel collision = SerialChainSolverTests.Collision();
+            var teleop = new SerialChainTeleop(profile, collision);
+            Assert.True(teleop.TryTakePose(Measured(profile, LeftReady, right)));
+            ChainJointLimits shoulder = profile.Arms[1].Joints[1].Limits;
+            Assert.True(right[1] - shoulder.SoftLower < 0.02, "the shoulder is not on its limit");
+
+            RigidTransform start = teleop.Tool(1);
+            teleop.EngageAt(1, Moved(start, -0.06, 0, 0));
+            for (int k = 0; k < 180; k++)
+            {
+                teleop.Step(1.0 / 90.0);
+                Assert.False(SerialChainCollision.Check(profile, collision, Pose(teleop)).IsHit, $"step {k}: the committed pose collides");
+            }
+
+            RigidTransform end = teleop.Tool(1);
+            Assert.True(start.X - end.X > 0.04, $"the gripper moved {1000 * (start.X - end.X):0} mm of the 60 asked");
+            Assert.True(SerialChainTeleop.AngleBetween(start, end) < 0.02, "the slide turned the gripper");
+        }
+
+        [Fact]
         public void AnArmDrivenIntoTheOther_IsBlocked_AndEveryCommittedPoseIsClear()
         {
             SerialChainTeleop teleop = Teleop(out SerialChainProfile profile, out SerialChainCollisionModel collision);

@@ -97,7 +97,7 @@ namespace Teleop.Bridge
     /// <summary>Finds a learned model by name for a <c>learned</c> preset (Bridge's <see cref="LearnedModels.TryLoad"/>).</summary>
     public delegate bool LearnedModelLoader(string name, out IInferenceBackend model, out string error);
 
-    public sealed class JetRoverJointStateLink
+    public sealed class JetRoverJointStateLink : IOperatorJointLink
     {
         private const double KeepaliveSeconds = 0.5;
         private const double ScoreWindowSeconds = 30.0;

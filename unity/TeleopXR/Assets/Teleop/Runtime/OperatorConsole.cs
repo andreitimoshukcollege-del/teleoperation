@@ -10,8 +10,8 @@ namespace Teleop.XR
     /// The operator console on the bench (docs/adr/0023): which joint predictor draws the twin, which
     /// others run beside it, a network disturbance on the joint link, and every running predictor's
     /// live numbers. A thin adapter: the bank, the scoring and the disturbance are Bridge's and Core's
-    /// (<see cref="JetRoverJointStateLink"/>, <see cref="JetRoverOperatorBridge.TryApplyDisturbance"/>);
-    /// this only maps presses to calls and numbers to text.
+    /// (<see cref="OperatorBridgeBase"/>, either robot's: the JetRover's or the FR3 Duo's, docs/adr/0029
+    /// amendment); this only maps presses to calls and numbers to text.
     /// <list type="bullet">
     /// <item><b>Predictor row:</b> pressing a predictor's big cap draws the twin with it (turning it
     /// on first if it was off, so it warms up from the next reading). The small cap beside it turns it
@@ -27,7 +27,7 @@ namespace Teleop.XR
     {
         public const int MaxPredictors = 6;
 
-        [SerializeField] private JetRoverOperatorBridge bridge;
+        [SerializeField] private OperatorBridgeBase bridge;
         [SerializeField] private TMP_Text panel;
 
         private static readonly Color Active = new Color(0.2f, 0.9f, 0.4f);    // the predicted arm's green
@@ -56,20 +56,20 @@ namespace Teleop.XR
 
         public bool IsVisible(ConsoleButton.Kind kind, int index)
         {
-            JetRoverJointStateLink link = Link;
+            IOperatorJointLink link = Link;
             return link != null && index < link.PredictorCount;
         }
 
         public string LabelFor(ConsoleButton.Kind kind, int index)
         {
             if (kind == ConsoleButton.Kind.TogglePredictor) return "";
-            JetRoverJointStateLink link = Link;
+            IOperatorJointLink link = Link;
             return link != null && index < link.PredictorCount ? link.PredictorLabel(index) : "";
         }
 
         public Color ColorFor(ConsoleButton.Kind kind, int index)
         {
-            JetRoverJointStateLink link = Link;
+            IOperatorJointLink link = Link;
             if (link == null || index >= link.PredictorCount) return Off;
             if (kind == ConsoleButton.Kind.TogglePredictor) return link.IsPredictorEnabled(index) ? Running : Off;
             if (index == link.ActivePredictorIndex) return Active;
@@ -78,7 +78,7 @@ namespace Teleop.XR
 
         public void OnPressed(ConsoleButton.Kind kind, int index)
         {
-            JetRoverJointStateLink link = Link;
+            IOperatorJointLink link = Link;
             switch (kind)
             {
                 case ConsoleButton.Kind.SelectPredictor:
@@ -95,7 +95,7 @@ namespace Teleop.XR
             _nextRefresh = 0f;
         }
 
-        private JetRoverJointStateLink Link => bridge != null ? bridge.JointState : null;
+        private IOperatorJointLink Link => bridge != null ? bridge.Link : null;
 
         private void Update()
         {
@@ -106,7 +106,7 @@ namespace Teleop.XR
             }
 
             _nextRefresh = Time.unscaledTime + 0.25f;
-            JetRoverJointStateLink link = Link;
+            IOperatorJointLink link = Link;
             _text.Clear();
             if (link == null)
             {
@@ -156,7 +156,7 @@ namespace Teleop.XR
             _text.Append(disturbance != null && disturbance.IsActive ? "<color=#FF9E26>NETWORK DISTURBED: " : "network: ");
             _text.Append(disturbance != null ? disturbance.Description : "off");
             if (disturbance != null && disturbance.IsActive) _text.Append("  (seed ").Append(disturbance.Seed).Append(")</color>");
-            _text.Append("\nlast 30 s, degrees (gripper: servo degrees); diagnostics, not results\n");
+            _text.Append("\nlast 30 s, degrees (gripper: ").Append(bridge.GripperErrorUnit).Append("); diagnostics, not results\n");
             _text.Append("</mspace><color=#A0A6AE>");
             for (int i = 0; i < link.PredictorCount; i++)
             {

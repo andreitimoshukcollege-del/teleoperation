@@ -51,14 +51,16 @@ namespace Teleop.XR.Editor
             public Renderer[] RackLeds;
         }
 
-        public static Result Build(Transform parent, LabPalette p)
+        /// <param name="benchDepth">How far the bench runs from its near edge (m): the JetRover's 0.8 by default; the FR3 Duo stands on a deeper one, behind the controls.</param>
+        /// <param name="robotName">The robot the sign's subtitle names.</param>
+        public static Result Build(Transform parent, LabPalette p, float benchDepth = LabLayout.BenchDepth, string robotName = "JetRover")
         {
             Transform room = LabParts.Group("Room", parent).transform;
             BuildShell(room, p);
-            BuildSignWall(room, p);
+            BuildSignWall(room, p, robotName);
             BuildFixtures(room, p);
             BuildCeilingServices(room, p);
-            BuildBench(room, p);
+            BuildBench(room, p, benchDepth);
             Renderer ring = BuildWorkcell(room, p);
             Renderer[] leds = BuildRacks(room, p);
             BuildDesks(room, p);
@@ -135,7 +137,7 @@ namespace Teleop.XR.Editor
 
         // ---- sign wall ----------------------------------------------------------------------
 
-        private static void BuildSignWall(Transform room, LabPalette p)
+        private static void BuildSignWall(Transform room, LabPalette p, string robotName)
         {
             float z = LabLayout.MaxZ;
             var slats = new LabMesh();
@@ -152,7 +154,7 @@ namespace Teleop.XR.Editor
             Quaternion facing = Quaternion.identity; // TMP faces -z, toward the room
             LabParts.Label("SignTitle", room, new Vector3(0f, 2.25f, z - 0.09f), facing, "TELEOPERATION LAB", 3.2f,
                 new Color(0.55f, 0.92f, 1f), new Vector2(3f, 0.4f), TextAlignmentOptions.Center, FontStyles.Bold);
-            LabParts.Label("SignSubtitle", room, new Vector3(0f, 1.86f, z - 0.09f), facing, "remote manipulation  ·  latency research  ·  JetRover", 1.1f,
+            LabParts.Label("SignSubtitle", room, new Vector3(0f, 1.86f, z - 0.09f), facing, "remote manipulation  ·  latency research  ·  " + robotName, 1.1f,
                 new Color(0.55f, 0.6f, 0.68f), new Vector2(3f, 0.15f));
         }
 
@@ -209,9 +211,9 @@ namespace Teleop.XR.Editor
 
         // ---- the robot's bench and the taped workcell ---------------------------------------
 
-        private static void BuildBench(Transform room, LabPalette p)
+        private static void BuildBench(Transform room, LabPalette p, float d)
         {
-            float top = LabLayout.BenchTop, hw = LabLayout.BenchHalfWidth, cz = LabLayout.BenchCentreZ, d = LabLayout.BenchDepth;
+            float top = LabLayout.BenchTop, hw = LabLayout.BenchHalfWidth, cz = LabLayout.BenchNearZ + d / 2f;
             float cx = LabLayout.ArmBase.x;
             LabParts.Part("Bench/Top", room, new LabMesh().Chamfer(new Vector3(cx, top - 0.02f, cz), new Vector3(2 * hw, 0.04f, d), 0.008f), p.BenchTop, PartKind.Static, 3f);
             var mat = new LabMesh { UvScale = 1f };

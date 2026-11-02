@@ -33,7 +33,7 @@ namespace Teleop.XR
         private static readonly int ColorId = Shader.PropertyToID("_Color");
 
         [SerializeField] private CameraFeedBridge feed;
-        [SerializeField] private JetRoverOperatorBridge robot;
+        [SerializeField] private OperatorBridgeBase robot;
         [SerializeField] private Renderer screen;
         [SerializeField] private TMP_Text feedLabel;
         [SerializeField] private TMP_Text numbersLabel;
@@ -60,13 +60,15 @@ namespace Teleop.XR
         private void Start()
         {
             if (feed == null) feed = FindAnyObjectByType<CameraFeedBridge>();
-            if (robot == null) robot = FindAnyObjectByType<JetRoverOperatorBridge>();
-            if (feed == null || robot == null)
+            if (robot == null) robot = FindAnyObjectByType<OperatorBridgeBase>();
+            if (robot == null)
             {
-                UnityEngine.Debug.LogWarning("CameraStatusBar: no CameraFeedBridge or JetRoverOperatorBridge in the scene; status strip disabled.", this);
+                UnityEngine.Debug.LogWarning("CameraStatusBar: no robot bridge in the scene; status strip disabled.", this);
                 enabled = false;
                 return;
             }
+
+            // No camera (the FR3 Duo's, simulated, has none yet): the strip says so and still shows the robot link.
 
             _block = new MaterialPropertyBlock();
             long now = Stopwatch.GetTimestamp();
@@ -84,7 +86,7 @@ namespace Teleop.XR
 
             _nextRefresh = now + (long)(RefreshSeconds * Stopwatch.Frequency);
 
-            long frames = feed.FramesShown;
+            long frames = feed != null ? feed.FramesShown : 0;
             if (frames != _lastFrames)
             {
                 _lastFrames = frames;
@@ -100,7 +102,8 @@ namespace Teleop.XR
             }
 
             // 0 no signal yet, 1 live, 2 frozen (frames came, then stopped), 3 feed component off.
-            int feedState = !feed.isActiveAndEnabled ? 3
+            int feedState = feed == null ? 4
+                : !feed.isActiveAndEnabled ? 3
                 : frames == 0 ? 0
                 : (now - _lastNewFrameTicks) / (double)Stopwatch.Frequency > FrozenAfterSeconds ? 2
                 : 1;
@@ -113,6 +116,7 @@ namespace Teleop.XR
                     feedLabel.text = feedState == 1 ? "LIVE  ·  JETROVER CAM"
                         : feedState == 2 ? "FROZEN  ·  no new frames"
                         : feedState == 3 ? "FEED OFF"
+                        : feedState == 4 ? "NO CAMERA  ·  the simulated robot has none"
                         : "NO SIGNAL  ·  waiting for the robot camera";
                 }
             }
@@ -123,16 +127,16 @@ namespace Teleop.XR
                 int width = feedState == 0 || texture == null ? 0 : texture.width;
                 int height = feedState == 0 || texture == null ? 0 : texture.height;
                 numbersLabel.SetText("{0:0} fps   decode {1:1} ms   {2:0}x{3:0}",
-                    feedState == 1 ? _fps : 0f, (float)feed.LastDecodeMilliseconds, width, height);
+                    feedState == 1 ? _fps : 0f, feed != null ? (float)feed.LastDecodeMilliseconds : 0f, width, height);
             }
 
-            JetRoverOperatorBridge.ConnectionStatus status = robot.Status;
+            OperatorBridgeBase.ConnectionStatus status = robot.Status;
             int linkState = (int)status;
             if (linkState != _linkState && linkLabel != null)
             {
                 _linkState = linkState;
-                linkLabel.text = status == JetRoverOperatorBridge.ConnectionStatus.Connected ? "ROBOT CONNECTED"
-                    : status == JetRoverOperatorBridge.ConnectionStatus.Stale ? "ROBOT CONNECTION LOST"
+                linkLabel.text = status == OperatorBridgeBase.ConnectionStatus.Connected ? "ROBOT CONNECTED"
+                    : status == OperatorBridgeBase.ConnectionStatus.Stale ? "ROBOT CONNECTION LOST"
                     : "ROBOT NOT CONNECTED";
             }
 

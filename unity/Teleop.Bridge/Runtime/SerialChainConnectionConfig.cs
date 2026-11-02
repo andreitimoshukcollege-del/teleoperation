@@ -22,11 +22,48 @@ namespace Teleop.Bridge
         public float CommandRateHz = 48f;
         public double MaxHorizonMs = 300.0;
 
+        /// <summary>
+        /// <c>absolute</c> (the default, docs/adr/0029 amendment): the robot anchored to your body, so where your hand is and
+        /// which way your palm faces is where the gripper goes and faces. <c>relative</c>: the clutch, which moves the
+        /// gripper by how far your hand moves from where you grabbed.
+        /// </summary>
+        public string HandMapping = "absolute";
+
         /// <summary>Hand motion → tool motion; 1 is one to one.</summary>
         public double PositionScale = 1.0;
 
+        /// <summary>
+        /// <c>one-euro</c> (the default, docs/adr/0029 amendment 7): a still hand's tracking jitter is filtered out before it
+        /// reaches the arms, and a moving hand barely lags. <c>off</c>: the hands go raw (docs/adr/0016 §5).
+        /// </summary>
+        public string HandFilter = "one-euro";
+
+        /// <summary>The hand filter's cutoff for a still hand (Hz), how fast it rises with the hand's speed (Hz per m/s) and turning (Hz per rad/s), and its speed estimate's cutoff (Hz).</summary>
+        public double HandFilterMinCutoffHz = 1.0;
+        public double HandFilterPositionBeta = 80.0;
+        public double HandFilterRotationBeta = 16.0;
+        public double HandFilterDerivativeCutoffHz = 1.0;
+
+        /// <summary>The absolute mapping's neutral hand, from the headset at recentre (m): forward, to each hand's side, down. There the arms are at their neutral tools.</summary>
+        public double NeutralForward = 0.30;
+        public double NeutralSide = 0.20;
+        public double NeutralDown = 0.40;
+
+        /// <summary>Frames a grab takes to slide the arm to where the hand maps (absolute mapping): about a second at 90 Hz.</summary>
+        public int ApproachSteps = 90;
+
         /// <summary>The most a joint's command moves per frame (radians); a larger IK step is shortened.</summary>
         public double MaxStepRadians = 0.1;
+
+        /// <summary>
+        /// <c>toggle</c> (the default, docs/adr/0029 amendment): fold the middle, ring and little fingers twice quickly to
+        /// lock that arm onto the hand, and twice again to unlock it. <c>hold</c>: the arm follows only while the curl is held.
+        /// </summary>
+        public string GrabMode = "toggle";
+
+        /// <summary>The toggle's clicks: a curl held between these two lengths (s), the second starting within the longer of the first's end.</summary>
+        public double MinPressSeconds = 0.04;
+        public double DoubleClickSeconds = 0.6;
 
         /// <summary>The grab (middle, ring and little fingers curled) holds below this curl ratio and lets go above the release one.</summary>
         public float GrabEngageBelowCurl = 1.25f;
@@ -38,6 +75,10 @@ namespace Teleop.Bridge
 
         /// <summary>False: nothing is ever sent but keepalives; the twin follows the robot and the markers your hands.</summary>
         public bool AllowMotion = true;
+
+        /// <summary>The console's network sliders never go past these (ms of delay plus jitter, % loss), as the JetRover's.</summary>
+        public float DisturbanceMaxDelayMs = 2000f;
+        public float DisturbanceMaxLossPercent = 50f;
 
         public int ClockSyncHistoryCapacity = 32;
         public float ClockSyncSmoothingAlpha = 0.2f;

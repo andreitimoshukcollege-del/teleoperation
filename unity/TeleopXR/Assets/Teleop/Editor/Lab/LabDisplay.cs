@@ -30,7 +30,10 @@ namespace Teleop.XR.Editor
             public CameraStatusBar StatusBar;
         }
 
-        public static Result Build(Transform parent, LabPalette p, Material screenMaterial, CameraFeedBridge feed, JetRoverOperatorBridge robot)
+        /// <param name="feed">The robot camera's feed, or null for a robot without one yet (the strip then says so).</param>
+        /// <param name="caption">The line under the strip: what the camera is.</param>
+        public static Result Build(Transform parent, LabPalette p, Material screenMaterial, CameraFeedBridge feed, OperatorBridgeBase robot,
+            string caption = "robot camera  ·  Orbbec DaBai DCW")
         {
             Transform root = LabParts.Group("CameraDisplay", parent).transform;
             root.position = LabLayout.DisplayFoot;
@@ -101,7 +104,7 @@ namespace Teleop.XR.Editor
             TextMeshPro numbersLabel = LabParts.Label("NumbersLabel", panel, new Vector3(left + 0.3f, stripY - 0.022f, textZ), Quaternion.identity,
                 "0 fps   decode 0.0 ms   0x0", 0.22f, new Color(0.6f, 0.66f, 0.74f), new Vector2(0.6f, 0.04f), TextAlignmentOptions.Left);
             LabParts.Label("DisplayCaption", panel, new Vector3(ScreenWidth / 2f - 0.33f, stripY - 0.022f, textZ), Quaternion.identity,
-                "robot camera  ·  Orbbec DaBai DCW", 0.2f, new Color(0.45f, 0.5f, 0.58f), new Vector2(0.6f, 0.04f), TextAlignmentOptions.Right);
+                caption, 0.2f, new Color(0.45f, 0.5f, 0.58f), new Vector2(0.6f, 0.04f), TextAlignmentOptions.Right);
 
             // The group's nameplate, hung under the bezel so it moves with the display.
             const float plateHeight = 0.14f, plateWidth = 1.56f;

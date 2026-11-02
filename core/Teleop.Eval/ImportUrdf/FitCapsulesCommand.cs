@@ -22,7 +22,9 @@ namespace Teleop.Eval.ImportUrdf
     /// or the robot's root for the fixed body. A gripper's fingers are taken fully open, in the arm's last joint
     /// frame.</item>
     /// <item><b>The disabled pairs:</b> adjacent links, an arm's link 0 with the body and with the other arm's link 0
-    /// (all on the mount), and any pair the fit makes touch at the ready pose.</item>
+    /// (all on the mount), any pair the fit makes touch at the ready pose, and two links one apart that the fit cannot keep
+    /// clear across the range of the two joints between them (<c>joint-limited</c>: left to those joints' limits, as the
+    /// robot's controller keeps them; docs/adr/0029 amendment).</item>
     /// <item><b>Byte-stable output:</b> numbers are rounded to a micrometre, so a re-fit is the same bytes on every
     /// platform. <c>FitCapsulesCommandTests</c> requires that of the committed file.</item>
     /// </list>
@@ -246,16 +248,32 @@ namespace Teleop.Eval.ImportUrdf
                 }
             }
 
-            // A pair touching at the ready pose is disabled on every arm alike, so the arms (mirror images) are checked the same way.
+            // Two links of one arm with one link between them, whose capsules come within the margin somewhere in the range
+            // of the two joints that set their relative pose (the rest of the arm at ready): the fit is too coarse to keep them
+            // apart, and those joints' limits are what the robot's own controller keeps them apart with. Left to the limits.
+            var jointLimited = new HashSet<(int, int, int, int)>();
+            for (int i = 0; i < capsules.Count; i++)
+            {
+                for (int k = i + 1; k < capsules.Count; k++)
+                {
+                    ChainCapsuleDocument a = capsules[i], b = capsules[k];
+                    if (a.arm < 0 || a.arm != b.arm || Math.Abs(a.frame - b.frame) != 2 || !model.IsChecked(i, k)) continue;
+                    if (touching.Contains(Key(capsules, i, k))) continue;
+                    if (PairTooCloseInRange(profile, model, ready, i, k, Math.Min(a.frame, b.frame) + 1)) jointLimited.Add(Key(capsules, i, k));
+                }
+            }
+
+            // A pair disabled on one arm is disabled on every arm alike, so the arms (mirror images) are checked the same way.
             for (int i = 0; i < capsules.Count; i++)
             {
                 for (int k = i + 1; k < capsules.Count; k++)
                 {
                     bool acrossArms = capsules[i].arm >= 0 && capsules[k].arm >= 0 && capsules[i].arm != capsules[k].arm;
-                    if (!acrossArms && model.IsChecked(i, k) && touching.Contains(Key(capsules, i, k)))
-                    {
+                    if (acrossArms || !model.IsChecked(i, k)) continue;
+                    if (touching.Contains(Key(capsules, i, k)))
                         disabled.Add(new DisabledPairDocument { a = capsules[i].name, b = capsules[k].name, reason = "touching-at-ready" });
-                    }
+                    else if (jointLimited.Contains(Key(capsules, i, k)))
+                        disabled.Add(new DisabledPairDocument { a = capsules[i].name, b = capsules[k].name, reason = "joint-limited" });
                 }
             }
 
@@ -297,6 +315,34 @@ namespace Teleop.Eval.ImportUrdf
             var pair = new SerialChainCollisionModel(model.Profile, new[] { model.Capsules[i], model.Capsules[k] }, Array.Empty<(int, int)>(), model.Margin);
             return SerialChainCollision.Check(profile, pair, pose).IsHit;
         }
+
+        /// <summary>
+        /// Whether the pair comes within the margin anywhere on a 25 × 25 grid of joints <paramref name="firstJoint"/> and the
+        /// next (of the pair's arm) across their soft ranges, everything else at <paramref name="pose"/>.
+        /// </summary>
+        private static bool PairTooCloseInRange(SerialChainProfile profile, SerialChainCollisionModel model, double[] pose, int i, int k, int firstJoint)
+        {
+            int arm = model.Capsules[i].Arm, offset = 0;
+            for (int a = 0; a < arm; a++) offset += profile.Arms[a].Joints.Length;
+            ChainJoint[] joints = profile.Arms[arm].Joints;
+            if (firstJoint + 1 >= joints.Length) return false;
+            var sample = (double[])pose.Clone();
+            const int steps = 25;
+            for (int u = 0; u < steps; u++)
+            {
+                for (int v = 0; v < steps; v++)
+                {
+                    sample[offset + firstJoint] = Inside(joints[firstJoint].Limits, u / (double)(steps - 1));
+                    sample[offset + firstJoint + 1] = Inside(joints[firstJoint + 1].Limits, v / (double)(steps - 1));
+                    if (PairTooClose(profile, model, sample, i, k)) return true;
+                }
+            }
+
+            return false;
+        }
+
+        /// <summary>A fraction of the way through a joint's soft range, a hair inside it so the range check itself never fires.</summary>
+        private static double Inside(ChainJointLimits l, double t) => l.SoftLower + 1e-6 + t * (l.SoftUpper - l.SoftLower - 2e-6);
 
         private static ChainCapsuleDocument FitCapsule(string name, int arm, int frame, List<double[]> points)
         {

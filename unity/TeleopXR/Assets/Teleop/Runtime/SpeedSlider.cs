@@ -36,7 +36,7 @@ namespace Teleop.XR
         }
 
         [SerializeField] private Setting setting = Setting.ArmSpeed;
-        [SerializeField] private JetRoverOperatorBridge bridge;
+        [SerializeField] private OperatorBridgeBase bridge;
         [Tooltip("The operator console the network settings go to (they are applied together, there).")]
         [SerializeField] private OperatorConsole console;
         [SerializeField] private XROrigin origin;
@@ -150,7 +150,7 @@ namespace Teleop.XR
                     bridge.SpeedRadPerSec = _value;
                 else if (setting == Setting.AddedDelay)
                 {
-                    if (bridge.JointState != null) bridge.JointState.AddedDelayMs = _value;
+                    if (bridge.Link != null) bridge.Link.AddedDelayMs = _value;
                 }
                 else if (console != null)
                     console.SetNetwork(setting, _value);

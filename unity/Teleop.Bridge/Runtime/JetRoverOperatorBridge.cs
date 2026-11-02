@@ -69,7 +69,7 @@ namespace Teleop.Bridge
     /// the Cartesian connection, not what conditions the real joint commands actually travel
     /// under, and (per the fix above) never affects the rig's visualization either.
     /// </summary>
-    public sealed class JetRoverOperatorBridge : MonoBehaviour
+    public sealed class JetRoverOperatorBridge : OperatorBridgeBase
     {
         private const int MaxDatagramBytes = 128;
 
@@ -159,27 +159,29 @@ namespace Teleop.Bridge
         /// At launch the mode is Off with nothing requested (the arm may already be resting), or On when
         /// the scene's <c>motionEnabledAtStart</c> is set (TeleopVR).
         /// </summary>
-        public JetRoverMotionMode MotionMode
+        public override JetRoverMotionMode MotionMode
         {
             get => _motionMode;
             set
             {
                 _motionMode = value;
                 _motionModeSet = true;
-                MotionOffReason = "";
+                _motionOffReason = "";
                 _jointStateLink?.SetMotionMode(value, NowTicks);
             }
         }
 
+        private string _motionOffReason = "";
+
         /// <summary>Why the robot was last turned off by something other than its button; empty otherwise.</summary>
-        public string MotionOffReason { get; private set; } = "";
+        public override string MotionOffReason => _motionOffReason;
 
         /// <summary>
         /// ROBOT OFF without the button (the headset taken off; docs/adr/0023 decision 5): park, then relax.
         /// The relax request goes out at once, three times, in case the app is about to be suspended and
         /// cannot repeat it. Does nothing when already off.
         /// </summary>
-        public void TurnOffNow(string reason)
+        public override void TurnOffNow(string reason)
         {
             if (_motionMode == JetRoverMotionMode.Off)
             {
@@ -187,7 +189,7 @@ namespace Teleop.Bridge
             }
 
             MotionMode = JetRoverMotionMode.Off;
-            MotionOffReason = reason ?? "";
+            _motionOffReason = reason ?? "";
             _jointStateLink?.FlushOperatorMessage(NowTicks, 3);
             Debug.Log($"[xr] robot motion -> Off: {MotionOffReason}");
         }
@@ -207,10 +209,10 @@ namespace Teleop.Bridge
         /// The mode is On but joint commands are held back: a hold request is waiting for the robot to say
         /// it holds again (docs/adr/0023 decision 5).
         /// </summary>
-        public bool WaitingForHold => _motionMode == JetRoverMotionMode.On && _jointStateLink != null && !_jointStateLink.MayCommand(NowTicks);
+        public override bool WaitingForHold => _motionMode == JetRoverMotionMode.On && _jointStateLink != null && !_jointStateLink.MayCommand(NowTicks);
 
         /// <summary>True when the config lets this bridge command the robot at all (<c>ConfirmHardwareMotion</c>).</summary>
-        public bool HardwareMotionAllowed => _config != null && _config.ConfirmHardwareMotion;
+        public override bool HardwareMotionAllowed => _config != null && _config.ConfirmHardwareMotion;
 
         /// <summary>
         /// The joint-state downlink (docs/adr/0018): the robot's measured joints and the predictor's
@@ -218,12 +220,19 @@ namespace Teleop.Bridge
         /// </summary>
         public JetRoverJointStateLink JointState => _jointStateLink;
 
+        /// <summary>The console's view of <see cref="JointState"/>.</summary>
+        public override IOperatorJointLink Link => _jointStateLink;
+
+        public override JetRoverArmPower ArmPower => _jointStateLink != null ? _jointStateLink.ArmPower : JetRoverArmPower.Unknown;
+        public override float ArmPowerRemainingDeg => _jointStateLink != null ? _jointStateLink.ArmPowerRemainingDeg : 0f;
+        public override string ArmPowerReasonText => _jointStateLink != null ? _jointStateLink.ArmPowerReasonText : "";
+
         /// <summary>
         /// The network disturbance on the joint socket (docs/adr/0023 decision 3): whether one is on,
         /// what it is, and its seed. Null until <c>Awake</c>. Set it with <see cref="TryApplyDisturbance"/>
         /// or <see cref="ApplyCustomDisturbance"/>.
         /// </summary>
-        public JointLinkDisturbance JointDisturbance => _jointTransport;
+        public override JointLinkDisturbance JointDisturbance => _jointTransport;
 
         /// <summary>
         /// Disturbs the joint socket in both directions with a named profile from Core's
@@ -272,7 +281,7 @@ namespace Teleop.Bridge
         /// Disturbs the joint socket in both directions with a one-way delay, a uniform jitter and a
         /// random loss, clamped to the config's caps; all zero switches it off.
         /// </summary>
-        public void ApplyCustomDisturbance(float delayMs, float jitterMs, float lossPercent)
+        public override void ApplyCustomDisturbance(float delayMs, float jitterMs, float lossPercent)
         {
             if (_jointTransport == null) return;
             delayMs = Math.Min(Math.Max(delayMs, 0f), _config.DisturbanceMaxDelayMs);
@@ -319,7 +328,7 @@ namespace Teleop.Bridge
         /// <c>--pulses-per-second</c>; the joint predictor replays commands at the same speed. Set by
         /// TeleopXR's speed slider; TeleopVR leaves it at 0.
         /// </summary>
-        public float SpeedRadPerSec
+        public override float SpeedRadPerSec
         {
             get => _speedRadPerSec;
             set => _speedRadPerSec = float.IsNaN(value) ? 0f : Math.Max(0f, value);
@@ -332,10 +341,10 @@ namespace Teleop.Bridge
         /// a collision model. While it runs it sets the speed every joint command carries, in place of
         /// <see cref="SpeedRadPerSec"/>.
         /// </summary>
-        public JetRoverTrainingCourse Training => _training;
+        public override JetRoverTrainingCourse Training => _training;
 
         /// <summary>This bridge's clock, for asking <see cref="JointState"/> for a prediction "now".</summary>
-        public long NowTicks => _clock != null ? _clock.NowTicks : 0;
+        public override long NowTicks => _clock != null ? _clock.NowTicks : 0;
 
         /// <summary>The wrist-roll angle (radians) in the current target, as sent to the gripper's rotation motor.</summary>
         public float WristRollRadians { get; private set; }
@@ -367,29 +376,12 @@ namespace Teleop.Bridge
         /// <summary>True once at least one downlink reply has ever been received -- a simple, cheap signal that Teleop.RobotHost is actually reachable, mirroring MoveArmCommand's own everObservedAnyState diagnostic.</summary>
         public bool HasReceivedAnyState { get; private set; }
 
-        /// <summary>
-        /// Whether this bridge has ever heard back from the real robot, and if so, whether that
-        /// contact is still fresh. There is no handshake or persistent "connection" to query here
-        /// (UDP has none, and this class sends every tick unconditionally regardless of replies --
-        /// see this class's own doc) -- this is a read of recency, not a live socket state.
-        /// Recovery after a drop needs no code of its own: sending never stops, so once
-        /// Teleop.RobotHost/the Jetson-side nodes come back, this flips back to
-        /// <see cref="ConnectionStatus.Connected"/> on its own the next time a reply arrives.
-        /// </summary>
-        public enum ConnectionStatus
-        {
-            /// <summary>No downlink reply has ever been received since this bridge started.</summary>
-            NeverConnected,
-
-            /// <summary>A reply arrived within the last <see cref="StaleAfterSeconds"/>.</summary>
-            Connected,
-
-            /// <summary>At least one reply arrived once, but not within the last <see cref="StaleAfterSeconds"/>.</summary>
-            Stale,
-        }
+        // ConnectionStatus is OperatorBridgeBase's: a read of recency, not a socket state. Recovery after a drop needs
+        // no code of its own: sending never stops, so once Teleop.RobotHost comes back, Status reads Connected again
+        // the next time a reply arrives.
 
         /// <summary>See <see cref="ConnectionStatus"/>'s own doc.</summary>
-        public ConnectionStatus Status
+        public override ConnectionStatus Status
         {
             get
             {

@@ -188,11 +188,19 @@ class IsaacWorld:
     def fixed_bodies(self, stage) -> List[str]:
         """The robot's rigid bodies no joint moves (its mount and what is bolted to it): those reached from the pinned base
         through fixed joints alone, in either direction. The base is the body a joint pins to the world (a joint with
-        one side empty), or the articulation root's body."""
+        one side empty), or the articulation root's body. A joint's side that is no body (the importer leaves a massless
+        URDF link, such as ``left_base``, as a plain transform) is the nearest body above it, as PhysX takes it."""
         from pxr import Usd, UsdPhysics
 
         robot = stage.GetPrimAtPath(self.robot_path)
         bodies, fixed_links, start = set(), {}, set()
+
+        def body_of(path) -> str:
+            prim = stage.GetPrimAtPath(path)
+            while prim and prim.IsValid() and not prim.HasAPI(UsdPhysics.RigidBodyAPI):
+                prim = prim.GetParent()
+            return str(prim.GetPath()) if prim and prim.IsValid() else str(path)
+
         for prim in Usd.PrimRange(robot):
             if prim.HasAPI(UsdPhysics.RigidBodyAPI):
                 bodies.add(str(prim.GetPath()))
@@ -200,8 +208,8 @@ class IsaacWorld:
                     start.add(str(prim.GetPath()))
             if prim.IsA(UsdPhysics.Joint):
                 j = UsdPhysics.Joint(prim)
-                b0 = [str(t) for t in j.GetBody0Rel().GetTargets()]
-                b1 = [str(t) for t in j.GetBody1Rel().GetTargets()]
+                b0 = [body_of(t) for t in j.GetBody0Rel().GetTargets()]
+                b1 = [body_of(t) for t in j.GetBody1Rel().GetTargets()]
                 if not b0 or not b1:
                     start.update(b0 + b1)
                 elif prim.IsA(UsdPhysics.FixedJoint):

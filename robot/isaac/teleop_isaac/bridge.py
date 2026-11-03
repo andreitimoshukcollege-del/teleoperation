@@ -64,6 +64,8 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     a.add_argument("--socket", default="/tmp/teleop-isaac.sock", help="the Unix datagram socket RobotHost talks to")
     a.add_argument("--scene", default="", help="a scene file (core/Scenes/*.json) to put beside the arms; none: the arms alone")
     a.add_argument("--world-every", type=int, default=20, help="send the objects' poses every this many 1 ms steps")
+    a.add_argument("--tap", default="", help="a second Unix datagram socket that gets a copy of every state and world message, "
+                                              "never blocking (the renderer's, docs/adr/0032 decision 2)")
     a.add_argument("--work", default=os.path.expanduser("~/isaacsim/work"), help="where the URDF's USD conversion is kept")
     a.add_argument("--stiffness", type=float, default=16000.0, help="arm joint drive stiffness, Nm/rad")
     a.add_argument("--damping", type=float, default=250.0, help="arm joint drive damping, Nm s/rad")
@@ -258,6 +260,19 @@ def main(argv: Optional[List[str]] = None) -> int:
             sequence += 1
             return sequence
 
+        tapped = tap_dropped = 0
+
+        def tap(message: bytes) -> None:
+            """A copy for the renderer; dropped and counted when it is absent or behind, so it never slows the loop."""
+            nonlocal tapped, tap_dropped
+            if not args.tap:
+                return
+            try:
+                sock.sendto(message, args.tap)
+                tapped += 1
+            except OSError:
+                tap_dropped += 1
+
         steps = late = 0
         lag_ms = 0.0
         step_ns = int(round(dt * 1e9))
@@ -325,7 +340,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             steps += 1
             window_steps += 1
 
-            if client is not None and steps % args.state_every == 0:
+            if (client is not None or args.tap) and steps % args.state_every == 0:
                 q = np.asarray(art.get_dof_positions().numpy()).reshape(-1)
                 v = np.asarray(art.get_dof_velocities().numpy()).reshape(-1)
                 sensed = time.monotonic_ns()
@@ -340,19 +355,24 @@ def main(argv: Optional[List[str]] = None) -> int:
                         report.append((m, float(q[i]) / travel, float(v[i]) / travel, states[k].q))
                 flags = (wire.FLAG_ENABLED if enabled else 0) | (wire.FLAG_BEHIND if lag_ms > 1.0 else 0)
                 sequence += 1
-                try:
-                    sock.sendto(wire.encode_state(sequence, sensed, steps * step_ns, flags, report), client)
-                except OSError:
-                    pass  # RobotHost went away; it says hello again when it is back
-
-            if world is not None and client is not None and steps % args.world_every == 0:
-                objects = world.read()
-                sensed = time.monotonic_ns()
-                for message in world.model.world_messages(next_sequence, sensed, objects):
+                message = wire.encode_state(sequence, sensed, steps * step_ns, flags, report)
+                if client is not None:
                     try:
                         sock.sendto(message, client)
                     except OSError:
-                        break
+                        pass  # RobotHost went away; it says hello again when it is back
+                tap(message)
+
+            if world is not None and (client is not None or args.tap) and steps % args.world_every == 0:
+                objects = world.read()
+                sensed = time.monotonic_ns()
+                for message in world.model.world_messages(next_sequence, sensed, objects):
+                    if client is not None:
+                        try:
+                            sock.sendto(message, client)
+                        except OSError:
+                            pass
+                    tap(message)
 
             next_tick += step_ns
             now = time.monotonic_ns()
@@ -380,7 +400,8 @@ def main(argv: Optional[List[str]] = None) -> int:
 
         sock.close()
         os.unlink(args.socket)
-        print(f"[isaac] stopped after {steps} steps, {late} late", flush=True)
+        tap_note = f"; tap {tapped} sent, {tap_dropped} dropped" if args.tap else ""
+        print(f"[isaac] stopped after {steps} steps, {late} late{tap_note}", flush=True)
         return 0
     except BaseException:
         # Kit's close ends the process before Python would print this, so a failed start looked like a clean exit.

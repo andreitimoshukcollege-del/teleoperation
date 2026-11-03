@@ -125,7 +125,9 @@ class IsaacWorld:
 
     # --- before play ------------------------------------------------------------------------------------------------
 
-    def build(self, stage) -> None:
+    def build(self, stage, physics: bool = True) -> None:
+        """The scene's prims. ``physics=False`` is the renderer's copy (docs/adr/0032 decision 2): every surface, the
+        floor included, as visuals alone, and objects it poses itself; no collider, body or physics material."""
         from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics, UsdShade
 
         def material(path: str, static: float, dynamic: float):
@@ -140,23 +142,25 @@ class IsaacWorld:
             UsdShade.MaterialBindingAPI.Apply(prim).Bind(mat, UsdShade.Tokens.weakerThanDescendants, "physics")
 
         scene = self.model.scene
-        fixed = self.fixed_bodies(stage)
+        fixed = self.fixed_bodies(stage) if physics else []
+        self.surface_paths = {}
         with Usd.EditContext(stage, stage.GetSessionLayer()):
             UsdGeom.Xform.Define(stage, self.ROOT)
             UsdGeom.Xform.Define(stage, f"{self.ROOT}/Surfaces")
             UsdGeom.Xform.Define(stage, f"{self.ROOT}/Objects")
             UsdGeom.Scope.Define(stage, f"{self.ROOT}/Materials")
             for k, s in enumerate(scene.surfaces):
-                if s.headset == "builtin" and not s.collides:
-                    continue
+                if physics and not s.collides:
+                    continue  # nothing to collide with, and the bridge renders nothing
                 name = prim_name(f"s{k}", s.id)
                 cube = UsdGeom.Cube.Define(stage, f"{self.ROOT}/Surfaces/{name}")
+                self.surface_paths[s.id] = f"{self.ROOT}/Surfaces/{name}"
                 cube.CreateSizeAttr(1.0)
                 x = UsdGeom.Xformable(cube)
                 x.AddTranslateOp().Set(Gf.Vec3d(*s.center))
                 x.AddScaleOp().Set(Gf.Vec3f(*s.size))
                 cube.CreateDisplayColorAttr([Gf.Vec3f(*s.colour)])
-                if s.collides:
+                if physics and s.collides:
                     UsdPhysics.CollisionAPI.Apply(cube.GetPrim())
                     # The robot's mount stands in the bench; a contact with a body no joint moves only fights the base's pin.
                     UsdPhysics.FilteredPairsAPI.Apply(cube.GetPrim()).CreateFilteredPairsRel().SetTargets([Sdf.Path(b) for b in fixed])
@@ -166,8 +170,9 @@ class IsaacWorld:
                 x = UsdGeom.Xformable(body)
                 x.AddTranslateOp().Set(Gf.Vec3d(*pose[:3]))
                 x.AddOrientOp(UsdGeom.XformOp.PrecisionDouble).Set(Gf.Quatd(pose[3], pose[4], pose[5], pose[6]))
-                rb = UsdPhysics.RigidBodyAPI.Apply(body.GetPrim())
-                rb.CreateKinematicEnabledAttr(True)
+                if physics:
+                    rb = UsdPhysics.RigidBodyAPI.Apply(body.GetPrim())
+                    rb.CreateKinematicEnabledAttr(True)
                 sx, sy, sz = o.size
                 if o.shape == "box":
                     g = UsdGeom.Cube.Define(stage, f"{path}/Shape")
@@ -182,6 +187,8 @@ class IsaacWorld:
                     g = UsdGeom.Sphere.Define(stage, f"{path}/Shape")
                     g.CreateRadiusAttr(sx / 2)
                 g.CreateDisplayColorAttr([Gf.Vec3f(*o.colour)])
+                if not physics:
+                    continue
                 UsdPhysics.CollisionAPI.Apply(g.GetPrim())
                 bind_physics(g.GetPrim(), material(f"{self.ROOT}/Materials/{path.rsplit('/', 1)[1]}", o.static_friction, o.dynamic_friction))
 

@@ -17,7 +17,7 @@ namespace Teleop.XR
     /// </summary>
     public sealed class Fr3MotionButton : MonoBehaviour
     {
-        public enum Role { Power, Recentre }
+        public enum Role { Power, Recentre, NewLayout }
 
         [SerializeField] private Role role = Role.Power;
         [SerializeField] private SerialChainOperatorBridge bridge;
@@ -49,6 +49,14 @@ namespace Teleop.XR
 
             _press ??= new FingertipPress(radiusMeters, pressDepthMeters, rearmDistanceMeters, cooldownSeconds);
             bool pressed = _press.Update(cap, origin);
+            if (role == Role.NewLayout)
+            {
+                // A new seeded layout of the scene's objects (docs/adr/0031 amendment 2), only while motion is off.
+                if (pressed && bridge.RequestNewLayout()) _flashUntil = Time.unscaledTime + 0.6f;
+                ShowNewLayout();
+                return;
+            }
+
             if (role == Role.Recentre)
             {
                 if (pressed && bridge.IsAbsolute)
@@ -69,6 +77,33 @@ namespace Teleop.XR
             }
 
             Show();
+        }
+
+        private void ShowNewLayout()
+        {
+            int state = !bridge.HasWorld ? 4 : bridge.WorldSceneMismatch ? 5 : Time.unscaledTime < _flashUntil ? 1 : bridge.CanRequestNewLayout ? 0 : bridge.MotionEnabled ? 2 : 3;
+            if (state == _shown)
+            {
+                return;
+            }
+
+            _shown = state;
+            Color color = state == 1 ? onColor : state == 0 ? new Color(0.95f, 0.65f, 0.15f) : lockedColor;
+            string text = state switch
+            {
+                0 => "NEW LAYOUT\n<size=60%>press to move the objects</size>",
+                1 => "NEW LAYOUT\n<size=60%>asked</size>",
+                2 => "NEW LAYOUT\n<size=60%>robot off to use</size>",
+                4 => "NEW LAYOUT\n<size=60%>no scene file</size>",
+                5 => "SCENE MISMATCH\n<size=60%>RobotHost runs another scene</size>",
+                _ => "NEW LAYOUT\n<size=60%>waiting for the world</size>",
+            };
+            _block ??= new MaterialPropertyBlock();
+            cap.GetPropertyBlock(_block);
+            _block.SetColor("_BaseColor", color);
+            _block.SetColor("_Color", color);
+            cap.SetPropertyBlock(_block);
+            if (label != null) label.SetText(text);
         }
 
         private void ShowRecentre()

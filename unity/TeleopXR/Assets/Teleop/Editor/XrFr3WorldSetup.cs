@@ -2,6 +2,7 @@ using System;
 using System.Linq;
 using Teleop.Bridge;
 using Teleop.RobotArm.World;
+using Unity.XR.CoreUtils;
 using UnityEditor;
 using UnityEditor.SceneManagement;
 using UnityEngine;
@@ -87,8 +88,64 @@ namespace Teleop.XR.Editor
             }
 
             if (world.Table.Display == SurfaceDisplay.Show) BuildLegs(root, world.Table);
+            BuildTwin(root, world);
+            var bridge = Object.FindAnyObjectByType<SerialChainOperatorBridge>(FindObjectsInactive.Include);
+            XROrigin origin = Object.FindAnyObjectByType<XROrigin>(FindObjectsInactive.Include);
+            XrFr3SceneBuilder.BuildButton(root, NewLayoutButtonName, XrFr3SceneBuilder.NewLayoutButtonAt, "Fr3NewLayoutCap", new Color(0.95f, 0.65f, 0.15f),
+                "NEW LAYOUT", Teleop.XR.Fr3MotionButton.Role.NewLayout, bridge, origin);
 
-            Debug.Log($"[fr3-world] built '{world.Name}': {world.Surfaces.Count(s => s.Display == SurfaceDisplay.Show)} surface(s) from the scene file");
+            Debug.Log($"[fr3-world] built '{world.Name}': {world.Surfaces.Count(s => s.Display == SurfaceDisplay.Show)} surface(s) and a twin of {world.Objects.Length} object(s) from the scene file, and NEW LAYOUT");
+        }
+
+        public const string TwinName = "WorldTwin";
+        public const string NewLayoutButtonName = "NewLayoutButton";
+
+        /// <summary>
+        /// The world twin: one visual per scene object (the built-in primitive of its shape, its colour, no collider), at its nominal
+        /// pose so previews show it, under a <see cref="SerialChainWorldTwin"/> that hides each at runtime until the robot reports it.
+        /// </summary>
+        private static void BuildTwin(Transform root, WorldScene world)
+        {
+            var twinRoot = new GameObject(TwinName).transform;
+            twinRoot.SetParent(root, false);
+            var objects = new Transform[world.Objects.Length];
+            var ids = new int[world.Objects.Length];
+            for (int i = 0; i < world.Objects.Length; i++)
+            {
+                SceneObject o = world.Objects[i];
+                PrimitiveType type = o.Shape == SceneShape.Box ? PrimitiveType.Cube : o.Shape == SceneShape.Cylinder ? PrimitiveType.Cylinder : PrimitiveType.Sphere;
+                GameObject go = GameObject.CreatePrimitive(type);
+                Object.DestroyImmediate(go.GetComponent<Collider>());
+                go.name = o.Name;
+                go.transform.SetParent(twinRoot, false);
+                Vector3 size = new CoreVec((float)o.SizeX, (float)o.SizeY, (float)o.SizeZ).ExtentsToUnity();
+                if (type == PrimitiveType.Cylinder) size.y /= 2f; // a cylinder primitive is 2 units tall
+                go.transform.localScale = size;
+                go.transform.localPosition = new CoreVec((float)o.NominalX, (float)o.NominalY, (float)o.NominalZ).ToUnity();
+                RigidTransformToUnity(o, go.transform);
+                var renderer = go.GetComponent<MeshRenderer>();
+                renderer.sharedMaterial = LabMaterials.Lit("Fr3World_" + o.Name, new Color(o.R, o.G, o.B), 0.4f);
+                renderer.lightProbeUsage = UnityEngine.Rendering.LightProbeUsage.BlendProbes;
+                objects[i] = go.transform;
+                ids[i] = o.Id;
+            }
+
+            var twin = twinRoot.gameObject.AddComponent<SerialChainWorldTwin>();
+            var so = new SerializedObject(twin);
+            so.FindProperty("bridge").objectReferenceValue = Object.FindAnyObjectByType<SerialChainOperatorBridge>(FindObjectsInactive.Include);
+            SerializedProperty list = so.FindProperty("objects");
+            list.arraySize = objects.Length;
+            for (int i = 0; i < objects.Length; i++) list.GetArrayElementAtIndex(i).objectReferenceValue = objects[i];
+            SerializedProperty idList = so.FindProperty("ids");
+            idList.arraySize = ids.Length;
+            for (int i = 0; i < ids.Length; i++) idList.GetArrayElementAtIndex(i).intValue = ids[i];
+            so.ApplyModifiedPropertiesWithoutUndo();
+        }
+
+        private static void RigidTransformToUnity(SceneObject o, Transform t)
+        {
+            var q = new System.Numerics.Quaternion((float)o.Nominal.Qx, (float)o.Nominal.Qy, (float)o.Nominal.Qz, (float)o.Nominal.Qw);
+            t.localRotation = q.ToUnity();
         }
 
         /// <summary>The name a surface's object takes in the scene: the work table is <c>WorkTable</c>.</summary>

@@ -62,11 +62,11 @@ namespace Teleop.RobotArm.World
         public double Top => CenterZ + SizeZ / 2;
     }
 
-    /// <summary>A fixed obstacle standing upright on the work table.</summary>
+    /// <summary>An object standing upright on the work table at its nominal pose: a fixed obstacle, or a movable one.</summary>
     public sealed class SceneObject
     {
         internal SceneObject(byte id, string name, SceneShape shape, double sx, double sy, double sz, double x, double y, double z, double yaw,
-            bool operatorMovable, double staticFriction, double dynamicFriction, float r, float g, float b, double jx, double jy, double jyaw)
+            bool movable, double mass, bool operatorMovable, double staticFriction, double dynamicFriction, float r, float g, float b, double jx, double jy, double jyaw)
         {
             Id = id;
             Name = name;
@@ -78,6 +78,8 @@ namespace Teleop.RobotArm.World
             NominalY = y;
             NominalZ = z;
             NominalYaw = yaw;
+            Movable = movable;
+            Mass = mass;
             OperatorMovable = operatorMovable;
             StaticFriction = staticFriction;
             DynamicFriction = dynamicFriction;
@@ -105,6 +107,17 @@ namespace Teleop.RobotArm.World
         public double NominalZ { get; }
         public double NominalYaw { get; }
         public RigidTransform Nominal { get; }
+
+        /// <summary>
+        /// A body physics moves (version 2): it has <see cref="Mass"/>, falls, and an arm can push or knock it over. A fixed one
+        /// moves only by a placement. Only a physics backend (Isaac) tells them apart; a placement stands either upright.
+        /// </summary>
+        public bool Movable { get; }
+
+        /// <summary>kg; 0 for a fixed object.</summary>
+        public double Mass { get; }
+
+        /// <summary>Whether the headset may move it (EDIT OBJECTS); independent of <see cref="Movable"/>.</summary>
         public bool OperatorMovable { get; }
         public double StaticFriction { get; }
         public double DynamicFriction { get; }
@@ -129,8 +142,13 @@ namespace Teleop.RobotArm.World
     public sealed class WorldScene
     {
         public const string Format = "teleop-scene";
-        public const int Version = 1;
+
+        /// <summary>The newest version this reader knows; it reads every version from 1. Version 2 adds movable objects.</summary>
+        public const int Version = 2;
         public const int MaxObjects = 24;
+
+        /// <summary>The heaviest movable object, kg: anything heavier is not something the arms are meant to knock over.</summary>
+        public const double MaxMass = 20.0;
 
         /// <summary>How far a surface or a resting object may be from where it must be, m.</summary>
         public const double Tolerance = 0.001;
@@ -201,7 +219,7 @@ namespace Teleop.RobotArm.World
         {
             if (d == null) throw new ArgumentNullException(nameof(d));
             if (d.format != Format) throw Bad("format", $"'{d.format}', not '{Format}'");
-            if (d.version != Version) throw Bad("version", $"{d.version}; this reader knows version {Version}");
+            if (d.version < 1 || d.version > Version) throw Bad("version", $"{d.version}; this reader knows versions 1 to {Version}");
             if (string.IsNullOrWhiteSpace(d.name)) throw Bad("name", "the scene has no name");
             if (string.IsNullOrWhiteSpace(d.robotProfile)) throw Bad("robotProfile", "the scene names no robot profile");
 
@@ -275,7 +293,17 @@ namespace Teleop.RobotArm.World
                 if (!(z[0] > 0 && z[1] > 0 && z[2] > 0)) throw Bad("size", $"'{o.name}' has a size that is not positive");
                 if (shape == SceneShape.Cylinder && Math.Abs(z[0] - z[1]) > 1e-9) throw Bad("size", $"cylinder '{o.name}' must be [d, d, h]");
                 if (shape == SceneShape.Sphere && (Math.Abs(z[0] - z[1]) > 1e-9 || Math.Abs(z[0] - z[2]) > 1e-9)) throw Bad("size", $"sphere '{o.name}' must be [d, d, d]");
-                if (o.kind != "fixed") throw Bad("kind", $"'{o.name}' is '{o.kind}'; version {Version} has fixed objects only");
+                bool movable = o.kind == "movable";
+                if (o.kind != "fixed" && !(movable && d.version >= 2))
+                {
+                    throw Bad("kind", d.version >= 2 ? $"'{o.name}' is '{o.kind}': fixed or movable" : $"'{o.name}' is '{o.kind}'; version 1 has fixed objects only");
+                }
+
+                if (movable ? !(o.mass > 0 && o.mass <= MaxMass) : o.mass != 0)
+                {
+                    throw Bad("mass", movable ? $"movable '{o.name}' has mass {o.mass}: more than 0 and at most {MaxMass} kg" : $"fixed '{o.name}' has a mass: only a movable object has one");
+                }
+
                 double[] pos = Vector(o.position, 3, "pose", $"'{o.name}' position");
                 double[] rpy = Vector(o.rpy, 3, "pose", $"'{o.name}' rpy");
                 if (Math.Abs(rpy[0]) > 1e-9 || Math.Abs(rpy[1]) > 1e-9) throw Bad("pose", $"'{o.name}' must stand upright (roll and pitch 0)");
@@ -284,7 +312,7 @@ namespace Teleop.RobotArm.World
                 Friction(o.staticFriction, o.dynamicFriction, $"object '{o.name}'");
                 double[] j = Vector(o.jitter, 3, "jitter", $"'{o.name}'");
                 if (!(j[0] >= 0 && j[1] >= 0 && j[2] >= 0)) throw Bad("jitter", $"'{o.name}' has a negative range");
-                objects[i] = new SceneObject((byte)o.id, o.name, shape, z[0], z[1], z[2], pos[0], pos[1], pos[2], rpy[2], o.operatorMovable,
+                objects[i] = new SceneObject((byte)o.id, o.name, shape, z[0], z[1], z[2], pos[0], pos[1], pos[2], rpy[2], movable, o.mass, o.operatorMovable,
                     o.staticFriction, o.dynamicFriction, (float)col[0], (float)col[1], (float)col[2], j[0], j[1], j[2]);
             }
 

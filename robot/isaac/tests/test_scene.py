@@ -43,6 +43,7 @@ def test_the_shipped_scene_parses_as_core_parses_it():
         assert list(o.nominal) == pytest.approx(e["nominal"], abs=1e-12)
         assert o.footprint_radius == pytest.approx(e["footprintRadius"], abs=1e-12)
         assert list(o.jitter) == pytest.approx(e["jitter"], abs=1e-12)
+        assert (o.movable, o.mass) == (e["movable"], pytest.approx(e["mass"], abs=1e-12))
 
 
 def test_the_isaac_only_sections_are_kept_for_the_renderer():
@@ -53,4 +54,4 @@ def test_the_isaac_only_sections_are_kept_for_the_renderer():
     assert cams["third"]["feedPort"] == 6007
     assert s.extra["backdrops"]["change"] == "per-session"
     hidden = [x.id for x in s.surfaces if x.headset == "hide"]
-    assert hidden == ["floor"] and not next(x for x in s.surfaces if x.id == "floor").collides
+    assert hidden == ["floor"] and next(x for x in s.surfaces if x.id == "floor").collides  # what a knocked-over object lands on

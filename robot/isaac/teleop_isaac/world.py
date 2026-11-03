@@ -1,4 +1,5 @@
-"""The world beside the arms in Isaac (docs/adr/0031 amendment 2): the scene file's surfaces and fixed obstacles.
+"""The world beside the arms in Isaac (docs/adr/0031 amendments 2 and 4): the scene file's surfaces, its fixed obstacles,
+and its movable objects, which are dynamic bodies: they fall, and an arm can push or knock them over.
 
 RobotHost decides where objects go (``WorldHost``, from the seeded layouts) and asks with PLACE; this module applies or
 refuses each placement and reports where the objects are. The rules are RobotHost's ``StaticWorld``'s, in its order, plus
@@ -11,7 +12,10 @@ what only physics can see: whether an arm is in the way.
 5. off the table or the placement region: OUTSIDE_REGION;
 6. closer to another object than the clearance (footprints, as Core's ``WorldScene.Overlaps``): OVERLAPS_OBJECT;
 7. an arm within the clearance of the object's shape at the new pose (a PhysX overlap query): OVERLAPS_ARM;
-8. otherwise the object is stood upright on the table at the pose's x, y and yaw (``Scene.pose_at``): APPLIED.
+8. otherwise the object is stood upright on the table at the pose's x, y and yaw (``Scene.pose_at``): APPLIED. A movable
+   object is also brought to rest there (its velocities zeroed), wherever it had fallen.
+
+Rules 4, 6 and 7 use where the objects are now: a movable object's pose is PhysX's, read at every WORLD (:meth:`IsaacWorld.read`).
 
 :class:`WorldModel` is the bookkeeping and the rules, with the arm check passed in, so it runs in the plain-Python tests.
 :class:`IsaacWorld` builds the prims and answers the arm check; it imports Isaac only when it is made.
@@ -96,8 +100,18 @@ class WorldModel:
         self.poses[index] = pose
         self.revision += 1
 
+    def flags(self, index: int) -> int:
+        """FLAG_KINEMATIC for a fixed object; a movable one is a dynamic body (docs/adr/0031 amendment 4)."""
+        return 0 if self.scene.objects[index].movable else wire.FLAG_KINEMATIC
+
+    def sense(self, index: int, pose: Pose) -> None:
+        """Where physics has a movable object now (it may have been pushed or have fallen); not a new revision, which
+        counts placements. A fixed object moves only by a placement, so its reading is not taken."""
+        if self.scene.objects[index].movable:
+            self.poses[index] = pose
+
     def objects(self) -> List[wire.ObjectPose]:
-        return [wire.ObjectPose(o.id, wire.FLAG_KINEMATIC, self.poses[i]) for i, o in enumerate(self.scene.objects)]
+        return [wire.ObjectPose(o.id, self.flags(i), self.poses[i]) for i, o in enumerate(self.scene.objects)]
 
     def world_messages(self, sequence: Callable[[], int], sensed_ticks: int,
                        objects: Optional[Sequence[wire.ObjectPose]] = None) -> List[bytes]:
@@ -111,8 +125,8 @@ class WorldModel:
 
 
 class IsaacWorld:
-    """The scene in Isaac's stage: surfaces as static colliders, obstacles as kinematic rigid bodies, on the session layer
-    so the robot's USD is never changed. Call :meth:`build` before the simulation plays and :meth:`attach` after."""
+    """The scene in Isaac's stage: surfaces as static colliders, fixed obstacles as kinematic rigid bodies and movable
+    objects as dynamic ones with their mass, on the session layer so the robot's USD is never changed. Call :meth:`build` before the simulation plays and :meth:`attach` after."""
 
     ROOT = "/World/Scene"
 
@@ -172,7 +186,9 @@ class IsaacWorld:
                 x.AddOrientOp(UsdGeom.XformOp.PrecisionDouble).Set(Gf.Quatd(pose[3], pose[4], pose[5], pose[6]))
                 if physics:
                     rb = UsdPhysics.RigidBodyAPI.Apply(body.GetPrim())
-                    rb.CreateKinematicEnabledAttr(True)
+                    rb.CreateKinematicEnabledAttr(not o.movable)
+                    if o.movable:
+                        UsdPhysics.MassAPI.Apply(body.GetPrim()).CreateMassAttr(o.mass)
                 sx, sy, sz = o.size
                 if o.shape == "box":
                     g = UsdGeom.Cube.Define(stage, f"{path}/Shape")
@@ -294,16 +310,23 @@ class IsaacWorld:
         outcome, i, upright = self.model.check(cause, object_id, pose, self.arm_near)
         if outcome == wire.APPLIED:
             self._bodies.set_world_poses(positions=np.array([upright[:3]]), orientations=np.array([upright[3:]]), indices=[i])
+            if self.model.scene.objects[i].movable:  # stood up and at rest, wherever it had rolled or fallen
+                self._bodies.set_velocities(np.zeros((1, 3)), np.zeros((1, 3)), indices=[i])
             self.model.apply(i, upright)
         now = self.model.poses[i] if i >= 0 else tuple(pose)
         return outcome, now
 
     def read(self) -> List[wire.ObjectPose]:
-        """Every object's pose as PhysX has it (not USD's, which the bridge does not write back)."""
+        """Every object's pose as PhysX has it (not USD's, which the bridge does not write back); a movable object's is
+        also taken as where it is now, for the placement rules."""
         import numpy as np
 
         positions, orientations = self._bodies.get_world_poses()
         p = np.asarray(positions.numpy() if hasattr(positions, "numpy") else positions).reshape(-1, 3)
         q = np.asarray(orientations.numpy() if hasattr(orientations, "numpy") else orientations).reshape(-1, 4)
-        return [wire.ObjectPose(o.id, wire.FLAG_KINEMATIC, (*map(float, p[i]), *map(float, q[i])))
-                for i, o in enumerate(self.model.scene.objects)]
+        out = []
+        for i, o in enumerate(self.model.scene.objects):
+            pose = (*map(float, p[i]), *map(float, q[i]))
+            self.model.sense(i, pose)
+            out.append(wire.ObjectPose(o.id, self.model.flags(i), pose))
+        return out

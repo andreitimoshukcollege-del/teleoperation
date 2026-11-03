@@ -35,7 +35,8 @@ can make physics steps late. The bridge's log is `~/isaacsim/bridge.log` on that
 ## The world (docs/adr/0031 amendment 2)
 
 With a scene (`core/Scenes/<scene>.json`, default `fr3-duo-bench`), `world.py` puts the file's surfaces in
-the stage as static colliders and its fixed obstacles as kinematic bodies, on the session layer, so the
+the stage as static colliders, its fixed obstacles as kinematic bodies and its movable ones as dynamic bodies
+with their mass, which fall and which an arm can knock over (ADR 0031 amendment 4), on the session layer, so the
 robot's USD is never changed. RobotHost decides where objects go, from seeded layouts, and asks with PLACE;
 the bridge applies or refuses each one by RobotHost's own rules (`StaticWorld`), plus a PhysX overlap query
 against the arms: `overlaps-arm`, and `arm-touching` for a move from the headset. After each Welcome it
@@ -146,6 +147,6 @@ These are all bridge arguments, and the Welcome's description records them in ea
 - **Position drives** of 16000 Nm/rad and 250 Nm·s/rad on the arm joints (about 20 Hz tracking),
   and 2000 N/m and 100 N·s/m on the fingers. They play Franka's internal controller.
 - **No gravity on the arms' own links.** The real FR3 compensates its own weight. Only the robot's
-  links: the scene's objects are kinematic today, and movable ones will feel gravity.
+  links: the scene's movable objects feel gravity.
 - **PhysX at 1 kHz on the CPU,** with 8 solver iterations and no results written back to USD. That
   setting is what makes 1 kHz affordable (docs/adr/0031 amendment).

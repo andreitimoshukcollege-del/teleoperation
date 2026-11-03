@@ -1,7 +1,7 @@
 {
   "about": "The canonical parse of core/Scenes/fr3-duo-bench.json (docs/adr/0031 amendment 2), written by SceneDocumentTests.",
   "scene": "fr3-duo-bench",
-  "sha256": "015518197bb71d5b5f1de5721485247be4ae9fd1f1c830713ed4a32cd60da6e9",
+  "sha256": "5e14837029bd2ba6872148d5e96b80d51ca2d603f773494c6c40f6cc3a618887",
   "table": [
     0.20000000000000007,
     0.9,
@@ -36,6 +36,8 @@
         0
       ],
       "footprintRadius": 0.042426406871192854,
+      "movable": true,
+      "mass": 0.4,
       "jitter": [
         0.08,
         0.08,
@@ -61,6 +63,8 @@
         0
       ],
       "footprintRadius": 0.042426406871192854,
+      "movable": true,
+      "mass": 0.4,
       "jitter": [
         0.08,
         0.08,
@@ -86,6 +90,8 @@
         0
       ],
       "footprintRadius": 0.15132745950421556,
+      "movable": true,
+      "mass": 0.6,
       "jitter": [
         0.05,
         0.1,
@@ -111,6 +117,8 @@
         0
       ],
       "footprintRadius": 0.04,
+      "movable": true,
+      "mass": 0.35,
       "jitter": [
         0.06,
         0.1,

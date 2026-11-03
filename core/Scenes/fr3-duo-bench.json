@@ -1,28 +1,28 @@
 {
   "format": "teleop-scene",
-  "version": 1,
+  "version": 2,
   "name": "fr3-duo-bench",
   "robotProfile": "fr3-duo",
   "surfaces": [
-    { "id": "bench", "center": [-0.45, 0.0, -0.02], "size": [1.30, 1.60, 0.04], "colour": [0.23, 0.25, 0.27],
+    { "id": "bench", "center": [-0.10, 0.0, -0.02], "size": [0.60, 1.60, 0.04], "colour": [0.23, 0.25, 0.27],
       "staticFriction": 0.6, "dynamicFriction": 0.5, "collides": true, "headset": "builtin" },
     { "id": "table", "center": [0.55, 0.0, -0.02], "size": [0.70, 1.60, 0.04], "colour": [0.35, 0.38, 0.41],
       "staticFriction": 0.6, "dynamicFriction": 0.5, "collides": true, "headset": "show" },
     { "id": "floor", "center": [0.0, 0.0, -0.859], "size": [8.0, 8.0, 0.02], "colour": [0.30, 0.30, 0.30],
-      "staticFriction": 0.6, "dynamicFriction": 0.5, "collides": false, "headset": "hide" }
+      "staticFriction": 0.6, "dynamicFriction": 0.5, "collides": true, "headset": "hide" }
   ],
   "objects": [
     { "id": 1, "name": "post-left", "shape": "box", "size": [0.06, 0.06, 0.30], "position": [0.50, 0.30, 0.15], "rpy": [0, 0, 0],
-      "kind": "fixed", "operatorMovable": true, "staticFriction": 0.8, "dynamicFriction": 0.6, "colour": [0.85, 0.51, 0.17],
+      "kind": "movable", "mass": 0.4, "operatorMovable": true, "staticFriction": 0.8, "dynamicFriction": 0.6, "colour": [0.85, 0.51, 0.17],
       "jitter": [0.08, 0.08, 0.6] },
     { "id": 2, "name": "post-right", "shape": "box", "size": [0.06, 0.06, 0.30], "position": [0.50, -0.30, 0.15], "rpy": [0, 0, 0],
-      "kind": "fixed", "operatorMovable": true, "staticFriction": 0.8, "dynamicFriction": 0.6, "colour": [0.16, 0.62, 0.66],
+      "kind": "movable", "mass": 0.4, "operatorMovable": true, "staticFriction": 0.8, "dynamicFriction": 0.6, "colour": [0.16, 0.62, 0.66],
       "jitter": [0.08, 0.08, 0.6] },
     { "id": 3, "name": "wall", "shape": "box", "size": [0.04, 0.30, 0.15], "position": [0.62, 0.0, 0.075], "rpy": [0, 0, 0],
-      "kind": "fixed", "operatorMovable": true, "staticFriction": 0.8, "dynamicFriction": 0.6, "colour": [0.62, 0.62, 0.70],
+      "kind": "movable", "mass": 0.6, "operatorMovable": true, "staticFriction": 0.8, "dynamicFriction": 0.6, "colour": [0.62, 0.62, 0.70],
       "jitter": [0.05, 0.10, 0.4] },
     { "id": 4, "name": "can", "shape": "cylinder", "size": [0.08, 0.08, 0.20], "position": [0.40, 0.0, 0.10], "rpy": [0, 0, 0],
-      "kind": "fixed", "operatorMovable": true, "staticFriction": 0.8, "dynamicFriction": 0.6, "colour": [0.80, 0.15, 0.12],
+      "kind": "movable", "mass": 0.35, "operatorMovable": true, "staticFriction": 0.8, "dynamicFriction": 0.6, "colour": [0.80, 0.15, 0.12],
       "jitter": [0.06, 0.10, 0.0] }
   ],
   "placement": { "xMin": 0.28, "xMax": 0.85, "yMin": -0.65, "yMax": 0.65, "clearance": 0.02 },

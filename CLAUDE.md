@@ -20,8 +20,9 @@ The robot reports only its own body: the 57-byte wrist pose, and the joint-state
 (ADR 0018). Its camera streams colour video to the headset (ADR 0014), but only for the operator's
 eyes: nothing interprets the image, no depth is streamed, there is no contact signal, and `Plant/`
 is kinematic by deliberate choice. **The one exception is simulated:** the FR3 Duo in Isaac Sim has
-a world beside it (ADR 0031 amendment 2, ADR 0032): a work table and fixed obstacles from a scene
-file (`core/Scenes/`), placed by RobotHost from seeded layouts, colliding with the arms in Isaac,
+a world beside it (ADR 0031 amendments 2 and 4, ADR 0032): a work table and obstacles from a scene
+file (`core/Scenes/`), placed by RobotHost from seeded layouts, colliding with the arms in Isaac
+(movable ones fall and can be knocked over there),
 drawn on the headset and recorded with each session. Isaac also renders two cameras of it as live
 feeds for the lab's screens, and records the head camera's colour, depth and object masks with each
 session as training data (ADR 0032); nothing on the headset interprets them. That is a source of

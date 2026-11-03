@@ -409,3 +409,58 @@ Amendment 2's moves are built on the headset.
 RobotHost's collision model, with link2 against link5.
 
 **Not verified:** whether the gesture feels right on the headset: the grab reach, the clamp, and the ghost's look.
+
+## Amendment 4 (2026-11-03): movable objects, and the robot just ahead of the operator
+
+The user, after trying amendment 3 on the headset: "we want the objects to not be static, so the arm should be able to knock
+it down, and the arm feels far away, we want the arm and the objects setup to be close to the user". They chose the layout
+"just ahead, over its shoulder".
+
+**Movable objects (scene file version 2).**
+- **The format.** Version 2 adds `kind: "movable"` with a `mass` in kg, more than 0 and at most 20. A fixed object has no
+  mass. Version 1 still reads, and still refuses `movable`. Readers take versions 1 to 2.
+  - Core's `WorldScene` and Python's `scene.py` apply the same rules with the same keywords (`kind`, `mass`, `version`).
+  - The shared vectors gained seven cases.
+  - The canonical-parse golden now carries `movable` and `mass`.
+- **The shipped scene.** All four objects are movable:
+  - the posts, 0.4 kg each;
+  - the wall, 0.6 kg;
+  - the can, 0.35 kg.
+
+  The floor now collides, so whatever falls off the table lands on it.
+- **Isaac.**
+  - A movable object is a dynamic rigid body: `kinematicEnabled` is false, and `MassAPI` carries its mass. It feels gravity;
+    only the robot's links have gravity off.
+  - It is reported with WORLD flag 0. A fixed object keeps `FLAG_KINEMATIC`.
+  - Each WORLD read takes PhysX's pose as where the object is now (`WorldModel.sense`). The placement rules use that pose:
+    overlap with another object, and arm touching. A pushed object is not a new revision; revisions count placements.
+  - A placement stands a movable object upright where it is put, and zeroes its velocities, wherever it had fallen. So
+    NEW LAYOUT, or a move by hand, is how a knocked-over object comes back.
+- **RobotHost's `StaticWorld`** (no physics, `fr3-sim-host`) is unchanged: there, every object stays where it was placed.
+- **Unchanged:**
+  - The headset's IK and RobotHost's refusal check still know nothing of objects (amendment 2).
+  - The twin already poses each object with its full orientation from world frames, so a fallen object is drawn lying
+    down.
+- **`just isaac-scene-check`** runs the bridge on a copy of the scene with post-left made fixed, because checks 4 and 5 need
+  an object that cannot move. It gains a sixth check: post-right under the left hand, then the same elbow motion.
+  - It passes when the post moves more than 2 cm or tips more than 15°, and the arm falls short of its command by less
+    than 0.05 rad.
+  - Placed again, the post stands within 3 mm of where it was put.
+  - A movable object at rest must stay within 3 mm of its nominal pose.
+
+**The robot just ahead of the operator.**
+- **The scene file's bench** is 0.6 m deep: x from −0.4 to 0.2. The robot's base is now 0.4 m in from the bench's near
+  edge, about 0.5 m ahead of the operator's eye; it was 1.1 m in. The work table still starts at the bench's far edge, so
+  the objects are about 0.9–1.1 m away.
+- **On the headset,** `XrFr3SceneBuilder.BenchDepth`/`RobotDepth` are 0.6/0.4, held to the file within 1 mm by
+  `XrFr3SceneCheck`.
+- **The controls** are built by the JetRover's code as before, then moved out of the arms' way (`ArrangeControls`):
+  - Power, pause, the twin's switches and the added-delay slider stay on the front-left.
+  - The predictor row runs along the front, right of the switches.
+  - The three network sliders are on the front-right.
+  - RECENTRE, NEW LAYOUT and EDIT OBJECTS stand one behind another on the right wing.
+  - The console's panel stands off the bench's right side, turned to the operator, so it never hides an arm.
+- **Why there:** by Core's FK at the start pose, the elbows are 0.5–0.6 m either side of the base, at its depth, 0.35–0.5 m
+  up. The bench's front 0.25 m is clear of them.
+- **Not changed:** the hands still map to the tools about the neutral pose (`BodyAnchoredMapping`). Only where the operator
+  sees the robot moved, not how it is driven.

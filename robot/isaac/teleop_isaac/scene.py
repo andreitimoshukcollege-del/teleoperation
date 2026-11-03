@@ -16,8 +16,9 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
 FORMAT = "teleop-scene"
-VERSION = 1
+VERSION = 2  # the newest version this reader knows; it reads every version from 1. Version 2 adds movable objects.
 MAX_OBJECTS = 24
+MAX_MASS = 20.0  # kg
 TOLERANCE = 0.001
 _NAME = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
 
@@ -66,6 +67,8 @@ class Object:
     size: Tuple[float, float, float]
     position: Tuple[float, float, float]
     yaw: float
+    movable: bool  # a body physics moves (version 2): it falls, and an arm can push or knock it over
+    mass: float  # kg; 0 for a fixed object
     operator_movable: bool
     static_friction: float
     dynamic_friction: float
@@ -143,8 +146,9 @@ def parse(doc: Dict[str, Any]) -> Scene:
     """Builds and validates a scene from the file's JSON object."""
     if doc.get("format", "") != FORMAT:
         raise _bad("format", f"'{doc.get('format', '')}', not '{FORMAT}'")
-    if doc.get("version", 0) != VERSION:
-        raise _bad("version", f"{doc.get('version', 0)}; this reader knows version {VERSION}")
+    version = doc.get("version", 0)
+    if not isinstance(version, int) or isinstance(version, bool) or not 1 <= version <= VERSION:
+        raise _bad("version", f"{version}; this reader knows versions 1 to {VERSION}")
     name = doc.get("name", "")
     if not isinstance(name, str) or not name.strip():
         raise _bad("name", "the scene has no name")
@@ -216,8 +220,14 @@ def parse(doc: Dict[str, Any]) -> Scene:
             raise _bad("size", f"cylinder '{oname}' must be [d, d, h]")
         if shape == "sphere" and (abs(z[0] - z[1]) > 1e-9 or abs(z[0] - z[2]) > 1e-9):
             raise _bad("size", f"sphere '{oname}' must be [d, d, d]")
-        if o.get("kind", "") != "fixed":
-            raise _bad("kind", f"'{oname}' is '{o.get('kind', '')}'; version {VERSION} has fixed objects only")
+        kind = o.get("kind", "")
+        movable = kind == "movable"
+        if kind != "fixed" and not (movable and version >= 2):
+            raise _bad("kind", f"'{oname}' is '{kind}': fixed or movable" if version >= 2 else f"'{oname}' is '{kind}'; version 1 has fixed objects only")
+        mass = o.get("mass", 0.0)
+        if not isinstance(mass, (int, float)) or isinstance(mass, bool) or (not 0 < mass <= MAX_MASS if movable else mass != 0):
+            raise _bad("mass", f"movable '{oname}' has mass {mass}: more than 0 and at most {MAX_MASS:g} kg" if movable
+                       else f"fixed '{oname}' has a mass: only a movable object has one")
         pos = _vector(o.get("position"), 3, "pose", f"'{oname}' position")
         rpy = _vector(o.get("rpy"), 3, "pose", f"'{oname}' rpy")
         if abs(rpy[0]) > 1e-9 or abs(rpy[1]) > 1e-9:
@@ -229,7 +239,7 @@ def parse(doc: Dict[str, Any]) -> Scene:
         j = _vector(o.get("jitter"), 3, "jitter", f"'{oname}'")
         if not all(v >= 0 for v in j):
             raise _bad("jitter", f"'{oname}' has a negative range")
-        objects.append(Object(oid, oname, shape, z, pos, rpy[2], bool(o.get("operatorMovable", False)),
+        objects.append(Object(oid, oname, shape, z, pos, rpy[2], movable, float(mass), bool(o.get("operatorMovable", False)),
                               float(o.get("staticFriction", 0.0)), float(o.get("dynamicFriction", 0.0)), col, j))
 
     known = {"format", "version", "name", "robotProfile", "surfaces", "objects", "placement"}

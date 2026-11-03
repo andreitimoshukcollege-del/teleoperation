@@ -239,9 +239,11 @@ conversion and no zero offsets: the values are the profile's joint coordinates.
 ### The world beside the arms (docs/adr/0031 amendment 2)
 
 When RobotHost runs with `--scene` (`just isaac-host`, `just fr3-sim-host`, both by default with
-`core/Scenes/fr3-duo-bench.json`), there are objects beside the arms: a work table and fixed obstacles
-from the scene file, placed by RobotHost from seeded layouts. In Isaac they collide with the arms; beside
-the simulated arm (`sim-host`) nothing collides. Simulated sessions only: the real robot has no world.
+`core/Scenes/fr3-duo-bench.json`), there are objects beside the arms: a work table and obstacles
+from the scene file, placed by RobotHost from seeded layouts. In Isaac they collide with the arms, and a
+movable one (scene file version 2, ADR 0031 amendment 4) is a dynamic body an arm can push or knock over,
+so between placements `WO` follows it wherever physics takes it; beside the simulated arm (`sim-host`)
+nothing collides and nothing moves. Simulated sessions only: the real robot has no world.
 Such a session has in addition:
 
 - **`scene.json`**: a byte-for-byte copy of the scene file RobotHost ran, hashed in `files.sha256`.

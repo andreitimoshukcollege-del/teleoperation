@@ -54,8 +54,9 @@ namespace Teleop.RobotArm.Tests.World
             Assert.Equal("fr3-duo-bench", s.Name);
             Assert.Equal(SerialChainKinematicsTests.LoadFr3Duo().Name, s.RobotProfile);
             Assert.NotNull(s.Bench);
-            // The VR bench: 1.3 m deep, the robot 1.1 m in from its near edge, its top at the robot's base.
-            Assert.Equal(-1.1, s.Bench!.XMin, 9);
+            // The VR bench: 0.6 m deep, the robot 0.4 m in from its near edge (just ahead of the operator, docs/adr/0031
+            // amendment 4), its top at the robot's base.
+            Assert.Equal(-0.4, s.Bench!.XMin, 9);
             Assert.Equal(0.2, s.Bench.XMax, 9);
             Assert.Equal(0.0, s.Bench.Top, 9);
             Assert.Equal(0.2, s.Table.XMin, 9);
@@ -65,6 +66,20 @@ namespace Teleop.RobotArm.Tests.World
             Assert.Equal(SurfaceDisplay.Show, s.Table.Display);
             Assert.Equal(4, s.Objects.Length);
             Assert.All(s.Objects, o => Assert.True(o.OperatorMovable));
+            // Every object can be knocked over (the user, 2026-11-03), and lands on the floor if it falls off the table.
+            Assert.All(s.Objects, o => Assert.True(o.Movable && o.Mass > 0 && o.Mass <= 1.0, o.Name));
+            Assert.True(s.Surfaces.Single(x => x.Id == "floor").Collides);
+        }
+
+        [Fact]
+        public void AVersion1File_StillReads_AndItsObjectsAreFixed()
+        {
+            string text = File.ReadAllText(ScenePath()).Replace("\"version\": 2", "\"version\": 1")
+                .Replace("\"kind\": \"movable\", \"mass\": 0.4,", "\"kind\": \"fixed\",").Replace("\"kind\": \"movable\", \"mass\": 0.6,", "\"kind\": \"fixed\",")
+                .Replace("\"kind\": \"movable\", \"mass\": 0.35,", "\"kind\": \"fixed\",");
+            WorldScene s = JsonSerializer.Deserialize<SceneDocument>(text, Options)!.ToScene();
+            Assert.All(s.Objects, o => Assert.False(o.Movable));
+            Assert.All(s.Objects, o => Assert.Equal(0.0, o.Mass));
         }
 
         [Fact]
@@ -101,6 +116,8 @@ namespace Teleop.RobotArm.Tests.World
                     ["size"] = new[] { o.SizeX, o.SizeY, o.SizeZ },
                     ["nominal"] = new[] { o.Nominal.X, o.Nominal.Y, o.Nominal.Z, o.Nominal.Qw, o.Nominal.Qx, o.Nominal.Qy, o.Nominal.Qz },
                     ["footprintRadius"] = o.FootprintRadius,
+                    ["movable"] = o.Movable,
+                    ["mass"] = o.Mass,
                     ["jitter"] = new[] { o.JitterX, o.JitterY, o.JitterYaw },
                 }).ToArray(),
             };

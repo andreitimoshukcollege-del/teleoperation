@@ -100,7 +100,7 @@ def test_world_messages_carry_every_object_and_count_snapshots():
     sensed, snapshot, revision, part, parts, objects = wire.decode_world(first[0])
     assert (sensed, snapshot, revision, part, parts) == (123456789, 1, 0, 0, 1)
     assert [o.id for o in objects] == [o.id for o in m.scene.objects]
-    assert all(o.flags == wire.FLAG_KINEMATIC for o in objects)
+    assert all(o.flags == 0 for o in objects)  # every shipped object is movable: a dynamic body, not kinematic
     assert wire.decode_world(m.world_messages(lambda: next(seq), 2)[0])[1] == 2
 
 
@@ -126,3 +126,26 @@ def test_prim_names_are_usd_names_and_stay_apart():
     assert all(re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", n) for n in names)
     assert len(set(names)) == len(names)
     assert prim_name("o1", "post-left") != prim_name("o2", "post.left")
+
+
+def test_a_movable_object_is_where_physics_has_it_and_a_fixed_one_where_it_was_placed():
+    # docs/adr/0031 amendment 4: a knocked-over object is where PhysX has it, for the placement rules; not a placement.
+    m = model()
+    can = m.scene.objects[3]
+    assert can.movable
+    knocked = (0.45, 0.05, 0.04, math.cos(0.7), math.sin(0.7), 0.0, 0.0)  # lying on its side
+    m.sense(3, knocked)
+    assert m.poses[3] == knocked and m.revision == 0
+    post = m.scene.objects[0]
+    # The post may not go where the can lies now, and the can stands up again wherever it is placed.
+    assert m.check(wire.CAUSE_LAYOUT, post.id, at(0.45, 0.05), no_arm)[0] == wire.OVERLAPS_OBJECT
+    outcome, i, upright = m.check(wire.CAUSE_LAYOUT, can.id, at(0.40, 0.0), no_arm)
+    assert outcome == wire.APPLIED and upright[2] == m.scene.table.top + can.size[2] / 2 and upright[4:6] == (0.0, 0.0)
+
+    doc = scene.load(SCENE)
+    fixed = WorldModel(scene.Scene(doc.name, doc.robot_profile, doc.surfaces, doc.table, doc.bench,
+                                   tuple(o.__class__(**{**o.__dict__, "movable": False, "mass": 0.0}) for o in doc.objects),
+                                   doc.region, doc.clearance))
+    fixed.sense(3, knocked)
+    assert fixed.poses[3] == tuple(doc.objects[3].nominal)
+    assert all(o.flags == wire.FLAG_KINEMATIC for o in fixed.objects())

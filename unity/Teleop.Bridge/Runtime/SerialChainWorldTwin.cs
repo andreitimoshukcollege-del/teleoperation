@@ -20,6 +20,8 @@ namespace Teleop.Bridge
         [SerializeField] private Transform[] objects = new Transform[0];
         [Tooltip("Each object's scene id, parallel to objects.")]
         [SerializeField] private int[] ids = new int[0];
+        [Tooltip("A see-through copy of each object, parallel to objects: shown where EDIT OBJECTS is dragging it (phase P5).")]
+        [SerializeField] private Transform[] ghosts = new Transform[0];
 
         private bool _warnedMismatch;
 
@@ -32,6 +34,11 @@ namespace Teleop.Bridge
         private void Start()
         {
             foreach (Transform t in objects)
+            {
+                if (t != null) t.gameObject.SetActive(false);
+            }
+
+            foreach (Transform t in ghosts)
             {
                 if (t != null) t.gameObject.SetActive(false);
             }
@@ -57,6 +64,21 @@ namespace Teleop.Bridge
                 if (!posed) continue;
                 t.localPosition = new CoreVec(p.X, p.Y, p.Z).ToUnity();
                 t.localRotation = CoreQuat.Normalize(new CoreQuat(p.Qx, p.Qy, p.Qz, p.Qw)).ToUnity();
+            }
+
+            // EDIT OBJECTS: the dragged object's ghost where the hand puts it. The solid one moves only when the world frames
+            // show the move, so the operator sees it cross the network, or be refused.
+            byte dragged = bridge.EditDraggedId;
+            for (int i = 0; i < ghosts.Length && i < ids.Length; i++)
+            {
+                Transform g = ghosts[i];
+                if (g == null) continue;
+                bool show = dragged != 0 && ids[i] == dragged && !mismatch;
+                if (g.gameObject.activeSelf != show) g.gameObject.SetActive(show);
+                if (!show) continue;
+                Teleop.RobotArm.Types.RigidTransform at = bridge.EditPreview;
+                g.localPosition = new CoreVec((float)at.X, (float)at.Y, (float)at.Z).ToUnity();
+                g.localRotation = CoreQuat.Normalize(new CoreQuat((float)at.Qx, (float)at.Qy, (float)at.Qz, (float)at.Qw)).ToUnity();
             }
         }
     }

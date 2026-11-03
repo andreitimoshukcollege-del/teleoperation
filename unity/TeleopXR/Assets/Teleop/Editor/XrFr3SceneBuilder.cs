@@ -221,6 +221,9 @@ namespace Teleop.XR.Editor
         /// <summary>NEW LAYOUT, left of RECENTRE on the bench's front (docs/adr/0031 amendment 2).</summary>
         internal static Vector3 NewLayoutButtonAt => RecentreButtonAt + new Vector3(-0.30f, 0f, 0f); // labels are 0.3 m wide
 
+        /// <summary>EDIT OBJECTS, right of RECENTRE (phase P5); the switches take the bench's front to the left.</summary>
+        internal static Vector3 EditObjectsButtonAt => RecentreButtonAt + new Vector3(0.30f, 0f, 0f);
+
         /// <summary>A fingertip button on a plinth: a cap to press, its label, and an <see cref="Fr3MotionButton"/> of <paramref name="role"/>.</summary>
         internal static Transform BuildButton(Transform parent, string name, Vector3 at, string capMaterial, Color capColor, string text,
             Fr3MotionButton.Role role, SerialChainOperatorBridge bridge, XROrigin origin)

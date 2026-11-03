@@ -463,9 +463,10 @@ fr3-sim-host track_hz="20" noise_rad="0" seed="1" port="6002" discovery_port="60
 
 # Check the world a RobotHost streams (docs/adr/0031 amendment 2), as the headset sees it (Teleop.Eval world-probe): the status names this scene file, every object is posed within 2 s, world frames come at 50 +-5 Hz, and, given the seed, the poses are that seed's layout; new_layout=true then asks for NEW LAYOUT and checks layout 2 arrives. Sends no joint command, so no arm moves. Against `just fr3-sim-host scene_seed=7` (another terminal): `just fr3-world-probe 127.0.0.1 7 true`; against Isaac, its address
 [group('fr3 (simulated)')]
-fr3-world-probe remote_host="127.0.0.1" seed="" new_layout="false" seconds="3" scene="fr3-duo-bench":
+fr3-world-probe remote_host="127.0.0.1" seed="" new_layout="false" seconds="3" scene="fr3-duo-bench" move="":
     cd core && dotnet run --project Teleop.Eval -- world-probe --remote-host {{remote_host}} --scene Scenes/{{scene}}.json --seconds {{seconds}} \
-        {{ if seed == "" { "" } else { "--seed " + seed } }} {{ if new_layout == "true" { "--new-layout" } else { "" } }}
+        {{ if seed == "" { "" } else { "--seed " + seed } }} {{ if new_layout == "true" { "--new-layout" } else { "" } }} \
+        {{ if move == "" { "" } else { "--move " + move } }}
 
 # Drive the simulated FR3 Duo of a running just fr3-sim-host (in another terminal) through seeded joint-space waypoints at 48 Hz (Teleop.Eval chain-drive): every joint within +-amplitude rad of where it starts, the hands toggling; Enter stops it, back at the start. Simulated robots only: chain-drive refuses a real one until the serial-chain collision model exists (docs/adr/0026 decision 5)
 [group('fr3 (simulated)')]
@@ -2989,6 +2990,28 @@ isaac-record-check seconds="40" amplitude="0.6" seed="3":
     [ -n "$dir" ] || { echo "error: no new completed session on $host within 4 min" >&2; exit 1; }
     echo "[record-check] checking $dir"
     ssh -o ConnectTimeout=10 "$host" "cd \$HOME/teleoperation-isaac/robot/isaac && \$HOME/isaacsim/venv/bin/python verify_session.py '$dir'"
+
+# Moving objects as the headset's EDIT OBJECTS does (phase P5), against a running `just isaac-host fr3-duo-bench 7` (seed 7, so the layout is known): world-probe checks layout 1 is seed 7's, moves the can to a free spot (applied, and the world frames show it there), asks for a spot off the table (outside-region), moves the left post aside, then, with the left arm held forward and down by chain-drive (simulated arms only), asks for the post back under that hand (overlaps-arm, Isaac's PhysX query). Exits non-zero if any answer is not the expected one
+[group('isaac')]
+isaac-edit-check:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    host="{{gpu_host}}"; addr=${host#*@}
+    just fr3-world-probe "$addr" 7 false 2
+    just fr3-world-probe "$addr" "" false 2 fr3-duo-bench "4:0.45:-0.10:30"
+    just fr3-world-probe "$addr" "" false 2 fr3-duo-bench "4:1.5:0:0:outside-region"
+    just fr3-world-probe "$addr" "" false 2 fr3-duo-bench "1:0.72:0.45:0"
+    # The left base and shoulder 0.6 rad forward put the left hand at about (0.51, 0.30, 0.16), where the post was; folding the
+    # elbow instead is refused by RobotHost's collision model (link2 against link5).
+    echo "[edit-check] holding the left arm forward and down (motors 1 and 2, +0.6 rad) for 20 s"
+    (cd core && sleep 40 | timeout 60 dotnet run --project Teleop.Eval -- chain-drive --simulated-robot --remote-host "$addr" --seconds 20 \
+        --hold 1:0.6,2:0.6 --amplitude-rad 0.6 --collision-model RobotProfiles/fr3-duo.collision.json > /dev/null 2>&1) &
+    drive=$!
+    sleep 10
+    status=0
+    just fr3-world-probe "$addr" "" false 0 fr3-duo-bench "1:0.51:0.30:0:overlaps-arm" || status=1
+    wait $drive || true
+    exit $status
 
 # The FR3 Duo in Isaac Sim on the GPU machine, behind a RobotHost there (docs/adr/0031): checks out this commit in ~/teleoperation-isaac (it must be on GitHub), builds RobotHost, starts the Isaac bridge (robot/isaac, log ~/isaacsim/bridge.log) and then RobotHost with --backend arm-server, joint port 6002 and discovery 6005 on that machine, recording headset sessions into ~/isaacsim/recordings. With a scene (core/Scenes/<scene>.json, default fr3-duo-bench; `none` for the arms alone), the table and obstacles are in Isaac too and RobotHost places them from seeded layouts (scene_seed: a number, or auto), docs/adr/0031 amendment 2. Enter stops both, as does `just isaac-stop` from any terminal. Refuses while an Isaac host of ours is already running there, or a training run of ours is going. Other people's GPU jobs do not stop it (the user's call, 2026-11-02): it says how much of the GPU they hold, since sharing it can make physics steps late. Point the headset at it with `just push-galaxy-fr3-config <GPU machine's address>`; drive it headless with `just fr3-teleop-probe 0.08 3 franka-replay false <GPU machine's address>` (just takes recipe arguments by position)
 [group('isaac')]

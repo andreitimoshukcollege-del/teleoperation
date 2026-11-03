@@ -222,6 +222,16 @@ namespace Teleop.XR.Editor
 
             if (root.transform.Find(XrFr3WorldSetup.NewLayoutButtonName)?.GetComponent<Fr3MotionButton>() == null)
                 problems.Add("no NEW LAYOUT button under the world root: run `just unity-world-fr3-xr`");
+            Fr3MotionButton edit = root.transform.Find(XrFr3WorldSetup.EditObjectsButtonName)?.GetComponent<Fr3MotionButton>();
+            if (edit == null || edit.ButtonRole != Fr3MotionButton.Role.EditObjects)
+                problems.Add("no EDIT OBJECTS button under the world root: run `just unity-world-fr3-xr`");
+            foreach (SerialChainWorldTwin twin in twins)
+            {
+                SerializedProperty ghosts = new SerializedObject(twin).FindProperty("ghosts");
+                if (ghosts.arraySize != world.Objects.Length ||
+                    Enumerable.Range(0, ghosts.arraySize).Any(i => !(ghosts.GetArrayElementAtIndex(i).objectReferenceValue is Transform g) || g.GetComponent<Collider>() != null))
+                    problems.Add("the world twin has no see-through ghost for each object: run `just unity-world-fr3-xr`");
+            }
 
             foreach (SceneSurface s in world.Surfaces.Where(x => x.Display == SurfaceDisplay.Show))
             {

@@ -93,9 +93,11 @@ namespace Teleop.XR.Editor
             XROrigin origin = Object.FindAnyObjectByType<XROrigin>(FindObjectsInactive.Include);
             XrFr3SceneBuilder.BuildButton(root, NewLayoutButtonName, XrFr3SceneBuilder.NewLayoutButtonAt, "Fr3NewLayoutCap", new Color(0.95f, 0.65f, 0.15f),
                 "NEW LAYOUT", Teleop.XR.Fr3MotionButton.Role.NewLayout, bridge, origin);
+            XrFr3SceneBuilder.BuildButton(root, EditObjectsButtonName, XrFr3SceneBuilder.EditObjectsButtonAt, "Fr3EditObjectsCap", new Color(0.55f, 0.35f, 0.9f),
+                "EDIT OBJECTS", Teleop.XR.Fr3MotionButton.Role.EditObjects, bridge, origin);
 
             BuildFeeds(bridge);
-            Debug.Log($"[fr3-world] built '{world.Name}': {world.Surfaces.Count(s => s.Display == SurfaceDisplay.Show)} surface(s) and a twin of {world.Objects.Length} object(s) from the scene file, NEW LAYOUT, and the {HeadFeedName} and {ThirdFeedName} feeds");
+            Debug.Log($"[fr3-world] built '{world.Name}': {world.Surfaces.Count(s => s.Display == SurfaceDisplay.Show)} surface(s) and a twin of {world.Objects.Length} object(s) with their ghosts from the scene file, NEW LAYOUT, EDIT OBJECTS, and the {HeadFeedName} and {ThirdFeedName} feeds");
         }
 
         public const string FeedsRootName = "Fr3CameraFeeds";
@@ -170,6 +172,7 @@ namespace Teleop.XR.Editor
 
         public const string TwinName = "WorldTwin";
         public const string NewLayoutButtonName = "NewLayoutButton";
+        public const string EditObjectsButtonName = "EditObjectsButton";
 
         /// <summary>
         /// The world twin: one visual per scene object (the built-in primitive of its shape, its colour, no collider), at its nominal
@@ -180,7 +183,10 @@ namespace Teleop.XR.Editor
             var twinRoot = new GameObject(TwinName).transform;
             twinRoot.SetParent(root, false);
             var objects = new Transform[world.Objects.Length];
+            var ghosts = new Transform[world.Objects.Length];
             var ids = new int[world.Objects.Length];
+            Color ghostColor = new Color(0.75f, 0.6f, 1f, 0.35f);
+            Material ghostMaterial = LabMaterials.Transparent("Fr3WorldGhost", ghostColor);
             for (int i = 0; i < world.Objects.Length; i++)
             {
                 SceneObject o = world.Objects[i];
@@ -199,6 +205,13 @@ namespace Teleop.XR.Editor
                 renderer.lightProbeUsage = UnityEngine.Rendering.LightProbeUsage.BlendProbes;
                 objects[i] = go.transform;
                 ids[i] = o.Id;
+
+                // Its ghost: where EDIT OBJECTS is dragging it, see-through, until the world frames show the move.
+                GameObject ghost = Object.Instantiate(go, twinRoot, false);
+                ghost.name = o.Name + "_ghost";
+                ghost.GetComponent<MeshRenderer>().sharedMaterial = ghostMaterial;
+                ghost.SetActive(false);
+                ghosts[i] = ghost.transform;
             }
 
             var twin = twinRoot.gameObject.AddComponent<SerialChainWorldTwin>();
@@ -207,6 +220,9 @@ namespace Teleop.XR.Editor
             SerializedProperty list = so.FindProperty("objects");
             list.arraySize = objects.Length;
             for (int i = 0; i < objects.Length; i++) list.GetArrayElementAtIndex(i).objectReferenceValue = objects[i];
+            SerializedProperty ghostList = so.FindProperty("ghosts");
+            ghostList.arraySize = ghosts.Length;
+            for (int i = 0; i < ghosts.Length; i++) ghostList.GetArrayElementAtIndex(i).objectReferenceValue = ghosts[i];
             SerializedProperty idList = so.FindProperty("ids");
             idList.arraySize = ids.Length;
             for (int i = 0; i < ids.Length; i++) idList.GetArrayElementAtIndex(i).intValue = ids[i];

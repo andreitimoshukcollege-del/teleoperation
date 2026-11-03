@@ -85,6 +85,7 @@ ADR 0032 amendment 1 holds the 2026-11-02 numbers: both feeds at 29.4–29.5 fps
 just isaac-backdrops-fetch 2000      # once: Open Images V7 validation, CC BY 2.0 only, into ~/isaacsim/backdrops/
 just isaac-backdrops-status          # how many, their licences, any whose sha256 no longer matches
 just isaac-record-check              # against a running isaac-host: drive, record, check one session end to end
+just isaac-edit-check                # against isaac-host fr3-duo-bench 7: headset moves applied and refused (an arm, off the table)
 ```
 
 - **The backdrop.** The renderer puts a random image on a mat over the table top and another on a screen beyond the table.

@@ -86,6 +86,9 @@ namespace Teleop.Bridge
         private (float Lag, float Jitter, float Loss) _disturbance;
         private SerialChainJointLink _link;
         private WorldState _world;
+        private ObjectEditGesture _edit;
+        private bool _editObjects, _hasPendingMove;
+        private ObjectPose _pendingMove;
         private LinkView _view;
         private JointSample[] _commanded;
         private SerialChainTeleop _teleop;
@@ -142,6 +145,7 @@ namespace Teleop.Bridge
                     }
 
                     ResetGrabs();
+                    EditObjects = false; // never both: a curl would be a grab of the arm and of an object
                     // Where you stand when you switch on is where the robot is anchored to you.
                     Recentre();
                 }
@@ -237,6 +241,69 @@ namespace Teleop.Bridge
         public bool CanRequestNewLayout => _link != null && _world != null && _world.HasStatus && _world.Status.Running &&
                                            !_world.SceneMismatch && _mode != JetRoverMotionMode.On && !_link.WorldEditPending;
 
+        /// <summary>
+        /// Whether EDIT OBJECTS can be on (phase P5): a world is running with this headset's scene file, the robot is off, and the
+        /// hands map absolutely (the cursor is where a hand would put the gripper).
+        /// </summary>
+        public bool CanEditObjects => _edit != null && _world.HasStatus && _world.Status.Running && !_world.SceneMismatch &&
+                                      _mode != JetRoverMotionMode.On && _mapping != null && _mapping.IsCentred;
+
+        /// <summary>
+        /// EDIT OBJECTS: a held curl grabs the nearest movable object and drags it; opening the hand asks RobotHost to move it there
+        /// (<see cref="ObjectEditGesture"/>). The arms let go and do not follow the hands meanwhile. Only while <see cref="CanEditObjects"/>.
+        /// </summary>
+        public bool EditObjects
+        {
+            get => _editObjects;
+            set
+            {
+                bool on = value && CanEditObjects;
+                if (on == _editObjects) return;
+                _editObjects = on;
+                ResetGrabs();
+                _edit?.Reset();
+                if (on && _teleop != null)
+                {
+                    if (_left >= 0 && _teleop.IsEngaged(_left)) _teleop.Release(_left);
+                    if (_right >= 0 && _teleop.IsEngaged(_right)) _teleop.Release(_right);
+                }
+
+                Debug.Log($"[world] EDIT OBJECTS {(on ? "on" : "off")}");
+            }
+        }
+
+        /// <summary>Whether an object is being dragged (the twin shows its ghost at <see cref="EditPreview"/>).</summary>
+        public bool EditDragging => _editObjects && _edit != null && _edit.IsDragging;
+
+        public byte EditDraggedId => EditDragging ? _edit.DraggedId : (byte)0;
+
+        /// <summary>Where the dragged object would go, in the robot's base frame.</summary>
+        public RigidTransform EditPreview => _edit != null ? _edit.Preview : RigidTransform.Identity;
+
+        /// <summary>Whether a move is waiting for RobotHost's answer.</summary>
+        public bool EditPending => _hasPendingMove || (_link != null && _link.WorldEditPending);
+
+        /// <summary>RobotHost's answer to the last edit, in words; empty before any.</summary>
+        public string LastEditOutcome
+        {
+            get
+            {
+                if (_world == null || !_world.HasStatus || _world.Status.EditSequence == 0) return "";
+                switch (_world.Status.EditOutcome)
+                {
+                    case 0: return "done";
+                    case 1: return "refused: an arm is in the way";
+                    case 2: return "refused: another object is there";
+                    case 3: return "refused: off the table";
+                    case 5: return "refused: that one is fixed";
+                    case 6: return "refused: an arm is touching it";
+                    case 7: return "refused: the robot is on";
+                    case 9: return "no answer from the world";
+                    default: return "refused";
+                }
+            }
+        }
+
         /// <summary>Asks RobotHost for the next seeded layout (only while motion is off); false when it cannot be asked now.</summary>
         public bool RequestNewLayout()
         {
@@ -313,6 +380,15 @@ namespace Teleop.Bridge
             if (!tracked) _handFilter[arm].Reset();
             else palm = Filtered(arm, _mapping != null ? ToWorld(palmPosition, palmRotation) : ToRoot(palmPosition, palmRotation));
             bool held = _grab[arm].Update(_grabConfig, tracked, curlRatio);
+            if (_editObjects)
+            {
+                // EDIT OBJECTS: the curl held grabs an object, never the arm (the double-curl lock is not read meanwhile).
+                if (_teleop.IsEngaged(arm)) _teleop.Release(arm);
+                bool mapped = tracked && _mapping != null && _mapping.IsCentred;
+                _edit.Update(leftHand ? 0 : 1, mapped, held, mapped ? _mapping.Map(arm, palm) : RigidTransform.Identity, _world);
+                return;
+            }
+
             if (_toggleConfig != null)
             {
                 // A double curl locks the arm on and another unlocks it; while locked it follows the hand whether or not
@@ -452,6 +528,7 @@ namespace Teleop.Bridge
             List<JointPredictorPreset> presets = Presets(out int active, out string[] descriptions);
             _world = LoadWorld(_profile);
             _link = new SerialChainJointLink(_transport, _clock, _profile, clockSync, presets, active, OperatorClientKind.Headset, _world);
+            _edit = _world != null ? new ObjectEditGesture(_world.Scene) : null;
             _view = new LinkView(_link, descriptions, _clock);
             _commanded = new JointSample[_teleop.MotorCount];
 
@@ -481,6 +558,23 @@ namespace Teleop.Bridge
             if (_link == null) return;
             long now = _clock.NowTicks;
             _link.Tick(now);
+            if (_edit != null)
+            {
+                if (_editObjects && !CanEditObjects) EditObjects = false; // the world stopped, or the scene changed
+                if (_edit.TryTakeRequest(out ObjectPose move))
+                {
+                    _pendingMove = move;
+                    _hasPendingMove = true;
+                }
+
+                // Sent once nothing else is waiting; the link re-sends it until RobotHost echoes it.
+                if (_hasPendingMove && !_link.WorldEditPending && _link.RequestWorldEdit(WorldEditOp.Move, _pendingMove, now))
+                {
+                    _hasPendingMove = false;
+                    Debug.Log($"[world] move {_pendingMove.Id} to ({_pendingMove.X:0.000}, {_pendingMove.Y:0.000}) requested");
+                }
+            }
+
             if (!_teleop.HasPose && _link.FramesReceived > 0) _teleop.TryTakePose(_link.Measured);
             if (motionEnabledAtStart && _mode != JetRoverMotionMode.On && _teleop.HasPose) MotionEnabled = true;
             // Anchored at launch too, once the headset is tracking, so the markers show where a grab would go.

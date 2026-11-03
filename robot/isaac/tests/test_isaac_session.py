@@ -26,7 +26,8 @@ def start(tmp_path, **kw):
     control = tmp_path / ".active"
     closed = []
     s = IsaacSession(str(control), ["head.rgb", "head.depth"], preamble=lambda: [("IV", "test", 1)],
-                     on_closed=closed.append, poll_seconds=0.02, free_bytes=lambda d: 10 ** 12, **kw)
+                     on_closed=closed.append, final_files=lambda d: {"backdrops.json": b"{}\n"}, poll_seconds=0.02,
+                     free_bytes=lambda d: 10 ** 12, **kw)
     return s, control, closed
 
 
@@ -50,7 +51,8 @@ def test_a_session_has_its_records_its_frames_and_a_trailer_that_hashes_them(tmp
     assert log[0] == f"JSES|1|isaac|1000000000|CLOCK_MONOTONIC|{d.name}"
     assert log[1] == "IV|test|1"
     tags = [x.split("|")[0] for x in log]
-    assert tags.count("VF") == 2 and tags.count("FS") == 2 and tags[-1] == "END"
+    assert tags.count("VF") == 2 and tags.count("FS") == 3 and tags[-1] == "END"
+    assert (d / "isaac" / "backdrops.json").read_bytes() == b"{}\n"
     vf = [x.split("|") for x in log if x.startswith("VF|")]
     assert vf[1][2:5] == ["2", "2000", "B"]
     rgb = dict((off, data) for off, data in read_sidecar(str(d / "isaac" / "head.rgb.frames")))
@@ -61,7 +63,8 @@ def test_a_session_has_its_records_its_frames_and_a_trailer_that_hashes_them(tmp
     assert list(rgb.values()) == [b"\xff\xd8one", b"\xff\xd8two"]
     for fs in (x.split("|") for x in log if x.startswith("FS|")):
         data = (d / fs[1]).read_bytes()
-        assert data.startswith(SIDECAR_HEADER) and int(fs[2]) == len(data) and fs[3] == hashlib.sha256(data).hexdigest()
+        assert int(fs[2]) == len(data) and fs[3] == hashlib.sha256(data).hexdigest()
+        assert data.startswith(SIDECAR_HEADER) or fs[1].endswith(".json")
     end = log[-1].split("|")
     body = ("\n".join(log[:-1]) + "\n").encode("ascii")
     assert end[1] == str(len(log) - 2) and end[2] == "0" and end[3] == hashlib.sha256(body).hexdigest()

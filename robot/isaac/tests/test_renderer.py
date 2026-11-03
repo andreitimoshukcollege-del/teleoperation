@@ -55,3 +55,23 @@ def test_an_image_is_stamped_with_the_state_posed_lag_frames_before():
     for t in (10, 20, 30, 40):
         s.posed(t)
     assert s.shown(0) == 40 and s.shown(2) == 20 and s.shown(4) == camwire.UNSET
+
+
+def test_masks_label_each_links_visual_by_side_and_part_and_nothing_that_nests():
+    from teleop_isaac.renderer import mask_class
+    assert mask_class("left_fr3v2_link3_visual") == "left_arm"
+    assert mask_class("right_fr3v2_hand_visual") == "right_hand"
+    assert mask_class("left_fr3v2_leftfinger_visual") == "left_hand"
+    assert mask_class("franka_head_1") == "head"
+    assert mask_class("fr3_duo_mount_mounting_point_visual") == "mount"
+    assert mask_class("left_fr3v2_link3") is None  # a link nests the next one: never labelled itself
+
+
+def test_a_frames_segmentation_becomes_stable_ids_and_depth_millimetres():
+    import numpy as np
+    from teleop_isaac.renderer import OBJECT_BASE, depth_mm, mask_table, stable_mask
+    table = mask_table([1, 4])
+    seg = np.array([[0, 7], [9, 3]], np.uint32)
+    info = {"7": {"class": "left_hand"}, "9": {"class": "object_4"}, "3": {"class": "something_else"}, "0": {"class": "BACKGROUND"}}
+    assert stable_mask(seg, info, table).tolist() == [[0, 2], [OBJECT_BASE + 4, 0]]
+    assert depth_mm(np.array([0.5, float("inf"), float("nan"), 70.0, 0.0])).tolist() == [500, 0, 0, 0, 0]

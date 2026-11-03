@@ -1,7 +1,47 @@
 using System;
+using System.Collections.Generic;
+using System.Globalization;
+using System.Linq;
 
 namespace Teleop.RobotHost.Recording
 {
+    /// <summary>
+    /// Another process writing its own log into each session, as the driver writes <c>driver.jlog</c>: Isaac's renderer writes
+    /// <c>isaac.jlog</c> and its frame sidecars under <c>isaac/</c> (docs/adr/0032 decision 6). A closed session waits up to
+    /// <see cref="Seconds"/> for its <c>END</c> trailer, checks its <c>FS</c> lines, and hashes its folder into <c>files.sha256</c>.
+    /// </summary>
+    public readonly struct WriterWait
+    {
+        public WriterWait(string name, double seconds)
+        {
+            Name = name;
+            Seconds = seconds;
+        }
+
+        public string Name { get; }
+
+        public double Seconds { get; }
+
+        /// <summary><c>name:seconds</c>, the name lower-case letters, digits, '-' and '_' (it names files).</summary>
+        public static bool TryParse(string spec, out WriterWait writer, out string error)
+        {
+            writer = default;
+            error = "";
+            int colon = spec.LastIndexOf(':');
+            string name = colon > 0 ? spec.Substring(0, colon) : "";
+            if (name.Length == 0 || !name.All(c => (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-' || c == '_') ||
+                name == "robothost" || name == "driver" ||
+                !double.TryParse(spec.Substring(colon + 1), NumberStyles.Float, CultureInfo.InvariantCulture, out double seconds) || !(seconds >= 0))
+            {
+                error = $"--auto-record-writer '{spec}': expected name:seconds (like isaac:60), a name other than robothost or driver";
+                return false;
+            }
+
+            writer = new WriterWait(name, seconds);
+            return true;
+        }
+    }
+
     /// <summary>
     /// The thresholds and paths of <see cref="AutoSessionRecorder"/> (docs/adr/0023 decision 4), one
     /// command-line argument each (<c>RobotHostArgs</c>). The defaults are the ADR's.
@@ -22,6 +62,9 @@ namespace Teleop.RobotHost.Recording
 
         /// <summary>How long a closed session waits for the driver's <c>END</c> trailer before <c>files.sha256</c> is written anyway.</summary>
         public double DriverWaitSeconds { get; set; } = 15;
+
+        /// <summary>Other writers each session waits for (<c>--auto-record-writer name:seconds</c>), after the driver.</summary>
+        public List<WriterWait> Writers { get; } = new List<WriterWait>();
 
         /// <summary>
         /// A second sender or subscriber change this soon after one that split the session does not
@@ -95,6 +138,8 @@ namespace Teleop.RobotHost.Recording
         public override string ToString() =>
             FormattableString.Invariant(
                 $"idle {IdleSeconds} s, rotate at {MaxMinutes} min, stop below {StopFreeGigabytes} GB free, start only above {StartFreeGigabytes} GB, ") +
-            FormattableString.Invariant($"driver wait {DriverWaitSeconds} s, min split {MinSplitSeconds} s, headset only (heartbeat within {HeadsetSeconds} s)");
+            FormattableString.Invariant($"driver wait {DriverWaitSeconds} s, ") +
+            string.Concat(Writers.Select(w => FormattableString.Invariant($"{w.Name} wait {w.Seconds} s, "))) +
+            FormattableString.Invariant($"min split {MinSplitSeconds} s, headset only (heartbeat within {HeadsetSeconds} s)");
     }
 }

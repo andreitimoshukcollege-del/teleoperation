@@ -122,7 +122,7 @@ namespace Teleop.RobotHost.Recording
             _auto = auto;
             _utcNow = utcNow ?? (() => DateTime.UtcNow);
             _log = log ?? Console.WriteLine;
-            _finalizer = new SessionFinalizer(auto?.DriverWaitSeconds ?? new AutoRecordOptions().DriverWaitSeconds, _utcNow, _log);
+            _finalizer = new SessionFinalizer(auto?.DriverWaitSeconds ?? new AutoRecordOptions().DriverWaitSeconds, _utcNow, _log, auto?.Writers);
             _thread = new Thread(Run) { IsBackground = true, Name = "session-recorder" };
             _thread.Start();
         }

@@ -100,17 +100,20 @@ def read_sidecar(path: str) -> List[Tuple[int, bytes]]:
 
 class IsaacSession:
     """``streams``: the sidecars a frame may carry, as ``camera.stream`` names (``head.rgb``, ``head.depth``, ...).
-    ``preamble()`` gives the records written right after each session's header; ``on_closed(directory)`` runs on the
-    writer thread after each session's trailer."""
+    ``preamble()`` gives the records written right after each session's header; ``final_files(directory)`` gives files
+    (name -> bytes) written into ``isaac/`` just before the trailer, each with its ``FS`` line; ``on_closed(directory)``
+    runs on the writer thread after each session's trailer."""
 
     def __init__(self, control_path: str, streams: Sequence[str], preamble: Callable[[], List[Sequence]] = lambda: [],
-                 on_closed: Callable[[str], None] = lambda d: None, writer: str = "isaac", frame_capacity: int = 90,
+                 on_closed: Callable[[str], None] = lambda d: None, final_files: Callable[[str], Dict[str, bytes]] = lambda d: {},
+                 writer: str = "isaac", frame_capacity: int = 90,
                  record_capacity: int = 100_000, poll_seconds: float = 0.5, min_free_bytes: int = 20 * 1024 ** 3,
                  free_bytes: Callable[[str], int] = lambda d: shutil.disk_usage(d).free):
         self._control = control_path
         self._streams = list(streams)
         self._preamble = preamble
         self._on_closed = on_closed
+        self._final_files = final_files
         self._writer = writer
         self._frames: "queue.Queue" = queue.Queue(maxsize=frame_capacity)
         self._records: "queue.Queue" = queue.Queue(maxsize=record_capacity)
@@ -125,6 +128,7 @@ class IsaacSession:
         self._log = None
         self._hash = None
         self._sidecars: Dict[str, Sidecar] = {}
+        self._suffix = ""
         self._failed: Optional[str] = None
         self._thread = threading.Thread(target=self._run, name="isaac-session", daemon=True)
         self._thread.start()
@@ -187,6 +191,7 @@ class IsaacSession:
                 n += 1
         if n > 1:
             say(f"{directory}: {self._writer}.jlog exists already (the renderer restarted in this session?); continuing in {os.path.basename(path)}")
+        self._suffix = suffix
         self._sidecars = {s: Sidecar(os.path.join(directory, "isaac", f"{s}{suffix}.frames")) for s in self._streams}
         self._log = log
         self._hash = hashlib.sha256()
@@ -249,6 +254,14 @@ class IsaacSession:
             for name, s in self._sidecars.items():
                 s.close()
                 self._emit("FS", (f"isaac/{os.path.basename(s.path)}", s.size, s.hash.hexdigest()))
+            for name, data in self._final_files(directory).items():
+                stem, ext = os.path.splitext(os.path.basename(name))
+                file_name = f"{stem}{self._suffix}{ext}"  # backdrops.2.json beside isaac.2.jlog
+                with open(os.path.join(directory, "isaac", file_name), "xb") as f:
+                    f.write(data)
+                    f.flush()
+                    os.fsync(f.fileno())
+                self._emit("FS", (f"isaac/{file_name}", len(data), hashlib.sha256(data).hexdigest()))
             trailer = f"END|{self.records}|{self.dropped + self.frames_dropped}|{self._hash.hexdigest()}\n".encode("ascii")
             self._log.write(trailer)
             self._log.flush()

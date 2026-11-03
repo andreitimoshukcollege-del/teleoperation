@@ -20,6 +20,8 @@ frame's ``captureTicks`` with the sensed time of the state it shows: CLOCK_MONOT
 from __future__ import annotations
 
 import argparse
+import hashlib
+import json
 import math
 import os
 import signal
@@ -32,6 +34,7 @@ from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 from typing import Dict, List, Mapping, Optional, Sequence, Tuple
 
+from . import backdrops as backdrops_module
 from . import camfeed, camwire, kinematics, wire
 from . import profile as profile_module
 from . import scene as scene_module
@@ -117,6 +120,61 @@ def mount_camera_orientation() -> Tuple[float, float, float, float]:
     return matrix_to_quat(MOUNT_TO_CAMERA)
 
 
+# The masks' stable ids (docs/adr/0032 decision 5): the same in every session, recorded in each as ``ID`` records. A
+# scene object ``n`` is ``OBJECT_BASE + n``. 0 is anything unlabelled, and the background.
+MASK_IDS = {"left_arm": 1, "left_hand": 2, "right_arm": 3, "right_hand": 4, "head": 5, "mount": 6,
+            "table": 10, "bench": 11, "floor": 12, "mat": 13, "screen": 14}
+OBJECT_BASE = 100
+
+
+def mask_class(prim_name: str) -> Optional[str]:
+    """The mask class of a robot prim: a link's ``<link>_visual`` by its side and part, the head's own meshes; None for the
+    rest (the labels go on prims that never nest, or they come out joined)."""
+    if prim_name.startswith("franka_head"):
+        return "head"
+    if not prim_name.endswith("_visual"):
+        return None
+    link = prim_name[:-len("_visual")]
+    side = "left" if link.startswith("left_") else "right" if link.startswith("right_") else None
+    if side is None:
+        return "head" if link.startswith("head") else "mount"
+    part = "hand" if ("hand" in link or "finger" in link) else "arm"
+    return f"{side}_{part}"
+
+
+def mask_table(object_ids: Sequence[int]) -> Dict[str, int]:
+    table = dict(MASK_IDS)
+    for i in object_ids:
+        table[f"object_{i}"] = OBJECT_BASE + i
+    return table
+
+
+def stable_mask(seg, id_to_labels: Mapping, table: Mapping[str, int]):
+    """A frame's segmentation (the annotator's ids, which change between frames) as stable ids, uint16."""
+    import numpy as np
+
+    lut_keys, lut_vals = [], []
+    for k, v in (id_to_labels or {}).items():
+        label = v.get("class") if isinstance(v, dict) else v
+        if label in table:
+            lut_keys.append(int(k))
+            lut_vals.append(table[label])
+    out = np.zeros(seg.shape, np.uint16)
+    for k, v in zip(lut_keys, lut_vals):
+        out[seg == k] = v
+    return out
+
+
+def depth_mm(depth):
+    """Distance to the image plane in metres as uint16 millimetres; nothing hit (inf, nan) and beyond 65.535 m are 0."""
+    import numpy as np
+
+    d = np.asarray(depth, np.float64)
+    mm = np.round(d * 1000.0)
+    ok = np.isfinite(mm) & (mm > 0) & (mm <= 65535)
+    return np.where(ok, mm, 0).astype(np.uint16)
+
+
 class Stamps:
     """The sensed time of the state posed at each frame, so an image read at frame k is stamped with frame k - lag's."""
 
@@ -146,6 +204,12 @@ def parse_args(argv=None) -> argparse.Namespace:
     a.add_argument("--lag", type=int, default=-1, help="the render lag in frames; -1: measure it at start-up")
     a.add_argument("--seconds", type=float, default=0.0, help="stop after this long (0: until stopped)")
     a.add_argument("--bind", default="0.0.0.0", help="the address the feeds listen on")
+    a.add_argument("--record-control", default="", help="RobotHost's session control file; while it names a session, frames "
+                                                          "are recorded into it (docs/adr/0032 decision 6). Empty: never")
+    a.add_argument("--record-every", type=int, default=1, help="record every this many rendered frames")
+    a.add_argument("--backdrops", default="", help="the backdrop images' folder (with manifest.json); default: the scene file's")
+    a.add_argument("--backdrop-seed", type=int, default=-1, help="the backdrop draw's seed; -1: from the clock (it is recorded)")
+    a.add_argument("--min-free-gb", type=float, default=20.0, help="stop recording below this much free disk")
     return a.parse_args(argv)
 
 
@@ -226,6 +290,70 @@ def run(app, args, p, scene, cameras, fps, joints, motors, tap) -> int:
             d.CreateIntensityAttr(float(light.get("intensity", 2500)))
             UsdGeom.Xformable(d).AddRotateXYZOp().Set(Gf.Vec3f(*light.get("rotateXYZDeg", [0, 0, 0])))
 
+    # --- the backdrop: a mat on the table top and a screen beyond the table (docs/adr/0032 decision 4) -------------
+    from pxr import Sdf, UsdShade
+
+    def textured_quad(path, corners):
+        mesh = UsdGeom.Mesh.Define(stage, path)
+        mesh.CreatePointsAttr([Gf.Vec3f(*c) for c in corners])
+        mesh.CreateFaceVertexCountsAttr([4])
+        mesh.CreateFaceVertexIndicesAttr([0, 1, 2, 3])
+        mesh.CreateDoubleSidedAttr(True)
+        st = UsdGeom.PrimvarsAPI(mesh).CreatePrimvar("st", Sdf.ValueTypeNames.TexCoord2fArray, UsdGeom.Tokens.faceVarying)
+        st.Set([Gf.Vec2f(0, 0), Gf.Vec2f(1, 0), Gf.Vec2f(1, 1), Gf.Vec2f(0, 1)])
+        mat = UsdShade.Material.Define(stage, path + "Material")
+        surf = UsdShade.Shader.Define(stage, path + "Material/Surface")
+        surf.CreateIdAttr("UsdPreviewSurface")
+        surf.CreateInput("roughness", Sdf.ValueTypeNames.Float).Set(0.9)
+        tex = UsdShade.Shader.Define(stage, path + "Material/Texture")
+        tex.CreateIdAttr("UsdUVTexture")
+        file_in = tex.CreateInput("file", Sdf.ValueTypeNames.Asset)
+        reader = UsdShade.Shader.Define(stage, path + "Material/St")
+        reader.CreateIdAttr("UsdPrimvarReader_float2")
+        reader.CreateInput("varname", Sdf.ValueTypeNames.Token).Set("st")
+        tex.CreateInput("st", Sdf.ValueTypeNames.Float2).ConnectToSource(reader.ConnectableAPI(), "result")
+        surf.CreateInput("diffuseColor", Sdf.ValueTypeNames.Color3f).ConnectToSource(tex.ConnectableAPI(), "rgb")
+        mat.CreateSurfaceOutput().ConnectToSource(surf.ConnectableAPI(), "surface")
+        UsdShade.MaterialBindingAPI.Apply(mesh.GetPrim()).Bind(mat)
+        return mesh, file_in
+
+    spec = scene.extra.get("backdrops") or {}
+    root_dir = args.backdrops or os.path.dirname(os.path.expanduser(spec.get("manifest", ""))) or backdrops_module.DEFAULT_ROOT
+    images = []
+    if os.path.exists(os.path.join(root_dir, "manifest.json")):
+        images = backdrops_module.load_manifest(root_dir)["images"]
+    backdrop_seed = args.backdrop_seed if args.backdrop_seed >= 0 else time.time_ns() % (2 ** 31)
+    quad_files = {}
+    t = scene.table
+    lift = float((spec.get("mat") or {}).get("lift", 0.0005))
+    top = t.top + lift
+    mat_mesh, quad_files["mat"] = textured_quad("/World/Backdrop/Mat", [(t.x_min, t.y_min, top), (t.x_max, t.y_min, top),
+                                                                        (t.x_max, t.y_max, top), (t.x_min, t.y_max, top)])
+    sc = spec.get("screen") or {"center": [1.30, 0.0, -0.10], "size": [2.40, 1.00]}
+    (cx, cy, cz), (sw, sh) = sc["center"], sc["size"]
+    screen_mesh, quad_files["screen"] = textured_quad("/World/Backdrop/Screen", [(cx, cy + sw / 2, cz - sh / 2), (cx, cy - sw / 2, cz - sh / 2),
+                                                                                 (cx, cy - sw / 2, cz + sh / 2), (cx, cy + sw / 2, cz + sh / 2)])
+
+    # --- mask labels, on prims that never nest (docs/adr/0032 decision 5) ------------------------------------------
+    table = mask_table([o.id for o in scene.objects])
+
+    def label(prim, name):
+        UsdSemantics.LabelsAPI.Apply(prim, "class").CreateLabelsAttr().Set([name])
+
+    labelled = 0
+    for prim in Usd.PrimRange(robot):
+        cls = mask_class(prim.GetName())
+        if cls is not None and not prim.IsInstanceProxy():
+            label(prim, cls)
+            labelled += 1
+    for sid, path in world.surface_paths.items():
+        if sid in MASK_IDS:
+            label(stage.GetPrimAtPath(path), sid)
+    for o, path in zip(scene.objects, world.object_paths):
+        label(stage.GetPrimAtPath(path), f"object_{o.id}")
+    label(mat_mesh.GetPrim(), "mat")
+    label(screen_mesh.GetPrim(), "screen")
+
     # The lag cube, labelled so the head camera's segmentation finds it; hidden once the lag is measured.
     cube = UsdGeom.Cube.Define(stage, "/World/LagCube")
     cube.CreateSizeAttr(1.0)
@@ -254,10 +382,17 @@ def run(app, args, p, scene, cameras, fps, joints, motors, tap) -> int:
         else:
             cam = RtxCamera(f"/World/Cameras/Cam_{c['id']}", positions=[list(c["position"])],
                             orientations=[list(look_at(c["position"], c["lookAt"]))], attributes=attrs)
-        annotators = ["rgb", "semantic_segmentation"] if i == 0 else ["rgb"]
+        records = list(c.get("record") or [])
+        annotators = ["rgb"]
+        if i == 0 or "mask" in records:
+            annotators.append("semantic_segmentation")
+        if "depth" in records:
+            annotators.append("distance_to_image_plane")
         sensors.append((cam, CameraSensor(cam, resolution=(h, w), annotators=annotators)))
         feeds.append(camfeed.CameraFeed(c["id"], int(c["feedPort"]), bind=args.bind))
-        specs.append({"id": c["id"], "width": w, "height": h, "quality": int(c.get("feedQuality", 80)), **intrinsics(w, h, hfov)})
+        specs.append({"id": c["id"], "width": w, "height": h, "quality": int(c.get("feedQuality", 80)), "record": records,
+                      "recordQuality": int(c.get("recordQuality", 92)), "near": float(c.get("near", 0.05)),
+                      "far": float(c.get("far", 10.0)), "mount": c.get("mount", ""), **intrinsics(w, h, hfov)})
     app_utils.play(commit=True)  # sensors deliver only while the timeline plays; with Physics at "none" nothing steps
 
     def read(sensor, name):
@@ -325,6 +460,105 @@ def run(app, args, p, scene, cameras, fps, joints, motors, tap) -> int:
     print(f"[render] Isaac Sim {version('isaacsim')}; render lag {lag} frame(s) ({agree:.1%} of {len(samples)} samples); "
           f"{len(moving)} moving links", flush=True)
 
+    # --- the cameras' poses, for the recording ----------------------------------------------------------------------
+    camera_poses = []
+    for cam, _ in sensors:
+        cp, cq = (np.asarray(x.numpy() if hasattr(x, "numpy") else x, float).reshape(-1) for x in cam.get_world_poses())
+        camera_poses.append(tuple(float(v) for v in list(cp[:3]) + list(cq[:4])))
+
+    # --- backdrops: one seeded pair at start-up and after every recorded session (docs/adr/0032 decision 4) ------------
+    backdrop = {"change": -1, "mat": None, "screen": None, "settle_until": -1}
+    used_this_session = []
+
+    def change_backdrop(frame_now: int) -> None:
+        backdrop["change"] += 1
+        if len(images) < 2:
+            backdrop["mat"] = backdrop["screen"] = None  # no images fetched: a plain table, and no screen
+            UsdGeom.Imageable(mat_mesh).MakeInvisible()
+            UsdGeom.Imageable(screen_mesh).MakeInvisible()
+            return
+        mat_img, screen_img = backdrops_module.pick(images, backdrop_seed, backdrop["change"])
+        quad_files["mat"].Set(os.path.join(root_dir, mat_img["file"]))
+        quad_files["screen"].Set(os.path.join(root_dir, screen_img["file"]))
+        backdrop["mat"], backdrop["screen"] = mat_img, screen_img
+        backdrop["settle_until"] = frame_now + lag + 1  # a new texture shows within the render lag (the spike: 2 frames)
+        session_record("BK", *bk_fields())
+        used_this_session.extend([mat_img, screen_img])
+
+    def bk_fields():
+        m, sc = backdrop["mat"], backdrop["screen"]
+        return (time.monotonic_ns(), backdrop["change"], backdrop_seed, m["sha256"] if m else "", m["imageId"] if m else "",
+                sc["sha256"] if sc else "", sc["imageId"] if sc else "")
+
+    # --- recording --------------------------------------------------------------------------------------------------
+    session = None
+    want_backdrop_change = []
+    world_snapshot = {"sensed": 0, "revision": -1, "objects": []}
+    streams = [f"{c['id']}.{st}" for c in specs for st in c["record"]]
+    scene_sha = hashlib.sha256(open(args.scene, "rb").read()).hexdigest()
+
+    def session_record(tag, *fields):
+        if session is not None:
+            session.record(tag, *fields)
+
+    def preamble():
+        used_this_session.clear()
+        if backdrop["mat"] is not None:
+            used_this_session.extend([backdrop["mat"], backdrop["screen"]])
+        out = [("IV", version("isaacsim"), fps, args.record_every, lag, round(agree, 4), len(samples)),
+               ("SC", scene.name, scene_sha)]
+        for c, pose in zip(specs, camera_poses):
+            out.append(("CM", c["id"], c["width"], c["height"], round(c["fx"], 6), round(c["fy"], 6), c["cx"], c["cy"], c["near"],
+                        c["far"], *[round(v, 7) for v in pose], c["mount"], [[st] for st in c["record"]]))
+        out.append(("ID", [[v, k] for k, v in sorted(table.items(), key=lambda kv: kv[1])]))
+        out.append(("BK", *bk_fields()))
+        if world_snapshot["objects"]:
+            out.append(("OL", world_snapshot["sensed"], world_snapshot["revision"], world_snapshot["objects"]))
+        return out
+
+    def final_files(directory):
+        seen, items = set(), []
+        for e in used_this_session:
+            if e["sha256"] not in seen:
+                seen.add(e["sha256"])
+                items.append({k: e[k] for k in ("sha256", "imageId", "license", "author", "authorProfileUrl", "title",
+                                                 "landingUrl", "source", "url", "width", "height")})
+        doc = {"format": "teleop-backdrops-used", "version": 1, "license": backdrops_module.CC_BY_2, "images": items}
+        return {"backdrops.json": (json.dumps(doc, indent=1, sort_keys=True) + "\n").encode("utf-8")}
+
+    if args.record_control:
+        if agree < 0.995 or not samples and args.lag < 0:
+            print(f"[render] warning: not recording: the render lag agreed in {agree:.1%} of {len(samples)} samples (needs 99.5%)", flush=True)
+        else:
+            from .isaac_session import IsaacSession
+            session = IsaacSession(args.record_control, streams, preamble=preamble, final_files=final_files,
+                                   on_closed=lambda d: want_backdrop_change.append(d), min_free_bytes=int(args.min_free_gb * 1024 ** 3))
+            print(f"[render] recording {', '.join(streams)} every {args.record_every} frame(s) into the sessions {args.record_control} names", flush=True)
+    recorder = ThreadPoolExecutor(max_workers=1, thread_name_prefix="record")
+    record_pending = [0]
+    record_lock = threading.Lock()
+    record_skipped = [0]
+
+    def encode_and_record(frame_no, sensed, flags, arrays):
+        try:
+            import cv2
+
+            blobs = {}
+            for name, (kind, a, quality) in arrays.items():
+                if kind == "rgb":
+                    buf = io.BytesIO()
+                    Image.fromarray(a).save(buf, "JPEG", quality=quality)
+                    blobs[name] = buf.getvalue()
+                else:
+                    ok, enc = cv2.imencode(".png", a)
+                    if ok:
+                        blobs[name] = enc.tobytes()
+            if session is not None:
+                session.frame(frame_no, sensed, flags, blobs)
+        finally:
+            with record_lock:
+                record_pending[0] -= 1
+
     # --- streaming -------------------------------------------------------------------------------------------------
     stop = []
     signal.signal(signal.SIGTERM, lambda *_: stop.append(True))
@@ -343,6 +577,7 @@ def run(app, args, p, scene, cameras, fps, joints, motors, tap) -> int:
             with pending_lock:
                 pending[i] -= 1
 
+    change_backdrop(0)
     stamps = Stamps()
     state_sensed, state_values = camwire.UNSET, {}
     states_in = worlds_in = 0
@@ -350,9 +585,10 @@ def run(app, args, p, scene, cameras, fps, joints, motors, tap) -> int:
     start = time.perf_counter()
     stop_at = start + args.seconds if args.seconds > 0 else None
     report_at = start + 5.0
-    frames = window_frames = 0
+    frames = window_frames = recorded = 0
     for c, f in zip(specs, feeds):
-        print(f"[render] camera {c['id']}: {c['width']}x{c['height']}, fx {c['fx']:.1f}, feed on UDP :{f.port}", flush=True)
+        print(f"[render] camera {c['id']}: {c['width']}x{c['height']}, fx {c['fx']:.1f}, feed on UDP :{f.port}, records {c['record']}", flush=True)
+    print(f"[render] backdrops: {len(images)} images from {root_dir}, seed {backdrop_seed}; {labelled} robot prims labelled for masks", flush=True)
     print(f"[render] streaming at {fps} fps", flush=True)
     while not stop and (stop_at is None or time.perf_counter() < stop_at):
         while True:
@@ -362,9 +598,9 @@ def run(app, args, p, scene, cameras, fps, joints, motors, tap) -> int:
                 break
             k = wire.kind_of(d)
             if k == wire.STATE:
-                s = wire.decode_state(d)
-                if s is not None and s[0] > state_sensed:
-                    state_sensed, state_values = s[0], motors.values([(m, q) for m, q, _, _ in s[3]])
+                st = wire.decode_state(d)
+                if st is not None and st[0] > state_sensed:
+                    state_sensed, state_values = st[0], motors.values([(m, q) for m, q, _, _ in st[3]])
                     states_in += 1
             elif k == wire.WORLD:
                 w = wire.decode_world(d)
@@ -375,8 +611,15 @@ def run(app, args, p, scene, cameras, fps, joints, motors, tap) -> int:
                             t_op, q_op = object_ops[o.id]
                             t_op.Set(Gf.Vec3d(*o.pose[:3]))
                             q_op.Set(Gf.Quatd(*o.pose[3:]))
+                    if w[2] != world_snapshot["revision"] and w[3] == w[4] - 1:
+                        world_snapshot.update(sensed=w[0], revision=w[2],
+                                              objects=[[o.id, *[round(v, 6) for v in o.pose]] for o in w[5]])
+                        session_record("OL", w[0], w[2], world_snapshot["objects"])
         for f in feeds:
             f.poll()
+        if want_backdrop_change:
+            want_backdrop_change.clear()
+            change_backdrop(frames)
 
         ts, qs = rest_t.copy(), rest_q.copy()
         for i, j in enumerate(moving):
@@ -386,20 +629,52 @@ def run(app, args, p, scene, cameras, fps, joints, motors, tap) -> int:
         stamps.posed(state_sensed)
         RenderingManager.render()
         capture = stamps.shown(lag)
+        recording = session is not None and session.active and frames % max(1, args.record_every) == 0 and capture != camwire.UNSET
+        if recording:
+            with record_lock:
+                if record_pending[0] >= 3:
+                    recording = False
+                    record_skipped[0] += 1
+                    session_record("FD", time.monotonic_ns(), frames, "encoder-behind")
+        arrays = {}
         for i, (_, sensor) in enumerate(sensors):
-            if not feeds[i].wanted():
-                continue
-            with pending_lock:
-                behind = pending[i] >= 2
-            if behind:
-                skipped[i] += 1  # the encoder is behind: drop this frame rather than queue it
+            c = specs[i]
+            send = feeds[i].wanted()
+            keep = recording and bool(c["record"])
+            if not send and not keep:
                 continue
             rgb, _ = read(sensor, "rgb")
             if rgb is None:
+                if keep:
+                    session_record("FD", time.monotonic_ns(), frames, f"{c['id']}-no-image")
                 continue
-            with pending_lock:
-                pending[i] += 1
-            encoders[i].submit(encode_and_send, i, np.ascontiguousarray(rgb[..., :3]), capture)
+            rgb = np.ascontiguousarray(rgb[..., :3])
+            if send:
+                with pending_lock:
+                    behind = pending[i] >= 2
+                if behind:
+                    skipped[i] += 1  # the encoder is behind: drop this frame rather than queue it
+                else:
+                    with pending_lock:
+                        pending[i] += 1
+                    encoders[i].submit(encode_and_send, i, rgb, capture)
+            if keep:
+                if "rgb" in c["record"]:
+                    arrays[f"{c['id']}.rgb"] = ("rgb", rgb, c["recordQuality"])
+                if "depth" in c["record"]:
+                    dep, _ = read(sensor, "distance_to_image_plane")
+                    if dep is not None:
+                        arrays[f"{c['id']}.depth"] = ("png", depth_mm(dep), 0)
+                if "mask" in c["record"]:
+                    seg, info = read(sensor, "semantic_segmentation")
+                    if seg is not None:
+                        arrays[f"{c['id']}.mask"] = ("png", stable_mask(seg, (info or {}).get("idToLabels") or {}, table), 0)
+        if recording and arrays:
+            flags = "B" if frames <= backdrop["settle_until"] else ""
+            with record_lock:
+                record_pending[0] += 1
+            recorder.submit(encode_and_record, frames, capture, flags, arrays)
+            recorded += 1
         frames += 1
         window_frames += 1
 
@@ -407,8 +682,12 @@ def run(app, args, p, scene, cameras, fps, joints, motors, tap) -> int:
         if now >= report_at:
             age = (time.monotonic_ns() - state_sensed) / 1e6 if state_sensed != camwire.UNSET else float("nan")
             sent = ", ".join(f"{f.name} {f.frames_sent} sent ({f.bytes_sent / 1e6:.1f} MB)" for f in feeds)
-            print(f"[render] {window_frames / (now - report_at + 5.0):.1f} fps; states {states_in}, world {worlds_in}; newest state "
-                  f"{age:.0f} ms old; {sent}; skipped {skipped}", flush=True)
+            rate = window_frames / (now - report_at + 5.0)
+            rec = f"; recording {session.directory} ({session.frames_written} written, {session.frames_dropped} dropped)" \
+                if session is not None and session.active else ""
+            print(f"[render] {rate:.1f} fps; states {states_in}, world {worlds_in}; newest state {age:.0f} ms old; {sent}; "
+                  f"skipped {skipped}{rec}", flush=True)
+            session_record("RH", time.monotonic_ns(), round(rate, 2), round(age, 1), skipped[0], skipped[-1], record_skipped[0])
             report_at, window_frames = now + 5.0, 0
         wait = start + frames * frame_s - time.perf_counter()
         if wait > 0:
@@ -418,6 +697,11 @@ def run(app, args, p, scene, cameras, fps, joints, motors, tap) -> int:
 
     for e in encoders:
         e.shutdown(wait=True)
+    recorder.shutdown(wait=True)
+    if session is not None:
+        session.close()
+        for d, n, dropped in session.closed_sessions:
+            print(f"[render] recorded {n} frames ({dropped} dropped) into {d}", flush=True)
     summary = "; ".join(f"{f.name}: {f.frames_sent} frames sent, {f.frames_paced} paced, {f.frames_failed} failed" for f in feeds)
     print(f"[render] stopped after {frames} frames; {summary}", flush=True)
     for f in feeds:

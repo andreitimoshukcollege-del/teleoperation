@@ -18,7 +18,7 @@ namespace Teleop.RobotHost
             "  [--arm-server-socket <path> [--arm-server-client-socket <path>] [--arm-server-timeout <s>]]\n" +
             "  [--discovery-port <port>] [--uplink-control <path>] [--record-control <path>] [--scene <file> [--scene-seed <n>|auto]]\n" +
             "  [--auto-record [--auto-record-root <dir>] [--auto-record-idle-seconds <s>] [--auto-record-max-minutes <min>]\n" +
-            "   [--auto-record-headset-seconds <s>] [--build-info-robothost <path>]]\n" +
+            "   [--auto-record-headset-seconds <s>] [--auto-record-writer <name:seconds>]... [--build-info-robothost <path>]]\n" +
             "  A serial-chain profile (\"kind\": \"serial-chain\", docs/adr/0026) runs this host instead of the JetRover's:\n" +
             "  the joint port only (commands in, joint-state frames out at 50 Hz to whoever sends a keepalive), no relay,\n" +
             "  no Cartesian path, no arm power (docs/adr/0027 decision 5). --backend sim is the simulated arm\n" +
@@ -100,6 +100,10 @@ namespace Teleop.RobotHost
                     case "--auto-record-idle-seconds": auto.IdleSeconds = Number(value); break;
                     case "--auto-record-max-minutes": auto.MaxMinutes = Number(value); break;
                     case "--auto-record-headset-seconds": auto.HeadsetSeconds = Number(value); break;
+                    case "--auto-record-writer":
+                        if (!WriterWait.TryParse(value, out WriterWait writer, out error)) return null;
+                        auto.Writers.Add(writer);
+                        break;
                     case "--build-info-robothost": auto.RobotHostBuildInfoPath = value; break;
                     default:
                         error = $"unknown argument '{flag}' for a serial-chain robot";

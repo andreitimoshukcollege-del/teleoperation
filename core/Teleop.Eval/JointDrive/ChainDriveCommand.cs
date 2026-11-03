@@ -36,7 +36,8 @@ namespace Teleop.Eval.JointDrive
         private const string Usage =
             "usage: chain-drive --simulated-robot [--profile RobotProfiles/fr3-duo.json] [--collision-model <profile>.collision.json]\n" +
             "                   [--remote-host 127.0.0.1] [--remote-port 6002]\n" +
-            "                   [--seconds 60] [--seed 1] [--amplitude-rad 0.5] [--rate-hz 48] [--operator-log <path> [--session-id <id>]] [--dry-run]";
+            "                   [--seconds 60] [--seed 1] [--amplitude-rad 0.5] [--rate-hz 48] [--operator-log <path> [--session-id <id>]] [--dry-run]\n" +
+            "                   [--as-headset]   (the headset's heartbeat, so RobotHost records the drive automatically)";
 
         public static int Run(string[] args)
         {
@@ -46,7 +47,7 @@ namespace Teleop.Eval.JointDrive
             double seconds = 60, amplitude = 0.5, rateHz = 48;
             ulong seed = 1;
             string? logPath = null, sessionId = null;
-            bool simulated = false, dryRun = false;
+            bool simulated = false, dryRun = false, asHeadset = false;
             try
             {
                 for (int i = 1; i < args.Length; i++)
@@ -67,6 +68,7 @@ namespace Teleop.Eval.JointDrive
                         case "--session-id": sessionId = Next(); break;
                         case "--simulated-robot": simulated = true; break;
                         case "--dry-run": dryRun = true; break;
+                        case "--as-headset": asHeadset = true; break;
                         default: throw new ArgumentException($"unknown argument '{args[i]}'");
                     }
                 }
@@ -124,10 +126,11 @@ namespace Teleop.Eval.JointDrive
                 return 0;
             }
 
-            return Drive(profile, plan, new IPEndPoint(IPAddress.Parse(host), port), seconds, rateHz, logPath, sessionId ?? "chain-drive");
+            return Drive(profile, plan, new IPEndPoint(IPAddress.Parse(host), port), seconds, rateHz, logPath, sessionId ?? "chain-drive", asHeadset);
         }
 
-        private static int Drive(SerialChainProfile profile, ChainDrivePlan plan, IPEndPoint robot, double seconds, double rateHz, string? logPath, string sessionId)
+        private static int Drive(SerialChainProfile profile, ChainDrivePlan plan, IPEndPoint robot, double seconds, double rateHz, string? logPath, string sessionId,
+            bool asHeadset)
         {
             long tps = Stopwatch.Frequency;
             using var socket = new Socket(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp);
@@ -206,8 +209,22 @@ namespace Teleop.Eval.JointDrive
             double maxGap = 0;
             JointTarget[] last = plan.Sample(0);
 
+            // --as-headset: the headset's heartbeat once a second (motion on), so RobotHost records the drive automatically, as it
+            // does only a headset's commands (docs/adr/0023 decision 4). Simulated robots only, like the drive itself.
+            var heartbeat = new byte[ArmPowerCodec.RequestSize];
+            uint heartbeatSequence = 0;
+            long nextHeartbeat = 0;
+
             void Send(long now, JointTarget[] targets)
             {
+                if (asHeadset && now >= nextHeartbeat &&
+                    ArmPowerCodec.TryEncodeRequest(OperatorClientKind.Headset, OperatorMotionMode.On, ArmPowerRequest.None, ++heartbeatSequence, now,
+                        heartbeat, out int heartbeatBytes))
+                {
+                    socket.SendTo(heartbeat, 0, ArmPowerCodec.RequestSize, SocketFlags.None, robot);
+                    nextHeartbeat = now + tps;
+                }
+
                 if (!JointCommandCodec.TryEncode(sequence, now, targets, buffer, out int written)) return;
                 socket.SendTo(buffer, 0, written, SocketFlags.None, robot);
                 log?.Command(now, sequence, now, targets);

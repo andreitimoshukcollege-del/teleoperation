@@ -183,6 +183,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         world = IsaacWorld(scene, str(robot.GetPath())) if scene is not None else None
         if world is not None:
             world.build(stage)
+            print(f"[isaac] the robot's fixed bodies ignore the surfaces: {', '.join(b.rsplit('/', 1)[-1] for b in world.fixed_bodies(stage))}", flush=True)
 
         settings = carb.settings.get_settings()
         for key in ("/physics/updateToUsd", "/physics/updateVelocitiesToUsd", "/physics/updateParticlesToUsd", "/physics/updateResidualsToUsd"):

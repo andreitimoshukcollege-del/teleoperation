@@ -140,6 +140,7 @@ class IsaacWorld:
             UsdShade.MaterialBindingAPI.Apply(prim).Bind(mat, UsdShade.Tokens.weakerThanDescendants, "physics")
 
         scene = self.model.scene
+        fixed = self.fixed_bodies(stage)
         with Usd.EditContext(stage, stage.GetSessionLayer()):
             UsdGeom.Xform.Define(stage, self.ROOT)
             UsdGeom.Xform.Define(stage, f"{self.ROOT}/Surfaces")
@@ -157,6 +158,8 @@ class IsaacWorld:
                 cube.CreateDisplayColorAttr([Gf.Vec3f(*s.colour)])
                 if s.collides:
                     UsdPhysics.CollisionAPI.Apply(cube.GetPrim())
+                    # The robot's mount stands in the bench; a contact with a body no joint moves only fights the base's pin.
+                    UsdPhysics.FilteredPairsAPI.Apply(cube.GetPrim()).CreateFilteredPairsRel().SetTargets([Sdf.Path(b) for b in fixed])
                     bind_physics(cube.GetPrim(), material(f"{self.ROOT}/Materials/{name}", s.static_friction, s.dynamic_friction))
             for o, path, pose in zip(scene.objects, self.object_paths, self.model.poses):
                 body = UsdGeom.Xform.Define(stage, path)
@@ -181,6 +184,32 @@ class IsaacWorld:
                 g.CreateDisplayColorAttr([Gf.Vec3f(*o.colour)])
                 UsdPhysics.CollisionAPI.Apply(g.GetPrim())
                 bind_physics(g.GetPrim(), material(f"{self.ROOT}/Materials/{path.rsplit('/', 1)[1]}", o.static_friction, o.dynamic_friction))
+
+    def fixed_bodies(self, stage) -> List[str]:
+        """The robot's rigid bodies no joint moves (its mount and what is bolted to it): every body that is not the child
+        of a moving joint, or below one."""
+        from pxr import Usd, UsdPhysics
+
+        robot = stage.GetPrimAtPath(self.robot_path)
+        bodies, children, moving = [], {}, []
+        for prim in Usd.PrimRange(robot):
+            if prim.HasAPI(UsdPhysics.RigidBodyAPI):
+                bodies.append(str(prim.GetPath()))
+            if prim.IsA(UsdPhysics.Joint):
+                j = UsdPhysics.Joint(prim)
+                b0 = [str(t) for t in j.GetBody0Rel().GetTargets()]
+                b1 = [str(t) for t in j.GetBody1Rel().GetTargets()]
+                for parent in b0 or [""]:
+                    children.setdefault(parent, []).extend(b1)
+                if not prim.IsA(UsdPhysics.FixedJoint):
+                    moving.extend(b1)
+        seen = set()
+        while moving:
+            b = moving.pop()
+            if b not in seen:
+                seen.add(b)
+                moving.extend(children.get(b, []))
+        return [b for b in bodies if b not in seen]
 
     # --- after play -------------------------------------------------------------------------------------------------
 

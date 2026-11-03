@@ -464,3 +464,21 @@ it down, and the arm feels far away, we want the arm and the objects setup to be
   up. The bench's front 0.25 m is clear of them.
 - **Not changed:** the hands still map to the tools about the neutral pose (`BodyAnchoredMapping`). Only where the operator
   sees the robot moved, not how it is driven.
+
+**Verified:**
+- **Tests:** `dotnet test` with the version-2 vectors, the golden and `AVersion1File_StillReads_AndItsObjectsAreFixed`;
+  `just isaac-bridge-test` (42 tests, including a sensed movable pose).
+- **`just isaac-scene-check` on the 5090,** 2026-11-03 (a8fab7a): all 20 checks pass.
+
+  | Check | Measured |
+  |---|---|
+  | The fixed post stalls the hand | 0.256 rad short; the post moved 0.00 mm |
+  | The movable post under the same motion | moved 86 mm, tipped 31.8°; the arm 0.0004 rad short |
+  | Placed again | applied, and at rest 0.0 mm from where it was put |
+  | Movable objects at rest at their nominal poses | within 0.0001 mm |
+  | Late steps | 4 in 25.5 s (0.16/s) |
+- **The headset scene:** rebuilt, `just unity-check-fr3-xr` passes, and the previews show the robot just below the
+  operator's eye, the controls on the front strip.
+
+**Not verified:** how it looks and feels in the headset: how close the robot seems, whether the arms crowd the controls,
+and how a knocked object looks at 50 Hz world frames.

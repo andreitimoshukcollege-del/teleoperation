@@ -135,6 +135,12 @@ def q_conj(q: Sequence[float]) -> Tuple[float, float, float, float]:
     return (q[0], -q[1], -q[2], -q[3])
 
 
+def compose(parent: Tuple[Sequence[float], Sequence[float]], local: Tuple[Sequence[float], Sequence[float]]):
+    """``local`` (a pose in ``parent``'s frame) in the frame ``parent`` is given in."""
+    d = kinematics.q_rotate(parent[1], local[0])
+    return tuple(a + b for a, b in zip(parent[0], d)), kinematics.q_mul(parent[1], local[1])
+
+
 def relative_pose(parent: Tuple[Sequence[float], Sequence[float]], child: Tuple[Sequence[float], Sequence[float]]):
     """``child``'s pose (position, w-x-y-z quaternion) in ``parent``'s frame, both given in the same frame."""
     pi = q_conj(parent[1])
@@ -428,7 +434,7 @@ def run(app, args, p, scene, cameras, fps, joints, motors, tap) -> int:
     lag_i = next((i for i, c in enumerate(cameras) if "mount" not in c or c["mount"] in ("head_camera_mounting_point",)), None)
     if lag_i is None:
         raise SystemExit("error: the scene has no camera that stands still, to measure the render lag with")
-    sensors, feeds, specs = [], [], []
+    sensors, feeds, specs, riding = [], [], [], []  # riding: (camera, mount link, its pose in that link's frame)
     for i, c in enumerate(cameras):
         w, h, hfov = int(c["width"]), int(c["height"]), float(c["hfovDeg"])
         focal = APERTURE_MM / (2 * math.tan(math.radians(hfov) / 2))
@@ -437,9 +443,15 @@ def run(app, args, p, scene, cameras, fps, joints, motors, tap) -> int:
         if "mount" in c:
             if c["mount"] not in links:
                 raise SystemExit(f"error: camera {c['id']}'s mount {c['mount']!r} is not a link of the robot")
+            # Not a child of its link: Isaac applies a camera's transform one frame sooner than the posed links (measured
+            # 2026-11-03: a wrist camera parented to its hand showed the hand's pose of the next frame's state, in every
+            # moving frame). So the renderer poses it itself, each frame from the state the links had one frame earlier,
+            # and image and camera show the same state (docs/adr/0032 amendment 3).
             local_t, local_q = mounted_camera_local(c)
-            cam = RtxCamera(f"{links[c['mount']].GetPath()}/{prim_name('Cam', c['id'])}", translations=[list(local_t)],
-                            orientations=[list(local_q)], attributes=attrs)
+            world_p, world_q = compose(kinematics.link_pose(joints, {}, c["mount"]), (local_t, local_q))
+            cam = RtxCamera(f"/World/Cameras/{prim_name('Cam', c['id'])}", positions=[list(world_p)],
+                            orientations=[list(world_q)], attributes=attrs)
+            riding.append((cam, c["mount"], (local_t, local_q)))
         else:
             cam = RtxCamera(f"/World/Cameras/{prim_name('Cam', c['id'])}", positions=[list(c["position"])],
                             orientations=[list(look_at(c["position"], c["lookAt"]))], attributes=attrs)
@@ -649,6 +661,7 @@ def run(app, args, p, scene, cameras, fps, joints, motors, tap) -> int:
     change_backdrop(0)
     stamps = Stamps()
     state_sensed, state_values = camwire.UNSET, {}
+    posed_values = {}  # the joint values the links were posed with at the previous frame
     states_in = worlds_in = 0
     frame_s = 1.0 / fps
     start = time.perf_counter()
@@ -690,6 +703,10 @@ def run(app, args, p, scene, cameras, fps, joints, motors, tap) -> int:
             want_backdrop_change.clear()
             change_backdrop(frames)
 
+        for cam, mount, local in riding:  # the state the links had one frame ago: see where the cameras are made
+            cp, cq = compose(kinematics.link_pose(joints, posed_values, mount), local)
+            cam.set_world_poses(positions=[list(cp)], orientations=[list(cq)])
+        posed_values = state_values
         ts, qs = rest_t.copy(), rest_q.copy()
         for i, j in enumerate(moving):
             t_i, q_i = kinematics.local_motion(j, tuple(rest_t[i]), tuple(rest_q[i]), state_values.get(j.name, 0.0))

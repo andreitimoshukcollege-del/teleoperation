@@ -5,7 +5,7 @@ import math
 from conftest import profile_path
 from teleop_isaac import camwire, kinematics, profile
 from teleop_isaac.renderer import (MotorMap, Stamps, backdrop_quads, estimate_lag, intrinsics, look_at, mount_camera_orientation,
-                                   mounted_camera_local, relative_pose, screen_corners)
+                                   compose, mounted_camera_local, relative_pose, screen_corners)
 
 
 def rotate(q, v):
@@ -137,6 +137,7 @@ def test_a_pose_relative_to_its_parent_composes_back():
     local = ((0.06, 0.0, 0.04), kinematics.q_axis((1.0, 0.0, 0.2), -0.4))
     world_p = [a + b for a, b in zip(parent[0], rotate(parent[1], local[0]))]
     world_q = kinematics.q_mul(parent[1], local[1])
-    p, q = relative_pose(parent, (world_p, world_q))
+    assert all(abs(a - b) < 1e-12 for a, b in zip(compose(parent, local)[0], world_p))
+    p, q = relative_pose(parent, compose(parent, local))
     assert all(abs(a - b) < 1e-12 for a, b in zip(p, local[0]))
     assert all(abs(a - b) < 1e-12 for a, b in zip(q, local[1]))

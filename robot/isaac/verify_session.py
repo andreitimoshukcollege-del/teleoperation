@@ -11,10 +11,11 @@ Prints one ``RESULT {...}`` line and exits non-zero when any check fails or has 
 - the frames written plus the frames dropped (``FD``) are at least 98% of the recording's duration x fps / record-every,
   and the frames written at least 95%;
 - every frame's ``stateSensed`` is the ``sensed`` of a ``QS`` record (at least 99.5% of them; the design is all);
-- depth on the table mat, against the table's plane through the recorded camera: p99 under 3 mm;
+- depth on the table mat for every camera with depth, a wrist camera posed by forward kinematics of the frame's state:
+  p99 under 3 mm, every camera that stands still and at least one on a link having seen the mat;
 - a point inside each hand (5 cm along the hand's axis from its flange), from the forward kinematics of the frame's ``QS``
-  state, projected through the recorded camera, lands within 8 px of that hand's mask in at least 95% of the frames
-  where the hand moved and its mask shows (at least 20 of them). That is what says each frame shows the state it is
+  state, projected through each camera that stands still, lands within 8 px of that hand's mask in at least 95% of the
+  frames where the hand moved, its mask shows and nothing nearer hides the point (at least 20 of them). That is what says each frame shows the state it is
   stamped with.
 """
 
@@ -172,6 +173,7 @@ def main() -> int:
         return cam["cx"] + cam["fx"] * xc[0] / -xc[2], cam["cy"] - cam["fy"] * xc[1] / -xc[2]
 
     depth_err = {}  # camera -> errors, mm
+    occluded = 0
     hand_dist, last_point = {"left": [], "right": []}, {}
     sides = {"left": MASK_IDS["left_hand"], "right": MASK_IDS["right_hand"]}
     imaged = [cid for cid in cams if f"{cid}.mask" in cams[cid]["record"] and f"{cid}.depth" in cams[cid]["record"]]
@@ -209,6 +211,14 @@ def main() -> int:
                 pr = project(cam, pos, rot, point)
                 if pr is None or not (0 <= pr[0] < cam["w"] and 0 <= pr[1] < cam["h"]):
                     continue
+                # Hidden behind something nearer (the other arm, an object): what the camera saw there is more than 3 cm
+                # in front of the point. A camera looking from the side sees that often; the old head camera looking
+                # down seldom did.
+                seen = depth[int(pr[1]), int(pr[0])]
+                along = float(-(rot.T @ (point - pos))[2]) * 1000.0
+                if 0 < seen < along - 30.0:
+                    occluded += 1
+                    continue
                 hand_dist[side].append(float(np.min(np.hypot(uu + 0.5 - pr[0], vv + 0.5 - pr[1]))))
     out["depth_cameras"] = {cid: {"samples": len(e), "p50": round(pct(e, 50), 3) if e else None, "p99": round(pct(e, 99), 3) if e else None}
                             for cid, e in depth_err.items()}
@@ -224,6 +234,7 @@ def main() -> int:
     checks["depth"] = bool(depth_err) and still_seen and moving_seen and all(pct(e, 99) < 3.0 for e in per_camera.values() if e)
     all_hands = hand_dist["left"] + hand_dist["right"]
     out["hand_samples"] = {k: len(v) for k, v in hand_dist.items()}
+    out["hand_occluded"] = occluded
     out["hand_px_p50"] = round(pct(all_hands, 50), 2) if all_hands else None
     out["hand_px_p95"] = round(pct(all_hands, 95), 2) if all_hands else None
     within = sum(1 for x in all_hands if x <= 8.0)

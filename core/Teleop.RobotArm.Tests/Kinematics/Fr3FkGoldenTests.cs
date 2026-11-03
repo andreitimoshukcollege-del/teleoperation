@@ -25,7 +25,7 @@ namespace Teleop.RobotArm.Tests.Kinematics
             }
 
             Assert.True(File.Exists(path), $"{path} is missing: run `just gen-isaac-goldens`");
-            Assert.Equal(expected, File.ReadAllText(path).Replace("\r\n", "\n"));
+            GoldenFile.AssertSame(File.ReadAllText(path), expected);
         }
 
         internal static string GoldenJson()

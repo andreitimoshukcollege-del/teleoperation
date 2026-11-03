@@ -78,7 +78,7 @@ namespace Teleop.RobotArm.Tests.World
             }
 
             Assert.True(File.Exists(path), $"{path} is missing: run `just gen-isaac-goldens`");
-            Assert.Equal(expected, File.ReadAllText(path).Replace("\r\n", "\n"));
+            GoldenFile.AssertSame(File.ReadAllText(path), expected);
         }
 
         /// <summary>The canonical parse: what Python's reader (robot/isaac/teleop_isaac/scene.py) must make of the same bytes.</summary>

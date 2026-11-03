@@ -7,6 +7,8 @@ never the robot's.
 
 ```
 headset ──UDP joint port──> RobotHost (--backend arm-server) ──Unix datagram socket──> bridge ──> Isaac Sim (PhysX 1 kHz)
+                                                                                         │ tap (copies, never blocks)
+headset / lab screens <──UDP 6003 (head), 6007 (third person)── renderer (a second Kit, visual only, 30 fps) <──┘
 ```
 
 ## Running it
@@ -22,6 +24,8 @@ just isaac-stop                       # stop them from any terminal (RobotHost c
 just fr3-teleop-probe 0.08 3 franka-replay false <GPU machine>   # drive it headless from here
 just push-galaxy-fr3-config <GPU machine>                        # point the headset at it
 just fr3-world-probe <GPU machine> 7 true                        # the world through RobotHost: seed 7's poses, then NEW LAYOUT
+just camera-probe 10 0 "" <GPU machine> 6003 6004                # the head camera's feed (6007 6014: the third person's)
+just isaac-host fr3-duo-bench auto false                         # without the renderer and its feeds
 ```
 
 `isaac-host` refuses while a training run of ours, or another Isaac host of ours, is going. Other
@@ -53,6 +57,28 @@ tracks within 0.01 rad. It also checks `arm-touching` and `overlaps-arm` while t
 post, and late steps of at most 1/s. On 2026-11-02 the hand stalled 0.256 rad short, the free motion
 tracked exactly (0.000 rad), and there were no late steps in 16 s.
 
+## The renderer and the feeds (docs/adr/0032 decisions 2 and 3)
+
+`renderer.py` is a second, headless Kit process beside the bridge, on cores 8–23 while the bridge has 2–5. Its log is
+`~/isaacsim/renderer.log`. It works like this:
+- **The stage.** It opens the bridge's converted robot USD with the `Physics` variant at `none`, so nothing steps.
+- **The scene.** It builds the scene file's surfaces, objects and lights as visuals, through `world.py`'s
+  `build(physics=False)`.
+- **Posing.** The bridge copies every state and world message to it (`--tap`, never blocking; drops are counted in the
+  bridge's last line). Each frame it poses the robot from the newest state (`kinematics.local_motion`) and the objects from
+  the newest WORLD.
+- **The cameras.** It renders the scene file's two cameras at 30 fps. JPEG encoding runs on one thread per camera, and a
+  frame is dropped rather than queued when its encoder is behind.
+- **The feeds.** Each camera goes out on ADR 0014's wire (`camwire.py`, `camfeed.py`) to whoever subscribed: the head camera
+  on 6003, the third person on 6007. A frame is encoded only while someone is subscribed.
+- **The capture stamp.** `captureTicks` is the sensed time of the state the frame shows, on RobotHost's CLOCK_MONOTONIC.
+  The image read after posing frame k shows frame k − lag. The lag is measured at start-up with a cube on the table, with
+  the objects hidden; on 2026-11-02 it was 2 frames in 100% of 87 samples.
+
+If the renderer fails to start, `isaac-host` says so and runs the robot without feeds. `isaac-stop` stops it with the rest.
+ADR 0032 amendment 1 holds the 2026-11-02 numbers: both feeds at 29.4–29.5 fps from the PC, no incomplete frames, and
+0.05 late steps a second on the bridge.
+
 ## The render check
 
 `just isaac-render-check` (`render_check.py`, docs/adr/0032 phase P0) measures what the cameras' design
@@ -82,6 +108,7 @@ The bridge runs from the pushed commit. Sample frames stay on that machine, in
 | `teleop_isaac/scene.py` | Core's `WorldScene` reader | `core/Scenes/testdata/vectors.json` and `golden/scene-fr3-duo-bench.json` (`just gen-isaac-goldens`) |
 | `teleop_isaac/kinematics.py` | Core's FK | `golden/fr3-duo-fk-v1.json` (`just gen-isaac-goldens`) |
 | `teleop_isaac/world.py`'s rules | RobotHost's `StaticWorld` | `tests/test_world.py`, including Core's frozen seed-1 layout |
+| `teleop_isaac/camwire.py`, `camfeed.py` | ADR 0014's `CameraChunkCodec`, `CameraSubscribeCodec`, `FramePacer`, `CameraStreamer` | `golden/camera-wire-v1.json`, written by `CameraWireGoldenTests` (`just gen-camera-wire-golden`) |
 
 `just isaac-bridge-test` runs those checks. They are plain Python and need no Isaac. Change a copy
 and its original together, or the tests fail.

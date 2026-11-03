@@ -3096,7 +3096,7 @@ gen-isaac-goldens:
     cd core && TELEOP_WRITE_GOLDEN=1 WSLENV="${WSLENV:+$WSLENV:}TELEOP_WRITE_GOLDEN" dotnet test Teleop.RobotArm.Tests --filter "FullyQualifiedName~SceneDocumentTests.TheIsaacGoldenFile|FullyQualifiedName~Fr3FkGoldenTests|FullyQualifiedName~SceneLayoutTests.ALayoutIsFrozen"
     just gen-arm-server-golden
 
-# How the GPU machine's Isaac Sim stands (docs/adr/0031): the version installed in our account, whether a setup is going and its log's last lines, and the GPU's load (it is shared)
+# How the GPU machine's Isaac Sim stands (docs/adr/0031): the version installed in our account, whether a setup is going and its log's last lines, the GPU's load (it is shared), and whether an Isaac host runs, with the renderer's newest health line
 [group('isaac')]
 isaac-status lines="6":
     @ssh -o ConnectTimeout=10 "{{gpu_host}}" 'root=$HOME/isaacsim; \
@@ -3104,6 +3104,9 @@ isaac-status lines="6":
         p=$(cat $root/setup.pid 2>/dev/null); \
         if [ -n "$p" ] && kill -0 "$p" 2>/dev/null; then echo "setup: going (pid $p), venv $(du -sh $root/venv 2>/dev/null | cut -f1)"; else echo "setup: not going"; fi; \
         nvidia-smi --query-gpu=name,memory.used,memory.total,utilization.gpu --format=csv,noheader; \
+        n=0; for p in $(pgrep -u "$USER" -f "teleop_isaac[.](bridge|renderer)" || true); do case "$(readlink /proc/$p/exe 2>/dev/null)" in *python*) n=$((n+1)) ;; esac; done; \
+        echo "isaac host: $n bridge/renderer process(es) running"; \
+        [ "$n" -gt 0 ] && grep "^\[render\] [0-9]" $root/renderer.log 2>/dev/null | tail -1; \
         echo; tail -n {{lines}} $root/setup.log 2>/dev/null || echo "(no setup log)"'
 
 # One-time local trainer venv, CPU only: the contract, the checker, the simulator and the tests (torch=true adds the CPU torch build, for smoke training and export). GPU machines use trainer/setup.sh from the packed file instead

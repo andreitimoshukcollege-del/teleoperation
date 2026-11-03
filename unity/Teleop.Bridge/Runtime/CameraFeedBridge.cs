@@ -35,6 +35,14 @@ namespace Teleop.Bridge
     /// </summary>
     public sealed class CameraFeedBridge : MonoBehaviour
     {
+        /// <summary>Where the camera sender is: the JetRover's (discovered, docs/adr/0022), or the serial-chain host's
+        /// (<c>fr3_connection</c>'s <c>RemoteHost</c>: Isaac's renderer on the GPU machine, docs/adr/0032 decision 3).</summary>
+        public enum AddressSource
+        {
+            JetRover = 0,
+            SerialChain = 1,
+        }
+
         private const int MaxFrameBytes = 256 * 1024;
         private const float LogIntervalSeconds = 10f;
 
@@ -48,7 +56,15 @@ namespace Teleop.Bridge
         [Tooltip("World-space offset from the arm's base anchor, applied once at start.")]
         [SerializeField] private Vector3 offsetFromArmBase = new Vector3(0.35f, 0.25f, 0f);
 
-        [Header("Network (robot address comes from jetrover_connection, like JetRoverOperatorBridge)")]
+        [Tooltip("Widest the panel may be, metres: a stream wider than height x aspect allows is shown smaller to fit. 0: no limit.")]
+        [SerializeField] private float panelMaxWidthMeters = 0f;
+
+        [Header("Feed")]
+        [Tooltip("What this camera is, for the status strip and the log (the FR3 lab has two).")]
+        [SerializeField] private string feedName = "JETROVER CAM";
+        [SerializeField] private AddressSource addressSource = AddressSource.JetRover;
+
+        [Header("Network (the sender's address comes from the address source's config)")]
         [SerializeField] private int robotPort = 6003;
         [SerializeField] private int localPort = 6004;
         [Tooltip("0 asks for every frame the camera produces; lower it if decoding costs too much frame time.")]
@@ -72,6 +88,9 @@ namespace Teleop.Bridge
         private Texture2D _texture;
         private long _framesShown;
         private long _nextLogTicks;
+
+        /// <summary>What this camera is (<c>JETROVER CAM</c>, <c>HEAD CAM (REC)</c>, ...).</summary>
+        public string FeedName => feedName;
 
         /// <summary>Frames decoded and shown since enable.</summary>
         public long FramesShown => _framesShown;
@@ -103,9 +122,17 @@ namespace Teleop.Bridge
 
         private void OnEnable()
         {
-            JetRoverArmConfig config = ConfigLoader.Load("jetrover_connection", "jetrover_connection.json", new JetRoverArmConfig());
-            // The same discovered address as the operator bridge's (docs/adr/0022).
-            _robot = new IPEndPoint(RobotAddressDiscovery.Resolve(config), robotPort);
+            if (addressSource == AddressSource.SerialChain)
+            {
+                SerialChainConnectionConfig fr3 = ConfigLoader.Load("fr3_connection", "fr3_connection.json", new SerialChainConnectionConfig());
+                _robot = new IPEndPoint(ResolveHost(fr3.RemoteHost), robotPort);
+            }
+            else
+            {
+                JetRoverArmConfig config = ConfigLoader.Load("jetrover_connection", "jetrover_connection.json", new JetRoverArmConfig());
+                // The same discovered address as the operator bridge's (docs/adr/0022).
+                _robot = new IPEndPoint(RobotAddressDiscovery.Resolve(config), robotPort);
+            }
 
             _socket = new Socket(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp);
             _socket.ReceiveBufferSize = 4 << 20;
@@ -168,7 +195,14 @@ namespace Teleop.Bridge
                         if (info.Frame.Height > 0)
                         {
                             float aspect = info.Frame.Width / (float)info.Frame.Height;
-                            panel.transform.localScale = new Vector3(panelHeightMeters * aspect, panelHeightMeters, 1f);
+                            float height = panelHeightMeters, width = height * aspect;
+                            if (panelMaxWidthMeters > 0f && width > panelMaxWidthMeters)
+                            {
+                                width = panelMaxWidthMeters;
+                                height = width / aspect;
+                            }
+
+                            panel.transform.localScale = new Vector3(width, height, 1f);
                         }
                     }
 
@@ -265,6 +299,25 @@ namespace Teleop.Bridge
             }
         }
 
+        /// <summary>An address, or a host name's first IPv4 address; loopback (and an error) when neither resolves.</summary>
+        private IPAddress ResolveHost(string host)
+        {
+            if (IPAddress.TryParse(host, out IPAddress address)) return address;
+            try
+            {
+                foreach (IPAddress a in Dns.GetHostAddresses(host))
+                {
+                    if (a.AddressFamily == AddressFamily.InterNetwork) return a;
+                }
+            }
+            catch (SocketException)
+            {
+            }
+
+            Debug.LogError($"[camera] {feedName}: '{host}' does not resolve; trying 127.0.0.1", this);
+            return IPAddress.Loopback;
+        }
+
         private void LogSummary()
         {
             long received, skipped;
@@ -277,7 +330,7 @@ namespace Teleop.Bridge
             }
 
             Debug.Log(
-                $"[camera] {_robot}: received {received} frames, shown {_framesShown}, skipped before decode {skipped}, " +
+                $"[camera] {feedName} {_robot}: received {received} frames, shown {_framesShown}, skipped before decode {skipped}, " +
                 $"last decode {LastDecodeMilliseconds:0.0} ms; reassembler completed {d.FramesCompleted}, " +
                 $"incomplete {d.DroppedIncomplete}, superseded {d.DroppedSuperseded}, late {d.LateChunks}, resyncs {d.Resyncs}");
         }

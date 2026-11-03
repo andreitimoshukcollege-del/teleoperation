@@ -177,6 +177,7 @@ namespace Teleop.XR.Editor
             var robotRoot = so.FindProperty("robotRoot")?.objectReferenceValue as Transform;
             if (twin != null && robotRoot != null) CheckTwin(twin, robotRoot, problems);
             if (robotRoot != null) CheckWorld(robotRoot, problems);
+            CheckFeeds(problems);
             return problems;
         }
 
@@ -237,6 +238,44 @@ namespace Teleop.XR.Editor
                 if (off > 0.001f || grown > 0.001f || Quaternion.Angle(t.rotation, robotRoot.rotation) > 0.1f)
                     problems.Add($"surface '{s.Id}' is {off * 1000:F1} mm and {grown * 1000:F1} mm (size) from the scene file's: run `just unity-world-fr3-xr`");
             }
+        }
+
+        /// <summary>
+        /// The two Isaac feeds (docs/adr/0032 decision 3): each a <see cref="CameraFeedBridge"/> asking the serial-chain host on its
+        /// own ports, showing on a display's screen it does not move, with that display's status strip reading it. Not safety
+        /// settings: a feed moves nothing.
+        /// </summary>
+        private static void CheckFeeds(List<string> problems)
+        {
+            var feeds = Object.FindObjectsByType<CameraFeedBridge>(FindObjectsInactive.Include, FindObjectsSortMode.None);
+            var bars = Object.FindObjectsByType<CameraStatusBar>(FindObjectsInactive.Include, FindObjectsSortMode.None);
+            foreach ((string name, int port, int local) in new[]
+            {
+                (XrFr3WorldSetup.HeadFeedName, XrFr3WorldSetup.HeadFeedPort, XrFr3WorldSetup.HeadFeedLocalPort),
+                (XrFr3WorldSetup.ThirdFeedName, XrFr3WorldSetup.ThirdFeedPort, XrFr3WorldSetup.ThirdFeedLocalPort),
+            })
+            {
+                CameraFeedBridge feed = feeds.FirstOrDefault(f => f.FeedName == name);
+                if (feed == null)
+                {
+                    problems.Add($"no '{name}' camera feed: run `just unity-world-fr3-xr`");
+                    continue;
+                }
+
+                var so = new SerializedObject(feed);
+                if (so.FindProperty("addressSource").enumValueIndex != (int)CameraFeedBridge.AddressSource.SerialChain)
+                    problems.Add($"the '{name}' feed asks the JetRover, not the FR3's host");
+                if (so.FindProperty("robotPort").intValue != port || so.FindProperty("localPort").intValue != local)
+                    problems.Add($"the '{name}' feed is not on ports {port} (sender) and {local} (here)");
+                if (so.FindProperty("armRig").objectReferenceValue != null)
+                    problems.Add($"the '{name}' feed has an arm rig set: it would move its screen out of its display");
+                if (!(so.FindProperty("panel").objectReferenceValue is Renderer panel) || panel.name != "Screen")
+                    problems.Add($"the '{name}' feed shows on no display's screen");
+                if (!bars.Any(b => new SerializedObject(b).FindProperty("feed").objectReferenceValue == feed))
+                    problems.Add($"no display's status strip reads the '{name}' feed");
+            }
+
+            if (feeds.Length != 2) problems.Add($"{feeds.Length} camera feeds; the FR3 lab has two (head and third-person)");
         }
 
         private static void CheckResources(List<string> problems)

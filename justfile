@@ -141,6 +141,11 @@ unity-scene-fr3-xr rebuild="false" bake="true":
 unity-check-fr3-xr:
     just _unity-batch TeleopXR Teleop.XR.Editor.XrFr3SceneCheck.Run
 
+# Build unity/TeleopXR's FR3 world from the scene file (Resources/fr3_scene.json, a copy of core/Scenes/fr3-duo-bench.json; docs/adr/0031 amendment 2): every surface the file shows, the work table in front of the robot, under the scene's World root, replacing only that root. Run it after the scene file changes, then just unity-check-fr3-xr. Close that project's editor first
+[group('fr3 (simulated)')]
+unity-world-fr3-xr:
+    just _unity-batch TeleopXR Teleop.XR.Editor.XrFr3WorldSetup.Run
+
 # Render unity/TeleopXR's FR3 Duo scene from six fixed viewpoints (the operator's, the console, front, left, above, the room), the twin at Franka's ready pose, to the Windows temp folder (teleop-fr3\\<time>\\, with a report.txt of the twin's triangles): how its meshes are reviewed without a headset. Close that project's editor first
 [group('fr3 (simulated)')]
 unity-preview-fr3-xr:
@@ -3019,6 +3024,12 @@ isaac-bridge-test:
 [group('isaac')]
 gen-arm-server-golden:
     cd core && TELEOP_WRITE_GOLDEN=1 WSLENV="${WSLENV:+$WSLENV:}TELEOP_WRITE_GOLDEN" dotnet test Teleop.RobotHost.Tests --filter "FullyQualifiedName~ArmServerWireTests.TheIsaacBridgesGoldenFile_IsWhatThisCodecWrites"
+
+# Rewrite the golden files Core writes for Isaac and the scene file (docs/adr/0031 amendment 2, docs/adr/0032), after a deliberate change: the canonical parse of core/Scenes/fr3-duo-bench.json (robot/isaac/golden/scene-fr3-duo-bench.json), the FR3 Duo's tool poses at seeded joint sets (robot/isaac/golden/fr3-duo-fk-v1.json), seed 1's object layout (core/Scenes/testdata/layout-seed1.txt), and the arm-server wire's. Then change the Python copies until `just isaac-bridge-test` passes
+[group('isaac')]
+gen-isaac-goldens:
+    cd core && TELEOP_WRITE_GOLDEN=1 WSLENV="${WSLENV:+$WSLENV:}TELEOP_WRITE_GOLDEN" dotnet test Teleop.RobotArm.Tests --filter "FullyQualifiedName~SceneDocumentTests.TheIsaacGoldenFile|FullyQualifiedName~Fr3FkGoldenTests|FullyQualifiedName~SceneLayoutTests.ALayoutIsFrozen"
+    just gen-arm-server-golden
 
 # How the GPU machine's Isaac Sim stands (docs/adr/0031): the version installed in our account, whether a setup is going and its log's last lines, and the GPU's load (it is shared)
 [group('isaac')]

@@ -54,7 +54,7 @@ namespace Teleop.XR.Editor
         /// enough back that, from the operator's eye, its arms rise above the console's panel instead of showing through it.
         /// </summary>
         public const float BenchDepth = 1.3f;
-        private const float RobotDepth = 1.1f;
+        internal const float RobotDepth = 1.1f;
 
         private static Vector3 RobotBase => new Vector3(LabLayout.ArmBase.x, LabLayout.BenchTop, LabLayout.BenchNearZ + RobotDepth);
 
@@ -201,6 +201,9 @@ namespace Teleop.XR.Editor
             XrControlSetup.BuildConsole(scene, bridge, origin, (config.JointPredictorPresets ?? new JointPredictorPresetData[0]).Select(p => p.Label).ToArray());
             XrControlSetup.BuildDelaySlider(scene, bridge, origin);
             BuildRecentreButton(bridge, origin);
+
+            // The world from the scene file (docs/adr/0031 amendment 2): the work table in front of the robot.
+            XrFr3WorldSetup.Apply();
 
             // The status lines: the arms on the display's caption line, the link above the switches.
             TMP_Text caption = Object.FindObjectsByType<TMP_Text>(FindObjectsInactive.Include, FindObjectsSortMode.None).FirstOrDefault(t => t.name == "DisplayCaption");

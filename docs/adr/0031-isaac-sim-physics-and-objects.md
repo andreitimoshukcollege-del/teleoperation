@@ -367,7 +367,9 @@ This amendment fixes what decisions 3–5 left open, before either side is built
      - Isaac-only `backdrops`, `cameras` and `lights` (ADR 0032).
    - **Format constraints:** no nulls and no nested arrays, so `JsonUtility` can read it.
 
-9. **Phases.** Decision 8's phase 2 becomes P1 (the scene file and a static world twin) and P2
-   (objects in Isaac, world frames, NEW LAYOUT and world records). The root `CLAUDE.md` Direction
+9. **Phases.** Decision 8's phase 2 becomes two:
+   - **P1:** the scene file, its readers in Core and Isaac, and the work table in the VR lab.
+   - **P2:** objects in Isaac, world frames, the headset's world twin, NEW LAYOUT and world records.
+     The world twin moved here from P1 because nothing can pose it before world frames exist. The root `CLAUDE.md` Direction
    paragraph is updated in P2. Moves from the headset are P5, after ADR 0032's feeds (P3) and recording
    (P4), the order the user chose.

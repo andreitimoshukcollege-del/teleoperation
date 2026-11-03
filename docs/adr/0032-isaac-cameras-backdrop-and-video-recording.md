@@ -2,8 +2,7 @@
 
 ## Status
 
-Proposed (2026-11-02). It is accepted when the user accepts it, now that the spike's numbers are in
-(below).
+Accepted (2026-11-02). The user merged it, with the spike's numbers (below), in PR #100.
 
 **Why it exists.** The user wants to collect training data in the lab with the simulated FR3 Duo, for
 models that will take video input. ADR 0031 decision 8 left "an Isaac camera to the headset's display"

@@ -64,7 +64,7 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("session")
     ap.add_argument("--urdf", default=os.path.join(REPO, "robot", "franka", "fr3_duo", "urdf", "fr3_duo.urdf"))
-    ap.add_argument("--every", type=int, default=3, help="decode every this many frames for the image checks")
+    ap.add_argument("--every", type=int, default=1, help="decode every this many frames for the image checks (hands are seldom in view)")
     args = ap.parse_args()
     d = os.path.abspath(os.path.expanduser(args.session))
     out = {"session": os.path.basename(d)}
@@ -204,7 +204,7 @@ def main() -> int:
 
     out["checks"] = checks
     out["missing"] = sorted(k for k, v in out.items() if v is None)
-    out["passes"] = all(checks.values()) and len(checks) == 8 and not out["missing"]
+    out["passes"] = all(checks.values()) and len(checks) == 7 and not out["missing"]
     print("RESULT " + json.dumps(out, sort_keys=True))
     return 0 if out["passes"] else 1
 

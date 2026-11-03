@@ -532,7 +532,8 @@ def run(app, args, p, scene, cameras, fps, joints, motors, tap) -> int:
         else:
             from .isaac_session import IsaacSession
             session = IsaacSession(args.record_control, streams, preamble=preamble, final_files=final_files,
-                                   on_closed=lambda d: want_backdrop_change.append(d), min_free_bytes=int(args.min_free_gb * 1024 ** 3))
+                                   on_closed=lambda d: want_backdrop_change.append(d), min_free_bytes=int(args.min_free_gb * 1024 ** 3),
+                                   poll_seconds=0.1)  # frames after RobotHost closes a session have no QS: keep that tail short
             print(f"[render] recording {', '.join(streams)} every {args.record_every} frame(s) into the sessions {args.record_control} names", flush=True)
     recorder = ThreadPoolExecutor(max_workers=1, thread_name_prefix="record")
     record_pending = [0]

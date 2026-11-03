@@ -99,6 +99,50 @@ namespace Teleop.RobotArm.Operator
         /// <summary>The solver's settings; its defaults when null.</summary>
         public SerialChainSolverOptions? Solver { get; set; }
 
+        /// <summary>
+        /// Recovery (<see cref="ChainStepMode.CartesianPath"/>): an arm off its target whose small steps have made no progress
+        /// (or are blocked) for this long (s) searches for a better pose of the whole arm, and, when one is clearly better,
+        /// moves there in joint space through checked poses, then follows again. 0 never. Without it an arm that crept into a
+        /// corner of its joint space (stretching after an unreachable hand, its forearm or base on a limit) never came back,
+        /// though the hand returned within reach (the user, 2026-11-03: it "gets stuck and confused in some positions").
+        /// </summary>
+        public double RecoverAfterSeconds { get; set; } = 0.3;
+
+        /// <summary>
+        /// Whether a recovery waits for the hand to be held still (true), or also starts while it moves when the arm's steps are
+        /// stuck or blocked (false). A search started while the hand moves moves the arm only to a pose that reaches the target:
+        /// one merely nearer left the moving hand's path and arrived after the hand had gone.
+        /// </summary>
+        public bool RecoverOnlyWhenStill { get; set; } = true;
+
+        /// <summary>How many starts a recovery search solves from (the arm's command, its home pose, then seeded random poses).</summary>
+        public int RecoverStarts { get; set; } = 32;
+
+        /// <summary>How many of those one <see cref="SerialChainTeleop.Step"/> solves: the search is spread over frames.</summary>
+        public int RecoverStartsPerStep { get; set; } = 4;
+
+        /// <summary>
+        /// A found pose is moved to when it puts the tool within half the reach tolerances of the target, or this much nearer it
+        /// (m, an angle weighed at <see cref="OrientationMeters"/> per radian) than the arm is: the arm's own steps finish from
+        /// there. Searches run only while the hand is held still, so neither leaves a moving hand's path.
+        /// </summary>
+        public double RecoverImprovement { get; set; } = 0.01;
+
+        /// <summary>
+        /// The share of each joint's velocity limit a recovery move uses: below following's, so it never lunges, yet quick, since
+        /// the operator is holding still and waiting (a corner can mean 4.5 rad of one joint).
+        /// </summary>
+        public double RecoverSpeedShare { get; set; } = 0.75;
+
+        /// <summary>
+        /// A redundant arm's spare motion is drawn toward its home pose (the robot's pose when it was first taken), at most
+        /// this fast (rad/s), so the hand's wandering does not walk the elbow and the base toward their limits; 0 never.
+        /// </summary>
+        public double PostureSpeed { get; set; } = 0.15;
+
+        /// <summary>A radian of the gripper's orientation error weighs this many metres of position error, when poses are compared.</summary>
+        public double OrientationMeters { get; set; } = 0.3;
+
         public string? Validate()
         {
             if (!(PositionScale > 0) || double.IsInfinity(PositionScale)) return $"PositionScale must be positive and finite ({PositionScale})";
@@ -110,6 +154,9 @@ namespace Teleop.RobotArm.Operator
             if (!(LimitReliefSpeed >= 0) || !(LimitZone > 0) || double.IsInfinity(LimitReliefSpeed + LimitZone)) return $"LimitReliefSpeed must be at least 0 and LimitZone positive ({LimitReliefSpeed}, {LimitZone})";
             if (!(JointSpeedShare >= 0) || JointSpeedShare > 1) return $"JointSpeedShare must be in [0, 1] ({JointSpeedShare})";
             if (!(ReachTolerance > 0) || !(ReachAngleTolerance > 0) || double.IsInfinity(ReachTolerance + ReachAngleTolerance)) return "the reach tolerances must be positive and finite";
+            if (!(RecoverSpeedShare > 0) || RecoverSpeedShare > 1) return $"RecoverSpeedShare must be in (0, 1] ({RecoverSpeedShare})";
+            if (!(RecoverAfterSeconds >= 0) || RecoverStarts < 2 || RecoverStartsPerStep < 1 || !(RecoverImprovement >= 0) || !(PostureSpeed >= 0) || !(OrientationMeters >= 0) ||
+                double.IsInfinity(RecoverAfterSeconds + RecoverImprovement + PostureSpeed + OrientationMeters)) return "the recovery and posture settings must be finite, at least 0, with at least 2 starts";
             return null;
         }
     }
@@ -177,6 +224,38 @@ namespace Teleop.RobotArm.Operator
         private readonly double[] _probe;
         private readonly double[] _slideGradient;
         private readonly double[] _unslid;
+        private readonly SerialChainSolver[] _searchSolvers;
+        private readonly double[] _home;
+        private readonly bool[] _homeTaken;
+        private readonly bool[] _transit;
+        private readonly bool[] _searching;
+        private readonly double[] _transitGoal;
+        private readonly RigidTransform[] _transitFor;
+        private readonly double[] _searchBest;
+        private readonly double[] _searchBestScore;
+        private readonly double[] _searchBestError;
+        private readonly double[] _searchBestPosition;
+        private readonly bool[] _searchStill;
+        private readonly double[] _searchBestAngle;
+        private readonly int[] _searchCount;
+        private readonly double[] _watchError;
+        private readonly double[] _watchSeconds;
+        private readonly double[] _cooldown;
+        private readonly SeededRng[] _rng;
+        private readonly double[] _seed;
+        private readonly double[] _found;
+        private readonly RigidTransform[] _watchGoal;
+        private readonly int[] _searchBestRoute;
+        private readonly int[] _routeStage;
+        private readonly double[] _escape;
+        private readonly bool[] _escapeValid;
+        private readonly double[] _path;
+
+        /// <summary>The recovery's counts since construction, for diagnostics: searches, searches that found nothing better, moves started, moves cut by a collision.</summary>
+        public int Searches { get; private set; }
+        public int SearchesNoBetter { get; private set; }
+        public int Transits { get; private set; }
+        public int TransitsBlocked { get; private set; }
 
         public SerialChainTeleop(SerialChainProfile profile, SerialChainCollisionModel? collision = null, SerialChainTeleopOptions? options = null)
         {
@@ -221,6 +300,46 @@ namespace Teleop.RobotArm.Operator
             _probe = new double[joints];
             _slideGradient = new double[widest];
             _unslid = new double[widest];
+            // The recovery's solves: a longer budget, and no pull toward where they start (they start anywhere).
+            SerialChainSolverOptions o0 = _options.Solver ?? new SerialChainSolverOptions();
+            var searchOptions = new SerialChainSolverOptions
+            {
+                Iterations = Math.Max(o0.Iterations, 150), Damping = o0.Damping, OrientationWeight = o0.OrientationWeight,
+                PositionTolerance = o0.PositionTolerance, OrientationTolerance = o0.OrientationTolerance, RestGain = 0, LimitGain = o0.LimitGain,
+                MaxStep = o0.MaxStep, LimitMargin = o0.LimitMargin,
+            };
+            _searchSolvers = new SerialChainSolver[arms];
+            _rng = new SeededRng[arms];
+            for (int a = 0; a < arms; a++)
+            {
+                _searchSolvers[a] = new SerialChainSolver(profile.Arms[a], searchOptions);
+                _rng[a] = new SeededRng(0x7E1E0Bu + (ulong)a);
+            }
+
+            _home = new double[joints];
+            _homeTaken = new bool[arms];
+            _transit = new bool[arms];
+            _searching = new bool[arms];
+            _transitGoal = new double[joints];
+            _transitFor = new RigidTransform[arms];
+            _searchBest = new double[joints];
+            _searchBestScore = new double[arms];
+            _searchBestError = new double[arms];
+            _searchBestPosition = new double[arms];
+            _searchStill = new bool[arms];
+            _searchBestAngle = new double[arms];
+            _searchCount = new int[arms];
+            _watchError = new double[arms];
+            _watchSeconds = new double[arms];
+            _cooldown = new double[arms];
+            _seed = new double[widest];
+            _found = new double[widest];
+            _watchGoal = new RigidTransform[arms];
+            _searchBestRoute = new int[arms];
+            _routeStage = new int[arms];
+            _escape = new double[joints];
+            _escapeValid = new bool[arms];
+            _path = new double[joints];
             MotorCount = joints;
             for (int a = 0; a < arms; a++)
             {
@@ -285,6 +404,13 @@ namespace Teleop.RobotArm.Operator
                 _clutches[a].Release();
                 _clutches[a].Hold(Tool(a));
                 _status[a] = ChainArmStatus.Idle;
+                if (!_homeTaken[a])
+                {
+                    Array.Copy(_q, _offset[a], _home, _offset[a], arm.Joints.Length);
+                    _homeTaken[a] = true;
+                }
+
+                ResetRecovery(a);
             }
 
             HasPose = true;
@@ -297,6 +423,7 @@ namespace Teleop.RobotArm.Operator
             if (!HasPose) return false;
             _clutches[arm].Engage(hand, Tool(arm));
             _status[arm] = ChainArmStatus.Following;
+            ResetRecovery(arm);
             return true;
         }
 
@@ -318,6 +445,7 @@ namespace Teleop.RobotArm.Operator
             _approachFrom[arm] = tool;
             _handTarget[arm] = target;
             _status[arm] = ChainArmStatus.Following;
+            ResetRecovery(arm);
             return true;
         }
 
@@ -340,7 +468,11 @@ namespace Teleop.RobotArm.Operator
             _clutches[arm].Release();
             _clutches[arm].Hold(Tool(arm));
             _status[arm] = ChainArmStatus.Idle;
+            ResetRecovery(arm);
         }
+
+        /// <summary>Whether arm <paramref name="arm"/> is moving through joint space to a pose its recovery found (<see cref="SerialChainTeleopOptions.RecoverAfterSeconds"/>).</summary>
+        public bool IsRecovering(int arm) => _transit[arm];
 
         public bool IsEngaged(int arm) => _clutches[arm].IsEngaged;
 
@@ -408,8 +540,14 @@ namespace Teleop.RobotArm.Operator
                 {
                     // The speed caps make the approach to a hand: no ramp.
                     if (_absolute[a]) _clutches[a].Track(_handTarget[a]);
-                    RigidTransform tool = Tool(a);
                     goal = _clutches[a].Target;
+                    if (_transit[a])
+                    {
+                        Transit(a, goal, seconds);
+                        continue;
+                    }
+
+                    RigidTransform tool = Tool(a);
                     step = Advance(tool, goal, _options.MaxLinearSpeed * seconds, _options.MaxAngularSpeed * seconds);
                     // The spare motion first, then the step solved from there: the solve puts the tool back on its path.
                     Array.Copy(_q, _candidate, _q.Length);
@@ -437,6 +575,7 @@ namespace Teleop.RobotArm.Operator
                     if (!slid && !LargestClearPart(a))
                     {
                         _status[a] = ChainArmStatus.Blocked;
+                        if (path) Watch(a, goal, seconds, trouble: true); // a blocked arm looks for another way too
                         continue;
                     }
                 }
@@ -446,7 +585,286 @@ namespace Teleop.RobotArm.Operator
                 if (collided && !(slid && !OffTarget(a, goal))) _status[a] = ChainArmStatus.Blocked;
                 else if (!path) _status[a] = r.Converged || shorten < 1.0 ? ChainArmStatus.Following : ChainArmStatus.StoppedShort;
                 else _status[a] = stuck && OffTarget(a, goal) ? ChainArmStatus.StoppedShort : ChainArmStatus.Following;
+                if (path) Watch(a, goal, seconds, stuck || collided);
             }
+        }
+
+        private void ResetRecovery(int a)
+        {
+            _transit[a] = _searching[a] = false;
+            _watchSeconds[a] = _cooldown[a] = 0;
+            _watchError[a] = double.PositiveInfinity;
+        }
+
+        /// <summary>How far a pose is from <paramref name="goal"/>, in metres, an angle weighed at <see cref="SerialChainTeleopOptions.OrientationMeters"/> per radian.</summary>
+        private double Miss(in RigidTransform tool, in RigidTransform goal) => Distance(tool, goal) + _options.OrientationMeters * AngleBetween(tool, goal);
+
+        /// <summary>
+        /// The recovery's watch, after each step of arm <paramref name="a"/>: off its target, with its steps in
+        /// <paramref name="trouble"/> (stuck, or colliding) and no progress for <see cref="SerialChainTeleopOptions.RecoverAfterSeconds"/>,
+        /// it starts a search; a search under way solves a few more starts.
+        /// </summary>
+        private void Watch(int a, in RigidTransform goal, double seconds, bool trouble)
+        {
+            if (!(_options.RecoverAfterSeconds > 0)) return;
+            double miss = Miss(Tool(a), goal);
+            if (!OffTarget(a, goal))
+            {
+                _searching[a] = false;
+                _watchError[a] = miss;
+                _watchSeconds[a] = 0;
+                return;
+            }
+
+            if (_searching[a])
+            {
+                Search(a, goal);
+                return;
+            }
+
+            if (_cooldown[a] > 0) _cooldown[a] -= seconds;
+            // A hand held still makes any lack of progress trouble, even when each small step succeeds: an arm whose posture terms
+            // undo them (a wrist on its limit, turning the long way) jitters in place reporting Following.
+            bool still = Distance(goal, _watchGoal[a]) <= 0.01 && AngleBetween(goal, _watchGoal[a]) <= 0.05;
+            if (!still) _watchGoal[a] = goal;
+            // Progress is the gap closing by 30% in a watch period: an arm on a limit creeping the long way round (2° a tenth of a
+            // second, against 3 rad/s free) is stuck, as the operator sees it.
+            double progress = Math.Max(0.003, 0.3 * _watchError[a]);
+            // Only while the hand is held still: a moving hand is followed along its path, and the branch the arm is on usually
+            // catches up; reconfiguring then left the path and arrived after the hand had gone (wandering hands: off target 5% -> 10%).
+            if ((still || (trouble && !_options.RecoverOnlyWhenStill)) && miss > _watchError[a] - progress)
+            {
+                _watchSeconds[a] += seconds;
+            }
+            else
+            {
+                _watchError[a] = miss;
+                _watchSeconds[a] = 0;
+            }
+
+            if (_watchSeconds[a] >= _options.RecoverAfterSeconds && _cooldown[a] <= 0)
+            {
+                _searching[a] = true;
+                _searchStill[a] = still;
+                Searches++;
+                _searchCount[a] = 0;
+                _searchBestScore[a] = double.PositiveInfinity;
+                _searchBestError[a] = double.PositiveInfinity;
+                _watchSeconds[a] = 0;
+                _watchError[a] = miss;
+                Search(a, goal);
+            }
+        }
+
+        /// <summary>
+        /// Solves a few of the recovery's starts for <paramref name="goal"/>: the arm's command, its home pose, then seeded
+        /// random poses inside the soft limits. A solution must be clear of the body and the other arm. The best reaches the
+        /// target most nearly, then is nearest the command, then nearest home. When every start is solved, an arm that the best
+        /// would bring clearly nearer its target moves there (<see cref="Transit"/>); otherwise it waits a second to search again.
+        /// </summary>
+        private void Search(int a, in RigidTransform goal)
+        {
+            ChainArm arm = _profile.Arms[a];
+            int n = arm.Joints.Length, o = _offset[a];
+            Span<double> seed = _seed.AsSpan(0, n), found = _found.AsSpan(0, n);
+            if (_searchCount[a] == 0) Escape(a);
+            for (int k = 0; k < _options.RecoverStartsPerStep && _searchCount[a] < _options.RecoverStarts; k++, _searchCount[a]++)
+            {
+                int c = _searchCount[a];
+                for (int j = 0; j < n; j++)
+                {
+                    ChainJointLimits l = arm.Joints[j].Limits;
+                    seed[j] = c == 0 ? _q[o + j] : c == 1 ? _home[o + j] : l.SoftLower + (l.SoftUpper - l.SoftLower) * _rng[a].NextDouble();
+                }
+
+                ChainSolveResult r = _searchSolvers[a].Solve(goal, seed, found);
+                Array.Copy(_q, _probe, _q.Length);
+                for (int j = 0; j < n; j++) _probe[o + j] = found[j];
+                if (_collision != null && SerialChainCollision.Check(_profile, _collision, _probe).IsHit) continue;
+                double error = r.PositionError + _options.OrientationMeters * r.OrientationError;
+                double travel = 0, fromHome = 0;
+                for (int j = 0; j < n; j++)
+                {
+                    // How long the move takes: the slowest joint's, at the recovery's share of its velocity limit.
+                    double v = _options.RecoverSpeedShare * arm.Joints[j].Limits.Velocity;
+                    travel = Math.Max(travel, Math.Abs(found[j] - _q[o + j]) / (v > 1e-9 ? v : 1.0));
+                    fromHome += (found[j] - _home[o + j]) * (found[j] - _home[o + j]);
+                }
+
+                // Reaching the target first, then the quickest move (a second weighs a centimetre), then nearness to home.
+                double score = error + 0.01 * travel + 0.001 * Math.Sqrt(fromHome / n);
+                if (score >= _searchBestScore[a]) continue;
+                // Only a pose the arm can get to, every sampled pose on the way clear: straight there; or by way of home; or, for an
+                // arm pressed against something so that every straight line starts into it, first away from it, then home.
+                int route = 0;
+                if (!PathClear(a, _q.AsSpan(o, n), found))
+                {
+                    if (PathClear(a, _q.AsSpan(o, n), _home.AsSpan(o, n)) && PathClear(a, _home.AsSpan(o, n), found)) route = 1;
+                    else if (_escapeValid[a] && PathClear(a, _escape.AsSpan(o, n), _home.AsSpan(o, n)) && PathClear(a, _home.AsSpan(o, n), found)) route = 2;
+                    else continue;
+                    score += 0.002 * route; // the longer way
+                    if (score >= _searchBestScore[a]) continue;
+                }
+
+                _searchBestScore[a] = score;
+                _searchBestError[a] = error;
+                _searchBestPosition[a] = r.PositionError;
+                _searchBestAngle[a] = r.OrientationError;
+                _searchBestRoute[a] = route;
+                for (int j = 0; j < n; j++) _searchBest[o + j] = found[j];
+            }
+
+            if (_searchCount[a] < _options.RecoverStarts) return;
+            _searching[a] = false;
+            // Better: it reaches the target, which the arm is off.
+            double now = Miss(Tool(a), goal);
+            bool reaches = _searchBestPosition[a] <= 0.5 * _options.ReachTolerance && _searchBestAngle[a] <= 0.5 * _options.ReachAngleTolerance;
+            if ((reaches && now > _searchBestError[a] + 0.003) || (_searchStill[a] && _searchBestError[a] < now - _options.RecoverImprovement))
+            {
+                _routeStage[a] = _searchBestRoute[a];
+                Array.Copy(_routeStage[a] == 2 ? _escape : _routeStage[a] == 1 ? _home : _searchBest, o, _transitGoal, o, n);
+                _transitFor[a] = goal;
+                _transit[a] = true;
+                Transits++;
+            }
+            else
+            {
+                // Nothing better this time; the next search draws other random starts (near the body most solutions collide).
+                _cooldown[a] = 0.3;
+                SearchesNoBetter++;
+            }
+        }
+
+        /// <summary>
+        /// One step of arm <paramref name="a"/>'s move to the pose its recovery found: straight in joint space, every joint as
+        /// fast as <see cref="Shorten"/> allows, each pose checked. A pose that would collide ends the move (the arm holds, and
+        /// searches again later); so does arriving, or the target moving far from the one the pose was found for.
+        /// </summary>
+        private void Transit(int a, in RigidTransform goal, double seconds)
+        {
+            int n = _profile.Arms[a].Joints.Length, o = _offset[a];
+            if (Distance(goal, _transitFor[a]) > 0.15 || AngleBetween(goal, _transitFor[a]) > 0.5)
+            {
+                // The hand went elsewhere meanwhile: search again for where it is now.
+                _transit[a] = false;
+                _searching[a] = true;
+                _searchStill[a] = false;
+                _searchCount[a] = 0;
+                _searchBestScore[a] = _searchBestError[a] = double.PositiveInfinity;
+                Search(a, goal);
+                _status[a] = ChainArmStatus.Following;
+                return;
+            }
+
+            Array.Copy(_q, _candidate, _q.Length);
+            Array.Copy(_transitGoal, o, _candidate, o, n);
+            double shorten = Shorten(a, seconds * _options.RecoverSpeedShare);
+            double left = 0;
+            for (int j = 0; j < n; j++)
+            {
+                double from = _q[o + j];
+                _candidate[o + j] = from + shorten * (_transitGoal[o + j] - from);
+                left = Math.Max(left, Math.Abs(_transitGoal[o + j] - _candidate[o + j]));
+            }
+
+            if (_collision != null && SerialChainCollision.Check(_profile, _collision, _candidate).IsHit)
+            {
+                // Cut by a collision (the other arm moved into the way since the path was checked): search again soon, from here.
+                _transit[a] = false;
+                _cooldown[a] = 0.2;
+                TransitsBlocked++;
+                _status[a] = ChainArmStatus.Blocked;
+                return;
+            }
+
+            Array.Copy(_candidate, o, _q, o, n);
+            _status[a] = ChainArmStatus.Following;
+            if (left < 1e-4)
+            {
+                if (_routeStage[a] > 0)
+                {
+                    // A waypoint reached: from the escape on to home, from home on to the pose itself.
+                    _routeStage[a]--;
+                    Array.Copy(_routeStage[a] == 1 ? _home : _searchBest, o, _transitGoal, o, n);
+                    return;
+                }
+
+                _transit[a] = false;
+                _watchSeconds[a] = 0;
+                _watchError[a] = Miss(Tool(a), goal);
+            }
+        }
+
+        /// <summary>
+        /// The escape for arm <paramref name="a"/>'s search: a pose a quarter of a radian away (the largest joint's move) that
+        /// opens at least 5 mm more clearance to the body and the other arm, reached along a clear straight line. Tried in turn:
+        /// up the gradient of the clearance, then each joint either way, then seeded random directions; the first that works.
+        /// The gradient alone fails an arm touching two things at once: moving off one presses it into the other.
+        /// </summary>
+        private void Escape(int a)
+        {
+            _escapeValid[a] = false;
+            if (_collision == null) return;
+            ChainArm arm = _profile.Arms[a];
+            int n = arm.Joints.Length, o = _offset[a];
+            Array.Copy(_q, _probe, _q.Length);
+            double clearance = SerialChainCollision.Clearance(_profile, _collision, _probe, a);
+            const double eps = 1e-4, reach = 0.25;
+            for (int j = 0; j < n; j++)
+            {
+                _probe[o + j] = _q[o + j] + eps;
+                _slideGradient[j] = (SerialChainCollision.Clearance(_profile, _collision, _probe, a) - clearance) / eps;
+                _probe[o + j] = _q[o + j];
+            }
+
+            int candidates = 1 + 2 * n + 8;
+            for (int c = 0; c < candidates; c++)
+            {
+                double largest = 0;
+                for (int j = 0; j < n; j++)
+                {
+                    double d = c == 0 ? _slideGradient[j]
+                        : c <= 2 * n ? ((c - 1) / 2 == j ? ((c - 1) % 2 == 0 ? 1.0 : -1.0) : 0.0)
+                        : 2 * _rng[a].NextDouble() - 1;
+                    _found[j] = d;
+                    largest = Math.Max(largest, Math.Abs(d));
+                }
+
+                if (!(largest > 1e-9)) continue;
+                for (int j = 0; j < n; j++)
+                {
+                    ChainJointLimits l = arm.Joints[j].Limits;
+                    _escape[o + j] = Math.Max(l.SoftLower, Math.Min(l.SoftUpper, _q[o + j] + reach * _found[j] / largest));
+                }
+
+                Array.Copy(_q, _probe, _q.Length);
+                Array.Copy(_escape, o, _probe, o, n);
+                if (SerialChainCollision.Clearance(_profile, _collision, _probe, a) < clearance + 0.005) continue;
+                if (PathClear(a, _q.AsSpan(o, n), _escape.AsSpan(o, n)))
+                {
+                    _escapeValid[a] = true;
+                    return;
+                }
+            }
+        }
+
+        /// <summary>Whether arm <paramref name="a"/> can move straight in joint space from <paramref name="from"/> to <paramref name="to"/>: every pose a twentieth of a radian apart clear, the other arm where it is.</summary>
+        private bool PathClear(int a, ReadOnlySpan<double> from, ReadOnlySpan<double> to)
+        {
+            if (_collision == null) return true;
+            int n = _profile.Arms[a].Joints.Length, o = _offset[a];
+            double far = 0;
+            for (int j = 0; j < n; j++) far = Math.Max(far, Math.Abs(to[j] - from[j]));
+            int samples = Math.Max(1, (int)Math.Ceiling(far / 0.05));
+            Array.Copy(_q, _path, _q.Length);
+            for (int k = 1; k <= samples; k++)
+            {
+                double u = (double)k / samples;
+                for (int j = 0; j < n; j++) _path[o + j] = from[j] + u * (to[j] - from[j]);
+                if (SerialChainCollision.Check(_profile, _collision, _path).IsHit) return false;
+            }
+
+            return true;
         }
 
         /// <summary>The longest step <see cref="Step(double)"/> takes (s): a host that stalls for longer gets a slower arm, not a jump.</summary>
@@ -497,6 +915,18 @@ namespace Teleop.RobotArm.Operator
                     : 0;
                 if (depth == 0) continue;
                 _gradient[j] = _options.LimitReliefSpeed * seconds * Math.Max(-1.0, Math.Min(1.0, depth));
+                any = true;
+            }
+
+            if (_options.PostureSpeed > 0 && _homeTaken[a])
+            {
+                // Toward home, at most PostureSpeed: the null space keeps the tool where it is.
+                for (int j = 0; j < n; j++)
+                {
+                    double d = (_home[o + j] - _candidate[o + j]) / 0.5;
+                    _gradient[j] += _options.PostureSpeed * seconds * Math.Max(-1.0, Math.Min(1.0, d));
+                }
+
                 any = true;
             }
 

@@ -474,6 +474,11 @@ fr3-sim-drive seconds="60" seed="1" amplitude="0.5" remote_host="127.0.0.1":
     cd core && dotnet run --project Teleop.Eval -- chain-drive --simulated-robot --remote-host {{remote_host}} \
         --seconds {{seconds}} --seed {{seed}} --amplitude-rad {{amplitude}}
 
+# Long synthetic teleoperation sessions of the FR3 Duo, headless (Teleop.Eval chain-ik-stress, docs/adr/0029 amendment 8): a scripted operator reaches all over a person's reach with the grips people use (palm down, forward, palm in, wrist rolls), holds, loses tracking, lets go and reaches beyond the robot, through the headset's absolute mapping and SerialChainTeleop at 90 Hz. A slow multi-start solve says which targets were reachable; prints how often each arm was off a reachable target, how long it took to reach a target once the hand stopped, the recovery's work, and every episode where a reachable target the hand held stayed unreached (stuck) or the gripper pointed more than 30 degrees off (wrong way). Exits 1 on any episode. Extra args pass through: --set RecoverAfterSeconds=0 (compare without recovery), --trace arm:from:to (every frame), --show n. Touches no robot
+[group('fr3 (simulated)')]
+fr3-ik-stress seconds="300" seeds="1-5" *args:
+    cd core && dotnet run --project Teleop.Eval -c Release -- chain-ik-stress --seconds {{seconds}} --seeds {{seeds}} {{args}}
+
 # The headset's two-hand operator (docs/adr/0029) with scripted hands, against a running just fr3-sim-host (another terminal): the same SerialChainJointLink and SerialChainTeleop the Galaxy XR runs, over the real socket. Grabs with both hands, moves them reach_m for 2 s, holds 2 s, and passes when each measured tool is within tolerance_mm of its clutch target, the left gripper closed, nothing blocked and the prediction within 1 deg at p95 (each reading against what the twin showed for its instant). headset=true says Headset in the heartbeat, so RobotHost records the session as it would the Galaxy XR's. Simulated robots only
 [group('fr3 (simulated)')]
 fr3-teleop-probe reach_m="0.08" tolerance_mm="3" predictor="franka-replay" headset="false" remote_host="127.0.0.1":

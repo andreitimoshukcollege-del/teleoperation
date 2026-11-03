@@ -361,6 +361,64 @@ namespace Teleop.RobotArm.Tests.Operator
             Assert.Equal(0.5, teleop.Opening(0), 6);
         }
 
+        // A corner the arm crept into in the stress run (chain-ik-stress, 2026-11-03): its base, upper arm and forearm on their
+        // limits after stretching for a hand out of reach. The target is one another pose of the arm reaches.
+        private static readonly double[] LeftCorner = { -2.57, 1.01, -2.88, -2.82, -2.86, 3.02, 3.03 };
+        private static readonly double[] LeftReachesIt = { -1.64, 0.89, 1.61, -1.91, -0.07, 2.09, 2.03 };
+
+        private static void Cornered(SerialChainTeleop teleop, SerialChainProfile profile, SerialChainCollisionModel collision, out RigidTransform target)
+        {
+            Assert.False(SerialChainCollision.Check(profile, collision, LeftCorner.Concat(RightReady).ToArray()).IsHit);
+            Assert.True(teleop.TryTakePose(Measured(profile, LeftCorner, RightReady))); // home stays the first pose taken: ready
+            target = SerialChainKinematics.Tool(profile.Arms[0], LeftReachesIt);
+            Assert.True(teleop.EngageAt(0, target));
+        }
+
+        [Fact]
+        public void AnArmInACorner_ComesOut_ToATargetItCanReach_ThroughCheckedPoses()
+        {
+            // Without recovery its small steps never get there: the corner is a trap.
+            SerialChainTeleop trapped = Teleop(out SerialChainProfile profile, out SerialChainCollisionModel collision, new SerialChainTeleopOptions { RecoverAfterSeconds = 0 });
+            Cornered(trapped, profile, collision, out RigidTransform target);
+            for (int k = 0; k < 450; k++) trapped.Step(1.0 / 90);
+            Assert.True(Distance(trapped.Tool(0), target) > 0.05, "the corner is no trap: the test no longer tests recovery");
+
+            SerialChainTeleop teleop = Teleop(out _, out _);
+            Cornered(teleop, profile, collision, out target);
+            var options = new SerialChainTeleopOptions();
+            double reachedAt = double.NaN;
+            bool recovered = false;
+            for (int k = 0; k < 450; k++)
+            {
+                double[] before = Pose(teleop);
+                teleop.Step(1.0 / 90);
+                double[] after = Pose(teleop);
+                recovered |= teleop.IsRecovering(0);
+                Assert.False(SerialChainCollision.Check(profile, collision, after).IsHit, $"step {k} collides");
+                Assert.True(after.Zip(before, (x, y) => Math.Abs(x - y)).Max() <= options.MaxStepRadians + 1e-9, $"step {k} moves a joint too far");
+                if (double.IsNaN(reachedAt) && Distance(teleop.Tool(0), target) < 0.01 && SerialChainTeleop.AngleBetween(teleop.Tool(0), target) < 0.087) reachedAt = k / 90.0;
+            }
+
+            Assert.True(recovered, "it never moved to another pose");
+            Assert.False(double.IsNaN(reachedAt), $"it never reached the target: {1000 * Distance(teleop.Tool(0), target):0} mm off");
+            Assert.True(reachedAt < 3.0, $"it took {reachedAt:0.00} s");
+            Assert.Equal(ChainArmStatus.Following, teleop.Status(0));
+        }
+
+        [Fact]
+        public void Recovering_AllocatesNothing()
+        {
+            SerialChainTeleop teleop = Teleop(out SerialChainProfile profile, out SerialChainCollisionModel collision);
+            Cornered(teleop, profile, collision, out _);
+            for (int k = 0; k < 20; k++) teleop.Step(1.0 / 90);
+            // The watch, the search spread over frames, and the move: all of it inside these steps.
+            AllocationAssert.Zero(() => teleop.Step(1.0 / 90), iterations: 150);
+            Assert.True(teleop.Searches > 0 && teleop.Transits > 0, $"{teleop.Searches} searches, {teleop.Transits} moves: the steps measured no recovery");
+        }
+
+        private static double Distance(in RigidTransform a, in RigidTransform b) =>
+            Math.Sqrt((a.X - b.X) * (a.X - b.X) + (a.Y - b.Y) * (a.Y - b.Y) + (a.Z - b.Z) * (a.Z - b.Z));
+
         [Fact]
         public void SteppingAndWriting_AreDeterministic_AndAllocateNothing()
         {

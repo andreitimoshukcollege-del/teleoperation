@@ -288,9 +288,13 @@ def run(app, args, p, scene, cameras, fps, joints, motors, tap) -> int:
 
     lag, agree, samples = args.lag, 1.0, []
     if args.lag < 0:
+        # On the table where the head camera looks (20-62 degrees down), with the scene's objects hidden so none hides it.
+        objects_root = UsdGeom.Imageable(stage.GetPrimAtPath(f"{IsaacWorld.ROOT}/Objects"))
+        objects_root.MakeInvisible()
         history = []
+        top = scene.table.top
         for k in range(90):
-            pos = (0.35 + 0.4 * ((k * 7) % 11) / 10, -0.15 + 0.3 * ((k * 3) % 7) / 6, 0.36)
+            pos = (0.35 + 0.4 * ((k * 7) % 11) / 10, -0.3 + 0.6 * ((k * 3) % 7) / 6, top + LAG_CUBE / 2 + 0.001)
             cube_t.Set(Gf.Vec3d(*pos))
             history.append(pos)
             RenderingManager.render()
@@ -311,6 +315,7 @@ def run(app, args, p, scene, cameras, fps, joints, motors, tap) -> int:
                         best = (e, j)
             if best is not None and best[0] < 8:
                 samples.append(best[1])
+        objects_root.MakeVisible()
         lag, agree = estimate_lag(samples)
         if lag is None:
             print("[render] warning: the render lag could not be measured (the cube was never seen); using 2", flush=True)

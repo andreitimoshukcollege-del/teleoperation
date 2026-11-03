@@ -1,4 +1,6 @@
 using System;
+using Teleop.RobotHost.ArmServer;
+using Teleop.RobotArm.World;
 using System.Globalization;
 using System.Text;
 using Teleop.Core.Types;
@@ -180,6 +182,88 @@ namespace Teleop.RobotHost.Recording
             (c.ReportsHandFilter
                 ? "|" + F(c.HandMinCutoffHz) + "|" + F(c.HandPositionBeta) + "|" + F(c.HandRotationBeta) + "|" + F(c.HandDerivativeCutoffHz)
                 : "");
+
+        // ---- the world (docs/adr/0031 amendment 2) ----
+
+        /// <summary><c>WL|t|layout|seed</c>: a layout began (drawn from <c>seed</c> by Core's <c>SceneLayout</c>).</summary>
+        public static string WorldLayout(long t, uint layout, ulong seed) =>
+            "WL|" + I(t) + "|" + layout.ToString(CultureInfo.InvariantCulture) + "|" + seed.ToString(CultureInfo.InvariantCulture);
+
+        /// <summary><c>WP|t|request|cause|id|x:y:z:qw:qx:qy:qz|outcome</c>: a placement settled; the pose is the one the object has now.</summary>
+        public static string WorldPlace(long t, uint request, PlaceCause cause, in ObjectPose pose, PlaceOutcome outcome) =>
+            "WP|" + I(t) + "|" + request.ToString(CultureInfo.InvariantCulture) + "|" + CauseName(cause) + "|" + pose.Id.ToString(CultureInfo.InvariantCulture) +
+            "|" + Pose(pose) + "|" + OutcomeName(outcome);
+
+        /// <summary><c>WO|t|sensed|revision|id:x:y:z:qw:qx:qy:qz;...</c>: where every object was, sensed on the host's clock.</summary>
+        public static string WorldObjects(long t, long sensed, uint revision, ReadOnlySpan<ObjectPose> poses)
+        {
+            var b = new StringBuilder("WO|").Append(I(t)).Append('|').Append(I(sensed)).Append('|').Append(revision.ToString(CultureInfo.InvariantCulture)).Append('|');
+            for (int i = 0; i < poses.Length; i++)
+            {
+                if (i > 0) b.Append(';');
+                b.Append(poses[i].Id.ToString(CultureInfo.InvariantCulture)).Append(':').Append(Pose(poses[i]));
+            }
+
+            return b.ToString();
+        }
+
+        /// <summary><c>WF|t|snapshot|sensed|parts</c>: a world frame sent to the subscriber.</summary>
+        public static string WorldFrame(long t, uint snapshot, long sensed, int parts) =>
+            "WF|" + I(t) + "|" + snapshot.ToString(CultureInfo.InvariantCulture) + "|" + I(sensed) + "|" + parts.ToString(CultureInfo.InvariantCulture);
+
+        /// <summary><c>WE|t|sequence|op|id|x:y:z:qw:qx:qy:qz|outcome</c>: an edit from the headset; outcome <c>pending</c> until it settles.</summary>
+        public static string WorldEdit(long t, uint sequence, WorldEditOp op, in ObjectPose pose, PlaceOutcome? outcome) =>
+            "WE|" + I(t) + "|" + sequence.ToString(CultureInfo.InvariantCulture) + "|" + EditName(op) + "|" + pose.Id.ToString(CultureInfo.InvariantCulture) +
+            "|" + Pose(pose) + "|" + (outcome.HasValue ? OutcomeName(outcome.Value) : "pending");
+
+        /// <summary><c>WC|t|sensed|arm:link:object:forceN;...</c>: contacts between the arms and objects (object 0 is the table); empty when they end.</summary>
+        public static string WorldContacts(long t, long sensed, ReadOnlySpan<ArmServerContact> contacts)
+        {
+            var b = new StringBuilder("WC|").Append(I(t)).Append('|').Append(I(sensed)).Append('|');
+            for (int i = 0; i < contacts.Length; i++)
+            {
+                if (i > 0) b.Append(';');
+                b.Append(contacts[i].Arm.ToString(CultureInfo.InvariantCulture)).Append(':').Append(contacts[i].Link.ToString(CultureInfo.InvariantCulture))
+                    .Append(':').Append(contacts[i].Object.ToString(CultureInfo.InvariantCulture)).Append(':').Append(F(contacts[i].ForceNewtons));
+            }
+
+            return b.ToString();
+        }
+
+        private static string Pose(in ObjectPose p) =>
+            F(p.X) + ":" + F(p.Y) + ":" + F(p.Z) + ":" + F(p.Qw) + ":" + F(p.Qx) + ":" + F(p.Qy) + ":" + F(p.Qz);
+
+        public static string CauseName(PlaceCause cause) => cause switch
+        {
+            PlaceCause.Layout => "layout",
+            PlaceCause.Headset => "headset",
+            PlaceCause.Reset => "reset",
+            _ => "?",
+        };
+
+        public static string EditName(WorldEditOp op) => op switch
+        {
+            WorldEditOp.Move => "move",
+            WorldEditOp.NewLayout => "new-layout",
+            WorldEditOp.ResetObject => "reset-object",
+            WorldEditOp.ResetLayout => "reset-layout",
+            _ => "?",
+        };
+
+        public static string OutcomeName(PlaceOutcome o) => o switch
+        {
+            PlaceOutcome.Applied => "applied",
+            PlaceOutcome.OverlapsArm => "overlaps-arm",
+            PlaceOutcome.OverlapsObject => "overlaps-object",
+            PlaceOutcome.OutsideRegion => "outside-region",
+            PlaceOutcome.UnknownObject => "unknown-object",
+            PlaceOutcome.NotMovable => "not-movable",
+            PlaceOutcome.ArmTouching => "arm-touching",
+            PlaceOutcome.Busy => "busy",
+            PlaceOutcome.InvalidPose => "invalid-pose",
+            PlaceOutcome.TimedOut => "timed-out",
+            _ => "?",
+        };
 
         public static string KindName(OperatorClientKind kind) => kind switch
         {

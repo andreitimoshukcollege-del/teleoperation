@@ -452,13 +452,20 @@ fr3_sim_recordings := "recordings/fr3-sim"
 
 # RobotHost on this PC against a SIMULATED FR3 Duo (docs/adr/0027): core/RobotProfiles/fr3-duo.json, Core's trajectory shaper at 1 kHz, a second-order tracking lag of track_hz, readings with noise_rad of seeded noise. Joint port 6002 and discovery 6005, as on the robot, so the headset and the Eval tools talk to it as they would to a robot (just fr3-sim-drive, just joint-probe remote_host=127.0.0.1). Sessions the headset commands are recorded automatically into recordings/fr3-sim (teleop-session v2, source sim-host); the uplink control file is recordings/fr3-sim/.uplink. Enter stops it. Moves nothing real
 [group('fr3 (simulated)')]
-fr3-sim-host track_hz="20" noise_rad="0" seed="1" port="6002" discovery_port="6005":
+fr3-sim-host track_hz="20" noise_rad="0" seed="1" port="6002" discovery_port="6005" scene="fr3-duo-bench" scene_seed="auto":
     mkdir -p {{fr3_sim_recordings}}
     cd core && dotnet run --project Teleop.RobotHost -- --profile-path RobotProfiles/fr3-duo.json --joint-local-port {{port}} --backend sim \
         --sim-track-hz {{track_hz}} --sim-noise-rad {{noise_rad}} --sim-seed {{seed}} --discovery-port {{discovery_port}} \
         --collision-model RobotProfiles/fr3-duo.collision.json \
+        {{ if scene == "none" { "" } else { "--scene Scenes/" + scene + ".json --scene-seed " + scene_seed } }} \
         --record-control ../{{fr3_sim_recordings}}/.active --auto-record --auto-record-root ../{{fr3_sim_recordings}} \
         --uplink-control ../{{fr3_sim_recordings}}/.uplink
+
+# Check the world a RobotHost streams (docs/adr/0031 amendment 2), as the headset sees it (Teleop.Eval world-probe): the status names this scene file, every object is posed within 2 s, world frames come at 50 +-5 Hz, and, given the seed, the poses are that seed's layout; new_layout=true then asks for NEW LAYOUT and checks layout 2 arrives. Sends no joint command, so no arm moves. Against `just fr3-sim-host scene_seed=7` (another terminal): `just fr3-world-probe 127.0.0.1 7 true`; against Isaac, its address
+[group('fr3 (simulated)')]
+fr3-world-probe remote_host="127.0.0.1" seed="" new_layout="false" seconds="3" scene="fr3-duo-bench":
+    cd core && dotnet run --project Teleop.Eval -- world-probe --remote-host {{remote_host}} --scene Scenes/{{scene}}.json --seconds {{seconds}} \
+        {{ if seed == "" { "" } else { "--seed " + seed } }} {{ if new_layout == "true" { "--new-layout" } else { "" } }}
 
 # Drive the simulated FR3 Duo of a running just fr3-sim-host (in another terminal) through seeded joint-space waypoints at 48 Hz (Teleop.Eval chain-drive): every joint within +-amplitude rad of where it starts, the hands toggling; Enter stops it, back at the start. Simulated robots only: chain-drive refuses a real one until the serial-chain collision model exists (docs/adr/0026 decision 5)
 [group('fr3 (simulated)')]

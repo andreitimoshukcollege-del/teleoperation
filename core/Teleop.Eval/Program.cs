@@ -51,6 +51,8 @@ namespace Teleop.Eval
                     return JointDrive.ChainDriveCommand.Run(args);
                 case "chain-teleop-probe":
                     return JointDrive.ChainTeleopProbeCommand.Run(args);
+                case "world-probe":
+                    return JointProbe.WorldProbeCommand.Run(args);
                 case "discover-robot":
                     return DiscoverRobotCommand.Run(args);
                 case "replay":

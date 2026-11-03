@@ -1,4 +1,6 @@
 using System;
+using Teleop.RobotHost.World;
+using Teleop.RobotArm.World;
 using System.IO;
 using System.Net;
 using System.Runtime.InteropServices;
@@ -69,6 +71,33 @@ namespace Teleop.RobotHost
 
             if (a.AutoRecord != null) a.AutoRecord.ProfileName = profile.Name;
 
+            // The world (docs/adr/0031 amendment 2): the scene file, which Isaac (or the static world) must run too.
+            WorldScene? scene = null;
+            byte[] sceneSha = Array.Empty<byte>();
+            ulong sceneSeed = a.SceneSeed ?? unchecked((ulong)DateTime.UtcNow.Ticks);
+            if (a.ScenePath != null)
+            {
+                try
+                {
+                    byte[] bytes = File.ReadAllBytes(a.ScenePath);
+                    scene = System.Text.Json.JsonSerializer.Deserialize<SceneDocument>(bytes, new System.Text.Json.JsonSerializerOptions { IncludeFields = true })!.ToScene();
+                    if (scene.RobotProfile != profile.Name) throw new InvalidDataException($"the scene is for '{scene.RobotProfile}', the profile is '{profile.Name}'");
+                    sceneSha = System.Security.Cryptography.SHA256.HashData(bytes);
+                }
+                catch (Exception e) when (e is IOException || e is InvalidDataException || e is FormatException || e is System.Text.Json.JsonException || e is UnauthorizedAccessException)
+                {
+                    Console.Error.WriteLine($"[world] {a.ScenePath}: {e.Message}");
+                    return 1;
+                }
+
+                if (a.AutoRecord != null)
+                {
+                    a.AutoRecord.ScenePath = a.ScenePath;
+                    a.AutoRecord.SceneName = scene.Name;
+                    a.AutoRecord.SceneSeed = sceneSeed;
+                }
+            }
+
             var clock = new MonotonicClock();
             TrajectoryShaperConfig shaper = SerialChainShaping.ForProfile(profile);
             var motorIds = new byte[shaper.Count];
@@ -90,7 +119,12 @@ namespace Teleop.RobotHost
 
                 start = new double[shaper.Count];
                 for (int m = 0; m < start.Length; m++) start[m] = server.Positions[m];
-                if (a.AutoRecord != null) a.AutoRecord.Source = SourceOf(server.Kind);
+                if (a.AutoRecord != null)
+                {
+                    a.AutoRecord.Source = SourceOf(server.Kind);
+                    a.AutoRecord.ArmServerKind = server.Kind.ToString();
+                    a.AutoRecord.ArmServerDescription = server.Description;
+                }
                 backend = server;
             }
             else
@@ -111,6 +145,25 @@ namespace Teleop.RobotHost
                 : null;
             var sessionState = recorder != null ? new SessionStateLines(recorder.Record) : null;
             using var discovery = a.DiscoveryPort.HasValue ? new DiscoveryResponder(a.DiscoveryPort.Value) : null;
+
+            StaticWorld? staticWorld = null;
+            WorldHost? world = null;
+            if (scene != null)
+            {
+                IWorldBackend worldBackend = server != null ? server : (IWorldBackend)(staticWorld = new StaticWorld(scene, sceneSha, clock.TicksPerSecond));
+                world = new WorldHost(scene, sceneSha, worldBackend, clock.TicksPerSecond, sceneSeed,
+                    line => { if (recorder != null && recorder.IsActive) recorder.Record(line); }, Console.WriteLine);
+                if (server != null && recorder != null)
+                {
+                    server.ContactsSink = (sensed, contacts) => { if (recorder.IsActive) recorder.Record(SessionLines.WorldContacts(clock.NowTicks, sensed, contacts.Span)); };
+                }
+
+                Console.WriteLine($"[world] scene '{scene.Name}' ({a.ScenePath}): {scene.Objects.Length} objects, layouts from seed {sceneSeed}, " +
+                    (server != null ? "placed in the arm server's world" : "a static world beside the simulated arm (nothing collides)"));
+            }
+
+            long worldSendTicks = 0;
+            Action<byte[], int> sendWorld = (buffer, bytes) => transport.Send(buffer.AsSpan(0, bytes), worldSendTicks);
 
             ulong uplinkSeed = 0;
             AutoSessionRecorder? auto = null;
@@ -157,6 +210,7 @@ namespace Teleop.RobotHost
                 if (operatorText != null && now - lastOperatorTicks <= 3 * clock.TicksPerSecond) sessionState.Operator(now, operatorKind!, operatorMode!, operatorText);
                 if (lastTraining.HasValue && now - lastTrainingTicks <= 3 * clock.TicksPerSecond) sessionState.Training(now, lastTraining.Value);
                 if (lastHeadset.HasValue && now - lastHeadsetTicks <= 3 * clock.TicksPerSecond) sessionState.Headset(now, lastHeadset.Value);
+                world?.WritePreamble(now);
             }
 
             Console.WriteLine(
@@ -310,6 +364,12 @@ namespace Teleop.RobotHost
                         continue;
                     }
 
+                    if (WorldCodec.TryDecodeEdit(datagram, out WorldEditOp editOp, out uint editSequence, out _, out ObjectPose editPose))
+                    {
+                        world?.HandleEdit(editOp, editSequence, editPose, operatorMode != "on", arrival);
+                        continue;
+                    }
+
                     if (JointCommandCodec.TryDecode(datagram, out uint sequence, out long capture, targets, out int count))
                     {
                         EndPoint? sender = transport.CurrentRemoteEndPoint;
@@ -368,13 +428,21 @@ namespace Teleop.RobotHost
                     auto?.OnSubscriber(now, null);
                 }
 
+                if (world != null)
+                {
+                    staticWorld?.Poll(now);
+                    worldSendTicks = now;
+                    world.Tick(now, streamer.IsSubscribed(now), operatorMode != "on", sendWorld);
+                }
+
                 Thread.Sleep(1);
             }
 
             sigterm?.Dispose();
             if (raisedTimer) TimeEndPeriod(1);
             Console.WriteLine($"Stopped. {plant.AcceptedCommands} joint command(s) taken, {plant.StaleCommands} stale, {plant.RefusedCommands} refused (collision), {plant.UnknownTargets} target(s) for unknown motors, " +
-                $"{plant.ClampedTargets} clamped; {backend.Summary}.");
+                $"{plant.ClampedTargets} clamped; {backend.Summary}." +
+                (world != null ? $" World: layout {world.LayoutNumber}, {world.FramesSent} frame(s) sent, {world.PlacementsRefused} placement(s) refused." : ""));
             return 0;
         }
 

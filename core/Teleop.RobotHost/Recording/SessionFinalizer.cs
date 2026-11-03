@@ -150,11 +150,12 @@ namespace Teleop.RobotHost.Recording
             log($"[record] completed {Path.GetFileName(directory)}: slider {conditions["speedSliderRadPerSec"]?.ToJsonString()}, files.sha256 written");
         }
 
-        /// <summary><c>sha256sum</c> format, as record-stop writes it: session.json, robot-profile.json, then every <c>.jlog</c>.</summary>
+        /// <summary><c>sha256sum</c> format, as record-stop writes it: session.json, robot-profile.json, scene.json, then every <c>.jlog</c>.</summary>
         public static void WriteChecksums(string directory)
         {
             var names = new List<string> { "session.json" };
             if (File.Exists(Path.Combine(directory, "robot-profile.json"))) names.Add("robot-profile.json");
+            if (File.Exists(Path.Combine(directory, "scene.json"))) names.Add("scene.json");
             names.AddRange(Directory.GetFiles(directory, "*.jlog").Select(Path.GetFileName).Select(n => n!).OrderBy(n => n, StringComparer.Ordinal));
             var text = new StringBuilder();
             foreach (string name in names)

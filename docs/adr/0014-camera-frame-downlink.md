@@ -294,3 +294,24 @@ The camera's MJPEG sizes, as `just robot-camera-check` lists them on 2026-10-25:
 instead of 32 × 24 cm, and both receivers take frames up to 256 KB with 4 MB socket buffers. Camera
 latency figures recorded before this date were at 640×480.
 
+
+## Amendment 2 (2026-11-02): a sender on another host, several feeds, rendered frames
+
+The simulated FR3 Duo in Isaac Sim streams two rendered cameras to the lab's screens (ADR 0032): the
+head camera, which is also the one recorded, and a third-person view.
+
+1. **A feed is identified by host and port.**
+   - **Where `CameraFeedBridge` gets its address:** either the JetRover's config with discovery, as
+     before, or the FR3 operator's `fr3_connection.json` `RemoteHost`.
+   - **Several feeds use several robot and local port pairs.** The FR3 has head 6003 to local 6004,
+     and third-person 6007 to local 6014.
+   - **§2's subscription is unchanged:** one subscriber per sender port, the newest keepalive wins.
+2. **A sender other than `Teleop.CameraHost` may implement this wire.** Isaac's renderer does, in
+   Python, pinned to the C# codec and sender by a golden file the C# tests write.
+3. **The capture stamp of a rendered frame** is the sensed time of the robot state the frame shows,
+   on the host's CLOCK_MONOTONIC. It is never the render or send time, as §4 requires of a camera's
+   stamp.
+4. **Two feeds double the headset's main-thread decode cost.** The log reports the decode time per
+   feed. Lowering the requested frame rate is the first remedy.
+5. **Recording frames for training** is a consumer other than the display, so it is ADR 0032's, as
+   "Not decided here" requires. Emulated impairment of the video flow stays undecided.

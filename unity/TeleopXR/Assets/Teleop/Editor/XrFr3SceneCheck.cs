@@ -6,6 +6,7 @@ using Teleop.Bridge;
 using Teleop.RobotArm.Collision;
 using Teleop.RobotArm.Kinematics;
 using Teleop.RobotArm.Types;
+using Teleop.RobotArm.World;
 using UnityEditor;
 using UnityEditor.SceneManagement;
 using UnityEngine;
@@ -175,7 +176,50 @@ namespace Teleop.XR.Editor
             var twin = so.FindProperty("twin")?.objectReferenceValue as SerialChainArmRig;
             var robotRoot = so.FindProperty("robotRoot")?.objectReferenceValue as Transform;
             if (twin != null && robotRoot != null) CheckTwin(twin, robotRoot, problems);
+            if (robotRoot != null) CheckWorld(robotRoot, problems);
             return problems;
+        }
+
+        /// <summary>
+        /// The world against the scene file (docs/adr/0031 amendment 2): every surface the file shows is in the scene within
+        /// 1 mm, and nothing under the world root simulates (Isaac does the physics).
+        /// </summary>
+        private static void CheckWorld(Transform robotRoot, List<string> problems)
+        {
+            WorldScene world;
+            try
+            {
+                world = XrFr3WorldSetup.LoadScene();
+            }
+            catch (Exception)
+            {
+                return; // CheckResources reported it
+            }
+
+            GameObject root = robotRoot.gameObject.scene.GetRootGameObjects().FirstOrDefault(g => g.name == XrFr3WorldSetup.RootName);
+            if (root == null)
+            {
+                problems.Add($"no '{XrFr3WorldSetup.RootName}' root: run `just unity-world-fr3-xr` (the work table comes from the scene file)");
+                return;
+            }
+
+            if (root.GetComponentsInChildren<Collider>(true).Length > 0 || root.GetComponentsInChildren<Rigidbody>(true).Length > 0)
+                problems.Add($"'{XrFr3WorldSetup.RootName}' has colliders or rigidbodies: the headset simulates nothing (Isaac does)");
+            foreach (SceneSurface s in world.Surfaces.Where(x => x.Display == SurfaceDisplay.Show))
+            {
+                Transform t = root.transform.Find(XrFr3WorldSetup.SurfaceObjectName(s.Id));
+                if (t == null)
+                {
+                    problems.Add($"surface '{s.Id}' is in the scene file but not in the scene: run `just unity-world-fr3-xr`");
+                    continue;
+                }
+
+                Vector3 centre = robotRoot.TransformPoint(new CoreVec((float)s.CenterX, (float)s.CenterY, (float)s.CenterZ).ToUnity());
+                Vector3 size = new CoreVec((float)s.SizeX, (float)s.SizeY, (float)s.SizeZ).ExtentsToUnity();
+                float off = Vector3.Distance(t.position, centre), grown = (t.lossyScale - size).magnitude;
+                if (off > 0.001f || grown > 0.001f || Quaternion.Angle(t.rotation, robotRoot.rotation) > 0.1f)
+                    problems.Add($"surface '{s.Id}' is {off * 1000:F1} mm and {grown * 1000:F1} mm (size) from the scene file's: run `just unity-world-fr3-xr`");
+            }
         }
 
         private static void CheckResources(List<string> problems)
@@ -207,6 +251,31 @@ namespace Teleop.XR.Editor
                 {
                     problems.Add($"fr3_duo_collision does not load: {e.Message}");
                 }
+            }
+
+            // The scene file (docs/adr/0031 amendment 2): it parses, it is this robot's, and its bench is the lab's bench.
+            try
+            {
+                WorldScene world = XrFr3WorldSetup.LoadScene();
+                if (profile != null && world.RobotProfile != profile.Name) problems.Add($"the scene file is for '{world.RobotProfile}', not '{profile.Name}'");
+                SceneSurface bench = world.Bench;
+                if (bench == null)
+                {
+                    problems.Add("the scene file has no bench: the lab's bench is where the robot stands");
+                }
+                else
+                {
+                    // The robot's root is on the bench top, RobotDepth in from its near edge, centred across it.
+                    float far = XrFr3SceneBuilder.BenchDepth - XrFr3SceneBuilder.RobotDepth;
+                    float[] want = { -XrFr3SceneBuilder.RobotDepth, far, -LabLayout.BenchHalfWidth, LabLayout.BenchHalfWidth, 0f };
+                    double[] got = { bench.XMin, bench.XMax, bench.YMin, bench.YMax, bench.Top };
+                    if (Enumerable.Range(0, 5).Any(i => Math.Abs(got[i] - want[i]) > 0.001))
+                        problems.Add($"the scene file's bench ({string.Join(", ", got.Select(v => v.ToString("F3")))}) is not the lab's ({string.Join(", ", want.Select(v => v.ToString("F3")))}): x from, x to, y from, y to, top");
+                }
+            }
+            catch (Exception e)
+            {
+                problems.Add($"Resources/{XrFr3WorldSetup.SceneResource}.json does not load: {e.Message}");
             }
 
             var configAsset = Resources.Load<TextAsset>("fr3_connection");

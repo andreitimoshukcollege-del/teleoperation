@@ -373,3 +373,39 @@ This amendment fixes what decisions 3–5 left open, before either side is built
      The world twin moved here from P1 because nothing can pose it before world frames exist. The root `CLAUDE.md` Direction
    paragraph is updated in P2. Moves from the headset are P5, after ADR 0032's feeds (P3) and recording
    (P4), the order the user chose.
+
+## Amendment 3 (2026-11-03): moving objects by hand from the headset (phase P5)
+
+Amendment 2's moves are built on the headset.
+- **EDIT OBJECTS** is a bench button right of RECENTRE. It works only while the robot is off, with absolute hands and a
+  running world whose scene file matches. Switching motion on turns it off.
+- **While it is on**, the arms let go and don't follow the hands.
+- **The gesture** is Core's `ObjectEditGesture` (`Teleop.RobotArm/World`).
+  - **The cursor** is each hand's mapped tool pose, where the gripper would go.
+  - **A held curl** (the grab's curl, not the double-curl lock) grabs the nearest operator-movable object within 6 cm of its
+    footprint and at most 10 cm above its top.
+  - **Dragging** moves it in x and y and turns it with the hand's heading, kept on the table and in the placement region.
+  - **Opening the hand** asks once for that pose. A drag under 5 mm and 2° asks nothing, and a lost hand cancels.
+  - **One object at a time,** by one hand.
+- **The request** is a `0x85` move. The joint link re-sends it until RobotHost echoes it. RobotHost places it with
+  `PlaceCause.Headset`, and Isaac refuses an overlap with an arm or another object, or an object an arm is touching.
+- **The twin** shows a see-through ghost where the hand puts the object. The solid object moves only when world frames show
+  the move, so the operator sees it cross the network, or be refused. The button's label says RobotHost's answer.
+
+**Verified:**
+- **Tests:**
+  - `ObjectEditGestureTests`: grab, drag, turn, clamp, a single request, tiny drags, lost tracking, one hand at a time,
+    unposed and fixed objects, and no allocation.
+  - `WorldHostTests`: a re-sent move is placed once, refused while motion is on, and times out when the backend never
+    answers.
+- **`just isaac-edit-check` on the 5090,** 2026-11-03, `isaac-host fr3-duo-bench 7`:
+  - the can moved to a free spot: applied, and the frames show it there to 0.000 mm and 0.000°;
+  - a spot off the table: `outside-region`;
+  - the left post moved aside: applied;
+  - with the left arm held forward and down, the post back under that hand: `overlaps-arm`.
+- **The same moves beside the simulated arm** (`fr3-sim-host`): applied, `outside-region`, `overlaps-object`.
+
+**How the arm was lowered:** `chain-drive --hold 1:0.6,2:0.6`. Folding the elbow (`--hold 4:-0.6`) is refused by
+RobotHost's collision model, with link2 against link5.
+
+**Not verified:** whether the gesture feels right on the headset: the grab reach, the clamp, and the ghost's look.

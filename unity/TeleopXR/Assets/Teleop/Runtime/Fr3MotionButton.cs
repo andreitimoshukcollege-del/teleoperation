@@ -17,7 +17,7 @@ namespace Teleop.XR
     /// </summary>
     public sealed class Fr3MotionButton : MonoBehaviour
     {
-        public enum Role { Power, Recentre, NewLayout }
+        public enum Role { Power, Recentre, NewLayout, EditObjects }
 
         [SerializeField] private Role role = Role.Power;
         [SerializeField] private SerialChainOperatorBridge bridge;
@@ -54,6 +54,14 @@ namespace Teleop.XR
                 // A new seeded layout of the scene's objects (docs/adr/0031 amendment 2), only while motion is off.
                 if (pressed && bridge.RequestNewLayout()) _flashUntil = Time.unscaledTime + 0.6f;
                 ShowNewLayout();
+                return;
+            }
+
+            if (role == Role.EditObjects)
+            {
+                // Moving the scene's objects by hand (phase P5), only while the robot is off.
+                if (pressed && (bridge.EditObjects || bridge.CanEditObjects)) bridge.EditObjects = !bridge.EditObjects;
+                ShowEditObjects();
                 return;
             }
 
@@ -97,6 +105,41 @@ namespace Teleop.XR
                 4 => "NEW LAYOUT\n<size=60%>no scene file</size>",
                 5 => "SCENE MISMATCH\n<size=60%>RobotHost runs another scene</size>",
                 _ => "NEW LAYOUT\n<size=60%>waiting for the world</size>",
+            };
+            _block ??= new MaterialPropertyBlock();
+            cap.GetPropertyBlock(_block);
+            _block.SetColor("_BaseColor", color);
+            _block.SetColor("_Color", color);
+            cap.SetPropertyBlock(_block);
+            if (label != null) label.SetText(text);
+        }
+
+        private string _shownOutcome = "";
+
+        private void ShowEditObjects()
+        {
+            string outcome = bridge.LastEditOutcome;
+            int state = !bridge.HasWorld ? 6 : bridge.WorldSceneMismatch ? 7
+                : bridge.EditObjects ? (bridge.EditDragging ? 2 : bridge.EditPending ? 3 : 1)
+                : bridge.CanEditObjects ? 0 : bridge.MotionEnabled ? 4 : 5;
+            if (state == _shown && ReferenceEquals(outcome, _shownOutcome))
+            {
+                return;
+            }
+
+            _shown = state;
+            _shownOutcome = outcome;
+            Color color = state == 1 || state == 2 || state == 3 ? onColor : state == 0 ? new Color(0.55f, 0.35f, 0.9f) : lockedColor;
+            string text = state switch
+            {
+                0 => "EDIT OBJECTS\n<size=60%>press, then curl a hand by one</size>",
+                1 => outcome.Length > 0 ? "EDITING\n<size=60%>" + outcome + " · press to stop</size>" : "EDITING\n<size=60%>curl by an object to grab it</size>",
+                2 => "EDITING\n<size=60%>open the hand to put it down</size>",
+                3 => "EDITING\n<size=60%>asking RobotHost...</size>",
+                4 => "EDIT OBJECTS\n<size=60%>robot off to use</size>",
+                6 => "EDIT OBJECTS\n<size=60%>no scene file</size>",
+                7 => "SCENE MISMATCH\n<size=60%>RobotHost runs another scene</size>",
+                _ => "EDIT OBJECTS\n<size=60%>waiting for the world</size>",
             };
             _block ??= new MaterialPropertyBlock();
             cap.GetPropertyBlock(_block);

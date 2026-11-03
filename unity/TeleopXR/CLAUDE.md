@@ -340,6 +340,15 @@ lighting.
   - **SCENE MISMATCH:** when RobotHost runs another scene file (a different sha256), they stay hidden and the NEW LAYOUT
     button says so.
 - **NEW LAYOUT** (orange, left of RECENTRE) asks RobotHost for the next seeded layout. It works only while the robot is off.
+- **EDIT OBJECTS** (purple, right of RECENTRE; docs/adr/0031 amendment 3) moves objects by hand while the robot is off.
+  - **While it is on**, the arms do not follow the hands.
+  - **Grabbing:** curl a hand and hold it, with the hand's marker (where the gripper would go) by an object, to grab the
+    nearest movable one.
+  - **Dragging:** move the hand to drag it over the table, and turn the hand to turn the object.
+  - **Putting it down:** open the hand. A see-through ghost shows where it goes; the solid object moves when the world
+    frames show the move.
+  - **Refusals:** RobotHost refuses a spot on an arm or another object, and the label says so.
+  - **Turning it off:** press again, or switch the robot on.
 - **Two displays** show Isaac's cameras, outside the joint link's disturbance:
   - **`HEAD CAM (REC)`,** on the right, is the camera that is recorded. Its feed comes from port 6003, received locally on 6004.
   - **`3RD PERSON`,** on the left, mirrored, is the view from in front of the robot. Its feed comes from 6007, received on 6014.

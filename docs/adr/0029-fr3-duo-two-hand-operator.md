@@ -462,3 +462,68 @@ robot is jittering between positions."
 - **The noise is simulated.** The real tracker's noise has not been measured, so the settings are first
   guesses to tune on the headset.
 - **The trainer** does not yet read the hand fields.
+
+## Amendment 8 (2026-11-03): the arm gets out of corners, and a stress test proves it
+
+**The report.** The user, 2026-11-03: the IK "still gets stuck and confused in some positions … the robot should never get stuck
+or be pointing the wrong way."
+
+**The stress test.** `just fr3-ik-stress` (`Teleop.Eval chain-ik-stress`, `IkStress/`) runs long synthetic sessions through the
+headset's absolute mapping and `SerialChainTeleop` at 90 Hz.
+- **The operator** reaches all over a person's reach with the grips people use: palm down to pick, pointing forward, palm in or
+  out, inward and outward, rolled over, and wrist rolls. Its reaches follow minimum-jerk profiles. It holds after most reaches,
+  works finely with tremor, loses tracking, lets go and grabs again, and sometimes reaches beyond the robot.
+- **Judging a target reachable** is a slow multi-start solve: 48 random starts, collision-checked with the other arm where it is.
+- **What counts:**
+  - **Stuck:** the hand has stopped on a target the arm can reach, and 1 s later the arm is still more than 2 cm or 10° off it.
+  - **Wrong way:** the same, with the tool within 3 cm of the target but pointing more than 30° off it.
+  - **Lag** while the hand moves is reported, not counted: the gripper speed caps of amendment 2 (1 m/s, 3 rad/s) are below a quick hand's.
+
+**What it found.** Ten 5-minute sessions gave 155 stuck and 74 wrong-way episodes, 365 s in all. The arm was off a target it could
+reach in 40% of its frames, and its position error p95 was 1.15 m. The shortest-path step (amendment 2) only ever solves a small
+step from where the arm is. Stretching after a hand out of reach, the arm crept into a corner of its joint space: the base,
+upper arm, forearm or wrist on a limit, sometimes with the gripper behind the robot. When the hand came back within reach, no small
+step led out. Another pose of the arm reached the target easily.
+
+**The fix, in `SerialChainTeleop` (path mode):**
+1. **Recovery** (`RecoverAfterSeconds` 0.3 s).
+   - **When it starts:** while the hand is held still and the arm, off its target, has not closed 30% of the gap in that long.
+     The progress test is relative, because a wrist on its limit creeping round the long way (2° a tenth of a second) is
+     stuck as the operator sees it. Fully blocked steps count too.
+   - **The search** (`RecoverStarts` 32, `RecoverStartsPerStep` 4) solves the arm's command, its home pose (the robot's pose when
+     first taken) and seeded random poses for the target.
+     - Each solution must be clear of the body and the other arm.
+     - It must also be reachable through checked poses: straight there; or via home; or, for an arm pressed against two things
+       at once, first a quarter radian away in a direction that opens 5 mm of clearance, then home.
+     - The best is the one that reaches the target most nearly, then is the quickest to get to (a second weighs a centimetre).
+   - **When it moves:** if the best puts the tool within half the reach tolerances, or 1 cm nearer (`RecoverImprovement`), the
+     arm moves there in joint space at 75% of each joint's velocity limit (`RecoverSpeedShare`), each pose checked. A
+     collision ends the move and the arm searches again 0.2 s later; a fruitless search waits 0.3 s.
+   - **Why only while the hand is still:** recovering while it moves cost the gentle wandering hands of
+     `SerialChainTeleopTrackingTests` dearly (off target 5.0% → 9.3%, path ratio 1.01 → 1.24). The hand had gone by the time the
+     arm arrived. `RecoverOnlyWhenStill` (true) keeps that choice.
+2. **Posture** (`PostureSpeed` 0.15 rad/s). The arm's spare motion is drawn toward home, so wandering hands do not walk it
+   toward its limits.
+
+**The same ten sessions now:**
+- **Episodes:** 3 stuck and 5 wrong-way, 13 s in all. In every one a recovery was under way when the hand moved on.
+- **Slow:** 12 holds took a recovery to reach, 1.5 s p50 and 1.9 s at most after the hand stopped.
+- **Off a reachable target:** 23% of frames. Position error p95 0.36 m.
+- **Reaching a held target:** 0.07 s p50, 1.52 s p95, 2.44 s p99 after the hand stopped (before: 0.22, 2.54, 3.20).
+- **Never reached before the hand moved on:** 219 holds, against 602.
+- **Cost:** one step of both arms took 0.06 ms p50 and 0.90 ms p99 on the PC (before: 0.09, 0.27). The worst step was 14 ms
+  (before: 11 ms).
+- **Gentle hands:** `SerialChainTeleopTrackingTests` is unchanged.
+
+**What the operator sees.** When the arm can't reach where you hold your hand, after about a third of a second it swings to
+another pose of the arm. A wrist on its limit may turn most of a revolution the other way. It never lunges (75% speed, checked
+poses). Hold still until it gets there.
+
+**Tests:**
+- `SerialChainTeleopTests`: an arm in a corner from the stress run, its target out of its own steps' reach, gets there within 3 s
+  through checked poses, and recovering allocates nothing.
+- `IkStressTests`: one 90 s session. No episode without a recovery, holds reached within 2 s at p95, and at least three traps
+  fewer than without the recovery.
+
+**Not verified:** the feel on the headset, and the step time on the headset's CPU. The worst step there may need fewer starts
+per step.

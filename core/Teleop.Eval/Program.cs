@@ -51,6 +51,8 @@ namespace Teleop.Eval
                     return JointDrive.ChainDriveCommand.Run(args);
                 case "chain-teleop-probe":
                     return JointDrive.ChainTeleopProbeCommand.Run(args);
+                case "chain-ik-stress":
+                    return IkStress.IkStressCommand.Run(args);
                 case "world-probe":
                     return JointProbe.WorldProbeCommand.Run(args);
                 case "discover-robot":
@@ -63,7 +65,7 @@ namespace Teleop.Eval
                 default:
                     Console.Error.WriteLine(
                         "usage: verify | audit | sweep | replay | compare | gen-golden | gen-trace | gen-trainer-golden | " +
-                        "clocksync-check | move-arm | build-profile | import-urdf | fit-capsules | catalog | joint-predict-bench | joint-probe | joint-drive | chain-drive | chain-teleop-probe | discover-robot");
+                        "clocksync-check | move-arm | build-profile | import-urdf | fit-capsules | catalog | joint-predict-bench | joint-probe | joint-drive | chain-drive | chain-teleop-probe | chain-ik-stress | discover-robot");
                     return 64;   // EX_USAGE
             }
         }

@@ -315,6 +315,9 @@ lighting.
 - **The neutral pose:** hands about 30 cm ahead of your face, 40 cm below it and 20 cm to each side put the
   grippers 55 cm ahead of and 30 cm above each robot shoulder, pointing forward.
 - **RECENTRE** (blue, the bench's front-right) re-anchors the robot to where you stand and face.
+- **When an arm can't follow where you hold your hand,** after about a third of a second it swings to another pose of the arm
+  that reaches it (docs/adr/0029 amendment 8). A wrist on its limit may turn most of a revolution the other way. It moves at 75%
+  of its joint speeds, through checked poses. Hold still until it gets there. While your hand keeps moving it follows as before.
   Switching motion on does it too.
 - **Power and pause** are the JetRover's buttons: off at launch, press power to start, and off and paused
   both stop commanding. Taking the headset off turns it off (`HeadsetRemovalGuard`).

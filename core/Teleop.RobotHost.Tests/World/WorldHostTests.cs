@@ -210,6 +210,91 @@ namespace Teleop.RobotHost.Tests.World
             Assert.False(s.Running);
         }
 
+        /// <summary>The static world, counting what it is asked to place.</summary>
+        private sealed class Counting : IWorldBackend
+        {
+            private readonly StaticWorld _inner = new StaticWorld(Scene, Sha, Tps);
+            public readonly List<(PlaceCause Cause, ObjectPose Pose)> Asked = new List<(PlaceCause, ObjectPose)>();
+            public bool HasWorld => true;
+            public ReadOnlySpan<byte> SceneSha256 => Sha;
+            public bool Physics => false;
+            public void Poll(long now) => _inner.Poll(now);
+
+            public void Place(uint request, PlaceCause cause, in ObjectPose pose, long hostTicks)
+            {
+                Asked.Add((cause, pose));
+                _inner.Place(request, cause, pose, hostTicks);
+            }
+
+            public bool TryTakeSnapshot(Span<ObjectPose> poses, out int count, out long sensedTicks, out uint revision) =>
+                _inner.TryTakeSnapshot(poses, out count, out sensedTicks, out revision);
+
+            public bool TryTakePlaced(out uint request, out PlaceOutcome outcome, out ObjectPose pose) => _inner.TryTakePlaced(out request, out outcome, out pose);
+        }
+
+        [Fact]
+        public void AMove_ReSentUntilEchoed_IsPlacedOnce_AndNotWhileMotionIsOn()
+        {
+            var backend = new Counting();
+            var rig = new Rig(backend);
+            rig.Tick(1);
+            backend.Poll(rig.Now);
+            int layout = backend.Asked.Count;
+            var move = new ObjectPose(4, 0, 0.45f, -0.05f, 0.1f, 1, 0, 0, 0);
+            for (int k = 0; k < 5; k++)
+            {
+                rig.Host.HandleEdit(WorldEditOp.Move, 9, move, motionOff: true, rig.Now); // the headset re-sends until echoed
+                rig.Tick(5);
+            }
+
+            Assert.Single(backend.Asked.Skip(layout), a => a.Cause == PlaceCause.Headset);
+            Assert.Equal((9u, (byte)PlaceOutcome.Applied), (rig.LastStatus().EditSequence, rig.LastStatus().EditOutcome));
+
+            rig.Host.HandleEdit(WorldEditOp.Move, 10, new ObjectPose(4, 0, 0.50f, 0.05f, 0.1f, 1, 0, 0, 0), motionOff: false, rig.Now);
+            rig.Tick(30, motionOff: false);
+            Assert.Equal((10u, (byte)PlaceOutcome.Busy), (rig.LastStatus().EditSequence, rig.LastStatus().EditOutcome));
+            Assert.Single(backend.Asked.Skip(layout), a => a.Cause == PlaceCause.Headset); // nothing more was placed
+        }
+
+        /// <summary>A backend that has the world and never answers a placement.</summary>
+        private sealed class Silent : IWorldBackend
+        {
+            public bool HasWorld => true;
+            public ReadOnlySpan<byte> SceneSha256 => Sha;
+            public bool Physics => true;
+            public void Place(uint request, PlaceCause cause, in ObjectPose pose, long hostTicks) { }
+
+            public bool TryTakeSnapshot(Span<ObjectPose> poses, out int count, out long sensedTicks, out uint revision)
+            {
+                count = 0;
+                sensedTicks = 0;
+                revision = 0;
+                return false;
+            }
+
+            public bool TryTakePlaced(out uint request, out PlaceOutcome outcome, out ObjectPose pose)
+            {
+                request = 0;
+                outcome = 0;
+                pose = default;
+                return false;
+            }
+        }
+
+        [Fact]
+        public void AMoveTheBackendNeverAnswers_TimesOut()
+        {
+            var rig = new Rig(new Silent());
+            rig.Tick(1);
+            rig.Tick(WorldHost.PlaceTimeoutSeconds * 1000 + 50); // the layout's placements time out first
+            rig.Host.HandleEdit(WorldEditOp.Move, 3, new ObjectPose(4, 0, 0.45f, -0.05f, 0.1f, 1, 0, 0, 0), motionOff: true, rig.Now);
+            rig.Tick(WorldHost.PlaceTimeoutSeconds * 500);
+            Assert.NotEqual((3u, (byte)PlaceOutcome.TimedOut), (rig.LastStatus().EditSequence, rig.LastStatus().EditOutcome));
+            rig.Tick(WorldHost.PlaceTimeoutSeconds * 600);
+            Assert.Equal((3u, (byte)PlaceOutcome.TimedOut), (rig.LastStatus().EditSequence, rig.LastStatus().EditOutcome));
+            Assert.Contains(rig.Records, r => r.StartsWith("WE|", StringComparison.Ordinal) && r.EndsWith("|timed-out", StringComparison.Ordinal));
+        }
+
         [Fact]
         public void WithAScene_ACommandIntoAnObstacleIsAccepted()
         {

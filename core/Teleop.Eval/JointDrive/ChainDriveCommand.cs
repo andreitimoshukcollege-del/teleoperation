@@ -37,7 +37,8 @@ namespace Teleop.Eval.JointDrive
             "usage: chain-drive --simulated-robot [--profile RobotProfiles/fr3-duo.json] [--collision-model <profile>.collision.json]\n" +
             "                   [--remote-host 127.0.0.1] [--remote-port 6002]\n" +
             "                   [--seconds 60] [--seed 1] [--amplitude-rad 0.5] [--rate-hz 48] [--operator-log <path> [--session-id <id>]] [--dry-run]\n" +
-            "                   [--as-headset]   (the headset's heartbeat, so RobotHost records the drive automatically)";
+            "                   [--as-headset]   (the headset's heartbeat, so RobotHost records the drive automatically)\n" +
+            "                   [--hold motor:offsetRad,...]   (hold the start pose with these offsets instead of moving at random)";
 
         public static int Run(string[] args)
         {
@@ -48,6 +49,7 @@ namespace Teleop.Eval.JointDrive
             ulong seed = 1;
             string? logPath = null, sessionId = null;
             bool simulated = false, dryRun = false, asHeadset = false;
+            string? hold = null;
             try
             {
                 for (int i = 1; i < args.Length; i++)
@@ -69,6 +71,7 @@ namespace Teleop.Eval.JointDrive
                         case "--simulated-robot": simulated = true; break;
                         case "--dry-run": dryRun = true; break;
                         case "--as-headset": asHeadset = true; break;
+                        case "--hold": hold = Next(); break;
                         default: throw new ArgumentException($"unknown argument '{args[i]}'");
                     }
                 }
@@ -126,11 +129,37 @@ namespace Teleop.Eval.JointDrive
                 return 0;
             }
 
-            return Drive(profile, plan, new IPEndPoint(IPAddress.Parse(host), port), seconds, rateHz, logPath, sessionId ?? "chain-drive", asHeadset);
+            (byte Motor, double Offset)[]? holdOffsets = null;
+            if (hold != null)
+            {
+                holdOffsets = hold.Split(',').Select(item =>
+                {
+                    string[] mo = item.Split(':');
+                    if (mo.Length != 2 || !byte.TryParse(mo[0], out byte motor) || plan.IndexOf(motor) < 0 ||
+                        !double.TryParse(mo[1], NumberStyles.Float, CultureInfo.InvariantCulture, out double offset) || Math.Abs(offset) > amplitude)
+                        throw new ArgumentException($"--hold '{item}': motor:offsetRad, a profile motor, the offset within --amplitude-rad");
+                    return (motor, offset);
+                }).ToArray();
+            }
+
+            return Drive(profile, plan, new IPEndPoint(IPAddress.Parse(host), port), seconds, rateHz, logPath, sessionId ?? "chain-drive", asHeadset, holdOffsets);
+        }
+
+        /// <summary>--hold: the start pose with fixed offsets on the named motors (the shaper takes the arm there and keeps it).</summary>
+        private static JointTarget[] Held(ChainDrivePlan plan, (byte Motor, double Offset)[] hold)
+        {
+            JointTarget[] home = plan.Home();
+            foreach ((byte motor, double offset) in hold)
+            {
+                int m = plan.IndexOf(motor);
+                home[m] = new JointTarget(motor, home[m].Angle + (float)offset, 0f);
+            }
+
+            return home;
         }
 
         private static int Drive(SerialChainProfile profile, ChainDrivePlan plan, IPEndPoint robot, double seconds, double rateHz, string? logPath, string sessionId,
-            bool asHeadset)
+            bool asHeadset, (byte Motor, double Offset)[]? hold)
         {
             long tps = Stopwatch.Frequency;
             using var socket = new Socket(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp);
@@ -245,7 +274,7 @@ namespace Teleop.Eval.JointDrive
 
                 if (now >= nextSend)
                 {
-                    last = plan.Sample(t);
+                    last = hold != null ? Held(plan, hold) : plan.Sample(t);
                     Send(now, last);
                     nextSend += interval;
                     if (nextSend < now) nextSend = now + interval;

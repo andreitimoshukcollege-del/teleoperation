@@ -19,8 +19,10 @@ namespace Teleop.Eval.JointProbe
     /// headset does and checks the world it streams. The status must arrive and name this scene file (its sha256), every object
     /// must be posed within 2 s, and world frames must come at 50 ± 5 Hz. With <c>--seed</c> the poses must be that seed's
     /// layout (<see cref="SceneLayout"/>); <c>--new-layout</c> then asks for the next one (motion is off: the probe sends no
-    /// command) and checks it arrives. Sends only the keepalive and that edit, never a joint command, so no arm moves. Exits 0
-    /// only when every check passes.
+    /// command) and checks it arrives. <c>--move id:x:y:yawDeg[:expected]</c> then asks to move one object (phase P5's edit,
+    /// as the headset's EDIT OBJECTS sends it) and checks the status echoes it with the expected outcome (<c>applied</c> by
+    /// default, or a refusal such as <c>overlaps-arm</c>), and, when applied, that the world frames show the object there.
+    /// Sends only the keepalive and those edits, never a joint command, so no arm moves. Exits 0 only when every check passes.
     /// </summary>
     public static class WorldProbeCommand
     {
@@ -31,6 +33,7 @@ namespace Teleop.Eval.JointProbe
             double seconds = 3;
             ulong? seed = null;
             bool newLayout = false;
+            string? moveSpec = null;
             for (int i = 1; i < args.Length; i++)
             {
                 string Next() => i + 1 < args.Length ? args[++i] : throw new ArgumentException($"{args[i]} needs a value");
@@ -42,8 +45,9 @@ namespace Teleop.Eval.JointProbe
                     case "--scene": scenePath = Next(); break;
                     case "--seed": seed = ulong.Parse(Next(), CultureInfo.InvariantCulture); break;
                     case "--new-layout": newLayout = true; break;
+                    case "--move": moveSpec = Next(); break;
                     default:
-                        Console.Error.WriteLine("usage: world-probe --remote-host <ip> --scene <file> [--remote-port 6002] [--seconds 3] [--seed <n> [--new-layout]]");
+                        Console.Error.WriteLine("usage: world-probe --remote-host <ip> --scene <file> [--remote-port 6002] [--seconds 3] [--seed <n> [--new-layout]] [--move id:x:y:yawDeg[:expected]]");
                         return 64;
                 }
             }
@@ -70,12 +74,14 @@ namespace Teleop.Eval.JointProbe
                 if (phase == 1)
                 {
                     var edit = new byte[WorldCodec.EditBytes];
-                    WorldCodec.TryEncodeEdit(WorldEditOp.NewLayout, 0, 1, Stopwatch.GetTimestamp(), default, edit, out int n);
+                    WorldCodec.TryEncodeEdit(WorldEditOp.NewLayout, 0, Sequence(), Stopwatch.GetTimestamp(), default, edit, out int n);
                     for (int k = 0; k < 4; k++) socket.SendTo(edit, 0, n, SocketFlags.None, robot); // re-sent: applied once
                 }
 
                 Watch(socket, robot, scene, sha, seconds, expect, phase == 1 ? 2u : (uint?)null, failures, phase == 1 ? "after NEW LAYOUT" : "");
             }
+
+            if (moveSpec != null) Move(socket, robot, scene, moveSpec, failures);
 
             if (failures.Count == 0)
             {
@@ -85,6 +91,87 @@ namespace Teleop.Eval.JointProbe
 
             foreach (string f in failures) Console.WriteLine("[world-probe] FAIL: " + f);
             return 1;
+        }
+
+        /// <summary>An edit sequence no earlier run against the same RobotHost used (it applies a re-sent sequence once).</summary>
+        private static uint Sequence() => (uint)(DateTime.UtcNow.Ticks / 10_000 % uint.MaxValue) | 1u;
+
+        private static readonly string[] Outcomes =
+            { "applied", "overlaps-arm", "overlaps-object", "outside-region", "unknown-object", "not-movable", "arm-touching", "busy", "invalid-pose", "timed-out" };
+
+        private static void Move(Socket socket, IPEndPoint robot, WorldScene scene, string spec, List<string> failures)
+        {
+            string[] f = spec.Split(':');
+            int expected = f.Length > 4 ? Array.IndexOf(Outcomes, f[4]) : 0;
+            if (f.Length < 4 || f.Length > 5 || expected < 0 || !byte.TryParse(f[0], out byte id))
+            {
+                failures.Add($"--move '{spec}': expected id:x:y:yawDeg[:{string.Join("|", Outcomes)}]");
+                return;
+            }
+
+            double x = double.Parse(f[1], CultureInfo.InvariantCulture), y = double.Parse(f[2], CultureInfo.InvariantCulture);
+            double yaw = double.Parse(f[3], CultureInfo.InvariantCulture) * Math.PI / 180;
+            var pose = new ObjectPose(id, 0, (float)x, (float)y, 0.1f, (float)Math.Cos(yaw / 2), 0, 0, (float)Math.Sin(yaw / 2));
+            uint sequence = Sequence() + 2;
+            var edit = new byte[WorldCodec.EditBytes];
+            WorldCodec.TryEncodeEdit(WorldEditOp.Move, id, sequence, Stopwatch.GetTimestamp(), pose, edit, out int n);
+            var buffer = new byte[JointDatagram.MaxBytes];
+            var part = new ObjectPose[WorldCodec.MaxObjectsPerFrame];
+            var statusSha = new byte[WorldCodec.Sha256Bytes];
+            WorldStatus? echoed = null;
+            ObjectPose? after = null;
+            long freq = Stopwatch.Frequency, start = Stopwatch.GetTimestamp(), end = start + 3 * freq, nextSend = 0;
+            while (Stopwatch.GetTimestamp() < end)
+            {
+                long now = Stopwatch.GetTimestamp();
+                if (now >= nextSend)
+                {
+                    JointStateCodec.TryEncodeSubscribe(now, freq, buffer, out int k);
+                    socket.SendTo(buffer, 0, k, SocketFlags.None, robot);
+                    if (!echoed.HasValue) socket.SendTo(edit, 0, n, SocketFlags.None, robot); // re-sent until echoed, as the headset does
+                    nextSend = now + freq / 4;
+                }
+
+                int got;
+                try
+                {
+                    got = socket.Receive(buffer);
+                }
+                catch (SocketException)
+                {
+                    continue;
+                }
+
+                ReadOnlySpan<byte> d = buffer.AsSpan(0, got);
+                if (WorldCodec.TryDecodeStatus(d, out WorldStatus s, statusSha, out _) && s.EditSequence == sequence) echoed = s;
+                else if (echoed.HasValue && WorldCodec.TryDecodeFrame(d, out _, out _, out _, out _, part, out int count))
+                {
+                    for (int i = 0; i < count; i++) if (part[i].Id == id) after = part[i];
+                }
+            }
+
+            string label = $"move {id} to ({x:F3}, {y:F3}, {f[3]}°)";
+            if (!echoed.HasValue)
+            {
+                failures.Add(label + ": RobotHost never echoed it");
+                return;
+            }
+
+            byte outcome = echoed.Value.EditOutcome;
+            Console.WriteLine($"[world-probe] {label}: {(outcome < Outcomes.Length ? Outcomes[outcome] : outcome.ToString(CultureInfo.InvariantCulture))}");
+            if (outcome != expected) failures.Add($"{label}: {(outcome < Outcomes.Length ? Outcomes[outcome] : "?")}, expected {Outcomes[expected]}");
+            if (expected != 0) return;
+            if (!after.HasValue)
+            {
+                failures.Add(label + ": no world frame showed the object after it");
+                return;
+            }
+
+            ObjectPose a = after.Value;
+            double gotYaw = Math.Atan2(2.0 * (a.Qw * a.Qz + a.Qx * a.Qy), 1.0 - 2.0 * (a.Qy * a.Qy + a.Qz * a.Qz));
+            double off = Math.Max(Math.Abs(a.X - x), Math.Abs(a.Y - y)), turn = Math.Abs(Math.IEEERemainder(gotYaw - yaw, 2 * Math.PI));
+            Console.WriteLine($"[world-probe] {label}: the frames show it {off * 1000:F3} mm and {turn * 180 / Math.PI:F3}° from there");
+            if (off > 1e-4 || turn > 0.01) failures.Add($"{label}: the frames show it {off * 1000:F3} mm and {turn * 180 / Math.PI:F3}° away");
         }
 
         private static void Watch(Socket socket, IPEndPoint robot, WorldScene scene, byte[] sha, double seconds, ulong? seed, uint? layout,

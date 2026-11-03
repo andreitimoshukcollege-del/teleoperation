@@ -117,3 +117,12 @@ def test_validity_matches_core():
     assert is_valid(at(0.1, 0.2, 1.0))
     assert not is_valid((0, 0, 0, 1.002, 0, 0, 0.1))
     assert not is_valid((0, 0, float("inf"), 1, 0, 0, 0))
+
+
+def test_prim_names_are_usd_names_and_stay_apart():
+    from teleop_isaac.world import prim_name
+    import re
+    names = [prim_name(f"o{o.id}", o.name) for o in model().scene.objects]
+    assert all(re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", n) for n in names)
+    assert len(set(names)) == len(names)
+    assert prim_name("o1", "post-left") != prim_name("o2", "post.left")

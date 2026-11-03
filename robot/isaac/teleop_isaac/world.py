@@ -20,6 +20,7 @@ what only physics can see: whether an arm is in the way.
 from __future__ import annotations
 
 import math
+import re
 from typing import Callable, List, Optional, Sequence, Tuple
 
 from . import wire
@@ -31,6 +32,12 @@ Pose = Tuple[float, float, float, float, float, float, float]  # x, y, z, qw, qx
 ArmCheck = Callable[[int, Pose, float], bool]
 
 TOUCH_MARGIN = 0.005  # metres: an arm this close to an object counts as touching it (rule 4)
+
+
+def prim_name(prefix: str, name: str) -> str:
+    """A USD prim name for a scene name: scene names may hold '-' and '.', prim names may not; the prefix keeps two
+    names that differ only there apart (``o1_post_left``)."""
+    return f"{prefix}_{re.sub(r'[^A-Za-z0-9_]', '_', name)}"
 
 
 def yaw_of(p: Sequence[float]) -> float:
@@ -112,7 +119,7 @@ class IsaacWorld:
     def __init__(self, scene: Scene, robot_path: str):
         self.model = WorldModel(scene)
         self.robot_path = robot_path.rstrip("/")
-        self.object_paths = [f"{self.ROOT}/Objects/{o.name}" for o in scene.objects]
+        self.object_paths = [f"{self.ROOT}/Objects/{prim_name(f'o{o.id}', o.name)}" for o in scene.objects]
         self._bodies = None
         self._query = None
 
@@ -138,10 +145,11 @@ class IsaacWorld:
             UsdGeom.Xform.Define(stage, f"{self.ROOT}/Surfaces")
             UsdGeom.Xform.Define(stage, f"{self.ROOT}/Objects")
             UsdGeom.Scope.Define(stage, f"{self.ROOT}/Materials")
-            for s in scene.surfaces:
+            for k, s in enumerate(scene.surfaces):
                 if s.headset == "builtin" and not s.collides:
                     continue
-                cube = UsdGeom.Cube.Define(stage, f"{self.ROOT}/Surfaces/{s.id}")
+                name = prim_name(f"s{k}", s.id)
+                cube = UsdGeom.Cube.Define(stage, f"{self.ROOT}/Surfaces/{name}")
                 cube.CreateSizeAttr(1.0)
                 x = UsdGeom.Xformable(cube)
                 x.AddTranslateOp().Set(Gf.Vec3d(*s.center))
@@ -149,7 +157,7 @@ class IsaacWorld:
                 cube.CreateDisplayColorAttr([Gf.Vec3f(*s.colour)])
                 if s.collides:
                     UsdPhysics.CollisionAPI.Apply(cube.GetPrim())
-                    bind_physics(cube.GetPrim(), material(f"{self.ROOT}/Materials/{s.id}", s.static_friction, s.dynamic_friction))
+                    bind_physics(cube.GetPrim(), material(f"{self.ROOT}/Materials/{name}", s.static_friction, s.dynamic_friction))
             for o, path, pose in zip(scene.objects, self.object_paths, self.model.poses):
                 body = UsdGeom.Xform.Define(stage, path)
                 x = UsdGeom.Xformable(body)
@@ -172,7 +180,7 @@ class IsaacWorld:
                     g.CreateRadiusAttr(sx / 2)
                 g.CreateDisplayColorAttr([Gf.Vec3f(*o.colour)])
                 UsdPhysics.CollisionAPI.Apply(g.GetPrim())
-                bind_physics(g.GetPrim(), material(f"{self.ROOT}/Materials/{o.name}", o.static_friction, o.dynamic_friction))
+                bind_physics(g.GetPrim(), material(f"{self.ROOT}/Materials/{path.rsplit('/', 1)[1]}", o.static_friction, o.dynamic_friction))
 
     # --- after play -------------------------------------------------------------------------------------------------
 

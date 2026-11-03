@@ -2826,6 +2826,89 @@ isaac-check seconds="5":
     ssh -o ConnectTimeout=10 "{{gpu_host}}" '[ -x ~/isaacsim/venv/bin/python ] && [ -f ~/isaacsim/VERSION ] || { echo "error: no Isaac Sim in our account there: just isaac-setup" >&2; exit 1; }; echo "GPU: $(nvidia-smi --query-gpu=name,driver_version,memory.used,memory.total --format=csv,noheader)"'
     ssh -o ConnectTimeout=10 "{{gpu_host}}" "~/isaacsim/venv/bin/python - --seconds '{{seconds}}'" < robot/isaac/check.py
 
+# The render spike (docs/adr/0032 phase P0) on the GPU machine: the measurements the choice of renderer rests on. (1) the Isaac bridge alone for `seconds`; (2) a separate renderer (robot/isaac/render_check.py: a visual-only robot posed from joint angles, the table, the backdrop surfaces, the head and third-person cameras with colour, depth and masks) with the bridge beside it, the two pinned to separate cores; (3) the head camera rendered inside the bridge's 1 kHz physics loop. Prints one `RESULT {...}` line and exits non-zero if any number is missing or the separate renderer misses a criterion: bridge late steps <= max(2x alone, 1/s), >= 29.5 fps, a render lag stable in >= 99.5% of frames, depth p99 < 3 mm, projection p99 < 3 px. The bridge runs from this commit, checked out in ~/teleoperation-isaac (it must be on GitHub); sample frames stay there in ~/isaacsim/render-check/latest. Refuses while an Isaac host of ours is running
+[group('isaac')]
+isaac-render-check seconds="20":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    commit=$(git rev-parse HEAD)
+    git fetch -q origin
+    [ -n "$(git branch -r --contains "$commit" 2>/dev/null)" ] || { echo "error: $commit is not on GitHub: push it first (the GPU machine runs the bridge from what GitHub has)" >&2; exit 1; }
+    host="{{gpu_host}}"
+    ssh -o ConnectTimeout=10 "$host" "COMMIT='$commit' bash -s" <<'REMOTE'
+    set -euo pipefail
+    [ -x "$HOME/isaacsim/venv/bin/python" ] || { echo "error: no Isaac Sim in our account here: just isaac-setup" >&2; exit 1; }
+    for p in $(pgrep -u "$USER" -f "teleop_isaac[.]bridge" || true); do
+        case "$(readlink "/proc/$p/exe" 2>/dev/null)" in *python*) echo "error: an Isaac host of ours is running (bridge pid $p): just isaac-stop first" >&2; exit 1 ;; esac
+    done
+    repo=$HOME/teleoperation-isaac
+    [ -d "$repo" ] || git clone -q https://github.com/andreitimoshukcollege-del/teleoperation.git "$repo"
+    cd "$repo" && git fetch -q origin && git checkout -q "$COMMIT" && echo "[render-check] repo at $(git log --oneline -1), GPU: $(nvidia-smi --query-gpu=name,memory.used --format=csv,noheader)"
+    REMOTE
+    tmp=$(mktemp -d)
+    trap 'rm -rf "$tmp"' EXIT
+    bridge="cd ~/teleoperation-isaac/robot/isaac && timeout 300 taskset -c 2-5 ~/isaacsim/venv/bin/python -m teleop_isaac.bridge --socket /tmp/teleop-render-check-\$USER.sock --seconds {{seconds}}"
+    echo "[render-check] 1/3: the bridge alone, {{seconds}} s"
+    ssh -o ConnectTimeout=10 "$host" "$bridge" > "$tmp/alone.log" 2>&1 || true
+    echo "[render-check] 2/3: the renderer, then the bridge beside it"
+    ssh -o ConnectTimeout=10 "$host" "timeout 900 taskset -c 8-23 ~/isaacsim/venv/bin/python - --seconds $(( {{seconds}} + 25 ))" < robot/isaac/render_check.py > "$tmp/renderer.log" 2>&1 &
+    renderer=$!
+    for _ in $(seq 1 150); do grep -q '^\[rc\] rendering' "$tmp/renderer.log" 2>/dev/null && break; kill -0 $renderer 2>/dev/null || break; sleep 2; done
+    ssh -o ConnectTimeout=10 "$host" "($bridge) & sleep 12; nvidia-smi --query-compute-apps=pid,used_memory --format=csv,noheader | sed 's/^/[gpu] /'; wait" > "$tmp/beside.log" 2>&1 || true
+    wait $renderer || true
+    echo "[render-check] 3/3: the head camera inside the bridge's physics loop"
+    ssh -o ConnectTimeout=10 "$host" "timeout 900 ~/isaacsim/venv/bin/python - --mode inprocess --seconds {{seconds}} --baseline 5" < robot/isaac/render_check.py > "$tmp/inprocess.log" 2>&1 || true
+    python3 - "$tmp" "$commit" "{{seconds}}" <<'PY'
+    import json, re, sys
+    tmp, commit, seconds = sys.argv[1], sys.argv[2], float(sys.argv[3])
+    def text(name):
+        return open(f"{tmp}/{name}.log", encoding="utf-8", errors="replace").read()
+    def late(name):
+        m = re.search(r"\[isaac\] stopped after (\d+) steps, (\d+) late", text(name))
+        return (int(m.group(1)), int(m.group(2))) if m else (None, None)
+    def result(name):
+        m = re.search(r"^RESULT (\{.*\})$", text(name), re.M)
+        return json.loads(m.group(1)) if m else {}
+    alone_steps, alone_late = late("alone")
+    beside_steps, beside_late = late("beside")
+    r, ip = result("renderer"), result("inprocess")
+    out = {"commit": commit, "seconds": seconds, "bridge_alone_steps": alone_steps, "bridge_alone_late": alone_late,
+           "bridge_beside_renderer_steps": beside_steps, "bridge_beside_renderer_late": beside_late,
+           "gpu_mib_beside": [line[6:] for line in text("beside").splitlines() if line.startswith("[gpu] ")] or None}
+    for k in ("isaac_version", "fps", "frame_ms_p50", "frame_ms_p99", "render_ms_p50", "render_ms_p99", "pose_ms_p50",
+              "read_ms_p50", "gpu_mib", "render_lag_frames", "render_lag_stable_fraction", "render_lag_samples",
+              "projection_err_px_p50", "projection_err_px_p99", "depth_err_mm_p50", "depth_err_mm_p99", "fk_vs_usd_mm_max",
+              "masks_left_right_distinct", "coverage_head", "coverage_third", "intrinsics", "head_camera_world",
+              "jpeg_q80_kb", "jpeg_q80_pil_ms", "jpeg_q92_kb", "jpeg_q92_pil_ms", "png16_depth_kb", "png16_mask_kb",
+              "texture_settle_frames", "texture_settle_frames_big", "texture_big_kb", "warmup_s"):
+        out["renderer_" + k] = r.get(k)
+    for k in ("late_steps_per_s_baseline", "late_steps_per_s_rendering", "render_stall_ms_p50", "render_stall_ms_p99",
+              "render_stall_ms_max", "state_gap_ms_p99_base", "state_gap_ms_p99_render", "state_gap_ms_max_render",
+              "render_sees_motion"):
+        out["inprocess_" + k] = ip.get(k)
+    checks = {}
+    if None not in (alone_late, beside_late):
+        checks["bridge_late_ok"] = beside_late / seconds <= max(2 * alone_late / seconds, 1.0)
+    if r.get("fps") is not None:
+        checks["fps_ok"] = r["fps"] >= 29.5
+    if r.get("render_lag_stable_fraction") is not None:
+        checks["lag_stable_ok"] = r["render_lag_stable_fraction"] >= 0.995
+    if r.get("depth_err_mm_p99") is not None:
+        checks["depth_ok"] = r["depth_err_mm_p99"] < 3.0
+    if r.get("projection_err_px_p99") is not None:
+        checks["projection_ok"] = r["projection_err_px_p99"] < 3.0
+    out["checks"] = checks
+    out["separate_renderer_passes"] = len(checks) == 5 and all(checks.values())
+    missing = sorted(k for k, v in out.items() if v is None)
+    out["missing"] = missing
+    print("RESULT " + json.dumps(out, sort_keys=True))
+    if missing:
+        for name in ("alone", "renderer", "beside", "inprocess"):
+            print(f"--- {name}.log (tail)", file=sys.stderr)
+            print("\n".join(text(name).splitlines()[-15:]), file=sys.stderr)
+    sys.exit(0 if not missing and out["separate_renderer_passes"] else 1)
+    PY
+
 # The FR3 Duo in Isaac Sim on the GPU machine, behind a RobotHost there (docs/adr/0031): checks out this commit in ~/teleoperation-isaac (it must be on GitHub), builds RobotHost, starts the Isaac bridge (robot/isaac, log ~/isaacsim/bridge.log) and then RobotHost with --backend arm-server, joint port 6002 and discovery 6005 on that machine, recording headset sessions into ~/isaacsim/recordings. Enter stops both, as does `just isaac-stop` from any terminal. Refuses while an Isaac host of ours is already running there, or a training run of ours is going. Other people's GPU jobs do not stop it (the user's call, 2026-11-02): it says how much of the GPU they hold, since sharing it can make physics steps late. Point the headset at it with `just push-galaxy-fr3-config <GPU machine's address>`; drive it headless with `just fr3-teleop-probe 0.08 3 franka-replay false <GPU machine's address>` (just takes recipe arguments by position)
 [group('isaac')]
 isaac-host:

@@ -2344,9 +2344,9 @@ camera-serve seconds="30" fps="30" device="/dev/video0" remote_host=default_jetr
 
 # Subscribe to the camera sender from this machine for `seconds` and report what arrives (frames, rate, sizes, reassembly drops); `save` writes the last frame to a path the (Windows) dotnet can resolve. Exit 1 if no frame arrived -- usually the sender is not running or this machine's firewall blocks inbound UDP on 6004
 [group('robot: checks and diagnostics (nothing moves)')]
-camera-probe seconds="10" max_fps="0" save="" remote_host=default_jetrover_host:
+camera-probe seconds="10" max_fps="0" save="" remote_host=default_jetrover_host port="6003" local_port="6004":
     cd core && dotnet run --project Teleop.CameraHost -c Release -- probe --host $(just _robot-host "{{remote_host}}") \
-        --seconds {{seconds}} --max-fps {{max_fps}} {{ if save != "" { "--save '" + save + "'" } else { "" } }}
+        --port {{port}} --local-port {{local_port}} --seconds {{seconds}} --max-fps {{max_fps}} {{ if save != "" { "--save '" + save + "'" } else { "" } }}
 
 # Show the robot's camera live in a window on this machine until Enter -- moves nothing, touches no service: subscribes as the headset does and serves the frames to a browser window at http://localhost:<http_port>/ (Edge's app window when it can). The sender streams to its newest subscriber only, so while this runs the headset loses the feed (close one of the two). Needs the camera sender running (just camera-logs) and inbound UDP on 6004 allowed by this machine's firewall. seconds=0 runs until Enter
 [group('robot: checks and diagnostics (nothing moves)')]
@@ -2944,11 +2944,12 @@ isaac-scene-check scene="fr3-duo-bench":
 
 # The FR3 Duo in Isaac Sim on the GPU machine, behind a RobotHost there (docs/adr/0031): checks out this commit in ~/teleoperation-isaac (it must be on GitHub), builds RobotHost, starts the Isaac bridge (robot/isaac, log ~/isaacsim/bridge.log) and then RobotHost with --backend arm-server, joint port 6002 and discovery 6005 on that machine, recording headset sessions into ~/isaacsim/recordings. With a scene (core/Scenes/<scene>.json, default fr3-duo-bench; `none` for the arms alone), the table and obstacles are in Isaac too and RobotHost places them from seeded layouts (scene_seed: a number, or auto), docs/adr/0031 amendment 2. Enter stops both, as does `just isaac-stop` from any terminal. Refuses while an Isaac host of ours is already running there, or a training run of ours is going. Other people's GPU jobs do not stop it (the user's call, 2026-11-02): it says how much of the GPU they hold, since sharing it can make physics steps late. Point the headset at it with `just push-galaxy-fr3-config <GPU machine's address>`; drive it headless with `just fr3-teleop-probe 0.08 3 franka-replay false <GPU machine's address>` (just takes recipe arguments by position)
 [group('isaac')]
-isaac-host scene="fr3-duo-bench" scene_seed="auto":
+isaac-host scene="fr3-duo-bench" scene_seed="auto" feeds="true":
     #!/usr/bin/env bash
     set -euo pipefail
     case "{{scene}}" in *[!A-Za-z0-9._-]*|"") echo "error: scene is a file name in core/Scenes without .json, or none" >&2; exit 1 ;; esac
     case "{{scene_seed}}" in auto|[0-9]*) ;; *) echo "error: scene_seed is a number or auto" >&2; exit 1 ;; esac
+    case "{{feeds}}" in true|false) ;; *) echo "error: feeds is true or false" >&2; exit 1 ;; esac
     [ "{{scene}}" = none ] || [ -f "core/Scenes/{{scene}}.json" ] || { echo "error: no core/Scenes/{{scene}}.json" >&2; exit 1; }
     commit=$(git rev-parse HEAD)
     git fetch -q origin
@@ -2990,9 +2991,16 @@ isaac-host scene="fr3-duo-bench" scene_seed="auto":
         host_scene=(--scene "core/Scenes/$SCENE.json" --scene-seed "$SCENE_SEED")
         echo "[isaac-host] scene $SCENE (seed $SCENE_SEED)"
     fi
-    (cd robot/isaac && exec "$HOME/isaacsim/venv/bin/python" -m teleop_isaac.bridge --socket "$sock" "${bridge_scene[@]}") > "$log" 2>&1 &
+    tap=/tmp/teleop-isaac-tap-$USER.sock
+    feeds=false
+    [ "$FEEDS" = true ] && [ "$SCENE" != none ] && feeds=true
+    tap_args=(); [ "$feeds" = true ] && tap_args=(--tap "$tap")
+    # The cores ADR 0032's spike measured: the bridge on 2-5, the renderer on 8-23.
+    pin() { if [ "$(nproc)" -ge 24 ]; then echo "taskset -c $1"; fi; }
+    (cd robot/isaac && exec $(pin 2-5) "$HOME/isaacsim/venv/bin/python" -m teleop_isaac.bridge --socket "$sock" "${bridge_scene[@]}" "${tap_args[@]}") > "$log" 2>&1 &
     bridge=$!
-    trap 'kill $bridge 2>/dev/null; wait $bridge 2>/dev/null || true' EXIT
+    renderer=""
+    trap 'kill $bridge $renderer 2>/dev/null; wait $bridge $renderer 2>/dev/null || true' EXIT
     echo "[isaac-host] bridge pid $bridge (log $log); waiting for Isaac to start"
     for i in $(seq 1 180); do
         grep -q "listening on" "$log" 2>/dev/null && break
@@ -3000,6 +3008,19 @@ isaac-host scene="fr3-duo-bench" scene_seed="auto":
         sleep 1
     done
     grep "^\[isaac\]" "$log" || { echo "error: the bridge did not start within 3 min" >&2; tail -30 "$log" >&2; exit 1; }
+    if [ "$feeds" = true ]; then
+        rlog=$HOME/isaacsim/renderer.log
+        (cd robot/isaac && exec $(pin 8-23) "$HOME/isaacsim/venv/bin/python" -m teleop_isaac.renderer --scene "../../core/Scenes/$SCENE.json" --tap "$tap") > "$rlog" 2>&1 &
+        renderer=$!
+        echo "[isaac-host] renderer pid $renderer (log $rlog); waiting for its feeds"
+        for i in $(seq 1 180); do
+            grep -q "^\[render\] streaming" "$rlog" 2>/dev/null && break
+            kill -0 $renderer 2>/dev/null || break
+            sleep 1
+        done
+        if grep -q "^\[render\] streaming" "$rlog" 2>/dev/null; then grep "^\[render\]" "$rlog"
+        else echo "warning: the renderer did not start, so there are no camera feeds (the robot runs without them):" >&2; tail -20 "$rlog" >&2; renderer=""; fi
+    fi
     mkdir -p "$HOME/isaacsim/recordings"
     dotnet "$HOME/isaacsim/robothost/Teleop.RobotHost.dll" --profile-path core/RobotProfiles/fr3-duo.json --joint-local-port 6002 \
         --backend arm-server --arm-server-socket "$sock" --collision-model core/RobotProfiles/fr3-duo.collision.json \
@@ -3007,7 +3028,7 @@ isaac-host scene="fr3-duo-bench" scene_seed="auto":
         "${host_scene[@]}"
     REMOTE
     )
-    ssh -o ConnectTimeout=10 "{{gpu_host}}" "COMMIT='$commit' SCENE='{{scene}}' SCENE_SEED='{{scene_seed}}' bash -c $(printf '%q' "$remote")"
+    ssh -o ConnectTimeout=10 "{{gpu_host}}" "COMMIT='$commit' SCENE='{{scene}}' SCENE_SEED='{{scene_seed}}' FEEDS='{{feeds}}' bash -c $(printf '%q' "$remote")"
 
 # Stop the Isaac host that `just isaac-host` started on the GPU machine (docs/adr/0031), from any terminal: what Enter does where it was started. RobotHost gets SIGTERM first, which it takes as Enter, so it closes its recording, and isaac-host then stops the bridge. Whatever still runs after 30 s gets SIGTERM, and after 60 s more, SIGKILL. Says which recording is newest and whether it is complete. Nothing running is not an error
 [group('isaac')]
@@ -3020,22 +3041,23 @@ isaac-stop:
     ours() { for p in $(pgrep -u "$USER" -f "$1" || true); do case "$(readlink "/proc/$p/exe" 2>/dev/null)" in *"$2"*) echo "$p" ;; esac; done; }
     host=$(ours "isaacsim/robothost/Teleop[.]RobotHost[.]dll" dotnet)
     bridge=$(ours "teleop_isaac[.]bridge" python)
-    if [ -z "$host$bridge" ]; then echo "[isaac-stop] no Isaac host of ours is running on $(hostname)"; exit 0; fi
+    renderer=$(ours "teleop_isaac[.]renderer" python)
+    if [ -z "$host$bridge$renderer" ]; then echo "[isaac-stop] no Isaac host of ours is running on $(hostname)"; exit 0; fi
     alive() { for p in "$@"; do kill -0 "$p" 2>/dev/null && return 0; done; return 1; }
     gone_within() { local seconds=$1; shift; for _ in $(seq 1 "$seconds"); do alive "$@" || return 0; sleep 1; done; ! alive "$@"; }
     if [ -n "$host" ]; then
         echo "[isaac-stop] RobotHost pid" $host "on $(hostname): stopping it; it closes its recording, then isaac-host stops the bridge"
         kill -TERM $host 2>/dev/null || true
     else
-        echo "[isaac-stop] the bridge, pid" $bridge ", runs without RobotHost on $(hostname): stopping it"
-        kill -TERM $bridge 2>/dev/null || true
+        echo "[isaac-stop] the bridge or renderer (pids" $bridge $renderer ") runs without RobotHost on $(hostname): stopping it"
+        kill -TERM $bridge $renderer 2>/dev/null || true
     fi
-    if ! gone_within 30 $host $bridge; then
+    if ! gone_within 30 $host $bridge $renderer; then
         echo "[isaac-stop] still running after 30 s: SIGTERM to all of it" >&2
-        kill -TERM $host $bridge 2>/dev/null || true
-        if ! gone_within 60 $host $bridge; then
+        kill -TERM $host $bridge $renderer 2>/dev/null || true
+        if ! gone_within 60 $host $bridge $renderer; then
             echo "[isaac-stop] still running after 90 s: SIGKILL" >&2
-            kill -KILL $host $bridge 2>/dev/null || true
+            kill -KILL $host $bridge $renderer 2>/dev/null || true
             rm -f "/tmp/teleop-isaac-$USER.sock"
         fi
     fi
@@ -3063,13 +3085,18 @@ isaac-bridge-test:
 gen-arm-server-golden:
     cd core && TELEOP_WRITE_GOLDEN=1 WSLENV="${WSLENV:+$WSLENV:}TELEOP_WRITE_GOLDEN" dotnet test Teleop.RobotHost.Tests --filter "FullyQualifiedName~ArmServerWireTests.TheIsaacBridgesGoldenFile_IsWhatThisCodecWrites"
 
+# Rewrite robot/isaac/golden/camera-wire-v1.json from ADR 0014's C# camera wire (CameraChunkCodec, CameraSubscribeCodec, FramePacer), after a deliberate change; then change robot/isaac/teleop_isaac/camwire.py and camfeed.py until just isaac-bridge-test passes
+[group('isaac')]
+gen-camera-wire-golden:
+    cd core && TELEOP_WRITE_GOLDEN=1 WSLENV="${WSLENV:+$WSLENV:}TELEOP_WRITE_GOLDEN" dotnet test Teleop.CameraHost.Tests --filter "FullyQualifiedName~CameraWireGoldenTests"
+
 # Rewrite the golden files Core writes for Isaac and the scene file (docs/adr/0031 amendment 2, docs/adr/0032), after a deliberate change: the canonical parse of core/Scenes/fr3-duo-bench.json (robot/isaac/golden/scene-fr3-duo-bench.json), the FR3 Duo's tool poses at seeded joint sets (robot/isaac/golden/fr3-duo-fk-v1.json), seed 1's object layout (core/Scenes/testdata/layout-seed1.txt), and the arm-server wire's. Then change the Python copies until `just isaac-bridge-test` passes
 [group('isaac')]
 gen-isaac-goldens:
     cd core && TELEOP_WRITE_GOLDEN=1 WSLENV="${WSLENV:+$WSLENV:}TELEOP_WRITE_GOLDEN" dotnet test Teleop.RobotArm.Tests --filter "FullyQualifiedName~SceneDocumentTests.TheIsaacGoldenFile|FullyQualifiedName~Fr3FkGoldenTests|FullyQualifiedName~SceneLayoutTests.ALayoutIsFrozen"
     just gen-arm-server-golden
 
-# How the GPU machine's Isaac Sim stands (docs/adr/0031): the version installed in our account, whether a setup is going and its log's last lines, and the GPU's load (it is shared)
+# How the GPU machine's Isaac Sim stands (docs/adr/0031): the version installed in our account, whether a setup is going and its log's last lines, the GPU's load (it is shared), and whether an Isaac host runs, with the renderer's newest health line
 [group('isaac')]
 isaac-status lines="6":
     @ssh -o ConnectTimeout=10 "{{gpu_host}}" 'root=$HOME/isaacsim; \
@@ -3077,6 +3104,9 @@ isaac-status lines="6":
         p=$(cat $root/setup.pid 2>/dev/null); \
         if [ -n "$p" ] && kill -0 "$p" 2>/dev/null; then echo "setup: going (pid $p), venv $(du -sh $root/venv 2>/dev/null | cut -f1)"; else echo "setup: not going"; fi; \
         nvidia-smi --query-gpu=name,memory.used,memory.total,utilization.gpu --format=csv,noheader; \
+        n=0; for p in $(pgrep -u "$USER" -f "teleop_isaac[.](bridge|renderer)" || true); do case "$(readlink /proc/$p/exe 2>/dev/null)" in *python*) n=$((n+1)) ;; esac; done; \
+        echo "isaac host: $n bridge/renderer process(es) running"; \
+        [ "$n" -gt 0 ] && grep "^\[render\] [0-9]" $root/renderer.log 2>/dev/null | tail -1; \
         echo; tail -n {{lines}} $root/setup.log 2>/dev/null || echo "(no setup log)"'
 
 # One-time local trainer venv, CPU only: the contract, the checker, the simulator and the tests (torch=true adds the CPU torch build, for smoke training and export). GPU machines use trainer/setup.sh from the packed file instead

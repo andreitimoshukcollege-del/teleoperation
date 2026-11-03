@@ -330,6 +330,25 @@ lighting.
   and ADDED DELAY. The headset reports any disturbance or delay to RobotHost, so those sessions are
   marked and the trainer refuses them.
 
+**The world and the two camera feeds** (docs/adr/0031 amendment 2, docs/adr/0032), built by
+`XrFr3WorldSetup` (`just unity-world-fr3-xr`, after a scene rebuild or a change to the scene file):
+- **The work table and the obstacles** come from the scene file, `Resources/fr3_scene.json`, a byte-identical copy of
+  `core/Scenes/fr3-duo-bench.json`.
+  - **The world twin** (`SerialChainWorldTwin`) poses each obstacle in `onBeforeRender` from the world frames RobotHost sends
+    on the joint link. The frames pass through that link's disturbance and ADDED DELAY, like the arm's state.
+  - **Until the first world frame,** the obstacles are hidden.
+  - **SCENE MISMATCH:** when RobotHost runs another scene file (a different sha256), they stay hidden and the NEW LAYOUT
+    button says so.
+- **NEW LAYOUT** (orange, left of RECENTRE) asks RobotHost for the next seeded layout. It works only while the robot is off.
+- **Two displays** show Isaac's cameras, outside the joint link's disturbance:
+  - **`HEAD CAM (REC)`,** on the right, is the camera that is recorded. Its feed comes from port 6003, received locally on 6004.
+  - **`3RD PERSON`,** on the left, mirrored, is the view from in front of the robot. Its feed comes from 6007, received on 6014.
+  - **Where they connect:** each `CameraFeedBridge` asks `fr3_connection`'s `RemoteHost`, which is `just isaac-host`'s
+    renderer. Beside `just fr3-sim-host` there is no renderer, and the strips say NO SIGNAL.
+  - **The log** reports each feed's decode time (`[camera] HEAD CAM (REC) ...`).
+- **`just unity-check-fr3-xr`** checks the twin's ids against the file, the table within 1 mm, the button, and both feeds'
+  ports and wiring. None of these are safety settings: none of them moves the robot.
+
 **Safety settings.** `just unity-check-fr3-xr` fails, and `just build-galaxy-fr3` refuses to build, if
 any of these changes:
 

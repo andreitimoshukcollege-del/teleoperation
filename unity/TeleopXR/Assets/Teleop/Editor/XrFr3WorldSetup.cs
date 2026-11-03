@@ -94,7 +94,78 @@ namespace Teleop.XR.Editor
             XrFr3SceneBuilder.BuildButton(root, NewLayoutButtonName, XrFr3SceneBuilder.NewLayoutButtonAt, "Fr3NewLayoutCap", new Color(0.95f, 0.65f, 0.15f),
                 "NEW LAYOUT", Teleop.XR.Fr3MotionButton.Role.NewLayout, bridge, origin);
 
-            Debug.Log($"[fr3-world] built '{world.Name}': {world.Surfaces.Count(s => s.Display == SurfaceDisplay.Show)} surface(s) and a twin of {world.Objects.Length} object(s) from the scene file, and NEW LAYOUT");
+            BuildFeeds(bridge);
+            Debug.Log($"[fr3-world] built '{world.Name}': {world.Surfaces.Count(s => s.Display == SurfaceDisplay.Show)} surface(s) and a twin of {world.Objects.Length} object(s) from the scene file, NEW LAYOUT, and the {HeadFeedName} and {ThirdFeedName} feeds");
+        }
+
+        public const string FeedsRootName = "Fr3CameraFeeds";
+        public const string HeadFeedName = "HEAD CAM (REC)";
+        public const string ThirdFeedName = "3RD PERSON";
+        public const string LeftDisplayName = "CameraDisplayLeft";
+        public const int HeadFeedPort = 6003, HeadFeedLocalPort = 6004, ThirdFeedPort = 6007, ThirdFeedLocalPort = 6014;
+        private const string FeedMeshLibraryPath = LabPaths.Generated + "/Fr3FeedMeshes.asset";
+        private const string ScreenMaterialPath = "Assets/Teleop/Materials/CameraPanel.mat";
+
+        /// <summary>
+        /// The two Isaac feeds (docs/adr/0032 decision 3), outside the joint link's disturbance: the head camera on the lab's
+        /// display, on the operator's right (built by the scene builder), and the third-person camera on a second display,
+        /// mirrored on the left, which this builds with its own mesh library. Each <see cref="CameraFeedBridge"/> asks
+        /// <c>fr3_connection</c>'s <c>RemoteHost</c>, Isaac's renderer on the GPU machine. Both are under <see cref="FeedsRootName"/>,
+        /// replaced on every run.
+        /// </summary>
+        private static void BuildFeeds(SerialChainOperatorBridge bridge)
+        {
+            foreach (GameObject old in SceneManager.GetActiveScene().GetRootGameObjects().Where(g => g.name == FeedsRootName).ToArray())
+            {
+                Object.DestroyImmediate(old);
+            }
+
+            GameObject dressing = SceneManager.GetActiveScene().GetRootGameObjects().FirstOrDefault(g => g.name == LabDressing.RootName)
+                ?? throw new InvalidOperationException("the scene has no LabDressing (build the FR3 scene first)");
+            Transform right = dressing.transform.Find("CameraDisplay") ?? throw new InvalidOperationException("the lab has no CameraDisplay");
+            Renderer rightScreen = right.Find("Panel/Screen")?.GetComponent<Renderer>() ?? throw new InvalidOperationException("CameraDisplay has no Panel/Screen");
+            Material screenMaterial = AssetDatabase.LoadAssetAtPath<Material>(ScreenMaterialPath)
+                ?? throw new InvalidOperationException($"{ScreenMaterialPath} is missing");
+
+            var root = new GameObject(FeedsRootName).transform;
+            CameraFeedBridge head = Feed(root, "HeadFeed", HeadFeedName, HeadFeedPort, HeadFeedLocalPort, rightScreen);
+            var bar = right.GetComponent<CameraStatusBar>();
+            if (bar != null)
+            {
+                var so = new SerializedObject(bar);
+                so.FindProperty("feed").objectReferenceValue = head;
+                so.ApplyModifiedPropertiesWithoutUndo();
+            }
+
+            Transform caption = right.Find("Panel/DisplayCaption");
+            if (caption != null) caption.GetComponent<TMPro.TMP_Text>().text = "head camera  ·  Isaac, recorded";
+
+            LabMeshLibrary.Begin(FeedMeshLibraryPath);
+            CameraFeedBridge third = Feed(root, "ThirdFeed", ThirdFeedName, ThirdFeedPort, ThirdFeedLocalPort, null);
+            LabDisplay.Result left = LabDisplay.Build(root, LabPalette.Create(), screenMaterial, third, bridge,
+                "third-person camera  ·  Isaac", LeftDisplayName, mirrored: true);
+            LabMeshLibrary.End();
+            var feed = new SerializedObject(third);
+            feed.FindProperty("panel").objectReferenceValue = left.Screen;
+            feed.ApplyModifiedPropertiesWithoutUndo();
+        }
+
+        private static CameraFeedBridge Feed(Transform root, string objectName, string feedName, int port, int localPort, Renderer screen)
+        {
+            var go = new GameObject(objectName);
+            go.transform.SetParent(root, false);
+            var feed = go.AddComponent<CameraFeedBridge>();
+            var so = new SerializedObject(feed);
+            so.FindProperty("panel").objectReferenceValue = screen;
+            // The display's screen is 1.2 x 0.9 m (4:3); a 16:9 feed fills its width.
+            so.FindProperty("panelHeightMeters").floatValue = LabDisplay.ScreenHeight;
+            so.FindProperty("panelMaxWidthMeters").floatValue = LabDisplay.ScreenWidth;
+            so.FindProperty("feedName").stringValue = feedName;
+            so.FindProperty("addressSource").enumValueIndex = (int)CameraFeedBridge.AddressSource.SerialChain;
+            so.FindProperty("robotPort").intValue = port;
+            so.FindProperty("localPort").intValue = localPort;
+            so.ApplyModifiedPropertiesWithoutUndo();
+            return feed;
         }
 
         public const string TwinName = "WorldTwin";

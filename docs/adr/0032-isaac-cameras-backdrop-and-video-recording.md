@@ -47,7 +47,7 @@ backdrop covers the table top as well as a screen.
 
    | | Head (recorded) | Third-person |
    |---|---|---|
-   | Pose | on `head_camera_mounting_point` | at (1.15, 0.75, 0.60) m, looking at (0.45, 0, 0.05): in front of the robot, about 47° to its left, 28° above the workspace |
+   | Pose | on `head_camera_mounting_point` | at (1.45, 0.95, 0.85) m, looking at (0.15, 0, 0.20): in front of the robot, to its left and above, framing the robot and the table (amendment 1; the spike's pose cut the robot off) |
    | Resolution | 640×360 | 640×360 |
    | Field of view | 69° horizontal: fx = fy = 465.6 px, cx = 320, cy = 180, pixel centres at +0.5 | same |
    | Rate | 30 fps | 30 fps |
@@ -189,6 +189,40 @@ tap), and depth and mask sizes in a cluttered scene (P4 measures them on recorde
 - **Procedural textures.** Less realistic. The user chose a dataset.
 - **One file per frame.** Tens of thousands of files per session. Sidecars indexed by the jlog keep a
   session to a few files.
+
+## Amendment 1 (2026-11-02): the renderer and the feeds built (phase P3)
+
+`teleop_isaac/renderer.py`, `camwire.py`, `camfeed.py` and the bridge's `--tap` are built as decisions 2 and 3 say. `just
+isaac-host` starts the renderer beside the bridge (`feeds=false` leaves it out). The headset shows the two feeds on two lab
+displays, `HEAD CAM (REC)` on the right and `3RD PERSON` on the left (`XrFr3WorldSetup`).
+
+**Changed from the decision:**
+- **The third-person camera** is at (1.45, 0.95, 0.85) m, looking at (0.15, 0, 0.20). At the spike's pose, aimed at the
+  table's centre, it cut the robot off at the top right.
+- **The scene's lights** are 2.5× dimmer: dome 300 and key 1000, not 800 and 2500. At the spike's values every colour came
+  out washed towards white.
+- **The render lag is measured on the table,** with the scene's objects hidden. A cube above them is outside the head
+  camera's view, which looks 20–62° down.
+
+**Measured on the 5090,** 2026-11-02, `just isaac-host fr3-duo-bench 7`, with the bridge on cores 2–5 and the renderer on
+8–23:
+
+| | Gate | Measured |
+|---|---|---|
+| Feeds, from the PC (`just camera-probe 10 0 "" <host> 6003 6004`, and 6007/6014) | ≥ 28 fps, no incomplete frames | head 29.4 fps, third-person 29.5 fps; 0 incomplete, 0 superseded |
+| Renderer frame rate | 30 fps | 30.0 fps |
+| Render lag at start-up | stable in ≥ 99.5% | 2 frames, in 100% of 87 samples |
+| Bridge late steps with the renderer beside it | ≤ 1/s | 21 in 422,648 steps (0.05/s) |
+| `fr3-teleop-probe` with the renderer running | PASS | PASS (tools 0.00 mm) |
+
+**Other measurements:**
+- **Frame size:** about 12–13 KB per frame at quality 80. That is smaller than the spike's 46 KB, because the scene has no
+  backdrop yet (P4).
+- **The tap:** it dropped 1.6% of its copies, all in the renderer's start-up seconds, before it drains them. The renderer
+  took about 250 states and 50 world frames a second.
+- **The newest state:** about 16 ms old when a frame is read.
+
+**Not measured:** the headset's decode cost for two feeds, which is logged per feed (`[camera] HEAD CAM (REC) ...`).
 
 ## Not decided here
 

@@ -218,8 +218,8 @@ namespace Teleop.XR.Editor
         private static void BuildRecentreButton(SerialChainOperatorBridge bridge, XROrigin origin) =>
             BuildButton(null, "RecentreButton", RecentreButtonAt, "Fr3RecentreCap", new Color(0.25f, 0.55f, 1f), "RECENTRE", Fr3MotionButton.Role.Recentre, bridge, origin);
 
-        /// <summary>NEW LAYOUT, beside RECENTRE on the bench's front-right (docs/adr/0031 amendment 2).</summary>
-        internal static Vector3 NewLayoutButtonAt => RecentreButtonAt + new Vector3(0.14f, 0f, 0f);
+        /// <summary>NEW LAYOUT, left of RECENTRE on the bench's front (docs/adr/0031 amendment 2).</summary>
+        internal static Vector3 NewLayoutButtonAt => RecentreButtonAt + new Vector3(-0.30f, 0f, 0f); // labels are 0.3 m wide
 
         /// <summary>A fingertip button on a plinth: a cap to press, its label, and an <see cref="Fr3MotionButton"/> of <paramref name="role"/>.</summary>
         internal static Transform BuildButton(Transform parent, string name, Vector3 at, string capMaterial, Color capColor, string text,

@@ -113,11 +113,11 @@ namespace Teleop.XR
                 _feedState = feedState;
                 if (feedLabel != null)
                 {
-                    feedLabel.text = feedState == 1 ? "LIVE  ·  JETROVER CAM"
+                    feedLabel.text = feedState == 1 ? "LIVE  ·  " + feed.FeedName
                         : feedState == 2 ? "FROZEN  ·  no new frames"
                         : feedState == 3 ? "FEED OFF"
                         : feedState == 4 ? "NO CAMERA  ·  the simulated robot has none"
-                        : "NO SIGNAL  ·  waiting for the robot camera";
+                        : "NO SIGNAL  ·  waiting for " + (feed != null ? feed.FeedName : "the robot camera");
                 }
             }
 

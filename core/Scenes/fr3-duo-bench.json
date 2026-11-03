@@ -31,11 +31,11 @@
   "cameras": [
     { "id": "head", "mount": "head_camera_mounting_point", "width": 640, "height": 360, "hfovDeg": 69.0, "near": 0.05, "far": 10.0,
       "fps": 30, "feedPort": 6003, "feedQuality": 80, "recordQuality": 92, "record": ["rgb", "depth", "mask"] },
-    { "id": "third", "position": [1.15, 0.75, 0.60], "lookAt": [0.45, 0.0, 0.05], "width": 640, "height": 360, "hfovDeg": 69.0,
+    { "id": "third", "position": [1.45, 0.95, 0.85], "lookAt": [0.15, 0.0, 0.20], "width": 640, "height": 360, "hfovDeg": 69.0,
       "near": 0.05, "far": 10.0, "fps": 30, "feedPort": 6007, "feedQuality": 80, "recordQuality": 92, "record": ["rgb"] }
   ],
   "lights": [
-    { "id": "dome", "kind": "dome", "intensity": 800 },
-    { "id": "key", "kind": "distant", "intensity": 2500, "rotateXYZDeg": [-40, 25, 0] }
+    { "id": "dome", "kind": "dome", "intensity": 300 },
+    { "id": "key", "kind": "distant", "intensity": 1000, "rotateXYZDeg": [-40, 25, 0] }
   ]
 }

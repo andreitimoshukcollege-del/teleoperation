@@ -79,6 +79,32 @@ If the renderer fails to start, `isaac-host` says so and runs the robot without 
 ADR 0032 amendment 1 holds the 2026-11-02 numbers: both feeds at 29.4–29.5 fps from the PC, no incomplete frames, and
 0.05 late steps a second on the bridge.
 
+## Backdrops and recording (docs/adr/0032 decisions 4–6)
+
+```bash
+just isaac-backdrops-fetch 2000      # once: Open Images V7 validation, CC BY 2.0 only, into ~/isaacsim/backdrops/
+just isaac-backdrops-status          # how many, their licences, any whose sha256 no longer matches
+just isaac-record-check              # against a running isaac-host: drive, record, check one session end to end
+```
+
+- **The backdrop.** The renderer puts a random image on a mat over the table top and another on a screen beyond the table.
+  The pair is `backdrops.pick(images, seed, change)`: change 0 at start-up, then one more after each recorded session.
+  - Downloads are untrusted data: a JPEG of at most 20 MB, decoded and at least 256 px a side, stored under its own sha256.
+  - Without images, the table is plain and there is no screen.
+- **Recording.** While RobotHost's control file (`~/isaacsim/recordings/.active`) names a session, the renderer writes
+  into it `isaac.jlog` and `isaac/<camera>.<stream>.frames`:
+  - head colour (JPEG 92), depth (16-bit PNG, mm) and masks (16-bit PNG, stable ids);
+  - third-person colour;
+  - `isaac/backdrops.json`, the attribution of every image shown.
+  RobotHost waits up to 60 s for the trailer, checks the `FS` lines and hashes `isaac/`. The renderer records only when its
+  start-up render lag agreed in ≥ 99.5% of samples, and stops below 20 GB free. The records are in
+  `trainer/contract/SESSION_FORMAT.md`.
+- **`isaac-record-check`** drives 40 s of seeded joint-space moves with `chain-drive --as-headset`, so that RobotHost
+  records them. It waits for the session to complete, then runs `verify_session.py` on the GPU machine. ADR 0032
+  amendment 2 holds the 2026-11-03 numbers: 100% of frames stamped with a `QS` state, depth p99 0.5 mm, and each hand's
+  point in its mask in 100% of 61 frames.
+- **Cost:** about 10 GB an hour of recording.
+
 ## The render check
 
 `just isaac-render-check` (`render_check.py`, docs/adr/0032 phase P0) measures what the cameras' design

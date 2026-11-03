@@ -224,6 +224,45 @@ displays, `HEAD CAM (REC)` on the right and `3RD PERSON` on the left (`XrFr3Worl
 
 **Not measured:** the headset's decode cost for two feeds, which is logged per feed (`[camera] HEAD CAM (REC) ...`).
 
+## Amendment 2 (2026-11-03): backdrops and recording built (phase P4)
+
+Decisions 4–6 are built.
+- **The backdrop images** come from `just isaac-backdrops-fetch` (`teleop_isaac/backdrops.py`, standard library). On
+  2026-11-03 it kept 2,000 images: 604 MB, all CC BY 2.0, from 1,790 authors.
+- **The renderer swaps them** on a mat over the table top and a screen beyond it, and records while RobotHost's control
+  file names a session (`teleop_isaac/isaac_session.py`).
+- **RobotHost waits for the renderer** with `--auto-record-writer isaac:60`. It checks each `FS` line and lists `isaac/`
+  in `files.sha256`.
+- **The formats** are in `trainer/contract/SESSION_FORMAT.md` ("Isaac's rendered frames").
+
+**How it differs from the decision:**
+- **The mask ids** come from labels on each link's `<link>_visual` prim and on the head's meshes. The links themselves nest,
+  and nested labels come out joined.
+- **The recorded camera poses** are the USD cameras' (looking along −z, +y up), in the robot's base frame, as `CM` records.
+- **The control file is read every 0.1 s.** At 0.5 s, 0.4% of a 73 s session's frames came from after RobotHost had closed
+  it, and had no `QS`. Readers skip such frames.
+- **`chain-drive --as-headset`** sends the headset's heartbeat, so `just isaac-record-check` can drive a session that
+  RobotHost records. Joint-space moves are what bring the hands into the head camera's view: it looks 20–62° down, and at
+  the start pose the hands are above its horizon.
+
+**Measured on the 5090,** 2026-11-03, `just isaac-host fr3-duo-bench 7`, then `just isaac-record-check` (40 s of
+`chain-drive` at ±0.6 rad, seed 3):
+
+| Check (`verify_session.py`) | Gate | Measured |
+|---|---|---|
+| `files.sha256`, with the 4 sidecars | all verify | 10 files, all verify |
+| `isaac.jlog` trailer and `FS` lines | all match | all match |
+| Frames written + dropped vs duration × fps | ≥ 98% (≥ 95% written) | 2,190 of 2,190 expected over 73.0 s; 0 dropped |
+| Frames stamped with a `QS` state | ≥ 99.5% | 100% |
+| Depth on the mat against the table plane | p99 < 3 mm | p50 0.23 mm, p99 0.50 mm (4.2 M samples) |
+| A point in each hand from the state's FK, projected, in its mask | ≥ 95% within 8 px, ≥ 20 samples | 100% of 61; p50 0.41 px, p95 0.59 px |
+
+**Other measurements:**
+- **Recording cost:** 209 MB for a 73 s session, or about 10 GB an hour, below the 17 GB/h this ADR estimated. The bridge
+  had 0.05 late steps a second while recording.
+- **The trainer:** `armpred check-session` accepts the session.
+- **Another seed:** seed 5 at 60 s brought the hands into view in only 14 frames, all within 8 px. So the check names seed 3.
+
 ## Not decided here
 
 - **Training a video model.** Its own ADR, once data exists.

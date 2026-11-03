@@ -5,6 +5,7 @@ using System.Linq;
 using System.Text;
 using System.Text.Json;
 using Teleop.Core.Types;
+using Teleop.RobotArm.World;
 using Teleop.RobotHost.ArmServer;
 
 namespace Teleop.RobotHost.Tests.ArmServer
@@ -140,6 +141,36 @@ namespace Teleop.RobotHost.Tests.ArmServer
             ArmServerWire.TryEncodeHealth(6, new ArmServerHealth(2.5f, 0.75f, 3, 60_000), buffer, out n);
             Add(new Dictionary<string, object> { ["kind"] = "health", ["sequence"] = 6, ["realTimeFactor"] = 2.5f, ["lagMilliseconds"] = 0.75f,
                 ["lateSteps"] = 3u, ["steps"] = 60_000u }, n);
+
+            // The world, kinds 7-11 (docs/adr/0031 amendment 2).
+            byte[] sha = Enumerable.Range(0, 32).Select(i => (byte)(i * 7 + 1)).ToArray();
+            byte[] worldIds = { 1, 2, 4 };
+            ArmServerWorld.TryEncodeWorldInfo(7, sha, worldIds, buffer, out n);
+            Add(new Dictionary<string, object> { ["kind"] = "world_info", ["sequence"] = 7, ["sceneSha256"] = Convert.ToHexString(sha).ToLowerInvariant(),
+                ["ids"] = worldIds.Select(x => (int)x).ToArray() }, n);
+
+            var objects = new[]
+            {
+                new ObjectPose(1, ObjectPose.FlagKinematic, 0.5f, 0.25f, 0.15f, 1f, 0f, 0f, 0f),
+                new ObjectPose(4, ObjectPose.FlagKinematic, 0.375f, -0.125f, 0.1f, 0.5f, 0.5f, -0.5f, 0.5f),
+            };
+            ArmServerWorld.TryEncodeWorld(8, 123_458_000_000, 42, 3, 0, 1, objects, buffer, out n);
+            Add(new Dictionary<string, object> { ["kind"] = "world", ["sequence"] = 8, ["sensedTicks"] = 123_458_000_000L, ["snapshot"] = 42u, ["revision"] = 3u,
+                ["part"] = 0, ["parts"] = 1, ["objects"] = objects.Select(o => new object[] { (int)o.Id, (int)o.Flags, o.X, o.Y, o.Z, o.Qw, o.Qx, o.Qy, o.Qz }).ToArray() }, n);
+
+            var placed = new ObjectPose(2, 0, 0.625f, -0.25f, 0.15f, 0.75f, 0f, 0f, 0.5f);
+            ArmServerWorld.TryEncodePlace(9, 123_459_000_000, 17, PlaceCause.Headset, placed, buffer, out n);
+            Add(new Dictionary<string, object> { ["kind"] = "place", ["sequence"] = 9, ["hostTicks"] = 123_459_000_000L, ["request"] = 17u, ["cause"] = (int)PlaceCause.Headset,
+                ["id"] = 2, ["pose"] = new[] { placed.X, placed.Y, placed.Z, placed.Qw, placed.Qx, placed.Qy, placed.Qz } }, n);
+
+            ArmServerWorld.TryEncodePlaced(10, 17, PlaceOutcome.OverlapsArm, 4, placed, buffer, out n);
+            Add(new Dictionary<string, object> { ["kind"] = "placed", ["sequence"] = 10, ["request"] = 17u, ["id"] = 2, ["outcome"] = (int)PlaceOutcome.OverlapsArm,
+                ["revision"] = 4u, ["pose"] = new[] { placed.X, placed.Y, placed.Z, placed.Qw, placed.Qx, placed.Qy, placed.Qz } }, n);
+
+            var contacts = new[] { new ArmServerContact(0, 254, 1, 12.5f), new ArmServerContact(1, 6, 0, 3.25f) };
+            ArmServerWorld.TryEncodeContacts(11, 123_460_000_000, contacts, buffer, out n);
+            Add(new Dictionary<string, object> { ["kind"] = "contacts", ["sequence"] = 11, ["sensedTicks"] = 123_460_000_000L,
+                ["contacts"] = contacts.Select(c => new object[] { (int)c.Arm, (int)c.Link, (int)c.Object, c.ForceNewtons }).ToArray() }, n);
 
             var golden = new Dictionary<string, object>
             {

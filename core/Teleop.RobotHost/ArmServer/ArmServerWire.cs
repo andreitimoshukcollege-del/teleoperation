@@ -310,7 +310,7 @@ namespace Teleop.RobotHost.ArmServer
             return true;
         }
 
-        private static void Header(Span<byte> output, byte kind, uint sequence)
+        internal static void Header(Span<byte> output, byte kind, uint sequence)
         {
             output[0] = (byte)'A';
             output[1] = (byte)'S';

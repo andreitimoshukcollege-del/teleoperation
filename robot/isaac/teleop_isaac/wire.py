@@ -148,3 +148,96 @@ def decode_health(d: bytes) -> Optional[Tuple[float, float, int, int]]:
     if kind_of(d) != HEALTH or len(d) != 24:
         return None
     return struct.unpack_from("<ffII", d, 8)
+
+
+# --- the world, kinds 7-11 (docs/adr/0031 amendment 2; RobotHost's ArmServer/ArmServerWorld.cs) -------------------------
+
+WORLD_INFO, WORLD, PLACE, PLACED, CONTACTS = 7, 8, 9, 10, 11
+MAX_OBJECTS_PER_WORLD = 16
+MAX_CONTACTS = 64
+CAUSE_LAYOUT, CAUSE_HEADSET, CAUSE_RESET = 1, 2, 3
+(APPLIED, OVERLAPS_ARM, OVERLAPS_OBJECT, OUTSIDE_REGION, UNKNOWN_OBJECT, NOT_MOVABLE, ARM_TOUCHING, BUSY, INVALID_POSE,
+ TIMED_OUT) = range(10)
+FLAG_KINEMATIC = 1
+_POSE = struct.Struct("<7f")  # x y z, qw qx qy qz
+
+
+@dataclass(frozen=True)
+class ObjectPose:
+    id: int
+    flags: int
+    pose: Tuple[float, float, float, float, float, float, float]  # x, y, z, qw, qx, qy, qz
+
+
+def encode_world_info(sequence: int, scene_sha256: bytes, ids: Sequence[int]) -> bytes:
+    if len(scene_sha256) != 32 or len(ids) > 255:
+        raise ValueError("a 32-byte sha256 and at most 255 ids")
+    return _header(WORLD_INFO, sequence) + scene_sha256 + bytes([len(ids)]) + bytes(ids)
+
+
+def decode_world_info(d: bytes) -> Optional[Tuple[bytes, Tuple[int, ...]]]:
+    if kind_of(d) != WORLD_INFO or len(d) < 41 or len(d) != 41 + d[40]:
+        return None
+    return d[8:40], tuple(d[41:])
+
+
+def encode_world(sequence: int, sensed_ticks: int, snapshot: int, revision: int, part: int, parts: int,
+                 objects: Sequence[ObjectPose]) -> bytes:
+    if len(objects) > MAX_OBJECTS_PER_WORLD or parts < 1 or not 0 <= part < parts:
+        raise ValueError("at most 16 objects per part, and part < parts")
+    body = b"".join(struct.pack("<BB", o.id, o.flags) + _POSE.pack(*o.pose) for o in objects)
+    return (_header(WORLD, sequence) + struct.pack("<qIIBBB", sensed_ticks, snapshot & 0xFFFFFFFF, revision & 0xFFFFFFFF,
+                                                    part, parts, len(objects)) + body)
+
+
+def decode_world(d: bytes) -> Optional[Tuple[int, int, int, int, int, List[ObjectPose]]]:
+    """(sensed ticks, snapshot, revision, part, parts, objects)."""
+    if kind_of(d) != WORLD or len(d) < 27:
+        return None
+    sensed, snapshot, revision, part, parts, n = struct.unpack_from("<qIIBBB", d, 8)
+    if n > MAX_OBJECTS_PER_WORLD or len(d) != 27 + 30 * n or parts == 0 or part >= parts:
+        return None
+    objects = [ObjectPose(d[27 + 30 * i], d[28 + 30 * i], _POSE.unpack_from(d, 29 + 30 * i)) for i in range(n)]
+    return sensed, snapshot, revision, part, parts, objects
+
+
+def encode_place(sequence: int, host_ticks: int, request: int, cause: int, object_id: int, pose: Sequence[float]) -> bytes:
+    return _header(PLACE, sequence) + struct.pack("<qIBB", host_ticks, request & 0xFFFFFFFF, cause, object_id) + _POSE.pack(*pose)
+
+
+def decode_place(d: bytes) -> Optional[Tuple[int, int, int, int, Tuple[float, ...]]]:
+    """(host ticks, request, cause, object id, pose)."""
+    if kind_of(d) != PLACE or len(d) != 50 or not 1 <= d[20] <= 3:
+        return None
+    host_ticks, request, cause, object_id = struct.unpack_from("<qIBB", d, 8)
+    return host_ticks, request, cause, object_id, _POSE.unpack_from(d, 22)
+
+
+def encode_placed(sequence: int, request: int, object_id: int, outcome: int, revision: int, pose: Sequence[float]) -> bytes:
+    return (_header(PLACED, sequence) + struct.pack("<IBBI", request & 0xFFFFFFFF, object_id, outcome, revision & 0xFFFFFFFF)
+            + _POSE.pack(*pose))
+
+
+def decode_placed(d: bytes) -> Optional[Tuple[int, int, int, int, Tuple[float, ...]]]:
+    """(request, object id, outcome, revision, pose)."""
+    if kind_of(d) != PLACED or len(d) != 46 or d[13] > TIMED_OUT:
+        return None
+    request, object_id, outcome, revision = struct.unpack_from("<IBBI", d, 8)
+    return request, object_id, outcome, revision, _POSE.unpack_from(d, 18)
+
+
+def encode_contacts(sequence: int, sensed_ticks: int, contacts: Sequence[Tuple[int, int, int, float]]) -> bytes:
+    """``contacts``: (arm, link, object (0 = table), normal force N) each."""
+    if len(contacts) > MAX_CONTACTS:
+        raise ValueError("too many contacts")
+    body = b"".join(struct.pack("<BBBf", a, l, o, f) for a, l, o, f in contacts)
+    return _header(CONTACTS, sequence) + struct.pack("<qB", sensed_ticks, len(contacts)) + body
+
+
+def decode_contacts(d: bytes) -> Optional[Tuple[int, List[Tuple[int, int, int, float]]]]:
+    if kind_of(d) != CONTACTS or len(d) < 17:
+        return None
+    sensed, n = struct.unpack_from("<qB", d, 8)
+    if n > MAX_CONTACTS or len(d) != 17 + 7 * n:
+        return None
+    return sensed, [struct.unpack_from("<BBBf", d, 17 + 7 * i) for i in range(n)]

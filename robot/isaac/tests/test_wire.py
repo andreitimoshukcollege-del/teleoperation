@@ -12,7 +12,8 @@ def f32(x: float) -> float:
 
 def test_every_golden_message_encodes_and_decodes_exactly():
     messages = golden("arm-server-wire-v1.json")["messages"]
-    assert [m["kind"] for m in messages] == ["hello", "welcome", "targets", "enable", "state", "health"]
+    assert [m["kind"] for m in messages] == ["hello", "welcome", "targets", "enable", "state", "health",
+                                             "world_info", "world", "place", "placed", "contacts"]
     for m in messages:
         raw = bytes.fromhex(m["hex"])
         assert wire.sequence_of(raw) == m["sequence"], m["kind"]
@@ -39,6 +40,24 @@ def test_every_golden_message_encodes_and_decodes_exactly():
         elif m["kind"] == "health":
             assert wire.encode_health(m["sequence"], m["realTimeFactor"], m["lagMilliseconds"], m["lateSteps"], m["steps"]) == raw
             assert wire.decode_health(raw) == (m["realTimeFactor"], m["lagMilliseconds"], m["lateSteps"], m["steps"])
+        elif m["kind"] == "world_info":
+            sha = bytes.fromhex(m["sceneSha256"])
+            assert wire.encode_world_info(m["sequence"], sha, m["ids"]) == raw
+            assert wire.decode_world_info(raw) == (sha, tuple(m["ids"]))
+        elif m["kind"] == "world":
+            objects = [wire.ObjectPose(o[0], o[1], tuple(o[2:])) for o in m["objects"]]
+            assert wire.encode_world(m["sequence"], m["sensedTicks"], m["snapshot"], m["revision"], m["part"], m["parts"], objects) == raw
+            rounded = [wire.ObjectPose(o.id, o.flags, tuple(f32(v) for v in o.pose)) for o in objects]
+            assert wire.decode_world(raw) == (m["sensedTicks"], m["snapshot"], m["revision"], m["part"], m["parts"], rounded)
+        elif m["kind"] == "place":
+            assert wire.encode_place(m["sequence"], m["hostTicks"], m["request"], m["cause"], m["id"], m["pose"]) == raw
+            assert wire.decode_place(raw) == (m["hostTicks"], m["request"], m["cause"], m["id"], tuple(f32(v) for v in m["pose"]))
+        elif m["kind"] == "placed":
+            assert wire.encode_placed(m["sequence"], m["request"], m["id"], m["outcome"], m["revision"], m["pose"]) == raw
+            assert wire.decode_placed(raw) == (m["request"], m["id"], m["outcome"], m["revision"], tuple(f32(v) for v in m["pose"]))
+        elif m["kind"] == "contacts":
+            assert wire.encode_contacts(m["sequence"], m["sensedTicks"], [tuple(c) for c in m["contacts"]]) == raw
+            assert wire.decode_contacts(raw) == (m["sensedTicks"], [(a, l, o, f32(f)) for a, l, o, f in m["contacts"]])
 
 
 def test_foreign_and_malformed_datagrams_are_refused():

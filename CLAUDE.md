@@ -15,13 +15,19 @@ gripper has changed how it accelerates. It is meant to combine with the latency 
 replace it: those axes decide when a sample is shown and how its correction is absorbed, while a
 model of the world improves what is shown at all.
 
-Treat this paragraph as intent and nothing more. **Nothing in this system models the environment
-today.** The robot reports only its own body: the 57-byte wrist pose, and the joint-state stream
+Treat this paragraph as intent and nothing more. **No real robot's environment is modelled today.**
+The robot reports only its own body: the 57-byte wrist pose, and the joint-state stream
 (ADR 0018). Its camera streams colour video to the headset (ADR 0014), but only for the operator's
 eyes: nothing interprets the image, no depth is streamed, there is no contact signal, and `Plant/`
-is kinematic by deliberate choice. Like `view synthesis` in the sentence above, this has no
-`Contracts/` interface, no folder and no ADR. Giving it any of those is an architecture change under "Where new code goes", so the
-ADR comes first. Do not write code against this paragraph.
+is kinematic by deliberate choice. **The one exception is simulated:** the FR3 Duo in Isaac Sim has
+a world beside it (ADR 0031 amendment 2, ADR 0032): a work table and fixed obstacles from a scene
+file (`core/Scenes/`), placed by RobotHost from seeded layouts, colliding with the arms in Isaac,
+drawn on the headset and recorded with each session. That is a source of data with objects in it,
+not a model of them. No predictor sees an object, and the headset's IK and RobotHost's refusal check
+ignore them on purpose. A predictor that reasons about the world, like `view synthesis` in the
+sentence above, has no `Contracts/` interface, no folder and no ADR. Giving it any of those is an
+architecture change under "Where new code goes", so the ADR comes first. Do not write code against
+this paragraph.
 
 ## The one law
 

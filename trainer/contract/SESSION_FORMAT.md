@@ -236,6 +236,36 @@ shaper's limits set the speed. The relay records (`RO`, `RI`, `TQ`, `PK`, `PS`) 
 **The truth** for motor `m` is its `QS` values at their `sensed` times, never the frames. No unit
 conversion and no zero offsets: the values are the profile's joint coordinates.
 
+### The world beside the arms (docs/adr/0031 amendment 2)
+
+When RobotHost runs with `--scene` (`just isaac-host`, `just fr3-sim-host`, both by default with
+`core/Scenes/fr3-duo-bench.json`), there are objects beside the arms: a work table and fixed obstacles
+from the scene file, placed by RobotHost from seeded layouts. In Isaac they collide with the arms; beside
+the simulated arm (`sim-host`) nothing collides. Simulated sessions only: the real robot has no world.
+Such a session has in addition:
+
+- **`scene.json`**: a byte-for-byte copy of the scene file RobotHost ran, hashed in `files.sha256`.
+- **`session.json`'s `scene`**: `{"name", "file": "scene.json", "sha256", "seed"}`. The sha256 is the
+  file's, and the seed is the one layout 1 was drawn from (layout *n* uses `seed + n − 1`).
+- **`session.json`'s `armServer`** (any session behind an arm server, scene or not): `{"kind",
+  "description"}`, the server's own account of itself: Isaac's version, the physics rate, drive gains and
+  efforts, and the scene it built.
+
+**`robothost.jlog`** gains these records. Poses are `x:y:z:qw:qx:qy:qz` in the robot's base frame (metres,
+Z up, the profile's frame); `sensed` is on the host's clock, like `QS.sensed`.
+
+| Tag | Fields after the tag | Meaning |
+|---|---|---|
+| `WL` | `t` `layout` `seed` | A new layout was drawn: at start, on NEW LAYOUT, or on a reset. Also written once when a session opens, for the layout in force |
+| `WP` | `t` `request` `cause` `id` `pose` `outcome` | A placement settled. `cause`: `layout`, `headset` or `reset`. `outcome`: `applied`, `overlaps-arm`, `overlaps-object`, `outside-region`, `unknown-object`, `not-movable`, `arm-touching`, `busy`, `invalid-pose` or `timed-out`. `pose` is where the object is now, which for anything but `applied` is where it already was |
+| `WO` | `t` `sensed` `revision` `objects` | Where every object was: `id:pose;...`. Written when a session opens, when any object moves more than 0.1 mm or 0.05°, and otherwise once a second. `revision` counts the placements the backend has applied |
+| `WF` | `t` `snapshot` `sensed` `parts` | A world frame sent to the headset (50 Hz): the snapshot it carried and when that was sensed |
+| `WE` | `t` `sequence` `op` `id` `pose` `outcome` | An edit from the headset. `op`: `move`, `new-layout`, `reset-object` or `reset-layout`. Written `pending` when it arrives, then again with its outcome |
+| `WC` | `t` `sensed` `contacts` | Contacts between the arms and objects, `arm:link:object:forceN;...` (object 0 is the table); empty when they end. Only when the arm server reports them; Isaac does not yet |
+
+**Objects are not the truth for the arm.** An arm stopped by an obstacle shows up as `QS` falling short
+of `AO`, never in the joint records themselves.
+
 ## Versioning
 
 Readers reject an unknown version. A change adds a version, and the reader keeps reading every

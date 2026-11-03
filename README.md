@@ -214,6 +214,12 @@ The profile is generated from Franka's URDF and never hand-edited. The arm is sh
 `JointTrajectoryShaper`, which the `franka-replay` predictor replays. Its sessions say `source:
 sim-host`, and their arm is never the robot's.
 
+**With physics:** `just isaac-host` runs the FR3 Duo in Isaac Sim on the GPU machine behind a RobotHost
+there (docs/adr/0031, `robot/isaac/README.md`). Both hosts have a world beside the arms by default:
+a work table and fixed obstacles from `core/Scenes/fr3-duo-bench.json`, laid out from a seed. The
+headset draws them and has a NEW LAYOUT button for the next layout, and every session records them.
+In Isaac the arms collide with them; beside the simulated arm nothing collides.
+
 ## Contributing
 
 Read root `CLAUDE.md` first, especially "Boundaries for agents". The short version: free rein

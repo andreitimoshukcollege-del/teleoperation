@@ -183,7 +183,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         world = IsaacWorld(scene, str(robot.GetPath())) if scene is not None else None
         if world is not None:
             world.build(stage)
-            print(f"[isaac] the robot's fixed bodies ignore the surfaces: {', '.join(b.rsplit('/', 1)[-1] for b in world.fixed_bodies(stage))}", flush=True)
+            fixed_bodies = world.fixed_bodies(stage)
+            print(f"[isaac] the robot's fixed bodies ignore the surfaces: {', '.join(b.rsplit('/', 1)[-1] for b in fixed_bodies)}", flush=True)
 
         settings = carb.settings.get_settings()
         for key in ("/physics/updateToUsd", "/physics/updateVelocitiesToUsd", "/physics/updateParticlesToUsd", "/physics/updateResidualsToUsd"):
@@ -214,8 +215,9 @@ def main(argv: Optional[List[str]] = None) -> int:
         if world is not None:
             world.attach()
             for surface, bodies in world.robot_on_surfaces():
-                if bodies:
-                    print(f"[isaac] the robot overlaps surface {surface!r} at start: {', '.join(b.rsplit('/', 1)[-1] for b in bodies)}", flush=True)
+                moving = [b for b in bodies if b not in fixed_bodies]
+                if moving:
+                    print(f"[isaac] warning: moving links overlap surface {surface!r} at start, and are pushed out: {', '.join(b.rsplit('/', 1)[-1] for b in moving)}", flush=True)
 
         dof_target = np.zeros((1, n))
 

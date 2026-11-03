@@ -196,6 +196,20 @@ namespace Teleop.RobotHost.Tests.Recording
         }
 
         [Fact]
+        public void AHostWithoutADriver_IsNotToldItsDriverLogIsMissing()
+        {
+            using var rig = new Rig(driverWaitSeconds: 0); // the serial-chain hosts: no driver, so no wait
+            int id = rig.Begin();
+            rig.Recorder.Record("KA|1|1|1000000000");
+            rig.Recorder.EndAuto(id, "no joint command for 30 s");
+
+            string dir = rig.AutoDir();
+            Assert.True(WaitFor(() => File.Exists(Path.Combine(dir, "files.sha256"))), string.Join("\n", rig.Log));
+            JsonNode meta = JsonNode.Parse(File.ReadAllText(Path.Combine(dir, "session.json")))!;
+            Assert.DoesNotContain("END trailer", (string?)meta["notes"] ?? "");
+        }
+
+        [Fact]
         public void ASplit_GivesTwoCompleteSessions_EachWithItsOwnRecords()
         {
             using var rig = new Rig(driverWaitSeconds: 0.2);

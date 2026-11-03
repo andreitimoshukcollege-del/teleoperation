@@ -2,7 +2,9 @@ using System;
 using System.Net.Sockets;
 using System.Text;
 using Teleop.Core.Types;
+using Teleop.RobotArm.World;
 using Teleop.RobotHost.Backend;
+using Teleop.RobotHost.World;
 
 namespace Teleop.RobotHost.ArmServer
 {
@@ -25,7 +27,7 @@ namespace Teleop.RobotHost.ArmServer
     /// names others, or whose clock is not this machine's (the server stamps readings with RobotHost's clock, docs/adr/0030
     /// decision 4).</para>
     /// </summary>
-    public sealed class ArmServerClient : IArmBackend, IDisposable
+    public sealed class ArmServerClient : IArmBackend, IWorldBackend, IDisposable
     {
         /// <summary>How far the server's clock may be from ours when it welcomes us: they must be the same clock.</summary>
         public const double MaxClockDisagreementSeconds = 0.05;
@@ -44,6 +46,20 @@ namespace Teleop.RobotHost.ArmServer
         private readonly int[] _slot = new int[256];
         private uint _sequence;
         private bool _haveState;
+
+        // The world (docs/adr/0031 amendment 2): the scene the server runs, a snapshot being assembled from its parts, the
+        // newest complete one, and placement results not yet taken.
+        private readonly byte[] _sceneSha = new byte[ArmServerWorld.Sha256Bytes];
+        private readonly ObjectPose[] _assembling = new ObjectPose[WorldScene.MaxObjects];
+        private readonly ObjectPose[] _snapshot = new ObjectPose[WorldScene.MaxObjects];
+        private readonly ObjectPose[] _worldPart = new ObjectPose[ArmServerWorld.MaxObjectsPerWorld];
+        private readonly ArmServerContact[] _contacts = new ArmServerContact[ArmServerWorld.MaxContacts];
+        private readonly (uint Request, PlaceOutcome Outcome, ObjectPose Pose)[] _placed = new (uint, PlaceOutcome, ObjectPose)[64];
+        private int _placedHead, _placedCount, _assembledCount, _snapshotCount;
+        private uint _assemblingSnapshot, _snapshotRevision;
+        private long _assemblingSensed, _snapshotSensed;
+        private ulong _partsSeen;
+        private bool _hasWorld, _snapshotFresh;
 
         public ArmServerClient(IArmServerLink link, ReadOnlySpan<byte> motorIds, long ticksPerSecond)
         {
@@ -176,6 +192,102 @@ namespace Teleop.RobotHost.ArmServer
 
         public void Dispose() => _link.Dispose();
 
+        public bool HasWorld => _hasWorld;
+
+        public ReadOnlySpan<byte> SceneSha256 => _hasWorld ? _sceneSha : ReadOnlySpan<byte>.Empty;
+
+        public bool Physics => Kind == ArmServerKind.Isaac;
+
+        /// <summary>The server's contact reports, as they come: sensed ticks, then each contact. Null: none.</summary>
+        public Action<long, ReadOnlyMemory<ArmServerContact>>? ContactsSink { get; set; }
+
+        public void Place(uint request, PlaceCause cause, in ObjectPose pose, long hostTicks)
+        {
+            if (ArmServerWorld.TryEncodePlace(++_sequence, hostTicks, request, cause, pose, _send, out int n)) _link.Send(_send.AsSpan(0, n));
+        }
+
+        public bool TryTakeSnapshot(Span<ObjectPose> poses, out int count, out long sensedTicks, out uint revision)
+        {
+            count = 0;
+            sensedTicks = _snapshotSensed;
+            revision = _snapshotRevision;
+            if (!_snapshotFresh || poses.Length < _snapshotCount) return false;
+            _snapshotFresh = false;
+            _snapshot.AsSpan(0, _snapshotCount).CopyTo(poses);
+            count = _snapshotCount;
+            return true;
+        }
+
+        public bool TryTakePlaced(out uint request, out PlaceOutcome outcome, out ObjectPose pose)
+        {
+            request = 0;
+            outcome = 0;
+            pose = default;
+            if (_placedCount == 0) return false;
+            (request, outcome, pose) = _placed[_placedHead];
+            _placedHead = (_placedHead + 1) % _placed.Length;
+            _placedCount--;
+            return true;
+        }
+
+        private bool HandleWorld(byte kind, ReadOnlySpan<byte> datagram)
+        {
+            if (kind == ArmServerWorld.KindWorldInfo && ArmServerWorld.TryDecodeWorldInfo(datagram, out ReadOnlySpan<byte> sha, out _))
+            {
+                sha.CopyTo(_sceneSha);
+                _hasWorld = true;
+                return true;
+            }
+
+            if (kind == ArmServerWorld.KindWorld &&
+                ArmServerWorld.TryDecodeWorld(datagram, out long sensed, out uint snapshot, out uint revision, out byte part, out byte parts, _worldPart, out int count))
+            {
+                if (snapshot != _assemblingSnapshot || _partsSeen == 0)
+                {
+                    _assemblingSnapshot = snapshot;
+                    _assemblingSensed = sensed;
+                    _partsSeen = 0;
+                    _assembledCount = 0;
+                }
+
+                int from = part * ArmServerWorld.MaxObjectsPerWorld;
+                if (from + count > _assembling.Length) return true;
+                _worldPart.AsSpan(0, count).CopyTo(_assembling.AsSpan(from));
+                _assembledCount = Math.Max(_assembledCount, from + count);
+                _partsSeen |= 1UL << part;
+                if (_partsSeen == (parts >= 64 ? ulong.MaxValue : (1UL << parts) - 1))
+                {
+                    _assembling.AsSpan(0, _assembledCount).CopyTo(_snapshot);
+                    _snapshotCount = _assembledCount;
+                    _snapshotSensed = _assemblingSensed;
+                    _snapshotRevision = revision;
+                    _snapshotFresh = true;
+                    _partsSeen = 0;
+                }
+
+                return true;
+            }
+
+            if (kind == ArmServerWorld.KindPlaced && ArmServerWorld.TryDecodePlaced(datagram, out uint request, out PlaceOutcome outcome, out _, out ObjectPose pose))
+            {
+                if (_placedCount < _placed.Length)
+                {
+                    _placed[(_placedHead + _placedCount) % _placed.Length] = (request, outcome, pose);
+                    _placedCount++;
+                }
+
+                return true;
+            }
+
+            if (kind == ArmServerWorld.KindContacts && ArmServerWorld.TryDecodeContacts(datagram, out long at, _contacts, out int n))
+            {
+                ContactsSink?.Invoke(at, new ReadOnlyMemory<ArmServerContact>(_contacts, 0, n));
+                return true;
+            }
+
+            return false;
+        }
+
         private void Handle(ReadOnlySpan<byte> datagram, long arrival)
         {
             byte kind = ArmServerWire.KindOf(datagram);
@@ -212,6 +324,7 @@ namespace Teleop.RobotHost.ArmServer
                 return;
             }
 
+            if (HandleWorld(kind, datagram)) return;
             if (kind != ArmServerWire.KindWelcome) Rejected++;
         }
     }

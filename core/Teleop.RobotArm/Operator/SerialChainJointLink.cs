@@ -7,6 +7,7 @@ using Teleop.Core.Time;
 using Teleop.Core.Types;
 using Teleop.RobotArm.Types;
 using Teleop.RobotArm.Wire;
+using Teleop.RobotArm.World;
 
 // C# 9: block-scoped namespace only, like the rest of Teleop.RobotArm.
 namespace Teleop.RobotArm.Operator
@@ -84,9 +85,28 @@ namespace Teleop.RobotArm.Operator
         private readonly JointSample[] _queueJoints = new JointSample[QueueCapacity * MaxJoints];
         private int _queueHead, _queueSize;
 
+        // The world (docs/adr/0031 amendment 2): world frames wait out the same added delay as joint frames, so objects and
+        // arms cross the disturbed network together. Optional: without a WorldState, world datagrams are ignored as before.
+        private const int WorldQueueCapacity = 512;
+        private readonly WorldState? _world;
+        private readonly long[] _worldRelease = new long[WorldQueueCapacity];
+        private readonly long[] _worldSensed = new long[WorldQueueCapacity];
+        private readonly int[] _worldCounts = new int[WorldQueueCapacity];
+        private readonly ObjectPose[] _worldPoses = new ObjectPose[WorldQueueCapacity * WorldCodec.MaxObjectsPerFrame];
+        private readonly ObjectPose[] _worldPart = new ObjectPose[WorldCodec.MaxObjectsPerFrame];
+        private readonly byte[] _worldSha = new byte[WorldCodec.Sha256Bytes];
+        private readonly byte[] _editBuffer = new byte[WorldCodec.EditBytes];
+        private int _worldHead, _worldSize;
+        private uint _editSequence;
+        private long _editFirstSent = long.MinValue, _editLastSent = long.MinValue;
+        private WorldEditOp _editOp;
+        private ObjectPose _editPose;
+
         public SerialChainJointLink(ITransport transport, ITimeAuthority clock, SerialChainProfile profile, ClockSyncConfig clockSyncConfig,
-            IReadOnlyList<JointPredictorPreset> presets, int activePreset, OperatorClientKind clientKind = OperatorClientKind.Headset)
+            IReadOnlyList<JointPredictorPreset> presets, int activePreset, OperatorClientKind clientKind = OperatorClientKind.Headset,
+            WorldState? world = null)
         {
+            _world = world;
             _transport = transport ?? throw new ArgumentNullException(nameof(transport));
             _clock = clock ?? throw new ArgumentNullException(nameof(clock));
             _profile = profile ?? throw new ArgumentNullException(nameof(profile));
@@ -109,6 +129,30 @@ namespace Teleop.RobotArm.Operator
                 _motionOn = value;
                 _motionChanged = true;
             }
+        }
+
+        /// <summary>The world as the headset sees it; null when the link was made without one.</summary>
+        public WorldState? World => _world;
+
+        /// <summary>Whether an edit is waiting for the status to echo it.</summary>
+        public bool WorldEditPending => _editFirstSent != long.MinValue;
+
+        /// <summary>The last edit that went unanswered for 2 s (0: none).</summary>
+        public uint WorldEditTimedOut { get; private set; }
+
+        /// <summary>
+        /// Asks RobotHost for a world edit (docs/adr/0031 amendment 2): NEW LAYOUT, a move, a reset. Re-sent every 0.25 s until the
+        /// world status echoes it, given up after 2 s. One at a time: false while another is waiting, or without a world.
+        /// </summary>
+        public bool RequestWorldEdit(WorldEditOp op, in ObjectPose pose, long now)
+        {
+            if (_world == null || WorldEditPending) return false;
+            _editSequence = _editSequence == uint.MaxValue ? 1 : _editSequence + 1;
+            _editOp = op;
+            _editPose = pose;
+            _editFirstSent = now;
+            _editLastSent = long.MinValue;
+            return true;
         }
 
         /// <summary>
@@ -196,8 +240,43 @@ namespace Teleop.RobotArm.Operator
                 _lastHeadsetSentTicks = now;
             }
 
+            if (_editFirstSent != long.MinValue)
+            {
+                if (_world!.HasStatus && _world.Status.EditSequence == _editSequence)
+                {
+                    _editFirstSent = long.MinValue;
+                }
+                else if (now - _editFirstSent > 2 * _clock.TicksPerSecond)
+                {
+                    WorldEditTimedOut = _editSequence;
+                    _editFirstSent = long.MinValue;
+                }
+                else if ((_editLastSent == long.MinValue || now - _editLastSent >= _clock.TicksPerSecond / 4) &&
+                         WorldCodec.TryEncodeEdit(_editOp, _editPose.Id, _editSequence, now, _editPose, _editBuffer, out int editBytes))
+                {
+                    _transport.Send(_editBuffer.AsSpan(0, editBytes), now);
+                    _editLastSent = now;
+                }
+            }
+
             while (_transport.TryReceive(now, _buffer, out int count, out long arrival))
             {
+                if (_world != null && count > 0 && _buffer[0] == WorldCodec.FrameTag)
+                {
+                    if (WorldCodec.TryDecodeFrame(_buffer.AsSpan(0, count), out _, out long worldSensed, out _, out _, _worldPart, out int objects))
+                    {
+                        EnqueueWorld(arrival + (long)(_addedDelayMs / 1000.0 * _clock.TicksPerSecond), worldSensed, objects);
+                    }
+
+                    continue;
+                }
+
+                if (_world != null && count > 0 && _buffer[0] == WorldCodec.StatusTag)
+                {
+                    if (WorldCodec.TryDecodeStatus(_buffer.AsSpan(0, count), out WorldStatus status, _worldSha, out _)) _world.ApplyStatus(status, _worldSha);
+                    continue;
+                }
+
                 if (!JointStateCodec.TryDecode(_buffer.AsSpan(0, count), out _, out long robotSend, out long sensed,
                         out long echoOperator, out long echoRobotRecv, out long robotTps, _received, out int jointCount))
                 {
@@ -238,6 +317,15 @@ namespace Teleop.RobotArm.Operator
                 _queueSize--;
             }
 
+            // World frames too, on the same release clock (each pose ordered by when RobotHost sensed it).
+            while (_worldSize > 0 && _worldRelease[_worldHead] <= now)
+            {
+                int slot = _worldHead;
+                for (int i = 0; i < _worldCounts[slot]; i++) _world!.Apply(_worldPoses[slot * WorldCodec.MaxObjectsPerFrame + i], _worldSensed[slot]);
+                _worldHead = (_worldHead + 1) % WorldQueueCapacity;
+                _worldSize--;
+            }
+
             // Once per tick: the jitter of each preset's estimate for now.
             _scorer.OnDisplayTick(now, now);
         }
@@ -257,6 +345,22 @@ namespace Teleop.RobotArm.Operator
             _queueCounts[slot] = jointCount;
             Array.Copy(_received, 0, _queueJoints, slot * MaxJoints, jointCount);
             _queueSize++;
+        }
+
+        private void EnqueueWorld(long releaseTicks, long sensedRobotTicks, int count)
+        {
+            if (_worldSize == WorldQueueCapacity)
+            {
+                _worldHead = (_worldHead + 1) % WorldQueueCapacity;
+                _worldSize--;
+            }
+
+            int slot = (_worldHead + _worldSize) % WorldQueueCapacity;
+            _worldRelease[slot] = releaseTicks;
+            _worldSensed[slot] = sensedRobotTicks;
+            _worldCounts[slot] = count;
+            Array.Copy(_worldPart, 0, _worldPoses, slot * WorldCodec.MaxObjectsPerFrame, count);
+            _worldSize++;
         }
 
         /// <summary>A joint command was just sent; the predictors replay it from when it reaches the robot.</summary>

@@ -8,9 +8,15 @@ Every millisecond, paced to the wall clock: take RobotHost's newest targets, ste
 motor, give its output to the joints' position drives, and step PhysX once. Every 4 ms, the arm's measured state goes
 back. About once a second, how well the loop keeps up.
 
+With ``--scene`` (docs/adr/0031 amendment 2), the scene file's surfaces and fixed obstacles are in the stage too
+(``world.py``): after each Welcome the bridge says which scene it runs (WORLD_INFO), every 20 ms where the objects are
+(WORLD, from PhysX), and it applies or refuses each PLACE RobotHost sends.
+
 What stands in for the FR3 (docs/adr/0031 decision 2), each a parameter written into the Welcome's description:
 - the joints' position drives (stiffness, damping) play Franka's internal controller;
 - the arms' own links feel no gravity, because the real FR3 compensates its own weight; objects will;
+- each arm joint's drive pushes no harder than the profile's effort (87 or 12 Nm), so an arm driven into an obstacle
+  stalls against it as the real one would, and what it measures falls short of what was commanded;
 - PhysX steps at 1 kHz with no results written back to USD, which is what makes 1 kHz affordable.
 """
 
@@ -23,9 +29,11 @@ import signal
 import socket
 import sys
 import time
+import traceback
 from typing import Dict, List, Optional, Tuple
 
 from . import profile as profile_module
+from . import scene as scene_module
 from . import wire
 from .shaper import ShapedState, shaper_for_profile, step
 
@@ -54,6 +62,8 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     a.add_argument("--profile", default=os.path.join(repo, "core", "RobotProfiles", "fr3-duo.json"))
     a.add_argument("--urdf", default=os.path.join(repo, "robot", "franka", "fr3_duo", "urdf", "fr3_duo.urdf"))
     a.add_argument("--socket", default="/tmp/teleop-isaac.sock", help="the Unix datagram socket RobotHost talks to")
+    a.add_argument("--scene", default="", help="a scene file (core/Scenes/*.json) to put beside the arms; none: the arms alone")
+    a.add_argument("--world-every", type=int, default=20, help="send the objects' poses every this many 1 ms steps")
     a.add_argument("--work", default=os.path.expanduser("~/isaacsim/work"), help="where the URDF's USD conversion is kept")
     a.add_argument("--stiffness", type=float, default=16000.0, help="arm joint drive stiffness, Nm/rad")
     a.add_argument("--damping", type=float, default=250.0, help="arm joint drive damping, Nm s/rad")
@@ -132,6 +142,10 @@ def main(argv: Optional[List[str]] = None) -> int:
     start = start_pose(p)
     states = [ShapedState.at_rest(q) for q in start]
     targets = list(start)
+    scene = scene_module.load(args.scene) if args.scene else None
+    if scene is not None and scene.robot_profile != p.name:
+        raise SystemExit(f"error: the scene {args.scene} is for profile {scene.robot_profile!r}, not {p.name!r}")
+    scene_sha = hashlib.sha256(open(args.scene, "rb").read()).digest() if scene is not None else b""
 
     from isaacsim import SimulationApp
 
@@ -144,7 +158,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         from importlib.metadata import version
         from isaacsim.core.experimental.prims import Articulation
         from isaacsim.core.simulation_manager import SimulationManager
-        from pxr import PhysxSchema, UsdPhysics
+        from pxr import PhysxSchema, Usd, UsdPhysics
+        from .world import IsaacWorld
 
         usd = convert_urdf(args.urdf, args.work)
         stage_utils.open_stage(usd)
@@ -162,9 +177,14 @@ def main(argv: Optional[List[str]] = None) -> int:
         art_api.CreateSolverPositionIterationCountAttr(args.iterations)
         art_api.CreateSolverVelocityIterationCountAttr(1)
         art_api.CreateEnabledSelfCollisionsAttr(False)
-        for prim in stage.Traverse():
+        for prim in Usd.PrimRange(robot):  # the robot's links only: objects feel gravity
             if prim.HasAPI(UsdPhysics.RigidBodyAPI):
                 PhysxSchema.PhysxRigidBodyAPI.Apply(prim).CreateDisableGravityAttr(True)
+        world = IsaacWorld(scene, str(robot.GetPath())) if scene is not None else None
+        if world is not None:
+            world.build(stage)
+            fixed_bodies = world.fixed_bodies(stage)
+            print(f"[isaac] the robot's fixed bodies ignore the surfaces: {', '.join(b.rsplit('/', 1)[-1] for b in fixed_bodies)}", flush=True)
 
         settings = carb.settings.get_settings()
         for key in ("/physics/updateToUsd", "/physics/updateVelocitiesToUsd", "/physics/updateParticlesToUsd", "/physics/updateResidualsToUsd"):
@@ -183,6 +203,21 @@ def main(argv: Optional[List[str]] = None) -> int:
         kp = np.array([[args.finger_stiffness if "finger" in nm else args.stiffness for nm in names]])
         kd = np.array([[args.finger_damping if "finger" in nm else args.damping for nm in names]])
         art.set_dof_gains(kp, kd)
+        imported = np.asarray(art.get_dof_max_efforts().numpy()).reshape(-1)
+        efforts = imported.copy()
+        for arm in p.arms:
+            for j in arm.joints:
+                if j.effort > 0:
+                    efforts[dofs.joint_dof[j.motor_id]] = j.effort
+        art.set_dof_max_efforts(efforts.reshape(1, -1))
+        arm_efforts = sorted({j.effort for arm in p.arms for j in arm.joints if j.effort > 0})
+        print(f"[isaac] drive force limits: imported {sorted(set(np.round(imported, 3).tolist()))}, now {sorted(set(np.round(efforts, 3).tolist()))}", flush=True)
+        if world is not None:
+            world.attach()
+            for surface, bodies in world.robot_on_surfaces():
+                moving = [b for b in bodies if b not in fixed_bodies]
+                if moving:
+                    print(f"[isaac] warning: moving links overlap surface {surface!r} at start, and are pushed out: {', '.join(b.rsplit('/', 1)[-1] for b in moving)}", flush=True)
 
         dof_target = np.zeros((1, n))
 
@@ -200,7 +235,10 @@ def main(argv: Optional[List[str]] = None) -> int:
         art.set_dof_position_targets(dof_target)
 
         description = (f"Isaac Sim {version('isaacsim')}, PhysX {1 / dt:.0f} Hz on CPU, drives {args.stiffness:g}/{args.damping:g} "
-                       f"(fingers {args.finger_stiffness:g}/{args.finger_damping:g}), robot gravity off, {args.iterations} solver iterations")
+                       f"(fingers {args.finger_stiffness:g}/{args.finger_damping:g}), arm efforts {'/'.join(f'{e:g}' for e in arm_efforts)} Nm, "
+                       f"robot gravity off, {args.iterations} solver iterations")
+        if world is not None:
+            description += f", scene {scene.name} ({scene_sha.hex()[:12]}, {len(scene.objects)} fixed objects)"
         if os.path.exists(args.socket):
             os.unlink(args.socket)
         sock = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
@@ -214,6 +252,12 @@ def main(argv: Optional[List[str]] = None) -> int:
         client = None
         enabled = True
         sequence = 0
+
+        def next_sequence() -> int:
+            nonlocal sequence
+            sequence += 1
+            return sequence
+
         steps = late = 0
         lag_ms = 0.0
         step_ns = int(round(dt * 1e9))
@@ -239,6 +283,9 @@ def main(argv: Optional[List[str]] = None) -> int:
                     sequence += 1
                     try:
                         sock.sendto(wire.encode_welcome(sequence, wire.SERVER_ISAAC, time.monotonic_ns(), motor_ids, description), client)
+                        if world is not None:
+                            sequence += 1
+                            sock.sendto(wire.encode_world_info(sequence, scene_sha, [o.id for o in scene.objects]), client)
                     except OSError:
                         client = None  # it left before the answer; it says hello again
                 elif kind == wire.TARGETS and sender == client:
@@ -253,6 +300,22 @@ def main(argv: Optional[List[str]] = None) -> int:
                         if not e.enabled:
                             targets = [s.q for s in states]  # come to rest where the shaper has the arm
                         enabled = e.enabled
+                elif kind == wire.PLACE and sender == client:
+                    place = wire.decode_place(data)
+                    if place is not None:
+                        _, request, cause, object_id, pose = place
+                        if world is not None:
+                            outcome, now_pose = world.place(cause, object_id, pose)
+                            revision = world.model.revision
+                        else:
+                            outcome, now_pose, revision = wire.UNKNOWN_OBJECT, tuple(pose), 0
+                        if outcome != wire.APPLIED or cause != wire.CAUSE_LAYOUT:
+                            print(f"[isaac] place {object_id} (cause {cause}): outcome {outcome}", flush=True)
+                        sequence += 1
+                        try:
+                            sock.sendto(wire.encode_placed(sequence, request, object_id, outcome, revision, now_pose), client)
+                        except OSError:
+                            pass
 
             for k in range(len(states)):
                 step(states[k], targets[k], limits[k], shaper)
@@ -282,6 +345,15 @@ def main(argv: Optional[List[str]] = None) -> int:
                 except OSError:
                     pass  # RobotHost went away; it says hello again when it is back
 
+            if world is not None and client is not None and steps % args.world_every == 0:
+                objects = world.read()
+                sensed = time.monotonic_ns()
+                for message in world.model.world_messages(next_sequence, sensed, objects):
+                    try:
+                        sock.sendto(message, client)
+                    except OSError:
+                        break
+
             next_tick += step_ns
             now = time.monotonic_ns()
             behind = now - next_tick
@@ -310,6 +382,12 @@ def main(argv: Optional[List[str]] = None) -> int:
         os.unlink(args.socket)
         print(f"[isaac] stopped after {steps} steps, {late} late", flush=True)
         return 0
+    except BaseException:
+        # Kit's close ends the process before Python would print this, so a failed start looked like a clean exit.
+        traceback.print_exc()
+        sys.stdout.flush()
+        sys.stderr.flush()
+        raise
     finally:
         app.close()
 

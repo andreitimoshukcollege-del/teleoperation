@@ -205,6 +205,23 @@ namespace Teleop.XR.Editor
 
             if (root.GetComponentsInChildren<Collider>(true).Length > 0 || root.GetComponentsInChildren<Rigidbody>(true).Length > 0)
                 problems.Add($"'{XrFr3WorldSetup.RootName}' has colliders or rigidbodies: the headset simulates nothing (Isaac does)");
+            // The world twin: one, wired to this bridge, holding every scene object by id.
+            SerialChainWorldTwin[] twins = root.GetComponentsInChildren<SerialChainWorldTwin>(true);
+            if (twins.Length != 1) problems.Add($"{twins.Length} SerialChainWorldTwin(s) under '{XrFr3WorldSetup.RootName}': run `just unity-world-fr3-xr`");
+            foreach (SerialChainWorldTwin twin in twins)
+            {
+                var tso = new SerializedObject(twin);
+                if (tso.FindProperty("bridge").objectReferenceValue == null) problems.Add("SerialChainWorldTwin.bridge is not set");
+                SerializedProperty ids = tso.FindProperty("ids"), objs = tso.FindProperty("objects");
+                var have = Enumerable.Range(0, ids.arraySize).Select(i => ids.GetArrayElementAtIndex(i).intValue).ToArray();
+                if (!have.SequenceEqual(world.Objects.Select(o => (int)o.Id)) || objs.arraySize != have.Length ||
+                    Enumerable.Range(0, objs.arraySize).Any(i => objs.GetArrayElementAtIndex(i).objectReferenceValue == null))
+                    problems.Add("the world twin's objects are not the scene file's: run `just unity-world-fr3-xr`");
+            }
+
+            if (root.transform.Find(XrFr3WorldSetup.NewLayoutButtonName)?.GetComponent<Fr3MotionButton>() == null)
+                problems.Add("no NEW LAYOUT button under the world root: run `just unity-world-fr3-xr`");
+
             foreach (SceneSurface s in world.Surfaces.Where(x => x.Display == SurfaceDisplay.Show))
             {
                 Transform t = root.transform.Find(XrFr3WorldSetup.SurfaceObjectName(s.Id));

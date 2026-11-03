@@ -215,10 +215,19 @@ namespace Teleop.XR.Editor
             Debug.Log($"[fr3-scene] built {ScenePath}: {twin.Joints.Length} moving joints on the twin; lab {LabMeshLibrary.Triangles} generated triangles");
         }
 
-        private static void BuildRecentreButton(SerialChainOperatorBridge bridge, XROrigin origin)
+        private static void BuildRecentreButton(SerialChainOperatorBridge bridge, XROrigin origin) =>
+            BuildButton(null, "RecentreButton", RecentreButtonAt, "Fr3RecentreCap", new Color(0.25f, 0.55f, 1f), "RECENTRE", Fr3MotionButton.Role.Recentre, bridge, origin);
+
+        /// <summary>NEW LAYOUT, beside RECENTRE on the bench's front-right (docs/adr/0031 amendment 2).</summary>
+        internal static Vector3 NewLayoutButtonAt => RecentreButtonAt + new Vector3(0.14f, 0f, 0f);
+
+        /// <summary>A fingertip button on a plinth: a cap to press, its label, and an <see cref="Fr3MotionButton"/> of <paramref name="role"/>.</summary>
+        internal static Transform BuildButton(Transform parent, string name, Vector3 at, string capMaterial, Color capColor, string text,
+            Fr3MotionButton.Role role, SerialChainOperatorBridge bridge, XROrigin origin)
         {
-            var root = new GameObject("RecentreButton").transform;
-            root.position = RecentreButtonAt;
+            var root = new GameObject(name).transform;
+            if (parent != null) root.SetParent(parent, true);
+            root.position = at;
             GameObject plinth = GameObject.CreatePrimitive(PrimitiveType.Cube);
             plinth.name = "Plinth";
             Object.DestroyImmediate(plinth.GetComponent<Collider>());
@@ -232,9 +241,9 @@ namespace Teleop.XR.Editor
             cap.transform.SetParent(root, false);
             cap.transform.localScale = new Vector3(0.055f, 0.008f, 0.055f); // a cylinder primitive is 2 units tall
             cap.transform.localPosition = new Vector3(0f, 0.038f, 0f);
-            cap.GetComponent<Renderer>().sharedMaterial = LabMaterials.Unlit("Fr3RecentreCap", new Color(0.25f, 0.55f, 1f));
+            cap.GetComponent<Renderer>().sharedMaterial = LabMaterials.Unlit(capMaterial, capColor);
             TextMeshPro label = LabParts.Label("Label", root, new Vector3(0f, 0.11f, 0.075f), Quaternion.Euler(15f, 0f, 0f),
-                "RECENTRE", 0.3f, Color.white, new Vector2(0.3f, 0.08f), TextAlignmentOptions.Center, FontStyles.Bold);
+                text, 0.3f, Color.white, new Vector2(0.3f, 0.08f), TextAlignmentOptions.Center, FontStyles.Bold);
 
             var button = root.gameObject.AddComponent<Fr3MotionButton>();
             SetReference(button, "bridge", bridge);
@@ -242,8 +251,9 @@ namespace Teleop.XR.Editor
             SetReference(button, "cap", cap.GetComponent<Renderer>());
             SetReference(button, "label", label);
             var so = new SerializedObject(button);
-            so.FindProperty("role").enumValueIndex = (int)Fr3MotionButton.Role.Recentre;
+            so.FindProperty("role").enumValueIndex = (int)role;
             so.ApplyModifiedPropertiesWithoutUndo();
+            return root;
         }
 
         private static Transform Marker(string name, Material material)
@@ -265,7 +275,7 @@ namespace Teleop.XR.Editor
             return ball.transform;
         }
 
-        private static void SetReference(Object component, string field, Object value)
+        internal static void SetReference(Object component, string field, Object value)
         {
             var so = new SerializedObject(component);
             SerializedProperty property = so.FindProperty(field)
@@ -274,7 +284,7 @@ namespace Teleop.XR.Editor
             so.ApplyModifiedPropertiesWithoutUndo();
         }
 
-        private static void SetReferences(Object component, string field, params Object[] values)
+        internal static void SetReferences(Object component, string field, params Object[] values)
         {
             var so = new SerializedObject(component);
             SerializedProperty property = so.FindProperty(field)

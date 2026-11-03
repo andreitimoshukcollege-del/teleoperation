@@ -15,15 +15,43 @@ The GPU machine needs our own Isaac Sim, installed once: `just isaac-setup`, the
 Push the commit you want to run, then:
 
 ```bash
-just isaac-host                       # Isaac and RobotHost on the GPU machine; Enter stops both
+just isaac-host                       # Isaac and RobotHost on the GPU machine, with the bench scene; Enter stops both
+just isaac-host fr3-duo-bench 7       # the same, layouts from seed 7 (just takes arguments by position)
+just isaac-host none                  # the arms alone, no table or obstacles
 just isaac-stop                       # stop them from any terminal (RobotHost closes its recording first)
 just fr3-teleop-probe 0.08 3 franka-replay false <GPU machine>   # drive it headless from here
 just push-galaxy-fr3-config <GPU machine>                        # point the headset at it
+just fr3-world-probe <GPU machine> 7 true                        # the world through RobotHost: seed 7's poses, then NEW LAYOUT
 ```
 
 `isaac-host` refuses while a training run of ours, or another Isaac host of ours, is going. Other
 people's GPU jobs no longer stop it (2026-11-02): it says how much of the GPU they hold, since sharing it
 can make physics steps late. The bridge's log is `~/isaacsim/bridge.log` on that machine.
+
+## The world (docs/adr/0031 amendment 2)
+
+With a scene (`core/Scenes/<scene>.json`, default `fr3-duo-bench`), `world.py` puts the file's surfaces in
+the stage as static colliders and its fixed obstacles as kinematic bodies, on the session layer, so the
+robot's USD is never changed. RobotHost decides where objects go, from seeded layouts, and asks with PLACE;
+the bridge applies or refuses each one by RobotHost's own rules (`StaticWorld`), plus a PhysX overlap query
+against the arms: `overlaps-arm`, and `arm-touching` for a move from the headset. After each Welcome it
+sends WORLD_INFO, the scene file's sha256 (RobotHost runs only a world whose file is byte-identical to
+its own), and every 20 ms WORLD, the objects' poses as PhysX has them.
+
+- **The robot's fixed bodies ignore the surfaces.** The mount, both arms' `link0` and the head stand in
+  the bench, and their contact with it fought the base's pin and threw both arms off their targets.
+  Every moving link, the hands included, collides with the table, the bench and the obstacles.
+- **Each arm joint pushes no harder than the profile's effort** (87 or 12 Nm; Isaac's import already
+  had these), so an arm driven into an obstacle stalls against it, and what it measures (`QS`) falls
+  short of what was commanded (`AO`).
+- **Isaac does not report contacts yet** (`WC` is never written behind it).
+
+`just isaac-scene-check` (`scene_check.py`) runs the real bridge with the scene and talks to it as RobotHost
+would. It checks WORLD_INFO, WORLD at 50 ± 5 Hz, placements applied and refused, and the left hand
+driven into a post: it must stall more than 0.05 rad short, while the same motion without the post
+tracks within 0.01 rad. It also checks `arm-touching` and `overlaps-arm` while the hand rests on the
+post, and late steps of at most 1/s. On 2026-11-02 the hand stalled 0.256 rad short, the free motion
+tracked exactly (0.000 rad), and there were no late steps in 16 s.
 
 ## The render check
 
@@ -51,6 +79,9 @@ The bridge runs from the pushed commit. Sample frames stay on that machine, in
 |---|---|---|
 | `teleop_isaac/wire.py` | RobotHost's `ArmServer/ArmServerWire.cs` | `golden/arm-server-wire-v1.json`, written by the C# tests (`just gen-arm-server-golden`) |
 | `teleop_isaac/shaper.py` | Core's `JointTrajectoryShaper` (via the trainer's copy, as text) | `golden/joint-shaper-v1.json`, the trainer's golden; an Eval test holds the two equal (`just gen-trainer-golden` refreshes both) |
+| `teleop_isaac/scene.py` | Core's `WorldScene` reader | `core/Scenes/testdata/vectors.json` and `golden/scene-fr3-duo-bench.json` (`just gen-isaac-goldens`) |
+| `teleop_isaac/kinematics.py` | Core's FK | `golden/fr3-duo-fk-v1.json` (`just gen-isaac-goldens`) |
+| `teleop_isaac/world.py`'s rules | RobotHost's `StaticWorld` | `tests/test_world.py`, including Core's frozen seed-1 layout |
 
 `just isaac-bridge-test` runs those checks. They are plain Python and need no Isaac. Change a copy
 and its original together, or the tests fail.
@@ -60,7 +91,7 @@ and its original together, or the tests fail.
 These are all bridge arguments, and the Welcome's description records them in each session's log:
 - **Position drives** of 16000 Nm/rad and 250 Nm·s/rad on the arm joints (about 20 Hz tracking),
   and 2000 N/m and 100 N·s/m on the fingers. They play Franka's internal controller.
-- **No gravity on the arms' own links.** The real FR3 compensates its own weight. Objects will feel
-  gravity (phase 2).
+- **No gravity on the arms' own links.** The real FR3 compensates its own weight. Only the robot's
+  links: the scene's objects are kinematic today, and movable ones will feel gravity.
 - **PhysX at 1 kHz on the CPU,** with 8 solver iterations and no results written back to USD. That
   setting is what makes 1 kHz affordable (docs/adr/0031 amendment).

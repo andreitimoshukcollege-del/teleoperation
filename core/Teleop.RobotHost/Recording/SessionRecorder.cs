@@ -488,6 +488,21 @@ namespace Teleop.RobotHost.Recording
             };
             // Session v2 names its profile (trainer/contract/SESSION_FORMAT.md); v1's keys are left exactly as they were.
             if (o.ProfileName != null) meta["robotProfile"] = o.ProfileName;
+            // The world (docs/adr/0031 amendment 2): the scene file, copied and hashed, and the seed of the first layout.
+            if (o.ScenePath != null && File.Exists(o.ScenePath))
+            {
+                byte[] scene = File.ReadAllBytes(o.ScenePath);
+                File.WriteAllBytes(Path.Combine(directory, "scene.json"), scene);
+                meta["scene"] = new JsonObject
+                {
+                    ["name"] = o.SceneName,
+                    ["file"] = "scene.json",
+                    ["sha256"] = Convert.ToHexString(SHA256.HashData(scene)).ToLowerInvariant(),
+                    ["seed"] = o.SceneSeed,
+                };
+            }
+
+            if (o.ArmServerKind != null) meta["armServer"] = new JsonObject { ["kind"] = o.ArmServerKind, ["description"] = o.ArmServerDescription };
             SessionFinalizer.WriteJsonAtomically(Path.Combine(directory, "session.json"), meta);
         }
 

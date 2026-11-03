@@ -1,5 +1,5 @@
 """A serial-chain robot profile (docs/adr/0026), as the bridge needs it: ``core/RobotProfiles/fr3-duo.json``'s arms,
-joints (motor ids, names, limits) and grippers. Only what the shaper and the Isaac joint mapping use; the kinematics
+joints (motor ids, names, limits, efforts) and grippers. Only what the shaper and the Isaac joint mapping use; the kinematics
 stay Core's.
 """
 
@@ -23,6 +23,7 @@ class Joint:
     jerk: float
     pbv_deceleration: float
     pbv_offset: float
+    effort: float = 0.0  # the drive's force limit, Nm (0: not given)
 
 
 @dataclass(frozen=True)
@@ -65,7 +66,7 @@ def load(path: str) -> Profile:
     for a in d["arms"]:
         joints = tuple(Joint(j["motorId"], j["name"], j["lower"], j["upper"], j["softLower"], j["softUpper"], j["velocity"],
                              j["acceleration"], j["jerk"], j.get("positionBasedDeceleration", 0.0),
-                             j.get("positionBasedVelocityOffset", 0.0)) for j in a["joints"])
+                             j.get("positionBasedVelocityOffset", 0.0), float(j.get("effort", 0.0))) for j in a["joints"])
         g = a.get("gripper") if a.get("hasGripper") else None
         gripper = Gripper(g["motorId"], g["name"], g["fingerTravel"], g["speed"], bool(g.get("secondFingerMimics", False))) if g else None
         arms.append(Arm(a["name"], joints, gripper))

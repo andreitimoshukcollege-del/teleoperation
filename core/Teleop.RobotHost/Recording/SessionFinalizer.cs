@@ -133,7 +133,9 @@ namespace Teleop.RobotHost.Recording
                 if (headsetDisturbed) notes.Add("the headset's network disturbance or added delay was on during the session (HD records): not a real-network measurement");
             }
 
-            if (!driverClosed)
+            // A wait of 0 with no driver log is a host without a driver (the serial-chain hosts): nothing was missing.
+            bool driverExpected = driverWaitSeconds > 0 || LogFiles(directory, "driver").Any();
+            if (!driverClosed && driverExpected)
             {
                 notes.Add(FormattableString.Invariant($"driver.jlog had no END trailer {driverWaitSeconds} s after RobotHost closed the session"));
                 log($"[record] {Path.GetFileName(directory)}: the driver's log was not closed within {driverWaitSeconds} s; files.sha256 written anyway");
@@ -150,11 +152,12 @@ namespace Teleop.RobotHost.Recording
             log($"[record] completed {Path.GetFileName(directory)}: slider {conditions["speedSliderRadPerSec"]?.ToJsonString()}, files.sha256 written");
         }
 
-        /// <summary><c>sha256sum</c> format, as record-stop writes it: session.json, robot-profile.json, then every <c>.jlog</c>.</summary>
+        /// <summary><c>sha256sum</c> format, as record-stop writes it: session.json, robot-profile.json, scene.json, then every <c>.jlog</c>.</summary>
         public static void WriteChecksums(string directory)
         {
             var names = new List<string> { "session.json" };
             if (File.Exists(Path.Combine(directory, "robot-profile.json"))) names.Add("robot-profile.json");
+            if (File.Exists(Path.Combine(directory, "scene.json"))) names.Add("scene.json");
             names.AddRange(Directory.GetFiles(directory, "*.jlog").Select(Path.GetFileName).Select(n => n!).OrderBy(n => n, StringComparer.Ordinal));
             var text = new StringBuilder();
             foreach (string name in names)

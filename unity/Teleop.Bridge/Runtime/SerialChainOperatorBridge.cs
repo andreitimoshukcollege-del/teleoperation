@@ -9,6 +9,7 @@ using Teleop.RobotArm.Collision;
 using Teleop.RobotArm.Operator;
 using Teleop.RobotArm.Types;
 using Teleop.RobotArm.Wire;
+using Teleop.RobotArm.World;
 using UnityEngine;
 using CoreQuat = System.Numerics.Quaternion;
 using CoreVec = System.Numerics.Vector3;
@@ -54,6 +55,7 @@ namespace Teleop.Bridge
         private const string ConfigResource = "fr3_connection";
         private const string ProfileResource = "fr3_duo_profile";
         private const string CollisionResource = "fr3_duo_collision";
+        private const string SceneResource = "fr3_scene";
 
         [Tooltip("The robot's root frame in the scene: the URDF's base link, where the twin is built.")]
         [SerializeField] private Transform robotRoot;
@@ -83,6 +85,7 @@ namespace Teleop.Bridge
         private ulong _disturbanceSeed;
         private (float Lag, float Jitter, float Loss) _disturbance;
         private SerialChainJointLink _link;
+        private WorldState _world;
         private LinkView _view;
         private JointSample[] _commanded;
         private SerialChainTeleop _teleop;
@@ -220,6 +223,28 @@ namespace Teleop.Bridge
 
         /// <summary>Whether the hands map absolutely (the robot anchored to your body), rather than through the relative clutch.</summary>
         public bool IsAbsolute => _mapping != null;
+
+        /// <summary>The world as the headset sees it (docs/adr/0031 amendment 2); null without a scene file.</summary>
+        public WorldState World => _world;
+
+        /// <summary>Whether a scene file was loaded, so the world can be shown at all.</summary>
+        public bool HasWorld => _world != null;
+
+        /// <summary>Whether RobotHost runs another scene file than this headset's (SCENE MISMATCH).</summary>
+        public bool WorldSceneMismatch => _world != null && _world.SceneMismatch;
+
+        /// <summary>Whether NEW LAYOUT can be asked for now: a world is running, motion is off, and no edit is waiting.</summary>
+        public bool CanRequestNewLayout => _link != null && _world != null && _world.HasStatus && _world.Status.Running &&
+                                           !_world.SceneMismatch && _mode != JetRoverMotionMode.On && !_link.WorldEditPending;
+
+        /// <summary>Asks RobotHost for the next seeded layout (only while motion is off); false when it cannot be asked now.</summary>
+        public bool RequestNewLayout()
+        {
+            if (!CanRequestNewLayout) return false;
+            bool sent = _link.RequestWorldEdit(WorldEditOp.NewLayout, default, _clock.NowTicks);
+            if (sent) Debug.Log("[world] NEW LAYOUT requested");
+            return sent;
+        }
 
         /// <summary>
         /// Anchors the robot to your body as you stand now (docs/adr/0029 amendments 1 and 4): the headset's position, with
@@ -425,7 +450,8 @@ namespace Teleop.Bridge
                 maxAcceptableRttTicks: (long)(_config.MaxAcceptableRttMs / 1000.0 * _clock.TicksPerSecond),
                 outlierRttMultiple: _config.OutlierRttMultiple, minSamplesBeforeTrusted: _config.MinSamplesBeforeTrusted);
             List<JointPredictorPreset> presets = Presets(out int active, out string[] descriptions);
-            _link = new SerialChainJointLink(_transport, _clock, _profile, clockSync, presets, active);
+            _world = LoadWorld(_profile);
+            _link = new SerialChainJointLink(_transport, _clock, _profile, clockSync, presets, active, OperatorClientKind.Headset, _world);
             _view = new LinkView(_link, descriptions, _clock);
             _commanded = new JointSample[_teleop.MotorCount];
 
@@ -653,6 +679,32 @@ namespace Teleop.Bridge
             {
                 get => _link.AddedDelayMs;
                 set => _link.AddedDelayMs = value;
+            }
+        }
+
+        /// <summary>
+        /// The scene file (docs/adr/0031 amendment 2): <c>persistentDataPath/fr3_scene.json</c> when pushed, else the copy in Resources.
+        /// Its sha256 is compared with the one RobotHost reports. Null (no world) when neither loads.
+        /// </summary>
+        private static WorldState LoadWorld(SerialChainProfile profile)
+        {
+            try
+            {
+                string pushed = System.IO.Path.Combine(Application.persistentDataPath, SceneResource + ".json");
+                byte[] bytes = System.IO.File.Exists(pushed) ? System.IO.File.ReadAllBytes(pushed) : Resources.Load<TextAsset>(SceneResource)?.bytes;
+                if (bytes == null) return null;
+                WorldScene scene = JsonUtility.FromJson<SceneDocument>(System.Text.Encoding.UTF8.GetString(bytes)).ToScene();
+                if (scene.RobotProfile != profile.Name) throw new FormatException($"the scene is for '{scene.RobotProfile}', not '{profile.Name}'");
+                using (var sha = System.Security.Cryptography.SHA256.Create())
+                {
+                    Debug.Log($"[world] scene '{scene.Name}': {scene.Objects.Length} objects{(System.IO.File.Exists(pushed) ? " (pushed)" : "")}");
+                    return new WorldState(scene, sha.ComputeHash(bytes));
+                }
+            }
+            catch (Exception e)
+            {
+                Debug.LogError($"[world] the scene file does not load: {e.Message}; no world twin");
+                return null;
             }
         }
 

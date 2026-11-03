@@ -58,6 +58,19 @@ namespace Teleop.RobotHost.Recording
         /// <summary>The robot profile's name, written into a v2 <c>session.json</c>. Null for v1.</summary>
         public string? ProfileName { get; set; }
 
+        /// <summary>The scene file (docs/adr/0031 amendment 2), copied into each session as <c>scene.json</c>. Null: no world.</summary>
+        public string? ScenePath { get; set; }
+
+        public string? SceneName { get; set; }
+
+        /// <summary>The seed layout 1 was drawn from; later layouts are in the session's <c>WL</c> records.</summary>
+        public ulong SceneSeed { get; set; }
+
+        /// <summary>What the arm server said it is (kind and description: the Isaac version and drive gains). Null: no arm server.</summary>
+        public string? ArmServerKind { get; set; }
+
+        public string? ArmServerDescription { get; set; }
+
         /// <summary>RobotHost's own <c>BUILD_INFO</c>. Null: <c>BUILD_INFO</c> beside the running assembly.</summary>
         public string? RobotHostBuildInfoPath { get; set; }
 

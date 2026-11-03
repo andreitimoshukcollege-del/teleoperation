@@ -2991,7 +2991,7 @@ isaac-record-check seconds="40" amplitude="0.6" seed="3":
     echo "[record-check] checking $dir"
     ssh -o ConnectTimeout=10 "$host" "cd \$HOME/teleoperation-isaac/robot/isaac && \$HOME/isaacsim/venv/bin/python verify_session.py '$dir'"
 
-# Moving objects as the headset's EDIT OBJECTS does (phase P5), against a running `just isaac-host fr3-duo-bench 7` (seed 7, so the layout is known): world-probe checks layout 1 is seed 7's, moves the can to a free spot (applied, and the world frames show it there), asks for a spot off the table (outside-region), then, with the left elbow held 0.6 rad down by chain-drive (simulated arms only), asks for the left post under that hand (overlaps-arm, Isaac's PhysX query). Exits non-zero if any answer is not the expected one
+# Moving objects as the headset's EDIT OBJECTS does (phase P5), against a running `just isaac-host fr3-duo-bench 7` (seed 7, so the layout is known): world-probe checks layout 1 is seed 7's, moves the can to a free spot (applied, and the world frames show it there), asks for a spot off the table (outside-region), moves the left post aside, then, with the left arm held forward and down by chain-drive (simulated arms only), asks for the post back under that hand (overlaps-arm, Isaac's PhysX query). Exits non-zero if any answer is not the expected one
 [group('isaac')]
 isaac-edit-check:
     #!/usr/bin/env bash
@@ -3000,13 +3000,16 @@ isaac-edit-check:
     just fr3-world-probe "$addr" 7 false 2
     just fr3-world-probe "$addr" "" false 2 fr3-duo-bench "4:0.45:-0.10:30"
     just fr3-world-probe "$addr" "" false 2 fr3-duo-bench "4:1.5:0:0:outside-region"
-    echo "[edit-check] holding the left elbow (motor 4) 0.6 rad down for 20 s"
+    just fr3-world-probe "$addr" "" false 2 fr3-duo-bench "1:0.72:0.45:0"
+    # The left base and shoulder 0.6 rad forward put the left hand at about (0.51, 0.30, 0.16), where the post was; folding the
+    # elbow instead is refused by RobotHost's collision model (link2 against link5).
+    echo "[edit-check] holding the left arm forward and down (motors 1 and 2, +0.6 rad) for 20 s"
     (cd core && sleep 40 | timeout 60 dotnet run --project Teleop.Eval -- chain-drive --simulated-robot --remote-host "$addr" --seconds 20 \
-        --hold 4:-0.6 --amplitude-rad 0.6 --collision-model RobotProfiles/fr3-duo.collision.json > /dev/null 2>&1) &
+        --hold 1:0.6,2:0.6 --amplitude-rad 0.6 --collision-model RobotProfiles/fr3-duo.collision.json > /dev/null 2>&1) &
     drive=$!
     sleep 10
     status=0
-    just fr3-world-probe "$addr" "" false 2 fr3-duo-bench "1:0.34:0.20:0:overlaps-arm" || status=1
+    just fr3-world-probe "$addr" "" false 0 fr3-duo-bench "1:0.51:0.30:0:overlaps-arm" || status=1
     wait $drive || true
     exit $status
 

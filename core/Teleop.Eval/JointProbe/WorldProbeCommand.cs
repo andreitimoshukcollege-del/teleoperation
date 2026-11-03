@@ -78,7 +78,8 @@ namespace Teleop.Eval.JointProbe
                     for (int k = 0; k < 4; k++) socket.SendTo(edit, 0, n, SocketFlags.None, robot); // re-sent: applied once
                 }
 
-                Watch(socket, robot, scene, sha, seconds, expect, phase == 1 ? 2u : (uint?)null, failures, phase == 1 ? "after NEW LAYOUT" : "");
+                // --seconds 0: no watch of the stream (another joint client is subscribed, so frames come and go); the move only.
+                if (seconds > 0 || phase == 1) Watch(socket, robot, scene, sha, Math.Max(seconds, 2), expect, phase == 1 ? 2u : (uint?)null, failures, phase == 1 ? "after NEW LAYOUT" : "");
             }
 
             if (moveSpec != null) Move(socket, robot, scene, moveSpec, failures);

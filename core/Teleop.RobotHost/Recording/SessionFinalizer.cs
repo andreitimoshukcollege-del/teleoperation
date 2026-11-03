@@ -133,7 +133,9 @@ namespace Teleop.RobotHost.Recording
                 if (headsetDisturbed) notes.Add("the headset's network disturbance or added delay was on during the session (HD records): not a real-network measurement");
             }
 
-            if (!driverClosed)
+            // A wait of 0 with no driver log is a host without a driver (the serial-chain hosts): nothing was missing.
+            bool driverExpected = driverWaitSeconds > 0 || LogFiles(directory, "driver").Any();
+            if (!driverClosed && driverExpected)
             {
                 notes.Add(FormattableString.Invariant($"driver.jlog had no END trailer {driverWaitSeconds} s after RobotHost closed the session"));
                 log($"[record] {Path.GetFileName(directory)}: the driver's log was not closed within {driverWaitSeconds} s; files.sha256 written anyway");

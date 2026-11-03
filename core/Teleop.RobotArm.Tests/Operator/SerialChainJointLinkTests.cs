@@ -1,3 +1,4 @@
+using Teleop.RobotArm.World;
 using Teleop.Core.Contracts;
 using Teleop.Core.Prediction;
 using Teleop.Core.Tests.TestSupport;
@@ -50,6 +51,93 @@ namespace Teleop.RobotArm.Tests.Operator
 
         private static readonly ClockSyncConfig Sync = new ClockSyncConfig(historyCapacity: 32, smoothingAlpha: 0.2f,
             maxAcceptableRttTicks: Tps, outlierRttMultiple: 4.0, minSamplesBeforeTrusted: 3);
+
+        private static SerialChainJointLink Link(SerialChainProfile profile, FakeSocket socket, ManualClock clock, WorldState? world)
+        {
+            JointPredictorConfig config = SerialChainJointLink.PredictorConfig(profile, Tps, maxHorizonMs: 300, modelSpeedRadPerSec: 2.5f);
+            var presets = new[] { new JointPredictorPreset("hold-last", "hold-last", config) };
+            return new SerialChainJointLink(socket, clock, profile, Sync, presets, 0, OperatorClientKind.Headset, world);
+        }
+
+        private static byte[] WorldFrame(byte id, float x, long sensed)
+        {
+            var b = new byte[JointDatagram.MaxBytes];
+            Assert.True(WorldCodec.TryEncodeFrame(1, sensed, 0, 1, new[] { new ObjectPose(id, 0, x, 0, 0.15f, 1, 0, 0, 0) }, b, out int n));
+            return b.AsSpan(0, n).ToArray();
+        }
+
+        [Fact]
+        public void WorldFrames_WaitOutTheAddedDelay_LikeJointFrames()
+        {
+            SerialChainProfile profile = SerialChainKinematicsTests.LoadFr3Duo();
+            var socket = new FakeSocket();
+            var clock = new ManualClock(Tps);
+            var world = new WorldState(World.SceneDocumentTests.LoadShipped(), new byte[32]);
+            SerialChainJointLink link = Link(profile, socket, clock, world);
+            link.AddedDelayMs = 200;
+            socket.Incoming.Enqueue((WorldFrame(1, 0.55f, 1000), 0));
+            link.Tick(0);
+            Assert.False(world.TryGet(1, out _, out _));
+            link.Tick(Tps / 10);
+            Assert.False(world.TryGet(1, out _, out _));
+            link.Tick(Tps / 5);
+            Assert.True(world.TryGet(1, out ObjectPose pose, out long sensed));
+            Assert.Equal((0.55f, 1000L), (pose.X, sensed));
+        }
+
+        [Fact]
+        public void AWorldEdit_IsResent_UntilTheStatusEchoesIt_AndGivenUpAfter2s()
+        {
+            SerialChainProfile profile = SerialChainKinematicsTests.LoadFr3Duo();
+            var socket = new FakeSocket();
+            var clock = new ManualClock(Tps);
+            var world = new WorldState(World.SceneDocumentTests.LoadShipped(), new byte[32]);
+            SerialChainJointLink link = Link(profile, socket, clock, world);
+            Assert.True(link.RequestWorldEdit(WorldEditOp.NewLayout, default, 0));
+            Assert.False(link.RequestWorldEdit(WorldEditOp.NewLayout, default, 0)); // one at a time
+            for (long t = 0; t < Tps; t += Tps / 100) link.Tick(t);
+            int edits = socket.Sent.Count(b => WorldCodec.TryDecodeEdit(b, out _, out _, out _, out _));
+            Assert.InRange(edits, 4, 5); // every 0.25 s
+            WorldCodec.TryDecodeEdit(socket.Sent.Last(b => b[0] == WorldCodec.EditTag), out _, out uint seq, out _, out _);
+
+            var status = new byte[WorldCodec.StatusBytes];
+            WorldCodec.TryEncodeStatus(new WorldStatus(WorldStatus.FlagRunning, 4, 2, 8, seq, 0, 0), new byte[32], 0, status, out _);
+            socket.Incoming.Enqueue((status, Tps));
+            link.Tick(Tps);
+            link.Tick(Tps + 1);
+            Assert.False(link.WorldEditPending);
+
+            Assert.True(link.RequestWorldEdit(WorldEditOp.NewLayout, default, 2 * Tps));
+            for (long t = 2 * Tps; t <= 4 * Tps + Tps / 10; t += Tps / 100) link.Tick(t);
+            Assert.False(link.WorldEditPending);
+            Assert.Equal(seq + 1, link.WorldEditTimedOut);
+        }
+
+        [Fact]
+        public void WorldFramesArriving_AllocateNothing()
+        {
+            SerialChainProfile profile = SerialChainKinematicsTests.LoadFr3Duo();
+            var socket = new FakeSocket();
+            var clock = new ManualClock(Tps);
+            var world = new WorldState(World.SceneDocumentTests.LoadShipped(), new byte[32]);
+            SerialChainJointLink link = Link(profile, socket, clock, world);
+            byte[] frame = WorldFrame(2, 0.5f, 1);
+            var frames = Enumerable.Range(0, 3000).Select(_ => frame).ToArray();
+            for (int i = 0; i < 300; i++)
+            {
+                socket.Incoming.Enqueue((frames[i], i));
+                link.Tick(i);
+            }
+
+            long before = GC.GetAllocatedBytesForCurrentThread();
+            for (int i = 300; i < 3000; i++)
+            {
+                socket.Incoming.Enqueue((frames[i], i));
+                link.Tick(i);
+            }
+
+            Assert.Equal(before, GC.GetAllocatedBytesForCurrentThread());
+        }
 
         private static SerialChainJointLink Link(SerialChainProfile profile, FakeSocket socket, ManualClock clock)
         {

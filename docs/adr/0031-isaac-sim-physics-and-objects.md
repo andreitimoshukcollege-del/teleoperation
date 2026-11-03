@@ -245,3 +245,129 @@ on the 5090, over the lab VPN (RTT 12.5 ms):
 
 **Not yet:** the forward-kinematics check against the profile, which decision 2 asks for. Only joint
 names and limits are checked so far. Phases 2 and 3 have not started.
+
+## Amendment 2 (2026-11-02): phase 2, the work table, fixed obstacles, layouts and moves
+
+The user wants to collect training data in the lab with the simulated FR3 Duo, and chose, for the objects:
+- **fixed obstacles first**, movable objects later;
+- **layouts from the scene file, and moves from the headset**;
+- **layouts that change only when asked**: at host start, with NEW LAYOUT, or by moving an object;
+- objects shown **in 3D in VR** (decision 4's world twin) **and on two camera feeds** (ADR 0032).
+
+This amendment fixes what decisions 3–5 left open, before either side is built.
+
+1. **A work table in front of the robot.** The VR lab's bench ends 0.2 m in front of the FR3, short of
+   its workspace.
+   - **The scene file** holds the bench and a work table that abuts the bench's far edge, flush with
+     its top, spanning x = 0.20–0.90 m in the root frame.
+   - **The FR3 scene** builds the table from the file, and the scene check compares the two within
+     1 mm.
+   - **The file:** `core/Scenes/fr3-duo-bench.json`.
+
+2. **Fixed obstacles first.**
+   - **`kind: fixed`** is a kinematic rigid body in Isaac: the arms collide with it, and only a
+     placement moves it.
+   - **`movable`** is reserved, and version 1 of the file refuses it.
+
+3. **The headset's IK and RobotHost's refusal check stay unaware of objects.**
+   - **Why:** the user wants the arms to collide in Isaac, so the contact shows as command against
+     measured. That divergence is the signal the Direction paragraph's world model is meant to learn.
+   - **What follows:** a command into an obstacle is accepted, and the arm stops against it. At
+     contact, the commanded ghost and the predicted arm pass through the obstacle while the measured
+     arm stops.
+   - **The drives:** each arm joint's force is limited to the profile's effort, so an arm stalls
+     against an obstacle instead of overpowering the solver.
+   - **A test pins it:** `WithAScene_ACommandIntoAnObstacleIsAccepted`.
+
+4. **Layouts are drawn by RobotHost** (Core's `SceneLayout.Draw(scene, seed)`, on `SeededRng`,
+   allocation-free).
+   - **When:** at host start (`--scene-seed n|auto`, recorded), and on NEW LAYOUT from the headset (a
+     bench button, only while motion is off). They never change on their own.
+   - **Isaac checks each placement:** it refuses a pose that overlaps an arm or another object (a
+     PhysX overlap query). A refused object is redrawn up to 8 times, and otherwise stays where it was.
+   - **The same code serves the simulated host:** `fr3-sim-host` runs it against a static world, so
+     the path is tested end to end without the GPU machine.
+
+5. **Moves from the headset come last** (phase P5).
+   - **EDIT OBJECTS** is a bench button, active only while motion is off.
+   - **The gesture:** a held curl grabs the nearest movable object's twin. Dragging moves it in x and
+     y, and palm yaw turns it, clamped to the table. Opening the hand sends one request.
+   - **The solid twin moves only when world frames show the new pose,** so a move visibly crosses the
+     network.
+
+6. **The wire.** Quaternions are w, x, y, z throughout, as `RigidTransform` and Isaac order them.
+
+   **Arm-server wire, version 1, new kinds 7–11**, in `ArmServerWire.cs`, `wire.py` and the golden
+   file. An older RobotHost counts them as rejected, and an older bridge ignores them.
+
+   | Kind | Direction | Body |
+   |---|---|---|
+   | 7 `WORLD_INFO` | bridge → host | `32s sceneSha256, u8 n, n × u8 id`. Sent after every WELCOME and on every scene change |
+   | 8 `WORLD` | bridge → host | `i64 sensedNs, u32 snapshot, u32 revision, u8 part, u8 parts, u8 n ≤ 16, n × (u8 id, u8 flags, 3 × f32 position, 4 × f32 quaternion)`. 50 Hz, poses from PhysX, not USD |
+   | 9 `PLACE` | host → bridge | `i64 hostTicks, u32 request, u8 cause (1 layout, 2 headset, 3 reset), u8 id, 3 × f32, 4 × f32` |
+   | 10 `PLACED` | bridge → host | `u32 request, u8 id, u8 outcome, u32 revision, 3 × f32, 4 × f32`: the pose the object has now |
+   | 11 `CONTACTS` | bridge → host | `i64 sensedNs, u8 n, n × (u8 arm, u8 link, u8 object (0 = table), f32 normal force N)`. Optional: sent if PhysX's contact reports work |
+
+   **Outcomes:**
+
+   | Code | Meaning |
+   |---|---|
+   | 0 | applied |
+   | 1 | overlaps an arm |
+   | 2 | overlaps an object |
+   | 3 | outside the placement region |
+   | 4 | unknown object |
+   | 5 | not movable |
+   | 6 | an arm touches it now |
+   | 7 | busy |
+   | 8 | invalid pose |
+   | 9 | timed out |
+
+   **Joint port, three new tags.** They share the joint states' transport, disturbance, `ClockSync`
+   and playout. That answers this ADR's open question: world frames share the joint link's playout.
+
+   | Tag | Direction | Layout |
+   |---|---|---|
+   | `0x85` edit request | headset → host | 44 B: `u8 tag, u8 version, u8 op (1 move, 2 new layout, 3 reset object, 4 reset layout), u8 id, u32 sequence, i64 operatorSendTicks, 3 × f32, 4 × f32`. Re-sent every 0.25 s until echoed, abandoned after 2 s |
+   | `0x86` world frame | host → headset | ≤ 249 B: `u8 tag, u8 version, u32 snapshot, i64 sensedTicks, u8 part, u8 parts, u8 n ≤ 8, n × (u8 id, 3 × f32, 4 × f32)`. Each part is applied as it arrives |
+   | `0x87` world status | host → headset | 64 B: `u8 tag, u8 version, u8 flags (world running, physics rather than static, edits allowed), u8 object count, 32 B scene sha256, u32 layout number, u64 layout seed, u32 echoed edit sequence, u8 outcome, u8 object id, u16 reserved, i64 robotSendTicks`. Once a second and on change |
+
+   **The headset checks the scene:** it compares the status's scene sha256 with its own copy of the
+   file, and shows SCENE MISMATCH instead of a wrong world.
+
+7. **Recording.**
+   - **`robothost.jlog`** gains these records, defined in `trainer/contract/SESSION_FORMAT.md` by the
+     change that builds them:
+
+     | Tag | Records |
+     |---|---|
+     | `WL` | a layout |
+     | `WP` | a placement and its outcome |
+     | `WO` | an object-pose snapshot, on change |
+     | `WF` | a world frame sent to the headset |
+     | `WC` | contacts |
+     | `WE` | an edit from the headset |
+
+   - **`session.json`** gains a `scene` block (name, sha256, seed) and the arm server's description
+     (the Isaac version and drive gains, which decision 5 asks for).
+   - **The scene file** is copied into the session as `scene.json` and hashed.
+
+8. **The scene file, version 1.**
+   - **Readers:**
+     - RobotHost reads it with System.Text.Json and the headset with `JsonUtility`. Both read the same
+       `[Serializable]` document in `Teleop.RobotArm`, which validates it and does no I/O.
+     - Isaac reads it with Python's `json`.
+   - **Shared test vectors** in `core/Scenes/testdata/` hold the readers to one meaning.
+   - **What it holds:**
+     - surfaces (bench, table, floor), each marked whether the headset shows it and whether it
+       collides;
+     - objects: id 1–254, name, shape, size, kind, whether the operator may move it, friction, colour,
+       a pose that rests on the table, and jitter in x, y and yaw;
+     - the placement region and clearance;
+     - Isaac-only `backdrops`, `cameras` and `lights` (ADR 0032).
+   - **Format constraints:** no nulls and no nested arrays, so `JsonUtility` can read it.
+
+9. **Phases.** Decision 8's phase 2 becomes P1 (the scene file and a static world twin) and P2
+   (objects in Isaac, world frames, NEW LAYOUT and world records). The root `CLAUDE.md` Direction
+   paragraph is updated in P2. Moves from the headset are P5, after ADR 0032's feeds (P3) and recording
+   (P4), the order the user chose.

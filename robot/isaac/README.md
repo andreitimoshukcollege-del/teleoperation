@@ -21,8 +21,29 @@ just fr3-teleop-probe 0.08 3 franka-replay false <GPU machine>   # drive it head
 just push-galaxy-fr3-config <GPU machine>                        # point the headset at it
 ```
 
-`isaac-host` refuses while the GPU is busy with someone else's job, or with a training run of ours.
-The bridge's log is `~/isaacsim/bridge.log` on that machine.
+`isaac-host` refuses while a training run of ours, or another Isaac host of ours, is going. Other
+people's GPU jobs no longer stop it (2026-11-02): it says how much of the GPU they hold, since sharing it
+can make physics steps late. The bridge's log is `~/isaacsim/bridge.log` on that machine.
+
+## The render check
+
+`just isaac-render-check` (`render_check.py`, docs/adr/0032 phase P0) measures what the cameras' design
+rests on, and prints one `RESULT` line:
+1. **The bridge alone** for 20 s.
+2. **A separate renderer with the bridge beside it,** the two pinned to separate cores. The renderer is a
+   visual-only copy of the robot, posed from joint angles about its URDF axes, with the table, the
+   backdrop surfaces and the head and third-person cameras.
+3. **The head camera rendered inside the bridge's physics loop.**
+
+It exits non-zero if any number is missing, or if the separate renderer misses a criterion:
+- the bridge's late steps stay at most 2× its rate alone, or 1/s;
+- at least 29.5 fps;
+- a render lag that is stable in at least 99.5% of frames;
+- depth p99 under 3 mm;
+- projection p99 under 3 px.
+
+The bridge runs from the pushed commit. Sample frames stay on that machine, in
+`~/isaacsim/render-check/latest`. ADR 0032 holds the 2026-11-02 numbers.
 
 ## What is pinned, and how
 

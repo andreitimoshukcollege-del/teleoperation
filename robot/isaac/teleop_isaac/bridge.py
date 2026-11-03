@@ -212,6 +212,9 @@ def main(argv: Optional[List[str]] = None) -> int:
         print(f"[isaac] drive force limits: imported {sorted(set(np.round(imported, 3).tolist()))}, now {sorted(set(np.round(efforts, 3).tolist()))}", flush=True)
         if world is not None:
             world.attach()
+            for surface, bodies in world.robot_on_surfaces():
+                if bodies:
+                    print(f"[isaac] the robot overlaps surface {surface!r} at start: {', '.join(b.rsplit('/', 1)[-1] for b in bodies)}", flush=True)
 
         dof_target = np.zeros((1, n))
 

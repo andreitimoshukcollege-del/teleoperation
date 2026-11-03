@@ -216,6 +216,27 @@ class IsaacWorld:
             self._query.overlap_box(half, position, rotation, report, False)
         return bool(hit)
 
+    def robot_on_surfaces(self) -> List[Tuple[str, List[str]]]:
+        """Each colliding surface with the robot's bodies that overlap it now (a PhysX overlap query of its box)."""
+        import carb
+
+        robot = self.robot_path + "/"
+        out = []
+        for s in self.model.scene.surfaces:
+            if not s.collides:
+                continue
+            hits: List[str] = []
+
+            def report(h) -> bool:
+                body = str(getattr(h, "rigid_body", "") or "")
+                if body.startswith(robot) and body not in hits:
+                    hits.append(body)
+                return True
+
+            self._query.overlap_box(carb.Float3(*(v / 2 for v in s.size)), carb.Float3(*s.center), carb.Float4(0, 0, 0, 1), report, False)
+            out.append((s.id, hits))
+        return out
+
     def place(self, cause: int, object_id: int, pose: Sequence[float]) -> Tuple[int, Pose]:
         """Applies or refuses one placement: (outcome, the object's pose now)."""
         import numpy as np

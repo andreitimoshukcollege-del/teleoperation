@@ -2921,11 +2921,35 @@ isaac-render-check seconds="20":
     sys.exit(0 if not missing and out["separate_renderer_passes"] else 1)
     PY
 
-# The FR3 Duo in Isaac Sim on the GPU machine, behind a RobotHost there (docs/adr/0031): checks out this commit in ~/teleoperation-isaac (it must be on GitHub), builds RobotHost, starts the Isaac bridge (robot/isaac, log ~/isaacsim/bridge.log) and then RobotHost with --backend arm-server, joint port 6002 and discovery 6005 on that machine, recording headset sessions into ~/isaacsim/recordings. Enter stops both, as does `just isaac-stop` from any terminal. Refuses while an Isaac host of ours is already running there, or a training run of ours is going. Other people's GPU jobs do not stop it (the user's call, 2026-11-02): it says how much of the GPU they hold, since sharing it can make physics steps late. Point the headset at it with `just push-galaxy-fr3-config <GPU machine's address>`; drive it headless with `just fr3-teleop-probe 0.08 3 franka-replay false <GPU machine's address>` (just takes recipe arguments by position)
+# The world in Isaac (docs/adr/0031 amendment 2) on the GPU machine: robot/isaac/scene_check.py starts the bridge with the scene file and talks to it as RobotHost would. Checks WORLD_INFO's sha256, WORLD at 50 +- 5 Hz from PhysX, placements applied and refused (off the table, onto an object, an unknown id), the left hand driven into a post stalling more than 0.05 rad short while the same motion without the post tracks within 0.01 rad, ARM_TOUCHING and OVERLAPS_ARM while it rests there, and late steps <= 1/s. Prints one `RESULT {...}` line and exits non-zero if any check fails or any number is missing. Runs this commit, checked out in ~/teleoperation-isaac (it must be on GitHub); the bridge's log stays in ~/isaacsim/scene-check-bridge.log. Refuses while an Isaac host of ours is running
 [group('isaac')]
-isaac-host:
+isaac-scene-check scene="fr3-duo-bench":
     #!/usr/bin/env bash
     set -euo pipefail
+    case "{{scene}}" in *[!A-Za-z0-9._-]*|"") echo "error: scene is a file name in core/Scenes without .json" >&2; exit 1 ;; esac
+    commit=$(git rev-parse HEAD)
+    git fetch -q origin
+    [ -n "$(git branch -r --contains "$commit" 2>/dev/null)" ] || { echo "error: $commit is not on GitHub: push it first (the GPU machine runs what GitHub has)" >&2; exit 1; }
+    ssh -o ConnectTimeout=10 "{{gpu_host}}" "COMMIT='$commit' SCENE='{{scene}}' bash -s" <<'REMOTE'
+    set -euo pipefail
+    [ -x "$HOME/isaacsim/venv/bin/python" ] || { echo "error: no Isaac Sim in our account here: just isaac-setup" >&2; exit 1; }
+    for p in $(pgrep -u "$USER" -f "teleop_isaac[.]bridge" || true); do
+        case "$(readlink "/proc/$p/exe" 2>/dev/null)" in *python*) echo "error: an Isaac host of ours is running (bridge pid $p): just isaac-stop first" >&2; exit 1 ;; esac
+    done
+    repo=$HOME/teleoperation-isaac
+    [ -d "$repo" ] || git clone -q https://github.com/andreitimoshukcollege-del/teleoperation.git "$repo"
+    cd "$repo" && git fetch -q origin && git checkout -q "$COMMIT" && echo "[scene-check] repo at $(git log --oneline -1), GPU: $(nvidia-smi --query-gpu=name,memory.used --format=csv,noheader)"
+    cd robot/isaac && timeout 600 "$HOME/isaacsim/venv/bin/python" scene_check.py --scene "$repo/core/Scenes/$SCENE.json"
+    REMOTE
+
+# The FR3 Duo in Isaac Sim on the GPU machine, behind a RobotHost there (docs/adr/0031): checks out this commit in ~/teleoperation-isaac (it must be on GitHub), builds RobotHost, starts the Isaac bridge (robot/isaac, log ~/isaacsim/bridge.log) and then RobotHost with --backend arm-server, joint port 6002 and discovery 6005 on that machine, recording headset sessions into ~/isaacsim/recordings. With a scene (core/Scenes/<scene>.json, default fr3-duo-bench; `none` for the arms alone), the table and obstacles are in Isaac too and RobotHost places them from seeded layouts (scene_seed: a number, or auto), docs/adr/0031 amendment 2. Enter stops both, as does `just isaac-stop` from any terminal. Refuses while an Isaac host of ours is already running there, or a training run of ours is going. Other people's GPU jobs do not stop it (the user's call, 2026-11-02): it says how much of the GPU they hold, since sharing it can make physics steps late. Point the headset at it with `just push-galaxy-fr3-config <GPU machine's address>`; drive it headless with `just fr3-teleop-probe 0.08 3 franka-replay false <GPU machine's address>` (just takes recipe arguments by position)
+[group('isaac')]
+isaac-host scene="fr3-duo-bench" scene_seed="auto":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    case "{{scene}}" in *[!A-Za-z0-9._-]*|"") echo "error: scene is a file name in core/Scenes without .json, or none" >&2; exit 1 ;; esac
+    case "{{scene_seed}}" in auto|[0-9]*) ;; *) echo "error: scene_seed is a number or auto" >&2; exit 1 ;; esac
+    [ "{{scene}}" = none ] || [ -f "core/Scenes/{{scene}}.json" ] || { echo "error: no core/Scenes/{{scene}}.json" >&2; exit 1; }
     commit=$(git rev-parse HEAD)
     git fetch -q origin
     [ -n "$(git branch -r --contains "$commit" 2>/dev/null)" ] || { echo "error: $commit is not on GitHub: push it first (the GPU machine runs what GitHub has)" >&2; exit 1; }
@@ -2960,7 +2984,13 @@ isaac-host:
         || { tail -20 "$HOME/isaacsim/robothost-build.log" >&2; exit 1; }
     sock=/tmp/teleop-isaac-$USER.sock
     log=$HOME/isaacsim/bridge.log
-    (cd robot/isaac && exec "$HOME/isaacsim/venv/bin/python" -m teleop_isaac.bridge --socket "$sock") > "$log" 2>&1 &
+    bridge_scene=(); host_scene=()
+    if [ "$SCENE" != none ]; then
+        bridge_scene=(--scene "../../core/Scenes/$SCENE.json")
+        host_scene=(--scene "core/Scenes/$SCENE.json" --scene-seed "$SCENE_SEED")
+        echo "[isaac-host] scene $SCENE (seed $SCENE_SEED)"
+    fi
+    (cd robot/isaac && exec "$HOME/isaacsim/venv/bin/python" -m teleop_isaac.bridge --socket "$sock" "${bridge_scene[@]}") > "$log" 2>&1 &
     bridge=$!
     trap 'kill $bridge 2>/dev/null; wait $bridge 2>/dev/null || true' EXIT
     echo "[isaac-host] bridge pid $bridge (log $log); waiting for Isaac to start"
@@ -2973,10 +3003,11 @@ isaac-host:
     mkdir -p "$HOME/isaacsim/recordings"
     dotnet "$HOME/isaacsim/robothost/Teleop.RobotHost.dll" --profile-path core/RobotProfiles/fr3-duo.json --joint-local-port 6002 \
         --backend arm-server --arm-server-socket "$sock" --collision-model core/RobotProfiles/fr3-duo.collision.json \
-        --discovery-port 6005 --record-control "$HOME/isaacsim/recordings/.active" --auto-record --auto-record-root "$HOME/isaacsim/recordings"
+        --discovery-port 6005 --record-control "$HOME/isaacsim/recordings/.active" --auto-record --auto-record-root "$HOME/isaacsim/recordings" \
+        "${host_scene[@]}"
     REMOTE
     )
-    ssh -o ConnectTimeout=10 "{{gpu_host}}" "COMMIT='$commit' bash -c $(printf '%q' "$remote")"
+    ssh -o ConnectTimeout=10 "{{gpu_host}}" "COMMIT='$commit' SCENE='{{scene}}' SCENE_SEED='{{scene_seed}}' bash -c $(printf '%q' "$remote")"
 
 # Stop the Isaac host that `just isaac-host` started on the GPU machine (docs/adr/0031), from any terminal: what Enter does where it was started. RobotHost gets SIGTERM first, which it takes as Enter, so it closes its recording, and isaac-host then stops the bridge. Whatever still runs after 30 s gets SIGTERM, and after 60 s more, SIGKILL. Says which recording is newest and whether it is complete. Nothing running is not an error
 [group('isaac')]

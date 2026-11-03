@@ -186,30 +186,36 @@ class IsaacWorld:
                 bind_physics(g.GetPrim(), material(f"{self.ROOT}/Materials/{path.rsplit('/', 1)[1]}", o.static_friction, o.dynamic_friction))
 
     def fixed_bodies(self, stage) -> List[str]:
-        """The robot's rigid bodies no joint moves (its mount and what is bolted to it): every body that is not the child
-        of a moving joint, or below one."""
+        """The robot's rigid bodies no joint moves (its mount and what is bolted to it): those reached from the pinned base
+        through fixed joints alone, in either direction. The base is the body a joint pins to the world (a joint with
+        one side empty), or the articulation root's body."""
         from pxr import Usd, UsdPhysics
 
         robot = stage.GetPrimAtPath(self.robot_path)
-        bodies, children, moving = [], {}, []
+        bodies, fixed_links, start = set(), {}, set()
         for prim in Usd.PrimRange(robot):
             if prim.HasAPI(UsdPhysics.RigidBodyAPI):
-                bodies.append(str(prim.GetPath()))
+                bodies.add(str(prim.GetPath()))
+                if prim.HasAPI(UsdPhysics.ArticulationRootAPI):
+                    start.add(str(prim.GetPath()))
             if prim.IsA(UsdPhysics.Joint):
                 j = UsdPhysics.Joint(prim)
                 b0 = [str(t) for t in j.GetBody0Rel().GetTargets()]
                 b1 = [str(t) for t in j.GetBody1Rel().GetTargets()]
-                for parent in b0 or [""]:
-                    children.setdefault(parent, []).extend(b1)
-                if not prim.IsA(UsdPhysics.FixedJoint):
-                    moving.extend(b1)
-        seen = set()
-        while moving:
-            b = moving.pop()
+                if not b0 or not b1:
+                    start.update(b0 + b1)
+                elif prim.IsA(UsdPhysics.FixedJoint):
+                    for a in b0:
+                        for b in b1:
+                            fixed_links.setdefault(a, []).append(b)
+                            fixed_links.setdefault(b, []).append(a)
+        seen, todo = set(), [b for b in start if b in bodies]
+        while todo:
+            b = todo.pop()
             if b not in seen:
                 seen.add(b)
-                moving.extend(children.get(b, []))
-        return [b for b in bodies if b not in seen]
+                todo.extend(fixed_links.get(b, []))
+        return sorted(seen)
 
     # --- after play -------------------------------------------------------------------------------------------------
 

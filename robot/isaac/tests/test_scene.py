@@ -49,9 +49,14 @@ def test_the_shipped_scene_parses_as_core_parses_it():
 def test_the_isaac_only_sections_are_kept_for_the_renderer():
     s = scene.load(os.path.join(SCENES, "fr3-duo-bench.json"))
     cams = {c["id"]: c for c in s.extra["cameras"]}
-    assert cams["head"]["mount"] == "head_camera_mounting_point"
-    assert (cams["head"]["width"], cams["head"]["height"], cams["head"]["feedPort"]) == (640, 360, 6003)
-    assert cams["third"]["feedPort"] == 6007
+    # docs/adr/0032 amendment 3: two third-person cameras and a camera on each wrist, no head camera.
+    assert list(cams) == ["third-left", "third-right", "wrist-left", "wrist-right"]
+    assert "mount" not in cams["third-left"]  # the render lag is measured with the first camera, which must stand still
+    assert cams["wrist-left"]["mount"] == "left_fr3v2_hand" and cams["wrist-right"]["mount"] == "right_fr3v2_hand"
+    # The headset's two displays take ports 6003 (right) and 6007 (left): the wrists, on their own sides.
+    assert (cams["wrist-right"]["feedPort"], cams["wrist-left"]["feedPort"]) == (6003, 6007)
+    assert {c["feedPort"] for c in cams.values()} == {6003, 6007, 6008, 6009}
+    assert all(c["record"] == ["rgb", "depth", "mask"] and (c["width"], c["height"]) == (640, 360) for c in cams.values())
     assert s.extra["backdrops"]["change"] == "per-session"
     hidden = [x.id for x in s.surfaces if x.headset == "hide"]
     assert hidden == ["floor"] and next(x for x in s.surfaces if x.id == "floor").collides  # what a knocked-over object lands on

@@ -120,6 +120,68 @@ def mount_camera_orientation() -> Tuple[float, float, float, float]:
     return matrix_to_quat(MOUNT_TO_CAMERA)
 
 
+def mounted_camera_local(c: Mapping) -> Tuple[Tuple[float, float, float], Tuple[float, float, float, float]]:
+    """A camera on a link (``mount``): its position and USD orientation (w, x, y, z) in that link's frame. With
+    ``mountLookAt`` (and ``mountPosition``, ``mountUp``, all in the link's frame) it looks from its position at that point,
+    as a wrist camera does (docs/adr/0032 amendment 3); without, it sits at the link's origin looking along the link's +x
+    with +z up, as the URDF's ``head_camera_mounting_point`` means."""
+    if "mountLookAt" in c:
+        position = tuple(float(v) for v in c.get("mountPosition", (0.0, 0.0, 0.0)))
+        return position, look_at(position, c["mountLookAt"], tuple(c.get("mountUp", (0.0, 0.0, 1.0))))
+    return (0.0, 0.0, 0.0), mount_camera_orientation()
+
+
+def q_conj(q: Sequence[float]) -> Tuple[float, float, float, float]:
+    return (q[0], -q[1], -q[2], -q[3])
+
+
+def relative_pose(parent: Tuple[Sequence[float], Sequence[float]], child: Tuple[Sequence[float], Sequence[float]]):
+    """``child``'s pose (position, w-x-y-z quaternion) in ``parent``'s frame, both given in the same frame."""
+    pi = q_conj(parent[1])
+    d = [c - p for c, p in zip(child[0], parent[0])]
+    return kinematics.q_rotate(pi, d), kinematics.q_mul(pi, child[1])
+
+
+def screen_corners(center: Sequence[float], size: Sequence[float], normal: Sequence[float]):
+    """A vertical backdrop screen's four corners: centred at ``center``, ``size`` = (width, height), facing the horizontal
+    ``normal`` (x, y). Corner order goes with texture coordinates (0,0), (1,0), (1,1), (0,1), so the image reads left to
+    right, unmirrored, from the side the normal faces."""
+    (cx, cy, cz), (w, h) = center, size
+    n = math.hypot(normal[0], normal[1])
+    ax, ay = -normal[1] / n, normal[0] / n  # left to right, seen from the side the normal faces
+    b, t = cz - h / 2, cz + h / 2
+    return [(cx - ax * w / 2, cy - ay * w / 2, b), (cx + ax * w / 2, cy + ay * w / 2, b),
+            (cx + ax * w / 2, cy + ay * w / 2, t), (cx - ax * w / 2, cy - ay * w / 2, t)]
+
+
+def backdrop_quads(scene) -> List[Tuple[str, str, List[Tuple[float, float, float]]]]:
+    """The scene file's backdrop surfaces (docs/adr/0032 decision 4, amendment 3): (id, mask class, corners) for every mat
+    lying on a surface (``mats``: on a surface's top, raised by ``lift``, within ``region`` [x0, x1, y0, y1] when given) and
+    every screen (``screens``). Each gets its own random image at every backdrop change. A mat on the work table is the
+    ``mat`` mask class, one on another surface that surface's class; a screen is ``screen``."""
+    spec = scene.extra.get("backdrops") or {}
+    out, ids = [], set()
+    surfaces = {x.id: x for x in scene.surfaces}
+    for m in spec.get("mats") or []:
+        s = surfaces.get(m.get("on", ""))
+        if s is None:
+            raise ValueError(f"backdrop mat {m.get('id')!r} lies on {m.get('on')!r}, which is not a surface of the scene")
+        x0, x1 = s.center[0] - s.size[0] / 2, s.center[0] + s.size[0] / 2
+        y0, y1 = s.center[1] - s.size[1] / 2, s.center[1] + s.size[1] / 2
+        if "region" in m:
+            r = m["region"]
+            x0, x1, y0, y1 = max(x0, r[0]), min(x1, r[1]), max(y0, r[2]), min(y1, r[3])
+        top = s.top + float(m.get("lift", 0.0005))
+        out.append((m["id"], "mat" if s.id == "table" else s.id, [(x0, y0, top), (x1, y0, top), (x1, y1, top), (x0, y1, top)]))
+    for sc in spec.get("screens") or []:
+        out.append((sc["id"], "screen", screen_corners(sc["center"], sc["size"], sc.get("normal", (-1.0, 0.0)))))
+    for qid, _, _ in out:
+        if qid in ids:
+            raise ValueError(f"two backdrop surfaces are called {qid!r}")
+        ids.add(qid)
+    return out
+
+
 # The masks' stable ids (docs/adr/0032 decision 5): the same in every session, recorded in each as ``ID`` records. A
 # scene object ``n`` is ``OBJECT_BASE + n``. 0 is anything unlabelled, and the background.
 MASK_IDS = {"left_arm": 1, "left_hand": 2, "right_arm": 3, "right_hand": 4, "head": 5, "mount": 6,
@@ -263,7 +325,7 @@ def run(app, args, p, scene, cameras, fps, joints, motors, tap) -> int:
     from pxr import Gf, Usd, UsdGeom, UsdLux, UsdSemantics
 
     from .bridge import convert_urdf
-    from .world import IsaacWorld
+    from .world import IsaacWorld, prim_name
 
     usd = convert_urdf(args.urdf, args.work)
     stage_utils.open_stage(usd)
@@ -323,16 +385,10 @@ def run(app, args, p, scene, cameras, fps, joints, motors, tap) -> int:
     if os.path.exists(os.path.join(root_dir, "manifest.json")):
         images = backdrops_module.load_manifest(root_dir)["images"]
     backdrop_seed = args.backdrop_seed if args.backdrop_seed >= 0 else time.time_ns() % (2 ** 31)
-    quad_files = {}
-    t = scene.table
-    lift = float((spec.get("mat") or {}).get("lift", 0.0005))
-    top = t.top + lift
-    mat_mesh, quad_files["mat"] = textured_quad("/World/Backdrop/Mat", [(t.x_min, t.y_min, top), (t.x_max, t.y_min, top),
-                                                                        (t.x_max, t.y_max, top), (t.x_min, t.y_max, top)])
-    sc = spec.get("screen") or {"center": [1.30, 0.0, -0.10], "size": [2.40, 1.00]}
-    (cx, cy, cz), (sw, sh) = sc["center"], sc["size"]
-    screen_mesh, quad_files["screen"] = textured_quad("/World/Backdrop/Screen", [(cx, cy + sw / 2, cz - sh / 2), (cx, cy - sw / 2, cz - sh / 2),
-                                                                                 (cx, cy - sw / 2, cz + sh / 2), (cx, cy + sw / 2, cz + sh / 2)])
+    quads = backdrop_quads(scene)  # (id, mask class, corners): the mats and the screens, each its own image
+    quad_meshes, quad_files = {}, {}
+    for qid, _, corners in quads:
+        quad_meshes[qid], quad_files[qid] = textured_quad(f"/World/Backdrop/{prim_name('q', qid)}", corners)
 
     # --- mask labels, on prims that never nest (docs/adr/0032 decision 5) ------------------------------------------
     table = mask_table([o.id for o in scene.objects])
@@ -351,10 +407,10 @@ def run(app, args, p, scene, cameras, fps, joints, motors, tap) -> int:
             label(stage.GetPrimAtPath(path), sid)
     for o, path in zip(scene.objects, world.object_paths):
         label(stage.GetPrimAtPath(path), f"object_{o.id}")
-    label(mat_mesh.GetPrim(), "mat")
-    label(screen_mesh.GetPrim(), "screen")
+    for qid, cls, _ in quads:
+        label(quad_meshes[qid].GetPrim(), cls)
 
-    # The lag cube, labelled so the head camera's segmentation finds it; hidden once the lag is measured.
+    # The lag cube, labelled so the lag camera's segmentation finds it; hidden once the lag is measured.
     cube = UsdGeom.Cube.Define(stage, "/World/LagCube")
     cube.CreateSizeAttr(1.0)
     cube_xf = UsdGeom.Xformable(cube)
@@ -368,6 +424,10 @@ def run(app, args, p, scene, cameras, fps, joints, motors, tap) -> int:
     view = XformPrim([str(links[j.child].GetPath()) for j in moving])
     rest_t, rest_q = (np.asarray(x.numpy() if hasattr(x, "numpy") else x, float) for x in view.get_local_poses())
 
+    # The render lag is measured with the first camera that stands still (the wrist cameras move with the arms).
+    lag_i = next((i for i, c in enumerate(cameras) if "mount" not in c or c["mount"] in ("head_camera_mounting_point",)), None)
+    if lag_i is None:
+        raise SystemExit("error: the scene has no camera that stands still, to measure the render lag with")
     sensors, feeds, specs = [], [], []
     for i, c in enumerate(cameras):
         w, h, hfov = int(c["width"]), int(c["height"]), float(c["hfovDeg"])
@@ -377,14 +437,15 @@ def run(app, args, p, scene, cameras, fps, joints, motors, tap) -> int:
         if "mount" in c:
             if c["mount"] not in links:
                 raise SystemExit(f"error: camera {c['id']}'s mount {c['mount']!r} is not a link of the robot")
-            cam = RtxCamera(f"{links[c['mount']].GetPath()}/Cam_{c['id']}", translations=[[0, 0, 0]],
-                            orientations=[list(mount_camera_orientation())], attributes=attrs)
+            local_t, local_q = mounted_camera_local(c)
+            cam = RtxCamera(f"{links[c['mount']].GetPath()}/{prim_name('Cam', c['id'])}", translations=[list(local_t)],
+                            orientations=[list(local_q)], attributes=attrs)
         else:
-            cam = RtxCamera(f"/World/Cameras/Cam_{c['id']}", positions=[list(c["position"])],
+            cam = RtxCamera(f"/World/Cameras/{prim_name('Cam', c['id'])}", positions=[list(c["position"])],
                             orientations=[list(look_at(c["position"], c["lookAt"]))], attributes=attrs)
         records = list(c.get("record") or [])
         annotators = ["rgb"]
-        if i == 0 or "mask" in records:
+        if i == lag_i or "mask" in records:
             annotators.append("semantic_segmentation")
         if "depth" in records:
             annotators.append("distance_to_image_plane")
@@ -404,16 +465,16 @@ def run(app, args, p, scene, cameras, fps, joints, motors, tap) -> int:
 
     for k in range(600):
         RenderingManager.render()
-        if read(sensors[0][1], "rgb")[0] is not None and k > 5:
+        if read(sensors[lag_i][1], "rgb")[0] is not None and k > 5:
             break
 
     # --- the render lag --------------------------------------------------------------------------------------------
-    head_cam, head_sensor = sensors[0]
+    head_cam, head_sensor = sensors[lag_i]
     hp, hq = (np.asarray(x.numpy() if hasattr(x, "numpy") else x, float).reshape(-1) for x in head_cam.get_world_poses())
     hrot = np.array([[1 - 2 * (hq[2] ** 2 + hq[3] ** 2), 2 * (hq[1] * hq[2] - hq[0] * hq[3]), 2 * (hq[1] * hq[3] + hq[0] * hq[2])],
                      [2 * (hq[1] * hq[2] + hq[0] * hq[3]), 1 - 2 * (hq[1] ** 2 + hq[3] ** 2), 2 * (hq[2] * hq[3] - hq[0] * hq[1])],
                      [2 * (hq[1] * hq[3] - hq[0] * hq[2]), 2 * (hq[2] * hq[3] + hq[0] * hq[1]), 1 - 2 * (hq[1] ** 2 + hq[2] ** 2)]])
-    s0 = specs[0]
+    s0 = specs[lag_i]
 
     def project(x):
         xc = hrot.T @ (np.asarray(x, float) - hp[:3])
@@ -423,7 +484,7 @@ def run(app, args, p, scene, cameras, fps, joints, motors, tap) -> int:
 
     lag, agree, samples = args.lag, 1.0, []
     if args.lag < 0:
-        # On the table where the head camera looks (20-62 degrees down), with the scene's objects hidden so none hides it.
+        # On the table, in that camera's view, with the scene's objects hidden so none hides it.
         objects_root = UsdGeom.Imageable(stage.GetPrimAtPath(f"{IsaacWorld.ROOT}/Objects"))
         objects_root.MakeInvisible()
         history = []
@@ -461,34 +522,41 @@ def run(app, args, p, scene, cameras, fps, joints, motors, tap) -> int:
           f"{len(moving)} moving links", flush=True)
 
     # --- the cameras' poses, for the recording ----------------------------------------------------------------------
+    # A camera that stands still: its pose in the robot's base frame. A camera on a link: its pose in that link's URDF
+    # frame, as Isaac rendered it (the robot is still at its rest pose, every joint 0), so a reader poses it at every
+    # frame from the frame's state by forward kinematics (docs/adr/0032 amendment 3).
     camera_poses = []
-    for cam, _ in sensors:
+    for (cam, _), c in zip(sensors, specs):
         cp, cq = (np.asarray(x.numpy() if hasattr(x, "numpy") else x, float).reshape(-1) for x in cam.get_world_poses())
-        camera_poses.append(tuple(float(v) for v in list(cp[:3]) + list(cq[:4])))
+        world = (tuple(float(v) for v in cp[:3]), tuple(float(v) for v in cq[:4]))
+        if c["mount"]:
+            local_p, local_q = relative_pose(kinematics.link_pose(joints, {}, c["mount"]), world)
+            camera_poses.append((*local_p, *local_q))
+        else:
+            camera_poses.append((*world[0], *world[1]))
 
     # --- backdrops: one seeded pair at start-up and after every recorded session (docs/adr/0032 decision 4) ------------
-    backdrop = {"change": -1, "mat": None, "screen": None, "settle_until": -1}
+    backdrop = {"change": -1, "images": {}, "settle_until": -1}  # images: quad id -> manifest entry
     used_this_session = []
 
     def change_backdrop(frame_now: int) -> None:
         backdrop["change"] += 1
-        if len(images) < 2:
-            backdrop["mat"] = backdrop["screen"] = None  # no images fetched: a plain table, and no screen
-            UsdGeom.Imageable(mat_mesh).MakeInvisible()
-            UsdGeom.Imageable(screen_mesh).MakeInvisible()
+        if len(images) < len(quads):
+            backdrop["images"] = {}  # too few images fetched: plain surfaces, and no screens
+            for mesh in quad_meshes.values():
+                UsdGeom.Imageable(mesh).MakeInvisible()
             return
-        mat_img, screen_img = backdrops_module.pick(images, backdrop_seed, backdrop["change"])
-        quad_files["mat"].Set(os.path.join(root_dir, mat_img["file"]))
-        quad_files["screen"].Set(os.path.join(root_dir, screen_img["file"]))
-        backdrop["mat"], backdrop["screen"] = mat_img, screen_img
+        picked = backdrops_module.pick(images, backdrop_seed, backdrop["change"], len(quads))
+        backdrop["images"] = {qid: img for (qid, _, _), img in zip(quads, picked)}
+        for qid, img in backdrop["images"].items():
+            quad_files[qid].Set(os.path.join(root_dir, img["file"]))
         backdrop["settle_until"] = frame_now + lag + 1  # a new texture shows within the render lag (the spike: 2 frames)
         session_record("BK", *bk_fields())
-        used_this_session.extend([mat_img, screen_img])
+        used_this_session.extend(backdrop["images"].values())
 
     def bk_fields():
-        m, sc = backdrop["mat"], backdrop["screen"]
-        return (time.monotonic_ns(), backdrop["change"], backdrop_seed, m["sha256"] if m else "", m["imageId"] if m else "",
-                sc["sha256"] if sc else "", sc["imageId"] if sc else "")
+        return (time.monotonic_ns(), backdrop["change"], backdrop_seed,
+                [[qid, img["sha256"], img["imageId"]] for qid, img in backdrop["images"].items()])
 
     # --- recording --------------------------------------------------------------------------------------------------
     session = None
@@ -503,13 +571,13 @@ def run(app, args, p, scene, cameras, fps, joints, motors, tap) -> int:
 
     def preamble():
         used_this_session.clear()
-        if backdrop["mat"] is not None:
-            used_this_session.extend([backdrop["mat"], backdrop["screen"]])
+        used_this_session.extend(backdrop["images"].values())
         out = [("IV", version("isaacsim"), fps, args.record_every, lag, round(agree, 4), len(samples)),
                ("SC", scene.name, scene_sha)]
         for c, pose in zip(specs, camera_poses):
             out.append(("CM", c["id"], c["width"], c["height"], round(c["fx"], 6), round(c["fy"], 6), c["cx"], c["cy"], c["near"],
-                        c["far"], *[round(v, 7) for v in pose], c["mount"], [[st] for st in c["record"]]))
+                        c["far"], *[round(v, 7) for v in pose], c["mount"], [[st] for st in c["record"]],
+                        "mount" if c["mount"] else "base"))
         out.append(("ID", [[v, k] for k, v in sorted(table.items(), key=lambda kv: kv[1])]))
         out.append(("BK", *bk_fields()))
         if world_snapshot["objects"]:
@@ -688,7 +756,7 @@ def run(app, args, p, scene, cameras, fps, joints, motors, tap) -> int:
                 if session is not None and session.active else ""
             print(f"[render] {rate:.1f} fps; states {states_in}, world {worlds_in}; newest state {age:.0f} ms old; {sent}; "
                   f"skipped {skipped}{rec}", flush=True)
-            session_record("RH", time.monotonic_ns(), round(rate, 2), round(age, 1), skipped[0], skipped[-1], record_skipped[0])
+            session_record("RH", time.monotonic_ns(), round(rate, 2), round(age, 1), skipped[0], skipped[-1], record_skipped[0], list(skipped))
             report_at, window_frames = now + 5.0, 0
         wait = start + frames * frame_s - time.perf_counter()
         if wait > 0:

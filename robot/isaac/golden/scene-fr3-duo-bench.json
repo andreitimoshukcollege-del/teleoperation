@@ -1,7 +1,7 @@
 {
   "about": "The canonical parse of core/Scenes/fr3-duo-bench.json (docs/adr/0031 amendment 2), written by SceneDocumentTests.",
   "scene": "fr3-duo-bench",
-  "sha256": "5e14837029bd2ba6872148d5e96b80d51ca2d603f773494c6c40f6cc3a618887",
+  "sha256": "6098a15f7e28e7c3af44c720314268087b35f9418945fb28a972fb28410a8cff",
   "table": [
     0.20000000000000007,
     0.9,

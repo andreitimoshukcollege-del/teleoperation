@@ -27,12 +27,25 @@
   ],
   "placement": { "xMin": 0.28, "xMax": 0.85, "yMin": -0.65, "yMax": 0.65, "clearance": 0.02 },
   "backdrops": { "change": "per-session", "manifest": "~/isaacsim/backdrops/openimages-v7-val/manifest.json",
-    "mat": { "on": "table", "lift": 0.0005 }, "screen": { "center": [1.30, 0.0, -0.10], "size": [2.40, 1.00] } },
+    "mats": [
+      { "id": "mat", "on": "table", "lift": 0.0005 },
+      { "id": "floor", "on": "floor", "lift": 0.001, "region": [-1.0, 1.4, -1.8, 1.8] } ],
+    "screens": [
+      { "id": "far", "center": [1.40, 0.0, 0.30], "size": [3.60, 2.40], "normal": [-1, 0] },
+      { "id": "back", "center": [-1.00, 0.0, 0.30], "size": [3.60, 2.40], "normal": [1, 0] },
+      { "id": "left", "center": [0.20, 1.80, 0.30], "size": [2.40, 2.40], "normal": [0, -1] },
+      { "id": "right", "center": [0.20, -1.80, 0.30], "size": [2.40, 2.40], "normal": [0, 1] } ] },
   "cameras": [
-    { "id": "head", "mount": "head_camera_mounting_point", "width": 640, "height": 360, "hfovDeg": 69.0, "near": 0.05, "far": 10.0,
-      "fps": 30, "feedPort": 6003, "feedQuality": 80, "recordQuality": 92, "record": ["rgb", "depth", "mask"] },
-    { "id": "third", "position": [1.45, 0.95, 0.85], "lookAt": [0.15, 0.0, 0.20], "width": 640, "height": 360, "hfovDeg": 69.0,
-      "near": 0.05, "far": 10.0, "fps": 30, "feedPort": 6007, "feedQuality": 80, "recordQuality": 92, "record": ["rgb"] }
+    { "id": "third-left", "position": [1.20, 1.10, 0.80], "lookAt": [0.25, 0.0, 0.10], "width": 640, "height": 360, "hfovDeg": 69.0,
+      "near": 0.05, "far": 10.0, "fps": 30, "feedPort": 6008, "feedQuality": 80, "recordQuality": 92, "record": ["rgb", "depth", "mask"] },
+    { "id": "third-right", "position": [1.20, -1.10, 0.80], "lookAt": [0.25, 0.0, 0.10], "width": 640, "height": 360, "hfovDeg": 69.0,
+      "near": 0.05, "far": 10.0, "fps": 30, "feedPort": 6009, "feedQuality": 80, "recordQuality": 92, "record": ["rgb", "depth", "mask"] },
+    { "id": "wrist-left", "mount": "left_fr3v2_hand", "mountPosition": [0.06, 0.0, 0.04], "mountLookAt": [0.0, 0.0, 0.16],
+      "mountUp": [1.0, 0.0, 0.0], "width": 640, "height": 360, "hfovDeg": 87.0, "near": 0.01, "far": 10.0, "fps": 30,
+      "feedPort": 6007, "feedQuality": 80, "recordQuality": 92, "record": ["rgb", "depth", "mask"] },
+    { "id": "wrist-right", "mount": "right_fr3v2_hand", "mountPosition": [0.06, 0.0, 0.04], "mountLookAt": [0.0, 0.0, 0.16],
+      "mountUp": [1.0, 0.0, 0.0], "width": 640, "height": 360, "hfovDeg": 87.0, "near": 0.01, "far": 10.0, "fps": 30,
+      "feedPort": 6003, "feedQuality": 80, "recordQuality": 92, "record": ["rgb", "depth", "mask"] }
   ],
   "lights": [
     { "id": "dome", "kind": "dome", "intensity": 300 },

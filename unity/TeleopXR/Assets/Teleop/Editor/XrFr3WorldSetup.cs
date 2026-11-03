@@ -97,21 +97,21 @@ namespace Teleop.XR.Editor
                 "EDIT OBJECTS", Teleop.XR.Fr3MotionButton.Role.EditObjects, bridge, origin);
 
             BuildFeeds(bridge);
-            Debug.Log($"[fr3-world] built '{world.Name}': {world.Surfaces.Count(s => s.Display == SurfaceDisplay.Show)} surface(s) and a twin of {world.Objects.Length} object(s) with their ghosts from the scene file, NEW LAYOUT, EDIT OBJECTS, and the {HeadFeedName} and {ThirdFeedName} feeds");
+            Debug.Log($"[fr3-world] built '{world.Name}': {world.Surfaces.Count(s => s.Display == SurfaceDisplay.Show)} surface(s) and a twin of {world.Objects.Length} object(s) with their ghosts from the scene file, NEW LAYOUT, EDIT OBJECTS, and the {RightFeedName} and {LeftFeedName} feeds");
         }
 
         public const string FeedsRootName = "Fr3CameraFeeds";
-        public const string HeadFeedName = "HEAD CAM (REC)";
-        public const string ThirdFeedName = "3RD PERSON";
+        public const string RightFeedName = "RIGHT WRIST (REC)";
+        public const string LeftFeedName = "LEFT WRIST (REC)";
         public const string LeftDisplayName = "CameraDisplayLeft";
-        public const int HeadFeedPort = 6003, HeadFeedLocalPort = 6004, ThirdFeedPort = 6007, ThirdFeedLocalPort = 6014;
+        public const int RightFeedPort = 6003, RightFeedLocalPort = 6004, LeftFeedPort = 6007, LeftFeedLocalPort = 6014;
         private const string FeedMeshLibraryPath = LabPaths.Generated + "/Fr3FeedMeshes.asset";
         private const string ScreenMaterialPath = "Assets/Teleop/Materials/CameraPanel.mat";
 
         /// <summary>
-        /// The two Isaac feeds (docs/adr/0032 decision 3), outside the joint link's disturbance: the head camera on the lab's
-        /// display, on the operator's right (built by the scene builder), and the third-person camera on a second display,
-        /// mirrored on the left, which this builds with its own mesh library. Each <see cref="CameraFeedBridge"/> asks
+        /// Two of Isaac's four feeds (docs/adr/0032 decision 3, amendment 3), outside the joint link's disturbance: the right
+        /// wrist camera on the lab's display, on the operator's right (built by the scene builder), and the left wrist camera
+        /// on a second display, mirrored on the left, which this builds with its own mesh library. Each <see cref="CameraFeedBridge"/> asks
         /// <c>fr3_connection</c>'s <c>RemoteHost</c>, Isaac's renderer on the GPU machine. Both are under <see cref="FeedsRootName"/>,
         /// replaced on every run.
         /// </summary>
@@ -130,7 +130,9 @@ namespace Teleop.XR.Editor
                 ?? throw new InvalidOperationException($"{ScreenMaterialPath} is missing");
 
             var root = new GameObject(FeedsRootName).transform;
-            CameraFeedBridge head = Feed(root, "HeadFeed", HeadFeedName, HeadFeedPort, HeadFeedLocalPort, rightScreen);
+            // The wrists, not the third-person cameras: the twin already shows the arms from outside; the wrist cameras show
+            // what the gripper is about to touch. The third-person feeds stay on the GPU machine (just camera-probe ... 6008/6009).
+            CameraFeedBridge head = Feed(root, "RightWristFeed", RightFeedName, RightFeedPort, RightFeedLocalPort, rightScreen);
             var bar = right.GetComponent<CameraStatusBar>();
             if (bar != null)
             {
@@ -140,12 +142,12 @@ namespace Teleop.XR.Editor
             }
 
             Transform caption = right.Find("Panel/DisplayCaption");
-            if (caption != null) caption.GetComponent<TMPro.TMP_Text>().text = "head camera  ·  Isaac, recorded";
+            if (caption != null) caption.GetComponent<TMPro.TMP_Text>().text = "right wrist camera  ·  Isaac, recorded";
 
             LabMeshLibrary.Begin(FeedMeshLibraryPath);
-            CameraFeedBridge third = Feed(root, "ThirdFeed", ThirdFeedName, ThirdFeedPort, ThirdFeedLocalPort, null);
+            CameraFeedBridge third = Feed(root, "LeftWristFeed", LeftFeedName, LeftFeedPort, LeftFeedLocalPort, null);
             LabDisplay.Result left = LabDisplay.Build(root, LabPalette.Create(), screenMaterial, third, bridge,
-                "third-person camera  ·  Isaac", LeftDisplayName, mirrored: true);
+                "left wrist camera  ·  Isaac, recorded", LeftDisplayName, mirrored: true);
             LabMeshLibrary.End();
             var feed = new SerializedObject(third);
             feed.FindProperty("panel").objectReferenceValue = left.Screen;

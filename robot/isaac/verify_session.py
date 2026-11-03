@@ -104,8 +104,11 @@ def main() -> int:
     for x in log:
         if x.startswith("CM|"):
             f = x.split("|")
+            # The pose is in the base frame, or (amendment 3's 20th field "mount") in the mount link's URDF frame.
             cams[f[1]] = {"w": int(f[2]), "h": int(f[3]), "fx": float(f[4]), "fy": float(f[5]), "cx": float(f[6]), "cy": float(f[7]),
-                          "p": np.array([float(v) for v in f[10:13]]), "R": quat_matrix(*[float(v) for v in f[13:17]])}
+                          "p": np.array([float(v) for v in f[10:13]]), "R": quat_matrix(*[float(v) for v in f[13:17]]),
+                          "mount": f[17] if len(f) > 17 else "", "frame": f[19] if len(f) > 19 else "base",
+                          "record": [f"{f[1]}.{st.strip('[]')}" for st in (f[18].split(";") if len(f) > 18 and f[18] else [])]}
     vfs = []
     for x in log:
         if x.startswith("VF|"):
@@ -139,12 +142,12 @@ def main() -> int:
     import cv2
 
     scene = scene_module.load(os.path.join(d, "scene.json"))
-    lift = float(((scene.extra.get("backdrops") or {}).get("mat") or {}).get("lift", 0.0005))
-    top = scene.table.top + lift
+    mats = {m.get("on"): m for m in ((scene.extra.get("backdrops") or {}).get("mats") or [])}
+    legacy = (scene.extra.get("backdrops") or {}).get("mat") or {}  # a session from before amendment 3
+    top = scene.table.top + float((mats.get("table") or legacy).get("lift", 0.0005))
     p = profile_module.load(os.path.join(d, "robot-profile.json"))
     motors = MotorMap(p)
     joints = kinematics.read_urdf(args.urdf)
-    head = cams.get("head")
     sidecars = {}
 
     def blob(name, part):
@@ -153,31 +156,48 @@ def main() -> int:
             sidecars[name] = dict(read_sidecar(path)) if os.path.exists(path) else {}
         return sidecars[name].get(part[0])
 
-    def project(cam, x):
-        xc = cam["R"].T @ (np.asarray(x, float) - cam["p"])
+    def pose_at(cam, values):
+        """The camera's (position, rotation) in the base frame at a frame whose state is ``values``: as recorded for a
+        camera that stands still; through the mount link's forward kinematics for one on a link."""
+        if cam["frame"] != "mount":
+            return cam["p"], cam["R"]
+        lp, lq = kinematics.link_pose(joints, values, cam["mount"])
+        lr = quat_matrix(*lq)
+        return np.array(lp) + lr @ cam["p"], lr @ cam["R"]
+
+    def project(cam, pos, rot, x):
+        xc = rot.T @ (np.asarray(x, float) - pos)
         if xc[2] >= -1e-6:
             return None
         return cam["cx"] + cam["fx"] * xc[0] / -xc[2], cam["cy"] - cam["fy"] * xc[1] / -xc[2]
 
-    depth_err, hand_dist, last_point = [], {"left": [], "right": []}, {}
+    depth_err = {}  # camera -> errors, mm
+    hand_dist, last_point = {"left": [], "right": []}, {}
     sides = {"left": MASK_IDS["left_hand"], "right": MASK_IDS["right_hand"]}
-    if head is not None:
-        us, vs = np.meshgrid(np.arange(0, head["w"], 4), np.arange(0, head["h"], 4))
+    imaged = [cid for cid in cams if f"{cid}.mask" in cams[cid]["record"] and f"{cid}.depth" in cams[cid]["record"]]
+    for cid in imaged:
+        cam = cams[cid]
+        depth_err[cid] = []
+        us, vs = np.meshgrid(np.arange(0, cam["w"], 4), np.arange(0, cam["h"], 4))
+        last_point.clear()
         for v in vfs[::max(1, args.every)]:
-            if "head.mask" not in v["parts"] or "head.depth" not in v["parts"] or v["sensed"] not in qs:
+            if f"{cid}.mask" not in v["parts"] or f"{cid}.depth" not in v["parts"] or v["sensed"] not in qs:
                 continue
-            mask = cv2.imdecode(np.frombuffer(blob("head.mask", v["parts"]["head.mask"]), np.uint8), cv2.IMREAD_UNCHANGED)
-            depth = cv2.imdecode(np.frombuffer(blob("head.depth", v["parts"]["head.depth"]), np.uint8), cv2.IMREAD_UNCHANGED)
+            values = motors.values(qs[v["sensed"]])
+            pos, rot = pose_at(cam, values)
+            mask = cv2.imdecode(np.frombuffer(blob(f"{cid}.mask", v["parts"][f"{cid}.mask"]), np.uint8), cv2.IMREAD_UNCHANGED)
+            depth = cv2.imdecode(np.frombuffer(blob(f"{cid}.depth", v["parts"][f"{cid}.depth"]), np.uint8), cv2.IMREAD_UNCHANGED)
             sel = mask[vs, us] == MASK_IDS["mat"]
             if sel.sum() > 50 and "B" not in v["flags"]:
                 u, w = us[sel] + 0.5, vs[sel] + 0.5
-                d_cam = np.stack([(u - head["cx"]) / head["fx"], -(w - head["cy"]) / head["fy"], -np.ones_like(u)], axis=0)
-                d_w = head["R"] @ d_cam
-                t = (top - head["p"][2]) / d_w[2]
+                d_cam = np.stack([(u - cam["cx"]) / cam["fx"], -(w - cam["cy"]) / cam["fy"], -np.ones_like(u)], axis=0)
+                d_w = rot @ d_cam
+                t = (top - pos[2]) / d_w[2]
                 measured = depth[vs[sel], us[sel]].astype(float)
                 ok = measured > 0
-                depth_err.extend(np.abs(measured[ok] - t[ok] * 1000.0)[::5].tolist())
-            values = motors.values(qs[v["sensed"]])
+                depth_err[cid].extend(np.abs(measured[ok] - t[ok] * 1000.0)[::5].tolist())
+            if cam["frame"] == "mount":
+                continue  # a wrist camera rides the hand: the hands are checked from the cameras that stand still
             for side, mid in sides.items():
                 hp, hq = kinematics.link_pose(joints, values, f"{side}_fr3v2_hand")
                 point = np.array(hp) + quat_matrix(*hq) @ np.array(HAND_POINT)
@@ -186,14 +206,22 @@ def main() -> int:
                 vv, uu = np.nonzero(mask == mid)
                 if not moved or len(uu) < 30:
                     continue
-                pr = project(head, point)
-                if pr is None or not (0 <= pr[0] < head["w"] and 0 <= pr[1] < head["h"]):
+                pr = project(cam, pos, rot, point)
+                if pr is None or not (0 <= pr[0] < cam["w"] and 0 <= pr[1] < cam["h"]):
                     continue
                 hand_dist[side].append(float(np.min(np.hypot(uu + 0.5 - pr[0], vv + 0.5 - pr[1]))))
+    out["depth_cameras"] = {cid: {"samples": len(e), "p50": round(pct(e, 50), 3) if e else None, "p99": round(pct(e, 99), 3) if e else None}
+                            for cid, e in depth_err.items()}
+    all_depth = [x for e in depth_err.values() for x in e]
+    # Every camera that stands still sees the mat; at least one on a link must too, which checks its moving pose.
+    still_seen = all(depth_err[c] for c in imaged if cams[c]["frame"] != "mount")
+    moving_seen = any(depth_err[c] for c in imaged if cams[c]["frame"] == "mount") or not any(cams[c]["frame"] == "mount" for c in imaged)
+    out["depth_moving_cameras_seen"] = moving_seen
+    per_camera, depth_err = depth_err, all_depth
     out["depth_err_mm_p50"] = round(pct(depth_err, 50), 3) if depth_err else None
     out["depth_err_mm_p99"] = round(pct(depth_err, 99), 3) if depth_err else None
     out["depth_samples"] = len(depth_err)
-    checks["depth"] = bool(depth_err) and pct(depth_err, 99) < 3.0
+    checks["depth"] = bool(depth_err) and still_seen and moving_seen and all(pct(e, 99) < 3.0 for e in per_camera.values() if e)
     all_hands = hand_dist["left"] + hand_dist["right"]
     out["hand_samples"] = {k: len(v) for k, v in hand_dist.items()}
     out["hand_px_p50"] = round(pct(all_hands, 50), 2) if all_hands else None

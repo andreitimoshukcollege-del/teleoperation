@@ -280,8 +280,10 @@ for its trailer (`--auto-record-writer isaac:60`), checks its `FS` lines, and li
 | `isaac/<camera>.<stream>.frames` | the frames: `TFRM`, uint16 version 1, uint16 0, then records, each a uint32 little-endian length and that many bytes |
 | `isaac/backdrops.json` | every backdrop image the session showed: sha256, Open Images id, licence (CC BY 2.0), author, title, pages |
 
-The streams are the scene file's `cameras[].record`. For `fr3-duo-bench`, they are `head.rgb`, `head.depth`, `head.mask`
-and `third.rgb`:
+The streams are the scene file's `cameras[].record`. For `fr3-duo-bench` (docs/adr/0032 amendment 3) there are four
+cameras, two third-person ones that stand still (`third-left`, `third-right`) and one on each wrist (`wrist-left`,
+`wrist-right`), each recording `rgb`, `depth` and `mask`, so 12 streams (`third-left.rgb`, ..., `wrist-right.mask`).
+Sessions from before 2026-11-04 have `head.rgb`, `head.depth`, `head.mask` and `third.rgb`.
 - **`rgb`** is a JPEG at the camera's `recordQuality` (92).
 - **`depth`** is a 16-bit PNG of the distance to the image plane in millimetres, with 0 where nothing was hit.
 - **`mask`** is a 16-bit PNG of stable ids (`ID`).
@@ -292,13 +294,13 @@ and `third.rgb`:
 |---|---|---|
 | `IV` | `isaacVersion` `fps` `recordEvery` `renderLag` `lagAgreement` `lagSamples` | The renderer: its rate, every how many frames it records, and its render lag in frames as measured at start-up (it records only when the lag agreed in ≥ 99.5% of samples) |
 | `SC` | `scene` `sha256` | The scene file it built (the same file as `scene.json`) |
-| `CM` | `camera` `width` `height` `fx` `fy` `cx` `cy` `near` `far` `x` `y` `z` `qw` `qx` `qy` `qz` `mount` `streams` | One per camera. A pinhole with no distortion, pixel centres at +0.5. The pose is the USD camera's in the robot's base frame: it looks along its −z with +y up, so a point projects to `u = cx + fx·x_c/(−z_c)`, `v = cy − fy·y_c/(−z_c)`. `mount` is the URDF link it is fixed to, or empty for a camera fixed in the room |
+| `CM` | `camera` `width` `height` `fx` `fy` `cx` `cy` `near` `far` `x` `y` `z` `qw` `qx` `qy` `qz` `mount` `streams` `poseFrame` | One per camera. A pinhole with no distortion, pixel centres at +0.5. The pose is the USD camera's: it looks along its −z with +y up, so a point projects to `u = cx + fx·x_c/(−z_c)`, `v = cy − fy·y_c/(−z_c)`. `mount` is the URDF link it is fixed to, or empty for a camera fixed in the room. `poseFrame` says what the pose is in: `base`, the robot's base frame; or `mount`, the mount link's URDF frame, for a camera that moves with the arm (a wrist camera), whose pose at a frame is that link's forward kinematics at the frame's `QS` state times this pose. Absent (sessions before 2026-11-04): `base` |
 | `ID` | `id:label;...` | The masks' stable ids: 1 `left_arm`, 2 `left_hand`, 3 `right_arm`, 4 `right_hand`, 5 `head`, 6 `mount`, 10 `table`, 11 `bench`, 12 `floor`, 13 `mat`, 14 `screen`, and `100 + n` for scene object `n`. 0 is anything unlabelled |
-| `BK` | `t` `change` `seed` `matSha256` `matImageId` `screenSha256` `screenImageId` | The backdrop shown from now on: change 0 at the renderer's start, then one per session it closes; the pair is `backdrops.pick(images, seed, change)` |
+| `BK` | `t` `change` `seed` `images` | The backdrop shown from now on: change 0 at the renderer's start, then one per session it closes. `images` is `surface:sha256:imageId;...`, one per mat and screen of the scene file's `backdrops` in its order (`mat`, `floor`, `far`, `back`, `left`, `right` for `fr3-duo-bench`), drawn by `backdrops.pick(images, seed, change, count)`. Sessions before 2026-11-04 have `matSha256` `matImageId` `screenSha256` `screenImageId` instead |
 | `OL` | `sensed` `revision` `objects` | Where the objects are, `id:x:y:z:qw:qx:qy:qz;...`, at the start and whenever the world's revision changes |
 | `VF` | `t` `frame` `stateSensed` `flags` `parts` | One recorded frame. `stateSensed` is the `sensed` of the `QS` state the frame shows, so frames join the arm's truth exactly. `flags` holds `B` while a new backdrop may still be settling (the render lag after a swap). `parts` lists `stream:offset:length;...` into the sidecars, the offset being the payload's first byte |
 | `FD` | `t` `frame` `reason` | A frame not recorded (`writer-behind`, `encoder-behind`, `<camera>-no-image`) |
-| `RH` | `t` `fps` `stateAgeMs` `headSkipped` `thirdSkipped` `recordSkipped` | Renderer health, every 5 s |
+| `RH` | `t` `fps` `stateAgeMs` `firstSkipped` `lastSkipped` `recordSkipped` `skipped` | Renderer health, every 5 s. `skipped` is every camera's feed frames skipped, `n;n;...` in `CM` order (absent before 2026-11-04); `firstSkipped` and `lastSkipped` are its first and last |
 | `ER` | `t` `reason` | Why the session's frames ended early (a nearly full disk: below 20 GB free, an I/O error) |
 | `FS` | `file` `bytes` `sha256` | One per file under `isaac/`, written before the trailer |
 

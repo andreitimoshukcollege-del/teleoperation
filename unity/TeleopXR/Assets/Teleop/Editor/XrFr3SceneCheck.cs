@@ -261,8 +261,8 @@ namespace Teleop.XR.Editor
             var bars = Object.FindObjectsByType<CameraStatusBar>(FindObjectsInactive.Include, FindObjectsSortMode.None);
             foreach ((string name, int port, int local) in new[]
             {
-                (XrFr3WorldSetup.HeadFeedName, XrFr3WorldSetup.HeadFeedPort, XrFr3WorldSetup.HeadFeedLocalPort),
-                (XrFr3WorldSetup.ThirdFeedName, XrFr3WorldSetup.ThirdFeedPort, XrFr3WorldSetup.ThirdFeedLocalPort),
+                (XrFr3WorldSetup.RightFeedName, XrFr3WorldSetup.RightFeedPort, XrFr3WorldSetup.RightFeedLocalPort),
+                (XrFr3WorldSetup.LeftFeedName, XrFr3WorldSetup.LeftFeedPort, XrFr3WorldSetup.LeftFeedLocalPort),
             })
             {
                 CameraFeedBridge feed = feeds.FirstOrDefault(f => f.FeedName == name);
@@ -285,7 +285,7 @@ namespace Teleop.XR.Editor
                     problems.Add($"no display's status strip reads the '{name}' feed");
             }
 
-            if (feeds.Length != 2) problems.Add($"{feeds.Length} camera feeds; the FR3 lab has two (head and third-person)");
+            if (feeds.Length != 2) problems.Add($"{feeds.Length} camera feeds; the FR3 lab has two (the wrist cameras)");
         }
 
         private static void CheckResources(List<string> problems)

@@ -12,7 +12,8 @@ no name on disk comes from anything the network sent. ``manifest.json`` lists ev
 author, title and pages. The images come from the CVDF mirror (``open-images-dataset.s3.amazonaws.com``), which resizes
 them, so Open Images' ``OriginalMD5`` (the original's) does not apply; the sha256 is ours.
 
-:func:`pick` chooses the table mat's and the screen's images for a backdrop change, from a seed and the change's number.
+:func:`pick` chooses the images of a backdrop change (one per mat and screen of the scene file), from a seed and the
+change's number.
 """
 
 from __future__ import annotations
@@ -183,14 +184,13 @@ def status(root: str, verify: bool = True) -> Dict:
             "authors": len({e["author"] for e in m["images"]})}
 
 
-def pick(images: Sequence[Dict], seed: int, change: int) -> Tuple[Dict, Dict]:
-    """The mat's and the screen's images for backdrop change ``change`` (0 at start-up, then one per session closed):
-    two different images, drawn from ``seed`` and ``change`` alone."""
-    if len(images) < 2:
-        raise ValueError("at least two backdrop images are needed")
+def pick(images: Sequence[Dict], seed: int, change: int, count: int = 2) -> Tuple[Dict, ...]:
+    """The images for backdrop change ``change`` (0 at start-up, then one per session closed): ``count`` different images,
+    one per backdrop surface in the scene file's order, drawn from ``seed``, ``change`` and ``count`` alone."""
+    if len(images) < max(2, count):
+        raise ValueError(f"at least {max(2, count)} backdrop images are needed")
     rng = random.Random(f"teleop-backdrop:{seed}:{change}")
-    a, b = rng.sample(range(len(images)), 2)
-    return images[a], images[b]
+    return tuple(images[k] for k in rng.sample(range(len(images)), count))
 
 
 def main(argv=None) -> int:

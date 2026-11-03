@@ -24,7 +24,7 @@ just isaac-stop                       # stop them from any terminal (RobotHost c
 just fr3-teleop-probe 0.08 3 franka-replay false <GPU machine>   # drive it headless from here
 just push-galaxy-fr3-config <GPU machine>                        # point the headset at it
 just fr3-world-probe <GPU machine> 7 true                        # the world through RobotHost: seed 7's poses, then NEW LAYOUT
-just camera-probe 10 0 "" <GPU machine> 6003 6004                # the head camera's feed (6007 6014: the third person's)
+just camera-probe 10 0 "" <GPU machine> 6003 6004                # the right wrist's feed (6007: the left wrist's; 6008, 6009: third-person left, right)
 just isaac-host fr3-duo-bench auto false                         # without the renderer and its feeds
 ```
 
@@ -68,10 +68,11 @@ tracked exactly (0.000 rad), and there were no late steps in 16 s.
 - **Posing.** The bridge copies every state and world message to it (`--tap`, never blocking; drops are counted in the
   bridge's last line). Each frame it poses the robot from the newest state (`kinematics.local_motion`) and the objects from
   the newest WORLD.
-- **The cameras.** It renders the scene file's two cameras at 30 fps. JPEG encoding runs on one thread per camera, and a
+- **The cameras.** It renders the scene file's cameras at 30 fps: two third-person ones and one on each wrist (ADR 0032
+  amendment 3), a wrist camera as a child of its hand's prim, so it moves with the hand. JPEG encoding runs on one thread per camera, and a
   frame is dropped rather than queued when its encoder is behind.
-- **The feeds.** Each camera goes out on ADR 0014's wire (`camwire.py`, `camfeed.py`) to whoever subscribed: the head camera
-  on 6003, the third person on 6007. A frame is encoded only while someone is subscribed.
+- **The feeds.** Each camera goes out on ADR 0014's wire (`camwire.py`, `camfeed.py`) to whoever subscribed: the right wrist
+  on 6003, the left wrist on 6007 (the headset's two displays), the third-person cameras on 6008 and 6009. A frame is encoded only while someone is subscribed.
 - **The capture stamp.** `captureTicks` is the sensed time of the state the frame shows, on RobotHost's CLOCK_MONOTONIC.
   The image read after posing frame k shows frame k − lag. The lag is measured at start-up with a cube on the table, with
   the objects hidden; on 2026-11-02 it was 2 frames in 100% of 87 samples.

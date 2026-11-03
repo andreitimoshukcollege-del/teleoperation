@@ -240,7 +240,8 @@ def main(argv: Optional[List[str]] = None) -> int:
                        f"(fingers {args.finger_stiffness:g}/{args.finger_damping:g}), arm efforts {'/'.join(f'{e:g}' for e in arm_efforts)} Nm, "
                        f"robot gravity off, {args.iterations} solver iterations")
         if world is not None:
-            description += f", scene {scene.name} ({scene_sha.hex()[:12]}, {len(scene.objects)} fixed objects)"
+            movable = sum(1 for o in scene.objects if o.movable)
+            description += f", scene {scene.name} ({scene_sha.hex()[:12]}, {len(scene.objects) - movable} fixed and {movable} movable objects)"
         if os.path.exists(args.socket):
             os.unlink(args.socket)
         sock = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)

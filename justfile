@@ -2942,6 +2942,30 @@ isaac-scene-check scene="fr3-duo-bench":
     cd robot/isaac && timeout 600 "$HOME/isaacsim/venv/bin/python" scene_check.py --scene "$repo/core/Scenes/$SCENE.json"
     REMOTE
 
+# Fetch the renderer's backdrop images onto the GPU machine, once (docs/adr/0032 decision 4): `count` images from Open Images V7's validation split, licensed CC BY 2.0 only, into ~/isaacsim/backdrops/openimages-v7-val with a manifest of each one's sha256, licence, author and pages. Downloads are untrusted data: each is kept only if it is a JPEG of at most 20 MB that decodes to at least 256 px a side, under its own sha256. Resumes where it stopped. Runs this commit (it must be on GitHub)
+[group('isaac')]
+isaac-backdrops-fetch count="2000":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    case "{{count}}" in *[!0-9]*|"") echo "error: count is a number" >&2; exit 1 ;; esac
+    commit=$(git rev-parse HEAD)
+    git fetch -q origin
+    [ -n "$(git branch -r --contains "$commit" 2>/dev/null)" ] || { echo "error: $commit is not on GitHub: push it first" >&2; exit 1; }
+    ssh -o ConnectTimeout=10 "{{gpu_host}}" "COMMIT='$commit' COUNT='{{count}}' bash -s" <<'REMOTE'
+    set -euo pipefail
+    repo=$HOME/teleoperation-isaac
+    [ -d "$repo" ] || git clone -q https://github.com/andreitimoshukcollege-del/teleoperation.git "$repo"
+    cd "$repo" && git fetch -q origin && git checkout -q "$COMMIT"
+    cd robot/isaac && "$HOME/isaacsim/venv/bin/python" -m teleop_isaac.backdrops fetch --count "$COUNT"
+    REMOTE
+
+# How the backdrop images stand on the GPU machine: how many, how big, their licences, and any whose sha256 no longer matches the manifest (exit 1 then, or with fewer than 2 images)
+[group('isaac')]
+isaac-backdrops-status:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    ssh -o ConnectTimeout=10 "{{gpu_host}}" 'cd "$HOME/teleoperation-isaac/robot/isaac" && "$HOME/isaacsim/venv/bin/python" -m teleop_isaac.backdrops status'
+
 # The FR3 Duo in Isaac Sim on the GPU machine, behind a RobotHost there (docs/adr/0031): checks out this commit in ~/teleoperation-isaac (it must be on GitHub), builds RobotHost, starts the Isaac bridge (robot/isaac, log ~/isaacsim/bridge.log) and then RobotHost with --backend arm-server, joint port 6002 and discovery 6005 on that machine, recording headset sessions into ~/isaacsim/recordings. With a scene (core/Scenes/<scene>.json, default fr3-duo-bench; `none` for the arms alone), the table and obstacles are in Isaac too and RobotHost places them from seeded layouts (scene_seed: a number, or auto), docs/adr/0031 amendment 2. Enter stops both, as does `just isaac-stop` from any terminal. Refuses while an Isaac host of ours is already running there, or a training run of ours is going. Other people's GPU jobs do not stop it (the user's call, 2026-11-02): it says how much of the GPU they hold, since sharing it can make physics steps late. Point the headset at it with `just push-galaxy-fr3-config <GPU machine's address>`; drive it headless with `just fr3-teleop-probe 0.08 3 franka-replay false <GPU machine's address>` (just takes recipe arguments by position)
 [group('isaac')]
 isaac-host scene="fr3-duo-bench" scene_seed="auto" feeds="true":

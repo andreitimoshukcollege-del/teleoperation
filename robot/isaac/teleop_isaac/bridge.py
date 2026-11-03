@@ -29,6 +29,7 @@ import signal
 import socket
 import sys
 import time
+import traceback
 from typing import Dict, List, Optional, Tuple
 
 from . import profile as profile_module
@@ -375,6 +376,12 @@ def main(argv: Optional[List[str]] = None) -> int:
         os.unlink(args.socket)
         print(f"[isaac] stopped after {steps} steps, {late} late", flush=True)
         return 0
+    except BaseException:
+        # Kit's close ends the process before Python would print this, so a failed start looked like a clean exit.
+        traceback.print_exc()
+        sys.stdout.flush()
+        sys.stderr.flush()
+        raise
     finally:
         app.close()
 

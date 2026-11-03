@@ -146,6 +146,11 @@ def main() -> int:
             if "listening on" in open(log_path, errors="replace").read():
                 break
             time.sleep(1)
+        if not os.path.exists(server):
+            tail = open(log_path, errors="replace").read().splitlines()[-30:]
+            print("RESULT " + json.dumps({"passes": False, "missing": ["bridge"], "error": "the bridge did not start"}))
+            print("\n".join(tail), file=sys.stderr)
+            return 1
         c = Client(mine, server)
         t0 = time.monotonic()
         c.send(wire.encode_hello(c.next(), time.monotonic_ns(), 1_000_000_000, p.name))

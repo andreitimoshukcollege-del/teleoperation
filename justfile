@@ -3020,6 +3020,12 @@ isaac-bridge-test:
 gen-arm-server-golden:
     cd core && TELEOP_WRITE_GOLDEN=1 WSLENV="${WSLENV:+$WSLENV:}TELEOP_WRITE_GOLDEN" dotnet test Teleop.RobotHost.Tests --filter "FullyQualifiedName~ArmServerWireTests.TheIsaacBridgesGoldenFile_IsWhatThisCodecWrites"
 
+# Rewrite the golden files Core writes for Isaac and the scene file (docs/adr/0031 amendment 2, docs/adr/0032), after a deliberate change: the canonical parse of core/Scenes/fr3-duo-bench.json (robot/isaac/golden/scene-fr3-duo-bench.json), the FR3 Duo's tool poses at seeded joint sets (robot/isaac/golden/fr3-duo-fk-v1.json), seed 1's object layout (core/Scenes/testdata/layout-seed1.txt), and the arm-server wire's. Then change the Python copies until `just isaac-bridge-test` passes
+[group('isaac')]
+gen-isaac-goldens:
+    cd core && TELEOP_WRITE_GOLDEN=1 WSLENV="${WSLENV:+$WSLENV:}TELEOP_WRITE_GOLDEN" dotnet test Teleop.RobotArm.Tests --filter "FullyQualifiedName~SceneDocumentTests.TheIsaacGoldenFile|FullyQualifiedName~Fr3FkGoldenTests|FullyQualifiedName~SceneLayoutTests.ALayoutIsFrozen"
+    just gen-arm-server-golden
+
 # How the GPU machine's Isaac Sim stands (docs/adr/0031): the version installed in our account, whether a setup is going and its log's last lines, and the GPU's load (it is shared)
 [group('isaac')]
 isaac-status lines="6":

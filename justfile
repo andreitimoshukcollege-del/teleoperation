@@ -2942,6 +2942,54 @@ isaac-scene-check scene="fr3-duo-bench":
     cd robot/isaac && timeout 600 "$HOME/isaacsim/venv/bin/python" scene_check.py --scene "$repo/core/Scenes/$SCENE.json"
     REMOTE
 
+# Fetch the renderer's backdrop images onto the GPU machine, once (docs/adr/0032 decision 4): `count` images from Open Images V7's validation split, licensed CC BY 2.0 only, into ~/isaacsim/backdrops/openimages-v7-val with a manifest of each one's sha256, licence, author and pages. Downloads are untrusted data: each is kept only if it is a JPEG of at most 20 MB that decodes to at least 256 px a side, under its own sha256. Resumes where it stopped. Runs this commit (it must be on GitHub)
+[group('isaac')]
+isaac-backdrops-fetch count="2000":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    case "{{count}}" in *[!0-9]*|"") echo "error: count is a number" >&2; exit 1 ;; esac
+    commit=$(git rev-parse HEAD)
+    git fetch -q origin
+    [ -n "$(git branch -r --contains "$commit" 2>/dev/null)" ] || { echo "error: $commit is not on GitHub: push it first" >&2; exit 1; }
+    ssh -o ConnectTimeout=10 "{{gpu_host}}" "COMMIT='$commit' COUNT='{{count}}' bash -s" <<'REMOTE'
+    set -euo pipefail
+    repo=$HOME/teleoperation-isaac
+    [ -d "$repo" ] || git clone -q https://github.com/andreitimoshukcollege-del/teleoperation.git "$repo"
+    cd "$repo" && git fetch -q origin && git checkout -q "$COMMIT"
+    cd robot/isaac && "$HOME/isaacsim/venv/bin/python" -m teleop_isaac.backdrops fetch --count "$COUNT"
+    REMOTE
+
+# How the backdrop images stand on the GPU machine: how many, how big, their licences, and any whose sha256 no longer matches the manifest (exit 1 then, or with fewer than 2 images)
+[group('isaac')]
+isaac-backdrops-status:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    ssh -o ConnectTimeout=10 "{{gpu_host}}" 'cd "$HOME/teleoperation-isaac/robot/isaac" && "$HOME/isaacsim/venv/bin/python" -m teleop_isaac.backdrops status'
+
+# The recording, end to end (docs/adr/0032 decision 6), against a running `just isaac-host`: drives the simulated arms from here through seeded joint-space moves (chain-drive, ±amplitude rad, as the headset so RobotHost records it), waits for the session to close (30 s without commands), then checks it on the GPU machine with robot/isaac/verify_session.py: files.sha256 with the frame sidecars, isaac.jlog's trailer and FS lines, the frame count against the duration, every frame stamped with a QS state, depth on the table mat p99 < 3 mm, and each hand's point landing in its mask in >= 95% of the frames where it moved and shows. Prints one RESULT line; exits non-zero if any check fails or has nothing to measure. Simulated arms only
+[group('isaac')]
+isaac-record-check seconds="40" amplitude="0.6" seed="3":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    host="{{gpu_host}}"; addr=${host#*@}
+    n=$(ssh -o ConnectTimeout=10 "$host" 'n=0; for p in $(pgrep -u "$USER" -f "teleop_isaac[.]renderer" || true); do case "$(readlink /proc/$p/exe 2>/dev/null)" in *python*) n=$((n+1)) ;; esac; done; echo $n')
+    [ "$n" -gt 0 ] || { echo "error: no Isaac renderer runs on $host: start just isaac-host first (with feeds)" >&2; exit 1; }
+    before=$(ssh -o ConnectTimeout=10 "$host" 'ls -1d $HOME/isaacsim/recordings/*/ 2>/dev/null | wc -l')
+    echo "[record-check] driving the arms for {{seconds}} s as the headset (seed {{seed}}, ±{{amplitude}} rad)"
+    # stdin held open without a line: Enter stops chain-drive.
+    (cd core && sleep $(( {{seconds}} + 20 )) | timeout $(( {{seconds}} + 60 )) dotnet run --project Teleop.Eval -- chain-drive --simulated-robot --as-headset \
+        --remote-host "$addr" --seconds {{seconds}} --seed {{seed}} --amplitude-rad {{amplitude}} --collision-model RobotProfiles/fr3-duo.collision.json) | grep -E "^\[chain-drive\] (done|stopped|driving)|error" || true
+    echo "[record-check] waiting for the session to close and complete (30 s idle, then the renderer's trailer)"
+    dir=""
+    for i in $(seq 1 120); do
+        dir=$(ssh -o ConnectTimeout=10 "$host" "n=\$(ls -1d \$HOME/isaacsim/recordings/*/ 2>/dev/null | wc -l); [ \$n -gt $before ] && d=\$(ls -1td \$HOME/isaacsim/recordings/*/ | head -1) && [ -f \$d/files.sha256 ] && echo \$d || true")
+        [ -n "$dir" ] && break
+        sleep 2
+    done
+    [ -n "$dir" ] || { echo "error: no new completed session on $host within 4 min" >&2; exit 1; }
+    echo "[record-check] checking $dir"
+    ssh -o ConnectTimeout=10 "$host" "cd \$HOME/teleoperation-isaac/robot/isaac && \$HOME/isaacsim/venv/bin/python verify_session.py '$dir'"
+
 # The FR3 Duo in Isaac Sim on the GPU machine, behind a RobotHost there (docs/adr/0031): checks out this commit in ~/teleoperation-isaac (it must be on GitHub), builds RobotHost, starts the Isaac bridge (robot/isaac, log ~/isaacsim/bridge.log) and then RobotHost with --backend arm-server, joint port 6002 and discovery 6005 on that machine, recording headset sessions into ~/isaacsim/recordings. With a scene (core/Scenes/<scene>.json, default fr3-duo-bench; `none` for the arms alone), the table and obstacles are in Isaac too and RobotHost places them from seeded layouts (scene_seed: a number, or auto), docs/adr/0031 amendment 2. Enter stops both, as does `just isaac-stop` from any terminal. Refuses while an Isaac host of ours is already running there, or a training run of ours is going. Other people's GPU jobs do not stop it (the user's call, 2026-11-02): it says how much of the GPU they hold, since sharing it can make physics steps late. Point the headset at it with `just push-galaxy-fr3-config <GPU machine's address>`; drive it headless with `just fr3-teleop-probe 0.08 3 franka-replay false <GPU machine's address>` (just takes recipe arguments by position)
 [group('isaac')]
 isaac-host scene="fr3-duo-bench" scene_seed="auto" feeds="true":
@@ -3010,7 +3058,8 @@ isaac-host scene="fr3-duo-bench" scene_seed="auto" feeds="true":
     grep "^\[isaac\]" "$log" || { echo "error: the bridge did not start within 3 min" >&2; tail -30 "$log" >&2; exit 1; }
     if [ "$feeds" = true ]; then
         rlog=$HOME/isaacsim/renderer.log
-        (cd robot/isaac && exec $(pin 8-23) "$HOME/isaacsim/venv/bin/python" -m teleop_isaac.renderer --scene "../../core/Scenes/$SCENE.json" --tap "$tap") > "$rlog" 2>&1 &
+        (cd robot/isaac && exec $(pin 8-23) "$HOME/isaacsim/venv/bin/python" -m teleop_isaac.renderer --scene "../../core/Scenes/$SCENE.json" --tap "$tap" \
+            --record-control "$HOME/isaacsim/recordings/.active") > "$rlog" 2>&1 &
         renderer=$!
         echo "[isaac-host] renderer pid $renderer (log $rlog); waiting for its feeds"
         for i in $(seq 1 180); do
@@ -3019,13 +3068,14 @@ isaac-host scene="fr3-duo-bench" scene_seed="auto" feeds="true":
             sleep 1
         done
         if grep -q "^\[render\] streaming" "$rlog" 2>/dev/null; then grep "^\[render\]" "$rlog"
-        else echo "warning: the renderer did not start, so there are no camera feeds (the robot runs without them):" >&2; tail -20 "$rlog" >&2; renderer=""; fi
+        else echo "warning: the renderer did not start, so there are no camera feeds or frames recorded (the robot runs without them):" >&2; tail -20 "$rlog" >&2; renderer=""; fi
     fi
+    writer=(); [ -n "$renderer" ] && writer=(--auto-record-writer isaac:60)
     mkdir -p "$HOME/isaacsim/recordings"
     dotnet "$HOME/isaacsim/robothost/Teleop.RobotHost.dll" --profile-path core/RobotProfiles/fr3-duo.json --joint-local-port 6002 \
         --backend arm-server --arm-server-socket "$sock" --collision-model core/RobotProfiles/fr3-duo.collision.json \
         --discovery-port 6005 --record-control "$HOME/isaacsim/recordings/.active" --auto-record --auto-record-root "$HOME/isaacsim/recordings" \
-        "${host_scene[@]}"
+        "${host_scene[@]}" "${writer[@]}"
     REMOTE
     )
     ssh -o ConnectTimeout=10 "{{gpu_host}}" "COMMIT='$commit' SCENE='{{scene}}' SCENE_SEED='{{scene_seed}}' FEEDS='{{feeds}}' bash -c $(printf '%q' "$remote")"
@@ -3052,11 +3102,12 @@ isaac-stop:
         echo "[isaac-stop] the bridge or renderer (pids" $bridge $renderer ") runs without RobotHost on $(hostname): stopping it"
         kill -TERM $bridge $renderer 2>/dev/null || true
     fi
-    if ! gone_within 30 $host $bridge $renderer; then
-        echo "[isaac-stop] still running after 30 s: SIGTERM to all of it" >&2
+    # RobotHost waits up to 60 s for the renderer's isaac.jlog trailer before it completes the session.
+    if ! gone_within 90 $host $bridge $renderer; then
+        echo "[isaac-stop] still running after 90 s: SIGTERM to all of it" >&2
         kill -TERM $host $bridge $renderer 2>/dev/null || true
         if ! gone_within 60 $host $bridge $renderer; then
-            echo "[isaac-stop] still running after 90 s: SIGKILL" >&2
+            echo "[isaac-stop] still running after 150 s: SIGKILL" >&2
             kill -KILL $host $bridge $renderer 2>/dev/null || true
             rm -f "/tmp/teleop-isaac-$USER.sock"
         fi

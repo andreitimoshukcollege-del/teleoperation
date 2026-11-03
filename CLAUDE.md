@@ -22,8 +22,10 @@ eyes: nothing interprets the image, no depth is streamed, there is no contact si
 is kinematic by deliberate choice. **The one exception is simulated:** the FR3 Duo in Isaac Sim has
 a world beside it (ADR 0031 amendment 2, ADR 0032): a work table and fixed obstacles from a scene
 file (`core/Scenes/`), placed by RobotHost from seeded layouts, colliding with the arms in Isaac,
-drawn on the headset and recorded with each session. That is a source of data with objects in it,
-not a model of them. No predictor sees an object, and the headset's IK and RobotHost's refusal check
+drawn on the headset and recorded with each session. Isaac also renders two cameras of it as live
+feeds for the lab's screens, and records the head camera's colour, depth and object masks with each
+session as training data (ADR 0032); nothing on the headset interprets them. That is a source of
+data with objects in it, not a model of them. No predictor sees an object, and the headset's IK and RobotHost's refusal check
 ignore them on purpose. A predictor that reasons about the world, like `view synthesis` in the
 sentence above, has no `Contracts/` interface, no folder and no ADR. Giving it any of those is an
 architecture change under "Where new code goes", so the ADR comes first. Do not write code against

@@ -266,6 +266,44 @@ Z up, the profile's frame); `sensed` is on the host's clock, like `QS.sensed`.
 **Objects are not the truth for the arm.** An arm stopped by an obstacle shows up as `QS` falling short
 of `AO`, never in the joint records themselves.
 
+### Isaac's rendered frames (docs/adr/0032 decisions 5 and 6)
+
+Behind `just isaac-host`, Isaac's renderer follows the same control file and writes the session's frames. RobotHost waits
+for its trailer (`--auto-record-writer isaac:60`), checks its `FS` lines, and lists every file under `isaac/` in
+`files.sha256`, so `sha256sum -c` covers the frames. A session from it has, in addition:
+
+| File | What |
+|---|---|
+| `isaac.jlog` | the renderer's log: a `JSES` header (writer `isaac`, CLOCK_MONOTONIC nanoseconds, RobotHost's clock), the records below, an `FS` line per file under `isaac/`, an `END` trailer (records, drops, sha256 of every line before it). A second renderer in the same session continues in `isaac.2.jlog`, with `.2` sidecars |
+| `isaac/<camera>.<stream>.frames` | the frames: `TFRM`, uint16 version 1, uint16 0, then records, each a uint32 little-endian length and that many bytes |
+| `isaac/backdrops.json` | every backdrop image the session showed: sha256, Open Images id, licence (CC BY 2.0), author, title, pages |
+
+The streams are the scene file's `cameras[].record`. For `fr3-duo-bench`, they are `head.rgb`, `head.depth`, `head.mask`
+and `third.rgb`:
+- **`rgb`** is a JPEG at the camera's `recordQuality` (92).
+- **`depth`** is a 16-bit PNG of the distance to the image plane in millimetres, with 0 where nothing was hit.
+- **`mask`** is a 16-bit PNG of stable ids (`ID`).
+
+**Depth and masks are privileged simulator labels:** never a model input that a real robot could supply.
+
+| Tag | Fields after the tag | Meaning |
+|---|---|---|
+| `IV` | `isaacVersion` `fps` `recordEvery` `renderLag` `lagAgreement` `lagSamples` | The renderer: its rate, every how many frames it records, and its render lag in frames as measured at start-up (it records only when the lag agreed in ≥ 99.5% of samples) |
+| `SC` | `scene` `sha256` | The scene file it built (the same file as `scene.json`) |
+| `CM` | `camera` `width` `height` `fx` `fy` `cx` `cy` `near` `far` `x` `y` `z` `qw` `qx` `qy` `qz` `mount` `streams` | One per camera. A pinhole with no distortion, pixel centres at +0.5. The pose is the USD camera's in the robot's base frame: it looks along its −z with +y up, so a point projects to `u = cx + fx·x_c/(−z_c)`, `v = cy − fy·y_c/(−z_c)`. `mount` is the URDF link it is fixed to, or empty for a camera fixed in the room |
+| `ID` | `id:label;...` | The masks' stable ids: 1 `left_arm`, 2 `left_hand`, 3 `right_arm`, 4 `right_hand`, 5 `head`, 6 `mount`, 10 `table`, 11 `bench`, 12 `floor`, 13 `mat`, 14 `screen`, and `100 + n` for scene object `n`. 0 is anything unlabelled |
+| `BK` | `t` `change` `seed` `matSha256` `matImageId` `screenSha256` `screenImageId` | The backdrop shown from now on: change 0 at the renderer's start, then one per session it closes; the pair is `backdrops.pick(images, seed, change)` |
+| `OL` | `sensed` `revision` `objects` | Where the objects are, `id:x:y:z:qw:qx:qy:qz;...`, at the start and whenever the world's revision changes |
+| `VF` | `t` `frame` `stateSensed` `flags` `parts` | One recorded frame. `stateSensed` is the `sensed` of the `QS` state the frame shows, so frames join the arm's truth exactly. `flags` holds `B` while a new backdrop may still be settling (the render lag after a swap). `parts` lists `stream:offset:length;...` into the sidecars, the offset being the payload's first byte |
+| `FD` | `t` `frame` `reason` | A frame not recorded (`writer-behind`, `encoder-behind`, `<camera>-no-image`) |
+| `RH` | `t` `fps` `stateAgeMs` `headSkipped` `thirdSkipped` `recordSkipped` | Renderer health, every 5 s |
+| `ER` | `t` `reason` | Why the session's frames ended early (a nearly full disk: below 20 GB free, an I/O error) |
+| `FS` | `file` `bytes` `sha256` | One per file under `isaac/`, written before the trailer |
+
+**A frame whose `stateSensed` has no `QS`** comes from the session's last tenth of a second or so. That is after RobotHost
+closed the session and before the renderer noticed; skip it. `just isaac-record-check` measures how many there are (0.4%
+of the frames of a 73 s session on 2026-11-03, with the control file read every 0.5 s; it is read every 0.1 s since).
+
 ## Versioning
 
 Readers reject an unknown version. A change adds a version, and the reader keeps reading every

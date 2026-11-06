@@ -321,6 +321,23 @@ cameras mounted as an Intel RealSense D405 is on a Franka hand.
 camera; `--record-every 2` halves it. The renderer's frame rate with four cameras on a shared GPU is a risk, measured
 below.
 
+## Amendment 4 (2026-11-06): all four cameras on the headset, on displays you can move
+
+The user: "right now only the arm cameras are shown and are not movable, can you add the third person cameras and have
+them movable, also they should be movable vertically".
+
+- **Four displays.** The third-person feeds (6008 left, 6009 right) get two more lab displays, each stacked above the wrist
+  display on its side, so the view ahead over the robot stays clear (placed in front, they filled its top). They are
+  received on 6015 and 6016.
+  - **Rate.** The third-person feeds ask for 15 fps (`CameraFeedBridge.maxFramesPerSecond`), so four feeds cost the
+    headset's decoder about what three did at 30. Recording is unaffected; the renderer records every camera at its own
+    rate.
+- **Movable.** All four float, their floor stands hidden. While the robot is off, the hand pointer
+  (`Fr3HandPointer`, docs/adr/0031 amendment 5) grabs one with a pinch, and it follows the ray at the distance it was
+  grabbed at, up and down too (`DisplayMover.freeVertical`, its origin kept between −0.8 and 1.2 m). It keeps turning to
+  face you. Where they are is not saved between launches.
+- **Not measured:** the headset's decode cost for four feeds. Each feed's decode time is logged (`[camera] ...`).
+
 ## Not decided here
 
 - **Training a video model.** Its own ADR, once data exists.

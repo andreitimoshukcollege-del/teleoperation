@@ -105,6 +105,12 @@ namespace Teleop.XR.Editor
         public const string LeftFeedName = "LEFT WRIST (REC)";
         public const string LeftDisplayName = "CameraDisplayLeft";
         public const int RightFeedPort = 6003, RightFeedLocalPort = 6004, LeftFeedPort = 6007, LeftFeedLocalPort = 6014;
+        public const string ThirdLeftFeedName = "3RD PERSON LEFT (REC)", ThirdRightFeedName = "3RD PERSON RIGHT (REC)";
+        public const string ThirdLeftDisplayName = "CameraDisplayThirdLeft", ThirdRightDisplayName = "CameraDisplayThirdRight";
+        public const int ThirdLeftFeedPort = 6008, ThirdLeftFeedLocalPort = 6015, ThirdRightFeedPort = 6009, ThirdRightFeedLocalPort = 6016;
+
+        /// <summary>The third-person feeds' rate (fps): half the wrists', so four feeds cost the headset's decoder three.</summary>
+        public const int ThirdFeedMaxFps = 15;
         private const string FeedMeshLibraryPath = LabPaths.Generated + "/Fr3FeedMeshes.asset";
         private const string ScreenMaterialPath = "Assets/Teleop/Materials/CameraPanel.mat";
 
@@ -130,8 +136,9 @@ namespace Teleop.XR.Editor
                 ?? throw new InvalidOperationException($"{ScreenMaterialPath} is missing");
 
             var root = new GameObject(FeedsRootName).transform;
-            // The wrists, not the third-person cameras: the twin already shows the arms from outside; the wrist cameras show
-            // what the gripper is about to touch. The third-person feeds stay on the GPU machine (just camera-probe ... 6008/6009).
+            // The wrists on the two displays beside you; the third-person cameras on two more, each stacked above the wrist display
+            // on its side (the user, 2026-11-06), so the view ahead over the robot stays clear. All four float, without their floor stands, and move with a pointing pinch while the robot is off,
+            // up and down too (Fr3HandPointer, DisplayMover).
             CameraFeedBridge head = Feed(root, "RightWristFeed", RightFeedName, RightFeedPort, RightFeedLocalPort, rightScreen);
             var bar = right.GetComponent<CameraStatusBar>();
             if (bar != null)
@@ -148,13 +155,58 @@ namespace Teleop.XR.Editor
             CameraFeedBridge third = Feed(root, "LeftWristFeed", LeftFeedName, LeftFeedPort, LeftFeedLocalPort, null);
             LabDisplay.Result left = LabDisplay.Build(root, LabPalette.Create(), screenMaterial, third, bridge,
                 "left wrist camera  ·  Isaac, recorded", LeftDisplayName, mirrored: true);
+            CameraFeedBridge thirdLeft = Feed(root, "ThirdLeftFeed", ThirdLeftFeedName, ThirdLeftFeedPort, ThirdLeftFeedLocalPort, null, ThirdFeedMaxFps);
+            LabDisplay.Result tl = LabDisplay.Build(root, LabPalette.Create(), screenMaterial, thirdLeft, bridge,
+                "third-person camera, front-left  ·  Isaac, recorded", ThirdLeftDisplayName, at: Above(LeftOf(LabLayout.DisplayFoot)));
+            CameraFeedBridge thirdRight = Feed(root, "ThirdRightFeed", ThirdRightFeedName, ThirdRightFeedPort, ThirdRightFeedLocalPort, null, ThirdFeedMaxFps);
+            LabDisplay.Result tr = LabDisplay.Build(root, LabPalette.Create(), screenMaterial, thirdRight, bridge,
+                "third-person camera, front-right  ·  Isaac, recorded", ThirdRightDisplayName, at: Above(LabLayout.DisplayFoot));
             LabMeshLibrary.End();
-            var feed = new SerializedObject(third);
-            feed.FindProperty("panel").objectReferenceValue = left.Screen;
-            feed.ApplyModifiedPropertiesWithoutUndo();
+            foreach ((CameraFeedBridge f, Renderer screen) in new[] { (third, left.Screen), (thirdLeft, tl.Screen), (thirdRight, tr.Screen) })
+            {
+                var feed = new SerializedObject(f);
+                feed.FindProperty("panel").objectReferenceValue = screen;
+                feed.ApplyModifiedPropertiesWithoutUndo();
+            }
+
+            // The upper pair without their nameplates, which would hang over the displays below.
+            foreach (string upper in new[] { ThirdLeftDisplayName, ThirdRightDisplayName })
+            {
+                foreach (Transform child in root.Find(upper).GetComponentsInChildren<Transform>(true))
+                {
+                    if (child.name.StartsWith("Nameplate", StringComparison.Ordinal) || child.name.EndsWith("Nameplate", StringComparison.Ordinal)) child.gameObject.SetActive(false);
+                }
+            }
+
+            // Movable, floating: each display's stand hidden, and a mover the hand pointer drives.
+            Transform[] displays = { right, root.Find(LeftDisplayName), root.Find(ThirdLeftDisplayName), root.Find(ThirdRightDisplayName) };
+            var movers = new DisplayMover[displays.Length];
+            for (int i = 0; i < displays.Length; i++)
+            {
+                Transform d = displays[i] ?? throw new InvalidOperationException("a camera display was not built");
+                foreach (Transform child in d.GetComponentsInChildren<Transform>(true))
+                {
+                    if (child != d && child.name.EndsWith("Stand", StringComparison.Ordinal)) child.gameObject.SetActive(false);
+                }
+
+                DisplayMover mover = d.GetComponent<DisplayMover>() ?? d.gameObject.AddComponent<DisplayMover>();
+                var mso = new SerializedObject(mover);
+                mso.FindProperty("freeVertical").boolValue = true;
+                mso.FindProperty("grabMargin").floatValue = 0.05f;
+                mso.ApplyModifiedPropertiesWithoutUndo();
+                movers[i] = mover;
+            }
+
+            Fr3HandPointer pointer = Object.FindAnyObjectByType<Fr3HandPointer>(FindObjectsInactive.Include);
+            if (pointer != null) XrFr3SceneBuilder.SetReferences(pointer, "displays", movers);
         }
 
-        private static CameraFeedBridge Feed(Transform root, string objectName, string feedName, int port, int localPort, Renderer screen)
+        /// <summary>The upper display's origin: its screen's bottom just clears the top of the one below, the upper one having no nameplate.</summary>
+        private static Vector3 Above(Vector3 foot) => foot + new Vector3(0f, 1.15f, 0f);
+
+        private static Vector3 LeftOf(Vector3 foot) => new Vector3(2f * LabLayout.OperatorEye.x - foot.x, foot.y, foot.z);
+
+        private static CameraFeedBridge Feed(Transform root, string objectName, string feedName, int port, int localPort, Renderer screen, int maxFps = 0)
         {
             var go = new GameObject(objectName);
             go.transform.SetParent(root, false);
@@ -168,6 +220,7 @@ namespace Teleop.XR.Editor
             so.FindProperty("addressSource").enumValueIndex = (int)CameraFeedBridge.AddressSource.SerialChain;
             so.FindProperty("robotPort").intValue = port;
             so.FindProperty("localPort").intValue = localPort;
+            so.FindProperty("maxFramesPerSecond").intValue = maxFps;
             so.ApplyModifiedPropertiesWithoutUndo();
             return feed;
         }

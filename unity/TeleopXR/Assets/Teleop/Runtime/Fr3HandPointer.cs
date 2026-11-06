@@ -15,6 +15,8 @@ namespace Teleop.XR
     /// <item><b>On a scene object</b> the pinch grabs it, and the ray drags it across the table; letting go asks RobotHost to put
     /// it there (<see cref="SerialChainOperatorBridge.UpdatePointer"/>). The twin shows its ghost meanwhile, and the solid object
     /// moves once the world frames say so. A fallen object is stood up by a click on it.</item>
+    /// <item><b>On a camera display</b> the pinch grabs it, and it follows the ray at the distance it was grabbed at, up and
+    /// down too, turning to face you (<see cref="DisplayMover"/>).</item>
     /// </list>
     /// <para><b>Only while the robot is off</b>, so a pinch never does two things: with the robot on, the hands drive the arms and
     /// the rays are hidden (the fingertips still press buttons). A ray whose hit is closer than <see cref="nearMeters"/> is
@@ -25,6 +27,8 @@ namespace Teleop.XR
         [SerializeField] private SerialChainOperatorBridge bridge;
         [SerializeField] private XROrigin origin;
         [SerializeField] private Material rayMaterial;
+        [Tooltip("The camera displays the pointer can move.")]
+        [SerializeField] private DisplayMover[] displays = new DisplayMover[0];
         [SerializeField] private float maxMeters = 3f;
         [SerializeField] private float nearMeters = 0.15f;
         [Tooltip("Thumb tip to index tip: a pinch below this, released above releaseMeters.")]
@@ -40,6 +44,7 @@ namespace Teleop.XR
         private readonly Transform[] _dots = new Transform[2];
         private readonly bool[] _pinched = new bool[2];
         private readonly bool[] _onCap = new bool[2];
+        private readonly DisplayMover[] _moving = new DisplayMover[2];
         private XRHandSubsystem _hands;
         private MaterialPropertyBlock _block;
 
@@ -88,20 +93,49 @@ namespace Teleop.XR
                 bool rising = _pinched[h] && !was;
 
                 Renderer cap = null;
-                float capAt = float.PositiveInfinity, objectAt = -1f;
+                DisplayMover display = null;
+                float capAt = float.PositiveInfinity, objectAt = -1f, displayAt = float.PositiveInfinity;
+                var ray = new Ray(from, dir);
                 if (tracked)
                 {
                     cap = NearestCap(from, dir, out capAt);
                     objectAt = bridge.PointerHit(from, dir);
+                    display = NearestDisplay(ray, out displayAt);
                 }
 
-                bool objectFirst = objectAt >= 0f && objectAt < capAt;
-                float hitAt = objectFirst ? objectAt : cap != null ? capAt : -1f;
+                // A display being moved keeps the pinch until it is let go.
+                if (_moving[h] != null)
+                {
+                    if (tracked && _pinched[h])
+                    {
+                        _hovered[h] = _moving[h];
+                        _moving[h].Drag(ray);
+                        bridge.UpdatePointer(h, tracked, false, from, dir);
+                        Show(h, true, from, dir, Vector3.Distance(from, _moving[h].GrabPoint(ray)), activeColor);
+                        continue;
+                    }
+
+                    _moving[h].End();
+                    _moving[h] = null;
+                }
+
+                bool displayFirst = display != null && displayAt < capAt && (objectAt < 0f || displayAt < objectAt);
+                bool objectFirst = !displayFirst && objectAt >= 0f && objectAt < capAt;
+                float hitAt = displayFirst ? displayAt : objectFirst ? objectAt : cap != null ? capAt : -1f;
                 bool near = hitAt >= 0f && hitAt < nearMeters;
                 bool dragging = bridge != null && bridge.PointerDragging;
+                _hovered[h] = displayFirst && !near ? display : null;
+                if (rising && displayFirst && !near)
+                {
+                    display.Begin(ray, displayAt);
+                    _moving[h] = display;
+                    bridge.UpdatePointer(h, tracked, false, from, dir);
+                    Show(h, true, from, dir, displayAt, activeColor);
+                    continue;
+                }
 
                 // A pinch that starts on a button clicks it, and is not also a drag for as long as it is held.
-                if (rising) _onCap[h] = cap != null && !objectFirst && !near;
+                if (rising) _onCap[h] = cap != null && !objectFirst && !displayFirst && !near;
                 if (!_pinched[h]) _onCap[h] = false;
                 if (rising && _onCap[h])
                 {
@@ -109,7 +143,7 @@ namespace Teleop.XR
                     Debug.Log($"[pointer] {(h == 0 ? "left" : "right")} hand clicked {cap.transform.parent?.name ?? cap.name}");
                 }
 
-                if (bridge != null) bridge.UpdatePointer(h, tracked && !near, _pinched[h] && !_onCap[h], from, dir);
+                if (bridge != null) bridge.UpdatePointer(h, tracked && !near, _pinched[h] && !_onCap[h] && !displayFirst, from, dir);
                 Show(h, tracked && !near, from, dir, hitAt, _pinched[h] || (dragging && bridge.PointerDragging) ? activeColor : hitAt >= 0f ? hoverColor : idleColor);
             }
         }
@@ -135,6 +169,37 @@ namespace Teleop.XR
             dir = (from - shoulder).normalized;
             pinch = Vector3.Distance(space.TransformPoint(indexTip.position), space.TransformPoint(thumbTip.position));
             return dir.sqrMagnitude > 0.5f;
+        }
+
+        private void LateUpdate()
+        {
+            // Lit while a hand's ray is on it (or moving it); the pointer is off with the robot on.
+            foreach (DisplayMover d in displays)
+            {
+                if (d != null) d.Hovered = false;
+            }
+
+            if (bridge == null || bridge.MotionEnabled) return;
+            for (int h = 0; h < 2; h++)
+            {
+                if (_rays[h].enabled && _hovered[h] != null) _hovered[h].Hovered = true;
+            }
+        }
+
+        private readonly DisplayMover[] _hovered = new DisplayMover[2];
+
+        private DisplayMover NearestDisplay(Ray ray, out float distance)
+        {
+            distance = float.PositiveInfinity;
+            DisplayMover best = null;
+            foreach (DisplayMover d in displays)
+            {
+                if (d == null || !d.gameObject.activeInHierarchy || !d.TryHit(ray, out float at) || at <= 0f || at > maxMeters + 3f || at >= distance) continue;
+                distance = at;
+                best = d;
+            }
+
+            return best;
         }
 
         /// <summary>The nearest watched cap the ray passes over, through its level top, within its radius and the slack.</summary>

@@ -251,11 +251,6 @@ namespace Teleop.XR.Editor
             }
         }
 
-        /// <summary>
-        /// The two Isaac feeds (docs/adr/0032 decision 3): each a <see cref="CameraFeedBridge"/> asking the serial-chain host on its
-        /// own ports, showing on a display's screen it does not move, with that display's status strip reading it. Not safety
-        /// settings: a feed moves nothing.
-        /// </summary>
         /// <summary>The scenario recording buttons (docs/adr/0033): each role once, wired to the bridge.</summary>
         private static void CheckRecording(List<string> problems)
         {
@@ -273,6 +268,9 @@ namespace Teleop.XR.Editor
                 var pso = new SerializedObject(p);
                 if (pso.FindProperty("bridge").objectReferenceValue == null || pso.FindProperty("origin").objectReferenceValue == null)
                     problems.Add("Fr3HandPointer is not wired to the bridge and the XR Origin");
+                SerializedProperty movers = pso.FindProperty("displays");
+                if (movers.arraySize != 4 || Enumerable.Range(0, movers.arraySize).Any(i => movers.GetArrayElementAtIndex(i).objectReferenceValue == null))
+                    problems.Add("Fr3HandPointer does not move the four camera displays: run `just unity-world-fr3-xr`");
             }
 
             Fr3MotionButton[] buttons = group.GetComponentsInChildren<Fr3MotionButton>(true);
@@ -284,6 +282,11 @@ namespace Teleop.XR.Editor
             }
         }
 
+        /// <summary>
+        /// The four Isaac feeds (docs/adr/0032 decision 3, amendment 3): each a <see cref="CameraFeedBridge"/> asking the
+        /// serial-chain host on its own ports, showing on a display's screen it does not move, with that display's status strip
+        /// reading it. Not safety settings: a feed moves nothing.
+        /// </summary>
         private static void CheckFeeds(List<string> problems)
         {
             var feeds = Object.FindObjectsByType<CameraFeedBridge>(FindObjectsInactive.Include, FindObjectsSortMode.None);
@@ -292,6 +295,8 @@ namespace Teleop.XR.Editor
             {
                 (XrFr3WorldSetup.RightFeedName, XrFr3WorldSetup.RightFeedPort, XrFr3WorldSetup.RightFeedLocalPort),
                 (XrFr3WorldSetup.LeftFeedName, XrFr3WorldSetup.LeftFeedPort, XrFr3WorldSetup.LeftFeedLocalPort),
+                (XrFr3WorldSetup.ThirdLeftFeedName, XrFr3WorldSetup.ThirdLeftFeedPort, XrFr3WorldSetup.ThirdLeftFeedLocalPort),
+                (XrFr3WorldSetup.ThirdRightFeedName, XrFr3WorldSetup.ThirdRightFeedPort, XrFr3WorldSetup.ThirdRightFeedLocalPort),
             })
             {
                 CameraFeedBridge feed = feeds.FirstOrDefault(f => f.FeedName == name);
@@ -314,7 +319,7 @@ namespace Teleop.XR.Editor
                     problems.Add($"no display's status strip reads the '{name}' feed");
             }
 
-            if (feeds.Length != 2) problems.Add($"{feeds.Length} camera feeds; the FR3 lab has two (the wrist cameras)");
+            if (feeds.Length != 4) problems.Add($"{feeds.Length} camera feeds; the FR3 lab has four (the wrists and the two third-person cameras)");
         }
 
         private static void CheckResources(List<string> problems)

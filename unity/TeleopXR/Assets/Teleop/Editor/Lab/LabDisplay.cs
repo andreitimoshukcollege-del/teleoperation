@@ -34,13 +34,14 @@ namespace Teleop.XR.Editor
         /// <param name="caption">The line under the strip: what the camera is.</param>
         /// <param name="rootName">The display's object; any name but the default also prefixes its meshes, so two displays can share one mesh library.</param>
         /// <param name="mirrored">On the operator's left instead (the FR3 lab's second feed, docs/adr/0032 decision 3).</param>
+        /// <param name="at">Where its foot stands instead (the FR3 lab's third-person displays); it faces the operator from there.</param>
         public static Result Build(Transform parent, LabPalette p, Material screenMaterial, CameraFeedBridge feed, OperatorBridgeBase robot,
-            string caption = "robot camera  ·  Orbbec DaBai DCW", string rootName = "CameraDisplay", bool mirrored = false)
+            string caption = "robot camera  ·  Orbbec DaBai DCW", string rootName = "CameraDisplay", bool mirrored = false, Vector3? at = null)
         {
             string mesh = rootName == "CameraDisplay" ? "Display" : rootName;
             Transform root = LabParts.Group(rootName, parent).transform;
-            Vector3 foot = LabLayout.DisplayFoot;
-            if (mirrored) foot.x = 2f * LabLayout.OperatorEye.x - foot.x;
+            Vector3 foot = at ?? LabLayout.DisplayFoot;
+            if (mirrored && at == null) foot.x = 2f * LabLayout.OperatorEye.x - foot.x;
             root.position = foot;
             Vector3 away = foot - LabLayout.OperatorEye;
             away.y = 0f;

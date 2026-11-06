@@ -374,16 +374,18 @@ lighting.
   it), **RECORD** starts a take and reads `STOP ● mm:ss` while recording, **DISCARD LAST** sets the last take aside. They
   work with the robot on or off, against `just isaac-host` (which passes `--scenarios`); beside `just fr3-sim-host` they
   say RobotHost records no scenarios.
-- **Two displays** show two of Isaac's four cameras (docs/adr/0032 amendment 3), outside the joint link's disturbance:
+- **Four displays** show Isaac's four cameras (docs/adr/0032 amendments 3 and 4), outside the joint link's disturbance:
   - **`RIGHT WRIST (REC)`,** on the right: the right hand's camera, from port 6003, received locally on 6004.
   - **`LEFT WRIST (REC)`,** on the left, mirrored: the left hand's, from 6007, received on 6014.
-  - The two third-person cameras are recorded but not shown (the twin already shows the arms from outside): `just
-    camera-probe` with 6008 and 6009.
+  - **`3RD PERSON RIGHT (REC)` / `3RD PERSON LEFT (REC)`,** stacked above those two: from 6009 / 6008, received on 6016 /
+    6015, at 15 fps so four feeds cost the decoder about three.
+  - **Movable, while the robot is off:** they float (no floor stands); point at one, pinch and drag it anywhere, up and
+    down too. It keeps facing you. Positions are not saved between launches.
   - **Where they connect:** each `CameraFeedBridge` asks `fr3_connection`'s `RemoteHost`, which is `just isaac-host`'s
     renderer. Beside `just fr3-sim-host` there is no renderer, and the strips say NO SIGNAL.
   - **The log** reports each feed's decode time (`[camera] RIGHT WRIST (REC) ...`).
 - **`just unity-check-fr3-xr`** checks the twin's ids against the file, the table within 1 mm, the buttons, both feeds'
-  ports and wiring, the RECORD group and the pointer. None of these are safety settings: none of them moves the robot.
+  ports and wiring (all four), the RECORD group, and the pointer with the four displays it moves. None of these are safety settings: none of them moves the robot.
 
 **Safety settings.** `just unity-check-fr3-xr` fails, and `just build-galaxy-fr3` refuses to build, if
 any of these changes:

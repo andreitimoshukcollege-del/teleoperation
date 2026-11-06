@@ -550,3 +550,33 @@ rotation will be the same as the hand but the position should be relative to the
 - **Tested.** `BodyAnchoredMappingTests.RelativePosition_StartsFromTheToolAtTheLock_AndMovesWithTheHand_WhileTheRotationStaysThePalms`.
   `chain-ik-stress` and `chain-teleop-probe` keep the absolute mapping: neither anchors.
 - **Not tested:** how it feels on the headset.
+
+## Amendment 10 (2026-11-06): the lock is a thumb-to-middle tap
+
+The user: "the double click of the fingers doesn't get recognized a lot of the time and can be annoying". Of the
+alternatives offered, they chose a tap of the thumb on the middle fingertip.
+
+- **Why it should be steadier.** It is read as the gripper's pinch is, from two fingertips' gap. Hand tracking measures that
+  far more steadily than a fold of three fingers, which it loses as the hand turns. It is also a single gesture, not two
+  inside a time window.
+  - A likely reason the double fold failed: between two quick folds the fingers rarely open past the release curl (1.55,
+    from an engage of 1.25), so the second fold is never seen as new.
+- **The rule** (Core's `MiddleTapToggle`):
+  - **A touch** is a thumb–middle gap below 1.5 cm, released above 3 cm.
+  - **It toggles the lock** once it has lasted 30 ms, while the thumb and index are at least 3.5 cm apart. It answers then,
+    without waiting for the release.
+  - **Holding on toggles nothing more.**
+  - **No touch counts while the index is on the thumb,** or if the index closes during it, so closing the gripper never
+    locks or unlocks. To unlock while gripping, open the index first.
+  - **Untracked frames do nothing,** and losing the hand never unlocks.
+- **Config.** `GrabMode` in `fr3_connection.json`:
+  - `middle-tap`, the default;
+  - `toggle`, the double fold, unchanged;
+  - `hold`.
+
+  The thresholds are `MiddleTapTouchMeters`, `MiddleTapReleaseMeters`, `MiddleTapIndexApartMeters` and
+  `MiddleTapMinSeconds`. `just push-galaxy-fr3-config` changes any of them without a rebuild.
+- **Tested:** `MiddleTapToggleTests` covers taps, holding, flicker, the gripper closing with the middle finger alongside,
+  and lost tracking.
+- **Not tested:** on the headset: whether 1.5 cm suits this headset's fingertip tracking, and whether the middle fingertip
+  stays visible behind the index at the angles you drive with.

@@ -100,6 +100,8 @@ namespace Teleop.Bridge
         private GrabGesture[] _grab;
         private GrabToggleConfig _toggleConfig;
         private GrabToggle[] _toggle;
+        private MiddleTapConfig _tapConfig;
+        private MiddleTapToggle[] _tap;
         private JointTarget[] _targets;
         private readonly byte[] _buffer = new byte[JointDatagram.MaxBytes];
         private long _sendIntervalTicks, _lastSendTicks = long.MinValue, _lastStepTicks = long.MinValue;
@@ -466,14 +468,18 @@ namespace Teleop.Bridge
         public float SecondsSinceLastFrame => _link != null ? (float)_link.SecondsSinceLastFrame(_clock.NowTicks) : float.PositiveInfinity;
         public string ActivePredictor => _link != null ? _link.Bank.ActiveLabel : "";
 
-        /// <summary>Whether a double curl locks the arm on (true) or the curl must be held (false).</summary>
-        public bool UsesToggle => _toggleConfig != null;
+        /// <summary>Whether a gesture locks the arm on (a middle tap or a double curl), rather than the curl being held.</summary>
+        public bool UsesToggle => _toggleConfig != null || _tapConfig != null;
 
-        /// <summary>Whether this hand's arm is locked on by a double curl (toggle mode); it may still be holding, if the hand is lost.</summary>
+        /// <summary>Whether the lock is a thumb-to-middle tap (docs/adr/0029 amendment 10), rather than a double curl.</summary>
+        public bool UsesMiddleTap => _tapConfig != null;
+
+        /// <summary>Whether this hand's arm is locked on (by a middle tap or a double curl); it may still be holding, if the hand is lost.</summary>
         public bool IsLocked(bool leftHand)
         {
             int arm = leftHand ? _left : _right;
-            return _toggle != null && arm >= 0 && _toggle[arm].IsLocked;
+            if (arm < 0) return false;
+            return _tapConfig != null ? _tap[arm].IsLocked : _toggle != null && _toggle[arm].IsLocked;
         }
 
         public DuoArmState ArmState(bool leftHand)
@@ -495,10 +501,12 @@ namespace Teleop.Bridge
             GrabGesture.CurlRatio(middleTip, middleKnuckle, ringTip, ringKnuckle, littleTip, littleKnuckle);
 
         /// <summary>
-        /// One hand's frame (world space): whether it is tracked, its palm's pose, its curl ratio and its thumb-index
-        /// gap. A held grab engages that hand's arm, or moves it; letting go, or losing tracking, holds it.
+        /// One hand's frame (world space): whether it is tracked, its palm's pose, its curl ratio, its thumb-index gap and its
+        /// thumb-middle gap (NaN when unknown). A held grab, or the lock, engages that hand's arm, or moves it; letting go, or
+        /// losing tracking, holds it.
         /// </summary>
-        public void SetHand(bool leftHand, bool tracked, Vector3 palmPosition, Quaternion palmRotation, float curlRatio, float pinchMeters)
+        public void SetHand(bool leftHand, bool tracked, Vector3 palmPosition, Quaternion palmRotation, float curlRatio, float pinchMeters,
+            float middleMeters = float.NaN)
         {
             int arm = leftHand ? _left : _right;
             if (_teleop == null || arm < 0) return;
@@ -518,7 +526,14 @@ namespace Teleop.Bridge
                 return;
             }
 
-            if (_toggleConfig != null)
+            if (_tapConfig != null)
+            {
+                // A thumb-to-middle tap locks the arm on and another unlocks it (docs/adr/0029 amendment 10); while locked it
+                // follows the hand whatever the fingers do, and holds while the hand is lost.
+                bool locked = _tap[arm].Update(_tapConfig, tracked, middleMeters, pinchMeters, _clock.NowTicks / (double)_clock.TicksPerSecond);
+                held = locked && tracked;
+            }
+            else if (_toggleConfig != null)
             {
                 // A double curl locks the arm on and another unlocks it; while locked it follows the hand whether or not
                 // tracking reads the hand as curled, and holds while the hand is lost.
@@ -648,14 +663,24 @@ namespace Teleop.Bridge
             _handFilter = new HandPoseFilter[_teleop.ArmCount];
             _grab = new GrabGesture[_teleop.ArmCount];
             _toggle = new GrabToggle[_teleop.ArmCount];
-            if (_config.GrabMode == "toggle")
+            _tap = new MiddleTapToggle[_teleop.ArmCount];
+            if (_config.GrabMode == "middle-tap")
+            {
+                _tapConfig = new MiddleTapConfig
+                {
+                    TouchMeters = _config.MiddleTapTouchMeters, ReleaseMeters = _config.MiddleTapReleaseMeters,
+                    IndexApartMeters = _config.MiddleTapIndexApartMeters, MinTouchSeconds = _config.MiddleTapMinSeconds,
+                };
+                if (_tapConfig.Validate() is string badTap) throw new InvalidOperationException("fr3_connection: " + badTap);
+            }
+            else if (_config.GrabMode == "toggle")
             {
                 _toggleConfig = new GrabToggleConfig { MinPressSeconds = _config.MinPressSeconds, DoubleClickSeconds = _config.DoubleClickSeconds };
                 if (_toggleConfig.Validate() is string badToggle) throw new InvalidOperationException("fr3_connection: " + badToggle);
             }
             else if (_config.GrabMode != "hold")
             {
-                throw new InvalidOperationException($"fr3_connection: GrabMode '{_config.GrabMode}' is neither 'toggle' nor 'hold'");
+                throw new InvalidOperationException($"fr3_connection: GrabMode '{_config.GrabMode}' is not 'middle-tap', 'toggle' or 'hold'");
             }
             _targets = new JointTarget[_teleop.MotorCount];
 
@@ -846,6 +871,7 @@ namespace Teleop.Bridge
             {
                 _grab[a].Reset();
                 _toggle[a].Reset();
+                _tap[a].Reset();
             }
         }
 

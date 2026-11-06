@@ -305,13 +305,15 @@ lighting.
 
 **Driving it.** Each hand drives its own arm, and the robot is anchored to your body (absolute):
 
-- **Lock an arm on by folding the middle, ring and little fingers twice quickly,** like a double-click.
-  The status line says `LOCKED`.
+- **Lock an arm on by tapping that hand's thumb on its middle fingertip** (docs/adr/0029 amendment 10), with the index
+  finger apart. The status line says `LOCKED` (and `free · tap thumb to middle finger` while it is not). A touch while
+  the index is on the thumb, as when closing the gripper, never counts. `GrabMode: "toggle"` in the config brings back
+  the double fold of the middle, ring and little fingers; `"hold"` makes the arm follow only while the curl is held.
   - **While locked:** the arm follows that hand whatever your fingers do. Its position moves by how far
     the hand moves from where you locked, and the gripper faces the way your palm faces, relative to your
     body: a flat palm pointing forward points the gripper forward (docs/adr/0029 amendment 9;
     `HandPosition: "absolute"` in the config instead puts the gripper where the hand is relative to your body).
-  - **Unlocking:** fold twice again; the arm stays where it is.
+  - **Unlocking:** tap again; the arm stays where it is.
   - **When you lock:** the arm stays where it is and the gripper turns to your palm's orientation over about a
     second rather than snapping.
   - **An open hand moves nothing,** its marker included.

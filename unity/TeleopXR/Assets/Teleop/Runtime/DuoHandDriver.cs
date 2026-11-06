@@ -90,7 +90,8 @@ namespace Teleop.XR
                 Vector3.Distance(ringTip, wrist), Vector3.Distance(ringKnuckle, wrist),
                 Vector3.Distance(littleTip, wrist), Vector3.Distance(littleKnuckle, wrist));
             float pinch = Vector3.Distance(thumb, index) * space.lossyScale.x;
-            bridge.SetHand(left, true, space.TransformPoint(palm.position), space.rotation * palm.rotation, curl, pinch);
+            float middle = Vector3.Distance(thumb, middleTip) * space.lossyScale.x; // the lock's tap (docs/adr/0029 amendment 10)
+            bridge.SetHand(left, true, space.TransformPoint(palm.position), space.rotation * palm.rotation, curl, pinch, middle);
         }
 
         private static bool TryPosition(XRHand hand, XRHandJointID id, out Vector3 position)
@@ -108,7 +109,7 @@ namespace Teleop.XR
                 return;
             }
 
-            // 4: locked by a double curl but holding, because the hand is lost.
+            // 4: locked (a middle tap or a double curl) but holding, because the hand is lost.
             int l = (int)bridge.ArmState(true), r = (int)bridge.ArmState(false);
             if (bridge.IsLocked(true) && l == (int)DuoArmState.Idle) l = 4;
             if (bridge.IsLocked(false) && r == (int)DuoArmState.Idle) r = 4;
@@ -162,7 +163,7 @@ namespace Teleop.XR
             : state == (int)DuoArmState.Following ? (bridge.UsesToggle ? "<color=#33BFFF>LOCKED</color>" : "<color=#33BFFF>HELD</color>")
             : state == (int)DuoArmState.StoppedShort ? "<color=#FF9919>OUT OF REACH</color>"
             : state == (int)DuoArmState.Blocked ? "<color=#FF3333>BLOCKED</color>"
-            : "free";
+            : bridge.UsesMiddleTap ? "free · tap thumb to middle finger" : "free";
 
         private static XRHandSubsystem FindHands()
         {

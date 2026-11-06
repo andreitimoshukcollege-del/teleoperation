@@ -5,6 +5,7 @@
   "CommandRateHz": 48.0,
   "MaxHorizonMs": 300.0,
   "HandMapping": "absolute",
+  "HandPosition": "relative",
   "PositionScale": 1.0,
   "HandFilter": "one-euro",
   "HandFilterMinCutoffHz": 1.0,

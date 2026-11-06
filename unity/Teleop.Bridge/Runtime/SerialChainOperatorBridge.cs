@@ -512,6 +512,7 @@ namespace Teleop.Bridge
             {
                 // EDIT OBJECTS: the curl held grabs an object, never the arm (the double-curl lock is not read meanwhile).
                 if (_teleop.IsEngaged(arm)) _teleop.Release(arm);
+                _mapping?.ClearAnchor(arm); // the EDIT OBJECTS cursor is where the hand maps by itself
                 bool mapped = tracked && _mapping != null && _mapping.IsCentred;
                 _edit.Update(leftHand ? 0 : 1, mapped, held, mapped ? _mapping.Map(arm, palm) : RigidTransform.Identity, _world);
                 return;
@@ -559,6 +560,7 @@ namespace Teleop.Bridge
             if (!tracked || !_mapping.IsCentred)
             {
                 if (_teleop.IsEngaged(arm)) _teleop.Release(arm);
+                _mapping.ClearAnchor(arm);
                 return;
             }
 
@@ -566,14 +568,22 @@ namespace Teleop.Bridge
             {
                 // An open hand moves nothing, its marker included: the marker stays on the arm until a grab (the user's call).
                 if (_teleop.IsEngaged(arm)) _teleop.Release(arm);
+                _mapping.ClearAnchor(arm);
                 return;
             }
 
+            // Position relative (HandPosition "relative", docs/adr/0029 amendment 9): the lock anchors the hand to where the tool
+            // is, so the arm stays put and then moves with the hand; the gripper turns to face the palm's way over the slide.
+            if (!_teleop.IsEngaged(arm) && _teleop.HasPose) _mapping.Anchor(arm, palm, _teleop.Tool(arm));
             RigidTransform target = _mapping.Map(arm, palm);
 
             if (!_teleop.IsEngaged(arm))
             {
-                if (!_teleop.EngageAt(arm, target)) return;
+                if (!_teleop.EngageAt(arm, target))
+                {
+                    _mapping.ClearAnchor(arm);
+                    return;
+                }
             }
             else
             {
@@ -609,7 +619,12 @@ namespace Teleop.Bridge
                 _mapping = new BodyAnchoredMapping(_profile, BodyAnchoredMapping.NeutralTools(_profile), new BodyMappingOptions
                 {
                     PositionScale = _config.PositionScale, NeutralForward = _config.NeutralForward, NeutralSide = _config.NeutralSide, NeutralDown = _config.NeutralDown,
+                    RelativePosition = _config.HandPosition == "relative",
                 });
+                if (_config.HandPosition != "relative" && _config.HandPosition != "absolute")
+                {
+                    throw new InvalidOperationException($"fr3_connection: HandPosition '{_config.HandPosition}' is neither 'relative' nor 'absolute'");
+                }
             }
             else if (_config.HandMapping != "relative")
             {

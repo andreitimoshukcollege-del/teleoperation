@@ -29,6 +29,13 @@ namespace Teleop.Bridge
         /// </summary>
         public string HandMapping = "absolute";
 
+        /// <summary>
+        /// With the absolute mapping, where the gripper goes (docs/adr/0029 amendment 9). <c>relative</c> (the default, the user's
+        /// choice, 2026-11-06): when an arm locks it stays where it is and then moves by how far the hand moves; it still faces
+        /// the way the palm faces. <c>absolute</c>: where the hand is relative to your body is where the gripper goes.
+        /// </summary>
+        public string HandPosition = "relative";
+
         /// <summary>Hand motion → tool motion; 1 is one to one.</summary>
         public double PositionScale = 1.0;
 

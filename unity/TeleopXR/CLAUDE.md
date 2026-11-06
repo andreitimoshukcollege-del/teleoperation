@@ -307,10 +307,13 @@ lighting.
 
 - **Lock an arm on by folding the middle, ring and little fingers twice quickly,** like a double-click.
   The status line says `LOCKED`.
-  - **While locked:** the arm follows that hand whatever your fingers do. Where the hand is, relative
-    to your body, is where the gripper goes; a flat palm pointing forward points the gripper forward.
+  - **While locked:** the arm follows that hand whatever your fingers do. Its position moves by how far
+    the hand moves from where you locked, and the gripper faces the way your palm faces, relative to your
+    body: a flat palm pointing forward points the gripper forward (docs/adr/0029 amendment 9;
+    `HandPosition: "absolute"` in the config instead puts the gripper where the hand is relative to your body).
   - **Unlocking:** fold twice again; the arm stays where it is.
-  - **When you lock:** the arm slides to your hand over about a second rather than lunging.
+  - **When you lock:** the arm stays where it is and the gripper turns to your palm's orientation over about a
+    second rather than snapping.
   - **An open hand moves nothing,** its marker included.
 - **While locked, the thumb-index gap is that arm's gripper:** 8 cm or more is open, 1.5 cm or less is
   closed.

@@ -75,6 +75,36 @@ namespace Teleop.RobotArm.Tests.Operator
         }
 
         [Fact]
+        public void RelativePosition_StartsFromTheToolAtTheLock_AndMovesWithTheHand_WhileTheRotationStaysThePalms()
+        {
+            // docs/adr/0029 amendment 9: where the hand locks, the tool stays; from there it moves with the hand; it faces the palm's way.
+            BodyAnchoredMapping m = Mapping(out _, new BodyMappingOptions { RelativePosition = true, PositionScale = 0.5 });
+            RigidTransform yaw30 = RigidTransform.Rotation(0, 0, 1, Math.PI / 6);
+            var tool = new RigidTransform(0.45, 0.25, 0.35, 1, 0, 0, 0);
+            RigidTransform lockHand = Hand(0.10, 0.40, -0.10, yaw30); // nowhere near the neutral hand
+            m.Anchor(0, lockHand, tool);
+            Assert.True(m.IsAnchored(0));
+            RigidTransform at = m.Map(0, lockHand);
+            Assert.Equal((0.45, 0.25, 0.35), (Math.Round(at.X, 9), Math.Round(at.Y, 9), Math.Round(at.Z, 9)));
+            RigidTransform moved = m.Map(0, Hand(0.30, 0.40, -0.10, yaw30));
+            Assert.Equal(0.10, moved.X - at.X, 9); // 20 cm of hand, at scale 0.5
+            Axis(moved, 0, 0, 1, out double x, out double y, out double z);
+            Assert.Equal(Math.Cos(Math.PI / 6), x, 9);
+            Assert.Equal(Math.Sin(Math.PI / 6), y, 9);
+            Assert.Equal(0, z, 9);
+
+            // The other arm is not anchored, and letting go brings this one back to where the hand maps by itself.
+            Assert.False(m.IsAnchored(1));
+            m.ClearAnchor(0);
+            BodyAnchoredMapping plain = Mapping(out _, new BodyMappingOptions { PositionScale = 0.5 });
+            Assert.Equal(plain.Map(0, lockHand).X, m.Map(0, lockHand).X, 9);
+
+            // Without the option an anchor does nothing.
+            plain.Anchor(0, lockHand, tool);
+            Assert.False(plain.IsAnchored(0));
+        }
+
+        [Fact]
         public void TheBodyFrame_IsTheHeadsPositionAndHeadingOnly()
         {
             // The same hand relative to the head, wherever the operator stands and faces: the same tool.

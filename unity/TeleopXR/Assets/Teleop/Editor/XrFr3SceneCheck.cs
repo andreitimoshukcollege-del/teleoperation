@@ -178,6 +178,7 @@ namespace Teleop.XR.Editor
             if (twin != null && robotRoot != null) CheckTwin(twin, robotRoot, problems);
             if (robotRoot != null) CheckWorld(robotRoot, problems);
             CheckFeeds(problems);
+            CheckRecording(problems);
             return problems;
         }
 
@@ -255,6 +256,34 @@ namespace Teleop.XR.Editor
         /// own ports, showing on a display's screen it does not move, with that display's status strip reading it. Not safety
         /// settings: a feed moves nothing.
         /// </summary>
+        /// <summary>The scenario recording buttons (docs/adr/0033): each role once, wired to the bridge.</summary>
+        private static void CheckRecording(List<string> problems)
+        {
+            GameObject group = SceneManager.GetActiveScene().GetRootGameObjects().FirstOrDefault(g => g.name == XrFr3SceneBuilder.RecordGroupName);
+            if (group == null)
+            {
+                problems.Add($"no '{XrFr3SceneBuilder.RecordGroupName}' (the RECORD buttons): rebuild the scene (`just unity-scene-fr3-xr true`)");
+                return;
+            }
+
+            Fr3HandPointer[] pointers = Object.FindObjectsByType<Fr3HandPointer>(FindObjectsInactive.Include, FindObjectsSortMode.None);
+            if (pointers.Length != 1) problems.Add($"{pointers.Length} Fr3HandPointer(s); the scene has one (pointing while the robot is off)");
+            foreach (Fr3HandPointer p in pointers)
+            {
+                var pso = new SerializedObject(p);
+                if (pso.FindProperty("bridge").objectReferenceValue == null || pso.FindProperty("origin").objectReferenceValue == null)
+                    problems.Add("Fr3HandPointer is not wired to the bridge and the XR Origin");
+            }
+
+            Fr3MotionButton[] buttons = group.GetComponentsInChildren<Fr3MotionButton>(true);
+            foreach (Fr3MotionButton.Role role in new[] { Fr3MotionButton.Role.Record, Fr3MotionButton.Role.ScenarioPrevious, Fr3MotionButton.Role.ScenarioNext, Fr3MotionButton.Role.DiscardLast })
+            {
+                Fr3MotionButton b = buttons.SingleOrDefault(x => x.ButtonRole == role);
+                if (b == null) problems.Add($"no {role} button under '{XrFr3SceneBuilder.RecordGroupName}'");
+                else if (new SerializedObject(b).FindProperty("bridge").objectReferenceValue == null) problems.Add($"the {role} button has no bridge");
+            }
+        }
+
         private static void CheckFeeds(List<string> problems)
         {
             var feeds = Object.FindObjectsByType<CameraFeedBridge>(FindObjectsInactive.Include, FindObjectsSortMode.None);

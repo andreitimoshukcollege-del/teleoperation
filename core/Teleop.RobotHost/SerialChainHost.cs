@@ -176,6 +176,21 @@ namespace Teleop.RobotHost
                 Console.WriteLine($"[record] automatic sessions into {root} while the headset commands ({a.AutoRecord})");
             }
 
+            // Takes of named scenarios from the headset's RECORD button (docs/adr/0033).
+            ScenarioRecorder? scenarios = null;
+            if (recorder != null && a.ScenariosRoot != null)
+            {
+                var folder = new ScenarioFolder(a.ScenariosRoot);
+                folder.EnsureExists();
+                string scenariosRoot = Path.GetFullPath(a.ScenariosRoot);
+                scenarios = new ScenarioRecorder(scenariosRoot, recorder, auto, folder, clock.TicksPerSecond, () => DateTime.UtcNow,
+                    () => FreeBytes(scenariosRoot), () => new UplinkCondition(uplink.Profile, uplinkSeed), Console.WriteLine);
+                Console.WriteLine($"[scenario] the headset's RECORD button records into {scenariosRoot} (the list: {Path.Combine(scenariosRoot, ScenarioList.FileName)})");
+            }
+
+            long recordSendTicks = 0;
+            Action<byte[], int> sendRecord = (buffer, bytes) => transport.Send(buffer.AsSpan(0, bytes), recordSendTicks);
+
             // The truth, from the backend's own steps (or the server's reports) rather than this loop's, so its spacing is exact.
             if (recorder != null)
             {
@@ -329,6 +344,7 @@ namespace Teleop.RobotHost
                         string text = transport.CurrentRemoteEndPoint?.ToString() ?? "?";
                         string kindName = SessionLines.KindName(kind), modeName = SessionLines.ModeName(mode);
                         if (kind == OperatorClientKind.Headset) auto?.OnHeadset(arrival, text);
+                        scenarios?.OnHeard(text, arrival);
                         if (text != operatorText || kindName != operatorKind || modeName != operatorMode) Console.WriteLine($"[operator] {kindName} at {text}, motion {modeName}");
                         operatorText = text;
                         operatorKind = kindName;
@@ -370,6 +386,12 @@ namespace Teleop.RobotHost
                         continue;
                     }
 
+                    if (RecordCodec.TryDecodeRequest(datagram, out RecordOp recordOp, out byte recordScenario, out ushort recordRevision, out uint recordSequence, out _))
+                    {
+                        scenarios?.HandleRequest(recordOp, recordScenario, recordRevision, recordSequence, transport.CurrentRemoteEndPoint?.ToString() ?? "?", arrival);
+                        continue;
+                    }
+
                     if (JointCommandCodec.TryDecode(datagram, out uint sequence, out long capture, targets, out int count))
                     {
                         EndPoint? sender = transport.CurrentRemoteEndPoint;
@@ -383,6 +405,7 @@ namespace Teleop.RobotHost
 
                         lastCommandTicks = arrival;
                         auto?.OnJointCommand(arrival, commanderText);
+                        scenarios?.OnHeard(commanderText, arrival);
                         if (recorder != null)
                         {
                             if (recorder.TakePreambleOwed()) StartSessionState(arrival);
@@ -428,6 +451,13 @@ namespace Teleop.RobotHost
                     auto?.OnSubscriber(now, null);
                 }
 
+                if (scenarios != null)
+                {
+                    scenarios.Tick(now);
+                    recordSendTicks = now;
+                    if (streamer.IsSubscribed(now)) scenarios.Send(now, sendRecord);
+                }
+
                 if (world != null)
                 {
                     staticWorld?.Poll(now);
@@ -438,6 +468,7 @@ namespace Teleop.RobotHost
                 Thread.Sleep(1);
             }
 
+            scenarios?.Stop("RobotHost is stopping");
             sigterm?.Dispose();
             if (raisedTimer) TimeEndPeriod(1);
             Console.WriteLine($"Stopped. {plant.AcceptedCommands} joint command(s) taken, {plant.StaleCommands} stale, {plant.RefusedCommands} refused (collision), {plant.UnknownTargets} target(s) for unknown motors, " +

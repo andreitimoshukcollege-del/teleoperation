@@ -3103,10 +3103,51 @@ isaac-host scene="fr3-duo-bench" scene_seed="auto" feeds="true":
     dotnet "$HOME/isaacsim/robothost/Teleop.RobotHost.dll" --profile-path core/RobotProfiles/fr3-duo.json --joint-local-port 6002 \
         --backend arm-server --arm-server-socket "$sock" --collision-model core/RobotProfiles/fr3-duo.collision.json \
         --discovery-port 6005 --record-control "$HOME/isaacsim/recordings/.active" --auto-record --auto-record-root "$HOME/isaacsim/recordings" \
-        "${host_scene[@]}" "${writer[@]}"
+        --scenarios "$HOME/isaacsim/scenarios" "${host_scene[@]}" "${writer[@]}"
     REMOTE
     )
     ssh -o ConnectTimeout=10 "{{gpu_host}}" "COMMIT='$commit' SCENE='{{scene}}' SCENE_SEED='{{scene_seed}}' FEEDS='{{feeds}}' bash -c $(printf '%q' "$remote")"
+
+# Let another account on the GPU machine read the headset's scenario takes (docs/adr/0033), once: ACLs, no sudo. It may enter (not list) our home and ~/isaacsim, read everything under ~/isaacsim/scenarios, and every take written there from now on (a default ACL), edit scenarios.txt (the list the headset shows), and save into the folder itself (editors replace a file when they save); takes stay read-only to it. Run it again after deleting the folder. Prints the folder's ACL
+[group('isaac')]
+isaac-share-scenarios user="seaqueue-cheng":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    case "{{user}}" in *[!a-z0-9._-]*|"") echo "error: user is an account name on the GPU machine" >&2; exit 1 ;; esac
+    ssh -o ConnectTimeout=10 "{{gpu_host}}" "U='{{user}}' bash -s" <<'REMOTE'
+    set -euo pipefail
+    id "$U" > /dev/null || { echo "error: no account $U here" >&2; exit 1; }
+    root=$HOME/isaacsim/scenarios
+    mkdir -p "$root"
+    setfacl -m "u:$U:x" "$HOME" "$HOME/isaacsim"
+    setfacl -R -m "u:$U:rX" "$root"
+    find "$root" -type d -exec setfacl -d -m "u:$U:rX" {} +
+    setfacl -m "u:$U:rwx" "$root"
+    [ -f "$root/scenarios.txt" ] && setfacl -m "u:$U:rw" "$root/scenarios.txt"
+    getfacl -p "$root" 2>/dev/null | grep -v '^#' | sed '/^$/d'
+    echo "[share] $U can read the takes in $root (takes: $root/<scenario>/<UTC>-take<n>/) and edit $root/scenarios.txt"
+    REMOTE
+
+# What the headset's RECORD button has recorded on the GPU machine (docs/adr/0033): the scenario list, and per scenario the takes kept (complete or not) and set aside, with their size
+[group('isaac')]
+isaac-scenarios:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    ssh -o ConnectTimeout=10 "{{gpu_host}}" bash -s <<'REMOTE'
+    set -euo pipefail
+    root=$HOME/isaacsim/scenarios
+    [ -d "$root" ] || { echo "no $root yet: just isaac-host makes it"; exit 0; }
+    echo "--- $root/scenarios.txt"; grep -v '^[[:space:]]*#' "$root/scenarios.txt" 2>/dev/null | sed '/^[[:space:]]*$/d' || echo "(none)"
+    for d in "$root"/*/; do
+        [ -d "$d" ] || continue
+        name=$(basename "$d"); [ "$name" = _discarded ] && continue
+        kept=$(find "$d" -mindepth 1 -maxdepth 1 -type d -name '*-take*' | wc -l)
+        done_=$(find "$d" -mindepth 2 -maxdepth 2 -name files.sha256 | wc -l)
+        aside=$(find "$root/_discarded/$name" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l)
+        echo "$name: $kept take(s) kept ($done_ complete), $aside set aside, $(du -sh "$d" | cut -f1)"
+    done
+    echo "free: $(df -h "$root" | awk 'NR==2 {print $4}')"
+    REMOTE
 
 # Stop the Isaac host that `just isaac-host` started on the GPU machine (docs/adr/0031), from any terminal: what Enter does where it was started. RobotHost gets SIGTERM first, which it takes as Enter, so it closes its recording, and isaac-host then stops the bridge. Whatever still runs after 30 s gets SIGTERM, and after 60 s more, SIGKILL. Says which recording is newest and whether it is complete. Nothing running is not an error
 [group('isaac')]

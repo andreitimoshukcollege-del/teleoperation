@@ -114,6 +114,47 @@ namespace Teleop.RobotArm.Tests.Operator
         }
 
         [Fact]
+        public void ARecordRequest_WaitsForTheList_IsResentUntilEchoed_AndTheStatusSkipsTheDisturbance()
+        {
+            // docs/adr/0033: control, not robot state: the status shows at once, whatever the added delay.
+            SerialChainProfile profile = SerialChainKinematicsTests.LoadFr3Duo();
+            var socket = new FakeSocket();
+            var clock = new ManualClock(Tps);
+            SerialChainJointLink link = Link(profile, socket, clock, null);
+            link.AddedDelayMs = 500;
+            Assert.False(link.RequestRecord(RecordOp.Start, 0, 0)); // nothing heard yet
+
+            var status = new byte[RecordCodec.StatusBytes];
+            RecordCodec.TryEncodeStatus(new RecordStatus(RecordState.Idle, RecordOutcome.None, 0, 255, 2, 3, 0, 0, 0, 300), 0, status, out _);
+            var list = new byte[256];
+            RecordCodec.TryEncodeList(3, 0, 1, new[] { "free-play", "knock-over" }, 0, 2, list, out int listBytes);
+            socket.Incoming.Enqueue((status, 0));
+            socket.Incoming.Enqueue((list.AsSpan(0, listBytes).ToArray(), 0));
+            link.Tick(0);
+            Assert.True(link.Recording.HasStatus && link.Recording.ListCurrent);
+            Assert.Equal("knock-over", link.Recording.Name(1));
+
+            Assert.False(link.RequestRecord(RecordOp.Start, 2, 0)); // no such scenario
+            Assert.True(link.RequestRecord(RecordOp.Start, 1, 0));
+            Assert.False(link.RequestRecord(RecordOp.Stop, 0, 0)); // one at a time
+            for (long t = 0; t < Tps; t += Tps / 100) link.Tick(t);
+            var sent = socket.Sent.Where(b => b[0] == RecordCodec.RequestTag).ToList();
+            Assert.InRange(sent.Count, 4, 5);
+            Assert.True(RecordCodec.TryDecodeRequest(sent[0], out RecordOp op, out byte scenario, out ushort revision, out uint seq, out _));
+            Assert.Equal((RecordOp.Start, (byte)1, (ushort)3), (op, scenario, revision));
+
+            RecordCodec.TryEncodeStatus(new RecordStatus(RecordState.Recording, RecordOutcome.Started, seq, 1, 2, 3, 0, 1, 0, 300), Tps, status, out _);
+            socket.Incoming.Enqueue((status, Tps));
+            link.Tick(Tps);
+            link.Tick(Tps + 1);
+            Assert.False(link.RecordRequestPending);
+            Assert.Equal(RecordState.Recording, link.Recording.Status.State);
+            Assert.True(link.RequestRecord(RecordOp.Stop, 0, Tps + 1));
+            for (long t = Tps + 1; t <= 3 * Tps + Tps / 10; t += Tps / 100) link.Tick(t);
+            Assert.Equal(seq + 1, link.RecordRequestTimedOut);
+        }
+
+        [Fact]
         public void WorldFramesArriving_AllocateNothing()
         {
             SerialChainProfile profile = SerialChainKinematicsTests.LoadFr3Duo();

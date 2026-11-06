@@ -17,7 +17,8 @@ namespace Teleop.XR
     /// </summary>
     public sealed class Fr3MotionButton : MonoBehaviour
     {
-        public enum Role { Power, Recentre, NewLayout, EditObjects }
+        // New roles go at the end: the scene stores the index.
+        public enum Role { Power, Recentre, NewLayout, EditObjects, Record, ScenarioPrevious, ScenarioNext, DiscardLast }
 
         [SerializeField] private Role role = Role.Power;
         [SerializeField] private SerialChainOperatorBridge bridge;
@@ -49,6 +50,21 @@ namespace Teleop.XR
 
             _press ??= new FingertipPress(radiusMeters, pressDepthMeters, rearmDistanceMeters, cooldownSeconds);
             bool pressed = _press.Update(cap, origin);
+            if (role == Role.Record || role == Role.ScenarioPrevious || role == Role.ScenarioNext || role == Role.DiscardLast)
+            {
+                // Takes of named scenarios (docs/adr/0033), with the robot on or off.
+                if (pressed)
+                {
+                    bool asked = role == Role.Record ? bridge.ToggleRecording()
+                        : role == Role.DiscardLast ? bridge.DiscardLastTake()
+                        : StepScenario(role == Role.ScenarioNext ? 1 : -1);
+                    if (asked) _flashUntil = Time.unscaledTime + 0.4f;
+                }
+
+                ShowRecording();
+                return;
+            }
+
             if (role == Role.NewLayout)
             {
                 // A new seeded layout of the scene's objects (docs/adr/0031 amendment 2), only while motion is off.
@@ -85,6 +101,67 @@ namespace Teleop.XR
             }
 
             Show();
+        }
+
+        private bool StepScenario(int step)
+        {
+            if (!bridge.RecordingAvailable || bridge.IsRecording) return false;
+            bridge.StepScenario(step);
+            return true;
+        }
+
+        private string _shownText = "";
+
+        private void ShowRecording()
+        {
+            bool available = bridge.RecordingAvailable, recording = bridge.IsRecording, flash = Time.unscaledTime < _flashUntil;
+            string scenario = bridge.SelectedScenarioName;
+            int count = bridge.ScenarioCount;
+            string outcome = bridge.LastRecordOutcome;
+            Color color;
+            string text;
+            if (!available)
+            {
+                color = lockedColor;
+                text = role == Role.Record ? "RECORD\n<size=60%>RobotHost records no scenarios</size>" : role == Role.DiscardLast ? "DISCARD LAST" : role == Role.ScenarioNext ? "NEXT >" : "< PREV";
+            }
+            else if (role == Role.Record)
+            {
+                if (recording)
+                {
+                    int seconds = bridge.TakeSeconds;
+                    color = offColor;
+                    text = $"STOP  <color=#ff3030>\u25CF</color> {seconds / 60:00}:{seconds % 60:00}\n<size=60%>{bridge.TakeScenarioName} take {bridge.TakeNumber} \u00B7 press to save</size>";
+                }
+                else
+                {
+                    color = flash || bridge.RecordPending ? onColor : new Color(0.85f, 0.15f, 0.15f);
+                    string tail = bridge.RecordPending ? "asking RobotHost..." : outcome.Length > 0 ? outcome : $"{bridge.RecordingFreeGigabytes} GB free";
+                    text = $"RECORD\n<size=60%>{scenario} \u00B7 {tail}</size>";
+                }
+            }
+            else if (role == Role.DiscardLast)
+            {
+                color = recording ? lockedColor : flash ? onColor : new Color(0.55f, 0.56f, 0.6f);
+                text = recording ? "DISCARD LAST\n<size=60%>stop the take first</size>" : "DISCARD LAST\n<size=60%>sets the last take aside</size>";
+            }
+            else
+            {
+                color = recording || count < 2 ? lockedColor : flash ? onColor : new Color(0.25f, 0.55f, 1f);
+                int at = bridge.SelectedScenario + 1;
+                text = role == Role.ScenarioNext ? $"NEXT >\n<size=60%>{scenario} ({at}/{count})</size>" : "< PREV";
+            }
+
+            int state = color.GetHashCode();
+            if (state == _shown && text == _shownText) return;
+            _shown = state;
+            _shownText = text;
+            _block ??= new MaterialPropertyBlock();
+            cap.GetPropertyBlock(_block);
+            _block.SetColor("_BaseColor", color);
+            _block.SetColor("_Color", color);
+            cap.SetPropertyBlock(_block);
+            if (label != null) label.SetText(text);
         }
 
         private void ShowNewLayout()

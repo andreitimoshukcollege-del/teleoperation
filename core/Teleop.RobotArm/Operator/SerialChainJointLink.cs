@@ -102,6 +102,15 @@ namespace Teleop.RobotArm.Operator
         private WorldEditOp _editOp;
         private ObjectPose _editPose;
 
+        // Scenario recording (docs/adr/0033): the status and list as they arrive, outside the disturbance (control, not state).
+        private readonly RecordingState _recording = new RecordingState();
+        private readonly byte[] _recordBuffer = new byte[RecordCodec.RequestBytes];
+        private uint _recordSequence;
+        private long _recordFirstSent = long.MinValue, _recordLastSent = long.MinValue;
+        private RecordOp _recordOp;
+        private byte _recordScenario;
+        private ushort _recordRevision;
+
         public SerialChainJointLink(ITransport transport, ITimeAuthority clock, SerialChainProfile profile, ClockSyncConfig clockSyncConfig,
             IReadOnlyList<JointPredictorPreset> presets, int activePreset, OperatorClientKind clientKind = OperatorClientKind.Headset,
             WorldState? world = null)
@@ -139,6 +148,36 @@ namespace Teleop.RobotArm.Operator
 
         /// <summary>The last edit that went unanswered for 2 s (0: none).</summary>
         public uint WorldEditTimedOut { get; private set; }
+
+        /// <summary>Scenario recording as RobotHost reports it (docs/adr/0033); never null, empty until a status arrives.</summary>
+        public RecordingState Recording => _recording;
+
+        /// <summary>Whether a record request is waiting for the status to echo it.</summary>
+        public bool RecordRequestPending => _recordFirstSent != long.MinValue;
+
+        /// <summary>The last record request that went unanswered for 2 s (0: none).</summary>
+        public uint RecordRequestTimedOut { get; private set; }
+
+        /// <summary>The sequence of the last record request asked (0: none yet); the status echoes it once RobotHost answered.</summary>
+        public uint RecordSequence => _recordSequence;
+
+        /// <summary>
+        /// Asks RobotHost to start a take of scenario <paramref name="scenario"/> (an index into the list as the headset has it),
+        /// stop the take, or set the last one aside (docs/adr/0033). Re-sent every 0.25 s until the status echoes it, given up
+        /// after 2 s. One at a time: false while another is waiting, or before the list matches the status.
+        /// </summary>
+        public bool RequestRecord(RecordOp op, int scenario, long now)
+        {
+            if (RecordRequestPending || !_recording.HasStatus) return false;
+            if (op == RecordOp.Start && (!_recording.ListCurrent || scenario < 0 || scenario >= _recording.Count)) return false;
+            _recordSequence = _recordSequence == uint.MaxValue ? 1 : _recordSequence + 1;
+            _recordOp = op;
+            _recordScenario = (byte)Math.Max(0, Math.Min(254, scenario));
+            _recordRevision = _recording.ListRevision;
+            _recordFirstSent = now;
+            _recordLastSent = long.MinValue;
+            return true;
+        }
 
         /// <summary>
         /// Asks RobotHost for a world edit (docs/adr/0031 amendment 2): NEW LAYOUT, a move, a reset. Re-sent every 0.25 s until the
@@ -259,8 +298,39 @@ namespace Teleop.RobotArm.Operator
                 }
             }
 
+            if (_recordFirstSent != long.MinValue)
+            {
+                if (_recording.HasStatus && _recording.Status.Sequence == _recordSequence)
+                {
+                    _recordFirstSent = long.MinValue;
+                }
+                else if (now - _recordFirstSent > 2 * _clock.TicksPerSecond)
+                {
+                    RecordRequestTimedOut = _recordSequence;
+                    _recordFirstSent = long.MinValue;
+                }
+                else if ((_recordLastSent == long.MinValue || now - _recordLastSent >= _clock.TicksPerSecond / 4) &&
+                         RecordCodec.TryEncodeRequest(_recordOp, _recordScenario, _recordRevision, _recordSequence, now, _recordBuffer, out int recordBytes))
+                {
+                    _transport.Send(_recordBuffer.AsSpan(0, recordBytes), now);
+                    _recordLastSent = now;
+                }
+            }
+
             while (_transport.TryReceive(now, _buffer, out int count, out long arrival))
             {
+                if (count > 0 && _buffer[0] == RecordCodec.StatusTag)
+                {
+                    if (RecordCodec.TryDecodeStatus(_buffer.AsSpan(0, count), out RecordStatus recordStatus, out long recordSent)) _recording.ApplyStatus(recordStatus, recordSent);
+                    continue;
+                }
+
+                if (count > 0 && _buffer[0] == RecordCodec.ListTag)
+                {
+                    _recording.ApplyListPart(_buffer.AsSpan(0, count));
+                    continue;
+                }
+
                 if (_world != null && count > 0 && _buffer[0] == WorldCodec.FrameTag)
                 {
                     if (WorldCodec.TryDecodeFrame(_buffer.AsSpan(0, count), out _, out long worldSensed, out _, out _, _worldPart, out int objects))

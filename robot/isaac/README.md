@@ -108,6 +108,33 @@ just isaac-edit-check                # against isaac-host fr3-duo-bench 7: heads
   point in its mask in 100% of 61 frames.
 - **Cost:** about 10 GB an hour of recording.
 
+## Recording scenarios from the headset (docs/adr/0033)
+
+For the person recording, on the headset:
+
+1. **Choose the scenario** with `< PREV` and `NEXT >` on the bench's left wing, behind the power button. NEXT's label
+   names the chosen one.
+2. **Start a take** by pressing RECORD. It turns into `STOP ● mm:ss`, with the scenario and take number. Do the scenario,
+   with the robot on.
+3. **Save the take** by pressing STOP. A take that went wrong can be set aside with DISCARD LAST once it is stopped. It is
+   moved, never deleted.
+
+**Where the takes go:** on the GPU machine, under `/home/andrei/isaacsim/scenarios/<scenario>/<UTC>-take<n>/`, one
+folder per take.
+- Each take holds:
+  - `robothost.jlog`, the robot's truth and commands;
+  - `isaac.jlog`, plus `isaac/` with the four cameras' colour, depth and masks;
+  - `session.json`, which names the scenario and the take;
+  - `files.sha256`. A take is complete once this is written, a few seconds after STOP.
+- Another account reads them once `just isaac-share-scenarios <account>` has run (default `seaqueue-cheng`). That account
+  can also edit the list, `/home/andrei/isaacsim/scenarios/scenarios.txt`:
+  - one scenario per line, `name | what to do`;
+  - the headset shows the new list within a few seconds.
+- `just isaac-scenarios` lists what has been recorded.
+
+**A take stops by itself** when the headset is silent for 10 s, after 30 min, or when the disk is nearly full (below
+21 GB). The button's label says so.
+
 ## The render check
 
 `just isaac-render-check` (`render_check.py`, docs/adr/0032 phase P0) measures what the cameras' design

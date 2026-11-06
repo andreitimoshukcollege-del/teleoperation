@@ -173,6 +173,11 @@ namespace Teleop.XR.Editor
             operatorObject.AddComponent<HandTrackingSession>();
             var guard = operatorObject.AddComponent<HeadsetRemovalGuard>();
             SetReference(guard, "bridge", bridge);
+            // Pointing while the robot is off (docs/adr/0031 amendment 5): pinch on a button to press it, on an object to drag it.
+            var pointer = new GameObject("HandPointer").AddComponent<Fr3HandPointer>();
+            SetReference(pointer, "bridge", bridge);
+            SetReference(pointer, "origin", origin);
+            SetReference(pointer, "rayMaterial", LabMaterials.Transparent("PointerRay", Color.white));
 
             // The lab, as the JetRover's, around a deeper bench.
             LabMeshLibrary.Begin(MeshLibraryPath);
@@ -204,6 +209,7 @@ namespace Teleop.XR.Editor
             XrControlSetup.BuildConsole(scene, bridge, origin, (config.JointPredictorPresets ?? new JointPredictorPresetData[0]).Select(p => p.Label).ToArray());
             XrControlSetup.BuildDelaySlider(scene, bridge, origin);
             BuildRecentreButton(bridge, origin);
+            BuildRecordButtons(bridge, origin);
             ArrangeControls(scene);
 
             // The world from the scene file (docs/adr/0031 amendment 2): the work table in front of the robot.
@@ -221,6 +227,31 @@ namespace Teleop.XR.Editor
 
         private static void BuildRecentreButton(SerialChainOperatorBridge bridge, XROrigin origin) =>
             BuildButton(null, "RecentreButton", RecentreButtonAt, "Fr3RecentreCap", new Color(0.25f, 0.55f, 1f), "RECENTRE", Fr3MotionButton.Role.Recentre, bridge, origin);
+
+        public const string RecordGroupName = "Fr3Recording";
+
+        /// <summary>
+        /// Scenario recording (docs/adr/0033), on the bench's left wing behind the power row: &lt; PREV, RECORD and NEXT &gt;
+        /// in a row (NEXT's label names the chosen scenario), DISCARD LAST behind RECORD, all under <see cref="RecordGroupName"/>.
+        /// </summary>
+        internal static void BuildRecordButtons(SerialChainOperatorBridge bridge, XROrigin origin)
+        {
+            foreach (GameObject old in SceneManager.GetActiveScene().GetRootGameObjects().Where(g => g.name == RecordGroupName).ToArray())
+            {
+                Object.DestroyImmediate(old);
+            }
+
+            var root = new GameObject(RecordGroupName).transform;
+            float top = LabLayout.BenchTop, row = LabLayout.BenchNearZ + 0.36f, x = LabLayout.ArmBase.x;
+            BuildButton(root, "ScenarioPrevious", new Vector3(x - 0.75f, top, row), "Fr3ScenarioCap", new Color(0.25f, 0.55f, 1f), "< PREV",
+                Fr3MotionButton.Role.ScenarioPrevious, bridge, origin);
+            BuildButton(root, "RecordButton", new Vector3(x - 0.56f, top, row), "Fr3RecordCap", new Color(0.85f, 0.15f, 0.15f), "RECORD",
+                Fr3MotionButton.Role.Record, bridge, origin);
+            BuildButton(root, "ScenarioNext", new Vector3(x - 0.37f, top, row), "Fr3ScenarioCap", new Color(0.25f, 0.55f, 1f), "NEXT >",
+                Fr3MotionButton.Role.ScenarioNext, bridge, origin);
+            BuildButton(root, "DiscardLastButton", new Vector3(x - 0.56f, top, row + 0.17f), "Fr3DiscardCap", new Color(0.55f, 0.56f, 0.6f), "DISCARD LAST",
+                Fr3MotionButton.Role.DiscardLast, bridge, origin);
+        }
 
         /// <summary>NEW LAYOUT, behind RECENTRE on the right wing (docs/adr/0031 amendment 2); each label stands above the one in front.</summary>
         internal static Vector3 NewLayoutButtonAt => RecentreButtonAt + new Vector3(0f, 0f, 0.18f);

@@ -454,7 +454,7 @@ namespace Teleop.XR.Editor
 
             Fr3MotionButton[] buttons = Object.FindObjectsByType<Fr3MotionButton>(FindObjectsInactive.Include, FindObjectsSortMode.None);
             foreach (Fr3MotionButton.Role role in new[] { Fr3MotionButton.Role.Record, Fr3MotionButton.Role.ScenarioPrevious, Fr3MotionButton.Role.ScenarioNext,
-                         Fr3MotionButton.Role.DiscardLast, Fr3MotionButton.Role.NewLayout })
+                         Fr3MotionButton.Role.DiscardLast, Fr3MotionButton.Role.NewLayout, Fr3MotionButton.Role.SizeDown, Fr3MotionButton.Role.SizeUp })
             {
                 Fr3MotionButton[] those = buttons.Where(b => b.ButtonRole == role).ToArray();
                 if (those.Length != 1) problems.Add($"{those.Length} {role} buttons, expected one" + rerun);

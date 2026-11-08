@@ -17,6 +17,11 @@ what only physics can see: whether an arm is in the way.
 
 Rules 4, 6 and 7 use where the objects are now: a movable object's pose is PhysX's, read at every WORLD (:meth:`IsaacWorld.read`).
 
+**Resizing** (RESIZE, docs/adr/0034 amendment 6) scales an object by a factor on the scene file's size, in every direction:
+the same rules at the new size, at the object's current x, y and yaw (an id the scene does not have, one the headset may not
+move, a factor outside 0.5-3, an arm touching it, off the table, too close to another object, an arm in the way), and then
+it is stood upright there at its new size. Every rule above uses each object's current size. SIZES reports them all.
+
 :class:`WorldModel` is the bookkeeping and the rules, with the arm check passed in, so it runs in the plain-Python tests.
 :class:`IsaacWorld` builds the prims and answers the arm check; it imports Isaac only when it is made.
 """
@@ -28,7 +33,7 @@ import re
 from typing import Callable, List, Optional, Sequence, Tuple
 
 from . import wire
-from .scene import Scene
+from .scene import Scene, is_valid_scale
 
 Pose = Tuple[float, float, float, float, float, float, float]  # x, y, z, qw, qx, qy, qz
 
@@ -64,8 +69,10 @@ class WorldModel:
     def __init__(self, scene: Scene):
         self.scene = scene
         self.poses: List[Pose] = [tuple(o.nominal) for o in scene.objects]
+        self.scales: List[float] = [1.0 for _ in scene.objects]
         self.revision = 0
         self.snapshot = 0
+        self.sizes_revision = 0
 
     def index_of(self, object_id: int) -> int:
         for i, o in enumerate(self.scene.objects):
@@ -85,16 +92,48 @@ class WorldModel:
             return wire.INVALID_POSE, i, None
         if cause == wire.CAUSE_HEADSET and arm_near(i, self.poses[i], TOUCH_MARGIN):
             return wire.ARM_TOUCHING, i, None
-        x, y = pose[0], pose[1]
-        if not self.scene.fits_on_table(i, x, y):
+        return self._fits(i, pose[0], pose[1], yaw_of(pose), self.scales[i], arm_near)
+
+    def _fits(self, i: int, x: float, y: float, yaw: float, scale: float, arm_near: ArmCheck) -> Tuple[int, int, Optional[Pose]]:
+        """Rules 5 to 8 for object ``i`` at (x, y, yaw) and size ``scale``."""
+        if not self.scene.fits_on_table(i, x, y, scale):
             return wire.OUTSIDE_REGION, i, None
         for k, other in enumerate(self.poses):
-            if k != i and self.scene.overlaps(i, x, y, k, other[0], other[1]):
+            if k != i and self.scene.overlaps(i, x, y, k, other[0], other[1], scale, self.scales[k]):
                 return wire.OVERLAPS_OBJECT, i, None
-        upright = tuple(self.scene.pose_at(i, x, y, yaw_of(pose)))
+        upright = tuple(self.scene.pose_at(i, x, y, yaw, scale))
         if arm_near(i, upright, self.scene.clearance):
             return wire.OVERLAPS_ARM, i, None
         return wire.APPLIED, i, upright
+
+    def check_resize(self, object_id: int, scale: float, arm_near: ArmCheck) -> Tuple[int, int, Optional[Pose]]:
+        """(outcome, object index or -1, the upright pose at the new size when APPLIED). The arm check sees the new size:
+        ``scales[i]`` holds it for the check's duration."""
+        i = self.index_of(object_id)
+        if i < 0:
+            return wire.UNKNOWN_OBJECT, -1, None
+        if not self.scene.objects[i].operator_movable:
+            return wire.NOT_MOVABLE, i, None
+        if not is_valid_scale(scale):
+            return wire.INVALID_POSE, i, None
+        if arm_near(i, self.poses[i], TOUCH_MARGIN):
+            return wire.ARM_TOUCHING, i, None
+        p = self.poses[i]
+        old = self.scales[i]
+        self.scales[i] = scale
+        try:
+            return self._fits(i, p[0], p[1], yaw_of(p), scale, arm_near)
+        finally:
+            self.scales[i] = old
+
+    def apply_resize(self, index: int, scale: float, pose: Pose) -> None:
+        self.scales[index] = scale
+        self.poses[index] = pose
+        self.revision += 1
+        self.sizes_revision += 1
+
+    def sizes_message(self, sequence: int) -> bytes:
+        return wire.encode_sizes(sequence, self.sizes_revision, [(o.id, self.scales[i]) for i, o in enumerate(self.scene.objects)])
 
     def apply(self, index: int, pose: Pose) -> None:
         self.poses[index] = pose
@@ -134,6 +173,7 @@ class IsaacWorld:
         self.model = WorldModel(scene)
         self.robot_path = robot_path.rstrip("/")
         self.object_paths = [f"{self.ROOT}/Objects/{prim_name(f'o{o.id}', o.name)}" for o in scene.objects]
+        self._stage = None
         self._bodies = None
         self._query = None
 
@@ -156,6 +196,8 @@ class IsaacWorld:
             UsdShade.MaterialBindingAPI.Apply(prim).Bind(mat, UsdShade.Tokens.weakerThanDescendants, "physics")
 
         scene = self.model.scene
+        self._stage = stage
+        self._physics = physics
         fixed = self.fixed_bodies(stage) if physics else []
         self.surface_paths = {}
         with Usd.EditContext(stage, stage.GetSessionLayer()):
@@ -263,6 +305,7 @@ class IsaacWorld:
         import carb
 
         o = self.model.scene.objects[index]
+        s = self.model.scales[index]
         robot = self.robot_path + "/"
         hit = []
 
@@ -275,9 +318,9 @@ class IsaacWorld:
 
         position = carb.Float3(pose[0], pose[1], pose[2])
         if o.shape == "sphere":
-            self._query.overlap_sphere(o.size[0] / 2 + margin, position, report, False)
+            self._query.overlap_sphere(o.size[0] * s / 2 + margin, position, report, False)
         else:
-            half = carb.Float3(o.size[0] / 2 + margin, o.size[1] / 2 + margin, o.size[2] / 2 + margin)
+            half = carb.Float3(o.size[0] * s / 2 + margin, o.size[1] * s / 2 + margin, o.size[2] * s / 2 + margin)
             rotation = carb.Float4(pose[4], pose[5], pose[6], pose[3])  # x, y, z, w
             self._query.overlap_box(half, position, rotation, report, False)
         return bool(hit)
@@ -314,6 +357,43 @@ class IsaacWorld:
                 self._bodies.set_velocities(np.zeros((1, 3)), np.zeros((1, 3)), indices=[i])
             self.model.apply(i, upright)
         now = self.model.poses[i] if i >= 0 else tuple(pose)
+        return outcome, now
+
+    def set_scale(self, index: int, scale: float) -> None:
+        """Object ``index``'s shape (and, with physics, its mass) at ``scale`` times the scene file's size, on the session
+        layer where :meth:`build` made it. The renderer's copy calls it as SIZES come; the bridge through :meth:`resize`."""
+        from pxr import Gf, Usd, UsdGeom, UsdPhysics
+
+        o = self.model.scene.objects[index]
+        stage = self._stage
+        shape = stage.GetPrimAtPath(f"{self.object_paths[index]}/Shape")
+        sx, sy, sz = (v * scale for v in o.size)
+        with Usd.EditContext(stage, stage.GetSessionLayer()):
+            if o.shape == "box":
+                ops = UsdGeom.Xformable(shape).GetOrderedXformOps()
+                ops[0].Set(Gf.Vec3f(sx, sy, sz))
+            elif o.shape == "cylinder":
+                g = UsdGeom.Cylinder(shape)
+                g.GetRadiusAttr().Set(sx / 2)
+                g.GetHeightAttr().Set(sz)
+            else:
+                UsdGeom.Sphere(shape).GetRadiusAttr().Set(sx / 2)
+            if self._physics and o.movable:
+                UsdPhysics.MassAPI(stage.GetPrimAtPath(self.object_paths[index])).GetMassAttr().Set(o.mass * scale ** 3)
+        self.model.scales[index] = scale
+
+    def resize(self, object_id: int, scale: float) -> Tuple[int, Pose]:
+        """Applies or refuses one resize: (outcome, the object's pose now)."""
+        import numpy as np
+
+        outcome, i, upright = self.model.check_resize(object_id, scale, self.arm_near)
+        if outcome == wire.APPLIED:
+            self.set_scale(i, scale)
+            self._bodies.set_world_poses(positions=np.array([upright[:3]]), orientations=np.array([upright[3:]]), indices=[i])
+            if self.model.scene.objects[i].movable:
+                self._bodies.set_velocities(np.zeros((1, 3)), np.zeros((1, 3)), indices=[i])
+            self.model.apply_resize(i, scale, upright)
+        now = self.model.poses[i] if i >= 0 else (0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0)
         return outcome, now
 
     def read(self) -> List[wire.ObjectPose]:

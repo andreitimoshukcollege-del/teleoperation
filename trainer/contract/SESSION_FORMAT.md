@@ -267,7 +267,8 @@ Z up, the profile's frame); `sensed` is on the host's clock, like `QS.sensed`.
 | `WP` | `t` `request` `cause` `id` `pose` `outcome` | A placement settled. `cause`: `layout`, `headset` or `reset`. `outcome`: `applied`, `overlaps-arm`, `overlaps-object`, `outside-region`, `unknown-object`, `not-movable`, `arm-touching`, `busy`, `invalid-pose` or `timed-out`. `pose` is where the object is now, which for anything but `applied` is where it already was |
 | `WO` | `t` `sensed` `revision` `objects` | Where every object was: `id:pose;...`. Written when a session opens, when any object moves more than 0.1 mm or 0.05°, and otherwise once a second. `revision` counts the placements the backend has applied |
 | `WF` | `t` `snapshot` `sensed` `parts` | A world frame sent to the headset (50 Hz): the snapshot it carried and when that was sensed |
-| `WE` | `t` `sequence` `op` `id` `pose` `outcome` | An edit from the headset. `op`: `move`, `new-layout`, `reset-object` or `reset-layout`. Written `pending` when it arrives, then again with its outcome |
+| `WE` | `t` `sequence` `op` `id` `pose` `outcome` | An edit from the headset. `op`: `move`, `new-layout`, `reset-object`, `reset-layout` or `resize` (whose pose's x is the asked size factor, docs/adr/0034 amendment 6). Written `pending` when it arrives, then again with its outcome |
+| `WZ` | `t` `revision` `id:factor;...` | Every object's size factor on the scene file's size, as the backend reports it (docs/adr/0034 amendment 6): in the preamble and on change. Absent before 2026-11-08: every object at its file size. A `WP` with cause `resize` is a resize's answer |
 | `WC` | `t` `sensed` `contacts` | Contacts between the arms and objects, `arm:link:object:forceN;...` (object 0 is the table); empty when they end. Only when the arm server reports them; Isaac does not yet |
 
 **Objects are not the truth for the arm.** An arm stopped by an obstacle shows up as `QS` falling short
@@ -316,6 +317,7 @@ FR3's sided ones, and one more record, because a JetRover session has no `QS` to
 
 | Tag | Fields after the tag | Meaning |
 |---|---|---|
+| `SZ` | `revision` `sizes` | Every scene object's size factor on the scene file's size, `[[id, factor], ...]` (docs/adr/0034 amendment 6): in the preamble and whenever the bridge reports a change. 1 is the file's size; a shape's every dimension is multiplied by it |
 | `VQ` | `frame` `stateSensed` `values` | The joint values frame `frame` was posed with, `[[joint, radians], ...]` by URDF joint name (each gripper finger in metres), written just before its `VF`, with the same `stateSensed`. For the JetRover that stamp is the bridge's time (CLOCK_MONOTONIC, RobotHost's clock on the same machine) of the physics state it posed, not of a relay reading: the readings RobotHost records (`RI`) trail the physics by up to a driver cycle (20 ms) |
 
 **A frame whose `stateSensed` has no `QS`** comes from the session's last tenth of a second or so. That is after RobotHost

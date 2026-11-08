@@ -232,6 +232,10 @@ def mask_class(prim_name: str) -> Optional[str]:
     if not prim_name.endswith("_visual"):
         return None
     link = prim_name[:-len("_visual")]
+    # The JetRover's CAD meshes (docs/adr/0034 amendment 6): one visual per link and colour, "<link>_<k>_visual".
+    jet_link = re.sub(r"_\d+$", "", link)
+    if jet_link in JETROVER_ARM_LINKS or jet_link in JETROVER_HAND_LINKS:
+        link = jet_link
     if link in JETROVER_ARM_LINKS:
         return "arm"
     if link in JETROVER_HAND_LINKS:
@@ -448,6 +452,16 @@ def run(app, args, p, scene, cameras, fps, joints, motors, tap) -> int:
     def label(prim, name):
         UsdSemantics.LabelsAPI.Apply(prim, "class").CreateLabelsAttr().Set([name])
 
+    # The JetRover's collision boxes, should the importer draw them: the CAD's meshes are its look now (docs/adr/0034
+    # amendment 6). Its collisions are named after their bodies ("turntable.0" as "tn__turntable0_<tag>").
+    hidden = 0
+    if args.sim:
+        for prim in Usd.PrimRange(robot):
+            if re.match(r"tn__[A-Za-z]+\d+_", prim.GetName()) and prim.IsA(UsdGeom.Imageable) and not prim.IsInstanceProxy():
+                UsdGeom.Imageable(prim).MakeInvisible()
+                hidden += 1
+        print(f"[render] JetRover: {hidden} collision prims hidden, its CAD meshes drawn", flush=True)
+
     labelled = 0
     for prim in Usd.PrimRange(robot):
         cls = mask_class(prim.GetName())
@@ -586,12 +600,12 @@ def run(app, args, p, scene, cameras, fps, joints, motors, tap) -> int:
     camera_poses = []
     for (cam, _), c in zip(sensors, specs):
         cp, cq = (np.asarray(x.numpy() if hasattr(x, "numpy") else x, float).reshape(-1) for x in cam.get_world_poses())
-        world = (tuple(float(v) for v in cp[:3]), tuple(float(v) for v in cq[:4]))
+        at = (tuple(float(v) for v in cp[:3]), tuple(float(v) for v in cq[:4]))
         if c["mount"]:
-            local_p, local_q = relative_pose(kinematics.link_pose(joints, {}, c["mount"]), world)
+            local_p, local_q = relative_pose(kinematics.link_pose(joints, {}, c["mount"]), at)
             camera_poses.append((*local_p, *local_q))
         else:
-            camera_poses.append((*world[0], *world[1]))
+            camera_poses.append((*at[0], *at[1]))
 
     # --- backdrops: one seeded pair at start-up and after every recorded session (docs/adr/0032 decision 4) ------------
     backdrop = {"change": -1, "images": {}, "settle_until": -1}  # images: quad id -> manifest entry
@@ -620,6 +634,8 @@ def run(app, args, p, scene, cameras, fps, joints, motors, tap) -> int:
     session = None
     want_backdrop_change = []
     world_snapshot = {"sensed": 0, "revision": -1, "objects": []}
+    # Each object's size factor (docs/adr/0034 amendment 6), from the bridge's SIZES: applied to the renderer's copy and recorded.
+    world_sizes = {"revision": -1, "sizes": [[o.id, 1.0] for o in scene.objects]}
     streams = [f"{c['id']}.{st}" for c in specs for st in c["record"]]
     scene_sha = hashlib.sha256(open(args.scene, "rb").read()).hexdigest()
 
@@ -640,6 +656,7 @@ def run(app, args, p, scene, cameras, fps, joints, motors, tap) -> int:
         out.append(("BK", *bk_fields()))
         if world_snapshot["objects"]:
             out.append(("OL", world_snapshot["sensed"], world_snapshot["revision"], world_snapshot["objects"]))
+        out.append(("SZ", max(0, world_sizes["revision"]), world_sizes["sizes"]))
         return out
 
     def final_files(directory):
@@ -744,6 +761,16 @@ def run(app, args, p, scene, cameras, fps, joints, motors, tap) -> int:
                         world_snapshot.update(sensed=w[0], revision=w[2],
                                               objects=[[o.id, *[round(v, 6) for v in o.pose]] for o in w[5]])
                         session_record("OL", w[0], w[2], world_snapshot["objects"])
+            elif k == wire.SIZES:
+                z = wire.decode_sizes(d)
+                if z is not None and z[0] != world_sizes["revision"]:
+                    sizes = {i: f for i, f in z[1]}
+                    for index, o in enumerate(scene.objects):
+                        f = sizes.get(o.id)
+                        if f is not None and abs(f - world.model.scales[index]) > 1e-6:
+                            world.set_scale(index, f)
+                    world_sizes.update(revision=z[0], sizes=[[o.id, round(world.model.scales[i], 4)] for i, o in enumerate(scene.objects)])
+                    session_record("SZ", z[0], world_sizes["sizes"])
         for f in feeds:
             f.poll()
         if want_backdrop_change:

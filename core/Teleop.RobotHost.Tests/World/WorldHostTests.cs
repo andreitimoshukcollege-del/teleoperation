@@ -319,5 +319,44 @@ namespace Teleop.RobotHost.Tests.World
             Assert.Equal(JointCommandOutcome.Accepted, plant.CommandJointTargets(command, captureTicks: 1, nowTicks: 1));
             Assert.NotNull(world);
         }
+
+        [Fact]
+        public void AResize_IsAppliedByTheBackend_ReachesTheHeadsetAsSizes_AndIsRecorded()
+        {
+            var rig = new Rig();
+            rig.Tick(1);
+            int can = Scene.IndexOf(4);
+            rig.Host.HandleEdit(WorldEditOp.Resize, 1, new ObjectPose(4, 0, 1.25f, 0, 0, 1, 0, 0, 0), motionOff: true, rig.Now);
+            rig.Tick(30);
+            Assert.Equal((1u, (byte)PlaceOutcome.Applied), (rig.LastStatus().EditSequence, rig.LastStatus().EditOutcome));
+            Assert.Equal(1.25f, rig.Host.ScaleOf(can));
+            byte[] d = rig.Sent.Last(x => x[0] == WorldCodec.SizesTag);
+            var ids = new byte[24];
+            var scales = new float[24];
+            Assert.True(WorldCodec.TryDecodeSizes(d, out uint revision, ids, scales, out int n));
+            Assert.Equal((1u, 4), (revision, n));
+            Assert.Equal(1.25f, scales[Array.IndexOf(ids, (byte)4, 0, n)]);
+            ObjectPose stood = rig.LastFrame().Single(p => p.Id == 4);
+            Assert.Equal(Scene.Table.Top + Scene.Objects[can].SizeZ * 1.25 / 2, stood.Z, 5); // stood up at its new height
+            Assert.Contains(rig.Records, r => r.StartsWith("WZ|", StringComparison.Ordinal) && r.Contains("4:1.25", StringComparison.Ordinal));
+            Assert.Contains(rig.Records, r => r.StartsWith("WE|", StringComparison.Ordinal) && r.Contains("|resize|", StringComparison.Ordinal) && r.EndsWith("|applied", StringComparison.Ordinal));
+        }
+
+        [Fact]
+        public void AResize_IsRefusedOutOfRange_WithMotionOn_AndWhereItWouldReachAnotherObject()
+        {
+            var rig = new Rig();
+            rig.Tick(1);
+            rig.Host.HandleEdit(WorldEditOp.Resize, 1, new ObjectPose(4, 0, 5f, 0, 0, 1, 0, 0, 0), motionOff: true, rig.Now);
+            rig.Tick(30);
+            Assert.Equal((byte)PlaceOutcome.InvalidPose, rig.LastStatus().EditOutcome);
+            rig.Host.HandleEdit(WorldEditOp.Resize, 2, new ObjectPose(4, 0, 1.5f, 0, 0, 1, 0, 0, 0), motionOff: false, rig.Now);
+            rig.Tick(30, motionOff: false);
+            Assert.Equal((2u, (byte)PlaceOutcome.Busy), (rig.LastStatus().EditSequence, rig.LastStatus().EditOutcome));
+            rig.Host.HandleEdit(WorldEditOp.Resize, 3, new ObjectPose(4, 0, 3f, 0, 0, 1, 0, 0, 0), motionOff: true, rig.Now);
+            rig.Tick(30);
+            Assert.NotEqual((byte)PlaceOutcome.Applied, rig.LastStatus().EditOutcome); // tripled, the can reaches its neighbours
+            Assert.Equal(1f, rig.Host.ScaleOf(Scene.IndexOf(4)));
+        }
     }
 }

@@ -86,6 +86,22 @@ namespace Teleop.RobotArm.Tests.Operator
         }
 
         [Fact]
+        public void WorldSizes_ApplyAtOnce_LikeTheStatus()
+        {
+            SerialChainProfile profile = SerialChainKinematicsTests.LoadFr3Duo();
+            var socket = new FakeSocket();
+            var clock = new ManualClock(Tps);
+            var world = new WorldState(World.SceneDocumentTests.LoadShipped(), new byte[32]);
+            SerialChainJointLink link = Link(profile, socket, clock, world);
+            link.AddedDelayMs = 200;
+            var b = new byte[JointDatagram.MaxBytes];
+            Assert.True(WorldCodec.TryEncodeSizes(2, new byte[] { 4 }, new[] { 1.5f }, b, out int n));
+            socket.Incoming.Enqueue((b.AsSpan(0, n).ToArray(), 0));
+            link.Tick(0);
+            Assert.Equal((1.5f, 2u), (world.Scale(4), world.SizesRevision));
+        }
+
+        [Fact]
         public void AWorldEdit_IsResent_UntilTheStatusEchoesIt_AndGivenUpAfter2s()
         {
             SerialChainProfile profile = SerialChainKinematicsTests.LoadFr3Duo();

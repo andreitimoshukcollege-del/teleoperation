@@ -25,6 +25,8 @@ namespace Teleop.Bridge
         [SerializeField] private Transform[] ghosts = new Transform[0];
 
         private bool _warnedMismatch;
+        private Vector3[] _baseScale = new Vector3[0];
+        private Vector3[] _ghostBaseScale = new Vector3[0];
 
         public int ObjectCount => objects.Length;
 
@@ -34,6 +36,12 @@ namespace Teleop.Bridge
 
         private void Start()
         {
+            // Each object's scale for the scene file's size: a resize multiplies it (docs/adr/0034 amendment 6).
+            _baseScale = new Vector3[objects.Length];
+            for (int i = 0; i < objects.Length; i++) _baseScale[i] = objects[i] != null ? objects[i].localScale : new Vector3(1f, 1f, 1f);
+            _ghostBaseScale = new Vector3[ghosts.Length];
+            for (int i = 0; i < ghosts.Length; i++) _ghostBaseScale[i] = ghosts[i] != null ? ghosts[i].localScale : new Vector3(1f, 1f, 1f);
+
             foreach (Transform t in objects)
             {
                 if (t != null) t.gameObject.SetActive(false);
@@ -66,6 +74,7 @@ namespace Teleop.Bridge
                 if (!posed) continue;
                 t.localPosition = new CoreVec(p.X, p.Y, p.Z).ToUnity();
                 t.localRotation = CoreQuat.Normalize(new CoreQuat(p.Qx, p.Qy, p.Qz, p.Qw)).ToUnity();
+                if (i < _baseScale.Length) t.localScale = _baseScale[i] * world.Scale((byte)ids[i]);
             }
 
             // EDIT OBJECTS: the dragged object's ghost where the hand puts it. The solid one moves only when the world frames
@@ -81,6 +90,7 @@ namespace Teleop.Bridge
                 Teleop.RobotArm.Types.RigidTransform at = side.EditPreview;
                 g.localPosition = new CoreVec((float)at.X, (float)at.Y, (float)at.Z).ToUnity();
                 g.localRotation = CoreQuat.Normalize(new CoreQuat((float)at.Qx, (float)at.Qy, (float)at.Qz, (float)at.Qw)).ToUnity();
+                if (i < _ghostBaseScale.Length) g.localScale = _ghostBaseScale[i] * world.Scale((byte)ids[i]);
             }
         }
     }

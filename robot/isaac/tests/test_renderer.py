@@ -153,6 +153,9 @@ def test_the_jetrovers_links_have_their_own_mask_classes_and_the_fr3s_keep_their
     assert mask_class("tn__Body12_ab") == "mount"
     assert mask_class("left_finger_visual") == "hand"
     assert mask_class("base_link_visual") == "mount"
+    # The CAD's meshes, one visual per link and colour (docs/adr/0034 amendment 6).
+    assert mask_class("wrist_link_2_visual") == "arm" and mask_class("left_finger_0_visual") == "hand"
+    assert mask_class("gripper_link_0_visual") == "hand" and mask_class("base_link_1_visual") == "mount"
     assert mask_class("left_fr3v2_link3_visual") == "left_arm" and mask_class("right_fr3v2_hand_visual") == "right_hand"
     assert (MASK_IDS["arm"], MASK_IDS["hand"]) == (7, 8) and MASK_IDS["left_arm"] == 1
 

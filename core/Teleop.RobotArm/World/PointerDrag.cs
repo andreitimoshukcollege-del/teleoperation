@@ -30,7 +30,7 @@ namespace Teleop.RobotArm.World
         private readonly bool[] _wasPinched = new bool[Hands];
         private int _owner = -1, _index = -1;
         private double _planeZ, _offsetX, _offsetY, _startX, _startY, _yaw;
-        private double _x, _y;
+        private double _x, _y, _scale = 1.0;
         private bool _wasUpright;
         private bool _hasRequest;
         private ObjectPose _request;
@@ -48,7 +48,7 @@ namespace Teleop.RobotArm.World
         public byte DraggedId => _owner >= 0 ? _scene.Objects[_index].Id : (byte)0;
 
         /// <summary>Where the dragged object would be put now: upright on the table.</summary>
-        public RigidTransform Preview => _index >= 0 ? _scene.PoseAt(_index, _x, _y, _yaw) : RigidTransform.Identity;
+        public RigidTransform Preview => _index >= 0 ? _scene.PoseAt(_index, _x, _y, _yaw, _scale) : RigidTransform.Identity;
 
         /// <summary>
         /// The object the ray from (<paramref name="ox"/>, <paramref name="oy"/>, <paramref name="oz"/>) along
@@ -68,7 +68,7 @@ namespace Teleop.RobotArm.World
             {
                 SceneObject o = _scene.Objects[i];
                 if (!o.OperatorMovable || !world.TryGet(o.Id, out ObjectPose p, out _)) continue;
-                double r = 0.5 * Math.Sqrt(o.SizeX * o.SizeX + o.SizeY * o.SizeY + o.SizeZ * o.SizeZ);
+                double r = 0.5 * world.Scale(o.Id) * Math.Sqrt(o.SizeX * o.SizeX + o.SizeY * o.SizeY + o.SizeZ * o.SizeZ);
                 double cx = p.X - ox, cy = p.Y - oy, cz = p.Z - oz;
                 double along = cx * dx + cy * dy + cz * dz;
                 if (along <= 0) continue;
@@ -144,13 +144,14 @@ namespace Teleop.RobotArm.World
             double t = (p.Z - oz) / dz;
             _owner = hand;
             _index = index;
+            _scale = world.Scale(p.Id);
             _planeZ = p.Z;
             _offsetX = p.X - (ox + dx * t);
             _offsetY = p.Y - (oy + dy * t);
             _yaw = Math.Atan2(2.0 * (p.Qw * p.Qz + p.Qx * p.Qy), 1.0 - 2.0 * (p.Qy * p.Qy + p.Qz * p.Qz));
-            RigidTransform upright = _scene.PoseAt(index, p.X, p.Y, _yaw);
+            RigidTransform upright = _scene.PoseAt(index, p.X, p.Y, _yaw, _scale);
             double tilt = Math.Abs(p.Qw * upright.Qw + p.Qx * upright.Qx + p.Qy * upright.Qy + p.Qz * upright.Qz);
-            _wasUpright = Math.Abs(p.Z - upright.Z) < 0.01 && tilt > Math.Cos(0.5 * 0.1) && _scene.FitsOnTable(index, p.X, p.Y);
+            _wasUpright = Math.Abs(p.Z - upright.Z) < 0.01 && tilt > Math.Cos(0.5 * 0.1) && _scene.FitsOnTable(index, p.X, p.Y, _scale);
             Clamp(p.X, p.Y);
             _startX = _x;
             _startY = _y;
@@ -169,7 +170,7 @@ namespace Teleop.RobotArm.World
         {
             SceneSurface t = _scene.Table;
             // 1 mm inside the bounds: the pose goes out as float32, whose rounding must not land it a hair outside.
-            double r = _scene.Objects[_index].FootprintRadius + 0.001;
+            double r = _scene.Objects[_index].FootprintRadius * _scale + 0.001;
             double x0 = Math.Max(t.XMin, _scene.RegionXMin) + r, x1 = Math.Min(t.XMax, _scene.RegionXMax) - r;
             double y0 = Math.Max(t.YMin, _scene.RegionYMin) + r, y1 = Math.Min(t.YMax, _scene.RegionYMax) - r;
             _x = x0 <= x1 ? Math.Min(Math.Max(x, x0), x1) : (x0 + x1) / 2;

@@ -236,6 +236,10 @@ Contents:
     The real robot sends no world, so with it the twin stays empty and NEW LAYOUT reads `waiting for the world`.
   - **RECORD, DISCARD LAST, < PREV, NEXT > and NEW LAYOUT** on the bench's right wing, behind the training course: they
     work as in the FR3 scene (RECORD with the robot on or off, NEW LAYOUT only off).
+  - **SIZE − / SIZE +** at the back of that group (docs/adr/0034 amendment 6), robot off: pinch an object with the pointer to
+    choose it, then each press makes it 1.25× smaller or larger, between 0.5× and 3× its scene-file size. Isaac refuses a size
+    that would reach an arm or another object, or leave the table; the label says the object and its size. The FR3 scene has
+    the same pair behind EDIT OBJECTS.
   - **The hand pointer** (`Fr3HandPointer`), robot off only: a pinch on a button presses it, on an object drags it, on a
     display moves it. **A pinch the pointer owns never engages the clutch** (`HandClutchDriver.handPointer`), and the
     pointer, not the clutch, moves the displays. With the robot on, the pointer is off and the clutch is as described above.

@@ -255,6 +255,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         client = None
         enabled = True
         sequence = 0
+        sizes_due, last_sizes = True, 0  # SIZES at start, on change and once a second (docs/adr/0034 amendment 6)
 
         def next_sequence() -> int:
             nonlocal sequence
@@ -302,6 +303,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                         if world is not None:
                             sequence += 1
                             sock.sendto(wire.encode_world_info(sequence, scene_sha, [o.id for o in scene.objects]), client)
+                            sizes_due = True
                     except OSError:
                         client = None  # it left before the answer; it says hello again
                 elif kind == wire.TARGETS and sender == client:
@@ -327,6 +329,22 @@ def main(argv: Optional[List[str]] = None) -> int:
                             outcome, now_pose, revision = wire.UNKNOWN_OBJECT, tuple(pose), 0
                         if outcome != wire.APPLIED or cause != wire.CAUSE_LAYOUT:
                             print(f"[isaac] place {object_id} (cause {cause}): outcome {outcome}", flush=True)
+                        sequence += 1
+                        try:
+                            sock.sendto(wire.encode_placed(sequence, request, object_id, outcome, revision, now_pose), client)
+                        except OSError:
+                            pass
+                elif kind == wire.RESIZE and sender == client:
+                    rz = wire.decode_resize(data)
+                    if rz is not None:
+                        _, request, object_id, scale = rz
+                        if world is not None:
+                            outcome, now_pose = world.resize(object_id, scale)
+                            revision = world.model.revision
+                        else:
+                            outcome, now_pose, revision = wire.UNKNOWN_OBJECT, (0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0), 0
+                        print(f"[isaac] resize {object_id} to {scale:.3g}x: outcome {outcome}", flush=True)
+                        sizes_due = sizes_due or outcome == wire.APPLIED
                         sequence += 1
                         try:
                             sock.sendto(wire.encode_placed(sequence, request, object_id, outcome, revision, now_pose), client)
@@ -364,6 +382,15 @@ def main(argv: Optional[List[str]] = None) -> int:
                         pass  # RobotHost went away; it says hello again when it is back
                 tap(message)
 
+            if world is not None and (client is not None or args.tap) and (sizes_due or steps - last_sizes >= round(1.0 / dt)):
+                sizes_due, last_sizes = False, steps
+                message = world.model.sizes_message(next_sequence())
+                if client is not None:
+                    try:
+                        sock.sendto(message, client)
+                    except OSError:
+                        pass
+                tap(message)
             if world is not None and (client is not None or args.tap) and steps % args.world_every == 0:
                 objects = world.read()
                 sensed = time.monotonic_ns()

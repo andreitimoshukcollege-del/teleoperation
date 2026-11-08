@@ -10,6 +10,9 @@ namespace Teleop.RobotHost.ArmServer
         Layout = 1,
         Headset = 2,
         Reset = 3,
+
+        /// <summary>A resize from the headset (docs/adr/0034 amendment 6): sent as RESIZE, never as PLACE; for the records.</summary>
+        Resize = 4,
     }
 
     /// <summary>What happened to a placement (docs/adr/0031 amendment 2); the joint port's world status echoes the same codes.</summary>
@@ -57,6 +60,11 @@ namespace Teleop.RobotHost.ArmServer
     /// uint8 id, float32 x y z, float32 qw qx qy qz.</description></item>
     /// <item><term>10 Placed</term><description>server → RobotHost: uint32 request, uint8 id, uint8 <see cref="PlaceOutcome"/>, uint32
     /// revision, then the pose the object has now.</description></item>
+    /// <item><term>12 Resize</term><description>RobotHost → server (docs/adr/0034 amendment 6): int64 host ticks, uint32 request,
+    /// uint8 id, float32 the new size factor on the scene file's size. Answered with a Placed of the same request: the object
+    /// is stood up where it is at the new size, or refused by the placement rules at that size.</description></item>
+    /// <item><term>13 Sizes</term><description>server → RobotHost: uint32 revision (counts resizes), uint8 count, then per
+    /// object uint8 id, float32 size factor. Every object, at start, on change and once a second.</description></item>
     /// <item><term>11 Contacts</term><description>server → RobotHost: int64 sensed ticks, uint8 count, then per contact uint8 arm,
     /// uint8 link, uint8 object, float32 normal force (N).</description></item>
     /// </list>
@@ -69,6 +77,9 @@ namespace Teleop.RobotHost.ArmServer
         public const byte KindPlace = 9;
         public const byte KindPlaced = 10;
         public const byte KindContacts = 11;
+        public const byte KindResize = 12;
+        public const byte KindSizes = 13;
+        private const int ResizeBytes = H + 17;
 
         public const int Sha256Bytes = 32;
         public const int MaxObjectsPerWorld = 16;
@@ -212,6 +223,70 @@ namespace Teleop.RobotHost.ArmServer
             outcome = (PlaceOutcome)datagram[H + 5];
             revision = BinaryPrimitives.ReadUInt32LittleEndian(datagram.Slice(H + 6));
             pose = ReadPose(datagram.Slice(H + 10), datagram[H + 4], 0);
+            return true;
+        }
+
+        public static bool TryEncodeResize(uint sequence, long hostTicks, uint request, byte id, float scale, Span<byte> output, out int written)
+        {
+            written = 0;
+            if (output.Length < ResizeBytes) return false;
+            ArmServerWire.Header(output, KindResize, sequence);
+            BinaryPrimitives.WriteInt64LittleEndian(output.Slice(H), hostTicks);
+            BinaryPrimitives.WriteUInt32LittleEndian(output.Slice(H + 8), request);
+            output[H + 12] = id;
+            BinaryPrimitives.WriteSingleLittleEndian(output.Slice(H + 13), scale);
+            written = ResizeBytes;
+            return true;
+        }
+
+        public static bool TryDecodeResize(ReadOnlySpan<byte> datagram, out long hostTicks, out uint request, out byte id, out float scale)
+        {
+            hostTicks = 0;
+            request = 0;
+            id = 0;
+            scale = 0;
+            if (ArmServerWire.KindOf(datagram) != KindResize || datagram.Length != ResizeBytes) return false;
+            hostTicks = BinaryPrimitives.ReadInt64LittleEndian(datagram.Slice(H));
+            request = BinaryPrimitives.ReadUInt32LittleEndian(datagram.Slice(H + 8));
+            id = datagram[H + 12];
+            scale = BinaryPrimitives.ReadSingleLittleEndian(datagram.Slice(H + 13));
+            return true;
+        }
+
+        public static bool TryEncodeSizes(uint sequence, uint revision, ReadOnlySpan<byte> ids, ReadOnlySpan<float> scales, Span<byte> output, out int written)
+        {
+            written = 0;
+            int n = ids.Length;
+            int size = H + 5 + 5 * n;
+            if (n != scales.Length || n > 255 || output.Length < size) return false;
+            ArmServerWire.Header(output, KindSizes, sequence);
+            BinaryPrimitives.WriteUInt32LittleEndian(output.Slice(H), revision);
+            output[H + 4] = (byte)n;
+            for (int i = 0; i < n; i++)
+            {
+                output[H + 5 + 5 * i] = ids[i];
+                BinaryPrimitives.WriteSingleLittleEndian(output.Slice(H + 6 + 5 * i), scales[i]);
+            }
+
+            written = size;
+            return true;
+        }
+
+        public static bool TryDecodeSizes(ReadOnlySpan<byte> datagram, out uint revision, Span<byte> ids, Span<float> scales, out int count)
+        {
+            revision = 0;
+            count = 0;
+            if (ArmServerWire.KindOf(datagram) != KindSizes || datagram.Length < H + 5) return false;
+            int n = datagram[H + 4];
+            if (n > ids.Length || n > scales.Length || datagram.Length != H + 5 + 5 * n) return false;
+            revision = BinaryPrimitives.ReadUInt32LittleEndian(datagram.Slice(H));
+            for (int i = 0; i < n; i++)
+            {
+                ids[i] = datagram[H + 5 + 5 * i];
+                scales[i] = BinaryPrimitives.ReadSingleLittleEndian(datagram.Slice(H + 6 + 5 * i));
+            }
+
+            count = n;
             return true;
         }
 

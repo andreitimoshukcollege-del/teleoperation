@@ -147,6 +147,13 @@ namespace Teleop.RobotArm.World
         public const int Version = 2;
         public const int MaxObjects = 24;
 
+        /// <summary>
+        /// How far the headset may resize an object (docs/adr/0034 amendment 6): a factor on the scene file's size, in every
+        /// direction, between these. 1 is the file's size.
+        /// </summary>
+        public const double MinObjectScale = 0.5;
+        public const double MaxObjectScale = 3.0;
+
         /// <summary>The heaviest movable object, kg: anything heavier is not something the arms are meant to knock over.</summary>
         public const double MaxMass = 20.0;
 
@@ -193,27 +200,39 @@ namespace Teleop.RobotArm.World
         }
 
         /// <summary>Whether object <paramref name="index"/>'s footprint, centred at (x, y), lies on the table and inside the placement region.</summary>
-        public bool FitsOnTable(int index, double x, double y)
+        public bool FitsOnTable(int index, double x, double y) => FitsOnTable(index, x, y, 1.0);
+
+        /// <summary>As <see cref="FitsOnTable(int, double, double)"/>, for the object resized by <paramref name="scale"/>.</summary>
+        public bool FitsOnTable(int index, double x, double y, double scale)
         {
-            double r = Objects[index].FootprintRadius;
+            double r = Objects[index].FootprintRadius * scale;
             return x - r >= Math.Max(Table.XMin, RegionXMin) - 1e-9 && x + r <= Math.Min(Table.XMax, RegionXMax) + 1e-9 &&
                    y - r >= Math.Max(Table.YMin, RegionYMin) - 1e-9 && y + r <= Math.Min(Table.YMax, RegionYMax) + 1e-9;
         }
 
         /// <summary>Whether two objects' footprints, centred where given, come closer than <see cref="Clearance"/>.</summary>
-        public bool Overlaps(int a, double ax, double ay, int b, double bx, double by)
+        public bool Overlaps(int a, double ax, double ay, int b, double bx, double by) => Overlaps(a, ax, ay, b, bx, by, 1.0, 1.0);
+
+        /// <summary>As <see cref="Overlaps(int, double, double, int, double, double)"/>, for the two objects resized.</summary>
+        public bool Overlaps(int a, double ax, double ay, int b, double bx, double by, double scaleA, double scaleB)
         {
-            double reach = Objects[a].FootprintRadius + Objects[b].FootprintRadius + Clearance;
+            double reach = Objects[a].FootprintRadius * scaleA + Objects[b].FootprintRadius * scaleB + Clearance;
             double dx = ax - bx, dy = ay - by;
             return dx * dx + dy * dy < reach * reach;
         }
 
         /// <summary>Object <paramref name="index"/> standing upright on the table at (x, y), turned <paramref name="yaw"/> about the vertical.</summary>
-        public RigidTransform PoseAt(int index, double x, double y, double yaw)
+        public RigidTransform PoseAt(int index, double x, double y, double yaw) => PoseAt(index, x, y, yaw, 1.0);
+
+        /// <summary>As <see cref="PoseAt(int, double, double, double)"/>, for the object resized by <paramref name="scale"/>.</summary>
+        public RigidTransform PoseAt(int index, double x, double y, double yaw, double scale)
         {
             RigidTransform turn = RigidTransform.Rotation(0, 0, 1, yaw);
-            return new RigidTransform(x, y, Table.Top + Objects[index].SizeZ / 2, turn.Qw, turn.Qx, turn.Qy, turn.Qz);
+            return new RigidTransform(x, y, Table.Top + Objects[index].SizeZ * scale / 2, turn.Qw, turn.Qx, turn.Qy, turn.Qz);
         }
+
+        /// <summary>Whether <paramref name="scale"/> is a size the headset may ask for.</summary>
+        public static bool IsValidScale(double scale) => scale >= MinObjectScale - 1e-6 && scale <= MaxObjectScale + 1e-6;
 
         internal static WorldScene Build(SceneDocument d)
         {

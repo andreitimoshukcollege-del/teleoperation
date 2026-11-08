@@ -27,6 +27,7 @@ namespace Teleop.Bridge
         private bool _hasPendingMove;
         private ObjectPose _pendingMove;
         private int _selectedScenario;
+        private byte _selectedObject;
 
         /// <param name="root">The robot's base frame in the scene: the twin's root, where the world's poses are given.</param>
         /// <param name="motionOn">Whether the robot is on (the hands drive the arms): world edits and pointing wait for it to be off.</param>
@@ -121,12 +122,56 @@ namespace Teleop.Bridge
             bool was = _pointer.IsDragging;
             _pointer.Update(hand, tracked && can, pinched && can, o.X, o.Y, o.Z, d.X, d.Y, d.Z, _side.World);
             if (!was && _pointer.IsDragging) Debug.Log($"[world] pointer grabbed object {_pointer.DraggedId}");
+            if (!was && _pointer.IsDragging) _selectedObject = _pointer.DraggedId;
             if (_pointer.TryTakeRequest(out ObjectPose move)) QueueMove(move);
+        }
+
+        // --- resizing (docs/adr/0034 amendment 6) -------------------------------------------------------------------------
+
+        /// <summary>One press of SIZE + or SIZE −: the size factor times or divided by this.</summary>
+        public const float ResizeStep = 1.25f;
+
+        /// <summary>The object SIZE − and SIZE + act on: the last one a pointer (or EDIT OBJECTS) grabbed; 0 before any.</summary>
+        public byte SelectedObject => _selectedObject;
+
+        public string SelectedObjectName
+        {
+            get
+            {
+                if (_selectedObject == 0 || _side.World == null) return "";
+                int i = _side.World.Scene.IndexOf(_selectedObject);
+                return i >= 0 ? _side.World.Scene.Objects[i].Name : "";
+            }
+        }
+
+        /// <summary>The selected object's size factor on the scene file's size, as RobotHost last reported it.</summary>
+        public float SelectedScale => _selectedObject != 0 && _side.World != null ? _side.World.Scale(_selectedObject) : 1f;
+
+        /// <summary>Whether the selected object is as large (<paramref name="up"/>) or as small as it may be.</summary>
+        public bool SelectedAtLimit(bool up) =>
+            up ? SelectedScale >= (float)WorldScene.MaxObjectScale - 1e-3f : SelectedScale <= (float)WorldScene.MinObjectScale + 1e-3f;
+
+        /// <summary>Whether a resize can be asked for now: a running world, motion off, an object chosen, no edit waiting.</summary>
+        public bool CanResize => WorldRunning && !_motionOn() && !EditPending && _selectedObject != 0;
+
+        /// <summary>Asks RobotHost to grow (<paramref name="step"/> &gt; 0) or shrink the selected object by <see cref="ResizeStep"/>, within the limits.</summary>
+        public bool RequestResize(int step)
+        {
+            if (!CanResize || step == 0) return false;
+            float now = SelectedScale;
+            float next = step > 0 ? now * ResizeStep : now / ResizeStep;
+            next = Math.Clamp(next, (float)WorldScene.MinObjectScale, (float)WorldScene.MaxObjectScale);
+            if (Math.Abs(next - now) < 1e-4f) return false;
+            bool sent = _side.RequestWorldEdit(WorldEditOp.Resize, new ObjectPose(_selectedObject, 0, next, 0, 0, 1, 0, 0, 0), _clock.NowTicks);
+            if (sent) Debug.Log($"[world] resize {SelectedObjectName} to {next:0.##}x requested");
+            return sent;
         }
 
         /// <summary>Each frame, after the link's tick: sends a queued move once nothing else waits.</summary>
         public void Update(long now)
         {
+            var (otherDragging, otherId, _) = OtherDrag();
+            if (otherDragging && otherId != 0) _selectedObject = otherId;
             if (_hasPendingMove && !_side.WorldEditPending && _side.RequestWorldEdit(WorldEditOp.Move, _pendingMove, now))
             {
                 _hasPendingMove = false;

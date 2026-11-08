@@ -16,6 +16,9 @@ namespace Teleop.RobotHost.World
         private readonly byte[] _sha;
         private readonly long _period;
         private readonly ObjectPose[] _poses;
+        private readonly float[] _scales;
+        private uint _sizesRevision;
+        private bool _sizesFresh = true;
         private readonly (uint Request, PlaceOutcome Outcome, ObjectPose Pose)[] _placed = new (uint, PlaceOutcome, ObjectPose)[64];
         private int _placedHead, _placedCount;
         private long _nextSnapshot = long.MinValue, _snapshotSensed;
@@ -28,6 +31,8 @@ namespace Teleop.RobotHost.World
             _sha = sceneSha256.ToArray();
             _period = ticksPerSecond / 50;
             _poses = new ObjectPose[scene.Objects.Length];
+            _scales = new float[scene.Objects.Length];
+            for (int i = 0; i < _scales.Length; i++) _scales[i] = 1f;
             for (int i = 0; i < _poses.Length; i++) _poses[i] = ObjectPose.Of(scene.Objects[i].Id, ObjectPose.FlagKinematic, scene.Objects[i].Nominal);
         }
 
@@ -47,6 +52,60 @@ namespace Teleop.RobotHost.World
             }
 
             ObjectPose now = index >= 0 ? _poses[index] : pose;
+            Answer(request, outcome, now);
+        }
+
+        /// <summary>Resizes one object, by the same rules at the new size (docs/adr/0034 amendment 6): stood up where it is.</summary>
+        public void Resize(uint request, byte id, float scale, long hostTicks)
+        {
+            int index = _scene.IndexOf(id);
+            PlaceOutcome outcome;
+            if (index < 0) outcome = PlaceOutcome.UnknownObject;
+            else if (!_scene.Objects[index].OperatorMovable) outcome = PlaceOutcome.NotMovable;
+            else if (!WorldScene.IsValidScale(scale)) outcome = PlaceOutcome.InvalidPose;
+            else if (!_scene.FitsOnTable(index, _poses[index].X, _poses[index].Y, scale)) outcome = PlaceOutcome.OutsideRegion;
+            else
+            {
+                outcome = PlaceOutcome.Applied;
+                for (int k = 0; k < _poses.Length; k++)
+                {
+                    if (k != index && _scene.Overlaps(index, _poses[index].X, _poses[index].Y, k, _poses[k].X, _poses[k].Y, scale, _scales[k])) outcome = PlaceOutcome.OverlapsObject;
+                }
+            }
+
+            if (outcome == PlaceOutcome.Applied)
+            {
+                ObjectPose p = _poses[index];
+                _scales[index] = scale;
+                _poses[index] = ObjectPose.Of(id, ObjectPose.FlagKinematic, _scene.PoseAt(index, p.X, p.Y, WorldHost.YawOf(p), scale));
+                _revision++;
+                _sizesRevision++;
+                _sizesFresh = true;
+                _fresh = true;
+                _snapshotSensed = hostTicks;
+            }
+
+            Answer(request, outcome, index >= 0 ? _poses[index] : new ObjectPose(id, 0, 0, 0, 0, 1, 0, 0, 0));
+        }
+
+        public bool TryTakeSizes(Span<byte> ids, Span<float> scales, out int count, out uint revision)
+        {
+            count = 0;
+            revision = _sizesRevision;
+            if (!_sizesFresh || ids.Length < _scales.Length || scales.Length < _scales.Length) return false;
+            _sizesFresh = false;
+            for (int i = 0; i < _scales.Length; i++)
+            {
+                ids[i] = _scene.Objects[i].Id;
+                scales[i] = _scales[i];
+            }
+
+            count = _scales.Length;
+            return true;
+        }
+
+        private void Answer(uint request, PlaceOutcome outcome, in ObjectPose now)
+        {
             if (_placedCount < _placed.Length)
             {
                 _placed[(_placedHead + _placedCount) % _placed.Length] = (request, outcome, now);
@@ -95,13 +154,13 @@ namespace Teleop.RobotHost.World
             if (cause == PlaceCause.Headset && !_scene.Objects[index].OperatorMovable) return PlaceOutcome.NotMovable;
             if (!pose.IsValid()) return PlaceOutcome.InvalidPose;
             double yaw = WorldHost.YawOf(pose);
-            if (!_scene.FitsOnTable(index, pose.X, pose.Y)) return PlaceOutcome.OutsideRegion;
+            if (!_scene.FitsOnTable(index, pose.X, pose.Y, _scales[index])) return PlaceOutcome.OutsideRegion;
             for (int k = 0; k < _poses.Length; k++)
             {
-                if (k != index && _scene.Overlaps(index, pose.X, pose.Y, k, _poses[k].X, _poses[k].Y)) return PlaceOutcome.OverlapsObject;
+                if (k != index && _scene.Overlaps(index, pose.X, pose.Y, k, _poses[k].X, _poses[k].Y, _scales[index], _scales[k])) return PlaceOutcome.OverlapsObject;
             }
 
-            upright = ObjectPose.Of(pose.Id, ObjectPose.FlagKinematic, _scene.PoseAt(index, pose.X, pose.Y, yaw));
+            upright = ObjectPose.Of(pose.Id, ObjectPose.FlagKinematic, _scene.PoseAt(index, pose.X, pose.Y, yaw, _scales[index]));
             return PlaceOutcome.Applied;
         }
     }

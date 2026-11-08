@@ -18,6 +18,9 @@ namespace Teleop.RobotHost.World
     /// otherwise the object stays where it was. Layouts never change on their own.</item>
     /// <item><b>Edits.</b> Moves and resets from the headset (joint port <c>0x85</c>), each applied once however often it is
     /// re-sent; the status echoes its sequence and outcome once settled.</item>
+    /// <item><b>Sizes</b> (docs/adr/0034 amendment 6). A resize from the headset (<see cref="WorldEditOp.Resize"/>) goes to the
+    /// backend, which applies or refuses it by the placement rules at the new size. The backend's sizes are the truth: they go to
+    /// the headset (<c>0x8B</c>) with the status, and into the records (<c>WZ</c>) when they change.</item>
     /// <item><b>To the headset.</b> The newest snapshot as world frames (<c>0x86</c>, eight objects a part) every 20 ms, and the
     /// status (<c>0x87</c>) once a second and on change, both only while someone subscribes.</item>
     /// <item><b>Records.</b> <c>WL</c>, <c>WP</c>, <c>WO</c> (a snapshot whenever something moved 0.1 mm or 0.05°, otherwise once a
@@ -43,6 +46,12 @@ namespace Teleop.RobotHost.World
         private readonly ObjectPose[] _part = new ObjectPose[WorldCodec.MaxObjectsPerFrame];
         private readonly byte[] _datagram = new byte[JointDatagram.MaxBytes];
         private readonly Pending[] _pending = new Pending[64];
+        private readonly byte[] _sizeIds;
+        private readonly float[] _sizeScales;
+        private readonly byte[] _takenIds = new byte[WorldScene.MaxObjects];
+        private readonly float[] _takenScales = new float[WorldScene.MaxObjects];
+        private uint _sizesRevision;
+        private bool _sizesChanged;
         private int _snapshotCount;
         private long _snapshotSensed, _lastFrame = long.MinValue, _lastStatus = long.MinValue, _lastRecordedTicks = long.MinValue;
         private uint _snapshotRevision, _frameSnapshot, _request;
@@ -76,7 +85,17 @@ namespace Teleop.RobotHost.World
             _targets = new RigidTransform[scene.Objects.Length];
             _snapshot = new ObjectPose[scene.Objects.Length];
             _lastRecorded = new ObjectPose[scene.Objects.Length];
+            _sizeIds = new byte[scene.Objects.Length];
+            _sizeScales = new float[scene.Objects.Length];
+            for (int i = 0; i < _sizeIds.Length; i++)
+            {
+                _sizeIds[i] = scene.Objects[i].Id;
+                _sizeScales[i] = 1f;
+            }
         }
+
+        /// <summary>Object <paramref name="index"/>'s size factor as the backend last reported it (1 before).</summary>
+        public float ScaleOf(int index) => _sizeScales[index];
 
         public uint LayoutNumber { get; private set; }
         public ulong LayoutSeed { get; private set; }
@@ -103,6 +122,7 @@ namespace Teleop.RobotHost.World
         {
             if (!_started) return;
             _record?.Invoke(SessionLines.WorldLayout(now, LayoutNumber, LayoutSeed));
+            _record?.Invoke(SessionLines.WorldSizes(now, _sizesRevision, _sizeIds, _sizeScales));
             if (_hasSnapshot) RecordSnapshot(now, force: true);
         }
 
@@ -129,6 +149,19 @@ namespace Teleop.RobotHost.World
                 }
 
                 outcome = PlaceOutcome.Applied;
+            }
+            else if (op == WorldEditOp.Resize)
+            {
+                int index = _scene.IndexOf(pose.Id);
+                if (index < 0) outcome = PlaceOutcome.UnknownObject;
+                else if (!_scene.Objects[index].OperatorMovable) outcome = PlaceOutcome.NotMovable;
+                else if (!WorldScene.IsValidScale(pose.X)) outcome = PlaceOutcome.InvalidPose;
+                else
+                {
+                    SendResize(index, pose.X, sequence, now);
+                    _record?.Invoke(SessionLines.WorldEdit(now, sequence, op, pose, null));
+                    return; // settles when the backend answers
+                }
             }
             else
             {
@@ -159,6 +192,19 @@ namespace Teleop.RobotHost.World
                 {
                     Settle(_pending[p].Request, PlaceOutcome.TimedOut, ObjectPose.Of(_scene.Objects[_pending[p].Index].Id, 0, _targets[_pending[p].Index]), now);
                 }
+            }
+
+            if (_backend.TryTakeSizes(_takenIds, _takenScales, out int sizes, out uint sizesRevision))
+            {
+                for (int k = 0; k < sizes; k++)
+                {
+                    int index = _scene.IndexOf(_takenIds[k]);
+                    if (index >= 0 && WorldScene.IsValidScale(_takenScales[k])) _sizeScales[index] = _takenScales[k];
+                }
+
+                _sizesRevision = sizesRevision;
+                _sizesChanged = true;
+                _record?.Invoke(SessionLines.WorldSizes(now, _sizesRevision, _sizeIds, _sizeScales));
             }
 
             if (_backend.TryTakeSnapshot(_snapshot, out int count, out long sensed, out uint revision))
@@ -192,11 +238,13 @@ namespace Teleop.RobotHost.World
 
             byte flags = (byte)((Running ? WorldStatus.FlagRunning : 0) | (_backend.Physics ? WorldStatus.FlagPhysics : 0) | (motionOff ? WorldStatus.FlagEditsAllowed : 0));
             var status = new WorldStatus(flags, (byte)_scene.Objects.Length, LayoutNumber, LayoutSeed, _resolvedEditSequence, _editOutcome, _editObject);
-            if (_lastStatus == long.MinValue || now - _lastStatus >= _tps || !status.Equals(_sentStatus))
+            if (_lastStatus == long.MinValue || now - _lastStatus >= _tps || !status.Equals(_sentStatus) || _sizesChanged)
             {
                 if (WorldCodec.TryEncodeStatus(status, _sha, now, _datagram, out int bytes)) send(_datagram, bytes);
+                if (Running && WorldCodec.TryEncodeSizes(_sizesRevision, _sizeIds, _sizeScales, _datagram, out int sizeBytes)) send(_datagram, sizeBytes);
                 _sentStatus = status;
                 _lastStatus = now;
+                _sizesChanged = false;
             }
         }
 
@@ -231,6 +279,15 @@ namespace Teleop.RobotHost.World
             _backend.Place(request, cause, ObjectPose.Of(_scene.Objects[index].Id, ObjectPose.FlagKinematic, _targets[index]), now);
         }
 
+        private void SendResize(int index, float scale, uint edit, long now)
+        {
+            uint request = ++_request;
+            int slot = Array.FindIndex(_pending, p => !p.Active);
+            if (slot < 0) slot = (int)(request % (uint)_pending.Length);
+            _pending[slot] = new Pending { Active = true, Request = request, Index = index, Cause = PlaceCause.Resize, Sent = now, Edit = edit };
+            _backend.Resize(request, _scene.Objects[index].Id, scale, now);
+        }
+
         private void Settle(uint request, PlaceOutcome outcome, in ObjectPose pose, long now)
         {
             int slot = -1;
@@ -255,7 +312,7 @@ namespace Teleop.RobotHost.World
                 return;
             }
 
-            if (done.Edit != 0) Resolve(done.Edit, outcome, now, WorldEditOp.Move, pose);
+            if (done.Edit != 0) Resolve(done.Edit, outcome, now, done.Cause == PlaceCause.Resize ? WorldEditOp.Resize : WorldEditOp.Move, pose);
         }
 
         /// <summary>Another spot for object <paramref name="index"/> within its jitter, clear of the others' targets.</summary>

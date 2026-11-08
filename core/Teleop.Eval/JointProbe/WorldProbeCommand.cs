@@ -33,7 +33,7 @@ namespace Teleop.Eval.JointProbe
             double seconds = 3;
             ulong? seed = null;
             bool newLayout = false;
-            string? moveSpec = null;
+            string? moveSpec = null, resizeSpec = null;
             for (int i = 1; i < args.Length; i++)
             {
                 string Next() => i + 1 < args.Length ? args[++i] : throw new ArgumentException($"{args[i]} needs a value");
@@ -46,8 +46,9 @@ namespace Teleop.Eval.JointProbe
                     case "--seed": seed = ulong.Parse(Next(), CultureInfo.InvariantCulture); break;
                     case "--new-layout": newLayout = true; break;
                     case "--move": moveSpec = Next(); break;
+                    case "--resize": resizeSpec = Next(); break;
                     default:
-                        Console.Error.WriteLine("usage: world-probe --remote-host <ip> --scene <file> [--remote-port 6002] [--seconds 3] [--seed <n> [--new-layout]] [--move id:x:y:yawDeg[:expected]]");
+                        Console.Error.WriteLine("usage: world-probe --remote-host <ip> --scene <file> [--remote-port 6002] [--seconds 3] [--seed <n> [--new-layout]] [--move id:x:y:yawDeg[:expected]] [--resize id:factor[:expected]]");
                         return 64;
                 }
             }
@@ -83,6 +84,7 @@ namespace Teleop.Eval.JointProbe
             }
 
             if (moveSpec != null) Move(socket, robot, scene, moveSpec, failures);
+            if (resizeSpec != null) Resize(socket, robot, scene, resizeSpec, failures);
 
             if (failures.Count == 0)
             {
@@ -173,6 +175,89 @@ namespace Teleop.Eval.JointProbe
             double off = Math.Max(Math.Abs(a.X - x), Math.Abs(a.Y - y)), turn = Math.Abs(Math.IEEERemainder(gotYaw - yaw, 2 * Math.PI));
             Console.WriteLine($"[world-probe] {label}: the frames show it {off * 1000:F3} mm and {turn * 180 / Math.PI:F3}° from there");
             if (off > 1e-4 || turn > 0.01) failures.Add($"{label}: the frames show it {off * 1000:F3} mm and {turn * 180 / Math.PI:F3}° away");
+        }
+
+        /// <summary>
+        /// <c>--resize id:factor[:expected]</c> (docs/adr/0034 amendment 6): asks to resize one object; when applied, the sizes
+        /// must report the factor, and the frames must show it stood on the table at its new height (within 2 mm: it settles).
+        /// </summary>
+        private static void Resize(Socket socket, IPEndPoint robot, WorldScene scene, string spec, List<string> failures)
+        {
+            string[] f = spec.Split(':');
+            int expected = f.Length > 2 ? Array.IndexOf(Outcomes, f[2]) : 0;
+            if (f.Length < 2 || f.Length > 3 || expected < 0 || !byte.TryParse(f[0], out byte id) || scene.IndexOf(id) < 0)
+            {
+                failures.Add($"--resize '{spec}': expected id:factor[:{string.Join("|", Outcomes)}], an id of the scene");
+                return;
+            }
+
+            float factor = float.Parse(f[1], CultureInfo.InvariantCulture);
+            uint sequence = Sequence() + 4;
+            var edit = new byte[WorldCodec.EditBytes];
+            WorldCodec.TryEncodeEdit(WorldEditOp.Resize, id, sequence, Stopwatch.GetTimestamp(), new ObjectPose(id, 0, factor, 0, 0, 1, 0, 0, 0), edit, out int n);
+            var buffer = new byte[JointDatagram.MaxBytes];
+            var part = new ObjectPose[WorldCodec.MaxObjectsPerFrame];
+            var statusSha = new byte[WorldCodec.Sha256Bytes];
+            var ids = new byte[WorldScene.MaxObjects];
+            var scales = new float[WorldScene.MaxObjects];
+            WorldStatus? echoed = null;
+            ObjectPose? after = null;
+            float? reported = null;
+            long freq = Stopwatch.Frequency, start = Stopwatch.GetTimestamp(), end = start + 3 * freq, nextSend = 0;
+            while (Stopwatch.GetTimestamp() < end)
+            {
+                long now = Stopwatch.GetTimestamp();
+                if (now >= nextSend)
+                {
+                    JointStateCodec.TryEncodeSubscribe(now, freq, buffer, out int k);
+                    socket.SendTo(buffer, 0, k, SocketFlags.None, robot);
+                    if (!echoed.HasValue) socket.SendTo(edit, 0, n, SocketFlags.None, robot);
+                    nextSend = now + freq / 4;
+                }
+
+                int got;
+                try
+                {
+                    got = socket.Receive(buffer);
+                }
+                catch (SocketException)
+                {
+                    continue;
+                }
+
+                ReadOnlySpan<byte> d = buffer.AsSpan(0, got);
+                if (WorldCodec.TryDecodeStatus(d, out WorldStatus s, statusSha, out _) && s.EditSequence == sequence) echoed = s;
+                else if (echoed.HasValue && WorldCodec.TryDecodeSizes(d, out _, ids, scales, out int sizes))
+                {
+                    for (int i = 0; i < sizes; i++) if (ids[i] == id) reported = scales[i];
+                }
+                else if (echoed.HasValue && WorldCodec.TryDecodeFrame(d, out _, out _, out _, out _, part, out int count))
+                {
+                    for (int i = 0; i < count; i++) if (part[i].Id == id) after = part[i];
+                }
+            }
+
+            string label = $"resize {id} to {factor:0.###}x";
+            if (!echoed.HasValue)
+            {
+                failures.Add(label + ": RobotHost never echoed it (an older RobotHost or bridge?)");
+                return;
+            }
+
+            byte outcome = echoed.Value.EditOutcome;
+            Console.WriteLine($"[world-probe] {label}: {(outcome < Outcomes.Length ? Outcomes[outcome] : outcome.ToString(CultureInfo.InvariantCulture))}");
+            if (outcome != expected) failures.Add($"{label}: {(outcome < Outcomes.Length ? Outcomes[outcome] : "?")}, expected {Outcomes[expected]}");
+            if (expected != 0) return;
+            if (!reported.HasValue || Math.Abs(reported.Value - factor) > 1e-4) failures.Add($"{label}: the sizes report {reported?.ToString("0.###", CultureInfo.InvariantCulture) ?? "nothing"}");
+            if (!after.HasValue)
+            {
+                failures.Add(label + ": no world frame showed the object after it");
+                return;
+            }
+
+            double height = scene.Table.Top + scene.Objects[scene.IndexOf(id)].SizeZ * factor / 2;
+            Console.WriteLine($"[world-probe] {label}: sizes report {reported:0.###}x; the frames show its centre at z {after.Value.Z:F4} (upright at the new size: {height:F4})");
+            if (Math.Abs(after.Value.Z - height) > 0.002) failures.Add($"{label}: its centre is at z {after.Value.Z:F4}, not {height:F4}");
         }
 
         private static void Watch(Socket socket, IPEndPoint robot, WorldScene scene, byte[] sha, double seconds, ulong? seed, uint? layout,

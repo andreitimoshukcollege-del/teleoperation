@@ -205,6 +205,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         print(f"[jetrover] {description}; {n} DOFs ({', '.join(names)}); torque {'on' if torque else 'off'}; listening on {args.socket}"
               + (f", world on {world_path}" if wsock is not None else ""), flush=True)
         world_client = None
+        sizes_due, last_sizes = True, 0  # SIZES at start, on change and once a second (docs/adr/0034 amendment 6)
         wseq = [0]
 
         def next_wseq() -> int:
@@ -285,6 +286,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                     try:
                         wsock.sendto(wire.encode_welcome(next_wseq(), wire.SERVER_ISAAC, time.monotonic_ns(), [], world_description), world_client)
                         wsock.sendto(wire.encode_world_info(next_wseq(), scene_sha, [o.id for o in scene.objects]), world_client)
+                        sizes_due = True
                     except OSError:
                         world_client = None
                 elif kind == wire.PLACE and sender == world_client:
@@ -294,6 +296,17 @@ def main(argv: Optional[List[str]] = None) -> int:
                         outcome, now_pose = world.place(cause, object_id, pose)
                         if outcome != wire.APPLIED or cause != wire.CAUSE_LAYOUT:
                             print(f"[jetrover] place {object_id} (cause {cause}): outcome {outcome}", flush=True)
+                        try:
+                            wsock.sendto(wire.encode_placed(next_wseq(), request, object_id, outcome, world.model.revision, now_pose), world_client)
+                        except OSError:
+                            pass
+                elif kind == wire.RESIZE and sender == world_client:
+                    rz = wire.decode_resize(data)
+                    if rz is not None:
+                        _, request, object_id, scale = rz
+                        outcome, now_pose = world.resize(object_id, scale)
+                        print(f"[jetrover] resize {object_id} to {scale:.3g}x: outcome {outcome}", flush=True)
+                        sizes_due = sizes_due or outcome == wire.APPLIED
                         try:
                             wsock.sendto(wire.encode_placed(next_wseq(), request, object_id, outcome, world.model.revision, now_pose), world_client)
                         except OSError:
@@ -321,6 +334,15 @@ def main(argv: Optional[List[str]] = None) -> int:
                         v = float(q[index[m.joint]])
                     report.append((m_id, float(v), 0.0, float(v)))
                 tap(wire.encode_state(next_wseq(), time.monotonic_ns(), steps * step_ns, wire.FLAG_ENABLED if torque else 0, report))
+            if world is not None and (world_client is not None or args.tap) and (sizes_due or steps - last_sizes >= round(1.0 / args.dt)):
+                sizes_due, last_sizes = False, steps
+                message = world.model.sizes_message(next_wseq())
+                if world_client is not None:
+                    try:
+                        wsock.sendto(message, world_client)
+                    except OSError:
+                        pass
+                tap(message)
             if world is not None and (world_client is not None or args.tap) and steps % args.world_every == 0:
                 objects = world.read()
                 for message in world.model.world_messages(next_wseq, time.monotonic_ns(), objects):

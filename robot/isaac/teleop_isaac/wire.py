@@ -153,6 +153,7 @@ def decode_health(d: bytes) -> Optional[Tuple[float, float, int, int]]:
 # --- the world, kinds 7-11 (docs/adr/0031 amendment 2; RobotHost's ArmServer/ArmServerWorld.cs) -------------------------
 
 WORLD_INFO, WORLD, PLACE, PLACED, CONTACTS = 7, 8, 9, 10, 11
+RESIZE, SIZES = 12, 13  # docs/adr/0034 amendment 6
 MAX_OBJECTS_PER_WORLD = 16
 MAX_CONTACTS = 64
 CAUSE_LAYOUT, CAUSE_HEADSET, CAUSE_RESET = 1, 2, 3
@@ -241,3 +242,34 @@ def decode_contacts(d: bytes) -> Optional[Tuple[int, List[Tuple[int, int, int, f
     if n > MAX_CONTACTS or len(d) != 17 + 7 * n:
         return None
     return sensed, [struct.unpack_from("<BBBf", d, 17 + 7 * i) for i in range(n)]
+
+
+# --- resizing, kinds 12-13 (docs/adr/0034 amendment 6) ----------------------------------------------------------------
+
+def encode_resize(sequence: int, host_ticks: int, request: int, object_id: int, scale: float) -> bytes:
+    return _header(RESIZE, sequence) + struct.pack("<qIBf", host_ticks, request & 0xFFFFFFFF, object_id, scale)
+
+
+def decode_resize(d: bytes) -> Optional[Tuple[int, int, int, float]]:
+    """(host ticks, request, object id, size factor). Answered with a PLACED of the same request."""
+    if kind_of(d) != RESIZE or len(d) != 25:
+        return None
+    return struct.unpack_from("<qIBf", d, 8)
+
+
+def encode_sizes(sequence: int, revision: int, sizes: Sequence[Tuple[int, float]]) -> bytes:
+    """Every object's size factor on the scene file's size: (id, factor) each."""
+    if len(sizes) > 255:
+        raise ValueError("at most 255 objects")
+    body = b"".join(struct.pack("<Bf", i, f) for i, f in sizes)
+    return _header(SIZES, sequence) + struct.pack("<IB", revision & 0xFFFFFFFF, len(sizes)) + body
+
+
+def decode_sizes(d: bytes) -> Optional[Tuple[int, List[Tuple[int, float]]]]:
+    """(revision, [(id, factor), ...])."""
+    if kind_of(d) != SIZES or len(d) < 13:
+        return None
+    revision, n = struct.unpack_from("<IB", d, 8)
+    if len(d) != 13 + 5 * n:
+        return None
+    return revision, [struct.unpack_from("<Bf", d, 13 + 5 * i) for i in range(n)]

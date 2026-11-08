@@ -9,6 +9,16 @@
       <mass value="3"/>
       <inertia ixx="0.06" ixy="0" ixz="0" iyy="0.06" iyz="0" izz="0.06"/>
     </inertial>
+    <visual name="base_link_0_visual">
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry><mesh filename="meshes/base_link_0.obj"/></geometry>
+      <material name="jetrover_base_link_0"><color rgba="0.07 0.072 0.078 1"/></material>
+    </visual>
+    <visual name="base_link_1_visual">
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry><mesh filename="meshes/base_link_1.obj"/></geometry>
+      <material name="jetrover_base_link_1"><color rgba="0.12 0.62 0.28 1"/></material>
+    </visual>
     <collision name="Body.0">
       <origin xyz="-0.0834 -0.0497 -0.0961" rpy="0 0 0"/>
       <geometry><box size="0.11 0.124 0.1292"/></geometry>
@@ -88,18 +98,15 @@
       <mass value="0.15"/>
       <inertia ixx="0.0000636" ixy="-0" ixz="0" iyy="0.0000541" iyz="-0.0000003" izz="0.0000578"/>
     </inertial>
-    <visual name="turntable.0">
-      <origin xyz="-0.0001 0 0.0114" rpy="0 0 0"/>
-      <geometry><box size="0.0514 0.0514 0.0312"/></geometry>
+    <visual name="turntable_0_visual">
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry><mesh filename="meshes/turntable_0.obj"/></geometry>
+      <material name="jetrover_turntable_0"><color rgba="0.07 0.072 0.078 1"/></material>
     </visual>
     <collision name="turntable.0">
       <origin xyz="-0.0001 0 0.0114" rpy="0 0 0"/>
       <geometry><box size="0.0514 0.0514 0.0312"/></geometry>
     </collision>
-    <visual name="turntable.1">
-      <origin xyz="-0.0001 -0.0018 0.0334" rpy="-1.3477198 -0.0106309 -0.0052166"/>
-      <geometry><box size="0.026 0.0336 0.0532"/></geometry>
-    </visual>
     <collision name="turntable.1">
       <origin xyz="-0.0001 -0.0018 0.0334" rpy="-1.3477198 -0.0106309 -0.0052166"/>
       <geometry><box size="0.026 0.0336 0.0532"/></geometry>
@@ -111,26 +118,19 @@
       <mass value="0.12"/>
       <inertia ixx="0.0000446" ixy="0" ixz="0.0000002" iyy="0.000287" iyz="0" izz="0.0003036"/>
     </inertial>
-    <visual name="proximal.0">
-      <origin xyz="0.0804 -0.0002 0.0006" rpy="0 0 0"/>
-      <geometry><box size="0.057 0.0486 0.0374"/></geometry>
+    <visual name="proximal_link_0_visual">
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry><mesh filename="meshes/proximal_link_0.obj"/></geometry>
+      <material name="jetrover_proximal_link_0"><color rgba="0.12 0.62 0.28 1"/></material>
     </visual>
     <collision name="proximal.0">
       <origin xyz="0.0804 -0.0002 0.0006" rpy="0 0 0"/>
       <geometry><box size="0.057 0.0486 0.0374"/></geometry>
     </collision>
-    <visual name="proximal.1">
-      <origin xyz="0.0202 -0.0002 0.0007" rpy="0 0 0"/>
-      <geometry><box size="0.0772 0.0616 0.0376"/></geometry>
-    </visual>
     <collision name="proximal.1">
       <origin xyz="0.0202 -0.0002 0.0007" rpy="0 0 0"/>
       <geometry><box size="0.0772 0.0616 0.0376"/></geometry>
     </collision>
-    <visual name="proximal.2">
-      <origin xyz="0.126 -0.0002 0.0006" rpy="0 0 0"/>
-      <geometry><box size="0.0484 0.0488 0.0374"/></geometry>
-    </visual>
     <collision name="proximal.2">
       <origin xyz="0.126 -0.0002 0.0006" rpy="0 0 0"/>
       <geometry><box size="0.0484 0.0488 0.0374"/></geometry>
@@ -142,26 +142,19 @@
       <mass value="0.12"/>
       <inertia ixx="0.0000438" ixy="0.0000001" ixz="0" iyy="0.0002893" iyz="0" izz="0.0003049"/>
     </inertial>
-    <visual name="distal.0">
-      <origin xyz="0.0663 -0.0008 0" rpy="0 0 0"/>
-      <geometry><box size="0.0638 0.0504 0.0376"/></geometry>
+    <visual name="distal_link_0_visual">
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry><mesh filename="meshes/distal_link_0.obj"/></geometry>
+      <material name="jetrover_distal_link_0"><color rgba="0.12 0.62 0.28 1"/></material>
     </visual>
     <collision name="distal.0">
       <origin xyz="0.0663 -0.0008 0" rpy="0 0 0"/>
       <geometry><box size="0.0638 0.0504 0.0376"/></geometry>
     </collision>
-    <visual name="distal.1">
-      <origin xyz="0.0113 -0.0005 0" rpy="0 0 0"/>
-      <geometry><box size="0.06 0.0616 0.0376"/></geometry>
-    </visual>
     <collision name="distal.1">
       <origin xyz="0.0113 -0.0005 0" rpy="0 0 0"/>
       <geometry><box size="0.06 0.0616 0.0376"/></geometry>
     </collision>
-    <visual name="distal.2">
-      <origin xyz="0.1209 -0.0005 0" rpy="0 0 0"/>
-      <geometry><box size="0.058 0.0488 0.0374"/></geometry>
-    </visual>
     <collision name="distal.2">
       <origin xyz="0.1209 -0.0005 0" rpy="0 0 0"/>
       <geometry><box size="0.058 0.0488 0.0374"/></geometry>
@@ -173,42 +166,37 @@
       <mass value="0.1"/>
       <inertia ixx="0.0001208" ixy="-0.0000003" ixz="-0.0000354" iyy="0.0001163" iyz="-0.0000005" izz="0.0001067"/>
     </inertial>
-    <visual name="wrist.0">
-      <origin xyz="0.0405 0 -0.0008" rpy="0 0 0"/>
-      <geometry><box size="0.0344 0.0616 0.0564"/></geometry>
+    <visual name="wrist_link_0_visual">
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry><mesh filename="meshes/wrist_link_0.obj"/></geometry>
+      <material name="jetrover_wrist_link_0"><color rgba="0.07 0.072 0.078 1"/></material>
+    </visual>
+    <visual name="wrist_link_1_visual">
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry><mesh filename="meshes/wrist_link_1.obj"/></geometry>
+      <material name="jetrover_wrist_link_1"><color rgba="0.12 0.62 0.28 1"/></material>
+    </visual>
+    <visual name="wrist_link_2_visual">
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry><mesh filename="meshes/wrist_link_2.obj"/></geometry>
+      <material name="jetrover_wrist_link_2"><color rgba="0.6 0.62 0.65 1"/></material>
     </visual>
     <collision name="wrist.0">
       <origin xyz="0.0405 0 -0.0008" rpy="0 0 0"/>
       <geometry><box size="0.0344 0.0616 0.0564"/></geometry>
     </collision>
-    <visual name="wrist.1">
-      <origin xyz="0.0107 -0.0248 0" rpy="0 0 0"/>
-      <geometry><box size="0.0586 0.012 0.0376"/></geometry>
-    </visual>
     <collision name="wrist.1">
       <origin xyz="0.0107 -0.0248 0" rpy="0 0 0"/>
       <geometry><box size="0.0586 0.012 0.0376"/></geometry>
     </collision>
-    <visual name="wrist.2">
-      <origin xyz="0.0651 0.023 0.0417" rpy="0 0 0"/>
-      <geometry><box size="0.033 0.0508 0.0484"/></geometry>
-    </visual>
     <collision name="wrist.2">
       <origin xyz="0.0651 0.023 0.0417" rpy="0 0 0"/>
       <geometry><box size="0.033 0.0508 0.0484"/></geometry>
     </collision>
-    <visual name="wrist.3">
-      <origin xyz="0.0651 -0.0218 0.0416" rpy="0 0 0"/>
-      <geometry><box size="0.033 0.0502 0.0484"/></geometry>
-    </visual>
     <collision name="wrist.3">
       <origin xyz="0.0651 -0.0218 0.0416" rpy="0 0 0"/>
       <geometry><box size="0.033 0.0502 0.0484"/></geometry>
     </collision>
-    <visual name="wrist.4">
-      <origin xyz="0.0117 0.0243 0" rpy="0 0 0"/>
-      <geometry><box size="0.0606 0.0128 0.0376"/></geometry>
-    </visual>
     <collision name="wrist.4">
       <origin xyz="0.0117 0.0243 0" rpy="0 0 0"/>
       <geometry><box size="0.0606 0.0128 0.0376"/></geometry>
@@ -220,18 +208,15 @@
       <mass value="0.12"/>
       <inertia ixx="0.0000648" ixy="0.0000006" ixz="0.0000024" iyy="0.0000548" iyz="-0.000001" izz="0.0000688"/>
     </inertial>
-    <visual name="gripper.0">
-      <origin xyz="0.0807 -0.0026 -0.0043" rpy="0.3729971 -1.5053658 1.2401309"/>
-      <geometry><box size="0.035 0.0622 0.0652"/></geometry>
+    <visual name="gripper_link_0_visual">
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry><mesh filename="meshes/gripper_link_0.obj"/></geometry>
+      <material name="jetrover_gripper_link_0"><color rgba="0.07 0.072 0.078 1"/></material>
     </visual>
     <collision name="gripper.0">
       <origin xyz="0.0807 -0.0026 -0.0043" rpy="0.3729971 -1.5053658 1.2401309"/>
       <geometry><box size="0.035 0.0622 0.0652"/></geometry>
     </collision>
-    <visual name="gripper.3">
-      <origin xyz="0.0845 -0.0069 -0.0255" rpy="0 0 0"/>
-      <geometry><box size="0.0256 0.0556 0.0426"/></geometry>
-    </visual>
     <collision name="gripper.3">
       <origin xyz="0.0845 -0.0069 -0.0255" rpy="0 0 0"/>
       <geometry><box size="0.0256 0.0556 0.0426"/></geometry>
@@ -243,9 +228,10 @@
       <mass value="0.01"/>
       <inertia ixx="0.0000016" ixy="0.0000006" ixz="0" iyy="0.0000048" iyz="-0.0000001" izz="0.000006"/>
     </inertial>
-    <visual name="gripper.1">
-      <origin xyz="0.1271 0.0172 0.0022" rpy="-1.3788013 1.5040733 1.5940511"/>
-      <geometry><box size="0.0136 0.0398 0.0752"/></geometry>
+    <visual name="left_finger_0_visual">
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry><mesh filename="meshes/left_finger_0.obj"/></geometry>
+      <material name="jetrover_left_finger_0"><color rgba="0.07 0.072 0.078 1"/></material>
     </visual>
     <collision name="gripper.1">
       <origin xyz="0.1271 0.0172 0.0022" rpy="-1.3788013 1.5040733 1.5940511"/>
@@ -258,9 +244,10 @@
       <mass value="0.01"/>
       <inertia ixx="0.0000015" ixy="-0.0000005" ixz="-0" iyy="0.0000048" iyz="0.0000001" izz="0.000006"/>
     </inertial>
-    <visual name="gripper.2">
-      <origin xyz="0.1271 -0.0177 0.0022" rpy="-1.5602007 1.511628 -1.4035509"/>
-      <geometry><box size="0.0136 0.0392 0.075"/></geometry>
+    <visual name="right_finger_0_visual">
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry><mesh filename="meshes/right_finger_0.obj"/></geometry>
+      <material name="jetrover_right_finger_0"><color rgba="0.07 0.072 0.078 1"/></material>
     </visual>
     <collision name="gripper.2">
       <origin xyz="0.1271 -0.0177 0.0022" rpy="-1.5602007 1.511628 -1.4035509"/>

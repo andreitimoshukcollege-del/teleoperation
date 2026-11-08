@@ -226,6 +226,11 @@ namespace Teleop.XR.Editor
             Fr3MotionButton edit = root.transform.Find(XrFr3WorldSetup.EditObjectsButtonName)?.GetComponent<Fr3MotionButton>();
             if (edit == null || edit.ButtonRole != Fr3MotionButton.Role.EditObjects)
                 problems.Add("no EDIT OBJECTS button under the world root: run `just unity-world-fr3-xr`");
+            foreach ((string name, Fr3MotionButton.Role role) in new[] { (XrFr3WorldSetup.SizeDownButtonName, Fr3MotionButton.Role.SizeDown), (XrFr3WorldSetup.SizeUpButtonName, Fr3MotionButton.Role.SizeUp) })
+            {
+                Fr3MotionButton b = root.transform.Find(name)?.GetComponent<Fr3MotionButton>();
+                if (b == null || b.ButtonRole != role) problems.Add($"no {role} button under the world root: run `just unity-world-fr3-xr`");
+            }
             foreach (SerialChainWorldTwin twin in twins)
             {
                 SerializedProperty ghosts = new SerializedObject(twin).FindProperty("ghosts");

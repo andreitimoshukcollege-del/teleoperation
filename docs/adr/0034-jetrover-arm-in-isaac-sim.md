@@ -239,3 +239,38 @@ three to be useful.
     clutch's pointer reference and the feeds' ports.
 - **Not measured yet:** any of J6 in the headset, against `just isaac-jetrover-host`. J3 (sim against real) is still open,
   so every session from it stays `source: isaac`.
+
+## Amendment 6 (2026-11-08): resizing objects from the headset, and the JetRover's own look in Isaac
+
+The user, in the headset: "the objects are showing but they are pretty small, can you add a way to resize, also the model that
+is showing in the isaac sim stream is very different to the actual robot model". Asked how, they chose resizing each object
+in the headset over a scale for the whole scene.
+
+- **Resizing.** An object's size is a factor on the scene file's size, the same in every direction, between 0.5 and 3
+  (`WorldScene.MinObjectScale`/`MaxObjectScale`).
+  - **Headset.** With the robot off, the last object a pointer (or the FR3's EDIT OBJECTS) grabbed is selected; SIZE − and
+    SIZE + (beside NEW LAYOUT in both scenes) step it by 1.25. A new world edit, `WorldEditOp.Resize` (5), carries the factor
+    in the edit's x. The twin draws each object at its size.
+  - **RobotHost** sends it to the backend and settles the edit by its answer. The backend's sizes are the truth: a new
+    joint-port datagram, `0x8B` world sizes, carries every object's factor to the headset with the status (once a second and
+    on change); `WZ` records them in the session.
+  - **The arm-server wire** gains kind 12 RESIZE (answered by a PLACED of the same request) and kind 13 SIZES (at start, on
+    change, once a second). The golden file has both.
+  - **Isaac** checks a resize by the placement rules at the new size and the object's current place (an arm touching it, off
+    the table, too close to another object, an arm in the way), then stands it upright there at its new size: the shape's
+    geometry and, for a movable object, its mass (× factor³) change on the session layer. Every placement rule uses each
+    object's current size. The renderer applies SIZES to its copy and records them as `SZ`.
+  - **Not done:** layouts drawn by RobotHost (`SceneLayout`, the redraws) still space objects by their file sizes; Isaac
+    refuses a spot that overlaps at the real size, and the redraw takes over. The FR3's EDIT OBJECTS ghost is drawn at the
+    file's height for a resized object.
+- **The JetRover's look.** The URDF drew each link as its collision boxes.
+  - `JetRoverVisualExport` (`just jetrover-visuals`, TeleopXR) writes the lab twin's CAD as OBJ meshes, one per URDF link and
+    colour, in the link frames the collision extractor uses (the commanded arm at every joint 0, gripper open). They are
+    decimated by vertex clustering on a 1.5 mm grid, a cell's vertices kept apart by facing: 447,441 triangles became 130,421
+    in 11 files, 7.7 MB, kept as plain text, not LFS, since the GPU machine clones from GitHub. `visuals.json` names each
+    file's link and colour (the lab palette's) and the FBX hashes.
+  - `JetRoverSimModel` writes a `<visual>` per mesh, with its colour, and drops a link's box visuals when it has meshes. The
+    collision boxes are unchanged, so physics is unchanged. The jaws go to the finger links, which slide where the real jaws
+    turn.
+  - The renderer labels `<link>_<k>_visual` for the masks (the arm 7, the hand 8, the chassis `mount`) and hides the
+    collision boxes should the importer draw them.

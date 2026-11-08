@@ -33,6 +33,8 @@ namespace Teleop.RobotArm.Operator
         private readonly ObjectPose[] _worldPart = new ObjectPose[WorldCodec.MaxObjectsPerFrame];
         private readonly byte[] _worldSha = new byte[WorldCodec.Sha256Bytes];
         private readonly byte[] _editBuffer = new byte[WorldCodec.EditBytes];
+        private readonly byte[] _sizeIds = new byte[WorldScene.MaxObjects];
+        private readonly float[] _sizeScales = new float[WorldScene.MaxObjects];
         private int _worldHead, _worldSize;
         private uint _editSequence;
         private long _editFirstSent = long.MinValue, _editLastSent = long.MinValue;
@@ -168,6 +170,16 @@ namespace Teleop.RobotArm.Operator
                 if (WorldCodec.TryDecodeFrame(datagram, out _, out long sensed, out _, out _, _worldPart, out int objects))
                 {
                     EnqueueWorld(arrival + (long)(addedDelayMs / 1000.0 * _clock.TicksPerSecond), sensed, objects);
+                }
+
+                return true;
+            }
+
+            if (tag == WorldCodec.SizesTag)
+            {
+                if (WorldCodec.TryDecodeSizes(datagram, out uint revision, _sizeIds, _sizeScales, out int n))
+                {
+                    _world.ApplySizes(revision, _sizeIds.AsSpan(0, n), _sizeScales.AsSpan(0, n));
                 }
 
                 return true;

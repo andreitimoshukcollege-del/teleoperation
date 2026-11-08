@@ -172,6 +172,16 @@ namespace Teleop.RobotHost.Tests.ArmServer
             Add(new Dictionary<string, object> { ["kind"] = "contacts", ["sequence"] = 11, ["sensedTicks"] = 123_460_000_000L,
                 ["contacts"] = contacts.Select(c => new object[] { (int)c.Arm, (int)c.Link, (int)c.Object, c.ForceNewtons }).ToArray() }, n);
 
+            // Resizing, kinds 12-13 (docs/adr/0034 amendment 6).
+            ArmServerWorld.TryEncodeResize(12, 123_461_000_000, 18, 3, 1.5f, buffer, out n);
+            Add(new Dictionary<string, object> { ["kind"] = "resize", ["sequence"] = 12, ["hostTicks"] = 123_461_000_000L, ["request"] = 18u, ["id"] = 3, ["scale"] = 1.5f }, n);
+
+            byte[] sizeIds = { 1, 3 };
+            float[] sizeScales = { 1f, 1.5f };
+            ArmServerWorld.TryEncodeSizes(13, 5, sizeIds, sizeScales, buffer, out n);
+            Add(new Dictionary<string, object> { ["kind"] = "sizes", ["sequence"] = 13, ["revision"] = 5u,
+                ["sizes"] = sizeIds.Select((x, i) => new object[] { (int)x, sizeScales[i] }).ToArray() }, n);
+
             var golden = new Dictionary<string, object>
             {
                 ["version"] = (int)ArmServerWire.Version,

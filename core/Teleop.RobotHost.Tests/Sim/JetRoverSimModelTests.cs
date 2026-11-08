@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Numerics;
@@ -29,6 +30,38 @@ namespace Teleop.RobotHost.Tests.Sim
             throw new InvalidOperationException("no repo root");
         }
 
+        /// <summary>The CAD meshes' manifest (docs/adr/0034 amendment 6), or none before <c>just jetrover-visuals</c> has run.</summary>
+        private static IReadOnlyList<JetRoverSimModel.Visual> Visuals()
+        {
+            string path = Path.Combine(Root(), "robot", "jetrover", "urdf", "meshes", "visuals.json");
+            return File.Exists(path) ? JetRoverSimModel.ParseVisuals(File.ReadAllText(path)) : Array.Empty<JetRoverSimModel.Visual>();
+        }
+
+        [Fact]
+        public void EveryVisual_IsAUrdfLinksMesh_WithTheTrianglesItsManifestSays()
+        {
+            string dir = Path.Combine(Root(), "robot", "jetrover", "urdf");
+            string manifest = Path.Combine(dir, "meshes", "visuals.json");
+            Assert.True(File.Exists(manifest), $"{manifest} is missing: just jetrover-visuals");
+            JsonNode doc = JsonNode.Parse(File.ReadAllText(manifest))!;
+            XDocument urdf = XDocument.Parse(JetRoverSimModel.Urdf(Profile(), JetRoverCollisionModel.Instance, Plant(Profile()), Visuals()));
+            var links = urdf.Root!.Elements("link").Select(l => (string)l.Attribute("name")!).ToHashSet();
+            foreach (JsonNode? v in doc["visuals"]!.AsArray())
+            {
+                string link = (string)v!["link"]!, file = (string)v["file"]!;
+                Assert.Contains(link, links);
+                string obj = Path.Combine(dir, file);
+                Assert.True(File.Exists(obj), obj);
+                string[] lines = File.ReadAllLines(obj);
+                Assert.Equal((int)v["triangles"]!, lines.Count(x => x.StartsWith("f ", StringComparison.Ordinal)));
+                Assert.DoesNotContain(lines, x => x.StartsWith("version https://git-lfs", StringComparison.Ordinal)); // never an LFS pointer
+            }
+
+            // Each link with meshes is drawn by them, not by its boxes.
+            Assert.All(urdf.Root.Elements("link").Where(l => l.Elements("visual").Any(x => x.Element("geometry")!.Element("mesh") != null)),
+                l => Assert.DoesNotContain(l.Elements("visual"), x => x.Element("geometry")!.Element("box") != null));
+        }
+
         private static RobotArmProfile Profile() => RobotArmProfileJson.Load(Path.Combine(Root(), "core", "RobotProfiles", "jetrover.json"));
 
         private static GenericArmPlantConfig Plant(RobotArmProfile profile)
@@ -45,7 +78,7 @@ namespace Teleop.RobotHost.Tests.Sim
         {
             RobotArmProfile profile = Profile();
             string expected = file.EndsWith(".urdf", StringComparison.Ordinal)
-                ? JetRoverSimModel.Urdf(profile, JetRoverCollisionModel.Instance, Plant(profile))
+                ? JetRoverSimModel.Urdf(profile, JetRoverCollisionModel.Instance, Plant(profile), Visuals())
                 : JetRoverSimModel.SimJson(profile, Plant(profile));
             string path = Path.Combine(Root(), "robot", "jetrover", "urdf", file);
             if (Environment.GetEnvironmentVariable("TELEOP_WRITE_GOLDEN") == "1") File.WriteAllText(path, expected, new UTF8Encoding(false));
@@ -57,7 +90,7 @@ namespace Teleop.RobotHost.Tests.Sim
         public void TheUrdfsChain_PutsTheWristWhereTheIkDoes()
         {
             RobotArmProfile profile = Profile();
-            XDocument urdf = XDocument.Parse(JetRoverSimModel.Urdf(profile, JetRoverCollisionModel.Instance, Plant(profile)));
+            XDocument urdf = XDocument.Parse(JetRoverSimModel.Urdf(profile, JetRoverCollisionModel.Instance, Plant(profile), Visuals()));
             var joints = urdf.Root!.Elements("joint").ToDictionary(j => (string)j.Attribute("name")!);
             var rng = new Random(7);
             for (int k = 0; k < 50; k++)
@@ -82,7 +115,7 @@ namespace Teleop.RobotHost.Tests.Sim
         public void TheArmWeighsWhatARobotArmOfThisSizeDoes_AndTheGripperNeverReports()
         {
             RobotArmProfile profile = Profile();
-            XDocument urdf = XDocument.Parse(JetRoverSimModel.Urdf(profile, JetRoverCollisionModel.Instance, Plant(profile)));
+            XDocument urdf = XDocument.Parse(JetRoverSimModel.Urdf(profile, JetRoverCollisionModel.Instance, Plant(profile), Visuals()));
             double arm = urdf.Root!.Elements("link").Where(l => (string)l.Attribute("name")! != "base_link")
                 .Sum(l => (double)l.Element("inertial")!.Element("mass")!.Attribute("value")!);
             Assert.InRange(arm, 0.2, 1.5); // a 5-servo arm of 13 cm links

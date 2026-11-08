@@ -11,6 +11,13 @@ namespace Teleop.RobotArm.Wire
         NewLayout = 2,
         ResetObject = 3,
         ResetLayout = 4,
+
+        /// <summary>
+        /// Resize one object (docs/adr/0034 amendment 6): the edit's x carries the new size factor on the scene file's size
+        /// (<see cref="World.WorldScene.MinObjectScale"/> to <see cref="World.WorldScene.MaxObjectScale"/>); the rest of its pose
+        /// is unused. The object is stood up where it is at the new size.
+        /// </summary>
+        Resize = 5,
     }
 
     /// <summary>The world's state as RobotHost reports it to the headset, once a second and on change.</summary>
@@ -61,6 +68,9 @@ namespace Teleop.RobotArm.Wire
     /// <item><term>0x86 world frame</term><description>RobotHost → headset, at most 249 bytes: tag, version, uint32 snapshot, int64
     /// sensed ticks (RobotHost's clock), uint8 part, uint8 parts, uint8 count (≤ <see cref="MaxObjectsPerFrame"/>), then per object
     /// uint8 id, float32 x y z, float32 qw qx qy qz. Each part is applied as it arrives.</description></item>
+    /// <item><term>0x8B world sizes</term><description>RobotHost → headset (docs/adr/0034 amendment 6), with the status: tag,
+    /// version, uint32 revision (counts resizes), uint8 count, then per object uint8 id, float32 size factor. Every object,
+    /// once a second and on change; applied at once, as the status is.</description></item>
     /// <item><term>0x87 world status</term><description>RobotHost → headset, 64 bytes: tag, version, flags, object count, 32 bytes of
     /// the scene file's sha256, uint32 layout number, uint64 layout seed, uint32 the last edit's sequence, uint8 its outcome (the
     /// arm-server wire's codes), uint8 its object, uint16 reserved, int64 robot send ticks.</description></item>
@@ -72,6 +82,9 @@ namespace Teleop.RobotArm.Wire
         public const byte EditTag = 0x85;
         public const byte FrameTag = 0x86;
         public const byte StatusTag = 0x87;
+        public const byte SizesTag = 0x8B;
+        private const int SizesHeaderBytes = 7;
+        private const int SizesObjectBytes = 5;
         public const byte Version = 1;
         public const int EditBytes = 44;
         public const int StatusBytes = 64;
@@ -104,7 +117,7 @@ namespace Teleop.RobotArm.Wire
             sequence = 0;
             operatorSendTicks = 0;
             pose = default;
-            if (source.Length != EditBytes || source[0] != EditTag || source[1] != Version || source[2] < 1 || source[2] > 4) return false;
+            if (source.Length != EditBytes || source[0] != EditTag || source[1] != Version || source[2] < 1 || source[2] > 5) return false;
             sequence = BinaryPrimitives.ReadUInt32LittleEndian(source.Slice(4));
             if (sequence == 0) return false;
             op = (WorldEditOp)source[2];
@@ -190,6 +203,48 @@ namespace Teleop.RobotArm.Wire
             status = new WorldStatus(source[2], source[3], BinaryPrimitives.ReadUInt32LittleEndian(source.Slice(36)),
                 BinaryPrimitives.ReadUInt64LittleEndian(source.Slice(40)), BinaryPrimitives.ReadUInt32LittleEndian(source.Slice(48)), source[52], source[53]);
             robotSendTicks = BinaryPrimitives.ReadInt64LittleEndian(source.Slice(56));
+            return true;
+        }
+
+        public static int SizesBytes(int objects) => SizesHeaderBytes + SizesObjectBytes * objects;
+
+        /// <summary>Every object's size factor, <paramref name="ids"/> and <paramref name="scales"/> parallel.</summary>
+        public static bool TryEncodeSizes(uint revision, ReadOnlySpan<byte> ids, ReadOnlySpan<float> scales, Span<byte> output, out int written)
+        {
+            written = 0;
+            int n = ids.Length;
+            if (n != scales.Length || n > World.WorldScene.MaxObjects || output.Length < SizesBytes(n)) return false;
+            output[0] = SizesTag;
+            output[1] = Version;
+            BinaryPrimitives.WriteUInt32LittleEndian(output.Slice(2), revision);
+            output[6] = (byte)n;
+            for (int i = 0; i < n; i++)
+            {
+                int at = SizesHeaderBytes + SizesObjectBytes * i;
+                output[at] = ids[i];
+                BinaryPrimitives.WriteInt32LittleEndian(output.Slice(at + 1), BitConverter.SingleToInt32Bits(scales[i]));
+            }
+
+            written = SizesBytes(n);
+            return true;
+        }
+
+        public static bool TryDecodeSizes(ReadOnlySpan<byte> source, out uint revision, Span<byte> ids, Span<float> scales, out int count)
+        {
+            revision = 0;
+            count = 0;
+            if (source.Length < SizesHeaderBytes || source[0] != SizesTag || source[1] != Version) return false;
+            int n = source[6];
+            if (n > ids.Length || n > scales.Length || source.Length != SizesBytes(n)) return false;
+            revision = BinaryPrimitives.ReadUInt32LittleEndian(source.Slice(2));
+            for (int i = 0; i < n; i++)
+            {
+                int at = SizesHeaderBytes + SizesObjectBytes * i;
+                ids[i] = source[at];
+                scales[i] = BitConverter.Int32BitsToSingle(BinaryPrimitives.ReadInt32LittleEndian(source.Slice(at + 1)));
+            }
+
+            count = n;
             return true;
         }
 

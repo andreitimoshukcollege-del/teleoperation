@@ -127,7 +127,8 @@ namespace Teleop.XR.Editor
         /// <summary>
         /// NEW LAYOUT and the RECORD buttons on the bench's right wing, behind the training course's START and TRAIN: the left
         /// wing behind power is the console's. RECORD, nearest, stays in reach while driving (STOP); the wing is beyond the arm's
-        /// reach (about 0.35 m from its base). RECORD and DISCARD LAST in front; &lt; PREV, NEXT &gt; and NEW LAYOUT behind.
+        /// reach (about 0.35 m from its base). RECORD and DISCARD LAST in front; &lt; PREV, NEXT &gt; and NEW LAYOUT behind; SIZE −
+        /// and SIZE + at the back.
         /// </summary>
         private static void BuildButtons(JetRoverOperatorBridge bridge, XROrigin origin)
         {
@@ -144,6 +145,11 @@ namespace Teleop.XR.Editor
                 Fr3MotionButton.Role.ScenarioNext, bridge, origin);
             XrFr3SceneBuilder.BuildButton(root, "NewLayoutButton", new Vector3(x + 0.765f, top, z + 0.22f), "Fr3NewLayoutCap", new Color(0.95f, 0.65f, 0.15f), "NEW LAYOUT",
                 Fr3MotionButton.Role.NewLayout, bridge, origin);
+            // Resizing the object a pointer last grabbed (docs/adr/0034 amendment 6): robot off, so the pointer reaches them.
+            XrFr3SceneBuilder.BuildButton(root, "SizeDownButton", new Vector3(x + 0.48f, top, z + 0.44f), "Fr3SizeCap", new Color(0.3f, 0.75f, 0.55f), "SIZE \u2212",
+                Fr3MotionButton.Role.SizeDown, bridge, origin);
+            XrFr3SceneBuilder.BuildButton(root, "SizeUpButton", new Vector3(x + 0.70f, top, z + 0.44f), "Fr3SizeCap", new Color(0.3f, 0.75f, 0.55f), "SIZE +",
+                Fr3MotionButton.Role.SizeUp, bridge, origin);
             WarnOverlaps(root);
         }
 

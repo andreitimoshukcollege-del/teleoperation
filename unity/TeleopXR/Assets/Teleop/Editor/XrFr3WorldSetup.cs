@@ -95,6 +95,11 @@ namespace Teleop.XR.Editor
                 "NEW LAYOUT", Teleop.XR.Fr3MotionButton.Role.NewLayout, bridge, origin);
             XrFr3SceneBuilder.BuildButton(root, EditObjectsButtonName, XrFr3SceneBuilder.EditObjectsButtonAt, "Fr3EditObjectsCap", new Color(0.55f, 0.35f, 0.9f),
                 "EDIT OBJECTS", Teleop.XR.Fr3MotionButton.Role.EditObjects, bridge, origin);
+            // Resizing the object a pointer (or EDIT OBJECTS) last grabbed (docs/adr/0034 amendment 6), behind EDIT OBJECTS.
+            XrFr3SceneBuilder.BuildButton(root, SizeDownButtonName, XrFr3SceneBuilder.EditObjectsButtonAt + new Vector3(-0.1f, 0f, 0.18f), "Fr3SizeCap",
+                new Color(0.3f, 0.75f, 0.55f), "SIZE \u2212", Teleop.XR.Fr3MotionButton.Role.SizeDown, bridge, origin);
+            XrFr3SceneBuilder.BuildButton(root, SizeUpButtonName, XrFr3SceneBuilder.EditObjectsButtonAt + new Vector3(0.1f, 0f, 0.18f), "Fr3SizeCap",
+                new Color(0.3f, 0.75f, 0.55f), "SIZE +", Teleop.XR.Fr3MotionButton.Role.SizeUp, bridge, origin);
 
             BuildFeeds(bridge);
             Debug.Log($"[fr3-world] built '{world.Name}': {world.Surfaces.Count(s => s.Display == SurfaceDisplay.Show)} surface(s) and a twin of {world.Objects.Length} object(s) with their ghosts from the scene file, NEW LAYOUT, EDIT OBJECTS, and the {RightFeedName} and {LeftFeedName} feeds");
@@ -230,6 +235,7 @@ namespace Teleop.XR.Editor
         public const string TwinName = "WorldTwin";
         public const string NewLayoutButtonName = "NewLayoutButton";
         public const string EditObjectsButtonName = "EditObjectsButton";
+        public const string SizeDownButtonName = "SizeDownButton", SizeUpButtonName = "SizeUpButton";
 
         /// <summary>
         /// The world twin: one visual per scene object (the built-in primitive of its shape, its colour, no collider), at its nominal

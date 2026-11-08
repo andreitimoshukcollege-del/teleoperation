@@ -98,19 +98,27 @@ class Scene:
     clearance: float
     extra: Dict[str, Any] = field(default_factory=dict)
 
-    def fits_on_table(self, index: int, x: float, y: float) -> bool:
-        r = self.objects[index].footprint_radius
+    def fits_on_table(self, index: int, x: float, y: float, scale: float = 1.0) -> bool:
+        r = self.objects[index].footprint_radius * scale
         t, (x0, x1, y0, y1) = self.table, self.region
         return (x - r >= max(t.x_min, x0) - 1e-9 and x + r <= min(t.x_max, x1) + 1e-9 and
                 y - r >= max(t.y_min, y0) - 1e-9 and y + r <= min(t.y_max, y1) + 1e-9)
 
-    def overlaps(self, a: int, ax: float, ay: float, b: int, bx: float, by: float) -> bool:
-        reach = self.objects[a].footprint_radius + self.objects[b].footprint_radius + self.clearance
+    def overlaps(self, a: int, ax: float, ay: float, b: int, bx: float, by: float, scale_a: float = 1.0, scale_b: float = 1.0) -> bool:
+        reach = self.objects[a].footprint_radius * scale_a + self.objects[b].footprint_radius * scale_b + self.clearance
         return (ax - bx) ** 2 + (ay - by) ** 2 < reach * reach
 
-    def pose_at(self, index: int, x: float, y: float, yaw: float) -> Tuple[float, ...]:
-        """Object ``index`` upright on the table at (x, y), turned ``yaw``: x, y, z, qw, qx, qy, qz."""
-        return (x, y, self.table.top + self.objects[index].size[2] / 2, math.cos(yaw / 2), 0.0, 0.0, math.sin(yaw / 2))
+    def pose_at(self, index: int, x: float, y: float, yaw: float, scale: float = 1.0) -> Tuple[float, ...]:
+        """Object ``index`` upright on the table at (x, y), turned ``yaw``, resized by ``scale``: x, y, z, qw, qx, qy, qz."""
+        return (x, y, self.table.top + self.objects[index].size[2] * scale / 2, math.cos(yaw / 2), 0.0, 0.0, math.sin(yaw / 2))
+
+
+# How far the headset may resize an object (Core's WorldScene.MinObjectScale / MaxObjectScale, docs/adr/0034 amendment 6).
+MIN_OBJECT_SCALE, MAX_OBJECT_SCALE = 0.5, 3.0
+
+
+def is_valid_scale(scale: float) -> bool:
+    return math.isfinite(scale) and MIN_OBJECT_SCALE - 1e-6 <= scale <= MAX_OBJECT_SCALE + 1e-6
 
 
 def _bad(what: str, detail: str) -> SceneError:

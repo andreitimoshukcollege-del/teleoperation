@@ -18,7 +18,7 @@ namespace Teleop.XR
     public sealed class Fr3MotionButton : MonoBehaviour
     {
         // New roles go at the end: the scene stores the index.
-        public enum Role { Power, Recentre, NewLayout, EditObjects, Record, ScenarioPrevious, ScenarioNext, DiscardLast }
+        public enum Role { Power, Recentre, NewLayout, EditObjects, Record, ScenarioPrevious, ScenarioNext, DiscardLast, SizeDown, SizeUp }
 
         [SerializeField] private Role role = Role.Power;
         [Tooltip("Either robot's bridge. RECORD, its scenario buttons and NEW LAYOUT work with both (docs/adr/0034 J6); power, RECENTRE and EDIT OBJECTS are the FR3 Duo's.")]
@@ -45,7 +45,8 @@ namespace Teleop.XR
         private OperatorSideControls Side => bridge.SideControls;
         private SerialChainOperatorBridge Fr3 => bridge as SerialChainOperatorBridge;
         private bool RobotOn => bridge.MotionMode == JetRoverMotionMode.On;
-        private bool SharedRole => role == Role.Record || role == Role.ScenarioPrevious || role == Role.ScenarioNext || role == Role.DiscardLast || role == Role.NewLayout;
+        private bool SharedRole => role == Role.Record || role == Role.ScenarioPrevious || role == Role.ScenarioNext || role == Role.DiscardLast || role == Role.NewLayout ||
+                                  role == Role.SizeDown || role == Role.SizeUp;
 
         private void Update()
         {
@@ -56,6 +57,14 @@ namespace Teleop.XR
 
             _press ??= new FingertipPress(radiusMeters, pressDepthMeters, rearmDistanceMeters, cooldownSeconds);
             bool pressed = _press.Update(cap, origin);
+            if (role == Role.SizeDown || role == Role.SizeUp)
+            {
+                // Resizing the object a pointer last grabbed (docs/adr/0034 amendment 6), only while the robot is off.
+                if (pressed && Side.RequestResize(role == Role.SizeUp ? 1 : -1)) _flashUntil = Time.unscaledTime + 0.4f;
+                ShowSize();
+                return;
+            }
+
             if (role != Role.NewLayout && SharedRole)
             {
                 // Takes of named scenarios (docs/adr/0033), with the robot on or off.
@@ -162,6 +171,52 @@ namespace Teleop.XR
             if (state == _shown && text == _shownText) return;
             _shown = state;
             _shownText = text;
+            _block ??= new MaterialPropertyBlock();
+            cap.GetPropertyBlock(_block);
+            _block.SetColor("_BaseColor", color);
+            _block.SetColor("_Color", color);
+            cap.SetPropertyBlock(_block);
+            if (label != null) label.SetText(text);
+        }
+
+        private string _shownSize = "";
+
+        private void ShowSize()
+        {
+            OperatorSideControls side = Side;
+            bool up = role == Role.SizeUp, flash = Time.unscaledTime < _flashUntil;
+            string name = side.SelectedObjectName;
+            float scale = side.SelectedScale;
+            string sign = up ? "SIZE +" : "SIZE \u2212";
+            string text;
+            Color color;
+            if (!side.HasWorld || side.WorldSceneMismatch)
+            {
+                color = lockedColor;
+                text = sign + (side.WorldSceneMismatch ? "\n<size=60%>scene mismatch</size>" : "\n<size=60%>no scene file</size>");
+            }
+            else if (side.SelectedObject == 0)
+            {
+                color = lockedColor;
+                text = sign + "\n<size=60%>pinch an object first</size>";
+            }
+            else if (RobotOn)
+            {
+                color = lockedColor;
+                text = sign + "\n<size=60%>robot off to use</size>";
+            }
+            else
+            {
+                bool atLimit = side.SelectedAtLimit(up);
+                color = flash || side.EditPending ? onColor : atLimit || !side.CanResize ? lockedColor : new Color(0.3f, 0.75f, 0.55f);
+                string outcome = side.EditPending ? "asking..." : atLimit ? "at the limit" : $"{scale:0.##}\u00D7";
+                text = $"{sign}\n<size=60%>{name} \u00B7 {outcome}</size>";
+            }
+
+            int state = color.GetHashCode();
+            if (state == _shown && text == _shownSize) return;
+            _shown = state;
+            _shownSize = text;
             _block ??= new MaterialPropertyBlock();
             cap.GetPropertyBlock(_block);
             _block.SetColor("_BaseColor", color);

@@ -79,9 +79,45 @@ namespace Teleop.RobotHost.Sim
             public double Mass;
         }
 
-        /// <summary>The URDF, from the profile, the collision model and the plant's pulse rate.</summary>
-        public static string Urdf(RobotArmProfile profile, ArmCollisionModel collision, GenericArmPlantConfig plant)
+        /// <summary>One CAD mesh of a link, from <c>robot/jetrover/urdf/meshes/visuals.json</c> (docs/adr/0034 amendment 6).</summary>
+        public readonly struct Visual
         {
+            public readonly string Link;
+            public readonly string File;
+            public readonly float R, G, B;
+
+            public Visual(string link, string file, float r, float g, float b)
+            {
+                Link = link;
+                File = file;
+                R = r;
+                G = g;
+                B = b;
+            }
+        }
+
+        /// <summary>The visuals manifest that unity/TeleopXR's <c>JetRoverVisualExport</c> writes (<c>just jetrover-visuals</c>).</summary>
+        public static IReadOnlyList<Visual> ParseVisuals(string json)
+        {
+            JsonNode doc = JsonNode.Parse(json) ?? throw new FormatException("an empty visuals manifest");
+            if ((string?)doc["format"] != "jetrover-visuals" || (int?)doc["version"] != 1) throw new FormatException("not a jetrover-visuals version 1 manifest");
+            var list = new List<Visual>();
+            foreach (JsonNode? v in doc["visuals"]!.AsArray())
+            {
+                JsonArray rgba = v!["rgba"]!.AsArray();
+                list.Add(new Visual((string)v["link"]!, (string)v["file"]!, (float)rgba[0]!, (float)rgba[1]!, (float)rgba[2]!));
+            }
+
+            return list;
+        }
+
+        /// <summary>
+        /// The URDF, from the profile, the collision model and the plant's pulse rate. With <paramref name="visuals"/> (the CAD's
+        /// meshes, docs/adr/0034 amendment 6), each link that has any is drawn by them instead of by its collision boxes.
+        /// </summary>
+        public static string Urdf(RobotArmProfile profile, ArmCollisionModel collision, GenericArmPlantConfig plant, IReadOnlyList<Visual>? visuals = null)
+        {
+            visuals ??= Array.Empty<Visual>();
             if (profile.WristJointCount != 1 || !profile.HasRotatingBase || !profile.HasGripper || !profile.GripperCanRotate)
                 throw new ArgumentException("the JetRover's model: a rotating base, one wrist pitch, a rotating gripper");
             double maxRadPerSec = plant.PulsesPerSecond / plant.PulsePerRadian;
@@ -124,6 +160,7 @@ namespace Teleop.RobotHost.Sim
 
             chassisCentre /= (float)chassisVolume;
             sb.Append(Inertial(ChassisMass, chassisCentre, new Vector3(0.02f, 0.02f, 0.02f) * (float)ChassisMass));
+            sb.Append(Meshes("base_link", visuals));
             foreach (CollisionBox box in collision.Boxes)
             {
                 Vector3 size = box.Max - box.Min, centre = (box.Max + box.Min) / 2;
@@ -132,7 +169,7 @@ namespace Teleop.RobotHost.Sim
 
             sb.Append("  </link>\n");
 
-            foreach (LinkSpec link in links.Values.Concat(new[] { left, right })) sb.Append(Link(link));
+            foreach (LinkSpec link in links.Values.Concat(new[] { left, right })) sb.Append(Link(link, visuals));
 
             float baseHeight = profile.BaseHeight, l1 = profile.ProximalLinkLength, l2 = profile.DistalLinkLength;
             sb.Append(Joint("base_yaw", "revolute", "base_link", "turntable", Vector3.Zero, new Vector3(0, 0, 1), collision.BaseYaw, maxRadPerSec));
@@ -203,7 +240,24 @@ namespace Teleop.RobotHost.Sim
             return doc.ToJsonString(new JsonSerializerOptions { WriteIndented = true }).Replace("\r\n", "\n") + "\n";
         }
 
-        private static string Link(LinkSpec link)
+        /// <summary>A link's CAD meshes as <c>&lt;visual&gt;</c> elements, each with its colour; empty when it has none.</summary>
+        private static string Meshes(string link, IReadOnlyList<Visual> visuals)
+        {
+            var sb = new StringBuilder();
+            int k = 0;
+            foreach (Visual v in visuals)
+            {
+                if (v.Link != link) continue;
+                sb.Append($"    <visual name=\"{link}_{k}_visual\">\n      <origin xyz=\"0 0 0\" rpy=\"0 0 0\"/>\n");
+                sb.Append($"      <geometry><mesh filename=\"{v.File}\"/></geometry>\n");
+                sb.Append($"      <material name=\"jetrover_{link}_{k}\"><color rgba=\"{F(v.R)} {F(v.G)} {F(v.B)} 1\"/></material>\n    </visual>\n");
+                k++;
+            }
+
+            return sb.ToString();
+        }
+
+        private static string Link(LinkSpec link, IReadOnlyList<Visual> visuals)
         {
             double volume = link.Boxes.Sum(b => (double)b.Size.X * b.Size.Y * b.Size.Z);
             double mass = LinkMassKg[link.Name];
@@ -235,9 +289,11 @@ namespace Teleop.RobotHost.Sim
             sb.Append($"  <link name=\"{link.Name}\">\n");
             sb.Append($"    <inertial>\n      <origin xyz=\"{F(com.X)} {F(com.Y)} {F(com.Z)}\" rpy=\"0 0 0\"/>\n      <mass value=\"{F(mass)}\"/>\n");
             sb.Append($"      <inertia ixx=\"{F(Math.Max(1e-7, inertia.M11))}\" ixy=\"{F(inertia.M12)}\" ixz=\"{F(inertia.M13)}\" iyy=\"{F(Math.Max(1e-7, inertia.M22))}\" iyz=\"{F(inertia.M23)}\" izz=\"{F(Math.Max(1e-7, inertia.M33))}\"/>\n    </inertial>\n");
+            string meshes = Meshes(link.Name, visuals);
+            sb.Append(meshes);
             foreach (var b in link.Boxes)
             {
-                sb.Append(Geometry("visual", b.Name, b.Center, b.Rotation, b.Size));
+                if (meshes.Length == 0) sb.Append(Geometry("visual", b.Name, b.Center, b.Rotation, b.Size));
                 sb.Append(Geometry("collision", b.Name, b.Center, b.Rotation, b.Size));
             }
 

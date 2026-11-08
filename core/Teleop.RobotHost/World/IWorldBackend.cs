@@ -28,5 +28,19 @@ namespace Teleop.RobotHost.World
 
         /// <summary>The next placement's result, in the order they came.</summary>
         bool TryTakePlaced(out uint request, out PlaceOutcome outcome, out ObjectPose pose);
+
+        /// <summary>
+        /// Resizes one object (docs/adr/0034 amendment 6); answered through <see cref="TryTakePlaced"/> with the same request. A
+        /// backend that cannot resize never answers, and the request times out.
+        /// </summary>
+        void Resize(uint request, byte id, float scale, long hostTicks) { }
+
+        /// <summary>Every object's size factor, when they changed since the last call (or the backend first said).</summary>
+        bool TryTakeSizes(Span<byte> ids, Span<float> scales, out int count, out uint revision)
+        {
+            count = 0;
+            revision = 0;
+            return false;
+        }
     }
 }

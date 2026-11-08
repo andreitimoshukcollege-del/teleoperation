@@ -16,6 +16,7 @@ namespace Teleop.RobotArm.World
         private readonly bool[] _posed = new bool[256];
         private readonly ObjectPose[] _pose = new ObjectPose[256];
         private readonly long[] _sensed = new long[256];
+        private readonly float[] _scale = new float[256];
         private readonly byte[] _statusSha = new byte[WorldCodec.Sha256Bytes];
         private readonly byte[] _sceneSha;
 
@@ -27,6 +28,24 @@ namespace Teleop.RobotArm.World
             Scene = scene;
             _sceneSha = sceneSha256.ToArray();
             foreach (SceneObject o in scene.Objects) _known[o.Id] = true;
+            for (int i = 0; i < _scale.Length; i++) _scale[i] = 1f;
+        }
+
+        /// <summary>The revision of the newest sizes taken (docs/adr/0034 amendment 6); 0 before any.</summary>
+        public uint SizesRevision { get; private set; }
+
+        /// <summary>Object <paramref name="id"/>'s size factor on the scene file's size: 1 until RobotHost reports another.</summary>
+        public float Scale(byte id) => _scale[id];
+
+        /// <summary>Every object's size factor as RobotHost reports it; an id the scene doesn't have, or a factor out of range, is ignored.</summary>
+        public void ApplySizes(uint revision, ReadOnlySpan<byte> ids, ReadOnlySpan<float> scales)
+        {
+            for (int i = 0; i < ids.Length && i < scales.Length; i++)
+            {
+                if (_known[ids[i]] && WorldScene.IsValidScale(scales[i])) _scale[ids[i]] = scales[i];
+            }
+
+            SizesRevision = revision;
         }
 
         public WorldScene Scene { get; }
@@ -89,6 +108,8 @@ namespace Teleop.RobotArm.World
         public void Reset()
         {
             Array.Clear(_posed, 0, _posed.Length);
+            for (int i = 0; i < _scale.Length; i++) _scale[i] = 1f;
+            SizesRevision = 0;
             Superseded = UnknownIds = 0;
             HasStatus = false;
             Status = default;

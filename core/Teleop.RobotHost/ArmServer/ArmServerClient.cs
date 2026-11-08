@@ -54,6 +54,11 @@ namespace Teleop.RobotHost.ArmServer
         private readonly ObjectPose[] _snapshot = new ObjectPose[WorldScene.MaxObjects];
         private readonly ObjectPose[] _worldPart = new ObjectPose[ArmServerWorld.MaxObjectsPerWorld];
         private readonly ArmServerContact[] _contacts = new ArmServerContact[ArmServerWorld.MaxContacts];
+        private readonly byte[] _sizeIds = new byte[WorldScene.MaxObjects];
+        private readonly float[] _sizeScales = new float[WorldScene.MaxObjects];
+        private int _sizeCount;
+        private uint _sizeRevision;
+        private bool _sizesFresh;
         private readonly (uint Request, PlaceOutcome Outcome, ObjectPose Pose)[] _placed = new (uint, PlaceOutcome, ObjectPose)[64];
         private int _placedHead, _placedCount, _assembledCount, _snapshotCount;
         private uint _assemblingSnapshot, _snapshotRevision;
@@ -209,6 +214,23 @@ namespace Teleop.RobotHost.ArmServer
             if (ArmServerWorld.TryEncodePlace(++_sequence, hostTicks, request, cause, pose, _send, out int n)) _link.Send(_send.AsSpan(0, n));
         }
 
+        public void Resize(uint request, byte id, float scale, long hostTicks)
+        {
+            if (ArmServerWorld.TryEncodeResize(++_sequence, hostTicks, request, id, scale, _send, out int n)) _link.Send(_send.AsSpan(0, n));
+        }
+
+        public bool TryTakeSizes(Span<byte> ids, Span<float> scales, out int count, out uint revision)
+        {
+            count = 0;
+            revision = _sizeRevision;
+            if (!_sizesFresh || ids.Length < _sizeCount || scales.Length < _sizeCount) return false;
+            _sizesFresh = false;
+            _sizeIds.AsSpan(0, _sizeCount).CopyTo(ids);
+            _sizeScales.AsSpan(0, _sizeCount).CopyTo(scales);
+            count = _sizeCount;
+            return true;
+        }
+
         public bool TryTakeSnapshot(Span<ObjectPose> poses, out int count, out long sensedTicks, out uint revision)
         {
             count = 0;
@@ -279,6 +301,15 @@ namespace Teleop.RobotHost.ArmServer
                     _placedCount++;
                 }
 
+                return true;
+            }
+
+            if (kind == ArmServerWorld.KindSizes && ArmServerWorld.TryDecodeSizes(datagram, out uint sizeRevision, _sizeIds, _sizeScales, out int sizes))
+            {
+                if (!_sizesFresh && sizes == _sizeCount && sizeRevision == _sizeRevision) return true; // the once-a-second repeat
+                _sizeCount = sizes;
+                _sizeRevision = sizeRevision;
+                _sizesFresh = true;
                 return true;
             }
 

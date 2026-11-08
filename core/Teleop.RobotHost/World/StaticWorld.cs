@@ -64,14 +64,21 @@ namespace Teleop.RobotHost.World
             if (index < 0) outcome = PlaceOutcome.UnknownObject;
             else if (!_scene.Objects[index].OperatorMovable) outcome = PlaceOutcome.NotMovable;
             else if (!WorldScene.IsValidScale(scale)) outcome = PlaceOutcome.InvalidPose;
-            else if (!_scene.TryClampOnTable(index, _poses[index].X, _poses[index].Y, scale, out cx, out cy)) outcome = PlaceOutcome.OutsideRegion;
+            else if (!_scene.TryClampOnTable(index, _poses[index].X, _poses[index].Y, scale, out _, out _)) outcome = PlaceOutcome.OutsideRegion;
             else
             {
-                outcome = PlaceOutcome.Applied;
-                for (int k = 0; k < _poses.Length; k++)
+                int me = index;
+                bool Clear(double px, double py)
                 {
-                    if (k != index && _scene.Overlaps(index, cx, cy, k, _poses[k].X, _poses[k].Y, scale, _scales[k])) outcome = PlaceOutcome.OverlapsObject;
+                    for (int k = 0; k < _poses.Length; k++)
+                    {
+                        if (k != me && _scene.Overlaps(me, px, py, k, _poses[k].X, _poses[k].Y, scale, _scales[k])) return false;
+                    }
+
+                    return true;
                 }
+
+                outcome = _scene.TryFindSpot(index, _poses[index].X, _poses[index].Y, scale, Clear, out cx, out cy) ? PlaceOutcome.Applied : PlaceOutcome.OverlapsObject;
             }
 
             if (outcome == PlaceOutcome.Applied)

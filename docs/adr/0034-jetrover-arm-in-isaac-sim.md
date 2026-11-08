@@ -288,7 +288,10 @@ blocked. also the gripper close and open seems to be inverted".
 - **Resizing.** The bridge's log showed most refusals were OUTSIDE_REGION at small sizes (the post at 1.95×, the can at
   1.25×): an object near the placement region's edge could not grow past it. A resize now moves the object in until its
   new footprint fits (`WorldScene.TryClampOnTable`, `Scene.clamp_on_table`), and is refused only when it fits nowhere. The
-  steps go to 1.25⁸ (5.96×; 12 bodies per resizable object in Isaac). `jetrover-bench`'s placement region is widened to
+  steps go to 1.25⁸ (5.96×; 12 bodies per resizable object in Isaac). Measured after that, objects still stopped growing where
+  a neighbour stood (OVERLAPS_OBJECT), so a resize now goes to the nearest spot where the new size fits, on a 1 cm grid over
+  the region (`WorldScene.TryFindSpot`, `Scene.spots_near`; Isaac asks PhysX about the arm at up to 24 such spots), and is
+  refused only when there is none. `jetrover-bench`'s placement region is widened to
   x 0.12–0.44, y ±0.24.
 - **The jaws.** The twin's "left" jaw lies at −y in the URDF's frame, where the left finger's box is at +y and closes toward
   −y, so closing opened them. `JetRoverVisualExport` now gives each jaw to the finger on its side, by where its vertices

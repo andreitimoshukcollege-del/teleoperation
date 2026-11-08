@@ -225,3 +225,16 @@ def test_a_resize_that_would_reach_past_an_edge_moves_the_object_in_until_it_fit
     assert outcome == wire.APPLIED
     assert abs(upright[0] - (x1 - o.footprint_radius * 1.25 ** 3 - 0.001)) < 1e-9 and upright[1] == 0.0
     assert m.check_resize(o.id, 1.25 ** 40, no_arm)[0] == wire.INVALID_POSE
+
+
+def test_a_resize_that_would_reach_another_object_finds_the_nearest_spot_where_it_fits():
+    m = model()
+    i = next(k for k, ob in enumerate(m.scene.objects) if ob.operator_movable)
+    o, k = m.scene.objects[i], (i + 1) % len(m.scene.objects)
+    p = m.poses[i]
+    gap = o.footprint_radius + m.scene.objects[k].footprint_radius + m.scene.clearance + 0.002
+    m.poses[k] = (p[0], p[1] + gap, *m.poses[k][2:])  # a neighbour just clear of it now
+    outcome, _, upright = m.check_resize(o.id, 1.5625, no_arm)
+    assert outcome == wire.APPLIED
+    assert not m.scene.overlaps(i, upright[0], upright[1], k, m.poses[k][0], m.poses[k][1], 1.5625, 1.0)
+    assert (upright[0] - p[0]) ** 2 + (upright[1] - p[1]) ** 2 < 0.05 ** 2  # moved only as far as it had to

@@ -235,6 +235,44 @@ namespace Teleop.RobotArm.World
             return x0 <= x1 && y0 <= y1;
         }
 
+        /// <summary>
+        /// The nearest point to (x, y), on a <paramref name="step"/> grid over where object <paramref name="index"/> at
+        /// <paramref name="scale"/> fits (the clamped point first), that <paramref name="clear"/> accepts: where a resize finds
+        /// room (docs/adr/0034 amendment 7). As robot/isaac's <c>Scene.spots_near</c>. False when none is.
+        /// </summary>
+        public bool TryFindSpot(int index, double x, double y, double scale, Func<double, double, bool> clear, out double fx, out double fy, double step = 0.01)
+        {
+            fx = fy = 0;
+            if (!TryClampOnTable(index, x, y, scale, out double cx, out double cy)) return false;
+            if (clear(cx, cy))
+            {
+                fx = cx;
+                fy = cy;
+                return true;
+            }
+
+            double r = Objects[index].FootprintRadius * scale + 0.001;
+            double x0 = Math.Max(Table.XMin, RegionXMin) + r, x1 = Math.Min(Table.XMax, RegionXMax) - r;
+            double y0 = Math.Max(Table.YMin, RegionYMin) + r, y1 = Math.Min(Table.YMax, RegionYMax) - r;
+            int nx = (int)((x1 - x0) / step) + 1, ny = (int)((y1 - y0) / step) + 1;
+            double best = double.MaxValue;
+            for (int i = 0; i < nx; i++)
+            {
+                for (int j = 0; j < ny; j++)
+                {
+                    double px = x0 + i * step, py = y0 + j * step, d = (px - x) * (px - x) + (py - y) * (py - y);
+                    if (d < best && clear(px, py))
+                    {
+                        best = d;
+                        fx = px;
+                        fy = py;
+                    }
+                }
+            }
+
+            return best < double.MaxValue;
+        }
+
         /// <summary>Whether two objects' footprints, centred where given, come closer than <see cref="Clearance"/>.</summary>
         public bool Overlaps(int a, double ax, double ay, int b, double bx, double by) => Overlaps(a, ax, ay, b, bx, by, 1.0, 1.0);
 

@@ -21,7 +21,7 @@ Rules 4, 6 and 7 use where the objects are now: a movable object's pose is PhysX
 the same rules at the new size, at the object's current x, y and yaw (an id the scene does not have, one the headset may not
 move, a factor not one of the resize steps (1.25 to the power -3 to 8), an arm touching it, too big for the table, too
 close to another object, an arm in the way), and then it is stood upright there at its new size. One that would reach past
-the table's or the region's edge is moved in until it fits (docs/adr/0034 amendment 7). Every rule above uses each object's current size. SIZES reports them all.
+an edge, or another object, goes to the nearest spot where it fits (:meth:`Scene.spots_near`, docs/adr/0034 amendment 7). Every rule above uses each object's current size. SIZES reports them all.
 
 PhysX cannot change a collider while it simulates (a cylinder's new radius is ignored; a box's new scale invalidates every
 simulation view, 2026-11-08), so the bridge builds one body per step for each object the headset may resize, and parks
@@ -126,13 +126,25 @@ class WorldModel:
         if arm_near(i, self.poses[i], TOUCH_MARGIN):
             return wire.ARM_TOUCHING, i, None
         p = self.poses[i]
-        at = self.scene.clamp_on_table(i, p[0], p[1], scale)
-        if at is None:
+        spots = self.scene.spots_near(i, p[0], p[1], scale)
+        if not spots:
             return wire.OUTSIDE_REGION, i, None
         old = self.scales[i]
         self.scales[i] = scale
         try:
-            return self._fits(i, at[0], at[1], yaw_of(p), scale, arm_near)
+            # The nearest spot clear of the others; the arm is asked about the first few such spots only (PhysX queries).
+            first, arm_asks = None, 0
+            for x, y in spots:
+                if any(k != i and self.scene.overlaps(i, x, y, k, o[0], o[1], scale, self.scales[k]) for k, o in enumerate(self.poses)):
+                    continue
+                outcome, _, upright = self._fits(i, x, y, yaw_of(p), scale, arm_near)
+                first = first or outcome
+                if outcome == wire.APPLIED:
+                    return outcome, i, upright
+                arm_asks += 1
+                if arm_asks >= 24:
+                    break
+            return (first or wire.OVERLAPS_OBJECT), i, None
         finally:
             self.scales[i] = old
 

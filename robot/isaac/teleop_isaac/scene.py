@@ -119,6 +119,21 @@ class Scene:
             return None
         return min(max(x, x0), x1), min(max(y, y0), y1)
 
+    def spots_near(self, index: int, x: float, y: float, scale: float = 1.0, step: float = 0.01) -> List[Tuple[float, float]]:
+        """Every point of a ``step`` grid where object ``index`` at ``scale`` fits on the table and in the region, nearest
+        (x, y) first, the clamped point itself first of all: where a resize looks for room (docs/adr/0034 amendment 7)."""
+        at = self.clamp_on_table(index, x, y, scale)
+        if at is None:
+            return []
+        r = self.objects[index].footprint_radius * scale + 0.001
+        t, (rx0, rx1, ry0, ry1) = self.table, self.region
+        x0, x1 = max(t.x_min, rx0) + r, min(t.x_max, rx1) - r
+        y0, y1 = max(t.y_min, ry0) + r, min(t.y_max, ry1) - r
+        nx, ny = int((x1 - x0) / step) + 1, int((y1 - y0) / step) + 1
+        grid = [(x0 + i * step, y0 + j * step) for i in range(nx) for j in range(ny)]
+        grid.sort(key=lambda p: (p[0] - x) ** 2 + (p[1] - y) ** 2)
+        return [at] + grid
+
     def pose_at(self, index: int, x: float, y: float, yaw: float, scale: float = 1.0) -> Tuple[float, ...]:
         """Object ``index`` upright on the table at (x, y), turned ``yaw``, resized by ``scale``: x, y, z, qw, qx, qy, qz."""
         return (x, y, self.table.top + self.objects[index].size[2] * scale / 2, math.cos(yaw / 2), 0.0, 0.0, math.sin(yaw / 2))

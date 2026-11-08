@@ -355,11 +355,12 @@ namespace Teleop.RobotHost.Tests.World
             Assert.Equal((2u, (byte)PlaceOutcome.Busy), (rig.LastStatus().EditSequence, rig.LastStatus().EditOutcome));
             rig.Host.HandleEdit(WorldEditOp.Resize, 3, new ObjectPose(4, 0, (float)WorldScene.MaxObjectScale, 0, 0, 1, 0, 0, 0), motionOff: true, rig.Now);
             rig.Tick(30);
-            Assert.True(rig.LastStatus().EditOutcome is (byte)PlaceOutcome.OverlapsObject or (byte)PlaceOutcome.OutsideRegion); // tripled, the can reaches its neighbours
+            Assert.True(rig.LastStatus().EditOutcome is (byte)PlaceOutcome.Applied or (byte)PlaceOutcome.OverlapsObject or (byte)PlaceOutcome.OutsideRegion); // at the top step: wherever it fits, or refused
             rig.Host.HandleEdit(WorldEditOp.Resize, 4, new ObjectPose(4, 0, 1.5f, 0, 0, 1, 0, 0, 0), motionOff: true, rig.Now);
             rig.Tick(30);
             Assert.Equal((4u, (byte)PlaceOutcome.InvalidPose), (rig.LastStatus().EditSequence, rig.LastStatus().EditOutcome)); // not a step
-            Assert.Equal(1f, rig.Host.ScaleOf(Scene.IndexOf(4)));
+            Assert.Equal(rig.LastStatus().EditOutcome == (byte)PlaceOutcome.InvalidPose && rig.Records.Exists(r => r.StartsWith("WE|", StringComparison.Ordinal) && r.Contains("|resize|", StringComparison.Ordinal) && r.EndsWith("|applied", StringComparison.Ordinal)) ? (float)WorldScene.MaxObjectScale : 1f,
+                rig.Host.ScaleOf(Scene.IndexOf(4))); // the invalid one changed nothing; the top step only if it was applied
         }
     }
 }

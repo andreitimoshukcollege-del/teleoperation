@@ -706,7 +706,7 @@ def run(app, args, p, scene, cameras, fps, joints, motors, tap) -> int:
 
     change_backdrop(0)
     stamps = Stamps()
-    posed_values: deque = deque(maxlen=16)  # the joint values posed at each frame, for the VQ records
+    frame_values: deque = deque(maxlen=16)  # the joint values posed at each frame, for the VQ records
     state_sensed, state_values = camwire.UNSET, {}
     posed_values = {}  # the joint values the links were posed with at the previous frame
     states_in = worlds_in = 0
@@ -760,7 +760,7 @@ def run(app, args, p, scene, cameras, fps, joints, motors, tap) -> int:
             ts[i], qs[i] = t_i, q_i
         view.set_local_poses(ts, qs)
         stamps.posed(state_sensed)
-        posed_values.append(state_values)
+        frame_values.append(state_values)
         RenderingManager.render()
         capture = stamps.shown(lag)
         recording = session is not None and session.active and frames % max(1, args.record_every) == 0 and capture != camwire.UNSET
@@ -806,8 +806,8 @@ def run(app, args, p, scene, cameras, fps, joints, motors, tap) -> int:
         if recording and arrays:
             # The joint values the frame shows (the state posed lag frames ago): a session with no QS records (the JetRover's,
             # docs/adr/0034 J5) still knows what each frame shows.
-            if lag < len(posed_values):
-                session_record("VQ", frames, capture, [[name, round(v, 6)] for name, v in sorted(posed_values[-1 - lag].items())])
+            if lag < len(frame_values):
+                session_record("VQ", frames, capture, [[name, round(v, 6)] for name, v in sorted(frame_values[-1 - lag].items())])
             flags = "B" if frames <= backdrop["settle_until"] else ""
             with record_lock:
                 record_pending[0] += 1

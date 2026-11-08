@@ -3190,7 +3190,7 @@ isaac-jetrover-host:
     relay=/tmp/teleop-jetrover-relay-$USER.sock
     log=$HOME/isaacsim/jetrover-bridge.log
     pin() { if [ "$(nproc)" -ge 24 ]; then echo "taskset -c $1"; fi; }
-    (cd robot/isaac && exec $(pin 2-5) "$HOME/isaacsim/venv/bin/python" -m teleop_isaac.jetrover_bridge --socket "$relay") > "$log" 2>&1 &
+    (cd robot/isaac && exec $(pin 2-5) "$HOME/isaacsim/venv/bin/python" -m teleop_isaac.jetrover_bridge --socket "$relay" --client-socket "$relay.robothost") > "$log" 2>&1 &
     bridge=$!
     trap 'kill $bridge 2>/dev/null; wait $bridge 2>/dev/null || true' EXIT
     echo "[isaac-jetrover] bridge pid $bridge (log $log); waiting for Isaac to start"
@@ -3202,12 +3202,13 @@ isaac-jetrover-host:
     grep "^\[jetrover\]" "$log" || { echo "error: the bridge did not start within 3 min" >&2; tail -30 "$log" >&2; exit 1; }
     rec=$HOME/isaacsim/jetrover-recordings
     mkdir -p "$rec"
+    park=""; [ -n "{{jetrover_park_contact_deg}}" ] && park="--park-contact-deg {{jetrover_park_contact_deg}}"
     # As teleop-robothost.service runs it on the Jetson (just deploy-robothost), the relay socket aside; no driver writes a log here.
     dotnet "$HOME/isaacsim/robothost/Teleop.RobotHost.dll" --local-port 6000 --remote-host 127.0.0.1 --remote-port 6001 \
         --relay-socket "$relay" --local-relay-socket "$relay.robothost" --joint-local-port 6002 --discovery-port 6005 \
         --profile-path core/RobotProfiles/jetrover.json --record-control "$rec/.active" \
         --auto-record --auto-record-root "$rec" --auto-record-profile core/RobotProfiles/jetrover.json --auto-record-source isaac \
-        --auto-record-driver-wait-seconds 0
+        --auto-record-driver-wait-seconds 0 --rest-pose-deg {{jetrover_rest_pose_deg}} $park
     REMOTE
     )
     ssh -o ConnectTimeout=10 "{{gpu_host}}" "COMMIT='$commit' bash -c $(printf '%q' "$remote")"

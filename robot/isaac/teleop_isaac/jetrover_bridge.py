@@ -6,7 +6,8 @@ Run on the GPU machine with Isaac's Python (``just isaac-jetrover-host`` does it
 
 It binds the Unix datagram socket the JetRover's RobotHost names with ``--relay-socket`` and speaks relay protocol v5, the ROS
 relay's own module: targets in (pulse and pulses per second per motor), torque on or off, and feedback out to whoever sent the
-last command. Every millisecond, paced to the wall clock:
+last command (before any, to ``--client-socket``, RobotHost's own relay socket, as the real relay sends it). Every millisecond,
+paced to the wall clock:
 
 - each servo's own setpoint ramps toward its target over ``|delta| / pulses_per_second`` (``servo.TimedSetpoint``), and the
   joint's PhysX position drive follows it, no harder than the servo's stall torque (decision 3);
@@ -39,6 +40,8 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     a = argparse.ArgumentParser(description="The JetRover's arm in Isaac Sim, behind its own RobotHost (docs/adr/0034)")
     a.add_argument("--sim", default=servo.DEFAULT_SIM, help="the sidecar (robot/jetrover/urdf/jetrover.sim.json)")
     a.add_argument("--socket", default="/tmp/teleop-jetrover-relay.sock", help="the relay socket RobotHost's --relay-socket names")
+    a.add_argument("--client-socket", default="", help="RobotHost's --local-relay-socket, where feedback goes every 50 ms whether or not "
+                                                     "commands come, as the real relay sends it (default: --socket plus .robothost)")
     a.add_argument("--work", default=os.path.expanduser("~/isaacsim/work"), help="where the URDF's USD conversion is kept")
     a.add_argument("--stiffness", type=float, default=60.0, help="joint drive stiffness, Nm/rad: a servo holding its setpoint")
     a.add_argument("--damping", type=float, default=1.5, help="joint drive damping, Nm s/rad")
@@ -168,7 +171,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         stopping = []
         signal.signal(signal.SIGTERM, lambda *_: stopping.append(True))
         signal.signal(signal.SIGINT, lambda *_: stopping.append(True))
-        client = None
+        client = args.client_socket or args.socket + ".robothost"
         commands = torques = rejected_total = sent = 0
         steps = late = 0
         step_ns = int(round(args.dt * 1e9))
@@ -185,7 +188,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                     break
                 batch.append(data)
                 if sender:
-                    client = sender
+                    client = sender  # whoever commands is where feedback goes
             if batch:
                 actions, rejected = rp.sort_datagrams(batch)
                 rejected_total += rejected
@@ -223,12 +226,12 @@ def main(argv: Optional[List[str]] = None) -> int:
                 q = np.asarray(art.get_dof_positions().numpy()).reshape(-1)
                 feedback.record(mid, model.pulse(mid, q[index[model.motors[mid].joint]]), now_s)
             entries = feedback.due_feedback(now_s)
-            if entries is not None and client is not None:
+            if entries is not None:
                 try:
                     sock.sendto(rp.encode_feedback(entries), client)
                     sent += 1
                 except OSError:
-                    client = None  # RobotHost went away; its next command says where it is
+                    pass  # RobotHost is not there (yet): the real relay's feedback is lost the same way
 
             next_tick += step_ns
             now = time.monotonic_ns()

@@ -41,7 +41,7 @@ def main() -> int:
     mine = relay + ".robothost"
     log_path = os.path.expanduser("~/isaacsim/jetrover-check-bridge.log")
     log = open(log_path, "w")
-    bridge = subprocess.Popen(["taskset", "-c", args.cpus, args.python, "-m", "teleop_isaac.jetrover_bridge", "--socket", relay, "--seconds", "120"],
+    bridge = subprocess.Popen(["taskset", "-c", args.cpus, args.python, "-m", "teleop_isaac.jetrover_bridge", "--socket", relay, "--client-socket", relay + ".robothost", "--seconds", "120"],
                               cwd=HERE, stdout=log, stderr=subprocess.STDOUT)
     out, checks = {}, {}
     try:

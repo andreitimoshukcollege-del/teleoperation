@@ -19,8 +19,9 @@ Rules 4, 6 and 7 use where the objects are now: a movable object's pose is PhysX
 
 **Resizing** (RESIZE, docs/adr/0034 amendment 6) scales an object by a factor on the scene file's size, in every direction:
 the same rules at the new size, at the object's current x, y and yaw (an id the scene does not have, one the headset may not
-move, a factor not one of the resize steps (1.25 to the power -3 to 5), an arm touching it, off the table, too close to another object, an arm in the way), and then
-it is stood upright there at its new size. Every rule above uses each object's current size. SIZES reports them all.
+move, a factor not one of the resize steps (1.25 to the power -3 to 8), an arm touching it, too big for the table, too
+close to another object, an arm in the way), and then it is stood upright there at its new size. One that would reach past
+the table's or the region's edge is moved in until it fits (docs/adr/0034 amendment 7). Every rule above uses each object's current size. SIZES reports them all.
 
 PhysX cannot change a collider while it simulates (a cylinder's new radius is ignored; a box's new scale invalidates every
 simulation view, 2026-11-08), so the bridge builds one body per step for each object the headset may resize, and parks
@@ -125,10 +126,13 @@ class WorldModel:
         if arm_near(i, self.poses[i], TOUCH_MARGIN):
             return wire.ARM_TOUCHING, i, None
         p = self.poses[i]
+        at = self.scene.clamp_on_table(i, p[0], p[1], scale)
+        if at is None:
+            return wire.OUTSIDE_REGION, i, None
         old = self.scales[i]
         self.scales[i] = scale
         try:
-            return self._fits(i, p[0], p[1], yaw_of(p), scale, arm_near)
+            return self._fits(i, at[0], at[1], yaw_of(p), scale, arm_near)
         finally:
             self.scales[i] = old
 

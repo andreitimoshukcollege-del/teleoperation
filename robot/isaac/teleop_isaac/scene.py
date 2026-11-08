@@ -108,6 +108,17 @@ class Scene:
         reach = self.objects[a].footprint_radius * scale_a + self.objects[b].footprint_radius * scale_b + self.clearance
         return (ax - bx) ** 2 + (ay - by) ** 2 < reach * reach
 
+    def clamp_on_table(self, index: int, x: float, y: float, scale: float = 1.0) -> Optional[Tuple[float, float]]:
+        """The nearest point to (x, y) where object ``index`` at ``scale`` fits on the table and in the region (1 mm in), as
+        Core's ``WorldScene.TryClampOnTable``; None when it fits nowhere."""
+        r = self.objects[index].footprint_radius * scale + 0.001
+        t, (rx0, rx1, ry0, ry1) = self.table, self.region
+        x0, x1 = max(t.x_min, rx0) + r, min(t.x_max, rx1) - r
+        y0, y1 = max(t.y_min, ry0) + r, min(t.y_max, ry1) - r
+        if x0 > x1 or y0 > y1:
+            return None
+        return min(max(x, x0), x1), min(max(y, y0), y1)
+
     def pose_at(self, index: int, x: float, y: float, yaw: float, scale: float = 1.0) -> Tuple[float, ...]:
         """Object ``index`` upright on the table at (x, y), turned ``yaw``, resized by ``scale``: x, y, z, qw, qx, qy, qz."""
         return (x, y, self.table.top + self.objects[index].size[2] * scale / 2, math.cos(yaw / 2), 0.0, 0.0, math.sin(yaw / 2))
@@ -115,7 +126,7 @@ class Scene:
 
 # The sizes the headset may give an object (Core's WorldScene resize steps, docs/adr/0034 amendment 6): 1.25 to the power
 # -3 to 5. Isaac builds a body for each and swaps them: a collider cannot change while PhysX simulates.
-RESIZE_STEP, MIN_RESIZE_STEP, MAX_RESIZE_STEP = 1.25, -3, 5
+RESIZE_STEP, MIN_RESIZE_STEP, MAX_RESIZE_STEP = 1.25, -3, 8
 RESIZE_SCALES = tuple(RESIZE_STEP ** k for k in range(MIN_RESIZE_STEP, MAX_RESIZE_STEP + 1))
 
 

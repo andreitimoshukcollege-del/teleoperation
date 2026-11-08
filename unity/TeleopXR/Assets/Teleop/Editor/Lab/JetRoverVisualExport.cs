@@ -24,7 +24,7 @@ namespace Teleop.XR.Editor
     /// part in its own pivot's frame, in Core's axes. Those are the URDF's link frames: its chain is Core's forward kinematics
     /// (<c>JetRoverSimModelTests</c>), and the extractor checks the pivots against Core's frames within 1 mm. The chassis goes
     /// to <c>base_link</c>, the turntable to <c>turntable</c>, the three arm parts to their links, the gripper body to
-    /// <c>gripper_link</c>, and each jaw to its finger (which slides in the URDF where the real jaw turns).</item>
+    /// <c>gripper_link</c>, and each jaw to the finger on its side (which slides in the URDF where the real jaw turns).</item>
     /// <item><b>Decimated</b> by vertex clustering on a <see cref="Cell"/> grid, a cell's vertices kept apart by which way they
     /// face, so edges stay sharp: the CAD has about 170k vertices an arm, the renderer draws it at 640 × 360.</item>
     /// <item><b>Colours</b> are the lab palette's (the materials <see cref="JetRoverCad"/> gives the parts), one file per colour.</item>
@@ -108,6 +108,25 @@ namespace Teleop.XR.Editor
             Add("gripper_link", roll, roll, t => InJaw(t, left) || InJaw(t, right));
             foreach (Transform j in left.Distinct()) Add("left_finger", j, roll, _ => false);
             foreach (Transform j in right.Distinct()) Add("right_finger", j, roll, _ => false);
+
+            // Each jaw on its own finger's side: the URDF's left finger is at +y and closes toward -y (its collision box says so),
+            // and the twin's "left" jaw is not always there. Measured, not named: swap them when the left one lies at -y.
+            double MeanY(string link)
+            {
+                double sum = 0;
+                int n = 0;
+                foreach (Group g in groups.Values.Where(x => x.Link == link)) foreach (Vector3 p in g.Positions) { sum += p.y; n++; }
+                return n > 0 ? sum / n : 0;
+            }
+
+            if (MeanY("left_finger") < 0 && MeanY("right_finger") > 0)
+            {
+                foreach (Group g in groups.Values) g.Link = g.Link == "left_finger" ? "right_finger" : g.Link == "right_finger" ? "left_finger" : g.Link;
+            }
+            else if (MeanY("left_finger") < 0 || MeanY("right_finger") > 0)
+            {
+                throw new InvalidOperationException("the jaws are not one on each side of the gripper");
+            }
 
             string folder = Path.GetFullPath(OutputFolder);
             Directory.CreateDirectory(folder);

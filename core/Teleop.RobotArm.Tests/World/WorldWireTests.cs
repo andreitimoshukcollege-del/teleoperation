@@ -109,9 +109,21 @@ namespace Teleop.RobotArm.Tests.World
             Assert.Equal(1f, world.Scale(4));
             world.ApplySizes(3, new byte[] { 4, 2, 200, 1 }, new[] { 1.5625f, 9f, 1.5625f, 1.5f });
             Assert.Equal((1.5625f, 1f, 1f, 1f, 3u), (world.Scale(4), world.Scale(2), world.Scale(200), world.Scale(1), world.SizesRevision));
-            Assert.Equal((-3, 5), (WorldScene.StepOf(WorldScene.MinObjectScale), WorldScene.StepOf(WorldScene.MaxObjectScale)));
+            Assert.Equal((-3, 8), (WorldScene.StepOf(WorldScene.MinObjectScale), WorldScene.StepOf(WorldScene.MaxObjectScale)));
             world.Reset();
             Assert.Equal(1f, world.Scale(4));
+        }
+
+        [Fact]
+        public void AResizedObject_IsClampedOntoTheTable_OrFitsNowhere()
+        {
+            WorldScene scene = SceneDocumentTests.LoadShipped();
+            int can = scene.IndexOf(4);
+            double r = scene.Objects[can].FootprintRadius * 2 + 0.001;
+            double x1 = Math.Min(scene.Table.XMax, scene.RegionXMax);
+            Assert.True(scene.TryClampOnTable(can, x1, 0, 2, out double cx, out double cy));
+            Assert.Equal((x1 - r, 0.0), (cx, cy));
+            Assert.False(scene.TryClampOnTable(can, 0.5, 0, 100, out _, out _));
         }
     }
 }

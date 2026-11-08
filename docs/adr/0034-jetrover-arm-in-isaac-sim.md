@@ -247,7 +247,7 @@ is showing in the isaac sim stream is very different to the actual robot model".
 in the headset over a scale for the whole scene.
 
 - **Resizing.** An object's size is a factor on the scene file's size, the same in every direction, in steps: 1.25 to a
-  whole power from −3 to 5, so 0.512 to 3.05 (`WorldScene.ResizeStep`, `ScaleOfStep`). Steps because of Isaac, below.
+  whole power from −3 to 5, so 0.512 to 3.05 (`WorldScene.ResizeStep`, `ScaleOfStep`; to 8 since amendment 7). Steps because of Isaac, below.
   - **Headset.** With the robot off, the last object a pointer (or the FR3's EDIT OBJECTS) grabbed is selected; SIZE − and
     SIZE + (beside NEW LAYOUT in both scenes) move it one step. A new world edit, `WorldEditOp.Resize` (5), carries the factor
     in the edit's x. The twin draws each object at its size.
@@ -279,3 +279,20 @@ in the headset over a scale for the whole scene.
     turn.
   - The renderer labels `<link>_<k>_visual` for the masks (the arm 7, the hand 8, the chassis `mount`) and hides the
     collision boxes should the importer draw them.
+
+## Amendment 7 (2026-11-08): resizing that reaches an edge, the jaws' sides, the hand camera
+
+The user, in the headset: "the resize works, but it maxes out at a certain size, also the hand camera is being partially
+blocked. also the gripper close and open seems to be inverted".
+
+- **Resizing.** The bridge's log showed most refusals were OUTSIDE_REGION at small sizes (the post at 1.95×, the can at
+  1.25×): an object near the placement region's edge could not grow past it. A resize now moves the object in until its
+  new footprint fits (`WorldScene.TryClampOnTable`, `Scene.clamp_on_table`), and is refused only when it fits nowhere. The
+  steps go to 1.25⁸ (5.96×; 12 bodies per resizable object in Isaac). `jetrover-bench`'s placement region is widened to
+  x 0.12–0.44, y ±0.24.
+- **The jaws.** The twin's "left" jaw lies at −y in the URDF's frame, where the left finger's box is at +y and closes toward
+  −y, so closing opened them. `JetRoverVisualExport` now gives each jaw to the finger on its side, by where its vertices
+  are, and fails when they are not one each side.
+- **The hand camera** sat 1.2 cm above the servo horn's plate (the CAD's grey part, z 0.038–0.063 in the gripper frame),
+  which filled its view. It is now at (0.10, 0, 0.05), ahead of the plate, looking at (0.26, 0, −0.01): the jaw tips at the
+  bottom of the frame, the work ahead.

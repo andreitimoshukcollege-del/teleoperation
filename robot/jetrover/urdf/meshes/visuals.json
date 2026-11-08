@@ -14,7 +14,7 @@
     {"link": "wrist_link", "file": "meshes/wrist_link_1.obj", "rgba": [0.12, 0.62, 0.28, 1], "triangles": 2836},
     {"link": "wrist_link", "file": "meshes/wrist_link_2.obj", "rgba": [0.6, 0.62, 0.65, 1], "triangles": 1518},
     {"link": "gripper_link", "file": "meshes/gripper_link_0.obj", "rgba": [0.07, 0.072, 0.078, 1], "triangles": 3222},
-    {"link": "left_finger", "file": "meshes/left_finger_0.obj", "rgba": [0.07, 0.072, 0.078, 1], "triangles": 4764},
-    {"link": "right_finger", "file": "meshes/right_finger_0.obj", "rgba": [0.07, 0.072, 0.078, 1], "triangles": 4808}
+    {"link": "left_finger", "file": "meshes/left_finger_0.obj", "rgba": [0.07, 0.072, 0.078, 1], "triangles": 4808},
+    {"link": "right_finger", "file": "meshes/right_finger_0.obj", "rgba": [0.07, 0.072, 0.078, 1], "triangles": 4764}
   ]
 }

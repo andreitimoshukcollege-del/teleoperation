@@ -154,7 +154,7 @@ namespace Teleop.RobotArm.World
         /// and swaps them.
         /// </summary>
         public const double ResizeStep = 1.25;
-        public const int MinResizeStep = -3, MaxResizeStep = 5;
+        public const int MinResizeStep = -3, MaxResizeStep = 8;
         public static readonly double MinObjectScale = Math.Pow(ResizeStep, MinResizeStep);
         public static readonly double MaxObjectScale = Math.Pow(ResizeStep, MaxResizeStep);
 
@@ -218,6 +218,21 @@ namespace Teleop.RobotArm.World
             double r = Objects[index].FootprintRadius * scale;
             return x - r >= Math.Max(Table.XMin, RegionXMin) - 1e-9 && x + r <= Math.Min(Table.XMax, RegionXMax) + 1e-9 &&
                    y - r >= Math.Max(Table.YMin, RegionYMin) - 1e-9 && y + r <= Math.Min(Table.YMax, RegionYMax) + 1e-9;
+        }
+
+        /// <summary>
+        /// The nearest point to (x, y) where object <paramref name="index"/>, resized by <paramref name="scale"/>, fits on the
+        /// table and inside the placement region (1 mm in, for float32's rounding): where a resize puts an object that would
+        /// otherwise reach past an edge (docs/adr/0034 amendment 7). False when it fits nowhere.
+        /// </summary>
+        public bool TryClampOnTable(int index, double x, double y, double scale, out double cx, out double cy)
+        {
+            double r = Objects[index].FootprintRadius * scale + 0.001;
+            double x0 = Math.Max(Table.XMin, RegionXMin) + r, x1 = Math.Min(Table.XMax, RegionXMax) - r;
+            double y0 = Math.Max(Table.YMin, RegionYMin) + r, y1 = Math.Min(Table.YMax, RegionYMax) - r;
+            cx = Math.Min(Math.Max(x, x0), x1);
+            cy = Math.Min(Math.Max(y, y0), y1);
+            return x0 <= x1 && y0 <= y1;
         }
 
         /// <summary>Whether two objects' footprints, centred where given, come closer than <see cref="Clearance"/>.</summary>

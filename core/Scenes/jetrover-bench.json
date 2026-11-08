@@ -25,7 +25,7 @@
       "kind": "movable", "mass": 0.05, "operatorMovable": true, "staticFriction": 0.8, "dynamicFriction": 0.6, "colour": [0.62, 0.62, 0.70],
       "jitter": [0.01, 0.04, 0.3] }
   ],
-  "placement": { "xMin": 0.12, "xMax": 0.36, "yMin": -0.18, "yMax": 0.18, "clearance": 0.01 },
+  "placement": { "xMin": 0.12, "xMax": 0.44, "yMin": -0.24, "yMax": 0.24, "clearance": 0.01 },
   "backdrops": { "change": "per-session", "manifest": "~/isaacsim/backdrops/openimages-v7-val/manifest.json",
     "mats": [
       { "id": "mat", "on": "table", "lift": 0.0005, "region": [0.10, 0.572, -0.40, 0.40] },
@@ -40,7 +40,7 @@
       "near": 0.02, "far": 6.0, "fps": 30, "feedPort": 6008, "feedQuality": 80, "recordQuality": 92, "record": ["rgb", "depth", "mask"] },
     { "id": "third-right", "position": [0.78, -0.48, 0.30], "lookAt": [0.12, 0.0, -0.08], "width": 640, "height": 360, "hfovDeg": 69.0,
       "near": 0.02, "far": 6.0, "fps": 30, "feedPort": 6009, "feedQuality": 80, "recordQuality": 92, "record": ["rgb", "depth", "mask"] },
-    { "id": "wrist", "mount": "gripper_link", "mountPosition": [0.06, 0.0, 0.075], "mountLookAt": [0.18, 0.0, 0.0],
+    { "id": "wrist", "mount": "gripper_link", "mountPosition": [0.10, 0.0, 0.05], "mountLookAt": [0.26, 0.0, -0.01],
       "mountUp": [0.0, 0.0, 1.0], "width": 640, "height": 360, "hfovDeg": 87.0, "near": 0.01, "far": 6.0, "fps": 30,
       "feedPort": 6003, "feedQuality": 80, "recordQuality": 92, "record": ["rgb", "depth", "mask"] }
   ],

@@ -60,16 +60,17 @@ namespace Teleop.RobotHost.World
         {
             int index = _scene.IndexOf(id);
             PlaceOutcome outcome;
+            double cx = 0, cy = 0;
             if (index < 0) outcome = PlaceOutcome.UnknownObject;
             else if (!_scene.Objects[index].OperatorMovable) outcome = PlaceOutcome.NotMovable;
             else if (!WorldScene.IsValidScale(scale)) outcome = PlaceOutcome.InvalidPose;
-            else if (!_scene.FitsOnTable(index, _poses[index].X, _poses[index].Y, scale)) outcome = PlaceOutcome.OutsideRegion;
+            else if (!_scene.TryClampOnTable(index, _poses[index].X, _poses[index].Y, scale, out cx, out cy)) outcome = PlaceOutcome.OutsideRegion;
             else
             {
                 outcome = PlaceOutcome.Applied;
                 for (int k = 0; k < _poses.Length; k++)
                 {
-                    if (k != index && _scene.Overlaps(index, _poses[index].X, _poses[index].Y, k, _poses[k].X, _poses[k].Y, scale, _scales[k])) outcome = PlaceOutcome.OverlapsObject;
+                    if (k != index && _scene.Overlaps(index, cx, cy, k, _poses[k].X, _poses[k].Y, scale, _scales[k])) outcome = PlaceOutcome.OverlapsObject;
                 }
             }
 
@@ -77,7 +78,7 @@ namespace Teleop.RobotHost.World
             {
                 ObjectPose p = _poses[index];
                 _scales[index] = scale;
-                _poses[index] = ObjectPose.Of(id, ObjectPose.FlagKinematic, _scene.PoseAt(index, p.X, p.Y, WorldHost.YawOf(p), scale));
+                _poses[index] = ObjectPose.Of(id, ObjectPose.FlagKinematic, _scene.PoseAt(index, cx, cy, WorldHost.YawOf(p), scale));
                 _revision++;
                 _sizesRevision++;
                 _sizesFresh = true;

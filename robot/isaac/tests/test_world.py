@@ -190,7 +190,7 @@ def test_a_resize_is_refused_by_the_same_rules_at_the_new_size():
     p = m.poses[i]
     gap = m.scene.objects[i].footprint_radius + m.scene.objects[k].footprint_radius + m.scene.clearance + 0.002
     m.poses[k] = (p[0], p[1] + gap, *m.poses[k][2:])
-    assert m.check_resize(o.id, 1.25 ** 5, no_arm)[0] in (wire.OVERLAPS_OBJECT, wire.OUTSIDE_REGION)
+    assert m.check_resize(o.id, 1.25 ** 8, no_arm)[0] in (wire.OVERLAPS_OBJECT, wire.OUTSIDE_REGION)
     assert m.scales[i] == 1.0
 
 
@@ -209,5 +209,19 @@ def test_placements_use_each_objects_current_size():
 def test_the_resize_steps_are_cores():
     from teleop_isaac.scene import RESIZE_SCALES, is_valid_scale
 
-    assert RESIZE_SCALES[0] == 1.25 ** -3 and RESIZE_SCALES[-1] == 1.25 ** 5 and 1.0 in RESIZE_SCALES
-    assert all(is_valid_scale(s) for s in RESIZE_SCALES) and not is_valid_scale(1.1) and not is_valid_scale(1.25 ** 6)
+    assert RESIZE_SCALES[0] == 1.25 ** -3 and RESIZE_SCALES[-1] == 1.25 ** 8 and 1.0 in RESIZE_SCALES
+    assert all(is_valid_scale(s) for s in RESIZE_SCALES) and not is_valid_scale(1.1) and not is_valid_scale(1.25 ** 9)
+
+
+def test_a_resize_that_would_reach_past_an_edge_moves_the_object_in_until_it_fits():
+    m = model()
+    i = next(k for k, ob in enumerate(m.scene.objects) if ob.operator_movable)
+    o = m.scene.objects[i]
+    # Put it hard against the region's far edge, others well away, then double it: applied, moved in by the growth.
+    x0, x1, y0, y1 = m.scene.region
+    r = o.footprint_radius + 0.0011
+    m.poses = [((x1 - r) if k == i else 9.0 + k, 0.0 if k == i else 9.0, *p[2:]) for k, p in enumerate(m.poses)]
+    outcome, _, upright = m.check_resize(o.id, 1.25 ** 3, no_arm)
+    assert outcome == wire.APPLIED
+    assert abs(upright[0] - (x1 - o.footprint_radius * 1.25 ** 3 - 0.001)) < 1e-9 and upright[1] == 0.0
+    assert m.check_resize(o.id, 1.25 ** 40, no_arm)[0] == wire.INVALID_POSE

@@ -296,3 +296,7 @@ blocked. also the gripper close and open seems to be inverted".
 - **The hand camera** sat 1.2 cm above the servo horn's plate (the CAD's grey part, z 0.038–0.063 in the gripper frame),
   which filled its view. It is now at (0.10, 0, 0.05), ahead of the plate, looking at (0.26, 0, −0.01): the jaw tips at the
   bottom of the frame, the work ahead.
+- **And Isaac kept the old jaws.** Its URDF conversion was cached by the URDF's text alone, and the re-exported meshes keep
+  their names, so the bridge and the renderer went on using the meshes converted before the fix (the stream still opened
+  the gripper on close). The cache is now named by the URDF and every mesh file it names (`jetrover_bridge.urdf_digest`).
+  The FR3's bridge keys its cache as before: its meshes are Franka's, which do not change.

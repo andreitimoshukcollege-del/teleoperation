@@ -67,12 +67,30 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     return a.parse_args(argv)
 
 
+def urdf_digest(urdf: str) -> str:
+    """The sha256 of the URDF and of every mesh file it names, in order: what a conversion is made of. The URDF alone is not
+    enough: re-exported meshes keep their names (docs/adr/0034 amendment 7, the jaws swapped and Isaac kept the old ones)."""
+    import re
+
+    h = hashlib.sha256()
+    with open(urdf, "rb") as f:
+        text = f.read()
+    h.update(text)
+    base = os.path.dirname(os.path.abspath(urdf))
+    for name in re.findall(rb'filename="([^"]+)"', text):
+        path = os.path.join(base, name.decode())
+        h.update(name)
+        if os.path.isfile(path):
+            with open(path, "rb") as m:
+                h.update(hashlib.sha256(m.read()).digest())
+    return h.hexdigest()[:12]
+
+
 def convert_urdf(urdf: str, work: str) -> str:
-    """The URDF as Isaac's USD, converted once per URDF content (its sha256 names the folder)."""
+    """The URDF as Isaac's USD, converted once per content: the URDF and its meshes (:func:`urdf_digest` names the folder)."""
     from isaacsim.asset.importer.urdf import URDFImporter, URDFImporterConfig
 
-    with open(urdf, "rb") as f:
-        digest = hashlib.sha256(f.read()).hexdigest()[:12]
+    digest = urdf_digest(urdf)
     out = os.path.join(work, f"jetrover-{digest}")
     name = os.path.splitext(os.path.basename(urdf))[0]
     usd = os.path.join(out, name, f"{name}.usda")

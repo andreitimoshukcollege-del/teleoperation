@@ -101,3 +101,16 @@ def test_the_checks_robothost_side_of_the_protocol_is_what_the_relay_reads():
     assert rp.decode_arm_command(data) == [(3, 612.0, 400.0), (10, 116.0, 2200.0)]
     fb = rp.encode_feedback([(1, True, 501.0), (10, False, 0.0)])
     assert jetrover_check.decode_feedback(rp, fb) == [(1, True, 501.0), (10, False, 0.0)]
+
+
+def test_a_conversion_is_named_by_the_urdf_and_its_meshes(tmp_path):
+    # A re-exported mesh keeps its name; Isaac must convert again (docs/adr/0034 amendment 7).
+    from teleop_isaac.jetrover_bridge import urdf_digest
+
+    (tmp_path / "meshes").mkdir()
+    (tmp_path / "meshes" / "a.obj").write_text("v 0 0 0\n")
+    urdf = tmp_path / "r.urdf"
+    urdf.write_text('<robot><link name="a"><visual><geometry><mesh filename="meshes/a.obj"/></geometry></visual></link></robot>')
+    before = urdf_digest(str(urdf))
+    (tmp_path / "meshes" / "a.obj").write_text("v 1 0 0\n")
+    assert urdf_digest(str(urdf)) != before

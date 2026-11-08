@@ -1,0 +1,63 @@
+{
+  "format": "jetrover-sim",
+  "version": 1,
+  "about": "The sidecar of the Isaac JetRover bridge (docs/adr/0034), written by JetRoverSimModel: angle = (pulse - zeroPulse) / pulsePerRadian - zeroOffsetRadians, as GenericArmPlant converts.",
+  "urdf": "jetrover.urdf",
+  "zeroPulse": 500,
+  "pulsePerRadian": 238.732407,
+  "minPulse": 0,
+  "maxPulse": 1000,
+  "defaultPulsesPerSecond": 2200,
+  "feedbackPeriodSeconds": 0.05,
+  "motors": [
+    {
+      "motorId": 1,
+      "joint": "base_yaw",
+      "zeroOffsetRadians": 0,
+      "feedback": true,
+      "stallTorqueNm": 3.4
+    },
+    {
+      "motorId": 2,
+      "joint": "proximal",
+      "zeroOffsetRadians": 0.122173049,
+      "feedback": true,
+      "stallTorqueNm": 3.4
+    },
+    {
+      "motorId": 3,
+      "joint": "distal",
+      "zeroOffsetRadians": 0,
+      "feedback": true,
+      "stallTorqueNm": 3.4
+    },
+    {
+      "motorId": 4,
+      "joint": "wrist",
+      "zeroOffsetRadians": 0,
+      "feedback": true,
+      "stallTorqueNm": 3.4
+    },
+    {
+      "motorId": 5,
+      "joint": "roll",
+      "zeroOffsetRadians": 0,
+      "feedback": true,
+      "stallTorqueNm": 1.5
+    },
+    {
+      "motorId": 10,
+      "joint": "gripper",
+      "zeroOffsetRadians": 0,
+      "feedback": false,
+      "stallTorqueNm": 1.5,
+      "openPulse": 116,
+      "closedPulse": 645,
+      "fingerTravelMeters": 0.011,
+      "fingers": [
+        "gripper",
+        "gripper_mirror"
+      ]
+    }
+  ]
+}

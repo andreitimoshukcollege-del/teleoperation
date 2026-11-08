@@ -480,3 +480,27 @@ Rules specific to these:
 - **The capture stamp is start of exposure.** On the JetRover's camera `camera_capture_to_send_ms`
   is about one frame period (32 ms at 30 fps, 68 ms at 15 fps, measured by
   `just camera-timestamp-spike` on 2026-10-01) before the network is involved at all.
+
+## 10. Simulator against robot
+
+How far a simulated JetRover arm is from the real one (docs/adr/0034 decision 6), measured at the relay seam the simulator
+replaces. A recorded real session's relay targets (`RO` records in `robothost.jlog`: pulse and pulses per second per
+motor) are replayed into the simulator at their recorded times, from the session's first valid reading. The simulator's
+feedback is compared with the relay feedback the session recorded (`RI` records), matched at the recorded readings' times:
+the simulated value at an instant is the newest simulated reading at or before it.
+
+| Metric | Unit | Definition |
+|---|---|---|
+| `sim_tracking_error_deg` | deg | per motor 1–5, `|simulated − recorded|` at each recorded valid reading, in joint degrees (pulse converted as `GenericArmPlant` converts). Reported as p50 and p95 per motor and pooled over motors 1–4, per session and over the replayed set |
+| `sim_settle_error_deg` | deg | the same, only at readings taken at least 0.5 s after the last command that changed that motor's target: how far the simulated arm comes to rest from where the real one did (droop, end stops, contact) |
+
+Rules specific to these:
+
+- **The gripper (motor 10) is not scored.** The real one never reports a position.
+- **Readings the robot marked invalid are skipped,** not interpolated over. A reading's time is when RobotHost took it
+  (`RI`'s `t`), which trails the servo read by up to the relay's period; the simulator's feedback is timed the same way, so
+  the lag cancels to within that period.
+- **A session replayed with fitted parameters is scored on sessions not used to fit them.** The split names its sessions,
+  and the fit and the score are reported together.
+- **Diagnostics of the simulator, not results about latency.** No paper figure is drawn from them except to say how far
+  sim is from real.

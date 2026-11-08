@@ -64,7 +64,8 @@ namespace Teleop.RobotHost.ArmServer
         public ArmServerClient(IArmServerLink link, ReadOnlySpan<byte> motorIds, long ticksPerSecond)
         {
             _link = link ?? throw new ArgumentNullException(nameof(link));
-            if (motorIds.Length == 0 || motorIds.Length > ArmServerWire.MaxMotors) throw new ArgumentException($"1 to {ArmServerWire.MaxMotors} motors", nameof(motorIds));
+            // No motors: a server of the world alone (the JetRover's Isaac world beside its relay, docs/adr/0034 decision 7).
+            if (motorIds.Length > ArmServerWire.MaxMotors) throw new ArgumentException($"at most {ArmServerWire.MaxMotors} motors", nameof(motorIds));
             if (ticksPerSecond <= 0) throw new ArgumentOutOfRangeException(nameof(ticksPerSecond));
             _motorIds = motorIds.ToArray();
             _ticksPerSecond = ticksPerSecond;

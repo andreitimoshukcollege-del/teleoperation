@@ -102,9 +102,11 @@ namespace Teleop.RobotHost.ArmServer
         /// <summary>
         /// Says hello until the server welcomes us (or <paramref name="timeoutSeconds"/> pass), and checks the welcome: the
         /// shaper's motors in the shaper's order, and the server's clock within <see cref="MaxClockDisagreementSeconds"/> of
-        /// ours. Then waits for the first state, so the arm's pose is known before anything is commanded.
+        /// ours. Then waits for the first state, so the arm's pose is known before anything is commanded. With
+        /// <paramref name="requireState"/> false it is done at the welcome: a server of the world alone, with no motors (the
+        /// JetRover's Isaac world beside its relay, docs/adr/0034 decision 7).
         /// </summary>
-        public bool Connect(Func<long> now, string profileName, double timeoutSeconds, Action<int>? sleep, out string error)
+        public bool Connect(Func<long> now, string profileName, double timeoutSeconds, Action<int>? sleep, out string error, bool requireState = true)
         {
             long deadline = now() + (long)(timeoutSeconds * _ticksPerSecond);
             long nextHello = long.MinValue;
@@ -145,7 +147,7 @@ namespace Teleop.RobotHost.ArmServer
                     if (welcomed) Handle(d, now());
                 }
 
-                if (welcomed && _haveState)
+                if (welcomed && (_haveState || !requireState))
                 {
                     error = "";
                     return true;

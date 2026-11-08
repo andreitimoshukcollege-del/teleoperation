@@ -51,6 +51,19 @@ namespace Teleop.RobotHost
         public readonly int? JointLocalPort;
 
         /// <summary>
+        /// A world beside the arm (docs/adr/0034 decision 7, J4): the scene file, its first layout's seed (null: from the clock),
+        /// and the Unix datagram socket the Isaac bridge serves the world on (the arm-server wire's world messages).
+        /// </summary>
+        public string? ScenePath { get; init; }
+        public ulong? SceneSeed { get; init; }
+        public string? WorldSocketPath { get; init; }
+        public string? LocalWorldSocketPath { get; init; }
+        public double WorldTimeoutSeconds { get; init; }
+
+        /// <summary>Takes of named scenarios from the headset's RECORD button (docs/adr/0033): the scenarios folder.</summary>
+        public string? ScenariosRoot { get; init; }
+
+        /// <summary>
         /// Path to a <c>RobotArmProfile</c> JSON file (<c>core/RobotProfiles/*.json</c> convention,
         /// docs/adr/0011-generic-robot-arm-profiles.md) -- null (the default) falls back to
         /// <c>RobotArmProfile.JetRoverMeasuredDefault</c>, a compatibility convenience, not the
@@ -111,6 +124,8 @@ namespace Teleop.RobotHost
             "   [--auto-record-headset-seconds <s>]\n" +
             "   [--auto-record-root <dir>] [--auto-record-profile <path>] [--auto-record-source robot|isaac]\n" +
             "   [--build-info-robothost <path>] [--build-info-driver <path>]]\n" +
+            "  [--scene <file> --world-socket <path> [--local-world-socket <path>] [--scene-seed <n>|auto] [--world-timeout <s>]]\n" +
+            "  [--scenarios <dir>]\n" +
             "  [--rest-pose-deg <d1,d2,...>] [--park-speed-rad-per-sec <r>] [--park-tolerance-deg <d>] [--park-timeout-seconds <s>]\n" +
             "  [--park-contact-deg <d>]\n" +
             "  --reply-to sender (default) replies to wherever the latest command came from;\n" +
@@ -193,6 +208,9 @@ namespace Teleop.RobotHost
             int? jointLocalPort = null;
             string? profilePath = null;
             string? recordControlPath = null;
+            string? scenePath = null, worldSocket = null, localWorldSocket = null, scenarios = null;
+            ulong? sceneSeed = null;
+            double worldTimeout = 60;
             string? uplinkControlPath = null;
             int? discoveryPort = null;
             string replyTo = "sender";
@@ -329,6 +347,30 @@ namespace Teleop.RobotHost
                     case "--park-timeout-seconds" when i + 1 < args.Length:
                         power.ParkTimeoutSeconds = Number(args[i], args[++i]);
                         break;
+                    case "--scene" when i + 1 < args.Length:
+                        scenePath = args[++i];
+                        break;
+                    case "--scene-seed" when i + 1 < args.Length:
+                        string seedText = args[++i];
+                        if (seedText != "auto")
+                        {
+                            if (ulong.TryParse(seedText, System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out ulong seed)) sceneSeed = seed;
+                            else autoError ??= $"--scene-seed '{seedText}' is a whole number or auto.";
+                        }
+
+                        break;
+                    case "--world-socket" when i + 1 < args.Length:
+                        worldSocket = args[++i];
+                        break;
+                    case "--local-world-socket" when i + 1 < args.Length:
+                        localWorldSocket = args[++i];
+                        break;
+                    case "--world-timeout" when i + 1 < args.Length:
+                        worldTimeout = Number(args[i], args[++i]);
+                        break;
+                    case "--scenarios" when i + 1 < args.Length:
+                        scenarios = args[++i];
+                        break;
                 }
             }
 
@@ -384,6 +426,18 @@ namespace Teleop.RobotHost
                 }
             }
 
+            if (scenePath != null && worldSocket == null)
+            {
+                error = "--scene needs --world-socket (the Isaac bridge's world, docs/adr/0034 decision 7).";
+                return null;
+            }
+
+            if (scenarios != null && !autoRecord)
+            {
+                error = "--scenarios needs --auto-record (a take is completed as an automatic session is).";
+                return null;
+            }
+
             string? powerInvalid = power.Validate();
             if (powerInvalid != null)
             {
@@ -395,7 +449,15 @@ namespace Teleop.RobotHost
             return new RobotHostArgs(
                 localPort.Value, remoteHost, remotePort, replyToSender, relaySocketPath, localRelaySocketPath,
                 maxDirectionMagnitude, jointLocalPort, profilePath, pulsesPerSecond, recordControlPath, uplinkControlPath, discoveryPort,
-                autoRecord ? auto : null, power);
+                autoRecord ? auto : null, power)
+            {
+                ScenePath = scenePath,
+                SceneSeed = sceneSeed,
+                WorldSocketPath = worldSocket,
+                LocalWorldSocketPath = localWorldSocket ?? (worldSocket != null ? worldSocket + ".robothost" : null),
+                WorldTimeoutSeconds = worldTimeout,
+                ScenariosRoot = scenarios,
+            };
         }
 
         private static int? ParseIntOrNull(string s) => int.TryParse(s, out int value) ? value : null;

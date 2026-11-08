@@ -3174,9 +3174,12 @@ isaac-scenarios:
 
 # The JetRover's arm in Isaac Sim on the GPU machine, behind the JetRover's own RobotHost (docs/adr/0034 J2): checks out this commit in ~/teleoperation-isaac (it must be on GitHub), builds RobotHost, starts teleop_isaac.jetrover_bridge on a relay socket (log ~/isaacsim/jetrover-bridge.log) and then RobotHost exactly as the Jetson runs it, with --relay-socket pointing at Isaac instead of the ROS relay: joint port 6002, discovery 6005, the JetRover profile, sessions recorded into ~/isaacsim/jetrover-recordings marked source isaac. Point the headset's JetRover app at it with `just push-galaxy-config <GPU machine's address>`. Enter stops both, as does `just isaac-stop`. Refuses while an Isaac host of ours (FR3 or JetRover) is running there: they share the ports. No real robot moves
 [group('isaac')]
-isaac-jetrover-host:
+isaac-jetrover-host scene="jetrover-bench" scene_seed="auto":
     #!/usr/bin/env bash
     set -euo pipefail
+    case "{{scene}}" in *[!A-Za-z0-9._-]*|"") echo "error: scene is a file name in core/Scenes without .json, or none" >&2; exit 1 ;; esac
+    case "{{scene_seed}}" in auto|[0-9]*) ;; *) echo "error: scene_seed is a number or auto" >&2; exit 1 ;; esac
+    [ "{{scene}}" = none ] || [ -f "core/Scenes/{{scene}}.json" ] || { echo "error: no core/Scenes/{{scene}}.json" >&2; exit 1; }
     commit=$(git rev-parse HEAD)
     git fetch -q origin
     [ -n "$(git branch -r --contains "$commit" 2>/dev/null)" ] || { echo "error: $commit is not on GitHub: push it first (the GPU machine runs what GitHub has)" >&2; exit 1; }
@@ -3193,7 +3196,13 @@ isaac-jetrover-host:
     relay=/tmp/teleop-jetrover-relay-$USER.sock
     log=$HOME/isaacsim/jetrover-bridge.log
     pin() { if [ "$(nproc)" -ge 24 ]; then echo "taskset -c $1"; fi; }
-    (cd robot/isaac && exec $(pin 2-5) "$HOME/isaacsim/venv/bin/python" -m teleop_isaac.jetrover_bridge --socket "$relay" --client-socket "$relay.robothost") > "$log" 2>&1 &
+    bridge_scene=(); host_scene=()
+    if [ "$SCENE" != none ]; then
+        bridge_scene=(--scene "../../core/Scenes/$SCENE.json" --world-socket "$relay.world")
+        host_scene=(--scene "core/Scenes/$SCENE.json" --scene-seed "$SCENE_SEED" --world-socket "$relay.world" --scenarios "$HOME/isaacsim/scenarios-jetrover")
+        echo "[isaac-jetrover] scene $SCENE (seed $SCENE_SEED)"
+    fi
+    (cd robot/isaac && exec $(pin 2-5) "$HOME/isaacsim/venv/bin/python" -m teleop_isaac.jetrover_bridge --socket "$relay" --client-socket "$relay.robothost" "${bridge_scene[@]}") > "$log" 2>&1 &
     bridge=$!
     trap 'kill $bridge 2>/dev/null; wait $bridge 2>/dev/null || true' EXIT
     echo "[isaac-jetrover] bridge pid $bridge (log $log); waiting for Isaac to start"
@@ -3211,10 +3220,10 @@ isaac-jetrover-host:
         --relay-socket "$relay" --local-relay-socket "$relay.robothost" --joint-local-port 6002 --discovery-port 6005 \
         --profile-path core/RobotProfiles/jetrover.json --record-control "$rec/.active" \
         --auto-record --auto-record-root "$rec" --auto-record-profile core/RobotProfiles/jetrover.json --auto-record-source isaac \
-        --auto-record-driver-wait-seconds 0 --rest-pose-deg {{jetrover_rest_pose_deg}} $park
+        --auto-record-driver-wait-seconds 0 --rest-pose-deg {{jetrover_rest_pose_deg}} $park "${host_scene[@]}"
     REMOTE
     )
-    ssh -o ConnectTimeout=10 "{{gpu_host}}" "COMMIT='$commit' bash -c $(printf '%q' "$remote")"
+    ssh -o ConnectTimeout=10 "{{gpu_host}}" "COMMIT='$commit' SCENE='{{scene}}' SCENE_SEED='{{scene_seed}}' bash -c $(printf '%q' "$remote")"
 
 # Stop the Isaac host that `just isaac-host` started on the GPU machine (docs/adr/0031), from any terminal: what Enter does where it was started. RobotHost gets SIGTERM first, which it takes as Enter, so it closes its recording, and isaac-host then stops the bridge. Whatever still runs after 30 s gets SIGTERM, and after 60 s more, SIGKILL. Says which recording is newest and whether it is complete. Nothing running is not an error
 [group('isaac')]

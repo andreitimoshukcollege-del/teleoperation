@@ -17,6 +17,11 @@ paced to the wall clock:
 
 Every 20 ms a cycle reads motors 1 to 5 back to back in whole pulses, as the real driver does, and every 20 ms the newest
 reading of each goes back, valid while under 0.2 s old; the gripper (10) is never valid (decision 4, ``servo.FeedbackEmulator``). The base is fixed (decision 5).
+
+With ``--scene`` (docs/adr/0034 decision 7, J4) the scene file's surfaces and objects are in the stage too (``world.py``, as
+the FR3's), served to RobotHost on a second socket (``--world-socket``) over the arm-server wire's world messages: a Welcome
+with no motors and WORLD_INFO after each Hello, WORLD every 20 ms from PhysX, PLACE applied or refused. ``--tap`` copies the
+arm's state (an arm-server STATE of joint values) and every WORLD to the renderer.
 """
 
 from __future__ import annotations
@@ -31,7 +36,9 @@ import time
 import traceback
 from typing import Dict, List, Optional
 
+from . import scene as scene_module
 from . import servo
+from . import wire
 
 HOME = (0.0, 1.0472, -1.5708, 0.5236, 0.0)  # JetRoverCollisionModel's home: yaw, proximal, distal, wrist, roll
 
@@ -52,6 +59,10 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     a.add_argument("--dt", type=float, default=0.001, help="the physics step, s")
     a.add_argument("--seconds", type=float, default=0.0, help="stop after this long (0: until stopped)")
     a.add_argument("--torque-off-at-start", action="store_true", help="start relaxed, as the robot does after ROBOT OFF")
+    a.add_argument("--scene", default="", help="a scene file (core/Scenes/*.json) for the robot's bench: its surfaces and objects")
+    a.add_argument("--world-socket", default="", help="where RobotHost's world client talks (default: --socket plus .world)")
+    a.add_argument("--world-every", type=int, default=20, help="send the objects' poses every this many steps")
+    a.add_argument("--tap", default="", help="the renderer's socket: a copy of the arm's state every 4 steps and of every WORLD")
     a.add_argument("--gui", action="store_true", help="open Isaac's window (needs a display)")
     return a.parse_args(argv)
 
@@ -81,6 +92,10 @@ def main(argv: Optional[List[str]] = None) -> int:
     pulses = servo.home_pulses(model, HOME)
     setpoints: Dict[int, servo.TimedSetpoint] = {m: servo.TimedSetpoint(p) for m, p in pulses.items()}
     feedback = servo.FeedbackEmulator(model)
+    scene = scene_module.load(args.scene) if args.scene else None
+    if scene is not None and scene.robot_profile != "jetrover":
+        raise SystemExit(f"error: the scene {args.scene} is for profile {scene.robot_profile!r}, not 'jetrover'")
+    scene_sha = __import__("hashlib").sha256(open(args.scene, "rb").read()).digest() if scene is not None else b""
 
     from isaacsim import SimulationApp
 
@@ -112,6 +127,13 @@ def main(argv: Optional[List[str]] = None) -> int:
         art_api.CreateSolverVelocityIterationCountAttr(1)
         art_api.CreateEnabledSelfCollisionsAttr(False)
         # Gravity stays on for the arm (decision 3): the real servos hold it up, and sag under load.
+        from .world import IsaacWorld
+
+        world = IsaacWorld(scene, str(robot.GetPath())) if scene is not None else None
+        if world is not None:
+            world.build(stage)
+            fixed = world.fixed_bodies(stage)
+            print(f"[jetrover] the robot's fixed bodies ignore the surfaces: {', '.join(b.rsplit('/', 1)[-1] for b in fixed)}", flush=True)
 
         settings = carb.settings.get_settings()
         for key in ("/physics/updateToUsd", "/physics/updateVelocitiesToUsd", "/physics/updateParticlesToUsd", "/physics/updateResidualsToUsd"):
@@ -138,6 +160,8 @@ def main(argv: Optional[List[str]] = None) -> int:
             if not m.is_gripper:
                 efforts[index[m.joint]] = m.stall_torque
         art.set_dof_max_efforts(efforts.reshape(1, -1))
+        if world is not None:
+            world.attach()
 
         target = np.zeros((1, n))
 
@@ -166,7 +190,38 @@ def main(argv: Optional[List[str]] = None) -> int:
         sock = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
         sock.bind(args.socket)
         sock.setblocking(False)
-        print(f"[jetrover] {description}; {n} DOFs ({', '.join(names)}); torque {'on' if torque else 'off'}; listening on {args.socket}", flush=True)
+        wsock = None
+        world_path = args.world_socket or args.socket + ".world"
+        if world is not None:
+            movable = sum(1 for o in scene.objects if o.movable)
+            description += f", scene {scene.name} ({scene_sha.hex()[:12]}, {len(scene.objects) - movable} fixed and {movable} movable objects)"
+            if os.path.exists(world_path):
+                os.unlink(world_path)
+            wsock = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
+            wsock.bind(world_path)
+            wsock.setblocking(False)
+        print(f"[jetrover] {description}; {n} DOFs ({', '.join(names)}); torque {'on' if torque else 'off'}; listening on {args.socket}"
+              + (f", world on {world_path}" if wsock is not None else ""), flush=True)
+        world_client = None
+        wseq = [0]
+
+        def next_wseq() -> int:
+            wseq[0] += 1
+            return wseq[0]
+
+        tapped = tap_dropped = 0
+
+        def tap(message: bytes) -> None:
+            nonlocal tapped, tap_dropped
+            if not args.tap:
+                return
+            try:
+                sock.sendto(message, args.tap)
+                tapped += 1
+            except OSError:
+                tap_dropped += 1
+
+        motor_order = sorted(model.motors)
 
         stopping = []
         signal.signal(signal.SIGTERM, lambda *_: stopping.append(True))
@@ -211,6 +266,37 @@ def main(argv: Optional[List[str]] = None) -> int:
                             if mid in setpoints:
                                 setpoints[mid].move(model.clamp(pulse), pps)
 
+            while wsock is not None:
+                try:
+                    data, sender = wsock.recvfrom(wire.MAX_BYTES)
+                except BlockingIOError:
+                    break
+                kind = wire.kind_of(data)
+                if kind == wire.HELLO and wire.decode_hello(data) is not None:
+                    hello = wire.decode_hello(data)
+                    if hello.profile != "jetrover":
+                        print(f"[jetrover] a world hello for profile {hello.profile!r}: not answered", flush=True)
+                        continue
+                    if sender != world_client:
+                        print(f"[jetrover] RobotHost's world client at {sender}", flush=True)
+                    world_client = sender
+                    try:
+                        wsock.sendto(wire.encode_welcome(next_wseq(), wire.SERVER_ISAAC, time.monotonic_ns(), [], description), world_client)
+                        wsock.sendto(wire.encode_world_info(next_wseq(), scene_sha, [o.id for o in scene.objects]), world_client)
+                    except OSError:
+                        world_client = None
+                elif kind == wire.PLACE and sender == world_client:
+                    place = wire.decode_place(data)
+                    if place is not None:
+                        _, request, cause, object_id, pose = place
+                        outcome, now_pose = world.place(cause, object_id, pose)
+                        if outcome != wire.APPLIED or cause != wire.CAUSE_LAYOUT:
+                            print(f"[jetrover] place {object_id} (cause {cause}): outcome {outcome}", flush=True)
+                        try:
+                            wsock.sendto(wire.encode_placed(next_wseq(), request, object_id, outcome, world.model.revision, now_pose), world_client)
+                        except OSError:
+                            pass
+
             seconds = args.dt
             for sp in setpoints.values():
                 sp.step(seconds)
@@ -220,6 +306,28 @@ def main(argv: Optional[List[str]] = None) -> int:
             SimulationManager.step(steps=1)
             steps += 1
             now_s = steps * args.dt
+
+            if args.tap and steps % 4 == 0:
+                # The renderer poses the arm from these: every motor's joint value (radians; the gripper's opening 0..1).
+                q = np.asarray(art.get_dof_positions().numpy()).reshape(-1)
+                report = []
+                for m_id in motor_order:
+                    m = model.motors[m_id]
+                    if m.is_gripper:
+                        v = q[index[m.fingers[0]]] / m.finger_travel if m.finger_travel else 0.0
+                    else:
+                        v = float(q[index[m.joint]])
+                    report.append((m_id, float(v), 0.0, float(v)))
+                tap(wire.encode_state(next_wseq(), time.monotonic_ns(), steps * step_ns, wire.FLAG_ENABLED if torque else 0, report))
+            if world is not None and (world_client is not None or args.tap) and steps % args.world_every == 0:
+                objects = world.read()
+                for message in world.model.world_messages(next_wseq, time.monotonic_ns(), objects):
+                    if world_client is not None:
+                        try:
+                            wsock.sendto(message, world_client)
+                        except OSError:
+                            pass
+                    tap(message)
 
             mid = feedback.due_read(now_s)
             if mid is not None:
@@ -252,6 +360,9 @@ def main(argv: Optional[List[str]] = None) -> int:
 
         sock.close()
         os.unlink(args.socket)
+        if wsock is not None:
+            wsock.close()
+            os.unlink(world_path)
         print(f"[jetrover] stopped after {steps} steps, {late} late; {commands} commands, {sent} feedback sent", flush=True)
         return 0
     except BaseException:

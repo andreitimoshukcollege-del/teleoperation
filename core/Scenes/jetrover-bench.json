@@ -1,0 +1,51 @@
+{
+  "format": "teleop-scene",
+  "version": 2,
+  "name": "jetrover-bench",
+  "robotProfile": "jetrover",
+  "surfaces": [
+    { "id": "bench", "center": [-0.064, -0.014, -0.2162], "size": [0.328, 1.60, 0.04], "colour": [0.09, 0.095, 0.105],
+      "staticFriction": 0.6, "dynamicFriction": 0.5, "collides": true, "headset": "builtin" },
+    { "id": "table", "center": [0.336, -0.014, -0.2162], "size": [0.472, 1.60, 0.04], "colour": [0.09, 0.095, 0.105],
+      "staticFriction": 0.6, "dynamicFriction": 0.5, "collides": true, "headset": "builtin" },
+    { "id": "floor", "center": [0.0, 0.0, -1.055], "size": [8.0, 8.0, 0.02], "colour": [0.30, 0.30, 0.30],
+      "staticFriction": 0.6, "dynamicFriction": 0.5, "collides": true, "headset": "hide" }
+  ],
+  "objects": [
+    { "id": 1, "name": "cube", "shape": "box", "size": [0.025, 0.025, 0.025], "position": [0.20, 0.08, -0.1837], "rpy": [0, 0, 0],
+      "kind": "movable", "mass": 0.02, "operatorMovable": true, "staticFriction": 0.8, "dynamicFriction": 0.6, "colour": [0.80, 0.15, 0.12],
+      "jitter": [0.03, 0.03, 0.6] },
+    { "id": 2, "name": "post", "shape": "box", "size": [0.025, 0.025, 0.09], "position": [0.24, -0.08, -0.1512], "rpy": [0, 0, 0],
+      "kind": "movable", "mass": 0.03, "operatorMovable": true, "staticFriction": 0.8, "dynamicFriction": 0.6, "colour": [0.85, 0.51, 0.17],
+      "jitter": [0.03, 0.03, 0.6] },
+    { "id": 3, "name": "can", "shape": "cylinder", "size": [0.035, 0.035, 0.065], "position": [0.17, -0.02, -0.1637], "rpy": [0, 0, 0],
+      "kind": "movable", "mass": 0.04, "operatorMovable": true, "staticFriction": 0.8, "dynamicFriction": 0.6, "colour": [0.16, 0.62, 0.66],
+      "jitter": [0.02, 0.03, 0.0] },
+    { "id": 4, "name": "wall", "shape": "box", "size": [0.015, 0.10, 0.05], "position": [0.29, 0.03, -0.1712], "rpy": [0, 0, 0],
+      "kind": "movable", "mass": 0.05, "operatorMovable": true, "staticFriction": 0.8, "dynamicFriction": 0.6, "colour": [0.62, 0.62, 0.70],
+      "jitter": [0.01, 0.04, 0.3] }
+  ],
+  "placement": { "xMin": 0.12, "xMax": 0.36, "yMin": -0.18, "yMax": 0.18, "clearance": 0.01 },
+  "backdrops": { "change": "per-session", "manifest": "~/isaacsim/backdrops/openimages-v7-val/manifest.json",
+    "mats": [
+      { "id": "mat", "on": "table", "lift": 0.0005, "region": [0.10, 0.572, -0.40, 0.40] },
+      { "id": "floor", "on": "floor", "lift": 0.001, "region": [-1.0, 1.4, -1.8, 1.8] } ],
+    "screens": [
+      { "id": "far", "center": [1.0, 0.0, 0.0], "size": [3.0, 2.2], "normal": [-1, 0] },
+      { "id": "back", "center": [-0.9, 0.0, 0.0], "size": [3.0, 2.2], "normal": [1, 0] },
+      { "id": "left", "center": [0.05, 1.2, 0.0], "size": [1.9, 2.2], "normal": [0, -1] },
+      { "id": "right", "center": [0.05, -1.2, 0.0], "size": [1.9, 2.2], "normal": [0, 1] } ] },
+  "cameras": [
+    { "id": "third-left", "position": [0.62, 0.42, 0.12], "lookAt": [0.18, 0.0, -0.16], "width": 640, "height": 360, "hfovDeg": 69.0,
+      "near": 0.02, "far": 6.0, "fps": 30, "feedPort": 6008, "feedQuality": 80, "recordQuality": 92, "record": ["rgb", "depth", "mask"] },
+    { "id": "third-right", "position": [0.62, -0.42, 0.12], "lookAt": [0.18, 0.0, -0.16], "width": 640, "height": 360, "hfovDeg": 69.0,
+      "near": 0.02, "far": 6.0, "fps": 30, "feedPort": 6009, "feedQuality": 80, "recordQuality": 92, "record": ["rgb", "depth", "mask"] },
+    { "id": "wrist", "mount": "gripper_link", "mountPosition": [0.05, 0.0, 0.035], "mountLookAt": [0.16, 0.0, -0.01],
+      "mountUp": [0.0, 0.0, 1.0], "width": 640, "height": 360, "hfovDeg": 87.0, "near": 0.01, "far": 6.0, "fps": 30,
+      "feedPort": 6003, "feedQuality": 80, "recordQuality": 92, "record": ["rgb", "depth", "mask"] }
+  ],
+  "lights": [
+    { "id": "dome", "kind": "dome", "intensity": 300 },
+    { "id": "key", "kind": "distant", "intensity": 1000, "rotateXYZDeg": [-40, 25, 0] }
+  ]
+}

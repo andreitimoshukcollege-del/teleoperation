@@ -82,6 +82,17 @@ namespace Teleop.RobotArm.Tests.World
             Assert.All(s.Objects, o => Assert.Equal(0.0, o.Mass));
         }
 
+        [Theory]
+        [InlineData("fr3-duo-bench", "fr3-duo")]
+        [InlineData("jetrover-bench", "jetrover")]
+        public void EveryShippedScene_Parses_ForItsRobot(string name, string profile)
+        {
+            // docs/adr/0034 decision 7: the JetRover's bench, its objects scaled to a 3 cm gripper and a 26 cm reach.
+            WorldScene s = JsonSerializer.Deserialize<SceneDocument>(File.ReadAllText(ScenePath(name)), Options)!.ToScene();
+            Assert.Equal(profile, s.RobotProfile);
+            Assert.All(s.Objects, o => Assert.True(o.Movable));
+        }
+
         [Fact]
         public void TheIsaacGoldenFile_IsWhatThisReaderMakesOfTheScene()
         {

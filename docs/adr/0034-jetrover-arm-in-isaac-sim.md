@@ -186,3 +186,17 @@ What exists for the JetRover:
     2.2 mm low, the sag of a servo arm holding itself up.
 - **Not done yet:** the headset's JetRover scene against it. Installing that APK replaces the FR3's (one app id), and the
   scene's camera has no Isaac feed until J5.
+
+## Amendment 4 (2026-11-08): the feedback timing is the real robot's since 2026-10-25
+
+The user, in the headset: "the measured values seem low hz".
+
+- **What was wrong.** Amendments 2 and 3 timed the feedback by an outdated description: one motor read every 10 ms in turn,
+  and feedback sent every 50 ms, about 20 Hz a motor. The robot has been faster since 2026-10-25:
+  - the driver (`robot_controller_node.py`, `pollRate` 0.02) reads motors 1–5 back to back every 20 ms, 2.9 ms a read
+    (the trainer's fit);
+  - the relay (`relay_node.py`, `_FEEDBACK_SEND_PERIOD_SECONDS` 0.02) sends every 20 ms.
+- **Now.** `servo.FeedbackEmulator` runs that cycle, and a cycle's readings are published when it ends. The relay's sends
+  come every 20 ms, so each motor gets a fresh reading about every 20 ms.
+  - The sidecar carries `feedbackPeriodSeconds` 0.02, `driverCycleSeconds` 0.02 and `readSeconds` 0.0029.
+  - `just isaac-jetrover-check` expects feedback at 45–55 Hz.

@@ -61,8 +61,14 @@ namespace Teleop.RobotHost.Sim
             ["base_yaw"] = 3.4, ["proximal"] = 3.4, ["distal"] = 3.4, ["wrist"] = 3.4, ["roll"] = 1.5, ["gripper"] = 1.5,
         };
 
-        /// <summary>How often the real driver reads each servo (s): motors 1 to 5 in turn, about every 50 ms each (ADR 0021's measurement).</summary>
-        public const double FeedbackPeriodSeconds = 0.05;
+        /// <summary>How often the real relay sends feedback (s): <c>relay_node.py</c>'s <c>_FEEDBACK_SEND_PERIOD_SECONDS</c>, 20 ms since 2026-10-25.</summary>
+        public const double FeedbackPeriodSeconds = 0.02;
+
+        /// <summary>The real driver's feedback cycle (s, <c>robot_controller_node.py</c>'s <c>pollRate</c>): motors 1 to 5 read back to back every 20 ms.</summary>
+        public const double DriverCycleSeconds = 0.02;
+
+        /// <summary>One bus position read (s): the trainer's fitted 2.9 ms (<c>armpred/sim/params.py</c>).</summary>
+        public const double ReadSeconds = 0.0029;
 
         private static readonly CultureInfo Inv = CultureInfo.InvariantCulture;
 
@@ -190,6 +196,8 @@ namespace Teleop.RobotHost.Sim
                 ["maxPulse"] = plant.MaxPulse,
                 ["defaultPulsesPerSecond"] = plant.PulsesPerSecond,
                 ["feedbackPeriodSeconds"] = FeedbackPeriodSeconds,
+                ["driverCycleSeconds"] = DriverCycleSeconds,
+                ["readSeconds"] = ReadSeconds,
                 ["motors"] = motors,
             };
             return doc.ToJsonString(new JsonSerializerOptions { WriteIndented = true }).Replace("\r\n", "\n") + "\n";

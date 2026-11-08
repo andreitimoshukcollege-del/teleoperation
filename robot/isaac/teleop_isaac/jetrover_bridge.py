@@ -15,8 +15,8 @@ paced to the wall clock:
   one does when it relaxes;
 - PhysX steps once.
 
-Every 10 ms one of motors 1 to 5 is read in whole pulses, and every 50 ms the newest reading of each goes back, valid while
-under 0.2 s old; the gripper (10) is never valid (decision 4, ``servo.FeedbackEmulator``). The base is fixed (decision 5).
+Every 20 ms a cycle reads motors 1 to 5 back to back in whole pulses, as the real driver does, and every 20 ms the newest
+reading of each goes back, valid while under 0.2 s old; the gripper (10) is never valid (decision 4, ``servo.FeedbackEmulator``). The base is fixed (decision 5).
 """
 
 from __future__ import annotations
@@ -159,8 +159,8 @@ def main(argv: Optional[List[str]] = None) -> int:
 
         description = (f"Isaac Sim {version('isaacsim')}, PhysX {1 / args.dt:.0f} Hz on CPU, servo drives {args.stiffness:g}/{args.damping:g} "
                        f"within {'/'.join(f'{m.stall_torque:g}' for m in model.motors.values() if not m.is_gripper)} Nm, arm gravity on, "
-                       f"timed-ramp setpoints, feedback motors {','.join(str(x) for x in feedback.order)} every {feedback.read_seconds * 1000:.0f} ms "
-                       f"in turn, sent every {model.feedback_seconds * 1000:.0f} ms")
+                       f"timed-ramp setpoints, feedback motors {','.join(str(x) for x in feedback.order)} read back to back ({feedback.read_seconds * 1000:.1f} ms each) "
+                       f"every {feedback.cycle_seconds * 1000:.0f} ms, sent every {model.feedback_seconds * 1000:.0f} ms")
         if os.path.exists(args.socket):
             os.unlink(args.socket)
         sock = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)

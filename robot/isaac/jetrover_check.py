@@ -2,7 +2,7 @@
 over relay protocol v5 as the JetRover's RobotHost would. Run from robot/isaac on the GPU machine; prints one ``RESULT {...}``
 line and exits non-zero when any check fails or any number is missing.
 
-1. Feedback arrives about every 50 ms, motors 1 to 5 valid, the gripper (10) never.
+1. Feedback arrives about every 20 ms, as the real relay sends it, motors 1 to 5 valid, the gripper (10) never.
 2. At home, each reading is near its home pulse (how far gravity pulls it is reported).
 3. A move of the elbow by 100 pulses at 400 pulses/s gets there at the commanded pace: past halfway near 0.25 s, within
    3 pulses of the target by 0.8 s.
@@ -89,7 +89,7 @@ def main() -> int:
         recent = [f for f in feeds if f[0] > 1.0]
         if len(recent) >= 2:
             out["feedback_hz"] = round((len(recent) - 1) / (recent[-1][0] - recent[0][0]), 2)
-            checks["feedback_rate"] = 17.0 <= out["feedback_hz"] <= 23.0
+            checks["feedback_rate"] = 45.0 <= out["feedback_hz"] <= 55.0
             last = recent[-1][1]
             checks["arm_motors_valid"] = all(last.get(m, (False, 0))[0] for m in (1, 2, 3, 4, 5))
             checks["gripper_never_valid"] = all(not f[1].get(10, (False, 0))[0] for f in feeds)

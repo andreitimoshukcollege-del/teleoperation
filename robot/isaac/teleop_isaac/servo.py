@@ -5,9 +5,9 @@
 - :class:`TimedSetpoint` is what a Hiwonder bus servo does with a move: it ramps its own setpoint linearly from where it is to
   the target over ``|delta| / pulses_per_second`` (the driver's ``durationMs``), and a new move starts from wherever the
   ramp had got to. The PhysX drive then follows the ramp, as the servo's motor follows its setpoint, within its torque.
-- :class:`FeedbackEmulator` is what the driver and relay report: motors read one at a time, round-robin, every
-  ``read_seconds``, in whole pulses; the newest reading of every motor sent every ``feedback_seconds``, valid while under
-  ``valid_seconds`` old; a motor that never reports (the gripper) always invalid.
+- :class:`FeedbackEmulator` is what the driver and relay report: a cycle every 20 ms reading motors 1 to 5 back to back in
+  whole pulses, published when it ends; the newest reading of every motor sent every 20 ms, valid while under 0.2 s old;
+  a motor that never reports (the gripper) always invalid.
 
 The relay protocol itself is the ROS relay's own module (``robot/ros/src/teleop_relay``), imported by :func:`relay_protocol`,
 so there is one Python implementation of it.
@@ -62,6 +62,8 @@ class SimModel:
         self.max_pulse = float(doc["maxPulse"])
         self.default_pps = float(doc["defaultPulsesPerSecond"])
         self.feedback_seconds = float(doc["feedbackPeriodSeconds"])
+        self.driver_cycle_seconds = float(doc.get("driverCycleSeconds", 0.02))
+        self.read_seconds = float(doc.get("readSeconds", 0.0029))
         self.urdf = doc["urdf"]
         self.motors: Dict[int, Motor] = {}
         for m in doc["motors"]:
@@ -129,29 +131,49 @@ class TimedSetpoint:
 
 
 class FeedbackEmulator:
-    """The driver's round-robin reads and the relay's periodic feedback datagram."""
+    """The driver's feedback cycles and the relay's periodic feedback datagram, as the real ones run (since 2026-10-25):
 
-    def __init__(self, model: SimModel, read_seconds: float = 0.01, valid_seconds: float = 0.2):
+    - every ``cycle_seconds`` (the driver's ``pollRate``, 20 ms) a cycle reads motors 1 to 5 back to back, ``read_seconds``
+      each (2.9 ms, the trainer's fitted bus read), in whole pulses;
+    - a cycle's readings are published when it ends, and only then seen by the relay;
+    - the relay sends the newest reading of every motor every ``feedback_seconds`` (its ``_FEEDBACK_SEND_PERIOD_SECONDS``,
+      20 ms), valid while under ``valid_seconds`` old (0.2 s); a motor that never reports (the gripper) always invalid.
+    """
+
+    def __init__(self, model: SimModel, read_seconds: Optional[float] = None, cycle_seconds: Optional[float] = None, valid_seconds: float = 0.2):
         self.model = model
-        self.read_seconds = read_seconds
+        self.read_seconds = model.read_seconds if read_seconds is None else read_seconds
+        self.cycle_seconds = model.driver_cycle_seconds if cycle_seconds is None else cycle_seconds
         self.valid_seconds = valid_seconds
         self.order: List[int] = sorted(m.motor_id for m in model.motors.values() if m.feedback)
-        self.readings: Dict[int, Tuple[float, float]] = {}  # motor -> (pulse, time)
+        self.readings: Dict[int, Tuple[float, float]] = {}  # motor -> (pulse, time read), as the relay has them
+        self._pending: List[Tuple[int, float, float]] = []
+        self._cycle_start = 0.0
         self._next_read = 0.0
-        self._next_send = 0.0
         self._turn = 0
+        self._next_send = 0.0
 
     def due_read(self, now: float) -> Optional[int]:
-        """The motor to read now, or None: one every ``read_seconds``, in turn."""
+        """The motor to read now, or None: a cycle's reads back to back, a cycle every ``cycle_seconds``."""
         if not self.order or now < self._next_read:
             return None
-        self._next_read = now + self.read_seconds
-        m = self.order[self._turn % len(self.order)]
+        if self._turn == 0:
+            self._cycle_start = now
+        m = self.order[self._turn]
         self._turn += 1
+        if self._turn < len(self.order):
+            self._next_read = now + self.read_seconds
+        else:
+            self._turn = 0
+            self._next_read = max(self._cycle_start + self.cycle_seconds, now + self.read_seconds)
         return m
 
     def record(self, motor_id: int, pulse: float, now: float) -> None:
-        self.readings[motor_id] = (float(round(pulse)), now)  # the bus reports whole pulses
+        self._pending.append((motor_id, float(round(pulse)), now))  # the bus reports whole pulses
+        if self._turn == 0:  # the cycle's last read: it publishes, read_seconds after the read began
+            for mid, p, t in self._pending:
+                self.readings[mid] = (p, t)
+            self._pending.clear()
 
     def due_feedback(self, now: float) -> Optional[List[Tuple[int, bool, float]]]:
         """The feedback datagram's entries when one is due, else None. Every motor of the model, in motor order."""

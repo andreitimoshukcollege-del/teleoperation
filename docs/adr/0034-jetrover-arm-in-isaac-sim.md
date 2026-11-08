@@ -152,4 +152,15 @@ What exists for the JetRover:
 - **The arm starts at the collision model's home pose,** torque on (`--torque-off-at-start` starts it relaxed).
 - **`just isaac-jetrover-check`** (`robot/isaac/jetrover_check.py`) is J1's gate: feedback cadence and validity, home, a move
   at its commanded pace, falling with torque off and holding with it on, and late steps.
-- **Not run yet:** the GPU machine was unreachable from this PC when it was written (2026-11-08).
+- **`just isaac-jetrover-check` on the 5090,** 2026-11-08 (644433c): all 9 checks pass, on the first run.
+
+  | Check | Measured |
+  |---|---|
+  | Feedback | 20.0 Hz; motors 1–5 valid, the gripper never |
+  | At home, under gravity | shoulder 3.2 pulses (0.8°) low, elbow 2, wrist 1 |
+  | Elbow +100 pulses at 400 pulses/s | past halfway at 0.19 s; within 3 pulses at 0.34 s (the ramp alone takes 0.25 s); settles 2 pulses short |
+  | Torque off | the shoulder fell 372 pulses (89°) in 2 s |
+  | Torque back on | held, 0 pulses of drift over 1 s |
+  | Late steps | 0 in 8,479 |
+
+  These say the bridge behaves like a servo arm. How close it is to the JetRover is J3's measurement.

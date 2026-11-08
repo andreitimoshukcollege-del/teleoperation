@@ -164,3 +164,25 @@ What exists for the JetRover:
   | Late steps | 0 in 8,479 |
 
   These say the bridge behaves like a servo arm. How close it is to the JetRover is J3's measurement.
+
+## Amendment 3 (2026-11-08): J2, the JetRover's RobotHost against Isaac
+
+- **`just isaac-jetrover-host`** runs the bridge and then RobotHost with the Jetson's flags (`deploy-robothost`'s), the relay
+  socket aside:
+  - joint port 6002 and discovery 6005;
+  - the JetRover profile;
+  - the Jetson's rest pose, so ROBOT OFF parks and relaxes;
+  - sessions in `~/isaacsim/jetrover-recordings` marked `source: isaac` by the new `--auto-record-source`.
+
+  `isaac-stop`, `isaac-status` and `isaac-host` now see the JetRover bridge too. The FR3 and JetRover hosts share their
+  ports, so one runs at a time.
+- **Feedback before any command.** The bridge first sent feedback only to whoever had commanded it, so an idle RobotHost
+  saw no servo at all. The real relay sends to RobotHost's fixed socket every 50 ms, so now the bridge does too
+  (`--client-socket`, RobotHost's `--local-relay-socket`).
+- **Measured on the 5090,** 2026-11-08, from the PC:
+  - `just joint-probe 3 <GPU machine>`: 49.5 Hz joint frames; servo feedback at 20.3 Hz with motors 1–5 sensed and the
+    gripper not, as on the robot. At home the shoulder reads 0.76° below its target under gravity.
+  - `just move-arm 0.15 0 0.08 0 <GPU machine>`: converged in 4 round trips, the wrist at (0.150, 0, 0.078). That is
+    2.2 mm low, the sag of a servo arm holding itself up.
+- **Not done yet:** the headset's JetRover scene against it. Installing that APK replaces the FR3's (one app id), and the
+  scene's camera has no Isaac feed until J5.

@@ -229,12 +229,13 @@ install-galaxy:
     just _adb devices -l
     just _adb install -r "$(wslpath -m "$apk")"
 
-# Point the Galaxy XR app at the robot without a rebuild: pushes a full jetrover_connection.json override (the Bridge default with RemoteHost replaced) to the app's files directory. Finds the robot itself (`just robot-ip`); pass an address to override. motion=false sends nothing to the arm (ConfirmHardwareMotion off): only the virtual arm moves, for a first try of the controls
+# Point the Galaxy XR app at the robot without a rebuild: pushes a full jetrover_connection.json override (the Bridge default with RemoteHost replaced) to the app's files directory. Finds the robot itself (`just robot-ip`); pass an address to override. motion=false sends nothing to the arm (ConfirmHardwareMotion off): only the virtual arm moves, for a first try of the controls `discover=false` turns off the app's own search for the robot (docs/adr/0022), so it talks to this address only: use it for the Isaac JetRover (`just push-galaxy-config <GPU machine> true false`), so a real robot nearby is never found instead
 [group('headset (Galaxy XR)')]
-push-galaxy-config host=default_jetrover_host motion="true":
+push-galaxy-config host=default_jetrover_host motion="true" discover="true":
     #!/usr/bin/env bash
     set -euo pipefail
     case "{{motion}}" in true|false) ;; *) echo "error: motion must be true or false, got '{{motion}}'" >&2; exit 1 ;; esac
+    case "{{discover}}" in true|false) ;; *) echo "error: discover must be true or false, got '{{discover}}'" >&2; exit 1 ;; esac
     host=$(just _robot-host "{{host}}")
     # The headset has no Tailscale. When this PC can only reach the robot through it (it is on
     # another network), ask the robot for its own lab-network address and give the headset that.
@@ -249,17 +250,19 @@ push-galaxy-config host=default_jetrover_host motion="true":
     esac
     tmp=$(mktemp --suffix=.json)
     trap 'rm -f "$tmp"' EXIT
-    python3 - "$tmp" "$host" "{{motion}}" <<'PY'
+    python3 - "$tmp" "$host" "{{motion}}" "{{discover}}" <<'PY'
     import json, sys
     cfg = json.load(open("unity/Teleop.Bridge/Runtime/Resources/jetrover_connection.json", encoding="utf-8"))
     cfg["RemoteHost"] = sys.argv[2]
     cfg["ConfirmHardwareMotion"] = sys.argv[3] == "true"
+    # false: the address given is the only one (the Isaac JetRover, docs/adr/0034): a real robot nearby is never found instead.
+    cfg["DiscoverRobot"] = sys.argv[4] == "true"
     json.dump(cfg, open(sys.argv[1], "w"), indent=2)
     PY
     dest=/sdcard/Android/data/com.teleop.jetroverxr/files
     just _adb shell mkdir -p "$dest"
     just _adb push "$(wslpath -m "$tmp")" "$dest/jetrover_connection.json"
-    echo "Galaxy XR app now targets $host, hardware motion {{ if motion == "true" { "ON" } else { "OFF (virtual arm only)" } }}; restart the app to pick it up."
+    echo "Galaxy XR app now targets $host, hardware motion {{ if motion == "true" { "ON" } else { "OFF (virtual arm only)" } }}, discovery {{ if discover == "true" { "on" } else { "OFF (this address only)" } }}; restart the app to pick it up."
 
 # Put a learned joint model on the Galaxy XR without a rebuild (docs/adr/0025): exports trainer/runs/<run>'s model.onnx as weights (checked against it on the golden's real windows) and pushes them to the app's files/models/<run>.weights, which the `learned` preset named <run> loads in place of the build's Resources copy. Point a preset at it with "Model": "<run>" (just push-galaxy-config pushes the presets); restart the app
 [group('headset (Galaxy XR)')]

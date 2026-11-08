@@ -194,6 +194,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         world_path = args.world_socket or args.socket + ".world"
         if world is not None:
             movable = sum(1 for o in scene.objects if o.movable)
+            world_description = (f"Isaac Sim {version('isaacsim')}, the JetRover's world: scene {scene.name} ({scene_sha.hex()[:12]}, "
+                                 f"{len(scene.objects) - movable} fixed and {movable} movable objects)")[:wire.MAX_DESCRIPTION_BYTES]
             description += f", scene {scene.name} ({scene_sha.hex()[:12]}, {len(scene.objects) - movable} fixed and {movable} movable objects)"
             if os.path.exists(world_path):
                 os.unlink(world_path)
@@ -281,7 +283,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                         print(f"[jetrover] RobotHost's world client at {sender}", flush=True)
                     world_client = sender
                     try:
-                        wsock.sendto(wire.encode_welcome(next_wseq(), wire.SERVER_ISAAC, time.monotonic_ns(), [], description), world_client)
+                        wsock.sendto(wire.encode_welcome(next_wseq(), wire.SERVER_ISAAC, time.monotonic_ns(), [], world_description), world_client)
                         wsock.sendto(wire.encode_world_info(next_wseq(), scene_sha, [o.id for o in scene.objects]), world_client)
                     except OSError:
                         world_client = None

@@ -1,0 +1,178 @@
+"""The JetRover's servos and driver as Isaac stands in for them (docs/adr/0034 decisions 1, 3 and 4), without Isaac.
+
+- :class:`SimModel` reads ``robot/jetrover/urdf/jetrover.sim.json`` (written by RobotHost's ``JetRoverSimModel``): each
+  motor's joint, and the pulse conversion ``GenericArmPlant`` uses, so a pulse means the same angle on both sides.
+- :class:`TimedSetpoint` is what a Hiwonder bus servo does with a move: it ramps its own setpoint linearly from where it is to
+  the target over ``|delta| / pulses_per_second`` (the driver's ``durationMs``), and a new move starts from wherever the
+  ramp had got to. The PhysX drive then follows the ramp, as the servo's motor follows its setpoint, within its torque.
+- :class:`FeedbackEmulator` is what the driver and relay report: motors read one at a time, round-robin, every
+  ``read_seconds``, in whole pulses; the newest reading of every motor sent every ``feedback_seconds``, valid while under
+  ``valid_seconds`` old; a motor that never reports (the gripper) always invalid.
+
+The relay protocol itself is the ROS relay's own module (``robot/ros/src/teleop_relay``), imported by :func:`relay_protocol`,
+so there is one Python implementation of it.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import sys
+from dataclasses import dataclass
+from typing import Dict, List, Optional, Sequence, Tuple
+
+REPO = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", ".."))
+DEFAULT_SIM = os.path.join(REPO, "robot", "jetrover", "urdf", "jetrover.sim.json")
+
+
+def relay_protocol():
+    """The ROS relay's protocol module (relay protocol v5), the one Python copy of it."""
+    path = os.path.join(REPO, "robot", "ros", "src", "teleop_relay")
+    if path not in sys.path:
+        sys.path.insert(0, path)
+    from teleop_relay import relay_protocol as rp  # noqa: E402
+
+    return rp
+
+
+@dataclass(frozen=True)
+class Motor:
+    motor_id: int
+    joint: str
+    zero_offset: float
+    feedback: bool
+    stall_torque: float
+    open_pulse: float = 0.0
+    closed_pulse: float = 0.0
+    finger_travel: float = 0.0
+    fingers: Tuple[str, ...] = ()
+
+    @property
+    def is_gripper(self) -> bool:
+        return bool(self.fingers)
+
+
+class SimModel:
+    def __init__(self, doc: Dict):
+        if doc.get("format") != "jetrover-sim" or doc.get("version") != 1:
+            raise ValueError("not a jetrover-sim version 1 sidecar")
+        self.zero_pulse = float(doc["zeroPulse"])
+        self.pulse_per_radian = float(doc["pulsePerRadian"])
+        self.min_pulse = float(doc["minPulse"])
+        self.max_pulse = float(doc["maxPulse"])
+        self.default_pps = float(doc["defaultPulsesPerSecond"])
+        self.feedback_seconds = float(doc["feedbackPeriodSeconds"])
+        self.urdf = doc["urdf"]
+        self.motors: Dict[int, Motor] = {}
+        for m in doc["motors"]:
+            self.motors[int(m["motorId"])] = Motor(int(m["motorId"]), m["joint"], float(m["zeroOffsetRadians"]), bool(m["feedback"]),
+                                                   float(m["stallTorqueNm"]), float(m.get("openPulse", 0.0)), float(m.get("closedPulse", 0.0)),
+                                                   float(m.get("fingerTravelMeters", 0.0)), tuple(m.get("fingers", ())))
+
+    @staticmethod
+    def load(path: str = DEFAULT_SIM) -> "SimModel":
+        with open(path, encoding="utf-8") as f:
+            return SimModel(json.load(f))
+
+    def value(self, motor_id: int, pulse: float) -> float:
+        """The joint's value for a pulse: radians, as ``GenericArmPlant`` converts (less the mounting offset); for the gripper,
+        each finger's closing travel in metres, from its open and closed pulses."""
+        m = self.motors[motor_id]
+        if m.is_gripper:
+            span = m.closed_pulse - m.open_pulse
+            f = (pulse - m.open_pulse) / span if span else 0.0
+            return min(max(f, 0.0), 1.0) * m.finger_travel
+        return (pulse - self.zero_pulse) / self.pulse_per_radian - m.zero_offset
+
+    def pulse(self, motor_id: int, value: float) -> float:
+        """The pulse a joint at ``value`` reads (the inverse of :meth:`value`)."""
+        m = self.motors[motor_id]
+        if m.is_gripper:
+            f = value / m.finger_travel if m.finger_travel else 0.0
+            return m.open_pulse + min(max(f, 0.0), 1.0) * (m.closed_pulse - m.open_pulse)
+        return self.zero_pulse + (value + m.zero_offset) * self.pulse_per_radian
+
+    def clamp(self, pulse: float) -> float:
+        return min(max(pulse, self.min_pulse), self.max_pulse)
+
+
+class TimedSetpoint:
+    """One servo's own setpoint: a linear ramp to each move's target over ``|delta| / pulses_per_second``."""
+
+    def __init__(self, pulse: float):
+        self.pulse = float(pulse)
+        self.target = float(pulse)
+        self._rate = 0.0  # pulses per second, signed
+
+    def move(self, target: float, pulses_per_second: float) -> None:
+        self.target = float(target)
+        delta = self.target - self.pulse
+        speed = abs(pulses_per_second) if pulses_per_second and pulses_per_second > 0 else 0.0
+        if speed <= 0.0 or delta == 0.0:
+            self.pulse = self.target if speed <= 0.0 else self.pulse  # no speed given: the servo jumps its setpoint
+            self._rate = 0.0
+            return
+        self._rate = speed if delta > 0 else -speed
+
+    def hold(self, pulse: float) -> None:
+        """Where the servo is now becomes its setpoint and target (torque coming back on holds the arm where it lies)."""
+        self.pulse = self.target = float(pulse)
+        self._rate = 0.0
+
+    def step(self, seconds: float) -> float:
+        if self._rate != 0.0:
+            nxt = self.pulse + self._rate * seconds
+            if (self._rate > 0 and nxt >= self.target) or (self._rate < 0 and nxt <= self.target):
+                nxt, self._rate = self.target, 0.0
+            self.pulse = nxt
+        return self.pulse
+
+
+class FeedbackEmulator:
+    """The driver's round-robin reads and the relay's periodic feedback datagram."""
+
+    def __init__(self, model: SimModel, read_seconds: float = 0.01, valid_seconds: float = 0.2):
+        self.model = model
+        self.read_seconds = read_seconds
+        self.valid_seconds = valid_seconds
+        self.order: List[int] = sorted(m.motor_id for m in model.motors.values() if m.feedback)
+        self.readings: Dict[int, Tuple[float, float]] = {}  # motor -> (pulse, time)
+        self._next_read = 0.0
+        self._next_send = 0.0
+        self._turn = 0
+
+    def due_read(self, now: float) -> Optional[int]:
+        """The motor to read now, or None: one every ``read_seconds``, in turn."""
+        if not self.order or now < self._next_read:
+            return None
+        self._next_read = now + self.read_seconds
+        m = self.order[self._turn % len(self.order)]
+        self._turn += 1
+        return m
+
+    def record(self, motor_id: int, pulse: float, now: float) -> None:
+        self.readings[motor_id] = (float(round(pulse)), now)  # the bus reports whole pulses
+
+    def due_feedback(self, now: float) -> Optional[List[Tuple[int, bool, float]]]:
+        """The feedback datagram's entries when one is due, else None. Every motor of the model, in motor order."""
+        if now < self._next_send:
+            return None
+        self._next_send = now + self.model.feedback_seconds
+        out = []
+        for mid in sorted(self.model.motors):
+            r = self.readings.get(mid)
+            valid = self.model.motors[mid].feedback and r is not None and now - r[1] < self.valid_seconds
+            out.append((mid, valid, r[0] if valid else 0.0))
+        return out
+
+
+def home_pulses(model: SimModel, home: Sequence[float]) -> Dict[int, float]:
+    """Pulses for the collision model's home pose (yaw, proximal, distal, wrist, roll), gripper open."""
+    joints = ("base_yaw", "proximal", "distal", "wrist", "roll")
+    out = {}
+    for mid, m in model.motors.items():
+        if m.is_gripper:
+            out[mid] = m.open_pulse
+        else:
+            out[mid] = model.pulse(mid, home[joints.index(m.joint)])
+    return out

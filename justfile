@@ -2948,6 +2948,26 @@ isaac-scene-check scene="fr3-duo-bench":
     cd robot/isaac && timeout 600 "$HOME/isaacsim/venv/bin/python" scene_check.py --scene "$repo/core/Scenes/$SCENE.json"
     REMOTE
 
+# The JetRover's arm in Isaac (docs/adr/0034 J1) on the GPU machine: robot/isaac/jetrover_check.py starts teleop_isaac.jetrover_bridge and talks relay protocol v5 to it as the JetRover's RobotHost would. Checks feedback every ~50 ms with motors 1-5 valid and the gripper never, the arm near home, an elbow move of 100 pulses at 400 pulses/s at that pace, the shoulder falling with torque off and holding with it back on, and late steps <= 1/s. Prints one `RESULT {...}` line and exits non-zero if any check fails or any number is missing. Runs this commit, checked out in ~/teleoperation-isaac (it must be on GitHub); the bridge's log stays in ~/isaacsim/jetrover-check-bridge.log. Refuses while an Isaac host of ours is running. Moves no real robot
+[group('isaac')]
+isaac-jetrover-check:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    commit=$(git rev-parse HEAD)
+    git fetch -q origin
+    [ -n "$(git branch -r --contains "$commit" 2>/dev/null)" ] || { echo "error: $commit is not on GitHub: push it first (the GPU machine runs what GitHub has)" >&2; exit 1; }
+    ssh -o ConnectTimeout=10 "{{gpu_host}}" "COMMIT='$commit' bash -s" <<'REMOTE'
+    set -euo pipefail
+    [ -x "$HOME/isaacsim/venv/bin/python" ] || { echo "error: no Isaac Sim in our account here: just isaac-setup" >&2; exit 1; }
+    for p in $(pgrep -u "$USER" -f "teleop_isaac[.](bridge|jetrover_bridge)" || true); do
+        case "$(readlink "/proc/$p/exe" 2>/dev/null)" in *python*) echo "error: an Isaac host of ours is running (pid $p): just isaac-stop first" >&2; exit 1 ;; esac
+    done
+    repo=$HOME/teleoperation-isaac
+    [ -d "$repo" ] || git clone -q https://github.com/andreitimoshukcollege-del/teleoperation.git "$repo"
+    cd "$repo" && git fetch -q origin && git checkout -q "$COMMIT" && echo "[jetrover-check] repo at $(git log --oneline -1), GPU: $(nvidia-smi --query-gpu=name,memory.used --format=csv,noheader)"
+    cd robot/isaac && timeout 600 "$HOME/isaacsim/venv/bin/python" jetrover_check.py
+    REMOTE
+
 # Fetch the renderer's backdrop images onto the GPU machine, once (docs/adr/0032 decision 4): `count` images from Open Images V7's validation split, licensed CC BY 2.0 only, into ~/isaacsim/backdrops/openimages-v7-val with a manifest of each one's sha256, licence, author and pages. Downloads are untrusted data: each is kept only if it is a JPEG of at most 20 MB that decodes to at least 256 px a side, under its own sha256. Resumes where it stopped. Runs this commit (it must be on GitHub)
 [group('isaac')]
 isaac-backdrops-fetch count="2000":

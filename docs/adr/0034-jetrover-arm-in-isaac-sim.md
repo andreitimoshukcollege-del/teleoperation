@@ -134,3 +134,22 @@ What exists for the JetRover:
 - **The sidecar** carries `GenericArmPlant`'s pulse conversion: zero pulse 500, 238.73 pulses/rad, the shoulder's
   0.122 rad mounting offset, the gripper's open and closed pulses. The gripper (motor 10) is marked as never reporting.
 - **Hiwonder's URDF** has not been compared yet: the robot was off the network.
+
+## Amendment 2 (2026-11-08): J1 written, not yet run on the 5090
+
+- **`teleop_isaac/jetrover_bridge.py`** binds the relay socket. It takes each drain of datagrams through the ROS relay's own
+  `sort_datagrams`: every torque switch in order, and the newest command only. Relay protocol v5 therefore keeps two
+  implementations, `RelayProtocol.cs` and `relay_protocol.py`, not three: decision 1's planned third copy, and its golden,
+  are not needed.
+- **`teleop_isaac/servo.py`** holds the rest, tested without Isaac (`tests/test_servo.py`):
+  - `TimedSetpoint`: a move ramps the servo's setpoint linearly over `|delta| / pulses_per_second` (the driver's
+    `durationMs`), and a new move starts from where the ramp is.
+  - `FeedbackEmulator`: motors 1–5 read in turn every 10 ms in whole pulses, every reading sent every 50 ms, valid while
+    under 0.2 s old, the gripper never.
+  - `SimModel`: `GenericArmPlant`'s pulse conversion from the sidecar.
+- **Drives.** Stiffness 60 N·m/rad and damping 1.5, within each servo's stall torque. With torque off, stiffness is 0 and
+  damping 0.02, so the arm falls. When torque comes back on, the servos hold where the arm lies.
+- **The arm starts at the collision model's home pose,** torque on (`--torque-off-at-start` starts it relaxed).
+- **`just isaac-jetrover-check`** (`robot/isaac/jetrover_check.py`) is J1's gate: feedback cadence and validity, home, a move
+  at its commanded pace, falling with torque off and holding with it on, and late steps.
+- **Not run yet:** the GPU machine was unreachable from this PC when it was written (2026-11-08).

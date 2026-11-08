@@ -23,6 +23,7 @@ import argparse
 import hashlib
 import json
 import math
+import re
 import os
 import signal
 import socket
@@ -63,6 +64,25 @@ class MotorMap:
                 second = g.name[:-1] + "2" if g.name.endswith("1") else None
                 self.joints[g.motor_id] = tuple(n for n in (g.name, second) if n)
                 self.scale[g.motor_id] = g.finger_travel
+
+    def values(self, motors: Sequence[Tuple[int, float]]) -> Dict[str, float]:
+        out: Dict[str, float] = {}
+        for m, v in motors:
+            for name in self.joints.get(m, ()):
+                out[name] = v * self.scale[m]
+        return out
+
+
+class SimMotorMap:
+    """:class:`MotorMap` for a robot described by a sim sidecar (the JetRover's, ``servo.SimModel``): a joint's radians as
+    they are; the gripper's 0..1 opening as each finger's closing travel."""
+
+    def __init__(self, model):
+        self.joints: Dict[int, Tuple[str, ...]] = {}
+        self.scale: Dict[int, float] = {}
+        for mid, m in model.motors.items():
+            self.joints[mid] = m.fingers if m.is_gripper else (m.joint,)
+            self.scale[mid] = m.finger_travel if m.is_gripper else 1.0
 
     def values(self, motors: Sequence[Tuple[int, float]]) -> Dict[str, float]:
         out: Dict[str, float] = {}
@@ -190,8 +210,12 @@ def backdrop_quads(scene) -> List[Tuple[str, str, List[Tuple[float, float, float
 
 # The masks' stable ids (docs/adr/0032 decision 5): the same in every session, recorded in each as ``ID`` records. A
 # scene object ``n`` is ``OBJECT_BASE + n``. 0 is anything unlabelled, and the background.
-MASK_IDS = {"left_arm": 1, "left_hand": 2, "right_arm": 3, "right_hand": 4, "head": 5, "mount": 6,
+MASK_IDS = {"left_arm": 1, "left_hand": 2, "right_arm": 3, "right_hand": 4, "head": 5, "mount": 6, "arm": 7, "hand": 8,
             "table": 10, "bench": 11, "floor": 12, "mat": 13, "screen": 14}
+
+# The JetRover's links (docs/adr/0034, robot/jetrover/urdf/jetrover.urdf): one arm, so its parts have no side.
+JETROVER_ARM_LINKS = ("turntable", "proximal_link", "distal_link", "wrist_link")
+JETROVER_HAND_LINKS = ("gripper_link", "left_finger", "right_finger")
 OBJECT_BASE = 100
 
 
@@ -200,9 +224,18 @@ def mask_class(prim_name: str) -> Optional[str]:
     rest (the labels go on prims that never nest, or they come out joined)."""
     if prim_name.startswith("franka_head"):
         return "head"
+    # The JetRover's boxes (robot/jetrover/urdf/jetrover.urdf): Isaac's importer names each after its collision body,
+    # "turntable.0" as "tn__turntable0_<tag>", so the link's part is the name's letters.
+    jet = re.match(r"tn__([A-Za-z]+)\d+_", prim_name)
+    if jet:
+        return {"turntable": "arm", "proximal": "arm", "distal": "arm", "wrist": "arm", "gripper": "hand", "Body": "mount"}.get(jet.group(1))
     if not prim_name.endswith("_visual"):
         return None
     link = prim_name[:-len("_visual")]
+    if link in JETROVER_ARM_LINKS:
+        return "arm"
+    if link in JETROVER_HAND_LINKS:
+        return "hand"
     side = "left" if link.startswith("left_") else "right" if link.startswith("right_") else None
     if side is None:
         return "head" if link.startswith("head") else "mount"
@@ -267,6 +300,8 @@ def parse_args(argv=None) -> argparse.Namespace:
     a.add_argument("--scene", required=True)
     a.add_argument("--profile", default=os.path.join(repo, "core", "RobotProfiles", "fr3-duo.json"))
     a.add_argument("--urdf", default=os.path.join(repo, "robot", "franka", "fr3_duo", "urdf", "fr3_duo.urdf"))
+    a.add_argument("--sim", default="", help="a sim sidecar (robot/jetrover/urdf/jetrover.sim.json, docs/adr/0034): its URDF and "
+                                               "motors instead of --profile and --urdf")
     a.add_argument("--work", default=os.path.expanduser("~/isaacsim/work"), help="where the bridge keeps the URDF's USD")
     a.add_argument("--tap", default="/tmp/teleop-isaac-tap.sock", help="the Unix datagram socket the bridge copies its messages to")
     a.add_argument("--lag", type=int, default=-1, help="the render lag in frames; -1: measure it at start-up")
@@ -284,14 +319,22 @@ def parse_args(argv=None) -> argparse.Namespace:
 def main(argv=None) -> int:
     args = parse_args(argv)
     sys.argv = sys.argv[:1]
-    p = profile_module.load(args.profile)
+    if args.sim:
+        from . import servo
+
+        sim_model = servo.SimModel.load(args.sim)
+        args.urdf = os.path.join(os.path.dirname(os.path.abspath(args.sim)), sim_model.urdf)
+        p = None
+    else:
+        sim_model = None
+        p = profile_module.load(args.profile)
     scene = scene_module.load(args.scene)
     cameras = scene.extra.get("cameras") or []
     if not cameras:
         raise SystemExit(f"error: {args.scene} has no cameras")
     fps = max(c.get("fps", 30) for c in cameras)
     joints = kinematics.read_urdf(args.urdf)
-    motors = MotorMap(p)
+    motors = SimMotorMap(sim_model) if sim_model is not None else MotorMap(p)
 
     if os.path.exists(args.tap):
         os.unlink(args.tap)
@@ -330,7 +373,10 @@ def run(app, args, p, scene, cameras, fps, joints, motors, tap) -> int:
     from PIL import Image
     from pxr import Gf, Usd, UsdGeom, UsdLux, UsdSemantics
 
-    from .bridge import convert_urdf
+    if args.sim:
+        from .jetrover_bridge import convert_urdf
+    else:
+        from .bridge import convert_urdf
     from .world import IsaacWorld, prim_name
 
     usd = convert_urdf(args.urdf, args.work)
@@ -660,6 +706,7 @@ def run(app, args, p, scene, cameras, fps, joints, motors, tap) -> int:
 
     change_backdrop(0)
     stamps = Stamps()
+    posed_values: deque = deque(maxlen=16)  # the joint values posed at each frame, for the VQ records
     state_sensed, state_values = camwire.UNSET, {}
     posed_values = {}  # the joint values the links were posed with at the previous frame
     states_in = worlds_in = 0
@@ -713,6 +760,7 @@ def run(app, args, p, scene, cameras, fps, joints, motors, tap) -> int:
             ts[i], qs[i] = t_i, q_i
         view.set_local_poses(ts, qs)
         stamps.posed(state_sensed)
+        posed_values.append(state_values)
         RenderingManager.render()
         capture = stamps.shown(lag)
         recording = session is not None and session.active and frames % max(1, args.record_every) == 0 and capture != camwire.UNSET
@@ -756,6 +804,10 @@ def run(app, args, p, scene, cameras, fps, joints, motors, tap) -> int:
                     if seg is not None:
                         arrays[f"{c['id']}.mask"] = ("png", stable_mask(seg, (info or {}).get("idToLabels") or {}, table), 0)
         if recording and arrays:
+            # The joint values the frame shows (the state posed lag frames ago): a session with no QS records (the JetRover's,
+            # docs/adr/0034 J5) still knows what each frame shows.
+            if lag < len(posed_values):
+                session_record("VQ", frames, capture, [[name, round(v, 6)] for name, v in sorted(posed_values[-1 - lag].items())])
             flags = "B" if frames <= backdrop["settle_until"] else ""
             with record_lock:
                 record_pending[0] += 1

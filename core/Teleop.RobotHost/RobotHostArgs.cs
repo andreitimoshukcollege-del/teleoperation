@@ -122,7 +122,7 @@ namespace Teleop.RobotHost
             "  [--auto-record [--auto-record-idle-seconds <s>] [--auto-record-max-minutes <min>] [--auto-record-stop-free-gb <gb>]\n" +
             "   [--auto-record-start-free-gb <gb>] [--auto-record-driver-wait-seconds <s>] [--auto-record-min-split-seconds <s>]\n" +
             "   [--auto-record-headset-seconds <s>]\n" +
-            "   [--auto-record-root <dir>] [--auto-record-profile <path>] [--auto-record-source robot|isaac]\n" +
+            "   [--auto-record-root <dir>] [--auto-record-profile <path>] [--auto-record-source robot|isaac] [--auto-record-writer <name:seconds>]...\n" +
             "   [--build-info-robothost <path>] [--build-info-driver <path>]]\n" +
             "  [--scene <file> --world-socket <path> [--local-world-socket <path>] [--scene-seed <n>|auto] [--world-timeout <s>]]\n" +
             "  [--scenarios <dir>]\n" +
@@ -313,6 +313,11 @@ namespace Teleop.RobotHost
                         break;
                     case "--auto-record-profile" when i + 1 < args.Length:
                         auto.ProfilePath = args[++i];
+                        break;
+                    case "--auto-record-writer" when i + 1 < args.Length:
+                        // Another writer of the session to wait for before completing it (the Isaac renderer, docs/adr/0034 J5).
+                        if (WriterWait.TryParse(args[++i], out WriterWait writer, out string writerError)) auto.Writers.Add(writer);
+                        else autoError ??= writerError + ".";
                         break;
                     case "--auto-record-source" when i + 1 < args.Length:
                         // What the robot is: robot (the default), or isaac when the relay is Isaac's (docs/adr/0034 decision 6).

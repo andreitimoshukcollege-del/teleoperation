@@ -141,3 +141,27 @@ def test_a_pose_relative_to_its_parent_composes_back():
     p, q = relative_pose(parent, compose(parent, local))
     assert all(abs(a - b) < 1e-12 for a, b in zip(p, local[0]))
     assert all(abs(a - b) < 1e-12 for a, b in zip(q, local[1]))
+
+
+def test_the_jetrovers_links_have_their_own_mask_classes_and_the_fr3s_keep_theirs():
+    from teleop_isaac.renderer import MASK_IDS, mask_class
+
+    assert mask_class("proximal_link_visual") == "arm" and mask_class("gripper_link_visual") == "hand"
+    # As Isaac's importer names the JetRover's boxes (seen in its converted USD, 2026-11-08).
+    assert mask_class("tn__proximal0_YE") == "arm" and mask_class("tn__proximal2_1_XH") == "arm"
+    assert mask_class("tn__gripper1_nC") == "hand" and mask_class("tn__turntable0_oF") == "arm"
+    assert mask_class("tn__Body12_ab") == "mount"
+    assert mask_class("left_finger_visual") == "hand"
+    assert mask_class("base_link_visual") == "mount"
+    assert mask_class("left_fr3v2_link3_visual") == "left_arm" and mask_class("right_fr3v2_hand_visual") == "right_hand"
+    assert (MASK_IDS["arm"], MASK_IDS["hand"]) == (7, 8) and MASK_IDS["left_arm"] == 1
+
+
+def test_the_sim_motor_map_turns_the_grippers_opening_into_finger_travel():
+    from teleop_isaac import servo
+    from teleop_isaac.renderer import SimMotorMap
+
+    m = SimMotorMap(servo.SimModel.load())
+    v = m.values([(2, 1.0), (10, 0.5)])
+    assert v["proximal"] == 1.0
+    assert v["gripper"] == v["gripper_mirror"] == 0.5 * 0.011

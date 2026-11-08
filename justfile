@@ -3202,9 +3202,12 @@ isaac-jetrover-host scene="jetrover-bench" scene_seed="auto":
         host_scene=(--scene "core/Scenes/$SCENE.json" --scene-seed "$SCENE_SEED" --world-socket "$relay.world" --scenarios "$HOME/isaacsim/scenarios-jetrover")
         echo "[isaac-jetrover] scene $SCENE (seed $SCENE_SEED)"
     fi
-    (cd robot/isaac && exec $(pin 2-5) "$HOME/isaacsim/venv/bin/python" -m teleop_isaac.jetrover_bridge --socket "$relay" --client-socket "$relay.robothost" "${bridge_scene[@]}") > "$log" 2>&1 &
+    tap=/tmp/teleop-isaac-tap-$USER.sock
+    tap_args=(); [ "$SCENE" != none ] && tap_args=(--tap "$tap")
+    (cd robot/isaac && exec $(pin 2-5) "$HOME/isaacsim/venv/bin/python" -m teleop_isaac.jetrover_bridge --socket "$relay" --client-socket "$relay.robothost" "${bridge_scene[@]}" "${tap_args[@]}") > "$log" 2>&1 &
     bridge=$!
-    trap 'kill $bridge 2>/dev/null; wait $bridge 2>/dev/null || true' EXIT
+    renderer=""
+    trap 'kill $bridge $renderer 2>/dev/null; wait $bridge $renderer 2>/dev/null || true' EXIT
     echo "[isaac-jetrover] bridge pid $bridge (log $log); waiting for Isaac to start"
     for i in $(seq 1 180); do
         grep -q "listening on" "$log" 2>/dev/null && break
@@ -3214,13 +3217,29 @@ isaac-jetrover-host scene="jetrover-bench" scene_seed="auto":
     grep "^\[jetrover\]" "$log" || { echo "error: the bridge did not start within 3 min" >&2; tail -30 "$log" >&2; exit 1; }
     rec=$HOME/isaacsim/jetrover-recordings
     mkdir -p "$rec"
+    writer=()
+    if [ "$SCENE" != none ]; then
+        # The cameras, backdrops and recorded frames (docs/adr/0034 J5): the FR3's renderer, given the JetRover's URDF and motors.
+        rlog=$HOME/isaacsim/renderer.log
+        (cd robot/isaac && exec $(pin 8-23) "$HOME/isaacsim/venv/bin/python" -m teleop_isaac.renderer --sim ../jetrover/urdf/jetrover.sim.json \
+            --scene "../../core/Scenes/$SCENE.json" --tap "$tap" --record-control "$rec/.active") > "$rlog" 2>&1 &
+        renderer=$!
+        echo "[isaac-jetrover] renderer pid $renderer (log $rlog); waiting for its feeds"
+        for i in $(seq 1 180); do
+            grep -q "^\[render\] streaming" "$rlog" 2>/dev/null && break
+            kill -0 $renderer 2>/dev/null || break
+            sleep 1
+        done
+        if grep -q "^\[render\] streaming" "$rlog" 2>/dev/null; then grep "^\[render\]" "$rlog"; writer=(--auto-record-writer isaac:60)
+        else echo "warning: the renderer did not start, so there are no camera feeds or frames recorded (the robot runs without them):" >&2; tail -20 "$rlog" >&2; renderer=""; fi
+    fi
     park=""; [ -n "{{jetrover_park_contact_deg}}" ] && park="--park-contact-deg {{jetrover_park_contact_deg}}"
     # As teleop-robothost.service runs it on the Jetson (just deploy-robothost), the relay socket aside; no driver writes a log here.
     dotnet "$HOME/isaacsim/robothost/Teleop.RobotHost.dll" --local-port 6000 --remote-host 127.0.0.1 --remote-port 6001 \
         --relay-socket "$relay" --local-relay-socket "$relay.robothost" --joint-local-port 6002 --discovery-port 6005 \
         --profile-path core/RobotProfiles/jetrover.json --record-control "$rec/.active" \
         --auto-record --auto-record-root "$rec" --auto-record-profile core/RobotProfiles/jetrover.json --auto-record-source isaac \
-        --auto-record-driver-wait-seconds 0 --rest-pose-deg {{jetrover_rest_pose_deg}} $park "${host_scene[@]}"
+        --auto-record-driver-wait-seconds 0 --rest-pose-deg {{jetrover_rest_pose_deg}} $park "${host_scene[@]}" "${writer[@]}"
     REMOTE
     )
     ssh -o ConnectTimeout=10 "{{gpu_host}}" "COMMIT='$commit' SCENE='{{scene}}' SCENE_SEED='{{scene_seed}}' bash -c $(printf '%q' "$remote")"

@@ -246,10 +246,10 @@ The user, in the headset: "the objects are showing but they are pretty small, ca
 is showing in the isaac sim stream is very different to the actual robot model". Asked how, they chose resizing each object
 in the headset over a scale for the whole scene.
 
-- **Resizing.** An object's size is a factor on the scene file's size, the same in every direction, between 0.5 and 3
-  (`WorldScene.MinObjectScale`/`MaxObjectScale`).
+- **Resizing.** An object's size is a factor on the scene file's size, the same in every direction, in steps: 1.25 to a
+  whole power from −3 to 5, so 0.512 to 3.05 (`WorldScene.ResizeStep`, `ScaleOfStep`). Steps because of Isaac, below.
   - **Headset.** With the robot off, the last object a pointer (or the FR3's EDIT OBJECTS) grabbed is selected; SIZE − and
-    SIZE + (beside NEW LAYOUT in both scenes) step it by 1.25. A new world edit, `WorldEditOp.Resize` (5), carries the factor
+    SIZE + (beside NEW LAYOUT in both scenes) move it one step. A new world edit, `WorldEditOp.Resize` (5), carries the factor
     in the edit's x. The twin draws each object at its size.
   - **RobotHost** sends it to the backend and settles the edit by its answer. The backend's sizes are the truth: a new
     joint-port datagram, `0x8B` world sizes, carries every object's factor to the headset with the status (once a second and
@@ -257,8 +257,13 @@ in the headset over a scale for the whole scene.
   - **The arm-server wire** gains kind 12 RESIZE (answered by a PLACED of the same request) and kind 13 SIZES (at start, on
     change, once a second). The golden file has both.
   - **Isaac** checks a resize by the placement rules at the new size and the object's current place (an arm touching it, off
-    the table, too close to another object, an arm in the way), then stands it upright there at its new size: the shape's
-    geometry and, for a movable object, its mass (× factor³) change on the session layer. Every placement rule uses each
+    the table, too close to another object, an arm in the way), then stands it upright there at its new size.
+  - **PhysX cannot change a collider while it simulates.** Measured on the 5090, 2026-11-08: a cylinder's new radius and
+    height were ignored (the can, 1.5×, settled at its old height, 16 mm low), and a box's new scale invalidated every
+    simulation view, so the next articulation call failed and the bridge exited. So the bridge builds one body per step for
+    each object the headset may resize (9 a object, mass × factor³), parks those not in use on an invisible shelf 5 m below
+    and 20 m aside, and swaps two by teleport, as a placement moves one. The renderer, which simulates nothing, changes its
+    copy's shape. Every placement rule uses each
     object's current size. The renderer applies SIZES to its copy and records them as `SZ`.
   - **Not done:** layouts drawn by RobotHost (`SceneLayout`, the redraws) still space objects by their file sizes; Isaac
     refuses a spot that overlaps at the real size, and the redraw takes over. The FR3's EDIT OBJECTS ghost is drawn at the

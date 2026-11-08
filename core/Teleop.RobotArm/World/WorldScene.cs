@@ -148,11 +148,21 @@ namespace Teleop.RobotArm.World
         public const int MaxObjects = 24;
 
         /// <summary>
-        /// How far the headset may resize an object (docs/adr/0034 amendment 6): a factor on the scene file's size, in every
-        /// direction, between these. 1 is the file's size.
+        /// The sizes the headset may give an object (docs/adr/0034 amendment 6): a factor on the scene file's size, in every
+        /// direction, <see cref="ResizeStep"/> to the power <see cref="MinResizeStep"/> to <see cref="MaxResizeStep"/> (0.512 to
+        /// 3.05). Steps, not any factor: Isaac cannot change a collider while it simulates, so it builds a body for every step
+        /// and swaps them.
         /// </summary>
-        public const double MinObjectScale = 0.5;
-        public const double MaxObjectScale = 3.0;
+        public const double ResizeStep = 1.25;
+        public const int MinResizeStep = -3, MaxResizeStep = 5;
+        public static readonly double MinObjectScale = Math.Pow(ResizeStep, MinResizeStep);
+        public static readonly double MaxObjectScale = Math.Pow(ResizeStep, MaxResizeStep);
+
+        /// <summary>The size factor of step <paramref name="step"/>, clamped to the steps there are.</summary>
+        public static double ScaleOfStep(int step) => Math.Pow(ResizeStep, Math.Max(MinResizeStep, Math.Min(MaxResizeStep, step)));
+
+        /// <summary>The step nearest <paramref name="scale"/>.</summary>
+        public static int StepOf(double scale) => scale > 0 ? (int)Math.Round(Math.Log(scale) / Math.Log(ResizeStep)) : MinResizeStep;
 
         /// <summary>The heaviest movable object, kg: anything heavier is not something the arms are meant to knock over.</summary>
         public const double MaxMass = 20.0;
@@ -232,7 +242,12 @@ namespace Teleop.RobotArm.World
         }
 
         /// <summary>Whether <paramref name="scale"/> is a size the headset may ask for.</summary>
-        public static bool IsValidScale(double scale) => scale >= MinObjectScale - 1e-6 && scale <= MaxObjectScale + 1e-6;
+        public static bool IsValidScale(double scale)
+        {
+            if (!(scale > 0) || double.IsInfinity(scale)) return false;
+            int step = StepOf(scale);
+            return step >= MinResizeStep && step <= MaxResizeStep && Math.Abs(scale - ScaleOfStep(step)) <= 1e-4 * scale;
+        }
 
         internal static WorldScene Build(SceneDocument d)
         {

@@ -353,9 +353,12 @@ namespace Teleop.RobotHost.Tests.World
             rig.Host.HandleEdit(WorldEditOp.Resize, 2, new ObjectPose(4, 0, 1.5f, 0, 0, 1, 0, 0, 0), motionOff: false, rig.Now);
             rig.Tick(30, motionOff: false);
             Assert.Equal((2u, (byte)PlaceOutcome.Busy), (rig.LastStatus().EditSequence, rig.LastStatus().EditOutcome));
-            rig.Host.HandleEdit(WorldEditOp.Resize, 3, new ObjectPose(4, 0, 3f, 0, 0, 1, 0, 0, 0), motionOff: true, rig.Now);
+            rig.Host.HandleEdit(WorldEditOp.Resize, 3, new ObjectPose(4, 0, (float)WorldScene.MaxObjectScale, 0, 0, 1, 0, 0, 0), motionOff: true, rig.Now);
             rig.Tick(30);
-            Assert.NotEqual((byte)PlaceOutcome.Applied, rig.LastStatus().EditOutcome); // tripled, the can reaches its neighbours
+            Assert.True(rig.LastStatus().EditOutcome is (byte)PlaceOutcome.OverlapsObject or (byte)PlaceOutcome.OutsideRegion); // tripled, the can reaches its neighbours
+            rig.Host.HandleEdit(WorldEditOp.Resize, 4, new ObjectPose(4, 0, 1.5f, 0, 0, 1, 0, 0, 0), motionOff: true, rig.Now);
+            rig.Tick(30);
+            Assert.Equal((4u, (byte)PlaceOutcome.InvalidPose), (rig.LastStatus().EditSequence, rig.LastStatus().EditOutcome)); // not a step
             Assert.Equal(1f, rig.Host.ScaleOf(Scene.IndexOf(4)));
         }
     }

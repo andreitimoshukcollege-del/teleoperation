@@ -113,12 +113,21 @@ class Scene:
         return (x, y, self.table.top + self.objects[index].size[2] * scale / 2, math.cos(yaw / 2), 0.0, 0.0, math.sin(yaw / 2))
 
 
-# How far the headset may resize an object (Core's WorldScene.MinObjectScale / MaxObjectScale, docs/adr/0034 amendment 6).
-MIN_OBJECT_SCALE, MAX_OBJECT_SCALE = 0.5, 3.0
+# The sizes the headset may give an object (Core's WorldScene resize steps, docs/adr/0034 amendment 6): 1.25 to the power
+# -3 to 5. Isaac builds a body for each and swaps them: a collider cannot change while PhysX simulates.
+RESIZE_STEP, MIN_RESIZE_STEP, MAX_RESIZE_STEP = 1.25, -3, 5
+RESIZE_SCALES = tuple(RESIZE_STEP ** k for k in range(MIN_RESIZE_STEP, MAX_RESIZE_STEP + 1))
+
+
+def step_of(scale: float) -> int:
+    return round(math.log(scale) / math.log(RESIZE_STEP)) if scale > 0 else MIN_RESIZE_STEP
 
 
 def is_valid_scale(scale: float) -> bool:
-    return math.isfinite(scale) and MIN_OBJECT_SCALE - 1e-6 <= scale <= MAX_OBJECT_SCALE + 1e-6
+    if not (math.isfinite(scale) and scale > 0):
+        return False
+    k = step_of(scale)
+    return MIN_RESIZE_STEP <= k <= MAX_RESIZE_STEP and abs(scale - RESIZE_STEP ** k) <= 1e-4 * scale
 
 
 def _bad(what: str, detail: str) -> SceneError:

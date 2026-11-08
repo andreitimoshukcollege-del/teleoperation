@@ -156,7 +156,7 @@ def test_a_movable_object_is_where_physics_has_it_and_a_fixed_one_where_it_was_p
 def test_a_resize_stands_the_object_up_where_it_is_at_its_new_size_and_reports_every_size():
     m = model()
     # An object with room to grow by a fifth where it stands now.
-    i = next(k for k, ob in enumerate(m.scene.objects) if ob.operator_movable and m.check_resize(ob.id, 1.2, no_arm)[0] == wire.APPLIED)
+    i = next(k for k, ob in enumerate(m.scene.objects) if ob.operator_movable and m.check_resize(ob.id, 1.25, no_arm)[0] == wire.APPLIED)
     o = m.scene.objects[i]
     seen = []
 
@@ -164,16 +164,16 @@ def test_a_resize_stands_the_object_up_where_it_is_at_its_new_size_and_reports_e
         seen.append(m.scales[index])
         return False
 
-    outcome, index, upright = m.check_resize(o.id, 1.2, arm)
+    outcome, index, upright = m.check_resize(o.id, 1.25, arm)
     assert (outcome, index) == (wire.APPLIED, i)
-    assert seen == [1.0, 1.2]  # touching now at its size, then in the way at the new one
+    assert seen == [1.0, 1.25]  # touching now at its size, then in the way at the new one
     assert m.scales[i] == 1.0  # nothing changes until it is applied
-    assert abs(upright[2] - (m.scene.table.top + 1.2 * o.size[2] / 2)) < 1e-12
+    assert abs(upright[2] - (m.scene.table.top + 1.25 * o.size[2] / 2)) < 1e-12
     assert upright[:2] == m.poses[i][:2]
-    m.apply_resize(i, 1.2, upright)
-    assert (m.scales[i], m.sizes_revision, m.revision) == (1.2, 1, 1)
+    m.apply_resize(i, 1.25, upright)
+    assert (m.scales[i], m.sizes_revision, m.revision) == (1.25, 1, 1)
     revision, sizes = wire.decode_sizes(m.sizes_message(7))
-    assert revision == 1 and abs(dict(sizes)[o.id] - 1.2) < 1e-6 and len(sizes) == len(m.scene.objects)
+    assert revision == 1 and abs(dict(sizes)[o.id] - 1.25) < 1e-6 and len(sizes) == len(m.scene.objects)
 
 
 def test_a_resize_is_refused_by_the_same_rules_at_the_new_size():
@@ -181,15 +181,16 @@ def test_a_resize_is_refused_by_the_same_rules_at_the_new_size():
     o = m.scene.objects[0]
     assert m.check_resize(200, 1.5, no_arm)[0] == wire.UNKNOWN_OBJECT
     assert m.check_resize(o.id, 0.2, no_arm)[0] == wire.INVALID_POSE
+    assert m.check_resize(o.id, 1.5, no_arm)[0] == wire.INVALID_POSE  # not a step: 1.25 to a whole power only
     assert m.check_resize(o.id, float("nan"), no_arm)[0] == wire.INVALID_POSE
-    assert m.check_resize(o.id, 1.5, lambda i, p, mg: True)[0] == wire.ARM_TOUCHING
-    assert m.check_resize(o.id, 1.5, lambda i, p, mg: mg >= m.scene.clearance)[0] == wire.OVERLAPS_ARM
+    assert m.check_resize(o.id, 1.5625, lambda i, p, mg: True)[0] == wire.ARM_TOUCHING
+    assert m.check_resize(o.id, 1.5625, lambda i, p, mg: mg >= m.scene.clearance)[0] == wire.OVERLAPS_ARM
     # Another object just clear of it now: tripled, it would reach that one, and its size is unchanged.
     i, k = m.index_of(o.id), (m.index_of(o.id) + 1) % len(m.scene.objects)
     p = m.poses[i]
     gap = m.scene.objects[i].footprint_radius + m.scene.objects[k].footprint_radius + m.scene.clearance + 0.002
     m.poses[k] = (p[0], p[1] + gap, *m.poses[k][2:])
-    assert m.check_resize(o.id, 3.0, no_arm)[0] in (wire.OVERLAPS_OBJECT, wire.OUTSIDE_REGION)
+    assert m.check_resize(o.id, 1.25 ** 5, no_arm)[0] in (wire.OVERLAPS_OBJECT, wire.OUTSIDE_REGION)
     assert m.scales[i] == 1.0
 
 
@@ -197,9 +198,16 @@ def test_placements_use_each_objects_current_size():
     m = model()
     o = m.scene.objects[2]
     i = m.index_of(o.id)
-    _, _, upright = m.check_resize(o.id, 2.0, no_arm)
+    _, _, upright = m.check_resize(o.id, 1.5625, no_arm)
     if upright is None:
         return  # this scene has no room to double it; the rule is covered by the refusals above
-    m.apply_resize(i, 2.0, upright)
+    m.apply_resize(i, 1.5625, upright)
     outcome, _, placed = m.check(wire.CAUSE_HEADSET, o.id, m.poses[i], no_arm)
-    assert outcome == wire.APPLIED and abs(placed[2] - (m.scene.table.top + o.size[2])) < 1e-12
+    assert outcome == wire.APPLIED and abs(placed[2] - (m.scene.table.top + 1.5625 * o.size[2] / 2)) < 1e-12
+
+
+def test_the_resize_steps_are_cores():
+    from teleop_isaac.scene import RESIZE_SCALES, is_valid_scale
+
+    assert RESIZE_SCALES[0] == 1.25 ** -3 and RESIZE_SCALES[-1] == 1.25 ** 5 and 1.0 in RESIZE_SCALES
+    assert all(is_valid_scale(s) for s in RESIZE_SCALES) and not is_valid_scale(1.1) and not is_valid_scale(1.25 ** 6)

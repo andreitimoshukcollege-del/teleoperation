@@ -13,9 +13,9 @@ namespace Teleop.RobotArm.Wire
         ResetLayout = 4,
 
         /// <summary>
-        /// Resize one object (docs/adr/0034 amendment 6): the edit's x carries the new size factor on the scene file's size
-        /// (<see cref="World.WorldScene.MinObjectScale"/> to <see cref="World.WorldScene.MaxObjectScale"/>); the rest of its pose
-        /// is unused. The object is stood up where it is at the new size.
+        /// Resize one object (docs/adr/0034 amendment 6): the edit's x carries the new size factor on the scene file's size, one
+        /// of <see cref="World.WorldScene.ScaleOfStep"/>'s; the rest of its pose is unused. The object is stood up where it is at
+        /// the new size.
         /// </summary>
         Resize = 5,
     }

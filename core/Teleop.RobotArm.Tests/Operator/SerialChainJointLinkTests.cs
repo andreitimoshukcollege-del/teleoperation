@@ -95,10 +95,10 @@ namespace Teleop.RobotArm.Tests.Operator
             SerialChainJointLink link = Link(profile, socket, clock, world);
             link.AddedDelayMs = 200;
             var b = new byte[JointDatagram.MaxBytes];
-            Assert.True(WorldCodec.TryEncodeSizes(2, new byte[] { 4 }, new[] { 1.5f }, b, out int n));
+            Assert.True(WorldCodec.TryEncodeSizes(2, new byte[] { 4 }, new[] { 1.5625f }, b, out int n));
             socket.Incoming.Enqueue((b.AsSpan(0, n).ToArray(), 0));
             link.Tick(0);
-            Assert.Equal((1.5f, 2u), (world.Scale(4), world.SizesRevision));
+            Assert.Equal((1.5625f, 2u), (world.Scale(4), world.SizesRevision));
         }
 
         [Fact]

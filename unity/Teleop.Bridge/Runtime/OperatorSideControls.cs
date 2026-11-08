@@ -128,8 +128,6 @@ namespace Teleop.Bridge
 
         // --- resizing (docs/adr/0034 amendment 6) -------------------------------------------------------------------------
 
-        /// <summary>One press of SIZE + or SIZE −: the size factor times or divided by this.</summary>
-        public const float ResizeStep = 1.25f;
 
         /// <summary>The object SIZE − and SIZE + act on: the last one a pointer (or EDIT OBJECTS) grabbed; 0 before any.</summary>
         public byte SelectedObject => _selectedObject;
@@ -149,19 +147,18 @@ namespace Teleop.Bridge
 
         /// <summary>Whether the selected object is as large (<paramref name="up"/>) or as small as it may be.</summary>
         public bool SelectedAtLimit(bool up) =>
-            up ? SelectedScale >= (float)WorldScene.MaxObjectScale - 1e-3f : SelectedScale <= (float)WorldScene.MinObjectScale + 1e-3f;
+            up ? WorldScene.StepOf(SelectedScale) >= WorldScene.MaxResizeStep : WorldScene.StepOf(SelectedScale) <= WorldScene.MinResizeStep;
 
         /// <summary>Whether a resize can be asked for now: a running world, motion off, an object chosen, no edit waiting.</summary>
         public bool CanResize => WorldRunning && !_motionOn() && !EditPending && _selectedObject != 0;
 
-        /// <summary>Asks RobotHost to grow (<paramref name="step"/> &gt; 0) or shrink the selected object by <see cref="ResizeStep"/>, within the limits.</summary>
+        /// <summary>Asks RobotHost to grow (<paramref name="step"/> &gt; 0) or shrink the selected object by one of <see cref="WorldScene"/>'s resize steps.</summary>
         public bool RequestResize(int step)
         {
             if (!CanResize || step == 0) return false;
-            float now = SelectedScale;
-            float next = step > 0 ? now * ResizeStep : now / ResizeStep;
-            next = Math.Clamp(next, (float)WorldScene.MinObjectScale, (float)WorldScene.MaxObjectScale);
-            if (Math.Abs(next - now) < 1e-4f) return false;
+            int at = WorldScene.StepOf(SelectedScale), to = Math.Max(WorldScene.MinResizeStep, Math.Min(WorldScene.MaxResizeStep, at + Math.Sign(step)));
+            if (to == at) return false;
+            float next = (float)WorldScene.ScaleOfStep(to);
             bool sent = _side.RequestWorldEdit(WorldEditOp.Resize, new ObjectPose(_selectedObject, 0, next, 0, 0, 1, 0, 0, 0), _clock.NowTicks);
             if (sent) Debug.Log($"[world] resize {SelectedObjectName} to {next:0.##}x requested");
             return sent;

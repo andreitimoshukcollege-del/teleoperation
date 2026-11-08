@@ -131,14 +131,14 @@ namespace Teleop.RobotArm.Tests.World
         {
             WorldScene scene = SceneDocumentTests.LoadShipped();
             WorldState world = Posed(scene);
-            world.ApplySizes(1, new byte[] { 4 }, new[] { 2f });
-            // The can doubled stands 0.4 m tall: its centre at 0.2 once moved there. A ray 0.18 m above its old centre still hits it.
-            world.Apply(new ObjectPose(4, 0, 0.40f, 0f, 0.20f, 1, 0, 0, 0), 2);
+            world.ApplySizes(1, new byte[] { 4 }, new[] { 1.953125f });
+            // The can at 1.25^3 stands 0.39 m tall: its centre at 0.195 once moved there. A ray 0.18 m above its old centre still hits it.
+            world.Apply(new ObjectPose(4, 0, 0.40f, 0f, 0.195f, 1, 0, 0, 0), 2);
             var d = new PointerDrag(scene);
             At(d, 1, true, 0.40, 0.0, 0.28, world);
             Assert.True(d.IsDragging);
             At(d, 1, true, 0.40, 0.10, 0.28, world);
-            Assert.Equal(0.20, d.Preview.Z, 6);
+            Assert.Equal(0.1953125, d.Preview.Z, 5);
         }
     }
 }

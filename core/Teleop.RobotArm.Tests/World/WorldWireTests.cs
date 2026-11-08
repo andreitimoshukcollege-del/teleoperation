@@ -107,8 +107,9 @@ namespace Teleop.RobotArm.Tests.World
             WorldScene scene = SceneDocumentTests.LoadShipped();
             var world = new WorldState(scene, new byte[32]);
             Assert.Equal(1f, world.Scale(4));
-            world.ApplySizes(3, new byte[] { 4, 2, 200 }, new[] { 2f, 9f, 2f });
-            Assert.Equal((2f, 1f, 1f, 3u), (world.Scale(4), world.Scale(2), world.Scale(200), world.SizesRevision));
+            world.ApplySizes(3, new byte[] { 4, 2, 200, 1 }, new[] { 1.5625f, 9f, 1.5625f, 1.5f });
+            Assert.Equal((1.5625f, 1f, 1f, 1f, 3u), (world.Scale(4), world.Scale(2), world.Scale(200), world.Scale(1), world.SizesRevision));
+            Assert.Equal((-3, 5), (WorldScene.StepOf(WorldScene.MinObjectScale), WorldScene.StepOf(WorldScene.MaxObjectScale)));
             world.Reset();
             Assert.Equal(1f, world.Scale(4));
         }

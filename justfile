@@ -229,7 +229,7 @@ install-galaxy:
     just _adb devices -l
     just _adb install -r "$(wslpath -m "$apk")"
 
-# Point the Galaxy XR app at the robot without a rebuild: pushes a full jetrover_connection.json override (the Bridge default with RemoteHost replaced) to the app's files directory. Finds the robot itself (`just robot-ip`); pass an address to override. motion=false sends nothing to the arm (ConfirmHardwareMotion off): only the virtual arm moves, for a first try of the controls `discover=false` turns off the app's own search for the robot (docs/adr/0022), so it talks to this address only: use it for the Isaac JetRover (`just push-galaxy-config <GPU machine> true false`), so a real robot nearby is never found instead
+# Point the Galaxy XR app at the robot without a rebuild: pushes a full jetrover_connection.json override (the Bridge default with RemoteHost replaced) to the app's files directory. Finds the robot itself (`just robot-ip`); pass an address to override. motion=false sends nothing to the arm (ConfirmHardwareMotion off): only the virtual arm moves, for a first try of the controls. `discover=false` turns off the app's own search for the robot (docs/adr/0022), so it talks to this address only: use it for the Isaac JetRover (`just push-galaxy-config <GPU machine> true false`), so a real robot nearby is never found instead
 [group('headset (Galaxy XR)')]
 push-galaxy-config host=default_jetrover_host motion="true" discover="true":
     #!/usr/bin/env bash

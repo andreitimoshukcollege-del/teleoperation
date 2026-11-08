@@ -109,7 +109,8 @@ namespace Teleop.RobotHost
             "  [--auto-record [--auto-record-idle-seconds <s>] [--auto-record-max-minutes <min>] [--auto-record-stop-free-gb <gb>]\n" +
             "   [--auto-record-start-free-gb <gb>] [--auto-record-driver-wait-seconds <s>] [--auto-record-min-split-seconds <s>]\n" +
             "   [--auto-record-headset-seconds <s>]\n" +
-            "   [--auto-record-root <dir>] [--auto-record-profile <path>] [--build-info-robothost <path>] [--build-info-driver <path>]]\n" +
+            "   [--auto-record-root <dir>] [--auto-record-profile <path>] [--auto-record-source robot|isaac]\n" +
+            "   [--build-info-robothost <path>] [--build-info-driver <path>]]\n" +
             "  [--rest-pose-deg <d1,d2,...>] [--park-speed-rad-per-sec <r>] [--park-tolerance-deg <d>] [--park-timeout-seconds <s>]\n" +
             "  [--park-contact-deg <d>]\n" +
             "  --reply-to sender (default) replies to wherever the latest command came from;\n" +
@@ -294,6 +295,10 @@ namespace Teleop.RobotHost
                         break;
                     case "--auto-record-profile" when i + 1 < args.Length:
                         auto.ProfilePath = args[++i];
+                        break;
+                    case "--auto-record-source" when i + 1 < args.Length:
+                        // What the robot is: robot (the default), or isaac when the relay is Isaac's (docs/adr/0034 decision 6).
+                        auto.Source = args[++i];
                         break;
                     case "--build-info-robothost" when i + 1 < args.Length:
                         auto.RobotHostBuildInfoPath = args[++i];

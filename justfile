@@ -3058,7 +3058,7 @@ isaac-host scene="fr3-duo-bench" scene_seed="auto" feeds="true":
     if [ -f "$HOME/train-sim.pid" ] && kill -0 "$(cat "$HOME/train-sim.pid")" 2>/dev/null; then echo "error: a training run of ours is going (just gpu-status)" >&2; exit 1; fi
     # A Python process only: this script's own shell, and its subshells, carry the bridge's command line in their text.
     mine=""
-    for p in $(pgrep -u "$USER" -f "teleop_isaac[.]bridge" || true); do
+    for p in $(pgrep -u "$USER" -f "teleop_isaac[.](bridge|jetrover_bridge)" || true); do
         case "$(readlink "/proc/$p/exe" 2>/dev/null)" in *python*) mine=$p; break ;; esac
     done
     if [ -n "$mine" ]; then
@@ -3169,6 +3169,49 @@ isaac-scenarios:
     echo "free: $(df -h "$root" | awk 'NR==2 {print $4}')"
     REMOTE
 
+# The JetRover's arm in Isaac Sim on the GPU machine, behind the JetRover's own RobotHost (docs/adr/0034 J2): checks out this commit in ~/teleoperation-isaac (it must be on GitHub), builds RobotHost, starts teleop_isaac.jetrover_bridge on a relay socket (log ~/isaacsim/jetrover-bridge.log) and then RobotHost exactly as the Jetson runs it, with --relay-socket pointing at Isaac instead of the ROS relay: joint port 6002, discovery 6005, the JetRover profile, sessions recorded into ~/isaacsim/jetrover-recordings marked source isaac. Point the headset's JetRover app at it with `just push-galaxy-config <GPU machine's address>`. Enter stops both, as does `just isaac-stop`. Refuses while an Isaac host of ours (FR3 or JetRover) is running there: they share the ports. No real robot moves
+[group('isaac')]
+isaac-jetrover-host:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    commit=$(git rev-parse HEAD)
+    git fetch -q origin
+    [ -n "$(git branch -r --contains "$commit" 2>/dev/null)" ] || { echo "error: $commit is not on GitHub: push it first (the GPU machine runs what GitHub has)" >&2; exit 1; }
+    remote=$(cat <<'REMOTE'
+    set -euo pipefail
+    repo=$HOME/teleoperation-isaac
+    [ -x "$HOME/isaacsim/venv/bin/python" ] || { echo "error: no Isaac Sim in our account here: just isaac-setup" >&2; exit 1; }
+    for p in $(pgrep -u "$USER" -f "teleop_isaac[.](bridge|jetrover_bridge)" || true); do
+        case "$(readlink "/proc/$p/exe" 2>/dev/null)" in *python*) echo "error: an Isaac host of ours is already running on $(hostname) (pid $p): stop it first (just isaac-stop)" >&2; exit 1 ;; esac
+    done
+    [ -d "$repo" ] || git clone -q https://github.com/andreitimoshukcollege-del/teleoperation.git "$repo"
+    cd "$repo" && git fetch -q origin && git checkout -q "$COMMIT" && echo "[isaac-jetrover] repo at $(git log --oneline -1)"
+    dotnet build -c Release -v q -nologo core/Teleop.RobotHost/Teleop.RobotHost.csproj -o "$HOME/isaacsim/robothost" > "$HOME/isaacsim/robothost-build.log" 2>&1         || { tail -20 "$HOME/isaacsim/robothost-build.log" >&2; exit 1; }
+    relay=/tmp/teleop-jetrover-relay-$USER.sock
+    log=$HOME/isaacsim/jetrover-bridge.log
+    pin() { if [ "$(nproc)" -ge 24 ]; then echo "taskset -c $1"; fi; }
+    (cd robot/isaac && exec $(pin 2-5) "$HOME/isaacsim/venv/bin/python" -m teleop_isaac.jetrover_bridge --socket "$relay") > "$log" 2>&1 &
+    bridge=$!
+    trap 'kill $bridge 2>/dev/null; wait $bridge 2>/dev/null || true' EXIT
+    echo "[isaac-jetrover] bridge pid $bridge (log $log); waiting for Isaac to start"
+    for i in $(seq 1 180); do
+        grep -q "listening on" "$log" 2>/dev/null && break
+        kill -0 $bridge 2>/dev/null || { echo "error: the bridge stopped:" >&2; tail -30 "$log" >&2; exit 1; }
+        sleep 1
+    done
+    grep "^\[jetrover\]" "$log" || { echo "error: the bridge did not start within 3 min" >&2; tail -30 "$log" >&2; exit 1; }
+    rec=$HOME/isaacsim/jetrover-recordings
+    mkdir -p "$rec"
+    # As teleop-robothost.service runs it on the Jetson (just deploy-robothost), the relay socket aside; no driver writes a log here.
+    dotnet "$HOME/isaacsim/robothost/Teleop.RobotHost.dll" --local-port 6000 --remote-host 127.0.0.1 --remote-port 6001 \
+        --relay-socket "$relay" --local-relay-socket "$relay.robothost" --joint-local-port 6002 --discovery-port 6005 \
+        --profile-path core/RobotProfiles/jetrover.json --record-control "$rec/.active" \
+        --auto-record --auto-record-root "$rec" --auto-record-profile core/RobotProfiles/jetrover.json --auto-record-source isaac \
+        --auto-record-driver-wait-seconds 0
+    REMOTE
+    )
+    ssh -o ConnectTimeout=10 "{{gpu_host}}" "COMMIT='$commit' bash -c $(printf '%q' "$remote")"
+
 # Stop the Isaac host that `just isaac-host` started on the GPU machine (docs/adr/0031), from any terminal: what Enter does where it was started. RobotHost gets SIGTERM first, which it takes as Enter, so it closes its recording, and isaac-host then stops the bridge. Whatever still runs after 30 s gets SIGTERM, and after 60 s more, SIGKILL. Says which recording is newest and whether it is complete. Nothing running is not an error
 [group('isaac')]
 isaac-stop:
@@ -3179,7 +3222,7 @@ isaac-stop:
     # Real processes only, as in isaac-host: this script's own shell, and isaac-host's, carry both command lines in their text.
     ours() { for p in $(pgrep -u "$USER" -f "$1" || true); do case "$(readlink "/proc/$p/exe" 2>/dev/null)" in *"$2"*) echo "$p" ;; esac; done; }
     host=$(ours "isaacsim/robothost/Teleop[.]RobotHost[.]dll" dotnet)
-    bridge=$(ours "teleop_isaac[.]bridge" python)
+    bridge=$(ours "teleop_isaac[.](bridge|jetrover_bridge)" python)
     renderer=$(ours "teleop_isaac[.]renderer" python)
     if [ -z "$host$bridge$renderer" ]; then echo "[isaac-stop] no Isaac host of ours is running on $(hostname)"; exit 0; fi
     alive() { for p in "$@"; do kill -0 "$p" 2>/dev/null && return 0; done; return 1; }
@@ -3244,7 +3287,7 @@ isaac-status lines="6":
         p=$(cat $root/setup.pid 2>/dev/null); \
         if [ -n "$p" ] && kill -0 "$p" 2>/dev/null; then echo "setup: going (pid $p), venv $(du -sh $root/venv 2>/dev/null | cut -f1)"; else echo "setup: not going"; fi; \
         nvidia-smi --query-gpu=name,memory.used,memory.total,utilization.gpu --format=csv,noheader; \
-        n=0; for p in $(pgrep -u "$USER" -f "teleop_isaac[.](bridge|renderer)" || true); do case "$(readlink /proc/$p/exe 2>/dev/null)" in *python*) n=$((n+1)) ;; esac; done; \
+        n=0; for p in $(pgrep -u "$USER" -f "teleop_isaac[.](bridge|jetrover_bridge|renderer)" || true); do case "$(readlink /proc/$p/exe 2>/dev/null)" in *python*) n=$((n+1)) ;; esac; done; \
         echo "isaac host: $n bridge/renderer process(es) running"; \
         [ "$n" -gt 0 ] && grep "^\[render\] [0-9]" $root/renderer.log 2>/dev/null | tail -1; \
         echo; tail -n {{lines}} $root/setup.log 2>/dev/null || echo "(no setup log)"'

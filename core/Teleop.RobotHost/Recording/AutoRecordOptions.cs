@@ -98,6 +98,9 @@ namespace Teleop.RobotHost.Recording
 
         public string Source { get; set; } = "robot";
 
+        /// <summary>The <c>source</c> values a session may carry (trainer/contract/SESSION_FORMAT.md).</summary>
+        public static readonly string[] Sources = { "robot", "sim", "sim-host", "isaac", "arm-server-sim", "unknown" };
+
         /// <summary>The robot profile's name, written into a v2 <c>session.json</c>. Null for v1.</summary>
         public string? ProfileName { get; set; }
 
@@ -125,6 +128,7 @@ namespace Teleop.RobotHost.Recording
         /// <summary>Null when every value is usable, else what is wrong.</summary>
         public string? Validate()
         {
+            if (Array.IndexOf(Sources, Source) < 0) return $"--auto-record-source '{Source}' is not one of {string.Join(", ", Sources)}";
             if (!(IdleSeconds > 0)) return "--auto-record-idle-seconds must be positive";
             if (!(MaxMinutes > 0)) return "--auto-record-max-minutes must be positive";
             if (!(StopFreeGigabytes >= 0)) return "--auto-record-stop-free-gb must be zero or more";

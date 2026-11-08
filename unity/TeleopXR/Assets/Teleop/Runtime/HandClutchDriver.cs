@@ -40,6 +40,8 @@ namespace Teleop.XR
         [SerializeField] private bool followPitch = true;
         [Tooltip("Optional: the camera display. While robot motion is off, a pinch that starts with the hand's ray on it moves the display instead of the arm.")]
         [SerializeField] private DisplayMover displayMover;
+        [Tooltip("Optional: the hand pointer (docs/adr/0034 J6). When set, it moves the displays, and a pinch it owns (on a button, an object or a display) never engages the clutch.")]
+        [SerializeField] private Fr3HandPointer handPointer;
         [Tooltip("Optional: drawn from the hand to the display while the ray is on it.")]
         [SerializeField] private LineRenderer pointer;
         [Tooltip("Where the hand's ray starts relative to the head, before the pinch point: about the shoulder (x is mirrored for the left hand).")]
@@ -87,7 +89,8 @@ namespace Teleop.XR
             bool moving = displayMover != null && displayMover.IsMoving;
             // The display is only offered while the robot cannot move, so a pinch meant for it can
             // never become a clutch on a live arm, and the reverse.
-            bool displayOffered = displayMover != null && !(bridge.MotionEnabled && bridge.HardwareMotionAllowed);
+            bool displayOffered = displayMover != null && handPointer == null && !(bridge.MotionEnabled && bridge.HardwareMotionAllowed);
+            bool pointerOwns = handPointer != null && handPointer.Owns(clutchHand == Handedness.Right ? 1 : 0);
             bool pointing = false;
             Ray ray = default;
             float hitDistance = 0f;
@@ -96,7 +99,7 @@ namespace Teleop.XR
                 ray = HandRay(point);
                 pointing = displayOffered && !clutch.IsEngaged && displayMover.TryHit(ray, out hitDistance);
 
-                if (!clutch.IsEngaged && !moving && distance < engageBelowMeters)
+                if (!clutch.IsEngaged && !moving && distance < engageBelowMeters && !pointerOwns)
                 {
                     // Where the pinch starts decides what it holds: the display under the ray, or the arm.
                     if (pointing)
@@ -134,7 +137,7 @@ namespace Teleop.XR
                 moving = false;
             }
 
-            if (displayMover != null) displayMover.Hovered = pointing || moving;
+            if (displayMover != null && handPointer == null) displayMover.Hovered = pointing || moving;
             ShowPointer(pointing || moving, point, ray, moving ? -1f : hitDistance);
 
             // The gripper hand only acts while the clutch hand is pinched, like the arm: let go with the

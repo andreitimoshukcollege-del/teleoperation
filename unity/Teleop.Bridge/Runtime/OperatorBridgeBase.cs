@@ -110,5 +110,11 @@ namespace Teleop.Bridge
 
         /// <summary>The JetRover's training course, while it sets the speed and clears the disturbance; null for other robots.</summary>
         public virtual JetRoverTrainingCourse Training => null;
+
+        /// <summary>
+        /// The world, pointing at objects and the RECORD button (docs/adr/0034 decision 7): what the scene's twin, buttons and
+        /// pointer use, whichever robot this is. Null before the link exists, or for a bridge without them.
+        /// </summary>
+        public virtual OperatorSideControls SideControls => null;
     }
 }

@@ -87,9 +87,7 @@ namespace Teleop.Bridge
         private SerialChainJointLink _link;
         private WorldState _world;
         private ObjectEditGesture _edit;
-        private PointerDrag _pointer;
-        private bool _editObjects, _hasPendingMove;
-        private ObjectPose _pendingMove;
+        private bool _editObjects;
         private LinkView _view;
         private JointSample[] _commanded;
         private SerialChainTeleop _teleop;
@@ -231,6 +229,12 @@ namespace Teleop.Bridge
         /// <summary>Whether the hands map absolutely (the robot anchored to your body), rather than through the relative clutch.</summary>
         public bool IsAbsolute => _mapping != null;
 
+        // --- the world, pointing and RECORD: the shared OperatorSideControls (docs/adr/0034 decision 7) ---------------------
+
+        private OperatorSideControls _controls;
+
+        public override OperatorSideControls SideControls => _controls;
+
         /// <summary>The world as the headset sees it (docs/adr/0031 amendment 2); null without a scene file.</summary>
         public WorldState World => _world;
 
@@ -241,8 +245,7 @@ namespace Teleop.Bridge
         public bool WorldSceneMismatch => _world != null && _world.SceneMismatch;
 
         /// <summary>Whether NEW LAYOUT can be asked for now: a world is running, motion is off, and no edit is waiting.</summary>
-        public bool CanRequestNewLayout => _link != null && _world != null && _world.HasStatus && _world.Status.Running &&
-                                           !_world.SceneMismatch && _mode != JetRoverMotionMode.On && !_link.WorldEditPending;
+        public bool CanRequestNewLayout => _controls != null && _controls.CanRequestNewLayout;
 
         /// <summary>
         /// Whether EDIT OBJECTS can be on (phase P5): a world is running with this headset's scene file, the robot is off, and the
@@ -275,173 +278,32 @@ namespace Teleop.Bridge
             }
         }
 
-        /// <summary>Whether an object is being dragged, by EDIT OBJECTS or a pointer (the twin shows its ghost at <see cref="EditPreview"/>).</summary>
-        public bool EditDragging => (_editObjects && _edit != null && _edit.IsDragging) || PointerDragging;
+        public bool EditDragging => _controls != null && _controls.EditDragging;
+        public byte EditDraggedId => _controls != null ? _controls.EditDraggedId : (byte)0;
+        public RigidTransform EditPreview => _controls != null ? _controls.EditPreview : RigidTransform.Identity;
+        public bool CanPointerDrag => _controls != null && _controls.CanPointerDrag;
+        public bool PointerDragging => _controls != null && _controls.PointerDragging;
+        public float PointerHit(Vector3 origin, Vector3 direction) => _controls != null ? _controls.PointerHit(origin, direction) : -1f;
+        public void UpdatePointer(int hand, bool tracked, bool pinched, Vector3 origin, Vector3 direction) => _controls?.UpdatePointer(hand, tracked, pinched, origin, direction);
+        public bool EditPending => _controls != null && _controls.EditPending;
+        public string LastEditOutcome => _controls != null ? _controls.LastEditOutcome : "";
+        public bool RequestNewLayout() => _controls != null && _controls.RequestNewLayout();
 
-        public byte EditDraggedId => _editObjects && _edit != null && _edit.IsDragging ? _edit.DraggedId : PointerDragging ? _pointer.DraggedId : (byte)0;
-
-        /// <summary>Where the dragged object would go, in the robot's base frame.</summary>
-        public RigidTransform EditPreview => PointerDragging ? _pointer.Preview : _edit != null ? _edit.Preview : RigidTransform.Identity;
-
-        // --- pointing (docs/adr/0031 amendment 5) ------------------------------------------------------------------------
-
-        /// <summary>
-        /// Whether a pointing ray may drag objects now: a running world with this headset's scene file, and the robot off (the
-        /// hands drive nothing). Unlike EDIT OBJECTS, the mapping does not matter: the ray is where the hand points.
-        /// </summary>
-        public bool CanPointerDrag => _pointer != null && _world.HasStatus && _world.Status.Running && !_world.SceneMismatch &&
-                                      _mode != JetRoverMotionMode.On && !_editObjects;
-
-        /// <summary>Whether a pointer drags an object now.</summary>
-        public bool PointerDragging => _pointer != null && _pointer.IsDragging;
-
-        /// <summary>
-        /// How far along a world-space ray the first object it hits is, in metres (the ray's direction need not be unit);
-        /// negative when it hits none, or pointing cannot drag now.
-        /// </summary>
-        public float PointerHit(Vector3 origin, Vector3 direction)
-        {
-            if (!CanPointerDrag) return -1f;
-            RootRay(origin, direction, out CoreVec o, out CoreVec d);
-            return _pointer.Hit(o.X, o.Y, o.Z, d.X, d.Y, d.Z, _world, out double distance) >= 0 ? (float)distance : -1f; // the root is not scaled
-        }
-
-        /// <summary>
-        /// One hand's pointing ray this frame (world space) and whether it pinches: a pinch that starts on an object drags it,
-        /// and letting go asks RobotHost to put it there (<see cref="PointerDrag"/>). Call for both hands every frame; with
-        /// <paramref name="tracked"/> false (or when pointing cannot drag) a drag is dropped and nothing asked.
-        /// </summary>
-        public void UpdatePointer(int hand, bool tracked, bool pinched, Vector3 origin, Vector3 direction)
-        {
-            if (_pointer == null) return;
-            bool can = CanPointerDrag;
-            RootRay(origin, direction, out CoreVec o, out CoreVec d);
-            bool was = _pointer.IsDragging;
-            _pointer.Update(hand, tracked && can, pinched && can, o.X, o.Y, o.Z, d.X, d.Y, d.Z, _world);
-            if (!was && _pointer.IsDragging) Debug.Log($"[world] pointer grabbed object {_pointer.DraggedId}");
-        }
-
-        /// <summary>Whether a move is waiting for RobotHost's answer.</summary>
-        public bool EditPending => _hasPendingMove || (_link != null && _link.WorldEditPending);
-
-        /// <summary>RobotHost's answer to the last edit, in words; empty before any.</summary>
-        public string LastEditOutcome
-        {
-            get
-            {
-                if (_world == null || !_world.HasStatus || _world.Status.EditSequence == 0) return "";
-                switch (_world.Status.EditOutcome)
-                {
-                    case 0: return "done";
-                    case 1: return "refused: an arm is in the way";
-                    case 2: return "refused: another object is there";
-                    case 3: return "refused: off the table";
-                    case 5: return "refused: that one is fixed";
-                    case 6: return "refused: an arm is touching it";
-                    case 7: return "refused: the robot is on";
-                    case 9: return "no answer from the world";
-                    default: return "refused";
-                }
-            }
-        }
-
-        /// <summary>Asks RobotHost for the next seeded layout (only while motion is off); false when it cannot be asked now.</summary>
-        public bool RequestNewLayout()
-        {
-            if (!CanRequestNewLayout) return false;
-            bool sent = _link.RequestWorldEdit(WorldEditOp.NewLayout, default, _clock.NowTicks);
-            if (sent) Debug.Log("[world] NEW LAYOUT requested");
-            return sent;
-        }
-
-        // --- scenario recording (docs/adr/0033) ------------------------------------------------------------------------
-
-        private int _selectedScenario;
-
-        /// <summary>RobotHost's recording status and scenario list; null before the link exists.</summary>
-        public RecordingState Recording => _link != null ? _link.Recording : null;
-
-        /// <summary>Whether RobotHost records scenarios at all (it answered with a status within the last 5 s).</summary>
-        public bool RecordingAvailable => _link != null && _link.Recording.HasStatus && _link.Recording.Status.State != RecordState.Unavailable &&
-                                          _link.SecondsSinceLastFrame(_clock.NowTicks) < 5.0;
-
-        public bool IsRecording => RecordingAvailable && _link.Recording.Status.State == RecordState.Recording;
-
-        /// <summary>Whether a record request is waiting for RobotHost's answer.</summary>
-        public bool RecordPending => _link != null && _link.RecordRequestPending;
-
-        /// <summary>The scenario the RECORD button records next: an index into the list, kept within it.</summary>
-        public int SelectedScenario
-        {
-            get
-            {
-                int n = _link != null ? _link.Recording.Count : 0;
-                return n == 0 ? 0 : Math.Max(0, Math.Min(n - 1, _selectedScenario));
-            }
-        }
-
-        /// <summary>How many scenarios RobotHost's list holds (0 before it arrives).</summary>
-        public int ScenarioCount => _link != null ? _link.Recording.Count : 0;
-
-        /// <summary>The take being recorded: its scenario, its number, and how long it has run.</summary>
-        public string TakeScenarioName => _link != null ? _link.Recording.Name(_link.Recording.Status.Scenario) : "";
-        public int TakeNumber => _link != null ? _link.Recording.Status.Take : 0;
-        public int TakeSeconds => _link != null ? (int)(_link.Recording.Status.ElapsedMs / 1000) : 0;
-
-        /// <summary>Free disk where the takes go, GB, as RobotHost last said.</summary>
-        public int RecordingFreeGigabytes => _link != null ? _link.Recording.Status.FreeGigabytes : 0;
-
-        /// <summary>The selected scenario's name, or empty before the list arrives.</summary>
-        public string SelectedScenarioName => _link != null ? _link.Recording.Name(SelectedScenario) : "";
-
-        /// <summary>Moves the selection by <paramref name="step"/> through the list, wrapping; not while a take records.</summary>
-        public void StepScenario(int step)
-        {
-            int n = _link != null ? _link.Recording.Count : 0;
-            if (n == 0 || IsRecording) return;
-            _selectedScenario = ((SelectedScenario + step) % n + n) % n;
-        }
-
-        /// <summary>Starts a take of the selected scenario, or stops the one going; false when it cannot be asked now.</summary>
-        public bool ToggleRecording()
-        {
-            if (!RecordingAvailable || RecordPending) return false;
-            bool stop = IsRecording;
-            bool sent = _link.RequestRecord(stop ? RecordOp.Stop : RecordOp.Start, SelectedScenario, _clock.NowTicks);
-            if (sent) Debug.Log(stop ? "[record] STOP asked" : $"[record] RECORD '{SelectedScenarioName}' asked");
-            return sent;
-        }
-
-        /// <summary>Sets the last take aside (RobotHost moves it into the folder's _discarded); false when it cannot be asked now.</summary>
-        public bool DiscardLastTake()
-        {
-            if (!RecordingAvailable || RecordPending || IsRecording) return false;
-            bool sent = _link.RequestRecord(RecordOp.DiscardLast, SelectedScenario, _clock.NowTicks);
-            if (sent) Debug.Log("[record] DISCARD LAST asked");
-            return sent;
-        }
-
-        /// <summary>RobotHost's answer to the last record request, in words; empty before any.</summary>
-        public string LastRecordOutcome
-        {
-            get
-            {
-                if (_link == null || !_link.Recording.HasStatus || _link.Recording.Status.Sequence == 0) return "";
-                switch (_link.Recording.Status.Outcome)
-                {
-                    case RecordOutcome.Started: return "recording";
-                    case RecordOutcome.Saved: return "take saved";
-                    case RecordOutcome.Discarded: return "last take set aside";
-                    case RecordOutcome.Busy: return "busy: try again";
-                    case RecordOutcome.UnknownScenario: return "the list changed: pick again";
-                    case RecordOutcome.LowDisk: return "the disk is nearly full";
-                    case RecordOutcome.Failed: return "could not record: see RobotHost's log";
-                    case RecordOutcome.NothingToDiscard: return "no take to set aside";
-                    case RecordOutcome.StoppedByItself: return "the take stopped by itself";
-                    default: return "";
-                }
-            }
-        }
+        public RecordingState Recording => _controls?.Recording;
+        public bool RecordingAvailable => _controls != null && _controls.RecordingAvailable;
+        public bool IsRecording => _controls != null && _controls.IsRecording;
+        public bool RecordPending => _controls != null && _controls.RecordPending;
+        public int SelectedScenario => _controls != null ? _controls.SelectedScenario : 0;
+        public int ScenarioCount => _controls != null ? _controls.ScenarioCount : 0;
+        public string TakeScenarioName => _controls != null ? _controls.TakeScenarioName : "";
+        public int TakeNumber => _controls != null ? _controls.TakeNumber : 0;
+        public int TakeSeconds => _controls != null ? _controls.TakeSeconds : 0;
+        public int RecordingFreeGigabytes => _controls != null ? _controls.RecordingFreeGigabytes : 0;
+        public string SelectedScenarioName => _controls != null ? _controls.SelectedScenarioName : "";
+        public void StepScenario(int step) => _controls?.StepScenario(step);
+        public bool ToggleRecording() => _controls != null && _controls.ToggleRecording();
+        public bool DiscardLastTake() => _controls != null && _controls.DiscardLastTake();
+        public string LastRecordOutcome => _controls != null ? _controls.LastRecordOutcome : "";
 
         /// <summary>
         /// Anchors the robot to your body as you stand now (docs/adr/0029 amendments 1 and 4): the headset's position, with
@@ -694,10 +556,14 @@ namespace Teleop.Bridge
                 maxAcceptableRttTicks: (long)(_config.MaxAcceptableRttMs / 1000.0 * _clock.TicksPerSecond),
                 outlierRttMultiple: _config.OutlierRttMultiple, minSamplesBeforeTrusted: _config.MinSamplesBeforeTrusted);
             List<JointPredictorPreset> presets = Presets(out int active, out string[] descriptions);
-            _world = LoadWorld(_profile);
+            _world = LoadWorld(SceneResource, _profile.Name);
             _link = new SerialChainJointLink(_transport, _clock, _profile, clockSync, presets, active, OperatorClientKind.Headset, _world);
             _edit = _world != null ? new ObjectEditGesture(_world.Scene) : null;
-            _pointer = _world != null ? new PointerDrag(_world.Scene) : null;
+            _controls = new OperatorSideControls(_link.Side, _clock, () => robotRoot != null ? robotRoot : transform, () => _mode == JetRoverMotionMode.On)
+            {
+                OtherDragOn = () => _editObjects,
+                OtherDrag = () => (_editObjects && _edit != null && _edit.IsDragging, _edit != null ? _edit.DraggedId : (byte)0, _edit != null ? _edit.Preview : RigidTransform.Identity),
+            };
             _view = new LinkView(_link, descriptions, _clock);
             _commanded = new JointSample[_teleop.MotorCount];
 
@@ -730,19 +596,11 @@ namespace Teleop.Bridge
             if (_edit != null)
             {
                 if (_editObjects && !CanEditObjects) EditObjects = false; // the world stopped, or the scene changed
-                if (_edit.TryTakeRequest(out ObjectPose move) || (_pointer != null && _pointer.TryTakeRequest(out move)))
-                {
-                    _pendingMove = move;
-                    _hasPendingMove = true;
-                }
-
-                // Sent once nothing else is waiting; the link re-sends it until RobotHost echoes it.
-                if (_hasPendingMove && !_link.WorldEditPending && _link.RequestWorldEdit(WorldEditOp.Move, _pendingMove, now))
-                {
-                    _hasPendingMove = false;
-                    Debug.Log($"[world] move {_pendingMove.Id} to ({_pendingMove.X:0.000}, {_pendingMove.Y:0.000}) requested");
-                }
+                if (_edit.TryTakeRequest(out ObjectPose move)) _controls.QueueMove(move);
             }
+
+            // Sent once nothing else is waiting; the link re-sends it until RobotHost echoes it.
+            _controls.Update(now);
 
             if (!_teleop.HasPose && _link.FramesReceived > 0) _teleop.TryTakePose(_link.Measured);
             if (motionEnabledAtStart && _mode != JetRoverMotionMode.On && _teleop.HasPose) MotionEnabled = true;
@@ -956,18 +814,19 @@ namespace Teleop.Bridge
         }
 
         /// <summary>
-        /// The scene file (docs/adr/0031 amendment 2): <c>persistentDataPath/fr3_scene.json</c> when pushed, else the copy in Resources.
-        /// Its sha256 is compared with the one RobotHost reports. Null (no world) when neither loads.
+        /// The scene file (docs/adr/0031 amendment 2): <c>persistentDataPath/&lt;resource&gt;.json</c> when pushed, else the copy in
+        /// Resources. Its sha256 is compared with the one RobotHost reports. Null (no world) when neither loads. The JetRover's bridge
+        /// loads its own (<c>jetrover_scene</c>, docs/adr/0034) through this too.
         /// </summary>
-        private static WorldState LoadWorld(SerialChainProfile profile)
+        internal static WorldState LoadWorld(string resource, string profileName)
         {
             try
             {
-                string pushed = System.IO.Path.Combine(Application.persistentDataPath, SceneResource + ".json");
-                byte[] bytes = System.IO.File.Exists(pushed) ? System.IO.File.ReadAllBytes(pushed) : Resources.Load<TextAsset>(SceneResource)?.bytes;
+                string pushed = System.IO.Path.Combine(Application.persistentDataPath, resource + ".json");
+                byte[] bytes = System.IO.File.Exists(pushed) ? System.IO.File.ReadAllBytes(pushed) : Resources.Load<TextAsset>(resource)?.bytes;
                 if (bytes == null) return null;
                 WorldScene scene = JsonUtility.FromJson<SceneDocument>(System.Text.Encoding.UTF8.GetString(bytes)).ToScene();
-                if (scene.RobotProfile != profile.Name) throw new FormatException($"the scene is for '{scene.RobotProfile}', not '{profile.Name}'");
+                if (scene.RobotProfile != profileName) throw new FormatException($"the scene is for '{scene.RobotProfile}', not '{profileName}'");
                 using (var sha = System.Security.Cryptography.SHA256.Create())
                 {
                     Debug.Log($"[world] scene '{scene.Name}': {scene.Objects.Length} objects{(System.IO.File.Exists(pushed) ? " (pushed)" : "")}");

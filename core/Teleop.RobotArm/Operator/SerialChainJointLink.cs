@@ -85,38 +85,16 @@ namespace Teleop.RobotArm.Operator
         private readonly JointSample[] _queueJoints = new JointSample[QueueCapacity * MaxJoints];
         private int _queueHead, _queueSize;
 
-        // The world (docs/adr/0031 amendment 2): world frames wait out the same added delay as joint frames, so objects and
-        // arms cross the disturbed network together. Optional: without a WorldState, world datagrams are ignored as before.
-        private const int WorldQueueCapacity = 512;
-        private readonly WorldState? _world;
-        private readonly long[] _worldRelease = new long[WorldQueueCapacity];
-        private readonly long[] _worldSensed = new long[WorldQueueCapacity];
-        private readonly int[] _worldCounts = new int[WorldQueueCapacity];
-        private readonly ObjectPose[] _worldPoses = new ObjectPose[WorldQueueCapacity * WorldCodec.MaxObjectsPerFrame];
-        private readonly ObjectPose[] _worldPart = new ObjectPose[WorldCodec.MaxObjectsPerFrame];
-        private readonly byte[] _worldSha = new byte[WorldCodec.Sha256Bytes];
-        private readonly byte[] _editBuffer = new byte[WorldCodec.EditBytes];
-        private int _worldHead, _worldSize;
-        private uint _editSequence;
-        private long _editFirstSent = long.MinValue, _editLastSent = long.MinValue;
-        private WorldEditOp _editOp;
-        private ObjectPose _editPose;
 
-        // Scenario recording (docs/adr/0033): the status and list as they arrive, outside the disturbance (control, not state).
-        private readonly RecordingState _recording = new RecordingState();
-        private readonly byte[] _recordBuffer = new byte[RecordCodec.RequestBytes];
-        private uint _recordSequence;
-        private long _recordFirstSent = long.MinValue, _recordLastSent = long.MinValue;
-        private RecordOp _recordOp;
-        private byte _recordScenario;
-        private ushort _recordRevision;
+        // The world (docs/adr/0031 amendment 2) and scenario recording (docs/adr/0033), shared with the JetRover's link.
+        private readonly JointPortSideChannels _side;
 
         public SerialChainJointLink(ITransport transport, ITimeAuthority clock, SerialChainProfile profile, ClockSyncConfig clockSyncConfig,
             IReadOnlyList<JointPredictorPreset> presets, int activePreset, OperatorClientKind clientKind = OperatorClientKind.Headset,
             WorldState? world = null)
         {
-            _world = world;
             _transport = transport ?? throw new ArgumentNullException(nameof(transport));
+            _side = new JointPortSideChannels(transport, clock ?? throw new ArgumentNullException(nameof(clock)), world);
             _clock = clock ?? throw new ArgumentNullException(nameof(clock));
             _profile = profile ?? throw new ArgumentNullException(nameof(profile));
             if (presets == null || presets.Count == 0) throw new ArgumentException("no joint predictor presets", nameof(presets));
@@ -140,59 +118,41 @@ namespace Teleop.RobotArm.Operator
             }
         }
 
+        /// <summary>The world and RECORD's datagrams on this link (shared with the JetRover's, docs/adr/0034 decision 7).</summary>
+        public JointPortSideChannels Side => _side;
+
         /// <summary>The world as the headset sees it; null when the link was made without one.</summary>
-        public WorldState? World => _world;
+        public WorldState? World => _side.World;
 
         /// <summary>Whether an edit is waiting for the status to echo it.</summary>
-        public bool WorldEditPending => _editFirstSent != long.MinValue;
+        public bool WorldEditPending => _side.WorldEditPending;
 
         /// <summary>The last edit that went unanswered for 2 s (0: none).</summary>
-        public uint WorldEditTimedOut { get; private set; }
+        public uint WorldEditTimedOut => _side.WorldEditTimedOut;
 
         /// <summary>Scenario recording as RobotHost reports it (docs/adr/0033); never null, empty until a status arrives.</summary>
-        public RecordingState Recording => _recording;
+        public RecordingState Recording => _side.Recording;
 
         /// <summary>Whether a record request is waiting for the status to echo it.</summary>
-        public bool RecordRequestPending => _recordFirstSent != long.MinValue;
+        public bool RecordRequestPending => _side.RecordRequestPending;
 
         /// <summary>The last record request that went unanswered for 2 s (0: none).</summary>
-        public uint RecordRequestTimedOut { get; private set; }
+        public uint RecordRequestTimedOut => _side.RecordRequestTimedOut;
 
-        /// <summary>The sequence of the last record request asked (0: none yet); the status echoes it once RobotHost answered.</summary>
-        public uint RecordSequence => _recordSequence;
-
-        /// <summary>
-        /// Asks RobotHost to start a take of scenario <paramref name="scenario"/> (an index into the list as the headset has it),
-        /// stop the take, or set the last one aside (docs/adr/0033). Re-sent every 0.25 s until the status echoes it, given up
-        /// after 2 s. One at a time: false while another is waiting, or before the list matches the status.
-        /// </summary>
-        public bool RequestRecord(RecordOp op, int scenario, long now)
-        {
-            if (RecordRequestPending || !_recording.HasStatus) return false;
-            if (op == RecordOp.Start && (!_recording.ListCurrent || scenario < 0 || scenario >= _recording.Count)) return false;
-            _recordSequence = _recordSequence == uint.MaxValue ? 1 : _recordSequence + 1;
-            _recordOp = op;
-            _recordScenario = (byte)Math.Max(0, Math.Min(254, scenario));
-            _recordRevision = _recording.ListRevision;
-            _recordFirstSent = now;
-            _recordLastSent = long.MinValue;
-            return true;
-        }
+        /// <summary>The sequence of the last record request asked (0: none yet).</summary>
+        public uint RecordSequence => _side.RecordSequence;
 
         /// <summary>
         /// Asks RobotHost for a world edit (docs/adr/0031 amendment 2): NEW LAYOUT, a move, a reset. Re-sent every 0.25 s until the
         /// world status echoes it, given up after 2 s. One at a time: false while another is waiting, or without a world.
         /// </summary>
-        public bool RequestWorldEdit(WorldEditOp op, in ObjectPose pose, long now)
-        {
-            if (_world == null || WorldEditPending) return false;
-            _editSequence = _editSequence == uint.MaxValue ? 1 : _editSequence + 1;
-            _editOp = op;
-            _editPose = pose;
-            _editFirstSent = now;
-            _editLastSent = long.MinValue;
-            return true;
-        }
+        public bool RequestWorldEdit(WorldEditOp op, in ObjectPose pose, long now) => _side.RequestWorldEdit(op, pose, now);
+
+        /// <summary>
+        /// Asks RobotHost to start a take of scenario <paramref name="scenario"/>, stop the take, or set the last one aside
+        /// (docs/adr/0033). Re-sent every 0.25 s until the status echoes it, given up after 2 s.
+        /// </summary>
+        public bool RequestRecord(RecordOp op, int scenario, long now) => _side.RequestRecord(op, scenario, now);
 
         /// <summary>
         /// What the headset does to its link and view now (the console's disturbance, the added delay): sent at the next
@@ -279,73 +239,11 @@ namespace Teleop.RobotArm.Operator
                 _lastHeadsetSentTicks = now;
             }
 
-            if (_editFirstSent != long.MinValue)
-            {
-                if (_world!.HasStatus && _world.Status.EditSequence == _editSequence)
-                {
-                    _editFirstSent = long.MinValue;
-                }
-                else if (now - _editFirstSent > 2 * _clock.TicksPerSecond)
-                {
-                    WorldEditTimedOut = _editSequence;
-                    _editFirstSent = long.MinValue;
-                }
-                else if ((_editLastSent == long.MinValue || now - _editLastSent >= _clock.TicksPerSecond / 4) &&
-                         WorldCodec.TryEncodeEdit(_editOp, _editPose.Id, _editSequence, now, _editPose, _editBuffer, out int editBytes))
-                {
-                    _transport.Send(_editBuffer.AsSpan(0, editBytes), now);
-                    _editLastSent = now;
-                }
-            }
-
-            if (_recordFirstSent != long.MinValue)
-            {
-                if (_recording.HasStatus && _recording.Status.Sequence == _recordSequence)
-                {
-                    _recordFirstSent = long.MinValue;
-                }
-                else if (now - _recordFirstSent > 2 * _clock.TicksPerSecond)
-                {
-                    RecordRequestTimedOut = _recordSequence;
-                    _recordFirstSent = long.MinValue;
-                }
-                else if ((_recordLastSent == long.MinValue || now - _recordLastSent >= _clock.TicksPerSecond / 4) &&
-                         RecordCodec.TryEncodeRequest(_recordOp, _recordScenario, _recordRevision, _recordSequence, now, _recordBuffer, out int recordBytes))
-                {
-                    _transport.Send(_recordBuffer.AsSpan(0, recordBytes), now);
-                    _recordLastSent = now;
-                }
-            }
+            _side.SendDue(now);
 
             while (_transport.TryReceive(now, _buffer, out int count, out long arrival))
             {
-                if (count > 0 && _buffer[0] == RecordCodec.StatusTag)
-                {
-                    if (RecordCodec.TryDecodeStatus(_buffer.AsSpan(0, count), out RecordStatus recordStatus, out long recordSent)) _recording.ApplyStatus(recordStatus, recordSent);
-                    continue;
-                }
-
-                if (count > 0 && _buffer[0] == RecordCodec.ListTag)
-                {
-                    _recording.ApplyListPart(_buffer.AsSpan(0, count));
-                    continue;
-                }
-
-                if (_world != null && count > 0 && _buffer[0] == WorldCodec.FrameTag)
-                {
-                    if (WorldCodec.TryDecodeFrame(_buffer.AsSpan(0, count), out _, out long worldSensed, out _, out _, _worldPart, out int objects))
-                    {
-                        EnqueueWorld(arrival + (long)(_addedDelayMs / 1000.0 * _clock.TicksPerSecond), worldSensed, objects);
-                    }
-
-                    continue;
-                }
-
-                if (_world != null && count > 0 && _buffer[0] == WorldCodec.StatusTag)
-                {
-                    if (WorldCodec.TryDecodeStatus(_buffer.AsSpan(0, count), out WorldStatus status, _worldSha, out _)) _world.ApplyStatus(status, _worldSha);
-                    continue;
-                }
+                if (_side.TryHandle(_buffer.AsSpan(0, count), arrival, _addedDelayMs)) continue;
 
                 if (!JointStateCodec.TryDecode(_buffer.AsSpan(0, count), out _, out long robotSend, out long sensed,
                         out long echoOperator, out long echoRobotRecv, out long robotTps, _received, out int jointCount))
@@ -388,13 +286,7 @@ namespace Teleop.RobotArm.Operator
             }
 
             // World frames too, on the same release clock (each pose ordered by when RobotHost sensed it).
-            while (_worldSize > 0 && _worldRelease[_worldHead] <= now)
-            {
-                int slot = _worldHead;
-                for (int i = 0; i < _worldCounts[slot]; i++) _world!.Apply(_worldPoses[slot * WorldCodec.MaxObjectsPerFrame + i], _worldSensed[slot]);
-                _worldHead = (_worldHead + 1) % WorldQueueCapacity;
-                _worldSize--;
-            }
+            _side.Release(now);
 
             // Once per tick: the jitter of each preset's estimate for now.
             _scorer.OnDisplayTick(now, now);
@@ -417,21 +309,6 @@ namespace Teleop.RobotArm.Operator
             _queueSize++;
         }
 
-        private void EnqueueWorld(long releaseTicks, long sensedRobotTicks, int count)
-        {
-            if (_worldSize == WorldQueueCapacity)
-            {
-                _worldHead = (_worldHead + 1) % WorldQueueCapacity;
-                _worldSize--;
-            }
-
-            int slot = (_worldHead + _worldSize) % WorldQueueCapacity;
-            _worldRelease[slot] = releaseTicks;
-            _worldSensed[slot] = sensedRobotTicks;
-            _worldCounts[slot] = count;
-            Array.Copy(_worldPart, 0, _worldPoses, slot * WorldCodec.MaxObjectsPerFrame, count);
-            _worldSize++;
-        }
 
         /// <summary>A joint command was just sent; the predictors replay it from when it reaches the robot.</summary>
         public void OnCommandSent(long sendTicks, ReadOnlySpan<JointTarget> targets)

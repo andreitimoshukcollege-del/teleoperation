@@ -13,7 +13,7 @@ namespace Teleop.XR
     /// <item><b>On a button</b> (any cap a <see cref="FingertipPress"/> watches: power, the console, the switches, RECORD, ...)
     /// the pinch presses it, exactly as a fingertip would.</item>
     /// <item><b>On a scene object</b> the pinch grabs it, and the ray drags it across the table; letting go asks RobotHost to put
-    /// it there (<see cref="SerialChainOperatorBridge.UpdatePointer"/>). The twin shows its ghost meanwhile, and the solid object
+    /// it there (<see cref="OperatorSideControls.UpdatePointer"/>). The twin shows its ghost meanwhile, and the solid object
     /// moves once the world frames say so. A fallen object is stood up by a click on it.</item>
     /// <item><b>On a camera display</b> the pinch grabs it, and it follows the ray at the distance it was grabbed at, up and
     /// down too, turning to face you (<see cref="DisplayMover"/>).</item>
@@ -24,7 +24,8 @@ namespace Teleop.XR
     /// </summary>
     public sealed class Fr3HandPointer : MonoBehaviour
     {
-        [SerializeField] private SerialChainOperatorBridge bridge;
+        [Tooltip("Either robot's bridge: the FR3 Duo's, or the JetRover's (docs/adr/0034 J6).")]
+        [SerializeField] private OperatorBridgeBase bridge;
         [SerializeField] private XROrigin origin;
         [SerializeField] private Material rayMaterial;
         [Tooltip("The camera displays the pointer can move.")]
@@ -45,6 +46,15 @@ namespace Teleop.XR
         private readonly bool[] _pinched = new bool[2];
         private readonly bool[] _onCap = new bool[2];
         private readonly DisplayMover[] _moving = new DisplayMover[2];
+        private readonly bool[] _aiming = new bool[2];
+        private readonly bool[] _holding = new bool[2];
+
+        /// <summary>
+        /// Whether a hand's pinch is this pointer's (0 left, 1 right): its ray is on a button, an object or a display, or a pinch
+        /// it took is still held. The JetRover's clutch is the right hand's pinch too, so <c>HandClutchDriver</c> leaves such a
+        /// pinch alone (docs/adr/0034 J6). As of the last frame: the two scripts' order is not fixed.
+        /// </summary>
+        public bool Owns(int hand) => hand >= 0 && hand < 2 && (_aiming[hand] || _holding[hand]);
         private XRHandSubsystem _hands;
         private MaterialPropertyBlock _block;
 
@@ -78,7 +88,8 @@ namespace Teleop.XR
 
         private void Update()
         {
-            bool active = bridge != null && bridge.IsReady && !bridge.MotionEnabled && origin != null && Camera.main != null;
+            OperatorSideControls side = bridge != null ? bridge.SideControls : null;
+            bool active = side != null && !RobotOn && origin != null && Camera.main != null;
             if (_hands == null || !_hands.running) _hands = FingertipPress.FindHands();
             Transform space = origin != null && origin.TrackablesParent != null ? origin.TrackablesParent : origin != null ? origin.transform : null;
             for (int h = 0; h < 2; h++)
@@ -99,7 +110,7 @@ namespace Teleop.XR
                 if (tracked)
                 {
                     cap = NearestCap(from, dir, out capAt);
-                    objectAt = bridge.PointerHit(from, dir);
+                    objectAt = side.PointerHit(from, dir);
                     display = NearestDisplay(ray, out displayAt);
                 }
 
@@ -110,8 +121,10 @@ namespace Teleop.XR
                     {
                         _hovered[h] = _moving[h];
                         _moving[h].Drag(ray);
-                        bridge.UpdatePointer(h, tracked, false, from, dir);
+                        side.UpdatePointer(h, tracked, false, from, dir);
                         Show(h, true, from, dir, Vector3.Distance(from, _moving[h].GrabPoint(ray)), activeColor);
+                        _aiming[h] = false;
+                        _holding[h] = true;
                         continue;
                     }
 
@@ -123,14 +136,16 @@ namespace Teleop.XR
                 bool objectFirst = !displayFirst && objectAt >= 0f && objectAt < capAt;
                 float hitAt = displayFirst ? displayAt : objectFirst ? objectAt : cap != null ? capAt : -1f;
                 bool near = hitAt >= 0f && hitAt < nearMeters;
-                bool dragging = bridge != null && bridge.PointerDragging;
+                bool dragging = side != null && side.PointerDragging;
                 _hovered[h] = displayFirst && !near ? display : null;
                 if (rising && displayFirst && !near)
                 {
                     display.Begin(ray, displayAt);
                     _moving[h] = display;
-                    bridge.UpdatePointer(h, tracked, false, from, dir);
+                    side.UpdatePointer(h, tracked, false, from, dir);
                     Show(h, true, from, dir, displayAt, activeColor);
+                    _aiming[h] = false;
+                    _holding[h] = true;
                     continue;
                 }
 
@@ -143,8 +158,13 @@ namespace Teleop.XR
                     Debug.Log($"[pointer] {(h == 0 ? "left" : "right")} hand clicked {cap.transform.parent?.name ?? cap.name}");
                 }
 
-                if (bridge != null) bridge.UpdatePointer(h, tracked && !near, _pinched[h] && !_onCap[h] && !displayFirst, from, dir);
-                Show(h, tracked && !near, from, dir, hitAt, _pinched[h] || (dragging && bridge.PointerDragging) ? activeColor : hitAt >= 0f ? hoverColor : idleColor);
+                bool wasDragging = side != null && side.PointerDragging;
+                if (side != null) side.UpdatePointer(h, tracked && !near, _pinched[h] && !_onCap[h] && !displayFirst, from, dir);
+                _aiming[h] = tracked && !near && hitAt >= 0f;
+                if (rising) _holding[h] = _aiming[h];
+                if (!_pinched[h]) _holding[h] = false;
+                if (!wasDragging && side != null && side.PointerDragging) _holding[h] = true;
+                Show(h, tracked && !near, from, dir, hitAt, _pinched[h] || (dragging && side.PointerDragging) ? activeColor : hitAt >= 0f ? hoverColor : idleColor);
             }
         }
 
@@ -179,7 +199,7 @@ namespace Teleop.XR
                 if (d != null) d.Hovered = false;
             }
 
-            if (bridge == null || bridge.MotionEnabled) return;
+            if (bridge == null || RobotOn) return;
             for (int h = 0; h < 2; h++)
             {
                 if (_rays[h].enabled && _hovered[h] != null) _hovered[h].Hovered = true;
@@ -187,6 +207,8 @@ namespace Teleop.XR
         }
 
         private readonly DisplayMover[] _hovered = new DisplayMover[2];
+
+        private bool RobotOn => bridge != null && bridge.MotionMode == JetRoverMotionMode.On;
 
         private DisplayMover NearestDisplay(Ray ray, out float distance)
         {

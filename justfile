@@ -121,6 +121,11 @@ robot-collision-model:
 unity-lab-xr bake="true":
     just _unity-batch TeleopXR Teleop.XR.Editor.LabDressing.Run "-labCapture {{ if bake == "true" { "-labBake" } else { "" } }}" true
 
+# Give unity/TeleopXR's JetRover scene the Isaac world (docs/adr/0034 J6) from Resources/jetrover_scene.json, a copy of core/Scenes/jetrover-bench.json: the world twin at the arm's base, NEW LAYOUT and the RECORD buttons on the bench's right wing, the hand pointer (robot off: a pinch clicks buttons, drags objects, moves displays), and the third-person feeds 6008/6009 on two more displays, all three displays floating. Replaces only its own roots; the hand-edited scene is otherwise left alone. Run it after the scene file changes, then just unity-check-xr. Close that project's editor first
+[group('headset (Galaxy XR)')]
+unity-world-jetrover-xr:
+    just _unity-batch TeleopXR Teleop.XR.Editor.XrJetRoverWorldSetup.Run
+
 # Headless check of unity/TeleopXR's scene: no missing scripts, Bridge wiring intact, pinch-grab settings safe for a real arm (no pull-to-hand, no snap, no smoothing, no throw), hands only
 [group('headset (Galaxy XR)')]
 unity-check-xr:

@@ -309,6 +309,15 @@ Sessions from before 2026-11-04 have `head.rgb`, `head.depth`, `head.mask` and `
 | `ER` | `t` `reason` | Why the session's frames ended early (a nearly full disk: below 20 GB free, an I/O error) |
 | `FS` | `file` `bytes` `sha256` | One per file under `isaac/`, written before the trailer |
 
+**The JetRover in Isaac** (docs/adr/0034) records version-1 sessions (`session.json` version 1) with `source: isaac`, and
+no `driver.jlog`: the bridge stands in for the driver. Its renderer writes the same `isaac.jlog`, with three cameras
+(`third-left`, `third-right`, `wrist`, the wrist's `mount` `gripper_link`), mask ids 7 `arm` and 8 `hand` instead of the
+FR3's sided ones, and one more record, because a JetRover session has no `QS` to join:
+
+| Tag | Fields after the tag | Meaning |
+|---|---|---|
+| `VQ` | `frame` `stateSensed` `values` | The joint values frame `frame` was posed with, `[[joint, radians], ...]` by URDF joint name (each gripper finger in metres), written just before its `VF`, with the same `stateSensed`. For the JetRover that stamp is the bridge's time (CLOCK_MONOTONIC, RobotHost's clock on the same machine) of the physics state it posed, not of a relay reading: the readings RobotHost records (`RI`) trail the physics by up to a driver cycle (20 ms) |
+
 **A frame whose `stateSensed` has no `QS`** comes from the session's last tenth of a second or so. That is after RobotHost
 closed the session and before the renderer noticed; skip it. `just isaac-record-check` measures how many there are (0.4%
 of the frames of a 73 s session on 2026-11-03, with the control file read every 0.5 s; it is read every 0.1 s since).

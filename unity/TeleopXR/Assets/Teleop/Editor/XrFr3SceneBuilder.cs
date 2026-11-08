@@ -291,7 +291,7 @@ namespace Teleop.XR.Editor
 
         /// <summary>A fingertip button on a plinth: a cap to press, its label, and an <see cref="Fr3MotionButton"/> of <paramref name="role"/>.</summary>
         internal static Transform BuildButton(Transform parent, string name, Vector3 at, string capMaterial, Color capColor, string text,
-            Fr3MotionButton.Role role, SerialChainOperatorBridge bridge, XROrigin origin)
+            Fr3MotionButton.Role role, OperatorBridgeBase bridge, XROrigin origin)
         {
             var root = new GameObject(name).transform;
             if (parent != null) root.SetParent(parent, true);

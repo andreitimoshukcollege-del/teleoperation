@@ -4,9 +4,11 @@ using Teleop.Core.Metrics;
 using Teleop.Core.Prediction;
 using Teleop.Core.Time;
 using Teleop.Core.Types;
+using Teleop.RobotArm.Operator;
 using Teleop.RobotArm.Power;
 using Teleop.RobotArm.Types;
 using Teleop.RobotArm.Wire;
+using Teleop.RobotArm.World;
 
 // C# 9: block-scoped namespace only, like the rest of unity/.
 namespace Teleop.Bridge
@@ -177,10 +179,11 @@ namespace Teleop.Bridge
         /// </summary>
         public JetRoverJointStateLink(ITransport transport, ITimeAuthority clock, in RobotArmProfile profile,
             ClockSyncConfig clockSyncConfig, JointPredictorPresetData[] presets, string activeLabel, double maxHorizonMs,
-            float gripperFractionPerRadian, byte[] readingAgeMotorIds, LearnedModelLoader loadModel = null)
+            float gripperFractionPerRadian, byte[] readingAgeMotorIds, LearnedModelLoader loadModel = null, WorldState world = null)
         {
             _transport = transport ?? throw new ArgumentNullException(nameof(transport));
             _clock = clock ?? throw new ArgumentNullException(nameof(clock));
+            _side = new JointPortSideChannels(transport, clock, world);
             if (presets == null || presets.Length == 0) throw new ArgumentException("no joint predictor presets");
             _profile = profile;
             _clockSync = new ClockSync(clockSyncConfig);
@@ -396,6 +399,12 @@ namespace Teleop.Bridge
             }
         }
 
+        // The world and scenario recording, as the FR3's link has them (docs/adr/0034 decision 7): Core's shared side channels.
+        private readonly JointPortSideChannels _side;
+
+        /// <summary>The world and RECORD's datagrams on this link (Core's <see cref="JointPortSideChannels"/>).</summary>
+        public JointPortSideChannels Side => _side;
+
         /// <summary>Sends a keepalive when one is due, and takes in every frame that has arrived.</summary>
         public void Tick(long now)
         {
@@ -436,8 +445,12 @@ namespace Teleop.Bridge
                 _lastTrainingSentTicks = now;
             }
 
+            _side.SendDue(now);
+
             while (_transport.TryReceive(now, _buffer, out int count, out long arrival))
             {
+                if (_side.TryHandle(_buffer.AsSpan(0, count), arrival, _addedDelayMs)) continue;
+
                 if (ArmPowerCodec.TryDecodeStatus(_buffer.AsSpan(0, count), out ArmPowerState powerState, out ArmPowerReason powerReason,
                         out uint echoSequence, out _, out _, out float remainingDeg))
                 {
@@ -492,6 +505,9 @@ namespace Teleop.Bridge
                 _queueHead = (_queueHead + 1) % QueueCapacity;
                 _queueSize--;
             }
+
+            // World frames too, on the same release clock.
+            _side.Release(now);
 
             // Once per frame: the jitter of each preset's prediction for now.
             _scorer.OnDisplayTick(now, now);

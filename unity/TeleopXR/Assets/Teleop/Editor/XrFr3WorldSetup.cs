@@ -88,7 +88,7 @@ namespace Teleop.XR.Editor
             }
 
             if (world.Table.Display == SurfaceDisplay.Show) BuildLegs(root, world.Table);
-            BuildTwin(root, world);
+            BuildTwin(root, world, Object.FindAnyObjectByType<SerialChainOperatorBridge>(FindObjectsInactive.Include), "Fr3World");
             var bridge = Object.FindAnyObjectByType<SerialChainOperatorBridge>(FindObjectsInactive.Include);
             XROrigin origin = Object.FindAnyObjectByType<XROrigin>(FindObjectsInactive.Include);
             XrFr3SceneBuilder.BuildButton(root, NewLayoutButtonName, XrFr3SceneBuilder.NewLayoutButtonAt, "Fr3NewLayoutCap", new Color(0.95f, 0.65f, 0.15f),
@@ -111,6 +111,7 @@ namespace Teleop.XR.Editor
 
         /// <summary>The third-person feeds' rate (fps): half the wrists', so four feeds cost the headset's decoder three.</summary>
         public const int ThirdFeedMaxFps = 15;
+        internal const string ScreenMaterialAssetPath = ScreenMaterialPath;
         private const string FeedMeshLibraryPath = LabPaths.Generated + "/Fr3FeedMeshes.asset";
         private const string ScreenMaterialPath = "Assets/Teleop/Materials/CameraPanel.mat";
 
@@ -202,11 +203,12 @@ namespace Teleop.XR.Editor
         }
 
         /// <summary>The upper display's origin: its screen's bottom just clears the top of the one below, the upper one having no nameplate.</summary>
-        private static Vector3 Above(Vector3 foot) => foot + new Vector3(0f, 1.15f, 0f);
+        internal static Vector3 Above(Vector3 foot) => foot + new Vector3(0f, 1.15f, 0f);
 
-        private static Vector3 LeftOf(Vector3 foot) => new Vector3(2f * LabLayout.OperatorEye.x - foot.x, foot.y, foot.z);
+        internal static Vector3 LeftOf(Vector3 foot) => new Vector3(2f * LabLayout.OperatorEye.x - foot.x, foot.y, foot.z);
 
-        private static CameraFeedBridge Feed(Transform root, string objectName, string feedName, int port, int localPort, Renderer screen, int maxFps = 0)
+        internal static CameraFeedBridge Feed(Transform root, string objectName, string feedName, int port, int localPort, Renderer screen, int maxFps = 0,
+            CameraFeedBridge.AddressSource source = CameraFeedBridge.AddressSource.SerialChain)
         {
             var go = new GameObject(objectName);
             go.transform.SetParent(root, false);
@@ -217,7 +219,7 @@ namespace Teleop.XR.Editor
             so.FindProperty("panelHeightMeters").floatValue = LabDisplay.ScreenHeight;
             so.FindProperty("panelMaxWidthMeters").floatValue = LabDisplay.ScreenWidth;
             so.FindProperty("feedName").stringValue = feedName;
-            so.FindProperty("addressSource").enumValueIndex = (int)CameraFeedBridge.AddressSource.SerialChain;
+            so.FindProperty("addressSource").enumValueIndex = (int)source;
             so.FindProperty("robotPort").intValue = port;
             so.FindProperty("localPort").intValue = localPort;
             so.FindProperty("maxFramesPerSecond").intValue = maxFps;
@@ -233,7 +235,7 @@ namespace Teleop.XR.Editor
         /// The world twin: one visual per scene object (the built-in primitive of its shape, its colour, no collider), at its nominal
         /// pose so previews show it, under a <see cref="SerialChainWorldTwin"/> that hides each at runtime until the robot reports it.
         /// </summary>
-        private static void BuildTwin(Transform root, WorldScene world)
+        internal static void BuildTwin(Transform root, WorldScene world, OperatorBridgeBase bridge, string materialPrefix)
         {
             var twinRoot = new GameObject(TwinName).transform;
             twinRoot.SetParent(root, false);
@@ -241,7 +243,7 @@ namespace Teleop.XR.Editor
             var ghosts = new Transform[world.Objects.Length];
             var ids = new int[world.Objects.Length];
             Color ghostColor = new Color(0.75f, 0.6f, 1f, 0.35f);
-            Material ghostMaterial = LabMaterials.Transparent("Fr3WorldGhost", ghostColor);
+            Material ghostMaterial = LabMaterials.Transparent(materialPrefix + "Ghost", ghostColor);
             for (int i = 0; i < world.Objects.Length; i++)
             {
                 SceneObject o = world.Objects[i];
@@ -256,7 +258,7 @@ namespace Teleop.XR.Editor
                 go.transform.localPosition = new CoreVec((float)o.NominalX, (float)o.NominalY, (float)o.NominalZ).ToUnity();
                 RigidTransformToUnity(o, go.transform);
                 var renderer = go.GetComponent<MeshRenderer>();
-                renderer.sharedMaterial = LabMaterials.Lit("Fr3World_" + o.Name, new Color(o.R, o.G, o.B), 0.4f);
+                renderer.sharedMaterial = LabMaterials.Lit(materialPrefix + "_" + o.Name, new Color(o.R, o.G, o.B), 0.4f);
                 renderer.lightProbeUsage = UnityEngine.Rendering.LightProbeUsage.BlendProbes;
                 objects[i] = go.transform;
                 ids[i] = o.Id;
@@ -271,7 +273,7 @@ namespace Teleop.XR.Editor
 
             var twin = twinRoot.gameObject.AddComponent<SerialChainWorldTwin>();
             var so = new SerializedObject(twin);
-            so.FindProperty("bridge").objectReferenceValue = Object.FindAnyObjectByType<SerialChainOperatorBridge>(FindObjectsInactive.Include);
+            so.FindProperty("bridge").objectReferenceValue = bridge;
             SerializedProperty list = so.FindProperty("objects");
             list.arraySize = objects.Length;
             for (int i = 0; i < objects.Length; i++) list.GetArrayElementAtIndex(i).objectReferenceValue = objects[i];

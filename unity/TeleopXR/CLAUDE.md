@@ -227,6 +227,24 @@ Contents:
   - The display's stand and bezel are dynamic, lit by light probes, so they move with it. Its
     position is not saved between sessions.
 
+- **The JetRover in Isaac** (docs/adr/0034 amendment 5): `just isaac-jetrover-host` on the GPU machine stands in for the
+  robot, and `just push-galaxy-config <GPU machine> true false` points the app at it with discovery off, so it never finds
+  the real JetRover instead. `XrJetRoverWorldSetup` (`just unity-world-jetrover-xr`, after the scene file changes) adds what
+  the FR3 scene has, replacing only its own roots:
+  - **The world twin:** `Resources/jetrover_scene.json`'s objects (a byte-identical copy of `core/Scenes/jetrover-bench.json`),
+    at the arm rig's `BaseAnchor`, each shown once Isaac reports it, through the joint link's disturbance and ADDED DELAY.
+    The real robot sends no world, so with it the twin stays empty and NEW LAYOUT reads `waiting for the world`.
+  - **RECORD, DISCARD LAST, < PREV, NEXT > and NEW LAYOUT** on the bench's right wing, behind the training course: they
+    work as in the FR3 scene (RECORD with the robot on or off, NEW LAYOUT only off).
+  - **The hand pointer** (`Fr3HandPointer`), robot off only: a pinch on a button presses it, on an object drags it, on a
+    display moves it. **A pinch the pointer owns never engages the clutch** (`HandClutchDriver.handPointer`), and the
+    pointer, not the clutch, moves the displays. With the robot on, the pointer is off and the clutch is as described above.
+  - **Two more displays** for Isaac's third-person cameras, `3RD PERSON LEFT (REC)` on the operator's left (6008 → local
+    6015) and `3RD PERSON RIGHT (REC)` above the wrist camera's display (6009 → 6016), at 15 fps. All three displays float
+    and move up and down too. The wrist display keeps the robot camera's feed (6003 → 6004), Isaac's wrist camera here.
+  - `just unity-check-xr` checks the twin's ids, the buttons, the pointer, its displays and the clutch's reference to it,
+    and the feeds' ports. None of these moves the robot.
+
 **These are safety settings.** `just unity-check-xr` fails, and `just build-galaxy` refuses to
 build, if any of them changes:
 

@@ -200,3 +200,42 @@ The user, in the headset: "the measured values seem low hz".
   come every 20 ms, so each motor gets a fresh reading about every 20 ms.
   - The sidecar carries `feedbackPeriodSeconds` 0.02, `driverCycleSeconds` 0.02 and `readSeconds` 0.0029.
   - `just isaac-jetrover-check` expects feedback at 45–55 Hz.
+
+## Amendment 5 (2026-11-08): J4–J6, the FR3 setup ported
+
+The user: "make the scene like the fr3 duo scene". Done on one branch rather than three PRs, since the headset half needs all
+three to be useful.
+
+- **J4, the world.**
+  - `core/Scenes/jetrover-bench.json` (version 2) is the JetRover's bench, from the CAD: the bench top 0.1962 m below the
+    yaw pivot, a table ahead of it flush with the top, four small movable objects (cube, post, can, wall) placed 0.12–0.36 m
+    ahead and ±0.18 m aside, inside the arm's reach. Bench and table are `builtin`: the headset's lab has them already.
+  - The bridge builds the scene (`--scene`) and serves the world on a second socket (`--world-socket`, kinds 7–11).
+    RobotHost (JetRover) gains `--scene`, `--scene-seed`, `--world-socket`; its `ArmServerClient` connects world-only
+    (no motors, no state). `WorldHost` is the FR3's.
+  - Measured on the 5090 with `world-probe`: 49.2 Hz world frames, seed 7's poses matched `Draw(7)` to 0.0002 mm, NEW
+    LAYOUT gave seed 8's.
+- **J5, cameras and recording.** The renderer takes `--sim robot/jetrover/urdf/jetrover.sim.json` and poses the JetRover
+  from the relay's feedback. Cameras: `third-left`/`third-right` (feeds 6008/6009, 0.78 m ahead, ±0.48 m aside, 0.30 m up)
+  and `wrist` on `gripper_link` (6003), each recording `rgb`, `depth`, `mask`. Masks add `arm` (7) and `hand` (8).
+  JetRover sessions have no `QS`, so each recorded frame carries its joint values in a `VQ` record. RobotHost waits for the
+  writer (`--auto-record-writer isaac:60`). Measured: feeds at 29.5–29.9 fps; a manual session had 274 `VF`, 274 `VQ`, 455
+  `RI`, an `END` trailer and every `FS` line. The robot renders as its collision boxes: the URDF has no CAD visuals yet.
+- **J6, the headset.**
+  - **Shared code.** The joint port's world and record side channels moved out of `SerialChainJointLink` into Core's
+    `JointPortSideChannels`; the JetRover's link uses the same class. In Bridge, `OperatorSideControls` holds NEW LAYOUT,
+    queued moves, pointer drags and RECORD over it, and `OperatorBridgeBase.SideControls` hands it to the scene, so
+    `SerialChainWorldTwin`, `Fr3HandPointer` and `Fr3MotionButton`'s RECORD and NEW LAYOUT roles take either robot's bridge.
+    The FR3's EDIT OBJECTS, power and RECENTRE stay FR3-only.
+  - **The JetRover scene** gets them from `XrJetRoverWorldSetup` (`just unity-world-jetrover-xr`), which replaces only its
+    own roots in the hand-edited scene: the world twin at the rig's `BaseAnchor`; RECORD, DISCARD LAST, < PREV, NEXT > and
+    NEW LAYOUT on the bench's right wing behind the training course (the left wing behind power is the console's); the hand
+    pointer; the third-person displays (front-left on the operator's left, front-right above the wrist display), all three
+    floating and movable.
+  - **The clutch and the pointer share the right hand's pinch.** With the robot off, a pinch the pointer owns (its ray on a
+    button, an object or a display) never engages the clutch (`HandClutchDriver.handPointer`, `Fr3HandPointer.Owns`), and
+    the pointer, not the clutch, moves the displays. With the robot on the pointer is off, so nothing changes for driving.
+  - `just unity-check-xr` checks the twin's ids against the file, the buttons, the pointer and its three displays, the
+    clutch's pointer reference and the feeds' ports.
+- **Not measured yet:** any of J6 in the headset, against `just isaac-jetrover-host`. J3 (sim against real) is still open,
+  so every session from it stays `source: isaac`.

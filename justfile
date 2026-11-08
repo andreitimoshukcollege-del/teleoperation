@@ -126,6 +126,22 @@ jetrover-visuals:
 unity-lab-xr bake="true":
     just _unity-batch TeleopXR Teleop.XR.Editor.LabDressing.Run "-labCapture {{ if bake == "true" { "-labBake" } else { "" } }}" true
 
+# Relay the headset to Isaac's RobotHost on the GPU machine from this PC (Teleop.Eval udp-relay), for a headset on this PC's Wi-Fi without the lab VPN: the joint port, the Cartesian port and the three camera feeds (6000, 6002, 6003, 6008, 6009) on this PC go to the same ports there. Then `just push-galaxy-config <this PC's Wi-Fi address> true false` and restart the app. Needs inbound UDP on those ports allowed once (just isaac-relay-firewall). Enter stops it. It adds this PC's hop to the delay: nothing measured through it is a lab-network figure
+[group('isaac')]
+isaac-relay upstream=gpu_host ports="6000,6002,6003,6008,6009":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    up="{{upstream}}"; up="${up#*@}"
+    wifi=$(ipconfig.exe 2>/dev/null | tr -d '\r' | awk '/Wireless LAN adapter Wi-Fi:/{w=1} w&&/IPv4 Address/{print $NF; exit}')
+    echo "[isaac-relay] this PC's Wi-Fi address: ${wifi:-unknown}; headset: just push-galaxy-config ${wifi:-<address>} true false"
+    cd core && dotnet run --project Teleop.Eval -- udp-relay --upstream "$up" --ports {{ports}}
+
+# Print the one admin PowerShell command that lets the Isaac relay's ports in through Windows Firewall (Windows blocks unsolicited inbound UDP on a Public network such as home Wi-Fi). Run it once in an elevated PowerShell; nothing here changes the firewall itself
+[group('isaac')]
+isaac-relay-firewall ports="6000,6002,6003,6008,6009":
+    @echo 'In an admin PowerShell, once:'
+    @echo '  New-NetFirewallRule -DisplayName "Teleop Isaac relay (UDP in)" -Direction Inbound -Protocol UDP -LocalPort {{ports}} -Action Allow -Profile Any'
+
 # Give unity/TeleopXR's JetRover scene the Isaac world (docs/adr/0034 J6) from Resources/jetrover_scene.json, a copy of core/Scenes/jetrover-bench.json: the world twin at the arm's base, NEW LAYOUT and the RECORD buttons on the bench's right wing, the hand pointer (robot off: a pinch clicks buttons, drags objects, moves displays), and the third-person feeds 6008/6009 on two more displays, all three displays floating. Replaces only its own roots; the hand-edited scene is otherwise left alone. Run it after the scene file changes, then just unity-check-xr. Close that project's editor first
 [group('headset (Galaxy XR)')]
 unity-world-jetrover-xr:

@@ -36,11 +36,11 @@
       { "id": "left", "center": [0.05, 1.2, 0.0], "size": [1.9, 2.2], "normal": [0, -1] },
       { "id": "right", "center": [0.05, -1.2, 0.0], "size": [1.9, 2.2], "normal": [0, 1] } ] },
   "cameras": [
-    { "id": "third-left", "position": [0.62, 0.42, 0.12], "lookAt": [0.18, 0.0, -0.16], "width": 640, "height": 360, "hfovDeg": 69.0,
+    { "id": "third-left", "position": [0.78, 0.48, 0.30], "lookAt": [0.12, 0.0, -0.08], "width": 640, "height": 360, "hfovDeg": 69.0,
       "near": 0.02, "far": 6.0, "fps": 30, "feedPort": 6008, "feedQuality": 80, "recordQuality": 92, "record": ["rgb", "depth", "mask"] },
-    { "id": "third-right", "position": [0.62, -0.42, 0.12], "lookAt": [0.18, 0.0, -0.16], "width": 640, "height": 360, "hfovDeg": 69.0,
+    { "id": "third-right", "position": [0.78, -0.48, 0.30], "lookAt": [0.12, 0.0, -0.08], "width": 640, "height": 360, "hfovDeg": 69.0,
       "near": 0.02, "far": 6.0, "fps": 30, "feedPort": 6009, "feedQuality": 80, "recordQuality": 92, "record": ["rgb", "depth", "mask"] },
-    { "id": "wrist", "mount": "gripper_link", "mountPosition": [0.05, 0.0, 0.035], "mountLookAt": [0.16, 0.0, -0.01],
+    { "id": "wrist", "mount": "gripper_link", "mountPosition": [0.06, 0.0, 0.075], "mountLookAt": [0.18, 0.0, 0.0],
       "mountUp": [0.0, 0.0, 1.0], "width": 640, "height": 360, "hfovDeg": 87.0, "near": 0.01, "far": 6.0, "fps": 30,
       "feedPort": 6003, "feedQuality": 80, "recordQuality": 92, "record": ["rgb", "depth", "mask"] }
   ],

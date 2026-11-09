@@ -268,3 +268,13 @@ so 15 % of its views carried a `persistence` forecast and 10 % `rtt-half`; until
 - **Not done here.** The FR3's link (`SerialChainJointLink`) does not forecast yet. No `forecast.jlog` is recorded.
   Whether `persistence` beats `absent` for this model on the real robot is a measurement for N6, not a claim: the model
   saw it in only 15 % of training, and N5 retrains on the new mix.
+- **First replay** (`just headset-replay`, `Teleop.Eval headset-replay`): the 2026-11-09 Isaac session
+  `20261109T221225Z-auto` (55 s over home Wi-Fi through the relay) with its link trace, through the headset's presets.
+  Arm joints, degrees, error p50 / p95, correction p95, display jitter p95: `learned` with `persistence` 0.25 / 7.27,
+  1.14, 1.88; without a forecast 0.27 / 7.37, 1.16, 1.84; `hold-last` 0.24 / 1.68, 1.68, 1.44; `servo 10-25`
+  0.24 / 4.20, 1.97, 2.21. The forecast changes almost nothing here: its uplink median (14.6 ms) was RTT/2's (14.4 ms).
+  What dominates is that Isaac's arm did not follow the commands: against the command sent 150 ms before each reading,
+  30–90 % of readings were more than 5° off on the worst joint (joint 1 commanded to 40.6° but never past 25.2°; joint 4
+  reaching −80° where no command went below −38.7°), so every predictor that replays commands loses to `hold-last`. One
+  session; why the arm departs from its commands (contact with the scene's objects, gravity sag, the fitted effort) is
+  open, and is the same question for the real robot before N6 can judge the forecast.

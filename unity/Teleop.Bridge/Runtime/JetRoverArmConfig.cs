@@ -33,6 +33,10 @@ namespace Teleop.Bridge
         // when nothing answers. False uses RemoteHost alone, as before. An empty RemoteHostName skips
         // mDNS. DiscoveryPort is RobotHost's --discovery-port.
         public bool DiscoverRobot = true;
+
+        // Record the link's raw stamps to persistentDataPath/linktraces (docs/adr/0035 N1): about 2.5 KB/s, the newest 200
+        // runs kept. just pull-galaxy-traces fetches them.
+        public bool RecordLinkTrace = true;
         public string RobotTailscaleHost = "100.112.90.72";
         public string RemoteHostName = "jetrover-sinrg.local";
         public int DiscoveryPort = 6005;

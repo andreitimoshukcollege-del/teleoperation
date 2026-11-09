@@ -258,6 +258,39 @@ push-galaxy-fr3-config host="" motion="true":
     just _adb push "$(wslpath -m "$tmp")" "$dest/fr3_connection.json"
     echo "the FR3 operator now targets $host:6002, motion {{ if motion == "true" { "allowed" } else { "LOCKED (keepalives only)" } }}; restart the app to pick it up."
 
+# Bring the Galaxy XR's link traces to this PC (docs/adr/0035 N1): the raw stamps of every joint-state frame and keepalive the headset received, one .ltrace file per app run, from the app's files/linktraces into `dest` (gitignored). Then just link-trace-summary. The headset keeps its newest 200 runs
+[group('headset (Galaxy XR)')]
+pull-galaxy-traces dest="recordings/linktraces":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    mkdir -p "{{dest}}"
+    src=/sdcard/Android/data/com.teleop.jetroverxr/files/linktraces
+    files=$(just _adb shell "ls $src 2>/dev/null" | tr -d '\r' | grep '\.ltrace$' || true)
+    [ -n "$files" ] || { echo "no link traces on the headset yet ($src): run the app once with RecordLinkTrace on (the default)"; exit 0; }
+    new=0
+    for f in $files; do
+        [ -f "{{dest}}/$f" ] && [ "$(stat -c %s "{{dest}}/$f")" -gt 0 ] && continue
+        just _adb pull "$src/$f" "$(wslpath -m "{{dest}}")/$f" > /dev/null
+        new=$((new + 1))
+    done
+    echo "[traces] $new new of $(echo "$files" | wc -w) on the headset, in {{dest}}"
+
+# Bring the Unity editor's link traces (Play mode, Direct Preview: docs/adr/0035 N1) to `dest`. In Play mode the network is this PC's, not the headset's Wi-Fi; their header says editor: true
+[group('headset (Galaxy XR)')]
+pull-editor-traces dest="recordings/linktraces":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    winuser=$(cmd.exe /c 'echo %USERNAME%' 2>/dev/null | tr -d '\r\n')
+    src="/mnt/c/Users/$winuser/AppData/LocalLow/Teleop/TeleopXR/linktraces"
+    mkdir -p "{{dest}}"
+    [ -d "$src" ] || { echo "no editor link traces yet ($src)"; exit 0; }
+    n=0; for f in "$src"/*.ltrace; do [ -e "$f" ] || continue; b=$(basename "$f"); [ -f "{{dest}}/editor-$b" ] || { cp "$f" "{{dest}}/editor-$b"; n=$((n + 1)); }; done
+    echo "[traces] $n new from the editor, in {{dest}}"
+
+# Summarise link traces (docs/adr/0035 N1; trainer/contract/LINK_TRACE_FORMAT.md): per file, the one-way delay (owd_downlink_ms), round trips, RFC 3550 jitter, loss by sequence, stalls over 100/250/500 ms and the bursts after them, leaving out what the headset's own disturbance delayed. Default: every trace in recordings/linktraces
+link-trace-summary +files="recordings/linktraces/*.ltrace":
+    cd trainer && python3 -m armpred.net.linktrace $(for f in {{files}}; do case "$f" in /*) echo "$f" ;; *) echo "../$f" ;; esac; done)
+
 # Build the Quest APK (unity/TeleopVR, Unity 2022.3) from its Build Settings scenes after its scene check -> unity/TeleopVR/Builds/TeleopVR-Quest.apk. The first Android build re-imports assets; close that project's editor first
 [group('quest (parked)')]
 build-quest:

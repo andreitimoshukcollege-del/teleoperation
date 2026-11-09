@@ -519,6 +519,26 @@ namespace Teleop.Bridge
                     _config.MaxHorizonMs, _config.GripperFractionPerRadian, new byte[0], null, world);
             }
 
+            if (_config.RecordLinkTrace)
+            {
+                try
+                {
+                    // The header names everything a reader needs that the records do not carry (docs/adr/0035 N1).
+                    string header = "{\"format\": \"teleop-link-trace\", \"version\": 1, \"headsetTps\": " + _clock.TicksPerSecond +
+                                    ", \"remoteHost\": \"" + remoteHost + "\", \"startedUtc\": \"" + DateTime.UtcNow.ToString("o") +
+                                    "\", \"app\": \"" + Application.productName + " " + Application.version + "\", \"device\": \"" +
+                                    SystemInfo.deviceModel.Replace("\"", "'") + "\", \"editor\": " + (Application.isEditor ? "true" : "false") +
+                                    ", \"recordBytes\": " + Teleop.RobotArm.Wire.LinkTraceCodec.RecordBytes + "}";
+                    _linkTrace = new LinkTraceRecorder(System.IO.Path.Combine(Application.persistentDataPath, "linktraces"), header, _clock.TicksPerSecond);
+                    _jointStateLink.Trace = _linkTrace;
+                    Debug.Log($"[linktrace] recording the link to {_linkTrace.Path}");
+                }
+                catch (Exception e)
+                {
+                    Debug.LogError($"[linktrace] cannot record the link: {e.Message}");
+                }
+            }
+
             _controls = new OperatorSideControls(_jointStateLink.Side, _clock,
                 () => armRig != null ? armRig.BaseAnchor : null, () => _motionMode == JetRoverMotionMode.On);
 
@@ -554,6 +574,7 @@ namespace Teleop.Bridge
         {
             long now = _clock.NowTicks;
             _jointStateLink?.Tick(now);
+            _linkTrace?.Tick(now);
             _controls?.Update(now);
 
             while (_operatorEndpoint.TryReceiveState(now, out _))
@@ -747,8 +768,11 @@ namespace Teleop.Bridge
             _metricSink.WriteLatencyTrace(_pendingTrace.WithRenderTicks(_clock.NowTicks));
         }
 
+        private LinkTraceRecorder _linkTrace;
+
         private void OnDestroy()
         {
+            _linkTrace?.Dispose();
             _cartesianUdp?.Dispose();
             _jointUdp?.Dispose();
             _metricSink?.Dispose();

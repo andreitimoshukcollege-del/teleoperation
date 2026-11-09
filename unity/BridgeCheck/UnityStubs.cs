@@ -137,7 +137,15 @@ namespace UnityEngine
     public static class Application
     {
         public static string persistentDataPath => string.Empty;
+        public static string productName => string.Empty;
+        public static string version => string.Empty;
+        public static bool isEditor => false;
         public static event Action onBeforeRender { add { } remove { } }
+    }
+
+    public static class SystemInfo
+    {
+        public static string deviceModel => string.Empty;
     }
 
     public class TextAsset : Object { public string text => string.Empty; public byte[] bytes => new byte[0]; }

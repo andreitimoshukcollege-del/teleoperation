@@ -345,3 +345,23 @@ it is pointed straight up".
   (0.08, 0, 0.07): the arm straight up, stretched forward, the chassis and the whole placement region all fall at least
   20 px inside the 640 × 360 frame. The far backdrop screen moves from x 1.0 to 1.6 (the cameras would have stood behind
   it), the side screens stretch to x 1.6 and the floor mat to 1.6.
+
+## Amendment 10 (2026-11-08): one gripper geometry on both sides, and the wrist camera off the roll
+
+The user: "it looks like the gripper expanding more on the video but not on the measured values, why is that and why are
+we not just using the measured isaac sim values. Also the camera rotates with the gripper which should not happen".
+
+- **Why they differed.** The headset is given Isaac's measured gripper, but as one number, how closed it is (0–1), and
+  each side drew that number its own way: Isaac's fingers slid from 70 mm open (amendment 9), the twin turned its CAD jaws
+  from their CAD pose (33.4 mm). Same reading, two widths.
+- **The CAD four-bar cannot open 70 mm.** Turning the twin's jaws back past the CAD pose, measured on the twin: the pads'
+  gap is 40.6 mm at 10°, 46.4 at 20°, 53.3 at 40–60°, then falls as the jaws swing past. The twin is the robot's own CAD,
+  so about 53 mm is most likely the real gripper's most too; amendment 9's 70 mm was an unmeasured estimate.
+- **Now both draw the twin's four-bar.** `JetRoverVisualExport` finds the angle for a 53 mm opening (38.25°), which
+  `TwinGripper.jawOpenDegrees` takes (set by `XrJetRoverWorldSetup`, checked by `unity-check-xr`), and tabulates the gap
+  over the closing, 0 to 1 in 0.05 steps (`fingerTravelByFraction`). `JetRoverSimModel` takes the table for the fingers'
+  limits (−9.8 to +16.2 mm) and the sidecar; the bridge, the renderer and the readings interpolate it
+  (`SimModel.finger_value`, `finger_fraction`). So a reading draws the same gap in the twin and in Isaac at every value,
+  not only at its ends; a linear slide would differ by about 7 mm halfway.
+- **The wrist camera rides `wrist_link`**, before the roll joint, not `gripper_link`, so the roll servo no longer turns it.
+  The two frames coincide at roll 0, so its mount pose is unchanged.

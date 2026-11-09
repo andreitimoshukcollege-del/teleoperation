@@ -70,6 +70,17 @@ namespace Teleop.XR.Editor
             }
         }
 
+        public const string VisualsPath = "../../robot/jetrover/urdf/meshes/visuals.json";
+
+        /// <summary>How far the twin's jaws open past the CAD's pose (deg), as <c>just jetrover-visuals</c> measured for Isaac's opening.</summary>
+        public static float JawOpenDegrees()
+        {
+            string text = System.IO.File.ReadAllText(VisualsPath);
+            var m = System.Text.RegularExpressions.Regex.Match(text, "\"jawOpenDegrees\":\\s*([0-9.]+)");
+            if (!m.Success) throw new InvalidOperationException($"{VisualsPath} has no jawOpenDegrees: run just jetrover-visuals");
+            return float.Parse(m.Groups[1].Value, System.Globalization.CultureInfo.InvariantCulture);
+        }
+
         /// <summary>The scene file the headset ships with, validated by Core's reader.</summary>
         public static WorldScene LoadScene()
         {
@@ -112,6 +123,15 @@ namespace Teleop.XR.Editor
             XrFr3SceneBuilder.SetReference(pointer, "bridge", bridge);
             XrFr3SceneBuilder.SetReference(pointer, "origin", origin);
             XrFr3SceneBuilder.SetReference(pointer, "rayMaterial", LabMaterials.Transparent("PointerRay", Color.white));
+
+            // Every twin gripper opens as far as Isaac's (docs/adr/0034 amendment 10): the angle JetRoverVisualExport measured.
+            float openDegrees = JawOpenDegrees();
+            foreach (TwinGripper g in Object.FindObjectsByType<TwinGripper>(FindObjectsInactive.Include, FindObjectsSortMode.None))
+            {
+                var gso = new SerializedObject(g);
+                gso.FindProperty("jawOpenDegrees").floatValue = openDegrees;
+                gso.ApplyModifiedPropertiesWithoutUndo();
+            }
 
             DisplayMover[] movers = BuildFeeds(bridge);
             XrFr3SceneBuilder.SetReferences(pointer, "displays", movers);

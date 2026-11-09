@@ -294,13 +294,13 @@
     <child link="left_finger"/>
     <origin xyz="0 0 0" rpy="0 0 0"/>
     <axis xyz="0 -1 0"/>
-    <limit lower="-0.018" upper="0.0165" effort="20" velocity="0.1"/>
+    <limit lower="-0.009781" upper="0.016241" effort="20" velocity="0.1"/>
   </joint>
   <joint name="gripper_mirror" type="prismatic">
     <parent link="gripper_link"/>
     <child link="right_finger"/>
     <origin xyz="0 0 0" rpy="0 0 0"/>
     <axis xyz="0 1 0"/>
-    <limit lower="-0.018" upper="0.0165" effort="20" velocity="0.1"/>
+    <limit lower="-0.009781" upper="0.016241" effort="20" velocity="0.1"/>
   </joint>
 </robot>

@@ -37,6 +37,12 @@ namespace Teleop.RobotHost.Tests.Sim
             return File.Exists(path) ? JetRoverSimModel.ParseVisuals(File.ReadAllText(path)) : Array.Empty<JetRoverSimModel.Visual>();
         }
 
+        private static IReadOnlyList<double> Travel()
+        {
+            string path = Path.Combine(Root(), "robot", "jetrover", "urdf", "meshes", "visuals.json");
+            return File.Exists(path) ? JetRoverSimModel.ParseFingerTravel(File.ReadAllText(path)) : Array.Empty<double>();
+        }
+
         private static IReadOnlyList<JetRoverSimModel.Pad> Pads()
         {
             string path = Path.Combine(Root(), "robot", "jetrover", "urdf", "meshes", "visuals.json");
@@ -51,9 +57,17 @@ namespace Teleop.RobotHost.Tests.Sim
             JetRoverSimModel.Pad left = pads.Single(p => p.Link == "left_finger"), right = pads.Single(p => p.Link == "right_finger");
             double gap = (left.Center.Y - left.Size.Y / 2) - (right.Center.Y + right.Size.Y / 2); // inner faces at the CAD's pose
             Assert.InRange(gap, 0.025, 0.045);
-            double open = gap + 2 * JetRoverSimModel.FingerOpenMeters, closed = gap - 2 * JetRoverSimModel.FingerTravelMeters;
+            IReadOnlyList<double> travel = Travel();
+            Assert.Equal(21, travel.Count);
+            for (int i = 1; i < travel.Count; i++) Assert.True(travel[i] > travel[i - 1], "the fingers close the more the gripper does");
+            double open = gap - 2 * travel[0], closed = gap - 2 * travel[^1];
             Assert.True(open > 0.035 + 0.005, $"open, the pads are {open * 1000:F1} mm apart: the 35 mm can must fit");
-            Assert.InRange(closed, -0.002, 0.001); // closed, they meet
+            Assert.InRange(closed, -0.002, 0.002); // closed, they meet
+
+            // The headset's twin opens its jaws to the same gap (docs/adr/0034 amendment 10): the table is the twin's own.
+            JsonNode doc = JsonNode.Parse(File.ReadAllText(Path.Combine(Root(), "robot", "jetrover", "urdf", "meshes", "visuals.json")))!;
+            Assert.Equal((double)doc["jawOpenGapMeters"]!, (double)doc["jawCadGapMeters"]! - 2 * travel[0], 3);
+            Assert.InRange((double)doc["jawOpenDegrees"]!, 1.0, 80.0);
         }
 
         [Fact]
@@ -63,7 +77,7 @@ namespace Teleop.RobotHost.Tests.Sim
             string manifest = Path.Combine(dir, "meshes", "visuals.json");
             Assert.True(File.Exists(manifest), $"{manifest} is missing: just jetrover-visuals");
             JsonNode doc = JsonNode.Parse(File.ReadAllText(manifest))!;
-            XDocument urdf = XDocument.Parse(JetRoverSimModel.Urdf(Profile(), JetRoverCollisionModel.Instance, Plant(Profile()), Visuals(), Pads()));
+            XDocument urdf = XDocument.Parse(JetRoverSimModel.Urdf(Profile(), JetRoverCollisionModel.Instance, Plant(Profile()), Visuals(), Pads(), Travel()));
             var links = urdf.Root!.Elements("link").Select(l => (string)l.Attribute("name")!).ToHashSet();
             foreach (JsonNode? v in doc["visuals"]!.AsArray())
             {
@@ -97,8 +111,8 @@ namespace Teleop.RobotHost.Tests.Sim
         {
             RobotArmProfile profile = Profile();
             string expected = file.EndsWith(".urdf", StringComparison.Ordinal)
-                ? JetRoverSimModel.Urdf(profile, JetRoverCollisionModel.Instance, Plant(profile), Visuals(), Pads())
-                : JetRoverSimModel.SimJson(profile, Plant(profile));
+                ? JetRoverSimModel.Urdf(profile, JetRoverCollisionModel.Instance, Plant(profile), Visuals(), Pads(), Travel())
+                : JetRoverSimModel.SimJson(profile, Plant(profile), Travel());
             string path = Path.Combine(Root(), "robot", "jetrover", "urdf", file);
             if (Environment.GetEnvironmentVariable("TELEOP_WRITE_GOLDEN") == "1") File.WriteAllText(path, expected, new UTF8Encoding(false));
             Assert.True(File.Exists(path), $"{path} is missing: TELEOP_WRITE_GOLDEN=1 dotnet test Teleop.RobotHost.Tests --filter JetRoverSimModelTests");
@@ -109,7 +123,7 @@ namespace Teleop.RobotHost.Tests.Sim
         public void TheUrdfsChain_PutsTheWristWhereTheIkDoes()
         {
             RobotArmProfile profile = Profile();
-            XDocument urdf = XDocument.Parse(JetRoverSimModel.Urdf(profile, JetRoverCollisionModel.Instance, Plant(profile), Visuals(), Pads()));
+            XDocument urdf = XDocument.Parse(JetRoverSimModel.Urdf(profile, JetRoverCollisionModel.Instance, Plant(profile), Visuals(), Pads(), Travel()));
             var joints = urdf.Root!.Elements("joint").ToDictionary(j => (string)j.Attribute("name")!);
             var rng = new Random(7);
             for (int k = 0; k < 50; k++)
@@ -134,12 +148,12 @@ namespace Teleop.RobotHost.Tests.Sim
         public void TheArmWeighsWhatARobotArmOfThisSizeDoes_AndTheGripperNeverReports()
         {
             RobotArmProfile profile = Profile();
-            XDocument urdf = XDocument.Parse(JetRoverSimModel.Urdf(profile, JetRoverCollisionModel.Instance, Plant(profile), Visuals(), Pads()));
+            XDocument urdf = XDocument.Parse(JetRoverSimModel.Urdf(profile, JetRoverCollisionModel.Instance, Plant(profile), Visuals(), Pads(), Travel()));
             double arm = urdf.Root!.Elements("link").Where(l => (string)l.Attribute("name")! != "base_link")
                 .Sum(l => (double)l.Element("inertial")!.Element("mass")!.Attribute("value")!);
             Assert.InRange(arm, 0.2, 1.5); // a 5-servo arm of 13 cm links
 
-            JsonNode sim = JsonNode.Parse(JetRoverSimModel.SimJson(profile, Plant(profile)))!;
+            JsonNode sim = JsonNode.Parse(JetRoverSimModel.SimJson(profile, Plant(profile), Travel()))!;
             var motors = sim["motors"]!.AsArray();
             Assert.Equal(new[] { 1, 2, 3, 4, 5, 10 }, motors.Select(m => (int)m!["motorId"]!).ToArray());
             Assert.True((bool)motors.Single(m => (int)m!["motorId"]! == 10)!["feedback"]!); // the real driver reads it (FEEDBACK_MOTOR_IDS)

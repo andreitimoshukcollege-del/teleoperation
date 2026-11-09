@@ -36,6 +36,16 @@ namespace Teleop.XR.Editor
         /// <summary>The decimation grid (m).</summary>
         private const float Cell = 0.0015f;
 
+        /// <summary>
+        /// The pads' gap fully open (m): just under the most the CAD's four-bar opens (about 53.3 mm, its jaws turned back
+        /// 40-60°; docs/adr/0034 amendment 10). The twin's jaws open to it, and Isaac's fingers follow the twin's gap
+        /// (<c>fingerTravelByFraction</c>), so both draw the same reading the same.
+        /// </summary>
+        private const float OpenGapMeters = 0.053f;
+
+        /// <summary>The gap table's steps: 0, 0.05, ..., 1 of the gripper's closing.</summary>
+        private const int TableSteps = 20;
+
         /// <summary>How much of each jaw, back from its tip, is its pad (m).</summary>
         private const float PadLength = 0.03f;
         private const string OutputFolder = "../../robot/jetrover/urdf/meshes";
@@ -167,14 +177,93 @@ namespace Teleop.XR.Editor
                 pads.Add($"    {{\"link\": \"{finger}\", \"center\": [{P(c.x)}, {P(c.y)}, {P(c.z)}], \"size\": [{P(sz.x)}, {P(sz.y)}, {P(sz.z)}]}}");
             }
 
+            // The twin's jaws opened to Isaac's opening (docs/adr/0034 amendment 10): the angle each inner link turns back past the
+            // CAD's pose for the pads to stand OpenGapMeters apart, measured on the twin by turning its jaws as TwinGripper does.
+            float closingSign = gso.FindProperty("jawClosingSign").floatValue, closedDegrees = gso.FindProperty("jawClosedDegrees").floatValue;
+            (float cadGap, float openDegrees, float[] gaps) = JawOpening(left, right, roll, closingSign, closedDegrees);
+            // Each finger's travel from the CAD's pose (m, toward the other) at each step of the closing: what Isaac's sliding fingers do.
+            string table = string.Join(", ", gaps.Select(g => P((cadGap - g) / 2)));
+
             string hashes = string.Join(", ", new[] { "Body", "Base", "LowerArm", "CenterArm", "UpperArm", "Gripper" }.Select(n =>
                 $"\"{n}.fbx\": \"{Sha(Path.Combine(JetRoverCad.Folder, n + ".fbx"))}\""));
             string manifest = "{\n  \"format\": \"jetrover-visuals\",\n  \"version\": 1,\n" +
                               "  \"about\": \"Written by unity/TeleopXR JetRoverVisualExport (just jetrover-visuals, docs/adr/0034 amendment 6) from the lab twin's CAD. Do not edit.\",\n" +
                               $"  \"cellMeters\": {F(Cell)},\n  \"sources\": {{{hashes}}},\n  \"visuals\": [\n" + string.Join(",\n", entries) + "\n  ],\n" +
-                              "  \"fingerPads\": [\n" + string.Join(",\n", pads) + "\n  ]\n}\n";
+                              "  \"fingerPads\": [\n" + string.Join(",\n", pads) + "\n  ],\n" +
+                              $"  \"jawCadGapMeters\": {P(cadGap)},\n  \"jawOpenGapMeters\": {P(OpenGapMeters)},\n  \"jawOpenDegrees\": {F(openDegrees)},\n" +
+                              $"  \"jawClosedDegrees\": {F(closedDegrees)},\n  \"fingerTravelByFraction\": [{table}]\n}}\n";
             File.WriteAllText(Path.Combine(folder, "visuals.json"), manifest, new UTF8Encoding(false));
             return $"wrote {entries.Count} meshes, {rawTriangles} -> {kept} triangles, to {folder}: {report}";
+        }
+
+        /// <summary>
+        /// The pads' gap at the CAD's pose, and the angle each inner link turns back (TwinGripper's opening direction) for the gap
+        /// to be <see cref="OpenGapMeters"/>: the jaws are turned as TwinGripper turns them, a quarter degree at a time, and the
+        /// gap read from the last <see cref="PadLength"/> of each jaw in the roll frame. They are put back after.
+        /// </summary>
+        private static (float CadGap, float OpenDegrees, float[] Gaps) JawOpening(Transform[] left, Transform[] right, Transform roll, float closingSign, float closedDegrees)
+        {
+            Quaternion l0 = left[0].localRotation, lo0 = left[1].localRotation, r0 = right[0].localRotation, ro0 = right[1].localRotation;
+            float Gap(float angle)
+            {
+                left[0].localRotation = l0 * Quaternion.AngleAxis(-angle * closingSign, Vector3.right);
+                left[1].localRotation = lo0 * Quaternion.AngleAxis(angle * closingSign, Vector3.right);
+                right[0].localRotation = r0 * Quaternion.AngleAxis(angle * closingSign, Vector3.right);
+                right[1].localRotation = ro0 * Quaternion.AngleAxis(-angle * closingSign, Vector3.right);
+                var sides = new List<(float Mean, float Inner)>();
+                foreach (Transform[] jaw in new[] { left, right })
+                {
+                    var pts = new List<Vector3>();
+                    foreach (Transform t in jaw.Distinct())
+                    {
+                        foreach (MeshFilter mf in t.GetComponentsInChildren<MeshFilter>(true))
+                        {
+                            if (mf.sharedMesh == null) continue;
+                            Matrix4x4 m = roll.worldToLocalMatrix * mf.transform.localToWorldMatrix;
+                            foreach (Vector3 v in mf.sharedMesh.vertices) pts.Add(ToCoreAxes(m.MultiplyPoint3x4(v)));
+                        }
+                    }
+
+                    float tip = pts.Max(p => p.x);
+                    List<Vector3> pad = pts.Where(p => p.x >= tip - PadLength).ToList();
+                    float mean = pad.Average(p => p.y);
+                    sides.Add((mean, mean > 0 ? pad.Min(p => p.y) : pad.Max(p => p.y)));
+                }
+
+                return Math.Abs(sides[0].Inner - sides[1].Inner);
+            }
+
+            float cad = Gap(0f), found = float.NaN;
+            for (float a = 0f; a >= -80f; a -= 0.25f)
+            {
+                if (Gap(a) >= OpenGapMeters)
+                {
+                    found = -a;
+                    break;
+                }
+            }
+
+            var gaps = new float[TableSteps + 1];
+            if (!float.IsNaN(found))
+            {
+                // The gap at each step of the closing, the jaws turned as TwinGripper turns them from open (-found) to closed.
+                for (int i = 0; i <= TableSteps; i++) gaps[i] = Gap(-found + i / (float)TableSteps * (found + closedDegrees));
+            }
+
+            left[0].localRotation = l0;
+            left[1].localRotation = lo0;
+            right[0].localRotation = r0;
+            right[1].localRotation = ro0;
+            if (float.IsNaN(found))
+            {
+                string sweep = string.Join(", ", new[] { -90f, -60f, -40f, -20f, -10f, 0f, 10f, 20f, 37f }.Select(x => $"{x:0}:{Gap(x) * 1000:F1}"));
+                left[0].localRotation = l0;
+                left[1].localRotation = lo0;
+                right[0].localRotation = r0;
+                right[1].localRotation = ro0;
+                throw new InvalidOperationException($"the twin's jaws never open to {OpenGapMeters * 1000:F1} mm (CAD {cad * 1000:F1} mm); gap by angle (deg:mm): {sweep}");
+            }
+            return (cad, found, gaps);
         }
 
         private static int LinkOrder(string link) => Array.IndexOf(new[] { "base_link", "turntable", "proximal_link", "distal_link", "wrist_link", "gripper_link", "left_finger", "right_finger" }, link);

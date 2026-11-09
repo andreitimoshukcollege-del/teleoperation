@@ -28,7 +28,11 @@ def test_the_gripper_maps_open_and_closed_pulses_onto_finger_travel_and_never_re
     assert g.is_gripper and g.feedback  # read by the real driver too, since PR #70 (FEEDBACK_MOTOR_IDS)
     assert m.value(10, g.open_pulse) == pytest.approx(-g.finger_open)  # open: past the CAD's pose
     assert m.value(10, g.closed_pulse) == pytest.approx(g.finger_travel)
-    assert m.value(10, (g.open_pulse + g.closed_pulse) / 2) == pytest.approx((g.finger_travel - g.finger_open) / 2)
+    # Between, the twin's four-bar (docs/adr/0034 amendment 10): its table's middle entry at half closed.
+    assert len(g.finger_table) == 21
+    assert m.value(10, (g.open_pulse + g.closed_pulse) / 2) == pytest.approx(g.finger_table[10])
+    for f in (0.0, 0.33, 0.5, 0.9, 1.0):
+        assert m.finger_fraction(10, m.finger_value(10, f)) == pytest.approx(f)
     for pulse in (g.open_pulse, 300.0, g.closed_pulse):
         assert m.pulse(10, m.value(10, pulse)) == pytest.approx(pulse)
 

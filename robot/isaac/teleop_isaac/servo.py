@@ -47,6 +47,7 @@ class Motor:
     finger_travel: float = 0.0
     fingers: Tuple[str, ...] = ()
     finger_open: float = 0.0  # metres each finger opens past the CAD's pose at the open pulse (docs/adr/0034 amendment 8)
+    finger_table: Tuple[float, ...] = ()  # each finger's travel at 0, 0.05, ..., 1 of the closing: the twin's four-bar (amendment 10)
 
     @property
     def is_gripper(self) -> bool:
@@ -71,7 +72,7 @@ class SimModel:
             self.motors[int(m["motorId"])] = Motor(int(m["motorId"]), m["joint"], float(m["zeroOffsetRadians"]), bool(m["feedback"]),
                                                    float(m["stallTorqueNm"]), float(m.get("openPulse", 0.0)), float(m.get("closedPulse", 0.0)),
                                                    float(m.get("fingerTravelMeters", 0.0)), tuple(m.get("fingers", ())),
-                                                   float(m.get("fingerOpenMeters", 0.0)))
+                                                   float(m.get("fingerOpenMeters", 0.0)), tuple(float(v) for v in m.get("fingerTravelByFraction", ())))
 
     @staticmethod
     def load(path: str = DEFAULT_SIM) -> "SimModel":
@@ -84,16 +85,14 @@ class SimModel:
         (``finger_travel``)."""
         m = self.motors[motor_id]
         if m.is_gripper:
-            return -m.finger_open + self.gripper_fraction(motor_id, pulse) * (m.finger_open + m.finger_travel)
+            return self.finger_value(motor_id, self.gripper_fraction(motor_id, pulse))
         return (pulse - self.zero_pulse) / self.pulse_per_radian - m.zero_offset
 
     def pulse(self, motor_id: int, value: float) -> float:
         """The pulse a joint at ``value`` reads (the inverse of :meth:`value`)."""
         m = self.motors[motor_id]
         if m.is_gripper:
-            span = m.finger_open + m.finger_travel
-            f = (value + m.finger_open) / span if span else 0.0
-            return m.open_pulse + min(max(f, 0.0), 1.0) * (m.closed_pulse - m.open_pulse)
+            return m.open_pulse + self.finger_fraction(motor_id, value) * (m.closed_pulse - m.open_pulse)
         return self.zero_pulse + (value + m.zero_offset) * self.pulse_per_radian
 
     def gripper_fraction(self, motor_id: int, pulse: float) -> float:
@@ -103,9 +102,31 @@ class SimModel:
         return min(max((pulse - m.open_pulse) / span if span else 0.0, 0.0), 1.0)
 
     def finger_value(self, motor_id: int, fraction: float) -> float:
-        """Each finger's travel for a gripper ``fraction`` (0 open, 1 closed)."""
+        """Each finger's travel for a gripper ``fraction`` (0 open, 1 closed): the twin's table when the sidecar has one,
+        else linear from ``-finger_open`` to ``finger_travel``."""
         m = self.motors[motor_id]
-        return -m.finger_open + min(max(fraction, 0.0), 1.0) * (m.finger_open + m.finger_travel)
+        f = min(max(fraction, 0.0), 1.0)
+        t = m.finger_table
+        if len(t) > 1:
+            x = f * (len(t) - 1)
+            i = min(int(x), len(t) - 2)
+            return t[i] + (x - i) * (t[i + 1] - t[i])
+        return -m.finger_open + f * (m.finger_open + m.finger_travel)
+
+    def finger_fraction(self, motor_id: int, travel: float) -> float:
+        """The gripper's closing (0..1) for each finger's ``travel``: :meth:`finger_value` inverted."""
+        m = self.motors[motor_id]
+        t = m.finger_table
+        if len(t) > 1:
+            if travel <= t[0]:
+                return 0.0
+            for i in range(len(t) - 1):
+                if travel <= t[i + 1]:
+                    span = t[i + 1] - t[i]
+                    return (i + ((travel - t[i]) / span if span else 0.0)) / (len(t) - 1)
+            return 1.0
+        span = m.finger_open + m.finger_travel
+        return min(max((travel + m.finger_open) / span if span else 0.0, 0.0), 1.0)
 
     def clamp(self, pulse: float) -> float:
         return min(max(pulse, self.min_pulse), self.max_pulse)

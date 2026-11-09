@@ -56,11 +56,22 @@ namespace Teleop.RobotHost.Sim
         public const double FingerTravelMeters = 0.0165;
 
         /// <summary>
-        /// How far each finger opens past the CAD's pose (m), at the open pulse: the CAD's pose leaves 33.5 mm between the pads,
-        /// and with this about 70 mm, the user's estimate of the real gripper's opening (docs/adr/0034 amendment 9; it was a
-        /// 10 mm guess, 53.5 mm, and opened less than the real one). Not measured: measure the real gripper and set it here.
+        /// How far each finger opens past the CAD's pose (m), at the open pulse, when the visuals manifest has no gap table
+        /// (<see cref="ParseFingerTravel"/>). With one, the table rules: the CAD's four-bar opens the pads to about 53 mm at
+        /// most (docs/adr/0034 amendment 10), not the 70 mm amendment 9 guessed.
         /// </summary>
-        public const double FingerOpenMeters = 0.018;
+        public const double FingerOpenMeters = 0.0098;
+
+        /// <summary>
+        /// Each finger's travel from the CAD's pose (m, toward the other) at 0, 0.05, ..., 1 of the gripper's closing: the
+        /// twin's four-bar, measured by <c>JetRoverVisualExport</c> (<c>fingerTravelByFraction</c>), so Isaac's sliding fingers
+        /// leave the same gap the twin's turning jaws do at every reading. Empty in a manifest from before amendment 10.
+        /// </summary>
+        public static double[] ParseFingerTravel(string json)
+        {
+            JsonNode doc = JsonNode.Parse(json) ?? throw new FormatException("an empty visuals manifest");
+            return doc["fingerTravelByFraction"] is JsonArray a ? a.Select(x => (double)x!).ToArray() : Array.Empty<double>();
+        }
 
         /// <summary>A finger's collision from the CAD (<c>visuals.json</c>'s <c>fingerPads</c>): its pad's box in the finger's frame.</summary>
         public readonly struct Pad
@@ -157,7 +168,7 @@ namespace Teleop.RobotHost.Sim
         /// meshes, docs/adr/0034 amendment 6), each link that has any is drawn by them instead of by its collision boxes.
         /// </summary>
         public static string Urdf(RobotArmProfile profile, ArmCollisionModel collision, GenericArmPlantConfig plant, IReadOnlyList<Visual>? visuals = null,
-            IReadOnlyList<Pad>? pads = null)
+            IReadOnlyList<Pad>? pads = null, IReadOnlyList<double>? fingerTravel = null)
         {
             visuals ??= Array.Empty<Visual>();
             pads ??= Array.Empty<Pad>();
@@ -230,7 +241,9 @@ namespace Teleop.RobotHost.Sim
             sb.Append(Joint("distal", "revolute", "proximal_link", "distal_link", new Vector3(l1, 0, 0), new Vector3(0, -1, 0), collision.Distal, maxRadPerSec));
             sb.Append(Joint("wrist", "revolute", "distal_link", "wrist_link", new Vector3(l2, 0, 0), new Vector3(0, -1, 0), collision.Wrist, maxRadPerSec));
             sb.Append(Joint("roll", "revolute", "wrist_link", "gripper_link", Vector3.Zero, new Vector3(1, 0, 0), collision.Roll, maxRadPerSec));
-            var travel = new AngleRange(-(float)FingerOpenMeters, (float)FingerTravelMeters);
+            var travel = fingerTravel is { Count: > 1 }
+                ? new AngleRange((float)fingerTravel.Min(), (float)fingerTravel.Max())
+                : new AngleRange(-(float)FingerOpenMeters, (float)FingerTravelMeters);
             sb.Append(Joint("gripper", "prismatic", "gripper_link", "left_finger", Vector3.Zero, new Vector3(0, -1, 0), travel, 0.1, "gripper"));
             sb.Append(Joint("gripper_mirror", "prismatic", "gripper_link", "right_finger", Vector3.Zero, new Vector3(0, 1, 0), travel, 0.1, "gripper"));
             sb.Append("</robot>\n");
@@ -238,7 +251,7 @@ namespace Teleop.RobotHost.Sim
         }
 
         /// <summary>The bridge's sidecar: the pulse conversion, each motor's joint, which motors report, and the servo limits.</summary>
-        public static string SimJson(RobotArmProfile profile, GenericArmPlantConfig plant)
+        public static string SimJson(RobotArmProfile profile, GenericArmPlantConfig plant, IReadOnlyList<double>? fingerTravel = null)
         {
             static string JointOf(JointRole role) => role switch
             {
@@ -269,8 +282,10 @@ namespace Teleop.RobotHost.Sim
                 {
                     m["openPulse"] = plant.GripperOpenPulse;
                     m["closedPulse"] = plant.GripperClosedPulse;
-                    m["fingerTravelMeters"] = FingerTravelMeters;
-                    m["fingerOpenMeters"] = FingerOpenMeters;
+                    bool table = fingerTravel is { Count: > 1 };
+                    m["fingerTravelMeters"] = table ? fingerTravel!.Max() : FingerTravelMeters;
+                    m["fingerOpenMeters"] = table ? -fingerTravel!.Min() : FingerOpenMeters;
+                    if (table) m["fingerTravelByFraction"] = new JsonArray(fingerTravel!.Select(v => (JsonNode?)JsonValue.Create(v)).ToArray());
                     m["fingers"] = new JsonArray("gripper", "gripper_mirror");
                 }
 

@@ -513,6 +513,13 @@ namespace Teleop.XR.Editor
                     problems.Add($"the {name} feed does not ask the JetRover's address");
             }
 
+            float open = XrJetRoverWorldSetup.JawOpenDegrees();
+            foreach (TwinGripper g in Object.FindObjectsByType<TwinGripper>(FindObjectsInactive.Include, FindObjectsSortMode.None))
+            {
+                float mine = new SerializedObject(g).FindProperty("jawOpenDegrees").floatValue;
+                if (Mathf.Abs(mine - open) > 0.01f) problems.Add($"TwinGripper '{g.name}' opens {mine:0.##} deg past the CAD, not the {open:0.##} Isaac's opening needs" + rerun);
+            }
+
             var locals = feeds.Select(x => new SerializedObject(x).FindProperty("localPort").intValue).ToArray();
             if (locals.Distinct().Count() != locals.Length) problems.Add($"two camera feeds share a local port ({string.Join(",", locals)})");
         }

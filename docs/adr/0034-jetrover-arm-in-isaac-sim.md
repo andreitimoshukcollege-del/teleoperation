@@ -365,3 +365,40 @@ we not just using the measured isaac sim values. Also the camera rotates with th
   not only at its ends; a linear slide would differ by about 7 mm halfway.
 - **The wrist camera rides `wrist_link`**, before the roll joint, not `gripper_link`, so the roll servo no longer turns it.
   The two frames coincide at roll 0, so its mount pose is unchanged.
+
+## Amendment 11 (2026-11-08): J3, the simulated arm fitted to the real one
+
+Decision 6, done (`just jetrover-sim-fit`; `teleop_isaac/simfit.py`, `jetrover_bridge --replay`, run as
+`teleop_isaac.simfit_run`). Real sessions' relay targets (`RO`) and torque switches (`TQ`) are replayed at their recorded
+times into the bridge's own Isaac arm, headless and unpaced (about 2.4× real time), from each session's first valid reading,
+with the driver's feedback cycles; the simulated readings are scored against the recorded ones (`RI`) as docs/metrics.md
+section 10 defines. A coordinate search (2 rounds, 22 evaluations of the first 90 s of each fit session) minimised the RMS
+tracking error of motors 1–4 (a pooled p95 is blind when most readings are of joints standing still).
+
+- **Split.** Fit: the four scripted drives of 2026-10-26 (`drive-steps-2p5`, `drive-steps-6`, `drive-wp-2p5`,
+  `drive-wp-5`). Held out, scored only: `drive-wp-sched`, the two `teleop-2p5` sessions of 2026-10-25 (20:09, 20:20) and
+  the two course sessions of 2026-10-27 (22:46, 22:55). Sessions before 2026-10-25 are left out (the old feedback timing).
+- **Fitted** (against the previous defaults): drive stiffness 21.2 Nm/rad (60), damping 4.24 Nm·s/rad (1.5), force limit
+  1.5 × stall torque (1.0), command delay 0 ms (0), and **servo speed 1.5625 × the commanded pulses per second** (1.0): the
+  real servos ramp about half again faster than RobotHost's `pulsesPerSecond` says, which was most of the old sim's lag.
+- **Result** (`sim_tracking_error_deg`, motors 1–4 pooled, p50 / p95):
+
+  | | default | fitted |
+  |---|---|---|
+  | fit sessions | 0.72 / 11.28 | 0.72 / 4.32 |
+  | held-out sessions | 1.44 / 12.72 | 0.96 / 5.28 |
+
+  Per held-out session p95: `drive-wp-sched` 10.8 → 3.4, teleop 20:09 10.1 → 3.8, teleop 20:20 12.7 → 5.3, course 22:55
+  6.5 → 2.9; course 22:46 19.7 → 18.5. Simple steps lose a little (p95 1.7 → 2.6–2.9) for the much closer motion.
+  `sim_settle_error_deg` held-out p95 rose 4.8 → 6.5, all of it course 22:46.
+- **Course 22:46, and a relaxed arm.** Its shoulder and wrist were off by 109–119° (p95) under both settings: the session
+  parks the arm and switches torque off, and the real readings do not move afterwards (identical 0, 1.2, 5.4 and 21 s
+  after `TQ 0`), the servos' gearboxes holding it, while decision 3's limp drives let the simulated arm fall. So torque off
+  now holds the arm where it is and the servos ignore commands until torque returns (`--relaxed hold`, the default;
+  `--relaxed fall` is the old limp arm). `just isaac-jetrover-check` expects it held.
+- **Now the bridge's defaults.** The live bridge and the replay drive one `IsaacServoSim`, so what was fitted is what runs.
+- **Not fitted:** the gripper (scored nowhere; its geometry is the CAD's, amendment 10), contact, and payloads. The fit
+  replays the robot side only: the headset's network is not in it.
+- **Confirmed with the new defaults** (738b1a7, held relaxed arm, score only): held-out p50 / p95 **0.72 / 4.32** (fit
+  sessions the same), `sim_settle_error_deg` held-out p95 1.68 (4.8 before J3). Course 22:46 went 18.5 → 5.3 (its
+  shoulder 119 → 5.8, wrist 109 → 4.3): the gearbox hold, not the fit, was what it lacked.

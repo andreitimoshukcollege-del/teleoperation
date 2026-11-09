@@ -470,17 +470,24 @@ class IsaacServoSim:
             self.setpoints[motor].move(pulse, pps * self.speed_scale)
 
     def torque(self, on) -> None:
-        """Torque on: a servo holds where the arm lies now. Off: held, the gearboxes keep the arm there (the drives stay on at
-        the place it was, commands ignored); falling, the drives go limp."""
+        """Held (the default): torque off freezes each servo's setpoint where its ramp stands, and the arm stays where it is (the
+        real gearboxes, amendment 11); commands are ignored; torque on goes on from there. Re-targeting at the measured place
+        instead would drop the drives' preload against gravity and let the arm sag again. Falling: torque off makes the drives
+        limp, and torque on holds where the arm lies then."""
         if on == self.on:
             return
         self.on = on
-        q = self._q()
-        for mid, sp in self.setpoints.items():
-            m = self.model.motors[mid]
-            sp.hold(self.model.pulse(mid, q[self.index[m.fingers[0] if m.is_gripper else m.joint]]))
-        held = on or self.hold_relaxed
-        self.art.set_dof_gains(self.kp_on if held else self.kp_off, self.kd_on if held else self.kd_off)
+        if self.hold_relaxed:
+            if not on:
+                for sp in self.setpoints.values():
+                    sp.hold(sp.pulse)
+            return
+        if on:
+            q = self._q()
+            for mid, sp in self.setpoints.items():
+                m = self.model.motors[mid]
+                sp.hold(self.model.pulse(mid, q[self.index[m.fingers[0] if m.is_gripper else m.joint]]))
+        self.art.set_dof_gains(self.kp_on if on else self.kp_off, self.kd_on if on else self.kd_off)
 
     def step(self) -> None:
         for sp in self.setpoints.values():

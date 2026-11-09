@@ -6,7 +6,8 @@ line and exits non-zero when any check fails or any number is missing.
 2. At home, each reading is near its home pulse (how far gravity pulls it is reported).
 3. A move of the elbow by 100 pulses at 400 pulses/s gets there at the fitted servo's pace (the commanded pulses per
    second times the bridge's --speed-scale, 1.5625: docs/adr/0034 amendment 11): past halfway by 0.05-0.40 s, within
-   3 pulses of the target by 0.8 s.
+   10 pulses of the target by 0.8 s. The real elbow settles 4.5-4.7 pulses short under gravity (median; a tenth of its
+   settled readings 7 or more), so the fitted drive is not held to the old 3.
 4. Torque off: the gearboxes hold the shoulder (under 4 pulses of drift over 2 s), as the real arm's readings do
    (amendment 11). Torque back on: it holds where it is (under 4 pulses of drift over the next second).
 5. The bridge's late steps, at most 1 a second.
@@ -108,7 +109,7 @@ def main() -> int:
         moved = [(t - t_move, f[3][1]) for t, f in feeds if t >= t_move and f.get(3, (False, 0))[0]]
         half = next((dt for dt, p in moved if p - start3 >= 50), None)
         out["half_way_s"] = round(half, 3) if half is not None else None
-        at = next((dt for dt, p in moved if abs(p - target[3]) <= 3), None)
+        at = next((dt for dt, p in moved if abs(p - target[3]) <= 10), None)
         out["arrived_s"] = round(at, 3) if at is not None else None
         out["move_final_error_pulses"] = round(moved[-1][1] - target[3], 1) if moved else None
         checks["move_pace"] = half is not None and 0.05 <= half <= 0.40

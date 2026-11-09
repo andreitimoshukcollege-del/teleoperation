@@ -11,7 +11,8 @@ after the gate, runs what it exports.
 - **Nothing here imports anything from the rest of the repo**, and nothing in the repo imports this.
   The packed file must work on a machine that has never seen the repo: no .NET, no Unity, no LFS.
 - **The only shared surface is `contract/`**: the file-format specs (`SESSION_FORMAT.md`,
-  `VIEW_FORMAT.md`, `MODEL_FORMAT.md`, and `FORECAST_FORMAT.md`, the network model's output) and
+  `VIEW_FORMAT.md`, `MODEL_FORMAT.md`, `FORECAST_FORMAT.md`, the network model's output, and
+  `NETWORK_DATASETS.md`) and
   `golden/`. A format change bumps its version, changes the
   spec and both sides in the same commit, and keeps the old version readable until no recording
   uses it.
@@ -77,6 +78,7 @@ sha256 in the model card.
 |---|---|
 | `armpred/contract/` | session (v1, the JetRover's; v2, a serial-chain robot's), view and bundle readers and writers, the session checker, the serial-chain profile (`chain_profile.py`). numpy only, so `just recording-check` and `just pack-dataset` run without torch |
 | `armpred/net/` | the copies of Core: `SeededRng`, impairments, `EmulatedTransport`'s ordering, the profile catalog, `ClockSync`; and `forecast.py`, network forecast v1 and the forecasters of known quality (not a copy) |
+| `armpred/net/datasets/` | the network datasets (docs/adr/0035 N2, `contract/NETWORK_DATASETS.md`): fetch, `.trace` v2, the tiers by Y.1541 and G.1050 (`standards.py`, `tiering.py`), the held-out split. Not a copy of Core |
 | `armpred/baselines/` | `hold-last`, `relay-replay`, the trajectory shaper and `franka-replay` (copies of Core, golden-pinned), `relay-replay-adaptive` (a dev baseline: online lag and droop, speed-blind) |
 | `armpred/sim/` | the JetRover simulator (operator motion, RobotHost, the relay gate, the servos, the reads); `fr3.py`, the FR3 Duo's (the shaper, a tracking lag, a payload bias; session v2, docs/adr/0028) |
 | `armpred/data/` | schedules, and turning a session plus a schedule and a seed into what the headset would have seen (views v3) |

@@ -143,7 +143,9 @@ jetrover-sim-fit sessions_dir="recordings/jetrover" fit="20261026T204223Z-drive-
     cd "$repo" && git fetch -q origin && git checkout -q "$COMMIT"
     out=$HOME/isaacsim/simfit/result-${COMMIT:0:7}.json; log=$HOME/isaacsim/simfit/fit.log
     cd robot/isaac
-    nohup "$HOME/isaacsim/venv/bin/python" -m teleop_isaac.jetrover_bridge --replay "$HOME/isaacsim/simfit/sessions.json" \
+    # Its own module name: isaac-stop and the hosts match teleop_isaac.(bridge|jetrover_bridge), and must not stop the fit.
+    pgrep -u "$USER" -f "teleop_isaac[.]simfit_run" > /dev/null && { echo "error: a fit of ours is already running on $(hostname): just jetrover-sim-fit-status" >&2; exit 1; }
+    nohup "$HOME/isaacsim/venv/bin/python" -m teleop_isaac.simfit_run "$HOME/isaacsim/simfit/sessions.json" \
         --fit-seconds {{fit_seconds}} --fit-rounds {{rounds}} --out "$out" > "$log" 2>&1 < /dev/null &
     echo "[sim-fit] running on $(hostname) at ${COMMIT:0:7} (pid $!): log $log, result $out"
     REMOTE

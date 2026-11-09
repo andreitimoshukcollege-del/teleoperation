@@ -3511,6 +3511,15 @@ gen-trainer-golden:
     cd core && dotnet run --project Teleop.Eval -- gen-trainer-golden
     cp trainer/contract/golden/joint-shaper-v1.json robot/isaac/golden/joint-shaper-v1.json
 
+# Regenerate core/testdata/learned/forecast-golden-v1.json from the trainer (docs/adr/0035 N3): the causal network forecasters (persistence, rtt-half), the network block and the forecast effective times that core/Teleop.Core/Forecast/ copies. After changing trainer/armpred/net/forecast.py, features/layout.py's encode_forecast or golden_forecast.py; then fix the C# copy until `just core-check` passes. Needs `just trainer-setup`
+[group('trainer')]
+gen-forecast-golden:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    PY=$(just _trainer-python)
+    cd trainer
+    "../$PY" -m armpred golden-forecast --out ../core/testdata/learned
+
 # Pack trainer/ into the one file the GPU machine needs: dist/armpred-<sha>.tar.gz, with a VERSION file naming the commit (and whether the tree was dirty). Unpack it there and run ./setup.sh (trainer/README.md)
 [group('trainer')]
 pack-trainer:

@@ -670,6 +670,13 @@ def cmd_golden_learned_v4(args) -> int:
     return 0
 
 
+def cmd_golden_forecast(args) -> int:
+    from .golden_forecast import write
+
+    write(args.out, seed=args.seed)
+    return 0
+
+
 def main(argv: Optional[List[str]] = None) -> int:
     parser = argparse.ArgumentParser(prog="armpred", description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
@@ -768,6 +775,11 @@ def main(argv: Optional[List[str]] = None) -> int:
     p.add_argument("--start", type=float, default=30.0, help="seconds into the view")
     p.add_argument("--seconds", type=float, default=6.0)
     p.set_defaults(func=cmd_golden_learned_v4)
+
+    p = sub.add_parser("golden-forecast", help="the causal network forecasters' golden fixture for the C# copy (docs/adr/0035 N3)")
+    p.add_argument("--out", required=True)
+    p.add_argument("--seed", type=int, default=11)
+    p.set_defaults(func=cmd_golden_forecast)
 
     p = sub.add_parser("evaluate", help="the trainer gate's numbers for a run, on a directory of sessions")
     p.add_argument("--run", required=True)

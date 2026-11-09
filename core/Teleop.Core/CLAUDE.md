@@ -16,6 +16,8 @@ drift. That property is the reason the project is laid out this way — protect 
   reads the file). docs/adr/0025.
 - `Plant/` — the Core-side `IRobotPlant` sweeps run against. Kinematic, not physics; the Unity
   and hardware plants live in `Bridge/`.
+- `Forecast/` — `INetworkForecaster` implementations: C# copies of the trainer's causal network forecasts, which tell
+  the learned joint model the link it is on (docs/adr/0035 N3); golden-pinned, see its `CLAUDE.md`.
 - `Transport/Impairments/` — one file per network-impairment axis, composed into a set the
   emulator applies. `ls` answers "what can a link do to a datagram?" (docs/adr/0013).
 - `Types/` — value types crossing the wire. Immutable, `System.Numerics`, ROS convention.

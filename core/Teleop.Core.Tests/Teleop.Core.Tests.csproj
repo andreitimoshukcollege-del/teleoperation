@@ -34,6 +34,8 @@
     <None Include="..\testdata\learned\finetune-pilot2-early7.weights" CopyToOutputDirectory="PreserveNewest" Link="testdata\learned\finetune-pilot2-early7.weights" />
     <!-- Layout v4's golden (docs/adr/0028), written by the trainer's `armpred golden-learned-v4`, and its model's weights (format 2). -->
     <None Include="..\testdata\learned\golden-v4.json" CopyToOutputDirectory="PreserveNewest" Link="testdata\learned\golden-v4.json" />
+    <!-- The causal network forecasters (docs/adr/0035 N3): written by `armpred golden-forecast`. -->
+    <None Include="..\testdata\learned\forecast-golden-v1.json" CopyToOutputDirectory="PreserveNewest" Link="testdata\learned\forecast-golden-v1.json" />
     <None Include="..\testdata\learned\fr3-*.weights" CopyToOutputDirectory="PreserveNewest" Link="testdata\learned\%(Filename)%(Extension)" />
   </ItemGroup>
 

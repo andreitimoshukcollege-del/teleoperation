@@ -12,7 +12,7 @@ namespace Teleop.Core.Prediction
     /// <c>core/testdata/learned/golden-v4.json</c> pins this copy to it (<c>armpred golden-learned-v4</c>).
     ///
     /// <para>One row of <see cref="JointFeatures"/> per motor in the <see cref="LearnedChainLayout"/>'s order, then one block
-    /// of <see cref="ArmFeatures"/> per arm, the last 101 the network block, zero until a network model exists. Values are
+    /// of <see cref="ArmFeatures"/> per arm, the last 101 the network block (the host's newest forecast, docs/adr/0035 N3, or zeros with none). Values are
     /// computed in double and stored as float, as the Python does. A hand is its 0..1 fraction ×
     /// <see cref="HandModelPerFraction"/> in model units.</para>
     ///
@@ -140,6 +140,28 @@ namespace Teleop.Core.Prediction
             _hasFresh = false;
             _lastFresh = 0;
             Array.Clear(_hasNewest, 0, _rows);
+            ClearForecast();
+        }
+
+        // The newest network forecast the host passed on (docs/adr/0035 N3), encoded once; every arm's block carries it.
+        private readonly float[] _forecastBlock = new float[NetworkFeatures - 1];
+        private bool _hasForecast;
+        private long _forecastIssued;
+
+        /// <summary>The host's newest network forecast (layout_v4.py's <c>observe_forecast</c>).</summary>
+        public void ObserveForecast(NetworkForecast forecast)
+        {
+            Forecast.NetworkForecastBlock.Encode(forecast, _forecastBlock);
+            _forecastIssued = forecast.IssuedTicks;
+            _hasForecast = true;
+        }
+
+        /// <summary>No forecast: every arm's network block is zeros (the <c>absent</c> level).</summary>
+        public void ClearForecast()
+        {
+            _hasForecast = false;
+            _forecastIssued = 0;
+            Array.Clear(_forecastBlock, 0, _forecastBlock.Length);
         }
 
         public double ToModel(int row, double value) => _layout.IsHand(row) ? value * HandModelPerFraction : value;
@@ -364,6 +386,13 @@ namespace Teleop.Core.Prediction
                     }
 
                     block[k + 6] = (float)(Math.Min(_cmdCount, WindowFull) / (double)WindowFull);
+                }
+
+                if (_hasForecast)
+                {
+                    Span<float> network = block.Slice(BaseArmFeatures, NetworkFeatures);
+                    _forecastBlock.AsSpan().CopyTo(network);
+                    network[NetworkFeatures - 1] = (float)((targetTicks - _forecastIssued) / tps / TimeScaleSeconds);
                 }
             }
 

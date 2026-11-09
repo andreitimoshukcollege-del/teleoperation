@@ -508,7 +508,7 @@ namespace Teleop.Bridge
             {
                 _jointStateLink = new JetRoverJointStateLink(_jointTransport, _clock, _profile, clockSyncConfig, presets,
                     _config.JointPredictorActive, _config.MaxHorizonMs, _config.GripperFractionPerRadian, readingAgeIds,
-                    LearnedModels.TryLoad, world);
+                    LearnedModels.TryLoad, world, _config.NetworkForecast);
             }
             catch (ArgumentException e)
             {
@@ -528,6 +528,7 @@ namespace Teleop.Bridge
                                     ", \"remoteHost\": \"" + remoteHost + "\", \"startedUtc\": \"" + DateTime.UtcNow.ToString("o") +
                                     "\", \"app\": \"" + Application.productName + " " + Application.version + "\", \"device\": \"" +
                                     SystemInfo.deviceModel.Replace("\"", "'") + "\", \"editor\": " + (Application.isEditor ? "true" : "false") +
+                                    ", \"networkForecast\": \"" + _jointStateLink.NetworkForecastLevel + "\"" +
                                     ", \"recordBytes\": " + Teleop.RobotArm.Wire.LinkTraceCodec.RecordBytes + "}";
                     _linkTrace = new LinkTraceRecorder(System.IO.Path.Combine(Application.persistentDataPath, "linktraces"), header, _clock.TicksPerSecond);
                     _jointStateLink.Trace = _linkTrace;

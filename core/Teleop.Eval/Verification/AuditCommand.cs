@@ -237,6 +237,7 @@ namespace Teleop.Eval.Verification
             ("Teleop.Core.Contracts.ICommandCodec", "Codecs"),
             ("Teleop.Core.Contracts.IPlayoutPolicy`1", "PlayoutPolicies"),
             ("Teleop.Core.Contracts.IAutonomyArbiter", "Arbiters"),
+            ("Teleop.Core.Contracts.INetworkForecaster", "NetworkForecasters"),
         };
 
         private static void RunRegistryCompletenessCheck(string sourceDir, string dllPath, List<string> findings)

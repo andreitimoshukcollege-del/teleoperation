@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using Teleop.Core.Buffering;
 using Teleop.Core.Contracts;
+using Teleop.Core.Forecast;
 using Teleop.Core.Prediction;
 using Teleop.Core.Reconciliation;
 using Teleop.Core.Transport;
@@ -145,5 +146,16 @@ namespace Teleop.Core.Registry
         /// </summary>
         public static readonly IReadOnlyDictionary<string, Func<AutonomyArbiterConfig, IAutonomyArbiter>> Arbiters =
             new Dictionary<string, Func<AutonomyArbiterConfig, IAutonomyArbiter>>(StringComparer.Ordinal);
+
+        /// <summary>
+        /// <see cref="INetworkForecaster"/> factories, from the operator clock's ticks per second (docs/adr/0035 N3): the
+        /// trainer's causal forecast levels, by its names. <c>absent</c> (no forecast) is no entry: the host does not build one.
+        /// </summary>
+        public static readonly IReadOnlyDictionary<string, Func<long, INetworkForecaster>> NetworkForecasters =
+            new Dictionary<string, Func<long, INetworkForecaster>>(StringComparer.Ordinal)
+            {
+                ["persistence"] = tps => new PersistenceForecaster(tps),
+                ["rtt-half"] = tps => new RttHalfForecaster(tps),
+            };
     }
 }

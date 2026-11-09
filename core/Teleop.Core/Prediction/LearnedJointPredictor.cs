@@ -24,7 +24,7 @@ namespace Teleop.Core.Prediction
     /// no fresh reading of every arm joint yet; the newest reading more than 1 s old; the backend failing;
     /// an output that is not finite. Deterministic for a deterministic backend; allocation-free.</para>
     /// </summary>
-    public sealed class LearnedJointPredictor : ICommandAwarePredictor
+    public sealed class LearnedJointPredictor : ICommandAwarePredictor, INetworkForecastTaker
     {
         private readonly IInferenceBackend _model;
         private readonly LearnedJointWindow? _window;
@@ -90,6 +90,20 @@ namespace Teleop.Core.Prediction
         {
             if (_window4 != null) _window4.ObserveState(sensedTicks, joints);
             else _window!.ObserveState(sensedTicks, joints);
+        }
+
+        /// <summary>The host's newest network forecast (docs/adr/0035 N3): the window's network block carries it.</summary>
+        public void ObserveForecast(NetworkForecast forecast)
+        {
+            if (forecast == null) throw new ArgumentNullException(nameof(forecast));
+            if (_window4 != null) _window4.ObserveForecast(forecast);
+            else _window!.ObserveForecast(forecast);
+        }
+
+        public void ClearForecast()
+        {
+            if (_window4 != null) _window4.ClearForecast();
+            else _window!.ClearForecast();
         }
 
         public bool TryPredict(long targetTicks, Span<JointSample> output, out int count)

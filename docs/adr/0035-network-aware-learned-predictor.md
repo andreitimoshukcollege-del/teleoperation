@@ -2,7 +2,8 @@
 
 ## Status
 
-Proposed, 2026-11-08. Not accepted: nothing here is built. Each phase is one PR, settled by amendments here.
+Accepted, 2026-11-08 (direction): the user, "start with N1, record the wifi traces". Each phase is one PR, settled by
+amendments here; N0's standards text is still to be copied in before N2 uses it.
 
 ## Context
 
@@ -109,3 +110,21 @@ perfect pose.
 - The exact shares of the new mix (N5, from the recorded traces).
 - A network model that forecasts beyond the causal levels (ADR 0021's `DEGRADED` levels need knowledge the headset lacks).
 - The real FR3's network.
+
+## Amendment 1 (2026-11-08): N1, the headset records its link
+
+- **What is recorded.** Every joint-state frame the JetRover link receives (its sequence, the robot's send stamp and tick
+  rate, the arrival, the send on the headset's clock by `ClockSync`, the reading's sensed time), every keepalive echo as
+  `ClockSync` takes it, and every change of the headset's own disturbance (the console's sliders, ADDED DELAY), so frames
+  it delayed itself can be left out. Raw stamps only: a reader can redo `ClockSync`.
+- **Format.** `trainer/contract/LINK_TRACE_FORMAT.md`: a JSON header line, then 48-byte records from Core's
+  `LinkTraceCodec`; `trainer/contract/golden/linktrace-v1.json` (written by `LinkTraceCodecTests`) pins the trainer's reader,
+  `armpred/net/linktrace.py`, to it.
+- **On the headset.** `LinkTraceRecorder` (Bridge) writes `persistentDataPath/linktraces/<UTC>.ltrace`, one file a run,
+  about 2.5 KB/s, buffered and written once a second (nothing allocates per frame); the newest 200 runs are kept.
+  `JetRoverArmConfig.RecordLinkTrace` (default on) turns it off. A write failure stops the trace, never the operator.
+- **Recipes.** `just pull-galaxy-traces` (the APK's files) and `just pull-editor-traces` (Play mode, whose header says
+  `editor: true`: its network is the PC's, not the headset's Wi-Fi) into `recordings/linktraces/`;
+  `just link-trace-summary` gives per trace the one-way delay, round trips, RFC 3550 jitter, loss by sequence, stalls over
+  100/250/500 ms and the bursts after them.
+- **Downlink only.** The uplink is already recorded by RobotHost (`JC`: arrival and the headset's send stamp).

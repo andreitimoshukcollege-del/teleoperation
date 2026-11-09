@@ -148,6 +148,9 @@ namespace Teleop.Bridge
         // The real network, live (docs/metrics.md §3, "Live link health"): lag, jitter and loss over the last 5 s of frames.
         private LiveLinkMeter _meter;
 
+        /// <summary>Where the link's raw stamps are recorded (docs/adr/0035 N1); null records nothing.</summary>
+        public LinkTraceRecorder Trace { get; set; }
+
         /// <summary>The median one-way delay from the robot to the headset over the last 5 s (ms); negative before the clocks sync.</summary>
         public float LagMilliseconds { get { double v = _meter.LagMs; return double.IsNaN(v) ? -1f : (float)v; } }
 
@@ -387,7 +390,17 @@ namespace Teleop.Bridge
         /// </summary>
         internal void SetHeadsetConditions(in HeadsetConditions conditions)
         {
-            if (!_headset.Equals(conditions)) _headsetChanged = true;
+            if (!_headset.Equals(conditions))
+            {
+                _headsetChanged = true;
+                // The trace marks where the headset's own disturbance was on: those frames are not the real network.
+                if (_headset.LagMs != conditions.LagMs || _headset.JitterMs != conditions.JitterMs || _headset.LossPercent != conditions.LossPercent ||
+                    _headset.AddedDelayMs != conditions.AddedDelayMs)
+                {
+                    Trace?.Conditions(conditions.LagMs, conditions.JitterMs, conditions.LossPercent, conditions.AddedDelayMs, _clock.NowTicks);
+                }
+            }
+
             _headset = conditions;
         }
 
@@ -479,8 +492,9 @@ namespace Teleop.Bridge
                 }
 
                 FramesReceived++;
-                _meter.OnFrame(frameSequence, robotSend, robotTps, arrival,
-                    IsSynced ? _clockSync.ToOperatorTicks(robotSend, robotTps, _clock.TicksPerSecond) : long.MinValue);
+                long sendOnOperator = IsSynced ? _clockSync.ToOperatorTicks(robotSend, robotTps, _clock.TicksPerSecond) : long.MinValue;
+                _meter.OnFrame(frameSequence, robotSend, robotTps, arrival, sendOnOperator);
+                Trace?.Frame(frameSequence, robotSend, robotTps, arrival, sendOnOperator, sensed);
                 _lastFrameArrivalTicks = arrival;
                 if (_firstFrameArrivalTicks == long.MinValue) _firstFrameArrivalTicks = arrival;
 
@@ -489,6 +503,7 @@ namespace Teleop.Bridge
                 {
                     _lastEchoOperatorTicks = echoOperator;
                     _clockSync.AddRoundTrip(echoOperator, _clock.TicksPerSecond, echoRobotRecv, robotSend, robotTps, arrival);
+                    Trace?.RoundTrip(echoOperator, echoRobotRecv, robotSend, robotTps, arrival);
                 }
 
                 // A reading newer than any before: the servo board is answering. A stamp more than 10 s

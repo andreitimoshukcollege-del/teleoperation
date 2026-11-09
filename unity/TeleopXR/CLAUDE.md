@@ -248,6 +248,9 @@ Contents:
     and move up and down too. The wrist display keeps the robot camera's feed (6003 → 6004), Isaac's wrist camera here.
   - `just unity-check-xr` checks the twin's ids, the buttons, the pointer, its displays and the clutch's reference to it,
     and the feeds' ports. None of these moves the robot.
+- **Link traces** (docs/adr/0035 N1): every run records the JetRover link's raw stamps to the app's `files/linktraces/`
+  (`RecordLinkTrace`, on by default), for training the learned predictor on real networks. `just pull-galaxy-traces`
+  fetches them, `just link-trace-summary` summarises them; in Play mode `just pull-editor-traces`.
 
 **These are safety settings.** `just unity-check-xr` fails, and `just build-galaxy` refuses to
 build, if any of them changes:

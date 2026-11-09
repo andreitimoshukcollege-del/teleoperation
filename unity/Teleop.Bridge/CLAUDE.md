@@ -28,6 +28,8 @@ parse and the forward pass are Core's `MlpWeights` and `MlpBackend`).
 `OperatorBridgeBase` (docs/adr/0029 amendment) is what the lab's controls take: both robots' bridges derive from it, so the
 console, the sliders, power and pause, the twin switches, the headset guard and the status lights drive either; it also
 declares the console's view of a joint link (`IOperatorJointLink`) and the twin switches' (`ITwinVisibility`).
+`LinkTraceRecorder` (docs/adr/0035 N1) writes the JetRover link's raw stamps to `persistentDataPath/linktraces` (records by
+Core's `LinkTraceCodec`, trainer/contract/LINK_TRACE_FORMAT.md); it owns only the file.
 `OperatorSideControls` (docs/adr/0034 amendment 5) is what either robot offers beside driving: the world (NEW LAYOUT, moves),
 pointer drags and RECORD, over Core's `JointPortSideChannels`; each bridge makes one and hands it out as
 `OperatorBridgeBase.SideControls`, so the world twin, the pointer and the RECORD buttons take either robot.

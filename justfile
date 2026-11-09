@@ -446,9 +446,9 @@ _robot-host host="auto":
     echo "error: could not find the robot. Nothing answered for $name.local on this network, and Tailscale could not reach '$name'. Check it is powered and online (cat /sys/class/net/eth0/carrier, tailscale status on the robot), or set JETROVER_HOST to an address." >&2
     exit 1
 
-# Point both Unity editors' Play mode at the robot's current address: updates RemoteHost in each project's per-machine jetrover_connection.json override (created from the Bridge default if missing) -- no rebuild. Windows side only. The Galaxy headset gets the same with `just push-galaxy-config`
+# Point both Unity editors' Play mode at the robot's current address: updates RemoteHost in each project's per-machine jetrover_connection.json override (created from the Bridge default if missing) -- no rebuild. Windows side only. The Galaxy headset gets the same with `just push-galaxy-config` discover=false points it at this address only, as push-galaxy-config's does (use it for Isaac)
 [group('headset (Galaxy XR)')]
-unity-robot-host host=default_jetrover_host:
+unity-robot-host host=default_jetrover_host discover="true":
     #!/usr/bin/env bash
     set -euo pipefail
     host=$(just _robot-host "{{host}}")
@@ -459,16 +459,18 @@ unity-robot-host host=default_jetrover_host:
         product=$(grep -m1 'productName:' "$settings" | sed 's/.*productName: *//' | tr -d '\r')
         dir="/mnt/c/Users/$winuser/AppData/LocalLow/$company/$product"
         mkdir -p "$dir"
-        python3 - "$dir/jetrover_connection.json" "$host" "$proj" <<'PY'
+        python3 - "$dir/jetrover_connection.json" "$host" "$proj" "{{discover}}" <<'PY'
     import json, os, sys
-    path, host, proj = sys.argv[1:4]
+    path, host, proj, discover = sys.argv[1:5]
     # The override replaces the whole config, so keep an existing one's other fields.
     src = path if os.path.exists(path) else "unity/Teleop.Bridge/Runtime/Resources/jetrover_connection.json"
     cfg = json.load(open(src, encoding="utf-8"))
     old = cfg.get("RemoteHost")
     cfg["RemoteHost"] = host
+    # discover=false: this address only. For Isaac, so Play mode never finds the real JetRover over Tailscale instead.
+    cfg["DiscoverRobot"] = discover != "false"
     json.dump(cfg, open(path, "w", encoding="utf-8"), indent=2)
-    print(f"{proj}: RemoteHost {old} -> {host}  ({path})")
+    print(f"{proj}: RemoteHost {old} -> {host}, discovery {'on' if cfg['DiscoverRobot'] else 'OFF'}  ({path})")
     PY
     done
 

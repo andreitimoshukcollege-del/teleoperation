@@ -402,3 +402,9 @@ tracking error of motors 1–4 (a pooled p95 is blind when most readings are of 
 - **Confirmed with the new defaults** (738b1a7, held relaxed arm, score only): held-out p50 / p95 **0.72 / 4.32** (fit
   sessions the same), `sim_settle_error_deg` held-out p95 1.68 (4.8 before J3). Course 22:46 went 18.5 → 5.3 (its
   shoulder 119 → 5.8, wrist 109 → 4.3): the gearbox hold, not the fit, was what it lacked.
+- **How the hold holds.** First built as re-targeting each servo at its measured place, which drops the drives' preload
+  against gravity: the J1 check saw the shoulder sag 10 more pulses after torque off. Torque off now freezes each setpoint
+  where its ramp stands (2c54cf1): 1 pulse. The confirmation above ran with the first form; the course session's figure
+  can only improve. With the softer fitted drive the elbow settles 7 pulses short in the J1 check, as the real one does
+  (recorded drives: median 4.5–4.7 pulses short, a tenth of settled readings 7 or more; the shoulder 5.8, 8–9), so the
+  check's arrival tolerance is 10 pulses, not 3. `just isaac-jetrover-check` passes all nine checks.

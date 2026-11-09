@@ -39,14 +39,19 @@ namespace Teleop.RobotHost.Net
         private EmulatedTransport? _emulator;
         private readonly List<EmulatedTransport> _draining = new List<EmulatedTransport>();
 
-        public UplinkImpairedReceiver(ITransport socket, long ticksPerSecond, int maxDatagramBytes)
+        /// <param name="tracesRoot">The network datasets' root, for <c>trace:</c> profiles (<see cref="UplinkProfiles"/>); null for none.</param>
+        public UplinkImpairedReceiver(ITransport socket, long ticksPerSecond, int maxDatagramBytes, string? tracesRoot = null)
         {
+            TracesRoot = tracesRoot;
             _socket = socket ?? throw new ArgumentNullException(nameof(socket));
             if (ticksPerSecond <= 0) throw new ArgumentOutOfRangeException(nameof(ticksPerSecond));
             _ticksPerSecond = ticksPerSecond;
             _maxDatagramBytes = maxDatagramBytes;
             _scratch = new byte[maxDatagramBytes + StampBytes];
         }
+
+        /// <summary>Where <c>trace:</c> profiles are read from (null: none can be).</summary>
+        public string? TracesRoot { get; }
 
         /// <summary>The active profile's name, or <c>none</c>.</summary>
         public string Profile { get; private set; } = "none";
@@ -58,7 +63,8 @@ namespace Teleop.RobotHost.Net
 
         /// <summary>
         /// Switches the impairment. <c>none</c> or <c>lan</c> turns it off. Throws on a name Core's
-        /// catalog does not know, so a typo never silently records an unimpaired session as impaired.
+        /// catalog does not know (or a <c>trace:</c> that does not load, <see cref="UplinkProfiles"/>), so a typo never
+        /// silently records an unimpaired session as impaired.
         /// With <paramref name="drainPrevious"/>, what the previous profile holds is still delivered
         /// when due; without it, it is dropped.
         /// </summary>
@@ -77,7 +83,7 @@ namespace Teleop.RobotHost.Net
                 return;
             }
 
-            if (!NetworkProfileCatalog.TryResolveImpairments(name, _ticksPerSecond, out INetworkImpairment[] impairments, out string? error))
+            if (!UplinkProfiles.TryResolve(name, _ticksPerSecond, TracesRoot, out INetworkImpairment[] impairments, out string? error))
             {
                 throw new ArgumentException(error ?? $"unknown network profile '{name}'", nameof(name));
             }

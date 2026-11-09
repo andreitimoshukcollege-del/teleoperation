@@ -213,3 +213,33 @@ def test_downloads_only_over_https_from_the_datasets_hosts_and_under_our_own_nam
     for bad in ("../x", ".hidden", "a/b", ""):
         with pytest.raises(ValueError):
             fetching.safe_name(bad)
+
+
+def test_the_uplink_check_compares_each_segment_with_its_trace(tmp_path):
+    from armpred.net.datasets import trace as T
+    from armpred.net.datasets import uplink_check as U
+
+    root = tmp_path / "root"
+    (root / "demo" / "traces").mkdir(parents=True)
+    T.write(str(root / "demo" / "traces" / "a.trace"), T.from_ms([40.0] * 3000, 20.0))
+    s = tmp_path / "session"
+    s.mkdir()
+    ns = 1_000_000
+    lines = ["JSES|1|robothost|1000000000|CLOCK_MONOTONIC|x", f"UP|{1000 * ns}|trace:demo/a|3"]
+    for i in range(200):  # commands every 28 ms, each released 40 ms (+1 ms of loop) after it was read; every 50th lost
+        if i % 50 == 7:
+            continue
+        t = 1000 * ns + i * 28 * ns
+        lines.append(f"JC|{t}|{t + 41 * ns}|{i}|0|A|1:0:3.8")
+    (s / "robothost.jlog").write_text("\n".join(lines) + "\n")
+    r = U.check(str(s), str(root))
+    seg, = r["segments"]
+    assert r["pass"] and seg["delay_ms"]["p50"] == 41.0 and seg["trace_delay_ms"]["p50"] == 40.0 and seg["loss"] == 0.02
+    def late(line):  # every command released 200 ms after it was read
+        f = line.split("|")
+        if f[0] == "JC":
+            f[2] = str(int(f[1]) + 200 * ns)
+        return "|".join(f)
+
+    (s / "robothost.jlog").write_text("\n".join(late(l) for l in lines) + "\n")
+    assert not U.check(str(s), str(root))["pass"]  # 200 ms where the trace says 40

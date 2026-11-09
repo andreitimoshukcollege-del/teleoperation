@@ -291,6 +291,49 @@ pull-editor-traces dest="recordings/linktraces":
 link-trace-summary +files="recordings/linktraces/*.ltrace":
     cd trainer && python3 -m armpred.net.linktrace $(for f in {{files}}; do case "$f" in /*) echo "$f" ;; *) echo "../$f" ;; esac; done)
 
+# Put the arm in Isaac on the tiers' networks (docs/adr/0035 N4): writes a schedule of train-side tier traces (good, poor, very-bad in turn, `segment_s` seconds each, `segments` of them; seeded, `seed=auto` draws one) into the running `just isaac-jetrover-host`'s uplink control file. RobotHost then replays each trace by time on the joint commands and keepalives it receives (their delays and losses), records every switch (UP), and its sessions are robot-side impaired, which the trainer takes as uplink truth. The schedule starts when RobotHost reads the file (within 0.5 s); `just isaac-uplink-off` ends it. Runs this commit's trainer from ~/teleoperation-datasets (it must be on GitHub)
+[group('isaac')]
+isaac-uplink-tiers segment_s="60" segments="15" seed="auto" tiers="good,poor,very-bad":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    case "{{seed}}" in auto) seed=$(( (RANDOM << 15) | RANDOM )) ;; *[!0-9]*|"") echo "error: seed is a number or auto" >&2; exit 1 ;; *) seed={{seed}} ;; esac
+    case "{{segment_s}}{{segments}}" in *[!0-9.]*) echo "error: segment_s and segments are numbers" >&2; exit 1 ;; esac
+    case "{{tiers}}" in *[!a-z,-]*) echo "error: tiers is a list of good, poor, very-bad" >&2; exit 1 ;; esac
+    commit=$(git rev-parse HEAD)
+    git fetch -q origin
+    [ -n "$(git branch -r --contains "$commit" 2>/dev/null)" ] || { echo "error: $commit is not on GitHub: push it first" >&2; exit 1; }
+    ssh -o ConnectTimeout=10 "{{gpu_host}}" "COMMIT='$commit' SEED='$seed' bash -s" <<'REMOTE'
+    set -euo pipefail
+    repo=$HOME/teleoperation-datasets
+    [ -d "$repo" ] || git clone -q https://github.com/andreitimoshukcollege-del/teleoperation.git "$repo"
+    cd "$repo" && git fetch -q origin && git checkout -q "$COMMIT"
+    cd trainer
+    unset PYTHONPATH
+    spec=$("$HOME/teleoperation/trainer/.venv/bin/python" -m armpred.net.datasets uplink-schedule --seed "$SEED" --segment-s {{segment_s}} --segments {{segments}} --tiers {{tiers}})
+    printf '%s\n' "$spec" > "$HOME/isaacsim/jetrover-uplink.part" && mv "$HOME/isaacsim/jetrover-uplink.part" "$HOME/isaacsim/jetrover-uplink"
+    echo "$spec" | tr ';' '\n'
+    REMOTE
+
+# Switch the Isaac arm's uplink impairment off (docs/adr/0035 N4): what is in flight still arrives
+[group('isaac')]
+isaac-uplink-off:
+    ssh -o ConnectTimeout=10 "{{gpu_host}}" 'printf "none 0\n" > "$HOME/isaacsim/jetrover-uplink" && echo "uplink impairment off"'
+
+# Did an Isaac session's arm get its tier schedule's delays and losses (docs/adr/0035 N4)? Per UP segment naming a trace: the delivered commands' delay (JC tDeliver - t) and their loss by sequence, against the trace over the same span; exits non-zero when a segment is off or none was checked. `id` as for isaac-jetrover-recording-fetch (newest by default)
+[group('isaac')]
+isaac-uplink-check id="newest":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    ssh -o ConnectTimeout=10 "{{gpu_host}}" "ID='{{id}}' bash -s" <<'REMOTE'
+    set -euo pipefail
+    rec=$HOME/isaacsim/jetrover-recordings
+    id=$ID; [ "$id" = newest ] && id=$(ls -t "$rec" | grep -v '^\.' | head -1)
+    case "$id" in *[!A-Za-z0-9._-]*|"") echo "error: not a session id: $id" >&2; exit 1 ;; esac
+    cd "$HOME/teleoperation-datasets/trainer"
+    unset PYTHONPATH
+    "$HOME/teleoperation/trainer/.venv/bin/python" -m armpred.net.datasets uplink-check "$rec/$id"
+    REMOTE
+
 # Bring an Isaac JetRover session from the GPU machine into recordings/isaac-jetrover/<id> (gitignored): its session.json, robothost.jlog, isaac.jlog and the rest, without the rendered frames (isaac/), never over one already here. `id` is a folder of ~/isaacsim/jetrover-recordings there, e.g. 20261109T221225Z-auto; "newest" takes the newest. Streamed over ssh (scp is not allowed there)
 [group('isaac')]
 isaac-jetrover-recording-fetch id="newest":
@@ -3410,6 +3453,7 @@ isaac-jetrover-host scene="jetrover-bench" scene_seed="auto":
     dotnet "$HOME/isaacsim/robothost/Teleop.RobotHost.dll" --local-port 6000 --remote-host 127.0.0.1 --remote-port 6001 \
         --relay-socket "$relay" --local-relay-socket "$relay.robothost" --joint-local-port 6002 --discovery-port 6005 \
         --profile-path core/RobotProfiles/jetrover.json --record-control "$rec/.active" \
+        --uplink-control "$HOME/isaacsim/jetrover-uplink" --uplink-traces "$HOME/datasets/network" \
         --auto-record --auto-record-root "$rec" --auto-record-profile core/RobotProfiles/jetrover.json --auto-record-source isaac \
         --auto-record-driver-wait-seconds 0 --rest-pose-deg {{jetrover_rest_pose_deg}} $park "${host_scene[@]}" "${writer[@]}"
     REMOTE

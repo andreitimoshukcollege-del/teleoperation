@@ -267,6 +267,7 @@ namespace Teleop.Core.Transport
         public bool Send(ReadOnlySpan<byte> payload, long nowTicks)
         {
             var fate = default(DatagramFate);
+            fate.SendTicks = nowTicks;
             for (int i = 0; i < _sendStage.Length; i++)
             {
                 _impairments[_sendStage[i]].ApplyOnSend(ref fate);
@@ -405,6 +406,7 @@ namespace Teleop.Core.Transport
                 _slotLengths[slot] = length;
 
                 var fate = default(DatagramFate);
+                fate.SendTicks = innerArrivalTicks;
                 for (int i = 0; i < _deliverStage.Length; i++)
                 {
                     _impairments[_deliverStage[i]].ApplyOnDeliver(ref fate);

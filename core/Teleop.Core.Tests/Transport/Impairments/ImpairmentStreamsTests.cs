@@ -54,7 +54,7 @@ public class ImpairmentStreamsTests
     [Fact]
     public void Derive_DistinctAxes_ProduceDistinctSubstreamSeeds()
     {
-        string[] axes = { "delay", "jitter", "loss", "reorder", "delay-trace" };
+        string[] axes = { "delay", "jitter", "loss", "reorder", "delay-trace", "timed-trace" };
         var seen = new HashSet<ulong>();
 
         foreach (string axis in axes)

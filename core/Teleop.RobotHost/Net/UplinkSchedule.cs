@@ -14,8 +14,9 @@ namespace Teleop.RobotHost.Net
     ///
     /// <para>The uplink control file holds <c>schedule &lt;seed&gt; &lt;profile&gt;@&lt;seconds&gt;;...</c>:
     /// the trainer's grammar for a named schedule (<c>lan@0;150ms-20j-0.5loss@45;lan@90</c>). The
-    /// first segment starts at 0 and the offsets increase. A name Core does not know refuses the whole
-    /// schedule, so a typo never records a session as impaired when it was not.</para>
+    /// first segment starts at 0 and the offsets increase. A segment may name a network dataset's trace,
+    /// <c>trace:&lt;dataset&gt;/&lt;id&gt;</c> (docs/adr/0035 N4, <see cref="UplinkProfiles"/>). A name that does not resolve refuses the
+    /// whole schedule, so a typo never records a session as impaired when it was not.</para>
     /// </summary>
     public sealed class UplinkSchedule
     {
@@ -57,7 +58,11 @@ namespace Teleop.RobotHost.Net
             request != null && request.StartsWith(Prefix, StringComparison.Ordinal);
 
         /// <summary>Parses <c>schedule &lt;seed&gt; &lt;spec&gt;</c>; false, with the reason, on anything malformed.</summary>
-        public static bool TryParse(string request, long ticksPerSecond, out UplinkSchedule? schedule, out string? error)
+        public static bool TryParse(string request, long ticksPerSecond, out UplinkSchedule? schedule, out string? error) =>
+            TryParse(request, ticksPerSecond, null, out schedule, out error);
+
+        /// <summary>As above, with <paramref name="tracesRoot"/> for segments that name a <c>trace:</c> (<see cref="UplinkProfiles"/>).</summary>
+        public static bool TryParse(string request, long ticksPerSecond, string? tracesRoot, out UplinkSchedule? schedule, out string? error)
         {
             schedule = null;
             error = null;
@@ -88,7 +93,7 @@ namespace Teleop.RobotHost.Net
 
                 string name = item.Substring(0, at);
                 if (name != "none" && name != "lan" &&
-                    !NetworkProfileCatalog.TryResolveImpairments(name, ticksPerSecond, out INetworkImpairment[] _, out string? why))
+                    !UplinkProfiles.TryResolve(name, ticksPerSecond, tracesRoot, out INetworkImpairment[] _, out string? why))
                 {
                     error = why ?? $"unknown network profile '{name}'";
                     return false;

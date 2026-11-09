@@ -84,6 +84,13 @@ def main(argv: Optional[List[str]] = None) -> int:
     sub.add_parser("status")
     o = sub.add_parser("ours")
     o.add_argument("files", nargs="+")
+    u = sub.add_parser("uplink-schedule", help="a RobotHost uplink schedule of train-side tier traces (docs/adr/0035 N4)")
+    u.add_argument("--seed", type=int, required=True)
+    u.add_argument("--segment-s", type=float, default=60.0)
+    u.add_argument("--segments", type=int, default=15)
+    u.add_argument("--tiers", default="good,poor,very-bad")
+    k = sub.add_parser("uplink-check", help="did a tier-scheduled session's arm get the traces' delays and losses? (docs/adr/0035 N4)")
+    k.add_argument("session")
     a = sub.add_parser("assess", help="one trace's assessment (any .trace v2), as JSON")
     a.add_argument("files", nargs="+")
     args = ap.parse_args(argv)
@@ -129,6 +136,19 @@ def main(argv: Optional[List[str]] = None) -> int:
                   f"delay p50 {a['delay_ms']['p50']} p99 {a['delay_ms']['p99']} ms, worst-minute IPDV {a['worst_minute']['ipdv_ms']} ms, "
                   f"loss {a['loss_ratio']:.4%}, bursts {a['burst_count']}")
         return 0 if doc["traces"] else 1
+    if args.cmd == "uplink-schedule":
+        from . import uplink_schedule
+
+        print(uplink_schedule.make(root, ALL, args.seed, args.segment_s, args.segments, [t for t in args.tiers.split(",") if t]))
+        return 0
+    if args.cmd == "uplink-check":
+        from . import uplink_check
+
+        r = uplink_check.check(args.session, root)
+        for seg in r["segments"]:
+            print(json.dumps(seg))
+        print(f"{r['session']}: {'PASS' if r['pass'] else 'FAIL'} ({sum(1 for s in r['segments'] if 'delay_ms' in s)} trace segments checked)")
+        return 0 if r["pass"] else 1
     if args.cmd == "assess":
         from . import trace as T
         from .tiering import assess

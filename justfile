@@ -291,6 +291,26 @@ pull-editor-traces dest="recordings/linktraces":
 link-trace-summary +files="recordings/linktraces/*.ltrace":
     cd trainer && python3 -m armpred.net.linktrace $(for f in {{files}}; do case "$f" in /*) echo "$f" ;; *) echo "../$f" ;; esac; done)
 
+# Bring an Isaac JetRover session from the GPU machine into recordings/isaac-jetrover/<id> (gitignored): its session.json, robothost.jlog, isaac.jlog and the rest, without the rendered frames (isaac/), never over one already here. `id` is a folder of ~/isaacsim/jetrover-recordings there, e.g. 20261109T221225Z-auto; "newest" takes the newest. Streamed over ssh (scp is not allowed there)
+[group('isaac')]
+isaac-jetrover-recording-fetch id="newest":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    id="{{id}}"
+    if [ "$id" = newest ]; then id=$(ssh -o ConnectTimeout=10 "{{gpu_host}}" 'ls -t ~/isaacsim/jetrover-recordings | grep -v "^\." | head -1'); fi
+    case "$id" in *[!A-Za-z0-9._-]*|"") echo "error: not a session id: $id" >&2; exit 1 ;; esac
+    dest=recordings/isaac-jetrover/$id
+    [ ! -e "$dest" ] || { echo "$dest is already here"; exit 0; }
+    mkdir -p "$dest.part"
+    ssh -o ConnectTimeout=10 "{{gpu_host}}" "cd ~/isaacsim/jetrover-recordings/$id && tar cf - --exclude=./isaac ." | tar xf - -C "$dest.part"
+    mv "$dest.part" "$dest"
+    echo "$dest: $(ls "$dest" | tr '\n' ' ')"
+
+# Replay a real JetRover headset session through the headset's own predictors offline, with and without the network forecast (docs/adr/0035 N3; Teleop.Eval headset-replay): RobotHost's robothost.jlog (frames sent, commands) joined by sequence with the headset's .ltrace (when each frame arrived), ClockSync and the forecaster run as the headset's link does, every default preset scored over the whole session by LiveJointScorer (error, correction, display jitter; arm joints). One session is an anecdote, printed, not a result. E.g. `just headset-replay recordings/isaac-jetrover/20261109T221225Z-auto recordings/linktraces/20261109T221220Z.ltrace`
+[group('trainer')]
+headset-replay session trace forecast="persistence":
+    cd core && dotnet run --project Teleop.Eval -- headset-replay --session "../{{session}}" --trace "../{{trace}}" --forecast "{{forecast}}"
+
 # Our own Wi-Fi as training traces (docs/adr/0035 N2, decision 3): every link trace in recordings/linktraces becomes .trace v2 pieces (cut where the headset disturbed its own link) in recordings/network-datasets/ours-wifi, each with its tier by the standards (G.1050's service test profiles, measured per minute as Y.1541 measures) printed. Needs `just trainer-setup`
 [group('trainer')]
 network-traces-ours +files="recordings/linktraces/*.ltrace":
@@ -3510,6 +3530,15 @@ trainer-test:
 gen-trainer-golden:
     cd core && dotnet run --project Teleop.Eval -- gen-trainer-golden
     cp trainer/contract/golden/joint-shaper-v1.json robot/isaac/golden/joint-shaper-v1.json
+
+# Regenerate core/testdata/learned/forecast-golden-v1.json from the trainer (docs/adr/0035 N3): the causal network forecasters (persistence, rtt-half), the network block and the forecast effective times that core/Teleop.Core/Forecast/ copies. After changing trainer/armpred/net/forecast.py, features/layout.py's encode_forecast or golden_forecast.py; then fix the C# copy until `just core-check` passes. Needs `just trainer-setup`
+[group('trainer')]
+gen-forecast-golden:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    PY=$(just _trainer-python)
+    cd trainer
+    "../$PY" -m armpred golden-forecast --out ../core/testdata/learned
 
 # Pack trainer/ into the one file the GPU machine needs: dist/armpred-<sha>.tar.gz, with a VERSION file naming the commit (and whether the tree was dirty). Unpack it there and run ./setup.sh (trainer/README.md)
 [group('trainer')]

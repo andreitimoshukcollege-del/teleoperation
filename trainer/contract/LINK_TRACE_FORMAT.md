@@ -17,6 +17,7 @@ received, recorded by the headset (`unity/Teleop.Bridge/Runtime/LinkTraceRecorde
    | `remoteHost` | the address the headset talked to (the robot, Isaac's GPU machine, or the PC running `just isaac-relay`) |
    | `startedUtc` | when the run began |
    | `app`, `device`, `editor` | which build, which device; `editor` true for Play mode (Direct Preview: the network is the PC's, not the headset's) |
+   | `networkForecast` | the forecast level the learned model was told (docs/adr/0035 N3: `persistence`, `rtt-half` or `absent`); missing in traces from before it |
    | `recordBytes` | `48` |
 
 2. **Records**, 48 bytes each, little-endian: `u8 kind | u8[3] 0 | u32 sequence | i64 a | i64 b | i64 c | i64 d | i64 e`.

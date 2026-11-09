@@ -129,7 +129,7 @@ namespace Teleop.Core.Time
             long robotRecvScaled = (long)Math.Round(robotRecvTicks * rateRatio);
             long robotSendScaled = (long)Math.Round(robotSendTicks * rateRatio);
 
-            long rtt = (operatorRecvTicks - operatorSendTicks) - (robotSendScaled - robotRecvScaled);
+            long rtt = RoundTripTicks(operatorSendTicks, operatorTicksPerSecond, robotRecvTicks, robotSendTicks, robotTicksPerSecond, operatorRecvTicks);
 
             if (rtt < 0)
             {
@@ -187,6 +187,25 @@ namespace Teleop.Core.Time
             _lastRttTicks = rtt;
             _acceptedCount++;
             return true;
+        }
+
+        /// <summary>
+        /// The round trip <see cref="AddRoundTrip"/> computes from the same four stamps (operator ticks): the operator's wait
+        /// less the robot's hold, with the robot's stamps rescaled exactly as there. A host that records every round trip
+        /// offered, accepted or not (the network forecasters do, docs/adr/0035 N3), takes it from here. Allocation-free.
+        /// </summary>
+        public static long RoundTripTicks(
+            long operatorSendTicks,
+            long operatorTicksPerSecond,
+            long robotRecvTicks,
+            long robotSendTicks,
+            long robotTicksPerSecond,
+            long operatorRecvTicks)
+        {
+            double rateRatio = (double)operatorTicksPerSecond / robotTicksPerSecond;
+            long robotRecvScaled = (long)Math.Round(robotRecvTicks * rateRatio);
+            long robotSendScaled = (long)Math.Round(robotSendTicks * rateRatio);
+            return (operatorRecvTicks - operatorSendTicks) - (robotSendScaled - robotRecvScaled);
         }
 
         /// <summary>

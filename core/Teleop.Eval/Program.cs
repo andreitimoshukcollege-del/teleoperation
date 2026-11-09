@@ -43,6 +43,8 @@ namespace Teleop.Eval
                     return Tooling.CatalogCommand.Run();
                 case "joint-predict-bench":
                     return JointBench.JointPredictBenchCommand.Run(args);
+                case "headset-replay":
+                    return JointBench.HeadsetReplayCommand.Run(args);
                 case "joint-probe":
                     return JointProbe.JointProbeCommand.Run(args);
                 case "joint-drive":

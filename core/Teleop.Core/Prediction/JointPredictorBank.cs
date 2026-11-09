@@ -52,6 +52,7 @@ namespace Teleop.Core.Prediction
     {
         private readonly string[] _labels;
         private readonly ICommandAwarePredictor[] _members;
+        private readonly INetworkForecastTaker?[] _takers;
         private readonly bool[] _enabled;
         private readonly bool[] _hasState;
         private readonly int[] _generation;
@@ -68,6 +69,7 @@ namespace Teleop.Core.Prediction
             int n = members.Count;
             _labels = new string[n];
             _members = new ICommandAwarePredictor[n];
+            _takers = new INetworkForecastTaker?[n];
             _enabled = new bool[n];
             _hasState = new bool[n];
             _generation = new int[n];
@@ -75,6 +77,7 @@ namespace Teleop.Core.Prediction
             {
                 _labels[i] = labels[i] ?? throw new ArgumentException($"label {i} is null", nameof(labels));
                 _members[i] = members[i] ?? throw new ArgumentException($"member {i} is null", nameof(members));
+                _takers[i] = _members[i] as INetworkForecastTaker;
                 for (int j = 0; j < i; j++)
                 {
                     if (string.Equals(_labels[j], _labels[i], StringComparison.Ordinal))
@@ -176,6 +179,38 @@ namespace Teleop.Core.Prediction
                 if (_enabled[i]) _members[i].ObserveCommand(effectiveTicks, targets, speedRadPerSec);
             }
         }
+
+        /// <summary>
+        /// A command, with two effective times (docs/adr/0035 N3): <paramref name="forecastEffectiveTicks"/> for the members
+        /// that take the network forecast (<see cref="INetworkForecastTaker"/>; send + the forecast's uplink median,
+        /// <c>Forecast/ForecastEffectiveTimes</c>), <paramref name="effectiveTicks"/> (send + RTT/2) for every other, as the
+        /// trainer gives a predictor that uses the forecast and one that does not.
+        /// </summary>
+        public void ObserveCommand(long effectiveTicks, long forecastEffectiveTicks, ReadOnlySpan<JointSample> targets, float speedRadPerSec)
+        {
+            for (int i = 0; i < _members.Length; i++)
+            {
+                if (_enabled[i]) _members[i].ObserveCommand(_takers[i] != null ? forecastEffectiveTicks : effectiveTicks, targets, speedRadPerSec);
+            }
+        }
+
+        /// <summary>The newest network forecast, to every enabled member that takes one.</summary>
+        public void ObserveForecast(NetworkForecast forecast)
+        {
+            for (int i = 0; i < _members.Length; i++)
+            {
+                if (_enabled[i]) _takers[i]?.ObserveForecast(forecast);
+            }
+        }
+
+        /// <summary>No forecast from now on, for every member that takes one.</summary>
+        public void ClearForecast()
+        {
+            for (int i = 0; i < _members.Length; i++) _takers[i]?.ClearForecast();
+        }
+
+        /// <summary>Whether member <paramref name="index"/> takes the network forecast.</summary>
+        public bool TakesForecast(int index) => _takers[index] != null;
 
         public void ObserveState(long sensedTicks, ReadOnlySpan<JointSample> joints)
         {

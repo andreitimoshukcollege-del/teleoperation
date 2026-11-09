@@ -243,3 +243,39 @@ own clone `~/teleoperation-datasets`, with the trainer's venv) and `just network
 - **What N5 must weigh**: RIPE Atlas is three quarters of the good tier and its traces are summaries (no correlation in
   time); Puffer's are slow levels (no packet-scale jitter); only G.1050's per-packet flows, Mahimahi and ours are packet
   timing. N5 samples by tier and by kind, not by count.
+
+## Amendment 4 (2026-11-09): N3, the headset tells the model its link
+
+Decision 1, built. The deployed model (`finetune-pilot2-early7`) was pre-trained and fine-tuned on decision 12's mixture,
+so 15 % of its views carried a `persistence` forecast and 10 % `rtt-half`; until now the headset always sent `absent`.
+
+- **Core.** `Types/NetworkForecast` (format v1); `Contracts/INetworkForecaster` with `Forecast/PersistenceForecaster`
+  and `RttHalfForecaster` (`Registries.NetworkForecasters`, enforced by `audit`); `Forecast/NetworkForecastBlock` (the
+  network block, for layouts v3 and v4) and `ForecastEffectiveTimes`; `ClockSync.RoundTripTicks` (the round trip
+  `AddRoundTrip` computes, for every round trip offered, accepted or not). `Contracts/INetworkForecastTaker`: `learned`
+  takes the forecast; both learned windows carry it and its age in their network block, zeros without one, as before.
+- **The trainer's rules, kept.** `JointPredictorBank` gives a forecast taker each command at send + the forecast's uplink
+  median at h = 0 (FIFO-clamped), and every other preset send + RTT/2, as `evaluate.py` gives a predictor that uses the
+  forecast and one that does not. A round trip's downlink delay and a frame's send estimate are taken after ClockSync has
+  seen that frame's round trip, as `views.py` builds them.
+- **Pinned.** `armpred golden-forecast` (`just gen-forecast-golden`) writes `core/testdata/learned/forecast-golden-v1.json`:
+  30 s of made-up observations (frames before sync, a 450 ms stall released as a burst, losses, an overtaken frame, a
+  negative and a stalled round trip), every forecast of both levels at 100 ms, the encoded block of every seventh, and
+  the effective times of 1000 commands. `NetworkForecasterTests` replays it.
+- **The headset.** `JetRoverJointStateLink` feeds the forecaster each frame and round trip, issues every 100 ms, and passes
+  each forecast to the bank; `JetRoverArmConfig.NetworkForecast` (`persistence` by default, `rtt-half`, or `absent` for
+  the old behaviour). The link trace's header records the level (`networkForecast`).
+- **Not done here.** The FR3's link (`SerialChainJointLink`) does not forecast yet. No `forecast.jlog` is recorded.
+  Whether `persistence` beats `absent` for this model on the real robot is a measurement for N6, not a claim: the model
+  saw it in only 15 % of training, and N5 retrains on the new mix.
+- **First replay** (`just headset-replay`, `Teleop.Eval headset-replay`): the 2026-11-09 Isaac session
+  `20261109T221225Z-auto` (55 s over home Wi-Fi through the relay) with its link trace, through the headset's presets.
+  Arm joints, degrees, error p50 / p95, correction p95, display jitter p95: `learned` with `persistence` 0.25 / 7.27,
+  1.14, 1.88; without a forecast 0.27 / 7.37, 1.16, 1.84; `hold-last` 0.24 / 1.68, 1.68, 1.44; `servo 10-25`
+  0.24 / 4.20, 1.97, 2.21. The forecast changes almost nothing here: its uplink median (14.6 ms) was RTT/2's (14.4 ms).
+  What dominates is that Isaac's arm did not follow the commands: against the command sent 150 ms before each reading,
+  30–90 % of readings were more than 5° off on the worst joint (joint 1 commanded to 40.6° but never past 25.2°; joint 4
+  reaching −80° where no command went below −38.7°), so every predictor that replays commands loses to `hold-last`.
+  ADR 0034 amendment 12 found why: not the sim (it follows the real arm's commands as the real arm did), but the driving,
+  twice the motion and the reversals of any real session (the wrist's −80° was the park at the end). N6 judges the forecast
+  on sessions driven as the real arm is.

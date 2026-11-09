@@ -275,6 +275,7 @@ so 15 % of its views carried a `persistence` forecast and 10 % `rtt-half`; until
   0.24 / 4.20, 1.97, 2.21. The forecast changes almost nothing here: its uplink median (14.6 ms) was RTT/2's (14.4 ms).
   What dominates is that Isaac's arm did not follow the commands: against the command sent 150 ms before each reading,
   30–90 % of readings were more than 5° off on the worst joint (joint 1 commanded to 40.6° but never past 25.2°; joint 4
-  reaching −80° where no command went below −38.7°), so every predictor that replays commands loses to `hold-last`. One
-  session; why the arm departs from its commands (contact with the scene's objects, gravity sag, the fitted effort) is
-  open, and is the same question for the real robot before N6 can judge the forecast.
+  reaching −80° where no command went below −38.7°), so every predictor that replays commands loses to `hold-last`.
+  ADR 0034 amendment 12 found why: not the sim (it follows the real arm's commands as the real arm did), but the driving,
+  twice the motion and the reversals of any real session (the wrist's −80° was the park at the end). N6 judges the forecast
+  on sessions driven as the real arm is.

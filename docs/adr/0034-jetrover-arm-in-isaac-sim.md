@@ -408,3 +408,35 @@ tracking error of motors 1–4 (a pooled p95 is blind when most readings are of 
   can only improve. With the softer fitted drive the elbow settles 7 pulses short in the J1 check, as the real one does
   (recorded drives: median 4.5–4.7 pulses short, a tenth of settled readings 7 or more; the shoulder 5.8, 8–9), so the
   check's arrival tolerance is 10 pulses, not 3. `just isaac-jetrover-check` passes all nine checks.
+
+## Amendment 12 (2026-11-09): the simulated arm follows its commands as the real one does; the gap was the driving
+
+Scoring the network forecast on an Isaac session (ADR 0035 amendment 4, `just headset-replay`) found every predictor that
+replays commands losing to `hold-last` (error p95 7.3° for `learned` against 1.7°), because the arm's readings sat far from
+the commands: on the worst joint, 55 % of readings were more than 5° from the command sent 150 ms before. Why, from
+`20261109T221225Z-auto`'s `robothost.jlog` (JC, RO, RI, FR) against three real headset sessions (`20261025T200935Z`,
+`20261025T202026Z`, `20261027T224623Z`):
+
+| | Isaac | real |
+|---|---|---|
+| The same relay commands replayed into the sim against what the real arm did (amendment 11's held-out teleop sessions) | p50 0.5–1.0°, p95 2.9–5.3° (one session's tail p95 18.5°) | — |
+| Command → servo report, the best-fitting delay (motors 1–3) | 130–170 ms | 190–220 ms |
+| A target held 0.5 s or more | within about a pulse; joints 2 and 3 about 5 pulses (1.2°) low, gravity sag | similar |
+| Overshoot at a stop, p95; time to within 1° | 1.4°; 330 ms; no ringing | 2.1–3.1°; 230–380 ms |
+| Physics | 1000 Hz in real time (39 late steps in 1.1 million), the fitted drives loaded | — |
+| Commands clamped on the way to the servo while driving | none (the large wrist mismatch is the park at the end) | none |
+| **Command reversals of 3° or more, joints 1–4** | **452 a minute** | 117–267 |
+| **Commanded joint travel, summed** | **185°/s** | 51–110°/s |
+| **Base joint's command speed p95 / p99** | **315 / 610°/s** | 92–121 / 178–373°/s |
+
+- **The sim is not at fault.** Given the real arm's commands it moves as the real arm did, it holds its targets, it settles
+  without ringing, and it keeps real time. It responds somewhat sooner than the real arm (130–170 ms against 190–220 ms).
+- **The gap is the driving.** The Isaac session asked for about twice the motion and twice the reversals of any real
+  session, and often faster than the relay is told to move (3.8 rad/s, 218°/s). Any arm here, real or simulated, trails
+  its commands by 150–200 ms, so with commands reversing every fraction of a second it is rarely where the newest one
+  says, and a predictor that replays commands through that lag overshoots and is corrected. The learned model was trained
+  on real sessions with half the reversals. This is what the operator felt as jitter in Isaac.
+- **One session.** It predicts that driving Isaac as the real arm is driven brings the command–reading gap, and `learned`'s
+  error, back to the real sessions' level; a session driven that way and scored with `just headset-replay` tests it.
+- **Not decided here.** Whether the headset should cap or smooth the hand's commanded speed, since commands faster than
+  the servos are asked to move can never be followed.

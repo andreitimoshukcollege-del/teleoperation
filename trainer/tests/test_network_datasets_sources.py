@@ -92,10 +92,12 @@ def test_g1050_converts_the_attachment_as_published(tmp_path):
     by = {e["id"]: e for e in doc["traces"]}
     assert set(by) == {"Dw4-bidi-VoIP1_Fwd", "Du1-bidi-bw-dwn"}
     w = by["Dw4-bidi-VoIP1_Fwd"]
-    assert (w["tier"], w["tierFrom"], w["group"], w["info"]["kind"]) == ("good", "source", "Dw4", "per-packet")
+    # one drop in 300 is 0.33 % random loss, past A's 0.05 %: the well-managed case's trace measures poor
+    assert (w["tier"], w["tierFrom"], w["info"]["caseTier"], w["group"], w["info"]["kind"]) == ("poor", "measured", "good", "Dw4", "per-packet")
     assert w["info"]["sendIntervalMs"] == 20.0 and w["assessment"]["sent"] == 300 and w["assessment"]["loss_ratio"] > 0
     u = by["Du1-bidi-bw-dwn"]
-    assert (u["tier"], u["info"]["kind"]) == ("very-bad", "statistical") and u["assessment"]["sent"] == 22 * 10
+    assert (u["info"]["caseTier"], u["info"]["kind"]) == ("very-bad", "statistical") and u["assessment"]["sent"] == 22 * 10
+    assert u["tier"] == u["measuredTier"]  # the tier is what the trace shows, not the case's label
 
 
 # Mahimahi traces/Verizon-LTE-short.down, its first lines verbatim.

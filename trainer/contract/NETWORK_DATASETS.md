@@ -30,8 +30,9 @@ Core, `Teleop.Eval`, the Bridge and `analysis/` read; they refuse version 2 by i
              "assessment": {...}, "info": {"kind": "replayed", "assumption": "...", ...}}]}
 ```
 
-`tier` is `good`, `poor` or `very-bad`; `tierFrom` is `source` where the source defines it (G.1050's own test cases) and
-`measured` otherwise. `info.kind` says what the trace is: `per-packet` (a recording of every datagram), `replayed` (a
+`tier` is `good`, `poor` or `very-bad`, what the trace measures (`tierFrom: measured`; `index.emit` can take a source's
+own tier instead, `tierFrom: source`, and no dataset does today). G.1050's traces keep their test case's profile as
+`info.caseTier`. `info.kind` says what the trace is: `per-packet` (a recording of every datagram), `replayed` (a
 capacity trace with the joint stream run through it), `level` (a measured slow delay level), `summary` or `statistical`
 (drawn from measured statistics, seeded: `info.seed`), `recorded` (ours).
 

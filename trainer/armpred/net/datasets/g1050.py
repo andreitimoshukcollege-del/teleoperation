@@ -18,7 +18,13 @@ output per access technology (DSL, GPON), scenario and test case (Annex F, Table
 **Conversion.** A VoIP ``.out`` becomes a trace as it is: each row a datagram, ``drop`` 1 a loss, the send interval the
 rows' median spacing. A ``bw`` file is a *statistical* trace: datagrams every 20 ms, each bin's delays drawn from a normal
 of the bin's mean and standard deviation (``sqrt(m2 - mean^2)``, the use Table 4 gives ``m2``), clipped at zero,
-delivered first in first out (synth.py), seeded by the file's path; the index says so. The tier is the test case's own profile (``tierFrom: source``); the measured one is kept beside it.
+delivered first in first out (synth.py), seeded by the file's path; the index says so.
+
+**The tier is what the trace measures**, as for every source; the case's own profile is ``info.caseTier``. They differ on
+purpose: a profile describes the network, not each flow in it. In profile B the VoIP flows are managed (QoS-prioritised)
+and see well-managed conditions (IPDV about 1 ms), and clause 7.2's cases span "mild to severe within each service test
+profile", so the mildest unmanaged ones measure good. A teleoperation stream at home has no priority, so what a trace
+shows is what it teaches.
 """
 
 from __future__ import annotations
@@ -172,6 +178,7 @@ def items(root: str) -> Iterator[Tuple[str, str, Trace, Dict]]:
 
 
 def convert(root: str) -> Dict:
-    made = list(items(root))
-    override = {I.safe_id(tid): TIER_OF_PROFILE[info["profile"]] for tid, _, _, info in made}
-    return I.emit(root, NAME, made, {"source": SOURCE.title, "url": URL}, tier_override=override)
+    made = []
+    for tid, group, tr, info in items(root):
+        made.append((tid, group, tr, {**info, "caseTier": TIER_OF_PROFILE[info["profile"]]}))
+    return I.emit(root, NAME, made, {"source": SOURCE.title, "url": URL})

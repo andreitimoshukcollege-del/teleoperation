@@ -527,3 +527,56 @@ poses). Hold still until it gets there.
 
 **Not verified:** the feel on the headset, and the step time on the headset's CPU. The worst step there may need fewer starts
 per step.
+
+## Amendment 9 (2026-11-06): position relative to the lock, rotation absolute
+
+The user: "i want the robot position to be relative to the hand but the rotation to absolute. So when you double click the
+rotation will be the same as the hand but the position should be relative to the starting point".
+
+- **What changes.** When an arm locks (the double curl), it stays where it is. From then on its tool moves by how far the
+  hand moves from where it locked, times `PositionScale`. It still faces exactly the way the palm faces, relative to the
+  body.
+  - Before, where the hand was relative to the body was where the gripper went, so a lock with the hand away from the
+    neutral pose slid the arm across the workspace.
+  - Now only the gripper's turn to the palm's orientation happens at a lock. It takes the usual slide (`ApproachSteps`,
+    about a second), so it turns rather than snaps.
+- **How.** Core's `BodyAnchoredMapping` takes an anchor per arm (`Anchor`, `ClearAnchor`), used only with the new
+  `BodyMappingOptions.RelativePosition`.
+  - At a lock the bridge anchors the hand to the arm's commanded tool.
+  - Letting go clears it, so the EDIT OBJECTS cursor and an unlocked hand still map by themselves.
+  - Walking still carries the body frame (amendment 5), so a walk does not drag a locked arm along.
+- **Config.** `HandPosition` in `fr3_connection.json`: `relative` (the default) or `absolute` (the old behaviour).
+  `just push-galaxy-fr3-config` changes it without a rebuild.
+- **Tested.** `BodyAnchoredMappingTests.RelativePosition_StartsFromTheToolAtTheLock_AndMovesWithTheHand_WhileTheRotationStaysThePalms`.
+  `chain-ik-stress` and `chain-teleop-probe` keep the absolute mapping: neither anchors.
+- **Not tested:** how it feels on the headset.
+
+## Amendment 10 (2026-11-06): the lock is a thumb-to-middle tap
+
+The user: "the double click of the fingers doesn't get recognized a lot of the time and can be annoying". Of the
+alternatives offered, they chose a tap of the thumb on the middle fingertip.
+
+- **Why it should be steadier.** It is read as the gripper's pinch is, from two fingertips' gap. Hand tracking measures that
+  far more steadily than a fold of three fingers, which it loses as the hand turns. It is also a single gesture, not two
+  inside a time window.
+  - A likely reason the double fold failed: between two quick folds the fingers rarely open past the release curl (1.55,
+    from an engage of 1.25), so the second fold is never seen as new.
+- **The rule** (Core's `MiddleTapToggle`):
+  - **A touch** is a thumb–middle gap below 1.5 cm, released above 3 cm.
+  - **It toggles the lock** once it has lasted 30 ms, while the thumb and index are at least 3.5 cm apart. It answers then,
+    without waiting for the release.
+  - **Holding on toggles nothing more.**
+  - **No touch counts while the index is on the thumb,** or if the index closes during it, so closing the gripper never
+    locks or unlocks. To unlock while gripping, open the index first.
+  - **Untracked frames do nothing,** and losing the hand never unlocks.
+- **Config.** `GrabMode` in `fr3_connection.json`:
+  - `middle-tap`, the default;
+  - `toggle`, the double fold, unchanged;
+  - `hold`.
+
+  The thresholds are `MiddleTapTouchMeters`, `MiddleTapReleaseMeters`, `MiddleTapIndexApartMeters` and
+  `MiddleTapMinSeconds`. `just push-galaxy-fr3-config` changes any of them without a rebuild.
+- **Tested:** `MiddleTapToggleTests` covers taps, holding, flicker, the gripper closing with the middle finger alongside,
+  and lost tracking.
+- **Not tested:** on the headset: whether 1.5 cm suits this headset's fingertip tracking, and whether the middle fingertip
+  stays visible behind the index at the angles you drive with.

@@ -24,7 +24,7 @@ just isaac-stop                       # stop them from any terminal (RobotHost c
 just fr3-teleop-probe 0.08 3 franka-replay false <GPU machine>   # drive it headless from here
 just push-galaxy-fr3-config <GPU machine>                        # point the headset at it
 just fr3-world-probe <GPU machine> 7 true                        # the world through RobotHost: seed 7's poses, then NEW LAYOUT
-just camera-probe 10 0 "" <GPU machine> 6003 6004                # the head camera's feed (6007 6014: the third person's)
+just camera-probe 10 0 "" <GPU machine> 6003 6004                # the right wrist's feed (6007: the left wrist's; 6008, 6009: third-person left, right)
 just isaac-host fr3-duo-bench auto false                         # without the renderer and its feeds
 ```
 
@@ -35,7 +35,8 @@ can make physics steps late. The bridge's log is `~/isaacsim/bridge.log` on that
 ## The world (docs/adr/0031 amendment 2)
 
 With a scene (`core/Scenes/<scene>.json`, default `fr3-duo-bench`), `world.py` puts the file's surfaces in
-the stage as static colliders and its fixed obstacles as kinematic bodies, on the session layer, so the
+the stage as static colliders, its fixed obstacles as kinematic bodies and its movable ones as dynamic bodies
+with their mass, which fall and which an arm can knock over (ADR 0031 amendment 4), on the session layer, so the
 robot's USD is never changed. RobotHost decides where objects go, from seeded layouts, and asks with PLACE;
 the bridge applies or refuses each one by RobotHost's own rules (`StaticWorld`), plus a PhysX overlap query
 against the arms: `overlaps-arm`, and `arm-touching` for a move from the headset. After each Welcome it
@@ -67,10 +68,11 @@ tracked exactly (0.000 rad), and there were no late steps in 16 s.
 - **Posing.** The bridge copies every state and world message to it (`--tap`, never blocking; drops are counted in the
   bridge's last line). Each frame it poses the robot from the newest state (`kinematics.local_motion`) and the objects from
   the newest WORLD.
-- **The cameras.** It renders the scene file's two cameras at 30 fps. JPEG encoding runs on one thread per camera, and a
+- **The cameras.** It renders the scene file's cameras at 30 fps: two third-person ones and one on each wrist (ADR 0032
+  amendment 3), a wrist camera as a child of its hand's prim, so it moves with the hand. JPEG encoding runs on one thread per camera, and a
   frame is dropped rather than queued when its encoder is behind.
-- **The feeds.** Each camera goes out on ADR 0014's wire (`camwire.py`, `camfeed.py`) to whoever subscribed: the head camera
-  on 6003, the third person on 6007. A frame is encoded only while someone is subscribed.
+- **The feeds.** Each camera goes out on ADR 0014's wire (`camwire.py`, `camfeed.py`) to whoever subscribed: the right wrist
+  on 6003, the left wrist on 6007 (the headset's two displays), the third-person cameras on 6008 and 6009. A frame is encoded only while someone is subscribed.
 - **The capture stamp.** `captureTicks` is the sensed time of the state the frame shows, on RobotHost's CLOCK_MONOTONIC.
   The image read after posing frame k shows frame k − lag. The lag is measured at start-up with a cube on the table, with
   the objects hidden; on 2026-11-02 it was 2 frames in 100% of 87 samples.
@@ -105,6 +107,33 @@ just isaac-edit-check                # against isaac-host fr3-duo-bench 7: heads
   amendment 2 holds the 2026-11-03 numbers: 100% of frames stamped with a `QS` state, depth p99 0.5 mm, and each hand's
   point in its mask in 100% of 61 frames.
 - **Cost:** about 10 GB an hour of recording.
+
+## Recording scenarios from the headset (docs/adr/0033)
+
+For the person recording, on the headset:
+
+1. **Choose the scenario** with `< PREV` and `NEXT >` on the bench's left wing, behind the power button. NEXT's label
+   names the chosen one.
+2. **Start a take** by pressing RECORD. It turns into `STOP ● mm:ss`, with the scenario and take number. Do the scenario,
+   with the robot on.
+3. **Save the take** by pressing STOP. A take that went wrong can be set aside with DISCARD LAST once it is stopped. It is
+   moved, never deleted.
+
+**Where the takes go:** on the GPU machine, under `/home/andrei/isaacsim/scenarios/<scenario>/<UTC>-take<n>/`, one
+folder per take.
+- Each take holds:
+  - `robothost.jlog`, the robot's truth and commands;
+  - `isaac.jlog`, plus `isaac/` with the four cameras' colour, depth and masks;
+  - `session.json`, which names the scenario and the take;
+  - `files.sha256`. A take is complete once this is written, a few seconds after STOP.
+- Another account reads them once `just isaac-share-scenarios <account>` has run (default `seaqueue-cheng`). That account
+  can also edit the list, `/home/andrei/isaacsim/scenarios/scenarios.txt`:
+  - one scenario per line, `name | what to do`;
+  - the headset shows the new list within a few seconds.
+- `just isaac-scenarios` lists what has been recorded.
+
+**A take stops by itself** when the headset is silent for 10 s, after 30 min, or when the disk is nearly full (below
+21 GB). The button's label says so.
 
 ## The render check
 
@@ -146,6 +175,6 @@ These are all bridge arguments, and the Welcome's description records them in ea
 - **Position drives** of 16000 Nm/rad and 250 Nm·s/rad on the arm joints (about 20 Hz tracking),
   and 2000 N/m and 100 N·s/m on the fingers. They play Franka's internal controller.
 - **No gravity on the arms' own links.** The real FR3 compensates its own weight. Only the robot's
-  links: the scene's objects are kinematic today, and movable ones will feel gravity.
+  links: the scene's movable objects feel gravity.
 - **PhysX at 1 kHz on the CPU,** with 8 solver iterations and no results written back to USD. That
   setting is what makes 1 kHz affordable (docs/adr/0031 amendment).

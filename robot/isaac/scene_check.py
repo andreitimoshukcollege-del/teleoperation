@@ -3,14 +3,20 @@ and talks to it as RobotHost would, over its socket. Run from robot/isaac on the
 line and exits non-zero when any check fails or any number is missing.
 
 1. Welcome, then WORLD_INFO with the scene file's sha256 and every object's id.
-2. WORLD at 50 +- 5 Hz, every object at its nominal pose.
+2. WORLD at 50 +- 5 Hz, every object at its nominal pose (a movable one settled within 3 mm of it).
 3. Placements: one applied, and seen in the next WORLD (PhysX has it, not only USD); off the table, onto another object and
    an unknown id refused.
 4. A post moved under the left hand, then the left elbow driven 0.6 rad down through it: the arm stalls on the post, so
    what it measures stays more than 0.05 rad short of the command, and the post does not move. The same motion with the
    post moved away falls short by less than 0.01 rad.
 5. While the hand rests on the post: from the headset, ARM_TOUCHING; as a layout, OVERLAPS_ARM.
-6. The bridge's late steps, at most 1 a second over the whole run.
+6. A movable object (docs/adr/0031 amendment 4): the other post under the hand, the same motion knocks it, so it moves
+   more than 2 cm or tips more than 15 degrees, and the arm falls short by less than 0.05 rad; placed again, it stands
+   upright at rest where it was put (within 3 mm).
+7. The bridge's late steps, at most 1 a second over the whole run.
+
+Checks 4 and 5 need an object that does not move, so the bridge runs a copy of the scene with post-left made fixed
+(written beside the bridge's log); every other object is as the scene file has it.
 """
 
 from __future__ import annotations
@@ -36,7 +42,8 @@ from teleop_isaac.bridge import start_pose  # noqa: E402
 REPO = os.path.abspath(os.path.join(HERE, "..", ".."))
 ELBOW = "left_fr3v2_joint4"
 ELBOW_TRAVEL = -0.6  # rad from the start pose: the left tool goes down and in, through (0.34, 0.20) at about z = 0.31
-POST_ID = 1  # post-left, 0.30 m tall
+POST_ID = 1  # post-left, 0.30 m tall; made fixed in the copy the bridge runs
+KNOCK_ID = 2  # post-right, 0.30 m tall, movable
 UNDER_HAND = (0.34, 0.20)
 
 
@@ -123,8 +130,20 @@ def main() -> int:
     args = a.parse_args()
 
     p = profile_module.load(os.path.join(REPO, "core", "RobotProfiles", "fr3-duo.json"))
-    scene = scene_module.load(args.scene)
-    sha = hashlib.sha256(open(args.scene, "rb").read()).digest()
+    with open(args.scene, encoding="utf-8") as f:
+        doc = json.load(f)
+    for o in doc["objects"]:
+        if o["id"] == POST_ID:
+            o["kind"] = "fixed"
+            o.pop("mass", None)
+    scene_path = os.path.expanduser("~/isaacsim/scene-check-scene.json")
+    with open(scene_path, "w", encoding="utf-8") as f:
+        json.dump(doc, f, indent=1)
+    scene = scene_module.load(scene_path)
+    if not any(o.id == KNOCK_ID and o.movable for o in scene.objects):
+        print("RESULT " + json.dumps({"passes": False, "missing": ["movable object"], "error": f"object {KNOCK_ID} is not movable in {args.scene}"}))
+        return 1
+    sha = hashlib.sha256(open(scene_path, "rb").read()).digest()
     motors = p.motor_ids()
     start = dict(zip(motors, start_pose(p)))
     elbow = next(j.motor_id for arm in p.arms for j in arm.joints if j.name == ELBOW)
@@ -136,7 +155,7 @@ def main() -> int:
     log_path = os.path.expanduser("~/isaacsim/scene-check-bridge.log")
     log = open(log_path, "w")
     bridge = subprocess.Popen(["taskset", "-c", args.cpus, args.python, "-m", "teleop_isaac.bridge", "--socket", server,
-                               "--scene", args.scene, "--seconds", "240"], cwd=HERE, stdout=log, stderr=subprocess.STDOUT)
+                               "--scene", scene_path, "--seconds", "260"], cwd=HERE, stdout=log, stderr=subprocess.STDOUT)
     out = {"scene": scene.name, "scene_sha256": sha.hex()}
     checks = {}
     try:
@@ -166,8 +185,10 @@ def main() -> int:
             sensed = [w[1] for w in c.world]
             out["world_sensed_hz"] = round((len(sensed) - 1) / ((sensed[-1] - sensed[0]) / 1e9), 2)
             checks["world_rate"] = 45.0 <= out["world_sensed_hz"] <= 55.0
-            out["nominal_err_m"] = max(math.dist(w[4][i][:3], nominal[i][:3]) for w in c.world for i in nominal)
-            checks["world_nominal"] = out["nominal_err_m"] < 1e-4
+            movable = {o.id for o in scene.objects if o.movable}
+            out["nominal_err_m"] = max(math.dist(w[4][i][:3], nominal[i][:3]) for w in c.world for i in nominal if i not in movable)
+            out["nominal_movable_err_m"] = max(math.dist(w[4][i][:3], nominal[i][:3]) for w in c.world[len(c.world) // 2:] for i in movable)
+            checks["world_nominal"] = out["nominal_err_m"] < 1e-4 and out["nominal_movable_err_m"] < 3e-3
         else:
             out["world_hz"] = None
 
@@ -213,9 +234,34 @@ def main() -> int:
         checks["post_moved_away"] = c.place(wire.CAUSE_LAYOUT, POST_ID, nominal[POST_ID]) == wire.APPLIED
         out["free_short_rad"] = round(drive(), 4)
         checks["free_tracks"] = out["free_short_rad"] < 0.01
-        c.hold(start, 2.0)
+        c.hold(start, 3.0)
 
-        # 6. late steps
+        # 6. a movable object: knocked, then stood up again
+        checks["knock_under_hand"] = c.place(wire.CAUSE_LAYOUT, KNOCK_ID, at(*UNDER_HAND)) == wire.APPLIED
+        c.hold(start, 1.0)
+        c.world.clear()
+        out["knock_short_rad"] = round(drive(), 4)
+        last = c.world[-1][4][KNOCK_ID] if c.world else None
+        if last is not None:
+            out["knock_moved_m"] = round(math.dist(last[:3], (*UNDER_HAND, scene.table.top + 0.15)), 4)
+            up = 1.0 - 2.0 * (last[4] ** 2 + last[5] ** 2)  # the post's own z axis against the vertical
+            out["knock_tilt_deg"] = round(math.degrees(math.acos(max(-1.0, min(1.0, up)))), 1)
+        else:
+            out["knock_moved_m"] = out["knock_tilt_deg"] = None
+        checks["knocked"] = last is not None and (out["knock_moved_m"] > 0.02 or out["knock_tilt_deg"] > 15) and out["knock_short_rad"] < 0.05
+        c.hold(start, 3.0)
+        back = nominal[KNOCK_ID]
+        out["restand_outcome"] = c.place(wire.CAUSE_LAYOUT, KNOCK_ID, back)
+        c.world.clear()
+        c.hold(start, 1.0)
+        if c.world:
+            now_pose = c.world[-1][4][KNOCK_ID]
+            out["restand_err_m"] = round(math.dist(now_pose[:3], back[:3]), 4)
+        else:
+            out["restand_err_m"] = None
+        checks["restands"] = out["restand_outcome"] == wire.APPLIED and out["restand_err_m"] is not None and out["restand_err_m"] < 3e-3
+
+        # 7. late steps
         seconds = time.monotonic() - t0
         if c.health:
             first, last = c.health[0], c.health[-1]
@@ -240,7 +286,7 @@ def main() -> int:
     text = open(log_path, errors="replace").read().splitlines()
     out["bridge"] = [line for line in text if line.startswith("[isaac]")][:12]
     out["checks"] = checks
-    expected = 17
+    expected = 20
     out["missing"] = sorted(k for k, v in out.items() if v is None) + ([f"{expected - len(checks)} checks"] if len(checks) < expected else [])
     out["passes"] = not out["missing"] and all(checks.values())
     print("RESULT " + json.dumps(out, sort_keys=True))

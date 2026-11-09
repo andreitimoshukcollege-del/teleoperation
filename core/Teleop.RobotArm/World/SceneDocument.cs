@@ -42,7 +42,7 @@ namespace Teleop.RobotArm.World
         public string headset = "show";
     }
 
-    /// <summary>One object: a fixed obstacle standing upright on the work table (version 1).</summary>
+    /// <summary>One object standing upright on the work table: a fixed obstacle, or (version 2) a movable body.</summary>
     [Serializable]
     public sealed class SceneObjectDocument
     {
@@ -57,8 +57,14 @@ namespace Teleop.RobotArm.World
         public double[] position = Array.Empty<double>();
         public double[] rpy = Array.Empty<double>();
 
-        /// <summary><c>fixed</c>: a kinematic body the arms collide with, moved only by a placement. <c>movable</c> is reserved.</summary>
+        /// <summary>
+        /// <c>fixed</c>: a kinematic body the arms collide with, moved only by a placement. <c>movable</c> (version 2): a body with
+        /// <see cref="mass"/> that falls and that an arm can push or knock over (docs/adr/0031 amendment 4).
+        /// </summary>
         public string kind = "";
+
+        /// <summary>kg: more than 0 for a movable object, absent (0) for a fixed one.</summary>
+        public double mass;
         public bool operatorMovable;
         public double staticFriction;
         public double dynamicFriction;

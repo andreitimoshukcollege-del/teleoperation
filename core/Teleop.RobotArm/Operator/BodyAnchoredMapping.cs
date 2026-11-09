@@ -17,6 +17,14 @@ namespace Teleop.RobotArm.Operator
         public double NeutralDown { get; set; } = 0.40;
 
         /// <summary>
+        /// Position relative, rotation absolute (docs/adr/0029 amendment 9, the user, 2026-11-06): at each lock the host calls
+        /// <see cref="BodyAnchoredMapping.Anchor"/>, so from then on the tool moves by how far the hand moves from where it
+        /// locked (times <see cref="PositionScale"/>) while it keeps facing the way the palm faces. False: the hand's position
+        /// relative to the body is the tool's, as well as its rotation.
+        /// </summary>
+        public bool RelativePosition { get; set; }
+
+        /// <summary>
         /// Walking carries the body frame (<see cref="BodyAnchoredMapping.Follow"/>, docs/adr/0029 amendment 5): a head
         /// moving horizontally faster than this (m/s, smoothed over <see cref="WalkSpeedSeconds"/>) is walking, and the
         /// frame then moves with it, so the target stays where it was. Slower is standing, sway or a lean to reach, and
@@ -87,6 +95,8 @@ namespace Teleop.RobotArm.Operator
         private RigidTransform _bodyFromWorld = RigidTransform.Identity;
         private double _bodyX, _bodyY, _bodyZ, _bodyYaw;
         private double _headX, _headY, _headSpeed, _pendingX, _pendingY, _walking;
+        private readonly double[] _anchorX, _anchorY, _anchorZ;
+        private readonly bool[] _anchored;
 
         /// <param name="neutralTools">Each arm's tool at the neutral hand, root frame; <see cref="NeutralTools"/> gives the FR3 Duo's.</param>
         public BodyAnchoredMapping(SerialChainProfile profile, RigidTransform[] neutralTools, BodyMappingOptions? options = null)
@@ -97,6 +107,10 @@ namespace Teleop.RobotArm.Operator
             if (_options.Validate() is string bad) throw new ArgumentException(bad, nameof(options));
             _neutralTool = (RigidTransform[])neutralTools.Clone();
             _neutralSide = new double[profile.Arms.Length];
+            _anchorX = new double[profile.Arms.Length];
+            _anchorY = new double[profile.Arms.Length];
+            _anchorZ = new double[profile.Arms.Length];
+            _anchored = new bool[profile.Arms.Length];
             for (int a = 0; a < profile.Arms.Length; a++)
             {
                 // Each hand on its own arm's side: the arm whose base is on the robot's left (+Y) takes the left hand.
@@ -196,6 +210,28 @@ namespace Teleop.RobotArm.Operator
             _bodyFromWorld = new RigidTransform(_bodyX, _bodyY, _bodyZ, heading.Qw, heading.Qx, heading.Qy, heading.Qz).Inverse();
         }
 
+        /// <summary>
+        /// With <see cref="BodyMappingOptions.RelativePosition"/>: from now until <see cref="ClearAnchor"/>, arm
+        /// <paramref name="arm"/>'s tool is at <paramref name="tool"/>'s position for a hand at <paramref name="hand"/>, and moves
+        /// with the hand from there. Rotation is untouched: still the palm's. Without the option it does nothing.
+        /// </summary>
+        public void Anchor(int arm, in RigidTransform hand, in RigidTransform tool)
+        {
+            if (!_options.RelativePosition) return;
+            _anchored[arm] = false;
+            RigidTransform at = Map(arm, hand);
+            _anchorX[arm] = tool.X - at.X;
+            _anchorY[arm] = tool.Y - at.Y;
+            _anchorZ[arm] = tool.Z - at.Z;
+            _anchored[arm] = true;
+        }
+
+        /// <summary>Back to where the hand maps by itself (the host calls it when the arm is let go).</summary>
+        public void ClearAnchor(int arm) => _anchored[arm] = false;
+
+        /// <summary>Whether arm <paramref name="arm"/> moves relative to an anchor now.</summary>
+        public bool IsAnchored(int arm) => _anchored[arm];
+
         /// <summary>Where arm <paramref name="arm"/>'s tool goes (root frame) for a hand at <paramref name="hand"/> (world).</summary>
         public RigidTransform Map(int arm, in RigidTransform hand)
         {
@@ -205,6 +241,13 @@ namespace Teleop.RobotArm.Operator
             double x = n.X + s * (inBody.X - _options.NeutralForward);
             double y = n.Y + s * (inBody.Y - _neutralSide[arm]);
             double z = n.Z + s * (inBody.Z + _options.NeutralDown);
+            if (_anchored[arm])
+            {
+                x += _anchorX[arm];
+                y += _anchorY[arm];
+                z += _anchorZ[arm];
+            }
+
             RigidTransform r = new RigidTransform(0, 0, 0, inBody.Qw, inBody.Qx, inBody.Qy, inBody.Qz).Compose(ToolFromHand);
             double norm = Math.Sqrt(r.Qw * r.Qw + r.Qx * r.Qx + r.Qy * r.Qy + r.Qz * r.Qz);
             if (!(norm > 1e-9)) norm = 1;

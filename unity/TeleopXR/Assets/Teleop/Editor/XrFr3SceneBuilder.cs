@@ -24,12 +24,13 @@ namespace Teleop.XR.Editor
     /// <item>The night-shift room, the camera display with its status strip, the workcell's status ring and the baked
     /// lighting: <see cref="LabRoom"/>, <see cref="LabDisplay"/>, <see cref="LabLighting"/>, with the FR3's own mesh
     /// library (sharing the JetRover's would delete its robot's meshes) and light probes over the FR3's workspace.</item>
-    /// <item>The bench is deeper (<see cref="BenchDepth"/>) and the FR3 Duo stands at its back, so its arms work beyond
-    /// the controls instead of sweeping through them.</item>
-    /// <item>The controls where the JetRover has them, built by the same code (<see cref="XrControlSetup"/>): power and
-    /// pause on the front-left, the twin's three switches beside them with the link's status line, the operator console
-    /// (predictors, the network sliders and the panel) behind them, and the added-delay slider. RECENTRE stands on the
-    /// front-right, where the JetRover's training course starts.</item>
+    /// <item>The FR3 Duo stands just ahead of the operator (docs/adr/0031 amendment 4, the user's choice, 2026-11-03): its
+    /// base <see cref="RobotDepth"/> in from the bench's near edge, about 0.5 m from where they stand, so they look over its
+    /// shoulder at its arms and the work table, which starts at the bench's far edge.</item>
+    /// <item>The controls are built by the JetRover's code (<see cref="XrControlSetup"/>) and then moved out of the arms'
+    /// way (<see cref="ArrangeControls"/>): every control is on the bench's front strip or its right wing, where the arms
+    /// do not reach, and the console's panel stands off the bench's right side, so it never hides an arm. Power, pause, the
+    /// twin's three switches and the added-delay slider stay where the JetRover has them, on the front-left.</item>
     /// <item>The twin's three arms, as the JetRover's: <b>predicted</b>, solid, with Franka's visual meshes;
     /// <b>commanded</b>, a blue ghost; <b>measured</b>, faint amber. The ghosts are the low-poly collision shapes and
     /// draw no mount: three visual twins would be 1.5M triangles. The headset guard turns the robot off when the headset
@@ -50,16 +51,18 @@ namespace Teleop.XR.Editor
         private const string ScreenMaterialPath = "Assets/Teleop/Materials/CameraPanel.mat";
 
         /// <summary>
-        /// The bench runs 1.3 m from its near edge (the JetRover's runs 0.8 m), and the robot's base stands 1.1 m in: far
-        /// enough back that, from the operator's eye, its arms rise above the console's panel instead of showing through it.
+        /// The bench runs 0.6 m from its near edge, and the robot's base stands 0.4 m in, so it is 0.5 m ahead of the
+        /// operator's eye and its arms work right in front of them (docs/adr/0031 amendment 4; it stood 1.1 m in before,
+        /// which felt far away). The scene file's bench (core/Scenes/fr3-duo-bench.json) is the same box, which
+        /// <c>XrFr3SceneCheck</c> holds within 1 mm.
         /// </summary>
-        public const float BenchDepth = 1.3f;
-        internal const float RobotDepth = 1.1f;
+        public const float BenchDepth = 0.6f;
+        internal const float RobotDepth = 0.4f;
 
         private static Vector3 RobotBase => new Vector3(LabLayout.ArmBase.x, LabLayout.BenchTop, LabLayout.BenchNearZ + RobotDepth);
 
-        /// <summary>RECENTRE, on the bench's front-right, where the JetRover's training course has its START cap.</summary>
-        private static Vector3 RecentreButtonAt => new Vector3(LabLayout.ArmBase.x + 0.42f, LabLayout.BenchTop, LabLayout.BenchNearZ + 0.12f);
+        /// <summary>RECENTRE, at the front of the bench's right wing; NEW LAYOUT and EDIT OBJECTS stand behind it.</summary>
+        private static Vector3 RecentreButtonAt => new Vector3(LabLayout.ArmBase.x + 0.72f, LabLayout.BenchTop, LabLayout.BenchNearZ + 0.10f);
 
         [MenuItem("Teleop/XR/Build FR3 Duo Scene")]
         public static void BuildFromMenu()
@@ -170,6 +173,11 @@ namespace Teleop.XR.Editor
             operatorObject.AddComponent<HandTrackingSession>();
             var guard = operatorObject.AddComponent<HeadsetRemovalGuard>();
             SetReference(guard, "bridge", bridge);
+            // Pointing while the robot is off (docs/adr/0031 amendment 5): pinch on a button to press it, on an object to drag it.
+            var pointer = new GameObject("HandPointer").AddComponent<Fr3HandPointer>();
+            SetReference(pointer, "bridge", bridge);
+            SetReference(pointer, "origin", origin);
+            SetReference(pointer, "rayMaterial", LabMaterials.Transparent("PointerRay", Color.white));
 
             // The lab, as the JetRover's, around a deeper bench.
             LabMeshLibrary.Begin(MeshLibraryPath);
@@ -201,6 +209,8 @@ namespace Teleop.XR.Editor
             XrControlSetup.BuildConsole(scene, bridge, origin, (config.JointPredictorPresets ?? new JointPredictorPresetData[0]).Select(p => p.Label).ToArray());
             XrControlSetup.BuildDelaySlider(scene, bridge, origin);
             BuildRecentreButton(bridge, origin);
+            BuildRecordButtons(bridge, origin);
+            ArrangeControls(scene);
 
             // The world from the scene file (docs/adr/0031 amendment 2): the work table in front of the robot.
             XrFr3WorldSetup.Apply();
@@ -218,15 +228,70 @@ namespace Teleop.XR.Editor
         private static void BuildRecentreButton(SerialChainOperatorBridge bridge, XROrigin origin) =>
             BuildButton(null, "RecentreButton", RecentreButtonAt, "Fr3RecentreCap", new Color(0.25f, 0.55f, 1f), "RECENTRE", Fr3MotionButton.Role.Recentre, bridge, origin);
 
-        /// <summary>NEW LAYOUT, left of RECENTRE on the bench's front (docs/adr/0031 amendment 2).</summary>
-        internal static Vector3 NewLayoutButtonAt => RecentreButtonAt + new Vector3(-0.30f, 0f, 0f); // labels are 0.3 m wide
+        public const string RecordGroupName = "Fr3Recording";
 
-        /// <summary>EDIT OBJECTS, right of RECENTRE (phase P5); the switches take the bench's front to the left.</summary>
-        internal static Vector3 EditObjectsButtonAt => RecentreButtonAt + new Vector3(0.30f, 0f, 0f);
+        /// <summary>
+        /// Scenario recording (docs/adr/0033), on the bench's left wing behind the power row: &lt; PREV, RECORD and NEXT &gt;
+        /// in a row (NEXT's label names the chosen scenario), DISCARD LAST behind RECORD, all under <see cref="RecordGroupName"/>.
+        /// </summary>
+        internal static void BuildRecordButtons(SerialChainOperatorBridge bridge, XROrigin origin)
+        {
+            foreach (GameObject old in SceneManager.GetActiveScene().GetRootGameObjects().Where(g => g.name == RecordGroupName).ToArray())
+            {
+                Object.DestroyImmediate(old);
+            }
+
+            var root = new GameObject(RecordGroupName).transform;
+            float top = LabLayout.BenchTop, row = LabLayout.BenchNearZ + 0.36f, x = LabLayout.ArmBase.x;
+            BuildButton(root, "ScenarioPrevious", new Vector3(x - 0.75f, top, row), "Fr3ScenarioCap", new Color(0.25f, 0.55f, 1f), "< PREV",
+                Fr3MotionButton.Role.ScenarioPrevious, bridge, origin);
+            BuildButton(root, "RecordButton", new Vector3(x - 0.56f, top, row), "Fr3RecordCap", new Color(0.85f, 0.15f, 0.15f), "RECORD",
+                Fr3MotionButton.Role.Record, bridge, origin);
+            BuildButton(root, "ScenarioNext", new Vector3(x - 0.37f, top, row), "Fr3ScenarioCap", new Color(0.25f, 0.55f, 1f), "NEXT >",
+                Fr3MotionButton.Role.ScenarioNext, bridge, origin);
+            BuildButton(root, "DiscardLastButton", new Vector3(x - 0.56f, top, row + 0.17f), "Fr3DiscardCap", new Color(0.55f, 0.56f, 0.6f), "DISCARD LAST",
+                Fr3MotionButton.Role.DiscardLast, bridge, origin);
+        }
+
+        /// <summary>NEW LAYOUT, behind RECENTRE on the right wing (docs/adr/0031 amendment 2); each label stands above the one in front.</summary>
+        internal static Vector3 NewLayoutButtonAt => RecentreButtonAt + new Vector3(0f, 0f, 0.18f);
+
+        /// <summary>EDIT OBJECTS, behind NEW LAYOUT (phase P5).</summary>
+        internal static Vector3 EditObjectsButtonAt => RecentreButtonAt + new Vector3(0f, 0f, 0.36f);
+
+        /// <summary>
+        /// Moves the console out of the arms' way, the robot standing close (docs/adr/0031 amendment 4): the predictor row
+        /// along the bench's front, right of the twin's switches; the three network sliders on the front-right, running
+        /// away from the operator as the JetRover's do; the panel standing off the bench's right side, turned to the
+        /// operator, so it never stands between their eye and an arm. Where the arms reach (from the FR3's own forward
+        /// kinematics at its start pose): the elbows about 0.5-0.6 m either side of the base at its depth, 0.35-0.5 m up,
+        /// so the bench's front 0.25 m is clear, and so are the wings' fronts.
+        /// </summary>
+        private static void ArrangeControls(Scene scene)
+        {
+            GameObject console = scene.GetRootGameObjects().Single(r => r.name == XrControlSetup.ConsoleName);
+            Transform root = console.transform;
+            const float firstX = -0.09f, spacing = 0.062f, rowZ = LabLayout.BenchNearZ + 0.07f;
+            for (int i = 0; i < OperatorConsole.MaxPredictors; i++)
+            {
+                root.Find($"Predictor{i}").localPosition = new Vector3(firstX + i * spacing, 0f, rowZ);
+                root.Find($"PredictorOnOff{i}").localPosition = new Vector3(firstX + i * spacing + 0.03f, 0f, rowZ);
+            }
+
+            string[] sliders = { "NetworkLag", "NetworkJitter", "NetworkLoss" };
+            for (int i = 0; i < sliders.Length; i++)
+            {
+                root.Find(sliders[i]).position = new Vector3(0.34f + i * 0.1f, LabLayout.BenchTop, LabLayout.BenchNearZ + 0.04f);
+            }
+
+            Transform panel = root.Find("Panel");
+            panel.position = new Vector3(LabLayout.ArmBase.x + 1.02f, LabLayout.BenchTop + 0.36f, LabLayout.BenchNearZ + 0.3f);
+            panel.rotation = Quaternion.Euler(18f, 70f, 0f); // its face to the operator at x = 0, z = 0
+        }
 
         /// <summary>A fingertip button on a plinth: a cap to press, its label, and an <see cref="Fr3MotionButton"/> of <paramref name="role"/>.</summary>
         internal static Transform BuildButton(Transform parent, string name, Vector3 at, string capMaterial, Color capColor, string text,
-            Fr3MotionButton.Role role, SerialChainOperatorBridge bridge, XROrigin origin)
+            Fr3MotionButton.Role role, OperatorBridgeBase bridge, XROrigin origin)
         {
             var root = new GameObject(name).transform;
             if (parent != null) root.SetParent(parent, true);

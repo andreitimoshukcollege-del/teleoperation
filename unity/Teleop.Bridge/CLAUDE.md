@@ -28,6 +28,9 @@ parse and the forward pass are Core's `MlpWeights` and `MlpBackend`).
 `OperatorBridgeBase` (docs/adr/0029 amendment) is what the lab's controls take: both robots' bridges derive from it, so the
 console, the sliders, power and pause, the twin switches, the headset guard and the status lights drive either; it also
 declares the console's view of a joint link (`IOperatorJointLink`) and the twin switches' (`ITwinVisibility`).
+`OperatorSideControls` (docs/adr/0034 amendment 5) is what either robot offers beside driving: the world (NEW LAYOUT, moves),
+pointer drags and RECORD, over Core's `JointPortSideChannels`; each bridge makes one and hands it out as
+`OperatorBridgeBase.SideControls`, so the world twin, the pointer and the RECORD buttons take either robot.
 `SerialChainOperatorBridge` and `SerialChainArmRig` (the FR3 Duo's two-hand operator and its twin, docs/adr/0029: every
 decision is `Teleop.RobotArm.Operator`'s `GrabGesture`, `SerialChainTeleop` and `SerialChainJointLink`; these convert the
 hands into the robot's root frame, own the socket and write Transforms). Their resources, `fr3_duo_profile.json`,

@@ -13,7 +13,7 @@ def f32(x: float) -> float:
 def test_every_golden_message_encodes_and_decodes_exactly():
     messages = golden("arm-server-wire-v1.json")["messages"]
     assert [m["kind"] for m in messages] == ["hello", "welcome", "targets", "enable", "state", "health",
-                                             "world_info", "world", "place", "placed", "contacts"]
+                                             "world_info", "world", "place", "placed", "contacts", "resize", "sizes"]
     for m in messages:
         raw = bytes.fromhex(m["hex"])
         assert wire.sequence_of(raw) == m["sequence"], m["kind"]
@@ -55,6 +55,12 @@ def test_every_golden_message_encodes_and_decodes_exactly():
         elif m["kind"] == "placed":
             assert wire.encode_placed(m["sequence"], m["request"], m["id"], m["outcome"], m["revision"], m["pose"]) == raw
             assert wire.decode_placed(raw) == (m["request"], m["id"], m["outcome"], m["revision"], tuple(f32(v) for v in m["pose"]))
+        elif m["kind"] == "resize":
+            assert wire.encode_resize(m["sequence"], m["hostTicks"], m["request"], m["id"], m["scale"]) == raw
+            assert wire.decode_resize(raw) == (m["hostTicks"], m["request"], m["id"], f32(m["scale"]))
+        elif m["kind"] == "sizes":
+            assert wire.encode_sizes(m["sequence"], m["revision"], [tuple(x) for x in m["sizes"]]) == raw
+            assert wire.decode_sizes(raw) == (m["revision"], [(i, f32(f)) for i, f in m["sizes"]])
         elif m["kind"] == "contacts":
             assert wire.encode_contacts(m["sequence"], m["sensedTicks"], [tuple(c) for c in m["contacts"]]) == raw
             assert wire.decode_contacts(raw) == (m["sensedTicks"], [(a, l, o, f32(f)) for a, l, o, f in m["contacts"]])

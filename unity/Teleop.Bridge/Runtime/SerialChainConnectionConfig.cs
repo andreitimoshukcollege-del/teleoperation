@@ -29,6 +29,13 @@ namespace Teleop.Bridge
         /// </summary>
         public string HandMapping = "absolute";
 
+        /// <summary>
+        /// With the absolute mapping, where the gripper goes (docs/adr/0029 amendment 9). <c>relative</c> (the default, the user's
+        /// choice, 2026-11-06): when an arm locks it stays where it is and then moves by how far the hand moves; it still faces
+        /// the way the palm faces. <c>absolute</c>: where the hand is relative to your body is where the gripper goes.
+        /// </summary>
+        public string HandPosition = "relative";
+
         /// <summary>Hand motion → tool motion; 1 is one to one.</summary>
         public double PositionScale = 1.0;
 
@@ -56,10 +63,21 @@ namespace Teleop.Bridge
         public double MaxStepRadians = 0.1;
 
         /// <summary>
-        /// <c>toggle</c> (the default, docs/adr/0029 amendment): fold the middle, ring and little fingers twice quickly to
-        /// lock that arm onto the hand, and twice again to unlock it. <c>hold</c>: the arm follows only while the curl is held.
+        /// <c>middle-tap</c> (the default, docs/adr/0029 amendment 10): tap the thumb on the middle fingertip to lock that arm
+        /// onto the hand, and tap again to unlock it. <c>toggle</c>: fold the middle, ring and little fingers twice quickly
+        /// instead (docs/adr/0029 amendment). <c>hold</c>: the arm follows only while the curl is held.
         /// </summary>
-        public string GrabMode = "toggle";
+        public string GrabMode = "middle-tap";
+
+        /// <summary>The middle tap: thumb and middle fingertips touching below this gap (m), apart again above the release gap.</summary>
+        public double MiddleTapTouchMeters = 0.015;
+        public double MiddleTapReleaseMeters = 0.03;
+
+        /// <summary>A tap counts only while the thumb and index are at least this far apart (m), so closing the gripper never locks or unlocks.</summary>
+        public double MiddleTapIndexApartMeters = 0.035;
+
+        /// <summary>How long the fingertips must touch (s) before the tap counts: shorter is tracking flicker.</summary>
+        public double MiddleTapMinSeconds = 0.03;
 
         /// <summary>The toggle's clicks: a curl held between these two lengths (s), the second starting within the longer of the first's end.</summary>
         public double MinPressSeconds = 0.04;

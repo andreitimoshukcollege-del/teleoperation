@@ -223,6 +223,12 @@ namespace Teleop.Bridge
         /// <summary>The console's view of <see cref="JointState"/>.</summary>
         public override IOperatorJointLink Link => _jointStateLink;
 
+        /// <summary>The world, pointing and RECORD (docs/adr/0034 J6), as the FR3's bridge has them.</summary>
+        public override OperatorSideControls SideControls => _controls;
+
+        private const string SceneResource = "jetrover_scene";
+        private OperatorSideControls _controls;
+
         public override JetRoverArmPower ArmPower => _jointStateLink != null ? _jointStateLink.ArmPower : JetRoverArmPower.Unknown;
         public override float ArmPowerRemainingDeg => _jointStateLink != null ? _jointStateLink.ArmPowerRemainingDeg : 0f;
         public override string ArmPowerReasonText => _jointStateLink != null ? _jointStateLink.ArmPowerReasonText : "";
@@ -496,11 +502,13 @@ namespace Teleop.Bridge
             // The joint-state downlink rides the joint socket: the robot streams to whoever last sent
             // on that port, so the keepalive must come from the same socket as the commands.
             JointPredictorPresetData[] presets = JointPresets(_config, out byte[] readingAgeIds);
+            // The bench's objects (docs/adr/0034 J6): only Isaac's world sends them; the real robot never does, and the twin stays empty.
+            Teleop.RobotArm.World.WorldState world = SerialChainOperatorBridge.LoadWorld(SceneResource, _profile.Name);
             try
             {
                 _jointStateLink = new JetRoverJointStateLink(_jointTransport, _clock, _profile, clockSyncConfig, presets,
                     _config.JointPredictorActive, _config.MaxHorizonMs, _config.GripperFractionPerRadian, readingAgeIds,
-                    LearnedModels.TryLoad);
+                    LearnedModels.TryLoad, world);
             }
             catch (ArgumentException e)
             {
@@ -508,8 +516,11 @@ namespace Teleop.Bridge
                 Debug.LogError($"[twin] {e.Message}; falling back to hold-last (no prediction)");
                 _jointStateLink = new JetRoverJointStateLink(_jointTransport, _clock, _profile, clockSyncConfig,
                     new[] { new JointPredictorPresetData { Label = "hold-last", Predictor = "hold-last" } }, "hold-last",
-                    _config.MaxHorizonMs, _config.GripperFractionPerRadian, new byte[0]);
+                    _config.MaxHorizonMs, _config.GripperFractionPerRadian, new byte[0], null, world);
             }
+
+            _controls = new OperatorSideControls(_jointStateLink.Side, _clock,
+                () => armRig != null ? armRig.BaseAnchor : null, () => _motionMode == JetRoverMotionMode.On);
 
             if (armRig != null && _profile.Collision != null)
             {
@@ -543,6 +554,7 @@ namespace Teleop.Bridge
         {
             long now = _clock.NowTicks;
             _jointStateLink?.Tick(now);
+            _controls?.Update(now);
 
             while (_operatorEndpoint.TryReceiveState(now, out _))
             {

@@ -55,6 +55,8 @@ namespace Teleop.Eval
                     return IkStress.IkStressCommand.Run(args);
                 case "world-probe":
                     return JointProbe.WorldProbeCommand.Run(args);
+                case "udp-relay":
+                    return Net.UdpRelayCommand.Run(args);
                 case "discover-robot":
                     return DiscoverRobotCommand.Run(args);
                 case "replay":

@@ -80,10 +80,11 @@ namespace Teleop.RobotArm.Tests.World
             WorldState world = Posed(scene);
             g.Update(0, true, true, At(0.40, 0.0, 0.22), world);
             g.Update(0, true, true, At(1.80, -2.0, 0.22), world);
-            double r = scene.Objects[3].FootprintRadius;
+            double r = scene.Objects[3].FootprintRadius + 0.001; // 1 mm inside, so the float32 pose on the wire still fits
             Assert.Equal(0.85 - r, g.Preview.X, 9);
             Assert.Equal(-0.65 + r, g.Preview.Y, 9);
             Assert.True(scene.FitsOnTable(3, g.Preview.X, g.Preview.Y));
+            Assert.True(scene.FitsOnTable(3, (float)g.Preview.X, (float)g.Preview.Y));
         }
 
         [Fact]

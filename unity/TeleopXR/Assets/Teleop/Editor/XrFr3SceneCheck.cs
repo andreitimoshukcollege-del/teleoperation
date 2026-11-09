@@ -178,6 +178,7 @@ namespace Teleop.XR.Editor
             if (twin != null && robotRoot != null) CheckTwin(twin, robotRoot, problems);
             if (robotRoot != null) CheckWorld(robotRoot, problems);
             CheckFeeds(problems);
+            CheckRecording(problems);
             return problems;
         }
 
@@ -225,6 +226,11 @@ namespace Teleop.XR.Editor
             Fr3MotionButton edit = root.transform.Find(XrFr3WorldSetup.EditObjectsButtonName)?.GetComponent<Fr3MotionButton>();
             if (edit == null || edit.ButtonRole != Fr3MotionButton.Role.EditObjects)
                 problems.Add("no EDIT OBJECTS button under the world root: run `just unity-world-fr3-xr`");
+            foreach ((string name, Fr3MotionButton.Role role) in new[] { (XrFr3WorldSetup.SizeDownButtonName, Fr3MotionButton.Role.SizeDown), (XrFr3WorldSetup.SizeUpButtonName, Fr3MotionButton.Role.SizeUp) })
+            {
+                Fr3MotionButton b = root.transform.Find(name)?.GetComponent<Fr3MotionButton>();
+                if (b == null || b.ButtonRole != role) problems.Add($"no {role} button under the world root: run `just unity-world-fr3-xr`");
+            }
             foreach (SerialChainWorldTwin twin in twins)
             {
                 SerializedProperty ghosts = new SerializedObject(twin).FindProperty("ghosts");
@@ -250,10 +256,41 @@ namespace Teleop.XR.Editor
             }
         }
 
+        /// <summary>The scenario recording buttons (docs/adr/0033): each role once, wired to the bridge.</summary>
+        private static void CheckRecording(List<string> problems)
+        {
+            GameObject group = SceneManager.GetActiveScene().GetRootGameObjects().FirstOrDefault(g => g.name == XrFr3SceneBuilder.RecordGroupName);
+            if (group == null)
+            {
+                problems.Add($"no '{XrFr3SceneBuilder.RecordGroupName}' (the RECORD buttons): rebuild the scene (`just unity-scene-fr3-xr true`)");
+                return;
+            }
+
+            Fr3HandPointer[] pointers = Object.FindObjectsByType<Fr3HandPointer>(FindObjectsInactive.Include, FindObjectsSortMode.None);
+            if (pointers.Length != 1) problems.Add($"{pointers.Length} Fr3HandPointer(s); the scene has one (pointing while the robot is off)");
+            foreach (Fr3HandPointer p in pointers)
+            {
+                var pso = new SerializedObject(p);
+                if (pso.FindProperty("bridge").objectReferenceValue == null || pso.FindProperty("origin").objectReferenceValue == null)
+                    problems.Add("Fr3HandPointer is not wired to the bridge and the XR Origin");
+                SerializedProperty movers = pso.FindProperty("displays");
+                if (movers.arraySize != 4 || Enumerable.Range(0, movers.arraySize).Any(i => movers.GetArrayElementAtIndex(i).objectReferenceValue == null))
+                    problems.Add("Fr3HandPointer does not move the four camera displays: run `just unity-world-fr3-xr`");
+            }
+
+            Fr3MotionButton[] buttons = group.GetComponentsInChildren<Fr3MotionButton>(true);
+            foreach (Fr3MotionButton.Role role in new[] { Fr3MotionButton.Role.Record, Fr3MotionButton.Role.ScenarioPrevious, Fr3MotionButton.Role.ScenarioNext, Fr3MotionButton.Role.DiscardLast })
+            {
+                Fr3MotionButton b = buttons.SingleOrDefault(x => x.ButtonRole == role);
+                if (b == null) problems.Add($"no {role} button under '{XrFr3SceneBuilder.RecordGroupName}'");
+                else if (new SerializedObject(b).FindProperty("bridge").objectReferenceValue == null) problems.Add($"the {role} button has no bridge");
+            }
+        }
+
         /// <summary>
-        /// The two Isaac feeds (docs/adr/0032 decision 3): each a <see cref="CameraFeedBridge"/> asking the serial-chain host on its
-        /// own ports, showing on a display's screen it does not move, with that display's status strip reading it. Not safety
-        /// settings: a feed moves nothing.
+        /// The four Isaac feeds (docs/adr/0032 decision 3, amendment 3): each a <see cref="CameraFeedBridge"/> asking the
+        /// serial-chain host on its own ports, showing on a display's screen it does not move, with that display's status strip
+        /// reading it. Not safety settings: a feed moves nothing.
         /// </summary>
         private static void CheckFeeds(List<string> problems)
         {
@@ -261,8 +298,10 @@ namespace Teleop.XR.Editor
             var bars = Object.FindObjectsByType<CameraStatusBar>(FindObjectsInactive.Include, FindObjectsSortMode.None);
             foreach ((string name, int port, int local) in new[]
             {
-                (XrFr3WorldSetup.HeadFeedName, XrFr3WorldSetup.HeadFeedPort, XrFr3WorldSetup.HeadFeedLocalPort),
-                (XrFr3WorldSetup.ThirdFeedName, XrFr3WorldSetup.ThirdFeedPort, XrFr3WorldSetup.ThirdFeedLocalPort),
+                (XrFr3WorldSetup.RightFeedName, XrFr3WorldSetup.RightFeedPort, XrFr3WorldSetup.RightFeedLocalPort),
+                (XrFr3WorldSetup.LeftFeedName, XrFr3WorldSetup.LeftFeedPort, XrFr3WorldSetup.LeftFeedLocalPort),
+                (XrFr3WorldSetup.ThirdLeftFeedName, XrFr3WorldSetup.ThirdLeftFeedPort, XrFr3WorldSetup.ThirdLeftFeedLocalPort),
+                (XrFr3WorldSetup.ThirdRightFeedName, XrFr3WorldSetup.ThirdRightFeedPort, XrFr3WorldSetup.ThirdRightFeedLocalPort),
             })
             {
                 CameraFeedBridge feed = feeds.FirstOrDefault(f => f.FeedName == name);
@@ -285,7 +324,7 @@ namespace Teleop.XR.Editor
                     problems.Add($"no display's status strip reads the '{name}' feed");
             }
 
-            if (feeds.Length != 2) problems.Add($"{feeds.Length} camera feeds; the FR3 lab has two (head and third-person)");
+            if (feeds.Length != 4) problems.Add($"{feeds.Length} camera feeds; the FR3 lab has four (the wrists and the two third-person cameras)");
         }
 
         private static void CheckResources(List<string> problems)

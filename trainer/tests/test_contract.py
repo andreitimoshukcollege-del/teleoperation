@@ -96,6 +96,35 @@ def test_an_automatic_session_with_unknown_conditions_is_read_and_checked(sim_se
     assert condition_tags(meta)["slider"] == 2.5 and condition_tags(meta)["uplink_impaired"] == 1.0
 
 
+def test_a_scenario_take_is_read_and_checked(sim_session_dir, tmp_path):
+    # A take from the headset's RECORD button (docs/adr/0033): an automatic session in all but its label, its motion
+    # "scenario:<name>" and a "scenario" object.
+    import json
+
+    from armpred.data.build import condition_tags
+
+    take = str(tmp_path / "20261106T153000Z-take001")
+    shutil.copytree(sim_session_dir, take)
+    meta_path = os.path.join(take, "session.json")
+    with open(meta_path) as f:
+        meta = json.load(f)
+    meta.update({
+        "id": "20261106T153000Z-take001", "source": "robot", "label": "scenario-knock-over", "stoppedUtc": "2026-11-06T15:31:00Z",
+        "builds": {"robothost": {"sha": "abc", "dirty": False}, "driver": {"sha": "def", "dirty": False}},
+        "scenario": {"name": "knock-over", "take": 1, "description": "knock each object over with either arm"},
+    })
+    meta["conditions"].update({
+        "speedSliderRadPerSec": "unknown", "load": {"kind": "unknown", "payloadGrams": None},
+        "network": {"uplinkProfile": "lan", "uplinkSeed": 0, "addedDelayMs": None},
+        "motion": "scenario:knock-over", "operator": "headset 10.0.0.7:6012",
+    })
+    with open(meta_path, "w") as f:
+        json.dump(meta, f, indent=2)
+    report = check_session_dir(take, allow_read_gaps=True)
+    assert report.ok, report.lines()
+    assert condition_tags(meta)["slider"] == -1.0
+
+
 def _rewrite_with(path, extra):
     """Rewrites a .jlog with its own records and then `extra` (tag, *fields), re-signed."""
     with open(path, encoding="ascii") as f:

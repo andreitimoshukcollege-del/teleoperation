@@ -1,0 +1,29 @@
+{
+  "format": "jetrover-visuals",
+  "version": 1,
+  "about": "Written by unity/TeleopXR JetRoverVisualExport (just jetrover-visuals, docs/adr/0034 amendment 6) from the lab twin's CAD. Do not edit.",
+  "cellMeters": 0.0015,
+  "sources": {"Body.fbx": "5bd8321368e960a94f05380b2bb47054cc729da88e9d606731b6b95b5cf095ed", "Base.fbx": "e43d0f0dc8d09d0f1d76c3f363586df2de48fbe4d20be2b8267fc4087c0d98b4", "LowerArm.fbx": "88db75cacf46a965ca30c227f3f35925cf44f60a307ef8ce06844365c083e05d", "CenterArm.fbx": "0cc0a9f188a6e4d8eab95fc4254ecdfc478b7f174e7997e01be2ac3ef24da579", "UpperArm.fbx": "fbf07c44d90ed6c158adb09ca2465936979456919d7545471f3847e06ac35e26", "Gripper.fbx": "5e6020a86a573ce6a7be08819fe7036bf5deed8bb4ec2cc5e74020286227aba1"},
+  "visuals": [
+    {"link": "base_link", "file": "meshes/base_link_0.obj", "rgba": [0.07, 0.072, 0.078, 1], "triangles": 55967},
+    {"link": "base_link", "file": "meshes/base_link_1.obj", "rgba": [0.12, 0.62, 0.28, 1], "triangles": 7550},
+    {"link": "turntable", "file": "meshes/turntable_0.obj", "rgba": [0.07, 0.072, 0.078, 1], "triangles": 14058},
+    {"link": "proximal_link", "file": "meshes/proximal_link_0.obj", "rgba": [0.12, 0.62, 0.28, 1], "triangles": 7716},
+    {"link": "distal_link", "file": "meshes/distal_link_0.obj", "rgba": [0.12, 0.62, 0.28, 1], "triangles": 7592},
+    {"link": "wrist_link", "file": "meshes/wrist_link_0.obj", "rgba": [0.07, 0.072, 0.078, 1], "triangles": 20390},
+    {"link": "wrist_link", "file": "meshes/wrist_link_1.obj", "rgba": [0.12, 0.62, 0.28, 1], "triangles": 2836},
+    {"link": "wrist_link", "file": "meshes/wrist_link_2.obj", "rgba": [0.6, 0.62, 0.65, 1], "triangles": 1518},
+    {"link": "gripper_link", "file": "meshes/gripper_link_0.obj", "rgba": [0.07, 0.072, 0.078, 1], "triangles": 3222},
+    {"link": "left_finger", "file": "meshes/left_finger_0.obj", "rgba": [0.07, 0.072, 0.078, 1], "triangles": 4808},
+    {"link": "right_finger", "file": "meshes/right_finger_0.obj", "rgba": [0.07, 0.072, 0.078, 1], "triangles": 4764}
+  ],
+  "fingerPads": [
+    {"link": "left_finger", "center": [0.147724, 0.022089, 0.002667], "size": [0.029996, 0.011332, 0.00739]},
+    {"link": "right_finger", "center": [0.147565, -0.02266, 0.003051], "size": [0.029787, 0.011285, 0.007074]}
+  ],
+  "jawCadGapMeters": 0.03344,
+  "jawOpenGapMeters": 0.053,
+  "jawOpenDegrees": 38.25,
+  "jawClosedDegrees": 37,
+  "fingerTravelByFraction": [-0.009781, -0.009331, -0.00876, -0.008071, -0.007266, -0.00635, -0.005325, -0.004198, -0.002971, -0.001651, -0.000242, 0.00125, 0.002817, 0.004453, 0.00615, 0.007902, 0.0097, 0.011536, 0.013404, 0.015294, 0.016241]
+}

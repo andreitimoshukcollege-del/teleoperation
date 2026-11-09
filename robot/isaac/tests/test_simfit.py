@@ -1,0 +1,109 @@
+"""The sim-against-real replay and fit (teleop_isaac/simfit.py, docs/metrics.md section 10), with a servo that follows its ramp."""
+
+import pytest
+
+from teleop_isaac import servo, simfit
+
+
+class RampSim:
+    """A servo that is exactly its timed ramp, ``lag_ms`` behind it: what a perfect fit of a lagging servo looks like."""
+
+    dt = 0.001
+
+    def __init__(self, lag_ms=0.0):
+        self.lag_steps = int(round(lag_ms))
+        self.history = {}
+        self.setpoints = {}
+        self.on = True
+
+    def reset(self, pulses, params):
+        self.setpoints = {m: servo.TimedSetpoint(p) for m, p in pulses.items()}
+        self.history = {m: [p] for m, p in pulses.items()}
+        self.on = True
+
+    def command(self, motor, pulse, pps):
+        if self.on and motor in self.setpoints:
+            self.setpoints[motor].move(pulse, pps)
+
+    def torque(self, on):
+        self.on = on
+
+    def step(self):
+        for m, sp in self.setpoints.items():
+            self.history[m].append(sp.step(self.dt))
+
+    def read(self, motor):
+        h = self.history[motor]
+        return h[max(0, len(h) - 1 - self.lag_steps)]
+
+
+def recorded(lag_ms, seconds=3.0):
+    """A synthetic session recorded from a servo ``lag_ms`` behind its ramp: motor 2 stepped from 500 to 700 at 1 s, read
+    with the real driver's cycles and sent every 20 ms."""
+    model = servo.SimModel.load()
+    tps = 1_000_000_000
+    sim = RampSim(lag_ms)
+    start = {m: 500.0 for m in model.motors}
+    sim.reset(start, simfit.Params())
+    fb = servo.FeedbackEmulator(model)
+    events, t, sent = [], 0.0, False
+    while t <= seconds:
+        if not sent and t >= 1.0:
+            events.append([int(t * tps), "RO", [[2, 700.0, 400.0]]])
+            sim.command(2, 700.0, 400.0)
+            sent = True
+        mid = fb.due_read(t)
+        while mid is not None:
+            fb.record(mid, sim.read(mid), t)
+            mid = fb.due_read(t)
+        out = fb.due_feedback(t)
+        if out is not None:
+            events.append([int(t * tps), "RI", [[m, int(v), p] for m, v, p in out if m != 10 or v]])
+        sim.step()
+        t = round(t + 0.001, 6)
+    return {"name": "synthetic", "tps": tps, "events": events}
+
+
+def test_a_simulator_that_is_the_robot_scores_nothing_and_a_lagging_one_scores_its_lag():
+    model = servo.SimModel.load()
+    session = recorded(lag_ms=40)
+    r = simfit.Replayer(model)
+    same = r.run(session, RampSim(40), simfit.Params()).summary()["sim_tracking_error_deg"]["pooled1to4"]
+    assert same["n"] > 100 and same["p95"] <= r.deg(1.0) + 1e-9  # whole pulses only
+    off = r.run(session, RampSim(0), simfit.Params()).summary()
+    # 40 ms at 400 pulses/s is 16 pulses, about 3.8 degrees, while the step ramps; nothing once settled.
+    assert off["sim_tracking_error_deg"]["motors"]["2"]["p95"] == pytest.approx(r.deg(16), abs=r.deg(2))
+    assert off["sim_settle_error_deg"]["motors"]["2"]["p95"] <= r.deg(1.0) + 1e-9
+
+
+def test_the_command_delay_parameter_reproduces_a_lagging_servo():
+    model = servo.SimModel.load()
+    session = recorded(lag_ms=40)
+    r = simfit.Replayer(model)
+    delayed = r.run(session, RampSim(0), simfit.Params(delay_ms=40)).summary()["sim_tracking_error_deg"]["motors"]["2"]
+    assert delayed["p95"] <= r.deg(5.0)  # the driver's read phase: a few whole pulses (16 without the delay)
+
+
+def test_the_fit_finds_the_delay_and_is_deterministic():
+    model = servo.SimModel.load()
+    session = recorded(lag_ms=40)
+    r = simfit.Replayer(model)
+
+    def evaluate(p):
+        return r.run(session, RampSim(0), p).objective()
+
+    best, score, history = simfit.fit(evaluate, rounds=2)
+    assert abs(best.delay_ms - 40) <= 10 and score <= r.deg(4.0)
+    again, _, _ = simfit.fit(evaluate, rounds=2)
+    assert again == best and len(history) > 5
+
+
+def test_a_session_extracts_its_relay_records_in_time_order(tmp_path):
+    d = tmp_path / "20261026T000000Z-x"
+    d.mkdir()
+    (d / "robothost.jlog").write_text("JSES|1|robothost|1000000000|CLOCK_MONOTONIC|x\n"
+                                      "RI|200|1:1:500;10:0:0\nRO|100|1:499.5:1432.4;10:129:1432.4\nTQ|150|0\nJC|160|junk\n")
+    s = simfit.extract_session(str(d))
+    assert s["tps"] == 1_000_000_000 and s["name"] == "20261026T000000Z-x"
+    assert [e[1] for e in s["events"]] == ["RO", "TQ", "RI"]
+    assert s["events"][0][2][0] == [1, 499.5, 1432.4] and s["events"][2][2][1] == [10, 0, 0.0]

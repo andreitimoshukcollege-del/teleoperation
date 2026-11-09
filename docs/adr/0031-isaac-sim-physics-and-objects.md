@@ -409,3 +409,104 @@ Amendment 2's moves are built on the headset.
 RobotHost's collision model, with link2 against link5.
 
 **Not verified:** whether the gesture feels right on the headset: the grab reach, the clamp, and the ghost's look.
+
+## Amendment 4 (2026-11-03): movable objects, and the robot just ahead of the operator
+
+The user, after trying amendment 3 on the headset: "we want the objects to not be static, so the arm should be able to knock
+it down, and the arm feels far away, we want the arm and the objects setup to be close to the user". They chose the layout
+"just ahead, over its shoulder".
+
+**Movable objects (scene file version 2).**
+- **The format.** Version 2 adds `kind: "movable"` with a `mass` in kg, more than 0 and at most 20. A fixed object has no
+  mass. Version 1 still reads, and still refuses `movable`. Readers take versions 1 to 2.
+  - Core's `WorldScene` and Python's `scene.py` apply the same rules with the same keywords (`kind`, `mass`, `version`).
+  - The shared vectors gained seven cases.
+  - The canonical-parse golden now carries `movable` and `mass`.
+- **The shipped scene.** All four objects are movable:
+  - the posts, 0.4 kg each;
+  - the wall, 0.6 kg;
+  - the can, 0.35 kg.
+
+  The floor now collides, so whatever falls off the table lands on it.
+- **Isaac.**
+  - A movable object is a dynamic rigid body: `kinematicEnabled` is false, and `MassAPI` carries its mass. It feels gravity;
+    only the robot's links have gravity off.
+  - It is reported with WORLD flag 0. A fixed object keeps `FLAG_KINEMATIC`.
+  - Each WORLD read takes PhysX's pose as where the object is now (`WorldModel.sense`). The placement rules use that pose:
+    overlap with another object, and arm touching. A pushed object is not a new revision; revisions count placements.
+  - A placement stands a movable object upright where it is put, and zeroes its velocities, wherever it had fallen. So
+    NEW LAYOUT, or a move by hand, is how a knocked-over object comes back.
+- **RobotHost's `StaticWorld`** (no physics, `fr3-sim-host`) is unchanged: there, every object stays where it was placed.
+- **Unchanged:**
+  - The headset's IK and RobotHost's refusal check still know nothing of objects (amendment 2).
+  - The twin already poses each object with its full orientation from world frames, so a fallen object is drawn lying
+    down.
+- **`just isaac-scene-check`** runs the bridge on a copy of the scene with post-left made fixed, because checks 4 and 5 need
+  an object that cannot move. It gains a sixth check: post-right under the left hand, then the same elbow motion.
+  - It passes when the post moves more than 2 cm or tips more than 15°, and the arm falls short of its command by less
+    than 0.05 rad.
+  - Placed again, the post stands within 3 mm of where it was put.
+  - A movable object at rest must stay within 3 mm of its nominal pose.
+
+**The robot just ahead of the operator.**
+- **The scene file's bench** is 0.6 m deep: x from −0.4 to 0.2. The robot's base is now 0.4 m in from the bench's near
+  edge, about 0.5 m ahead of the operator's eye; it was 1.1 m in. The work table still starts at the bench's far edge, so
+  the objects are about 0.9–1.1 m away.
+- **On the headset,** `XrFr3SceneBuilder.BenchDepth`/`RobotDepth` are 0.6/0.4, held to the file within 1 mm by
+  `XrFr3SceneCheck`.
+- **The controls** are built by the JetRover's code as before, then moved out of the arms' way (`ArrangeControls`):
+  - Power, pause, the twin's switches and the added-delay slider stay on the front-left.
+  - The predictor row runs along the front, right of the switches.
+  - The three network sliders are on the front-right.
+  - RECENTRE, NEW LAYOUT and EDIT OBJECTS stand one behind another on the right wing.
+  - The console's panel stands off the bench's right side, turned to the operator, so it never hides an arm.
+- **Why there:** by Core's FK at the start pose, the elbows are 0.5–0.6 m either side of the base, at its depth, 0.35–0.5 m
+  up. The bench's front 0.25 m is clear of them.
+- **Not changed:** the hands still map to the tools about the neutral pose (`BodyAnchoredMapping`). Only where the operator
+  sees the robot moved, not how it is driven.
+
+**Verified:**
+- **Tests:** `dotnet test` with the version-2 vectors, the golden and `AVersion1File_StillReads_AndItsObjectsAreFixed`;
+  `just isaac-bridge-test` (42 tests, including a sensed movable pose).
+- **`just isaac-scene-check` on the 5090,** 2026-11-03 (a8fab7a): all 20 checks pass.
+
+  | Check | Measured |
+  |---|---|
+  | The fixed post stalls the hand | 0.256 rad short; the post moved 0.00 mm |
+  | The movable post under the same motion | moved 86 mm, tipped 31.8°; the arm 0.0004 rad short |
+  | Placed again | applied, and at rest 0.0 mm from where it was put |
+  | Movable objects at rest at their nominal poses | within 0.0001 mm |
+  | Late steps | 4 in 25.5 s (0.16/s) |
+- **The headset scene:** rebuilt, `just unity-check-fr3-xr` passes, and the previews show the robot just below the
+  operator's eye, the controls on the front strip.
+
+**Not verified:** how it looks and feels in the headset: how close the robot seems, whether the arms crowd the controls,
+and how a knocked object looks at 50 Hz world frames.
+
+## Amendment 5 (2026-11-06): pointing at buttons and objects while the robot is off
+
+The user: "add the ability to point and click on a button while the robot is off and to point and drag the isaac sim
+objects around".
+
+- **The ray.** While the robot is off, each tracked hand casts a ray from about its shoulder through its pinch point
+  (`Fr3HandPointer`), as Android XR's hand rays and the JetRover's display mover do. A thumb–index pinch below 2 cm
+  clicks; the pinch releases above 3.5 cm.
+- **On a button.** A pinch whose ray is on a button presses it, exactly as a fingertip does. This covers every cap a
+  `FingertipPress` watches: power, the console, the switches, RECENTRE, NEW LAYOUT, EDIT OBJECTS and the RECORD group.
+  `FingertipPress.PointerClick` marks the cap, and its next update reports a press, under the same cooldown. Caps are
+  small, so the ray may pass 2 cm beside one.
+- **On an object.** A pinch whose ray is on an object grabs it. The object follows the ray's point on the level through
+  its centre, kept on the table and in the placement region. Releasing asks RobotHost to place it there, through the same
+  move request and refusals as EDIT OBJECTS.
+  - The logic is Core's `PointerDrag` (`Teleop.RobotArm/World`), headless-tested and allocation-free.
+  - An object counts as hit within its bounding sphere, so a fallen object is caught too.
+  - A click on a fallen object, even one on the floor, asks to stand it upright on the table.
+  - The twin's see-through ghost shows the drag. The solid object moves when the world frames show it.
+- **Only while the robot is off,** and not while EDIT OBJECTS is on. So a pinch never does two things: with the robot on,
+  the hands drive the arms, the rays are hidden, and fingertips still press buttons. A ray whose hit is nearer than 15 cm
+  is hidden too, because that close the fingertip is the way. Pointing at power can switch the robot on; the rays then
+  disappear.
+- **Clamped drags stay 1 mm inside the region.** Found while testing: a drag clamped exactly to the region's edge goes
+  out as a float32 pose whose rounding can land it a hair outside, and RobotHost would refuse it. EDIT OBJECTS had the
+  same edge case and now keeps the same margin.
+- **The JetRover scene is unchanged:** it has no `Fr3HandPointer`, so its buttons still take fingertips only.

@@ -69,6 +69,7 @@
     <BridgeSource Include="SerialChainArmRig.cs" />
     <BridgeSource Include="SerialChainOperatorBridge.cs" />
     <BridgeSource Include="SerialChainWorldTwin.cs" />
+    <BridgeSource Include="OperatorSideControls.cs" />
 
     <Compile Include="@(BridgeSource->'../Teleop.Bridge/Runtime/%(Identity)')"
              Link="Bridge/%(Identity)" />

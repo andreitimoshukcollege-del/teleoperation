@@ -74,7 +74,12 @@ and closes and completes it. In the session they are recognised by `label` and `
   an automatic session, means RobotHost's own impairment changed during it; its `UP` records say
   when. `addedDelayMs` (the headset's added delay) is `null` in an automatic session: the robot does
   not know it.
-- `conditions.motion` is `teleop`, `joint-drive:<script>`, or `auto` (an automatic session).
+- `conditions.motion` is `teleop`, `joint-drive:<script>`, `auto` (an automatic session), or
+  `scenario:<name>` (a take from the headset's RECORD button, docs/adr/0033). A take's `label` is
+  `scenario-<name>`, and it has a `scenario` object: `name`, `take` (its number, counting up per
+  scenario) and `description` (what `scenarios.txt` says to do). Takes are in the scenarios folder
+  (`~/isaacsim/scenarios/<name>/<UTC>-take<n>/`), not with the automatic sessions, and are otherwise
+  automatic sessions: opened, completed and recorded by RobotHost the same way.
 - `conditions.operator` is a name, `joint-drive@robot`, or, in an automatic session, `headset <ip:port>`
   (the joint-command sender, which only a headset can be since 2026-10-26: RobotHost records only a
   sender that sends the headset heartbeat, docs/adr/0023 decision 4). Automatic sessions recorded
@@ -239,9 +244,11 @@ conversion and no zero offsets: the values are the profile's joint coordinates.
 ### The world beside the arms (docs/adr/0031 amendment 2)
 
 When RobotHost runs with `--scene` (`just isaac-host`, `just fr3-sim-host`, both by default with
-`core/Scenes/fr3-duo-bench.json`), there are objects beside the arms: a work table and fixed obstacles
-from the scene file, placed by RobotHost from seeded layouts. In Isaac they collide with the arms; beside
-the simulated arm (`sim-host`) nothing collides. Simulated sessions only: the real robot has no world.
+`core/Scenes/fr3-duo-bench.json`), there are objects beside the arms: a work table and obstacles
+from the scene file, placed by RobotHost from seeded layouts. In Isaac they collide with the arms, and a
+movable one (scene file version 2, ADR 0031 amendment 4) is a dynamic body an arm can push or knock over,
+so between placements `WO` follows it wherever physics takes it; beside the simulated arm (`sim-host`)
+nothing collides and nothing moves. Simulated sessions only: the real robot has no world.
 Such a session has in addition:
 
 - **`scene.json`**: a byte-for-byte copy of the scene file RobotHost ran, hashed in `files.sha256`.
@@ -260,7 +267,8 @@ Z up, the profile's frame); `sensed` is on the host's clock, like `QS.sensed`.
 | `WP` | `t` `request` `cause` `id` `pose` `outcome` | A placement settled. `cause`: `layout`, `headset` or `reset`. `outcome`: `applied`, `overlaps-arm`, `overlaps-object`, `outside-region`, `unknown-object`, `not-movable`, `arm-touching`, `busy`, `invalid-pose` or `timed-out`. `pose` is where the object is now, which for anything but `applied` is where it already was |
 | `WO` | `t` `sensed` `revision` `objects` | Where every object was: `id:pose;...`. Written when a session opens, when any object moves more than 0.1 mm or 0.05°, and otherwise once a second. `revision` counts the placements the backend has applied |
 | `WF` | `t` `snapshot` `sensed` `parts` | A world frame sent to the headset (50 Hz): the snapshot it carried and when that was sensed |
-| `WE` | `t` `sequence` `op` `id` `pose` `outcome` | An edit from the headset. `op`: `move`, `new-layout`, `reset-object` or `reset-layout`. Written `pending` when it arrives, then again with its outcome |
+| `WE` | `t` `sequence` `op` `id` `pose` `outcome` | An edit from the headset. `op`: `move`, `new-layout`, `reset-object`, `reset-layout` or `resize` (whose pose's x is the asked size factor, docs/adr/0034 amendment 6). Written `pending` when it arrives, then again with its outcome |
+| `WZ` | `t` `revision` `id:factor;...` | Every object's size factor on the scene file's size, as the backend reports it (docs/adr/0034 amendment 6): in the preamble and on change. Absent before 2026-11-08: every object at its file size. A `WP` with cause `resize` is a resize's answer |
 | `WC` | `t` `sensed` `contacts` | Contacts between the arms and objects, `arm:link:object:forceN;...` (object 0 is the table); empty when they end. Only when the arm server reports them; Isaac does not yet |
 
 **Objects are not the truth for the arm.** An arm stopped by an obstacle shows up as `QS` falling short
@@ -278,8 +286,10 @@ for its trailer (`--auto-record-writer isaac:60`), checks its `FS` lines, and li
 | `isaac/<camera>.<stream>.frames` | the frames: `TFRM`, uint16 version 1, uint16 0, then records, each a uint32 little-endian length and that many bytes |
 | `isaac/backdrops.json` | every backdrop image the session showed: sha256, Open Images id, licence (CC BY 2.0), author, title, pages |
 
-The streams are the scene file's `cameras[].record`. For `fr3-duo-bench`, they are `head.rgb`, `head.depth`, `head.mask`
-and `third.rgb`:
+The streams are the scene file's `cameras[].record`. For `fr3-duo-bench` (docs/adr/0032 amendment 3) there are four
+cameras, two third-person ones that stand still (`third-left`, `third-right`) and one on each wrist (`wrist-left`,
+`wrist-right`), each recording `rgb`, `depth` and `mask`, so 12 streams (`third-left.rgb`, ..., `wrist-right.mask`).
+Sessions from before 2026-11-04 have `head.rgb`, `head.depth`, `head.mask` and `third.rgb`.
 - **`rgb`** is a JPEG at the camera's `recordQuality` (92).
 - **`depth`** is a 16-bit PNG of the distance to the image plane in millimetres, with 0 where nothing was hit.
 - **`mask`** is a 16-bit PNG of stable ids (`ID`).
@@ -290,15 +300,25 @@ and `third.rgb`:
 |---|---|---|
 | `IV` | `isaacVersion` `fps` `recordEvery` `renderLag` `lagAgreement` `lagSamples` | The renderer: its rate, every how many frames it records, and its render lag in frames as measured at start-up (it records only when the lag agreed in ≥ 99.5% of samples) |
 | `SC` | `scene` `sha256` | The scene file it built (the same file as `scene.json`) |
-| `CM` | `camera` `width` `height` `fx` `fy` `cx` `cy` `near` `far` `x` `y` `z` `qw` `qx` `qy` `qz` `mount` `streams` | One per camera. A pinhole with no distortion, pixel centres at +0.5. The pose is the USD camera's in the robot's base frame: it looks along its −z with +y up, so a point projects to `u = cx + fx·x_c/(−z_c)`, `v = cy − fy·y_c/(−z_c)`. `mount` is the URDF link it is fixed to, or empty for a camera fixed in the room |
+| `CM` | `camera` `width` `height` `fx` `fy` `cx` `cy` `near` `far` `x` `y` `z` `qw` `qx` `qy` `qz` `mount` `streams` `poseFrame` | One per camera. A pinhole with no distortion, pixel centres at +0.5. The pose is the USD camera's: it looks along its −z with +y up, so a point projects to `u = cx + fx·x_c/(−z_c)`, `v = cy − fy·y_c/(−z_c)`. `mount` is the URDF link it is fixed to, or empty for a camera fixed in the room. `poseFrame` says what the pose is in: `base`, the robot's base frame; or `mount`, the mount link's URDF frame, for a camera that moves with the arm (a wrist camera), whose pose at a frame is that link's forward kinematics at the frame's `QS` state times this pose. Absent (sessions before 2026-11-04): `base` |
 | `ID` | `id:label;...` | The masks' stable ids: 1 `left_arm`, 2 `left_hand`, 3 `right_arm`, 4 `right_hand`, 5 `head`, 6 `mount`, 10 `table`, 11 `bench`, 12 `floor`, 13 `mat`, 14 `screen`, and `100 + n` for scene object `n`. 0 is anything unlabelled |
-| `BK` | `t` `change` `seed` `matSha256` `matImageId` `screenSha256` `screenImageId` | The backdrop shown from now on: change 0 at the renderer's start, then one per session it closes; the pair is `backdrops.pick(images, seed, change)` |
+| `BK` | `t` `change` `seed` `images` | The backdrop shown from now on: change 0 at the renderer's start, then one per session it closes. `images` is `surface:sha256:imageId;...`, one per mat and screen of the scene file's `backdrops` in its order (`mat`, `floor`, `far`, `back`, `left`, `right` for `fr3-duo-bench`), drawn by `backdrops.pick(images, seed, change, count)`. Sessions before 2026-11-04 have `matSha256` `matImageId` `screenSha256` `screenImageId` instead |
 | `OL` | `sensed` `revision` `objects` | Where the objects are, `id:x:y:z:qw:qx:qy:qz;...`, at the start and whenever the world's revision changes |
 | `VF` | `t` `frame` `stateSensed` `flags` `parts` | One recorded frame. `stateSensed` is the `sensed` of the `QS` state the frame shows, so frames join the arm's truth exactly. `flags` holds `B` while a new backdrop may still be settling (the render lag after a swap). `parts` lists `stream:offset:length;...` into the sidecars, the offset being the payload's first byte |
 | `FD` | `t` `frame` `reason` | A frame not recorded (`writer-behind`, `encoder-behind`, `<camera>-no-image`) |
-| `RH` | `t` `fps` `stateAgeMs` `headSkipped` `thirdSkipped` `recordSkipped` | Renderer health, every 5 s |
+| `RH` | `t` `fps` `stateAgeMs` `firstSkipped` `lastSkipped` `recordSkipped` `skipped` | Renderer health, every 5 s. `skipped` is every camera's feed frames skipped, `n;n;...` in `CM` order (absent before 2026-11-04); `firstSkipped` and `lastSkipped` are its first and last |
 | `ER` | `t` `reason` | Why the session's frames ended early (a nearly full disk: below 20 GB free, an I/O error) |
 | `FS` | `file` `bytes` `sha256` | One per file under `isaac/`, written before the trailer |
+
+**The JetRover in Isaac** (docs/adr/0034) records version-1 sessions (`session.json` version 1) with `source: isaac`, and
+no `driver.jlog`: the bridge stands in for the driver. Its renderer writes the same `isaac.jlog`, with three cameras
+(`third-left`, `third-right`, `wrist`, the wrist's `mount` `gripper_link`), mask ids 7 `arm` and 8 `hand` instead of the
+FR3's sided ones, and one more record, because a JetRover session has no `QS` to join:
+
+| Tag | Fields after the tag | Meaning |
+|---|---|---|
+| `SZ` | `revision` `sizes` | Every scene object's size factor on the scene file's size, `[[id, factor], ...]` (docs/adr/0034 amendment 6): in the preamble and whenever the bridge reports a change. 1 is the file's size; a shape's every dimension is multiplied by it |
+| `VQ` | `frame` `stateSensed` `values` | The joint values frame `frame` was posed with, `[[joint, radians], ...]` by URDF joint name (each gripper finger in metres), written just before its `VF`, with the same `stateSensed`. For the JetRover that stamp is the bridge's time (CLOCK_MONOTONIC, RobotHost's clock on the same machine) of the physics state it posed, not of a relay reading: the readings RobotHost records (`RI`) trail the physics by up to a driver cycle (20 ms) |
 
 **A frame whose `stateSensed` has no `QS`** comes from the session's last tenth of a second or so. That is after RobotHost
 closed the session and before the renderer noticed; skip it. `just isaac-record-check` measures how many there are (0.4%

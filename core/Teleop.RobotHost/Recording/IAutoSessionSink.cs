@@ -43,6 +43,32 @@ namespace Teleop.RobotHost.Recording
 
         /// <summary>Why it opened (first command after idle, a split, a rotation), for the log and <c>notes</c>.</summary>
         public string Reason { get; }
+
+        /// <summary>A take of a scenario from the headset's RECORD button (docs/adr/0033), or null for an automatic session.</summary>
+        public ScenarioTake? Take { get; set; }
+    }
+
+    /// <summary>
+    /// A scenario take (docs/adr/0033): it goes into <see cref="Directory"/> (the scenarios folder's
+    /// <c>&lt;scenario&gt;/&lt;UTC&gt;-take&lt;n&gt;</c>) rather than the automatic sessions' folder, and its
+    /// <c>session.json</c> names the scenario.
+    /// </summary>
+    public sealed class ScenarioTake
+    {
+        public ScenarioTake(string scenario, string description, int take, string directory)
+        {
+            Scenario = scenario ?? throw new ArgumentNullException(nameof(scenario));
+            Description = description ?? "";
+            Take = take;
+            Directory = directory ?? throw new ArgumentNullException(nameof(directory));
+        }
+
+        public string Scenario { get; }
+        public string Description { get; }
+        public int Take { get; }
+
+        /// <summary>The session directory, absolute; its last part is the session id.</summary>
+        public string Directory { get; }
     }
 
     /// <summary>

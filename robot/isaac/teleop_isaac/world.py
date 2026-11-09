@@ -1,4 +1,5 @@
-"""The world beside the arms in Isaac (docs/adr/0031 amendment 2): the scene file's surfaces and fixed obstacles.
+"""The world beside the arms in Isaac (docs/adr/0031 amendments 2 and 4): the scene file's surfaces, its fixed obstacles,
+and its movable objects, which are dynamic bodies: they fall, and an arm can push or knock them over.
 
 RobotHost decides where objects go (``WorldHost``, from the seeded layouts) and asks with PLACE; this module applies or
 refuses each placement and reports where the objects are. The rules are RobotHost's ``StaticWorld``'s, in its order, plus
@@ -11,7 +12,20 @@ what only physics can see: whether an arm is in the way.
 5. off the table or the placement region: OUTSIDE_REGION;
 6. closer to another object than the clearance (footprints, as Core's ``WorldScene.Overlaps``): OVERLAPS_OBJECT;
 7. an arm within the clearance of the object's shape at the new pose (a PhysX overlap query): OVERLAPS_ARM;
-8. otherwise the object is stood upright on the table at the pose's x, y and yaw (``Scene.pose_at``): APPLIED.
+8. otherwise the object is stood upright on the table at the pose's x, y and yaw (``Scene.pose_at``): APPLIED. A movable
+   object is also brought to rest there (its velocities zeroed), wherever it had fallen.
+
+Rules 4, 6 and 7 use where the objects are now: a movable object's pose is PhysX's, read at every WORLD (:meth:`IsaacWorld.read`).
+
+**Resizing** (RESIZE, docs/adr/0034 amendment 6) scales an object by a factor on the scene file's size, in every direction:
+the same rules at the new size, at the object's current x, y and yaw (an id the scene does not have, one the headset may not
+move, a factor not one of the resize steps (1.25 to the power -3 to 8), an arm touching it, too big for the table, too
+close to another object, an arm in the way), and then it is stood upright there at its new size. One that would reach past
+an edge, or another object, goes to the nearest spot where it fits (:meth:`Scene.spots_near`, docs/adr/0034 amendment 7). Every rule above uses each object's current size. SIZES reports them all.
+
+PhysX cannot change a collider while it simulates (a cylinder's new radius is ignored; a box's new scale invalidates every
+simulation view, 2026-11-08), so the bridge builds one body per step for each object the headset may resize, and parks
+those not in use on a hidden shelf far below the floor (:data:`SHELF_Z`). A resize swaps two of them by teleport.
 
 :class:`WorldModel` is the bookkeeping and the rules, with the arm check passed in, so it runs in the plain-Python tests.
 :class:`IsaacWorld` builds the prims and answers the arm check; it imports Isaac only when it is made.
@@ -24,7 +38,7 @@ import re
 from typing import Callable, List, Optional, Sequence, Tuple
 
 from . import wire
-from .scene import Scene
+from .scene import RESIZE_SCALES, Scene, is_valid_scale, step_of
 
 Pose = Tuple[float, float, float, float, float, float, float]  # x, y, z, qw, qx, qy, qz
 
@@ -32,6 +46,8 @@ Pose = Tuple[float, float, float, float, float, float, float]  # x, y, z, qw, qx
 ArmCheck = Callable[[int, Pose, float], bool]
 
 TOUCH_MARGIN = 0.005  # metres: an arm this close to an object counts as touching it (rule 4)
+SHELF_X, SHELF_Z = 20.0, -5.0  # metres: where the unused size variants rest, far from every scene
+UNIT = RESIZE_SCALES.index(1.0)  # the step of the scene file's size
 
 
 def prim_name(prefix: str, name: str) -> str:
@@ -60,8 +76,10 @@ class WorldModel:
     def __init__(self, scene: Scene):
         self.scene = scene
         self.poses: List[Pose] = [tuple(o.nominal) for o in scene.objects]
+        self.scales: List[float] = [1.0 for _ in scene.objects]
         self.revision = 0
         self.snapshot = 0
+        self.sizes_revision = 0
 
     def index_of(self, object_id: int) -> int:
         for i, o in enumerate(self.scene.objects):
@@ -81,23 +99,80 @@ class WorldModel:
             return wire.INVALID_POSE, i, None
         if cause == wire.CAUSE_HEADSET and arm_near(i, self.poses[i], TOUCH_MARGIN):
             return wire.ARM_TOUCHING, i, None
-        x, y = pose[0], pose[1]
-        if not self.scene.fits_on_table(i, x, y):
+        return self._fits(i, pose[0], pose[1], yaw_of(pose), self.scales[i], arm_near)
+
+    def _fits(self, i: int, x: float, y: float, yaw: float, scale: float, arm_near: ArmCheck) -> Tuple[int, int, Optional[Pose]]:
+        """Rules 5 to 8 for object ``i`` at (x, y, yaw) and size ``scale``."""
+        if not self.scene.fits_on_table(i, x, y, scale):
             return wire.OUTSIDE_REGION, i, None
         for k, other in enumerate(self.poses):
-            if k != i and self.scene.overlaps(i, x, y, k, other[0], other[1]):
+            if k != i and self.scene.overlaps(i, x, y, k, other[0], other[1], scale, self.scales[k]):
                 return wire.OVERLAPS_OBJECT, i, None
-        upright = tuple(self.scene.pose_at(i, x, y, yaw_of(pose)))
+        upright = tuple(self.scene.pose_at(i, x, y, yaw, scale))
         if arm_near(i, upright, self.scene.clearance):
             return wire.OVERLAPS_ARM, i, None
         return wire.APPLIED, i, upright
+
+    def check_resize(self, object_id: int, scale: float, arm_near: ArmCheck) -> Tuple[int, int, Optional[Pose]]:
+        """(outcome, object index or -1, the upright pose at the new size when APPLIED). The arm check sees the new size:
+        ``scales[i]`` holds it for the check's duration."""
+        i = self.index_of(object_id)
+        if i < 0:
+            return wire.UNKNOWN_OBJECT, -1, None
+        if not self.scene.objects[i].operator_movable:
+            return wire.NOT_MOVABLE, i, None
+        if not is_valid_scale(scale):
+            return wire.INVALID_POSE, i, None
+        if arm_near(i, self.poses[i], TOUCH_MARGIN):
+            return wire.ARM_TOUCHING, i, None
+        p = self.poses[i]
+        spots = self.scene.spots_near(i, p[0], p[1], scale)
+        if not spots:
+            return wire.OUTSIDE_REGION, i, None
+        old = self.scales[i]
+        self.scales[i] = scale
+        try:
+            # The nearest spot clear of the others; the arm is asked about the first few such spots only (PhysX queries).
+            first, arm_asks = None, 0
+            for x, y in spots:
+                if any(k != i and self.scene.overlaps(i, x, y, k, o[0], o[1], scale, self.scales[k]) for k, o in enumerate(self.poses)):
+                    continue
+                outcome, _, upright = self._fits(i, x, y, yaw_of(p), scale, arm_near)
+                first = first or outcome
+                if outcome == wire.APPLIED:
+                    return outcome, i, upright
+                arm_asks += 1
+                if arm_asks >= 24:
+                    break
+            return (first or wire.OVERLAPS_OBJECT), i, None
+        finally:
+            self.scales[i] = old
+
+    def apply_resize(self, index: int, scale: float, pose: Pose) -> None:
+        self.scales[index] = scale
+        self.poses[index] = pose
+        self.revision += 1
+        self.sizes_revision += 1
+
+    def sizes_message(self, sequence: int) -> bytes:
+        return wire.encode_sizes(sequence, self.sizes_revision, [(o.id, self.scales[i]) for i, o in enumerate(self.scene.objects)])
 
     def apply(self, index: int, pose: Pose) -> None:
         self.poses[index] = pose
         self.revision += 1
 
+    def flags(self, index: int) -> int:
+        """FLAG_KINEMATIC for a fixed object; a movable one is a dynamic body (docs/adr/0031 amendment 4)."""
+        return 0 if self.scene.objects[index].movable else wire.FLAG_KINEMATIC
+
+    def sense(self, index: int, pose: Pose) -> None:
+        """Where physics has a movable object now (it may have been pushed or have fallen); not a new revision, which
+        counts placements. A fixed object moves only by a placement, so its reading is not taken."""
+        if self.scene.objects[index].movable:
+            self.poses[index] = pose
+
     def objects(self) -> List[wire.ObjectPose]:
-        return [wire.ObjectPose(o.id, wire.FLAG_KINEMATIC, self.poses[i]) for i, o in enumerate(self.scene.objects)]
+        return [wire.ObjectPose(o.id, self.flags(i), self.poses[i]) for i, o in enumerate(self.scene.objects)]
 
     def world_messages(self, sequence: Callable[[], int], sensed_ticks: int,
                        objects: Optional[Sequence[wire.ObjectPose]] = None) -> List[bytes]:
@@ -111,8 +186,8 @@ class WorldModel:
 
 
 class IsaacWorld:
-    """The scene in Isaac's stage: surfaces as static colliders, obstacles as kinematic rigid bodies, on the session layer
-    so the robot's USD is never changed. Call :meth:`build` before the simulation plays and :meth:`attach` after."""
+    """The scene in Isaac's stage: surfaces as static colliders, fixed obstacles as kinematic rigid bodies and movable
+    objects as dynamic ones with their mass, on the session layer so the robot's USD is never changed. Call :meth:`build` before the simulation plays and :meth:`attach` after."""
 
     ROOT = "/World/Scene"
 
@@ -120,6 +195,18 @@ class IsaacWorld:
         self.model = WorldModel(scene)
         self.robot_path = robot_path.rstrip("/")
         self.object_paths = [f"{self.ROOT}/Objects/{prim_name(f'o{o.id}', o.name)}" for o in scene.objects]
+        self._stage = None
+        # The bridge's bodies: each object's at its file size (its object path), then, for one the headset may resize, one
+        # per other step. body_paths[slots[i][k]] is object i's body at RESIZE_SCALES[k]; active[i] the one in use.
+        self.body_paths: List[str] = list(self.object_paths)
+        self.slots: List[dict] = [{UNIT: i} for i in range(len(scene.objects))]
+        self.active: List[int] = list(range(len(scene.objects)))
+
+    def parked(self, index: int, step: int) -> Pose:
+        """Where object ``index``'s body at step ``step`` rests while not in use: upright on the shelf, a metre from the next."""
+        s = RESIZE_SCALES[step]
+        return (SHELF_X + (step - len(RESIZE_SCALES) / 2) * 1.0, (index - len(self.model.scene.objects) / 2) * 1.0,
+                SHELF_Z + self.model.scene.objects[index].size[2] * s / 2 + 0.001, 1.0, 0.0, 0.0, 0.0)
         self._bodies = None
         self._query = None
 
@@ -142,6 +229,8 @@ class IsaacWorld:
             UsdShade.MaterialBindingAPI.Apply(prim).Bind(mat, UsdShade.Tokens.weakerThanDescendants, "physics")
 
         scene = self.model.scene
+        self._stage = stage
+        self._physics = physics
         fixed = self.fixed_bodies(stage) if physics else []
         self.surface_paths = {}
         with Usd.EditContext(stage, stage.GetSessionLayer()):
@@ -165,15 +254,17 @@ class IsaacWorld:
                     # The robot's mount stands in the bench; a contact with a body no joint moves only fights the base's pin.
                     UsdPhysics.FilteredPairsAPI.Apply(cube.GetPrim()).CreateFilteredPairsRel().SetTargets([Sdf.Path(b) for b in fixed])
                     bind_physics(cube.GetPrim(), material(f"{self.ROOT}/Materials/{name}", s.static_friction, s.dynamic_friction))
-            for o, path, pose in zip(scene.objects, self.object_paths, self.model.poses):
-                body = UsdGeom.Xform.Define(stage, path)
-                x = UsdGeom.Xformable(body)
+            def body(o, path, pose, scale):
+                prim = UsdGeom.Xform.Define(stage, path)
+                x = UsdGeom.Xformable(prim)
                 x.AddTranslateOp().Set(Gf.Vec3d(*pose[:3]))
                 x.AddOrientOp(UsdGeom.XformOp.PrecisionDouble).Set(Gf.Quatd(pose[3], pose[4], pose[5], pose[6]))
                 if physics:
-                    rb = UsdPhysics.RigidBodyAPI.Apply(body.GetPrim())
-                    rb.CreateKinematicEnabledAttr(True)
-                sx, sy, sz = o.size
+                    rb = UsdPhysics.RigidBodyAPI.Apply(prim.GetPrim())
+                    rb.CreateKinematicEnabledAttr(not o.movable)
+                    if o.movable:
+                        UsdPhysics.MassAPI.Apply(prim.GetPrim()).CreateMassAttr(o.mass * scale ** 3)
+                sx, sy, sz = (v * scale for v in o.size)
                 if o.shape == "box":
                     g = UsdGeom.Cube.Define(stage, f"{path}/Shape")
                     g.CreateSizeAttr(1.0)
@@ -187,10 +278,30 @@ class IsaacWorld:
                     g = UsdGeom.Sphere.Define(stage, f"{path}/Shape")
                     g.CreateRadiusAttr(sx / 2)
                 g.CreateDisplayColorAttr([Gf.Vec3f(*o.colour)])
-                if not physics:
-                    continue
-                UsdPhysics.CollisionAPI.Apply(g.GetPrim())
-                bind_physics(g.GetPrim(), material(f"{self.ROOT}/Materials/{path.rsplit('/', 1)[1]}", o.static_friction, o.dynamic_friction))
+                if physics:
+                    UsdPhysics.CollisionAPI.Apply(g.GetPrim())
+                    bind_physics(g.GetPrim(), material(f"{self.ROOT}/Materials/{path.rsplit('/', 1)[1]}", o.static_friction, o.dynamic_friction))
+
+            for o, path, pose in zip(scene.objects, self.object_paths, self.model.poses):
+                body(o, path, pose, 1.0)
+            if physics:
+                # The other sizes of each object the headset may resize, at rest on the hidden shelf.
+                shelf = UsdGeom.Cube.Define(stage, f"{self.ROOT}/Shelf")
+                shelf.CreateSizeAttr(1.0)
+                sx = UsdGeom.Xformable(shelf)
+                sx.AddTranslateOp().Set(Gf.Vec3d(SHELF_X - 0.5, -0.5, SHELF_Z - 0.05))
+                sx.AddScaleOp().Set(Gf.Vec3f(len(RESIZE_SCALES) + 2.0, len(scene.objects) + 2.0, 0.1))
+                UsdPhysics.CollisionAPI.Apply(shelf.GetPrim())
+                UsdGeom.Imageable(shelf).MakeInvisible()
+                for i, (o, path) in enumerate(zip(scene.objects, self.object_paths)):
+                    if not (o.movable and o.operator_movable):
+                        continue
+                    for k, s in enumerate(RESIZE_SCALES):
+                        if k == UNIT:
+                            continue
+                        self.slots[i][k] = len(self.body_paths)
+                        self.body_paths.append(f"{path}_s{k}")
+                        body(o, self.body_paths[-1], self.parked(i, k), s)
 
     def fixed_bodies(self, stage) -> List[str]:
         """The robot's rigid bodies no joint moves (its mount and what is bolted to it): those reached from the pinned base
@@ -238,7 +349,7 @@ class IsaacWorld:
         import omni.physx
         from isaacsim.core.experimental.prims import RigidPrim
 
-        self._bodies = RigidPrim(self.object_paths)
+        self._bodies = RigidPrim(self.body_paths)
         self._query = omni.physx.get_physx_scene_query_interface()
 
     def arm_near(self, index: int, pose: Pose, margin: float) -> bool:
@@ -247,6 +358,7 @@ class IsaacWorld:
         import carb
 
         o = self.model.scene.objects[index]
+        s = self.model.scales[index]
         robot = self.robot_path + "/"
         hit = []
 
@@ -259,9 +371,9 @@ class IsaacWorld:
 
         position = carb.Float3(pose[0], pose[1], pose[2])
         if o.shape == "sphere":
-            self._query.overlap_sphere(o.size[0] / 2 + margin, position, report, False)
+            self._query.overlap_sphere(o.size[0] * s / 2 + margin, position, report, False)
         else:
-            half = carb.Float3(o.size[0] / 2 + margin, o.size[1] / 2 + margin, o.size[2] / 2 + margin)
+            half = carb.Float3(o.size[0] * s / 2 + margin, o.size[1] * s / 2 + margin, o.size[2] * s / 2 + margin)
             rotation = carb.Float4(pose[4], pose[5], pose[6], pose[3])  # x, y, z, w
             self._query.overlap_box(half, position, rotation, report, False)
         return bool(hit)
@@ -293,17 +405,71 @@ class IsaacWorld:
 
         outcome, i, upright = self.model.check(cause, object_id, pose, self.arm_near)
         if outcome == wire.APPLIED:
-            self._bodies.set_world_poses(positions=np.array([upright[:3]]), orientations=np.array([upright[3:]]), indices=[i])
+            self._bodies.set_world_poses(positions=np.array([upright[:3]]), orientations=np.array([upright[3:]]), indices=[self.active[i]])
+            if self.model.scene.objects[i].movable:  # stood up and at rest, wherever it had rolled or fallen
+                self._bodies.set_velocities(np.zeros((1, 3)), np.zeros((1, 3)), indices=[self.active[i]])
             self.model.apply(i, upright)
         now = self.model.poses[i] if i >= 0 else tuple(pose)
         return outcome, now
 
+    def set_scale(self, index: int, scale: float) -> None:
+        """The renderer's copy (no physics): object ``index``'s shape at ``scale`` times the scene file's size, on the session
+        layer where :meth:`build` made it, as SIZES come. The bridge never changes a collider: it swaps bodies (:meth:`resize`)."""
+        from pxr import Gf, Usd, UsdGeom
+
+        if self._physics:
+            raise RuntimeError("set_scale is the renderer's: PhysX cannot change a collider while it simulates")
+        o = self.model.scene.objects[index]
+        stage = self._stage
+        shape = stage.GetPrimAtPath(f"{self.object_paths[index]}/Shape")
+        sx, sy, sz = (v * scale for v in o.size)
+        with Usd.EditContext(stage, stage.GetSessionLayer()):
+            if o.shape == "box":
+                UsdGeom.Xformable(shape).GetOrderedXformOps()[0].Set(Gf.Vec3f(sx, sy, sz))
+            elif o.shape == "cylinder":
+                g = UsdGeom.Cylinder(shape)
+                g.GetRadiusAttr().Set(sx / 2)
+                g.GetHeightAttr().Set(sz)
+            else:
+                UsdGeom.Sphere(shape).GetRadiusAttr().Set(sx / 2)
+        self.model.scales[index] = scale
+
+    def resize(self, object_id: int, scale: float) -> Tuple[int, Pose]:
+        """Applies or refuses one resize: (outcome, the object's pose now). Applied, the body in use goes back to the shelf
+        and the one of the new size takes its place, upright, at rest."""
+        import numpy as np
+
+        outcome, i, upright = self.model.check_resize(object_id, scale, self.arm_near)
+        if outcome == wire.APPLIED:
+            k = RESIZE_SCALES.index(min(RESIZE_SCALES, key=lambda s: abs(s - scale)))
+            new = self.slots[i].get(k)
+            if new is None:  # the scene file lets the headset move it, but it was built without sizes (not movable)
+                outcome = wire.NOT_MOVABLE
+            else:
+                old = self.active[i]
+                old_k = next(kk for kk, slot in self.slots[i].items() if slot == old)
+                if new != old:
+                    parked = self.parked(i, old_k)
+                    self._bodies.set_world_poses(positions=np.array([parked[:3], upright[:3]]),
+                                                 orientations=np.array([parked[3:], upright[3:]]), indices=[old, new])
+                    self._bodies.set_velocities(np.zeros((2, 3)), np.zeros((2, 3)), indices=[old, new])
+                self.active[i] = new
+                self.model.apply_resize(i, RESIZE_SCALES[k], upright)
+        now = self.model.poses[i] if i >= 0 else (0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0)
+        return outcome, now
+
     def read(self) -> List[wire.ObjectPose]:
-        """Every object's pose as PhysX has it (not USD's, which the bridge does not write back)."""
+        """Every object's pose as PhysX has it (not USD's, which the bridge does not write back); a movable object's is
+        also taken as where it is now, for the placement rules."""
         import numpy as np
 
         positions, orientations = self._bodies.get_world_poses()
         p = np.asarray(positions.numpy() if hasattr(positions, "numpy") else positions).reshape(-1, 3)
         q = np.asarray(orientations.numpy() if hasattr(orientations, "numpy") else orientations).reshape(-1, 4)
-        return [wire.ObjectPose(o.id, wire.FLAG_KINEMATIC, (*map(float, p[i]), *map(float, q[i])))
-                for i, o in enumerate(self.model.scene.objects)]
+        out = []
+        for i, o in enumerate(self.model.scene.objects):
+            b = self.active[i]
+            pose = (*map(float, p[b]), *map(float, q[b]))
+            self.model.sense(i, pose)
+            out.append(wire.ObjectPose(o.id, self.model.flags(i), pose))
+        return out

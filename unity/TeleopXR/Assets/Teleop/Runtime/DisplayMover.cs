@@ -22,6 +22,11 @@ namespace Teleop.XR
         [SerializeField] private Color heldColor = new Color(0.3f, 1f, 0.45f);
         [Tooltip("How much bigger than the display itself the grab target is, metres.")]
         [SerializeField] private float grabMargin = 0.05f;
+        [Tooltip("Moves up and down with the ray too (a display without a floor stand, the FR3 lab's), within the heights below; else it slides over the floor.")]
+        [SerializeField] private bool freeVertical;
+        [Tooltip("The lowest and highest its origin may go (m), when it moves vertically.")]
+        [SerializeField] private float minHeight = -0.8f;
+        [SerializeField] private float maxHeight = 1.2f;
 
         private Renderer[] _renderers;
         private Vector3 _offset;
@@ -70,7 +75,8 @@ namespace Teleop.XR
             }
 
             Vector3 target = ray.GetPoint(_distance) + _offset;
-            transform.position = new Vector3(target.x, transform.position.y, target.z);
+            float y = freeVertical ? Mathf.Clamp(target.y, minHeight, maxHeight) : transform.position.y;
+            transform.position = new Vector3(target.x, y, target.z);
 
             Camera eye = Camera.main;
             if (eye != null)

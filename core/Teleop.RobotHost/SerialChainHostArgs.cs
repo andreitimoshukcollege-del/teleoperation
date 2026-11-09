@@ -19,6 +19,7 @@ namespace Teleop.RobotHost
             "  [--discovery-port <port>] [--uplink-control <path>] [--record-control <path>] [--scene <file> [--scene-seed <n>|auto]]\n" +
             "  [--auto-record [--auto-record-root <dir>] [--auto-record-idle-seconds <s>] [--auto-record-max-minutes <min>]\n" +
             "   [--auto-record-headset-seconds <s>] [--auto-record-writer <name:seconds>]... [--build-info-robothost <path>]]\n" +
+            "  [--scenarios <dir>]\n" +
             "  A serial-chain profile (\"kind\": \"serial-chain\", docs/adr/0026) runs this host instead of the JetRover's:\n" +
             "  the joint port only (commands in, joint-state frames out at 50 Hz to whoever sends a keepalive), no relay,\n" +
             "  no Cartesian path, no arm power (docs/adr/0027 decision 5). --backend sim is the simulated arm\n" +
@@ -31,7 +32,9 @@ namespace Teleop.RobotHost
             "  collide (docs/adr/0026 amendment). Sessions are teleop-session v2 with source sim-host, or what the arm server is:\n" +
             "  isaac, or robot (trainer/contract/SESSION_FORMAT.md). --scene (core/Scenes/*.json, docs/adr/0031 amendment 2) runs a\n" +
             "  world: layouts drawn from --scene-seed (auto: from the clock, logged and recorded), placed in Isaac or, beside the\n" +
-            "  simulated arm, a static world; world frames go to the headset on the joint port.";
+            "  simulated arm, a static world; world frames go to the headset on the joint port. --scenarios (needs --auto-record)\n" +
+            "  records takes of named scenarios from the headset's RECORD button (docs/adr/0033) into <dir>/<scenario>/<UTC>-take<n>,\n" +
+            "  the list read from <dir>/scenarios.txt (made from a template when missing, re-read when it changes).";
 
         public string ProfilePath = "";
         public int JointLocalPort;
@@ -47,6 +50,7 @@ namespace Teleop.RobotHost
         public AutoRecordOptions? AutoRecord;
         public string? ScenePath;
         public ulong? SceneSeed;
+        public string? ScenariosRoot;
 
         public static SerialChainHostArgs? TryParse(string[] args, out string error)
         {
@@ -91,6 +95,7 @@ namespace Teleop.RobotHost
                     case "--record-control": a.RecordControlPath = value; break;
                     case "--collision-model": a.CollisionModelPath = value; break;
                     case "--scene": a.ScenePath = value; break;
+                    case "--scenarios": a.ScenariosRoot = value; break;
                     case "--scene-seed":
                         if (value == "auto") break;
                         if (!ulong.TryParse(value, NumberStyles.None, CultureInfo.InvariantCulture, out ulong sceneSeed)) { error = $"--scene-seed '{value}' is a whole number or auto"; return null; }
@@ -120,6 +125,7 @@ namespace Teleop.RobotHost
             else if (a.Sim.Validate() is string sim) error = "--sim: " + sim;
             else if (autoRecord && a.RecordControlPath == null) error = "--auto-record needs --record-control";
             else if (autoRecord && auto.Validate() is string bad) error = bad;
+            else if (a.ScenariosRoot != null && !autoRecord) error = "--scenarios needs --auto-record (a take is completed as an automatic session is)";
 
             if (error.Length > 0) return null;
 

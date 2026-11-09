@@ -81,5 +81,49 @@ namespace Teleop.RobotArm.Tests.World
             for (int i = 200; i < 5000; i++) state.Apply(p, i);
             Assert.Equal(before, GC.GetAllocatedBytesForCurrentThread());
         }
+
+        [Fact]
+        public void Sizes_RoundTrip_AndAResizeEdit_CarriesItsFactorInX()
+        {
+            byte[] ids = { 1, 4 };
+            float[] scales = { 1f, 1.75f };
+            var buffer = new byte[256];
+            Assert.True(WorldCodec.TryEncodeSizes(9, ids, scales, buffer, out int n));
+            Assert.Equal(WorldCodec.SizesBytes(2), n);
+            var gotIds = new byte[24];
+            var gotScales = new float[24];
+            Assert.True(WorldCodec.TryDecodeSizes(buffer.AsSpan(0, n), out uint revision, gotIds, gotScales, out int count));
+            Assert.Equal((9u, 2, (byte)4, 1.75f), (revision, count, gotIds[1], gotScales[1]));
+            Assert.False(WorldCodec.TryDecodeSizes(buffer.AsSpan(0, n - 1), out _, gotIds, gotScales, out _));
+
+            Assert.True(WorldCodec.TryEncodeEdit(WorldEditOp.Resize, 4, 3, 77, new ObjectPose(4, 0, 1.5f, 0, 0, 1, 0, 0, 0), buffer, out n));
+            Assert.True(WorldCodec.TryDecodeEdit(buffer.AsSpan(0, n), out WorldEditOp op, out uint sequence, out _, out ObjectPose pose));
+            Assert.Equal((WorldEditOp.Resize, 3u, (byte)4, 1.5f), (op, sequence, pose.Id, pose.X));
+        }
+
+        [Fact]
+        public void TheState_TakesSizes_IgnoringForeignIdsAndFactorsOutOfRange()
+        {
+            WorldScene scene = SceneDocumentTests.LoadShipped();
+            var world = new WorldState(scene, new byte[32]);
+            Assert.Equal(1f, world.Scale(4));
+            world.ApplySizes(3, new byte[] { 4, 2, 200, 1 }, new[] { 1.5625f, 9f, 1.5625f, 1.5f });
+            Assert.Equal((1.5625f, 1f, 1f, 1f, 3u), (world.Scale(4), world.Scale(2), world.Scale(200), world.Scale(1), world.SizesRevision));
+            Assert.Equal((-3, 8), (WorldScene.StepOf(WorldScene.MinObjectScale), WorldScene.StepOf(WorldScene.MaxObjectScale)));
+            world.Reset();
+            Assert.Equal(1f, world.Scale(4));
+        }
+
+        [Fact]
+        public void AResizedObject_IsClampedOntoTheTable_OrFitsNowhere()
+        {
+            WorldScene scene = SceneDocumentTests.LoadShipped();
+            int can = scene.IndexOf(4);
+            double r = scene.Objects[can].FootprintRadius * 2 + 0.001;
+            double x1 = Math.Min(scene.Table.XMax, scene.RegionXMax);
+            Assert.True(scene.TryClampOnTable(can, x1, 0, 2, out double cx, out double cy));
+            Assert.Equal((x1 - r, 0.0), (cx, cy));
+            Assert.False(scene.TryClampOnTable(can, 0.5, 0, 100, out _, out _));
+        }
     }
 }

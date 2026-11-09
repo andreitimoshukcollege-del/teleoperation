@@ -171,7 +171,8 @@ namespace Teleop.RobotArm.World
         {
             double x = _startX + (cursor.X - _cursorX), y = _startY + (cursor.Y - _cursorY);
             SceneSurface t = _scene.Table;
-            double r = _scene.Objects[_index].FootprintRadius;
+            // 1 mm inside the bounds: the pose goes out as float32, whose rounding must not land it a hair outside.
+            double r = _scene.Objects[_index].FootprintRadius + 0.001;
             double x0 = Math.Max(t.XMin, _scene.RegionXMin) + r, x1 = Math.Min(t.XMax, _scene.RegionXMax) - r;
             double y0 = Math.Max(t.YMin, _scene.RegionYMin) + r, y1 = Math.Min(t.YMax, _scene.RegionYMax) - r;
             _x = x0 <= x1 ? Math.Min(Math.Max(x, x0), x1) : (x0 + x1) / 2;

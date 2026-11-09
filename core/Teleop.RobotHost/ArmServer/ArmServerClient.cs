@@ -54,6 +54,11 @@ namespace Teleop.RobotHost.ArmServer
         private readonly ObjectPose[] _snapshot = new ObjectPose[WorldScene.MaxObjects];
         private readonly ObjectPose[] _worldPart = new ObjectPose[ArmServerWorld.MaxObjectsPerWorld];
         private readonly ArmServerContact[] _contacts = new ArmServerContact[ArmServerWorld.MaxContacts];
+        private readonly byte[] _sizeIds = new byte[WorldScene.MaxObjects];
+        private readonly float[] _sizeScales = new float[WorldScene.MaxObjects];
+        private int _sizeCount;
+        private uint _sizeRevision;
+        private bool _sizesFresh;
         private readonly (uint Request, PlaceOutcome Outcome, ObjectPose Pose)[] _placed = new (uint, PlaceOutcome, ObjectPose)[64];
         private int _placedHead, _placedCount, _assembledCount, _snapshotCount;
         private uint _assemblingSnapshot, _snapshotRevision;
@@ -64,7 +69,8 @@ namespace Teleop.RobotHost.ArmServer
         public ArmServerClient(IArmServerLink link, ReadOnlySpan<byte> motorIds, long ticksPerSecond)
         {
             _link = link ?? throw new ArgumentNullException(nameof(link));
-            if (motorIds.Length == 0 || motorIds.Length > ArmServerWire.MaxMotors) throw new ArgumentException($"1 to {ArmServerWire.MaxMotors} motors", nameof(motorIds));
+            // No motors: a server of the world alone (the JetRover's Isaac world beside its relay, docs/adr/0034 decision 7).
+            if (motorIds.Length > ArmServerWire.MaxMotors) throw new ArgumentException($"at most {ArmServerWire.MaxMotors} motors", nameof(motorIds));
             if (ticksPerSecond <= 0) throw new ArgumentOutOfRangeException(nameof(ticksPerSecond));
             _motorIds = motorIds.ToArray();
             _ticksPerSecond = ticksPerSecond;
@@ -102,9 +108,11 @@ namespace Teleop.RobotHost.ArmServer
         /// <summary>
         /// Says hello until the server welcomes us (or <paramref name="timeoutSeconds"/> pass), and checks the welcome: the
         /// shaper's motors in the shaper's order, and the server's clock within <see cref="MaxClockDisagreementSeconds"/> of
-        /// ours. Then waits for the first state, so the arm's pose is known before anything is commanded.
+        /// ours. Then waits for the first state, so the arm's pose is known before anything is commanded. With
+        /// <paramref name="requireState"/> false it is done at the welcome: a server of the world alone, with no motors (the
+        /// JetRover's Isaac world beside its relay, docs/adr/0034 decision 7).
         /// </summary>
-        public bool Connect(Func<long> now, string profileName, double timeoutSeconds, Action<int>? sleep, out string error)
+        public bool Connect(Func<long> now, string profileName, double timeoutSeconds, Action<int>? sleep, out string error, bool requireState = true)
         {
             long deadline = now() + (long)(timeoutSeconds * _ticksPerSecond);
             long nextHello = long.MinValue;
@@ -145,7 +153,7 @@ namespace Teleop.RobotHost.ArmServer
                     if (welcomed) Handle(d, now());
                 }
 
-                if (welcomed && _haveState)
+                if (welcomed && (_haveState || !requireState))
                 {
                     error = "";
                     return true;
@@ -204,6 +212,23 @@ namespace Teleop.RobotHost.ArmServer
         public void Place(uint request, PlaceCause cause, in ObjectPose pose, long hostTicks)
         {
             if (ArmServerWorld.TryEncodePlace(++_sequence, hostTicks, request, cause, pose, _send, out int n)) _link.Send(_send.AsSpan(0, n));
+        }
+
+        public void Resize(uint request, byte id, float scale, long hostTicks)
+        {
+            if (ArmServerWorld.TryEncodeResize(++_sequence, hostTicks, request, id, scale, _send, out int n)) _link.Send(_send.AsSpan(0, n));
+        }
+
+        public bool TryTakeSizes(Span<byte> ids, Span<float> scales, out int count, out uint revision)
+        {
+            count = 0;
+            revision = _sizeRevision;
+            if (!_sizesFresh || ids.Length < _sizeCount || scales.Length < _sizeCount) return false;
+            _sizesFresh = false;
+            _sizeIds.AsSpan(0, _sizeCount).CopyTo(ids);
+            _sizeScales.AsSpan(0, _sizeCount).CopyTo(scales);
+            count = _sizeCount;
+            return true;
         }
 
         public bool TryTakeSnapshot(Span<ObjectPose> poses, out int count, out long sensedTicks, out uint revision)
@@ -276,6 +301,15 @@ namespace Teleop.RobotHost.ArmServer
                     _placedCount++;
                 }
 
+                return true;
+            }
+
+            if (kind == ArmServerWorld.KindSizes && ArmServerWorld.TryDecodeSizes(datagram, out uint sizeRevision, _sizeIds, _sizeScales, out int sizes))
+            {
+                if (!_sizesFresh && sizes == _sizeCount && sizeRevision == _sizeRevision) return true; // the once-a-second repeat
+                _sizeCount = sizes;
+                _sizeRevision = sizeRevision;
+                _sizesFresh = true;
                 return true;
             }
 

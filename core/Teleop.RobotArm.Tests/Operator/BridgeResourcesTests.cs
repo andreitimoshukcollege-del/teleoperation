@@ -22,6 +22,7 @@ namespace Teleop.RobotArm.Tests.Operator
         [InlineData("fr3_duo_collision.json", "core/RobotProfiles/fr3-duo.collision.json")]
         [InlineData("models/fr3-sim-1.bytes", "core/testdata/learned/fr3-sim-1.weights")]
         [InlineData("fr3_scene.json", "core/Scenes/fr3-duo-bench.json")]
+        [InlineData("jetrover_scene.json", "core/Scenes/jetrover-bench.json")]
         public void TheHeadsetsCopy_IsTheGeneratedFile(string resource, string source)
         {
             byte[] copy = File.ReadAllBytes(Resources(resource));

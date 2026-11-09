@@ -263,6 +263,81 @@ Decisions 4–6 are built.
 - **The trainer:** `armpred check-session` accepts the session.
 - **Another seed:** seed 5 at 60 s brought the hands into view in only 14 frames, all within 8 px. So the check names seed 3.
 
+## Amendment 3 (2026-11-03): two third-person cameras and two wrist cameras, and a backdrop all around
+
+The user: "we want 2 3rd person cameras and 2 at the wrists. no camera at the base anymore ... I want the background of the
+scene to still be dynamic." Then they chose the poses: third-person cameras at front-left and front-right, and wrist
+cameras mounted as an Intel RealSense D405 is on a Franka hand.
+
+**The cameras** (the scene file's `cameras`; every one records colour, depth and masks):
+
+| | `third-left` / `third-right` | `wrist-left` / `wrist-right` |
+|---|---|---|
+| Pose | at (1.20, ±1.10, 0.80) m, looking at (0.25, 0, 0.10): across the table, about 45° to each side and above, framing both arms and every object | on `<side>_fr3v2_hand`, at (0.06, 0, 0.04) m in the hand's frame (on its back, just above the flange), looking at (0, 0, 0.16) with the hand's +x up: along the fingers, tilted 27° towards them, the fingertips in the image's lower half |
+| Field of view | 69° horizontal | 87° horizontal (a D405's) |
+| Near clip | 0.05 m | 0.01 m |
+| Feed port | 6008 / 6009 | 6007 (left) / 6003 (right) |
+
+- **The head camera is gone.** The URDF's mount point is still there; nothing renders from it.
+- **A mounted camera** is given in its link's frame (`mountPosition`, `mountLookAt`, `mountUp`). Without `mountLookAt`, it
+  keeps the head mount's convention (along the link's +x, +z up).
+- **The render lag** is measured with the first camera that stands still. That is `third-left`, so the lag cube on the table
+  is in view.
+- **What the recording says about a moving camera.**
+  - Its `CM` pose is in the mount link's URDF frame. The renderer derives it from Isaac's rendered camera and the link's
+    forward kinematics at rest.
+  - A new `poseFrame` field says which frame the pose is in (`base` or `mount`).
+  - A reader poses the camera at a frame by FK of the frame's `QS` state (`trainer/contract/SESSION_FORMAT.md`).
+- **On the headset:** the two lab displays show the wrist cameras, `RIGHT WRIST (REC)` on the right and
+  `LEFT WRIST (REC)` on the left.
+  - Why the wrists: the twin already shows the arms from outside, while the wrist cameras show what each gripper is about to
+    touch.
+  - The third-person feeds stay on the GPU machine's ports: `just camera-probe` with 6008 and 6009.
+  - The headset decodes two feeds, as before.
+
+**The backdrop** (the scene file's `backdrops`):
+- **The surfaces.** It is now a list of `mats` lying on surfaces and `screens` standing up. Each gets its own random image
+  at every change (`backdrops.pick(images, seed, change, count)`):
+  - `mat`: the work table's top, as before;
+  - `floor`: the floor from x −1.0 to 1.4 m and y ±1.8 m;
+  - four screens, 2.4 m high from the floor up, closing the scene in. `far` is beyond the table (x 1.4), `back` is behind
+    the robot (x −1.0), and `left` and `right` are at y ±1.8.
+- **Why:** the third-person cameras look back past the robot, where Isaac had nothing, and the wrist cameras look at the
+  table and past it. With a random image on every surface either sees, the background stays something a model must learn
+  to ignore.
+- **Masks.** Each screen is in the `screen` mask class. The floor mat is in the `floor` class, and the table mat stays `mat`.
+  The id table is unchanged.
+- **`BK`** now lists `surface:sha256:imageId` for every surface.
+
+**What `just isaac-record-check` (`verify_session.py`) checks now:**
+- **Depth on the table mat,** for every camera with depth: p99 under 3 mm.
+  - Every camera that stands still must see the mat.
+  - So must at least one wrist camera. That checks the moving pose through FK.
+- **The hand projection** uses the cameras that stand still.
+  - With two of them, the hands are in view at most frames, not only when a joint-space move brings them down into the
+    old head camera's view.
+
+**Disk:** 12 streams instead of 4. A rough estimate is about 30–40 GB an hour, against the 10 GB measured with the head
+camera; `--record-every 2` halves it. The renderer's frame rate with four cameras on a shared GPU is a risk, measured
+below.
+
+## Amendment 4 (2026-11-06): all four cameras on the headset, on displays you can move
+
+The user: "right now only the arm cameras are shown and are not movable, can you add the third person cameras and have
+them movable, also they should be movable vertically".
+
+- **Four displays.** The third-person feeds (6008 left, 6009 right) get two more lab displays, each stacked above the wrist
+  display on its side, so the view ahead over the robot stays clear (placed in front, they filled its top). They are
+  received on 6015 and 6016.
+  - **Rate.** The third-person feeds ask for 15 fps (`CameraFeedBridge.maxFramesPerSecond`), so four feeds cost the
+    headset's decoder about what three did at 30. Recording is unaffected; the renderer records every camera at its own
+    rate.
+- **Movable.** All four float, their floor stands hidden. While the robot is off, the hand pointer
+  (`Fr3HandPointer`, docs/adr/0031 amendment 5) grabs one with a pinch, and it follows the ray at the distance it was
+  grabbed at, up and down too (`DisplayMover.freeVertical`, its origin kept between −0.8 and 1.2 m). It keeps turning to
+  face you. Where they are is not saved between launches.
+- **Not measured:** the headset's decode cost for four feeds. Each feed's decode time is logged (`[camera] ...`).
+
 ## Not decided here
 
 - **Training a video model.** Its own ADR, once data exists.

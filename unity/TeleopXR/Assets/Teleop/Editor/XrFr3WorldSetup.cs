@@ -88,30 +88,42 @@ namespace Teleop.XR.Editor
             }
 
             if (world.Table.Display == SurfaceDisplay.Show) BuildLegs(root, world.Table);
-            BuildTwin(root, world);
+            BuildTwin(root, world, Object.FindAnyObjectByType<SerialChainOperatorBridge>(FindObjectsInactive.Include), "Fr3World");
             var bridge = Object.FindAnyObjectByType<SerialChainOperatorBridge>(FindObjectsInactive.Include);
             XROrigin origin = Object.FindAnyObjectByType<XROrigin>(FindObjectsInactive.Include);
             XrFr3SceneBuilder.BuildButton(root, NewLayoutButtonName, XrFr3SceneBuilder.NewLayoutButtonAt, "Fr3NewLayoutCap", new Color(0.95f, 0.65f, 0.15f),
                 "NEW LAYOUT", Teleop.XR.Fr3MotionButton.Role.NewLayout, bridge, origin);
             XrFr3SceneBuilder.BuildButton(root, EditObjectsButtonName, XrFr3SceneBuilder.EditObjectsButtonAt, "Fr3EditObjectsCap", new Color(0.55f, 0.35f, 0.9f),
                 "EDIT OBJECTS", Teleop.XR.Fr3MotionButton.Role.EditObjects, bridge, origin);
+            // Resizing the object a pointer (or EDIT OBJECTS) last grabbed (docs/adr/0034 amendment 6), behind EDIT OBJECTS.
+            XrFr3SceneBuilder.BuildButton(root, SizeDownButtonName, XrFr3SceneBuilder.EditObjectsButtonAt + new Vector3(-0.1f, 0f, 0.18f), "Fr3SizeCap",
+                new Color(0.3f, 0.75f, 0.55f), "SIZE \u2212", Teleop.XR.Fr3MotionButton.Role.SizeDown, bridge, origin);
+            XrFr3SceneBuilder.BuildButton(root, SizeUpButtonName, XrFr3SceneBuilder.EditObjectsButtonAt + new Vector3(0.1f, 0f, 0.18f), "Fr3SizeCap",
+                new Color(0.3f, 0.75f, 0.55f), "SIZE +", Teleop.XR.Fr3MotionButton.Role.SizeUp, bridge, origin);
 
             BuildFeeds(bridge);
-            Debug.Log($"[fr3-world] built '{world.Name}': {world.Surfaces.Count(s => s.Display == SurfaceDisplay.Show)} surface(s) and a twin of {world.Objects.Length} object(s) with their ghosts from the scene file, NEW LAYOUT, EDIT OBJECTS, and the {HeadFeedName} and {ThirdFeedName} feeds");
+            Debug.Log($"[fr3-world] built '{world.Name}': {world.Surfaces.Count(s => s.Display == SurfaceDisplay.Show)} surface(s) and a twin of {world.Objects.Length} object(s) with their ghosts from the scene file, NEW LAYOUT, EDIT OBJECTS, and the {RightFeedName} and {LeftFeedName} feeds");
         }
 
         public const string FeedsRootName = "Fr3CameraFeeds";
-        public const string HeadFeedName = "HEAD CAM (REC)";
-        public const string ThirdFeedName = "3RD PERSON";
+        public const string RightFeedName = "RIGHT WRIST (REC)";
+        public const string LeftFeedName = "LEFT WRIST (REC)";
         public const string LeftDisplayName = "CameraDisplayLeft";
-        public const int HeadFeedPort = 6003, HeadFeedLocalPort = 6004, ThirdFeedPort = 6007, ThirdFeedLocalPort = 6014;
+        public const int RightFeedPort = 6003, RightFeedLocalPort = 6004, LeftFeedPort = 6007, LeftFeedLocalPort = 6014;
+        public const string ThirdLeftFeedName = "3RD PERSON LEFT (REC)", ThirdRightFeedName = "3RD PERSON RIGHT (REC)";
+        public const string ThirdLeftDisplayName = "CameraDisplayThirdLeft", ThirdRightDisplayName = "CameraDisplayThirdRight";
+        public const int ThirdLeftFeedPort = 6008, ThirdLeftFeedLocalPort = 6015, ThirdRightFeedPort = 6009, ThirdRightFeedLocalPort = 6016;
+
+        /// <summary>The third-person feeds' rate (fps): half the wrists', so four feeds cost the headset's decoder three.</summary>
+        public const int ThirdFeedMaxFps = 15;
+        internal const string ScreenMaterialAssetPath = ScreenMaterialPath;
         private const string FeedMeshLibraryPath = LabPaths.Generated + "/Fr3FeedMeshes.asset";
         private const string ScreenMaterialPath = "Assets/Teleop/Materials/CameraPanel.mat";
 
         /// <summary>
-        /// The two Isaac feeds (docs/adr/0032 decision 3), outside the joint link's disturbance: the head camera on the lab's
-        /// display, on the operator's right (built by the scene builder), and the third-person camera on a second display,
-        /// mirrored on the left, which this builds with its own mesh library. Each <see cref="CameraFeedBridge"/> asks
+        /// Two of Isaac's four feeds (docs/adr/0032 decision 3, amendment 3), outside the joint link's disturbance: the right
+        /// wrist camera on the lab's display, on the operator's right (built by the scene builder), and the left wrist camera
+        /// on a second display, mirrored on the left, which this builds with its own mesh library. Each <see cref="CameraFeedBridge"/> asks
         /// <c>fr3_connection</c>'s <c>RemoteHost</c>, Isaac's renderer on the GPU machine. Both are under <see cref="FeedsRootName"/>,
         /// replaced on every run.
         /// </summary>
@@ -130,7 +142,10 @@ namespace Teleop.XR.Editor
                 ?? throw new InvalidOperationException($"{ScreenMaterialPath} is missing");
 
             var root = new GameObject(FeedsRootName).transform;
-            CameraFeedBridge head = Feed(root, "HeadFeed", HeadFeedName, HeadFeedPort, HeadFeedLocalPort, rightScreen);
+            // The wrists on the two displays beside you; the third-person cameras on two more, each stacked above the wrist display
+            // on its side (the user, 2026-11-06), so the view ahead over the robot stays clear. All four float, without their floor stands, and move with a pointing pinch while the robot is off,
+            // up and down too (Fr3HandPointer, DisplayMover).
+            CameraFeedBridge head = Feed(root, "RightWristFeed", RightFeedName, RightFeedPort, RightFeedLocalPort, rightScreen);
             var bar = right.GetComponent<CameraStatusBar>();
             if (bar != null)
             {
@@ -140,19 +155,65 @@ namespace Teleop.XR.Editor
             }
 
             Transform caption = right.Find("Panel/DisplayCaption");
-            if (caption != null) caption.GetComponent<TMPro.TMP_Text>().text = "head camera  ·  Isaac, recorded";
+            if (caption != null) caption.GetComponent<TMPro.TMP_Text>().text = "right wrist camera  ·  Isaac, recorded";
 
             LabMeshLibrary.Begin(FeedMeshLibraryPath);
-            CameraFeedBridge third = Feed(root, "ThirdFeed", ThirdFeedName, ThirdFeedPort, ThirdFeedLocalPort, null);
+            CameraFeedBridge third = Feed(root, "LeftWristFeed", LeftFeedName, LeftFeedPort, LeftFeedLocalPort, null);
             LabDisplay.Result left = LabDisplay.Build(root, LabPalette.Create(), screenMaterial, third, bridge,
-                "third-person camera  ·  Isaac", LeftDisplayName, mirrored: true);
+                "left wrist camera  ·  Isaac, recorded", LeftDisplayName, mirrored: true);
+            CameraFeedBridge thirdLeft = Feed(root, "ThirdLeftFeed", ThirdLeftFeedName, ThirdLeftFeedPort, ThirdLeftFeedLocalPort, null, ThirdFeedMaxFps);
+            LabDisplay.Result tl = LabDisplay.Build(root, LabPalette.Create(), screenMaterial, thirdLeft, bridge,
+                "third-person camera, front-left  ·  Isaac, recorded", ThirdLeftDisplayName, at: Above(LeftOf(LabLayout.DisplayFoot)));
+            CameraFeedBridge thirdRight = Feed(root, "ThirdRightFeed", ThirdRightFeedName, ThirdRightFeedPort, ThirdRightFeedLocalPort, null, ThirdFeedMaxFps);
+            LabDisplay.Result tr = LabDisplay.Build(root, LabPalette.Create(), screenMaterial, thirdRight, bridge,
+                "third-person camera, front-right  ·  Isaac, recorded", ThirdRightDisplayName, at: Above(LabLayout.DisplayFoot));
             LabMeshLibrary.End();
-            var feed = new SerializedObject(third);
-            feed.FindProperty("panel").objectReferenceValue = left.Screen;
-            feed.ApplyModifiedPropertiesWithoutUndo();
+            foreach ((CameraFeedBridge f, Renderer screen) in new[] { (third, left.Screen), (thirdLeft, tl.Screen), (thirdRight, tr.Screen) })
+            {
+                var feed = new SerializedObject(f);
+                feed.FindProperty("panel").objectReferenceValue = screen;
+                feed.ApplyModifiedPropertiesWithoutUndo();
+            }
+
+            // The upper pair without their nameplates, which would hang over the displays below.
+            foreach (string upper in new[] { ThirdLeftDisplayName, ThirdRightDisplayName })
+            {
+                foreach (Transform child in root.Find(upper).GetComponentsInChildren<Transform>(true))
+                {
+                    if (child.name.StartsWith("Nameplate", StringComparison.Ordinal) || child.name.EndsWith("Nameplate", StringComparison.Ordinal)) child.gameObject.SetActive(false);
+                }
+            }
+
+            // Movable, floating: each display's stand hidden, and a mover the hand pointer drives.
+            Transform[] displays = { right, root.Find(LeftDisplayName), root.Find(ThirdLeftDisplayName), root.Find(ThirdRightDisplayName) };
+            var movers = new DisplayMover[displays.Length];
+            for (int i = 0; i < displays.Length; i++)
+            {
+                Transform d = displays[i] ?? throw new InvalidOperationException("a camera display was not built");
+                foreach (Transform child in d.GetComponentsInChildren<Transform>(true))
+                {
+                    if (child != d && child.name.EndsWith("Stand", StringComparison.Ordinal)) child.gameObject.SetActive(false);
+                }
+
+                DisplayMover mover = d.GetComponent<DisplayMover>() ?? d.gameObject.AddComponent<DisplayMover>();
+                var mso = new SerializedObject(mover);
+                mso.FindProperty("freeVertical").boolValue = true;
+                mso.FindProperty("grabMargin").floatValue = 0.05f;
+                mso.ApplyModifiedPropertiesWithoutUndo();
+                movers[i] = mover;
+            }
+
+            Fr3HandPointer pointer = Object.FindAnyObjectByType<Fr3HandPointer>(FindObjectsInactive.Include);
+            if (pointer != null) XrFr3SceneBuilder.SetReferences(pointer, "displays", movers);
         }
 
-        private static CameraFeedBridge Feed(Transform root, string objectName, string feedName, int port, int localPort, Renderer screen)
+        /// <summary>The upper display's origin: its screen's bottom just clears the top of the one below, the upper one having no nameplate.</summary>
+        internal static Vector3 Above(Vector3 foot) => foot + new Vector3(0f, 1.15f, 0f);
+
+        internal static Vector3 LeftOf(Vector3 foot) => new Vector3(2f * LabLayout.OperatorEye.x - foot.x, foot.y, foot.z);
+
+        internal static CameraFeedBridge Feed(Transform root, string objectName, string feedName, int port, int localPort, Renderer screen, int maxFps = 0,
+            CameraFeedBridge.AddressSource source = CameraFeedBridge.AddressSource.SerialChain)
         {
             var go = new GameObject(objectName);
             go.transform.SetParent(root, false);
@@ -163,9 +224,10 @@ namespace Teleop.XR.Editor
             so.FindProperty("panelHeightMeters").floatValue = LabDisplay.ScreenHeight;
             so.FindProperty("panelMaxWidthMeters").floatValue = LabDisplay.ScreenWidth;
             so.FindProperty("feedName").stringValue = feedName;
-            so.FindProperty("addressSource").enumValueIndex = (int)CameraFeedBridge.AddressSource.SerialChain;
+            so.FindProperty("addressSource").enumValueIndex = (int)source;
             so.FindProperty("robotPort").intValue = port;
             so.FindProperty("localPort").intValue = localPort;
+            so.FindProperty("maxFramesPerSecond").intValue = maxFps;
             so.ApplyModifiedPropertiesWithoutUndo();
             return feed;
         }
@@ -173,12 +235,13 @@ namespace Teleop.XR.Editor
         public const string TwinName = "WorldTwin";
         public const string NewLayoutButtonName = "NewLayoutButton";
         public const string EditObjectsButtonName = "EditObjectsButton";
+        public const string SizeDownButtonName = "SizeDownButton", SizeUpButtonName = "SizeUpButton";
 
         /// <summary>
         /// The world twin: one visual per scene object (the built-in primitive of its shape, its colour, no collider), at its nominal
         /// pose so previews show it, under a <see cref="SerialChainWorldTwin"/> that hides each at runtime until the robot reports it.
         /// </summary>
-        private static void BuildTwin(Transform root, WorldScene world)
+        internal static void BuildTwin(Transform root, WorldScene world, OperatorBridgeBase bridge, string materialPrefix)
         {
             var twinRoot = new GameObject(TwinName).transform;
             twinRoot.SetParent(root, false);
@@ -186,7 +249,7 @@ namespace Teleop.XR.Editor
             var ghosts = new Transform[world.Objects.Length];
             var ids = new int[world.Objects.Length];
             Color ghostColor = new Color(0.75f, 0.6f, 1f, 0.35f);
-            Material ghostMaterial = LabMaterials.Transparent("Fr3WorldGhost", ghostColor);
+            Material ghostMaterial = LabMaterials.Transparent(materialPrefix + "Ghost", ghostColor);
             for (int i = 0; i < world.Objects.Length; i++)
             {
                 SceneObject o = world.Objects[i];
@@ -201,7 +264,7 @@ namespace Teleop.XR.Editor
                 go.transform.localPosition = new CoreVec((float)o.NominalX, (float)o.NominalY, (float)o.NominalZ).ToUnity();
                 RigidTransformToUnity(o, go.transform);
                 var renderer = go.GetComponent<MeshRenderer>();
-                renderer.sharedMaterial = LabMaterials.Lit("Fr3World_" + o.Name, new Color(o.R, o.G, o.B), 0.4f);
+                renderer.sharedMaterial = LabMaterials.Lit(materialPrefix + "_" + o.Name, new Color(o.R, o.G, o.B), 0.4f);
                 renderer.lightProbeUsage = UnityEngine.Rendering.LightProbeUsage.BlendProbes;
                 objects[i] = go.transform;
                 ids[i] = o.Id;
@@ -216,7 +279,7 @@ namespace Teleop.XR.Editor
 
             var twin = twinRoot.gameObject.AddComponent<SerialChainWorldTwin>();
             var so = new SerializedObject(twin);
-            so.FindProperty("bridge").objectReferenceValue = Object.FindAnyObjectByType<SerialChainOperatorBridge>(FindObjectsInactive.Include);
+            so.FindProperty("bridge").objectReferenceValue = bridge;
             SerializedProperty list = so.FindProperty("objects");
             list.arraySize = objects.Length;
             for (int i = 0; i < objects.Length; i++) list.GetArrayElementAtIndex(i).objectReferenceValue = objects[i];

@@ -87,8 +87,7 @@ namespace Teleop.Bridge
         private SerialChainJointLink _link;
         private WorldState _world;
         private ObjectEditGesture _edit;
-        private bool _editObjects, _hasPendingMove;
-        private ObjectPose _pendingMove;
+        private bool _editObjects;
         private LinkView _view;
         private JointSample[] _commanded;
         private SerialChainTeleop _teleop;
@@ -99,6 +98,8 @@ namespace Teleop.Bridge
         private GrabGesture[] _grab;
         private GrabToggleConfig _toggleConfig;
         private GrabToggle[] _toggle;
+        private MiddleTapConfig _tapConfig;
+        private MiddleTapToggle[] _tap;
         private JointTarget[] _targets;
         private readonly byte[] _buffer = new byte[JointDatagram.MaxBytes];
         private long _sendIntervalTicks, _lastSendTicks = long.MinValue, _lastStepTicks = long.MinValue;
@@ -228,6 +229,12 @@ namespace Teleop.Bridge
         /// <summary>Whether the hands map absolutely (the robot anchored to your body), rather than through the relative clutch.</summary>
         public bool IsAbsolute => _mapping != null;
 
+        // --- the world, pointing and RECORD: the shared OperatorSideControls (docs/adr/0034 decision 7) ---------------------
+
+        private OperatorSideControls _controls;
+
+        public override OperatorSideControls SideControls => _controls;
+
         /// <summary>The world as the headset sees it (docs/adr/0031 amendment 2); null without a scene file.</summary>
         public WorldState World => _world;
 
@@ -238,8 +245,7 @@ namespace Teleop.Bridge
         public bool WorldSceneMismatch => _world != null && _world.SceneMismatch;
 
         /// <summary>Whether NEW LAYOUT can be asked for now: a world is running, motion is off, and no edit is waiting.</summary>
-        public bool CanRequestNewLayout => _link != null && _world != null && _world.HasStatus && _world.Status.Running &&
-                                           !_world.SceneMismatch && _mode != JetRoverMotionMode.On && !_link.WorldEditPending;
+        public bool CanRequestNewLayout => _controls != null && _controls.CanRequestNewLayout;
 
         /// <summary>
         /// Whether EDIT OBJECTS can be on (phase P5): a world is running with this headset's scene file, the robot is off, and the
@@ -272,46 +278,32 @@ namespace Teleop.Bridge
             }
         }
 
-        /// <summary>Whether an object is being dragged (the twin shows its ghost at <see cref="EditPreview"/>).</summary>
-        public bool EditDragging => _editObjects && _edit != null && _edit.IsDragging;
+        public bool EditDragging => _controls != null && _controls.EditDragging;
+        public byte EditDraggedId => _controls != null ? _controls.EditDraggedId : (byte)0;
+        public RigidTransform EditPreview => _controls != null ? _controls.EditPreview : RigidTransform.Identity;
+        public bool CanPointerDrag => _controls != null && _controls.CanPointerDrag;
+        public bool PointerDragging => _controls != null && _controls.PointerDragging;
+        public float PointerHit(Vector3 origin, Vector3 direction) => _controls != null ? _controls.PointerHit(origin, direction) : -1f;
+        public void UpdatePointer(int hand, bool tracked, bool pinched, Vector3 origin, Vector3 direction) => _controls?.UpdatePointer(hand, tracked, pinched, origin, direction);
+        public bool EditPending => _controls != null && _controls.EditPending;
+        public string LastEditOutcome => _controls != null ? _controls.LastEditOutcome : "";
+        public bool RequestNewLayout() => _controls != null && _controls.RequestNewLayout();
 
-        public byte EditDraggedId => EditDragging ? _edit.DraggedId : (byte)0;
-
-        /// <summary>Where the dragged object would go, in the robot's base frame.</summary>
-        public RigidTransform EditPreview => _edit != null ? _edit.Preview : RigidTransform.Identity;
-
-        /// <summary>Whether a move is waiting for RobotHost's answer.</summary>
-        public bool EditPending => _hasPendingMove || (_link != null && _link.WorldEditPending);
-
-        /// <summary>RobotHost's answer to the last edit, in words; empty before any.</summary>
-        public string LastEditOutcome
-        {
-            get
-            {
-                if (_world == null || !_world.HasStatus || _world.Status.EditSequence == 0) return "";
-                switch (_world.Status.EditOutcome)
-                {
-                    case 0: return "done";
-                    case 1: return "refused: an arm is in the way";
-                    case 2: return "refused: another object is there";
-                    case 3: return "refused: off the table";
-                    case 5: return "refused: that one is fixed";
-                    case 6: return "refused: an arm is touching it";
-                    case 7: return "refused: the robot is on";
-                    case 9: return "no answer from the world";
-                    default: return "refused";
-                }
-            }
-        }
-
-        /// <summary>Asks RobotHost for the next seeded layout (only while motion is off); false when it cannot be asked now.</summary>
-        public bool RequestNewLayout()
-        {
-            if (!CanRequestNewLayout) return false;
-            bool sent = _link.RequestWorldEdit(WorldEditOp.NewLayout, default, _clock.NowTicks);
-            if (sent) Debug.Log("[world] NEW LAYOUT requested");
-            return sent;
-        }
+        public RecordingState Recording => _controls?.Recording;
+        public bool RecordingAvailable => _controls != null && _controls.RecordingAvailable;
+        public bool IsRecording => _controls != null && _controls.IsRecording;
+        public bool RecordPending => _controls != null && _controls.RecordPending;
+        public int SelectedScenario => _controls != null ? _controls.SelectedScenario : 0;
+        public int ScenarioCount => _controls != null ? _controls.ScenarioCount : 0;
+        public string TakeScenarioName => _controls != null ? _controls.TakeScenarioName : "";
+        public int TakeNumber => _controls != null ? _controls.TakeNumber : 0;
+        public int TakeSeconds => _controls != null ? _controls.TakeSeconds : 0;
+        public int RecordingFreeGigabytes => _controls != null ? _controls.RecordingFreeGigabytes : 0;
+        public string SelectedScenarioName => _controls != null ? _controls.SelectedScenarioName : "";
+        public void StepScenario(int step) => _controls?.StepScenario(step);
+        public bool ToggleRecording() => _controls != null && _controls.ToggleRecording();
+        public bool DiscardLastTake() => _controls != null && _controls.DiscardLastTake();
+        public string LastRecordOutcome => _controls != null ? _controls.LastRecordOutcome : "";
 
         /// <summary>
         /// Anchors the robot to your body as you stand now (docs/adr/0029 amendments 1 and 4): the headset's position, with
@@ -338,14 +330,18 @@ namespace Teleop.Bridge
         public float SecondsSinceLastFrame => _link != null ? (float)_link.SecondsSinceLastFrame(_clock.NowTicks) : float.PositiveInfinity;
         public string ActivePredictor => _link != null ? _link.Bank.ActiveLabel : "";
 
-        /// <summary>Whether a double curl locks the arm on (true) or the curl must be held (false).</summary>
-        public bool UsesToggle => _toggleConfig != null;
+        /// <summary>Whether a gesture locks the arm on (a middle tap or a double curl), rather than the curl being held.</summary>
+        public bool UsesToggle => _toggleConfig != null || _tapConfig != null;
 
-        /// <summary>Whether this hand's arm is locked on by a double curl (toggle mode); it may still be holding, if the hand is lost.</summary>
+        /// <summary>Whether the lock is a thumb-to-middle tap (docs/adr/0029 amendment 10), rather than a double curl.</summary>
+        public bool UsesMiddleTap => _tapConfig != null;
+
+        /// <summary>Whether this hand's arm is locked on (by a middle tap or a double curl); it may still be holding, if the hand is lost.</summary>
         public bool IsLocked(bool leftHand)
         {
             int arm = leftHand ? _left : _right;
-            return _toggle != null && arm >= 0 && _toggle[arm].IsLocked;
+            if (arm < 0) return false;
+            return _tapConfig != null ? _tap[arm].IsLocked : _toggle != null && _toggle[arm].IsLocked;
         }
 
         public DuoArmState ArmState(bool leftHand)
@@ -367,10 +363,12 @@ namespace Teleop.Bridge
             GrabGesture.CurlRatio(middleTip, middleKnuckle, ringTip, ringKnuckle, littleTip, littleKnuckle);
 
         /// <summary>
-        /// One hand's frame (world space): whether it is tracked, its palm's pose, its curl ratio and its thumb-index
-        /// gap. A held grab engages that hand's arm, or moves it; letting go, or losing tracking, holds it.
+        /// One hand's frame (world space): whether it is tracked, its palm's pose, its curl ratio, its thumb-index gap and its
+        /// thumb-middle gap (NaN when unknown). A held grab, or the lock, engages that hand's arm, or moves it; letting go, or
+        /// losing tracking, holds it.
         /// </summary>
-        public void SetHand(bool leftHand, bool tracked, Vector3 palmPosition, Quaternion palmRotation, float curlRatio, float pinchMeters)
+        public void SetHand(bool leftHand, bool tracked, Vector3 palmPosition, Quaternion palmRotation, float curlRatio, float pinchMeters,
+            float middleMeters = float.NaN)
         {
             int arm = leftHand ? _left : _right;
             if (_teleop == null || arm < 0) return;
@@ -384,12 +382,20 @@ namespace Teleop.Bridge
             {
                 // EDIT OBJECTS: the curl held grabs an object, never the arm (the double-curl lock is not read meanwhile).
                 if (_teleop.IsEngaged(arm)) _teleop.Release(arm);
+                _mapping?.ClearAnchor(arm); // the EDIT OBJECTS cursor is where the hand maps by itself
                 bool mapped = tracked && _mapping != null && _mapping.IsCentred;
                 _edit.Update(leftHand ? 0 : 1, mapped, held, mapped ? _mapping.Map(arm, palm) : RigidTransform.Identity, _world);
                 return;
             }
 
-            if (_toggleConfig != null)
+            if (_tapConfig != null)
+            {
+                // A thumb-to-middle tap locks the arm on and another unlocks it (docs/adr/0029 amendment 10); while locked it
+                // follows the hand whatever the fingers do, and holds while the hand is lost.
+                bool locked = _tap[arm].Update(_tapConfig, tracked, middleMeters, pinchMeters, _clock.NowTicks / (double)_clock.TicksPerSecond);
+                held = locked && tracked;
+            }
+            else if (_toggleConfig != null)
             {
                 // A double curl locks the arm on and another unlocks it; while locked it follows the hand whether or not
                 // tracking reads the hand as curled, and holds while the hand is lost.
@@ -431,6 +437,7 @@ namespace Teleop.Bridge
             if (!tracked || !_mapping.IsCentred)
             {
                 if (_teleop.IsEngaged(arm)) _teleop.Release(arm);
+                _mapping.ClearAnchor(arm);
                 return;
             }
 
@@ -438,14 +445,22 @@ namespace Teleop.Bridge
             {
                 // An open hand moves nothing, its marker included: the marker stays on the arm until a grab (the user's call).
                 if (_teleop.IsEngaged(arm)) _teleop.Release(arm);
+                _mapping.ClearAnchor(arm);
                 return;
             }
 
+            // Position relative (HandPosition "relative", docs/adr/0029 amendment 9): the lock anchors the hand to where the tool
+            // is, so the arm stays put and then moves with the hand; the gripper turns to face the palm's way over the slide.
+            if (!_teleop.IsEngaged(arm) && _teleop.HasPose) _mapping.Anchor(arm, palm, _teleop.Tool(arm));
             RigidTransform target = _mapping.Map(arm, palm);
 
             if (!_teleop.IsEngaged(arm))
             {
-                if (!_teleop.EngageAt(arm, target)) return;
+                if (!_teleop.EngageAt(arm, target))
+                {
+                    _mapping.ClearAnchor(arm);
+                    return;
+                }
             }
             else
             {
@@ -481,7 +496,12 @@ namespace Teleop.Bridge
                 _mapping = new BodyAnchoredMapping(_profile, BodyAnchoredMapping.NeutralTools(_profile), new BodyMappingOptions
                 {
                     PositionScale = _config.PositionScale, NeutralForward = _config.NeutralForward, NeutralSide = _config.NeutralSide, NeutralDown = _config.NeutralDown,
+                    RelativePosition = _config.HandPosition == "relative",
                 });
+                if (_config.HandPosition != "relative" && _config.HandPosition != "absolute")
+                {
+                    throw new InvalidOperationException($"fr3_connection: HandPosition '{_config.HandPosition}' is neither 'relative' nor 'absolute'");
+                }
             }
             else if (_config.HandMapping != "relative")
             {
@@ -505,14 +525,24 @@ namespace Teleop.Bridge
             _handFilter = new HandPoseFilter[_teleop.ArmCount];
             _grab = new GrabGesture[_teleop.ArmCount];
             _toggle = new GrabToggle[_teleop.ArmCount];
-            if (_config.GrabMode == "toggle")
+            _tap = new MiddleTapToggle[_teleop.ArmCount];
+            if (_config.GrabMode == "middle-tap")
+            {
+                _tapConfig = new MiddleTapConfig
+                {
+                    TouchMeters = _config.MiddleTapTouchMeters, ReleaseMeters = _config.MiddleTapReleaseMeters,
+                    IndexApartMeters = _config.MiddleTapIndexApartMeters, MinTouchSeconds = _config.MiddleTapMinSeconds,
+                };
+                if (_tapConfig.Validate() is string badTap) throw new InvalidOperationException("fr3_connection: " + badTap);
+            }
+            else if (_config.GrabMode == "toggle")
             {
                 _toggleConfig = new GrabToggleConfig { MinPressSeconds = _config.MinPressSeconds, DoubleClickSeconds = _config.DoubleClickSeconds };
                 if (_toggleConfig.Validate() is string badToggle) throw new InvalidOperationException("fr3_connection: " + badToggle);
             }
             else if (_config.GrabMode != "hold")
             {
-                throw new InvalidOperationException($"fr3_connection: GrabMode '{_config.GrabMode}' is neither 'toggle' nor 'hold'");
+                throw new InvalidOperationException($"fr3_connection: GrabMode '{_config.GrabMode}' is not 'middle-tap', 'toggle' or 'hold'");
             }
             _targets = new JointTarget[_teleop.MotorCount];
 
@@ -526,9 +556,14 @@ namespace Teleop.Bridge
                 maxAcceptableRttTicks: (long)(_config.MaxAcceptableRttMs / 1000.0 * _clock.TicksPerSecond),
                 outlierRttMultiple: _config.OutlierRttMultiple, minSamplesBeforeTrusted: _config.MinSamplesBeforeTrusted);
             List<JointPredictorPreset> presets = Presets(out int active, out string[] descriptions);
-            _world = LoadWorld(_profile);
+            _world = LoadWorld(SceneResource, _profile.Name);
             _link = new SerialChainJointLink(_transport, _clock, _profile, clockSync, presets, active, OperatorClientKind.Headset, _world);
             _edit = _world != null ? new ObjectEditGesture(_world.Scene) : null;
+            _controls = new OperatorSideControls(_link.Side, _clock, () => robotRoot != null ? robotRoot : transform, () => _mode == JetRoverMotionMode.On)
+            {
+                OtherDragOn = () => _editObjects,
+                OtherDrag = () => (_editObjects && _edit != null && _edit.IsDragging, _edit != null ? _edit.DraggedId : (byte)0, _edit != null ? _edit.Preview : RigidTransform.Identity),
+            };
             _view = new LinkView(_link, descriptions, _clock);
             _commanded = new JointSample[_teleop.MotorCount];
 
@@ -561,19 +596,11 @@ namespace Teleop.Bridge
             if (_edit != null)
             {
                 if (_editObjects && !CanEditObjects) EditObjects = false; // the world stopped, or the scene changed
-                if (_edit.TryTakeRequest(out ObjectPose move))
-                {
-                    _pendingMove = move;
-                    _hasPendingMove = true;
-                }
-
-                // Sent once nothing else is waiting; the link re-sends it until RobotHost echoes it.
-                if (_hasPendingMove && !_link.WorldEditPending && _link.RequestWorldEdit(WorldEditOp.Move, _pendingMove, now))
-                {
-                    _hasPendingMove = false;
-                    Debug.Log($"[world] move {_pendingMove.Id} to ({_pendingMove.X:0.000}, {_pendingMove.Y:0.000}) requested");
-                }
+                if (_edit.TryTakeRequest(out ObjectPose move)) _controls.QueueMove(move);
             }
+
+            // Sent once nothing else is waiting; the link re-sends it until RobotHost echoes it.
+            _controls.Update(now);
 
             if (!_teleop.HasPose && _link.FramesReceived > 0) _teleop.TryTakePose(_link.Measured);
             if (motionEnabledAtStart && _mode != JetRoverMotionMode.On && _teleop.HasPose) MotionEnabled = true;
@@ -678,6 +705,15 @@ namespace Teleop.Bridge
             return new RigidTransform(p.X, p.Y, p.Z, q.W, q.X, q.Y, q.Z);
         }
 
+        /// <summary>A world-space ray in the robot's root frame, Core's convention, its direction a unit vector.</summary>
+        private void RootRay(Vector3 origin, Vector3 direction, out CoreVec o, out CoreVec d)
+        {
+            Transform root = robotRoot != null ? robotRoot : transform;
+            o = root.InverseTransformPoint(origin).ToCore();
+            CoreVec far = root.InverseTransformPoint(origin + direction).ToCore();
+            d = CoreVec.Normalize(far - o);
+        }
+
         /// <summary>A world-space hand pose in the robot's root frame, Core's convention.</summary>
         private RigidTransform ToRoot(Vector3 position, Quaternion rotation)
         {
@@ -693,6 +729,7 @@ namespace Teleop.Bridge
             {
                 _grab[a].Reset();
                 _toggle[a].Reset();
+                _tap[a].Reset();
             }
         }
 
@@ -777,18 +814,19 @@ namespace Teleop.Bridge
         }
 
         /// <summary>
-        /// The scene file (docs/adr/0031 amendment 2): <c>persistentDataPath/fr3_scene.json</c> when pushed, else the copy in Resources.
-        /// Its sha256 is compared with the one RobotHost reports. Null (no world) when neither loads.
+        /// The scene file (docs/adr/0031 amendment 2): <c>persistentDataPath/&lt;resource&gt;.json</c> when pushed, else the copy in
+        /// Resources. Its sha256 is compared with the one RobotHost reports. Null (no world) when neither loads. The JetRover's bridge
+        /// loads its own (<c>jetrover_scene</c>, docs/adr/0034) through this too.
         /// </summary>
-        private static WorldState LoadWorld(SerialChainProfile profile)
+        internal static WorldState LoadWorld(string resource, string profileName)
         {
             try
             {
-                string pushed = System.IO.Path.Combine(Application.persistentDataPath, SceneResource + ".json");
-                byte[] bytes = System.IO.File.Exists(pushed) ? System.IO.File.ReadAllBytes(pushed) : Resources.Load<TextAsset>(SceneResource)?.bytes;
+                string pushed = System.IO.Path.Combine(Application.persistentDataPath, resource + ".json");
+                byte[] bytes = System.IO.File.Exists(pushed) ? System.IO.File.ReadAllBytes(pushed) : Resources.Load<TextAsset>(resource)?.bytes;
                 if (bytes == null) return null;
                 WorldScene scene = JsonUtility.FromJson<SceneDocument>(System.Text.Encoding.UTF8.GetString(bytes)).ToScene();
-                if (scene.RobotProfile != profile.Name) throw new FormatException($"the scene is for '{scene.RobotProfile}', not '{profile.Name}'");
+                if (scene.RobotProfile != profileName) throw new FormatException($"the scene is for '{scene.RobotProfile}', not '{profileName}'");
                 using (var sha = System.Security.Cryptography.SHA256.Create())
                 {
                     Debug.Log($"[world] scene '{scene.Name}': {scene.Objects.Length} objects{(System.IO.File.Exists(pushed) ? " (pushed)" : "")}");

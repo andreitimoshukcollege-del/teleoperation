@@ -216,6 +216,19 @@ namespace Teleop.RobotHost.Recording
             "WE|" + I(t) + "|" + sequence.ToString(CultureInfo.InvariantCulture) + "|" + EditName(op) + "|" + pose.Id.ToString(CultureInfo.InvariantCulture) +
             "|" + Pose(pose) + "|" + (outcome.HasValue ? OutcomeName(outcome.Value) : "pending");
 
+        /// <summary><c>WZ|t|revision|id:scale;...</c>: every object's size factor on the scene file's size (docs/adr/0034 amendment 6), at the start and on change.</summary>
+        public static string WorldSizes(long t, uint revision, ReadOnlySpan<byte> ids, ReadOnlySpan<float> scales)
+        {
+            var b = new StringBuilder("WZ|").Append(I(t)).Append('|').Append(revision.ToString(CultureInfo.InvariantCulture)).Append('|');
+            for (int i = 0; i < ids.Length; i++)
+            {
+                if (i > 0) b.Append(';');
+                b.Append(ids[i].ToString(CultureInfo.InvariantCulture)).Append(':').Append(scales[i].ToString("0.####", CultureInfo.InvariantCulture));
+            }
+
+            return b.ToString();
+        }
+
         /// <summary><c>WC|t|sensed|arm:link:object:forceN;...</c>: contacts between the arms and objects (object 0 is the table); empty when they end.</summary>
         public static string WorldContacts(long t, long sensed, ReadOnlySpan<ArmServerContact> contacts)
         {
@@ -238,6 +251,7 @@ namespace Teleop.RobotHost.Recording
             PlaceCause.Layout => "layout",
             PlaceCause.Headset => "headset",
             PlaceCause.Reset => "reset",
+            PlaceCause.Resize => "resize",
             _ => "?",
         };
 
@@ -247,6 +261,7 @@ namespace Teleop.RobotHost.Recording
             WorldEditOp.NewLayout => "new-layout",
             WorldEditOp.ResetObject => "reset-object",
             WorldEditOp.ResetLayout => "reset-layout",
+            WorldEditOp.Resize => "resize",
             _ => "?",
         };
 

@@ -227,6 +227,28 @@ Contents:
   - The display's stand and bezel are dynamic, lit by light probes, so they move with it. Its
     position is not saved between sessions.
 
+- **The JetRover in Isaac** (docs/adr/0034 amendment 5): `just isaac-jetrover-host` on the GPU machine stands in for the
+  robot, and `just push-galaxy-config <GPU machine> true false` points the app at it with discovery off, so it never finds
+  the real JetRover instead. `XrJetRoverWorldSetup` (`just unity-world-jetrover-xr`, after the scene file changes) adds what
+  the FR3 scene has, replacing only its own roots:
+  - **The world twin:** `Resources/jetrover_scene.json`'s objects (a byte-identical copy of `core/Scenes/jetrover-bench.json`),
+    at the arm rig's `BaseAnchor`, each shown once Isaac reports it, through the joint link's disturbance and ADDED DELAY.
+    The real robot sends no world, so with it the twin stays empty and NEW LAYOUT reads `waiting for the world`.
+  - **RECORD, DISCARD LAST, < PREV, NEXT > and NEW LAYOUT** on the bench's right wing, behind the training course: they
+    work as in the FR3 scene (RECORD with the robot on or off, NEW LAYOUT only off).
+  - **SIZE − / SIZE +** at the back of that group (docs/adr/0034 amendment 6), robot off: pinch an object with the pointer to
+    choose it, then each press makes it 1.25× smaller or larger, from 0.51× to 5.96× its scene-file size; one that would reach past the table's edge is moved in until it fits. Isaac refuses a size
+    that would reach an arm or another object, or leave the table; the label says the object and its size. The FR3 scene has
+    the same pair behind EDIT OBJECTS.
+  - **The hand pointer** (`Fr3HandPointer`), robot off only: a pinch on a button presses it, on an object drags it, on a
+    display moves it. **A pinch the pointer owns never engages the clutch** (`HandClutchDriver.handPointer`), and the
+    pointer, not the clutch, moves the displays. With the robot on, the pointer is off and the clutch is as described above.
+  - **Two more displays** for Isaac's third-person cameras, `3RD PERSON LEFT (REC)` on the operator's left (6008 → local
+    6015) and `3RD PERSON RIGHT (REC)` above the wrist camera's display (6009 → 6016), at 15 fps. All three displays float
+    and move up and down too. The wrist display keeps the robot camera's feed (6003 → 6004), Isaac's wrist camera here.
+  - `just unity-check-xr` checks the twin's ids, the buttons, the pointer, its displays and the clutch's reference to it,
+    and the feeds' ports. None of these moves the robot.
+
 **These are safety settings.** `just unity-check-xr` fails, and `just build-galaxy` refuses to
 build, if any of them changes:
 
@@ -283,7 +305,11 @@ lighting.
 **The same lab and the same controls as the JetRover's** (docs/adr/0029 amendment):
 - **Built by the same code:** `LabRoom`, `LabDisplay`, `LabLighting`, and `XrControlSetup`'s console,
   slider, button and switch builders, all through `OperatorBridgeBase`.
-- **The bench is deeper,** and the FR3 Duo stands at its back, so its arms clear the console panel.
+- **The robot stands just ahead of you** (docs/adr/0031 amendment 4): its base 0.4 m into a 0.6 m bench, about 0.5 m from
+  your eye, so you look over its shoulder. The controls are moved out of the arms' way (`XrFr3SceneBuilder.ArrangeControls`):
+  power, pause, the switches and ADDED DELAY on the front-left; the predictor row along the front; the network sliders on
+  the front-right; RECENTRE, NEW LAYOUT and EDIT OBJECTS one behind another on the right wing; the console's panel off the
+  bench's right side; the RECORD group on the left wing behind power.
 - **The FR3 lab has its own mesh library,** `Generated/Fr3LabMeshes.asset` (LFS). A lab build deletes
   the meshes it did not write, so sharing the JetRover's would delete that robot's.
 - **No arm-speed slider and no training course:** neither applies to the FR3.
@@ -301,12 +327,17 @@ lighting.
 
 **Driving it.** Each hand drives its own arm, and the robot is anchored to your body (absolute):
 
-- **Lock an arm on by folding the middle, ring and little fingers twice quickly,** like a double-click.
-  The status line says `LOCKED`.
-  - **While locked:** the arm follows that hand whatever your fingers do. Where the hand is, relative
-    to your body, is where the gripper goes; a flat palm pointing forward points the gripper forward.
-  - **Unlocking:** fold twice again; the arm stays where it is.
-  - **When you lock:** the arm slides to your hand over about a second rather than lunging.
+- **Lock an arm on by tapping that hand's thumb on its middle fingertip** (docs/adr/0029 amendment 10), with the index
+  finger apart. The status line says `LOCKED` (and `free · tap thumb to middle finger` while it is not). A touch while
+  the index is on the thumb, as when closing the gripper, never counts. `GrabMode: "toggle"` in the config brings back
+  the double fold of the middle, ring and little fingers; `"hold"` makes the arm follow only while the curl is held.
+  - **While locked:** the arm follows that hand whatever your fingers do. Its position moves by how far
+    the hand moves from where you locked, and the gripper faces the way your palm faces, relative to your
+    body: a flat palm pointing forward points the gripper forward (docs/adr/0029 amendment 9;
+    `HandPosition: "absolute"` in the config instead puts the gripper where the hand is relative to your body).
+  - **Unlocking:** tap again; the arm stays where it is.
+  - **When you lock:** the arm stays where it is and the gripper turns to your palm's orientation over about a
+    second rather than snapping.
   - **An open hand moves nothing,** its marker included.
 - **While locked, the thumb-index gap is that arm's gripper:** 8 cm or more is open, 1.5 cm or less is
   closed.
@@ -314,7 +345,7 @@ lighting.
   hand returns.
 - **The neutral pose:** hands about 30 cm ahead of your face, 40 cm below it and 20 cm to each side put the
   grippers 55 cm ahead of and 30 cm above each robot shoulder, pointing forward.
-- **RECENTRE** (blue, the bench's front-right) re-anchors the robot to where you stand and face.
+- **RECENTRE** (blue, the front of the right wing) re-anchors the robot to where you stand and face.
 - **When an arm can't follow where you hold your hand,** after about a third of a second it swings to another pose of the arm
   that reaches it (docs/adr/0029 amendment 8). A wrist on its limit may turn most of a revolution the other way. It moves at 75%
   of its joint speeds, through checked poses. Hold still until it gets there. While your hand keeps moving it follows as before.
@@ -342,8 +373,10 @@ lighting.
   - **Until the first world frame,** the obstacles are hidden.
   - **SCENE MISMATCH:** when RobotHost runs another scene file (a different sha256), they stay hidden and the NEW LAYOUT
     button says so.
-- **NEW LAYOUT** (orange, left of RECENTRE) asks RobotHost for the next seeded layout. It works only while the robot is off.
-- **EDIT OBJECTS** (purple, right of RECENTRE; docs/adr/0031 amendment 3) moves objects by hand while the robot is off.
+- **The objects are movable in Isaac** (docs/adr/0031 amendment 4): an arm can push or knock them over, and the twin shows
+  them lying where they fell. NEW LAYOUT, EDIT OBJECTS or a pointer click stands one back up.
+- **NEW LAYOUT** (orange, behind RECENTRE) asks RobotHost for the next seeded layout. It works only while the robot is off.
+- **EDIT OBJECTS** (purple, behind NEW LAYOUT; docs/adr/0031 amendment 3) moves objects by hand while the robot is off.
   - **While it is on**, the arms do not follow the hands.
   - **Grabbing:** curl a hand and hold it, with the hand's marker (where the gripper would go) by an object, to grab the
     nearest movable one.
@@ -352,14 +385,29 @@ lighting.
     frames show the move.
   - **Refusals:** RobotHost refuses a spot on an arm or another object, and the label says so.
   - **Turning it off:** press again, or switch the robot on.
-- **Two displays** show Isaac's cameras, outside the joint link's disturbance:
-  - **`HEAD CAM (REC)`,** on the right, is the camera that is recorded. Its feed comes from port 6003, received locally on 6004.
-  - **`3RD PERSON`,** on the left, mirrored, is the view from in front of the robot. Its feed comes from 6007, received on 6014.
+- **Pointing, while the robot is off** (`Fr3HandPointer`, docs/adr/0031 amendment 5): each hand casts a ray from about its
+  shoulder through its pinch point.
+  - **Pinch on a button** to press it, as a fingertip would: any cap a `FingertipPress` watches, power included.
+  - **Pinch on an object** to drag it over the table; let go and RobotHost is asked to put it there (refusals as EDIT
+    OBJECTS). A click on a fallen object stands it up.
+  - **With the robot on** the rays are hidden and pinches drive nothing but the arms; fingertips still press buttons. A ray
+    nearer than 15 cm to what it hits is hidden too.
+- **Scenario recording** (docs/adr/0033), the left wing behind power: `< PREV` / `NEXT >` choose the scenario (NEXT names
+  it), **RECORD** starts a take and reads `STOP ● mm:ss` while recording, **DISCARD LAST** sets the last take aside. They
+  work with the robot on or off, against `just isaac-host` (which passes `--scenarios`); beside `just fr3-sim-host` they
+  say RobotHost records no scenarios.
+- **Four displays** show Isaac's four cameras (docs/adr/0032 amendments 3 and 4), outside the joint link's disturbance:
+  - **`RIGHT WRIST (REC)`,** on the right: the right hand's camera, from port 6003, received locally on 6004.
+  - **`LEFT WRIST (REC)`,** on the left, mirrored: the left hand's, from 6007, received on 6014.
+  - **`3RD PERSON RIGHT (REC)` / `3RD PERSON LEFT (REC)`,** stacked above those two: from 6009 / 6008, received on 6016 /
+    6015, at 15 fps so four feeds cost the decoder about three.
+  - **Movable, while the robot is off:** they float (no floor stands); point at one, pinch and drag it anywhere, up and
+    down too. It keeps facing you. Positions are not saved between launches.
   - **Where they connect:** each `CameraFeedBridge` asks `fr3_connection`'s `RemoteHost`, which is `just isaac-host`'s
     renderer. Beside `just fr3-sim-host` there is no renderer, and the strips say NO SIGNAL.
-  - **The log** reports each feed's decode time (`[camera] HEAD CAM (REC) ...`).
-- **`just unity-check-fr3-xr`** checks the twin's ids against the file, the table within 1 mm, the button, and both feeds'
-  ports and wiring. None of these are safety settings: none of them moves the robot.
+  - **The log** reports each feed's decode time (`[camera] RIGHT WRIST (REC) ...`).
+- **`just unity-check-fr3-xr`** checks the twin's ids against the file, the table within 1 mm, the buttons, both feeds'
+  ports and wiring (all four), the RECORD group, and the pointer with the four displays it moves. None of these are safety settings: none of them moves the robot.
 
 **Safety settings.** `just unity-check-fr3-xr` fails, and `just build-galaxy-fr3` refuses to build, if
 any of these changes:

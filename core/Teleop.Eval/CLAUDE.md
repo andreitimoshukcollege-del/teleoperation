@@ -14,7 +14,7 @@ wall clock, do real file I/O, and take NuGet dependencies (`YamlDotNet`, so far)
 | `Verification/` | `VerifyCommand`, `AuditCommand` — Gate 3's two real checks |
 | `Sweep/` | `ExperimentConfig`, `NetworkProfileCatalog`, `TraceFile`, `SweepCommand`, `ManifestWriter` — Gate 5's sweep |
 | `Tooling/` | `GoldenSessionBuilder`, `SyntheticTraceBuilder` — deterministic generators for committed fixtures, never hand-authored data |
-| `Net/` | `UdpTransport` — a real, socket-backed `ITransport` for this host's side of a cross-machine link. A deliberate byte-for-byte duplicate of `Teleop.RobotHost`'s own copy, same precedent as `Time/MonotonicClock` |
+| `Net/` | `UdpTransport` — a real, socket-backed `ITransport` for this host's side of a cross-machine link. A deliberate byte-for-byte duplicate of `Teleop.RobotHost`'s own copy, same precedent as `Time/MonotonicClock`. `UdpRelayCommand` — `udp-relay` |
 | `ClockSyncCheck/` | `ClockSyncCheckCommand`, `ClockSyncCheckArgs` — Phase 3's real cross-machine `ClockSync` diagnostic |
 | `MoveArm/` | `MoveArmCommand`, `MoveArmArgs` — general-purpose "move the real JetRover arm to a Cartesian target" operator tool, `just move-arm x y z` |
 | `ImportUrdf/` | `ImportUrdfCommand`, `UrdfModel`, `SerialChainProfileJson` — `import-urdf`: a URDF to a serial-chain robot profile (docs/adr/0026), `just import-fr3-profile` |
@@ -38,6 +38,7 @@ wall clock, do real file I/O, and take NuGet dependencies (`YamlDotNet`, so far)
 | `chain-ik-stress` | real, not one of the five documented subcommands — long synthetic FR3 Duo teleop sessions, headless (docs/adr/0029 amendment 8): a scripted operator through `BodyAnchoredMapping` and `SerialChainTeleop` at 90 Hz; reports off-target time on reachable targets, settle times after the hand stops, the recovery's work, and stuck / wrong-way episodes, and exits 1 on any. Touches no robot. `just fr3-ik-stress` |
 | `import-urdf` | real, not one of the five documented subcommands — writes a serial-chain robot profile from a URDF (docs/adr/0026 decision 3); `just import-fr3-profile` regenerates `core/RobotProfiles/fr3-duo.json`, and `ImportUrdfCommandTests` requires the committed bytes. Touches no robot |
 | `discover-robot` | real, not one of the five documented subcommands — finds the robot as the headset does at start (docs/adr/0022), with the same `RobotAddressResolver`; `just robot-discover`. Sends only discovery queries |
+| `udp-relay` | real, not one of the five documented subcommands — forwards a headset's UDP (the joint, Cartesian and camera ports) from this machine to a host it can reach and the headset cannot: Isaac's RobotHost on the lab's GPU machine over this PC's VPN, for a headset on this PC's Wi-Fi. Bytes pass unchanged; a new sender on a port takes it over; Enter stops it. Adds this PC's hop to every delay. `just isaac-relay` |
 | `replay` | stub, exits 70 (`EX_SOFTWARE`) — not built yet |
 | `compare` | stub, exits 70 — not built yet |
 

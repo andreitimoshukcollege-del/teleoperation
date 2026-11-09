@@ -84,7 +84,9 @@ class ServoSim(Protocol):
 
     dt: float
 
-    def reset(self, pulses: Dict[int, float], params: Params) -> None: ...
+    def reset(self, pulses: Dict[int, float], params: Params) -> None:
+        """Every motor at ``pulses``, at rest, torque on, with ``params`` (the sim applies ``speed_scale`` to each command)."""
+        ...
 
     def command(self, motor: int, pulse: float, pps: float) -> None: ...
 
@@ -178,7 +180,7 @@ class Replayer:
                 else:
                     sent = (todo[ti][0] - t0) / tps
                     for m, pulse, pps in payload:
-                        sim.command(m, self.model.clamp(pulse), pps * params.speed_scale)
+                        sim.command(m, self.model.clamp(pulse), pps)  # the sim applies params.speed_scale, as the live bridge does
                         if m in last_target and abs(pulse - last_target[m]) > 0.5:
                             last_target[m] = pulse
                             changed_at[m] = sent

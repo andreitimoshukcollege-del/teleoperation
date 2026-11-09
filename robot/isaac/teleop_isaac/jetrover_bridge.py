@@ -11,8 +11,10 @@ paced to the wall clock:
 
 - each servo's own setpoint ramps toward its target over ``|delta| / pulses_per_second`` (``servo.TimedSetpoint``), and the
   joint's PhysX position drive follows it, no harder than the servo's stall torque (decision 3);
-- the arm feels gravity, so it sags and slows under load, and with torque off the drives go limp and it falls, as the real
-  one does when it relaxes;
+- the arm feels gravity, so it sags and slows under load; with torque off the servos' gearboxes hold it where it is and
+  commands are ignored until torque comes back, as the real arm's readings show (docs/adr/0034 amendment 11; ``--relaxed
+  fall`` instead lets it fall limp);
+- the drives, torque limits and servo speed are J3's fit to the real arm (amendment 11; ``just jetrover-sim-fit``);
 - PhysX steps once.
 
 Every 20 ms a cycle reads motors 1 to 5 back to back in whole pulses, as the real driver does, and every 20 ms the newest
@@ -51,8 +53,14 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     a.add_argument("--client-socket", default="", help="RobotHost's --local-relay-socket, where feedback goes every 50 ms whether or not "
                                                      "commands come, as the real relay sends it (default: --socket plus .robothost)")
     a.add_argument("--work", default=os.path.expanduser("~/isaacsim/work"), help="where the URDF's USD conversion is kept")
-    a.add_argument("--stiffness", type=float, default=60.0, help="joint drive stiffness, Nm/rad: a servo holding its setpoint")
-    a.add_argument("--damping", type=float, default=1.5, help="joint drive damping, Nm s/rad")
+    # J3's fit to the real arm (docs/adr/0034 amendment 11): held-out tracking p95 12.7 -> 5.3 deg against 60 / 1.5 / 1 / 1.
+    a.add_argument("--stiffness", type=float, default=21.213, help="joint drive stiffness, Nm/rad: a servo holding its setpoint")
+    a.add_argument("--damping", type=float, default=4.2426, help="joint drive damping, Nm s/rad")
+    a.add_argument("--effort-scale", type=float, default=1.5, help="times each servo's stall torque: the drives' force limit")
+    a.add_argument("--speed-scale", type=float, default=1.5625, help="times each command's pulses per second: how fast the real "
+                                                                     "servos ramp, against what RobotHost asks")
+    a.add_argument("--relaxed", choices=("hold", "fall"), default="hold", help="torque off: the gearboxes hold the arm (the real "
+                                                                               "arm's readings), or the drives go limp and it falls")
     a.add_argument("--finger-stiffness", type=float, default=2000.0, help="finger drive stiffness, N/m")
     a.add_argument("--finger-damping", type=float, default=40.0, help="finger drive damping, N s/m")
     a.add_argument("--limp-damping", type=float, default=0.02, help="joint damping with torque off (Nm s/rad): a relaxed servo's gearbox")
@@ -175,10 +183,6 @@ def main(argv: Optional[List[str]] = None) -> int:
             raise RuntimeError(f"Isaac's articulation lacks the sidecar's joints: {', '.join(missing)} (has {', '.join(names)})")
         n = len(names)
         finger = np.array([("finger" in nm or nm.startswith("gripper")) for nm in names])
-        kp_on = np.where(finger, args.finger_stiffness, args.stiffness).reshape(1, -1)
-        kd_on = np.where(finger, args.finger_damping, args.damping).reshape(1, -1)
-        kp_off = np.zeros((1, n))
-        kd_off = np.where(finger, args.finger_damping, args.limp_damping).reshape(1, -1)
         efforts = np.asarray(art.get_dof_max_efforts().numpy()).reshape(-1).copy()
         for m in model.motors.values():
             if not m.is_gripper:
@@ -202,13 +206,20 @@ def main(argv: Optional[List[str]] = None) -> int:
         apply_setpoints()
         art.set_dof_positions(target)
         art.set_dof_position_targets(target)
-        torque = not args.torque_off_at_start
-        art.set_dof_gains(kp_on if torque else kp_off, kd_on if torque else kd_off)
+        # One servo arm for the live loop and the replay (J3): what was fitted is what runs.
+        from . import simfit
+        arm = IsaacServoSim(args, model, art, setpoints, index, finger, efforts, target, apply_setpoints, np, SimulationManager)
+        live = simfit.Params(stiffness=args.stiffness, damping=args.damping, effort_scale=args.effort_scale, speed_scale=args.speed_scale)
+        arm.reset({mid: sp.pulse for mid, sp in setpoints.items()}, live)
+        if args.torque_off_at_start:
+            arm.torque(False)
         if args.replay:
-            return replay_and_fit(args, model, art, setpoints, index, finger, efforts, target, apply_setpoints, np, SimulationManager)
+            return replay_and_fit(args, model, arm, live)
+        torque = arm.on
 
         description = (f"Isaac Sim {version('isaacsim')}, PhysX {1 / args.dt:.0f} Hz on CPU, servo drives {args.stiffness:g}/{args.damping:g} "
-                       f"within {'/'.join(f'{m.stall_torque:g}' for m in model.motors.values() if not m.is_gripper)} Nm, arm gravity on, "
+                       f"within {args.effort_scale:g} x {'/'.join(f'{m.stall_torque:g}' for m in model.motors.values() if not m.is_gripper)} Nm, "
+                       f"speed x{args.speed_scale:g}, relaxed: {args.relaxed}, arm gravity on, "
                        f"timed-ramp setpoints, feedback motors {','.join(str(x) for x in feedback.order)} read back to back ({feedback.read_seconds * 1000:.1f} ms each) "
                        f"every {feedback.cycle_seconds * 1000:.0f} ms, sent every {model.feedback_seconds * 1000:.0f} ms")
         if os.path.exists(args.socket):
@@ -281,19 +292,12 @@ def main(argv: Optional[List[str]] = None) -> int:
                         torques += 1
                         if payload != torque:
                             torque = payload
-                            if torque:
-                                # Back on, a servo holds where the arm lies now.
-                                q = np.asarray(art.get_dof_positions().numpy()).reshape(-1)
-                                for mid, sp in setpoints.items():
-                                    m = model.motors[mid]
-                                    sp.hold(model.pulse(mid, q[index[m.fingers[0] if m.is_gripper else m.joint]]))
-                            art.set_dof_gains(kp_on if torque else kp_off, kd_on if torque else kd_off)
+                            arm.torque(torque)
                             print(f"[jetrover] torque {'on' if torque else 'off'}", flush=True)
                     else:
                         commands += 1
                         for mid, pulse, pps in payload:
-                            if mid in setpoints:
-                                setpoints[mid].move(model.clamp(pulse), pps)
+                            arm.command(mid, model.clamp(pulse), pps)
 
             while wsock is not None:
                 try:
@@ -338,13 +342,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                         except OSError:
                             pass
 
-            seconds = args.dt
-            for sp in setpoints.values():
-                sp.step(seconds)
-            if torque:
-                apply_setpoints()
-                art.set_dof_position_targets(target)
-            SimulationManager.step(steps=1)
+            arm.step()
             steps += 1
             now_s = steps * args.dt
 
@@ -434,6 +432,8 @@ class IsaacServoSim:
         self.on = True
         self.q = None
         self.kp_on = self.kd_on = None
+        self.speed_scale = 1.0
+        self.hold_relaxed = getattr(args, "relaxed", "hold") == "hold"
 
     def _q(self):
         if self.q is None:
@@ -447,6 +447,7 @@ class IsaacServoSim:
         self.kd_on = np.where(self.finger, self.args.finger_damping, params.damping).reshape(1, -1)
         self.kp_off = np.zeros((1, n))
         self.kd_off = np.where(self.finger, self.args.finger_damping, self.args.limp_damping).reshape(1, -1)
+        self.speed_scale = params.speed_scale
         e = self.efforts.copy()
         for m in self.model.motors.values():
             if not m.is_gripper:
@@ -463,24 +464,28 @@ class IsaacServoSim:
         self.q = None
 
     def command(self, motor, pulse, pps) -> None:
-        if motor in self.setpoints:
-            self.setpoints[motor].move(pulse, pps)
+        """A relay target, ramped at its pulses per second times the fitted speed scale; ignored while relaxed and held, as a
+        servo with torque off ignores its position."""
+        if motor in self.setpoints and (self.on or not self.hold_relaxed):
+            self.setpoints[motor].move(pulse, pps * self.speed_scale)
 
     def torque(self, on) -> None:
+        """Torque on: a servo holds where the arm lies now. Off: held, the gearboxes keep the arm there (the drives stay on at
+        the place it was, commands ignored); falling, the drives go limp."""
         if on == self.on:
             return
         self.on = on
-        if on:  # back on, a servo holds where the arm lies now, as the bridge does
-            q = self._q()
-            for mid, sp in self.setpoints.items():
-                m = self.model.motors[mid]
-                sp.hold(self.model.pulse(mid, q[self.index[m.fingers[0] if m.is_gripper else m.joint]]))
-        self.art.set_dof_gains(self.kp_on if on else self.kp_off, self.kd_on if on else self.kd_off)
+        q = self._q()
+        for mid, sp in self.setpoints.items():
+            m = self.model.motors[mid]
+            sp.hold(self.model.pulse(mid, q[self.index[m.fingers[0] if m.is_gripper else m.joint]]))
+        held = on or self.hold_relaxed
+        self.art.set_dof_gains(self.kp_on if held else self.kp_off, self.kd_on if held else self.kd_off)
 
     def step(self) -> None:
         for sp in self.setpoints.values():
             sp.step(self.dt)
-        if self.on:
+        if self.on or self.hold_relaxed:
             self.apply_setpoints()
             self.art.set_dof_position_targets(self.target)
         self.sm.step(steps=1)
@@ -491,16 +496,14 @@ class IsaacServoSim:
         return self.model.pulse(motor, self._q()[self.index[m.fingers[0] if m.is_gripper else m.joint]])
 
 
-def replay_and_fit(args, model, art, setpoints, index, finger, efforts, target, apply_setpoints, np, sim_manager) -> int:
+def replay_and_fit(args, model, sim, default) -> int:
     """Sim against real (docs/adr/0034 decision 6, J3): score the default drives on every session, fit on the ``fit``
     sessions, score the fitted ones on every session, write the result. docs/metrics.md section 10."""
     from . import simfit
 
     with open(args.replay, encoding="utf-8") as f:
         doc = json.load(f)
-    sim = IsaacServoSim(args, model, art, setpoints, index, finger, efforts, target, apply_setpoints, np, sim_manager)
     replayer = simfit.Replayer(model)
-    default = simfit.Params(stiffness=args.stiffness, damping=args.damping)
 
     def score_all(p, label):
         out = {}

@@ -18,7 +18,8 @@ ALL = list(SOURCES) + [OURS]
 
 
 def _names(given: List[str], allowed: List[str]) -> List[str]:
-    names = given or allowed
+    """The datasets named, or every one that can be fetched unattended (not ``MANUAL``) when none is."""
+    names = given or [n for n in allowed if not getattr(SOURCES.get(n), "MANUAL", False)]
     bad = [n for n in names if n not in allowed]
     if bad:
         raise SystemExit(f"unknown dataset(s) {bad}; known: {allowed}")

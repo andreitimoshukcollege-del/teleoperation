@@ -11,7 +11,7 @@ import zipfile
 import numpy as np
 import pytest
 
-from armpred.net.datasets import fcc_mba, fetching, g1050, iso9660, mahimahi, puffer, ripe_atlas, synth
+from armpred.net.datasets import fcc_mba, fetching, g1050, mahimahi, puffer, ripe_atlas, synth
 from armpred.net.datasets.tiering import assess
 
 # G.1050 (07/2016) clause 6.6, Table 3 (Dw4, stream HD_cbr downstream), verbatim: header and the first rows.
@@ -53,66 +53,49 @@ def test_g1050_bins_give_mean_and_spread_and_a_fifo_statistical_trace():
 
 
 def test_g1050_test_case_labels():
-    m = g1050.CASE.match("Dw4")
+    m = g1050.CASE.match("Dw4-t")
     assert (m["tech"], m["profile"], m["severity"]) == ("D", "w", "4")
-    assert g1050.CASE.match("Dp1t") and not g1050.CASE.match("Core")
+    assert g1050.CASE.match("Dp1t") and not g1050.CASE.match("Core") and not g1050.CASE.match("PCAP")
+    times, delays = g1050.parse_out(G1050_REAL_HEAD)
+    assert times == [3.0] and delays == [86.062902]
+    assert g1050.parse_bins(G1050_REAL_BINS)[1][:2] == (1.2, 15.95)
 
 
-def make_iso(files):
-    """A minimal ISO 9660 image (primary volume only): {"DIR/NAME.OUT": bytes}."""
-    sector = 2048
-    blob = {}
-    dirs = {"": []}
-    for path in files:
-        parts = path.split("/")
-        for k in range(1, len(parts)):
-            d = "/".join(parts[:k])
-            if d not in dirs:
-                dirs[d] = []
-                dirs["/".join(parts[:k - 1])].append((parts[k - 1], d, True))
-        dirs["/".join(parts[:-1])].append((parts[-1], path, False))
-    lba = 18
-    where = {}
-    for d in dirs:
-        where[d] = (lba, sector)
-        lba += 1
-    for p, data in files.items():
-        n = max(1, -(-len(data) // sector))
-        where[p] = (lba, len(data))
-        blob[lba] = data
-        lba += n
+# The attachment as published (Software/D/out.bidi/Dw4-t/VoIP1_Fwd.out.gz): its header and first row, verbatim.
+G1050_REAL_HEAD = """Source:,"TIA TR30.3: TIA-921C"
+Creation Date:,12/01/2013
+Description:, description
+Content-Encoding :, ASCII
+Delay Unit:,ms
 
-    def rec(name: bytes, extent: int, size: int, is_dir: bool) -> bytes:
-        body = struct.pack("<B B I I I I 7s B B B H H B", 0, 0, extent, 0, size, 0, b"\0" * 7, 2 if is_dir else 0, 0, 0, 1, 0, len(name)) + name
-        body = bytes([33 + len(name) + (len(name) + 1) % 2]) + body[1:]
-        return body + (b"\0" if len(name) % 2 == 0 else b"")
-
-    img = bytearray(lba * sector)
-    for d, entries in dirs.items():
-        ext, _ = where[d]
-        recs = rec(b"\0", ext, sector, True) + rec(b"\1", ext, sector, True)
-        for name, target, is_dir in entries:
-            t_ext, t_size = where[target]
-            recs += rec((name if is_dir else name + ";1").encode(), t_ext, t_size, is_dir)
-        img[ext * sector:ext * sector + len(recs)] = recs
-    for at, data in blob.items():
-        img[at * sector:at * sector + len(data)] = data
-    pvd = bytearray(sector)
-    pvd[0:6] = b"\x01CD001"
-    pvd[156:156 + 34] = rec(b"\0", where[""][0], sector, True)
-    img[16 * sector:17 * sector] = pvd
-    img[17 * sector:17 * sector + 6] = b"\xffCD001"
-    return bytes(img)
+Time, Delay, Drop
+3.000000000,86.062902,0
+"""
+# Software/D/out.bidi/Du1-t/bw-dwn.csv, its first rows, verbatim.
+G1050_REAL_BINS = "t, bw, pack, mean, m2\n1.00, 2428800, 200, 14.63, 219.50\n1.20, 2793120, 230, 15.95, 261.93\n"
 
 
-def test_iso9660_finds_and_reads_files_by_path():
-    img = make_iso({"D/BIDI/DW4/VOIP1_FWD.OUT": G1050_OUT.encode(), "README.TXT": b"hello"})
-    f = io.BytesIO(img)
-    entries = {e.path: e for e in iso9660.walk(f)}
-    assert {"D", "D/BIDI", "D/BIDI/DW4", "D/BIDI/DW4/VOIP1_FWD.OUT", "README.TXT"} <= set(entries)
-    assert iso9660.read(f, entries["README.TXT"], 100) == b"hello"
-    with pytest.raises(ValueError):
-        iso9660.read(f, entries["D/BIDI/DW4/VOIP1_FWD.OUT"], 10)
+def test_g1050_converts_the_attachment_as_published(tmp_path):
+    import gzip
+    root = str(tmp_path)
+    dl = tmp_path / g1050.NAME / "download"
+    dl.mkdir(parents=True)
+    voip = G1050_REAL_HEAD + "".join(f"{3.0 + 0.02 * i:.9f},{86.0 + (i % 5)},{1 if i == 50 else 0}\n" for i in range(1, 300))
+    bins = G1050_REAL_BINS + "".join(f"{1.4 + 0.2 * i:.2f}, 2428800, 200, {20.0 + i}, {(20.0 + i) ** 2 + 16.0}\n" for i in range(20))
+    with zipfile.ZipFile(dl / g1050.ZIP_NAME, "w") as z:
+        z.writestr("Software/D/out.bidi/Dw4-t/VoIP1_Fwd.out.gz", gzip.compress(voip.encode()))
+        z.writestr("Software/D/out.bidi/Dw4-t/HDTV1_Down.out.gz", gzip.compress(voip.encode()))  # not a VoIP flow: left out
+        z.writestr("Software/D/out.bidi/Du1-t/bw-dwn.csv", bins)
+        z.writestr("Software/D/out.bidi/Dw4-t/bw-dwn.csv", bins)  # a managed case's iPerf: left out
+        z.writestr("Software/COPYRIGHT.txt", "free from copyright restriction")
+    doc = g1050.convert(root)
+    by = {e["id"]: e for e in doc["traces"]}
+    assert set(by) == {"Dw4-bidi-VoIP1_Fwd", "Du1-bidi-bw-dwn"}
+    w = by["Dw4-bidi-VoIP1_Fwd"]
+    assert (w["tier"], w["tierFrom"], w["group"], w["info"]["kind"]) == ("good", "source", "Dw4", "per-packet")
+    assert w["info"]["sendIntervalMs"] == 20.0 and w["assessment"]["sent"] == 300 and w["assessment"]["loss_ratio"] > 0
+    u = by["Du1-bidi-bw-dwn"]
+    assert (u["tier"], u["info"]["kind"]) == ("very-bad", "statistical") and u["assessment"]["sent"] == 22 * 10
 
 
 # Mahimahi traces/Verizon-LTE-short.down, its first lines verbatim.

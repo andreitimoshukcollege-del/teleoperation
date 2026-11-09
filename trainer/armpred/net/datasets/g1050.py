@@ -2,14 +2,16 @@
 Recommendation's own simulations, for each of its three service test profiles, which are the tiers.
 
 **Source.** The Recommendation's electronic attachment (Annex H), freely available from the ITU:
-``T-REC-G.1050-201607-I!!SOFT-ZST-E``, a zip of about 780 MB holding an ISO 9660 image. Its ``./D`` (DSL) and ``./G``
-(GPON) folders hold the simulator's output per scenario and test case (Annex F, Table F.1):
+``T-REC-G.1050-201607-I!!SOFT-ZST-E``, a zip of about 780 MB. (Annex H describes an ISO 9660 image; the zip as published
+holds the folders directly.) ``Software/COPYRIGHT.txt``: the simulator output, the test cases and the interfering
+traffic "are free from copyright restriction". ``Software/{D,G}/out.{bidi,dwn,up}/<case>-t/`` hold the simulator's
+output per access technology (DSL, GPON), scenario and test case (Annex F, Table F.1):
 
-- ``$TECH/$SC/$TC/$FLOW.out``: the managed flows' "delay-loss schedule" (clause 6.6, Table 3): a header, then one row per
-  packet, ``time delay(ms) drop``. The VoIP flows (``VoIP1_Fwd``, ``VoIP1_Rev``: G.729, one packet every 20 ms) are the
+- ``$FLOW.out.gz``: the managed flows' "delay-loss schedule" (clause 6.6, Table 3): a header (``Source:,"TIA TR30.3:
+  TIA-921C"`` ... ``Time, Delay, Drop``), then one CSV row per packet, ``time,delay(ms),drop``. The VoIP flows (``VoIP1_Fwd``, ``VoIP1_Rev``: G.729, one packet every 20 ms) are the
   ones kept: the same rate and size class as the joint stream. Profiles A and B (``w``, ``p``) carry managed flows;
   profile C (``u``) has none ("There are no managed streams in the Unmanaged service test profile C").
-- ``$TECH/$SC/$TC/bw-{up,dwn}.csv``: the iPerf flow's delay per time bin (clause 6.6, Table 4: ``t``, bandwidth, packets,
+- ``bw-{up,dwn}.csv``: the iPerf flow's delay per time bin (clause 6.6, Table 4: ``t``, bandwidth, packets,
   ``mean`` delay, ``m2`` the mean squared delay, "used to introduce jitter for network emulation"). Kept for profile C,
   where a packet crossing the saturated, unmanaged link sees that queue.
 
@@ -31,7 +33,7 @@ from typing import Dict, Iterator, List, Optional, Tuple
 
 import numpy as np
 
-from . import fetching, iso9660, synth
+from . import fetching, synth
 from . import index as I
 from .standards import TIER_OF_PROFILE
 from .trace import LOST, Trace, from_ms
@@ -42,15 +44,15 @@ SOURCE = fetching.Source(
     name=NAME,
     title="ITU-T G.1050 (07/2016) electronic attachment: simulator output of the standard test cases",
     hosts=["www.itu.int"],
-    licence="ITU publication, freely available ('Freely available items'); copyright ITU. Used for research; not redistributed.",
+    licence="ITU publication, freely available; the attachment's COPYRIGHT.txt: the simulator output, test cases and interfering traffic 'are free from copyright restriction'. Not redistributed.",
     terms_url="https://www.itu.int/en/ITU-T/publications/Pages/default.aspx",
     citation="ITU-T Recommendation G.1050 (07/2016), Network model for evaluating multimedia transmission performance over Internet Protocol, Annex H.",
 )
 ZIP_NAME = "g1050-2016-attachment.zip"
 MAX_ZIP = 1_200_000_000
-MAX_ISO = 4_000_000_000
 MAX_MEMBER = 400_000_000
-CASE = re.compile(r"^(?P<tech>[DG])(?P<profile>[wpu])(?P<severity>\d+)t?$")
+CASE = re.compile(r"^(?P<tech>[DG])(?P<profile>[wpu])(?P<severity>\d+)(-?t)?$")
+MEMBER = re.compile(r"^Software/(?P<tech>[DG])/out\.(?P<scen>bidi|dwn|up)/(?P<case>[^/]+)/(?P<file>[^/]+)$")
 KEEP_FLOWS = ("VoIP1_Fwd", "VoIP1_Rev")
 STAT_INTERVAL_MS = 20.0
 
@@ -60,38 +62,30 @@ def fetch(root: str) -> fetching.Manifest:
     old = fetching.load_manifest(root, NAME) or {}
     known = {f["path"]: f["sha256"] for f in old.get("files", [])}
     got = fetching.download(URL, os.path.join(d, "download"), ZIP_NAME, SOURCE, MAX_ZIP, known, timeout_s=120.0)
-    m = fetching.Manifest(SOURCE, [got], kept="the whole attachment zip; the conversion reads the VoIP .out and bw-*.csv files out of its ISO image")
+    m = fetching.Manifest(SOURCE, [got], kept="the whole attachment zip; the conversion reads its VoIP .out.gz and bw-*.csv files in place")
     fetching.save_manifest(root, m)
     return m
 
 
-def _iso_path(root: str) -> str:
-    """The ISO image, taken out of the zip once (zip members are read, never extracted by their own names)."""
-    d = fetching.dataset_dir(root, NAME)
-    iso = os.path.join(d, "download", "g1050-2016-attachment.iso")
-    if os.path.exists(iso):
-        return iso
-    with zipfile.ZipFile(os.path.join(d, "download", ZIP_NAME)) as z:
-        isos = [i for i in z.infolist() if i.filename.lower().endswith(".iso")]
-        if len(isos) != 1:
-            raise ValueError(f"expected one .iso in the attachment, found {[i.filename for i in z.infolist()][:20]}")
-        if isos[0].file_size > MAX_ISO:
-            raise ValueError(f"{isos[0].filename}: {isos[0].file_size} bytes")
-        with z.open(isos[0]) as src, open(iso + ".part", "wb") as dst:
-            n = 0
-            for block in iter(lambda: src.read(1 << 20), b""):
-                n += len(block)
-                if n > MAX_ISO:
-                    raise ValueError("the ISO image is larger than its zip entry said")
-                dst.write(block)
-    os.replace(iso + ".part", iso)
-    return iso
+def _zip(root: str) -> zipfile.ZipFile:
+    return zipfile.ZipFile(os.path.join(fetching.dataset_dir(root, NAME), "download", ZIP_NAME))
 
 
 def listing(root: str) -> List[str]:
-    """Every path in the attachment (for ``status``: what is in it)."""
-    with open(_iso_path(root), "rb") as f:
-        return [e.path + ("/" if e.is_dir else "") for e in iso9660.walk(f)]
+    """Every path in the attachment (for looking at what is in it)."""
+    with _zip(root) as z:
+        return z.namelist()
+
+
+def _read(z: zipfile.ZipFile, info: zipfile.ZipInfo) -> bytes:
+    """A member's bytes, read in place (never extracted under its own name), size-checked."""
+    if info.file_size > MAX_MEMBER:
+        raise ValueError(f"{info.filename}: {info.file_size} bytes")
+    with z.open(info) as f:
+        data = f.read(MAX_MEMBER + 1)
+    if len(data) > MAX_MEMBER:
+        raise ValueError(f"{info.filename}: larger than its entry said")
+    return data
 
 
 def _text(data: bytes, path: str) -> str:
@@ -148,37 +142,33 @@ def _seed(s: str) -> int:
 
 
 def items(root: str) -> Iterator[Tuple[str, str, Trace, Dict]]:
-    with open(_iso_path(root), "rb") as f:
-        entries = iso9660.walk(f)
-        for e in entries:
-            if e.is_dir:
+    with _zip(root) as z:
+        for info in sorted(z.infolist(), key=lambda i: i.filename):
+            mm = MEMBER.match(info.filename)
+            if not mm:
                 continue
-            parts = e.path.split("/")
-            if len(parts) < 4:
+            m = CASE.match(mm["case"])
+            if not m or m["tech"] != mm["tech"]:
                 continue
-            tech, scen, case, fname = parts[-4], parts[-3], parts[-2], parts[-1]
-            m = CASE.match(case)
-            if tech not in ("D", "G") or not m:
-                continue
+            fname, scen, case = mm["file"], mm["scen"], m["tech"] + m["profile"] + m["severity"]
             base = fname[:-3] if fname.lower().endswith(".gz") else fname
-            group = f"{m['tech']}{m['profile']}{m['severity']}"  # a test case, whatever the scenario
-            info = {"testCase": case, "scenario": scen, "access": {"D": "DSL", "G": "GPON"}[tech],
-                    "profile": m["profile"], "severity": int(m["severity"]), "source": e.path}
+            info_ = {"testCase": case, "scenario": scen, "access": {"D": "DSL", "G": "GPON"}[m["tech"]],
+                     "profile": m["profile"], "severity": int(m["severity"]), "source": info.filename}
             if m["profile"] in "wp" and base.endswith(".out") and base[:-4] in KEEP_FLOWS:
-                times, delays = parse_out(_text(iso9660.read(f, e, MAX_MEMBER), e.path))
+                times, delays = parse_out(_text(_read(z, info), fname))
                 if len(times) < 100:
                     continue
                 interval = float(np.median(np.diff(times))) * 1000.0
-                info.update(flow=base[:-4], kind="per-packet", sendIntervalMs=round(interval, 3))
-                yield f"{case}-{scen}-{base[:-4]}", group, from_ms(delays, interval), info
+                info_.update(flow=base[:-4], kind="per-packet", sendIntervalMs=round(interval, 3))
+                yield f"{case}-{scen}-{base[:-4]}", case, from_ms(delays, interval), info_
             elif m["profile"] == "u" and re.match(r"^bw-(up|dwn)\.csv$", base):
-                bins = parse_bins(_text(iso9660.read(f, e, MAX_MEMBER), e.path))
+                bins = parse_bins(_text(_read(z, info), fname))
                 if len(bins) < 10:
                     continue
-                seed = _seed(e.path)
-                info.update(flow=base[:-4], kind="statistical", seed=seed, sendIntervalMs=STAT_INTERVAL_MS,
-                            assumption="iPerf per-bin mean and sqrt(m2 - mean^2) as a normal per 20 ms datagram, clipped at 0, FIFO; no loss (TCP)")
-                yield f"{case}-{scen}-{base[:-4]}", group, statistical_trace(bins, seed), info
+                seed = _seed(info.filename)
+                info_.update(flow=base[:-4], kind="statistical", seed=seed, sendIntervalMs=STAT_INTERVAL_MS,
+                             assumption="iPerf per-bin mean and sqrt(m2 - mean^2) as a normal per 20 ms datagram, clipped at 0, FIFO; no loss (TCP)")
+                yield f"{case}-{scen}-{base[:-4]}", case, statistical_trace(bins, seed), info_
 
 
 def convert(root: str) -> Dict:

@@ -11,7 +11,10 @@ column or two, so nothing is read by position):
 - ``curr_dlping.csv``, ``curr_ulping.csv``: latency under load: a packet every 100 ms for the 10 s of a download or
   upload speed test, same columns.
 
-fcc.gov's terms page could not be fetched (HTTP 403, 2026-11-09). Federal works are generally public domain; the data
+**data.fcc.gov refuses automated downloads** (HTTP 403 to the fetcher on 2026-11-09, from the GPU machine), and the
+refusal is respected: the source is left out of a plain ``fetch`` (``MANUAL``), and the two files can be downloaded in a
+browser and put into ``<root>/fcc-mba/download/`` under the names above; ``fetch fcc-mba`` then records them (sha256,
+"placed by hand") instead of downloading. fcc.gov's terms page could not be fetched either (HTTP 403). Federal works are generally public domain; the data
 were collected by a contractor, so the terms are recorded as unverified. Nothing is redistributed.
 
 **Conversion.** A row becomes a *summary* trace (synth.py): one-way floor, mean and spread half the round trip's, loss
@@ -55,6 +58,7 @@ MAX_PROFILE = 10_000_000
 FILES = {"curr_udplatency.csv": ("idle", 60.0), "curr_dlping.csv": ("download-load", 10.0), "curr_ulping.csv": ("upload-load", 10.0)}
 NEEDED = ("unit_id", "rtt_min", "rtt_avg", "rtt_std", "successes", "failures")
 MAX_UNITS = 300
+MANUAL = True  # data.fcc.gov answers HTTP 403 to automated clients: the files are placed by hand
 ROWS_PER_UNIT = 4
 
 
@@ -63,11 +67,32 @@ def fetch(root: str) -> fetching.Manifest:
     old = fetching.load_manifest(root, NAME) or {}
     known = {f["path"]: f["sha256"] for f in old.get("files", [])}
     dl = os.path.join(d, "download")
-    files = [fetching.download(BASE + PROFILE, dl, PROFILE, SOURCE, MAX_PROFILE, known),
-             fetching.download(BASE + ARCHIVE, dl, ARCHIVE, SOURCE, MAX_ARCHIVE, known, timeout_s=120.0)]
+    files = []
+    for name, cap in ((PROFILE, MAX_PROFILE), (ARCHIVE, MAX_ARCHIVE)):
+        path = os.path.join(dl, name)
+        if os.path.exists(path):  # placed by hand (the server refuses automated clients), or fetched before
+            if os.path.getsize(path) > cap:
+                raise ValueError(f"{path}: larger than the {cap} bytes allowed")
+            rel = os.path.relpath(path, d)
+            sha = fetching.sha256_of(path)
+            files.append(fetching.Fetched(rel, BASE + name, os.path.getsize(path), sha,
+                                          old_when(old, rel, sha) or f"placed by hand, recorded {fetching.now_utc()}"))
+            continue
+        try:
+            files.append(fetching.download(BASE + name, dl, name, SOURCE, cap, known, timeout_s=120.0))
+        except RuntimeError as e:
+            raise RuntimeError(f"{e}. data.fcc.gov refuses automated downloads: fetch {BASE + name} in a browser and put it "
+                               f"at {path}, then run fetch fcc-mba again") from None
     m = fetching.Manifest(SOURCE, files, kept="the July 2023 archive and the unit profile; the conversion reads curr_udplatency, curr_dlping and curr_ulping")
     fetching.save_manifest(root, m)
     return m
+
+
+def old_when(old: Dict, rel: str, sha: str) -> Optional[str]:
+    for f in old.get("files", []):
+        if f.get("path") == rel and f.get("sha256") == sha:
+            return f.get("fetched_utc")
+    return None
 
 
 def _h(s: str) -> str:

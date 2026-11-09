@@ -116,6 +116,43 @@ unity-scene-xr rebuild="false":
 robot-collision-model:
     just _unity-batch TeleopXR Teleop.XR.Editor.RobotCollisionExtractor.Run "" true
 
+# Fit the simulated JetRover to the real one (docs/adr/0034 decision 6, J3; docs/metrics.md section 10): extracts the relay records (RO, RI, TQ) of real sessions in `sessions_dir`, sends them to the GPU machine, and there replays them headless into the bridge's own Isaac arm, scores the default drives, fits stiffness, damping, torque limits, a command delay and a speed scale on the `fit` sessions, and scores the fitted drives on all of them, held-out ones apart. Detached: watch with just jetrover-sim-fit-status. Touches no robot; the Isaac host may keep running
+[group('isaac')]
+jetrover-sim-fit sessions_dir="recordings/jetrover" fit="20261026T204223Z-drive-steps-2p5,20261026T204737Z-drive-steps-6,20261026T205353Z-drive-wp-2p5,20261026T210007Z-drive-wp-5" heldout="20261026T210625Z-drive-wp-sched,20261025T200935Z-teleop-2p5,20261025T202026Z-teleop-2p5,20261027T224623Z-auto,20261027T225507Z-auto" fit_seconds="90" rounds="2":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    commit=$(git rev-parse HEAD)
+    git fetch -q origin
+    [ -n "$(git branch -r --contains "$commit" 2>/dev/null)" ] || { echo "error: $commit is not on GitHub: push it first (the GPU machine runs what GitHub has)" >&2; exit 1; }
+    tmp=$(mktemp -d)
+    (cd robot/isaac && python3 - "{{sessions_dir}}" "{{fit}}" "{{heldout}}" > "$tmp/sessions.json") <<'PY'
+    import json, os, sys
+    from teleop_isaac import simfit
+    root, fit, held = sys.argv[1], sys.argv[2].split(","), sys.argv[3].split(",")
+    root = root if os.path.isabs(root) else os.path.join("../..", root)
+    out = {g: [simfit.extract_session(os.path.join(root, n)) for n in names if n] for g, names in (("fit", fit), ("heldout", held))}
+    json.dump(out, sys.stdout)
+    PY
+    echo "[sim-fit] $(du -h "$tmp/sessions.json" | cut -f1) of relay records from $(echo "{{fit}},{{heldout}}" | tr ',' '\n' | grep -c .) sessions"
+    ssh -o BatchMode=yes {{gpu_host}} 'mkdir -p ~/isaacsim/simfit && cat > ~/isaacsim/simfit/sessions.json' < "$tmp/sessions.json"
+    rm -rf "$tmp"
+    ssh -o BatchMode=yes {{gpu_host}} COMMIT="$commit" bash -s <<'REMOTE'
+    set -euo pipefail
+    repo=$HOME/teleoperation-simfit
+    [ -d "$repo" ] || git clone -q https://github.com/andreitimoshukcollege-del/teleoperation.git "$repo"
+    cd "$repo" && git fetch -q origin && git checkout -q "$COMMIT"
+    out=$HOME/isaacsim/simfit/result-${COMMIT:0:7}.json; log=$HOME/isaacsim/simfit/fit.log
+    cd robot/isaac
+    nohup "$HOME/isaacsim/venv/bin/python" -m teleop_isaac.jetrover_bridge --replay "$HOME/isaacsim/simfit/sessions.json" \
+        --fit-seconds {{fit_seconds}} --fit-rounds {{rounds}} --out "$out" > "$log" 2>&1 < /dev/null &
+    echo "[sim-fit] running on $(hostname) at ${COMMIT:0:7} (pid $!): log $log, result $out"
+    REMOTE
+
+# How the sim-against-real fit on the GPU machine is doing (just jetrover-sim-fit): its log's scores and fit steps, and the result once written
+[group('isaac')]
+jetrover-sim-fit-status:
+    ssh -o BatchMode=yes {{gpu_host}} 'grep -E "\[sim-fit\]|\[fit\]|Traceback|Error" ~/isaacsim/simfit/fit.log | tail -40; ls -t ~/isaacsim/simfit/result-*.json 2>/dev/null | head -1'
+
 # Write the JetRover's look for Isaac (docs/adr/0034 amendment 6): the lab twin's CAD as one OBJ per URDF link and colour in robot/jetrover/urdf/meshes/, decimated, with visuals.json; then rewrite the URDF with TELEOP_WRITE_GOLDEN=1 (just jetrover-urdf). Close TeleopXR's editor first
 [group('isaac')]
 jetrover-visuals:

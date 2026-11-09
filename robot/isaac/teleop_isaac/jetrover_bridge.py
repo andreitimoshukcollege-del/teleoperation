@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import json
 import os
 import signal
 import socket
@@ -64,6 +65,11 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     a.add_argument("--world-every", type=int, default=20, help="send the objects' poses every this many steps")
     a.add_argument("--tap", default="", help="the renderer's socket: a copy of the arm's state every 4 steps and of every WORLD")
     a.add_argument("--gui", action="store_true", help="open Isaac's window (needs a display)")
+    a.add_argument("--replay", default="", help="sim against real (docs/adr/0034 J3): a sessions file from just jetrover-sim-fit; "
+                                                "replay it headless and unpaced, score it, fit, and exit. No sockets")
+    a.add_argument("--fit-seconds", type=float, default=90.0, help="--replay: seconds of each fit session per evaluation")
+    a.add_argument("--fit-rounds", type=int, default=2, help="--replay: the coordinate search's rounds (0: score only)")
+    a.add_argument("--out", default="", help="--replay: where the result goes (JSON)")
     return a.parse_args(argv)
 
 
@@ -198,6 +204,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         art.set_dof_position_targets(target)
         torque = not args.torque_off_at_start
         art.set_dof_gains(kp_on if torque else kp_off, kd_on if torque else kd_off)
+        if args.replay:
+            return replay_and_fit(args, model, art, setpoints, index, finger, efforts, target, apply_setpoints, np, SimulationManager)
 
         description = (f"Isaac Sim {version('isaacsim')}, PhysX {1 / args.dt:.0f} Hz on CPU, servo drives {args.stiffness:g}/{args.damping:g} "
                        f"within {'/'.join(f'{m.stall_torque:g}' for m in model.motors.values() if not m.is_gripper)} Nm, arm gravity on, "
@@ -415,6 +423,122 @@ def main(argv: Optional[List[str]] = None) -> int:
         raise
     finally:
         app.close()
+
+
+class IsaacServoSim:
+    """:class:`simfit.ServoSim` over the bridge's own articulation and setpoints: exactly what RobotHost drives, unpaced."""
+
+    def __init__(self, args, model, art, setpoints, index, finger, efforts, target, apply_setpoints, np, sim_manager):
+        self.dt = args.dt
+        self.args, self.model, self.art, self.setpoints, self.index = args, model, art, setpoints, index
+        self.finger, self.efforts, self.target, self.apply_setpoints, self.np, self.sm = finger, efforts, target, apply_setpoints, np, sim_manager
+        self.on = True
+        self.q = None
+        self.kp_on = self.kd_on = None
+
+    def _q(self):
+        if self.q is None:
+            self.q = self.np.asarray(self.art.get_dof_positions().numpy()).reshape(-1)
+        return self.q
+
+    def reset(self, pulses, params) -> None:
+        np = self.np
+        n = len(self.finger)
+        self.kp_on = np.where(self.finger, self.args.finger_stiffness, params.stiffness).reshape(1, -1)
+        self.kd_on = np.where(self.finger, self.args.finger_damping, params.damping).reshape(1, -1)
+        self.kp_off = np.zeros((1, n))
+        self.kd_off = np.where(self.finger, self.args.finger_damping, self.args.limp_damping).reshape(1, -1)
+        e = self.efforts.copy()
+        for m in self.model.motors.values():
+            if not m.is_gripper:
+                e[self.index[m.joint]] = m.stall_torque * params.effort_scale
+        self.art.set_dof_max_efforts(e.reshape(1, -1))
+        for mid, sp in self.setpoints.items():
+            sp.hold(pulses[mid])
+        self.apply_setpoints()
+        self.art.set_dof_positions(self.target)
+        self.art.set_dof_velocities(np.zeros_like(self.target))
+        self.art.set_dof_position_targets(self.target)
+        self.on = True
+        self.art.set_dof_gains(self.kp_on, self.kd_on)
+        self.q = None
+
+    def command(self, motor, pulse, pps) -> None:
+        if motor in self.setpoints:
+            self.setpoints[motor].move(pulse, pps)
+
+    def torque(self, on) -> None:
+        if on == self.on:
+            return
+        self.on = on
+        if on:  # back on, a servo holds where the arm lies now, as the bridge does
+            q = self._q()
+            for mid, sp in self.setpoints.items():
+                m = self.model.motors[mid]
+                sp.hold(self.model.pulse(mid, q[self.index[m.fingers[0] if m.is_gripper else m.joint]]))
+        self.art.set_dof_gains(self.kp_on if on else self.kp_off, self.kd_on if on else self.kd_off)
+
+    def step(self) -> None:
+        for sp in self.setpoints.values():
+            sp.step(self.dt)
+        if self.on:
+            self.apply_setpoints()
+            self.art.set_dof_position_targets(self.target)
+        self.sm.step(steps=1)
+        self.q = None
+
+    def read(self, motor) -> float:
+        m = self.model.motors[motor]
+        return self.model.pulse(motor, self._q()[self.index[m.fingers[0] if m.is_gripper else m.joint]])
+
+
+def replay_and_fit(args, model, art, setpoints, index, finger, efforts, target, apply_setpoints, np, sim_manager) -> int:
+    """Sim against real (docs/adr/0034 decision 6, J3): score the default drives on every session, fit on the ``fit``
+    sessions, score the fitted ones on every session, write the result. docs/metrics.md section 10."""
+    from . import simfit
+
+    with open(args.replay, encoding="utf-8") as f:
+        doc = json.load(f)
+    sim = IsaacServoSim(args, model, art, setpoints, index, finger, efforts, target, apply_setpoints, np, sim_manager)
+    replayer = simfit.Replayer(model)
+    default = simfit.Params(stiffness=args.stiffness, damping=args.damping)
+
+    def score_all(p, label):
+        out = {}
+        for group in ("fit", "heldout"):
+            pooled = simfit.Score()
+            per = {}
+            for s in doc[group]:
+                t = time.monotonic()
+                sc = replayer.run(s, sim, p)
+                pooled.add(sc)
+                per[s["name"]] = sc.summary()
+                tr = per[s["name"]]["sim_tracking_error_deg"]["pooled1to4"]
+                print(f"[sim-fit] {label} {group} {s['name']}: tracking p50 {tr['p50']} p95 {tr['p95']} deg over {tr['n']} readings "
+                      f"({time.monotonic() - t:.0f} s)", flush=True)
+            out[group] = {"pooled": pooled.summary(), "sessions": per}
+        return out
+
+    result = {"format": "jetrover-sim-fit", "version": 1, "split": {g: [s["name"] for s in doc[g]] for g in ("fit", "heldout")},
+              "fitSeconds": args.fit_seconds, "default": {"params": default.to_dict()}}
+    result["default"]["scores"] = score_all(default, "default")
+
+    def evaluate(p):
+        total = simfit.Score()
+        for s in doc["fit"]:
+            total.add(replayer.run(s, sim, p, seconds=args.fit_seconds))
+        return total.objective()
+
+    if args.fit_rounds > 0:
+        best, objective, history = simfit.fit(evaluate, default, rounds=args.fit_rounds, log=lambda s: print(s, flush=True))
+        result["fitted"] = {"params": best.to_dict(), "objective": objective, "history": history, "scores": score_all(best, "fitted")}
+    if args.out:
+        simfit.write_result(args.out, result)
+    for k in ("default", "fitted"):
+        if k in result:
+            h = result[k]["scores"]["heldout"]["pooled"]["sim_tracking_error_deg"]["pooled1to4"]
+            print(f"[sim-fit] {k} {result[k]['params']}: held-out tracking p50 {h['p50']} p95 {h['p95']} deg", flush=True)
+    return 0
 
 
 if __name__ == "__main__":

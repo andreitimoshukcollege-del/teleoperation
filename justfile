@@ -291,6 +291,57 @@ pull-editor-traces dest="recordings/linktraces":
 link-trace-summary +files="recordings/linktraces/*.ltrace":
     cd trainer && python3 -m armpred.net.linktrace $(for f in {{files}}; do case "$f" in /*) echo "$f" ;; *) echo "../$f" ;; esac; done)
 
+# Our own Wi-Fi as training traces (docs/adr/0035 N2, decision 3): every link trace in recordings/linktraces becomes .trace v2 pieces (cut where the headset disturbed its own link) in recordings/network-datasets/ours-wifi, each with its tier by the standards (G.1050's service test profiles, measured per minute as Y.1541 measures) printed. Needs `just trainer-setup`
+[group('trainer')]
+network-traces-ours +files="recordings/linktraces/*.ltrace":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    PY=$(just _trainer-python)
+    cd trainer
+    "../$PY" -m armpred.net.datasets --root ../recordings/network-datasets ours $(for f in {{files}}; do case "$f" in /*) echo "$f" ;; *) echo "../$f" ;; esac; done)
+
+# Fetch the public network datasets onto the GPU machine and convert them (docs/adr/0035 N2), detached: G.1050's own test cases (the ITU attachment, ~780 MB), Mahimahi's cellular traces (~31 MB), a day of Puffer (~290 MB, fetched once as Puffer asks), the FCC's July 2023 MBA archive (~1.7 GB) and RIPE Atlas pings by connection kind, into ~/datasets/network/<name> with a manifest each (source, licence, sha256), then .trace v2 files with their tiers, and the held-out split. Downloads are untrusted data: HTTPS from each dataset's own hosts only, size-capped, parsed and never run. Runs this commit from its own clone (~/teleoperation-datasets; it must be on GitHub) with the trainer's venv there. `names` limits it, e.g. `just network-datasets-fetch "mahimahi ripe-atlas"`. Watch with `just network-datasets-status`
+[group('trainer')]
+network-datasets-fetch names="":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    for n in {{names}}; do case "$n" in g1050-2016|mahimahi|puffer|fcc-mba|ripe-atlas) ;; *) echo "error: unknown dataset $n" >&2; exit 1 ;; esac; done
+    commit=$(git rev-parse HEAD)
+    git fetch -q origin
+    [ -n "$(git branch -r --contains "$commit" 2>/dev/null)" ] || { echo "error: $commit is not on GitHub: push it first" >&2; exit 1; }
+    ssh -o ConnectTimeout=10 "{{gpu_host}}" "COMMIT='$commit' NAMES='{{names}}' bash -s" <<'REMOTE'
+    set -euo pipefail
+    if [ -f ~/network-datasets.pid ] && kill -0 "$(cat ~/network-datasets.pid)" 2>/dev/null; then
+        echo "error: a fetch is already going (pid $(cat ~/network-datasets.pid)): just network-datasets-status" >&2; exit 1
+    fi
+    py=$HOME/teleoperation/trainer/.venv/bin/python
+    [ -x "$py" ] || { echo "error: no trainer venv at $py (run just gpu-train once, or trainer/setup.sh there)" >&2; exit 1; }
+    repo=$HOME/teleoperation-datasets
+    [ -d "$repo" ] || git clone -q https://github.com/andreitimoshukcollege-del/teleoperation.git "$repo"
+    cd "$repo" && git fetch -q origin && git checkout -q "$COMMIT" && echo "repo at $(git log --oneline -1); $(df -h ~ | tail -1 | awk '{print $4}') free"
+    cd trainer
+    log=~/network-datasets.log
+    # The clone's own armpred, not the venv's: -m from this folder puts it first on sys.path.
+    nohup setsid bash -c "unset PYTHONPATH; '$py' -m armpred.net.datasets fetch $NAMES; '$py' -m armpred.net.datasets convert $NAMES; '$py' -m armpred.net.datasets split" > "$log" 2>&1 < /dev/null &
+    echo $! > ~/network-datasets.pid
+    echo "started (pid $!), log $log"
+    sleep 10; tail -5 "$log"
+    REMOTE
+
+# How the network datasets stand on the GPU machine (docs/adr/0035 N2): per dataset the files fetched (and any whose sha256 no longer matches its manifest: exit 1), the licence, the traces per tier, and the held-out split; plus whether a fetch is running and its log's tail
+[group('trainer')]
+network-datasets-status lines="15":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    ssh -o ConnectTimeout=10 "{{gpu_host}}" 'bash -s' <<'REMOTE'
+    set -uo pipefail
+    if [ -f ~/network-datasets.pid ] && kill -0 "$(cat ~/network-datasets.pid)" 2>/dev/null; then echo "fetch running (pid $(cat ~/network-datasets.pid))"; else echo "no fetch running"; fi
+    tail -n {{lines}} ~/network-datasets.log 2>/dev/null || echo "(no log)"
+    echo
+    cd ~/teleoperation-datasets/trainer 2>/dev/null || { echo "no ~/teleoperation-datasets yet: just network-datasets-fetch"; exit 1; }
+    unset PYTHONPATH; ~/teleoperation/trainer/.venv/bin/python -m armpred.net.datasets status
+    REMOTE
+
 # Build the Quest APK (unity/TeleopVR, Unity 2022.3) from its Build Settings scenes after its scene check -> unity/TeleopVR/Builds/TeleopVR-Quest.apk. The first Android build re-imports assets; close that project's editor first
 [group('quest (parked)')]
 build-quest:

@@ -41,7 +41,11 @@ def load_delays_ms(path):
     """One-way delays in milliseconds. Format is `TRACE|<version>|<ticksPerSecond>` then one
     tick count per line -- see core/Teleop.Eval/Sweep/TraceFile.cs."""
     lines = path.read_text().splitlines()
-    ticks_per_second = int(lines[0].split("|")[2])
+    header = lines[0].split("|")
+    if len(header) != 3 or header[0] != "TRACE" or header[1] != "1":
+        # Version 2 (docs/adr/0035 amendment 3: loss markers, a send interval) is the trainer's; this reads version 1 only.
+        raise ValueError(f"{path}: not a version-1 trace header: {lines[0]!r}")
+    ticks_per_second = int(header[2])
     return [int(v) / ticks_per_second * 1000.0 for v in lines[1:] if v.strip()]
 
 

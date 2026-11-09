@@ -81,7 +81,7 @@ perfect pose.
 
 | Phase | What | Needs |
 |---|---|---|
-| N0 | This ADR accepted; G.1050 / Y.1541 numbers copied in with their clauses | the standards' text |
+| N0 | This ADR accepted; G.1050 / Y.1541 numbers copied in with their clauses (amendment 2) | the standards' text (both free from the ITU) |
 | N1 | `just pull-galaxy-traces`: the headset records downlink traces; a week of home, lab and relay Wi-Fi | the headset |
 | N2 | `just network-datasets-fetch` and converters to `.trace` for RIPE Atlas, FCC MBA, Puffer, Mahimahi; manifests, licences, fixtures; the tier split | the GPU machine's disk |
 | N3 | Core: the forecast's causal levels in C#, golden-pinned to `forecast.py`; the headset fills the network block | an ADR-level Core change (this one) |
@@ -134,3 +134,94 @@ perfect pose.
   loss 0.013%, 18 stalls over 100 ms and none over 250 ms, each followed by a burst of about 7 frames. A calmer evening than
   the one in Context (RTT p50 83, p90 312 ms): one trace is not the tier. A week of them, at different times of day, is N1's
   remaining work.
+
+## Amendment 2 (2026-11-09): N0, the standards' numbers, and the tiers are G.1050's profiles
+
+Both Recommendations are free from the ITU ("Freely available items"); the numbers below were copied from their text,
+fetched 2026-11-09, and are in `trainer/armpred/net/datasets/standards.py`, which a test holds to them.
+
+**ITU-T Y.1541 (12/2011), clause 5.3, Table 1** "IP network QoS class definitions and network performance objectives":
+
+| Class | Mean IPTD (upper bound) | IPDV: 1 − 10⁻³ quantile of IPTD minus its minimum | IPLR |
+|---|---|---|---|
+| 0 | 100 ms | 50 ms | 1 × 10⁻³ |
+| 1 | 400 ms | 50 ms | 1 × 10⁻³ |
+| 2 | 100 ms | U | 1 × 10⁻³ |
+| 3 | 400 ms | U | 1 × 10⁻³ |
+| 4 | 1 s | U | 1 × 10⁻³ |
+| 5 | U | U | U |
+
+"U" is unspecified. The general notes: "An evaluation interval of 1 minute is suggested for IPTD, IPDV, and IPLR ...
+Any minute observed should meet these objectives."
+
+**ITU-T G.1050 (07/2016), clause 7.1, Table 6** "Impairment levels per service test profile" (ranges, min to max):
+
+| | Profile A, well-managed | Profile B, partially-managed | Profile C, unmanaged |
+|---|---|---|---|
+| One-way latency | 20–100 ms regional, 90–300 ms intercontinental | 20–100 ms regional, 90–400 ms intercontinental | 20–500 ms |
+| Jitter (peak-to-peak) | 0–50 ms | 0–150 ms | 0–500 ms |
+| Sequential packet loss | random loss only | 40–200 ms | 40–10 000 ms |
+| Rate of sequential loss | random loss only | < 10⁻³ /s | < 10⁻¹ /s |
+| Random packet loss | 0–0.05 % | 0–2 % | 0–20 % |
+| Reordered packets | 0–0.001 % | 0–0.01 % | 0–0.1 % |
+
+"The total packet loss shown is the sum of the sequential packet loss and random packet loss." Clause 7.2 labels the
+standard test cases `<access><profile><severity>`: D (DSL) or G (GPON), w / p / u, a higher digit a harder case.
+
+**The tiers are G.1050's three profiles**: good = A, poor = B, very bad = C (and anything past C). This refines decision 2,
+whose table assigned tiers by source: a source spans tiers (the FCC's panel has DSL and fibre; RIPE Atlas has data
+centres and LTE), so each trace is assessed on its own (`tiering.py`):
+
+- per minute (Y.1541's interval; a trace under a minute is one window): the mean one-way delay, and the jitter as Y.1540's
+  2-point IPDV (the 1 − 10⁻³ quantile minus the minimum). G.1050 says "peak-to-peak" without saying over which packets;
+  the quantile keeps one late datagram in thousands from deciding the tier;
+- over the trace: a run of lost datagrams lasting at least 40 ms (Table 6's shortest burst) is sequential loss, a shorter
+  one random loss; a datagram that arrives before the one sent before it is reordered;
+- a trace's profile is the least severe one whose every bound holds in every minute. The Y.1541 class is recorded too.
+
+Measured this way, the headset's first trace (amendment 1) is **poor**: profile B, Y.1541 class 2 (worst-minute IPDV
+140 ms, mean 16 ms, loss 0.013 %, no bursts).
+
+G.1050's attachment (Annex H, a zip of about 780 MB, also free) holds the Recommendation's own simulator output per test
+case (Annex F): per-packet delay and loss for the managed flows of profiles A and B (`$FLOW.out`, clause 6.6 Table 3),
+and per-bin delay statistics of the unmanaged iPerf flow (`bw-*.csv`, Table 4). These are the standard's tiers as traces,
+and N2 uses them.
+
+## Amendment 3 (2026-11-09): N2, the datasets
+
+`trainer/armpred/net/datasets/`, run on the GPU machine by `just network-datasets-fetch` (detached; this commit, from its
+own clone `~/teleoperation-datasets`, with the trainer's venv) and `just network-datasets-status`; our own traces locally by
+`just network-traces-ours`.
+
+- **`.trace` version 2** (`datasets/trace.py`): `TRACE|2|<tps>|<sendIntervalTicks>`, then a delay in ticks or `L` (lost)
+  per datagram, datagram i sent at i × the interval. Only the trainer reads it; `Teleop.Eval`, the Bridge, the trainer's v1
+  reader and `analysis/playout_bounds.py` refuse it by its header (the last now checks the version).
+- **Per dataset**, under `~/datasets/network/<name>/`: `download/` (untrusted: HTTPS from the dataset's own hosts only,
+  size-capped, under names chosen here, parsed and never run), `manifest.json` (URL, sha256, bytes, when, licence, terms,
+  citation, what was kept), `traces/*.trace` and `index.json` (per trace: group, sha256, tier and the measured tier,
+  the assessment, what the conversion assumed and its seed). `trainer/contract/NETWORK_DATASETS.md` has the formats.
+- **The split** (`split.json`): a group (a G.1050 test case, a Mahimahi link, a Puffer session, an FCC unit, a RIPE probe,
+  one of our recordings) is held out when hash(salt, dataset, group) < 0.2; a (dataset, tier) with two or more groups and
+  none held out holds out its lowest-hash one. Adding data never moves a group.
+
+| Dataset | What | Becomes | Licence / terms (as recorded in its manifest) |
+|---|---|---|---|
+| `g1050-2016` | the attachment's ISO image, read in place (`iso9660.py`, standard library) | A and B: VoIP flows (20 ms) per packet as they are; C: iPerf bins as a normal per datagram from the bin's mean and √(m2 − mean²) | ITU, freely available; not redistributed |
+| `mahimahi` | 8 cellular links × down/up (Saturator, NSDI 2013) | the joint stream (284-byte datagrams every 20 ms) through a FIFO in front of the link's delivery opportunities; a datagram not delivered in 3 s is lost (the FCC MBA's UDP timeout), where an unbounded queue made a driving trace's dead zones into delays of a minute | GPL-3.0 (the repository's); none stated for the traces |
+| `puffer` | one day's `video_sent` (2026-11-07) | per stream ≥ 120 s: half the smoothed `tcpi_rtt`, interpolated between ~2 s chunks; no packet-scale jitter | **none stated**; Puffer asks for one download, which is all the fetch does |
+| `fcc-mba` | July 2023 raw archive (the last), unit profile | per unit, idle hours (60 s) and loaded speed tests (10 s): summary traces | unverified (fcc.gov answered 403); US federal works are generally public domain |
+| `ripe-atlas` | measurement 1001 (k-root), probes by tag (data centre, home fibre/cable/DSL/Wi-Fi, LTE, 5G, Starlink, satellite), 2026-11-01 + 2 days | per probe and 4-hour block: a 60 s summary trace | RIPE Atlas terms 4.5: research allowed, commercial needs permission; raw data not republished |
+| `ours-wifi` | the headset's `.ltrace` files | per piece: the one-way delay by `ClockSync`, losses by sequence, the arrival order the headset saw kept | ours |
+
+- **Summary traces** (`synth.py`; FCC, RIPE): one-way delay half the round trip; a shifted gamma above half the minimum
+  with half the mean and half the standard deviation, drawn per datagram independently (a summary says nothing of
+  correlation in time); Bernoulli loss at the measured rate; delivered first in, first out, so draws never invent
+  reordering. Seeded (`numpy` PCG64), the seed in the index. These are statistical stand-ins at the right level and
+  spread, not recordings, and the index says which kind (`per-packet`, `replayed`, `level`, `summary`, `statistical`,
+  `recorded`) every trace is.
+- **Verified end to end on Mahimahi** (fetched and converted on the PC, 2026-11-09: 16 files, 30.1 MB, 3 s): all 16 traces
+  very bad, past profile C (worst-minute IPDV over 500 ms in every one; the eight long driving traces also lose 1.8–8.6 %
+  in bursts); the split held out 3 of the 8 links.
+- **Not verified yet**: the G.1050 attachment's layout (the zip's ISO, its folder names, the `.out` and `bw` files' exact
+  columns) and the FCC archive's real headers are written from the Recommendation and the data dictionary; the first
+  `just network-datasets-fetch` checks them, and this amendment records what it found.

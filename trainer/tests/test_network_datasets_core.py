@@ -157,3 +157,17 @@ def test_the_split_holds_out_by_group_and_every_cell_has_a_test_side(tmp_path):
     for tier, c in doc["counts"]["demo"].items():
         assert c["groupsTest"] >= 1 and c["train"] > 0
     assert split.make(root, ["demo"])["traces"] == sides  # deterministic
+
+
+def test_a_group_with_traces_in_two_tiers_is_on_one_side_in_both(tmp_path):
+    root = str(tmp_path)
+    items = []
+    for g in range(8):
+        good = T.from_ms(steady(3000, 30.0, spread=5.0), 20.0)
+        poor = T.from_ms([30.0 + (100.0 if i % 500 == 0 else 0.0) for i in range(3000)], 20.0)  # 100 ms spikes: another tier
+        items += [(f"g{g}-a", f"case{g}", good, {}), (f"g{g}-b", f"case{g}", poor, {})]
+    I.emit(root, "demo", items, {})
+    doc = split.make(root, ["demo"], salt="x")
+    for g in range(8):
+        assert doc["traces"][f"demo/g{g}-a"] == doc["traces"][f"demo/g{g}-b"]
+    assert len(doc["counts"]["demo"]) == 2 and all(c["groupsTest"] >= 1 for c in doc["counts"]["demo"].values())

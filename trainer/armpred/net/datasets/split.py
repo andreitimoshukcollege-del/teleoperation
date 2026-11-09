@@ -2,8 +2,9 @@
 group, so a test trace never shares a session, a unit, a probe or a test case with a training one.
 
 A group is held out when the hash of (salt, dataset, group) falls under ``fraction``: adding data never moves a group
-already assigned. A (dataset, tier) cell with at least two groups and none under the threshold holds out its lowest-hash
-group, so every tier of every source has a test side. ``split.json`` records the salt, the fraction, each trace's side and
+already assigned. A (dataset, tier) cell with at least two groups and none held out holds out its lowest-hash group, so
+every tier of every source has a test side. The decision is the group's, across tiers: a group with traces in two tiers
+(a G.1050 test case whose flows measure differently) is on the same side in both. ``split.json`` records the salt, the fraction, each trace's side and
 the counts.
 """
 
@@ -36,15 +37,18 @@ def make(root: str, datasets: List[str], salt: str = SALT, fraction: float = FRA
             continue
         for e in doc["traces"]:
             cells[(name, e["tier"])][e["group"]].append(e["id"])
+    # Held out per group, across tiers: a group whose traces fall in two tiers is on one side in both.
+    test: Dict[str, set] = defaultdict(set)
+    for (name, tier), groups in cells.items():
+        test[name] |= {g for g in groups if _h(name, g, salt) < fraction}
+    for (name, tier), groups in sorted(cells.items()):
+        if len(groups) >= 2 and not (test[name] & set(groups)):
+            test[name].add(min(groups, key=lambda g: _h(name, g, salt)))
     side: Dict[str, str] = {}
     counts: Dict = defaultdict(lambda: defaultdict(lambda: {"train": 0, "test": 0, "groupsTest": 0, "groups": 0}))
     for (name, tier), groups in sorted(cells.items()):
-        ranked = sorted(groups, key=lambda g: _h(name, g, salt))
-        test = {g for g in ranked if _h(name, g, salt) < fraction}
-        if not test and len(ranked) >= 2:
-            test = {ranked[0]}
-        for g in ranked:
-            s = "test" if g in test else "train"
+        for g in sorted(groups, key=lambda g: _h(name, g, salt)):
+            s = "test" if g in test[name] else "train"
             c = counts[name][tier]
             c["groups"] += 1
             c["groupsTest"] += s == "test"

@@ -206,10 +206,10 @@ own clone `~/teleoperation-datasets`, with the trainer's venv) and `just network
 
 | Dataset | What | Becomes | Licence / terms (as recorded in its manifest) |
 |---|---|---|---|
-| `g1050-2016` | the attachment's ISO image, read in place (`iso9660.py`, standard library) | A and B: VoIP flows (20 ms) per packet as they are; C: iPerf bins as a normal per datagram from the bin's mean and √(m2 − mean²) | ITU, freely available; not redistributed |
+| `g1050-2016` | the attachment zip, read in place (Annex H describes an ISO image; the zip as published holds the folders `Software/{D,G}/out.{bidi,dwn,up}/<case>-t/`) | A and B: VoIP flows (20 ms) per packet as they are; C: iPerf bins as a normal per datagram from the bin's mean and √(m2 − mean²) | ITU, freely available; its `COPYRIGHT.txt`: the simulator output is "free from copyright restriction"; not redistributed |
 | `mahimahi` | 8 cellular links × down/up (Saturator, NSDI 2013) | the joint stream (284-byte datagrams every 20 ms) through a FIFO in front of the link's delivery opportunities; a datagram not delivered in 3 s is lost (the FCC MBA's UDP timeout), where an unbounded queue made a driving trace's dead zones into delays of a minute | GPL-3.0 (the repository's); none stated for the traces |
 | `puffer` | one day's `video_sent` (2026-11-07) | per stream ≥ 120 s: half the smoothed `tcpi_rtt`, interpolated between ~2 s chunks; no packet-scale jitter | **none stated**; Puffer asks for one download, which is all the fetch does |
-| `fcc-mba` | July 2023 raw archive (the last), unit profile | per unit, idle hours (60 s) and loaded speed tests (10 s): summary traces | unverified (fcc.gov answered 403); US federal works are generally public domain |
+| `fcc-mba` | July 2023 raw archive (the last), unit profile | per unit, idle hours (60 s) and loaded speed tests (10 s): summary traces | unverified (fcc.gov answered 403); US federal works are generally public domain. **data.fcc.gov refuses automated downloads (HTTP 403), and that is respected**: left out of a plain fetch; the two files can be put in `download/` by hand and `fetch fcc-mba` records them |
 | `ripe-atlas` | measurement 1001 (k-root), probes by tag (data centre, home fibre/cable/DSL/Wi-Fi, LTE, 5G, Starlink, satellite), 2026-11-01 + 2 days | per probe and 4-hour block: a 60 s summary trace | RIPE Atlas terms 4.5: research allowed, commercial needs permission; raw data not republished |
 | `ours-wifi` | the headset's `.ltrace` files | per piece: the one-way delay by `ClockSync`, losses by sequence, the arrival order the headset saw kept | ours |
 
@@ -219,9 +219,27 @@ own clone `~/teleoperation-datasets`, with the trainer's venv) and `just network
   reordering. Seeded (`numpy` PCG64), the seed in the index. These are statistical stand-ins at the right level and
   spread, not recordings, and the index says which kind (`per-packet`, `replayed`, `level`, `summary`, `statistical`,
   `recorded`) every trace is.
-- **Verified end to end on Mahimahi** (fetched and converted on the PC, 2026-11-09: 16 files, 30.1 MB, 3 s): all 16 traces
-  very bad, past profile C (worst-minute IPDV over 500 ms in every one; the eight long driving traces also lose 1.8–8.6 %
-  in bursts); the split held out 3 of the 8 links.
-- **Not verified yet**: the G.1050 attachment's layout (the zip's ISO, its folder names, the `.out` and `bw` files' exact
-  columns) and the FCC archive's real headers are written from the Recommendation and the data dictionary; the first
-  `just network-datasets-fetch` checks them, and this amendment records what it found.
+- **A trace's tier is what it measures, for G.1050 too**; the test case's profile is kept as `info.caseTier`. On the
+  attachment, 65 of 224 traces measured better than their case: profile B's VoIP flows are managed (QoS-prioritised;
+  worst-minute IPDV about 1 ms), and clause 7.2's cases run "mild to severe within each service test profile", so the
+  mildest unmanaged cases (Du1, Gu1) measure good. A profile describes a network, not each flow in it, and the headset's
+  stream has no priority.
+- **The split holds a group out across tiers** (a G.1050 case whose flows measure differently is on one side in both).
+
+**The first fetch** (GPU machine, 2026-11-09, commit `5797365`; 2.6 GB, 375 GB left):
+
+| Dataset | Traces | good | poor | very bad | held out: traces / groups (groups counted per tier) |
+|---|---|---|---|---|---|
+| `g1050-2016` | 224 | 155 | 26 | 43 | 20 / 5 of 42 cases |
+| `mahimahi` | 16 | 0 | 0 | 16 | 6 / 3 of 8 links |
+| `puffer` | 400 | 224 | 122 | 54 | 78 / 71 of 342 sessions |
+| `ripe-atlas` | 1276 | 1003 | 120 | 153 | 312 / 45 of 108 probes |
+| `fcc-mba` | — | | | | refused (HTTP 403) |
+| `ours-wifi` | 1 (local) | 0 | 1 | 0 | — |
+
+- No group straddles the split (checked on the GPU machine: 0 of 500).
+- Mahimahi, fetched and converted on the PC too: every driving trace loses 1.8–8.6 % in bursts; the short ones queue to
+  1.4–1.7 s and lose nothing.
+- **What N5 must weigh**: RIPE Atlas is three quarters of the good tier and its traces are summaries (no correlation in
+  time); Puffer's are slow levels (no packet-scale jitter); only G.1050's per-packet flows, Mahimahi and ours are packet
+  timing. N5 samples by tier and by kind, not by count.

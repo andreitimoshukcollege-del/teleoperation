@@ -128,3 +128,9 @@ perfect pose.
   `just link-trace-summary` gives per trace the one-way delay, round trips, RFC 3550 jitter, loss by sequence, stalls over
   100/250/500 ms and the bursts after them.
 - **Downlink only.** The uplink is already recorded by RobotHost (`JC`: arrival and the headset's send stamp).
+- **First trace (2026-11-09, Galaxy XR on home Wi-Fi, through `just isaac-relay` to Isaac).** 162 s, 7989 frames (49 Hz),
+  399 KB (2.5 KB/s, as designed). One-way delay p50/p95/p99/max 14 / 25 / 54 / 163 ms, round trips p50/p95/max
+  28 / 41 / 213 ms (half the RTT agrees with the one-way delay, so the stamps and `ClockSync` agree), RFC 3550 jitter 7 ms,
+  loss 0.013%, 18 stalls over 100 ms and none over 250 ms, each followed by a burst of about 7 frames. A calmer evening than
+  the one in Context (RTT p50 83, p90 312 ms): one trace is not the tier. A week of them, at different times of day, is N1's
+  remaining work.

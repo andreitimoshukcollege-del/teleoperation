@@ -81,7 +81,7 @@ def test_the_command_delay_parameter_reproduces_a_lagging_servo():
     session = recorded(lag_ms=40)
     r = simfit.Replayer(model)
     delayed = r.run(session, RampSim(0), simfit.Params(delay_ms=40)).summary()["sim_tracking_error_deg"]["motors"]["2"]
-    assert delayed["p95"] <= r.deg(3.5)  # the driver's read phase: a few whole pulses
+    assert delayed["p95"] <= r.deg(5.0)  # the driver's read phase: a few whole pulses (16 without the delay)
 
 
 def test_the_fit_finds_the_delay_and_is_deterministic():

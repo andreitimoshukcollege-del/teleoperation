@@ -142,7 +142,7 @@ namespace Teleop.RobotHost.Tests.Sim
             JsonNode sim = JsonNode.Parse(JetRoverSimModel.SimJson(profile, Plant(profile)))!;
             var motors = sim["motors"]!.AsArray();
             Assert.Equal(new[] { 1, 2, 3, 4, 5, 10 }, motors.Select(m => (int)m!["motorId"]!).ToArray());
-            Assert.False((bool)motors.Single(m => (int)m!["motorId"]! == 10)!["feedback"]!);
+            Assert.True((bool)motors.Single(m => (int)m!["motorId"]! == 10)!["feedback"]!); // the real driver reads it (FEEDBACK_MOTOR_IDS)
             Assert.Equal(0.12217305, (double)motors.Single(m => (int)m!["motorId"]! == 2)!["zeroOffsetRadians"]!, 6);
         }
 

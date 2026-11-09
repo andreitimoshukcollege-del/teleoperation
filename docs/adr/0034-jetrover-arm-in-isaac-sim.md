@@ -325,3 +325,23 @@ remotely".
   (docs/metrics.md §3, "Live link health"). Diagnostics only; nothing is recorded.
 - **`just isaac-relay`** builds into its own folder, so a running relay no longer locks `core-check`'s build of
   `Teleop.Eval`.
+
+## Amendment 9 (2026-11-08): the gripper reports, opens to 70 mm, and the third-person cameras see the whole arm
+
+The user, grasping in Isaac through the relay: "when I grab an object, the measured values seem to phase into the object,
+also the gripper doesn't seem to open as far as it does in real life, also the 3rd person camera angles cut off the arm when
+it is pointed straight up".
+
+- **The gripper reports its position.** Decision 4 had the sim report what the robot senses, and the gripper never
+  answered reads when it was written. It has since 2026-10-25: the real driver reads motors 1–5 and 10
+  (`FEEDBACK_MOTOR_IDS`, PR #70, with `ReadBackoff` for one that stops answering). The sidecar now marks the gripper
+  `feedback: true`, so the sim reads it in each 20 ms cycle and RobotHost passes the fingers' real place to the headset:
+  the measured twin stops at the object instead of showing the command. `just isaac-jetrover-check` expects it valid.
+  The J3 fit started before this (e18c645) replays with the old five-read cycle; its scored motors are 1–5 either way.
+- **Open, the pads are about 70 mm apart** (`FingerOpenMeters` 0.018), the user's estimate of the real gripper, up from my
+  10 mm guess (53.5 mm). Still not measured.
+- **The third-person cameras** stood at (0.78, ±0.48, 0.30) looking at (0.12, 0, −0.08), and the arm pointed straight up
+  (its tip about 0.46 m over the yaw pivot) left the frame by 180 px. They now stand at (1.15, ±0.68, 0.40) looking at
+  (0.08, 0, 0.07): the arm straight up, stretched forward, the chassis and the whole placement region all fall at least
+  20 px inside the 640 × 360 frame. The far backdrop screen moves from x 1.0 to 1.6 (the cameras would have stood behind
+  it), the side screens stretch to x 1.6 and the floor mat to 1.6.

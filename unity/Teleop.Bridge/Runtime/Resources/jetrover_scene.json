@@ -29,16 +29,16 @@
   "backdrops": { "change": "per-session", "manifest": "~/isaacsim/backdrops/openimages-v7-val/manifest.json",
     "mats": [
       { "id": "mat", "on": "table", "lift": 0.0005, "region": [0.10, 0.572, -0.40, 0.40] },
-      { "id": "floor", "on": "floor", "lift": 0.001, "region": [-1.0, 1.4, -1.8, 1.8] } ],
+      { "id": "floor", "on": "floor", "lift": 0.001, "region": [-1.0, 1.6, -1.8, 1.8] } ],
     "screens": [
-      { "id": "far", "center": [1.0, 0.0, 0.0], "size": [3.0, 2.2], "normal": [-1, 0] },
+      { "id": "far", "center": [1.6, 0.0, 0.0], "size": [3.0, 2.2], "normal": [-1, 0] },
       { "id": "back", "center": [-0.9, 0.0, 0.0], "size": [3.0, 2.2], "normal": [1, 0] },
-      { "id": "left", "center": [0.05, 1.2, 0.0], "size": [1.9, 2.2], "normal": [0, -1] },
-      { "id": "right", "center": [0.05, -1.2, 0.0], "size": [1.9, 2.2], "normal": [0, 1] } ] },
+      { "id": "left", "center": [0.35, 1.2, 0.0], "size": [2.5, 2.2], "normal": [0, -1] },
+      { "id": "right", "center": [0.35, -1.2, 0.0], "size": [2.5, 2.2], "normal": [0, 1] } ] },
   "cameras": [
-    { "id": "third-left", "position": [0.78, 0.48, 0.30], "lookAt": [0.12, 0.0, -0.08], "width": 640, "height": 360, "hfovDeg": 69.0,
+    { "id": "third-left", "position": [1.15, 0.68, 0.40], "lookAt": [0.08, 0.0, 0.07], "width": 640, "height": 360, "hfovDeg": 69.0,
       "near": 0.02, "far": 6.0, "fps": 30, "feedPort": 6008, "feedQuality": 80, "recordQuality": 92, "record": ["rgb", "depth", "mask"] },
-    { "id": "third-right", "position": [0.78, -0.48, 0.30], "lookAt": [0.12, 0.0, -0.08], "width": 640, "height": 360, "hfovDeg": 69.0,
+    { "id": "third-right", "position": [1.15, -0.68, 0.40], "lookAt": [0.08, 0.0, 0.07], "width": 640, "height": 360, "hfovDeg": 69.0,
       "near": 0.02, "far": 6.0, "fps": 30, "feedPort": 6009, "feedQuality": 80, "recordQuality": 92, "record": ["rgb", "depth", "mask"] },
     { "id": "wrist", "mount": "gripper_link", "mountPosition": [0.10, 0.0, 0.05], "mountLookAt": [0.26, 0.0, -0.01],
       "mountUp": [0.0, 0.0, 1.0], "width": 640, "height": 360, "hfovDeg": 87.0, "near": 0.01, "far": 6.0, "fps": 30,

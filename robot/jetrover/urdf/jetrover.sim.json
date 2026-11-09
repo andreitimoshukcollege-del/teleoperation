@@ -51,12 +51,12 @@
       "motorId": 10,
       "joint": "gripper",
       "zeroOffsetRadians": 0,
-      "feedback": false,
+      "feedback": true,
       "stallTorqueNm": 1.5,
       "openPulse": 116,
       "closedPulse": 645,
       "fingerTravelMeters": 0.0165,
-      "fingerOpenMeters": 0.01,
+      "fingerOpenMeters": 0.018,
       "fingers": [
         "gripper",
         "gripper_mirror"

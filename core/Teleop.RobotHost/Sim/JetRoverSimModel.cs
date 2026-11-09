@@ -56,11 +56,11 @@ namespace Teleop.RobotHost.Sim
         public const double FingerTravelMeters = 0.0165;
 
         /// <summary>
-        /// How far each finger opens past the CAD's pose (m), at the open pulse: a guess, not a measurement (docs/adr/0034
-        /// amendment 8). The CAD's pose leaves 33 mm between the pads, too little for the bench's 35 mm can; with this, 53 mm.
-        /// Measure the real gripper's opening and set it here.
+        /// How far each finger opens past the CAD's pose (m), at the open pulse: the CAD's pose leaves 33.5 mm between the pads,
+        /// and with this about 70 mm, the user's estimate of the real gripper's opening (docs/adr/0034 amendment 9; it was a
+        /// 10 mm guess, 53.5 mm, and opened less than the real one). Not measured: measure the real gripper and set it here.
         /// </summary>
-        public const double FingerOpenMeters = 0.010;
+        public const double FingerOpenMeters = 0.018;
 
         /// <summary>A finger's collision from the CAD (<c>visuals.json</c>'s <c>fingerPads</c>): its pad's box in the finger's frame.</summary>
         public readonly struct Pad
@@ -260,7 +260,9 @@ namespace Teleop.RobotHost.Sim
                     ["joint"] = JointOf(j.Role),
                     ["zeroOffsetRadians"] = Math.Round(j.ZeroOffsetRadians, 9),
                     // The driver reads motors 1 to 5; the gripper (10) never answers a position read (ADR 0018).
-                    ["feedback"] = j.Role != JointRole.GripperMain,
+                    // Every motor reports, the gripper too: the real driver reads 1-5 and 10 (FEEDBACK_MOTOR_IDS, since PR #70),
+                    // backing off one that stops answering (docs/adr/0034 amendment 9).
+                    ["feedback"] = true,
                     ["stallTorqueNm"] = StallTorqueNm[JointOf(j.Role)],
                 };
                 if (j.Role == JointRole.GripperMain)

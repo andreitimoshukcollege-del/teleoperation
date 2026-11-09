@@ -311,3 +311,12 @@ see the delay.
 - **Not changed.** The FR3's host (`SerialChainHost`) takes Core profiles only. The trainer has no copy of
   `TimedTraceImpairment`: it reads what the arm lived through from `tDeliver`, and N5 decides how traces enter the
   simulator.
+- **First session** (`20261109T224845Z-auto`, 2026-11-09, driven from the headset over home Wi-Fi through the relay, 8.8
+  of a 15-minute schedule): `just isaac-uplink-check` PASS on all 9 trace segments (three good, three poor, three very
+  bad; Puffer, RIPE Atlas, G.1050). The arm's delivered delay matched each trace's within a few ms at p50 and p95 (from
+  9.1 / 11.1 ms to 146 / 321 ms by the trace; the arm 1–4 ms above it, RobotHost's loop taking a released command
+  slightly after it is due), and the losses with them (5.8 % against the trace's 6.2 % on the lossiest).
+- **Not yet training data.** `armpred check-session` refuses the session: the trainer's JetRover truth is the driver's
+  servo reads (`driver.jlog`: `RD`, and the gate's `CI`, `GP`, `GD`, `WR`, `CY`), and Isaac's bridge, which emulates that
+  driver, does not write them. Making Isaac JetRover sessions readable (the bridge writing `driver.jlog` from its emulated
+  reads and gate) is the next step before N5 can use them.

@@ -26,9 +26,11 @@ def test_the_gripper_maps_open_and_closed_pulses_onto_finger_travel_and_never_re
     m = model()
     g = m.motors[10]
     assert g.is_gripper and not g.feedback
-    assert m.value(10, g.open_pulse) == 0.0
+    assert m.value(10, g.open_pulse) == pytest.approx(-g.finger_open)  # open: past the CAD's pose
     assert m.value(10, g.closed_pulse) == pytest.approx(g.finger_travel)
-    assert m.value(10, (g.open_pulse + g.closed_pulse) / 2) == pytest.approx(g.finger_travel / 2)
+    assert m.value(10, (g.open_pulse + g.closed_pulse) / 2) == pytest.approx((g.finger_travel - g.finger_open) / 2)
+    for pulse in (g.open_pulse, 300.0, g.closed_pulse):
+        assert m.pulse(10, m.value(10, pulse)) == pytest.approx(pulse)
 
 
 def test_a_servo_ramps_to_its_target_over_delta_over_speed_and_a_new_move_starts_where_the_ramp_is():

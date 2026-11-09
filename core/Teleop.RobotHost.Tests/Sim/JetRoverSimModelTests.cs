@@ -37,6 +37,25 @@ namespace Teleop.RobotHost.Tests.Sim
             return File.Exists(path) ? JetRoverSimModel.ParseVisuals(File.ReadAllText(path)) : Array.Empty<JetRoverSimModel.Visual>();
         }
 
+        private static IReadOnlyList<JetRoverSimModel.Pad> Pads()
+        {
+            string path = Path.Combine(Root(), "robot", "jetrover", "urdf", "meshes", "visuals.json");
+            return File.Exists(path) ? JetRoverSimModel.ParsePads(File.ReadAllText(path)) : Array.Empty<JetRoverSimModel.Pad>();
+        }
+
+        [Fact]
+        public void TheFingers_CollideAsTheirPads_WideEnoughForTheCan_AndMeetClosed()
+        {
+            IReadOnlyList<JetRoverSimModel.Pad> pads = Pads();
+            Assert.Equal(2, pads.Count);
+            JetRoverSimModel.Pad left = pads.Single(p => p.Link == "left_finger"), right = pads.Single(p => p.Link == "right_finger");
+            double gap = (left.Center.Y - left.Size.Y / 2) - (right.Center.Y + right.Size.Y / 2); // inner faces at the CAD's pose
+            Assert.InRange(gap, 0.025, 0.045);
+            double open = gap + 2 * JetRoverSimModel.FingerOpenMeters, closed = gap - 2 * JetRoverSimModel.FingerTravelMeters;
+            Assert.True(open > 0.035 + 0.005, $"open, the pads are {open * 1000:F1} mm apart: the 35 mm can must fit");
+            Assert.InRange(closed, -0.002, 0.001); // closed, they meet
+        }
+
         [Fact]
         public void EveryVisual_IsAUrdfLinksMesh_WithTheTrianglesItsManifestSays()
         {
@@ -44,7 +63,7 @@ namespace Teleop.RobotHost.Tests.Sim
             string manifest = Path.Combine(dir, "meshes", "visuals.json");
             Assert.True(File.Exists(manifest), $"{manifest} is missing: just jetrover-visuals");
             JsonNode doc = JsonNode.Parse(File.ReadAllText(manifest))!;
-            XDocument urdf = XDocument.Parse(JetRoverSimModel.Urdf(Profile(), JetRoverCollisionModel.Instance, Plant(Profile()), Visuals()));
+            XDocument urdf = XDocument.Parse(JetRoverSimModel.Urdf(Profile(), JetRoverCollisionModel.Instance, Plant(Profile()), Visuals(), Pads()));
             var links = urdf.Root!.Elements("link").Select(l => (string)l.Attribute("name")!).ToHashSet();
             foreach (JsonNode? v in doc["visuals"]!.AsArray())
             {
@@ -78,7 +97,7 @@ namespace Teleop.RobotHost.Tests.Sim
         {
             RobotArmProfile profile = Profile();
             string expected = file.EndsWith(".urdf", StringComparison.Ordinal)
-                ? JetRoverSimModel.Urdf(profile, JetRoverCollisionModel.Instance, Plant(profile), Visuals())
+                ? JetRoverSimModel.Urdf(profile, JetRoverCollisionModel.Instance, Plant(profile), Visuals(), Pads())
                 : JetRoverSimModel.SimJson(profile, Plant(profile));
             string path = Path.Combine(Root(), "robot", "jetrover", "urdf", file);
             if (Environment.GetEnvironmentVariable("TELEOP_WRITE_GOLDEN") == "1") File.WriteAllText(path, expected, new UTF8Encoding(false));
@@ -90,7 +109,7 @@ namespace Teleop.RobotHost.Tests.Sim
         public void TheUrdfsChain_PutsTheWristWhereTheIkDoes()
         {
             RobotArmProfile profile = Profile();
-            XDocument urdf = XDocument.Parse(JetRoverSimModel.Urdf(profile, JetRoverCollisionModel.Instance, Plant(profile), Visuals()));
+            XDocument urdf = XDocument.Parse(JetRoverSimModel.Urdf(profile, JetRoverCollisionModel.Instance, Plant(profile), Visuals(), Pads()));
             var joints = urdf.Root!.Elements("joint").ToDictionary(j => (string)j.Attribute("name")!);
             var rng = new Random(7);
             for (int k = 0; k < 50; k++)
@@ -115,7 +134,7 @@ namespace Teleop.RobotHost.Tests.Sim
         public void TheArmWeighsWhatARobotArmOfThisSizeDoes_AndTheGripperNeverReports()
         {
             RobotArmProfile profile = Profile();
-            XDocument urdf = XDocument.Parse(JetRoverSimModel.Urdf(profile, JetRoverCollisionModel.Instance, Plant(profile), Visuals()));
+            XDocument urdf = XDocument.Parse(JetRoverSimModel.Urdf(profile, JetRoverCollisionModel.Instance, Plant(profile), Visuals(), Pads()));
             double arm = urdf.Root!.Elements("link").Where(l => (string)l.Attribute("name")! != "base_link")
                 .Sum(l => (double)l.Element("inertial")!.Element("mass")!.Attribute("value")!);
             Assert.InRange(arm, 0.2, 1.5); // a 5-servo arm of 13 cm links

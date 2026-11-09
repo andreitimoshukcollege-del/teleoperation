@@ -303,3 +303,25 @@ blocked. also the gripper close and open seems to be inverted".
   their names, so the bridge and the renderer went on using the meshes converted before the fix (the stream still opened
   the gripper on close). The cache is now named by the URDF and every mesh file it names (`jetrover_bridge.urdf_digest`).
   The FR3's bridge keys its cache as before: its meshes are Franka's, which do not change.
+
+## Amendment 8 (2026-11-08): grasping, and the real network on the headset
+
+The user, through `just isaac-relay` from home: "the gripper still doesn't seem to open all the way and the collision boxes
+don't allow me to grab objects ... can you display the ping, lag, loss somewhere, since we are actually communicating
+remotely".
+
+- **The fingers collide as their pads.** The URDF's finger collisions were the arm's self-collision boxes, padded round each
+  whole jaw linkage: their inner faces stood 21 mm apart at "open", narrower than the 25 mm cube. `JetRoverVisualExport`
+  now writes each jaw's last 3 cm as a box (`visuals.json`'s `fingerPads`), and `JetRoverSimModel` uses those as the
+  fingers' collisions: 33.5 mm apart at the CAD's pose.
+- **The fingers' travel.** Closed, each finger now moves 16.5 mm (the twin's own `TwinGripper.travelMeters`), so the pads
+  meet; it was 11 mm, which left 11 mm. Open, each moves 10 mm past the CAD's pose (`FingerOpenMeters`), for 53.5 mm between
+  the pads, so the 35 mm can fits. **That 10 mm is a guess:** the real gripper's opening was never measured
+  (`GripperOpenPulse` is uncalibrated). The sidecar carries both (`fingerTravelMeters`, `fingerOpenMeters`); the bridge,
+  the renderer and the reported opening use them (`SimModel.finger_value`).
+- **The real network, live.** `LiveLinkMeter` (Core) takes every joint-state frame and gives, over the last 5 s, the median
+  one-way delay to the headset (lag), RFC 3550 jitter, and downlink loss by sequence number; the round trip is
+  `ClockSync`'s. The JetRover scene's twin status line reads `live · ping N ms · lag N ms · jitter N ms · loss N%`
+  (docs/metrics.md §3, "Live link health"). Diagnostics only; nothing is recorded.
+- **`just isaac-relay`** builds into its own folder, so a running relay no longer locks `core-check`'s build of
+  `Teleop.Eval`.

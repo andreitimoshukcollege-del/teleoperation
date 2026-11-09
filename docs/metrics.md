@@ -125,6 +125,20 @@ The second is **derived at analysis time from `owd_uplink_ms` / `owd_downlink_ms
 separately emitted — it is a reduction of samples that already exist, and a second emitter for it
 could only disagree with them.
 
+**Live link health (the headset's status line; diagnostics, never results).** When the robot is far away the link's own
+delay, jitter and loss are real, not emulated, so the headset shows them, from the joint-state frames over the last 5 s
+(`Teleop.RobotArm.Operator.LiveLinkMeter`, docs/adr/0034 amendment 8):
+- **ping** — `ClockSync`'s last round trip (ms);
+- **lag** — the median `owd_downlink_ms` of the window: arrival minus the robot's send stamp put on the headset's clock by
+  `ClockSync`; shown only once it has synced;
+- **jitter** — `net_downlink_jitter_ms` exactly as above (RFC 3550 A.8, raw stamps and each side's own tick rate), smoothed
+  over every frame since the stream (re)started;
+- **loss** — `1 − received / (last sequence − first sequence + 1)` over the window's frames: downlink only, and by the
+  sender's sequence numbers rather than the transport-boundary counts below, which the headset cannot see for a remote
+  robot. A duplicate or reordered frame is counted once; a sequence that jumps by over 1000 (a RobotHost restart) restarts
+  the window.
+None of these is recorded; a session's citable network figures are still the recorded `owd_*` and the analysis below.
+
 **Loss rate** — fraction of sent datagrams never received.
 
 Metric names: `net_uplink_sent` / `net_downlink_sent`, one sample of value 1 per datagram the

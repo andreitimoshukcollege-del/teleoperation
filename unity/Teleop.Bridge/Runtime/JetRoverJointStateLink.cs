@@ -144,6 +144,18 @@ namespace Teleop.Bridge
         public bool HasState => _measuredCount > 0;
         public bool IsSynced => _clockSync.Diagnostics.IsSynced;
         public long FramesReceived { get; private set; }
+
+        // The real network, live (docs/metrics.md §3, "Live link health"): lag, jitter and loss over the last 5 s of frames.
+        private LiveLinkMeter _meter;
+
+        /// <summary>The median one-way delay from the robot to the headset over the last 5 s (ms); negative before the clocks sync.</summary>
+        public float LagMilliseconds { get { double v = _meter.LagMs; return double.IsNaN(v) ? -1f : (float)v; } }
+
+        /// <summary>RFC 3550 interarrival jitter of the frames (ms).</summary>
+        public float JitterMilliseconds => (float)_meter.JitterMs;
+
+        /// <summary>The share of the last 5 s of frames, by sequence number, that never arrived (%).</summary>
+        public float LossPercent => (float)(_meter.LossFraction * 100.0);
         public float RoundTripMilliseconds => _clockSync.Diagnostics.LastRttTicks * 1000f / _clock.TicksPerSecond;
 
         /// <summary>
@@ -184,6 +196,7 @@ namespace Teleop.Bridge
             _transport = transport ?? throw new ArgumentNullException(nameof(transport));
             _clock = clock ?? throw new ArgumentNullException(nameof(clock));
             _side = new JointPortSideChannels(transport, clock, world);
+            _meter = new LiveLinkMeter(clock.TicksPerSecond);
             if (presets == null || presets.Length == 0) throw new ArgumentException("no joint predictor presets");
             _profile = profile;
             _clockSync = new ClockSync(clockSyncConfig);
@@ -408,6 +421,7 @@ namespace Teleop.Bridge
         /// <summary>Sends a keepalive when one is due, and takes in every frame that has arrived.</summary>
         public void Tick(long now)
         {
+            _meter.Trim(now);
             if (_lastKeepaliveTicks == long.MinValue || now - _lastKeepaliveTicks >= _keepaliveIntervalTicks)
             {
                 if (JointStateCodec.TryEncodeSubscribe(now, _clock.TicksPerSecond, _buffer, out int written))
@@ -458,13 +472,15 @@ namespace Teleop.Bridge
                     continue;
                 }
 
-                if (!JointStateCodec.TryDecode(_buffer.AsSpan(0, count), out _, out long robotSend, out long sensed,
+                if (!JointStateCodec.TryDecode(_buffer.AsSpan(0, count), out uint frameSequence, out long robotSend, out long sensed,
                         out long echoOperator, out long echoRobotRecv, out long robotTps, _received, out int jointCount))
                 {
                     continue;
                 }
 
                 FramesReceived++;
+                _meter.OnFrame(frameSequence, robotSend, robotTps, arrival,
+                    IsSynced ? _clockSync.ToOperatorTicks(robotSend, robotTps, _clock.TicksPerSecond) : long.MinValue);
                 _lastFrameArrivalTicks = arrival;
                 if (_firstFrameArrivalTicks == long.MinValue) _firstFrameArrivalTicks = arrival;
 

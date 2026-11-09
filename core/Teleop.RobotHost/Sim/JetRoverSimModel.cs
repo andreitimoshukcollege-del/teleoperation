@@ -49,8 +49,49 @@ namespace Teleop.RobotHost.Sim
         /// <summary>The chassis's mass (kg); it is pinned to the world, so it only matters to the contacts.</summary>
         public const double ChassisMass = 3.0;
 
-        /// <summary>Each finger's travel from open to closed (m): the jaw bodies' gap, less a margin, halved.</summary>
-        public const double FingerTravelMeters = 0.011;
+        /// <summary>
+        /// Each finger's travel from the CAD's pose to closed (m): the twin's own (<c>TwinGripper.travelMeters</c>), half the
+        /// 33 mm between the CAD jaws' pads, so the pads meet (docs/adr/0034 amendment 8; it was 0.011, which left 11 mm).
+        /// </summary>
+        public const double FingerTravelMeters = 0.0165;
+
+        /// <summary>
+        /// How far each finger opens past the CAD's pose (m), at the open pulse: a guess, not a measurement (docs/adr/0034
+        /// amendment 8). The CAD's pose leaves 33 mm between the pads, too little for the bench's 35 mm can; with this, 53 mm.
+        /// Measure the real gripper's opening and set it here.
+        /// </summary>
+        public const double FingerOpenMeters = 0.010;
+
+        /// <summary>A finger's collision from the CAD (<c>visuals.json</c>'s <c>fingerPads</c>): its pad's box in the finger's frame.</summary>
+        public readonly struct Pad
+        {
+            public readonly string Link;
+            public readonly Vector3 Center, Size;
+
+            public Pad(string link, Vector3 center, Vector3 size)
+            {
+                Link = link;
+                Center = center;
+                Size = size;
+            }
+        }
+
+        /// <summary>The finger pads of the visuals manifest; none in a manifest from before docs/adr/0034 amendment 8.</summary>
+        public static IReadOnlyList<Pad> ParsePads(string json)
+        {
+            JsonNode doc = JsonNode.Parse(json) ?? throw new FormatException("an empty visuals manifest");
+            var list = new List<Pad>();
+            if (doc["fingerPads"] is JsonArray pads)
+            {
+                foreach (JsonNode? p in pads)
+                {
+                    JsonArray c = p!["center"]!.AsArray(), s = p["size"]!.AsArray();
+                    list.Add(new Pad((string)p["link"]!, new Vector3((float)c[0]!, (float)c[1]!, (float)c[2]!), new Vector3((float)s[0]!, (float)s[1]!, (float)s[2]!)));
+                }
+            }
+
+            return list;
+        }
 
         /// <summary>
         /// Stall torque (N·m) per joint: Hiwonder's 35 kg·cm bus servos on the yaw, shoulder, elbow and wrist pitch, its smaller
@@ -115,9 +156,11 @@ namespace Teleop.RobotHost.Sim
         /// The URDF, from the profile, the collision model and the plant's pulse rate. With <paramref name="visuals"/> (the CAD's
         /// meshes, docs/adr/0034 amendment 6), each link that has any is drawn by them instead of by its collision boxes.
         /// </summary>
-        public static string Urdf(RobotArmProfile profile, ArmCollisionModel collision, GenericArmPlantConfig plant, IReadOnlyList<Visual>? visuals = null)
+        public static string Urdf(RobotArmProfile profile, ArmCollisionModel collision, GenericArmPlantConfig plant, IReadOnlyList<Visual>? visuals = null,
+            IReadOnlyList<Pad>? pads = null)
         {
             visuals ??= Array.Empty<Visual>();
+            pads ??= Array.Empty<Pad>();
             if (profile.WristJointCount != 1 || !profile.HasRotatingBase || !profile.HasGripper || !profile.GripperCanRotate)
                 throw new ArgumentException("the JetRover's model: a rotating base, one wrist pitch, a rotating gripper");
             double maxRadPerSec = plant.PulsesPerSecond / plant.PulsePerRadian;
@@ -169,6 +212,16 @@ namespace Teleop.RobotHost.Sim
 
             sb.Append("  </link>\n");
 
+            // The fingers collide as their pads (docs/adr/0034 amendment 8): the collision model's jaw boxes, padded for the IK's
+            // self-collision check, stand 21 mm apart, narrower than the bench's cube.
+            foreach (LinkSpec finger in new[] { left, right })
+            {
+                Pad[] mine = pads.Where(p => p.Link == finger.Name).ToArray();
+                if (mine.Length == 0) continue;
+                finger.Boxes.Clear();
+                foreach (Pad p in mine) finger.Boxes.Add(($"{finger.Name}.pad", p.Center, Quaternion.Identity, p.Size));
+            }
+
             foreach (LinkSpec link in links.Values.Concat(new[] { left, right })) sb.Append(Link(link, visuals));
 
             float baseHeight = profile.BaseHeight, l1 = profile.ProximalLinkLength, l2 = profile.DistalLinkLength;
@@ -177,7 +230,7 @@ namespace Teleop.RobotHost.Sim
             sb.Append(Joint("distal", "revolute", "proximal_link", "distal_link", new Vector3(l1, 0, 0), new Vector3(0, -1, 0), collision.Distal, maxRadPerSec));
             sb.Append(Joint("wrist", "revolute", "distal_link", "wrist_link", new Vector3(l2, 0, 0), new Vector3(0, -1, 0), collision.Wrist, maxRadPerSec));
             sb.Append(Joint("roll", "revolute", "wrist_link", "gripper_link", Vector3.Zero, new Vector3(1, 0, 0), collision.Roll, maxRadPerSec));
-            var travel = new AngleRange(0f, (float)FingerTravelMeters);
+            var travel = new AngleRange(-(float)FingerOpenMeters, (float)FingerTravelMeters);
             sb.Append(Joint("gripper", "prismatic", "gripper_link", "left_finger", Vector3.Zero, new Vector3(0, -1, 0), travel, 0.1, "gripper"));
             sb.Append(Joint("gripper_mirror", "prismatic", "gripper_link", "right_finger", Vector3.Zero, new Vector3(0, 1, 0), travel, 0.1, "gripper"));
             sb.Append("</robot>\n");
@@ -215,6 +268,7 @@ namespace Teleop.RobotHost.Sim
                     m["openPulse"] = plant.GripperOpenPulse;
                     m["closedPulse"] = plant.GripperClosedPulse;
                     m["fingerTravelMeters"] = FingerTravelMeters;
+                    m["fingerOpenMeters"] = FingerOpenMeters;
                     m["fingers"] = new JsonArray("gripper", "gripper_mirror");
                 }
 

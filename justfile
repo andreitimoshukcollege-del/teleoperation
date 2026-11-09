@@ -134,7 +134,8 @@ isaac-relay upstream=gpu_host ports="6000,6002,6003,6008,6009":
     up="{{upstream}}"; up="${up#*@}"
     wifi=$(ipconfig.exe 2>/dev/null | tr -d '\r' | awk '/Wireless LAN adapter Wi-Fi:/{w=1} w&&/IPv4 Address/{print $NF; exit}')
     echo "[isaac-relay] this PC's Wi-Fi address: ${wifi:-unknown}; headset: just push-galaxy-config ${wifi:-<address>} true false"
-    cd core && dotnet run --project Teleop.Eval -- udp-relay --upstream "$up" --ports {{ports}}
+    # Its own build folder: a running relay holds its DLLs, and must not block core-check rebuilding Teleop.Eval's.
+    cd core && dotnet build Teleop.Eval -c Release -v q -nologo -o ../build/relay > /dev/null && dotnet ../build/relay/Teleop.Eval.dll udp-relay --upstream "$up" --ports {{ports}}
 
 # Print the one admin PowerShell command that lets the Isaac relay's ports in through Windows Firewall (Windows blocks unsolicited inbound UDP on a Public network such as home Wi-Fi). Run it once in an elevated PowerShell; nothing here changes the firewall itself
 [group('isaac')]

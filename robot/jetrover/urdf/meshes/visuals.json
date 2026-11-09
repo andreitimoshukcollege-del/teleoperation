@@ -16,5 +16,9 @@
     {"link": "gripper_link", "file": "meshes/gripper_link_0.obj", "rgba": [0.07, 0.072, 0.078, 1], "triangles": 3222},
     {"link": "left_finger", "file": "meshes/left_finger_0.obj", "rgba": [0.07, 0.072, 0.078, 1], "triangles": 4808},
     {"link": "right_finger", "file": "meshes/right_finger_0.obj", "rgba": [0.07, 0.072, 0.078, 1], "triangles": 4764}
+  ],
+  "fingerPads": [
+    {"link": "left_finger", "center": [0.147724, 0.022089, 0.002667], "size": [0.029996, 0.011332, 0.00739]},
+    {"link": "right_finger", "center": [0.147565, -0.02266, 0.003051], "size": [0.029787, 0.011285, 0.007074]}
   ]
 }

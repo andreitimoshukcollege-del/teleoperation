@@ -224,34 +224,34 @@
   </link>
   <link name="left_finger">
     <inertial>
-      <origin xyz="0.1271 0.0172 0.0022" rpy="0 0 0"/>
+      <origin xyz="0.147724 0.022089 0.002667" rpy="0 0 0"/>
       <mass value="0.01"/>
-      <inertia ixx="0.0000016" ixy="0.0000006" ixz="0" iyy="0.0000048" iyz="-0.0000001" izz="0.000006"/>
+      <inertia ixx="0.0000002" ixy="0" ixz="0" iyy="0.0000008" iyz="0" izz="0.0000009"/>
     </inertial>
     <visual name="left_finger_0_visual">
       <origin xyz="0 0 0" rpy="0 0 0"/>
       <geometry><mesh filename="meshes/left_finger_0.obj"/></geometry>
       <material name="jetrover_left_finger_0"><color rgba="0.07 0.072 0.078 1"/></material>
     </visual>
-    <collision name="gripper.1">
-      <origin xyz="0.1271 0.0172 0.0022" rpy="-1.3788013 1.5040733 1.5940511"/>
-      <geometry><box size="0.0136 0.0398 0.0752"/></geometry>
+    <collision name="left_finger.pad">
+      <origin xyz="0.147724 0.022089 0.002667" rpy="0 0 0"/>
+      <geometry><box size="0.029996 0.011332 0.00739"/></geometry>
     </collision>
   </link>
   <link name="right_finger">
     <inertial>
-      <origin xyz="0.1271 -0.0177 0.0022" rpy="0 0 0"/>
+      <origin xyz="0.147565 -0.02266 0.003051" rpy="0 0 0"/>
       <mass value="0.01"/>
-      <inertia ixx="0.0000015" ixy="-0.0000005" ixz="-0" iyy="0.0000048" iyz="0.0000001" izz="0.000006"/>
+      <inertia ixx="0.0000001" ixy="0" ixz="-0" iyy="0.0000008" iyz="0" izz="0.0000008"/>
     </inertial>
     <visual name="right_finger_0_visual">
       <origin xyz="0 0 0" rpy="0 0 0"/>
       <geometry><mesh filename="meshes/right_finger_0.obj"/></geometry>
       <material name="jetrover_right_finger_0"><color rgba="0.07 0.072 0.078 1"/></material>
     </visual>
-    <collision name="gripper.2">
-      <origin xyz="0.1271 -0.0177 0.0022" rpy="-1.5602007 1.511628 -1.4035509"/>
-      <geometry><box size="0.0136 0.0392 0.075"/></geometry>
+    <collision name="right_finger.pad">
+      <origin xyz="0.147565 -0.02266 0.003051" rpy="0 0 0"/>
+      <geometry><box size="0.029787 0.011285 0.007074"/></geometry>
     </collision>
   </link>
   <joint name="base_yaw" type="revolute">
@@ -294,13 +294,13 @@
     <child link="left_finger"/>
     <origin xyz="0 0 0" rpy="0 0 0"/>
     <axis xyz="0 -1 0"/>
-    <limit lower="0" upper="0.011" effort="20" velocity="0.1"/>
+    <limit lower="-0.01" upper="0.0165" effort="20" velocity="0.1"/>
   </joint>
   <joint name="gripper_mirror" type="prismatic">
     <parent link="gripper_link"/>
     <child link="right_finger"/>
     <origin xyz="0 0 0" rpy="0 0 0"/>
     <axis xyz="0 1 0"/>
-    <limit lower="0" upper="0.011" effort="20" velocity="0.1"/>
+    <limit lower="-0.01" upper="0.0165" effort="20" velocity="0.1"/>
   </joint>
 </robot>

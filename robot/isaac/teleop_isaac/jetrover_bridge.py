@@ -347,7 +347,8 @@ def main(argv: Optional[List[str]] = None) -> int:
                 for m_id in motor_order:
                     m = model.motors[m_id]
                     if m.is_gripper:
-                        v = q[index[m.fingers[0]]] / m.finger_travel if m.finger_travel else 0.0
+                        span = m.finger_open + m.finger_travel
+                        v = (q[index[m.fingers[0]]] + m.finger_open) / span if span else 0.0
                     else:
                         v = float(q[index[m.joint]])
                     report.append((m_id, float(v), 0.0, float(v)))

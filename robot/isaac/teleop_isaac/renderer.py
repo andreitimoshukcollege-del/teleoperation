@@ -75,20 +75,20 @@ class MotorMap:
 
 class SimMotorMap:
     """:class:`MotorMap` for a robot described by a sim sidecar (the JetRover's, ``servo.SimModel``): a joint's radians as
-    they are; the gripper's 0..1 opening as each finger's closing travel."""
+    they are; the gripper's 0..1 closing as each finger's travel (``SimModel.finger_value``: open past the CAD's pose at 0)."""
 
     def __init__(self, model):
+        self.model = model
         self.joints: Dict[int, Tuple[str, ...]] = {}
-        self.scale: Dict[int, float] = {}
         for mid, m in model.motors.items():
             self.joints[mid] = m.fingers if m.is_gripper else (m.joint,)
-            self.scale[mid] = m.finger_travel if m.is_gripper else 1.0
 
     def values(self, motors: Sequence[Tuple[int, float]]) -> Dict[str, float]:
         out: Dict[str, float] = {}
         for m, v in motors:
+            gripper = m in self.model.motors and self.model.motors[m].is_gripper
             for name in self.joints.get(m, ()):
-                out[name] = v * self.scale[m]
+                out[name] = self.model.finger_value(m, v) if gripper else v
         return out
 
 

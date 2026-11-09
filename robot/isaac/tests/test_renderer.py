@@ -2,6 +2,8 @@
 
 import math
 
+import pytest
+
 from conftest import profile_path
 from teleop_isaac import camwire, kinematics, profile
 from teleop_isaac.renderer import (MotorMap, Stamps, backdrop_quads, estimate_lag, intrinsics, look_at, mount_camera_orientation,
@@ -167,4 +169,6 @@ def test_the_sim_motor_map_turns_the_grippers_opening_into_finger_travel():
     m = SimMotorMap(servo.SimModel.load())
     v = m.values([(2, 1.0), (10, 0.5)])
     assert v["proximal"] == 1.0
-    assert v["gripper"] == v["gripper_mirror"] == 0.5 * 0.011
+    g = servo.SimModel.load().motors[10]
+    assert v["gripper"] == v["gripper_mirror"] == pytest.approx(-g.finger_open + 0.5 * (g.finger_open + g.finger_travel))
+    assert m.values([(10, 0.0)])["gripper"] == pytest.approx(-g.finger_open)  # open: past the CAD's pose

@@ -35,6 +35,9 @@ namespace Teleop.XR.Editor
     {
         /// <summary>The decimation grid (m).</summary>
         private const float Cell = 0.0015f;
+
+        /// <summary>How much of each jaw, back from its tip, is its pad (m).</summary>
+        private const float PadLength = 0.03f;
         private const string OutputFolder = "../../robot/jetrover/urdf/meshes";
 
         public static void Run()
@@ -150,11 +153,26 @@ namespace Teleop.XR.Editor
                 }
             }
 
+            // Each finger's pad (docs/adr/0034 amendment 8): the box round its jaw's last PadLength towards the tip, in the finger's
+            // frame. The URDF's fingers collide as these, so an object fits between the pads, not between padded jaw boxes.
+            var pads = new List<string>();
+            foreach (string finger in new[] { "left_finger", "right_finger" })
+            {
+                List<Vector3> pts = groups.Values.Where(x => x.Link == finger).SelectMany(x => x.Positions).ToList();
+                float tip = pts.Max(p => p.x);
+                List<Vector3> pad = pts.Where(p => p.x >= tip - PadLength).ToList();
+                Vector3 lo = new Vector3(pad.Min(p => p.x), pad.Min(p => p.y), pad.Min(p => p.z));
+                Vector3 hi = new Vector3(pad.Max(p => p.x), pad.Max(p => p.y), pad.Max(p => p.z));
+                Vector3 c = (lo + hi) / 2, sz = hi - lo;
+                pads.Add($"    {{\"link\": \"{finger}\", \"center\": [{P(c.x)}, {P(c.y)}, {P(c.z)}], \"size\": [{P(sz.x)}, {P(sz.y)}, {P(sz.z)}]}}");
+            }
+
             string hashes = string.Join(", ", new[] { "Body", "Base", "LowerArm", "CenterArm", "UpperArm", "Gripper" }.Select(n =>
                 $"\"{n}.fbx\": \"{Sha(Path.Combine(JetRoverCad.Folder, n + ".fbx"))}\""));
             string manifest = "{\n  \"format\": \"jetrover-visuals\",\n  \"version\": 1,\n" +
                               "  \"about\": \"Written by unity/TeleopXR JetRoverVisualExport (just jetrover-visuals, docs/adr/0034 amendment 6) from the lab twin's CAD. Do not edit.\",\n" +
-                              $"  \"cellMeters\": {F(Cell)},\n  \"sources\": {{{hashes}}},\n  \"visuals\": [\n" + string.Join(",\n", entries) + "\n  ]\n}\n";
+                              $"  \"cellMeters\": {F(Cell)},\n  \"sources\": {{{hashes}}},\n  \"visuals\": [\n" + string.Join(",\n", entries) + "\n  ],\n" +
+                              "  \"fingerPads\": [\n" + string.Join(",\n", pads) + "\n  ]\n}\n";
             File.WriteAllText(Path.Combine(folder, "visuals.json"), manifest, new UTF8Encoding(false));
             return $"wrote {entries.Count} meshes, {rawTriangles} -> {kept} triangles, to {folder}: {report}";
         }

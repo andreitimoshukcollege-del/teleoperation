@@ -279,3 +279,35 @@ so 15 % of its views carried a `persistence` forecast and 10 % `rtt-half`; until
   ADR 0034 amendment 12 found why: not the sim (it follows the real arm's commands as the real arm did), but the driving,
   twice the motion and the reversals of any real session (the wrist's −80° was the park at the end). N6 judges the forecast
   on sessions driven as the real arm is.
+
+## Amendment 5 (2026-11-09): N4, the arm in Isaac on the tiers' networks, robot-side
+
+Decision 4 said the console's sliders (`JointLinkDisturbance`, on the headset) would put the tiers on the uplink. N4 puts
+them on **RobotHost's own uplink impairment** instead (`UplinkImpairedReceiver`, docs/adr/0021 decisions 4 and 13), for
+three reasons found in the trainer:
+
+- the trainer already takes a robot-side impaired session as uplink truth (ADR 0021 decision 13: "a fast-changing
+  uplink exists only where the arm physically lived through it"), from each command's `JC` `t` and `tDeliver`;
+- it refuses a session the headset disturbed (`headsetDisturbed`): the headset's emulator also delays the frames, so the
+  downlink would no longer be the real network;
+- nothing on the headset changes, and the tiers' traces are already on the GPU machine beside Isaac's RobotHost.
+
+Keepalives go through the robot-side impairment too, so ClockSync's round trips, and the persistence forecast's uplink,
+see the delay.
+
+- **Core.** `DatagramFate.SendTicks` (set by `EmulatedTransport` at both stages; over a loopback both are the send
+  tick); `Transport/Impairments/TimedTraceImpairment` (axis `timed-trace`, no draws): a `.trace` v2 looked up by each
+  datagram's time since the first, so a 450 ms stall stays 450 ms on a 36 Hz command stream; built by
+  `NetworkProfileCatalog.CreateTimedTrace`.
+- **RobotHost.** `Net/UplinkProfiles`: an uplink profile or schedule segment may be `trace:<dataset>/<id>`, read from
+  `--uplink-traces` (version 2 only, rescaled to the host's ticks; a name that does not load is refused, so a typo never
+  records an impaired session that was not). `just isaac-jetrover-host` passes `--uplink-control
+  ~/isaacsim/jetrover-uplink --uplink-traces ~/datasets/network`.
+- **Schedules.** `python -m armpred.net.datasets uplink-schedule` (`just isaac-uplink-tiers`): good, poor, very-bad in
+  turn, `segment_s` each; per segment a dataset with train-side traces of that tier drawn uniformly, then a trace;
+  seeded. Held-out traces are never used. `just isaac-uplink-off` ends it.
+- **Checked.** `just isaac-uplink-check` (`uplink-check`): per segment, the delivered commands' median delay against the
+  trace's over the same span (within 5 ms + 15 %) and the loss by sequence (within 3 points); non-zero exit otherwise.
+- **Not changed.** The FR3's host (`SerialChainHost`) takes Core profiles only. The trainer has no copy of
+  `TimedTraceImpairment`: it reads what the arm lived through from `tDeliver`, and N5 decides how traces enter the
+  simulator.

@@ -133,7 +133,7 @@ namespace Teleop.RobotHost
             byte[]? jointRecvBuffer = jointTransport != null ? new byte[MaxJointDatagramBytes] : null;
             // A physically impaired uplink for recorded sessions (docs/adr/0021): off unless the uplink
             // control file names a profile. Receive side only, so frames to the headset are untouched.
-            var uplink = jointTransport != null ? new UplinkImpairedReceiver(jointTransport, clock.TicksPerSecond, MaxJointDatagramBytes) : null;
+            var uplink = jointTransport != null ? new UplinkImpairedReceiver(jointTransport, clock.TicksPerSecond, MaxJointDatagramBytes, a.UplinkTracesRoot) : null;
             string? uplinkRequest = null;
             long nextUplinkPollTicks = long.MinValue;
             // A schedule in the control file (docs/adr/0021 decision 13): switched here, on time,
@@ -356,7 +356,7 @@ namespace Teleop.RobotHost
                         if (request != uplinkRequest && UplinkSchedule.IsSchedule(request))
                         {
                             uplinkRequest = request;
-                            if (UplinkSchedule.TryParse(request!, clock.TicksPerSecond, out UplinkSchedule? schedule, out string? why))
+                            if (UplinkSchedule.TryParse(request!, clock.TicksPerSecond, a.UplinkTracesRoot, out UplinkSchedule? schedule, out string? why))
                             {
                                 uplinkSchedule = schedule;
                                 uplinkScheduleStart = clock.NowTicks;

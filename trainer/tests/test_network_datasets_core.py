@@ -171,3 +171,28 @@ def test_a_group_with_traces_in_two_tiers_is_on_one_side_in_both(tmp_path):
     for g in range(8):
         assert doc["traces"][f"demo/g{g}-a"] == doc["traces"][f"demo/g{g}-b"]
     assert len(doc["counts"]["demo"]) == 2 and all(c["groupsTest"] >= 1 for c in doc["counts"]["demo"].values())
+
+
+def test_an_uplink_schedule_cycles_the_tiers_over_train_traces_only(tmp_path):
+    from armpred.net.datasets import uplink_schedule as U
+
+    root = str(tmp_path)
+    items = []
+    for g in range(10):
+        good = T.from_ms(steady(3000, 30.0, spread=5.0), 20.0)
+        poor = T.from_ms([30.0 + (60.0 - (i % 500) * 20.0 if i % 500 < 3 else 0.0) for i in range(3000)], 20.0)
+        items += [(f"g{g}", f"g{g}", good, {}), (f"p{g}", f"p{g}", poor, {})]
+    I.emit(root, "demo", items, {})
+    doc = split.make(root, ["demo"])
+    spec = U.make(root, ["demo"], seed=5, segment_s=30, segments=6, tiers=["good", "poor"])
+    assert spec.startswith("schedule 5 ")
+    segs = spec.split(" ", 2)[2].split(";")
+    assert [s.split("@")[1] for s in segs] == ["0", "30", "60", "90", "120", "150"]
+    tiers = {e["id"]: e["tier"] for e in I.load(root, "demo")["traces"]}
+    for k, s in enumerate(segs):
+        tid = s.split("@")[0].split("/")[1]
+        assert tiers[tid] == ["good", "poor"][k % 2]
+        assert doc["traces"][f"demo/{tid}"] == "train"
+    assert U.make(root, ["demo"], seed=5, segment_s=30, segments=6, tiers=["good", "poor"]) == spec
+    with pytest.raises(ValueError):
+        U.make(root, ["demo"], seed=5, tiers=["very-bad"])

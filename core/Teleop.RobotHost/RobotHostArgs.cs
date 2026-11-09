@@ -91,6 +91,12 @@ namespace Teleop.RobotHost
         public readonly string? UplinkControlPath;
 
         /// <summary>
+        /// The network datasets' root (docs/adr/0035 N4): uplink profiles <c>trace:&lt;dataset&gt;/&lt;id&gt;</c> are read from
+        /// <c>&lt;root&gt;/&lt;dataset&gt;/traces/&lt;id&gt;.trace</c> (<see cref="Net.UplinkProfiles"/>). Null: none can be named.
+        /// </summary>
+        public string? UplinkTracesRoot { get; init; }
+
+        /// <summary>
         /// The discovery port (docs/adr/0022-robot-discovery.md): RobotHost answers the headset's
         /// "where are you?" there with its hostname and LAN addresses. Null (the default) never answers.
         /// <c>just deploy-robothost</c> passes 6005.
@@ -118,7 +124,7 @@ namespace Teleop.RobotHost
             "Usage: Teleop.RobotHost --local-port <port> [--remote-host <ip> --remote-port <port>] " +
             "[--reply-to sender|fixed] --relay-socket <path> --local-relay-socket <path> " +
             "[--max-direction-magnitude <n>] [--pulses-per-second <n>] [--joint-local-port <port>] [--profile-path <path>] " +
-            "[--record-control <path>] [--uplink-control <path>] [--discovery-port <port>]\n" +
+            "[--record-control <path>] [--uplink-control <path>] [--uplink-traces <dir>] [--discovery-port <port>]\n" +
             "  [--auto-record [--auto-record-idle-seconds <s>] [--auto-record-max-minutes <min>] [--auto-record-stop-free-gb <gb>]\n" +
             "   [--auto-record-start-free-gb <gb>] [--auto-record-driver-wait-seconds <s>] [--auto-record-min-split-seconds <s>]\n" +
             "   [--auto-record-headset-seconds <s>]\n" +
@@ -150,6 +156,8 @@ namespace Teleop.RobotHost
             "  --uplink-control names the uplink control file (docs/adr/0021): while it holds a Core\n" +
             "  network profile and a seed, joint commands reach the plant through that profile. Omit it\n" +
             "  to never impair the uplink.\n" +
+            "  --uplink-traces names the network datasets' root (docs/adr/0035 N4), so an uplink profile or schedule\n" +
+            "  segment may be trace:<dataset>/<id>, that trace replayed by time. Omit it to allow Core profiles only.\n" +
             "  --discovery-port answers the headset's discovery query there with this machine's name and\n" +
             "  LAN addresses (docs/adr/0022). Omit it to not answer.\n" +
             "  --auto-record opens a session whenever the headset commands the robot (docs/adr/0023): only joint\n" +
@@ -212,6 +220,7 @@ namespace Teleop.RobotHost
             ulong? sceneSeed = null;
             double worldTimeout = 60;
             string? uplinkControlPath = null;
+            string? uplinkTracesRoot = null;
             int? discoveryPort = null;
             string replyTo = "sender";
             bool autoRecord = false;
@@ -280,6 +289,9 @@ namespace Teleop.RobotHost
                         break;
                     case "--uplink-control" when i + 1 < args.Length:
                         uplinkControlPath = args[++i];
+                        break;
+                    case "--uplink-traces" when i + 1 < args.Length:
+                        uplinkTracesRoot = args[++i];
                         break;
                     case "--discovery-port" when i + 1 < args.Length:
                         discoveryPort = ParseIntOrNull(args[++i]) ?? -1;
@@ -456,6 +468,7 @@ namespace Teleop.RobotHost
                 maxDirectionMagnitude, jointLocalPort, profilePath, pulsesPerSecond, recordControlPath, uplinkControlPath, discoveryPort,
                 autoRecord ? auto : null, power)
             {
+                UplinkTracesRoot = uplinkTracesRoot,
                 ScenePath = scenePath,
                 SceneSeed = sceneSeed,
                 WorldSocketPath = worldSocket,

@@ -39,6 +39,7 @@ import time
 import traceback
 from typing import Dict, List, Optional
 
+from . import driver_log
 from . import scene as scene_module
 from . import servo
 from . import wire
@@ -72,6 +73,9 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     a.add_argument("--world-socket", default="", help="where RobotHost's world client talks (default: --socket plus .world)")
     a.add_argument("--world-every", type=int, default=20, help="send the objects' poses every this many steps")
     a.add_argument("--tap", default="", help="the renderer's socket: a copy of the arm's state every 4 steps and of every WORLD")
+    a.add_argument("--record-control", default="", help="RobotHost's recording control file (its .active): while it names a session, "
+                                                        "write that session's driver.jlog, the reads and moves this stand-in driver did "
+                                                        "(driver_log.py, docs/adr/0035 N4)")
     a.add_argument("--gui", action="store_true", help="open Isaac's window (needs a display)")
     a.add_argument("--replay", default="", help="sim against real (docs/adr/0034 J3): a sessions file from just jetrover-sim-fit; "
                                                 "replay it headless and unpaced, score it, fit, and exit. No sockets")
@@ -263,6 +267,14 @@ def main(argv: Optional[List[str]] = None) -> int:
 
         motor_order = sorted(model.motors)
 
+        # The driver's half of a recorded session (docs/adr/0035 N4): what this stand-in driver read and moved.
+        dlog = None
+        if args.record_control:
+            from . import isaac_session
+
+            dlog = driver_log.DriverLog(isaac_session.IsaacSession(args.record_control, streams=[], writer="driver"),
+                                        feedback.read_seconds, feedback.order)
+
         stopping = []
         signal.signal(signal.SIGTERM, lambda *_: stopping.append(True))
         signal.signal(signal.SIGINT, lambda *_: stopping.append(True))
@@ -296,8 +308,15 @@ def main(argv: Optional[List[str]] = None) -> int:
                             print(f"[jetrover] torque {'on' if torque else 'off'}", flush=True)
                     else:
                         commands += 1
+                        t_cmd = time.monotonic_ns()
+                        if dlog is not None:
+                            dlog.command(t_cmd, [(mid, model.clamp(pulse), pps) for mid, pulse, pps in payload])
                         for mid, pulse, pps in payload:
-                            arm.command(mid, model.clamp(pulse), pps)
+                            target = model.clamp(pulse)
+                            sp = setpoints.get(mid)
+                            if dlog is not None and sp is not None and (arm.on or not arm.hold_relaxed) and abs(target - sp.target) >= 0.5:
+                                dlog.moved(t_cmd, mid, target, sp.pulse, pps * arm.speed_scale)
+                            arm.command(mid, target, pps)
 
             while wsock is not None:
                 try:
@@ -380,7 +399,10 @@ def main(argv: Optional[List[str]] = None) -> int:
             mid = feedback.due_read(now_s)
             if mid is not None:
                 q = np.asarray(art.get_dof_positions().numpy()).reshape(-1)
-                feedback.record(mid, model.pulse(mid, q[index[model.motors[mid].joint]]), now_s)
+                reading = model.pulse(mid, q[index[model.motors[mid].joint]])
+                feedback.record(mid, reading, now_s)
+                if dlog is not None:
+                    dlog.read(time.monotonic_ns(), mid, reading)
             entries = feedback.due_feedback(now_s)
             if entries is not None:
                 try:
@@ -406,6 +428,8 @@ def main(argv: Optional[List[str]] = None) -> int:
                 print(f"[jetrover] {steps} steps, {late} late; {commands} commands, {torques} torque switches, {rejected_total} rejected; "
                       f"{sent} feedback sent; torque {'on' if torque else 'off'}", flush=True)
 
+        if dlog is not None:
+            dlog.session.close()
         sock.close()
         os.unlink(args.socket)
         if wsock is not None:

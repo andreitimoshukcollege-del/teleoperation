@@ -312,11 +312,11 @@ def main(argv: Optional[List[str]] = None) -> int:
                         if dlog is not None:
                             dlog.command(t_cmd, [(mid, model.clamp(pulse), pps) for mid, pulse, pps in payload])
                         for mid, pulse, pps in payload:
-                            target = model.clamp(pulse)
+                            goal = model.clamp(pulse)  # not `target`: that name is the drives' position-target array
                             sp = setpoints.get(mid)
-                            if dlog is not None and sp is not None and (arm.on or not arm.hold_relaxed) and abs(target - sp.target) >= 0.5:
-                                dlog.moved(t_cmd, mid, target, sp.pulse, pps * arm.speed_scale)
-                            arm.command(mid, target, pps)
+                            if dlog is not None and sp is not None and (arm.on or not arm.hold_relaxed) and abs(goal - sp.target) >= 0.5:
+                                dlog.moved(t_cmd, mid, goal, sp.pulse, pps * arm.speed_scale)
+                            arm.command(mid, goal, pps)
 
             while wsock is not None:
                 try:

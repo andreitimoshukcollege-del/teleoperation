@@ -327,3 +327,26 @@ see the delay.
   follows RobotHost's control file like `isaac.jlog`, and RobotHost waits for its trailer as for the real driver's. First
   session (`20261110T223200Z-auto`, 50 s, driven from the headset directly on SINRG Wi-Fi): `armpred check-session` **OK**,
   clock causality 14 987 / 15 066 feedback values matched to a read, every motor read at 49.8 Hz, no gap over 22 ms.
+
+## Amendment 6 (2026-11-11): N5, the network datasets in training and in the trainer's tests
+
+- **A trace segment** (`data/schedule.py`: `Segment.trace`, `trace_root`, `trace_offset_s`; `net/datasets/library.py`): a
+  network dataset's trace replayed by time from an offset, its delays and its losses, as Core's `TimedTraceImpairment`
+  does on RobotHost's uplink (N4), indexed in whole nanoseconds as Core indexes in ticks. It works wherever a schedule
+  does: a view's downlink, and a simulated session's physical uplink. The forecast's truth for it is the trace's own
+  quantiles, loss and floor around that moment (`forecast.LinkTruth`), so the oracle and the degraded levels stay honest.
+- **The mix** (`RandomScheduleConfig.share_trace`, `trace_tier_weights`, `datasets_root`): a share of segments drawn from
+  the **train** side of `split.json`, the tier by weight, then a dataset evenly, a trace and an offset. Drawn after the
+  outage share, so a config without it draws every schedule as before (200 seeds checked against main). The simulator's
+  uplink now draws from the run's `[schedules]` too (unchanged for every existing config).
+- **The tests** (decision 6): with `datasets_root`, `trace_test_schedules` adds `trace_tests_per_tier` **held-out**
+  traces of each tier (round-robin over datasets, a fixed hash order) as test schedules, `trace:<dataset>/<id>@0`
+  (`parse` takes them with the root; trainer-only, never official), and `summarize` pools them `by_tier`; the report has
+  a by-tier table of error, correction and jitter p95. `armpred evaluate --datasets-root` scores an older run on them.
+- **Configs.** `sim-pretrain-n5` (pilot2's, plus the mix: 30 % trace segments, the tiers even; named 15 %, parametric
+  25 %, added delay 12 %, queue 6 %, outage 4 %, bursty the rest) and `finetune-n5` (real-finetune-pilot2's, the same).
+  Shares are a choice, stated in the configs: the very-bad traces carry the real stalls and bursts the 4 % outage share
+  could not, at about the rate the headset's Wi-Fi showed (a stall over 100 ms every 6–10 s on calm evenings).
+- **Smoke.** The whole pipeline on a three-tier fixture root (`smoke` matrix, half the segments traces): simulated arms
+  on trace uplinks, views on trace downlinks, training, export, and evaluation with six held-out trace schedules and the
+  by-tier table. Not a result of any kind.

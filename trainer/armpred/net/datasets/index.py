@@ -74,3 +74,10 @@ def load(root: str, name: str) -> Optional[Dict]:
     if doc.get("format") != FORMAT or doc.get("version") != VERSION:
         raise ValueError(f"{p}: not a {FORMAT} v{VERSION}")
     return doc
+
+
+def datasets_under(root: str) -> List[str]:
+    """Every converted dataset under ``root`` (a folder holding an ``index.json``), sorted."""
+    if not os.path.isdir(root):
+        return []
+    return sorted(d for d in os.listdir(root) if os.path.exists(os.path.join(root, d, "index.json")))

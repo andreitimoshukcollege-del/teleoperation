@@ -98,6 +98,21 @@ def _prior_servo(config: dict) -> Optional[dict]:
     return None
 
 
+def _schedules_cfg(config: dict):
+    """The run's ``[schedules]`` table as a RandomScheduleConfig (lists as tuples, ``~`` in datasets_root expanded)."""
+    from .data.schedule import RandomScheduleConfig
+
+    table = {k: tuple(v) if isinstance(v, list) else v for k, v in config.get("schedules", {}).items()}
+    if table.get("datasets_root"):
+        table["datasets_root"] = os.path.expanduser(table["datasets_root"])
+    return RandomScheduleConfig(**table)
+
+
+def _datasets_root(config: dict) -> Optional[str]:
+    root = config.get("schedules", {}).get("datasets_root")
+    return os.path.expanduser(root) if root else None
+
+
 def _prepare(config: dict, data_dir: str, workers: int, log) -> dict:
     """Simulate the session matrix and build the train/val shards into ``data_dir``, once: every
     training run of a grid then reads the same shards (and the same test sessions)."""
@@ -112,8 +127,7 @@ def _prepare(config: dict, data_dir: str, workers: int, log) -> dict:
     matrix = MatrixConfig(**{k: tuple(v) if isinstance(v, list) else v for k, v in config.get("matrix", {}).items()})
     ranges = SimRanges(**{k: tuple(v) for k, v in config.get("ranges", {}).items()})
     build_cfg = BuildConfig(sample=SampleConfig(**config.get("sample", {})),
-                            schedules=RandomScheduleConfig(**{k: tuple(v) if isinstance(v, list) else v
-                                                             for k, v in config.get("schedules", {}).items()}),
+                            schedules=_schedules_cfg(config),
                             aware=bool(config.get("train", {}).get("aware", False)), traces_dir=TRACES, workers=workers,
                             sensed_ages_ms=_prior_ages(config), forecast=_forecast_cfg(config))
     prepared_path = os.path.join(data_dir, "prepared.json")
@@ -123,7 +137,7 @@ def _prepare(config: dict, data_dir: str, workers: int, log) -> dict:
         if old != L.layout_id(build_cfg.aware):
             raise SystemExit(f"{data_dir} holds shards for layout {old}; this trainer builds {L.layout_id(build_cfg.aware)}. "
                              "Prepare into a new directory.")
-    dirs = simulate_matrix(matrix, ranges, seed, data_dir, workers=workers, log=log)
+    dirs = simulate_matrix(matrix, ranges, seed, data_dir, workers=workers, log=log, schedules=build_cfg.schedules)
     paths = build_splits(dirs, data_dir, int(config.get("views_per_session", 8)), int(config.get("val_views", 2)),
                          build_cfg, seed, log=log)
     with open(prepared_path, "w", encoding="utf-8") as f:
@@ -184,7 +198,8 @@ def _train_run(config: dict, data_dir: str, out: str, workers: int, log, steps: 
                 sensed_ages_ms=ages)
     if not skip_eval:
         _evaluate_run(out, prepared["dirs"]["test"], cfg, log=log, workers=workers, simulated=True, sensed_ages_ms=ages,
-                      servo=_prior_servo(config))
+                      servo=_prior_servo(config), datasets_root=_datasets_root(config),
+                      trace_tests_per_tier=config.get("evaluate", {}).get("trace_tests_per_tier"))
     return 0
 
 
@@ -334,31 +349,37 @@ def _evaluate_one(args):
 
     from .contract.profile import load_profile
 
-    session_dir, schedule, seed, onnx_path, aware, profile_path, ages, servo = args
+    session_dir, schedule, seed, onnx_path, aware, profile_path, ages, servo, datasets_root = args
     session = load_session(session_dir)
     profile = load_profile(profile_path) if profile_path else JETROVER
-    view = synthesize(session, profile, parse(schedule), seed=seed, traces_dir=TRACES)
+    view = synthesize(session, profile, parse(schedule, datasets_root), seed=seed, traces_dir=TRACES)
     if schedule in FORECAST_SWEEP_SCHEDULES:
         return evaluate_with_sweep(view, onnx_path, aware=aware, sensed_ages_ms=ages, seed=seed, servo=servo)
     return evaluate_view(view, default_predictors(onnx_path, view.tps, aware=aware, sensed_ages_ms=ages, servo=servo), seed=seed)
 
 
 def _evaluate_run(out: str, test_dirs: List[str], cfg, log, workers: int = 0, simulated: bool = True,
-                  profile_path: Optional[str] = None, sensed_ages_ms=None, servo: Optional[dict] = None) -> dict:
+                  profile_path: Optional[str] = None, sensed_ages_ms=None, servo: Optional[dict] = None,
+                  datasets_root: Optional[str] = None, trace_tests_per_tier: Optional[int] = None) -> dict:
     from concurrent.futures import ProcessPoolExecutor
 
     from .evaluate import bootstrap_p95_difference, bootstrap_window_p95_difference, is_live_impaired, summarize
-    from .pipeline import TEST_SCHEDULES
+    from .pipeline import TEST_SCHEDULES, TRACE_TESTS_PER_TIER, trace_test_schedules
     from .report import write_report
 
+    # docs/adr/0035 decision 6: with the network datasets, every tier's held-out traces are test schedules too.
+    tiers = trace_test_schedules(datasets_root, TRACE_TESTS_PER_TIER if trace_tests_per_tier is None else trace_tests_per_tier) \
+        if datasets_root else {}
+    schedules = list(TEST_SCHEDULES) + sorted(tiers)
     jobs = [(d, s, 7 + i, os.path.join(out, "model.onnx"), cfg.aware, profile_path,
-             tuple(sensed_ages_ms) if sensed_ages_ms else None, servo)
-            for i, d in enumerate(test_dirs) for s in TEST_SCHEDULES]
-    log(f"evaluating {len(jobs)} views ({len(test_dirs)} test sessions x {len(TEST_SCHEDULES)} schedules)")
+             tuple(sensed_ages_ms) if sensed_ages_ms else None, servo, datasets_root or None)
+            for i, d in enumerate(test_dirs) for s in schedules]
+    log(f"evaluating {len(jobs)} views ({len(test_dirs)} test sessions x {len(schedules)} schedules"
+        + (f", {len(tiers)} of them held-out network traces by tier" if tiers else "") + ")")
     t0 = time.time()
     with ProcessPoolExecutor(max_workers=workers or os.cpu_count() or 1) as pool:
         results = list(pool.map(_evaluate_one, jobs, chunksize=1))
-    summary = summarize(results)
+    summary = summarize(results, tiers=tiers)
     # G6's "two replays bit-identical": the first view, evaluated again from scratch.
     again = _evaluate_one(jobs[0])
     summary["deterministic"] = all(
@@ -396,7 +417,9 @@ def cmd_evaluate(args) -> int:
     if args.prior:
         log(f"prior {args.prior}: reading ages {ages} ms, relay-replay-servo {servo}")
     _evaluate_run(args.run, [os.path.dirname(d) for d in dirs], cfg, log=log, workers=args.workers,
-                  simulated=not args.real, profile_path=args.profile, sensed_ages_ms=ages, servo=servo)
+                  simulated=not args.real, profile_path=args.profile, sensed_ages_ms=ages, servo=servo,
+                  datasets_root=os.path.expanduser(args.datasets_root) if args.datasets_root else None,
+                  trace_tests_per_tier=args.trace_tests_per_tier)
     return 0
 
 
@@ -500,8 +523,7 @@ def cmd_finetune(args) -> int:
         init_state = torch.load(os.path.join(args.init, "checkpoints", "best.pt"), map_location="cpu")
         log(f"starting from {args.init}")
     build_cfg = BuildConfig(sample=SampleConfig(**config.get("sample", {})),
-                            schedules=RandomScheduleConfig(**{k: tuple(v) if isinstance(v, list) else v
-                                                             for k, v in config.get("schedules", {}).items()}),
+                            schedules=_schedules_cfg(config),
                             aware=cfg.aware, traces_dir=TRACES, workers=args.workers, sensed_ages_ms=_prior_ages(config),
                             forecast=_forecast_cfg(config))
     seed = int(config.get("seed", 1))
@@ -530,7 +552,8 @@ def cmd_finetune(args) -> int:
     if split["test"]:
         _evaluate_run(out, [os.path.join(bundle_dir, "sessions", sid) for sid in split["test"]], cfg, log=log,
                       workers=args.workers, simulated=False, profile_path=profile_path, sensed_ages_ms=ages,
-                      servo=_prior_servo(config))
+                      servo=_prior_servo(config), datasets_root=_datasets_root(config),
+                      trace_tests_per_tier=config.get("evaluate", {}).get("trace_tests_per_tier"))
     else:
         log("no test sessions in the split: record them after freezing this model, then `armpred evaluate --real`")
     return 0
@@ -788,6 +811,9 @@ def main(argv: Optional[List[str]] = None) -> int:
     p.add_argument("--real", action="store_true", help="the sessions are recordings, not simulations")
     p.add_argument("--prior", help="armpred sysid's prior.json: adds the fitted rows, and the fitted reading ages")
     p.add_argument("--profile", help="the robot profile the sessions were recorded with (a bundle's robot-profile.json)")
+    p.add_argument("--datasets-root", default=None,
+                   help="the network datasets (docs/adr/0035): their held-out traces become per-tier test schedules too")
+    p.add_argument("--trace-tests-per-tier", type=int, default=None)
     p.add_argument("--workers", type=int, default=0)
     p.set_defaults(func=cmd_evaluate)
 

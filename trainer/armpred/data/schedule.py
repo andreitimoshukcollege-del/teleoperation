@@ -26,6 +26,7 @@ from typing import List, Optional, Sequence, Tuple
 
 import numpy as np
 
+from ..net.datasets import library as TL
 from ..net.impairments import EmulatedLink, Impairment
 from ..net.profiles import NAMED_PROFILES, NetworkProfile, create_impairments, ms_to_ticks, resolve_impairments, resolve_parametric
 
@@ -56,14 +57,23 @@ class Segment:
     # from the session start); what was sent in it arrives when it ends, some of it lost.
     outage_at_s: Optional[float] = None
     outage_s: float = 0.0
+    # A network dataset's trace (docs/adr/0035 N5): ``<dataset>/<id>`` under ``trace_root``, replayed by time from
+    # ``trace_offset_s`` into it, its delays and its losses (net/datasets/library.py). Trainer-only (not named).
+    trace: str = ""
+    trace_root: str = ""
+    trace_offset_s: float = 0.0
 
     def impairments(self, tps: int, traces_dir: Optional[str]) -> List[Impairment]:
+        if self.trace:
+            return []  # ScheduledLink replays the trace itself
         if self.named:
             return resolve_impairments(self.name, tps, traces_dir)
         return create_impairments(self.profile)
 
     def base_profile(self, tps: int) -> Optional[NetworkProfile]:
         """The profile behind the segment's impairments; None for a recorded trace."""
+        if self.trace:
+            return None
         if self.named:
             return resolve_parametric(self.name, tps)
         return self.profile
@@ -173,11 +183,23 @@ class Schedule:
                         added_delay_ms=float(d.get("added_delay_ms", 0.0)))
 
 
-def parse(spec: str) -> Schedule:
-    """``lan@0;150ms-20j-0.5loss@60`` -- named profiles only (the grammar official scoring uses)."""
+TRACE_PREFIX = "trace:"
+
+
+def parse(spec: str, datasets_root: Optional[str] = None) -> Schedule:
+    """``lan@0;150ms-20j-0.5loss@60`` -- named profiles (the grammar official scoring uses); and, with
+    ``datasets_root``, ``trace:<dataset>/<id>@<start>`` for a network dataset's trace from its beginning (trainer-only,
+    docs/adr/0035 N5: the per-tier test schedules)."""
     segments = []
     for part in spec.split(";"):
         name, _, start = part.partition("@")
+        if name.startswith(TRACE_PREFIX):
+            if not datasets_root:
+                raise ValueError(f"'{name}' needs the network datasets' root")
+            ref = name[len(TRACE_PREFIX):]
+            TL.path_of(datasets_root, ref)  # refuses a malformed reference
+            segments.append(Segment(start_s=float(start or 0.0), name=name, named=False, trace=ref, trace_root=datasets_root))
+            continue
         segments.append(Segment(start_s=float(start or 0.0), name=name, named=True))
     segments.sort(key=lambda s: s.start_s)
     if segments[0].start_s != 0.0:
@@ -202,6 +224,31 @@ class RandomScheduleConfig:
     max_delay_ms: float = 600.0
     ramp_share: float = 0.5
     uplink_lan_share: float = 0.5
+    # docs/adr/0035 N5: a share of segments replaying a network dataset's train-side trace from ``datasets_root``, its
+    # tier drawn by ``trace_tier_weights`` (good, poor, very bad), then a dataset uniformly, then a trace and an offset.
+    # Drawn after the outage share and before the bursty rest, so 0 (the default) leaves every older mix's draws as
+    # they were.
+    share_trace: float = 0.0
+    trace_tier_weights: Sequence[float] = (1.0, 1.0, 1.0)
+    datasets_root: str = ""
+
+
+TRACE_TIERS = ("good", "poor", "very-bad")
+_POOLS: dict = {}
+
+
+def _trace_pool(config: RandomScheduleConfig):
+    """tier -> dataset -> train-side trace ids under ``datasets_root`` (net/datasets/uplink_schedule.py), read once."""
+    if not config.datasets_root:
+        raise ValueError("share_trace > 0 needs datasets_root (the network datasets, docs/adr/0035 N2)")
+    pool = _POOLS.get(config.datasets_root)
+    if pool is None:
+        from ..net.datasets.index import datasets_under
+        from ..net.datasets.uplink_schedule import train_traces
+
+        pool = train_traces(config.datasets_root, datasets_under(config.datasets_root))
+        _POOLS[config.datasets_root] = pool
+    return pool
 
 
 def _log_uniform(rng: np.random.Generator, lo: float, hi: float) -> float:
@@ -220,6 +267,8 @@ def _random_segments(duration_s: float, rng: np.random.Generator, config: Random
     c_added = c_param + config.share_added_delay
     c_queue = c_added + config.share_queue
     c_outage = c_queue + config.share_outage
+    c_trace = c_outage + config.share_trace
+    pool = _trace_pool(config) if config.share_trace > 0 else None
     while t < duration_s:
         dwell = min(config.max_dwell_s, max(config.min_dwell_s, rng.exponential(config.mean_dwell_s)))
         r = rng.random()
@@ -262,6 +311,22 @@ def _random_segments(duration_s: float, rng: np.random.Generator, config: Random
             at = t + rng.uniform(0.2, dwell - length)
             segments.append(Segment(t, f"outage:b{base:.0f}o{length * 1000:.0f}", False, profile=profile,
                                     outage_at_s=at, outage_s=length))
+        elif r < c_trace:
+            # A real network (docs/adr/0035 N5): a train-side trace of a tier, from a random point in it.
+            w = np.asarray(config.trace_tier_weights, dtype=np.float64)
+            tiers = [k for k, tier in enumerate(TRACE_TIERS) if pool[tier] and w[k] > 0]
+            if not tiers:
+                raise ValueError("share_trace > 0 but no train-side trace of a weighted tier under datasets_root")
+            p = w[tiers] / w[tiers].sum()
+            tier = TRACE_TIERS[tiers[int(rng.choice(len(tiers), p=p))]]
+            datasets = sorted(pool[tier])
+            dataset = datasets[int(rng.integers(len(datasets)))]
+            ids = pool[tier][dataset]
+            ref = f"{dataset}/{ids[int(rng.integers(len(ids)))]}"
+            length = TL.load(config.datasets_root, ref).seconds
+            offset = float(rng.uniform(0.0, max(0.0, length - dwell)))
+            segments.append(Segment(t, f"{TRACE_PREFIX}{ref}+{offset:.1f}", False, trace=ref, trace_root=config.datasets_root,
+                                    trace_offset_s=offset))
         else:
             # Bursty congestion, trainer-only: a low baseline with long delay bursts riding on it.
             # Not the synthetic-burst trace, which ADR 0021 holds out of training entirely.
@@ -321,6 +386,11 @@ class ScheduledLink:
         """(delivered, arrival, segment index)."""
         k = min(max(bisect.bisect_right(self._starts, send_s) - 1, 0), len(self._starts) - 1)
         segment = self.schedule.segments[k]
+        if segment.trace:
+            d = TL.sample(segment.trace_root, segment.trace, segment.trace_offset_s, float(send_s) - segment.start_s)
+            if d is None:
+                return False, int(send_ticks), k
+            return True, int(send_ticks) + int(round(d / 1000.0 * self.tps)), k
         link = self._links.get(k)
         if link is None:
             link = EmulatedLink(segment.impairments(self.tps, self.traces_dir), (self.seed * 1_000_003 + k) & _MASK64)

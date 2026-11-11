@@ -473,7 +473,9 @@ def is_live_impaired(conditions: dict) -> bool:
     return conditions.get("network", {}).get("uplinkProfile", "lan") not in ("lan", "none")
 
 
-def summarize(results: Sequence[ViewResult]) -> Dict[str, object]:
+def summarize(results: Sequence[ViewResult], tiers: Optional[Dict[str, str]] = None) -> Dict[str, object]:
+    """``tiers``: schedule -> network tier for the held-out network traces (docs/adr/0035 decision 6), pooled into
+    ``by_tier`` as well as listed in ``by_schedule``."""
     names = _names(results)
 
     def stats(rs: Sequence[ViewResult], n: str) -> Dict[str, Dict[str, float]]:
@@ -513,9 +515,15 @@ def summarize(results: Sequence[ViewResult]) -> Dict[str, object]:
         by_condition[cond] = {n: {"joint_prediction_error_deg": percentiles(_cat([r.errors[n][:, 2] for r in rs if n in r.errors]))}
                               for n in names if any(n in r.errors for r in rs)}
     live = [r for r in results if is_live_impaired(r.conditions)]
+    by_tier: Dict[str, Dict[str, object]] = {}
+    for tier in ("good", "poor", "very-bad"):
+        rs = [r for r in results if (tiers or {}).get(r.schedule) == tier]
+        if rs:
+            by_tier[tier] = {n: stats(rs, n) for n in names if any(n in r.errors for r in rs)}
     return {
         "views": len(results),
         "by_schedule": by_schedule,
+        "by_tier": by_tier,
         "by_condition": by_condition,
         "live_impaired": {n: stats(live, n) for n in names if any(n in r.errors for r in live)},
         "overall": overall,

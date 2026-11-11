@@ -320,3 +320,10 @@ see the delay.
   servo reads (`driver.jlog`: `RD`, and the gate's `CI`, `GP`, `GD`, `WR`, `CY`), and Isaac's bridge, which emulates that
   driver, does not write them. Making Isaac JetRover sessions readable (the bridge writing `driver.jlog` from its emulated
   reads and gate) is the next step before N5 can use them.
+- **Isaac sessions are training data now.** The bridge, which stands in for the JetRover's driver, writes `driver.jlog`
+  from what it did (`robot/isaac/teleop_isaac/driver_log.py`): every emulated servo read (`RD`, ending at the step the
+  joint was sampled, so the trainer's midpoint is half a read, 1.45 ms, before it), each feedback cycle (`CY`), each relay
+  command array (`CI`) and each servo ramp it started (`WR`); no `GP`/`GD` (the bridge has no gate) and no `BV`. It
+  follows RobotHost's control file like `isaac.jlog`, and RobotHost waits for its trailer as for the real driver's. First
+  session (`20261110T223200Z-auto`, 50 s, driven from the headset directly on SINRG Wi-Fi): `armpred check-session` **OK**,
+  clock causality 14 987 / 15 066 feedback values matched to a read, every motor read at 49.8 Hz, no gap over 22 ms.

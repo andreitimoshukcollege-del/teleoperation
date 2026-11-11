@@ -3410,6 +3410,8 @@ isaac-jetrover-host scene="jetrover-bench" scene_seed="auto":
     dotnet build -c Release -v q -nologo core/Teleop.RobotHost/Teleop.RobotHost.csproj -o "$HOME/isaacsim/robothost" > "$HOME/isaacsim/robothost-build.log" 2>&1         || { tail -20 "$HOME/isaacsim/robothost-build.log" >&2; exit 1; }
     relay=/tmp/teleop-jetrover-relay-$USER.sock
     log=$HOME/isaacsim/jetrover-bridge.log
+    rec=$HOME/isaacsim/jetrover-recordings
+    mkdir -p "$rec"
     pin() { if [ "$(nproc)" -ge 24 ]; then echo "taskset -c $1"; fi; }
     bridge_scene=(); host_scene=()
     if [ "$SCENE" != none ]; then
@@ -3419,7 +3421,7 @@ isaac-jetrover-host scene="jetrover-bench" scene_seed="auto":
     fi
     tap=/tmp/teleop-isaac-tap-$USER.sock
     tap_args=(); [ "$SCENE" != none ] && tap_args=(--tap "$tap")
-    (cd robot/isaac && exec $(pin 2-5) "$HOME/isaacsim/venv/bin/python" -m teleop_isaac.jetrover_bridge --socket "$relay" --client-socket "$relay.robothost" "${bridge_scene[@]}" "${tap_args[@]}") > "$log" 2>&1 &
+    (cd robot/isaac && exec $(pin 2-5) "$HOME/isaacsim/venv/bin/python" -m teleop_isaac.jetrover_bridge --socket "$relay" --client-socket "$relay.robothost" --record-control "$rec/.active" "${bridge_scene[@]}" "${tap_args[@]}") > "$log" 2>&1 &
     bridge=$!
     renderer=""
     trap 'kill $bridge $renderer 2>/dev/null; wait $bridge $renderer 2>/dev/null || true' EXIT
@@ -3430,8 +3432,6 @@ isaac-jetrover-host scene="jetrover-bench" scene_seed="auto":
         sleep 1
     done
     grep "^\[jetrover\]" "$log" || { echo "error: the bridge did not start within 3 min" >&2; tail -30 "$log" >&2; exit 1; }
-    rec=$HOME/isaacsim/jetrover-recordings
-    mkdir -p "$rec"
     writer=()
     if [ "$SCENE" != none ]; then
         # The cameras, backdrops and recorded frames (docs/adr/0034 J5): the FR3's renderer, given the JetRover's URDF and motors.
@@ -3449,13 +3449,14 @@ isaac-jetrover-host scene="jetrover-bench" scene_seed="auto":
         else echo "warning: the renderer did not start, so there are no camera feeds or frames recorded (the robot runs without them):" >&2; tail -20 "$rlog" >&2; renderer=""; fi
     fi
     park=""; [ -n "{{jetrover_park_contact_deg}}" ] && park="--park-contact-deg {{jetrover_park_contact_deg}}"
-    # As teleop-robothost.service runs it on the Jetson (just deploy-robothost), the relay socket aside; no driver writes a log here.
+    # As teleop-robothost.service runs it on the Jetson (just deploy-robothost), the relay socket aside; the bridge writes driver.jlog
+    # (docs/adr/0035 N4), and RobotHost waits for its trailer as it waits for the real driver's.
     dotnet "$HOME/isaacsim/robothost/Teleop.RobotHost.dll" --local-port 6000 --remote-host 127.0.0.1 --remote-port 6001 \
         --relay-socket "$relay" --local-relay-socket "$relay.robothost" --joint-local-port 6002 --discovery-port 6005 \
         --profile-path core/RobotProfiles/jetrover.json --record-control "$rec/.active" \
         --uplink-control "$HOME/isaacsim/jetrover-uplink" --uplink-traces "$HOME/datasets/network" \
         --auto-record --auto-record-root "$rec" --auto-record-profile core/RobotProfiles/jetrover.json --auto-record-source isaac \
-        --auto-record-driver-wait-seconds 0 --rest-pose-deg {{jetrover_rest_pose_deg}} $park "${host_scene[@]}" "${writer[@]}"
+        --rest-pose-deg {{jetrover_rest_pose_deg}} $park "${host_scene[@]}" "${writer[@]}"
     REMOTE
     )
     ssh -o ConnectTimeout=10 "{{gpu_host}}" "COMMIT='$commit' SCENE='{{scene}}' SCENE_SEED='{{scene_seed}}' bash -c $(printf '%q' "$remote")"

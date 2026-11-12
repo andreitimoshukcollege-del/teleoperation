@@ -96,7 +96,7 @@ class LeRobotWriter:
                         raise TakeError(f"{take.path}: a {cam.name} frame is {image.size}, not {cam.width}x{cam.height}")
                     row["observation.images." + cam.name] = np.asarray(image)
                 ds.add_frame(row)
-            ds.save_episode()
+            ds.save_episode(parallel_encoding=False)  # no forked encoder pool: this process runs for days, and torch makes it multi-threaded
         finally:
             ds.finalize()
         return episode

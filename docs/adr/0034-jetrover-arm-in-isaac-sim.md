@@ -453,8 +453,10 @@ more things, and both shape when a servo moves:
   packet carries the move's duration in whole milliseconds, and servos with the same duration share a packet. A torque
   switch drops the waiting targets and times the next move from the last reading.
 - **One thread.** The node runs on rclpy's single-threaded executor. Its 20 ms feedback timer reads every servo back to
-  back, about 15 ms of every 20, and a command that arrives during a read cycle waits until the cycle ends (the command
-  subscription keeps the newest 3, the torque one the newest 1).
+  back, and a command that arrives during a read cycle waits until the cycle ends (the command subscription keeps the
+  newest 3, the torque one the newest 1). Six reads take about 21 ms, longer than the timer's period, so the timer is
+  already due when a cycle ends: the executor runs one waiting command, then the next cycle (see "One command between two
+  cycles" below).
 
 The bridge was 40–60 ms quicker to respond than the real arm (amendment 12: 130–170 ms against 190–220 ms) and overshot
 less at a stop (1.4° against 2.1–3.1°), and J3's fit (amendment 11) chose servos 1.56 times faster than commanded. Some of
@@ -475,8 +477,9 @@ that may have been the fit making up for what is missing here.
   `GD`, 96.5–98.5 % of `WR` packets. The rest are flushes the log does not time.
 - **The J3 replay reads at each session's own driver cycles** (`simfit.extract_cycles` from `driver.jlog`,
   `servo.RecordedFeedback`; `--replay-cycles emulated` runs cycles of its own, as before). On a synthetic arm behind the gate,
-  the replay on its recorded cycles reproduces it exactly, on cycles of its own it misses by 0.72° (p95), and without the
-  gate by 7.9°. The replay's clock now counts physics steps instead of summing them: the sum drifted off the recorded times
+  the replay on its recorded cycles reproduces it exactly. On cycles of its own, 7 ms out of phase, it misses by 17° (p95;
+  p50 1.4°), and without the gate by 14.4° (p50 3.8°). The sweep sends a command every 20 ms and the driver takes one per
+  ~27 ms cycle, so its queue is full and the phase decides which targets survive it. The replay's clock now counts physics steps instead of summing them: the sum drifted off the recorded times
   by enough to move a command past a cycle boundary, and that alone had cost 14° on the same arm.
 - **First look, without Isaac:** the held-out sessions `drive-wp-sched` and the two `teleop-2p5` of 2026-10-25 (120 s
   each), replayed into an ideal servo that is exactly its timed ramp: tracking p95 14.9° without the gate, 11.0° with it on
@@ -485,5 +488,67 @@ that may have been the fit making up for what is missing here.
 - **`--driver-gate off`** keeps the old behaviour, for comparing the two and reproducing amendment 11's fit.
 - **Then J3 is fitted again** with the gate, on the same split, and the result is written here. The fit's parameters stay
   what they were: what changes is what they have to explain.
-- **Not modelled:** the relay node and the ROS transport between it and the driver (about a millisecond; J3's `delay_ms` is
-  where they would go), the 3 ms settle wait before a read after a packet, and the board's own pacing of a packet.
+- **Not modelled:** the ROS transport between the relay and the driver (J3's `delay_ms` is where it goes; the fit below
+  puts 5 ms there), the 3 ms settle wait before a read after a packet, and the board's own pacing of a packet. The relay
+  node was listed here as about a millisecond. It is not: see the next section.
+
+### What the refits found (2026-11-12)
+
+J3 was fitted again on amendment 11's split: four sessions for the fit, five held out, 90 s of each fit session per
+evaluation. Three runs:
+
+| Run | Driver in the replay | Fitted (stiffness / damping / effort / delay / speed) | Fit objective | Held-out p50 / p95 |
+|---|---|---|---|---|
+| Amendment 11 | none (`--driver-gate off`) | 21.2 / 4.24 / 1.5 / 0 ms / 1.56 | 2.335 | 0.72° / 4.32° |
+| `3548c46` | gate, queue emptied at once | 50.5 / 4.24 / 0.49 / 50 ms / 1.32 | 1.348 | 0.72° / 2.88° |
+| `a87cea9` | gate, one command per cycle, relay poll | 50.5 / 3.27 / 0.54 / 5 ms / 0.97 | 1.283 | 0.72° / 3.12° |
+
+Held-out p95 by session (wp-sched, teleop 20:09, teleop 20:20, course 22:46, course 22:55):
+
+- amendment 11: 3.36, 3.84, 5.28, 5.28, 2.88;
+- `3548c46`: 2.64, 2.64, 3.12, 3.12, 2.16;
+- `a87cea9`: 2.40, 3.12, 3.60, 3.12, 2.40.
+
+Readings are whole pulses, 0.24° each, so these differences are one or two pulses.
+
+- **The gate is most of the gain.** Held-out p95 goes from 4.32° to about 3°, and the fit objective from 2.3 to 1.3.
+- **The `3548c46` fit's 50 ms delay was standing in for two stages the replay left out.** The real `driver.jlog` shows
+  both (below). With them modelled, the fit wants 5 ms of delay, about a ROS hop. It also wants the servos at 0.97 × the
+  commanded speed. Amendment 11's 1.56 × and the 50 ms were both making up for the missing driver. The last fit's search
+  had converged: its final steps changed the objective by under 0.002.
+- **Held-out p95 is one pulse worse than `3548c46`'s, on the two 2026-10-25 teleop sessions.** In those sessions a
+  command takes 54 ms from the relay to the driver (cross-correlation of their `RO` and `CI` streams). The replay explains
+  26 ms of that, with the same number of commands reaching the driver (12,674 against 12,666). The other 28 ms is
+  unexplained. The 50 ms stand-in happened to fit those two sessions; on the waypoint session the modelled stages already
+  account for the lag (below). The `a87cea9` parameters stand, because each one now means what it says.
+- **The bridge's defaults are now the `a87cea9` fit:** stiffness 50.45, damping 3.27, effort scale 0.544, speed scale
+  0.972. The live bridge has no command delay, so its 5 ms is not applied live: RobotHost's socket to the bridge is a hop
+  of its own.
+
+### One command between two cycles, and the relay's 20 ms poll
+
+Two stages between RobotHost and the servos shape when a command takes effect. The Isaac driver emulator now models both
+(`servo.DriverEmulator`, `servo.RelayEmulator`; `--relay-poll on|off`, on by default).
+
+- **The executor takes one command array per turn.** In the real `driver.jlog`, 12,740 of the 13,135 gaps between cycles
+  in `drive-wp-2p5` ran one command array, 59 ran two, and the rest none. Gaps last 2.5 ms (median). A cycle's first
+  command starts 0.95 ms after the cycle ends, and a second command in the same gap 1.8 ms after the first. rclpy takes
+  one message per subscription per turn, and the overdue read timer ends the turn.
+- **The queue stays full.** The relay sends at 48 Hz and the driver takes one command per cycle, about every 23 ms. So
+  the three-deep queue stays full, its oldest entry is dropped, and each command waits about two cycles. The emulator used
+  to empty the queue in every gap.
+- **How the emulator does it.** Each callback holds the thread for 2.75 ms, and an emulated cycle waits for a running
+  callback. With a session's recorded cycles, the turn ends when another callback would still be running at the next
+  recorded cycle's start.
+- **The ROS relay** (`relay_node.py`) drains its socket every 20 ms. It publishes every torque switch and only the newest
+  command, using the relay's own `relay_protocol.sort_actions`, which the Isaac side calls too.
+- **Emulated reads take 3.5 ms each** (`JetRoverSimModel.ReadSeconds`): a real read takes 3.2 ms, plus 0.3 ms before the
+  next. Reads are now timed from the cycle's start, so a 1 ms physics step no longer rounds each one up to 4 ms. The
+  trainer keeps its own 2.9 ms.
+
+Checked against `drive-wp-2p5`, where the relay sent 14,743 commands:
+
+| | Real | Replay now | Replay before |
+|---|---|---|---|
+| Relay-to-driver lag (cross-correlated, every motor) | 66 ms | 62 ms | 10 ms |
+| Commands that reached the driver | 12,858 | 13,037 | 14,743 |

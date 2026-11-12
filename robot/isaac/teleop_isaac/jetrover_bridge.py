@@ -54,11 +54,13 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     a.add_argument("--client-socket", default="", help="RobotHost's --local-relay-socket, where feedback goes every 50 ms whether or not "
                                                      "commands come, as the real relay sends it (default: --socket plus .robothost)")
     a.add_argument("--work", default=os.path.expanduser("~/isaacsim/work"), help="where the URDF's USD conversion is kept")
-    # J3's fit to the real arm (docs/adr/0034 amendment 11): held-out tracking p95 12.7 -> 5.3 deg against 60 / 1.5 / 1 / 1.
-    a.add_argument("--stiffness", type=float, default=21.213, help="joint drive stiffness, Nm/rad: a servo holding its setpoint")
-    a.add_argument("--damping", type=float, default=4.2426, help="joint drive damping, Nm s/rad")
-    a.add_argument("--effort-scale", type=float, default=1.5, help="times each servo's stall torque: the drives' force limit")
-    a.add_argument("--speed-scale", type=float, default=1.5625, help="times each command's pulses per second: how fast the real "
+    # J3's fit to the real arm behind the emulated driver and relay (docs/adr/0034 amendment 13, a87cea9): held-out tracking
+    # p95 3.12 deg (amendment 11's 21.213 / 4.2426 / 1.5 / 1.5625 without them: 4.32). The fit's 5 ms command delay is not
+    # applied live: RobotHost's socket to this bridge is a hop of its own.
+    a.add_argument("--stiffness", type=float, default=50.4533, help="joint drive stiffness, Nm/rad: a servo holding its setpoint")
+    a.add_argument("--damping", type=float, default=3.2715, help="joint drive damping, Nm s/rad")
+    a.add_argument("--effort-scale", type=float, default=0.54433, help="times each servo's stall torque: the drives' force limit")
+    a.add_argument("--speed-scale", type=float, default=0.97249, help="times each command's pulses per second: how fast the real "
                                                                      "servos ramp, against what RobotHost asks")
     a.add_argument("--relaxed", choices=("hold", "fall"), default="hold", help="torque off: the gearboxes hold the arm (the real "
                                                                                "arm's readings), or the drives go limp and it falls")

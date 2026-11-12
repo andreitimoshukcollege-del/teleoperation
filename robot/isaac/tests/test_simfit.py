@@ -123,28 +123,36 @@ def recorded_gated(seconds=3.0):
     start = {m: 500.0 for m in model.motors}
     sim.reset(start, simfit.Params())
     fb = servo.FeedbackEmulator(model)
+    # The relay already has every motor at 0, so the replay's clock starts with this one (its first valid reading): the
+    # gate compares float times, and two clocks offset by a cycle would round a cooldown differently now and then.
+    fb.readings = {m: (500.0, 0.0) for m in fb.order}
+    fb._next_read = 0.007  # its cycles 7 ms out of phase with any the replay would run itself
     drv = servo.DriverEmulator(model, fb, servo_move=sim.write, servo_command=sim.command, servo_torque=sim.torque)
-    events, t, k = [], 0.0, 0
+    relay = servo.RelayEmulator()
+    events, t, k, step = [], 0.0, 0, 0
     cycles = []
     while t <= seconds:
         if t >= 0.5 and t < 2.5 and abs(t - (0.5 + 0.02 * k)) < 1e-6:
             pulse = 500.0 + 150.0 * (1 if (k // 15) % 2 == 0 else -1) * ((k % 15) / 15.0)
             events.append([round(t * tps), "RO", [[2, pulse, 900.0]]])
-            drv.command(t, [(2, pulse, 900.0)])
+            relay.offer("command", [(2, pulse, 900.0)])
             k += 1
+        for kind, value in relay.due(t):
+            drv.command(t, value)
         mid = drv.due_read(t)
         while mid is not None:
             if fb._turn == 1 or (len(fb.order) == 1):  # the cycle's first read
                 cycles.append([round(t * tps), None, []])
             cycles[-1][2].append([round(t * tps), mid])
-            cycles[-1][1] = round((t + fb.read_seconds) * tps)
+            cycles[-1][1] = round((fb._busy_until if fb._turn == 0 else t + fb.read_seconds) * tps)  # ends when its reads do
             drv.record(mid, sim.read(mid), t)
             mid = drv.due_read(t)
         out = fb.due_feedback(t)
         if out is not None:
             events.append([round(t * tps), "RI", [[m, int(v), p] for m, v, p in out if m != 10 or v]])
         sim.step()
-        t = round(t + 0.001, 6)
+        step += 1
+        t = step * 0.001  # counted, as the replay counts it
     return {"name": "synthetic-gated", "tps": tps, "events": events, "cycles": cycles}
 
 
@@ -157,9 +165,14 @@ def test_a_gated_arm_is_reproduced_by_the_gated_replay_and_not_by_the_ungated_on
     one = simfit.Replayer(model).deg(1.0)
     gated = p95(simfit.Replayer(model))  # the gate, on the session's own read cycles
     assert gated["n"] > 100 and gated["p95"] <= one + 1e-9
-    assert p95(simfit.Replayer(model, gate=False))["p95"] > 3 * one
-    # The gate on cycles of the replay's own, out of phase with the recording's: close, not exact (a few targets differ).
-    assert 0 < p95(simfit.Replayer(model, cycles="emulated"))["p95"] <= 4 * one
+    ungated = p95(simfit.Replayer(model, gate=False))
+    assert ungated["p95"] > 3 * one
+    # The gate on cycles of the replay's own, 7 ms out of phase with the recording's: commands come every 20 ms and the
+    # thread takes one per ~27 ms cycle, so the queue is full and the phase decides which targets survive it. Most
+    # readings stay close, but this sweep's 36-degree flips land at other times (p95 17 degrees): why a replay runs each
+    # session's recorded cycles.
+    emulated = p95(simfit.Replayer(model, cycles="emulated"))
+    assert emulated["p95"] > one and emulated["p50"] < ungated["p50"] / 2
 
 
 def test_a_session_replays_with_the_zero_offsets_it_was_recorded_with(tmp_path):

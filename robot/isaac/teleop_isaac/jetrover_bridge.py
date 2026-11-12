@@ -71,6 +71,9 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     a.add_argument("--driver-gate", choices=("on", "off"), default="on",
                    help="the real driver's write gate and single thread in front of the servos (docs/adr/0034 amendment 13); "
                         "off: every target starts its ramp at once, as before")
+    a.add_argument("--relay-poll", choices=("on", "off"), default="on",
+                   help="RobotHost's messages reach the driver at the ROS relay's 20 ms socket polls, the newest command only "
+                        "(relay_node.py, docs/adr/0034 amendment 13); off: as they arrive")
     a.add_argument("--replay-cycles", choices=("recorded", "emulated"), default="recorded",
                    help="--replay: read at each session's own driver cycles (its driver.jlog), or run the driver's cycles from "
                         "the first reading (before amendment 13)")
@@ -230,7 +233,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         description = (f"Isaac Sim {version('isaacsim')}, PhysX {1 / args.dt:.0f} Hz on CPU, servo drives {args.stiffness:g}/{args.damping:g} "
                        f"within {args.effort_scale:g} x {'/'.join(f'{m.stall_torque:g}' for m in model.motors.values() if not m.is_gripper)} Nm, "
                        f"speed x{args.speed_scale:g}, relaxed: {args.relaxed}, arm gravity on, "
-                       f"timed-ramp setpoints, driver gate {args.driver_gate}, feedback motors {','.join(str(x) for x in feedback.order)} read back to back ({feedback.read_seconds * 1000:.1f} ms each) "
+                       f"timed-ramp setpoints, driver gate {args.driver_gate}, relay poll {args.relay_poll}, feedback motors {','.join(str(x) for x in feedback.order)} read back to back ({feedback.read_seconds * 1000:.1f} ms each) "
                        f"every {feedback.cycle_seconds * 1000:.0f} ms, sent every {model.feedback_seconds * 1000:.0f} ms")
         if os.path.exists(args.socket):
             os.unlink(args.socket)
@@ -309,19 +312,22 @@ def main(argv: Optional[List[str]] = None) -> int:
         step_ns = int(round(args.dt * 1e9))
         start_ns = next_tick = time.monotonic_ns()
         stop_at = start_ns + int(args.seconds * 1e9) if args.seconds > 0 else None
+        # The ROS relay drains its socket every 20 ms and acts on the newest command (docs/adr/0034 amendment 13).
+        poll_steps = max(1, int(round(servo.RelayEmulator.POLL_SECONDS / args.dt))) if args.relay_poll == "on" else 1
+        datagrams = []
         report_at = start_ns + 5_000_000_000
 
         while not stopping and (stop_at is None or time.monotonic_ns() < stop_at):
-            batch = []
             while True:
                 try:
                     data, sender = sock.recvfrom(4096)
                 except BlockingIOError:
                     break
-                batch.append(data)
+                datagrams.append(data)
                 if sender:
                     client = sender  # whoever commands is where feedback goes
-            if batch:
+            if datagrams and steps % poll_steps == 0:
+                batch, datagrams = datagrams, []
                 actions, rejected = rp.sort_datagrams(batch)
                 rejected_total += rejected
                 for kind, payload in actions:
@@ -554,7 +560,7 @@ def replay_and_fit(args, model, sim, default) -> int:
 
     with open(args.replay, encoding="utf-8") as f:
         doc = json.load(f)
-    replayer = simfit.Replayer(model, gate=args.driver_gate == "on", cycles=args.replay_cycles)
+    replayer = simfit.Replayer(model, gate=args.driver_gate == "on", cycles=args.replay_cycles, relay=args.relay_poll == "on")
 
     def score_all(p, label):
         out = {}
@@ -573,7 +579,8 @@ def replay_and_fit(args, model, sim, default) -> int:
         return out
 
     result = {"format": "jetrover-sim-fit", "version": 1, "split": {g: [s["name"] for s in doc[g]] for g in ("fit", "heldout")},
-              "fitSeconds": args.fit_seconds, "driverGate": args.driver_gate, "replayCycles": args.replay_cycles, "default": {"params": default.to_dict()}}
+              "fitSeconds": args.fit_seconds, "driverGate": args.driver_gate, "replayCycles": args.replay_cycles,
+              "relayPoll": args.relay_poll, "default": {"params": default.to_dict()}}
     result["default"]["scores"] = score_all(default, "default")
 
     def evaluate(p):

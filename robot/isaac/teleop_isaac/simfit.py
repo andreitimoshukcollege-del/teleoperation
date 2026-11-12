@@ -188,18 +188,29 @@ class Score:
         return (t if t is not None else 1e9) + 0.5 * (r if r is not None else 0.0)
 
 
+def deliver(drv: "servo.DriverEmulator", now: float, message) -> None:
+    """A relay message, ``("command", targets)`` or ``("torque", on)``, reaching the driver."""
+    kind, value = message
+    if kind == "torque":
+        drv.torque(now, bool(value))
+    else:
+        drv.command(now, value)  # the sim applies params.speed_scale, as the live bridge does
+
+
 class Replayer:
     """Replays one session into a :class:`ServoSim` and scores it (docs/metrics.md section 10)."""
 
-    def __init__(self, model: servo.SimModel, gate: bool = True, cycles: str = "recorded"):
+    def __init__(self, model: servo.SimModel, gate: bool = True, cycles: str = "recorded", relay: bool = True):
         """``gate``: the driver's write gate and single thread (amendment 13). ``cycles``: ``"recorded"`` reads at the session's
         own driver cycles where it has them (:class:`servo.RecordedFeedback`), ``"emulated"`` runs the driver's cycles from
-        the first reading (:class:`servo.FeedbackEmulator`, as before amendment 13)."""
+        the first reading (:class:`servo.FeedbackEmulator`, as before amendment 13). ``relay``: RobotHost's messages reach
+        the driver at the ROS relay's 20 ms polls, the newest command only (:class:`servo.RelayEmulator`); off, at once."""
         if cycles not in ("recorded", "emulated"):
             raise ValueError(f"cycles must be 'recorded' or 'emulated', not {cycles!r}")
         self.model = model
         self.gate = gate
         self.cycles = cycles
+        self.relay = relay
 
     def deg(self, pulses: float) -> float:
         return abs(pulses) / self.model.pulse_per_radian * 180.0 / math.pi
@@ -236,6 +247,7 @@ class Replayer:
             fb = servo.FeedbackEmulator(self.model)
         drv = servo.DriverEmulator(self.model, fb, servo_move=sim.write, servo_command=sim.command, servo_torque=sim.torque,
                                    gate=self.gate)
+        relay = servo.RelayEmulator() if self.relay else None
         delay = params.delay_ms / 1000.0
         # Commands and torque switches before the first reading are already in the state it shows.
         todo = [e for e in events[first + 1:] if e[1] in ("RO", "TQ")]
@@ -251,16 +263,21 @@ class Replayer:
         while now <= end:
             while ti < len(todo) and (todo[ti][0] - t0) / tps + (delay if todo[ti][1] == "RO" else 0.0) <= now + eps:
                 kind, payload = todo[ti][1], todo[ti][2]
-                if kind == "TQ":
-                    drv.torque(now, bool(payload))
+                message = ("torque", bool(payload)) if kind == "TQ" else ("command", payload)
+                if relay is not None:
+                    relay.offer(*message)
                 else:
+                    deliver(drv, now, message)
+                if kind == "RO":
                     sent = (todo[ti][0] - t0) / tps
-                    drv.command(now, payload)  # the sim applies params.speed_scale, as the live bridge does
                     for m, pulse, pps in payload:
                         if m in last_target and abs(pulse - last_target[m]) > 0.5:
                             last_target[m] = pulse
                             changed_at[m] = sent
                 ti += 1
+            if relay is not None:
+                for message in relay.due(now):
+                    deliver(drv, now, message)
             mid = drv.due_read(now)
             while mid is not None:
                 drv.record(mid, sim.read(mid), now)

@@ -64,20 +64,21 @@ def test_the_gate_is_the_real_drivers_own_module():
 
 def test_a_command_waits_for_the_read_cycle_to_end():
     drv, s, rows = emulator()
-    # The first cycle starts at 0 and reads six motors 2.9 ms apart: busy until 6 x 2.9 = 17.4 ms.
+    # The first cycle starts at 0 and reads six motors 3.5 ms apart: busy until 6 x 3.5 = 21 ms.
     run(drv, s, 0.03, commands=[(0.005, [(2, 700.0, 400.0)])])
-    assert [(round(t, 3), m, p) for t, m, p, _ in s.moves] == [(0.018, 2, 700.0)]
+    assert [(round(t, 3), m, p) for t, m, p, _ in s.moves] == [(0.021, 2, 700.0)]
     assert rows[0] == ("CI", [(2, 700, 400.0)])
 
 
-def test_outside_a_cycle_a_servos_first_move_takes_the_minimum_and_the_next_waits_out_its_cooldown():
+def test_a_servos_first_move_takes_the_minimum_and_the_next_waits_out_its_cooldown():
     drv, s, rows = emulator()
     run(drv, s, 0.4, commands=[(0.019, [(2, 700.0, 400.0)]), (0.030, [(2, 800.0, 400.0)])])
     first, second = s.moves
-    assert (round(first[0], 3), first[2], first[3]) == (0.019, 700.0, 0.05)  # no last pulse sent yet: the minimum
-    # The second arrives in the cooldown (to 69 ms), waits, and goes out at the first read after it: 100 pulses at 400/s.
+    assert (round(first[0], 3), first[2], first[3]) == (0.021, 700.0, 0.05)  # no last pulse sent yet: the minimum
+    # The second arrives in the cooldown (to 71 ms), waits, and goes out at the first read after it, at most one read
+    # (3.5 ms) later: 100 pulses at 400/s.
     assert ("GP", 2, 800) in rows
-    assert second[0] >= 0.069 and second[0] < 0.069 + 0.02 and (second[2], second[3]) == (800.0, 0.25)
+    assert 0.071 - 1e-9 <= second[0] < 0.071 + 0.0035 + 1e-9 and (second[2], second[3]) == (800.0, 0.25)
     assert ("WR", 250, [(2, 800)]) in rows
 
 
@@ -102,7 +103,10 @@ def test_a_torque_switch_drops_the_waiting_target_and_times_the_next_move_from_t
     drv, s, rows = emulator()
     run(drv, s, 0.3, commands=[(0.019, [(2, 700.0, 400.0)]), (0.030, [(2, 900.0, 400.0)]), (0.120, [(2, 600.0, 200.0)])],
         torques=[(0.040, False), (0.100, True)], reading=520.0)
-    assert [(round(t, 3), on) for t, on in s.torques] == [(0.04, False), (0.1, True)]
+    # Each switch waits for the cycle running when it arrives, then takes the thread before the next one.
+    switched = [(round(t, 3), on) for t, on in s.torques]
+    assert [on for _, on in switched] == [False, True]
+    assert all(0 < t - sent < 0.021 + 0.003 for (t, _), sent in zip(switched, (0.040, 0.100)))
     assert ("TQ", 0) in rows and ("TQ", 1) in rows
     pulses = [(p, sec) for _, m, p, sec in s.moves if m == 2]
     # 900 was waiting when torque went off: dropped. 600 is timed from the last reading, 520: 80 pulses at 200/s.
@@ -115,8 +119,23 @@ def test_a_full_command_queue_drops_its_oldest():
     for i, p in enumerate((610.0, 620.0, 630.0, 640.0)):
         drv.command(0.001 + i * 0.001, [(4, p, 400.0)])
     assert [r for r in rows if r[0] == "CI"] == []
-    run(drv, s, 0.03)
+    run(drv, s, 0.1)
     assert [r[1][0][1] for r in rows if r[0] == "CI"] == [620, 630, 640]
+
+
+def test_the_thread_takes_one_waiting_command_between_two_cycles():
+    # The real driver.jlog: the read timer is overdue when a cycle ends, so the executor runs one command array and then
+    # the next cycle. A backlog drains one command per cycle (21 ms of reads and the command's 2.75 ms).
+    drv, s, rows = emulator()
+    at = []
+    drv._clock_ns = lambda: round(s.t * 1e9)
+    drv._log = lambda tag, t, *f: at.append((t / 1e9, f[0][0][1])) if tag == "CI" else None
+    drv.due_read(0.0)
+    for i, p in enumerate((620.0, 630.0, 640.0)):
+        drv.command(0.001 + i * 0.001, [(4, p, 400.0)])
+    run(drv, s, 0.1)
+    assert [p for _, p in at] == [620, 630, 640]
+    assert [round(t, 3) for t, _ in at] == [0.021, 0.045, 0.069]  # each after a cycle: 21 + 3 (the command) + 21 ms
 
 
 def test_without_the_gate_every_target_goes_straight_to_the_servo():
@@ -126,3 +145,14 @@ def test_without_the_gate_every_target_goes_straight_to_the_servo():
     drv.command(0.002, [(2, 702.0, 400.0)])
     assert [(m, p, pps) for _, m, p, pps in s.commands] == [(2, 700.4, 400.0), (2, 702.0, 400.0)]
     assert s.moves == []
+
+
+def test_the_relay_publishes_at_its_polls_every_torque_switch_and_the_newest_command():
+    relay = servo.RelayEmulator()
+    assert relay.due(0.0) == []
+    relay.offer("command", [(2, 600.0, 400.0)])
+    relay.offer("torque", True)
+    relay.offer("command", [(2, 610.0, 400.0)])
+    assert relay.due(0.019) == []  # between polls: waiting in the socket
+    assert relay.due(0.020) == [("torque", True), ("command", [(2, 610.0, 400.0)])]
+    assert relay.due(0.021) == []

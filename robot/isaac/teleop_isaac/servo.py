@@ -78,7 +78,7 @@ class SimModel:
         self.default_pps = float(doc["defaultPulsesPerSecond"])
         self.feedback_seconds = float(doc["feedbackPeriodSeconds"])
         self.driver_cycle_seconds = float(doc.get("driverCycleSeconds", 0.02))
-        self.read_seconds = float(doc.get("readSeconds", 0.0029))
+        self.read_seconds = float(doc.get("readSeconds", 0.0035))
         self.urdf = doc["urdf"]
         self.motors: Dict[int, Motor] = {}
         for m in doc["motors"]:
@@ -202,12 +202,16 @@ class TimedSetpoint:
 class FeedbackEmulator:
     """The driver's feedback cycles and the relay's periodic feedback datagram, as the real ones run (since 2026-10-25):
 
-    - every ``cycle_seconds`` (the driver's ``pollRate``, 20 ms) a cycle reads motors 1 to 5 back to back, ``read_seconds``
-      each (2.9 ms, the trainer's fitted bus read), in whole pulses;
+    - every ``cycle_seconds`` (the driver's ``pollRate``, 20 ms) a cycle reads every motor that answers back to back,
+      ``read_seconds`` each (3.5 ms: a real read and the driver's step to the next), in whole pulses; six reads take
+      longer than the period, so the next cycle starts as soon as the thread is free, as the real one does;
     - a cycle's readings are published when it ends, and only then seen by the relay;
     - the relay sends the newest reading of every motor every ``feedback_seconds`` (its ``_FEEDBACK_SEND_PERIOD_SECONDS``,
       20 ms), valid while under ``valid_seconds`` old (0.2 s); a motor that never reports (the gripper) always invalid.
     """
+
+    recorded = False  # cycles of its own; RecordedFeedback's are a session's
+    EPS = 1e-9  # a time that falls on the caller's step counts at that step, however the floats round
 
     def __init__(self, model: SimModel, read_seconds: Optional[float] = None, cycle_seconds: Optional[float] = None, valid_seconds: float = 0.2):
         self.model = model
@@ -226,22 +230,28 @@ class FeedbackEmulator:
     def busy(self, now: float) -> bool:
         """Whether a read cycle is running at ``now``: from its first read until its last one has ended. The real driver's
         single thread runs nothing else then (:class:`DriverEmulator`)."""
-        return self._turn != 0 or now < self._busy_until
+        return self._turn != 0 or now < self._busy_until - self.EPS
+
+    def timer_waiting(self, now: float, callback_seconds: float) -> bool:
+        """Whether the read timer is due at ``now`` (no cycle running): it takes the thread at the executor's next turn."""
+        return bool(self.order) and self._turn == 0 and now >= self._next_read - self.EPS
 
     def due_read(self, now: float) -> Optional[int]:
         """The motor to read now, or None: a cycle's reads back to back, a cycle every ``cycle_seconds``."""
-        if not self.order or now < self._next_read:
+        if not self.order or now < self._next_read - self.EPS:
             return None
         if self._turn == 0:
             self._cycle_start = now
         m = self.order[self._turn]
         self._turn += 1
+        # Reads are timed from the cycle's start, not from the step that ran the last one: a caller stepping 1 ms would
+        # otherwise round every 3.5 ms read up to 4.
         if self._turn < len(self.order):
-            self._next_read = now + self.read_seconds
+            self._next_read = max(now, self._cycle_start + self._turn * self.read_seconds)
         else:
             self._turn = 0
-            self._busy_until = now + self.read_seconds
-            self._next_read = max(self._cycle_start + self.cycle_seconds, now + self.read_seconds)
+            self._busy_until = max(now, self._cycle_start + len(self.order) * self.read_seconds)
+            self._next_read = max(self._cycle_start + self.cycle_seconds, self._busy_until)
         return m
 
     def record(self, motor_id: int, pulse: float, now: float) -> None:
@@ -281,12 +291,18 @@ class RecordedFeedback(FeedbackEmulator):
         self._bi = 0       # the first cycle not yet ended, for busy()
         self._publish_next = False
 
-    EPS = 1e-9  # a recorded time that falls on the caller's step counts at that step
+    recorded = True
 
     def busy(self, now: float) -> bool:
         while self._bi < len(self.cycles) and self.cycles[self._bi][1] <= now + self.EPS:
             self._bi += 1
         return self._bi < len(self.cycles) and self.cycles[self._bi][0] <= now + self.EPS
+
+    def timer_waiting(self, now: float, callback_seconds: float) -> bool:
+        """Whether another callback started at ``now`` would still be running when the session's next cycle began: then the
+        real timer was already due, and took the thread instead."""
+        self.busy(now)
+        return self._bi < len(self.cycles) and self.cycles[self._bi][0] < now + callback_seconds - self.EPS
 
     def due_read(self, now: float) -> Optional[int]:
         while self._ci < len(self.cycles):
@@ -310,13 +326,45 @@ class RecordedFeedback(FeedbackEmulator):
             self._publish_next = False
 
 
+class RelayEmulator:
+    """The ROS relay's command path (``relay_node.py``'s ``_poll_local_socket``, docs/adr/0034 amendment 13): what RobotHost
+    sends waits in the relay's socket until its next poll, every :attr:`POLL_SECONDS`, which publishes every torque switch
+    and the newest command only (the relay's own ``relay_protocol.sort_actions``). Adds 10 ms on average, and drops a
+    command whenever two arrive between polls."""
+
+    POLL_SECONDS = 0.02  # relay_node.py's _COMMAND_POLL_PERIOD_SECONDS
+    EPS = 1e-9
+
+    def __init__(self, first_poll: float = 0.0):
+        self._rp = relay_protocol()
+        self._next = first_poll
+        self._waiting: List[Tuple[str, object]] = []
+
+    def offer(self, kind: str, value) -> None:
+        """A message from RobotHost: ``("command", targets)`` or ``("torque", on)``."""
+        self._waiting.append((kind, value))
+
+    def due(self, now: float) -> List[Tuple[str, object]]:
+        """What the relay publishes at ``now``: nothing between polls."""
+        if now < self._next - self.EPS:
+            return []
+        while self._next <= now + self.EPS:
+            self._next += self.POLL_SECONDS
+        out, self._waiting = self._rp.sort_actions(self._waiting), []
+        return out
+
+
 class DriverEmulator:
     """The JetRover's servo driver node as the real one runs it (``robot_controller_node.py`` and ``ServoController``,
     docs/adr/0034 amendment 13), in front of any simulated servos.
 
-    - **One thread.** Command arrays and torque switches that arrive while a read cycle runs wait for its end, in order,
-      the command subscription keeping its newest :attr:`COMMAND_DEPTH` and the torque one its newest :attr:`TORQUE_DEPTH`,
-      as rclpy's single-threaded executor and the node's queue depths do.
+    - **One thread, one callback at a time.** Command arrays and torque switches that arrive while a read cycle runs wait
+      for its end, the command subscription keeping its newest :attr:`COMMAND_DEPTH` and the torque one its newest
+      :attr:`TORQUE_DEPTH`, as rclpy's single-threaded executor and the node's queue depths do. They are taken oldest first,
+      one at a time, each holding the thread :attr:`COMMAND_SECONDS`, and no cycle starts while one runs; the driver's read
+      timer is overdue by the time a cycle ends, so it takes the thread back as soon as the callback returns. The real
+      driver therefore runs one command array between two cycles, and with the relay sending at 48 Hz and a cycle every
+      ~23 ms its three-deep queue stays full: a command waits about two cycles (docs/adr/0034 amendment 13).
     - **The write gate** is the driver's own (:func:`write_gate`): a servo takes a new move only after its last one's
       duration, the newest waiting target wins and is written between reads, and a target under 5 pulses from the last one
       written is dropped. Each board packet starts its servos' moves over its duration, in whole milliseconds as the packet
@@ -332,6 +380,12 @@ class DriverEmulator:
 
     COMMAND_DEPTH = 3
     TORQUE_DEPTH = 1
+    # How long one callback holds the thread, from the end of what ran before it: the real driver.jlog (2026-10-25/26)
+    # has a cycle's first command 0.95 ms after the cycle ends and a second one in the same gap 1.8 ms after the first
+    # (medians). Gaps between cycles are 2.5 ms (median), so one command array fits in almost every gap: 12,740 of 13,135
+    # gaps in 20261026T205353Z-drive-wp-2p5 ran one, 59 ran two.
+    COMMAND_SECONDS = 0.00275
+    EPS = 1e-9
 
     def __init__(self, model: SimModel, feedback: "FeedbackEmulator", servo_move=None, servo_command=None, servo_torque=None,
                  gate: bool = True, log=None, clock_ns=None):
@@ -346,6 +400,8 @@ class DriverEmulator:
         self._wg = write_gate() if gate else None
         self.gate = self._wg.WriteGate() if gate else None
         self._queue: List[Tuple[str, object]] = []
+        self._free_at = float("-inf")  # when the running callback returns
+        self._taken: set = set()  # the subscriptions that ran a message in this executor turn (emulated cycles)
         self.last_read: Dict[int, int] = {}
         self.packets = 0
 
@@ -379,26 +435,44 @@ class DriverEmulator:
             del self._queue[mine[0]]  # a full subscription queue drops its oldest message
 
     def tick(self, now: float) -> None:
-        """Runs whatever waited for the thread, once no read cycle is running."""
-        if not self.gated or not self._queue or self.feedback.busy(now):
+        """Runs the oldest message that waited for the thread, once no read cycle and no other callback is running."""
+        if not self.gated or not self._queue:
             return
-        queue, self._queue = self._queue, []
-        for kind, payload in queue:
-            if kind == "command":
-                resolved = [(m, int(self.model.clamp(p)), pps) for m, p, pps in self._wg.resolve(payload)]
-                self._record("CI", [(m, p, float(pps)) for m, p, pps in resolved])
-                moves, events = self.gate.offer(resolved, now)
-                self._events(events)
-                self._write(moves)
-            else:
-                self.gate.torque_switched(self.last_read)
-                self._torque(payload)
-                self._record("TQ", 1 if payload else 0)
+        if self.feedback.busy(now):
+            self._taken.clear()  # a cycle runs: the turn after it starts afresh
+            return
+        if now < self._free_at - self.EPS:
+            return
+        # One message per subscription per executor turn; with the read timer due, its cycle ends the turn.
+        if self.feedback.timer_waiting(now, self.COMMAND_SECONDS):
+            waiting = [i for i, (k, _) in enumerate(self._queue) if k not in self._taken]
+            if not waiting:
+                return
+            kind, payload = self._queue.pop(waiting[0])
+            self._taken.add(kind)
+        else:
+            kind, payload = self._queue.pop(0)
+        self._free_at = now + self.COMMAND_SECONDS
+        if kind == "command":
+            resolved = [(m, int(self.model.clamp(p)), pps) for m, p, pps in self._wg.resolve(payload)]
+            self._record("CI", [(m, p, float(pps)) for m, p, pps in resolved])
+            moves, events = self.gate.offer(resolved, now)
+            self._events(events)
+            self._write(moves)
+        else:
+            self.gate.torque_switched(self.last_read)
+            self._torque(payload)
+            self._record("TQ", 1 if payload else 0)
 
     def due_read(self, now: float) -> Optional[int]:
-        """The motor to read now, or None. Before each read the gate's waiting targets whose cooldown is over go out."""
+        """The motor to read now, or None. Before each read the gate's waiting targets whose cooldown is over go out.
+        Emulated cycles wait for a running callback; recorded ones ran when they ran."""
         self.tick(now)
+        if self.gated and not self.feedback.recorded and now < self._free_at - self.EPS:
+            return None
         mid = self.feedback.due_read(now)
+        if mid is not None:
+            self._taken.clear()  # the timer ran: a new executor turn
         if mid is not None and self.gated:
             moves, events = self.gate.flush(now)
             self._events(events)

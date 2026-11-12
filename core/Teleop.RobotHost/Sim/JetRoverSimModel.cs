@@ -116,11 +116,13 @@ namespace Teleop.RobotHost.Sim
         /// <summary>How often the real relay sends feedback (s): <c>relay_node.py</c>'s <c>_FEEDBACK_SEND_PERIOD_SECONDS</c>, 20 ms since 2026-10-25.</summary>
         public const double FeedbackPeriodSeconds = 0.02;
 
-        /// <summary>The real driver's feedback cycle (s, <c>robot_controller_node.py</c>'s <c>pollRate</c>): motors 1 to 5 read back to back every 20 ms.</summary>
+        /// <summary>The real driver's feedback cycle (s, <c>robot_controller_node.py</c>'s <c>pollRate</c>): every motor that answers read back to back every 20 ms, or as soon as the last cycle's six reads end (they take longer).</summary>
         public const double DriverCycleSeconds = 0.02;
 
-        /// <summary>One bus position read (s): the trainer's fitted 2.9 ms (<c>armpred/sim/params.py</c>).</summary>
-        public const double ReadSeconds = 0.0029;
+        /// <summary>One bus position read and the driver's step to the next (s): 3.2 ms a read and 0.3 ms between reads in the
+        /// real <c>driver.jlog</c> (means, 2026-10-25/26), so six reads take 21 ms (real cycles: 21.3 to 21.8 ms, mean).
+        /// Isaac's driver emulator only; the trainer keeps its own fitted 2.9 ms (<c>armpred/sim/params.py</c>). docs/adr/0034 amendment 13.</summary>
+        public const double ReadSeconds = 0.0035;
 
         private static readonly CultureInfo Inv = CultureInfo.InvariantCulture;
 

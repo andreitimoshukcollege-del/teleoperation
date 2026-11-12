@@ -139,7 +139,8 @@ jetrover-sim-fit sessions_dir="recordings/jetrover" fit="20261026T204223Z-drive-
     echo "[sim-fit] $(du -h "$tmp/sessions.json" | cut -f1) of relay records from $(echo "{{fit}},{{heldout}}" | tr ',' '\n' | grep -c .) sessions"
     ssh -o BatchMode=yes {{gpu_host}} 'mkdir -p ~/isaacsim/simfit && cat > ~/isaacsim/simfit/sessions.json' < "$tmp/sessions.json"
     rm -rf "$tmp"
-    ssh -o BatchMode=yes {{gpu_host}} COMMIT="$commit" START="{{start}}" bash -s <<'REMOTE'
+    # ssh joins its arguments into one remote command line: `start` (checked above: no quotes) is quoted for that shell.
+    ssh -o BatchMode=yes {{gpu_host}} "COMMIT=$commit START='{{start}}' bash -s" <<'REMOTE'
     set -euo pipefail
     repo=$HOME/teleoperation-simfit
     [ -d "$repo" ] || git clone -q https://github.com/andreitimoshukcollege-del/teleoperation.git "$repo"

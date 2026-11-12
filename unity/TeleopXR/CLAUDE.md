@@ -472,9 +472,13 @@ and a GPU with Vulkan video encoding (this PC: RTX 4060 Laptop).
 
 **APK** (the headset alone, over Wi-Fi):
 
-1. `just build-galaxy` produces `Builds/TeleopXR.apk`. It runs the scene check first and refuses
-   to build if the check fails.
-2. `just install-galaxy` installs it over USB.
+1. `just build-galaxy` produces `Builds/teleop-jetrover-robot.apk`, **Teleop JetRover Robot** (app id
+   `com.teleop.jetroverxr`). It runs the scene check first and refuses to build if the check fails.
+   `just build-galaxy-sim` builds the same scene as **Teleop JetRover Sim** (`com.teleop.jetroverxr.sim`,
+   `Builds/teleop-jetrover-sim.apk`) for the Isaac JetRover: discovery off, so it never finds the real robot,
+   and the GPU machine's address built in. The two install side by side, each with its own files directory;
+   `push-galaxy-config`, `push-galaxy-model` and `pull-galaxy-traces` take `app=sim` for it.
+2. `just install-galaxy` installs it over USB (`just install-galaxy sim` the sim app).
 3. `just push-galaxy-config` points the app at the robot's current LAN address without a
    rebuild. Use `just push-galaxy-config auto false` the first time you try the controls: the
    virtual arm moves and the real one doesn't. It finds the robot itself (`just robot-ip`); pass an address to override. It pushes a

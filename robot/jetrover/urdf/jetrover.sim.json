@@ -22,7 +22,7 @@
     {
       "motorId": 2,
       "joint": "proximal",
-      "zeroOffsetRadians": 0.122173049,
+      "zeroOffsetRadians": -0.644948006,
       "feedback": true,
       "stallTorqueNm": 3.4
     },

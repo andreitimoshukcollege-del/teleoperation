@@ -58,6 +58,25 @@ def test_a_session_that_failed_its_check_is_never_packed(bundle, tmp_path):
             f.write(good)
 
 
+def test_a_session_recorded_with_other_zero_offsets_is_never_packed(bundle, tmp_path):
+    root, _, _ = bundle
+    d = str(root / "sessions" / "s32")
+    own = os.path.join(d, "robot-profile.json")
+    remounted = json.loads(json.dumps(PROFILE))
+    remounted["joints"][1]["zeroOffsetRadians"] = -0.64494798  # the shoulder servo replaced 2026-11-11
+    try:
+        with open(own, "w", encoding="utf-8") as f:
+            json.dump(remounted, f)
+        with pytest.raises(BundleError, match=r"other zero offsets .*motors \[2\]"):
+            write_bundle([d], str(tmp_path / "x.tar"), str(root / "jetrover.json"), "sha")
+        write_bundle([d], str(tmp_path / "y.tar"), own, "sha")  # with the profile it was recorded with, it packs
+        with open(own, "w", encoding="utf-8") as f:
+            json.dump(PROFILE, f)
+        write_bundle([d], str(tmp_path / "z.tar"), str(root / "jetrover.json"), "sha")
+    finally:
+        os.remove(own)
+
+
 def test_a_damaged_bundle_is_refused(bundle, tmp_path):
     _, path, ids = bundle
     into = str(tmp_path / "unpacked")

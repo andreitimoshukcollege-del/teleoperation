@@ -284,11 +284,13 @@ namespace Teleop.RobotArm.Types
         /// The exact JetRover arm this codebase has always driven, expressed as a profile instead
         /// of hardcoded fields -- preserves every number <c>ArmLinkLengths.Measured</c> and the old
         /// <c>SERVO_ENUM</c> (robot/ros) had. The proximal joint's
-        /// <see cref="JointHardwareSpec.ZeroOffsetRadians"/> (+7 degrees) is a real, empirically
-        /// calibrated mounting correction (2026-08-17, live-hardware testing): commanding the
-        /// kinematically "correct" 90 degrees produced a real pose noticeably short of true
-        /// vertical, and +7 degrees was needed to reach it for this joint's actual servo-horn
-        /// mounting -- see docs/adr/0011-generic-robot-arm-profiles.md.
+        /// <see cref="JointHardwareSpec.ZeroOffsetRadians"/> is a real, empirically calibrated
+        /// mounting correction, the same number as <c>core/RobotProfiles/jetrover.json</c>'s (a RobotHost
+        /// test holds them equal): -36.95 degrees since the shoulder servo was replaced on 2026-11-11
+        /// (held truly vertical, the new servo read pulse 721, so the offset is 221/238.7 rad - pi/2).
+        /// The first servo's was +7 degrees (2026-08-17: 97 degrees commanded reached true vertical) --
+        /// see docs/adr/0011-generic-robot-arm-profiles.md. RobotHost loads jetrover.json
+        /// (<c>just deploy-robothost</c> passes it); this default is the fallback.
         ///
         /// <para><b>Its collision model is attached</b> (<see cref="JetRoverCollisionModel"/>,
         /// generated from the CAD, docs/adr/0020). That replaced the hand-tuned shoulder floor this
@@ -304,7 +306,7 @@ namespace Teleop.RobotArm.Types
         {
             get
             {
-                const float proximalZeroOffsetRadians = 7f * MathF.PI / 180f;
+                const float proximalZeroOffsetRadians = -0.64494798f; // jetrover.json; the shoulder servo replaced 2026-11-11
 
                 return new RobotArmProfile(
                     name: "jetrover",

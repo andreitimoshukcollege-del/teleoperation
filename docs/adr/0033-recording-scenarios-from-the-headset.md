@@ -90,3 +90,17 @@ The user's choices (2026-11-03):
 - **An export recipe:** a manual step for someone who does not use the repo.
 - **Scenarios in the headset's config** (`fr3_connection.json`): changing the list would then need adb and the repo. A
   file on the GPU machine is his to edit.
+
+## Amendment 1 (2026-11-12): RECORD on the real JetRover; disk thresholds as options
+
+ADR 0036 wants the real robot's takes too.
+
+1. **`deploy-robothost` passes `--scenarios /home/jetson/recordings/scenarios`.** The headset's buttons already work
+   with the JetRover (`OperatorSideControls`): with this RobotHost they answer instead of reading "RobotHost records no
+   scenarios". The labmate's list is `scenarios.txt` in that folder; `just robot-scenarios` lists the takes.
+2. **The disk thresholds become options:** `--scenario-start-free-gb` and `--scenario-stop-free-gb`.
+   - The defaults stay 25 and 21 GB, which suit the GPU machine.
+   - The Jetson's disk is smaller, so `deploy-robothost` passes thresholds sized to it. A take with the camera costs
+     about 4.5 GB an hour (ADR 0014 amendment 3).
+3. **Real takes reach the GPU machine.** ADR 0036's watcher copies complete ones there, and that machine is where they
+   are converted and shared.

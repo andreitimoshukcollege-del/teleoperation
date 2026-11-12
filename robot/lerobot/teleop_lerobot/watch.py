@@ -68,6 +68,7 @@ class Converter:
                         self.checked[(s["take"], s["filesSha256"])] = None
 
     def _skip(self, take: str, content: str, reason: str) -> None:
+        reason = reason[len(take) + 2:] if reason.startswith(take + ": ") else reason  # the path is logged once
         self.checked[(take, content)] = None
         self.log(f"skipped {take}: {reason}")
         with open(os.path.join(self.out, "skipped.jsonl"), "a", encoding="utf-8") as f:

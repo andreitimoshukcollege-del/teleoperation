@@ -244,7 +244,11 @@ namespace Teleop.RobotHost
                 string scenariosRoot = Path.GetFullPath(a.ScenariosRoot);
                 scenarios = new ScenarioRecorder(scenariosRoot, recorder, auto, folder, clock.TicksPerSecond, () => DateTime.UtcNow,
                     () => FreeBytes(scenariosRoot), () => new UplinkCondition(uplink!.Profile, uplinkSeedNow), Console.WriteLine);
-                Console.WriteLine($"[scenario] the headset's RECORD button records into {scenariosRoot}");
+                // The Jetson's disk is smaller than the GPU machine's (docs/adr/0033 amendment 1).
+                if (a.ScenarioStartFreeGigabytes is double startFree) scenarios.StartFreeGigabytes = startFree;
+                if (a.ScenarioStopFreeGigabytes is double stopFree) scenarios.StopFreeGigabytes = stopFree;
+                Console.WriteLine($"[scenario] the headset's RECORD button records into {scenariosRoot}: a take starts with " +
+                    $"{scenarios.StartFreeGigabytes:0.#} GB free and stops below {scenarios.StopFreeGigabytes:0.#} GB");
             }
 
             long sideSendTicks = 0;

@@ -60,3 +60,7 @@ unity/TeleopXR/Assets/Teleop/Lab/Generated/Fr3FeedMeshes.asset filter=lfs diff=l
 # and in CI, where LFS payloads are not fetched), so they stay in git as plain binary.
 *.dae filter=lfs diff=lfs merge=lfs -text
 *.stl binary
+
+# Session logs and their frame sidecars (trainer/contract/SESSION_FORMAT.md): sha256-checked byte for byte.
+*.jlog    text eol=lf
+*.frames  binary

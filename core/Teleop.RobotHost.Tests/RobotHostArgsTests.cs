@@ -114,6 +114,37 @@ namespace Teleop.RobotHost.Tests
         }
 
         [Fact]
+        public void ScenarioDiskThresholds_DefaultToTheRecorders_AndAreArguments()
+        {
+            string[] scenarios = Base.Concat(Recording).Concat(new[] { "--auto-record", "--scenarios", "/home/jetson/recordings/scenarios" }).ToArray();
+            var plain = RobotHostArgs.TryParse(scenarios, out string? e0)!.Value;
+            Assert.Null(e0);
+            Assert.Null(plain.ScenarioStartFreeGigabytes);
+            Assert.Null(plain.ScenarioStopFreeGigabytes);
+            var sized = RobotHostArgs.TryParse(scenarios.Concat(new[] { "--scenario-start-free-gb", "6", "--scenario-stop-free-gb", "3" }).ToArray(), out string? e1)!.Value;
+            Assert.Null(e1);
+            Assert.Equal((6.0, 3.0), (sized.ScenarioStartFreeGigabytes, sized.ScenarioStopFreeGigabytes));
+        }
+
+        [Theory]
+        [InlineData("--scenario-stop-free-gb", "-1")]
+        [InlineData("--scenario-start-free-gb", "20")] // below the default stop threshold (21)
+        [InlineData("--scenario-start-free-gb", "lots")]
+        public void ScenarioDiskThresholds_RefuseAnUnusableValue(string flag, string value)
+        {
+            string[] scenarios = Base.Concat(Recording).Concat(new[] { "--auto-record", "--scenarios", "/s" }).ToArray();
+            Assert.Null(RobotHostArgs.TryParse(scenarios.Concat(new[] { flag, value }).ToArray(), out string? error));
+            Assert.NotNull(error);
+        }
+
+        [Fact]
+        public void ScenarioDiskThresholds_NeedScenarios()
+        {
+            Assert.Null(RobotHostArgs.TryParse(Base.Concat(Recording).Concat(new[] { "--auto-record", "--scenario-stop-free-gb", "3" }).ToArray(), out string? error));
+            Assert.Contains("--scenarios", error);
+        }
+
+        [Fact]
         public void AutoRecord_NeedsTheControlFileAndTheJointPort()
         {
             Assert.Null(RobotHostArgs.TryParse(Base.Concat(new[] { "--auto-record", "--joint-local-port", "6002" }).ToArray(), out string? e1));

@@ -157,7 +157,25 @@ namespace Teleop.RobotHost.Tests.Sim
             var motors = sim["motors"]!.AsArray();
             Assert.Equal(new[] { 1, 2, 3, 4, 5, 10 }, motors.Select(m => (int)m!["motorId"]!).ToArray());
             Assert.True((bool)motors.Single(m => (int)m!["motorId"]! == 10)!["feedback"]!); // the real driver reads it (FEEDBACK_MOTOR_IDS)
-            Assert.Equal(0.12217305, (double)motors.Single(m => (int)m!["motorId"]! == 2)!["zeroOffsetRadians"]!, 6);
+            Assert.Equal(-0.64494798, (double)motors.Single(m => (int)m!["motorId"]! == 2)!["zeroOffsetRadians"]!, 6); // jetrover.json: the shoulder servo replaced 2026-11-11
+        }
+
+        [Fact]
+        public void TheBuiltInJetRover_IsJetRoverJson()
+        {
+            // RobotHost runs jetrover.json (just deploy-robothost passes it); the built-in default is a fallback that must not
+            // go stale when a servo is re-mounted (the shoulder, 2026-11-11, moved its zero offset by 44 degrees).
+            RobotArmProfile file = Profile(), builtIn = RobotArmProfile.JetRoverMeasuredDefault;
+            Assert.Equal(file.Joints.Select(j => (j.MotorId, j.Role, j.WristIndex)), builtIn.Joints.Select(j => (j.MotorId, j.Role, j.WristIndex)));
+            for (int i = 0; i < file.Joints.Length; i++)
+            {
+                Assert.Equal(file.Joints[i].ZeroOffsetRadians, builtIn.Joints[i].ZeroOffsetRadians, 6);
+                Assert.Equal(file.Joints[i].MinAngleRadians, builtIn.Joints[i].MinAngleRadians);
+                Assert.Equal(file.Joints[i].MaxAngleRadians, builtIn.Joints[i].MaxAngleRadians);
+            }
+            Assert.Equal(file.ProximalLinkLength, builtIn.ProximalLinkLength, 6);
+            Assert.Equal(file.DistalLinkLength, builtIn.DistalLinkLength, 6);
+            Assert.Equal(file.BaseHeight, builtIn.BaseHeight, 6);
         }
 
         private static Vector3 Vec(string s)

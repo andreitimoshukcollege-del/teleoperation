@@ -8,8 +8,11 @@ it, so the format has one implementation. A ``.tar`` holding:
 - ``index.json``: ``{"format": "jetrover-data", "version": 1, "repoSha": ..., "sessions": [...]}``,
   each session with its conditions, the sha256 of every file, its read gaps and check statistics.
 
-A session whose ``check.json`` is missing or failed is refused at packing; a file whose sha256 does
-not match the index is refused at reading.
+A session whose ``check.json`` is missing or failed is refused at packing, and so is one whose own
+``robot-profile.json`` (the copy RobotHost recorded it with) turns pulses into angles differently from the
+bundle's: the bundle has one profile, and a re-mounted servo changes a zero offset (the JetRover's shoulder,
+2026-11-11), so sessions from before and after it are packed apart. A file whose sha256 does not match the
+index is refused at reading.
 """
 
 from __future__ import annotations
@@ -37,7 +40,14 @@ def _sha256(path: str) -> str:
     return h.hexdigest()
 
 
+def _zero_offsets(path: str) -> Dict[int, float]:
+    with open(path, "r", encoding="utf-8") as f:
+        raw = json.load(f)
+    return {int(j["motorId"]): float(j.get("zeroOffsetRadians", 0.0)) for j in raw.get("joints", [])}
+
+
 def write_bundle(sessions: Sequence[str], out: str, profile_path: str, repo_sha: str) -> Dict[str, object]:
+    bundle_offsets = _zero_offsets(profile_path)
     index: Dict[str, object] = {"format": FORMAT, "version": VERSION, "repoSha": repo_sha, "sessions": []}
     entries: List[dict] = index["sessions"]  # type: ignore[assignment]
     for directory in sessions:
@@ -48,6 +58,14 @@ def write_bundle(sessions: Sequence[str], out: str, profile_path: str, repo_sha:
             report = json.load(f)
         if not report.get("ok"):
             raise BundleError(f"{directory}: its check failed: {report.get('failures')}")
+        own = os.path.join(directory, "robot-profile.json")
+        if os.path.exists(own):
+            mine = _zero_offsets(own)
+            moved = sorted(m for m in set(mine) | set(bundle_offsets)
+                           if abs(mine.get(m, 0.0) - bundle_offsets.get(m, 0.0)) > 1e-6)
+            if moved:
+                raise BundleError(f"{directory}: recorded with other zero offsets than {profile_path} (motors {moved}): "
+                                  "pack it with the profile it was recorded with, in a bundle of its own")
         with open(os.path.join(directory, "session.json"), "r", encoding="utf-8") as f:
             meta = json.load(f)
         files = {name: _sha256(os.path.join(directory, name)) for name in sorted(os.listdir(directory))

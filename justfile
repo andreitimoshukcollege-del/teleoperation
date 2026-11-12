@@ -192,10 +192,31 @@ unity-world-jetrover-xr:
 unity-check-xr:
     just _unity-batch TeleopXR Teleop.XR.Editor.XrSceneCheck.Run
 
-# Build the Galaxy XR APK (unity/TeleopXR, Unity 6.6) after its scene check -> unity/TeleopXR/Builds/TeleopXR.apk. Close that project's editor first
+# Build the Galaxy XR app for the real JetRover (unity/TeleopXR, Unity 6.6) after its scene check -> unity/TeleopXR/Builds/teleop-jetrover-robot.apk, "Teleop JetRover Robot" (app id com.teleop.jetroverxr, the one it always had). Close that project's editor first
 [group('headset (Galaxy XR)')]
 build-galaxy:
     just _unity-batch TeleopXR Teleop.XR.Editor.XrBuild.Run "-buildTarget Android"
+
+# Build the Galaxy XR app for the Isaac JetRover (docs/adr/0034) -> unity/TeleopXR/Builds/teleop-jetrover-sim.apk, "Teleop JetRover Sim" (app id com.teleop.jetroverxr.sim): the same scene as build-galaxy, installed beside it, with discovery off so it never finds the real robot, and `host` as its address (default: the GPU machine's address on its other network, the one the headset shares; just push-galaxy-config <host> true false sim changes it without a rebuild). Close that project's editor first
+[group('headset (Galaxy XR)')]
+build-galaxy-sim host="auto":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    host="{{host}}"
+    if [ "$host" = auto ]; then
+        gpu="{{gpu_host}}"; gpu_ip="${gpu#*@}"
+        # The GPU machine's addresses other than the one this PC reaches it by (the lab VPN) and docker's: its Wi-Fi.
+        host=$(ssh -o ConnectTimeout=10 -o BatchMode=yes "$gpu" "ip -4 -o addr show scope global" | awk '{print $2, $4}' \
+            | grep -v -E '^(docker|br-|veth|tailscale)' | cut -d' ' -f2 | cut -d/ -f1 | grep -v -x -F "$gpu_ip" | head -1 || true)
+        [ -n "$host" ] || { echo "error: could not find the GPU machine's other address; pass it: just build-galaxy-sim <address>" >&2; exit 1; }
+        echo "sim app: the Isaac JetRover at $host (the GPU machine)"
+    fi
+    case "$host" in *[!A-Za-z0-9.:-]*) echo "error: host must be an address, got '$host'" >&2; exit 1 ;; esac
+    # The build rewrites the Bridge's connection default for itself and puts it back; if Unity dies before it can, this does.
+    res=unity/Teleop.Bridge/Runtime/Resources/jetrover_connection.json
+    keep=$(mktemp); cp "$res" "$keep"
+    trap 'cmp -s "$keep" "$res" || { cp "$keep" "$res"; echo "restored $res" >&2; }; rm -f "$keep"' EXIT
+    just _unity-batch TeleopXR Teleop.XR.Editor.XrBuild.RunSim "-buildTarget Android -teleopRemoteHost $host"
 
 # Build unity/TeleopXR's FR3 Duo scene (Fr3DuoXR, docs/adr/0029) from code: the JetRover's lab (room, camera display, status ring, baked lighting) around a deeper bench, the FR3 Duo at its back (the solid twin from Franka's visual meshes, commanded and measured ghosts), and the JetRover's controls where it has them (power and pause, the twin switches, the operator console with its network sliders, the added-delay slider) plus RECENTRE. Create-only; rebuild=true replaces it, discarding hand edits; bake=true (the default) bakes its lighting, about a minute. The JetRover scene is untouched. Run unity-setup-xr first; close that project's editor first
 [group('fr3 (simulated)')]
@@ -221,6 +242,10 @@ unity-preview-fr3-xr:
 [group('fr3 (simulated)')]
 build-galaxy-fr3:
     just _unity-batch TeleopXR Teleop.XR.Editor.XrBuild.RunFr3 "-buildTarget Android"
+
+# Internal: the Galaxy XR app id of app=robot or app=sim (unity/TeleopXR's XrBuild)
+_galaxy-app-id app:
+    @case "{{app}}" in robot) echo com.teleop.jetroverxr ;; sim) echo com.teleop.jetroverxr.sim ;; *) echo "error: app must be robot or sim, got '{{app}}'" >&2; exit 1 ;; esac
 
 # Install the FR3 Duo's Galaxy XR APK (just build-galaxy-fr3) on the headset over USB (developer mode and USB debugging on; accept the prompt in the headset). The same app id as the JetRover's: it replaces that app
 [group('fr3 (simulated)')]
@@ -260,11 +285,11 @@ push-galaxy-fr3-config host="" motion="true":
 
 # Bring the Galaxy XR's link traces to this PC (docs/adr/0035 N1): the raw stamps of every joint-state frame and keepalive the headset received, one .ltrace file per app run, from the app's files/linktraces into `dest` (gitignored). Then just link-trace-summary. The headset keeps its newest 200 runs
 [group('headset (Galaxy XR)')]
-pull-galaxy-traces dest="recordings/linktraces":
+pull-galaxy-traces dest="recordings/linktraces" app="robot":
     #!/usr/bin/env bash
     set -euo pipefail
     mkdir -p "{{dest}}"
-    src=/sdcard/Android/data/com.teleop.jetroverxr/files/linktraces
+    src=/sdcard/Android/data/$(just _galaxy-app-id "{{app}}")/files/linktraces
     files=$(just _adb shell "ls $src 2>/dev/null" | tr -d '\r' | grep '\.ltrace$' || true)
     [ -n "$files" ] || { echo "no link traces on the headset yet ($src): run the app once with RecordLinkTrace on (the default)"; exit 0; }
     new=0
@@ -432,23 +457,30 @@ mirror-galaxy *args:
     # ADB reaches the Windows process through WSLENV, as the Windows path scrcpy expects.
     ADB="$(wslpath -w "$adb")" WSLENV="${WSLENV:+$WSLENV:}ADB" "$scrcpy" --no-audio --max-size 1920 --window-title=GalaxyXR {{args}}
 
-# Install the Galaxy XR APK on the headset over USB (developer mode and USB debugging on; accept the prompt in the headset)
+# Install a Galaxy XR app on the headset over USB (developer mode and USB debugging on; accept the prompt in the headset): app=robot (just build-galaxy) or app=sim (just build-galaxy-sim). The two install side by side
 [group('headset (Galaxy XR)')]
-install-galaxy:
+install-galaxy app="robot":
     #!/usr/bin/env bash
     set -euo pipefail
-    apk=unity/TeleopXR/Builds/TeleopXR.apk
-    [ -f "$apk" ] || { echo "error: $apk not found; run just build-galaxy first" >&2; exit 1; }
+    case "{{app}}" in robot) build=build-galaxy ;; sim) build=build-galaxy-sim ;; *) echo "error: app must be robot or sim, got '{{app}}'" >&2; exit 1 ;; esac
+    apk=unity/TeleopXR/Builds/teleop-jetrover-{{app}}.apk
+    [ -f "$apk" ] || { echo "error: $apk not found; run just $build first" >&2; exit 1; }
     just _adb devices -l
     just _adb install -r "$(wslpath -m "$apk")"
 
-# Point the Galaxy XR app at the robot without a rebuild: pushes a full jetrover_connection.json override (the Bridge default with RemoteHost replaced) to the app's files directory. Finds the robot itself (`just robot-ip`); pass an address to override. motion=false sends nothing to the arm (ConfirmHardwareMotion off): only the virtual arm moves, for a first try of the controls. `discover=false` turns off the app's own search for the robot (docs/adr/0022), so it talks to this address only: use it for the Isaac JetRover (`just push-galaxy-config <GPU machine> true false`), so a real robot nearby is never found instead
+# Point the Galaxy XR app at the robot without a rebuild: pushes a full jetrover_connection.json override (the Bridge default with RemoteHost replaced) to the app's files directory. Finds the robot itself (`just robot-ip`); pass an address to override. motion=false sends nothing to the arm (ConfirmHardwareMotion off): only the virtual arm moves, for a first try of the controls. `discover=false` turns off the app's own search for the robot (docs/adr/0022), so it talks to this address only: use it for the Isaac JetRover (`just push-galaxy-config <GPU machine> true false`), so a real robot nearby is never found instead. `app=sim` pushes to the Isaac app (just build-galaxy-sim) instead of the robot's, and refuses an automatic host or discovery: `just push-galaxy-config <GPU machine> true false sim`
 [group('headset (Galaxy XR)')]
-push-galaxy-config host=default_jetrover_host motion="true" discover="true":
+push-galaxy-config host=default_jetrover_host motion="true" discover="true" app="robot":
     #!/usr/bin/env bash
     set -euo pipefail
     case "{{motion}}" in true|false) ;; *) echo "error: motion must be true or false, got '{{motion}}'" >&2; exit 1 ;; esac
     case "{{discover}}" in true|false) ;; *) echo "error: discover must be true or false, got '{{discover}}'" >&2; exit 1 ;; esac
+    just _galaxy-app-id "{{app}}" > /dev/null
+    # The sim app must never be pointed at the real robot: it needs the GPU machine's address, and never discovers.
+    if [ "{{app}}" = sim ]; then
+        case "{{host}}" in auto|"") echo "error: app=sim needs the Isaac host's address (the GPU machine): just push-galaxy-config <address> true false sim" >&2; exit 1 ;; esac
+        [ "{{discover}}" = false ] || { echo "error: app=sim never discovers (it would find the real robot): pass discover=false" >&2; exit 1; }
+    fi
     host=$(just _robot-host "{{host}}")
     # The headset has no Tailscale. When this PC can only reach the robot through it (it is on
     # another network), ask the robot for its own lab-network address and give the headset that.
@@ -472,21 +504,21 @@ push-galaxy-config host=default_jetrover_host motion="true" discover="true":
     cfg["DiscoverRobot"] = sys.argv[4] == "true"
     json.dump(cfg, open(sys.argv[1], "w"), indent=2)
     PY
-    dest=/sdcard/Android/data/com.teleop.jetroverxr/files
+    dest=/sdcard/Android/data/$(just _galaxy-app-id "{{app}}")/files
     just _adb shell mkdir -p "$dest"
     just _adb push "$(wslpath -m "$tmp")" "$dest/jetrover_connection.json"
-    echo "Galaxy XR app now targets $host, hardware motion {{ if motion == "true" { "ON" } else { "OFF (virtual arm only)" } }}, discovery {{ if discover == "true" { "on" } else { "OFF (this address only)" } }}; restart the app to pick it up."
+    echo "Galaxy XR app ({{app}}) now targets $host, hardware motion {{ if motion == "true" { "ON" } else { "OFF (virtual arm only)" } }}, discovery {{ if discover == "true" { "on" } else { "OFF (this address only)" } }}; restart the app to pick it up."
 
 # Put a learned joint model on the Galaxy XR without a rebuild (docs/adr/0025): exports trainer/runs/<run>'s model.onnx as weights (checked against it on the golden's real windows) and pushes them to the app's files/models/<run>.weights, which the `learned` preset named <run> loads in place of the build's Resources copy. Point a preset at it with "Model": "<run>" (just push-galaxy-config pushes the presets); restart the app
 [group('headset (Galaxy XR)')]
-push-galaxy-model run:
+push-galaxy-model run app="robot":
     #!/usr/bin/env bash
     set -euo pipefail
     case "{{run}}" in *[!A-Za-z0-9._-]*|"") echo "error: run is a trainer/runs name" >&2; exit 1 ;; esac
     [ -f "trainer/runs/{{run}}/model.onnx" ] || { echo "error: no trainer/runs/{{run}}/model.onnx (just gpu-fetch it)" >&2; exit 1; }
     mkdir -p dist
     ( cd trainer && .venv-win-cuda/Scripts/armpred.exe export-weights --run "runs/{{run}}" --golden ../core/testdata/learned/golden-v3.json --out "../dist/{{run}}.weights" )
-    dest=/sdcard/Android/data/com.teleop.jetroverxr/files/models
+    dest=/sdcard/Android/data/$(just _galaxy-app-id "{{app}}")/files/models
     just _adb shell mkdir -p "$dest"
     just _adb push "dist/{{run}}.weights" "$dest/{{run}}.weights"
     echo "the headset has model {{run}}; a preset with \"Model\": \"{{run}}\" runs it after the app restarts"
@@ -807,7 +839,9 @@ deploy-robothost remote_host=default_jetrover_host remote_user="jetson" operator
     scp -o StrictHostKeyChecking=accept-new "$archive" "${scp_dest}:/tmp/${remote_dir}.tar.gz"
     extra_args=""
     if [ -n "{{max_direction_magnitude}}" ]; then extra_args="$extra_args --max-direction-magnitude {{max_direction_magnitude}}"; fi
-    if [ -n "{{profile_path}}" ]; then extra_args="$extra_args --profile-path {{profile_path}}"; fi
+    # The profile RobotHost converts angles with: profile_path, or else the jetrover.json this deploy copied (never the
+    # C# built-in default, which goes stale when a servo is re-mounted: the shoulder, 2026-11-11). Sessions record the same file.
+    extra_args="$extra_args --profile-path {{ if profile_path == "" { "/home/jetson/robothost_current/robot-profile.json" } else { profile_path } }}"
     # The fastest the servos may be told to move (pulses/s; the code default is 2200, about 9 rad/s).
     # The headset's speed slider asks for slower moves with every joint command, and RobotHost caps
     # those requests at this. Lower it to cap the slider; leave it empty to keep the default.
@@ -1466,7 +1500,9 @@ robot-journal-persist remote_host=default_jetrover_host remote_user="jetson":
 robot-measure-joint-limits ids="2 4" seconds="90" remote_host=default_jetrover_host remote_user="jetson":
     #!/usr/bin/env bash
     set -uo pipefail
-    ssh -o StrictHostKeyChecking=accept-new "{{remote_user}}@$(just _robot-host "{{remote_host}}")" "IDS='{{ids}}' SECONDS_TO_MEASURE={{seconds}} bash -s" <<'REMOTE'
+    # The profile's zero offsets, from this checkout's jetrover.json (never a copy here: a re-mounted servo changes them)
+    offsets=$(python3 -c "import json; print(' '.join(f'{j[\"motorId\"]}:{j.get(\"zeroOffsetRadians\", 0.0)}' for j in json.load(open('core/RobotProfiles/jetrover.json'))['joints']))") || { echo "error: could not read core/RobotProfiles/jetrover.json" >&2; exit 1; }
+    ssh -o StrictHostKeyChecking=accept-new "{{remote_user}}@$(just _robot-host "{{remote_host}}")" "IDS='{{ids}}' SECONDS_TO_MEASURE={{seconds}} ZERO_OFFSETS='$offsets' bash -s" <<'REMOTE'
     sudo systemctl stop jetrover-arm-control
     sdk=$(ls -d /home/jetson/teleop_ros_current/install/jetrover_arm_control/lib/python3*/site-packages | head -1)
     PYTHONUNBUFFERED=1 PYTHONPATH="$sdk" python3 - <<'PY'
@@ -1476,7 +1512,7 @@ robot-measure-joint-limits ids="2 4" seconds="90" remote_host=default_jetrover_h
     ids = [int(i) for i in os.environ["IDS"].split()]
     seconds = float(os.environ["SECONDS_TO_MEASURE"])
     names = {1: "base yaw", 2: "shoulder", 3: "elbow", 4: "wrist pitch", 5: "wrist roll"}
-    zero_offset = {2: 0.12217305}  # core/RobotProfiles/jetrover.json
+    zero_offset = {int(m): float(o) for m, o in (kv.split(":") for kv in os.environ["ZERO_OFFSETS"].split())}  # core/RobotProfiles/jetrover.json
     pulse_per_radian = 1000.0 / math.radians(240.0)
 
     def angle(servo, pulse):
@@ -1698,6 +1734,77 @@ robot-servo-probe ids="1 5 10" remote_host=default_jetrover_host remote_user="je
     sudo systemctl start jetrover-arm-control
     sleep 5
     echo "--- driver: $(systemctl is-active jetrover-arm-control)"
+    REMOTE
+
+# Give a bus servo a new ID, e.g. a replacement that arrived with a factory ID another servo already has (2026-08-13: a new elbow came as 1, the base's; 2026-11-11: a new base came as 2, the shoulder's, and neither 1 nor 2 then answered). Moves nothing and sends no torque command; stops the servo driver for a few seconds (someone holds the arm). Refuses unless exactly one servo answers cleanly at `from` (five position reads, all clean: two servos on one ID garble every reply, so DISCONNECT every other servo with ID `from` first) and nothing answers at `to`; then writes the ID and checks the servo answers at `to` and nothing at `from`. Starts the driver again either way
+[group('robot: deploy and restart (someone at the robot)')]
+robot-servo-set-id from to remote_host=default_jetrover_host remote_user="jetson":
+    #!/usr/bin/env bash
+    set -uo pipefail
+    case "{{from}}{{to}}" in *[!0-9]*|"") echo "error: from and to are servo ids" >&2; exit 1 ;; esac
+    [ "{{from}}" != "{{to}}" ] && [ "{{to}}" -ge 0 ] && [ "{{to}}" -le 253 ] || { echo "error: to is another id, 0..253" >&2; exit 1; }
+    ssh -o StrictHostKeyChecking=accept-new "{{remote_user}}@$(just _robot-host "{{remote_host}}")" "FROM={{from}} TO={{to}} bash -s" <<'REMOTE'
+    sudo systemctl stop jetrover-arm-control
+    sdk=$(ls -d /home/jetson/teleop_ros_current/install/jetrover_arm_control/lib/python3*/site-packages | head -1)
+    PYTHONUNBUFFERED=1 PYTHONPATH="$sdk" python3 - <<'PY'
+    import os, queue, struct, sys, time
+    from jetrover_arm_control.board_manager.robot_controller_sdk import Board, PacketFunction
+
+    def ask(board, servo, cmd, unpack, wait=1.0):
+        """(value, None) for a clean answer from that servo, else (None, why) -- as robot-servo-probe asks."""
+        with board.servo_read_lock:
+            try:
+                board.bus_servo_queue.get_nowait()
+            except queue.Empty:
+                pass
+            board.buf_write(PacketFunction.PACKET_FUNC_BUS_SERVO, [cmd, servo])
+            try:
+                data = board.bus_servo_queue.get(block=True, timeout=wait)
+            except queue.Empty:
+                return None, "no answer"
+            try:
+                sid, rcmd, success, *info = struct.unpack(unpack, data)
+            except struct.error:
+                return None, f"unreadable reply {bytes(data).hex()}"
+            if rcmd != cmd or sid != servo or success != 0:
+                return None, f"error reply {bytes(data).hex()}"
+            return info[0], None
+
+    def positions(board, servo, n=5):
+        got = []
+        for _ in range(n):
+            v, why = ask(board, servo, 0x05, "<BBbh")
+            got.append(v if why is None else why)
+            time.sleep(0.05)
+        return got
+
+    old, new = int(os.environ["FROM"]), int(os.environ["TO"])
+    board = Board()
+    board.enable_reception()
+    time.sleep(0.5)
+    at_new = positions(board, new, 3)
+    if any(isinstance(v, int) for v in at_new):
+        print(f"REFUSED: a servo already answers at {new} ({at_new}); two servos on one id is what this fixes, not makes", flush=True)
+        sys.exit(2)
+    at_old = positions(board, old)
+    print(f"servo {old}: positions {at_old}", flush=True)
+    if not all(isinstance(v, int) for v in at_old):
+        print(f"REFUSED: servo {old} does not answer cleanly ({at_old}). None is there, or more than one servo has id {old}: "
+              f"disconnect every other servo with that id from the bus and run this again", flush=True)
+        sys.exit(2)
+    board.bus_servo_set_id(old, new)
+    time.sleep(0.3)
+    after_new, after_old = positions(board, new), positions(board, old, 3)
+    print(f"after: servo {new} positions {after_new}; servo {old} {after_old}", flush=True)
+    ok = all(isinstance(v, int) for v in after_new) and not any(isinstance(v, int) for v in after_old)
+    print(f"{'DONE' if ok else 'FAILED'}: servo {old} is {'now' if ok else 'not cleanly'} id {new}", flush=True)
+    sys.exit(0 if ok else 1)
+    PY
+    status=$?
+    sudo systemctl start jetrover-arm-control
+    sleep 5
+    echo "--- driver: $(systemctl is-active jetrover-arm-control)"
+    exit $status
     REMOTE
 
 # Experiment, for a board that has stopped answering (just robot-board-diagnose: 0 bytes read): try to bring it back from the Jetson instead of the power switch. Stops the servo driver, opens the board's serial port itself, and asks servo 1 for its position: with both control lines released, then after a 100 ms DTR pulse, then after a 100 ms RTS pulse, stopping at the first that gets an answer. It prints which one worked, then starts the driver again and checks the feedback. First run, 2026-10-20: none did, so these lines do not reset the board (only the power switch did). A pulse that resets the board's controller can drop the servos' torque, so someone must hold the arm

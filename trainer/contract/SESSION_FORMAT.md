@@ -22,6 +22,7 @@ two; its `label` is still `auto`.
 | `marks.jlog` | `just record-mark` | no |
 | `operator.jlog` | `joint-drive` (later, the Bridge) | no |
 | `latents.jlog` | the simulator only | sim only |
+| `camera.jlog`, `camera/` | `Teleop.CameraHost`, on the real robot ("The robot's camera" below) | no |
 | `files.sha256` | `just record-stop`, or RobotHost for an automatic session (`sha256sum` format) | yes, for a packed session |
 
 **A log that exists is never truncated.** A writer that restarts while the control file still names
@@ -310,19 +311,39 @@ Sessions from before 2026-11-04 have `head.rgb`, `head.depth`, `head.mask` and `
 | `ER` | `t` `reason` | Why the session's frames ended early (a nearly full disk: below 20 GB free, an I/O error) |
 | `FS` | `file` `bytes` `sha256` | One per file under `isaac/`, written before the trailer |
 
-**The JetRover in Isaac** (docs/adr/0034) records version-1 sessions (`session.json` version 1) with `source: isaac`, and
-no `driver.jlog`: the bridge stands in for the driver. Its renderer writes the same `isaac.jlog`, with three cameras
-(`third-left`, `third-right`, `wrist`, the wrist's `mount` `gripper_link`), mask ids 7 `arm` and 8 `hand` instead of the
+**The JetRover in Isaac** (docs/adr/0034) records version-1 sessions (`session.json` version 1) with `source: isaac`. The
+bridge stands in for the driver, and since 2026-11-09 it writes the session's `driver.jlog` too: its emulated reads,
+cycles, commands and moves (docs/adr/0035 N4). Its renderer writes the same `isaac.jlog`, with three cameras
+(`third-left`, `third-right`, `wrist`, the wrist's `mount` `wrist_link`; `gripper_link` before docs/adr/0034 amendment 10), mask ids 7 `arm` and 8 `hand` instead of the
 FR3's sided ones, and one more record, because a JetRover session has no `QS` to join:
 
 | Tag | Fields after the tag | Meaning |
 |---|---|---|
 | `SZ` | `revision` `sizes` | Every scene object's size factor on the scene file's size, `[[id, factor], ...]` (docs/adr/0034 amendment 6): in the preamble and whenever the bridge reports a change. 1 is the file's size; a shape's every dimension is multiplied by it |
-| `VQ` | `frame` `stateSensed` `values` | The joint values frame `frame` was posed with, `[[joint, radians], ...]` by URDF joint name (each gripper finger in metres), written just before its `VF`, with the same `stateSensed`. For the JetRover that stamp is the bridge's time (CLOCK_MONOTONIC, RobotHost's clock on the same machine) of the physics state it posed, not of a relay reading: the readings RobotHost records (`RI`) trail the physics by up to a driver cycle (20 ms) |
+| `VQ` | `frame` `stateSensed` `values` | The joint values frame `frame` was posed with, `joint:value;...` by URDF joint name, sorted, radians (each gripper finger in metres), written just before its `VF`, with the same `stateSensed`. For the JetRover that stamp is the bridge's time (CLOCK_MONOTONIC, RobotHost's clock on the same machine) of the physics state it posed, not of a relay reading: the readings RobotHost records (`RI`) trail the physics by up to a driver cycle (20 ms) |
 
 **A frame whose `stateSensed` has no `QS`** comes from the session's last tenth of a second or so. That is after RobotHost
 closed the session and before the renderer noticed; skip it. `just isaac-record-check` measures how many there are (0.4%
 of the frames of a 73 s session on 2026-11-03, with the control file read every 0.5 s; it is read every 0.1 s since).
+
+### The robot's camera (docs/adr/0014 amendment 3)
+
+On the real JetRover, `Teleop.CameraHost` follows the same control file and records the camera. RobotHost waits for its
+trailer (`--auto-record-writer camera:30`), checks its `FS` lines and lists `camera/` in `files.sha256`. A session from
+it has, in addition:
+
+| File | What |
+|---|---|
+| `camera.jlog` | CameraHost's log: a `JSES` header (writer `camera`, CLOCK_MONOTONIC nanoseconds, RobotHost's clock), the records below, an `FS` line per file under `camera/`, an `END` trailer. After a restart in the same session, `camera.2.jlog` with `.2` sidecars |
+| `camera/front.rgb.frames` | the frames, as `isaac/`'s sidecars (`TFRM`, uint16 version 1, uint16 0, then uint32 little-endian length-prefixed records): each the camera's own MJPEG frame, unchanged |
+
+| Tag | Fields after the tag | Meaning |
+|---|---|---|
+| `CM` | `camera` `width` `height` | The camera, `front`, and its frame size. No intrinsics or pose: none are calibrated |
+| `VF` | `t` `frame` `stateSensed` `flags` `parts` | One recorded frame, as `isaac.jlog`'s. `t` is when it was queued for writing. `stateSensed` is the frame's `captureTicks`: the V4L2 start of exposure on CLOCK_MONOTONIC (docs/adr/0014 §4). `flags` is empty. `parts` is `front.rgb:offset:length` |
+| `FD` | `t` `frame` `reason` | A frame not recorded (`writer-behind`): it was still streamed |
+| `ER` | `t` `reason` | Why the session's frames ended early (the disk below its floor, an I/O error) |
+| `FS` | `file` `bytes` `sha256` | One per file under `camera/`, written before the trailer |
 
 ## Versioning
 

@@ -50,13 +50,13 @@ case "$cmd" in
     status)
         if running; then echo "[lerobot] watcher running (pid $(cat "$pidfile")), at $(cd "$repo" && git log --oneline -1)"
         else echo "[lerobot] watcher NOT running"; fi
-        [ -f "$log" ] && tail -8 "$log"
+        if [ -f "$log" ]; then tail -8 "$log"; fi
         for ledger in "$out"/*/*/meta/teleop/takes.jsonl; do
             [ -f "$ledger" ] || continue
             ds=${ledger%/meta/teleop/takes.jsonl}
             echo "  ${ds#$out/}: $(wc -l < "$ledger") episode(s), $(du -sh "$ds" | cut -f1)"
         done
-        [ -f "$out/skipped.jsonl" ] && echo "  skipped takes: $(wc -l < "$out/skipped.jsonl") (see $out/skipped.jsonl)"
+        if [ -f "$out/skipped.jsonl" ]; then echo "  skipped takes: $(wc -l < "$out/skipped.jsonl") (see $out/skipped.jsonl)"; fi
         ;;
     *) echo "usage: watch.sh start|ensure <commit> | stop | status" >&2; exit 2 ;;
 esac

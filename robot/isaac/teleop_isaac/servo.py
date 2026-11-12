@@ -21,7 +21,7 @@ from __future__ import annotations
 import json
 import os
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Dict, List, Optional, Sequence, Tuple
 
 REPO = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", ".."))
@@ -91,6 +91,18 @@ class SimModel:
     def load(path: str = DEFAULT_SIM) -> "SimModel":
         with open(path, encoding="utf-8") as f:
             return SimModel(json.load(f))
+
+    def set_zero_offsets(self, offsets: Dict[int, float]) -> Dict[int, float]:
+        """Replaces motors' zero offsets in place (a replayed session's own, from the profile it was recorded with, docs/adr/0034
+        amendment 13) and returns the ones they had, for putting back. In place, because the bridge's setpoint and read paths
+        convert through this same model."""
+        before = {}
+        for mid, offset in offsets.items():
+            m = self.motors.get(int(mid))
+            if m is not None and not m.is_gripper:
+                before[int(mid)] = m.zero_offset
+                self.motors[int(mid)] = replace(m, zero_offset=float(offset))
+        return before
 
     def value(self, motor_id: int, pulse: float) -> float:
         """The joint's value for a pulse: radians, as ``GenericArmPlant`` converts (less the mounting offset); for the gripper,

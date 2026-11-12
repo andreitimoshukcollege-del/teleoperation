@@ -160,3 +160,27 @@ def test_a_gated_arm_is_reproduced_by_the_gated_replay_and_not_by_the_ungated_on
     assert p95(simfit.Replayer(model, gate=False))["p95"] > 3 * one
     # The gate on cycles of the replay's own, out of phase with the recording's: close, not exact (a few targets differ).
     assert 0 < p95(simfit.Replayer(model, cycles="emulated"))["p95"] <= 4 * one
+
+
+def test_a_session_replays_with_the_zero_offsets_it_was_recorded_with(tmp_path):
+    """The shoulder servo replaced on 2026-11-11 moved motor 2's offset by 44 degrees: a session recorded before must still
+    turn its pulses into the angles its own profile meant, or the simulated shoulder stands 44 degrees off and carries a
+    different load (the J3 refit of 2026-11-11 first ran this way: motor 2's p95 went 2.9 -> 20.6 deg)."""
+    import json as _json
+
+    model = servo.SimModel.load()
+    now = model.motors[2].zero_offset
+    (tmp_path / "robot-profile.json").write_text(_json.dumps(
+        {"joints": [{"motorId": 1, "role": "BaseYaw"}, {"motorId": 2, "role": "Proximal", "zeroOffsetRadians": 0.12217305}]}))
+    assert simfit.recorded_zero_offsets(str(tmp_path)) == {"1": 0.0, "2": 0.12217305}
+    seen = []
+
+    class Watching(RampSim):
+        def reset(self, pulses, params):
+            seen.append((model.motors[2].zero_offset, model.value(2, 500.0)))
+            super().reset(pulses, params)
+
+    session = dict(recorded(lag_ms=0, seconds=1.2), zeroOffsets=simfit.recorded_zero_offsets(str(tmp_path)))
+    simfit.Replayer(model, gate=False).run(session, Watching(0), simfit.Params())
+    assert seen == [(0.12217305, -0.12217305)]
+    assert model.motors[2].zero_offset == now  # put back

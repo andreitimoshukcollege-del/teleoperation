@@ -116,14 +116,17 @@ unity-scene-xr rebuild="false":
 robot-collision-model:
     just _unity-batch TeleopXR Teleop.XR.Editor.RobotCollisionExtractor.Run "" true
 
-# Fit the simulated JetRover to the real one (docs/adr/0034 decision 6, J3; docs/metrics.md section 10): extracts the relay records (RO, RI, TQ) of real sessions in `sessions_dir`, sends them to the GPU machine, and there replays them headless into the bridge's own Isaac arm, scores the default drives, fits stiffness, damping, torque limits, a command delay and a speed scale on the `fit` sessions, and scores the fitted drives on all of them, held-out ones apart. Detached: watch with just jetrover-sim-fit-status. Touches no robot; the Isaac host may keep running
+# Fit the simulated JetRover to the real one (docs/adr/0034 decision 6, J3; docs/metrics.md section 10): extracts the relay records (RO, RI, TQ) of real sessions in `sessions_dir`, sends them to the GPU machine, and there replays them headless into the bridge's own Isaac arm, scores the default drives, fits stiffness, damping, torque limits, a command delay and a speed scale on the `fit` sessions, and scores the fitted drives on all of them, held-out ones apart. Detached: watch with just jetrover-sim-fit-status. Touches no robot; the Isaac host may keep running. `start` begins the search from other parameters than the bridge's defaults (its flags, e.g. "--stiffness 42 --speed-scale 1.0"), keeping its own result file; `rounds` lengthens it
 [group('isaac')]
-jetrover-sim-fit sessions_dir="recordings/jetrover" fit="20261026T204223Z-drive-steps-2p5,20261026T204737Z-drive-steps-6,20261026T205353Z-drive-wp-2p5,20261026T210007Z-drive-wp-5" heldout="20261026T210625Z-drive-wp-sched,20261025T200935Z-teleop-2p5,20261025T202026Z-teleop-2p5,20261027T224623Z-auto,20261027T225507Z-auto" fit_seconds="90" rounds="2":
+jetrover-sim-fit sessions_dir="recordings/jetrover" fit="20261026T204223Z-drive-steps-2p5,20261026T204737Z-drive-steps-6,20261026T205353Z-drive-wp-2p5,20261026T210007Z-drive-wp-5" heldout="20261026T210625Z-drive-wp-sched,20261025T200935Z-teleop-2p5,20261025T202026Z-teleop-2p5,20261027T224623Z-auto,20261027T225507Z-auto" fit_seconds="90" rounds="2" start="":
     #!/usr/bin/env bash
     set -euo pipefail
     commit=$(git rev-parse HEAD)
     git fetch -q origin
     [ -n "$(git branch -r --contains "$commit" 2>/dev/null)" ] || { echo "error: $commit is not on GitHub: push it first (the GPU machine runs what GitHub has)" >&2; exit 1; }
+    # `start`: where the search begins instead of the bridge's defaults, as the bridge's own flags, e.g.
+    # "--stiffness 42 --damping 4.2 --speed-scale 1.0" (also --effort-scale, --driver-gate, --replay-cycles).
+    case "{{start}}" in *[!A-Za-z0-9.\ -]*) echo "error: start takes only the bridge's flags and numbers, got '{{start}}'" >&2; exit 1 ;; esac
     tmp=$(mktemp -d)
     (cd robot/isaac && python3 - "{{sessions_dir}}" "{{fit}}" "{{heldout}}" > "$tmp/sessions.json") <<'PY'
     import json, os, sys
@@ -136,17 +139,19 @@ jetrover-sim-fit sessions_dir="recordings/jetrover" fit="20261026T204223Z-drive-
     echo "[sim-fit] $(du -h "$tmp/sessions.json" | cut -f1) of relay records from $(echo "{{fit}},{{heldout}}" | tr ',' '\n' | grep -c .) sessions"
     ssh -o BatchMode=yes {{gpu_host}} 'mkdir -p ~/isaacsim/simfit && cat > ~/isaacsim/simfit/sessions.json' < "$tmp/sessions.json"
     rm -rf "$tmp"
-    ssh -o BatchMode=yes {{gpu_host}} COMMIT="$commit" bash -s <<'REMOTE'
+    ssh -o BatchMode=yes {{gpu_host}} COMMIT="$commit" START="{{start}}" bash -s <<'REMOTE'
     set -euo pipefail
     repo=$HOME/teleoperation-simfit
     [ -d "$repo" ] || git clone -q https://github.com/andreitimoshukcollege-del/teleoperation.git "$repo"
     cd "$repo" && git fetch -q origin && git checkout -q "$COMMIT"
     out=$HOME/isaacsim/simfit/result-${COMMIT:0:7}.json; log=$HOME/isaacsim/simfit/fit.log
+    # A run with a `start` keeps its own result: two runs at one commit must not overwrite each other.
+    if [ -n "$START" ]; then out=$HOME/isaacsim/simfit/result-${COMMIT:0:7}-$(date +%Y%m%dT%H%M%S).json; fi
     cd robot/isaac
     # Its own module name: isaac-stop and the hosts match teleop_isaac.(bridge|jetrover_bridge), and must not stop the fit.
     pgrep -u "$USER" -f "teleop_isaac[.]simfit_run" > /dev/null && { echo "error: a fit of ours is already running on $(hostname): just jetrover-sim-fit-status" >&2; exit 1; }
     nohup "$HOME/isaacsim/venv/bin/python" -m teleop_isaac.simfit_run "$HOME/isaacsim/simfit/sessions.json" \
-        --fit-seconds {{fit_seconds}} --fit-rounds {{rounds}} --out "$out" > "$log" 2>&1 < /dev/null &
+        --fit-seconds {{fit_seconds}} --fit-rounds {{rounds}} --out "$out" $START > "$log" 2>&1 < /dev/null &
     echo "[sim-fit] running on $(hostname) at ${COMMIT:0:7} (pid $!): log $log, result $out"
     REMOTE
 

@@ -94,7 +94,19 @@ def extract_session(directory: str) -> Dict:
                 events.append([int(t), tag, entries])
     events.sort(key=lambda e: e[0])
     return {"name": os.path.basename(os.path.normpath(directory)), "tps": tps, "events": events,
-            "cycles": extract_cycles(directory, tps)}
+            "cycles": extract_cycles(directory, tps), "zeroOffsets": recorded_zero_offsets(directory)}
+
+
+def recorded_zero_offsets(directory: str) -> Dict[str, float]:
+    """Each motor's zero offset in the profile the session was recorded with (its ``robot-profile.json``), by motor id; empty
+    without one. A pulse means the angle that profile says: the JetRover's shoulder servo was replaced on 2026-11-11 and its
+    offset moved 44 degrees, so sessions before and after it must not share one conversion."""
+    path = os.path.join(directory, "robot-profile.json")
+    if not os.path.exists(path):
+        return {}
+    with open(path, encoding="utf-8") as f:
+        doc = json.load(f)
+    return {str(int(j["motorId"])): float(j.get("zeroOffsetRadians", 0.0)) for j in doc.get("joints", [])}
 
 
 # --- the simulator's side ------------------------------------------------------------------------------------------------
@@ -193,6 +205,14 @@ class Replayer:
         return abs(pulses) / self.model.pulse_per_radian * 180.0 / math.pi
 
     def run(self, session: Dict, sim: ServoSim, params: Params, seconds: float = 0.0) -> Score:
+        """Replays with the session's own zero offsets (the profile it was recorded with) and puts the model's back after."""
+        before = self.model.set_zero_offsets({int(m): o for m, o in (session.get("zeroOffsets") or {}).items()})
+        try:
+            return self._run(session, sim, params, seconds)
+        finally:
+            self.model.set_zero_offsets(before)
+
+    def _run(self, session: Dict, sim: ServoSim, params: Params, seconds: float) -> Score:
         events = session["events"]
         tps = float(session["tps"])
         first = next((i for i, e in enumerate(events) if e[1] == "RI" and all(v for m, v, _ in e[2] if m in SCORED)), None)

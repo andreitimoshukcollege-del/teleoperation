@@ -16,7 +16,7 @@ def test_a_pulse_means_the_angle_generic_arm_plant_means():
     m = model()
     assert m.pulse_per_radian == pytest.approx(1000 / math.radians(240), rel=1e-6)
     assert m.value(1, 500.0) == pytest.approx(0.0)
-    assert m.value(2, 500.0) == pytest.approx(-0.12217305)  # the shoulder's mounting offset
+    assert m.value(2, 500.0) == pytest.approx(0.64494801, abs=1e-6)  # the shoulder's mounting offset (servo replaced 2026-11-11)
     for mid in (1, 2, 3, 4, 5):
         for a in (-1.0, 0.0, 0.7):
             assert m.value(mid, m.pulse(mid, a)) == pytest.approx(a)

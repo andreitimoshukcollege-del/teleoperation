@@ -29,15 +29,15 @@ def test_reads_end_when_the_bridge_samples_and_a_cycle_spans_its_reads():
     assert rec.rows[-1][0] == "RD" and sum(1 for r in rec.rows if r[0] == "CY") == 1  # a new cycle has begun
 
 
-def test_commands_and_moves():
+def test_the_drivers_own_records_pass_through_and_an_ungated_move_is_one_record_per_servo():
     rec = Recorder()
     log = DriverLog(rec, read_seconds=0.0029, cycle_motors=[1])
-    log.command(5, [(1, 612.7, 907.18), (2, 400, 907.18)])
-    log.moved(5, 1, 612.7, 500.0, 907.18 * 1.5625)
-    assert rec.rows[0] == ("CI", 5, [(1, 612, 907.18), (2, 400, 907.18)])
-    assert rec.rows[1] == ("WR", 5, int(112.7 / (907.18 * 1.5625) * 1000), [(1, 613)])
-    log.command(6, [])
-    assert len(rec.rows) == 2  # an empty array writes nothing
+    log.driver("CI", 5, [(1, 612, 907.18), (2, 400, 907.18)])
+    log.driver("GP", 5, 2, 400)
+    log.driver("WR", 5, 50, [(1, 612)])
+    assert rec.rows == [("CI", 5, [(1, 612, 907.18), (2, 400, 907.18)]), ("GP", 5, 2, 400), ("WR", 5, 50, [(1, 612)])]
+    log.moved(6, 1, 612.7, 500.0, 907.18 * 1.5625)  # --driver-gate off
+    assert rec.rows[3] == ("WR", 6, int(112.7 / (907.18 * 1.5625) * 1000), [(1, 613)])
 
 
 def test_it_writes_driver_jlog_into_the_open_session_with_the_real_drivers_header_and_trailer(tmp_path):
@@ -53,7 +53,7 @@ def test_it_writes_driver_jlog_into_the_open_session_with_the_real_drivers_heade
         log = DriverLog(session, read_seconds=0.0029, cycle_motors=[1, 2])
         log.read(10_000_000, 1, 500)
         log.read(12_900_000, 2, 501)
-        log.command(13_000_000, [(1, 600, 907.0)])
+        log.driver("CI", 13_000_000, [(1, 600, 907.0)])
         time.sleep(0.2)
         control.unlink()
         end = time.monotonic() + 5

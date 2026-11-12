@@ -440,3 +440,50 @@ the commands: on the worst joint, 55 % of readings were more than 5° from the c
   error, back to the real sessions' level; a session driven that way and scored with `just headset-replay` tests it.
 - **Not decided here.** Whether the headset should cap or smooth the hand's commanded speed, since commands faster than
   the servos are asked to move can never be followed.
+
+## Amendment 13 (2026-11-11): the driver's write gate and its single thread, in the bridge
+
+Decision 1 says Isaac replaces the ROS driver. Until now the bridge replaced it with less than it does: every relay target
+started a new servo ramp the moment it arrived. The real driver (`robot_controller_node.py`, `ServoController`) does two
+more things, and both shape when a servo moves:
+
+- **The write gate.** A servo takes a new move only after its last one's duration (`|target − last sent| / pulses per
+  second`, at least 50 ms) has passed. A target that arrives during that cooldown waits, and the newest one wins; it is
+  written between position reads (`flushPending`). A target under 5 pulses from the last one written is dropped. The board
+  packet carries the move's duration in whole milliseconds, and servos with the same duration share a packet. A torque
+  switch drops the waiting targets and times the next move from the last reading.
+- **One thread.** The node runs on rclpy's single-threaded executor. Its 20 ms feedback timer reads every servo back to
+  back, about 15 ms of every 20, and a command that arrives during a read cycle waits until the cycle ends (the command
+  subscription keeps the newest 3, the torque one the newest 1).
+
+The bridge was 40–60 ms quicker to respond than the real arm (amendment 12: 130–170 ms against 190–220 ms) and overshot
+less at a stop (1.4° against 2.1–3.1°), and J3's fit (amendment 11) chose servos 1.56 times faster than commanded. Some of
+that may have been the fit making up for what is missing here.
+
+- **One implementation of the gate.** It moves out of `ServoController` into `servo_controller/write_gate.py`, plain Python
+  with no serial port, and `ServoController` uses it unchanged in behaviour (the driver's tests stay as they are). The
+  bridge imports that module from `robot/ros`, as it imports the relay protocol, so the two can never drift.
+- **The executor is emulated** (`servo.DriverEmulator`): commands and torque switches that arrive during a read cycle wait
+  for its end, the gate's waiting targets are flushed before each read, and each board packet starts the servos' ramps over
+  its duration. The live bridge and the J3 replay drive the same emulator.
+- **`driver.jlog` from the bridge now has the real driver's gate records:** `CI` as the gate saw it, `GP`, `GD`, and `WR` per
+  board packet with its commanded duration (no longer one per servo at the simulated speed).
+- **What the real logs say** (the ten recorded sessions of 2026-10-25 and 26, `driver.jlog`): not one of about 85,000 command
+  arrays (`CI`) reached the gate during a read cycle (`CY`); the driver was reading about 90 % of the time, in cycles of
+  17–20 ms (p50) every 21–23 ms. Replaying each session's `CI` through `write_gate.py`, flushing where the node flushes (at
+  a cycle's start and after each read but its last), gives the gate decisions the driver logged: 99.3–99.97 % of `GP` and
+  `GD`, 96.5–98.5 % of `WR` packets. The rest are flushes the log does not time.
+- **The J3 replay reads at each session's own driver cycles** (`simfit.extract_cycles` from `driver.jlog`,
+  `servo.RecordedFeedback`; `--replay-cycles emulated` runs cycles of its own, as before). On a synthetic arm behind the gate,
+  the replay on its recorded cycles reproduces it exactly, on cycles of its own it misses by 0.72° (p95), and without the
+  gate by 7.9°. The replay's clock now counts physics steps instead of summing them: the sum drifted off the recorded times
+  by enough to move a command past a cycle boundary, and that alone had cost 14° on the same arm.
+- **First look, without Isaac:** the held-out sessions `drive-wp-sched` and the two `teleop-2p5` of 2026-10-25 (120 s
+  each), replayed into an ideal servo that is exactly its timed ramp: tracking p95 14.9° without the gate, 11.0° with it on
+  emulated cycles, 10.1° on recorded ones (p50 2.2° → 1.7°). With that servo, J3's 1.56 × speed makes it worse (10.8°), as
+  it would if the speed-up had been standing in for the gate.
+- **`--driver-gate off`** keeps the old behaviour, for comparing the two and reproducing amendment 11's fit.
+- **Then J3 is fitted again** with the gate, on the same split, and the result is written here. The fit's parameters stay
+  what they were: what changes is what they have to explain.
+- **Not modelled:** the relay node and the ROS transport between it and the driver (about a millisecond; J3's `delay_ms` is
+  where they would go), the 3 ms settle wait before a read after a packet, and the board's own pacing of a packet.

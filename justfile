@@ -2506,11 +2506,11 @@ deploy-ros activate="true" remote_host=default_jetrover_host remote_user="jetson
         mkdir -p ~/${remote_dir} && tar xzf /tmp/${remote_dir}.tar.gz -C ~/${remote_dir} && rm -f /tmp/${remote_dir}.tar.gz
         cd ~/${remote_dir} && source /opt/ros/foxy/setup.bash && colcon build 2>&1 | tail -4
         test -f ~/${remote_dir}/install/setup.bash
-        echo '--- the plain-Python tests (relay protocol, stale tracking, servo controller, read backoff, session log):'
+        echo '--- the plain-Python tests (relay protocol, stale tracking, servo controller, write gate, read backoff, session log):'
         PYTHONPATH=src/teleop_relay:src/jetrover_arm_control python3 -m pytest -q -p no:cacheprovider \
             src/teleop_relay/test/test_relay_protocol.py src/teleop_relay/test/test_stale_tracked_value.py \
             src/jetrover_arm_control/test/test_servo_controller.py src/jetrover_arm_control/test/test_read_backoff.py \
-            src/jetrover_arm_control/test/test_session_log.py 2>&1 | tail -6
+            src/jetrover_arm_control/test/test_session_log.py src/jetrover_arm_control/test/test_write_gate.py 2>&1 | tail -6
         exit \${PIPESTATUS[0]}
     "
     # The build every recorded session's session.json names (docs/adr/0021): ~/teleop_ros_current/BUILD_INFO.

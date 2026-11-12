@@ -2,21 +2,14 @@ import time
 from time import sleep
 
 from jetrover_arm_control.board_manager.robot_board_manager import BoardManager
+from jetrover_arm_control.servo_controller import write_gate
 from jetrover_arm_control.session_log import NullSessionLog
 
-# setPos's write-gate threshold, in pulse units. A bus-traffic optimization only (skip a physical
-# write that wouldn't move the servo perceptibly) -- see docs/adr/0010-absolute-joint-targets-over-local-relay.md
-# for why this stopped being a correctness requirement once setPos began receiving already-resolved
-# absolute pulse targets instead of relative deltas.
-MIN_MEANINGFUL_PULSE_DELTA = 5
-
-# Minimum move duration regardless of distance, seconds -- avoids an implausibly fast/jerky
-# instantaneous move for a near-zero delta. The move *speed* itself (pulses/second) is no longer a
-# module constant here: docs/adr/0011-generic-robot-arm-profiles.md moves it to an explicit
-# per-call parameter (setPos's own pulses_per_second), supplied by GenericArmPlant over the wire,
-# so the .NET side and this side no longer have to keep a duplicated PULSES_PER_SECOND number in
-# sync by hand.
-MIN_MOVE_DURATION_SECONDS = 0.05
+# The write gate (threshold, minimum duration, cooldown, pending targets) lives in write_gate.py, plain
+# Python the Isaac JetRover's bridge imports too (teleoperation docs/adr/0034 amendment 13). The two
+# constants stay importable from here.
+MIN_MEANINGFUL_PULSE_DELTA = write_gate.MIN_MEANINGFUL_PULSE_DELTA
+MIN_MOVE_DURATION_SECONDS = write_gate.MIN_MOVE_DURATION_SECONDS
 
 # How long a position read waits after the last move packet, seconds. With the headset streaming
 # (2026-10-20), a read sent straight after a burst of move packets often got no answer, costing
@@ -76,12 +69,9 @@ class ServoController:
         self.pwm_max = 1000
 
         # See class doc: the last pulse actually sent per servoID (used only for the write gate
-        # now, not a position belief), and the monotonic timestamp (time.monotonic()) after which
-        # the next real write for that servo is due.
-        self._lastSentPulse = {}
-        self._nextAllowedWriteAt = {}
-        # The newest target that arrived during a servo's cooldown: servoID -> (pulse, speed).
-        self._pending = {}
+        # now, not a position belief), when each servo's next real write is due (time.monotonic()),
+        # and the newest target that arrived during a servo's cooldown -- all in write_gate.WriteGate.
+        self._gate = write_gate.WriteGate()
         # When the last move packet went out (time.monotonic()); getRawPos waits
         # WRITE_SETTLE_SECONDS after it.
         self._lastWriteAt = None
@@ -117,24 +107,12 @@ class ServoController:
         (servoID, absolute pulse target, pulses_per_second). Returns the packets written."""
         now = time.monotonic()
         logged = self._log.now()
-        moves = []
-        resolved = []
-        for servoID, direction, pulses_per_second in targets:
-            nextPos = int(direction)
-            nextPos = 0 if nextPos < 0 else 1000 if nextPos > 1000 else nextPos
-            resolved.append((servoID, nextPos, pulses_per_second))
+        resolved = write_gate.resolve(targets)
         self._log.record("CI", logged, [(i, p, float(pps)) for i, p, pps in resolved])
-        for servoID, nextPos, pulses_per_second in resolved:
-            if now < self._nextAllowedWriteAt.get(servoID, 0.0):
-                # Still cooling down from this servo's last real move: keep it as the pending
-                # target, newest wins, for flushPending to write when the cooldown ends.
-                self._pending[servoID] = (nextPos, pulses_per_second)
-                self._log.record("GP", logged, servoID, nextPos)
-                continue
-
-            self._pending.pop(servoID, None)
-            self._plan(servoID, nextPos, pulses_per_second, now, moves)
-
+        # A target during its servo's cooldown is kept as the pending one (GP), newest wins, for
+        # flushPending to write when the cooldown ends; one within the threshold is dropped (GD).
+        moves, events = self._gate.offer(resolved, now)
+        self._logGate(events, logged)
         return self._send(moves)
 
     def flushPending(self):
@@ -142,57 +120,34 @@ class ServoController:
         setPositions. Cheap when nothing is pending; robot_controller_node.py calls it between
         feedback reads, since on the single-threaded executor no command callback runs while the
         feedback poll does. Returns the packets written."""
-        if not self._pending:
+        if not self._gate.pending:
             return 0
 
-        now = time.monotonic()
-        moves = []
-        for servoID in list(self._pending):
-            if now < self._nextAllowedWriteAt.get(servoID, 0.0):
-                continue
-            nextPos, pulses_per_second = self._pending.pop(servoID)
-            self._plan(servoID, nextPos, pulses_per_second, now, moves)
-
+        moves, events = self._gate.flush(time.monotonic())
+        self._logGate(events, None)
         return self._send(moves)
 
-    def _plan(self, servoID: int, nextPos: int, pulses_per_second: float, now: float, moves):
-        """Adds one move to moves, unless it is within the write gate of what was last sent."""
-        lastSent = self._lastSentPulse.get(servoID)
-        if lastSent is not None and abs(nextPos - lastSent) < MIN_MEANINGFUL_PULSE_DELTA:
-            # Not a correctness concern (see MIN_MEANINGFUL_PULSE_DELTA's own comment) -- just
-            # skips a physical write that wouldn't move the servo perceptibly.
-            self._log.record("GD", self._log.now(), servoID, nextPos)
-            return
-
-        # No prior sent value for this servo (its very first move) -- there is no real distance
-        # to measure a speed against yet, so this one call falls back to the minimum duration
-        # rather than an undefined or zero-distance one.
-        pulseDelta = abs(nextPos - lastSent) if lastSent is not None else 0
-        duration = max(MIN_MOVE_DURATION_SECONDS, pulseDelta / pulses_per_second)
-
-        # The STM32 firmware paces the physical move itself via duration (the parameter
-        # bus_servo_set_position encodes into the packet) -- no need to block this thread waiting
-        # for it. Track when the next write may go out instead.
-        self._lastSentPulse[servoID] = nextPos
-        self._nextAllowedWriteAt[servoID] = now + duration
-        moves.append((duration, servoID, nextPos))
+    def _logGate(self, events, logged):
+        """The gate's GP (kept pending) and GD (dropped: within the threshold of the last pulse sent)
+        decisions, in order. GD is a bus-traffic optimization, not a correctness concern."""
+        for tag, servoID, nextPos in events:
+            self._log.record(tag, logged if logged is not None and tag == "GP" else self._log.now(), servoID, nextPos)
 
     def _send(self, moves):
         """One board packet per distinct duration (the packet carries one duration for all its
-        servos). Returns the packets written."""
-        byDuration = {}
-        for duration, servoID, nextPos in moves:
-            byDuration.setdefault(duration, []).append([servoID, nextPos])
-        for duration, positions in byDuration.items():
+        servos). The STM32 firmware paces the physical move itself via that duration, so nothing
+        blocks here. Returns the packets written."""
+        written = write_gate.packets(moves)
+        for duration, positions in written:
             self._log.record("WR", self._log.now(), int(duration * 1000), [(i, p) for i, p in positions])
             self.board.bus_servo_set_position(duration, positions)
-        if byDuration:
+        if written:
             self._lastWriteAt = time.monotonic()
-        return len(byDuration)
+        return len(written)
 
     def resetArm(self):
         # A reset overrides whatever was still waiting to be written.
-        self._pending.clear()
+        self._gate.clear_pending()
 
         self.board.bus_servo_set_position(1, ((10, 500), (5, 500), (4, 500 ), (3, 500), (2, 500), (1, 500)))
         sleep(0.02)
@@ -258,11 +213,10 @@ class ServoController:
         over a long way would slam it). A servo never read has no last pulse, as at start-up.
         Returns the number of servos switched."""
         on = state == 1
-        self._pending.clear()
+        self._gate.clear_pending()
         for servoID in self.servoList:
             self.board.bus_servo_enable_torque(servoID, 1 if on else 0)
-        self._lastSentPulse = dict(self._lastReadPulse)
-        self._nextAllowedWriteAt.clear()
+        self._gate.torque_switched(self._lastReadPulse)
         self._log.record("TQ", self._log.now(), 1 if on else 0)
         return len(self.servoList)
 

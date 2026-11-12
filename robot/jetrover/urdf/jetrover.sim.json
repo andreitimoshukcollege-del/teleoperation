@@ -10,7 +10,7 @@
   "defaultPulsesPerSecond": 2200,
   "feedbackPeriodSeconds": 0.02,
   "driverCycleSeconds": 0.02,
-  "readSeconds": 0.0029,
+  "readSeconds": 0.0035,
   "motors": [
     {
       "motorId": 1,

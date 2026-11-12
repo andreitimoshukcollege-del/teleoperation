@@ -54,11 +54,13 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     a.add_argument("--client-socket", default="", help="RobotHost's --local-relay-socket, where feedback goes every 50 ms whether or not "
                                                      "commands come, as the real relay sends it (default: --socket plus .robothost)")
     a.add_argument("--work", default=os.path.expanduser("~/isaacsim/work"), help="where the URDF's USD conversion is kept")
-    # J3's fit to the real arm (docs/adr/0034 amendment 11): held-out tracking p95 12.7 -> 5.3 deg against 60 / 1.5 / 1 / 1.
-    a.add_argument("--stiffness", type=float, default=21.213, help="joint drive stiffness, Nm/rad: a servo holding its setpoint")
-    a.add_argument("--damping", type=float, default=4.2426, help="joint drive damping, Nm s/rad")
-    a.add_argument("--effort-scale", type=float, default=1.5, help="times each servo's stall torque: the drives' force limit")
-    a.add_argument("--speed-scale", type=float, default=1.5625, help="times each command's pulses per second: how fast the real "
+    # J3's fit to the real arm behind the emulated driver and relay (docs/adr/0034 amendment 13, a87cea9): held-out tracking
+    # p95 3.12 deg (amendment 11's 21.213 / 4.2426 / 1.5 / 1.5625 without them: 4.32). The fit's 5 ms command delay is not
+    # applied live: RobotHost's socket to this bridge is a hop of its own.
+    a.add_argument("--stiffness", type=float, default=50.4533, help="joint drive stiffness, Nm/rad: a servo holding its setpoint")
+    a.add_argument("--damping", type=float, default=3.2715, help="joint drive damping, Nm s/rad")
+    a.add_argument("--effort-scale", type=float, default=0.54433, help="times each servo's stall torque: the drives' force limit")
+    a.add_argument("--speed-scale", type=float, default=0.97249, help="times each command's pulses per second: how fast the real "
                                                                      "servos ramp, against what RobotHost asks")
     a.add_argument("--relaxed", choices=("hold", "fall"), default="hold", help="torque off: the gearboxes hold the arm (the real "
                                                                                "arm's readings), or the drives go limp and it falls")
@@ -68,6 +70,15 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     a.add_argument("--iterations", type=int, default=16, help="the articulation solver's position iterations")
     a.add_argument("--dt", type=float, default=0.001, help="the physics step, s")
     a.add_argument("--seconds", type=float, default=0.0, help="stop after this long (0: until stopped)")
+    a.add_argument("--driver-gate", choices=("on", "off"), default="on",
+                   help="the real driver's write gate and single thread in front of the servos (docs/adr/0034 amendment 13); "
+                        "off: every target starts its ramp at once, as before")
+    a.add_argument("--relay-poll", choices=("on", "off"), default="on",
+                   help="RobotHost's messages reach the driver at the ROS relay's 20 ms socket polls, the newest command only "
+                        "(relay_node.py, docs/adr/0034 amendment 13); off: as they arrive")
+    a.add_argument("--replay-cycles", choices=("recorded", "emulated"), default="recorded",
+                   help="--replay: read at each session's own driver cycles (its driver.jlog), or run the driver's cycles from "
+                        "the first reading (before amendment 13)")
     a.add_argument("--torque-off-at-start", action="store_true", help="start relaxed, as the robot does after ROBOT OFF")
     a.add_argument("--scene", default="", help="a scene file (core/Scenes/*.json) for the robot's bench: its surfaces and objects")
     a.add_argument("--world-socket", default="", help="where RobotHost's world client talks (default: --socket plus .world)")
@@ -224,7 +235,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         description = (f"Isaac Sim {version('isaacsim')}, PhysX {1 / args.dt:.0f} Hz on CPU, servo drives {args.stiffness:g}/{args.damping:g} "
                        f"within {args.effort_scale:g} x {'/'.join(f'{m.stall_torque:g}' for m in model.motors.values() if not m.is_gripper)} Nm, "
                        f"speed x{args.speed_scale:g}, relaxed: {args.relaxed}, arm gravity on, "
-                       f"timed-ramp setpoints, feedback motors {','.join(str(x) for x in feedback.order)} read back to back ({feedback.read_seconds * 1000:.1f} ms each) "
+                       f"timed-ramp setpoints, driver gate {args.driver_gate}, relay poll {args.relay_poll}, feedback motors {','.join(str(x) for x in feedback.order)} read back to back ({feedback.read_seconds * 1000:.1f} ms each) "
                        f"every {feedback.cycle_seconds * 1000:.0f} ms, sent every {model.feedback_seconds * 1000:.0f} ms")
         if os.path.exists(args.socket):
             os.unlink(args.socket)
@@ -275,6 +286,25 @@ def main(argv: Optional[List[str]] = None) -> int:
             dlog = driver_log.DriverLog(isaac_session.IsaacSession(args.record_control, streams=[], writer="driver"),
                                         feedback.read_seconds, feedback.order)
 
+        def switch_torque(on: bool) -> None:
+            nonlocal torque
+            if on != torque:
+                torque = on
+                arm.torque(on)
+                print(f"[jetrover] torque {'on' if on else 'off'}", flush=True)
+
+        def ungated(mid: int, goal: float, pps: float) -> None:
+            # --driver-gate off: the bridge before amendment 13, each servo's ramp at the command's own speed.
+            sp = setpoints.get(mid)
+            if dlog is not None and sp is not None and (arm.on or not arm.hold_relaxed) and abs(goal - sp.target) >= 0.5:
+                dlog.moved(time.monotonic_ns(), mid, goal, sp.pulse, pps * arm.speed_scale)
+            arm.command(mid, goal, pps)
+
+        # The driver between the relay and the servos (docs/adr/0034 amendment 13): its write gate and its single thread.
+        driver = servo.DriverEmulator(model, feedback, servo_move=arm.write, servo_command=ungated, servo_torque=switch_torque,
+                                      gate=args.driver_gate == "on", log=dlog.driver if dlog is not None else None,
+                                      clock_ns=time.monotonic_ns)
+
         stopping = []
         signal.signal(signal.SIGTERM, lambda *_: stopping.append(True))
         signal.signal(signal.SIGINT, lambda *_: stopping.append(True))
@@ -284,39 +314,31 @@ def main(argv: Optional[List[str]] = None) -> int:
         step_ns = int(round(args.dt * 1e9))
         start_ns = next_tick = time.monotonic_ns()
         stop_at = start_ns + int(args.seconds * 1e9) if args.seconds > 0 else None
+        # The ROS relay drains its socket every 20 ms and acts on the newest command (docs/adr/0034 amendment 13).
+        poll_steps = max(1, int(round(servo.RelayEmulator.POLL_SECONDS / args.dt))) if args.relay_poll == "on" else 1
+        datagrams = []
         report_at = start_ns + 5_000_000_000
 
         while not stopping and (stop_at is None or time.monotonic_ns() < stop_at):
-            batch = []
             while True:
                 try:
                     data, sender = sock.recvfrom(4096)
                 except BlockingIOError:
                     break
-                batch.append(data)
+                datagrams.append(data)
                 if sender:
                     client = sender  # whoever commands is where feedback goes
-            if batch:
+            if datagrams and steps % poll_steps == 0:
+                batch, datagrams = datagrams, []
                 actions, rejected = rp.sort_datagrams(batch)
                 rejected_total += rejected
                 for kind, payload in actions:
                     if kind == "torque":
                         torques += 1
-                        if payload != torque:
-                            torque = payload
-                            arm.torque(torque)
-                            print(f"[jetrover] torque {'on' if torque else 'off'}", flush=True)
+                        driver.torque(steps * args.dt, bool(payload))
                     else:
                         commands += 1
-                        t_cmd = time.monotonic_ns()
-                        if dlog is not None:
-                            dlog.command(t_cmd, [(mid, model.clamp(pulse), pps) for mid, pulse, pps in payload])
-                        for mid, pulse, pps in payload:
-                            goal = model.clamp(pulse)  # not `target`: that name is the drives' position-target array
-                            sp = setpoints.get(mid)
-                            if dlog is not None and sp is not None and (arm.on or not arm.hold_relaxed) and abs(goal - sp.target) >= 0.5:
-                                dlog.moved(t_cmd, mid, goal, sp.pulse, pps * arm.speed_scale)
-                            arm.command(mid, goal, pps)
+                        driver.command(steps * args.dt, payload)
 
             while wsock is not None:
                 try:
@@ -396,11 +418,11 @@ def main(argv: Optional[List[str]] = None) -> int:
                             pass
                     tap(message)
 
-            mid = feedback.due_read(now_s)
+            mid = driver.due_read(now_s)
             if mid is not None:
                 q = np.asarray(art.get_dof_positions().numpy()).reshape(-1)
                 reading = model.pulse(mid, q[index[model.motors[mid].joint]])
-                feedback.record(mid, reading, now_s)
+                driver.record(mid, reading, now_s)
                 if dlog is not None:
                     dlog.read(time.monotonic_ns(), mid, reading)
             entries = feedback.due_feedback(now_s)
@@ -487,6 +509,12 @@ class IsaacServoSim:
         self.art.set_dof_gains(self.kp_on, self.kd_on)
         self.q = None
 
+    def write(self, motor, pulse, seconds) -> None:
+        """A board move packet's servo (docs/adr/0034 amendment 13): from where its ramp stands to ``pulse`` over the packet's
+        duration, shortened by the fitted speed scale; ignored while relaxed and held."""
+        if motor in self.setpoints and (self.on or not self.hold_relaxed):
+            self.setpoints[motor].move_over(pulse, seconds / self.speed_scale)
+
     def command(self, motor, pulse, pps) -> None:
         """A relay target, ramped at its pulses per second times the fitted speed scale; ignored while relaxed and held, as a
         servo with torque off ignores its position."""
@@ -534,7 +562,7 @@ def replay_and_fit(args, model, sim, default) -> int:
 
     with open(args.replay, encoding="utf-8") as f:
         doc = json.load(f)
-    replayer = simfit.Replayer(model)
+    replayer = simfit.Replayer(model, gate=args.driver_gate == "on", cycles=args.replay_cycles, relay=args.relay_poll == "on")
 
     def score_all(p, label):
         out = {}
@@ -553,7 +581,8 @@ def replay_and_fit(args, model, sim, default) -> int:
         return out
 
     result = {"format": "jetrover-sim-fit", "version": 1, "split": {g: [s["name"] for s in doc[g]] for g in ("fit", "heldout")},
-              "fitSeconds": args.fit_seconds, "default": {"params": default.to_dict()}}
+              "fitSeconds": args.fit_seconds, "driverGate": args.driver_gate, "replayCycles": args.replay_cycles,
+              "relayPoll": args.relay_poll, "default": {"params": default.to_dict()}}
     result["default"]["scores"] = score_all(default, "default")
 
     def evaluate(p):

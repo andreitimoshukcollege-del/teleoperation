@@ -112,8 +112,7 @@ def sort_datagrams(datagrams):
     plus how many datagrams were rejected. A backlog must not replay stale commands (only the newest
     is current), but every torque switch counts, in order, and none may be lost behind a command
     (relay_node.py's _poll_local_socket)."""
-    actions = []
-    newest_command = None
+    messages = []
     rejected = 0
     for data in datagrams:
         kind = kind_of(data)
@@ -122,20 +121,34 @@ def sort_datagrams(datagrams):
             if on is None:
                 rejected += 1
             else:
-                actions.append(("torque", on))
+                messages.append(("torque", on))
         elif kind == KIND_COMMAND:
             targets = decode_arm_command(data)
             if targets is None:
                 rejected += 1
             else:
-                newest_command = (len(actions), targets)
+                messages.append(("command", targets))
         else:
             rejected += 1
+    return sort_actions(messages), rejected
+
+
+def sort_actions(messages):
+    """`sort_datagrams` after decoding: messages [("torque", on) | ("command", targets)] in arrival
+    order -> every torque switch, in order, and the newest command only, placed after the torque
+    switches that arrived before it and before the ones after it. The Isaac JetRover's replay
+    (teleoperation's robot/isaac/teleop_isaac/simfit.py) runs its recorded relay messages through this."""
+    actions = []
+    newest_command = None
+    for kind, value in messages:
+        if kind == "torque":
+            actions.append(("torque", value))
+        else:
+            newest_command = (len(actions), value)
     if newest_command is not None:
         index, targets = newest_command
-        # Placed after the torque switches that arrived before it, before the ones after it.
         actions.insert(index, ("command", targets))
-    return actions, rejected
+    return actions
 
 
 def encode_feedback(entries) -> bytes:

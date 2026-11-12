@@ -11,12 +11,14 @@ what that emulation did:
   is half a read (1.45 ms) before the sample. Every value RobotHost then takes as feedback (``RI``) is one of these, which
   is what the trainer's clock-causality check asks;
 - ``CY t tEnd``: each feedback cycle, from its first read's ``tReq`` to its last read's ``tResp``;
-- ``CI t targets``: each relay command array, ``motor:pulse:pulsesPerSecond`` after the 0..1000 clamp;
-- ``WR t durationMs positions``: each servo the bridge actually moved (its target changed and torque was on), with the ramp's
-  duration at the servo's own speed (the command's pulses per second times the fitted speed scale). One record per servo.
+- the driver's own records, from :class:`servo.DriverEmulator` (docs/adr/0034 amendment 13), as the real driver writes
+  them: ``CI t targets`` when a command array reaches the gate (after the single thread has let it through),
+  ``GP t motor pulse`` and ``GD t motor pulse`` for the gate's decisions, ``WR t durationMs positions`` per board packet
+  with its commanded duration, and ``TQ t on`` per torque switch.
 
-The bridge has no gate (it applies every target at once), so there is no ``GP`` or ``GD``; the real gate's pacing is in
-RobotHost's ``RO``. No battery (``BV``). Everything is ``time.monotonic_ns()``, CLOCK_MONOTONIC, RobotHost's clock, and the
+With ``--driver-gate off`` (the bridge before amendment 13) there is no gate: ``CI`` per command array as it arrives,
+``WR`` one per servo moved, with the ramp's duration at the servo's own speed (:meth:`DriverLog.moved`), and no ``GP``,
+``GD`` or ``TQ``. No battery (``BV``) either way. Everything is ``time.monotonic_ns()``, CLOCK_MONOTONIC, RobotHost's clock, and the
 log follows RobotHost's control file like ``isaac.jlog`` (``isaac_session.IsaacSession`` with ``writer="driver"``), never
 blocking the physics loop.
 """
@@ -36,11 +38,9 @@ class DriverLog:
         self._cycle_start: Optional[int] = None
         self._seen: List[int] = []
 
-    def command(self, t_ns: int, targets: Iterable[Tuple[int, float, float]]) -> None:
-        """A relay command array arrived: ``(motor, pulse after the clamp, pulses per second)``."""
-        items = [(int(m), int(p), float(pps)) for m, p, pps in targets]
-        if items:
-            self.session.record("CI", t_ns, items)
+    def driver(self, tag: str, t_ns: int, *fields) -> None:
+        """One of the driver's own records (``CI``, ``GP``, ``GD``, ``WR``, ``TQ``), from :class:`servo.DriverEmulator`."""
+        self.session.record(tag, t_ns, *fields)
 
     def moved(self, t_ns: int, motor: int, target: float, from_pulse: float, servo_pps: float) -> None:
         """The bridge started a servo's ramp from ``from_pulse`` to ``target`` at ``servo_pps``."""

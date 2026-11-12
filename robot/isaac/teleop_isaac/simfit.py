@@ -3,7 +3,8 @@
 - :func:`extract_session` reads a recorded real session's ``robothost.jlog`` down to what a replay needs: the relay targets
   (``RO``), the relay feedback (``RI``) and the torque switches (``TQ``), on RobotHost's clock.
 - :class:`Replayer` replays them into any simulated servo set (:class:`ServoSim`) at their recorded times, from the session's
-  first valid reading, with the driver's feedback cycles (:class:`servo.FeedbackEmulator`), and scores the simulated readings
+  first valid reading, through the driver's write gate, single thread and feedback cycles (:class:`servo.DriverEmulator`,
+  docs/adr/0034 amendment 13; ``gate=False`` replays as before it), and scores the simulated readings
   against the recorded ones: ``sim_tracking_error_deg`` at every valid reading of motors 1-5, ``sim_settle_error_deg`` at
   those at least 0.5 s after the last command that changed that motor's target. The gripper is never scored.
 - :func:`fit` is a coordinate search over the simulator's parameters, minimising the RMS tracking error of motors 1-4 on
@@ -29,9 +30,42 @@ SETTLE_SECONDS = 0.5       # a reading counts toward settling this long after it
 
 # --- the sessions -------------------------------------------------------------------------------------------------------
 
+def extract_cycles(directory: str, tps: int) -> List:
+    """The driver's read cycles from a session's ``driver.jlog``: ``[[start, end, [[t, motor], ...]], ...]`` in RobotHost's
+    ticks (both logs are CLOCK_MONOTONIC), each with the reads that answered, at their request times. Empty without the log."""
+    path = os.path.join(directory, "driver.jlog")
+    if not os.path.exists(path):
+        return []
+    dtps, windows, reads = 1_000_000_000, [], []
+    with open(path, encoding="utf-8") as f:
+        for line in f:
+            tag, _, rest = line.rstrip("\n").partition("|")
+            p = rest.split("|")
+            if tag == "JSES" and len(p) >= 3 and p[2].isdigit():
+                dtps = int(p[2])
+            elif tag == "CY" and len(p) >= 2 and p[0].isdigit() and p[1].isdigit():
+                windows.append((int(p[0]), int(p[1])))
+            elif tag == "RD" and len(p) >= 4 and p[0].isdigit() and p[3] != "":
+                reads.append((int(p[0]), int(p[2])))
+    windows.sort()
+    reads.sort()
+    scale = tps / dtps
+    out, ri = [], 0
+    for a, b in windows:
+        while ri < len(reads) and reads[ri][0] < a:
+            ri += 1
+        mine = []
+        while ri < len(reads) and reads[ri][0] <= b:
+            mine.append([int(reads[ri][0] * scale), reads[ri][1]])
+            ri += 1
+        out.append([int(a * scale), int(b * scale), mine])
+    return out
+
+
 def extract_session(directory: str) -> Dict:
-    """A session's replay: ``{"name", "tps", "events": [[t, kind, payload], ...]}`` sorted by ``t`` (RobotHost's ticks), with
-    ``kind`` ``"RO"`` (``[[motor, pulse, pps], ...]``), ``"RI"`` (``[[motor, valid, pulse], ...]``) or ``"TQ"`` (``1``/``0``)."""
+    """A session's replay: ``{"name", "tps", "events": [[t, kind, payload], ...], "cycles": [...]}`` with ``events`` sorted by
+    ``t`` (RobotHost's ticks), ``kind`` ``"RO"`` (``[[motor, pulse, pps], ...]``), ``"RI"`` (``[[motor, valid, pulse], ...]``)
+    or ``"TQ"`` (``1``/``0``), and ``cycles`` the driver's own read cycles (:func:`extract_cycles`; empty without its log)."""
     tps = 1_000_000_000
     events = []
     with open(os.path.join(directory, "robothost.jlog"), encoding="utf-8") as f:
@@ -59,7 +93,20 @@ def extract_session(directory: str) -> Dict:
                         entries.append([int(p[0]), int(p[1]), float(p[2])])
                 events.append([int(t), tag, entries])
     events.sort(key=lambda e: e[0])
-    return {"name": os.path.basename(os.path.normpath(directory)), "tps": tps, "events": events}
+    return {"name": os.path.basename(os.path.normpath(directory)), "tps": tps, "events": events,
+            "cycles": extract_cycles(directory, tps), "zeroOffsets": recorded_zero_offsets(directory)}
+
+
+def recorded_zero_offsets(directory: str) -> Dict[str, float]:
+    """Each motor's zero offset in the profile the session was recorded with (its ``robot-profile.json``), by motor id; empty
+    without one. A pulse means the angle that profile says: the JetRover's shoulder servo was replaced on 2026-11-11 and its
+    offset moved 44 degrees, so sessions before and after it must not share one conversion."""
+    path = os.path.join(directory, "robot-profile.json")
+    if not os.path.exists(path):
+        return {}
+    with open(path, encoding="utf-8") as f:
+        doc = json.load(f)
+    return {str(int(j["motorId"])): float(j.get("zeroOffsetRadians", 0.0)) for j in doc.get("joints", [])}
 
 
 # --- the simulator's side ------------------------------------------------------------------------------------------------
@@ -88,7 +135,13 @@ class ServoSim(Protocol):
         """Every motor at ``pulses``, at rest, torque on, with ``params`` (the sim applies ``speed_scale`` to each command)."""
         ...
 
-    def command(self, motor: int, pulse: float, pps: float) -> None: ...
+    def command(self, motor: int, pulse: float, pps: float) -> None:
+        """Without the driver's gate: the servo ramps to ``pulse`` at ``pps`` times ``speed_scale``."""
+        ...
+
+    def write(self, motor: int, pulse: float, seconds: float) -> None:
+        """A board move packet's servo: to ``pulse`` over ``seconds`` divided by ``speed_scale``."""
+        ...
 
     def torque(self, on: bool) -> None: ...
 
@@ -135,16 +188,42 @@ class Score:
         return (t if t is not None else 1e9) + 0.5 * (r if r is not None else 0.0)
 
 
+def deliver(drv: "servo.DriverEmulator", now: float, message) -> None:
+    """A relay message, ``("command", targets)`` or ``("torque", on)``, reaching the driver."""
+    kind, value = message
+    if kind == "torque":
+        drv.torque(now, bool(value))
+    else:
+        drv.command(now, value)  # the sim applies params.speed_scale, as the live bridge does
+
+
 class Replayer:
     """Replays one session into a :class:`ServoSim` and scores it (docs/metrics.md section 10)."""
 
-    def __init__(self, model: servo.SimModel):
+    def __init__(self, model: servo.SimModel, gate: bool = True, cycles: str = "recorded", relay: bool = True):
+        """``gate``: the driver's write gate and single thread (amendment 13). ``cycles``: ``"recorded"`` reads at the session's
+        own driver cycles where it has them (:class:`servo.RecordedFeedback`), ``"emulated"`` runs the driver's cycles from
+        the first reading (:class:`servo.FeedbackEmulator`, as before amendment 13). ``relay``: RobotHost's messages reach
+        the driver at the ROS relay's 20 ms polls, the newest command only (:class:`servo.RelayEmulator`); off, at once."""
+        if cycles not in ("recorded", "emulated"):
+            raise ValueError(f"cycles must be 'recorded' or 'emulated', not {cycles!r}")
         self.model = model
+        self.gate = gate
+        self.cycles = cycles
+        self.relay = relay
 
     def deg(self, pulses: float) -> float:
         return abs(pulses) / self.model.pulse_per_radian * 180.0 / math.pi
 
     def run(self, session: Dict, sim: ServoSim, params: Params, seconds: float = 0.0) -> Score:
+        """Replays with the session's own zero offsets (the profile it was recorded with) and puts the model's back after."""
+        before = self.model.set_zero_offsets({int(m): o for m, o in (session.get("zeroOffsets") or {}).items()})
+        try:
+            return self._run(session, sim, params, seconds)
+        finally:
+            self.model.set_zero_offsets(before)
+
+    def _run(self, session: Dict, sim: ServoSim, params: Params, seconds: float) -> Score:
         events = session["events"]
         tps = float(session["tps"])
         first = next((i for i, e in enumerate(events) if e[1] == "RI" and all(v for m, v, _ in e[2] if m in SCORED)), None)
@@ -160,7 +239,15 @@ class Replayer:
         for m in self.model.motors:
             start.setdefault(m, self.model.zero_pulse)
         sim.reset(start, params)
-        fb = servo.FeedbackEmulator(self.model)
+        recorded = session.get("cycles") or []
+        if self.cycles == "recorded" and recorded:
+            fb = servo.RecordedFeedback(self.model, [((a - t0) / tps, (b - t0) / tps, [((t - t0) / tps, m) for t, m in reads])
+                                                     for a, b, reads in recorded if b >= t0])
+        else:
+            fb = servo.FeedbackEmulator(self.model)
+        drv = servo.DriverEmulator(self.model, fb, servo_move=sim.write, servo_command=sim.command, servo_torque=sim.torque,
+                                   gate=self.gate)
+        relay = servo.RelayEmulator() if self.relay else None
         delay = params.delay_ms / 1000.0
         # Commands and torque switches before the first reading are already in the state it shows.
         todo = [e for e in events[first + 1:] if e[1] in ("RO", "TQ")]
@@ -170,26 +257,32 @@ class Replayer:
             end = min(end, seconds)
         last_target: Dict[int, float] = {m: start[m] for m in SCORED}
         changed_at: Dict[int, float] = {m: -1e9 for m in SCORED}
-        ti = ri = 0
+        ti = ri = step = 0
         now = 0.0
+        eps = 1e-9  # recorded times that fall on a physics step count at that step, however the floats round
         while now <= end:
-            while ti < len(todo) and (todo[ti][0] - t0) / tps + (delay if todo[ti][1] == "RO" else 0.0) <= now:
+            while ti < len(todo) and (todo[ti][0] - t0) / tps + (delay if todo[ti][1] == "RO" else 0.0) <= now + eps:
                 kind, payload = todo[ti][1], todo[ti][2]
-                if kind == "TQ":
-                    sim.torque(bool(payload))
+                message = ("torque", bool(payload)) if kind == "TQ" else ("command", payload)
+                if relay is not None:
+                    relay.offer(*message)
                 else:
+                    deliver(drv, now, message)
+                if kind == "RO":
                     sent = (todo[ti][0] - t0) / tps
                     for m, pulse, pps in payload:
-                        sim.command(m, self.model.clamp(pulse), pps)  # the sim applies params.speed_scale, as the live bridge does
                         if m in last_target and abs(pulse - last_target[m]) > 0.5:
                             last_target[m] = pulse
                             changed_at[m] = sent
                 ti += 1
-            mid = fb.due_read(now)
+            if relay is not None:
+                for message in relay.due(now):
+                    deliver(drv, now, message)
+            mid = drv.due_read(now)
             while mid is not None:
-                fb.record(mid, sim.read(mid), now)
-                mid = fb.due_read(now)
-            while ri < len(readings) and (readings[ri][0] - t0) / tps <= now:
+                drv.record(mid, sim.read(mid), now)
+                mid = drv.due_read(now)
+            while ri < len(readings) and (readings[ri][0] - t0) / tps <= now + eps:
                 at = (readings[ri][0] - t0) / tps
                 for m, valid, pulse in readings[ri][2]:
                     if not valid or m not in SCORED or m not in fb.readings:
@@ -200,7 +293,8 @@ class Replayer:
                         score.settle.setdefault(m, []).append(err)
                 ri += 1
             sim.step()
-            now += sim.dt
+            step += 1
+            now = step * sim.dt  # counted, not summed: a sum of steps drifts off the recorded times
         return score
 
 

@@ -3408,6 +3408,8 @@ isaac-host scene="fr3-duo-bench" scene_seed="auto" feeds="true":
     fi
     [ -d "$repo" ] || git clone -q https://github.com/andreitimoshukcollege-del/teleoperation.git "$repo"
     cd "$repo" && git fetch -q origin && git checkout -q "$COMMIT" && echo "[isaac-host] repo at $(git log --oneline -1)"
+    # Every take recorded here becomes a LeRobot episode (docs/adr/0036): start the converter if it is not running.
+    "$repo/robot/lerobot/watch.sh" ensure "$COMMIT" || echo "[isaac-host] the LeRobot converter is not running: just lerobot-setup, then just lerobot-watch-start" >&2
     dotnet build -c Release -v q -nologo core/Teleop.RobotHost/Teleop.RobotHost.csproj -o "$HOME/isaacsim/robothost" > "$HOME/isaacsim/robothost-build.log" 2>&1 \
         || { tail -20 "$HOME/isaacsim/robothost-build.log" >&2; exit 1; }
     sock=/tmp/teleop-isaac-$USER.sock
@@ -3459,7 +3461,7 @@ isaac-host scene="fr3-duo-bench" scene_seed="auto" feeds="true":
     )
     ssh -o ConnectTimeout=10 "{{gpu_host}}" "COMMIT='$commit' SCENE='{{scene}}' SCENE_SEED='{{scene_seed}}' FEEDS='{{feeds}}' bash -c $(printf '%q' "$remote")"
 
-# Let another account on the GPU machine read the headset's scenario takes (docs/adr/0033), once: ACLs, no sudo. It may enter (not list) our home and ~/isaacsim, read everything under ~/isaacsim/scenarios, and every take written there from now on (a default ACL), edit scenarios.txt (the list the headset shows), and save into the folder itself (editors replace a file when they save); takes stay read-only to it. Run it again after deleting the folder. Prints the folder's ACL
+# Let another account on the GPU machine read the headset's scenario takes (docs/adr/0033) and their LeRobot datasets (docs/adr/0036), once: ACLs, no sudo. It may enter (not list) our home and ~/isaacsim; read everything under ~/isaacsim/scenarios (the FR3 Duo's) and ~/isaacsim/scenarios-jetrover, and every take written there from now on (a default ACL); edit each scenarios.txt (the list the headset shows) and save into those folders (editors replace a file when they save); and read every dataset under ~/isaacsim/lerobot, written or rebuilt. Takes and datasets stay read-only to it. Run it again after deleting a folder
 [group('isaac')]
 isaac-share-scenarios user="seaqueue-cheng":
     #!/usr/bin/env bash
@@ -3468,15 +3470,22 @@ isaac-share-scenarios user="seaqueue-cheng":
     ssh -o ConnectTimeout=10 "{{gpu_host}}" "U='{{user}}' bash -s" <<'REMOTE'
     set -euo pipefail
     id "$U" > /dev/null || { echo "error: no account $U here" >&2; exit 1; }
-    root=$HOME/isaacsim/scenarios
-    mkdir -p "$root"
     setfacl -m "u:$U:x" "$HOME" "$HOME/isaacsim"
-    setfacl -R -m "u:$U:rX" "$root"
-    find "$root" -type d -exec setfacl -d -m "u:$U:rX" {} +
-    setfacl -m "u:$U:rwx" "$root"
-    [ -f "$root/scenarios.txt" ] && setfacl -m "u:$U:rw" "$root/scenarios.txt"
-    getfacl -p "$root" 2>/dev/null | grep -v '^#' | sed '/^$/d'
-    echo "[share] $U can read the takes in $root (takes: $root/<scenario>/<UTC>-take<n>/) and edit $root/scenarios.txt"
+    # The FR3 Duo's and the JetRover's takes (docs/adr/0033): read the takes, edit the scenario list.
+    for root in "$HOME/isaacsim/scenarios" "$HOME/isaacsim/scenarios-jetrover"; do
+        mkdir -p "$root"
+        setfacl -R -m "u:$U:rX" "$root"
+        find "$root" -type d -exec setfacl -d -m "u:$U:rX" {} +
+        setfacl -m "u:$U:rwx" "$root"
+        [ -f "$root/scenarios.txt" ] && setfacl -m "u:$U:rw" "$root/scenarios.txt"
+        echo "[share] $U can read the takes in $root (<scenario>/<UTC>-take<n>/) and edit $root/scenarios.txt"
+    done
+    # Their LeRobot datasets (docs/adr/0036): read only, including every dataset written or rebuilt later.
+    out=$HOME/isaacsim/lerobot
+    mkdir -p "$out"
+    setfacl -R -m "u:$U:rX" "$out"
+    find "$out" -type d -exec setfacl -d -m "u:$U:rX" {} +
+    echo "[share] $U can read the LeRobot datasets in $out (<robot>-<source>/<scenario>/)"
     REMOTE
 
 # What the headset's RECORD button has recorded on the GPU machine (docs/adr/0033): the scenario list, and per scenario the takes kept (complete or not) and set aside, with their size
@@ -3500,6 +3509,76 @@ isaac-scenarios:
     echo "free: $(df -h "$root" | awk 'NR==2 {print $4}')"
     REMOTE
 
+# Build the LeRobot converter's environment on the GPU machine (docs/adr/0036), once and after robot/lerobot/requirements.txt changes: ~/isaacsim/lerobot-venv (Python 3.12) with that lerobot version, and pytest for just lerobot-test. Runs the pushed commit
+[group('lerobot')]
+lerobot-setup:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    commit=$(git rev-parse HEAD)
+    git fetch -q origin
+    [ -n "$(git branch -r --contains "$commit" 2>/dev/null)" ] || { echo "error: $commit is not on GitHub: push it first (the GPU machine runs what GitHub has)" >&2; exit 1; }
+    ssh -o ConnectTimeout=10 "{{gpu_host}}" "COMMIT='$commit' bash -s" <<'REMOTE'
+    set -euo pipefail
+    repo=$HOME/teleoperation-lerobot venv=$HOME/isaacsim/lerobot-venv
+    [ -d "$repo" ] || git clone -q https://github.com/andreitimoshukcollege-del/teleoperation.git "$repo"
+    cd "$repo" && git fetch -q origin && git checkout -q "$COMMIT"
+    [ -x "$venv/bin/python" ] || python3 -m venv "$venv"
+    "$venv/bin/pip" install -q --upgrade pip
+    "$venv/bin/pip" install -q -r robot/lerobot/requirements.txt pytest
+    "$venv/bin/python" -c "import lerobot, sys; from lerobot.datasets import LeRobotDataset; print('[lerobot] lerobot', lerobot.__version__, 'on Python', sys.version.split()[0], 'in', sys.prefix)"
+    REMOTE
+
+# Run robot/lerobot's tests on the GPU machine in the converter's environment, LeRobot round trip included (locally that one is skipped). Runs the pushed commit, in a checkout of its own
+[group('lerobot')]
+lerobot-test:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    commit=$(git rev-parse HEAD)
+    git fetch -q origin
+    [ -n "$(git branch -r --contains "$commit" 2>/dev/null)" ] || { echo "error: $commit is not on GitHub: push it first (the GPU machine runs what GitHub has)" >&2; exit 1; }
+    ssh -o ConnectTimeout=10 "{{gpu_host}}" "COMMIT='$commit' bash -s" <<'REMOTE'
+    set -euo pipefail
+    repo=$HOME/teleoperation-lerobot-test
+    [ -d "$repo" ] || git clone -q https://github.com/andreitimoshukcollege-del/teleoperation.git "$repo"
+    cd "$repo" && git fetch -q origin && git checkout -q "$COMMIT" && cd robot/lerobot
+    "$HOME/isaacsim/lerobot-venv/bin/python" -m pytest -q -p no:cacheprovider tests
+    REMOTE
+
+# (Re)start the LeRobot converter on the GPU machine at the pushed commit (docs/adr/0036): every headset take, 60 s after it is complete, becomes an episode of ~/isaacsim/lerobot/<robot>-<source>/<scenario>/. Detached: it outlives this shell. isaac-host and isaac-jetrover-host start it when it is not running
+[group('lerobot')]
+lerobot-watch-start:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    commit=$(git rev-parse HEAD)
+    git fetch -q origin
+    [ -n "$(git branch -r --contains "$commit" 2>/dev/null)" ] || { echo "error: $commit is not on GitHub: push it first (the GPU machine runs what GitHub has)" >&2; exit 1; }
+    ssh -o ConnectTimeout=10 "{{gpu_host}}" "bash -s start '$commit'" < robot/lerobot/watch.sh
+
+# Stop the LeRobot converter on the GPU machine: it finishes the take it is writing first (up to 10 min)
+[group('lerobot')]
+lerobot-watch-stop:
+    ssh -o ConnectTimeout=10 "{{gpu_host}}" "bash -s stop" < robot/lerobot/watch.sh
+
+# The LeRobot converter on the GPU machine: running or not, its log, and every dataset with its episodes and size
+[group('lerobot')]
+lerobot-watch-status:
+    ssh -o ConnectTimeout=10 "{{gpu_host}}" "bash -s status" < robot/lerobot/watch.sh
+
+# Rebuild one LeRobot dataset from its kept takes, on the GPU machine (docs/adr/0036 decision 6), e.g. after a schema change: dataset is <robot>-<source>/<scenario>, as lerobot-watch-status lists it. Stop the watcher first (just lerobot-watch-stop), start it again after
+[group('lerobot')]
+lerobot-rebuild dataset:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    case "{{dataset}}" in *[!A-Za-z0-9._/-]*|*..*|/*) echo "error: dataset is <robot>-<source>/<scenario>" >&2; exit 1 ;; esac
+    ssh -o ConnectTimeout=10 "{{gpu_host}}" "DATASET='{{dataset}}' bash -s" <<'REMOTE'
+    set -euo pipefail
+    pid=$HOME/isaacsim/lerobot/watch.pid
+    if [ -f "$pid" ] && kill -0 "$(cat "$pid")" 2>/dev/null; then echo "error: the watcher is running: just lerobot-watch-stop first" >&2; exit 1; fi
+    cd "$HOME/teleoperation-lerobot/robot/lerobot"
+    "$HOME/isaacsim/lerobot-venv/bin/python" -m teleop_lerobot rebuild --root "$HOME/isaacsim/scenarios" --root "$HOME/isaacsim/scenarios-jetrover" \
+        --root "$HOME/isaacsim/scenarios-real" --out "$HOME/isaacsim/lerobot" "$DATASET"
+    REMOTE
+
 # The JetRover's arm in Isaac Sim on the GPU machine, behind the JetRover's own RobotHost (docs/adr/0034 J2): checks out this commit in ~/teleoperation-isaac (it must be on GitHub), builds RobotHost, starts teleop_isaac.jetrover_bridge on a relay socket (log ~/isaacsim/jetrover-bridge.log) and then RobotHost exactly as the Jetson runs it, with --relay-socket pointing at Isaac instead of the ROS relay: joint port 6002, discovery 6005, the JetRover profile, sessions recorded into ~/isaacsim/jetrover-recordings marked source isaac. Point the headset's JetRover app at it with `just push-galaxy-config <GPU machine's address>`. Enter stops both, as does `just isaac-stop`. Refuses while an Isaac host of ours (FR3 or JetRover) is running there: they share the ports. No real robot moves
 [group('isaac')]
 isaac-jetrover-host scene="jetrover-bench" scene_seed="auto":
@@ -3520,6 +3599,8 @@ isaac-jetrover-host scene="jetrover-bench" scene_seed="auto":
     done
     [ -d "$repo" ] || git clone -q https://github.com/andreitimoshukcollege-del/teleoperation.git "$repo"
     cd "$repo" && git fetch -q origin && git checkout -q "$COMMIT" && echo "[isaac-jetrover] repo at $(git log --oneline -1)"
+    # Every take recorded here becomes a LeRobot episode (docs/adr/0036): start the converter if it is not running.
+    "$repo/robot/lerobot/watch.sh" ensure "$COMMIT" || echo "[isaac-jetrover] the LeRobot converter is not running: just lerobot-setup, then just lerobot-watch-start" >&2
     dotnet build -c Release -v q -nologo core/Teleop.RobotHost/Teleop.RobotHost.csproj -o "$HOME/isaacsim/robothost" > "$HOME/isaacsim/robothost-build.log" 2>&1         || { tail -20 "$HOME/isaacsim/robothost-build.log" >&2; exit 1; }
     relay=/tmp/teleop-jetrover-relay-$USER.sock
     log=$HOME/isaacsim/jetrover-bridge.log

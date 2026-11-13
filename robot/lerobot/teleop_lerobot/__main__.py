@@ -33,6 +33,11 @@ def main(argv=None) -> int:
         if name == "watch":
             s.add_argument("--every", type=float, default=10.0)
             s.add_argument("--once", action="store_true")
+            s.add_argument("--pull-robot", default="", help="copy the real robot's complete takes into this scenario root "
+                                                          "(pull.py); it should also be a --root")
+            s.add_argument("--robot-hosts-file", default="", help="the robot's addresses, one per line (just lerobot-robot-key)")
+            s.add_argument("--robot-mdns", default="jetrover-sinrg.local")
+            s.add_argument("--robot-key", default="", help="the ssh key the robot accepts from this machine")
         else:
             s.add_argument("dataset", help="<robot>-<source>/<scenario>, under --out")
     s = sub.add_parser("inspect")
@@ -55,7 +60,13 @@ def main(argv=None) -> int:
 
     roots = [os.path.expanduser(r) for r in a.root]
     out = os.path.expanduser(a.out)
-    conv = Converter(roots, out, LeRobotWriter(a.vcodec), fps=a.fps, settle=a.settle, log=_log)
+    puller = None
+    if a.command == "watch" and a.pull_robot:
+        from .pull import RobotPuller
+
+        puller = RobotPuller(os.path.expanduser(a.pull_robot), hosts_file=os.path.expanduser(a.robot_hosts_file) or None,
+                             mdns=a.robot_mdns, key=os.path.expanduser(a.robot_key) or None, log=_log)
+    conv = Converter(roots, out, LeRobotWriter(a.vcodec), fps=a.fps, settle=a.settle, log=_log, puller=puller)
     if a.command == "watch":
         conv.run(every=a.every, once=a.once)
         return 0

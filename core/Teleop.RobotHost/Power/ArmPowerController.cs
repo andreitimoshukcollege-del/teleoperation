@@ -36,7 +36,8 @@ namespace Teleop.RobotHost.Power
     /// <list type="bullet">
     /// <item><b>Relax</b>, while holding: refused without a rest pose, without a collision model, or
     /// without a fresh reading of every arm joint. Already within the tolerance of the rest pose: the
-    /// torque goes off at once. Otherwise the straight joint-space path from the measured pose to the
+    /// torque goes off at once, unless an operator command was let through within the settle time (a
+    /// move just sent has not shown in the readings yet); then it parks like any other. Otherwise the straight joint-space path from the measured pose to the
     /// rest pose is sampled against the collision model RobotHost enforces (docs/adr/0020), every
     /// sample from the start to the end; one collision refuses it. Then the arm parks: waypoints along
     /// that path, the furthest joint at the park speed, through the joint-command path. When every arm
@@ -226,8 +227,12 @@ namespace Teleop.RobotHost.Power
             }
 
             if (_torque != Torque.On) TorqueOn(now);
+            _lastOperatorCommandTicks = now;
             return true;
         }
+
+        /// <summary>When the last operator command was let through (robot ticks), or <see cref="long.MinValue"/>.</summary>
+        private long _lastOperatorCommandTicks = long.MinValue;
 
         /// <summary>Advances a park and repeats the status. Call every loop.</summary>
         public void Tick(long now)
@@ -249,7 +254,12 @@ namespace Teleop.RobotHost.Power
             int stale = FirstStale(now, long.MinValue);
             if (stale >= 0) return Refuse(now, ArmPowerReason.BoardNotAnswering, $"motor {_armMotorIds[stale]} has no fresh reading");
 
-            if (MaxDistance(_angles) <= _options.ToleranceDegrees * Deg)
+            // Readings at the rest pose say nothing about a move just sent: a command accepted 6 ms before the relax had not
+            // shown in them yet, and the torque went off mid-move (the 2026-11 bug hunt, C-06). Within the settle time of an
+            // operator command, a relax parks instead: one waypoint back to the rest pose, and the torque goes off only once
+            // fresh readings have settled there.
+            bool recentlyCommanded = _lastOperatorCommandTicks != long.MinValue && now - _lastOperatorCommandTicks < Ticks(_options.SettleSeconds);
+            if (!recentlyCommanded && MaxDistance(_angles) <= _options.ToleranceDegrees * Deg)
             {
                 // Already resting there: nothing to move.
                 Transition(now, ArmPowerState.Parking, ArmPowerReason.None, "already at the rest pose");

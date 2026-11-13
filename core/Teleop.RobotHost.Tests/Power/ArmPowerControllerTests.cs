@@ -316,6 +316,28 @@ namespace Teleop.RobotHost.Tests.Power
         }
 
         [Fact]
+        public void AtTheRestPose_ButJustCommandedAway_ARelaxParksBack_BeforeTheTorqueGoesOff()
+        {
+            // A move was accepted, the relax came 6 ms later: the readings still said "at rest", and the torque went off
+            // mid-move, so the arm fell limp on its way out (the 2026-11 bug hunt, C-06).
+            float[] rest = ClearRestDeg.Select(d => (float)d * Deg).ToArray();
+            var rig = new Rig(start: rest);
+            Assert.True(rig.Power.AcceptOperatorCommand(rig.Now));
+            rig.Arm.CommandArm(new byte[] { 1, 2, 3, 4, 5 }.Select((id, i) => new JointTarget(id, rest[i] + 20f * Deg, 1.0f)).ToArray(), rig.Now);
+            rig.Now += T(0.006);
+            rig.Arm.Advance(rig.Now);
+
+            rig.Request(ArmPowerRequest.Relax, 1);
+            Assert.Equal(ArmPowerState.Parking, rig.Power.State);
+            Assert.DoesNotContain(rig.Arm.Torque, t => !t.On); // (the accepted command switched it on: start-up does not know)
+
+            rig.Run(10);
+            Assert.Equal(ArmPowerState.Relaxed, rig.Power.State);
+            Assert.Equal(new[] { true, false }, rig.Arm.Torque.Select(t => t.On));
+            for (int i = 0; i < 5; i++) Assert.InRange(rig.Arm.Angles[i] - rest[i], -3f * Deg, 3f * Deg);
+        }
+
+        [Fact]
         public void WithoutARestPose_EveryRelaxIsRefused()
         {
             var arm = new SimArm(Home());

@@ -318,7 +318,16 @@ namespace Teleop.RobotHost.Plant
             // one, so this only ever catches a bug or another tool.
             if (_profile.Collision != null)
             {
-                CollisionHit hit = ArmCollision.Check(_profile, _profile.Collision, CommandedPose(targets));
+                ArmPose commanded = CommandedPose(targets);
+                CollisionHit hit = ArmCollision.Check(_profile, _profile.Collision, commanded);
+                // The end pose alone is not enough: every servo then travels to it at the same speed, and a path between two
+                // clear poses can pass through the robot (the 2026-11 bug hunt, C-05: 38% of the way, the distal link into
+                // the body). The path from where the arm is now is checked too.
+                if (!hit.IsHit)
+                {
+                    hit = ServoPathHit(BeliefPose(), commanded);
+                }
+
                 if (hit.IsHit)
                 {
                     RefusedJointCommands++;
@@ -358,6 +367,51 @@ namespace Teleop.RobotHost.Plant
         /// "dropped, the arm holds"); this counter tells the two causes apart.
         /// </summary>
         public int InvalidJointCommands { get; private set; }
+
+        /// <summary>Paths shorter than this (largest joint change, radians) are not sampled: a teleop frame moves a few degrees.</summary>
+        public const float PathCheckThresholdRadians = 4f * MathF.PI / 180f;
+
+        /// <summary>The spacing of the poses sampled along a longer servo path, radians of the largest joint change.</summary>
+        public const float PathStepRadians = 2f * MathF.PI / 180f;
+
+        /// <summary>
+        /// The first collision along the path the servos take from <paramref name="from"/> to <paramref name="to"/>, or no
+        /// hit. All servos move at one speed (the write gate plans each move as its distance over the same pulses per
+        /// second), so each joint advances at the same rate until it reaches its target: at progress tau every joint is
+        /// <c>from + sign(delta) * min(|delta|, tau)</c>. A start the model calls invalid (the measured rest pose reads past
+        /// a stop) is first clamped into the ranges; a start still in collision cannot require a clear path, as in the
+        /// headset's solver, and only the end pose is judged. Allocation-free.
+        /// </summary>
+        private CollisionHit ServoPathHit(ArmPose from, ArmPose to)
+        {
+            ArmCollisionModel model = _profile.Collision!;
+            from = new ArmPose(model.BaseYaw.Clamp(from.BaseYaw), model.Proximal.Clamp(from.Proximal), model.Distal.Clamp(from.Distal),
+                model.Wrist.Clamp(from.Wrist), model.Roll.Clamp(from.Roll));
+            float dYaw = to.BaseYaw - from.BaseYaw, dProximal = to.Proximal - from.Proximal, dDistal = to.Distal - from.Distal,
+                dWrist = to.Wrist - from.Wrist, dRoll = to.Roll - from.Roll;
+            float longest = Math.Max(Math.Max(Math.Max(Math.Abs(dYaw), Math.Abs(dProximal)), Math.Max(Math.Abs(dDistal), Math.Abs(dWrist))), Math.Abs(dRoll));
+            if (longest <= PathCheckThresholdRadians || !ArmCollision.IsValid(_profile, model, from))
+            {
+                return default;
+            }
+
+            int steps = (int)MathF.Ceiling(longest / PathStepRadians);
+            for (int s = 1; s < steps; s++)
+            {
+                float tau = longest * s / steps;
+                var pose = new ArmPose(from.BaseYaw + Toward(dYaw, tau), from.Proximal + Toward(dProximal, tau), from.Distal + Toward(dDistal, tau),
+                    from.Wrist + Toward(dWrist, tau), from.Roll + Toward(dRoll, tau));
+                CollisionHit hit = ArmCollision.Check(_profile, model, pose);
+                if (hit.IsHit)
+                {
+                    return hit;
+                }
+            }
+
+            return default;
+        }
+
+        private static float Toward(float delta, float tau) => delta >= 0f ? Math.Min(delta, tau) : Math.Max(delta, -tau);
 
         /// <summary>
         /// The slowest move this plant asks for, pulses per second. The servo board carries a move's duration as 16-bit

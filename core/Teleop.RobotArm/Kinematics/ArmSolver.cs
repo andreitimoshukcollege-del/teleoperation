@@ -159,9 +159,17 @@ namespace Teleop.RobotArm.Kinematics
         /// </summary>
         public void Reset(in RobotArmProfile profile, in ArmPose pose)
         {
-            _last = pose;
-            _lastPosition = ArmKinematics.Forward(profile, pose.BaseYaw, pose.Proximal, pose.Distal);
-            _lastBranch = BranchOf(pose);
+            // A measured pose can sit just past a joint's stop: the rest pose's wrist reads -114 deg against a -112.7 deg
+            // limit. A start the model calls invalid lifts the per-solve cap and the path check (a path cannot be required to
+            // stay clear when it starts in collision), so one solve from rest could jump 119-158 deg (the 2026-11 bug hunt,
+            // E-01). Clamped into the ranges, such a start is valid and every solve from it stays capped and path-checked.
+            ArmPose seed = profile.Collision is ArmCollisionModel model
+                ? new ArmPose(model.BaseYaw.Clamp(pose.BaseYaw), model.Proximal.Clamp(pose.Proximal), model.Distal.Clamp(pose.Distal),
+                    model.Wrist.Clamp(pose.Wrist), model.Roll.Clamp(pose.Roll))
+                : pose;
+            _last = seed;
+            _lastPosition = ArmKinematics.Forward(profile, seed.BaseYaw, seed.Proximal, seed.Distal);
+            _lastBranch = BranchOf(seed);
             _hasLast = true;
             _hasLastSolution = false;
         }

@@ -609,7 +609,7 @@ namespace Teleop.Eval.JointDrive
                     _nextKeepalive = now + Stopwatch.Frequency / 2;
                 }
 
-                while (_socket.Available > 0)
+                while (_socket.Poll(0, SelectMode.SelectRead)) // Poll, not Available: an empty datagram reads as Available 0 and would block the queue (B-01)
                 {
                     int received;
                     try

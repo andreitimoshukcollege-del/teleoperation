@@ -72,11 +72,17 @@ namespace Teleop.Bridge
             _ = nowTicks;
             byteCount = 0;
             arrivalTicks = 0;
-            if (_socket.Available <= 0) { return false; }
-
+            // Poll, not Available: Available is FIONREAD, which reads 0 while an empty datagram sits at the head of the queue
+            // (Android is Linux), so an Available gate never dequeued it and every datagram behind it was stuck for good (the
+            // 2026-11 bug hunt, B-01). Empty datagrams are read off and skipped.
             int received;
-            try { received = _socket.Receive(_receiveScratch, SocketFlags.None); }
-            catch (SocketException) { return false; }
+            do
+            {
+                if (!_socket.Poll(0, SelectMode.SelectRead)) { return false; }
+                try { received = _socket.Receive(_receiveScratch, SocketFlags.None); }
+                catch (SocketException) { return false; }
+            }
+            while (received == 0);
 
             arrivalTicks = _clock.NowTicks;
 
@@ -89,7 +95,7 @@ namespace Teleop.Bridge
 
         public void Reset()
         {
-            while (_socket.Available > 0)
+            while (_socket.Poll(0, SelectMode.SelectRead))
             {
                 try { _socket.Receive(_receiveScratch, SocketFlags.None); }
                 catch (SocketException) { break; }

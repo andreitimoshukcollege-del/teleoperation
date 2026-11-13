@@ -85,7 +85,9 @@ namespace Teleop.RobotHost.Relay
         {
             entryCount = 0;
 
-            if (_socket.Available <= 0)
+            // Poll, not Available: an empty datagram reads as Available 0 and would block all feedback behind it (B-01). An
+            // empty one is read off and fails to decode; the next call reads what follows.
+            if (!_socket.Poll(0, SelectMode.SelectRead))
             {
                 return false;
             }

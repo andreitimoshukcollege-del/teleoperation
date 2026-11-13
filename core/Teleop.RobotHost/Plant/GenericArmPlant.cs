@@ -299,6 +299,15 @@ namespace Teleop.RobotHost.Plant
                 return JointCommandOutcome.Stale;
             }
 
+            // Malformed input is refused whole before it touches any state, so it does not consume the capture stamp
+            // either: a NaN or infinite value would reach the servo driver as a NaN pulse and kill it, and a motor named
+            // twice would overflow the per-joint buffer below (the 2026-11 bug hunt, C-01 and C-02).
+            if (!IsWellFormed(targets))
+            {
+                InvalidJointCommands++;
+                return JointCommandOutcome.Refused;
+            }
+
             _lastAcceptedJointCaptureTicks = captureTicks;
             _lastJointCommandStateTicks = _stateTicks;
             _hadJointCommand = true;
@@ -342,6 +351,52 @@ namespace Teleop.RobotHost.Plant
 
         /// <summary>Joint commands refused because the pose would collide (docs/adr/0020), since construction.</summary>
         public int RefusedJointCommands { get; private set; }
+
+        /// <summary>
+        /// Joint commands refused as malformed, since construction: a target that is not finite, or a motor this profile has
+        /// named twice. Recorded as <see cref="JointCommandOutcome.Refused"/> too (the session format has no other letter for
+        /// "dropped, the arm holds"); this counter tells the two causes apart.
+        /// </summary>
+        public int InvalidJointCommands { get; private set; }
+
+        /// <summary>
+        /// The slowest move this plant asks for, pulses per second. The servo board carries a move's duration as 16-bit
+        /// milliseconds, so a move longer than 65.535 s wraps: a very slow request (0.01 rad/s is 2.4 pulses/s) became a
+        /// near-instant move, after which the driver held that servo for over a minute (the 2026-11 bug hunt, C-03). At 20
+        /// pulses/s the board's whole range (1000 pulses) takes 50 s, inside the field.
+        /// </summary>
+        public const float MinPulsesPerSecond = 20f;
+
+        /// <summary>
+        /// Whether a joint command may reach the plant: every angle and speed finite, and no motor this profile has named
+        /// twice. A motor id the profile does not have is ignored later, as before. Allocation-free.
+        /// </summary>
+        private bool IsWellFormed(ReadOnlySpan<JointTarget> targets)
+        {
+            Span<bool> seen = stackalloc bool[_profile.JointCount];
+            foreach (JointTarget target in targets)
+            {
+                if (!float.IsFinite(target.Angle) || !float.IsFinite(target.Speed))
+                {
+                    return false;
+                }
+
+                int index = FindJointIndexByMotorId(target.MotorId);
+                if (index < 0)
+                {
+                    continue;
+                }
+
+                if (seen[index])
+                {
+                    return false;
+                }
+
+                seen[index] = true;
+            }
+
+            return true;
+        }
 
         /// <summary>Why the most recent refused joint command was refused.</summary>
         public CollisionHit LastRefusal { get; private set; }
@@ -412,15 +467,20 @@ namespace Teleop.RobotHost.Plant
         private void ApplyJointTargets(ReadOnlySpan<JointTarget> incomingTargets)
         {
             Span<JointTarget> outgoing = stackalloc JointTarget[_profile.JointCount];
+            Span<bool> written = stackalloc bool[_profile.JointCount];
             int outgoingCount = 0;
 
             foreach (JointTarget incoming in incomingTargets)
             {
                 int index = FindJointIndexByMotorId(incoming.MotorId);
-                if (index < 0)
+                // A second target for one joint, or a value that is not finite, never reaches the relay. CommandJointAngles
+                // refuses such a command whole; this also covers the Cartesian path, whose gripper value comes off the wire.
+                if (index < 0 || written[index] || !float.IsFinite(incoming.Angle))
                 {
                     continue;
                 }
+
+                written[index] = true;
 
                 JointHardwareSpec joint = _profile.Joints[index];
 
@@ -581,7 +641,9 @@ namespace Teleop.RobotHost.Plant
                 return _config.PulsesPerSecond;
             }
 
-            return Math.Min(requested * _config.PulsePerRadian, _config.PulsesPerSecond);
+            // Floored, so no move outlasts the board's 16-bit duration field (MinPulsesPerSecond); capped at what the robot
+            // was deployed to allow.
+            return Math.Min(Math.Max(requested * _config.PulsePerRadian, MinPulsesPerSecond), _config.PulsesPerSecond);
         }
 
         /// <summary>

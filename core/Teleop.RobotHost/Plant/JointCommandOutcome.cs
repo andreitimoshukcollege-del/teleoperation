@@ -12,7 +12,10 @@ namespace Teleop.RobotHost.Plant
         /// <summary>Dropped: its capture stamp was not newer than the last one taken.</summary>
         Stale,
 
-        /// <summary>Dropped: the pose would collide (docs/adr/0020); the arm holds.</summary>
+        /// <summary>
+        /// Dropped, and the arm holds: the pose would collide (docs/adr/0020), or the command was malformed (a value not finite,
+        /// or a motor named twice). The plants count the two causes apart.
+        /// </summary>
         Refused,
 
         /// <summary>Dropped: the arm was parking or relaxed (docs/adr/0023 decision 5); nothing reached the plant.</summary>

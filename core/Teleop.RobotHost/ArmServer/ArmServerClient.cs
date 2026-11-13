@@ -397,7 +397,9 @@ namespace Teleop.RobotHost.ArmServer
         public bool TryReceive(Span<byte> buffer, out int bytes)
         {
             bytes = 0;
-            if (_socket.Available <= 0) return false;
+            // Poll, not Available: an empty datagram reads as Available 0 and would block everything behind it (B-01). An
+            // empty one is read off here and reported as nothing; the next call reads what follows.
+            if (!_socket.Poll(0, SelectMode.SelectRead)) return false;
             try
             {
                 bytes = _socket.Receive(buffer, SocketFlags.None);

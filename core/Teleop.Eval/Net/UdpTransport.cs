@@ -71,20 +71,26 @@ namespace Teleop.Eval.Net
             byteCount = 0;
             arrivalTicks = 0;
 
-            if (_socket.Available <= 0)
-            {
-                return false;
-            }
-
+            // Poll, not Available (RobotHost's UdpTransport says why): an empty datagram at the head of the queue would
+            // otherwise block every one behind it. Empty datagrams are read off and skipped.
             int received;
-            try
+            do
             {
-                received = _socket.Receive(_receiveScratch, SocketFlags.None);
+                if (!_socket.Poll(0, SelectMode.SelectRead))
+                {
+                    return false;
+                }
+
+                try
+                {
+                    received = _socket.Receive(_receiveScratch, SocketFlags.None);
+                }
+                catch (SocketException)
+                {
+                    return false;
+                }
             }
-            catch (SocketException)
-            {
-                return false;
-            }
+            while (received == 0);
 
             arrivalTicks = _clock.NowTicks;
 
@@ -101,7 +107,7 @@ namespace Teleop.Eval.Net
 
         public void Reset()
         {
-            while (_socket.Available > 0)
+            while (_socket.Poll(0, SelectMode.SelectRead))
             {
                 try
                 {

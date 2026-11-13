@@ -6,7 +6,7 @@ lab's schema (`SINRG-Lab/world-models`, `data_collection/`). The converter runs 
 | Recipe | What |
 |---|---|
 | `just lerobot-setup` | once: `~/isaacsim/lerobot-venv` with `requirements.txt`'s lerobot |
-| `just lerobot-watch-start` / `-stop` / `-status` | the converter (`isaac-host` and `isaac-jetrover-host` start it if it is not running) |
+| `just lerobot-watch-start` / `-stop` / `-status` | the converter. Start also installs a cron keeper that brings it back within 5 min of a reboot or crash; stop removes it (`isaac-host` and `isaac-jetrover-host` start it too if it is not running) |
 | `just lerobot-rebuild <robot>-<source>/<scenario>` | one dataset again from its kept takes |
 | `just lerobot-test` | the tests there, LeRobot round trip included |
 | `just isaac-jetrover-take [scenario] [script] [speed] [seconds]` | a take of Isaac's JetRover with no headset: joint-drive drives it from the PC and records it, as RECORD would (needs `just isaac-jetrover-host`) |

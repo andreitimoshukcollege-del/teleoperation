@@ -34,7 +34,8 @@ from typing import Dict, List, Optional, Tuple
 
 from . import profile as profile_module
 from . import scene as scene_module
-from . import wire
+from . import urdf_usd, wire
+from .world_server import WorldServer
 from .shaper import ShapedState, shaper_for_profile, step
 
 READY_POSE = (0.0, -0.785398163397448, 0.0, -2.356194490192345, 0.0, 1.570796326794897, 0.785398163397448)
@@ -79,19 +80,8 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
 
 
 def convert_urdf(urdf: str, work: str) -> str:
-    """The URDF as Isaac's USD, converted once per URDF content (its sha256 names the folder)."""
-    from isaacsim.asset.importer.urdf import URDFImporter, URDFImporterConfig
-
-    with open(urdf, "rb") as f:
-        digest = hashlib.sha256(f.read()).hexdigest()[:12]
-    out = os.path.join(work, f"fr3_duo-{digest}")
-    name = os.path.splitext(os.path.basename(urdf))[0]
-    usd = os.path.join(out, name, f"{name}.usda")
-    if not os.path.isfile(usd):
-        os.makedirs(out, exist_ok=True)
-        usd = URDFImporter(URDFImporterConfig(urdf_path=urdf, usd_path=out, fix_base=True,
-                                              joint_drive_type="force", joint_target_type="position")).import_urdf()
-    return usd
+    """The FR3 Duo's URDF as Isaac's USD, converted once per content, meshes included (``urdf_usd``)."""
+    return urdf_usd.convert_urdf(urdf, work, "fr3_duo")
 
 
 class DofMap:
@@ -255,7 +245,6 @@ def main(argv: Optional[List[str]] = None) -> int:
         client = None
         enabled = True
         sequence = 0
-        sizes_due, last_sizes = True, 0  # SIZES at start, on change and once a second (docs/adr/0034 amendment 6)
 
         def next_sequence() -> int:
             nonlocal sequence
@@ -274,6 +263,9 @@ def main(argv: Optional[List[str]] = None) -> int:
                 tapped += 1
             except OSError:
                 tap_dropped += 1
+
+        world_server = WorldServer(world, scene_sha, [o.id for o in scene.objects] if scene is not None else [], sock.sendto,
+                                   next_sequence, tap, round(1.0 / dt), args.world_every, "isaac")
 
         steps = late = 0
         lag_ms = 0.0
@@ -297,13 +289,11 @@ def main(argv: Optional[List[str]] = None) -> int:
                     if sender != client:
                         print(f"[isaac] RobotHost at {sender}", flush=True)
                     client = sender
-                    sequence += 1
                     try:
-                        sock.sendto(wire.encode_welcome(sequence, wire.SERVER_ISAAC, time.monotonic_ns(), motor_ids, description), client)
-                        if world is not None:
-                            sequence += 1
-                            sock.sendto(wire.encode_world_info(sequence, scene_sha, [o.id for o in scene.objects]), client)
-                            sizes_due = True
+                        sock.sendto(wire.encode_welcome(next_sequence(), wire.SERVER_ISAAC, time.monotonic_ns(), motor_ids, description), client)
+                        info = world_server.world_info()
+                        if info is not None:
+                            sock.sendto(info, client)
                     except OSError:
                         client = None  # it left before the answer; it says hello again
                 elif kind == wire.TARGETS and sender == client:
@@ -318,38 +308,8 @@ def main(argv: Optional[List[str]] = None) -> int:
                         if not e.enabled:
                             targets = [s.q for s in states]  # come to rest where the shaper has the arm
                         enabled = e.enabled
-                elif kind == wire.PLACE and sender == client:
-                    place = wire.decode_place(data)
-                    if place is not None:
-                        _, request, cause, object_id, pose = place
-                        if world is not None:
-                            outcome, now_pose = world.place(cause, object_id, pose)
-                            revision = world.model.revision
-                        else:
-                            outcome, now_pose, revision = wire.UNKNOWN_OBJECT, tuple(pose), 0
-                        if outcome != wire.APPLIED or cause != wire.CAUSE_LAYOUT:
-                            print(f"[isaac] place {object_id} (cause {cause}): outcome {outcome}", flush=True)
-                        sequence += 1
-                        try:
-                            sock.sendto(wire.encode_placed(sequence, request, object_id, outcome, revision, now_pose), client)
-                        except OSError:
-                            pass
-                elif kind == wire.RESIZE and sender == client:
-                    rz = wire.decode_resize(data)
-                    if rz is not None:
-                        _, request, object_id, scale = rz
-                        if world is not None:
-                            outcome, now_pose = world.resize(object_id, scale)
-                            revision = world.model.revision
-                        else:
-                            outcome, now_pose, revision = wire.UNKNOWN_OBJECT, (0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0), 0
-                        print(f"[isaac] resize {object_id} to {scale:.3g}x: outcome {outcome}", flush=True)
-                        sizes_due = sizes_due or outcome == wire.APPLIED
-                        sequence += 1
-                        try:
-                            sock.sendto(wire.encode_placed(sequence, request, object_id, outcome, revision, now_pose), client)
-                        except OSError:
-                            pass
+                elif sender == client:
+                    world_server.handle(kind, data, client)
 
             for k in range(len(states)):
                 step(states[k], targets[k], limits[k], shaper)
@@ -382,25 +342,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                         pass  # RobotHost went away; it says hello again when it is back
                 tap(message)
 
-            if world is not None and (client is not None or args.tap) and (sizes_due or steps - last_sizes >= round(1.0 / dt)):
-                sizes_due, last_sizes = False, steps
-                message = world.model.sizes_message(next_sequence())
-                if client is not None:
-                    try:
-                        sock.sendto(message, client)
-                    except OSError:
-                        pass
-                tap(message)
-            if world is not None and (client is not None or args.tap) and steps % args.world_every == 0:
-                objects = world.read()
-                sensed = time.monotonic_ns()
-                for message in world.model.world_messages(next_sequence, sensed, objects):
-                    if client is not None:
-                        try:
-                            sock.sendto(message, client)
-                        except OSError:
-                            pass
-                    tap(message)
+            world_server.publish(steps, client, bool(args.tap))
 
             next_tick += step_ns
             now = time.monotonic_ns()

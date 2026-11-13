@@ -42,7 +42,8 @@ from typing import Dict, List, Optional
 from . import driver_log
 from . import scene as scene_module
 from . import servo
-from . import wire
+from . import urdf_usd, wire
+from .world_server import WorldServer
 
 HOME = (0.0, 1.0472, -1.5708, 0.5236, 0.0)  # JetRoverCollisionModel's home: yaw, proximal, distal, wrist, roll
 
@@ -96,38 +97,9 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     return a.parse_args(argv)
 
 
-def urdf_digest(urdf: str) -> str:
-    """The sha256 of the URDF and of every mesh file it names, in order: what a conversion is made of. The URDF alone is not
-    enough: re-exported meshes keep their names (docs/adr/0034 amendment 7, the jaws swapped and Isaac kept the old ones)."""
-    import re
-
-    h = hashlib.sha256()
-    with open(urdf, "rb") as f:
-        text = f.read()
-    h.update(text)
-    base = os.path.dirname(os.path.abspath(urdf))
-    for name in re.findall(rb'filename="([^"]+)"', text):
-        path = os.path.join(base, name.decode())
-        h.update(name)
-        if os.path.isfile(path):
-            with open(path, "rb") as m:
-                h.update(hashlib.sha256(m.read()).digest())
-    return h.hexdigest()[:12]
-
-
 def convert_urdf(urdf: str, work: str) -> str:
-    """The URDF as Isaac's USD, converted once per content: the URDF and its meshes (:func:`urdf_digest` names the folder)."""
-    from isaacsim.asset.importer.urdf import URDFImporter, URDFImporterConfig
-
-    digest = urdf_digest(urdf)
-    out = os.path.join(work, f"jetrover-{digest}")
-    name = os.path.splitext(os.path.basename(urdf))[0]
-    usd = os.path.join(out, name, f"{name}.usda")
-    if not os.path.isfile(usd):
-        os.makedirs(out, exist_ok=True)
-        usd = URDFImporter(URDFImporterConfig(urdf_path=urdf, usd_path=out, fix_base=True,
-                                              joint_drive_type="force", joint_target_type="position")).import_urdf()
-    return usd
+    """The JetRover's URDF as Isaac's USD, converted once per content, meshes included (``urdf_usd``)."""
+    return urdf_usd.convert_urdf(urdf, work, "jetrover")
 
 
 def main(argv: Optional[List[str]] = None) -> int:
@@ -142,7 +114,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     scene = scene_module.load(args.scene) if args.scene else None
     if scene is not None and scene.robot_profile != "jetrover":
         raise SystemExit(f"error: the scene {args.scene} is for profile {scene.robot_profile!r}, not 'jetrover'")
-    scene_sha = __import__("hashlib").sha256(open(args.scene, "rb").read()).digest() if scene is not None else b""
+    scene_sha = hashlib.sha256(open(args.scene, "rb").read()).digest() if scene is not None else b""
 
     from isaacsim import SimulationApp
 
@@ -257,7 +229,6 @@ def main(argv: Optional[List[str]] = None) -> int:
         print(f"[jetrover] {description}; {n} DOFs ({', '.join(names)}); torque {'on' if torque else 'off'}; listening on {args.socket}"
               + (f", world on {world_path}" if wsock is not None else ""), flush=True)
         world_client = None
-        sizes_due, last_sizes = True, 0  # SIZES at start, on change and once a second (docs/adr/0034 amendment 6)
         wseq = [0]
 
         def next_wseq() -> int:
@@ -275,6 +246,10 @@ def main(argv: Optional[List[str]] = None) -> int:
                 tapped += 1
             except OSError:
                 tap_dropped += 1
+
+        world_server = WorldServer(world, scene_sha, [o.id for o in scene.objects] if scene is not None else [],
+                                   wsock.sendto if wsock is not None else (lambda message, address: None),
+                                   next_wseq, tap, round(1.0 / args.dt), args.world_every, "jetrover")
 
         motor_order = sorted(model.motors)
 
@@ -356,32 +331,11 @@ def main(argv: Optional[List[str]] = None) -> int:
                     world_client = sender
                     try:
                         wsock.sendto(wire.encode_welcome(next_wseq(), wire.SERVER_ISAAC, time.monotonic_ns(), [], world_description), world_client)
-                        wsock.sendto(wire.encode_world_info(next_wseq(), scene_sha, [o.id for o in scene.objects]), world_client)
-                        sizes_due = True
+                        wsock.sendto(world_server.world_info(), world_client)
                     except OSError:
                         world_client = None
-                elif kind == wire.PLACE and sender == world_client:
-                    place = wire.decode_place(data)
-                    if place is not None:
-                        _, request, cause, object_id, pose = place
-                        outcome, now_pose = world.place(cause, object_id, pose)
-                        if outcome != wire.APPLIED or cause != wire.CAUSE_LAYOUT:
-                            print(f"[jetrover] place {object_id} (cause {cause}): outcome {outcome}", flush=True)
-                        try:
-                            wsock.sendto(wire.encode_placed(next_wseq(), request, object_id, outcome, world.model.revision, now_pose), world_client)
-                        except OSError:
-                            pass
-                elif kind == wire.RESIZE and sender == world_client:
-                    rz = wire.decode_resize(data)
-                    if rz is not None:
-                        _, request, object_id, scale = rz
-                        outcome, now_pose = world.resize(object_id, scale)
-                        print(f"[jetrover] resize {object_id} to {scale:.3g}x: outcome {outcome}", flush=True)
-                        sizes_due = sizes_due or outcome == wire.APPLIED
-                        try:
-                            wsock.sendto(wire.encode_placed(next_wseq(), request, object_id, outcome, world.model.revision, now_pose), world_client)
-                        except OSError:
-                            pass
+                elif sender == world_client:
+                    world_server.handle(kind, data, world_client)
 
             arm.step()
             steps += 1
@@ -399,24 +353,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                         v = float(q[index[m.joint]])
                     report.append((m_id, float(v), 0.0, float(v)))
                 tap(wire.encode_state(next_wseq(), time.monotonic_ns(), steps * step_ns, wire.FLAG_ENABLED if torque else 0, report))
-            if world is not None and (world_client is not None or args.tap) and (sizes_due or steps - last_sizes >= round(1.0 / args.dt)):
-                sizes_due, last_sizes = False, steps
-                message = world.model.sizes_message(next_wseq())
-                if world_client is not None:
-                    try:
-                        wsock.sendto(message, world_client)
-                    except OSError:
-                        pass
-                tap(message)
-            if world is not None and (world_client is not None or args.tap) and steps % args.world_every == 0:
-                objects = world.read()
-                for message in world.model.world_messages(next_wseq, time.monotonic_ns(), objects):
-                    if world_client is not None:
-                        try:
-                            wsock.sendto(message, world_client)
-                        except OSError:
-                            pass
-                    tap(message)
+            world_server.publish(steps, world_client, bool(args.tap))
 
             mid = driver.due_read(now_s)
             if mid is not None:

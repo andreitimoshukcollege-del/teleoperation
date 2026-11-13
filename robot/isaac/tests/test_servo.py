@@ -112,7 +112,7 @@ def test_the_checks_robothost_side_of_the_protocol_is_what_the_relay_reads():
 
 def test_a_conversion_is_named_by_the_urdf_and_its_meshes(tmp_path):
     # A re-exported mesh keeps its name; Isaac must convert again (docs/adr/0034 amendment 7).
-    from teleop_isaac.jetrover_bridge import urdf_digest
+    from teleop_isaac.urdf_usd import urdf_digest
 
     (tmp_path / "meshes").mkdir()
     (tmp_path / "meshes" / "a.obj").write_text("v 0 0 0\n")

@@ -274,7 +274,6 @@ namespace Teleop.RobotHost.Sim
                     ["motorId"] = (int)j.MotorId,
                     ["joint"] = JointOf(j.Role),
                     ["zeroOffsetRadians"] = Math.Round(j.ZeroOffsetRadians, 9),
-                    // The driver reads motors 1 to 5; the gripper (10) never answers a position read (ADR 0018).
                     // Every motor reports, the gripper too: the real driver reads 1-5 and 10 (FEEDBACK_MOTOR_IDS, since PR #70),
                     // backing off one that stops answering (docs/adr/0034 amendment 9).
                     ["feedback"] = true,

@@ -17,8 +17,10 @@ to arm control were left behind (the camera is now served by `core/Teleop.Camera
   - it publishes servo feedback on `/unity/robot/servo/feedback_array` and the battery level on
     `/robot/battery` (millivolts).
   - **`FEEDBACK_MOTOR_IDS`** in `robot_controller_node.py` lists the servos it reads back. That is
-    1–5. Motor 10, the gripper, is left out: it never answers, and each read of it used to stall
-    the loop for a second.
+    1–5 and 10, the gripper. The gripper was left out from 2026-10-20 to 2026-10-25, when it did not
+    answer and each read of it stalled the loop for a second; it has been read again since PR #70,
+    behind `ReadBackoff`, which skips a servo for a while after a read that timed out. Its open and
+    closed pulses are uncalibrated.
   - `board_manager/robot_controller_sdk.py` is Hiwonder's board library. `just robot-board-commands`
     lists what the board accepts.
 - **`teleop_relay`** bridges RobotHost to the driver over a Unix socket
@@ -41,7 +43,9 @@ just robot-ros-diff              # read-only: is the Jetson running exactly what
 ```
 
 The plain-Python tests (`test_relay_protocol.py`, `test_stale_tracked_value.py`,
-`test_servo_controller.py`) need only `pytest`. The ament lint tests (`test_flake8.py`,
+`test_servo_controller.py`, `test_read_backoff.py`, `test_session_log.py`, `test_write_gate.py`,
+`test_idle_keepalive.py`) need only `pytest`. The deploy runs all of them but
+`test_idle_keepalive.py`. The ament lint tests (`test_flake8.py`,
 `test_pep257.py`, `test_copyright.py`) need ROS and are not run by the deploy.
 
 Requirements on the Jetson: ROS 2 Foxy, and Python 3's `pyserial`.

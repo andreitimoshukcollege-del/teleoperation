@@ -77,8 +77,9 @@ namespace Teleop.RobotHost.Plant
     /// default while every other joint shows real progress would be a worse estimate than using
     /// the last thing this plant actually told it to do. <see cref="IsFullySensed"/> is what tells
     /// a caller whether to trust <see cref="State"/> as a measurement rather than partly an
-    /// estimate -- it excludes the gripper (which never has feedback wired up, by design, both
-    /// before and after this generalization) and is always computed, never withheld.
+    /// estimate -- it excludes the gripper and the wrist roll, as it always has (the gripper is
+    /// read back since PR #70, but its open and closed pulses are uncalibrated), and is always
+    /// computed, never withheld.
     ///
     /// Not thread-safe, by contract. Time is always a parameter, never a clock read, same as
     /// every other <see cref="IRobotPlant"/> implementation.
@@ -171,7 +172,7 @@ namespace Teleop.RobotHost.Plant
             ResetInternal();
         }
 
-        /// <summary>True once every position-affecting joint (every joint except the gripper, which never has feedback wired up) has been sensed at least once.</summary>
+        /// <summary>True once every position-affecting joint (every joint except the gripper and the wrist roll) has been sensed at least once.</summary>
         public bool IsFullySensed
         {
             get

@@ -67,7 +67,8 @@ crc8_table = [
 # Seconds to wait for a bus servo's answer to a read (see bus_servo_read_and_unpack). 1 s, as the
 # library always had: cutting it to 50 ms (2026-10-20) stopped all servo feedback on the JetRover,
 # so this board's answers can take longer than that. The one-second stall that change targeted
-# came from motor 10, which never answers; it is off FEEDBACK_MOTOR_IDS instead.
+# came from motor 10, the gripper, which did not answer then. It answers since 2026-10-25 and is
+# read again, behind ReadBackoff (robot_controller_node.py's FEEDBACK_MOTOR_IDS).
 BUS_SERVO_READ_TIMEOUT = 1.0
 
 

@@ -23,7 +23,7 @@ from typing import Callable, Dict, List, Optional, Protocol, Sequence, Tuple
 
 from . import servo
 
-SCORED = (1, 2, 3, 4, 5)   # the motors that report a position; 10, the gripper, never does
+SCORED = (1, 2, 3, 4, 5)   # the motors scored; 10, the gripper, is not, though it reports since PR #70 (docs/adr/0034 amendment 9)
 POOLED = (1, 2, 3, 4)      # the pooled figure: the arm's pitch joints and the yaw
 SETTLE_SECONDS = 0.5       # a reading counts toward settling this long after its motor's last target change
 
@@ -232,7 +232,7 @@ class Replayer:
             return score
         t0 = events[first][0]
         start = {m: p for m, v, p in events[first][2] if v}
-        # The gripper starts at its first commanded pulse (it never reports), else open.
+        # The gripper starts at its first commanded pulse, else open; it is not scored (SCORED).
         g = next((m for m, mo in self.model.motors.items() if mo.is_gripper), None)
         if g is not None:
             start[g] = next((p for e in events if e[1] == "RO" for m, p, _ in e[2] if m == g), self.model.motors[g].open_pulse)

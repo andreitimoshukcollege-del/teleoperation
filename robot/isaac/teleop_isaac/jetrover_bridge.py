@@ -17,8 +17,9 @@ paced to the wall clock:
 - the drives, torque limits and servo speed are J3's fit to the real arm (amendment 11; ``just jetrover-sim-fit``);
 - PhysX steps once.
 
-Every 20 ms a cycle reads motors 1 to 5 back to back in whole pulses, as the real driver does, and every 20 ms the newest
-reading of each goes back, valid while under 0.2 s old; the gripper (10) is never valid (decision 4, ``servo.FeedbackEmulator``). The base is fixed (decision 5).
+Every 20 ms a cycle reads motors 1 to 5 and the gripper (10) back to back in whole pulses, as the real driver does since
+PR #70, and every 20 ms the newest reading of each goes back, valid while under 0.2 s old (decision 4, amendment 9,
+``servo.FeedbackEmulator``). The base is fixed (decision 5).
 
 With ``--scene`` (docs/adr/0034 decision 7, J4) the scene file's surfaces and objects are in the stage too (``world.py``, as
 the FR3's), served to RobotHost on a second socket (``--world-socket``) over the arm-server wire's world messages: a Welcome

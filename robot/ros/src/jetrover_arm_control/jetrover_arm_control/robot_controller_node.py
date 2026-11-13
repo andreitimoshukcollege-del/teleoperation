@@ -16,9 +16,8 @@ from jetrover_arm_control.servo_controller.idle_keepalive import IdleKeepalive
 # Which motor ids to poll for feedback -- Jetson-local, deliberately separate from the
 # operator-side RobotArmProfile (docs/adr/0011-generic-robot-arm-profiles.md): this node no
 # longer needs to know joint *roles*, only which raw motor ids exist on this bus to read back.
-# Matches JetRover's four arm joints (base/lower/middle/upper, motor ids 1-4); gripper feedback
-# stays disabled, same as before this generalization -- GenericArmPlant sends the gripper
-# open-loop, with no belief tracking that would need it.
+# The JetRover's base yaw, shoulder, elbow, wrist pitch and wrist roll (motor ids 1-5) and the
+# gripper (10). The gripper's open and closed pulses are uncalibrated.
 # Motor 10 (the gripper) is read again since 2026-10-25: it was taken off on 2026-10-20 because it
 # did not answer, and every unanswered read held each feedback cycle (and every command behind it,
 # on this one thread) for the library's one-second timeout. On 2026-10-25 it answered its id,

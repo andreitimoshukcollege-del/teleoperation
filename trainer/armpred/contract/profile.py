@@ -128,7 +128,9 @@ def profile_from_dict(raw: dict, pulse_overrides: Optional[Dict[str, float]] = N
 
 
 # The JetRover as core/RobotProfiles/jetrover.json describes it, for the simulator when no bundle
-# supplies a profile. A bundle's own copy always wins.
+# supplies a profile. A bundle's own copy always wins: every real session carries the profile it was
+# recorded with, so one from before the shoulder servo was replaced (2026-11-11, +7 degrees then) is
+# read with its own offset, never this one.
 JETROVER = profile_from_dict(
     {
         "name": "jetrover",
@@ -137,7 +139,7 @@ JETROVER = profile_from_dict(
         "distalLinkLength": 0.13,
         "joints": [
             {"motorId": 1, "role": "BaseYaw"},
-            {"motorId": 2, "role": "Proximal", "zeroOffsetRadians": 0.12217305},
+            {"motorId": 2, "role": "Proximal", "zeroOffsetRadians": -0.64494798},  # since 2026-11-11
             {"motorId": 3, "role": "Distal"},
             {"motorId": 4, "role": "Wrist", "wristIndex": 0},
             {"motorId": 10, "role": "GripperMain"},

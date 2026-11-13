@@ -4299,15 +4299,53 @@ robot-recordings remote_host=default_jetrover_host remote_user="jetson":
            printf "%-60s %6s  logs closed: %s\n" "$(basename "$d")" "$(du -sh "$d" | cut -f1)" "$closed"; done; \
          df -h {{robot_recordings}} | tail -1'
 
-# The headset's takes on the robot (docs/adr/0033 amendment 1): per scenario, each take's size, whether RobotHost completed it (files.sha256), and how many camera frames it holds; then the disk. Touches nothing
+# The headset's takes on the robot (docs/adr/0033 amendment 1): the scenario list the headset shows, then per scenario each take's size, whether RobotHost completed it (files.sha256), and how many camera frames it holds; then the disk. Touches nothing
 [group('robot: recording (docs/adr/0021)')]
 robot-scenarios remote_host=default_jetrover_host remote_user="jetson":
     ssh -o StrictHostKeyChecking=accept-new "{{remote_user}}@$(just _robot-host "{{remote_host}}")" \
-        'root={{robot_recordings}}/scenarios; echo "recording now: $(cat {{robot_recordings}}/.active 2>/dev/null || echo nothing)"; \
+        'root={{robot_recordings}}/scenarios; echo "scenario list ($root/scenarios.txt):"; \
+         if [ -f "$root/scenarios.txt" ]; then sed -e "s/#.*//" -e "/^[[:space:]]*$/d" -e "s/^/  /" "$root/scenarios.txt"; else echo "  (none yet: RobotHost writes a starter list once it runs with --scenarios)"; fi; \
+         echo "recording now: $(cat {{robot_recordings}}/.active 2>/dev/null || echo nothing)"; \
          for d in "$root"/*/*-take*/; do [ -d "$d" ] || continue; \
            frames=$(grep -c "^VF" "$d"camera.jlog 2>/dev/null || echo 0); \
            printf "%-50s %6s  %-10s %6s camera frames\n" "${d#$root/}" "$(du -sh "$d" | cut -f1)" "$([ -f "$d"files.sha256 ] && echo complete || echo open)" "$frames"; done; \
          df -h {{robot_recordings}} | tail -1'
+
+# Set the scenario list the headset shows on the real robot (docs/adr/0033 amendment 1) from a file here, e.g. `just robot-scenarios-set my-scenarios.txt`: one scenario a line, `name | what the operator does`, `#` starts a comment; a name is 1 to 24 letters, digits, '.', '_' or '-' (not starting with '_' or '.') and names the folder its takes go in; at most 16. The file is checked against RobotHost's own rules first and refused if a line would be skipped; then it replaces ~/recordings/scenarios/scenarios.txt on the robot in one step, the old one kept as scenarios.txt.prev. The headset shows the new list within a few seconds. Moves nothing
+[group('robot: recording (docs/adr/0021)')]
+robot-scenarios-set file remote_host=default_jetrover_host remote_user="jetson":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    [ -f "{{file}}" ] || { echo "error: no file {{file}}" >&2; exit 1; }
+    # RobotHost's rules (core/Teleop.RobotHost/Recording/ScenarioList.cs), so a typo is caught here, not at the robot.
+    python3 - "{{file}}" <<'PY'
+    import re, sys
+    names, problems = [], []
+    for i, raw in enumerate(open(sys.argv[1], encoding="utf-8").read().replace("\r\n", "\n").split("\n"), 1):
+        line = raw.split("#", 1)[0].strip()
+        if not line:
+            continue
+        name = line.split("|", 1)[0].strip()
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,23}", name):
+            problems.append(f"line {i}: '{name}' is not a scenario name (1 to 24 letters, digits, '.', '_', '-'; not starting with '_' or '.')")
+        elif name.lower() in (n.lower() for n in names):
+            problems.append(f"line {i}: '{name}' is already in the list")
+        elif len(names) == 16:
+            problems.append(f"line {i}: more than 16 scenarios; '{name}' and the rest would be left out")
+        else:
+            names.append(name)
+    if problems:
+        print("error: RobotHost would skip these lines:\n  " + "\n  ".join(problems), file=sys.stderr)
+        sys.exit(1)
+    if not names:
+        print("error: no scenarios in the file (RobotHost would show only free-play)", file=sys.stderr)
+        sys.exit(1)
+    print(f"{len(names)} scenario(s): {', '.join(names)}")
+    PY
+    target="{{remote_user}}@$(just _robot-host "{{remote_host}}")"
+    ssh -o StrictHostKeyChecking=accept-new "$target" 'r={{robot_recordings}}/scenarios; mkdir -p "$r"; cat > "$r/scenarios.txt.tmp" && \
+        { [ ! -f "$r/scenarios.txt" ] || cp -p "$r/scenarios.txt" "$r/scenarios.txt.prev"; } && mv "$r/scenarios.txt.tmp" "$r/scenarios.txt" && \
+        echo "[robot] $r/scenarios.txt replaced$([ -f "$r/scenarios.txt.prev" ] && echo "; the previous list is scenarios.txt.prev")"' < "{{file}}"
 
 # Copy new sessions from the robot into recordings/jetrover/ (gitignored; archive them to a GitHub Release), never overwriting one already here, then check each new one
 [group('robot: recording (docs/adr/0021)')]

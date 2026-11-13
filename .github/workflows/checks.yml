@@ -69,6 +69,11 @@ jobs:
             dir: robot/lerobot
             install: pip install numpy==2.4.6 pytest==9.1.1
             run: python -m pytest -q -p no:cacheprovider tests
+          # The onboard pilot runner (it records drive sessions on the Jetson by itself): stdlib only, no robot.
+          - suite: pilot
+            dir: robot/pilot
+            install: pip install pytest==9.1.1
+            run: python -m pytest -q -p no:cacheprovider tests
           # The ROS packages' plain-Python tests: every test file but ament's lint ones, which need a ROS install. A
           # superset of what deploy-ros runs on the Jetson (it leaves out test_idle_keepalive.py).
           - suite: ros

@@ -16,7 +16,7 @@ namespace Teleop.Eval.Verification
     /// <c>scripts/hooks/core-guard.sh</c> -- <c>audit</c> must be self-contained under
     /// <c>dotnet run</c> alone, since a fresh clone or CI runner has no guarantee that hook is
     /// installed or executable.</item>
-    /// <item>Reflection over the compiled <c>Teleop.Core.dll</c>, for questions text-grep cannot
+    /// <item>Reflection over the compiled <c>Teleop.Core.dll</c> and <c>Teleop.RobotArm.dll</c>, for questions text-grep cannot
     /// answer authoritatively: what the assembly actually references, what target framework it
     /// was actually built for, and an absence-of-token property (every public type sealed by
     /// default) that a regex cannot express cleanly.</item>
@@ -37,30 +37,41 @@ namespace Teleop.Eval.Verification
                 return 66; // EX_NOINPUT
             }
 
-            string sourceDir = Path.Combine(coreDir, "Teleop.Core");
             string repoRoot = Path.GetDirectoryName(coreDir)!;
-
-            string? dllPath = FindNewestBuiltDll(repoRoot);
-            if (dllPath == null)
-            {
-                Console.Error.WriteLine(
-                    $"audit: Teleop.Core.dll not found under {Path.Combine(repoRoot, "build", "Teleop.Core", "bin")}. " +
-                    "Run `dotnet build Teleop.Core/Teleop.Core.csproj` first.");
-                return 66; // EX_NOINPUT
-            }
-
             var findings = new List<string>();
+            var scanned = new List<string>();
 
-            RunSourceTextChecks(sourceDir, findings);
-            RunAssemblyChecks(dllPath, findings);
-            RunProjectFileChecks(sourceDir, findings);
-            RunRegistryCompletenessCheck(sourceDir, dllPath, findings);
-            RunImpairmentReachabilityCheck(sourceDir, dllPath, findings);
-            RunBuildOutputCheck(sourceDir, findings);
+            // Core and RobotArm both ship to the headset as Unity packages and are held to the same rules (root CLAUDE.md
+            // invariants 1-7). RobotArm may name System.Net's value types (IPAddress: its discovery and mDNS codecs) and
+            // may reference Core; it may not open a socket. Registry and impairment checks are Core's alone.
+            foreach (Package package in Packages)
+            {
+                string sourceDir = Path.Combine(coreDir, package.Name);
+                string? dllPath = FindNewestBuiltDll(repoRoot, package.Name);
+                if (dllPath == null)
+                {
+                    Console.Error.WriteLine(
+                        $"audit: {package.Name}.dll not found under {Path.Combine(repoRoot, "build", package.Name, "bin")}. " +
+                        $"Run `dotnet build {package.Name}/{package.Name}.csproj` first.");
+                    return 66; // EX_NOINPUT
+                }
+
+                RunSourceTextChecks(sourceDir, package, findings);
+                RunAssemblyChecks(dllPath, package, findings);
+                RunProjectFileChecks(sourceDir, package.Name, findings);
+                RunBuildOutputCheck(sourceDir, findings);
+                if (package.Name == "Teleop.Core")
+                {
+                    RunRegistryCompletenessCheck(sourceDir, dllPath, findings);
+                    RunImpairmentReachabilityCheck(sourceDir, dllPath, findings);
+                }
+
+                scanned.Add($"{sourceDir} + {dllPath}");
+            }
 
             if (findings.Count == 0)
             {
-                Console.WriteLine($"audit: PASS -- no invariant violations found in {sourceDir} or {dllPath}.");
+                Console.WriteLine($"audit: PASS -- no invariant violations found in {string.Join("; ", scanned)}.");
                 return 0;
             }
 
@@ -91,15 +102,15 @@ namespace Teleop.Eval.Verification
             return null;
         }
 
-        private static string? FindNewestBuiltDll(string repoRoot)
+        private static string? FindNewestBuiltDll(string repoRoot, string name)
         {
-            string binDir = Path.Combine(repoRoot, "build", "Teleop.Core", "bin");
+            string binDir = Path.Combine(repoRoot, "build", name, "bin");
             if (!Directory.Exists(binDir))
             {
                 return null;
             }
 
-            string[] candidates = Directory.GetFiles(binDir, "Teleop.Core.dll", SearchOption.AllDirectories);
+            string[] candidates = Directory.GetFiles(binDir, name + ".dll", SearchOption.AllDirectories);
             if (candidates.Length == 0)
             {
                 return null;
@@ -108,20 +119,53 @@ namespace Teleop.Eval.Verification
             return candidates.OrderByDescending(File.GetLastWriteTimeUtc).First();
         }
 
+        /// <summary>A Unity-shipped package the audit holds to Core's invariants.</summary>
+        private sealed class Package
+        {
+            public Package(string name, string[] allowedReferences, Regex ioPattern)
+            {
+                Name = name;
+                AllowedReferences = allowedReferences;
+                IoPattern = ioPattern;
+            }
+
+            public string Name { get; }
+
+            /// <summary>Assembly-name prefixes the built DLL may reference, beyond the BCL.</summary>
+            public string[] AllowedReferences { get; }
+
+            public Regex IoPattern { get; }
+        }
+
+        private static readonly Package[] Packages =
+        {
+            new Package("Teleop.Core", Array.Empty<string>(),
+                new Regex(@"using\s+System\.IO|using\s+System\.Net|new\s+Thread|Task\.Run", RegexOptions.Compiled)),
+            new Package("Teleop.RobotArm", new[] { "Teleop.Core" },
+                new Regex(@"using\s+System\.IO|System\.Net\.Sockets\.(Socket|UdpClient|TcpClient|TcpListener)\b|\b(Socket|UdpClient|TcpClient|TcpListener)\s*\(|\bDns\.|new\s+Thread|Task\.Run", RegexOptions.Compiled)),
+        };
+
         // Category 1-6 below mirror scripts/hooks/core-guard.sh's own ordering (highest
         // consequence first), re-implemented in C# so `audit` runs under `dotnet run` alone.
-        private static void RunSourceTextChecks(string sourceDir, List<string> findings)
+        private static void RunSourceTextChecks(string sourceDir, Package package, List<string> findings)
         {
+            string where = package.Name == "Teleop.Core" ? "Core" : package.Name;
             var checks = new (string Description, Regex Pattern)[]
             {
-                ("UnityEngine referenced in Core", new Regex(@"using\s+UnityEngine|UnityEngine\.", RegexOptions.Compiled)),
-                ("wall-clock read in Core (use ITimeAuthority)", new Regex(@"DateTime\.(Now|UtcNow)|Environment\.TickCount|new\s+Stopwatch|Time\.time", RegexOptions.Compiled)),
-                ("I/O or threading in Core (belongs in the host)", new Regex(@"using\s+System\.IO|using\s+System\.Net|new\s+Thread|Task\.Run", RegexOptions.Compiled)),
-                ("unseeded randomness in Core", new Regex(@"new\s+Random\(|Guid\.NewGuid", RegexOptions.Compiled)),
-                ("reflection in Core (breaks IL2CPP AOT)", new Regex(@"Activator\.CreateInstance|Reflection\.Emit|Expression\.Compile|\.GetType\(\)\.GetMethod|\.GetMethod\(", RegexOptions.Compiled)),
-                ("C#10+ file-scoped namespace in Core (breaks Unity 2022.3 / C# 9)", new Regex(@"^\s*namespace\s+[A-Za-z0-9_.]+\s*;", RegexOptions.Compiled)),
-                ("C#10+ global using in Core (breaks Unity 2022.3 / C# 9)", new Regex(@"^\s*global\s+using\s", RegexOptions.Compiled)),
+                ($"UnityEngine referenced in {where}", new Regex(@"using\s+UnityEngine|UnityEngine\.", RegexOptions.Compiled)),
+                ($"wall-clock read in {where} (use ITimeAuthority)", new Regex(@"DateTime\.(Now|UtcNow)|Environment\.TickCount|new\s+Stopwatch|Time\.time", RegexOptions.Compiled)),
+                ($"I/O or threading in {where} (belongs in the host)", package.IoPattern),
+                ($"unseeded randomness in {where}", new Regex(@"new\s+Random\(|Guid\.NewGuid", RegexOptions.Compiled)),
+                ($"reflection in {where} (breaks IL2CPP AOT)", new Regex(@"Activator\.CreateInstance|Reflection\.Emit|Expression\.Compile|\.GetType\(\)\.GetMethod|\.GetMethod\(", RegexOptions.Compiled)),
+                ($"C#10+ file-scoped namespace in {where} (breaks Unity / C# 9)", new Regex(@"^\s*namespace\s+[A-Za-z0-9_.]+\s*;", RegexOptions.Compiled)),
+                ($"C#10+ global using in {where} (breaks Unity / C# 9)", new Regex(@"^\s*global\s+using\s", RegexOptions.Compiled)),
             };
+
+            if (!Directory.Exists(sourceDir))
+            {
+                findings.Add($"source folder {sourceDir} not found");
+                return;
+            }
 
             foreach (string file in Directory.GetFiles(sourceDir, "*.cs", SearchOption.AllDirectories))
             {
@@ -146,12 +190,12 @@ namespace Teleop.Eval.Verification
 
             // Collection expressions ("[1, 2]") and primary constructors on classes are C#10+/12
             // features rejected by the compiler itself under this project's <LangVersion>9.0</>
-            // -- a successful `dotnet build` of Teleop.Core.csproj is already authoritative
+            // -- a successful `dotnet build` of the csproj is already authoritative
             // evidence neither is present, and regexing for them risks false positives against
             // ordinary array-literal or method-declaration syntax. Not checked here.
         }
 
-        private static void RunAssemblyChecks(string dllPath, List<string> findings)
+        private static void RunAssemblyChecks(string dllPath, Package package, List<string> findings)
         {
             Assembly assembly;
             try
@@ -164,11 +208,12 @@ namespace Teleop.Eval.Verification
                 return;
             }
 
-            string[] allowedPrefixes = { "System", "netstandard", "mscorlib" };
+            string[] bcl = { "System", "netstandard", "mscorlib" };
             foreach (AssemblyName referenced in assembly.GetReferencedAssemblies())
             {
                 string name = referenced.Name ?? string.Empty;
-                if (!allowedPrefixes.Any(p => name.StartsWith(p, StringComparison.Ordinal)))
+                if (!bcl.Any(p => name.StartsWith(p, StringComparison.Ordinal)) &&
+                    !package.AllowedReferences.Any(a => string.Equals(name, a, StringComparison.Ordinal)))
                 {
                     findings.Add($"{Path.GetFileName(dllPath)} references non-BCL assembly '{name}' (zero NuGet dependencies invariant)");
                 }
@@ -195,9 +240,9 @@ namespace Teleop.Eval.Verification
             }
         }
 
-        private static void RunProjectFileChecks(string sourceDir, List<string> findings)
+        private static void RunProjectFileChecks(string sourceDir, string name, List<string> findings)
         {
-            string csprojPath = Path.Combine(sourceDir, "Teleop.Core.csproj");
+            string csprojPath = Path.Combine(sourceDir, name + ".csproj");
             if (!File.Exists(csprojPath))
             {
                 findings.Add($"{csprojPath} not found");
@@ -245,9 +290,9 @@ namespace Teleop.Eval.Verification
             string registriesPath = Path.Combine(sourceDir, "Registry", "Registries.cs");
             if (!File.Exists(registriesPath))
             {
-                // Not a failure: nothing in this project has more than one implementation to
-                // register yet. Reported for visibility, not as a finding.
-                Console.WriteLine("audit: registry-completeness: N/A -- Registries.cs not introduced yet.");
+                // A finding, not "N/A": every axis has registered implementations, so a missing file means a moved file or
+                // a wrong path, and passing then would be a gate that checks nothing (root CLAUDE.md invariant 10).
+                findings.Add($"registry-completeness: {registriesPath} not found -- nothing could be checked");
                 return;
             }
 
@@ -262,7 +307,7 @@ namespace Teleop.Eval.Verification
                 return;
             }
 
-            string registriesSource = File.ReadAllText(registriesPath);
+            string registriesSource = StripLineComments(File.ReadAllText(registriesPath));
 
             foreach (var (interfaceFullName, registryPropertyName) in RegistryCompletenessAxes)
             {
@@ -288,7 +333,7 @@ namespace Teleop.Eval.Verification
                         continue;
                     }
 
-                    if (!registriesSource.Contains(candidate.Name, StringComparison.Ordinal))
+                    if (!NamesType(registriesSource, candidate.Name))
                     {
                         findings.Add(
                             $"registry-completeness: {candidate.FullName} implements {interfaceFullName} but is not " +
@@ -320,7 +365,7 @@ namespace Teleop.Eval.Verification
             string catalogPath = Path.Combine(sourceDir, "Transport", "NetworkProfileCatalog.cs");
             if (!File.Exists(catalogPath))
             {
-                Console.WriteLine("audit: impairment-reachability: N/A -- NetworkProfileCatalog.cs not found.");
+                findings.Add($"impairment-reachability: {catalogPath} not found -- nothing could be checked");
                 return;
             }
 
@@ -338,11 +383,11 @@ namespace Teleop.Eval.Verification
             Type? impairmentInterface = assembly.GetType("Teleop.Core.Contracts.INetworkImpairment");
             if (impairmentInterface == null)
             {
-                Console.WriteLine("audit: impairment-reachability: N/A -- INetworkImpairment not present.");
+                findings.Add($"impairment-reachability: could not find Teleop.Core.Contracts.INetworkImpairment in {Path.GetFileName(dllPath)} -- has Contracts/ changed?");
                 return;
             }
 
-            string catalogSource = File.ReadAllText(catalogPath);
+            string catalogSource = StripLineComments(File.ReadAllText(catalogPath));
 
             foreach (Type candidate in assembly.GetTypes())
             {
@@ -356,7 +401,7 @@ namespace Teleop.Eval.Verification
                     continue;
                 }
 
-                if (!catalogSource.Contains(candidate.Name, StringComparison.Ordinal))
+                if (!NamesType(catalogSource, candidate.Name))
                 {
                     findings.Add(
                         $"impairment-reachability: {candidate.FullName} implements INetworkImpairment but is " +
@@ -364,6 +409,30 @@ namespace Teleop.Eval.Verification
                         "headless test will notice");
                 }
             }
+        }
+
+        /// <summary>
+        /// Whether <paramref name="source"/> names the type as a whole identifier: <c>Kalman</c> is not found inside
+        /// <c>KalmanPosePredictor</c>, and a generic type's metadata name (<c>HoldLast`1</c>) is matched by its source name.
+        /// </summary>
+        internal static bool NamesType(string source, string metadataName)
+        {
+            int tick = metadataName.IndexOf('`');
+            string name = tick < 0 ? metadataName : metadataName.Substring(0, tick);
+            return Regex.IsMatch(source, @"(?<![A-Za-z0-9_])" + Regex.Escape(name) + @"(?![A-Za-z0-9_])");
+        }
+
+        /// <summary>The source without its <c>//</c> comments, so a type named only in a comment does not count as used.</summary>
+        internal static string StripLineComments(string source)
+        {
+            var lines = source.Split('\n');
+            for (int i = 0; i < lines.Length; i++)
+            {
+                int at = lines[i].IndexOf("//", StringComparison.Ordinal);
+                if (at >= 0) lines[i] = lines[i].Substring(0, at);
+            }
+
+            return string.Join("\n", lines);
         }
 
         private static void RunBuildOutputCheck(string sourceDir, List<string> findings)

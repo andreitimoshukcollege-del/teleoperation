@@ -26,7 +26,7 @@ wall clock, do real file I/O, and take NuGet dependencies (`YamlDotNet`, so far)
 | Command | Status |
 |---|---|
 | `verify` | real — replays the golden `.tlog` twice, asserts byte-identical |
-| `audit` | real — invariant + registry-completeness check over the built assembly |
+| `audit` | real — invariant check over the built Core and RobotArm assemblies (both ship to the headset), plus registry completeness for Core; a missing input is a finding, never "N/A" |
 | `sweep` | real — runs an `experiments/*.yaml`, writes `results/<id>/<timestamp>/` |
 | `gen-golden` | real, not one of the five documented subcommands — regenerates the golden `.tlog` |
 | `gen-trace` | real, not one of the five documented subcommands — regenerates a network trace |

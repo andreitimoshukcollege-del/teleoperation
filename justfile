@@ -3478,7 +3478,7 @@ isaac-host scene="fr3-duo-bench" scene_seed="auto" feeds="true":
     )
     ssh -o ConnectTimeout=10 "{{gpu_host}}" "COMMIT='$commit' SCENE='{{scene}}' SCENE_SEED='{{scene_seed}}' FEEDS='{{feeds}}' bash -c $(printf '%q' "$remote")"
 
-# Let another account on the GPU machine read the headset's scenario takes (docs/adr/0033) and their LeRobot datasets (docs/adr/0036), once: ACLs, no sudo. It may enter (not list) our home and ~/isaacsim; read everything under ~/isaacsim/scenarios (the FR3 Duo's) and ~/isaacsim/scenarios-jetrover, and every take written there from now on (a default ACL); edit each scenarios.txt (the list the headset shows) and save into those folders (editors replace a file when they save); and read every dataset under ~/isaacsim/lerobot, written or rebuilt. Takes and datasets stay read-only to it. Run it again after deleting a folder
+# Let another account on the GPU machine read the headset's scenario takes (docs/adr/0033) and their LeRobot datasets (docs/adr/0036), once: ACLs, no sudo. It may enter (not list) our home and ~/isaacsim; read everything under ~/isaacsim/scenarios (the FR3 Duo's) and ~/isaacsim/scenarios-jetrover, and every take written there from now on (a default ACL); edit each scenarios.txt (the list the headset shows) and save into those folders (editors replace a file when they save); and read the real robot's takes copied into ~/isaacsim/scenarios-real and every dataset under ~/isaacsim/lerobot, written or rebuilt. Takes and datasets stay read-only to it. Run it again after deleting a folder
 [group('isaac')]
 isaac-share-scenarios user="seaqueue-cheng":
     #!/usr/bin/env bash
@@ -3497,12 +3497,15 @@ isaac-share-scenarios user="seaqueue-cheng":
         [ -f "$root/scenarios.txt" ] && setfacl -m "u:$U:rw" "$root/scenarios.txt"
         echo "[share] $U can read the takes in $root (<scenario>/<UTC>-take<n>/) and edit $root/scenarios.txt"
     done
-    # Their LeRobot datasets (docs/adr/0036): read only, including every dataset written or rebuilt later.
-    out=$HOME/isaacsim/lerobot
-    mkdir -p "$out"
-    setfacl -R -m "u:$U:rX" "$out"
-    find "$out" -type d -exec setfacl -d -m "u:$U:rX" {} +
-    echo "[share] $U can read the LeRobot datasets in $out (<robot>-<source>/<scenario>/)"
+    # The real robot's takes as copied here (docs/adr/0036 decision 7) and every LeRobot dataset: read only, including
+    # everything written, copied or rebuilt later. Its scenario list stays on the robot.
+    for ro in "$HOME/isaacsim/scenarios-real" "$HOME/isaacsim/lerobot"; do
+        mkdir -p "$ro"
+        setfacl -R -m "u:$U:rX" "$ro"
+        find "$ro" -type d -exec setfacl -d -m "u:$U:rX" {} +
+    done
+    echo "[share] $U can read the real robot's takes in $HOME/isaacsim/scenarios-real (<scenario>/<UTC>-take<n>/)"
+    echo "[share] $U can read the LeRobot datasets in $HOME/isaacsim/lerobot (<robot>-<source>/<scenario>/)"
     REMOTE
 
 # What the headset's RECORD button has recorded on the GPU machine (docs/adr/0033): the scenario list, and per scenario the takes kept (complete or not) and set aside, with their size

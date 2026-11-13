@@ -147,7 +147,7 @@ namespace Teleop.XR.Editor
 
         // ---- the rig ----------------------------------------------------------------------------
 
-        private static GameObject FindHandsRigPrefab()
+        internal static GameObject FindHandsRigPrefab()
         {
             string path = AssetDatabase.FindAssets("t:Prefab XR Origin Hands", new[] { "Assets/Samples" })
                 .Select(AssetDatabase.GUIDToAssetPath)
@@ -161,7 +161,7 @@ namespace Teleop.XR.Editor
             return AssetDatabase.LoadAssetAtPath<GameObject>(path);
         }
 
-        private static GameObject BuildHandsRig(GameObject prefab)
+        internal static GameObject BuildHandsRig(GameObject prefab)
         {
             var rig = (GameObject)PrefabUtility.InstantiatePrefab(prefab);
             rig.transform.SetPositionAndRotation(Vector3.zero, Quaternion.identity);
@@ -251,7 +251,7 @@ namespace Teleop.XR.Editor
             return target.transform;
         }
 
-        private static void BuildLighting()
+        internal static void BuildLighting()
         {
             var lightObject = new GameObject("Directional Light");
             var light = lightObject.AddComponent<Light>();

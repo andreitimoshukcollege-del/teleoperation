@@ -20,7 +20,8 @@ namespace Teleop.Eval.Tooling
     /// <para>The trainer (<c>trainer/</c>) runs on a GPU machine with no .NET, so it carries its own
     /// copies of <see cref="SeededRng"/>, the impairments and <see cref="EmulatedTransport"/>'s
     /// ordering, the profile catalog, <see cref="ClockSync"/> and <see cref="RelayReplayPredictor"/>,
-    /// and the golden file for a copy of <see cref="RelayReplayServoPredictor"/> to come.
+    /// and the golden files for copies of <see cref="RelayReplayServoPredictor"/>, <see cref="JointTrajectoryShaper"/>
+    /// and <see cref="FrankaReplayPredictor"/> (docs/adr/0027, the FR3's trainer simulator and prior) to come.
     /// These files are what Core actually produced for fixed inputs; the trainer's tests replay the
     /// same inputs and must match them exactly, and <c>TrainerGoldenFilesTests</c> fails here if Core
     /// stops reproducing them. Regenerate after any change to those classes, inspect the diff, and
@@ -43,6 +44,8 @@ namespace Teleop.Eval.Tooling
                 ("clocksync-v1.json", ClockSyncCases()),
                 ("relay-replay-v1.json", RelayReplay()),
                 ("relay-replay-servo.json", RelayReplayServo()),
+                ("joint-shaper-v1.json", JointShaper()),
+                ("franka-replay-v1.json", FrankaReplay()),
             };
         }
 
@@ -509,6 +512,235 @@ namespace Teleop.Eval.Tooling
             w.WriteNumber("deadbandDrops", gate.DeadbandDrops);
             w.WriteNumber("coalesced", gate.Coalesced);
             w.WriteEndObject();
+            w.WriteEndObject();
+        }
+
+        // ---------------------------------------------------------------- the trajectory shaper and franka-replay (docs/adr/0027)
+
+        private const long FrankaTps = 1_000_000_000L;
+
+        /// <summary>
+        /// Four FR3 v2 joints and a Franka Hand finger, with core/RobotProfiles/fr3-duo.json's numbers: joint 1
+        /// (wide and symmetric), joint 2 (the gentlest position-based deceleration), joint 4 (a range entirely
+        /// below zero) and joint 6 (entirely above), at Teleop.RobotArm's SerialChainShaping defaults.
+        /// </summary>
+        private static TrajectoryShaperConfig Fr3Shaper() => new TrajectoryShaperConfig(new[]
+        {
+            ShapedJointLimits.Joint(1, -2.9007400166666666, 2.9007400166666666, -2.9007400166666666, 2.9007400166666666, 2.62, 10, 5000, 6.0, 0.6520000381679385),
+            ShapedJointLimits.Joint(2, -1.8360900166666667, 1.8360900166666667, -1.8360900166666667, 1.8360900166666667, 2.62, 10, 5000, 2.585, 0.2499685851463105),
+            ShapedJointLimits.Joint(4, -3.077020016666667, -0.11693708333333333, -3.077020016666667, -0.11693708333333333, 2.62, 10, 5000, 4.0, 0.3542181933842238),
+            ShapedJointLimits.Joint(6, 0.43982265, 4.62163335, 0.43982265, 4.62163335, 4.18, 10, 5000, 5.5, 0.4884649342105264),
+            ShapedJointLimits.Finger(8, 0.2 / 0.04, 0.02),
+        });
+
+        /// <summary>
+        /// The shaper stepped on its own: per motor, a seeded stream of targets anywhere in (and past) its
+        /// range, held 1 to 400 steps each, from rest at the range's middle. Every step's state, in double.
+        /// </summary>
+        private static string JointShaper()
+        {
+            TrajectoryShaperConfig config = Fr3Shaper();
+            return Json(w =>
+            {
+                w.WriteString("about",
+                    "JointTrajectoryShaper steps on fixed target streams (TrainerGoldenBuilder). Each step is [target, q, v, a] for a " +
+                    "joint, [target, q, moving (0/1), to] for a finger, after the step; doubles as JSON numbers, which round-trip exactly.");
+                WriteShaperConfig(w, config);
+                w.WriteStartArray("cases");
+                for (int i = 0; i < config.Count; i++)
+                {
+                    ShapedJointLimits l = config[i];
+                    var rng = new SeededRng(31UL + (ulong)i);
+                    ShapedJointState state = ShapedJointState.AtRest(0.5 * (l.Lower + l.Upper));
+                    w.WriteStartObject();
+                    w.WriteNumber("motorId", l.MotorId);
+                    w.WriteNumber("start", state.Q);
+                    w.WriteStartArray("steps");
+                    int written = 0;
+                    while (written < 3000)
+                    {
+                        double target = l.Lower - 0.2 + (l.Upper - l.Lower + 0.4) * rng.NextDouble();
+                        int hold = 1 + (int)(400 * rng.NextDouble());
+                        for (int k = 0; k < hold && written < 3000; k++, written++)
+                        {
+                            JointTrajectoryShaper.Step(ref state, target, l, config);
+                            w.WriteStartArray();
+                            w.WriteNumberValue(target);
+                            w.WriteNumberValue(state.Q);
+                            if (l.IsFinger)
+                            {
+                                w.WriteNumberValue(state.Moving ? 1 : 0);
+                                w.WriteNumberValue(state.To);
+                            }
+                            else
+                            {
+                                w.WriteNumberValue(state.V);
+                                w.WriteNumberValue(state.A);
+                            }
+
+                            w.WriteEndArray();
+                        }
+                    }
+
+                    w.WriteEndArray();
+                    w.WriteEndObject();
+                }
+
+                w.WriteEndArray();
+            });
+        }
+
+        /// <summary>franka-replay on fixed call sequences, in relay-replay-v1.json's shape: a wide ring and a small one.</summary>
+        private static string FrankaReplay()
+        {
+            return Json(w =>
+            {
+                w.WriteString("about",
+                    "FrankaReplayPredictor outputs on fixed call sequences (TrainerGoldenBuilder). Motor 30 is not in the shaper, so it is held. " +
+                    "A sample is [motorId, float bits, sensed].");
+                WriteShaperConfig(w, Fr3Shaper());
+                w.WriteStartArray("cases");
+                WriteFrankaCase(w, "wide-ring", FrankaConfig(capacity: 96, horizonMs: 1000), seed: 41);
+                WriteFrankaCase(w, "small-ring", FrankaConfig(capacity: 6, horizonMs: 300), seed: 42);
+                w.WriteEndArray();
+            });
+        }
+
+        private static JointPredictorConfig FrankaConfig(int capacity, long horizonMs) => new JointPredictorConfig(
+            maxJoints: 8, commandHistoryCapacity: capacity, maxJointSpeedRadPerSec: 2f,
+            instantMotorIds: new byte[] { 8 }, maxHorizonTicks: horizonMs * FrankaTps / 1000L, ticksPerSecond: FrankaTps,
+            shaper: Fr3Shaper());
+
+        private static void WriteFrankaCase(Utf8JsonWriter w, string name, JointPredictorConfig config, ulong seed)
+        {
+            var predictor = new FrankaReplayPredictor(config);
+            byte[] motors = { 1, 2, 4, 6, 8, 30 };
+            double[] centre = { 0.0, 0.0, -1.6, 2.5, 0.5, 0.0 };
+            var rng = new SeededRng(seed);
+            var output = new JointSample[config.MaxJoints];
+            var targets = new JointSample[motors.Length];
+            var joints = new JointSample[motors.Length];
+            var position = new float[motors.Length];
+            var goal = new float[motors.Length];
+            for (int j = 0; j < motors.Length; j++) position[j] = goal[j] = (float)centre[j];
+
+            w.WriteStartObject();
+            w.WriteString("name", name);
+            w.WriteStartObject("config");
+            w.WriteNumber("maxJoints", config.MaxJoints);
+            w.WriteNumber("commandHistoryCapacity", config.CommandHistoryCapacity);
+            w.WriteNumber("maxHorizonTicks", config.MaxHorizonTicks);
+            w.WriteNumber("ticksPerSecond", config.TicksPerSecond);
+            w.WriteEndObject();
+            w.WriteStartArray("calls");
+
+            long tps = config.TicksPerSecond, ms = tps / 1000, start = 5_000L * tps;
+            long nextCommand = start, nextState = start + 3 * ms, nextPredict = start + 1 * ms, nextGoal = start, lastSensed = 0;
+            for (long now = start; now < start + 8_000 * ms; now += ms)
+            {
+                if (now == start + 4_000 * ms)
+                {
+                    predictor.Reset();
+                    w.WriteStartObject();
+                    w.WriteString("op", "reset");
+                    w.WriteEndObject();
+                }
+
+                if (now >= nextGoal)
+                {
+                    for (int j = 0; j < motors.Length; j++) goal[j] = (float)(centre[j] + (motors[j] == 8 ? 0.5 : 1.0) * (rng.NextDouble() * 2.0 - 1.0));
+                    nextGoal = now + (long)((300 + 1_200 * rng.NextDouble()) * ms);
+                }
+
+                if (now >= nextCommand)
+                {
+                    // 48 Hz, easing toward the goal; now and then an older command, which must be rejected.
+                    for (int j = 0; j < motors.Length; j++)
+                    {
+                        position[j] += 0.1f * (goal[j] - position[j]);
+                        targets[j] = new JointSample(motors[j], position[j], false);
+                    }
+
+                    long effective = now + 4 * ms;
+                    if (rng.NextDouble() < 0.02) effective -= 60 * ms;
+                    predictor.ObserveCommand(effective, targets, 0f);
+                    WriteCommand(w, effective, 0f, targets);
+                    nextCommand = now + 21 * ms;
+                }
+
+                bool gap = now > start + 2_000 * ms && now < start + 2_600 * ms; // 600 ms with no state
+                if (now >= nextState && !gap)
+                {
+                    long sensed = rng.NextDouble() < 0.8 ? now - 3 * ms : lastSensed;
+                    if (sensed == 0) sensed = now - 3 * ms;
+                    if (rng.NextDouble() < 0.03) sensed -= 90 * ms; // an out-of-order frame
+                    for (int j = 0; j < motors.Length; j++)
+                    {
+                        float lagged = position[j] - (float)(0.02 * (rng.NextDouble() - 0.5));
+                        joints[j] = new JointSample(motors[j], lagged, true);
+                    }
+
+                    predictor.ObserveState(sensed, joints);
+                    WriteState(w, sensed, joints);
+                    lastSensed = sensed;
+                    nextState = now + 20 * ms;
+                }
+
+                if (now >= nextPredict)
+                {
+                    long target = now + (long)((rng.NextDouble() * 120.0 - 20.0) * ms);
+                    bool ok = predictor.TryPredict(target, output, out int count);
+                    PredictorDiagnostics d = predictor.Diagnostics;
+                    w.WriteStartObject();
+                    w.WriteString("op", "predict");
+                    w.WriteNumber("t", target);
+                    w.WriteBoolean("ok", ok);
+                    WriteSamples(w, "out", output, ok ? count : 0);
+                    w.WriteNumber("horizon", d.HorizonTicks);
+                    w.WriteNumber("accepted", d.AcceptedObservations);
+                    w.WriteNumber("rejected", d.RejectedObservations);
+                    w.WriteEndObject();
+                    nextPredict = now + 11 * ms;
+                }
+            }
+
+            w.WriteEndArray();
+            w.WriteEndObject();
+        }
+
+        /// <summary>A shaper's settings and every motor's limits, all doubles as JSON numbers.</summary>
+        private static void WriteShaperConfig(Utf8JsonWriter w, TrajectoryShaperConfig c)
+        {
+            w.WriteStartObject("shaper");
+            w.WriteNumber("stepSeconds", c.StepSeconds);
+            w.WriteNumber("velocityScale", c.VelocityScale);
+            w.WriteNumber("accelerationScale", c.AccelerationScale);
+            w.WriteNumber("jerkScale", c.JerkScale);
+            w.WriteNumber("brakingScale", c.BrakingScale);
+            w.WriteNumber("settleSeconds", c.SettleSeconds);
+            w.WriteNumber("positionMargin", c.PositionMargin);
+            w.WriteStartArray("motors");
+            for (int i = 0; i < c.Count; i++)
+            {
+                ShapedJointLimits l = c[i];
+                w.WriteStartObject();
+                w.WriteNumber("motorId", l.MotorId);
+                w.WriteBoolean("isFinger", l.IsFinger);
+                w.WriteNumber("lower", l.Lower);
+                w.WriteNumber("upper", l.Upper);
+                w.WriteNumber("softLower", l.SoftLower);
+                w.WriteNumber("softUpper", l.SoftUpper);
+                w.WriteNumber("velocity", l.Velocity);
+                w.WriteNumber("acceleration", l.Acceleration);
+                w.WriteNumber("jerk", l.Jerk);
+                w.WriteNumber("positionBasedDeceleration", l.PositionBasedDeceleration);
+                w.WriteNumber("positionBasedVelocityOffset", l.PositionBasedVelocityOffset);
+                w.WriteNumber("fingerSpeed", l.FingerSpeed);
+                w.WriteNumber("fingerDeadband", l.FingerDeadband);
+                w.WriteEndObject();
+            }
+
+            w.WriteEndArray();
             w.WriteEndObject();
         }
 

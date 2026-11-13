@@ -47,6 +47,9 @@ namespace Teleop.RobotHost.Recording
         public const string AutoMarkerName = ".active-auto";
 
         public const string AutoLabel = "auto";
+
+        /// <summary>A scenario take's <c>label</c> is this and the scenario's name; its <c>conditions.motion</c> is <c>scenario:&lt;name&gt;</c>.</summary>
+        public const string ScenarioLabelPrefix = "scenario-";
         private const string Writer = "robothost";
         private const string Clock = "CLOCK_MONOTONIC";
 
@@ -122,7 +125,7 @@ namespace Teleop.RobotHost.Recording
             _auto = auto;
             _utcNow = utcNow ?? (() => DateTime.UtcNow);
             _log = log ?? Console.WriteLine;
-            _finalizer = new SessionFinalizer(auto?.DriverWaitSeconds ?? new AutoRecordOptions().DriverWaitSeconds, _utcNow, _log);
+            _finalizer = new SessionFinalizer(auto?.DriverWaitSeconds ?? new AutoRecordOptions().DriverWaitSeconds, _utcNow, _log, auto?.Writers);
             _thread = new Thread(Run) { IsBackground = true, Name = "session-recorder" };
             _thread.Start();
         }
@@ -380,11 +383,23 @@ namespace Teleop.RobotHost.Recording
                     return;
                 }
 
-                string root = AutoRoot;
-                string baseId = spec.StartedUtc.ToUniversalTime().ToString("yyyyMMdd'T'HHmmss'Z'", CultureInfo.InvariantCulture) + "-" + AutoLabel;
-                string id = baseId;
-                for (int n = 2; System.IO.Directory.Exists(Path.Combine(root, id)); n++) id = baseId + "-" + n.ToString(CultureInfo.InvariantCulture);
-                directory = Path.Combine(root, id);
+                string id;
+                if (spec.Take != null)
+                {
+                    // A scenario take (docs/adr/0033): its directory was chosen by the scenario recorder, and must be new.
+                    directory = spec.Take.Directory;
+                    id = Path.GetFileName(directory.TrimEnd('/', '\\'));
+                    if (System.IO.Directory.Exists(directory)) throw new IOException($"{directory} already exists");
+                }
+                else
+                {
+                    string root = AutoRoot;
+                    string baseId = spec.StartedUtc.ToUniversalTime().ToString("yyyyMMdd'T'HHmmss'Z'", CultureInfo.InvariantCulture) + "-" + AutoLabel;
+                    id = baseId;
+                    for (int n = 2; System.IO.Directory.Exists(Path.Combine(root, id)); n++) id = baseId + "-" + n.ToString(CultureInfo.InvariantCulture);
+                    directory = Path.Combine(root, id);
+                }
+
                 System.IO.Directory.CreateDirectory(directory);
                 WriteSessionJson(directory, id, spec);
 
@@ -404,7 +419,9 @@ namespace Teleop.RobotHost.Recording
                 }
 
                 OpenLog(directory, generation, auto: true);
-                _log($"[record] automatic session {id} into {directory} ({spec.Reason})");
+                _log(spec.Take != null
+                    ? $"[record] scenario '{spec.Take.Scenario}' take {spec.Take.Take} into {directory}"
+                    : $"[record] automatic session {id} into {directory} ({spec.Reason})");
             }
             catch (Exception e) when (e is IOException || e is UnauthorizedAccessException || e is ArgumentException)
             {
@@ -447,8 +464,12 @@ namespace Teleop.RobotHost.Recording
             network["addedDelayMs"] = null;
 
             string? profileSha = null;
-            var notes = new StringBuilder("opened automatically by RobotHost (docs/adr/0023 decision 4): " + spec.Reason +
-                "; load and any headset-side network disturbance are unknown; the operator is the headset at " + spec.Sender);
+            var notes = new StringBuilder(spec.Take != null
+                ? $"scenario '{spec.Take.Scenario}' take {spec.Take.Take}, recorded with the headset's RECORD button (docs/adr/0033)" +
+                  (spec.Take.Description.Length > 0 ? ": " + spec.Take.Description : "") +
+                  "; load and any headset-side network disturbance are unknown; the operator is the headset at " + spec.Sender
+                : "opened automatically by RobotHost (docs/adr/0023 decision 4): " + spec.Reason +
+                  "; load and any headset-side network disturbance are unknown; the operator is the headset at " + spec.Sender);
             if (o.ProfilePath != null && File.Exists(o.ProfilePath))
             {
                 byte[] profile = File.ReadAllBytes(o.ProfilePath);
@@ -462,11 +483,11 @@ namespace Teleop.RobotHost.Recording
 
             var meta = new JsonObject
             {
-                ["format"] = "jetrover-session",
-                ["version"] = 1,
+                ["format"] = o.SessionFormat,
+                ["version"] = o.SessionVersion,
                 ["id"] = id,
-                ["source"] = "robot",
-                ["label"] = AutoLabel,
+                ["source"] = o.Source,
+                ["label"] = spec.Take != null ? ScenarioLabelPrefix + spec.Take.Scenario : AutoLabel,
                 ["startedUtc"] = spec.StartedUtc.ToUniversalTime().ToString("yyyy-MM-dd'T'HH:mm:ss'Z'", CultureInfo.InvariantCulture),
                 ["conditions"] = new JsonObject
                 {
@@ -474,7 +495,7 @@ namespace Teleop.RobotHost.Recording
                     ["speedSliderRadPerSec"] = "unknown",
                     ["load"] = new JsonObject { ["kind"] = "unknown", ["payloadGrams"] = null },
                     ["network"] = network,
-                    ["motion"] = AutoLabel,
+                    ["motion"] = spec.Take != null ? ScenarioLabelPrefix.TrimEnd('-') + ":" + spec.Take.Scenario : AutoLabel,
                     // Only a headset opens one (docs/adr/0023 decision 4, 2026-10-26): its address.
                     ["operator"] = "headset " + spec.Sender,
                 },
@@ -486,6 +507,33 @@ namespace Teleop.RobotHost.Recording
                 ["robotProfileSha256"] = profileSha,
                 ["notes"] = notes.ToString(),
             };
+            // Session v2 names its profile (trainer/contract/SESSION_FORMAT.md); v1's keys are left exactly as they were.
+            if (o.ProfileName != null) meta["robotProfile"] = o.ProfileName;
+            // The world (docs/adr/0031 amendment 2): the scene file, copied and hashed, and the seed of the first layout.
+            if (o.ScenePath != null && File.Exists(o.ScenePath))
+            {
+                byte[] scene = File.ReadAllBytes(o.ScenePath);
+                File.WriteAllBytes(Path.Combine(directory, "scene.json"), scene);
+                meta["scene"] = new JsonObject
+                {
+                    ["name"] = o.SceneName,
+                    ["file"] = "scene.json",
+                    ["sha256"] = Convert.ToHexString(SHA256.HashData(scene)).ToLowerInvariant(),
+                    ["seed"] = o.SceneSeed,
+                };
+            }
+
+            if (spec.Take != null)
+            {
+                meta["scenario"] = new JsonObject
+                {
+                    ["name"] = spec.Take.Scenario,
+                    ["take"] = spec.Take.Take,
+                    ["description"] = spec.Take.Description,
+                };
+            }
+
+            if (o.ArmServerKind != null) meta["armServer"] = new JsonObject { ["kind"] = o.ArmServerKind, ["description"] = o.ArmServerDescription };
             SessionFinalizer.WriteJsonAtomically(Path.Combine(directory, "session.json"), meta);
         }
 

@@ -35,16 +35,32 @@ namespace Teleop.Eval
                     return MoveArmCommand.Run(args);
                 case "build-profile":
                     return BuildProfileCommand.Run(args);
+                case "import-urdf":
+                    return ImportUrdf.ImportUrdfCommand.Run(args);
+                case "fit-capsules":
+                    return ImportUrdf.FitCapsulesCommand.Run(args);
                 case "catalog":
                     return Tooling.CatalogCommand.Run();
                 case "joint-predict-bench":
                     return JointBench.JointPredictBenchCommand.Run(args);
+                case "headset-replay":
+                    return JointBench.HeadsetReplayCommand.Run(args);
                 case "joint-probe":
                     return JointProbe.JointProbeCommand.Run(args);
                 case "arm-power":
                     return ArmPower.ArmPowerCommand.Run(args);
                 case "joint-drive":
                     return JointDrive.JointDriveCommand.Run(args);
+                case "chain-drive":
+                    return JointDrive.ChainDriveCommand.Run(args);
+                case "chain-teleop-probe":
+                    return JointDrive.ChainTeleopProbeCommand.Run(args);
+                case "chain-ik-stress":
+                    return IkStress.IkStressCommand.Run(args);
+                case "world-probe":
+                    return JointProbe.WorldProbeCommand.Run(args);
+                case "udp-relay":
+                    return Net.UdpRelayCommand.Run(args);
                 case "discover-robot":
                     return DiscoverRobotCommand.Run(args);
                 case "replay":
@@ -55,7 +71,7 @@ namespace Teleop.Eval
                 default:
                     Console.Error.WriteLine(
                         "usage: verify | audit | sweep | replay | compare | gen-golden | gen-trace | gen-trainer-golden | " +
-                        "clocksync-check | move-arm | build-profile | catalog | joint-predict-bench | joint-probe | arm-power | joint-drive | discover-robot");
+                        "clocksync-check | move-arm | build-profile | import-urdf | fit-capsules | catalog | joint-predict-bench | joint-probe | arm-power | joint-drive | chain-drive | chain-teleop-probe | chain-ik-stress | discover-robot");
                     return 64;   // EX_USAGE
             }
         }

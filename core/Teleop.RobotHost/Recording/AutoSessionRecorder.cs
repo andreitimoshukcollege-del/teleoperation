@@ -105,6 +105,27 @@ namespace Teleop.RobotHost.Recording
         /// <summary>How many sessions it has opened since start-up.</summary>
         public int SessionsOpened { get; private set; }
 
+        private bool _held;
+
+        /// <summary>
+        /// While true, a scenario take is recording (docs/adr/0033): this recorder opens nothing, and setting it closes an open
+        /// automatic session first. Commands still count as commands, so once released the next automatic session opens after
+        /// the usual idle gap, not on the very next command.
+        /// </summary>
+        public bool Held
+        {
+            get => _held;
+            set
+            {
+                if (value == _held) return;
+                _held = value;
+                if (!value) return;
+                Refresh();
+                if (_generation != 0) Close("a scenario take starts (the headset's RECORD button)", reopen: false);
+                _reopen = false;
+            }
+        }
+
         /// <summary>
         /// The joint-state stream's subscriber is now <paramref name="endpoint"/> (call on a change),
         /// or lapsed (null: its keepalives stopped). A different subscriber during a session splits it.
@@ -169,7 +190,7 @@ namespace Teleop.RobotHost.Recording
             }
 
             _loggedNotHeadset = false;
-            if (_generation == 0)
+            if (_generation == 0 && !_held)
             {
                 bool idleGap = !_haveCommand || nowTicks - _lastCommandTicks >= _idleTicks;
                 if (idleGap || _reopen)

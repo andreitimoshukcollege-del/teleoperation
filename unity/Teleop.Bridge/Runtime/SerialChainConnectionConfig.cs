@@ -1,0 +1,111 @@
+using System;
+
+// C# 9: block-scoped namespace only, like the rest of unity/.
+namespace Teleop.Bridge
+{
+    /// <summary>
+    /// The FR3 Duo operator's settings (docs/adr/0029), loaded by <see cref="ConfigLoader"/> from
+    /// <c>persistentDataPath/fr3_connection.json</c>, else <c>Resources/fr3_connection.json</c>. Plain data, like
+    /// <see cref="JetRoverArmConfig"/>: every value is passed to <c>Teleop.RobotArm</c>'s operator, which decides what
+    /// it means. The robot profile and its collision model are not here: they are generated files
+    /// (<c>Resources/fr3_duo_profile.json</c>, <c>fr3_duo_collision.json</c>), copies a test holds to
+    /// <c>core/RobotProfiles/</c>.
+    /// </summary>
+    [Serializable]
+    public sealed class SerialChainConnectionConfig
+    {
+        /// <summary>The serial-chain RobotHost (<c>just fr3-sim-host</c>): an address or a host name. 127.0.0.1 is the PC itself, which is right for Direct Preview.</summary>
+        public string RemoteHost = "127.0.0.1";
+
+        public int JointRemotePort = 6002;
+        public int JointLocalPort = 6012;
+        public float CommandRateHz = 48f;
+        public double MaxHorizonMs = 300.0;
+
+        /// <summary>
+        /// <c>absolute</c> (the default, docs/adr/0029 amendment): the robot anchored to your body, so where your hand is and
+        /// which way your palm faces is where the gripper goes and faces. <c>relative</c>: the clutch, which moves the
+        /// gripper by how far your hand moves from where you grabbed.
+        /// </summary>
+        public string HandMapping = "absolute";
+
+        /// <summary>
+        /// With the absolute mapping, where the gripper goes (docs/adr/0029 amendment 9). <c>relative</c> (the default, the user's
+        /// choice, 2026-11-06): when an arm locks it stays where it is and then moves by how far the hand moves; it still faces
+        /// the way the palm faces. <c>absolute</c>: where the hand is relative to your body is where the gripper goes.
+        /// </summary>
+        public string HandPosition = "relative";
+
+        /// <summary>Hand motion → tool motion; 1 is one to one.</summary>
+        public double PositionScale = 1.0;
+
+        /// <summary>
+        /// <c>one-euro</c> (the default, docs/adr/0029 amendment 7): a still hand's tracking jitter is filtered out before it
+        /// reaches the arms, and a moving hand barely lags. <c>off</c>: the hands go raw (docs/adr/0016 §5).
+        /// </summary>
+        public string HandFilter = "one-euro";
+
+        /// <summary>The hand filter's cutoff for a still hand (Hz), how fast it rises with the hand's speed (Hz per m/s) and turning (Hz per rad/s), and its speed estimate's cutoff (Hz).</summary>
+        public double HandFilterMinCutoffHz = 1.0;
+        public double HandFilterPositionBeta = 80.0;
+        public double HandFilterRotationBeta = 16.0;
+        public double HandFilterDerivativeCutoffHz = 1.0;
+
+        /// <summary>The absolute mapping's neutral hand, from the headset at recentre (m): forward, to each hand's side, down. There the arms are at their neutral tools.</summary>
+        public double NeutralForward = 0.30;
+        public double NeutralSide = 0.20;
+        public double NeutralDown = 0.40;
+
+        /// <summary>Frames a grab takes to slide the arm to where the hand maps (absolute mapping): about a second at 90 Hz.</summary>
+        public int ApproachSteps = 90;
+
+        /// <summary>The most a joint's command moves per frame (radians); a larger IK step is shortened.</summary>
+        public double MaxStepRadians = 0.1;
+
+        /// <summary>
+        /// <c>middle-tap</c> (the default, docs/adr/0029 amendment 10): tap the thumb on the middle fingertip to lock that arm
+        /// onto the hand, and tap again to unlock it. <c>toggle</c>: fold the middle, ring and little fingers twice quickly
+        /// instead (docs/adr/0029 amendment). <c>hold</c>: the arm follows only while the curl is held.
+        /// </summary>
+        public string GrabMode = "middle-tap";
+
+        /// <summary>The middle tap: thumb and middle fingertips touching below this gap (m), apart again above the release gap.</summary>
+        public double MiddleTapTouchMeters = 0.015;
+        public double MiddleTapReleaseMeters = 0.03;
+
+        /// <summary>A tap counts only while the thumb and index are at least this far apart (m), so closing the gripper never locks or unlocks.</summary>
+        public double MiddleTapIndexApartMeters = 0.035;
+
+        /// <summary>How long the fingertips must touch (s) before the tap counts: shorter is tracking flicker.</summary>
+        public double MiddleTapMinSeconds = 0.03;
+
+        /// <summary>The toggle's clicks: a curl held between these two lengths (s), the second starting within the longer of the first's end.</summary>
+        public double MinPressSeconds = 0.04;
+        public double DoubleClickSeconds = 0.6;
+
+        /// <summary>The grab (middle, ring and little fingers curled) holds below this curl ratio and lets go above the release one.</summary>
+        public float GrabEngageBelowCurl = 1.25f;
+        public float GrabReleaseAboveCurl = 1.55f;
+
+        /// <summary>The thumb-index gap that is the gripper fully open, and fully closed (m).</summary>
+        public float PinchOpenMeters = 0.08f;
+        public float PinchClosedMeters = 0.015f;
+
+        /// <summary>False: nothing is ever sent but keepalives; the twin follows the robot and the markers your hands.</summary>
+        public bool AllowMotion = true;
+
+        /// <summary>The console's network sliders never go past these (ms of delay plus jitter, % loss), as the JetRover's.</summary>
+        public float DisturbanceMaxDelayMs = 2000f;
+        public float DisturbanceMaxLossPercent = 50f;
+
+        public int ClockSyncHistoryCapacity = 32;
+        public float ClockSyncSmoothingAlpha = 0.2f;
+        public double MaxAcceptableRttMs = 2000.0;
+        public double OutlierRttMultiple = 3.0;
+        public int MinSamplesBeforeTrusted = 3;
+
+        /// <summary>The predictors the twin can draw with; <see cref="JointPredictorActive"/> names the one drawing at launch.</summary>
+        public JointPredictorPresetData[] JointPredictorPresets = new JointPredictorPresetData[0];
+        public string JointPredictorActive = "franka-replay";
+    }
+}

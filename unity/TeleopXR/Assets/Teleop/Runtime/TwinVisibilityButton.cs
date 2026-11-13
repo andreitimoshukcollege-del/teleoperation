@@ -1,3 +1,4 @@
+using Teleop.Bridge;
 using TMPro;
 using Unity.XR.CoreUtils;
 using UnityEngine;
@@ -15,7 +16,8 @@ namespace Teleop.XR
     {
         public enum Arm { Predicted, Commanded, Measured }
 
-        [SerializeField] private TwinArmsDriver arms;
+        [Tooltip("The twin whose arms this shows or hides: the JetRover's TwinArmsDriver or the FR3 Duo's bridge (ITwinVisibility).")]
+        [SerializeField] private MonoBehaviour arms;
         [SerializeField] private Arm arm;
         [SerializeField] private XROrigin origin;
         [SerializeField] private Renderer cap;
@@ -27,20 +29,22 @@ namespace Teleop.XR
         private int _shown = -1;
         private MaterialPropertyBlock _block;
 
+        private ITwinVisibility Arms => arms as ITwinVisibility;
+
         private bool Visible
         {
-            get => arm == Arm.Predicted ? arms.ShowPredicted : arm == Arm.Measured ? arms.ShowMeasured : arms.ShowCommanded;
+            get => arm == Arm.Predicted ? Arms.ShowPredicted : arm == Arm.Measured ? Arms.ShowMeasured : Arms.ShowCommanded;
             set
             {
-                if (arm == Arm.Predicted) arms.ShowPredicted = value;
-                else if (arm == Arm.Measured) arms.ShowMeasured = value;
-                else arms.ShowCommanded = value;
+                if (arm == Arm.Predicted) Arms.ShowPredicted = value;
+                else if (arm == Arm.Measured) Arms.ShowMeasured = value;
+                else Arms.ShowCommanded = value;
             }
         }
 
         private void Update()
         {
-            if (arms == null || cap == null)
+            if (Arms == null || cap == null)
             {
                 return;
             }

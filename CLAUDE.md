@@ -15,13 +15,23 @@ gripper has changed how it accelerates. It is meant to combine with the latency 
 replace it: those axes decide when a sample is shown and how its correction is absorbed, while a
 model of the world improves what is shown at all.
 
-Treat this paragraph as intent and nothing more. **Nothing in this system models the environment
-today.** The robot reports only its own body: the 57-byte wrist pose, and the joint-state stream
+Treat this paragraph as intent and nothing more. **No real robot's environment is modelled today.**
+The robot reports only its own body: the 57-byte wrist pose, and the joint-state stream
 (ADR 0018). Its camera streams colour video to the headset (ADR 0014), but only for the operator's
 eyes: nothing interprets the image, no depth is streamed, there is no contact signal, and `Plant/`
-is kinematic by deliberate choice. Like `view synthesis` in the sentence above, this has no
-`Contracts/` interface, no folder and no ADR. Giving it any of those is an architecture change under "Where new code goes", so the
-ADR comes first. Do not write code against this paragraph.
+is kinematic by deliberate choice. **The one exception is simulated:** the FR3 Duo in Isaac Sim has
+a world beside it (ADR 0031 amendments 2 and 4, ADR 0032): a work table and obstacles from a scene
+file (`core/Scenes/`), placed by RobotHost from seeded layouts, colliding with the arms in Isaac
+(movable ones fall and can be knocked over there),
+drawn on the headset and recorded with each session. Isaac also renders four cameras of it (two
+third-person, one on each wrist), shows the wrist cameras live on the lab's screens, and records every
+camera's colour, depth and object masks with each session as training data (ADR 0032 amendment 3);
+nothing on the headset interprets them. That is a source of
+data with objects in it, not a model of them. No predictor sees an object, and the headset's IK and RobotHost's refusal check
+ignore them on purpose. A predictor that reasons about the world, like `view synthesis` in the
+sentence above, has no `Contracts/` interface, no folder and no ADR. Giving it any of those is an
+architecture change under "Where new code goes", so the ADR comes first. Do not write code against
+this paragraph.
 
 ## The one law
 
@@ -50,6 +60,8 @@ capabilities to Core by **implementing interfaces that Core declares** (`IRobotP
 | `unity/Teleop.Bridge/` | both Unity projects | shared UPM package: the only Unity code that touches Core; real I/O |
 | `core/Teleop.RobotArm/`, `core/Teleop.RobotHost/`, `core/Teleop.CameraHost/` | `dotnet` | arm kinematics and wire formats; what runs on the robot's Jetson |
 | `robot/ros/` | colcon (ROS 2), on the Jetson | the servo board driver and relay (ADR 0019); independent of the builds above; `just deploy-ros` |
+| `robot/isaac/` | Isaac Sim's Python, on the GPU machine | the FR3 Duo in Isaac Sim behind RobotHost (ADR 0031); its copies of the arm-server wire and the shaper are golden-pinned; `just isaac-host`, `just isaac-bridge-test` |
+| `robot/lerobot/` | its own venv, on the GPU machine | headset takes into the lab's LeRobot v3 datasets (ADR 0036); reads sessions by `trainer/contract/SESSION_FORMAT.md`, imports nothing from `trainer/`; `just lerobot-watch-start` |
 | `analysis/` | nothing | Python; reads `results/` |
 | `trainer/` | its own Python env, on the GPU machine | the arm simulator and model training (ADR 0021); imports nothing from the repo, packed to one file by `just pack-trainer`; exports `.onnx` |
 | `experiments/` | — | one YAML per experiment |

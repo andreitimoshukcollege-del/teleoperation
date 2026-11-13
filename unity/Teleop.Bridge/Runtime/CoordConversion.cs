@@ -23,6 +23,10 @@ namespace Teleop.Bridge
         public static Quaternion ToUnity(this CoreQuat q) =>
             new Quaternion(q.Y, -q.Z, -q.X, q.W);
 
+        /// <summary>A box's full extents (ROS x, y, z) as Unity's (x, y, z): which side is which, never negative.</summary>
+        public static Vector3 ExtentsToUnity(this CoreVec size) =>
+            new Vector3(Mathf.Abs(size.Y), Mathf.Abs(size.Z), Mathf.Abs(size.X));
+
         // ---- Unity -> ROS ----
 
         public static CoreVec ToCore(this Vector3 v) => new CoreVec(v.z, -v.x, v.y);

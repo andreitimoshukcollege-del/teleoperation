@@ -33,6 +33,17 @@ namespace Teleop.Bridge
         // when nothing answers. False uses RemoteHost alone, as before. An empty RemoteHostName skips
         // mDNS. DiscoveryPort is RobotHost's --discovery-port.
         public bool DiscoverRobot = true;
+
+        // Record the link's raw stamps to persistentDataPath/linktraces (docs/adr/0035 N1): about 2.5 KB/s, the newest 200
+        // runs kept. just pull-galaxy-traces fetches them.
+        public bool RecordLinkTrace = true;
+
+        // The network forecast the learned model is told (docs/adr/0035 N3): a level of the trainer's that the headset can
+        // make from what it observes, "persistence" (frame delays, sequence gaps, keepalive round trips) or "rtt-half"
+        // (ClockSync's RTT/2), issued every 100 ms; "absent" leaves the model's network block at zeros, as before N3. The
+        // learned preset's commands then take effect at send + the forecast's uplink median; every other preset's at
+        // send + RTT/2, as always.
+        public string NetworkForecast = "persistence";
         public string RobotTailscaleHost = "100.112.90.72";
         public string RemoteHostName = "jetrover-sinrg.local";
         public int DiscoveryPort = 6005;

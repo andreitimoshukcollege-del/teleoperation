@@ -1,0 +1,483 @@
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Text;
+using Teleop.Bridge;
+using Teleop.RobotArm.Collision;
+using Teleop.RobotArm.Kinematics;
+using Teleop.RobotArm.Types;
+using Teleop.RobotArm.World;
+using UnityEditor;
+using UnityEditor.SceneManagement;
+using UnityEngine;
+using UnityEngine.SceneManagement;
+using UnityEngine.XR.Interaction.Toolkit.Inputs;
+using CoreQuat = System.Numerics.Quaternion;
+using CoreVec = System.Numerics.Vector3;
+using Object = UnityEngine.Object;
+
+// C# 9: block-scoped namespace only, like the rest of unity/.
+namespace Teleop.XR.Editor
+{
+    /// <summary>
+    /// <b>Teleop → XR → Check FR3 Duo Scene</b> (or <c>just unity-check-fr3-xr</c>): fails on anything in
+    /// <c>Fr3DuoXR.unity</c> that would let a hand move an arm it should not, or draw a twin that is not the robot
+    /// (docs/adr/0029). <c>just build-galaxy-fr3</c> runs it first and refuses to build on a failure.
+    /// <list type="bullet">
+    /// <item>No missing scripts; hand smoothing inactive; no controllers in the modality manager.</item>
+    /// <item><see cref="SerialChainOperatorBridge"/> wired (root, twin, two markers), motion <b>off at launch</b>.</item>
+    /// <item><see cref="DuoHandDriver"/> present, enabled, wired; power and pause (<see cref="MotionToggleButton"/>) one each and the
+    /// headset guard, wired to this bridge, as in the JetRover scene; the twin's switches, the console and its sliders
+    /// wired (docs/adr/0029 amendment); and no arm-speed slider (the FR3's shaper sets its own speed).</item>
+    /// <item>The resources parse: the profile, the collision model (for that profile), the config (a grab that cannot
+    /// chatter, a gripper that is not inverted, a position scale in (0, 2], a step limit in (0, 0.2]); every learned
+    /// preset's model loads and runs.</item>
+    /// <item><b>The twin is the profile:</b> at 25 seeded poses inside the soft limits, each arm's
+    /// <c>*_hand_tcp</c> in the twin is within 1 mm and 0.1° of <see cref="SerialChainKinematics.Tool"/>.</item>
+    /// </list>
+    /// </summary>
+    public static class XrFr3SceneCheck
+    {
+        [MenuItem("Teleop/XR/Check FR3 Duo Scene")]
+        public static void RunFromMenu()
+        {
+            if (!EditorSceneManager.SaveCurrentModifiedScenesIfUserWantsTo()) return;
+            Report(Check());
+        }
+
+        /// <summary>Batch entry point: <c>-executeMethod Teleop.XR.Editor.XrFr3SceneCheck.Run</c>.</summary>
+        public static void Run()
+        {
+            List<string> problems;
+            try
+            {
+                problems = Check();
+            }
+            catch (Exception e)
+            {
+                Debug.LogError($"[fr3-check] could not run: {e}");
+                EditorApplication.Exit(2);
+                return;
+            }
+
+            Report(problems);
+            EditorApplication.Exit(problems.Count == 0 ? 0 : 1);
+        }
+
+        public static List<string> Check()
+        {
+            var problems = new List<string>();
+            CheckResources(problems);
+            string path = XrFr3SceneBuilder.ScenePath;
+            if (AssetDatabase.LoadAssetAtPath<SceneAsset>(path) == null)
+            {
+                problems.Add($"{path}: not found (run `just unity-scene-fr3-xr`)");
+                return problems;
+            }
+
+            Scene scene = EditorSceneManager.OpenScene(path, OpenSceneMode.Single);
+            foreach (GameObject root in scene.GetRootGameObjects())
+            {
+                foreach (Transform t in root.GetComponentsInChildren<Transform>(true))
+                {
+                    int missing = GameObjectUtility.GetMonoBehavioursWithMissingScriptCount(t.gameObject);
+                    if (missing > 0) problems.Add($"{missing} missing script(s) on '{t.name}'");
+                    foreach (MonoBehaviour behaviour in t.GetComponents<MonoBehaviour>())
+                    {
+                        if (behaviour != null && behaviour.GetType().Name == XrSceneCheck.HandSmoothingTypeName && behaviour.isActiveAndEnabled)
+                            problems.Add($"hand smoothing is active on '{t.name}': it filters the hand that moves the robot (ADR 0016 §5)");
+                    }
+                }
+            }
+
+            XRInputModalityManager modality = Object.FindAnyObjectByType<XRInputModalityManager>(FindObjectsInactive.Include);
+            if (modality != null && (modality.leftController != null || modality.rightController != null))
+                problems.Add("the modality manager has controllers: the scene is hands only");
+
+            var bridge = Object.FindAnyObjectByType<SerialChainOperatorBridge>(FindObjectsInactive.Include);
+            if (bridge == null)
+            {
+                problems.Add("no SerialChainOperatorBridge");
+                return problems;
+            }
+
+            var so = new SerializedObject(bridge);
+            RequireReference(so, "robotRoot", problems);
+            RequireReference(so, "twin", problems);
+            SerializedProperty markers = so.FindProperty("targetMarkers");
+            if (markers == null || markers.arraySize != 2 || Enumerable.Range(0, 2).Any(i => markers.GetArrayElementAtIndex(i).objectReferenceValue == null))
+                problems.Add("SerialChainOperatorBridge.targetMarkers must hold two markers (left, right)");
+            if (so.FindProperty("motionEnabledAtStart")?.boolValue != false)
+                problems.Add("SerialChainOperatorBridge.motionEnabledAtStart is on: the robot must not move at launch, before anyone presses the button");
+            if (!bridge.enabled) problems.Add("SerialChainOperatorBridge is disabled");
+            if (bridge.GetComponent<HandTrackingSession>() == null) problems.Add("no HandTrackingSession next to SerialChainOperatorBridge");
+
+            DuoHandDriver[] drivers = Object.FindObjectsByType<DuoHandDriver>(FindObjectsInactive.Include, FindObjectsSortMode.None);
+            if (drivers.Length != 1) problems.Add($"{drivers.Length} DuoHandDriver(s): exactly one drives the arms");
+            foreach (DuoHandDriver d in drivers)
+            {
+                if (!d.isActiveAndEnabled && d.gameObject.activeInHierarchy) problems.Add("DuoHandDriver is disabled");
+                var dso = new SerializedObject(d);
+                RequireReference(dso, "bridge", problems);
+                RequireReference(dso, "origin", problems);
+            }
+
+            // Power and pause, as the JetRover's (MotionToggleButton): exactly one of each, wired to this bridge.
+            MotionToggleButton[] toggles = Object.FindObjectsByType<MotionToggleButton>(FindObjectsInactive.Include, FindObjectsSortMode.None);
+            foreach (MotionToggleButton.Role role in new[] { MotionToggleButton.Role.Power, MotionToggleButton.Role.Pause })
+            {
+                MotionToggleButton[] matching = toggles.Where(t => t.ButtonRole == role).ToArray();
+                if (matching.Length != 1) problems.Add($"{matching.Length} {role} button(s): exactly one {(role == MotionToggleButton.Role.Power ? "starts and stops the robot" : "pauses it")}");
+                foreach (MotionToggleButton toggle in matching)
+                {
+                    var tso = new SerializedObject(toggle);
+                    foreach (string field in new[] { "bridge", "origin", "cap" }) RequireReference(tso, field, problems);
+                    if (tso.FindProperty("bridge").objectReferenceValue != bridge) problems.Add($"the {role} button is not wired to this scene's bridge");
+                    if (!toggle.isActiveAndEnabled) problems.Add($"the {role} button is disabled or inactive");
+                }
+            }
+
+            // RECENTRE (optional, the absolute mapping's): wired if present.
+            foreach (Fr3MotionButton b in Object.FindObjectsByType<Fr3MotionButton>(FindObjectsInactive.Include, FindObjectsSortMode.None))
+            {
+                if (b.ButtonRole == Fr3MotionButton.Role.Power) problems.Add("an Fr3MotionButton has the Power role: power is MotionToggleButton's, as in the JetRover scene");
+                var bso = new SerializedObject(b);
+                foreach (string field in new[] { "bridge", "origin", "cap" }) RequireReference(bso, field, problems);
+            }
+
+            // The headset guard: taking the headset off turns the robot off.
+            var guard = Object.FindAnyObjectByType<HeadsetRemovalGuard>(FindObjectsInactive.Include);
+            if (guard == null) problems.Add("no HeadsetRemovalGuard: taking the headset off would leave the robot on");
+            else if (new SerializedObject(guard).FindProperty("bridge").objectReferenceValue != bridge) problems.Add("HeadsetRemovalGuard.bridge is not this scene's bridge");
+            else if (!guard.isActiveAndEnabled) problems.Add("HeadsetRemovalGuard is disabled or inactive");
+
+            // The twin's switches, the console, the sliders: the JetRover's, wired to this bridge (not safety settings; they move nothing).
+            TwinVisibilityButton[] switches = Object.FindObjectsByType<TwinVisibilityButton>(FindObjectsInactive.Include, FindObjectsSortMode.None);
+            if (switches.Length != 3) problems.Add($"{switches.Length} twin switch(es), expected PREDICTED, COMMANDED and MEASURED");
+            foreach (TwinVisibilityButton sw in switches)
+            {
+                if (new SerializedObject(sw).FindProperty("arms").objectReferenceValue != bridge) problems.Add($"twin switch '{sw.name}' is not wired to this scene's bridge");
+            }
+
+            var console = Object.FindAnyObjectByType<OperatorConsole>(FindObjectsInactive.Include);
+            if (console == null) problems.Add("no OperatorConsole");
+            else if (new SerializedObject(console).FindProperty("bridge").objectReferenceValue != bridge) problems.Add("OperatorConsole.bridge is not this scene's bridge");
+            SpeedSlider[] sliders = Object.FindObjectsByType<SpeedSlider>(FindObjectsInactive.Include, FindObjectsSortMode.None);
+            foreach (string name in new[] { "NetworkLag", "NetworkJitter", "NetworkLoss", XrControlSetup.DelaySliderName })
+            {
+                SpeedSlider slider = sliders.FirstOrDefault(x => x.name == name);
+                if (slider == null) problems.Add($"no {name} slider");
+                else if (new SerializedObject(slider).FindProperty("bridge").objectReferenceValue != bridge) problems.Add($"the {name} slider is not wired to this scene's bridge");
+            }
+
+            if (sliders.Any(x => x.name == XrControlSetup.SpeedSliderName)) problems.Add("an arm-speed slider: the FR3's shaper sets its own speed, so it would move nothing");
+            foreach (string field in new[] { "commandedTwin", "measuredTwin" }) RequireReference(so, field, problems);
+
+            var twin = so.FindProperty("twin")?.objectReferenceValue as SerialChainArmRig;
+            var robotRoot = so.FindProperty("robotRoot")?.objectReferenceValue as Transform;
+            if (twin != null && robotRoot != null) CheckTwin(twin, robotRoot, problems);
+            if (robotRoot != null) CheckWorld(robotRoot, problems);
+            CheckFeeds(problems);
+            CheckRecording(problems);
+            return problems;
+        }
+
+        /// <summary>
+        /// The world against the scene file (docs/adr/0031 amendment 2): every surface the file shows is in the scene within
+        /// 1 mm, and nothing under the world root simulates (Isaac does the physics).
+        /// </summary>
+        private static void CheckWorld(Transform robotRoot, List<string> problems)
+        {
+            WorldScene world;
+            try
+            {
+                world = XrFr3WorldSetup.LoadScene();
+            }
+            catch (Exception)
+            {
+                return; // CheckResources reported it
+            }
+
+            GameObject root = robotRoot.gameObject.scene.GetRootGameObjects().FirstOrDefault(g => g.name == XrFr3WorldSetup.RootName);
+            if (root == null)
+            {
+                problems.Add($"no '{XrFr3WorldSetup.RootName}' root: run `just unity-world-fr3-xr` (the work table comes from the scene file)");
+                return;
+            }
+
+            if (root.GetComponentsInChildren<Collider>(true).Length > 0 || root.GetComponentsInChildren<Rigidbody>(true).Length > 0)
+                problems.Add($"'{XrFr3WorldSetup.RootName}' has colliders or rigidbodies: the headset simulates nothing (Isaac does)");
+            // The world twin: one, wired to this bridge, holding every scene object by id.
+            SerialChainWorldTwin[] twins = root.GetComponentsInChildren<SerialChainWorldTwin>(true);
+            if (twins.Length != 1) problems.Add($"{twins.Length} SerialChainWorldTwin(s) under '{XrFr3WorldSetup.RootName}': run `just unity-world-fr3-xr`");
+            foreach (SerialChainWorldTwin twin in twins)
+            {
+                var tso = new SerializedObject(twin);
+                if (tso.FindProperty("bridge").objectReferenceValue == null) problems.Add("SerialChainWorldTwin.bridge is not set");
+                SerializedProperty ids = tso.FindProperty("ids"), objs = tso.FindProperty("objects");
+                var have = Enumerable.Range(0, ids.arraySize).Select(i => ids.GetArrayElementAtIndex(i).intValue).ToArray();
+                if (!have.SequenceEqual(world.Objects.Select(o => (int)o.Id)) || objs.arraySize != have.Length ||
+                    Enumerable.Range(0, objs.arraySize).Any(i => objs.GetArrayElementAtIndex(i).objectReferenceValue == null))
+                    problems.Add("the world twin's objects are not the scene file's: run `just unity-world-fr3-xr`");
+            }
+
+            if (root.transform.Find(XrFr3WorldSetup.NewLayoutButtonName)?.GetComponent<Fr3MotionButton>() == null)
+                problems.Add("no NEW LAYOUT button under the world root: run `just unity-world-fr3-xr`");
+            Fr3MotionButton edit = root.transform.Find(XrFr3WorldSetup.EditObjectsButtonName)?.GetComponent<Fr3MotionButton>();
+            if (edit == null || edit.ButtonRole != Fr3MotionButton.Role.EditObjects)
+                problems.Add("no EDIT OBJECTS button under the world root: run `just unity-world-fr3-xr`");
+            foreach ((string name, Fr3MotionButton.Role role) in new[] { (XrFr3WorldSetup.SizeDownButtonName, Fr3MotionButton.Role.SizeDown), (XrFr3WorldSetup.SizeUpButtonName, Fr3MotionButton.Role.SizeUp) })
+            {
+                Fr3MotionButton b = root.transform.Find(name)?.GetComponent<Fr3MotionButton>();
+                if (b == null || b.ButtonRole != role) problems.Add($"no {role} button under the world root: run `just unity-world-fr3-xr`");
+            }
+            foreach (SerialChainWorldTwin twin in twins)
+            {
+                SerializedProperty ghosts = new SerializedObject(twin).FindProperty("ghosts");
+                if (ghosts.arraySize != world.Objects.Length ||
+                    Enumerable.Range(0, ghosts.arraySize).Any(i => !(ghosts.GetArrayElementAtIndex(i).objectReferenceValue is Transform g) || g.GetComponent<Collider>() != null))
+                    problems.Add("the world twin has no see-through ghost for each object: run `just unity-world-fr3-xr`");
+            }
+
+            foreach (SceneSurface s in world.Surfaces.Where(x => x.Display == SurfaceDisplay.Show))
+            {
+                Transform t = root.transform.Find(XrFr3WorldSetup.SurfaceObjectName(s.Id));
+                if (t == null)
+                {
+                    problems.Add($"surface '{s.Id}' is in the scene file but not in the scene: run `just unity-world-fr3-xr`");
+                    continue;
+                }
+
+                Vector3 centre = robotRoot.TransformPoint(new CoreVec((float)s.CenterX, (float)s.CenterY, (float)s.CenterZ).ToUnity());
+                Vector3 size = new CoreVec((float)s.SizeX, (float)s.SizeY, (float)s.SizeZ).ExtentsToUnity();
+                float off = Vector3.Distance(t.position, centre), grown = (t.lossyScale - size).magnitude;
+                if (off > 0.001f || grown > 0.001f || Quaternion.Angle(t.rotation, robotRoot.rotation) > 0.1f)
+                    problems.Add($"surface '{s.Id}' is {off * 1000:F1} mm and {grown * 1000:F1} mm (size) from the scene file's: run `just unity-world-fr3-xr`");
+            }
+        }
+
+        /// <summary>The scenario recording buttons (docs/adr/0033): each role once, wired to the bridge.</summary>
+        private static void CheckRecording(List<string> problems)
+        {
+            GameObject group = SceneManager.GetActiveScene().GetRootGameObjects().FirstOrDefault(g => g.name == XrFr3SceneBuilder.RecordGroupName);
+            if (group == null)
+            {
+                problems.Add($"no '{XrFr3SceneBuilder.RecordGroupName}' (the RECORD buttons): rebuild the scene (`just unity-scene-fr3-xr true`)");
+                return;
+            }
+
+            Fr3HandPointer[] pointers = Object.FindObjectsByType<Fr3HandPointer>(FindObjectsInactive.Include, FindObjectsSortMode.None);
+            if (pointers.Length != 1) problems.Add($"{pointers.Length} Fr3HandPointer(s); the scene has one (pointing while the robot is off)");
+            foreach (Fr3HandPointer p in pointers)
+            {
+                var pso = new SerializedObject(p);
+                if (pso.FindProperty("bridge").objectReferenceValue == null || pso.FindProperty("origin").objectReferenceValue == null)
+                    problems.Add("Fr3HandPointer is not wired to the bridge and the XR Origin");
+                SerializedProperty movers = pso.FindProperty("displays");
+                if (movers.arraySize != 4 || Enumerable.Range(0, movers.arraySize).Any(i => movers.GetArrayElementAtIndex(i).objectReferenceValue == null))
+                    problems.Add("Fr3HandPointer does not move the four camera displays: run `just unity-world-fr3-xr`");
+            }
+
+            Fr3MotionButton[] buttons = group.GetComponentsInChildren<Fr3MotionButton>(true);
+            foreach (Fr3MotionButton.Role role in new[] { Fr3MotionButton.Role.Record, Fr3MotionButton.Role.ScenarioPrevious, Fr3MotionButton.Role.ScenarioNext, Fr3MotionButton.Role.DiscardLast })
+            {
+                Fr3MotionButton b = buttons.SingleOrDefault(x => x.ButtonRole == role);
+                if (b == null) problems.Add($"no {role} button under '{XrFr3SceneBuilder.RecordGroupName}'");
+                else if (new SerializedObject(b).FindProperty("bridge").objectReferenceValue == null) problems.Add($"the {role} button has no bridge");
+            }
+        }
+
+        /// <summary>
+        /// The four Isaac feeds (docs/adr/0032 decision 3, amendment 3): each a <see cref="CameraFeedBridge"/> asking the
+        /// serial-chain host on its own ports, showing on a display's screen it does not move, with that display's status strip
+        /// reading it. Not safety settings: a feed moves nothing.
+        /// </summary>
+        private static void CheckFeeds(List<string> problems)
+        {
+            var feeds = Object.FindObjectsByType<CameraFeedBridge>(FindObjectsInactive.Include, FindObjectsSortMode.None);
+            var bars = Object.FindObjectsByType<CameraStatusBar>(FindObjectsInactive.Include, FindObjectsSortMode.None);
+            foreach ((string name, int port, int local) in new[]
+            {
+                (XrFr3WorldSetup.RightFeedName, XrFr3WorldSetup.RightFeedPort, XrFr3WorldSetup.RightFeedLocalPort),
+                (XrFr3WorldSetup.LeftFeedName, XrFr3WorldSetup.LeftFeedPort, XrFr3WorldSetup.LeftFeedLocalPort),
+                (XrFr3WorldSetup.ThirdLeftFeedName, XrFr3WorldSetup.ThirdLeftFeedPort, XrFr3WorldSetup.ThirdLeftFeedLocalPort),
+                (XrFr3WorldSetup.ThirdRightFeedName, XrFr3WorldSetup.ThirdRightFeedPort, XrFr3WorldSetup.ThirdRightFeedLocalPort),
+            })
+            {
+                CameraFeedBridge feed = feeds.FirstOrDefault(f => f.FeedName == name);
+                if (feed == null)
+                {
+                    problems.Add($"no '{name}' camera feed: run `just unity-world-fr3-xr`");
+                    continue;
+                }
+
+                var so = new SerializedObject(feed);
+                if (so.FindProperty("addressSource").enumValueIndex != (int)CameraFeedBridge.AddressSource.SerialChain)
+                    problems.Add($"the '{name}' feed asks the JetRover, not the FR3's host");
+                if (so.FindProperty("robotPort").intValue != port || so.FindProperty("localPort").intValue != local)
+                    problems.Add($"the '{name}' feed is not on ports {port} (sender) and {local} (here)");
+                if (so.FindProperty("armRig").objectReferenceValue != null)
+                    problems.Add($"the '{name}' feed has an arm rig set: it would move its screen out of its display");
+                if (!(so.FindProperty("panel").objectReferenceValue is Renderer panel) || panel.name != "Screen")
+                    problems.Add($"the '{name}' feed shows on no display's screen");
+                if (!bars.Any(b => new SerializedObject(b).FindProperty("feed").objectReferenceValue == feed))
+                    problems.Add($"no display's status strip reads the '{name}' feed");
+            }
+
+            if (feeds.Length != 4) problems.Add($"{feeds.Length} camera feeds; the FR3 lab has four (the wrists and the two third-person cameras)");
+        }
+
+        private static void CheckResources(List<string> problems)
+        {
+            SerialChainProfile profile = null;
+            try
+            {
+                profile = Fr3DuoModel.LoadProfile();
+                if (profile.Validate() is string bad) problems.Add($"fr3_duo_profile: {bad}");
+            }
+            catch (Exception e)
+            {
+                problems.Add($"fr3_duo_profile does not load: {e.Message}");
+            }
+
+            var collisionAsset = Resources.Load<TextAsset>("fr3_duo_collision");
+            if (collisionAsset == null)
+            {
+                problems.Add("Resources/fr3_duo_collision.json is missing");
+            }
+            else
+            {
+                try
+                {
+                    SerialChainCollisionModel model = JsonUtility.FromJson<SerialChainCollisionDocument>(collisionAsset.text).ToModel();
+                    if (profile != null && model.Profile != profile.Name) problems.Add($"the collision model is for '{model.Profile}', not '{profile.Name}'");
+                }
+                catch (Exception e)
+                {
+                    problems.Add($"fr3_duo_collision does not load: {e.Message}");
+                }
+            }
+
+            // The scene file (docs/adr/0031 amendment 2): it parses, it is this robot's, and its bench is the lab's bench.
+            try
+            {
+                WorldScene world = XrFr3WorldSetup.LoadScene();
+                if (profile != null && world.RobotProfile != profile.Name) problems.Add($"the scene file is for '{world.RobotProfile}', not '{profile.Name}'");
+                SceneSurface bench = world.Bench;
+                if (bench == null)
+                {
+                    problems.Add("the scene file has no bench: the lab's bench is where the robot stands");
+                }
+                else
+                {
+                    // The robot's root is on the bench top, RobotDepth in from its near edge, centred across it.
+                    float far = XrFr3SceneBuilder.BenchDepth - XrFr3SceneBuilder.RobotDepth;
+                    float[] want = { -XrFr3SceneBuilder.RobotDepth, far, -LabLayout.BenchHalfWidth, LabLayout.BenchHalfWidth, 0f };
+                    double[] got = { bench.XMin, bench.XMax, bench.YMin, bench.YMax, bench.Top };
+                    if (Enumerable.Range(0, 5).Any(i => Math.Abs(got[i] - want[i]) > 0.001))
+                        problems.Add($"the scene file's bench ({string.Join(", ", got.Select(v => v.ToString("F3")))}) is not the lab's ({string.Join(", ", want.Select(v => v.ToString("F3")))}): x from, x to, y from, y to, top");
+                }
+            }
+            catch (Exception e)
+            {
+                problems.Add($"Resources/{XrFr3WorldSetup.SceneResource}.json does not load: {e.Message}");
+            }
+
+            var configAsset = Resources.Load<TextAsset>("fr3_connection");
+            SerialChainConnectionConfig config = configAsset != null ? JsonUtility.FromJson<SerialChainConnectionConfig>(configAsset.text) : null;
+            if (config == null)
+            {
+                problems.Add("Resources/fr3_connection.json is missing or does not parse");
+                return;
+            }
+
+            if (!(config.GrabEngageBelowCurl > 0f) || !(config.GrabReleaseAboveCurl > config.GrabEngageBelowCurl))
+                problems.Add($"fr3_connection: the grab must engage below its release curl ({config.GrabEngageBelowCurl} / {config.GrabReleaseAboveCurl}), or it chatters");
+            if (!(config.PinchOpenMeters > config.PinchClosedMeters) || config.PinchClosedMeters < 0f)
+                problems.Add($"fr3_connection: the gripper's open pinch must be wider than its closed one ({config.PinchOpenMeters} / {config.PinchClosedMeters})");
+            if (!(config.PositionScale > 0) || config.PositionScale > 2)
+                problems.Add($"fr3_connection: PositionScale {config.PositionScale} is outside (0, 2]");
+            if (!(config.MaxStepRadians > 0) || config.MaxStepRadians > 0.2)
+                problems.Add($"fr3_connection: MaxStepRadians {config.MaxStepRadians} is outside (0, 0.2]");
+            foreach (JointPredictorPresetData p in config.JointPredictorPresets ?? new JointPredictorPresetData[0])
+            {
+                if (p == null || p.Predictor != "learned" || !p.Enabled) continue;
+                if (!LearnedModels.Check(p.Model, out string modelId, out string error)) problems.Add($"fr3 preset '{p.Label}': {error}");
+                else Debug.Log($"[fr3-check] preset '{p.Label}' runs {modelId}");
+            }
+        }
+
+        /// <summary>The twin's tool frames against Core's forward kinematics, at seeded poses.</summary>
+        private static void CheckTwin(SerialChainArmRig twin, Transform robotRoot, List<string> problems)
+        {
+            SerialChainProfile profile = Fr3DuoModel.LoadProfile();
+            int moving = profile.Arms.Sum(a => a.Joints.Length + (a.HasGripper && a.Gripper.SecondFingerMimics ? 2 : a.HasGripper ? 1 : 0));
+            if (twin.Joints.Length != moving) problems.Add($"the twin has {twin.Joints.Length} moving joints; the profile {moving}");
+
+            var random = new System.Random(29);
+            double worstMm = 0, worstDeg = 0;
+            for (int trial = 0; trial < 25; trial++)
+            {
+                foreach (ChainArm arm in profile.Arms)
+                {
+                    var q = new double[arm.Joints.Length];
+                    for (int j = 0; j < q.Length; j++)
+                    {
+                        ChainJointLimits l = arm.Joints[j].Limits;
+                        q[j] = l.SoftLower + random.NextDouble() * (l.SoftUpper - l.SoftLower);
+                        int index = Array.FindIndex(twin.Joints, rj => rj.motorId == arm.Joints[j].MotorId);
+                        if (index < 0)
+                        {
+                            problems.Add($"the twin has no joint for motor {arm.Joints[j].MotorId}");
+                            return;
+                        }
+
+                        twin.SetJoint(index, (float)q[j]);
+                    }
+
+                    Transform tcp = twin.GetComponentsInChildren<Transform>(true).FirstOrDefault(t => t.name == $"{arm.Name}_fr3v2_hand_tcp");
+                    if (tcp == null)
+                    {
+                        problems.Add($"the twin has no {arm.Name}_fr3v2_hand_tcp");
+                        return;
+                    }
+
+                    RigidTransform tool = SerialChainKinematics.Tool(arm, q);
+                    Vector3 expected = new CoreVec((float)tool.X, (float)tool.Y, (float)tool.Z).ToUnity();
+                    Quaternion expectedRotation = new CoreQuat((float)tool.Qx, (float)tool.Qy, (float)tool.Qz, (float)tool.Qw).ToUnity();
+                    Vector3 actual = robotRoot.InverseTransformPoint(tcp.position);
+                    Quaternion actualRotation = Quaternion.Inverse(robotRoot.rotation) * tcp.rotation;
+                    worstMm = Math.Max(worstMm, 1000.0 * Vector3.Distance(expected, actual));
+                    worstDeg = Math.Max(worstDeg, Quaternion.Angle(expectedRotation, actualRotation));
+                }
+            }
+
+            // Back to zero, so the saved scene is not left at the last sample.
+            for (int i = 0; i < twin.Joints.Length; i++) twin.SetJoint(i, 0f);
+            if (worstMm > 1.0 || worstDeg > 0.1)
+                problems.Add($"the twin is not the profile: its tool frames are up to {worstMm:0.###} mm and {worstDeg:0.###}° from Core's FK");
+            else
+                Debug.Log($"[fr3-check] twin matches Core's FK: worst {worstMm:0.####} mm, {worstDeg:0.####}° over 25 poses per arm");
+        }
+
+        private static void RequireReference(SerializedObject so, string field, List<string> problems)
+        {
+            SerializedProperty property = so.FindProperty(field);
+            if (property == null) problems.Add($"{so.targetObject.GetType().Name} has no serialized field '{field}'");
+            else if (property.objectReferenceValue == null) problems.Add($"{so.targetObject.GetType().Name}.{field} is not assigned");
+        }
+
+        private static void Report(List<string> problems)
+        {
+            if (problems.Count == 0)
+            {
+                Debug.Log("[fr3-check] PASS: Fr3DuoXR has no missing scripts, intact wiring, motion off at launch, and a twin that is the profile");
+                return;
+            }
+
+            var message = new StringBuilder($"[fr3-check] FAIL: {problems.Count} problem(s)");
+            foreach (string problem in problems) message.Append("\n  - ").Append(problem);
+            Debug.LogError(message.ToString());
+        }
+    }
+}

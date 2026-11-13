@@ -13,8 +13,8 @@ namespace Teleop.Core.Prediction
     /// side changes both and regenerates the golden (<c>armpred golden-learned</c>).
     ///
     /// <para>Per predicted joint (motors 1-5, then the gripper, 10), 251 values; then 114 arm-wide values,
-    /// the last 101 the network block, which stays zero until a network model exists (the
-    /// <c>absent</c> forecast level). Values are computed in double and stored as float, as the
+    /// the last 101 the network block: the newest forecast the host passed on (<see cref="ObserveForecast"/>, docs/adr/0035
+    /// N3: <c>Forecast/NetworkForecastBlock</c> and its age), or zeros with none (the <c>absent</c> forecast level). Values are computed in double and stored as float, as the
     /// Python does; angles are in model units (radians; the gripper in servo radians of travel, its
     /// 0..1 fraction / <see cref="GripperFractionPerRadian"/>).</para>
     ///
@@ -85,6 +85,11 @@ namespace Teleop.Core.Prediction
         private readonly bool[] _hasNow = new bool[JointCount], _hasBefore = new bool[JointCount];
         private readonly int[] _inForce = new int[PathPoints];
 
+        // The newest network forecast the host passed on (docs/adr/0035 N3), encoded; its age is added at TryBuild.
+        private readonly float[] _forecastBlock = new float[NetworkFeatures - 1];
+        private bool _hasForecast;
+        private long _forecastIssued;
+
         public LearnedJointWindow(JointPredictorConfig config)
         {
             if (config == null) throw new ArgumentNullException(nameof(config));
@@ -111,6 +116,26 @@ namespace Teleop.Core.Prediction
             _hasFresh = false;
             _lastFresh = 0;
             Array.Clear(_hasNewest, 0, JointCount);
+            ClearForecast();
+        }
+
+        /// <summary>
+        /// The host's newest network forecast (layout.py's <c>observe_forecast</c>): the network block carries it, and its
+        /// age at each target, from now on.
+        /// </summary>
+        public void ObserveForecast(NetworkForecast forecast)
+        {
+            Forecast.NetworkForecastBlock.Encode(forecast, _forecastBlock);
+            _forecastIssued = forecast.IssuedTicks;
+            _hasForecast = true;
+        }
+
+        /// <summary>No forecast: the network block is zeros, every flag 0 (the <c>absent</c> level).</summary>
+        public void ClearForecast()
+        {
+            _hasForecast = false;
+            _forecastIssued = 0;
+            Array.Clear(_forecastBlock, 0, _forecastBlock.Length);
         }
 
         public static int RowOf(byte motor)
@@ -347,6 +372,13 @@ namespace Teleop.Core.Prediction
                 }
 
                 arm[a + 6] = (float)(Math.Min(_cmdCount, WindowFull) / (double)WindowFull);
+            }
+
+            if (_hasForecast)
+            {
+                Span<float> network = arm.Slice(BaseArmFeatures, NetworkFeatures);
+                _forecastBlock.AsSpan().CopyTo(network);
+                network[NetworkFeatures - 1] = (float)((targetTicks - _forecastIssued) / tps / TimeScaleSeconds);
             }
 
             valid = staleness <= FallbackStalenessSeconds;

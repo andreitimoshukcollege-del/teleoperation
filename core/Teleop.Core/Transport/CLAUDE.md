@@ -51,7 +51,8 @@ not a widening of a struct plus an edit at every construction site.
 
 Requirements:
 - All impairment driven by injected seeded RNG. Same seed + same set + same input => same output.
-- Trace replay is sample by sample, no resampling (`TraceDelayImpairment`).
+- Trace replay is sample by sample, no resampling (`TraceDelayImpairment`; `TimedTraceImpairment` replays a `.trace`
+  v2 by each datagram's send time, so a stall keeps its length whatever the stream's rate, docs/adr/0035 N4).
 - Loss must model **bursts**, not just a Bernoulli rate. Real links lose runs of packets, and
   burst length is what breaks jitter buffers (`GilbertElliottLossImpairment`).
 
@@ -60,8 +61,9 @@ All three are met.
 ### The impairment set
 
 `Impairments/`: `FixedDelay` (0 draws/datagram), `UniformJitter` (1), `GilbertElliottLoss` (1, send
-stage), `Reorder` (1), `TraceDelay` (0). Each owns its parameters, validates them in its own
-constructor, and owns one RNG substream.
+stage), `Reorder` (1), `TraceDelay` (0), `TimedTrace` (0; loss at send and delay at drain, both from the sample
+at `DatagramFate.SendTicks`). Each owns its parameters, validates them in its own constructor, and owns one RNG
+substream.
 
 **Two stages, because a datagram has two.** Loss is decided in `Send`, so a lost datagram never
 reaches the wrapped transport — a real link does not put a dropped packet on the wire, and

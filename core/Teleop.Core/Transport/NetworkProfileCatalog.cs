@@ -379,6 +379,13 @@ namespace Teleop.Core.Transport
             new TraceDelayImpairment(delayTraceTicks);
 
         /// <summary>
+        /// A recorded network replayed by time, with its losses (<see cref="TimedTraceImpairment"/>, docs/adr/0035 N4): a
+        /// <c>.trace</c> version 2's samples in the host's ticks. Constructed here, like every impairment, so IL2CPP keeps it.
+        /// </summary>
+        public static INetworkImpairment CreateTimedTrace(long[] delayTicks, bool[] lost, long intervalTicks) =>
+            new TimedTraceImpairment(delayTicks, lost, intervalTicks);
+
+        /// <summary>
         /// Name to impairment set, for a host that wants a frozen benchmark link and has no use for
         /// the <see cref="NetworkProfile"/> record itself. Resolves exactly the names
         /// <see cref="TryResolveParametric"/> does, and rejects the rest identically.

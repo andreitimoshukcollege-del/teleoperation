@@ -1,0 +1,129 @@
+{
+  "about": "The canonical parse of core/Scenes/fr3-duo-bench.json (docs/adr/0031 amendment 2), written by SceneDocumentTests.",
+  "scene": "fr3-duo-bench",
+  "sha256": "6098a15f7e28e7c3af44c720314268087b35f9418945fb28a972fb28410a8cff",
+  "table": [
+    0.20000000000000007,
+    0.9,
+    -0.8,
+    0.8,
+    0
+  ],
+  "region": [
+    0.28,
+    0.85,
+    -0.65,
+    0.65,
+    0.02
+  ],
+  "objects": [
+    {
+      "id": 1,
+      "name": "post-left",
+      "shape": "box",
+      "size": [
+        0.06,
+        0.06,
+        0.3
+      ],
+      "nominal": [
+        0.5,
+        0.3,
+        0.15,
+        1,
+        0,
+        0,
+        0
+      ],
+      "footprintRadius": 0.042426406871192854,
+      "movable": true,
+      "mass": 0.4,
+      "jitter": [
+        0.08,
+        0.08,
+        0.6
+      ]
+    },
+    {
+      "id": 2,
+      "name": "post-right",
+      "shape": "box",
+      "size": [
+        0.06,
+        0.06,
+        0.3
+      ],
+      "nominal": [
+        0.5,
+        -0.3,
+        0.15,
+        1,
+        0,
+        0,
+        0
+      ],
+      "footprintRadius": 0.042426406871192854,
+      "movable": true,
+      "mass": 0.4,
+      "jitter": [
+        0.08,
+        0.08,
+        0.6
+      ]
+    },
+    {
+      "id": 3,
+      "name": "wall",
+      "shape": "box",
+      "size": [
+        0.04,
+        0.3,
+        0.15
+      ],
+      "nominal": [
+        0.62,
+        0,
+        0.075,
+        1,
+        0,
+        0,
+        0
+      ],
+      "footprintRadius": 0.15132745950421556,
+      "movable": true,
+      "mass": 0.6,
+      "jitter": [
+        0.05,
+        0.1,
+        0.4
+      ]
+    },
+    {
+      "id": 4,
+      "name": "can",
+      "shape": "cylinder",
+      "size": [
+        0.08,
+        0.08,
+        0.2
+      ],
+      "nominal": [
+        0.4,
+        0,
+        0.1,
+        1,
+        0,
+        0,
+        0
+      ],
+      "footprintRadius": 0.04,
+      "movable": true,
+      "mass": 0.35,
+      "jitter": [
+        0.06,
+        0.1,
+        0
+      ]
+    }
+  ]
+}

@@ -87,3 +87,48 @@ work, not assumed.
 - Verified against the real JetRover after the fix lands: re-running `clocksync-check`
   (`core/Teleop.Eval/ClockSyncCheck/`) should now report an RTT consistent with the real Tailscale
   RTT observed independently (`~63-110ms`), not the ~100x-inflated figures Phase 3 first reported.
+
+## Amendment (2026-10-31): the smoothing's precision
+
+**The bug.** Each accepted round trip is folded into the running offset by an EWMA, and that EWMA
+blended the two `long` values in single precision:
+`(long)(alpha * offsetSample + (1f - alpha) * smoothed)` with a `float` alpha. The offset is the gap
+between two machines' boot times, which is hours to days of ticks. Single precision has 24 bits, so
+from the second accepted sample on, the offset snapped onto a float32 grid and stayed there.
+- **Grid size.** 2^22 ticks (4.2 ms) for a 10 h offset at the Galaxy XR's 1 GHz; 2^16 ticks (6.5 ms)
+  for 25 h at the editor's 10 MHz.
+- **The error.** Up to half a grid step, roughly constant through a session. Clock drift was
+  followed only in grid-sized jumps.
+- **History.** It was found on 2026-10-20, while writing the trainer's golden files, and left until
+  now.
+
+**The fix.** The EWMA now runs in double on the difference between sample and estimate:
+`offset += round(alpha * (sample - offset))`. The same applies to the uncertainty. Its precision no
+longer depends on the offset's size: it settles within `0.5 / alpha` ticks of a steady sample
+(2.5 ticks at 0.2).
+- **Tests.** `ClockSyncTests` now recovers a 10 h and a 25 h offset to the tick, and follows a
+  50 µs/s drift on every sample. The old code missed by 0.64 ms and 1.02 ms, and lagged the drift by
+  1.39 ms instead of 0.1 ms.
+- **The trainer's golden exchanges** (`trainer/contract/golden/clocksync-v1.json`). Offsets moved by
+  up to 2.3 ms in the headset case and 6.0 ms in the editor case. No round trip changed between
+  accepted and rejected.
+
+**What carried the error.** Everything `ToOperatorTicks` converts while two machines' clocks are
+far apart:
+- the joint twin's sensed times and the predictors' inputs built from them;
+- `owd_uplink_ms`, `owd_downlink_ms` and the other cross-clock metrics in `docs/metrics.md`;
+- the camera latency figures;
+- the trainer's views (`trainer/armpred/net/clocksync.py` copied the float32 arithmetic on purpose,
+  to match the headsets of the time).
+
+Absolute cross-clock figures from real cross-machine sessions before this change can be a few
+milliseconds off. They are off by a roughly constant amount within one session. `results/` is
+append-only, so those runs stay as they are; their `manifest.json` SHAs tell them apart.
+
+**What did not.** Sweeps and loopback tests run both ends on one clock. There the offset is near
+zero and single precision was exact to a tick, so they can differ by at most a tick (rounding, where
+the old cast truncated).
+
+**Models trained before the fix** saw an error of up to a few milliseconds in their time inputs,
+different in each session. The headset now gives them the error-free value, which is inside the
+spread they were trained on. They are not retrained for it.

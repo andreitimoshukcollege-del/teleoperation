@@ -18,11 +18,12 @@ LOG_SCALE_MIN, LOG_SCALE_MAX = math.log(1e-4), math.log(0.5)
 _GRIPPER_FLAG = 2 + L.N_PATH * 2 + L.N_READINGS * 3 + L.N_INNOVATIONS * 4 + L.PREDICTED_MOTORS.index(L.GRIPPER_MOTOR)
 
 
-def _head(raw: torch.Tensor, joint_row: torch.Tensor) -> torch.Tensor:
-    """[..., 2] raw -> [..., 2]: the correction bounded to +-15 degrees (+-90 servo degrees on the
-    gripper's row, picked by its identity flag), the log-scale clamped."""
-    flag = joint_row[..., _GRIPPER_FLAG]
-    cap = MAX_CORRECTION + (GRIPPER_MAX_CORRECTION - MAX_CORRECTION) * flag
+def _head(raw: torch.Tensor, joint_row: torch.Tensor, flag_index: int = _GRIPPER_FLAG,
+          cap_rad: float = MAX_CORRECTION, flag_cap: float = GRIPPER_MAX_CORRECTION) -> torch.Tensor:
+    """[..., 2] raw -> [..., 2]: the correction bounded to +-``cap_rad`` (+-``flag_cap`` on the row whose
+    identity flag at ``flag_index`` is set: v3's gripper, v4's hand), the log-scale clamped. The defaults are v3's."""
+    flag = joint_row[..., flag_index]
+    cap = cap_rad + (flag_cap - cap_rad) * flag
     corr = cap * torch.tanh(raw[..., 0])
     log_b = torch.clamp(raw[..., 1], LOG_SCALE_MIN, LOG_SCALE_MAX)
     return torch.stack([corr, log_b], dim=-1)
@@ -34,8 +35,10 @@ class JointMLP(nn.Module):
     name = "mlp"
 
     def __init__(self, joint_features: int = L.JOINT_FEATURES, arm_features: int = L.ARM_FEATURES,
-                 hidden: Tuple[int, ...] = (128, 128, 64)):
+                 hidden: Tuple[int, ...] = (128, 128, 64), flag_index: int = _GRIPPER_FLAG,
+                 cap_rad: float = MAX_CORRECTION, flag_cap: float = GRIPPER_MAX_CORRECTION):
         super().__init__()
+        self.flag_index, self.cap_rad, self.flag_cap = flag_index, cap_rad, flag_cap
         layers = []
         width = joint_features + arm_features
         for h in hidden:
@@ -48,7 +51,7 @@ class JointMLP(nn.Module):
         nn.init.zeros_(self.net[-1].bias)
 
     def forward(self, joint_row: torch.Tensor, arm_row: torch.Tensor) -> torch.Tensor:
-        return _head(self.net(torch.cat([joint_row, arm_row], dim=-1)), joint_row)
+        return _head(self.net(torch.cat([joint_row, arm_row], dim=-1)), joint_row, self.flag_index, self.cap_rad, self.flag_cap)
 
 
 def _slices():
@@ -124,13 +127,41 @@ class JointConv(nn.Module):
         return _head(self.head(torch.cat(pooled + [scalars], dim=-1)), joint_row)
 
 
-def build(name: str, aware: bool = False) -> nn.Module:
+def build(name: str, aware: bool = False, layout: str = "v3") -> nn.Module:
+    if layout == "v4":
+        from ..features import layout_v4 as L4
+
+        if name != "mlp":
+            raise ValueError("layout v4 runs architecture A (mlp) only, the one the repo's backend computes")
+        return JointMLP(joint_features=L4.JOINT_FEATURES, arm_features=L4.ARM_FEATURES, flag_index=L4.HAND_FLAG_INDEX,
+                        cap_rad=L4.MAX_CORRECTION_RAD, flag_cap=L4.HAND_MAX_CORRECTION)
     arm = L.arm_features(aware)
     if name == "mlp":
         return JointMLP(arm_features=arm)
     if name == "conv":
         return JointConv(arm_features=arm)
     raise ValueError(f"unknown architecture {name!r}")
+
+
+class FlatExportV4(nn.Module):
+    """Layout v4's graph (docs/adr/0028 decision 2): ``x`` [1, rows * JOINT_FEATURES + arms * ARM_FEATURES]
+    (every motor's row in profile order, then each arm's block) and ``y`` [1, rows * 2]. Row r is paired with arm
+    ``arm_of_row[r]``'s block: one shared MLP for every joint of every arm."""
+
+    def __init__(self, model: nn.Module, joint_features: int, arm_features: int, arm_of_row: Tuple[int, ...], arms: int):
+        super().__init__()
+        self.model = model
+        self.jf, self.af = joint_features, arm_features
+        self.arm_of_row = tuple(int(a) for a in arm_of_row)
+        self.arms = arms
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        n = len(self.arm_of_row)
+        joints = x[:, : n * self.jf].reshape(n, self.jf)
+        blocks = x[:, n * self.jf:].reshape(self.arms, self.af)
+        # Static shapes: one row of the arm blocks per joint row, picked by a fixed slice each.
+        arm = torch.cat([blocks[a:a + 1] for a in self.arm_of_row], dim=0)
+        return self.model(joints, arm).reshape(1, n * 2)
 
 
 class FlatExport(nn.Module):

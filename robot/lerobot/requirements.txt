@@ -1,0 +1,4 @@
+# The converter's environment on the GPU machine (just lerobot-setup). 0.5.1 is the oldest release where
+# `from lerobot.datasets import LeRobotDataset` works, the import the lab's recorders use: any version the lab has
+# reads what it writes.
+lerobot==0.5.1

@@ -40,7 +40,7 @@ namespace Teleop.Eval.Tests.BuildProfile
             "n",              // Proximal wants min (the collision model replaced the floor, docs/adr/0020)
             "n",              // Proximal wants max
             "y",              // Proximal wants zero-offset
-            "0.12217305",     // Proximal zero-offset (7 degrees, real calibrated mounting correction)
+            "-0.64494798",    // Proximal zero-offset (-36.95 degrees, the shoulder servo replaced 2026-11-11)
             "3",              // Distal motor id
             "n",              // Distal wants min
             "n",              // Distal wants max

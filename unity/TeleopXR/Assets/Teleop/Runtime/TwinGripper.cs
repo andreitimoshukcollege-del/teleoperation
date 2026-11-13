@@ -31,6 +31,8 @@ namespace Teleop.XR
         [SerializeField] private Transform rightJawOuter;
         [Tooltip("How far each inner link turns from open to closed. The CAD jaws meet at about 37°.")]
         [SerializeField] private float jawClosedDegrees = 37f;
+        [Tooltip("How far each inner link turns the other way, open: the jaws past the CAD's pose, so fully open shows the real gripper's opening (docs/adr/0034 amendment 10; JetRoverVisualExport measures it for Isaac's 69.5 mm).")]
+        [SerializeField] private float jawOpenDegrees = 0f;
         [Tooltip("+1 or -1: which way about the links' X axis closes.")]
         [SerializeField] private float jawClosingSign = -1f;
 
@@ -83,7 +85,8 @@ namespace Teleop.XR
                     if (rightJawOuter != null) _rightOuter0 = rightJawOuter.localRotation;
                 }
 
-                float angle = _gripper * jawClosedDegrees;
+                // Open (0) is the CAD's pose turned back by jawOpenDegrees; closed (1) is jawClosedDegrees the other way.
+                float angle = -jawOpenDegrees + _gripper * (jawOpenDegrees + jawClosedDegrees);
                 if (leftJaw != null) leftJaw.localRotation = _leftJaw0 * Quaternion.AngleAxis(-angle * jawClosingSign, Vector3.right);
                 if (leftJawOuter != null) leftJawOuter.localRotation = _leftOuter0 * Quaternion.AngleAxis(angle * jawClosingSign, Vector3.right);
                 if (rightJaw != null) rightJaw.localRotation = _rightJaw0 * Quaternion.AngleAxis(angle * jawClosingSign, Vector3.right);

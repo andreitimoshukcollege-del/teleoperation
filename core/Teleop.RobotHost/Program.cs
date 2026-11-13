@@ -14,6 +14,9 @@ using Teleop.RobotHost.Power;
 using Teleop.RobotHost.Recording;
 using Teleop.RobotHost.Relay;
 using Teleop.RobotHost.Time;
+using Teleop.RobotHost.ArmServer;
+using Teleop.RobotHost.World;
+using Teleop.RobotArm.World;
 
 namespace Teleop.RobotHost
 {
@@ -33,17 +36,25 @@ namespace Teleop.RobotHost
         /// <summary>
         /// Separate size budget for the joint-angle listener, distinct from the Cartesian path's
         /// own <see cref="MaxDatagramBytes"/> -- each <see cref="UdpTransport"/> owns its own
-        /// fixed receive buffer, so there is no reason the two hops must share one constant
-        /// (docs/adr/0011-generic-robot-arm-profiles.md). Numerically identical to
-        /// <see cref="MaxDatagramBytes"/> today only because nothing has needed to diverge yet.
+        /// fixed receive buffer (docs/adr/0011-generic-robot-arm-profiles.md). The joint port's one
+        /// constant, 256 bytes since the FR3 Duo (docs/adr/0026 decision 6).
         /// </summary>
-        private const int MaxJointDatagramBytes = 128;
+        private const int MaxJointDatagramBytes = JointDatagram.MaxBytes;
 
         private static int Main(string[] args)
         {
             if (args.Length == 1 && args[0] == "--clock-echo")
             {
                 return ClockEcho();
+            }
+
+            // A serial-chain profile (the FR3 Duo, docs/adr/0026) runs its own host loop (docs/adr/0027 decision 5);
+            // everything below is the JetRover's.
+            int profileFlag = Array.IndexOf(args, "--profile-path");
+            if (profileFlag >= 0 && profileFlag + 1 < args.Length && File.Exists(args[profileFlag + 1]) &&
+                SerialChainProfileJson.IsSerialChain(args[profileFlag + 1]))
+            {
+                return SerialChainHost.Run(args);
             }
 
             RobotHostArgs? parsed = RobotHostArgs.TryParse(args, out string? error);
@@ -122,7 +133,7 @@ namespace Teleop.RobotHost
             byte[]? jointRecvBuffer = jointTransport != null ? new byte[MaxJointDatagramBytes] : null;
             // A physically impaired uplink for recorded sessions (docs/adr/0021): off unless the uplink
             // control file names a profile. Receive side only, so frames to the headset are untouched.
-            var uplink = jointTransport != null ? new UplinkImpairedReceiver(jointTransport, clock.TicksPerSecond, MaxJointDatagramBytes) : null;
+            var uplink = jointTransport != null ? new UplinkImpairedReceiver(jointTransport, clock.TicksPerSecond, MaxJointDatagramBytes, a.UplinkTracesRoot) : null;
             string? uplinkRequest = null;
             long nextUplinkPollTicks = long.MinValue;
             // A schedule in the control file (docs/adr/0021 decision 13): switched here, on time,
@@ -193,6 +204,55 @@ namespace Teleop.RobotHost
                 Console.WriteLine($"[record] automatic sessions into {autoRoot} while commanded ({a.AutoRecord}); " +
                     (freeNow.HasValue ? $"{freeNow.Value / 1073741824.0:0.00} GB free now" : "free space unknown"));
             }
+
+            // A world beside the arm (docs/adr/0034 decision 7, J4): the scene file, which the Isaac bridge runs too, served on
+            // its world socket over the arm-server wire's world messages. RobotHost decides where objects go (WorldHost).
+            WorldHost? world = null;
+            ArmServerClient? worldServer = null;
+            if (a.ScenePath != null && jointTransport != null)
+            {
+                byte[] sceneBytes = File.ReadAllBytes(a.ScenePath);
+                WorldScene scene = System.Text.Json.JsonSerializer.Deserialize<SceneDocument>(sceneBytes, new System.Text.Json.JsonSerializerOptions { IncludeFields = true })!.ToScene();
+                if (scene.RobotProfile != profile.Name) throw new InvalidDataException($"the scene is for '{scene.RobotProfile}', the profile is '{profile.Name}'");
+                byte[] sceneSha = System.Security.Cryptography.SHA256.HashData(sceneBytes);
+                ulong sceneSeed = a.SceneSeed ?? unchecked((ulong)DateTime.UtcNow.Ticks);
+                if (a.AutoRecord != null)
+                {
+                    a.AutoRecord.ScenePath = a.ScenePath;
+                    a.AutoRecord.SceneName = scene.Name;
+                    a.AutoRecord.SceneSeed = sceneSeed;
+                }
+
+                worldServer = new ArmServerClient(new UdsArmServerLink(a.WorldSocketPath!, a.LocalWorldSocketPath!), ReadOnlySpan<byte>.Empty, clock.TicksPerSecond);
+                if (!worldServer.Connect(() => clock.NowTicks, profile.Name, a.WorldTimeoutSeconds, ms => Thread.Sleep(ms), out string why, requireState: false))
+                {
+                    throw new InvalidOperationException($"[world] {a.WorldSocketPath}: {why}");
+                }
+
+                world = new WorldHost(scene, sceneSha, worldServer, clock.TicksPerSecond, sceneSeed,
+                    line => { if (recorder != null && recorder.IsActive) recorder.Record(line); }, Console.WriteLine);
+                Console.WriteLine($"[world] scene '{scene.Name}' ({a.ScenePath}): {scene.Objects.Length} objects, layouts from seed {sceneSeed}, " +
+                    $"placed in {worldServer.Description}");
+            }
+
+            // Takes of named scenarios from the headset's RECORD button (docs/adr/0033).
+            ScenarioRecorder? scenarios = null;
+            if (recorder != null && a.ScenariosRoot != null)
+            {
+                var folder = new ScenarioFolder(a.ScenariosRoot);
+                folder.EnsureExists();
+                string scenariosRoot = Path.GetFullPath(a.ScenariosRoot);
+                scenarios = new ScenarioRecorder(scenariosRoot, recorder, auto, folder, clock.TicksPerSecond, () => DateTime.UtcNow,
+                    () => FreeBytes(scenariosRoot), () => new UplinkCondition(uplink!.Profile, uplinkSeedNow), Console.WriteLine);
+                // The Jetson's disk is smaller than the GPU machine's (docs/adr/0033 amendment 1).
+                if (a.ScenarioStartFreeGigabytes is double startFree) scenarios.StartFreeGigabytes = startFree;
+                if (a.ScenarioStopFreeGigabytes is double stopFree) scenarios.StopFreeGigabytes = stopFree;
+                Console.WriteLine($"[scenario] the headset's RECORD button records into {scenariosRoot}: a take starts with " +
+                    $"{scenarios.StartFreeGigabytes:0.#} GB free and stops below {scenarios.StopFreeGigabytes:0.#} GB");
+            }
+
+            long sideSendTicks = 0;
+            Action<byte[], int> sendSide = (buffer, bytes) => jointTransport!.Send(buffer.AsSpan(0, bytes), sideSendTicks);
 
             // The start of every session's file: the state it would otherwise only learn on a change.
             void StartSessionState(long now)
@@ -300,7 +360,7 @@ namespace Teleop.RobotHost
                         if (request != uplinkRequest && UplinkSchedule.IsSchedule(request))
                         {
                             uplinkRequest = request;
-                            if (UplinkSchedule.TryParse(request!, clock.TicksPerSecond, out UplinkSchedule? schedule, out string? why))
+                            if (UplinkSchedule.TryParse(request!, clock.TicksPerSecond, a.UplinkTracesRoot, out UplinkSchedule? schedule, out string? why))
                             {
                                 uplinkSchedule = schedule;
                                 uplinkScheduleStart = clock.NowTicks;
@@ -386,6 +446,7 @@ namespace Teleop.RobotHost
                             string clientText = jointTransport.CurrentRemoteEndPoint?.ToString() ?? "?";
                             string kindName = SessionLines.KindName(clientKind), modeName = SessionLines.ModeName(clientMode);
                             if (clientKind == OperatorClientKind.Headset) auto?.OnHeadset(arrivalTicks, clientText);
+                            scenarios?.OnHeard(clientText, arrivalTicks);
                             if (clientText != operatorText || kindName != operatorKind || modeName != operatorMode)
                             {
                                 Console.WriteLine($"[operator] {kindName} at {clientText}, motion {modeName}");
@@ -446,6 +507,18 @@ namespace Teleop.RobotHost
                             continue;
                         }
 
+                        if (WorldCodec.TryDecodeEdit(jointRecvBuffer.AsSpan(0, byteCount), out WorldEditOp editOp, out uint editSequence, out _, out ObjectPose editPose))
+                        {
+                            world?.HandleEdit(editOp, editSequence, editPose, operatorMode != "on", arrivalTicks);
+                            continue;
+                        }
+
+                        if (RecordCodec.TryDecodeRequest(jointRecvBuffer.AsSpan(0, byteCount), out RecordOp recordOp, out byte recordScenario, out ushort recordRevision, out uint recordSequence, out _))
+                        {
+                            scenarios?.HandleRequest(recordOp, recordScenario, recordRevision, recordSequence, jointTransport.CurrentRemoteEndPoint?.ToString() ?? "?", arrivalTicks);
+                            continue;
+                        }
+
                         if (JointCommandCodec.TryDecode(
                             jointRecvBuffer.AsSpan(0, byteCount), out uint commandSequence, out long captureTicks,
                             jointTargetsBuffer!, out int targetCount))
@@ -465,6 +538,7 @@ namespace Teleop.RobotHost
                             // (docs/adr/0023), and its relay output (RO) is recorded inside the plant.
                             lastJointCommandTicks = arrivalTicks;
                             auto?.OnJointCommand(arrivalTicks, jointCommanderText);
+                            scenarios?.OnHeard(jointCommanderText, arrivalTicks);
                             if (recorder != null)
                             {
                                 if (recorder.TakePreambleOwed()) StartSessionState(arrivalTicks);
@@ -538,6 +612,24 @@ namespace Teleop.RobotHost
                     }
                 }
 
+                if (jointTransport != null && (world != null || scenarios != null))
+                {
+                    long now = clock.NowTicks;
+                    sideSendTicks = now;
+                    bool subscribed = jointStreamer.IsSubscribed(now);
+                    if (scenarios != null)
+                    {
+                        scenarios.Tick(now);
+                        if (subscribed) scenarios.Send(now, sendSide);
+                    }
+
+                    if (world != null)
+                    {
+                        worldServer!.Poll(now);
+                        world.Tick(now, subscribed, operatorMode != "on", sendSide);
+                    }
+                }
+
                 // Logged once per change, not per datagram: a moved operator is worth a line in
                 // the service journal, a steady one is not.
                 EndPoint? replyTarget = transport.CurrentRemoteEndPoint;
@@ -554,6 +646,8 @@ namespace Teleop.RobotHost
                 Thread.Sleep(5);
             }
 
+            scenarios?.Stop("RobotHost is stopping");
+            worldServer?.Dispose();
             sigterm?.Dispose();
             Console.WriteLine("Stopped.");
             return 0;

@@ -196,6 +196,31 @@ switched off.
 calibration findings and a rate-dependent command-loss bug. Most "new" hardware problems turn out
 to be repeats.
 
+## The FR3 Duo (simulated, until it arrives)
+
+The platform is moving to Franka's FR3 Duo: two 7-joint arms with hands (docs/adr/0026–0028). The
+JetRover stays supported. The hardware is not here yet, so the FR3 runs as a simulated arm on the PC.
+Nothing real moves:
+
+```bash
+just fr3-sim-host                 # RobotHost against the simulated FR3 Duo (joint port 6002); Enter stops
+just fr3-sim-drive                # in a second terminal: seeded joint-space moves at 48 Hz
+just fr3-sim-record smoke 60      # ...or the same, recorded as a teleop-session v2 into recordings/fr3-sim/
+just import-fr3-profile           # regenerate core/RobotProfiles/fr3-duo.json from robot/franka/fr3_duo/
+cd core && dotnet run --project Teleop.Eval -- joint-predict-bench --robot fr3   # franka-replay vs the rest
+```
+
+The profile is generated from Franka's URDF and never hand-edited. The arm is shaped by Core's
+`JointTrajectoryShaper`, which the `franka-replay` predictor replays. Its sessions say `source:
+sim-host`, and their arm is never the robot's.
+
+**With physics:** `just isaac-host` runs the FR3 Duo in Isaac Sim on the GPU machine behind a RobotHost
+there (docs/adr/0031, `robot/isaac/README.md`). Both hosts have a world beside the arms by default:
+a work table and obstacles from `core/Scenes/fr3-duo-bench.json`, laid out from a seed (in Isaac,
+the arms can knock them over: docs/adr/0031 amendment 4). The
+headset draws them and has a NEW LAYOUT button for the next layout, and every session records them.
+In Isaac the arms collide with them; beside the simulated arm nothing collides.
+
 ## Contributing
 
 Read root `CLAUDE.md` first, especially "Boundaries for agents". The short version: free rein

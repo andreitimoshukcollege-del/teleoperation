@@ -90,7 +90,7 @@ _unity-batch project method extra="" graphics="false":
         -logFile "$(wslpath -w "$log")" {{extra}}
     code=$?
     set -e
-    grep -a -E '^\[(scene-check|xr-setup|xr-scene|build|lab)\]|error CS[0-9]+' "$log" | sed 's/\r$//' | tail -40 || true
+    grep -a -E '^\[(scene-check|xr-setup|xr-scene|fr3-scene|fr3-check|build|lab)\]|error CS[0-9]+' "$log" | sed 's/\r$//' | tail -40 || true
     if [ "$code" -ne 0 ]; then
         echo "Unity exited $code. Full log: $log" >&2
     fi
@@ -116,20 +116,325 @@ unity-scene-xr rebuild="false":
 robot-collision-model:
     just _unity-batch TeleopXR Teleop.XR.Editor.RobotCollisionExtractor.Run "" true
 
+# Fit the simulated JetRover to the real one (docs/adr/0034 decision 6, J3; docs/metrics.md section 10): extracts the relay records (RO, RI, TQ) of real sessions in `sessions_dir`, sends them to the GPU machine, and there replays them headless into the bridge's own Isaac arm, scores the default drives, fits stiffness, damping, torque limits, a command delay and a speed scale on the `fit` sessions, and scores the fitted drives on all of them, held-out ones apart. Detached: watch with just jetrover-sim-fit-status. Touches no robot; the Isaac host may keep running. `start` begins the search from other parameters than the bridge's defaults (its flags, e.g. "--stiffness 42 --speed-scale 1.0"), keeping its own result file; `rounds` lengthens it
+[group('isaac')]
+jetrover-sim-fit sessions_dir="recordings/jetrover" fit="20261026T204223Z-drive-steps-2p5,20261026T204737Z-drive-steps-6,20261026T205353Z-drive-wp-2p5,20261026T210007Z-drive-wp-5" heldout="20261026T210625Z-drive-wp-sched,20261025T200935Z-teleop-2p5,20261025T202026Z-teleop-2p5,20261027T224623Z-auto,20261027T225507Z-auto" fit_seconds="90" rounds="2" start="":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    commit=$(git rev-parse HEAD)
+    git fetch -q origin
+    [ -n "$(git branch -r --contains "$commit" 2>/dev/null)" ] || { echo "error: $commit is not on GitHub: push it first (the GPU machine runs what GitHub has)" >&2; exit 1; }
+    # `start`: where the search begins instead of the bridge's defaults, as the bridge's own flags, e.g.
+    # "--stiffness 42 --damping 4.2 --speed-scale 1.0" (also --effort-scale, --driver-gate, --replay-cycles).
+    case "{{start}}" in *[!A-Za-z0-9.\ -]*) echo "error: start takes only the bridge's flags and numbers, got '{{start}}'" >&2; exit 1 ;; esac
+    tmp=$(mktemp -d)
+    (cd robot/isaac && python3 - "{{sessions_dir}}" "{{fit}}" "{{heldout}}" > "$tmp/sessions.json") <<'PY'
+    import json, os, sys
+    from teleop_isaac import simfit
+    root, fit, held = sys.argv[1], sys.argv[2].split(","), sys.argv[3].split(",")
+    root = root if os.path.isabs(root) else os.path.join("../..", root)
+    out = {g: [simfit.extract_session(os.path.join(root, n)) for n in names if n] for g, names in (("fit", fit), ("heldout", held))}
+    json.dump(out, sys.stdout)
+    PY
+    echo "[sim-fit] $(du -h "$tmp/sessions.json" | cut -f1) of relay records from $(echo "{{fit}},{{heldout}}" | tr ',' '\n' | grep -c .) sessions"
+    ssh -o BatchMode=yes {{gpu_host}} 'mkdir -p ~/isaacsim/simfit && cat > ~/isaacsim/simfit/sessions.json' < "$tmp/sessions.json"
+    rm -rf "$tmp"
+    # ssh joins its arguments into one remote command line: `start` (checked above: no quotes) is quoted for that shell.
+    ssh -o BatchMode=yes {{gpu_host}} "COMMIT=$commit START='{{start}}' bash -s" <<'REMOTE'
+    set -euo pipefail
+    repo=$HOME/teleoperation-simfit
+    [ -d "$repo" ] || git clone -q https://github.com/andreitimoshukcollege-del/teleoperation.git "$repo"
+    cd "$repo" && git fetch -q origin && git checkout -q "$COMMIT"
+    out=$HOME/isaacsim/simfit/result-${COMMIT:0:7}.json; log=$HOME/isaacsim/simfit/fit.log
+    # A run with a `start` keeps its own result: two runs at one commit must not overwrite each other.
+    if [ -n "$START" ]; then out=$HOME/isaacsim/simfit/result-${COMMIT:0:7}-$(date +%Y%m%dT%H%M%S).json; fi
+    cd robot/isaac
+    # Its own module name: isaac-stop and the hosts match teleop_isaac.(bridge|jetrover_bridge), and must not stop the fit.
+    pgrep -u "$USER" -f "teleop_isaac[.]simfit_run" > /dev/null && { echo "error: a fit of ours is already running on $(hostname): just jetrover-sim-fit-status" >&2; exit 1; }
+    nohup "$HOME/isaacsim/venv/bin/python" -m teleop_isaac.simfit_run "$HOME/isaacsim/simfit/sessions.json" \
+        --fit-seconds {{fit_seconds}} --fit-rounds {{rounds}} --out "$out" $START > "$log" 2>&1 < /dev/null &
+    echo "[sim-fit] running on $(hostname) at ${COMMIT:0:7} (pid $!): log $log, result $out"
+    REMOTE
+
+# How the sim-against-real fit on the GPU machine is doing (just jetrover-sim-fit): its log's scores and fit steps, and the result once written
+[group('isaac')]
+jetrover-sim-fit-status:
+    ssh -o BatchMode=yes {{gpu_host}} 'grep -E "\[sim-fit\]|\[fit\]|Traceback|Error" ~/isaacsim/simfit/fit.log | tail -40; ls -t ~/isaacsim/simfit/result-*.json 2>/dev/null | head -1'
+
+# Write the JetRover's look for Isaac (docs/adr/0034 amendment 6): the lab twin's CAD as one OBJ per URDF link and colour in robot/jetrover/urdf/meshes/, decimated, with visuals.json; then rewrite the URDF with TELEOP_WRITE_GOLDEN=1 (just jetrover-urdf). Close TeleopXR's editor first
+[group('isaac')]
+jetrover-visuals:
+    just _unity-batch TeleopXR Teleop.XR.Editor.JetRoverVisualExport.Run "" true
+
 # Rebuild unity/TeleopXR's lab (night-shift room, JetRover twin, camera display, lighting), bake the lighting, and render preview screenshots to the Windows temp folder; prints the contact sheet's path. bake=false skips the multi-minute bake. Close that project's editor first
 [group('headset (Galaxy XR)')]
 unity-lab-xr bake="true":
     just _unity-batch TeleopXR Teleop.XR.Editor.LabDressing.Run "-labCapture {{ if bake == "true" { "-labBake" } else { "" } }}" true
+
+# Relay the headset to Isaac's RobotHost on the GPU machine from this PC (Teleop.Eval udp-relay), for a headset on this PC's Wi-Fi without the lab VPN: the joint port, the Cartesian port and the three camera feeds (6000, 6002, 6003, 6008, 6009) on this PC go to the same ports there. Then `just push-galaxy-config <this PC's Wi-Fi address> true false` and restart the app. Needs inbound UDP on those ports allowed once (just isaac-relay-firewall). Enter stops it. It adds this PC's hop to the delay: nothing measured through it is a lab-network figure
+[group('isaac')]
+isaac-relay upstream=gpu_host ports="6000,6002,6003,6008,6009":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    up="{{upstream}}"; up="${up#*@}"
+    wifi=$(ipconfig.exe 2>/dev/null | tr -d '\r' | awk '/Wireless LAN adapter Wi-Fi:/{w=1} w&&/IPv4 Address/{print $NF; exit}')
+    echo "[isaac-relay] this PC's Wi-Fi address: ${wifi:-unknown}; headset: just push-galaxy-config ${wifi:-<address>} true false"
+    # Its own build folder: a running relay holds its DLLs, and must not block core-check rebuilding Teleop.Eval's.
+    cd core && dotnet build Teleop.Eval -c Release -v q -nologo -o ../build/relay > /dev/null && dotnet ../build/relay/Teleop.Eval.dll udp-relay --upstream "$up" --ports {{ports}}
+
+# Print the one admin PowerShell command that lets the Isaac relay's ports in through Windows Firewall (Windows blocks unsolicited inbound UDP on a Public network such as home Wi-Fi). Run it once in an elevated PowerShell; nothing here changes the firewall itself
+[group('isaac')]
+isaac-relay-firewall ports="6000,6002,6003,6008,6009":
+    @echo 'In an admin PowerShell, once:'
+    @echo '  New-NetFirewallRule -DisplayName "Teleop Isaac relay (UDP in)" -Direction Inbound -Protocol UDP -LocalPort {{ports}} -Action Allow -Profile Any'
+
+# Give unity/TeleopXR's JetRover scene the Isaac world (docs/adr/0034 J6) from Resources/jetrover_scene.json, a copy of core/Scenes/jetrover-bench.json: the world twin at the arm's base, NEW LAYOUT and the RECORD buttons on the bench's right wing, the hand pointer (robot off: a pinch clicks buttons, drags objects, moves displays), and the third-person feeds 6008/6009 on two more displays, all three displays floating. Replaces only its own roots; the hand-edited scene is otherwise left alone. Run it after the scene file changes, then just unity-check-xr. Close that project's editor first
+[group('headset (Galaxy XR)')]
+unity-world-jetrover-xr:
+    just _unity-batch TeleopXR Teleop.XR.Editor.XrJetRoverWorldSetup.Run
 
 # Headless check of unity/TeleopXR's scene: no missing scripts, Bridge wiring intact, pinch-grab settings safe for a real arm (no pull-to-hand, no snap, no smoothing, no throw), hands only
 [group('headset (Galaxy XR)')]
 unity-check-xr:
     just _unity-batch TeleopXR Teleop.XR.Editor.XrSceneCheck.Run
 
-# Build the Galaxy XR APK (unity/TeleopXR, Unity 6.6) after its scene check -> unity/TeleopXR/Builds/TeleopXR.apk. Close that project's editor first
+# Build the Galaxy XR app for the real JetRover (unity/TeleopXR, Unity 6.6) after its scene check -> unity/TeleopXR/Builds/teleop-jetrover-robot.apk, "Teleop JetRover Robot" (app id com.teleop.jetroverxr, the one it always had). Close that project's editor first
 [group('headset (Galaxy XR)')]
 build-galaxy:
     just _unity-batch TeleopXR Teleop.XR.Editor.XrBuild.Run "-buildTarget Android"
+
+# Build the Galaxy XR app for the Isaac JetRover (docs/adr/0034) -> unity/TeleopXR/Builds/teleop-jetrover-sim.apk, "Teleop JetRover Sim" (app id com.teleop.jetroverxr.sim): the same scene as build-galaxy, installed beside it, with discovery off so it never finds the real robot, and `host` as its address (default: the GPU machine's address on its other network, the one the headset shares; just push-galaxy-config <host> true false sim changes it without a rebuild). Close that project's editor first
+[group('headset (Galaxy XR)')]
+build-galaxy-sim host="auto":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    host="{{host}}"
+    if [ "$host" = auto ]; then
+        gpu="{{gpu_host}}"; gpu_ip="${gpu#*@}"
+        # The GPU machine's addresses other than the one this PC reaches it by (the lab VPN) and docker's: its Wi-Fi.
+        host=$(ssh -o ConnectTimeout=10 -o BatchMode=yes "$gpu" "ip -4 -o addr show scope global" | awk '{print $2, $4}' \
+            | grep -v -E '^(docker|br-|veth|tailscale)' | cut -d' ' -f2 | cut -d/ -f1 | grep -v -x -F "$gpu_ip" | head -1 || true)
+        [ -n "$host" ] || { echo "error: could not find the GPU machine's other address; pass it: just build-galaxy-sim <address>" >&2; exit 1; }
+        echo "sim app: the Isaac JetRover at $host (the GPU machine)"
+    fi
+    case "$host" in *[!A-Za-z0-9.:-]*) echo "error: host must be an address, got '$host'" >&2; exit 1 ;; esac
+    # The build rewrites the Bridge's connection default for itself and puts it back; if Unity dies before it can, this does.
+    res=unity/Teleop.Bridge/Runtime/Resources/jetrover_connection.json
+    keep=$(mktemp); cp "$res" "$keep"
+    trap 'cmp -s "$keep" "$res" || { cp "$keep" "$res"; echo "restored $res" >&2; }; rm -f "$keep"' EXIT
+    just _unity-batch TeleopXR Teleop.XR.Editor.XrBuild.RunSim "-buildTarget Android -teleopRemoteHost $host"
+
+# Build unity/TeleopXR's FR3 Duo scene (Fr3DuoXR, docs/adr/0029) from code: the JetRover's lab (room, camera display, status ring, baked lighting) around a deeper bench, the FR3 Duo at its back (the solid twin from Franka's visual meshes, commanded and measured ghosts), and the JetRover's controls where it has them (power and pause, the twin switches, the operator console with its network sliders, the added-delay slider) plus RECENTRE. Create-only; rebuild=true replaces it, discarding hand edits; bake=true (the default) bakes its lighting, about a minute. The JetRover scene is untouched. Run unity-setup-xr first; close that project's editor first
+[group('fr3 (simulated)')]
+unity-scene-fr3-xr rebuild="false" bake="true":
+    just _unity-batch TeleopXR Teleop.XR.Editor.XrFr3SceneBuilder.Run "{{ if rebuild == "true" { "-teleopRebuildScene" } else { "" } }} {{ if bake == "true" { "-labBake" } else { "" } }}" {{ if bake == "true" { "true" } else { "false" } }}
+
+# Headless check of unity/TeleopXR's FR3 Duo scene: no missing scripts, wiring intact, motion off at launch, hands only and unsmoothed, the resources parse, and the twin's tool frames within 1 mm / 0.1 deg of Core's FK at 25 seeded poses per arm
+[group('fr3 (simulated)')]
+unity-check-fr3-xr:
+    just _unity-batch TeleopXR Teleop.XR.Editor.XrFr3SceneCheck.Run
+
+# Build unity/TeleopXR's FR3 world from the scene file (Resources/fr3_scene.json, a copy of core/Scenes/fr3-duo-bench.json; docs/adr/0031 amendment 2): every surface the file shows, the work table in front of the robot, under the scene's World root, replacing only that root. Run it after the scene file changes, then just unity-check-fr3-xr. Close that project's editor first
+[group('fr3 (simulated)')]
+unity-world-fr3-xr:
+    just _unity-batch TeleopXR Teleop.XR.Editor.XrFr3WorldSetup.Run
+
+# Render unity/TeleopXR's FR3 Duo scene from six fixed viewpoints (the operator's, the console, front, left, above, the room), the twin at Franka's ready pose, to the Windows temp folder (teleop-fr3\\<time>\\, with a report.txt of the twin's triangles): how its meshes are reviewed without a headset. Close that project's editor first
+[group('fr3 (simulated)')]
+unity-preview-fr3-xr:
+    just _unity-batch TeleopXR Teleop.XR.Editor.Fr3Capture.Run "" true
+
+# Build the FR3 Duo's Galaxy XR APK after its scene check -> unity/TeleopXR/Builds/TeleopXR-FR3.apk (the same app id as the JetRover's, so installing it replaces that one). Close that project's editor first
+[group('fr3 (simulated)')]
+build-galaxy-fr3:
+    just _unity-batch TeleopXR Teleop.XR.Editor.XrBuild.RunFr3 "-buildTarget Android"
+
+# Internal: the Galaxy XR app id of app=robot or app=sim (unity/TeleopXR's XrBuild)
+_galaxy-app-id app:
+    @case "{{app}}" in robot) echo com.teleop.jetroverxr ;; sim) echo com.teleop.jetroverxr.sim ;; *) echo "error: app must be robot or sim, got '{{app}}'" >&2; exit 1 ;; esac
+
+# Install the FR3 Duo's Galaxy XR APK (just build-galaxy-fr3) on the headset over USB (developer mode and USB debugging on; accept the prompt in the headset). The same app id as the JetRover's: it replaces that app
+[group('fr3 (simulated)')]
+install-galaxy-fr3:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    apk=unity/TeleopXR/Builds/TeleopXR-FR3.apk
+    [ -f "$apk" ] || { echo "error: $apk not found; run just build-galaxy-fr3 first" >&2; exit 1; }
+    just _adb devices -l
+    just _adb install -r "$(wslpath -m "$apk")"
+
+# Point the Galaxy XR app's FR3 operator at a just fr3-sim-host on this PC (or at the address given first, e.g. the GPU machine's for just isaac-host) without a rebuild: pushes fr3_connection.json with RemoteHost replaced. The headset must reach the PC on the LAN; Direct Preview needs none of this (127.0.0.1 is the PC). motion=false sends only keepalives
+[group('fr3 (simulated)')]
+push-galaxy-fr3-config host="" motion="true":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    case "{{motion}}" in true|false) ;; *) echo "error: motion must be true or false, got '{{motion}}'" >&2; exit 1 ;; esac
+    host="{{host}}"
+    if [ -z "$host" ]; then
+        # This PC's own LAN address, as the Windows side sees it (the headset cannot reach WSL's).
+        host=$(powershell.exe -NoProfile -Command "(Get-NetIPConfiguration | Where-Object { \$_.IPv4DefaultGateway -ne \$null } | Select-Object -First 1).IPv4Address.IPAddress" | tr -d '\r')
+    fi
+    [ -n "$host" ] || { echo "error: no LAN address found for this PC; pass one: just push-galaxy-fr3-config <address>" >&2; exit 1; }
+    tmp=$(mktemp --suffix=.json)
+    trap 'rm -f "$tmp"' EXIT
+    python3 - "$tmp" "$host" "{{motion}}" <<'PY'
+    import json, sys
+    cfg = json.load(open("unity/Teleop.Bridge/Runtime/Resources/fr3_connection.json", encoding="utf-8"))
+    cfg["RemoteHost"] = sys.argv[2]
+    cfg["AllowMotion"] = sys.argv[3] == "true"
+    json.dump(cfg, open(sys.argv[1], "w"), indent=2)
+    PY
+    dest=/sdcard/Android/data/com.teleop.jetroverxr/files
+    just _adb shell mkdir -p "$dest"
+    just _adb push "$(wslpath -m "$tmp")" "$dest/fr3_connection.json"
+    echo "the FR3 operator now targets $host:6002, motion {{ if motion == "true" { "allowed" } else { "LOCKED (keepalives only)" } }}; restart the app to pick it up."
+
+# Bring the Galaxy XR's link traces to this PC (docs/adr/0035 N1): the raw stamps of every joint-state frame and keepalive the headset received, one .ltrace file per app run, from the app's files/linktraces into `dest` (gitignored). Then just link-trace-summary. The headset keeps its newest 200 runs
+[group('headset (Galaxy XR)')]
+pull-galaxy-traces dest="recordings/linktraces" app="robot":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    mkdir -p "{{dest}}"
+    src=/sdcard/Android/data/$(just _galaxy-app-id "{{app}}")/files/linktraces
+    files=$(just _adb shell "ls $src 2>/dev/null" | tr -d '\r' | grep '\.ltrace$' || true)
+    [ -n "$files" ] || { echo "no link traces on the headset yet ($src): run the app once with RecordLinkTrace on (the default)"; exit 0; }
+    new=0
+    for f in $files; do
+        [ -f "{{dest}}/$f" ] && [ "$(stat -c %s "{{dest}}/$f")" -gt 0 ] && continue
+        just _adb pull "$src/$f" "$(wslpath -m "{{dest}}")/$f" > /dev/null
+        new=$((new + 1))
+    done
+    echo "[traces] $new new of $(echo "$files" | wc -w) on the headset, in {{dest}}"
+
+# Bring the Unity editor's link traces (Play mode, Direct Preview: docs/adr/0035 N1) to `dest`. In Play mode the network is this PC's, not the headset's Wi-Fi; their header says editor: true
+[group('headset (Galaxy XR)')]
+pull-editor-traces dest="recordings/linktraces":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    winuser=$(cmd.exe /c 'echo %USERNAME%' 2>/dev/null | tr -d '\r\n')
+    src="/mnt/c/Users/$winuser/AppData/LocalLow/Teleop/TeleopXR/linktraces"
+    mkdir -p "{{dest}}"
+    [ -d "$src" ] || { echo "no editor link traces yet ($src)"; exit 0; }
+    n=0; for f in "$src"/*.ltrace; do [ -e "$f" ] || continue; b=$(basename "$f"); [ -f "{{dest}}/editor-$b" ] || { cp "$f" "{{dest}}/editor-$b"; n=$((n + 1)); }; done
+    echo "[traces] $n new from the editor, in {{dest}}"
+
+# Summarise link traces (docs/adr/0035 N1; trainer/contract/LINK_TRACE_FORMAT.md): per file, the one-way delay (owd_downlink_ms), round trips, RFC 3550 jitter, loss by sequence, stalls over 100/250/500 ms and the bursts after them, leaving out what the headset's own disturbance delayed. Default: every trace in recordings/linktraces
+link-trace-summary +files="recordings/linktraces/*.ltrace":
+    cd trainer && python3 -m armpred.net.linktrace $(for f in {{files}}; do case "$f" in /*) echo "$f" ;; *) echo "../$f" ;; esac; done)
+
+# Put the arm in Isaac on the tiers' networks (docs/adr/0035 N4): writes a schedule of train-side tier traces (good, poor, very-bad in turn, `segment_s` seconds each, `segments` of them; seeded, `seed=auto` draws one) into the running `just isaac-jetrover-host`'s uplink control file. RobotHost then replays each trace by time on the joint commands and keepalives it receives (their delays and losses), records every switch (UP), and its sessions are robot-side impaired, which the trainer takes as uplink truth. The schedule starts when RobotHost reads the file (within 0.5 s); `just isaac-uplink-off` ends it. Runs this commit's trainer from ~/teleoperation-datasets (it must be on GitHub)
+[group('isaac')]
+isaac-uplink-tiers segment_s="60" segments="15" seed="auto" tiers="good,poor,very-bad":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    case "{{seed}}" in auto) seed=$(( (RANDOM << 15) | RANDOM )) ;; *[!0-9]*|"") echo "error: seed is a number or auto" >&2; exit 1 ;; *) seed={{seed}} ;; esac
+    case "{{segment_s}}{{segments}}" in *[!0-9.]*) echo "error: segment_s and segments are numbers" >&2; exit 1 ;; esac
+    case "{{tiers}}" in *[!a-z,-]*) echo "error: tiers is a list of good, poor, very-bad" >&2; exit 1 ;; esac
+    commit=$(git rev-parse HEAD)
+    git fetch -q origin
+    [ -n "$(git branch -r --contains "$commit" 2>/dev/null)" ] || { echo "error: $commit is not on GitHub: push it first" >&2; exit 1; }
+    ssh -o ConnectTimeout=10 "{{gpu_host}}" "COMMIT='$commit' SEED='$seed' bash -s" <<'REMOTE'
+    set -euo pipefail
+    repo=$HOME/teleoperation-datasets
+    [ -d "$repo" ] || git clone -q https://github.com/andreitimoshukcollege-del/teleoperation.git "$repo"
+    cd "$repo" && git fetch -q origin && git checkout -q "$COMMIT"
+    cd trainer
+    unset PYTHONPATH
+    spec=$("$HOME/teleoperation/trainer/.venv/bin/python" -m armpred.net.datasets uplink-schedule --seed "$SEED" --segment-s {{segment_s}} --segments {{segments}} --tiers {{tiers}})
+    printf '%s\n' "$spec" > "$HOME/isaacsim/jetrover-uplink.part" && mv "$HOME/isaacsim/jetrover-uplink.part" "$HOME/isaacsim/jetrover-uplink"
+    echo "$spec" | tr ';' '\n'
+    REMOTE
+
+# Switch the Isaac arm's uplink impairment off (docs/adr/0035 N4): what is in flight still arrives
+[group('isaac')]
+isaac-uplink-off:
+    ssh -o ConnectTimeout=10 "{{gpu_host}}" 'printf "none 0\n" > "$HOME/isaacsim/jetrover-uplink" && echo "uplink impairment off"'
+
+# Did an Isaac session's arm get its tier schedule's delays and losses (docs/adr/0035 N4)? Per UP segment naming a trace: the delivered commands' delay (JC tDeliver - t) and their loss by sequence, against the trace over the same span; exits non-zero when a segment is off or none was checked. `id` as for isaac-jetrover-recording-fetch (newest by default)
+[group('isaac')]
+isaac-uplink-check id="newest":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    ssh -o ConnectTimeout=10 "{{gpu_host}}" "ID='{{id}}' bash -s" <<'REMOTE'
+    set -euo pipefail
+    rec=$HOME/isaacsim/jetrover-recordings
+    id=$ID; [ "$id" = newest ] && id=$(ls -t "$rec" | grep -v '^\.' | head -1)
+    case "$id" in *[!A-Za-z0-9._-]*|"") echo "error: not a session id: $id" >&2; exit 1 ;; esac
+    cd "$HOME/teleoperation-datasets/trainer"
+    unset PYTHONPATH
+    "$HOME/teleoperation/trainer/.venv/bin/python" -m armpred.net.datasets uplink-check "$rec/$id"
+    REMOTE
+
+# Bring an Isaac JetRover session from the GPU machine into recordings/isaac-jetrover/<id> (gitignored): its session.json, robothost.jlog, isaac.jlog and the rest, without the rendered frames (isaac/), never over one already here. `id` is a folder of ~/isaacsim/jetrover-recordings there, e.g. 20261109T221225Z-auto; "newest" takes the newest. Streamed over ssh (scp is not allowed there)
+[group('isaac')]
+isaac-jetrover-recording-fetch id="newest":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    id="{{id}}"
+    if [ "$id" = newest ]; then id=$(ssh -o ConnectTimeout=10 "{{gpu_host}}" 'ls -t ~/isaacsim/jetrover-recordings | grep -v "^\." | head -1'); fi
+    case "$id" in *[!A-Za-z0-9._-]*|"") echo "error: not a session id: $id" >&2; exit 1 ;; esac
+    dest=recordings/isaac-jetrover/$id
+    [ ! -e "$dest" ] || { echo "$dest is already here"; exit 0; }
+    mkdir -p "$dest.part"
+    ssh -o ConnectTimeout=10 "{{gpu_host}}" "cd ~/isaacsim/jetrover-recordings/$id && tar cf - --exclude=./isaac ." | tar xf - -C "$dest.part"
+    mv "$dest.part" "$dest"
+    echo "$dest: $(ls "$dest" | tr '\n' ' ')"
+
+# Replay a real JetRover headset session through the headset's own predictors offline, with and without the network forecast (docs/adr/0035 N3; Teleop.Eval headset-replay): RobotHost's robothost.jlog (frames sent, commands) joined by sequence with the headset's .ltrace (when each frame arrived), ClockSync and the forecaster run as the headset's link does, every default preset scored over the whole session by LiveJointScorer (error, correction, display jitter; arm joints). One session is an anecdote, printed, not a result. E.g. `just headset-replay recordings/isaac-jetrover/20261109T221225Z-auto recordings/linktraces/20261109T221220Z.ltrace`
+[group('trainer')]
+headset-replay session trace forecast="persistence":
+    cd core && dotnet run --project Teleop.Eval -- headset-replay --session "../{{session}}" --trace "../{{trace}}" --forecast "{{forecast}}"
+
+# Our own Wi-Fi as training traces (docs/adr/0035 N2, decision 3): every link trace in recordings/linktraces becomes .trace v2 pieces (cut where the headset disturbed its own link) in recordings/network-datasets/ours-wifi, each with its tier by the standards (G.1050's service test profiles, measured per minute as Y.1541 measures) printed. Needs `just trainer-setup`
+[group('trainer')]
+network-traces-ours +files="recordings/linktraces/*.ltrace":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    PY=$(just _trainer-python)
+    cd trainer
+    "../$PY" -m armpred.net.datasets --root ../recordings/network-datasets ours $(for f in {{files}}; do case "$f" in /*) echo "$f" ;; *) echo "../$f" ;; esac; done)
+
+# Fetch the public network datasets onto the GPU machine and convert them (docs/adr/0035 N2), detached: G.1050's own test cases (the ITU attachment, ~780 MB), Mahimahi's cellular traces (~31 MB), a day of Puffer (~290 MB, fetched once as Puffer asks), the FCC's July 2023 MBA archive (~1.7 GB) and RIPE Atlas pings by connection kind, into ~/datasets/network/<name> with a manifest each (source, licence, sha256), then .trace v2 files with their tiers, and the held-out split. Downloads are untrusted data: HTTPS from each dataset's own hosts only, size-capped, parsed and never run. Runs this commit from its own clone (~/teleoperation-datasets; it must be on GitHub) with the trainer's venv there. `names` limits it, e.g. `just network-datasets-fetch "mahimahi ripe-atlas"`. Watch with `just network-datasets-status`
+[group('trainer')]
+network-datasets-fetch names="":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    for n in {{names}}; do case "$n" in g1050-2016|mahimahi|puffer|fcc-mba|ripe-atlas) ;; *) echo "error: unknown dataset $n" >&2; exit 1 ;; esac; done
+    commit=$(git rev-parse HEAD)
+    git fetch -q origin
+    [ -n "$(git branch -r --contains "$commit" 2>/dev/null)" ] || { echo "error: $commit is not on GitHub: push it first" >&2; exit 1; }
+    ssh -o ConnectTimeout=10 "{{gpu_host}}" "COMMIT='$commit' NAMES='{{names}}' bash -s" <<'REMOTE'
+    set -euo pipefail
+    if [ -f ~/network-datasets.pid ] && kill -0 "$(cat ~/network-datasets.pid)" 2>/dev/null; then
+        echo "error: a fetch is already going (pid $(cat ~/network-datasets.pid)): just network-datasets-status" >&2; exit 1
+    fi
+    py=$HOME/teleoperation/trainer/.venv/bin/python
+    [ -x "$py" ] || { echo "error: no trainer venv at $py (run just gpu-train once, or trainer/setup.sh there)" >&2; exit 1; }
+    repo=$HOME/teleoperation-datasets
+    [ -d "$repo" ] || git clone -q https://github.com/andreitimoshukcollege-del/teleoperation.git "$repo"
+    cd "$repo" && git fetch -q origin && git checkout -q "$COMMIT" && echo "repo at $(git log --oneline -1); $(df -h ~ | tail -1 | awk '{print $4}') free"
+    cd trainer
+    log=~/network-datasets.log
+    # The clone's own armpred, not the venv's: -m from this folder puts it first on sys.path.
+    nohup setsid bash -c "unset PYTHONPATH; '$py' -m armpred.net.datasets fetch $NAMES; '$py' -m armpred.net.datasets convert $NAMES; '$py' -m armpred.net.datasets split" > "$log" 2>&1 < /dev/null &
+    echo $! > ~/network-datasets.pid
+    echo "started (pid $!), log $log"
+    sleep 10; tail -5 "$log"
+    REMOTE
+
+# How the network datasets stand on the GPU machine (docs/adr/0035 N2): per dataset the files fetched (and any whose sha256 no longer matches its manifest: exit 1), the licence, the traces per tier, and the held-out split; plus whether a fetch is running and its log's tail
+[group('trainer')]
+network-datasets-status lines="15":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    ssh -o ConnectTimeout=10 "{{gpu_host}}" 'bash -s' <<'REMOTE'
+    set -uo pipefail
+    if [ -f ~/network-datasets.pid ] && kill -0 "$(cat ~/network-datasets.pid)" 2>/dev/null; then echo "fetch running (pid $(cat ~/network-datasets.pid))"; else echo "no fetch running"; fi
+    tail -n {{lines}} ~/network-datasets.log 2>/dev/null || echo "(no log)"
+    echo
+    cd ~/teleoperation-datasets/trainer 2>/dev/null || { echo "no ~/teleoperation-datasets yet: just network-datasets-fetch"; exit 1; }
+    unset PYTHONPATH; ~/teleoperation/trainer/.venv/bin/python -m armpred.net.datasets status
+    REMOTE
 
 # Build the Quest APK (unity/TeleopVR, Unity 2022.3) from its Build Settings scenes after its scene check -> unity/TeleopVR/Builds/TeleopVR-Quest.apk. The first Android build re-imports assets; close that project's editor first
 [group('quest (parked)')]
@@ -158,22 +463,30 @@ mirror-galaxy *args:
     # ADB reaches the Windows process through WSLENV, as the Windows path scrcpy expects.
     ADB="$(wslpath -w "$adb")" WSLENV="${WSLENV:+$WSLENV:}ADB" "$scrcpy" --no-audio --max-size 1920 --window-title=GalaxyXR {{args}}
 
-# Install the Galaxy XR APK on the headset over USB (developer mode and USB debugging on; accept the prompt in the headset)
+# Install a Galaxy XR app on the headset over USB (developer mode and USB debugging on; accept the prompt in the headset): app=robot (just build-galaxy) or app=sim (just build-galaxy-sim). The two install side by side
 [group('headset (Galaxy XR)')]
-install-galaxy:
+install-galaxy app="robot":
     #!/usr/bin/env bash
     set -euo pipefail
-    apk=unity/TeleopXR/Builds/TeleopXR.apk
-    [ -f "$apk" ] || { echo "error: $apk not found; run just build-galaxy first" >&2; exit 1; }
+    case "{{app}}" in robot) build=build-galaxy ;; sim) build=build-galaxy-sim ;; *) echo "error: app must be robot or sim, got '{{app}}'" >&2; exit 1 ;; esac
+    apk=unity/TeleopXR/Builds/teleop-jetrover-{{app}}.apk
+    [ -f "$apk" ] || { echo "error: $apk not found; run just $build first" >&2; exit 1; }
     just _adb devices -l
     just _adb install -r "$(wslpath -m "$apk")"
 
-# Point the Galaxy XR app at the robot without a rebuild: pushes a full jetrover_connection.json override (the Bridge default with RemoteHost replaced) to the app's files directory. Finds the robot itself (`just robot-ip`); pass an address to override. motion=false sends nothing to the arm (ConfirmHardwareMotion off): only the virtual arm moves, for a first try of the controls
+# Point the Galaxy XR app at the robot without a rebuild: pushes a full jetrover_connection.json override (the Bridge default with RemoteHost replaced) to the app's files directory. Finds the robot itself (`just robot-ip`); pass an address to override. motion=false sends nothing to the arm (ConfirmHardwareMotion off): only the virtual arm moves, for a first try of the controls. `discover=false` turns off the app's own search for the robot (docs/adr/0022), so it talks to this address only: use it for the Isaac JetRover (`just push-galaxy-config <GPU machine> true false`), so a real robot nearby is never found instead. `app=sim` pushes to the Isaac app (just build-galaxy-sim) instead of the robot's, and refuses an automatic host or discovery: `just push-galaxy-config <GPU machine> true false sim`
 [group('headset (Galaxy XR)')]
-push-galaxy-config host=default_jetrover_host motion="true":
+push-galaxy-config host=default_jetrover_host motion="true" discover="true" app="robot":
     #!/usr/bin/env bash
     set -euo pipefail
     case "{{motion}}" in true|false) ;; *) echo "error: motion must be true or false, got '{{motion}}'" >&2; exit 1 ;; esac
+    case "{{discover}}" in true|false) ;; *) echo "error: discover must be true or false, got '{{discover}}'" >&2; exit 1 ;; esac
+    just _galaxy-app-id "{{app}}" > /dev/null
+    # The sim app must never be pointed at the real robot: it needs the GPU machine's address, and never discovers.
+    if [ "{{app}}" = sim ]; then
+        case "{{host}}" in auto|"") echo "error: app=sim needs the Isaac host's address (the GPU machine): just push-galaxy-config <address> true false sim" >&2; exit 1 ;; esac
+        [ "{{discover}}" = false ] || { echo "error: app=sim never discovers (it would find the real robot): pass discover=false" >&2; exit 1; }
+    fi
     host=$(just _robot-host "{{host}}")
     # The headset has no Tailscale. When this PC can only reach the robot through it (it is on
     # another network), ask the robot for its own lab-network address and give the headset that.
@@ -188,28 +501,30 @@ push-galaxy-config host=default_jetrover_host motion="true":
     esac
     tmp=$(mktemp --suffix=.json)
     trap 'rm -f "$tmp"' EXIT
-    python3 - "$tmp" "$host" "{{motion}}" <<'PY'
+    python3 - "$tmp" "$host" "{{motion}}" "{{discover}}" <<'PY'
     import json, sys
     cfg = json.load(open("unity/Teleop.Bridge/Runtime/Resources/jetrover_connection.json", encoding="utf-8"))
     cfg["RemoteHost"] = sys.argv[2]
     cfg["ConfirmHardwareMotion"] = sys.argv[3] == "true"
+    # false: the address given is the only one (the Isaac JetRover, docs/adr/0034): a real robot nearby is never found instead.
+    cfg["DiscoverRobot"] = sys.argv[4] == "true"
     json.dump(cfg, open(sys.argv[1], "w"), indent=2)
     PY
-    dest=/sdcard/Android/data/com.teleop.jetroverxr/files
+    dest=/sdcard/Android/data/$(just _galaxy-app-id "{{app}}")/files
     just _adb shell mkdir -p "$dest"
     just _adb push "$(wslpath -m "$tmp")" "$dest/jetrover_connection.json"
-    echo "Galaxy XR app now targets $host, hardware motion {{ if motion == "true" { "ON" } else { "OFF (virtual arm only)" } }}; restart the app to pick it up."
+    echo "Galaxy XR app ({{app}}) now targets $host, hardware motion {{ if motion == "true" { "ON" } else { "OFF (virtual arm only)" } }}, discovery {{ if discover == "true" { "on" } else { "OFF (this address only)" } }}; restart the app to pick it up."
 
 # Put a learned joint model on the Galaxy XR without a rebuild (docs/adr/0025): exports trainer/runs/<run>'s model.onnx as weights (checked against it on the golden's real windows) and pushes them to the app's files/models/<run>.weights, which the `learned` preset named <run> loads in place of the build's Resources copy. Point a preset at it with "Model": "<run>" (just push-galaxy-config pushes the presets); restart the app
 [group('headset (Galaxy XR)')]
-push-galaxy-model run:
+push-galaxy-model run app="robot":
     #!/usr/bin/env bash
     set -euo pipefail
     case "{{run}}" in *[!A-Za-z0-9._-]*|"") echo "error: run is a trainer/runs name" >&2; exit 1 ;; esac
     [ -f "trainer/runs/{{run}}/model.onnx" ] || { echo "error: no trainer/runs/{{run}}/model.onnx (just gpu-fetch it)" >&2; exit 1; }
     mkdir -p dist
     ( cd trainer && .venv-win-cuda/Scripts/armpred.exe export-weights --run "runs/{{run}}" --golden ../core/testdata/learned/golden-v3.json --out "../dist/{{run}}.weights" )
-    dest=/sdcard/Android/data/com.teleop.jetroverxr/files/models
+    dest=/sdcard/Android/data/$(just _galaxy-app-id "{{app}}")/files/models
     just _adb shell mkdir -p "$dest"
     just _adb push "dist/{{run}}.weights" "$dest/{{run}}.weights"
     echo "the headset has model {{run}}; a preset with \"Model\": \"{{run}}\" runs it after the app restarts"
@@ -234,7 +549,9 @@ default_operator_host := env_var_or_default("OPERATOR_HOST", "100.82.140.80")
 # The robot's hostname, which it announces over mDNS as <name>.local (`just robot-set-hostname`).
 robot_mdns_name := env_var_or_default("JETROVER_NAME", "jetrover-sinrg")
 # The GPU machine for trainer runs (just gpu-train, gpu-status, gpu-fetch): an account with this repo's SSH key.
-gpu_host := env_var_or_default("GPU_HOST", "andrei@10.188.58.164")
+gpu_host := env_var_or_default("GPU_HOST", "andrei@10.188.58.133")
+# The Isaac Sim installed in our own account on the GPU machine (docs/adr/0031): NVIDIA's pip build, whose 6.x wheels are for Python 3.12, the machine's own.
+isaac_version := env_var_or_default("ISAAC_VERSION", "6.2.0.0")
 # Where ROBOT OFF parks the arm before its torque goes off (docs/adr/0023 decision 5), passed by
 # deploy-robothost as --rest-pose-deg: degrees, motors 1-5 (base yaw, shoulder, elbow, wrist pitch,
 # wrist roll; the gripper is left as it is), in RobotHost's joint angles as `just joint-probe` prints
@@ -314,9 +631,9 @@ _robot-host host="auto":
     echo "error: could not find the robot. Nothing answered for $name.local on this network, and Tailscale could not reach '$name'. Check it is powered and online (cat /sys/class/net/eth0/carrier, tailscale status on the robot), or set JETROVER_HOST to an address." >&2
     exit 1
 
-# Point both Unity editors' Play mode at the robot's current address: updates RemoteHost in each project's per-machine jetrover_connection.json override (created from the Bridge default if missing) -- no rebuild. Windows side only. The Galaxy headset gets the same with `just push-galaxy-config`
+# Point both Unity editors' Play mode at the robot's current address: updates RemoteHost in each project's per-machine jetrover_connection.json override (created from the Bridge default if missing) -- no rebuild. Windows side only. The Galaxy headset gets the same with `just push-galaxy-config` discover=false points it at this address only, as push-galaxy-config's does (use it for Isaac)
 [group('headset (Galaxy XR)')]
-unity-robot-host host=default_jetrover_host:
+unity-robot-host host=default_jetrover_host discover="true":
     #!/usr/bin/env bash
     set -euo pipefail
     host=$(just _robot-host "{{host}}")
@@ -327,16 +644,18 @@ unity-robot-host host=default_jetrover_host:
         product=$(grep -m1 'productName:' "$settings" | sed 's/.*productName: *//' | tr -d '\r')
         dir="/mnt/c/Users/$winuser/AppData/LocalLow/$company/$product"
         mkdir -p "$dir"
-        python3 - "$dir/jetrover_connection.json" "$host" "$proj" <<'PY'
+        python3 - "$dir/jetrover_connection.json" "$host" "$proj" "{{discover}}" <<'PY'
     import json, os, sys
-    path, host, proj = sys.argv[1:4]
+    path, host, proj, discover = sys.argv[1:5]
     # The override replaces the whole config, so keep an existing one's other fields.
     src = path if os.path.exists(path) else "unity/Teleop.Bridge/Runtime/Resources/jetrover_connection.json"
     cfg = json.load(open(src, encoding="utf-8"))
     old = cfg.get("RemoteHost")
     cfg["RemoteHost"] = host
+    # discover=false: this address only. For Isaac, so Play mode never finds the real JetRover over Tailscale instead.
+    cfg["DiscoverRobot"] = discover != "false"
     json.dump(cfg, open(path, "w", encoding="utf-8"), indent=2)
-    print(f"{proj}: RemoteHost {old} -> {host}  ({path})")
+    print(f"{proj}: RemoteHost {old} -> {host}, discovery {'on' if cfg['DiscoverRobot'] else 'OFF'}  ({path})")
     PY
     done
 
@@ -377,6 +696,109 @@ build-profile output="" force="false":
         {{ if output != "" { "--output " + output } else { "" } }} \
         {{ if force == "true" { "--force" } else { "" } }}
 
+# Regenerate core/RobotProfiles/fr3-duo.json (and the byte-identical copies in trainer/contract/profiles/ and the headset's Bridge Resources) and its collision model fr3-duo.collision.json (fit-capsules: one capsule per link from the URDF's collision meshes, docs/adr/0026 amendment) from the vendored URDF (docs/adr/0026 decision 3) -- never edit that file by hand. Ids: left arm 1-7 + hand 8, right arm 11-17 + hand 18. The URDF has no acceleration or jerk limits, so Franka's published FR3 figures are given here (10 rad/s^2, 5000 rad/s^3); Teleop.Eval.Tests' ImportUrdfCommandTests repeats these arguments and requires the committed bytes, so change both together
+[group('robot: profiles')]
+import-fr3-profile:
+    cd core && dotnet run --project Teleop.Eval -- import-urdf \
+        --urdf ../robot/franka/fr3_duo/urdf/fr3_duo.urdf --out RobotProfiles/fr3-duo.json --name fr3-duo \
+        --arm left:left_fr3v2_hand_tcp:1 --arm right:right_fr3v2_hand_tcp:11 \
+        --gripper left:left_fr3v2_finger_joint1:8 --gripper right:right_fr3v2_finger_joint1:18 \
+        --acceleration 10 --jerk 5000 \
+        --upstream frankarobotics/franka_description@7aeeddc449edf8d62b594f9e36a81da53e7796f9
+    cp core/RobotProfiles/fr3-duo.json trainer/contract/profiles/fr3-duo.json
+    cd core && dotnet run --project Teleop.Eval -- fit-capsules --urdf ../robot/franka/fr3_duo/urdf/fr3_duo.urdf \
+        --profile RobotProfiles/fr3-duo.json --out RobotProfiles/fr3-duo.collision.json --margin 0.01
+    # The headset's copies (docs/adr/0029): Unity loads only what is under the project; BridgeResourcesTests holds them to these.
+    cp core/RobotProfiles/fr3-duo.json unity/Teleop.Bridge/Runtime/Resources/fr3_duo_profile.json
+    cp core/RobotProfiles/fr3-duo.collision.json unity/Teleop.Bridge/Runtime/Resources/fr3_duo_collision.json
+
+# ---- the simulated FR3 Duo (docs/adr/0026, 0027): nothing real moves ----
+
+fr3_sim_recordings := "recordings/fr3-sim"
+
+# RobotHost on this PC against a SIMULATED FR3 Duo (docs/adr/0027): core/RobotProfiles/fr3-duo.json, Core's trajectory shaper at 1 kHz, a second-order tracking lag of track_hz, readings with noise_rad of seeded noise. Joint port 6002 and discovery 6005, as on the robot, so the headset and the Eval tools talk to it as they would to a robot (just fr3-sim-drive, just joint-probe remote_host=127.0.0.1). Sessions the headset commands are recorded automatically into recordings/fr3-sim (teleop-session v2, source sim-host); the uplink control file is recordings/fr3-sim/.uplink. Enter stops it. Moves nothing real
+[group('fr3 (simulated)')]
+fr3-sim-host track_hz="20" noise_rad="0" seed="1" port="6002" discovery_port="6005" scene="fr3-duo-bench" scene_seed="auto":
+    mkdir -p {{fr3_sim_recordings}}
+    cd core && dotnet run --project Teleop.RobotHost -- --profile-path RobotProfiles/fr3-duo.json --joint-local-port {{port}} --backend sim \
+        --sim-track-hz {{track_hz}} --sim-noise-rad {{noise_rad}} --sim-seed {{seed}} --discovery-port {{discovery_port}} \
+        --collision-model RobotProfiles/fr3-duo.collision.json \
+        {{ if scene == "none" { "" } else { "--scene Scenes/" + scene + ".json --scene-seed " + scene_seed } }} \
+        --record-control ../{{fr3_sim_recordings}}/.active --auto-record --auto-record-root ../{{fr3_sim_recordings}} \
+        --uplink-control ../{{fr3_sim_recordings}}/.uplink
+
+# Check the world a RobotHost streams (docs/adr/0031 amendment 2), as the headset sees it (Teleop.Eval world-probe): the status names this scene file, every object is posed within 2 s, world frames come at 50 +-5 Hz, and, given the seed, the poses are that seed's layout; new_layout=true then asks for NEW LAYOUT and checks layout 2 arrives; resize=id:factor[:expected] asks to resize one object (docs/adr/0034 amendment 6) and checks the sizes and its new height. Sends no joint command, so no arm moves. Against `just fr3-sim-host scene_seed=7` (another terminal): `just fr3-world-probe 127.0.0.1 7 true`; against Isaac, its address
+[group('fr3 (simulated)')]
+fr3-world-probe remote_host="127.0.0.1" seed="" new_layout="false" seconds="3" scene="fr3-duo-bench" move="" resize="":
+    cd core && dotnet run --project Teleop.Eval -- world-probe --remote-host {{remote_host}} --scene Scenes/{{scene}}.json --seconds {{seconds}} \
+        {{ if seed == "" { "" } else { "--seed " + seed } }} {{ if new_layout == "true" { "--new-layout" } else { "" } }} \
+        {{ if move == "" { "" } else { "--move " + move } }} {{ if resize == "" { "" } else { "--resize " + resize } }}
+
+# Drive the simulated FR3 Duo of a running just fr3-sim-host (in another terminal) through seeded joint-space waypoints at 48 Hz (Teleop.Eval chain-drive): every joint within +-amplitude rad of where it starts, the hands toggling; Enter stops it, back at the start. Simulated robots only: chain-drive refuses a real one until the serial-chain collision model exists (docs/adr/0026 decision 5)
+[group('fr3 (simulated)')]
+fr3-sim-drive seconds="60" seed="1" amplitude="0.5" remote_host="127.0.0.1":
+    cd core && dotnet run --project Teleop.Eval -- chain-drive --simulated-robot --remote-host {{remote_host}} \
+        --seconds {{seconds}} --seed {{seed}} --amplitude-rad {{amplitude}}
+
+# Long synthetic teleoperation sessions of the FR3 Duo, headless (Teleop.Eval chain-ik-stress, docs/adr/0029 amendment 8): a scripted operator reaches all over a person's reach with the grips people use (palm down, forward, palm in, wrist rolls), holds, loses tracking, lets go and reaches beyond the robot, through the headset's absolute mapping and SerialChainTeleop at 90 Hz. A slow multi-start solve says which targets were reachable; prints how often each arm was off a reachable target, how long it took to reach a target once the hand stopped, the recovery's work, and every episode where a reachable target the hand held stayed unreached (stuck) or the gripper pointed more than 30 degrees off (wrong way). Exits 1 on any episode. Extra args pass through: --set RecoverAfterSeconds=0 (compare without recovery), --trace arm:from:to (every frame), --show n. Touches no robot
+[group('fr3 (simulated)')]
+fr3-ik-stress seconds="300" seeds="1-5" *args:
+    cd core && dotnet run --project Teleop.Eval -c Release -- chain-ik-stress --seconds {{seconds}} --seeds {{seeds}} {{args}}
+
+# The headset's two-hand operator (docs/adr/0029) with scripted hands, against a running just fr3-sim-host (another terminal): the same SerialChainJointLink and SerialChainTeleop the Galaxy XR runs, over the real socket. Grabs with both hands, moves them reach_m for 2 s, holds 2 s, and passes when each measured tool is within tolerance_mm of its clutch target, the left gripper closed, nothing blocked and the prediction within 1 deg at p95 (each reading against what the twin showed for its instant). headset=true says Headset in the heartbeat, so RobotHost records the session as it would the Galaxy XR's. Simulated robots only
+[group('fr3 (simulated)')]
+fr3-teleop-probe reach_m="0.08" tolerance_mm="3" predictor="franka-replay" headset="false" remote_host="127.0.0.1":
+    cd core && dotnet run --project Teleop.Eval -- chain-teleop-probe --simulated-robot --remote-host {{remote_host}} \
+        --reach-m {{reach_m}} --tolerance-mm {{tolerance_mm}} --predictor {{predictor}} {{ if headset == "true" { "--as-headset" } else { "" } }}
+
+# Record one scripted session on the simulated FR3 Duo (a running just fr3-sim-host): opens recordings/fr3-sim/<UTC>-<label>/ with a teleop-session v2 session.json (source sim-host) and the profile, runs chain-drive into its operator.jlog, then closes it (stoppedUtc, files.sha256). Its arm is simulated and is never the robot's (docs/adr/0027 decision 6)
+[group('fr3 (simulated)')]
+fr3-sim-record label seconds="60" seed="1" amplitude="0.5" network="lan":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    root={{fr3_sim_recordings}}
+    mkdir -p "$root"
+    [ -s "$root/.active" ] && { echo "error: a session is already recording ($(cat "$root/.active"))" >&2; exit 1; }
+    id="$(date -u +%Y%m%dT%H%M%SZ)-{{label}}"
+    dir="$root/$id"
+    mkdir -p "$dir"
+    cp core/RobotProfiles/fr3-duo.json "$dir/robot-profile.json"
+    python3 - "$dir/session.json" "$id" "{{label}}" "{{network}}" "{{seed}}" "{{amplitude}}" "$(sha256sum core/RobotProfiles/fr3-duo.json | cut -d' ' -f1)" "$(git rev-parse HEAD)" "$([ -n "$(git status --porcelain -- core)" ] && echo true || echo false)" <<'PY'
+    import datetime, json, sys
+    path, sid, label, network, seed, amplitude, profile_sha, sha, dirty = sys.argv[1:]
+    json.dump({
+        "format": "teleop-session", "version": 2, "id": sid, "source": "sim-host", "label": label,
+        "startedUtc": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "conditions": {
+            "speedSliderRadPerSec": "none",
+            "load": {"kind": "none", "payloadGrams": 0},
+            "network": {"uplinkProfile": network, "uplinkSeed": 0, "addedDelayMs": 0},
+            "motion": "chain-drive:waypoints", "operator": "chain-drive seed " + seed + " amplitude " + amplitude,
+        },
+        "builds": {"robothost": {"sha": sha, "dirty": dirty == "true"}},
+        "robotProfile": "fr3-duo", "robotProfileSha256": profile_sha,
+        "notes": "the simulated FR3 Duo (Fr3SimBackend, just fr3-sim-host); its arm is simulated and is never the robot's",
+    }, open(path, "w"), indent=2)
+    PY
+    if [ "{{network}}" != "lan" ]; then printf '%s 1\n' "{{network}}" > "$root/.uplink"; sleep 1; fi
+    printf '%s\n' "../$dir" > "$root/.active"
+    sleep 1
+    status=0
+    (cd core && dotnet run --project Teleop.Eval -- chain-drive --simulated-robot --seconds {{seconds}} --seed {{seed}} \
+        --amplitude-rad {{amplitude}} --operator-log "../$dir/operator.jlog" --session-id "$id") || status=$?
+    rm -f "$root/.active" "$root/.uplink"
+    for i in $(seq 1 40); do tail -n 1 "$dir/robothost.jlog" 2>/dev/null | grep -q '^END|' && break; sleep 0.25; done
+    python3 - "$dir/session.json" <<'PY'
+    import datetime, json, sys
+    meta = json.load(open(sys.argv[1]))
+    meta["stoppedUtc"] = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    json.dump(meta, open(sys.argv[1], "w"), indent=2)
+    PY
+    (cd "$dir" && sha256sum session.json robot-profile.json *.jlog > files.sha256)
+    for f in "$dir"/*.jlog; do printf '%-16s %8s lines  %s\n' "$(basename "$f")" "$(wc -l < "$f")" "$(tail -n 1 "$f" | cut -c1-60)"; done
+    echo "recorded $dir (chain-drive exit $status)"
+    exit $status
+
 # Phase-3 cross-machine ClockSync diagnostic against an already-running Teleop.RobotHost -- moves the real arm once and holds; a human must be watching the hardware
 [group('robot: moves the arm (someone watching)')]
 clocksync-check remote_host=default_jetrover_host remote_port="6000" local_port="6001" rate_hz="20" duration_seconds="20":
@@ -403,7 +825,7 @@ deploy-robot checks="true":
 
 # Publish Teleop.RobotHost for the Jetson (linux-arm64), copy it over, and restart its systemd service -- needs passwordless ssh/scp; does NOT touch the Jetson's ROS 2 nodes, see robot/systemd/README.md. It runs recording whenever the headset commands the robot (--auto-record, docs/adr/0023; robot/README.md) unless auto_record=false, and parks then relaxes the arm on the headset's ROBOT OFF at rest_pose_deg (default jetrover_rest_pose_deg, docs/adr/0023 decision 5). Relay wire v5: deploy the ROS side too (just deploy-ros, or just deploy-robot for both)
 [group('robot: deploy and restart (someone at the robot)')]
-deploy-robothost remote_host=default_jetrover_host remote_user="jetson" operator_host=default_operator_host max_direction_magnitude="" profile_path="" pulses_per_second="" auto_record="true" rest_pose_deg=jetrover_rest_pose_deg park_contact_deg=jetrover_park_contact_deg:
+deploy-robothost remote_host=default_jetrover_host remote_user="jetson" operator_host=default_operator_host max_direction_magnitude="" profile_path="" pulses_per_second="" auto_record="true" rest_pose_deg=jetrover_rest_pose_deg park_contact_deg=jetrover_park_contact_deg scenario_free_gb="8:4":
     #!/usr/bin/env bash
     set -euo pipefail
     case "{{auto_record}}" in true|false) ;; *) echo "error: auto_record must be true or false, got '{{auto_record}}'" >&2; exit 1 ;; esac
@@ -433,7 +855,9 @@ deploy-robothost remote_host=default_jetrover_host remote_user="jetson" operator
     scp -o StrictHostKeyChecking=accept-new "$archive" "${scp_dest}:/tmp/${remote_dir}.tar.gz"
     extra_args=""
     if [ -n "{{max_direction_magnitude}}" ]; then extra_args="$extra_args --max-direction-magnitude {{max_direction_magnitude}}"; fi
-    if [ -n "{{profile_path}}" ]; then extra_args="$extra_args --profile-path {{profile_path}}"; fi
+    # The profile RobotHost converts angles with: profile_path, or else the jetrover.json this deploy copied (never the
+    # C# built-in default, which goes stale when a servo is re-mounted: the shoulder, 2026-11-11). Sessions record the same file.
+    extra_args="$extra_args --profile-path {{ if profile_path == "" { "/home/jetson/robothost_current/robot-profile.json" } else { profile_path } }}"
     # The fastest the servos may be told to move (pulses/s; the code default is 2200, about 9 rad/s).
     # The headset's speed slider asks for slower moves with every joint command, and RobotHost caps
     # those requests at this. Lower it to cap the slider; leave it empty to keep the default.
@@ -454,9 +878,18 @@ deploy-robothost remote_host=default_jetrover_host remote_user="jetson" operator
     case "$rest_pose" in *[!0-9.,-]*) echo "error: rest_pose_deg must be comma-separated degrees, got '$rest_pose'" >&2; exit 1 ;; esac
     if [ -n "$rest_pose" ]; then extra_args="$extra_args --rest-pose-deg $rest_pose"; fi
     if [ -n "{{park_contact_deg}}" ]; then extra_args="$extra_args --park-contact-deg {{park_contact_deg}}"; fi
+    # The headset's RECORD button (docs/adr/0033 amendment 1): takes into ~/recordings/scenarios/<scenario>/, the list
+    # in its scenarios.txt. A take starts only with scenario_free_gb's first number of GB free and stops below the second
+    # (the camera costs about 4.5 GB an hour), and RobotHost waits up to 30 s for CameraHost's camera.jlog trailer
+    # (deploy-camerahost record=true) and lists camera/ in files.sha256. Every take becomes a LeRobot episode on the GPU
+    # machine (docs/adr/0036) once it is copied there.
+    case "{{scenario_free_gb}}" in [0-9]*:[0-9]*) ;; *) echo "error: scenario_free_gb is START:STOP in GB, e.g. 8:4" >&2; exit 1 ;; esac
     if [ "{{auto_record}}" = "true" ]; then
         extra_args="$extra_args --auto-record --build-info-robothost /home/jetson/robothost_current/BUILD_INFO --build-info-driver /home/jetson/teleop_ros_current/BUILD_INFO"
         if [ -z "{{profile_path}}" ]; then extra_args="$extra_args --auto-record-profile /home/jetson/robothost_current/robot-profile.json"; fi
+        free='{{scenario_free_gb}}'
+        extra_args="$extra_args --scenarios /home/jetson/recordings/scenarios --scenario-start-free-gb ${free%%:*} --scenario-stop-free-gb ${free##*:}"
+        extra_args="$extra_args --auto-record-writer camera:30"
     fi
     # robothost-run.sh is the stable script teleop-robothost.service's ExecStart points at
     # (robot/systemd/teleop-robothost.service) -- regenerated on every deploy with this run's exact
@@ -486,6 +919,8 @@ deploy-robothost remote_host=default_jetrover_host remote_user="jetson" operator
         sleep 2
         echo '--- teleop-robothost.service status ---'
         systemctl status teleop-robothost --no-pager -n 10
+        echo '--- the recordings disk (takes need {{scenario_free_gb}} GB free to start:stop) ---'
+        df -h /home/jetson/recordings | tail -1
     "
 
 # Read-only: the camera sender's recent journal (teleop-camerahost.service) with its per-10 s [stats] lines, the video devices present, and the kernel's recent USB/camera events. Use it when the headset's feed freezes or cuts out
@@ -1101,7 +1536,9 @@ robot-journal-persist remote_host=default_jetrover_host remote_user="jetson":
 robot-measure-joint-limits ids="2 4" seconds="90" remote_host=default_jetrover_host remote_user="jetson":
     #!/usr/bin/env bash
     set -uo pipefail
-    ssh -o StrictHostKeyChecking=accept-new "{{remote_user}}@$(just _robot-host "{{remote_host}}")" "IDS='{{ids}}' SECONDS_TO_MEASURE={{seconds}} bash -s" <<'REMOTE'
+    # The profile's zero offsets, from this checkout's jetrover.json (never a copy here: a re-mounted servo changes them)
+    offsets=$(python3 -c "import json; print(' '.join(f'{j[\"motorId\"]}:{j.get(\"zeroOffsetRadians\", 0.0)}' for j in json.load(open('core/RobotProfiles/jetrover.json'))['joints']))") || { echo "error: could not read core/RobotProfiles/jetrover.json" >&2; exit 1; }
+    ssh -o StrictHostKeyChecking=accept-new "{{remote_user}}@$(just _robot-host "{{remote_host}}")" "IDS='{{ids}}' SECONDS_TO_MEASURE={{seconds}} ZERO_OFFSETS='$offsets' bash -s" <<'REMOTE'
     sudo systemctl stop jetrover-arm-control
     sdk=$(ls -d /home/jetson/teleop_ros_current/install/jetrover_arm_control/lib/python3*/site-packages | head -1)
     PYTHONUNBUFFERED=1 PYTHONPATH="$sdk" python3 - <<'PY'
@@ -1111,7 +1548,7 @@ robot-measure-joint-limits ids="2 4" seconds="90" remote_host=default_jetrover_h
     ids = [int(i) for i in os.environ["IDS"].split()]
     seconds = float(os.environ["SECONDS_TO_MEASURE"])
     names = {1: "base yaw", 2: "shoulder", 3: "elbow", 4: "wrist pitch", 5: "wrist roll"}
-    zero_offset = {2: 0.12217305}  # core/RobotProfiles/jetrover.json
+    zero_offset = {int(m): float(o) for m, o in (kv.split(":") for kv in os.environ["ZERO_OFFSETS"].split())}  # core/RobotProfiles/jetrover.json
     pulse_per_radian = 1000.0 / math.radians(240.0)
 
     def angle(servo, pulse):
@@ -1333,6 +1770,77 @@ robot-servo-probe ids="1 5 10" remote_host=default_jetrover_host remote_user="je
     sudo systemctl start jetrover-arm-control
     sleep 5
     echo "--- driver: $(systemctl is-active jetrover-arm-control)"
+    REMOTE
+
+# Give a bus servo a new ID, e.g. a replacement that arrived with a factory ID another servo already has (2026-08-13: a new elbow came as 1, the base's; 2026-11-11: a new base came as 2, the shoulder's, and neither 1 nor 2 then answered). Moves nothing and sends no torque command; stops the servo driver for a few seconds (someone holds the arm). Refuses unless exactly one servo answers cleanly at `from` (five position reads, all clean: two servos on one ID garble every reply, so DISCONNECT every other servo with ID `from` first) and nothing answers at `to`; then writes the ID and checks the servo answers at `to` and nothing at `from`. Starts the driver again either way
+[group('robot: deploy and restart (someone at the robot)')]
+robot-servo-set-id from to remote_host=default_jetrover_host remote_user="jetson":
+    #!/usr/bin/env bash
+    set -uo pipefail
+    case "{{from}}{{to}}" in *[!0-9]*|"") echo "error: from and to are servo ids" >&2; exit 1 ;; esac
+    [ "{{from}}" != "{{to}}" ] && [ "{{to}}" -ge 0 ] && [ "{{to}}" -le 253 ] || { echo "error: to is another id, 0..253" >&2; exit 1; }
+    ssh -o StrictHostKeyChecking=accept-new "{{remote_user}}@$(just _robot-host "{{remote_host}}")" "FROM={{from}} TO={{to}} bash -s" <<'REMOTE'
+    sudo systemctl stop jetrover-arm-control
+    sdk=$(ls -d /home/jetson/teleop_ros_current/install/jetrover_arm_control/lib/python3*/site-packages | head -1)
+    PYTHONUNBUFFERED=1 PYTHONPATH="$sdk" python3 - <<'PY'
+    import os, queue, struct, sys, time
+    from jetrover_arm_control.board_manager.robot_controller_sdk import Board, PacketFunction
+
+    def ask(board, servo, cmd, unpack, wait=1.0):
+        """(value, None) for a clean answer from that servo, else (None, why) -- as robot-servo-probe asks."""
+        with board.servo_read_lock:
+            try:
+                board.bus_servo_queue.get_nowait()
+            except queue.Empty:
+                pass
+            board.buf_write(PacketFunction.PACKET_FUNC_BUS_SERVO, [cmd, servo])
+            try:
+                data = board.bus_servo_queue.get(block=True, timeout=wait)
+            except queue.Empty:
+                return None, "no answer"
+            try:
+                sid, rcmd, success, *info = struct.unpack(unpack, data)
+            except struct.error:
+                return None, f"unreadable reply {bytes(data).hex()}"
+            if rcmd != cmd or sid != servo or success != 0:
+                return None, f"error reply {bytes(data).hex()}"
+            return info[0], None
+
+    def positions(board, servo, n=5):
+        got = []
+        for _ in range(n):
+            v, why = ask(board, servo, 0x05, "<BBbh")
+            got.append(v if why is None else why)
+            time.sleep(0.05)
+        return got
+
+    old, new = int(os.environ["FROM"]), int(os.environ["TO"])
+    board = Board()
+    board.enable_reception()
+    time.sleep(0.5)
+    at_new = positions(board, new, 3)
+    if any(isinstance(v, int) for v in at_new):
+        print(f"REFUSED: a servo already answers at {new} ({at_new}); two servos on one id is what this fixes, not makes", flush=True)
+        sys.exit(2)
+    at_old = positions(board, old)
+    print(f"servo {old}: positions {at_old}", flush=True)
+    if not all(isinstance(v, int) for v in at_old):
+        print(f"REFUSED: servo {old} does not answer cleanly ({at_old}). None is there, or more than one servo has id {old}: "
+              f"disconnect every other servo with that id from the bus and run this again", flush=True)
+        sys.exit(2)
+    board.bus_servo_set_id(old, new)
+    time.sleep(0.3)
+    after_new, after_old = positions(board, new), positions(board, old, 3)
+    print(f"after: servo {new} positions {after_new}; servo {old} {after_old}", flush=True)
+    ok = all(isinstance(v, int) for v in after_new) and not any(isinstance(v, int) for v in after_old)
+    print(f"{'DONE' if ok else 'FAILED'}: servo {old} is {'now' if ok else 'not cleanly'} id {new}", flush=True)
+    sys.exit(0 if ok else 1)
+    PY
+    status=$?
+    sudo systemctl start jetrover-arm-control
+    sleep 5
+    echo "--- driver: $(systemctl is-active jetrover-arm-control)"
+    exit $status
     REMOTE
 
 # Experiment, for a board that has stopped answering (just robot-board-diagnose: 0 bytes read): try to bring it back from the Jetson instead of the power switch. Stops the servo driver, opens the board's serial port itself, and asks servo 1 for its position: with both control lines released, then after a 100 ms DTR pulse, then after a 100 ms RTS pulse, stopping at the first that gets an answer. It prints which one worked, then starts the driver again and checks the feedback. First run, 2026-10-20: none did, so these lines do not reset the board (only the power switch did). A pulse that resets the board's controller can drop the servos' torque, so someone must hold the arm
@@ -2034,11 +2542,11 @@ deploy-ros activate="true" remote_host=default_jetrover_host remote_user="jetson
         mkdir -p ~/${remote_dir} && tar xzf /tmp/${remote_dir}.tar.gz -C ~/${remote_dir} && rm -f /tmp/${remote_dir}.tar.gz
         cd ~/${remote_dir} && source /opt/ros/foxy/setup.bash && colcon build 2>&1 | tail -4
         test -f ~/${remote_dir}/install/setup.bash
-        echo '--- the plain-Python tests (relay protocol, stale tracking, servo controller, read backoff, session log):'
+        echo '--- the plain-Python tests (relay protocol, stale tracking, servo controller, write gate, read backoff, session log):'
         PYTHONPATH=src/teleop_relay:src/jetrover_arm_control python3 -m pytest -q -p no:cacheprovider \
             src/teleop_relay/test/test_relay_protocol.py src/teleop_relay/test/test_stale_tracked_value.py \
             src/jetrover_arm_control/test/test_servo_controller.py src/jetrover_arm_control/test/test_read_backoff.py \
-            src/jetrover_arm_control/test/test_session_log.py 2>&1 | tail -6
+            src/jetrover_arm_control/test/test_session_log.py src/jetrover_arm_control/test/test_write_gate.py 2>&1 | tail -6
         exit \${PIPESTATUS[0]}
     "
     # The build every recorded session's session.json names (docs/adr/0021): ~/teleop_ros_current/BUILD_INFO.
@@ -2203,9 +2711,9 @@ camera-serve seconds="30" fps="30" device="/dev/video0" remote_host=default_jetr
 
 # Subscribe to the camera sender from this machine for `seconds` and report what arrives (frames, rate, sizes, reassembly drops); `save` writes the last frame to a path the (Windows) dotnet can resolve. Exit 1 if no frame arrived -- usually the sender is not running or this machine's firewall blocks inbound UDP on 6004
 [group('robot: checks and diagnostics (nothing moves)')]
-camera-probe seconds="10" max_fps="0" save="" remote_host=default_jetrover_host:
+camera-probe seconds="10" max_fps="0" save="" remote_host=default_jetrover_host port="6003" local_port="6004":
     cd core && dotnet run --project Teleop.CameraHost -c Release -- probe --host $(just _robot-host "{{remote_host}}") \
-        --seconds {{seconds}} --max-fps {{max_fps}} {{ if save != "" { "--save '" + save + "'" } else { "" } }}
+        --port {{port}} --local-port {{local_port}} --seconds {{seconds}} --max-fps {{max_fps}} {{ if save != "" { "--save '" + save + "'" } else { "" } }}
 
 # Show the robot's camera live in a window on this machine until Enter -- moves nothing, touches no service: subscribes as the headset does and serves the frames to a browser window at http://localhost:<http_port>/ (Edge's app window when it can). The sender streams to its newest subscriber only, so while this runs the headset loses the feed (close one of the two). Needs the camera sender running (just camera-logs) and inbound UDP on 6004 allowed by this machine's firewall. seconds=0 runs until Enter
 [group('robot: checks and diagnostics (nothing moves)')]
@@ -2215,12 +2723,18 @@ camera-view seconds="0" max_fps="0" http_port="8090" remote_host=default_jetrove
 
 # Publish Teleop.CameraHost for the Jetson, copy it over, write ~/camerahost-run.sh and restart teleop-camerahost if it is installed (see robot/systemd/README.md) -- moves nothing; does not touch teleop-robothost or the ROS nodes. size is the capture size, WIDTHxHEIGHT, e.g. `just deploy-camerahost 1280x720`. The default 640x360 is the camera's whole width (its 4:3 sizes, 640x480 included, are the middle 76% of its 16:9 sensor; docs/adr/0014, 2026-10-25). The camera offers MJPEG at 320x180, 320x240, 640x360, 640x480, 1280x720, 1280x960, 1440x1080 and 1920x1080; the receivers take frames up to 256 KB
 [group('robot: deploy and restart (someone at the robot)')]
-deploy-camerahost size="640x360" fps="30" device="auto" remote_host=default_jetrover_host remote_user="jetson":
+deploy-camerahost size="640x360" fps="30" device="auto" record="true" remote_host=default_jetrover_host remote_user="jetson":
     #!/usr/bin/env bash
     set -euo pipefail
     case "{{size}}" in [1-9]*x[1-9]*) ;; *) echo "error: size is WIDTHxHEIGHT, e.g. 1280x720 (got '{{size}}')" >&2; exit 1 ;; esac
     width="{{size}}"; width="${width%x*}"; height="{{size}}"; height="${height#*x}"
     case "$width$height" in *[!0-9]*) echo "error: size is WIDTHxHEIGHT, e.g. 1280x720 (got '{{size}}')" >&2; exit 1 ;; esac
+    case "{{record}}" in true|false) ;; *) echo "error: record must be true or false, got '{{record}}'" >&2; exit 1 ;; esac
+    # record=true: CameraHost also records the camera into every take from the headset's RECORD button (docs/adr/0014
+    # amendment 3, docs/adr/0036), following the robot's control file; other sessions get a camera.jlog with no frames.
+    # It stops below 3 GB free, under RobotHost's take thresholds (deploy-robothost scenario_free_gb).
+    record_args=""
+    if [ "{{record}}" = "true" ]; then record_args="--record-control /home/jetson/recordings/.active --record-min-free-gb 3"; fi
     host=$(just _robot-host "{{remote_host}}")
     cd core
     stamp=$(date +%Y%m%d-%H%M%S)
@@ -2244,7 +2758,7 @@ deploy-camerahost size="640x360" fps="30" device="auto" remote_host=default_jetr
     ssh -o StrictHostKeyChecking=accept-new "$target" "cat > /home/jetson/camerahost-run.sh" <<EOF
     #!/bin/bash
     exec /home/jetson/.dotnet/dotnet /home/jetson/camerahost_current/Teleop.CameraHost.dll serve \
-        --device {{device}} --width $width --height $height --fps {{fps}} --port 6003
+        --device {{device}} --width $width --height $height --fps {{fps}} --port 6003 $record_args
     EOF
     ssh -o StrictHostKeyChecking=accept-new "$target" "
         set -e
@@ -2544,7 +3058,24 @@ _trainer-python:
 train-sim config="sim-pretrain" name="" *args:
     trainer/train-sim.sh "{{config}}" "{{name}}" {{args}}
 
-# Start `just train-sim <config>` on the GPU machine ($GPU_HOST, default andrei@10.188.58.164), detached, so this machine and the SSH session can go (docs/adr/0021). Clones the repo into ~/teleoperation there the first time and pulls main every time; refuses while a run of ours is going there, or while the GPU is busy (over 2 GB in use: someone else's job). The run is trainer/runs/<config>-<commit> there; the log ~/train-sim-<config>.log. Watch it with just gpu-status; bring it back with just gpu-fetch
+# The FR3 Duo's simulated pretraining on this machine (docs/adr/0028): simulate the FR3 session matrix (session v2), build layout v4, train on top of franka-replay, export (weights format 2), evaluate, all into trainer/runs/<name>. On Linux it runs trainer/train-fr3-sim.sh (trainer/.venv, built the first time); under WSL it runs the Windows CUDA venv trainer/.venv-win-cuda. config: fr3-smoke (minutes) or fr3-sim-pretrain (hours). SIMULATED: the report says so, and it is never a gate verdict
+[group('trainer')]
+train-fr3-sim config="fr3-sim-pretrain" name="" *args:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    name="{{name}}"; [ -n "$name" ] || name="{{config}}-$(git rev-parse --short HEAD)"
+    # The Windows CUDA venv: this checkout's, or (in a git worktree) the main checkout's.
+    py=""
+    for v in trainer/.venv-win-cuda "$(dirname "$(git rev-parse --path-format=absolute --git-common-dir)")/trainer/.venv-win-cuda"; do
+        [ -x "$v/Scripts/python.exe" ] && { py="$(cd "$v" && pwd)/Scripts/python.exe"; break; }
+    done
+    if [ -n "$py" ] && grep -qi microsoft /proc/version 2>/dev/null; then
+        cd trainer && "$py" -m armpred fr3-sim-pretrain --config "configs/{{config}}.toml" --out "runs/$name" {{args}}
+    else
+        trainer/train-fr3-sim.sh "{{config}}" "$name" {{args}}
+    fi
+
+# Start `just train-sim <config>` on the GPU machine ($GPU_HOST, default andrei@10.188.58.133), detached, so this machine and the SSH session can go (docs/adr/0021). Clones the repo into ~/teleoperation there the first time and pulls main every time; refuses while a run of ours is going there, or while the GPU is busy (over 2 GB in use: someone else's job). The run is trainer/runs/<config>-<commit> there; the log ~/train-sim-<config>.log. Watch it with just gpu-status; bring it back with just gpu-fetch
 [group('trainer')]
 gpu-train config="sim-pretrain-pilot1":
     #!/usr/bin/env bash
@@ -2641,6 +3172,681 @@ gpu-fetch run:
     echo "trainer/runs/{{run}}:"; ls trainer/runs/{{run}}
     [ -f "trainer/runs/{{run}}/eval/report.md" ] && sed -n '1,20p' "trainer/runs/{{run}}/eval/report.md" || true
 
+# ---- Isaac Sim on the GPU machine (docs/adr/0031) ----
+
+# Install Isaac Sim into our own account on the GPU machine ($GPU_HOST), in user space with no sudo: a venv of the machine's Python 3.12 at ~/isaacsim/venv, and the pinned isaacsim wheels from NVIDIA's index. Detached (tens of GB to download), log ~/isaacsim/setup.log; watch it with just isaac-status. It accepts no licence: Isaac's first launch asks, and the user answers. The Isaac already on that machine is another account's and is left alone
+[group('isaac')]
+isaac-setup version=isaac_version:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    case "{{version}}" in *[!0-9.]*|"") echo "error: version is an isaacsim version, like 6.2.0.0" >&2; exit 1 ;; esac
+    ssh -o ConnectTimeout=10 "{{gpu_host}}" "VERSION='{{version}}' bash -s" <<'REMOTE'
+    set -euo pipefail
+    root=$HOME/isaacsim
+    mkdir -p "$root"
+    if [ -f "$root/setup.pid" ] && kill -0 "$(cat "$root/setup.pid")" 2>/dev/null; then
+        echo "error: an install is already going (pid $(cat "$root/setup.pid")): just isaac-status" >&2; exit 1
+    fi
+    if [ "$(cat "$root/VERSION" 2>/dev/null)" = "$VERSION" ]; then echo "Isaac Sim $VERSION is already installed in $root"; exit 0; fi
+    free=$(df -BG --output=avail "$HOME" | tail -1 | tr -dc 0-9)
+    [ "$free" -ge 80 ] || { echo "error: ${free} GB free in $HOME; the install wants about 80 with pip's cache" >&2; exit 1; }
+    # VERSION is written last, so it names only a finished install.
+    nohup setsid bash -c "set -euo pipefail
+        echo \"started \$(date -Is): isaacsim[all,extscache]==$VERSION\"
+        rm -f '$root/VERSION'
+        [ -x '$root/venv/bin/python' ] || /usr/bin/python3.12 -m venv '$root/venv'
+        '$root/venv/bin/python' -m pip install --upgrade pip
+        '$root/venv/bin/python' -m pip install 'isaacsim[all,extscache]==$VERSION' --extra-index-url https://pypi.nvidia.com
+        echo '$VERSION' > '$root/VERSION'
+        echo \"done \$(date -Is)\"" > "$root/setup.log" 2>&1 < /dev/null &
+    echo $! > "$root/setup.pid"
+    echo "installing Isaac Sim $VERSION into $root on $(hostname) (pid $!); log $root/setup.log: just isaac-status"
+    REMOTE
+
+# Isaac Sim's first check on the GPU machine (docs/adr/0031): launches it headless in our account, drops a cube on a ground with PhysX stepped at 1 kHz, and says whether Isaac starts on that GPU, the cube rests where it should, and the physics outruns the wall clock (robot/isaac/check.py, sent from here; nothing is written there but Isaac's own caches). Isaac's first launch builds its caches and takes minutes
+[group('isaac')]
+isaac-check seconds="5":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    ssh -o ConnectTimeout=10 "{{gpu_host}}" '[ -x ~/isaacsim/venv/bin/python ] && [ -f ~/isaacsim/VERSION ] || { echo "error: no Isaac Sim in our account there: just isaac-setup" >&2; exit 1; }; echo "GPU: $(nvidia-smi --query-gpu=name,driver_version,memory.used,memory.total --format=csv,noheader)"'
+    ssh -o ConnectTimeout=10 "{{gpu_host}}" "~/isaacsim/venv/bin/python - --seconds '{{seconds}}'" < robot/isaac/check.py
+
+# The render spike (docs/adr/0032 phase P0) on the GPU machine: the measurements the choice of renderer rests on. (1) the Isaac bridge alone for `seconds`; (2) a separate renderer (robot/isaac/render_check.py: a visual-only robot posed from joint angles, the table, the backdrop surfaces, the head and third-person cameras with colour, depth and masks) with the bridge beside it, the two pinned to separate cores; (3) the head camera rendered inside the bridge's 1 kHz physics loop. Prints one `RESULT {...}` line and exits non-zero if any number is missing or the separate renderer misses a criterion: bridge late steps <= max(2x alone, 1/s), >= 29.5 fps, a render lag stable in >= 99.5% of frames, depth p99 < 3 mm, projection p99 < 3 px. The bridge runs from this commit, checked out in ~/teleoperation-isaac (it must be on GitHub); sample frames stay there in ~/isaacsim/render-check/latest. Refuses while an Isaac host of ours is running
+[group('isaac')]
+isaac-render-check seconds="20":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    commit=$(git rev-parse HEAD)
+    git fetch -q origin
+    [ -n "$(git branch -r --contains "$commit" 2>/dev/null)" ] || { echo "error: $commit is not on GitHub: push it first (the GPU machine runs the bridge from what GitHub has)" >&2; exit 1; }
+    host="{{gpu_host}}"
+    ssh -o ConnectTimeout=10 "$host" "COMMIT='$commit' bash -s" <<'REMOTE'
+    set -euo pipefail
+    [ -x "$HOME/isaacsim/venv/bin/python" ] || { echo "error: no Isaac Sim in our account here: just isaac-setup" >&2; exit 1; }
+    for p in $(pgrep -u "$USER" -f "teleop_isaac[.]bridge" || true); do
+        case "$(readlink "/proc/$p/exe" 2>/dev/null)" in *python*) echo "error: an Isaac host of ours is running (bridge pid $p): just isaac-stop first" >&2; exit 1 ;; esac
+    done
+    repo=$HOME/teleoperation-isaac
+    [ -d "$repo" ] || git clone -q https://github.com/andreitimoshukcollege-del/teleoperation.git "$repo"
+    cd "$repo" && git fetch -q origin && git checkout -q "$COMMIT" && echo "[render-check] repo at $(git log --oneline -1), GPU: $(nvidia-smi --query-gpu=name,memory.used --format=csv,noheader)"
+    REMOTE
+    tmp=$(mktemp -d)
+    trap 'rm -rf "$tmp"' EXIT
+    bridge="cd ~/teleoperation-isaac/robot/isaac && timeout 300 taskset -c 2-5 ~/isaacsim/venv/bin/python -m teleop_isaac.bridge --socket /tmp/teleop-render-check-\$USER.sock --seconds {{seconds}}"
+    echo "[render-check] 1/3: the bridge alone, {{seconds}} s"
+    ssh -o ConnectTimeout=10 "$host" "$bridge" > "$tmp/alone.log" 2>&1 || true
+    echo "[render-check] 2/3: the renderer, then the bridge beside it"
+    ssh -o ConnectTimeout=10 "$host" "timeout 900 taskset -c 8-23 ~/isaacsim/venv/bin/python - --seconds $(( {{seconds}} + 25 ))" < robot/isaac/render_check.py > "$tmp/renderer.log" 2>&1 &
+    renderer=$!
+    for _ in $(seq 1 150); do grep -q '^\[rc\] rendering' "$tmp/renderer.log" 2>/dev/null && break; kill -0 $renderer 2>/dev/null || break; sleep 2; done
+    ssh -o ConnectTimeout=10 "$host" "($bridge) & sleep 12; nvidia-smi --query-compute-apps=pid,used_memory --format=csv,noheader | sed 's/^/[gpu] /'; wait" > "$tmp/beside.log" 2>&1 || true
+    wait $renderer || true
+    echo "[render-check] 3/3: the head camera inside the bridge's physics loop"
+    ssh -o ConnectTimeout=10 "$host" "timeout 900 ~/isaacsim/venv/bin/python - --mode inprocess --seconds {{seconds}} --baseline 5" < robot/isaac/render_check.py > "$tmp/inprocess.log" 2>&1 || true
+    python3 - "$tmp" "$commit" "{{seconds}}" <<'PY'
+    import json, re, sys
+    tmp, commit, seconds = sys.argv[1], sys.argv[2], float(sys.argv[3])
+    def text(name):
+        return open(f"{tmp}/{name}.log", encoding="utf-8", errors="replace").read()
+    def late(name):
+        m = re.search(r"\[isaac\] stopped after (\d+) steps, (\d+) late", text(name))
+        return (int(m.group(1)), int(m.group(2))) if m else (None, None)
+    def result(name):
+        m = re.search(r"^RESULT (\{.*\})$", text(name), re.M)
+        return json.loads(m.group(1)) if m else {}
+    alone_steps, alone_late = late("alone")
+    beside_steps, beside_late = late("beside")
+    r, ip = result("renderer"), result("inprocess")
+    out = {"commit": commit, "seconds": seconds, "bridge_alone_steps": alone_steps, "bridge_alone_late": alone_late,
+           "bridge_beside_renderer_steps": beside_steps, "bridge_beside_renderer_late": beside_late,
+           "gpu_mib_beside": [line[6:] for line in text("beside").splitlines() if line.startswith("[gpu] ")] or None}
+    for k in ("isaac_version", "fps", "frame_ms_p50", "frame_ms_p99", "render_ms_p50", "render_ms_p99", "pose_ms_p50",
+              "read_ms_p50", "gpu_mib", "render_lag_frames", "render_lag_stable_fraction", "render_lag_samples",
+              "projection_err_px_p50", "projection_err_px_p99", "depth_err_mm_p50", "depth_err_mm_p99", "fk_vs_usd_mm_max",
+              "masks_left_right_distinct", "coverage_head", "coverage_third", "intrinsics", "head_camera_world",
+              "jpeg_q80_kb", "jpeg_q80_pil_ms", "jpeg_q92_kb", "jpeg_q92_pil_ms", "png16_depth_kb", "png16_mask_kb",
+              "texture_settle_frames", "texture_settle_frames_big", "texture_big_kb", "warmup_s"):
+        out["renderer_" + k] = r.get(k)
+    for k in ("late_steps_per_s_baseline", "late_steps_per_s_rendering", "render_stall_ms_p50", "render_stall_ms_p99",
+              "render_stall_ms_max", "state_gap_ms_p99_base", "state_gap_ms_p99_render", "state_gap_ms_max_render",
+              "render_sees_motion"):
+        out["inprocess_" + k] = ip.get(k)
+    checks = {}
+    if None not in (alone_late, beside_late):
+        checks["bridge_late_ok"] = beside_late / seconds <= max(2 * alone_late / seconds, 1.0)
+    if r.get("fps") is not None:
+        checks["fps_ok"] = r["fps"] >= 29.5
+    if r.get("render_lag_stable_fraction") is not None:
+        checks["lag_stable_ok"] = r["render_lag_stable_fraction"] >= 0.995
+    if r.get("depth_err_mm_p99") is not None:
+        checks["depth_ok"] = r["depth_err_mm_p99"] < 3.0
+    if r.get("projection_err_px_p99") is not None:
+        checks["projection_ok"] = r["projection_err_px_p99"] < 3.0
+    out["checks"] = checks
+    out["separate_renderer_passes"] = len(checks) == 5 and all(checks.values())
+    missing = sorted(k for k, v in out.items() if v is None)
+    out["missing"] = missing
+    print("RESULT " + json.dumps(out, sort_keys=True))
+    if missing:
+        for name in ("alone", "renderer", "beside", "inprocess"):
+            print(f"--- {name}.log (tail)", file=sys.stderr)
+            print("\n".join(text(name).splitlines()[-15:]), file=sys.stderr)
+    sys.exit(0 if not missing and out["separate_renderer_passes"] else 1)
+    PY
+
+# The world in Isaac (docs/adr/0031 amendment 2) on the GPU machine: robot/isaac/scene_check.py starts the bridge with the scene file and talks to it as RobotHost would. Checks WORLD_INFO's sha256, WORLD at 50 +- 5 Hz from PhysX, placements applied and refused (off the table, onto an object, an unknown id), the left hand driven into a post stalling more than 0.05 rad short while the same motion without the post tracks within 0.01 rad, ARM_TOUCHING and OVERLAPS_ARM while it rests there, and late steps <= 1/s. Prints one `RESULT {...}` line and exits non-zero if any check fails or any number is missing. Runs this commit, checked out in ~/teleoperation-isaac (it must be on GitHub); the bridge's log stays in ~/isaacsim/scene-check-bridge.log. Refuses while an Isaac host of ours is running
+[group('isaac')]
+isaac-scene-check scene="fr3-duo-bench":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    case "{{scene}}" in *[!A-Za-z0-9._-]*|"") echo "error: scene is a file name in core/Scenes without .json" >&2; exit 1 ;; esac
+    commit=$(git rev-parse HEAD)
+    git fetch -q origin
+    [ -n "$(git branch -r --contains "$commit" 2>/dev/null)" ] || { echo "error: $commit is not on GitHub: push it first (the GPU machine runs what GitHub has)" >&2; exit 1; }
+    ssh -o ConnectTimeout=10 "{{gpu_host}}" "COMMIT='$commit' SCENE='{{scene}}' bash -s" <<'REMOTE'
+    set -euo pipefail
+    [ -x "$HOME/isaacsim/venv/bin/python" ] || { echo "error: no Isaac Sim in our account here: just isaac-setup" >&2; exit 1; }
+    for p in $(pgrep -u "$USER" -f "teleop_isaac[.]bridge" || true); do
+        case "$(readlink "/proc/$p/exe" 2>/dev/null)" in *python*) echo "error: an Isaac host of ours is running (bridge pid $p): just isaac-stop first" >&2; exit 1 ;; esac
+    done
+    repo=$HOME/teleoperation-isaac
+    [ -d "$repo" ] || git clone -q https://github.com/andreitimoshukcollege-del/teleoperation.git "$repo"
+    cd "$repo" && git fetch -q origin && git checkout -q "$COMMIT" && echo "[scene-check] repo at $(git log --oneline -1), GPU: $(nvidia-smi --query-gpu=name,memory.used --format=csv,noheader)"
+    cd robot/isaac && timeout 600 "$HOME/isaacsim/venv/bin/python" scene_check.py --scene "$repo/core/Scenes/$SCENE.json"
+    REMOTE
+
+# The JetRover's arm in Isaac (docs/adr/0034 J1) on the GPU machine: robot/isaac/jetrover_check.py starts teleop_isaac.jetrover_bridge and talks relay protocol v5 to it as the JetRover's RobotHost would. Checks feedback every ~50 ms with motors 1-5 valid and the gripper never, the arm near home, an elbow move of 100 pulses at 400 pulses/s at that pace, the shoulder falling with torque off and holding with it back on, and late steps <= 1/s. Prints one `RESULT {...}` line and exits non-zero if any check fails or any number is missing. Runs this commit, checked out in ~/teleoperation-isaac (it must be on GitHub); the bridge's log stays in ~/isaacsim/jetrover-check-bridge.log. Refuses while an Isaac host of ours is running. Moves no real robot
+[group('isaac')]
+isaac-jetrover-check:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    commit=$(git rev-parse HEAD)
+    git fetch -q origin
+    [ -n "$(git branch -r --contains "$commit" 2>/dev/null)" ] || { echo "error: $commit is not on GitHub: push it first (the GPU machine runs what GitHub has)" >&2; exit 1; }
+    ssh -o ConnectTimeout=10 "{{gpu_host}}" "COMMIT='$commit' bash -s" <<'REMOTE'
+    set -euo pipefail
+    [ -x "$HOME/isaacsim/venv/bin/python" ] || { echo "error: no Isaac Sim in our account here: just isaac-setup" >&2; exit 1; }
+    for p in $(pgrep -u "$USER" -f "teleop_isaac[.](bridge|jetrover_bridge)" || true); do
+        case "$(readlink "/proc/$p/exe" 2>/dev/null)" in *python*) echo "error: an Isaac host of ours is running (pid $p): just isaac-stop first" >&2; exit 1 ;; esac
+    done
+    repo=$HOME/teleoperation-isaac
+    [ -d "$repo" ] || git clone -q https://github.com/andreitimoshukcollege-del/teleoperation.git "$repo"
+    cd "$repo" && git fetch -q origin && git checkout -q "$COMMIT" && echo "[jetrover-check] repo at $(git log --oneline -1), GPU: $(nvidia-smi --query-gpu=name,memory.used --format=csv,noheader)"
+    cd robot/isaac && timeout 600 "$HOME/isaacsim/venv/bin/python" jetrover_check.py
+    REMOTE
+
+# Fetch the renderer's backdrop images onto the GPU machine, once (docs/adr/0032 decision 4): `count` images from Open Images V7's validation split, licensed CC BY 2.0 only, into ~/isaacsim/backdrops/openimages-v7-val with a manifest of each one's sha256, licence, author and pages. Downloads are untrusted data: each is kept only if it is a JPEG of at most 20 MB that decodes to at least 256 px a side, under its own sha256. Resumes where it stopped. Runs this commit (it must be on GitHub)
+[group('isaac')]
+isaac-backdrops-fetch count="2000":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    case "{{count}}" in *[!0-9]*|"") echo "error: count is a number" >&2; exit 1 ;; esac
+    commit=$(git rev-parse HEAD)
+    git fetch -q origin
+    [ -n "$(git branch -r --contains "$commit" 2>/dev/null)" ] || { echo "error: $commit is not on GitHub: push it first" >&2; exit 1; }
+    ssh -o ConnectTimeout=10 "{{gpu_host}}" "COMMIT='$commit' COUNT='{{count}}' bash -s" <<'REMOTE'
+    set -euo pipefail
+    repo=$HOME/teleoperation-isaac
+    [ -d "$repo" ] || git clone -q https://github.com/andreitimoshukcollege-del/teleoperation.git "$repo"
+    cd "$repo" && git fetch -q origin && git checkout -q "$COMMIT"
+    cd robot/isaac && "$HOME/isaacsim/venv/bin/python" -m teleop_isaac.backdrops fetch --count "$COUNT"
+    REMOTE
+
+# How the backdrop images stand on the GPU machine: how many, how big, their licences, and any whose sha256 no longer matches the manifest (exit 1 then, or with fewer than 2 images)
+[group('isaac')]
+isaac-backdrops-status:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    ssh -o ConnectTimeout=10 "{{gpu_host}}" 'cd "$HOME/teleoperation-isaac/robot/isaac" && "$HOME/isaacsim/venv/bin/python" -m teleop_isaac.backdrops status'
+
+# The recording, end to end (docs/adr/0032 decision 6), against a running `just isaac-host`: drives the simulated arms from here through seeded joint-space moves (chain-drive, ±amplitude rad, as the headset so RobotHost records it), waits for the session to close (30 s without commands), then checks it on the GPU machine with robot/isaac/verify_session.py: files.sha256 with the frame sidecars, isaac.jlog's trailer and FS lines, the frame count against the duration, every frame stamped with a QS state, depth on the table mat p99 < 3 mm, and each hand's point landing in its mask in >= 95% of the frames where it moved and shows. Prints one RESULT line; exits non-zero if any check fails or has nothing to measure. Simulated arms only
+[group('isaac')]
+isaac-record-check seconds="40" amplitude="0.6" seed="3":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    host="{{gpu_host}}"; addr=${host#*@}
+    n=$(ssh -o ConnectTimeout=10 "$host" 'n=0; for p in $(pgrep -u "$USER" -f "teleop_isaac[.]renderer" || true); do case "$(readlink /proc/$p/exe 2>/dev/null)" in *python*) n=$((n+1)) ;; esac; done; echo $n')
+    [ "$n" -gt 0 ] || { echo "error: no Isaac renderer runs on $host: start just isaac-host first (with feeds)" >&2; exit 1; }
+    before=$(ssh -o ConnectTimeout=10 "$host" 'ls -1d $HOME/isaacsim/recordings/*/ 2>/dev/null | wc -l')
+    echo "[record-check] driving the arms for {{seconds}} s as the headset (seed {{seed}}, ±{{amplitude}} rad)"
+    # stdin held open without a line: Enter stops chain-drive.
+    (cd core && sleep $(( {{seconds}} + 20 )) | timeout $(( {{seconds}} + 60 )) dotnet run --project Teleop.Eval -- chain-drive --simulated-robot --as-headset \
+        --remote-host "$addr" --seconds {{seconds}} --seed {{seed}} --amplitude-rad {{amplitude}} --collision-model RobotProfiles/fr3-duo.collision.json) | grep -E "^\[chain-drive\] (done|stopped|driving)|error" || true
+    echo "[record-check] waiting for the session to close and complete (30 s idle, then the renderer's trailer)"
+    dir=""
+    for i in $(seq 1 120); do
+        dir=$(ssh -o ConnectTimeout=10 "$host" "n=\$(ls -1d \$HOME/isaacsim/recordings/*/ 2>/dev/null | wc -l); [ \$n -gt $before ] && d=\$(ls -1td \$HOME/isaacsim/recordings/*/ | head -1) && [ -f \$d/files.sha256 ] && echo \$d || true")
+        [ -n "$dir" ] && break
+        sleep 2
+    done
+    [ -n "$dir" ] || { echo "error: no new completed session on $host within 4 min" >&2; exit 1; }
+    echo "[record-check] checking $dir"
+    ssh -o ConnectTimeout=10 "$host" "cd \$HOME/teleoperation-isaac/robot/isaac && \$HOME/isaacsim/venv/bin/python verify_session.py '$dir'"
+
+# Moving objects as the headset's EDIT OBJECTS does (phase P5), against a running `just isaac-host fr3-duo-bench 7` (seed 7, so the layout is known): world-probe checks layout 1 is seed 7's, moves the can to a free spot (applied, and the world frames show it there), asks for a spot off the table (outside-region), moves the left post aside, then, with the left arm held forward and down by chain-drive (simulated arms only), asks for the post back under that hand (overlaps-arm, Isaac's PhysX query). Exits non-zero if any answer is not the expected one
+[group('isaac')]
+isaac-edit-check:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    host="{{gpu_host}}"; addr=${host#*@}
+    just fr3-world-probe "$addr" 7 false 2
+    just fr3-world-probe "$addr" "" false 2 fr3-duo-bench "4:0.45:-0.10:30"
+    just fr3-world-probe "$addr" "" false 2 fr3-duo-bench "4:1.5:0:0:outside-region"
+    just fr3-world-probe "$addr" "" false 2 fr3-duo-bench "1:0.72:0.45:0"
+    # The left base and shoulder 0.6 rad forward put the left hand at about (0.51, 0.30, 0.16), where the post was; folding the
+    # elbow instead is refused by RobotHost's collision model (link2 against link5).
+    echo "[edit-check] holding the left arm forward and down (motors 1 and 2, +0.6 rad) for 20 s"
+    (cd core && sleep 40 | timeout 60 dotnet run --project Teleop.Eval -- chain-drive --simulated-robot --remote-host "$addr" --seconds 20 \
+        --hold 1:0.6,2:0.6 --amplitude-rad 0.6 --collision-model RobotProfiles/fr3-duo.collision.json > /dev/null 2>&1) &
+    drive=$!
+    sleep 10
+    status=0
+    just fr3-world-probe "$addr" "" false 0 fr3-duo-bench "1:0.51:0.30:0:overlaps-arm" || status=1
+    wait $drive || true
+    exit $status
+
+# The FR3 Duo in Isaac Sim on the GPU machine, behind a RobotHost there (docs/adr/0031): checks out this commit in ~/teleoperation-isaac (it must be on GitHub), builds RobotHost, starts the Isaac bridge (robot/isaac, log ~/isaacsim/bridge.log) and then RobotHost with --backend arm-server, joint port 6002 and discovery 6005 on that machine, recording headset sessions into ~/isaacsim/recordings. With a scene (core/Scenes/<scene>.json, default fr3-duo-bench; `none` for the arms alone), the table and obstacles are in Isaac too and RobotHost places them from seeded layouts (scene_seed: a number, or auto), docs/adr/0031 amendment 2. Enter stops both, as does `just isaac-stop` from any terminal. Refuses while an Isaac host of ours is already running there, or a training run of ours is going. Other people's GPU jobs do not stop it (the user's call, 2026-11-02): it says how much of the GPU they hold, since sharing it can make physics steps late. Point the headset at it with `just push-galaxy-fr3-config <GPU machine's address>`; drive it headless with `just fr3-teleop-probe 0.08 3 franka-replay false <GPU machine's address>` (just takes recipe arguments by position)
+[group('isaac')]
+isaac-host scene="fr3-duo-bench" scene_seed="auto" feeds="true":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    case "{{scene}}" in *[!A-Za-z0-9._-]*|"") echo "error: scene is a file name in core/Scenes without .json, or none" >&2; exit 1 ;; esac
+    case "{{scene_seed}}" in auto|[0-9]*) ;; *) echo "error: scene_seed is a number or auto" >&2; exit 1 ;; esac
+    case "{{feeds}}" in true|false) ;; *) echo "error: feeds is true or false" >&2; exit 1 ;; esac
+    [ "{{scene}}" = none ] || [ -f "core/Scenes/{{scene}}.json" ] || { echo "error: no core/Scenes/{{scene}}.json" >&2; exit 1; }
+    commit=$(git rev-parse HEAD)
+    git fetch -q origin
+    [ -n "$(git branch -r --contains "$commit" 2>/dev/null)" ] || { echo "error: $commit is not on GitHub: push it first (the GPU machine runs what GitHub has)" >&2; exit 1; }
+    [ -z "$(git status --porcelain -- core robot/isaac)" ] || echo "warning: core/ or robot/isaac has uncommitted changes; the GPU machine runs $commit without them" >&2
+    remote=$(cat <<'REMOTE'
+    set -euo pipefail
+    repo=$HOME/teleoperation-isaac
+    [ -x "$HOME/isaacsim/venv/bin/python" ] || { echo "error: no Isaac Sim in our account here: just isaac-setup" >&2; exit 1; }
+    if [ -f "$HOME/train-sim.pid" ] && kill -0 "$(cat "$HOME/train-sim.pid")" 2>/dev/null; then echo "error: a training run of ours is going (just gpu-status)" >&2; exit 1; fi
+    # A Python process only: this script's own shell, and its subshells, carry the bridge's command line in their text.
+    mine=""
+    for p in $(pgrep -u "$USER" -f "teleop_isaac[.](bridge|jetrover_bridge)" || true); do
+        case "$(readlink "/proc/$p/exe" 2>/dev/null)" in *python*) mine=$p; break ;; esac
+    done
+    if [ -n "$mine" ]; then
+        echo "error: an Isaac host of ours is already running on $(hostname) (bridge pid $mine): use it, or stop it first (Enter where it was started, or just isaac-stop)" >&2
+        exit 1
+    fi
+    # Other people's GPU jobs only: ours are not someone else's.
+    others=0
+    while IFS=, read -r pid mem; do
+        pid=${pid// /}; mem=${mem//[^0-9]/}
+        [ -n "$pid" ] || continue
+        [ "$(ps -o user= -p "$pid" 2>/dev/null | tr -d ' ')" = "$USER" ] || others=$((others + ${mem:-0}))
+    done < <(nvidia-smi --query-compute-apps=pid,used_memory --format=csv,noheader,nounits)
+    if [ "$others" -gt 0 ]; then
+        echo "[isaac-host] other people's GPU jobs hold ${others} MiB: starting anyway, sharing the GPU (late steps can come from them)"
+    fi
+    [ -d "$repo" ] || git clone -q https://github.com/andreitimoshukcollege-del/teleoperation.git "$repo"
+    cd "$repo" && git fetch -q origin && git checkout -q "$COMMIT" && echo "[isaac-host] repo at $(git log --oneline -1)"
+    # Every take recorded here becomes a LeRobot episode (docs/adr/0036): start the converter if it is not running.
+    "$repo/robot/lerobot/watch.sh" ensure "$COMMIT" || echo "[isaac-host] the LeRobot converter is not running: just lerobot-setup, then just lerobot-watch-start" >&2
+    dotnet build -c Release -v q -nologo core/Teleop.RobotHost/Teleop.RobotHost.csproj -o "$HOME/isaacsim/robothost" > "$HOME/isaacsim/robothost-build.log" 2>&1 \
+        || { tail -20 "$HOME/isaacsim/robothost-build.log" >&2; exit 1; }
+    sock=/tmp/teleop-isaac-$USER.sock
+    log=$HOME/isaacsim/bridge.log
+    bridge_scene=(); host_scene=()
+    if [ "$SCENE" != none ]; then
+        bridge_scene=(--scene "../../core/Scenes/$SCENE.json")
+        host_scene=(--scene "core/Scenes/$SCENE.json" --scene-seed "$SCENE_SEED")
+        echo "[isaac-host] scene $SCENE (seed $SCENE_SEED)"
+    fi
+    tap=/tmp/teleop-isaac-tap-$USER.sock
+    feeds=false
+    [ "$FEEDS" = true ] && [ "$SCENE" != none ] && feeds=true
+    tap_args=(); [ "$feeds" = true ] && tap_args=(--tap "$tap")
+    # The cores ADR 0032's spike measured: the bridge on 2-5, the renderer on 8-23.
+    pin() { if [ "$(nproc)" -ge 24 ]; then echo "taskset -c $1"; fi; }
+    (cd robot/isaac && exec $(pin 2-5) "$HOME/isaacsim/venv/bin/python" -m teleop_isaac.bridge --socket "$sock" "${bridge_scene[@]}" "${tap_args[@]}") > "$log" 2>&1 &
+    bridge=$!
+    renderer=""
+    trap 'kill $bridge $renderer 2>/dev/null; wait $bridge $renderer 2>/dev/null || true' EXIT
+    echo "[isaac-host] bridge pid $bridge (log $log); waiting for Isaac to start"
+    for i in $(seq 1 180); do
+        grep -q "listening on" "$log" 2>/dev/null && break
+        kill -0 $bridge 2>/dev/null || { echo "error: the bridge stopped:" >&2; tail -30 "$log" >&2; exit 1; }
+        sleep 1
+    done
+    grep "^\[isaac\]" "$log" || { echo "error: the bridge did not start within 3 min" >&2; tail -30 "$log" >&2; exit 1; }
+    if [ "$feeds" = true ]; then
+        rlog=$HOME/isaacsim/renderer.log
+        (cd robot/isaac && exec $(pin 8-23) "$HOME/isaacsim/venv/bin/python" -m teleop_isaac.renderer --scene "../../core/Scenes/$SCENE.json" --tap "$tap" \
+            --record-control "$HOME/isaacsim/recordings/.active") > "$rlog" 2>&1 &
+        renderer=$!
+        echo "[isaac-host] renderer pid $renderer (log $rlog); waiting for its feeds"
+        for i in $(seq 1 180); do
+            grep -q "^\[render\] streaming" "$rlog" 2>/dev/null && break
+            kill -0 $renderer 2>/dev/null || break
+            sleep 1
+        done
+        if grep -q "^\[render\] streaming" "$rlog" 2>/dev/null; then grep "^\[render\]" "$rlog"
+        else echo "warning: the renderer did not start, so there are no camera feeds or frames recorded (the robot runs without them):" >&2; tail -20 "$rlog" >&2; renderer=""; fi
+    fi
+    writer=(); [ -n "$renderer" ] && writer=(--auto-record-writer isaac:60)
+    mkdir -p "$HOME/isaacsim/recordings"
+    dotnet "$HOME/isaacsim/robothost/Teleop.RobotHost.dll" --profile-path core/RobotProfiles/fr3-duo.json --joint-local-port 6002 \
+        --backend arm-server --arm-server-socket "$sock" --collision-model core/RobotProfiles/fr3-duo.collision.json \
+        --discovery-port 6005 --record-control "$HOME/isaacsim/recordings/.active" --auto-record --auto-record-root "$HOME/isaacsim/recordings" \
+        --scenarios "$HOME/isaacsim/scenarios" "${host_scene[@]}" "${writer[@]}"
+    REMOTE
+    )
+    ssh -o ConnectTimeout=10 "{{gpu_host}}" "COMMIT='$commit' SCENE='{{scene}}' SCENE_SEED='{{scene_seed}}' FEEDS='{{feeds}}' bash -c $(printf '%q' "$remote")"
+
+# Let another account on the GPU machine read the headset's scenario takes (docs/adr/0033) and their LeRobot datasets (docs/adr/0036), once: ACLs, no sudo. It may enter (not list) our home and ~/isaacsim; read everything under ~/isaacsim/scenarios (the FR3 Duo's) and ~/isaacsim/scenarios-jetrover, and every take written there from now on (a default ACL); edit each scenarios.txt (the list the headset shows) and save into those folders (editors replace a file when they save); and read the real robot's takes copied into ~/isaacsim/scenarios-real and every dataset under ~/isaacsim/lerobot, written or rebuilt. Takes and datasets stay read-only to it. Run it again after deleting a folder
+[group('isaac')]
+isaac-share-scenarios user="seaqueue-cheng":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    case "{{user}}" in *[!a-z0-9._-]*|"") echo "error: user is an account name on the GPU machine" >&2; exit 1 ;; esac
+    ssh -o ConnectTimeout=10 "{{gpu_host}}" "U='{{user}}' bash -s" <<'REMOTE'
+    set -euo pipefail
+    id "$U" > /dev/null || { echo "error: no account $U here" >&2; exit 1; }
+    setfacl -m "u:$U:x" "$HOME" "$HOME/isaacsim"
+    # The FR3 Duo's and the JetRover's takes (docs/adr/0033): read the takes, edit the scenario list.
+    for root in "$HOME/isaacsim/scenarios" "$HOME/isaacsim/scenarios-jetrover"; do
+        mkdir -p "$root"
+        setfacl -R -m "u:$U:rX" "$root"
+        find "$root" -type d -exec setfacl -d -m "u:$U:rX" {} +
+        setfacl -m "u:$U:rwx" "$root"
+        [ -f "$root/scenarios.txt" ] && setfacl -m "u:$U:rw" "$root/scenarios.txt"
+        echo "[share] $U can read the takes in $root (<scenario>/<UTC>-take<n>/) and edit $root/scenarios.txt"
+    done
+    # The real robot's takes as copied here (docs/adr/0036 decision 7) and every LeRobot dataset: read only, including
+    # everything written, copied or rebuilt later. Its scenario list stays on the robot.
+    for ro in "$HOME/isaacsim/scenarios-real" "$HOME/isaacsim/lerobot"; do
+        mkdir -p "$ro"
+        setfacl -R -m "u:$U:rX" "$ro"
+        find "$ro" -type d -exec setfacl -d -m "u:$U:rX" {} +
+    done
+    echo "[share] $U can read the real robot's takes in $HOME/isaacsim/scenarios-real (<scenario>/<UTC>-take<n>/)"
+    echo "[share] $U can read the LeRobot datasets in $HOME/isaacsim/lerobot (<robot>-<source>/<scenario>/)"
+    REMOTE
+
+# What the headset's RECORD button has recorded on the GPU machine (docs/adr/0033): the scenario list, and per scenario the takes kept (complete or not) and set aside, with their size
+[group('isaac')]
+isaac-scenarios:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    ssh -o ConnectTimeout=10 "{{gpu_host}}" bash -s <<'REMOTE'
+    set -euo pipefail
+    root=$HOME/isaacsim/scenarios
+    [ -d "$root" ] || { echo "no $root yet: just isaac-host makes it"; exit 0; }
+    echo "--- $root/scenarios.txt"; grep -v '^[[:space:]]*#' "$root/scenarios.txt" 2>/dev/null | sed '/^[[:space:]]*$/d' || echo "(none)"
+    for d in "$root"/*/; do
+        [ -d "$d" ] || continue
+        name=$(basename "$d"); [ "$name" = _discarded ] && continue
+        kept=$(find "$d" -mindepth 1 -maxdepth 1 -type d -name '*-take*' | wc -l)
+        done_=$(find "$d" -mindepth 2 -maxdepth 2 -name files.sha256 | wc -l)
+        aside=$(find "$root/_discarded/$name" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l)
+        echo "$name: $kept take(s) kept ($done_ complete), $aside set aside, $(du -sh "$d" | cut -f1)"
+    done
+    echo "free: $(df -h "$root" | awk 'NR==2 {print $4}')"
+    REMOTE
+
+# Build the LeRobot converter's environment on the GPU machine (docs/adr/0036), once and after robot/lerobot/requirements.txt changes: ~/isaacsim/lerobot-venv (Python 3.12) with that lerobot version, and pytest for just lerobot-test. Runs the pushed commit
+[group('lerobot')]
+lerobot-setup:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    commit=$(git rev-parse HEAD)
+    git fetch -q origin
+    [ -n "$(git branch -r --contains "$commit" 2>/dev/null)" ] || { echo "error: $commit is not on GitHub: push it first (the GPU machine runs what GitHub has)" >&2; exit 1; }
+    ssh -o ConnectTimeout=10 "{{gpu_host}}" "COMMIT='$commit' bash -s" <<'REMOTE'
+    set -euo pipefail
+    repo=$HOME/teleoperation-lerobot venv=$HOME/isaacsim/lerobot-venv
+    [ -d "$repo" ] || git clone -q https://github.com/andreitimoshukcollege-del/teleoperation.git "$repo"
+    cd "$repo" && git fetch -q origin && git checkout -q "$COMMIT"
+    [ -x "$venv/bin/python" ] || python3 -m venv "$venv"
+    "$venv/bin/pip" install -q --upgrade pip
+    "$venv/bin/pip" install -q -r robot/lerobot/requirements.txt pytest
+    "$venv/bin/python" -c "import lerobot, sys; from lerobot.datasets import LeRobotDataset; print('[lerobot] lerobot', lerobot.__version__, 'on Python', sys.version.split()[0], 'in', sys.prefix)"
+    REMOTE
+
+# Run robot/lerobot's tests on the GPU machine in the converter's environment, LeRobot round trip included (locally that one is skipped). Runs the pushed commit, in a checkout of its own
+[group('lerobot')]
+lerobot-test:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    commit=$(git rev-parse HEAD)
+    git fetch -q origin
+    [ -n "$(git branch -r --contains "$commit" 2>/dev/null)" ] || { echo "error: $commit is not on GitHub: push it first (the GPU machine runs what GitHub has)" >&2; exit 1; }
+    ssh -o ConnectTimeout=10 "{{gpu_host}}" "COMMIT='$commit' bash -s" <<'REMOTE'
+    set -euo pipefail
+    repo=$HOME/teleoperation-lerobot-test
+    [ -d "$repo" ] || git clone -q https://github.com/andreitimoshukcollege-del/teleoperation.git "$repo"
+    cd "$repo" && git fetch -q origin && git checkout -q "$COMMIT" && cd robot/lerobot
+    "$HOME/isaacsim/lerobot-venv/bin/python" -m pytest -q -p no:cacheprovider tests
+    REMOTE
+
+# (Re)start the LeRobot converter on the GPU machine at the pushed commit (docs/adr/0036): every headset take, 60 s after it is complete, becomes an episode of ~/isaacsim/lerobot/<robot>-<source>/<scenario>/. Detached: it outlives this shell. isaac-host and isaac-jetrover-host start it when it is not running
+[group('lerobot')]
+lerobot-watch-start:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    commit=$(git rev-parse HEAD)
+    git fetch -q origin
+    [ -n "$(git branch -r --contains "$commit" 2>/dev/null)" ] || { echo "error: $commit is not on GitHub: push it first (the GPU machine runs what GitHub has)" >&2; exit 1; }
+    ssh -o ConnectTimeout=10 "{{gpu_host}}" "bash -s start '$commit'" < robot/lerobot/watch.sh
+
+# Stop the LeRobot converter on the GPU machine: it finishes the take it is writing first (up to 10 min)
+[group('lerobot')]
+lerobot-watch-stop:
+    ssh -o ConnectTimeout=10 "{{gpu_host}}" "bash -s stop" < robot/lerobot/watch.sh
+
+# The LeRobot converter on the GPU machine: running or not, its log, and every dataset with its episodes and size
+[group('lerobot')]
+lerobot-watch-status:
+    ssh -o ConnectTimeout=10 "{{gpu_host}}" "bash -s status" < robot/lerobot/watch.sh
+
+# Rebuild one LeRobot dataset from its kept takes, on the GPU machine (docs/adr/0036 decision 6), e.g. after a schema change: dataset is <robot>-<source>/<scenario>, as lerobot-watch-status lists it. Stop the watcher first (just lerobot-watch-stop), start it again after
+[group('lerobot')]
+lerobot-rebuild dataset:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    case "{{dataset}}" in *[!A-Za-z0-9._/-]*|*..*|/*) echo "error: dataset is <robot>-<source>/<scenario>" >&2; exit 1 ;; esac
+    ssh -o ConnectTimeout=10 "{{gpu_host}}" "DATASET='{{dataset}}' bash -s" <<'REMOTE'
+    set -euo pipefail
+    pid=$HOME/isaacsim/lerobot/watch.pid
+    if [ -f "$pid" ] && kill -0 "$(cat "$pid")" 2>/dev/null; then echo "error: the watcher is running: just lerobot-watch-stop first" >&2; exit 1; fi
+    cd "$HOME/teleoperation-lerobot/robot/lerobot"
+    "$HOME/isaacsim/lerobot-venv/bin/python" -m teleop_lerobot rebuild --root "$HOME/isaacsim/scenarios" --root "$HOME/isaacsim/scenarios-jetrover" \
+        --root "$HOME/isaacsim/scenarios-real" --out "$HOME/isaacsim/lerobot" "$DATASET"
+    REMOTE
+
+# Let the LeRobot converter on the GPU machine copy the real robot's takes (docs/adr/0036 decision 7), once: makes the GPU account a key of its own (~/.ssh/id_ed25519_jetrover, if it has none), adds it to the Jetson's authorized_keys through this PC's own access, writes the robot's address where the converter looks first (~/isaacsim/lerobot/robot-hosts; it falls back on jetrover-sinrg.local), and checks the GPU machine reaches the robot with it. Changes only those two files
+[group('lerobot')]
+lerobot-robot-key remote_host=default_jetrover_host remote_user="jetson":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    host=$(just _robot-host "{{remote_host}}")
+    pub=$(ssh -o ConnectTimeout=10 "{{gpu_host}}" 'k=$HOME/.ssh/id_ed25519_jetrover; mkdir -p ~/.ssh && chmod 700 ~/.ssh
+        [ -f "$k" ] || ssh-keygen -q -t ed25519 -N "" -C "lerobot-pull@$(hostname)" -f "$k"; cat "$k.pub"')
+    case "$pub" in "ssh-ed25519 "*) ;; *) echo "error: no public key from the GPU machine: $pub" >&2; exit 1 ;; esac
+    echo "$pub" | ssh -o StrictHostKeyChecking=accept-new "{{remote_user}}@$host" 'read -r key; mkdir -p ~/.ssh && chmod 700 ~/.ssh
+        touch ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys
+        if grep -qxF "$key" ~/.ssh/authorized_keys; then echo "[robot] the GPU machine'"'"'s key was already allowed"; else echo "$key" >> ~/.ssh/authorized_keys; echo "[robot] allowed the GPU machine'"'"'s key"; fi'
+    just lerobot-robot-host "$host"
+
+# Tell the LeRobot converter on the GPU machine where the robot is now (it is on DHCP): writes ~/isaacsim/lerobot/robot-hosts there and checks the GPU machine reaches the robot with its key (just lerobot-robot-key, once). host defaults to the robot's address as this PC finds it
+[group('lerobot')]
+lerobot-robot-host host=default_jetrover_host remote_user="jetson":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    addr=$(just _robot-host "{{host}}")
+    case "$addr" in *[!A-Za-z0-9.:-]*|"") echo "error: '$addr' is not an address" >&2; exit 1 ;; esac
+    ssh -o ConnectTimeout=10 "{{gpu_host}}" "ADDR='$addr' U='{{remote_user}}' bash -s" <<'REMOTE'
+    set -euo pipefail
+    mkdir -p ~/isaacsim/lerobot && echo "$ADDR" > ~/isaacsim/lerobot/robot-hosts
+    if ssh -i ~/.ssh/id_ed25519_jetrover -o IdentitiesOnly=yes -o BatchMode=yes -o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new "$U@$ADDR" true; then
+        echo "[lerobot] the GPU machine reaches the robot at $ADDR: its complete takes are copied within a minute of the converter's next pass"
+    else
+        echo "[lerobot] wrote $ADDR, but the GPU machine cannot reach the robot there yet (off, another network, or no key: just lerobot-robot-key)" >&2
+    fi
+    REMOTE
+
+# Free the robot's disk of takes the GPU machine holds (docs/adr/0036): a take, kept or set aside, whose copy on the GPU machine has the same files.sha256 (and so checked out when it was copied) is deleted on the robot; never the one recording. Dry run unless apply=true
+[group('robot: recording (docs/adr/0021)')]
+robot-prune-takes apply="false" remote_host=default_jetrover_host remote_user="jetson":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    target="{{remote_user}}@$(just _robot-host "{{remote_host}}")"
+    list='for f in */*-take*/files.sha256 _discarded/*/*-take*/files.sha256; do [ -f "$f" ] && echo "${f%/files.sha256} $(sha256sum "$f" | cut -c1-64)"; done; true'
+    robot=$(ssh -o StrictHostKeyChecking=accept-new "$target" "a=\$(cat ~/recordings/.active 2>/dev/null); cd ~/recordings/scenarios 2>/dev/null || exit 0; echo \"ACTIVE \$a\"; $list")
+    gpu=$(ssh -o ConnectTimeout=10 "{{gpu_host}}" "cd ~/isaacsim/scenarios-real 2>/dev/null || exit 0; $list")
+    deletable=$(python3 - "$robot" "$gpu" <<'PY'
+    import re, sys
+    robot, gpu = sys.argv[1].splitlines(), sys.argv[2].splitlines()
+    take = re.compile(r"^(_discarded/)?[A-Za-z0-9][A-Za-z0-9._-]{0,23}/\d{8}T\d{6}Z-take\d+$")
+    active = next((l[7:].strip() for l in robot if l.startswith("ACTIVE ")), "")
+    held = {}
+    for line in gpu:
+        path, _, sha = line.partition(" ")
+        held[path.split("/", 1)[1] if path.startswith("_discarded/") else path] = sha
+    for line in robot:
+        if line.startswith("ACTIVE "):
+            continue
+        path, _, sha = line.partition(" ")
+        bare = path.split("/", 1)[1] if path.startswith("_discarded/") else path
+        if not take.match(path) or (active and active.rstrip("/").endswith("/" + bare)):
+            continue
+        if held.get(bare) == sha:
+            print(path)
+        else:
+            print(f"keeping {path}: {'not on the GPU machine' if bare not in held else 'its GPU copy differs'}", file=sys.stderr)
+    PY
+    )
+    n=$(echo "$deletable" | grep -c . || true)
+    echo "--- held on the GPU machine and deletable on the robot: $n take(s)"
+    echo "$deletable" | grep . | sed 's/^/  /' || true
+    if [ "{{apply}}" != true ] || [ "$n" = 0 ]; then [ "{{apply}}" != true ] && echo "dry run: nothing deleted. just robot-prune-takes true deletes them"; exit 0; fi
+    ssh "$target" "cd ~/recordings/scenarios && for d in $(echo $deletable); do rm -rf -- \"\$d\" && echo \"  deleted \$d\"; done; echo \"--- free now: \$(df -h ~/recordings | tail -1 | awk '{print \$4}')\""
+
+# The JetRover's arm in Isaac Sim on the GPU machine, behind the JetRover's own RobotHost (docs/adr/0034 J2): checks out this commit in ~/teleoperation-isaac (it must be on GitHub), builds RobotHost, starts teleop_isaac.jetrover_bridge on a relay socket (log ~/isaacsim/jetrover-bridge.log) and then RobotHost exactly as the Jetson runs it, with --relay-socket pointing at Isaac instead of the ROS relay: joint port 6002, discovery 6005, the JetRover profile, sessions recorded into ~/isaacsim/jetrover-recordings marked source isaac. Point the headset's JetRover app at it with `just push-galaxy-config <GPU machine's address>`. Enter stops both, as does `just isaac-stop`. Refuses while an Isaac host of ours (FR3 or JetRover) is running there: they share the ports. No real robot moves
+[group('isaac')]
+isaac-jetrover-host scene="jetrover-bench" scene_seed="auto":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    case "{{scene}}" in *[!A-Za-z0-9._-]*|"") echo "error: scene is a file name in core/Scenes without .json, or none" >&2; exit 1 ;; esac
+    case "{{scene_seed}}" in auto|[0-9]*) ;; *) echo "error: scene_seed is a number or auto" >&2; exit 1 ;; esac
+    [ "{{scene}}" = none ] || [ -f "core/Scenes/{{scene}}.json" ] || { echo "error: no core/Scenes/{{scene}}.json" >&2; exit 1; }
+    commit=$(git rev-parse HEAD)
+    git fetch -q origin
+    [ -n "$(git branch -r --contains "$commit" 2>/dev/null)" ] || { echo "error: $commit is not on GitHub: push it first (the GPU machine runs what GitHub has)" >&2; exit 1; }
+    remote=$(cat <<'REMOTE'
+    set -euo pipefail
+    repo=$HOME/teleoperation-isaac
+    [ -x "$HOME/isaacsim/venv/bin/python" ] || { echo "error: no Isaac Sim in our account here: just isaac-setup" >&2; exit 1; }
+    for p in $(pgrep -u "$USER" -f "teleop_isaac[.](bridge|jetrover_bridge)" || true); do
+        case "$(readlink "/proc/$p/exe" 2>/dev/null)" in *python*) echo "error: an Isaac host of ours is already running on $(hostname) (pid $p): stop it first (just isaac-stop)" >&2; exit 1 ;; esac
+    done
+    [ -d "$repo" ] || git clone -q https://github.com/andreitimoshukcollege-del/teleoperation.git "$repo"
+    cd "$repo" && git fetch -q origin && git checkout -q "$COMMIT" && echo "[isaac-jetrover] repo at $(git log --oneline -1)"
+    # Every take recorded here becomes a LeRobot episode (docs/adr/0036): start the converter if it is not running.
+    "$repo/robot/lerobot/watch.sh" ensure "$COMMIT" || echo "[isaac-jetrover] the LeRobot converter is not running: just lerobot-setup, then just lerobot-watch-start" >&2
+    dotnet build -c Release -v q -nologo core/Teleop.RobotHost/Teleop.RobotHost.csproj -o "$HOME/isaacsim/robothost" > "$HOME/isaacsim/robothost-build.log" 2>&1         || { tail -20 "$HOME/isaacsim/robothost-build.log" >&2; exit 1; }
+    relay=/tmp/teleop-jetrover-relay-$USER.sock
+    log=$HOME/isaacsim/jetrover-bridge.log
+    rec=$HOME/isaacsim/jetrover-recordings
+    mkdir -p "$rec"
+    pin() { if [ "$(nproc)" -ge 24 ]; then echo "taskset -c $1"; fi; }
+    bridge_scene=(); host_scene=()
+    if [ "$SCENE" != none ]; then
+        bridge_scene=(--scene "../../core/Scenes/$SCENE.json" --world-socket "$relay.world")
+        host_scene=(--scene "core/Scenes/$SCENE.json" --scene-seed "$SCENE_SEED" --world-socket "$relay.world" --scenarios "$HOME/isaacsim/scenarios-jetrover")
+        echo "[isaac-jetrover] scene $SCENE (seed $SCENE_SEED)"
+    fi
+    tap=/tmp/teleop-isaac-tap-$USER.sock
+    tap_args=(); [ "$SCENE" != none ] && tap_args=(--tap "$tap")
+    (cd robot/isaac && exec $(pin 2-5) "$HOME/isaacsim/venv/bin/python" -m teleop_isaac.jetrover_bridge --socket "$relay" --client-socket "$relay.robothost" --record-control "$rec/.active" "${bridge_scene[@]}" "${tap_args[@]}") > "$log" 2>&1 &
+    bridge=$!
+    renderer=""
+    trap 'kill $bridge $renderer 2>/dev/null; wait $bridge $renderer 2>/dev/null || true' EXIT
+    echo "[isaac-jetrover] bridge pid $bridge (log $log); waiting for Isaac to start"
+    for i in $(seq 1 180); do
+        grep -q "listening on" "$log" 2>/dev/null && break
+        kill -0 $bridge 2>/dev/null || { echo "error: the bridge stopped:" >&2; tail -30 "$log" >&2; exit 1; }
+        sleep 1
+    done
+    grep "^\[jetrover\]" "$log" || { echo "error: the bridge did not start within 3 min" >&2; tail -30 "$log" >&2; exit 1; }
+    writer=()
+    if [ "$SCENE" != none ]; then
+        # The cameras, backdrops and recorded frames (docs/adr/0034 J5): the FR3's renderer, given the JetRover's URDF and motors.
+        rlog=$HOME/isaacsim/renderer.log
+        (cd robot/isaac && exec $(pin 8-23) "$HOME/isaacsim/venv/bin/python" -m teleop_isaac.renderer --sim ../jetrover/urdf/jetrover.sim.json \
+            --scene "../../core/Scenes/$SCENE.json" --tap "$tap" --record-control "$rec/.active") > "$rlog" 2>&1 &
+        renderer=$!
+        echo "[isaac-jetrover] renderer pid $renderer (log $rlog); waiting for its feeds"
+        for i in $(seq 1 180); do
+            grep -q "^\[render\] streaming" "$rlog" 2>/dev/null && break
+            kill -0 $renderer 2>/dev/null || break
+            sleep 1
+        done
+        if grep -q "^\[render\] streaming" "$rlog" 2>/dev/null; then grep "^\[render\]" "$rlog"; writer=(--auto-record-writer isaac:60)
+        else echo "warning: the renderer did not start, so there are no camera feeds or frames recorded (the robot runs without them):" >&2; tail -20 "$rlog" >&2; renderer=""; fi
+    fi
+    park=""; [ -n "{{jetrover_park_contact_deg}}" ] && park="--park-contact-deg {{jetrover_park_contact_deg}}"
+    # As teleop-robothost.service runs it on the Jetson (just deploy-robothost), the relay socket aside; the bridge writes driver.jlog
+    # (docs/adr/0035 N4), and RobotHost waits for its trailer as it waits for the real driver's.
+    dotnet "$HOME/isaacsim/robothost/Teleop.RobotHost.dll" --local-port 6000 --remote-host 127.0.0.1 --remote-port 6001 \
+        --relay-socket "$relay" --local-relay-socket "$relay.robothost" --joint-local-port 6002 --discovery-port 6005 \
+        --profile-path core/RobotProfiles/jetrover.json --record-control "$rec/.active" \
+        --uplink-control "$HOME/isaacsim/jetrover-uplink" --uplink-traces "$HOME/datasets/network" \
+        --auto-record --auto-record-root "$rec" --auto-record-profile core/RobotProfiles/jetrover.json --auto-record-source isaac \
+        --rest-pose-deg {{jetrover_rest_pose_deg}} $park "${host_scene[@]}" "${writer[@]}"
+    REMOTE
+    )
+    ssh -o ConnectTimeout=10 "{{gpu_host}}" "COMMIT='$commit' SCENE='{{scene}}' SCENE_SEED='{{scene_seed}}' bash -c $(printf '%q' "$remote")"
+
+# Stop the Isaac host that `just isaac-host` started on the GPU machine (docs/adr/0031), from any terminal: what Enter does where it was started. RobotHost gets SIGTERM first, which it takes as Enter, so it closes its recording, and isaac-host then stops the bridge. Whatever still runs after 30 s gets SIGTERM, and after 60 s more, SIGKILL. Says which recording is newest and whether it is complete. Nothing running is not an error
+[group('isaac')]
+isaac-stop:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    remote=$(cat <<'REMOTE'
+    set -euo pipefail
+    # Real processes only, as in isaac-host: this script's own shell, and isaac-host's, carry both command lines in their text.
+    ours() { for p in $(pgrep -u "$USER" -f "$1" || true); do case "$(readlink "/proc/$p/exe" 2>/dev/null)" in *"$2"*) echo "$p" ;; esac; done; }
+    host=$(ours "isaacsim/robothost/Teleop[.]RobotHost[.]dll" dotnet)
+    bridge=$(ours "teleop_isaac[.](bridge|jetrover_bridge)" python)
+    renderer=$(ours "teleop_isaac[.]renderer" python)
+    if [ -z "$host$bridge$renderer" ]; then echo "[isaac-stop] no Isaac host of ours is running on $(hostname)"; exit 0; fi
+    alive() { for p in "$@"; do kill -0 "$p" 2>/dev/null && return 0; done; return 1; }
+    gone_within() { local seconds=$1; shift; for _ in $(seq 1 "$seconds"); do alive "$@" || return 0; sleep 1; done; ! alive "$@"; }
+    if [ -n "$host" ]; then
+        echo "[isaac-stop] RobotHost pid" $host "on $(hostname): stopping it; it closes its recording, then isaac-host stops the bridge"
+        kill -TERM $host 2>/dev/null || true
+    else
+        echo "[isaac-stop] the bridge or renderer (pids" $bridge $renderer ") runs without RobotHost on $(hostname): stopping it"
+        kill -TERM $bridge $renderer 2>/dev/null || true
+    fi
+    # RobotHost waits up to 60 s for the renderer's isaac.jlog trailer before it completes the session.
+    if ! gone_within 90 $host $bridge $renderer; then
+        echo "[isaac-stop] still running after 90 s: SIGTERM to all of it" >&2
+        kill -TERM $host $bridge $renderer 2>/dev/null || true
+        if ! gone_within 60 $host $bridge $renderer; then
+            echo "[isaac-stop] still running after 150 s: SIGKILL" >&2
+            kill -KILL $host $bridge $renderer 2>/dev/null || true
+            rm -f "/tmp/teleop-isaac-$USER.sock"
+        fi
+    fi
+    echo "[isaac-stop] stopped"
+    tail -n 2 "$HOME/isaacsim/bridge.log" 2>/dev/null | sed 's/^/[isaac-stop] bridge log: /' || true
+    last=$(ls -1td "$HOME"/isaacsim/recordings/*/ 2>/dev/null | head -1 || true)
+    if [ -n "$last" ] && [ -f "$last/files.sha256" ]; then echo "[isaac-stop] newest recording, complete: $last"
+    elif [ -n "$last" ]; then echo "[isaac-stop] newest recording has no files.sha256 (not completed): $last" >&2
+    fi
+    REMOTE
+    )
+    ssh -o ConnectTimeout=10 "{{gpu_host}}" "bash -c $(printf '%q' "$remote")"
+
+# The Isaac bridge's plain-Python tests (robot/isaac/tests): its copies of the arm-server wire and the shaper against their golden files, and the profile's motor order. No Isaac needed. Needs `just trainer-setup` (its numpy and pytest)
+[group('isaac')]
+isaac-bridge-test:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    PY=$(just _trainer-python)
+    cd robot/isaac
+    "../../$PY" -m pytest -q -p no:cacheprovider tests
+
+# Rewrite robot/isaac/golden/arm-server-wire-v1.json from RobotHost's codec (after a deliberate change to ArmServerWire.cs); then change robot/isaac/teleop_isaac/wire.py until just isaac-bridge-test passes
+[group('isaac')]
+gen-arm-server-golden:
+    cd core && TELEOP_WRITE_GOLDEN=1 WSLENV="${WSLENV:+$WSLENV:}TELEOP_WRITE_GOLDEN" dotnet test Teleop.RobotHost.Tests --filter "FullyQualifiedName~ArmServerWireTests.TheIsaacBridgesGoldenFile_IsWhatThisCodecWrites"
+
+# Rewrite robot/isaac/golden/camera-wire-v1.json from ADR 0014's C# camera wire (CameraChunkCodec, CameraSubscribeCodec, FramePacer), after a deliberate change; then change robot/isaac/teleop_isaac/camwire.py and camfeed.py until just isaac-bridge-test passes
+[group('isaac')]
+gen-camera-wire-golden:
+    cd core && TELEOP_WRITE_GOLDEN=1 WSLENV="${WSLENV:+$WSLENV:}TELEOP_WRITE_GOLDEN" dotnet test Teleop.CameraHost.Tests --filter "FullyQualifiedName~CameraWireGoldenTests"
+
+# Rewrite robot/lerobot/tests/golden/camera/ from CameraHost's session writer (docs/adr/0014 amendment 3), after a deliberate change to CameraSessionWriter.cs; then change robot/lerobot/teleop_lerobot/takes.py until robot/lerobot's tests pass
+[group('lerobot')]
+gen-camera-session-golden:
+    cd core && TELEOP_WRITE_GOLDEN=1 WSLENV="${WSLENV:+$WSLENV:}TELEOP_WRITE_GOLDEN" dotnet test Teleop.CameraHost.Tests --filter "FullyQualifiedName~CameraSessionGoldenTests"
+
+# Rewrite the golden files Core writes for Isaac and the scene file (docs/adr/0031 amendment 2, docs/adr/0032), after a deliberate change: the canonical parse of core/Scenes/fr3-duo-bench.json (robot/isaac/golden/scene-fr3-duo-bench.json), the FR3 Duo's tool poses at seeded joint sets (robot/isaac/golden/fr3-duo-fk-v1.json), seed 1's object layout (core/Scenes/testdata/layout-seed1.txt), and the arm-server wire's. Then change the Python copies until `just isaac-bridge-test` passes
+[group('isaac')]
+gen-isaac-goldens:
+    cd core && TELEOP_WRITE_GOLDEN=1 WSLENV="${WSLENV:+$WSLENV:}TELEOP_WRITE_GOLDEN" dotnet test Teleop.RobotArm.Tests --filter "FullyQualifiedName~SceneDocumentTests.TheIsaacGoldenFile|FullyQualifiedName~Fr3FkGoldenTests|FullyQualifiedName~SceneLayoutTests.ALayoutIsFrozen"
+    just gen-arm-server-golden
+
+# How the GPU machine's Isaac Sim stands (docs/adr/0031): the version installed in our account, whether a setup is going and its log's last lines, the GPU's load (it is shared), and whether an Isaac host runs, with the renderer's newest health line
+[group('isaac')]
+isaac-status lines="6":
+    @ssh -o ConnectTimeout=10 "{{gpu_host}}" 'root=$HOME/isaacsim; \
+        echo "installed: $(cat $root/VERSION 2>/dev/null || echo nothing yet)"; \
+        p=$(cat $root/setup.pid 2>/dev/null); \
+        if [ -n "$p" ] && kill -0 "$p" 2>/dev/null; then echo "setup: going (pid $p), venv $(du -sh $root/venv 2>/dev/null | cut -f1)"; else echo "setup: not going"; fi; \
+        nvidia-smi --query-gpu=name,memory.used,memory.total,utilization.gpu --format=csv,noheader; \
+        n=0; for p in $(pgrep -u "$USER" -f "teleop_isaac[.](bridge|jetrover_bridge|renderer)" || true); do case "$(readlink /proc/$p/exe 2>/dev/null)" in *python*) n=$((n+1)) ;; esac; done; \
+        echo "isaac host: $n bridge/renderer process(es) running"; \
+        [ "$n" -gt 0 ] && grep "^\[render\] [0-9]" $root/renderer.log 2>/dev/null | tail -1; \
+        echo; tail -n {{lines}} $root/setup.log 2>/dev/null || echo "(no setup log)"'
+
 # One-time local trainer venv, CPU only: the contract, the checker, the simulator and the tests (torch=true adds the CPU torch build, for smoke training and export). GPU machines use trainer/setup.sh from the packed file instead
 [group('trainer')]
 trainer-setup torch="false":
@@ -2670,10 +3876,20 @@ trainer-test:
     cd trainer
     "../$PY" -m pytest -q -p no:cacheprovider
 
-# Regenerate trainer/contract/golden from Core (after changing SeededRng, the impairments, the profile catalog, ClockSync or relay-replay); then fix the trainer's copies until `just trainer-test` passes
+# Regenerate trainer/contract/golden from Core (after changing SeededRng, the impairments, the profile catalog, ClockSync, relay-replay or the shaper), and the Isaac bridge's copy of the shaper's (robot/isaac/golden); then fix the copies until `just trainer-test` and `just isaac-bridge-test` pass
 [group('trainer')]
 gen-trainer-golden:
     cd core && dotnet run --project Teleop.Eval -- gen-trainer-golden
+    cp trainer/contract/golden/joint-shaper-v1.json robot/isaac/golden/joint-shaper-v1.json
+
+# Regenerate core/testdata/learned/forecast-golden-v1.json from the trainer (docs/adr/0035 N3): the causal network forecasters (persistence, rtt-half), the network block and the forecast effective times that core/Teleop.Core/Forecast/ copies. After changing trainer/armpred/net/forecast.py, features/layout.py's encode_forecast or golden_forecast.py; then fix the C# copy until `just core-check` passes. Needs `just trainer-setup`
+[group('trainer')]
+gen-forecast-golden:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    PY=$(just _trainer-python)
+    cd trainer
+    "../$PY" -m armpred golden-forecast --out ../core/testdata/learned
 
 # Pack trainer/ into the one file the GPU machine needs: dist/armpred-<sha>.tar.gz, with a VERSION file naming the commit (and whether the tree was dirty). Unpack it there and run ./setup.sh (trainer/README.md)
 [group('trainer')]
@@ -2822,6 +4038,8 @@ record-stop remote_host=default_jetrover_host remote_user="jetson":
     for i in $(seq 1 60); do
         done=true
         for f in robothost driver; do tail -n 1 "$dir/$f.jlog" 2>/dev/null | grep -q '^END|' || done=false; done
+        # CameraHost's log, when it records (docs/adr/0014 amendment 3): it closes within half a second of the control file.
+        if [ -e "$dir/camera.jlog" ]; then tail -n 1 "$dir/camera.jlog" | grep -q '^END|' || done=false; fi
         $done && break; sleep 0.25
     done
     python3 - "$dir" <<'PY'
@@ -2854,7 +4072,8 @@ record-stop remote_host=default_jetrover_host remote_user="jetson":
         print(f"no joint commands: the slider stays {asked}, as record-start was told")
     json.dump(meta, open(path, "w"), indent=2)
     PY
-    cd "$dir" && sha256sum session.json robot-profile.json *.jlog > files.sha256
+    # A writer's folder (camera/: CameraHost's frames) is hashed with the logs, as SessionFinalizer does for a take.
+    cd "$dir" && sha256sum session.json robot-profile.json *.jlog $(find camera -type f ! -name '*.part' 2>/dev/null | sort) > files.sha256
     for f in *.jlog; do printf '%-16s %s\n' "$f" "$(tail -n 1 "$f")"; done
     echo "stopped $(basename "$dir")"
     SH
@@ -3062,6 +4281,16 @@ robot-recordings remote_host=default_jetrover_host remote_user="jetson":
          for d in {{robot_recordings}}/jetrover/*/; do [ -d "$d" ] || continue; \
            closed=$(for f in "$d"*.jlog; do tail -n 1 "$f" | grep -q "^END|" && echo -n "+" || echo -n "-"; done); \
            printf "%-60s %6s  logs closed: %s\n" "$(basename "$d")" "$(du -sh "$d" | cut -f1)" "$closed"; done; \
+         df -h {{robot_recordings}} | tail -1'
+
+# The headset's takes on the robot (docs/adr/0033 amendment 1): per scenario, each take's size, whether RobotHost completed it (files.sha256), and how many camera frames it holds; then the disk. Touches nothing
+[group('robot: recording (docs/adr/0021)')]
+robot-scenarios remote_host=default_jetrover_host remote_user="jetson":
+    ssh -o StrictHostKeyChecking=accept-new "{{remote_user}}@$(just _robot-host "{{remote_host}}")" \
+        'root={{robot_recordings}}/scenarios; echo "recording now: $(cat {{robot_recordings}}/.active 2>/dev/null || echo nothing)"; \
+         for d in "$root"/*/*-take*/; do [ -d "$d" ] || continue; \
+           frames=$(grep -c "^VF" "$d"camera.jlog 2>/dev/null || echo 0); \
+           printf "%-50s %6s  %-10s %6s camera frames\n" "${d#$root/}" "$(du -sh "$d" | cut -f1)" "$([ -f "$d"files.sha256 ] && echo complete || echo open)" "$frames"; done; \
          df -h {{robot_recordings}} | tail -1'
 
 # Copy new sessions from the robot into recordings/jetrover/ (gitignored; archive them to a GitHub Release), never overwriting one already here, then check each new one

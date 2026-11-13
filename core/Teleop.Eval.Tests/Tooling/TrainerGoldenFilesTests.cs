@@ -18,6 +18,7 @@ namespace Teleop.Eval.Tests.Tooling
         private static readonly string[] Expected =
         {
             "rng-v1.json", "impairments-v1.json", "clocksync-v1.json", "relay-replay-v1.json", "relay-replay-servo.json",
+            "joint-shaper-v1.json", "franka-replay-v1.json",
         };
 
         [Fact]
@@ -93,6 +94,19 @@ namespace Teleop.Eval.Tests.Tooling
                     $"{name} no longer matches what Core produces. If the Core change is intended, run " +
                     "'dotnet run --project Teleop.Eval -- gen-trainer-golden' from core/ and update the trainer's copies to match.");
             }
+        }
+
+        [Fact]
+        public void TheIsaacBridgesShaperGolden_IsTheTrainers()
+        {
+            // The Isaac bridge's shaper copy is pinned to the same golden (docs/adr/0031 decision 2); robot/ reads nothing from trainer/.
+            string root = RepoRoot();
+            string trace = Path.Combine(root, "core", "testdata", "traces", "synthetic-burst.trace");
+            string shaper = TrainerGoldenBuilder.BuildAll(trace).Single(f => f.Name == "joint-shaper-v1.json").Content;
+            string copy = Path.Combine(root, "robot", "isaac", "golden", "joint-shaper-v1.json");
+            Assert.True(File.Exists(copy), $"{copy} is missing: just gen-trainer-golden copies it there");
+            Assert.True(File.ReadAllText(copy).Replace("\r\n", "\n") == shaper,
+                "robot/isaac/golden/joint-shaper-v1.json is not what Core produces: run just gen-trainer-golden, and fix robot/isaac/teleop_isaac/shaper.py to match");
         }
 
         [Fact]

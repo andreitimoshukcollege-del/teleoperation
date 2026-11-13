@@ -3,6 +3,7 @@ using System.Diagnostics;
 using System.Net;
 using System.Net.Sockets;
 using System.Runtime.InteropServices;
+using Teleop.CameraHost.Recording;
 using Teleop.CameraHost.Streaming;
 using Teleop.CameraHost.V4l2;
 using Teleop.Core.Types;
@@ -26,7 +27,8 @@ namespace Teleop.CameraHost
         /// <summary>How often a missing camera is looked for again.</summary>
         private const int RetryMilliseconds = 1000;
 
-        public static int Run(string device, uint width, uint height, uint fps, int port, double subscriberTimeoutSeconds, double seconds)
+        public static int Run(string device, uint width, uint height, uint fps, int port, double subscriberTimeoutSeconds, double seconds,
+            string? recordControl = null, double recordMinFreeGigabytes = 2, bool recordTakesOnly = true)
         {
             // The camera is opened, and reopened, inside the loop: the DaBai drops off the USB bus now
             // and then and comes back, sometimes under another /dev/videoN (2026-10-12). Exiting on that,
@@ -54,6 +56,16 @@ namespace Teleop.CameraHost
                 Console.WriteLine(
                     $"Teleop.CameraHost on UDP :{port}, camera {device}; subscribers time out after " +
                     $"{subscriberTimeoutSeconds:0.#} s; first frame id {firstFrameId}.");
+
+                // Records the camera into the robot's session while the control file names one (docs/adr/0014 amendment 3).
+                using CameraSessionWriter? recording = recordControl == null ? null : new CameraSessionWriter(
+                    recordControl, Stopwatch.GetTimestamp, ticksPerSecond, (long)(recordMinFreeGigabytes * 1024 * 1024 * 1024),
+                    log: Console.WriteLine, takesOnly: recordTakesOnly);
+                if (recordControl != null)
+                {
+                    Console.WriteLine($"[record] following {recordControl}, frames into {(recordTakesOnly ? "takes only" : "every session")}; " +
+                        $"recording stops below {recordMinFreeGigabytes:0.#} GB free");
+                }
 
                 var receive = new byte[64];
                 EndPoint from = new IPEndPoint(IPAddress.Any, 0);
@@ -139,6 +151,9 @@ namespace Teleop.CameraHost
                             streamer.OfferFrame(
                                 capture.FrameBytes(frame), captureTicks, (ushort)capture.Width, (ushort)capture.Height,
                                 Stopwatch.GetTimestamp());
+                            // Before Requeue: the bytes are the driver's buffer until then.
+                            recording?.OfferFrame(capture.FrameBytes(frame), unchecked((uint)captured), captureTicks,
+                                (ushort)capture.Width, (ushort)capture.Height);
                             capture.Requeue(frame);
                         }
                         catch (Exception e)

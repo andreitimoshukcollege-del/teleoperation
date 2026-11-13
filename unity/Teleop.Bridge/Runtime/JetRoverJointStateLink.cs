@@ -1,12 +1,16 @@
 using System;
 using Teleop.Core.Contracts;
+using Teleop.Core.Forecast;
 using Teleop.Core.Metrics;
 using Teleop.Core.Prediction;
+using Teleop.Core.Registry;
 using Teleop.Core.Time;
 using Teleop.Core.Types;
+using Teleop.RobotArm.Operator;
 using Teleop.RobotArm.Power;
 using Teleop.RobotArm.Types;
 using Teleop.RobotArm.Wire;
+using Teleop.RobotArm.World;
 
 // C# 9: block-scoped namespace only, like the rest of unity/.
 namespace Teleop.Bridge
@@ -97,7 +101,7 @@ namespace Teleop.Bridge
     /// <summary>Finds a learned model by name for a <c>learned</c> preset (Bridge's <see cref="LearnedModels.TryLoad"/>).</summary>
     public delegate bool LearnedModelLoader(string name, out IInferenceBackend model, out string error);
 
-    public sealed class JetRoverJointStateLink
+    public sealed class JetRoverJointStateLink : IOperatorJointLink
     {
         private const double KeepaliveSeconds = 0.5;
         private const double ScoreWindowSeconds = 30.0;
@@ -111,7 +115,7 @@ namespace Teleop.Bridge
         private readonly string[] _descriptions;
         private readonly LiveJointScorer _scorer;
         private readonly long _keepaliveIntervalTicks;
-        private readonly byte[] _buffer = new byte[128];
+        private readonly byte[] _buffer = new byte[JointDatagram.MaxBytes];
         private readonly byte[] _powerBuffer = new byte[ArmPowerCodec.RequestSize];
         private readonly byte[] _trainingBuffer = new byte[TrainingTaskCodec.Size];
         private readonly byte[] _headsetBuffer = new byte[HeadsetConditionsCodec.Size];
@@ -132,6 +136,24 @@ namespace Teleop.Bridge
         private int _measuredCount;
         private long _lastKeepaliveTicks = long.MinValue;
         private long _lastEchoOperatorTicks = long.MinValue;
+
+        // The network forecast (docs/adr/0035 N3): every decision is Core's forecaster's; this feeds it and passes it on.
+        private const double ForecastIntervalSeconds = 0.1; // forecast.py's ISSUE_INTERVAL_S
+        private readonly INetworkForecaster _forecaster; // null: "absent"
+        private readonly NetworkForecast _forecast = new NetworkForecast();
+        private readonly ForecastEffectiveTimes _forecastEffective;
+        private readonly long _forecastIntervalTicks;
+        private long _lastForecastTicks = long.MinValue;
+        private bool _hasForecast;
+        private bool _hasSequence;
+        private uint _lastSequence;
+        private long _sequenceUnwrapped;
+
+        /// <summary>The network forecast's level, as the trainer names it ("absent" when none is made).</summary>
+        public string NetworkForecastLevel => _forecaster != null ? _forecaster.Level : "absent";
+
+        /// <summary>The newest forecast issued (null before the first, or with none made).</summary>
+        public NetworkForecast LatestForecast => _hasForecast ? _forecast : null;
         private long _lastFrameArrivalTicks;
         private long _lastFreshArrivalTicks = long.MinValue;
         private long _firstFrameArrivalTicks = long.MinValue;
@@ -142,6 +164,21 @@ namespace Teleop.Bridge
         public bool HasState => _measuredCount > 0;
         public bool IsSynced => _clockSync.Diagnostics.IsSynced;
         public long FramesReceived { get; private set; }
+
+        // The real network, live (docs/metrics.md §3, "Live link health"): lag, jitter and loss over the last 5 s of frames.
+        private LiveLinkMeter _meter;
+
+        /// <summary>Where the link's raw stamps are recorded (docs/adr/0035 N1); null records nothing.</summary>
+        public LinkTraceRecorder Trace { get; set; }
+
+        /// <summary>The median one-way delay from the robot to the headset over the last 5 s (ms); negative before the clocks sync.</summary>
+        public float LagMilliseconds { get { double v = _meter.LagMs; return double.IsNaN(v) ? -1f : (float)v; } }
+
+        /// <summary>RFC 3550 interarrival jitter of the frames (ms).</summary>
+        public float JitterMilliseconds => (float)_meter.JitterMs;
+
+        /// <summary>The share of the last 5 s of frames, by sequence number, that never arrived (%).</summary>
+        public float LossPercent => (float)(_meter.LossFraction * 100.0);
         public float RoundTripMilliseconds => _clockSync.Diagnostics.LastRttTicks * 1000f / _clock.TicksPerSecond;
 
         /// <summary>
@@ -177,15 +214,31 @@ namespace Teleop.Bridge
         /// </summary>
         public JetRoverJointStateLink(ITransport transport, ITimeAuthority clock, in RobotArmProfile profile,
             ClockSyncConfig clockSyncConfig, JointPredictorPresetData[] presets, string activeLabel, double maxHorizonMs,
-            float gripperFractionPerRadian, byte[] readingAgeMotorIds, LearnedModelLoader loadModel = null)
+            float gripperFractionPerRadian, byte[] readingAgeMotorIds, LearnedModelLoader loadModel = null, WorldState world = null,
+            string networkForecast = "persistence")
         {
             _transport = transport ?? throw new ArgumentNullException(nameof(transport));
             _clock = clock ?? throw new ArgumentNullException(nameof(clock));
+            _side = new JointPortSideChannels(transport, clock, world);
+            _meter = new LiveLinkMeter(clock.TicksPerSecond);
             if (presets == null || presets.Length == 0) throw new ArgumentException("no joint predictor presets");
             _profile = profile;
             _clockSync = new ClockSync(clockSyncConfig);
             _keepaliveIntervalTicks = (long)(KeepaliveSeconds * clock.TicksPerSecond);
             _power = new OperatorArmPower(clock.TicksPerSecond);
+            if (!string.IsNullOrEmpty(networkForecast) && networkForecast != "absent")
+            {
+                if (!Registries.NetworkForecasters.TryGetValue(networkForecast, out Func<long, INetworkForecaster> make))
+                {
+                    throw new ArgumentException(
+                        $"no network forecast '{networkForecast}' (absent, {string.Join(", ", Registries.NetworkForecasters.Keys)})");
+                }
+
+                _forecaster = make(clock.TicksPerSecond);
+            }
+
+            _forecastEffective = new ForecastEffectiveTimes(clock.TicksPerSecond);
+            _forecastIntervalTicks = (long)(ForecastIntervalSeconds * clock.TicksPerSecond);
 
             byte[] gripperIds = GripperIds(profile);
             var corePresets = new JointPredictorPreset[presets.Length];
@@ -371,7 +424,17 @@ namespace Teleop.Bridge
         /// </summary>
         internal void SetHeadsetConditions(in HeadsetConditions conditions)
         {
-            if (!_headset.Equals(conditions)) _headsetChanged = true;
+            if (!_headset.Equals(conditions))
+            {
+                _headsetChanged = true;
+                // The trace marks where the headset's own disturbance was on: those frames are not the real network.
+                if (_headset.LagMs != conditions.LagMs || _headset.JitterMs != conditions.JitterMs || _headset.LossPercent != conditions.LossPercent ||
+                    _headset.AddedDelayMs != conditions.AddedDelayMs)
+                {
+                    Trace?.Conditions(conditions.LagMs, conditions.JitterMs, conditions.LossPercent, conditions.AddedDelayMs, _clock.NowTicks);
+                }
+            }
+
             _headset = conditions;
         }
 
@@ -396,9 +459,16 @@ namespace Teleop.Bridge
             }
         }
 
+        // The world and scenario recording, as the FR3's link has them (docs/adr/0034 decision 7): Core's shared side channels.
+        private readonly JointPortSideChannels _side;
+
+        /// <summary>The world and RECORD's datagrams on this link (Core's <see cref="JointPortSideChannels"/>).</summary>
+        public JointPortSideChannels Side => _side;
+
         /// <summary>Sends a keepalive when one is due, and takes in every frame that has arrived.</summary>
         public void Tick(long now)
         {
+            _meter.Trim(now);
             if (_lastKeepaliveTicks == long.MinValue || now - _lastKeepaliveTicks >= _keepaliveIntervalTicks)
             {
                 if (JointStateCodec.TryEncodeSubscribe(now, _clock.TicksPerSecond, _buffer, out int written))
@@ -436,8 +506,12 @@ namespace Teleop.Bridge
                 _lastTrainingSentTicks = now;
             }
 
+            _side.SendDue(now);
+
             while (_transport.TryReceive(now, _buffer, out int count, out long arrival))
             {
+                if (_side.TryHandle(_buffer.AsSpan(0, count), arrival, _addedDelayMs)) continue;
+
                 if (ArmPowerCodec.TryDecodeStatus(_buffer.AsSpan(0, count), out ArmPowerState powerState, out ArmPowerReason powerReason,
                         out uint echoSequence, out _, out _, out float remainingDeg))
                 {
@@ -445,13 +519,16 @@ namespace Teleop.Bridge
                     continue;
                 }
 
-                if (!JointStateCodec.TryDecode(_buffer.AsSpan(0, count), out _, out long robotSend, out long sensed,
+                if (!JointStateCodec.TryDecode(_buffer.AsSpan(0, count), out uint frameSequence, out long robotSend, out long sensed,
                         out long echoOperator, out long echoRobotRecv, out long robotTps, _received, out int jointCount))
                 {
                     continue;
                 }
 
                 FramesReceived++;
+                long sendOnOperator = IsSynced ? _clockSync.ToOperatorTicks(robotSend, robotTps, _clock.TicksPerSecond) : long.MinValue;
+                _meter.OnFrame(frameSequence, robotSend, robotTps, arrival, sendOnOperator);
+                Trace?.Frame(frameSequence, robotSend, robotTps, arrival, sendOnOperator, sensed);
                 _lastFrameArrivalTicks = arrival;
                 if (_firstFrameArrivalTicks == long.MinValue) _firstFrameArrivalTicks = arrival;
 
@@ -460,6 +537,21 @@ namespace Teleop.Bridge
                 {
                     _lastEchoOperatorTicks = echoOperator;
                     _clockSync.AddRoundTrip(echoOperator, _clock.TicksPerSecond, echoRobotRecv, robotSend, robotTps, arrival);
+                    Trace?.RoundTrip(echoOperator, echoRobotRecv, robotSend, robotTps, arrival);
+                    if (_forecaster != null)
+                    {
+                        // Every round trip offered, accepted or not, with this frame's delay by the clock after it (views.py).
+                        ClockSyncDiagnostics sync = _clockSync.Diagnostics;
+                        long rtt = ClockSync.RoundTripTicks(echoOperator, _clock.TicksPerSecond, echoRobotRecv, robotSend, robotTps, arrival);
+                        long down = sync.IsSynced ? arrival - _clockSync.ToOperatorTicks(robotSend, robotTps, _clock.TicksPerSecond) : -1;
+                        _forecaster.ObserveRoundTrip(arrival, rtt, down, sync.OffsetUncertaintyTicks, sync.MinRttTicks, sync.IsSynced);
+                    }
+                }
+
+                if (_forecaster != null)
+                {
+                    long sendEstimate = IsSynced ? _clockSync.ToOperatorTicks(robotSend, robotTps, _clock.TicksPerSecond) : -1;
+                    _forecaster.ObserveFrame(arrival, sendEstimate, Unwrap(frameSequence));
                 }
 
                 // A reading newer than any before: the servo board is answering. A stamp more than 10 s
@@ -474,6 +566,15 @@ namespace Teleop.Bridge
                 long robotTime = sensed != 0 ? sensed : robotSend;
                 long sensedOperator = IsSynced ? _clockSync.ToOperatorTicks(robotTime, robotTps, _clock.TicksPerSecond) : long.MinValue;
                 Enqueue(arrival + AddedDelayTicks, sensedOperator, jointCount);
+            }
+
+            // The network forecast, every 100 ms, from what arrived so far; the learned preset takes it.
+            if (_forecaster != null && (_lastForecastTicks == long.MinValue || now - _lastForecastTicks >= _forecastIntervalTicks))
+            {
+                _forecaster.Issue(now, _forecast);
+                _bank.ObserveForecast(_forecast);
+                _hasForecast = true;
+                _lastForecastTicks = now;
             }
 
             // Frames become the measurement, and reach the predictor, once their added delay is over.
@@ -492,6 +593,9 @@ namespace Teleop.Bridge
                 _queueHead = (_queueHead + 1) % QueueCapacity;
                 _queueSize--;
             }
+
+            // World frames too, on the same release clock.
+            _side.Release(now);
 
             // Once per frame: the jitter of each preset's prediction for now.
             _scorer.OnDisplayTick(now, now);
@@ -550,7 +654,25 @@ namespace Teleop.Bridge
             }
 
             long uplink = IsSynced ? _clockSync.Diagnostics.OffsetUncertaintyTicks : 0;
-            _bank.ObserveCommand(sendTicks + uplink, _command.AsSpan(0, n), speed);
+            if (_forecaster == null)
+            {
+                _bank.ObserveCommand(sendTicks + uplink, _command.AsSpan(0, n), speed);
+                return;
+            }
+
+            // A preset that takes the forecast gets the command when the forecast says it arrives (docs/adr/0035 N3).
+            long forecastEffective = _forecastEffective.Next(sendTicks, sendTicks + uplink, _hasForecast ? _forecast : null);
+            _bank.ObserveCommand(sendTicks + uplink, forecastEffective, _command.AsSpan(0, n), speed);
+        }
+
+        /// <summary>The frame sequence, unwrapped across its 32 bits (forecast.py's frame index).</summary>
+        private long Unwrap(uint sequence)
+        {
+            if (_hasSequence) _sequenceUnwrapped += unchecked((int)(sequence - _lastSequence));
+            else _sequenceUnwrapped = sequence;
+            _hasSequence = true;
+            _lastSequence = sequence;
+            return _sequenceUnwrapped;
         }
 
         /// <summary>The newest measured joints, as received.</summary>

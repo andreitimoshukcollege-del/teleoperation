@@ -20,7 +20,7 @@ namespace Teleop.XR
     /// The predicted and measured arms stay hidden until the robot's first frame arrives. A thin
     /// adapter: every decision about the robot's motion is the Core predictor's.
     /// </summary>
-    public sealed class TwinArmsDriver : MonoBehaviour
+    public sealed class TwinArmsDriver : MonoBehaviour, ITwinVisibility
     {
         [SerializeField] private JetRoverOperatorBridge bridge;
         [SerializeField] private JetRoverArmRig predictedRig;
@@ -118,9 +118,16 @@ namespace Teleop.XR
             else if (link.BoardSilent) state = 5;
             else state = link.IsSynced ? 4 : 3;
             int rtt = link != null ? Mathf.RoundToInt(link.RoundTripMilliseconds) : 0;
+            // The real network, live (docs/metrics.md §3): ping is the round trip, lag the one-way delay to the headset, then
+            // the frames' jitter and loss over the last 5 s. Rounded so the line changes only when a figure does.
+            int lag = link != null ? Mathf.RoundToInt(link.LagMilliseconds) : -1;
+            int jitter = link != null ? Mathf.RoundToInt(link.JitterMilliseconds) : 0;
+            int loss10 = link != null ? Mathf.RoundToInt(link.LossPercent * 10f) : 0;
             // A console disturbance (docs/adr/0023) is named on this line too, so nobody mistakes it for the real network.
             bool disturbed = bridge != null && bridge.JointDisturbance != null && bridge.JointDisturbance.IsActive;
             int key = (disturbed ? 100000 : 0) + state * 10000 + Mathf.Clamp(rtt, 0, 9999);
+            key = unchecked(key * 31 + lag) * 31 + jitter;
+            key = unchecked(key * 31 + loss10);
             if (key == _shownStatus)
             {
                 return;
@@ -135,8 +142,9 @@ namespace Teleop.XR
                 case 3: statusLabel.SetText("robot state live  ·  syncing clocks…"); break;
                 case 5: statusLabel.SetText("<color=#FF5050>SERVO BOARD NOT ANSWERING  ·  power-cycle the robot</color>"); break;
                 default:
-                    if (disturbed) statusLabel.SetText("robot state live  ·  rtt {0:0} ms  ·  NETWORK DISTURBED", rtt);
-                    else statusLabel.SetText("robot state live  ·  rtt {0:0} ms", rtt);
+                    string lagText = lag >= 0 ? lag + " ms" : "–";
+                    string line = $"live  ·  ping {rtt} ms  ·  lag {lagText}  ·  jitter {jitter} ms  ·  loss {loss10 / 10f:0.0}%";
+                    statusLabel.SetText(disturbed ? line + "  ·  NETWORK DISTURBED" : line);
                     break;
             }
         }

@@ -244,6 +244,57 @@ public class ClockSyncTests
         Assert.Equal(20_000_000, sync.Diagnostics.OffsetTicks);
     }
 
+    // The boot-time gap between two machines' clocks is hours to days of ticks. The EWMA used to
+    // blend those longs in single precision, which snapped the offset onto a float32 grid (4.2 ms
+    // at 10 h and 1 GHz, 6.5 ms at 25 h and 10 MHz) and held it there (docs/adr/0008 amendment).
+    [Theory]
+    [InlineData(1_000_000_000L, 36_000_000_000_123L)] // the Galaxy XR's rate, 10 h apart
+    [InlineData(10_000_000L, -900_000_000_007L)]     // the editor's rate, 25 h apart the other way
+    public void AddRoundTrip_HoursOfBootTimeOffset_IsRecoveredToTheTick(long rate, long offset)
+    {
+        var sync = new ClockSync(new ClockSyncConfig(16, 0.2f, rate, 3.0, 3));
+        long robot = 3_600L * rate;
+        for (int i = 0; i < 20; i++)
+        {
+            robot += rate / 2;
+            long delay = rate / 1000 * (2 + i % 3); // 2-4 ms each way: symmetric, so every sample is exact
+            long t1 = robot, t2 = robot + rate / 2000;
+            long t0 = t1 + offset - delay, t3 = t2 + offset + delay;
+            Assert.True(sync.AddRoundTrip(t0, rate, t1, t2, rate, t3), $"round trip {i}");
+            Assert.Equal(offset, sync.Diagnostics.OffsetTicks);
+        }
+    }
+
+    [Fact]
+    public void AddRoundTrip_DriftingOffset_IsFollowedEverySample_NotInGridSizedJumps()
+    {
+        const long rate = 1_000_000_000L;
+        const long driftPerSample = 25_000; // 50 us/s, two round trips a second
+        const double alpha = 0.2;
+        var sync = new ClockSync(new ClockSyncConfig(16, (float)alpha, rate, 3.0, 3));
+        long offset = 36_000_000_000_000L;
+        long robot = 3_600L * rate;
+        long last = 0;
+        for (int i = 0; i < 200; i++)
+        {
+            robot += rate / 2;
+            offset += driftPerSample;
+            long t1 = robot, t2 = robot + rate / 2000;
+            long t0 = t1 + offset - 3_000_000, t3 = t2 + offset + 3_000_000;
+            Assert.True(sync.AddRoundTrip(t0, rate, t1, t2, rate, t3));
+            long estimate = sync.Diagnostics.OffsetTicks;
+            if (i >= 80) // the start-up transient has decayed below a tick by then (0.8^80)
+            {
+                // An EWMA lags a ramp by drift * (1 - alpha) / alpha: 100 us here, steady, and never a grid step.
+                double lag = driftPerSample * (1 - alpha) / alpha;
+                Assert.InRange(offset - estimate, lag - 5, lag + 5);
+                Assert.True(estimate > last, $"round trip {i}: the estimate did not move");
+            }
+
+            last = estimate;
+        }
+    }
+
     [Fact]
     public void AddRoundTrip_Allocates_Zero_Bytes()
     {

@@ -1,0 +1,23 @@
+# The FR3 Duo's simulated pretraining (docs/adr/0028): every speed x load cell, 5-minute sessions, layout v4 on
+# top of franka-replay. `just train-fr3-sim` (local GPU) or `armpred fr3-sim-pretrain --config
+# configs/fr3-sim-pretrain.toml --out runs/fr3-sim`. SIMULATED: the arm's tracking is the simulator's invention,
+# so this pretrains for fine-tuning on real FR3 sessions and is never a gate verdict (ADR 0028 decision 5).
+seed = 1
+views_per_session = 4
+val_views = 1
+
+[matrix]
+speeds = [0.3, 0.6, 1.0, 1.6, "varied"]
+loads = ["none", "payload-light", "payload-heavy", "payload-changing"]
+sessions_per_cell = 3
+test_sessions_per_cell = 1
+minutes = 5.0
+
+[sample]
+queries_per_s = 10.0
+
+[train]
+arch = "mlp"
+steps = 60000
+batch = 4096
+val_every = 2000

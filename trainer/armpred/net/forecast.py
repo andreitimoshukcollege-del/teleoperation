@@ -193,7 +193,12 @@ class LinkTruth:
         seg = s.segment
         x = self.to_sched_s(t_op)
         offset = self.offset_ms(t_op)
-        if s.q_base_ms is None:
+        if getattr(seg, "trace", ""):
+            # A network dataset's trace (docs/adr/0035 N5): its own conditions around this moment are the truth.
+            from .datasets import library as TL
+
+            q, loss, floor = TL.window(seg.trace_root, seg.trace, seg.trace_offset_s, x - seg.start_s, QUANTILES)
+        elif s.q_base_ms is None:
             q, loss, floor = self._realized_value(t_op)
         else:
             q, loss, floor = s.q_base_ms.copy(), s.loss_base, s.floor_ms

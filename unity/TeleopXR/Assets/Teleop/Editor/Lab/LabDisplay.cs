@@ -30,11 +30,20 @@ namespace Teleop.XR.Editor
             public CameraStatusBar StatusBar;
         }
 
-        public static Result Build(Transform parent, LabPalette p, Material screenMaterial, CameraFeedBridge feed, JetRoverOperatorBridge robot)
+        /// <param name="feed">The robot camera's feed, or null for a robot without one yet (the strip then says so).</param>
+        /// <param name="caption">The line under the strip: what the camera is.</param>
+        /// <param name="rootName">The display's object; any name but the default also prefixes its meshes, so two displays can share one mesh library.</param>
+        /// <param name="mirrored">On the operator's left instead (the FR3 lab's second feed, docs/adr/0032 decision 3).</param>
+        /// <param name="at">Where its foot stands instead (the FR3 lab's third-person displays); it faces the operator from there.</param>
+        public static Result Build(Transform parent, LabPalette p, Material screenMaterial, CameraFeedBridge feed, OperatorBridgeBase robot,
+            string caption = "robot camera  ·  Orbbec DaBai DCW", string rootName = "CameraDisplay", bool mirrored = false, Vector3? at = null)
         {
-            Transform root = LabParts.Group("CameraDisplay", parent).transform;
-            root.position = LabLayout.DisplayFoot;
-            Vector3 away = LabLayout.DisplayFoot - LabLayout.OperatorEye;
+            string mesh = rootName == "CameraDisplay" ? "Display" : rootName;
+            Transform root = LabParts.Group(rootName, parent).transform;
+            Vector3 foot = at ?? LabLayout.DisplayFoot;
+            if (mirrored && at == null) foot.x = 2f * LabLayout.OperatorEye.x - foot.x;
+            root.position = foot;
+            Vector3 away = foot - LabLayout.OperatorEye;
             away.y = 0f;
             root.rotation = Quaternion.LookRotation(away.normalized, Vector3.up);
 
@@ -55,7 +64,7 @@ namespace Teleop.XR.Editor
             stand.Chamfer(new Vector3(0f, LabLayout.ScreenCentreHeight - 0.05f, 0.05f), new Vector3(0.32f, 0.26f, 0.05f), 0.01f);
             // Dynamic, not Static: the operator can move the display (DisplayMover), and static-batched or
             // lightmapped parts would stay behind. Light probes light it instead.
-            LabParts.Part("Display/Stand", root, stand, p.SteelDark, PartKind.Dynamic);
+            LabParts.Part(mesh + "/Stand", root, stand, p.SteelDark, PartKind.Dynamic);
 
             Transform panel = LabParts.Group("Panel", root).transform;
             panel.localPosition = new Vector3(0f, LabLayout.ScreenCentreHeight, 0f);
@@ -65,7 +74,7 @@ namespace Teleop.XR.Editor
             float top = ScreenHeight / 2f + margin, bottom = -ScreenHeight / 2f - 0.012f - stripHeight - margin;
             var bezel = new LabMesh();
             bezel.Chamfer(new Vector3(0f, (top + bottom) / 2f, 0f), new Vector3(ScreenWidth + 2 * margin, top - bottom, 0.045f), 0.012f);
-            LabParts.Part("Display/Bezel", panel, bezel, p.Bezel, PartKind.Dynamic);
+            LabParts.Part(mesh + "/Bezel", panel, bezel, p.Bezel, PartKind.Dynamic);
 
             // The screen: a unit quad, scaled. Facing -z, toward the operator.
             var quad = new LabMesh();
@@ -74,7 +83,7 @@ namespace Teleop.XR.Editor
             screenGo.transform.SetParent(panel, false);
             screenGo.transform.localPosition = new Vector3(0f, 0f, -0.0235f);
             screenGo.transform.localScale = new Vector3(ScreenWidth, ScreenHeight, 1f);
-            screenGo.AddComponent<MeshFilter>().sharedMesh = LabMeshLibrary.Store("Display/Screen", quad, false);
+            screenGo.AddComponent<MeshFilter>().sharedMesh = LabMeshLibrary.Store(mesh + "/Screen", quad, false);
             var screen = screenGo.AddComponent<MeshRenderer>();
             screen.sharedMaterial = screenMaterial;
             LabParts.Configure(screen, PartKind.Emitter);
@@ -82,15 +91,15 @@ namespace Teleop.XR.Editor
             float stripY = -ScreenHeight / 2f - 0.012f - stripHeight / 2f;
             var strip = new LabMesh();
             strip.Screen(new Vector3(0f, stripY, -0.0234f), Vector3.back, Vector3.up, new Vector2(ScreenWidth, stripHeight));
-            LabParts.Part("Display/Strip", panel, strip, p.StripGlass, PartKind.Emitter);
+            LabParts.Part(mesh + "/Strip", panel, strip, p.StripGlass, PartKind.Emitter);
 
             var underglow = new LabMesh();
             underglow.Box(new Vector3(0f, bottom - 0.004f, -0.02f), new Vector3(ScreenWidth, 0.006f, 0.006f));
-            LabParts.Part("Display/Underglow", panel, underglow, p.Underglow, PartKind.Emitter);
+            LabParts.Part(mesh + "/Underglow", panel, underglow, p.Underglow, PartKind.Emitter);
 
             var dot = new LabMesh();
             dot.Cylinder(new Vector3(-ScreenWidth / 2f + 0.03f, stripY + 0.024f, -0.0245f), Vector3.forward, 0.009f, 0.002f, 16);
-            Renderer liveDot = LabParts.Part("Display/LiveDot", panel, dot, p.LiveDot, PartKind.Emitter);
+            Renderer liveDot = LabParts.Part(mesh + "/LiveDot", panel, dot, p.LiveDot, PartKind.Emitter);
 
             float textZ = -0.026f, left = -ScreenWidth / 2f + 0.055f;
             var white = new Color(0.86f, 0.9f, 0.95f);
@@ -101,14 +110,14 @@ namespace Teleop.XR.Editor
             TextMeshPro numbersLabel = LabParts.Label("NumbersLabel", panel, new Vector3(left + 0.3f, stripY - 0.022f, textZ), Quaternion.identity,
                 "0 fps   decode 0.0 ms   0x0", 0.22f, new Color(0.6f, 0.66f, 0.74f), new Vector2(0.6f, 0.04f), TextAlignmentOptions.Left);
             LabParts.Label("DisplayCaption", panel, new Vector3(ScreenWidth / 2f - 0.33f, stripY - 0.022f, textZ), Quaternion.identity,
-                "robot camera  ·  Orbbec DaBai DCW", 0.2f, new Color(0.45f, 0.5f, 0.58f), new Vector2(0.6f, 0.04f), TextAlignmentOptions.Right);
+                caption, 0.2f, new Color(0.45f, 0.5f, 0.58f), new Vector2(0.6f, 0.04f), TextAlignmentOptions.Right);
 
             // The group's nameplate, hung under the bezel so it moves with the display.
             const float plateHeight = 0.14f, plateWidth = 1.56f;
             float plateY = bottom - 0.014f - plateHeight / 2f;
             var plate = new LabMesh();
             plate.Chamfer(new Vector3(0f, plateY, 0.004f), new Vector3(plateWidth, plateHeight, 0.02f), 0.008f);
-            LabParts.Part("Display/Nameplate", panel, plate, p.Bezel, PartKind.Dynamic);
+            LabParts.Part(mesh + "/Nameplate", panel, plate, p.Bezel, PartKind.Dynamic);
             LabParts.Label("NameplateText", panel, new Vector3(0f, plateY, -0.0075f), Quaternion.identity,
                 "SPATIAL INTELLIGENCE RESEARCH GROUP", 0.6f, new Color(1f, 0.16f, 0.14f), new Vector2(plateWidth - 0.06f, plateHeight),
                 TextAlignmentOptions.Center, FontStyles.Bold);

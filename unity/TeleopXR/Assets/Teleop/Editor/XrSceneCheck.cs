@@ -159,6 +159,7 @@ namespace Teleop.XR.Editor
             CheckConsole(bridge, problems);
             CheckCourse(bridge, problems);
             CheckLearnedModels(problems);
+            CheckWorld(bridge, problems);
 
             CheckAndroidOpenXR(problems);
 
@@ -410,6 +411,117 @@ namespace Teleop.XR.Editor
                 else
                     Debug.Log($"[scene-check] preset '{p.Label}' runs {modelId}");
             }
+        }
+
+        /// <summary>
+        /// The Isaac world's parts (docs/adr/0034 J6, <see cref="XrJetRoverWorldSetup"/>): the twin's ids against the scene file, the
+        /// RECORD row and NEW LAYOUT, the pointer and the displays it moves, and the third-person feeds. None of them moves the robot;
+        /// the one that touches the clutch is checked for the clutch's sake: it must name this scene's pointer.
+        /// </summary>
+        private static void CheckWorld(JetRoverOperatorBridge bridge, List<string> problems)
+        {
+            const string rerun = " (run `just unity-world-jetrover-xr`)";
+            Teleop.RobotArm.World.WorldScene world;
+            try
+            {
+                world = XrJetRoverWorldSetup.LoadScene();
+            }
+            catch (Exception e)
+            {
+                problems.Add($"the scene file does not load: {e.Message}");
+                return;
+            }
+
+            var twin = Object.FindAnyObjectByType<SerialChainWorldTwin>(FindObjectsInactive.Include);
+            if (twin == null)
+            {
+                problems.Add("no world twin" + rerun);
+            }
+            else
+            {
+                var so = new SerializedObject(twin);
+                if (so.FindProperty("bridge").objectReferenceValue != bridge) problems.Add("the world twin is not wired to this scene's JetRoverOperatorBridge");
+                SerializedProperty ids = so.FindProperty("ids");
+                int[] mine = Enumerable.Range(0, ids.arraySize).Select(i => ids.GetArrayElementAtIndex(i).intValue).ToArray();
+                int[] file = world.Objects.Select(o => (int)o.Id).ToArray();
+                if (!mine.SequenceEqual(file)) problems.Add($"the world twin's ids ({string.Join(",", mine)}) are not the scene file's ({string.Join(",", file)})" + rerun);
+                if (so.FindProperty("objects").arraySize != file.Length || so.FindProperty("ghosts").arraySize != file.Length)
+                    problems.Add("the world twin's objects and ghosts are not one per scene object" + rerun);
+                Transform armBase = XrJetRoverWorldSetup.ArmBase(bridge);
+                if (Vector3.Distance(twin.transform.position, armBase.position) > 0.001f)
+                    problems.Add("the world twin is not at the arm's base anchor" + rerun);
+            }
+
+            Fr3MotionButton[] buttons = Object.FindObjectsByType<Fr3MotionButton>(FindObjectsInactive.Include, FindObjectsSortMode.None);
+            foreach (Fr3MotionButton.Role role in new[] { Fr3MotionButton.Role.Record, Fr3MotionButton.Role.ScenarioPrevious, Fr3MotionButton.Role.ScenarioNext,
+                         Fr3MotionButton.Role.DiscardLast, Fr3MotionButton.Role.NewLayout, Fr3MotionButton.Role.SizeDown, Fr3MotionButton.Role.SizeUp })
+            {
+                Fr3MotionButton[] those = buttons.Where(b => b.ButtonRole == role).ToArray();
+                if (those.Length != 1) problems.Add($"{those.Length} {role} buttons, expected one" + rerun);
+                foreach (Fr3MotionButton b in those)
+                {
+                    var bso = new SerializedObject(b);
+                    if (bso.FindProperty("bridge").objectReferenceValue != bridge) problems.Add($"the {role} button is not wired to this scene's bridge");
+                    RequireReference(bso, "cap", problems);
+                    RequireReference(bso, "origin", problems);
+                }
+            }
+
+            foreach (Fr3MotionButton b in buttons.Where(b => b.ButtonRole == Fr3MotionButton.Role.Power || b.ButtonRole == Fr3MotionButton.Role.Recentre
+                                                              || b.ButtonRole == Fr3MotionButton.Role.EditObjects))
+            {
+                problems.Add($"an FR3-only {b.ButtonRole} button '{b.name}': it does nothing with the JetRover");
+            }
+
+            Fr3HandPointer[] pointers = Object.FindObjectsByType<Fr3HandPointer>(FindObjectsInactive.Include, FindObjectsSortMode.None);
+            if (pointers.Length != 1)
+            {
+                problems.Add($"{pointers.Length} hand pointers, expected one" + rerun);
+            }
+            else
+            {
+                var pso = new SerializedObject(pointers[0]);
+                if (pso.FindProperty("bridge").objectReferenceValue != bridge) problems.Add("the hand pointer is not wired to this scene's bridge");
+                RequireReference(pso, "origin", problems);
+                SerializedProperty displays = pso.FindProperty("displays");
+                int movers = Object.FindObjectsByType<DisplayMover>(FindObjectsInactive.Include, FindObjectsSortMode.None).Length;
+                if (displays.arraySize != 3 || movers != 3) problems.Add($"the pointer moves {displays.arraySize} displays and the scene has {movers}, expected 3" + rerun);
+                var clutch = Object.FindAnyObjectByType<HandClutchDriver>(FindObjectsInactive.Include);
+                if (clutch != null && new SerializedObject(clutch).FindProperty("handPointer").objectReferenceValue != pointers[0])
+                    problems.Add("HandClutchDriver.handPointer is not the scene's pointer: a pinch on a button or an object would also engage the clutch" + rerun);
+            }
+
+            CameraFeedBridge[] feeds = Object.FindObjectsByType<CameraFeedBridge>(FindObjectsInactive.Include, FindObjectsSortMode.None);
+            foreach ((string name, int port, int local) in new[]
+                     {
+                         (XrJetRoverWorldSetup.ThirdLeftFeedName, XrJetRoverWorldSetup.ThirdLeftFeedPort, XrJetRoverWorldSetup.ThirdLeftFeedLocalPort),
+                         (XrJetRoverWorldSetup.ThirdRightFeedName, XrJetRoverWorldSetup.ThirdRightFeedPort, XrJetRoverWorldSetup.ThirdRightFeedLocalPort),
+                     })
+            {
+                CameraFeedBridge f = feeds.FirstOrDefault(x => new SerializedObject(x).FindProperty("feedName").stringValue == name);
+                if (f == null)
+                {
+                    problems.Add($"no {name} feed" + rerun);
+                    continue;
+                }
+
+                var fso = new SerializedObject(f);
+                RequireReference(fso, "panel", problems);
+                if (fso.FindProperty("robotPort").intValue != port || fso.FindProperty("localPort").intValue != local)
+                    problems.Add($"the {name} feed is not on {port} -> {local}");
+                if (fso.FindProperty("addressSource").enumValueIndex != (int)CameraFeedBridge.AddressSource.JetRover)
+                    problems.Add($"the {name} feed does not ask the JetRover's address");
+            }
+
+            float open = XrJetRoverWorldSetup.JawOpenDegrees();
+            foreach (TwinGripper g in Object.FindObjectsByType<TwinGripper>(FindObjectsInactive.Include, FindObjectsSortMode.None))
+            {
+                float mine = new SerializedObject(g).FindProperty("jawOpenDegrees").floatValue;
+                if (Mathf.Abs(mine - open) > 0.01f) problems.Add($"TwinGripper '{g.name}' opens {mine:0.##} deg past the CAD, not the {open:0.##} Isaac's opening needs" + rerun);
+            }
+
+            var locals = feeds.Select(x => new SerializedObject(x).FindProperty("localPort").intValue).ToArray();
+            if (locals.Distinct().Count() != locals.Length) problems.Add($"two camera feeds share a local port ({string.Join(",", locals)})");
         }
 
         private static void RequireReference(SerializedObject so, string field, List<string> problems)

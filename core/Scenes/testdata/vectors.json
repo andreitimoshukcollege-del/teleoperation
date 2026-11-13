@@ -1,0 +1,5462 @@
+{
+ "about": "Scene file test vectors (docs/adr/0031 amendments 2 and 4): each case changes one thing from a valid scene. 'expect' is 'ok', or the keyword the error message starts with. Read by Teleop.RobotArm.Tests (SceneDocumentTests) and robot/isaac/tests (test_scene.py); both readers must agree.",
+ "cases": [
+  {
+   "name": "the base scene",
+   "expect": "ok",
+   "scene": {
+    "format": "teleop-scene",
+    "version": 1,
+    "name": "vectors",
+    "robotProfile": "fr3-duo",
+    "surfaces": [
+     {
+      "id": "bench",
+      "center": [
+       -0.45,
+       0.0,
+       -0.02
+      ],
+      "size": [
+       1.3,
+       1.6,
+       0.04
+      ],
+      "colour": [
+       0.2,
+       0.2,
+       0.2
+      ],
+      "staticFriction": 0.6,
+      "dynamicFriction": 0.5,
+      "collides": true,
+      "headset": "builtin"
+     },
+     {
+      "id": "table",
+      "center": [
+       0.55,
+       0.0,
+       -0.02
+      ],
+      "size": [
+       0.7,
+       1.6,
+       0.04
+      ],
+      "colour": [
+       0.4,
+       0.4,
+       0.4
+      ],
+      "staticFriction": 0.6,
+      "dynamicFriction": 0.5,
+      "collides": true,
+      "headset": "show"
+     }
+    ],
+    "objects": [
+     {
+      "id": 1,
+      "name": "a",
+      "shape": "box",
+      "size": [
+       0.06,
+       0.06,
+       0.3
+      ],
+      "position": [
+       0.5,
+       0.3,
+       0.15
+      ],
+      "rpy": [
+       0,
+       0,
+       0
+      ],
+      "kind": "fixed",
+      "operatorMovable": true,
+      "staticFriction": 0.8,
+      "dynamicFriction": 0.6,
+      "colour": [
+       0.5,
+       0.5,
+       0.5
+      ],
+      "jitter": [
+       0.05,
+       0.05,
+       0.3
+      ]
+     }
+    ],
+    "placement": {
+     "xMin": 0.28,
+     "xMax": 0.85,
+     "yMin": -0.65,
+     "yMax": 0.65,
+     "clearance": 0.02
+    }
+   }
+  },
+  {
+   "name": "no bench: the table alone",
+   "expect": "ok",
+   "scene": {
+    "format": "teleop-scene",
+    "version": 1,
+    "name": "vectors",
+    "robotProfile": "fr3-duo",
+    "surfaces": [
+     {
+      "id": "table",
+      "center": [
+       0.55,
+       0.0,
+       -0.02
+      ],
+      "size": [
+       0.7,
+       1.6,
+       0.04
+      ],
+      "colour": [
+       0.4,
+       0.4,
+       0.4
+      ],
+      "staticFriction": 0.6,
+      "dynamicFriction": 0.5,
+      "collides": true,
+      "headset": "show"
+     }
+    ],
+    "objects": [
+     {
+      "id": 1,
+      "name": "a",
+      "shape": "box",
+      "size": [
+       0.06,
+       0.06,
+       0.3
+      ],
+      "position": [
+       0.5,
+       0.3,
+       0.15
+      ],
+      "rpy": [
+       0,
+       0,
+       0
+      ],
+      "kind": "fixed",
+      "operatorMovable": true,
+      "staticFriction": 0.8,
+      "dynamicFriction": 0.6,
+      "colour": [
+       0.5,
+       0.5,
+       0.5
+      ],
+      "jitter": [
+       0.05,
+       0.05,
+       0.3
+      ]
+     }
+    ],
+    "placement": {
+     "xMin": 0.28,
+     "xMax": 0.85,
+     "yMin": -0.65,
+     "yMax": 0.65,
+     "clearance": 0.02
+    }
+   }
+  },
+  {
+   "name": "a sphere resting on the table",
+   "expect": "ok",
+   "scene": {
+    "format": "teleop-scene",
+    "version": 1,
+    "name": "vectors",
+    "robotProfile": "fr3-duo",
+    "surfaces": [
+     {
+      "id": "bench",
+      "center": [
+       -0.45,
+       0.0,
+       -0.02
+      ],
+      "size": [
+       1.3,
+       1.6,
+       0.04
+      ],
+      "colour": [
+       0.2,
+       0.2,
+       0.2
+      ],
+      "staticFriction": 0.6,
+      "dynamicFriction": 0.5,
+      "collides": true,
+      "headset": "builtin"
+     },
+     {
+      "id": "table",
+      "center": [
+       0.55,
+       0.0,
+       -0.02
+      ],
+      "size": [
+       0.7,
+       1.6,
+       0.04
+      ],
+      "colour": [
+       0.4,
+       0.4,
+       0.4
+      ],
+      "staticFriction": 0.6,
+      "dynamicFriction": 0.5,
+      "collides": true,
+      "headset": "show"
+     }
+    ],
+    "objects": [
+     {
+      "id": 1,
+      "name": "a",
+      "shape": "sphere",
+      "size": [
+       0.1,
+       0.1,
+       0.1
+      ],
+      "position": [
+       0.5,
+       0.3,
+       0.05
+      ],
+      "rpy": [
+       0,
+       0,
+       0
+      ],
+      "kind": "fixed",
+      "operatorMovable": true,
+      "staticFriction": 0.8,
+      "dynamicFriction": 0.6,
+      "colour": [
+       0.5,
+       0.5,
+       0.5
+      ],
+      "jitter": [
+       0.05,
+       0.05,
+       0.3
+      ]
+     }
+    ],
+    "placement": {
+     "xMin": 0.28,
+     "xMax": 0.85,
+     "yMin": -0.65,
+     "yMax": 0.65,
+     "clearance": 0.02
+    }
+   }
+  },
+  {
+   "name": "a cylinder resting on the table",
+   "expect": "ok",
+   "scene": {
+    "format": "teleop-scene",
+    "version": 1,
+    "name": "vectors",
+    "robotProfile": "fr3-duo",
+    "surfaces": [
+     {
+      "id": "bench",
+      "center": [
+       -0.45,
+       0.0,
+       -0.02
+      ],
+      "size": [
+       1.3,
+       1.6,
+       0.04
+      ],
+      "colour": [
+       0.2,
+       0.2,
+       0.2
+      ],
+      "staticFriction": 0.6,
+      "dynamicFriction": 0.5,
+      "collides": true,
+      "headset": "builtin"
+     },
+     {
+      "id": "table",
+      "center": [
+       0.55,
+       0.0,
+       -0.02
+      ],
+      "size": [
+       0.7,
+       1.6,
+       0.04
+      ],
+      "colour": [
+       0.4,
+       0.4,
+       0.4
+      ],
+      "staticFriction": 0.6,
+      "dynamicFriction": 0.5,
+      "collides": true,
+      "headset": "show"
+     }
+    ],
+    "objects": [
+     {
+      "id": 1,
+      "name": "a",
+      "shape": "cylinder",
+      "size": [
+       0.08,
+       0.08,
+       0.2
+      ],
+      "position": [
+       0.5,
+       0.3,
+       0.1
+      ],
+      "rpy": [
+       0,
+       0,
+       0
+      ],
+      "kind": "fixed",
+      "operatorMovable": true,
+      "staticFriction": 0.8,
+      "dynamicFriction": 0.6,
+      "colour": [
+       0.5,
+       0.5,
+       0.5
+      ],
+      "jitter": [
+       0.05,
+       0.05,
+       0.3
+      ]
+     }
+    ],
+    "placement": {
+     "xMin": 0.28,
+     "xMax": 0.85,
+     "yMin": -0.65,
+     "yMax": 0.65,
+     "clearance": 0.02
+    }
+   }
+  },
+  {
+   "name": "an Isaac-only surface and unknown sections",
+   "expect": "ok",
+   "scene": {
+    "format": "teleop-scene",
+    "version": 1,
+    "name": "vectors",
+    "robotProfile": "fr3-duo",
+    "surfaces": [
+     {
+      "id": "bench",
+      "center": [
+       -0.45,
+       0.0,
+       -0.02
+      ],
+      "size": [
+       1.3,
+       1.6,
+       0.04
+      ],
+      "colour": [
+       0.2,
+       0.2,
+       0.2
+      ],
+      "staticFriction": 0.6,
+      "dynamicFriction": 0.5,
+      "collides": true,
+      "headset": "builtin"
+     },
+     {
+      "id": "table",
+      "center": [
+       0.55,
+       0.0,
+       -0.02
+      ],
+      "size": [
+       0.7,
+       1.6,
+       0.04
+      ],
+      "colour": [
+       0.4,
+       0.4,
+       0.4
+      ],
+      "staticFriction": 0.6,
+      "dynamicFriction": 0.5,
+      "collides": true,
+      "headset": "show"
+     },
+     {
+      "id": "floor",
+      "center": [
+       0,
+       0,
+       -0.859
+      ],
+      "size": [
+       8,
+       8,
+       0.02
+      ],
+      "colour": [
+       0.3,
+       0.3,
+       0.3
+      ],
+      "staticFriction": 0.6,
+      "dynamicFriction": 0.5,
+      "collides": false,
+      "headset": "hide"
+     }
+    ],
+    "objects": [
+     {
+      "id": 1,
+      "name": "a",
+      "shape": "box",
+      "size": [
+       0.06,
+       0.06,
+       0.3
+      ],
+      "position": [
+       0.5,
+       0.3,
+       0.15
+      ],
+      "rpy": [
+       0,
+       0,
+       0
+      ],
+      "kind": "fixed",
+      "operatorMovable": true,
+      "staticFriction": 0.8,
+      "dynamicFriction": 0.6,
+      "colour": [
+       0.5,
+       0.5,
+       0.5
+      ],
+      "jitter": [
+       0.05,
+       0.05,
+       0.3
+      ]
+     }
+    ],
+    "placement": {
+     "xMin": 0.28,
+     "xMax": 0.85,
+     "yMin": -0.65,
+     "yMax": 0.65,
+     "clearance": 0.02
+    },
+    "cameras": [
+     {
+      "id": "head"
+     }
+    ],
+    "lights": []
+   }
+  },
+  {
+   "name": "two objects, apart",
+   "expect": "ok",
+   "scene": {
+    "format": "teleop-scene",
+    "version": 1,
+    "name": "vectors",
+    "robotProfile": "fr3-duo",
+    "surfaces": [
+     {
+      "id": "bench",
+      "center": [
+       -0.45,
+       0.0,
+       -0.02
+      ],
+      "size": [
+       1.3,
+       1.6,
+       0.04
+      ],
+      "colour": [
+       0.2,
+       0.2,
+       0.2
+      ],
+      "staticFriction": 0.6,
+      "dynamicFriction": 0.5,
+      "collides": true,
+      "headset": "builtin"
+     },
+     {
+      "id": "table",
+      "center": [
+       0.55,
+       0.0,
+       -0.02
+      ],
+      "size": [
+       0.7,
+       1.6,
+       0.04
+      ],
+      "colour": [
+       0.4,
+       0.4,
+       0.4
+      ],
+      "staticFriction": 0.6,
+      "dynamicFriction": 0.5,
+      "collides": true,
+      "headset": "show"
+     }
+    ],
+    "objects": [
+     {
+      "id": 1,
+      "name": "a",
+      "shape": "box",
+      "size": [
+       0.06,
+       0.06,
+       0.3
+      ],
+      "position": [
+       0.5,
+       0.3,
+       0.15
+      ],
+      "rpy": [
+       0,
+       0,
+       0
+      ],
+      "kind": "fixed",
+      "operatorMovable": true,
+      "staticFriction": 0.8,
+      "dynamicFriction": 0.6,
+      "colour": [
+       0.5,
+       0.5,
+       0.5
+      ],
+      "jitter": [
+       0.05,
+       0.05,
+       0.3
+      ]
+     },
+     {
+      "id": 2,
+      "name": "b",
+      "shape": "box",
+      "size": [
+       0.06,
+       0.06,
+       0.3
+      ],
+      "position": [
+       0.5,
+       -0.3,
+       0.15
+      ],
+      "rpy": [
+       0,
+       0,
+       0
+      ],
+      "kind": "fixed",
+      "operatorMovable": true,
+      "staticFriction": 0.8,
+      "dynamicFriction": 0.6,
+      "colour": [
+       0.5,
+       0.5,
+       0.5
+      ],
+      "jitter": [
+       0.05,
+       0.05,
+       0.3
+      ]
+     }
+    ],
+    "placement": {
+     "xMin": 0.28,
+     "xMax": 0.85,
+     "yMin": -0.65,
+     "yMax": 0.65,
+     "clearance": 0.02
+    }
+   }
+  },
+  {
+   "name": "the wrong format",
+   "expect": "format",
+   "scene": {
+    "format": "teleop-world",
+    "version": 1,
+    "name": "vectors",
+    "robotProfile": "fr3-duo",
+    "surfaces": [
+     {
+      "id": "bench",
+      "center": [
+       -0.45,
+       0.0,
+       -0.02
+      ],
+      "size": [
+       1.3,
+       1.6,
+       0.04
+      ],
+      "colour": [
+       0.2,
+       0.2,
+       0.2
+      ],
+      "staticFriction": 0.6,
+      "dynamicFriction": 0.5,
+      "collides": true,
+      "headset": "builtin"
+     },
+     {
+      "id": "table",
+      "center": [
+       0.55,
+       0.0,
+       -0.02
+      ],
+      "size": [
+       0.7,
+       1.6,
+       0.04
+      ],
+      "colour": [
+       0.4,
+       0.4,
+       0.4
+      ],
+      "staticFriction": 0.6,
+      "dynamicFriction": 0.5,
+      "collides": true,
+      "headset": "show"
+     }
+    ],
+    "objects": [
+     {
+      "id": 1,
+      "name": "a",
+      "shape": "box",
+      "size": [
+       0.06,
+       0.06,
+       0.3
+      ],
+      "position": [
+       0.5,
+       0.3,
+       0.15
+      ],
+      "rpy": [
+       0,
+       0,
+       0
+      ],
+      "kind": "fixed",
+      "operatorMovable": true,
+      "staticFriction": 0.8,
+      "dynamicFriction": 0.6,
+      "colour": [
+       0.5,
+       0.5,
+       0.5
+      ],
+      "jitter": [
+       0.05,
+       0.05,
+       0.3
+      ]
+     }
+    ],
+    "placement": {
+     "xMin": 0.28,
+     "xMax": 0.85,
+     "yMin": -0.65,
+     "yMax": 0.65,
+     "clearance": 0.02
+    }
+   }
+  },
+  {
+   "name": "a later version",
+   "expect": "version",
+   "scene": {
+    "format": "teleop-scene",
+    "version": 3,
+    "name": "vectors",
+    "robotProfile": "fr3-duo",
+    "surfaces": [
+     {
+      "id": "bench",
+      "center": [
+       -0.45,
+       0.0,
+       -0.02
+      ],
+      "size": [
+       1.3,
+       1.6,
+       0.04
+      ],
+      "colour": [
+       0.2,
+       0.2,
+       0.2
+      ],
+      "staticFriction": 0.6,
+      "dynamicFriction": 0.5,
+      "collides": true,
+      "headset": "builtin"
+     },
+     {
+      "id": "table",
+      "center": [
+       0.55,
+       0.0,
+       -0.02
+      ],
+      "size": [
+       0.7,
+       1.6,
+       0.04
+      ],
+      "colour": [
+       0.4,
+       0.4,
+       0.4
+      ],
+      "staticFriction": 0.6,
+      "dynamicFriction": 0.5,
+      "collides": true,
+      "headset": "show"
+     }
+    ],
+    "objects": [
+     {
+      "id": 1,
+      "name": "a",
+      "shape": "box",
+      "size": [
+       0.06,
+       0.06,
+       0.3
+      ],
+      "position": [
+       0.5,
+       0.3,
+       0.15
+      ],
+      "rpy": [
+       0,
+       0,
+       0
+      ],
+      "kind": "fixed",
+      "operatorMovable": true,
+      "staticFriction": 0.8,
+      "dynamicFriction": 0.6,
+      "colour": [
+       0.5,
+       0.5,
+       0.5
+      ],
+      "jitter": [
+       0.05,
+       0.05,
+       0.3
+      ]
+     }
+    ],
+    "placement": {
+     "xMin": 0.28,
+     "xMax": 0.85,
+     "yMin": -0.65,
+     "yMax": 0.65,
+     "clearance": 0.02
+    }
+   }
+  },
+  {
+   "name": "no name",
+   "expect": "name",
+   "scene": {
+    "format": "teleop-scene",
+    "version": 1,
+    "name": "",
+    "robotProfile": "fr3-duo",
+    "surfaces": [
+     {
+      "id": "bench",
+      "center": [
+       -0.45,
+       0.0,
+       -0.02
+      ],
+      "size": [
+       1.3,
+       1.6,
+       0.04
+      ],
+      "colour": [
+       0.2,
+       0.2,
+       0.2
+      ],
+      "staticFriction": 0.6,
+      "dynamicFriction": 0.5,
+      "collides": true,
+      "headset": "builtin"
+     },
+     {
+      "id": "table",
+      "center": [
+       0.55,
+       0.0,
+       -0.02
+      ],
+      "size": [
+       0.7,
+       1.6,
+       0.04
+      ],
+      "colour": [
+       0.4,
+       0.4,
+       0.4
+      ],
+      "staticFriction": 0.6,
+      "dynamicFriction": 0.5,
+      "collides": true,
+      "headset": "show"
+     }
+    ],
+    "objects": [
+     {
+      "id": 1,
+      "name": "a",
+      "shape": "box",
+      "size": [
+       0.06,
+       0.06,
+       0.3
+      ],
+      "position": [
+       0.5,
+       0.3,
+       0.15
+      ],
+      "rpy": [
+       0,
+       0,
+       0
+      ],
+      "kind": "fixed",
+      "operatorMovable": true,
+      "staticFriction": 0.8,
+      "dynamicFriction": 0.6,
+      "colour": [
+       0.5,
+       0.5,
+       0.5
+      ],
+      "jitter": [
+       0.05,
+       0.05,
+       0.3
+      ]
+     }
+    ],
+    "placement": {
+     "xMin": 0.28,
+     "xMax": 0.85,
+     "yMin": -0.65,
+     "yMax": 0.65,
+     "clearance": 0.02
+    }
+   }
+  },
+  {
+   "name": "no robot profile",
+   "expect": "robotProfile",
+   "scene": {
+    "format": "teleop-scene",
+    "version": 1,
+    "name": "vectors",
+    "robotProfile": "",
+    "surfaces": [
+     {
+      "id": "bench",
+      "center": [
+       -0.45,
+       0.0,
+       -0.02
+      ],
+      "size": [
+       1.3,
+       1.6,
+       0.04
+      ],
+      "colour": [
+       0.2,
+       0.2,
+       0.2
+      ],
+      "staticFriction": 0.6,
+      "dynamicFriction": 0.5,
+      "collides": true,
+      "headset": "builtin"
+     },
+     {
+      "id": "table",
+      "center": [
+       0.55,
+       0.0,
+       -0.02
+      ],
+      "size": [
+       0.7,
+       1.6,
+       0.04
+      ],
+      "colour": [
+       0.4,
+       0.4,
+       0.4
+      ],
+      "staticFriction": 0.6,
+      "dynamicFriction": 0.5,
+      "collides": true,
+      "headset": "show"
+     }
+    ],
+    "objects": [
+     {
+      "id": 1,
+      "name": "a",
+      "shape": "box",
+      "size": [
+       0.06,
+       0.06,
+       0.3
+      ],
+      "position": [
+       0.5,
+       0.3,
+       0.15
+      ],
+      "rpy": [
+       0,
+       0,
+       0
+      ],
+      "kind": "fixed",
+      "operatorMovable": true,
+      "staticFriction": 0.8,
+      "dynamicFriction": 0.6,
+      "colour": [
+       0.5,
+       0.5,
+       0.5
+      ],
+      "jitter": [
+       0.05,
+       0.05,
+       0.3
+      ]
+     }
+    ],
+    "placement": {
+     "xMin": 0.28,
+     "xMax": 0.85,
+     "yMin": -0.65,
+     "yMax": 0.65,
+     "clearance": 0.02
+    }
+   }
+  },
+  {
+   "name": "no table",
+   "expect": "table",
+   "scene": {
+    "format": "teleop-scene",
+    "version": 1,
+    "name": "vectors",
+    "robotProfile": "fr3-duo",
+    "surfaces": [
+     {
+      "id": "bench",
+      "center": [
+       -0.45,
+       0.0,
+       -0.02
+      ],
+      "size": [
+       1.3,
+       1.6,
+       0.04
+      ],
+      "colour": [
+       0.2,
+       0.2,
+       0.2
+      ],
+      "staticFriction": 0.6,
+      "dynamicFriction": 0.5,
+      "collides": true,
+      "headset": "builtin"
+     }
+    ],
+    "objects": [
+     {
+      "id": 1,
+      "name": "a",
+      "shape": "box",
+      "size": [
+       0.06,
+       0.06,
+       0.3
+      ],
+      "position": [
+       0.5,
+       0.3,
+       0.15
+      ],
+      "rpy": [
+       0,
+       0,
+       0
+      ],
+      "kind": "fixed",
+      "operatorMovable": true,
+      "staticFriction": 0.8,
+      "dynamicFriction": 0.6,
+      "colour": [
+       0.5,
+       0.5,
+       0.5
+      ],
+      "jitter": [
+       0.05,
+       0.05,
+       0.3
+      ]
+     }
+    ],
+    "placement": {
+     "xMin": 0.28,
+     "xMax": 0.85,
+     "yMin": -0.65,
+     "yMax": 0.65,
+     "clearance": 0.02
+    }
+   }
+  },
+  {
+   "name": "two surfaces with one id",
+   "expect": "surface",
+   "scene": {
+    "format": "teleop-scene",
+    "version": 1,
+    "name": "vectors",
+    "robotProfile": "fr3-duo",
+    "surfaces": [
+     {
+      "id": "table",
+      "center": [
+       -0.45,
+       0.0,
+       -0.02
+      ],
+      "size": [
+       1.3,
+       1.6,
+       0.04
+      ],
+      "colour": [
+       0.2,
+       0.2,
+       0.2
+      ],
+      "staticFriction": 0.6,
+      "dynamicFriction": 0.5,
+      "collides": true,
+      "headset": "builtin"
+     },
+     {
+      "id": "table",
+      "center": [
+       0.55,
+       0.0,
+       -0.02
+      ],
+      "size": [
+       0.7,
+       1.6,
+       0.04
+      ],
+      "colour": [
+       0.4,
+       0.4,
+       0.4
+      ],
+      "staticFriction": 0.6,
+      "dynamicFriction": 0.5,
+      "collides": true,
+      "headset": "show"
+     }
+    ],
+    "objects": [
+     {
+      "id": 1,
+      "name": "a",
+      "shape": "box",
+      "size": [
+       0.06,
+       0.06,
+       0.3
+      ],
+      "position": [
+       0.5,
+       0.3,
+       0.15
+      ],
+      "rpy": [
+       0,
+       0,
+       0
+      ],
+      "kind": "fixed",
+      "operatorMovable": true,
+      "staticFriction": 0.8,
+      "dynamicFriction": 0.6,
+      "colour": [
+       0.5,
+       0.5,
+       0.5
+      ],
+      "jitter": [
+       0.05,
+       0.05,
+       0.3
+      ]
+     }
+    ],
+    "placement": {
+     "xMin": 0.28,
+     "xMax": 0.85,
+     "yMin": -0.65,
+     "yMax": 0.65,
+     "clearance": 0.02
+    }
+   }
+  },
+  {
+   "name": "a surface of no thickness",
+   "expect": "surface",
+   "scene": {
+    "format": "teleop-scene",
+    "version": 1,
+    "name": "vectors",
+    "robotProfile": "fr3-duo",
+    "surfaces": [
+     {
+      "id": "bench",
+      "center": [
+       -0.45,
+       0.0,
+       -0.02
+      ],
+      "size": [
+       1.3,
+       1.6,
+       0.04
+      ],
+      "colour": [
+       0.2,
+       0.2,
+       0.2
+      ],
+      "staticFriction": 0.6,
+      "dynamicFriction": 0.5,
+      "collides": true,
+      "headset": "builtin"
+     },
+     {
+      "id": "table",
+      "center": [
+       0.55,
+       0.0,
+       -0.02
+      ],
+      "size": [
+       0.7,
+       1.6,
+       0.0
+      ],
+      "colour": [
+       0.4,
+       0.4,
+       0.4
+      ],
+      "staticFriction": 0.6,
+      "dynamicFriction": 0.5,
+      "collides": true,
+      "headset": "show"
+     }
+    ],
+    "objects": [
+     {
+      "id": 1,
+      "name": "a",
+      "shape": "box",
+      "size": [
+       0.06,
+       0.06,
+       0.3
+      ],
+      "position": [
+       0.5,
+       0.3,
+       0.15
+      ],
+      "rpy": [
+       0,
+       0,
+       0
+      ],
+      "kind": "fixed",
+      "operatorMovable": true,
+      "staticFriction": 0.8,
+      "dynamicFriction": 0.6,
+      "colour": [
+       0.5,
+       0.5,
+       0.5
+      ],
+      "jitter": [
+       0.05,
+       0.05,
+       0.3
+      ]
+     }
+    ],
+    "placement": {
+     "xMin": 0.28,
+     "xMax": 0.85,
+     "yMin": -0.65,
+     "yMax": 0.65,
+     "clearance": 0.02
+    }
+   }
+  },
+  {
+   "name": "a surface with an unknown headset value",
+   "expect": "surface",
+   "scene": {
+    "format": "teleop-scene",
+    "version": 1,
+    "name": "vectors",
+    "robotProfile": "fr3-duo",
+    "surfaces": [
+     {
+      "id": "bench",
+      "center": [
+       -0.45,
+       0.0,
+       -0.02
+      ],
+      "size": [
+       1.3,
+       1.6,
+       0.04
+      ],
+      "colour": [
+       0.2,
+       0.2,
+       0.2
+      ],
+      "staticFriction": 0.6,
+      "dynamicFriction": 0.5,
+      "collides": true,
+      "headset": "builtin"
+     },
+     {
+      "id": "table",
+      "center": [
+       0.55,
+       0.0,
+       -0.02
+      ],
+      "size": [
+       0.7,
+       1.6,
+       0.04
+      ],
+      "colour": [
+       0.4,
+       0.4,
+       0.4
+      ],
+      "staticFriction": 0.6,
+      "dynamicFriction": 0.5,
+      "collides": true,
+      "headset": "maybe"
+     }
+    ],
+    "objects": [
+     {
+      "id": 1,
+      "name": "a",
+      "shape": "box",
+      "size": [
+       0.06,
+       0.06,
+       0.3
+      ],
+      "position": [
+       0.5,
+       0.3,
+       0.15
+      ],
+      "rpy": [
+       0,
+       0,
+       0
+      ],
+      "kind": "fixed",
+      "operatorMovable": true,
+      "staticFriction": 0.8,
+      "dynamicFriction": 0.6,
+      "colour": [
+       0.5,
+       0.5,
+       0.5
+      ],
+      "jitter": [
+       0.05,
+       0.05,
+       0.3
+      ]
+     }
+    ],
+    "placement": {
+     "xMin": 0.28,
+     "xMax": 0.85,
+     "yMin": -0.65,
+     "yMax": 0.65,
+     "clearance": 0.02
+    }
+   }
+  },
+  {
+   "name": "a table that does not abut the bench",
+   "expect": "table",
+   "scene": {
+    "format": "teleop-scene",
+    "version": 1,
+    "name": "vectors",
+    "robotProfile": "fr3-duo",
+    "surfaces": [
+     {
+      "id": "bench",
+      "center": [
+       -0.45,
+       0.0,
+       -0.02
+      ],
+      "size": [
+       1.3,
+       1.6,
+       0.04
+      ],
+      "colour": [
+       0.2,
+       0.2,
+       0.2
+      ],
+      "staticFriction": 0.6,
+      "dynamicFriction": 0.5,
+      "collides": true,
+      "headset": "builtin"
+     },
+     {
+      "id": "table",
+      "center": [
+       0.6,
+       0.0,
+       -0.02
+      ],
+      "size": [
+       0.7,
+       1.6,
+       0.04
+      ],
+      "colour": [
+       0.4,
+       0.4,
+       0.4
+      ],
+      "staticFriction": 0.6,
+      "dynamicFriction": 0.5,
+      "collides": true,
+      "headset": "show"
+     }
+    ],
+    "objects": [
+     {
+      "id": 1,
+      "name": "a",
+      "shape": "box",
+      "size": [
+       0.06,
+       0.06,
+       0.3
+      ],
+      "position": [
+       0.5,
+       0.3,
+       0.15
+      ],
+      "rpy": [
+       0,
+       0,
+       0
+      ],
+      "kind": "fixed",
+      "operatorMovable": true,
+      "staticFriction": 0.8,
+      "dynamicFriction": 0.6,
+      "colour": [
+       0.5,
+       0.5,
+       0.5
+      ],
+      "jitter": [
+       0.05,
+       0.05,
+       0.3
+      ]
+     }
+    ],
+    "placement": {
+     "xMin": 0.28,
+     "xMax": 0.85,
+     "yMin": -0.65,
+     "yMax": 0.65,
+     "clearance": 0.02
+    }
+   }
+  },
+  {
+   "name": "a table that is not flush with the bench",
+   "expect": "table",
+   "scene": {
+    "format": "teleop-scene",
+    "version": 1,
+    "name": "vectors",
+    "robotProfile": "fr3-duo",
+    "surfaces": [
+     {
+      "id": "bench",
+      "center": [
+       -0.45,
+       0.0,
+       -0.02
+      ],
+      "size": [
+       1.3,
+       1.6,
+       0.04
+      ],
+      "colour": [
+       0.2,
+       0.2,
+       0.2
+      ],
+      "staticFriction": 0.6,
+      "dynamicFriction": 0.5,
+      "collides": true,
+      "headset": "builtin"
+     },
+     {
+      "id": "table",
+      "center": [
+       0.55,
+       0.0,
+       -0.01
+      ],
+      "size": [
+       0.7,
+       1.6,
+       0.04
+      ],
+      "colour": [
+       0.4,
+       0.4,
+       0.4
+      ],
+      "staticFriction": 0.6,
+      "dynamicFriction": 0.5,
+      "collides": true,
+      "headset": "show"
+     }
+    ],
+    "objects": [
+     {
+      "id": 1,
+      "name": "a",
+      "shape": "box",
+      "size": [
+       0.06,
+       0.06,
+       0.3
+      ],
+      "position": [
+       0.5,
+       0.3,
+       0.15
+      ],
+      "rpy": [
+       0,
+       0,
+       0
+      ],
+      "kind": "fixed",
+      "operatorMovable": true,
+      "staticFriction": 0.8,
+      "dynamicFriction": 0.6,
+      "colour": [
+       0.5,
+       0.5,
+       0.5
+      ],
+      "jitter": [
+       0.05,
+       0.05,
+       0.3
+      ]
+     }
+    ],
+    "placement": {
+     "xMin": 0.28,
+     "xMax": 0.85,
+     "yMin": -0.65,
+     "yMax": 0.65,
+     "clearance": 0.02
+    }
+   }
+  },
+  {
+   "name": "a placement region with min above max",
+   "expect": "placement",
+   "scene": {
+    "format": "teleop-scene",
+    "version": 1,
+    "name": "vectors",
+    "robotProfile": "fr3-duo",
+    "surfaces": [
+     {
+      "id": "bench",
+      "center": [
+       -0.45,
+       0.0,
+       -0.02
+      ],
+      "size": [
+       1.3,
+       1.6,
+       0.04
+      ],
+      "colour": [
+       0.2,
+       0.2,
+       0.2
+      ],
+      "staticFriction": 0.6,
+      "dynamicFriction": 0.5,
+      "collides": true,
+      "headset": "builtin"
+     },
+     {
+      "id": "table",
+      "center": [
+       0.55,
+       0.0,
+       -0.02
+      ],
+      "size": [
+       0.7,
+       1.6,
+       0.04
+      ],
+      "colour": [
+       0.4,
+       0.4,
+       0.4
+      ],
+      "staticFriction": 0.6,
+      "dynamicFriction": 0.5,
+      "collides": true,
+      "headset": "show"
+     }
+    ],
+    "objects": [
+     {
+      "id": 1,
+      "name": "a",
+      "shape": "box",
+      "size": [
+       0.06,
+       0.06,
+       0.3
+      ],
+      "position": [
+       0.5,
+       0.3,
+       0.15
+      ],
+      "rpy": [
+       0,
+       0,
+       0
+      ],
+      "kind": "fixed",
+      "operatorMovable": true,
+      "staticFriction": 0.8,
+      "dynamicFriction": 0.6,
+      "colour": [
+       0.5,
+       0.5,
+       0.5
+      ],
+      "jitter": [
+       0.05,
+       0.05,
+       0.3
+      ]
+     }
+    ],
+    "placement": {
+     "xMin": 0.9,
+     "xMax": 0.3,
+     "yMin": -0.65,
+     "yMax": 0.65,
+     "clearance": 0.02
+    }
+   }
+  },
+  {
+   "name": "a placement region off the table",
+   "expect": "placement",
+   "scene": {
+    "format": "teleop-scene",
+    "version": 1,
+    "name": "vectors",
+    "robotProfile": "fr3-duo",
+    "surfaces": [
+     {
+      "id": "bench",
+      "center": [
+       -0.45,
+       0.0,
+       -0.02
+      ],
+      "size": [
+       1.3,
+       1.6,
+       0.04
+      ],
+      "colour": [
+       0.2,
+       0.2,
+       0.2
+      ],
+      "staticFriction": 0.6,
+      "dynamicFriction": 0.5,
+      "collides": true,
+      "headset": "builtin"
+     },
+     {
+      "id": "table",
+      "center": [
+       0.55,
+       0.0,
+       -0.02
+      ],
+      "size": [
+       0.7,
+       1.6,
+       0.04
+      ],
+      "colour": [
+       0.4,
+       0.4,
+       0.4
+      ],
+      "staticFriction": 0.6,
+      "dynamicFriction": 0.5,
+      "collides": true,
+      "headset": "show"
+     }
+    ],
+    "objects": [
+     {
+      "id": 1,
+      "name": "a",
+      "shape": "box",
+      "size": [
+       0.06,
+       0.06,
+       0.3
+      ],
+      "position": [
+       0.5,
+       0.3,
+       0.15
+      ],
+      "rpy": [
+       0,
+       0,
+       0
+      ],
+      "kind": "fixed",
+      "operatorMovable": true,
+      "staticFriction": 0.8,
+      "dynamicFriction": 0.6,
+      "colour": [
+       0.5,
+       0.5,
+       0.5
+      ],
+      "jitter": [
+       0.05,
+       0.05,
+       0.3
+      ]
+     }
+    ],
+    "placement": {
+     "xMin": 2.0,
+     "xMax": 3.0,
+     "yMin": -0.65,
+     "yMax": 0.65,
+     "clearance": 0.02
+    }
+   }
+  },
+  {
+   "name": "no objects",
+   "expect": "objects",
+   "scene": {
+    "format": "teleop-scene",
+    "version": 1,
+    "name": "vectors",
+    "robotProfile": "fr3-duo",
+    "surfaces": [
+     {
+      "id": "bench",
+      "center": [
+       -0.45,
+       0.0,
+       -0.02
+      ],
+      "size": [
+       1.3,
+       1.6,
+       0.04
+      ],
+      "colour": [
+       0.2,
+       0.2,
+       0.2
+      ],
+      "staticFriction": 0.6,
+      "dynamicFriction": 0.5,
+      "collides": true,
+      "headset": "builtin"
+     },
+     {
+      "id": "table",
+      "center": [
+       0.55,
+       0.0,
+       -0.02
+      ],
+      "size": [
+       0.7,
+       1.6,
+       0.04
+      ],
+      "colour": [
+       0.4,
+       0.4,
+       0.4
+      ],
+      "staticFriction": 0.6,
+      "dynamicFriction": 0.5,
+      "collides": true,
+      "headset": "show"
+     }
+    ],
+    "objects": [],
+    "placement": {
+     "xMin": 0.28,
+     "xMax": 0.85,
+     "yMin": -0.65,
+     "yMax": 0.65,
+     "clearance": 0.02
+    }
+   }
+  },
+  {
+   "name": "25 objects",
+   "expect": "objects",
+   "scene": {
+    "format": "teleop-scene",
+    "version": 1,
+    "name": "vectors",
+    "robotProfile": "fr3-duo",
+    "surfaces": [
+     {
+      "id": "bench",
+      "center": [
+       -0.45,
+       0.0,
+       -0.02
+      ],
+      "size": [
+       1.3,
+       1.6,
+       0.04
+      ],
+      "colour": [
+       0.2,
+       0.2,
+       0.2
+      ],
+      "staticFriction": 0.6,
+      "dynamicFriction": 0.5,
+      "collides": true,
+      "headset": "builtin"
+     },
+     {
+      "id": "table",
+      "center": [
+       0.55,
+       0.0,
+       -0.02
+      ],
+      "size": [
+       0.7,
+       1.6,
+       0.04
+      ],
+      "colour": [
+       0.4,
+       0.4,
+       0.4
+      ],
+      "staticFriction": 0.6,
+      "dynamicFriction": 0.5,
+      "collides": true,
+      "headset": "show"
+     }
+    ],
+    "objects": [
+     {
+      "id": 1,
+      "name": "o0",
+      "shape": "box",
+      "size": [
+       0.06,
+       0.06,
+       0.3
+      ],
+      "position": [
+       0.5,
+       0.3,
+       0.15
+      ],
+      "rpy": [
+       0,
+       0,
+       0
+      ],
+      "kind": "fixed",
+      "operatorMovable": true,
+      "staticFriction": 0.8,
+      "dynamicFriction": 0.6,
+      "colour": [
+       0.5,
+       0.5,
+       0.5
+      ],
+      "jitter": [
+       0.05,
+       0.05,
+       0.3
+      ]
+     },
+     {
+      "id": 2,
+      "name": "o1",
+      "shape": "box",
+      "size": [
+       0.06,
+       0.06,
+       0.3
+      ],
+      "position": [
+       0.5,
+       0.3,
+       0.15
+      ],
+      "rpy": [
+       0,
+       0,
+       0
+      ],
+      "kind": "fixed",
+      "operatorMovable": true,
+      "staticFriction": 0.8,
+      "dynamicFriction": 0.6,
+      "colour": [
+       0.5,
+       0.5,
+       0.5
+      ],
+      "jitter": [
+       0.05,
+       0.05,
+       0.3
+      ]
+     },
+     {
+      "id": 3,
+      "name": "o2",
+      "shape": "box",
+      "size": [
+       0.06,
+       0.06,
+       0.3
+      ],
+      "position": [
+       0.5,
+       0.3,
+       0.15
+      ],
+      "rpy": [
+       0,
+       0,
+       0
+      ],
+      "kind": "fixed",
+      "operatorMovable": true,
+      "staticFriction": 0.8,
+      "dynamicFriction": 0.6,
+      "colour": [
+       0.5,
+       0.5,
+       0.5
+      ],
+      "jitter": [
+       0.05,
+       0.05,
+       0.3
+      ]
+     },
+     {
+      "id": 4,
+      "name": "o3",
+      "shape": "box",
+      "size": [
+       0.06,
+       0.06,
+       0.3
+      ],
+      "position": [
+       0.5,
+       0.3,
+       0.15
+      ],
+      "rpy": [
+       0,
+       0,
+       0
+      ],
+      "kind": "fixed",
+      "operatorMovable": true,
+      "staticFriction": 0.8,
+      "dynamicFriction": 0.6,
+      "colour": [
+       0.5,
+       0.5,
+       0.5
+      ],
+      "jitter": [
+       0.05,
+       0.05,
+       0.3
+      ]
+     },
+     {
+      "id": 5,
+      "name": "o4",
+      "shape": "box",
+      "size": [
+       0.06,
+       0.06,
+       0.3
+      ],
+      "position": [
+       0.5,
+       0.3,
+       0.15
+      ],
+      "rpy": [
+       0,
+       0,
+       0
+      ],
+      "kind": "fixed",
+      "operatorMovable": true,
+      "staticFriction": 0.8,
+      "dynamicFriction": 0.6,
+      "colour": [
+       0.5,
+       0.5,
+       0.5
+      ],
+      "jitter": [
+       0.05,
+       0.05,
+       0.3
+      ]
+     },
+     {
+      "id": 6,
+      "name": "o5",
+      "shape": "box",
+      "size": [
+       0.06,
+       0.06,
+       0.3
+      ],
+      "position": [
+       0.5,
+       0.3,
+       0.15
+      ],
+      "rpy": [
+       0,
+       0,
+       0
+      ],
+      "kind": "fixed",
+      "operatorMovable": true,
+      "staticFriction": 0.8,
+      "dynamicFriction": 0.6,
+      "colour": [
+       0.5,
+       0.5,
+       0.5
+      ],
+      "jitter": [
+       0.05,
+       0.05,
+       0.3
+      ]
+     },
+     {
+      "id": 7,
+      "name": "o6",
+      "shape": "box",
+      "size": [
+       0.06,
+       0.06,
+       0.3
+      ],
+      "position": [
+       0.5,
+       0.3,
+       0.15
+      ],
+      "rpy": [
+       0,
+       0,
+       0
+      ],
+      "kind": "fixed",
+      "operatorMovable": true,
+      "staticFriction": 0.8,
+      "dynamicFriction": 0.6,
+      "colour": [
+       0.5,
+       0.5,
+       0.5
+      ],
+      "jitter": [
+       0.05,
+       0.05,
+       0.3
+      ]
+     },
+     {
+      "id": 8,
+      "name": "o7",
+      "shape": "box",
+      "size": [
+       0.06,
+       0.06,
+       0.3
+      ],
+      "position": [
+       0.5,
+       0.3,
+       0.15
+      ],
+      "rpy": [
+       0,
+       0,
+       0
+      ],
+      "kind": "fixed",
+      "operatorMovable": true,
+      "staticFriction": 0.8,
+      "dynamicFriction": 0.6,
+      "colour": [
+       0.5,
+       0.5,
+       0.5
+      ],
+      "jitter": [
+       0.05,
+       0.05,
+       0.3
+      ]
+     },
+     {
+      "id": 9,
+      "name": "o8",
+      "shape": "box",
+      "size": [
+       0.06,
+       0.06,
+       0.3
+      ],
+      "position": [
+       0.5,
+       0.3,
+       0.15
+      ],
+      "rpy": [
+       0,
+       0,
+       0
+      ],
+      "kind": "fixed",
+      "operatorMovable": true,
+      "staticFriction": 0.8,
+      "dynamicFriction": 0.6,
+      "colour": [
+       0.5,
+       0.5,
+       0.5
+      ],
+      "jitter": [
+       0.05,
+       0.05,
+       0.3
+      ]
+     },
+     {
+      "id": 10,
+      "name": "o9",
+      "shape": "box",
+      "size": [
+       0.06,
+       0.06,
+       0.3
+      ],
+      "position": [
+       0.5,
+       0.3,
+       0.15
+      ],
+      "rpy": [
+       0,
+       0,
+       0
+      ],
+      "kind": "fixed",
+      "operatorMovable": true,
+      "staticFriction": 0.8,
+      "dynamicFriction": 0.6,
+      "colour": [
+       0.5,
+       0.5,
+       0.5
+      ],
+      "jitter": [
+       0.05,
+       0.05,
+       0.3
+      ]
+     },
+     {
+      "id": 11,
+      "name": "o10",
+      "shape": "box",
+      "size": [
+       0.06,
+       0.06,
+       0.3
+      ],
+      "position": [
+       0.5,
+       0.3,
+       0.15
+      ],
+      "rpy": [
+       0,
+       0,
+       0
+      ],
+      "kind": "fixed",
+      "operatorMovable": true,
+      "staticFriction": 0.8,
+      "dynamicFriction": 0.6,
+      "colour": [
+       0.5,
+       0.5,
+       0.5
+      ],
+      "jitter": [
+       0.05,
+       0.05,
+       0.3
+      ]
+     },
+     {
+      "id": 12,
+      "name": "o11",
+      "shape": "box",
+      "size": [
+       0.06,
+       0.06,
+       0.3
+      ],
+      "position": [
+       0.5,
+       0.3,
+       0.15
+      ],
+      "rpy": [
+       0,
+       0,
+       0
+      ],
+      "kind": "fixed",
+      "operatorMovable": true,
+      "staticFriction": 0.8,
+      "dynamicFriction": 0.6,
+      "colour": [
+       0.5,
+       0.5,
+       0.5
+      ],
+      "jitter": [
+       0.05,
+       0.05,
+       0.3
+      ]
+     },
+     {
+      "id": 13,
+      "name": "o12",
+      "shape": "box",
+      "size": [
+       0.06,
+       0.06,
+       0.3
+      ],
+      "position": [
+       0.5,
+       0.3,
+       0.15
+      ],
+      "rpy": [
+       0,
+       0,
+       0
+      ],
+      "kind": "fixed",
+      "operatorMovable": true,
+      "staticFriction": 0.8,
+      "dynamicFriction": 0.6,
+      "colour": [
+       0.5,
+       0.5,
+       0.5
+      ],
+      "jitter": [
+       0.05,
+       0.05,
+       0.3
+      ]
+     },
+     {
+      "id": 14,
+      "name": "o13",
+      "shape": "box",
+      "size": [
+       0.06,
+       0.06,
+       0.3
+      ],
+      "position": [
+       0.5,
+       0.3,
+       0.15
+      ],
+      "rpy": [
+       0,
+       0,
+       0
+      ],
+      "kind": "fixed",
+      "operatorMovable": true,
+      "staticFriction": 0.8,
+      "dynamicFriction": 0.6,
+      "colour": [
+       0.5,
+       0.5,
+       0.5
+      ],
+      "jitter": [
+       0.05,
+       0.05,
+       0.3
+      ]
+     },
+     {
+      "id": 15,
+      "name": "o14",
+      "shape": "box",
+      "size": [
+       0.06,
+       0.06,
+       0.3
+      ],
+      "position": [
+       0.5,
+       0.3,
+       0.15
+      ],
+      "rpy": [
+       0,
+       0,
+       0
+      ],
+      "kind": "fixed",
+      "operatorMovable": true,
+      "staticFriction": 0.8,
+      "dynamicFriction": 0.6,
+      "colour": [
+       0.5,
+       0.5,
+       0.5
+      ],
+      "jitter": [
+       0.05,
+       0.05,
+       0.3
+      ]
+     },
+     {
+      "id": 16,
+      "name": "o15",
+      "shape": "box",
+      "size": [
+       0.06,
+       0.06,
+       0.3
+      ],
+      "position": [
+       0.5,
+       0.3,
+       0.15
+      ],
+      "rpy": [
+       0,
+       0,
+       0
+      ],
+      "kind": "fixed",
+      "operatorMovable": true,
+      "staticFriction": 0.8,
+      "dynamicFriction": 0.6,
+      "colour": [
+       0.5,
+       0.5,
+       0.5
+      ],
+      "jitter": [
+       0.05,
+       0.05,
+       0.3
+      ]
+     },
+     {
+      "id": 17,
+      "name": "o16",
+      "shape": "box",
+      "size": [
+       0.06,
+       0.06,
+       0.3
+      ],
+      "position": [
+       0.5,
+       0.3,
+       0.15
+      ],
+      "rpy": [
+       0,
+       0,
+       0
+      ],
+      "kind": "fixed",
+      "operatorMovable": true,
+      "staticFriction": 0.8,
+      "dynamicFriction": 0.6,
+      "colour": [
+       0.5,
+       0.5,
+       0.5
+      ],
+      "jitter": [
+       0.05,
+       0.05,
+       0.3
+      ]
+     },
+     {
+      "id": 18,
+      "name": "o17",
+      "shape": "box",
+      "size": [
+       0.06,
+       0.06,
+       0.3
+      ],
+      "position": [
+       0.5,
+       0.3,
+       0.15
+      ],
+      "rpy": [
+       0,
+       0,
+       0
+      ],
+      "kind": "fixed",
+      "operatorMovable": true,
+      "staticFriction": 0.8,
+      "dynamicFriction": 0.6,
+      "colour": [
+       0.5,
+       0.5,
+       0.5
+      ],
+      "jitter": [
+       0.05,
+       0.05,
+       0.3
+      ]
+     },
+     {
+      "id": 19,
+      "name": "o18",
+      "shape": "box",
+      "size": [
+       0.06,
+       0.06,
+       0.3
+      ],
+      "position": [
+       0.5,
+       0.3,
+       0.15
+      ],
+      "rpy": [
+       0,
+       0,
+       0
+      ],
+      "kind": "fixed",
+      "operatorMovable": true,
+      "staticFriction": 0.8,
+      "dynamicFriction": 0.6,
+      "colour": [
+       0.5,
+       0.5,
+       0.5
+      ],
+      "jitter": [
+       0.05,
+       0.05,
+       0.3
+      ]
+     },
+     {
+      "id": 20,
+      "name": "o19",
+      "shape": "box",
+      "size": [
+       0.06,
+       0.06,
+       0.3
+      ],
+      "position": [
+       0.5,
+       0.3,
+       0.15
+      ],
+      "rpy": [
+       0,
+       0,
+       0
+      ],
+      "kind": "fixed",
+      "operatorMovable": true,
+      "staticFriction": 0.8,
+      "dynamicFriction": 0.6,
+      "colour": [
+       0.5,
+       0.5,
+       0.5
+      ],
+      "jitter": [
+       0.05,
+       0.05,
+       0.3
+      ]
+     },
+     {
+      "id": 21,
+      "name": "o20",
+      "shape": "box",
+      "size": [
+       0.06,
+       0.06,
+       0.3
+      ],
+      "position": [
+       0.5,
+       0.3,
+       0.15
+      ],
+      "rpy": [
+       0,
+       0,
+       0
+      ],
+      "kind": "fixed",
+      "operatorMovable": true,
+      "staticFriction": 0.8,
+      "dynamicFriction": 0.6,
+      "colour": [
+       0.5,
+       0.5,
+       0.5
+      ],
+      "jitter": [
+       0.05,
+       0.05,
+       0.3
+      ]
+     },
+     {
+      "id": 22,
+      "name": "o21",
+      "shape": "box",
+      "size": [
+       0.06,
+       0.06,
+       0.3
+      ],
+      "position": [
+       0.5,
+       0.3,
+       0.15
+      ],
+      "rpy": [
+       0,
+       0,
+       0
+      ],
+      "kind": "fixed",
+      "operatorMovable": true,
+      "staticFriction": 0.8,
+      "dynamicFriction": 0.6,
+      "colour": [
+       0.5,
+       0.5,
+       0.5
+      ],
+      "jitter": [
+       0.05,
+       0.05,
+       0.3
+      ]
+     },
+     {
+      "id": 23,
+      "name": "o22",
+      "shape": "box",
+      "size": [
+       0.06,
+       0.06,
+       0.3
+      ],
+      "position": [
+       0.5,
+       0.3,
+       0.15
+      ],
+      "rpy": [
+       0,
+       0,
+       0
+      ],
+      "kind": "fixed",
+      "operatorMovable": true,
+      "staticFriction": 0.8,
+      "dynamicFriction": 0.6,
+      "colour": [
+       0.5,
+       0.5,
+       0.5
+      ],
+      "jitter": [
+       0.05,
+       0.05,
+       0.3
+      ]
+     },
+     {
+      "id": 24,
+      "name": "o23",
+      "shape": "box",
+      "size": [
+       0.06,
+       0.06,
+       0.3
+      ],
+      "position": [
+       0.5,
+       0.3,
+       0.15
+      ],
+      "rpy": [
+       0,
+       0,
+       0
+      ],
+      "kind": "fixed",
+      "operatorMovable": true,
+      "staticFriction": 0.8,
+      "dynamicFriction": 0.6,
+      "colour": [
+       0.5,
+       0.5,
+       0.5
+      ],
+      "jitter": [
+       0.05,
+       0.05,
+       0.3
+      ]
+     },
+     {
+      "id": 25,
+      "name": "o24",
+      "shape": "box",
+      "size": [
+       0.06,
+       0.06,
+       0.3
+      ],
+      "position": [
+       0.5,
+       0.3,
+       0.15
+      ],
+      "rpy": [
+       0,
+       0,
+       0
+      ],
+      "kind": "fixed",
+      "operatorMovable": true,
+      "staticFriction": 0.8,
+      "dynamicFriction": 0.6,
+      "colour": [
+       0.5,
+       0.5,
+       0.5
+      ],
+      "jitter": [
+       0.05,
+       0.05,
+       0.3
+      ]
+     }
+    ],
+    "placement": {
+     "xMin": 0.28,
+     "xMax": 0.85,
+     "yMin": -0.65,
+     "yMax": 0.65,
+     "clearance": 0.02
+    }
+   }
+  },
+  {
+   "name": "object id 0",
+   "expect": "object id",
+   "scene": {
+    "format": "teleop-scene",
+    "version": 1,
+    "name": "vectors",
+    "robotProfile": "fr3-duo",
+    "surfaces": [
+     {
+      "id": "bench",
+      "center": [
+       -0.45,
+       0.0,
+       -0.02
+      ],
+      "size": [
+       1.3,
+       1.6,
+       0.04
+      ],
+      "colour": [
+       0.2,
+       0.2,
+       0.2
+      ],
+      "staticFriction": 0.6,
+      "dynamicFriction": 0.5,
+      "collides": true,
+      "headset": "builtin"
+     },
+     {
+      "id": "table",
+      "center": [
+       0.55,
+       0.0,
+       -0.02
+      ],
+      "size": [
+       0.7,
+       1.6,
+       0.04
+      ],
+      "colour": [
+       0.4,
+       0.4,
+       0.4
+      ],
+      "staticFriction": 0.6,
+      "dynamicFriction": 0.5,
+      "collides": true,
+      "headset": "show"
+     }
+    ],
+    "objects": [
+     {
+      "id": 0,
+      "name": "a",
+      "shape": "box",
+      "size": [
+       0.06,
+       0.06,
+       0.3
+      ],
+      "position": [
+       0.5,
+       0.3,
+       0.15
+      ],
+      "rpy": [
+       0,
+       0,
+       0
+      ],
+      "kind": "fixed",
+      "operatorMovable": true,
+      "staticFriction": 0.8,
+      "dynamicFriction": 0.6,
+      "colour": [
+       0.5,
+       0.5,
+       0.5
+      ],
+      "jitter": [
+       0.05,
+       0.05,
+       0.3
+      ]
+     }
+    ],
+    "placement": {
+     "xMin": 0.28,
+     "xMax": 0.85,
+     "yMin": -0.65,
+     "yMax": 0.65,
+     "clearance": 0.02
+    }
+   }
+  },
+  {
+   "name": "object id 255",
+   "expect": "object id",
+   "scene": {
+    "format": "teleop-scene",
+    "version": 1,
+    "name": "vectors",
+    "robotProfile": "fr3-duo",
+    "surfaces": [
+     {
+      "id": "bench",
+      "center": [
+       -0.45,
+       0.0,
+       -0.02
+      ],
+      "size": [
+       1.3,
+       1.6,
+       0.04
+      ],
+      "colour": [
+       0.2,
+       0.2,
+       0.2
+      ],
+      "staticFriction": 0.6,
+      "dynamicFriction": 0.5,
+      "collides": true,
+      "headset": "builtin"
+     },
+     {
+      "id": "table",
+      "center": [
+       0.55,
+       0.0,
+       -0.02
+      ],
+      "size": [
+       0.7,
+       1.6,
+       0.04
+      ],
+      "colour": [
+       0.4,
+       0.4,
+       0.4
+      ],
+      "staticFriction": 0.6,
+      "dynamicFriction": 0.5,
+      "collides": true,
+      "headset": "show"
+     }
+    ],
+    "objects": [
+     {
+      "id": 255,
+      "name": "a",
+      "shape": "box",
+      "size": [
+       0.06,
+       0.06,
+       0.3
+      ],
+      "position": [
+       0.5,
+       0.3,
+       0.15
+      ],
+      "rpy": [
+       0,
+       0,
+       0
+      ],
+      "kind": "fixed",
+      "operatorMovable": true,
+      "staticFriction": 0.8,
+      "dynamicFriction": 0.6,
+      "colour": [
+       0.5,
+       0.5,
+       0.5
+      ],
+      "jitter": [
+       0.05,
+       0.05,
+       0.3
+      ]
+     }
+    ],
+    "placement": {
+     "xMin": 0.28,
+     "xMax": 0.85,
+     "yMin": -0.65,
+     "yMax": 0.65,
+     "clearance": 0.02
+    }
+   }
+  },
+  {
+   "name": "two objects with one id",
+   "expect": "object id",
+   "scene": {
+    "format": "teleop-scene",
+    "version": 1,
+    "name": "vectors",
+    "robotProfile": "fr3-duo",
+    "surfaces": [
+     {
+      "id": "bench",
+      "center": [
+       -0.45,
+       0.0,
+       -0.02
+      ],
+      "size": [
+       1.3,
+       1.6,
+       0.04
+      ],
+      "colour": [
+       0.2,
+       0.2,
+       0.2
+      ],
+      "staticFriction": 0.6,
+      "dynamicFriction": 0.5,
+      "collides": true,
+      "headset": "builtin"
+     },
+     {
+      "id": "table",
+      "center": [
+       0.55,
+       0.0,
+       -0.02
+      ],
+      "size": [
+       0.7,
+       1.6,
+       0.04
+      ],
+      "colour": [
+       0.4,
+       0.4,
+       0.4
+      ],
+      "staticFriction": 0.6,
+      "dynamicFriction": 0.5,
+      "collides": true,
+      "headset": "show"
+     }
+    ],
+    "objects": [
+     {
+      "id": 1,
+      "name": "a",
+      "shape": "box",
+      "size": [
+       0.06,
+       0.06,
+       0.3
+      ],
+      "position": [
+       0.5,
+       0.3,
+       0.15
+      ],
+      "rpy": [
+       0,
+       0,
+       0
+      ],
+      "kind": "fixed",
+      "operatorMovable": true,
+      "staticFriction": 0.8,
+      "dynamicFriction": 0.6,
+      "colour": [
+       0.5,
+       0.5,
+       0.5
+      ],
+      "jitter": [
+       0.05,
+       0.05,
+       0.3
+      ]
+     },
+     {
+      "id": 1,
+      "name": "b",
+      "shape": "box",
+      "size": [
+       0.06,
+       0.06,
+       0.3
+      ],
+      "position": [
+       0.5,
+       -0.3,
+       0.15
+      ],
+      "rpy": [
+       0,
+       0,
+       0
+      ],
+      "kind": "fixed",
+      "operatorMovable": true,
+      "staticFriction": 0.8,
+      "dynamicFriction": 0.6,
+      "colour": [
+       0.5,
+       0.5,
+       0.5
+      ],
+      "jitter": [
+       0.05,
+       0.05,
+       0.3
+      ]
+     }
+    ],
+    "placement": {
+     "xMin": 0.28,
+     "xMax": 0.85,
+     "yMin": -0.65,
+     "yMax": 0.65,
+     "clearance": 0.02
+    }
+   }
+  },
+  {
+   "name": "an object name with a space",
+   "expect": "object name",
+   "scene": {
+    "format": "teleop-scene",
+    "version": 1,
+    "name": "vectors",
+    "robotProfile": "fr3-duo",
+    "surfaces": [
+     {
+      "id": "bench",
+      "center": [
+       -0.45,
+       0.0,
+       -0.02
+      ],
+      "size": [
+       1.3,
+       1.6,
+       0.04
+      ],
+      "colour": [
+       0.2,
+       0.2,
+       0.2
+      ],
+      "staticFriction": 0.6,
+      "dynamicFriction": 0.5,
+      "collides": true,
+      "headset": "builtin"
+     },
+     {
+      "id": "table",
+      "center": [
+       0.55,
+       0.0,
+       -0.02
+      ],
+      "size": [
+       0.7,
+       1.6,
+       0.04
+      ],
+      "colour": [
+       0.4,
+       0.4,
+       0.4
+      ],
+      "staticFriction": 0.6,
+      "dynamicFriction": 0.5,
+      "collides": true,
+      "headset": "show"
+     }
+    ],
+    "objects": [
+     {
+      "id": 1,
+      "name": "a b",
+      "shape": "box",
+      "size": [
+       0.06,
+       0.06,
+       0.3
+      ],
+      "position": [
+       0.5,
+       0.3,
+       0.15
+      ],
+      "rpy": [
+       0,
+       0,
+       0
+      ],
+      "kind": "fixed",
+      "operatorMovable": true,
+      "staticFriction": 0.8,
+      "dynamicFriction": 0.6,
+      "colour": [
+       0.5,
+       0.5,
+       0.5
+      ],
+      "jitter": [
+       0.05,
+       0.05,
+       0.3
+      ]
+     }
+    ],
+    "placement": {
+     "xMin": 0.28,
+     "xMax": 0.85,
+     "yMin": -0.65,
+     "yMax": 0.65,
+     "clearance": 0.02
+    }
+   }
+  },
+  {
+   "name": "two objects with one name",
+   "expect": "object name",
+   "scene": {
+    "format": "teleop-scene",
+    "version": 1,
+    "name": "vectors",
+    "robotProfile": "fr3-duo",
+    "surfaces": [
+     {
+      "id": "bench",
+      "center": [
+       -0.45,
+       0.0,
+       -0.02
+      ],
+      "size": [
+       1.3,
+       1.6,
+       0.04
+      ],
+      "colour": [
+       0.2,
+       0.2,
+       0.2
+      ],
+      "staticFriction": 0.6,
+      "dynamicFriction": 0.5,
+      "collides": true,
+      "headset": "builtin"
+     },
+     {
+      "id": "table",
+      "center": [
+       0.55,
+       0.0,
+       -0.02
+      ],
+      "size": [
+       0.7,
+       1.6,
+       0.04
+      ],
+      "colour": [
+       0.4,
+       0.4,
+       0.4
+      ],
+      "staticFriction": 0.6,
+      "dynamicFriction": 0.5,
+      "collides": true,
+      "headset": "show"
+     }
+    ],
+    "objects": [
+     {
+      "id": 1,
+      "name": "a",
+      "shape": "box",
+      "size": [
+       0.06,
+       0.06,
+       0.3
+      ],
+      "position": [
+       0.5,
+       0.3,
+       0.15
+      ],
+      "rpy": [
+       0,
+       0,
+       0
+      ],
+      "kind": "fixed",
+      "operatorMovable": true,
+      "staticFriction": 0.8,
+      "dynamicFriction": 0.6,
+      "colour": [
+       0.5,
+       0.5,
+       0.5
+      ],
+      "jitter": [
+       0.05,
+       0.05,
+       0.3
+      ]
+     },
+     {
+      "id": 2,
+      "name": "a",
+      "shape": "box",
+      "size": [
+       0.06,
+       0.06,
+       0.3
+      ],
+      "position": [
+       0.5,
+       -0.3,
+       0.15
+      ],
+      "rpy": [
+       0,
+       0,
+       0
+      ],
+      "kind": "fixed",
+      "operatorMovable": true,
+      "staticFriction": 0.8,
+      "dynamicFriction": 0.6,
+      "colour": [
+       0.5,
+       0.5,
+       0.5
+      ],
+      "jitter": [
+       0.05,
+       0.05,
+       0.3
+      ]
+     }
+    ],
+    "placement": {
+     "xMin": 0.28,
+     "xMax": 0.85,
+     "yMin": -0.65,
+     "yMax": 0.65,
+     "clearance": 0.02
+    }
+   }
+  },
+  {
+   "name": "an unknown shape",
+   "expect": "shape",
+   "scene": {
+    "format": "teleop-scene",
+    "version": 1,
+    "name": "vectors",
+    "robotProfile": "fr3-duo",
+    "surfaces": [
+     {
+      "id": "bench",
+      "center": [
+       -0.45,
+       0.0,
+       -0.02
+      ],
+      "size": [
+       1.3,
+       1.6,
+       0.04
+      ],
+      "colour": [
+       0.2,
+       0.2,
+       0.2
+      ],
+      "staticFriction": 0.6,
+      "dynamicFriction": 0.5,
+      "collides": true,
+      "headset": "builtin"
+     },
+     {
+      "id": "table",
+      "center": [
+       0.55,
+       0.0,
+       -0.02
+      ],
+      "size": [
+       0.7,
+       1.6,
+       0.04
+      ],
+      "colour": [
+       0.4,
+       0.4,
+       0.4
+      ],
+      "staticFriction": 0.6,
+      "dynamicFriction": 0.5,
+      "collides": true,
+      "headset": "show"
+     }
+    ],
+    "objects": [
+     {
+      "id": 1,
+      "name": "a",
+      "shape": "cone",
+      "size": [
+       0.06,
+       0.06,
+       0.3
+      ],
+      "position": [
+       0.5,
+       0.3,
+       0.15
+      ],
+      "rpy": [
+       0,
+       0,
+       0
+      ],
+      "kind": "fixed",
+      "operatorMovable": true,
+      "staticFriction": 0.8,
+      "dynamicFriction": 0.6,
+      "colour": [
+       0.5,
+       0.5,
+       0.5
+      ],
+      "jitter": [
+       0.05,
+       0.05,
+       0.3
+      ]
+     }
+    ],
+    "placement": {
+     "xMin": 0.28,
+     "xMax": 0.85,
+     "yMin": -0.65,
+     "yMax": 0.65,
+     "clearance": 0.02
+    }
+   }
+  },
+  {
+   "name": "a size of zero",
+   "expect": "size",
+   "scene": {
+    "format": "teleop-scene",
+    "version": 1,
+    "name": "vectors",
+    "robotProfile": "fr3-duo",
+    "surfaces": [
+     {
+      "id": "bench",
+      "center": [
+       -0.45,
+       0.0,
+       -0.02
+      ],
+      "size": [
+       1.3,
+       1.6,
+       0.04
+      ],
+      "colour": [
+       0.2,
+       0.2,
+       0.2
+      ],
+      "staticFriction": 0.6,
+      "dynamicFriction": 0.5,
+      "collides": true,
+      "headset": "builtin"
+     },
+     {
+      "id": "table",
+      "center": [
+       0.55,
+       0.0,
+       -0.02
+      ],
+      "size": [
+       0.7,
+       1.6,
+       0.04
+      ],
+      "colour": [
+       0.4,
+       0.4,
+       0.4
+      ],
+      "staticFriction": 0.6,
+      "dynamicFriction": 0.5,
+      "collides": true,
+      "headset": "show"
+     }
+    ],
+    "objects": [
+     {
+      "id": 1,
+      "name": "a",
+      "shape": "box",
+      "size": [
+       0.06,
+       0.0,
+       0.3
+      ],
+      "position": [
+       0.5,
+       0.3,
+       0.15
+      ],
+      "rpy": [
+       0,
+       0,
+       0
+      ],
+      "kind": "fixed",
+      "operatorMovable": true,
+      "staticFriction": 0.8,
+      "dynamicFriction": 0.6,
+      "colour": [
+       0.5,
+       0.5,
+       0.5
+      ],
+      "jitter": [
+       0.05,
+       0.05,
+       0.3
+      ]
+     }
+    ],
+    "placement": {
+     "xMin": 0.28,
+     "xMax": 0.85,
+     "yMin": -0.65,
+     "yMax": 0.65,
+     "clearance": 0.02
+    }
+   }
+  },
+  {
+   "name": "a cylinder that is not round",
+   "expect": "size",
+   "scene": {
+    "format": "teleop-scene",
+    "version": 1,
+    "name": "vectors",
+    "robotProfile": "fr3-duo",
+    "surfaces": [
+     {
+      "id": "bench",
+      "center": [
+       -0.45,
+       0.0,
+       -0.02
+      ],
+      "size": [
+       1.3,
+       1.6,
+       0.04
+      ],
+      "colour": [
+       0.2,
+       0.2,
+       0.2
+      ],
+      "staticFriction": 0.6,
+      "dynamicFriction": 0.5,
+      "collides": true,
+      "headset": "builtin"
+     },
+     {
+      "id": "table",
+      "center": [
+       0.55,
+       0.0,
+       -0.02
+      ],
+      "size": [
+       0.7,
+       1.6,
+       0.04
+      ],
+      "colour": [
+       0.4,
+       0.4,
+       0.4
+      ],
+      "staticFriction": 0.6,
+      "dynamicFriction": 0.5,
+      "collides": true,
+      "headset": "show"
+     }
+    ],
+    "objects": [
+     {
+      "id": 1,
+      "name": "a",
+      "shape": "cylinder",
+      "size": [
+       0.08,
+       0.06,
+       0.2
+      ],
+      "position": [
+       0.5,
+       0.3,
+       0.1
+      ],
+      "rpy": [
+       0,
+       0,
+       0
+      ],
+      "kind": "fixed",
+      "operatorMovable": true,
+      "staticFriction": 0.8,
+      "dynamicFriction": 0.6,
+      "colour": [
+       0.5,
+       0.5,
+       0.5
+      ],
+      "jitter": [
+       0.05,
+       0.05,
+       0.3
+      ]
+     }
+    ],
+    "placement": {
+     "xMin": 0.28,
+     "xMax": 0.85,
+     "yMin": -0.65,
+     "yMax": 0.65,
+     "clearance": 0.02
+    }
+   }
+  },
+  {
+   "name": "a sphere that is not round",
+   "expect": "size",
+   "scene": {
+    "format": "teleop-scene",
+    "version": 1,
+    "name": "vectors",
+    "robotProfile": "fr3-duo",
+    "surfaces": [
+     {
+      "id": "bench",
+      "center": [
+       -0.45,
+       0.0,
+       -0.02
+      ],
+      "size": [
+       1.3,
+       1.6,
+       0.04
+      ],
+      "colour": [
+       0.2,
+       0.2,
+       0.2
+      ],
+      "staticFriction": 0.6,
+      "dynamicFriction": 0.5,
+      "collides": true,
+      "headset": "builtin"
+     },
+     {
+      "id": "table",
+      "center": [
+       0.55,
+       0.0,
+       -0.02
+      ],
+      "size": [
+       0.7,
+       1.6,
+       0.04
+      ],
+      "colour": [
+       0.4,
+       0.4,
+       0.4
+      ],
+      "staticFriction": 0.6,
+      "dynamicFriction": 0.5,
+      "collides": true,
+      "headset": "show"
+     }
+    ],
+    "objects": [
+     {
+      "id": 1,
+      "name": "a",
+      "shape": "sphere",
+      "size": [
+       0.1,
+       0.1,
+       0.2
+      ],
+      "position": [
+       0.5,
+       0.3,
+       0.1
+      ],
+      "rpy": [
+       0,
+       0,
+       0
+      ],
+      "kind": "fixed",
+      "operatorMovable": true,
+      "staticFriction": 0.8,
+      "dynamicFriction": 0.6,
+      "colour": [
+       0.5,
+       0.5,
+       0.5
+      ],
+      "jitter": [
+       0.05,
+       0.05,
+       0.3
+      ]
+     }
+    ],
+    "placement": {
+     "xMin": 0.28,
+     "xMax": 0.85,
+     "yMin": -0.65,
+     "yMax": 0.65,
+     "clearance": 0.02
+    }
+   }
+  },
+  {
+   "name": "a movable object in version 1",
+   "expect": "kind",
+   "scene": {
+    "format": "teleop-scene",
+    "version": 1,
+    "name": "vectors",
+    "robotProfile": "fr3-duo",
+    "surfaces": [
+     {
+      "id": "bench",
+      "center": [
+       -0.45,
+       0.0,
+       -0.02
+      ],
+      "size": [
+       1.3,
+       1.6,
+       0.04
+      ],
+      "colour": [
+       0.2,
+       0.2,
+       0.2
+      ],
+      "staticFriction": 0.6,
+      "dynamicFriction": 0.5,
+      "collides": true,
+      "headset": "builtin"
+     },
+     {
+      "id": "table",
+      "center": [
+       0.55,
+       0.0,
+       -0.02
+      ],
+      "size": [
+       0.7,
+       1.6,
+       0.04
+      ],
+      "colour": [
+       0.4,
+       0.4,
+       0.4
+      ],
+      "staticFriction": 0.6,
+      "dynamicFriction": 0.5,
+      "collides": true,
+      "headset": "show"
+     }
+    ],
+    "objects": [
+     {
+      "id": 1,
+      "name": "a",
+      "shape": "box",
+      "size": [
+       0.06,
+       0.06,
+       0.3
+      ],
+      "position": [
+       0.5,
+       0.3,
+       0.15
+      ],
+      "rpy": [
+       0,
+       0,
+       0
+      ],
+      "kind": "movable",
+      "operatorMovable": true,
+      "staticFriction": 0.8,
+      "dynamicFriction": 0.6,
+      "colour": [
+       0.5,
+       0.5,
+       0.5
+      ],
+      "jitter": [
+       0.05,
+       0.05,
+       0.3
+      ]
+     }
+    ],
+    "placement": {
+     "xMin": 0.28,
+     "xMax": 0.85,
+     "yMin": -0.65,
+     "yMax": 0.65,
+     "clearance": 0.02
+    }
+   }
+  },
+  {
+   "name": "version 2: the base scene",
+   "expect": "ok",
+   "scene": {
+    "format": "teleop-scene",
+    "version": 2,
+    "name": "vectors",
+    "robotProfile": "fr3-duo",
+    "surfaces": [
+     {
+      "id": "bench",
+      "center": [
+       -0.45,
+       0.0,
+       -0.02
+      ],
+      "size": [
+       1.3,
+       1.6,
+       0.04
+      ],
+      "colour": [
+       0.2,
+       0.2,
+       0.2
+      ],
+      "staticFriction": 0.6,
+      "dynamicFriction": 0.5,
+      "collides": true,
+      "headset": "builtin"
+     },
+     {
+      "id": "table",
+      "center": [
+       0.55,
+       0.0,
+       -0.02
+      ],
+      "size": [
+       0.7,
+       1.6,
+       0.04
+      ],
+      "colour": [
+       0.4,
+       0.4,
+       0.4
+      ],
+      "staticFriction": 0.6,
+      "dynamicFriction": 0.5,
+      "collides": true,
+      "headset": "show"
+     }
+    ],
+    "objects": [
+     {
+      "id": 1,
+      "name": "a",
+      "shape": "box",
+      "size": [
+       0.06,
+       0.06,
+       0.3
+      ],
+      "position": [
+       0.5,
+       0.3,
+       0.15
+      ],
+      "rpy": [
+       0,
+       0,
+       0
+      ],
+      "kind": "fixed",
+      "operatorMovable": true,
+      "staticFriction": 0.8,
+      "dynamicFriction": 0.6,
+      "colour": [
+       0.5,
+       0.5,
+       0.5
+      ],
+      "jitter": [
+       0.05,
+       0.05,
+       0.3
+      ]
+     }
+    ],
+    "placement": {
+     "xMin": 0.28,
+     "xMax": 0.85,
+     "yMin": -0.65,
+     "yMax": 0.65,
+     "clearance": 0.02
+    }
+   }
+  },
+  {
+   "name": "version 2: a movable object",
+   "expect": "ok",
+   "scene": {
+    "format": "teleop-scene",
+    "version": 2,
+    "name": "vectors",
+    "robotProfile": "fr3-duo",
+    "surfaces": [
+     {
+      "id": "bench",
+      "center": [
+       -0.45,
+       0.0,
+       -0.02
+      ],
+      "size": [
+       1.3,
+       1.6,
+       0.04
+      ],
+      "colour": [
+       0.2,
+       0.2,
+       0.2
+      ],
+      "staticFriction": 0.6,
+      "dynamicFriction": 0.5,
+      "collides": true,
+      "headset": "builtin"
+     },
+     {
+      "id": "table",
+      "center": [
+       0.55,
+       0.0,
+       -0.02
+      ],
+      "size": [
+       0.7,
+       1.6,
+       0.04
+      ],
+      "colour": [
+       0.4,
+       0.4,
+       0.4
+      ],
+      "staticFriction": 0.6,
+      "dynamicFriction": 0.5,
+      "collides": true,
+      "headset": "show"
+     }
+    ],
+    "objects": [
+     {
+      "id": 1,
+      "name": "a",
+      "shape": "box",
+      "size": [
+       0.06,
+       0.06,
+       0.3
+      ],
+      "position": [
+       0.5,
+       0.3,
+       0.15
+      ],
+      "rpy": [
+       0,
+       0,
+       0
+      ],
+      "kind": "movable",
+      "operatorMovable": true,
+      "staticFriction": 0.8,
+      "dynamicFriction": 0.6,
+      "colour": [
+       0.5,
+       0.5,
+       0.5
+      ],
+      "jitter": [
+       0.05,
+       0.05,
+       0.3
+      ],
+      "mass": 0.4
+     }
+    ],
+    "placement": {
+     "xMin": 0.28,
+     "xMax": 0.85,
+     "yMin": -0.65,
+     "yMax": 0.65,
+     "clearance": 0.02
+    }
+   }
+  },
+  {
+   "name": "version 2: a movable object with no mass",
+   "expect": "mass",
+   "scene": {
+    "format": "teleop-scene",
+    "version": 2,
+    "name": "vectors",
+    "robotProfile": "fr3-duo",
+    "surfaces": [
+     {
+      "id": "bench",
+      "center": [
+       -0.45,
+       0.0,
+       -0.02
+      ],
+      "size": [
+       1.3,
+       1.6,
+       0.04
+      ],
+      "colour": [
+       0.2,
+       0.2,
+       0.2
+      ],
+      "staticFriction": 0.6,
+      "dynamicFriction": 0.5,
+      "collides": true,
+      "headset": "builtin"
+     },
+     {
+      "id": "table",
+      "center": [
+       0.55,
+       0.0,
+       -0.02
+      ],
+      "size": [
+       0.7,
+       1.6,
+       0.04
+      ],
+      "colour": [
+       0.4,
+       0.4,
+       0.4
+      ],
+      "staticFriction": 0.6,
+      "dynamicFriction": 0.5,
+      "collides": true,
+      "headset": "show"
+     }
+    ],
+    "objects": [
+     {
+      "id": 1,
+      "name": "a",
+      "shape": "box",
+      "size": [
+       0.06,
+       0.06,
+       0.3
+      ],
+      "position": [
+       0.5,
+       0.3,
+       0.15
+      ],
+      "rpy": [
+       0,
+       0,
+       0
+      ],
+      "kind": "movable",
+      "operatorMovable": true,
+      "staticFriction": 0.8,
+      "dynamicFriction": 0.6,
+      "colour": [
+       0.5,
+       0.5,
+       0.5
+      ],
+      "jitter": [
+       0.05,
+       0.05,
+       0.3
+      ]
+     }
+    ],
+    "placement": {
+     "xMin": 0.28,
+     "xMax": 0.85,
+     "yMin": -0.65,
+     "yMax": 0.65,
+     "clearance": 0.02
+    }
+   }
+  },
+  {
+   "name": "version 2: a movable object heavier than 20 kg",
+   "expect": "mass",
+   "scene": {
+    "format": "teleop-scene",
+    "version": 2,
+    "name": "vectors",
+    "robotProfile": "fr3-duo",
+    "surfaces": [
+     {
+      "id": "bench",
+      "center": [
+       -0.45,
+       0.0,
+       -0.02
+      ],
+      "size": [
+       1.3,
+       1.6,
+       0.04
+      ],
+      "colour": [
+       0.2,
+       0.2,
+       0.2
+      ],
+      "staticFriction": 0.6,
+      "dynamicFriction": 0.5,
+      "collides": true,
+      "headset": "builtin"
+     },
+     {
+      "id": "table",
+      "center": [
+       0.55,
+       0.0,
+       -0.02
+      ],
+      "size": [
+       0.7,
+       1.6,
+       0.04
+      ],
+      "colour": [
+       0.4,
+       0.4,
+       0.4
+      ],
+      "staticFriction": 0.6,
+      "dynamicFriction": 0.5,
+      "collides": true,
+      "headset": "show"
+     }
+    ],
+    "objects": [
+     {
+      "id": 1,
+      "name": "a",
+      "shape": "box",
+      "size": [
+       0.06,
+       0.06,
+       0.3
+      ],
+      "position": [
+       0.5,
+       0.3,
+       0.15
+      ],
+      "rpy": [
+       0,
+       0,
+       0
+      ],
+      "kind": "movable",
+      "operatorMovable": true,
+      "staticFriction": 0.8,
+      "dynamicFriction": 0.6,
+      "colour": [
+       0.5,
+       0.5,
+       0.5
+      ],
+      "jitter": [
+       0.05,
+       0.05,
+       0.3
+      ],
+      "mass": 25.0
+     }
+    ],
+    "placement": {
+     "xMin": 0.28,
+     "xMax": 0.85,
+     "yMin": -0.65,
+     "yMax": 0.65,
+     "clearance": 0.02
+    }
+   }
+  },
+  {
+   "name": "version 2: a fixed object with a mass",
+   "expect": "mass",
+   "scene": {
+    "format": "teleop-scene",
+    "version": 2,
+    "name": "vectors",
+    "robotProfile": "fr3-duo",
+    "surfaces": [
+     {
+      "id": "bench",
+      "center": [
+       -0.45,
+       0.0,
+       -0.02
+      ],
+      "size": [
+       1.3,
+       1.6,
+       0.04
+      ],
+      "colour": [
+       0.2,
+       0.2,
+       0.2
+      ],
+      "staticFriction": 0.6,
+      "dynamicFriction": 0.5,
+      "collides": true,
+      "headset": "builtin"
+     },
+     {
+      "id": "table",
+      "center": [
+       0.55,
+       0.0,
+       -0.02
+      ],
+      "size": [
+       0.7,
+       1.6,
+       0.04
+      ],
+      "colour": [
+       0.4,
+       0.4,
+       0.4
+      ],
+      "staticFriction": 0.6,
+      "dynamicFriction": 0.5,
+      "collides": true,
+      "headset": "show"
+     }
+    ],
+    "objects": [
+     {
+      "id": 1,
+      "name": "a",
+      "shape": "box",
+      "size": [
+       0.06,
+       0.06,
+       0.3
+      ],
+      "position": [
+       0.5,
+       0.3,
+       0.15
+      ],
+      "rpy": [
+       0,
+       0,
+       0
+      ],
+      "kind": "fixed",
+      "operatorMovable": true,
+      "staticFriction": 0.8,
+      "dynamicFriction": 0.6,
+      "colour": [
+       0.5,
+       0.5,
+       0.5
+      ],
+      "jitter": [
+       0.05,
+       0.05,
+       0.3
+      ],
+      "mass": 0.4
+     }
+    ],
+    "placement": {
+     "xMin": 0.28,
+     "xMax": 0.85,
+     "yMin": -0.65,
+     "yMax": 0.65,
+     "clearance": 0.02
+    }
+   }
+  },
+  {
+   "name": "version 2: an unknown kind",
+   "expect": "kind",
+   "scene": {
+    "format": "teleop-scene",
+    "version": 2,
+    "name": "vectors",
+    "robotProfile": "fr3-duo",
+    "surfaces": [
+     {
+      "id": "bench",
+      "center": [
+       -0.45,
+       0.0,
+       -0.02
+      ],
+      "size": [
+       1.3,
+       1.6,
+       0.04
+      ],
+      "colour": [
+       0.2,
+       0.2,
+       0.2
+      ],
+      "staticFriction": 0.6,
+      "dynamicFriction": 0.5,
+      "collides": true,
+      "headset": "builtin"
+     },
+     {
+      "id": "table",
+      "center": [
+       0.55,
+       0.0,
+       -0.02
+      ],
+      "size": [
+       0.7,
+       1.6,
+       0.04
+      ],
+      "colour": [
+       0.4,
+       0.4,
+       0.4
+      ],
+      "staticFriction": 0.6,
+      "dynamicFriction": 0.5,
+      "collides": true,
+      "headset": "show"
+     }
+    ],
+    "objects": [
+     {
+      "id": 1,
+      "name": "a",
+      "shape": "box",
+      "size": [
+       0.06,
+       0.06,
+       0.3
+      ],
+      "position": [
+       0.5,
+       0.3,
+       0.15
+      ],
+      "rpy": [
+       0,
+       0,
+       0
+      ],
+      "kind": "floating",
+      "operatorMovable": true,
+      "staticFriction": 0.8,
+      "dynamicFriction": 0.6,
+      "colour": [
+       0.5,
+       0.5,
+       0.5
+      ],
+      "jitter": [
+       0.05,
+       0.05,
+       0.3
+      ]
+     }
+    ],
+    "placement": {
+     "xMin": 0.28,
+     "xMax": 0.85,
+     "yMin": -0.65,
+     "yMax": 0.65,
+     "clearance": 0.02
+    }
+   }
+  },
+  {
+   "name": "version 0",
+   "expect": "version",
+   "scene": {
+    "format": "teleop-scene",
+    "version": 0,
+    "name": "vectors",
+    "robotProfile": "fr3-duo",
+    "surfaces": [
+     {
+      "id": "bench",
+      "center": [
+       -0.45,
+       0.0,
+       -0.02
+      ],
+      "size": [
+       1.3,
+       1.6,
+       0.04
+      ],
+      "colour": [
+       0.2,
+       0.2,
+       0.2
+      ],
+      "staticFriction": 0.6,
+      "dynamicFriction": 0.5,
+      "collides": true,
+      "headset": "builtin"
+     },
+     {
+      "id": "table",
+      "center": [
+       0.55,
+       0.0,
+       -0.02
+      ],
+      "size": [
+       0.7,
+       1.6,
+       0.04
+      ],
+      "colour": [
+       0.4,
+       0.4,
+       0.4
+      ],
+      "staticFriction": 0.6,
+      "dynamicFriction": 0.5,
+      "collides": true,
+      "headset": "show"
+     }
+    ],
+    "objects": [
+     {
+      "id": 1,
+      "name": "a",
+      "shape": "box",
+      "size": [
+       0.06,
+       0.06,
+       0.3
+      ],
+      "position": [
+       0.5,
+       0.3,
+       0.15
+      ],
+      "rpy": [
+       0,
+       0,
+       0
+      ],
+      "kind": "fixed",
+      "operatorMovable": true,
+      "staticFriction": 0.8,
+      "dynamicFriction": 0.6,
+      "colour": [
+       0.5,
+       0.5,
+       0.5
+      ],
+      "jitter": [
+       0.05,
+       0.05,
+       0.3
+      ]
+     }
+    ],
+    "placement": {
+     "xMin": 0.28,
+     "xMax": 0.85,
+     "yMin": -0.65,
+     "yMax": 0.65,
+     "clearance": 0.02
+    }
+   }
+  },
+  {
+   "name": "an object tipped over",
+   "expect": "pose",
+   "scene": {
+    "format": "teleop-scene",
+    "version": 1,
+    "name": "vectors",
+    "robotProfile": "fr3-duo",
+    "surfaces": [
+     {
+      "id": "bench",
+      "center": [
+       -0.45,
+       0.0,
+       -0.02
+      ],
+      "size": [
+       1.3,
+       1.6,
+       0.04
+      ],
+      "colour": [
+       0.2,
+       0.2,
+       0.2
+      ],
+      "staticFriction": 0.6,
+      "dynamicFriction": 0.5,
+      "collides": true,
+      "headset": "builtin"
+     },
+     {
+      "id": "table",
+      "center": [
+       0.55,
+       0.0,
+       -0.02
+      ],
+      "size": [
+       0.7,
+       1.6,
+       0.04
+      ],
+      "colour": [
+       0.4,
+       0.4,
+       0.4
+      ],
+      "staticFriction": 0.6,
+      "dynamicFriction": 0.5,
+      "collides": true,
+      "headset": "show"
+     }
+    ],
+    "objects": [
+     {
+      "id": 1,
+      "name": "a",
+      "shape": "box",
+      "size": [
+       0.06,
+       0.06,
+       0.3
+      ],
+      "position": [
+       0.5,
+       0.3,
+       0.15
+      ],
+      "rpy": [
+       0.3,
+       0,
+       0
+      ],
+      "kind": "fixed",
+      "operatorMovable": true,
+      "staticFriction": 0.8,
+      "dynamicFriction": 0.6,
+      "colour": [
+       0.5,
+       0.5,
+       0.5
+      ],
+      "jitter": [
+       0.05,
+       0.05,
+       0.3
+      ]
+     }
+    ],
+    "placement": {
+     "xMin": 0.28,
+     "xMax": 0.85,
+     "yMin": -0.65,
+     "yMax": 0.65,
+     "clearance": 0.02
+    }
+   }
+  },
+  {
+   "name": "a position with two numbers",
+   "expect": "pose",
+   "scene": {
+    "format": "teleop-scene",
+    "version": 1,
+    "name": "vectors",
+    "robotProfile": "fr3-duo",
+    "surfaces": [
+     {
+      "id": "bench",
+      "center": [
+       -0.45,
+       0.0,
+       -0.02
+      ],
+      "size": [
+       1.3,
+       1.6,
+       0.04
+      ],
+      "colour": [
+       0.2,
+       0.2,
+       0.2
+      ],
+      "staticFriction": 0.6,
+      "dynamicFriction": 0.5,
+      "collides": true,
+      "headset": "builtin"
+     },
+     {
+      "id": "table",
+      "center": [
+       0.55,
+       0.0,
+       -0.02
+      ],
+      "size": [
+       0.7,
+       1.6,
+       0.04
+      ],
+      "colour": [
+       0.4,
+       0.4,
+       0.4
+      ],
+      "staticFriction": 0.6,
+      "dynamicFriction": 0.5,
+      "collides": true,
+      "headset": "show"
+     }
+    ],
+    "objects": [
+     {
+      "id": 1,
+      "name": "a",
+      "shape": "box",
+      "size": [
+       0.06,
+       0.06,
+       0.3
+      ],
+      "position": [
+       0.5,
+       0.3
+      ],
+      "rpy": [
+       0,
+       0,
+       0
+      ],
+      "kind": "fixed",
+      "operatorMovable": true,
+      "staticFriction": 0.8,
+      "dynamicFriction": 0.6,
+      "colour": [
+       0.5,
+       0.5,
+       0.5
+      ],
+      "jitter": [
+       0.05,
+       0.05,
+       0.3
+      ]
+     }
+    ],
+    "placement": {
+     "xMin": 0.28,
+     "xMax": 0.85,
+     "yMin": -0.65,
+     "yMax": 0.65,
+     "clearance": 0.02
+    }
+   }
+  },
+  {
+   "name": "an object floating above the table",
+   "expect": "rests",
+   "scene": {
+    "format": "teleop-scene",
+    "version": 1,
+    "name": "vectors",
+    "robotProfile": "fr3-duo",
+    "surfaces": [
+     {
+      "id": "bench",
+      "center": [
+       -0.45,
+       0.0,
+       -0.02
+      ],
+      "size": [
+       1.3,
+       1.6,
+       0.04
+      ],
+      "colour": [
+       0.2,
+       0.2,
+       0.2
+      ],
+      "staticFriction": 0.6,
+      "dynamicFriction": 0.5,
+      "collides": true,
+      "headset": "builtin"
+     },
+     {
+      "id": "table",
+      "center": [
+       0.55,
+       0.0,
+       -0.02
+      ],
+      "size": [
+       0.7,
+       1.6,
+       0.04
+      ],
+      "colour": [
+       0.4,
+       0.4,
+       0.4
+      ],
+      "staticFriction": 0.6,
+      "dynamicFriction": 0.5,
+      "collides": true,
+      "headset": "show"
+     }
+    ],
+    "objects": [
+     {
+      "id": 1,
+      "name": "a",
+      "shape": "box",
+      "size": [
+       0.06,
+       0.06,
+       0.3
+      ],
+      "position": [
+       0.5,
+       0.3,
+       0.2
+      ],
+      "rpy": [
+       0,
+       0,
+       0
+      ],
+      "kind": "fixed",
+      "operatorMovable": true,
+      "staticFriction": 0.8,
+      "dynamicFriction": 0.6,
+      "colour": [
+       0.5,
+       0.5,
+       0.5
+      ],
+      "jitter": [
+       0.05,
+       0.05,
+       0.3
+      ]
+     }
+    ],
+    "placement": {
+     "xMin": 0.28,
+     "xMax": 0.85,
+     "yMin": -0.65,
+     "yMax": 0.65,
+     "clearance": 0.02
+    }
+   }
+  },
+  {
+   "name": "a colour above 1",
+   "expect": "colour",
+   "scene": {
+    "format": "teleop-scene",
+    "version": 1,
+    "name": "vectors",
+    "robotProfile": "fr3-duo",
+    "surfaces": [
+     {
+      "id": "bench",
+      "center": [
+       -0.45,
+       0.0,
+       -0.02
+      ],
+      "size": [
+       1.3,
+       1.6,
+       0.04
+      ],
+      "colour": [
+       0.2,
+       0.2,
+       0.2
+      ],
+      "staticFriction": 0.6,
+      "dynamicFriction": 0.5,
+      "collides": true,
+      "headset": "builtin"
+     },
+     {
+      "id": "table",
+      "center": [
+       0.55,
+       0.0,
+       -0.02
+      ],
+      "size": [
+       0.7,
+       1.6,
+       0.04
+      ],
+      "colour": [
+       0.4,
+       0.4,
+       0.4
+      ],
+      "staticFriction": 0.6,
+      "dynamicFriction": 0.5,
+      "collides": true,
+      "headset": "show"
+     }
+    ],
+    "objects": [
+     {
+      "id": 1,
+      "name": "a",
+      "shape": "box",
+      "size": [
+       0.06,
+       0.06,
+       0.3
+      ],
+      "position": [
+       0.5,
+       0.3,
+       0.15
+      ],
+      "rpy": [
+       0,
+       0,
+       0
+      ],
+      "kind": "fixed",
+      "operatorMovable": true,
+      "staticFriction": 0.8,
+      "dynamicFriction": 0.6,
+      "colour": [
+       1.5,
+       0.5,
+       0.5
+      ],
+      "jitter": [
+       0.05,
+       0.05,
+       0.3
+      ]
+     }
+    ],
+    "placement": {
+     "xMin": 0.28,
+     "xMax": 0.85,
+     "yMin": -0.65,
+     "yMax": 0.65,
+     "clearance": 0.02
+    }
+   }
+  },
+  {
+   "name": "negative friction",
+   "expect": "friction",
+   "scene": {
+    "format": "teleop-scene",
+    "version": 1,
+    "name": "vectors",
+    "robotProfile": "fr3-duo",
+    "surfaces": [
+     {
+      "id": "bench",
+      "center": [
+       -0.45,
+       0.0,
+       -0.02
+      ],
+      "size": [
+       1.3,
+       1.6,
+       0.04
+      ],
+      "colour": [
+       0.2,
+       0.2,
+       0.2
+      ],
+      "staticFriction": 0.6,
+      "dynamicFriction": 0.5,
+      "collides": true,
+      "headset": "builtin"
+     },
+     {
+      "id": "table",
+      "center": [
+       0.55,
+       0.0,
+       -0.02
+      ],
+      "size": [
+       0.7,
+       1.6,
+       0.04
+      ],
+      "colour": [
+       0.4,
+       0.4,
+       0.4
+      ],
+      "staticFriction": 0.6,
+      "dynamicFriction": 0.5,
+      "collides": true,
+      "headset": "show"
+     }
+    ],
+    "objects": [
+     {
+      "id": 1,
+      "name": "a",
+      "shape": "box",
+      "size": [
+       0.06,
+       0.06,
+       0.3
+      ],
+      "position": [
+       0.5,
+       0.3,
+       0.15
+      ],
+      "rpy": [
+       0,
+       0,
+       0
+      ],
+      "kind": "fixed",
+      "operatorMovable": true,
+      "staticFriction": -0.1,
+      "dynamicFriction": 0.6,
+      "colour": [
+       0.5,
+       0.5,
+       0.5
+      ],
+      "jitter": [
+       0.05,
+       0.05,
+       0.3
+      ]
+     }
+    ],
+    "placement": {
+     "xMin": 0.28,
+     "xMax": 0.85,
+     "yMin": -0.65,
+     "yMax": 0.65,
+     "clearance": 0.02
+    }
+   }
+  },
+  {
+   "name": "a negative jitter",
+   "expect": "jitter",
+   "scene": {
+    "format": "teleop-scene",
+    "version": 1,
+    "name": "vectors",
+    "robotProfile": "fr3-duo",
+    "surfaces": [
+     {
+      "id": "bench",
+      "center": [
+       -0.45,
+       0.0,
+       -0.02
+      ],
+      "size": [
+       1.3,
+       1.6,
+       0.04
+      ],
+      "colour": [
+       0.2,
+       0.2,
+       0.2
+      ],
+      "staticFriction": 0.6,
+      "dynamicFriction": 0.5,
+      "collides": true,
+      "headset": "builtin"
+     },
+     {
+      "id": "table",
+      "center": [
+       0.55,
+       0.0,
+       -0.02
+      ],
+      "size": [
+       0.7,
+       1.6,
+       0.04
+      ],
+      "colour": [
+       0.4,
+       0.4,
+       0.4
+      ],
+      "staticFriction": 0.6,
+      "dynamicFriction": 0.5,
+      "collides": true,
+      "headset": "show"
+     }
+    ],
+    "objects": [
+     {
+      "id": 1,
+      "name": "a",
+      "shape": "box",
+      "size": [
+       0.06,
+       0.06,
+       0.3
+      ],
+      "position": [
+       0.5,
+       0.3,
+       0.15
+      ],
+      "rpy": [
+       0,
+       0,
+       0
+      ],
+      "kind": "fixed",
+      "operatorMovable": true,
+      "staticFriction": 0.8,
+      "dynamicFriction": 0.6,
+      "colour": [
+       0.5,
+       0.5,
+       0.5
+      ],
+      "jitter": [
+       0.05,
+       -0.05,
+       0.3
+      ]
+     }
+    ],
+    "placement": {
+     "xMin": 0.28,
+     "xMax": 0.85,
+     "yMin": -0.65,
+     "yMax": 0.65,
+     "clearance": 0.02
+    }
+   }
+  },
+  {
+   "name": "an object at the region's edge",
+   "expect": "fits",
+   "scene": {
+    "format": "teleop-scene",
+    "version": 1,
+    "name": "vectors",
+    "robotProfile": "fr3-duo",
+    "surfaces": [
+     {
+      "id": "bench",
+      "center": [
+       -0.45,
+       0.0,
+       -0.02
+      ],
+      "size": [
+       1.3,
+       1.6,
+       0.04
+      ],
+      "colour": [
+       0.2,
+       0.2,
+       0.2
+      ],
+      "staticFriction": 0.6,
+      "dynamicFriction": 0.5,
+      "collides": true,
+      "headset": "builtin"
+     },
+     {
+      "id": "table",
+      "center": [
+       0.55,
+       0.0,
+       -0.02
+      ],
+      "size": [
+       0.7,
+       1.6,
+       0.04
+      ],
+      "colour": [
+       0.4,
+       0.4,
+       0.4
+      ],
+      "staticFriction": 0.6,
+      "dynamicFriction": 0.5,
+      "collides": true,
+      "headset": "show"
+     }
+    ],
+    "objects": [
+     {
+      "id": 1,
+      "name": "a",
+      "shape": "box",
+      "size": [
+       0.06,
+       0.06,
+       0.3
+      ],
+      "position": [
+       0.84,
+       0.3,
+       0.15
+      ],
+      "rpy": [
+       0,
+       0,
+       0
+      ],
+      "kind": "fixed",
+      "operatorMovable": true,
+      "staticFriction": 0.8,
+      "dynamicFriction": 0.6,
+      "colour": [
+       0.5,
+       0.5,
+       0.5
+      ],
+      "jitter": [
+       0.05,
+       0.05,
+       0.3
+      ]
+     }
+    ],
+    "placement": {
+     "xMin": 0.28,
+     "xMax": 0.85,
+     "yMin": -0.65,
+     "yMax": 0.65,
+     "clearance": 0.02
+    }
+   }
+  },
+  {
+   "name": "jitter that reaches off the table",
+   "expect": "fits",
+   "scene": {
+    "format": "teleop-scene",
+    "version": 1,
+    "name": "vectors",
+    "robotProfile": "fr3-duo",
+    "surfaces": [
+     {
+      "id": "bench",
+      "center": [
+       -0.45,
+       0.0,
+       -0.02
+      ],
+      "size": [
+       1.3,
+       1.6,
+       0.04
+      ],
+      "colour": [
+       0.2,
+       0.2,
+       0.2
+      ],
+      "staticFriction": 0.6,
+      "dynamicFriction": 0.5,
+      "collides": true,
+      "headset": "builtin"
+     },
+     {
+      "id": "table",
+      "center": [
+       0.55,
+       0.0,
+       -0.02
+      ],
+      "size": [
+       0.7,
+       1.6,
+       0.04
+      ],
+      "colour": [
+       0.4,
+       0.4,
+       0.4
+      ],
+      "staticFriction": 0.6,
+      "dynamicFriction": 0.5,
+      "collides": true,
+      "headset": "show"
+     }
+    ],
+    "objects": [
+     {
+      "id": 1,
+      "name": "a",
+      "shape": "box",
+      "size": [
+       0.06,
+       0.06,
+       0.3
+      ],
+      "position": [
+       0.5,
+       0.3,
+       0.15
+      ],
+      "rpy": [
+       0,
+       0,
+       0
+      ],
+      "kind": "fixed",
+      "operatorMovable": true,
+      "staticFriction": 0.8,
+      "dynamicFriction": 0.6,
+      "colour": [
+       0.5,
+       0.5,
+       0.5
+      ],
+      "jitter": [
+       0.5,
+       0.05,
+       0.3
+      ]
+     }
+    ],
+    "placement": {
+     "xMin": 0.28,
+     "xMax": 0.85,
+     "yMin": -0.65,
+     "yMax": 0.65,
+     "clearance": 0.02
+    }
+   }
+  },
+  {
+   "name": "two objects too close",
+   "expect": "overlap",
+   "scene": {
+    "format": "teleop-scene",
+    "version": 1,
+    "name": "vectors",
+    "robotProfile": "fr3-duo",
+    "surfaces": [
+     {
+      "id": "bench",
+      "center": [
+       -0.45,
+       0.0,
+       -0.02
+      ],
+      "size": [
+       1.3,
+       1.6,
+       0.04
+      ],
+      "colour": [
+       0.2,
+       0.2,
+       0.2
+      ],
+      "staticFriction": 0.6,
+      "dynamicFriction": 0.5,
+      "collides": true,
+      "headset": "builtin"
+     },
+     {
+      "id": "table",
+      "center": [
+       0.55,
+       0.0,
+       -0.02
+      ],
+      "size": [
+       0.7,
+       1.6,
+       0.04
+      ],
+      "colour": [
+       0.4,
+       0.4,
+       0.4
+      ],
+      "staticFriction": 0.6,
+      "dynamicFriction": 0.5,
+      "collides": true,
+      "headset": "show"
+     }
+    ],
+    "objects": [
+     {
+      "id": 1,
+      "name": "a",
+      "shape": "box",
+      "size": [
+       0.06,
+       0.06,
+       0.3
+      ],
+      "position": [
+       0.5,
+       0.3,
+       0.15
+      ],
+      "rpy": [
+       0,
+       0,
+       0
+      ],
+      "kind": "fixed",
+      "operatorMovable": true,
+      "staticFriction": 0.8,
+      "dynamicFriction": 0.6,
+      "colour": [
+       0.5,
+       0.5,
+       0.5
+      ],
+      "jitter": [
+       0.05,
+       0.05,
+       0.3
+      ]
+     },
+     {
+      "id": 2,
+      "name": "b",
+      "shape": "box",
+      "size": [
+       0.06,
+       0.06,
+       0.3
+      ],
+      "position": [
+       0.52,
+       0.32,
+       0.15
+      ],
+      "rpy": [
+       0,
+       0,
+       0
+      ],
+      "kind": "fixed",
+      "operatorMovable": true,
+      "staticFriction": 0.8,
+      "dynamicFriction": 0.6,
+      "colour": [
+       0.5,
+       0.5,
+       0.5
+      ],
+      "jitter": [
+       0.05,
+       0.05,
+       0.3
+      ]
+     }
+    ],
+    "placement": {
+     "xMin": 0.28,
+     "xMax": 0.85,
+     "yMin": -0.65,
+     "yMax": 0.65,
+     "clearance": 0.02
+    }
+   }
+  }
+ ]
+}

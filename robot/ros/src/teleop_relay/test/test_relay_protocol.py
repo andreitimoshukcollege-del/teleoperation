@@ -133,3 +133,9 @@ def test_sort_datagrams_keeps_every_torque_switch_and_only_the_newest_command_in
 def test_sort_datagrams_with_nothing_valid():
     assert relay_protocol.sort_datagrams([bytes([5, 3, 9]), b""]) == ([], 2)
     assert relay_protocol.sort_datagrams([]) == ([], 0)
+
+
+def test_sort_actions_is_sort_datagrams_after_decoding():
+    assert relay_protocol.sort_actions([("command", [(1, 500.0, 90.0)]), ("torque", True), ("command", [(1, 510.0, 90.0)]),
+                                        ("torque", False)]) == [("torque", True), ("command", [(1, 510.0, 90.0)]), ("torque", False)]
+    assert relay_protocol.sort_actions([]) == []

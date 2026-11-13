@@ -196,6 +196,20 @@ namespace Teleop.RobotHost.Tests.Recording
         }
 
         [Fact]
+        public void AHostWithoutADriver_IsNotToldItsDriverLogIsMissing()
+        {
+            using var rig = new Rig(driverWaitSeconds: 0); // the serial-chain hosts: no driver, so no wait
+            int id = rig.Begin();
+            rig.Recorder.Record("KA|1|1|1000000000");
+            rig.Recorder.EndAuto(id, "no joint command for 30 s");
+
+            string dir = rig.AutoDir();
+            Assert.True(WaitFor(() => File.Exists(Path.Combine(dir, "files.sha256"))), string.Join("\n", rig.Log));
+            JsonNode meta = JsonNode.Parse(File.ReadAllText(Path.Combine(dir, "session.json")))!;
+            Assert.DoesNotContain("END trailer", (string?)meta["notes"] ?? "");
+        }
+
+        [Fact]
         public void ASplit_GivesTwoCompleteSessions_EachWithItsOwnRecords()
         {
             using var rig = new Rig(driverWaitSeconds: 0.2);
@@ -236,6 +250,7 @@ namespace Teleop.RobotHost.Tests.Recording
             rig.Recorder.EndAuto(first, "the joint-command sender changed");
             int second = rig.Begin("10.0.0.5:40000");
             rig.Recorder.Record("JC|4|4|1|1|A|1:0.1:2.5");
+            rig.Recorder.Record("HD|5|0|0|0|0|0|1|80|16|1"); // a hand filter (docs/adr/0029 amendment 7) is not a disturbance
             rig.Recorder.EndAuto(second, "no joint command for 30 s");
 
             string a = rig.AutoDir(), b = rig.AutoDir("20261026T120000Z-auto-2");

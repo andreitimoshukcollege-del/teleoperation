@@ -25,7 +25,21 @@ docs/adr/0024; every decision is `Teleop.RobotArm`'s `TrainingCourse`, this conv
 positions into the scene and gives TeleopXR plain types). `LearnedModels` (a `learned` preset's model,
 docs/adr/0025: reads `persistentDataPath/models/<name>.weights` or `Resources/models/<name>.bytes`; the
 parse and the forward pass are Core's `MlpWeights` and `MlpBackend`).
-`DisplayCalibrationConfig` is the plain data type `ConfigLoader` loads, not an adapter itself.
+`OperatorBridgeBase` (docs/adr/0029 amendment) is what the lab's controls take: both robots' bridges derive from it, so the
+console, the sliders, power and pause, the twin switches, the headset guard and the status lights drive either; it also
+declares the console's view of a joint link (`IOperatorJointLink`) and the twin switches' (`ITwinVisibility`).
+`JetRoverJointStateLink` also feeds the network forecaster (docs/adr/0035 N3; `JetRoverArmConfig.NetworkForecast`, default `persistence`): every forecast is Core's `Forecast/`, issued every 100 ms and passed to the bank. `LinkTraceRecorder` (docs/adr/0035 N1) writes the JetRover link's raw stamps to `persistentDataPath/linktraces` (records by
+Core's `LinkTraceCodec`, trainer/contract/LINK_TRACE_FORMAT.md); it owns only the file.
+`OperatorSideControls` (docs/adr/0034 amendment 5) is what either robot offers beside driving: the world (NEW LAYOUT, moves),
+pointer drags and RECORD, over Core's `JointPortSideChannels`; each bridge makes one and hands it out as
+`OperatorBridgeBase.SideControls`, so the world twin, the pointer and the RECORD buttons take either robot.
+`SerialChainOperatorBridge` and `SerialChainArmRig` (the FR3 Duo's two-hand operator and its twin, docs/adr/0029: every
+decision is `Teleop.RobotArm.Operator`'s `GrabGesture`, `SerialChainTeleop` and `SerialChainJointLink`; these convert the
+hands into the robot's root frame, own the socket and write Transforms). Their resources, `fr3_duo_profile.json`,
+`fr3_duo_collision.json` and `models/fr3-sim-1.bytes`, are copies of generated files that `BridgeResourcesTests` holds to
+`core/RobotProfiles/` and `core/testdata/learned/` (`just import-fr3-profile` refreshes them); `fr3_connection.json` is the
+operator's config. `DisplayCalibrationConfig` and `SerialChainConnectionConfig` are the plain data types `ConfigLoader`
+loads, not adapters themselves.
 
 **Implementations of Core interfaces** — the direction inverts here. Core declares, Unity
 provides: `UnityRobotPlant : IRobotPlant` (not yet built — Phase 4 reuses Core's own

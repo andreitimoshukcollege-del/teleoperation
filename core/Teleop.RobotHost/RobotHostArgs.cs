@@ -51,6 +51,28 @@ namespace Teleop.RobotHost
         public readonly int? JointLocalPort;
 
         /// <summary>
+        /// A world beside the arm (docs/adr/0034 decision 7, J4): the scene file, its first layout's seed (null: from the clock),
+        /// and the Unix datagram socket the Isaac bridge serves the world on (the arm-server wire's world messages).
+        /// </summary>
+        public string? ScenePath { get; init; }
+        public ulong? SceneSeed { get; init; }
+        public string? WorldSocketPath { get; init; }
+        public string? LocalWorldSocketPath { get; init; }
+        public double WorldTimeoutSeconds { get; init; }
+
+        /// <summary>Takes of named scenarios from the headset's RECORD button (docs/adr/0033): the scenarios folder.</summary>
+        public string? ScenariosRoot { get; init; }
+
+        /// <summary>
+        /// A take starts only with this much free disk, and stops below <see cref="ScenarioStopFreeGigabytes"/>
+        /// (docs/adr/0033 amendment 1). Null keeps <c>ScenarioRecorder</c>'s defaults, 25 and 21 GB, sized for the GPU
+        /// machine; the Jetson's disk is smaller.
+        /// </summary>
+        public double? ScenarioStartFreeGigabytes { get; init; }
+
+        public double? ScenarioStopFreeGigabytes { get; init; }
+
+        /// <summary>
         /// Path to a <c>RobotArmProfile</c> JSON file (<c>core/RobotProfiles/*.json</c> convention,
         /// docs/adr/0011-generic-robot-arm-profiles.md) -- null (the default) falls back to
         /// <c>RobotArmProfile.JetRoverMeasuredDefault</c>, a compatibility convenience, not the
@@ -76,6 +98,12 @@ namespace Teleop.RobotHost
         /// default) never impairs. <c>just uplink-impair</c> writes it.
         /// </summary>
         public readonly string? UplinkControlPath;
+
+        /// <summary>
+        /// The network datasets' root (docs/adr/0035 N4): uplink profiles <c>trace:&lt;dataset&gt;/&lt;id&gt;</c> are read from
+        /// <c>&lt;root&gt;/&lt;dataset&gt;/traces/&lt;id&gt;.trace</c> (<see cref="Net.UplinkProfiles"/>). Null: none can be named.
+        /// </summary>
+        public string? UplinkTracesRoot { get; init; }
 
         /// <summary>
         /// The discovery port (docs/adr/0022-robot-discovery.md): RobotHost answers the headset's
@@ -105,11 +133,14 @@ namespace Teleop.RobotHost
             "Usage: Teleop.RobotHost --local-port <port> [--remote-host <ip> --remote-port <port>] " +
             "[--reply-to sender|fixed] --relay-socket <path> --local-relay-socket <path> " +
             "[--max-direction-magnitude <n>] [--pulses-per-second <n>] [--joint-local-port <port>] [--profile-path <path>] " +
-            "[--record-control <path>] [--uplink-control <path>] [--discovery-port <port>]\n" +
+            "[--record-control <path>] [--uplink-control <path>] [--uplink-traces <dir>] [--discovery-port <port>]\n" +
             "  [--auto-record [--auto-record-idle-seconds <s>] [--auto-record-max-minutes <min>] [--auto-record-stop-free-gb <gb>]\n" +
             "   [--auto-record-start-free-gb <gb>] [--auto-record-driver-wait-seconds <s>] [--auto-record-min-split-seconds <s>]\n" +
             "   [--auto-record-headset-seconds <s>]\n" +
-            "   [--auto-record-root <dir>] [--auto-record-profile <path>] [--build-info-robothost <path>] [--build-info-driver <path>]]\n" +
+            "   [--auto-record-root <dir>] [--auto-record-profile <path>] [--auto-record-source robot|isaac] [--auto-record-writer <name:seconds>]...\n" +
+            "   [--build-info-robothost <path>] [--build-info-driver <path>]]\n" +
+            "  [--scene <file> --world-socket <path> [--local-world-socket <path>] [--scene-seed <n>|auto] [--world-timeout <s>]]\n" +
+            "  [--scenarios <dir> [--scenario-start-free-gb <gb>] [--scenario-stop-free-gb <gb>]]\n" +
             "  [--rest-pose-deg <d1,d2,...>] [--park-speed-rad-per-sec <r>] [--park-tolerance-deg <d>] [--park-timeout-seconds <s>]\n" +
             "  [--park-contact-deg <d>]\n" +
             "  --reply-to sender (default) replies to wherever the latest command came from;\n" +
@@ -134,6 +165,8 @@ namespace Teleop.RobotHost
             "  --uplink-control names the uplink control file (docs/adr/0021): while it holds a Core\n" +
             "  network profile and a seed, joint commands reach the plant through that profile. Omit it\n" +
             "  to never impair the uplink.\n" +
+            "  --uplink-traces names the network datasets' root (docs/adr/0035 N4), so an uplink profile or schedule\n" +
+            "  segment may be trace:<dataset>/<id>, that trace replayed by time. Omit it to allow Core profiles only.\n" +
             "  --discovery-port answers the headset's discovery query there with this machine's name and\n" +
             "  LAN addresses (docs/adr/0022). Omit it to not answer.\n" +
             "  --auto-record opens a session whenever the headset commands the robot (docs/adr/0023): only joint\n" +
@@ -192,7 +225,12 @@ namespace Teleop.RobotHost
             int? jointLocalPort = null;
             string? profilePath = null;
             string? recordControlPath = null;
+            string? scenePath = null, worldSocket = null, localWorldSocket = null, scenarios = null;
+            double? scenarioStartFree = null, scenarioStopFree = null;
+            ulong? sceneSeed = null;
+            double worldTimeout = 60;
             string? uplinkControlPath = null;
+            string? uplinkTracesRoot = null;
             int? discoveryPort = null;
             string replyTo = "sender";
             bool autoRecord = false;
@@ -262,6 +300,9 @@ namespace Teleop.RobotHost
                     case "--uplink-control" when i + 1 < args.Length:
                         uplinkControlPath = args[++i];
                         break;
+                    case "--uplink-traces" when i + 1 < args.Length:
+                        uplinkTracesRoot = args[++i];
+                        break;
                     case "--discovery-port" when i + 1 < args.Length:
                         discoveryPort = ParseIntOrNull(args[++i]) ?? -1;
                         break;
@@ -295,6 +336,15 @@ namespace Teleop.RobotHost
                     case "--auto-record-profile" when i + 1 < args.Length:
                         auto.ProfilePath = args[++i];
                         break;
+                    case "--auto-record-writer" when i + 1 < args.Length:
+                        // Another writer of the session to wait for before completing it (the Isaac renderer, docs/adr/0034 J5).
+                        if (WriterWait.TryParse(args[++i], out WriterWait writer, out string writerError)) auto.Writers.Add(writer);
+                        else autoError ??= writerError + ".";
+                        break;
+                    case "--auto-record-source" when i + 1 < args.Length:
+                        // What the robot is: robot (the default), or isaac when the relay is Isaac's (docs/adr/0034 decision 6).
+                        auto.Source = args[++i];
+                        break;
                     case "--build-info-robothost" when i + 1 < args.Length:
                         auto.RobotHostBuildInfoPath = args[++i];
                         break;
@@ -323,6 +373,36 @@ namespace Teleop.RobotHost
                         break;
                     case "--park-timeout-seconds" when i + 1 < args.Length:
                         power.ParkTimeoutSeconds = Number(args[i], args[++i]);
+                        break;
+                    case "--scene" when i + 1 < args.Length:
+                        scenePath = args[++i];
+                        break;
+                    case "--scene-seed" when i + 1 < args.Length:
+                        string seedText = args[++i];
+                        if (seedText != "auto")
+                        {
+                            if (ulong.TryParse(seedText, System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out ulong seed)) sceneSeed = seed;
+                            else autoError ??= $"--scene-seed '{seedText}' is a whole number or auto.";
+                        }
+
+                        break;
+                    case "--world-socket" when i + 1 < args.Length:
+                        worldSocket = args[++i];
+                        break;
+                    case "--local-world-socket" when i + 1 < args.Length:
+                        localWorldSocket = args[++i];
+                        break;
+                    case "--world-timeout" when i + 1 < args.Length:
+                        worldTimeout = Number(args[i], args[++i]);
+                        break;
+                    case "--scenarios" when i + 1 < args.Length:
+                        scenarios = args[++i];
+                        break;
+                    case "--scenario-start-free-gb" when i + 1 < args.Length:
+                        scenarioStartFree = Number(args[i], args[++i]);
+                        break;
+                    case "--scenario-stop-free-gb" when i + 1 < args.Length:
+                        scenarioStopFree = Number(args[i], args[++i]);
                         break;
                 }
             }
@@ -379,6 +459,32 @@ namespace Teleop.RobotHost
                 }
             }
 
+            if (scenePath != null && worldSocket == null)
+            {
+                error = "--scene needs --world-socket (the Isaac bridge's world, docs/adr/0034 decision 7).";
+                return null;
+            }
+
+            if (scenarios != null && !autoRecord)
+            {
+                error = "--scenarios needs --auto-record (a take is completed as an automatic session is).";
+                return null;
+            }
+
+            if ((scenarioStartFree != null || scenarioStopFree != null) && scenarios == null)
+            {
+                error = "--scenario-start-free-gb and --scenario-stop-free-gb need --scenarios.";
+                return null;
+            }
+
+            // ScenarioRecorder's defaults stand in for an omitted one.
+            double startFree = scenarioStartFree ?? 25, stopFree = scenarioStopFree ?? 21;
+            if (!(stopFree >= 0) || !(startFree >= stopFree))
+            {
+                error = $"the scenario free-disk thresholds must be zero or more, start ({startFree} GB) at least stop ({stopFree} GB).";
+                return null;
+            }
+
             string? powerInvalid = power.Validate();
             if (powerInvalid != null)
             {
@@ -390,7 +496,18 @@ namespace Teleop.RobotHost
             return new RobotHostArgs(
                 localPort.Value, remoteHost, remotePort, replyToSender, relaySocketPath, localRelaySocketPath,
                 maxDirectionMagnitude, jointLocalPort, profilePath, pulsesPerSecond, recordControlPath, uplinkControlPath, discoveryPort,
-                autoRecord ? auto : null, power);
+                autoRecord ? auto : null, power)
+            {
+                UplinkTracesRoot = uplinkTracesRoot,
+                ScenePath = scenePath,
+                SceneSeed = sceneSeed,
+                WorldSocketPath = worldSocket,
+                LocalWorldSocketPath = localWorldSocket ?? (worldSocket != null ? worldSocket + ".robothost" : null),
+                WorldTimeoutSeconds = worldTimeout,
+                ScenariosRoot = scenarios,
+                ScenarioStartFreeGigabytes = scenarioStartFree,
+                ScenarioStopFreeGigabytes = scenarioStopFree,
+            };
         }
 
         private static int? ParseIntOrNull(string s) => int.TryParse(s, out int value) ? value : null;

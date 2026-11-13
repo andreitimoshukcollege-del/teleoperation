@@ -227,6 +227,31 @@ Contents:
   - The display's stand and bezel are dynamic, lit by light probes, so they move with it. Its
     position is not saved between sessions.
 
+- **The JetRover in Isaac** (docs/adr/0034 amendment 5): `just isaac-jetrover-host` on the GPU machine stands in for the
+  robot, and `just push-galaxy-config <GPU machine> true false` points the app at it with discovery off, so it never finds
+  the real JetRover instead. `XrJetRoverWorldSetup` (`just unity-world-jetrover-xr`, after the scene file changes) adds what
+  the FR3 scene has, replacing only its own roots:
+  - **The world twin:** `Resources/jetrover_scene.json`'s objects (a byte-identical copy of `core/Scenes/jetrover-bench.json`),
+    at the arm rig's `BaseAnchor`, each shown once Isaac reports it, through the joint link's disturbance and ADDED DELAY.
+    The real robot sends no world, so with it the twin stays empty and NEW LAYOUT reads `waiting for the world`.
+  - **RECORD, DISCARD LAST, < PREV, NEXT > and NEW LAYOUT** on the bench's right wing, behind the training course: they
+    work as in the FR3 scene (RECORD with the robot on or off, NEW LAYOUT only off).
+  - **SIZE − / SIZE +** at the back of that group (docs/adr/0034 amendment 6), robot off: pinch an object with the pointer to
+    choose it, then each press makes it 1.25× smaller or larger, from 0.51× to 5.96× its scene-file size; one that would reach past the table's edge is moved in until it fits. Isaac refuses a size
+    that would reach an arm or another object, or leave the table; the label says the object and its size. The FR3 scene has
+    the same pair behind EDIT OBJECTS.
+  - **The hand pointer** (`Fr3HandPointer`), robot off only: a pinch on a button presses it, on an object drags it, on a
+    display moves it. **A pinch the pointer owns never engages the clutch** (`HandClutchDriver.handPointer`), and the
+    pointer, not the clutch, moves the displays. With the robot on, the pointer is off and the clutch is as described above.
+  - **Two more displays** for Isaac's third-person cameras, `3RD PERSON LEFT (REC)` on the operator's left (6008 → local
+    6015) and `3RD PERSON RIGHT (REC)` above the wrist camera's display (6009 → 6016), at 15 fps. All three displays float
+    and move up and down too. The wrist display keeps the robot camera's feed (6003 → 6004), Isaac's wrist camera here.
+  - `just unity-check-xr` checks the twin's ids, the buttons, the pointer, its displays and the clutch's reference to it,
+    and the feeds' ports. None of these moves the robot.
+- **Link traces** (docs/adr/0035 N1): every run records the JetRover link's raw stamps to the app's `files/linktraces/`
+  (`RecordLinkTrace`, on by default), for training the learned predictor on real networks. `just pull-galaxy-traces`
+  fetches them, `just link-trace-summary` summarises them; in Play mode `just pull-editor-traces`.
+
 **These are safety settings.** `just unity-check-xr` fails, and `just build-galaxy` refuses to
 build, if any of them changes:
 
@@ -273,6 +298,151 @@ What the check cannot see:
 - The base rig also carries locomotion providers (move, turn, teleport, climb, grab-move). All of
   them are driven by controller input actions, so with no controllers they do nothing.
 
+## The FR3 Duo scene (`Fr3DuoXR`, docs/adr/0029)
+
+A second scene for the simulated FR3 Duo, beside the JetRover's lab, which it leaves alone. It is built by
+`XrFr3SceneBuilder` (**Teleop → XR → Build FR3 Duo Scene**, or `just unity-scene-fr3-xr`). Like the lab
+builder, it only creates the scene: `rebuild=true` replaces it, and `bake=true` (the default) bakes its
+lighting.
+
+**The same lab and the same controls as the JetRover's** (docs/adr/0029 amendment):
+- **Built by the same code:** `LabRoom`, `LabDisplay`, `LabLighting`, and `XrControlSetup`'s console,
+  slider, button and switch builders, all through `OperatorBridgeBase`.
+- **The robot stands just ahead of you** (docs/adr/0031 amendment 4): its base 0.4 m into a 0.6 m bench, about 0.5 m from
+  your eye, so you look over its shoulder. The controls are moved out of the arms' way (`XrFr3SceneBuilder.ArrangeControls`):
+  power, pause, the switches and ADDED DELAY on the front-left; the predictor row along the front; the network sliders on
+  the front-right; RECENTRE, NEW LAYOUT and EDIT OBJECTS one behind another on the right wing; the console's panel off the
+  bench's right side; the RECORD group on the left wing behind power.
+- **The FR3 lab has its own mesh library,** `Generated/Fr3LabMeshes.asset` (LFS). A lab build deletes
+  the meshes it did not write, so sharing the JetRover's would delete that robot's.
+- **No arm-speed slider and no training course:** neither applies to the FR3.
+
+**Trying it, from the editor (Direct Preview):**
+
+1. Start the simulated robot on this PC with `just fr3-sim-host`. It listens on the joint port, 6002, and
+   records every session the headset commands into `recordings/fr3-sim/`.
+2. Open `Assets/Scenes/Fr3DuoXR.unity` and press Play. `fr3_connection.json`'s `RemoteHost` is 127.0.0.1,
+   which is this PC, so no push is needed.
+3. **For the APK instead:**
+   - `just build-galaxy-fr3` builds `Builds/TeleopXR-FR3.apk`; installing it replaces the JetRover app.
+   - `just push-galaxy-fr3-config` points the app at this PC's LAN address.
+   - The headset must be on the PC's Wi-Fi.
+
+**Driving it.** Each hand drives its own arm, and the robot is anchored to your body (absolute):
+
+- **Lock an arm on by tapping that hand's thumb on its middle fingertip** (docs/adr/0029 amendment 10), with the index
+  finger apart. The status line says `LOCKED` (and `free · tap thumb to middle finger` while it is not). A touch while
+  the index is on the thumb, as when closing the gripper, never counts. `GrabMode: "toggle"` in the config brings back
+  the double fold of the middle, ring and little fingers; `"hold"` makes the arm follow only while the curl is held.
+  - **While locked:** the arm follows that hand whatever your fingers do. Its position moves by how far
+    the hand moves from where you locked, and the gripper faces the way your palm faces, relative to your
+    body: a flat palm pointing forward points the gripper forward (docs/adr/0029 amendment 9;
+    `HandPosition: "absolute"` in the config instead puts the gripper where the hand is relative to your body).
+  - **Unlocking:** tap again; the arm stays where it is.
+  - **When you lock:** the arm stays where it is and the gripper turns to your palm's orientation over about a
+    second rather than snapping.
+  - **An open hand moves nothing,** its marker included.
+- **While locked, the thumb-index gap is that arm's gripper:** 8 cm or more is open, 1.5 cm or less is
+  closed.
+- **Losing tracking of a locked hand holds the arm** (`LOCKED · hand lost`), and it slides back when the
+  hand returns.
+- **The neutral pose:** hands about 30 cm ahead of your face, 40 cm below it and 20 cm to each side put the
+  grippers 55 cm ahead of and 30 cm above each robot shoulder, pointing forward.
+- **RECENTRE** (blue, the front of the right wing) re-anchors the robot to where you stand and face.
+- **When an arm can't follow where you hold your hand,** after about a third of a second it swings to another pose of the arm
+  that reaches it (docs/adr/0029 amendment 8). A wrist on its limit may turn most of a revolution the other way. It moves at 75%
+  of its joint speeds, through checked poses. Hold still until it gets there. While your hand keeps moving it follows as before.
+  Switching motion on does it too.
+- **Power and pause** are the JetRover's buttons: off at launch, press power to start, and off and paused
+  both stop commanding. Taking the headset off turns it off (`HeadsetRemovalGuard`).
+- **The twin's three arms, as the JetRover's,** each shown or hidden by its switch:
+  - **predicted,** solid, with Franka's visual meshes;
+  - **commanded,** a blue ghost;
+  - **measured,** faint amber.
+
+  The ghosts are low-poly and draw no mount. The display's caption line shows the motion mode and each
+  arm's state and grip; the line above the switches shows the link.
+- **The console** works as in the JetRover's scene: select or toggle predictors, read live error,
+  correction and jitter (the grip column is in % of the opening), and use the LAG/JITTER/LOSS sliders
+  and ADDED DELAY. The headset reports any disturbance or delay to RobotHost, so those sessions are
+  marked and the trainer refuses them.
+
+**The world and the two camera feeds** (docs/adr/0031 amendment 2, docs/adr/0032), built by
+`XrFr3WorldSetup` (`just unity-world-fr3-xr`, after a scene rebuild or a change to the scene file):
+- **The work table and the obstacles** come from the scene file, `Resources/fr3_scene.json`, a byte-identical copy of
+  `core/Scenes/fr3-duo-bench.json`.
+  - **The world twin** (`SerialChainWorldTwin`) poses each obstacle in `onBeforeRender` from the world frames RobotHost sends
+    on the joint link. The frames pass through that link's disturbance and ADDED DELAY, like the arm's state.
+  - **Until the first world frame,** the obstacles are hidden.
+  - **SCENE MISMATCH:** when RobotHost runs another scene file (a different sha256), they stay hidden and the NEW LAYOUT
+    button says so.
+- **The objects are movable in Isaac** (docs/adr/0031 amendment 4): an arm can push or knock them over, and the twin shows
+  them lying where they fell. NEW LAYOUT, EDIT OBJECTS or a pointer click stands one back up.
+- **NEW LAYOUT** (orange, behind RECENTRE) asks RobotHost for the next seeded layout. It works only while the robot is off.
+- **EDIT OBJECTS** (purple, behind NEW LAYOUT; docs/adr/0031 amendment 3) moves objects by hand while the robot is off.
+  - **While it is on**, the arms do not follow the hands.
+  - **Grabbing:** curl a hand and hold it, with the hand's marker (where the gripper would go) by an object, to grab the
+    nearest movable one.
+  - **Dragging:** move the hand to drag it over the table, and turn the hand to turn the object.
+  - **Putting it down:** open the hand. A see-through ghost shows where it goes; the solid object moves when the world
+    frames show the move.
+  - **Refusals:** RobotHost refuses a spot on an arm or another object, and the label says so.
+  - **Turning it off:** press again, or switch the robot on.
+- **Pointing, while the robot is off** (`Fr3HandPointer`, docs/adr/0031 amendment 5): each hand casts a ray from about its
+  shoulder through its pinch point.
+  - **Pinch on a button** to press it, as a fingertip would: any cap a `FingertipPress` watches, power included.
+  - **Pinch on an object** to drag it over the table; let go and RobotHost is asked to put it there (refusals as EDIT
+    OBJECTS). A click on a fallen object stands it up.
+  - **With the robot on** the rays are hidden and pinches drive nothing but the arms; fingertips still press buttons. A ray
+    nearer than 15 cm to what it hits is hidden too.
+- **Scenario recording** (docs/adr/0033), the left wing behind power: `< PREV` / `NEXT >` choose the scenario (NEXT names
+  it), **RECORD** starts a take and reads `STOP ● mm:ss` while recording, **DISCARD LAST** sets the last take aside. They
+  work with the robot on or off, against `just isaac-host` (which passes `--scenarios`); beside `just fr3-sim-host` they
+  say RobotHost records no scenarios.
+- **Four displays** show Isaac's four cameras (docs/adr/0032 amendments 3 and 4), outside the joint link's disturbance:
+  - **`RIGHT WRIST (REC)`,** on the right: the right hand's camera, from port 6003, received locally on 6004.
+  - **`LEFT WRIST (REC)`,** on the left, mirrored: the left hand's, from 6007, received on 6014.
+  - **`3RD PERSON RIGHT (REC)` / `3RD PERSON LEFT (REC)`,** stacked above those two: from 6009 / 6008, received on 6016 /
+    6015, at 15 fps so four feeds cost the decoder about three.
+  - **Movable, while the robot is off:** they float (no floor stands); point at one, pinch and drag it anywhere, up and
+    down too. It keeps facing you. Positions are not saved between launches.
+  - **Where they connect:** each `CameraFeedBridge` asks `fr3_connection`'s `RemoteHost`, which is `just isaac-host`'s
+    renderer. Beside `just fr3-sim-host` there is no renderer, and the strips say NO SIGNAL.
+  - **The log** reports each feed's decode time (`[camera] RIGHT WRIST (REC) ...`).
+- **`just unity-check-fr3-xr`** checks the twin's ids against the file, the table within 1 mm, the buttons, both feeds'
+  ports and wiring (all four), the RECORD group, and the pointer with the four displays it moves. None of these are safety settings: none of them moves the robot.
+
+**Safety settings.** `just unity-check-fr3-xr` fails, and `just build-galaxy-fr3` refuses to build, if
+any of these changes:
+
+| Setting | Value | Because |
+|---|---|---|
+| `SerialChainOperatorBridge.motionEnabledAtStart` | off | nothing moves before someone presses power |
+| `DuoHandDriver` | exactly one, wired, enabled | nothing else drives the arms |
+| `MotionToggleButton` | one Power and one Pause, wired to this bridge, enabled | power is how the robot starts and stops |
+| `HeadsetRemovalGuard` | present, wired, enabled | taking the headset off must stop the robot |
+| Grab engage / release curl | engage below release (1.25 / 1.55) | otherwise the clutch chatters |
+| Gripper pinch range | open > closed | otherwise the gripper is inverted |
+| `PositionScale` / `MaxStepRadians` | (0, 2] / (0, 0.2] | the arm moves no further than twice the hand, and never far between checked poses |
+| Hand smoothing, controllers | inactive, none | as in the JetRover scene |
+| The twin | its tool frames within 1 mm / 0.1° of Core's FK at 25 poses per arm | a twin that is not the robot looks exactly like prediction error |
+
+The check also requires the switches, the console and its sliders to be wired, and no arm-speed slider.
+These are not safety settings, since they move nothing.
+
+**Before the headset: `just fr3-teleop-probe`** runs this scene's link and teleop with scripted hands
+against a running `just fr3-sim-host`, over the real socket. It checks the whole path except the
+hands and Unity: sync, the first command, clutch, IK, collision, sending and the twin's prediction.
+`just unity-preview-fr3-xr` renders the scene from six viewpoints to `%TEMP%\teleop-fr3\`.
+
+**What the check cannot see:**
+- whether the grab and double-curl timings suit your hands on this headset's tracking;
+- whether the neutral pose and the absolute rotation feel right;
+- the frame time on the device with the visual meshes.
+
+All the thresholds, the neutral pose and the timings can be changed without a rebuild: edit
+`unity/Teleop.Bridge/Runtime/Resources/fr3_connection.json`, then `just push-galaxy-fr3-config`.
+
 ## Testing on the Galaxy XR
 
 **Once per headset: developer mode and USB debugging.** The menu names below are from ManageXR's
@@ -302,9 +472,13 @@ and a GPU with Vulkan video encoding (this PC: RTX 4060 Laptop).
 
 **APK** (the headset alone, over Wi-Fi):
 
-1. `just build-galaxy` produces `Builds/TeleopXR.apk`. It runs the scene check first and refuses
-   to build if the check fails.
-2. `just install-galaxy` installs it over USB.
+1. `just build-galaxy` produces `Builds/teleop-jetrover-robot.apk`, **Teleop JetRover Robot** (app id
+   `com.teleop.jetroverxr`). It runs the scene check first and refuses to build if the check fails.
+   `just build-galaxy-sim` builds the same scene as **Teleop JetRover Sim** (`com.teleop.jetroverxr.sim`,
+   `Builds/teleop-jetrover-sim.apk`) for the Isaac JetRover: discovery off, so it never finds the real robot,
+   and the GPU machine's address built in. The two install side by side, each with its own files directory;
+   `push-galaxy-config`, `push-galaxy-model` and `pull-galaxy-traces` take `app=sim` for it.
+2. `just install-galaxy` installs it over USB (`just install-galaxy sim` the sim app).
 3. `just push-galaxy-config` points the app at the robot's current LAN address without a
    rebuild. Use `just push-galaxy-config auto false` the first time you try the controls: the
    virtual arm moves and the real one doesn't. It finds the robot itself (`just robot-ip`); pass an address to override. It pushes a

@@ -26,10 +26,10 @@ namespace Teleop.Core.Types
     /// configuration — legal, but it must say so in its own doc rather than depending on the
     /// emulator's current loop.
     ///
-    /// <b>Deliberately absent:</b> send tick, sequence number, payload length. No impairment shipped
-    /// today reads them, and "no invented knobs" (<c>Types/PredictorConfig.cs</c>'s reasoning)
-    /// applies to struct fields too. Adding one later is source-compatible for every impairment that
-    /// ignores it.
+    /// <b>Deliberately absent:</b> sequence number, payload length. No impairment shipped today reads
+    /// them, and "no invented knobs" (<c>Types/PredictorConfig.cs</c>'s reasoning) applies to struct
+    /// fields too. <see cref="SendTicks"/> was added (docs/adr/0035 N4) for an impairment that replays a
+    /// trace by time; every impairment that ignores it is unchanged.
     /// </summary>
     public struct DatagramFate
     {
@@ -52,5 +52,13 @@ namespace Teleop.Core.Types
         /// <c>ITransport.Send</c>'s "returns false when the datagram will not be delivered" promises.
         /// </summary>
         public bool Dropped;
+
+        /// <summary>
+        /// When the datagram entered the link, on the host's timebase: at the <c>Send</c> stage the send
+        /// tick; at the <c>Deliver</c> stage the tick the wrapped transport handed it over, which over a
+        /// loopback (every emulator this repo builds) is the same send tick. Set by the emulator before
+        /// any impairment runs; read-only to impairments by convention (docs/adr/0035 N4).
+        /// </summary>
+        public long SendTicks;
     }
 }

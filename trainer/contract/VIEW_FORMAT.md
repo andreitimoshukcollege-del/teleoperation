@@ -87,5 +87,6 @@ only.
 - **Downlink.** Each frame goes through the link of the segment active when it was sent, one link
   per segment, seeded from (seed, segment).
 - **Headset.** As `JetRoverJointStateLink`: ticks at about 90 Hz; ClockSync on echo changes with the
-  true arrival; frames decoded before sync never reach the predictor; the hold-back; effective time
+  true arrival (its EWMA in double since 2026-10-31: views made earlier carry the old float32 offset
+  error of a few milliseconds, docs/adr/0008 amendment); frames decoded before sync never reach the predictor; the hold-back; effective time
   = send + RTT/2.

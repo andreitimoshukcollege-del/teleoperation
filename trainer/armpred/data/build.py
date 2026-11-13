@@ -59,6 +59,19 @@ class BuildConfig:
     # `armpred sysid` fits them from recordings (its prior.json).
     sensed_ages_ms: Optional[Tuple[float, ...]] = None
     forecast: ForecastConfig = ForecastConfig()
+    # The window's layout: "v3" (the JetRover's, layout.py) or "v4" (a serial-chain robot's, layout_v4.py).
+    layout: str = "v3"
+
+
+def layout_module(layout: str):
+    """The features module for a layout id (the speed-aware ``-aware`` suffix is v3's)."""
+    if layout.startswith("v3"):
+        return L
+    if layout == "v4":
+        from ..features import layout_v4
+
+        return layout_v4
+    raise ValueError(f"unknown layout {layout!r}")
 
 
 def condition_tags(meta: dict) -> Dict[str, float]:
@@ -76,15 +89,16 @@ def condition_tags(meta: dict) -> Dict[str, float]:
 
 def _one(plan: ViewPlan, cfg: BuildConfig) -> Tuple[Samples, Dict[str, object]]:
     session = load_session(plan.session_dir)
-    profile = load_profile(plan.profile_path) if plan.profile_path else JETROVER
+    layout = layout_module(cfg.layout)
+    profile = None if session.version == 2 else (load_profile(plan.profile_path) if plan.profile_path else JETROVER)
     rng = np.random.default_rng(np.random.PCG64(plan.seed))
     duration = (int(session.reads.t_resp.max()) - int(session.reads.t_req.min())) / session.ticks_per_second
     schedule = parse(plan.schedule) if plan.schedule else random_schedule(duration, rng, cfg.schedules)
     view = synthesize(session, profile, schedule, seed=plan.seed, traces_dir=cfg.traces_dir)
-    prior = headset_joint_config(view.tps, sensed_ages_ms=cfg.sensed_ages_ms) if cfg.sensed_ages_ms else None
+    prior = headset_joint_config(view.tps, sensed_ages_ms=cfg.sensed_ages_ms) if cfg.sensed_ages_ms and layout is L else None
     level = cfg.forecast.pick(plan.seed)
     samples = view_samples(view, rng, cfg.sample, prior_config=prior, aware=cfg.aware, level=level,
-                           forecast_seed=plan.seed ^ 0x5F0CA57)
+                           forecast_seed=plan.seed ^ 0x5F0CA57, layout=layout)
     info = {"session": session.id, "schedule": schedule.describe(), "namedOnly": schedule.only_named,
             "seed": plan.seed, "samples": len(samples), "forecastLevel": level, **condition_tags(session.meta)}
     return samples, info
@@ -121,7 +135,7 @@ def build(plans: Sequence[ViewPlan], cfg: BuildConfig, out_path: str) -> Dict[st
     np.savez(out_path, view=np.concatenate(view_index) if view_index else np.zeros(0, np.int32), **arrays,
              **{f"tag_{k}": v for k, v in tags.items()})
     index = {"views": infos, "samples": int(sum(len(p) for p in parts)), "aware": cfg.aware,
-             "layout": L.layout_id(cfg.aware), "sample": asdict(cfg.sample), "forecast": asdict(cfg.forecast)}
+             "layout": layout_module(cfg.layout).layout_id(cfg.aware), "sample": asdict(cfg.sample), "forecast": asdict(cfg.forecast)}
     with open(os.path.splitext(out_path)[0] + ".json", "w", encoding="utf-8") as f:
         json.dump(index, f, indent=2)
     return index

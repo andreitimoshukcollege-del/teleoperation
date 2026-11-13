@@ -259,6 +259,15 @@ def write_report(summary: dict, path: str, simulated: bool, card: Optional[dict]
     lines += ["| Schedule | " + " | ".join(names) + " |", "|---|" + "---|" * len(names)]
     for sched, stats in summary.get("by_schedule", {}).items():
         lines.append(f"| `{sched}` | " + " | ".join(cell(stats, n) for n in names) + " |")
+    if summary.get("by_tier"):
+        # docs/adr/0035 decision 6: the network datasets' held-out traces, pooled by tier. A model that wins poor and very
+        # bad but loses good is not accepted.
+        lines += ["", "## By network tier: held-out traces (error p95 / correction p95 / jitter p95, degrees)", "",
+                  "| Tier | " + " | ".join(names) + " |", "|---|" + "---|" * len(names)]
+        tri = lambda st, n: (f"{_f(st[n]['joint_prediction_error_deg']['p95'])} / {_f(st[n]['joint_correction_deg']['p95'])} / "  # noqa: E731
+                             f"{_f(st[n]['joint_display_jitter_deg']['p95'], 3)}") if n in st else "—"
+        for tier, stats in summary["by_tier"].items():
+            lines.append(f"| {tier} | " + " | ".join(tri(stats, n) for n in names) + " |")
     lines += ["", "## By condition (error p95, degrees)", "", "| Condition | " + " | ".join(names) + " |", "|---|" + "---|" * len(names)]
     for cond, stats in summary.get("by_condition", {}).items():
         lines.append(f"| {cond} | " + " | ".join(cell(stats, n) for n in names) + " |")

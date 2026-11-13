@@ -24,14 +24,17 @@ namespace Teleop.RobotHost.Recording
     {
         private readonly BlockingCollection<string> _jobs = new BlockingCollection<string>();
         private readonly double _driverWaitSeconds;
+        private readonly IReadOnlyList<WriterWait> _writers;
         private readonly Func<DateTime> _utcNow;
         private readonly Action<string> _log;
         private readonly Thread _thread;
         private int _pending;
 
-        public SessionFinalizer(double driverWaitSeconds, Func<DateTime>? utcNow = null, Action<string>? log = null)
+        public SessionFinalizer(double driverWaitSeconds, Func<DateTime>? utcNow = null, Action<string>? log = null,
+            IReadOnlyList<WriterWait>? writers = null)
         {
             _driverWaitSeconds = driverWaitSeconds;
+            _writers = writers?.ToArray() ?? Array.Empty<WriterWait>();
             _utcNow = utcNow ?? (() => DateTime.UtcNow);
             _log = log ?? Console.WriteLine;
             _thread = new Thread(Run) { IsBackground = true, Name = "session-finalizer" };
@@ -54,7 +57,7 @@ namespace Teleop.RobotHost.Recording
             _thread.Join(timeout);
         }
 
-        public void Dispose() => Dispose(TimeSpan.FromSeconds(_driverWaitSeconds + 30));
+        public void Dispose() => Dispose(TimeSpan.FromSeconds(_driverWaitSeconds + _writers.Sum(w => w.Seconds) + 30));
 
         private void Run()
         {
@@ -62,7 +65,7 @@ namespace Teleop.RobotHost.Recording
             {
                 try
                 {
-                    Complete(directory, _driverWaitSeconds, _utcNow, _log);
+                    Complete(directory, _driverWaitSeconds, _utcNow, _log, _writers);
                 }
                 catch (Exception e)
                 {
@@ -91,9 +94,21 @@ namespace Teleop.RobotHost.Recording
         }
 
         /// <summary>Completes one session directory; see the class summary. Synchronous (tests call it directly).</summary>
-        public static void Complete(string directory, double driverWaitSeconds, Func<DateTime> utcNow, Action<string> log)
+        public static void Complete(string directory, double driverWaitSeconds, Func<DateTime> utcNow, Action<string> log,
+            IReadOnlyList<WriterWait>? writers = null)
         {
-            bool driverClosed = WaitForDriverTrailer(directory, driverWaitSeconds);
+            writers ??= Array.Empty<WriterWait>();
+            bool driverClosed = WaitForTrailer(directory, "driver", driverWaitSeconds);
+            var writerNotes = new List<string>();
+            foreach (WriterWait w in writers)
+            {
+                bool closed = WaitForTrailer(directory, w.Name, w.Seconds);
+                List<string> logs = LogFiles(directory, w.Name).ToList();
+                if (logs.Count == 0) writerNotes.Add($"{w.Name}.jlog is missing: that writer recorded nothing");
+                else if (!closed) writerNotes.Add(FormattableString.Invariant($"{w.Name}.jlog had no END trailer {w.Seconds} s after RobotHost closed the session"));
+                else writerNotes.AddRange(CheckFileLines(directory, logs));
+            }
+
             string metaPath = Path.Combine(directory, "session.json");
             JsonNode meta = JsonNode.Parse(File.ReadAllText(metaPath)) ?? throw new InvalidDataException("session.json is empty");
             meta["stoppedUtc"] = utcNow().ToString("yyyy-MM-dd'T'HH:mm:ss'Z'", CultureInfo.InvariantCulture);
@@ -133,11 +148,16 @@ namespace Teleop.RobotHost.Recording
                 if (headsetDisturbed) notes.Add("the headset's network disturbance or added delay was on during the session (HD records): not a real-network measurement");
             }
 
-            if (!driverClosed)
+            // A wait of 0 with no driver log is a host without a driver (the serial-chain hosts): nothing was missing.
+            bool driverExpected = driverWaitSeconds > 0 || LogFiles(directory, "driver").Any();
+            if (!driverClosed && driverExpected)
             {
                 notes.Add(FormattableString.Invariant($"driver.jlog had no END trailer {driverWaitSeconds} s after RobotHost closed the session"));
                 log($"[record] {Path.GetFileName(directory)}: the driver's log was not closed within {driverWaitSeconds} s; files.sha256 written anyway");
             }
+
+            notes.AddRange(writerNotes);
+            foreach (string note in writerNotes) log($"[record] {Path.GetFileName(directory)}: {note}");
 
             if (notes.Count > 0)
             {
@@ -146,16 +166,30 @@ namespace Teleop.RobotHost.Recording
             }
 
             WriteJsonAtomically(metaPath, meta);
-            WriteChecksums(directory);
+            WriteChecksums(directory, writers.Select(w => w.Name));
             log($"[record] completed {Path.GetFileName(directory)}: slider {conditions["speedSliderRadPerSec"]?.ToJsonString()}, files.sha256 written");
         }
 
-        /// <summary><c>sha256sum</c> format, as record-stop writes it: session.json, robot-profile.json, then every <c>.jlog</c>.</summary>
-        public static void WriteChecksums(string directory)
+        /// <summary>
+        /// <c>sha256sum</c> format, as record-stop writes it: session.json, robot-profile.json, scene.json, every <c>.jlog</c>, then
+        /// every file under each writer's folder (<c>isaac/head.rgb.frames</c>, ...), so <c>sha256sum -c</c> checks them all.
+        /// </summary>
+        public static void WriteChecksums(string directory, IEnumerable<string>? writerFolders = null)
         {
             var names = new List<string> { "session.json" };
             if (File.Exists(Path.Combine(directory, "robot-profile.json"))) names.Add("robot-profile.json");
+            if (File.Exists(Path.Combine(directory, "scene.json"))) names.Add("scene.json");
             names.AddRange(Directory.GetFiles(directory, "*.jlog").Select(Path.GetFileName).Select(n => n!).OrderBy(n => n, StringComparer.Ordinal));
+            foreach (string folder in writerFolders ?? Array.Empty<string>())
+            {
+                string root = Path.Combine(directory, folder);
+                if (!Directory.Exists(root)) continue;
+                names.AddRange(Directory.GetFiles(root, "*", SearchOption.AllDirectories)
+                    .Select(p => Path.GetRelativePath(directory, p).Replace('\\', '/'))
+                    .Where(n => !n.EndsWith(".part", StringComparison.Ordinal))
+                    .OrderBy(n => n, StringComparer.Ordinal));
+            }
+
             var text = new StringBuilder();
             foreach (string name in names)
             {
@@ -175,12 +209,52 @@ namespace Teleop.RobotHost.Recording
             return Directory.GetFiles(directory, writer + "*.jlog").OrderBy(p => p, StringComparer.Ordinal);
         }
 
-        private static bool WaitForDriverTrailer(string directory, double seconds)
+        /// <summary>
+        /// Every <c>FS|name|bytes|sha256</c> line of a writer's logs against the file it names: a problem for each that is missing,
+        /// another size, or another hash. A name must stay inside the session.
+        /// </summary>
+        internal static IEnumerable<string> CheckFileLines(string directory, IEnumerable<string> logs)
+        {
+            string root = Path.GetFullPath(directory) + Path.DirectorySeparatorChar;
+            foreach (string log in logs)
+            {
+                foreach (string line in File.ReadLines(log, Encoding.ASCII))
+                {
+                    if (!line.StartsWith("FS|", StringComparison.Ordinal)) continue;
+                    string[] f = line.Split('|');
+                    if (f.Length != 4 || !long.TryParse(f[2], NumberStyles.None, CultureInfo.InvariantCulture, out long bytes))
+                    {
+                        yield return $"{Path.GetFileName(log)} has a malformed FS line: {line}";
+                        continue;
+                    }
+
+                    string path = Path.GetFullPath(Path.Combine(directory, f[1]));
+                    if (!path.StartsWith(root, StringComparison.Ordinal))
+                    {
+                        yield return $"{Path.GetFileName(log)} names a file outside the session: {f[1]}";
+                        continue;
+                    }
+
+                    if (!File.Exists(path))
+                    {
+                        yield return $"{f[1]} is missing (named by {Path.GetFileName(log)})";
+                        continue;
+                    }
+
+                    long size = new FileInfo(path).Length;
+                    string sha;
+                    using (FileStream stream = File.OpenRead(path)) sha = Convert.ToHexString(SHA256.HashData(stream)).ToLowerInvariant();
+                    if (size != bytes || sha != f[3]) yield return $"{f[1]} is not what {Path.GetFileName(log)} says ({size} bytes, sha256 {sha[..12]})";
+                }
+            }
+        }
+
+        private static bool WaitForTrailer(string directory, string writer, double seconds)
         {
             DateTime deadline = DateTime.UtcNow + TimeSpan.FromSeconds(seconds);
             while (true)
             {
-                var logs = LogFiles(directory, "driver").ToList();
+                var logs = LogFiles(directory, writer).ToList();
                 if (logs.Count > 0 && logs.All(p => LastLine(p).StartsWith("END|", StringComparison.Ordinal))) return true;
                 if (DateTime.UtcNow >= deadline) return false;
                 Thread.Sleep(100);

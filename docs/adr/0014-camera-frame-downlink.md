@@ -294,3 +294,58 @@ The camera's MJPEG sizes, as `just robot-camera-check` lists them on 2026-10-25:
 instead of 32 × 24 cm, and both receivers take frames up to 256 KB with 4 MB socket buffers. Camera
 latency figures recorded before this date were at 640×480.
 
+
+## Amendment 2 (2026-11-02): a sender on another host, several feeds, rendered frames
+
+The simulated FR3 Duo in Isaac Sim streams two rendered cameras to the lab's screens (ADR 0032): the
+head camera, which is also the one recorded, and a third-person view.
+
+1. **A feed is identified by host and port.**
+   - **Where `CameraFeedBridge` gets its address:** either the JetRover's config with discovery, as
+     before, or the FR3 operator's `fr3_connection.json` `RemoteHost`.
+   - **Several feeds use several robot and local port pairs.** The FR3 has head 6003 to local 6004,
+     and third-person 6007 to local 6014.
+   - **§2's subscription is unchanged:** one subscriber per sender port, the newest keepalive wins.
+2. **A sender other than `Teleop.CameraHost` may implement this wire.** Isaac's renderer does, in
+   Python, pinned to the C# codec and sender by a golden file the C# tests write.
+3. **The capture stamp of a rendered frame** is the sensed time of the robot state the frame shows,
+   on the host's CLOCK_MONOTONIC. It is never the render or send time, as §4 requires of a camera's
+   stamp.
+4. **Two feeds double the headset's main-thread decode cost.** The log reports the decode time per
+   feed. Lowering the requested frame rate is the first remedy.
+5. **Recording frames for training** is a consumer other than the display, so it is ADR 0032's, as
+   "Not decided here" requires. Emulated impairment of the video flow stays undecided.
+
+## Amendment 3 (2026-11-12): CameraHost records into sessions
+
+ADR 0036 turns the headset's takes into LeRobot datasets, the real JetRover's included, and a real take holds no camera
+frames today. A second camera client cannot record them: §2 serves one subscriber, so it would take the feed from the
+headset. CameraHost records them itself.
+
+1. **`--record-control <file>`** (the robot's `~/recordings/.active`). CameraHost follows the control file as the
+   driver's `session_log.py` does:
+   - it is polled every 0.5 s;
+   - while it names a session, CameraHost writes `camera.jlog` and `camera/front.rgb.frames` into it;
+   - an existing log is never truncated: after a restart it writes `camera.2.jlog`, with `.2` sidecars.
+2. **The format is the Isaac renderer's** (`trainer/contract/SESSION_FORMAT.md`, "The robot's camera"), so one reader
+   serves both:
+   - a `JSES` header (writer `camera`, CLOCK_MONOTONIC nanoseconds);
+   - `CM` (name `front`, width and height; no intrinsics, since none are calibrated);
+   - one `VF` per frame, whose `stateSensed` is the frame's `captureTicks` (§4: the start of exposure, on RobotHost's
+     clock);
+   - `FD` for a frame not recorded, `FS` per sidecar, and the `END` trailer.
+3. **The frames are the camera's own MJPEG bytes,** recorded unchanged (§3: no encode on the Jetson). That is all of
+   them, at the capture rate.
+   - **Only into takes, by default:** sessions whose `session.json` has a `scenario` (ADR 0033). Another session, such as
+     an automatic one opened whenever the headset drives the arm (ADR 0023 decision 4), gets a `camera.jlog` with no
+     frames. Recording every session would fill the Jetson's disk with video nobody asked for, and then no take could
+     start. RobotHost still finds the writer's trailer. `--record-frames all` records every session.
+   - **A frame with no capture stamp** on CLOCK_MONOTONIC (§4) is not recorded. It gets an `FD` (`unstamped`), since
+     nothing could join it to the joints.
+4. **Recording never slows the stream.** Frames go through a bounded queue to a writer thread. A full queue drops the
+   frame from the recording with an `FD`, never from the stream. The writer stops below a free-disk floor, with an `ER`.
+5. **RobotHost waits for it** (`--auto-record-writer camera:30`, `deploy-robothost`). It checks the `FS` lines and lists
+   `camera/` in `files.sha256`, so `sha256sum -c` covers the frames. The manual `just record-stop` hashes writer folders
+   too.
+6. **Cost:** about 42 KB a frame at 640×360, so about 4.5 GB an hour at 30 fps, on the Jetson until the take is copied
+   off (ADR 0036 decision 7).

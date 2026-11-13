@@ -41,6 +41,41 @@ TEST_SCHEDULES = (
     "synthetic-burst@0",
     "lan@0;150ms-20j-0.5loss@120;lan@300",
 )
+TRACE_TESTS_PER_TIER = 2
+
+
+def trace_test_schedules(datasets_root: str, per_tier: int = TRACE_TESTS_PER_TIER) -> Dict[str, str]:
+    """Test schedules from the network datasets' **held-out** traces (docs/adr/0035 decision 6, N5): ``per_tier`` per tier,
+    each from a different dataset where the tier has several, a trace from its start for the whole view; schedule -> tier.
+    Chosen by a fixed hash of the reference, so they stay put as datasets grow."""
+    import hashlib
+
+    from .net.datasets import index as DI
+
+    with open(os.path.join(datasets_root, "split.json"), encoding="utf-8") as f:
+        side = json.load(f)["traces"]
+    by_tier: Dict[str, Dict[str, List[str]]] = {}
+    for name in DI.datasets_under(datasets_root):
+        doc = DI.load(datasets_root, name)
+        if doc is None:
+            continue
+        for e in doc["traces"]:
+            if side.get(f"{name}/{e['id']}") == "test":
+                by_tier.setdefault(e["tier"], {}).setdefault(name, []).append(e["id"])
+    out: Dict[str, str] = {}
+    for tier in ("good", "poor", "very-bad"):
+        # Round-robin over the tier's datasets, each's held-out ids in a fixed hash order.
+        queues = [[f"{d}/{i}" for i in sorted(ids, key=lambda i: hashlib.sha256(f"{d}/{i}".encode()).hexdigest())]
+                  for d, ids in sorted(by_tier.get(tier, {}).items())]
+        picked = 0
+        while picked < per_tier and any(queues):
+            for q in queues:
+                if q and picked < per_tier:
+                    out[f"trace:{q.pop(0)}@0"] = tier
+                    picked += 1
+    return out
+
+
 # The forecast-quality sweep runs on these (each level re-runs the model, so not on every schedule).
 FORECAST_SWEEP_SCHEDULES = ("lan@0", "150ms-20j-0.5loss@0")
 # A test session's physical uplink, when it has one: named training profiles, switching every 45 s.
@@ -132,20 +167,20 @@ def plan_sim_sessions(m: MatrixConfig, seed: int) -> Dict[str, List[dict]]:
     return out
 
 
-def _uplink_kw(spec: dict, duration_s: float) -> Dict[str, str]:
+def _uplink_kw(spec: dict, duration_s: float, schedules: RandomScheduleConfig = RandomScheduleConfig()) -> Dict[str, str]:
     uplink = spec["uplink"]
     if uplink == "schedule:random":
         rng = np.random.default_rng(np.random.PCG64([spec["seed"], 0x0091]))
-        return {"uplink_profile": "lan", "uplink_schedule": random_uplink_schedule(duration_s, rng).to_json()}
+        return {"uplink_profile": "lan", "uplink_schedule": random_uplink_schedule(duration_s, rng, schedules).to_json()}
     if uplink == "schedule:test":
         return {"uplink_profile": "lan", "uplink_schedule": test_uplink_schedule(duration_s).to_json()}
     return {"uplink_profile": uplink}
 
 
 def _simulate_one(args) -> str:
-    spec, m, ranges, directory = args
+    spec, m, ranges, directory, schedules = args
     params = sample_params(spec["seed"], ranges, duration_s=m.minutes * 60.0, slider=spec["slider"],
-                           **_uplink_kw(spec, m.minutes * 60.0), **_load_kw(spec["load"], m))
+                           **_uplink_kw(spec, m.minutes * 60.0, schedules), **_load_kw(spec["load"], m))
     write_session(simulate_session(params), directory)
     report = check_session_dir(directory, allow_read_gaps=True)
     if not report.ok:
@@ -153,7 +188,10 @@ def _simulate_one(args) -> str:
     return directory
 
 
-def simulate_matrix(m: MatrixConfig, ranges: SimRanges, seed: int, out_dir: str, workers: int = 0, log=print) -> Dict[str, List[str]]:
+def simulate_matrix(m: MatrixConfig, ranges: SimRanges, seed: int, out_dir: str, workers: int = 0, log=print,
+                    schedules: RandomScheduleConfig = RandomScheduleConfig()) -> Dict[str, List[str]]:
+    """``schedules``: the mix a ``schedule:random`` session's physical uplink is drawn from (the run's ``[schedules]``,
+    so a share of network-dataset traces reaches the simulated arm too, docs/adr/0035 N5)."""
     plan = plan_sim_sessions(m, seed)
     jobs, dirs = [], {k: [] for k in plan}
     for split, specs in plan.items():
@@ -162,7 +200,7 @@ def simulate_matrix(m: MatrixConfig, ranges: SimRanges, seed: int, out_dir: str,
             dirs[split].append(d)
             # Reuse a session only if it still passes the check (a failed write is never reused).
             if not (os.path.exists(os.path.join(d, "session.json")) and check_session_dir(d, allow_read_gaps=True).ok):
-                jobs.append((spec, m, ranges, d))
+                jobs.append((spec, m, ranges, d, schedules))
     log(f"simulating {len(jobs)} sessions ({sum(len(v) for v in dirs.values())} planned: "
         f"{len(dirs['train'])} train / {len(dirs['val'])} val / {len(dirs['test'])} test), {m.minutes:g} min each")
     t0 = time.time()

@@ -1,0 +1,51 @@
+# ADR 0035 N5: real-finetune-pilot2 (below) from sim-pretrain-n5, with the same network mix and per-tier tests, on the
+# recorded sessions plus the Isaac sessions the arm lived through on tier traces (N4; source isaac, robot-side impaired).
+#
+# Fine-tuning sim-pretrain-pilot2 on recorded sessions (ADR 0021 step D3), as real-finetune.toml with
+# that run's prior. First used 2026-10-27 with the diagnostic split-heldout-early7:
+#   just gpu-finetune dist/jetrover-data-20261026T211226Z.tar split-heldout-early7 real-finetune-pilot2 \
+#     sim-pretrain-pilot2-69a8261 finetune-pilot2-early7
+# Real sessions are scarce next to simulated ones, so each is replayed through more network views.
+seed = 1
+views_per_session = 16
+val_views = 4
+
+[sample]
+queries_per_s = 20.0
+event_share = 0.25
+pair_share = 0.2
+
+[train]
+arch = "mlp"
+aware = false
+steps = 30000
+batch = 8192
+lr = 5e-4
+lr_min = 1e-5
+warmup = 500
+val_every = 1000
+
+# The prior sim-pretrain-pilot2 was trained with: the model's baseline must be the one it learned to correct.
+[prior]
+file = "configs/priors/pilot2-prior.json"
+
+# docs/adr/0035 N5: the network datasets in the mix. About 30% of segments replay a train-side trace of the network
+# datasets (G.1050, Mahimahi, Puffer, RIPE Atlas, ours: ~/datasets/network on the GPU machine, `just
+# network-datasets-fetch`), its tier drawn evenly (good, poor, very bad), then a dataset evenly (so RIPE Atlas does not
+# crowd the rest out), a trace and an offset; by time, with its losses. The synthetic kinds keep their roles at smaller
+# shares; outages and bursts stay, and the very-bad traces add the real stalls and bursts the 4% outage share lacked
+# (the headset's own Wi-Fi: a stall over 100 ms every 6-10 s on calm evenings, ADR 0035 amendment 1). The same mix
+# drives the simulated sessions' physical uplink (schedule:random).
+[schedules]
+datasets_root = "~/datasets/network"
+share_named = 0.15
+share_parametric = 0.25
+share_added_delay = 0.12
+share_queue = 0.06
+share_outage = 0.04
+share_trace = 0.30
+trace_tier_weights = [1.0, 1.0, 1.0]
+
+# docs/adr/0035 decision 6: two held-out traces of each tier are test schedules too, pooled by tier in the report.
+[evaluate]
+trace_tests_per_tier = 2

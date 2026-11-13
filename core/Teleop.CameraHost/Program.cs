@@ -18,8 +18,11 @@ namespace Teleop.CameraHost
             "Usage:\n" +
             "  Teleop.CameraHost serve [--device auto|/dev/videoN] [--width 640] [--height 360] [--fps 30]\n" +
             "                          [--port 6003] [--subscriber-timeout 3] [--seconds 0]\n" +
+            "                          [--record-control <file> [--record-min-free-gb 2] [--record-frames takes|all]]\n" +
             "      Stream native MJPEG frames to the latest subscriber (docs/adr/0014). --seconds 0 runs\n" +
-            "      until Ctrl+C or SIGTERM. Linux only.\n" +
+            "      until Ctrl+C or SIGTERM. With --record-control (the robot's recordings/.active), also\n" +
+            "      record them into the session it names (docs/adr/0014 amendment 3): only into takes from the\n" +
+            "      headset's RECORD button unless --record-frames all. Linux only.\n" +
             "  Teleop.CameraHost probe --host <robot ip> [--port 6003] [--local-port 6004] [--seconds 10]\n" +
             "                          [--max-fps 0] [--save <path.jpg>]\n" +
             "      Subscribe, reassemble and report what arrives. Exit 0 if a frame arrived, else 1.\n" +
@@ -49,7 +52,9 @@ namespace Teleop.CameraHost
             }
 
             string device = "/dev/video0", host = string.Empty;
-            string? save = null;
+            string? save = null, recordControl = null;
+            double recordMinFree = 2;
+            string recordFrames = "takes";
             // 640x360, not 640x480: the DaBai's 4:3 modes are the middle of its 16:9 sensor (docs/adr/0014, 2026-10-25).
             uint width = 640, height = 360, fps = 30;
             int frames = 150, port = 6003, localPort = 6004, httpPort = 8090;
@@ -82,6 +87,9 @@ namespace Teleop.CameraHost
                     "--seconds" when hasValue => double.TryParse(value, out seconds),
                     "--subscriber-timeout" when hasValue => double.TryParse(value, out subscriberTimeout),
                     "--max-fps" when hasValue => ushort.TryParse(value, out maxFps),
+                    "--record-control" when hasValue => Set(ref recordControl, value),
+                    "--record-frames" when hasValue && (value == "takes" || value == "all") => Set(ref recordFrames, value),
+                    "--record-min-free-gb" when hasValue => double.TryParse(value, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out recordMinFree),
                     _ => false,
                 };
 
@@ -105,7 +113,14 @@ namespace Teleop.CameraHost
             switch (verb)
             {
                 case "serve":
-                    return ServeCommand.Run(device, width, height, fps, port, subscriberTimeout, seconds);
+                    if (!(recordMinFree >= 0))
+                    {
+                        Console.Error.WriteLine("error: --record-min-free-gb must be zero or more.");
+                        return 2;
+                    }
+
+                    return ServeCommand.Run(device, width, height, fps, port, subscriberTimeout, seconds, recordControl, recordMinFree,
+                        recordFrames == "takes");
                 case "probe":
                     if (host.Length == 0 || seconds == 0)
                     {

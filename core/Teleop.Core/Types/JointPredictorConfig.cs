@@ -166,7 +166,9 @@ namespace Teleop.Core.Types
             float servoPipelineDelaySeconds = DefaultServoPipelineDelaySeconds,
             bool servoFirstMoveFromMeasured = DefaultServoFirstMoveFromMeasured,
             float servoStepSeconds = DefaultServoStepSeconds,
-            Contracts.IInferenceBackend? model = null)
+            Contracts.IInferenceBackend? model = null,
+            TrajectoryShaperConfig? shaper = null,
+            LearnedChainLayout? chainLayout = null)
         {
             if (!(servoMaxSpeedRadPerSec > 0f)) throw new System.ArgumentOutOfRangeException(nameof(servoMaxSpeedRadPerSec), "the servo speed must be positive (+infinity is no cap)");
             if (!(servoLagSeconds >= 0f) || float.IsInfinity(servoLagSeconds)) throw new System.ArgumentOutOfRangeException(nameof(servoLagSeconds), "the servo lag must be zero or positive, and finite");
@@ -218,6 +220,8 @@ namespace Teleop.Core.Types
             ServoFirstMoveFromMeasured = servoFirstMoveFromMeasured;
             ServoStepSeconds = servoStepSeconds;
             Model = model;
+            Shaper = shaper;
+            ChainLayout = chainLayout;
         }
 
         /// <summary>
@@ -226,11 +230,37 @@ namespace Teleop.Core.Types
         /// </summary>
         public Contracts.IInferenceBackend? Model { get; }
 
+        /// <summary>
+        /// The robot's trajectory shaper (docs/adr/0027 decision 1), for <c>franka-replay</c>; null for every
+        /// other predictor. The host builds it from the robot's profile, the same one its backend shapes with.
+        /// </summary>
+        public TrajectoryShaperConfig? Shaper { get; }
+
+        /// <summary>
+        /// A serial-chain robot's rows for layout v4 (docs/adr/0028), for <c>learned</c> with an FR3 model; null for the
+        /// JetRover's layout v3. With it, <c>learned</c> needs <see cref="Shaper"/> too: its prior is <c>franka-replay</c>.
+        /// </summary>
+        public LearnedChainLayout? ChainLayout { get; }
+
         /// <summary>This config with <paramref name="model"/> as its <see cref="Model"/>; every other value the same.</summary>
         public JointPredictorConfig WithModel(Contracts.IInferenceBackend? model) =>
             new JointPredictorConfig(MaxJoints, CommandHistoryCapacity, MaxJointSpeedRadPerSec, InstantMotorIds, MaxHorizonTicks,
                 TicksPerSecond, ScaledMotorIds, SpeedScales, RelayMinMoveSeconds, RelayDeadbandRad, RelayMoveSpeedRadPerSec,
                 SensedAgeMotorIds, SensedAgeSeconds, ServoMaxSpeedRadPerSec, ServoLagSeconds, ServoPipelineDelaySeconds,
-                ServoFirstMoveFromMeasured, ServoStepSeconds, model);
+                ServoFirstMoveFromMeasured, ServoStepSeconds, model, Shaper, ChainLayout);
+
+        /// <summary>This config with <paramref name="shaper"/> as its <see cref="Shaper"/>; every other value the same.</summary>
+        public JointPredictorConfig WithShaper(TrajectoryShaperConfig? shaper) =>
+            new JointPredictorConfig(MaxJoints, CommandHistoryCapacity, MaxJointSpeedRadPerSec, InstantMotorIds, MaxHorizonTicks,
+                TicksPerSecond, ScaledMotorIds, SpeedScales, RelayMinMoveSeconds, RelayDeadbandRad, RelayMoveSpeedRadPerSec,
+                SensedAgeMotorIds, SensedAgeSeconds, ServoMaxSpeedRadPerSec, ServoLagSeconds, ServoPipelineDelaySeconds,
+                ServoFirstMoveFromMeasured, ServoStepSeconds, Model, shaper, ChainLayout);
+
+        /// <summary>This config with <paramref name="layout"/> as its <see cref="ChainLayout"/>; every other value the same.</summary>
+        public JointPredictorConfig WithChainLayout(LearnedChainLayout? layout) =>
+            new JointPredictorConfig(MaxJoints, CommandHistoryCapacity, MaxJointSpeedRadPerSec, InstantMotorIds, MaxHorizonTicks,
+                TicksPerSecond, ScaledMotorIds, SpeedScales, RelayMinMoveSeconds, RelayDeadbandRad, RelayMoveSpeedRadPerSec,
+                SensedAgeMotorIds, SensedAgeSeconds, ServoMaxSpeedRadPerSec, ServoLagSeconds, ServoPipelineDelaySeconds,
+                ServoFirstMoveFromMeasured, ServoStepSeconds, Model, Shaper, layout);
     }
 }

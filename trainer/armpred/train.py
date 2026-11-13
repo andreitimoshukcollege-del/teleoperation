@@ -56,6 +56,7 @@ class TrainConfig:
     val_every: int = 2_000
     seed: int = 1
     device: str = "auto"
+    layout: str = "v3"  # "v4": the FR3's (docs/adr/0028)
 
 
 def _device(name: str) -> torch.device:
@@ -145,7 +146,8 @@ def train(train_ds: Dataset, val_ds: Dataset, cfg: TrainConfig, out_dir: str, lo
     torch.manual_seed(cfg.seed)
     rng = np.random.default_rng(cfg.seed)
     device = _device(cfg.device)
-    model = build(cfg.arch, cfg.aware).to(device)
+    model = build(cfg.arch, cfg.aware, cfg.layout).to(device)
+    lay = _layout(cfg.layout)
     if init_state is not None:
         model.load_state_dict(init_state)
     ema = copy.deepcopy(model).eval()
@@ -164,7 +166,7 @@ def train(train_ds: Dataset, val_ds: Dataset, cfg: TrainConfig, out_dir: str, lo
 
     # The checkpoint is chosen on the arm joints alone, as the trainer gate scores them; the gripper (the
     # last row, layout v3) is logged beside it, in servo degrees.
-    val_arm = val_ds.samples.joint < len(L.ARM_MOTORS)
+    val_arm = lay.is_arm_row()[val_ds.samples.joint]
     val_prior = np.abs(val_ds.samples.prior - val_ds.samples.truth) * DEG
     val_prior[~val_ds.samples.valid | ~val_arm] = np.nan
     val_hold = np.abs(val_ds.samples.newest - val_ds.samples.truth) * DEG
@@ -183,7 +185,7 @@ def train(train_ds: Dataset, val_ds: Dataset, cfg: TrainConfig, out_dir: str, lo
         if cfg.forecast_dropout > 0.0:
             drop = torch.rand(arm.shape[0], device=device) < cfg.forecast_dropout
             arm = arm.clone()
-            arm[drop, L.BASE_ARM_FEATURES:L.BASE_ARM_FEATURES + L.NETWORK_FEATURES] = 0.0
+            arm[drop, lay.BASE_ARM_FEATURES:lay.BASE_ARM_FEATURES + lay.NETWORK_FEATURES] = 0.0
         y = model(on(tr["joint"][idx]), arm)
         residual = y[:, 0] - on(tr["target"][idx])
         loss = huber(residual * DEG, torch.zeros_like(residual))
@@ -234,7 +236,13 @@ def train(train_ds: Dataset, val_ds: Dataset, cfg: TrainConfig, out_dir: str, lo
     return summary
 
 
+def _layout(layout: str):
+    from .data.build import layout_module
+
+    return layout_module(layout)
+
+
 def load_best(out_dir: str, cfg: TrainConfig) -> nn.Module:
-    model = build(cfg.arch, cfg.aware)
+    model = build(cfg.arch, cfg.aware, cfg.layout)
     model.load_state_dict(torch.load(os.path.join(out_dir, "checkpoints", "best.pt"), map_location="cpu"))
     return model.eval()

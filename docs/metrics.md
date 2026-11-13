@@ -7,6 +7,9 @@ research project ends up with numbers nobody can interpret six months later.
 Conventions used throughout:
 
 - Time in **milliseconds**, on the synced clock (`Time/ClockSync.cs`). Never a local clock.
+  Cross-clock figures from real cross-machine sessions recorded before 2026-10-31 may be a few
+  milliseconds off: the clock-offset estimate was stuck on a coarse grid (docs/adr/0008
+  amendment). The run's `manifest.json` SHA dates it.
 - Distances in **millimetres**, angles in **degrees**, both in ROS convention (right-handed,
   Z-up, X-forward).
 - Every distribution reported as **p50 / p95 / p99**, never a mean alone. These distributions
@@ -121,6 +124,20 @@ Emitting it therefore needs a wire-format change, not an implementation.
 The second is **derived at analysis time from `owd_uplink_ms` / `owd_downlink_ms`** and is not
 separately emitted — it is a reduction of samples that already exist, and a second emitter for it
 could only disagree with them.
+
+**Live link health (the headset's status line; diagnostics, never results).** When the robot is far away the link's own
+delay, jitter and loss are real, not emulated, so the headset shows them, from the joint-state frames over the last 5 s
+(`Teleop.RobotArm.Operator.LiveLinkMeter`, docs/adr/0034 amendment 8):
+- **ping** — `ClockSync`'s last round trip (ms);
+- **lag** — the median `owd_downlink_ms` of the window: arrival minus the robot's send stamp put on the headset's clock by
+  `ClockSync`; shown only once it has synced;
+- **jitter** — `net_downlink_jitter_ms` exactly as above (RFC 3550 A.8, raw stamps and each side's own tick rate), smoothed
+  over every frame since the stream (re)started;
+- **loss** — `1 − received / (last sequence − first sequence + 1)` over the window's frames: downlink only, and by the
+  sender's sequence numbers rather than the transport-boundary counts below, which the headset cannot see for a remote
+  robot. A duplicate or reordered frame is counted once; a sequence that jumps by over 1000 (a RobotHost restart) restarts
+  the window.
+None of these is recorded; a session's citable network figures are still the recorded `owd_*` and the analysis below.
 
 **Loss rate** — fraction of sent datagrams never received.
 
@@ -477,3 +494,27 @@ Rules specific to these:
 - **The capture stamp is start of exposure.** On the JetRover's camera `camera_capture_to_send_ms`
   is about one frame period (32 ms at 30 fps, 68 ms at 15 fps, measured by
   `just camera-timestamp-spike` on 2026-10-01) before the network is involved at all.
+
+## 10. Simulator against robot
+
+How far a simulated JetRover arm is from the real one (docs/adr/0034 decision 6), measured at the relay seam the simulator
+replaces. A recorded real session's relay targets (`RO` records in `robothost.jlog`: pulse and pulses per second per
+motor) are replayed into the simulator at their recorded times, from the session's first valid reading. The simulator's
+feedback is compared with the relay feedback the session recorded (`RI` records), matched at the recorded readings' times:
+the simulated value at an instant is the newest simulated reading at or before it.
+
+| Metric | Unit | Definition |
+|---|---|---|
+| `sim_tracking_error_deg` | deg | per motor 1–5, `|simulated − recorded|` at each recorded valid reading, in joint degrees (pulse converted as `GenericArmPlant` converts). Reported as p50 and p95 per motor and pooled over motors 1–4, per session and over the replayed set |
+| `sim_settle_error_deg` | deg | the same, only at readings taken at least 0.5 s after the last command that changed that motor's target: how far the simulated arm comes to rest from where the real one did (droop, end stops, contact) |
+
+Rules specific to these:
+
+- **The gripper (motor 10) is not scored.** The real one never reports a position.
+- **Readings the robot marked invalid are skipped,** not interpolated over. A reading's time is when RobotHost took it
+  (`RI`'s `t`), which trails the servo read by up to the relay's period; the simulator's feedback is timed the same way, so
+  the lag cancels to within that period.
+- **A session replayed with fitted parameters is scored on sessions not used to fit them.** The split names its sessions,
+  and the fit and the score are reported together.
+- **Diagnostics of the simulator, not results about latency.** No paper figure is drawn from them except to say how far
+  sim is from real.

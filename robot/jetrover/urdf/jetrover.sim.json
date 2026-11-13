@@ -1,0 +1,89 @@
+{
+  "format": "jetrover-sim",
+  "version": 1,
+  "about": "The sidecar of the Isaac JetRover bridge (docs/adr/0034), written by JetRoverSimModel: angle = (pulse - zeroPulse) / pulsePerRadian - zeroOffsetRadians, as GenericArmPlant converts.",
+  "urdf": "jetrover.urdf",
+  "zeroPulse": 500,
+  "pulsePerRadian": 238.732407,
+  "minPulse": 0,
+  "maxPulse": 1000,
+  "defaultPulsesPerSecond": 2200,
+  "feedbackPeriodSeconds": 0.02,
+  "driverCycleSeconds": 0.02,
+  "readSeconds": 0.0035,
+  "motors": [
+    {
+      "motorId": 1,
+      "joint": "base_yaw",
+      "zeroOffsetRadians": 0,
+      "feedback": true,
+      "stallTorqueNm": 3.4
+    },
+    {
+      "motorId": 2,
+      "joint": "proximal",
+      "zeroOffsetRadians": -0.644948006,
+      "feedback": true,
+      "stallTorqueNm": 3.4
+    },
+    {
+      "motorId": 3,
+      "joint": "distal",
+      "zeroOffsetRadians": 0,
+      "feedback": true,
+      "stallTorqueNm": 3.4
+    },
+    {
+      "motorId": 4,
+      "joint": "wrist",
+      "zeroOffsetRadians": 0,
+      "feedback": true,
+      "stallTorqueNm": 3.4
+    },
+    {
+      "motorId": 5,
+      "joint": "roll",
+      "zeroOffsetRadians": 0,
+      "feedback": true,
+      "stallTorqueNm": 1.5
+    },
+    {
+      "motorId": 10,
+      "joint": "gripper",
+      "zeroOffsetRadians": 0,
+      "feedback": true,
+      "stallTorqueNm": 1.5,
+      "openPulse": 116,
+      "closedPulse": 645,
+      "fingerTravelMeters": 0.016241,
+      "fingerOpenMeters": 0.009781,
+      "fingerTravelByFraction": [
+        -0.009781,
+        -0.009331,
+        -0.00876,
+        -0.008071,
+        -0.007266,
+        -0.00635,
+        -0.005325,
+        -0.004198,
+        -0.002971,
+        -0.001651,
+        -0.000242,
+        0.00125,
+        0.002817,
+        0.004453,
+        0.00615,
+        0.007902,
+        0.0097,
+        0.011536,
+        0.013404,
+        0.015294,
+        0.016241
+      ],
+      "fingers": [
+        "gripper",
+        "gripper_mirror"
+      ]
+    }
+  ]
+}

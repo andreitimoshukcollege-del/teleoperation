@@ -79,10 +79,7 @@ namespace Teleop.RobotHost
             {
                 try
                 {
-                    byte[] bytes = File.ReadAllBytes(a.ScenePath);
-                    scene = System.Text.Json.JsonSerializer.Deserialize<SceneDocument>(bytes, new System.Text.Json.JsonSerializerOptions { IncludeFields = true })!.ToScene();
-                    if (scene.RobotProfile != profile.Name) throw new InvalidDataException($"the scene is for '{scene.RobotProfile}', the profile is '{profile.Name}'");
-                    sceneSha = System.Security.Cryptography.SHA256.HashData(bytes);
+                    scene = HostRecording.LoadScene(a.ScenePath, profile.Name, out sceneSha);
                 }
                 catch (Exception e) when (e is IOException || e is InvalidDataException || e is FormatException || e is System.Text.Json.JsonException || e is UnauthorizedAccessException)
                 {
@@ -90,12 +87,7 @@ namespace Teleop.RobotHost
                     return 1;
                 }
 
-                if (a.AutoRecord != null)
-                {
-                    a.AutoRecord.ScenePath = a.ScenePath;
-                    a.AutoRecord.SceneName = scene.Name;
-                    a.AutoRecord.SceneSeed = sceneSeed;
-                }
+                HostRecording.NoteScene(a.AutoRecord, a.ScenePath, scene, sceneSeed);
             }
 
             var clock = new MonotonicClock();
@@ -166,27 +158,12 @@ namespace Teleop.RobotHost
             Action<byte[], int> sendWorld = (buffer, bytes) => transport.Send(buffer.AsSpan(0, bytes), worldSendTicks);
 
             ulong uplinkSeed = 0;
-            AutoSessionRecorder? auto = null;
-            if (recorder != null && a.AutoRecord != null)
-            {
-                string root = recorder.AutoRoot;
-                Directory.CreateDirectory(root);
-                auto = new AutoSessionRecorder(a.AutoRecord, recorder, clock.TicksPerSecond, () => DateTime.UtcNow,
-                    () => FreeBytes(root), () => new UplinkCondition(uplink.Profile, uplinkSeed), Console.WriteLine);
-                Console.WriteLine($"[record] automatic sessions into {root} while the headset commands ({a.AutoRecord})");
-            }
+            AutoSessionRecorder? auto = HostRecording.StartAuto(a.AutoRecord, recorder, clock.TicksPerSecond,
+                () => new UplinkCondition(uplink.Profile, uplinkSeed), Console.WriteLine);
 
             // Takes of named scenarios from the headset's RECORD button (docs/adr/0033).
-            ScenarioRecorder? scenarios = null;
-            if (recorder != null && a.ScenariosRoot != null)
-            {
-                var folder = new ScenarioFolder(a.ScenariosRoot);
-                folder.EnsureExists();
-                string scenariosRoot = Path.GetFullPath(a.ScenariosRoot);
-                scenarios = new ScenarioRecorder(scenariosRoot, recorder, auto, folder, clock.TicksPerSecond, () => DateTime.UtcNow,
-                    () => FreeBytes(scenariosRoot), () => new UplinkCondition(uplink.Profile, uplinkSeed), Console.WriteLine);
-                Console.WriteLine($"[scenario] the headset's RECORD button records into {scenariosRoot} (the list: {Path.Combine(scenariosRoot, ScenarioList.FileName)})");
-            }
+            ScenarioRecorder? scenarios = HostRecording.StartScenarios(a.ScenariosRoot, null, null, recorder, auto, clock.TicksPerSecond,
+                () => new UplinkCondition(uplink.Profile, uplinkSeed), Console.WriteLine);
 
             long recordSendTicks = 0;
             Action<byte[], int> sendRecord = (buffer, bytes) => transport.Send(buffer.AsSpan(0, bytes), recordSendTicks);
@@ -526,18 +503,6 @@ namespace Teleop.RobotHost
             }
 
             return out_;
-        }
-
-        private static long? FreeBytes(string path)
-        {
-            try
-            {
-                return new DriveInfo(path).AvailableFreeSpace;
-            }
-            catch (Exception e) when (e is IOException || e is UnauthorizedAccessException || e is ArgumentException)
-            {
-                return null;
-            }
         }
     }
 }

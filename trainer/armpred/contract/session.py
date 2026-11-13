@@ -315,6 +315,24 @@ class CourseLabel:
     disturbed: bool
 
 
+OPERATOR_KINDS = ("human", "scripted")
+
+
+def operator_kind(meta: dict) -> str:
+    """Who drove a session, from its session.json: ``human`` (someone in the headset: ``teleop``, or an
+    automatic session a headset opened), ``scripted`` (``joint-drive:<script>``, the arm driving itself:
+    the pilot), or ``unknown``. Scripted data is shaped like teleop at best (the course script), so a
+    fine-tune can train on human data alone once there is enough of it ([real] train_sources)."""
+    conditions = meta.get("conditions", {}) or {}
+    motion = str(conditions.get("motion", ""))
+    operator = str(conditions.get("operator", ""))
+    if motion.startswith("joint-drive") or operator.startswith("joint-drive"):
+        return "scripted"
+    if motion == "teleop" or (motion == "auto" and (operator.startswith("headset") or operator.startswith("auto "))):
+        return "human"
+    return "unknown"
+
+
 def headset_disturbed(session: "Session") -> bool:
     """Whether the headset's network disturbance or added delay was on at any point (an HD record with
     any value on, a NaN lag being a named profile), or session.json says so: not a real-network

@@ -258,6 +258,26 @@ namespace Teleop.RobotArm.Tests.Training
             Assert.Equal(before, GC.GetAllocatedBytesForCurrentThread());
         }
 
+        [Fact]
+        public void TryDraw_DrawsOneRound_WithoutRunningTheCourse_AndTheSameSeedDrawsTheSame()
+        {
+            var a = new TrainingCourse(Profile, Floor);
+            var b = new TrainingCourse(Profile, Floor);
+            Assert.True(a.TryDraw(TrainingTask.Reach, 21));
+            Assert.True(b.TryDraw(TrainingTask.Reach, 21));
+            Assert.False(a.Running);
+            Assert.Equal(TrainingCourse.ReachTargets, a.TargetCount);
+            for (int i = 0; i < a.TargetCount; i++) Assert.Equal(a.Target(i), b.Target(i));
+
+            Assert.True(a.TryDraw(TrainingTask.Trace, 22));
+            Assert.Equal(TrainingCourse.TracePoints, a.PathCount);
+            Assert.True(a.PathLength > 0.1f);
+            Assert.True(a.TryDraw(TrainingTask.Shuttle, 23));
+            Assert.Equal(2, a.TargetCount);
+            Assert.Equal(0, a.PathCount);
+            Assert.False(a.TryDraw(TrainingTask.None, 24));
+        }
+
         private static TrainingCourse Started(uint id)
         {
             var course = new TrainingCourse(Profile, Floor);

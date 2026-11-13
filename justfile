@@ -659,6 +659,16 @@ unity-robot-host host=default_jetrover_host discover="true":
     PY
     done
 
+# The headset's ROBOT OFF from the PC (docs/adr/0023 decision 5): RobotHost parks the arm at its rest pose (jetrover_rest_pose_deg, along its own collision-checked path at its park speed, a few seconds) and then switches torque off, so it rests unpowered. Prints the park's progress; exits non-zero if RobotHost refuses (the reason is printed: a silent servo board, a path that would collide, ...). THE ARM MOVES: someone watching, its workspace clear. Turn the headset off first, or it asks for torque back. Needs a RobotHost with park and relax (just deploy-robothost)
+[group('robot: moves the arm (someone watching)')]
+robot-off remote_host=default_jetrover_host:
+    cd core && dotnet run --project Teleop.Eval -- arm-power --request relax --remote-host $(just _robot-host "{{remote_host}}")
+
+# Torque back on, the arm holding where it is (the counterpart of just robot-off; the headset's ROBOT ON does the same before its first command). Nothing moves, but the servos stiffen: an arm resting on its support stays there
+[group('robot: moves the arm (someone watching)')]
+robot-on remote_host=default_jetrover_host:
+    cd core && dotnet run --project Teleop.Eval -- arm-power --request hold --remote-host $(just _robot-host "{{remote_host}}")
+
 # Move the real JetRover arm to a Cartesian target (wrist frame, meters) and hold, e.g. `just move-arm 0.15 0 0.08` -- requires Teleop.RobotHost running on the Jetson and a human watching the hardware
 [group('robot: moves the arm (someone watching)')]
 move-arm x y z gripper="0" remote_host=default_jetrover_host remote_port="6000" local_port="6001":
@@ -1343,6 +1353,15 @@ robot-disk-cleanup apply="false" remote_host=default_jetrover_host remote_user="
     [ ${#old[@]} -gt 0 ] && rm -rf "${old[@]}"
     echo "--- after: $(df -h / | tail -1 | awk '{print $4 " free of " $2 " (" $5 " used)"}')"
     REMOTE
+
+# How much real data there is, by who drove it: human (the headset: teleop, or an automatic session it opened) or scripted (the pilot's joint-drive sessions), each session's driving minutes, and whether it can train (it passes the check and the headset did not disturb it). Over recordings/jetrover/ here; fetch first (just fetch-recordings)
+[group('robot: recording (docs/adr/0021)')]
+recordings-summary:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cd trainer
+    PY=$([ -f .venv-win/Scripts/python.exe ] && echo .venv-win/Scripts/python.exe || echo .venv/bin/python)
+    "$PY" -m armpred summarize-recordings "../recordings/jetrover/*"
 
 # Which recordings the headset's network disturbance altered (LAG/JITTER/LOSS act on the uplink before the real send, so RobotHost's JC records show the reordering, loss and delay; trainer/armpred/contract/disturbance.py; HD records too, since 2026-10-27), over recordings/jetrover/ here. apply=true sets them aside: moves each into recordings/disturbed/ here and ~/recordings/disturbed/ on the robot (never the session recording now), so nothing fetches, packs or trains on them; nothing is deleted. extra="id1 id2" sets aside sessions too short to judge. Fetch first (just fetch-recordings) so every session is judged
 [group('robot: recording (docs/adr/0021)')]
@@ -4075,7 +4094,7 @@ record-drive label script speed *options:
             *) pass+=("$opt") ;;
         esac
     done
-    case "{{script}}" in waypoints|steps) ;; *) echo "error: script must be waypoints or steps" >&2; exit 1 ;; esac
+    case "{{script}}" in waypoints|steps|course) ;; *) echo "error: script must be waypoints, steps or course" >&2; exit 1 ;; esac
     host=$(just _robot-host "$remote_host")
     target="$remote_user@$host"
     # Built before the session opens, so the recording does not start with a compile.
@@ -4142,21 +4161,32 @@ deploy-joint-drive remote_host=default_jetrover_host remote_user="jetson":
         echo \"jointdrive_current -> $remote_dir: \$(cat ~/jointdrive_current/BUILD_INFO)\" && \
         ~/.dotnet/dotnet ~/jointdrive_current/Teleop.Eval.dll joint-drive --script steps --speed 1 --seconds 10 --dry-run | tail -1"
 
-# Record a plan's drive sessions on the robot itself, so the laptop can close (moves the arm; someone watches it the WHOLE time): copies robot/pilot (and the robot profile record-start uses) to the Jetson and starts robot/pilot/onboard.py there, detached. It runs every drive: session back to back, joint-drive talking to RobotHost over loopback (so no Wi-Fi in these sessions; their notes say so), rests rest_s between sessions, stops below 11.0 V and after any session that ends early. Teleop sessions need the laptop: just pilot only=teleop. Stop: just pilot-stop from any machine, or the robot's power switch. Watch: just pilot-status. Needs just deploy-joint-drive first. Options as key=value: plan=<file>, from=<label>, rest_s (60), start_delay_s (30), remote_host
+# Record a plan's drive sessions on the robot itself, so the laptop can close (moves the arm; someone watches it the WHOLE time). The plan is robot/pilot/pilot-v2.txt, the course pilot, unless plan= says otherwise; every run draws new moves (variant=, from its start time); joint-drive switches torque on first and frees an arm resting on its support; after a clean run the arm parks and relaxes (relax=false: it holds). Copies robot/pilot (and the robot profile record-start uses) to the Jetson and starts robot/pilot/onboard.py there, detached. It runs every drive: session back to back, joint-drive talking to RobotHost over loopback (so no Wi-Fi in these sessions; their notes say so), rests rest_s between sessions, stops below 11.0 V and after any session that ends early. Teleop sessions need the laptop: just pilot only=teleop. Stop: just pilot-stop from any machine, or the robot's power switch. Watch: just pilot-status. Needs just deploy-joint-drive first. Options as key=value: plan=<file>, from=<label>, rest_s (60), start_delay_s (30), remote_host
 [group('robot: recording (docs/adr/0021)')]
 [positional-arguments]
 pilot-on-robot *options:
     #!/usr/bin/env bash
     set -euo pipefail
-    plan=robot/pilot/pilot-v1.txt from="" rest_s=60 start_delay_s=30 remote_host="{{default_jetrover_host}}"
+    # variant: mixed into every drive session's seed, so each run draws new moves; a new one every run
+    # (its start time) unless given, and variant=<one from a session's notes> repeats that run.
+    # The course pilot by default (2026-10-28); plan=robot/pilot/pilot-v1.txt is the pilot hour's drives.
+    # relax=false leaves the arm holding at the end instead of parking it and switching torque off.
+    plan=robot/pilot/pilot-v2.txt from="" rest_s=60 start_delay_s=30 remote_host="{{default_jetrover_host}}" variant="$(date -u +%Y%m%dT%H%M%SZ)" relax=true
     for opt in "$@"; do
         case "$opt" in
-            plan=*|from=*|rest_s=*|start_delay_s=*|remote_host=*) printf -v "${opt%%=*}" '%s' "${opt#*=}" ;;
-            *) echo "error: unknown option '$opt' (plan= from= rest_s= start_delay_s= remote_host=)" >&2; exit 1 ;;
+            plan=*|from=*|rest_s=*|start_delay_s=*|remote_host=*|variant=*|relax=*) printf -v "${opt%%=*}" '%s' "${opt#*=}" ;;
+            *) echo "error: unknown option '$opt' (plan= from= rest_s= start_delay_s= remote_host= variant= relax=)" >&2; exit 1 ;;
         esac
     done
+    case "$relax" in true) relax_arg="" ;; false) relax_arg="--no-relax" ;; *) echo "error: relax must be true or false" >&2; exit 1 ;; esac
+    case "$variant" in *[!A-Za-z0-9._-]*|"") echo "error: variant must be letters, digits, . _ or -" >&2; exit 1 ;; esac
+    echo "pilot variant $variant (every session's moves are new; variant=$variant repeats them)"
     host=$(just _robot-host "$remote_host")
     target="jetson@$host"
+    # Fail fast when the robot is off or off the network, instead of waiting for TCP's own timeout.
+    if ! ssh -o ConnectTimeout=10 -o BatchMode=yes "$target" true 2>/dev/null; then
+        echo "error: the robot does not answer at $host (is it on, and on the network? just robot-ip): nothing was started" >&2; exit 1
+    fi
     built=$(ssh "$target" 'cat ~/jointdrive_current/BUILD_INFO 2>/dev/null' || true)
     [ -n "$built" ] || { echo "error: joint-drive is not on the robot: just deploy-joint-drive" >&2; exit 1; }
     case "$built" in *"$(git rev-parse HEAD)"*) ;; *) echo "warning: the robot's joint-drive ($built) is not this checkout's $(git rev-parse --short HEAD): just deploy-joint-drive to update it" >&2 ;; esac
@@ -4167,7 +4197,7 @@ pilot-on-robot *options:
     ssh "$target" "mkdir -p ~/$dest ~/recordings && rm -f ~/recordings/.pilot-stop"
     scp -q robot/pilot/pilot.py robot/pilot/onboard.py "$plan" core/RobotProfiles/jetrover.json "$target:$dest/"
     ssh "$target" "cd ~/$dest && setsid nohup python3 -u onboard.py '$(basename "$plan")' --profile jetrover.json --from '$from' \
-        --rest '$rest_s' --start-delay '$start_delay_s' > ~/recordings/pilot-onboard.log 2>&1 < /dev/null & echo \$! > ~/recordings/.pilot-onboard.pid"
+        --rest '$rest_s' --start-delay '$start_delay_s' --variant '$variant' $relax_arg > ~/recordings/pilot-onboard.log 2>&1 < /dev/null & echo \$! > ~/recordings/.pilot-onboard.pid"
     sleep 3
     ssh "$target" 'cat ~/recordings/pilot-onboard.log'
     echo

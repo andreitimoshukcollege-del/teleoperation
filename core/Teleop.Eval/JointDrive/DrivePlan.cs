@@ -14,6 +14,13 @@ namespace Teleop.Eval.JointDrive
 
         /// <summary>One joint at a time jumps and holds, so the relay moves it at the requested speed: what <c>armpred sysid</c> needs to see the servo's speed limit and lag.</summary>
         Steps,
+
+        /// <summary>
+        /// The headset's training course driven by the robot itself (<see cref="CourseScript"/>): REACH,
+        /// TRACE and SHUTTLE rounds on the course's own targets, solved by the headset's IK, at the
+        /// course's speed levels, with the gripper opened and closed. Scripted data shaped like teleop.
+        /// </summary>
+        Course,
     }
 
     /// <summary>
@@ -108,7 +115,17 @@ namespace Teleop.Eval.JointDrive
         public readonly ArmPose To;
         public readonly LegPhase Phase;
 
-        public DriveLeg(double start, double duration, double hold, ArmPose from, ArmPose to, LegPhase phase)
+        /// <summary>The speed the commands ask for during this leg, rad/s; NaN for the plan's own.</summary>
+        public readonly float Speed;
+
+        /// <summary>The gripper fraction at the leg's start and end (ramped between); NaN holds it as reported.</summary>
+        public readonly float GripperFrom, GripperTo;
+
+        /// <summary>A constant-speed leg (a trace's segment) instead of a minimum-jerk one.</summary>
+        public readonly bool Linear;
+
+        public DriveLeg(double start, double duration, double hold, ArmPose from, ArmPose to, LegPhase phase,
+            float speed = float.NaN, float gripperFrom = float.NaN, float gripperTo = float.NaN, bool linear = false)
         {
             Start = start;
             Duration = duration;
@@ -116,6 +133,10 @@ namespace Teleop.Eval.JointDrive
             From = from;
             To = to;
             Phase = phase;
+            Speed = speed;
+            GripperFrom = gripperFrom;
+            GripperTo = gripperTo;
+            Linear = linear;
         }
 
         public double End => Start + Duration + Hold;
@@ -199,24 +220,38 @@ namespace Teleop.Eval.JointDrive
             double t = 0;
             if (start.MaxJointDelta(home) > 0.01f)
             {
-                if (!PathValid(profile, model, null, start, home))
+                if (!TryApproach(profile, model, start, home, out List<(ArmPose To, bool Step)> via, out error))
                 {
-                    error = $"the straight path from the arm's measured pose ({Describe(start)}) to home ({Describe(home)}) " +
-                            "is not collision-free by the model, so nothing was sent. Move the arm to a clear pose first " +
-                            "(just move-arm 0.15 0 0.08), then run again";
                     return false;
                 }
 
-                double d = SmoothDuration(start.MaxJointDelta(home), ApproachSpeedRadPerSec);
-                legs.Add(new DriveLeg(t, d, 1.0, start, home, LegPhase.Approach));
-                t += d + 1.0;
+                ArmPose from = start;
+                for (int i = 0; i < via.Count; i++)
+                {
+                    (ArmPose to, bool step) = via[i];
+                    float delta = from.MaxJointDelta(to);
+                    // A step is commanded at once and the relay moves it at the approach speed: wait for it.
+                    double d = step ? 0 : SmoothDuration(delta, ApproachSpeedRadPerSec);
+                    double hold = step ? delta / ApproachSpeedRadPerSec + 0.5 : i == via.Count - 1 ? 1.0 : 0.3;
+                    legs.Add(new DriveLeg(t, d, hold, from, to, LegPhase.Approach, ApproachSpeedRadPerSec));
+                    t += d + hold;
+                    from = to;
+                }
             }
 
             var rng = new SeededRng(seed);
             ArmPose current = home;
             double end = t + seconds;
             int stepJoint = 0;
-            while (t < end)
+            if (script == DriveScript.Course)
+            {
+                if (!CourseScript.Append(profile, model, envelope, ref current, ref t, end, ref rng, legs, out error))
+                {
+                    return false;
+                }
+            }
+
+            while (script != DriveScript.Course && t < end)
             {
                 DriveLeg leg;
                 string? why = script == DriveScript.Waypoints
@@ -259,8 +294,25 @@ namespace Teleop.Eval.JointDrive
             if (into <= 0) return leg.From;
             if (leg.Duration <= 0 || into >= leg.Duration) return leg.To;
             double u = into / leg.Duration;
-            double s = u * u * u * (10 - u * (15 - 6 * u));
+            double s = leg.Linear ? u : u * u * u * (10 - u * (15 - 6 * u));
             return ArmPose.Lerp(leg.From, leg.To, (float)s);
+        }
+
+        /// <summary>The speed the commands ask for at <paramref name="t"/>: the leg's, else the plan's.</summary>
+        public float SpeedAt(double t)
+        {
+            float s = LegAt(t).Speed;
+            return float.IsNaN(s) ? SpeedRadPerSec : s;
+        }
+
+        /// <summary>The gripper fraction to command at <paramref name="t"/>, ramped over the leg; NaN to hold it as reported.</summary>
+        public float GripperAt(double t)
+        {
+            DriveLeg leg = LegAt(t);
+            if (float.IsNaN(leg.GripperTo)) return float.NaN;
+            if (float.IsNaN(leg.GripperFrom) || leg.Duration <= 0) return leg.GripperTo;
+            double u = Math.Min(1.0, Math.Max(0.0, (t - leg.Start) / Math.Max(leg.Duration, CourseScript.GripperRampSeconds)));
+            return (float)(leg.GripperFrom + (leg.GripperTo - leg.GripperFrom) * u);
         }
 
         /// <summary>The leg in force at <paramref name="t"/>.</summary>
@@ -268,6 +320,117 @@ namespace Teleop.Eval.JointDrive
         {
             Sample(t);
             return _legs[_cursor];
+        }
+
+        /// <summary>The largest single-joint move tried to lift a resting arm clear of its support, degrees.</summary>
+        public const float MaxEscapeDegrees = 20f;
+
+        /// <summary>
+        /// How to get from the arm's measured pose to home, collision-free by the model: straight when
+        /// that is clear, else one joint at a time in the first order whose every leg is clear. An arm that
+        /// rests on something (sagged onto its support with its torque off, or parked) first makes the
+        /// smallest single-joint move, up to <see cref="MaxEscapeDegrees"/>, that frees it, with only the
+        /// contacts the resting pose already has allowed on the way (<see cref="ArmContacts"/>); that move
+        /// is a step (<c>Step</c>), commanded at once, since RobotHost refuses a commanded pose that collides.
+        /// </summary>
+        public static bool TryApproach(in RobotArmProfile profile, ArmCollisionModel model, in ArmPose start, in ArmPose home,
+            out List<(ArmPose To, bool Step)> via, out string? error)
+        {
+            via = new List<(ArmPose, bool)>();
+            error = null;
+            if (ArmCollision.IsValid(profile, model, start))
+            {
+                if (TryReach(profile, model, start, home, via)) return true;
+                error = $"no collision-free path from the arm's measured pose ({Describe(start)}) to home ({Describe(home)}), " +
+                        "straight or one joint at a time, so nothing was sent. Move the arm to a clear pose first " +
+                        "(just move-arm 0.15 0 0.08), then run again";
+                return false;
+            }
+
+            ArmCollisionModel? allowed = ArmContacts.AllowPoseContacts(profile, model, start, out string contacts);
+            if (allowed == null)
+            {
+                error = $"the arm's measured pose ({Describe(start)}) collides by the model ({contacts}), and not only by resting on " +
+                        "something, so nothing was sent. Move the arm to a clear pose first (just move-arm 0.15 0 0.08), then run again";
+                return false;
+            }
+
+            int[] order = { 1, 2, 3, 0, 4 }; // lift with the shoulder and elbow first, as a person would
+            for (int deg = 3; deg <= MaxEscapeDegrees; deg++)
+            {
+                foreach (int j in order)
+                {
+                    foreach (float sign in new[] { 1f, -1f })
+                    {
+                        ArmPose free = WithJoint(start, j, Joint(start, j) + sign * deg * MathF.PI / 180f);
+                        if (!ArmCollision.IsValid(profile, model, free) || !PathValid(profile, allowed, null, start, free)) continue;
+                        var rest = new List<(ArmPose, bool)>();
+                        if (!TryReach(profile, model, free, home, rest)) continue;
+                        via.Add((free, true));
+                        via.AddRange(rest);
+                        return true;
+                    }
+                }
+            }
+
+            error = $"the arm rests on something ({contacts}) at {Describe(start)}, and no single-joint move of up to " +
+                    $"{MaxEscapeDegrees:0}° frees it on a path to home, so nothing was sent. Lift it clear first (just move-arm 0.15 0 0.08)";
+            return false;
+        }
+
+        private static bool TryReach(in RobotArmProfile profile, ArmCollisionModel model, in ArmPose from, in ArmPose home, List<(ArmPose, bool)> via)
+        {
+            if (PathValid(profile, model, null, from, home))
+            {
+                via.Add((home, false));
+                return true;
+            }
+
+            var differ = new List<int>();
+            for (int j = 0; j < DriveEnvelope.JointCount; j++) if (MathF.Abs(Joint(from, j) - Joint(home, j)) > 0.01f) differ.Add(j);
+            foreach (int[] perm in Permutations(differ.ToArray()))
+            {
+                var legs = new List<(ArmPose, bool)>();
+                ArmPose p = from;
+                bool ok = true;
+                foreach (int j in perm)
+                {
+                    ArmPose next = WithJoint(p, j, Joint(home, j));
+                    if (!PathValid(profile, model, null, p, next)) { ok = false; break; }
+                    legs.Add((next, false));
+                    p = next;
+                }
+
+                if (ok)
+                {
+                    via.AddRange(legs);
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        private static IEnumerable<int[]> Permutations(int[] items)
+        {
+            if (items.Length <= 1)
+            {
+                yield return items;
+                yield break;
+            }
+
+            for (int i = 0; i < items.Length; i++)
+            {
+                int[] others = new int[items.Length - 1];
+                for (int k = 0, o = 0; k < items.Length; k++) if (k != i) others[o++] = items[k];
+                foreach (int[] rest in Permutations(others))
+                {
+                    var p = new int[items.Length];
+                    p[0] = items[i];
+                    Array.Copy(rest, 0, p, 1, rest.Length);
+                    yield return p;
+                }
+            }
         }
 
         /// <summary>Whether every pose on the straight joint-space path is free (and, with an envelope, inside it).</summary>
@@ -306,7 +469,7 @@ namespace Teleop.Eval.JointDrive
 
         private static double Deg(float radians) => radians * 180.0 / Math.PI;
 
-        private static double SmoothDuration(float distance, float peakSpeed) => Math.Max(0.3, MinJerkPeak * distance / peakSpeed);
+        internal static double SmoothDuration(float distance, float peakSpeed) => Math.Max(0.3, MinJerkPeak * distance / peakSpeed);
 
         /// <summary>
         /// A smooth move to a random pose: usually near the current one (each joint up to ±0.6 rad

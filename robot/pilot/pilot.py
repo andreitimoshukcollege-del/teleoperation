@@ -35,6 +35,24 @@ class Session:
     prompt: str
 
 
+def drive_speed(session) -> str:
+    """joint-drive's --speed for a drive session: its slider, or for the course script (which sets its own
+    levels, 1.0-6.0 rad/s) the slider's top, which it caps every move at."""
+    return "6" if session.slider == "varied" else session.slider
+
+
+def drive_seed(session, variant: str = "") -> str:
+    """joint-drive's --seed. A course session's comes from its label, so each draws its own rounds; with a
+    variant (just pilot-on-robot makes a new one every run) every drive session's comes from its label and
+    the variant, so each run draws new moves. Reproducible either way: the same label and variant give
+    the same seed. Without a variant the other scripts keep joint-drive's default, as before."""
+    import zlib
+
+    if variant:
+        return str(zlib.crc32((session.label + "|" + variant).encode("utf-8")) + 1)
+    return str(zlib.crc32(session.label.encode("utf-8")) + 1) if session.motion == "drive:course" else "1"
+
+
 def read_plan(path: str) -> List[Session]:
     sessions = []
     with open(path, encoding="utf-8") as f:
@@ -46,8 +64,8 @@ def read_plan(path: str) -> List[Session]:
             if len(fields) != 6:
                 sys.exit(f"{path}:{number}: expected 6 |-separated fields, got {len(fields)}")
             label, slider, minutes, motion, options, prompt = fields
-            if motion not in ("teleop", "drive:waypoints", "drive:steps"):
-                sys.exit(f"{path}:{number}: motion must be teleop, drive:waypoints or drive:steps, got '{motion}'")
+            if motion not in ("teleop", "drive:waypoints", "drive:steps", "drive:course"):
+                sys.exit(f"{path}:{number}: motion must be teleop, drive:waypoints, drive:steps or drive:course, got '{motion}'")
             float(minutes)
             if slider != "varied":
                 float(slider)
@@ -156,7 +174,7 @@ def main() -> int:
             status = just("record-stop", host)
         else:
             script = s.motion.split(":", 1)[1]
-            status = just("record-drive", s.label, script, s.slider, f"seconds={s.minutes * 60:.0f}", f"remote_host={host}", *s.options)
+            status = just("record-drive", s.label, script, drive_speed(s), f"seed={drive_seed(s)}", f"seconds={s.minutes * 60:.0f}", f"remote_host={host}", *s.options)
             if status != 0:
                 print(f"  record-drive exited {status}: the drive stopped early or the recording failed (read above). "
                       "A session cut short is still recorded and checked.")

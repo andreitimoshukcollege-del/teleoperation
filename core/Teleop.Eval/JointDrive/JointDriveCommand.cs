@@ -52,7 +52,7 @@ namespace Teleop.Eval.JointDrive
         private const int MaxDatagramBytes = Teleop.RobotArm.Wire.JointDatagram.MaxBytes;
 
         private const string Usage =
-            "usage: joint-drive --script waypoints|steps --speed <rad/s> [--seconds 300] [--seed 1] [--margin-deg 15] [--rate-hz 48]\n" +
+            "usage: joint-drive --script waypoints|steps|course --speed <rad/s> [--seconds 300] [--seed 1] [--margin-deg 15] [--rate-hz 48]\n" +
             "                   (--dry-run | --remote-host <ip> [--remote-port 6002] --confirm-hardware-motion)\n" +
             "                   [--operator-log <path> [--session-id <id>]] [--stop-file <path>]";
 
@@ -76,7 +76,8 @@ namespace Teleop.Eval.JointDrive
                         case "--script":
                             string name = Next();
                             script = name == "waypoints" ? DriveScript.Waypoints : name == "steps" ? DriveScript.Steps
-                                : throw new ArgumentException($"unknown script '{name}' (waypoints or steps)");
+                                : name == "course" ? DriveScript.Course
+                                : throw new ArgumentException($"unknown script '{name}' (waypoints, steps or course)");
                             break;
                         case "--speed": speed = (float)Number(); break;
                         case "--seconds": seconds = Number(); break;
@@ -135,7 +136,21 @@ namespace Teleop.Eval.JointDrive
                 return 130;
             }
 
-            return Drive(script.Value, profile, envelope, speed, seconds, seed, rateHz, new IPEndPoint(address, port), logPath, sessionId ?? "joint-drive", stopFile);
+            // Torque on first (docs/adr/0023 decision 5): a relaxed arm ignores every command, and a parked
+            // one would stay parked. The arm stiffens where it rests; nothing moves.
+            var robotEndPoint = new IPEndPoint(address, port);
+            if (ArmPower.ArmPowerCommand.Request(robotEndPoint, ArmPowerRequest.Hold, 10, out bool answered) != 0)
+            {
+                if (answered)
+                {
+                    Console.Error.WriteLine("joint-drive: RobotHost did not switch torque on (above); nothing was sent");
+                    return 1;
+                }
+
+                Console.WriteLine("[joint-drive] RobotHost reports no arm power (older than park and relax): driving without asking for torque");
+            }
+
+            return Drive(script.Value, profile, envelope, speed, seconds, seed, rateHz, robotEndPoint, logPath, sessionId ?? "joint-drive", stopFile);
         }
 
         private static void PrintEnvelope(in DriveEnvelope envelope, double marginDeg)
@@ -306,10 +321,13 @@ namespace Teleop.Eval.JointDrive
             double maxError = 0;
             DriveFault fault = DriveFault.None;
             float gripper = link.Gripper;
+            // What each command carries: the plan's leg speed and gripper (the course script sets both),
+            // else the session's speed and the gripper as the stream reported it.
+            float sendSpeed = speed, sendGripper = gripper;
 
             void Send(long now, in ArmPose pose)
             {
-                int count = Targets(profile, pose, gripper, speed, targets);
+                int count = Targets(profile, pose, sendGripper, sendSpeed, targets);
                 if (JointCommandCodec.TryEncode(sequence, now, targets.AsSpan(0, count), datagram, out int written))
                 {
                     socket.SendTo(datagram, 0, written, SocketFlags.None, robot);
@@ -350,6 +368,9 @@ namespace Teleop.Eval.JointDrive
                 if (now >= nextSend)
                 {
                     commanded = plan.Sample(planTime);
+                    sendSpeed = plan.SpeedAt(planTime);
+                    float plannedGripper = plan.GripperAt(planTime);
+                    sendGripper = float.IsNaN(plannedGripper) ? gripper : plannedGripper;
                     Send(now, commanded);
                     nextSend += interval;
                     if (nextSend < now) nextSend = now + interval;

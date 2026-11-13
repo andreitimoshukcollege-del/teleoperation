@@ -47,6 +47,8 @@ namespace Teleop.Eval
                     return JointBench.HeadsetReplayCommand.Run(args);
                 case "joint-probe":
                     return JointProbe.JointProbeCommand.Run(args);
+                case "arm-power":
+                    return ArmPower.ArmPowerCommand.Run(args);
                 case "joint-drive":
                     return JointDrive.JointDriveCommand.Run(args);
                 case "chain-drive":
@@ -69,7 +71,7 @@ namespace Teleop.Eval
                 default:
                     Console.Error.WriteLine(
                         "usage: verify | audit | sweep | replay | compare | gen-golden | gen-trace | gen-trainer-golden | " +
-                        "clocksync-check | move-arm | build-profile | import-urdf | fit-capsules | catalog | joint-predict-bench | joint-probe | joint-drive | chain-drive | chain-teleop-probe | chain-ik-stress | discover-robot");
+                        "clocksync-check | move-arm | build-profile | import-urdf | fit-capsules | catalog | joint-predict-bench | joint-probe | arm-power | joint-drive | chain-drive | chain-teleop-probe | chain-ik-stress | discover-robot");
                     return 64;   // EX_USAGE
             }
         }

@@ -511,6 +511,25 @@ def cmd_finetune(args) -> int:
     index = _unpack_bundle(args.data, bundle_dir, log)
     ids = [e["id"] for e in index["sessions"]]
     split = _split(args.split, ids)
+    # Which operator kinds train (trainer/README.md, "Human and scripted data"): [real] train_sources;
+    # unset, every session trains. The test sessions are never filtered.
+    from .contract.session import OPERATOR_KINDS, operator_kind
+
+    kinds = {e["id"]: operator_kind(e) for e in index["sessions"]}
+    sources = config.get("real", {}).get("train_sources")  # unset: every session trains, as before
+    allowed = list(sources) if sources is not None else [*OPERATOR_KINDS, "unknown"]
+    unknown = [k for k in allowed if k not in (*OPERATOR_KINDS, "unknown")]
+    if unknown:
+        raise SystemExit(f"[real] train_sources: {unknown} is not one of {list(OPERATOR_KINDS)}")
+    for name in ("train", "val"):
+        kept = [i for i in split[name] if kinds[i] in allowed]
+        dropped = [i for i in split[name] if kinds[i] not in allowed]
+        if dropped:
+            log(f"{name}: left out {len(dropped)} session(s) not in train_sources {allowed}: {', '.join(dropped)}")
+        split[name] = kept
+    for name in ("train", "val", "test"):
+        counts = {k: sum(1 for i in split[name] if kinds[i] == k) for k in (*OPERATOR_KINDS, "unknown")}
+        log(f"{name}: " + ", ".join(f"{n} {k}" for k, n in counts.items() if n))
     profile_path = os.path.join(bundle_dir, "robot-profile.json")
     cfg = _train_cfg(config.get("train", {}))
     init_state = None
@@ -670,6 +689,50 @@ def cmd_check_disturbance(args) -> int:
     return 0
 
 
+def cmd_summarize_recordings(args) -> int:
+    """How much real data there is, by who drove it: human (the headset) or scripted (the pilot), and
+    whether each session can train (it passes the check and the headset did not disturb it)."""
+    import glob
+    from collections import defaultdict
+
+    import numpy as np
+
+    from .contract.check import check_session_dir
+    from .contract.disturbance import uplink_report
+    from .contract.session import OPERATOR_KINDS, headset_disturbed, load_session, operator_kind
+
+    dirs = sorted(d for pattern in args.sessions for d in glob.glob(pattern) if os.path.isdir(d))
+    minutes = defaultdict(float)
+    sessions = defaultdict(int)
+    for d in dirs:
+        name = os.path.basename(os.path.normpath(d))
+        try:
+            s = load_session(d)
+        except Exception as e:
+            print(f"{name}: unreadable ({e})")
+            continue
+        kind = operator_kind(s.meta)
+        t = np.sort(s.commands.t.astype(np.int64)) if len(s.commands) > 1 else np.zeros(0, dtype=np.int64)
+        gaps = np.diff(t) / s.ticks_per_second if len(t) > 1 else np.zeros(0)
+        driving = float(np.sum(gaps[gaps < 1.0])) / 60.0  # minutes with commands flowing
+        report = check_session_dir(d, allow_read_gaps=True)
+        up = uplink_report(s)
+        disturbed = headset_disturbed(s) or (up is not None and up.disturbed)
+        usable = report.ok and not disturbed
+        why = "" if usable else ("headset-disturbed" if disturbed else "; ".join(report.failures)[:70])
+        rounds = sum(1 for r in s.rounds if r.phase == "done")
+        print(f"{name:36} {kind:9} {driving:6.1f} min{'' if usable else '  NOT USABLE: ' + why}{f'  ({rounds} course rounds)' if rounds else ''}")
+        key = (kind, "usable" if usable else "not usable")
+        minutes[key] += driving
+        sessions[key] += 1
+    print()
+    for kind in (*OPERATOR_KINDS, "unknown"):
+        for state in ("usable", "not usable"):
+            if sessions[(kind, state)]:
+                print(f"{kind:9} {state:10}: {minutes[(kind, state)]:6.1f} min of driving in {sessions[(kind, state)]} session(s)")
+    return 0
+
+
 def cmd_export_weights(args) -> int:
     from .golden_learned import copy_weights
 
@@ -766,6 +829,10 @@ def main(argv: Optional[List[str]] = None) -> int:
     p.add_argument("--workers", type=int, default=0)
     p.add_argument("--steps", type=int, default=0)
     p.set_defaults(func=cmd_grid)
+
+    p = sub.add_parser("summarize-recordings", help="real driving minutes by who drove (human or scripted), and whether each session can train")
+    p.add_argument("sessions", nargs="+", help="session directories or glob patterns")
+    p.set_defaults(func=cmd_summarize_recordings)
 
     p = sub.add_parser("check-disturbance", help="which sessions the headset's network disturbance altered (from RobotHost's JC records)")
     p.add_argument("sessions", nargs="+", help="session directories or glob patterns")

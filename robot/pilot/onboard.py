@@ -38,7 +38,7 @@ import sys
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from pilot import read_plan  # noqa: E402  (the plan format is pilot.py's)
+from pilot import drive_seed, drive_speed, read_plan  # noqa: E402  (the plan format is pilot.py's)
 
 HOME = os.path.expanduser("~")
 RECORDINGS = os.path.join(HOME, "recordings")
@@ -89,13 +89,15 @@ def options(session) -> dict:
     return values
 
 
-def session_json(sid: str, session, o: dict, profile_sha: str) -> dict:
+def session_json(sid: str, session, o: dict, profile_sha: str, seed_note: str = "") -> dict:
     """As `just record-start` writes it (keep the two the same)."""
     network = o["network"]
     uplink = {"uplinkProfile": network, "uplinkSeed": 0, "addedDelayMs": float(o["added_delay_ms"])}
     if network.startswith("schedule:"):
         uplink.update({"uplinkProfile": "schedule", "uplinkSchedule": network[len("schedule:"):], "uplinkSeed": 1})
     notes = "joint-drive ran on the robot, to RobotHost over loopback (no Wi-Fi)"
+    if seed_note:
+        notes += "; " + seed_note
     if o["notes"]:
         notes += "; " + o["notes"]
     return {
@@ -115,13 +117,13 @@ def session_json(sid: str, session, o: dict, profile_sha: str) -> dict:
     }
 
 
-def open_session(session, profile_path: str) -> str:
+def open_session(session, profile_path: str, seed_note: str = "") -> str:
     o = options(session)
     sid = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%SZ") + "-" + session.label
     directory = os.path.join(RECORDINGS, "jetrover", sid)
     os.makedirs(directory)
     with open(os.path.join(directory, "session.json"), "w") as f:
-        json.dump(session_json(sid, session, o, sha256_file(profile_path)), f, indent=2)
+        json.dump(session_json(sid, session, o, sha256_file(profile_path), seed_note), f, indent=2)
     with open(profile_path, "rb") as src, open(os.path.join(directory, "robot-profile.json"), "wb") as dst:
         dst.write(src.read())
     take_control_file(directory)
@@ -284,6 +286,8 @@ def main() -> int:
     parser.add_argument("--from", dest="start", default="")
     parser.add_argument("--rest", type=float, default=60, help="seconds between sessions, for the servos")
     parser.add_argument("--start-delay", type=float, default=30, help="seconds before the first session")
+    parser.add_argument("--no-relax", action="store_true", help="leave the arm holding at the end instead of parking it and switching torque off")
+    parser.add_argument("--variant", default="", help="mixed into every drive session's seed: a new one draws new moves (pilot.py drive_seed)")
     args = parser.parse_args()
 
     sessions = [s for s in read_plan(args.plan) if s.motion.startswith("drive:")]
@@ -303,22 +307,26 @@ def main() -> int:
         f"joint-drive build {build_info(os.path.join(HOME, 'jointdrive_current', 'BUILD_INFO'))}")
     for s in sessions:
         log(f"  {s.label:18} {s.motion:16} {s.slider:>5} rad/s {s.minutes:4.0f} min  {' '.join(s.options)}")
+    if args.variant:
+        log(f"variant {args.variant}: every session's moves are new, and this variant repeats them")
     log(f"first session in {args.start_delay:.0f} s. Stop: just pilot-stop, or the power switch.")
     if not wait(args.start_delay):
         log("stopped before the first session (just pilot-stop)")
         return 130
 
     done = []
+    low_battery = False
     for index, s in enumerate(sessions, 1):
         log(f"=== [{index}/{len(sessions)}] {s.label}")
-        directory = open_session(s, args.profile)
+        seed = drive_seed(s, args.variant)
+        directory = open_session(s, args.profile, f"pilot variant {args.variant or 'none'}, joint-drive --seed {seed}")
         sid = os.path.basename(directory)
         log(f"recording {sid}")
         status = 1
         try:
             status = subprocess.call(
-                [DOTNET, JOINT_DRIVE, "joint-drive", "--script", s.motion.split(":", 1)[1], "--speed", s.slider,
-                 "--seconds", f"{s.minutes * 60:.0f}", "--remote-host", "127.0.0.1", "--confirm-hardware-motion",
+                [DOTNET, JOINT_DRIVE, "joint-drive", "--script", s.motion.split(":", 1)[1], "--speed", drive_speed(s),
+                 "--seconds", f"{s.minutes * 60:.0f}", "--seed", seed, "--remote-host", "127.0.0.1", "--confirm-hardware-motion",
                  "--operator-log", os.path.join(directory, "operator.jlog"), "--session-id", sid, "--stop-file", STOP],
                 stdin=subprocess.DEVNULL)
         finally:
@@ -337,6 +345,7 @@ def main() -> int:
             log("joint-drive stopped early (read its lines above): not starting another session")
             break
         if mv is not None and mv < MIN_BATTERY_MV:
+            low_battery = True
             log(f"below {MIN_BATTERY_MV / 1000:.1f} V: stopping. Charge or swap the pack"
                 + (f", then just pilot-on-robot from={sessions[index].label}" if index < len(sessions) else ""))
             break
@@ -347,6 +356,17 @@ def main() -> int:
                 break
 
     log(f"done: {len(done)} of {len(sessions)} sessions completed ({' '.join(done)}). Copy them: just fetch-recordings")
+    # Rest the arm unpowered, as the headset's ROBOT OFF does (docs/adr/0023 decision 5): only after a
+    # clean end (every session, or a low battery). After a stall, a lost stream or just pilot-stop the arm
+    # holds where it is, for a person to look at first.
+    clean = (len(done) == len(sessions) or low_battery) and not os.path.exists(STOP)
+    if clean and not args.no_relax:
+        log("parking the arm at its rest pose and switching torque off (just robot-off)")
+        relax = subprocess.call([DOTNET, JOINT_DRIVE, "arm-power", "--remote-host", "127.0.0.1", "--request", "relax"],
+                                stdin=subprocess.DEVNULL)
+        log("relaxed" if relax == 0 else f"not relaxed (arm-power exited {relax}): the arm holds; just robot-off once it is clear")
+    elif not clean:
+        log("the arm holds where it is (the run did not end cleanly): look at it, then just robot-off")
     return 0
 
 

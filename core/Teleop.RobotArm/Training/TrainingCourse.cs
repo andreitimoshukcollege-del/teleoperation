@@ -91,6 +91,7 @@ namespace Teleop.RobotArm.Training
         private float _score;
         private bool _disturbed;
         private bool _disturbedThisRound;
+        private bool _drawn;
 
         /// <param name="minHeightMeters">The clutch's floor (the headset's <c>ClutchMinHeightMeters</c>).</param>
         public TrainingCourse(RobotArmProfile profile, float minHeightMeters)
@@ -127,7 +128,7 @@ namespace Teleop.RobotArm.Training
             Running ? (_level == VariedLevel ? float.NaN : SpeedLevels[_level]) : float.NaN, _score);
 
         /// <summary>Reach: the targets, the one to go for now, and what each asks of the gripper.</summary>
-        public int TargetCount => Running ? _targetCount : 0;
+        public int TargetCount => Running || _drawn ? _targetCount : 0;
         public int ActiveTarget => _activeTarget;
         public Vector3 Target(int i) => _targets[i];
         public GripperGoal Goal(int i) => _goals[i];
@@ -136,7 +137,10 @@ namespace Teleop.RobotArm.Training
         public float HoldProgress => (float)Math.Min(1.0, _holdSeconds / ReachHoldSeconds);
 
         /// <summary>Trace: the curve and the bead.</summary>
-        public int PathCount => Running && _task == TrainingTask.Trace ? TracePoints : 0;
+        public int PathCount => (Running || _drawn) && _task == TrainingTask.Trace ? TracePoints : 0;
+
+        /// <summary>The trace's length along its curve, metres (0 when no trace is drawn).</summary>
+        public float PathLength => PathCount > 0 ? _pathLength : 0f;
         public Vector3 PathPoint(int i) => _path[i];
         public Vector3 Bead => PointAlong(_beadAlong);
 
@@ -158,10 +162,34 @@ namespace Teleop.RobotArm.Training
             counts.CopyTo(_coverage);
         }
 
+        /// <summary>
+        /// Draws one round of <paramref name="task"/> as the course would, seeded by <paramref name="seed"/>,
+        /// without running it: for an automatic operator that drives the course's own targets (joint-drive's
+        /// <c>course</c> script). Afterwards <see cref="TargetCount"/>, <see cref="Target"/>, <see cref="Goal"/>,
+        /// <see cref="PathCount"/> and <see cref="PathPoint"/> describe it. False when the task has no room.
+        /// Stops a running course.
+        /// </summary>
+        public bool TryDraw(TrainingTask task, ulong seed)
+        {
+            Running = false;
+            _rng = new SeededRng(seed == 0 ? 1UL : seed);
+            _task = task;
+            _targetCount = 0;
+            _drawn = task switch
+            {
+                TrainingTask.Reach => BuildReach(),
+                TrainingTask.Trace => BuildTrace(),
+                TrainingTask.Shuttle => BuildShuttle(),
+                _ => false,
+            };
+            return _drawn;
+        }
+
         /// <summary>Starts the course: the first round is announced. <paramref name="courseId"/> seeds every draw and labels the rounds.</summary>
         public void Start(uint courseId, double now)
         {
             _courseId = courseId;
+            _drawn = false;
             _rng = new SeededRng(courseId == 0 ? 1UL : courseId);
             _round = 0;
             _task = TrainingTask.None;

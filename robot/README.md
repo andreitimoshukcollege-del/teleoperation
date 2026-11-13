@@ -133,8 +133,29 @@ with `just pilot-stop` from any machine (joint-drive holds the arm at once), or 
 teleop sessions still need the laptop: `just pilot only=teleop`. `onboard.py` writes session.json and
 closes sessions itself, as `record-start`/`record-stop` do, and must be kept the same as them.
 
+**The course pilot** (`robot/pilot/pilot-v2.txt`, 2026-10-28): six 10-minute sessions of joint-drive's
+`course` script, the headset's training course driven by the robot itself, for scripted data shaped like
+teleop while there is little teleop data. Each round is the course's own (REACH, TRACE, SHUTTLE), every
+target solved by the headset's IK and every path checked like any other script's, at the course's levels
+(1.0-6.0 rad/s, varied; no move faster than 6). The gripper opens and closes for REACH targets, but
+closes only to 75% and only on arrival, for at most 1.5 s. Each session's rounds come from its label.
+They are `joint-drive:course` sessions: scripted, kept apart from headset driving
+(`just recordings-summary`). `just joint-drive-preview course 6` shows one without moving anything.
+**`just pilot-on-robot` runs the course pilot by default** (`plan=robot/pilot/pilot-v1.txt` for the pilot
+hour's drives). Each `joint-drive` session first switches torque on (as `just robot-on`: a relaxed arm
+ignores commands), and from an arm resting on its support (relaxed, it sags onto it) it makes the smallest
+single-joint move that frees it, at 0.5 rad/s, before going home along a collision-free path (straight, or
+one joint at a time). After a clean run (every session, or a low battery) the arm parks at its rest pose
+and relaxes, as ROBOT OFF does (`relax=false` keeps it holding); after a stall, a lost stream or
+`just pilot-stop` it holds where it is, for a person to look at.
+
+**Every `just pilot-on-robot` run draws new moves:** it mixes a variant (the run's start time, UTC) into
+every drive session's seed, and each session's notes record the variant and its `joint-drive --seed`.
+`variant=<that>` repeats a run exactly. `just pilot` on the laptop takes no variant and repeats its plan.
+
 ```bash
 just deploy-joint-drive          # once, and after joint-drive changes; moves nothing
+just pilot-on-robot plan=robot/pilot/pilot-v2.txt   # the course pilot: about an hour, the arm and gripper move by themselves
 just pilot only=teleop           # the headset sessions, from the laptop
 just pilot-on-robot              # the drive sessions, on the robot; the laptop can close
 just pilot-status                # from any machine with the repo
@@ -244,6 +265,10 @@ what makes the servo board go silent (2026-10-26: silent after 77 idle minutes w
 torque as it is. What RobotHost does, step by step, is in the ADR; `just robothost-logs` shows each
 `[power]` line, and recorded sessions carry `PQ`, `PS`, `PK` and `TQ` records.
 
+- **From the PC:** `just robot-off` does what the headset's ROBOT OFF does (park at the rest pose, then
+  torque off) and prints the park's progress; `just robot-on` switches torque back on where the arm is.
+  They send the operator message as a tool, so they open no automatic recording. Turn the headset off
+  first: a headset that is on asks for torque back as soon as it sees the arm parked.
 - **The rest pose** is `jetrover_rest_pose_deg` at the top of the `justfile`, which
   `just deploy-robothost` passes as `--rest-pose-deg`: degrees, motors 1-5 (base yaw, shoulder, elbow,
   wrist pitch, wrist roll), in the joint angles `just joint-probe` prints (the profile's zero offsets

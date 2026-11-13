@@ -77,6 +77,14 @@ namespace Teleop.RobotHost.Recording
         private int _queued;
         private long _dropped;
 
+        /// <summary>
+        /// Drops counted for a session that has since been taken over, by its generation, until its trailer is written.
+        /// A new session zeroes <see cref="_dropped"/> while the old file may still be waiting for the writer thread to
+        /// close it; without this its trailer read the new session's zero, and a damaged session passed check-session
+        /// (the 2026-11 bug hunt, D-01).
+        /// </summary>
+        private readonly ConcurrentDictionary<int, long> _droppedBefore = new ConcurrentDictionary<int, long>();
+
         // The writer thread's own.
         private readonly Func<string, Stream> _openFile;
         private Stream? _file;
@@ -192,10 +200,10 @@ namespace Teleop.RobotHost.Recording
             {
                 if (_active || _controlBusy) return 0;
                 generation = ++_generation;
+                CarryDrops(_activeGeneration);
                 _activeGeneration = generation;
                 _active = true;
                 _preambleOwed = true;
-                Interlocked.Exchange(ref _dropped, 0);
             }
 
             _queue.Enqueue(new Item(generation, null, spec, null));
@@ -222,6 +230,20 @@ namespace Teleop.RobotHost.Recording
             _thread.Join(TimeSpan.FromSeconds(10));
             _finalizer.Dispose();
             _signal.Dispose();
+        }
+
+        /// <summary>Sets aside the drops counted so far as <paramref name="generation"/>'s, and starts the count again. Under <c>_gate</c>.</summary>
+        private void CarryDrops(int generation)
+        {
+            long dropped = Interlocked.Exchange(ref _dropped, 0);
+            if (dropped > 0) _droppedBefore.AddOrUpdate(generation, dropped, (_, d) => d + dropped);
+        }
+
+        /// <summary>The drops that belong to <paramref name="generation"/>'s file: set aside when it was taken over, plus the live count while it is still the active one.</summary>
+        private long DroppedFor(int generation)
+        {
+            _droppedBefore.TryGetValue(generation, out long before);
+            return before + (_activeGeneration == generation ? Interlocked.Read(ref _dropped) : 0);
         }
 
         private void Deactivate(int generation)
@@ -338,10 +360,10 @@ namespace Teleop.RobotHost.Recording
             lock (_gate)
             {
                 // A manual session wins over an automatic one that was begun but not yet opened.
+                CarryDrops(_activeGeneration);
                 _activeGeneration = generation;
                 _active = true;
                 _preambleOwed = true;
-                Interlocked.Exchange(ref _dropped, 0);
             }
         }
 
@@ -611,7 +633,7 @@ namespace Teleop.RobotHost.Recording
             string directory = _directory!;
             bool auto = _fileAuto;
             long records = _records;
-            long dropped = Interlocked.Read(ref _dropped);
+            long dropped = DroppedFor(_fileGeneration);
             bool closed = WriteTrailerAndRelease();
             _log($"[record] stopped ({reason}): {records} records, {dropped} dropped, in {directory}" + (closed ? "" : "; the trailer could not be written"));
             if (auto) CompleteAuto(directory);
@@ -626,8 +648,10 @@ namespace Teleop.RobotHost.Recording
         {
             Deactivate(_fileGeneration);
             string sha = Convert.ToHexString(_hash!.GetHashAndReset()).ToLowerInvariant();
+            long dropped = DroppedFor(_fileGeneration);
+            _droppedBefore.TryRemove(_fileGeneration, out _);
             byte[] trailer = Encoding.ASCII.GetBytes("END|" + _records.ToString(CultureInfo.InvariantCulture) + "|" +
-                Interlocked.Read(ref _dropped).ToString(CultureInfo.InvariantCulture) + "|" + sha + "\n");
+                dropped.ToString(CultureInfo.InvariantCulture) + "|" + sha + "\n");
             bool closed = Guard(() =>
             {
                 _file!.Write(trailer, 0, trailer.Length);

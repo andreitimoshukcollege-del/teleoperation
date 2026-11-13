@@ -85,6 +85,71 @@ def test_a_dataset_whose_write_died_is_rebuilt(scenarios, tmp_path):
     assert json.load(open(info))["total_episodes"] == 1
 
 
+class FailsOn(FakeWriter):
+    """A writer that cannot write one take (LeRobot raising on its data), and writes every other."""
+
+    def __init__(self, name):
+        super().__init__()
+        self.name, self.attempts = name, 0
+
+    def append(self, root, repo, take):
+        if os.path.basename(take.path) == self.name:
+            self.attempts += 1
+            raise RuntimeError("encoder refused the frames")
+        return super().append(root, repo, take)
+
+
+def test_a_take_that_cannot_be_written_is_skipped_after_a_few_passes_and_the_next_takes_still_land(scenarios, tmp_path):
+    # It was retried forever and the takes after it never ran (the 2026-11 bug hunt, D-02).
+    from teleop_lerobot.watch import APPEND_ATTEMPTS
+    jetrover_take(scenarios, name="20261112T100000Z-take001")
+    jetrover_take(scenarios, name="20261112T100500Z-take002")
+    jetrover_take(scenarios, name="20261112T101000Z-take003")
+    out = str(tmp_path / "lerobot")
+    clock = {"now": time.time() + 100}
+    writer = FailsOn("20261112T100500Z-take002")
+    conv = Converter([scenarios], out, writer, settle=60.0, log=lambda s: None, clock=lambda: clock["now"])
+    for _ in range(APPEND_ATTEMPTS + 2):
+        conv.pass_once()
+    root = os.path.join(out, "jetrover-isaac", "reach")
+    assert [os.path.basename(e["take"]) for e in read_ledger(root)] == ["20261112T100000Z-take001", "20261112T101000Z-take003"]
+    assert writer.attempts == APPEND_ATTEMPTS
+    skipped = [json.loads(line) for line in open(os.path.join(out, "skipped.jsonl")).read().splitlines()]
+    assert [os.path.basename(s["take"]) for s in skipped] == ["20261112T100500Z-take002"]
+
+
+def test_after_a_take_is_skipped_a_discard_is_applied(scenarios, tmp_path):
+    # The rebuild a discard triggers re-read the unwritable take and failed, so the discarded take stayed (D-02).
+    from teleop_lerobot.watch import APPEND_ATTEMPTS
+    first = jetrover_take(scenarios, name="20261112T100000Z-take001")
+    jetrover_take(scenarios, name="20261112T100500Z-take002")
+    jetrover_take(scenarios, name="20261112T101000Z-take003")
+    out = str(tmp_path / "lerobot")
+    clock = {"now": time.time() + 100}
+    conv = Converter([scenarios], out, FailsOn("20261112T100500Z-take002"), settle=60.0, log=lambda s: None, clock=lambda: clock["now"])
+    for _ in range(APPEND_ATTEMPTS + 2):
+        conv.pass_once()
+    discarded = os.path.join(scenarios, "_discarded", "reach")
+    os.makedirs(discarded)
+    shutil.move(first, discarded)
+    conv.pass_once()
+    root = os.path.join(out, "jetrover-isaac", "reach")
+    assert [os.path.basename(e["take"]) for e in read_ledger(root)] == ["20261112T101000Z-take003"]
+    assert json.load(open(os.path.join(root, "meta", "info.json")))["total_episodes"] == 1
+
+
+def test_an_episode_with_no_ledger_line_is_caught(scenarios, tmp_path):
+    # A take set aside while it was its scenario's first episode left LeRobot's episode and an empty ledger, which the
+    # old check (only for a non-empty ledger) never saw (the 2026-11 bug hunt, D-03).
+    out = str(tmp_path / "lerobot")
+    root = os.path.join(out, "jetrover-isaac", "reach")
+    os.makedirs(os.path.join(root, "meta"))
+    json.dump({"total_episodes": 1}, open(os.path.join(root, "meta", "info.json"), "w"))
+    conv, _ = converter(scenarios, out)
+    conv.pass_once()
+    assert not os.path.exists(os.path.join(root, "meta", "info.json"))  # rebuilt from its kept takes: none
+
+
 def test_a_bad_take_is_skipped_once_with_its_reason(scenarios, tmp_path):
     path = jetrover_take(scenarios)
     with open(os.path.join(path, "robothost.jlog"), "ab") as f:

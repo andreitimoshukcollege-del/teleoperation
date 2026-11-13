@@ -10,7 +10,8 @@ Each pass:
 3. Per dataset (``<out>/<robot>-<source>/<scenario>/``):
    - a take in its ledger that is no longer kept (set aside, or gone), or a ledger that disagrees with LeRobot's own
      episode count (a write that died), means a rebuild from the kept takes;
-   - otherwise each kept take not yet in the ledger is appended, oldest first.
+   - otherwise each kept take not yet in the ledger is appended, oldest first. A take that reads but cannot be written
+     is tried for ``APPEND_ATTEMPTS`` passes, then skipped like an unreadable one, so it never holds up the takes after it.
 """
 
 from __future__ import annotations
@@ -27,6 +28,9 @@ from .takes import Take, TakeError, checksum_id, read_take, verify_checksums
 from .writer import append_take, read_ledger, rebuild, recorded_episodes
 
 TAKE = re.compile(r"^\d{8}T\d{6}Z-take\d+$")
+
+# A take that reads but cannot be written is tried this many passes, then skipped (written to skipped.jsonl).
+APPEND_ATTEMPTS = 3
 
 
 def complete_takes(roots: Iterable[str], now: float, settle: float) -> List[str]:
@@ -54,6 +58,7 @@ class Converter:
         self.fps, self.settle, self.log, self.clock = fps, settle, log, clock
         self.checked: Dict[Tuple[str, str], Optional[Tuple[str, str]]] = {}  # (take, content) -> (group, scenario) or None
         self.failed_rebuilds: Dict[str, Tuple] = {}
+        self.append_failures: Dict[Tuple[str, str], int] = {}  # (take, content) -> failed writes so far
         self.stopping = False  # SIGTERM: finish the take being written, then stop
         os.makedirs(out, exist_ok=True)
         self._load_skipped()
@@ -126,7 +131,11 @@ class Converter:
             listed = {(e["take"], e["filesSha256"]) for e in ledger}
             current = {(t, checksum_id(t)) for t in takes}
             stale = [e for e in ledger if (e["take"], e["filesSha256"]) not in current]
-            broken = bool(ledger) and recorded_episodes(root) != len(ledger)
+            # Broken when LeRobot's episodes and the ledger disagree, an empty ledger included: a take set aside while it
+            # was the scenario's first episode left one episode and no ledger line, and nothing caught it (the 2026-11 bug
+            # hunt, D-03). A ledger with no dataset at all (deleted) is broken too.
+            episodes = recorded_episodes(root)
+            broken = (episodes is None and bool(ledger)) or (episodes is not None and episodes != len(ledger))
             if stale or broken:
                 signature = (tuple(sorted(current)), tuple((e["take"], e["filesSha256"]) for e in ledger))
                 if self.failed_rebuilds.get(root) == signature:
@@ -152,7 +161,17 @@ class Converter:
                     self.log(f"{root}: episode {line['episode']} from {take} ({line['frames']} frames, "
                              f"{line['filled']} filled)")
                 except Exception as e:  # noqa: BLE001
-                    self.log(f"writing {take} into {root} failed: {e!r}; the next pass rebuilds it if it is broken")
+                    # One take that cannot be written must not hold up its scenario: it was retried forever, the takes
+                    # after it never ran, and a later discard's rebuild failed on it (the 2026-11 bug hunt, D-02). After
+                    # APPEND_ATTEMPTS failures it is skipped like an unreadable take; a full disk gets a few passes first.
+                    key = (take, checksum_id(take))
+                    self.append_failures[key] = self.append_failures.get(key, 0) + 1
+                    if self.append_failures[key] >= APPEND_ATTEMPTS:
+                        self.append_failures.pop(key, None)
+                        self._skip(take, key[1], f"writing it into {root} failed {APPEND_ATTEMPTS} times; last: {e!r}")
+                    else:
+                        self.log(f"writing {take} into {root} failed ({self.append_failures[key]} of {APPEND_ATTEMPTS}): {e!r}; "
+                                 "the next pass rebuilds the dataset if it is broken")
                     break
         return written
 

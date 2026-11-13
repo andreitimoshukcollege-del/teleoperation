@@ -50,8 +50,19 @@ namespace Teleop.Eval.Verification
                 return 1;
             }
 
+            // The .tlog round trip runs no algorithm; every registry entry is replayed too (DeterminismCheck, the 2026-11
+            // bug hunt's A-03).
+            var failures = DeterminismCheck.Run(out int stacks);
+            if (failures.Count > 0)
+            {
+                Console.Error.WriteLine($"verify: FAIL -- {failures.Count} of {stacks} algorithm stacks did not replay identically on {DeterminismCheck.Profile}:");
+                foreach (string failure in failures) Console.Error.WriteLine($"  - {failure}");
+                return 1;
+            }
+
             Console.WriteLine($"verify: PASS -- {goldenPath} replays byte-identical across two " +
-                "independent passes, and matches the original file exactly.");
+                "independent passes, and matches the original file exactly; " +
+                $"{stacks} algorithm stacks (every registry entry) replay bit-identical metric streams on {DeterminismCheck.Profile}, seed {DeterminismCheck.Seed}.");
             return 0;
         }
 

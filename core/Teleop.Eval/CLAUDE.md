@@ -30,7 +30,7 @@ NuGet dependencies (`YamlDotNet`, so far).
 
 | Command | Status |
 |---|---|
-| `verify` | real — replays the golden `.tlog` twice, asserts byte-identical |
+| `verify` | real — replays the golden `.tlog` twice and asserts byte-identical, then replays every registry entry twice (`Verification/DeterminismCheck`: pose stacks through the sweep's loopback pipeline, joint predictors through the joint bench, on `300ms-60j-2loss-bursty`, seed 7) and asserts bit-identical metric streams; a stack that throws or records nothing fails |
 | `audit` | real — invariant check over the built Core and RobotArm assemblies (both ship to the headset), plus registry completeness for Core; a missing input is a finding, never "N/A" |
 | `sweep` | real — runs an `experiments/*.yaml`, writes `results/<id>/<timestamp>/` |
 | `gen-golden` | real, not one of the five documented subcommands — regenerates the golden `.tlog` |

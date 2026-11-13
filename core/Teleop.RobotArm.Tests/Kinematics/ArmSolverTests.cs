@@ -21,6 +21,34 @@ namespace Teleop.RobotArm.Tests.Kinematics
         public ArmSolverTests(ITestOutputHelper output) => _output = output;
 
         [Fact]
+        public void FromTheMeasuredRestPose_EverySolveStaysCapped()
+        {
+            // The rest pose the arm parks at reads the wrist at -114 deg, past its -112.7 deg stop. Seeded with that, the
+            // solver treated the start as invalid, lifted its 30 deg cap and path check, and one solve jumped 119-158 deg
+            // (the 2026-11 bug hunt, E-01). The seed is now clamped into the ranges, so the start is valid.
+            RobotArmProfile jetRover = RobotArmProfile.JetRoverMeasuredDefault;
+            ArmCollisionModel model = jetRover.Collision!;
+            const float deg = MathF.PI / 180f;
+            var rest = new ArmPose(-1.20f * deg, 91.16f * deg, -78.48f * deg, -114.0f * deg, 5.76f * deg);
+            Assert.False(model.Wrist.Contains(rest.Wrist)); // the reading really is past the stop
+
+            foreach (Vector3 target in new[] { new Vector3(0.15f, 0f, 0.08f), new Vector3(0.20f, 0.10f, 0.15f), new Vector3(0.12f, -0.12f, 0.05f) })
+            {
+                var solver = new ArmSolver();
+                solver.Reset(jetRover, rest);
+                ArmPose from = solver.LastPose;
+                Assert.True(ArmCollision.IsValid(jetRover, model, from), "the clamped seed is a valid start");
+                for (int i = 0; i < 20; i++)
+                {
+                    ArmSolution s = solver.Solve(jetRover, target, 0f, 0f);
+                    float jump = from.MaxJointDelta(s.Pose);
+                    Assert.True(jump <= ArmSolver.MaxJumpPerSolve + 1e-4f, $"solve {i} toward {target} jumped {jump / deg:0.0} deg");
+                    from = s.Pose;
+                }
+            }
+        }
+
+        [Fact]
         public void FreeTarget_IsReachedExactly_WithTheClosedFormSolution()
         {
             var solver = new ArmSolver();

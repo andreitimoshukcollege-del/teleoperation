@@ -59,7 +59,10 @@ namespace Teleop.Bridge
             {
                 // No angle floor: the collision model keeps it off the body (docs/adr/0020).
                 MotorId = 2, Role = JointRole.Proximal,
-                ZeroOffsetRadians = 0.12217305f, // +7 degrees, calibrated 2026-08-17 against real hardware
+                // -36.95 degrees: the shoulder servo was replaced on 2026-11-11 (+7 degrees before, calibrated 2026-08-17).
+                // Matches core/RobotProfiles/jetrover.json and RobotArmProfile.JetRoverMeasuredDefault. The headset itself only
+                // sends angles; RobotHost turns them into pulses with its own profile.
+                ZeroOffsetRadians = -0.64494798f,
             },
             new JointHardwareSpecData { MotorId = 3, Role = JointRole.Distal },
             new JointHardwareSpecData { MotorId = 4, Role = JointRole.Wrist, WristIndex = 0 },

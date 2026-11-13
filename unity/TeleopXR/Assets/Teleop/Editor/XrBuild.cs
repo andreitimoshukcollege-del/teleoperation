@@ -21,7 +21,7 @@ namespace Teleop.XR.Editor
     /// <see cref="SimApplicationId"/>, for the Isaac JetRover (docs/adr/0034). The same scene; its built-in connection
     /// default has discovery off (it never finds the real robot, docs/adr/0022) and <c>-teleopRemoteHost</c> as its
     /// address. Both apps install side by side, each with its own files directory.</item>
-    /// <item><c>TeleopXR-FR3.apk</c> (<c>just build-galaxy-fr3</c>): the FR3 Duo's scene, under the robot app's id.</item>
+    /// <item><c>TeleopXR-FR3.apk</c> (<c>just build-galaxy-fr3</c>): the FR3 Duo's scene, as <b>Teleop FR3 Duo</b> (<c>com.teleop.fr3duoxr</c>), which installs beside the JetRover apps.</item>
     /// </list>
     /// A variant's name, id and connection default are set for its build only, and put back afterwards.
     /// </summary>
@@ -34,6 +34,10 @@ namespace Teleop.XR.Editor
         public const string RobotProductName = "Teleop JetRover Robot";
         public const string SimProductName = "Teleop JetRover Sim";
         public const string SimApplicationId = XrProjectSetup.ApplicationId + ".sim";
+
+        /// <summary>The FR3 Duo's app has an id of its own, so installing it no longer replaces the JetRover robot app.</summary>
+        public const string Fr3ProductName = "Teleop FR3 Duo";
+        public const string Fr3ApplicationId = "com.teleop.fr3duoxr";
 
         /// <summary>The Bridge's built-in connection default, which the sim build replaces for its build only.</summary>
         private const string ConnectionResource = "Packages/com.teleop.bridge/Runtime/Resources/jetrover_connection.json";
@@ -63,7 +67,7 @@ namespace Teleop.XR.Editor
         /// the JetRover's, which it leaves alone. Output: <c>Builds/TeleopXR-FR3.apk</c>.
         /// </summary>
         public static void RunFr3() => Build(XrFr3SceneCheck.Check, XrFr3SceneBuilder.ScenePath, Fr3ApkPath,
-            XrProjectSetup.ProductName, XrProjectSetup.ApplicationId, null);
+            Fr3ProductName, Fr3ApplicationId, null);
 
         private static string Arg(string name)
         {

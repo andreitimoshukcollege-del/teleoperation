@@ -39,6 +39,7 @@ An uncompressed NumPy `.npz` (`numpy.savez`): a zip of `.npy` arrays, readable f
 | `cmd_true_uplink` | int64 | [n] | v2. Ticks from the send to the plant; -1 if lost (default -1) |
 | `frame_send_est` | int64 | [f] | v2. The frame's send time as the headset's ClockSync placed it when it arrived; -1 before sync |
 | `sync_rtt`, `sync_frame`, `sync_min_rtt`, `sync_synced` | int64, int64, int64, bool | [s] | v2. Each round trip's RTT (accepted or not), the frame that echoed it, ClockSync's window minimum and whether it trusted itself after it |
+| `st_sensed_true` | int64 | [m] | Optional (since 2026-11-13). Each state's frame's true sensed (or send) time on the operator's clock: the session's own stamp through the view's clock map, not `ClockSync`. For metrics only (an event's `t_info`); never a model input. Absent in older views |
 | `fc_t`, `fc_q_ms`, `fc_loss`, `fc_floor_ms`, `fc_outage`, `fc_valid_q`, `fc_valid_loss`, `fc_valid_outage` | | | v2, optional. One network forecast stream (`FORECAST_FORMAT.md`) |
 
 Calls are in call order. When a command and a state share a tick, the command came first; a forecast

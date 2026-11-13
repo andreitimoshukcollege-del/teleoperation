@@ -95,6 +95,9 @@ class View:
     sync_min_rtt: Optional[np.ndarray] = None  # int64: ClockSync's window minimum after it
     sync_synced: Optional[np.ndarray] = None  # bool: ClockSync trusted after it
     forecasts: Optional[ForecastStream] = None  # saved with a view only when one was attached
+    # Optional, since 2026-11-13: each state's frame's TRUE sensed time on the operator's clock (the session's own stamp
+    # through the view's clock map), for metrics only; the predictor sees st_sensed. None in a view saved before it.
+    st_sensed_true: Optional[np.ndarray] = None
 
     @property
     def tps(self) -> int:
@@ -319,6 +322,9 @@ def synthesize(session: Session, profile: RobotProfile, schedule: Schedule, seed
 
     # -- assemble -------------------------------------------------------------------------------
     st_idx = np.array([r[2] for r in st_rows], dtype=np.int64)
+    # The truth's clock, not ClockSync's: what an event's t_info is measured against (evaluate._t_info).
+    st_robot = np.where(f.sensed[st_idx] != 0, f.sensed[st_idx], f.robot_send[st_idx]) if len(st_idx) else np.zeros(0, np.int64)
+    st_sensed_true = op(st_robot) if len(st_idx) else np.zeros(0, np.int64)
     ok = session.reads.ok
     tr_motor = session.reads.motor[ok]
     if session.reads.value is not None:
@@ -361,6 +367,7 @@ def synthesize(session: Session, profile: RobotProfile, schedule: Schedule, seed
         cmd_value=c.angle[order].astype(np.float32),
         st_t=np.array([r[0] for r in st_rows], dtype=np.int64),
         st_sensed=np.array([r[1] for r in st_rows], dtype=np.int64),
+        st_sensed_true=st_sensed_true,
         st_count=f.count[st_idx].astype(np.int16) if len(st_idx) else np.zeros(0, np.int16),
         st_motor=f.motor[st_idx].astype(np.int16) if len(st_idx) else np.zeros((0, f.motor.shape[1]), np.int16),
         st_value=f.value[st_idx].astype(np.float32) if len(st_idx) else np.zeros((0, f.motor.shape[1]), np.float32),
@@ -506,6 +513,8 @@ _FORECAST_ARRAYS = ("t", "q_ms", "loss", "floor_ms", "outage", "valid_q", "valid
 
 def save_view(view: View, path: str) -> None:
     arrays = {name: getattr(view, name) for name in _ARRAYS_V1 + _ARRAYS_V2}
+    if view.st_sensed_true is not None:
+        arrays["st_sensed_true"] = view.st_sensed_true
     meta = dict(view.meta)
     if view.forecasts is not None:
         meta["forecastLevel"] = view.forecasts.level
@@ -532,6 +541,8 @@ def load_view(path: str) -> View:
                 kw[name] = kw[name][keep]
         if version >= 2:
             kw.update({name: z[name] for name in _ARRAYS_V2})
+        if "st_sensed_true" in z.files:
+            kw["st_sensed_true"] = z["st_sensed_true"]
         forecasts = None
         if "forecastLevel" in meta:
             forecasts = ForecastStream(level=str(meta.pop("forecastLevel")),

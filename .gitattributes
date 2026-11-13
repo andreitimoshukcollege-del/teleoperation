@@ -36,6 +36,11 @@
 # trap on any machine whose shell lacks git-lfs.
 *.docx binary
 
+# The learned predictors' weights (docs/adr/0025): raw float32, exact to the byte (golden-pinned). Without this,
+# text=auto decides by sniffing, and a file it took for text would have its "line endings" rewritten.
+*.weights binary
+*.bytes binary
+
 # Binaries -> LFS
 *.fbx   filter=lfs diff=lfs merge=lfs -text
 *.blend filter=lfs diff=lfs merge=lfs -text

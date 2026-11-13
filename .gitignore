@@ -19,11 +19,12 @@ __pycache__/
 .venv/
 venv/
 .ipynb_checkpoints/
+*.egg-info/
 
-# ROS 2 / colcon
-robot/build/
-robot/install/
-robot/log/
+# ROS 2 / colcon (colcon build runs in robot/ros)
+robot/ros/build/
+robot/ros/install/
+robot/ros/log/
 
 # Bulk research data: commit small golden fixtures in core/testdata/ only.
 # Session recordings and video go to a GitHub Release, not to git or LFS.
@@ -32,7 +33,6 @@ recordings/
 *.mkv
 
 # Training checkpoints. Only published models get committed.
-analysis/training/checkpoints/
 *.ckpt
 *.pt
 *.pth

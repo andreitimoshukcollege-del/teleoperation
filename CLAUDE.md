@@ -169,7 +169,7 @@ runs the same lookup from the PC), so the pushed address is its fallback.
 - **Never touch:** `results/` (append-only — write new directories, never edit old ones),
   `unity/TeleopVR/Library/`, `unity/TeleopXR/Library/`, `build/`, anything gitignored.
 - `robot/ros/` is code like any other, but deploying it (`just deploy-ros`) restarts the servo
-  driver, and `RelayProtocol.cs` and `relay_protocol.py` must change together. Nobody being at the
+  driver, and `RelayProtocol.cs` and `relay_protocol.py` must change together (a golden file pins them: `just gen-relay-golden`). Nobody being at the
   robot does not by itself block commanding real hardware (moving the arm, restarting the servo
   driver), but double-check first: say what will move and how far, and get the user's confirmation
   that the arm's workspace is clear before sending it (see "Testing the real robot").

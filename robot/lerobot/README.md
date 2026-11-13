@@ -9,6 +9,8 @@ lab's schema (`SINRG-Lab/world-models`, `data_collection/`). The converter runs 
 | `just lerobot-watch-start` / `-stop` / `-status` | the converter (`isaac-host` and `isaac-jetrover-host` start it if it is not running) |
 | `just lerobot-rebuild <robot>-<source>/<scenario>` | one dataset again from its kept takes |
 | `just lerobot-test` | the tests there, LeRobot round trip included |
+| `just isaac-jetrover-take [scenario] [script] [speed] [seconds]` | a take of Isaac's JetRover with no headset: joint-drive drives it from the PC and records it, as RECORD would (needs `just isaac-jetrover-host`) |
+| `just record-take <scenario> …` | the same on the real robot: **moves the arm**, someone watching |
 | `just isaac-share-scenarios` | lets the labmate read the takes and the datasets |
 | `just lerobot-robot-key` | once: lets the GPU machine copy the real robot's takes (a key of its own, the robot's address) |
 | `just lerobot-robot-host` | the robot's address again, after DHCP moved it |

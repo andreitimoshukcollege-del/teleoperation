@@ -89,8 +89,13 @@ namespace Teleop.RobotHost.Recording
         private long _statusSentTicks = long.MinValue;
 
         public ScenarioRecorder(string root, IAutoSessionSink sink, AutoSessionRecorder? auto, IScenarioFiles files, long ticksPerSecond,
-            Func<DateTime> utcNow, Func<long?> freeBytes, Func<UplinkCondition> uplink, Action<string>? log = null)
+            Func<DateTime> utcNow, Func<long?> freeBytes, Func<UplinkCondition> uplink, Action<string>? log = null,
+            ushort? firstRevision = null)
         {
+            // Each process starts its list revisions somewhere new. Starting at 0, the first list after a restart was always
+            // revision 1, the same number the headset held for the old process's list, so it kept the old names and called
+            // them current: a take could be labelled with the wrong scenario (the 2026-11 bug hunt, E-02).
+            _revision = firstRevision ?? (ushort)System.Security.Cryptography.RandomNumberGenerator.GetInt32(1, ushort.MaxValue);
             _root = Path.GetFullPath(root ?? throw new ArgumentNullException(nameof(root)));
             _sink = sink ?? throw new ArgumentNullException(nameof(sink));
             _auto = auto;

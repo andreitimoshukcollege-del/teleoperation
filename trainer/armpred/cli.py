@@ -75,6 +75,19 @@ def _prior_ages(config: dict) -> Optional[tuple]:
     return None
 
 
+def _card_ages(run: str) -> Optional[tuple]:
+    """The reading ages the run's model was trained with, from its model card, when they were fitted (``prior.config`` is
+    ``headset+fitted-ages``); None when the card is missing or says the headset's defaults."""
+    path = os.path.join(run, "model-card.json")
+    if not os.path.exists(path):
+        return None
+    with open(path, "r", encoding="utf-8") as f:
+        prior = json.load(f).get("prior", {})
+    if prior.get("config") != "headset+fitted-ages" or not prior.get("sensedAgeMs"):
+        return None
+    return tuple(float(x) for x in prior["sensedAgeMs"])
+
+
 def _forecast_cfg(config: dict):
     """``[forecast] level = "good"`` (every view), or ``[forecast.mixture]`` shares (a draw per view);
     the default is ADR 0021 decision 12's mixture."""
@@ -416,6 +429,13 @@ def cmd_evaluate(args) -> int:
     ages, servo = _prior_ages({"prior": prior}), _prior_servo({"prior": prior})
     if args.prior:
         log(f"prior {args.prior}: reading ages {ages} ms, relay-replay-servo {servo}")
+    else:
+        # A model trained on fitted reading ages is scored on them, not on the headset's defaults: the README's
+        # post-freeze command passes no --prior, and its p50 and p95 moved (the 2026-11 bug hunt, T-02). The fitted
+        # servo rows still need --prior: the card does not keep the servo fit.
+        ages = _card_ages(args.run)
+        if ages:
+            log(f"reading ages {ages} ms from the run's model card (it was trained on them); --prior adds the fitted servo rows")
     _evaluate_run(args.run, [os.path.dirname(d) for d in dirs], cfg, log=log, workers=args.workers,
                   simulated=not args.real, profile_path=args.profile, sensed_ages_ms=ages, servo=servo,
                   datasets_root=os.path.expanduser(args.datasets_root) if args.datasets_root else None,

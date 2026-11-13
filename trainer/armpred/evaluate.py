@@ -193,7 +193,11 @@ def _t_info(view: View) -> List[Tuple[int, str, int]]:
     An uplink event that moved the delay by at least ``UPLINK_CHANGE_MS`` is also an ``uplink-change``."""
     out = []
     fresh_t, fresh_s, newest = [], [], None
-    for t, s in zip(view.st_t, view.st_sensed):
+    # The frame's TRUE sensed time: ClockSync's estimate is off by its bias on an impaired link, and against it t_info
+    # picked frames sensed before the event, 66-145 ms early on 150-300 ms links (the 2026-11 bug hunt, T-01). A view
+    # saved before st_sensed_true existed falls back to the estimate.
+    sensed = view.st_sensed_true if view.st_sensed_true is not None else view.st_sensed
+    for t, s in zip(view.st_t, sensed):
         if newest is None or s > newest:
             newest = int(s)
             fresh_t.append(int(t))

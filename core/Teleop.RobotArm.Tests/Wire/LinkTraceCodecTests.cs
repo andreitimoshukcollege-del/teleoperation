@@ -38,9 +38,12 @@ namespace Teleop.RobotArm.Tests.Wire
         {
             var b = new byte[LinkTraceCodec.RecordBytes];
             LinkTraceCodec.TryEncode(LinkTraceKind.Frame, 1, 2, 3, 4, 5, 6, b);
-            long before = GC.GetAllocatedBytesForCurrentThread();
-            for (uint i = 0; i < 1000; i++) LinkTraceCodec.TryEncode(LinkTraceKind.Frame, i, i, 1_000_000_000, i * 20_000L, i * 20_000L - 9, 0, b);
-            Assert.Equal(before, GC.GetAllocatedBytesForCurrentThread());
+            uint i = 0;
+            Teleop.Core.Tests.TestSupport.AllocationAssert.Zero(() =>
+            {
+                LinkTraceCodec.TryEncode(LinkTraceKind.Frame, i, i, 1_000_000_000, i * 20_000L, i * 20_000L - 9, 0, b);
+                i++;
+            }, iterations: 1000);
         }
 
         [Fact]

@@ -1,0 +1,91 @@
+# Every check a PR must pass, in one workflow (root CLAUDE.md "Verify your work"). The three core/ gates, bridge-check,
+# and each Python suite. Suites that need Isaac Sim, LeRobot, torch or a robot skip those tests on their own
+# (importorskip, missing recordings), so what runs here is everything that can run on a plain Linux runner.
+name: checks
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+jobs:
+  core:
+    name: core (${{ matrix.gate }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        gate: [test, verify, audit]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+      - run: dotnet restore
+        working-directory: core
+      - if: matrix.gate == 'test'
+        run: dotnet test
+        working-directory: core
+      - if: matrix.gate != 'test'
+        run: dotnet run --project Teleop.Eval -- ${{ matrix.gate }}
+        working-directory: core
+
+  # Compiles unity/'s Bridge against Core at Unity's settings: a Core signature change otherwise breaks the editor
+  # while every gate above stays green (unity/BridgeCheck/README.md).
+  bridge-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+      - run: dotnet build --nologo
+        working-directory: unity/BridgeCheck
+
+  python:
+    name: python (${{ matrix.suite }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # analysis/ shells out to dotnet for some tests, hence setup-dotnet below for every suite.
+          - suite: analysis
+            dir: analysis
+            install: pip install -r requirements-dev.txt && pip install -e . --no-build-isolation
+            run: python -m pytest -q -p no:cacheprovider
+          - suite: trainer
+            dir: trainer
+            install: pip install -r requirements.txt
+            run: python -m pytest -q -p no:cacheprovider
+          # Isaac's copies of the arm-server wire, camera wire, shaper, FK and scene against their golden files.
+          - suite: isaac
+            dir: robot/isaac
+            install: pip install numpy==2.4.6 pytest==9.1.1
+            run: python -m pytest -q -p no:cacheprovider tests
+          # The converter without LeRobot (its round trip skips here and runs on the GPU machine: just lerobot-test).
+          - suite: lerobot
+            dir: robot/lerobot
+            install: pip install numpy==2.4.6 pytest==9.1.1
+            run: python -m pytest -q -p no:cacheprovider tests
+          # The ROS packages' plain-Python tests: every test file but ament's lint ones, which need a ROS install. A
+          # superset of what deploy-ros runs on the Jetson (it leaves out test_idle_keepalive.py).
+          - suite: ros
+            dir: robot/ros
+            install: pip install pytest==9.1.1 pyserial==3.5
+            run: >-
+              PYTHONPATH=src/teleop_relay:src/jetrover_arm_control python -m pytest -q -p no:cacheprovider src
+              --ignore-glob='*/test_copyright.py' --ignore-glob='*/test_flake8.py' --ignore-glob='*/test_pep257.py'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+      - run: ${{ matrix.install }}
+        working-directory: ${{ matrix.dir }}
+      - run: ${{ matrix.run }}
+        working-directory: ${{ matrix.dir }}

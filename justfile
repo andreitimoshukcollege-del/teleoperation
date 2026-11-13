@@ -815,7 +815,7 @@ deploy-robot checks="true":
 
 # Publish Teleop.RobotHost for the Jetson (linux-arm64), copy it over, and restart its systemd service -- needs passwordless ssh/scp; does NOT touch the Jetson's ROS 2 nodes, see robot/systemd/README.md. It runs recording whenever the headset commands the robot (--auto-record, docs/adr/0023; robot/README.md) unless auto_record=false, and parks then relaxes the arm on the headset's ROBOT OFF at rest_pose_deg (default jetrover_rest_pose_deg, docs/adr/0023 decision 5). Relay wire v5: deploy the ROS side too (just deploy-ros, or just deploy-robot for both)
 [group('robot: deploy and restart (someone at the robot)')]
-deploy-robothost remote_host=default_jetrover_host remote_user="jetson" operator_host=default_operator_host max_direction_magnitude="" profile_path="" pulses_per_second="" auto_record="true" rest_pose_deg=jetrover_rest_pose_deg park_contact_deg=jetrover_park_contact_deg:
+deploy-robothost remote_host=default_jetrover_host remote_user="jetson" operator_host=default_operator_host max_direction_magnitude="" profile_path="" pulses_per_second="" auto_record="true" rest_pose_deg=jetrover_rest_pose_deg park_contact_deg=jetrover_park_contact_deg scenario_free_gb="8:4":
     #!/usr/bin/env bash
     set -euo pipefail
     case "{{auto_record}}" in true|false) ;; *) echo "error: auto_record must be true or false, got '{{auto_record}}'" >&2; exit 1 ;; esac
@@ -868,9 +868,18 @@ deploy-robothost remote_host=default_jetrover_host remote_user="jetson" operator
     case "$rest_pose" in *[!0-9.,-]*) echo "error: rest_pose_deg must be comma-separated degrees, got '$rest_pose'" >&2; exit 1 ;; esac
     if [ -n "$rest_pose" ]; then extra_args="$extra_args --rest-pose-deg $rest_pose"; fi
     if [ -n "{{park_contact_deg}}" ]; then extra_args="$extra_args --park-contact-deg {{park_contact_deg}}"; fi
+    # The headset's RECORD button (docs/adr/0033 amendment 1): takes into ~/recordings/scenarios/<scenario>/, the list
+    # in its scenarios.txt. A take starts only with scenario_free_gb's first number of GB free and stops below the second
+    # (the camera costs about 4.5 GB an hour), and RobotHost waits up to 30 s for CameraHost's camera.jlog trailer
+    # (deploy-camerahost record=true) and lists camera/ in files.sha256. Every take becomes a LeRobot episode on the GPU
+    # machine (docs/adr/0036) once it is copied there.
+    case "{{scenario_free_gb}}" in [0-9]*:[0-9]*) ;; *) echo "error: scenario_free_gb is START:STOP in GB, e.g. 8:4" >&2; exit 1 ;; esac
     if [ "{{auto_record}}" = "true" ]; then
         extra_args="$extra_args --auto-record --build-info-robothost /home/jetson/robothost_current/BUILD_INFO --build-info-driver /home/jetson/teleop_ros_current/BUILD_INFO"
         if [ -z "{{profile_path}}" ]; then extra_args="$extra_args --auto-record-profile /home/jetson/robothost_current/robot-profile.json"; fi
+        free='{{scenario_free_gb}}'
+        extra_args="$extra_args --scenarios /home/jetson/recordings/scenarios --scenario-start-free-gb ${free%%:*} --scenario-stop-free-gb ${free##*:}"
+        extra_args="$extra_args --auto-record-writer camera:30"
     fi
     # robothost-run.sh is the stable script teleop-robothost.service's ExecStart points at
     # (robot/systemd/teleop-robothost.service) -- regenerated on every deploy with this run's exact
@@ -900,6 +909,8 @@ deploy-robothost remote_host=default_jetrover_host remote_user="jetson" operator
         sleep 2
         echo '--- teleop-robothost.service status ---'
         systemctl status teleop-robothost --no-pager -n 10
+        echo '--- the recordings disk (takes need {{scenario_free_gb}} GB free to start:stop) ---'
+        df -h /home/jetson/recordings | tail -1
     "
 
 # Read-only: the camera sender's recent journal (teleop-camerahost.service) with its per-10 s [stats] lines, the video devices present, and the kernel's recent USB/camera events. Use it when the headset's feed freezes or cuts out
@@ -2693,12 +2704,18 @@ camera-view seconds="0" max_fps="0" http_port="8090" remote_host=default_jetrove
 
 # Publish Teleop.CameraHost for the Jetson, copy it over, write ~/camerahost-run.sh and restart teleop-camerahost if it is installed (see robot/systemd/README.md) -- moves nothing; does not touch teleop-robothost or the ROS nodes. size is the capture size, WIDTHxHEIGHT, e.g. `just deploy-camerahost 1280x720`. The default 640x360 is the camera's whole width (its 4:3 sizes, 640x480 included, are the middle 76% of its 16:9 sensor; docs/adr/0014, 2026-10-25). The camera offers MJPEG at 320x180, 320x240, 640x360, 640x480, 1280x720, 1280x960, 1440x1080 and 1920x1080; the receivers take frames up to 256 KB
 [group('robot: deploy and restart (someone at the robot)')]
-deploy-camerahost size="640x360" fps="30" device="auto" remote_host=default_jetrover_host remote_user="jetson":
+deploy-camerahost size="640x360" fps="30" device="auto" record="true" remote_host=default_jetrover_host remote_user="jetson":
     #!/usr/bin/env bash
     set -euo pipefail
     case "{{size}}" in [1-9]*x[1-9]*) ;; *) echo "error: size is WIDTHxHEIGHT, e.g. 1280x720 (got '{{size}}')" >&2; exit 1 ;; esac
     width="{{size}}"; width="${width%x*}"; height="{{size}}"; height="${height#*x}"
     case "$width$height" in *[!0-9]*) echo "error: size is WIDTHxHEIGHT, e.g. 1280x720 (got '{{size}}')" >&2; exit 1 ;; esac
+    case "{{record}}" in true|false) ;; *) echo "error: record must be true or false, got '{{record}}'" >&2; exit 1 ;; esac
+    # record=true: CameraHost also records the camera into every take from the headset's RECORD button (docs/adr/0014
+    # amendment 3, docs/adr/0036), following the robot's control file; other sessions get a camera.jlog with no frames.
+    # It stops below 3 GB free, under RobotHost's take thresholds (deploy-robothost scenario_free_gb).
+    record_args=""
+    if [ "{{record}}" = "true" ]; then record_args="--record-control /home/jetson/recordings/.active --record-min-free-gb 3"; fi
     host=$(just _robot-host "{{remote_host}}")
     cd core
     stamp=$(date +%Y%m%d-%H%M%S)
@@ -2722,7 +2739,7 @@ deploy-camerahost size="640x360" fps="30" device="auto" remote_host=default_jetr
     ssh -o StrictHostKeyChecking=accept-new "$target" "cat > /home/jetson/camerahost-run.sh" <<EOF
     #!/bin/bash
     exec /home/jetson/.dotnet/dotnet /home/jetson/camerahost_current/Teleop.CameraHost.dll serve \
-        --device {{device}} --width $width --height $height --fps {{fps}} --port 6003
+        --device {{device}} --width $width --height $height --fps {{fps}} --port 6003 $record_args
     EOF
     ssh -o StrictHostKeyChecking=accept-new "$target" "
         set -e
@@ -3716,6 +3733,11 @@ gen-arm-server-golden:
 gen-camera-wire-golden:
     cd core && TELEOP_WRITE_GOLDEN=1 WSLENV="${WSLENV:+$WSLENV:}TELEOP_WRITE_GOLDEN" dotnet test Teleop.CameraHost.Tests --filter "FullyQualifiedName~CameraWireGoldenTests"
 
+# Rewrite robot/lerobot/tests/golden/camera/ from CameraHost's session writer (docs/adr/0014 amendment 3), after a deliberate change to CameraSessionWriter.cs; then change robot/lerobot/teleop_lerobot/takes.py until robot/lerobot's tests pass
+[group('lerobot')]
+gen-camera-session-golden:
+    cd core && TELEOP_WRITE_GOLDEN=1 WSLENV="${WSLENV:+$WSLENV:}TELEOP_WRITE_GOLDEN" dotnet test Teleop.CameraHost.Tests --filter "FullyQualifiedName~CameraSessionGoldenTests"
+
 # Rewrite the golden files Core writes for Isaac and the scene file (docs/adr/0031 amendment 2, docs/adr/0032), after a deliberate change: the canonical parse of core/Scenes/fr3-duo-bench.json (robot/isaac/golden/scene-fr3-duo-bench.json), the FR3 Duo's tool poses at seeded joint sets (robot/isaac/golden/fr3-duo-fk-v1.json), seed 1's object layout (core/Scenes/testdata/layout-seed1.txt), and the arm-server wire's. Then change the Python copies until `just isaac-bridge-test` passes
 [group('isaac')]
 gen-isaac-goldens:
@@ -3926,6 +3948,8 @@ record-stop remote_host=default_jetrover_host remote_user="jetson":
     for i in $(seq 1 60); do
         done=true
         for f in robothost driver; do tail -n 1 "$dir/$f.jlog" 2>/dev/null | grep -q '^END|' || done=false; done
+        # CameraHost's log, when it records (docs/adr/0014 amendment 3): it closes within half a second of the control file.
+        if [ -e "$dir/camera.jlog" ]; then tail -n 1 "$dir/camera.jlog" | grep -q '^END|' || done=false; fi
         $done && break; sleep 0.25
     done
     python3 - "$dir" <<'PY'
@@ -3958,7 +3982,8 @@ record-stop remote_host=default_jetrover_host remote_user="jetson":
         print(f"no joint commands: the slider stays {asked}, as record-start was told")
     json.dump(meta, open(path, "w"), indent=2)
     PY
-    cd "$dir" && sha256sum session.json robot-profile.json *.jlog > files.sha256
+    # A writer's folder (camera/: CameraHost's frames) is hashed with the logs, as SessionFinalizer does for a take.
+    cd "$dir" && sha256sum session.json robot-profile.json *.jlog $(find camera -type f ! -name '*.part' 2>/dev/null | sort) > files.sha256
     for f in *.jlog; do printf '%-16s %s\n' "$f" "$(tail -n 1 "$f")"; done
     echo "stopped $(basename "$dir")"
     SH
@@ -4155,6 +4180,16 @@ robot-recordings remote_host=default_jetrover_host remote_user="jetson":
          for d in {{robot_recordings}}/jetrover/*/; do [ -d "$d" ] || continue; \
            closed=$(for f in "$d"*.jlog; do tail -n 1 "$f" | grep -q "^END|" && echo -n "+" || echo -n "-"; done); \
            printf "%-60s %6s  logs closed: %s\n" "$(basename "$d")" "$(du -sh "$d" | cut -f1)" "$closed"; done; \
+         df -h {{robot_recordings}} | tail -1'
+
+# The headset's takes on the robot (docs/adr/0033 amendment 1): per scenario, each take's size, whether RobotHost completed it (files.sha256), and how many camera frames it holds; then the disk. Touches nothing
+[group('robot: recording (docs/adr/0021)')]
+robot-scenarios remote_host=default_jetrover_host remote_user="jetson":
+    ssh -o StrictHostKeyChecking=accept-new "{{remote_user}}@$(just _robot-host "{{remote_host}}")" \
+        'root={{robot_recordings}}/scenarios; echo "recording now: $(cat {{robot_recordings}}/.active 2>/dev/null || echo nothing)"; \
+         for d in "$root"/*/*-take*/; do [ -d "$d" ] || continue; \
+           frames=$(grep -c "^VF" "$d"camera.jlog 2>/dev/null || echo 0); \
+           printf "%-50s %6s  %-10s %6s camera frames\n" "${d#$root/}" "$(du -sh "$d" | cut -f1)" "$([ -f "$d"files.sha256 ] && echo complete || echo open)" "$frames"; done; \
          df -h {{robot_recordings}} | tail -1'
 
 # Copy new sessions from the robot into recordings/jetrover/ (gitignored; archive them to a GitHub Release), never overwriting one already here, then check each new one

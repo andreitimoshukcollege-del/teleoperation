@@ -64,6 +64,15 @@ namespace Teleop.RobotHost
         public string? ScenariosRoot { get; init; }
 
         /// <summary>
+        /// A take starts only with this much free disk, and stops below <see cref="ScenarioStopFreeGigabytes"/>
+        /// (docs/adr/0033 amendment 1). Null keeps <c>ScenarioRecorder</c>'s defaults, 25 and 21 GB, sized for the GPU
+        /// machine; the Jetson's disk is smaller.
+        /// </summary>
+        public double? ScenarioStartFreeGigabytes { get; init; }
+
+        public double? ScenarioStopFreeGigabytes { get; init; }
+
+        /// <summary>
         /// Path to a <c>RobotArmProfile</c> JSON file (<c>core/RobotProfiles/*.json</c> convention,
         /// docs/adr/0011-generic-robot-arm-profiles.md) -- null (the default) falls back to
         /// <c>RobotArmProfile.JetRoverMeasuredDefault</c>, a compatibility convenience, not the
@@ -131,7 +140,7 @@ namespace Teleop.RobotHost
             "   [--auto-record-root <dir>] [--auto-record-profile <path>] [--auto-record-source robot|isaac] [--auto-record-writer <name:seconds>]...\n" +
             "   [--build-info-robothost <path>] [--build-info-driver <path>]]\n" +
             "  [--scene <file> --world-socket <path> [--local-world-socket <path>] [--scene-seed <n>|auto] [--world-timeout <s>]]\n" +
-            "  [--scenarios <dir>]\n" +
+            "  [--scenarios <dir> [--scenario-start-free-gb <gb>] [--scenario-stop-free-gb <gb>]]\n" +
             "  [--rest-pose-deg <d1,d2,...>] [--park-speed-rad-per-sec <r>] [--park-tolerance-deg <d>] [--park-timeout-seconds <s>]\n" +
             "  [--park-contact-deg <d>]\n" +
             "  --reply-to sender (default) replies to wherever the latest command came from;\n" +
@@ -217,6 +226,7 @@ namespace Teleop.RobotHost
             string? profilePath = null;
             string? recordControlPath = null;
             string? scenePath = null, worldSocket = null, localWorldSocket = null, scenarios = null;
+            double? scenarioStartFree = null, scenarioStopFree = null;
             ulong? sceneSeed = null;
             double worldTimeout = 60;
             string? uplinkControlPath = null;
@@ -388,6 +398,12 @@ namespace Teleop.RobotHost
                     case "--scenarios" when i + 1 < args.Length:
                         scenarios = args[++i];
                         break;
+                    case "--scenario-start-free-gb" when i + 1 < args.Length:
+                        scenarioStartFree = Number(args[i], args[++i]);
+                        break;
+                    case "--scenario-stop-free-gb" when i + 1 < args.Length:
+                        scenarioStopFree = Number(args[i], args[++i]);
+                        break;
                 }
             }
 
@@ -455,6 +471,20 @@ namespace Teleop.RobotHost
                 return null;
             }
 
+            if ((scenarioStartFree != null || scenarioStopFree != null) && scenarios == null)
+            {
+                error = "--scenario-start-free-gb and --scenario-stop-free-gb need --scenarios.";
+                return null;
+            }
+
+            // ScenarioRecorder's defaults stand in for an omitted one.
+            double startFree = scenarioStartFree ?? 25, stopFree = scenarioStopFree ?? 21;
+            if (!(stopFree >= 0) || !(startFree >= stopFree))
+            {
+                error = $"the scenario free-disk thresholds must be zero or more, start ({startFree} GB) at least stop ({stopFree} GB).";
+                return null;
+            }
+
             string? powerInvalid = power.Validate();
             if (powerInvalid != null)
             {
@@ -475,6 +505,8 @@ namespace Teleop.RobotHost
                 LocalWorldSocketPath = localWorldSocket ?? (worldSocket != null ? worldSocket + ".robothost" : null),
                 WorldTimeoutSeconds = worldTimeout,
                 ScenariosRoot = scenarios,
+                ScenarioStartFreeGigabytes = scenarioStartFree,
+                ScenarioStopFreeGigabytes = scenarioStopFree,
             };
         }
 

@@ -329,8 +329,10 @@ of the frames of a 73 s session on 2026-11-03, with the control file read every 
 ### The robot's camera (docs/adr/0014 amendment 3)
 
 On the real JetRover, `Teleop.CameraHost` follows the same control file and records the camera. RobotHost waits for its
-trailer (`--auto-record-writer camera:30`), checks its `FS` lines and lists `camera/` in `files.sha256`. A session from
-it has, in addition:
+trailer (`--auto-record-writer camera:30`), checks its `FS` lines and lists `camera/` in `files.sha256`. Frames go only
+into takes (a `session.json` with a `scenario`, docs/adr/0033), unless CameraHost runs with `--record-frames all`. Any
+other session gets a `camera.jlog` with a header and a trailer and nothing between. A session with frames has, in
+addition:
 
 | File | What |
 |---|---|
@@ -341,7 +343,7 @@ it has, in addition:
 |---|---|---|
 | `CM` | `camera` `width` `height` | The camera, `front`, and its frame size. No intrinsics or pose: none are calibrated |
 | `VF` | `t` `frame` `stateSensed` `flags` `parts` | One recorded frame, as `isaac.jlog`'s. `t` is when it was queued for writing. `stateSensed` is the frame's `captureTicks`: the V4L2 start of exposure on CLOCK_MONOTONIC (docs/adr/0014 §4). `flags` is empty. `parts` is `front.rgb:offset:length` |
-| `FD` | `t` `frame` `reason` | A frame not recorded (`writer-behind`): it was still streamed |
+| `FD` | `t` `frame` `reason` | A frame not recorded: `writer-behind` (the disk fell behind), or `unstamped` (no capture stamp on CLOCK_MONOTONIC, so nothing could join it). It was still streamed |
 | `ER` | `t` `reason` | Why the session's frames ended early (the disk below its floor, an I/O error) |
 | `FS` | `file` `bytes` `sha256` | One per file under `camera/`, written before the trailer |
 

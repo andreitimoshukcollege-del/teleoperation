@@ -336,6 +336,12 @@ headset. CameraHost records them itself.
    - `FD` for a frame not recorded, `FS` per sidecar, and the `END` trailer.
 3. **The frames are the camera's own MJPEG bytes,** recorded unchanged (§3: no encode on the Jetson). That is all of
    them, at the capture rate.
+   - **Only into takes, by default:** sessions whose `session.json` has a `scenario` (ADR 0033). Another session, such as
+     an automatic one opened whenever the headset drives the arm (ADR 0023 decision 4), gets a `camera.jlog` with no
+     frames. Recording every session would fill the Jetson's disk with video nobody asked for, and then no take could
+     start. RobotHost still finds the writer's trailer. `--record-frames all` records every session.
+   - **A frame with no capture stamp** on CLOCK_MONOTONIC (§4) is not recorded. It gets an `FD` (`unstamped`), since
+     nothing could join it to the joints.
 4. **Recording never slows the stream.** Frames go through a bounded queue to a writer thread. A full queue drops the
    frame from the recording with an `FD`, never from the stream. The writer stops below a free-disk floor, with an `ER`.
 5. **RobotHost waits for it** (`--auto-record-writer camera:30`, `deploy-robothost`). It checks the `FS` lines and lists

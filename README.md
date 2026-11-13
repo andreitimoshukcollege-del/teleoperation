@@ -74,7 +74,12 @@ only if you want `analysis/`'s GUI.
 | `unity/TeleopVR/` | the Meta Quest operator app, parked (kept, no longer developed) |
 | `robot/ros/` | the robot's ROS 2 workspace: the servo board driver and the relay to RobotHost |
 | `robot/systemd/` | the Jetson's services |
+| `robot/isaac/` | the FR3 Duo and the JetRover's arm in Isaac Sim, on the GPU machine, behind RobotHost |
+| `robot/lerobot/` | headset takes into the lab's LeRobot v3 datasets, on the GPU machine (its own venv) |
+| `robot/pilot/` | the pilot plans and the scripts that record them (`just pilot`, `just pilot-on-robot`) |
+| `robot/jetrover/`, `robot/franka/` | the robot descriptions: the JetRover's URDF and Isaac sidecar, the FR3 Duo's vendored URDF |
 | `analysis/` | Python — reads `results/`, produces figures |
+| `trainer/` | the arm simulator and model training, on the GPU machine; imports nothing from the repo |
 | `experiments/` | one YAML per experiment |
 | `results/` | **append-only.** New directories only; never edit an old one |
 | `docs/metrics.md` | every metric is defined here |

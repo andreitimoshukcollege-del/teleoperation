@@ -3599,7 +3599,7 @@ lerobot-test:
     "$HOME/isaacsim/lerobot-venv/bin/python" -m pytest -q -p no:cacheprovider tests
     REMOTE
 
-# (Re)start the LeRobot converter on the GPU machine at the pushed commit (docs/adr/0036): every headset take, 60 s after it is complete, becomes an episode of ~/isaacsim/lerobot/<robot>-<source>/<scenario>/. Detached: it outlives this shell. isaac-host and isaac-jetrover-host start it when it is not running
+# (Re)start the LeRobot converter on the GPU machine at the pushed commit (docs/adr/0036): every headset take, 60 s after it is complete, becomes an episode of ~/isaacsim/lerobot/<robot>-<source>/<scenario>/. Detached: it outlives this shell. Also installs its keeper, a cron entry that starts it again within 5 minutes of a reboot or a crash (isaac-host and isaac-jetrover-host start it too when it is not running)
 [group('lerobot')]
 lerobot-watch-start:
     #!/usr/bin/env bash
@@ -3609,12 +3609,12 @@ lerobot-watch-start:
     [ -n "$(git branch -r --contains "$commit" 2>/dev/null)" ] || { echo "error: $commit is not on GitHub: push it first (the GPU machine runs what GitHub has)" >&2; exit 1; }
     ssh -o ConnectTimeout=10 "{{gpu_host}}" "bash -s start '$commit'" < robot/lerobot/watch.sh
 
-# Stop the LeRobot converter on the GPU machine: it finishes the take it is writing first (up to 10 min)
+# Stop the LeRobot converter on the GPU machine, and remove its keeper so it stays stopped: it finishes the take it is writing first (up to 10 min). just lerobot-watch-start brings both back
 [group('lerobot')]
 lerobot-watch-stop:
     ssh -o ConnectTimeout=10 "{{gpu_host}}" "bash -s stop" < robot/lerobot/watch.sh
 
-# The LeRobot converter on the GPU machine: running or not, its log, and every dataset with its episodes and size
+# The LeRobot converter on the GPU machine: running or not, whether its keeper is on, its log, and every dataset with its episodes and size
 [group('lerobot')]
 lerobot-watch-status:
     ssh -o ConnectTimeout=10 "{{gpu_host}}" "bash -s status" < robot/lerobot/watch.sh

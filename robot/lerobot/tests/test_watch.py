@@ -105,3 +105,51 @@ def test_discarded_and_open_takes_are_never_candidates(scenarios, tmp_path):
     os.remove(os.path.join(open_take, "files.sha256"))
     conv, _ = converter(scenarios, str(tmp_path / "lerobot"))
     assert conv.pass_once() == 0
+
+
+LAB_TIMING_FIELDS = {"episode_saved_so_far", "frame_in_episode", "pc_sample_mono_ns", "jetson_state_wall_ns",
+                     "jetson_action_wall_ns", "pc_state_recv_mono_ns", "pc_action_recv_mono_ns", "pc_camera_read_mono_ns"}
+
+
+def test_the_lab_recorders_two_files_sit_beside_the_dataset_in_its_format(scenarios, tmp_path):
+    jetrover_take(scenarios, name="20261112T100000Z-take001")
+    jetrover_take(scenarios, name="20261112T100500Z-take002")
+    out = str(tmp_path / "lerobot")
+    conv, _ = converter(scenarios, out)
+    conv.pass_once()
+    root = os.path.join(out, "jetrover-isaac", "reach")
+
+    timing = [json.loads(l) for l in open(os.path.join(root, "capture_timing.jsonl"))]
+    assert {frozenset(t) for t in timing} == {frozenset(LAB_TIMING_FIELDS)}  # record_jetrover.py's fields, no more
+    assert [t["episode_saved_so_far"] for t in timing] == [0] * 31 + [1] * 31
+    assert [t["frame_in_episode"] for t in timing[:3]] == [0, 1, 2]
+    first = timing[0]
+    assert first["jetson_state_wall_ns"] is None and first["jetson_action_wall_ns"] is None
+    assert first["pc_state_recv_mono_ns"] <= first["pc_camera_read_mono_ns"] and first["pc_action_recv_mono_ns"] <= first["pc_camera_read_mono_ns"]
+
+    events = [json.loads(l) for l in open(os.path.join(root, "raw_ros_events.jsonl"))]
+    readies = [e for e in events if e["type"] == "ready"]
+    assert len(readies) == 2 and readies[0]["servo_ids"] == [1, 2, 3, 4, 5, 10]  # one per take, as the bridge says ready
+    actions = [e for e in events if e["type"] == "action"]
+    states = [e for e in events if e["type"] == "state"]
+    assert {frozenset(e) for e in actions + states} == {frozenset({"type", "jetson_wall_ns", "jetson_mono_ns", "servo_ids", "values", "pc_received_mono_ns"})}
+    assert actions[0]["servo_ids"] == [1, 2, 3, 4, 5, 10] and actions[0]["values"] == [501.5, 502.5, 503.5, 504.5, 505.5, 510.5]
+    assert states[0]["servo_ids"] == [1, 2, 3, 4, 5] and states[0]["values"] == [401.0, 402.0, 403.0, 404.0, 405.0]
+    # The bridge emits a state only when every arm servo read: the one RI with motor 3 invalid is not a state.
+    assert len(states) == 2 * 115 and len(actions) == 2 * 116
+    times = [e["jetson_mono_ns"] for e in events[1:117 + 115]]
+    assert times == sorted(times)
+
+
+def test_an_fr3_dataset_gets_them_too_with_its_sixteen_motors(scenarios, tmp_path):
+    fr3_take(scenarios)
+    out = str(tmp_path / "lerobot")
+    conv, _ = converter(scenarios, out)
+    conv.pass_once()
+    root = os.path.join(out, "fr3_duo-isaac", "handover")
+    events = [json.loads(l) for l in open(os.path.join(root, "raw_ros_events.jsonl"))]
+    state = next(e for e in events if e["type"] == "state")
+    assert state["servo_ids"] == list(range(1, 9)) + list(range(11, 19))
+    assert state["values"][7] == 0.02  # the hand's 0.5 opening as finger travel, as in observation.state
+    frames = read_ledger(root)[0]["frames"]
+    assert len(open(os.path.join(root, "capture_timing.jsonl")).readlines()) == frames

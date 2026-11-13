@@ -5,6 +5,11 @@ Beside LeRobot's own files, ``meta/teleop/`` holds what the dataset was made fro
 
 - ``takes.jsonl``: one line per episode, in episode order;
 - ``episode_<n>.timing.jsonl``: one line per frame, with its source times.
+
+At the dataset's top, as the lab's recorder writes them (SINRG-Lab/world-models, ``record_jetrover.py``), so its tools
+and habits carry over: ``capture_timing.jsonl`` (one line per frame, every episode) and ``raw_ros_events.jsonl`` (every
+take's commands and readings, ``takes.raw_events``). Their times are the session's one clock; the lab's ``*_wall_ns``
+fields are null, since a take keeps no wall clock per record.
 """
 
 from __future__ import annotations
@@ -16,7 +21,7 @@ import shutil
 import time
 from typing import Callable, Dict, List, Optional
 
-from .takes import Take, TakeError, checksum_id
+from .takes import Take, TakeError, checksum_id, raw_events
 
 TELEOP = os.path.join("meta", "teleop")
 
@@ -111,6 +116,23 @@ def append_take(writer, root: str, take: Take) -> dict:
     with open(os.path.join(teleop, f"episode_{episode:06d}.timing.jsonl"), "w", encoding="utf-8") as f:
         for i, frame in enumerate(take.frames):
             f.write(json.dumps({"frameIndex": i, **frame.timing}, separators=(",", ":")) + "\n")
+    # The lab recorder's two files (see the module doc): its field names, filled from the take's one clock.
+    with open(os.path.join(root, "capture_timing.jsonl"), "a", encoding="utf-8") as f:
+        for i, frame in enumerate(take.frames):
+            t = frame.timing
+            f.write(json.dumps({
+                "episode_saved_so_far": episode,
+                "frame_in_episode": i,
+                "pc_sample_mono_ns": t["grid"],
+                "jetson_state_wall_ns": None,
+                "jetson_action_wall_ns": None,
+                "pc_state_recv_mono_ns": t["sensed"] - t["stateAge"],
+                "pc_action_recv_mono_ns": t["sensed"] - t["actionAge"],
+                "pc_camera_read_mono_ns": t["sensed"],
+            }, separators=(",", ":")) + "\n")
+    with open(os.path.join(root, "raw_ros_events.jsonl"), "a", encoding="utf-8") as f:
+        for event in raw_events(take):
+            f.write(json.dumps(event, separators=(",", ":")) + "\n")
     line = {"episode": episode, "take": os.path.abspath(take.path), "session": take.session_id,
             "filesSha256": checksum_id(take.path), "frames": len(take.frames),
             "filled": sum(1 for f in take.frames if f.timing["filled"]), "fps": take.fps, "task": take.task,

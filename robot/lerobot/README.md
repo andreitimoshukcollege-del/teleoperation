@@ -18,7 +18,10 @@ lab's schema (`SINRG-Lab/world-models`, `data_collection/`). The converter runs 
 
 Datasets: `~/isaacsim/lerobot/<robot>-<source>/<scenario>/`. Beside LeRobot's files, `meta/teleop/takes.jsonl` names
 the take behind each episode, and `episode_<n>.timing.jsonl` gives each frame's source times and its state's and
-action's ages. Takes that could not be converted are in `~/isaacsim/lerobot/skipped.jsonl`, with the reason.
+action's ages. At the dataset's top, as the lab's `record_jetrover.py` writes them: `capture_timing.jsonl` (one line
+per frame of every episode, its field names) and `raw_ros_events.jsonl` (every take's commands as `action` and
+readings as `state`, its bridge's fields). Their times are the session's one clock, CLOCK_MONOTONIC; the lab's
+`*_wall_ns` fields are null, since a take keeps no wall clock per record. Takes that could not be converted are in `~/isaacsim/lerobot/skipped.jsonl`, with the reason.
 
 | Module | |
 |---|---|

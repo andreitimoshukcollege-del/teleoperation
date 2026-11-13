@@ -68,15 +68,14 @@ namespace Teleop.RobotArm.Tests.Operator
         {
             var m = new LiveLinkMeter(Tps);
             Feed(m, 300, 10);
-            long before = GC.GetAllocatedBytesForCurrentThread();
-            for (int i = 300; i < 600; i++)
+            int i = 300;
+            Teleop.Core.Tests.TestSupport.AllocationAssert.Zero(() =>
             {
                 m.OnFrame((uint)(1000 + i), i * 20_000_000L, RobotTps, i * 20_000L + 10_000, i * 20_000L);
                 m.Trim(i * 20_000L);
                 _ = m.LagMs + m.LossFraction + m.JitterMs;
-            }
-
-            Assert.Equal(before, GC.GetAllocatedBytesForCurrentThread());
+                i++;
+            }, iterations: 1000);
         }
     }
 }

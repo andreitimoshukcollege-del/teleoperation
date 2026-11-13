@@ -552,3 +552,34 @@ Checked against `drive-wp-2p5`, where the relay sent 14,743 commands:
 |---|---|---|---|
 | Relay-to-driver lag (cross-correlated, every motor) | 66 ms | 62 ms | 10 ms |
 | Commands that reached the driver | 12,858 | 13,037 | 14,743 |
+
+### The other 28 ms: the executor's order (2026-11-12)
+
+The 28 ms the replay left unexplained in the 2026-10-25 teleop sessions comes from rclpy's executor. Of the 10,980
+commands in those sessions that could be told apart, 10,977 reached the driver one full cycle after the cycle they
+arrived in, though the queue was mostly empty.
+
+- **Why.** Each wait, the executor runs the callbacks it found ready: timers first, then subscriptions. A message that
+  arrives during a read cycle is first seen by the next wait. That wait also finds the read timer overdue, so a whole
+  read cycle runs before the message does.
+- **Why the waypoint drives already matched.** Their queue is always backlogged, so the subscription is always ready.
+- **What the emulator does now** (`a7d1a1b`). `DriverEmulator` notes which subscriptions had a message waiting when each
+  read cycle starts (`cycles_started` on both feedback classes). After the cycle, while the timer is due, only those run.
+  In an idle gap with the timer not due, messages run as they arrive, as before.
+
+Relay-to-driver lag, cross-correlated over every motor:
+
+| Session | Real | Replay now | Replay before |
+|---|---|---|---|
+| teleop 20:09 / 20:20 | 54 / 52 ms | 48 ms | 26 ms |
+| `drive-wp-2p5` | 66 ms | 62 ms | 62 ms |
+
+**J3 fitted again at `a7d1a1b`**, with the same split and two rounds:
+
+- **The search stayed where it started,** the `a87cea9` parameters with no command delay. All 20 probes scored worse than
+  the start's 1.273. A delay of 10 ms scored 1.312 and 20 ms scored 1.411, so the fit no longer wants the 5 ms either.
+- **The parameters do not change,** and neither do the bridge's defaults.
+- **Held-out p50 / p95 is 0.72° / 2.64°,** from 3.12° at the same parameters before the executor rule. This is now the
+  best held-out p95 of any fit, `3548c46`'s 50 ms stand-in included.
+- **By session** (wp-sched, teleop 20:09, teleop 20:20, course 22:46, course 22:55): 2.40, 2.64, 2.88, 2.64, 1.92.
+- **The fit sessions** score p95 0.96, 0.96, 2.16 and 3.12.

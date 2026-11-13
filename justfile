@@ -3596,6 +3596,74 @@ lerobot-rebuild dataset:
         --root "$HOME/isaacsim/scenarios-real" --out "$HOME/isaacsim/lerobot" "$DATASET"
     REMOTE
 
+# Let the LeRobot converter on the GPU machine copy the real robot's takes (docs/adr/0036 decision 7), once: makes the GPU account a key of its own (~/.ssh/id_ed25519_jetrover, if it has none), adds it to the Jetson's authorized_keys through this PC's own access, writes the robot's address where the converter looks first (~/isaacsim/lerobot/robot-hosts; it falls back on jetrover-sinrg.local), and checks the GPU machine reaches the robot with it. Changes only those two files
+[group('lerobot')]
+lerobot-robot-key remote_host=default_jetrover_host remote_user="jetson":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    host=$(just _robot-host "{{remote_host}}")
+    pub=$(ssh -o ConnectTimeout=10 "{{gpu_host}}" 'k=$HOME/.ssh/id_ed25519_jetrover; mkdir -p ~/.ssh && chmod 700 ~/.ssh
+        [ -f "$k" ] || ssh-keygen -q -t ed25519 -N "" -C "lerobot-pull@$(hostname)" -f "$k"; cat "$k.pub"')
+    case "$pub" in "ssh-ed25519 "*) ;; *) echo "error: no public key from the GPU machine: $pub" >&2; exit 1 ;; esac
+    echo "$pub" | ssh -o StrictHostKeyChecking=accept-new "{{remote_user}}@$host" 'read -r key; mkdir -p ~/.ssh && chmod 700 ~/.ssh
+        touch ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys
+        if grep -qxF "$key" ~/.ssh/authorized_keys; then echo "[robot] the GPU machine'"'"'s key was already allowed"; else echo "$key" >> ~/.ssh/authorized_keys; echo "[robot] allowed the GPU machine'"'"'s key"; fi'
+    just lerobot-robot-host "$host"
+
+# Tell the LeRobot converter on the GPU machine where the robot is now (it is on DHCP): writes ~/isaacsim/lerobot/robot-hosts there and checks the GPU machine reaches the robot with its key (just lerobot-robot-key, once). host defaults to the robot's address as this PC finds it
+[group('lerobot')]
+lerobot-robot-host host=default_jetrover_host remote_user="jetson":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    addr=$(just _robot-host "{{host}}")
+    case "$addr" in *[!A-Za-z0-9.:-]*|"") echo "error: '$addr' is not an address" >&2; exit 1 ;; esac
+    ssh -o ConnectTimeout=10 "{{gpu_host}}" "ADDR='$addr' U='{{remote_user}}' bash -s" <<'REMOTE'
+    set -euo pipefail
+    mkdir -p ~/isaacsim/lerobot && echo "$ADDR" > ~/isaacsim/lerobot/robot-hosts
+    if ssh -i ~/.ssh/id_ed25519_jetrover -o IdentitiesOnly=yes -o BatchMode=yes -o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new "$U@$ADDR" true; then
+        echo "[lerobot] the GPU machine reaches the robot at $ADDR: its complete takes are copied within a minute of the converter's next pass"
+    else
+        echo "[lerobot] wrote $ADDR, but the GPU machine cannot reach the robot there yet (off, another network, or no key: just lerobot-robot-key)" >&2
+    fi
+    REMOTE
+
+# Free the robot's disk of takes the GPU machine holds (docs/adr/0036): a take, kept or set aside, whose copy on the GPU machine has the same files.sha256 (and so checked out when it was copied) is deleted on the robot; never the one recording. Dry run unless apply=true
+[group('robot: recording (docs/adr/0021)')]
+robot-prune-takes apply="false" remote_host=default_jetrover_host remote_user="jetson":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    target="{{remote_user}}@$(just _robot-host "{{remote_host}}")"
+    list='for f in */*-take*/files.sha256 _discarded/*/*-take*/files.sha256; do [ -f "$f" ] && echo "${f%/files.sha256} $(sha256sum "$f" | cut -c1-64)"; done; true'
+    robot=$(ssh -o StrictHostKeyChecking=accept-new "$target" "a=\$(cat ~/recordings/.active 2>/dev/null); cd ~/recordings/scenarios 2>/dev/null || exit 0; echo \"ACTIVE \$a\"; $list")
+    gpu=$(ssh -o ConnectTimeout=10 "{{gpu_host}}" "cd ~/isaacsim/scenarios-real 2>/dev/null || exit 0; $list")
+    deletable=$(python3 - "$robot" "$gpu" <<'PY'
+    import re, sys
+    robot, gpu = sys.argv[1].splitlines(), sys.argv[2].splitlines()
+    take = re.compile(r"^(_discarded/)?[A-Za-z0-9][A-Za-z0-9._-]{0,23}/\d{8}T\d{6}Z-take\d+$")
+    active = next((l[7:].strip() for l in robot if l.startswith("ACTIVE ")), "")
+    held = {}
+    for line in gpu:
+        path, _, sha = line.partition(" ")
+        held[path.split("/", 1)[1] if path.startswith("_discarded/") else path] = sha
+    for line in robot:
+        if line.startswith("ACTIVE "):
+            continue
+        path, _, sha = line.partition(" ")
+        bare = path.split("/", 1)[1] if path.startswith("_discarded/") else path
+        if not take.match(path) or (active and active.rstrip("/").endswith("/" + bare)):
+            continue
+        if held.get(bare) == sha:
+            print(path)
+        else:
+            print(f"keeping {path}: {'not on the GPU machine' if bare not in held else 'its GPU copy differs'}", file=sys.stderr)
+    PY
+    )
+    n=$(echo "$deletable" | grep -c . || true)
+    echo "--- held on the GPU machine and deletable on the robot: $n take(s)"
+    echo "$deletable" | grep . | sed 's/^/  /' || true
+    if [ "{{apply}}" != true ] || [ "$n" = 0 ]; then [ "{{apply}}" != true ] && echo "dry run: nothing deleted. just robot-prune-takes true deletes them"; exit 0; fi
+    ssh "$target" "cd ~/recordings/scenarios && for d in $(echo $deletable); do rm -rf -- \"\$d\" && echo \"  deleted \$d\"; done; echo \"--- free now: \$(df -h ~/recordings | tail -1 | awk '{print \$4}')\""
+
 # The JetRover's arm in Isaac Sim on the GPU machine, behind the JetRover's own RobotHost (docs/adr/0034 J2): checks out this commit in ~/teleoperation-isaac (it must be on GitHub), builds RobotHost, starts teleop_isaac.jetrover_bridge on a relay socket (log ~/isaacsim/jetrover-bridge.log) and then RobotHost exactly as the Jetson runs it, with --relay-socket pointing at Isaac instead of the ROS relay: joint port 6002, discovery 6005, the JetRover profile, sessions recorded into ~/isaacsim/jetrover-recordings marked source isaac. Point the headset's JetRover app at it with `just push-galaxy-config <GPU machine's address>`. Enter stops both, as does `just isaac-stop`. Refuses while an Isaac host of ours (FR3 or JetRover) is running there: they share the ports. No real robot moves
 [group('isaac')]
 isaac-jetrover-host scene="jetrover-bench" scene_seed="auto":

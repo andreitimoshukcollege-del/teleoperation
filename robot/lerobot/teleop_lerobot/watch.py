@@ -49,8 +49,8 @@ def complete_takes(roots: Iterable[str], now: float, settle: float) -> List[str]
 
 class Converter:
     def __init__(self, roots: List[str], out: str, writer, fps: int = 15, settle: float = 60.0,
-                 log: Callable[[str], None] = print, clock: Callable[[], float] = time.time):
-        self.roots, self.out, self.writer = roots, out, writer
+                 log: Callable[[str], None] = print, clock: Callable[[], float] = time.time, puller=None):
+        self.roots, self.out, self.writer, self.puller = roots, out, writer, puller
         self.fps, self.settle, self.log, self.clock = fps, settle, log, clock
         self.checked: Dict[Tuple[str, str], Optional[Tuple[str, str]]] = {}  # (take, content) -> (group, scenario) or None
         self.failed_rebuilds: Dict[str, Tuple] = {}
@@ -114,6 +114,11 @@ class Converter:
     def pass_once(self) -> int:
         """One pass. Returns how many episodes were written."""
         written = 0
+        if self.puller is not None:
+            try:
+                self.puller.pass_once()  # the real robot's new takes (pull.py), at most once a minute
+            except Exception as e:  # noqa: BLE001 - an unreachable robot must not stop the Isaac takes
+                self.log(f"robot: the copy pass failed: {e!r}")
         kept = self.kept()
         for root in sorted(set(kept) | set(self.known_datasets())):
             takes = kept.get(root, [])

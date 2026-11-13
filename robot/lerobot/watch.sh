@@ -18,6 +18,9 @@ log=$out/watch.log
 # The scenario roots: the FR3 Duo's and the JetRover's Isaac takes, and the real robot's (copied in by ADR 0036
 # decision 7). A root that does not exist yet is skipped each pass.
 roots=(--root "$HOME/isaacsim/scenarios" --root "$HOME/isaacsim/scenarios-jetrover" --root "$HOME/isaacsim/scenarios-real")
+# The real robot's complete takes are copied into scenarios-real (pull.py), with the key and address that
+# just lerobot-robot-key sets up; until then the watcher says once that it has no key.
+robot=(--pull-robot "$HOME/isaacsim/scenarios-real" --robot-hosts-file "$out/robot-hosts" --robot-key "$HOME/.ssh/id_ed25519_jetrover")
 
 running() { [ -f "$pidfile" ] && kill -0 "$(cat "$pidfile")" 2>/dev/null; }
 
@@ -38,7 +41,7 @@ start() {
     (cd "$repo" && git fetch -q origin && git checkout -q "$commit")
     mkdir -p "$out"
     cd "$repo/robot/lerobot"
-    nohup setsid "$venv/bin/python" -m teleop_lerobot watch "${roots[@]}" --out "$out" >> "$log" 2>&1 < /dev/null &
+    nohup setsid "$venv/bin/python" -m teleop_lerobot watch "${roots[@]}" "${robot[@]}" --out "$out" >> "$log" 2>&1 < /dev/null &
     echo $! > "$pidfile"
     echo "[lerobot] watcher started at $(cd "$repo" && git log --oneline -1) (pid $!), log $log"
 }

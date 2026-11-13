@@ -69,16 +69,14 @@ jobs:
             dir: robot/lerobot
             install: pip install numpy==2.4.6 pytest==9.1.1
             run: python -m pytest -q -p no:cacheprovider tests
-          # The ROS packages' plain-Python tests, as deploy-ros runs them on the Jetson, plus the keep-alive's.
+          # The ROS packages' plain-Python tests: every test file but ament's lint ones, which need a ROS install. A
+          # superset of what deploy-ros runs on the Jetson (it leaves out test_idle_keepalive.py).
           - suite: ros
             dir: robot/ros
             install: pip install pytest==9.1.1 pyserial==3.5
             run: >-
-              PYTHONPATH=src/teleop_relay:src/jetrover_arm_control python -m pytest -q -p no:cacheprovider
-              src/teleop_relay/test/test_relay_protocol.py src/teleop_relay/test/test_stale_tracked_value.py
-              src/jetrover_arm_control/test/test_servo_controller.py src/jetrover_arm_control/test/test_read_backoff.py
-              src/jetrover_arm_control/test/test_session_log.py src/jetrover_arm_control/test/test_write_gate.py
-              src/jetrover_arm_control/test/test_idle_keepalive.py
+              PYTHONPATH=src/teleop_relay:src/jetrover_arm_control python -m pytest -q -p no:cacheprovider src
+              --ignore-glob='*/test_copyright.py' --ignore-glob='*/test_flake8.py' --ignore-glob='*/test_pep257.py'
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

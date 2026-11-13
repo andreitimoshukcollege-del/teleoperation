@@ -214,20 +214,11 @@ namespace Teleop.RobotArm.Tests.Operator
         {
             var filter = new HandPoseFilter();
             double t = 0;
-            for (int i = 0; i < 500; i++) // warm up: the first calls JIT, which counts as allocation
+            Teleop.Core.Tests.TestSupport.AllocationAssert.Zero(() =>
             {
                 t += Frame;
                 filter.Filter(Config, Palm.Compose(RigidTransform.Rotation(0, 0, 1, t)), t);
-            }
-
-            long before = GC.GetAllocatedBytesForCurrentThread();
-            for (int i = 0; i < 2000; i++)
-            {
-                t += Frame;
-                filter.Filter(Config, Palm.Compose(RigidTransform.Rotation(0, 0, 1, t)), t);
-            }
-
-            Assert.Equal(before, GC.GetAllocatedBytesForCurrentThread());
+            }, iterations: 1000);
         }
 
         [Fact]

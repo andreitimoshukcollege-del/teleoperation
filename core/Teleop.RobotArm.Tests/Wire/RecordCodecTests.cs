@@ -98,14 +98,12 @@ namespace Teleop.RobotArm.Tests.Wire
             var state = new RecordingState();
             state.ApplyListPart(b.AsSpan(0, n));
             var status = new RecordStatus(RecordState.Idle, RecordOutcome.None, 0, 255, 2, 2, 0, 0, 0, 100);
-            long before = GC.GetAllocatedBytesForCurrentThread();
-            for (int i = 0; i < 1000; i++)
+            long i = 0;
+            Teleop.Core.Tests.TestSupport.AllocationAssert.Zero(() =>
             {
                 state.ApplyListPart(b.AsSpan(0, n));
-                state.ApplyStatus(status, i);
-            }
-
-            Assert.Equal(before, GC.GetAllocatedBytesForCurrentThread());
+                state.ApplyStatus(status, i++);
+            }, iterations: 1000);
             Assert.True(state.ListCurrent);
         }
     }

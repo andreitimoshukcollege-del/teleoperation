@@ -179,21 +179,13 @@ namespace Teleop.RobotArm.Tests.Operator
             var world = new WorldState(World.SceneDocumentTests.LoadShipped(), new byte[32]);
             SerialChainJointLink link = Link(profile, socket, clock, world);
             byte[] frame = WorldFrame(2, 0.5f, 1);
-            var frames = Enumerable.Range(0, 3000).Select(_ => frame).ToArray();
-            for (int i = 0; i < 300; i++)
+            long i = 0;
+            Teleop.Core.Tests.TestSupport.AllocationAssert.Zero(() =>
             {
-                socket.Incoming.Enqueue((frames[i], i));
+                socket.Incoming.Enqueue((frame, i));
                 link.Tick(i);
-            }
-
-            long before = GC.GetAllocatedBytesForCurrentThread();
-            for (int i = 300; i < 3000; i++)
-            {
-                socket.Incoming.Enqueue((frames[i], i));
-                link.Tick(i);
-            }
-
-            Assert.Equal(before, GC.GetAllocatedBytesForCurrentThread());
+                i++;
+            }, iterations: 1000);
         }
 
         private static SerialChainJointLink Link(SerialChainProfile profile, FakeSocket socket, ManualClock clock)

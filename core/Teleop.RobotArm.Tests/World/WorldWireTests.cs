@@ -76,10 +76,8 @@ namespace Teleop.RobotArm.Tests.World
         {
             var state = new WorldState(SceneDocumentTests.LoadShipped(), new byte[32]);
             ObjectPose p = P(2, 0.5f);
-            for (int i = 0; i < 200; i++) state.Apply(p, i);
-            long before = GC.GetAllocatedBytesForCurrentThread();
-            for (int i = 200; i < 5000; i++) state.Apply(p, i);
-            Assert.Equal(before, GC.GetAllocatedBytesForCurrentThread());
+            long i = 0;
+            Teleop.Core.Tests.TestSupport.AllocationAssert.Zero(() => state.Apply(p, i++), iterations: 1000);
         }
 
         [Fact]

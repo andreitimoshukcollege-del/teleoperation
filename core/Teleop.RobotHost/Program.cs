@@ -189,21 +189,11 @@ namespace Teleop.RobotHost
             long lastJointCommandTicks = long.MinValue;
 
             // Recording whenever the robot is commanded (docs/adr/0023 decision 4).
-            AutoSessionRecorder? auto = null;
-            if (recorder != null && a.AutoRecord != null && jointTransport != null)
-            {
-                string autoRoot = recorder.AutoRoot;
-                Directory.CreateDirectory(autoRoot);
-                auto = new AutoSessionRecorder(a.AutoRecord, recorder, clock.TicksPerSecond, () => DateTime.UtcNow,
-                    () => FreeBytes(autoRoot),
-                    () => uplinkSchedule != null
-                        ? new UplinkCondition(uplink!.Profile, uplinkSchedule.Seed, uplinkSchedule.Spec)
-                        : new UplinkCondition(uplink!.Profile, uplinkSeedNow),
-                    Console.WriteLine);
-                long? freeNow = FreeBytes(autoRoot);
-                Console.WriteLine($"[record] automatic sessions into {autoRoot} while commanded ({a.AutoRecord}); " +
-                    (freeNow.HasValue ? $"{freeNow.Value / 1073741824.0:0.00} GB free now" : "free space unknown"));
-            }
+            AutoSessionRecorder? auto = jointTransport == null ? null : HostRecording.StartAuto(a.AutoRecord, recorder, clock.TicksPerSecond,
+                () => uplinkSchedule != null
+                    ? new UplinkCondition(uplink!.Profile, uplinkSchedule.Seed, uplinkSchedule.Spec)
+                    : new UplinkCondition(uplink!.Profile, uplinkSeedNow),
+                Console.WriteLine);
 
             // A world beside the arm (docs/adr/0034 decision 7, J4): the scene file, which the Isaac bridge runs too, served on
             // its world socket over the arm-server wire's world messages. RobotHost decides where objects go (WorldHost).
@@ -211,17 +201,9 @@ namespace Teleop.RobotHost
             ArmServerClient? worldServer = null;
             if (a.ScenePath != null && jointTransport != null)
             {
-                byte[] sceneBytes = File.ReadAllBytes(a.ScenePath);
-                WorldScene scene = System.Text.Json.JsonSerializer.Deserialize<SceneDocument>(sceneBytes, new System.Text.Json.JsonSerializerOptions { IncludeFields = true })!.ToScene();
-                if (scene.RobotProfile != profile.Name) throw new InvalidDataException($"the scene is for '{scene.RobotProfile}', the profile is '{profile.Name}'");
-                byte[] sceneSha = System.Security.Cryptography.SHA256.HashData(sceneBytes);
+                WorldScene scene = HostRecording.LoadScene(a.ScenePath, profile.Name, out byte[] sceneSha);
                 ulong sceneSeed = a.SceneSeed ?? unchecked((ulong)DateTime.UtcNow.Ticks);
-                if (a.AutoRecord != null)
-                {
-                    a.AutoRecord.ScenePath = a.ScenePath;
-                    a.AutoRecord.SceneName = scene.Name;
-                    a.AutoRecord.SceneSeed = sceneSeed;
-                }
+                HostRecording.NoteScene(a.AutoRecord, a.ScenePath, scene, sceneSeed);
 
                 worldServer = new ArmServerClient(new UdsArmServerLink(a.WorldSocketPath!, a.LocalWorldSocketPath!), ReadOnlySpan<byte>.Empty, clock.TicksPerSecond);
                 if (!worldServer.Connect(() => clock.NowTicks, profile.Name, a.WorldTimeoutSeconds, ms => Thread.Sleep(ms), out string why, requireState: false))
@@ -236,20 +218,8 @@ namespace Teleop.RobotHost
             }
 
             // Takes of named scenarios from the headset's RECORD button (docs/adr/0033).
-            ScenarioRecorder? scenarios = null;
-            if (recorder != null && a.ScenariosRoot != null)
-            {
-                var folder = new ScenarioFolder(a.ScenariosRoot);
-                folder.EnsureExists();
-                string scenariosRoot = Path.GetFullPath(a.ScenariosRoot);
-                scenarios = new ScenarioRecorder(scenariosRoot, recorder, auto, folder, clock.TicksPerSecond, () => DateTime.UtcNow,
-                    () => FreeBytes(scenariosRoot), () => new UplinkCondition(uplink!.Profile, uplinkSeedNow), Console.WriteLine);
-                // The Jetson's disk is smaller than the GPU machine's (docs/adr/0033 amendment 1).
-                if (a.ScenarioStartFreeGigabytes is double startFree) scenarios.StartFreeGigabytes = startFree;
-                if (a.ScenarioStopFreeGigabytes is double stopFree) scenarios.StopFreeGigabytes = stopFree;
-                Console.WriteLine($"[scenario] the headset's RECORD button records into {scenariosRoot}: a take starts with " +
-                    $"{scenarios.StartFreeGigabytes:0.#} GB free and stops below {scenarios.StopFreeGigabytes:0.#} GB");
-            }
+            ScenarioRecorder? scenarios = HostRecording.StartScenarios(a.ScenariosRoot, a.ScenarioStartFreeGigabytes, a.ScenarioStopFreeGigabytes, recorder, auto, clock.TicksPerSecond,
+                () => new UplinkCondition(uplink!.Profile, uplinkSeedNow), Console.WriteLine);
 
             long sideSendTicks = 0;
             Action<byte[], int> sendSide = (buffer, bytes) => jointTransport!.Send(buffer.AsSpan(0, bytes), sideSendTicks);
@@ -651,19 +621,6 @@ namespace Teleop.RobotHost
             sigterm?.Dispose();
             Console.WriteLine("Stopped.");
             return 0;
-        }
-
-        /// <summary>Free space where the recordings go, or null when it cannot be read.</summary>
-        private static long? FreeBytes(string path)
-        {
-            try
-            {
-                return new DriveInfo(path).AvailableFreeSpace;
-            }
-            catch (Exception e) when (e is IOException || e is UnauthorizedAccessException || e is ArgumentException)
-            {
-                return null;
-            }
         }
 
         /// <summary>

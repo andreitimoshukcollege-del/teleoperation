@@ -116,14 +116,13 @@ namespace Teleop.RobotArm.Tests.World
             WorldState world = Posed(scene);
             var d = new PointerDrag(scene);
             At(d, 0, true, 0.40, 0.0, 0.10, world);
-            long before = GC.GetAllocatedBytesForCurrentThread();
-            for (int i = 0; i < 2000; i++)
+            int i = 0;
+            Teleop.Core.Tests.TestSupport.AllocationAssert.Zero(() =>
             {
                 At(d, 0, true, 0.40, 0.001 * (i % 100), 0.10, world);
                 At(d, 1, false, 0.7, 0.4, 0.0, world);
-            }
-
-            Assert.Equal(before, GC.GetAllocatedBytesForCurrentThread());
+                i++;
+            }, iterations: 1000);
         }
 
         [Fact]

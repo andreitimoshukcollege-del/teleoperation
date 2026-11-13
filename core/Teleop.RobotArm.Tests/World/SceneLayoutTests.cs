@@ -81,10 +81,8 @@ namespace Teleop.RobotArm.Tests.World
         public void Drawing_AllocatesNothing()
         {
             var poses = new RigidTransform[Scene.Objects.Length];
-            for (ulong s = 0; s < 200; s++) SceneLayout.Draw(Scene, s, poses); // warm up: the first calls JIT
-            long before = GC.GetAllocatedBytesForCurrentThread();
-            for (ulong s = 0; s < 2000; s++) SceneLayout.Draw(Scene, s, poses);
-            Assert.Equal(before, GC.GetAllocatedBytesForCurrentThread());
+            ulong s = 0;
+            Teleop.Core.Tests.TestSupport.AllocationAssert.Zero(() => SceneLayout.Draw(Scene, s++, poses), iterations: 1000);
         }
 
         [Fact]

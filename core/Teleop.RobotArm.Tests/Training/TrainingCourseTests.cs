@@ -240,22 +240,12 @@ namespace Teleop.RobotArm.Tests.Training
         {
             TrainingCourse course = Started(14);
             double now = Run(course, 0, TrainingCourse.CountdownSeconds + 0.05, Vector3.Zero, ready: true);
-            for (int i = 0; i < 500; i++) // warm up: the first calls JIT, which counts as allocation
+            Teleop.Core.Tests.TestSupport.AllocationAssert.Zero(() =>
             {
                 now += Frame;
                 course.Update(now, new Vector3(0.15f, 0f, 0.08f), 0.5f, true, false);
                 _ = course.State;
-            }
-
-            long before = GC.GetAllocatedBytesForCurrentThread();
-            for (int i = 0; i < 2000; i++)
-            {
-                now += Frame;
-                course.Update(now, new Vector3(0.15f, 0f, 0.08f), 0.5f, true, false);
-                _ = course.State;
-            }
-
-            Assert.Equal(before, GC.GetAllocatedBytesForCurrentThread());
+            }, iterations: 500);
         }
 
         [Fact]

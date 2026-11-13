@@ -1,11 +1,16 @@
 # robot/
 
-Everything that runs on the JetRover's Jetson that is not .NET, and the robot descriptions:
+Everything robot-side that is not .NET: what runs on the JetRover's Jetson, the simulated robots
+and the dataset converter on the GPU machine, the pilot scripts, and the robot descriptions:
 
 | Path | What |
 |---|---|
 | `ros/` | the ROS 2 (Foxy) colcon workspace: `jetrover_arm_control` (the Hiwonder board's serial protocol, the servo bus, the battery) and `teleop_relay` (the bridge to RobotHost) |
 | `systemd/` | the Jetson's four services, and how to install them |
+| `isaac/` | Isaac Sim's Python on the GPU machine: the FR3 Duo behind RobotHost (docs/adr/0031) and the JetRover's arm behind the relay (docs/adr/0034). See its `README.md` |
+| `lerobot/` | its own venv on the GPU machine: headset takes into the lab's LeRobot v3 datasets (docs/adr/0036). See its `README.md` |
+| `pilot/` | the pilot plans (`pilot-v1.txt`, `pilot-v2.txt`), `pilot.py` (`just pilot`, from the laptop) and `onboard.py` (`just pilot-on-robot`, on the Jetson), docs/adr/0021 |
+| `jetrover/urdf/` | the JetRover's URDF and its Isaac sidecar `jetrover.sim.json`, written by RobotHost's `JetRoverSimModel` (docs/adr/0034; `JetRoverSimModelTests` requires the committed bytes), and `meshes/`, the lab twin's CAD (`just jetrover-visuals`) |
 | `franka/fr3_duo/` | the FR3 Duo's robot description (Franka's URDF and meshes, vendored with provenance, docs/adr/0026). Nothing runs from it: it is the input to the FR3 profile and the Unity model |
 
 `ros/` came in from the separate

@@ -11,15 +11,18 @@ after the gate, runs what it exports.
 - **Nothing here imports anything from the rest of the repo**, and nothing in the repo imports this.
   The packed file must work on a machine that has never seen the repo: no .NET, no Unity, no LFS.
 - **The only shared surface is `contract/`**: the file-format specs (`SESSION_FORMAT.md`,
-  `VIEW_FORMAT.md`, `MODEL_FORMAT.md`, `FORECAST_FORMAT.md`, the network model's output, and
-  `NETWORK_DATASETS.md`) and
-  `golden/`. A format change bumps its version, changes the
+  `VIEW_FORMAT.md`, `MODEL_FORMAT.md`, `FORECAST_FORMAT.md` (the network model's output),
+  `LINK_TRACE_FORMAT.md` (the headset's link trace) and `NETWORK_DATASETS.md`), `golden/`,
+  `profiles/` and `traces/` (copies of `core/RobotProfiles/fr3-duo.json` and
+  `core/testdata/traces/synthetic-burst.trace`). A format change bumps its version, changes the
   spec and both sides in the same commit, and keeps the old version readable until no recording
   uses it.
 - **`golden/` is written by the repo, never by hand**: `cd core && dotnet run --project Teleop.Eval
-  -- gen-trainer-golden ../trainer/contract/golden`. It pins this package's copies of Core
-  (`SeededRng`, the impairments, the profile catalog, `ClockSync`, `relay-replay`) to the C#
-  originals. If a golden test fails, the copy is wrong or Core changed; fix whichever moved, and never
+  -- gen-trainer-golden ../trainer/contract/golden` (`just gen-trainer-golden`). It pins this
+  package's copies of Core (`SeededRng`, the impairments, the profile catalog, `ClockSync`,
+  `relay-replay`, `relay-replay-servo`, the trajectory shaper, `franka-replay`) to the C#
+  originals. `golden/linktrace-v1.json` is the exception: `LinkTraceCodecTests` writes it, and it
+  pins `armpred/net/linktrace.py` to `Teleop.RobotArm`'s `LinkTraceCodec`. If a golden test fails, the copy is wrong or Core changed; fix whichever moved, and never
   loosen a tolerance to make it pass.
 
 ## Copies of Core are exact, or they are not copies
@@ -69,25 +72,26 @@ sha256 in the model card.
 
 - `runs/<name>/` on the GPU machine: `model.onnx`, `model-card.json`, `report.md`, `views/`,
   `checkpoints/`. Nothing under `runs/` is committed; checkpoints never leave the GPU machine.
-- A model is committed only when a published result depends on it, under `core/testdata/models/`,
-  by the repo's C# phase.
+- A model is committed only when a published result depends on it, under `core/testdata/learned/`,
+  by the repo's C# phase (see `core/testdata/CLAUDE.md`).
 
 ## Layout
 
 | Path | Holds |
 |---|---|
-| `armpred/contract/` | session (v1, the JetRover's; v2, a serial-chain robot's), view and bundle readers and writers, the session checker, the serial-chain profile (`chain_profile.py`). numpy only, so `just recording-check` and `just pack-dataset` run without torch |
-| `armpred/net/` | the copies of Core: `SeededRng`, impairments, `EmulatedTransport`'s ordering, the profile catalog, `ClockSync`; and `forecast.py`, network forecast v1 and the forecasters of known quality (not a copy) |
+| `armpred/contract/` | session (v1, the JetRover's; v2, a serial-chain robot's), view and bundle readers and writers, the `.jlog` line format (`jlog.py`), the session checker, the robot profiles (`profile.py`, `chain_profile.py`), `forecast.jlog` (`forecast_log.py`), and finding sessions the headset's network disturbance altered (`disturbance.py`). numpy only, so `just recording-check` and `just pack-dataset` run without torch |
+| `armpred/net/` | the copies of Core: `SeededRng`, impairments, `EmulatedTransport`'s ordering, the profile catalog, `ClockSync`; `forecast.py`, network forecast v1 and the forecasters of known quality (not a copy); `linktrace.py`, the headset's link trace reader |
 | `armpred/net/datasets/` | the network datasets (docs/adr/0035 N2, `contract/NETWORK_DATASETS.md`): fetch, `.trace` v2, the tiers by Y.1541 and G.1050 (`standards.py`, `tiering.py`), the held-out split. Not a copy of Core |
-| `armpred/baselines/` | `hold-last`, `relay-replay`, the trajectory shaper and `franka-replay` (copies of Core, golden-pinned), `relay-replay-adaptive` (a dev baseline: online lag and droop, speed-blind) |
+| `armpred/baselines/` | `hold-last`, `relay-replay`, `relay-replay-servo`, the trajectory shaper and `franka-replay` (copies of Core, golden-pinned), `relay-replay-adaptive` (`adaptive.py`, a dev baseline: online lag and droop, speed-blind) |
 | `armpred/sim/` | the JetRover simulator (operator motion, RobotHost, the relay gate, the servos, the reads); `fr3.py`, the FR3 Duo's (the shaper, a tracking lag, a payload bias; session v2, docs/adr/0028) |
-| `armpred/data/` | schedules, and turning a session plus a schedule and a seed into what the headset would have seen (views v3) |
+| `armpred/data/` | schedules, the sender-to-robot clock map (`clockmap.py`), and turning a session plus a schedule and a seed into what the headset would have seen (views v3) |
 | `armpred/features/` | the model's input window (layout v3: the JetRover's arm and gripper; layout v4: the FR3 Duo's rows and per-arm blocks, `contract/MODEL_FORMAT.md`) |
 | `armpred/fr3_pipeline.py`, `export_v4.py`, `evaluate_fr3.py` | `armpred fr3-sim-pretrain`: the FR3's matrix, layout v4 shards, training, the v4 export (weights format 2) and its simulated evaluation (docs/adr/0028) |
 | `contract/profiles/` | `fr3-duo.json`, a byte-identical copy of `core/RobotProfiles/fr3-duo.json` (an Eval test holds them equal) |
 | `armpred/models/`, `train.py`, `export.py`, `evaluate.py`, `report.py` | torch models, training, ONNX export, the evaluation and the trainer gate |
 | `armpred/sysid.py` | what the recordings say about the robot: the simulator's ranges and the prior's fitted reading ages |
-| `armpred/pipeline.py`, `armpred/cli.py` | the session matrix, `prepare`, `train-run`, `sim-pretrain`, `grid`, `finetune`, `sysid` |
-| `configs/` | TOML run configs, and the pre-registered `split-v1.toml` |
-| `slurm/` | `apptainer.def`, `train-array.sbatch` |
+| `armpred/golden_learned.py`, `golden_learned_v4.py`, `golden_forecast.py` | the golden fixtures for the repo's C# copies, written to `core/testdata/learned/` (`armpred golden-learned`, `golden-learned-v4`, `golden-forecast`) |
+| `armpred/pipeline.py`, `armpred/cli.py` | the session matrix, `prepare`, `train-run`, `sim-pretrain`, `grid`, `finetune`, `sysid`, and the rest of `armpred`'s subcommands |
+| `configs/` | TOML run configs; the splits, the pre-registered `split-v1.toml` first; `priors/`, the prior's fitted reading ages and servo parameters |
+| `slurm/` | `apptainer.def`, `prepare.sbatch`, `train-array.sbatch` |
 | `tests/` | pytest; `tests/golden/` checks the copies of Core |

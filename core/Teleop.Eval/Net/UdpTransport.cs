@@ -6,8 +6,10 @@ using Teleop.Core.Contracts;
 namespace Teleop.Eval.Net
 {
     /// <summary>
-    /// A byte-for-byte copy of <c>Teleop.RobotHost.Net.UdpTransport</c>, for the operator/dev-
-    /// machine side of a real cross-machine link (<c>clocksync-check</c>). Each host gets its own
+    /// A copy of <c>Teleop.RobotHost.Net.UdpTransport</c>'s fixed-peer mode, for the operator/dev-
+    /// machine side of a real cross-machine link (<c>clocksync-check</c>, <c>move-arm</c>,
+    /// <c>chain-teleop-probe</c>). RobotHost's has since gained a reply-to-sender mode (#57); this
+    /// one always sends to the endpoint given at construction. Each host gets its own
     /// copy rather than a shared project reference between sibling host projects -- the same
     /// "every host gets its own copy" precedent <c>Teleop.Eval.Time.MonotonicClock</c>'s own doc
     /// comment already establishes for <c>ITimeAuthority</c>, extended here to the first real

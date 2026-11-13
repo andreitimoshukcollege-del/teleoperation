@@ -1,6 +1,7 @@
 # analysis/
 
-Python. Reads `results/`, produces figures and statistics, trains models, exports ONNX.
+Python. Reads `results/` and produces figures and statistics. Training and ONNX export are
+`trainer/`'s (see "Model training" below).
 
 **This side never influences the runtime.** It consumes emitted data and produces artifacts.
 It does not reimplement algorithms — if a plot needs a metric that Core doesn't emit, add the
@@ -183,14 +184,15 @@ disagree, and you will trust the wrong one.
   agent acting on its own. It exists for clearing scratch sweeps (e.g. repeated
   `exp-gui-sweep` runs from this same GUI), not for routine cleanup — nothing a paper or writeup
   cites should ever go through it.
-- `tests/test_cli_against_committed_run.py` runs the real CLI end-to-end against the committed
-  `results/exp-001-predictor-baseline/` run and checks a computed p50 against a hand
-  computation from the raw CSV — it skips itself if that result directory isn't present, it
+- `tests/test_cli_against_committed_run.py` runs the real CLI end-to-end against the
+  `results/exp-001-predictor-baseline/20260804-020431Z/` run and checks a computed p50 against a
+  hand computation from the raw CSV. That run is not committed (`results/` is gitignored except
+  its `CLAUDE.md`), so the test skips itself unless the run's `manifest.json` is present; it
   never fabricates a pass. This is the test that actually proves the pipeline works, not just
   that its pieces don't crash; a change that breaks only this test is a real regression, not a
   fixture problem.
 - Every new figure/aggregation function needs a test against the tiny synthetic fixture in
-  `tests/conftest.py` (`synthetic_run`), not the real committed result — hand-computable values
+  `tests/conftest.py` (`synthetic_run`), not a real result — hand-computable values
   keep assertions meaningful instead of "whatever the code currently outputs."
 - `.venv/` is gitignored; recreate it, don't commit it.
 

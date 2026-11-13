@@ -1,8 +1,9 @@
 # Teleop.Eval
 
-The headless CLI: `verify`, `audit`, `sweep`, `replay`, `compare`, plus two undocumented
-`gen-*` tools. A **host** — unlike `core/Teleop.Core/`, this project is allowed to touch a
-wall clock, do real file I/O, and take NuGet dependencies (`YamlDotNet`, so far).
+The headless CLI: the gates `verify` and `audit`, `sweep`, the stubs `replay` and `compare`, and
+the fixture generators, robot tools and benches in the tables below. A **host** — unlike
+`core/Teleop.Core/`, this project is allowed to touch a wall clock, do real file I/O, and take
+NuGet dependencies (`YamlDotNet`, so far).
 
 ## Layout
 
@@ -12,14 +13,18 @@ wall clock, do real file I/O, and take NuGet dependencies (`YamlDotNet`, so far)
 | `Metrics/` | `CsvMetricSink` — the file-writing `IMetricSink` Core is forbidden from having |
 | `Recording/` | `TlogFileWriter`/`TlogFileReader` — own the actual `.tlog` file handle `Recording/RecordFormat.cs` (Core) is forbidden from touching |
 | `Verification/` | `VerifyCommand`, `AuditCommand` — Gate 3's two real checks |
-| `Sweep/` | `ExperimentConfig`, `NetworkProfileCatalog`, `TraceFile`, `SweepCommand`, `ManifestWriter` — Gate 5's sweep |
-| `Tooling/` | `GoldenSessionBuilder`, `SyntheticTraceBuilder` — deterministic generators for committed fixtures, never hand-authored data |
-| `Net/` | `UdpTransport` — a real, socket-backed `ITransport` for this host's side of a cross-machine link. A deliberate byte-for-byte duplicate of `Teleop.RobotHost`'s own copy, same precedent as `Time/MonotonicClock`. `UdpRelayCommand` — `udp-relay` |
+| `Sweep/` | `ExperimentConfig`, `NetworkProfileCatalog`, `TraceFile`, `SweepCommand`, `ManifestWriter`, `ResolvedStack` — Gate 5's sweep |
+| `Tooling/` | `GoldenSessionBuilder`, `SyntheticTraceBuilder`, `TrainerGoldenBuilder` — deterministic generators for committed fixtures, never hand-authored data (`gen-golden`, `gen-trace`, `gen-trainer-golden`). `CatalogCommand` — `catalog`: every registry entry and network profile a sweep can name, as JSON |
+| `Net/` | `UdpTransport` — a real, socket-backed `ITransport` for this host's side of a cross-machine link. Its own copy rather than a reference to `Teleop.RobotHost`, same precedent as `Time/MonotonicClock`. It began as a copy of RobotHost's and keeps only its fixed-peer mode; RobotHost's has since added reply-to-sender (#57). `UdpRelayCommand` — `udp-relay` |
 | `ClockSyncCheck/` | `ClockSyncCheckCommand`, `ClockSyncCheckArgs` — Phase 3's real cross-machine `ClockSync` diagnostic |
-| `MoveArm/` | `MoveArmCommand`, `MoveArmArgs` — general-purpose "move the real JetRover arm to a Cartesian target" operator tool, `just move-arm x y z` |
-| `ImportUrdf/` | `ImportUrdfCommand`, `UrdfModel`, `SerialChainProfileJson` — `import-urdf`: a URDF to a serial-chain robot profile (docs/adr/0026), `just import-fr3-profile` |
+| `MoveArm/` | `MoveArmCommand`, `MoveArmArgs` — general-purpose "move the real JetRover arm to a Cartesian target" operator tool, `just move-arm x y z`. `DiscoverRobotCommand` — `discover-robot` |
+| `ImportUrdf/` | `ImportUrdfCommand`, `ImportUrdfArgs`, `UrdfModel`, `SerialChainProfileJson` — `import-urdf`: a URDF to a serial-chain robot profile (docs/adr/0026), `just import-fr3-profile`. `FitCapsulesCommand` — `fit-capsules`: the profile's collision capsules fitted to the URDF's collision geometry (docs/adr/0026 amendment) |
 | `IkStress/` | `IkStressRunner`, `OperatorScript`, `ReachOracle`, `IkStressCommand` — `chain-ik-stress`: long synthetic teleoperation sessions of the FR3 Duo through the headset's mapping and IK, scored against a slow multi-start reachability check (docs/adr/0029 amendment 8), `just fr3-ik-stress` |
-| `JointDrive/` | `JointDriveCommand`, `DrivePlan`, `DriveWatchdog`, `OperatorLog`, `ChainDriveCommand`, `ChainTeleopProbeCommand` — `joint-drive`: the arm drives itself through scripted joint moves for recorded sessions (docs/adr/0021), `just record-drive` / `just pilot` |
+| `JointDrive/` | `JointDriveCommand`, `DrivePlan`, `DriveWatchdog`, `OperatorLog`, `CourseScript`, `TakeClient`, `ChainDriveCommand`, `ChainTeleopProbeCommand` — `joint-drive`: the arm drives itself through scripted joint moves for recorded sessions (docs/adr/0021), `just record-drive` / `just pilot`; `TakeClient` records a drive as a take (`--take`, docs/adr/0033, docs/adr/0036) |
+| `ArmPower/` | `ArmPowerCommand` — `arm-power`: ROBOT OFF / ROBOT ON from the PC (docs/adr/0023 decision 5), `just robot-off` / `just robot-on` |
+| `BuildProfile/` | `BuildProfileCommand`, `ProfileBuilderWizard`, `RobotArmProfileJson` — `build-profile`: an interactive wizard that writes a robot arm profile (docs/adr/0011), `just build-profile` |
+| `JointBench/` | `JointPredictBenchCommand` — `joint-predict-bench`: the joint-space predictors' benchmark row against a simulated servo arm (docs/adr/0018). `HeadsetReplayCommand` — `headset-replay` (docs/adr/0035 N3) |
+| `JointProbe/` | `JointProbeCommand` — `joint-probe`: what a RobotHost's joint-state stream carries, `just joint-probe`. `WorldProbeCommand` — `world-probe`: checks the world a serial-chain RobotHost streams (docs/adr/0031 amendment 2), `just fr3-world-probe` |
 
 ## Subcommands
 
@@ -30,6 +35,13 @@ wall clock, do real file I/O, and take NuGet dependencies (`YamlDotNet`, so far)
 | `sweep` | real — runs an `experiments/*.yaml`, writes `results/<id>/<timestamp>/` |
 | `gen-golden` | real, not one of the five documented subcommands — regenerates the golden `.tlog` |
 | `gen-trace` | real, not one of the five documented subcommands — regenerates a network trace |
+| `gen-trainer-golden` | real — writes the golden files that pin the trainer's Python copies of Core (docs/adr/0021 decision 5) to `trainer/contract/golden/`. `just gen-trainer-golden` |
+| `catalog` | real — prints every registry entry and network profile a sweep can be configured with, as JSON, read live from `Registries` and `NetworkProfileCatalog`; the experiment GUI reads it |
+| `build-profile` | real — interactive wizard that writes a robot arm profile to `RobotProfiles/<name>.json` (docs/adr/0011). `just build-profile` |
+| `fit-capsules` | real — fits a serial-chain robot's collision capsules to its URDF's collision geometry, byte-stable (docs/adr/0026 amendment); `FitCapsulesCommandTests` requires the committed file. Touches no robot |
+| `joint-predict-bench` | real — scores every registered `ICommandAwarePredictor` against a simulated servo arm and network, deterministic: `joint_prediction_error_deg` and `joint_correction_deg` (docs/metrics.md §4) |
+| `joint-probe` | real — listens to a RobotHost's joint-state stream for a few seconds and reports frame rate, round trip, and which joints are sensed. Sends only the keepalive. `just joint-probe` |
+| `world-probe` | real — checks the world a serial-chain RobotHost streams: status names the scene file, every object posed within 2 s, frames at 50 ± 5 Hz; optional layout and move checks. Sends no joint command. `just fr3-world-probe` |
 | `clocksync-check` | real, not one of the five documented subcommands — Phase 3 of the JetRover integration (`docs/adr/0007-jetrover-plant-and-robot-host.md`); a real cross-machine `ClockSync` diagnostic against an already-running `Teleop.RobotHost`, see `ClockSyncCheck/ClockSyncCheckCommand.cs`'s own doc comment |
 | `move-arm` | real, not one of the five documented subcommands — sends a fixed `CommandFrame` to an already-running `Teleop.RobotHost`, repeated until the robot's own reported position converges within `--position-tolerance-meters` of `--x --y --z` (or `--timeout-seconds` elapses, exit non-zero) — never claims success on a fixed duration alone; see `MoveArm/MoveArmCommand.cs`'s own doc comment |
 | `joint-drive` | real, not one of the five documented subcommands — drives the real JetRover through a planned session of joint moves (docs/adr/0021): every pose checked against the collision model first, the IK's ranges less a margin, a stall and stream watchdog, Enter to stop; writes `operator.jlog`. `--dry-run` plans and sends nothing. Before moving it switches torque on (`arm-power` hold), and from an arm resting on its support it frees it with the smallest single-joint move first (`DrivePlan.TryApproach`). Scripts: `waypoints`, `steps`, `course` (the headset's training course, `CourseScript`). See `JointDrive/JointDriveCommand.cs`'s own doc comment |

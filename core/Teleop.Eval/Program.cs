@@ -71,15 +71,16 @@ namespace Teleop.Eval
                 default:
                     Console.Error.WriteLine(
                         "usage: verify | audit | sweep | replay | compare | gen-golden | gen-trace | gen-trainer-golden | " +
-                        "clocksync-check | move-arm | build-profile | import-urdf | fit-capsules | catalog | joint-predict-bench | joint-probe | arm-power | joint-drive | chain-drive | chain-teleop-probe | chain-ik-stress | discover-robot");
+                        "clocksync-check | move-arm | build-profile | import-urdf | fit-capsules | catalog | joint-predict-bench | " +
+                        "headset-replay | joint-probe | arm-power | joint-drive | chain-drive | chain-teleop-probe | chain-ik-stress | " +
+                        "world-probe | udp-relay | discover-robot");
                     return 64;   // EX_USAGE
             }
         }
 
-        // Not one of the five documented subcommands -- a small, explicit scope addition so the
-        // golden .tlog fixture is generated deterministically rather than hand-authored (which
-        // risks CRLF/encoding corruption when edited from WSL). Never invoked by verify/audit
-        // themselves; a one-off tool run by a human, output committed by hand.
+        // A generator, not a check: the golden .tlog fixture is generated deterministically rather
+        // than hand-authored (which risks CRLF/encoding corruption when edited from WSL). Never
+        // invoked by verify/audit themselves; a one-off tool run by a human, output committed by hand.
         private static int RunGenGolden(string[] args)
         {
             string outputPath = args.Length > 1 ? args[1] : Path.Combine("testdata", "golden", "basic-session.tlog");
@@ -97,9 +98,8 @@ namespace Teleop.Eval
             return 0;
         }
 
-        // Not one of the five documented subcommands, same reasoning as gen-golden: the
-        // synthetic-burst network trace is generated deterministically and committed, never
-        // hand-authored.
+        // Same reasoning as gen-golden: the synthetic-burst network trace is generated
+        // deterministically and committed, never hand-authored.
         private static int RunGenTrace(string[] args)
         {
             string outputPath = args.Length > 1 ? args[1] : Path.Combine("testdata", "traces", "synthetic-burst.trace");

@@ -3765,7 +3765,7 @@ isaac-jetrover-host scene="jetrover-bench" scene_seed="auto":
     )
     ssh -o ConnectTimeout=10 "{{gpu_host}}" "COMMIT='$commit' SCENE='{{scene}}' SCENE_SEED='{{scene_seed}}' bash -c $(printf '%q' "$remote")"
 
-# Stop the Isaac host that `just isaac-host` started on the GPU machine (docs/adr/0031), from any terminal: what Enter does where it was started. RobotHost gets SIGTERM first, which it takes as Enter, so it closes its recording, and isaac-host then stops the bridge. Whatever still runs after 30 s gets SIGTERM, and after 60 s more, SIGKILL. Says which recording is newest and whether it is complete. Nothing running is not an error
+# Stop the Isaac host that `just isaac-host` or `just isaac-jetrover-host` started on the GPU machine (docs/adr/0031, 0034), from any terminal: what Enter does where it was started. RobotHost gets SIGTERM first, which it takes as Enter, so it closes its recording, and isaac-host then stops the bridge. Whatever still runs after 30 s gets SIGTERM, and after 60 s more, SIGKILL. Says which recording is newest and whether it is complete. Nothing running is not an error
 [group('isaac')]
 isaac-stop:
     #!/usr/bin/env bash
@@ -3778,13 +3778,21 @@ isaac-stop:
     bridge=$(ours "teleop_isaac[.](bridge|jetrover_bridge)" python)
     renderer=$(ours "teleop_isaac[.]renderer" python)
     if [ -z "$host$bridge$renderer" ]; then echo "[isaac-stop] no Isaac host of ours is running on $(hostname)"; exit 0; fi
+    # Which host this is, read before stopping it: the JetRover's (isaac-jetrover-host: its bridge, or a RobotHost on a relay
+    # socket) or the FR3 Duo's (isaac-host). Each has its own bridge log, recordings and sockets.
+    if [ -n "$(ours "teleop_isaac[.]jetrover_bridge" python)" ] || { [ -n "$host" ] && grep -qa -- "--relay-socket" $(printf '/proc/%s/cmdline ' $host) 2>/dev/null; }; then
+        kind="JetRover"; log=$HOME/isaacsim/jetrover-bridge.log; rec=$HOME/isaacsim/jetrover-recordings
+        socks="/tmp/teleop-jetrover-relay-$USER.sock /tmp/teleop-jetrover-relay-$USER.sock.world"
+    else
+        kind="FR3 Duo"; log=$HOME/isaacsim/bridge.log; rec=$HOME/isaacsim/recordings; socks="/tmp/teleop-isaac-$USER.sock"
+    fi
     alive() { for p in "$@"; do kill -0 "$p" 2>/dev/null && return 0; done; return 1; }
     gone_within() { local seconds=$1; shift; for _ in $(seq 1 "$seconds"); do alive "$@" || return 0; sleep 1; done; ! alive "$@"; }
     if [ -n "$host" ]; then
-        echo "[isaac-stop] RobotHost pid" $host "on $(hostname): stopping it; it closes its recording, then isaac-host stops the bridge"
+        echo "[isaac-stop] the $kind's RobotHost pid" $host "on $(hostname): stopping it; it closes its recording, then its host recipe stops the bridge"
         kill -TERM $host 2>/dev/null || true
     else
-        echo "[isaac-stop] the bridge or renderer (pids" $bridge $renderer ") runs without RobotHost on $(hostname): stopping it"
+        echo "[isaac-stop] the $kind's bridge or renderer (pids" $bridge $renderer ") runs without RobotHost on $(hostname): stopping it"
         kill -TERM $bridge $renderer 2>/dev/null || true
     fi
     # RobotHost waits up to 60 s for the renderer's isaac.jlog trailer before it completes the session.
@@ -3794,12 +3802,12 @@ isaac-stop:
         if ! gone_within 60 $host $bridge $renderer; then
             echo "[isaac-stop] still running after 150 s: SIGKILL" >&2
             kill -KILL $host $bridge $renderer 2>/dev/null || true
-            rm -f "/tmp/teleop-isaac-$USER.sock"
+            rm -f $socks
         fi
     fi
     echo "[isaac-stop] stopped"
-    tail -n 2 "$HOME/isaacsim/bridge.log" 2>/dev/null | sed 's/^/[isaac-stop] bridge log: /' || true
-    last=$(ls -1td "$HOME"/isaacsim/recordings/*/ 2>/dev/null | head -1 || true)
+    tail -n 2 "$log" 2>/dev/null | sed 's/^/[isaac-stop] bridge log: /' || true
+    last=$(ls -1td "$rec"/*/ 2>/dev/null | head -1 || true)
     if [ -n "$last" ] && [ -f "$last/files.sha256" ]; then echo "[isaac-stop] newest recording, complete: $last"
     elif [ -n "$last" ]; then echo "[isaac-stop] newest recording has no files.sha256 (not completed): $last" >&2
     fi

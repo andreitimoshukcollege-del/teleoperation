@@ -211,6 +211,7 @@ class FeedbackEmulator:
     """
 
     recorded = False  # cycles of its own; RecordedFeedback's are a session's
+    cycles_started = 0  # read cycles begun so far (DriverEmulator notes what was waiting at each start)
     EPS = 1e-9  # a time that falls on the caller's step counts at that step, however the floats round
 
     def __init__(self, model: SimModel, read_seconds: Optional[float] = None, cycle_seconds: Optional[float] = None, valid_seconds: float = 0.2):
@@ -242,6 +243,7 @@ class FeedbackEmulator:
             return None
         if self._turn == 0:
             self._cycle_start = now
+            self.cycles_started += 1
         m = self.order[self._turn]
         self._turn += 1
         # Reads are timed from the cycle's start, not from the step that ran the last one: a caller stepping 1 ms would
@@ -311,6 +313,8 @@ class RecordedFeedback(FeedbackEmulator):
                 t, m = reads[self._ri]
                 if t > now + self.EPS:
                     return None
+                if self._ri == 0:
+                    self.cycles_started += 1
                 self._ri += 1
                 self._publish_next = self._ri == len(reads)
                 return m
@@ -365,6 +369,13 @@ class DriverEmulator:
       timer is overdue by the time a cycle ends, so it takes the thread back as soon as the callback returns. The real
       driver therefore runs one command array between two cycles, and with the relay sending at 48 Hz and a cycle every
       ~23 ms its three-deep queue stays full: a command waits about two cycles (docs/adr/0034 amendment 13).
+    - **Only what was waiting when the cycle started runs after it.** rclpy's executor takes the callbacks one wait found
+      ready, timers before subscriptions; a message that arrives during a read cycle is seen by the next wait, which
+      also finds the read timer overdue, so a whole cycle more runs first. So after a cycle, while the timer is due, a
+      subscription runs only if it had a message waiting when that cycle started (it then takes its oldest kept
+      message). In the real teleop sessions of 2026-10-25, 10,977 commands of 10,980 that could be told apart reached
+      the driver one full cycle after the one they arrived in, though its queue was mostly empty; without this rule the
+      replay put them a cycle early, 28 ms short (docs/adr/0034 amendment 13).
     - **The write gate** is the driver's own (:func:`write_gate`): a servo takes a new move only after its last one's
       duration, the newest waiting target wins and is written between reads, and a target under 5 pulses from the last one
       written is dropped. Each board packet starts its servos' moves over its duration, in whole milliseconds as the packet
@@ -402,6 +413,7 @@ class DriverEmulator:
         self._queue: List[Tuple[str, object]] = []
         self._free_at = float("-inf")  # when the running callback returns
         self._taken: set = set()  # the subscriptions that ran a message in this executor turn (emulated cycles)
+        self._ready: set = set()  # the subscriptions that had a message waiting when the last read cycle started
         self.last_read: Dict[int, int] = {}
         self.packets = 0
 
@@ -445,7 +457,7 @@ class DriverEmulator:
             return
         # One message per subscription per executor turn; with the read timer due, its cycle ends the turn.
         if self.feedback.timer_waiting(now, self.COMMAND_SECONDS):
-            waiting = [i for i, (k, _) in enumerate(self._queue) if k not in self._taken]
+            waiting = [i for i, (k, _) in enumerate(self._queue) if k not in self._taken and k in self._ready]
             if not waiting:
                 return
             kind, payload = self._queue.pop(waiting[0])
@@ -470,9 +482,12 @@ class DriverEmulator:
         self.tick(now)
         if self.gated and not self.feedback.recorded and now < self._free_at - self.EPS:
             return None
+        started = self.feedback.cycles_started
         mid = self.feedback.due_read(now)
         if mid is not None:
             self._taken.clear()  # the timer ran: a new executor turn
+        if self.feedback.cycles_started != started:
+            self._ready = {k for k, _ in self._queue}  # what the wait before this cycle found ready
         if mid is not None and self.gated:
             moves, events = self.gate.flush(now)
             self._events(events)

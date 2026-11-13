@@ -2,7 +2,8 @@
 
 ## Status
 
-Proposed (2026-10-28). It opens the FR3 Duo work, with ADR 0027 (the arm backend and the
+Accepted (2026-11-12): built in phases P1 and P3 (serial-chain profiles, `import-urdf`, the 256-byte
+`JointDatagram`) and merged in PR #92 on 2026-10-30. Proposed (2026-10-28). It opens the FR3 Duo work, with ADR 0027 (the arm backend and the
 trajectory shaper) and ADR 0028 (the learned predictor for the FR3).
 
 The user asked for the platform to move to a better arm, Franka's **FR3 Duo**, keeping the base and

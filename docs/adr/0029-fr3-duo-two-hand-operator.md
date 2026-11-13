@@ -2,7 +2,9 @@
 
 ## Status
 
-Proposed (2026-10-29). Part of the FR3 Duo work (ADRs 0026–0028); phase P7 of the plan. It adds a
+Accepted (2026-11-12): built in phase P7 (`SerialChainTeleop`, `BodyAnchoredMapping`, the Galaxy XR
+operator) and merged in PR #92 on 2026-10-30. Proposed (2026-10-29). Part of the FR3 Duo work
+(ADRs 0026–0028); phase P7 of the plan. It adds a
 second operator beside ADR 0017's JetRover clutch, which it does not change. The user chose the gesture:
 **grab clutches, pinch grips**, one hand per arm.
 

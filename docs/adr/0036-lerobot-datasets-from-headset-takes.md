@@ -74,6 +74,9 @@ CameraHost streams the camera's own MJPEG and writes nothing to disk.
    - **`meta/teleop/episode_<n>.timing.jsonl`:** one line per frame. It gives the frame's source time and frame number,
      and the state's and action's ages at `t`, so frames can be filtered before training.
    - **Sharing:** the folders are shared read-only with the labmate, as the takes are (ADR 0033 decision 6).
+   - **The lab recorder's own files (2026-11-13):** `capture_timing.jsonl` and `raw_ros_events.jsonl` at the dataset's
+     top, in `record_jetrover.py`'s field names, from the take's one clock. Its `*_wall_ns` fields are null: a take
+     keeps no wall clock per record.
 6. **When a take is converted.** A take is ready once it has `files.sha256`, `sha256sum -c` passes, and it has sat for
    60 s, so a DISCARD LAST pressed straight after it wins. The watcher scans the scenario roots every 10 s.
    - It runs from its own checkout of a pushed commit, in its own venv with the lab's `lerobot` version.

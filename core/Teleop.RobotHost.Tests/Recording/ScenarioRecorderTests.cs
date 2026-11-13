@@ -162,6 +162,53 @@ namespace Teleop.RobotHost.Tests.Recording
         }
 
         [Fact]
+        public void ARestartedRobotHost_ListIsTakenAsNew_NotTheHeadsetsStaleOne()
+        {
+            // Every process started at revision 0, so its first list was revision 1, the number the headset held for the
+            // previous process's list: the headset kept the old names and called them current, and a take could go to the
+            // wrong scenario (the 2026-11 bug hunt, E-02).
+            var utc = new DateTime(2026, 11, 13, 9, 0, 0, DateTimeKind.Utc);
+            ScenarioRecorder Host(string list)
+            {
+                var files = new FakeFiles { List = list };
+                var host = new ScenarioRecorder("/data/scenarios", new FakeSink(), null, files, Tps, () => utc, () => 400 * GB, () => UplinkCondition.None);
+                host.Tick(0);
+                return host;
+            }
+
+            var headset = new Teleop.RobotArm.Operator.RecordingState();
+            void Hear(ScenarioRecorder host, long now) => host.Send(now, (bytes, n) =>
+            {
+                var datagram = new ReadOnlySpan<byte>(bytes, 0, n);
+                if (RecordCodec.TryDecodeStatus(datagram, out RecordStatus status, out long ticks)) headset.ApplyStatus(status, ticks);
+                else headset.ApplyListPart(datagram);
+            });
+
+            Hear(Host("pick-can\nstack\n"), T(1));
+            Assert.Equal("pick-can", headset.Name(0));
+
+            // The restarted host reads a different list.
+            Hear(Host("other\npick-can\nstack\n"), T(2));
+            Assert.True(headset.ListCurrent);
+            Assert.Equal((3, "other"), (headset.Count, headset.Name(0)));
+        }
+
+        [Fact]
+        public void EachProcess_StartsItsListRevisionsSomewhereNew()
+        {
+            ushort FirstListRevision(ushort? first)
+            {
+                var host = new ScenarioRecorder("/data/scenarios", new FakeSink(), null, new FakeFiles(), Tps, () => DateTime.UtcNow,
+                    () => 400 * GB, () => UplinkCondition.None, firstRevision: first);
+                host.Tick(0);
+                return host.ListRevision;
+            }
+
+            Assert.True(Enumerable.Range(0, 20).Select(_ => FirstListRevision(null)).Distinct().Count() > 1, "twenty processes all started at the same revision");
+            Assert.Equal(1, FirstListRevision(0)); // the old start, still available to a test that needs it fixed
+        }
+
+        [Fact]
         public void AnIndexIntoAnOlderList_OrPastTheEnd_IsRefused()
         {
             var rig = new Rig();

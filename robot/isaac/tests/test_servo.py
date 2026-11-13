@@ -54,9 +54,11 @@ def test_a_servo_ramps_to_its_target_over_delta_over_speed_and_a_new_move_starts
     assert (s.pulse, s.target) == (512.4, 512.4)
 
 
-def test_a_cycle_reads_motors_1_to_5_and_the_gripper_back_to_back_and_the_relay_reports_every_20_ms_in_whole_pulses():
+def test_a_cycle_reads_motors_1_to_5_and_the_gripper_back_to_back_and_the_relay_reports_each_cycle_once_in_whole_pulses():
     # The real driver (robot_controller_node.py, pollRate 0.02) and relay (relay_node.py, 0.02 s), since 2026-10-25. Six
-    # reads of 3.5 ms take 21 ms, longer than the 20 ms period, so the next cycle starts as the last one ends.
+    # reads of 3.5 ms take 21 ms, longer than the 20 ms period, so the next cycle starts as the last one ends. The relay's
+    # 20 ms timer sends only when a cycle has published since its last send (relay_node.py's _fresh): one datagram per
+    # cycle, never a repeat (the 2026-11 bug hunt, F-01, where the emulator re-sent stale readings).
     m = model()
     fb = servo.FeedbackEmulator(m)
     sent = []
@@ -75,7 +77,10 @@ def test_a_cycle_reads_motors_1_to_5_and_the_gripper_back_to_back_and_the_relay_
     times = [t for _, t in reads]
     assert times[6] - times[0] == pytest.approx(0.021)  # a cycle as long as its six reads
     assert times[1:6] == pytest.approx([0.004, 0.007, 0.011, 0.014, 0.018])  # back to back, 3.5 ms each on a 1 ms step
-    assert len(sent) == 25  # every 20 ms
+    published = [t for mid, t in reads if mid == 10]  # a cycle publishes at its last read, the gripper's
+    assert len(published) - 1 <= len(sent) <= len(published)  # one per cycle; the last may still be waiting for a tick
+    for (a, _), (b, _) in zip(sent, sent[1:]):
+        assert any(a < p <= b for p in published), f"sent at {a} and {b} with no cycle between"
     last = dict((mid, (valid, pulse)) for mid, valid, pulse in sent[-1][1])
     assert last[10] == (True, 510.0)
     assert last[3] == (True, 503.0)  # whole pulses

@@ -208,7 +208,8 @@ class FeedbackEmulator:
       longer than the period, so the next cycle starts as soon as the thread is free, as the real one does;
     - a cycle's readings are published when it ends, and only then seen by the relay;
     - the relay sends the newest reading of every motor every ``feedback_seconds`` (its ``_FEEDBACK_SEND_PERIOD_SECONDS``,
-      20 ms), valid while under ``valid_seconds`` old (0.2 s); a motor the sidecar marks as not reporting always invalid.
+      20 ms) when a cycle has published since its last send, and nothing otherwise, valid while under ``valid_seconds``
+      old (0.2 s); a motor the sidecar marks as not reporting always invalid.
       The sidecar marks every motor as reporting, the gripper too (docs/adr/0034 amendment 9).
     """
 
@@ -229,6 +230,8 @@ class FeedbackEmulator:
         self._turn = 0
         self._busy_until = 0.0
         self._next_send = 0.0
+        # A reading published since the last feedback datagram (relay_node.py's _fresh): only then is one sent.
+        self._fresh = False
 
     def busy(self, now: float) -> bool:
         """Whether a read cycle is running at ``now``: from its first read until its last one has ended. The real driver's
@@ -264,12 +267,19 @@ class FeedbackEmulator:
             for mid, p, t in self._pending:
                 self.readings[mid] = (p, t)
             self._pending.clear()
+            self._fresh = True
 
     def due_feedback(self, now: float) -> Optional[List[Tuple[int, bool, float]]]:
         """The feedback datagram's entries when one is due, else None. Every motor of the model, in motor order."""
         if now < self._next_send:
             return None
         self._next_send = now + self.model.feedback_seconds
+        # The real relay says nothing when no reading has come in since its last send: RobotHost stamps each arrival as
+        # the reading's time, so a resend would make old pulses look new. The emulator re-sent them, 16% of its datagrams,
+        # and every Isaac JetRover session carried duplicate RI readings (the 2026-11 bug hunt, F-01).
+        if not self._fresh:
+            return None
+        self._fresh = False
         out = []
         for mid in sorted(self.model.motors):
             r = self.readings.get(mid)
@@ -330,6 +340,7 @@ class RecordedFeedback(FeedbackEmulator):
                 self.readings[mid] = (p, t)
             self._pending.clear()
             self._publish_next = False
+            self._fresh = True
 
 
 class RelayEmulator:

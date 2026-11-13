@@ -126,6 +126,7 @@ def recorded_gated(seconds=3.0):
     # The relay already has every motor at 0, so the replay's clock starts with this one (its first valid reading): the
     # gate compares float times, and two clocks offset by a cycle would round a cooldown differently now and then.
     fb.readings = {m: (500.0, 0.0) for m in fb.order}
+    fb._fresh = True  # readings the relay already has: its first datagram goes out at 0, as a real one would after them
     fb._next_read = 0.007  # its cycles 7 ms out of phase with any the replay would run itself
     drv = servo.DriverEmulator(model, fb, servo_move=sim.write, servo_command=sim.command, servo_torque=sim.torque)
     relay = servo.RelayEmulator()

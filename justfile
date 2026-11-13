@@ -26,6 +26,15 @@ core-audit:
 [group('checks')]
 core-check: core-test core-verify core-audit
 
+# HEAD, if GitHub has it; otherwise an error. The GPU machine checks out what GitHub has, so every recipe that runs a commit there starts with commit=$(just _pushed-commit)
+_pushed-commit:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    commit=$(git rev-parse HEAD)
+    git fetch -q origin
+    [ -n "$(git branch -r --contains "$commit" 2>/dev/null)" ] || { echo "error: $commit is not on GitHub: push it first (the GPU machine runs what GitHub has)" >&2; exit 1; }
+    echo "$commit"
+
 # Compile Bridge/ against Core headlessly -- catches a Core API change silently breaking unity/. NOT a substitute for opening the editor; see unity/BridgeCheck/README.md
 [group('checks')]
 bridge-check:
@@ -121,9 +130,7 @@ robot-collision-model:
 jetrover-sim-fit sessions_dir="recordings/jetrover" fit="20261026T204223Z-drive-steps-2p5,20261026T204737Z-drive-steps-6,20261026T205353Z-drive-wp-2p5,20261026T210007Z-drive-wp-5" heldout="20261026T210625Z-drive-wp-sched,20261025T200935Z-teleop-2p5,20261025T202026Z-teleop-2p5,20261027T224623Z-auto,20261027T225507Z-auto" fit_seconds="90" rounds="2" start="":
     #!/usr/bin/env bash
     set -euo pipefail
-    commit=$(git rev-parse HEAD)
-    git fetch -q origin
-    [ -n "$(git branch -r --contains "$commit" 2>/dev/null)" ] || { echo "error: $commit is not on GitHub: push it first (the GPU machine runs what GitHub has)" >&2; exit 1; }
+    commit=$(just _pushed-commit)
     # `start`: where the search begins instead of the bridge's defaults, as the bridge's own flags, e.g.
     # "--stiffness 42 --damping 4.2 --speed-scale 1.0" (also --effort-scale, --driver-gate, --replay-cycles).
     case "{{start}}" in *[!A-Za-z0-9.\ -]*) echo "error: start takes only the bridge's flags and numbers, got '{{start}}'" >&2; exit 1 ;; esac
@@ -331,9 +338,7 @@ isaac-uplink-tiers segment_s="60" segments="15" seed="auto" tiers="good,poor,ver
     case "{{seed}}" in auto) seed=$(( (RANDOM << 15) | RANDOM )) ;; *[!0-9]*|"") echo "error: seed is a number or auto" >&2; exit 1 ;; *) seed={{seed}} ;; esac
     case "{{segment_s}}{{segments}}" in *[!0-9.]*) echo "error: segment_s and segments are numbers" >&2; exit 1 ;; esac
     case "{{tiers}}" in *[!a-z,-]*) echo "error: tiers is a list of good, poor, very-bad" >&2; exit 1 ;; esac
-    commit=$(git rev-parse HEAD)
-    git fetch -q origin
-    [ -n "$(git branch -r --contains "$commit" 2>/dev/null)" ] || { echo "error: $commit is not on GitHub: push it first" >&2; exit 1; }
+    commit=$(just _pushed-commit)
     ssh -o ConnectTimeout=10 "{{gpu_host}}" "COMMIT='$commit' SEED='$seed' bash -s" <<'REMOTE'
     set -euo pipefail
     repo=$HOME/teleoperation-datasets
@@ -401,9 +406,7 @@ network-datasets-fetch names="":
     #!/usr/bin/env bash
     set -euo pipefail
     for n in {{names}}; do case "$n" in g1050-2016|mahimahi|puffer|fcc-mba|ripe-atlas) ;; *) echo "error: unknown dataset $n" >&2; exit 1 ;; esac; done
-    commit=$(git rev-parse HEAD)
-    git fetch -q origin
-    [ -n "$(git branch -r --contains "$commit" 2>/dev/null)" ] || { echo "error: $commit is not on GitHub: push it first" >&2; exit 1; }
+    commit=$(just _pushed-commit)
     ssh -o ConnectTimeout=10 "{{gpu_host}}" "COMMIT='$commit' NAMES='{{names}}' bash -s" <<'REMOTE'
     set -euo pipefail
     if [ -f ~/network-datasets.pid ] && kill -0 "$(cat ~/network-datasets.pid)" 2>/dev/null; then
@@ -3224,9 +3227,7 @@ isaac-check seconds="5":
 isaac-render-check seconds="20":
     #!/usr/bin/env bash
     set -euo pipefail
-    commit=$(git rev-parse HEAD)
-    git fetch -q origin
-    [ -n "$(git branch -r --contains "$commit" 2>/dev/null)" ] || { echo "error: $commit is not on GitHub: push it first (the GPU machine runs the bridge from what GitHub has)" >&2; exit 1; }
+    commit=$(just _pushed-commit)
     host="{{gpu_host}}"
     ssh -o ConnectTimeout=10 "$host" "COMMIT='$commit' bash -s" <<'REMOTE'
     set -euo pipefail
@@ -3308,9 +3309,7 @@ isaac-scene-check scene="fr3-duo-bench":
     #!/usr/bin/env bash
     set -euo pipefail
     case "{{scene}}" in *[!A-Za-z0-9._-]*|"") echo "error: scene is a file name in core/Scenes without .json" >&2; exit 1 ;; esac
-    commit=$(git rev-parse HEAD)
-    git fetch -q origin
-    [ -n "$(git branch -r --contains "$commit" 2>/dev/null)" ] || { echo "error: $commit is not on GitHub: push it first (the GPU machine runs what GitHub has)" >&2; exit 1; }
+    commit=$(just _pushed-commit)
     ssh -o ConnectTimeout=10 "{{gpu_host}}" "COMMIT='$commit' SCENE='{{scene}}' bash -s" <<'REMOTE'
     set -euo pipefail
     [ -x "$HOME/isaacsim/venv/bin/python" ] || { echo "error: no Isaac Sim in our account here: just isaac-setup" >&2; exit 1; }
@@ -3328,9 +3327,7 @@ isaac-scene-check scene="fr3-duo-bench":
 isaac-jetrover-check:
     #!/usr/bin/env bash
     set -euo pipefail
-    commit=$(git rev-parse HEAD)
-    git fetch -q origin
-    [ -n "$(git branch -r --contains "$commit" 2>/dev/null)" ] || { echo "error: $commit is not on GitHub: push it first (the GPU machine runs what GitHub has)" >&2; exit 1; }
+    commit=$(just _pushed-commit)
     ssh -o ConnectTimeout=10 "{{gpu_host}}" "COMMIT='$commit' bash -s" <<'REMOTE'
     set -euo pipefail
     [ -x "$HOME/isaacsim/venv/bin/python" ] || { echo "error: no Isaac Sim in our account here: just isaac-setup" >&2; exit 1; }
@@ -3349,9 +3346,7 @@ isaac-backdrops-fetch count="2000":
     #!/usr/bin/env bash
     set -euo pipefail
     case "{{count}}" in *[!0-9]*|"") echo "error: count is a number" >&2; exit 1 ;; esac
-    commit=$(git rev-parse HEAD)
-    git fetch -q origin
-    [ -n "$(git branch -r --contains "$commit" 2>/dev/null)" ] || { echo "error: $commit is not on GitHub: push it first" >&2; exit 1; }
+    commit=$(just _pushed-commit)
     ssh -o ConnectTimeout=10 "{{gpu_host}}" "COMMIT='$commit' COUNT='{{count}}' bash -s" <<'REMOTE'
     set -euo pipefail
     repo=$HOME/teleoperation-isaac
@@ -3422,9 +3417,7 @@ isaac-host scene="fr3-duo-bench" scene_seed="auto" feeds="true":
     case "{{scene_seed}}" in auto|[0-9]*) ;; *) echo "error: scene_seed is a number or auto" >&2; exit 1 ;; esac
     case "{{feeds}}" in true|false) ;; *) echo "error: feeds is true or false" >&2; exit 1 ;; esac
     [ "{{scene}}" = none ] || [ -f "core/Scenes/{{scene}}.json" ] || { echo "error: no core/Scenes/{{scene}}.json" >&2; exit 1; }
-    commit=$(git rev-parse HEAD)
-    git fetch -q origin
-    [ -n "$(git branch -r --contains "$commit" 2>/dev/null)" ] || { echo "error: $commit is not on GitHub: push it first (the GPU machine runs what GitHub has)" >&2; exit 1; }
+    commit=$(just _pushed-commit)
     [ -z "$(git status --porcelain -- core robot/isaac)" ] || echo "warning: core/ or robot/isaac has uncommitted changes; the GPU machine runs $commit without them" >&2
     remote=$(cat <<'REMOTE'
     set -euo pipefail
@@ -3571,9 +3564,7 @@ isaac-jetrover-take scenario="free-play" script="waypoints" speed="1.5" seconds=
 lerobot-setup:
     #!/usr/bin/env bash
     set -euo pipefail
-    commit=$(git rev-parse HEAD)
-    git fetch -q origin
-    [ -n "$(git branch -r --contains "$commit" 2>/dev/null)" ] || { echo "error: $commit is not on GitHub: push it first (the GPU machine runs what GitHub has)" >&2; exit 1; }
+    commit=$(just _pushed-commit)
     ssh -o ConnectTimeout=10 "{{gpu_host}}" "COMMIT='$commit' bash -s" <<'REMOTE'
     set -euo pipefail
     repo=$HOME/teleoperation-lerobot venv=$HOME/isaacsim/lerobot-venv
@@ -3590,9 +3581,7 @@ lerobot-setup:
 lerobot-test:
     #!/usr/bin/env bash
     set -euo pipefail
-    commit=$(git rev-parse HEAD)
-    git fetch -q origin
-    [ -n "$(git branch -r --contains "$commit" 2>/dev/null)" ] || { echo "error: $commit is not on GitHub: push it first (the GPU machine runs what GitHub has)" >&2; exit 1; }
+    commit=$(just _pushed-commit)
     ssh -o ConnectTimeout=10 "{{gpu_host}}" "COMMIT='$commit' bash -s" <<'REMOTE'
     set -euo pipefail
     repo=$HOME/teleoperation-lerobot-test
@@ -3606,9 +3595,7 @@ lerobot-test:
 lerobot-watch-start:
     #!/usr/bin/env bash
     set -euo pipefail
-    commit=$(git rev-parse HEAD)
-    git fetch -q origin
-    [ -n "$(git branch -r --contains "$commit" 2>/dev/null)" ] || { echo "error: $commit is not on GitHub: push it first (the GPU machine runs what GitHub has)" >&2; exit 1; }
+    commit=$(just _pushed-commit)
     ssh -o ConnectTimeout=10 "{{gpu_host}}" "bash -s start '$commit'" < robot/lerobot/watch.sh
 
 # Stop the LeRobot converter on the GPU machine, and remove its keeper so it stays stopped: it finishes the take it is writing first (up to 10 min). just lerobot-watch-start brings both back
@@ -3712,9 +3699,7 @@ isaac-jetrover-host scene="jetrover-bench" scene_seed="auto":
     case "{{scene}}" in *[!A-Za-z0-9._-]*|"") echo "error: scene is a file name in core/Scenes without .json, or none" >&2; exit 1 ;; esac
     case "{{scene_seed}}" in auto|[0-9]*) ;; *) echo "error: scene_seed is a number or auto" >&2; exit 1 ;; esac
     [ "{{scene}}" = none ] || [ -f "core/Scenes/{{scene}}.json" ] || { echo "error: no core/Scenes/{{scene}}.json" >&2; exit 1; }
-    commit=$(git rev-parse HEAD)
-    git fetch -q origin
-    [ -n "$(git branch -r --contains "$commit" 2>/dev/null)" ] || { echo "error: $commit is not on GitHub: push it first (the GPU machine runs what GitHub has)" >&2; exit 1; }
+    commit=$(just _pushed-commit)
     remote=$(cat <<'REMOTE'
     set -euo pipefail
     repo=$HOME/teleoperation-isaac

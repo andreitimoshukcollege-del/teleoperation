@@ -244,7 +244,7 @@ unity-world-fr3-xr:
 unity-preview-fr3-xr:
     just _unity-batch TeleopXR Teleop.XR.Editor.Fr3Capture.Run "" true
 
-# Build the FR3 Duo's Galaxy XR APK after its scene check -> unity/TeleopXR/Builds/TeleopXR-FR3.apk (the same app id as the JetRover's, so installing it replaces that one). Close that project's editor first
+# Build the FR3 Duo's Galaxy XR APK after its scene check -> unity/TeleopXR/Builds/TeleopXR-FR3.apk, "Teleop FR3 Duo" (app id com.teleop.fr3duoxr: it installs beside the JetRover apps). Close that project's editor first
 [group('fr3 (simulated)')]
 build-galaxy-fr3:
     just _unity-batch TeleopXR Teleop.XR.Editor.XrBuild.RunFr3 "-buildTarget Android"
@@ -284,7 +284,8 @@ push-galaxy-fr3-config host="" motion="true":
     cfg["AllowMotion"] = sys.argv[3] == "true"
     json.dump(cfg, open(sys.argv[1], "w"), indent=2)
     PY
-    dest=/sdcard/Android/data/com.teleop.jetroverxr/files
+    # The FR3 app's own files directory (Teleop FR3 Duo, com.teleop.fr3duoxr): it installs beside the JetRover apps.
+    dest=/sdcard/Android/data/com.teleop.fr3duoxr/files
     just _adb shell mkdir -p "$dest"
     just _adb push "$(wslpath -m "$tmp")" "$dest/fr3_connection.json"
     echo "the FR3 operator now targets $host:6002, motion {{ if motion == "true" { "allowed" } else { "LOCKED (keepalives only)" } }}; restart the app to pick it up."

@@ -324,7 +324,8 @@ lighting.
 2. Open `Assets/Scenes/Fr3DuoXR.unity` and press Play. `fr3_connection.json`'s `RemoteHost` is 127.0.0.1,
    which is this PC, so no push is needed.
 3. **For the APK instead:**
-   - `just build-galaxy-fr3` builds `Builds/TeleopXR-FR3.apk`; installing it replaces the JetRover app.
+   - `just build-galaxy-fr3` builds `Builds/TeleopXR-FR3.apk`, **Teleop FR3 Duo** (`com.teleop.fr3duoxr`). It installs
+     beside the JetRover apps (before 2026-11-13 it shared the robot app's id and replaced it).
    - `just push-galaxy-fr3-config` points the app at this PC's LAN address.
    - The headset must be on the PC's Wi-Fi.
 

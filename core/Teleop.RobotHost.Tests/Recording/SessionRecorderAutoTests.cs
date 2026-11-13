@@ -406,6 +406,74 @@ namespace Teleop.RobotHost.Tests.Recording
             public override void SetLength(long value) => throw new NotSupportedException();
         }
 
+        /// <summary>A file whose writes wait until the gate opens: a disk that has stalled.</summary>
+        private sealed class GatedStream : Stream
+        {
+            private readonly Stream _inner;
+            private readonly ManualResetEventSlim _gate;
+
+            public GatedStream(Stream inner, ManualResetEventSlim gate)
+            {
+                _inner = inner;
+                _gate = gate;
+            }
+
+            public override void Write(byte[] buffer, int offset, int count)
+            {
+                _gate.Wait();
+                _inner.Write(buffer, offset, count);
+            }
+
+            public override void Flush() => _inner.Flush();
+            public override bool CanRead => false;
+            public override bool CanSeek => false;
+            public override bool CanWrite => true;
+            public override long Length => _inner.Length;
+            public override long Position { get => _inner.Position; set => throw new NotSupportedException(); }
+            public override int Read(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+            public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+            public override void SetLength(long value) => throw new NotSupportedException();
+
+            protected override void Dispose(bool disposing)
+            {
+                if (disposing) _inner.Dispose();
+                base.Dispose(disposing);
+            }
+        }
+
+        [Fact]
+        public void ASessionSplitWhileTheDiskStalls_KeepsItsDropsInItsOwnTrailer()
+        {
+            // A stalled disk filled the queue and lines were dropped; the session was then split (EndAuto, BeginAuto), which
+            // zeroed the drop count before the writer had closed the old file. Its trailer read END|n|0 and the damaged
+            // session passed check-session (the 2026-11 bug hunt, D-01).
+            using var gate = new ManualResetEventSlim(false);
+            using var rig = new Rig(start: false);
+            const string first = "20261026T120000Z-auto";
+            Func<string, Stream> open = path =>
+            {
+                Stream file = new FileStream(path, FileMode.CreateNew, FileAccess.Write, FileShare.Read);
+                return Path.GetFileName(Path.GetDirectoryName(path)) == first && Path.GetFileName(path) == "robothost.jlog" ? new GatedStream(file, gate) : file;
+            };
+            rig.Recorder = new SessionRecorder(rig.Control, Tps, capacity: 10, 0.02, rig.Options, () => Utc, rig.Log.Enqueue, open);
+
+            int generation = rig.Begin();
+            Assert.True(generation > 0);
+            Assert.True(WaitFor(() => File.Exists(Path.Combine(rig.AutoDir(first), "robothost.jlog"))));
+            for (int i = 0; i < 50; i++) rig.Recorder.Record($"KA|{i}|{i}|1000000000"); // at most 10 fit: the rest drop
+            long droppedHere = rig.Recorder.Dropped;
+            Assert.True(droppedHere >= 40, $"dropped {droppedHere}");
+
+            rig.Recorder.EndAuto(generation, "split");
+            Assert.True(rig.Recorder.BeginAuto(new AutoSessionSpec(Utc.AddSeconds(5), "10.0.0.5:6002", UplinkCondition.None, "split")) > 0);
+            gate.Set();
+
+            string log = Path.Combine(rig.AutoDir(first), "robothost.jlog");
+            Assert.True(WaitFor(() => ReadShared(log).Contains("\nEND|")), "the first session's trailer was written");
+            (_, string[] trailer) = ReadLog(log);
+            Assert.Equal(droppedHere.ToString(System.Globalization.CultureInfo.InvariantCulture), trailer[2]);
+        }
+
         private static Func<string, Stream> FailIn(string directoryName, bool once) => path =>
         {
             Stream file = new FileStream(path, FileMode.CreateNew, FileAccess.Write, FileShare.Read);

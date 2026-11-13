@@ -123,7 +123,7 @@ them.
 ```bash
 cd core
 dotnet test                                        # unit + allocation tests
-dotnet run --project Teleop.Eval -- verify         # replay a golden log twice; assert identical
+dotnet run --project Teleop.Eval -- verify         # replay the golden log, and every registry entry, twice; assert identical
 dotnet run --project Teleop.Eval -- audit          # invariant check over the built assembly
 ```
 

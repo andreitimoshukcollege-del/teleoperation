@@ -305,7 +305,7 @@ namespace Teleop.Eval.Sweep
             return true;
         }
 
-        private static void RunTrial(
+        internal static void RunTrial(
             string predictorName, string reconcilerName, string playoutPolicyName, string profileName,
             ulong seed, ExperimentConfig config, string tracesDirectory, IMetricSink sink)
         {

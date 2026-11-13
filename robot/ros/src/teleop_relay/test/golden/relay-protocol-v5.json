@@ -1,0 +1,125 @@
+{
+  "version": 5,
+  "about": "The protocol between RobotHost and the ROS relay (core/Teleop.RobotHost/Relay/RelayProtocol.cs and robot/ros/src/teleop_relay/teleop_relay/relay_protocol.py): fixed messages and their bytes, and bytes both ends reject. Written by RelayProtocolGoldenTests (just gen-relay-golden).",
+  "messages": [
+    {
+      "kind": "command",
+      "targets": [
+        [
+          1,
+          500,
+          300
+        ],
+        [
+          2,
+          -3.25,
+          300
+        ],
+        [
+          3,
+          1.5,
+          250
+        ],
+        [
+          10,
+          812.5,
+          119
+        ]
+      ],
+      "hex": "050104010000fa430000964302000050c000009643030000c03f00007a430a00204b440000ee42"
+    },
+    {
+      "kind": "command",
+      "targets": [],
+      "hex": "050100"
+    },
+    {
+      "kind": "feedback",
+      "entries": [
+        [
+          1,
+          true,
+          500.5
+        ],
+        [
+          5,
+          false,
+          0
+        ],
+        [
+          10,
+          true,
+          123.25
+        ]
+      ],
+      "hex": "05020301010040fa430500000000000a010080f642"
+    },
+    {
+      "kind": "feedback",
+      "entries": [],
+      "hex": "050200"
+    },
+    {
+      "kind": "torque",
+      "on": true,
+      "hex": "050301"
+    },
+    {
+      "kind": "torque",
+      "on": false,
+      "hex": "050300"
+    }
+  ],
+  "rejects": [
+    {
+      "decoder": "command",
+      "why": "an older version",
+      "hex": "040101070000fa430000ee42"
+    },
+    {
+      "decoder": "command",
+      "why": "the feedback kind",
+      "hex": "050201070000fa430000ee42"
+    },
+    {
+      "decoder": "command",
+      "why": "an unknown kind",
+      "hex": "050901070000fa430000ee42"
+    },
+    {
+      "decoder": "command",
+      "why": "count says 2, one tuple follows",
+      "hex": "050102070000fa430000ee42"
+    },
+    {
+      "decoder": "command",
+      "why": "more joints than MaxJointsPerMessage",
+      "hex": "050121000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+    },
+    {
+      "decoder": "command",
+      "why": "shorter than a header",
+      "hex": "0501"
+    },
+    {
+      "decoder": "torque",
+      "why": "a value other than 0 and 1",
+      "hex": "050302"
+    },
+    {
+      "decoder": "torque",
+      "why": "an older version",
+      "hex": "040301"
+    },
+    {
+      "decoder": "torque",
+      "why": "the command kind",
+      "hex": "050101"
+    },
+    {
+      "decoder": "torque",
+      "why": "shorter than a torque message",
+      "hex": "0503"
+    }
+  ]
+}

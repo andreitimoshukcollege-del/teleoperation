@@ -2551,7 +2551,8 @@ deploy-ros activate="true" remote_host=default_jetrover_host remote_user="jetson
         test -f ~/${remote_dir}/install/setup.bash
         echo '--- the plain-Python tests (relay protocol, stale tracking, servo controller, write gate, read backoff, session log):'
         PYTHONPATH=src/teleop_relay:src/jetrover_arm_control python3 -m pytest -q -p no:cacheprovider \
-            src/teleop_relay/test/test_relay_protocol.py src/teleop_relay/test/test_stale_tracked_value.py \
+            src/teleop_relay/test/test_relay_protocol.py src/teleop_relay/test/test_relay_protocol_golden.py \
+            src/teleop_relay/test/test_stale_tracked_value.py \
             src/jetrover_arm_control/test/test_servo_controller.py src/jetrover_arm_control/test/test_read_backoff.py \
             src/jetrover_arm_control/test/test_session_log.py src/jetrover_arm_control/test/test_write_gate.py 2>&1 | tail -6
         exit \${PIPESTATUS[0]}
@@ -3834,6 +3835,11 @@ isaac-bridge-test:
 [group('isaac')]
 gen-arm-server-golden:
     cd core && TELEOP_WRITE_GOLDEN=1 WSLENV="${WSLENV:+$WSLENV:}TELEOP_WRITE_GOLDEN" dotnet test Teleop.RobotHost.Tests --filter "FullyQualifiedName~ArmServerWireTests.TheIsaacBridgesGoldenFile_IsWhatThisCodecWrites"
+
+# Rewrite robot/ros/src/teleop_relay/test/golden/relay-protocol-v5.json from RobotHost's RelayProtocol.cs, after a deliberate change to it; then change relay_protocol.py until its tests pass (the two deploy together)
+[group('checks')]
+gen-relay-golden:
+    cd core && TELEOP_WRITE_GOLDEN=1 WSLENV="${WSLENV:+$WSLENV:}TELEOP_WRITE_GOLDEN" dotnet test Teleop.RobotHost.Tests --filter "FullyQualifiedName~RelayProtocolGoldenTests"
 
 # Rewrite robot/isaac/golden/camera-wire-v1.json from ADR 0014's C# camera wire (CameraChunkCodec, CameraSubscribeCodec, FramePacer), after a deliberate change; then change robot/isaac/teleop_isaac/camwire.py and camfeed.py until just isaac-bridge-test passes
 [group('isaac')]

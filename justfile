@@ -683,6 +683,12 @@ joint-drive script speed seconds="300" seed="1" margin_deg="15" remote_host=defa
     cd core && dotnet run --project Teleop.Eval -- joint-drive --script {{script}} --speed {{speed}} --seconds {{seconds}} \
         --seed {{seed}} --margin-deg {{margin_deg}} --remote-host $(just _robot-host "{{remote_host}}") --confirm-hardware-motion
 
+# Record one take of a scenario with the arm driving itself, as the headset's RECORD button would (docs/adr/0033, docs/adr/0036), e.g. `just record-take free-play waypoints 1.5 60`: joint-drive with --take, so RobotHost records it as a take (RECORD on the robot needs deploy-robothost's --scenarios), the camera goes in it, and the GPU machine copies it and adds it to the scenario's LeRobot dataset. MOVES THE REAL ARM: someone watches, the space around it clear, the headset app closed. The take starts once the arm is read and before anything moves, and is kept on every way out, Enter included; a take that cannot start leaves the arm where it is
+[group('robot: moves the arm (someone watching)')]
+record-take scenario script="waypoints" speed="1.5" seconds="60" seed="1" remote_host=default_jetrover_host:
+    cd core && dotnet run --project Teleop.Eval -- joint-drive --script {{script}} --speed {{speed}} --seconds {{seconds}} --seed {{seed}} \
+        --remote-host "$(cd .. && just _robot-host "{{remote_host}}")" --take "{{scenario}}" --confirm-hardware-motion
+
 # What just joint-drive would do, planned from the model's home pose -- sends nothing, needs no robot: the envelope (the IK's joint ranges less margin_deg), the moves, the range of targets and the fastest commanded motion
 [group('robot: checks and diagnostics (nothing moves)')]
 joint-drive-preview script speed seconds="300" seed="1" margin_deg="15":
@@ -3547,6 +3553,16 @@ isaac-scenarios:
     done
     echo "free: $(df -h "$root" | awk 'NR==2 {print $4}')"
     REMOTE
+
+# Record one take of the simulated JetRover with no headset (docs/adr/0036): joint-drive drives Isaac's arm from this PC and records it as a take of scenario, exactly as the headset's RECORD button would, e.g. `just isaac-jetrover-take free-play waypoints 1.5 45`. Needs just isaac-jetrover-host running (its scene enables takes; free-play, knock-over and push-to-edge are on its list). About a minute after it is saved, the LeRobot converter adds it to jetrover-isaac/<scenario> (just lerobot-watch-status). Only Isaac's arm moves; another headset or tool on its joint port fights it
+[group('lerobot')]
+isaac-jetrover-take scenario="free-play" script="waypoints" speed="1.5" seconds="45" seed="1":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    host="{{gpu_host}}"; host="${host#*@}"
+    case "$host" in *[!0-9.]*) echo "error: joint-drive needs the GPU machine's address as numbers, got '$host' (GPU_HOST)" >&2; exit 1 ;; esac
+    cd core && dotnet run --project Teleop.Eval -- joint-drive --script {{script}} --speed {{speed}} --seconds {{seconds}} --seed {{seed}} \
+        --remote-host "$host" --take "{{scenario}}" --confirm-hardware-motion
 
 # Build the LeRobot converter's environment on the GPU machine (docs/adr/0036), once and after robot/lerobot/requirements.txt changes: ~/isaacsim/lerobot-venv (Python 3.12) with that lerobot version, and pytest for just lerobot-test. Runs the pushed commit
 [group('lerobot')]

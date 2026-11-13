@@ -7,6 +7,7 @@ using System.Net.Sockets;
 using System.Threading;
 using Teleop.Core.Types;
 using Teleop.RobotArm.Collision;
+using Teleop.RobotArm.Operator;
 using Teleop.RobotArm.Types;
 using Teleop.RobotArm.Wire;
 
@@ -39,6 +40,11 @@ namespace Teleop.Eval.JointDrive
     /// terminal (<c>robot/pilot/onboard.py</c> on the robot, stopped by <c>just pilot-stop</c>); it
     /// refuses to start while that file exists.</para>
     ///
+    /// <para><c>--take &lt;scenario&gt;</c> records the drive as a take of that scenario, as the headset's RECORD button
+    /// does (docs/adr/0033, <see cref="TakeClient"/>), so it becomes a LeRobot episode (docs/adr/0036) with nobody at the
+    /// headset. The take starts once the arm's reading is in and before anything moves, and is stopped and kept on every
+    /// way out after that, a fault or Enter included. A take that cannot start leaves the arm unmoved.</para>
+    ///
     /// <para><c>--dry-run</c> plans from home, prints the envelope and what the session would do, and
     /// sends nothing; with <c>--operator-log</c> it writes the commands it would send, stamped on a
     /// simulated clock, to check the format.</para>
@@ -54,7 +60,7 @@ namespace Teleop.Eval.JointDrive
         private const string Usage =
             "usage: joint-drive --script waypoints|steps|course --speed <rad/s> [--seconds 300] [--seed 1] [--margin-deg 15] [--rate-hz 48]\n" +
             "                   (--dry-run | --remote-host <ip> [--remote-port 6002] --confirm-hardware-motion)\n" +
-            "                   [--operator-log <path> [--session-id <id>]] [--stop-file <path>]";
+            "                   [--operator-log <path> [--session-id <id>]] [--stop-file <path>] [--take <scenario>]";
 
         public static int Run(string[] args)
         {
@@ -62,7 +68,7 @@ namespace Teleop.Eval.JointDrive
             float speed = 0f;
             double seconds = 300, marginDeg = 15, rateHz = 48;
             ulong seed = 1;
-            string? host = null, logPath = null, sessionId = null, stopFile = null;
+            string? host = null, logPath = null, sessionId = null, stopFile = null, take = null;
             int port = 6002;
             bool dryRun = false, confirmed = false;
             try
@@ -91,6 +97,7 @@ namespace Teleop.Eval.JointDrive
                         case "--stop-file": stopFile = Next(); break;
                         case "--dry-run": dryRun = true; break;
                         case "--confirm-hardware-motion": confirmed = true; break;
+                        case "--take": take = Next(); break;
                         default: throw new ArgumentException($"unknown argument '{args[i]}'");
                     }
                 }
@@ -100,6 +107,8 @@ namespace Teleop.Eval.JointDrive
                 if (!(seconds > 0)) throw new ArgumentException("--seconds must be positive");
                 if (!(marginDeg >= 5)) throw new ArgumentException("--margin-deg must be at least 5");
                 if (!(rateHz >= 10 && rateHz <= 100)) throw new ArgumentException("--rate-hz must be in [10, 100]");
+                if (take != null && (take.Length == 0 || take.Length > RecordCodec.MaxNameLength)) throw new ArgumentException("--take names a scenario");
+                if (take != null && dryRun) throw new ArgumentException("--take records a real drive; a dry run sends nothing");
             }
             catch (Exception e) when (e is ArgumentException || e is FormatException || e is OverflowException)
             {
@@ -150,7 +159,7 @@ namespace Teleop.Eval.JointDrive
                 Console.WriteLine("[joint-drive] RobotHost reports no arm power (older than park and relax): driving without asking for torque");
             }
 
-            return Drive(script.Value, profile, envelope, speed, seconds, seed, rateHz, robotEndPoint, logPath, sessionId ?? "joint-drive", stopFile);
+            return Drive(script.Value, profile, envelope, speed, seconds, seed, rateHz, robotEndPoint, logPath, sessionId ?? "joint-drive", stopFile, take);
         }
 
         private static void PrintEnvelope(in DriveEnvelope envelope, double marginDeg)
@@ -239,12 +248,15 @@ namespace Teleop.Eval.JointDrive
         }
 
         private static int Drive(DriveScript script, RobotArmProfile profile, DriveEnvelope envelope, float speed, double seconds, ulong seed,
-            double rateHz, IPEndPoint robot, string? logPath, string sessionId, string? stopFile)
+            double rateHz, IPEndPoint robot, string? logPath, string sessionId, string? stopFile, string? takeScenario)
         {
             long tps = Stopwatch.Frequency;
             using var socket = new Socket(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp);
             socket.Bind(new IPEndPoint(IPAddress.Any, 0));
             var link = new Link(socket, robot, profile);
+            TakeClient? take = takeScenario == null ? null
+                : new TakeClient((bytes, n) => socket.SendTo(bytes, 0, n, SocketFlags.None, robot), TakeClient.FirstSequence());
+            link.Take = take;
 
             using var stop = new ManualResetEventSlim(false);
             Console.CancelKeyPress += (_, e) =>
@@ -301,10 +313,15 @@ namespace Teleop.Eval.JointDrive
             }
 
             PrintPlan(plan!, rateHz);
+            if (take != null && !StartTake(take, takeScenario!, link, stop))
+            {
+                return 1; // nothing moved
+            }
+
             Console.WriteLine("[joint-drive] the arm moves in 3 s. Press Enter to stop it where it is.");
             for (long until = Stopwatch.GetTimestamp() + 3 * tps; Stopwatch.GetTimestamp() < until;)
             {
-                if (stop.IsSet) return 130;
+                if (stop.IsSet) return FinishTake(take, link, 130);
                 link.Pump(Stopwatch.GetTimestamp(), default);
                 Thread.Sleep(5);
             }
@@ -407,28 +424,112 @@ namespace Teleop.Eval.JointDrive
                     Console.Error.WriteLine($"joint-drive: STOPPED: the {DriveEnvelope.JointName(watchdog.StalledJoint)} joint stalled " +
                         $"(over {DriveWatchdog.StallErrorRadians} rad from its command and not moving for {DriveWatchdog.StallSeconds} s); " +
                         "it now holds where it is. Check what it touched before going on.");
-                    return 2;
+                    return FinishTake(take, link, 2);
                 case DriveFault.FrameGap:
                     Console.Error.WriteLine($"joint-drive: STOPPED: no joint-state frame for {DriveWatchdog.MaxDegradedSeconds} s (the robot, RobotHost or the network is gone); " +
                         "sent a hold to the last measured pose.");
-                    return 3;
+                    return FinishTake(take, link, 3);
                 case DriveFault.StreamDegraded:
                     Console.Error.WriteLine($"joint-drive: STOPPED: the joint-state stream was missing or below {DriveWatchdog.MinFrameRateHz} Hz for {DriveWatchdog.MaxDegradedSeconds} s " +
                         $"of the last {DriveWatchdog.DegradedWindowSeconds} s. " +
                         "Either the Wi-Fi is losing frames, or something else (the headset app, joint-probe) is on the joint port: " +
                         "two SS lines in the session's robothost.jlog mean the second. Sent a hold to the last measured pose.");
-                    return 3;
+                    return FinishTake(take, link, 3);
             }
 
             if (stop.IsSet)
             {
                 Console.Error.WriteLine("joint-drive: stopped by hand; the arm holds where it is.");
-                return 130;
+                return FinishTake(take, link, 130);
             }
 
             Console.WriteLine("[joint-drive] done: the arm is back at home.");
-            return 0;
+            return FinishTake(take, link, 0);
         }
+
+        /// <summary>How long a RECORD request is sent again before it counts as unanswered (the headset gives up after 2 s).</summary>
+        private const double RequestSeconds = 5;
+
+        /// <summary>
+        /// Starts the take: waits for RobotHost's scenario list, then sends Start until its status echoes it. False, with
+        /// the reason printed, when the list never comes, the scenario is not on it, or RobotHost refuses.
+        /// </summary>
+        private static bool StartTake(TakeClient take, string scenario, Link link, ManualResetEventSlim stop)
+        {
+            long tps = Stopwatch.Frequency;
+            for (long until = Stopwatch.GetTimestamp() + 10 * tps; !take.State.HasList || !take.State.HasStatus;)
+            {
+                if (stop.IsSet) return false;
+                if (Stopwatch.GetTimestamp() > until)
+                {
+                    Console.Error.WriteLine("joint-drive: RobotHost sent no scenario list in 10 s: it records no takes (it needs --scenarios; " +
+                        "for Isaac, just isaac-jetrover-host with a scene). Nothing moved.");
+                    return false;
+                }
+
+                link.Pump(Stopwatch.GetTimestamp(), default);
+                Thread.Sleep(5);
+            }
+
+            int index = take.IndexOf(scenario);
+            if (index < 0)
+            {
+                Console.Error.WriteLine($"joint-drive: RobotHost has no scenario '{scenario}'; it has: {take.Names()}. Nothing moved.");
+                return false;
+            }
+
+            RecordOutcome outcome = Request(take, link, RecordOp.Start, (byte)index, take.State.ListRevision);
+            if (outcome != RecordOutcome.Started || take.State.Status.State != RecordState.Recording)
+            {
+                Console.Error.WriteLine($"joint-drive: RobotHost did not start a take of '{scenario}' ({Describe(outcome)}). Nothing moved.");
+                return false;
+            }
+
+            Console.WriteLine($"[joint-drive] recording take {take.State.Status.Take} of '{scenario}'");
+            return true;
+        }
+
+        /// <summary>Stops and keeps the take, if one is going; the drive's own exit code stands unless that fails (exit 4).</summary>
+        private static int FinishTake(TakeClient? take, Link link, int code)
+        {
+            if (take == null || !take.State.HasStatus || take.State.Status.State != RecordState.Recording) return code;
+            RecordOutcome outcome = Request(take, link, RecordOp.Stop, RecordStatus.NoScenario, take.State.ListRevision);
+            if (outcome == RecordOutcome.Saved)
+            {
+                Console.WriteLine($"[joint-drive] take {take.State.Status.Take} saved ({take.State.Status.TakesKept} kept of this scenario); " +
+                    "RobotHost completes it, and the LeRobot converter adds it about a minute later");
+                return code;
+            }
+
+            Console.Error.WriteLine($"joint-drive: the take was not stopped cleanly ({Describe(outcome)}); RobotHost stops it by itself 10 s after the last command.");
+            return code == 0 ? 4 : code;
+        }
+
+        /// <summary>One RECORD request, sent every 0.25 s until RobotHost's status echoes it; its outcome, or None unanswered.</summary>
+        private static RecordOutcome Request(TakeClient take, Link link, RecordOp op, byte scenario, ushort revision)
+        {
+            long tps = Stopwatch.Frequency;
+            long now = Stopwatch.GetTimestamp();
+            uint sequence = take.Begin(op, scenario, revision, now);
+            long nextSend = now + tps / 4, until = now + (long)(RequestSeconds * tps);
+            while (!take.Answered(sequence))
+            {
+                now = Stopwatch.GetTimestamp();
+                if (now > until) return RecordOutcome.None;
+                if (now >= nextSend)
+                {
+                    take.Resend();
+                    nextSend = now + tps / 4;
+                }
+
+                link.Pump(now, default);
+                Thread.Sleep(5);
+            }
+
+            return take.State.Status.Outcome;
+        }
+
+        private static string Describe(RecordOutcome outcome) => outcome == RecordOutcome.None ? "no answer" : outcome.ToString();
 
         /// <summary>One command's targets, in the profile's order, every joint carrying the requested speed as the headset's do.</summary>
         internal static int Targets(in RobotArmProfile profile, in ArmPose pose, float gripperFraction, float speed, Span<JointTarget> output)
@@ -495,6 +596,9 @@ namespace Teleop.Eval.JointDrive
 
             public long Frames { get; private set; }
 
+            /// <summary>Takes the joint port's RECORD status and scenario list, when the drive records a take.</summary>
+            public TakeClient? Take { get; set; }
+
             /// <summary>Sends the keepalive when due and takes in every frame waiting; with a watchdog, feeds it each frame and fresh reading.</summary>
             public void Pump(long now, DriveWatchdog? watchdog, in ArmPose commanded = default)
             {
@@ -520,6 +624,7 @@ namespace Teleop.Eval.JointDrive
                     if (!JointStateCodec.TryDecode(_buffer.AsSpan(0, received), out _, out _, out long sensedTicks, out _, out _,
                             out long robotTps, _joints, out int count))
                     {
+                        Take?.OnDatagram(_buffer.AsSpan(0, received));
                         continue;
                     }
 

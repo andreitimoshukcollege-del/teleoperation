@@ -380,7 +380,7 @@ def run(app, args, p, scene, cameras, fps, joints, motors, tap) -> int:
     if args.sim:
         from .jetrover_bridge import convert_urdf
     else:
-        from .bridge import convert_urdf
+        from .bridge import convert_urdf  # each bridge's own folder prefix, so the renderer opens the USD its bridge does
     from .world import IsaacWorld, prim_name
 
     usd = convert_urdf(args.urdf, args.work)

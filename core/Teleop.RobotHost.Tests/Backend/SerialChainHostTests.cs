@@ -140,6 +140,26 @@ namespace Teleop.RobotHost.Tests.Backend
         }
 
         [Fact]
+        public void ThePlantRefusesAMotorNamedTwiceOrANonFiniteValue_WholeAndWithoutCrashing()
+        {
+            // 17 entries for 16 motors overflowed the plant's scratch buffer (the 2026-11 bug hunt, C-01).
+            (SerialChainProfile profile, _, Fr3SimBackend backend) = Sim();
+            var plant = new SerialChainPlant(profile, backend);
+            var all = profile.Arms.SelectMany(a => a.Joints.Select(j => j.MotorId).Concat(a.HasGripper ? new[] { a.Gripper.MotorId } : Array.Empty<byte>()))
+                .Select(id => new JointTarget(id, 0f, 0f)).ToList();
+            all.Add(new JointTarget(all[0].MotorId, 0.1f, 0f));
+
+            Assert.Equal(JointCommandOutcome.Refused, plant.CommandJointTargets(all.ToArray(), captureTicks: 10, nowTicks: 0));
+            Assert.Equal(JointCommandOutcome.Refused, plant.CommandJointTargets(new[] { new JointTarget(11, float.PositiveInfinity, 0f) }, captureTicks: 11, nowTicks: 0));
+            Assert.Equal(JointCommandOutcome.Refused, plant.CommandJointTargets(new[] { new JointTarget(11, float.NaN, 0f) }, captureTicks: 12, nowTicks: 0));
+            Assert.Equal(3, plant.InvalidCommands);
+            Assert.Equal(0, plant.AcceptedCommands);
+
+            // Not taken, so the stamp is not either: the corrected command at the same stamp goes through.
+            Assert.Equal(JointCommandOutcome.Accepted, plant.CommandJointTargets(new[] { new JointTarget(11, 0.2f, 0f) }, captureTicks: 10, nowTicks: 1));
+        }
+
+        [Fact]
         public void WithACollisionModel_ThePlantRefusesACollidingCommand_AndTakesTheNextClearOne()
         {
             (SerialChainProfile profile, TrajectoryShaperConfig shaper, Fr3SimBackend backend) = Sim();

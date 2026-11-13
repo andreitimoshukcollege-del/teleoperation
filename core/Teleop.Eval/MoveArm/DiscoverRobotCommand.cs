@@ -75,7 +75,7 @@ namespace Teleop.Eval.MoveArm
 
                     foreach (Socket s in all)
                     {
-                        while (s.Available > 0)
+                        while (s.Poll(0, SelectMode.SelectRead)) // Poll, not Available: an empty datagram reads as Available 0 and would block the queue (B-01)
                         {
                             EndPoint from = new IPEndPoint(IPAddress.Any, 0);
                             int n;

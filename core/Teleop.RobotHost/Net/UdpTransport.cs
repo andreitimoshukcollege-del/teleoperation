@@ -162,22 +162,30 @@ namespace Teleop.RobotHost.Net
             byteCount = 0;
             arrivalTicks = 0;
 
-            if (_socket.Available <= 0)
-            {
-                return false;
-            }
-
+            // Poll, not Available: Available is FIONREAD, which reads 0 while an empty datagram sits at the head of the queue,
+            // so an Available gate never dequeued it and every datagram behind it was stuck for good (the 2026-11 bug hunt,
+            // B-01: one `printf '' | nc -u` stopped the joint port). An empty datagram carries nothing: it is read off the
+            // queue and skipped, and it never moves the reply target.
             int received;
-            try
+            do
             {
-                received = _replyToSender
-                    ? _socket.ReceiveFrom(_receiveScratch, SocketFlags.None, ref _senderScratch)
-                    : _socket.Receive(_receiveScratch, SocketFlags.None);
+                if (!_socket.Poll(0, SelectMode.SelectRead))
+                {
+                    return false;
+                }
+
+                try
+                {
+                    received = _replyToSender
+                        ? _socket.ReceiveFrom(_receiveScratch, SocketFlags.None, ref _senderScratch)
+                        : _socket.Receive(_receiveScratch, SocketFlags.None);
+                }
+                catch (SocketException)
+                {
+                    return false;
+                }
             }
-            catch (SocketException)
-            {
-                return false;
-            }
+            while (received == 0);
 
             // Read now, not at TryReceive's entry -- this is the closest this transport gets to
             // a real arrival timestamp. See the class doc's precision caveat.
@@ -216,7 +224,7 @@ namespace Teleop.RobotHost.Net
         /// </summary>
         public void Reset()
         {
-            while (_socket.Available > 0)
+            while (_socket.Poll(0, SelectMode.SelectRead))
             {
                 try
                 {

@@ -82,7 +82,9 @@ namespace Teleop.CameraHost
                 {
                     while (!stop.IsSet && Stopwatch.GetTimestamp() < deadline)
                     {
-                        while (socket.Available > 0)
+                        // Poll, not Available: an empty datagram reads as Available 0 and would block every keepalive
+                        // behind it, so the stream would stop for good (the 2026-11 bug hunt, B-01).
+                        while (socket.Poll(0, SelectMode.SelectRead))
                         {
                             int n;
                             try

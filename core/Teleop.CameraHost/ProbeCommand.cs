@@ -67,7 +67,7 @@ namespace Teleop.CameraHost
                     continue;
                 }
 
-                while (socket.Available > 0)
+                while (socket.Poll(0, SelectMode.SelectRead)) // Poll, not Available: an empty datagram reads as Available 0 and would block the queue (B-01)
                 {
                     int n = socket.Receive(receive);
                     long arrival = Stopwatch.GetTimestamp(); // at dequeue, docs/metrics.md §1

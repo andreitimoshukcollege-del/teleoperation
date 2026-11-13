@@ -190,7 +190,7 @@ namespace Teleop.Eval.JointDrive
                     nextKeepalive = now + tps / 2;
                 }
 
-                while (socket.Available > 0)
+                while (socket.Poll(0, SelectMode.SelectRead)) // Poll, not Available: an empty datagram reads as Available 0 and would block the queue (B-01)
                 {
                     EndPoint from = new IPEndPoint(IPAddress.Any, 0);
                     int got;

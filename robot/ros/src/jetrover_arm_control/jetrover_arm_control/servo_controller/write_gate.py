@@ -11,11 +11,13 @@ What it decides, per servo (see `ServoController`'s class doc for the history):
 - a target that arrives while the servo is still cooling down from its last move is kept as its pending target, the
   newest winning (`GP`), and written by `flush` once the cooldown ends;
 - otherwise it becomes a move whose duration is the distance from the last pulse sent at the given speed, never under
-  `MIN_MOVE_DURATION_SECONDS` (a servo's first move has no distance to measure, so it takes the minimum), and the
-  servo cools down for that duration.
+  `MIN_MOVE_DURATION_SECONDS` (a servo's first move has no distance to measure, so it takes the minimum) and never over
+  `MAX_MOVE_DURATION_SECONDS` (the board's 16-bit millisecond field), and the servo cools down for that duration.
 
 Times are whatever monotonic seconds the caller passes; the gate never reads a clock.
 """
+
+import math
 
 # The write-gate threshold, in pulse units. A bus-traffic optimization only (skip a physical
 # write that wouldn't move the servo perceptibly) -- see docs/adr/0010-absolute-joint-targets-over-local-relay.md
@@ -28,6 +30,11 @@ MIN_MEANINGFUL_PULSE_DELTA = 5
 # parameter (docs/adr/0011-generic-robot-arm-profiles.md), supplied by GenericArmPlant over the wire.
 MIN_MOVE_DURATION_SECONDS = 0.05
 
+# Maximum move duration, seconds: the board carries a move's duration as 16-bit milliseconds, so anything longer
+# wraps around to a near-instant move (the 2026-11 bug hunt, C-03: 65.764 s ran in 228 ms, and the gate then held
+# that servo for 65.8 s). RobotHost floors its speed so its moves never get here; this is the driver's own backstop.
+MAX_MOVE_DURATION_SECONDS = 65.535
+
 # The board's pulse range; targets are clamped into it.
 PULSE_MIN = 0
 PULSE_MAX = 1000
@@ -35,9 +42,15 @@ PULSE_MAX = 1000
 
 def resolve(targets):
     """(servoID, pulse, pulses_per_second) as the driver receives them -> the same with the pulse truncated to an int
-    and clamped to the board's range, as `ServoController.setPositions` writes them to its `CI` record."""
+    and clamped to the board's range, as `ServoController.setPositions` writes them to its `CI` record.
+
+    A target whose pulse or speed is not a finite number, or whose speed is not positive, is dropped: `int(nan)`
+    raised in the driver's callback and killed the node, and a sender at 48 Hz killed it again on every restart
+    (the 2026-11 bug hunt, C-02)."""
     resolved = []
     for servoID, direction, pulses_per_second in targets:
+        if not (math.isfinite(direction) and math.isfinite(pulses_per_second) and pulses_per_second > 0):
+            continue
         nextPos = int(direction)
         nextPos = PULSE_MIN if nextPos < PULSE_MIN else PULSE_MAX if nextPos > PULSE_MAX else nextPos
         resolved.append((servoID, nextPos, pulses_per_second))
@@ -107,7 +120,7 @@ class WriteGate:
             events.append(("GD", servoID, nextPos))
             return
         pulseDelta = abs(nextPos - lastSent) if lastSent is not None else 0
-        duration = max(MIN_MOVE_DURATION_SECONDS, pulseDelta / pulses_per_second)
+        duration = min(MAX_MOVE_DURATION_SECONDS, max(MIN_MOVE_DURATION_SECONDS, pulseDelta / pulses_per_second))
         # The board's firmware paces the physical move over `duration`; the next write for this servo waits for it.
         self.lastSentPulse[servoID] = nextPos
         self.nextAllowedWriteAt[servoID] = now + duration

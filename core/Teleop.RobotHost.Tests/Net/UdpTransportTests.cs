@@ -101,6 +101,33 @@ namespace Teleop.RobotHost.Tests.Net
         }
 
         [Fact]
+        public void AnEmptyDatagram_IsSkipped_AndWhatFollowsItStillArrives()
+        {
+            // One `printf '' | nc -u robot 6002` stopped the joint port for good on Linux: FIONREAD (Socket.Available) reads 0
+            // while an empty datagram is at the head of the queue, so an Available gate never read it off and nothing
+            // behind it was read again (the 2026-11 bug hunt, B-01).
+            int portRobot = GetFreeUdpPort();
+            var clock = new MonotonicClock();
+            using var robot = new UdpTransport(portRobot, remoteEndPoint: null, maxPayloadBytes: 64, clock, replyToSender: true);
+            using var attacker = new Socket(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp);
+            attacker.Bind(new IPEndPoint(IPAddress.Loopback, 0));
+            using var headset = new Socket(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp);
+            headset.Bind(new IPEndPoint(IPAddress.Loopback, 0));
+            var robotEndPoint = new IPEndPoint(IPAddress.Loopback, portRobot);
+
+            attacker.SendTo(System.Array.Empty<byte>(), robotEndPoint);
+            Thread.Sleep(20);
+            headset.SendTo(new byte[] { 7, 8, 9 }, robotEndPoint);
+
+            var buffer = new byte[64];
+            Assert.True(PollReceive(robot, clock, buffer, out int count));
+            Assert.Equal(3, count);
+            Assert.Equal(new byte[] { 7, 8, 9 }, buffer[..3]);
+            // The empty datagram never became the reply target: replies go to the headset.
+            Assert.Equal(headset.LocalEndPoint, robot.CurrentRemoteEndPoint);
+        }
+
+        [Fact]
         public void ReplyToSender_WithNoConfiguredPeer_SendFailsUntilADatagramArrives()
         {
             var clock = new MonotonicClock();

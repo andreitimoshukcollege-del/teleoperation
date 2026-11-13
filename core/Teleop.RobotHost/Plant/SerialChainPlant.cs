@@ -146,6 +146,15 @@ namespace Teleop.RobotHost.Plant
                 return JointCommandOutcome.Stale;
             }
 
+            // Malformed input is refused whole: a target that is not finite, or a motor named twice, which would overflow
+            // the per-motor scratch buffer below (the 2026-11 bug hunt, C-01). Like a collision refusal, it is not taken, so
+            // its capture stamp is not either.
+            if (!IsWellFormed(targets))
+            {
+                InvalidCommands++;
+                return JointCommandOutcome.Refused;
+            }
+
             int count = 0;
             if (_collision != null)
             {
@@ -192,6 +201,39 @@ namespace Teleop.RobotHost.Plant
             Array.Copy(_scratch, _targets, count);
             AcceptedCommands++;
             return JointCommandOutcome.Accepted;
+        }
+
+        /// <summary>
+        /// Commands refused as malformed (a target not finite, or a motor named twice), since construction. Recorded as
+        /// <see cref="JointCommandOutcome.Refused"/>, like a collision refusal; this counter tells the two apart.
+        /// </summary>
+        public int InvalidCommands { get; private set; }
+
+        private bool IsWellFormed(ReadOnlySpan<JointTarget> targets)
+        {
+            Span<bool> seen = stackalloc bool[_motorIds.Length];
+            for (int i = 0; i < targets.Length; i++)
+            {
+                if (!float.IsFinite(targets[i].Angle))
+                {
+                    return false;
+                }
+
+                int m = Array.IndexOf(_motorIds, targets[i].MotorId);
+                if (m < 0)
+                {
+                    continue;
+                }
+
+                if (seen[m])
+                {
+                    return false;
+                }
+
+                seen[m] = true;
+            }
+
+            return true;
         }
 
         /// <summary>The targets the last accepted command sent to the backend.</summary>

@@ -40,7 +40,8 @@ namespace Teleop.RobotHost.Net
         public int Poll()
         {
             int answered = 0;
-            while (_socket.Available > 0)
+            // Poll, not Available: an empty datagram reads as Available 0 and would block every query behind it (B-01).
+            while (_socket.Poll(0, SelectMode.SelectRead))
             {
                 EndPoint from = new IPEndPoint(IPAddress.Any, 0);
                 int n;

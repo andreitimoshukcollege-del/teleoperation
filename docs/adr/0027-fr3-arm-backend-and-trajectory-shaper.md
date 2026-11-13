@@ -2,6 +2,8 @@
 
 ## Status
 
+Accepted (2026-11-12): built in phases P2 and P3 (`JointTrajectoryShaper`, `franka-replay`, the
+simulated serial-chain RobotHost, session format v2) and merged in PR #92 on 2026-10-30.
 Proposed (2026-10-28). It belongs to the FR3 Duo work (ADR 0026) and is the user's "hardware arrives
 later" choice made concrete: a simulated arm now, behind the seam a real one will use.
 

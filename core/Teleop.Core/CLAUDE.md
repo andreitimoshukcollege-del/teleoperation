@@ -2,7 +2,7 @@
 
 Every algorithm in the project lives here. This assembly is compiled by **two** build systems
 from these same `.cs` files: `dotnet` (via `Teleop.Core.csproj`, for tests and eval) and Unity
-(via `package.json` + `Teleop.Core.asmdef`, for the Quest build). There is one copy. It cannot
+(via `package.json` + `Teleop.Core.asmdef`, for the headset build). There is one copy. It cannot
 drift. That property is the reason the project is laid out this way — protect it.
 
 ## Layout

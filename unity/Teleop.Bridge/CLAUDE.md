@@ -43,14 +43,17 @@ loads, not adapters themselves.
 
 **Implementations of Core interfaces** — the direction inverts here. Core declares, Unity
 provides: `UnityRobotPlant : IRobotPlant` (not yet built — Phase 4 reuses Core's own
-`RigidBodyPlant` directly instead, see `Plant/CLAUDE.md`), `UdpTransport : ITransport` (not yet
-built — Phase 4 is in-process only), `UnityMetricSink : IMetricSink` (built),
+`RigidBodyPlant` directly instead, see `Plant/CLAUDE.md`), `UdpTransport : ITransport` (built:
+the third copy of RobotHost's fixed-peer transport, sending through a `byte[]` scratch because
+Unity's corlib lacks the span `SendTo`), `UnityMetricSink : IMetricSink` (built),
 `UnityMonotonicClock : ITimeAuthority` (built; every Core component Bridge constructs needs one,
-the same reasoning `Time/CLAUDE.md` gives for why `Teleop.Eval` has its own `MonotonicClock`),
-and eventually an `IInferenceBackend` (see the Sentis note in `unity/TeleopVR/Assets/Teleop/CLAUDE.md`).
+the same reasoning `Time/CLAUDE.md` gives for why `Teleop.Eval` has its own `MonotonicClock`).
+The `IInferenceBackend` is Core's own `MlpBackend` (docs/adr/0025): `LearnedModels.cs` only reads
+the weights file. Sentis stays banned.
 
-Bridge should stay small: roughly a dozen files, mostly under 100 lines. Growth means logic is
-leaking out of Core, and every leaked line is a line the headless sweeps can no longer test.
+Bridge was meant to stay small: roughly a dozen files, mostly under 100 lines. It is now 34
+files and about 6,800 lines, four of them over 400 lines. Growth means logic may
+be leaking out of Core, and every leaked line is a line the headless sweeps can no longer test.
 
 ## Network impairment: the checkbox panel
 

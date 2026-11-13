@@ -2,6 +2,8 @@
 
 ## Status
 
+Accepted (2026-11-12): built in phases P4 and P5 (the trainer's FR3 simulator, layout v4,
+`LearnedJointWindowV4`, weights format 2) and merged in PR #92 on 2026-10-30.
 Proposed (2026-10-28). Part of the FR3 Duo work (ADRs 0026, 0027). It amends ADR 0021: decision 5
 (what the trainer copies), decision 6 (the simulator), decisions 7 and 9 (the model and the gate,
 for the FR3). It also amends ADR 0025: decisions 1, 3 and 4 (the C# window and backend). The user

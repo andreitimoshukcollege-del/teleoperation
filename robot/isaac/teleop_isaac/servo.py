@@ -8,9 +8,10 @@
 - :class:`DriverEmulator` is the driver node between the relay and the servos (docs/adr/0034 amendment 13): its write gate,
   the real driver's own module (``write_gate.py``, imported by :func:`write_gate`), and its single thread, so a command that
   arrives during a read cycle waits for the cycle's end, and the gate's waiting targets go out between reads.
-- :class:`FeedbackEmulator` is what the driver and relay report: a cycle every 20 ms reading motors 1 to 5 back to back in
-  whole pulses, published when it ends; the newest reading of every motor sent every 20 ms, valid while under 0.2 s old;
-  a motor that never reports (the gripper) always invalid.
+- :class:`FeedbackEmulator` is what the driver and relay report: a cycle every 20 ms reading back to back, in whole pulses,
+  every motor the sidecar marks ``feedback`` (1 to 5 and the gripper, 10, as the real driver reads them since PR #70:
+  docs/adr/0034 amendment 9), published when it ends; the newest reading of every motor sent every 20 ms, valid while
+  under 0.2 s old; a motor the sidecar marks as not reporting always invalid.
 
 The relay protocol itself is the ROS relay's own module (``robot/ros/src/teleop_relay``), imported by :func:`relay_protocol`,
 so there is one Python implementation of it.
@@ -207,7 +208,8 @@ class FeedbackEmulator:
       longer than the period, so the next cycle starts as soon as the thread is free, as the real one does;
     - a cycle's readings are published when it ends, and only then seen by the relay;
     - the relay sends the newest reading of every motor every ``feedback_seconds`` (its ``_FEEDBACK_SEND_PERIOD_SECONDS``,
-      20 ms), valid while under ``valid_seconds`` old (0.2 s); a motor that never reports (the gripper) always invalid.
+      20 ms), valid while under ``valid_seconds`` old (0.2 s); a motor the sidecar marks as not reporting always invalid.
+      The sidecar marks every motor as reporting, the gripper too (docs/adr/0034 amendment 9).
     """
 
     recorded = False  # cycles of its own; RecordedFeedback's are a session's

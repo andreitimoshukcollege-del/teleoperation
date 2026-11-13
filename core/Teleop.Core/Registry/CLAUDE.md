@@ -2,7 +2,7 @@
 
 `Registries.cs` — static `string -> factory` tables, one per research axis, hand-maintained.
 Reflection-free by design (root CLAUDE.md invariant 5): IL2CPP's stripper removes any type
-nothing references directly, and there is no runtime codegen on Quest, so `Activator.CreateInstance`
+nothing references directly, and there is no runtime codegen on the headset, so `Activator.CreateInstance`
 is not an option. Every entry here is a plain dictionary literal calling a real constructor.
 
 ## Adding an entry
@@ -17,28 +17,33 @@ type," so the mapping survives whatever IL2CPP strips.
 | Property | Axis | Entries |
 |---|---|---|
 | `Predictors` | `Prediction/` | `none`, `const-vel`, `double-exp` |
-| `JointPredictors` | `Prediction/` (`ICommandAwarePredictor`, docs/adr/0018) | `hold-last`, `servo-replay`, `relay-replay`, `relay-replay-servo` |
-| `Reconcilers` | `Reconciliation/` | `snap` |
+| `JointPredictors` | `Prediction/` (`ICommandAwarePredictor`, docs/adr/0018) | `hold-last`, `servo-replay`, `relay-replay`, `relay-replay-servo`, `franka-replay` (docs/adr/0027), `learned` (docs/adr/0025) |
+| `Reconcilers` | `Reconciliation/` | `snap`, `spring`, `budget-blend`, `velocity-match`, `exp-smooth`, `exp-smooth-c1`, `exp-smooth-track` |
 | `Codecs` | `Transport/` (`ICommandCodec`) | `raw` |
 | `Transports` | `Transport/` (`ITransport`) | `loopback` |
-| `PlayoutPolicies` | `Buffering/` | *(none yet)* |
+| `PlayoutPolicies` | `Buffering/` | `immediate`, `fixed`, `percentile` |
 | `Arbiters` | `Autonomy/` | *(none yet)* |
+| `NetworkForecasters` | `Forecast/` (`INetworkForecaster`, docs/adr/0035 N3) | `persistence`, `rtt-half` |
 
-`PlayoutPolicies` and `Arbiters` are declared and correctly typed despite being empty — adding
-the first `Buffering/`/`Autonomy/` implementation is a one-line addition to an existing table,
-not a new table to design.
+`franka-replay` throws without `config.Shaper` and `learned` without `config.Model`: the host
+supplies both.
 
-`EmulatedTransport` is deliberately not registered in `Transports` yet: it is a decorator over
-another `ITransport` plus a `NetworkProfile` and a `SeededRng`, a materially different
-constructor shape than `LoopbackTransport`'s `(maxPayloadBytes, capacity)`. Forcing it into the
-same factory signature would be worse than not registering it; give it its own entry shape (or a
-small builder type) once a sweep actually needs to select a transport by name.
+`Arbiters` is declared and correctly typed despite being empty — adding the first `Autonomy/`
+implementation is a one-line addition to an existing table, not a new table to design.
+
+Only `loopback` is registered in `Transports`. `EmulatedTransport`, `MeasuredTransport`,
+`BottleneckTransport`, `RateLimitedTransport` and `BacklogBackoffTransport` are decorators with
+constructor shapes unlike `LoopbackTransport`'s `(maxPayloadBytes, capacity)` (`EmulatedTransport`
+takes another `ITransport`, a `NetworkProfile` and a `SeededRng`). Forcing them into the same
+factory signature would be worse than not registering them; give them their own entry shape (or a
+small builder type) once a sweep actually needs to select a transport by name. `Transport/CLAUDE.md`
+lists them, since `audit` does not check `Transports`.
 
 ## Requirements
 
 1. `StringComparer.Ordinal` on every dictionary — a registry lookup must not depend on
-   locale/culture behavior differing between `dotnet test` (CoreCLR) and the Quest build
-   (IL2CPP/Mono), the same reasoning `Types/SeededRng.cs` gives for hand-rolling its PRNG instead
+   locale/culture behavior differing between `dotnet test` (CoreCLR) and the headset build
+   (IL2CPP), the same reasoning `Types/SeededRng.cs` gives for hand-rolling its PRNG instead
    of trusting `System.Random` to agree across runtimes.
 2. No entry may exist for a type that doesn't actually exist on disk, and no implementation may
    exist without an entry here — `Teleop.Eval -- audit`'s registry-completeness check enforces
@@ -53,8 +58,8 @@ small builder type) once a sweep actually needs to select a transport by name.
 `audit`'s `RegistryCompletenessAxes` list deliberately does not include it. Two reasons, and they
 are the same ones that keep `EmulatedTransport` out:
 
-- The five constructors take five different shapes — `(long)`, `(long)`, `(double, double)`,
-  `(double, long)`, `(long[])`. One factory signature covering them all is a stringly-typed
+- The six constructors take five different shapes — `(long)` twice, `(double, double)`,
+  `(double, long)`, `(long[])`, `(long[], bool[], long)`. One factory signature covering them all is a stringly-typed
   parameter bag, which is worse than not registering them.
 - The by-name selection this axis needs already exists and is richer than a dictionary could be:
   `Transport/NetworkProfileCatalog.cs` maps a name to a whole *set*, including three regex-driven

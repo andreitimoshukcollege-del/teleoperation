@@ -38,11 +38,17 @@ this paragraph.
 Dependencies point one direction. `Teleop.Core` sits at the bottom and depends on nothing.
 
 ```
-analysis/  ──reads──>  results/  <──writes──  Teleop.Eval ──────────────┐
-                                                                        ├──> Teleop.Core
-                     unity/TeleopVR ─┬──> unity/Teleop.Bridge ──────────┘     (depends on NOTHING)
-                     unity/TeleopXR ─┘
+analysis/ ──reads──> results/ <──writes── Teleop.Eval ───────┐
+                                          Teleop.RobotHost ──┤
+unity/TeleopVR ─┬──> unity/Teleop.Bridge ────────────────────┴──> Teleop.RobotArm ──> Teleop.Core
+unity/TeleopXR ─┘                                                                       ^
+                                          Teleop.CameraHost ────────────────────────────┘
+                                                                          (Core depends on NOTHING)
 ```
+
+Eval, RobotHost and Bridge also reference `Teleop.Core` directly. `Teleop.RobotArm` is a Unity
+package too (`com.teleop.robotarm`, resolved by both Unity projects): `noEngineReferences`,
+`netstandard2.1`, C# 9, like Core.
 
 Core must never reference `UnityEngine` and must never know Unity exists. Unity supplies
 capabilities to Core by **implementing interfaces that Core declares** (`IRobotPlant`,
@@ -136,7 +142,9 @@ serialization, scene wiring, or IL2CPP. See `unity/BridgeCheck/README.md`.
 If [`just`](https://github.com/casey/just) is installed, the repo-root `justfile` wraps the
 above plus `analysis/`'s test suite: `just core-check` runs all three `core/` gates,
 `just bridge-check` compiles `Bridge/` against Core, `just test` runs `analysis/`'s pytest suite,
-`just check` runs everything. For the two Unity projects (they need the Windows side, and the
+`just check` runs those three (`core-check`, `bridge-check`, `test`). It does not run the other
+Python suites (`just trainer-test`, `just isaac-bridge-test`, `just lerobot-test`) or the Unity
+checks below. For the two Unity projects (they need the Windows side, and the
 project's editor closed): `just unity-check-vr` / `just unity-check-xr` open their scenes headless
 and fail on missing scripts or broken wiring, and `just build-quest` / `just build-galaxy` build the
 two APKs. `just --list` shows every
@@ -225,9 +233,10 @@ ownership rule, and there is no longer a restriction on where any directory may 
   installed in WSL; never run a working-tree-modifying git command from a shell
   without `git-lfs`, or LFS-tracked binaries get written as pointer text files.
 - **Unity 2022.3.46f1** (TeleopVR) — C# 9, API Compatibility Level `.NET Standard 2.1`. Sentis
-  requires 2023.2+, so on-device ML inference goes through `IInferenceBackend` with a
-  backend chosen at Phase 7; do not write `using Unity.Sentis` anywhere (the Unity 6 project
-  included, until that Phase 7 ADR).
+  requires 2023.2+, so on-device ML inference goes through `IInferenceBackend`. ADR 0025 (the
+  Phase 7 backend decision) chose plain C# in Core (`Inference/MlpBackend.cs`), no package and no
+  Sentis; the learned joint predictor runs that way on the headset. Do not write
+  `using Unity.Sentis` anywhere, the Unity 6 project included.
 - **Unity 6000.6.4f1** (TeleopXR, ADR 0016; Android XR needs ≥ 6000.3.6f1) — also C# 9 / .NET
   Standard 2.1 (`-langversion:9.0` confirmed in its build). Galaxy XR
   is tested from the editor with Android XR **Direct Preview** over USB-C (Windows 11), the Link

@@ -15,7 +15,7 @@ report its own operating point is not evaluable.
 | `fixed` | `FixedDelayPlayout.cs` | constant delay budget; the other baseline, and the denominator every adaptive claim is stated against |
 | `percentile` | `PercentileTrackingPlayout.cs` | budget = nearest-rank quantile of the last `w` observed one-way delays. At `p = 1.0` it *is* `analysis/playout_bounds.py`'s "max of the last w", exactly |
 
-Both are thin policies over `PlayoutSampleBuffer.cs`, an `internal` shared implementation of
+All three are thin policies over `PlayoutSampleBuffer.cs`, an `internal` shared implementation of
 ordering, duplicate rejection and late/underrun counting — the same reasoning
 `Reconciliation/DisplayedJerkEstimator.cs` records for itself, since these are the terms policies
 are *compared on*. `PlayoutMetrics.cs` holds the five metric names and the per-release emission.

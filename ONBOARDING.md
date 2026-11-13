@@ -396,7 +396,13 @@ the code. Nobody has written that ADR.
 | `unity/Teleop.Bridge/` | the only Unity code that touches Core; shared by both Unity projects |
 | `unity/TeleopVR/` | the Meta Quest operator app (parked) |
 | `robot/ros/` | the robot's ROS 2 workspace: servo board driver and relay |
+| `robot/systemd/` | the Jetson's services |
+| `robot/isaac/` | the FR3 Duo and the JetRover's arm in Isaac Sim, on the GPU machine, behind RobotHost |
+| `robot/lerobot/` | headset takes into the lab's LeRobot v3 datasets, on the GPU machine (its own venv) |
+| `robot/pilot/` | the pilot plans and the scripts that record them (`just pilot`, `just pilot-on-robot`) |
+| `robot/jetrover/`, `robot/franka/` | the robot descriptions: the JetRover's URDF and Isaac sidecar, the FR3 Duo's vendored URDF |
 | `analysis/` | Python: reads `results/`, makes figures |
+| `trainer/` | the arm simulator and model training, on the GPU machine; imports nothing from the repo |
 | `experiments/` | one YAML per experiment |
 | `results/` | **append-only** — write new directories, never edit old ones |
 | `docs/adr/` | architecture decisions, with the reasoning |

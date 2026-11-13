@@ -81,7 +81,9 @@ Contents:
   - **`DragTarget`** is no longer grabbable. It is a 2 cm marker showing the commanded wrist
     position, and the bridge still reads it.
   - **`TwinGripper`** on the wrist closes the twin's jaws by the gripper command and rolls the
-    gripper by the wrist roll. It shows what is sent; the real gripper has no feedback.
+    gripper by the wrist roll. On the command twin it shows what is sent. The measured arm's
+    `TwinGripper` shows the gripper's reading (motor 10 is read back since PR #70); its open and
+    closed pulses are uncalibrated, so the fraction is approximate.
   - **`MotionToggleButton`, the robot's power and pause buttons, on the bench's front-left corner**
     (docs/adr/0023 decision 5). Press them down with a fingertip. Only a fingertip counts; no ray or
     far pinch can press them. The robot is **off at every launch**.
@@ -200,9 +202,11 @@ Contents:
 - **What the robot measures:** `just joint-probe` prints which motors have servo feedback.
   - **Motors 1–5 are measured** since `just robot-set-feedback-ids` (2026-10-12). Before that the
     relay only read 1–4.
-  - **Motor 10 (the gripper) never is.** Commanding it works (it closes and opens), but its servo
-    does not answer position reads, so its value is only what RobotHost last commanded.
-  - **On the measured arm:** it hides its gripper while the roll is unmeasured.
+  - **Motor 10 (the gripper) is measured since PR #70 (2026-10-25)**: the driver reads it again,
+    behind a backoff for a servo that stops answering. Its open and closed pulses are uncalibrated,
+    so the measured fraction is approximate. While it is not read, its value is what RobotHost last
+    commanded.
+  - **On the measured arm:** it hides its gripper while neither the roll nor the gripper is measured.
   - **On the predicted arm:** the predictor keeps its own estimate of an unmeasured joint,
     moving at servo speed, instead of copying the belief. The gripper takes its command.
 - **The arm-speed slider** (`SpeedSlider`) on the bench's left, left of the motion button.

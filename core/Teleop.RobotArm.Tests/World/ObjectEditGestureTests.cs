@@ -169,15 +169,13 @@ namespace Teleop.RobotArm.Tests.World
             var g = new ObjectEditGesture(scene);
             WorldState world = Posed(scene);
             RigidTransform a = At(0.40, 0.0, 0.22), b = At(0.45, 0.05, 0.22, 0.3);
-            for (int i = 0; i < 100; i++) g.Update(0, true, i % 10 != 9, i % 2 == 0 ? a : b, world);
-            long before = GC.GetAllocatedBytesForCurrentThread();
-            for (int i = 0; i < 5000; i++)
+            int i = 0;
+            Teleop.Core.Tests.TestSupport.AllocationAssert.Zero(() =>
             {
                 g.Update(0, true, i % 10 != 9, i % 2 == 0 ? a : b, world);
                 g.TryTakeRequest(out _);
-            }
-
-            Assert.Equal(before, GC.GetAllocatedBytesForCurrentThread());
+                i++;
+            }, iterations: 1000);
         }
     }
 }

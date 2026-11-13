@@ -375,6 +375,35 @@ that is not finite, or the backend failing. Reported as a count and a rate.
 **`joint_inference_us`** (docs/adr/0021): a learned joint predictor's inference time per call, in
 microseconds, with the device, the runtime and the thread count stated. Percentiles; the gate uses p99.
 
+**`uplink_change_window_deg`** (docs/adr/0021 decision 14): `joint_event_error_deg`'s forecast gate
+window, reported under its own name.
+- **Definition:** every arm-joint error of `joint_prediction_error_deg` (|prediction − driver read|,
+  degrees, at the read instant) whose target time falls in [t_e, t_info + 1000 ms) after an
+  `uplink-change` event, pooled over every such event of every view.
+- **Reporting:** percentiles (p50/p95/p99/max). Forecast gates F1 (an oracle forecast against none)
+  and F3 (a good forecast against the best baseline) compare its p95.
+- **Where:** `trainer/armpred/evaluate.py` (`window_errors`, `summarize`); `report.py` reads it.
+
+**`gripper_prediction_error_deg`** (docs/adr/0021, layout v3): `joint_prediction_error_deg` for the
+gripper (motor 10) on its own.
+- **Definition:** at a successful driver read of the gripper, |predicted gripper − the read| in
+  *servo degrees*: the wire's 0..1 fraction divided by `GRIPPER_FRACTION_PER_RAD` (0.4513, layout
+  v3's servo radians), times 180/π. The reads are drawn at random after the same warm-up as the arm's,
+  at one arm joint's share of the arm's read rate (`reads_per_s` / 5). A predictor with no gripper
+  value (NaN) is not scored.
+- **Reporting:** percentiles (p50/p95/p99/max). Never in the gate, and never pooled with the arm
+  joints. The report also gives its p95 as a fraction (× 0.4513 × π/180). The gripper's open and
+  closed pulses are uncalibrated, so a fraction is approximate.
+- **Where:** `trainer/armpred/evaluate.py` (`evaluate_view`, `summarize`).
+
+**`gripper_correction_deg`** (docs/adr/0021, layout v3): `joint_correction_deg` for the gripper on
+its own.
+- **Definition:** at each state call that brings a new measurement (as `joint_correction_deg`
+  defines it), |`predict(t)` after − before| for the gripper, in servo degrees as above, when finite.
+- **Reporting:** percentiles (p50/p95/p99/max), next to `gripper_prediction_error_deg`. Never in the
+  gate.
+- **Where:** `trainer/armpred/evaluate.py` (`evaluate_view`, `summarize`).
+
 ## 5. Correction cost
 
 The counterweight to prediction accuracy, and the reason accuracy alone is never a result.

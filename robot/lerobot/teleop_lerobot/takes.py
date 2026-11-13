@@ -299,5 +299,44 @@ def read_take(path: str, fps: int = 15) -> Take:
     return take
 
 
+def raw_events(take: "Take"):
+    """The take's commands and readings as the lab recorder's ``raw_ros_events.jsonl`` lines (SINRG-Lab/world-models,
+    ``jetrover_record_bridge.py``): a ``ready``, then ``action`` and ``state`` events in time order. ``action`` carries
+    every motor in the dataset's order; ``state`` the sensed ones (for the JetRover, motors 1 to 5, and only when all
+    of them read, as the lab's bridge emits them). Its times are the session's one clock (CLOCK_MONOTONIC):
+    ``jetson_mono_ns`` and ``pc_received_mono_ns`` are both the time RobotHost logged it. ``jetson_wall_ns`` is
+    null: a take keeps no wall clock per record."""
+    host = read_jlog(os.path.join(take.path, "robothost.jlog"), "robothost")
+    events = []
+    if take.robot == "jetrover":
+        motors, sensed = list(JETROVER_MOTORS), list(JETROVER_SENSED)
+        for r in host.tag("RO"):
+            got = {int(it[0]): float(it[1]) for it in items(r[1])}
+            if all(m in got for m in motors):
+                events.append((int(r[0]), "action", motors, [got[m] for m in motors]))
+        for r in host.tag("RI"):
+            got = {int(it[0]): float(it[2]) for it in items(r[1]) if it[1] == "1"}
+            if all(m in got for m in sensed):
+                events.append((int(r[0]), "state", sensed, [got[m] for m in sensed]))
+    else:
+        with open(os.path.join(take.path, "robot-profile.json"), encoding="utf-8") as f:
+            motors, travel = _fr3_order(json.load(f))
+        for r in host.tag("AO"):
+            got = {int(it[0]): float(it[1]) * travel.get(int(it[0]), 1.0) for it in items(r[1])}
+            ids = [m for m in motors if m in got]
+            events.append((int(r[0]), "action", ids, [got[m] for m in ids]))
+        for r in host.tag("QS"):
+            got = {int(it[0]): float(it[1]) * travel.get(int(it[0]), 1.0) for it in items(r[2])}
+            if all(m in got for m in motors):
+                events.append((int(r[1]), "state", motors, [got[m] for m in motors]))
+    events.sort(key=lambda e: e[0])
+    first = events[0][0] if events else 0
+    out = [{"type": "ready", "jetson_wall_ns": None, "jetson_mono_ns": first, "servo_ids": list(motors), "pc_received_mono_ns": first}]
+    for t, kind, ids, values in events:
+        out.append({"type": kind, "jetson_wall_ns": None, "jetson_mono_ns": t, "servo_ids": list(ids), "values": values,
+                    "pc_received_mono_ns": t})
+    return out
+
+
 __all__ = ["Camera", "Frame", "JlogError", "Take", "TakeError", "checksum_id", "read_payload", "read_take",
-           "verify_checksums"]
+           "verify_checksums", "raw_events"]

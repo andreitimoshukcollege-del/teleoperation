@@ -105,3 +105,44 @@ def test_a_shard_built_for_another_layout_is_refused(tmp_path):
     (tmp_path / "train.json").write_text(json.dumps({"views": [], "samples": 0, "aware": False}))
     with pytest.raises(ValueError, match="layout v1"):
         load_shards([str(path)], layout="v3")
+
+
+def test_the_servo_prior_is_its_own_layout_and_the_window_corrects_it():
+    # Layout v3-servo (2026-11-14): the same features, built on speed-blind relay-replay-servo with a servo fit.
+    from armpred.baselines.relay_replay_servo import RelayReplayServoPredictor
+    from armpred.baselines.types import with_servo_fit
+
+    assert L.layout_id(False, "relay-replay-servo") == "v3-servo" and L.layout_id(True, "relay-replay-servo") == "v3-servo-aware"
+    for aware in (False, True):
+        for prior in L.PRIORS:
+            assert L.prior_of_layout(L.layout_id(aware, prior)) == prior
+    with pytest.raises(ValueError):
+        L.layout_id(False, "hold-last")
+    with pytest.raises(ValueError):
+        L.FeatureState(headset_joint_config(NS), prior="hold-last")
+
+    fit = {"servoLagSeconds": 0.04, "servoMaxSpeedRadPerSec": 3.25, "servoPipelineDelaySeconds": 0.0138}
+    config = with_servo_fit(headset_joint_config(NS), fit)
+    assert (config.servo_lag_seconds, config.servo_max_speed_rad_per_sec) == (np.float32(0.04), np.float32(3.25))
+    servo_state = L.FeatureState(config, prior="relay-replay-servo")
+    plain_state = L.FeatureState(config)
+    alone = RelayReplayServoPredictor(config)
+    for k in range(96):
+        # A step at 1 s: the servo's lag and speed cap make its prior differ from relay-replay's.
+        targets = [JointSample(m, (0.8 if k >= 48 else 0.0) + 0.01 * m, False) for m in L.ARM_MOTORS]
+        for s in (servo_state, plain_state):
+            s.observe_command(int(k / 48.0 * NS), targets, 0.0)
+        alone.observe_command(int(k / 48.0 * NS), targets, 0.0)
+        if k % 2 == 0 and k < 48:  # read until the step: the prior extrapolates from 0.96 s to the target
+            reading = [JointSample(m, 0.01 * m, True) for m in L.ARM_MOTORS]
+            for s in (servo_state, plain_state):
+                s.observe_state(int(k / 48.0 * NS), reading)
+            alone.observe_state(int(k / 48.0 * NS), reading)
+    target = int(1.1 * NS)
+    w_servo, w_plain = servo_state.window(target), plain_state.window(target)
+    ok, predicted = alone.try_predict(target)
+    assert ok and w_servo.valid
+    by = {s.motor_id: s.value for s in predicted}
+    for row, m in enumerate(L.ARM_MOTORS):
+        assert abs(w_servo.prior[row] - by[m]) < 1e-12  # the window's prior is relay-replay-servo's prediction
+    assert np.abs(w_servo.prior[:5] - w_plain.prior[:5]).max() > 0.01  # and not relay-replay's

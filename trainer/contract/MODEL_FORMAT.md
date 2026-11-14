@@ -21,7 +21,8 @@ back: `fraction = (prior + y[2j]) * 0.4513`. The card states the factor (`model.
 - **Static shapes, opset 17,** and only the ops in `armpred/export.py`'s `ALLOWED_OPS`, so whichever
   on-device runtime the Phase 7 ADR picks is not blocked by an exotic op.
 - **The prediction is `prior + y[2j]`** for joint j, where the prior is `relay-replay` run speed-blind
-  (the host passes 0 as the requested speed) with the config the model card names.
+  (the host passes 0 as the requested speed) with the config the model card names; in layout `v3-servo`,
+  `relay-replay-servo` run speed-blind with the card's fitted servo parameters (below).
 - **Fallback to the prior** (and count it, by cause): no fresh reading yet; the newest reading more
   than 1 s old; any output not finite; the backend failing.
 - **Parity:** the exported graph matches the torch model to 1e-5 rad on real windows (the card says
@@ -31,7 +32,7 @@ back: `fraction = (prior + y[2j]) * 0.4513`. The card states the factor (`model.
 
 | Key | Value |
 |---|---|
-| `teleop.layout_id` | `v3` or `v3-aware` (`v2`, `v2-aware` before 2026-10-25; `v1`, `v1-aware` before 2026-10-21) |
+| `teleop.layout_id` | `v3` or `v3-aware` (`v2`, `v2-aware` before 2026-10-25; `v1`, `v1-aware` before 2026-10-21); `v3-servo`, `v3-servo-aware` (below) |
 | `teleop.model_format` | `2` (`1` before 2026-10-25) |
 | `teleop.input_length`, `teleop.output_length` | `1620` (or `1621`), `12` |
 | `teleop.arch` | `mlp` or `conv` |
@@ -144,6 +145,17 @@ and the C# changed in the same commit.
 `prior.config` is `headset` (the reading ages 45/35/25/15/5 ms, the relay's gate) until `sysid` fits
 one, when it becomes the fitted values themselves (since 2026-10-25 the headset's own defaults are
 `sysid`'s fit: 30.2/25.3/22.6/20.1/17.1 ms).
+
+**Layout `v3-servo` (2026-11-14, a trainer experiment).** Layout v3's window and output exactly, with
+one difference: the prior is `relay-replay-servo`, speed-blind, with `sysid`'s fitted servo parameters
+(a run's `[prior] predictor = "relay-replay-servo"`). Every prior value, slope and innovation in the
+window is that predictor's, and the model corrects it. The card says `prior.predictor`
+`relay-replay-servo` and keeps the fit as `prior.relayReplayServo` (`servoLagSeconds`,
+`servoMaxSpeedRadPerSec`, `servoPipelineDelaySeconds`), which the trainer's evaluation rebuilds the
+prior from. **The C# predictor runs `v3` only**: the sizes match, so `armpred`'s weights export and
+`golden-learned` refuse a `v3-servo` model, and a host must refuse a layout id it does not know. A
+`v3-servo` model reaches the headset only after the C# window learns that prior (a new ADR 0025
+amendment), never by relabelling.
 
 ## Layout v4: the FR3 Duo (docs/adr/0028; 2026-10-29)
 

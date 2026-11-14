@@ -3086,30 +3086,46 @@ train-fr3-sim config="fr3-sim-pretrain" name="" *args:
         trainer/train-fr3-sim.sh "{{config}}" "$name" {{args}}
     fi
 
-# Start `just train-sim <config>` on the GPU machine ($GPU_HOST, default andrei@10.188.58.133), detached, so this machine and the SSH session can go (docs/adr/0021). Clones the repo into ~/teleoperation there the first time and pulls main every time; refuses while a run of ours is going there, or while the GPU is busy (over 2 GB in use: someone else's job). The run is trainer/runs/<config>-<commit> there; the log ~/train-sim-<config>.log. Watch it with just gpu-status; bring it back with just gpu-fetch
+# Start `just train-sim <config>` on the GPU machine ($GPU_HOST, default andrei@10.188.58.133), detached, so this machine and the SSH session can go (docs/adr/0021). Clones the repo into ~/teleoperation there the first time and checks out `ref` as GitHub has it every time (main by default; a pushed branch trains before it is merged); refuses while a run of ours is going there, or while someone else's job holds over 2 GB of the GPU (our own Isaac host does not count). While an Isaac host of ours runs there, the run keeps off its cores (6 and up, 24 workers), so the twin's physics keeps real time. The run is trainer/runs/<config>-<commit> there; the log ~/train-sim-<config>.log. Watch it with just gpu-status; bring it back with just gpu-fetch
 [group('trainer')]
-gpu-train config="sim-pretrain-pilot1":
+gpu-train config="sim-pretrain-pilot1" ref="main":
     #!/usr/bin/env bash
     set -euo pipefail
     case "{{config}}" in *[!A-Za-z0-9._-]*) echo "error: config is a trainer/configs name" >&2; exit 1 ;; esac
     [ -f "trainer/configs/{{config}}.toml" ] || { echo "error: no trainer/configs/{{config}}.toml here" >&2; exit 1; }
-    ssh -o ConnectTimeout=10 "{{gpu_host}}" "CONFIG='{{config}}' bash -s" <<'REMOTE'
+    case "{{ref}}" in *[!A-Za-z0-9._/-]*|"") echo "error: ref is a branch name" >&2; exit 1 ;; esac
+    git fetch -q origin && git rev-parse -q --verify "origin/{{ref}}" > /dev/null || { echo "error: origin/{{ref}} is not on GitHub: push it first" >&2; exit 1; }
+    ssh -o ConnectTimeout=10 "{{gpu_host}}" "CONFIG='{{config}}' REF='{{ref}}' bash -s" <<'REMOTE'
     set -euo pipefail
     if [ -f ~/train-sim.pid ] && kill -0 "$(cat ~/train-sim.pid)" 2>/dev/null; then
         echo "error: a run is already going (pid $(cat ~/train-sim.pid)): just gpu-status" >&2; exit 1
     fi
-    used=$(nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits | head -1 | tr -d ' ')
-    if [ "${used:-0}" -gt 2048 ]; then
-        echo "error: the GPU has ${used} MiB in use: someone else's job. Not starting." >&2
+    # Someone else's job is what blocks a run: our own processes (the Isaac twin's 3 GB) do not. A pid this account
+    # cannot see counts as someone else's.
+    ours=0 others=0
+    while IFS=, read -r pid mem; do
+        pid=${pid// /}; mem=${mem// /}
+        if [ "$(ps -o user= -p "$pid" 2>/dev/null | tr -d ' ')" = "$USER" ]; then ours=$((ours + ${mem:-0})); else others=$((others + ${mem:-0})); fi
+    done < <(nvidia-smi --query-compute-apps=pid,used_memory --format=csv,noheader,nounits)
+    if [ "$others" -gt 2048 ]; then
+        echo "error: someone else's job holds ${others} MiB of the GPU. Not starting." >&2
         nvidia-smi --query-compute-apps=pid,process_name,used_memory --format=csv >&2 || true
         exit 1
     fi
+    [ "$ours" -gt 0 ] && echo "the GPU: ${ours} MiB is ours (an Isaac host), ${others} MiB anyone else's"
     [ -d ~/teleoperation ] || git clone -q https://github.com/andreitimoshukcollege-del/teleoperation.git ~/teleoperation
-    cd ~/teleoperation && git checkout -q main && git pull -q --ff-only
-    echo "repo at $(git log --oneline -1)"
+    cd ~/teleoperation && git fetch -q origin && git checkout -q --detach "origin/$REF"
+    echo "repo at $(git log --oneline -1) ($REF)"
     log=~/train-sim-$CONFIG.log
+    # An Isaac host of ours (its bridge pinned to cores 2-5, the renderer to 8-23): keep the run off the physics' cores,
+    # so the twin it records stays at real time.
+    pin=() extra=()
+    if pgrep -u "$USER" -f "teleop_isaac[.](bridge|jetrover_bridge)" > /dev/null && [ "$(nproc)" -ge 24 ]; then
+        pin=(taskset -c "6-$(( $(nproc) - 1 ))"); extra=("" --workers 24)
+        echo "an Isaac host of ours is running: the run takes cores 6-$(( $(nproc) - 1 )), 24 workers"
+    fi
     # The script, not `just train-sim`: a GPU machine's `just` may be too old for this justfile.
-    nohup setsid trainer/train-sim.sh "$CONFIG" > "$log" 2>&1 < /dev/null &
+    nohup setsid "${pin[@]}" trainer/train-sim.sh "$CONFIG" "${extra[@]}" > "$log" 2>&1 < /dev/null &
     echo $! > ~/train-sim.pid
     echo "started (pid $!), run trainer/runs/$CONFIG-$(git rev-parse --short HEAD), log $log"
     sleep 15; tail -5 "$log"

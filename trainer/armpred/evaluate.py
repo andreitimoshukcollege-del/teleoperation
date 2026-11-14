@@ -105,7 +105,8 @@ class ModelPredictor(Predictor):
 
     uses_forecast = True
 
-    def __init__(self, onnx_path: str, prior_config: JointPredictorConfig, aware: bool, name: str = "seq-model"):
+    def __init__(self, onnx_path: str, prior_config: JointPredictorConfig, aware: bool, name: str = "seq-model",
+                 servo: Optional[Dict[str, float]] = None):
         import onnxruntime as ort
 
         options = ort.SessionOptions()
@@ -114,7 +115,16 @@ class ModelPredictor(Predictor):
         options.execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL
         options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_BASIC
         self.session = ort.InferenceSession(onnx_path, options, providers=["CPUExecutionProvider"])
-        self.state = L.FeatureState(prior_config, aware=aware)
+        # The prior the model was trained to correct is in its layout id (v3: relay-replay; v3-servo: relay-replay-servo,
+        # which needs the fitted servo parameters it was trained with: never the C# defaults in their place).
+        layout = self.session.get_modelmeta().custom_metadata_map.get("teleop.layout_id", L.layout_id(aware))
+        self.prior_kind = L.prior_of_layout(layout)
+        if self.prior_kind == "relay-replay-servo":
+            if not servo:
+                raise ValueError(f"{onnx_path} is layout {layout}: it needs the fitted servo parameters it was trained with "
+                                 "(--prior, or the run's model card)")
+            prior_config = servo_config(prior_config, servo)
+        self.state = L.FeatureState(prior_config, aware=aware, prior=self.prior_kind)
         self.name = name
         self.fallbacks = 0
         self.calls = 0
@@ -612,19 +622,20 @@ def default_predictors(onnx_path: Optional[str], tps: int, prior_config: Optiona
         out.append(Baseline("relay-replay-fitted", RelayReplayPredictor(config), blind=False))
     if servo:
         out.append(Baseline("relay-replay-servo-fitted", RelayReplayServoPredictor(servo_config(config, servo)), blind=False))
+        # Speed-blind, as a model's prior must be (it is never given the slider): the prior a residual over the
+        # fitted servo would correct.
+        out.append(Baseline("relay-replay-servo-fitted-blind", RelayReplayServoPredictor(servo_config(config, servo)), blind=True))
     if onnx_path:
-        out.append(ModelPredictor(onnx_path, config, aware))
+        out.append(ModelPredictor(onnx_path, config, aware, servo=servo))
     return out
 
 
 def servo_config(config: JointPredictorConfig, servo: Dict[str, float]) -> JointPredictorConfig:
     """A config with ``armpred sysid``'s fitted relay-replay-servo parameters (prior.json's
     ``relayReplayServo``); what it did not fit keeps the C# default."""
-    import dataclasses
+    from .baselines.types import with_servo_fit
 
-    names = {"servoLagSeconds": "servo_lag_seconds", "servoMaxSpeedRadPerSec": "servo_max_speed_rad_per_sec",
-             "servoPipelineDelaySeconds": "servo_pipeline_delay_seconds"}
-    return dataclasses.replace(config, **{names[k]: float(v) for k, v in servo.items() if k in names})
+    return with_servo_fit(config, servo)
 
 
 # The forecast-quality sweep (ADR 0021 decisions 12 and 14): every level but absent, which is the
@@ -633,7 +644,7 @@ SWEEP_LEVELS: Tuple[str, ...] = tuple(level for level in FC.LEVELS if level != "
 
 
 def forecast_predictors(onnx_path: Optional[str], tps: int, level: str, prior_config: Optional[JointPredictorConfig] = None,
-                        aware: bool = False) -> List[Predictor]:
+                        aware: bool = False, servo: Optional[Dict[str, float]] = None) -> List[Predictor]:
     """The predictors a forecast reaches, at one level: relay-replay and relay-replay-servo as the
     headset runs them but fed the forecast's effective times (decision 14's F3 baselines), and the model."""
     config = prior_config or headset_joint_config(tps)
@@ -642,7 +653,7 @@ def forecast_predictors(onnx_path: Optional[str], tps: int, level: str, prior_co
                             Baseline(f"relay-replay-servo-fc@{level}", RelayReplayServoPredictor(headset_joint_config(tps)),
                                      blind=False, uses_forecast=True)]
     if onnx_path:
-        out.append(ModelPredictor(onnx_path, config, aware, name=f"seq-model@{level}"))
+        out.append(ModelPredictor(onnx_path, config, aware, name=f"seq-model@{level}", servo=servo))
     return out
 
 
@@ -658,7 +669,7 @@ def evaluate_with_sweep(view: View, onnx_path: Optional[str], aware: bool = Fals
     config = headset_joint_config(view.tps, sensed_ages_ms=tuple(sensed_ages_ms)) if sensed_ages_ms else None
     for level in levels:
         forecasts, eff = view_forecasts(view, level, seed ^ 0x5F0CA57)
-        run = evaluate_view(view, forecast_predictors(onnx_path, view.tps, level, prior_config=config, aware=aware),
+        run = evaluate_view(view, forecast_predictors(onnx_path, view.tps, level, prior_config=config, aware=aware, servo=servo),
                             seed=seed, jitter_s=jitter_s, forecasts=forecasts, eff_forecast=eff)
         base.merge(run)
     return base

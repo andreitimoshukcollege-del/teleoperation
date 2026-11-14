@@ -166,7 +166,7 @@ def _fresh_state_times(view: View) -> np.ndarray:
 
 def view_samples(view: View, rng: np.random.Generator, cfg: SampleConfig = SampleConfig(),
                  prior_config: Optional[JointPredictorConfig] = None, aware: bool = False,
-                 level: str = "absent", forecast_seed: int = 0, layout=L3) -> Samples:
+                 level: str = "absent", forecast_seed: int = 0, layout=L3, prior: str = "relay-replay") -> Samples:
     """A view's samples in ``layout`` (layout v3, the JetRover's, unless given; v4 is the FR3's)."""
     prior_config = prior_config or layout.default_prior_config(view.tps)
     queries = _queries(view, rng, cfg, layout)
@@ -183,7 +183,8 @@ def view_samples(view: View, rng: np.random.Generator, cfg: SampleConfig = Sampl
     if n == 0:
         return out
     forecasts, eff = view_forecasts(view, level, forecast_seed)
-    state = layout.FeatureState(prior_config, aware=aware)
+    # Layout v3's prior may be relay-replay-servo (layout v3-servo); v4 has one prior.
+    state = layout.FeatureState(prior_config, aware=aware, prior=prior) if prior != "relay-replay" else layout.FeatureState(prior_config, aware=aware)
     calls = call_stream(view, forecasts)
     ci = 0
     event_t = np.array([t for t, k in zip(view.events_t, view.events_kind) if k in EVENT_KINDS], dtype=np.int64)

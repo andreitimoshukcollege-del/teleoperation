@@ -15,7 +15,7 @@ from typing import Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 
-from ..baselines.types import headset_joint_config
+from ..baselines.types import headset_joint_config, with_servo_fit
 from ..contract.profile import JETROVER, RobotProfile, load_profile
 from ..contract.session import load_session
 from ..features import layout as L
@@ -58,6 +58,10 @@ class BuildConfig:
     # The prior's per-motor reading ages (ms, motors 1-5): None is the headset's 45/35/25/15/5;
     # `armpred sysid` fits them from recordings (its prior.json).
     sensed_ages_ms: Optional[Tuple[float, ...]] = None
+    # The window's prior (layout v3 only): relay-replay, or relay-replay-servo (layout v3-servo) with `armpred sysid`'s
+    # fitted servo parameters (prior.json's relayReplayServo, as sorted (name, value) pairs).
+    prior: str = "relay-replay"
+    servo: Optional[Tuple[Tuple[str, float], ...]] = None
     forecast: ForecastConfig = ForecastConfig()
     # The window's layout: "v3" (the JetRover's, layout.py) or "v4" (a serial-chain robot's, layout_v4.py).
     layout: str = "v3"
@@ -72,6 +76,12 @@ def layout_module(layout: str):
 
         return layout_v4
     raise ValueError(f"unknown layout {layout!r}")
+
+
+def layout_id_of(cfg: BuildConfig) -> str:
+    """The layout id the config's shards are: v3 (or v3-servo, v3-aware, v3-servo-aware) or v4."""
+    module = layout_module(cfg.layout)
+    return module.layout_id(cfg.aware, cfg.prior) if module is L else module.layout_id(cfg.aware)
 
 
 def condition_tags(meta: dict) -> Dict[str, float]:
@@ -96,9 +106,13 @@ def _one(plan: ViewPlan, cfg: BuildConfig) -> Tuple[Samples, Dict[str, object]]:
     schedule = parse(plan.schedule) if plan.schedule else random_schedule(duration, rng, cfg.schedules)
     view = synthesize(session, profile, schedule, seed=plan.seed, traces_dir=cfg.traces_dir)
     prior = headset_joint_config(view.tps, sensed_ages_ms=cfg.sensed_ages_ms) if cfg.sensed_ages_ms and layout is L else None
+    if cfg.prior == "relay-replay-servo":
+        if layout is not L or not cfg.servo:
+            raise ValueError("a relay-replay-servo prior is layout v3's, with the fitted servo parameters")
+        prior = with_servo_fit(prior or headset_joint_config(view.tps), dict(cfg.servo))
     level = cfg.forecast.pick(plan.seed)
     samples = view_samples(view, rng, cfg.sample, prior_config=prior, aware=cfg.aware, level=level,
-                           forecast_seed=plan.seed ^ 0x5F0CA57, layout=layout)
+                           forecast_seed=plan.seed ^ 0x5F0CA57, layout=layout, prior=cfg.prior)
     info = {"session": session.id, "schedule": schedule.describe(), "namedOnly": schedule.only_named,
             "seed": plan.seed, "samples": len(samples), "forecastLevel": level, **condition_tags(session.meta)}
     return samples, info
@@ -135,7 +149,7 @@ def build(plans: Sequence[ViewPlan], cfg: BuildConfig, out_path: str) -> Dict[st
     np.savez(out_path, view=np.concatenate(view_index) if view_index else np.zeros(0, np.int32), **arrays,
              **{f"tag_{k}": v for k, v in tags.items()})
     index = {"views": infos, "samples": int(sum(len(p) for p in parts)), "aware": cfg.aware,
-             "layout": layout_module(cfg.layout).layout_id(cfg.aware), "sample": asdict(cfg.sample), "forecast": asdict(cfg.forecast)}
+             "layout": layout_id_of(cfg), "sample": asdict(cfg.sample), "forecast": asdict(cfg.forecast)}
     with open(os.path.splitext(out_path)[0] + ".json", "w", encoding="utf-8") as f:
         json.dump(index, f, indent=2)
     return index

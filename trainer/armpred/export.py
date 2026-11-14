@@ -147,6 +147,11 @@ def write_weights(onnx_path: str, out_path: str, model_id: str, check_inputs: np
     onnxruntime on ``check_inputs``: real windows (the golden's), held to ``PARITY_TOLERANCE_RAD``."""
     import onnxruntime as ort
 
+    # The C# predictor (LearnedJointWindow) builds a relay-replay prior: a model that corrects another (layout v3-servo,
+    # a trainer experiment) would run on the wrong one, with every size matching. Refused until the C# side has it.
+    layout = ort.InferenceSession(onnx_path, providers=["CPUExecutionProvider"]).get_modelmeta().custom_metadata_map.get("teleop.layout_id", "v3")
+    if L.prior_of_layout(layout) != "relay-replay":
+        raise ValueError(f"{onnx_path} is layout {layout}: the C# predictor runs layout v3 (a relay-replay prior) only")
     layers = mlp_layers_from_onnx(onnx_path)
     if layers[0][0].shape[1] != L.JOINT_FEATURES + L.ARM_FEATURES:
         raise ValueError(f"{onnx_path}: first layer takes {layers[0][0].shape[1]}, layout v3 is {L.JOINT_FEATURES + L.ARM_FEATURES}")

@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field
-from typing import Sequence, Tuple
+from typing import Dict, Optional, Sequence, Tuple
 
 import numpy as np
 
@@ -102,6 +102,20 @@ class JointPredictorConfig:
         object.__setattr__(self, "servo_lag_seconds", f32(self.servo_lag_seconds))
         object.__setattr__(self, "servo_pipeline_delay_seconds", f32(self.servo_pipeline_delay_seconds))
         object.__setattr__(self, "servo_step_seconds", f32(self.servo_step_seconds))
+
+
+SERVO_FIT_NAMES = {"servoLagSeconds": "servo_lag_seconds", "servoMaxSpeedRadPerSec": "servo_max_speed_rad_per_sec",
+                   "servoPipelineDelaySeconds": "servo_pipeline_delay_seconds"}
+
+
+def with_servo_fit(config: "JointPredictorConfig", servo: Optional[Dict[str, float]]) -> "JointPredictorConfig":
+    """``config`` with ``armpred sysid``'s fitted relay-replay-servo parameters (prior.json's ``relayReplayServo``); what
+    was not fitted keeps the C# default. None leaves it as it is."""
+    import dataclasses
+
+    if not servo:
+        return config
+    return dataclasses.replace(config, **{SERVO_FIT_NAMES[k]: float(v) for k, v in servo.items() if k in SERVO_FIT_NAMES})
 
 
 def headset_joint_config(ticks_per_second: int, max_horizon_ms: float = 500.0,

@@ -75,6 +75,35 @@ def _prior_ages(config: dict) -> Optional[tuple]:
     return None
 
 
+def _prior_kind(config: dict) -> str:
+    """``[prior] predictor``: the window's prior, ``relay-replay`` (layout v3, the C# predictor's; the default) or
+    ``relay-replay-servo`` (layout v3-servo, a trainer experiment), which needs ``[prior] file`` with a servo fit."""
+    from .features import layout as L
+
+    kind = str(config.get("prior", {}).get("predictor", "relay-replay"))
+    if kind not in L.PRIORS:
+        raise SystemExit(f"[prior] predictor = {kind!r}: one of {list(L.PRIORS)}")
+    if kind == "relay-replay-servo" and not _prior_servo(config):
+        raise SystemExit("[prior] predictor = \"relay-replay-servo\" needs [prior] file, an armpred sysid prior.json with relayReplayServo")
+    return kind
+
+
+def _prior_build_kwargs(config: dict) -> dict:
+    """BuildConfig's prior and servo fields for a run config."""
+    kind = _prior_kind(config)
+    servo = _prior_servo(config) if kind == "relay-replay-servo" else None
+    return {"prior": kind, "servo": tuple(sorted((k, float(v)) for k, v in servo.items())) if servo else None}
+
+
+def _card_servo(run: str) -> Optional[dict]:
+    """The fitted servo parameters a run's model card keeps (``prior.relayReplayServo``, written since layout v3-servo), or None."""
+    path = os.path.join(run, "model-card.json")
+    if not os.path.exists(path):
+        return None
+    with open(path, "r", encoding="utf-8") as f:
+        return json.load(f).get("prior", {}).get("relayReplayServo") or None
+
+
 def _card_ages(run: str) -> Optional[tuple]:
     """The reading ages the run's model was trained with, from its model card, when they were fitted (``prior.config`` is
     ``headset+fitted-ages``); None when the card is missing or says the headset's defaults."""
@@ -129,7 +158,7 @@ def _datasets_root(config: dict) -> Optional[str]:
 def _prepare(config: dict, data_dir: str, workers: int, log) -> dict:
     """Simulate the session matrix and build the train/val shards into ``data_dir``, once: every
     training run of a grid then reads the same shards (and the same test sessions)."""
-    from .data.build import BuildConfig
+    from .data.build import BuildConfig, layout_id_of
     from .features import layout as L
     from .data.dataset import SampleConfig
     from .data.schedule import RandomScheduleConfig
@@ -142,20 +171,22 @@ def _prepare(config: dict, data_dir: str, workers: int, log) -> dict:
     build_cfg = BuildConfig(sample=SampleConfig(**config.get("sample", {})),
                             schedules=_schedules_cfg(config),
                             aware=bool(config.get("train", {}).get("aware", False)), traces_dir=TRACES, workers=workers,
-                            sensed_ages_ms=_prior_ages(config), forecast=_forecast_cfg(config))
+                            sensed_ages_ms=_prior_ages(config), forecast=_forecast_cfg(config), **_prior_build_kwargs(config))
+    layout = layout_id_of(build_cfg)
     prepared_path = os.path.join(data_dir, "prepared.json")
     if os.path.exists(prepared_path):
         with open(prepared_path, "r", encoding="utf-8") as f:
             old = json.load(f).get("layout", "v1")
-        if old != L.layout_id(build_cfg.aware):
-            raise SystemExit(f"{data_dir} holds shards for layout {old}; this trainer builds {L.layout_id(build_cfg.aware)}. "
+        if old != layout:
+            raise SystemExit(f"{data_dir} holds shards for layout {old}; this run builds {layout}. "
                              "Prepare into a new directory.")
     dirs = simulate_matrix(matrix, ranges, seed, data_dir, workers=workers, log=log, schedules=build_cfg.schedules)
     paths = build_splits(dirs, data_dir, int(config.get("views_per_session", 8)), int(config.get("val_views", 2)),
                          build_cfg, seed, log=log)
     with open(prepared_path, "w", encoding="utf-8") as f:
         json.dump({"dirs": dirs, "paths": paths, "aware": build_cfg.aware, "sensedAgesMs": build_cfg.sensed_ages_ms,
-                   "layout": L.layout_id(build_cfg.aware), "forecast": asdict(build_cfg.forecast)}, f, indent=2)
+                   "layout": layout, "prior": build_cfg.prior, "servo": dict(build_cfg.servo) if build_cfg.servo else None,
+                   "forecast": asdict(build_cfg.forecast)}, f, indent=2)
     return {"dirs": dirs, "paths": paths}
 
 
@@ -196,9 +227,10 @@ def _train_run(config: dict, data_dir: str, out: str, workers: int, log, steps: 
         cfg = replace(cfg, steps=steps, val_every=max(1, min(cfg.val_every, steps)))
     if cfg.aware != prepared["aware"]:
         raise SystemExit(f"the shards in {data_dir} were built with aware={prepared['aware']}, the run asks aware={cfg.aware}")
-    layout = L.layout_id(cfg.aware)
+    kind = _prior_kind(config)
+    layout = L.layout_id(cfg.aware, kind)
     if prepared.get("layout", "v1") != layout:
-        raise SystemExit(f"the shards in {data_dir} are layout {prepared.get('layout', 'v1')}, this trainer is {layout}: prepare again")
+        raise SystemExit(f"the shards in {data_dir} are layout {prepared.get('layout', 'v1')}, this run is {layout}: prepare again")
     train_ds = load_shards([prepared["paths"]["train"]], layout=layout)
     val_ds = load_shards([prepared["paths"]["val"]], layout=layout)
     log(f"armpred {__version__} train-run -> {out} (trainer {trainer_version()}); data {data_dir}")
@@ -208,7 +240,7 @@ def _train_run(config: dict, data_dir: str, out: str, workers: int, log, steps: 
         f"(prior {summary['val_prior']['p95']:.3f}, hold-last {summary['val_hold_last']['p95']:.3f})")
     ages = prepared.get("sensedAgesMs")
     _export_run(out, cfg, val_ds, data_hashes={k: _sha(v) for k, v in prepared["paths"].items()}, log=log, source="sim",
-                sensed_ages_ms=ages)
+                sensed_ages_ms=ages, prior=kind, servo=_prior_servo(config) if kind == "relay-replay-servo" else None)
     if not skip_eval:
         _evaluate_run(out, prepared["dirs"]["test"], cfg, log=log, workers=workers, simulated=True, sensed_ages_ms=ages,
                       servo=_prior_servo(config), datasets_root=_datasets_root(config),
@@ -300,7 +332,8 @@ def _sha(path: str) -> str:
     return sha256(path)
 
 
-def _export_run(out: str, cfg, val_ds, data_hashes: dict, log, source: str, sensed_ages_ms=None) -> dict:
+def _export_run(out: str, cfg, val_ds, data_hashes: dict, log, source: str, sensed_ages_ms=None, prior: str = "relay-replay",
+                servo: Optional[dict] = None) -> dict:
     from . import FORECAST_FORMAT_VERSION
     from .export import export_onnx, flat_inputs
     from .features import layout as L
@@ -322,6 +355,8 @@ def _export_run(out: str, cfg, val_ds, data_hashes: dict, log, source: str, sens
         "teleop.trainer_dirty": str(version.get("dirty")),
         "teleop.data_sha256": json.dumps(data_hashes, sort_keys=True),
         "teleop.source": source,
+        # Overrides export_onnx's own: v3-servo when the window's prior is relay-replay-servo.
+        "teleop.layout_id": L.layout_id(cfg.aware, prior),
     }, parity_inputs=parity)
     summary = json.load(open(os.path.join(out, "train-summary.json"), "r", encoding="utf-8"))
     card = {
@@ -333,7 +368,8 @@ def _export_run(out: str, cfg, val_ds, data_hashes: dict, log, source: str, sens
         "forecast": {"format": FORECAST_FORMAT_VERSION, "horizonsMs": list(FC.HORIZONS_MS), "quantiles": list(FC.QUANTILES),
                      "trainingDropout": cfg.forecast_dropout,
                      "levels": "ADR 0021 decision 12 mixture unless the run's [forecast] says otherwise"},
-        "prior": {"predictor": "relay-replay", "speed": "aware" if cfg.aware else "blind",
+        "prior": {"predictor": prior, "speed": "aware" if cfg.aware else "blind",
+                  **({"relayReplayServo": dict(servo)} if servo else {}),
                   "config": "headset" if not sensed_ages_ms else "headset+fitted-ages",
                   "sensedAgeMotorIds": [1, 2, 3, 4, 5],
                   "sensedAgeMs": list(sensed_ages_ms) if sensed_ages_ms else [45.0, 35.0, 25.0, 15.0, 5.0]},
@@ -436,6 +472,10 @@ def cmd_evaluate(args) -> int:
         ages = _card_ages(args.run)
         if ages:
             log(f"reading ages {ages} ms from the run's model card (it was trained on them); --prior adds the fitted servo rows")
+        # A v3-servo model keeps its servo fit in the card: its prior needs it, and the fitted servo rows come with it.
+        servo = _card_servo(args.run)
+        if servo:
+            log(f"relay-replay-servo {servo} from the run's model card (its prior)")
     _evaluate_run(args.run, [os.path.dirname(d) for d in dirs], cfg, log=log, workers=args.workers,
                   simulated=not args.real, profile_path=args.profile, sensed_ages_ms=ages, servo=servo,
                   datasets_root=os.path.expanduser(args.datasets_root) if args.datasets_root else None,
@@ -517,7 +557,7 @@ def _split(path: str, ids: List[str]) -> dict:
 def cmd_finetune(args) -> int:
     import torch
 
-    from .data.build import BuildConfig, ViewPlan, build, load_shards
+    from .data.build import BuildConfig, ViewPlan, build, layout_id_of, load_shards
     from .data.dataset import SampleConfig
     from .data.schedule import RandomScheduleConfig
     from .pipeline import TRACES, load_config, trainer_version
@@ -559,12 +599,14 @@ def cmd_finetune(args) -> int:
         init_train = _train_cfg(init_cfg.get("train", {}))
         if (init_train.arch, init_train.aware) != (cfg.arch, cfg.aware):
             raise SystemExit(f"--init {args.init} is a {init_train.arch} (aware={init_train.aware}); the config asks {cfg.arch} (aware={cfg.aware})")
+        if _prior_kind(init_cfg) != _prior_kind(config):
+            raise SystemExit(f"--init {args.init} corrects a {_prior_kind(init_cfg)} prior; the config asks {_prior_kind(config)}")
         init_state = torch.load(os.path.join(args.init, "checkpoints", "best.pt"), map_location="cpu")
         log(f"starting from {args.init}")
     build_cfg = BuildConfig(sample=SampleConfig(**config.get("sample", {})),
                             schedules=_schedules_cfg(config),
                             aware=cfg.aware, traces_dir=TRACES, workers=args.workers, sensed_ages_ms=_prior_ages(config),
-                            forecast=_forecast_cfg(config))
+                            forecast=_forecast_cfg(config), **_prior_build_kwargs(config))
     seed = int(config.get("seed", 1))
     paths = {}
     for name, n_views in (("train", int(config.get("views_per_session", 16))), ("val", int(config.get("val_views", 4)))):
@@ -578,7 +620,7 @@ def cmd_finetune(args) -> int:
             log(f"{name}: {info['samples']} samples from {len(plans)} views")
     from .features import layout as L
 
-    layout = L.layout_id(cfg.aware)
+    layout = layout_id_of(build_cfg)
     train_ds, val_ds = load_shards([paths["train"]], layout=layout), load_shards([paths["val"]], layout=layout)
     log(f"armpred {__version__} finetune -> {out} (trainer {trainer_version()}), {len(train_ds)} samples")
     summary = train(train_ds, val_ds, cfg, out, log=log, init_state=init_state)
@@ -587,7 +629,7 @@ def cmd_finetune(args) -> int:
     data_hashes["bundle"] = _sha(args.data)
     ages = build_cfg.sensed_ages_ms
     _export_run(out, cfg, val_ds, data_hashes=data_hashes, log=log, source="sim+real" if args.init else "real",
-                sensed_ages_ms=ages)
+                sensed_ages_ms=ages, prior=build_cfg.prior, servo=dict(build_cfg.servo) if build_cfg.servo else None)
     if split["test"]:
         _evaluate_run(out, [os.path.join(bundle_dir, "sessions", sid) for sid in split["test"]], cfg, log=log,
                       workers=args.workers, simulated=False, profile_path=profile_path, sensed_ages_ms=ages,

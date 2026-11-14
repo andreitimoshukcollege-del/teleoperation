@@ -19,7 +19,7 @@ Per joint (``JOINT_FEATURES`` = 251), every time relative to the target T and di
 
 | Part | Count | Content |
 |---|---|---|
-| prior | 2 | the speed-blind relay-replay prediction at T; its slope over the last 40 ms |
+| prior | 2 | the speed-blind prior's prediction at T (relay-replay; relay-replay-servo in ``v3-servo``); its slope over the last 40 ms |
 | commanded path | 80 x 2 | newest first, every 20 ms of effective time from T + 0.2 s back to T - 1.38 s: the target in force (the newest command whose effective time is not later), mask |
 | readings | 16 x 3 | the newest fresh readings: time, value, mask |
 | innovations | 8 x 4 | the prior's error on each fresh reading before it arrived: time, error, horizon, mask |
@@ -43,6 +43,11 @@ validity flags (quantiles, loss, outage, per direction); and the forecast's age 
 forecast the block is zeros with every flag 0. The speed-aware ablation (``aware=True``) appends the
 newest command's requested speed (layout ``v3-aware``).
 
+**The prior** is speed-blind relay-replay, which the headset's C# predictor runs (``LearnedJointWindow``). Layout
+``v3-servo`` (2026-11-14, a trainer experiment) puts speed-blind relay-replay-servo with the fitted servo parameters in
+its place: the same features, but every prior value, slope and innovation is that predictor's, and the model corrects it.
+Its id differs so nothing mistakes one for the other; the C# predictor runs ``v3`` only.
+
 **Never in the window:** the requested speed (except ``v3-aware``), the network profile, schedule or
 true delays (a forecast is an estimate, at a stated quality, ADR 0021 decision 11), the hold-back,
 the payload, or anything else not passed through the predictor's calls.
@@ -58,6 +63,7 @@ from typing import Deque, Dict, List, Optional, Sequence, Tuple
 import numpy as np
 
 from ..baselines.relay_replay import RelayReplayPredictor
+from ..baselines.relay_replay_servo import RelayReplayServoPredictor
 from ..baselines.types import JointPredictorConfig, JointSample
 from ..net import forecast as FC
 
@@ -93,6 +99,8 @@ MAX_CORRECTION_RAD = math.radians(15.0)
 # 13.4 servo degrees p95, hold-last 9.1), which a 15-degree cap could not undo.
 GRIPPER_MAX_CORRECTION_RAD = math.radians(90.0)
 FALLBACK_STALENESS_S = 1.0
+# The priors a v3 window can be built on: relay-replay (layout v3, the C# predictor's) and relay-replay-servo (v3-servo).
+PRIORS: Tuple[str, ...] = ("relay-replay", "relay-replay-servo")
 
 JOINT_FEATURES = 2 + N_PATH * 2 + N_READINGS * 3 + N_INNOVATIONS * 4 + len(PREDICTED_MOTORS) + 2 + 1
 N_HORIZONS = len(FC.HORIZONS_MS)
@@ -117,8 +125,15 @@ def default_prior_config(tps: int, profile=None) -> JointPredictorConfig:
     return headset_joint_config(tps)
 
 
-def layout_id(aware: bool) -> str:
-    return LAYOUT_ID + ("-aware" if aware else "")
+def layout_id(aware: bool, prior: str = "relay-replay") -> str:
+    if prior not in PRIORS:
+        raise ValueError(f"unknown prior {prior!r}: one of {PRIORS}")
+    return LAYOUT_ID + ("-servo" if prior == "relay-replay-servo" else "") + ("-aware" if aware else "")
+
+
+def prior_of_layout(layout: str) -> str:
+    """The prior a v3 layout id names (``v3``, ``v3-aware``: relay-replay; ``v3-servo``, ``v3-servo-aware``: relay-replay-servo)."""
+    return "relay-replay-servo" if layout.startswith(LAYOUT_ID + "-servo") else "relay-replay"
 
 
 def arm_features(aware: bool) -> int:
@@ -160,11 +175,15 @@ class Window:
 class FeatureState:
     """Everything the window needs, updated call by call, allocation-light and deterministic."""
 
-    def __init__(self, prior_config: JointPredictorConfig, aware: bool = False):
+    def __init__(self, prior_config: JointPredictorConfig, aware: bool = False, prior: str = "relay-replay"):
+        if prior not in PRIORS:
+            raise ValueError(f"unknown prior {prior!r}: one of {PRIORS}")
         self.config = prior_config
         self.tps = prior_config.ticks_per_second
         self.aware = aware
-        self.prior = RelayReplayPredictor(prior_config)
+        self.prior_kind = prior
+        # relay-replay-servo takes its servo parameters from prior_config (servo_config: armpred sysid's fit).
+        self.prior = RelayReplayServoPredictor(prior_config) if prior == "relay-replay-servo" else RelayReplayPredictor(prior_config)
         self.reset()
 
     def reset(self) -> None:

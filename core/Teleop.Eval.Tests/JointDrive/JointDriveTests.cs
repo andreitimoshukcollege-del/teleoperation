@@ -173,6 +173,36 @@ namespace Teleop.Eval.Tests.JointDrive
         }
 
         [Fact]
+        public void ALongerStreamBudget_RidesOutKeepaliveOutages_AndIsBounded()
+        {
+            // The twin behind a very bad uplink: keepalives arrive seconds apart and RobotHost pauses the stream meanwhile.
+            // Frames at 50 Hz, except from 2 s to 8 s.
+            var real = new DriveWatchdog();
+            var twin = new DriveWatchdog(10.0, 20.0);
+            Assert.Equal(40.0, twin.DegradedWindowLength);
+            for (int i = 0; i <= 500; i++)
+            {
+                double t = i * 0.02;
+                if (t < 2.0 || t >= 8.0)
+                {
+                    real.OnFrame(t);
+                    twin.OnFrame(t);
+                }
+
+                real.IsHealthy(t);
+                twin.IsHealthy(t);
+                if (Math.Abs(t - 6.0) < 1e-9) Assert.Equal(DriveFault.FrameGap, real.Check(t));
+            }
+
+            Assert.Equal(DriveFault.None, twin.Check(10.0));
+            // A twin that has really gone: no frame for 20 s is a fault all the same.
+            for (int i = 501; i <= 1600; i++) twin.IsHealthy(i * 0.02);
+            Assert.Equal(DriveFault.FrameGap, twin.Check(32.0));
+            Assert.Throws<ArgumentOutOfRangeException>(() => new DriveWatchdog(1.0, 2.0));
+            Assert.Throws<ArgumentOutOfRangeException>(() => new DriveWatchdog(1.0, DriveWatchdog.MaxStreamSeconds + 1));
+        }
+
+        [Fact]
         public void ALongerStallWindow_NeedsTheSimulatedRobotFlag()
         {
             var error = new StringWriter();
@@ -189,6 +219,20 @@ namespace Teleop.Eval.Tests.JointDrive
             }
 
             Assert.Contains("needs --simulated-robot", error.ToString());
+
+            var error2 = new StringWriter();
+            Console.SetError(error2);
+            try
+            {
+                int code = JointDriveCommand.Run(new[] { "joint-drive", "--script", "steps", "--speed", "2", "--remote-host", "127.0.0.1", "--confirm-hardware-motion", "--stream-seconds", "20" });
+                Assert.Equal(64, code);
+            }
+            finally
+            {
+                Console.SetError(old);
+            }
+
+            Assert.Contains("--stream-seconds over 3 needs --simulated-robot", error2.ToString());
         }
 
         [Fact]

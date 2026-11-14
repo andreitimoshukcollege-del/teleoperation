@@ -3683,8 +3683,10 @@ isaac-jetrover-record-drive label script speed *options:
         just isaac-uplink-tiers "$segment_s" "$segments" "$seed" "$tiers" > /dev/null
     fi
     # On the tiers' uplink RobotHost refuses the commands it made stale and the arm holds short, which joint-drive's 1 s
-    # stall stop takes for a stall (2026-11-14, batch 1 session 3): the twin waits 10 s. On the plain LAN it keeps 1 s.
-    stall=(); [ "$tiers" != none ] && stall=(--simulated-robot --stall-seconds 10)
+    # stall stop takes for a stall (2026-11-14, batch 1 session 3), and the keepalives arrive seconds apart, so RobotHost
+    # pauses the joint-state stream, which its 3 s degraded-stream stop takes for a lost robot (batch 2 session 1): the
+    # twin waits 10 s and 20 s (of 40). On the plain LAN it keeps the real arm's limits.
+    stall=(); [ "$tiers" != none ] && stall=(--simulated-robot --stall-seconds 10 --stream-seconds 20)
     mkdir -p "recordings/.drive/$id"
     status=0
     (cd core && dotnet run --no-build --project Teleop.Eval -- joint-drive --script "{{script}}" --speed "{{speed}}" --seconds "$seconds" \

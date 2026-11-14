@@ -43,7 +43,9 @@ namespace Teleop.Eval.JointDrive
     /// <para><c>--stall-seconds</c> (with <c>--simulated-robot</c>, which it needs above 1 s) lengthens the stall stop for the
     /// JetRover's Isaac twin on a deliberately bad uplink (docs/adr/0035 N4, <c>just isaac-jetrover-record-drive</c>): RobotHost
     /// refuses the commands the uplink made stale and the arm holds short of its command, which a 1 s window takes for a
-    /// stall. A real arm always keeps the 1 s stop.</para>
+    /// stall. <c>--stream-seconds</c> (likewise) lengthens the degraded-stream stop: the uplink delays the keepalives too,
+    /// and RobotHost pauses the joint-state stream until one arrives. A real arm always keeps the 1 s stall stop and the
+    /// 3 s degraded-stream stop.</para>
     ///
     /// <para><c>--take &lt;scenario&gt;</c> records the drive as a take of that scenario, as the headset's RECORD button
     /// does (docs/adr/0033, <see cref="TakeClient"/>), so it becomes a LeRobot episode (docs/adr/0036) with nobody at the
@@ -66,7 +68,7 @@ namespace Teleop.Eval.JointDrive
             "usage: joint-drive --script waypoints|steps|course --speed <rad/s> [--seconds 300] [--seed 1] [--margin-deg 15] [--rate-hz 48]\n" +
             "                   (--dry-run | --remote-host <ip> [--remote-port 6002] --confirm-hardware-motion)\n" +
             "                   [--operator-log <path> [--session-id <id>]] [--stop-file <path>] [--take <scenario>]\n" +
-            "                   [--simulated-robot [--stall-seconds 1]]";
+            "                   [--simulated-robot [--stall-seconds 1] [--stream-seconds 3]]";
 
         public static int Run(string[] args)
         {
@@ -77,7 +79,7 @@ namespace Teleop.Eval.JointDrive
             string? host = null, logPath = null, sessionId = null, stopFile = null, take = null;
             int port = 6002;
             bool dryRun = false, confirmed = false, simulated = false;
-            double stallSeconds = DriveWatchdog.StallSeconds;
+            double stallSeconds = DriveWatchdog.StallSeconds, streamSeconds = DriveWatchdog.MaxDegradedSeconds;
             try
             {
                 for (int i = 1; i < args.Length; i++)
@@ -107,6 +109,7 @@ namespace Teleop.Eval.JointDrive
                         case "--take": take = Next(); break;
                         case "--simulated-robot": simulated = true; break;
                         case "--stall-seconds": stallSeconds = Number(); break;
+                        case "--stream-seconds": streamSeconds = Number(); break;
                         default: throw new ArgumentException($"unknown argument '{args[i]}'");
                     }
                 }
@@ -123,6 +126,10 @@ namespace Teleop.Eval.JointDrive
                 // The real robot keeps the 1 s stall stop: a longer one is for the Isaac twin, said out loud.
                 if (stallSeconds > DriveWatchdog.StallSeconds && !simulated)
                     throw new ArgumentException($"--stall-seconds over {DriveWatchdog.StallSeconds} needs --simulated-robot: a real arm stops on a {DriveWatchdog.StallSeconds} s stall");
+                if (!(streamSeconds >= DriveWatchdog.MaxDegradedSeconds && streamSeconds <= DriveWatchdog.MaxStreamSeconds))
+                    throw new ArgumentException($"--stream-seconds must be in [{DriveWatchdog.MaxDegradedSeconds}, {DriveWatchdog.MaxStreamSeconds}]");
+                if (streamSeconds > DriveWatchdog.MaxDegradedSeconds && !simulated)
+                    throw new ArgumentException($"--stream-seconds over {DriveWatchdog.MaxDegradedSeconds} needs --simulated-robot: a real arm stops after {DriveWatchdog.MaxDegradedSeconds} s of a degraded stream");
             }
             catch (Exception e) when (e is ArgumentException || e is FormatException || e is OverflowException)
             {
@@ -173,7 +180,7 @@ namespace Teleop.Eval.JointDrive
                 Console.WriteLine("[joint-drive] RobotHost reports no arm power (older than park and relax): driving without asking for torque");
             }
 
-            return Drive(script.Value, profile, envelope, speed, seconds, seed, rateHz, robotEndPoint, logPath, sessionId ?? "joint-drive", stopFile, take, stallSeconds);
+            return Drive(script.Value, profile, envelope, speed, seconds, seed, rateHz, robotEndPoint, logPath, sessionId ?? "joint-drive", stopFile, take, stallSeconds, streamSeconds);
         }
 
         private static void PrintEnvelope(in DriveEnvelope envelope, double marginDeg)
@@ -262,7 +269,7 @@ namespace Teleop.Eval.JointDrive
         }
 
         private static int Drive(DriveScript script, RobotArmProfile profile, DriveEnvelope envelope, float speed, double seconds, ulong seed,
-            double rateHz, IPEndPoint robot, string? logPath, string sessionId, string? stopFile, string? takeScenario, double stallSeconds)
+            double rateHz, IPEndPoint robot, string? logPath, string sessionId, string? stopFile, string? takeScenario, double stallSeconds, double streamSeconds)
         {
             long tps = Stopwatch.Frequency;
             using var socket = new Socket(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp);
@@ -341,9 +348,11 @@ namespace Teleop.Eval.JointDrive
             }
 
             using OperatorLog? log = logPath != null ? new OperatorLog(File.Create(logPath), tps, sessionId) : null;
-            var watchdog = new DriveWatchdog(stallSeconds);
+            var watchdog = new DriveWatchdog(stallSeconds, streamSeconds);
             if (stallSeconds > DriveWatchdog.StallSeconds)
                 Console.WriteLine(FormattableString.Invariant($"[joint-drive] simulated robot: a joint stalls after {stallSeconds:0.#} s far from its command, not {DriveWatchdog.StallSeconds:0.#} s"));
+            if (streamSeconds > DriveWatchdog.MaxDegradedSeconds)
+                Console.WriteLine(FormattableString.Invariant($"[joint-drive] simulated robot: it stops after {streamSeconds:0.#} s of a degraded stream in {watchdog.DegradedWindowLength:0.#} s, not {DriveWatchdog.MaxDegradedSeconds:0.#} s in {DriveWatchdog.DegradedWindowSeconds:0.#} s"));
             var targets = new JointTarget[profile.JointCount];
             var datagram = new byte[MaxDatagramBytes];
             long interval = (long)(tps / rateHz);
@@ -394,7 +403,7 @@ namespace Teleop.Eval.JointDrive
                     paused = !healthy;
                     if (paused) pauses++;
                     Console.WriteLine(paused
-                        ? FormattableString.Invariant($"[joint-drive] {planTime,5:0} s: joint-state frames are not arriving (Wi-Fi?); holding until they do (it stops after {DriveWatchdog.MaxDegradedSeconds:0} s of this in {DriveWatchdog.DegradedWindowSeconds:0} s)")
+                        ? FormattableString.Invariant($"[joint-drive] {planTime,5:0} s: joint-state frames are not arriving (Wi-Fi?); holding until they do (it stops after {watchdog.DegradedLimitSeconds:0} s of this in {watchdog.DegradedWindowLength:0} s)")
                         : FormattableString.Invariant($"[joint-drive] {planTime,5:0} s: frames are back; going on"));
                 }
 
@@ -442,12 +451,12 @@ namespace Teleop.Eval.JointDrive
                         "it now holds where it is. Check what it touched before going on.");
                     return FinishTake(take, link, 2);
                 case DriveFault.FrameGap:
-                    Console.Error.WriteLine($"joint-drive: STOPPED: no joint-state frame for {DriveWatchdog.MaxDegradedSeconds} s (the robot, RobotHost or the network is gone); " +
+                    Console.Error.WriteLine($"joint-drive: STOPPED: no joint-state frame for {watchdog.DegradedLimitSeconds} s (the robot, RobotHost or the network is gone); " +
                         "sent a hold to the last measured pose.");
                     return FinishTake(take, link, 3);
                 case DriveFault.StreamDegraded:
-                    Console.Error.WriteLine($"joint-drive: STOPPED: the joint-state stream was missing or below {DriveWatchdog.MinFrameRateHz} Hz for {DriveWatchdog.MaxDegradedSeconds} s " +
-                        $"of the last {DriveWatchdog.DegradedWindowSeconds} s. " +
+                    Console.Error.WriteLine($"joint-drive: STOPPED: the joint-state stream was missing or below {DriveWatchdog.MinFrameRateHz} Hz for {watchdog.DegradedLimitSeconds} s " +
+                        $"of the last {watchdog.DegradedWindowLength} s. " +
                         "Either the Wi-Fi is losing frames, or something else (the headset app, joint-probe) is on the joint port: " +
                         "two SS lines in the session's robothost.jlog mean the second. Sent a hold to the last measured pose.");
                     return FinishTake(take, link, 3);

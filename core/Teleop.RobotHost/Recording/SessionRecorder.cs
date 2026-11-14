@@ -487,9 +487,11 @@ namespace Teleop.RobotHost.Recording
 
             string? profileSha = null;
             var notes = new StringBuilder(spec.Take != null
-                ? $"scenario '{spec.Take.Scenario}' take {spec.Take.Take}, recorded with the headset's RECORD button (docs/adr/0033)" +
+                ? $"scenario '{spec.Take.Scenario}' take {spec.Take.Take}, " +
+                  (spec.FromHeadset ? "recorded with the headset's RECORD button (docs/adr/0033)" : "recorded by a tool, not a headset (joint-drive --take, docs/adr/0036)") +
                   (spec.Take.Description.Length > 0 ? ": " + spec.Take.Description : "") +
-                  "; load and any headset-side network disturbance are unknown; the operator is the headset at " + spec.Sender
+                  "; load and any headset-side network disturbance are unknown; " +
+                  (spec.FromHeadset ? "the operator is the headset at " : "the operator is a tool (no headset heartbeat from it) at ") + spec.Sender
                 : "opened automatically by RobotHost (docs/adr/0023 decision 4): " + spec.Reason +
                   "; load and any headset-side network disturbance are unknown; the operator is the headset at " + spec.Sender);
             if (o.ProfilePath != null && File.Exists(o.ProfilePath))
@@ -518,8 +520,9 @@ namespace Teleop.RobotHost.Recording
                     ["load"] = new JsonObject { ["kind"] = "unknown", ["payloadGrams"] = null },
                     ["network"] = network,
                     ["motion"] = spec.Take != null ? ScenarioLabelPrefix.TrimEnd('-') + ":" + spec.Take.Scenario : AutoLabel,
-                    // Only a headset opens one (docs/adr/0023 decision 4, 2026-10-26): its address.
-                    ["operator"] = "headset " + spec.Sender,
+                    // Only a headset opens an automatic session (docs/adr/0023 decision 4, 2026-10-26): its address. A take
+                    // can come from a tool (joint-drive --take): "tool <address>", so it never passes for a person's driving.
+                    ["operator"] = (spec.FromHeadset ? "headset " : "tool ") + spec.Sender,
                 },
                 ["builds"] = new JsonObject
                 {

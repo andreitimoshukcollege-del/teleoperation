@@ -84,7 +84,10 @@ and closes and completes it. In the session they are recognised by `label` and `
 - `conditions.operator` is a name, `joint-drive@robot`, or, in an automatic session, `headset <ip:port>`
   (the joint-command sender, which only a headset can be since 2026-10-26: RobotHost records only a
   sender that sends the headset heartbeat, docs/adr/0023 decision 4). Automatic sessions recorded
-  before then say `auto <ip:port>`.
+  before then say `auto <ip:port>`. A take says `headset <ip:port>` when its sender sent the headset
+  heartbeat within the automatic recorder's window, and `tool <ip:port>` otherwise: a take a tool
+  recorded (`joint-drive --take`, `just isaac-jetrover-take`), driven by a script, not a person. Takes
+  recorded before 2026-11-14 say `headset` whoever started them.
 - These values were added without a version change: they are new values of existing fields, and
   every reader already handles them (`trainer/tests/test_contract.py`).
 - `conditions` describe the session for stratification and splits. **A model never sees them.**

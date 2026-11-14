@@ -236,7 +236,14 @@ namespace Teleop.RobotHost.Recording
             string id = started.ToUniversalTime().ToString("yyyyMMdd'T'HHmmss'Z'", CultureInfo.InvariantCulture) + "-take" + take.ToString("000", CultureInfo.InvariantCulture);
             string directory = Path.Combine(_root, s.Name, id);
             if (_auto != null) _auto.Held = true;
-            var spec = new AutoSessionSpec(started, sender, _uplink(), "scenario take") { Take = new ScenarioTake(s.Name, s.Description, take, directory) };
+            // A headset is the sender of its latest heartbeat (docs/adr/0018 §9), as the automatic recorder judges it; a tool
+            // (joint-drive --take) is not. Without an automatic recorder there is nothing to judge by: the RECORD button's.
+            bool fromHeadset = _auto == null || _auto.IsHeadset(now, sender);
+            var spec = new AutoSessionSpec(started, sender, _uplink(), "scenario take")
+            {
+                Take = new ScenarioTake(s.Name, s.Description, take, directory),
+                FromHeadset = fromHeadset,
+            };
             int generation = _sink.BeginAuto(spec);
             if (generation == 0)
             {
@@ -253,7 +260,7 @@ namespace Teleop.RobotHost.Recording
             _senderSeenTicks = now;
             _lastTake = directory;
             _lastTakeScenario = s.Name;
-            _log($"[scenario] recording '{s.Name}' take {take} (from {sender})");
+            _log($"[scenario] recording '{s.Name}' take {take} (from {(fromHeadset ? "the headset" : "a tool, not a headset,")} at {sender})");
             return RecordOutcome.Started;
         }
 

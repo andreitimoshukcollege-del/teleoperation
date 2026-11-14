@@ -3549,7 +3549,7 @@ isaac-scenarios:
     echo "free: $(df -h "$root" | awk 'NR==2 {print $4}')"
     REMOTE
 
-# Record one take of the simulated JetRover with no headset (docs/adr/0036): joint-drive drives Isaac's arm from this PC and records it as a take of scenario, exactly as the headset's RECORD button would, e.g. `just isaac-jetrover-take free-play waypoints 1.5 45`. Needs just isaac-jetrover-host running (its scene enables takes; free-play, knock-over and push-to-edge are on its list). About a minute after it is saved, the LeRobot converter adds it to jetrover-isaac/<scenario> (just lerobot-watch-status). Only Isaac's arm moves; another headset or tool on its joint port fights it
+# Record one take of the simulated JetRover with no headset (docs/adr/0036): joint-drive drives Isaac's arm from this PC and records it as a take of scenario, as the headset's RECORD button would, but labelled a tool's (session.json's operator is `tool <ip:port>`, which the trainer counts as scripted, not human), e.g. `just isaac-jetrover-take free-play waypoints 1.5 45`. Needs just isaac-jetrover-host running (its scene enables takes; free-play, knock-over and push-to-edge are on its list). About a minute after it is saved, the LeRobot converter adds it to jetrover-isaac/<scenario> (just lerobot-watch-status). Only Isaac's arm moves; another headset or tool on its joint port fights it
 [group('lerobot')]
 isaac-jetrover-take scenario="free-play" script="waypoints" speed="1.5" seconds="45" seed="1":
     #!/usr/bin/env bash
@@ -3558,6 +3558,178 @@ isaac-jetrover-take scenario="free-play" script="waypoints" speed="1.5" seconds=
     case "$host" in *[!0-9.]*) echo "error: joint-drive needs the GPU machine's address as numbers, got '$host' (GPU_HOST)" >&2; exit 1 ;; esac
     cd core && dotnet run --project Teleop.Eval -- joint-drive --script {{script}} --speed {{speed}} --seconds {{seconds}} --seed {{seed}} \
         --remote-host "$host" --take "{{scenario}}" --confirm-hardware-motion
+
+# Record one session the simulated JetRover drives itself, for the trainer (docs/adr/0034 J2, 0035 N4): just record-drive against the twin instead of the robot, e.g. `just isaac-jetrover-record-drive course-2p5 course 2.5 tiers=good,poor,very-bad`. Opens a manual session in ~/isaacsim/jetrover-recordings on the GPU machine (source isaac, motion joint-drive:<script>, operator joint-drive: the trainer's "scripted"), drives Isaac's arm with joint-drive from this PC, puts joint-drive's operator.jlog in the session and closes it: waits for every writer's END trailer, stamps stoppedUtc, the slider its commands carried and the uplink schedule RobotHost applied (UP records), and writes files.sha256. A take (isaac-jetrover-take) is labelled a tool's too, but sits with the scenario takes and records its frames. Options as key=value: seconds (300), seed (1), margin_deg (15), tiers (none, or a list of good, poor, very-bad: the tiers' uplink schedule of just isaac-uplink-tiers for the whole session, seeded by seed), segment_s (60). Run the twin as `just isaac-jetrover-host none`: with a scene, the renderer records every camera into the session too (about 50 GB an hour). Only Isaac's arm moves; a headset on the twin fights it
+[group('isaac')]
+[positional-arguments]
+isaac-jetrover-record-drive label script speed *options:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    seconds=300 seed=1 margin_deg=15 tiers=none segment_s=60
+    for opt in "${@:4}"; do
+        case "$opt" in
+            seconds=*|seed=*|margin_deg=*|tiers=*|segment_s=*) printf -v "${opt%%=*}" '%s' "${opt#*=}" ;;
+            *) echo "error: unknown option '$opt' (seconds= seed= margin_deg= tiers= segment_s=)" >&2; exit 1 ;;
+        esac
+    done
+    case "{{label}}" in *[!A-Za-z0-9._-]*|"") echo "error: label may hold only letters, digits, . _ -" >&2; exit 1 ;; esac
+    case "{{script}}" in waypoints|steps|course) ;; *) echo "error: script must be waypoints, steps or course" >&2; exit 1 ;; esac
+    case "{{speed}}$seed$seconds$segment_s$margin_deg" in *[!0-9.]*) echo "error: speed, seed, seconds, segment_s and margin_deg are numbers" >&2; exit 1 ;; esac
+    case "$tiers" in none) ;; *[!a-z,-]*|"") echo "error: tiers is none or a list of good, poor, very-bad" >&2; exit 1 ;; esac
+    gpu="{{gpu_host}}"; host="${gpu#*@}"
+    case "$host" in *[!0-9.]*) echo "error: joint-drive needs the GPU machine's address as numbers, got '$host' (GPU_HOST)" >&2; exit 1 ;; esac
+    # Built before the session opens, so the recording does not start with a compile.
+    (cd core && dotnet build Teleop.Eval -nologo -v q > /dev/null)
+    id="$(date -u +%Y%m%dT%H%M%SZ)-isaac-{{label}}"
+    # Open: session.json and robot-profile.json from the twin's own checkout, then the control file that RobotHost, the
+    # bridge (driver.jlog) and the renderer, if any, follow, created only if it does not exist, as record-start does.
+    ssh -o ConnectTimeout=10 "$gpu" "ID='$id' LABEL='{{label}}' SLIDER='{{speed}}' SCRIPT='{{script}}' bash -s" <<'REMOTE'
+    set -euo pipefail
+    rec=$HOME/isaacsim/jetrover-recordings repo=$HOME/teleoperation-isaac
+    pgrep -u "$USER" -f "isaacsim/robothost/Teleop[.]RobotHost[.]dll" > /dev/null || { echo "error: the twin is not running: just isaac-jetrover-host none" >&2; exit 1; }
+    pgrep -u "$USER" -f "teleop_isaac[.]jetrover_bridge" > /dev/null || { echo "error: the Isaac host running is not the JetRover's" >&2; exit 1; }
+    if [ -s "$rec/.active" ]; then echo "error: a session is already recording there: $(cat "$rec/.active")" >&2; exit 1; fi
+    dir=$rec/$ID
+    mkdir -p "$dir"
+    cp "$repo/core/RobotProfiles/jetrover.json" "$dir/robot-profile.json"
+    python3 - "$dir" "$ID" "$LABEL" "$SLIDER" "$SCRIPT" "$(sha256sum "$dir/robot-profile.json" | cut -c1-64)" "$(git -C "$repo" rev-parse HEAD)" <<'PY'
+    import datetime, json, sys
+    d, sid, label, slider, script, profile_sha, commit = sys.argv[1:]
+    json.dump({
+        "format": "jetrover-session", "version": 1, "id": sid, "source": "isaac", "label": label,
+        "startedUtc": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "conditions": {
+            "speedSliderRadPerSec": float(slider),
+            "load": {"kind": "none", "payloadGrams": 0.0},
+            "network": {"uplinkProfile": "lan", "uplinkSeed": 0, "addedDelayMs": 0.0, "headsetDisturbed": False},
+            "motion": "joint-drive:" + script, "operator": "joint-drive",
+        },
+        "builds": {"robothost": {"commit": commit}, "driver": {"commit": commit, "kind": "teleop_isaac.jetrover_bridge"}},
+        "robotProfileSha256": profile_sha,
+        "notes": "the JetRover's Isaac twin, driven by joint-drive (just isaac-jetrover-record-drive)",
+    }, open(d + "/session.json", "w"), indent=2)
+    PY
+    [ -e "$rec/.active" ] && [ ! -s "$rec/.active" ] && rm -f "$rec/.active"
+    printf '%s\n' "$dir" > "$rec/.active.start"
+    if ! ln "$rec/.active.start" "$rec/.active" 2>/dev/null; then rm -f "$rec/.active.start"; echo "error: something took the control file first: $(cat "$rec/.active")" >&2; exit 1; fi
+    rm -f "$rec/.active.start"
+    for i in $(seq 1 40); do [ -s "$dir/robothost.jlog" ] && [ -e "$dir/driver.jlog" ] && break; sleep 0.25; done
+    if ! { [ -s "$dir/robothost.jlog" ] && [ -e "$dir/driver.jlog" ]; }; then rm -f "$rec/.active"; echo "error: RobotHost or the bridge is not recording ($dir)" >&2; exit 1; fi
+    echo "[isaac-drive] recording $ID"
+    REMOTE
+    # Close: the uplink back to none (RobotHost records it), the control file removed, every writer's END trailer, then
+    # session.json's stoppedUtc, slider (from the JC records, as record-stop does) and uplink schedule, and files.sha256.
+    finish() {
+        trap - EXIT INT
+        if [ -s "recordings/.drive/$id/operator.jlog" ]; then
+            ssh -o ConnectTimeout=10 "$gpu" "cat > ~/isaacsim/jetrover-recordings/$id/operator.jlog" < "recordings/.drive/$id/operator.jlog"
+        fi
+        ssh -o ConnectTimeout=10 "$gpu" "ID='$id' SEED='$seed' bash -s" <<'REMOTE'
+    set -euo pipefail
+    rec=$HOME/isaacsim/jetrover-recordings; dir=$rec/$ID; up=$HOME/isaacsim/jetrover-uplink
+    spec=$(cat "$up" 2>/dev/null || true)
+    printf 'none 0\n' > "$up"
+    sleep 1
+    if [ "$(cat "$rec/.active" 2>/dev/null || true)" = "$dir" ]; then rm -f "$rec/.active"; fi
+    for i in $(seq 1 240); do
+        done=true
+        for f in robothost driver isaac; do
+            [ "$f" = isaac ] && [ ! -e "$dir/isaac.jlog" ] && continue
+            tail -n 1 "$dir/$f.jlog" 2>/dev/null | grep -q '^END|' || done=false
+        done
+        $done && break; sleep 0.25
+    done
+    $done || echo "warning: not every writer closed its log within 60 s" >&2
+    python3 - "$dir" "$spec" "$SEED" <<'PY'
+    import datetime, json, sys
+    d, spec, seed = sys.argv[1:]
+    path = d + "/session.json"
+    meta = json.load(open(path))
+    meta["stoppedUtc"] = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    speeds, applied = set(), []
+    with open(d + "/robothost.jlog") as f:
+        for line in f:
+            if line.startswith("JC|"):
+                for target in line.rstrip("\n").split("|")[6].split(";"):
+                    motor, _, speed = target.split(":")
+                    if motor != "10" and float(speed) > 0:
+                        speeds.add(round(float(speed), 2))
+            elif line.startswith("UP|"):
+                applied.append(line.rstrip("\n").split("|")[2])
+    if speeds:
+        meta["conditions"]["speedSliderRadPerSec"] = next(iter(speeds)) if len(speeds) == 1 else "varied"
+    traces = [a for a in applied if a not in ("none", "lan", "")]
+    if traces:
+        # RobotHost applied the tiers' schedule (its UP records are the truth the trainer reads); the spec is what was asked.
+        # The control file holds "schedule <seed> <name>@<s>;...": the session keeps the list alone, as record-start writes it.
+        listed = spec.strip().split(" ", 2)[2] if spec.startswith("schedule ") and spec.strip().count(" ") >= 2 else spec.strip()
+        meta["conditions"]["network"].update({"uplinkProfile": "schedule", "uplinkSchedule": listed, "uplinkSeed": int(seed)})
+        print(f"uplink: {len(traces)} trace switch(es) applied")
+    elif spec.strip() and not spec.startswith("none"):
+        print("WARNING: an uplink schedule was asked for but RobotHost recorded no switch to it: the session is on the plain LAN")
+    json.dump(meta, open(path, "w"), indent=2)
+    print(f"slider {meta['conditions']['speedSliderRadPerSec']}")
+    PY
+    cd "$dir" && sha256sum session.json robot-profile.json *.jlog $(find isaac -type f ! -name '*.part' 2>/dev/null | sort) > files.sha256
+    for f in *.jlog; do printf '%-16s %s\n' "$f" "$(tail -n 1 "$f" | cut -c1-80)"; done
+    echo "[isaac-drive] stopped $ID"
+    REMOTE
+    }
+    trap finish EXIT
+    trap 'echo "interrupted: closing the session"; exit 130' INT
+    if [ "$tiers" != none ]; then
+        # The schedule covers the drive and more (joint-drive's plan runs past --seconds to return home); RobotHost starts it within 0.5 s.
+        segments=$(python3 -c "import math; print(math.ceil(2 * $seconds / $segment_s) + 2)")
+        just isaac-uplink-tiers "$segment_s" "$segments" "$seed" "$tiers" > /dev/null
+    fi
+    # On the tiers' uplink RobotHost refuses the commands it made stale and the arm holds short, which joint-drive's 1 s
+    # stall stop takes for a stall (2026-11-14, batch 1 session 3), and the keepalives arrive seconds apart, so RobotHost
+    # pauses the joint-state stream, which its 3 s degraded-stream stop takes for a lost robot (batch 2 session 1): the
+    # twin waits 10 s and 20 s (of 40). On the plain LAN it keeps the real arm's limits.
+    stall=(); [ "$tiers" != none ] && stall=(--simulated-robot --stall-seconds 10 --stream-seconds 20)
+    mkdir -p "recordings/.drive/$id"
+    status=0
+    (cd core && dotnet run --no-build --project Teleop.Eval -- joint-drive --script "{{script}}" --speed "{{speed}}" --seconds "$seconds" \
+        --seed "$seed" --margin-deg "$margin_deg" --remote-host "$host" --confirm-hardware-motion "${stall[@]}" \
+        --operator-log "../recordings/.drive/$id/operator.jlog" --session-id "$id") || status=$?
+    [ "$status" -eq 0 ] || echo "joint-drive exited $status; the session is recorded up to there" >&2
+    exit "$status"
+
+# Many twin sessions in a row for the trainer, unattended (docs/adr/0035 N4): `hours` of just isaac-jetrover-record-drive, each about `minutes` long, with its script, speed and network drawn from `seed` (course half the time, waypoints and steps otherwise; 1 to 6 rad/s; the tiers' uplink schedule half the time, the plain LAN otherwise), labelled b<seed>-<n>-<script>-<speed>. A session joint-drive's watchdog cut short is kept and the batch goes on; it stops after three of those in a row, any other failure, or when a file recordings/.drive/STOP exists (it is removed). Needs `just isaac-jetrover-host none` running. Bring the sessions here with just isaac-jetrover-recording-fetch <id>
+[group('isaac')]
+isaac-jetrover-drive-batch hours="2" minutes="5" seed="1":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    case "{{hours}}{{minutes}}{{seed}}" in *[!0-9.]*) echo "error: hours, minutes and seed are numbers" >&2; exit 1 ;; esac
+    mkdir -p recordings/.drive && rm -f recordings/.drive/STOP
+    end=$(python3 -c "import time; print(int(time.time() + {{hours}} * 3600))")
+    n=0 cut=0
+    while [ "$(date +%s)" -lt "$end" ]; do
+        n=$((n + 1))
+        read -r script speed tiers sseed < <(python3 - {{seed}} $n <<'PY'
+    import random, sys
+    seed, n = int(sys.argv[1]), int(sys.argv[2])
+    r = random.Random(seed * 100003 + n)
+    script = r.choices(["course", "waypoints", "steps"], weights=[0.5, 0.3, 0.2])[0]
+    speed = r.choice([1.0, 1.5, 2.5, 3.8, 5.0, 6.0])
+    tiers = "good,poor,very-bad" if r.random() < 0.5 else "none"
+    print(script, speed, tiers, seed * 1000 + n)
+    PY
+        )
+        label="b{{seed}}-$n-$script-${speed/./p}"
+        echo "=== [batch] session $n: $script at $speed rad/s, uplink $tiers, seed $sseed"
+        code=0
+        just isaac-jetrover-record-drive "$label" "$script" "$speed" seconds=$(python3 -c "print(int({{minutes}} * 60))") seed="$sseed" tiers="$tiers" < /dev/null || code=$?
+        # 2 and 3: joint-drive's watchdog stopped the drive (a stall, the stream gone); the session is kept up to there.
+        case "$code" in
+            0) cut=0 ;;
+            2|3) cut=$((cut + 1)); echo "[batch] session $n was cut short (joint-drive exit $code); kept up to there" >&2
+                 [ "$cut" -lt 3 ] || { echo "[batch] 3 sessions in a row cut short: stopping" >&2; exit 1; } ;;
+            *) echo "[batch] session $n failed (exit $code): stopping" >&2; exit 1 ;;
+        esac
+        if [ -e recordings/.drive/STOP ]; then rm -f recordings/.drive/STOP; echo "[batch] STOP file: stopping after $n session(s)"; break; fi
+    done
+    echo "[batch] $n session(s) recorded"
 
 # Build the LeRobot converter's environment on the GPU machine (docs/adr/0036), once and after robot/lerobot/requirements.txt changes: ~/isaacsim/lerobot-venv (Python 3.12) with that lerobot version, and pytest for just lerobot-test. Runs the pushed commit
 [group('lerobot')]

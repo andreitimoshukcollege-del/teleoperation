@@ -32,7 +32,7 @@ namespace Teleop.Eval.JointDrive
     ///
     /// <para>A stall is a joint more than <see cref="StallErrorRadians"/> from its command whose
     /// reading has moved less than <see cref="StallSpeedRadPerSec"/> over the last half second, for
-    /// <see cref="StallSeconds"/> in a row. A moving arm is never a stall, however far behind, and an
+    /// <see cref="StallSeconds"/> in a row (a simulated robot's window may be longer). A moving arm is never a stall, however far behind, and an
     /// arm that has arrived is never far, so the limits need not know the speed or the latency.</para>
     ///
     /// <para><b>A degraded stream pauses; only a long one stops.</b> <see cref="IsHealthy"/> is false
@@ -75,14 +75,48 @@ namespace Teleop.Eval.JointDrive
         private int _frameNext;
         private double _firstFrame = double.NaN;
         private double _lastFrame = double.NaN;
-        private readonly double[] _degradedBuckets = new double[(int)(DegradedWindowSeconds / BucketSeconds)];
+        private readonly double[] _degradedBuckets;
         private long _bucket = long.MinValue;
         private double _lastHealthCheck = double.NaN;
 
-        public DriveWatchdog()
+        /// <summary>The longest stall window <c>joint-drive</c> accepts, and only for a simulated robot.</summary>
+        public const double MaxStallSeconds = 30.0;
+
+        /// <summary>The longest degraded-stream budget <c>joint-drive</c> accepts, and only for a simulated robot.</summary>
+        public const double MaxStreamSeconds = 30.0;
+
+        private readonly double _stallSeconds;
+        private readonly double _degradedSeconds;
+        private readonly double _degradedWindow;
+
+        /// <param name="stallSeconds">How long a joint may sit far from its command, unmoving, before it is a stall:
+        /// <see cref="StallSeconds"/> for a real robot. A simulated one on a deliberately bad uplink (docs/adr/0035 N4) may
+        /// take longer: RobotHost refuses the stale commands and the arm holds, which looks exactly like a stall.</param>
+        /// <param name="degradedSeconds">How long the stream may be degraded, in all, before it is a fault:
+        /// <see cref="MaxDegradedSeconds"/> within <see cref="DegradedWindowSeconds"/> for a real robot. A simulated one on a
+        /// deliberately bad uplink may take longer, within a window twice as long (at least the real one's): the uplink
+        /// delays the keepalives too, and RobotHost pauses the stream until one arrives. A frame gap is a fault after the
+        /// same time.</param>
+        public DriveWatchdog(double stallSeconds = StallSeconds, double degradedSeconds = MaxDegradedSeconds)
         {
+            if (!(stallSeconds >= StallSeconds && stallSeconds <= MaxStallSeconds))
+                throw new ArgumentOutOfRangeException(nameof(stallSeconds), $"a stall window is {StallSeconds} to {MaxStallSeconds} s");
+            if (!(degradedSeconds >= MaxDegradedSeconds && degradedSeconds <= MaxStreamSeconds))
+                throw new ArgumentOutOfRangeException(nameof(degradedSeconds), $"a degraded-stream budget is {MaxDegradedSeconds} to {MaxStreamSeconds} s");
+            _stallSeconds = stallSeconds;
+            _degradedSeconds = degradedSeconds;
+            _degradedWindow = Math.Max(DegradedWindowSeconds, 2 * degradedSeconds);
+            _degradedBuckets = new double[(int)Math.Round(_degradedWindow / BucketSeconds)];
             Array.Fill(_stallSince, double.NaN);
         }
+
+        /// <summary>This watchdog's degraded-stream budget, seconds, and the window it is counted over.</summary>
+        public double DegradedLimitSeconds => _degradedSeconds;
+
+        public double DegradedWindowLength => _degradedWindow;
+
+        /// <summary>This watchdog's stall window, seconds.</summary>
+        public double StallWindowSeconds => _stallSeconds;
 
         /// <summary>The joint that stalled, after <see cref="DriveFault.Stall"/>; otherwise -1.</summary>
         public int StalledJoint { get; private set; } = -1;
@@ -107,7 +141,7 @@ namespace Teleop.Eval.JointDrive
                 if (error > StallErrorRadians && still)
                 {
                     if (double.IsNaN(_stallSince[j])) _stallSince[j] = sensedAt;
-                    else if (sensedAt - _stallSince[j] >= StallSeconds && StalledJoint < 0) StalledJoint = j;
+                    else if (sensedAt - _stallSince[j] >= _stallSeconds && StalledJoint < 0) StalledJoint = j;
                 }
                 else
                 {
@@ -154,8 +188,8 @@ namespace Teleop.Eval.JointDrive
             AdvanceBuckets(now);
             double degraded = 0;
             foreach (double d in _degradedBuckets) degraded += d;
-            if (degraded < MaxDegradedSeconds) return DriveFault.None;
-            return double.IsNaN(_lastFrame) || now - _lastFrame >= MaxDegradedSeconds ? DriveFault.FrameGap : DriveFault.StreamDegraded;
+            if (degraded < _degradedSeconds) return DriveFault.None;
+            return double.IsNaN(_lastFrame) || now - _lastFrame >= _degradedSeconds ? DriveFault.FrameGap : DriveFault.StreamDegraded;
         }
 
         /// <summary>Moves the bucket ring to <paramref name="now"/>, emptying the buckets it passes.</summary>

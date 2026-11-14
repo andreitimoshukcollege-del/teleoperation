@@ -36,7 +36,7 @@ namespace Teleop.RobotHost.Recording
 
         public DateTime StartedUtc { get; }
 
-        /// <summary>The joint-command sender, <c>ip:port</c>; <c>conditions.operator</c> is <c>headset &lt;sender&gt;</c> (only a headset opens one).</summary>
+        /// <summary>The joint-command sender, <c>ip:port</c>; <c>conditions.operator</c> is <c>headset &lt;sender&gt;</c>, or <c>tool &lt;sender&gt;</c> (see <see cref="FromHeadset"/>).</summary>
         public string Sender { get; }
 
         public UplinkCondition Uplink { get; }
@@ -46,6 +46,14 @@ namespace Teleop.RobotHost.Recording
 
         /// <summary>A take of a scenario from the headset's RECORD button (docs/adr/0033), or null for an automatic session.</summary>
         public ScenarioTake? Take { get; set; }
+
+        /// <summary>
+        /// Whether <see cref="Sender"/> is a headset: <c>conditions.operator</c> is then <c>headset &lt;sender&gt;</c>, else
+        /// <c>tool &lt;sender&gt;</c>. Always true for an automatic session (only a headset opens one); a take can also be
+        /// started by a tool (<c>joint-drive --take</c>), which sends no headset heartbeat from its joint port, and its
+        /// session must not claim a person drove it (the trainer's <c>operator_kind</c> reads this).
+        /// </summary>
+        public bool FromHeadset { get; set; } = true;
     }
 
     /// <summary>

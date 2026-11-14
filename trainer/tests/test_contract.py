@@ -260,4 +260,8 @@ def test_who_drove_a_session():
     assert operator_kind(meta("joint-drive:course", "joint-drive@robot")) == "scripted"
     assert operator_kind(meta("joint-drive:waypoints", "joint-drive")) == "scripted"
     assert operator_kind(meta("auto", "tool 10.0.0.9:5000")) == "unknown"
+    # Takes (docs/adr/0033): from the headset's RECORD button, or a tool's (joint-drive --take, since 2026-11-14).
+    assert operator_kind(meta("scenario:free-play", "headset 10.0.0.5:6012")) == "human"
+    assert operator_kind(meta("scenario:free-play", "tool 10.0.0.9:50001")) == "scripted"
+    assert operator_kind(meta("scenario:free-play", "")) == "unknown"
     assert operator_kind({}) == "unknown"

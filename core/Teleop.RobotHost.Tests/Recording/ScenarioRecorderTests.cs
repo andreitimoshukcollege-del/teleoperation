@@ -126,6 +126,7 @@ namespace Teleop.RobotHost.Tests.Recording
             Assert.False(rig.Auto.IsOpen); // closed for the take
             Assert.True(rig.Scenarios.IsRecording);
             ScenarioTake take = rig.Sink.Begun.Last().Take!;
+            Assert.True(rig.Sink.Begun.Last().FromHeadset); // its sender sent the headset heartbeat
             Assert.Equal(("knock-over", 6), (take.Scenario, take.Take));
             Assert.Equal(Path.Combine(Path.GetFullPath("/data/scenarios"), "knock-over", "20261106T153000Z-take006"), take.Directory);
             RecordStatus s = rig.Scenarios.Status(T(31));
@@ -148,6 +149,27 @@ namespace Teleop.RobotHost.Tests.Recording
             Assert.False(rig.Auto.Held);
             Assert.Equal(4, rig.Scenarios.Status(T(41)).TakesKept);
             Assert.Equal(RecordOutcome.Busy, rig.Ask(RecordOp.Stop, 0, T(42))); // nothing to stop
+        }
+
+        [Fact]
+        public void ATake_FromATool_IsNotTheHeadsets()
+        {
+            // joint-drive --take: its arm-power socket sends the operator message as a tool, and its joint port sends no
+            // heartbeat at all; a headset whose heartbeat is older than the window, or from another port, is no better.
+            var rig = new Rig();
+            Assert.Equal(RecordOutcome.Started, rig.Ask(RecordOp.Start, 0, T(1)));
+            Assert.False(rig.Sink.Begun.Last().FromHeadset);
+            Assert.Contains(rig.Log, l => l.Contains("a tool, not a headset,"));
+            Assert.Equal(RecordOutcome.Saved, rig.Ask(RecordOp.Stop, 0, T(2)));
+
+            rig.Auto.OnHeadset(T(3), "10.0.0.7:6013");
+            Assert.Equal(RecordOutcome.Started, rig.Ask(RecordOp.Start, 0, T(4)));
+            Assert.False(rig.Sink.Begun.Last().FromHeadset);
+            Assert.Equal(RecordOutcome.Saved, rig.Ask(RecordOp.Stop, 0, T(5)));
+
+            rig.Auto.OnHeadset(T(6), Headset);
+            Assert.Equal(RecordOutcome.Started, rig.Ask(RecordOp.Start, 0, T(6 + new AutoRecordOptions().HeadsetSeconds + 0.5)));
+            Assert.False(rig.Sink.Begun.Last().FromHeadset);
         }
 
         [Fact]
@@ -323,6 +345,8 @@ namespace Teleop.RobotHost.Tests.Recording
                 var meta = JsonNode.Parse(File.ReadAllText(Path.Combine(dir, "session.json")))!;
                 Assert.Equal("scenario-knock-over", (string?)meta["label"]);
                 Assert.Equal("scenario:knock-over", (string?)meta["conditions"]!["motion"]);
+                // No automatic recorder to judge the sender by: the RECORD button's, as before.
+                Assert.Equal("headset " + Headset, (string?)meta["conditions"]!["operator"]);
                 Assert.Equal("knock-over", (string?)meta["scenario"]!["name"]);
                 Assert.Equal(1, (int)meta["scenario"]!["take"]!);
                 Assert.Equal("20261106T153000Z-take001", (string?)meta["id"]);
@@ -334,6 +358,42 @@ namespace Teleop.RobotHost.Tests.Recording
                 Assert.Equal(RecordOutcome.Discarded, scenarios.Status(T(3)).Outcome);
                 Assert.True(Directory.Exists(Path.Combine(root, "scenarios", "_discarded", "knock-over", "20261106T153000Z-take001")));
                 Assert.Equal((0, 1), folder.Takes("knock-over"));
+            }
+            finally
+            {
+                try { Directory.Delete(root, true); } catch (IOException) { }
+            }
+        }
+
+        [Fact]
+        public void TheRealWriter_LabelsAToolsTake_ATool()
+        {
+            string root = Path.Combine(Path.GetTempPath(), "teleop-scenario-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(root);
+            try
+            {
+                var options = new AutoRecordOptions { DriverWaitSeconds = 0, Source = "isaac", RecordingsRoot = Path.Combine(root, "auto") };
+                using var recorder = new SessionRecorder(Path.Combine(root, ".active"), Tps, SessionRecorder.DefaultCapacity, 0.02, options, () => DateTime.UtcNow, _ => { });
+                var folder = new ScenarioFolder(Path.Combine(root, "scenarios"));
+                folder.EnsureExists();
+                var utc = new DateTime(2026, 11, 6, 15, 30, 0, DateTimeKind.Utc);
+                var auto = new AutoSessionRecorder(options, recorder, Tps, () => utc, () => 400 * GB, () => UplinkCondition.None, _ => { });
+                var scenarios = new ScenarioRecorder(Path.Combine(root, "scenarios"), recorder, auto, folder, Tps, () => utc, () => 400 * GB, () => UplinkCondition.None);
+                scenarios.Tick(0);
+                const string Tool = "10.0.0.9:50001";
+                scenarios.HandleRequest(RecordOp.Start, 0, scenarios.ListRevision, 1, Tool, T(1));
+                Assert.True(scenarios.IsRecording);
+                Thread.Sleep(200);
+                scenarios.HandleRequest(RecordOp.Stop, 0, scenarios.ListRevision, 2, Tool, T(2));
+                string dir = Path.Combine(root, "scenarios", "free-play", "20261106T153000Z-take001");
+                var sw = Stopwatch.StartNew();
+                while (!File.Exists(Path.Combine(dir, "files.sha256")) && sw.Elapsed.TotalSeconds < 10) Thread.Sleep(20);
+                Assert.True(File.Exists(Path.Combine(dir, "files.sha256")), "the take was not completed");
+                var meta = JsonNode.Parse(File.ReadAllText(Path.Combine(dir, "session.json")))!;
+                Assert.Equal("tool " + Tool, (string?)meta["conditions"]!["operator"]);
+                Assert.Equal("scenario:free-play", (string?)meta["conditions"]!["motion"]);
+                Assert.Contains("recorded by a tool, not a headset", (string?)meta["notes"]);
+                Assert.DoesNotContain("RECORD button", (string?)meta["notes"]);
             }
             finally
             {

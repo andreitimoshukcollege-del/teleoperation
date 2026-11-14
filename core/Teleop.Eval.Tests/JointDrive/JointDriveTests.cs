@@ -144,6 +144,54 @@ namespace Teleop.Eval.Tests.JointDrive
         }
 
         [Fact]
+        public void ALongerStallWindow_WaitsItOut_AndIsBounded()
+        {
+            // The Isaac twin on a very bad uplink: RobotHost refuses stale commands and the arm holds 0.35 rad short.
+            var commanded = new ArmPose(0.35f, 1.0f, -1.5f, 0.5f, 0f);
+            var held = new ArmPose(0f, 1.0f, -1.5f, 0.5f, 0f);
+            var real = new DriveWatchdog();
+            var twin = new DriveWatchdog(8.0);
+            for (int i = 0; i <= 500; i++)
+            {
+                double t = i * 0.02;
+                real.OnFrame(t);
+                twin.OnFrame(t);
+                if (i % 5 != 0 && i % 5 != 2) continue;
+                real.OnReading(t, held, commanded);
+                twin.OnReading(t, held, commanded);
+                if (Math.Abs(t - 5.0) < 1e-9)
+                {
+                    Assert.Equal(DriveFault.Stall, real.Check(t));
+                    Assert.Equal(DriveFault.None, twin.Check(t));
+                }
+            }
+
+            Assert.Equal(DriveFault.Stall, twin.Check(10.0)); // held past 8 s: a stall all the same
+            Assert.Equal(0, twin.StalledJoint);
+            Assert.Throws<ArgumentOutOfRangeException>(() => new DriveWatchdog(0.5));
+            Assert.Throws<ArgumentOutOfRangeException>(() => new DriveWatchdog(DriveWatchdog.MaxStallSeconds + 1));
+        }
+
+        [Fact]
+        public void ALongerStallWindow_NeedsTheSimulatedRobotFlag()
+        {
+            var error = new StringWriter();
+            TextWriter old = Console.Error;
+            Console.SetError(error);
+            try
+            {
+                int code = JointDriveCommand.Run(new[] { "joint-drive", "--script", "steps", "--speed", "2", "--remote-host", "127.0.0.1", "--confirm-hardware-motion", "--stall-seconds", "8" });
+                Assert.Equal(64, code);
+            }
+            finally
+            {
+                Console.SetError(old);
+            }
+
+            Assert.Contains("needs --simulated-robot", error.ToString());
+        }
+
+        [Fact]
         public void AShortGap_OnlyPauses_AndTheStreamComingBackResumes()
         {
             var w = new DriveWatchdog();

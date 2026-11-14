@@ -319,16 +319,23 @@ OPERATOR_KINDS = ("human", "scripted")
 
 
 def operator_kind(meta: dict) -> str:
-    """Who drove a session, from its session.json: ``human`` (someone in the headset: ``teleop``, or an
-    automatic session a headset opened), ``scripted`` (``joint-drive:<script>``, the arm driving itself:
-    the pilot), or ``unknown``. Scripted data is shaped like teleop at best (the course script), so a
-    fine-tune can train on human data alone once there is enough of it ([real] train_sources)."""
+    """Who drove a session, from its session.json: ``human`` (someone in the headset: ``teleop``, an
+    automatic session a headset opened, or a take from the headset's RECORD button), ``scripted``
+    (``joint-drive:<script>``, the arm driving itself: the pilot; or a take a tool recorded, ``joint-drive
+    --take``, whose operator RobotHost writes as ``tool <ip:port>``), or ``unknown``. Scripted data is
+    shaped like teleop at best (the course script), so a fine-tune can train on human data alone once there
+    is enough of it ([real] train_sources).
+
+    Takes recorded before 2026-11-14 say ``headset <ip:port>`` whoever started them; a ``joint-drive --take``
+    among them passes for human here (RobotHost's log of the time says "which is not a headset")."""
     conditions = meta.get("conditions", {}) or {}
     motion = str(conditions.get("motion", ""))
     operator = str(conditions.get("operator", ""))
-    if motion.startswith("joint-drive") or operator.startswith("joint-drive"):
+    take = motion.startswith("scenario:")
+    if motion.startswith("joint-drive") or operator.startswith("joint-drive") or (take and operator.startswith("tool ")):
         return "scripted"
-    if motion == "teleop" or (motion == "auto" and (operator.startswith("headset") or operator.startswith("auto "))):
+    headset = operator.startswith("headset")
+    if motion == "teleop" or (motion == "auto" and (headset or operator.startswith("auto "))) or (take and headset):
         return "human"
     return "unknown"
 

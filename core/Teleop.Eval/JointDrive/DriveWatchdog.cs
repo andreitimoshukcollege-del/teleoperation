@@ -32,7 +32,7 @@ namespace Teleop.Eval.JointDrive
     ///
     /// <para>A stall is a joint more than <see cref="StallErrorRadians"/> from its command whose
     /// reading has moved less than <see cref="StallSpeedRadPerSec"/> over the last half second, for
-    /// <see cref="StallSeconds"/> in a row. A moving arm is never a stall, however far behind, and an
+    /// <see cref="StallSeconds"/> in a row (a simulated robot's window may be longer). A moving arm is never a stall, however far behind, and an
     /// arm that has arrived is never far, so the limits need not know the speed or the latency.</para>
     ///
     /// <para><b>A degraded stream pauses; only a long one stops.</b> <see cref="IsHealthy"/> is false
@@ -79,10 +79,24 @@ namespace Teleop.Eval.JointDrive
         private long _bucket = long.MinValue;
         private double _lastHealthCheck = double.NaN;
 
-        public DriveWatchdog()
+        /// <summary>The longest stall window <c>joint-drive</c> accepts, and only for a simulated robot.</summary>
+        public const double MaxStallSeconds = 30.0;
+
+        private readonly double _stallSeconds;
+
+        /// <param name="stallSeconds">How long a joint may sit far from its command, unmoving, before it is a stall:
+        /// <see cref="StallSeconds"/> for a real robot. A simulated one on a deliberately bad uplink (docs/adr/0035 N4) may
+        /// take longer: RobotHost refuses the stale commands and the arm holds, which looks exactly like a stall.</param>
+        public DriveWatchdog(double stallSeconds = StallSeconds)
         {
+            if (!(stallSeconds >= StallSeconds && stallSeconds <= MaxStallSeconds))
+                throw new ArgumentOutOfRangeException(nameof(stallSeconds), $"a stall window is {StallSeconds} to {MaxStallSeconds} s");
+            _stallSeconds = stallSeconds;
             Array.Fill(_stallSince, double.NaN);
         }
+
+        /// <summary>This watchdog's stall window, seconds.</summary>
+        public double StallWindowSeconds => _stallSeconds;
 
         /// <summary>The joint that stalled, after <see cref="DriveFault.Stall"/>; otherwise -1.</summary>
         public int StalledJoint { get; private set; } = -1;
@@ -107,7 +121,7 @@ namespace Teleop.Eval.JointDrive
                 if (error > StallErrorRadians && still)
                 {
                     if (double.IsNaN(_stallSince[j])) _stallSince[j] = sensedAt;
-                    else if (sensedAt - _stallSince[j] >= StallSeconds && StalledJoint < 0) StalledJoint = j;
+                    else if (sensedAt - _stallSince[j] >= _stallSeconds && StalledJoint < 0) StalledJoint = j;
                 }
                 else
                 {

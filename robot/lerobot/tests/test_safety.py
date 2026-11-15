@@ -145,6 +145,40 @@ def test_the_watcher_never_rebuilds_a_safety_dataset(scenarios, tmp_path):
     assert (batch / "meta" / "teleop" / "takes.jsonl").exists()
 
 
+def test_the_video_encoding_override_reaches_lerobots_encoder_and_is_put_back(monkeypatch):
+    # LeRobot 0.5.1 takes no CRF from LeRobotDataset (2026-11-15): the writer hands its encoder one while an episode is saved.
+    import sys
+    import types
+
+    from teleop_lerobot.writer import video_encoding
+
+    calls = []
+
+    def encode_video_frames(imgs_dir, video_path, fps, vcodec="libsvtav1", crf=30, preset=None, **rest):
+        calls.append((crf, preset))
+
+    fake = types.ModuleType("lerobot.datasets.dataset_writer")
+    fake.encode_video_frames = encode_video_frames
+    package = types.ModuleType("lerobot.datasets")
+    package.dataset_writer = fake
+    monkeypatch.setitem(sys.modules, "lerobot", types.ModuleType("lerobot"))
+    monkeypatch.setitem(sys.modules, "lerobot.datasets", package)
+    monkeypatch.setitem(sys.modules, "lerobot.datasets.dataset_writer", fake)
+
+    with video_encoding(18, 8):
+        fake.encode_video_frames("imgs", "out.mp4", 15, vcodec="libsvtav1")
+    fake.encode_video_frames("imgs", "out.mp4", 15)
+    with video_encoding():  # nothing asked: LeRobot's own
+        fake.encode_video_frames("imgs", "out.mp4", 15)
+    assert calls == [(18, 8), (30, None), (30, None)]
+    assert fake.encode_video_frames is encode_video_frames
+
+    del fake.encode_video_frames
+    with pytest.raises(RuntimeError):
+        with video_encoding(18, 8):
+            pass
+
+
 def test_the_watcher_leaves_the_safety_scenarios_alone(scenarios):
     take(scenarios, "collide_with_obstacle", [])
     jetrover_take(scenarios, scenario="free-play")

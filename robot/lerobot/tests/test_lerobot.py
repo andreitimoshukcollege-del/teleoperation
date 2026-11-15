@@ -41,3 +41,27 @@ def test_two_takes_become_two_episodes_lerobot_reads_back(scenarios, tmp_path):
     assert tuple(item["observation.images.wrist"].shape) == (3, 48, 64)
     assert [e["episode"] for e in read_ledger(root)] == [0, 1]
     assert os.path.exists(os.path.join(root, "meta", "teleop", "episode_000001.timing.jsonl"))
+
+
+def test_a_safety_writer_encodes_at_its_own_crf_and_says_so(scenarios, tmp_path, monkeypatch):
+    # LeRobot's own CRF 30 softened the twin's wrist camera (2026-11-15): the safety datasets are encoded at SAFETY_CRF.
+    import json
+
+    from lerobot.datasets import LeRobotDataset, dataset_writer
+    from teleop_lerobot.writer import SAFETY_CRF, SAFETY_PRESET
+
+    seen = []
+    real = dataset_writer.encode_video_frames
+
+    def spy(*args, **kwargs):
+        seen.append((kwargs.get("crf"), kwargs.get("preset")))
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(dataset_writer, "encode_video_frames", spy)
+    take = read_take(jetrover_take(scenarios, image=jpeg))
+    root = str(tmp_path / "safety")
+    append_take(LeRobotWriter(crf=SAFETY_CRF, preset=SAFETY_PRESET), root, take)
+    assert seen and set(seen) == {(SAFETY_CRF, SAFETY_PRESET)}
+    assert dataset_writer.encode_video_frames is spy  # put back after the episode
+    assert json.load(open(os.path.join(root, "meta", "teleop", "encoding.json")))["crf"] == SAFETY_CRF
+    assert LeRobotDataset(repo_id(take.dataset_group, take.scenario), root=root).meta.total_episodes == 1

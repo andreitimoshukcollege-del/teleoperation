@@ -1,0 +1,608 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="gpu-ui-token" content="__TOKEN__">
+<title>GPU machine</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect x='1.5' y='3.5' width='13' height='9' rx='1.5' fill='none' stroke='%23565c64' stroke-width='1.5'/%3E%3Cpath d='M4 8h8' stroke='%232f6bd0' stroke-width='2'/%3E%3C/svg%3E">
+<style nonce="__NONCE__">
+:root {
+  color-scheme: light dark;
+  --bg: #ffffff; --surface: #f6f7f9; --fg: #1b1d21; --muted: #565c64; --line: #d3d7dd;
+  --track: #e2e5ea; --fill: #2f6bd0; --accent: #1f55b5;
+  --run-bg: #e3f3e7; --run-fg: #1a5c2c; --pause-bg: #fcefd3; --pause-fg: #6f4600;
+  --stop-bg: #eaecef; --stop-fg: #3b4047; --done-bg: #e2eafb; --done-fg: #1c4a91;
+  --fail-bg: #fbe3e1; --fail-fg: #8f1d14;
+  --err-bg: #fdeceb; --err-fg: #8f1d14; --err-line: #f2c4c0;
+  --danger: #b3261e; --on-danger: #ffffff;
+  --btn-bg: #ffffff; --btn-fg: #1b1d21; --btn-line: #8a919a;
+  --live: #1e8a3c; --stale: #a86400; --bad: #c3261d;
+  --sans: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --mono: ui-monospace, "Cascadia Mono", "Segoe UI Mono", Consolas, "Liberation Mono", Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #15171a; --surface: #1d2024; --fg: #e6e8eb; --muted: #a3a9b1; --line: #343940;
+    --track: #2f343a; --fill: #6f9eea; --accent: #8fb4f2;
+    --run-bg: #183a23; --run-fg: #a8e2b7; --pause-bg: #413112; --pause-fg: #f3d28c;
+    --stop-bg: #2b2f35; --stop-fg: #c8cdd4; --done-bg: #1a3053; --done-fg: #b4cbf5;
+    --fail-bg: #46201c; --fail-fg: #f5b7b0;
+    --err-bg: #3a1c1a; --err-fg: #f5c3be; --err-line: #6b302b;
+    --btn-bg: #24282d; --btn-fg: #e6e8eb; --btn-line: #6a717a;
+    --live: #4cc36d; --stale: #e0a03a; --bad: #f07068;
+  }
+}
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }  /* over .progress's display: flex and the like */
+html { -webkit-text-size-adjust: 100%; }
+body { margin: 0; background: var(--bg); color: var(--fg); font: 15px/1.5 var(--sans); }
+.wrap { max-width: 1200px; margin: 0 auto; padding: 0 16px; }
+header.top { border-bottom: 1px solid var(--line); padding: 20px 0 18px; }
+.title-row { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 8px 24px; }
+h1 { font-size: 22px; line-height: 1.3; margin: 0; font-weight: 650; }
+h1 .host { font-weight: 400; color: var(--muted); font-size: 16px; margin-left: 6px; overflow-wrap: anywhere; }
+h2 { font-size: 17px; margin: 0 0 12px; font-weight: 650; }
+h3 { font-size: 16px; margin: 0; font-weight: 650; overflow-wrap: anywhere; }
+.conn { display: inline-flex; align-items: center; gap: 8px; margin: 0; font-size: 14px; color: var(--muted); }
+.conn .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--btn-line); flex: none; }
+.conn[data-state="live"] .dot { background: var(--live); }
+.conn[data-state="stale"] .dot { background: var(--stale); }
+.conn[data-state="error"] .dot { background: var(--bad); }
+.stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 14px 28px; margin: 18px 0 0; }
+.stats > div { min-width: 0; }
+.stats dt { font-size: 13px; color: var(--muted); margin: 0 0 4px; }
+.stats dd { margin: 0; font-variant-numeric: tabular-nums; }
+.stats .bar { margin-top: 6px; }
+.error { background: var(--err-bg); color: var(--err-fg); border: 1px solid var(--err-line); border-radius: 6px;
+  padding: 10px 12px; margin: 16px 0 0; overflow-wrap: anywhere; }
+main section { padding: 28px 0 4px; }
+.cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 340px), 1fr)); gap: 16px; }
+.card { background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 16px;
+  display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+.card-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.chip { flex: none; font-size: 13px; font-weight: 600; line-height: 1.2; padding: 3px 10px; border-radius: 999px;
+  background: var(--stop-bg); color: var(--stop-fg); }
+.chip[data-status="running"] { background: var(--run-bg); color: var(--run-fg); }
+.chip[data-status="paused"] { background: var(--pause-bg); color: var(--pause-fg); }
+.chip[data-status="done"] { background: var(--done-bg); color: var(--done-fg); }
+.chip[data-status="failed"] { background: var(--fail-bg); color: var(--fail-fg); }
+.meta, .eta, .busy { margin: 0; font-size: 14px; }
+.meta { color: var(--muted); font-variant-numeric: tabular-nums; }
+.eta-note { color: var(--muted); }
+.busy { color: var(--accent); }
+.progress { display: flex; flex-direction: column; gap: 4px; }
+.progress-text { font-size: 14px; font-variant-numeric: tabular-nums; }
+.bar { height: 8px; background: var(--track); border-radius: 4px; overflow: hidden; }
+.bar .fill { display: block; height: 100%; width: 0; background: var(--fill); border-radius: 4px; }
+.detail { margin: 0; font: 12.5px/1.45 var(--mono); color: var(--muted); white-space: pre-wrap; overflow-wrap: anywhere; }
+.actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.actions:empty { display: none; }
+.btn { font: inherit; font-size: 14px; line-height: 1.2; min-height: 34px; padding: 7px 14px; border-radius: 6px;
+  border: 1px solid var(--btn-line); background: var(--btn-bg); color: var(--btn-fg); cursor: pointer; }
+.btn.danger { background: var(--danger); border-color: var(--danger); color: var(--on-danger); }
+.btn:disabled { opacity: 0.55; cursor: not-allowed; }
+.btn:focus-visible { outline: 2px solid var(--fill); outline-offset: 2px; }
+.muted { color: var(--muted); }
+.empty { color: var(--muted); margin: 0; }
+.table-wrap { overflow-x: auto; }
+table { width: 100%; border-collapse: collapse; font-size: 14px; }
+th, td { text-align: left; vertical-align: top; padding: 7px 10px 7px 0; border-bottom: 1px solid var(--line); }
+th { font-size: 13px; font-weight: 600; color: var(--muted); }
+td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+td.mono { font: 12.5px/1.45 var(--mono); overflow-wrap: anywhere; }
+td.cmd { font: 12.5px/1.45 var(--mono); overflow-wrap: anywhere; min-width: 16ch; }
+.log { list-style: none; margin: 0; padding: 0; }
+.log li { border-bottom: 1px solid var(--line); padding: 10px 0; }
+.log .line { display: flex; flex-wrap: wrap; gap: 4px 12px; align-items: baseline; }
+.log .when { color: var(--muted); font-variant-numeric: tabular-nums; }
+.log .what { color: var(--muted); font-size: 13px; overflow-wrap: anywhere; }
+.log .result[data-ok="true"] { color: var(--run-fg); background: var(--run-bg); }
+.log .result[data-ok="false"] { color: var(--fail-fg); background: var(--fail-bg); }
+.log .result { font-size: 13px; font-weight: 600; padding: 1px 8px; border-radius: 999px; color: var(--accent); }
+.log pre { margin: 6px 0 0; font: 12.5px/1.45 var(--mono); color: var(--muted); white-space: pre-wrap;
+  overflow-wrap: anywhere; max-height: 14em; overflow-y: auto; }
+dialog { background: var(--bg); color: var(--fg); border: 1px solid var(--line); border-radius: 10px; padding: 20px;
+  width: min(480px, calc(100vw - 32px)); }
+dialog::backdrop { background: rgba(0, 0, 0, 0.5); }
+dialog h2 { margin: 0 0 4px; }
+dialog p { margin: 10px 0 0; }
+dialog .job { color: var(--muted); margin: 0; overflow-wrap: anywhere; }
+dialog .how { color: var(--muted); font-size: 13px; }
+.dialog-buttons { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 10px; margin-top: 20px; }
+.toast { position: fixed; left: 16px; right: 16px; bottom: 16px; max-width: 560px; margin: 0 auto; padding: 10px 14px;
+  border-radius: 8px; background: var(--fg); color: var(--bg); font-size: 14px; overflow-wrap: anywhere; }
+.toast[data-bad="1"] { background: var(--err-bg); color: var(--err-fg); border: 1px solid var(--err-line); }
+footer { color: var(--muted); font-size: 13px; padding: 24px 0 32px; }
+@media (max-width: 520px) {
+  h1 { font-size: 19px; }
+  h1 .host { display: block; margin: 2px 0 0; }
+  .card { padding: 14px; }
+}
+</style>
+</head>
+<body>
+<header class="top">
+  <div class="wrap">
+    <div class="title-row">
+      <h1>GPU machine <span id="host" class="host"></span></h1>
+      <p id="conn" class="conn" data-state="waiting"><span class="dot" aria-hidden="true"></span><span id="conn-text">connecting</span></p>
+    </div>
+    <dl class="stats">
+      <div>
+        <dt>GPU</dt>
+        <dd><span id="gpu-text">unknown</span><div class="bar" id="gpu-util-bar" role="progressbar" aria-label="GPU utilisation" aria-valuemin="0" aria-valuemax="100"><span class="fill"></span></div></dd>
+      </div>
+      <div>
+        <dt>GPU memory</dt>
+        <dd><span id="mem-text">unknown</span><div class="bar" id="gpu-mem-bar" role="progressbar" aria-label="GPU memory in use" aria-valuemin="0" aria-valuemax="100"><span class="fill"></span></div></dd>
+      </div>
+      <div><dt>Disk free (home)</dt><dd id="disk">unknown</dd></div>
+      <div><dt>Load per core</dt><dd id="load">unknown</dd></div>
+    </dl>
+    <p id="error" class="error" role="alert" hidden></p>
+  </div>
+</header>
+<main class="wrap">
+  <section aria-labelledby="jobs-h">
+    <h2 id="jobs-h">Jobs</h2>
+    <div id="jobs" class="cards"></div>
+    <p id="no-jobs" class="empty" hidden>Nothing of ours is running.</p>
+  </section>
+  <section aria-labelledby="other-h">
+    <h2 id="other-h">Our other processes</h2>
+    <div id="other"></div>
+  </section>
+  <section aria-labelledby="gpu-h">
+    <h2 id="gpu-h">Other accounts on the GPU</h2>
+    <div id="gpu-others"></div>
+  </section>
+  <section aria-labelledby="log-h">
+    <h2 id="log-h">Actions from this page</h2>
+    <div id="log"></div>
+  </section>
+  <footer>Every button asks first. The page runs nothing but its fixed actions; it stops when its terminal does (Ctrl+C).</footer>
+</main>
+<dialog id="confirm" aria-labelledby="confirm-title" aria-describedby="confirm-text">
+  <h2 id="confirm-title"></h2>
+  <p id="confirm-job" class="job"></p>
+  <p id="confirm-text"></p>
+  <p id="confirm-how" class="how"></p>
+  <div class="dialog-buttons">
+    <button type="button" class="btn" id="confirm-cancel">Cancel</button>
+    <button type="button" class="btn" id="confirm-ok">OK</button>
+  </div>
+</dialog>
+<p id="toast" class="toast" role="status" aria-live="polite" hidden></p>
+<script nonce="__NONCE__">
+"use strict";
+(function () {
+  const TOKEN = document.querySelector('meta[name="gpu-ui-token"]').content;
+  const POLL_MS = 3000;
+  const LABELS = { stop: "Stop", pause: "Pause", resume: "Resume", start: "Start" };
+  const $ = (id) => document.getElementById(id);
+
+  let last = null;         // the last /api/status answer
+  let lastAt = 0;          // performance.now() when it came
+  let fetchError = null;   // why this page's own server did not answer, when it did not
+  let polling = false;
+  let timer = 0;
+  let shownRemote = null;  // the machine's answer the tables below the cards show
+  let shownLog = "";
+  const cards = new Map(); // job id -> its card's elements, kept so a poll never steals a button's focus
+
+  function el(tag, cls, text) {
+    const e = document.createElement(tag);
+    if (cls) e.className = cls;
+    if (text !== undefined && text !== null) e.textContent = String(text);
+    return e;
+  }
+
+  // -- formatting -------------------------------------------------------------------------------------------------
+
+  function dur(s) {
+    s = Math.max(0, Math.round(s));
+    if (s < 60) return s + " s";
+    const m = Math.round(s / 60);
+    if (m < 60) return m + " min";
+    const h = Math.floor(m / 60), r = m % 60;
+    if (h < 48) return r ? h + " h " + r + " min" : h + " h";
+    return Math.floor(h / 24) + " days " + (h % 24) + " h";
+  }
+  function left(s) { return s < 45 ? "less than a minute left" : "about " + dur(s) + " left"; }
+  function bytes(n) {
+    if (typeof n !== "number") return "unknown";
+    const units = ["B", "KiB", "MiB", "GiB", "TiB"];
+    let i = 0;
+    while (n >= 1024 && i < units.length - 1) { n /= 1024; i++; }
+    return (i === 0 || n >= 100 ? Math.round(n) : n.toFixed(1)) + " " + units[i];
+  }
+  function mib(n) { return typeof n === "number" ? bytes(n * 1024 * 1024) : "unknown"; }
+  function clock(epoch, withSeconds) {
+    const d = new Date(epoch * 1000);
+    const opts = withSeconds ? { hour: "2-digit", minute: "2-digit", second: "2-digit" } : { hour: "2-digit", minute: "2-digit" };
+    const t = d.toLocaleTimeString([], opts);
+    return d.toDateString() === new Date().toDateString() ? t : d.toLocaleDateString([], { month: "short", day: "numeric" }) + " " + t;
+  }
+  function num(v) { return typeof v === "number" && isFinite(v); }
+
+  // -- time -------------------------------------------------------------------------------------------------------
+
+  function sinceFetch() { return (performance.now() - lastAt) / 1000; }
+  function remoteAge() { return last && num(last.remote_age_s) ? last.remote_age_s + sinceFetch() : null; }
+  // The machine's clock now (its jobs' times are on it), and this computer's (the local batch's).
+  function remoteNow() { return last && last.remote ? last.remote.time + remoteAge() : null; }
+  function localNow() { return last ? last.now + sinceFetch() : Date.now() / 1000; }
+
+  // -- polling ----------------------------------------------------------------------------------------------------
+
+  async function poll() {
+    if (polling) return;
+    polling = true;
+    clearTimeout(timer);
+    try {
+      const r = await fetch("/api/status", { cache: "no-store" });
+      if (!r.ok) throw new Error("HTTP " + r.status);
+      last = await r.json();
+      lastAt = performance.now();
+      fetchError = null;
+    } catch (e) {
+      fetchError = String((e && e.message) || e);
+    }
+    polling = false;
+    render(true);
+    timer = setTimeout(poll, POLL_MS);
+  }
+
+  // -- rendering --------------------------------------------------------------------------------------------------
+
+  function connState() {
+    if (fetchError) return ["error", "this page's server does not answer"];
+    if (!last) return ["waiting", "connecting"];
+    if (!last.remote) return last.remote_error ? ["error", "no answer from the machine yet"] : ["waiting", "waiting for the first answer"];
+    const age = remoteAge();
+    if (last.remote_error || age > Math.max(15, 3 * last.interval_s)) return ["stale", "stale: last answer " + dur(age) + " ago"];
+    return ["live", "live: updated " + dur(age) + " ago"];
+  }
+
+  function setBar(bar, fraction) {
+    const f = Math.max(0, Math.min(1, num(fraction) ? fraction : 0));
+    bar.firstElementChild.style.width = (f * 100).toFixed(1) + "%";
+    bar.setAttribute("aria-valuenow", String(Math.round(f * 100)));
+  }
+
+  function renderHeader() {
+    const [state, text] = connState();
+    $("conn").dataset.state = state;
+    $("conn-text").textContent = text;
+    const remote = last && last.remote;
+    $("host").textContent = last ? last.host + (remote ? " (" + remote.host + ")" : "") : "";
+    const problems = [];
+    if (fetchError) problems.push("This page's server does not answer (" + fetchError + "). Is the dashboard still running?");
+    if (last && last.remote_error) {
+      problems.push((remote ? "The last look at the machine failed, so this shows the answer from " + dur(remoteAge()) + " ago: " : "No answer from the machine: ") + last.remote_error);
+    }
+    $("error").hidden = problems.length === 0;
+    $("error").textContent = problems.join(" ");
+    if (!remote) return;
+    const g = remote.gpu || {};
+    const parts = [];
+    if (g.name) parts.push(g.name.replace(/^NVIDIA (GeForce )?/, ""));
+    if (num(g.util)) parts.push(g.util + "% busy");
+    if (num(g.temp)) parts.push(g.temp + " °C");
+    $("gpu-text").textContent = parts.join(", ") || "unknown";
+    setBar($("gpu-util-bar"), num(g.util) ? g.util / 100 : 0);
+    if (num(g.mem_used) && num(g.mem_total) && g.mem_total > 0) {
+      const ours = (g.apps || []).filter((a) => a.ours).reduce((s, a) => s + (a.mem || 0), 0);
+      $("mem-text").textContent = mib(g.mem_used) + " of " + mib(g.mem_total) + " in use" + (ours ? "; ours " + mib(ours) : "");
+      setBar($("gpu-mem-bar"), g.mem_used / g.mem_total);
+    } else {
+      $("mem-text").textContent = "unknown";
+      setBar($("gpu-mem-bar"), 0);
+    }
+    const disk = remote.disk || {};
+    $("disk").textContent = num(disk.free) ? bytes(disk.free) + " of " + bytes(disk.total) : "unknown";
+    const load = remote.load || [];
+    $("load").textContent = num(load[0]) && remote.cores ? (load[0] / remote.cores).toFixed(2) + " (" + load[0].toFixed(1) + " on " + remote.cores + " cores)" : "unknown";
+  }
+
+  function makeCard() {
+    const c = {};
+    c.root = el("article", "card");
+    const head = el("div", "card-head");
+    c.title = el("h3");
+    c.chip = el("span", "chip");
+    head.append(c.title, c.chip);
+    c.meta = el("p", "meta");
+    c.prog = el("div", "progress");
+    c.bar = el("div", "bar");
+    c.bar.setAttribute("role", "progressbar");
+    c.bar.setAttribute("aria-valuemin", "0");
+    c.bar.setAttribute("aria-valuemax", "100");
+    c.bar.append(el("span", "fill"));
+    c.progText = el("span", "progress-text");
+    c.prog.append(c.bar, c.progText);
+    c.eta = el("p", "eta");
+    c.etaMain = el("span", "eta-main");
+    c.etaNote = el("span", "eta-note");
+    c.eta.append(c.etaMain, c.etaNote);
+    c.detail = el("pre", "detail");
+    c.busy = el("p", "busy", "An action on this job is running…");
+    c.actions = el("div", "actions");
+    c.actionsKey = null;
+    c.root.append(head, c.meta, c.prog, c.eta, c.detail, c.busy, c.actions);
+    return c;
+  }
+
+  function etaText(job, age) {
+    if (job.status === "done") return ["finished", ""];
+    if (job.status === "stopped" || job.status === "failed") return ["", ""];
+    const note = job.eta_note || "";
+    if (num(job.eta_s)) return [left(job.eta_s - age), note];
+    if (note) return [note, ""];
+    return ["no estimate", ""];
+  }
+
+  function updateCard(c, job, now, age, busy) {
+    c.title.textContent = job.title || job.id;
+    c.chip.textContent = job.status || "?";
+    c.chip.dataset.status = job.status || "";
+    const meta = [];
+    if (num(job.started) && num(now)) meta.push("started " + clock(job.started) + ", " + dur(now - job.started) + " ago");
+    if (job.pids && job.pids.length) meta.push((job.pids.length === 1 ? "pid " : "pids ") + job.pids.join(", "));
+    c.meta.textContent = meta.join(" · ");
+    c.meta.hidden = meta.length === 0;
+    const p = job.progress;
+    if (p && num(p.done) && num(p.total) && p.total > 0) {
+      c.prog.hidden = false;
+      setBar(c.bar, p.done / p.total);
+      c.bar.setAttribute("aria-label", job.title + ": " + p.done + " of " + p.total + " " + (p.unit || ""));
+      c.progText.textContent = p.done + " of " + p.total + " " + (p.unit || "") + " (" + Math.floor((100 * p.done) / p.total) + "%)";
+    } else {
+      c.prog.hidden = true;
+    }
+    const [main, note] = etaText(job, age);
+    c.etaMain.textContent = main;
+    c.etaNote.textContent = note ? " — " + note : "";
+    c.eta.hidden = !main;
+    const detail = (job.detail || []).join("\n");
+    c.detail.textContent = detail;
+    c.detail.hidden = !detail;
+    c.busy.hidden = !busy;
+    const actions = job.actions || [];
+    const key = actions.join(",") + (busy ? "|busy" : "");
+    if (key !== c.actionsKey) {
+      c.actionsKey = key;
+      c.actions.replaceChildren();
+      for (const a of actions) {
+        const b = el("button", a === "stop" ? "btn danger" : "btn", LABELS[a] || a);
+        b.type = "button";
+        b.disabled = busy;
+        b.setAttribute("aria-label", (LABELS[a] || a) + ": " + (job.title || job.id));
+        b.addEventListener("click", () => act(job.id, a));
+        c.actions.append(b);
+      }
+    }
+  }
+
+  function currentJobs() {
+    if (!last) return [];
+    const out = [];
+    const b = last.batch;
+    const active = b && (b.status === "running" || b.status === "paused");
+    const rAge = remoteAge() || 0;
+    if (b && active) out.push({ job: b, now: localNow(), age: sinceFetch() });
+    if (last.remote) for (const j of last.remote.jobs || []) out.push({ job: j, now: remoteNow(), age: rAge });
+    if (b && !active) out.push({ job: b, now: localNow(), age: sinceFetch() });
+    return out;
+  }
+
+  function findJob(id) {
+    const hit = currentJobs().find((x) => x.job.id === id);
+    return hit ? hit.job : null;
+  }
+
+  function renderJobs() {
+    const box = $("jobs");
+    const busy = new Set(((last && last.actions_log) || []).filter((e) => e.ok === null).map((e) => e.job));
+    const seen = new Set();
+    currentJobs().forEach((x, i) => {
+      let c = cards.get(x.job.id);
+      if (!c) { c = makeCard(); cards.set(x.job.id, c); }
+      seen.add(x.job.id);
+      updateCard(c, x.job, x.now, x.age, busy.has(x.job.id));
+      if (box.children[i] !== c.root) box.insertBefore(c.root, box.children[i] || null);
+    });
+    for (const [id, c] of cards) if (!seen.has(id)) { c.root.remove(); cards.delete(id); }
+    $("no-jobs").hidden = seen.size > 0 || !last || !last.remote;
+  }
+
+  function selecting(box) {
+    const s = window.getSelection();
+    return s && !s.isCollapsed && box.contains(s.anchorNode);
+  }
+
+  function table(headers, rows) {
+    const wrap = el("div", "table-wrap");
+    const t = el("table");
+    const tr = el("tr");
+    for (const [h, cls] of headers) tr.append(el("th", cls, h));
+    const thead = el("thead");
+    thead.append(tr);
+    const tbody = el("tbody");
+    for (const row of rows) {
+      const r = el("tr");
+      for (const [v, cls] of row) r.append(el("td", cls, v));
+      tbody.append(r);
+    }
+    t.append(thead, tbody);
+    wrap.append(t);
+    return wrap;
+  }
+
+  function renderOther(remote) {
+    const box = $("other");
+    if (selecting(box)) return;
+    box.replaceChildren();
+    if (!remote) { box.append(el("p", "empty", "No answer from the machine yet.")); return; }
+    const rows = remote.other || [];
+    if (!rows.length) { box.append(el("p", "empty", "None.")); return; }
+    const now = remote.time;
+    box.append(table([["PID", "num"], ["Command", ""], ["Memory", "num"], ["Age", "num"]],
+      rows.map((o) => [[o.pid, "num"], [o.cmd + (o.state === "T" ? "  (stopped)" : ""), "cmd"], [bytes(o.rss), "num"],
+        [num(o.started) ? dur(now - o.started) : "?", "num"]])));
+  }
+
+  function renderGpuOthers(remote) {
+    const box = $("gpu-others");
+    if (selecting(box)) return;
+    box.replaceChildren();
+    if (!remote) { box.append(el("p", "empty", "No answer from the machine yet.")); return; }
+    const apps = (remote.gpu && remote.gpu.apps) || [];
+    const users = new Map();
+    for (const a of apps.filter((x) => !x.ours)) {
+      const u = users.get(a.user) || { mem: 0, n: 0 };
+      u.mem += a.mem || 0;
+      u.n += 1;
+      users.set(a.user, u);
+    }
+    const ours = apps.filter((x) => x.ours);
+    const oursMem = ours.reduce((s, a) => s + (a.mem || 0), 0);
+    if (!users.size) {
+      box.append(el("p", "empty", "No other account is using the GPU."));
+    } else {
+      box.append(table([["Account", ""], ["GPU memory", "num"], ["Processes", "num"]],
+        [...users.entries()].sort((a, b) => b[1].mem - a[1].mem).map(([u, v]) => [[u, ""], [mib(v.mem), "num"], [v.n, "num"]])));
+    }
+    box.append(el("p", "muted", ours.length ? "Ours: " + mib(oursMem) + " in " + ours.length + " process" + (ours.length === 1 ? "" : "es") + "." : "Ours: none."));
+  }
+
+  function renderLog(log) {
+    const box = $("log");
+    const key = JSON.stringify(log);
+    if (key === shownLog || selecting(box)) return;
+    shownLog = key;
+    box.replaceChildren();
+    if (!log.length) { box.append(el("p", "empty", "None yet.")); return; }
+    const ul = el("ul", "log");
+    for (const e of log.slice().reverse()) {
+      const li = el("li");
+      const line = el("div", "line");
+      line.append(el("span", "when", clock(e.time, true)), el("strong", null, e.title + ": " + e.action));
+      const r = el("span", "result", e.ok === null ? "running" : e.ok ? "done" : "failed");
+      r.dataset.ok = e.ok === null ? "" : String(e.ok);
+      line.append(r);
+      li.append(line, el("div", "what", e.what + (num(e.finished) ? " (took " + dur(e.finished - e.time) + ")" : "")));
+      if (e.output) li.append(el("pre", null, e.output));
+      ul.append(li);
+    }
+    box.append(ul);
+  }
+
+  function render(fresh) {
+    renderHeader();
+    if (!last) return;
+    renderJobs();
+    if (fresh && last.remote !== shownRemote) {  // the tables change only with a new answer
+      shownRemote = last.remote;
+      renderOther(last.remote);
+      renderGpuOthers(last.remote);
+    }
+    renderLog(last.actions_log || []);
+  }
+
+  // -- actions ----------------------------------------------------------------------------------------------------
+
+  function confirmSpec(job, action) {
+    const pg = job.pgid;
+    const sig = (s) => "Sends SIG" + s + " to process group " + pg + " on the GPU machine.";
+    const specs = {
+      "twin stop": ["Stop the Isaac twin?",
+        "This stops RobotHost, the bridge and the renderer on the GPU machine, and closes a recording in progress. It can take a few minutes.",
+        "Runs just isaac-stop in the repo.", "Stop the twin"],
+      "watcher stop": ["Stop the LeRobot watcher?",
+        "This stops the watcher and removes its cron keeper too, so nothing starts it again until it is started here or with just lerobot-watch-start. It first finishes the take it is converting (up to 10 minutes).",
+        "Runs just lerobot-watch-stop in the repo.", "Stop the watcher"],
+      "watcher start": ["Start the LeRobot watcher?",
+        "This starts the watcher at the repo's pushed commit and installs its cron keeper, which starts it again after a reboot or a crash.",
+        "Runs just lerobot-watch-start in the repo.", "Start the watcher"],
+      "training pause": ["Pause the training run?",
+        "This freezes the run where it is. Its GPU memory stays held while it is paused. Resume lets it go on.", sig("STOP"), "Pause the run"],
+      "training resume": ["Resume the training run?", "The run goes on from where it was frozen.", sig("CONT"), "Resume the run"],
+      "training stop": ["Stop the training run?",
+        "This ends the run. The run's folder keeps what it wrote.", sig("TERM"), "Stop the run"],
+      "netfetch stop": ["Stop the network datasets fetch?",
+        "This ends the fetch, and the conversion and split that follow it. What was already fetched stays on disk.", sig("TERM"), "Stop the fetch"],
+      "simfit stop": ["Stop the sim fit?", "This ends the fit. Its log stays.", sig("TERM"), "Stop the fit"],
+      "batch pause": ["Pause the safety batch?",
+        "This takes effect after the take in progress: the batch then waits before its next take until it is resumed.",
+        "Writes recordings/.drive/PAUSE in the repo.", "Pause after this take"],
+      "batch resume": ["Resume the safety batch?", "The batch goes on with its next take.",
+        "Removes recordings/.drive/PAUSE in the repo.", "Resume the batch"],
+      "batch stop": ["Stop the safety batch?",
+        "This takes effect after the take in progress: no more takes are recorded, and the dataset is still built from the takes kept so far.",
+        "Writes recordings/.drive/STOP in the repo.", "Stop after this take"],
+    };
+    const s = specs[job.kind + " " + action] || [(LABELS[action] || action) + "?", "", "", LABELS[action] || action];
+    return { title: s[0], job: job.title || job.id, text: s[1], how: s[2], ok: s[3], danger: action === "stop" };
+  }
+
+  function ask(spec) {
+    const d = $("confirm"), ok = $("confirm-ok"), cancel = $("confirm-cancel");
+    $("confirm-title").textContent = spec.title;
+    $("confirm-job").textContent = spec.job;
+    $("confirm-text").textContent = spec.text;
+    $("confirm-how").textContent = spec.how;
+    ok.textContent = spec.ok;
+    ok.className = spec.danger ? "btn danger" : "btn";
+    if (typeof d.showModal !== "function") {
+      return Promise.resolve(window.confirm(spec.title + "\n\n" + spec.job + "\n\n" + spec.text + "\n\n" + spec.how));
+    }
+    return new Promise((resolve) => {
+      const finish = (v) => {
+        ok.onclick = null; cancel.onclick = null; d.oncancel = null;
+        if (d.open) d.close();
+        resolve(v);
+      };
+      ok.onclick = () => finish(true);
+      cancel.onclick = () => finish(false);
+      d.oncancel = (e) => { e.preventDefault(); finish(false); };
+      d.showModal();
+      cancel.focus();
+    });
+  }
+
+  let toastTimer = 0;
+  function toast(message, bad) {
+    const t = $("toast");
+    t.textContent = message;
+    t.dataset.bad = bad ? "1" : "";
+    t.hidden = false;
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => { t.hidden = true; }, 8000);
+  }
+
+  async function act(jobId, action) {
+    const job = findJob(jobId);
+    if (!job || !(job.actions || []).includes(action)) { toast("That is not offered any more.", true); return; }
+    if (!(await ask(confirmSpec(job, action)))) return;
+    try {
+      const r = await fetch("/api/action", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-Token": TOKEN },
+        body: JSON.stringify({ job: jobId, action: action }),
+      });
+      const answer = await r.json().catch(() => ({ ok: false, message: "HTTP " + r.status }));
+      toast(answer.message || (answer.ok ? "started" : "refused"), !answer.ok);
+    } catch (e) {
+      toast("This page's server did not answer: " + ((e && e.message) || e), true);
+    }
+    poll();
+  }
+
+  setInterval(() => render(false), 1000);  // the ages and estimates count on between two answers
+  poll();
+})();
+</script>
+</body>
+</html>

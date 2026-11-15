@@ -3387,6 +3387,28 @@ isaac-backdrops-status:
     set -euo pipefail
     ssh -o ConnectTimeout=10 "{{gpu_host}}" 'cd "$HOME/repos/isaac/robot/isaac" && "$HOME/isaacsim/venv/bin/python" -m teleop_isaac.backdrops status'
 
+# Fetch the rooms around the JetRover twin's table onto the GPU machine, once (docs/adr/0037 decision 2): every indoor HDRI on Poly Haven (CC0, about 300, 2K Radiance, ~2 GB) into ~/isaacsim/assets/hdri/polyhaven-indoor with a manifest of each one's sha256, authors, page and mean luminance (the renderer normalises the dome's brightness by it). Downloads are untrusted data: each is kept only if it comes from dl.polyhaven.org, matches the size and md5 the API gave, and decodes to a 2:1 panorama, under its own sha256. Resumes where it stopped. Runs this commit (it must be on GitHub)
+[group('isaac')]
+isaac-environments-fetch:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    commit=$(just _pushed-commit)
+    ssh -o ConnectTimeout=10 "{{gpu_host}}" "COMMIT='$commit' bash -s" <<'REMOTE'
+    set -euo pipefail
+    repo=$HOME/repos/isaac
+    [ -d "$repo" ] || git clone -q https://github.com/andreitimoshukcollege-del/teleoperation.git "$repo"
+    cd "$repo" && git fetch -q origin && git checkout -q "$COMMIT"
+    mkdir -p "$HOME/logs/isaac"
+    cd robot/isaac && "$HOME/isaacsim/venv/bin/python" -m teleop_isaac.environments fetch 2>&1 | tee "$HOME/logs/isaac/environments-fetch.log" | tail -3
+    REMOTE
+
+# How the HDRI rooms stand on the GPU machine: how many, how big, their licences, their mean luminance's spread, and any whose sha256 no longer matches the manifest (exit 1 then, or with fewer than 2 rooms)
+[group('isaac')]
+isaac-environments-status:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    ssh -o ConnectTimeout=10 "{{gpu_host}}" 'cd "$HOME/repos/isaac/robot/isaac" && "$HOME/isaacsim/venv/bin/python" -m teleop_isaac.environments status'
+
 # The recording, end to end (docs/adr/0032 decision 6), against a running `just isaac-host`: drives the simulated arms from here through seeded joint-space moves (chain-drive, ±amplitude rad, as the headset so RobotHost records it), waits for the session to close (30 s without commands), then checks it on the GPU machine with robot/isaac/verify_session.py: files.sha256 with the frame sidecars, isaac.jlog's trailer and FS lines, the frame count against the duration, every frame stamped with a QS state, depth on the table mat p99 < 3 mm, and each hand's point landing in its mask in >= 95% of the frames where it moved and shows. Prints one RESULT line; exits non-zero if any check fails or has nothing to measure. Simulated arms only
 [group('isaac')]
 isaac-record-check seconds="40" amplitude="0.6" seed="3":

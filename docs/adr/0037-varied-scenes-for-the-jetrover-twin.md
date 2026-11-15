@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed, 2026-11-15.
+Accepted, 2026-11-15 (the user, on starting P1). P1 built 2026-11-15.
 
 ## Context
 
@@ -52,13 +52,21 @@ bridge reports the same sha (WORLD_INFO), and joint-drive and the headset refuse
    - The renderer replaces the backdrop screens with a dome light textured with a Poly Haven indoor HDRI. The same photo
      is both what the cameras see beyond the table and the light that falls on the scene, so background and lighting
      match by construction.
-   - The fixed distant light goes; the physical floor and the table stay.
+   - The fixed distant light goes, and the table stays. The floor stays in the bridge, where it catches a falling object,
+     but the renderer no longer draws it (the scene's `hideSurfaces`), so the room's own floor shows below the table.
    - The room changes when the backdrop does today: at start and after each closed session, and each take is a session.
-     The draw is seeded and recorded (`EN`: HDRI id, seed, licence) in `isaac.jlog` and `isaac/environment.json`, as
-     backdrops are now.
-   - HDRIs are fetched once into `~/isaacsim/assets/hdri/` by a recipe (2K EXR, about 300 rooms, checked and size-capped
-     like the backdrops). Each is stored with its measured mean luminance, so its dome intensity can be normalised and
-     exposure stays comparable across rooms.
+     The draw is seeded (the backdrop's seed) and recorded in `isaac.jlog` (`EN`: change, seed, HDRI id and sha256, yaw,
+     dome intensity, settle frames) and `isaac/environment.json` (every room's attribution), as backdrops are now.
+   - Rooms come in rounds: every room once, in a seeded order, before any comes back. Each is turned by a seeded yaw.
+   - HDRIs are fetched once into `~/isaacsim/assets/hdri/polyhaven-indoor/` by a recipe (2K Radiance `.hdr`: all 301
+     indoor rooms, 1.9 GB, fetched in under 3 minutes on 2026-11-15). Each is kept only if it matches the API's size
+     and md5 and decodes to a 2:1 panorama. It is stored with its measured mean luminance over the sphere, so the dome's
+     intensity is normalised (the scene's `meanRadiance` over it) and exposure stays comparable across rooms, as a
+     camera's auto-exposure would.
+     - The rooms' own mean luminance spans 0.14 to 2.2, a factor of 16.
+     - Normalised, the third-person camera's mean brightness stayed between 112 and 154 (of 255) across five rooms.
+   - A new dome texture shows within a frame or two. After a change, the renderer re-renders the pose, unrecorded, until
+     the image holds still: 5-6 frames, measured. Frames for one render lag more are flagged `B`.
    - The renderer alone does this: no wire or C# change. A photo at infinity has no parallax. If near-field geometry
      turns out to matter, a later phase can add 3D rooms (Isaac's environments, or rooms built from walls, windows and
      furniture).

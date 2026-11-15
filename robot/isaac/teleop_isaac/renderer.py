@@ -252,6 +252,30 @@ METER_RANGE = (0.25, 4.0)  # the metered intensity stays within this factor of t
 METER_GAMMA = 2.2        # an image's brightness goes roughly with radiance to the 1/2.2: the correction undoes that
 
 
+CAMERA_GAIN_RANGE = (0.25, 4.0)  # a camera's own exposure gain, in linear light
+
+
+def camera_gain(brightness: float, target: float) -> float:
+    """A camera's own exposure gain (linear light) that brings its mean brightness from ``brightness`` toward ``target``,
+    within :data:`CAMERA_GAIN_RANGE`: its auto-exposure, locked for the session."""
+    g = (target / max(brightness, 1.0)) ** METER_GAMMA
+    return min(CAMERA_GAIN_RANGE[1], max(CAMERA_GAIN_RANGE[0], g))
+
+
+def exposure_lut(gain: float):
+    """The 256-entry table that applies ``gain`` to an 8-bit sRGB image in linear light (clipping at white), or None for a
+    gain of 1."""
+    import numpy as np
+
+    if abs(gain - 1.0) < 1e-6:
+        return None
+    x = np.arange(256, dtype=np.float64) / 255.0
+    lin = np.where(x <= 0.04045, x / 12.92, ((x + 0.055) / 1.055) ** 2.4) * gain
+    lin = np.clip(lin, 0.0, 1.0)
+    out = np.where(lin <= 0.0031308, lin * 12.92, 1.055 * lin ** (1 / 2.4) - 0.055)
+    return np.clip(np.round(out * 255.0), 0, 255).astype(np.uint8)
+
+
 def metered_intensity(intensity: float, base: float, brightness: float, target: float) -> float:
     """The dome intensity that should bring the metering camera's mean brightness from ``brightness`` to ``target``, as a
     camera's auto-exposure would, kept within :data:`METER_RANGE` of ``base`` (the luminance-normalised intensity)."""
@@ -748,7 +772,8 @@ def run(app, args, p, scene, cameras, fps, joints, motors, tap) -> int:
     # --- backdrops: one seeded pair at start-up and after every recorded session (docs/adr/0032 decision 4) ------------
     backdrop = {"change": -1, "images": {}, "settle_until": -1}  # images: quad id -> manifest entry
     used_this_session = []
-    room = {"hdri": None, "yaw": 0.0, "intensity": 0.0, "base": 0.0, "settle": 0, "trace": [], "brightness": 0.0}
+    room = {"hdri": None, "yaw": 0.0, "intensity": 0.0, "base": 0.0, "settle": 0, "trace": [], "brightness": 0.0, "gains": {}}
+    camera_luts = [None] * len(specs)  # each camera's own exposure, locked per room (docs/adr/0037 decision 2)
     rooms_this_session = []
 
     def change_room() -> bool:
@@ -768,7 +793,8 @@ def run(app, args, p, scene, cameras, fps, joints, motors, tap) -> int:
     def en_fields():
         h = room["hdri"] or {}
         return (time.monotonic_ns(), backdrop["change"], backdrop_seed, h.get("id", ""), h.get("sha256", ""), room["yaw"],
-                room["intensity"], room["settle"], room["brightness"])
+                room["intensity"], room["settle"], room["brightness"],
+                [[c["id"], room["gains"].get(c["id"], 1.0)] for c in specs])
 
     def change_backdrop(frame_now: int) -> None:
         backdrop["change"] += 1
@@ -942,10 +968,23 @@ def run(app, args, p, scene, cameras, fps, joints, motors, tap) -> int:
             ok = until_settled()
         room["settle"] = len(trace)
         room["brightness"] = trace[-1] if trace else 0.0
+        # Every other camera meters its own image, as its own auto-exposure would, and keeps that gain for the session (the
+        # arm is at rest between takes, so a wrist camera meters its rest view). The still camera the dome was set by keeps 1.
+        room["gains"] = {}
+        for i, (_, sensor) in enumerate(sensors):
+            camera_luts[i] = None
+            if i == lag_i or target is None:
+                continue
+            rgb, _ = read(sensor, "rgb")
+            if rgb is None:
+                continue
+            g = round(camera_gain(float(np.asarray(rgb[::8, ::8, :3], np.float32).mean()), target), 3)
+            room["gains"][specs[i]["id"]] = g
+            camera_luts[i] = exposure_lut(g)
         h = room["hdri"] or {}
         print(f"[render] room {h.get('id')} (yaw {room['yaw']:.0f} deg, dome {room['base']:.0f} -> {room['intensity']:.0f} in "
               f"{len(steps)} metering step(s)): {'settled' if ok else 'NOT settled'} after {len(trace)} frames at brightness "
-              f"{room['brightness']}", flush=True)
+              f"{room['brightness']}; camera gains {room['gains']}", flush=True)
 
     change_backdrop(0)
     posed_values = {}  # the joint values the links were posed with at the previous frame
@@ -1037,6 +1076,8 @@ def run(app, args, p, scene, cameras, fps, joints, motors, tap) -> int:
                     session_record("FD", time.monotonic_ns(), frames, f"{c['id']}-no-image")
                 continue
             rgb = np.ascontiguousarray(rgb[..., :3])
+            if camera_luts[i] is not None:
+                rgb = camera_luts[i][rgb]
             if send:
                 with pending_lock:
                     behind = pending[i] >= 2

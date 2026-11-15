@@ -253,3 +253,21 @@ def test_the_meter_corrects_the_dome_toward_the_target_within_its_range():
     assert metered_intensity(3000.0, 1000.0, 1.0, 118.0) == pytest.approx(1000.0 * METER_RANGE[1])
     assert metered_intensity(300.0, 1000.0, 255.0, 10.0) == pytest.approx(1000.0 * METER_RANGE[0])
     assert metered_intensity(1000.0, 1000.0, 0.0, 118.0) == pytest.approx(1000.0 * METER_RANGE[1])
+
+
+def test_a_cameras_own_exposure_is_a_gain_in_linear_light_within_its_range():
+    import numpy as np
+    from teleop_isaac.renderer import CAMERA_GAIN_RANGE, camera_gain, exposure_lut
+    assert camera_gain(118.0, 118.0) == pytest.approx(1.0)
+    assert camera_gain(59.0, 118.0) == pytest.approx(CAMERA_GAIN_RANGE[1])   # 2^2.2 > 4: as far as it goes
+    assert camera_gain(177.0, 118.0) == pytest.approx((118 / 177) ** 2.2)
+    assert camera_gain(0.0, 118.0) == pytest.approx(CAMERA_GAIN_RANGE[1])    # a black frame never divides by zero
+    assert exposure_lut(1.0) is None
+    up, down = exposure_lut(2.0), exposure_lut(0.5)
+    assert up.dtype == np.uint8 and len(up) == 256
+    assert (np.diff(up.astype(int)) >= 0).all() and (np.diff(down.astype(int)) >= 0).all()  # never reorders tones
+    assert up[0] == 0 and up[255] == 255 and down[0] == 0
+    # Double the light: mid-grey 118 (linear 0.181) becomes linear 0.362, sRGB ~161; half: linear 0.090, sRGB ~85.
+    assert abs(int(up[118]) - 161) <= 1 and abs(int(down[118]) - 85) <= 1
+    img = np.array([[[118, 0, 255]]], np.uint8)
+    assert up[img].tolist() == [[[up[118], 0, 255]]]

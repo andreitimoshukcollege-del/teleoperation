@@ -109,6 +109,8 @@ just isaac-edit-check                # against isaac-host fr3-duo-bench 7: heads
   - The dome's intensity starts at the scene's `meanRadiance` over the room's mean luminance (the rooms' own brightness
     spans 16x). That alone left a white studio twice as bright in the image as a dim store, so the renderer then meters
     the first still camera's image and corrects the dome toward `targetBrightness`, as a camera's auto-exposure would.
+    Each other camera (the wrist's) then meters its own image and keeps that gain for the session: the dome sets the
+    light, each camera its own exposure.
   - After a change the renderer re-renders the pose, unrecorded, until the image holds still (5-7 frames on the 5090),
     and again after each metering step.
   - The floor is not drawn (the room's own floor shows); it still catches a falling object in the bridge.

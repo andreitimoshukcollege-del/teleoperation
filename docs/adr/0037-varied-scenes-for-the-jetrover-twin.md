@@ -68,7 +68,12 @@ bridge reports the same sha (WORLD_INFO), and joint-drive and the headset refuse
        studio is bright in the image whatever light it gives.
      - So the renderer also **meters**, as a camera's auto-exposure does. Once a room has settled, it reads the first still
        camera's mean brightness and corrects the dome toward the scene's `targetBrightness` (118). That is at most 3
-       steps, within 0.25-4x of the normalised intensity, and all before the session records.
+       steps, within 0.25-4x of the normalised intensity, and all before the session records. Over ten rooms that held
+       the third-person camera between 115 and 130.
+     - The wrist camera still ranged from 46 to 175: in a cave, the room beyond the table is bright and the table under
+       it is dim. So every other camera also meters its own image when the room changes (the arm at rest between takes)
+       and keeps that gain for the session, like a camera with its own auto-exposure locked per take. The gain is applied
+       to its 8-bit colour in linear light, within 0.25-4x, and recorded in `EN`.
    - A new dome texture shows within a frame or two. After a change, the renderer re-renders the pose, unrecorded, until
      the image holds still: 5-6 frames, measured. Frames for one render lag more are flagged `B`.
    - The renderer alone does this: no wire or C# change. A photo at infinity has no parallax. If near-field geometry

@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted, 2026-11-15 (the user, on starting P1). P1 built 2026-11-15; P2 built 2026-11-15 (amendment 1).
+Accepted, 2026-11-15 (the user, on starting P1). P1 built 2026-11-15; P2 built 2026-11-15 (amendments 1 and 2); P3 built 2026-11-15 (amendment 3).
 
 ## Context
 
@@ -232,3 +232,25 @@ The user asked for random sizes per take.
   The backend takes these in order, so the table is empty while it is filled and no placement meets a stale object.
   RobotHost still refuses a resize of a parked object from the headset.
 - **Recorded as before.** `WZ` holds the sizes, and the headset scales its twin from the SIZES message.
+
+## Amendment 3 (2026-11-15): P3 as built, real YCB objects
+
+- **Assets.** `teleop_isaac.ycb` (`just isaac-ycb-fetch`) fetched all 21 objects NVIDIA converts into
+  `~/isaacsim/assets/ycb/`, each USD with its one colour texture, checked and recorded by sha256.
+  - The assets are axis-aligned but not consistently upright: the cans and the mug are tall along their y, the boxes and
+    tools along z. The fetch table names each one's up, and the manifest records the rotation that stands it so, with its
+    size and box centre in that standing frame.
+  - Masses are YCB's published ones. Friction is by material, typical dry values that were not measured.
+- **The `mesh` shape.** A scene object with `"shape": "mesh"` names its `asset` (`ycb/025_mug`); its `size` is its standing
+  box.
+  - **In Isaac:** the asset is referenced under the body, rotated and centred, with a convex decomposition collider per mesh
+    and the object's own friction bound above the asset's render material.
+  - **Everywhere else:** footprints, the headset's twin (a box in the entry's colour) and joint-drive's plans use the box.
+  - **No resizing:** a real object has no resize bodies and layouts never resize it. Real objects keep their real size.
+- **The pool.** `jetrover-bench` swaps eight primitives for the eight YCB objects within about 12 cm, ids 31-38:
+  - tomato soup can (349 g), tuna can (171 g), pudding box (187 g), gelatin box (97 g);
+  - potted meat can (370 g), mug (118 g), the large marker standing on its end (16 g), foam brick (28 g).
+
+  The pool is still 24: 8 primitives that layouts resize, 8 real objects and 8 fixed walls. Larger YCB objects (the cracker
+  and sugar boxes, the bottles, the drill) are fetched but not in the pool: they are beyond the user's 12 cm.
+- **On the twin, an 8-take batch:** all 8 kept. `collide_with_obstacle` knocked over the YCB marker and the foam brick.

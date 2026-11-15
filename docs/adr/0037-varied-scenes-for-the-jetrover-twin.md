@@ -201,5 +201,12 @@ bridge reports the same sha (WORLD_INFO), and joint-drive and the headset refuse
   - WorldHost over StaticWorld (parking, records, reset, headset refusals, redraw-then-park);
   - the bridge's model and wire;
   - the safety scripts, which still plan on at least 80% of 16 pool layouts per category.
+- **The shelf floats what rests on it.** Parked cylinders tipped on the flat shelf, rolled off its edge and fell for good.
+  One was found 1.9 km down, so joint-drive never saw the world at rest. A body put on the shelf (parked, or a size not in
+  use) now has gravity off and no velocity; one brought back has gravity again.
+- **On the twin (2026-11-15, an 8-take batch):** layouts of 4 to 7 objects. 6 takes were kept, 1 set aside and 1 not
+  planned. The objects touched were the big block, the wedge and the wide can, where the old bench only ever had the post
+  and the wall touched. The take set aside was `collide_with_obstacle` pushing the 140 g big block 2.6 cm without tipping
+  it: what can be knocked over is P4's to measure.
 - **Still for the user:** the headset's world twin is baked in the editor (`just unity-xr-jetrover-world`) and must be
   rebaked for the new objects, then the Galaxy app rebuilt.

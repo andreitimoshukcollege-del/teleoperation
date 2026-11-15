@@ -382,8 +382,30 @@ class IsaacWorld:
 
         self._bodies = RigidPrim(self.body_paths)
         self._query = omni.physx.get_physx_scene_query_interface()
+        # Whatever rests on the shelf floats there: a body with gravity, upright on a flat, tips and rolls over its edge
+        # (measured 2026-11-15: parked cylinders fell for good, so the world never came to rest).
+        self._float([b for b in range(len(self.body_paths)) if b not in self.active], True)
+        self._float([self.active[i] for i, p in enumerate(self.model.parked) if p], True)
         if self._contact_report:
             self._physx_sim = omni.physx.get_physx_simulation_interface()
+
+    def _float(self, bodies: Sequence[int], on_shelf: bool) -> None:
+        """Gravity off and at rest for bodies put on the shelf, gravity on for bodies brought back; movable ones only (a fixed
+        object is kinematic, and PhysX refuses its velocities)."""
+        import numpy as np
+
+        movable = [b for b in bodies if self.model.scene.objects[self._object_of(b)].movable]
+        if not movable:
+            return
+        self._bodies.set_enabled_gravities([not on_shelf], indices=movable)
+        if on_shelf:
+            self._bodies.set_velocities(np.zeros((len(movable), 3)), np.zeros((len(movable), 3)), indices=movable)
+
+    def _object_of(self, body: int) -> int:
+        for i, slots in enumerate(self.slots):
+            if body in slots.values():
+                return i
+        raise KeyError(body)
 
     # --- the arm's contacts with the objects (docs/adr/0036 amendment 1) ---------------------------------------------
 
@@ -489,11 +511,13 @@ class IsaacWorld:
             k = next(kk for kk, slot in self.slots[i].items() if slot == self.active[i])
             shelf = self.parked(i, k)
             self._bodies.set_world_poses(positions=np.array([shelf[:3]]), orientations=np.array([shelf[3:]]), indices=[self.active[i]])
-            self._bodies.set_velocities(np.zeros((1, 3)), np.zeros((1, 3)), indices=[self.active[i]])
+            self._float([self.active[i]], True)
             self.model.park(i, shelf)
             if self.contact_tracker is not None:
                 self.contact_tracker.forget(object_id)
         elif outcome == wire.APPLIED:
+            if self.model.parked[i]:
+                self._float([self.active[i]], False)  # back from the shelf: it falls and can be knocked over again
             self._bodies.set_world_poses(positions=np.array([upright[:3]]), orientations=np.array([upright[3:]]), indices=[self.active[i]])
             if self.model.scene.objects[i].movable:  # stood up and at rest, wherever it had rolled or fallen
                 self._bodies.set_velocities(np.zeros((1, 3)), np.zeros((1, 3)), indices=[self.active[i]])
@@ -544,6 +568,8 @@ class IsaacWorld:
                     self._bodies.set_world_poses(positions=np.array([parked[:3], upright[:3]]),
                                                  orientations=np.array([parked[3:], upright[3:]]), indices=[old, new])
                     self._bodies.set_velocities(np.zeros((2, 3)), np.zeros((2, 3)), indices=[old, new])
+                    self._float([old], True)
+                    self._float([new], False)
                     if self.contact_tracker is not None:  # both bodies teleported
                         self.contact_tracker.forget(object_id)
                 self.active[i] = new

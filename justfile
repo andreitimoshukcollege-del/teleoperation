@@ -3179,6 +3179,11 @@ gpu-finetune bundle split config init out:
     sleep 15; tail -5 "$log"
     REMOTE
 
+# The GPU machine at a glance (robot/gpu): a page in your browser of what runs in our account there (the twin, the LeRobot watcher, a training run, a safety batch and its dataset build, the network datasets' fetch, a sim fit), how far along each is and about how long is left, with buttons that stop what can be stopped and pause what can be paused, each asking first. Local only (127.0.0.1:<port>); it asks the machine over ssh every few seconds and runs nothing but its fixed actions. Ctrl+C stops it
+[group('gpu')]
+gpu-ui port="8765":
+    python3 robot/gpu/dashboard.py --host "{{gpu_host}}" --port {{port}} --repo "{{justfile_directory()}}" --open
+
 # The GPU machine's run -- touches nothing: whether ours is still going, the GPU, and the end of its log
 [group('trainer')]
 gpu-status config="sim-pretrain-pilot1" lines="8":
@@ -3753,7 +3758,7 @@ isaac-jetrover-drive-batch hours="2" minutes="5" seed="1":
     done
     echo "[batch] $n session(s) recorded"
 
-# The labmate's safety dataset from the JetRover twin, unattended (docs/adr/0036 amendment 1): `takes` rounds of the four categories (reach_no_obstacle, stop_before_collision, collide_and_recover, collide_with_obstacle) in a seeded order, each take one `joint-drive --script <category> --new-layout --take <category>` (a fresh layout, the arm driven relative to where the objects are), checked against its category by its physics contacts (teleop_lerobot safety-check: a take that fails is set aside to _discarded/<category>/ with its reason), then the kept takes written as one dataset in his label format at ~/data/lerobot/jetrover-isaac-safety/jetrover_<UTC>_<id>/ (front = the wrist camera; manual_safety_labels.json, meta/safety_labels.parquet, safety_events.jsonl). Needs `just isaac-jetrover-host jetrover-bench` running this commit (its bridge reports the contacts) and the LeRobot environment (just lerobot-setup). Stops after 5 takes in a row that could not be planned, or when recordings/.drive/STOP exists. Only Isaac's arm moves
+# The labmate's safety dataset from the JetRover twin, unattended (docs/adr/0036 amendment 1): `takes` rounds of the four categories (reach_no_obstacle, stop_before_collision, collide_and_recover, collide_with_obstacle) in a seeded order, each take one `joint-drive --script <category> --new-layout --take <category>` (a fresh layout, the arm driven relative to where the objects are), checked against its category by its physics contacts (teleop_lerobot safety-check: a take that fails is set aside to _discarded/<category>/ with its reason), then the kept takes written as one dataset in his label format at ~/data/lerobot/jetrover-isaac-safety/jetrover_<UTC>_<id>/ (front = the wrist camera; manual_safety_labels.json, meta/safety_labels.parquet, safety_events.jsonl). Needs `just isaac-jetrover-host jetrover-bench` running this commit (its bridge reports the contacts) and the LeRobot environment (just lerobot-setup). Stops after 5 takes in a row that could not be planned, or when recordings/.drive/STOP exists (after the take in progress); waits between takes while recordings/.drive/PAUSE exists. Writes its progress to recordings/.drive/safety-batch.json for `just gpu-ui`, which shows it and makes those two files. Only Isaac's arm moves
 [group('isaac')]
 isaac-safety-batch takes="25" seed="1":
     #!/usr/bin/env bash
@@ -3782,7 +3787,13 @@ isaac-safety-batch takes="25" seed="1":
     echo "[safety] checker at $(git log --oneline -1 | cut -c1-60); twin at ${twin:0:7}"
     REMOTE
     (cd core && dotnet build Teleop.Eval -nologo -v q > /dev/null)
-    mkdir -p recordings/.drive && rm -f recordings/.drive/STOP
+    # The batch's progress for just gpu-ui (robot/gpu), rewritten whole at each step: progress <takes done> <phase> [dataset].
+    progress() {
+        printf '{"recipe":"isaac-safety-batch","pid":%d,"name":"%s","total":%d,"take":%d,"kept":%d,"setAside":%d,"unplanned":%d,"unchecked":%d,"started":%d,"updated":%d,"phase":"%s","dataset":%s}\n' \
+            $$ "$name" "$total" "$1" "${#kept[@]}" "$setaside" "$unplanned" "$unchecked" "$started" "$(date +%s)" "$2" "${3:-null}" \
+            > recordings/.drive/safety-batch.json.tmp && mv recordings/.drive/safety-batch.json.tmp recordings/.drive/safety-batch.json
+    }
+    mkdir -p recordings/.drive && rm -f recordings/.drive/STOP recordings/.drive/PAUSE
     name="jetrover_$(date -u +%Y%m%d_%H%M%S)_$(printf '%06x' $(( (RANDOM << 15 | RANDOM) & 0xFFFFFF )))"
     # The plan: each round the four categories in a seeded order, each take its own seed and the free movement's speed.
     plan=$(python3 - {{takes}} {{seed}} <<'PY'
@@ -3798,8 +3809,17 @@ isaac-safety-batch takes="25" seed="1":
             print(c, r.choice([1.5, 2.5, 3.8]), seed * 100000 + n)
     PY
     )
-    kept=() setaside=0 unplanned=0 consecutive=0 n=0
+    kept=() setaside=0 unplanned=0 consecutive=0 n=0 unchecked=0 paused=0
+    started=$(date +%s) total=$(( {{takes}} * 4 ))
     while read -r cat speed sseed; do
+        # just gpu-ui's pause: wait here, between takes, while recordings/.drive/PAUSE exists (STOP still stops).
+        while [ -e recordings/.drive/PAUSE ] && [ ! -e recordings/.drive/STOP ]; do
+            [ "$paused" = 1 ] || { echo "[safety] paused before take $((n + 1)): delete recordings/.drive/PAUSE to go on"; progress "$n" paused; paused=1; }
+            sleep 2
+        done
+        if [ -e recordings/.drive/STOP ]; then rm -f recordings/.drive/STOP recordings/.drive/PAUSE; echo "[safety] STOP file: stopping before take $((n + 1))"; break; fi
+        paused=0
+        progress "$n" takes
         n=$((n + 1))
         # ssh -n in the loop: a plain ssh would read the plan from the loop's standard input and end it.
         before=$(ssh -n -o ConnectTimeout=10 "$gpu" "ls ~/data/takes/jetrover-isaac/$cat 2>/dev/null | grep -- '-take' | sort | tail -1" || true)
@@ -3825,7 +3845,7 @@ isaac-safety-batch takes="25" seed="1":
     done
     exit 1
     REMOTE
-        ) || { echo "[safety] take $n: RobotHost did not complete a new $cat take in 2 min" >&2; continue; }
+        ) || { echo "[safety] take $n: RobotHost did not complete a new $cat take in 2 min" >&2; unchecked=$((unchecked + 1)); continue; }
         # Asked again once if no verdict comes back (2026-11-15: one check returned nothing, the take was fine when run again).
         for attempt in 1 2; do
             verdict=$(ssh -n -o ConnectTimeout=10 "$gpu" "cd ~/repos/safety/robot/lerobot && ~/isaacsim/lerobot-venv/bin/python -m teleop_lerobot safety-check --set-aside '$take'" || true)
@@ -3853,11 +3873,13 @@ isaac-safety-batch takes="25" seed="1":
         if [ -e recordings/.drive/STOP ]; then rm -f recordings/.drive/STOP; echo "[safety] STOP file: stopping after take $n"; break; fi
     done <<< "$plan"
     echo "[safety] $n take(s): ${#kept[@]} kept, $setaside set aside, $unplanned not planned"
-    [ "${#kept[@]}" -gt 0 ] || { echo "[safety] nothing kept: no dataset written" >&2; exit 1; }
+    [ "${#kept[@]}" -gt 0 ] || { echo "[safety] nothing kept: no dataset written" >&2; progress "$n" failed; exit 1; }
+    progress "$n" building
     # A build that fails is retried once into a fresh folder, a failed one set aside, and every attempt's full log kept there.
     # (The one failure seen, 2026-11-15, was the LeRobot watcher deleting the half-written dataset, since fixed: it leaves the
     # *-safety groups alone.)
-    ssh -o ConnectTimeout=10 "$gpu" "NAME='$name' bash -s $(printf "'%s' " "${kept[@]}")" <<'REMOTE'
+    build=0
+    ssh -o ConnectTimeout=10 "$gpu" "NAME='$name' bash -s $(printf "'%s' " "${kept[@]}")" <<'REMOTE' || build=$?
     set -uo pipefail
     out=$HOME/data/lerobot/jetrover-isaac-safety; mkdir -p "$out"
     cd "$HOME/repos/safety/robot/lerobot"
@@ -3874,6 +3896,7 @@ isaac-safety-batch takes="25" seed="1":
     done
     exit 1
     REMOTE
+    if [ "$build" = 0 ]; then progress "$n" done "\"~/data/lerobot/jetrover-isaac-safety/$name\""; else progress "$n" failed; exit 1; fi
 
 # Build the LeRobot converter's environment on the GPU machine (docs/adr/0036), once and after robot/lerobot/requirements.txt changes: ~/isaacsim/lerobot-venv (Python 3.12) with that lerobot version, and pytest for just lerobot-test. Runs the pushed commit
 [group('lerobot')]

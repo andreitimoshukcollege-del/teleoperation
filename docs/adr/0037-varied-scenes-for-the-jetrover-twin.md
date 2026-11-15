@@ -61,10 +61,14 @@ bridge reports the same sha (WORLD_INFO), and joint-drive and the headset refuse
    - HDRIs are fetched once into `~/isaacsim/assets/hdri/polyhaven-indoor/` by a recipe (2K Radiance `.hdr`: all 301
      indoor rooms, 1.9 GB, fetched in under 3 minutes on 2026-11-15). Each is kept only if it matches the API's size
      and md5 and decodes to a 2:1 panorama. It is stored with its measured mean luminance over the sphere, so the dome's
-     intensity is normalised (the scene's `meanRadiance` over it) and exposure stays comparable across rooms, as a
-     camera's auto-exposure would.
+     intensity starts normalised (the scene's `meanRadiance` over it).
      - The rooms' own mean luminance spans 0.14 to 2.2, a factor of 16.
-     - Normalised, the third-person camera's mean brightness stayed between 112 and 154 (of 255) across five rooms.
+     - Normalised, the third-person camera's mean brightness stayed between 112 and 154 (of 255) across five rooms, but
+       between 91 and 185 across the seven takes of the first batch, and the wrist camera's between 74 and 206: a white
+       studio is bright in the image whatever light it gives.
+     - So the renderer also **meters**, as a camera's auto-exposure does. Once a room has settled, it reads the first still
+       camera's mean brightness and corrects the dome toward the scene's `targetBrightness` (118). That is at most 3
+       steps, within 0.25-4x of the normalised intensity, and all before the session records.
    - A new dome texture shows within a frame or two. After a change, the renderer re-renders the pose, unrecorded, until
      the image holds still: 5-6 frames, measured. Frames for one render lag more are flagged `B`.
    - The renderer alone does this: no wire or C# change. A photo at infinity has no parallax. If near-field geometry

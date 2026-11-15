@@ -226,7 +226,8 @@ def test_an_environment_must_name_a_dome_light_a_brightness_and_real_surfaces():
     s = _jetrover_bench()
     for change, word in (({"kind": "box"}, "kind"), ({"dome": "sun"}, "dome"), ({"meanRadiance": 0}, "meanRadiance"),
                          ({"yawDeg": [10, 5]}, "yawDeg"), ({"rotateXYZDeg": [0, 0]}, "rotateXYZDeg"),
-                         ({"hideSurfaces": ["ceiling"]}, "ceiling"), ({"change": "per-frame"}, "change")):
+                         ({"hideSurfaces": ["ceiling"]}, "ceiling"), ({"change": "per-frame"}, "change"),
+                         ({"targetBrightness": 300}, "targetBrightness")):
         t = dataclasses.replace(s, extra=dict(s.extra, environment=dict(s.extra["environment"], **change)))
         with pytest.raises(ValueError, match=word):
             environment_spec(t)
@@ -240,3 +241,15 @@ def test_a_room_has_settled_once_the_brightness_holds_still_past_the_render_lag(
     assert settled([198.1, 140.9, 141.45, 141.61, 141.71, 141.77], at_least=5)  # measured on the 5090, 2026-11-15
     assert not settled([100.0, 100.0, 100.0, 100.0, 130.0], at_least=3)        # the new room has only just shown
     assert settled([100.0, 130.0, 130.1, 130.1, 130.2], at_least=3)
+
+
+def test_the_meter_corrects_the_dome_toward_the_target_within_its_range():
+    from teleop_isaac.renderer import METER_RANGE, metered_intensity
+    # 1.5x too bright: the dome drops by 1.5^2.2, as an image's brightness goes with radiance^(1/2.2).
+    assert metered_intensity(1000.0, 1000.0, 177.0, 118.0) == pytest.approx(1000.0 / 1.5 ** 2.2)
+    assert metered_intensity(1000.0, 1000.0, 118.0 / 1.5, 118.0) == pytest.approx(1000.0 * 1.5 ** 2.2)
+    assert metered_intensity(1000.0, 1000.0, 118.0, 118.0) == pytest.approx(1000.0)
+    # Never past METER_RANGE of the luminance-normalised intensity, however dark the image (a black frame included).
+    assert metered_intensity(3000.0, 1000.0, 1.0, 118.0) == pytest.approx(1000.0 * METER_RANGE[1])
+    assert metered_intensity(300.0, 1000.0, 255.0, 10.0) == pytest.approx(1000.0 * METER_RANGE[0])
+    assert metered_intensity(1000.0, 1000.0, 0.0, 118.0) == pytest.approx(1000.0 * METER_RANGE[1])

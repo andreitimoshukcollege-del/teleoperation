@@ -239,8 +239,25 @@ def environment_spec(scene) -> Optional[Dict]:
             raise ValueError(f"environment hides {sid!r}, which is not a surface of the scene")
     if spec.get("change", "per-session") != "per-session":
         raise ValueError("environment change: only 'per-session'")
+    target = spec.get("targetBrightness")
+    if target is not None and not 0 < float(target) < 255:
+        raise ValueError("environment targetBrightness is between 0 and 255")
     return {"dome": dome, "manifest": str(spec.get("manifest", "")), "meanRadiance": radiance, "yawDeg": yaw,
-            "rotateXYZDeg": rot, "hideSurfaces": hide}
+            "rotateXYZDeg": rot, "hideSurfaces": hide, "targetBrightness": None if target is None else float(target)}
+
+
+METER_STEPS = 3          # at most this many exposure corrections after a room change
+METER_TOLERANCE = 6.0    # close enough to the target brightness (0-255)
+METER_RANGE = (0.25, 4.0)  # the metered intensity stays within this factor of the luminance-normalised one
+METER_GAMMA = 2.2        # an image's brightness goes roughly with radiance to the 1/2.2: the correction undoes that
+
+
+def metered_intensity(intensity: float, base: float, brightness: float, target: float) -> float:
+    """The dome intensity that should bring the metering camera's mean brightness from ``brightness`` to ``target``, as a
+    camera's auto-exposure would, kept within :data:`METER_RANGE` of ``base`` (the luminance-normalised intensity)."""
+    factor = (target / max(brightness, 1.0)) ** METER_GAMMA
+    lo, hi = base * METER_RANGE[0], base * METER_RANGE[1]
+    return min(hi, max(lo, intensity * factor))
 
 
 def settled(trace: Sequence[float], at_least: int, still: int = 3, tolerance: float = 0.25) -> bool:
@@ -731,7 +748,7 @@ def run(app, args, p, scene, cameras, fps, joints, motors, tap) -> int:
     # --- backdrops: one seeded pair at start-up and after every recorded session (docs/adr/0032 decision 4) ------------
     backdrop = {"change": -1, "images": {}, "settle_until": -1}  # images: quad id -> manifest entry
     used_this_session = []
-    room = {"hdri": None, "yaw": 0.0, "intensity": 0.0, "settle": 0, "trace": []}
+    room = {"hdri": None, "yaw": 0.0, "intensity": 0.0, "base": 0.0, "settle": 0, "trace": [], "brightness": 0.0}
     rooms_this_session = []
 
     def change_room() -> bool:
@@ -744,14 +761,14 @@ def run(app, args, p, scene, cameras, fps, joints, motors, tap) -> int:
         env_dome.GetIntensityAttr().Set(intensity)
         rx, ry, rz = env["rotateXYZDeg"]
         env_rotate.Set(Gf.Vec3f(rx, ry, rz + yaw))
-        room.update(hdri=hdri, yaw=yaw, intensity=round(intensity, 3), settle=0, trace=[])
+        room.update(hdri=hdri, yaw=yaw, intensity=round(intensity, 3), base=intensity, settle=0, trace=[], brightness=0.0)
         rooms_this_session.append(hdri)
         return True
 
     def en_fields():
         h = room["hdri"] or {}
         return (time.monotonic_ns(), backdrop["change"], backdrop_seed, h.get("id", ""), h.get("sha256", ""), room["yaw"],
-                room["intensity"], room["settle"])
+                room["intensity"], room["settle"], room["brightness"])
 
     def change_backdrop(frame_now: int) -> None:
         backdrop["change"] += 1
@@ -896,19 +913,39 @@ def run(app, args, p, scene, cameras, fps, joints, motors, tap) -> int:
         frames right after a change can still show the old room or none (measured on the 5090, docs/adr/0037). Every
         render is stamped as posed, so the lag's frame association holds. Between sessions, so nothing recorded waits."""
         trace = room["trace"]
-        for _ in range(max(0, args.environment_settle_max)):
-            stamps.posed(state_sensed)
-            frame_values.append(state_values)
-            render_frame()
-            rgb, _ = read(sensors[lag_i][1], "rgb")
-            if rgb is not None:
-                trace.append(round(float(np.asarray(rgb[::8, ::8, :3], np.float32).mean()), 2))
-            if settled(trace, at_least=lag + 3):
-                break
+
+        def until_settled():
+            start = len(trace)
+            for _ in range(max(0, args.environment_settle_max)):
+                stamps.posed(state_sensed)
+                frame_values.append(state_values)
+                render_frame()
+                rgb, _ = read(sensors[lag_i][1], "rgb")
+                if rgb is not None:
+                    trace.append(round(float(np.asarray(rgb[::8, ::8, :3], np.float32).mean()), 2))
+                if settled(trace[start:], at_least=lag + 3):
+                    return True
+            return False
+
+        ok = until_settled()
+        steps = []
+        target = env["targetBrightness"]
+        # The camera's auto-exposure (docs/adr/0037 decision 2): meter the still camera's image, set the dome toward the
+        # target, settle again; a few steps at most, and within METER_RANGE of the luminance-normalised intensity.
+        while ok and target is not None and trace and abs(trace[-1] - target) > METER_TOLERANCE and len(steps) < METER_STEPS:
+            new = metered_intensity(room["intensity"], room["base"], trace[-1], target)
+            if abs(new - room["intensity"]) < 1e-3 * room["intensity"]:
+                break  # at the edge of the range
+            steps.append(round(new))
+            room["intensity"] = round(new, 3)
+            env_dome.GetIntensityAttr().Set(new)
+            ok = until_settled()
         room["settle"] = len(trace)
+        room["brightness"] = trace[-1] if trace else 0.0
         h = room["hdri"] or {}
-        print(f"[render] room {h.get('id')} (yaw {room['yaw']:.0f} deg, dome {room['intensity']:.0f}): "
-              f"{'settled' if settled(trace, lag + 3) else 'NOT settled'} after {len(trace)} frames; brightness {trace}", flush=True)
+        print(f"[render] room {h.get('id')} (yaw {room['yaw']:.0f} deg, dome {room['base']:.0f} -> {room['intensity']:.0f} in "
+              f"{len(steps)} metering step(s)): {'settled' if ok else 'NOT settled'} after {len(trace)} frames at brightness "
+              f"{room['brightness']}", flush=True)
 
     change_backdrop(0)
     posed_values = {}  # the joint values the links were posed with at the previous frame

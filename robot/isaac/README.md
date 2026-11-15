@@ -106,10 +106,11 @@ just isaac-edit-check                # against isaac-host fr3-duo-bench 7: heads
 
   - The room is `environments.pick(hdris, seed, change)`, at the same changes as the backdrop: every room once before any
     comes back, turned by a random yaw.
-  - The dome's intensity is the scene's `meanRadiance` over the room's mean luminance, as a camera's auto-exposure would
-    have it. The rooms' own brightness spans 16x; normalised, a third-person camera's mean brightness stays within ±15%
-    (measured 2026-11-15).
-  - After a change the renderer re-renders the pose, unrecorded, until the image holds still: 5-6 frames on the 5090.
+  - The dome's intensity starts at the scene's `meanRadiance` over the room's mean luminance (the rooms' own brightness
+    spans 16x). That alone left a white studio twice as bright in the image as a dim store, so the renderer then meters
+    the first still camera's image and corrects the dome toward `targetBrightness`, as a camera's auto-exposure would.
+  - After a change the renderer re-renders the pose, unrecorded, until the image holds still (5-7 frames on the 5090),
+    and again after each metering step.
   - The floor is not drawn (the room's own floor shows); it still catches a falling object in the bridge.
   - Each session records `EN` and `isaac/environment.json`, the attribution of every room shown.
   - Without rooms, the dome is plain.

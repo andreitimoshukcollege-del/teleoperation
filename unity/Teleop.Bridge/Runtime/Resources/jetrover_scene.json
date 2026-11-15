@@ -28,7 +28,7 @@
   "placement": { "xMin": 0.12, "xMax": 0.44, "yMin": -0.24, "yMax": 0.24, "clearance": 0.01 },
   "environment": { "kind": "hdri", "dome": "dome", "change": "per-session",
     "manifest": "~/isaacsim/assets/hdri/polyhaven-indoor/manifest.json",
-    "meanRadiance": 1000, "yawDeg": [0, 360], "rotateXYZDeg": [0, 0, 0], "hideSurfaces": ["floor"] },
+    "meanRadiance": 1000, "targetBrightness": 118, "yawDeg": [0, 360], "rotateXYZDeg": [0, 0, 0], "hideSurfaces": ["floor"] },
   "cameras": [
     { "id": "third-left", "position": [1.15, 0.68, 0.40], "lookAt": [0.08, 0.0, 0.07], "width": 640, "height": 360, "hfovDeg": 69.0,
       "near": 0.02, "far": 6.0, "fps": 30, "feedPort": 6008, "feedQuality": 80, "recordQuality": 92, "record": ["rgb", "depth", "mask"] },

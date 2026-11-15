@@ -75,9 +75,14 @@ namespace Teleop.Eval.Tests.JointDrive
             DrivePlan plan = Plan(DriveScript.CollideAndRecover);
             ArmPose[] poses = Poses(plan).ToArray();
             int touching = poses.Count(p => Within(p, Bench, 0f));
-            Assert.InRange(touching * 0.01, 0.05, 2.0); // a touch, not a push
-            // Never deep: at most TouchDepthMeters past the model's first touch (each box only shrunk to 1 mm short of its middle).
-            Assert.DoesNotContain(poses, p => Within(p, Bench, -(SafetyScript.TouchDepthMeters + 0.003f)));
+            // A touch, not a push: easing in, a moment held, easing out (by the model's boxes, ~15 mm larger than Isaac's links).
+            Assert.InRange(touching * 0.01, 0.05, 3.0);
+            // Never deep: each object at most 2 mm past its own touch depth (TouchDepthMeters, kept 3 mm short of its middle).
+            foreach (SafetyObject o in Bench)
+            {
+                float limit = SafetyScript.TouchTarget(o, SafetyScript.TouchDepthMeters) + 0.002f;
+                Assert.DoesNotContain(poses, p => Within(p, new[] { o }, -limit));
+            }
             Assert.False(Within(poses[^1], Bench, 0f));
         }
 
@@ -85,7 +90,7 @@ namespace Teleop.Eval.Tests.JointDrive
         public void CollideWithObstacle_DrivesDeepIntoTheObject()
         {
             DrivePlan plan = Plan(DriveScript.CollideWithObstacle);
-            Assert.Contains(Poses(plan), p => Within(p, Bench, -(SafetyScript.TouchDepthMeters + 0.003f))); // deeper than any recovering touch
+            Assert.Contains(Poses(plan), p => Within(p, Bench, -0.008f)); // well inside the box: through it, not grazing it
         }
 
         [Fact]
@@ -139,6 +144,46 @@ namespace Teleop.Eval.Tests.JointDrive
             {
                 Assert.True(planned.GetValueOrDefault(script) >= Layouts * 8 / 10, $"{report}; e.g. {string.Join(" | ", why)}");
             }
+        }
+
+        [Fact]
+        public void EveryScript_DragsTheWrist_AlongAContinuousPath()
+        {
+            // Teleop is a dragged point: a target every 48 Hz tick along a continuous path, never a jump from pose to pose
+            // (the user, 2026-11-15). The plan's script part, sampled as joint-drive sends it, moves the wrist at most the
+            // fastest stroke's distance in a tick (the through sweep's 0.40 m/s, and a little for tremor), and nearly all of
+            // it comes as dense ticks rather than long moves.
+            foreach (DriveScript script in new[] { DriveScript.ReachNoObstacle, DriveScript.StopBeforeCollision, DriveScript.CollideAndRecover, DriveScript.CollideWithObstacle })
+            {
+                DrivePlan plan = Plan(script, 3);
+                var script_ = plan.Legs.Where(l => l.Phase == LegPhase.Script).ToList();
+                double moving = script_.Where(l => l.Duration > 0).Sum(l => l.Duration);
+                double inTicks = script_.Where(l => l.Duration > 0 && Math.Abs(l.Duration - DragPath.TickSeconds) < 1e-9).Sum(l => l.Duration);
+                Assert.True(inTicks / moving > 0.95, $"{script}: {inTicks:0.0} of {moving:0.0} s moving is one target a tick");
+                double t0 = script_[0].Start, t1 = script_[^1].End;
+                Vector3 last = DragPath.Wrist(Profile, plan.Sample(t0));
+                float worst = 0f;
+                for (double t = t0 + DragPath.TickSeconds; t <= t1; t += DragPath.TickSeconds)
+                {
+                    Vector3 w = DragPath.Wrist(Profile, plan.Sample(t));
+                    worst = Math.Max(worst, Vector3.Distance(w, last));
+                    last = w;
+                }
+
+                Assert.True(worst <= SafetyScript.ThroughSpeed.Max * DragPath.TickSeconds * 1.3f + 0.002f, $"{script}: the wrist jumped {worst * 1000:0.0} mm in a tick");
+            }
+        }
+
+        [Fact]
+        public void AStroke_IsSmooth_EndsWhereItWasMeant_AndKeepsItsPeak()
+        {
+            var points = new[] { new Vector3(0.15f, 0f, 0.05f), new Vector3(0.18f, 0.06f, 0.08f), new Vector3(0.12f, 0.1f, 0.04f) };
+            List<Vector3> w = DragPath.Stroke(points, 0.1f, DragPath.Profile.MinimumJerk, 7);
+            Assert.Equal(points[^1], w[^1]);
+            float fastest = Enumerable.Range(1, w.Count - 1).Max(i => Vector3.Distance(w[i - 1], w[i])) / (float)DragPath.TickSeconds;
+            Assert.InRange(fastest, 0.08f, 0.13f); // the peak, give or take the tremor and the tick grid
+            Assert.Equal(1.0, DragPath.Shape(DragPath.Profile.EaseIn, 1.0), 9);
+            Assert.Equal(1.0, DragPath.Shape(DragPath.Profile.MinimumJerk, 1.0), 9);
         }
 
         [Fact]

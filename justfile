@@ -3820,7 +3820,12 @@ isaac-safety-batch takes="25" seed="1":
     exit 1
     REMOTE
         ) || { echo "[safety] take $n: RobotHost did not complete a new $cat take in 2 min" >&2; continue; }
-        verdict=$(ssh -n -o ConnectTimeout=10 "$gpu" "cd ~/teleoperation-safety/robot/lerobot && ~/isaacsim/lerobot-venv/bin/python -m teleop_lerobot safety-check --set-aside '$take'" || true)
+        # Asked again once if no verdict comes back (2026-11-15: one check returned nothing, the take was fine when run again).
+        for attempt in 1 2; do
+            verdict=$(ssh -n -o ConnectTimeout=10 "$gpu" "cd ~/teleoperation-safety/robot/lerobot && ~/isaacsim/lerobot-venv/bin/python -m teleop_lerobot safety-check --set-aside '$take'" || true)
+            case "$verdict" in *'"ok":'*) break ;; esac
+            echo "[safety] no verdict for $take (attempt $attempt)${verdict:+: ${verdict: -200}}" >&2; sleep 5
+        done
         # The verdict as an argument, not through a one-liner's quotes (an f-string with escaped quotes is a syntax error
         # before Python 3.12, which made every take look set aside on 2026-11-15).
         if python3 - "$verdict" <<'PY'

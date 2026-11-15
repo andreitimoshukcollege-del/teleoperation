@@ -66,25 +66,29 @@ namespace Teleop.Eval.JointDrive
         public const float ApproachClearanceMeters = 0.02f;
         public const float StopGapMinMeters = 0.01f;
         public const float StopGapMaxMeters = 0.03f;
-        // Measured on the twin 2026-11-15: the collision model's arm boxes are larger than Isaac's link shapes, so its first
-        // touch is about 15 mm short of the real one. 8 mm reached no object (2 of 2), 15 and 25 mm touched and backed off
-        // (3 of 3 driven), 35 mm tipped a post (1 of 2) or touched nothing: 20 mm.
+        // collide_and_recover goes this deep into the object's box (capped by the box's size). Measured on the twin 2026-11-15:
+        // the collision model's arm boxes are larger than Isaac's link shapes (about 15 mm), so a touch must go well into the
+        // box to touch in Isaac; pushes measured along the sweep (8 mm reached nothing, 15-25 mm touched, 35 mm tipped a post or
+        // grazed) put it near 20 mm. Measured into the box since then: a grazing sweep goes along a box, not into it.
         public const float TouchDepthMeters = 0.020f;
         public const float ThroughPastMeters = 0.04f;
+
+        /// <summary>collide_with_obstacle goes at least this deep into the object's box (or as deep as the box allows): through it, not past its edge.</summary>
+        public const float ThroughDepthMeters = 0.012f;
         public const float SweepRadians = 0.6f;
         public const float MinTravelMeters = 0.03f;
         public const float LineStepMeters = 0.005f;
         public const float LiftMeters = 0.08f;
         public const double PreRollSeconds = 3.0;
 
-        /// <summary>The wrist's speed along the line, m/s: (min, max) per script.</summary>
-        public static readonly (float Min, float Max) StopSpeed = (0.08f, 0.16f), TouchSpeed = (0.03f, 0.06f), ThroughSpeed = (0.25f, 0.40f);
+        /// <summary>The wrist's peak speed along the sweep, m/s: (min, max) per script.</summary>
+        public static readonly (float Min, float Max) StopSpeed = (0.08f, 0.16f), TouchSpeed = (0.04f, 0.08f), ThroughSpeed = (0.25f, 0.40f);
 
         // The wrist is the IK's target and sits well above the table (the JetRover's wrist barely goes below its shoulder), so the
         // gripper comes down beside the object, pointing down, its tip 1-6 cm below the object's top.
         private static readonly float[] Pitches = { -1.5f, -1.2f, -0.9f };
-        private static readonly float[] HeightsAboveTop = { 0.10f, 0.12f, 0.08f, 0.14f };
-        private static readonly float[] RadiusInside = { 0.0f, 0.02f, 0.04f, 0.06f, 0.08f };
+        private static readonly float[] HeightsAboveTop = { 0.10f, 0.12f, 0.08f, 0.14f, 0.06f, 0.16f };
+        private static readonly float[] RadiusInside = { 0.0f, 0.02f, 0.04f, 0.06f, 0.08f, -0.02f, 0.10f };
 
         public static bool IsSafety(DriveScript script) => script == DriveScript.ReachNoObstacle || script == DriveScript.StopBeforeCollision
             || script == DriveScript.CollideAndRecover || script == DriveScript.CollideWithObstacle;
@@ -132,7 +136,8 @@ namespace Teleop.Eval.JointDrive
             ArmCollisionModel clear = WithObjects(model, objects, ClearanceMeters);
             if (script == DriveScript.ReachNoObstacle)
             {
-                return Waypoints(profile, clear, envelope, speed, ref current, ref t, end, ref rng, legs, out error);
+                return DragFree(profile, clear, envelope, ref current, ref t, end, ref rng, legs, out error)
+                       && DragHome(profile, clear, envelope, ref current, ref t, ref rng, legs);
             }
 
             if (objects.Count == 0)
@@ -141,7 +146,7 @@ namespace Teleop.Eval.JointDrive
                 return false;
             }
 
-            if (!Waypoints(profile, clear, envelope, speed, ref current, ref t, t + PreRollSeconds, ref rng, legs, out error)) return false;
+            if (!DragFree(profile, clear, envelope, ref current, ref t, t + PreRollSeconds, ref rng, legs, out error)) return false;
 
             // Objects in a random order; for each, the approach heights and pitches in turn: the first line that works.
             var order = new int[objects.Count];
@@ -156,10 +161,13 @@ namespace Teleop.Eval.JointDrive
             {
                 foreach (Sweep sweep in Sweeps(objects[oi], ref rng))
                 {
+                    // From home first, a cheap test of the sweep; TryEvent solves it again from where the drag in arrives.
                     if (TryLine(profile, model, envelope, objects, oi, sweep, model.Home, out Line line) &&
-                        TryEvent(script, profile, model, envelope, objects, oi, line, ref current, ref t, ref rng, legs, options))
+                        TryEvent(script, profile, model, envelope, objects, oi, sweep, line, ref current, ref t, ref rng, legs, options))
                     {
-                        return true;
+                        // Home clear of the objects unless the episode knocked one over (then it is anywhere: the arm's own model).
+                        ArmCollisionModel homeward = script == DriveScript.CollideWithObstacle ? model : WithObjects(model, objects, ApproachClearanceMeters);
+                        return DragHome(profile, homeward, envelope, ref current, ref t, ref rng, legs);
                     }
                 }
             }
@@ -168,7 +176,12 @@ namespace Teleop.Eval.JointDrive
             return false;
         }
 
-        private static bool Waypoints(in RobotArmProfile profile, ArmCollisionModel model, in DriveEnvelope envelope, float speed,
+        /// <summary>
+        /// Free movement as an operator's: drag strokes from where the wrist is to reachable points (now and then through one more
+        /// on the way), each at a hand's speed, a third of them followed by a pause (the clutch let go), every tick's pose
+        /// checked against <paramref name="model"/> (the objects' boxes grown, so it keeps clear of them).
+        /// </summary>
+        private static bool DragFree(in RobotArmProfile profile, ArmCollisionModel model, in DriveEnvelope envelope,
             ref ArmPose current, ref double t, double end, ref SeededRng rng, List<DriveLeg> legs, out string? error)
         {
             error = null;
@@ -178,18 +191,55 @@ namespace Teleop.Eval.JointDrive
                 return false;
             }
 
+            var sampler = new TrainingTargetSampler(profile, CourseScript.MinHeightMeters);
+            int failed = 0;
             while (t < end)
             {
-                string? why = DrivePlan.NextWaypoint(profile, model, envelope, current, speed, t, ref rng, out DriveLeg leg);
-                if (why != null)
+                var points = new List<Vector3> { DragPath.Wrist(profile, current) };
+                int stops = 1 + (rng.NextDouble() < 0.4 ? 1 : 0);
+                bool drawn = true;
+                for (int k = 0; k < stops && drawn; k++)
                 {
-                    error = why;
-                    return false;
+                    drawn = sampler.TrySample(ref rng, out Vector3 p, points[points.Count - 1], 0.04f, 60);
+                    if (drawn) points.Add(p);
                 }
 
-                legs.Add(leg);
-                t = leg.End;
-                current = leg.To;
+                float peak = DragPath.MinStrokeSpeed + (float)rng.NextDouble() * (DragPath.MaxStrokeSpeed - DragPath.MinStrokeSpeed);
+                float pitch = (float)(-0.6 + 0.9 * rng.NextDouble());
+                ulong tremor = rng.NextUInt64() | 1;
+                if (drawn && DragPath.Follow(profile, model, envelope, current,
+                        DragPath.Stroke(points, peak, DragPath.Profile.MinimumJerk, tremor), pitch, out List<ArmPose> poses))
+                {
+                    DragPath.AddTicks(legs, ref t, current, poses);
+                    current = poses[poses.Count - 1];
+                    if (rng.NextDouble() < 0.33) DragPath.AddHold(legs, ref t, current, 0.3 + 0.9 * rng.NextDouble());
+                    failed = 0;
+                    continue;
+                }
+
+                if (++failed > 80)
+                {
+                    error = $"no drag stroke from {DrivePlan.Describe(current)} keeps clear of the objects in 80 tries";
+                    return false;
+                }
+            }
+
+            return true;
+        }
+
+        /// <summary>The episode's end as an operator's: a drag stroke back to the home pose's wrist (DrivePlan then settles any
+        /// small remainder). Skipped, leaving DrivePlan's own return, when no such stroke is free.</summary>
+        private static bool DragHome(in RobotArmProfile profile, ArmCollisionModel model, in DriveEnvelope envelope,
+            ref ArmPose current, ref double t, ref SeededRng rng, List<DriveLeg> legs)
+        {
+            Vector3 from = DragPath.Wrist(profile, current), home = DragPath.Wrist(profile, model.Home);
+            if (Vector3.Distance(from, home) < 0.01f) return true;
+            float peak = DragPath.MinStrokeSpeed + (float)rng.NextDouble() * (DragPath.MaxStrokeSpeed - DragPath.MinStrokeSpeed);
+            if (DragPath.Follow(profile, model, envelope, current,
+                    DragPath.Stroke(new[] { from, home }, peak, DragPath.Profile.MinimumJerk, rng.NextUInt64() | 1), -0.3f, out List<ArmPose> poses))
+            {
+                DragPath.AddTicks(legs, ref t, current, poses);
+                current = poses[poses.Count - 1];
             }
 
             return true;
@@ -202,9 +252,11 @@ namespace Teleop.Eval.JointDrive
             public readonly ArmPose[] Poses;
             public readonly int Usable; // poses 0..Usable-1 are reachable, in the envelope and free of everything but the object
             public readonly int Contact; // the first pose touching the object's box (gap 0), or -1
+            public readonly float Pitch; // the wrist pitch it was solved at
 
-            public Line(Vector3[] points, ArmPose[] poses, int usable, int contact)
+            public Line(Vector3[] points, ArmPose[] poses, int usable, int contact, float pitch)
             {
+                Pitch = pitch;
                 Points = points;
                 Poses = poses;
                 Usable = usable;
@@ -260,7 +312,7 @@ namespace Teleop.Eval.JointDrive
             }
 
             if (contact < (int)(MinTravelMeters / LineStepMeters)) return false;
-            line = new Line(points.ToArray(), poses.ToArray(), poses.Count, contact);
+            line = new Line(points.ToArray(), poses.ToArray(), poses.Count, contact, sweep.Pitch);
             return true;
         }
 
@@ -304,10 +356,30 @@ namespace Teleop.Eval.JointDrive
         }
 
         private static bool TryEvent(DriveScript script, in RobotArmProfile profile, ArmCollisionModel model, in DriveEnvelope envelope,
-            IReadOnlyList<SafetyObject> objects, int oi, in Line line, ref ArmPose current, ref double t, ref SeededRng rng, List<DriveLeg> legs,
+            IReadOnlyList<SafetyObject> objects, int oi, Sweep sweep, Line line, ref ArmPose current, ref double t, ref SeededRng rng, List<DriveLeg> legs,
             SafetyOptions options)
         {
+            // Dragged into the sweep's start on a path clear of every object: straight there (through a point a little above the
+            // middle), or by way of home's wrist. Then the sweep solved again from where the drag arrived, as the headset's IK
+            // would go on from there; its contact and stop or touch points are found on that.
+            ArmCollisionModel approachModel = WithObjects(model, objects, ApproachClearanceMeters);
+            Vector3 here = DragPath.Wrist(profile, current), start = line.Points[0];
+            float peak = DragPath.MinStrokeSpeed + (float)rng.NextDouble() * (DragPath.MaxStrokeSpeed - DragPath.MinStrokeSpeed);
+            ulong tremor = rng.NextUInt64() | 1;
+            Vector3 above = Vector3.Lerp(here, start, 0.5f) + new Vector3(0, 0, 0.02f + 0.02f * (float)rng.NextDouble());
+            if (!DragPath.Follow(profile, approachModel, envelope, current, DragPath.Stroke(new[] { here, above, start }, peak, DragPath.Profile.MinimumJerk, tremor),
+                    line.Pitch, out List<ArmPose> inbound) &&
+                !DragPath.Follow(profile, approachModel, envelope, current,
+                    DragPath.Stroke(new[] { here, DragPath.Wrist(profile, model.Home), start }, peak, DragPath.Profile.MinimumJerk, tremor), line.Pitch, out inbound))
+            {
+                return false;
+            }
+
+            ArmPose arrived = inbound[inbound.Count - 1];
+            if (!TryLine(profile, model, envelope, objects, oi, sweep, arrived, out line) || Vector3.Distance(line.Points[0], start) > 0.01f) return false;
+
             int target;
+            double touchAt = 0;
             (float Min, float Max) speeds;
             if (script == DriveScript.StopBeforeCollision)
             {
@@ -325,67 +397,80 @@ namespace Teleop.Eval.JointDrive
             }
             else if (script == DriveScript.CollideAndRecover)
             {
-                // The first touch lies between the last free pose and the contact pose: TouchDepthMeters on from the free one,
-                // so the push is at most that, plus nothing.
-                target = line.Contact - 1 + (int)MathF.Ceiling(options.TouchDepthMeters / LineStepMeters);
-                if (target >= line.Usable) return false;
+                // Into the object's box by TouchDepthMeters, not that far along the sweep: a sweep that grazes the box goes along
+                // it, not into it (2026-11-15: 20 mm along reached 1-3 mm in, and Isaac's links are ~15 mm inside the model's
+                // boxes, so it never touched). Capped at how deep this object's box can be entered at all.
+                float want = TouchTarget(objects[oi], options.TouchDepthMeters);
+                target = -1;
+                float d0 = 0f, d1 = 0f;
+                for (int i = line.Contact; i < line.Usable; i++)
+                {
+                    d1 = Depth(profile, model, objects[oi], line.Poses[i]);
+                    if (d1 >= want)
+                    {
+                        target = i;
+                        break;
+                    }
+
+                    d0 = Math.Max(d1, 0f);
+                }
+
+                if (target < 0) return false;
+                // Stop at the depth itself, not at the next 5 mm step past it.
+                touchAt = target - 1 + (d1 > d0 ? Math.Clamp((want - d0) / (d1 - d0), 0f, 1f) : 1f);
                 speeds = TouchSpeed;
             }
             else
             {
                 target = line.Usable - 1;
                 if (target < line.Contact + (int)MathF.Ceiling(0.03f / LineStepMeters)) return false; // not far enough through
+                // Through the object, not past its edge: some pose well inside its box.
+                float through = Math.Min(ThroughDepthMeters, MaxDepth(objects[oi]));
+                bool deep = false;
+                for (int i = line.Contact; i <= target && !deep; i++) deep = Depth(profile, model, objects[oi], line.Poses[i]) >= through - 0.0005f;
+                if (!deep) return false;
                 speeds = ThroughSpeed;
             }
-
-            // Into the line's start on a path clear of every object: straight there, or by way of home.
-            ArmCollisionModel approachModel = WithObjects(model, objects, ApproachClearanceMeters);
-            bool direct = DrivePlan.PathValid(profile, approachModel, envelope, current, line.Poses[0]);
-            if (!direct && !(DrivePlan.PathValid(profile, approachModel, envelope, current, model.Home)
-                             && DrivePlan.PathValid(profile, approachModel, envelope, model.Home, line.Poses[0]))) return false;
-            ArmPose lifted = default;
-            bool lift = script == DriveScript.CollideWithObstacle;
-            if (lift && !TryLift(profile, model, envelope, line, target, out lifted)) return false;
 
             float v = speeds.Min + (float)rng.NextDouble() * (speeds.Max - speeds.Min);
             var newLegs = new List<DriveLeg>();
             double tt = t;
-            ArmPose via = current;
-            if (!direct)
-            {
-                double dh = DrivePlan.SmoothDuration(current.MaxJointDelta(model.Home), 1.5f);
-                newLegs.Add(new DriveLeg(tt, dh, 0.2, current, model.Home, LegPhase.Script));
-                tt = newLegs[newLegs.Count - 1].End;
-                via = model.Home;
-            }
-
-            double d0 = DrivePlan.SmoothDuration(via.MaxJointDelta(line.Poses[0]), 1.5f);
-            newLegs.Add(new DriveLeg(tt, d0, 0.3 + 0.4 * rng.NextDouble(), via, line.Poses[0], LegPhase.Script));
-            tt = newLegs[newLegs.Count - 1].End;
-            AddLine(line, 0, target, v, ref tt, newLegs);
-            ArmPose last = line.Poses[target];
+            DragPath.AddTicks(newLegs, ref tt, current, inbound);
+            if (arrived.MaxJointDelta(line.Poses[0]) > 0.005f) DragPath.AddTicks(newLegs, ref tt, arrived, Along(line, -1, 0, 0.05f, DragPath.Profile.MinimumJerk, arrived));
+            DragPath.AddHold(newLegs, ref tt, line.Poses[0], 0.2 + 0.4 * rng.NextDouble());
+            ArmPose last;
             if (script == DriveScript.StopBeforeCollision)
             {
-                newLegs.Add(new DriveLeg(tt, 0, 1.0 + rng.NextDouble(), last, last, LegPhase.Script));
-                tt += newLegs[newLegs.Count - 1].Hold;
-                AddLine(line, target, 0, v, ref tt, newLegs);
+                // Slowing to a stop at the gap, a pause, then dragged back.
+                DragPath.AddTicks(newLegs, ref tt, line.Poses[0], Along(line, 0, target, v, DragPath.Profile.MinimumJerk));
+                DragPath.AddHold(newLegs, ref tt, line.Poses[target], 1.0 + rng.NextDouble());
+                DragPath.AddTicks(newLegs, ref tt, line.Poses[target], Along(line, target, 0, v, DragPath.Profile.MinimumJerk));
                 last = line.Poses[0];
             }
             else if (script == DriveScript.CollideAndRecover)
             {
-                newLegs.Add(new DriveLeg(tt, 0, 0.2 + 0.2 * rng.NextDouble(), last, last, LegPhase.Script));
-                tt += newLegs[newLegs.Count - 1].Hold;
-                AddLine(line, target, 0, StopSpeed.Min, ref tt, newLegs);
+                // Easing into the touch, a moment held, then pulled back before it tips.
+                ArmPose touch = PoseAt(line, touchAt);
+                DragPath.AddTicks(newLegs, ref tt, line.Poses[0], Along(line, 0, touchAt, v, DragPath.Profile.MinimumJerk));
+                DragPath.AddHold(newLegs, ref tt, touch, 0.2 + 0.2 * rng.NextDouble());
+                float back = StopSpeed.Min + (float)rng.NextDouble() * (StopSpeed.Max - StopSpeed.Min);
+                DragPath.AddTicks(newLegs, ref tt, touch, Along(line, touchAt, 0, back, DragPath.Profile.MinimumJerk));
                 last = line.Poses[0];
             }
             else
             {
-                newLegs.Add(new DriveLeg(tt, 0, 0.3, last, last, LegPhase.Script));
-                tt += 0.3;
-                double dl = DrivePlan.SmoothDuration(last.MaxJointDelta(lifted), 1.0f);
-                newLegs.Add(new DriveLeg(tt, dl, 0.5, last, lifted, LegPhase.Script));
-                tt = newLegs[newLegs.Count - 1].End;
-                last = lifted;
+                // Speeding up and keeping its speed through the object, then lifted away.
+                DragPath.AddTicks(newLegs, ref tt, line.Poses[0], Along(line, 0, target, v, DragPath.Profile.EaseIn));
+                ArmPose through = line.Poses[target];
+                Vector3 p = line.Points[target];
+                if (!DragPath.Follow(profile, model, envelope, through,
+                        DragPath.Stroke(new[] { p, p + new Vector3(0, 0, LiftMeters) }, 0.08f, DragPath.Profile.MinimumJerk), line.Pitch, out List<ArmPose> lift))
+                {
+                    return false;
+                }
+
+                DragPath.AddTicks(newLegs, ref tt, through, lift);
+                last = lift[lift.Count - 1];
             }
 
             // DrivePlan returns home from here on a path the model calls free: an event that leaves no such path would refuse the
@@ -397,33 +482,67 @@ namespace Teleop.Eval.JointDrive
             return true;
         }
 
-        /// <summary>Linear legs along the line's poses from index <paramref name="from"/> to <paramref name="to"/> (either way) at <paramref name="speed"/> m/s.</summary>
-        private static void AddLine(in Line line, int from, int to, float speed, ref double t, List<DriveLeg> legs)
+        /// <summary>
+        /// How deep <paramref name="pose"/>'s arm is inside object <paramref name="o"/>'s box, metres, to the millimetre: the
+        /// most the box can shrink on every side and still be touched (each axis no further than 0.5 mm short of its middle);
+        /// below 0 when it does not touch it at all.
+        /// </summary>
+        private static float Depth(in RobotArmProfile profile, ArmCollisionModel model, in SafetyObject o, in ArmPose pose)
         {
-            int step = to >= from ? 1 : -1;
-            for (int i = from; i != to; i += step)
+            float best = -1f, cap = MaxDepth(o);
+            for (float d = 0f; d <= cap + 1e-6f; d += 0.001f)
             {
-                double d = Math.Max(0.01, Vector3.Distance(line.Points[i], line.Points[i + step]) / speed);
-                legs.Add(new DriveLeg(t, d, 0, line.Poses[i], line.Poses[i + step], LegPhase.Script, linear: true));
-                t += d;
+                Vector3 half = (o.Max - o.Min) / 2f, s = Vector3.Min(new Vector3(d), half - new Vector3(0.0005f));
+                var inner = new SafetyObject(o.Id, o.Min + s, o.Max - s);
+                if (ArmCollision.IsValid(profile, WithObjects(model, new[] { inner }, 0f, 0f), pose)) break;
+                best = d;
             }
+
+            return best;
         }
 
-        /// <summary>The wrist <see cref="LiftMeters"/> above the line's pose <paramref name="at"/>, on a path free of everything but the object.</summary>
-        private static bool TryLift(in RobotArmProfile profile, ArmCollisionModel model, in DriveEnvelope envelope, in Line line, int at, out ArmPose lifted)
+        /// <summary>The deepest <see cref="Depth"/> can measure in <paramref name="o"/>: its smallest half-size, less 0.5 mm.</summary>
+        public static float MaxDepth(in SafetyObject o)
         {
-            Vector3 up = line.Points[at] + new Vector3(0, 0, LiftMeters);
-            foreach (float pitch in Pitches)
+            Vector3 half = (o.Max - o.Min) / 2f;
+            return MathF.Max(0f, MathF.Min(half.X, MathF.Min(half.Y, half.Z)) - 0.0005f);
+        }
+
+        /// <summary>
+        /// The sweep's poses every tick from index <paramref name="from"/> to <paramref name="to"/> (either way), timed by
+        /// <paramref name="profile"/> at a peak of <paramref name="peak"/> m/s along the wrist's arc: its solved poses
+        /// interpolated 5 mm apart, as dense as the headset's targets at these speeds. <paramref name="from"/> -1 joins
+        /// <paramref name="joinFrom"/> to pose 0 over 5 mm's worth of time.
+        /// </summary>
+        private static List<ArmPose> Along(in Line line, double from, double to, float peak, DragPath.Profile profile, ArmPose joinFrom = default)
+        {
+            var poses = new List<ArmPose>();
+            double meters = Math.Max(1.0, Math.Abs(to - from)) * LineStepMeters;
+            int ticks = Math.Max(1, (int)Math.Ceiling(DragPath.Seconds(profile, meters, peak) / DragPath.TickSeconds));
+            for (int k = 1; k <= ticks; k++)
             {
-                if (TrySolve(profile, line.Poses[at], up, pitch, out lifted) && DrivePlan.PathValid(profile, model, envelope, line.Poses[at], lifted))
+                double s = DragPath.Shape(profile, k / (double)ticks);
+                if (from < 0)
                 {
-                    return true;
+                    poses.Add(ArmPose.Lerp(joinFrom, line.Poses[0], (float)s));
+                    continue;
                 }
+
+                poses.Add(PoseAt(line, from + (to - from) * s));
             }
 
-            lifted = default;
-            return false;
+            return poses;
         }
+
+        /// <summary>The sweep's pose at a fractional index: its solved poses, 5 mm apart, interpolated.</summary>
+        private static ArmPose PoseAt(in Line line, double at)
+        {
+            int i0 = Math.Clamp((int)Math.Floor(at), 0, line.Usable - 1), i1 = Math.Min(i0 + 1, line.Usable - 1);
+            return ArmPose.Lerp(line.Poses[i0], line.Poses[i1], (float)Math.Clamp(at - i0, 0, 1));
+        }
+
+        /// <summary>How deep collide_and_recover goes into <paramref name="o"/>'s box: <paramref name="depth"/>, but never within 3 mm of its middle (a touch, not a push through).</summary>
+        public static float TouchTarget(in SafetyObject o, float depth) => MathF.Max(0.001f, MathF.Min(depth, MaxDepth(o) - 0.003f));
 
         /// <summary>The headset's IK from <paramref name="from"/> to the wrist <paramref name="target"/>, roll 0, until it gets there.</summary>
         private static bool TrySolve(in RobotArmProfile profile, in ArmPose from, Vector3 target, float pitch, out ArmPose pose)

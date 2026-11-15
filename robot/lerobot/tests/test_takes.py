@@ -35,6 +35,16 @@ def test_an_episode_runs_from_the_first_to_the_last_accepted_command_at_15_fps(s
     assert all(b - a == pytest.approx(1e9 / 15, abs=1.5e6) for a, b in zip(sensed, sensed[1:]))
 
 
+def test_frames_that_wobble_in_time_are_still_taken_evenly(scenarios):
+    # The twin's frames wobble by a few ms (2026-11-15): taking the newest frame at most 1 ms past each point picked frames
+    # 1, 2 or 3 apart. The nearest frame keeps them 2 apart, every step within a frame's wobble of 1/15 s.
+    take = read_take(jetrover_take(scenarios, jitter=4.0))
+    numbers = [f.timing["frame"] for f in take.frames]
+    assert all(b - a == 2 for a, b in zip(numbers, numbers[1:])), numbers
+    assert all(abs(f.timing["sensed"] - f.timing["grid"]) <= 5 * MS for f in take.frames)
+    assert not any(f.timing["filled"] for f in take.frames)
+
+
 def test_a_gap_in_the_recording_repeats_the_last_frame_and_says_so(scenarios):
     take = read_take(jetrover_take(scenarios, gap=(2.0, 2.3)))
     filled = [f for f in take.frames if f.timing["filled"]]

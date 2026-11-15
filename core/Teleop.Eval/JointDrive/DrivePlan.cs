@@ -204,7 +204,8 @@ namespace Teleop.Eval.JointDrive
         /// </summary>
         public static bool TryBuild(
             DriveScript script, in RobotArmProfile profile, in ArmPose start, float speedRadPerSec, double seconds, ulong seed,
-            in DriveEnvelope envelope, out DrivePlan? plan, out string? error, IReadOnlyList<SafetyObject>? objects = null)
+            in DriveEnvelope envelope, out DrivePlan? plan, out string? error, IReadOnlyList<SafetyObject>? objects = null,
+            SafetyOptions? safetyOptions = null)
         {
             plan = null;
             error = null;
@@ -272,7 +273,7 @@ namespace Teleop.Eval.JointDrive
                     return false;
                 }
 
-                if (!SafetyScript.Append(script, profile, model, envelope, objects, speedRadPerSec, ref current, ref t, end, ref rng, legs, out error))
+                if (!SafetyScript.Append(script, profile, model, envelope, objects, speedRadPerSec, ref current, ref t, end, ref rng, legs, out error, safetyOptions))
                 {
                     return false;
                 }

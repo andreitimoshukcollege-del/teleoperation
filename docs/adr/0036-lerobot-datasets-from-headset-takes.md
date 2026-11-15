@@ -149,6 +149,12 @@ safe or unsafe, **unsafe while any arm link touches an object** (the table does 
 
    The scripts aim at the objects where they are: RobotHost already streams the world's poses to the joint client, and
    the layout changes every take. Their takes are labelled a tool's (operator `tool <ip:port>`, the trainer's scripted).
+   **Driven as an operator drives (2026-11-15, the user's ask):** a dragged point, not moves between poses. The wrist
+   follows smooth strokes (through reachable points, a hand's speed profile at the clutch's half scale, pauses as when the
+   clutch is let go, a small tremor), and the headset's IK is solved once a 48 Hz tick from the pose before, as the headset
+   solves: the commands are a dense list of targets along a path, the input the lab's model is given. The sweep into an
+   object is timed the same way (easing to a stop, easing into a touch and back, accelerating through), and a touch's
+   depth is measured into the object's box, not along the sweep (a grazing sweep slides along a box).
 3. **Each take is checked against its scenario before it is kept.** No contact for `reach_no_obstacle` and
    `stop_before_collision`; a contact that ends with the object upright for `collide_and_recover`; a contact after which
    the object has tipped or moved for `collide_with_obstacle`. A take that fails is set aside (`_discarded`), with the

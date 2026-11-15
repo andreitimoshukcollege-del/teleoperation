@@ -3820,8 +3820,26 @@ isaac-safety-batch takes="25" seed="1":
     exit 1
     REMOTE
         ) || { echo "[safety] take $n: RobotHost did not complete a new $cat take in 2 min" >&2; continue; }
-        verdict=$(ssh -n -o ConnectTimeout=10 "$gpu" "cd ~/teleoperation-safety/robot/lerobot && ~/isaacsim/lerobot-venv/bin/python -m teleop_lerobot safety-check --set-aside '$take'" || true)
-        if echo "$verdict" | python3 -c 'import json,sys; v=json.loads(sys.stdin.read().strip().splitlines()[-1]); print(f"[safety] {v[\"category\"]}: {\"kept\" if v[\"ok\"] else \"set aside\"}: {v[\"reason\"]} ({v[\"unsafeFrames\"]} of {v[\"frames\"]} frames unsafe)"); sys.exit(0 if v["ok"] else 1)'; then
+        # Asked again once if no verdict comes back (2026-11-15: one check returned nothing, the take was fine when run again).
+        for attempt in 1 2; do
+            verdict=$(ssh -n -o ConnectTimeout=10 "$gpu" "cd ~/teleoperation-safety/robot/lerobot && ~/isaacsim/lerobot-venv/bin/python -m teleop_lerobot safety-check --set-aside '$take'" || true)
+            case "$verdict" in *'"ok":'*) break ;; esac
+            echo "[safety] no verdict for $take (attempt $attempt)${verdict:+: ${verdict: -200}}" >&2; sleep 5
+        done
+        # The verdict as an argument, not through a one-liner's quotes (an f-string with escaped quotes is a syntax error
+        # before Python 3.12, which made every take look set aside on 2026-11-15).
+        if python3 - "$verdict" <<'PY'
+    import json, sys
+    lines = [l for l in sys.argv[1].strip().splitlines() if l.startswith("{")]
+    if not lines:
+        print("[safety] no verdict from the checker: " + sys.argv[1].strip()[-300:])
+        sys.exit(1)
+    v = json.loads(lines[-1])
+    state = "kept" if v["ok"] else "set aside"
+    print("[safety] %s: %s: %s (%d of %d frames unsafe)" % (v["category"], state, v["reason"], v["unsafeFrames"], v["frames"]))
+    sys.exit(0 if v["ok"] else 1)
+    PY
+        then
             kept+=("$take")
         else
             setaside=$((setaside + 1))
@@ -3830,8 +3848,26 @@ isaac-safety-batch takes="25" seed="1":
     done <<< "$plan"
     echo "[safety] $n take(s): ${#kept[@]} kept, $setaside set aside, $unplanned not planned"
     [ "${#kept[@]}" -gt 0 ] || { echo "[safety] nothing kept: no dataset written" >&2; exit 1; }
-    ssh -o ConnectTimeout=10 "$gpu" "cd ~/teleoperation-safety/robot/lerobot && ~/isaacsim/lerobot-venv/bin/python -m teleop_lerobot safety-build --out ~/isaacsim/lerobot/jetrover-isaac-safety/$name $(printf "'%s' " "${kept[@]}")"
-    echo "[safety] dataset: ~/isaacsim/lerobot/jetrover-isaac-safety/$name on the GPU machine"
+    # A build that fails is retried once into a fresh folder, a failed one set aside, and every attempt's full log kept there.
+    # (The one failure seen, 2026-11-15, was the LeRobot watcher deleting the half-written dataset, since fixed: it leaves the
+    # *-safety groups alone.)
+    ssh -o ConnectTimeout=10 "$gpu" "NAME='$name' bash -s $(printf "'%s' " "${kept[@]}")" <<'REMOTE'
+    set -uo pipefail
+    out=$HOME/isaacsim/lerobot/jetrover-isaac-safety; mkdir -p "$out"
+    cd "$HOME/teleoperation-safety/robot/lerobot"
+    for attempt in 1 2; do
+        dest=$out/$NAME; [ "$attempt" = 1 ] || dest=$out/$NAME-retry
+        log=$out/$NAME.build-$attempt.log
+        if "$HOME/isaacsim/lerobot-venv/bin/python" -m teleop_lerobot safety-build --out "$dest" "$@" > "$log" 2>&1; then
+            grep -E "episode [0-9]+:" "$log" | sed 's/^/  /'
+            echo "[safety] dataset: $dest on the GPU machine (log $log)"
+            exit 0
+        fi
+        echo "[safety] build attempt $attempt failed: $(grep -vE '^(Svt|Map)' "$log" | tail -3 | tr '\n' ' ')" >&2
+        [ -e "$dest" ] && mv "$dest" "$dest.failed-$(date -u +%H%M%S)"
+    done
+    exit 1
+    REMOTE
 
 # Build the LeRobot converter's environment on the GPU machine (docs/adr/0036), once and after robot/lerobot/requirements.txt changes: ~/isaacsim/lerobot-venv (Python 3.12) with that lerobot version, and pytest for just lerobot-test. Runs the pushed commit
 [group('lerobot')]

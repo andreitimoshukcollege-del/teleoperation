@@ -25,6 +25,7 @@ from typing import Callable, Dict, Iterable, List, Optional, Tuple
 
 from .jlog import JlogError
 from .safety import CATEGORIES as SAFETY_CATEGORIES
+from .safety import GROUP_SUFFIX as SAFETY_GROUP_SUFFIX
 from .takes import Take, TakeError, checksum_id, read_take, verify_checksums
 from .writer import append_take, read_ledger, rebuild, recorded_episodes
 
@@ -114,7 +115,10 @@ class Converter:
         if os.path.isdir(self.out):
             for group in sorted(os.listdir(self.out)):
                 g = os.path.join(self.out, group)
-                if os.path.isdir(g) and not group.startswith((".", "_")):
+                # A safety group (<robot>-<source>-safety, safety.py) holds datasets the safety builder writes once from
+                # takes this watcher never converts: taken for its own, every take in them looked set aside and the
+                # dataset was "rebuilt" empty, deleting it (2026-11-15, twice, once mid-build).
+                if os.path.isdir(g) and not group.startswith((".", "_")) and not group.endswith(SAFETY_GROUP_SUFFIX):
                     out += [os.path.join(g, s) for s in sorted(os.listdir(g))
                             if os.path.isdir(os.path.join(g, s)) and ".rebuild-" not in s and ".old-" not in s]
         return out

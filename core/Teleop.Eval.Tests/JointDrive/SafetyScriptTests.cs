@@ -42,7 +42,13 @@ namespace Teleop.Eval.Tests.JointDrive
         /// <summary>Whether <paramref name="pose"/> comes within <paramref name="gap"/> of any of <paramref name="objects"/> (gap below 0: that far inside).</summary>
         private static bool Within(in ArmPose pose, IReadOnlyList<SafetyObject> objects, float gap)
         {
-            var grown = objects.Select(o => gap >= 0 ? o : new SafetyObject(o.Id, o.Min - new Vector3(gap), o.Max + new Vector3(gap))).ToArray();
+            // Inside by -gap on each axis, but never past the box's middle (1 mm short of it), so a small box stays a box.
+            var grown = objects.Select(o =>
+            {
+                if (gap >= 0) return o;
+                Vector3 half = (o.Max - o.Min) / 2f, s = Vector3.Min(new Vector3(-gap), half - new Vector3(0.001f));
+                return new SafetyObject(o.Id, o.Min + s, o.Max - s);
+            }).ToArray();
             return !ArmCollision.IsValid(Profile, SafetyScript.WithObjects(Model, grown, Math.Max(gap, 0f), 0f), pose);
         }
 
@@ -70,7 +76,7 @@ namespace Teleop.Eval.Tests.JointDrive
             ArmPose[] poses = Poses(plan).ToArray();
             int touching = poses.Count(p => Within(p, Bench, 0f));
             Assert.InRange(touching * 0.01, 0.05, 2.0); // a touch, not a push
-            // Never deep: at most TouchDepthMeters (8 mm) past the first touch, and the cube is only 25 mm across.
+            // Never deep: at most TouchDepthMeters past the model's first touch (each box only shrunk to 1 mm short of its middle).
             Assert.DoesNotContain(poses, p => Within(p, Bench, -(SafetyScript.TouchDepthMeters + 0.003f)));
             Assert.False(Within(poses[^1], Bench, 0f));
         }

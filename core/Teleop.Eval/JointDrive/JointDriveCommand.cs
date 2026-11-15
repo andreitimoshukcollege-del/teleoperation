@@ -71,7 +71,7 @@ namespace Teleop.Eval.JointDrive
             "usage: joint-drive --script waypoints|steps|course --speed <rad/s> [--seconds 300] [--seed 1] [--margin-deg 15] [--rate-hz 48]\n" +
             "                   (--dry-run | --remote-host <ip> [--remote-port 6002] --confirm-hardware-motion)\n" +
             "                   [--operator-log <path> [--session-id <id>]] [--stop-file <path>] [--take <scenario>]\n" +
-            "                   [--simulated-robot [--stall-seconds 1] [--stream-seconds 3]] [--scene <file> [--new-layout]]";
+            "                   [--simulated-robot [--stall-seconds 1] [--stream-seconds 3]] [--scene <file> [--new-layout] [--touch-depth-mm 8]]";
 
         public static int Run(string[] args)
         {
@@ -85,6 +85,7 @@ namespace Teleop.Eval.JointDrive
             double stallSeconds = DriveWatchdog.StallSeconds, streamSeconds = DriveWatchdog.MaxDegradedSeconds;
             string? scenePath = null;
             bool newLayout = false;
+            var safetyOptions = new SafetyOptions();
             try
             {
                 for (int i = 1; i < args.Length; i++)
@@ -126,6 +127,7 @@ namespace Teleop.Eval.JointDrive
                         case "--stream-seconds": streamSeconds = Number(); break;
                         case "--scene": scenePath = Next(); break;
                         case "--new-layout": newLayout = true; break;
+                        case "--touch-depth-mm": safetyOptions.TouchDepthMeters = (float)(Number() / 1000.0); break;
                         default: throw new ArgumentException($"unknown argument '{args[i]}'");
                     }
                 }
@@ -135,6 +137,7 @@ namespace Teleop.Eval.JointDrive
                 if (safety && scenePath == null) throw new ArgumentException($"--script {SafetyScript.Category(script.Value)} plans around the objects: it needs --scene <core/Scenes/*.json>");
                 if (!safety && (scenePath != null || newLayout)) throw new ArgumentException("--scene and --new-layout are for the safety scripts");
                 if (newLayout && dryRun) throw new ArgumentException("--new-layout asks RobotHost for a layout; a dry run sends nothing");
+                if (!(safetyOptions.TouchDepthMeters > 0f && safetyOptions.TouchDepthMeters <= 0.06f)) throw new ArgumentException("--touch-depth-mm must be in (0, 60]");
                 if (!(speed > 0f) || speed > MaxSpeedRadPerSec) throw new ArgumentException($"--speed must be in (0, {MaxSpeedRadPerSec}] rad/s, the headset slider's range");
                 if (!(seconds > 0)) throw new ArgumentException("--seconds must be positive");
                 if (!(marginDeg >= 5)) throw new ArgumentException("--margin-deg must be at least 5");
@@ -184,7 +187,7 @@ namespace Teleop.Eval.JointDrive
                 // A safety script's dry run plans around the scene's objects where the file puts them.
                 List<SafetyObject>? nominal = scene == null ? null : scene.Objects.Select(o => WorldView.Bounds(o, 1.0, o.Nominal.X, o.Nominal.Y,
                     o.Nominal.Z, o.Nominal.Qw, o.Nominal.Qx, o.Nominal.Qy, o.Nominal.Qz)).ToList();
-                return DryRun(script.Value, profile, envelope, speed, seconds, seed, rateHz, logPath, sessionId ?? "joint-drive-dry-run", nominal);
+                return DryRun(script.Value, profile, envelope, speed, seconds, seed, rateHz, logPath, sessionId ?? "joint-drive-dry-run", nominal, safetyOptions);
             }
 
             if (!confirmed)
@@ -220,7 +223,7 @@ namespace Teleop.Eval.JointDrive
             }
 
             return Drive(script.Value, profile, envelope, speed, seconds, seed, rateHz, robotEndPoint, logPath, sessionId ?? "joint-drive", stopFile, take,
-                stallSeconds, streamSeconds, scene, sceneSha, newLayout);
+                stallSeconds, streamSeconds, scene, sceneSha, newLayout, safetyOptions);
         }
 
         private static void PrintEnvelope(in DriveEnvelope envelope, double marginDeg)
@@ -273,9 +276,9 @@ namespace Teleop.Eval.JointDrive
         }
 
         private static int DryRun(DriveScript script, RobotArmProfile profile, DriveEnvelope envelope, float speed, double seconds, ulong seed,
-            double rateHz, string? logPath, string sessionId, IReadOnlyList<SafetyObject>? objects)
+            double rateHz, string? logPath, string sessionId, IReadOnlyList<SafetyObject>? objects, SafetyOptions? safetyOptions = null)
         {
-            if (!DrivePlan.TryBuild(script, profile, profile.Collision!.Home, speed, seconds, seed, envelope, out DrivePlan? plan, out string? error, objects))
+            if (!DrivePlan.TryBuild(script, profile, profile.Collision!.Home, speed, seconds, seed, envelope, out DrivePlan? plan, out string? error, objects, safetyOptions))
             {
                 Console.Error.WriteLine($"joint-drive: {error}");
                 return 1;
@@ -310,7 +313,7 @@ namespace Teleop.Eval.JointDrive
 
         private static int Drive(DriveScript script, RobotArmProfile profile, DriveEnvelope envelope, float speed, double seconds, ulong seed,
             double rateHz, IPEndPoint robot, string? logPath, string sessionId, string? stopFile, string? takeScenario, double stallSeconds, double streamSeconds,
-            WorldScene? scene, byte[] sceneSha, bool newLayout)
+            WorldScene? scene, byte[] sceneSha, bool newLayout, SafetyOptions safetyOptions)
         {
             long tps = Stopwatch.Frequency;
             using var socket = new Socket(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp);
@@ -377,7 +380,7 @@ namespace Teleop.Eval.JointDrive
 
             ArmPose start = link.Measured;
             Console.WriteLine($"[joint-drive] the arm is at {DrivePlan.Describe(start)}");
-            if (!DrivePlan.TryBuild(script, profile, start, speed, seconds, seed, envelope, out DrivePlan? plan, out string? error, objects))
+            if (!DrivePlan.TryBuild(script, profile, start, speed, seconds, seed, envelope, out DrivePlan? plan, out string? error, objects, safetyOptions))
             {
                 Console.Error.WriteLine($"joint-drive: {error}");
                 return 1;

@@ -9,6 +9,17 @@ using Teleop.RobotArm.Types;
 
 namespace Teleop.Eval.JointDrive
 {
+    /// <summary>What a safety script may be told from the command line (joint-drive's options).</summary>
+    public sealed class SafetyOptions
+    {
+        /// <summary>
+        /// collide_and_recover's push past the collision model's first touch of the object's box, metres (joint-drive
+        /// --touch-depth-mm). The model's boxes for the arm are larger than Isaac's link shapes, so its first touch is short of
+        /// the real one; the default is <see cref="SafetyScript.TouchDepthMeters"/>, measured on the twin.
+        /// </summary>
+        public float TouchDepthMeters { get; set; } = SafetyScript.TouchDepthMeters;
+    }
+
     /// <summary>One scene object as a safety script plans around it: its axis-aligned bounds in the arm base frame (metres).</summary>
     public readonly struct SafetyObject
     {
@@ -55,7 +66,10 @@ namespace Teleop.Eval.JointDrive
         public const float ApproachClearanceMeters = 0.02f;
         public const float StopGapMinMeters = 0.01f;
         public const float StopGapMaxMeters = 0.03f;
-        public const float TouchDepthMeters = 0.008f;
+        // Measured on the twin 2026-11-15: the collision model's arm boxes are larger than Isaac's link shapes, so its first
+        // touch is about 15 mm short of the real one. 8 mm reached no object (2 of 2), 15 and 25 mm touched and backed off
+        // (3 of 3 driven), 35 mm tipped a post (1 of 2) or touched nothing: 20 mm.
+        public const float TouchDepthMeters = 0.020f;
         public const float ThroughPastMeters = 0.04f;
         public const float SweepRadians = 0.6f;
         public const float MinTravelMeters = 0.03f;
@@ -111,9 +125,10 @@ namespace Teleop.Eval.JointDrive
         /// </summary>
         public static bool Append(DriveScript script, in RobotArmProfile profile, ArmCollisionModel model, in DriveEnvelope envelope,
             IReadOnlyList<SafetyObject> objects, float speed, ref ArmPose current, ref double t, double end, ref SeededRng rng,
-            List<DriveLeg> legs, out string? error)
+            List<DriveLeg> legs, out string? error, SafetyOptions? options = null)
         {
             error = null;
+            options ??= new SafetyOptions();
             ArmCollisionModel clear = WithObjects(model, objects, ClearanceMeters);
             if (script == DriveScript.ReachNoObstacle)
             {
@@ -142,7 +157,7 @@ namespace Teleop.Eval.JointDrive
                 foreach (Sweep sweep in Sweeps(objects[oi], ref rng))
                 {
                     if (TryLine(profile, model, envelope, objects, oi, sweep, model.Home, out Line line) &&
-                        TryEvent(script, profile, model, envelope, objects, oi, line, ref current, ref t, ref rng, legs))
+                        TryEvent(script, profile, model, envelope, objects, oi, line, ref current, ref t, ref rng, legs, options))
                     {
                         return true;
                     }
@@ -289,7 +304,8 @@ namespace Teleop.Eval.JointDrive
         }
 
         private static bool TryEvent(DriveScript script, in RobotArmProfile profile, ArmCollisionModel model, in DriveEnvelope envelope,
-            IReadOnlyList<SafetyObject> objects, int oi, in Line line, ref ArmPose current, ref double t, ref SeededRng rng, List<DriveLeg> legs)
+            IReadOnlyList<SafetyObject> objects, int oi, in Line line, ref ArmPose current, ref double t, ref SeededRng rng, List<DriveLeg> legs,
+            SafetyOptions options)
         {
             int target;
             (float Min, float Max) speeds;
@@ -311,7 +327,7 @@ namespace Teleop.Eval.JointDrive
             {
                 // The first touch lies between the last free pose and the contact pose: TouchDepthMeters on from the free one,
                 // so the push is at most that, plus nothing.
-                target = line.Contact - 1 + (int)MathF.Ceiling(TouchDepthMeters / LineStepMeters);
+                target = line.Contact - 1 + (int)MathF.Ceiling(options.TouchDepthMeters / LineStepMeters);
                 if (target >= line.Usable) return false;
                 speeds = TouchSpeed;
             }
@@ -372,6 +388,9 @@ namespace Teleop.Eval.JointDrive
                 last = lifted;
             }
 
+            // DrivePlan returns home from here on a path the model calls free: an event that leaves no such path would refuse the
+            // whole take (2026-11-15: "no free path back to home"), so another sweep is tried instead.
+            if (!DrivePlan.PathValid(profile, model, null, last, model.Home)) return false;
             legs.AddRange(newLegs);
             t = tt;
             current = last;

@@ -95,11 +95,32 @@ just isaac-edit-check                # against isaac-host fr3-duo-bench 7: heads
   The pair is `backdrops.pick(images, seed, change)`: change 0 at start-up, then one more after each recorded session.
   - Downloads are untrusted data: a JPEG of at most 20 MB, decoded and at least 256 px a side, stored under its own sha256.
   - Without images, the table is plain and there is no screen.
+- **The room** (docs/adr/0037 decision 2), for a scene with an `environment` (`jetrover-bench` since 2026-11-15, which has
+  no backdrops): the dome light shows a Poly Haven indoor HDRI, a 360° photograph of a real room, so what the cameras see
+  beyond the table and the light on it come from one photo.
+
+  ```bash
+  just isaac-environments-fetch      # once: every indoor HDRI (CC0, ~300, 2K, ~2 GB) into ~/isaacsim/assets/hdri/
+  just isaac-environments-status     # how many, their licences, the spread of their brightness, any whose sha256 no longer matches
+  ```
+
+  - The room is `environments.pick(hdris, seed, change)`, at the same changes as the backdrop: every room once before any
+    comes back, turned by a random yaw.
+  - The dome's intensity starts at the scene's `meanRadiance` over the room's mean luminance (the rooms' own brightness
+    spans 16x). That alone left a white studio twice as bright in the image as a dim store, so the renderer then meters
+    the first still camera's image and corrects the dome toward `targetBrightness`, as a camera's auto-exposure would.
+    Each other camera (the wrist's) then meters its own image and keeps that gain for the session: the dome sets the
+    light, each camera its own exposure.
+  - After a change the renderer re-renders the pose, unrecorded, until the image holds still (5-7 frames on the 5090),
+    and again after each metering step.
+  - The floor is not drawn (the room's own floor shows); it still catches a falling object in the bridge.
+  - Each session records `EN` and `isaac/environment.json`, the attribution of every room shown.
+  - Without rooms, the dome is plain.
 - **Recording.** While RobotHost's control file (`~/data/sessions/fr3_duo-isaac/.active`) names a session, the renderer writes
   into it `isaac.jlog` and `isaac/<camera>.<stream>.frames`:
   - head colour (JPEG 92), depth (16-bit PNG, mm) and masks (16-bit PNG, stable ids);
   - third-person colour;
-  - `isaac/backdrops.json`, the attribution of every image shown.
+  - `isaac/backdrops.json`, the attribution of every image shown (and `isaac/environment.json`, every room's).
   RobotHost waits up to 60 s for the trailer, checks the `FS` lines and hashes `isaac/`. The renderer records only when its
   start-up render lag agreed in ≥ 99.5% of samples, and stops below 20 GB free. The records are in
   `trainer/contract/SESSION_FORMAT.md`.

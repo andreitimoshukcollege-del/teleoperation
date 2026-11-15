@@ -14,6 +14,7 @@ they need. Nothing here is edited by hand, except a take list (`scenarios.txt`).
 │   ├── robothost/                   RobotHost, as the Isaac hosts build it
 │   ├── work/                        the URDFs converted to USD
 │   ├── backdrops/                   the Open Images backdrops (just isaac-backdrops-fetch; the scene files name this path)
+│   ├── assets/hdri/polyhaven-indoor/ the HDRI rooms around the JetRover twin (ADR 0037; just isaac-environments-fetch; jetrover-bench names this path)
 │   └── jetrover-uplink              the uplink impairment's control file (just isaac-uplink-*)
 ├── data/                            everything recorded, and what is built from it
 │   ├── sessions/<robot>-<source>/   automatic sessions: jetrover-isaac (isaac-jetrover-host), fr3_duo-isaac (isaac-host)

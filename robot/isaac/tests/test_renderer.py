@@ -197,3 +197,77 @@ def test_the_render_settings_are_the_carb_settings_run_sets_and_checks():
         "/rtx/post/motionblur/enabled": False}
     assert render_settings(parse_args(["--scene", "s.json", "--rtx-renderer", "PathTracing", "--motion-blur"])) == {
         "/rtx/rendermode": "PathTracing"}
+
+
+# --- the room around the table (docs/adr/0037 decision 2) -------------------------------------------------------------
+
+def _jetrover_bench():
+    from conftest import REPO
+    import os
+    from teleop_isaac import scene as scene_module
+    return scene_module.load(os.path.join(REPO, "core", "Scenes", "jetrover-bench.json"))
+
+
+def test_the_jetrover_bench_is_a_grey_table_in_an_hdri_room_with_no_photo_surfaces():
+    from teleop_isaac.renderer import environment_spec
+    s = _jetrover_bench()
+    assert backdrop_quads(s) == []  # no mat on the table, no screens around it
+    env = environment_spec(s)
+    assert env["dome"] == "dome" and env["meanRadiance"] > 0 and env["yawDeg"] == [0.0, 360.0]
+    assert env["hideSurfaces"] == ["floor"]  # the room's own floor shows; the bridge's floor still catches what falls
+    assert [x["kind"] for x in s.extra["lights"]] == ["dome"]  # the room is the light: no fixed distant light
+    grey = {x.id: x.colour for x in s.surfaces}
+    assert grey["table"] == grey["bench"] and len(set(grey["table"])) == 1
+
+
+def test_an_environment_must_name_a_dome_light_a_brightness_and_real_surfaces():
+    import dataclasses
+    from teleop_isaac.renderer import environment_spec
+    s = _jetrover_bench()
+    for change, word in (({"kind": "box"}, "kind"), ({"dome": "sun"}, "dome"), ({"meanRadiance": 0}, "meanRadiance"),
+                         ({"yawDeg": [10, 5]}, "yawDeg"), ({"rotateXYZDeg": [0, 0]}, "rotateXYZDeg"),
+                         ({"hideSurfaces": ["ceiling"]}, "ceiling"), ({"change": "per-frame"}, "change"),
+                         ({"targetBrightness": 300}, "targetBrightness")):
+        t = dataclasses.replace(s, extra=dict(s.extra, environment=dict(s.extra["environment"], **change)))
+        with pytest.raises(ValueError, match=word):
+            environment_spec(t)
+    t = dataclasses.replace(s, extra={k: v for k, v in s.extra.items() if k != "environment"})
+    assert environment_spec(t) is None  # a scene with no room (fr3-duo-bench): backdrops as before
+
+
+def test_a_room_has_settled_once_the_brightness_holds_still_past_the_render_lag():
+    from teleop_isaac.renderer import settled
+    assert not settled([198.1, 140.9, 141.4, 141.6], at_least=5)                # too soon
+    assert settled([198.1, 140.9, 141.45, 141.61, 141.71, 141.77], at_least=5)  # measured on the 5090, 2026-11-15
+    assert not settled([100.0, 100.0, 100.0, 100.0, 130.0], at_least=3)        # the new room has only just shown
+    assert settled([100.0, 130.0, 130.1, 130.1, 130.2], at_least=3)
+
+
+def test_the_meter_corrects_the_dome_toward_the_target_within_its_range():
+    from teleop_isaac.renderer import METER_RANGE, metered_intensity
+    # 1.5x too bright: the dome drops by 1.5^2.2, as an image's brightness goes with radiance^(1/2.2).
+    assert metered_intensity(1000.0, 1000.0, 177.0, 118.0) == pytest.approx(1000.0 / 1.5 ** 2.2)
+    assert metered_intensity(1000.0, 1000.0, 118.0 / 1.5, 118.0) == pytest.approx(1000.0 * 1.5 ** 2.2)
+    assert metered_intensity(1000.0, 1000.0, 118.0, 118.0) == pytest.approx(1000.0)
+    # Never past METER_RANGE of the luminance-normalised intensity, however dark the image (a black frame included).
+    assert metered_intensity(3000.0, 1000.0, 1.0, 118.0) == pytest.approx(1000.0 * METER_RANGE[1])
+    assert metered_intensity(300.0, 1000.0, 255.0, 10.0) == pytest.approx(1000.0 * METER_RANGE[0])
+    assert metered_intensity(1000.0, 1000.0, 0.0, 118.0) == pytest.approx(1000.0 * METER_RANGE[1])
+
+
+def test_a_cameras_own_exposure_is_a_gain_in_linear_light_within_its_range():
+    import numpy as np
+    from teleop_isaac.renderer import CAMERA_GAIN_RANGE, camera_gain, exposure_lut
+    assert camera_gain(118.0, 118.0) == pytest.approx(1.0)
+    assert camera_gain(59.0, 118.0) == pytest.approx(CAMERA_GAIN_RANGE[1])   # 2^2.2 > 4: as far as it goes
+    assert camera_gain(177.0, 118.0) == pytest.approx((118 / 177) ** 2.2)
+    assert camera_gain(0.0, 118.0) == pytest.approx(CAMERA_GAIN_RANGE[1])    # a black frame never divides by zero
+    assert exposure_lut(1.0) is None
+    up, down = exposure_lut(2.0), exposure_lut(0.5)
+    assert up.dtype == np.uint8 and len(up) == 256
+    assert (np.diff(up.astype(int)) >= 0).all() and (np.diff(down.astype(int)) >= 0).all()  # never reorders tones
+    assert up[0] == 0 and up[255] == 255 and down[0] == 0
+    # Double the light: mid-grey 118 (linear 0.181) becomes linear 0.362, sRGB ~161; half: linear 0.090, sRGB ~85.
+    assert abs(int(up[118]) - 161) <= 1 and abs(int(down[118]) - 85) <= 1
+    img = np.array([[[118, 0, 255]]], np.uint8)
+    assert up[img].tolist() == [[[up[118], 0, 255]]]

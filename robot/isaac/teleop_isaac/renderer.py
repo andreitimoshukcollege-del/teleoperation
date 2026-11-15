@@ -36,6 +36,7 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import Dict, List, Mapping, Optional, Sequence, Tuple
 
 from . import backdrops as backdrops_module
+from . import environments as environments_module
 from . import camfeed, camwire, kinematics, wire
 from . import profile as profile_module
 from . import scene as scene_module
@@ -208,6 +209,49 @@ def backdrop_quads(scene) -> List[Tuple[str, str, List[Tuple[float, float, float
     return out
 
 
+def environment_spec(scene) -> Optional[Dict]:
+    """The scene file's room around the table (docs/adr/0037 decision 2), checked, or None when it has none: an HDRI on the
+    dome light ``dome``, its brightness set so the room's mean radiance is ``meanRadiance`` whatever the photo's exposure,
+    turned about the vertical by a seeded draw from ``yawDeg``, after ``rotateXYZDeg``. ``hideSurfaces`` are surfaces the
+    cameras do not see (the room's own floor shows instead), though they still collide in the bridge."""
+    spec = scene.extra.get("environment")
+    if spec is None:
+        return None
+    if spec.get("kind") != "hdri":
+        raise ValueError(f"environment kind {spec.get('kind')!r}: only 'hdri'")
+    domes = [light["id"] for light in scene.extra.get("lights") or [] if light.get("kind") == "dome"]
+    dome = spec.get("dome", "dome")
+    if dome not in domes:
+        raise ValueError(f"environment dome {dome!r} is not a dome light of the scene ({domes})")
+    radiance = float(spec.get("meanRadiance", 0))
+    if not radiance > 0:
+        raise ValueError("environment meanRadiance must be positive")
+    yaw = [float(v) for v in spec.get("yawDeg", [0.0, 360.0])]
+    if len(yaw) != 2 or yaw[0] > yaw[1]:
+        raise ValueError("environment yawDeg is [low, high]")
+    rot = [float(v) for v in spec.get("rotateXYZDeg", [0.0, 0.0, 0.0])]
+    if len(rot) != 3:
+        raise ValueError("environment rotateXYZDeg has three angles")
+    surfaces = {x.id for x in scene.surfaces}
+    hide = list(spec.get("hideSurfaces") or [])
+    for sid in hide:
+        if sid not in surfaces:
+            raise ValueError(f"environment hides {sid!r}, which is not a surface of the scene")
+    if spec.get("change", "per-session") != "per-session":
+        raise ValueError("environment change: only 'per-session'")
+    return {"dome": dome, "manifest": str(spec.get("manifest", "")), "meanRadiance": radiance, "yawDeg": yaw,
+            "rotateXYZDeg": rot, "hideSurfaces": hide}
+
+
+def settled(trace: Sequence[float], at_least: int, still: int = 3, tolerance: float = 0.25) -> bool:
+    """Whether a room change has shown: at least ``at_least`` frames rendered, and the camera's mean brightness (0-255) has
+    moved less than ``tolerance`` over each of the last ``still`` frames."""
+    if len(trace) < max(at_least, still + 1):
+        return False
+    tail = trace[-(still + 1):]
+    return all(abs(b - a) < tolerance for a, b in zip(tail, tail[1:]))
+
+
 # The masks' stable ids (docs/adr/0032 decision 5): the same in every session, recorded in each as ``ID`` records. A
 # scene object ``n`` is ``OBJECT_BASE + n``. 0 is anything unlabelled, and the background.
 MASK_IDS = {"left_arm": 1, "left_hand": 2, "right_arm": 3, "right_hand": 4, "head": 5, "mount": 6, "arm": 7, "hand": 8,
@@ -315,7 +359,10 @@ def parse_args(argv=None) -> argparse.Namespace:
                                                           "are recorded into it (docs/adr/0032 decision 6). Empty: never")
     a.add_argument("--record-every", type=int, default=1, help="record every this many rendered frames")
     a.add_argument("--backdrops", default="", help="the backdrop images' folder (with manifest.json); default: the scene file's")
-    a.add_argument("--backdrop-seed", type=int, default=-1, help="the backdrop draw's seed; -1: from the clock (it is recorded)")
+    a.add_argument("--backdrop-seed", type=int, default=-1, help="the seed of the backdrop and room draws; -1: from the clock (it is recorded)")
+    a.add_argument("--environments", default="", help="the HDRI rooms' folder (with manifest.json, docs/adr/0037); default: the scene file's")
+    a.add_argument("--environment-settle-max", type=int, default=90,
+                   help="after a room change, render at most this many frames, unrecorded, waiting for the new room to show")
     a.add_argument("--min-free-gb", type=float, default=20.0, help="stop recording below this much free disk")
     # How the frames are rendered (docs/adr/0036 amendment 2; measured 2026-11-15 on the 5090, three 640x360 cameras recording
     # rgb, depth and masks). Isaac's default, DLSS Performance, renders each camera at half its width and height and rebuilds
@@ -456,9 +503,11 @@ def run(app, args, p, scene, cameras, fps, joints, motors, tap) -> int:
     for o, path in zip(scene.objects, world.object_paths):
         ops = UsdGeom.Xformable(stage.GetPrimAtPath(path)).GetOrderedXformOps()
         object_ops[o.id] = (ops[0], ops[1])
+    domes = {}
     for light in scene.extra.get("lights") or []:
         if light.get("kind") == "dome":
-            UsdLux.DomeLight.Define(stage, f"/World/Lights/{light['id']}").CreateIntensityAttr(float(light.get("intensity", 800)))
+            domes[light["id"]] = UsdLux.DomeLight.Define(stage, f"/World/Lights/{light['id']}")
+            domes[light["id"]].CreateIntensityAttr(float(light.get("intensity", 800)))
         elif light.get("kind") == "distant":
             d = UsdLux.DistantLight.Define(stage, f"/World/Lights/{light['id']}")
             d.CreateIntensityAttr(float(light.get("intensity", 2500)))
@@ -501,6 +550,22 @@ def run(app, args, p, scene, cameras, fps, joints, motors, tap) -> int:
     quad_meshes, quad_files = {}, {}
     for qid, _, corners in quads:
         quad_meshes[qid], quad_files[qid] = textured_quad(f"/World/Backdrop/{prim_name('q', qid)}", corners)
+
+    # --- the room: an HDRI on the dome light, background and light from one photo (docs/adr/0037 decision 2) --------
+    env = environment_spec(scene)
+    hdris, env_root, env_dome, env_rotate = [], "", None, None
+    if env is not None:
+        env_root = args.environments or os.path.dirname(os.path.expanduser(env["manifest"])) or environments_module.DEFAULT_ROOT
+        if os.path.exists(os.path.join(env_root, "manifest.json")):
+            hdris = environments_module.load_manifest(env_root)["hdris"]
+        env_dome = domes[env["dome"]]
+        env_dome.CreateTextureFormatAttr(UsdLux.Tokens.latlong)
+        env_rotate = UsdGeom.Xformable(env_dome).AddRotateXYZOp()
+        env_rotate.Set(Gf.Vec3f(*env["rotateXYZDeg"]))
+        for sid in env["hideSurfaces"]:
+            UsdGeom.Imageable(stage.GetPrimAtPath(world.surface_paths[sid])).MakeInvisible()
+        if not hdris:
+            print(f"[render] warning: no HDRI rooms in {env_root} (just isaac-environments-fetch): a plain dome light", flush=True)
 
     # --- mask labels, on prims that never nest (docs/adr/0032 decision 5) ------------------------------------------
     table = mask_table([o.id for o in scene.objects])
@@ -666,9 +731,37 @@ def run(app, args, p, scene, cameras, fps, joints, motors, tap) -> int:
     # --- backdrops: one seeded pair at start-up and after every recorded session (docs/adr/0032 decision 4) ------------
     backdrop = {"change": -1, "images": {}, "settle_until": -1}  # images: quad id -> manifest entry
     used_this_session = []
+    room = {"hdri": None, "yaw": 0.0, "intensity": 0.0, "settle": 0, "trace": []}
+    rooms_this_session = []
+
+    def change_room() -> bool:
+        """The next room on the dome (docs/adr/0037 decision 2); True if the dome changed and must settle."""
+        if env is None or not hdris:
+            return False
+        hdri, yaw = environments_module.pick(hdris, backdrop_seed, backdrop["change"], env["yawDeg"])
+        intensity = environments_module.dome_intensity(env["meanRadiance"], hdri)
+        env_dome.GetTextureFileAttr().Set(os.path.join(env_root, hdri["file"]))
+        env_dome.GetIntensityAttr().Set(intensity)
+        rx, ry, rz = env["rotateXYZDeg"]
+        env_rotate.Set(Gf.Vec3f(rx, ry, rz + yaw))
+        room.update(hdri=hdri, yaw=yaw, intensity=round(intensity, 3), settle=0, trace=[])
+        rooms_this_session.append(hdri)
+        return True
+
+    def en_fields():
+        h = room["hdri"] or {}
+        return (time.monotonic_ns(), backdrop["change"], backdrop_seed, h.get("id", ""), h.get("sha256", ""), room["yaw"],
+                room["intensity"], room["settle"])
 
     def change_backdrop(frame_now: int) -> None:
         backdrop["change"] += 1
+        if change_room():
+            settle_room()
+            session_record("EN", *en_fields())
+        if not quads:
+            backdrop["images"] = {}
+            backdrop["settle_until"] = frame_now + lag + 1
+            return
         if len(images) < len(quads):
             backdrop["images"] = {}  # too few images fetched: plain surfaces, and no screens
             for mesh in quad_meshes.values():
@@ -702,6 +795,9 @@ def run(app, args, p, scene, cameras, fps, joints, motors, tap) -> int:
     def preamble():
         used_this_session.clear()
         used_this_session.extend(backdrop["images"].values())
+        rooms_this_session.clear()
+        if room["hdri"] is not None:
+            rooms_this_session.append(room["hdri"])
         out = [("IV", version("isaacsim"), fps, args.record_every, lag, round(agree, 4), len(samples)),
                ("RX", args.rtx_renderer, args.anti_aliasing, args.subframes, 1 if args.motion_blur else 0, args.samples_per_pixel),
                ("SC", scene.name, scene_sha)]
@@ -711,6 +807,8 @@ def run(app, args, p, scene, cameras, fps, joints, motors, tap) -> int:
                         "mount" if c["mount"] else "base"))
         out.append(("ID", [[v, k] for k, v in sorted(table.items(), key=lambda kv: kv[1])]))
         out.append(("BK", *bk_fields()))
+        if env is not None:
+            out.append(("EN", *en_fields()))
         if world_snapshot["objects"]:
             out.append(("OL", world_snapshot["sensed"], world_snapshot["revision"], world_snapshot["objects"]))
         out.append(("SZ", max(0, world_sizes["revision"]), world_sizes["sizes"]))
@@ -724,7 +822,18 @@ def run(app, args, p, scene, cameras, fps, joints, motors, tap) -> int:
                 items.append({k: e[k] for k in ("sha256", "imageId", "license", "author", "authorProfileUrl", "title",
                                                  "landingUrl", "source", "url", "width", "height")})
         doc = {"format": "teleop-backdrops-used", "version": 1, "license": backdrops_module.CC_BY_2, "images": items}
-        return {"backdrops.json": (json.dumps(doc, indent=1, sort_keys=True) + "\n").encode("utf-8")}
+        out = {"backdrops.json": (json.dumps(doc, indent=1, sort_keys=True) + "\n").encode("utf-8")}
+        if env is not None:
+            seen, rooms = set(), []
+            for e in rooms_this_session:
+                if e["sha256"] not in seen:
+                    seen.add(e["sha256"])
+                    rooms.append({k: e[k] for k in ("id", "sha256", "name", "authors", "license", "source", "url", "landingUrl",
+                                                     "width", "height", "meanLuminance")})
+            doc = {"format": "teleop-environments-used", "version": 1, "license": environments_module.CC0,
+                   "meanRadiance": env["meanRadiance"], "hdris": rooms}
+            out["environment.json"] = (json.dumps(doc, indent=1, sort_keys=True) + "\n").encode("utf-8")
+        return out
 
     if args.record_control:
         if agree < 0.995 or not samples and args.lag < 0:
@@ -778,10 +887,30 @@ def run(app, args, p, scene, cameras, fps, joints, motors, tap) -> int:
             with pending_lock:
                 pending[i] -= 1
 
-    change_backdrop(0)
     stamps = Stamps()
     frame_values: deque = deque(maxlen=16)  # the joint values posed at each frame, for the VQ records
     state_sensed, state_values = camwire.UNSET, {}
+
+    def settle_room() -> None:
+        """Render the pose again, unrecorded, until the new room shows: the dome's texture loads in the background, so the
+        frames right after a change can still show the old room or none (measured on the 5090, docs/adr/0037). Every
+        render is stamped as posed, so the lag's frame association holds. Between sessions, so nothing recorded waits."""
+        trace = room["trace"]
+        for _ in range(max(0, args.environment_settle_max)):
+            stamps.posed(state_sensed)
+            frame_values.append(state_values)
+            render_frame()
+            rgb, _ = read(sensors[lag_i][1], "rgb")
+            if rgb is not None:
+                trace.append(round(float(np.asarray(rgb[::8, ::8, :3], np.float32).mean()), 2))
+            if settled(trace, at_least=lag + 3):
+                break
+        room["settle"] = len(trace)
+        h = room["hdri"] or {}
+        print(f"[render] room {h.get('id')} (yaw {room['yaw']:.0f} deg, dome {room['intensity']:.0f}): "
+              f"{'settled' if settled(trace, lag + 3) else 'NOT settled'} after {len(trace)} frames; brightness {trace}", flush=True)
+
+    change_backdrop(0)
     posed_values = {}  # the joint values the links were posed with at the previous frame
     states_in = worlds_in = 0
     frame_s = 1.0 / fps
@@ -791,7 +920,10 @@ def run(app, args, p, scene, cameras, fps, joints, motors, tap) -> int:
     frames = window_frames = recorded = 0
     for c, f in zip(specs, feeds):
         print(f"[render] camera {c['id']}: {c['width']}x{c['height']}, fx {c['fx']:.1f}, feed on UDP :{f.port}, records {c['record']}", flush=True)
-    print(f"[render] backdrops: {len(images)} images from {root_dir}, seed {backdrop_seed}; {labelled} robot prims labelled for masks", flush=True)
+    print(f"[render] backdrops: {len(images) if quads else 0} images from {root_dir}, seed {backdrop_seed}; {labelled} robot prims labelled for masks", flush=True)
+    if env is not None:
+        print(f"[render] rooms: {len(hdris)} HDRIs from {env_root}, mean radiance {env['meanRadiance']}, yaw {env['yawDeg']}, "
+              f"hidden {env['hideSurfaces']}", flush=True)
     check_render_settings("at the start of the stream")
     print(f"[render] streaming at {fps} fps", flush=True)
     while not stop and (stop_at is None or time.perf_counter() < stop_at):

@@ -123,6 +123,28 @@ def test_a_failing_take_is_set_aside_with_its_reason(scenarios):
     assert json.load(open(os.path.join(dest, "safety-check.json")))["ok"] is False
 
 
+def test_the_watcher_never_rebuilds_a_safety_dataset(scenarios, tmp_path):
+    # 2026-11-15: the watcher took jetrover-isaac-safety/<batch> for one of its datasets, saw every take in its ledger as set
+    # aside (it skips the safety scenarios), and "rebuilt" it empty, deleting it.
+    from teleop_lerobot.watch import Converter
+
+    path = take(scenarios, "collide_with_obstacle", [])
+    out = tmp_path / "lerobot"
+    batch = out / "jetrover-isaac-safety" / "jetrover_20261115_020534_abcdef"
+    (batch / "meta" / "teleop").mkdir(parents=True)
+    (batch / "meta" / "info.json").write_text(json.dumps({"total_episodes": 1}))
+    (batch / "meta" / "teleop" / "takes.jsonl").write_text(json.dumps({"episode": 0, "take": path, "filesSha256": "x"}) + "\n")
+
+    class NoWriter:
+        def __getattr__(self, name):
+            raise AssertionError(f"the watcher wrote ({name}) though it had nothing of its own to write")
+
+    conv = Converter([scenarios], str(out), NoWriter(), settle=0, log=lambda m: None)
+    assert str(batch) not in conv.known_datasets()
+    conv.pass_once()
+    assert (batch / "meta" / "teleop" / "takes.jsonl").exists()
+
+
 def test_the_watcher_leaves_the_safety_scenarios_alone(scenarios):
     take(scenarios, "collide_with_obstacle", [])
     jetrover_take(scenarios, scenario="free-play")

@@ -3843,8 +3843,9 @@ isaac-safety-batch takes="25" seed="1":
     done <<< "$plan"
     echo "[safety] $n take(s): ${#kept[@]} kept, $setaside set aside, $unplanned not planned"
     [ "${#kept[@]}" -gt 0 ] || { echo "[safety] nothing kept: no dataset written" >&2; exit 1; }
-    # LeRobot's episode write failed once mid-build on 2026-11-15 (in its image statistics) and the same takes then built twice
-    # cleanly: the build is retried once into a fresh folder, a failed one set aside, and every attempt's full log kept there.
+    # A build that fails is retried once into a fresh folder, a failed one set aside, and every attempt's full log kept there.
+    # (The one failure seen, 2026-11-15, was the LeRobot watcher deleting the half-written dataset, since fixed: it leaves the
+    # *-safety groups alone.)
     ssh -o ConnectTimeout=10 "$gpu" "NAME='$name' bash -s $(printf "'%s' " "${kept[@]}")" <<'REMOTE'
     set -uo pipefail
     out=$HOME/isaacsim/lerobot/jetrover-isaac-safety; mkdir -p "$out"

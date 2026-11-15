@@ -35,6 +35,7 @@ from .takes import Camera, Frame, Take
 REACH, STOP, RECOVER, COLLIDE = "reach_no_obstacle", "stop_before_collision", "collide_and_recover", "collide_with_obstacle"
 CATEGORIES = (REACH, STOP, RECOVER, COLLIDE)
 SOURCE = "physics"
+GROUP_SUFFIX = "-safety"  # the datasets' folder, <out>/<robot>-<source>-safety/<batch>/: the watcher leaves it alone
 FRONT = "wrist"  # the twin's camera that is the real robot's (on the arm): his datasets' observation.images.front
 TIPPED_DEGREES = 30.0  # collide_with_obstacle: a touched object tipped at least this far, or
 MOVED_METERS = 0.03  # moved at least this far

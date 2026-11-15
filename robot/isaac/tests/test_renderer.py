@@ -172,3 +172,15 @@ def test_the_sim_motor_map_turns_the_grippers_opening_into_finger_travel():
     g = servo.SimModel.load().motors[10]
     assert v["gripper"] == v["gripper_mirror"] == pytest.approx(g.finger_table[10])
     assert m.values([(10, 0.0)])["gripper"] == pytest.approx(-g.finger_open)  # open: past the CAD's pose
+
+
+def test_the_render_settings_default_to_frames_that_show_only_their_own_pose():
+    # Isaac's DLSS and one render a frame smear a moving arm across frames (2026-11-14): off, and two renders a pose.
+    from teleop_isaac.renderer import parse_args
+
+    a = parse_args(["--scene", "s.json"])
+    assert (a.rtx_renderer, a.anti_aliasing, a.subframes, a.motion_blur) == ("RealTimePathTracing", 0, 2, False)
+    b = parse_args(["--scene", "s.json", "--anti-aliasing", "3", "--subframes", "1", "--motion-blur"])
+    assert (b.anti_aliasing, b.subframes, b.motion_blur) == (3, 1, True)
+    with pytest.raises(SystemExit):
+        parse_args(["--scene", "s.json", "--subframes", "0"])

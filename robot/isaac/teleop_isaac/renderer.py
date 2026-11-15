@@ -317,7 +317,19 @@ def parse_args(argv=None) -> argparse.Namespace:
     a.add_argument("--backdrops", default="", help="the backdrop images' folder (with manifest.json); default: the scene file's")
     a.add_argument("--backdrop-seed", type=int, default=-1, help="the backdrop draw's seed; -1: from the clock (it is recorded)")
     a.add_argument("--min-free-gb", type=float, default=20.0, help="stop recording below this much free disk")
-    return a.parse_args(argv)
+    # Isaac's defaults (DLSS Performance: a quarter of the pixels, upscaled from earlier frames; the real-time path tracer's
+    # temporal accumulation) smear a moving arm across frames, so a frame no longer shows only the state it is stamped with
+    # (measured 2026-11-14, docs/adr/0036 amendment 1). No anti-aliasing, no motion blur, and each pose rendered twice so the
+    # accumulated history settles on it: sharp still frames, a mostly solid moving arm, 28.5 fps of three cameras on the 5090.
+    a.add_argument("--rtx-renderer", default="RealTimePathTracing", help="Isaac's renderer (RealTimePathTracing, RaytracedLighting, ...)")
+    a.add_argument("--anti-aliasing", type=int, default=0, choices=(0, 1, 2, 3, 4),
+                   help="Isaac's anti-aliasing: 0 off, 1 TAA, 2 FXAA, 3 DLSS (Isaac's default, which smears), 4 RTXAA")
+    a.add_argument("--subframes", type=int, default=2, help="render each pose this many times before reading it (Replicator's rt_subframes)")
+    a.add_argument("--motion-blur", action="store_true", help="leave Isaac's motion blur setting as it is (off otherwise)")
+    args = a.parse_args(argv)
+    if args.subframes < 1:
+        a.error("--subframes must be at least 1")
+    return args
 
 
 def main(argv=None) -> int:
@@ -349,7 +361,11 @@ def main(argv=None) -> int:
 
     from isaacsim import SimulationApp
 
-    app = SimulationApp({"headless": True})
+    app = SimulationApp({"headless": True, "renderer": args.rtx_renderer, "anti_aliasing": args.anti_aliasing})
+    if not args.motion_blur:
+        import carb
+
+        carb.settings.get_settings().set("/rtx/post/motionblur/enabled", False)
     try:
         return run(app, args, p, scene, cameras, fps, joints, motors, tap)
     except BaseException:
@@ -376,6 +392,14 @@ def run(app, args, p, scene, cameras, fps, joints, motors, tap) -> int:
     from isaacsim.sensors.experimental.rtx import CameraSensor, RtxCamera
     from PIL import Image
     from pxr import Gf, Usd, UsdGeom, UsdLux, UsdSemantics
+
+    def render_frame() -> None:
+        """One frame: the pose rendered ``--subframes`` times, so the renderer's history settles on it before it is read."""
+        for _ in range(args.subframes):
+            RenderingManager.render()
+
+    print(f"[render] renderer {args.rtx_renderer}, anti-aliasing {args.anti_aliasing}, {args.subframes} subframe(s) a frame, "
+          f"motion blur {'as Isaac has it' if args.motion_blur else 'off'}", flush=True)
 
     if args.sim:
         from .jetrover_bridge import convert_urdf
@@ -565,7 +589,7 @@ def run(app, args, p, scene, cameras, fps, joints, motors, tap) -> int:
             pos = (0.35 + 0.4 * ((k * 7) % 11) / 10, -0.3 + 0.6 * ((k * 3) % 7) / 6, top + LAG_CUBE / 2 + 0.001)
             cube_t.Set(Gf.Vec3d(*pos))
             history.append(pos)
-            RenderingManager.render()
+            render_frame()  # as the frames are rendered: the lag is in frames of subframes
             seg, info = read(head_sensor, "semantic_segmentation")
             ids = {v.get("class"): int(i) for i, v in ((info or {}).get("idToLabels") or {}).items()}
             if seg is None or "lag_cube" not in ids:
@@ -647,6 +671,7 @@ def run(app, args, p, scene, cameras, fps, joints, motors, tap) -> int:
         used_this_session.clear()
         used_this_session.extend(backdrop["images"].values())
         out = [("IV", version("isaacsim"), fps, args.record_every, lag, round(agree, 4), len(samples)),
+               ("RX", args.rtx_renderer, args.anti_aliasing, args.subframes, 1 if args.motion_blur else 0),
                ("SC", scene.name, scene_sha)]
         for c, pose in zip(specs, camera_poses):
             out.append(("CM", c["id"], c["width"], c["height"], round(c["fx"], 6), round(c["fy"], 6), c["cx"], c["cy"], c["near"],
@@ -788,7 +813,7 @@ def run(app, args, p, scene, cameras, fps, joints, motors, tap) -> int:
         view.set_local_poses(ts, qs)
         stamps.posed(state_sensed)
         frame_values.append(state_values)
-        RenderingManager.render()
+        render_frame()
         capture = stamps.shown(lag)
         recording = session is not None and session.active and frames % max(1, args.record_every) == 0 and capture != camwire.UNSET
         if recording:

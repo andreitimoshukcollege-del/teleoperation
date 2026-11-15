@@ -175,12 +175,25 @@ def test_the_sim_motor_map_turns_the_grippers_opening_into_finger_travel():
 
 
 def test_the_render_settings_default_to_frames_that_show_only_their_own_pose():
-    # Isaac's DLSS and one render a frame smear a moving arm across frames (2026-11-14): off, and two renders a pose.
+    # Isaac's DLSS Performance smears a moving camera's frames (2026-11-14), and Isaac 6.2 turns anything but 3 or 4 back
+    # into it (2026-11-15): DLAA, two samples a pixel, one render a pose.
     from teleop_isaac.renderer import parse_args
 
     a = parse_args(["--scene", "s.json"])
-    assert (a.rtx_renderer, a.anti_aliasing, a.subframes, a.motion_blur) == ("RealTimePathTracing", 0, 2, False)
-    b = parse_args(["--scene", "s.json", "--anti-aliasing", "3", "--subframes", "1", "--motion-blur"])
-    assert (b.anti_aliasing, b.subframes, b.motion_blur) == (3, 1, True)
-    with pytest.raises(SystemExit):
-        parse_args(["--scene", "s.json", "--subframes", "0"])
+    assert (a.rtx_renderer, a.anti_aliasing, a.samples_per_pixel, a.subframes, a.motion_blur) == ("RealTimePathTracing", 4, 2, 1, False)
+    b = parse_args(["--scene", "s.json", "--anti-aliasing", "3", "--dlss-mode", "2", "--subframes", "2", "--motion-blur"])
+    assert (b.anti_aliasing, b.dlss_mode, b.subframes, b.motion_blur) == (3, 2, 2, True)
+    for bad in (["--subframes", "0"], ["--samples-per-pixel", "0"], ["--anti-aliasing", "0"]):
+        with pytest.raises(SystemExit):
+            parse_args(["--scene", "s.json"] + bad)
+
+
+def test_the_render_settings_are_the_carb_settings_run_sets_and_checks():
+    # Set once the stage has loaded (opening it puts Isaac's back) and checked again before streaming.
+    from teleop_isaac.renderer import parse_args, render_settings
+
+    assert render_settings(parse_args(["--scene", "s.json"])) == {
+        "/rtx/rendermode": "RealTimePathTracing", "/rtx/post/aa/op": 4, "/rtx/post/dlss/execMode": 0, "/rtx/rtpt/spp": 2,
+        "/rtx/post/motionblur/enabled": False}
+    assert render_settings(parse_args(["--scene", "s.json", "--rtx-renderer", "PathTracing", "--motion-blur"])) == {
+        "/rtx/rendermode": "PathTracing"}

@@ -45,7 +45,7 @@
       "feedPort": 6003, "feedQuality": 80, "recordQuality": 92, "record": ["rgb", "depth", "mask"] }
   ],
   "lights": [
-    { "id": "dome", "kind": "dome", "intensity": 300 },
-    { "id": "key", "kind": "distant", "intensity": 1000, "rotateXYZDeg": [-40, 25, 0] }
+    { "id": "dome", "kind": "dome", "intensity": 1000 },
+    { "id": "key", "kind": "distant", "intensity": 3000, "rotateXYZDeg": [-40, 25, 0] }
   ]
 }

@@ -317,19 +317,40 @@ def parse_args(argv=None) -> argparse.Namespace:
     a.add_argument("--backdrops", default="", help="the backdrop images' folder (with manifest.json); default: the scene file's")
     a.add_argument("--backdrop-seed", type=int, default=-1, help="the backdrop draw's seed; -1: from the clock (it is recorded)")
     a.add_argument("--min-free-gb", type=float, default=20.0, help="stop recording below this much free disk")
-    # Isaac's defaults (DLSS Performance: a quarter of the pixels, upscaled from earlier frames; the real-time path tracer's
-    # temporal accumulation) smear a moving arm across frames, so a frame no longer shows only the state it is stamped with
-    # (measured 2026-11-14, docs/adr/0036 amendment 1). No anti-aliasing, no motion blur, and each pose rendered twice so the
-    # accumulated history settles on it: sharp still frames, a mostly solid moving arm, 28.5 fps of three cameras on the 5090.
-    a.add_argument("--rtx-renderer", default="RealTimePathTracing", help="Isaac's renderer (RealTimePathTracing, RaytracedLighting, ...)")
-    a.add_argument("--anti-aliasing", type=int, default=0, choices=(0, 1, 2, 3, 4),
-                   help="Isaac's anti-aliasing: 0 off, 1 TAA, 2 FXAA, 3 DLSS (Isaac's default, which smears), 4 RTXAA")
-    a.add_argument("--subframes", type=int, default=2, help="render each pose this many times before reading it (Replicator's rt_subframes)")
+    # How the frames are rendered (docs/adr/0036 amendment 2; measured 2026-11-15 on the 5090, three 640x360 cameras recording
+    # rgb, depth and masks). Isaac's default, DLSS Performance, renders each camera at half its width and height and rebuilds
+    # it from earlier frames: soft when still, smeared when the camera moves (a new pose takes ~20 frames to settle), and the
+    # wrist camera always moves. DLAA (4) renders at the camera's own resolution and settles in one frame: moving wrist frames
+    # 38 dB from their pose's still image and 1.4-1.7x the still detail, 30 fps with one render a pose. Isaac 6.2's Real-Time
+    # 2.0 takes only 3 or 4 (anything else turns back into 3: the "0, off" asked for since 2026-11-14 was DLSS all along), and
+    # opening a stage puts its settings back: run() sets them once the stage has loaded and stops if Isaac did not keep one.
+    # Two path-traced samples a pixel cost nothing at 30 fps; four cost 2 fps.
+    a.add_argument("--rtx-renderer", default="RealTimePathTracing", help="Isaac's renderer (RealTimePathTracing or PathTracing)")
+    a.add_argument("--anti-aliasing", type=int, default=4, choices=(3, 4),
+                   help="Real-Time 2.0's anti-aliasing: 4 DLAA (the camera's own resolution), 3 DLSS (upscaled from earlier frames; Isaac's default)")
+    a.add_argument("--dlss-mode", type=int, default=0, choices=(0, 1, 2),
+                   help="with --anti-aliasing 3: 0 performance (Isaac's default), 1 balanced, 2 quality")
+    a.add_argument("--samples-per-pixel", type=int, default=2, help="Real-Time 2.0's path-traced samples a pixel, each render")
+    a.add_argument("--subframes", type=int, default=1, help="render each pose this many times before reading it (Replicator's rt_subframes)")
     a.add_argument("--motion-blur", action="store_true", help="leave Isaac's motion blur setting as it is (off otherwise)")
     args = a.parse_args(argv)
     if args.subframes < 1:
         a.error("--subframes must be at least 1")
+    if args.samples_per_pixel < 1:
+        a.error("--samples-per-pixel must be at least 1")
     return args
+
+
+def render_settings(args) -> Dict[str, object]:
+    """The carb settings the frames are rendered with (see parse_args). run() sets them once the stage has loaded: opening a
+    stage puts Isaac's back."""
+    out: Dict[str, object] = {"/rtx/rendermode": args.rtx_renderer}
+    if args.rtx_renderer == "RealTimePathTracing":
+        out.update({"/rtx/post/aa/op": args.anti_aliasing, "/rtx/post/dlss/execMode": args.dlss_mode,
+                    "/rtx/rtpt/spp": args.samples_per_pixel})
+    if not args.motion_blur:
+        out["/rtx/post/motionblur/enabled"] = False
+    return out
 
 
 def main(argv=None) -> int:
@@ -362,10 +383,6 @@ def main(argv=None) -> int:
     from isaacsim import SimulationApp
 
     app = SimulationApp({"headless": True, "renderer": args.rtx_renderer, "anti_aliasing": args.anti_aliasing})
-    if not args.motion_blur:
-        import carb
-
-        carb.settings.get_settings().set("/rtx/post/motionblur/enabled", False)
     try:
         return run(app, args, p, scene, cameras, fps, joints, motors, tap)
     except BaseException:
@@ -398,8 +415,8 @@ def run(app, args, p, scene, cameras, fps, joints, motors, tap) -> int:
         for _ in range(args.subframes):
             RenderingManager.render()
 
-    print(f"[render] renderer {args.rtx_renderer}, anti-aliasing {args.anti_aliasing}, {args.subframes} subframe(s) a frame, "
-          f"motion blur {'as Isaac has it' if args.motion_blur else 'off'}", flush=True)
+    print(f"[render] renderer {args.rtx_renderer}, anti-aliasing {args.anti_aliasing}, {args.samples_per_pixel} sample(s) a pixel, "
+          f"{args.subframes} subframe(s) a frame, motion blur {'as Isaac has it' if args.motion_blur else 'off'}", flush=True)
 
     if args.sim:
         from .jetrover_bridge import convert_urdf
@@ -411,6 +428,21 @@ def run(app, args, p, scene, cameras, fps, joints, motors, tap) -> int:
     stage_utils.open_stage(usd)
     while stage_utils.is_stage_loading():
         app.update()
+    # Opening the stage put Isaac's render settings back (DLSS Performance, whatever SimulationApp was given; measured
+    # 2026-11-15): ours now, before the world, the cameras and the lag measurement, and checked again before streaming.
+    import carb
+
+    carb_settings = carb.settings.get_settings()
+    wanted_render = render_settings(args)
+    for key, value in wanted_render.items():
+        carb_settings.set(key, value)
+
+    def check_render_settings(when: str) -> None:
+        kept = {key: carb_settings.get(key) for key in wanted_render}
+        if kept != wanted_render:
+            raise SystemExit(f"error: Isaac did not keep the render settings {when}: asked {wanted_render}, has {kept}")
+
+    check_render_settings("after the stage loaded")
     stage = stage_utils.get_current_stage()
     robot = stage.GetDefaultPrim()
     robot.GetVariantSets().GetVariantSet("Physics").SetVariantSelection("none")
@@ -671,7 +703,7 @@ def run(app, args, p, scene, cameras, fps, joints, motors, tap) -> int:
         used_this_session.clear()
         used_this_session.extend(backdrop["images"].values())
         out = [("IV", version("isaacsim"), fps, args.record_every, lag, round(agree, 4), len(samples)),
-               ("RX", args.rtx_renderer, args.anti_aliasing, args.subframes, 1 if args.motion_blur else 0),
+               ("RX", args.rtx_renderer, args.anti_aliasing, args.subframes, 1 if args.motion_blur else 0, args.samples_per_pixel),
                ("SC", scene.name, scene_sha)]
         for c, pose in zip(specs, camera_poses):
             out.append(("CM", c["id"], c["width"], c["height"], round(c["fx"], 6), round(c["fy"], 6), c["cx"], c["cy"], c["near"],
@@ -760,6 +792,7 @@ def run(app, args, p, scene, cameras, fps, joints, motors, tap) -> int:
     for c, f in zip(specs, feeds):
         print(f"[render] camera {c['id']}: {c['width']}x{c['height']}, fx {c['fx']:.1f}, feed on UDP :{f.port}, records {c['record']}", flush=True)
     print(f"[render] backdrops: {len(images)} images from {root_dir}, seed {backdrop_seed}; {labelled} robot prims labelled for masks", flush=True)
+    check_render_settings("at the start of the stream")
     print(f"[render] streaming at {fps} fps", flush=True)
     while not stop and (stop_at is None or time.perf_counter() < stop_at):
         while True:

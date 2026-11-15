@@ -150,40 +150,136 @@ namespace Teleop.Eval.Tests.JointDrive
         public void EveryScript_DragsTheWrist_AlongAContinuousPath()
         {
             // Teleop is a dragged point: a target every 48 Hz tick along a continuous path, never a jump from pose to pose
-            // (the user, 2026-11-15). The plan's script part, sampled as joint-drive sends it, moves the wrist at most the
-            // fastest stroke's distance in a tick (the through sweep's 0.40 m/s, and a little for tremor), and nearly all of
-            // it comes as dense ticks rather than long moves.
+            // (the user, 2026-11-15). The plan's script part, sampled as joint-drive sends it, never moves the wrist faster
+            // than a hand does (HandModel.MaxWristSpeed), and all of its motion comes as dense ticks rather than long moves.
             foreach (DriveScript script in new[] { DriveScript.ReachNoObstacle, DriveScript.StopBeforeCollision, DriveScript.CollideAndRecover, DriveScript.CollideWithObstacle })
             {
                 DrivePlan plan = Plan(script, 3);
                 var script_ = plan.Legs.Where(l => l.Phase == LegPhase.Script).ToList();
                 double moving = script_.Where(l => l.Duration > 0).Sum(l => l.Duration);
-                double inTicks = script_.Where(l => l.Duration > 0 && Math.Abs(l.Duration - DragPath.TickSeconds) < 1e-9).Sum(l => l.Duration);
-                Assert.True(inTicks / moving > 0.95, $"{script}: {inTicks:0.0} of {moving:0.0} s moving is one target a tick");
+                double inTicks = script_.Where(l => l.Duration > 0 && Math.Abs(l.Duration - HandModel.TickSeconds) < 1e-9).Sum(l => l.Duration);
+                Assert.True(inTicks / moving > 0.99, $"{script}: {inTicks:0.0} of {moving:0.0} s moving is one target a tick");
                 double t0 = script_[0].Start, t1 = script_[^1].End;
-                Vector3 last = DragPath.Wrist(Profile, plan.Sample(t0));
+                Vector3 last = HandModel.Wrist(Profile, plan.Sample(t0));
                 float worst = 0f;
-                for (double t = t0 + DragPath.TickSeconds; t <= t1; t += DragPath.TickSeconds)
+                for (double t = t0 + HandModel.TickSeconds; t <= t1; t += HandModel.TickSeconds)
                 {
-                    Vector3 w = DragPath.Wrist(Profile, plan.Sample(t));
+                    Vector3 w = HandModel.Wrist(Profile, plan.Sample(t));
                     worst = Math.Max(worst, Vector3.Distance(w, last));
                     last = w;
                 }
 
-                Assert.True(worst <= SafetyScript.ThroughSpeed.Max * DragPath.TickSeconds * 1.3f + 0.002f, $"{script}: the wrist jumped {worst * 1000:0.0} mm in a tick");
+                Assert.True(worst <= HandModel.MaxWristSpeed * HandModel.TickSeconds + 0.0005f, $"{script}: the wrist jumped {worst * 1000:0.0} mm in a tick");
             }
         }
 
         [Fact]
-        public void AStroke_IsSmooth_EndsWhereItWasMeant_AndKeepsItsPeak()
+        public void TheHand_MovesAsAPersonDoes_NotFromRestToRest()
         {
-            var points = new[] { new Vector3(0.15f, 0f, 0.05f), new Vector3(0.18f, 0.06f, 0.08f), new Vector3(0.12f, 0.1f, 0.04f) };
-            List<Vector3> w = DragPath.Stroke(points, 0.1f, DragPath.Profile.MinimumJerk, 7);
-            Assert.Equal(points[^1], w[^1]);
-            float fastest = Enumerable.Range(1, w.Count - 1).Max(i => Vector3.Distance(w[i - 1], w[i])) / (float)DragPath.TickSeconds;
-            Assert.InRange(fastest, 0.08f, 0.13f); // the peak, give or take the tremor and the tick grid
-            Assert.Equal(1.0, DragPath.Shape(DragPath.Profile.EaseIn, 1.0), 9);
-            Assert.Equal(1.0, DragPath.Shape(DragPath.Profile.MinimumJerk, 1.0), 9);
+            // People at the headset (2026-11-15, 31 sessions, docs/adr/0036 amendment 2) chain overlapping submovements: 5.4
+            // speed peaks a bout, a quarter of bouts with a single one; they let go of the clutch while still moving (75% of
+            // holds begin with a step faster than 30 mm/s); they hold it let go 27% of the time, and move the wrist at ~98 mm/s
+            // (median, while moving). The script before (one minimum-jerk bell to rest, then the next) had 1.1 peaks a bout, 88%
+            // single-peak bouts, no release at speed and 32 mm/s. The bands here are loose: the measured ones are the analysis's.
+            var hand = new HumanOperator(Profile, Envelope, Model.Home, 11);
+            Assert.True(hand.FreeUntil(180, Model));
+            IReadOnlyList<HandCommand> c = hand.Commands;
+            int n = c.Count;
+            double dt = HandModel.TickSeconds;
+            var step = new double[n];
+            for (int k = 1; k < n; k++) step[k] = Vector3.Distance(c[k].Target, c[k - 1].Target) / dt;
+            double[] speed = Smooth(step, 0.040 / dt);
+
+            int holds = 0, atSpeed = 0, held = 0;
+            for (int k = 1; k < n; k++)
+            {
+                if (c[k].Held) held++;
+                if (c[k].Held && !c[k - 1].Held)
+                {
+                    holds++;
+                    if (step[k - 1] > 0.030) atSpeed++;
+                }
+            }
+
+            var peaks = new List<int>();
+            var inMotion = new List<double>();
+            for (int k = 0; k < n;)
+            {
+                if (c[k].Held || speed[k] < 0.010) { k++; continue; }
+                int end = k;
+                while (end < n && !c[end].Held && speed[end] >= 0.005) end++;
+                double top = 0;
+                for (int i = k; i < end; i++) top = Math.Max(top, speed[i]);
+                if (end - k >= 5) peaks.Add(Peaks(speed, k, end, Math.Max(0.1 * top, 0.003)));
+                for (int i = k; i < end; i++) inMotion.Add(speed[i]);
+                k = end;
+            }
+
+            inMotion.Sort();
+            double median = inMotion[inMotion.Count / 2];
+            double perBout = peaks.Average(), single = peaks.Count(p => p <= 1) / (double)peaks.Count;
+            string report = $"{peaks.Count} bouts, {perBout:0.0} peaks a bout, {single:P0} single-peak; {atSpeed}/{holds} holds entered at speed; held {held * dt / (n * dt):P0}; median speed moving {median * 1000:0} mm/s";
+            Assert.True(perBout >= 2.0, report);
+            Assert.True(single <= 0.5, report);
+            Assert.True(holds >= 10 && atSpeed >= 0.5 * holds, report);
+            Assert.InRange(held / (double)n, 0.10, 0.45);
+            Assert.True(median >= 0.045 && median <= 0.2, report);
+        }
+
+        /// <summary>A Gaussian moving average with an sd of <paramref name="sigma"/> samples.</summary>
+        private static double[] Smooth(double[] x, double sigma)
+        {
+            int r = (int)Math.Ceiling(3 * sigma);
+            var w = Enumerable.Range(-r, 2 * r + 1).Select(i => Math.Exp(-0.5 * i * i / (sigma * sigma))).ToArray();
+            var y = new double[x.Length];
+            for (int k = 0; k < x.Length; k++)
+            {
+                double s = 0, ws = 0;
+                for (int i = -r; i <= r; i++)
+                {
+                    int j = k + i;
+                    if (j < 0 || j >= x.Length) continue;
+                    s += w[i + r] * x[j];
+                    ws += w[i + r];
+                }
+
+                y[k] = s / ws;
+            }
+
+            return y;
+        }
+
+        /// <summary>The peaks of <paramref name="x"/> in [from, to): each rising by <paramref name="h"/> from the valley before it and falling by it after.</summary>
+        private static int Peaks(double[] x, int from, int to, double h)
+        {
+            int count = 0;
+            double valley = x[from], top = x[from];
+            bool rising = true;
+            for (int i = from; i < to; i++)
+            {
+                if (rising)
+                {
+                    top = Math.Max(top, x[i]);
+                    if (top - valley >= h && top - x[i] >= h)
+                    {
+                        count++;
+                        rising = false;
+                        valley = x[i];
+                    }
+                }
+                else
+                {
+                    valley = Math.Min(valley, x[i]);
+                    if (x[i] - valley >= h)
+                    {
+                        rising = true;
+                        top = x[i];
+                    }
+                }
+            }
+
+            if (rising && top - valley >= h) count++; // the bout ended on a peak (cut off by a release)
+            return Math.Max(count, 1);
         }
 
         [Fact]

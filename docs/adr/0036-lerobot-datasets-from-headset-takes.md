@@ -190,3 +190,71 @@ safe or unsafe, **unsafe while any arm link touches an object** (the table does 
 - Decision 2 of the main ADR (camera names ours) gives way for this dataset only: its `front` is a renamed `wrist`.
 - What only a person can check: that the labmate's training reads these datasets as it reads his own, and whether he
   trains on the exact labels or his 1 s lead window (both are in the dataset).
+
+## Amendment 2 (2026-11-15): driven as a person drives, and frames as sharp as a moving camera allows
+
+**Context.** The user looked at the first drag-path dataset (amendment 1, decision 2) and found the motion robotic (it goes
+to a point and stops, then to another and stops) and the video low quality and blurry in motion. Both were measured.
+
+- **Motion.** 31 human headset sessions (12 on the robot, 2026-10-25..27; 19 on the twin, 2026-11-08..10; 55 min, 117k
+  commands) against the scripted takes, on 45 measures with a band each from the human data (the robot's and the twin's
+  operators agree in structure, within ~15%). The drag path was outside the band on 37 of 45, the pose-to-pose scripts
+  before it on 32. People chain overlapping submovements (1.55 speed peaks a second of motion, 26% of bouts with one peak,
+  the speed between peaks at 22% of them); the script drew one minimum-jerk bell per stroke to rest (0.01 a second, 88%).
+  People let go of the clutch while still moving (75% of holds) and take it on the move (46%); the script never did.
+  The script was 3-4x too slow (32 vs 98 mm/s while moving), its strokes straight (chord/path 0.96 vs 0.37), its tremor
+  a fixed 8-12 Hz sinusoid (people's jitter is broadband and grows with speed, ~80 v^0.78 mm/s in 4-15 Hz), it worked too
+  low and far out, and never used the roll or the gripper (people: roll moving 41% of the time, 14 gripper actions a
+  minute).
+- **Video.** Decision 5's "anti-aliasing off" never took effect: Isaac 6.2's Real-Time 2.0 takes only 3 (DLSS) or 4
+  (DLAA) and turns anything else back into 3, and opening a stage puts its render settings back. Every frame since was
+  DLSS Performance: each camera rendered at half its width and height and rebuilt from earlier frames, which smears
+  everything in view when the camera moves, and the wrist camera, the datasets' `front`, always moves. Decision 5's test
+  had watched a static camera. Against a supersampled reference of the same poses, its still wrist frames kept 66% of the
+  detail, its moving ones 63%. The wrist frames averaged luma 32 of 255 (the real camera's 129), and LeRobot's AV1 at CRF
+  30 kept 89% of what was recorded.
+
+**Decisions.**
+
+1. **A person, modelled** (`joint-drive`'s `HumanOperator`, `HandModel` holds every number). The hand's intended path is a
+   sum of overlapping minimum-jerk submovements (each starts 40-80% into the one before; durations on the human main
+   sequence, T ~ A^0.22; a skewed time base, so speed peaks early), grouped as an operator groups them: moves to a goal
+   (an endpoint error, then corrections), back and forth (bowed, so a reversal keeps moving), small adjustments; between
+   them the hand carries on, keeps still with the clutch held, or lets go. The clutch maps the hand onto the wrist's target
+   as the headset's `ClutchMapping` does (relative to engage, kept in reach and above the floor, held bit-identical while
+   let go, re-anchored on engage); a release mostly comes while the hand still moves (the rest of its submovement is lost)
+   and the clutch is often taken again on the move. The hand as tracked drifts, and jitters in proportion to its speed
+   (v^0.78). Pitch, roll and gripper move as people move them (the gripper only while the clutch is held). Every tick is
+   solved by the headset's IK from the pose before and checked (envelope, collision model, the objects grown); a part that
+   fails is drawn again. Fitted with the analysis's own measures: ten 90 s drives of free movement fall inside 43 of the
+   45 bands. The two left are the command rate: `joint-drive` sends at 48 Hz, the headset in Direct Preview at 36 Hz (every
+   second frame of 72 Hz), and an APK on the device may differ; unchanged.
+2. **The categories keep their geometry; the approach becomes a person's.** The sideways sweep round the base still says
+   where an object is met. The final approach follows it as a chain of overlapping submovements through points at most
+   4 cm apart (a straight move cuts 2.4 cm inside the arc over a 20 cm swipe), slows short of its aim and corrects (a
+   touch is a gentle push in), and how far it goes is one number, bisected with every random draw held fixed until the
+   collision model's closest approach, or depth, over every tick is the category's: 1-3 cm for a stop; the touch depth
+   within 1.5 mm, in contact 0.12-1.2 s and clear within 0.6 s of pulling back; at least 12 mm deep for a swipe, which
+   keeps the other objects at the approach clearance until it meets its own. The gripper is opened on the way, as the
+   touch depth was measured; the roll is held through the approach. Free movement before an approach: 3-8 s.
+3. **DLAA, set once the stage has loaded, and checked.** The renderer sets `/rtx/post/aa/op` 4 (DLAA: each camera's own
+   resolution, settled in one frame), `/rtx/rtpt/spp` 2 and motion blur off after the stage loads, and stops if Isaac has
+   not kept them, then and at the start of the stream; one render a pose (`--subframes 1`). `RX` records the samples a
+   pixel too. Measured with the three cameras recording rgb, depth and masks: 30.0 fps, the lag check at 100%; still wrist
+   frames keep 93-96% of the reference's detail, moving ones 71-72%.
+4. **Brighter.** The bench scene's lights x3 (dome 1000, key 3000): the wrist camera's mean luma 69, the third-person
+   cameras' 141, unclipped.
+5. **Encoded at CRF 18.** The safety datasets' videos are AV1 at CRF 18, preset 8: 96% of the recorded detail, 1.6x the
+   size (15.7 MB a minute a camera). LeRobot 0.5.1 takes no CRF from `LeRobotDataset`, so the writer hands one to its
+   encoder call while an episode is saved, and `meta/teleop/encoding.json` says which. The watcher's per-scenario
+   datasets keep LeRobot's default for now: their episodes are appended to existing files.
+
+**Consequences.**
+
+- Free movement is a person's by every measure but the command rate. An approach and its event are a person's in
+  texture (overlapping submovements, corrections, releases on the move, jitter) on a script's geometry, and score as
+  such on the measures the task sets (the wrist low, the pitch held through an approach, the gripper open).
+- The datasets of amendment 1 are DLSS-smeared, dark and drag-path: kept, never mixed with new ones.
+- One operator's statistics, probably, all through Direct Preview; a second operator or an APK session may move
+  differently.
+- A contact take takes ~2 s to plan; every category plans on at least 80% of random layouts.

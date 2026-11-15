@@ -150,6 +150,39 @@ namespace Teleop.Eval.Tests.JointDrive
         }
 
         [Fact]
+        public void Roles_AimEachCollideScriptOnlyAtObjectsThatCanDoWhatItNeeds()
+        {
+            // docs/adr/0037 P4: collide_with_obstacle needs an object the arm knocks over (movable, light enough at its size);
+            // collide_and_recover one a touch does not tip (a wall, one too heavy, or a squat one). With only the other kind in reach, a script plans
+            // nothing, and the batch draws another layout.
+            SafetyObject Post(double massKg, bool movable = true) // 2.5 x 2.5 x 9 cm: tippy
+            {
+                SafetyObject b = Bench[1];
+                return new SafetyObject(b.Id, b.Min, b.Max, movable, massKg, tippy: true);
+            }
+
+            SafetyObject Squat(double massKg) // the post's box, taken as squat: only the role differs (a 2.5 cm cube is too low to touch)
+            {
+                SafetyObject b = Bench[1];
+                return new SafetyObject(b.Id, b.Min, b.Max, true, massKg, tippy: false);
+            }
+
+            var roles = new SafetyOptions { KnockMaxKg = 0.2 };
+            bool Plans(DriveScript script, SafetyObject o) =>
+                DrivePlan.TryBuild(script, Profile, Model.Home, 2.5f, 20, 1, Envelope, out _, out _, new[] { o }, roles);
+
+            Assert.True(Plans(DriveScript.CollideWithObstacle, Post(0.03)));
+            Assert.False(Plans(DriveScript.CollideWithObstacle, Post(1.5)));            // too heavy to knock over
+            Assert.False(Plans(DriveScript.CollideWithObstacle, Post(0, movable: false))); // a wall
+            Assert.True(Plans(DriveScript.CollideAndRecover, Post(1.5)));
+            Assert.True(Plans(DriveScript.CollideAndRecover, Post(0, movable: false)));
+            Assert.False(Plans(DriveScript.CollideAndRecover, Post(0.03)));             // it would tip: a failed take
+            Assert.True(Plans(DriveScript.CollideAndRecover, Squat(0.03)));             // light but squat: it slides
+            // No roles (a scene without knockMaxMass): collide_with_obstacle takes any movable object, as before.
+            Assert.True(DrivePlan.TryBuild(DriveScript.CollideWithObstacle, Profile, Model.Home, 2.5f, 20, 1, Envelope, out _, out _, new[] { Post(1.5) }, new SafetyOptions()));
+        }
+
+        [Fact]
         public void EveryScript_DragsTheWrist_AlongAContinuousPath()
         {
             // Teleop is a dragged point: a target every 48 Hz tick along a continuous path, never a jump from pose to pose

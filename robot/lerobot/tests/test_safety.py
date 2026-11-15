@@ -201,3 +201,9 @@ def test_the_knock_report_says_what_each_touched_object_weighed_and_whether_it_w
     summary = safety.knock_summary(list(rows.values()))
     assert any("1/1 knocked" in line and "can" in line for line in summary)
     assert any(line.startswith("fixed: 0/1") for line in summary)
+
+
+def test_the_sizes_come_from_the_renderers_first_sz_record():
+    # The record lists hold the fields after the tag: SZ|58|1:1.5625;2:1.0 is ["58", "1:1.5625;2:1.0"].
+    assert safety.sizes([["58", "1:1.5625;2:1.0;31:1.0"], ["59", "1:0.8"]]) == {1: 1.5625, 2: 1.0, 31: 1.0}
+    assert safety.sizes([]) == {} and safety.sizes([["58"]]) == {}

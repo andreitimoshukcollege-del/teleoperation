@@ -190,8 +190,10 @@ namespace Teleop.RobotArm.World
 
         private WorldScene(string name, string robotProfile, SceneSurface[] surfaces, SceneSurface table, SceneSurface? bench,
             SceneObject[] objects, double xMin, double xMax, double yMin, double yMax, double clearance,
-            int movableMin, int movableMax, int fixedMin, int fixedMax, double sizeMin, double sizeMax, double reachMin, double reachMax)
+            int movableMin, int movableMax, int fixedMin, int fixedMax, double sizeMin, double sizeMax, double reachMin, double reachMax,
+            double knockMaxMass)
         {
+            KnockMaxMass = knockMaxMass;
             ReachMin = reachMin;
             ReachMax = reachMax;
             SizeMin = sizeMin;
@@ -241,6 +243,9 @@ namespace Teleop.RobotArm.World
         public bool DrawsSizes => SizeMax > 0;
         public double SizeMin { get; }
         public double SizeMax { get; }
+
+        /// <summary>The heaviest a movable object may be at its size, kg, and be one the arm knocks over (docs/adr/0037 P4); 0: no roles.</summary>
+        public double KnockMaxMass { get; }
 
         /// <summary>A pool's band for its movable objects, m from the robot's base (0, 0 when there is none): where the arm reaches them.</summary>
         public double ReachMin { get; }
@@ -526,8 +531,11 @@ namespace Teleop.RobotArm.World
             }
 
             if (pool.reachMax > 0 && !isPool) throw Bad("pool", "a reach band is only for a pool");
+            if (!Finite(pool.knockMaxMass) || pool.knockMaxMass < 0 || pool.knockMaxMass > MaxMass) throw Bad("pool", $"knockMaxMass is 0 (no roles) to {MaxMass} kg");
+            if (pool.knockMaxMass > 0 && !isPool) throw Bad("pool", "roles are only for a pool");
             var scene = new WorldScene(d.name, d.robotProfile, surfaces, table, bench, objects, p.xMin, p.xMax, p.yMin, p.yMax, p.clearance,
-                pool.movableMin, pool.movableMax, pool.fixedMin, pool.fixedMax, pool.sizeMin, pool.sizeMax, pool.reachMin, pool.reachMax);
+                pool.movableMin, pool.movableMax, pool.fixedMin, pool.fixedMax, pool.sizeMin, pool.sizeMax, pool.reachMin, pool.reachMax,
+                pool.knockMaxMass);
             for (int i = 0; i < objects.Length; i++)
             {
                 SceneObject o = objects[i];

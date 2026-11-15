@@ -86,7 +86,7 @@
       "jitter": [0, 0, 0] }
   ],
   "placement": { "xMin": 0.12, "xMax": 0.44, "yMin": -0.24, "yMax": 0.24, "clearance": 0.01 },
-  "pool": { "movableMin": 2, "movableMax": 5, "fixedMin": 1, "fixedMax": 2, "sizeMin": 0.02, "sizeMax": 0.12, "reachMin": 0.15, "reachMax": 0.30 },
+  "pool": { "movableMin": 2, "movableMax": 5, "fixedMin": 1, "fixedMax": 2, "sizeMin": 0.02, "sizeMax": 0.12, "reachMin": 0.15, "reachMax": 0.30, "knockMaxMass": 0.7 },
   "environment": { "kind": "hdri", "dome": "dome", "change": "per-session",
     "manifest": "~/isaacsim/assets/hdri/polyhaven-indoor/manifest.json",
     "meanRadiance": 1000, "targetBrightness": 118, "yawDeg": [0, 360], "rotateXYZDeg": [0, 0, 0], "hideSurfaces": ["floor"] },

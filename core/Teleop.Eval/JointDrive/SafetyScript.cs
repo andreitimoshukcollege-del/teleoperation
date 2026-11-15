@@ -18,6 +18,23 @@ namespace Teleop.Eval.JointDrive
         /// the real one; the default is <see cref="SafetyScript.TouchDepthMeters"/>, measured on the twin.
         /// </summary>
         public float TouchDepthMeters { get; set; } = SafetyScript.TouchDepthMeters;
+
+        /// <summary>
+        /// docs/adr/0037 P4: the heaviest movable object, at its size, kg, that the arm knocks over (the scene's knockMaxMass,
+        /// measured on the twin). Above 0, roles apply: collide_with_obstacle aims only at <see cref="Knockable"/> objects, and
+        /// collide_and_recover only at ones a touch does not tip (<see cref="Steady"/>). 0: collide_with_obstacle aims at any
+        /// movable object and collide_and_recover at any object.
+        /// </summary>
+        public double KnockMaxKg { get; set; }
+
+        /// <summary>Whether <paramref name="o"/> is one the arm knocks over: movable, and within <see cref="KnockMaxKg"/> when it is set.</summary>
+        public bool Knockable(in SafetyObject o) => o.Movable && (KnockMaxKg <= 0 || o.Mass <= KnockMaxKg);
+
+        /// <summary>
+        /// Whether a touch leaves <paramref name="o"/> standing: a wall, one too heavy to knock over, or a squat one (pushed, a
+        /// squat object slides before it tips; see <see cref="SafetyObject.Tippy"/>).
+        /// </summary>
+        public bool Steady(in SafetyObject o) => !o.Movable || (KnockMaxKg > 0 && o.Mass > KnockMaxKg) || !o.Tippy;
     }
 
     /// <summary>One scene object as a safety script plans around it: its axis-aligned bounds in the arm base frame (metres).</summary>
@@ -30,12 +47,26 @@ namespace Teleop.Eval.JointDrive
         /// <summary>Whether physics can move it (a scene's movable object): only such an object can be knocked over.</summary>
         public readonly bool Movable;
 
-        public SafetyObject(byte id, Vector3 min, Vector3 max, bool movable = true)
+        /// <summary>Its mass at its size, kg (0 for a fixed object): what decides whether the arm can knock it over (docs/adr/0037 P4).</summary>
+        public readonly double Mass;
+
+        /// <summary>
+        /// Whether a push tips it before it slides (docs/adr/0037 P4): taller than <see cref="TippyAspect"/> times its narrower
+        /// side. Pushed at mid-height, an object tips first when its height exceeds its width over its friction (about 0.8).
+        /// </summary>
+        public readonly bool Tippy;
+
+        /// <summary>Height over narrower side above which a pushed object tips before it slides.</summary>
+        public const double TippyAspect = 1.25;
+
+        public SafetyObject(byte id, Vector3 min, Vector3 max, bool movable = true, double mass = 0, bool tippy = false)
         {
             Id = id;
             Min = min;
             Max = max;
             Movable = movable;
+            Mass = mass;
+            Tippy = tippy;
         }
 
         public Vector3 Center => (Min + Max) / 2f;
@@ -46,9 +77,9 @@ namespace Teleop.Eval.JointDrive
         /// <summary>This object's box grown by <paramref name="grow"/> on every side (shrunk when negative, never past its middle).</summary>
         public SafetyObject Grown(float grow)
         {
-            if (grow >= 0) return new SafetyObject(Id, Min - new Vector3(grow), Max + new Vector3(grow), Movable);
+            if (grow >= 0) return new SafetyObject(Id, Min - new Vector3(grow), Max + new Vector3(grow), Movable, Mass, Tippy);
             Vector3 s = Vector3.Min(new Vector3(-grow), (Max - Min) / 2f - new Vector3(0.0005f));
-            return new SafetyObject(Id, Min + s, Max - s, Movable);
+            return new SafetyObject(Id, Min + s, Max - s, Movable, Mass, Tippy);
         }
     }
 
@@ -212,8 +243,10 @@ namespace Teleop.Eval.JointDrive
             int builds = 0;
             foreach (int oi in order)
             {
-                // Knocking over needs a body physics moves: a fixed wall (a pool's, docs/adr/0037) is an obstacle, never the target.
-                if (script == DriveScript.CollideWithObstacle && !objects[oi].Movable) continue;
+                // Roles (docs/adr/0037 P4): knocking over needs a body the arm can tip or shove (a fixed wall, or one too heavy, is
+                // an obstacle, never the target); touching and backing off needs one that does not tip.
+                if (script == DriveScript.CollideWithObstacle && !options.Knockable(objects[oi])) continue;
+                if (script == DriveScript.CollideAndRecover && options.KnockMaxKg > 0 && !options.Steady(objects[oi])) continue;
                 foreach (Sweep sweep in Sweeps(objects[oi], ref rng))
                 {
                     if (!TryLine(profile, model, envelope, objects, oi, sweep, model.Home, out Line line)) continue;

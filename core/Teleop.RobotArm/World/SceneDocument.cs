@@ -108,6 +108,13 @@ namespace Teleop.RobotArm.World
         /// </summary>
         public double reachMin;
         public double reachMax;
+
+        /// <summary>
+        /// docs/adr/0037 P4: the heaviest a movable object may be, at its drawn size, kg, and still be one the arm knocks over
+        /// (measured on the twin). The safety scripts aim collide_with_obstacle only at such objects and collide_and_recover only
+        /// at others. Absent (0): no roles.
+        /// </summary>
+        public double knockMaxMass;
     }
 
     /// <summary>Where objects may stand: every footprint lies inside this region and on the table, this far apart.</summary>

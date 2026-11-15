@@ -170,10 +170,7 @@ def knocks(path: str) -> List[Dict]:
     :func:`check`'s rule (tipped at least ``TIPPED_DEGREES`` or moved at least ``MOVED_METERS``)."""
     with open(os.path.join(path, "scene.json"), encoding="utf-8") as f:
         scene = {o["id"]: o for o in json.load(f)["objects"]}
-    scales: Dict[int, float] = {}
-    sz = read_jlog(os.path.join(path, "isaac.jlog"), "isaac").tag("SZ")
-    if sz:
-        scales = {int(it[0]): float(it[1]) for it in items(sz[0][2] if len(sz[0]) > 2 else "") if len(it) >= 2}
+    scales = sizes(read_jlog(os.path.join(path, "isaac.jlog"), "isaac").tag("SZ"))
     stretches = contacts(path)
     poses = object_poses(path)
     end = max((p[-1][0] for p in poses.values() if p), default=0)
@@ -193,6 +190,13 @@ def knocks(path: str) -> List[Dict]:
                     "tiltDeg": round(tilt, 1), "movedCm": round(dist * 100, 2),
                     "knocked": bool(tilt >= TIPPED_DEGREES or dist >= MOVED_METERS)})
     return out
+
+
+def sizes(sz_records: Sequence[Sequence[str]]) -> Dict[int, float]:
+    """Each object's size factor from the renderer's first ``SZ`` record (fields after the tag: revision, ``id:factor;...``)."""
+    if not sz_records or len(sz_records[0]) < 2:
+        return {}
+    return {int(it[0]): float(it[1]) for it in items(sz_records[0][1]) if len(it) >= 2}
 
 
 MASS_BINS_KG = (0.03, 0.06, 0.1, 0.2, 0.4, 0.8)

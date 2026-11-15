@@ -39,6 +39,8 @@ The labmate's account reads parts of `data/` once `just isaac-share-scenarios` h
 - `data/takes/fr3_duo-isaac` and `data/takes/jetrover-isaac`: read, and edit their `scenarios.txt`;
 - `data/takes/jetrover-real` and `data/lerobot`: read only.
 
+What runs there now, how far along it is, and buttons to stop or pause it: `just gpu-ui` (robot/gpu).
+
 Disk: about 10 GB an hour of a twin's recording (three or four cameras' colour, depth and masks). RobotHost stops a take
 below 21 GB free, and the renderer stops recording below 20 GB.
 

@@ -14,16 +14,52 @@ fields are null, since a take keeps no wall clock per record.
 
 from __future__ import annotations
 
+import contextlib
 import io
 import json
 import os
 import shutil
 import time
-from typing import Callable, Dict, List, Optional
+from typing import Callable, Dict, Iterator, List, Optional
 
 from .takes import Take, TakeError, checksum_id, raw_events
 
 TELEOP = os.path.join("meta", "teleop")
+
+# The safety datasets' video encoding (docs/adr/0036 amendment 2). LeRobot's own (AV1, CRF 30, preset 12) kept 89% of the
+# recorded frames' detail on the twin's wrist camera, 37.6 dB from them while it moves; CRF 18 at preset 8 keeps 96%, 39.9 dB,
+# for 1.6x the size (15.7 MB a minute a camera at 640x360, 15 fps; measured 2026-11-15).
+SAFETY_CRF = 18
+SAFETY_PRESET = 8
+
+
+@contextlib.contextmanager
+def video_encoding(crf: Optional[int] = None, preset: Optional[int] = None) -> Iterator[None]:
+    """LeRobot 0.5.1 encodes each episode's videos with ``encode_video_frames``'s defaults and passes no quality option on from
+    ``LeRobotDataset``; inside this block, its writer's call gets ``crf`` and ``preset`` instead. Nothing changes when both
+    are None. A lerobot without that call is an error, never a silent default."""
+    if crf is None and preset is None:
+        yield
+        return
+    from lerobot.datasets import dataset_writer
+
+    original = getattr(dataset_writer, "encode_video_frames", None)
+    if original is None:
+        raise RuntimeError("lerobot.datasets.dataset_writer has no encode_video_frames to give a CRF to: "
+                           "not the lerobot in requirements.txt")
+
+    def encode(*args, **kwargs):
+        if crf is not None:
+            kwargs["crf"] = crf
+        if preset is not None:
+            kwargs["preset"] = preset
+        return original(*args, **kwargs)
+
+    dataset_writer.encode_video_frames = encode
+    try:
+        yield
+    finally:
+        dataset_writer.encode_video_frames = original
 
 
 def features(take: Take) -> Dict[str, dict]:
@@ -63,12 +99,18 @@ def repo_id(group: str, scenario: str) -> str:
 class LeRobotWriter:
     """Writes episodes with ``lerobot``. Imported lazily, so the rest of the package runs without it."""
 
-    def __init__(self, vcodec: str = "libsvtav1"):
+    def __init__(self, vcodec: str = "libsvtav1", crf: Optional[int] = None, preset: Optional[int] = None):
         import numpy as np  # noqa: F401  (lerobot's own dependency)
         from PIL import Image  # noqa: F401
         from lerobot.datasets import LeRobotDataset  # noqa: F401  (the import the lab's recorders use)
 
         self.vcodec = vcodec
+        self.crf = crf
+        self.preset = preset
+
+    def encoding(self) -> dict:
+        """How this writer's videos are encoded (``meta/teleop/encoding.json``): None is LeRobot's own default."""
+        return {"vcodec": self.vcodec, "crf": self.crf, "preset": self.preset, "pixFmt": "yuv420p", "gop": 2}
 
     def append(self, root: str, repo: str, take: Take) -> int:
         """Appends ``take`` as the next episode of the dataset at ``root`` (created if absent). Returns its index."""
@@ -101,9 +143,14 @@ class LeRobotWriter:
                         raise TakeError(f"{take.path}: a {cam.name} frame is {image.size}, not {cam.width}x{cam.height}")
                     row["observation.images." + cam.name] = np.asarray(image)
                 ds.add_frame(row)
-            ds.save_episode(parallel_encoding=False)  # no forked encoder pool: this process runs for days, and torch makes it multi-threaded
+            with video_encoding(self.crf, self.preset):
+                ds.save_episode(parallel_encoding=False)  # no forked encoder pool: this process runs for days, and torch makes it multi-threaded
         finally:
-            ds.finalize()
+            with video_encoding(self.crf, self.preset):
+                ds.finalize()
+        os.makedirs(os.path.join(root, TELEOP), exist_ok=True)
+        with open(os.path.join(root, TELEOP, "encoding.json"), "w", encoding="utf-8") as f:
+            json.dump(self.encoding(), f)
         return episode
 
 

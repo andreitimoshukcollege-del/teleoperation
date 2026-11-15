@@ -300,7 +300,8 @@ namespace Teleop.Eval.JointDrive
                 for (double t = 0; t <= plan.TotalSeconds; t += 1 / rateHz)
                 {
                     long ticks = (long)(t * tps);
-                    int count = Targets(profile, plan.Sample(t), 0f, speed, targets);
+                    float gripper = plan.GripperAt(t); // NaN: the plan holds it as reported, and a dry run has no report
+                    int count = Targets(profile, plan.Sample(t), float.IsNaN(gripper) ? 0f : gripper, plan.SpeedAt(t), targets);
                     log.Command(ticks, sequence++, ticks, targets.Slice(0, count));
                 }
 

@@ -56,6 +56,8 @@ def main(argv=None) -> int:
     s.add_argument("--out", required=True, help="the new dataset's folder, e.g. ~/data/lerobot/jetrover-isaac-safety/jetrover_<UTC>_<id>")
     s.add_argument("--fps", type=int, default=15)
     s.add_argument("--vcodec", default="libsvtav1")
+    s.add_argument("--crf", type=int, default=None, help="the videos' CRF (default: writer.SAFETY_CRF)")
+    s.add_argument("--preset", type=int, default=None, help="the AV1 encoder's preset (default: writer.SAFETY_PRESET)")
     a = p.parse_args(argv)
 
     if a.command == "safety-check":
@@ -76,10 +78,11 @@ def main(argv=None) -> int:
 
     if a.command == "safety-build":
         from . import safety
-        from .writer import LeRobotWriter
+        from .writer import SAFETY_CRF, SAFETY_PRESET, LeRobotWriter
 
         takes = [read_take(path, a.fps) for path in a.takes]
-        safety.build(LeRobotWriter(a.vcodec), os.path.expanduser(a.out), takes, _log)
+        writer = LeRobotWriter(a.vcodec, crf=SAFETY_CRF if a.crf is None else a.crf, preset=SAFETY_PRESET if a.preset is None else a.preset)
+        safety.build(writer, os.path.expanduser(a.out), takes, _log)
         return 0
 
     if a.command == "inspect":

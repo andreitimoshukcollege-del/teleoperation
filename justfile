@@ -3747,6 +3747,92 @@ isaac-jetrover-drive-batch hours="2" minutes="5" seed="1":
     done
     echo "[batch] $n session(s) recorded"
 
+# The labmate's safety dataset from the JetRover twin, unattended (docs/adr/0036 amendment 1): `takes` rounds of the four categories (reach_no_obstacle, stop_before_collision, collide_and_recover, collide_with_obstacle) in a seeded order, each take one `joint-drive --script <category> --new-layout --take <category>` (a fresh layout, the arm driven relative to where the objects are), checked against its category by its physics contacts (teleop_lerobot safety-check: a take that fails is set aside to _discarded/<category>/ with its reason), then the kept takes written as one dataset in his label format at ~/isaacsim/lerobot/jetrover-isaac-safety/jetrover_<UTC>_<id>/ (front = the wrist camera; manual_safety_labels.json, meta/safety_labels.parquet, safety_events.jsonl). Needs `just isaac-jetrover-host jetrover-bench` running this commit (its bridge reports the contacts) and the LeRobot environment (just lerobot-setup). Stops after 5 takes in a row that could not be planned, or when recordings/.drive/STOP exists. Only Isaac's arm moves
+[group('isaac')]
+isaac-safety-batch takes="25" seed="1":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    case "{{takes}}{{seed}}" in *[!0-9]*|"") echo "error: takes and seed are numbers" >&2; exit 1 ;; esac
+    gpu="{{gpu_host}}"; host="${gpu#*@}"
+    case "$host" in *[!0-9.]*) echo "error: joint-drive needs the GPU machine's address as numbers, got '$host' (GPU_HOST)" >&2; exit 1 ;; esac
+    commit=$(just _pushed-commit)
+    # The checker and builder run from this commit, in a checkout of their own (the watcher's stays as it is); the twin must
+    # run it too, or its bridge reports no contacts and every collide take fails its check. Its scenario list gets the four.
+    ssh -o ConnectTimeout=10 "$gpu" "COMMIT='$commit' bash -s" <<'REMOTE'
+    set -euo pipefail
+    repo=$HOME/teleoperation-safety
+    [ -d "$repo" ] || git clone -q https://github.com/andreitimoshukcollege-del/teleoperation.git "$repo"
+    cd "$repo" && git fetch -q origin && git checkout -q "$COMMIT"
+    [ -x "$HOME/isaacsim/lerobot-venv/bin/python" ] || { echo "error: no LeRobot environment: just lerobot-setup" >&2; exit 1; }
+    pgrep -u "$USER" -f "teleop_isaac[.]renderer" > /dev/null || { echo "error: the twin is not running with a scene: just isaac-jetrover-host jetrover-bench" >&2; exit 1; }
+    twin=$(git -C "$HOME/teleoperation-isaac" rev-parse HEAD 2>/dev/null || echo none)
+    if ! git -C "$repo" merge-base --is-ancestor "$(git -C "$repo" log -1 --format=%H -- robot/isaac/teleop_isaac/contacts.py)" "$twin" 2>/dev/null; then
+        echo "error: the twin runs $twin, which has no contact reporting: restart it from this commit (just isaac-stop; just isaac-jetrover-host jetrover-bench)" >&2; exit 1
+    fi
+    list=$HOME/isaacsim/scenarios-jetrover/scenarios.txt
+    for c in reach_no_obstacle stop_before_collision collide_and_recover collide_with_obstacle; do
+        grep -q "^$c\b" "$list" || echo "$c | safety dataset (docs/adr/0036 amendment 1): joint-drive --script $c" >> "$list"
+    done
+    echo "[safety] checker at $(git log --oneline -1 | cut -c1-60); twin at ${twin:0:7}"
+    REMOTE
+    (cd core && dotnet build Teleop.Eval -nologo -v q > /dev/null)
+    mkdir -p recordings/.drive && rm -f recordings/.drive/STOP
+    name="jetrover_$(date -u +%Y%m%d_%H%M%S)_$(printf '%06x' $(( (RANDOM << 15 | RANDOM) & 0xFFFFFF )))"
+    # The plan: each round the four categories in a seeded order, each take its own seed and the free movement's speed.
+    plan=$(python3 - {{takes}} {{seed}} <<'PY'
+    import random, sys
+    rounds, seed = int(sys.argv[1]), int(sys.argv[2])
+    r = random.Random(seed * 7919)
+    cats = ["reach_no_obstacle", "stop_before_collision", "collide_and_recover", "collide_with_obstacle"]
+    n = 0
+    for _ in range(rounds):
+        r.shuffle(cats)
+        for c in cats:
+            n += 1
+            print(c, r.choice([1.5, 2.5, 3.8]), seed * 100000 + n)
+    PY
+    )
+    kept=() setaside=0 unplanned=0 consecutive=0 n=0
+    while read -r cat speed sseed; do
+        n=$((n + 1))
+        # ssh -n in the loop: a plain ssh would read the plan from the loop's standard input and end it.
+        before=$(ssh -n -o ConnectTimeout=10 "$gpu" "ls ~/isaacsim/scenarios-jetrover/$cat 2>/dev/null | grep -- '-take' | sort | tail -1" || true)
+        echo "=== [safety] take $n: $cat (seed $sseed, free movement at $speed rad/s)"
+        code=0
+        (cd core && dotnet run --no-build --project Teleop.Eval -- joint-drive --script "$cat" --speed "$speed" --seconds 15 --seed "$sseed" \
+            --scene Scenes/jetrover-bench.json --new-layout --take "$cat" --remote-host "$host" --confirm-hardware-motion \
+            --simulated-robot --stall-seconds 3 < /dev/null) || code=$?
+        case "$code" in
+            0|2|3|4) consecutive=0 ;;  # a take was recorded (2, 3: a watchdog stopped it; 4: not stopped cleanly): check it
+            1) unplanned=$((unplanned + 1)); consecutive=$((consecutive + 1)); echo "[safety] take $n: nothing recorded (no plan or no world)" >&2
+               [ "$consecutive" -lt 5 ] || { echo "[safety] 5 takes in a row could not be planned: stopping" >&2; break; }
+               continue ;;
+            *) echo "[safety] joint-drive exited $code: stopping" >&2; break ;;
+        esac
+        # RobotHost completes the take (files.sha256) once every writer has closed: up to a minute for the renderer's.
+        take=$(ssh -o ConnectTimeout=10 "$gpu" "CAT='$cat' BEFORE='$before' bash -s" <<'REMOTE'
+    d=$HOME/isaacsim/scenarios-jetrover/$CAT
+    for i in $(seq 1 240); do
+        newest=$(ls "$d" 2>/dev/null | grep -- '-take' | sort | tail -1)
+        if [ -n "$newest" ] && [ "$newest" != "$BEFORE" ] && [ -f "$d/$newest/files.sha256" ]; then echo "$d/$newest"; exit 0; fi
+        sleep 0.5
+    done
+    exit 1
+    REMOTE
+        ) || { echo "[safety] take $n: RobotHost did not complete a new $cat take in 2 min" >&2; continue; }
+        verdict=$(ssh -n -o ConnectTimeout=10 "$gpu" "cd ~/teleoperation-safety/robot/lerobot && ~/isaacsim/lerobot-venv/bin/python -m teleop_lerobot safety-check --set-aside '$take'" || true)
+        if echo "$verdict" | python3 -c 'import json,sys; v=json.loads(sys.stdin.read().strip().splitlines()[-1]); print(f"[safety] {v[\"category\"]}: {\"kept\" if v[\"ok\"] else \"set aside\"}: {v[\"reason\"]} ({v[\"unsafeFrames\"]} of {v[\"frames\"]} frames unsafe)"); sys.exit(0 if v["ok"] else 1)'; then
+            kept+=("$take")
+        else
+            setaside=$((setaside + 1))
+        fi
+        if [ -e recordings/.drive/STOP ]; then rm -f recordings/.drive/STOP; echo "[safety] STOP file: stopping after take $n"; break; fi
+    done <<< "$plan"
+    echo "[safety] $n take(s): ${#kept[@]} kept, $setaside set aside, $unplanned not planned"
+    [ "${#kept[@]}" -gt 0 ] || { echo "[safety] nothing kept: no dataset written" >&2; exit 1; }
+    ssh -o ConnectTimeout=10 "$gpu" "cd ~/teleoperation-safety/robot/lerobot && ~/isaacsim/lerobot-venv/bin/python -m teleop_lerobot safety-build --out ~/isaacsim/lerobot/jetrover-isaac-safety/$name $(printf "'%s' " "${kept[@]}")"
+    echo "[safety] dataset: ~/isaacsim/lerobot/jetrover-isaac-safety/$name on the GPU machine"
+
 # Build the LeRobot converter's environment on the GPU machine (docs/adr/0036), once and after robot/lerobot/requirements.txt changes: ~/isaacsim/lerobot-venv (Python 3.12) with that lerobot version, and pytest for just lerobot-test. Runs the pushed commit
 [group('lerobot')]
 lerobot-setup:

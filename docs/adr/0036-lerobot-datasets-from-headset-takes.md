@@ -115,3 +115,68 @@ CameraHost streams the camera's own MJPEG and writes nothing to disk.
 - **Radians for the JetRover:** cleaner, but the lab's training and labeling code would need changes. The takes keep
   everything needed to write that later.
 - **One dataset per take:** many small datasets, where LeRobot expects episodes within one.
+
+## Amendment 1 (2026-11-14): safety datasets from the JetRover twin, labelled by physics
+
+**Context.** The labmate's safety head (`SINRG-Lab/world-models`, `cosmos-JetRover/training/`) learns a per-frame
+safe/unsafe label from JetRover video. His sessions are labelled by hand: `data_collection/labeling/label_safety.py` turns
+`manual_safety_labels.json` (`{"<episode_index>": [[start, end], ...]}`, inclusive, episode-relative unsafe ranges; an
+episode left out is all safe) into `meta/safety_labels.parquet` (one row per frame: `episode_index`, `frame_index`,
+`label`, `category`, `effective_category`, `overridden`, `source`), which training reads (`episode_index`, `frame_index`,
+`label`; 16-frame chunks, a chunk unsafe if any frame is). His memo calls the JSON the source of truth. An episode's
+category is its task string, one of `reach_no_obstacle`, `stop_before_collision`, `go_around_obstacle`,
+`collide_with_obstacle`, `collide_and_recover`; his older path labels from `safety_events.jsonl` `contact`/`clear` markers
+with a 1 s lead window. His review tools read `observation.images.front`.
+
+The user wants (2026-11-14) four scenarios recorded on the JetRover twin, scripted and unattended, every frame labelled
+safe or unsafe, **unsafe while any arm link touches an object** (the table does not count), **in his format, unchanged**.
+
+**Decisions.**
+
+1. **The label is physics.** The Isaac bridge reports contacts between the arm's links and the scene's objects each
+   physics step on the arm-server wire's existing contacts message; RobotHost records them as `WC` (SESSION_FORMAT.md),
+   which Isaac did not send before. A frame is unsafe when the arm touched an object at any moment of its frame period:
+   decision 3's `t`, half a frame either side (at 15 fps a frame lasts 67 ms, and a recovering touch can be shorter, so
+   the instant alone could miss it). A contact no `WC` ends lasts to the take's end. No frame is labelled by eye.
+2. **Four scripted scenarios** (`joint-drive`), each a take of the scenario named by its category:
+
+   | Scenario | Category (take scenario and task string) | The script |
+   |---|---|---|
+   | free movement | `reach_no_obstacle` | moves about, every link kept a margin from every object |
+   | close to the object | `stop_before_collision` | approaches an object and stops 1–3 cm short |
+   | collide, then recover | `collide_and_recover` | touches an object and backs off before it tips |
+   | full collision | `collide_with_obstacle` | drives through an object and knocks it over |
+
+   The scripts aim at the objects where they are: RobotHost already streams the world's poses to the joint client, and
+   the layout changes every take. Their takes are labelled a tool's (operator `tool <ip:port>`, the trainer's scripted).
+3. **Each take is checked against its scenario before it is kept.** No contact for `reach_no_obstacle` and
+   `stop_before_collision`; a contact that ends with the object upright for `collide_and_recover`; a contact after which
+   the object has tipped or moved for `collide_with_obstacle`. A take that fails is set aside (`_discarded`), with the
+   reason, and never relabelled into another category.
+4. **His format, file for file.** One dataset per batch, `~/isaacsim/lerobot/jetrover-isaac-safety/jetrover_<UTC>_<id>/`,
+   holding all four categories, as his sessions mix them (his training splits one session's episodes into train and
+   test, so a dataset of one category has nothing to learn the boundary from):
+   - `observation.images.front` is the twin's **wrist** camera: the real JetRover's camera rides the arm (ADR 0014; ADR
+     0034 amendment 10), and that is his real sessions' `front`. The third-person cameras stay as `third-left` and
+     `third-right`; his tools ignore them.
+   - each episode's task string is its category;
+   - `manual_safety_labels.json`: the physics contact ranges in his schema;
+   - `meta/safety_labels.parquet`: the rows `label_safety.py` writes from that JSON, `effective_category` the category,
+     `overridden` false, `source` `physics`;
+   - `safety_events.jsonl`: per episode the first contact frame (`contact`) and the frame after the last (`clear`), so
+     his `label_safety.py` without the JSON gives his lead-window labels;
+   - decision 5's `capture_timing.jsonl` and `raw_ros_events.jsonl`, as for every dataset.
+
+   The watcher leaves these four scenarios out of its per-scenario datasets (decision 5); the batch builds its dataset
+   from its kept takes when it ends, and can rebuild it the same way.
+5. **Recorded after the renderer stops smearing motion.** Isaac's real-time renderer blends each frame with earlier
+   ones (DLSS Performance and temporal accumulation, measured 2026-11-14), which smears the moving arm across exactly
+   the frames these labels are about. The render settings are fixed first, and every session records which it used.
+
+**Consequences.**
+
+- Labels are exact and free, and as true as the twin's contact geometry: the twin's collision shapes, not the real
+  arm's (ADR 0034).
+- Decision 2 of the main ADR (camera names ours) gives way for this dataset only: its `front` is a renamed `wrist`.
+- What only a person can check: that the labmate's training reads these datasets as it reads his own, and whether he
+  trains on the exact labels or his 1 s lead window (both are in the dataset).

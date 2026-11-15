@@ -107,10 +107,11 @@ class LeRobotWriter:
         return episode
 
 
-def append_take(writer, root: str, take: Take) -> dict:
-    """Writes one take as an episode and records it in ``meta/teleop``. Returns its ledger line."""
+def append_take(writer, root: str, take: Take, repo: Optional[str] = None) -> dict:
+    """Writes one take as an episode and records it in ``meta/teleop``. Returns its ledger line. ``repo`` names the
+    dataset when its episodes are of several scenarios (a safety dataset); by default it is the take's scenario's."""
     group, scenario = take.dataset_group, take.scenario
-    episode = writer.append(root, repo_id(group, scenario), take)
+    episode = writer.append(root, repo or repo_id(group, scenario), take)
     teleop = os.path.join(root, TELEOP)
     os.makedirs(teleop, exist_ok=True)
     with open(os.path.join(teleop, f"episode_{episode:06d}.timing.jsonl"), "w", encoding="utf-8") as f:

@@ -151,7 +151,8 @@ def main(argv: Optional[List[str]] = None) -> int:
 
         world = IsaacWorld(scene, str(robot.GetPath())) if scene is not None else None
         if world is not None:
-            world.build(stage)
+            # Every object body reports its contacts (docs/adr/0036 amendment 1): the arm touching an object is a label.
+            world.build(stage, contact_report=True)
             fixed = world.fixed_bodies(stage)
             print(f"[jetrover] the robot's fixed bodies ignore the surfaces: {', '.join(b.rsplit('/', 1)[-1] for b in fixed)}", flush=True)
 
@@ -178,6 +179,9 @@ def main(argv: Optional[List[str]] = None) -> int:
         art.set_dof_max_efforts(efforts.reshape(1, -1))
         if world is not None:
             world.attach()
+            from .contacts import urdf_links
+
+            world.enable_contacts(urdf_links(urdf), args.dt)
 
         target = np.zeros((1, n))
 
@@ -286,6 +290,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         signal.signal(signal.SIGINT, lambda *_: stopping.append(True))
         client = args.client_socket or args.socket + ".robothost"
         commands = torques = rejected_total = sent = 0
+        contacts_sent = contact_changes = 0
         steps = late = 0
         step_ns = int(round(args.dt * 1e9))
         start_ns = next_tick = time.monotonic_ns()
@@ -355,6 +360,21 @@ def main(argv: Optional[List[str]] = None) -> int:
                     report.append((m_id, float(v), 0.0, float(v)))
                 tap(wire.encode_state(next_wseq(), time.monotonic_ns(), steps * step_ns, wire.FLAG_ENABLED if torque else 0, report))
             world_server.publish(steps, world_client, bool(args.tap))
+            if world is not None and world.contact_tracker is not None:
+                # The arm's contacts with the objects, read every physics step (docs/adr/0036 amendment 1): sent the step
+                # the touching (link, object) pairs change, an empty message when the last ends, and again with the world
+                # while one lasts (its force). RobotHost records them as WC, stamped like the renderer's frames.
+                changed = world.contact_step()
+                if changed or (world.contact_tracker.touching() and steps % args.world_every == 0):
+                    message = wire.encode_contacts(next_wseq(), time.monotonic_ns(), world.contact_tracker.contacts())
+                    if world_client is not None:
+                        try:
+                            wsock.sendto(message, world_client)
+                            contacts_sent += 1
+                        except OSError:
+                            pass  # RobotHost went away; it says hello again when it is back
+                    if changed:
+                        contact_changes += 1
 
             mid = driver.due_read(now_s)
             if mid is not None:
@@ -386,7 +406,9 @@ def main(argv: Optional[List[str]] = None) -> int:
             if now >= report_at:
                 report_at = now + 5_000_000_000
                 print(f"[jetrover] {steps} steps, {late} late; {commands} commands, {torques} torque switches, {rejected_total} rejected; "
-                      f"{sent} feedback sent; torque {'on' if torque else 'off'}", flush=True)
+                      f"{sent} feedback sent; torque {'on' if torque else 'off'}"
+                      + (f"; contacts: {contact_changes} changes, {contacts_sent} sent, touching {world.contact_tracker.touching()}"
+                         if world is not None and world.contact_tracker is not None else ""), flush=True)
 
         if dlog is not None:
             dlog.session.close()
@@ -395,7 +417,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         if wsock is not None:
             wsock.close()
             os.unlink(world_path)
-        print(f"[jetrover] stopped after {steps} steps, {late} late; {commands} commands, {sent} feedback sent", flush=True)
+        print(f"[jetrover] stopped after {steps} steps, {late} late; {commands} commands, {sent} feedback sent; "
+              f"{contact_changes} contact changes, {contacts_sent} contact messages", flush=True)
         return 0
     except BaseException:
         traceback.print_exc()

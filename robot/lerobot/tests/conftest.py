@@ -75,9 +75,10 @@ def frames_log(take, writer, folder, sid, cameras, vfs, image=lambda cam, n: f"{
 
 
 def jetrover_take(root, name="20261112T100000Z-take001", scenario="reach", source="isaac", gap=None, image=None,
-                  cameras=("third-left", "wrist")):
+                  cameras=("third-left", "wrist"), extra=()):
     """A JetRover take: commands accepted from 1.0 to 3.0 s, RO and RI every 20 ms, frames at 30 fps from 0.5 to
-    3.5 s (the first two with B). ``gap``: (from, to) seconds with no frame recorded."""
+    3.5 s (the first two with B). ``gap``: (from, to) seconds with no frame recorded. ``extra``: more robothost.jlog rows
+    (``[tag, t, ...]``), such as contacts (WC) and object poses (WO)."""
     take = os.path.join(root, scenario, name)
     os.makedirs(take)
     sid = session_json(take, "jetrover-session", 1, source, scenario)
@@ -91,6 +92,7 @@ def jetrover_take(root, name="20261112T100000Z-take001", scenario="reach", sourc
         rows.append(["RO", t, ro])
         ri = ";".join(f"{m}:{0 if (m == 3 and k == 60) else 1}:{400 + m + k}" for m in (1, 2, 3, 4, 5, 10))
         rows.append(["RI", t + 5 * MS, ri])
+    rows.extend(list(r) for r in extra)
     rows.sort(key=lambda r: int(r[1]))
     write_jlog(os.path.join(take, "robothost.jlog"), "robothost", sid, rows)
     vfs = []

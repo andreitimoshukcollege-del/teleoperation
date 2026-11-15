@@ -21,6 +21,18 @@ namespace Teleop.Eval.JointDrive
         /// course's speed levels, with the gripper opened and closed. Scripted data shaped like teleop.
         /// </summary>
         Course,
+
+        /// <summary>Safety: waypoints kept clear of every object (docs/adr/0036 amendment 1, <see cref="SafetyScript"/>).</summary>
+        ReachNoObstacle,
+
+        /// <summary>Safety: approach an object and stop 1-3 cm short.</summary>
+        StopBeforeCollision,
+
+        /// <summary>Safety: touch an object and back off before it tips.</summary>
+        CollideAndRecover,
+
+        /// <summary>Safety: drive through an object and knock it over.</summary>
+        CollideWithObstacle,
     }
 
     /// <summary>
@@ -192,7 +204,7 @@ namespace Teleop.Eval.JointDrive
         /// </summary>
         public static bool TryBuild(
             DriveScript script, in RobotArmProfile profile, in ArmPose start, float speedRadPerSec, double seconds, ulong seed,
-            in DriveEnvelope envelope, out DrivePlan? plan, out string? error)
+            in DriveEnvelope envelope, out DrivePlan? plan, out string? error, IReadOnlyList<SafetyObject>? objects = null)
         {
             plan = null;
             error = null;
@@ -251,7 +263,22 @@ namespace Teleop.Eval.JointDrive
                 }
             }
 
-            while (script != DriveScript.Course && t < end)
+            bool safety = SafetyScript.IsSafety(script);
+            if (safety)
+            {
+                if (objects == null)
+                {
+                    error = $"{SafetyScript.Category(script)} plans around the scene's objects: it needs their poses (--scene)";
+                    return false;
+                }
+
+                if (!SafetyScript.Append(script, profile, model, envelope, objects, speedRadPerSec, ref current, ref t, end, ref rng, legs, out error))
+                {
+                    return false;
+                }
+            }
+
+            while (script != DriveScript.Course && !safety && t < end)
             {
                 DriveLeg leg;
                 string? why = script == DriveScript.Waypoints
@@ -476,7 +503,7 @@ namespace Teleop.Eval.JointDrive
         /// away), sometimes anywhere in the envelope. Its peak speed is 40-100% of the requested speed,
         /// and half the moves end in a pause of 0.2-1.2 s, as a person's do.
         /// </summary>
-        private static string? NextWaypoint(
+        internal static string? NextWaypoint(
             in RobotArmProfile profile, ArmCollisionModel model, in DriveEnvelope envelope, in ArmPose current, float speed,
             double t, ref SeededRng rng, out DriveLeg leg)
         {

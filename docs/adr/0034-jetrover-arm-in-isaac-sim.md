@@ -172,7 +172,7 @@ What exists for the JetRover:
   - joint port 6002 and discovery 6005;
   - the JetRover profile;
   - the Jetson's rest pose, so ROBOT OFF parks and relaxes;
-  - sessions in `~/isaacsim/jetrover-recordings` marked `source: isaac` by the new `--auto-record-source`.
+  - sessions in `~/data/sessions/jetrover-isaac` marked `source: isaac` by the new `--auto-record-source`.
 
   `isaac-stop`, `isaac-status` and `isaac-host` now see the JetRover bridge too. The FR3 and JetRover hosts share their
   ports, so one runs at a time.

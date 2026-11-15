@@ -10,7 +10,7 @@ A labmate will record training data with the simulated FR3 Duo (ADR 0031, ADR 00
 machine, under his own account (`seaqueue-cheng`), and does not use the repo. What exists today:
 
 - **Automatic sessions** (ADR 0023 decision 4). RobotHost records whenever a headset commands the arms, into
-  `~/isaacsim/recordings`. They are named by time alone.
+  `~/data/sessions/fr3_duo-isaac`. They are named by time alone.
 - **Hand-made sessions** with `just record-start` and `record-stop`, from a PC with the repo.
 
 Neither says what the operator was doing, and neither is reachable from his account.
@@ -63,7 +63,7 @@ The user's choices (2026-11-03):
      saves the take.
    - **DISCARD LAST** sets the last take aside.
    - Every label carries RobotHost's last answer: saved, set aside, low disk, the list changed, and so on.
-6. **The shared folder.** `just isaac-host` passes `--scenarios ~/isaacsim/scenarios`. `just isaac-share-scenarios`
+6. **The shared folder.** `just isaac-host` passes `--scenarios ~/data/takes/fr3_duo-isaac`. `just isaac-share-scenarios`
    (default user `seaqueue-cheng`) sets ACLs once, with no sudo:
    - The labmate can enter our home and `~/isaacsim` but not list them.
    - He can read everything under the scenarios folder, and every take written there later (a default ACL).

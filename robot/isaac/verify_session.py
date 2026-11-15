@@ -2,7 +2,7 @@
 
 Run on the GPU machine with Isaac's Python (numpy, Pillow, OpenCV), from robot/isaac:
 
-    ~/isaacsim/venv/bin/python verify_session.py ~/isaacsim/recordings/<session>
+    ~/isaacsim/venv/bin/python verify_session.py ~/data/sessions/fr3_duo-isaac/<session>
 
 Prints one ``RESULT {...}`` line and exits non-zero when any check fails or has nothing to measure (CLAUDE.md invariant 10):
 

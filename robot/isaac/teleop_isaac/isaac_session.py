@@ -1,6 +1,6 @@
 """The Isaac renderer's half of a recorded session (docs/adr/0032 decision 6, trainer/contract/SESSION_FORMAT.md).
 
-Follows RobotHost's control file (``~/isaacsim/recordings/.active``, the session directory RobotHost writes when it opens a
+Follows RobotHost's control file (``~/data/sessions/<robot>-isaac/.active``, the session directory RobotHost writes when it opens a
 session and removes when it closes it), as the JetRover driver's ``session_log.py`` does. While a session is open it
 writes into its directory:
 

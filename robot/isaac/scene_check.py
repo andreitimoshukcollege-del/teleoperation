@@ -152,7 +152,8 @@ def main() -> int:
     user = os.environ.get("USER", "me")
     server = f"/tmp/teleop-scene-check-{user}.sock"
     mine = f"/tmp/teleop-scene-check-{user}-client.sock"
-    log_path = os.path.expanduser("~/isaacsim/scene-check-bridge.log")
+    log_path = os.path.expanduser("~/logs/isaac/scene-check-bridge.log")  # docs/gpu-machine.md
+    os.makedirs(os.path.dirname(log_path), exist_ok=True)
     log = open(log_path, "w")
     bridge = subprocess.Popen(["taskset", "-c", args.cpus, args.python, "-m", "teleop_isaac.bridge", "--socket", server,
                                "--scene", scene_path, "--seconds", "260"], cwd=HERE, stdout=log, stderr=subprocess.STDOUT)

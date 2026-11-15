@@ -53,7 +53,7 @@ def main(argv=None) -> int:
     s.add_argument("--set-aside", action="store_true", help="move a take that fails its category to _discarded")
     s = sub.add_parser("safety-build")
     s.add_argument("takes", nargs="+")
-    s.add_argument("--out", required=True, help="the new dataset's folder, e.g. ~/isaacsim/lerobot/jetrover-isaac-safety/jetrover_<UTC>_<id>")
+    s.add_argument("--out", required=True, help="the new dataset's folder, e.g. ~/data/lerobot/jetrover-isaac-safety/jetrover_<UTC>_<id>")
     s.add_argument("--fps", type=int, default=15)
     s.add_argument("--vcodec", default="libsvtav1")
     a = p.parse_args(argv)

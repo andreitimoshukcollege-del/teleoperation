@@ -41,7 +41,8 @@ def main() -> int:
     user = os.environ.get("USER", "me")
     relay = f"/tmp/teleop-jetrover-check-{user}.sock"
     mine = relay + ".robothost"
-    log_path = os.path.expanduser("~/isaacsim/jetrover-check-bridge.log")
+    log_path = os.path.expanduser("~/logs/isaac/jetrover-check-bridge.log")  # docs/gpu-machine.md
+    os.makedirs(os.path.dirname(log_path), exist_ok=True)
     log = open(log_path, "w")
     bridge = subprocess.Popen(["taskset", "-c", args.cpus, args.python, "-m", "teleop_isaac.jetrover_bridge", "--socket", relay, "--client-socket", relay + ".robothost", "--seconds", "120"],
                               cwd=HERE, stdout=log, stderr=subprocess.STDOUT)

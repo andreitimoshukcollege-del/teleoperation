@@ -1,7 +1,7 @@
 # Network datasets (docs/adr/0035 amendments 2 and 3)
 
 Public network measurements and our own Wi-Fi, as delay traces the trainer replays, each with its tier by the standards.
-Written by `armpred/net/datasets/` (`python -m armpred.net.datasets`), under `~/datasets/network/` on the GPU machine
+Written by `armpred/net/datasets/` (`python -m armpred.net.datasets`), under `~/data/network/` on the GPU machine
 (`TELEOP_NETWORK_DATASETS` moves it). Nothing here is committed except converters and test fixtures of a few lines.
 
 ## `.trace` version 2

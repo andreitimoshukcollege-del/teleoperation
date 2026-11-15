@@ -16,12 +16,13 @@ lab's schema (`SINRG-Lab/world-models`, `data_collection/`). The converter runs 
 | `just lerobot-robot-host` | the robot's address again, after DHCP moved it |
 | `just robot-prune-takes [true]` | deletes robot takes the GPU machine holds identical copies of (dry run by default) |
 
-Datasets: `~/isaacsim/lerobot/<robot>-<source>/<scenario>/`. Beside LeRobot's files, `meta/teleop/takes.jsonl` names
+Datasets: `~/data/lerobot/<robot>-<source>/<scenario>/` (what lives where on the GPU machine: docs/gpu-machine.md; the
+watcher's log and pid file are in `~/logs/lerobot/`). Beside LeRobot's files, `meta/teleop/takes.jsonl` names
 the take behind each episode, and `episode_<n>.timing.jsonl` gives each frame's source times and its state's and
 action's ages. At the dataset's top, as the lab's `record_jetrover.py` writes them: `capture_timing.jsonl` (one line
 per frame of every episode, its field names) and `raw_ros_events.jsonl` (every take's commands as `action` and
 readings as `state`, its bridge's fields). Their times are the session's one clock, CLOCK_MONOTONIC; the lab's
-`*_wall_ns` fields are null, since a take keeps no wall clock per record. Takes that could not be converted are in `~/isaacsim/lerobot/skipped.jsonl`, with the reason.
+`*_wall_ns` fields are null, since a take keeps no wall clock per record. Takes that could not be converted are in `~/data/lerobot/skipped.jsonl`, with the reason.
 
 | Module | |
 |---|---|
@@ -29,6 +30,6 @@ readings as `state`, its bridge's fields). Their times are the session's one clo
 | `teleop_lerobot/takes.py` | a take into episode frames: alignment, 15 fps grid, trimming. No LeRobot, no numpy |
 | `teleop_lerobot/writer.py` | the LeRobot side: append an episode, rebuild a dataset |
 | `teleop_lerobot/watch.py` | finds complete takes, keeps each dataset in step with its kept takes |
-| `teleop_lerobot/pull.py` | copies the real robot's complete takes into `~/isaacsim/scenarios-real`, checked before they land; follows its DISCARD LAST |
+| `teleop_lerobot/pull.py` | copies the real robot's complete takes into `~/data/takes/jetrover-real`, checked before they land; follows its DISCARD LAST |
 
 Tests: `python -m pytest robot/lerobot/tests` anywhere (the LeRobot round trip is skipped without lerobot).

@@ -46,7 +46,7 @@ perfect pose.
    | **poor** | home broadband, busy Wi-Fi, 4G | Y.1541 classes 1/3 (delay ≤ 400 ms); G.1050 *partially managed*; FCC Measuring Broadband America UDP latency and loss; Puffer's per-connection RTT (`tcpi_rtt`) |
    | **very bad** | congested cellular, power-saving Wi-Fi, outages | G.1050 *unmanaged*; Mahimahi's cellular capacity traces (Saturator, NSDI 2013) replayed through a queue at the joint stream's bitrate; our own recorded Wi-Fi traces (decision 3) |
 
-   - **Each dataset is fetched by a recipe** into `~/datasets/network/<name>/` on the GPU machine, with a
+   - **Each dataset is fetched by a recipe** into `~/data/network/<name>/` on the GPU machine, with a
      `manifest.json` of its source URL, licence, terms, sha256 and what was kept, as the backdrops manifest records its
      images (ADR 0032). Downloaded files are untrusted data: parsed, never run.
    - **They become traces**, Core's `.trace` format (`TRACE|1|<tps>`, one delay per line; loss as a marker), which the
@@ -190,13 +190,13 @@ and N2 uses them.
 ## Amendment 3 (2026-11-09): N2, the datasets
 
 `trainer/armpred/net/datasets/`, run on the GPU machine by `just network-datasets-fetch` (detached; this commit, from its
-own clone `~/teleoperation-datasets`, with the trainer's venv) and `just network-datasets-status`; our own traces locally by
+own clone `~/repos/datasets`, with the trainer's venv) and `just network-datasets-status`; our own traces locally by
 `just network-traces-ours`.
 
 - **`.trace` version 2** (`datasets/trace.py`): `TRACE|2|<tps>|<sendIntervalTicks>`, then a delay in ticks or `L` (lost)
   per datagram, datagram i sent at i × the interval. Only the trainer reads it; `Teleop.Eval`, the Bridge, the trainer's v1
   reader and `analysis/playout_bounds.py` refuse it by its header (the last now checks the version).
-- **Per dataset**, under `~/datasets/network/<name>/`: `download/` (untrusted: HTTPS from the dataset's own hosts only,
+- **Per dataset**, under `~/data/network/<name>/`: `download/` (untrusted: HTTPS from the dataset's own hosts only,
   size-capped, under names chosen here, parsed and never run), `manifest.json` (URL, sha256, bytes, when, licence, terms,
   citation, what was kept), `traces/*.trace` and `index.json` (per trace: group, sha256, tier and the measured tier,
   the assessment, what the conversion assumed and its seed). `trainer/contract/NETWORK_DATASETS.md` has the formats.
@@ -302,7 +302,7 @@ see the delay.
 - **RobotHost.** `Net/UplinkProfiles`: an uplink profile or schedule segment may be `trace:<dataset>/<id>`, read from
   `--uplink-traces` (version 2 only, rescaled to the host's ticks; a name that does not load is refused, so a typo never
   records an impaired session that was not). `just isaac-jetrover-host` passes `--uplink-control
-  ~/isaacsim/jetrover-uplink --uplink-traces ~/datasets/network`.
+  ~/isaacsim/jetrover-uplink --uplink-traces ~/data/network`.
 - **Schedules.** `python -m armpred.net.datasets uplink-schedule` (`just isaac-uplink-tiers`): good, poor, very-bad in
   turn, `segment_s` each; per segment a dataset with train-side traces of that tier drawn uniformly, then a trace;
   seeded. Held-out traces are never used. `just isaac-uplink-off` ends it.

@@ -2,7 +2,7 @@
 # The LeRobot converter on the GPU machine (docs/adr/0036). Run by the justfile's lerobot-* recipes, by isaac-host /
 # isaac-jetrover-host (ensure), and by cron (keep); never by hand on a PC.
 #
-#   start <commit>   (re)start the watcher at <commit>, from its own checkout ~/teleoperation-lerobot (so an Isaac host
+#   start <commit>   (re)start the watcher at <commit>, from its own checkout ~/repos/lerobot (so an Isaac host
 #                    started at another commit never changes the code under a running watcher), and install the keeper
 #   ensure [commit]  start it if it is not running: at <commit>, or at the checkout's current commit
 #   keep             cron's every-5-minutes and at-boot call: ensure, silent unless it had to start it
@@ -16,28 +16,30 @@
 set -euo pipefail
 cmd=${1:-status}
 commit=${2:-}
-repo=$HOME/teleoperation-lerobot
+# Where things are on the GPU machine: docs/gpu-machine.md.
+repo=$HOME/repos/lerobot
 venv=$HOME/isaacsim/lerobot-venv
-out=$HOME/isaacsim/lerobot
-pidfile=$out/watch.pid
-log=$out/watch.log
-lock=$out/.watch.lock
+out=$HOME/data/lerobot
+logs=$HOME/logs/lerobot
+pidfile=$logs/watch.pid
+log=$logs/watch.log
+lock=$logs/.watch.lock
 tag="# teleop-lerobot-keeper (docs/adr/0036; just lerobot-watch-stop removes it)"
-# The scenario roots: the FR3 Duo's and the JetRover's Isaac takes, and the real robot's (copied in by ADR 0036
+# The take roots: the FR3 Duo's and the JetRover's Isaac takes, and the real robot's (copied in by ADR 0036
 # decision 7). A root that does not exist yet is skipped each pass.
-roots=(--root "$HOME/isaacsim/scenarios" --root "$HOME/isaacsim/scenarios-jetrover" --root "$HOME/isaacsim/scenarios-real")
-# The real robot's complete takes are copied into scenarios-real (pull.py), with the key and address that
+roots=(--root "$HOME/data/takes/fr3_duo-isaac" --root "$HOME/data/takes/jetrover-isaac" --root "$HOME/data/takes/jetrover-real")
+# The real robot's complete takes are copied into its root (pull.py), with the key and address that
 # just lerobot-robot-key sets up; until then the watcher says once that it has no key.
-robot=(--pull-robot "$HOME/isaacsim/scenarios-real" --robot-hosts-file "$out/robot-hosts" --robot-key "$HOME/.ssh/id_ed25519_jetrover")
+robot=(--pull-robot "$HOME/data/takes/jetrover-real" --robot-hosts-file "$out/robot-hosts" --robot-key "$HOME/.ssh/id_ed25519_jetrover")
 
-mkdir -p "$out"
+mkdir -p "$out" "$logs"
 running() { [ -f "$pidfile" ] && kill -0 "$(cat "$pidfile")" 2>/dev/null; }
 
 keeper_on() {
     local self="$repo/robot/lerobot/watch.sh"
     { crontab -l 2>/dev/null | grep -vF "$tag" || true
-      echo "@reboot bash $self keep >> $out/keeper.log 2>&1 $tag"
-      echo "*/5 * * * * bash $self keep >> $out/keeper.log 2>&1 $tag"
+      echo "@reboot bash $self keep >> $logs/keeper.log 2>&1 $tag"
+      echo "*/5 * * * * bash $self keep >> $logs/keeper.log 2>&1 $tag"
     } | crontab -
 }
 

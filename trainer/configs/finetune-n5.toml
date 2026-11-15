@@ -30,14 +30,14 @@ val_every = 1000
 file = "configs/priors/pilot2-prior.json"
 
 # docs/adr/0035 N5: the network datasets in the mix. About 30% of segments replay a train-side trace of the network
-# datasets (G.1050, Mahimahi, Puffer, RIPE Atlas, ours: ~/datasets/network on the GPU machine, `just
+# datasets (G.1050, Mahimahi, Puffer, RIPE Atlas, ours: ~/data/network on the GPU machine, `just
 # network-datasets-fetch`), its tier drawn evenly (good, poor, very bad), then a dataset evenly (so RIPE Atlas does not
 # crowd the rest out), a trace and an offset; by time, with its losses. The synthetic kinds keep their roles at smaller
 # shares; outages and bursts stay, and the very-bad traces add the real stalls and bursts the 4% outage share lacked
 # (the headset's own Wi-Fi: a stall over 100 ms every 6-10 s on calm evenings, ADR 0035 amendment 1). The same mix
 # drives the simulated sessions' physical uplink (schedule:random).
 [schedules]
-datasets_root = "~/datasets/network"
+datasets_root = "~/data/network"
 share_named = 0.15
 share_parametric = 0.25
 share_added_delay = 0.12

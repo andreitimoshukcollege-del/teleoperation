@@ -108,7 +108,7 @@ backdrop covers the table top as well as a screen.
    **Masks and depth are privileged simulator labels.** They are never a model input on the robot.
 
 6. **Recording follows RobotHost's sessions through its control file,**
-   `~/isaacsim/recordings/.active`, as the JetRover driver follows it.
+   `~/data/sessions/fr3_duo-isaac/.active`, as the JetRover driver follows it.
    - **What the renderer writes** into the session directory: `isaac.jlog` (ASCII, with the JSES header
      and `END` trailer) and `isaac/<camera>.<stream>.frames` sidecars.
    - **RobotHost's finalizer** waits for `isaac.jlog`'s trailer (`--auto-record-writer isaac:60`),

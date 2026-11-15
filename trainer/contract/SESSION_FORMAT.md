@@ -79,7 +79,7 @@ and closes and completes it. In the session they are recognised by `label` and `
   `scenario:<name>` (a take from the headset's RECORD button, docs/adr/0033). A take's `label` is
   `scenario-<name>`, and it has a `scenario` object: `name`, `take` (its number, counting up per
   scenario) and `description` (what `scenarios.txt` says to do). Takes are in the scenarios folder
-  (`~/isaacsim/scenarios/<name>/<UTC>-take<n>/`), not with the automatic sessions, and are otherwise
+  (`~/data/takes/<robot>-<source>/<name>/<UTC>-take<n>/`), not with the automatic sessions, and are otherwise
   automatic sessions: opened, completed and recorded by RobotHost the same way.
 - `conditions.operator` is a name, `joint-drive@robot`, or, in an automatic session, `headset <ip:port>`
   (the joint-command sender, which only a headset can be since 2026-10-26: RobotHost records only a

@@ -30,7 +30,8 @@ just isaac-host fr3-duo-bench auto false                         # without the r
 
 `isaac-host` refuses while a training run of ours, or another Isaac host of ours, is going. Other
 people's GPU jobs no longer stop it (2026-11-02): it says how much of the GPU they hold, since sharing it
-can make physics steps late. The bridge's log is `~/isaacsim/bridge.log` on that machine.
+can make physics steps late. The bridge's log is `~/logs/isaac/bridge.log` on that machine (what lives where there:
+docs/gpu-machine.md).
 
 ## The world (docs/adr/0031 amendment 2)
 
@@ -61,7 +62,7 @@ tracked exactly (0.000 rad), and there were no late steps in 16 s.
 ## The renderer and the feeds (docs/adr/0032 decisions 2 and 3)
 
 `renderer.py` is a second, headless Kit process beside the bridge, on cores 8–23 while the bridge has 2–5. Its log is
-`~/isaacsim/renderer.log`. It works like this:
+`~/logs/isaac/renderer.log`. It works like this:
 - **The stage.** It opens the bridge's converted robot USD with the `Physics` variant at `none`, so nothing steps.
 - **The scene.** It builds the scene file's surfaces, objects and lights as visuals, through `world.py`'s
   `build(physics=False)`.
@@ -94,7 +95,7 @@ just isaac-edit-check                # against isaac-host fr3-duo-bench 7: heads
   The pair is `backdrops.pick(images, seed, change)`: change 0 at start-up, then one more after each recorded session.
   - Downloads are untrusted data: a JPEG of at most 20 MB, decoded and at least 256 px a side, stored under its own sha256.
   - Without images, the table is plain and there is no screen.
-- **Recording.** While RobotHost's control file (`~/isaacsim/recordings/.active`) names a session, the renderer writes
+- **Recording.** While RobotHost's control file (`~/data/sessions/fr3_duo-isaac/.active`) names a session, the renderer writes
   into it `isaac.jlog` and `isaac/<camera>.<stream>.frames`:
   - head colour (JPEG 92), depth (16-bit PNG, mm) and masks (16-bit PNG, stable ids);
   - third-person colour;
@@ -119,7 +120,7 @@ For the person recording, on the headset:
 3. **Save the take** by pressing STOP. A take that went wrong can be set aside with DISCARD LAST once it is stopped. It is
    moved, never deleted.
 
-**Where the takes go:** on the GPU machine, under `/home/andrei/isaacsim/scenarios/<scenario>/<UTC>-take<n>/`, one
+**Where the takes go:** on the GPU machine, under `/home/andrei/data/takes/fr3_duo-isaac/<scenario>/<UTC>-take<n>/`, one
 folder per take.
 - Each take holds:
   - `robothost.jlog`, the robot's truth and commands;
@@ -127,7 +128,7 @@ folder per take.
   - `session.json`, which names the scenario and the take;
   - `files.sha256`. A take is complete once this is written, a few seconds after STOP.
 - Another account reads them once `just isaac-share-scenarios <account>` has run (default `seaqueue-cheng`). That account
-  can also edit the list, `/home/andrei/isaacsim/scenarios/scenarios.txt`:
+  can also edit the list, `/home/andrei/data/takes/fr3_duo-isaac/scenarios.txt`:
   - one scenario per line, `name | what to do`;
   - the headset shows the new list within a few seconds.
 - `just isaac-scenarios` lists what has been recorded.

@@ -66,7 +66,7 @@ CameraHost streams the camera's own MJPEG and writes nothing to disk.
      Parking and the idle seconds around a take are left out.
    - **Frames left out:** frames that have no state (the session's last ~0.1 s, after RobotHost closed it), and frames
      whose backdrop may still be settling (`B`).
-5. **Folders and bookkeeping.** Datasets live at `~/isaacsim/lerobot/<robot>-<source>/<scenario>/`, so sim and real
+5. **Folders and bookkeeping.** Datasets live at `~/data/lerobot/<robot>-<source>/<scenario>/`, so sim and real
    data, and the two robots, never share a dataset. The three folders are `jetrover-real`, `jetrover-isaac` and
    `fr3_duo-isaac`.
    - **`meta/teleop/takes.jsonl`:** one line per episode. It gives the take's path, the sha256 of its `files.sha256`,
@@ -159,7 +159,7 @@ safe or unsafe, **unsafe while any arm link touches an object** (the table does 
    `stop_before_collision`; a contact that ends with the object upright for `collide_and_recover`; a contact after which
    the object has tipped or moved for `collide_with_obstacle`. A take that fails is set aside (`_discarded`), with the
    reason, and never relabelled into another category.
-4. **His format, file for file.** One dataset per batch, `~/isaacsim/lerobot/jetrover-isaac-safety/jetrover_<UTC>_<id>/`,
+4. **His format, file for file.** One dataset per batch, `~/data/lerobot/jetrover-isaac-safety/jetrover_<UTC>_<id>/`,
    holding all four categories, as his sessions mix them (his training splits one session's episodes into train and
    test, so a dataset of one category has nothing to learn the boundary from):
    - `observation.images.front` is the twin's **wrist** camera: the real JetRover's camera rides the arm (ADR 0014; ADR

@@ -22,7 +22,7 @@ import urllib.request
 from dataclasses import dataclass, field
 from typing import Dict, Iterable, List, Optional
 
-DEFAULT_ROOT = os.path.expanduser(os.environ.get("TELEOP_NETWORK_DATASETS", "~/datasets/network"))
+DEFAULT_ROOT = os.path.expanduser(os.environ.get("TELEOP_NETWORK_DATASETS", "~/data/network"))
 USER_AGENT = "teleop-research-network-datasets/1 (docs/adr/0035; one download per file)"
 CHUNK = 1 << 20
 

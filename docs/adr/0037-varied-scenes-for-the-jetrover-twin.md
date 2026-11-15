@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted, 2026-11-15 (the user, on starting P1). P1 built 2026-11-15.
+Accepted, 2026-11-15 (the user, on starting P1). P1 built 2026-11-15; P2 built 2026-11-15 (amendment 1).
 
 ## Context
 
@@ -168,3 +168,38 @@ bridge reports the same sha (WORLD_INFO), and joint-drive and the headset refuse
 - **Google Scanned Objects as well** (about 1000 more items, CC-BY). They come without masses, which would have to be
   estimated. Left for later.
 - **Procedural objects only.** Unlimited variety, but they look less real; kept for walls and fixtures (decision 5).
+
+## Amendment 1 (2026-11-15): P2 as built
+
+- **The pool.** `jetrover-bench` lists 24 objects:
+  - the four primitives it had;
+  - 12 more movable ones: boxes, cylinders, a plate, a domino, a slab, from 1.2 to 12 cm and 15 to 140 g;
+  - 8 fixed walls and fixtures, up to 25 cm long and 12 cm high.
+
+  Its `pool` asks each layout for 2-5 movable objects and 1-2 fixed ones (the user's choice of "up to about 12 cm"). Scene
+  files with no `pool` behave exactly as before, so their layouts are unchanged; `layout-seed1.txt` still pins them.
+- **A layout** draws, from its seed alone:
+  - how many objects of each kind;
+  - which ones (a partial shuffle);
+  - a spot for each, fixed ones first, uniform where its footprint fits and yaw uniform, redrawn while it would touch one
+    already placed (64 tries).
+
+  One that finds no spot is parked. A spot the backend then refuses is redrawn anywhere in the region; after the redraws the
+  object is parked, not left where it stood. Reset puts the layout back as drawn.
+- **Parking is a placement** with a new cause, `park` (5 on the Isaac wire; 4 stays RobotHost's resize record). The bridge
+  stands the body on its existing hidden shelf (the slot of its current size), and reports the object with a new flag bit,
+  `FlagParked` (2). A pool's objects start parked, so their nominal poses may share the table and validation skips the
+  nominal-overlap rule for a pool.
+- **The headset's world frame carries no flags** (its 0x86 format is unchanged). The headset's and joint-drive's
+  `WorldState` mark a pose more than 2 m below the table top as parked: the shelf is 5 m down, and an object knocked to the
+  floor lands under 1 m down. The headset hides a parked object; its grab gestures and joint-drive's plans skip it.
+- **One piece of decision 6 came forward.** `collide_with_obstacle` aims only at movable objects, since a fixed wall cannot
+  be knocked over; walls remain obstacles to every script. Roles (`knockable`, `pushable`, `fixture`) are still P4's.
+- **Tests:**
+  - shared scene vectors (pool rules, both readers);
+  - the pool's layouts (counts, apart, on the table, varied, deterministic, no allocation);
+  - WorldHost over StaticWorld (parking, records, reset, headset refusals, redraw-then-park);
+  - the bridge's model and wire;
+  - the safety scripts, which still plan on at least 80% of 16 pool layouts per category.
+- **Still for the user:** the headset's world twin is baked in the editor (`just unity-xr-jetrover-world`) and must be
+  rebaked for the new objects, then the Galaxy app rebuilt.

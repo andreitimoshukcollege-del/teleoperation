@@ -13,6 +13,13 @@ namespace Teleop.RobotHost.ArmServer
 
         /// <summary>A resize from the headset (docs/adr/0034 amendment 6): sent as RESIZE, never as PLACE; for the records.</summary>
         Resize = 4,
+
+        /// <summary>
+        /// A pool's layout leaves the object out (docs/adr/0037 decision 3): the server puts it on its hidden shelf, at
+        /// <see cref="WorldScene.ParkedPose"/>, whatever pose comes with it, and reports it with <see cref="ObjectPose.FlagParked"/>
+        /// until a placement of another cause brings it back.
+        /// </summary>
+        Park = 5,
     }
 
     /// <summary>What happened to a placement (docs/adr/0031 amendment 2); the joint port's world status echoes the same codes.</summary>
@@ -190,7 +197,7 @@ namespace Teleop.RobotHost.ArmServer
             pose = default;
             if (ArmServerWire.KindOf(datagram) != KindPlace || datagram.Length != H + 14 + PoseBytes) return false;
             byte c = datagram[H + 12];
-            if (c < 1 || c > 3) return false;
+            if (c < 1 || c > 5 || c == (byte)PlaceCause.Resize) return false;
             hostTicks = BinaryPrimitives.ReadInt64LittleEndian(datagram.Slice(H));
             request = BinaryPrimitives.ReadUInt32LittleEndian(datagram.Slice(H + 8));
             cause = (PlaceCause)c;

@@ -17,6 +17,11 @@ what only physics can see: whether an arm is in the way.
 
 Rules 4, 6 and 7 use where the objects are now: a movable object's pose is PhysX's, read at every WORLD (:meth:`IsaacWorld.read`).
 
+**Parking** (docs/adr/0037 decision 3). A scene whose objects are a pool lets each layout choose which take part; RobotHost sends
+the others with CAUSE_PARK. A parked object is stood on the hidden shelf (``Scene.parked_pose``, at its current size's slot),
+whatever pose came with it, and is reported with FLAG_PARKED until a placement of another cause brings it back. The headset
+may not move or resize it, and no rule counts it as in the way. A pool's objects start parked.
+
 **Resizing** (RESIZE, docs/adr/0034 amendment 6) scales an object by a factor on the scene file's size, in every direction:
 the same rules at the new size, at the object's current x, y and yaw (an id the scene does not have, one the headset may not
 move, a factor not one of the resize steps (1.25 to the power -3 to 8), an arm touching it, too big for the table, too
@@ -75,7 +80,9 @@ class WorldModel:
 
     def __init__(self, scene: Scene):
         self.scene = scene
-        self.poses: List[Pose] = [tuple(o.nominal) for o in scene.objects]
+        # A pool's objects start parked (their nominal poses may share the table), the rest at their nominal poses.
+        self.parked: List[bool] = [scene.is_pool for _ in scene.objects]
+        self.poses: List[Pose] = [tuple(scene.parked_pose(i) if scene.is_pool else o.nominal) for i, o in enumerate(scene.objects)]
         self.scales: List[float] = [1.0 for _ in scene.objects]
         self.revision = 0
         self.snapshot = 0
@@ -93,7 +100,9 @@ class WorldModel:
         if i < 0:
             return wire.UNKNOWN_OBJECT, -1, None
         o = self.scene.objects[i]
-        if cause == wire.CAUSE_HEADSET and not o.operator_movable:
+        if cause == wire.CAUSE_PARK:
+            return wire.APPLIED, i, None  # the caller stands it on the shelf
+        if cause == wire.CAUSE_HEADSET and (not o.operator_movable or self.parked[i]):
             return wire.NOT_MOVABLE, i, None
         if not is_valid(pose):
             return wire.INVALID_POSE, i, None
@@ -106,7 +115,7 @@ class WorldModel:
         if not self.scene.fits_on_table(i, x, y, scale):
             return wire.OUTSIDE_REGION, i, None
         for k, other in enumerate(self.poses):
-            if k != i and self.scene.overlaps(i, x, y, k, other[0], other[1], scale, self.scales[k]):
+            if k != i and not self.parked[k] and self.scene.overlaps(i, x, y, k, other[0], other[1], scale, self.scales[k]):
                 return wire.OVERLAPS_OBJECT, i, None
         upright = tuple(self.scene.pose_at(i, x, y, yaw, scale))
         if arm_near(i, upright, self.scene.clearance):
@@ -119,7 +128,7 @@ class WorldModel:
         i = self.index_of(object_id)
         if i < 0:
             return wire.UNKNOWN_OBJECT, -1, None
-        if not self.scene.objects[i].operator_movable:
+        if not self.scene.objects[i].operator_movable or self.parked[i]:
             return wire.NOT_MOVABLE, i, None
         if not is_valid_scale(scale):
             return wire.INVALID_POSE, i, None
@@ -135,7 +144,8 @@ class WorldModel:
             # The nearest spot clear of the others; the arm is asked about the first few such spots only (PhysX queries).
             first, arm_asks = None, 0
             for x, y in spots:
-                if any(k != i and self.scene.overlaps(i, x, y, k, o[0], o[1], scale, self.scales[k]) for k, o in enumerate(self.poses)):
+                if any(k != i and not self.parked[k] and self.scene.overlaps(i, x, y, k, o[0], o[1], scale, self.scales[k])
+                       for k, o in enumerate(self.poses)):
                     continue
                 outcome, _, upright = self._fits(i, x, y, yaw_of(p), scale, arm_near)
                 first = first or outcome
@@ -158,12 +168,22 @@ class WorldModel:
         return wire.encode_sizes(sequence, self.sizes_revision, [(o.id, self.scales[i]) for i, o in enumerate(self.scene.objects)])
 
     def apply(self, index: int, pose: Pose) -> None:
+        """A placement applied: the object stands at ``pose``, on the table again if it was parked."""
         self.poses[index] = pose
+        self.parked[index] = False
+        self.revision += 1
+
+    def park(self, index: int, pose: Pose) -> None:
+        """Object ``index`` stood on the shelf at ``pose``, out of the layout."""
+        self.poses[index] = pose
+        self.parked[index] = True
         self.revision += 1
 
     def flags(self, index: int) -> int:
-        """FLAG_KINEMATIC for a fixed object; a movable one is a dynamic body (docs/adr/0031 amendment 4)."""
-        return 0 if self.scene.objects[index].movable else wire.FLAG_KINEMATIC
+        """FLAG_KINEMATIC for a fixed object (a movable one is a dynamic body, docs/adr/0031 amendment 4), and FLAG_PARKED
+        for one the layout left out."""
+        f = 0 if self.scene.objects[index].movable else wire.FLAG_KINEMATIC
+        return f | (wire.FLAG_PARKED if self.parked[index] else 0)
 
     def sense(self, index: int, pose: Pose) -> None:
         """Where physics has a movable object now (it may have been pushed or have fallen); not a new revision, which
@@ -292,6 +312,7 @@ class IsaacWorld:
                     UsdPhysics.CollisionAPI.Apply(g.GetPrim())
                     bind_physics(g.GetPrim(), material(f"{self.ROOT}/Materials/{path.rsplit('/', 1)[1]}", o.static_friction, o.dynamic_friction))
 
+            # A pool's objects start on the shelf (the model's poses): Scene.parked_pose is the shelf's slot at the file's size.
             for o, path, pose in zip(scene.objects, self.object_paths, self.model.poses):
                 body(o, path, pose, 1.0)
             if physics:
@@ -464,7 +485,15 @@ class IsaacWorld:
         import numpy as np
 
         outcome, i, upright = self.model.check(cause, object_id, pose, self.arm_near)
-        if outcome == wire.APPLIED:
+        if outcome == wire.APPLIED and cause == wire.CAUSE_PARK:
+            k = next(kk for kk, slot in self.slots[i].items() if slot == self.active[i])
+            shelf = self.parked(i, k)
+            self._bodies.set_world_poses(positions=np.array([shelf[:3]]), orientations=np.array([shelf[3:]]), indices=[self.active[i]])
+            self._bodies.set_velocities(np.zeros((1, 3)), np.zeros((1, 3)), indices=[self.active[i]])
+            self.model.park(i, shelf)
+            if self.contact_tracker is not None:
+                self.contact_tracker.forget(object_id)
+        elif outcome == wire.APPLIED:
             self._bodies.set_world_poses(positions=np.array([upright[:3]]), orientations=np.array([upright[3:]]), indices=[self.active[i]])
             if self.model.scene.objects[i].movable:  # stood up and at rest, wherever it had rolled or fallen
                 self._bodies.set_velocities(np.zeros((1, 3)), np.zeros((1, 3)), indices=[self.active[i]])

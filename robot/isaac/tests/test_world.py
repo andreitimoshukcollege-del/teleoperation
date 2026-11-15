@@ -238,3 +238,51 @@ def test_a_resize_that_would_reach_another_object_finds_the_nearest_spot_where_i
     assert outcome == wire.APPLIED
     assert not m.scene.overlaps(i, upright[0], upright[1], k, m.poses[k][0], m.poses[k][1], 1.5625, 1.0)
     assert (upright[0] - p[0]) ** 2 + (upright[1] - p[1]) ** 2 < 0.05 ** 2  # moved only as far as it had to
+
+
+# --- a pool's objects, parked and placed (docs/adr/0037 decision 3) ---------------------------------------------------
+
+POOL = os.path.join(REPO, "core", "Scenes", "jetrover-bench.json")
+
+
+def pool_model():
+    return WorldModel(scene.load(POOL))
+
+
+def test_a_pools_objects_start_parked_on_the_shelf_and_say_so():
+    m = pool_model()
+    assert m.scene.is_pool and all(m.parked)
+    for i, p in enumerate(m.poses):
+        assert p == m.scene.parked_pose(i)
+    assert all(o.flags & wire.FLAG_PARKED for o in m.objects())
+
+
+def test_park_is_applied_whatever_pose_comes_and_any_other_placement_brings_the_object_back():
+    m = pool_model()
+    i = next(k for k, o in enumerate(m.scene.objects) if o.movable)
+    oid = m.scene.objects[i].id
+    outcome, index, upright = m.check(wire.CAUSE_LAYOUT, oid, at(0.28, 0.0, z=-0.15), no_arm)
+    assert outcome == wire.APPLIED
+    m.apply(index, upright)
+    assert not m.parked[i] and not (m.objects()[i].flags & wire.FLAG_PARKED)
+    outcome, index, upright = m.check(wire.CAUSE_PARK, oid, (float("nan"),) * 7, no_arm)  # the pose is the shelf's, not this
+    assert (outcome, index, upright) == (wire.APPLIED, i, None)
+    m.park(index, m.scene.parked_pose(i))
+    assert m.parked[i] and m.objects()[i].flags & wire.FLAG_PARKED
+    assert m.check(wire.CAUSE_PARK, 250, at(0, 0), no_arm)[0] == wire.UNKNOWN_OBJECT
+
+
+def test_a_parked_object_is_never_in_the_way_and_the_headset_cannot_move_or_resize_it():
+    m = pool_model()
+    a, b = [k for k, o in enumerate(m.scene.objects) if o.movable][:2]
+    # Both parked: nothing stands on the table, so a placement right where a parked object's nominal pose is succeeds.
+    pa = m.scene.objects[a].position
+    assert m.check(wire.CAUSE_LAYOUT, m.scene.objects[b].id, at(pa[0], pa[1], z=-0.15), no_arm)[0] == wire.APPLIED
+    assert m.check(wire.CAUSE_HEADSET, m.scene.objects[a].id, at(0.28, 0.1, z=-0.15), no_arm)[0] == wire.NOT_MOVABLE
+    assert m.check_resize(m.scene.objects[a].id, 1.25, no_arm)[0] == wire.NOT_MOVABLE
+
+
+def test_park_crosses_the_wire_and_resize_never_does():
+    d = wire.encode_place(1, 2, 3, wire.CAUSE_PARK, 4, at(0, 0))
+    assert wire.decode_place(d)[2] == wire.CAUSE_PARK
+    assert wire.decode_place(wire.encode_place(1, 2, 3, 4, 4, at(0, 0))) is None  # 4 is RobotHost's resize record only

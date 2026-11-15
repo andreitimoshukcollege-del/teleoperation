@@ -67,7 +67,7 @@ namespace Teleop.RobotArm.World
             for (int i = 0; i < _scene.Objects.Length; i++)
             {
                 SceneObject o = _scene.Objects[i];
-                if (!o.OperatorMovable || !world.TryGet(o.Id, out ObjectPose p, out _)) continue;
+                if (!o.OperatorMovable || !world.TryGet(o.Id, out ObjectPose p, out _) || p.Parked) continue; // parked: out of the layout
                 double r = 0.5 * world.Scale(o.Id) * Math.Sqrt(o.SizeX * o.SizeX + o.SizeY * o.SizeY + o.SizeZ * o.SizeZ);
                 double cx = p.X - ox, cy = p.Y - oy, cz = p.Z - oz;
                 double along = cx * dx + cy * dy + cz * dz;

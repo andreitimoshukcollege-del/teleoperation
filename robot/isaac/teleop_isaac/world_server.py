@@ -64,7 +64,7 @@ class WorldServer:
                     revision = self.world.model.revision
                 else:
                     outcome, now_pose, revision = wire.UNKNOWN_OBJECT, tuple(pose), 0
-                if outcome != wire.APPLIED or cause != wire.CAUSE_LAYOUT:
+                if outcome != wire.APPLIED or cause not in (wire.CAUSE_LAYOUT, wire.CAUSE_PARK):
                     print(f"[{self.tag}] place {object_id} (cause {cause}): outcome {outcome}", flush=True)
                 self._send(wire.encode_placed(self.next_sequence(), request, object_id, outcome, revision, now_pose), client)
             return True

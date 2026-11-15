@@ -540,10 +540,11 @@ def run(app, args, p, scene, cameras, fps, joints, motors, tap) -> int:
 
     world = IsaacWorld(scene, str(robot.GetPath()))
     world.build(stage, physics=False)
-    object_ops = {}
+    object_ops, object_shown = {}, {}
     for o, path in zip(scene.objects, world.object_paths):
         ops = UsdGeom.Xformable(stage.GetPrimAtPath(path)).GetOrderedXformOps()
         object_ops[o.id] = (ops[0], ops[1])
+        object_shown[o.id] = [UsdGeom.Imageable(stage.GetPrimAtPath(path)), True]
     domes = {}
     for light in scene.extra.get("lights") or []:
         if light.get("kind") == "dome":
@@ -1023,6 +1024,11 @@ def run(app, args, p, scene, cameras, fps, joints, motors, tap) -> int:
                             t_op, q_op = object_ops[o.id]
                             t_op.Set(Gf.Vec3d(*o.pose[:3]))
                             q_op.Set(Gf.Quatd(*o.pose[3:]))
+                            # A parked object (docs/adr/0037 decision 3) is out of sight on the shelf already; hidden, too.
+                            shown = not (o.flags & wire.FLAG_PARKED)
+                            if object_shown[o.id][1] != shown:
+                                (object_shown[o.id][0].MakeVisible if shown else object_shown[o.id][0].MakeInvisible)()
+                                object_shown[o.id][1] = shown
                     if w[2] != world_snapshot["revision"] and w[3] == w[4] - 1:
                         world_snapshot.update(sensed=w[0], revision=w[2],
                                               objects=[[o.id, *[round(v, 6) for v in o.pose]] for o in w[5]])

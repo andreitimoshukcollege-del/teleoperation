@@ -10,6 +10,14 @@ namespace Teleop.RobotArm.World
         /// <summary>Isaac moves it as a kinematic body (bit 0).</summary>
         public const byte FlagKinematic = 1;
 
+        /// <summary>
+        /// Parked (bit 1, docs/adr/0037 decision 3): this layout leaves it out, so it rests off-stage
+        /// (<see cref="WorldScene.ParkedPose"/>), where no camera, arm or other object reaches it. Show it nowhere.
+        /// </summary>
+        public const byte FlagParked = 2;
+
+        public bool Parked => (Flags & FlagParked) != 0;
+
         public readonly byte Id;
         public readonly byte Flags;
         public readonly float X;

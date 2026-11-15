@@ -332,7 +332,7 @@ namespace Teleop.Eval.JointProbe
             {
                 if (st.LayoutSeed != seed.Value) failures.Add($"layout seed {st.LayoutSeed}, expected {seed.Value}" + at);
                 var expected = new RigidTransform[scene.Objects.Length];
-                SceneLayout.Draw(scene, seed.Value, expected);
+                SceneLayout.Draw(scene, seed.Value, expected, new bool[scene.Objects.Length]); // a pool's parked objects at their shelf poses
                 double worst = scene.Objects.Select((o, i) => Math.Max(Math.Abs(latest[o.Id].X - expected[i].X), Math.Abs(latest[o.Id].Y - expected[i].Y))).Max();
                 Console.WriteLine($"[world-probe]{at} poses against seed {seed.Value}'s layout: worst {worst * 1000:F4} mm");
                 if (worst > 1e-5) failures.Add($"the poses are {worst * 1000:F3} mm from seed {seed.Value}'s layout" + at);

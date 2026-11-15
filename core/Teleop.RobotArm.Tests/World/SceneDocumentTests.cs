@@ -1,3 +1,5 @@
+using System;
+using System.Linq;
 using System.IO;
 using System.Security.Cryptography;
 using System.Text;
@@ -90,7 +92,17 @@ namespace Teleop.RobotArm.Tests.World
             // docs/adr/0034 decision 7: the JetRover's bench, its objects scaled to a 3 cm gripper and a 26 cm reach.
             WorldScene s = JsonSerializer.Deserialize<SceneDocument>(File.ReadAllText(ScenePath(name)), Options)!.ToScene();
             Assert.Equal(profile, s.RobotProfile);
-            Assert.All(s.Objects, o => Assert.True(o.Movable));
+            if (!s.IsPool)
+            {
+                Assert.All(s.Objects, o => Assert.True(o.Movable));
+                return;
+            }
+
+            // docs/adr/0037 decision 3: a pool of movable objects of many shapes and sizes, up to ~12 cm, and fixed walls
+            // up to 25 cm long; each layout puts a few of each on the table.
+            Assert.True(s.MovableMin >= 1 && s.FixedMax >= 1);
+            Assert.All(s.Objects.Where(o => o.Movable), o => Assert.True(Math.Max(o.SizeX, Math.Max(o.SizeY, o.SizeZ)) <= 0.12 + 1e-9, o.Name));
+            Assert.All(s.Objects.Where(o => !o.Movable), o => Assert.True(Math.Max(o.SizeX, o.SizeY) <= 0.25 + 1e-9 && o.SizeZ <= 0.12 + 1e-9, o.Name));
         }
 
         [Fact]

@@ -51,6 +51,10 @@ its own), and every 20 ms WORLD, the objects' poses as PhysX has them.
   had these), so an arm driven into an obstacle stalls against it, and what it measures (`QS`) falls
   short of what was commanded (`AO`).
 - **Isaac does not report contacts yet** (`WC` is never written behind it).
+- **A pool** (docs/adr/0037 decision 3, `jetrover-bench`): each layout puts a few of the file's objects on the table and
+  sends the rest with PLACE cause `park`. The bridge stands those on its hidden shelf, the one the resize variants rest on
+  (5 m below the floor, 17 m out, past every camera's far plane), and reports them with `FLAG_PARKED`; the renderer hides
+  them too. A pool's objects start parked, and no rule counts a parked one as in the way.
 
 `just isaac-scene-check` (`scene_check.py`) runs the real bridge with the scene and talks to it as RobotHost
 would. It checks WORLD_INFO, WORLD at 50 ± 5 Hz, placements applied and refused, and the left hand

@@ -124,13 +124,15 @@ namespace Teleop.Eval.Tests.JointDrive
             Assert.NotNull(dir);
             var scene = WorldView.LoadScene(System.IO.Path.Combine(dir!, "core", "Scenes", "jetrover-bench.json"), out _);
             var poses = new RigidTransform[scene.Objects.Length];
+            var parked = new bool[scene.Objects.Length];
             const int Layouts = 16; // all 40 of seeds 1-40 planned for every script (2026-11-14); 16 keep the test short
             var planned = new Dictionary<DriveScript, int>();
             var why = new List<string>();
             for (ulong seed = 1; seed <= Layouts; seed++)
             {
-                SceneLayout.Draw(scene, seed, poses);
-                var objects = scene.Objects.Select((o, i) => WorldView.Bounds(o, 1.0, poses[i].X, poses[i].Y, poses[i].Z, poses[i].Qw, poses[i].Qx, poses[i].Qy, poses[i].Qz)).ToArray();
+                SceneLayout.Draw(scene, seed, poses, parked); // a pool's (docs/adr/0037): only the objects on the table count
+                var objects = scene.Objects.Select((o, i) => (o, i)).Where(x => !parked[x.i])
+                    .Select(x => WorldView.Bounds(x.o, 1.0, poses[x.i].X, poses[x.i].Y, poses[x.i].Z, poses[x.i].Qw, poses[x.i].Qx, poses[x.i].Qy, poses[x.i].Qz)).ToArray();
                 foreach (DriveScript script in new[] { DriveScript.ReachNoObstacle, DriveScript.StopBeforeCollision, DriveScript.CollideAndRecover, DriveScript.CollideWithObstacle })
                 {
                     if (DrivePlan.TryBuild(script, Profile, Model.Home, 2.5f, 20, seed, Envelope, out _, out string? error, objects))

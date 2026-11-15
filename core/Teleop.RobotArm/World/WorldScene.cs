@@ -170,9 +170,21 @@ namespace Teleop.RobotArm.World
         /// <summary>How far a surface or a resting object may be from where it must be, m.</summary>
         public const double Tolerance = 0.001;
 
+        /// <summary>
+        /// Where a parked object rests (docs/adr/0037 decision 3): upright on the bridge's hidden shelf, 5 m below the floor and
+        /// 17 m out, a metre from the next, beyond every camera's far plane and every arm. robot/isaac's <c>Scene.parked_pose</c>
+        /// (and <c>IsaacWorld.parked</c> at the file's size) is the same pose.
+        /// </summary>
+        public const double ParkX = 17.0, ParkZ = -5.0;
+
         private WorldScene(string name, string robotProfile, SceneSurface[] surfaces, SceneSurface table, SceneSurface? bench,
-            SceneObject[] objects, double xMin, double xMax, double yMin, double yMax, double clearance)
+            SceneObject[] objects, double xMin, double xMax, double yMin, double yMax, double clearance,
+            int movableMin, int movableMax, int fixedMin, int fixedMax)
         {
+            MovableMin = movableMin;
+            MovableMax = movableMax;
+            FixedMin = fixedMin;
+            FixedMax = fixedMax;
             Name = name;
             RobotProfile = robotProfile;
             Surfaces = surfaces;
@@ -197,6 +209,19 @@ namespace Teleop.RobotArm.World
         public double RegionYMin { get; }
         public double RegionYMax { get; }
         public double Clearance { get; }
+
+        /// <summary>Whether the objects are a pool that each layout chooses from (docs/adr/0037 decision 3).</summary>
+        public bool IsPool => MovableMax + FixedMax > 0;
+
+        /// <summary>A pool's layout puts <see cref="MovableMin"/> to <see cref="MovableMax"/> movable objects on the table, and <see cref="FixedMin"/> to <see cref="FixedMax"/> fixed ones.</summary>
+        public int MovableMin { get; }
+        public int MovableMax { get; }
+        public int FixedMin { get; }
+        public int FixedMax { get; }
+
+        /// <summary>Where object <paramref name="index"/> rests while parked: see <see cref="ParkX"/>.</summary>
+        public RigidTransform ParkedPose(int index) =>
+            new RigidTransform(ParkX, (index - Objects.Length / 2.0) * 1.0, ParkZ + Objects[index].SizeZ / 2 + 0.001, 1, 0, 0, 0);
 
         /// <summary>The object's index in <see cref="Objects"/>, or -1.</summary>
         public int IndexOf(byte id)
@@ -403,7 +428,28 @@ namespace Teleop.RobotArm.World
                     o.staticFriction, o.dynamicFriction, (float)col[0], (float)col[1], (float)col[2], j[0], j[1], j[2]);
             }
 
-            var scene = new WorldScene(d.name, d.robotProfile, surfaces, table, bench, objects, p.xMin, p.xMax, p.yMin, p.yMax, p.clearance);
+            ScenePoolDocument pool = d.pool ?? new ScenePoolDocument();
+            int movables = 0, fixeds = 0;
+            foreach (SceneObject o in objects)
+            {
+                if (o.Movable) movables++;
+                else fixeds++;
+            }
+
+            if (pool.movableMin < 0 || pool.fixedMin < 0 || pool.movableMin > pool.movableMax || pool.fixedMin > pool.fixedMax)
+            {
+                throw Bad("pool", "each kind needs 0 <= min <= max");
+            }
+
+            if (pool.movableMax > movables || pool.fixedMax > fixeds)
+            {
+                throw Bad("pool", $"it asks for up to {pool.movableMax} movable and {pool.fixedMax} fixed objects; the scene has {movables} and {fixeds}");
+            }
+
+            bool isPool = pool.movableMax + pool.fixedMax > 0;
+            if (isPool && d.version < 2) throw Bad("pool", "a pool needs version 2");
+            var scene = new WorldScene(d.name, d.robotProfile, surfaces, table, bench, objects, p.xMin, p.xMax, p.yMin, p.yMax, p.clearance,
+                pool.movableMin, pool.movableMax, pool.fixedMin, pool.fixedMax);
             for (int i = 0; i < objects.Length; i++)
             {
                 SceneObject o = objects[i];
@@ -418,7 +464,8 @@ namespace Teleop.RobotArm.World
                     }
                 }
 
-                for (int k = 0; k < i; k++)
+                // A pool's objects take part a few at a time and start parked, so their nominal poses may share the table.
+                for (int k = 0; k < i && !isPool; k++)
                 {
                     if (scene.Overlaps(i, o.NominalX, o.NominalY, k, objects[k].NominalX, objects[k].NominalY))
                     {

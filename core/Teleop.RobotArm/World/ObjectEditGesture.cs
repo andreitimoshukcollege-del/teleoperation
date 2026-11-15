@@ -137,7 +137,7 @@ namespace Teleop.RobotArm.World
             for (int i = 0; i < _scene.Objects.Length; i++)
             {
                 SceneObject o = _scene.Objects[i];
-                if (!o.OperatorMovable || !world.TryGet(o.Id, out ObjectPose p, out _)) continue;
+                if (!o.OperatorMovable || !world.TryGet(o.Id, out ObjectPose p, out _) || p.Parked) continue; // parked: out of the layout
                 double dx = cursor.X - p.X, dy = cursor.Y - p.Y;
                 double planar = Math.Sqrt(dx * dx + dy * dy) - o.FootprintRadius;
                 double top = p.Z + o.SizeZ / 2;

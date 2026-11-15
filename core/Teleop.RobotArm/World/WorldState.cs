@@ -69,7 +69,12 @@ namespace Teleop.RobotArm.World
             }
         }
 
-        /// <summary>Takes one object's pose sensed at <paramref name="sensedTicks"/>; false when it is older or not the scene's.</summary>
+        /// <summary>
+        /// Takes one object's pose sensed at <paramref name="sensedTicks"/>; false when it is older or not the scene's. The joint
+        /// port's world frame carries no flags, so a pose more than <see cref="ParkedDepth"/> below the table is taken as parked
+        /// (docs/adr/0037 decision 3: <see cref="WorldScene.ParkedPose"/> is 5 m down; one knocked to the floor lands under 1 m
+        /// down) and stored with <see cref="ObjectPose.FlagParked"/>.
+        /// </summary>
         public bool Apply(in ObjectPose pose, long sensedTicks)
         {
             if (!_known[pose.Id])
@@ -84,11 +89,16 @@ namespace Teleop.RobotArm.World
                 return false;
             }
 
-            _pose[pose.Id] = pose;
+            _pose[pose.Id] = pose.Z < Scene.Table.Top - ParkedDepth
+                ? new ObjectPose(pose.Id, (byte)(pose.Flags | ObjectPose.FlagParked), pose.X, pose.Y, pose.Z, pose.Qw, pose.Qx, pose.Qy, pose.Qz)
+                : pose;
             _sensed[pose.Id] = sensedTicks;
             _posed[pose.Id] = true;
             return true;
         }
+
+        /// <summary>How far below the table top a pose counts as parked, m.</summary>
+        public const double ParkedDepth = 2.0;
 
         public void ApplyStatus(in WorldStatus status, ReadOnlySpan<byte> sceneSha256)
         {

@@ -70,8 +70,9 @@ namespace Teleop.Eval.JointDrive
         public const double ContinueProbability = 0.63, ReleaseProbability = 0.62;
         public const double DwellMedian = 0.25, DwellSigma = 0.8;
 
-        /// <summary>A hold (the clutch let go): lognormal, seconds (people: median 0.72 s, p95 5 s).</summary>
-        public const double HoldMedian = 0.80, HoldSigma = 1.15, HoldMax = 9.0;
+        /// <summary>A hold (the clutch let go): lognormal, seconds (people: median 0.72 s, p95 5 s), at most HoldMax: an episode lasts
+        /// 15-25 s, and a longer stillness is most of its video (two of seven takes held 9 s, 2026-11-15).</summary>
+        public const double HoldMedian = 0.80, HoldSigma = 1.15, HoldMax = 6.0;
 
         /// <summary>The pinch opens while the hand still moves, this far into its last submovement (75% of people's holds start at speed).</summary>
         public const double CutOffProbability = 0.95, CutOffLow = 0.35, CutOffHigh = 0.70;

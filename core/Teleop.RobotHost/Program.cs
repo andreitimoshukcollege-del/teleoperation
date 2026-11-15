@@ -255,6 +255,10 @@ namespace Teleop.RobotHost
                 {
                     sessionState.Headset(now, lastHeadset.Value);
                 }
+
+                // The world in force (WL, WZ, WO), so every session and take stands alone, as the serial-chain host's do: the
+                // JetRover's sessions had none, so a take could not say which objects were on the table or at what size.
+                world?.WritePreamble(now);
             }
 
             // Discovery (docs/adr/0022): the headset asks here where the robot is, so a new DHCP lease

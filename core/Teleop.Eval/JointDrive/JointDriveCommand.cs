@@ -1,7 +1,9 @@
 using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.Globalization;
 using System.IO;
+using System.Linq;
 using System.Net;
 using System.Net.Sockets;
 using System.Threading;
@@ -10,6 +12,7 @@ using Teleop.RobotArm.Collision;
 using Teleop.RobotArm.Operator;
 using Teleop.RobotArm.Types;
 using Teleop.RobotArm.Wire;
+using Teleop.RobotArm.World;
 
 namespace Teleop.Eval.JointDrive
 {
@@ -68,7 +71,7 @@ namespace Teleop.Eval.JointDrive
             "usage: joint-drive --script waypoints|steps|course --speed <rad/s> [--seconds 300] [--seed 1] [--margin-deg 15] [--rate-hz 48]\n" +
             "                   (--dry-run | --remote-host <ip> [--remote-port 6002] --confirm-hardware-motion)\n" +
             "                   [--operator-log <path> [--session-id <id>]] [--stop-file <path>] [--take <scenario>]\n" +
-            "                   [--simulated-robot [--stall-seconds 1] [--stream-seconds 3]]";
+            "                   [--simulated-robot [--stall-seconds 1] [--stream-seconds 3]] [--scene <file> [--new-layout]]";
 
         public static int Run(string[] args)
         {
@@ -80,6 +83,8 @@ namespace Teleop.Eval.JointDrive
             int port = 6002;
             bool dryRun = false, confirmed = false, simulated = false;
             double stallSeconds = DriveWatchdog.StallSeconds, streamSeconds = DriveWatchdog.MaxDegradedSeconds;
+            string? scenePath = null;
+            bool newLayout = false;
             try
             {
                 for (int i = 1; i < args.Length; i++)
@@ -90,9 +95,18 @@ namespace Teleop.Eval.JointDrive
                     {
                         case "--script":
                             string name = Next();
-                            script = name == "waypoints" ? DriveScript.Waypoints : name == "steps" ? DriveScript.Steps
-                                : name == "course" ? DriveScript.Course
-                                : throw new ArgumentException($"unknown script '{name}' (waypoints, steps or course)");
+                            script = name switch
+                            {
+                                "waypoints" => DriveScript.Waypoints,
+                                "steps" => DriveScript.Steps,
+                                "course" => DriveScript.Course,
+                                "reach_no_obstacle" => DriveScript.ReachNoObstacle,
+                                "stop_before_collision" => DriveScript.StopBeforeCollision,
+                                "collide_and_recover" => DriveScript.CollideAndRecover,
+                                "collide_with_obstacle" => DriveScript.CollideWithObstacle,
+                                _ => throw new ArgumentException($"unknown script '{name}' (waypoints, steps, course, reach_no_obstacle, " +
+                                                                 "stop_before_collision, collide_and_recover or collide_with_obstacle)"),
+                            };
                             break;
                         case "--speed": speed = (float)Number(); break;
                         case "--seconds": seconds = Number(); break;
@@ -110,11 +124,17 @@ namespace Teleop.Eval.JointDrive
                         case "--simulated-robot": simulated = true; break;
                         case "--stall-seconds": stallSeconds = Number(); break;
                         case "--stream-seconds": streamSeconds = Number(); break;
+                        case "--scene": scenePath = Next(); break;
+                        case "--new-layout": newLayout = true; break;
                         default: throw new ArgumentException($"unknown argument '{args[i]}'");
                     }
                 }
 
                 if (script == null) throw new ArgumentException("--script is required");
+                bool safety = SafetyScript.IsSafety(script.Value);
+                if (safety && scenePath == null) throw new ArgumentException($"--script {SafetyScript.Category(script.Value)} plans around the objects: it needs --scene <core/Scenes/*.json>");
+                if (!safety && (scenePath != null || newLayout)) throw new ArgumentException("--scene and --new-layout are for the safety scripts");
+                if (newLayout && dryRun) throw new ArgumentException("--new-layout asks RobotHost for a layout; a dry run sends nothing");
                 if (!(speed > 0f) || speed > MaxSpeedRadPerSec) throw new ArgumentException($"--speed must be in (0, {MaxSpeedRadPerSec}] rad/s, the headset slider's range");
                 if (!(seconds > 0)) throw new ArgumentException("--seconds must be positive");
                 if (!(marginDeg >= 5)) throw new ArgumentException("--margin-deg must be at least 5");
@@ -138,6 +158,22 @@ namespace Teleop.Eval.JointDrive
                 return 64;
             }
 
+            // The safety scripts' scene (docs/adr/0036 amendment 1): the file RobotHost runs, checked against its world status.
+            WorldScene? scene = null;
+            byte[] sceneSha = Array.Empty<byte>();
+            if (scenePath != null)
+            {
+                try
+                {
+                    scene = WorldView.LoadScene(scenePath, out sceneSha);
+                }
+                catch (Exception e) when (e is IOException || e is UnauthorizedAccessException || e is System.Text.Json.JsonException || e is InvalidDataException || e is ArgumentException)
+                {
+                    Console.Error.WriteLine($"joint-drive: --scene {scenePath}: {e.Message}");
+                    return 64;
+                }
+            }
+
             RobotArmProfile profile = RobotArmProfile.JetRoverMeasuredDefault;
             ArmCollisionModel model = profile.Collision!;
             var envelope = DriveEnvelope.FromModel(model, (float)(marginDeg * Math.PI / 180));
@@ -145,7 +181,10 @@ namespace Teleop.Eval.JointDrive
 
             if (dryRun)
             {
-                return DryRun(script.Value, profile, envelope, speed, seconds, seed, rateHz, logPath, sessionId ?? "joint-drive-dry-run");
+                // A safety script's dry run plans around the scene's objects where the file puts them.
+                List<SafetyObject>? nominal = scene == null ? null : scene.Objects.Select(o => WorldView.Bounds(o, 1.0, o.Nominal.X, o.Nominal.Y,
+                    o.Nominal.Z, o.Nominal.Qw, o.Nominal.Qx, o.Nominal.Qy, o.Nominal.Qz)).ToList();
+                return DryRun(script.Value, profile, envelope, speed, seconds, seed, rateHz, logPath, sessionId ?? "joint-drive-dry-run", nominal);
             }
 
             if (!confirmed)
@@ -180,7 +219,8 @@ namespace Teleop.Eval.JointDrive
                 Console.WriteLine("[joint-drive] RobotHost reports no arm power (older than park and relax): driving without asking for torque");
             }
 
-            return Drive(script.Value, profile, envelope, speed, seconds, seed, rateHz, robotEndPoint, logPath, sessionId ?? "joint-drive", stopFile, take, stallSeconds, streamSeconds);
+            return Drive(script.Value, profile, envelope, speed, seconds, seed, rateHz, robotEndPoint, logPath, sessionId ?? "joint-drive", stopFile, take,
+                stallSeconds, streamSeconds, scene, sceneSha, newLayout);
         }
 
         private static void PrintEnvelope(in DriveEnvelope envelope, double marginDeg)
@@ -223,7 +263,7 @@ namespace Teleop.Eval.JointDrive
             }
 
             Console.WriteLine(
-                FormattableString.Invariant($"[joint-drive] plan: {plan.Script.ToString().ToLowerInvariant()} at {plan.SpeedRadPerSec:0.##} rad/s, {script} moves ({steps} steps), ") +
+                FormattableString.Invariant($"[joint-drive] plan: {(SafetyScript.IsSafety(plan.Script) ? SafetyScript.Category(plan.Script) : plan.Script.ToString().ToLowerInvariant())} at {plan.SpeedRadPerSec:0.##} rad/s, {script} moves ({steps} steps), ") +
                 FormattableString.Invariant($"{plan.TotalSeconds:0} s with the approach and return; fastest smooth motion commanded {maxSmoothSpeed:0.00} rad/s"));
             for (int j = 0; j < DriveEnvelope.JointCount; j++)
             {
@@ -233,9 +273,9 @@ namespace Teleop.Eval.JointDrive
         }
 
         private static int DryRun(DriveScript script, RobotArmProfile profile, DriveEnvelope envelope, float speed, double seconds, ulong seed,
-            double rateHz, string? logPath, string sessionId)
+            double rateHz, string? logPath, string sessionId, IReadOnlyList<SafetyObject>? objects)
         {
-            if (!DrivePlan.TryBuild(script, profile, profile.Collision!.Home, speed, seconds, seed, envelope, out DrivePlan? plan, out string? error))
+            if (!DrivePlan.TryBuild(script, profile, profile.Collision!.Home, speed, seconds, seed, envelope, out DrivePlan? plan, out string? error, objects))
             {
                 Console.Error.WriteLine($"joint-drive: {error}");
                 return 1;
@@ -269,12 +309,14 @@ namespace Teleop.Eval.JointDrive
         }
 
         private static int Drive(DriveScript script, RobotArmProfile profile, DriveEnvelope envelope, float speed, double seconds, ulong seed,
-            double rateHz, IPEndPoint robot, string? logPath, string sessionId, string? stopFile, string? takeScenario, double stallSeconds, double streamSeconds)
+            double rateHz, IPEndPoint robot, string? logPath, string sessionId, string? stopFile, string? takeScenario, double stallSeconds, double streamSeconds,
+            WorldScene? scene, byte[] sceneSha, bool newLayout)
         {
             long tps = Stopwatch.Frequency;
             using var socket = new Socket(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp);
             socket.Bind(new IPEndPoint(IPAddress.Any, 0));
             var link = new Link(socket, robot, profile);
+            if (scene != null) link.World = new WorldState(scene, sceneSha);
             TakeClient? take = takeScenario == null ? null
                 : new TakeClient((bytes, n) => socket.SendTo(bytes, 0, n, SocketFlags.None, robot), TakeClient.FirstSequence());
             link.Take = take;
@@ -325,9 +367,17 @@ namespace Teleop.Eval.JointDrive
                 link.Pump(Stopwatch.GetTimestamp(), default);
             }
 
+            // A safety script plans around the objects where RobotHost says they are (docs/adr/0036 amendment 1), after a new
+            // layout when asked: every object posed, and at rest.
+            List<SafetyObject>? objects = null;
+            if (link.World != null && !PrepareWorld(link, socket, robot, newLayout, stop, out objects))
+            {
+                return 1; // nothing moved
+            }
+
             ArmPose start = link.Measured;
             Console.WriteLine($"[joint-drive] the arm is at {DrivePlan.Describe(start)}");
-            if (!DrivePlan.TryBuild(script, profile, start, speed, seconds, seed, envelope, out DrivePlan? plan, out string? error))
+            if (!DrivePlan.TryBuild(script, profile, start, speed, seconds, seed, envelope, out DrivePlan? plan, out string? error, objects))
             {
                 Console.Error.WriteLine($"joint-drive: {error}");
                 return 1;
@@ -474,6 +524,130 @@ namespace Teleop.Eval.JointDrive
 
         /// <summary>How long a RECORD request is sent again before it counts as unanswered (the headset gives up after 2 s).</summary>
         private const double RequestSeconds = 5;
+
+        /// <summary>
+        /// The world the safety scripts plan in (docs/adr/0036 amendment 1): RobotHost's world status (its scene must be ours)
+        /// and every object's pose, from the joint port. With <paramref name="newLayout"/>, first asks RobotHost for a new random
+        /// layout, which it takes only while the operator's motion is not on: a heartbeat with motion paused, the edit re-sent
+        /// until the status answers it, then torque on again (the hold request, motion on). Either way the objects must then
+        /// be at rest (no move over 1 mm or 1 degree for <see cref="SettleSeconds"/>). False, said why, if any of it fails.
+        /// </summary>
+        private static bool PrepareWorld(Link link, Socket socket, IPEndPoint robot, bool newLayout, ManualResetEventSlim stop, out List<SafetyObject>? objects)
+        {
+            objects = null;
+            WorldState world = link.World!;
+            long tps = Stopwatch.Frequency;
+            long until = Stopwatch.GetTimestamp() + 10 * tps;
+            while (!world.HasStatus || !WorldView.TryObjects(world, out _))
+            {
+                if (stop.IsSet) return false;
+                if (Stopwatch.GetTimestamp() > until)
+                {
+                    Console.Error.WriteLine("joint-drive: RobotHost sent no world in 10 s (it needs --scene, and the world frames go to a subscribed client). Nothing moved.");
+                    return false;
+                }
+
+                link.Pump(Stopwatch.GetTimestamp(), null);
+                Thread.Sleep(5);
+            }
+
+            if (world.SceneMismatch)
+            {
+                Console.Error.WriteLine("joint-drive: RobotHost runs another scene file than --scene (their sha256 differ). Nothing moved.");
+                return false;
+            }
+
+            if (newLayout)
+            {
+                uint before = world.Status.LayoutNumber;
+                var buffer = new byte[256];
+                uint heartbeat = 0, edit = (uint)(Stopwatch.GetTimestamp() & 0x3FFFFFFF) | 1u;
+                long next = 0;
+                until = Stopwatch.GetTimestamp() + 10 * tps;
+                Console.WriteLine($"[joint-drive] asking RobotHost for a new layout (now layout {before}); motion paused meanwhile");
+                while (true)
+                {
+                    long now = Stopwatch.GetTimestamp();
+                    if (stop.IsSet) return false;
+                    if (now > until)
+                    {
+                        Console.Error.WriteLine($"joint-drive: RobotHost did not apply a new layout in 10 s (status: edit {world.Status.EditSequence}, outcome {world.Status.EditOutcome}). Nothing moved.");
+                        return false;
+                    }
+
+                    if (world.Status.EditSequence == edit)
+                    {
+                        if (world.Status.EditOutcome == 0 && world.Status.LayoutNumber != before) break; // applied
+                        if (world.Status.EditOutcome != 0) edit++; // busy (motion not off yet): a refused sequence is spent, so a new one
+                    }
+
+                    if (now >= next)
+                    {
+                        ArmPowerCodec.TryEncodeRequest(OperatorClientKind.Tool, OperatorMotionMode.Paused, ArmPowerRequest.None, ++heartbeat, now, buffer, out int n);
+                        socket.SendTo(buffer, 0, n, SocketFlags.None, robot);
+                        WorldCodec.TryEncodeEdit(WorldEditOp.NewLayout, 0, edit, now, default, buffer, out n);
+                        socket.SendTo(buffer, 0, n, SocketFlags.None, robot);
+                        next = now + tps * 3 / 10;
+                    }
+
+                    link.Pump(now, null);
+                    Thread.Sleep(5);
+                }
+
+                Console.WriteLine($"[joint-drive] layout {world.Status.LayoutNumber} (seed {world.Status.LayoutSeed}); waiting for the objects to settle");
+            }
+
+            // At rest: every object's newest pose within 1 mm and 1 degree of where it was SettleSeconds ago.
+            var scene = world.Scene;
+            var anchor = new ObjectPose[scene.Objects.Length];
+            long anchorAt = 0;
+            until = Stopwatch.GetTimestamp() + 20 * tps;
+            while (true)
+            {
+                long now = Stopwatch.GetTimestamp();
+                if (stop.IsSet) return false;
+                if (now > until)
+                {
+                    Console.Error.WriteLine("joint-drive: the objects did not come to rest in 20 s. Nothing moved.");
+                    return false;
+                }
+
+                link.Pump(now, null);
+                bool still = anchorAt != 0;
+                for (int i = 0; i < anchor.Length; i++)
+                {
+                    world.TryGet(scene.Objects[i].Id, out ObjectPose p, out _);
+                    if (anchorAt == 0) continue;
+                    float moved = new System.Numerics.Vector3(p.X - anchor[i].X, p.Y - anchor[i].Y, p.Z - anchor[i].Z).Length();
+                    float turned = 2f * MathF.Acos(MathF.Min(1f, MathF.Abs(p.Qw * anchor[i].Qw + p.Qx * anchor[i].Qx + p.Qy * anchor[i].Qy + p.Qz * anchor[i].Qz)));
+                    if (moved > 0.001f || turned > MathF.PI / 180f) still = false;
+                }
+
+                if (still && now - anchorAt >= (long)(SettleSeconds * tps)) break;
+                if (!still)
+                {
+                    for (int i = 0; i < anchor.Length; i++) world.TryGet(scene.Objects[i].Id, out anchor[i], out _);
+                    anchorAt = now;
+                }
+
+                Thread.Sleep(20);
+            }
+
+            WorldView.TryObjects(world, out List<SafetyObject> found);
+            objects = found;
+            Console.WriteLine("[joint-drive] objects at rest: " + string.Join("; ", found.Select(o =>
+                FormattableString.Invariant($"{o.Id} at ({o.Center.X:0.000}, {o.Center.Y:0.000}, {o.Center.Z:0.000})"))));
+            if (newLayout && ArmPower.ArmPowerCommand.Request(robot, ArmPowerRequest.Hold, 10, out _) != 0)
+            {
+                Console.Error.WriteLine("joint-drive: RobotHost did not switch motion back on after the new layout. Nothing moved.");
+                return false;
+            }
+
+            return true;
+        }
+
+        /// <summary>How long every object must stay put before a safety script plans around it, seconds.</summary>
+        public const double SettleSeconds = 1.0;
 
         /// <summary>
         /// Starts the take: waits for RobotHost's scenario list, then sends Start until its status echoes it. False, with
@@ -624,6 +798,38 @@ namespace Teleop.Eval.JointDrive
             /// <summary>Takes the joint port's RECORD status and scenario list, when the drive records a take.</summary>
             public TakeClient? Take { get; set; }
 
+            /// <summary>Takes RobotHost's world status, frames and sizes, when a safety script plans around the objects.</summary>
+            public WorldState? World { get; set; }
+
+            private readonly byte[] _worldSha = new byte[WorldCodec.Sha256Bytes];
+            private readonly ObjectPose[] _worldObjects = new ObjectPose[WorldCodec.MaxObjectsPerFrame];
+            private readonly byte[] _sizeIds = new byte[256];
+            private readonly float[] _sizeScales = new float[256];
+
+            private bool TakeWorld(ReadOnlySpan<byte> datagram)
+            {
+                if (World == null) return false;
+                if (WorldCodec.TryDecodeStatus(datagram, out WorldStatus status, _worldSha, out _))
+                {
+                    World.ApplyStatus(status, _worldSha);
+                    return true;
+                }
+
+                if (WorldCodec.TryDecodeFrame(datagram, out _, out long sensed, out _, out _, _worldObjects, out int count))
+                {
+                    for (int i = 0; i < count; i++) World.Apply(_worldObjects[i], sensed);
+                    return true;
+                }
+
+                if (WorldCodec.TryDecodeSizes(datagram, out uint revision, _sizeIds, _sizeScales, out int sizes))
+                {
+                    World.ApplySizes(revision, _sizeIds.AsSpan(0, sizes), _sizeScales.AsSpan(0, sizes));
+                    return true;
+                }
+
+                return false;
+            }
+
             /// <summary>Sends the keepalive when due and takes in every frame waiting; with a watchdog, feeds it each frame and fresh reading.</summary>
             public void Pump(long now, DriveWatchdog? watchdog, in ArmPose commanded = default)
             {
@@ -649,7 +855,7 @@ namespace Teleop.Eval.JointDrive
                     if (!JointStateCodec.TryDecode(_buffer.AsSpan(0, received), out _, out _, out long sensedTicks, out _, out _,
                             out long robotTps, _joints, out int count))
                     {
-                        Take?.OnDatagram(_buffer.AsSpan(0, received));
+                        if (!TakeWorld(_buffer.AsSpan(0, received))) Take?.OnDatagram(_buffer.AsSpan(0, received));
                         continue;
                     }
 

@@ -24,6 +24,7 @@ import time
 from typing import Callable, Dict, Iterable, List, Optional, Tuple
 
 from .jlog import JlogError
+from .safety import CATEGORIES as SAFETY_CATEGORIES
 from .takes import Take, TakeError, checksum_id, read_take, verify_checksums
 from .writer import append_take, read_ledger, rebuild, recorded_episodes
 
@@ -41,7 +42,9 @@ def complete_takes(roots: Iterable[str], now: float, settle: float) -> List[str]
             continue
         for scenario in sorted(os.listdir(root)):
             folder = os.path.join(root, scenario)
-            if scenario.startswith(("_", ".")) or not os.path.isdir(folder):
+            # The safety categories' takes become one dataset per batch (safety.py, docs/adr/0036 amendment 1), not a
+            # dataset per scenario.
+            if scenario.startswith(("_", ".")) or scenario in SAFETY_CATEGORIES or not os.path.isdir(folder):
                 continue
             for name in sorted(os.listdir(folder)):
                 take = os.path.join(folder, name)

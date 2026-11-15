@@ -213,6 +213,12 @@ namespace Teleop.RobotHost
 
                 world = new WorldHost(scene, sceneSha, worldServer, clock.TicksPerSecond, sceneSeed,
                     line => { if (recorder != null && recorder.IsActive) recorder.Record(line); }, Console.WriteLine);
+                // The arm's contacts with the objects, when the world server reports them (the Isaac JetRover bridge, docs/adr/0036
+                // amendment 1): recorded as WC, as the serial-chain host does, the safety label's source.
+                worldServer.ContactsSink = (sensed, contacts) =>
+                {
+                    if (recorder != null && recorder.IsActive) recorder.Record(SessionLines.WorldContacts(clock.NowTicks, sensed, contacts.Span));
+                };
                 Console.WriteLine($"[world] scene '{scene.Name}' ({a.ScenePath}): {scene.Objects.Length} objects, layouts from seed {sceneSeed}, " +
                     $"placed in {worldServer.Description}");
             }

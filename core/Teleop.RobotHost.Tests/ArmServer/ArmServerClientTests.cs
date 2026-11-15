@@ -6,6 +6,7 @@ using System.Net.Sockets;
 using System.Threading;
 using Teleop.Core.Types;
 using Teleop.RobotHost.ArmServer;
+using Teleop.RobotHost.Recording;
 using Teleop.RobotHost.Tests.Relay;
 
 namespace Teleop.RobotHost.Tests.ArmServer
@@ -45,6 +46,8 @@ namespace Teleop.RobotHost.Tests.ArmServer
                 ArmServerWire.TryEncodeState(2, new ArmServerStateHeader(sensed, sensed, ArmServerWire.FlagEnabled), ids, positions, zeros, positions, b, out int n);
                 _toClient.Enqueue(b.AsSpan(0, n).ToArray());
             }
+
+            public void PushRaw(ReadOnlySpan<byte> datagram) => _toClient.Enqueue(datagram.ToArray());
 
             public void PushHealth(float factor)
             {
@@ -147,6 +150,28 @@ namespace Teleop.RobotHost.Tests.ArmServer
             client.Poll(now());
             Assert.Equal(1, client.Rejected);
             Assert.Equal(before, client.Positions.ToArray());
+        }
+
+        [Fact]
+        public void Contacts_ReachTheSink_AndRecordAsWC()
+        {
+            // The Isaac JetRover bridge reports the arm touching an object (docs/adr/0036 amendment 1); RobotHost records it.
+            var (client, server, now) = Connected();
+            Assert.True(client.Connect(now, "jetrover", 1.0, null, out string error), error);
+            var got = new List<(long Sensed, ArmServerContact[] Contacts)>();
+            client.ContactsSink = (sensed, contacts) => got.Add((sensed, contacts.ToArray()));
+            var b = new byte[ArmServerWire.MaxBytes];
+            Assert.True(ArmServerWorld.TryEncodeContacts(9, 7_000_000_000, new[] { new ArmServerContact(0, 5, 1, 2.5f) }, b, out int n));
+            server.PushRaw(b.AsSpan(0, n));
+            Assert.True(ArmServerWorld.TryEncodeContacts(10, 7_500_000_000, ReadOnlySpan<ArmServerContact>.Empty, b, out n));
+            server.PushRaw(b.AsSpan(0, n));
+            client.Poll(now());
+            Assert.Equal(2, got.Count);
+            Assert.Equal(7_000_000_000, got[0].Sensed);
+            Assert.Equal((0, 5, 1, 2.5f), (got[0].Contacts[0].Arm, got[0].Contacts[0].Link, got[0].Contacts[0].Object, got[0].Contacts[0].ForceNewtons));
+            Assert.Empty(got[1].Contacts); // the contact ended
+            Assert.Equal("WC|42|7000000000|0:5:1:2.5", SessionLines.WorldContacts(42, got[0].Sensed, got[0].Contacts));
+            Assert.Equal("WC|43|7500000000|", SessionLines.WorldContacts(43, got[1].Sensed, got[1].Contacts));
         }
 
         [LinuxOnlyFact]

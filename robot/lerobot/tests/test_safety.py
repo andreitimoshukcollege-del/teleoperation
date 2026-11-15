@@ -1,0 +1,130 @@
+"""Safety datasets from the twin's takes, labelled by physics (docs/adr/0036 amendment 1): frame labels from WC contacts,
+each category's check, and the lab's label files."""
+
+import json
+import math
+import os
+
+import pytest
+
+from conftest import MS, jetrover_take
+from teleop_lerobot import safety
+from teleop_lerobot.takes import read_take
+from teleop_lerobot.watch import complete_takes
+
+UPRIGHT = (1.0, 0.0, 0.0, 0.0)
+ON_ITS_SIDE = (math.cos(math.pi / 4), math.sin(math.pi / 4), 0.0, 0.0)  # 90 degrees about x
+
+
+def wc(t_ms, pairs=""):
+    return ["WC", t_ms * MS + MS, t_ms * MS, pairs]
+
+
+def wo(t_ms, poses):
+    """poses: {object: (x, y, z, (qw, qx, qy, qz))}."""
+    text = ";".join(f"{o}:{x}:{y}:{z}:{q[0]}:{q[1]}:{q[2]}:{q[3]}" for o, (x, y, z, q) in poses.items())
+    return ["WO", t_ms * MS + MS, t_ms * MS, 1, text]
+
+
+def take(root, category, extra, name="20261114T100000Z-take001"):
+    return jetrover_take(root, name=name, scenario=category, extra=extra)
+
+
+def verdict(path):
+    t = read_take(path)
+    stretches = safety.contacts(path)
+    labels = safety.frame_labels(t, stretches)
+    return t, labels, safety.check(t, labels, stretches, safety.object_poses(path))
+
+
+def test_a_touch_labels_the_frames_it_spans_and_recovering_passes(scenarios):
+    standing = {2: (0.24, -0.08, -0.15, UPRIGHT)}
+    path = take(scenarios, "collide_and_recover", [wo(1000, standing), wc(1500, "0:5:2:1.5"), wc(1620), wo(2900, standing)])
+    t, labels, v = verdict(path)
+    assert v.ok, v.reason
+    assert v.touched == (2,)
+    unsafe = [i for i, x in enumerate(labels) if x]
+    # Frames every 1/15 s from 1.0 s: the touch 1.50-1.62 s spans frames 7..9 (their periods reach +-33 ms).
+    times = [t.frames[i].timing["sensed"] / 1e9 for i in unsafe]
+    assert unsafe == list(range(unsafe[0], unsafe[-1] + 1)) and min(times) <= 1.5 + 0.034 and max(times) >= 1.62 - 0.034
+    assert labels[-1] == 0
+
+
+def test_a_touch_shorter_than_a_frame_still_marks_one(scenarios):
+    # 20 ms, between two frame instants: the frame whose period holds it is unsafe.
+    path = take(scenarios, "collide_and_recover", [wc(1510, "0:6:1:0.3"), wc(1530)])
+    _, labels, v = verdict(path)
+    assert sum(labels) >= 1 and v.ok
+
+
+def test_recovering_that_never_lets_go_or_tips_its_object_fails(scenarios):
+    path = take(scenarios, "collide_and_recover", [wc(1500, "0:5:2:1.5")], name="20261114T100000Z-take001")
+    assert "no recovery" in verdict(path)[2].reason
+    tipped = take(scenarios, "collide_and_recover", [wo(1000, {2: (0.24, -0.08, -0.15, UPRIGHT)}), wc(1500, "0:5:2:1.5"), wc(1600),
+                                                     wo(2500, {2: (0.26, -0.08, -0.18, ON_ITS_SIDE)})], name="20261114T100100Z-take002")
+    v = verdict(tipped)[2]
+    assert not v.ok and "tipped object 2 by 90" in v.reason
+
+
+def test_a_full_collision_must_knock_its_object_over(scenarios):
+    knocked = take(scenarios, "collide_with_obstacle", [wo(1000, {3: (0.17, -0.02, -0.16, UPRIGHT)}), wc(1400, "0:4:3:6.0"),
+                                                        wc(1900), wo(2500, {3: (0.21, -0.05, -0.18, ON_ITS_SIDE)})])
+    assert verdict(knocked)[2].ok
+    grazed = take(scenarios, "collide_with_obstacle", [wo(1000, {3: (0.17, -0.02, -0.16, UPRIGHT)}), wc(1400, "0:4:3:0.5"),
+                                                       wc(1450), wo(2500, {3: (0.171, -0.02, -0.16, UPRIGHT)})], name="20261114T100100Z-take002")
+    v = verdict(grazed)[2]
+    assert not v.ok and "tipped none" in v.reason
+
+
+def test_no_contact_categories_fail_on_any_touch(scenarios):
+    assert verdict(take(scenarios, "stop_before_collision", []))[2].ok
+    assert verdict(take(scenarios, "reach_no_obstacle", [], name="20261114T100100Z-take002"))[2].ok
+    v = verdict(take(scenarios, "stop_before_collision", [wc(2000, "0:6:4:0.2"), wc(2040)], name="20261114T100200Z-take003"))[2]
+    assert not v.ok and "touched object(s) [4]" in v.reason
+    assert not verdict(take(scenarios, "collide_with_obstacle", [], name="20261114T100300Z-take004"))[2].ok  # never touched
+
+
+def test_the_dataset_take_has_his_front_camera_and_category_task(scenarios):
+    t = safety.as_safety(read_take(take(scenarios, "collide_and_recover", [])))
+    assert [c.name for c in t.cameras] == ["third-left", "front"]
+    assert all("front" in f.parts and "wrist" not in f.parts for f in t.frames)
+    assert t.task == "collide_and_recover" and t.scenario == "collide_and_recover"
+
+
+def test_his_label_files(tmp_path):
+    episodes = [(0, "reach_no_obstacle", [0, 0, 0]), (1, "collide_and_recover", [0, 1, 1, 0, 1, 0]),
+                (2, "collide_with_obstacle", [0, 0, 1, 1])]
+    assert safety.ranges([0, 1, 1, 0, 1, 0]) == [[1, 2], [4, 4]]
+    assert safety.events(1, "collide_and_recover", [0, 1, 1, 0, 1, 0]) == [
+        {"episode": 1, "kind": "contact", "frame_in_episode": 1, "source": "physics"},
+        {"episode": 1, "kind": "clear", "frame_in_episode": 5, "source": "physics"}]
+    assert [e["kind"] for e in safety.events(2, "collide_with_obstacle", [0, 0, 1, 1])] == ["contact"]  # no recovery: no clear
+    rows = safety.label_rows(1, "collide_and_recover", [0, 1])
+    assert rows[1] == {"episode_index": 1, "frame_index": 1, "label": 1, "category": "collide_and_recover",
+                       "effective_category": "collide_and_recover", "overridden": False, "source": "physics"}
+    pd = pytest.importorskip("pandas")
+    pytest.importorskip("pyarrow")
+    safety.write_labels(str(tmp_path), episodes)
+    # His manual JSON: string episode keys, inclusive ranges, all-safe episodes left out.
+    assert json.loads((tmp_path / "manual_safety_labels.json").read_text()) == {"1": [[1, 2], [4, 4]], "2": [[2, 3]]}
+    lines = [json.loads(x) for x in (tmp_path / "safety_events.jsonl").read_text().splitlines()]
+    assert [(e["episode"], e["kind"]) for e in lines] == [(1, "contact"), (1, "clear"), (2, "contact")]
+    df = pd.read_parquet(tmp_path / "meta" / "safety_labels.parquet")
+    assert list(df.columns) == ["episode_index", "frame_index", "label", "category", "effective_category", "overridden", "source"]
+    assert len(df) == 13 and int(df["label"].sum()) == 5
+
+
+def test_a_failing_take_is_set_aside_with_its_reason(scenarios):
+    path = take(scenarios, "stop_before_collision", [wc(2000, "0:6:4:0.2"), wc(2040)])
+    v = verdict(path)[2]
+    dest = safety.set_aside(path, v)
+    assert dest == os.path.join(scenarios, "_discarded", "stop_before_collision", os.path.basename(path))
+    assert not os.path.exists(path)
+    assert json.load(open(os.path.join(dest, "safety-check.json")))["ok"] is False
+
+
+def test_the_watcher_leaves_the_safety_scenarios_alone(scenarios):
+    take(scenarios, "collide_with_obstacle", [])
+    jetrover_take(scenarios, scenario="free-play")
+    found = complete_takes([scenarios], now=1e12, settle=0)
+    assert [os.path.basename(os.path.dirname(t)) for t in found] == ["free-play"]

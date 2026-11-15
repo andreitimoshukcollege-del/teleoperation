@@ -201,6 +201,10 @@ class IsaacWorld:
         self.body_paths: List[str] = list(self.object_paths)
         self.slots: List[dict] = [{UNIT: i} for i in range(len(scene.objects))]
         self.active: List[int] = list(range(len(scene.objects)))
+        # The arm's contacts with the objects (docs/adr/0036 amendment 1), when the bridge asks for them (enable_contacts).
+        self.contact_tracker = None
+        self._contact_report = False
+        self._physx_sim = None
 
     def parked(self, index: int, step: int) -> Pose:
         """Where object ``index``'s body at step ``step`` rests while not in use: upright on the shelf, a metre from the next."""
@@ -212,10 +216,14 @@ class IsaacWorld:
 
     # --- before play ------------------------------------------------------------------------------------------------
 
-    def build(self, stage, physics: bool = True) -> None:
+    def build(self, stage, physics: bool = True, contact_report: bool = False) -> None:
         """The scene's prims. ``physics=False`` is the renderer's copy (docs/adr/0032 decision 2): every surface, the
-        floor included, as visuals alone, and objects it poses itself; no collider, body or physics material."""
-        from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics, UsdShade
+        floor included, as visuals alone, and objects it poses itself; no collider, body or physics material.
+        ``contact_report`` marks every object body for PhysX's contact report (threshold 0: every touch), which
+        :meth:`contact_step` reads (docs/adr/0036 amendment 1)."""
+        from pxr import Gf, PhysxSchema, Sdf, Usd, UsdGeom, UsdPhysics, UsdShade
+
+        self._contact_report = bool(physics and contact_report)
 
         def material(path: str, static: float, dynamic: float):
             mat = UsdShade.Material.Define(stage, path)
@@ -264,6 +272,8 @@ class IsaacWorld:
                     rb.CreateKinematicEnabledAttr(not o.movable)
                     if o.movable:
                         UsdPhysics.MassAPI.Apply(prim.GetPrim()).CreateMassAttr(o.mass * scale ** 3)
+                    if self._contact_report:
+                        PhysxSchema.PhysxContactReportAPI.Apply(prim.GetPrim()).CreateThresholdAttr().Set(0.0)
                 sx, sy, sz = (v * scale for v in o.size)
                 if o.shape == "box":
                     g = UsdGeom.Cube.Define(stage, f"{path}/Shape")
@@ -351,6 +361,56 @@ class IsaacWorld:
 
         self._bodies = RigidPrim(self.body_paths)
         self._query = omni.physx.get_physx_scene_query_interface()
+        if self._contact_report:
+            self._physx_sim = omni.physx.get_physx_simulation_interface()
+
+    # --- the arm's contacts with the objects (docs/adr/0036 amendment 1) ---------------------------------------------
+
+    def enable_contacts(self, links: Sequence[str], dt: float) -> None:
+        """Tracks the robot's contacts with the objects: ``links`` the URDF's link names in order (a contact's link
+        number), ``dt`` the physics step. Needs :meth:`build` with ``contact_report=True``."""
+        from .contacts import ContactTracker
+
+        if not self._contact_report:
+            raise RuntimeError("enable_contacts needs build(..., contact_report=True)")
+        bodies = {}
+        for i, o in enumerate(self.model.scene.objects):
+            for slot in self.slots[i].values():
+                bodies[self.body_paths[slot]] = o.id
+        self.contact_tracker = ContactTracker(self.robot_path, links, bodies, dt)
+
+    def contact_events(self) -> list:
+        """PhysX's contact report since the last call, as :class:`~teleop_isaac.contacts.ContactEvent` s."""
+        import math
+
+        from omni.physx.bindings._physx import ContactEventType
+        from pxr import PhysicsSchemaTools
+
+        from .contacts import FOUND, LOST, PERSIST, ContactEvent
+
+        if self._physx_sim is None:
+            return []
+        headers, data = self._physx_sim.get_contact_report()
+        kinds = {ContactEventType.CONTACT_FOUND: FOUND, ContactEventType.CONTACT_PERSIST: PERSIST,
+                 ContactEventType.CONTACT_LOST: LOST}
+        path = PhysicsSchemaTools.intToSdfPath
+        out = []
+        for h in headers:
+            kind = kinds.get(h.type)
+            if kind is None:
+                continue
+            impulse = 0.0
+            for d in data[h.contact_data_offset:h.contact_data_offset + h.num_contact_data]:
+                impulse += math.sqrt(d.impulse[0] ** 2 + d.impulse[1] ** 2 + d.impulse[2] ** 2)
+            out.append(ContactEvent(str(path(h.actor0)), str(path(h.actor1)), str(path(h.collider0)), str(path(h.collider1)),
+                                    kind, impulse))
+        return out
+
+    def contact_step(self) -> bool:
+        """Reads this step's contact report into the tracker; True when the touching (link, object) pairs changed."""
+        if self.contact_tracker is None:
+            return False
+        return self.contact_tracker.update(self.contact_events())
 
     def arm_near(self, index: int, pose: Pose, margin: float) -> bool:
         """Whether any link of the robot is within ``margin`` of object ``index``'s shape at ``pose``. Boxes and
@@ -409,6 +469,8 @@ class IsaacWorld:
             if self.model.scene.objects[i].movable:  # stood up and at rest, wherever it had rolled or fallen
                 self._bodies.set_velocities(np.zeros((1, 3)), np.zeros((1, 3)), indices=[self.active[i]])
             self.model.apply(i, upright)
+            if self.contact_tracker is not None:  # teleported: PhysX may never report its old contacts lost
+                self.contact_tracker.forget(object_id)
         now = self.model.poses[i] if i >= 0 else tuple(pose)
         return outcome, now
 
@@ -453,6 +515,8 @@ class IsaacWorld:
                     self._bodies.set_world_poses(positions=np.array([parked[:3], upright[:3]]),
                                                  orientations=np.array([parked[3:], upright[3:]]), indices=[old, new])
                     self._bodies.set_velocities(np.zeros((2, 3)), np.zeros((2, 3)), indices=[old, new])
+                    if self.contact_tracker is not None:  # both bodies teleported
+                        self.contact_tracker.forget(object_id)
                 self.active[i] = new
                 self.model.apply_resize(i, RESIZE_SCALES[k], upright)
         now = self.model.poses[i] if i >= 0 else (0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0)

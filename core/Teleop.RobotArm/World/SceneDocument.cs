@@ -101,6 +101,13 @@ namespace Teleop.RobotArm.World
         /// </summary>
         public double sizeMin;
         public double sizeMax;
+
+        /// <summary>
+        /// When both are above 0: a layout stands each movable object this far from the robot's base (the root frame's origin,
+        /// horizontally), m, where its arm can reach it (docs/adr/0037 amendment 3). Absent (0): anywhere in the region.
+        /// </summary>
+        public double reachMin;
+        public double reachMax;
     }
 
     /// <summary>Where objects may stand: every footprint lies inside this region and on the table, this far apart.</summary>

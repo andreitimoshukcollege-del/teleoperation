@@ -254,3 +254,12 @@ The user asked for random sizes per take.
   The pool is still 24: 8 primitives that layouts resize, 8 real objects and 8 fixed walls. Larger YCB objects (the cracker
   and sugar boxes, the bottles, the drill) are fetched but not in the pool: they are beyond the user's 12 cm.
 - **On the twin, an 8-take batch:** all 8 kept. `collide_with_obstacle` knocked over the YCB marker and the foam brick.
+- **A reach band.** Uniform over the whole region, the bigger objects often stood out of the arm's reach:
+  - the wrist reaches 14-24 cm from the base, and the region runs to 44 cm;
+  - the safety scripts' random-layout test fell to 9 and 14 of 16 for the two collide categories, against its bar of 80%.
+
+  A pool may set `reachMin`/`reachMax` (m from the robot's base, horizontally; `jetrover-bench`: 0.15 and 0.30): its movable
+  objects stand only there. Walls keep the whole region (the long ones need it to fit; they are obstacles). The test plans
+  every category on at least 80% of layouts again, at the bar it always had.
+- **Large objects take part less often.** Their round footprint more often finds no free spot in the band. Over 2000
+  layouts, the mug was on the table in 7.5% and the pudding box in 9.6%, against about 20% for the small primitives.

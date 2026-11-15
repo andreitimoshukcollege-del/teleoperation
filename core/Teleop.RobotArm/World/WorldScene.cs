@@ -190,8 +190,10 @@ namespace Teleop.RobotArm.World
 
         private WorldScene(string name, string robotProfile, SceneSurface[] surfaces, SceneSurface table, SceneSurface? bench,
             SceneObject[] objects, double xMin, double xMax, double yMin, double yMax, double clearance,
-            int movableMin, int movableMax, int fixedMin, int fixedMax, double sizeMin, double sizeMax)
+            int movableMin, int movableMax, int fixedMin, int fixedMax, double sizeMin, double sizeMax, double reachMin, double reachMax)
         {
+            ReachMin = reachMin;
+            ReachMax = reachMax;
             SizeMin = sizeMin;
             SizeMax = sizeMax;
             MovableMin = movableMin;
@@ -239,6 +241,18 @@ namespace Teleop.RobotArm.World
         public bool DrawsSizes => SizeMax > 0;
         public double SizeMin { get; }
         public double SizeMax { get; }
+
+        /// <summary>A pool's band for its movable objects, m from the robot's base (0, 0 when there is none): where the arm reaches them.</summary>
+        public double ReachMin { get; }
+        public double ReachMax { get; }
+
+        /// <summary>Whether a pool's layout may stand object <paramref name="index"/> at (x, y): a movable object within the reach band, when there is one; any other anywhere.</summary>
+        public bool InReach(int index, double x, double y)
+        {
+            if (!(ReachMax > 0) || !Objects[index].Movable) return true;
+            double r = Math.Sqrt(x * x + y * y);
+            return r >= ReachMin && r <= ReachMax;
+        }
 
         /// <summary>Whether a layout may give object <paramref name="index"/> another size: a movable object the headset may resize, in a pool that draws sizes.</summary>
         public bool Resizable(int index) => DrawsSizes && Objects[index].Movable && Objects[index].OperatorMovable && Objects[index].Shape != SceneShape.Mesh;
@@ -506,8 +520,14 @@ namespace Teleop.RobotArm.World
             }
 
             if (pool.sizeMax > 0 && !isPool) throw Bad("pool", "sizes are drawn only for a pool");
+            if (!Finite(pool.reachMin, pool.reachMax) || !((pool.reachMin == 0 && pool.reachMax == 0) || (pool.reachMin >= 0 && pool.reachMin < pool.reachMax && pool.reachMax > 0)))
+            {
+                throw Bad("pool", "reachMin and reachMax are both 0, or 0 <= reachMin < reachMax");
+            }
+
+            if (pool.reachMax > 0 && !isPool) throw Bad("pool", "a reach band is only for a pool");
             var scene = new WorldScene(d.name, d.robotProfile, surfaces, table, bench, objects, p.xMin, p.xMax, p.yMin, p.yMax, p.clearance,
-                pool.movableMin, pool.movableMax, pool.fixedMin, pool.fixedMax, pool.sizeMin, pool.sizeMax);
+                pool.movableMin, pool.movableMax, pool.fixedMin, pool.fixedMax, pool.sizeMin, pool.sizeMax, pool.reachMin, pool.reachMax);
             for (int i = 0; i < objects.Length; i++)
             {
                 SceneObject o = objects[i];

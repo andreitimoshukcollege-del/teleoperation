@@ -306,6 +306,7 @@ def parse(doc: Dict[str, Any]) -> Scene:
     pd = doc.get("pool", {}) or {}
     pool = tuple(pd.get(k, 0) for k in ("movableMin", "movableMax", "fixedMin", "fixedMax"))
     size_min, size_max = pd.get("sizeMin", 0.0), pd.get("sizeMax", 0.0)
+    reach_min, reach_max = pd.get("reachMin", 0.0), pd.get("reachMax", 0.0)
     if not all(isinstance(v, int) and not isinstance(v, bool) for v in pool) or min(pool) < 0 or pool[0] > pool[1] or pool[2] > pool[3]:
         raise _bad("pool", "each kind needs 0 <= min <= max")
     movables = sum(1 for o in objects if o.movable)
@@ -318,6 +319,10 @@ def parse(doc: Dict[str, Any]) -> Scene:
         raise _bad("pool", "sizeMin and sizeMax are both 0, or 0 < sizeMin < sizeMax")
     if size_max > 0 and not is_pool:
         raise _bad("pool", "sizes are drawn only for a pool")
+    if not (_finite(reach_min) and _finite(reach_max)) or not ((reach_min == 0 and reach_max == 0) or 0 <= reach_min < reach_max):
+        raise _bad("pool", "reachMin and reachMax are both 0, or 0 <= reachMin < reachMax")
+    if reach_max > 0 and not is_pool:
+        raise _bad("pool", "a reach band is only for a pool")
     known = {"format", "version", "name", "robotProfile", "surfaces", "objects", "placement", "pool"}
     scene = Scene(name, robot_profile, tuple(surfaces), table, bench, tuple(objects), (float(x0), float(x1), float(y0), float(y1)),
                   float(clearance), {k: v for k, v in doc.items() if k not in known}, pool)

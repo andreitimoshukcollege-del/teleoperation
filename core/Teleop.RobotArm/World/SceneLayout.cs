@@ -37,7 +37,7 @@ namespace Teleop.RobotArm.World
         /// <see cref="WorldScene.ParkedPose"/>. A pool's layout draws, from one <see cref="SeededRng"/>: how many movable
         /// objects (uniform in the pool's range), how many fixed ones, which (a partial Fisher-Yates shuffle of each kind in
         /// file order), then a spot for each, the fixed ones first: x and y uniform where its footprint fits on the table and
-        /// in the region, and yaw uniform in ±π, redrawn while it comes within the clearance of one already placed, up to
+        /// in the region (a movable one also within the pool's reach band, if it has one), and yaw uniform in ±π, redrawn while it comes within the clearance of one already placed, up to
         /// <see cref="MaxPoolTries"/> times. One that finds no spot is parked too. Returns how many chosen objects found no
         /// spot. Allocates nothing.
         /// </summary>
@@ -111,7 +111,7 @@ namespace Teleop.RobotArm.World
                     double x = x0 + rng.NextDouble() * (x1 - x0);
                     double y = y0 + rng.NextDouble() * (y1 - y0);
                     double yaw = (2 * rng.NextDouble() - 1) * Math.PI;
-                    if (x0 > x1 || y0 > y1 || !scene.FitsOnTable(i, x, y, scale)) continue;
+                    if (x0 > x1 || y0 > y1 || !scene.FitsOnTable(i, x, y, scale) || !scene.InReach(i, x, y)) continue;
                     bool clear = true;
                     for (int q = 0; q < placedCount && clear; q++)
                     {

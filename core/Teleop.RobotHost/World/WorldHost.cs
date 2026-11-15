@@ -414,7 +414,7 @@ namespace Teleop.RobotHost.World
                     yaw = o.NominalYaw + (2 * rng.NextDouble() - 1) * o.JitterYaw;
                 }
 
-                if (!_scene.FitsOnTable(index, x, y, ScaleFor(index))) continue;
+                if (!_scene.FitsOnTable(index, x, y, ScaleFor(index)) || (_scene.IsPool && !_scene.InReach(index, x, y))) continue;
                 bool clear = true;
                 for (int k = 0; k < _targets.Length && clear; k++)
                 {

@@ -409,8 +409,9 @@ network-datasets-fetch names="":
     commit=$(just _pushed-commit)
     ssh -o ConnectTimeout=10 "{{gpu_host}}" "COMMIT='$commit' NAMES='{{names}}' bash -s" <<'REMOTE'
     set -euo pipefail
-    if [ -f ~/network-datasets.pid ] && kill -0 "$(cat ~/network-datasets.pid)" 2>/dev/null; then
-        echo "error: a fetch is already going (pid $(cat ~/network-datasets.pid)): just network-datasets-status" >&2; exit 1
+    mkdir -p ~/logs  # logs and pid files live here, not loose in ~
+    if [ -f ~/logs/network-datasets.pid ] && kill -0 "$(cat ~/logs/network-datasets.pid)" 2>/dev/null; then
+        echo "error: a fetch is already going (pid $(cat ~/logs/network-datasets.pid)): just network-datasets-status" >&2; exit 1
     fi
     py=$HOME/teleoperation/trainer/.venv/bin/python
     [ -x "$py" ] || { echo "error: no trainer venv at $py (run just gpu-train once, or trainer/setup.sh there)" >&2; exit 1; }
@@ -418,10 +419,10 @@ network-datasets-fetch names="":
     [ -d "$repo" ] || git clone -q https://github.com/andreitimoshukcollege-del/teleoperation.git "$repo"
     cd "$repo" && git fetch -q origin && git checkout -q "$COMMIT" && echo "repo at $(git log --oneline -1); $(df -h ~ | tail -1 | awk '{print $4}') free"
     cd trainer
-    log=~/network-datasets.log
+    log=~/logs/network-datasets.log
     # The clone's own armpred, not the venv's: -m from this folder puts it first on sys.path.
     nohup setsid bash -c "unset PYTHONPATH; '$py' -m armpred.net.datasets fetch $NAMES; '$py' -m armpred.net.datasets convert $NAMES; '$py' -m armpred.net.datasets split" > "$log" 2>&1 < /dev/null &
-    echo $! > ~/network-datasets.pid
+    echo $! > ~/logs/network-datasets.pid
     echo "started (pid $!), log $log"
     sleep 10; tail -5 "$log"
     REMOTE
@@ -433,8 +434,8 @@ network-datasets-status lines="15":
     set -euo pipefail
     ssh -o ConnectTimeout=10 "{{gpu_host}}" 'bash -s' <<'REMOTE'
     set -uo pipefail
-    if [ -f ~/network-datasets.pid ] && kill -0 "$(cat ~/network-datasets.pid)" 2>/dev/null; then echo "fetch running (pid $(cat ~/network-datasets.pid))"; else echo "no fetch running"; fi
-    tail -n {{lines}} ~/network-datasets.log 2>/dev/null || echo "(no log)"
+    if [ -f ~/logs/network-datasets.pid ] && kill -0 "$(cat ~/logs/network-datasets.pid)" 2>/dev/null; then echo "fetch running (pid $(cat ~/logs/network-datasets.pid))"; else echo "no fetch running"; fi
+    tail -n {{lines}} ~/logs/network-datasets.log 2>/dev/null || echo "(no log)"
     echo
     cd ~/teleoperation-datasets/trainer 2>/dev/null || { echo "no ~/teleoperation-datasets yet: just network-datasets-fetch"; exit 1; }
     unset PYTHONPATH; ~/teleoperation/trainer/.venv/bin/python -m armpred.net.datasets status
@@ -3086,7 +3087,7 @@ train-fr3-sim config="fr3-sim-pretrain" name="" *args:
         trainer/train-fr3-sim.sh "{{config}}" "$name" {{args}}
     fi
 
-# Start `just train-sim <config>` on the GPU machine ($GPU_HOST, default andrei@10.188.58.133), detached, so this machine and the SSH session can go (docs/adr/0021). Clones the repo into ~/teleoperation there the first time and checks out `ref` as GitHub has it every time (main by default; a pushed branch trains before it is merged); refuses while a run of ours is going there, or while someone else's job holds over 2 GB of the GPU (our own Isaac host does not count). While an Isaac host of ours runs there, the run keeps off its cores (6 and up, 24 workers), so the twin's physics keeps real time. The run is trainer/runs/<config>-<commit> there; the log ~/train-sim-<config>.log. Watch it with just gpu-status; bring it back with just gpu-fetch
+# Start `just train-sim <config>` on the GPU machine ($GPU_HOST, default andrei@10.188.58.133), detached, so this machine and the SSH session can go (docs/adr/0021). Clones the repo into ~/teleoperation there the first time and checks out `ref` as GitHub has it every time (main by default; a pushed branch trains before it is merged); refuses while a run of ours is going there, or while someone else's job holds over 2 GB of the GPU (our own Isaac host does not count). While an Isaac host of ours runs there, the run keeps off its cores (6 and up, 24 workers), so the twin's physics keeps real time. The run is trainer/runs/<config>-<commit> there; the log ~/logs/train-sim-<config>.log. Watch it with just gpu-status; bring it back with just gpu-fetch
 [group('trainer')]
 gpu-train config="sim-pretrain-pilot1" ref="main":
     #!/usr/bin/env bash
@@ -3097,8 +3098,9 @@ gpu-train config="sim-pretrain-pilot1" ref="main":
     git fetch -q origin && git rev-parse -q --verify "origin/{{ref}}" > /dev/null || { echo "error: origin/{{ref}} is not on GitHub: push it first" >&2; exit 1; }
     ssh -o ConnectTimeout=10 "{{gpu_host}}" "CONFIG='{{config}}' REF='{{ref}}' bash -s" <<'REMOTE'
     set -euo pipefail
-    if [ -f ~/train-sim.pid ] && kill -0 "$(cat ~/train-sim.pid)" 2>/dev/null; then
-        echo "error: a run is already going (pid $(cat ~/train-sim.pid)): just gpu-status" >&2; exit 1
+    mkdir -p ~/logs  # logs and pid files live here, not loose in ~
+    if [ -f ~/logs/train-sim.pid ] && kill -0 "$(cat ~/logs/train-sim.pid)" 2>/dev/null; then
+        echo "error: a run is already going (pid $(cat ~/logs/train-sim.pid)): just gpu-status" >&2; exit 1
     fi
     # Someone else's job is what blocks a run: our own processes (the Isaac twin's 3 GB) do not. A pid this account
     # cannot see counts as someone else's.
@@ -3116,7 +3118,7 @@ gpu-train config="sim-pretrain-pilot1" ref="main":
     [ -d ~/teleoperation ] || git clone -q https://github.com/andreitimoshukcollege-del/teleoperation.git ~/teleoperation
     cd ~/teleoperation && git fetch -q origin && git checkout -q --detach "origin/$REF"
     echo "repo at $(git log --oneline -1) ($REF)"
-    log=~/train-sim-$CONFIG.log
+    log=~/logs/train-sim-$CONFIG.log
     # An Isaac host of ours (its bridge pinned to cores 2-5, the renderer to 8-23): keep the run off the physics' cores,
     # so the twin it records stays at real time.
     pin=() extra=()
@@ -3126,7 +3128,7 @@ gpu-train config="sim-pretrain-pilot1" ref="main":
     fi
     # The script, not `just train-sim`: a GPU machine's `just` may be too old for this justfile.
     nohup setsid "${pin[@]}" trainer/train-sim.sh "$CONFIG" "${extra[@]}" > "$log" 2>&1 < /dev/null &
-    echo $! > ~/train-sim.pid
+    echo $! > ~/logs/train-sim.pid
     echo "started (pid $!), run trainer/runs/$CONFIG-$(git rev-parse --short HEAD), log $log"
     sleep 15; tail -5 "$log"
     REMOTE
@@ -3145,8 +3147,9 @@ gpu-finetune bundle split config init out:
     case "$name" in *[!A-Za-z0-9._-]*) echo "error: the bundle's file name must be plain" >&2; exit 1 ;; esac
     ssh -o ConnectTimeout=10 "{{gpu_host}}" "INIT='{{init}}' OUT='{{out}}' bash -s" <<'REMOTE'
     set -euo pipefail
-    if [ -f ~/train-sim.pid ] && kill -0 "$(cat ~/train-sim.pid)" 2>/dev/null; then
-        echo "error: a run is already going (pid $(cat ~/train-sim.pid)): just gpu-status" >&2; exit 1
+    mkdir -p ~/logs  # logs and pid files live here, not loose in ~
+    if [ -f ~/logs/train-sim.pid ] && kill -0 "$(cat ~/logs/train-sim.pid)" 2>/dev/null; then
+        echo "error: a run is already going (pid $(cat ~/logs/train-sim.pid)): just gpu-status" >&2; exit 1
     fi
     used=$(nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits | head -1 | tr -d ' ')
     if [ "${used:-0}" -gt 2048 ]; then
@@ -3168,10 +3171,10 @@ gpu-finetune bundle split config init out:
     echo "repo at $(git log --oneline -1)"
     cd trainer
     unset PYTHONPATH  # as train-sim.sh: a sourced ROS setup.bash breaks the venv
-    log=~/train-sim-$OUT.log
+    log=~/logs/train-sim-$OUT.log
     nohup setsid .venv/bin/armpred finetune --data ~/finetune-inputs/"$NAME" --split ~/finetune-inputs/"$OUT"/split.toml \
         --config ~/finetune-inputs/"$OUT"/config.toml --init runs/"$INIT" --out runs/"$OUT" > "$log" 2>&1 < /dev/null &
-    echo $! > ~/train-sim.pid
+    echo $! > ~/logs/train-sim.pid
     echo "started (pid $!), run trainer/runs/$OUT, log $log"
     sleep 15; tail -5 "$log"
     REMOTE
@@ -3179,11 +3182,11 @@ gpu-finetune bundle split config init out:
 # The GPU machine's run -- touches nothing: whether ours is still going, the GPU, and the end of its log
 [group('trainer')]
 gpu-status config="sim-pretrain-pilot1" lines="8":
-    @ssh -o ConnectTimeout=10 "{{gpu_host}}" 'p=$(cat ~/train-sim.pid 2>/dev/null); \
+    @ssh -o ConnectTimeout=10 "{{gpu_host}}" 'p=$(cat ~/logs/train-sim.pid 2>/dev/null); \
         if [ -n "$p" ] && kill -0 "$p" 2>/dev/null; then echo "run: going (pid $p)"; else echo "run: not going"; fi; \
         nvidia-smi --query-gpu=name,memory.used,memory.total,utilization.gpu --format=csv,noheader; \
         echo "its clock: $(date +%H:%M:%S); load: $(cut -d" " -f1-3 /proc/loadavg) on $(nproc) cores; trainer processes: $(pgrep -fc "armpred" || true)"; \
-        echo; tail -n {{lines}} ~/train-sim-{{config}}.log 2>/dev/null || echo "(no log ~/train-sim-{{config}}.log)"'
+        echo; tail -n {{lines}} ~/logs/train-sim-{{config}}.log 2>/dev/null || echo "(no log ~/logs/train-sim-{{config}}.log)"'
 
 # Bring a GPU run back here, e.g. `just gpu-fetch sim-pretrain-pilot1-24901ef`: packs trainer/runs/<run> there without its checkpoints or training data, copies it to dist/, and unpacks it into trainer/runs/<run> (refusing to overwrite one already here)
 [group('trainer')]
@@ -3195,6 +3198,7 @@ gpu-fetch run:
     ssh -o ConnectTimeout=10 "{{gpu_host}}" "cd ~/teleoperation/trainer/runs && [ -d '{{run}}' ] && tar czf ~/'{{run}}'.tgz --exclude='{{run}}/checkpoints' --exclude='{{run}}/data' '{{run}}' && ls -la ~/'{{run}}'.tgz"
     mkdir -p dist trainer/runs
     scp -q "{{gpu_host}}:{{run}}.tgz" "dist/{{run}}.tgz"
+    ssh -o ConnectTimeout=10 "{{gpu_host}}" "rm -f ~/'{{run}}'.tgz"  # copied: not left behind there (2026-11-15: 3.4 GB of them)
     tar xzf "dist/{{run}}.tgz" -C trainer/runs
     echo "trainer/runs/{{run}}:"; ls trainer/runs/{{run}}
     [ -f "trainer/runs/{{run}}/eval/report.md" ] && sed -n '1,20p' "trainer/runs/{{run}}/eval/report.md" || true
@@ -3439,7 +3443,7 @@ isaac-host scene="fr3-duo-bench" scene_seed="auto" feeds="true":
     set -euo pipefail
     repo=$HOME/teleoperation-isaac
     [ -x "$HOME/isaacsim/venv/bin/python" ] || { echo "error: no Isaac Sim in our account here: just isaac-setup" >&2; exit 1; }
-    if [ -f "$HOME/train-sim.pid" ] && kill -0 "$(cat "$HOME/train-sim.pid")" 2>/dev/null; then echo "error: a training run of ours is going (just gpu-status)" >&2; exit 1; fi
+    if [ -f "$HOME/logs/train-sim.pid" ] && kill -0 "$(cat "$HOME/logs/train-sim.pid")" 2>/dev/null; then echo "error: a training run of ours is going (just gpu-status)" >&2; exit 1; fi
     # A Python process only: this script's own shell, and its subshells, carry the bridge's command line in their text.
     mine=""
     for p in $(pgrep -u "$USER" -f "teleop_isaac[.](bridge|jetrover_bridge)" || true); do

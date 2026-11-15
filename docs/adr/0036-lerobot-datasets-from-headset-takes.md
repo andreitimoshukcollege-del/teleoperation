@@ -172,6 +172,10 @@ safe or unsafe, **unsafe while any arm link touches an object** (the table does 
 5. **Recorded after the renderer stops smearing motion.** Isaac's real-time renderer blends each frame with earlier
    ones (DLSS Performance and temporal accumulation, measured 2026-11-14), which smears the moving arm across exactly
    the frames these labels are about. The render settings are fixed first, and every session records which it used.
+   **Done 2026-11-15:** the renderer now runs the real-time path tracer with anti-aliasing and motion blur off and renders
+   each pose twice before reading it (`--subframes 2`), recorded as `RX` in `isaac.jlog`. Measured on the 5090 with the
+   bench scene's three cameras: 29 fps, its lag stable, still frames sharp and a swinging arm (2.5 rad/s) solid. Three
+   subframes ran at 21 fps and ghosted more, its poses further apart.
 
 **Consequences.**
 

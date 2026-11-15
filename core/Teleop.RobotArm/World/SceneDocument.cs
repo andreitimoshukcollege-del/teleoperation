@@ -88,6 +88,13 @@ namespace Teleop.RobotArm.World
         public int movableMax;
         public int fixedMin;
         public int fixedMax;
+
+        /// <summary>
+        /// When both are above 0: each layout also draws a size for every movable object the headset may resize, one of the
+        /// resize steps that keeps its largest side between these, m (docs/adr/0037 amendment 2). Absent (0): the file's sizes.
+        /// </summary>
+        public double sizeMin;
+        public double sizeMax;
     }
 
     /// <summary>Where objects may stand: every footprint lies inside this region and on the table, this far apart.</summary>

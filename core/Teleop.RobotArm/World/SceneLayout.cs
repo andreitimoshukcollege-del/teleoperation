@@ -44,8 +44,22 @@ namespace Teleop.RobotArm.World
         public static int Draw(WorldScene scene, ulong seed, Span<RigidTransform> poses, Span<bool> parked)
         {
             if (scene == null) throw new ArgumentNullException(nameof(scene));
+            Span<double> scales = stackalloc double[WorldScene.MaxObjects];
+            return Draw(scene, seed, poses, parked, scales);
+        }
+
+        /// <summary>
+        /// As <see cref="Draw(WorldScene, ulong, Span{RigidTransform}, Span{bool})"/>, with each object's size (docs/adr/0037
+        /// amendment 2): for a pool that draws sizes, each object on the table that may be resized first takes a resize step,
+        /// uniform among those that keep its largest side in the pool's range, and its spot is drawn at that size. Every other
+        /// object's is 1 (a parked one keeps whatever size it has). The poses are at the drawn sizes.
+        /// </summary>
+        public static int Draw(WorldScene scene, ulong seed, Span<RigidTransform> poses, Span<bool> parked, Span<double> scales)
+        {
+            if (scene == null) throw new ArgumentNullException(nameof(scene));
             int n = scene.Objects.Length;
-            if (poses.Length < n || parked.Length < n) throw new ArgumentException($"room for {n} poses and flags is needed");
+            if (poses.Length < n || parked.Length < n || scales.Length < n) throw new ArgumentException($"room for {n} poses, flags and sizes is needed");
+            scales.Slice(0, n).Fill(1.0);
             if (!scene.IsPool)
             {
                 parked.Slice(0, n).Clear();
@@ -80,7 +94,15 @@ namespace Teleop.RobotArm.World
             for (int k = 0; k < count; k++)
             {
                 int i = order[k];
-                double r = scene.Objects[i].FootprintRadius;
+                double scale = 1.0;
+                if (scene.Resizable(i))
+                {
+                    scene.SizeSteps(i, out int lo, out int hi);
+                    int step = Math.Min(hi, lo + (int)(rng.NextDouble() * (hi - lo + 1)));
+                    scale = WorldScene.ScaleOfStep(step);
+                }
+
+                double r = scene.Objects[i].FootprintRadius * scale;
                 double x0 = Math.Max(scene.Table.XMin, scene.RegionXMin) + r, x1 = Math.Min(scene.Table.XMax, scene.RegionXMax) - r;
                 double y0 = Math.Max(scene.Table.YMin, scene.RegionYMin) + r, y1 = Math.Min(scene.Table.YMax, scene.RegionYMax) - r;
                 bool done = false;
@@ -89,11 +111,11 @@ namespace Teleop.RobotArm.World
                     double x = x0 + rng.NextDouble() * (x1 - x0);
                     double y = y0 + rng.NextDouble() * (y1 - y0);
                     double yaw = (2 * rng.NextDouble() - 1) * Math.PI;
-                    if (x0 > x1 || y0 > y1 || !scene.FitsOnTable(i, x, y)) continue;
+                    if (x0 > x1 || y0 > y1 || !scene.FitsOnTable(i, x, y, scale)) continue;
                     bool clear = true;
                     for (int q = 0; q < placedCount && clear; q++)
                     {
-                        if (scene.Overlaps(i, x, y, placed[q], xs[q], ys[q])) clear = false;
+                        if (scene.Overlaps(i, x, y, placed[q], xs[q], ys[q], scale, scales[placed[q]])) clear = false;
                     }
 
                     if (!clear) continue;
@@ -102,7 +124,8 @@ namespace Teleop.RobotArm.World
                     ys[placedCount] = y;
                     placedCount++;
                     parked[i] = false;
-                    poses[i] = scene.PoseAt(i, x, y, yaw);
+                    scales[i] = scale;
+                    poses[i] = scene.PoseAt(i, x, y, yaw, scale);
                     done = true;
                 }
 

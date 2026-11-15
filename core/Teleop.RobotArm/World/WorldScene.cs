@@ -179,8 +179,10 @@ namespace Teleop.RobotArm.World
 
         private WorldScene(string name, string robotProfile, SceneSurface[] surfaces, SceneSurface table, SceneSurface? bench,
             SceneObject[] objects, double xMin, double xMax, double yMin, double yMax, double clearance,
-            int movableMin, int movableMax, int fixedMin, int fixedMax)
+            int movableMin, int movableMax, int fixedMin, int fixedMax, double sizeMin, double sizeMax)
         {
+            SizeMin = sizeMin;
+            SizeMax = sizeMax;
             MovableMin = movableMin;
             MovableMax = movableMax;
             FixedMin = fixedMin;
@@ -219,9 +221,41 @@ namespace Teleop.RobotArm.World
         public int FixedMin { get; }
         public int FixedMax { get; }
 
+        /// <summary>
+        /// Whether a pool's layouts also draw sizes (docs/adr/0037 amendment 2): each movable object the headset may resize
+        /// gets a resize step that keeps its largest side within <see cref="SizeMin"/> to <see cref="SizeMax"/>, m.
+        /// </summary>
+        public bool DrawsSizes => SizeMax > 0;
+        public double SizeMin { get; }
+        public double SizeMax { get; }
+
+        /// <summary>Whether a layout may give object <paramref name="index"/> another size: a movable object the headset may resize, in a pool that draws sizes.</summary>
+        public bool Resizable(int index) => DrawsSizes && Objects[index].Movable && Objects[index].OperatorMovable;
+
+        /// <summary>The resize steps a layout may give object <paramref name="index"/>: its largest side within the pool's size range (step 0 when none is).</summary>
+        public void SizeSteps(int index, out int min, out int max)
+        {
+            SceneObject o = Objects[index];
+            double largest = Math.Max(o.SizeX, Math.Max(o.SizeY, o.SizeZ));
+            min = MaxResizeStep + 1;
+            max = MinResizeStep - 1;
+            for (int k = MinResizeStep; k <= MaxResizeStep; k++)
+            {
+                double side = largest * ScaleOfStep(k);
+                if (side < SizeMin - 1e-9 || side > SizeMax + 1e-9) continue;
+                min = Math.Min(min, k);
+                max = Math.Max(max, k);
+            }
+
+            if (min > max) min = max = 0;
+        }
+
         /// <summary>Where object <paramref name="index"/> rests while parked: see <see cref="ParkX"/>.</summary>
-        public RigidTransform ParkedPose(int index) =>
-            new RigidTransform(ParkX, (index - Objects.Length / 2.0) * 1.0, ParkZ + Objects[index].SizeZ / 2 + 0.001, 1, 0, 0, 0);
+        public RigidTransform ParkedPose(int index) => ParkedPose(index, 1.0);
+
+        /// <summary>As <see cref="ParkedPose(int)"/>, at size <paramref name="scale"/>.</summary>
+        public RigidTransform ParkedPose(int index, double scale) =>
+            new RigidTransform(ParkX, (index - Objects.Length / 2.0) * 1.0, ParkZ + Objects[index].SizeZ * scale / 2 + 0.001, 1, 0, 0, 0);
 
         /// <summary>The object's index in <see cref="Objects"/>, or -1.</summary>
         public int IndexOf(byte id)
@@ -448,8 +482,14 @@ namespace Teleop.RobotArm.World
 
             bool isPool = pool.movableMax + pool.fixedMax > 0;
             if (isPool && d.version < 2) throw Bad("pool", "a pool needs version 2");
+            if (!Finite(pool.sizeMin, pool.sizeMax) || !((pool.sizeMin == 0 && pool.sizeMax == 0) || (pool.sizeMin > 0 && pool.sizeMin < pool.sizeMax)))
+            {
+                throw Bad("pool", "sizeMin and sizeMax are both 0, or 0 < sizeMin < sizeMax");
+            }
+
+            if (pool.sizeMax > 0 && !isPool) throw Bad("pool", "sizes are drawn only for a pool");
             var scene = new WorldScene(d.name, d.robotProfile, surfaces, table, bench, objects, p.xMin, p.xMax, p.yMin, p.yMax, p.clearance,
-                pool.movableMin, pool.movableMax, pool.fixedMin, pool.fixedMax);
+                pool.movableMin, pool.movableMax, pool.fixedMin, pool.fixedMax, pool.sizeMin, pool.sizeMax);
             for (int i = 0; i < objects.Length; i++)
             {
                 SceneObject o = objects[i];

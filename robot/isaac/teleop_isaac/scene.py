@@ -105,9 +105,10 @@ class Scene:
     def is_pool(self) -> bool:
         return self.pool[1] + self.pool[3] > 0
 
-    def parked_pose(self, index: int) -> Tuple[float, ...]:
+    def parked_pose(self, index: int, scale: float = 1.0) -> Tuple[float, ...]:
         """Where object ``index`` rests while parked: upright on the bridge's hidden shelf, as Core's ``WorldScene.ParkedPose``."""
-        return (PARK_X, (index - len(self.objects) / 2.0) * 1.0, PARK_Z + self.objects[index].size[2] / 2 + 0.001, 1.0, 0.0, 0.0, 0.0)
+        return (PARK_X, (index - len(self.objects) / 2.0) * 1.0, PARK_Z + self.objects[index].size[2] * scale / 2 + 0.001,
+                1.0, 0.0, 0.0, 0.0)
 
     def fits_on_table(self, index: int, x: float, y: float, scale: float = 1.0) -> bool:
         r = self.objects[index].footprint_radius * scale
@@ -298,6 +299,7 @@ def parse(doc: Dict[str, Any]) -> Scene:
 
     pd = doc.get("pool", {}) or {}
     pool = tuple(pd.get(k, 0) for k in ("movableMin", "movableMax", "fixedMin", "fixedMax"))
+    size_min, size_max = pd.get("sizeMin", 0.0), pd.get("sizeMax", 0.0)
     if not all(isinstance(v, int) and not isinstance(v, bool) for v in pool) or min(pool) < 0 or pool[0] > pool[1] or pool[2] > pool[3]:
         raise _bad("pool", "each kind needs 0 <= min <= max")
     movables = sum(1 for o in objects if o.movable)
@@ -306,6 +308,10 @@ def parse(doc: Dict[str, Any]) -> Scene:
     is_pool = pool[1] + pool[3] > 0
     if is_pool and version < 2:
         raise _bad("pool", "a pool needs version 2")
+    if not (_finite(size_min) and _finite(size_max)) or not ((size_min == 0 and size_max == 0) or 0 < size_min < size_max):
+        raise _bad("pool", "sizeMin and sizeMax are both 0, or 0 < sizeMin < sizeMax")
+    if size_max > 0 and not is_pool:
+        raise _bad("pool", "sizes are drawn only for a pool")
     known = {"format", "version", "name", "robotProfile", "surfaces", "objects", "placement", "pool"}
     scene = Scene(name, robot_profile, tuple(surfaces), table, bench, tuple(objects), (float(x0), float(x1), float(y0), float(y1)),
                   float(clearance), {k: v for k, v in doc.items() if k not in known}, pool)

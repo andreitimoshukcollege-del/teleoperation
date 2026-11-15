@@ -128,10 +128,14 @@ class WorldModel:
         i = self.index_of(object_id)
         if i < 0:
             return wire.UNKNOWN_OBJECT, -1, None
-        if not self.scene.objects[i].operator_movable or self.parked[i]:
+        if not self.scene.objects[i].operator_movable:
             return wire.NOT_MOVABLE, i, None
         if not is_valid_scale(scale):
             return wire.INVALID_POSE, i, None
+        if self.parked[i]:
+            # On the shelf (docs/adr/0037 amendment 2): it only changes size there. RobotHost refuses the headset's resize of a
+            # parked object before it gets here; a layout resizes on the shelf before it places.
+            return wire.APPLIED, i, tuple(self.scene.parked_pose(i, scale))
         if arm_near(i, self.poses[i], TOUCH_MARGIN):
             return wire.ARM_TOUCHING, i, None
         p = self.poses[i]
@@ -159,6 +163,7 @@ class WorldModel:
             self.scales[i] = old
 
     def apply_resize(self, index: int, scale: float, pose: Pose) -> None:
+        """A resize applied: the object stands at ``pose`` at ``scale`` (still parked if it was: on the shelf)."""
         self.scales[index] = scale
         self.poses[index] = pose
         self.revision += 1
@@ -563,13 +568,15 @@ class IsaacWorld:
             else:
                 old = self.active[i]
                 old_k = next(kk for kk, slot in self.slots[i].items() if slot == old)
+                if self.model.parked[i]:
+                    upright = self.parked(i, k)  # on the shelf: the new size's body is already in its own slot there
                 if new != old:
                     parked = self.parked(i, old_k)
                     self._bodies.set_world_poses(positions=np.array([parked[:3], upright[:3]]),
                                                  orientations=np.array([parked[3:], upright[3:]]), indices=[old, new])
                     self._bodies.set_velocities(np.zeros((2, 3)), np.zeros((2, 3)), indices=[old, new])
                     self._float([old], True)
-                    self._float([new], False)
+                    self._float([new], self.model.parked[i])
                     if self.contact_tracker is not None:  # both bodies teleported
                         self.contact_tracker.forget(object_id)
                 self.active[i] = new

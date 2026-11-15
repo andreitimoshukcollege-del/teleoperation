@@ -210,3 +210,25 @@ bridge reports the same sha (WORLD_INFO), and joint-drive and the headset refuse
   it: what can be knocked over is P4's to measure.
 - **Still for the user:** the headset's world twin is baked in the editor (`just unity-xr-jetrover-world`) and must be
   rebaked for the new objects, then the Galaxy app rebuilt.
+
+## Amendment 2 (2026-11-15): a size per object per take
+
+The user asked for random sizes per take.
+
+- **The draw.** A pool may set `sizeMin` and `sizeMax` (m; `jetrover-bench`: 0.02 and 0.12). Then each layout also draws a
+  size for every movable object the headset may resize:
+  - one of the existing resize steps (1.25 to the power −3 to 8), uniform among those that keep its largest side in that
+    range;
+  - its spot is drawn at that size.
+
+  The 2.5 cm cube runs from 2 cm to about 12 cm. Fixed walls keep their sizes; they have no resize bodies, and their sizes
+  already vary across the pool. Mass grows with the cube of the size, as the bridge's resize bodies already have it.
+- **Sizes change on the shelf, never on the table.** A new layout:
+  1. parks every object;
+  2. resizes on the shelf each one whose drawn size differs (a resize of a parked object only swaps its shelf body, with no
+     table rule to pass);
+  3. places the drawn ones.
+
+  The backend takes these in order, so the table is empty while it is filled and no placement meets a stale object.
+  RobotHost still refuses a resize of a parked object from the headset.
+- **Recorded as before.** `WZ` holds the sizes, and the headset scales its twin from the SIZES message.

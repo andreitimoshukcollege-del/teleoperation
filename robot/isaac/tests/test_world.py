@@ -272,14 +272,24 @@ def test_park_is_applied_whatever_pose_comes_and_any_other_placement_brings_the_
     assert m.check(wire.CAUSE_PARK, 250, at(0, 0), no_arm)[0] == wire.UNKNOWN_OBJECT
 
 
-def test_a_parked_object_is_never_in_the_way_and_the_headset_cannot_move_or_resize_it():
+def test_a_parked_object_is_never_in_the_way_and_the_headset_cannot_move_it():
     m = pool_model()
     a, b = [k for k, o in enumerate(m.scene.objects) if o.movable][:2]
     # Both parked: nothing stands on the table, so a placement right where a parked object's nominal pose is succeeds.
     pa = m.scene.objects[a].position
     assert m.check(wire.CAUSE_LAYOUT, m.scene.objects[b].id, at(pa[0], pa[1], z=-0.15), no_arm)[0] == wire.APPLIED
     assert m.check(wire.CAUSE_HEADSET, m.scene.objects[a].id, at(0.28, 0.1, z=-0.15), no_arm)[0] == wire.NOT_MOVABLE
-    assert m.check_resize(m.scene.objects[a].id, 1.25, no_arm)[0] == wire.NOT_MOVABLE
+
+
+def test_a_parked_object_changes_size_on_the_shelf_whatever_is_on_the_table():
+    # docs/adr/0037 amendment 2: a layout resizes on the shelf before it places (RobotHost refuses the headset's resize of a
+    # parked object). Nothing on the table can be in its way there, nor an arm.
+    m = pool_model()
+    a = next(k for k, o in enumerate(m.scene.objects) if o.movable and o.operator_movable)
+    outcome, index, pose = m.check_resize(m.scene.objects[a].id, 2.44140625, lambda i, p, margin: True)
+    assert (outcome, index) == (wire.APPLIED, a) and pose == m.scene.parked_pose(a, 2.44140625)
+    m.apply_resize(index, 2.44140625, pose)
+    assert m.parked[a] and m.scales[a] == 2.44140625 and m.objects()[a].flags & wire.FLAG_PARKED
 
 
 def test_park_crosses_the_wire_and_resize_never_does():

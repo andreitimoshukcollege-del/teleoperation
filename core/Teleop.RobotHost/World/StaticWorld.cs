@@ -68,8 +68,22 @@ namespace Teleop.RobotHost.World
             PlaceOutcome outcome;
             double cx = 0, cy = 0;
             if (index < 0) outcome = PlaceOutcome.UnknownObject;
-            else if (!_scene.Objects[index].OperatorMovable || _poses[index].Parked) outcome = PlaceOutcome.NotMovable;
+            else if (!_scene.Objects[index].OperatorMovable) outcome = PlaceOutcome.NotMovable;
             else if (!WorldScene.IsValidScale(scale)) outcome = PlaceOutcome.InvalidPose;
+            else if (_poses[index].Parked)
+            {
+                // On the shelf (docs/adr/0037 amendment 2): nothing to fit, it only changes size there. RobotHost refuses the
+                // headset's resize of a parked object before it gets here; a layout resizes on the shelf before placing.
+                _scales[index] = scale;
+                _poses[index] = ObjectPose.Of(id, ObjectPose.FlagKinematic | ObjectPose.FlagParked, _scene.ParkedPose(index, scale));
+                _revision++;
+                _sizesRevision++;
+                _sizesFresh = true;
+                _fresh = true;
+                _snapshotSensed = hostTicks;
+                Answer(request, PlaceOutcome.Applied, _poses[index]);
+                return;
+            }
             else if (!_scene.TryClampOnTable(index, _poses[index].X, _poses[index].Y, scale, out _, out _)) outcome = PlaceOutcome.OutsideRegion;
             else
             {

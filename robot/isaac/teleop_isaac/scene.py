@@ -22,6 +22,7 @@ MAX_MASS = 20.0  # kg
 TOLERANCE = 0.001
 PARK_X, PARK_Z = 17.0, -5.0  # where a parked object rests (docs/adr/0037 decision 3): Core's WorldScene.ParkX / ParkZ
 _NAME = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
+_ASSET = re.compile(r"^[a-z0-9_]{1,64}/[a-z0-9_]{1,64}$")
 
 
 class SceneError(ValueError):
@@ -75,11 +76,12 @@ class Object:
     dynamic_friction: float
     colour: Tuple[float, float, float]
     jitter: Tuple[float, float, float]
+    asset: str = ""  # a mesh's asset, library/name (docs/adr/0037 decision 4); empty for the other shapes
 
     @property
     def footprint_radius(self) -> float:
         sx, sy, _ = self.size
-        return 0.5 * math.sqrt(sx * sx + sy * sy) if self.shape == "box" else 0.5 * sx
+        return 0.5 * math.sqrt(sx * sx + sy * sy) if self.shape in ("box", "mesh") else 0.5 * sx
 
     @property
     def nominal(self) -> Tuple[float, float, float, float, float, float, float]:
@@ -266,8 +268,12 @@ def parse(doc: Dict[str, Any]) -> Scene:
             if k.name == oname:
                 raise _bad("object name", f"two objects are called '{oname}'")
         shape = o.get("shape", "")
-        if shape not in ("box", "cylinder", "sphere"):
-            raise _bad("shape", f"'{oname}' has shape '{shape}': box, cylinder or sphere")
+        if shape not in ("box", "cylinder", "sphere", "mesh"):
+            raise _bad("shape", f"'{oname}' has shape '{shape}': box, cylinder, sphere or mesh")
+        asset = o.get("asset", "")
+        if not isinstance(asset, str) or (not _ASSET.match(asset) if shape == "mesh" else asset != ""):
+            raise _bad("asset", f"mesh '{oname}' needs an asset, library/name in lowercase letters, digits and '_'" if shape == "mesh"
+                       else f"'{oname}' is a {shape}: only a mesh has an asset")
         z = _vector(o.get("size"), 3, "size", f"'{oname}'")
         if not all(v > 0 for v in z):
             raise _bad("size", f"'{oname}' has a size that is not positive")
@@ -295,7 +301,7 @@ def parse(doc: Dict[str, Any]) -> Scene:
         if not all(v >= 0 for v in j):
             raise _bad("jitter", f"'{oname}' has a negative range")
         objects.append(Object(oid, oname, shape, z, pos, rpy[2], movable, float(mass), bool(o.get("operatorMovable", False)),
-                              float(o.get("staticFriction", 0.0)), float(o.get("dynamicFriction", 0.0)), col, j))
+                              float(o.get("staticFriction", 0.0)), float(o.get("dynamicFriction", 0.0)), col, j, asset))
 
     pd = doc.get("pool", {}) or {}
     pool = tuple(pd.get(k, 0) for k in ("movableMin", "movableMax", "fixedMin", "fixedMax"))

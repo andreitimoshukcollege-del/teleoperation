@@ -107,7 +107,8 @@ namespace Teleop.RobotArm.Tests.World
 
             // The 2.5 cm cube runs from 2 cm to about 12 cm: it takes most of the steps between, not one size.
             Assert.True(seen["cube"].Count >= 6, string.Join(", ", seen["cube"]));
-            Assert.True(seen.Values.Count(v => v.Count >= 3) >= 10, "most objects take several sizes");
+            int resizable = Enumerable.Range(0, Pool.Objects.Length).Count(Pool.Resizable); // the real objects keep their real size
+            Assert.True(seen.Values.Count(v => v.Count >= 3) >= resizable * 3 / 4, "most resizable objects take several sizes");
         }
 
         [Fact]

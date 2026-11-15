@@ -253,7 +253,8 @@ namespace Teleop.XR.Editor
             for (int i = 0; i < world.Objects.Length; i++)
             {
                 SceneObject o = world.Objects[i];
-                PrimitiveType type = o.Shape == SceneShape.Box ? PrimitiveType.Cube : o.Shape == SceneShape.Cylinder ? PrimitiveType.Cylinder : PrimitiveType.Sphere;
+                // A real object's mesh (docs/adr/0037 decision 4) is drawn as its box until the headset gets meshes.
+                PrimitiveType type = o.Shape == SceneShape.Box || o.Shape == SceneShape.Mesh ? PrimitiveType.Cube : o.Shape == SceneShape.Cylinder ? PrimitiveType.Cylinder : PrimitiveType.Sphere;
                 GameObject go = GameObject.CreatePrimitive(type);
                 Object.DestroyImmediate(go.GetComponent<Collider>());
                 go.name = o.Name;

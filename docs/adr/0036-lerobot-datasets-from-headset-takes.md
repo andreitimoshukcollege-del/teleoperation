@@ -226,9 +226,12 @@ to a point and stops, then to another and stops) and the video low quality and b
    and the clutch is often taken again on the move. The hand as tracked drifts, and jitters in proportion to its speed
    (v^0.78). Pitch, roll and gripper move as people move them (the gripper only while the clutch is held). Every tick is
    solved by the headset's IK from the pose before and checked (envelope, collision model, the objects grown); a part that
-   fails is drawn again. Fitted with the analysis's own measures: ten 90 s drives of free movement fall inside 43 of the
-   45 bands. The two left are the command rate: `joint-drive` sends at 48 Hz, the headset in Direct Preview at 36 Hz (every
-   second frame of 72 Hz), and an APK on the device may differ; unchanged.
+   fails is drawn again. Fitted with the analysis's own measures: ten 90 s drives of free movement fall inside 41-43 of
+   the 45 bands from run to run. Two are always out, the command rate's: `joint-drive` sends at 48 Hz, the headset in
+   Direct Preview at 36 Hz (every second frame of 72 Hz), and an APK on the device may differ; unchanged. Two sit at a
+   band's edge: single-peak bouts peak at 0.44-0.49 of their length (people 0.34, band to 0.45), and with holds capped at
+   6 s (an episode lasts 15-25 s; two of the first batch's takes held still for 9 s) their p95 measures 3.4 s (people
+   5 s, band from 3.6 s).
 2. **The categories keep their geometry; the approach becomes a person's.** The sideways sweep round the base still says
    where an object is met. The final approach follows it as a chain of overlapping submovements through points at most
    4 cm apart (a straight move cuts 2.4 cm inside the arc over a 20 cm swipe), slows short of its aim and corrects (a

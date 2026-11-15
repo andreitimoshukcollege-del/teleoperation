@@ -3778,7 +3778,9 @@ isaac-safety-batch takes="25" seed="1":
     (cd core && dotnet build Teleop.Eval -nologo -v q > /dev/null)
     mkdir -p recordings/.drive && rm -f recordings/.drive/STOP
     name="jetrover_$(date -u +%Y%m%d_%H%M%S)_$(printf '%06x' $(( (RANDOM << 15 | RANDOM) & 0xFFFFFF )))"
-    # The plan: each round the four categories in a seeded order, each take its own seed and the free movement's speed.
+    # The plan: each round the four categories in a seeded order, each take its own seed and the speed slider's setting
+    # (the joint speed the commands ask for: mostly 3.8 rad/s, as the human sessions on the twin had it; slower caps a
+    # person's faster moves, docs/adr/0036 amendment 2).
     plan=$(python3 - {{takes}} {{seed}} <<'PY'
     import random, sys
     rounds, seed = int(sys.argv[1]), int(sys.argv[2])
@@ -3789,7 +3791,7 @@ isaac-safety-batch takes="25" seed="1":
         r.shuffle(cats)
         for c in cats:
             n += 1
-            print(c, r.choice([1.5, 2.5, 3.8]), seed * 100000 + n)
+            print(c, r.choice([2.5, 3.8, 3.8]), seed * 100000 + n)
     PY
     )
     kept=() setaside=0 unplanned=0 consecutive=0 n=0
@@ -3797,7 +3799,7 @@ isaac-safety-batch takes="25" seed="1":
         n=$((n + 1))
         # ssh -n in the loop: a plain ssh would read the plan from the loop's standard input and end it.
         before=$(ssh -n -o ConnectTimeout=10 "$gpu" "ls ~/isaacsim/scenarios-jetrover/$cat 2>/dev/null | grep -- '-take' | sort | tail -1" || true)
-        echo "=== [safety] take $n: $cat (seed $sseed, free movement at $speed rad/s)"
+        echo "=== [safety] take $n: $cat (seed $sseed, speed slider $speed rad/s)"
         code=0
         (cd core && dotnet run --no-build --project Teleop.Eval -- joint-drive --script "$cat" --speed "$speed" --seconds 15 --seed "$sseed" \
             --scene Scenes/jetrover-bench.json --new-layout --take "$cat" --remote-host "$host" --confirm-hardware-motion \

@@ -75,10 +75,11 @@ def frames_log(take, writer, folder, sid, cameras, vfs, image=lambda cam, n: f"{
 
 
 def jetrover_take(root, name="20261112T100000Z-take001", scenario="reach", source="isaac", gap=None, image=None,
-                  cameras=("third-left", "wrist"), extra=()):
+                  cameras=("third-left", "wrist"), extra=(), jitter=0.0):
     """A JetRover take: commands accepted from 1.0 to 3.0 s, RO and RI every 20 ms, frames at 30 fps from 0.5 to
     3.5 s (the first two with B). ``gap``: (from, to) seconds with no frame recorded. ``extra``: more robothost.jlog rows
-    (``[tag, t, ...]``), such as contacts (WC) and object poses (WO)."""
+    (``[tag, t, ...]``), such as contacts (WC) and object poses (WO). ``jitter``: each frame's time wobbles by up to that
+    many ms (seeded), as the twin's renderer's do (sd ~3 ms, 2026-11-15)."""
     take = os.path.join(root, scenario, name)
     os.makedirs(take)
     sid = session_json(take, "jetrover-session", 1, source, scenario)
@@ -96,8 +97,9 @@ def jetrover_take(root, name="20261112T100000Z-take001", scenario="reach", sourc
     rows.sort(key=lambda r: int(r[1]))
     write_jlog(os.path.join(take, "robothost.jlog"), "robothost", sid, rows)
     vfs = []
+    wobble = __import__("random").Random(7)
     for n in range(0, 91):
-        sensed = 500 * MS + round(n * 1e9 / 30)
+        sensed = 500 * MS + round(n * 1e9 / 30) + round(wobble.uniform(-jitter, jitter) * MS)
         if gap and gap[0] * 1e9 < sensed < gap[1] * 1e9:
             continue
         vfs.append((sensed + 100 * MS, n, sensed, "B" if n < 2 else ""))

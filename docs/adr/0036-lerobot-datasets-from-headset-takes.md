@@ -60,8 +60,10 @@ CameraHost streams the camera's own MJPEG and writes nothing to disk.
      turned into one finger's travel in metres, the opening times the profile's `fingerTravel` (0.04 m).
    - **FR3 `action`:** the newest `AO` at or before `t`, in the same units.
 4. **The rate is fixed.** Episodes are written at 15 fps by default, on a uniform grid from the episode's first frame.
-   - Each grid point takes the newest recorded frame at or before it. A gap in the recording is filled by repeating the
-     last frame, and the timing file flags it.
+   - Each grid point takes the recorded frame nearest it, the earlier on a tie, if one is within half a step. A gap in
+     the recording is filled by repeating the last frame, and the timing file flags it. (Until 2026-11-15 a point took the
+     newest frame at most 1 ms past it. The twin's frame times wobble by ~3 ms, so at 30 fps written as 15 that picked
+     frames 1, 2 or 3 apart, a 5 Hz judder in 80 of the first safety batch's 85 episodes. The datasets were rebuilt.)
    - **Start and end:** an episode runs from the take's first accepted operator command (`JC` outcome `A`) to its last.
      Parking and the idle seconds around a take are left out.
    - **Frames left out:** frames that have no state (the session's last ~0.1 s, after RobotHost closed it), and frames

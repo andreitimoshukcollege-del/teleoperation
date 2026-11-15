@@ -280,21 +280,24 @@ def read_take(path: str, fps: int = 15) -> Take:
 
     take = Take(path, str(meta.get("id", os.path.basename(path))), robot, source, scenario["name"],
                 scenario.get("description") or scenario["name"], names, fps, cameras)
-    # A recorded frame up to a millisecond after a grid point still counts for it: at 30 fps written as 15, every other
-    # frame falls on a grid point, and integer nanoseconds put half of them a fraction past it.
-    step, t0, slack = tps / fps, candidates[0][0], tps // 1000
+    # Each grid point takes the recorded frame nearest it, if one is within half a step; else the last frame again,
+    # flagged as filled. (Until 2026-11-15 it took the newest frame at most 1 ms past the point: the twin's frames wobble
+    # by ~3 ms, so at 30 fps written as 15 that picked frames 1, 2 or 3 apart, a 5 Hz judder in 80 of 85 episodes.)
+    step, t0 = tps / fps, candidates[0][0]
+    half = step / 2
     i, k, previous = 0, 0, None
     while True:
         grid = t0 + k * step
-        if grid > candidates[-1][0] + slack:
+        if grid > candidates[-1][0] + half:
             break
-        while i + 1 < len(candidates) and candidates[i + 1][0] <= grid + slack:
+        while i + 1 < len(candidates) and abs(candidates[i + 1][0] - grid) < abs(candidates[i][0] - grid):  # a tie: the earlier
             i += 1
-        t, number, parts, state, action, state_age, action_age = candidates[i]
+        chosen = i if (abs(candidates[i][0] - grid) <= half or previous is None) else previous
+        t, number, parts, state, action, state_age, action_age = candidates[chosen]
         take.frames.append(Frame(parts, [float(x) for x in state], [float(x) for x in action], {
-            "grid": int(round(grid)), "sensed": t, "frame": number, "filled": i == previous,
+            "grid": int(round(grid)), "sensed": t, "frame": number, "filled": chosen == previous,
             "stateAge": int(state_age), "actionAge": int(action_age)}))
-        previous = i
+        previous = chosen
         k += 1
     return take
 

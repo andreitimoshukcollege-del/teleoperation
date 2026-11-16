@@ -13,6 +13,11 @@ Run on the GPU machine with Isaac's Python (``just isaac-models-survey``, ``just
 - **Each texture** must lie under ``textures/``, end in ``.jpg``, ``.png`` or ``.exr``, and start like one.
 - **On disk:** ``<root>/<id>/<id>.usd`` with its textures at the paths it names. The manifest records every file's sha256.
 
+**Texture paths.** Poly Haven's USD names its textures by an absolute path on Poly Haven's own machines
+(``/mnt/prod/Assets/Models/<id>/staging/textures/...``). :func:`_localize` rewrites each such reference to the downloaded
+file beside it (``./textures/<name>``) and refuses a model that names a texture it did not include; the manifest records the
+rewritten USD's sha256.
+
 ``survey`` fetches only each candidate's USD (no textures) into a scratch folder and prints its measured size standing,
 so fixtures can be picked by size. ``manifest.json`` has the same entries as ``ycb.py``'s (how it stands, its size and box
 centre standing), so ``world.mesh_asset`` reads either library.
@@ -102,6 +107,38 @@ def _inspect(usd_path: str) -> Tuple[str, Tuple[float, ...], Tuple[float, ...]]:
     return up, tuple(float(v) * mpu for v in box.GetMin()), tuple(float(v) * mpu for v in box.GetMax())
 
 
+def _localize(usd_path: str, have: Sequence[str]) -> List[str]:
+    """Points every texture the USD names at ``./textures/<name>`` beside it, when ``have`` holds that name, and saves it;
+    returns the names it references that are not in ``have``. Needs Isaac's pxr."""
+    from pxr import Sdf
+
+    layer = Sdf.Layer.FindOrOpen(usd_path)
+    have = set(have)
+    missing: List[str] = []
+
+    def visit(path):
+        spec = layer.GetObjectAtPath(path)
+        if not isinstance(spec, Sdf.AttributeSpec) or spec.typeName != Sdf.ValueTypeNames.Asset:
+            return
+        v = spec.default
+        ref = getattr(v, "path", "") if v is not None else ""
+        if not ref or ref.endswith(".mdl"):
+            return
+        name = ref.replace("\\", "/").rsplit("/", 1)[-1]
+        if name not in have:
+            # Some USDs name a map in one format and include it in another (ceramic_vase_01: rough .exr named, .jpg included).
+            stem = name.rsplit(".", 1)[0]
+            name = next((h for h in sorted(have) if h.rsplit(".", 1)[0] == stem), name)
+        if name in have:
+            spec.default = Sdf.AssetPath(f"./textures/{name}")
+        elif name not in missing:
+            missing.append(name)
+
+    layer.Traverse(layer.pseudoRoot.path, visit)
+    layer.Save()
+    return missing
+
+
 def entry(asset_id: str, info: Dict, files: Dict[str, str], up: str, lo: Sequence[float], hi: Sequence[float]) -> Dict:
     size = [round(abs(v), 5) for v in stand(up, [h - l for l, h in zip(lo, hi)])]
     centre = [round(v, 5) for v in stand(up, [(h + l) / 2 for l, h in zip(lo, hi)])]
@@ -172,7 +209,7 @@ def survey(categories: Sequence[str], scratch: str, download=_download, inspect=
     return out
 
 
-def fetch(root: str, ids: Sequence[str], download=_download, inspect=_inspect, say=print) -> Dict:
+def fetch(root: str, ids: Sequence[str], download=_download, inspect=_inspect, localize=_localize, say=print) -> Dict:
     manifest = load_manifest(root)
     have = {e["name"] for e in manifest["objects"]}
     for asset_id in ids:
@@ -188,7 +225,13 @@ def fetch(root: str, ids: Sequence[str], download=_download, inspect=_inspect, s
                 if not _TEXTURE.match(rel):
                     raise ValueError(f"it includes {rel!r}, not a texture under textures/")
                 files[rel] = _write(os.path.join(root, asset_id, rel), _get(s, rel, download))
-            up, lo, hi = inspect(os.path.join(root, asset_id, f"{asset_id}.usd"))
+            usd = os.path.join(root, asset_id, f"{asset_id}.usd")
+            missing = localize(usd, [rel.rsplit("/", 1)[-1] for rel in include])
+            if missing:
+                raise ValueError(f"it names textures it does not include: {missing}")
+            with open(usd, "rb") as f:
+                files[f"{asset_id}.usd"] = hashlib.sha256(f.read()).hexdigest()  # as rewritten
+            up, lo, hi = inspect(usd)
         except Exception as e:  # noqa: BLE001
             say(f"[models] {asset_id}: failed ({e})")
             continue

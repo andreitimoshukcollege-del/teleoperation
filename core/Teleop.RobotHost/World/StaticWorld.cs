@@ -8,7 +8,8 @@ namespace Teleop.RobotHost.World
     /// The world beside the simulated arm (<c>just fr3-sim-host scene=...</c>, docs/adr/0031 amendment 2): objects stay where
     /// they were placed, and nothing collides with the arm. It applies the same placement rules as Isaac except the arm's
     /// overlap (the table and region, other objects, whether the headset may move it), and reports a snapshot every 20 ms, so
-    /// the whole world path runs end to end without the GPU machine.
+    /// the whole world path runs end to end without the GPU machine. A pool's objects (docs/adr/0037 decision 3) start parked,
+    /// and a placement with <see cref="PlaceCause.Park"/> parks one, as Isaac's bridge does.
     /// </summary>
     public sealed class StaticWorld : IWorldBackend
     {
@@ -33,7 +34,12 @@ namespace Teleop.RobotHost.World
             _poses = new ObjectPose[scene.Objects.Length];
             _scales = new float[scene.Objects.Length];
             for (int i = 0; i < _scales.Length; i++) _scales[i] = 1f;
-            for (int i = 0; i < _poses.Length; i++) _poses[i] = ObjectPose.Of(scene.Objects[i].Id, ObjectPose.FlagKinematic, scene.Objects[i].Nominal);
+            for (int i = 0; i < _poses.Length; i++)
+            {
+                _poses[i] = scene.IsPool
+                    ? ObjectPose.Of(scene.Objects[i].Id, ObjectPose.FlagKinematic | ObjectPose.FlagParked, scene.ParkedPose(i))
+                    : ObjectPose.Of(scene.Objects[i].Id, ObjectPose.FlagKinematic, scene.Objects[i].Nominal);
+            }
         }
 
         public bool HasWorld => true;
@@ -64,6 +70,20 @@ namespace Teleop.RobotHost.World
             if (index < 0) outcome = PlaceOutcome.UnknownObject;
             else if (!_scene.Objects[index].OperatorMovable) outcome = PlaceOutcome.NotMovable;
             else if (!WorldScene.IsValidScale(scale)) outcome = PlaceOutcome.InvalidPose;
+            else if (_poses[index].Parked)
+            {
+                // On the shelf (docs/adr/0037 amendment 2): nothing to fit, it only changes size there. RobotHost refuses the
+                // headset's resize of a parked object before it gets here; a layout resizes on the shelf before placing.
+                _scales[index] = scale;
+                _poses[index] = ObjectPose.Of(id, ObjectPose.FlagKinematic | ObjectPose.FlagParked, _scene.ParkedPose(index, scale));
+                _revision++;
+                _sizesRevision++;
+                _sizesFresh = true;
+                _fresh = true;
+                _snapshotSensed = hostTicks;
+                Answer(request, PlaceOutcome.Applied, _poses[index]);
+                return;
+            }
             else if (!_scene.TryClampOnTable(index, _poses[index].X, _poses[index].Y, scale, out _, out _)) outcome = PlaceOutcome.OutsideRegion;
             else
             {
@@ -72,7 +92,7 @@ namespace Teleop.RobotHost.World
                 {
                     for (int k = 0; k < _poses.Length; k++)
                     {
-                        if (k != me && _scene.Overlaps(me, px, py, k, _poses[k].X, _poses[k].Y, scale, _scales[k])) return false;
+                        if (k != me && !_poses[k].Parked && _scene.Overlaps(me, px, py, k, _poses[k].X, _poses[k].Y, scale, _scales[k])) return false;
                     }
 
                     return true;
@@ -159,13 +179,19 @@ namespace Teleop.RobotHost.World
             upright = default;
             index = _scene.IndexOf(pose.Id);
             if (index < 0) return PlaceOutcome.UnknownObject;
-            if (cause == PlaceCause.Headset && !_scene.Objects[index].OperatorMovable) return PlaceOutcome.NotMovable;
+            if (cause == PlaceCause.Park)
+            {
+                upright = ObjectPose.Of(pose.Id, ObjectPose.FlagKinematic | ObjectPose.FlagParked, _scene.ParkedPose(index));
+                return PlaceOutcome.Applied;
+            }
+
+            if (cause == PlaceCause.Headset && (!_scene.Objects[index].OperatorMovable || _poses[index].Parked)) return PlaceOutcome.NotMovable;
             if (!pose.IsValid()) return PlaceOutcome.InvalidPose;
             double yaw = WorldHost.YawOf(pose);
             if (!_scene.FitsOnTable(index, pose.X, pose.Y, _scales[index])) return PlaceOutcome.OutsideRegion;
             for (int k = 0; k < _poses.Length; k++)
             {
-                if (k != index && _scene.Overlaps(index, pose.X, pose.Y, k, _poses[k].X, _poses[k].Y, _scales[index], _scales[k])) return PlaceOutcome.OverlapsObject;
+                if (k != index && !_poses[k].Parked && _scene.Overlaps(index, pose.X, pose.Y, k, _poses[k].X, _poses[k].Y, _scales[index], _scales[k])) return PlaceOutcome.OverlapsObject;
             }
 
             upright = ObjectPose.Of(pose.Id, ObjectPose.FlagKinematic, _scene.PoseAt(index, pose.X, pose.Y, yaw, _scales[index]));

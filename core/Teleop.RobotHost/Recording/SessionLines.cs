@@ -185,9 +185,26 @@ namespace Teleop.RobotHost.Recording
 
         // ---- the world (docs/adr/0031 amendment 2) ----
 
-        /// <summary><c>WL|t|layout|seed</c>: a layout began (drawn from <c>seed</c> by Core's <c>SceneLayout</c>).</summary>
+        /// <summary>
+        /// <c>WL|t|layout|seed</c>: a layout began (drawn from <c>seed</c> by Core's <c>SceneLayout</c>). For a pool (docs/adr/0037
+        /// decision 3), <c>WL|t|layout|seed|ids</c>: <c>ids</c> (<c>id;id;...</c>, in file order) are the objects the layout put on
+        /// the table; the rest are parked.
+        /// </summary>
         public static string WorldLayout(long t, uint layout, ulong seed) =>
             "WL|" + I(t) + "|" + layout.ToString(CultureInfo.InvariantCulture) + "|" + seed.ToString(CultureInfo.InvariantCulture);
+
+        /// <summary>As <see cref="WorldLayout(long, uint, ulong)"/>, for a pool: the objects taking part.</summary>
+        public static string WorldLayout(long t, uint layout, ulong seed, ReadOnlySpan<byte> activeIds)
+        {
+            var b = new StringBuilder(WorldLayout(t, layout, seed)).Append('|');
+            for (int i = 0; i < activeIds.Length; i++)
+            {
+                if (i > 0) b.Append(';');
+                b.Append(activeIds[i].ToString(CultureInfo.InvariantCulture));
+            }
+
+            return b.ToString();
+        }
 
         /// <summary><c>WP|t|request|cause|id|x:y:z:qw:qx:qy:qz|outcome</c>: a placement settled; the pose is the one the object has now.</summary>
         public static string WorldPlace(long t, uint request, PlaceCause cause, in ObjectPose pose, PlaceOutcome outcome) =>
@@ -252,6 +269,7 @@ namespace Teleop.RobotHost.Recording
             PlaceCause.Headset => "headset",
             PlaceCause.Reset => "reset",
             PlaceCause.Resize => "resize",
+            PlaceCause.Park => "park",
             _ => "?",
         };
 

@@ -157,9 +157,11 @@ RESIZE, SIZES = 12, 13  # docs/adr/0034 amendment 6
 MAX_OBJECTS_PER_WORLD = 16
 MAX_CONTACTS = 64
 CAUSE_LAYOUT, CAUSE_HEADSET, CAUSE_RESET = 1, 2, 3
+CAUSE_PARK = 5  # a pool's layout leaves the object out (docs/adr/0037 decision 3); 4 is RobotHost's resize, never sent as PLACE
 (APPLIED, OVERLAPS_ARM, OVERLAPS_OBJECT, OUTSIDE_REGION, UNKNOWN_OBJECT, NOT_MOVABLE, ARM_TOUCHING, BUSY, INVALID_POSE,
  TIMED_OUT) = range(10)
 FLAG_KINEMATIC = 1
+FLAG_PARKED = 2  # off-stage on the hidden shelf (docs/adr/0037 decision 3): show it nowhere
 _POSE = struct.Struct("<7f")  # x y z, qw qx qy qz
 
 
@@ -208,7 +210,7 @@ def encode_place(sequence: int, host_ticks: int, request: int, cause: int, objec
 
 def decode_place(d: bytes) -> Optional[Tuple[int, int, int, int, Tuple[float, ...]]]:
     """(host ticks, request, cause, object id, pose)."""
-    if kind_of(d) != PLACE or len(d) != 50 or not 1 <= d[20] <= 3:
+    if kind_of(d) != PLACE or len(d) != 50 or d[20] not in (CAUSE_LAYOUT, CAUSE_HEADSET, CAUSE_RESET, CAUSE_PARK):
         return None
     host_ticks, request, cause, object_id = struct.unpack_from("<qIBB", d, 8)
     return host_ticks, request, cause, object_id, _POSE.unpack_from(d, 22)

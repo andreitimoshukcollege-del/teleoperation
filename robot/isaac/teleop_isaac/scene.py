@@ -20,6 +20,7 @@ VERSION = 2  # the newest version this reader knows; it reads every version from
 MAX_OBJECTS = 24
 MAX_MASS = 20.0  # kg
 TOLERANCE = 0.001
+PARK_X, PARK_Z = 17.0, -5.0  # where a parked object rests (docs/adr/0037 decision 3): Core's WorldScene.ParkX / ParkZ
 _NAME = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
 
 
@@ -97,6 +98,17 @@ class Scene:
     region: Tuple[float, float, float, float]
     clearance: float
     extra: Dict[str, Any] = field(default_factory=dict)
+    # A pool (docs/adr/0037 decision 3): (movableMin, movableMax, fixedMin, fixedMax); all 0 when the scene is not one.
+    pool: Tuple[int, int, int, int] = (0, 0, 0, 0)
+
+    @property
+    def is_pool(self) -> bool:
+        return self.pool[1] + self.pool[3] > 0
+
+    def parked_pose(self, index: int, scale: float = 1.0) -> Tuple[float, ...]:
+        """Where object ``index`` rests while parked: upright on the bridge's hidden shelf, as Core's ``WorldScene.ParkedPose``."""
+        return (PARK_X, (index - len(self.objects) / 2.0) * 1.0, PARK_Z + self.objects[index].size[2] * scale / 2 + 0.001,
+                1.0, 0.0, 0.0, 0.0)
 
     def fits_on_table(self, index: int, x: float, y: float, scale: float = 1.0) -> bool:
         r = self.objects[index].footprint_radius * scale
@@ -285,15 +297,30 @@ def parse(doc: Dict[str, Any]) -> Scene:
         objects.append(Object(oid, oname, shape, z, pos, rpy[2], movable, float(mass), bool(o.get("operatorMovable", False)),
                               float(o.get("staticFriction", 0.0)), float(o.get("dynamicFriction", 0.0)), col, j))
 
-    known = {"format", "version", "name", "robotProfile", "surfaces", "objects", "placement"}
+    pd = doc.get("pool", {}) or {}
+    pool = tuple(pd.get(k, 0) for k in ("movableMin", "movableMax", "fixedMin", "fixedMax"))
+    size_min, size_max = pd.get("sizeMin", 0.0), pd.get("sizeMax", 0.0)
+    if not all(isinstance(v, int) and not isinstance(v, bool) for v in pool) or min(pool) < 0 or pool[0] > pool[1] or pool[2] > pool[3]:
+        raise _bad("pool", "each kind needs 0 <= min <= max")
+    movables = sum(1 for o in objects if o.movable)
+    if pool[1] > movables or pool[3] > len(objects) - movables:
+        raise _bad("pool", f"it asks for up to {pool[1]} movable and {pool[3]} fixed objects; the scene has {movables} and {len(objects) - movables}")
+    is_pool = pool[1] + pool[3] > 0
+    if is_pool and version < 2:
+        raise _bad("pool", "a pool needs version 2")
+    if not (_finite(size_min) and _finite(size_max)) or not ((size_min == 0 and size_max == 0) or 0 < size_min < size_max):
+        raise _bad("pool", "sizeMin and sizeMax are both 0, or 0 < sizeMin < sizeMax")
+    if size_max > 0 and not is_pool:
+        raise _bad("pool", "sizes are drawn only for a pool")
+    known = {"format", "version", "name", "robotProfile", "surfaces", "objects", "placement", "pool"}
     scene = Scene(name, robot_profile, tuple(surfaces), table, bench, tuple(objects), (float(x0), float(x1), float(y0), float(y1)),
-                  float(clearance), {k: v for k, v in doc.items() if k not in known})
+                  float(clearance), {k: v for k, v in doc.items() if k not in known}, pool)
     for i, o in enumerate(objects):
         for sx in (-1, 0, 1):
             for sy in (-1, 0, 1):
                 if not scene.fits_on_table(i, o.position[0] + sx * o.jitter[0], o.position[1] + sy * o.jitter[1]):
                     raise _bad("fits", f"'{o.name}' leaves the table or the placement region at its nominal pose or the edge of its jitter")
-        for k in range(i):
+        for k in range(i if not is_pool else 0):  # a pool's objects start parked: their nominal poses may share the table
             if scene.overlaps(i, o.position[0], o.position[1], k, objects[k].position[0], objects[k].position[1]):
                 raise _bad("overlap", f"'{o.name}' and '{objects[k].name}' are closer than the clearance at their nominal poses")
     return scene

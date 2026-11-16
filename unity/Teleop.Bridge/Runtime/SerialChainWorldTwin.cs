@@ -69,7 +69,8 @@ namespace Teleop.Bridge
             {
                 Transform t = objects[i];
                 if (t == null) continue;
-                bool posed = world.TryGet((byte)ids[i], out ObjectPose p, out _) && !mismatch;
+                // A parked object (docs/adr/0037 decision 3) is out of this layout: hidden, like one not yet posed.
+                bool posed = world.TryGet((byte)ids[i], out ObjectPose p, out _) && !mismatch && !p.Parked;
                 if (t.gameObject.activeSelf != posed) t.gameObject.SetActive(posed);
                 if (!posed) continue;
                 t.localPosition = new CoreVec(p.X, p.Y, p.Z).ToUnity();

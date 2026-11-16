@@ -27,11 +27,15 @@ namespace Teleop.Eval.JointDrive
         public readonly Vector3 Min;
         public readonly Vector3 Max;
 
-        public SafetyObject(byte id, Vector3 min, Vector3 max)
+        /// <summary>Whether physics can move it (a scene's movable object): only such an object can be knocked over.</summary>
+        public readonly bool Movable;
+
+        public SafetyObject(byte id, Vector3 min, Vector3 max, bool movable = true)
         {
             Id = id;
             Min = min;
             Max = max;
+            Movable = movable;
         }
 
         public Vector3 Center => (Min + Max) / 2f;
@@ -42,9 +46,9 @@ namespace Teleop.Eval.JointDrive
         /// <summary>This object's box grown by <paramref name="grow"/> on every side (shrunk when negative, never past its middle).</summary>
         public SafetyObject Grown(float grow)
         {
-            if (grow >= 0) return new SafetyObject(Id, Min - new Vector3(grow), Max + new Vector3(grow));
+            if (grow >= 0) return new SafetyObject(Id, Min - new Vector3(grow), Max + new Vector3(grow), Movable);
             Vector3 s = Vector3.Min(new Vector3(-grow), (Max - Min) / 2f - new Vector3(0.0005f));
-            return new SafetyObject(Id, Min + s, Max - s);
+            return new SafetyObject(Id, Min + s, Max - s, Movable);
         }
     }
 
@@ -208,6 +212,8 @@ namespace Teleop.Eval.JointDrive
             int builds = 0;
             foreach (int oi in order)
             {
+                // Knocking over needs a body physics moves: a fixed wall (a pool's, docs/adr/0037) is an obstacle, never the target.
+                if (script == DriveScript.CollideWithObstacle && !objects[oi].Movable) continue;
                 foreach (Sweep sweep in Sweeps(objects[oi], ref rng))
                 {
                     if (!TryLine(profile, model, envelope, objects, oi, sweep, model.Home, out Line line)) continue;

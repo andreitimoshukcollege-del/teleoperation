@@ -21,6 +21,12 @@ namespace Teleop.RobotArm.World
         public SceneObjectDocument[] objects = Array.Empty<SceneObjectDocument>();
         public ScenePlacementDocument placement = new ScenePlacementDocument();
 
+        /// <summary>
+        /// docs/adr/0037 decision 3: when set (any maximum above 0), the objects are a pool and each layout chooses which take
+        /// part; the rest are parked. Absent (all 0): every object takes part, jittered around its nominal pose.
+        /// </summary>
+        public ScenePoolDocument pool = new ScenePoolDocument();
+
         /// <summary>Builds and validates the scene.</summary>
         /// <exception cref="FormatException">The document is not a valid scene; the message starts with what is wrong.</exception>
         public WorldScene ToScene() => WorldScene.Build(this);
@@ -72,6 +78,23 @@ namespace Teleop.RobotArm.World
 
         /// <summary>The seeded layout's ranges, ±: x and y (m), and yaw (rad).</summary>
         public double[] jitter = Array.Empty<double>();
+    }
+
+    /// <summary>How many objects of each kind a pool's layout puts on the table, inclusive (docs/adr/0037 decision 3).</summary>
+    [Serializable]
+    public sealed class ScenePoolDocument
+    {
+        public int movableMin;
+        public int movableMax;
+        public int fixedMin;
+        public int fixedMax;
+
+        /// <summary>
+        /// When both are above 0: each layout also draws a size for every movable object the headset may resize, one of the
+        /// resize steps that keeps its largest side between these, m (docs/adr/0037 amendment 2). Absent (0): the file's sizes.
+        /// </summary>
+        public double sizeMin;
+        public double sizeMax;
     }
 
     /// <summary>Where objects may stand: every footprint lies inside this region and on the table, this far apart.</summary>

@@ -16,6 +16,12 @@ namespace Teleop.RobotHost.World
     /// object; NEW LAYOUT from the headset draws the next (seed + layout − 1), only while motion is off. A placement the backend
     /// refuses (it overlaps an arm, say) is redrawn up to <see cref="MaxRedraws"/> times within that object's jitter, and
     /// otherwise the object stays where it was. Layouts never change on their own.</item>
+    /// <item><b>Pools</b> (docs/adr/0037 decision 3). For a scene whose objects are a pool, the layout also chooses which take
+    /// part: the rest are sent to the backend with <see cref="PlaceCause.Park"/>. A layout spot the backend refuses is redrawn
+    /// anywhere in the region, and an object that finds none is parked. Reset puts the layout back as it was drawn; a parked
+    /// object cannot be moved or resized from the headset. A pool that draws sizes (docs/adr/0037 amendment 2) changes them
+    /// on the shelf: a new layout parks every object, resizes there each one whose drawn size differs, then places the
+    /// drawn ones, so the table is empty while it is filled.</item>
     /// <item><b>Edits.</b> Moves and resets from the headset (joint port <c>0x85</c>), each applied once however often it is
     /// re-sent; the status echoes its sequence and outcome once settled.</item>
     /// <item><b>Sizes</b> (docs/adr/0034 amendment 6). A resize from the headset (<see cref="WorldEditOp.Resize"/>) goes to the
@@ -41,11 +47,15 @@ namespace Teleop.RobotHost.World
         private readonly Action<string>? _record;
         private readonly Action<string>? _log;
         private readonly RigidTransform[] _targets;
+        private readonly RigidTransform[] _layoutTargets;
+        private readonly bool[] _parked;
+        private readonly double[] _layoutScales;
+        private readonly byte[] _activeIds;
         private readonly ObjectPose[] _snapshot;
         private readonly ObjectPose[] _lastRecorded;
         private readonly ObjectPose[] _part = new ObjectPose[WorldCodec.MaxObjectsPerFrame];
         private readonly byte[] _datagram = new byte[JointDatagram.MaxBytes];
-        private readonly Pending[] _pending = new Pending[64];
+        private readonly Pending[] _pending = new Pending[128];
         private readonly byte[] _sizeIds;
         private readonly float[] _sizeScales;
         private readonly byte[] _takenIds = new byte[WorldScene.MaxObjects];
@@ -83,6 +93,10 @@ namespace Teleop.RobotHost.World
             _record = record;
             _log = log;
             _targets = new RigidTransform[scene.Objects.Length];
+            _layoutTargets = new RigidTransform[scene.Objects.Length];
+            _parked = new bool[scene.Objects.Length];
+            _layoutScales = new double[scene.Objects.Length];
+            _activeIds = new byte[scene.Objects.Length];
             _snapshot = new ObjectPose[scene.Objects.Length];
             _lastRecorded = new ObjectPose[scene.Objects.Length];
             _sizeIds = new byte[scene.Objects.Length];
@@ -93,6 +107,9 @@ namespace Teleop.RobotHost.World
                 _sizeScales[i] = 1f;
             }
         }
+
+        /// <summary>Whether the current layout leaves object <paramref name="index"/> out (a pool's, docs/adr/0037 decision 3).</summary>
+        public bool IsParked(int index) => _parked[index];
 
         /// <summary>Object <paramref name="index"/>'s size factor as the backend last reported it (1 before).</summary>
         public float ScaleOf(int index) => _sizeScales[index];
@@ -121,7 +138,7 @@ namespace Teleop.RobotHost.World
         public void WritePreamble(long now)
         {
             if (!_started) return;
-            _record?.Invoke(SessionLines.WorldLayout(now, LayoutNumber, LayoutSeed));
+            _record?.Invoke(LayoutLine(now));
             _record?.Invoke(SessionLines.WorldSizes(now, _sizesRevision, _sizeIds, _sizeScales));
             if (_hasSnapshot) RecordSnapshot(now, force: true);
         }
@@ -144,8 +161,8 @@ namespace Teleop.RobotHost.World
             {
                 for (int i = 0; i < _targets.Length; i++)
                 {
-                    _targets[i] = _scene.Objects[i].Nominal;
-                    SendPlace(i, PlaceCause.Reset, 0, now);
+                    _targets[i] = _scene.IsPool ? _layoutTargets[i] : _scene.Objects[i].Nominal;
+                    SendPlace(i, _parked[i] ? PlaceCause.Park : PlaceCause.Reset, 0, now);
                 }
 
                 outcome = PlaceOutcome.Applied;
@@ -154,7 +171,7 @@ namespace Teleop.RobotHost.World
             {
                 int index = _scene.IndexOf(pose.Id);
                 if (index < 0) outcome = PlaceOutcome.UnknownObject;
-                else if (!_scene.Objects[index].OperatorMovable) outcome = PlaceOutcome.NotMovable;
+                else if (!_scene.Objects[index].OperatorMovable || _parked[index]) outcome = PlaceOutcome.NotMovable;
                 else if (!WorldScene.IsValidScale(pose.X)) outcome = PlaceOutcome.InvalidPose;
                 else
                 {
@@ -167,11 +184,12 @@ namespace Teleop.RobotHost.World
             {
                 int index = _scene.IndexOf(pose.Id);
                 if (index < 0) outcome = PlaceOutcome.UnknownObject;
-                else if (!_scene.Objects[index].OperatorMovable) outcome = PlaceOutcome.NotMovable;
+                else if (!_scene.Objects[index].OperatorMovable || _parked[index]) outcome = PlaceOutcome.NotMovable;
                 else if (op == WorldEditOp.Move && !pose.IsValid()) outcome = PlaceOutcome.InvalidPose;
                 else
                 {
-                    _targets[index] = op == WorldEditOp.ResetObject ? _scene.Objects[index].Nominal : pose.ToTransform();
+                    RigidTransform home = _scene.IsPool ? _layoutTargets[index] : _scene.Objects[index].Nominal;
+                    _targets[index] = op == WorldEditOp.ResetObject ? home : pose.ToTransform();
                     SendPlace(index, op == WorldEditOp.ResetObject ? PlaceCause.Reset : PlaceCause.Headset, sequence, now);
                     _record?.Invoke(SessionLines.WorldEdit(now, sequence, op, pose, null));
                     return; // settles when the backend answers
@@ -264,10 +282,57 @@ namespace Teleop.RobotHost.World
         {
             LayoutNumber++;
             LayoutSeed = unchecked(_baseSeed + LayoutNumber - 1);
-            int nominal = SceneLayout.Draw(_scene, LayoutSeed, _targets);
-            _record?.Invoke(SessionLines.WorldLayout(now, LayoutNumber, LayoutSeed));
-            _log?.Invoke($"[world] layout {LayoutNumber} (seed {LayoutSeed}){(nominal > 0 ? $", {nominal} object(s) at their nominal pose" : "")}");
-            for (int i = 0; i < _targets.Length; i++) SendPlace(i, PlaceCause.Layout, 0, now);
+            int missed = SceneLayout.Draw(_scene, LayoutSeed, _targets, _parked, _layoutScales);
+            _targets.AsSpan().CopyTo(_layoutTargets);
+            _record?.Invoke(LayoutLine(now));
+            string what = _scene.IsPool
+                ? $", {_targets.Length - ParkedCount()} of {_targets.Length} objects on the table{(missed > 0 ? $" ({missed} found no spot)" : "")}"
+                : missed > 0 ? $", {missed} object(s) at their nominal pose" : "";
+            _log?.Invoke($"[world] layout {LayoutNumber} (seed {LayoutSeed}){what}");
+            if (_scene.DrawsSizes)
+            {
+                // Sizes change on the shelf, never on the table: park every object, resize there, then place the drawn ones.
+                // The backend takes these in order, so each placement meets only the objects already placed, at their new sizes.
+                for (int i = 0; i < _targets.Length; i++) SendPlace(i, PlaceCause.Park, 0, now);
+                for (int i = 0; i < _targets.Length; i++)
+                {
+                    if (!_parked[i] && _scene.Resizable(i) && Math.Abs(_layoutScales[i] - _sizeScales[i]) > 1e-4 * _layoutScales[i])
+                    {
+                        SendResize(i, (float)_layoutScales[i], 0, now);
+                    }
+                }
+
+                for (int i = 0; i < _targets.Length; i++)
+                {
+                    if (!_parked[i]) SendPlace(i, PlaceCause.Layout, 0, now);
+                }
+
+                return;
+            }
+
+            for (int i = 0; i < _targets.Length; i++) SendPlace(i, _parked[i] ? PlaceCause.Park : PlaceCause.Layout, 0, now);
+        }
+
+        /// <summary>The size a layout redraw checks object <paramref name="index"/> at: the drawn one for a pool that draws sizes, else the backend's.</summary>
+        private double ScaleFor(int index) => _scene.DrawsSizes && !_parked[index] ? _layoutScales[index] : _sizeScales[index];
+
+        private int ParkedCount()
+        {
+            int n = 0;
+            foreach (bool p in _parked) n += p ? 1 : 0;
+            return n;
+        }
+
+        private string LayoutLine(long now)
+        {
+            if (!_scene.IsPool) return SessionLines.WorldLayout(now, LayoutNumber, LayoutSeed);
+            int n = 0;
+            for (int i = 0; i < _parked.Length; i++)
+            {
+                if (!_parked[i]) _activeIds[n++] = _scene.Objects[i].Id;
+            }
+
+            return SessionLines.WorldLayout(now, LayoutNumber, LayoutSeed, _activeIds.AsSpan(0, n));
         }
 
         private void SendPlace(int index, PlaceCause cause, uint edit, long now, int tries = 0)
@@ -312,28 +377,53 @@ namespace Teleop.RobotHost.World
                 return;
             }
 
+            if (outcome != PlaceOutcome.Applied && done.Cause == PlaceCause.Layout && outcome != PlaceOutcome.TimedOut && _scene.IsPool)
+            {
+                // No spot the backend takes: out of this layout, rather than wherever it stood before.
+                _parked[done.Index] = true;
+                _targets[done.Index] = _layoutTargets[done.Index] = _scene.ParkedPose(done.Index);
+                _record?.Invoke(LayoutLine(now));
+                SendPlace(done.Index, PlaceCause.Park, 0, now);
+                return;
+            }
+
             if (done.Edit != 0) Resolve(done.Edit, outcome, now, done.Cause == PlaceCause.Resize ? WorldEditOp.Resize : WorldEditOp.Move, pose);
         }
 
-        /// <summary>Another spot for object <paramref name="index"/> within its jitter, clear of the others' targets.</summary>
+        /// <summary>Another spot for object <paramref name="index"/>, clear of the others' targets: within its jitter, or for a pool anywhere in the region.</summary>
         private bool Redraw(int index, int tries)
         {
             SceneObject o = _scene.Objects[index];
             var rng = new SeededRng(unchecked(LayoutSeed * 0x9E3779B97F4A7C15UL + (ulong)index * 1000 + (ulong)tries));
-            for (int t = 0; t < SceneLayout.MaxTries; t++)
+            double r = o.FootprintRadius * ScaleFor(index);
+            double x0 = Math.Max(_scene.Table.XMin, _scene.RegionXMin) + r, x1 = Math.Min(_scene.Table.XMax, _scene.RegionXMax) - r;
+            double y0 = Math.Max(_scene.Table.YMin, _scene.RegionYMin) + r, y1 = Math.Min(_scene.Table.YMax, _scene.RegionYMax) - r;
+            for (int t = 0; t < (_scene.IsPool ? SceneLayout.MaxPoolTries : SceneLayout.MaxTries); t++)
             {
-                double x = o.NominalX + (2 * rng.NextDouble() - 1) * o.JitterX;
-                double y = o.NominalY + (2 * rng.NextDouble() - 1) * o.JitterY;
-                double yaw = o.NominalYaw + (2 * rng.NextDouble() - 1) * o.JitterYaw;
-                if (!_scene.FitsOnTable(index, x, y)) continue;
+                double x, y, yaw;
+                if (_scene.IsPool)
+                {
+                    x = x0 + rng.NextDouble() * (x1 - x0);
+                    y = y0 + rng.NextDouble() * (y1 - y0);
+                    yaw = (2 * rng.NextDouble() - 1) * Math.PI;
+                }
+                else
+                {
+                    x = o.NominalX + (2 * rng.NextDouble() - 1) * o.JitterX;
+                    y = o.NominalY + (2 * rng.NextDouble() - 1) * o.JitterY;
+                    yaw = o.NominalYaw + (2 * rng.NextDouble() - 1) * o.JitterYaw;
+                }
+
+                if (!_scene.FitsOnTable(index, x, y, ScaleFor(index))) continue;
                 bool clear = true;
                 for (int k = 0; k < _targets.Length && clear; k++)
                 {
-                    if (k != index && _scene.Overlaps(index, x, y, k, _targets[k].X, _targets[k].Y)) clear = false;
+                    if (k != index && !_parked[k] && _scene.Overlaps(index, x, y, k, _targets[k].X, _targets[k].Y, ScaleFor(index), ScaleFor(k))) clear = false;
                 }
 
                 if (!clear) continue;
-                _targets[index] = _scene.PoseAt(index, x, y, yaw);
+                _targets[index] = _scene.PoseAt(index, x, y, yaw, ScaleFor(index));
+                if (_scene.IsPool) _layoutTargets[index] = _targets[index];
                 return true;
             }
 

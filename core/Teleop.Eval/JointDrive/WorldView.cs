@@ -46,16 +46,20 @@ namespace Teleop.Eval.JointDrive
                 max = Vector3.Max(max, p);
             }
 
-            return new SafetyObject(o.Id, min, max);
+            return new SafetyObject(o.Id, min, max, o.Movable);
         }
 
-        /// <summary>Every object of <paramref name="state"/>'s scene where it last was, at its size; false (and nothing) until every one has been posed.</summary>
+        /// <summary>
+        /// Every object of <paramref name="state"/>'s scene where it last was, at its size, but those the layout parked (a pool's,
+        /// docs/adr/0037 decision 3): they are off-stage, out of every plan. False (and nothing) until every one has been posed.
+        /// </summary>
         public static bool TryObjects(WorldState state, out List<SafetyObject> objects)
         {
             objects = new List<SafetyObject>();
             foreach (SceneObject o in state.Scene.Objects)
             {
                 if (!state.TryGet(o.Id, out ObjectPose p, out _)) return false;
+                if (p.Parked) continue;
                 objects.Add(Bounds(o, state.Scale(o.Id), p.X, p.Y, p.Z, p.Qw, p.Qx, p.Qy, p.Qz));
             }
 

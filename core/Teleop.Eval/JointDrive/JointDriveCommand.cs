@@ -604,6 +604,7 @@ namespace Teleop.Eval.JointDrive
             // At rest: every object's newest pose within 1 mm and 1 degree of where it was SettleSeconds ago.
             var scene = world.Scene;
             var anchor = new ObjectPose[scene.Objects.Length];
+            var restless = new string[scene.Objects.Length];
             long anchorAt = 0;
             until = Stopwatch.GetTimestamp() + 20 * tps;
             while (true)
@@ -612,7 +613,8 @@ namespace Teleop.Eval.JointDrive
                 if (stop.IsSet) return false;
                 if (now > until)
                 {
-                    Console.Error.WriteLine("joint-drive: the objects did not come to rest in 20 s. Nothing moved.");
+                    string which = string.Join("; ", restless.Where(r => r != null));
+                    Console.Error.WriteLine($"joint-drive: the objects did not come to rest in 20 s ({(which.Length > 0 ? which : "never all posed")}). Nothing moved.");
                     return false;
                 }
 
@@ -624,7 +626,12 @@ namespace Teleop.Eval.JointDrive
                     if (anchorAt == 0) continue;
                     float moved = new System.Numerics.Vector3(p.X - anchor[i].X, p.Y - anchor[i].Y, p.Z - anchor[i].Z).Length();
                     float turned = 2f * MathF.Acos(MathF.Min(1f, MathF.Abs(p.Qw * anchor[i].Qw + p.Qx * anchor[i].Qx + p.Qy * anchor[i].Qy + p.Qz * anchor[i].Qz)));
-                    if (moved > 0.001f || turned > MathF.PI / 180f) still = false;
+                    if (moved > 0.001f || turned > MathF.PI / 180f)
+                    {
+                        still = false;
+                        restless[i] = FormattableString.Invariant($"{scene.Objects[i].Name} moved {moved * 1000:0.#} mm, turned {turned * 180 / MathF.PI:0.#} deg at ({p.X:0.000}, {p.Y:0.000}, {p.Z:0.000})");
+                    }
+                    else restless[i] = null!;
                 }
 
                 if (still && now - anchorAt >= (long)(SettleSeconds * tps)) break;

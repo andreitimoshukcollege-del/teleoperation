@@ -191,9 +191,10 @@ namespace Teleop.RobotArm.World
         private WorldScene(string name, string robotProfile, SceneSurface[] surfaces, SceneSurface table, SceneSurface? bench,
             SceneObject[] objects, double xMin, double xMax, double yMin, double yMax, double clearance,
             int movableMin, int movableMax, int fixedMin, int fixedMax, double sizeMin, double sizeMax, double reachMin, double reachMax,
-            double knockMaxMass)
+            double knockMaxMass, double[] fixedRegions)
         {
             KnockMaxMass = knockMaxMass;
+            FixedRegions = fixedRegions;
             ReachMin = reachMin;
             ReachMax = reachMax;
             SizeMin = sizeMin;
@@ -243,6 +244,46 @@ namespace Teleop.RobotArm.World
         public bool DrawsSizes => SizeMax > 0;
         public double SizeMin { get; }
         public double SizeMax { get; }
+
+        /// <summary>Where a pool's fixed objects stand, flat <c>[xMin, xMax, yMin, yMax, ...]</c> (docs/adr/0037 amendment 5); empty: the placement region.</summary>
+        public double[] FixedRegions { get; }
+
+        /// <summary>Whether object <paramref name="index"/> stands in <see cref="FixedRegions"/> rather than the placement region.</summary>
+        public bool InFixedRegions(int index) => FixedRegions.Length > 0 && !Objects[index].Movable;
+
+        /// <summary>
+        /// A random spot for object <paramref name="index"/> at <paramref name="scale"/> where it fits (its footprint on the table
+        /// and in its region; a movable one also in the reach band), drawn from <paramref name="rng"/>: three draws a try (a
+        /// fixed-region object first picks its rectangle). A fixed-region object faces the robot's base, give or take
+        /// 20 degrees; any other turns at random. False when the draw misses (the caller tries again); the clearance from other
+        /// objects is the caller's.
+        /// </summary>
+        public bool DrawSpot(int index, double scale, ref Teleop.Core.Types.SeededRng rng, out double x, out double y, out double yaw)
+        {
+            double r = Objects[index].FootprintRadius * scale;
+            double x0, x1, y0, y1;
+            if (InFixedRegions(index))
+            {
+                int k = Math.Min(FixedRegions.Length / 4 - 1, (int)(rng.NextDouble() * (FixedRegions.Length / 4)));
+                x0 = Math.Max(Table.XMin, FixedRegions[4 * k]) + r;
+                x1 = Math.Min(Table.XMax, FixedRegions[4 * k + 1]) - r;
+                y0 = Math.Max(Table.YMin, FixedRegions[4 * k + 2]) + r;
+                y1 = Math.Min(Table.YMax, FixedRegions[4 * k + 3]) - r;
+            }
+            else
+            {
+                x0 = Math.Max(Table.XMin, RegionXMin) + r;
+                x1 = Math.Min(Table.XMax, RegionXMax) - r;
+                y0 = Math.Max(Table.YMin, RegionYMin) + r;
+                y1 = Math.Min(Table.YMax, RegionYMax) - r;
+            }
+
+            x = x0 + rng.NextDouble() * (x1 - x0);
+            y = y0 + rng.NextDouble() * (y1 - y0);
+            double turn = (2 * rng.NextDouble() - 1) * Math.PI;
+            yaw = InFixedRegions(index) ? Math.Atan2(-y, -x) + turn * (20.0 / 180.0) : turn;
+            return x0 <= x1 && y0 <= y1 && FitsOnTable(index, x, y, scale) && InReach(index, x, y);
+        }
 
         /// <summary>The heaviest a movable object may be at its size, kg, and be one the arm knocks over (docs/adr/0037 P4); 0: no roles.</summary>
         public double KnockMaxMass { get; }
@@ -305,6 +346,20 @@ namespace Teleop.RobotArm.World
         public bool FitsOnTable(int index, double x, double y, double scale)
         {
             double r = Objects[index].FootprintRadius * scale;
+            if (InFixedRegions(index))
+            {
+                for (int k = 0; k + 3 < FixedRegions.Length; k += 4)
+                {
+                    if (x - r >= Math.Max(Table.XMin, FixedRegions[k]) - 1e-9 && x + r <= Math.Min(Table.XMax, FixedRegions[k + 1]) + 1e-9 &&
+                        y - r >= Math.Max(Table.YMin, FixedRegions[k + 2]) - 1e-9 && y + r <= Math.Min(Table.YMax, FixedRegions[k + 3]) + 1e-9)
+                    {
+                        return true;
+                    }
+                }
+
+                return false;
+            }
+
             return x - r >= Math.Max(Table.XMin, RegionXMin) - 1e-9 && x + r <= Math.Min(Table.XMax, RegionXMax) + 1e-9 &&
                    y - r >= Math.Max(Table.YMin, RegionYMin) - 1e-9 && y + r <= Math.Min(Table.YMax, RegionYMax) + 1e-9;
         }
@@ -533,9 +588,25 @@ namespace Teleop.RobotArm.World
             if (pool.reachMax > 0 && !isPool) throw Bad("pool", "a reach band is only for a pool");
             if (!Finite(pool.knockMaxMass) || pool.knockMaxMass < 0 || pool.knockMaxMass > MaxMass) throw Bad("pool", $"knockMaxMass is 0 (no roles) to {MaxMass} kg");
             if (pool.knockMaxMass > 0 && !isPool) throw Bad("pool", "roles are only for a pool");
+            double[] fr = pool.fixedRegions ?? Array.Empty<double>();
+            if (fr.Length % 4 != 0) throw Bad("pool", "fixedRegions holds xMin, xMax, yMin, yMax for each rectangle");
+            for (int k = 0; k < fr.Length; k += 4)
+            {
+                if (!Finite(fr[k], fr[k + 1], fr[k + 2], fr[k + 3]) || !(fr[k] < fr[k + 1] && fr[k + 2] < fr[k + 3]))
+                {
+                    throw Bad("pool", "each fixedRegions rectangle needs min < max on both axes");
+                }
+
+                if (fr[k + 1] < table.XMin || fr[k] > table.XMax || fr[k + 3] < table.YMin || fr[k + 2] > table.YMax)
+                {
+                    throw Bad("pool", "a fixedRegions rectangle does not overlap the table");
+                }
+            }
+
+            if (fr.Length > 0 && !isPool) throw Bad("pool", "fixedRegions are only for a pool");
             var scene = new WorldScene(d.name, d.robotProfile, surfaces, table, bench, objects, p.xMin, p.xMax, p.yMin, p.yMax, p.clearance,
                 pool.movableMin, pool.movableMax, pool.fixedMin, pool.fixedMax, pool.sizeMin, pool.sizeMax, pool.reachMin, pool.reachMax,
-                pool.knockMaxMass);
+                pool.knockMaxMass, fr);
             for (int i = 0; i < objects.Length; i++)
             {
                 SceneObject o = objects[i];

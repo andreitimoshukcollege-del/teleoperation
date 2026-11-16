@@ -37,6 +37,7 @@ from typing import Dict, List, Mapping, Optional, Sequence, Tuple
 
 from . import backdrops as backdrops_module
 from . import environments as environments_module
+from . import materials as materials_module
 from . import camfeed, camwire, kinematics, wire
 from . import profile as profile_module
 from . import scene as scene_module
@@ -282,6 +283,34 @@ def metered_intensity(intensity: float, base: float, brightness: float, target: 
     factor = (target / max(brightness, 1.0)) ** METER_GAMMA
     lo, hi = base * METER_RANGE[0], base * METER_RANGE[1]
     return min(hi, max(lo, intensity * factor))
+
+
+def materials_spec(scene) -> Optional[Dict]:
+    """The scene file's materials (docs/adr/0037 amendment 5), checked, or None: which texture classes each simple shape
+    may wear (``box``, ``cylinder``), which texture each surface wears (``surfaces``, desaturated by ``surfaceDesaturation``),
+    and ``tileScale``, the texture's repeats per its real size (the renderer's projection, measured on the twin)."""
+    spec = scene.extra.get("materials")
+    if spec is None:
+        return None
+    classes = {"box": list(spec.get("box") or []), "cylinder": list(spec.get("cylinder") or [])}
+    for shape, cs in classes.items():
+        if not all(c in ("wood", "metal") for c in cs):
+            raise ValueError(f"materials {shape}: classes are wood and metal, not {cs}")
+    surfaces = dict(spec.get("surfaces") or {})
+    known = {x.id for x in scene.surfaces}
+    for sid, tid in surfaces.items():
+        if sid not in known:
+            raise ValueError(f"materials surfaces: {sid!r} is not a surface of the scene")
+        if tid not in materials_module.TEXTURES:
+            raise ValueError(f"materials surfaces: {tid!r} is not one of the textures")
+    tile = float(spec.get("tileScale", 1.0))
+    if not tile > 0:
+        raise ValueError("materials tileScale must be positive")
+    desat = float(spec.get("surfaceDesaturation", 0.0))
+    if not 0 <= desat <= 1:
+        raise ValueError("materials surfaceDesaturation is 0 to 1")
+    return {"manifest": str(spec.get("manifest", "")), "classes": classes, "surfaces": surfaces, "tileScale": tile,
+            "surfaceDesaturation": desat}
 
 
 def settled(trace: Sequence[float], at_least: int, still: int = 3, tolerance: float = 0.25) -> bool:
@@ -609,6 +638,63 @@ def run(app, args, p, scene, cameras, fps, joints, motors, tap) -> int:
         if not hdris:
             print(f"[render] warning: no HDRI rooms in {env_root} (just isaac-environments-fetch): a plain dome light", flush=True)
 
+    # --- real materials on the simple shapes and the surfaces (docs/adr/0037 amendment 5) ------------------------------
+    mats = materials_spec(scene)
+    textures, tex_root, tex_by_id, mat_shaders = [], "", {}, {}  # mat_shaders: object id or surface id -> its OmniPBR shader
+
+    def omnipbr(path: str):
+        mtl = UsdShade.Material.Define(stage, path)
+        sh = UsdShade.Shader.Define(stage, path + "/Shader")
+        sh.CreateImplementationSourceAttr(UsdShade.Tokens.sourceAsset)
+        sh.SetSourceAsset("OmniPBR.mdl", "mdl")
+        sh.SetSourceAssetSubIdentifier("OmniPBR", "mdl")
+        sh.CreateInput("project_uvw", Sdf.ValueTypeNames.Bool).Set(True)  # the shapes have no UVs: projected
+        sh.CreateInput("world_or_object", Sdf.ValueTypeNames.Bool).Set(False)  # object space: it stays on as the object moves
+        sh.CreateInput("reflectionroughness_texture_influence", Sdf.ValueTypeNames.Float).Set(1.0)
+        mtl.CreateSurfaceOutput("mdl").ConnectToSource(sh.ConnectableAPI(), "out")
+        mtl.CreateVolumeOutput("mdl").ConnectToSource(sh.ConnectableAPI(), "out")
+        mtl.CreateDisplacementOutput("mdl").ConnectToSource(sh.ConnectableAPI(), "out")
+        return mtl, sh
+
+    def wear(sh, tex: Dict, scale_m: float) -> None:
+        """Texture ``tex`` on shader ``sh``, tiled at its real size on an object ``scale_m`` across in its projection's units."""
+        d = os.path.join(tex_root, tex["id"])
+        for name, inp, raw in (("diffuse.jpg", "diffuse_texture", False), ("roughness.jpg", "reflectionroughness_texture", True),
+                               ("normal.png", "normalmap_texture", True)):
+            a = sh.CreateInput(inp, Sdf.ValueTypeNames.Asset)
+            a.Set(Sdf.AssetPath(os.path.join(d, name)))
+            if raw:
+                a.GetAttr().SetColorSpace("raw")
+        k = mats["tileScale"] * scale_m / float(tex["sizeM"])
+        sh.CreateInput("texture_scale", Sdf.ValueTypeNames.Float2).Set(Gf.Vec2f(k, k))
+
+    def object_extent(index: int) -> float:
+        """How far across the object's projection runs, in its units: a box is a unit cube scaled by its prim, a cylinder
+        is built at its size."""
+        o = scene.objects[index]
+        return 1.0 if o.shape == "box" else max(o.size) * world.model.scales[index]
+
+    if mats is not None:
+        tex_root = os.path.dirname(os.path.expanduser(mats["manifest"])) or materials_module.DEFAULT_ROOT
+        if os.path.exists(os.path.join(tex_root, "manifest.json")):
+            textures = materials_module.load_manifest(tex_root)["textures"]
+        tex_by_id = {t["id"]: t for t in textures}
+        if not textures:
+            print(f"[render] warning: no textures in {tex_root} (just isaac-materials-fetch): the shapes keep their colours", flush=True)
+        else:
+            for o, path in zip(scene.objects, world.object_paths):
+                if o.shape in mats["classes"] and mats["classes"][o.shape]:
+                    mtl, sh = omnipbr(f"/World/Looks/{prim_name('m', str(o.id))}")
+                    UsdShade.MaterialBindingAPI.Apply(stage.GetPrimAtPath(f"{path}/Shape")).Bind(mtl, UsdShade.Tokens.strongerThanDescendants)
+                    mat_shaders[o.id] = sh
+            for sid, tid in mats["surfaces"].items():
+                if sid in world.surface_paths and tid in tex_by_id:
+                    mtl, sh = omnipbr(f"/World/Looks/{prim_name('s', sid)}")
+                    UsdShade.MaterialBindingAPI.Apply(stage.GetPrimAtPath(world.surface_paths[sid])).Bind(mtl, UsdShade.Tokens.strongerThanDescendants)
+                    sf = next(x for x in scene.surfaces if x.id == sid)
+                    wear(sh, tex_by_id[tid], max(sf.size[0], sf.size[1]) / max(sf.size))  # a unit cube scaled: its long side
+                    sh.CreateInput("albedo_desaturation", Sdf.ValueTypeNames.Float).Set(mats["surfaceDesaturation"])
+
     # --- mask labels, on prims that never nest (docs/adr/0032 decision 5) ------------------------------------------
     table = mask_table([o.id for o in scene.objects])
 
@@ -774,6 +860,20 @@ def run(app, args, p, scene, cameras, fps, joints, motors, tap) -> int:
     backdrop = {"change": -1, "images": {}, "settle_until": -1}  # images: quad id -> manifest entry
     used_this_session = []
     room = {"hdri": None, "yaw": 0.0, "intensity": 0.0, "base": 0.0, "settle": 0, "trace": [], "brightness": 0.0, "gains": {}}
+    worn = {}  # object id -> texture it wears this change (docs/adr/0037 amendment 5)
+
+    def change_materials() -> None:
+        worn.clear()
+        if not mat_shaders:
+            return
+        for index, o in enumerate(scene.objects):
+            sh = mat_shaders.get(o.id)
+            if sh is None:
+                continue
+            tex = materials_module.pick(textures, mats["classes"][o.shape], backdrop_seed, backdrop["change"], o.id)
+            if tex is not None:
+                wear(sh, tex, object_extent(index))
+                worn[o.id] = tex
     camera_luts = [None] * len(specs)  # each camera's own exposure, locked per room (docs/adr/0037 decision 2)
     rooms_this_session = []
 
@@ -799,6 +899,8 @@ def run(app, args, p, scene, cameras, fps, joints, motors, tap) -> int:
 
     def change_backdrop(frame_now: int) -> None:
         backdrop["change"] += 1
+        change_materials()
+        session_record("MT", backdrop["change"], [[oid, t["id"]] for oid, t in sorted(worn.items())])
         if change_room():
             settle_room()
             session_record("EN", *en_fields())
@@ -853,6 +955,8 @@ def run(app, args, p, scene, cameras, fps, joints, motors, tap) -> int:
         out.append(("BK", *bk_fields()))
         if env is not None:
             out.append(("EN", *en_fields()))
+        if worn:
+            out.append(("MT", backdrop["change"], [[oid, t["id"]] for oid, t in sorted(worn.items())]))
         if world_snapshot["objects"]:
             out.append(("OL", world_snapshot["sensed"], world_snapshot["revision"], world_snapshot["objects"]))
         out.append(("SZ", max(0, world_sizes["revision"]), world_sizes["sizes"]))
@@ -874,8 +978,11 @@ def run(app, args, p, scene, cameras, fps, joints, motors, tap) -> int:
                     seen.add(e["sha256"])
                     rooms.append({k: e[k] for k in ("id", "sha256", "name", "authors", "license", "source", "url", "landingUrl",
                                                      "width", "height", "meanLuminance")})
+            used = {t["id"]: t for t in worn.values()}
+            used.update({tid: tex_by_id[tid] for tid in (mats or {}).get("surfaces", {}).values() if tid in tex_by_id})
             doc = {"format": "teleop-environments-used", "version": 1, "license": environments_module.CC0,
-                   "meanRadiance": env["meanRadiance"], "hdris": rooms}
+                   "meanRadiance": env["meanRadiance"], "hdris": rooms,
+                   "textures": [{k: t[k] for k in ("id", "class", "name", "authors", "license", "landingUrl", "sizeM")} for t in used.values()]}
             out["environment.json"] = (json.dumps(doc, indent=1, sort_keys=True) + "\n").encode("utf-8")
         return out
 
@@ -1041,6 +1148,8 @@ def run(app, args, p, scene, cameras, fps, joints, motors, tap) -> int:
                         f = sizes.get(o.id)
                         if f is not None and abs(f - world.model.scales[index]) > 1e-6:
                             world.set_scale(index, f)
+                            if o.id in worn:  # a cylinder's projection runs in metres: retile it at its new size
+                                wear(mat_shaders[o.id], worn[o.id], object_extent(index))
                     world_sizes.update(revision=z[0], sizes=[[o.id, round(world.model.scales[i], 4)] for i, o in enumerate(scene.objects)])
                     session_record("SZ", z[0], world_sizes["sizes"])
         for f in feeds:

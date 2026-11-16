@@ -395,17 +395,12 @@ namespace Teleop.RobotHost.World
         {
             SceneObject o = _scene.Objects[index];
             var rng = new SeededRng(unchecked(LayoutSeed * 0x9E3779B97F4A7C15UL + (ulong)index * 1000 + (ulong)tries));
-            double r = o.FootprintRadius * ScaleFor(index);
-            double x0 = Math.Max(_scene.Table.XMin, _scene.RegionXMin) + r, x1 = Math.Min(_scene.Table.XMax, _scene.RegionXMax) - r;
-            double y0 = Math.Max(_scene.Table.YMin, _scene.RegionYMin) + r, y1 = Math.Min(_scene.Table.YMax, _scene.RegionYMax) - r;
             for (int t = 0; t < (_scene.IsPool ? SceneLayout.MaxPoolTries : SceneLayout.MaxTries); t++)
             {
                 double x, y, yaw;
                 if (_scene.IsPool)
                 {
-                    x = x0 + rng.NextDouble() * (x1 - x0);
-                    y = y0 + rng.NextDouble() * (y1 - y0);
-                    yaw = (2 * rng.NextDouble() - 1) * Math.PI;
+                    if (!_scene.DrawSpot(index, ScaleFor(index), ref rng, out x, out y, out yaw)) continue;
                 }
                 else
                 {

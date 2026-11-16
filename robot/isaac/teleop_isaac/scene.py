@@ -102,6 +102,8 @@ class Scene:
     extra: Dict[str, Any] = field(default_factory=dict)
     # A pool (docs/adr/0037 decision 3): (movableMin, movableMax, fixedMin, fixedMax); all 0 when the scene is not one.
     pool: Tuple[int, int, int, int] = (0, 0, 0, 0)
+    # Where a pool's fixed objects stand instead of the region (docs/adr/0037 amendment 5): flat (xMin, xMax, yMin, yMax, ...).
+    fixed_regions: Tuple[float, ...] = ()
 
     @property
     def is_pool(self) -> bool:
@@ -115,6 +117,11 @@ class Scene:
     def fits_on_table(self, index: int, x: float, y: float, scale: float = 1.0) -> bool:
         r = self.objects[index].footprint_radius * scale
         t, (x0, x1, y0, y1) = self.table, self.region
+        if self.fixed_regions and not self.objects[index].movable:
+            f = self.fixed_regions
+            return any(x - r >= max(t.x_min, f[k]) - 1e-9 and x + r <= min(t.x_max, f[k + 1]) + 1e-9 and
+                       y - r >= max(t.y_min, f[k + 2]) - 1e-9 and y + r <= min(t.y_max, f[k + 3]) + 1e-9
+                       for k in range(0, len(f) - 3, 4))
         return (x - r >= max(t.x_min, x0) - 1e-9 and x + r <= min(t.x_max, x1) + 1e-9 and
                 y - r >= max(t.y_min, y0) - 1e-9 and y + r <= min(t.y_max, y1) + 1e-9)
 
@@ -328,9 +335,20 @@ def parse(doc: Dict[str, Any]) -> Scene:
         raise _bad("pool", f"knockMaxMass is 0 (no roles) to {MAX_MASS:g} kg")
     if knock > 0 and not is_pool:
         raise _bad("pool", "roles are only for a pool")
+    fr = pd.get("fixedRegions", []) or []
+    if not isinstance(fr, list) or len(fr) % 4 != 0:
+        raise _bad("pool", "fixedRegions holds xMin, xMax, yMin, yMax for each rectangle")
+    for k in range(0, len(fr), 4):
+        a, b, c, d = fr[k:k + 4]
+        if not all(_finite(v) for v in (a, b, c, d)) or not (a < b and c < d):
+            raise _bad("pool", "each fixedRegions rectangle needs min < max on both axes")
+        if b < table.x_min or a > table.x_max or d < table.y_min or c > table.y_max:
+            raise _bad("pool", "a fixedRegions rectangle does not overlap the table")
+    if fr and not is_pool:
+        raise _bad("pool", "fixedRegions are only for a pool")
     known = {"format", "version", "name", "robotProfile", "surfaces", "objects", "placement", "pool"}
     scene = Scene(name, robot_profile, tuple(surfaces), table, bench, tuple(objects), (float(x0), float(x1), float(y0), float(y1)),
-                  float(clearance), {k: v for k, v in doc.items() if k not in known}, pool)
+                  float(clearance), {k: v for k, v in doc.items() if k not in known}, pool, tuple(float(v) for v in fr))
     for i, o in enumerate(objects):
         for sx in (-1, 0, 1):
             for sy in (-1, 0, 1):

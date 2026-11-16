@@ -117,8 +117,8 @@ namespace Teleop.Eval.Tests.JointDrive
         [Fact]
         public void OnRandomLayouts_EveryScriptUsuallyFindsAnApproach()
         {
-            // RobotHost draws a new layout per take (SceneLayout, the bench scene's region and jitter): each category must plan on
-            // most of them. A layout a script cannot use is skipped by the batch, not driven badly.
+            // RobotHost draws a new layout per take (SceneLayout, the bench scene's pool): each category must plan on enough of them.
+            // A layout a script cannot use is skipped by the batch, not driven badly.
             string? dir = AppContext.BaseDirectory;
             while (dir != null && !System.IO.File.Exists(System.IO.Path.Combine(dir, "core", "Scenes", "jetrover-bench.json"))) dir = System.IO.Path.GetDirectoryName(dir);
             Assert.NotNull(dir);
@@ -136,16 +136,26 @@ namespace Teleop.Eval.Tests.JointDrive
                     .Select(x => WorldView.Bounds(x.o, scales[x.i], poses[x.i].X, poses[x.i].Y, poses[x.i].Z, poses[x.i].Qw, poses[x.i].Qx, poses[x.i].Qy, poses[x.i].Qz)).ToArray();
                 foreach (DriveScript script in new[] { DriveScript.ReachNoObstacle, DriveScript.StopBeforeCollision, DriveScript.CollideAndRecover, DriveScript.CollideWithObstacle })
                 {
-                    if (DrivePlan.TryBuild(script, Profile, Model.Home, 2.5f, 20, seed, Envelope, out _, out string? error, objects))
+                    var roles = new SafetyOptions { KnockMaxKg = scene.KnockMaxMass }; // as joint-drive plans it (--scene)
+                    if (DrivePlan.TryBuild(script, Profile, Model.Home, 2.5f, 20, seed, Envelope, out _, out string? error, objects, roles))
                         planned[script] = planned.GetValueOrDefault(script) + 1;
                     else if (why.Count < 6) why.Add($"layout {seed} {script}: {error}");
                 }
             }
 
             string report = string.Join(", ", planned.Select(kv => $"{SafetyScript.Category(kv.Key)} {kv.Value}/{Layouts}"));
+            // The bars (docs/adr/0037 amendment 5, 2026-11-16). A fixture bigger than the robot now stands within the arm's
+            // reach beside it every take (the user's choice), and it takes approach paths away. Over 40 layouts the scripts
+            // planned: reach 100%, collide_with_obstacle 80%, stop_before_collision 70%, collide_and_recover 63%; without the
+            // fixture, nearly all. A layout a script cannot use costs the batch a few seconds and another layout, never a take.
+            var bar = new Dictionary<DriveScript, int>
+            {
+                [DriveScript.ReachNoObstacle] = Layouts * 8 / 10, [DriveScript.CollideWithObstacle] = Layouts * 6 / 10,
+                [DriveScript.StopBeforeCollision] = Layouts * 5 / 10, [DriveScript.CollideAndRecover] = Layouts * 5 / 10,
+            };
             foreach (DriveScript script in new[] { DriveScript.ReachNoObstacle, DriveScript.StopBeforeCollision, DriveScript.CollideAndRecover, DriveScript.CollideWithObstacle })
             {
-                Assert.True(planned.GetValueOrDefault(script) >= Layouts * 8 / 10, $"{report}; e.g. {string.Join(" | ", why)}");
+                Assert.True(planned.GetValueOrDefault(script) >= bar[script], $"{report}; e.g. {string.Join(" | ", why)}");
             }
         }
 
@@ -153,7 +163,8 @@ namespace Teleop.Eval.Tests.JointDrive
         public void Roles_AimEachCollideScriptOnlyAtObjectsThatCanDoWhatItNeeds()
         {
             // docs/adr/0037 P4: collide_with_obstacle needs an object the arm knocks over (movable, light enough at its size);
-            // collide_and_recover one a touch does not tip (a wall, one too heavy, or a squat one). With only the other kind in reach, a script plans
+            // collide_and_recover prefers one a touch does not tip (a wall, one too heavy, or a squat one), and takes another
+            // only when none of those can be approached. With only the other kind in reach, a script plans
             // nothing, and the batch draws another layout.
             SafetyObject Post(double massKg, bool movable = true) // 2.5 x 2.5 x 9 cm: tippy
             {
@@ -176,7 +187,7 @@ namespace Teleop.Eval.Tests.JointDrive
             Assert.False(Plans(DriveScript.CollideWithObstacle, Post(0, movable: false))); // a wall
             Assert.True(Plans(DriveScript.CollideAndRecover, Post(1.5)));
             Assert.True(Plans(DriveScript.CollideAndRecover, Post(0, movable: false)));
-            Assert.False(Plans(DriveScript.CollideAndRecover, Post(0.03)));             // it would tip: a failed take
+            Assert.True(Plans(DriveScript.CollideAndRecover, Post(0.03)));              // only a tippy one in reach: tried after all
             Assert.True(Plans(DriveScript.CollideAndRecover, Squat(0.03)));             // light but squat: it slides
             // No roles (a scene without knockMaxMass): collide_with_obstacle takes any movable object, as before.
             Assert.True(DrivePlan.TryBuild(DriveScript.CollideWithObstacle, Profile, Model.Home, 2.5f, 20, 1, Envelope, out _, out _, new[] { Post(1.5) }, new SafetyOptions()));

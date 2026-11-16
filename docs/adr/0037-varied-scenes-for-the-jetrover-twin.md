@@ -345,3 +345,45 @@ The user chose furniture-scale fixtures at the edges, and real materials togethe
 - **What is left.** Every object in the scene now has a scanned or real-material surface; only the hidden floor and the
   shelf have none.
 - **On the twin, a 4-take check:** 3 kept and 1 not planned. Fixtures and textures rendered with every texture found.
+
+### Amendment 5, revised the same day: fixtures within reach, scans only, delivery boxes
+
+The user's judgement of the first check:
+- the fixtures stood on the wings, 36-80 cm from the arm's base, out of the reach of a wrist that reaches 14-24 cm;
+- the small simple shapes still looked untextured: a 2-5 cm block shows only a few pixels of a texture that spans 1.5-2 m;
+- and the user asked for cardboard delivery boxes.
+
+The user chose fixtures beside the robot, and real scans in place of the simple shapes.
+
+- **Fixtures beside the robot.**
+  - A fixed region now bounds the object's **centre**, and the footprint must lie on the table or on the bench beside it
+    (flush with it). `jetrover-bench` puts the regions beside the robot's body: x -0.15 to 0.06 m, |y| 0.25-0.50 m.
+  - Two more pool fields:
+    - `robotKeepOut`: no footprint may reach the robot, at x -0.21 to 0.14 m and |y| up to 0.20 m. That is the chassis, plus
+      room for the elbow to swing; fixtures hugging the chassis took the arm's paths.
+    - `fixedNearMax` (0.22 m): a fixture's near side comes within the arm's reach.
+  - The third-person cameras see the robot from the front, so a fixture beside it blocks nothing of their view.
+- **One fixture a take** (`fixedMax` 1). Two, one on each side, boxed the arm in.
+- **Every object is a real scan.**
+  - The 8 simple shapes are gone. In their place are five small Poly Haven props (a cleaner tin, a carved wooden elephant,
+    a wooden bowl) and **delivery parcels**: Poly Haven's cardboard box at 0.30, 0.34, 0.38 and 0.42 of its size. The two
+    flattest props (a mousetrap 1.8 cm tall, a roll of tape 2.5 cm) were dropped, too low for a touch.
+  - A mesh entry may be its asset uniformly scaled (`world.mesh_factor`; every axis must agree within 3%).
+  - The same box at 0.85, 33 x 44 x 29 cm, is a fixture.
+  - Masses for Poly Haven props are estimates: Poly Haven publishes none (a parcel 120-250 g, as an empty box).
+  - No object is resizable now (meshes keep their size), so the pool has no size range.
+- **`collide_and_recover`** prefers steady objects, and tries the others only when none can be approached. With fixtures
+  beside the robot and many low objects, steady ones alone left half the layouts unplannable; a tipped object sets the
+  take aside at its check instead.
+- **What a big object within reach costs.** It takes the arm's approach paths away. Over 40 layouts, with the scene's roles:
+
+  | Category | Layouts planned |
+  |---|---|
+  | `reach_no_obstacle` | 100% |
+  | `collide_with_obstacle` | 80% |
+  | `stop_before_collision` | 70% |
+  | `collide_and_recover` | 63% |
+
+  Without the fixture, nearly all layouts plan. The random-layout test's bars were 80% for every category. They are now 80%,
+  60%, 50% and 50% respectively, with this reason in the test: a layout a script cannot use costs the batch a few seconds
+  and another layout, never a take.

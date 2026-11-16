@@ -104,6 +104,15 @@ class Scene:
     pool: Tuple[int, int, int, int] = (0, 0, 0, 0)
     # Where a pool's fixed objects stand instead of the region (docs/adr/0037 amendment 5): flat (xMin, xMax, yMin, yMax, ...).
     fixed_regions: Tuple[float, ...] = ()
+    # The robot's footprint no object's footprint may reach (xMin, xMax, yMin, yMax), or () (docs/adr/0037 amendment 5).
+    robot_keep_out: Tuple[float, ...] = ()
+
+    def clear_of_robot(self, x: float, y: float, r: float) -> bool:
+        if len(self.robot_keep_out) != 4:
+            return True
+        x0, x1, y0, y1 = self.robot_keep_out
+        dx, dy = max(x0 - x, 0.0, x - x1), max(y0 - y, 0.0, y - y1)
+        return dx * dx + dy * dy >= r * r - 1e-12
 
     @property
     def is_pool(self) -> bool:
@@ -117,11 +126,17 @@ class Scene:
     def fits_on_table(self, index: int, x: float, y: float, scale: float = 1.0) -> bool:
         r = self.objects[index].footprint_radius * scale
         t, (x0, x1, y0, y1) = self.table, self.region
+        if not self.clear_of_robot(x, y, r):
+            return False
         if self.fixed_regions and not self.objects[index].movable:
+            # Its centre in a rectangle, its footprint on the table or on the bench beside it (flush with it).
+            b = self.bench
+            sx0, sx1 = (min(t.x_min, b.x_min), max(t.x_max, b.x_max)) if b else (t.x_min, t.x_max)
+            sy0, sy1 = (max(t.y_min, b.y_min), min(t.y_max, b.y_max)) if b else (t.y_min, t.y_max)
+            if x - r < sx0 - 1e-9 or x + r > sx1 + 1e-9 or y - r < sy0 - 1e-9 or y + r > sy1 + 1e-9:
+                return False
             f = self.fixed_regions
-            return any(x - r >= max(t.x_min, f[k]) - 1e-9 and x + r <= min(t.x_max, f[k + 1]) + 1e-9 and
-                       y - r >= max(t.y_min, f[k + 2]) - 1e-9 and y + r <= min(t.y_max, f[k + 3]) + 1e-9
-                       for k in range(0, len(f) - 3, 4))
+            return any(f[k] - 1e-9 <= x <= f[k + 1] + 1e-9 and f[k + 2] - 1e-9 <= y <= f[k + 3] + 1e-9 for k in range(0, len(f) - 3, 4))
         return (x - r >= max(t.x_min, x0) - 1e-9 and x + r <= min(t.x_max, x1) + 1e-9 and
                 y - r >= max(t.y_min, y0) - 1e-9 and y + r <= min(t.y_max, y1) + 1e-9)
 
@@ -342,13 +357,22 @@ def parse(doc: Dict[str, Any]) -> Scene:
         a, b, c, d = fr[k:k + 4]
         if not all(_finite(v) for v in (a, b, c, d)) or not (a < b and c < d):
             raise _bad("pool", "each fixedRegions rectangle needs min < max on both axes")
-        if b < table.x_min or a > table.x_max or d < table.y_min or c > table.y_max:
-            raise _bad("pool", "a fixedRegions rectangle does not overlap the table")
+        sx0 = min(table.x_min, bench.x_min) if bench else table.x_min
+        sx1 = max(table.x_max, bench.x_max) if bench else table.x_max
+        if b < sx0 or a > sx1 or d < table.y_min or c > table.y_max:
+            raise _bad("pool", "a fixedRegions rectangle does not overlap the table or the bench")
     if fr and not is_pool:
         raise _bad("pool", "fixedRegions are only for a pool")
+    ko = pd.get("robotKeepOut", []) or []
+    if ko and (not isinstance(ko, list) or len(ko) != 4 or not all(_finite(v) for v in ko) or not (ko[0] < ko[1] and ko[2] < ko[3])):
+        raise _bad("pool", "robotKeepOut is [xMin, xMax, yMin, yMax] with min < max, or absent")
+    near = pd.get("fixedNearMax", 0.0)
+    if not _finite(near) or near < 0:
+        raise _bad("pool", "fixedNearMax is 0 (no bound) or a distance in metres")
     known = {"format", "version", "name", "robotProfile", "surfaces", "objects", "placement", "pool"}
     scene = Scene(name, robot_profile, tuple(surfaces), table, bench, tuple(objects), (float(x0), float(x1), float(y0), float(y1)),
-                  float(clearance), {k: v for k, v in doc.items() if k not in known}, pool, tuple(float(v) for v in fr))
+                  float(clearance), {k: v for k, v in doc.items() if k not in known}, pool, tuple(float(v) for v in fr),
+                  tuple(float(v) for v in ko))
     for i, o in enumerate(objects):
         for sx in (-1, 0, 1):
             for sy in (-1, 0, 1):

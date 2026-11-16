@@ -121,11 +121,15 @@ def test_a_materials_section_names_known_classes_surfaces_and_textures():
     assert materials_spec(dataclasses.replace(s, extra={k: v for k, v in s.extra.items() if k != "materials"})) is None
 
 
-def test_the_benchs_fixtures_are_real_models_bigger_than_the_robot_on_the_tables_wings():
+def test_the_benchs_fixtures_are_real_models_bigger_than_the_robot_beside_it_within_reach():
+    import math
     s = _bench()
     fixed = [(i, o) for i, o in enumerate(s.objects) if not o.movable]
-    assert len(fixed) == 8 and all(o.shape == "mesh" and o.asset.startswith("polyhaven/") for _, o in fixed)
+    assert len(fixed) == 9 and all(o.shape == "mesh" and o.asset.startswith("polyhaven/") for _, o in fixed)
     assert all(o.size[2] >= 0.28 for _, o in fixed)
     for i, o in fixed:
-        assert s.fits_on_table(i, *o.position[:2]), o.name     # each in a wing at its nominal spot
-        assert not s.fits_on_table(i, 0.3, 0.0), o.name         # never in the middle of the table
+        assert s.fits_on_table(i, *o.position[:2]), o.name     # beside the robot at its nominal spot
+        assert not s.fits_on_table(i, 0.3, 0.0), o.name         # never in the work area in front
+        assert not s.fits_on_table(i, 0.0, 0.0), o.name         # never on the robot
+        near = math.hypot(*o.position[:2]) - o.footprint_radius
+        assert near <= 0.24, f"{o.name}: its near side {near:.2f} m from the base, beyond the wrist's reach"

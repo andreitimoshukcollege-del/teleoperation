@@ -72,7 +72,17 @@ def mesh_asset(asset: str, root: str = ASSETS, manifests: Optional[Dict[str, Dic
     e = manifests[library].get(name)
     if e is None:
         raise KeyError(f"{asset} is not in {library}'s manifest")
-    return {"usd": os.path.join(root, library, e["usd"]), "rotation": tuple(e["rotation"]), "centre": tuple(e["centre"])}
+    return {"usd": os.path.join(root, library, e["usd"]), "rotation": tuple(e["rotation"]), "centre": tuple(e["centre"]),
+            "size": tuple(e["size"])}
+
+
+def mesh_factor(entry_size: Sequence[float], asset_size: Sequence[float]) -> float:
+    """The uniform scale that makes an asset the scene entry's size (a delivery box comes in many sizes; docs/adr/0037
+    amendment 5). Every axis must agree within 3%: an entry may scale its asset, never stretch it."""
+    f = [e / a for e, a in zip(entry_size, asset_size)]
+    if not all(abs(v / f[2] - 1.0) <= 0.03 for v in f):
+        raise ValueError(f"a mesh entry's size {list(entry_size)} is not its asset's {list(asset_size)} scaled uniformly")
+    return f[2]
 
 
 def prim_name(prefix: str, name: str) -> str:
@@ -326,11 +336,12 @@ class IsaacWorld:
                     # A real object (docs/adr/0037 decision 4): its asset referenced under the body, stood up and centred on
                     # its box; its look is the asset's, its colliders a convex decomposition of each of its meshes.
                     info = mesh_asset(o.asset, self.assets_root, self._manifests)
+                    k = scale * mesh_factor(o.size, info["size"])  # the entry may be its asset scaled (a box of another size)
                     g = UsdGeom.Xform.Define(stage, f"{path}/Shape")
                     gx = UsdGeom.Xformable(g)
-                    gx.AddTranslateOp().Set(Gf.Vec3d(*(-c * scale for c in info["centre"])))
+                    gx.AddTranslateOp().Set(Gf.Vec3d(*(-c * k for c in info["centre"])))
                     gx.AddOrientOp(UsdGeom.XformOp.PrecisionDouble).Set(Gf.Quatd(*info["rotation"]))
-                    gx.AddScaleOp().Set(Gf.Vec3f(scale, scale, scale))
+                    gx.AddScaleOp().Set(Gf.Vec3f(k, k, k))
                     g.GetPrim().GetReferences().AddReference(info["usd"])
                 elif o.shape == "box":
                     g = UsdGeom.Cube.Define(stage, f"{path}/Shape")
@@ -589,8 +600,9 @@ class IsaacWorld:
             if o.shape == "mesh":
                 ops = UsdGeom.Xformable(shape).GetOrderedXformOps()
                 info = mesh_asset(o.asset, self.assets_root, self._manifests)
-                ops[0].Set(Gf.Vec3d(*(-c * scale for c in info["centre"])))
-                ops[2].Set(Gf.Vec3f(scale, scale, scale))
+                k = scale * mesh_factor(o.size, info["size"])
+                ops[0].Set(Gf.Vec3d(*(-c * k for c in info["centre"])))
+                ops[2].Set(Gf.Vec3f(k, k, k))
             elif o.shape == "box":
                 UsdGeom.Xformable(shape).GetOrderedXformOps()[0].Set(Gf.Vec3f(sx, sy, sz))
             elif o.shape == "cylinder":

@@ -240,24 +240,32 @@ namespace Teleop.Eval.JointDrive
             }
 
             int builds = 0;
-            foreach (int oi in order)
+            // Roles (docs/adr/0037 P4): knocking over needs a body the arm can tip or shove (a fixed wall, or one too heavy, is an
+            // obstacle, never the target). Touching and backing off prefers one that does not tip; when none of those can be
+            // approached, the others are tried (2026-11-16: with fixtures beside the robot and many low objects, steady ones
+            // alone left 10 of 16 layouts unplannable; a tipped object sets the take aside at its check instead).
+            bool roles = options.KnockMaxKg > 0;
+            for (int pass = 0; pass < (script == DriveScript.CollideAndRecover && roles ? 2 : 1); pass++)
             {
-                // Roles (docs/adr/0037 P4): knocking over needs a body the arm can tip or shove (a fixed wall, or one too heavy, is
-                // an obstacle, never the target); touching and backing off needs one that does not tip.
-                if (script == DriveScript.CollideWithObstacle && !options.Knockable(objects[oi])) continue;
-                if (script == DriveScript.CollideAndRecover && options.KnockMaxKg > 0 && !options.Steady(objects[oi])) continue;
-                foreach (Sweep sweep in Sweeps(objects[oi], ref rng))
+                foreach (int oi in order)
                 {
-                    if (!TryLine(profile, model, envelope, objects, oi, sweep, model.Home, out Line line)) continue;
-                    if (++builds > MaxBuilds) break;
-                    hand.Restore(rolled);
-                    if (TryEvent(script, profile, model, objects, oi, line, hand, ref rng, options, home, homePitch))
+                    if (script == DriveScript.CollideWithObstacle && !options.Knockable(objects[oi])) continue;
+                    if (script == DriveScript.CollideAndRecover && roles && options.Steady(objects[oi]) != (pass == 0)) continue;
+                    foreach (Sweep sweep in Sweeps(objects[oi], ref rng))
                     {
-                        double t0 = t; // the hand's timeline starts here in the plan
-                        hand.AppendLegs(legs, ref t, ref current);
-                        EndMoving(legs, ref t, ref current, ref rng, t0 + hand.OnwardStart, t0 + hand.OnwardEnd);
-                        return true;
+                        if (!TryLine(profile, model, envelope, objects, oi, sweep, model.Home, out Line line)) continue;
+                        if (++builds > MaxBuilds) break;
+                        hand.Restore(rolled);
+                        if (TryEvent(script, profile, model, objects, oi, line, hand, ref rng, options, home, homePitch))
+                        {
+                            double t0 = t; // the hand's timeline starts here in the plan
+                            hand.AppendLegs(legs, ref t, ref current);
+                            EndMoving(legs, ref t, ref current, ref rng, t0 + hand.OnwardStart, t0 + hand.OnwardEnd);
+                            return true;
+                        }
                     }
+
+                    if (builds > MaxBuilds) break;
                 }
 
                 if (builds > MaxBuilds) break;

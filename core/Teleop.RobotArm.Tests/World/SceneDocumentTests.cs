@@ -102,7 +102,10 @@ namespace Teleop.RobotArm.Tests.World
             // 12.1), real ones among them (decision 4); its fixed objects are real fixtures bigger than the robot (amendment 5:
             // at least 28 cm tall, scanned models), standing on the table's wings. Each layout puts a few of each on the table.
             Assert.True(s.MovableMin >= 1 && s.FixedMax >= 1);
-            Assert.All(s.Objects.Where(o => o.Movable), o => Assert.True(Math.Max(o.SizeX, Math.Max(o.SizeY, o.SizeZ)) <= 0.125, o.Name));
+            // Every object is a real scan (amendment 5: nothing without a real surface); the movable ones up to ~12 cm, but the
+            // delivery parcels (up to 25 cm); the cleaner tin and the bowl are 12.7 and 12.9.
+            Assert.All(s.Objects, o => Assert.True(o.Shape == SceneShape.Mesh, o.Name));
+            Assert.All(s.Objects.Where(o => o.Movable), o => Assert.True(Math.Max(o.SizeX, Math.Max(o.SizeY, o.SizeZ)) <= (o.Name.StartsWith("parcel") ? 0.25 : 0.135), o.Name));
             Assert.All(s.Objects.Where(o => !o.Movable), o => Assert.True(o.SizeZ >= 0.28 && o.Shape == SceneShape.Mesh && s.InFixedRegions(Array.IndexOf(s.Objects, o)), o.Name));
             Assert.Contains(s.Objects, o => o.Shape == SceneShape.Mesh && o.Asset.StartsWith("ycb/"));
             Assert.All(s.Objects.Where(o => o.Shape == SceneShape.Mesh), o => Assert.False(s.Resizable(Array.IndexOf(s.Objects, o)), o.Name));

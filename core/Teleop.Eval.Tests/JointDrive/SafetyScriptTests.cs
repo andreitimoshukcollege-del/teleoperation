@@ -144,18 +144,43 @@ namespace Teleop.Eval.Tests.JointDrive
             }
 
             string report = string.Join(", ", planned.Select(kv => $"{SafetyScript.Category(kv.Key)} {kv.Value}/{Layouts}"));
-            // The bars (docs/adr/0037 amendment 5, 2026-11-16). A fixture bigger than the robot now stands within the arm's
-            // reach beside it every take (the user's choice), and it takes approach paths away. Over 40 layouts the scripts
-            // planned: reach 100%, collide_with_obstacle 80%, stop_before_collision 70%, collide_and_recover 63%; without the
-            // fixture, nearly all. A layout a script cannot use costs the batch a few seconds and another layout, never a take.
+            // The bars (docs/adr/0037 amendment 5, 2026-11-16). A fixture bigger than the robot stands within the arm's reach
+            // beside it every take (the user's choice); it takes approach paths away, and since it is swept along its side it is
+            // a target itself. Over 40 layouts the scripts planned: reach 100%, collide_with_obstacle 85%,
+            // stop_before_collision 98% (the fixture the target in 22), collide_and_recover 98% (the fixture in 21). A layout a
+            // script cannot use costs the batch a few seconds and another layout, never a take.
             var bar = new Dictionary<DriveScript, int>
             {
                 [DriveScript.ReachNoObstacle] = Layouts * 8 / 10, [DriveScript.CollideWithObstacle] = Layouts * 6 / 10,
-                [DriveScript.StopBeforeCollision] = Layouts * 5 / 10, [DriveScript.CollideAndRecover] = Layouts * 5 / 10,
+                [DriveScript.StopBeforeCollision] = Layouts * 8 / 10, [DriveScript.CollideAndRecover] = Layouts * 8 / 10,
             };
             foreach (DriveScript script in new[] { DriveScript.ReachNoObstacle, DriveScript.StopBeforeCollision, DriveScript.CollideAndRecover, DriveScript.CollideWithObstacle })
             {
                 Assert.True(planned.GetValueOrDefault(script) >= bar[script], $"{report}; e.g. {string.Join(" | ", why)}");
+            }
+        }
+
+        [Fact]
+        public void AFixtureTallerThanTheArmReaches_IsMetAlongItsSide()
+        {
+            // docs/adr/0037 amendment 5: a fixture's top is out of the wrist's reach, so it is swept along its side; seen from
+            // the base it is wide and near, so the sweep starts beyond its edge (2026-11-16: neither, and no fixture was ever
+            // approached). A 22 x 22 x 50 cm box standing on the table beside the robot, in front of it and off to its side.
+            const float Half = 0.11f, Table = -0.1962f, Height = 0.5f;
+            foreach ((float bearingDeg, float near) in new[] { (60f, 0.15f), (90f, 0.20f), (90f, 0.28f), (100f, 0.24f), (-80f, 0.20f) })
+            {
+                float b = bearingDeg * MathF.PI / 180f;
+                var c = new System.Numerics.Vector2(MathF.Cos(b), MathF.Sin(b)) * (near + Half);
+                var box = new SafetyObject(60, new System.Numerics.Vector3(c.X - Half, c.Y - Half, Table),
+                    new System.Numerics.Vector3(c.X + Half, c.Y + Half, Table + Height), movable: false);
+                var roles = new SafetyOptions { KnockMaxKg = 0.7 };
+                foreach (DriveScript script in new[] { DriveScript.StopBeforeCollision, DriveScript.CollideAndRecover })
+                {
+                    Assert.True(DrivePlan.TryBuild(script, Profile, Model.Home, 2.5f, 20, 1, Envelope, out _, out string? error, new[] { box }, roles),
+                        $"{script}, the box at {bearingDeg} degrees, its near side {near} m out: {error}");
+                }
+
+                Assert.False(DrivePlan.TryBuild(DriveScript.CollideWithObstacle, Profile, Model.Home, 2.5f, 20, 1, Envelope, out _, out _, new[] { box }, roles));
             }
         }
 

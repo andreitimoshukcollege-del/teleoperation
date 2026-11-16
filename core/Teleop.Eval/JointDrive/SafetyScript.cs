@@ -142,12 +142,26 @@ namespace Teleop.Eval.JointDrive
         /// <summary>How many approaches (object, sweep) are built before the script gives up.</summary>
         public const int MaxBuilds = 40;
 
+        /// <summary>The share of collide_and_recover takes that try a fixed object (a fixture) before the movable ones.</summary>
+        public const double FixtureFirstShare = 0.5;
+
 
         // The wrist is the IK's target and sits well above the table (the JetRover's wrist barely goes below its shoulder), so the
         // gripper comes down beside the object, pointing down, its tip 1-6 cm below the object's top.
         private static readonly float[] Pitches = { -1.5f, -1.2f, -0.9f };
         private static readonly float[] HeightsAboveTop = { 0.10f, 0.12f, 0.08f, 0.14f, 0.06f, 0.16f };
         private static readonly float[] RadiusInside = { 0.0f, 0.02f, 0.04f, 0.06f, 0.08f, -0.02f, 0.10f };
+
+        // A tall object (a fixture bigger than the robot, docs/adr/0037 amendment 5): its top is out of the arm's reach, so it
+        // is also swept along its side, the hand near level, so the gripper reaching out past the wrist meets it. The wrist
+        // goes only where the IK reaches it (mapped 2026-11-16 in the arm base frame: 16-24 cm out, 2 cm below to 10 cm above
+        // the base frame's origin, within 90 degrees of straight ahead); the sweeps above the top alone never approached a fixture.
+        public const float TallObjectMeters = 0.15f;
+        private static readonly float[] SideWristZ = { 0.02f, 0.0f, 0.04f, 0.06f, -0.02f };
+        private static readonly float[] SideRadii = { 0.20f, 0.18f, 0.22f, 0.16f, 0.24f };
+        private static readonly float[] SidePitches = { 0.0f, -0.3f, -0.6f };
+        /// <summary>A side sweep's wrist stays at least this far below a tall object's top, so the hand meets its side.</summary>
+        public const float SideBelowTopMeters = 0.04f;
 
         public static bool IsSafety(DriveScript script) => script == DriveScript.ReachNoObstacle || script == DriveScript.StopBeforeCollision
             || script == DriveScript.CollideAndRecover || script == DriveScript.CollideWithObstacle;
@@ -243,14 +257,24 @@ namespace Teleop.Eval.JointDrive
             // Roles (docs/adr/0037 P4): knocking over needs a body the arm can tip or shove (a fixed wall, or one too heavy, is an
             // obstacle, never the target). Touching and backing off prefers one that does not tip; when none of those can be
             // approached, the others are tried (2026-11-16: with fixtures beside the robot and many low objects, steady ones
-            // alone left 10 of 16 layouts unplannable; a tipped object sets the take aside at its check instead).
+            // alone left 10 of 16 layouts unplannable; a tipped object sets the take aside at its check instead). A fixture is
+            // always steady and, swept along its side, nearly always in reach, so it would be nearly every touch (34 of 40
+            // layouts): it is tried first in FixtureFirstShare of the takes, and after every movable object in the rest.
             bool roles = options.KnockMaxKg > 0;
-            for (int pass = 0; pass < (script == DriveScript.CollideAndRecover && roles ? 2 : 1); pass++)
+            bool fixtureFirst = script == DriveScript.CollideAndRecover && roles && rng.NextDouble() < FixtureFirstShare;
+            int Rank(in SafetyObject o)
+            {
+                if (script != DriveScript.CollideAndRecover || !roles) return 0;
+                if (!o.Movable) return fixtureFirst ? 0 : 2;
+                return options.Steady(o) ? 0 : 1;
+            }
+
+            for (int pass = 0; pass < 3; pass++)
             {
                 foreach (int oi in order)
                 {
                     if (script == DriveScript.CollideWithObstacle && !options.Knockable(objects[oi])) continue;
-                    if (script == DriveScript.CollideAndRecover && roles && options.Steady(objects[oi]) != (pass == 0)) continue;
+                    if (Rank(objects[oi]) != pass) continue;
                     foreach (Sweep sweep in Sweeps(objects[oi], ref rng))
                     {
                         if (!TryLine(profile, model, envelope, objects, oi, sweep, model.Home, out Line line)) continue;
@@ -337,7 +361,18 @@ namespace Teleop.Eval.JointDrive
             float bearing = MathF.Atan2(c.Y, c.X);
             float halfWidth = MathF.Max(o.Max.X - o.Min.X, o.Max.Y - o.Min.Y) / 2f;
             float past = (halfWidth + ThroughPastMeters) / sweep.Radius;
-            float a0 = bearing + sweep.Side * SweepRadians, a1 = bearing - sweep.Side * past;
+            float lead = SweepRadians;
+            if (o.Max.Z - o.Min.Z >= TallObjectMeters)
+            {
+                // A fixture beside the robot is wide and near: seen from the base it spans 20-30 degrees each side, and a level
+                // hand reaches its corner from well off its middle (2026-11-16: every arc began touching it). So the arc begins
+                // SweepRadians beyond its edge, and goes as far past its far edge.
+                float span = AngularHalfSpan(o, bearing);
+                lead = span + SweepRadians;
+                past = span + ThroughPastMeters / sweep.Radius;
+            }
+
+            float a0 = bearing + sweep.Side * lead, a1 = bearing - sweep.Side * past;
             int n = (int)MathF.Ceiling(MathF.Abs(a1 - a0) * sweep.Radius / LineStepMeters) + 1;
             ArmCollisionModel touch = WithObjects(model, new[] { o }, 0f, 0f);
             ArmCollisionModel clearOfAll = WithObjects(model, objects, ApproachClearanceMeters);
@@ -375,6 +410,22 @@ namespace Teleop.Eval.JointDrive
             return true;
         }
 
+        /// <summary>How far, in radians either side of <paramref name="bearing"/>, an object's footprint reaches as seen from the base axis.</summary>
+        private static float AngularHalfSpan(in SafetyObject o, float bearing)
+        {
+            float span = 0f;
+            foreach (float x in new[] { o.Min.X, o.Max.X })
+            foreach (float y in new[] { o.Min.Y, o.Max.Y })
+            {
+                float d = MathF.Atan2(y, x) - bearing;
+                while (d > MathF.PI) d -= 2f * MathF.PI;
+                while (d < -MathF.PI) d += 2f * MathF.PI;
+                span = MathF.Max(span, MathF.Abs(d));
+            }
+
+            return span;
+        }
+
         /// <summary>One sideways sweep's geometry: the wrist's radius from the base axis and height (arm base frame), its pitch, and which side it comes from (+1: from the object's left, counter-clockwise of it).</summary>
         private readonly struct Sweep
         {
@@ -390,7 +441,7 @@ namespace Teleop.Eval.JointDrive
             }
         }
 
-        /// <summary>The sweeps to try for one object, in a seeded order: radii a little inside its own, heights above its top, pitches, both sides.</summary>
+        /// <summary>The sweeps to try for one object, in a seeded order: radii a little inside its own, heights above its top, pitches, both sides; and a tall object also along its side.</summary>
         private static List<Sweep> Sweeps(in SafetyObject o, ref SeededRng rng)
         {
             Vector3 c = o.Center;
@@ -403,6 +454,17 @@ namespace Teleop.Eval.JointDrive
             {
                 float r = reach - inside;
                 if (r > 0.06f) all.Add(new Sweep(r, o.Max.Z + above, pitch, side));
+            }
+
+            if (o.Max.Z - o.Min.Z >= TallObjectMeters)
+            {
+                foreach (float r in SideRadii)
+                foreach (float z in SideWristZ)
+                foreach (float pitch in SidePitches)
+                foreach (int side in new[] { 1, -1 })
+                {
+                    if (z <= o.Max.Z - SideBelowTopMeters) all.Add(new Sweep(r, z, pitch, side));
+                }
             }
 
             for (int i = all.Count - 1; i > 0; i--)

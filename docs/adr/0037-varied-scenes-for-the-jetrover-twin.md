@@ -387,3 +387,36 @@ The user chose fixtures beside the robot, and real scans in place of the simple 
   Without the fixture, nearly all layouts plan. The random-layout test's bars were 80% for every category. They are now 80%,
   60%, 50% and 50% respectively, with this reason in the test: a layout a script cannot use costs the batch a few seconds
   and another layout, never a take.
+
+### Amendment 5, second revision (2026-11-16): fixtures are touched, and the cameras come closer
+
+The user saw that the fixtures still looked out of reach, and asked whether the arm ever touched one. It never had. No take
+since the fixtures came touched one (ids 41-49), and a fixture standing alone beside the robot planned no stop and no touch
+at any spot:
+- the safety scripts approached an object only on arcs **above its top**, and every fixture's top (28 cm and up) is out of a
+  wrist that reaches only 2 cm below to 10 cm above the arm base frame's origin, 16-24 cm out, within 90° of straight ahead
+  (mapped through the headset's IK);
+- and a fixture beside the robot is wide and near: seen from the base it spans 20-30° each side of its middle, so a level
+  hand already reaches its corner where the arc began, 0.6 rad off its middle, and no arc found a clear start.
+
+So an object at least 15 cm tall (`SafetyScript.TallObjectMeters`) is also swept **along its side**: the wrist at 16-24 cm
+and 2 cm below to 6 cm above the frame's origin, at least 4 cm below the object's top, the hand level or tilted down by up to
+0.6 rad, so the gripper reaching past the wrist meets the object's side. The arc begins 0.6 rad beyond the object's edge
+as seen from the base, not its middle, and goes as far past its far edge.
+
+A fixture is always steady, and now nearly always in reach, so `collide_and_recover` would have touched it in 34 of 40
+layouts. It tries the fixture first in half of its takes (`FixtureFirstShare`) and after every movable object in the rest.
+Over 40 layouts, with the scene's roles:
+
+| Category | Layouts planned | The fixture the target |
+|---|---|---|
+| `reach_no_obstacle` | 100% | (none touched) |
+| `collide_with_obstacle` | 85% | never: a fixture cannot be knocked over |
+| `stop_before_collision` | 98% | 22 |
+| `collide_and_recover` | 98% | 21 |
+
+The random-layout test's bars for the stop and the touch go back to 80%. A new test plans both against a 22 × 22 × 50 cm box
+alone beside the robot, in front of it and off to either side.
+
+The third-person cameras move a quarter of the way in towards the point they look at: from (1.15, ±0.68, 0.40) m to
+(0.88, ±0.51, 0.32) m, the user's request, so the robot and the objects fill more of the frame.

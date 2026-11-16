@@ -95,9 +95,9 @@
   "materials": { "manifest": "~/isaacsim/assets/textures/polyhaven/manifest.json", "box": ["wood"], "cylinder": ["metal", "wood"],
     "surfaces": { "table": "grey_oak_veneer_01", "bench": "grey_oak_veneer_01" }, "surfaceDesaturation": 0.85, "surfaceTint": [0.42, 0.42, 0.42], "tileScale": 1.0 },
   "cameras": [
-    { "id": "third-left", "position": [1.15, 0.68, 0.40], "lookAt": [0.08, 0.0, 0.07], "width": 640, "height": 360, "hfovDeg": 69.0,
+    { "id": "third-left", "position": [0.88, 0.51, 0.32], "lookAt": [0.08, 0.0, 0.07], "width": 640, "height": 360, "hfovDeg": 69.0,
       "near": 0.02, "far": 6.0, "fps": 30, "feedPort": 6008, "feedQuality": 80, "recordQuality": 92, "record": ["rgb", "depth", "mask"] },
-    { "id": "third-right", "position": [1.15, -0.68, 0.40], "lookAt": [0.08, 0.0, 0.07], "width": 640, "height": 360, "hfovDeg": 69.0,
+    { "id": "third-right", "position": [0.88, -0.51, 0.32], "lookAt": [0.08, 0.0, 0.07], "width": 640, "height": 360, "hfovDeg": 69.0,
       "near": 0.02, "far": 6.0, "fps": 30, "feedPort": 6009, "feedQuality": 80, "recordQuality": 92, "record": ["rgb", "depth", "mask"] },
     { "id": "wrist", "mount": "wrist_link", "mountPosition": [0.10, 0.0, 0.05], "mountLookAt": [0.26, 0.0, -0.01],
       "mountUp": [0.0, 0.0, 1.0], "width": 640, "height": 360, "hfovDeg": 87.0, "near": 0.01, "far": 6.0, "fps": 30,

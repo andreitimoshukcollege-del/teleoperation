@@ -281,12 +281,32 @@ namespace Teleop.RobotArm.World
             double x0, x1, y0, y1;
             if (InFixedRegions(index))
             {
-                // A fixed-region rectangle holds the centre; FitsOnTable then checks the footprint.
+                // A fixed-region rectangle holds the centre; the footprint lies on the table or the bench. Draw x there, then y
+                // only where the object clears the robot's keep-out and its near side is within reach (a thin band beside the
+                // robot: drawn from the whole rectangle, 3-4% of tries landed in it). FitsOnTable and InReach still decide.
                 int k = Math.Min(FixedRegions.Length / 4 - 1, (int)(rng.NextDouble() * (FixedRegions.Length / 4)));
-                x0 = FixedRegions[4 * k];
-                x1 = FixedRegions[4 * k + 1];
-                y0 = FixedRegions[4 * k + 2];
-                y1 = FixedRegions[4 * k + 3];
+                double sx0 = Bench != null ? Math.Min(Table.XMin, Bench.XMin) : Table.XMin, sx1 = Bench != null ? Math.Max(Table.XMax, Bench.XMax) : Table.XMax;
+                double sy0 = Bench != null ? Math.Max(Table.YMin, Bench.YMin) : Table.YMin, sy1 = Bench != null ? Math.Min(Table.YMax, Bench.YMax) : Table.YMax;
+                x0 = Math.Max(FixedRegions[4 * k], sx0 + r);
+                x1 = Math.Min(FixedRegions[4 * k + 1], sx1 - r);
+                x = x0 + rng.NextDouble() * (x1 - x0);
+                y0 = Math.Max(FixedRegions[4 * k + 2], sy0 + r);
+                y1 = Math.Min(FixedRegions[4 * k + 3], sy1 - r);
+                if (FixedNearMax > 0)
+                {
+                    double reach = FixedNearMax + r, half = reach * reach - x * x;
+                    double ymax = half > 0 ? Math.Sqrt(half) : 0;
+                    y0 = Math.Max(y0, -ymax);
+                    y1 = Math.Min(y1, ymax);
+                }
+
+                if (RobotKeepOut.Length == 4 && x >= RobotKeepOut[0] - r && x <= RobotKeepOut[1] + r)
+                {
+                    if (FixedRegions[4 * k + 2] >= RobotKeepOut[3]) y0 = Math.Max(y0, RobotKeepOut[3] + r);
+                    else if (FixedRegions[4 * k + 3] <= RobotKeepOut[2]) y1 = Math.Min(y1, RobotKeepOut[2] - r);
+                }
+
+                y = y0 + rng.NextDouble() * (y1 - y0);
             }
             else
             {
@@ -294,10 +314,10 @@ namespace Teleop.RobotArm.World
                 x1 = Math.Min(Table.XMax, RegionXMax) - r;
                 y0 = Math.Max(Table.YMin, RegionYMin) + r;
                 y1 = Math.Min(Table.YMax, RegionYMax) - r;
+                x = x0 + rng.NextDouble() * (x1 - x0);
+                y = y0 + rng.NextDouble() * (y1 - y0);
             }
 
-            x = x0 + rng.NextDouble() * (x1 - x0);
-            y = y0 + rng.NextDouble() * (y1 - y0);
             double turn = (2 * rng.NextDouble() - 1) * Math.PI;
             yaw = InFixedRegions(index) ? Math.Atan2(-y, -x) + turn * (20.0 / 180.0) : turn;
             return x0 <= x1 && y0 <= y1 && FitsOnTable(index, x, y, scale) && InReach(index, x, y);

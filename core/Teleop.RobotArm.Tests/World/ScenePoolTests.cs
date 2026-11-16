@@ -68,6 +68,8 @@ namespace Teleop.RobotArm.Tests.World
                 // An object that found no spot is parked too: never more on the table than the range, and fewer only by the misses.
                 Assert.InRange(movable, Pool.MovableMin - missed, Pool.MovableMax);
                 Assert.InRange(fixeds, Pool.FixedMin - missed, Pool.FixedMax);
+                // A fixture always finds its spot beside the robot (2026-11-16: drawn from its whole rectangle, 17% of layouts had none).
+                Assert.True(fixeds >= Pool.FixedMin, $"seed {seed}: {fixeds} fixture(s)");
             }
         }
 

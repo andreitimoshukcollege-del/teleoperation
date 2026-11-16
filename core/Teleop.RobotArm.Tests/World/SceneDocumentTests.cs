@@ -98,10 +98,12 @@ namespace Teleop.RobotArm.Tests.World
                 return;
             }
 
-            // docs/adr/0037 decision 3: a pool of movable objects of many shapes and sizes, up to ~12 cm, and fixed walls
-            // up to 25 cm long; each layout puts a few of each on the table.
+            // docs/adr/0037 decision 3: a pool of movable objects of many shapes and sizes, up to ~12 cm (the YCB marker is
+            // 12.1), real ones among them (decision 4), and fixed walls up to 25 cm long; each layout puts a few of each on the table.
             Assert.True(s.MovableMin >= 1 && s.FixedMax >= 1);
-            Assert.All(s.Objects.Where(o => o.Movable), o => Assert.True(Math.Max(o.SizeX, Math.Max(o.SizeY, o.SizeZ)) <= 0.12 + 1e-9, o.Name));
+            Assert.All(s.Objects.Where(o => o.Movable), o => Assert.True(Math.Max(o.SizeX, Math.Max(o.SizeY, o.SizeZ)) <= 0.125, o.Name));
+            Assert.Contains(s.Objects, o => o.Shape == SceneShape.Mesh && o.Asset.StartsWith("ycb/"));
+            Assert.All(s.Objects.Where(o => o.Shape == SceneShape.Mesh), o => Assert.False(s.Resizable(Array.IndexOf(s.Objects, o)), o.Name));
             Assert.All(s.Objects.Where(o => !o.Movable), o => Assert.True(Math.Max(o.SizeX, o.SizeY) <= 0.25 + 1e-9 && o.SizeZ <= 0.12 + 1e-9, o.Name));
         }
 

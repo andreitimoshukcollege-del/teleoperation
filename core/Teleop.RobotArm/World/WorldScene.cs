@@ -9,6 +9,12 @@ namespace Teleop.RobotArm.World
         Box,
         Cylinder,
         Sphere,
+
+        /// <summary>
+        /// A real object's scanned mesh (docs/adr/0037 decision 4): Isaac draws and collides <see cref="SceneObject.Asset"/>;
+        /// everything else (footprints, the headset, joint-drive's plans) takes its axis-aligned box, the file's size.
+        /// </summary>
+        Mesh,
     }
 
     /// <summary>Who draws a surface: the headset's lab already has it, the headset builds it from the file, or only Isaac.</summary>
@@ -66,8 +72,10 @@ namespace Teleop.RobotArm.World
     public sealed class SceneObject
     {
         internal SceneObject(byte id, string name, SceneShape shape, double sx, double sy, double sz, double x, double y, double z, double yaw,
-            bool movable, double mass, bool operatorMovable, double staticFriction, double dynamicFriction, float r, float g, float b, double jx, double jy, double jyaw)
+            bool movable, double mass, bool operatorMovable, double staticFriction, double dynamicFriction, float r, float g, float b, double jx, double jy, double jyaw,
+            string asset = "")
         {
+            Asset = asset;
             Id = id;
             Name = name;
             Shape = shape;
@@ -89,7 +97,7 @@ namespace Teleop.RobotArm.World
             JitterX = jx;
             JitterY = jy;
             JitterYaw = jyaw;
-            FootprintRadius = shape == SceneShape.Box ? 0.5 * Math.Sqrt(sx * sx + sy * sy) : 0.5 * sx;
+            FootprintRadius = shape == SceneShape.Box || shape == SceneShape.Mesh ? 0.5 * Math.Sqrt(sx * sx + sy * sy) : 0.5 * sx;
             RigidTransform turn = RigidTransform.Rotation(0, 0, 1, yaw);
             Nominal = new RigidTransform(x, y, z, turn.Qw, turn.Qx, turn.Qy, turn.Qz);
         }
@@ -97,6 +105,9 @@ namespace Teleop.RobotArm.World
         public byte Id { get; }
         public string Name { get; }
         public SceneShape Shape { get; }
+
+        /// <summary>A <see cref="SceneShape.Mesh"/>'s asset, <c>library/name</c> (<c>ycb/025_mug</c>); empty for the other shapes.</summary>
+        public string Asset { get; }
 
         /// <summary>Full extents: a box's sides; a cylinder's diameter twice, then its height; a sphere's diameter three times.</summary>
         public double SizeX { get; }
@@ -179,8 +190,10 @@ namespace Teleop.RobotArm.World
 
         private WorldScene(string name, string robotProfile, SceneSurface[] surfaces, SceneSurface table, SceneSurface? bench,
             SceneObject[] objects, double xMin, double xMax, double yMin, double yMax, double clearance,
-            int movableMin, int movableMax, int fixedMin, int fixedMax, double sizeMin, double sizeMax)
+            int movableMin, int movableMax, int fixedMin, int fixedMax, double sizeMin, double sizeMax, double reachMin, double reachMax)
         {
+            ReachMin = reachMin;
+            ReachMax = reachMax;
             SizeMin = sizeMin;
             SizeMax = sizeMax;
             MovableMin = movableMin;
@@ -229,8 +242,20 @@ namespace Teleop.RobotArm.World
         public double SizeMin { get; }
         public double SizeMax { get; }
 
+        /// <summary>A pool's band for its movable objects, m from the robot's base (0, 0 when there is none): where the arm reaches them.</summary>
+        public double ReachMin { get; }
+        public double ReachMax { get; }
+
+        /// <summary>Whether a pool's layout may stand object <paramref name="index"/> at (x, y): a movable object within the reach band, when there is one; any other anywhere.</summary>
+        public bool InReach(int index, double x, double y)
+        {
+            if (!(ReachMax > 0) || !Objects[index].Movable) return true;
+            double r = Math.Sqrt(x * x + y * y);
+            return r >= ReachMin && r <= ReachMax;
+        }
+
         /// <summary>Whether a layout may give object <paramref name="index"/> another size: a movable object the headset may resize, in a pool that draws sizes.</summary>
-        public bool Resizable(int index) => DrawsSizes && Objects[index].Movable && Objects[index].OperatorMovable;
+        public bool Resizable(int index) => DrawsSizes && Objects[index].Movable && Objects[index].OperatorMovable && Objects[index].Shape != SceneShape.Mesh;
 
         /// <summary>The resize steps a layout may give object <paramref name="index"/>: its largest side within the pool's size range (step 0 when none is).</summary>
         public void SizeSteps(int index, out int min, out int max)
@@ -433,8 +458,15 @@ namespace Teleop.RobotArm.World
                     "box" => SceneShape.Box,
                     "cylinder" => SceneShape.Cylinder,
                     "sphere" => SceneShape.Sphere,
-                    _ => throw Bad("shape", $"'{o.name}' has shape '{o.shape}': box, cylinder or sphere"),
+                    "mesh" => SceneShape.Mesh,
+                    _ => throw Bad("shape", $"'{o.name}' has shape '{o.shape}': box, cylinder, sphere or mesh"),
                 };
+                string asset = o.asset ?? "";
+                if (shape == SceneShape.Mesh ? !ValidAsset(asset) : asset.Length > 0)
+                {
+                    throw Bad("asset", shape == SceneShape.Mesh ? $"mesh '{o.name}' needs an asset, library/name in lowercase letters, digits and '_'" : $"'{o.name}' is a {o.shape}: only a mesh has an asset");
+                }
+
                 double[] z = Vector(o.size, 3, "size", $"'{o.name}'");
                 if (!(z[0] > 0 && z[1] > 0 && z[2] > 0)) throw Bad("size", $"'{o.name}' has a size that is not positive");
                 if (shape == SceneShape.Cylinder && Math.Abs(z[0] - z[1]) > 1e-9) throw Bad("size", $"cylinder '{o.name}' must be [d, d, h]");
@@ -459,7 +491,7 @@ namespace Teleop.RobotArm.World
                 double[] j = Vector(o.jitter, 3, "jitter", $"'{o.name}'");
                 if (!(j[0] >= 0 && j[1] >= 0 && j[2] >= 0)) throw Bad("jitter", $"'{o.name}' has a negative range");
                 objects[i] = new SceneObject((byte)o.id, o.name, shape, z[0], z[1], z[2], pos[0], pos[1], pos[2], rpy[2], movable, o.mass, o.operatorMovable,
-                    o.staticFriction, o.dynamicFriction, (float)col[0], (float)col[1], (float)col[2], j[0], j[1], j[2]);
+                    o.staticFriction, o.dynamicFriction, (float)col[0], (float)col[1], (float)col[2], j[0], j[1], j[2], asset);
             }
 
             ScenePoolDocument pool = d.pool ?? new ScenePoolDocument();
@@ -488,8 +520,14 @@ namespace Teleop.RobotArm.World
             }
 
             if (pool.sizeMax > 0 && !isPool) throw Bad("pool", "sizes are drawn only for a pool");
+            if (!Finite(pool.reachMin, pool.reachMax) || !((pool.reachMin == 0 && pool.reachMax == 0) || (pool.reachMin >= 0 && pool.reachMin < pool.reachMax && pool.reachMax > 0)))
+            {
+                throw Bad("pool", "reachMin and reachMax are both 0, or 0 <= reachMin < reachMax");
+            }
+
+            if (pool.reachMax > 0 && !isPool) throw Bad("pool", "a reach band is only for a pool");
             var scene = new WorldScene(d.name, d.robotProfile, surfaces, table, bench, objects, p.xMin, p.xMax, p.yMin, p.yMax, p.clearance,
-                pool.movableMin, pool.movableMax, pool.fixedMin, pool.fixedMax, pool.sizeMin, pool.sizeMax);
+                pool.movableMin, pool.movableMax, pool.fixedMin, pool.fixedMax, pool.sizeMin, pool.sizeMax, pool.reachMin, pool.reachMax);
             for (int i = 0; i < objects.Length; i++)
             {
                 SceneObject o = objects[i];
@@ -562,6 +600,20 @@ namespace Teleop.RobotArm.World
             }
 
             return true;
+        }
+
+        /// <summary><c>library/name</c>, each part 1-64 of a-z, 0-9 and '_' (an asset names a file under the GPU machine's assets folder).</summary>
+        private static bool ValidAsset(string asset)
+        {
+            int slash = asset.IndexOf('/');
+            if (slash < 1 || slash != asset.LastIndexOf('/') || slash == asset.Length - 1 || asset.Length > 129) return false;
+            foreach (char ch in asset)
+            {
+                bool ok = (ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9') || ch == '_' || ch == '/';
+                if (!ok) return false;
+            }
+
+            return slash <= 64 && asset.Length - slash - 1 <= 64;
         }
 
         private static bool ValidName(string? name)

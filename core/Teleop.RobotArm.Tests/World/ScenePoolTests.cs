@@ -53,6 +53,8 @@ namespace Teleop.RobotArm.Tests.World
                     if (Pool.Objects[i].Movable) movable++;
                     else fixeds++;
                     Assert.True(Pool.FitsOnTable(i, poses[i].X, poses[i].Y, scales[i]), $"seed {seed}: {Pool.Objects[i].Name} off the table");
+                    // A movable object stands where the arm reaches it (amendment 3): within the band from the robot's base.
+                    if (Pool.Objects[i].Movable) Assert.InRange(Math.Sqrt(poses[i].X * poses[i].X + poses[i].Y * poses[i].Y), Pool.ReachMin, Pool.ReachMax);
                     Assert.Equal(Pool.Table.Top + Pool.Objects[i].SizeZ * scales[i] / 2, poses[i].Z, 9);
                     for (int k = 0; k < i; k++)
                     {
@@ -73,11 +75,16 @@ namespace Teleop.RobotArm.Tests.World
             string Key((RigidTransform[] Poses, bool[] Parked, int Missed) d) => string.Join(",", d.Parked.Select((p, i) => p ? "" : Pool.Objects[i].Name).Where(n => n != ""));
             Assert.True(sets.Select(Key).Distinct().Count() > 50, "almost every layout takes a different set of objects");
             Assert.True(sets.Select(d => d.Parked.Count(p => !p)).Distinct().Count() >= 4, "the count on the table varies");
-            // Every object of the pool takes part in some layout.
-            Assert.All(Enumerable.Range(0, Pool.Objects.Length), i => Assert.Contains(sets, d => !d.Parked[i]));
-            // Anywhere in the region, not around a nominal pose: the movable objects' x spread over most of it.
-            double[] xs = sets.SelectMany(d => d.Poses.Where((p, i) => !d.Parked[i] && Pool.Objects[i].Movable).Select(p => p.X)).ToArray();
-            Assert.True(xs.Max() - xs.Min() > 0.7 * (Pool.RegionXMax - Pool.RegionXMin));
+            // Every object of the pool takes part in some layout. The large ones less often (2026-11-15, 2000 layouts: the mug
+            // 7.5 %, the small primitives about 20 %): their round footprint more often finds no free spot in the reach band.
+            var many = Enumerable.Range(1, 300).Select(s => Draw((ulong)s)).ToArray();
+            Assert.All(Enumerable.Range(0, Pool.Objects.Length), i => Assert.Contains(many, d => !d.Parked[i]));
+            // Anywhere in the reach band, not around a nominal pose: the movable objects spread over most of its depth and
+            // swing, and the fixed ones over most of the region.
+            double[] rs = sets.SelectMany(d => d.Poses.Where((p, i) => !d.Parked[i] && Pool.Objects[i].Movable).Select(p => Math.Sqrt(p.X * p.X + p.Y * p.Y))).ToArray();
+            Assert.True(rs.Max() - rs.Min() > 0.7 * (Pool.ReachMax - Pool.ReachMin));
+            double[] ys = sets.SelectMany(d => d.Poses.Where((p, i) => !d.Parked[i] && Pool.Objects[i].Movable).Select(p => p.Y)).ToArray();
+            Assert.True(ys.Max() - ys.Min() > 0.3);
         }
 
         [Fact]
@@ -107,7 +114,8 @@ namespace Teleop.RobotArm.Tests.World
 
             // The 2.5 cm cube runs from 2 cm to about 12 cm: it takes most of the steps between, not one size.
             Assert.True(seen["cube"].Count >= 6, string.Join(", ", seen["cube"]));
-            Assert.True(seen.Values.Count(v => v.Count >= 3) >= 10, "most objects take several sizes");
+            int resizable = Enumerable.Range(0, Pool.Objects.Length).Count(Pool.Resizable); // the real objects keep their real size
+            Assert.True(seen.Values.Count(v => v.Count >= 3) >= resizable * 3 / 4, "most resizable objects take several sizes");
         }
 
         [Fact]

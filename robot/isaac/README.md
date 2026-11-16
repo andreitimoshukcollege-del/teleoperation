@@ -54,7 +54,12 @@ its own), and every 20 ms WORLD, the objects' poses as PhysX has them.
 - **A pool** (docs/adr/0037 decision 3, `jetrover-bench`): each layout puts a few of the file's objects on the table and
   sends the rest with PLACE cause `park`. The bridge stands those on its hidden shelf, the one the resize variants rest on
   (5 m below the floor, 17 m out, past every camera's far plane), and reports them with `FLAG_PARKED`; the renderer hides
-  them too. A pool's objects start parked, and no rule counts a parked one as in the way.
+  them too. A pool's objects start parked, and no rule counts a parked one as in the way. A pool with `sizeMin`/`sizeMax`
+  also draws a size per resizable object per take (amendment 2), changed while it is parked.
+- **Real objects** (docs/adr/0037 decision 4): `just isaac-ycb-fetch` (once) puts the 21 YCB objects NVIDIA converts in
+  `~/isaacsim/assets/ycb/` (`teleop_isaac.ycb`), with each one's standing rotation and size, mass and friction. A scene
+  object of shape `mesh` names one (`"asset": "ycb/025_mug"`); `world.py` references it, stood up and centred on its box,
+  with a convex decomposition collider. Real objects keep their size: they get no resize bodies.
 
 `just isaac-scene-check` (`scene_check.py`) runs the real bridge with the scene and talks to it as RobotHost
 would. It checks WORLD_INFO, WORLD at 50 ± 5 Hz, placements applied and refused, and the left hand

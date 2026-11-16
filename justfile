@@ -3409,6 +3409,28 @@ isaac-environments-status:
     set -euo pipefail
     ssh -o ConnectTimeout=10 "{{gpu_host}}" 'cd "$HOME/repos/isaac/robot/isaac" && "$HOME/isaacsim/venv/bin/python" -m teleop_isaac.environments status'
 
+# Fetch the real objects for the JetRover twin's table onto the GPU machine, once (docs/adr/0037 decision 4): the 21 YCB objects NVIDIA converts for Isaac (Isaac/Props/YCB/Axis_Aligned, YCB CC BY 4.0), each USD with its textures, into ~/isaacsim/assets/ycb with a manifest of each one's files (sha256), how it stands, its size standing, its YCB mass and its friction by material; jetrover-bench's mesh objects name them. Downloads are untrusted data: only from that folder, a USD crate of at most 40 MB, textures only under Materials/ and only PNG or JPEG. Resumes where it stopped. Runs this commit (it must be on GitHub)
+[group('isaac')]
+isaac-ycb-fetch:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    commit=$(just _pushed-commit)
+    ssh -o ConnectTimeout=10 "{{gpu_host}}" "COMMIT='$commit' bash -s" <<'REMOTE'
+    set -euo pipefail
+    repo=$HOME/repos/isaac
+    [ -d "$repo" ] || git clone -q https://github.com/andreitimoshukcollege-del/teleoperation.git "$repo"
+    cd "$repo" && git fetch -q origin && git checkout -q "$COMMIT"
+    mkdir -p "$HOME/logs/isaac"
+    cd robot/isaac && "$HOME/isaacsim/venv/bin/python" -m teleop_isaac.ycb fetch 2>&1 | grep -v '^Warning' | tee "$HOME/logs/isaac/ycb-fetch.log" | tail -3
+    REMOTE
+
+# How the YCB objects stand on the GPU machine: how many, each one's size standing in cm, and any file whose sha256 no longer matches the manifest (exit 1 then, or with none)
+[group('isaac')]
+isaac-ycb-status:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    ssh -o ConnectTimeout=10 "{{gpu_host}}" 'cd "$HOME/repos/isaac/robot/isaac" && "$HOME/isaacsim/venv/bin/python" -m teleop_isaac.ycb status'
+
 # The recording, end to end (docs/adr/0032 decision 6), against a running `just isaac-host`: drives the simulated arms from here through seeded joint-space moves (chain-drive, ±amplitude rad, as the headset so RobotHost records it), waits for the session to close (30 s without commands), then checks it on the GPU machine with robot/isaac/verify_session.py: files.sha256 with the frame sidecars, isaac.jlog's trailer and FS lines, the frame count against the duration, every frame stamped with a QS state, depth on the table mat p99 < 3 mm, and each hand's point landing in its mask in >= 95% of the frames where it moved and shows. Prints one RESULT line; exits non-zero if any check fails or has nothing to measure. Simulated arms only
 [group('isaac')]
 isaac-record-check seconds="40" amplitude="0.6" seed="3":

@@ -55,8 +55,14 @@ namespace Teleop.RobotArm.World
         public int id;
         public string name = "";
 
-        /// <summary><c>box</c> (size is its full extents), <c>cylinder</c> (<c>[d, d, h]</c> along its own z) or <c>sphere</c> (<c>[d, d, d]</c>).</summary>
+        /// <summary>
+        /// <c>box</c> (size is its full extents), <c>cylinder</c> (<c>[d, d, h]</c> along its own z), <c>sphere</c> (<c>[d, d, d]</c>),
+        /// or <c>mesh</c> (docs/adr/0037 decision 4: a real object's <see cref="asset"/>; size is its axis-aligned box, standing).
+        /// </summary>
         public string shape = "";
+
+        /// <summary>A mesh's asset, <c>library/name</c> (<c>ycb/025_mug</c>): Isaac's files for it are under the GPU machine's assets folder. Empty otherwise.</summary>
+        public string asset = "";
         public double[] size = Array.Empty<double>();
 
         /// <summary>The nominal pose, root frame: its centre, and URDF roll/pitch/yaw (roll and pitch 0 in version 1).</summary>
@@ -95,6 +101,13 @@ namespace Teleop.RobotArm.World
         /// </summary>
         public double sizeMin;
         public double sizeMax;
+
+        /// <summary>
+        /// When both are above 0: a layout stands each movable object this far from the robot's base (the root frame's origin,
+        /// horizontally), m, where its arm can reach it (docs/adr/0037 amendment 3). Absent (0): anywhere in the region.
+        /// </summary>
+        public double reachMin;
+        public double reachMax;
     }
 
     /// <summary>Where objects may stand: every footprint lies inside this region and on the table, this far apart.</summary>

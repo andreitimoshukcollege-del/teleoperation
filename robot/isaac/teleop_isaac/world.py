@@ -38,9 +38,11 @@ those not in use on a hidden shelf far below the floor (:data:`SHELF_Z`). A resi
 
 from __future__ import annotations
 
+import json
 import math
+import os
 import re
-from typing import Callable, List, Optional, Sequence, Tuple
+from typing import Callable, Dict, List, Optional, Sequence, Tuple
 
 from . import wire
 from .scene import RESIZE_SCALES, Scene, is_valid_scale, step_of
@@ -53,6 +55,24 @@ ArmCheck = Callable[[int, Pose, float], bool]
 TOUCH_MARGIN = 0.005  # metres: an arm this close to an object counts as touching it (rule 4)
 SHELF_X, SHELF_Z = 20.0, -5.0  # metres: where the unused size variants rest, far from every scene
 UNIT = RESIZE_SCALES.index(1.0)  # the step of the scene file's size
+ASSETS = os.path.expanduser("~/isaacsim/assets")  # a mesh's asset library/name is <ASSETS>/<library>/<name>/<name>.usd
+
+
+def mesh_asset(asset: str, root: str = ASSETS, manifests: Optional[Dict[str, Dict]] = None) -> Dict:
+    """A mesh object's asset (docs/adr/0037 decision 4) from its library's manifest (``ycb.py`` writes YCB's): the USD's path,
+    the rotation that stands it (w, x, y, z) and its box's centre in the standing frame, metres."""
+    library, name = asset.split("/")
+    manifests = manifests if manifests is not None else {}
+    if library not in manifests:
+        path = os.path.join(root, library, "manifest.json")
+        if not os.path.exists(path):
+            raise FileNotFoundError(f"no {path}: fetch the {library} assets first (just isaac-{library}-fetch)")
+        with open(path, encoding="utf-8") as f:
+            manifests[library] = {e["name"]: e for e in json.load(f)["objects"]}
+    e = manifests[library].get(name)
+    if e is None:
+        raise KeyError(f"{asset} is not in {library}'s manifest")
+    return {"usd": os.path.join(root, library, e["usd"]), "rotation": tuple(e["rotation"]), "centre": tuple(e["centre"])}
 
 
 def prim_name(prefix: str, name: str) -> str:
@@ -216,8 +236,10 @@ class IsaacWorld:
 
     ROOT = "/World/Scene"
 
-    def __init__(self, scene: Scene, robot_path: str):
+    def __init__(self, scene: Scene, robot_path: str, assets_root: str = ASSETS):
         self.model = WorldModel(scene)
+        self.assets_root = assets_root
+        self._manifests: Dict[str, Dict] = {}
         self.robot_path = robot_path.rstrip("/")
         self.object_paths = [f"{self.ROOT}/Objects/{prim_name(f'o{o.id}', o.name)}" for o in scene.objects]
         self._stage = None
@@ -300,7 +322,17 @@ class IsaacWorld:
                     if self._contact_report:
                         PhysxSchema.PhysxContactReportAPI.Apply(prim.GetPrim()).CreateThresholdAttr().Set(0.0)
                 sx, sy, sz = (v * scale for v in o.size)
-                if o.shape == "box":
+                if o.shape == "mesh":
+                    # A real object (docs/adr/0037 decision 4): its asset referenced under the body, stood up and centred on
+                    # its box; its look is the asset's, its colliders a convex decomposition of each of its meshes.
+                    info = mesh_asset(o.asset, self.assets_root, self._manifests)
+                    g = UsdGeom.Xform.Define(stage, f"{path}/Shape")
+                    gx = UsdGeom.Xformable(g)
+                    gx.AddTranslateOp().Set(Gf.Vec3d(*(-c * scale for c in info["centre"])))
+                    gx.AddOrientOp(UsdGeom.XformOp.PrecisionDouble).Set(Gf.Quatd(*info["rotation"]))
+                    gx.AddScaleOp().Set(Gf.Vec3f(scale, scale, scale))
+                    g.GetPrim().GetReferences().AddReference(info["usd"])
+                elif o.shape == "box":
                     g = UsdGeom.Cube.Define(stage, f"{path}/Shape")
                     g.CreateSizeAttr(1.0)
                     UsdGeom.Xformable(g).AddScaleOp().Set(Gf.Vec3f(sx, sy, sz))
@@ -312,8 +344,18 @@ class IsaacWorld:
                 else:
                     g = UsdGeom.Sphere.Define(stage, f"{path}/Shape")
                     g.CreateRadiusAttr(sx / 2)
-                g.CreateDisplayColorAttr([Gf.Vec3f(*o.colour)])
-                if physics:
+                if o.shape != "mesh":
+                    g.CreateDisplayColorAttr([Gf.Vec3f(*o.colour)])
+                if physics and o.shape == "mesh":
+                    for m in Usd.PrimRange(g.GetPrim()):
+                        if m.IsA(UsdGeom.Mesh):
+                            UsdPhysics.CollisionAPI.Apply(m)
+                            UsdPhysics.MeshCollisionAPI.Apply(m).CreateApproximationAttr(UsdPhysics.Tokens.convexDecomposition)
+                    # Stronger than the asset's own (render) material binding, which would otherwise give PhysX no friction.
+                    UsdShade.MaterialBindingAPI.Apply(g.GetPrim()).Bind(
+                        material(f"{self.ROOT}/Materials/{path.rsplit('/', 1)[1]}", o.static_friction, o.dynamic_friction),
+                        UsdShade.Tokens.strongerThanDescendants, "physics")
+                elif physics:
                     UsdPhysics.CollisionAPI.Apply(g.GetPrim())
                     bind_physics(g.GetPrim(), material(f"{self.ROOT}/Materials/{path.rsplit('/', 1)[1]}", o.static_friction, o.dynamic_friction))
 
@@ -330,8 +372,8 @@ class IsaacWorld:
                 UsdPhysics.CollisionAPI.Apply(shelf.GetPrim())
                 UsdGeom.Imageable(shelf).MakeInvisible()
                 for i, (o, path) in enumerate(zip(scene.objects, self.object_paths)):
-                    if not (o.movable and o.operator_movable):
-                        continue
+                    if not (o.movable and o.operator_movable) or o.shape == "mesh":
+                        continue  # a real object keeps its real size: no resize bodies
                     for k, s in enumerate(RESIZE_SCALES):
                         if k == UNIT:
                             continue
@@ -544,7 +586,12 @@ class IsaacWorld:
         shape = stage.GetPrimAtPath(f"{self.object_paths[index]}/Shape")
         sx, sy, sz = (v * scale for v in o.size)
         with Usd.EditContext(stage, stage.GetSessionLayer()):
-            if o.shape == "box":
+            if o.shape == "mesh":
+                ops = UsdGeom.Xformable(shape).GetOrderedXformOps()
+                info = mesh_asset(o.asset, self.assets_root, self._manifests)
+                ops[0].Set(Gf.Vec3d(*(-c * scale for c in info["centre"])))
+                ops[2].Set(Gf.Vec3f(scale, scale, scale))
+            elif o.shape == "box":
                 UsdGeom.Xformable(shape).GetOrderedXformOps()[0].Set(Gf.Vec3f(sx, sy, sz))
             elif o.shape == "cylinder":
                 g = UsdGeom.Cylinder(shape)

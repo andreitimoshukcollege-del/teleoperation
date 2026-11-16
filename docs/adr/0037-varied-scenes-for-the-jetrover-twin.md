@@ -420,3 +420,15 @@ alone beside the robot, in front of it and off to either side.
 
 The third-person cameras move a quarter of the way in towards the point they look at: from (1.15, ±0.68, 0.40) m to
 (0.88, ±0.51, 0.32) m, the user's request, so the robot and the objects fill more of the frame.
+
+**Objects as they are turned (the same day).** The first check on the twin aimed a touch at a fixture, a jerrycan turned
+95°, and Isaac reported no contact. Each object was its axis-aligned bounds. Measured offline at the jerrycan's pose, the
+touches went 18-20 mm into those bounds but between 10 mm short of the can's own box and 5 mm into it: the arc meets a box at
+a corner, and a turned object's real corner lies up to 3 cm inside its bounds' corner. The collision model's arm boxes
+are also about 15 mm larger than Isaac's links (the reason for the 20 mm depth), so the arm stopped just short. A turned
+movable object had the same shortfall, only less often seen.
+
+So `CollisionBox` may be turned (`Teleop.RobotArm`): its own axes, centre and half extents, with `Min`/`Max` kept as its
+bounds for the broad phase. The separating-axis test already took two turned boxes, and an axis-aligned box computes
+exactly as before. `SafetyObject` carries the object's rotation from its world pose. A touch now goes 19-20 mm into the
+jerrycan's own box. Sweeps are still placed from the bounds.

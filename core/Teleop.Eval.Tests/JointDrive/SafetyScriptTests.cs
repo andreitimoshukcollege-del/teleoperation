@@ -161,6 +161,27 @@ namespace Teleop.Eval.Tests.JointDrive
         }
 
         [Fact]
+        public void ATurnedObject_IsCheckedAsItIsTurned_NotAsItsBounds()
+        {
+            // 2026-11-16: an object was its axis-aligned bounds, and a touch at a turned jerrycan's corner stopped 10 mm short
+            // of it to 5 mm in, never touching in Isaac. A thin slab turned 135 degrees about z, 10 cm ahead of the gripper: its
+            // bounds take in the gripper, the slab does not.
+            Span<LinkFrame> frames = stackalloc LinkFrame[5];
+            ArmCollision.ComputeFrames(Profile, Model.Home, frames);
+            LinkFrame gf = frames[(int)ArmLink.Gripper];
+            System.Numerics.Vector3 p = Model.Bodies.Where(b => b.Link == ArmLink.Gripper).Select(b => gf.ToBase(b.Center)).OrderBy(c => c.X + c.Y).Last(); // its foremost part
+            var ahead = System.Numerics.Vector3.Normalize(new System.Numerics.Vector3(1f, 1f, 0f)); // ahead of the gripper and to its left
+            var turn = System.Numerics.Quaternion.CreateFromAxisAngle(System.Numerics.Vector3.UnitZ, 3f * MathF.PI / 4f); // thin along ahead
+            var slab = new SafetyObject(70, p + 0.10f * ahead, turn, new System.Numerics.Vector3(0.12f, 0.005f, 0.04f), movable: false);
+            Assert.True(p.X > slab.Min.X && p.X < slab.Max.X && p.Y > slab.Min.Y && p.Y < slab.Max.Y, "the slab's bounds take in the gripper");
+            var turned = SafetyScript.WithObjects(Model, new[] { slab }, 0f, 0f);
+            Assert.True(ArmCollision.IsValid(Profile, turned, Model.Home), ArmCollision.Check(Profile, turned, Model.Home).Describe(turned));
+            var bounds = new SafetyObject(70, slab.Min, slab.Max, movable: false);
+            Assert.False(ArmCollision.IsValid(Profile, SafetyScript.WithObjects(Model, new[] { bounds }, 0f, 0f), Model.Home));
+            Assert.Equal(slab.HalfExtents.Y + 0.01f, slab.Grown(0.01f).HalfExtents.Y, 5);
+        }
+
+        [Fact]
         public void AFixtureTallerThanTheArmReaches_IsMetAlongItsSide()
         {
             // docs/adr/0037 amendment 5: a fixture's top is out of the wrist's reach, so it is swept along its side; seen from

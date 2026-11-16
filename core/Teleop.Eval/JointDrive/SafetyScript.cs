@@ -37,12 +37,19 @@ namespace Teleop.Eval.JointDrive
         public bool Steady(in SafetyObject o) => !o.Movable || (KnockMaxKg > 0 && o.Mass > KnockMaxKg) || !o.Tippy;
     }
 
-    /// <summary>One scene object as a safety script plans around it: its axis-aligned bounds in the arm base frame (metres).</summary>
+    /// <summary>
+    /// One scene object as a safety script plans around it, in the arm base frame (metres): its box as it is turned
+    /// (<see cref="Center"/>, <see cref="Rotation"/>, <see cref="HalfExtents"/>), and that box's axis-aligned bounds
+    /// (<see cref="Min"/>, <see cref="Max"/>), which place the sweeps.
+    /// </summary>
     public readonly struct SafetyObject
     {
         public readonly byte Id;
         public readonly Vector3 Min;
         public readonly Vector3 Max;
+        public readonly Vector3 Center;
+        public readonly Quaternion Rotation;
+        public readonly Vector3 HalfExtents;
 
         /// <summary>Whether physics can move it (a scene's movable object): only such an object can be knocked over.</summary>
         public readonly bool Movable;
@@ -59,27 +66,36 @@ namespace Teleop.Eval.JointDrive
         /// <summary>Height over narrower side above which a pushed object tips before it slides.</summary>
         public const double TippyAspect = 1.25;
 
+        /// <summary>An axis-aligned object.</summary>
         public SafetyObject(byte id, Vector3 min, Vector3 max, bool movable = true, double mass = 0, bool tippy = false)
+            : this(id, (min + max) / 2f, Quaternion.Identity, (max - min) / 2f, movable, mass, tippy)
+        {
+        }
+
+        /// <summary>A turned object: its box centred at <paramref name="center"/>, turned by <paramref name="rotation"/>.</summary>
+        public SafetyObject(byte id, Vector3 center, Quaternion rotation, Vector3 halfExtents, bool movable = true, double mass = 0, bool tippy = false)
         {
             Id = id;
-            Min = min;
-            Max = max;
+            Center = center;
+            Rotation = rotation;
+            HalfExtents = halfExtents;
+            var box = new CollisionBox("", center, rotation, halfExtents);
+            Min = box.Min;
+            Max = box.Max;
             Movable = movable;
             Mass = mass;
             Tippy = tippy;
         }
 
-        public Vector3 Center => (Min + Max) / 2f;
-
-        public CollisionBox Box(float grow) =>
-            new CollisionBox($"object {Id}", Min - new Vector3(grow), Max + new Vector3(grow));
+        public CollisionBox Box(float grow) => new CollisionBox($"object {Id}", Center, Rotation, HalfExtents + new Vector3(grow));
 
         /// <summary>This object's box grown by <paramref name="grow"/> on every side (shrunk when negative, never past its middle).</summary>
         public SafetyObject Grown(float grow)
         {
-            if (grow >= 0) return new SafetyObject(Id, Min - new Vector3(grow), Max + new Vector3(grow), Movable, Mass, Tippy);
-            Vector3 s = Vector3.Min(new Vector3(-grow), (Max - Min) / 2f - new Vector3(0.0005f));
-            return new SafetyObject(Id, Min + s, Max - s, Movable, Mass, Tippy);
+            Vector3 half = grow >= 0
+                ? HalfExtents + new Vector3(grow)
+                : HalfExtents - Vector3.Min(new Vector3(-grow), HalfExtents - new Vector3(0.0005f));
+            return new SafetyObject(Id, Center, Rotation, half, Movable, Mass, Tippy);
         }
     }
 
@@ -102,8 +118,8 @@ namespace Teleop.Eval.JointDrive
     /// <para>Where an approach goes is found on a sideways sweep round the base past the object (the arm's reach is a thin
     /// shell, so an object is met from the side; <see cref="Sweeps"/>). How far the final approach goes is one number,
     /// searched with every random draw held fixed until the closest approach (or depth) the collision model measures over
-    /// every tick is the category's. An object is its axis-aligned box, so a rotated object is a little larger than it is: a
-    /// stop stops a little early, and a touch may fall short by a few millimetres, which the take check catches. Every pose
+    /// every tick is the category's. An object is its box, turned as it stands (a round object is a little smaller than its box,
+    /// so a touch on its edge may fall short, which the take check catches). Every pose
     /// stays in the envelope and passes the collision model (floor, body, the arm's own links), as every script's do; only the
     /// object is allowed to be hit, by the two collide scripts. Every tick is solved by the headset's IK
     /// (<see cref="ArmSolver"/>).</para>
@@ -676,7 +692,7 @@ namespace Teleop.Eval.JointDrive
         /// <summary>The deepest a pose can be measured inside <paramref name="o"/>: its smallest half-size, less 0.5 mm.</summary>
         public static float MaxDepth(in SafetyObject o)
         {
-            Vector3 half = (o.Max - o.Min) / 2f;
+            Vector3 half = o.HalfExtents;
             return MathF.Max(0f, MathF.Min(half.X, MathF.Min(half.Y, half.Z)) - 0.0005f);
         }
 

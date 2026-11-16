@@ -210,8 +210,11 @@ namespace Teleop.Eval.Tests.JointDrive
         }
 
         [Fact]
-        public void TheHand_MovesAsAPersonDoes_NotFromRestToRest()
+        public void TheHand_MovesContinuously_InOverlappingSubmovements()
         {
+            // docs/adr/0036 amendment 3 (the user, 2026-11-16): the motion flows. The hand never lets go of the clutch mid-take,
+            // is almost always moving, and a stillness lasts at most about half a second. The submovements still overlap as a
+            // person's do (amendment 2, below), at the speed people move.
             // People at the headset (2026-11-15, 31 sessions, docs/adr/0036 amendment 2) chain overlapping submovements: 5.4
             // speed peaks a bout, a quarter of bouts with a single one; they let go of the clutch while still moving (75% of
             // holds begin with a step faster than 30 mm/s); they hold it let go 27% of the time, and move the wrist at ~98 mm/s
@@ -255,10 +258,20 @@ namespace Teleop.Eval.Tests.JointDrive
             double median = inMotion[inMotion.Count / 2];
             double perBout = peaks.Average(), single = peaks.Count(p => p <= 1) / (double)peaks.Count;
             string report = $"{peaks.Count} bouts, {perBout:0.0} peaks a bout, {single:P0} single-peak; {atSpeed}/{holds} holds entered at speed; held {held * dt / (n * dt):P0}; median speed moving {median * 1000:0} mm/s";
+            int still = 0, longest = 0, run = 0;
+            for (int k = 0; k < n; k++)
+            {
+                run = speed[k] < 0.005 ? run + 1 : 0;
+                if (run > 0) still++;
+                longest = Math.Max(longest, run);
+            }
+
+            report += $"; still {still / (double)n:P0}, longest stillness {longest * dt:0.00} s";
             Assert.True(perBout >= 2.0, report);
             Assert.True(single <= 0.5, report);
-            Assert.True(holds >= 10 && atSpeed >= 0.5 * holds, report);
-            Assert.InRange(held / (double)n, 0.10, 0.45);
+            Assert.True(holds == 0 && held == 0, report);            // the clutch is never let go mid-take
+            Assert.True(still <= 0.10 * n, report);                  // almost always moving
+            Assert.True(longest * dt <= 0.7, report);                // a pause is brief (at most 0.5 s, plus the smoothing)
             Assert.True(median >= 0.045 && median <= 0.2, report);
         }
 

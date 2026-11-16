@@ -263,3 +263,24 @@ to a point and stops, then to another and stops) and the video low quality and b
 - One operator's statistics, probably, all through Direct Preview; a second operator or an APK session may move
   differently.
 - A contact take takes ~2 s to plan; every category plans on at least 80% of random layouts.
+
+## Amendment 3 (2026-11-16): the safety takes' motion flows, and takes run on from one another
+
+The user judged the safety takes' motion stop-and-go: every take started and ended at the same home pose, and the hand
+paused often. That was the fit of amendment 2: people pause between 37% of their moves and let go of the clutch in most
+of those pauses, for holds up to 6 s. The user chose a continuous motion over that fit.
+
+- **Pauses are rare and short.** The hand carries straight on 92% of the time (it was 63%). A pause is a brief dwell,
+  lognormal with median 0.18 s and at most 0.5 s. The clutch is never let go mid-take: no releases, re-pinches or
+  mid-move releases. A stop event holds 0.3-0.5 s.
+- **No move home.**
+  - A safety take starts wherever the last one left the arm, when that pose is inside the envelope and clear of the new
+    layout's objects by the scripts' clearance; otherwise it goes home first, as before.
+  - After its event, the hand moves on toward a point nearby, and the plan ends partway (50-80%) through that move, never
+    during the event. The episode therefore ends with the arm moving, and DrivePlan adds no return leg.
+- **What no longer holds.** The motion no longer matches amendment 2's human bands for holds and releases; the
+  submovements still overlap as a person's do, at the speed people move.
+- **Tests:**
+  - `TheHand_MovesContinuously_InOverlappingSubmovements`: no release, at least 90% of ticks moving, no stillness over
+    0.7 s with the smoothing, and the overlap and speed bands as before.
+  - The scripts' own tests still hold every category to its event, with the cut never inside it.

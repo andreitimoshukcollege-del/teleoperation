@@ -210,10 +210,9 @@ namespace Teleop.Eval.JointDrive
                     return false;
                 }
 
-                // Back toward home as an operator brings it (DrivePlan then settles any small remainder); without a free way
-                // there, DrivePlan's own return.
-                hand.MoveTo(home, homePitch, 0f, clear, 0.004);
+                // No way home (docs/adr/0036 amendment 3): the take ends partway through its last move, the arm still moving.
                 hand.AppendLegs(legs, ref t, ref current);
+                EndMoving(legs, ref t, ref current, ref rng);
                 return true;
             }
 
@@ -254,7 +253,9 @@ namespace Teleop.Eval.JointDrive
                     hand.Restore(rolled);
                     if (TryEvent(script, profile, model, objects, oi, line, hand, ref rng, options, home, homePitch))
                     {
+                        double t0 = t; // the hand's timeline starts here in the plan
                         hand.AppendLegs(legs, ref t, ref current);
+                        EndMoving(legs, ref t, ref current, ref rng, t0 + hand.OnwardStart, t0 + hand.OnwardEnd);
                         return true;
                     }
                 }
@@ -264,6 +265,35 @@ namespace Teleop.Eval.JointDrive
 
             error = $"no object could be approached for {Category(script)} from {DrivePlan.Describe(current)}";
             return false;
+        }
+
+        /// <summary>
+        /// Ends the take partway (50-80%) through a final move, dropping what follows, so it stops while the arm still moves
+        /// (docs/adr/0036 amendment 3): the next take carries on from wherever this one left the arm. The move is the plan's
+        /// [<paramref name="windowFrom"/>, <paramref name="windowTo"/>] when given (an event's move onward: never the event
+        /// itself), else its last run of moving ticks.
+        /// </summary>
+        internal static void EndMoving(List<DriveLeg> legs, ref double t, ref ArmPose current, ref SeededRng rng,
+            double windowFrom = double.NaN, double windowTo = double.NaN)
+        {
+            int last = legs.Count - 1;
+            while (last >= 0 && legs[last].From.MaxJointDelta(legs[last].To) < 1e-5f) last--;
+            if (last < 0) return;
+            int first = last;
+            while (first > 0 && legs[first - 1].From.MaxJointDelta(legs[first - 1].To) >= 1e-5f && legs[first - 1].Hold < 1e-6) first--;
+            double from = legs[first].Start, to = legs[last].Start + legs[last].Duration;
+            if (!double.IsNaN(windowFrom) && windowTo > windowFrom)
+            {
+                from = windowFrom;
+                to = windowTo;
+            }
+            double cut = from + (0.5 + 0.3 * rng.NextDouble()) * (to - from);
+            int keep = legs.FindLastIndex(l => l.Start <= cut);
+            if (keep < 0) return;
+            legs.RemoveRange(keep + 1, legs.Count - keep - 1);
+            DriveLeg k = legs[keep];
+            t = k.Start + k.Duration + k.Hold;
+            current = k.To;
         }
 
         /// <summary>The wrist's line towards one object, and its IK poses; the indices where the arm first comes within a gap of the object's box.</summary>

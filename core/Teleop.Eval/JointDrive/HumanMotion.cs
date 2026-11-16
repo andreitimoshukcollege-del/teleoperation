@@ -67,12 +67,15 @@ namespace Teleop.Eval.JointDrive
         public const double TransportProbability = 0.50, ReciprocateProbability = 0.32;
 
         // Between those: carry straight on (overlapping), keep the clutch but hold the hand still, or let go of the clutch.
-        public const double ContinueProbability = 0.63, ReleaseProbability = 0.62;
-        public const double DwellMedian = 0.25, DwellSigma = 0.8;
+        // Continuous by the user's choice (2026-11-16, docs/adr/0036 amendment 3): people carry on 63% of the time and let go
+        // in 62% of the rest (the fit of amendment 2); the takes looked stop-and-go, so the hand carries on 92% of the time,
+        // a pause is a brief dwell (at most DwellMax), and the clutch is never let go mid-take.
+        public const double ContinueProbability = 0.92, ReleaseProbability = 0.0;
+        public const double DwellMedian = 0.18, DwellSigma = 0.6, DwellMax = 0.5;
 
-        /// <summary>A hold (the clutch let go): lognormal, seconds (people: median 0.72 s, p95 5 s), at most HoldMax: an episode lasts
-        /// 15-25 s, and a longer stillness is most of its video (two of seven takes held 9 s, 2026-11-15).</summary>
-        public const double HoldMedian = 0.80, HoldSigma = 1.15, HoldMax = 6.0;
+        /// <summary>A hold (the clutch let go): lognormal, seconds, at most HoldMax. People: median 0.72 s, p95 5 s; continuous
+        /// takes (amendment 3) hold no longer than a dwell.</summary>
+        public const double HoldMedian = 0.25, HoldSigma = 0.6, HoldMax = 0.5;
 
         /// <summary>The pinch opens while the hand still moves, this far into its last submovement (75% of people's holds start at speed).</summary>
         public const double CutOffProbability = 0.95, CutOffLow = 0.35, CutOffHigh = 0.70;
@@ -81,10 +84,10 @@ namespace Teleop.Eval.JointDrive
         public const double EngageMovingProbability = 0.42, EngageLeadLow = 0.04, EngageLeadHigh = 0.22;
 
         /// <summary>After a hold, a short re-pinch and another hold, with this probability; the re-pinch's length, seconds.</summary>
-        public const double BlipProbability = 0.05, BlipLow = 0.05, BlipHigh = 0.25;
+        public const double BlipProbability = 0.0, BlipLow = 0.05, BlipHigh = 0.25;
 
         /// <summary>A move interrupted by a short release while the hand goes on, with this probability.</summary>
-        public const double MidReleaseProbability = 0.06, MidReleaseLow = 0.06, MidReleaseHigh = 0.20;
+        public const double MidReleaseProbability = 0.0, MidReleaseLow = 0.06, MidReleaseHigh = 0.20;
 
         // The hand's pitch: each move turns it by Laplace(PitchLaplaceDegrees), pulled back toward the centre; now and then
         // re-aimed. It follows over this fraction of the move.
@@ -587,7 +590,7 @@ namespace Teleop.Eval.JointDrive
                 if (pauseAfter)
                 {
                     double u = _rng.NextDouble();
-                    next = Pause(tl, next, u < 0.45 ? PauseKind.Continue : u < 0.75 ? PauseKind.Dwell : PauseKind.Release, cutOff: true, firstMove: moves);
+                    next = Pause(tl, next, u < 0.85 ? PauseKind.Continue : PauseKind.Dwell, cutOff: true, firstMove: moves); // continuous (amendment 3)
                 }
 
                 if (Accept(tl, t0, check))
@@ -638,7 +641,7 @@ namespace Teleop.Eval.JointDrive
                     rollGoal: null, tolerance: 0.0015, maxCorrections: 3);
                 if (kind == HandEvent.Stop)
                 {
-                    next = Draw.Chance(ref _rng, 0.5) ? Pause(tl, next, PauseKind.Release, cutOff: false, holdAtLeast: 0.8) : tl.MotionEnd + Draw.Uniform(ref _rng, 1.0, 2.0);
+                    next = tl.MotionEnd + Draw.Uniform(ref _rng, 0.3, 0.5); // stopped short: a brief stillness, then away (amendment 3)
                 }
                 else
                 {
@@ -652,13 +655,26 @@ namespace Teleop.Eval.JointDrive
                 next = Transport(tl, back, next, slow: kind == HandEvent.Touch ? 0.85 : 1.0, tolerance: 0.008);
             }
 
+            // Then on, not home (amendment 3): a free move toward a point in reach, during which the take ends.
             double clear = tl.MotionEnd;
-            next = Transport(tl, home, next, tolerance: 0.004, pitchGoal: homePitch, rollGoal: 0f);
+            Vector3 onward = TargetEndpoint(tl) + new Vector3((float)Draw.Uniform(ref _rng, -0.06, 0.02), (float)Draw.Uniform(ref _rng, -0.10, 0.10),
+                (float)Draw.Uniform(ref _rng, 0.03, 0.08));
+            double onwardStart = next;
+            next = Transport(tl, onward, next, tolerance: 0.008);
+            double onwardEnd = tl.MotionEnd;
             if (Grips) MaybeGrip(tl, clear, tl.MotionEnd); // back to using the gripper once clear of the object
             if (!Accept(tl, finalStart, _profile.Collision!, 0.3)) return false;
             _free = next;
+            OnwardStart = onwardStart;
+            OnwardEnd = onwardEnd;
             return true;
         }
+
+        /// <summary>The last <see cref="Event"/>'s move onward, after the event, seconds on the hand's timeline: where the take may end (docs/adr/0036 amendment 3).</summary>
+        public double OnwardStart { get; private set; } = double.NaN;
+
+        /// <summary>See <see cref="OnwardStart"/>.</summary>
+        public double OnwardEnd { get; private set; } = double.NaN;
 
         /// <summary>
         /// Appends the poses solved so far to <paramref name="legs"/> from <paramref name="t"/>, one linear leg a tick (a run of
@@ -1173,7 +1189,7 @@ namespace Teleop.Eval.JointDrive
                 : Draw.Chance(ref _rng, HandModel.ReleaseProbability) ? PauseKind.Release : PauseKind.Dwell);
             if (k == PauseKind.Continue) return next;
             double motionEnd = tl.MotionEnd;
-            if (k == PauseKind.Dwell) return Math.Max(next, motionEnd + Draw.LogNormal(ref _rng, HandModel.DwellMedian, HandModel.DwellSigma));
+            if (k == PauseKind.Dwell) return Math.Max(next, motionEnd + Math.Min(HandModel.DwellMax, Draw.LogNormal(ref _rng, HandModel.DwellMedian, HandModel.DwellSigma)));
 
             // A release at speed comes during the move's last substantial submovement (not a trailing correction): people's
             // hands are still at 44% of their recent peak in the last 100 ms before the pinch opens.

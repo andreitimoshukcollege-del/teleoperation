@@ -3893,6 +3893,10 @@ isaac-safety-batch takes="25" seed="1" categories="all" build="true":
         paused=0
         progress "$n" takes
         n=$((n + 1))
+        # The twin must still be whole: with its bridge or renderer gone (2026-11-16: the ssh session that started them timed
+        # out in a VPN drop), RobotHost still records takes, with no physics and no frames, and every one fails its check.
+        alive=$(ssh -n -o ConnectTimeout=10 "$gpu" 'n=0; for p in "teleop_isaac[.]jetrover_bridge" "teleop_isaac[.]renderer"; do for q in $(pgrep -u "$USER" -f "$p" || true); do case "$(readlink /proc/$q/exe 2>/dev/null)" in *python*) n=$((n+1)); break ;; esac; done; done; echo $n' || echo 0)
+        if [ "$alive" != 2 ]; then echo "[safety] the twin is not whole before take $n (bridge and renderer: $alive of 2 running): stopping; restart it (just isaac-stop; just isaac-jetrover-host jetrover-bench)" >&2; n=$((n - 1)); break; fi
         # ssh -n in the loop: a plain ssh would read the plan from the loop's standard input and end it.
         before=$(ssh -n -o ConnectTimeout=10 "$gpu" "ls ~/data/takes/jetrover-isaac/$cat 2>/dev/null | grep -- '-take' | sort | tail -1" || true)
         echo "=== [safety] take $n: $cat (seed $sseed, speed slider $speed rad/s)"

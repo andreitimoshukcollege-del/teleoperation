@@ -309,8 +309,11 @@ def materials_spec(scene) -> Optional[Dict]:
     desat = float(spec.get("surfaceDesaturation", 0.0))
     if not 0 <= desat <= 1:
         raise ValueError("materials surfaceDesaturation is 0 to 1")
+    tint = [float(v) for v in spec.get("surfaceTint", [1.0, 1.0, 1.0])]
+    if len(tint) != 3 or not all(0 <= v <= 1 for v in tint):
+        raise ValueError("materials surfaceTint is [r, g, b], each 0 to 1")
     return {"manifest": str(spec.get("manifest", "")), "classes": classes, "surfaces": surfaces, "tileScale": tile,
-            "surfaceDesaturation": desat}
+            "surfaceDesaturation": desat, "surfaceTint": tint}
 
 
 def settled(trace: Sequence[float], at_least: int, still: int = 3, tolerance: float = 0.25) -> bool:
@@ -694,6 +697,7 @@ def run(app, args, p, scene, cameras, fps, joints, motors, tap) -> int:
                     sf = next(x for x in scene.surfaces if x.id == sid)
                     wear(sh, tex_by_id[tid], max(sf.size[0], sf.size[1]) / max(sf.size))  # a unit cube scaled: its long side
                     sh.CreateInput("albedo_desaturation", Sdf.ValueTypeNames.Float).Set(mats["surfaceDesaturation"])
+                    sh.CreateInput("diffuse_tint", Sdf.ValueTypeNames.Color3f).Set(Gf.Vec3f(*mats["surfaceTint"]))  # the light oak, grey
 
     # --- mask labels, on prims that never nest (docs/adr/0032 decision 5) ------------------------------------------
     table = mask_table([o.id for o in scene.objects])

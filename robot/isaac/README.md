@@ -60,6 +60,12 @@ its own), and every 20 ms WORLD, the objects' poses as PhysX has them.
   `~/isaacsim/assets/ycb/` (`teleop_isaac.ycb`), with each one's standing rotation and size, mass and friction. A scene
   object of shape `mesh` names one (`"asset": "ycb/025_mug"`); `world.py` references it, stood up and centred on its box,
   with a convex decomposition collider. Real objects keep their size: they get no resize bodies.
+- **Fixtures and materials** (docs/adr/0037 amendment 5):
+  - `just isaac-models-survey <categories>` measures Poly Haven's models and `just isaac-models-fetch` fetches the ones the
+    scene names (`polyhaven/<id>`, into `~/isaacsim/assets/polyhaven/`, texture paths pointed at their own folder). The
+    fixtures stand in the pool's `fixedRegions` (the table's wings).
+  - `just isaac-materials-fetch` fetches the 20 PBR textures the simple shapes wear per take, and the table's grey
+    laminate; the renderer projects them in object space.
 
 `just isaac-scene-check` (`scene_check.py`) runs the real bridge with the scene and talks to it as RobotHost
 would. It checks WORLD_INFO, WORLD at 50 ± 5 Hz, placements applied and refused, and the left hand

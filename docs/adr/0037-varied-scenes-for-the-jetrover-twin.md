@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted, 2026-11-15 (the user, on starting P1). P1 built 2026-11-15; P2 built 2026-11-15 (amendments 1 and 2); P3 built 2026-11-15 (amendment 3); P4 built 2026-11-15 (amendment 4).
+Accepted, 2026-11-15 (the user, on starting P1). P1 built 2026-11-15; P2 built 2026-11-15 (amendments 1 and 2); P3 built 2026-11-15 (amendment 3); P4 built 2026-11-15 (amendment 4). Real fixtures and materials 2026-11-16 (amendment 5).
 
 ## Context
 
@@ -309,3 +309,39 @@ measured on the twin.
   - the random-layout test, which every category passes at its 80% bar with roles on;
   - the knock report and its size parse;
   - the pool's `knockMaxMass` in the shared vectors.
+
+## Amendment 5 (2026-11-16): fixtures bigger than the robot, and nothing without a real surface
+
+The user's judgement after P4:
+1. In real life, immovable things near a robot are big, bigger than the robot itself; the thin walls were tiny.
+2. Nothing should be a flat colour, since such objects cannot exist in real life.
+
+The user chose furniture-scale fixtures at the edges, and real materials together with the scans.
+
+- **Fixtures.** The 8 thin walls become 8 Poly Haven models (CC0), each 30-69 cm tall: two jerrycans, an electric kettle, two
+  vases, a marble bust, a garden gnome and a brass vase. They stay `fixed` (kinematic) and keep their real look and size.
+  - **The fetcher.** `teleop_isaac.models` fetches them as USD with their textures. Each file is checked against the API's
+    size and md5, and is fetched only from Poly Haven's download host and only under `textures/`.
+  - **Texture paths.** Poly Haven's USD names its textures by an absolute path on Poly Haven's own machines. The fetch
+    points each reference at the file downloaded beside it, or at the same map in the format the download included, and
+    refuses a model that names one it lacks.
+  - **Choosing them.** `survey` measured 270 models of the fitting categories. These 8 stand sensibly on a table, are
+    taller than the robot, and fit a wing.
+- **Where fixtures stand.** A pool's `fixedRegions` are rectangles where its fixed objects stand instead of the placement
+  region. `jetrover-bench` uses the table's two wings, |y| 0.36-0.80 m.
+  - The third-person cameras sit beyond the table's far edge, looking back at the robot, so a fixture there would block
+    their view.
+  - A fixture is drawn facing the robot, give or take 20 degrees.
+  - Every placement rule (Core's `FitsOnTable`, the bridge's `Scene.fits_on_table`) uses the regions, and the shared
+    vectors hold the two readers equal.
+- **Materials.** The simple shapes wear real CC0 PBR textures, drawn per take with the room (seeded, recorded as `MT`, and
+  attributed in `environment.json`).
+  - Boxes are wooden blocks: walnut, ash, bamboo, oak, cherry and pine veneers, and painted planks.
+  - Cylinders are metal or wooden cans: plain and rusted plates, painted metal.
+  - The table and bench are a grey oak laminate (`grey_oak_veneer_01`, desaturated and tinted grey).
+  - `teleop_isaac.materials` fetches the 20 textures, checked the same way, with each one's real-world size so it tiles
+    at its true scale. The shapes have no UVs, so the renderer projects in object space (OmniPBR's `project_uvw`), which
+    keeps the texture on as the object moves.
+- **What is left.** Every object in the scene now has a scanned or real-material surface; only the hidden floor and the
+  shelf have none.
+- **On the twin, a 4-take check:** 3 kept and 1 not planned. Fixtures and textures rendered with every texture found.

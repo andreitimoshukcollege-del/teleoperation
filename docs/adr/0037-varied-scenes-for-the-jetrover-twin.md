@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted, 2026-11-15 (the user, on starting P1). P1 built 2026-11-15; P2 built 2026-11-15 (amendments 1 and 2); P3 built 2026-11-15 (amendment 3).
+Accepted, 2026-11-15 (the user, on starting P1). P1 built 2026-11-15; P2 built 2026-11-15 (amendments 1 and 2); P3 built 2026-11-15 (amendment 3); P4 built 2026-11-15 (amendment 4).
 
 ## Context
 
@@ -263,3 +263,49 @@ The user asked for random sizes per take.
   every category on at least 80% of layouts again, at the bar it always had.
 - **Large objects take part less often.** Their round footprint more often finds no free spot in the band. Over 2000
   layouts, the mug was on the table in 7.5% and the pudding box in 9.6%, against about 20% for the small primitives.
+
+## Amendment 4 (2026-11-15): P4 as built, roles from measurement
+
+Decision 6 tagged each object with one role. With sizes per take (amendment 2), one tag cannot be right: a 2 cm cube tips,
+a 12 cm one weighs about 2 kg. Roles are therefore decided per take, from the object at its drawn size, against a threshold
+measured on the twin.
+
+- **The measurement.**
+  - `teleop_lerobot knock-report` lists every object a take touched: its size (the renderer's `SZ`), its mass at that size,
+    how far it tipped and moved from its first touch, and whether that is knocked over by the take check's own rule
+    (tipped at least 30 degrees or moved at least 3 cm).
+  - `just isaac-knock-probe` runs `collide_with_obstacle` takes alone (`isaac-safety-batch` now takes `categories=` and
+    `build=`) and reports them.
+- **What it found** (48 collide takes, 51 touched movable objects, 2026-11-15):
+
+  | Mass at size | Knocked over |
+  |---|---|
+  | 0–30 g | 17 of 20 |
+  | 30–60 g | 1 of 1 |
+  | 60–100 g | 8 of 8 |
+  | 100–200 g | 7 of 9 |
+  | 200–400 g | 10 of 12 |
+  | 400–800 g | 1 of 1 (a 670 g can) |
+  | Fixed walls | 0 of 6 |
+
+  - Every miss was a graze, whatever the mass.
+  - The twin's arm shoves objects of several hundred grams; "knocked" counts a 3 cm shove.
+  - Nothing heavier than 670 g was touched, so the data says nothing above it.
+- **The knock role.** `collide_with_obstacle` aims only at **knockable** objects: movable, and at most the pool's
+  `knockMaxMass` at its size. For `jetrover-bench` that is 0.7 kg, the heaviest mass measured knocked over. A scene without
+  it keeps the old rule (any movable object).
+- **The steady role.** `collide_and_recover` fails a take that tips its object, so it aims only at **steady** objects: a
+  wall, a movable one above `knockMaxMass`, or a squat one.
+  - An object pushed at mid-height tips before it slides when its height exceeds its narrower side over its friction
+    (about 0.8): taller than 1.25 times its narrower side is **tippy**.
+  - The recover takes agree. The tall post (height over narrow side 4.0) and the marker (6.4) tipped; the wedge (0.7) and
+    the foam brick (1.03) slid.
+  - This corrects decision 6, which had collide_and_recover aim at pushable or knockable objects: a knockable object is
+    exactly what fails it.
+- **The world preamble.** The JetRover host never wrote WorldHost's preamble (`WL`, `WZ`, `WO`) into its sessions and takes,
+  as the serial-chain host does. It does now, so a take says which objects were on the table and at what size.
+- **Tests:**
+  - the roles (each collide script plans only against objects of its role);
+  - the random-layout test, which every category passes at its 80% bar with roles on;
+  - the knock report and its size parse;
+  - the pool's `knockMaxMass` in the shared vectors.

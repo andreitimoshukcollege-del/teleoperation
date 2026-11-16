@@ -6,7 +6,9 @@
 - ``safety-check TAKE...``: each safety take's labels and verdict against its category, as JSON lines (``--set-aside``
   moves a failing one to ``_discarded``; no LeRobot needed);
 - ``safety-build --out DATASET TAKE...``: one safety dataset from checked takes, in the lab's label format
-  (docs/adr/0036 amendment 1).
+  (docs/adr/0036 amendment 1);
+- ``knock-report TAKE...``: every object each take touched, its mass at its size and whether it was knocked over, as JSON
+  lines, then a summary by mass (docs/adr/0037 P4; no LeRobot needed).
 """
 
 from __future__ import annotations
@@ -51,6 +53,8 @@ def main(argv=None) -> int:
     s.add_argument("takes", nargs="+")
     s.add_argument("--fps", type=int, default=15)
     s.add_argument("--set-aside", action="store_true", help="move a take that fails its category to _discarded")
+    s = sub.add_parser("knock-report")
+    s.add_argument("takes", nargs="*")
     s = sub.add_parser("safety-build")
     s.add_argument("takes", nargs="+")
     s.add_argument("--out", required=True, help="the new dataset's folder, e.g. ~/data/lerobot/jetrover-isaac-safety/jetrover_<UTC>_<id>")
@@ -75,6 +79,21 @@ def main(argv=None) -> int:
                               "frames": len(labels), "unsafeFrames": v.unsafe_frames, "touched": list(v.touched),
                               "unsafeRanges": safety.ranges(labels), "setAside": moved}), flush=True)
         return 1 if failed else 0
+
+    if a.command == "knock-report":
+        from . import safety
+
+        rows = []
+        for path in a.takes:
+            try:
+                rows.extend(safety.knocks(path))
+            except (OSError, ValueError, KeyError) as e:
+                print(f"[knock] {path}: skipped ({e})", file=sys.stderr)
+        for r in rows:
+            print(json.dumps(r), flush=True)
+        for line in safety.knock_summary(rows):
+            print("[knock] " + line, file=sys.stderr)
+        return 0 if rows else 1
 
     if a.command == "safety-build":
         from . import safety

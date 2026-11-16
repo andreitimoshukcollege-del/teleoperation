@@ -46,7 +46,9 @@ namespace Teleop.Eval.JointDrive
                 max = Vector3.Max(max, p);
             }
 
-            return new SafetyObject(o.Id, min, max, o.Movable);
+            // Mass at size, as Isaac's bodies have it; tippy from the file's proportions, which a uniform size keeps.
+            bool tippy = o.SizeZ > SafetyObject.TippyAspect * Math.Min(o.SizeX, o.SizeY);
+            return new SafetyObject(o.Id, min, max, o.Movable, o.Mass * scale * scale * scale, tippy);
         }
 
         /// <summary>

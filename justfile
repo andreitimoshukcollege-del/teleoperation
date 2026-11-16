@@ -3802,12 +3802,38 @@ isaac-jetrover-drive-batch hours="2" minutes="5" seed="1":
     done
     echo "[batch] $n session(s) recorded"
 
+# How often the arm knocks over each kind of object (docs/adr/0037 P4): `takes` collide_with_obstacle takes on the twin (just isaac-safety-batch with only that category and no dataset), then teleop_lerobot knock-report over every collide take recorded since `since` (UTC, as take names start: default this run's start; e.g. 20261115T2150 for every pool take): each touched object's size, its mass at that size, how far it tipped and moved, and whether that is knocked over by the take check's rule, summarised by mass. The rows go to ~/analysis/knock/<UTC>.jsonl on the GPU machine. Needs `just isaac-jetrover-host jetrover-bench` running this commit. Only Isaac's arm moves
+[group('isaac')]
+isaac-knock-probe takes="30" seed="1" since="":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    case "{{since}}" in ""|[0-9]*) ;; *) echo "error: since is a UTC stamp like 20261115T2150" >&2; exit 1 ;; esac
+    since="{{since}}"; [ -n "$since" ] || since=$(date -u +%Y%m%dT%H%M%S)
+    [ "{{takes}}" = 0 ] || just isaac-safety-batch {{takes}} {{seed}} collide_with_obstacle false || true
+    ssh -o ConnectTimeout=10 "{{gpu_host}}" "SINCE='$since' bash -s" <<'REMOTE'
+    set -euo pipefail
+    mkdir -p "$HOME/analysis/knock"; out=$HOME/analysis/knock/$(date -u +%Y%m%dT%H%M%SZ).jsonl
+    takes=()
+    for d in "$HOME"/data/takes/jetrover-isaac/{,_discarded/}{collide_with_obstacle,collide_and_recover}/*-take*; do
+        n=$(basename "$d"); [[ "$n" > "$SINCE" ]] && [ -f "$d/files.sha256" ] && takes+=("$d")
+    done
+    echo "[knock] ${#takes[@]} collide take(s) since $SINCE"
+    [ "${#takes[@]}" -gt 0 ] || exit 1
+    cd "$HOME/repos/safety/robot/lerobot" && "$HOME/isaacsim/lerobot-venv/bin/python" -m teleop_lerobot knock-report "${takes[@]}" > "$out"
+    echo "[knock] rows: $out"
+    REMOTE
+
 # The labmate's safety dataset from the JetRover twin, unattended (docs/adr/0036 amendment 1): `takes` rounds of the four categories (reach_no_obstacle, stop_before_collision, collide_and_recover, collide_with_obstacle) in a seeded order, each take one `joint-drive --script <category> --new-layout --take <category>` (a fresh layout, the arm driven relative to where the objects are), checked against its category by its physics contacts (teleop_lerobot safety-check: a take that fails is set aside to _discarded/<category>/ with its reason), then the kept takes written as one dataset in his label format at ~/data/lerobot/jetrover-isaac-safety/jetrover_<UTC>_<id>/ (front = the wrist camera; manual_safety_labels.json, meta/safety_labels.parquet, safety_events.jsonl). Needs `just isaac-jetrover-host jetrover-bench` running this commit (its bridge reports the contacts) and the LeRobot environment (just lerobot-setup). Stops after 5 takes in a row that could not be planned, or when recordings/.drive/STOP exists (after the take in progress); waits between takes while recordings/.drive/PAUSE exists. Writes its progress to recordings/.drive/safety-batch.json for `just gpu-ui`, which shows it and makes those two files. Only Isaac's arm moves
 [group('isaac')]
-isaac-safety-batch takes="25" seed="1":
+isaac-safety-batch takes="25" seed="1" categories="all" build="true":
     #!/usr/bin/env bash
     set -euo pipefail
     case "{{takes}}{{seed}}" in *[!0-9]*|"") echo "error: takes and seed are numbers" >&2; exit 1 ;; esac
+    cats="{{categories}}"; [ "$cats" != all ] || cats=reach_no_obstacle,stop_before_collision,collide_and_recover,collide_with_obstacle
+    for c in ${cats//,/ }; do
+        case "$c" in reach_no_obstacle|stop_before_collision|collide_and_recover|collide_with_obstacle) ;; *) echo "error: categories is all, or a comma list of the four, not '$c'" >&2; exit 1 ;; esac
+    done
+    case "{{build}}" in true|false) ;; *) echo "error: build is true or false" >&2; exit 1 ;; esac
     gpu="{{gpu_host}}"; host="${gpu#*@}"
     case "$host" in *[!0-9.]*) echo "error: joint-drive needs the GPU machine's address as numbers, got '$host' (GPU_HOST)" >&2; exit 1 ;; esac
     commit=$(just _pushed-commit)
@@ -3842,11 +3868,11 @@ isaac-safety-batch takes="25" seed="1":
     # The plan: each round the four categories in a seeded order, each take its own seed and the speed slider's setting
     # (the joint speed the commands ask for: mostly 3.8 rad/s, as the human sessions on the twin had it; slower caps a
     # person's faster moves, docs/adr/0036 amendment 2).
-    plan=$(python3 - {{takes}} {{seed}} <<'PY'
+    plan=$(python3 - {{takes}} {{seed}} "$cats" <<'PY'
     import random, sys
     rounds, seed = int(sys.argv[1]), int(sys.argv[2])
     r = random.Random(seed * 7919)
-    cats = ["reach_no_obstacle", "stop_before_collision", "collide_and_recover", "collide_with_obstacle"]
+    cats = sys.argv[3].split(",")
     n = 0
     for _ in range(rounds):
         r.shuffle(cats)
@@ -3856,7 +3882,7 @@ isaac-safety-batch takes="25" seed="1":
     PY
     )
     kept=() setaside=0 unplanned=0 consecutive=0 n=0 unchecked=0 paused=0
-    started=$(date +%s) total=$(( {{takes}} * 4 ))
+    started=$(date +%s) total=$(( {{takes}} * $(echo "$cats" | tr ',' '\n' | wc -l) ))
     while read -r cat speed sseed; do
         # just gpu-ui's pause: wait here, between takes, while recordings/.drive/PAUSE exists (STOP still stops).
         while [ -e recordings/.drive/PAUSE ] && [ ! -e recordings/.drive/STOP ]; do
@@ -3920,6 +3946,7 @@ isaac-safety-batch takes="25" seed="1":
     done <<< "$plan"
     echo "[safety] $n take(s): ${#kept[@]} kept, $setaside set aside, $unplanned not planned"
     [ "${#kept[@]}" -gt 0 ] || { echo "[safety] nothing kept: no dataset written" >&2; progress "$n" failed; exit 1; }
+    if [ "{{build}}" != true ]; then echo "[safety] build=false: no dataset written"; progress "$n" done; exit 0; fi
     progress "$n" building
     # A build that fails is retried once into a fresh folder, a failed one set aside, and every attempt's full log kept there.
     # (The one failure seen, 2026-11-15, was the LeRobot watcher deleting the half-written dataset, since fixed: it leaves the

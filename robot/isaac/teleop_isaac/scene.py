@@ -323,6 +323,11 @@ def parse(doc: Dict[str, Any]) -> Scene:
         raise _bad("pool", "reachMin and reachMax are both 0, or 0 <= reachMin < reachMax")
     if reach_max > 0 and not is_pool:
         raise _bad("pool", "a reach band is only for a pool")
+    knock = pd.get("knockMaxMass", 0.0)
+    if not _finite(knock) or not 0 <= knock <= MAX_MASS:
+        raise _bad("pool", f"knockMaxMass is 0 (no roles) to {MAX_MASS:g} kg")
+    if knock > 0 and not is_pool:
+        raise _bad("pool", "roles are only for a pool")
     known = {"format", "version", "name", "robotProfile", "surfaces", "objects", "placement", "pool"}
     scene = Scene(name, robot_profile, tuple(surfaces), table, bench, tuple(objects), (float(x0), float(x1), float(y0), float(y1)),
                   float(clearance), {k: v for k, v in doc.items() if k not in known}, pool)

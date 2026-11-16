@@ -163,6 +163,63 @@ def check(take: Take, labels: Sequence[int], stretches: Sequence[Contact],
     return Verdict(True, f"knocked {[o for o, (tl, d) in knocked if tl >= TIPPED_DEGREES or d >= MOVED_METERS]}", unsafe, touched)
 
 
+def knocks(path: str) -> List[Dict]:
+    """Every object the take touched (docs/adr/0037 P4: what can be knocked over), with what it was: its size factor (the
+    renderer's first ``SZ``), its mass at that size (the scene file's mass times the cube of the factor, as Isaac's bodies
+    have it), how far it tipped and moved from its first touch to the take's end, and whether that is knocked over by
+    :func:`check`'s rule (tipped at least ``TIPPED_DEGREES`` or moved at least ``MOVED_METERS``)."""
+    with open(os.path.join(path, "scene.json"), encoding="utf-8") as f:
+        scene = {o["id"]: o for o in json.load(f)["objects"]}
+    scales = sizes(read_jlog(os.path.join(path, "isaac.jlog"), "isaac").tag("SZ"))
+    stretches = contacts(path)
+    poses = object_poses(path)
+    end = max((p[-1][0] for p in poses.values() if p), default=0)
+    first: Dict[int, int] = {}
+    for c in stretches:
+        for o in c.objects:
+            first.setdefault(o, c.start)
+    out = []
+    for obj, t in sorted(first.items()):
+        p = poses.get(obj, [])
+        a, b = _at(p, t), _at(p, end)
+        tilt, dist = (_tilt_degrees(a, b), math.dist(a[:3], b[:3])) if a is not None and b is not None else (0.0, 0.0)
+        o = scene.get(obj, {})
+        scale = scales.get(obj, 1.0)
+        out.append({"take": os.path.abspath(path), "object": obj, "name": o.get("name", "?"), "kind": o.get("kind", "?"),
+                    "shape": o.get("shape", "?"), "scale": scale, "massKg": round(float(o.get("mass", 0.0)) * scale ** 3, 4),
+                    "tiltDeg": round(tilt, 1), "movedCm": round(dist * 100, 2),
+                    "knocked": bool(tilt >= TIPPED_DEGREES or dist >= MOVED_METERS)})
+    return out
+
+
+def sizes(sz_records: Sequence[Sequence[str]]) -> Dict[int, float]:
+    """Each object's size factor from the renderer's first ``SZ`` record (fields after the tag: revision, ``id:factor;...``)."""
+    if not sz_records or len(sz_records[0]) < 2:
+        return {}
+    return {int(it[0]): float(it[1]) for it in items(sz_records[0][1]) if len(it) >= 2}
+
+
+MASS_BINS_KG = (0.03, 0.06, 0.1, 0.2, 0.4, 0.8)
+
+
+def knock_summary(rows: Sequence[Dict]) -> List[str]:
+    """How often a touched movable object was knocked over, by its mass at its size (bins up to each of
+    :data:`MASS_BINS_KG`, then above the last)."""
+    out = []
+    edges = (0.0,) + MASS_BINS_KG + (float("inf"),)
+    movable = [r for r in rows if r["kind"] == "movable"]
+    for lo, hi in zip(edges, edges[1:]):
+        b = [r for r in movable if lo < r["massKg"] <= hi]
+        if b:
+            k = sum(r["knocked"] for r in b)
+            names = sorted({r["name"] for r in b})
+            out.append(f"{lo * 1000:5.0f}-{hi * 1000:5.0f} g: {k}/{len(b)} knocked ({100 * k / len(b):.0f}%): {', '.join(names)}")
+    fixed = [r for r in rows if r["kind"] != "movable"]
+    if fixed:
+        out.append(f"fixed: {sum(r['knocked'] for r in fixed)}/{len(fixed)} knocked")
+    return out
+
+
 def as_safety(take: Take) -> Take:
     """The take as the safety dataset writes it: its ``wrist`` camera named ``front`` (his tools read that), and its task
     string its category (his ``label_safety.py`` reads an episode's category from it)."""

@@ -184,3 +184,26 @@ def test_the_watcher_leaves_the_safety_scenarios_alone(scenarios):
     jetrover_take(scenarios, scenario="free-play")
     found = complete_takes([scenarios], now=1e12, settle=0)
     assert [os.path.basename(os.path.dirname(t)) for t in found] == ["free-play"]
+
+
+def test_the_knock_report_says_what_each_touched_object_weighed_and_whether_it_went_over(scenarios):
+    # docs/adr/0037 P4: what can be knocked over, by mass at size, from the takes themselves.
+    path = take(scenarios, "collide_with_obstacle", [wo(1000, {3: (0.17, -0.02, -0.16, UPRIGHT), 4: (0.25, 0.0, -0.17, UPRIGHT)}),
+                                                     wc(1400, "0:4:3:6.0;0:4:4:1.0"), wc(1900),
+                                                     wo(2500, {3: (0.21, -0.05, -0.18, ON_ITS_SIDE), 4: (0.251, 0.0, -0.17, UPRIGHT)})])
+    with open(os.path.join(path, "scene.json"), "w") as f:
+        json.dump({"objects": [{"id": 3, "name": "can", "kind": "movable", "shape": "cylinder", "mass": 0.04},
+                               {"id": 4, "name": "wall", "kind": "fixed", "shape": "box", "mass": 0}]}, f)
+    rows = {r["object"]: r for r in safety.knocks(path)}
+    assert rows[3]["knocked"] and rows[3]["tiltDeg"] == pytest.approx(90.0, abs=0.1) and rows[3]["massKg"] == 0.04
+    assert rows[3]["scale"] == 1.0  # no SZ in this take's isaac.jlog: the file's size
+    assert not rows[4]["knocked"] and rows[4]["movedCm"] == pytest.approx(0.1, abs=0.01)
+    summary = safety.knock_summary(list(rows.values()))
+    assert any("1/1 knocked" in line and "can" in line for line in summary)
+    assert any(line.startswith("fixed: 0/1") for line in summary)
+
+
+def test_the_sizes_come_from_the_renderers_first_sz_record():
+    # The record lists hold the fields after the tag: SZ|58|1:1.5625;2:1.0 is ["58", "1:1.5625;2:1.0"].
+    assert safety.sizes([["58", "1:1.5625;2:1.0;31:1.0"], ["59", "1:0.8"]]) == {1: 1.5625, 2: 1.0, 31: 1.0}
+    assert safety.sizes([]) == {} and safety.sizes([["58"]]) == {}

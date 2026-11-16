@@ -169,6 +169,7 @@ namespace Teleop.Eval.JointDrive
                 try
                 {
                     scene = WorldView.LoadScene(scenePath, out sceneSha);
+                    safetyOptions.KnockMaxKg = scene.KnockMaxMass; // the scene's roles (docs/adr/0037 P4)
                 }
                 catch (Exception e) when (e is IOException || e is UnauthorizedAccessException || e is System.Text.Json.JsonException || e is InvalidDataException || e is ArgumentException)
                 {

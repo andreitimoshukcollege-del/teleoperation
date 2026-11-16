@@ -147,7 +147,7 @@ namespace Teleop.Eval.Tests.JointDrive
             // The bars (docs/adr/0037 amendment 5, 2026-11-16). A fixture bigger than the robot stands within the arm's reach
             // beside it every take (the user's choice); it takes approach paths away, and since it is swept along its side it is
             // a target itself. Over 40 layouts the scripts planned: reach 100%, collide_with_obstacle 85%,
-            // stop_before_collision 98% (the fixture the target in 22), collide_and_recover 98% (the fixture in 21). A layout a
+            // stop_before_collision 98% (the fixture the target in 17), collide_and_recover 98% (the fixture in 16). A layout a
             // script cannot use costs the batch a few seconds and another layout, never a take.
             var bar = new Dictionary<DriveScript, int>
             {

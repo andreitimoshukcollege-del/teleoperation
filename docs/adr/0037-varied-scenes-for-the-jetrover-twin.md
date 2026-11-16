@@ -432,3 +432,5 @@ So `CollisionBox` may be turned (`Teleop.RobotArm`): its own axes, centre and ha
 bounds for the broad phase. The separating-axis test already took two turned boxes, and an axis-aligned box computes
 exactly as before. `SafetyObject` carries the object's rotation from its world pose. A touch now goes 19-20 mm into the
 jerrycan's own box. Sweeps are still placed from the bounds.
+Over the same 40 layouts the fixture is now the target of 17 stops and 16 touches (it was 22 and 21): its own box is
+smaller than its bounds, so fewer arcs meet it.

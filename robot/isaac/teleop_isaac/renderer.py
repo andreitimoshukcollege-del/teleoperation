@@ -36,6 +36,7 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import Dict, List, Mapping, Optional, Sequence, Tuple
 
 from . import backdrops as backdrops_module
+from . import clutter as clutter_module
 from . import environments as environments_module
 from . import materials as materials_module
 from . import camfeed, camwire, kinematics, wire
@@ -285,10 +286,56 @@ def metered_intensity(intensity: float, base: float, brightness: float, target: 
     return min(hi, max(lo, intensity * factor))
 
 
+LOOK_ID = re.compile(r"^[a-z0-9][a-z0-9-]{0,39}$")  # it goes into LK records: no ':', ';' or '|'
+LOOK_FIELDS = ("texture", "desaturation", "tint", "roughness", "roughnessTexture", "weight")
+
+
+def _unit(v, what: str) -> float:
+    if not (isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v) and 0 <= v <= 1):
+        raise ValueError(f"{what} is a number from 0 to 1")
+    return float(v)
+
+
+def _look(lid, d) -> Dict:
+    if not isinstance(lid, str) or not LOOK_ID.match(lid):
+        raise ValueError(f"materials looks: {lid!r}: lowercase letters, digits and '-'")
+    if lid in materials_module.TEXTURES:
+        raise ValueError(f"materials looks: {lid!r} is a texture's id; a look needs a name of its own")
+    if not isinstance(d, dict):
+        raise ValueError(f"materials looks: {lid!r} is not an object")
+    unknown = sorted(set(d) - set(LOOK_FIELDS))
+    if unknown:
+        raise ValueError(f"materials looks: {lid!r} has no field {', '.join(unknown)}")
+    tid = d.get("texture")
+    if tid not in materials_module.TEXTURES:
+        raise ValueError(f"materials looks: {lid!r} wears {tid!r}, which is not one of the textures")
+    weight = d.get("weight", 1.0)
+    if not (isinstance(weight, (int, float)) and not isinstance(weight, bool) and math.isfinite(weight) and weight > 0):
+        raise ValueError(f"materials looks: {lid!r} weight must be a positive number")
+    tint = d.get("tint", [1.0, 1.0, 1.0])
+    if not (isinstance(tint, list) and len(tint) == 3):
+        raise ValueError(f"materials looks: {lid!r} tint is [r, g, b], each 0 to 1")
+    rough = d.get("roughness")
+    rough = None if rough is None else _unit(rough, f"materials looks: {lid!r} roughness")
+    return {"texture": tid, "desaturation": _unit(d.get("desaturation", 0.0), f"materials looks: {lid!r} desaturation"),
+            "tint": [_unit(v, f"materials looks: {lid!r} tint") for v in tint], "roughness": rough,
+            # How much of the texture's own roughness shows: all of it unless the look sets a roughness, then none unless
+            # it says how much (OmniPBR's reflectionroughness_texture_influence).
+            "roughnessTexture": _unit(d.get("roughnessTexture", 1.0 if rough is None else 0.0),
+                                      f"materials looks: {lid!r} roughnessTexture"),
+            "weight": float(weight)}
+
+
 def materials_spec(scene) -> Optional[Dict]:
-    """The scene file's materials (docs/adr/0037 amendment 5), checked, or None: which texture classes each simple shape
-    may wear (``box``, ``cylinder``), which texture each surface wears (``surfaces``, desaturated by ``surfaceDesaturation``),
-    and ``tileScale``, the texture's repeats per its real size (the renderer's projection, measured on the twin)."""
+    """The scene file's materials (docs/adr/0037 amendment 5 and "Surfaces and flat clutter"), checked, or None:
+    - which texture classes each simple shape may wear (``box``, ``cylinder``);
+    - ``looks``: each a ``texture`` with its ``desaturation``, ``tint``, an optional ``roughness`` (OmniPBR's constant, with
+      ``roughnessTexture`` the share of the texture's own) and a ``weight`` in the draw;
+    - what each surface wears (``surfaces``): a list of looks, drawn per change by their weights, or one texture id (the
+      first form, still read: it wears the section's ``surfaceDesaturation`` and ``surfaceTint``, as a look named after it);
+    - ``objects``: looks for simple shapes by name, as for a surface, instead of their class's textures;
+    - ``tileScale``, a texture's repeats per its real size (the renderer's projection, measured on the twin).
+    ``surfaces`` and ``objects`` come back as lists of look ids, and ``looks`` holds every look they name."""
     spec = scene.extra.get("materials")
     if spec is None:
         return None
@@ -296,13 +343,6 @@ def materials_spec(scene) -> Optional[Dict]:
     for shape, cs in classes.items():
         if not all(c in ("wood", "metal") for c in cs):
             raise ValueError(f"materials {shape}: classes are wood and metal, not {cs}")
-    surfaces = dict(spec.get("surfaces") or {})
-    known = {x.id for x in scene.surfaces}
-    for sid, tid in surfaces.items():
-        if sid not in known:
-            raise ValueError(f"materials surfaces: {sid!r} is not a surface of the scene")
-        if tid not in materials_module.TEXTURES:
-            raise ValueError(f"materials surfaces: {tid!r} is not one of the textures")
     tile = float(spec.get("tileScale", 1.0))
     if not tile > 0:
         raise ValueError("materials tileScale must be positive")
@@ -312,8 +352,62 @@ def materials_spec(scene) -> Optional[Dict]:
     tint = [float(v) for v in spec.get("surfaceTint", [1.0, 1.0, 1.0])]
     if len(tint) != 3 or not all(0 <= v <= 1 for v in tint):
         raise ValueError("materials surfaceTint is [r, g, b], each 0 to 1")
-    return {"manifest": str(spec.get("manifest", "")), "classes": classes, "surfaces": surfaces, "tileScale": tile,
-            "surfaceDesaturation": desat, "surfaceTint": tint}
+    declared = spec.get("looks") or {}
+    if not isinstance(declared, dict):
+        raise ValueError("materials looks: an object of looks by name")
+    looks = {lid: _look(lid, d) for lid, d in declared.items()}
+
+    def choice(where: str, value) -> List[str]:
+        if isinstance(value, str):
+            if value not in materials_module.TEXTURES:
+                raise ValueError(f"materials {where}: {value!r} is not one of the textures")
+            looks.setdefault(value, {"texture": value, "desaturation": desat, "tint": tint, "roughness": None,
+                                     "roughnessTexture": 1.0, "weight": 1.0})
+            return [value]
+        if not isinstance(value, list) or not value:
+            raise ValueError(f"materials {where}: an empty list; it names a texture or at least one look")
+        for lid in value:
+            if not isinstance(lid, str) or lid not in declared:
+                raise ValueError(f"materials {where}: {lid!r} is not one of the looks")
+        if len(set(value)) != len(value):
+            raise ValueError(f"materials {where}: a look named twice")
+        return list(value)
+
+    known = {x.id for x in scene.surfaces}
+    surfaces = {}
+    for sid, value in dict(spec.get("surfaces") or {}).items():
+        if sid not in known:
+            raise ValueError(f"materials surfaces: {sid!r} is not a surface of the scene")
+        surfaces[sid] = choice(f"surfaces {sid}", value)
+    shapes = {o.name: o.shape for o in scene.objects}
+    objects = {}
+    for name, value in dict(spec.get("objects") or {}).items():
+        if name not in shapes:
+            raise ValueError(f"materials objects: {name!r} is not an object of the scene")
+        if shapes[name] not in ("box", "cylinder", "sphere"):
+            raise ValueError(f"materials objects: {name!r} is a {shapes[name]}, which keeps its own look")
+        if name in known:
+            raise ValueError(f"materials objects: {name!r} is also a surface's id")
+        objects[name] = choice(f"objects {name}", value)
+    return {"manifest": str(spec.get("manifest", "")), "classes": classes, "surfaces": surfaces, "objects": objects,
+            "looks": looks, "tileScale": tile, "surfaceDesaturation": desat, "surfaceTint": tint}
+
+
+# Each OmniPBR map input, the stem of the manifest file that feeds it, and whether it is data (not colour).
+MAP_INPUTS = (("diffuse_texture", "diffuse", False), ("reflectionroughness_texture", "roughness", True),
+              ("normalmap_texture", "normal", True))
+
+
+def texture_maps(tex: Mapping) -> List[Tuple[str, str, bool]]:
+    """What texture ``tex`` (its manifest entry) feeds each OmniPBR map input: (input, file name or "" when it has none,
+    raw). A file is found by its stem among the entry's ``files``, so ``diffuse.jpg`` (Poly Haven's) and ``diffuse.png``
+    (one made here) both serve."""
+    names = sorted(tex.get("files") or {})
+    out = []
+    for inp, stem, raw in MAP_INPUTS:
+        hit = [n for n in names if os.path.splitext(n)[0] == stem]
+        out.append((inp, hit[0] if hit else "", raw))
+    return out
 
 
 def settled(trace: Sequence[float], at_least: int, still: int = 3, tolerance: float = 0.25) -> bool:
@@ -326,9 +420,10 @@ def settled(trace: Sequence[float], at_least: int, still: int = 3, tolerance: fl
 
 
 # The masks' stable ids (docs/adr/0032 decision 5): the same in every session, recorded in each as ``ID`` records. A
-# scene object ``n`` is ``OBJECT_BASE + n``. 0 is anything unlabelled, and the background.
+# scene object ``n`` is ``OBJECT_BASE + n``. 0 is anything unlabelled, and the background. ``clutter`` is every piece of
+# the flat clutter the renderer alone draws on the table (docs/adr/0037, "Surfaces and flat clutter").
 MASK_IDS = {"left_arm": 1, "left_hand": 2, "right_arm": 3, "right_hand": 4, "head": 5, "mount": 6, "arm": 7, "hand": 8,
-            "table": 10, "bench": 11, "floor": 12, "mat": 13, "screen": 14}
+            "table": 10, "bench": 11, "floor": 12, "mat": 13, "screen": 14, "clutter": 15}
 
 # The JetRover's links (docs/adr/0034, robot/jetrover/urdf/jetrover.urdf): one arm, so its parts have no side.
 JETROVER_ARM_LINKS = ("turntable", "proximal_link", "distal_link", "wrist_link")
@@ -641,17 +736,18 @@ def run(app, args, p, scene, cameras, fps, joints, motors, tap) -> int:
         if not hdris:
             print(f"[render] warning: no HDRI rooms in {env_root} (just isaac-environments-fetch): a plain dome light", flush=True)
 
-    # --- real materials on the simple shapes and the surfaces (docs/adr/0037 amendment 5) ------------------------------
+    # --- real materials on the simple shapes and the surfaces (docs/adr/0037 amendment 5, "Surfaces and flat clutter") ---
     mats = materials_spec(scene)
-    textures, tex_root, tex_by_id, mat_shaders = [], "", {}, {}  # mat_shaders: object id or surface id -> its OmniPBR shader
+    textures, tex_root, tex_by_id, mat_shaders = [], "", {}, {}  # mat_shaders: object id -> its OmniPBR shader (class textures)
+    look_shaders, look_choices = {}, {}  # surface id or object name -> its OmniPBR shader; -> the fetched looks it draws from
 
-    def omnipbr(path: str):
+    def omnipbr(path: str, project: bool = True):
         mtl = UsdShade.Material.Define(stage, path)
         sh = UsdShade.Shader.Define(stage, path + "/Shader")
         sh.CreateImplementationSourceAttr(UsdShade.Tokens.sourceAsset)
         sh.SetSourceAsset("OmniPBR.mdl", "mdl")
         sh.SetSourceAssetSubIdentifier("OmniPBR", "mdl")
-        sh.CreateInput("project_uvw", Sdf.ValueTypeNames.Bool).Set(True)  # the shapes have no UVs: projected
+        sh.CreateInput("project_uvw", Sdf.ValueTypeNames.Bool).Set(project)  # the shapes have no UVs: projected; clutter has its own
         sh.CreateInput("world_or_object", Sdf.ValueTypeNames.Bool).Set(False)  # object space: it stays on as the object moves
         sh.CreateInput("reflectionroughness_texture_influence", Sdf.ValueTypeNames.Float).Set(1.0)
         mtl.CreateSurfaceOutput("mdl").ConnectToSource(sh.ConnectableAPI(), "out")
@@ -659,23 +755,40 @@ def run(app, args, p, scene, cameras, fps, joints, motors, tap) -> int:
         mtl.CreateDisplacementOutput("mdl").ConnectToSource(sh.ConnectableAPI(), "out")
         return mtl, sh
 
-    def wear(sh, tex: Dict, scale_m: float) -> None:
-        """Texture ``tex`` on shader ``sh``, tiled at its real size on an object ``scale_m`` across in its projection's units."""
+    def wear(sh, tex: Dict, scale_m: float, projected: bool = True) -> None:
+        """Texture ``tex`` on shader ``sh``, each map its manifest entry has (``texture_maps``), tiled at its real size: on an
+        object ``scale_m`` across in its projection's units, or (not ``projected``) on a mesh whose texture coordinates are
+        metres."""
         d = os.path.join(tex_root, tex["id"])
-        for name, inp, raw in (("diffuse.jpg", "diffuse_texture", False), ("roughness.jpg", "reflectionroughness_texture", True),
-                               ("normal.png", "normalmap_texture", True)):
+        for inp, name, raw in texture_maps(tex):
             a = sh.CreateInput(inp, Sdf.ValueTypeNames.Asset)
-            a.Set(Sdf.AssetPath(os.path.join(d, name)))
+            a.Set(Sdf.AssetPath(os.path.join(d, name) if name else ""))
             if raw:
                 a.GetAttr().SetColorSpace("raw")
-        k = mats["tileScale"] * scale_m / float(tex["sizeM"])
+        k = (mats["tileScale"] * scale_m if projected else 1.0) / float(tex["sizeM"])
         sh.CreateInput("texture_scale", Sdf.ValueTypeNames.Float2).Set(Gf.Vec2f(k, k))
+
+    def wear_look(sh, look: Dict, scale_m: float) -> None:
+        """Look ``look`` on shader ``sh``: its texture desaturated and tinted, and its roughness. Every input is set, so
+        nothing of the look before stays."""
+        wear(sh, tex_by_id[look["texture"]], scale_m)
+        sh.CreateInput("albedo_desaturation", Sdf.ValueTypeNames.Float).Set(look["desaturation"])
+        sh.CreateInput("diffuse_tint", Sdf.ValueTypeNames.Color3f).Set(Gf.Vec3f(*look["tint"]))
+        sh.CreateInput("reflection_roughness_constant", Sdf.ValueTypeNames.Float).Set(
+            0.5 if look["roughness"] is None else look["roughness"])
+        sh.CreateInput("reflectionroughness_texture_influence", Sdf.ValueTypeNames.Float).Set(look["roughnessTexture"])
 
     def object_extent(index: int) -> float:
         """How far across the object's projection runs, in its units: a box is a unit cube scaled by its prim, a cylinder
         is built at its size."""
         o = scene.objects[index]
         return 1.0 if o.shape == "box" else max(o.size) * world.model.scales[index]
+
+    surface_extent = {s.id: max(s.size[0], s.size[1]) / max(s.size) for s in scene.surfaces}  # a unit cube scaled: its long side
+    object_index = {o.name: i for i, o in enumerate(scene.objects)}
+
+    def look_extent(name: str) -> float:
+        return surface_extent[name] if name in surface_extent else object_extent(object_index[name])
 
     if mats is not None:
         tex_root = os.path.dirname(os.path.expanduser(mats["manifest"])) or materials_module.DEFAULT_ROOT
@@ -685,19 +798,39 @@ def run(app, args, p, scene, cameras, fps, joints, motors, tap) -> int:
         if not textures:
             print(f"[render] warning: no textures in {tex_root} (just isaac-materials-fetch): the shapes keep their colours", flush=True)
         else:
+            unfetched = sorted({lk["texture"] for lk in mats["looks"].values() if lk["texture"] not in tex_by_id})
+            if unfetched:
+                print(f"[render] warning: textures not fetched (just isaac-materials-fetch): {', '.join(unfetched)}; the looks that "
+                      f"wear them are left out of the draw", flush=True)
+
+            def fetched(ids: Sequence[str]) -> List[str]:
+                return [lid for lid in ids if mats["looks"][lid]["texture"] in tex_by_id]
+
             for o, path in zip(scene.objects, world.object_paths):
-                if o.shape in mats["classes"] and mats["classes"][o.shape]:
+                if o.name in mats["objects"]:
+                    if fetched(mats["objects"][o.name]):
+                        mtl, sh = omnipbr(f"/World/Looks/{prim_name('m', str(o.id))}")
+                        UsdShade.MaterialBindingAPI.Apply(stage.GetPrimAtPath(f"{path}/Shape")).Bind(mtl, UsdShade.Tokens.strongerThanDescendants)
+                        look_shaders[o.name], look_choices[o.name] = sh, fetched(mats["objects"][o.name])
+                elif o.shape in mats["classes"] and mats["classes"][o.shape]:
                     mtl, sh = omnipbr(f"/World/Looks/{prim_name('m', str(o.id))}")
                     UsdShade.MaterialBindingAPI.Apply(stage.GetPrimAtPath(f"{path}/Shape")).Bind(mtl, UsdShade.Tokens.strongerThanDescendants)
                     mat_shaders[o.id] = sh
-            for sid, tid in mats["surfaces"].items():
-                if sid in world.surface_paths and tid in tex_by_id:
+            for sid, ids in mats["surfaces"].items():
+                if sid in world.surface_paths and fetched(ids):
                     mtl, sh = omnipbr(f"/World/Looks/{prim_name('s', sid)}")
                     UsdShade.MaterialBindingAPI.Apply(stage.GetPrimAtPath(world.surface_paths[sid])).Bind(mtl, UsdShade.Tokens.strongerThanDescendants)
-                    sf = next(x for x in scene.surfaces if x.id == sid)
-                    wear(sh, tex_by_id[tid], max(sf.size[0], sf.size[1]) / max(sf.size))  # a unit cube scaled: its long side
-                    sh.CreateInput("albedo_desaturation", Sdf.ValueTypeNames.Float).Set(mats["surfaceDesaturation"])
-                    sh.CreateInput("diffuse_tint", Sdf.ValueTypeNames.Color3f).Set(Gf.Vec3f(*mats["surfaceTint"]))  # the light oak, grey
+                    look_shaders[sid], look_choices[sid] = sh, fetched(ids)
+
+    # --- flat clutter on the table, the renderer's alone (docs/adr/0037, "Surfaces and flat clutter") ------------------
+    clutter_all = clutter_module.spec(scene)
+    clut = clutter_module.usable(clutter_all, tex_by_id)  # without the kinds whose texture is not fetched
+    if clutter_all is not None:
+        left_out = sorted({k.kind for k in clutter_all.kinds} - {k.kind for k in (clut.kinds if clut else ())})
+        if left_out:
+            print(f"[render] warning: clutter kinds left out, their texture not fetched (just isaac-materials-fetch): {', '.join(left_out)}",
+                  flush=True)
+    clutter_now: List = []  # the pieces on the table this change
 
     # --- mask labels, on prims that never nest (docs/adr/0032 decision 5) ------------------------------------------
     table = mask_table([o.id for o in scene.objects])
@@ -865,11 +998,11 @@ def run(app, args, p, scene, cameras, fps, joints, motors, tap) -> int:
     used_this_session = []
     room = {"hdri": None, "yaw": 0.0, "intensity": 0.0, "base": 0.0, "settle": 0, "trace": [], "brightness": 0.0, "gains": {}}
     worn = {}  # object id -> texture it wears this change (docs/adr/0037 amendment 5)
+    looks_worn = {}  # surface id or object name -> the look it wears this change ("Surfaces and flat clutter")
 
     def change_materials() -> None:
         worn.clear()
-        if not mat_shaders:
-            return
+        looks_worn.clear()
         for index, o in enumerate(scene.objects):
             sh = mat_shaders.get(o.id)
             if sh is None:
@@ -878,6 +1011,49 @@ def run(app, args, p, scene, cameras, fps, joints, motors, tap) -> int:
             if tex is not None:
                 wear(sh, tex, object_extent(index))
                 worn[o.id] = tex
+        for name, ids in look_choices.items():  # each surface and looked object its own draw, by the looks' weights
+            draw = materials_module.surface_look if name in surface_extent else materials_module.object_look
+            lid = draw(mats["looks"], ids, backdrop_seed, backdrop["change"], name)
+            wear_look(look_shaders[name], mats["looks"][lid], look_extent(name))
+            looks_worn[name] = lid
+
+    def lk_items():
+        return [[name, lid] for name, lid in sorted(looks_worn.items())]
+
+    clutter_root = "/World/Clutter"
+
+    def rebuild_clutter() -> None:
+        """This change's flat clutter (clutter.draw), built afresh under /World/Clutter: a mesh per piece, a sheet wearing its
+        texture by its own texture coordinates and tinted, a cable or bag a plain plastic, each labelled ``clutter``."""
+        clutter_now.clear()
+        if stage.GetPrimAtPath(clutter_root):
+            stage.RemovePrim(clutter_root)
+        if clut is None:
+            return
+        UsdGeom.Xform.Define(stage, clutter_root)
+        for n, piece in enumerate(clutter_module.draw(clut, backdrop_seed, backdrop["change"])):
+            geo = clutter_module.mesh(piece, scene.table.top)
+            m = UsdGeom.Mesh.Define(stage, f"{clutter_root}/{prim_name('c', f'{n:02d}_{piece.kind}')}")
+            m.CreatePointsAttr([Gf.Vec3f(*v) for v in geo.points])
+            m.CreateFaceVertexCountsAttr(geo.counts)
+            m.CreateFaceVertexIndicesAttr(geo.indices)
+            m.CreateNormalsAttr([Gf.Vec3f(*v) for v in geo.normals])
+            m.SetNormalsInterpolation(UsdGeom.Tokens.vertex)
+            m.CreateSubdivisionSchemeAttr(UsdGeom.Tokens.none)
+            m.CreateDoubleSidedAttr(True)
+            mtl, sh = omnipbr(f"{clutter_root}/Looks/{prim_name('m', str(n))}", project=False)
+            if piece.texture:
+                st = UsdGeom.PrimvarsAPI(m).CreatePrimvar("st", Sdf.ValueTypeNames.TexCoord2fArray, UsdGeom.Tokens.vertex)
+                st.Set([Gf.Vec2f(*v) for v in geo.st])
+                wear(sh, tex_by_id[piece.texture], 1.0, projected=False)
+                sh.CreateInput("diffuse_tint", Sdf.ValueTypeNames.Color3f).Set(Gf.Vec3f(*piece.colour))
+            else:
+                sh.CreateInput("diffuse_color_constant", Sdf.ValueTypeNames.Color3f).Set(Gf.Vec3f(*piece.colour))
+                sh.CreateInput("reflection_roughness_constant", Sdf.ValueTypeNames.Float).Set(0.5 if piece.roughness is None else piece.roughness)
+                sh.CreateInput("reflectionroughness_texture_influence", Sdf.ValueTypeNames.Float).Set(0.0)
+            UsdShade.MaterialBindingAPI.Apply(m.GetPrim()).Bind(mtl)
+            label(m.GetPrim(), "clutter")
+            clutter_now.append(piece)
     camera_luts = [None] * len(specs)  # each camera's own exposure, locked per room (docs/adr/0037 decision 2)
     rooms_this_session = []
 
@@ -905,6 +1081,11 @@ def run(app, args, p, scene, cameras, fps, joints, motors, tap) -> int:
         backdrop["change"] += 1
         change_materials()
         session_record("MT", backdrop["change"], [[oid, t["id"]] for oid, t in sorted(worn.items())])
+        if looks_worn:
+            session_record("LK", backdrop["change"], lk_items())
+        rebuild_clutter()  # before the room settles: the cameras meter the table as it will be recorded
+        if clutter_all is not None:
+            session_record("CL", backdrop["change"], clutter_module.cl_items(clutter_now))
         if change_room():
             settle_room()
             session_record("EN", *en_fields())
@@ -961,6 +1142,10 @@ def run(app, args, p, scene, cameras, fps, joints, motors, tap) -> int:
             out.append(("EN", *en_fields()))
         if worn:
             out.append(("MT", backdrop["change"], [[oid, t["id"]] for oid, t in sorted(worn.items())]))
+        if looks_worn:
+            out.append(("LK", backdrop["change"], lk_items()))
+        if clutter_all is not None:
+            out.append(("CL", backdrop["change"], clutter_module.cl_items(clutter_now)))
         if world_snapshot["objects"]:
             out.append(("OL", world_snapshot["sensed"], world_snapshot["revision"], world_snapshot["objects"]))
         out.append(("SZ", max(0, world_sizes["revision"]), world_sizes["sizes"]))
@@ -982,11 +1167,15 @@ def run(app, args, p, scene, cameras, fps, joints, motors, tap) -> int:
                     seen.add(e["sha256"])
                     rooms.append({k: e[k] for k in ("id", "sha256", "name", "authors", "license", "source", "url", "landingUrl",
                                                      "width", "height", "meanLuminance")})
+            # Every texture the shapes, the surfaces' looks and the clutter wore; one made here says so in its source.
             used = {t["id"]: t for t in worn.values()}
-            used.update({tid: tex_by_id[tid] for tid in (mats or {}).get("surfaces", {}).values() if tid in tex_by_id})
+            used.update({mats["looks"][lid]["texture"]: tex_by_id[mats["looks"][lid]["texture"]] for lid in looks_worn.values()})
+            used.update({c.texture: tex_by_id[c.texture] for c in clutter_now if c.texture})
+            credits = [{"id": t["id"], "class": t.get("class", ""), "name": t.get("name", ""), "authors": t.get("authors", []),
+                        "license": t.get("license", ""), "landingUrl": t.get("landingUrl", ""), "sizeM": t.get("sizeM"),
+                        "source": t.get("source", "Poly Haven (polyhaven.com)")} for t in sorted(used.values(), key=lambda t: t["id"])]
             doc = {"format": "teleop-environments-used", "version": 1, "license": environments_module.CC0,
-                   "meanRadiance": env["meanRadiance"], "hdris": rooms,
-                   "textures": [{k: t[k] for k in ("id", "class", "name", "authors", "license", "landingUrl", "sizeM")} for t in used.values()]}
+                   "meanRadiance": env["meanRadiance"], "hdris": rooms, "textures": credits}
             out["environment.json"] = (json.dumps(doc, indent=1, sort_keys=True) + "\n").encode("utf-8")
         return out
 
@@ -1154,6 +1343,8 @@ def run(app, args, p, scene, cameras, fps, joints, motors, tap) -> int:
                             world.set_scale(index, f)
                             if o.id in worn:  # a cylinder's projection runs in metres: retile it at its new size
                                 wear(mat_shaders[o.id], worn[o.id], object_extent(index))
+                            elif o.name in looks_worn:
+                                wear_look(look_shaders[o.name], mats["looks"][looks_worn[o.name]], object_extent(index))
                     world_sizes.update(revision=z[0], sizes=[[o.id, round(world.model.scales[i], 4)] for i, o in enumerate(scene.objects)])
                     session_record("SZ", z[0], world_sizes["sizes"])
         for f in feeds:

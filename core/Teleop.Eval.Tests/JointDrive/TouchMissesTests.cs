@@ -165,8 +165,9 @@ namespace Teleop.Eval.Tests.JointDrive
             }
 
             foreach (string row in rows) _output.WriteLine(row);
-            // A layout with no touch of a real shape is planned elsewhere by the batch (another layout), never driven to a miss.
-            Assert.True(replanned >= takes.Count - 2, string.Join("\n", rows));
+            // Every one plans (2026-11-17). Were one not to, the batch would draw another layout rather than drive a miss; but
+            // then this test would no longer show that layout touched.
+            Assert.True(replanned == takes.Count, string.Join("\n", rows));
         }
     }
 }

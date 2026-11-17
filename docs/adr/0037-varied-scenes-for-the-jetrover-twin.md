@@ -434,3 +434,129 @@ exactly as before. `SafetyObject` carries the object's rotation from its world p
 jerrycan's own box. Sweeps are still placed from the bounds.
 Over the same 40 layouts the fixture is now the target of 17 stops and 16 touches (it was 22 and 21): its own box is
 smaller than its bounds, so fewer arcs meet it.
+
+### Amendment 5, third revision (2026-11-17): a touch is planned against the object's own shape
+
+The batch after the second revision (`just isaac-safety-batch 25 10 all true`, joint-drive at 94bb0a7) set aside 12 of 25
+`collide_and_recover` takes as "never touched an object", none with a contact record: takes 059, 060, 064, 065, 066, 070,
+071, 075, 076, 079, 080 and 082 of that scenario. Measured offline against the objects' meshes:
+
+- **The objects are far smaller than their boxes.** Eleven of the misses aimed at a round or irregular scan: the garden
+  gnome, the three vases, the marble bust, the kettle (fixtures) and the wooden elephant (movable). The twelfth aimed at the
+  large marker. The arm went 19.5-21 mm into the target's box and stayed 18-103 mm from its mesh, mostly from the mesh's
+  convex hull too (the table below). Only take 059 reached its mesh, the elephant's, by 0.3 mm, and it recorded no contact.
+- **The model's fingers are not the twin's.** The C# model's arm matches the twin's URDF (`robot/jetrover/urdf/jetrover.urdf`)
+  link for link, but for the fingers. Its `gripper.1` and `gripper.2` (two CAD boxes at x 0.127 m) do not exist in Isaac,
+  which has two pads, about 30 x 11 x 7 mm, on prismatic joints, about 32 mm either side of the gripper's axis when it is
+  open. Take 066 aimed at the large marker (19 mm across) with the CAD's fingers, and the twin's open fingers passed either
+  side of it.
+- In the 12 takes that were kept, Isaac's links (from the twin's own joint values) came between 3.8 mm inside and 2.4 mm
+  outside the real mesh, and the link that went deepest was a finger pad in 8. So the reason the second revision gave for
+  the 20 mm depth ("the model's boxes are about 15 mm larger than Isaac's links") was wrong: they are Isaac's links, but for
+  the fingers. The shortfall was the objects' own shapes.
+
+**The shapes.** `robot/isaac/shape_survey.py` measures each mesh asset as `world.py` stands it. Its output is committed beside
+the scene as `core/Scenes/jetrover-bench.shapes.json` (format `teleop-object-shapes`, version 1).
+
+- Each asset is cut along its standing z into slabs. Each slab is a convex polygon, counter-clockwise, extruded from its `z0`
+  to its `z1`. Every coordinate is a fraction of the asset's box (its manifest's `size`, -0.5..0.5 about the box's centre),
+  so one entry serves every size of the asset (the five cardboard boxes are one entry).
+- It is measured from the **render mesh**: every `UsdGeom.Mesh` under the asset, not PhysX's convex decomposition. Only a
+  running Kit cooks the decomposition, and the survey starts none: it runs in Isaac's Python over ssh stdin, prints JSON,
+  and writes nothing on the GPU machine. The decomposition lies a few millimetres outside the mesh.
+- A thin layer's section is the hull of the mesh's vertices in it and of the points where triangle edges cross its planes,
+  so no layer is empty. Layers are merged into slabs so that the largest **excess** of any slab is as small as it can be.
+  The excess is how far a slab's prism can stand off the mesh: its overhang past the narrowest section in it, but at most
+  the slab's height (a surface that overhangs by more is nearly level, and is within that height above or below).
+- The bottom 8 mm is a slab of its own, left out of that cost: the collision model keeps the arm 10 mm above the table.
+- **8 to 48 slabs, not 8 to 16.** The survey's first cut, at most 16 slabs with the overhang alone as the cost, left six
+  assets overhanging their mesh by 11-33 mm (the bust 33, the gnome 20, the brass vase 15, the kettle 13, the green jerrycan
+  12, the cardboard box 11): as much as the touch depth, or more. With up to 48 slabs, the worst are the bust (8.7 mm), the
+  gnome (6.5) and the brass vase (5.8), and 17 of the 20 assets are within 4.4 mm. The slab count costs nothing per check:
+  a box is tested only against the slabs its height meets.
+- **Checked against the meshes**, points on every slab's sides (above the floor band) stand off the mesh by a median of
+  0.5-2.7 mm per asset. The tails are where a hull fills in a concave section: the kettle's handle and spout (90th
+  percentile 13.5 mm, worst 33 mm), the jerrycans' handles (99th percentile 20-24 mm), the cardboard box's flaps, the gnome,
+  the bowl, and the elephant's legs and trunk (90th percentile 7.1 mm). The excess does not see these.
+- The 24 objects are 20 assets, not the 16 counted while the misses were measured.
+
+**The planner.** `SafetyObject` has an optional `Shape` (`ObjectShape`: the asset's slabs scaled to the object's box).
+`WorldView.LoadScene` loads the shapes file beside the scene when there is one, and `WorldView.Bounds` and `TryObjects` give
+each scanned object its shape, so joint-drive plans with it (its dry run too). Only Teleop.Eval reads the file.
+
+- Only `collide_and_recover`'s touch uses the shape. Its sweep must reach the shape itself (the line's first contact), and
+  the touch goes `ShapeTouchDepthMeters`, **9 mm**, into it, but no deeper than 3 mm short of the inner radius of the slab
+  the line meets (the large marker gets about 6 mm).
+- The depth is measured by `ShapeGap`, as `GapLadder` measures a box: a separating-axis test between the arm's boxes and
+  each slab's prism, the shape grown or shrunk in 0.5 mm steps (each slab's polygon offset edge by edge, and the stack's
+  bottom with it).
+- **A touch goes into the object's side, never down through its top.** For a touch the shape stops 10 mm below its top
+  (`ObjectShape.TouchTop`), and no offset moves that. With the top counted, two re-planned touches missed the mesh by
+  coming down through it: a pad 8.5 mm below the wooden bowl's rim and 28 mm inside its outline was in the bowl, 45 mm from
+  the wood; another, 7.7 mm below a parcel's concave top, was 10 mm from the cardboard. A slab's polygon covers whatever
+  hollow is under its top. A pad 10 mm below the top got there moving sideways, so it crossed the object's wall.
+- **The arm for a touch is the twin's**: the model's bodies without `gripper.1` and `gripper.2`, plus the URDF's two pads,
+  placed where each tick's commanded gripper holds them (the sidecar's finger travel table). The approach opens the gripper,
+  but the hand model's staging grip can still be ramping during the final approach: in a test, a touch met its can with the
+  gripper at 0.88.
+- Why 9 mm: Isaac now counts a touch only within 1 mm, or with an impulse. Its colliders have a contact offset of 5 mm and
+  a rest offset of 0, the mesh colliders lie a little outside the render mesh, and a slab's prism can stand off a sloping
+  mesh by the survey's excess.
+- `stop_before_collision`, every clearance check (where the final approach starts, the path there) and the other objects
+  stay on the full boxes with the model's bodies, so a stop's clearance does not shrink. An object without a shape is
+  touched 20 mm into its box, as before.
+
+**The misses, re-planned** (`TouchMissesTests`). Each take's layout, start pose, seed and speed are in the test project's
+`testdata/touch-misses.json`. Given the same record, the old planner reproduces every command the twin was sent (within
+0.0002 rad), so the record is right.
+- "Box" and "shape" are how far the plan goes into the object's box (the collision model's bodies) and into its slab shape
+  (`ShapeGap`). -40 means 40 mm short or more.
+- "Mesh" is the GPU machine's check, approach.py's method: Isaac's link boxes, the pads where the commanded gripper held
+  them, against the mesh's surface. Positive is how deep the mesh's surface lies inside an arm box, which saturates at a
+  pad's half thickness, 3.5-3.7 mm ("pad"). Negative is how far short of the surface the arm stayed.
+
+| Take | Old target | Its shape | Old: box | Old: shape | Old: mesh | New target | New: shape | New: mesh |
+|---|---|---|---|---|---|---|---|---|
+| 059 | wooden elephant | movable, legs and trunk | 19.5 | 7.0 | 0.3 | wooden bowl | 9.0 | 3.7 pad |
+| 060 | garden gnome | fixture, irregular | 19.5 | -40 | -51.5 | garden gnome | 9.0 | 3.5 pad |
+| 064 | antique vase | fixture, round | 19.5 | -24.0 | -23.6 | antique vase | 9.0 | 6.9 |
+| 065 | ceramic vase | fixture, round | 20.0 | -17.0 | -18.4 | ceramic vase | 8.5 | 3.3 pad |
+| 066 | large marker | movable, 19 mm across | 5.5 | -5.5 | -5.5 | large delivery box | 9.5 | 3.5 pad |
+| 070 | brass vase | fixture, round | 21.0 | -40 | -40.3 | tuna can | 9.0 | 3.7 pad |
+| 071 | marble bust | fixture, irregular | 19.5 | -40 | -74.0 | marble bust | 8.0 | 1.3 |
+| 075 | kettle | fixture, handle and spout | 20.0 | -40 | -102.6 | kettle | 9.0 | 3.7 pad |
+| 076 | ceramic vase | fixture, round | 20.5 | -40 | -60.4 | ceramic vase | 9.0 | 3.5 pad |
+| 079 | brass vase | fixture, round | 20.5 | -21.5 | -25.0 | parcel (mid) | 9.0 | 3.5 pad |
+| 080 | marble bust | fixture, irregular | 20.0 | -40 | -49.3 | marble bust | 9.5 | 6.3 |
+| 082 | kettle | fixture, handle and spout | 20.5 | -40 | -61.1 | parcel (mid) | 9.5 | 3.5 pad |
+
+All millimetres. Every old plan stopped short of the mesh but take 059's, which reached it by 0.3 mm and recorded no contact
+(the twin's arm is not exactly the plan's, and the elephant's collider is a decomposition). Every new plan reaches it.
+Five new plans touch another object of the layout (takes 059, 066, 070, 079 and 082): none of the old target's sweeps
+gave a touch of its own shape, so the planner went on to the next object, as it does when an approach fails.
+
+**Over 40 random layouts** (seeds 1-40, the scene's roles), `collide_and_recover` plans on 40 (39 before). Its touch goes
+8.0-10.0 mm into the touched object's shape, median 9.0. The fixture is the target in 13 (16 before). The other scripts
+are unchanged: `reach_no_obstacle` 40, `stop_before_collision` 39, `collide_with_obstacle` 38. Planned against the boxes,
+the same touches went from 40 mm short of the object's shape to 31.5 mm into it (median 16.5).
+
+**What is left.** A touch can still fall in a gap a hull fills in: between the kettle's handle and its body, under a
+jerrycan's handle, between the elephant's legs. The take check sets such a take aside, as before. Closing the gaps needs
+slabs of several convex polygons.
+
+**Tests.**
+- The shapes file covers every mesh object of the scene, each a uniform scaling of its asset, and a malformed file is
+  refused.
+- The shape test agrees with points sampled through boxes near five shapes.
+- The pads follow the sidecar's finger travel table.
+- The cleaner tin, turned 45 degrees so that its box's corner faces the arm 18 mm outside the can, is touched 9 +- 1.5 mm
+  into itself.
+- The 12 misses, re-planned, touch 7 mm or more into the object, and every one plans.
+- The random-layout test plans with the shapes, and its bars stay at 80%, 60%, 80% and 80%.
+- The survey's geometry (robot/isaac's pytest): a box in the fewest slabs, a cone cut to the goal, slab polygons outside
+  every section, and the JSON.
+
+**The twin check**, once this and the new contact rule are merged and the twin is restarted from that commit (`just
+isaac-stop; just isaac-jetrover-host jetrover-bench`): `just isaac-safety-batch 25 10 collide_and_recover true`. It passes
+when no take is set aside as "never touched an object", and none for a tipped object. RobotHost draws its own layouts, so
+this is a new sample, not the same 25.

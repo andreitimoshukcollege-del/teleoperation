@@ -1002,7 +1002,6 @@ def run(app, args, p, scene, cameras, fps, joints, motors, tap) -> int:
 
     def change_materials() -> None:
         worn.clear()
-        looks_worn.clear()
         for index, o in enumerate(scene.objects):
             sh = mat_shaders.get(o.id)
             if sh is None:
@@ -1011,11 +1010,13 @@ def run(app, args, p, scene, cameras, fps, joints, motors, tap) -> int:
             if tex is not None:
                 wear(sh, tex, object_extent(index))
                 worn[o.id] = tex
+        drawn = {}
         for name, ids in look_choices.items():  # each surface and looked object its own draw, by the looks' weights
             draw = materials_module.surface_look if name in surface_extent else materials_module.object_look
-            lid = draw(mats["looks"], ids, backdrop_seed, backdrop["change"], name)
-            wear_look(look_shaders[name], mats["looks"][lid], look_extent(name))
-            looks_worn[name] = lid
+            drawn[name] = draw(mats["looks"], ids, backdrop_seed, backdrop["change"], name)
+            wear_look(look_shaders[name], mats["looks"][drawn[name]], look_extent(name))
+        looks_worn.clear()  # the writer thread's preamble reads it: refilled only once the new looks are on
+        looks_worn.update(drawn)
 
     def lk_items():
         return [[name, lid] for name, lid in sorted(looks_worn.items())]
@@ -1024,12 +1025,14 @@ def run(app, args, p, scene, cameras, fps, joints, motors, tap) -> int:
 
     def rebuild_clutter() -> None:
         """This change's flat clutter (clutter.draw), built afresh under /World/Clutter: a mesh per piece, a sheet wearing its
-        texture by its own texture coordinates and tinted, a cable or bag a plain plastic, each labelled ``clutter``."""
-        clutter_now.clear()
+        texture by its own texture coordinates and tinted, a cable or bag a plain plastic, each labelled ``clutter``.
+        ``clutter_now`` (which the writer thread's preamble reads) takes the new pieces in one go, once they are built."""
         if stage.GetPrimAtPath(clutter_root):
             stage.RemovePrim(clutter_root)
         if clut is None:
+            clutter_now[:] = []
             return
+        built = []
         UsdGeom.Xform.Define(stage, clutter_root)
         for n, piece in enumerate(clutter_module.draw(clut, backdrop_seed, backdrop["change"])):
             geo = clutter_module.mesh(piece, scene.table.top)
@@ -1053,7 +1056,8 @@ def run(app, args, p, scene, cameras, fps, joints, motors, tap) -> int:
                 sh.CreateInput("reflectionroughness_texture_influence", Sdf.ValueTypeNames.Float).Set(0.0)
             UsdShade.MaterialBindingAPI.Apply(m.GetPrim()).Bind(mtl)
             label(m.GetPrim(), "clutter")
-            clutter_now.append(piece)
+            built.append(piece)
+        clutter_now[:] = built
     camera_luts = [None] * len(specs)  # each camera's own exposure, locked per room (docs/adr/0037 decision 2)
     rooms_this_session = []
 

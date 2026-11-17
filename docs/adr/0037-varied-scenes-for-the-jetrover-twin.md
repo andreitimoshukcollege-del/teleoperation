@@ -740,9 +740,10 @@ generalisation.
   gate passes on the new file.
 
 **Consequences.**
-- The scene's sha256 changes. RobotHost and the bridge read the same file, but the headset refuses a scene whose sha differs
-  from its own copy's, so its twin must be re-baked (`just unity-world-jetrover-xr`, then `just unity-check-xr`) and the
-  sim app rebuilt (`just build-galaxy-sim`).
+- The scene's sha256 changes. RobotHost and the bridge read the same file, but the headset checks its own copy's sha against
+  RobotHost's, so the app must carry the new copy. Re-bake the twin as after any scene change (`just unity-world-jetrover-xr`,
+  then `just unity-check-xr`; the objects are the same, so the twin itself does not change) and rebuild the sim app
+  (`just build-galaxy-sim`).
 - Assets: `just isaac-materials-fetch` downloads the eight new textures (about 48 MB) and makes the four, then
   `just isaac-materials-status` checks them. Until then, the renderer leaves out of the draw any look or clutter kind whose
   texture is missing, and says so in its log.

@@ -140,10 +140,10 @@ namespace Teleop.RobotArm.Tests.World
             public double Lying, EdgeLayouts, Clustered, MeanInReach, MeanOnTable;
             public int[] InReach = new int[8];
 
-            public override string ToString() => FormattableString.Invariant(
-                $"lying {Lying:0.000} of the movable objects that can; clustered {Clustered:0.000} of those in reach beside another; " +
-                $"by the edge in {EdgeLayouts:0.000} of layouts; movable in reach {MeanInReach:0.00} a layout ({MeanOnTable:0.00} with the edge one), " +
-                $"layouts with 0-5 in reach: {string.Join("/", InReach.Take(6))}");
+            public override string ToString() =>
+                FormattableString.Invariant($"lying {Lying:0.000} of the movable objects that can; clustered {Clustered:0.000} of those in reach beside another; ") +
+                FormattableString.Invariant($"by the edge in {EdgeLayouts:0.000} of layouts; movable in reach {MeanInReach:0.00} a layout ({MeanOnTable:0.00} with the edge one), ") +
+                $"layouts with 0-5 in reach: {string.Join("/", InReach.Take(6))}";
         }
 
         /// <summary>

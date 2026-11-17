@@ -134,20 +134,21 @@ namespace Teleop.RobotArm.World
         public double fixedNearMax;
 
         /// <summary>
-        /// docs/adr/0037 amendment 6: the chance, 0-1, that each movable object after a layout's first stands next to one
-        /// already placed (a cluster), rather than anywhere in the reach band. 0: every one anywhere, as before.
+        /// docs/adr/0037 amendment 6: the chance, 0-1, that each movable object in reach after a layout's first stands next to
+        /// one already placed (a cluster), rather than anywhere in the reach band. 0: every one anywhere, as before.
         /// </summary>
         public double clusterShare;
 
         /// <summary>
-        /// docs/adr/0037 amendment 6: the chance, 0-1, that a movable object with a stable side lies on it (a can, a parcel,
-        /// a marker) rather than standing upright. 0: every one upright, as before.
+        /// docs/adr/0037 amendment 6: the chance, 0-1, that a movable object with a stable side at least 3 cm tall lies on it (a
+        /// can, a parcel) rather than standing upright. 0: every one upright, as before.
         /// </summary>
         public double lyingShare;
 
         /// <summary>
-        /// docs/adr/0037 amendment 6: rectangles <c>[xMin, xMax, yMin, yMax, ...]</c>, root frame, that hold the centre of a
-        /// movable object standing by the table's edge, outside the reach band; its footprint lies on the table or the bench.
+        /// docs/adr/0037 amendment 6: rectangles <c>[xMin, xMax, yMin, yMax, ...]</c>, root frame, outside the placement region,
+        /// that hold the centre of a movable object standing by the bench's edge, out of the arm's reach; its footprint lies on
+        /// the table or the bench.
         /// </summary>
         public double[] edgeRegions = Array.Empty<double>();
 

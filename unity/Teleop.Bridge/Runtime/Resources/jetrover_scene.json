@@ -89,7 +89,7 @@
   "pool": { "movableMin": 2, "movableMax": 5, "fixedMin": 1, "fixedMax": 1, "reachMin": 0.15, "reachMax": 0.30, "knockMaxMass": 0.7,
     "fixedRegions": [-0.15, 0.06, 0.25, 0.50, -0.15, 0.06, -0.50, -0.25], "fixedNearMax": 0.22,
     "robotKeepOut": [-0.21, 0.14, -0.20, 0.20],
-    "clusterShare": 0.6, "lyingShare": 0.35, "edgeShare": 0.5, "edgeRegions": [-0.20, -0.12, 0.24, 0.62, -0.20, -0.12, -0.62, -0.24] },
+    "clusterShare": 0.6, "lyingShare": 0.35, "edgeShare": 0.5, "edgeRegions": [-0.20, -0.12, 0.40, 0.62, -0.20, -0.12, -0.62, -0.40] },
   "environment": { "kind": "hdri", "dome": "dome", "change": "per-session",
     "manifest": "~/isaacsim/assets/hdri/polyhaven-indoor/manifest.json",
     "meanRadiance": 1000, "targetBrightness": 118, "yawDeg": [0, 360], "rotateXYZDeg": [0, 0, 0], "hideSurfaces": ["floor"] },

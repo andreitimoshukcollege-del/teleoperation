@@ -399,7 +399,7 @@ namespace Teleop.RobotHost.World
         {
             SceneObject o = _scene.Objects[index];
             var rng = new SeededRng(unchecked(LayoutSeed * 0x9E3779B97F4A7C15UL + (ulong)index * 1000 + (ulong)tries));
-            // Its drawn rest, and by the table's edge if it was drawn there (docs/adr/0037 amendment 6), are kept.
+            // Its drawn rest, and the bench's edge if it was drawn there (docs/adr/0037 amendment 6), are kept.
             int rest = WorldScene.RestOf(_layoutTargets[index]);
             bool atEdge = _scene.IsPool && o.Movable && _scene.InEdgeRegions(_layoutTargets[index].X, _layoutTargets[index].Y);
             for (int t = 0; t < (_scene.IsPool ? SceneLayout.MaxPoolTries : SceneLayout.MaxTries); t++)

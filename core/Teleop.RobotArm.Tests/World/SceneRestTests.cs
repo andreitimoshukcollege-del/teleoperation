@@ -123,6 +123,8 @@ namespace Teleop.RobotArm.Tests.World
             _output.WriteLine($"amendment 6 over {Layouts} layouts: {now}");
             _output.WriteLine($"the same pool without its shares:  {before}");
 
+            // Measured 2026-11-17: lying 0.335; clustered 0.756 (0.427 without); one by the edge in 0.498 of layouts; 2.24 movable
+            // objects in reach a layout (2.21 without), 2.74 with the edge one.
             // A movable object that can lie does so about as often as the pool says.
             Assert.InRange(now.Lying, Pool.LyingShare - 0.07, Pool.LyingShare + 0.07);
             Assert.Equal(0, before.Lying);
@@ -138,12 +140,12 @@ namespace Teleop.RobotArm.Tests.World
         private sealed class Stats
         {
             public double Lying, EdgeLayouts, Clustered, MeanInReach, MeanOnTable;
-            public int[] InReach = new int[8];
+            public int[] InReach = new int[8], OnTable = new int[8];
 
             public override string ToString() =>
                 FormattableString.Invariant($"lying {Lying:0.000} of the movable objects that can; clustered {Clustered:0.000} of those in reach beside another; ") +
                 FormattableString.Invariant($"by the edge in {EdgeLayouts:0.000} of layouts; movable in reach {MeanInReach:0.00} a layout ({MeanOnTable:0.00} with the edge one), ") +
-                $"layouts with 0-5 in reach: {string.Join("/", InReach.Take(6))}";
+                $"layouts with 0-5 in reach: {string.Join("/", InReach.Take(6))}, 0-6 on the table with the edge one: {string.Join("/", OnTable.Take(7))}";
         }
 
         /// <summary>
@@ -167,6 +169,7 @@ namespace Teleop.RobotArm.Tests.World
                 inReachTotal += inReach.Length;
                 onTable += inReach.Length + (hasEdge ? 1 : 0);
                 s.InReach[inReach.Length]++;
+                s.OnTable[inReach.Length + (hasEdge ? 1 : 0)]++;
                 foreach (int i in Enumerable.Range(0, poses.Length).Where(i => !parked[i] && scene.Objects[i].Movable))
                 {
                     if (!Enumerable.Range(1, 5).Any(r => scene.CanLie(i, r))) continue;

@@ -9,7 +9,8 @@ what only physics can see: whether an arm is in the way.
 2. from the headset, an object it may not move: NOT_MOVABLE;
 3. a pose that is not finite or not a unit quaternion: INVALID_POSE;
 4. from the headset, an object an arm is touching now: ARM_TOUCHING;
-5. off the table or the placement region: OUTSIDE_REGION;
+5. off the table or the placement region (a pool's fixed object: its fixed regions; a movable one may also stand in the
+   pool's edge regions, docs/adr/0037 amendment 6): OUTSIDE_REGION;
 6. closer to another object than the clearance (footprints, as Core's ``WorldScene.Overlaps``): OVERLAPS_OBJECT;
 7. an arm within the clearance of the object's shape at the new pose (a PhysX overlap query): OVERLAPS_ARM;
 8. otherwise the object is stood on the table at the pose's x, y and heading (``Scene.pose_at``): APPLIED. It rests on the

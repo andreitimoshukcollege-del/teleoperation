@@ -85,15 +85,17 @@ namespace Teleop.Eval.Tests.JointDrive
 
         /// <summary>
         /// A point's depth inside a shape, by brute force: the least of its distances to its slab's sides (each side's line,
-        /// as the shape is offset edge by edge), to the bottom and to the top; negative outside. Its slab is the one whose
-        /// height holds it (the bottom one below the bottom, the top one above the top); at a boundary, the better of two.
+        /// as the shape is offset edge by edge) and to the bottom; negative outside; nothing above the touch's top (which no
+        /// offset moves). Its slab is the one whose height holds it (the bottom one below the bottom); at a boundary, the
+        /// better of two.
         /// </summary>
         internal static float Depth(ObjectShape s, Vector3 p)
         {
             float best = float.NegativeInfinity;
+            if (p.Z > s.TouchTop) return best;
             for (int k = 0; k < s.SlabCount; k++)
             {
-                if ((p.Z < s.Z0(k) && k > 0) || (p.Z > s.Z1(k) && k < s.SlabCount - 1)) continue;
+                if ((p.Z < s.Z0(k) && k > 0) || p.Z > s.Z1(k)) continue;
                 IReadOnlyList<Vector2> poly = s.Outline(k);
                 float lateral = float.PositiveInfinity;
                 for (int i = 0; i < poly.Count; i++)
@@ -103,7 +105,7 @@ namespace Teleop.Eval.Tests.JointDrive
                     lateral = MathF.Min(lateral, Vector2.Dot(n, poly[i] - new Vector2(p.X, p.Y)));
                 }
 
-                best = MathF.Max(best, MathF.Min(lateral, MathF.Min(p.Z - s.Bottom, s.Top - p.Z)));
+                best = MathF.Max(best, MathF.Min(lateral, p.Z - s.Bottom));
             }
 
             return best;
@@ -124,9 +126,9 @@ namespace Teleop.Eval.Tests.JointDrive
             var ws = Grid(b.Half.Z, spacing).ToList();
             if (MathF.Abs(b.AxisZ.Z) > 0.99999f)
             {
-                // Upright: a slab's start inside the box is a height of its own, just above and just below.
-                for (int k = 0; k < s.SlabCount; k++)
-                foreach (float z in new[] { s.Z0(k) - 1e-5f, s.Z0(k) + 1e-5f })
+                // Upright: a slab's start inside the box is a height of its own, just above and just below, and so is the touch's top.
+                for (int k = 0; k <= s.SlabCount; k++)
+                foreach (float z in k < s.SlabCount ? new[] { s.Z0(k) - 1e-5f, s.Z0(k) + 1e-5f } : new[] { s.TouchTop - 1e-5f })
                 {
                     float w = (z - b.Center.Z) * MathF.Sign(b.AxisZ.Z);
                     if (MathF.Abs(w) <= b.Half.Z) ws.Add(w);

@@ -177,13 +177,23 @@ namespace Teleop.Eval.JointDrive
     /// An object's own shape at its size (docs/adr/0037 amendment 5, third revision), in its frame: its box's centre and axes,
     /// metres; the slabs of its <see cref="AssetShape"/> scaled to the box. A touch is measured against it as
     /// <see cref="GapLadder"/> measures a box: the shape grown or shrunk by a distance, every slab's polygon moved out (or
-    /// in) by it edge by edge, and the stack's bottom and top with it (shrunk, every slab is cut to the stack's new height; a
-    /// slab shrunk past its inner radius is gone). So a point's depth inside is the least of its distances to its slab's sides,
-    /// to the bottom and to the top. Offsets come in steps of <see cref="Step"/>, each slab's built when first asked for.
+    /// in) by it edge by edge, and the stack's bottom with it (shrunk, every slab is cut to the stack's new height; a slab
+    /// shrunk past its inner radius is gone). Its top is <see cref="TouchTop"/>, which no offset moves: a touch goes into the
+    /// object's side, never down through its top, where a slab's polygon covers what may be a hollow (a bowl, a box's flaps).
+    /// So a point's depth inside is the least of its distances to its slab's sides and to the bottom, below
+    /// <see cref="TouchTop"/>. Offsets come in steps of <see cref="Step"/>, each slab's built when first asked for.
     /// </summary>
     public sealed class ObjectShape
     {
         public const float Step = GapLadder.Step;
+
+        /// <summary>
+        /// How far below its top a touch may meet an object (<see cref="TouchTop"/>). Measured 2026-11-17: the two re-planned
+        /// touches that missed the mesh came down through the top, a pad 8.5 mm below a bowl's rim and 28 mm inside its outline
+        /// (in the bowl, 45 mm from the wood) and 7.7 mm below a parcel's concave top; the nine that reached it came in through
+        /// a side. A pad this far below the top got there moving sideways, so it crossed the object's wall.
+        /// </summary>
+        public const float TopMarginMeters = 0.010f;
 
         /// <summary>The ladder's reach either way: grown up to <see cref="GapLadder.MaxGap"/>, shrunk up to as much (or its <see cref="MaxDepth"/>).</summary>
         public static readonly int MaxSteps = (int)MathF.Round(GapLadder.MaxGap / Step);
@@ -219,9 +229,10 @@ namespace Teleop.Eval.JointDrive
                 _built[s] = new bool[2 * MaxSteps + 1];
             }
 
+            TouchTop = MathF.Max(Bottom + 0.001f, Top - TopMarginMeters);
             float widest = 0f;
-            foreach (float r in _inner) widest = MathF.Max(widest, r);
-            MaxDepth = MathF.Max(0f, MathF.Min(widest, (Top - Bottom) / 2f) - 0.0005f);
+            for (int s = 0; s < n; s++) if (_z0[s] < TouchTop) widest = MathF.Max(widest, _inner[s]);
+            MaxDepth = MathF.Max(0f, MathF.Min(widest, TouchTop - Bottom) - 0.0005f);
             ShrinkSteps = Math.Min(MaxSteps, (int)MathF.Floor(MaxDepth / Step + 1e-3f));
         }
 
@@ -229,6 +240,9 @@ namespace Teleop.Eval.JointDrive
         public int SlabCount => _z0.Length;
         public float Bottom => _z0[0];
         public float Top => _z1[_z1.Length - 1];
+
+        /// <summary>The highest a touch meets the object: <see cref="TopMarginMeters"/> below its top, wherever the shape is offset to.</summary>
+        public float TouchTop { get; }
         public float Z0(int slab) => _z0[slab];
         public float Z1(int slab) => _z1[slab];
         public IReadOnlyList<Vector2> Outline(int slab) => _outline[slab];
@@ -236,7 +250,7 @@ namespace Teleop.Eval.JointDrive
         /// <summary>How far slab <paramref name="slab"/>'s polygon can shrink before it is gone: the radius of the largest circle in it, metres.</summary>
         public float InnerRadius(int slab) => _inner[slab];
 
-        /// <summary>The deepest a pose can be measured inside the shape: its widest slab's inner radius (at most half its height), less 0.5 mm.</summary>
+        /// <summary>The deepest a pose can be measured inside the shape: its widest slab's inner radius below <see cref="TouchTop"/> (at most its height there), less 0.5 mm.</summary>
         public float MaxDepth { get; }
 
         /// <summary>How many steps the shape can shrink and still be measured (up to <see cref="MaxSteps"/>).</summary>
@@ -246,13 +260,13 @@ namespace Teleop.Eval.JointDrive
         public bool Overlaps(ReadOnlySpan<ShapeBox> boxes, int steps)
         {
             float d = steps * Step;
-            float bottom = Bottom - d, top = Top + d;
+            float bottom = Bottom - d, top = TouchTop;
             if (!(top > bottom)) return false;
             foreach (ref readonly ShapeBox b in boxes)
             {
                 float lo = MathF.Max(b.Center.Z - b.Reach.Z, bottom), hi = MathF.Min(b.Center.Z + b.Reach.Z, top);
                 if (lo > hi) continue;
-                // The slabs the box's height meets (the bottom one reaching down to the stack's bottom, the top one up to its top).
+                // The slabs the box's height meets (the bottom one reaching down to the stack's bottom).
                 for (int s = FirstSlabAbove(lo); s < _z0.Length && (s == 0 || _z0[s] <= hi); s++)
                 {
                     if (BoxOverlaps(b, s, steps)) return true;
@@ -268,7 +282,7 @@ namespace Teleop.Eval.JointDrive
             float least = float.PositiveInfinity;
             foreach (ref readonly ShapeBox b in boxes)
             {
-                float lo = b.Center.Z - b.Reach.Z, hi = b.Center.Z + b.Reach.Z;
+                float lo = b.Center.Z - b.Reach.Z, hi = MathF.Min(b.Center.Z + b.Reach.Z, TouchTop);
                 for (int s = FirstSlabAbove(lo); s < _z0.Length && _z0[s] <= hi; s++)
                 {
                     if (BoxOverlaps(b, s, 0)) least = MathF.Min(least, _inner[s]);
@@ -294,11 +308,11 @@ namespace Teleop.Eval.JointDrive
 
         private bool BoxOverlaps(in ShapeBox b, int slab, int steps)
         {
-            // The slab's height in the offset stack: the bottom one from the stack's bottom, the top one to its top, and each cut
-            // to the stack when it shrinks.
+            // The slab's height in the offset stack: the bottom one from the stack's bottom, each cut to the stack's bottom when it
+            // shrinks, and none above the touch's top.
             float d = steps * Step;
             float z0 = slab == 0 ? Bottom - d : MathF.Max(_z0[slab], Bottom - d);
-            float z1 = slab == _z1.Length - 1 ? Top + d : MathF.Min(_z1[slab], Top + d);
+            float z1 = MathF.Min(_z1[slab], TouchTop);
             if (!(z1 > z0)) return false;
             Vector2[]? poly = Polygon(slab, steps);
             return poly != null && BoxPrismOverlap(b, poly, z0, z1);

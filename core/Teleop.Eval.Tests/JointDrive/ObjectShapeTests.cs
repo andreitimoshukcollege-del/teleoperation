@@ -216,19 +216,30 @@ namespace Teleop.Eval.Tests.JointDrive
         }
 
         [Fact]
-        public void TheTouchBodies_AreTheTwinsLinks_WithTheOpenFingersPads()
+        public void TheTouchBodies_AreTheTwinsLinks_WithItsFingersPads()
         {
-            // The model's two CAD finger boxes are not in the twin; its pads are, about 32 mm either side of the gripper's axis open.
+            // The model's two CAD finger boxes are not in the twin; its pads are: open, about 32 mm either side of the gripper's
+            // axis, closed about 6 mm. Each finger's travel is the twin's own table.
             CollisionBody[] bodies = ShapeGap.TouchBodies(Model);
             Assert.Equal(Model.Bodies.Length, bodies.Length);
             Assert.DoesNotContain(bodies, b => b.Name == "gripper.1" || b.Name == "gripper.2");
             CollisionBody left = bodies.Single(b => b.Name == "left_finger.pad"), right = bodies.Single(b => b.Name == "right_finger.pad");
             Assert.InRange(left.Center.Y, 0.0318f, 0.0319f);
             Assert.InRange(right.Center.Y, -0.0325f, -0.0324f);
-            Assert.Equal(0f, SafetyScript.ApproachGripper); // the pads are placed open: the touch is planned with the gripper open
+            CollisionBody closed = ShapeGap.TouchBodies(Model, 1f).Single(b => b.Name == "left_finger.pad");
+            Assert.InRange(closed.Center.Y, 0.0058f, 0.0059f);
+
+            using var sidecar = System.Text.Json.JsonDocument.Parse(File.ReadAllBytes(RepoFile("robot", "jetrover", "urdf", "jetrover.sim.json")));
+            System.Text.Json.JsonElement gripper = sidecar.RootElement.GetProperty("motors").EnumerateArray().Single(m => m.GetProperty("joint").GetString() == "gripper");
+            float[] table = gripper.GetProperty("fingerTravelByFraction").EnumerateArray().Select(v => v.GetSingle()).ToArray();
+            Assert.Equal(table, ShapeGap.FingerTravelByFraction);
+            Assert.Equal(-ShapeGap.FingerTravelByFraction[0], gripper.GetProperty("fingerOpenMeters").GetSingle());
         }
 
-        /// <summary>The deepest <paramref name="plan"/> goes into <paramref name="o"/>'s shape (by <see cref="ShapeGap"/>, sampled every 10 ms), and when.</summary>
+        /// <summary>
+        /// The deepest <paramref name="plan"/> goes into <paramref name="o"/>'s shape (by <see cref="ShapeGap"/>, the pads where
+        /// the plan's gripper holds them, sampled every 10 ms), and when.
+        /// </summary>
         internal static float ShapeDepth(DrivePlan plan, in SafetyObject o, out double when)
         {
             var gap = new ShapeGap(Profile, Model, o);
@@ -236,7 +247,7 @@ namespace Teleop.Eval.Tests.JointDrive
             when = double.NaN;
             for (double t = 0; t <= plan.TotalSeconds; t += 0.01)
             {
-                float d = -gap.SignedGap(plan.Sample(t));
+                float d = -gap.SignedGap(plan.Sample(t), plan.GripperAt(t));
                 if (d > deepest)
                 {
                     deepest = d;
@@ -271,9 +282,8 @@ namespace Teleop.Eval.Tests.JointDrive
                         continue;
                     planned++;
                     float depth = ShapeDepth(plan!, real, out double when);
-                    report.Add($"({x}, {y}) seed {seed}: {depth * 1000:0.0} mm at {when:0.00} s");
+                    report.Add($"({x}, {y}) seed {seed}: {depth * 1000:0.0} mm at {when:0.00} s, gripper {plan!.GripperAt(when):0.00}");
                     Assert.InRange(depth, SafetyScript.ShapeTouchDepthMeters - 0.0015f, SafetyScript.ShapeTouchDepthMeters + 0.0015f);
-                    Assert.Equal(SafetyScript.ApproachGripper, plan!.GripperAt(when)); // the touch is made with the gripper open, as its pads are placed
                 }
             }
 

@@ -456,7 +456,7 @@ namespace Teleop.Eval.JointDrive
     /// How close a pose's arm comes to one object's own shape (<see cref="SafetyObject.Shape"/>), to <see cref="Step"/>, as
     /// <see cref="GapLadder"/> measures its box (docs/adr/0037 amendment 5, third revision). The arm is its boxes as Isaac's
     /// links are (<see cref="TouchBodies"/>: the model's bodies, but its two CAD finger boxes replaced by the fingers' pads
-    /// where the open gripper holds them). Clear of the shape: the most it can grow and stay clear (up to
+    /// where the gripper holds them). Clear of the shape: the most it can grow and stay clear (up to
     /// <see cref="GapLadder.MaxGap"/>). Touching it: minus the most it can shrink and still be touched (up to as much, or its
     /// <see cref="ObjectShape.MaxDepth"/>), a hair below zero at a first touch.
     /// </summary>
@@ -465,22 +465,32 @@ namespace Teleop.Eval.JointDrive
         public const float Step = ObjectShape.Step;
 
         /// <summary>
-        /// The JetRover's finger pads in the twin (robot/jetrover/urdf/jetrover.urdf): <c>left_finger</c>'s pad, a box
-        /// 29.996 x 11.332 x 7.39 mm at (0.147724, 0.022089, 0.002667) m, rides the prismatic joint <c>gripper</c> along -Y;
-        /// <c>right_finger</c>'s, 29.787 x 11.285 x 7.074 mm at (0.147565, -0.02266, 0.003051) m, <c>gripper_mirror</c> along
-        /// +Y. Open (<see cref="SafetyScript.ApproachGripper"/> 0, the sidecar's first <c>fingerTravelByFraction</c>) both
-        /// joints are at -<see cref="FingerOpenMeters"/>, so each pad sits that much further out, about 32 mm either side.
+        /// Each finger's travel for a gripper fraction (0 open, 1 closed) at 0.05 steps, metres along its joint: the twin's own
+        /// table (robot/jetrover/urdf/jetrover.sim.json's <c>fingerTravelByFraction</c>; a test holds the two equal).
         /// </summary>
-        public const float FingerOpenMeters = 0.009781f;
+        public static readonly float[] FingerTravelByFraction =
+        {
+            -0.009781f, -0.009331f, -0.00876f, -0.008071f, -0.007266f, -0.00635f, -0.005325f, -0.004198f, -0.002971f, -0.001651f,
+            -0.000242f, 0.00125f, 0.002817f, 0.004453f, 0.00615f, 0.007902f, 0.0097f, 0.011536f, 0.013404f, 0.015294f, 0.016241f,
+        };
 
-        public static readonly CollisionBody LeftPad = new CollisionBody("left_finger.pad", ArmLink.Gripper,
-            new Vector3(0.147724f, 0.022089f + FingerOpenMeters, 0.002667f), Quaternion.Identity, new Vector3(0.029996f, 0.011332f, 0.00739f) / 2f);
+        /// <summary>
+        /// The JetRover's finger pads in the twin (robot/jetrover/urdf/jetrover.urdf), each in its finger's frame, which is the
+        /// gripper's moved along the finger's prismatic joint: <c>left_finger</c>'s pad, a box 29.996 x 11.332 x 7.39 mm at
+        /// (0.147724, 0.022089, 0.002667) m, on <c>gripper</c> along -Y; <c>right_finger</c>'s, 29.787 x 11.285 x 7.074 mm at
+        /// (0.147565, -0.02266, 0.003051) m, on <c>gripper_mirror</c> along +Y. Open, both joints are at -9.781 mm, so each pad is
+        /// about 32 mm from the gripper's axis.
+        /// </summary>
+        public static readonly CollisionBody LeftPadAtZero = new CollisionBody("left_finger.pad", ArmLink.Gripper,
+            new Vector3(0.147724f, 0.022089f, 0.002667f), Quaternion.Identity, new Vector3(0.029996f, 0.011332f, 0.00739f) / 2f);
 
-        public static readonly CollisionBody RightPad = new CollisionBody("right_finger.pad", ArmLink.Gripper,
-            new Vector3(0.147565f, -0.02266f - FingerOpenMeters, 0.003051f), Quaternion.Identity, new Vector3(0.029787f, 0.011285f, 0.007074f) / 2f);
+        /// <summary>See <see cref="LeftPadAtZero"/>.</summary>
+        public static readonly CollisionBody RightPadAtZero = new CollisionBody("right_finger.pad", ArmLink.Gripper,
+            new Vector3(0.147565f, -0.02266f, 0.003051f), Quaternion.Identity, new Vector3(0.029787f, 0.011285f, 0.007074f) / 2f);
 
         private readonly RobotArmProfile _profile;
-        private readonly CollisionBody[] _bodies;
+        private readonly CollisionBody[] _bodies; // the model's, without its CAD fingers
+        private readonly bool _pads;              // and the twin's two pads after them
         private readonly ObjectShape _shape;
         private readonly Vector3 _center;
         private readonly Quaternion _toObject;
@@ -488,7 +498,7 @@ namespace Teleop.Eval.JointDrive
         public ShapeGap(in RobotArmProfile profile, ArmCollisionModel model, in SafetyObject o)
         {
             _profile = profile;
-            _bodies = TouchBodies(model);
+            _bodies = WithoutCadFingers(model, out _pads);
             _shape = o.Shape ?? throw new ArgumentException($"object {o.Id} has no shape", nameof(o));
             _center = o.Center;
             _toObject = Quaternion.Conjugate(Quaternion.Normalize(o.Rotation));
@@ -496,73 +506,96 @@ namespace Teleop.Eval.JointDrive
 
         public ObjectShape Shape => _shape;
 
-        /// <summary>
-        /// The arm's boxes for a touch: <paramref name="model"/>'s bodies, but the JetRover CAD's two finger boxes
-        /// (<c>gripper.1</c>, <c>gripper.2</c>, which the twin does not have) replaced by its two pads, open
-        /// (<see cref="LeftPad"/>, <see cref="RightPad"/>). Another model's bodies are as they are.
-        /// </summary>
-        public static CollisionBody[] TouchBodies(ArmCollisionModel model)
+        /// <summary>How many boxes the arm is for a touch.</summary>
+        public int BoxCount => _bodies.Length + (_pads ? 2 : 0);
+
+        /// <summary>Each finger's travel at gripper fraction <paramref name="gripper"/> (clamped to 0..1), metres: <see cref="FingerTravelByFraction"/>, interpolated.</summary>
+        public static float FingerTravel(float gripper)
         {
-            var bodies = new List<CollisionBody>(model.Bodies.Length + 2);
-            bool fingers = false;
-            foreach (CollisionBody b in model.Bodies)
-            {
-                if (b.Link == ArmLink.Gripper && (b.Name == "gripper.1" || b.Name == "gripper.2"))
-                {
-                    fingers = true;
-                    continue;
-                }
+            float[] t = FingerTravelByFraction;
+            float x = Math.Clamp(float.IsNaN(gripper) ? SafetyScript.ApproachGripper : gripper, 0f, 1f) * (t.Length - 1);
+            int i = Math.Min((int)x, t.Length - 2);
+            return t[i] + (x - i) * (t[i + 1] - t[i]);
+        }
 
-                bodies.Add(b);
-            }
-
-            if (fingers)
+        /// <summary>
+        /// The arm's boxes for a touch with the gripper at <paramref name="gripper"/>: <paramref name="model"/>'s bodies, but the
+        /// JetRover CAD's two finger boxes (<c>gripper.1</c>, <c>gripper.2</c>, which the twin does not have) replaced by its two
+        /// pads where that gripper holds them. Another model's bodies are as they are.
+        /// </summary>
+        public static CollisionBody[] TouchBodies(ArmCollisionModel model, float gripper = SafetyScript.ApproachGripper)
+        {
+            var bodies = new List<CollisionBody>(WithoutCadFingers(model, out bool pads));
+            if (pads)
             {
-                bodies.Add(LeftPad);
-                bodies.Add(RightPad);
+                float q = FingerTravel(gripper);
+                bodies.Add(Pad(LeftPadAtZero, -q));
+                bodies.Add(Pad(RightPadAtZero, q));
             }
 
             return bodies.ToArray();
         }
 
-        /// <summary>The arm's touch boxes at <paramref name="pose"/>, in the object's frame.</summary>
-        public void Boxes(in ArmPose pose, Span<ShapeBox> boxes)
+        private static CollisionBody[] WithoutCadFingers(ArmCollisionModel model, out bool hadThem)
+        {
+            var bodies = new List<CollisionBody>(model.Bodies.Length);
+            hadThem = false;
+            foreach (CollisionBody b in model.Bodies)
+            {
+                if (b.Link == ArmLink.Gripper && (b.Name == "gripper.1" || b.Name == "gripper.2")) hadThem = true;
+                else bodies.Add(b);
+            }
+
+            return bodies.ToArray();
+        }
+
+        /// <summary>A pad moved by <paramref name="y"/> along the gripper's Y (its finger's joint value times the joint's axis).</summary>
+        private static CollisionBody Pad(in CollisionBody atZero, float y) =>
+            new CollisionBody(atZero.Name, atZero.Link, atZero.Center + new Vector3(0f, y, 0f), atZero.Rotation, atZero.HalfExtents);
+
+        /// <summary>The arm's touch boxes at <paramref name="pose"/>, the gripper at <paramref name="gripper"/> (open when NaN), in the object's frame.</summary>
+        public void Boxes(in ArmPose pose, float gripper, Span<ShapeBox> boxes)
         {
             Span<LinkFrame> frames = stackalloc LinkFrame[5];
             ArmCollision.ComputeFrames(_profile, pose, frames);
-            for (int i = 0; i < _bodies.Length; i++)
+            for (int i = 0; i < _bodies.Length; i++) boxes[i] = Box(frames, _bodies[i]);
+            if (_pads)
             {
-                CollisionBody body = _bodies[i];
-                LinkFrame frame = frames[(int)body.Link];
-                Quaternion turn = _toObject * frame.Rotation * body.Rotation;
-                Vector3 c = Vector3.Transform(frame.ToBase(body.Center) - _center, _toObject);
-                boxes[i] = new ShapeBox(c, Vector3.Transform(Vector3.UnitX, turn), Vector3.Transform(Vector3.UnitY, turn), Vector3.Transform(Vector3.UnitZ, turn),
-                    body.HalfExtents);
+                float q = FingerTravel(gripper);
+                boxes[_bodies.Length] = Box(frames, Pad(LeftPadAtZero, -q));
+                boxes[_bodies.Length + 1] = Box(frames, Pad(RightPadAtZero, q));
             }
         }
 
-        public int BoxCount => _bodies.Length;
-
-        /// <summary>Whether the arm at <paramref name="pose"/> touches the shape.</summary>
-        public bool Touches(in ArmPose pose)
+        private ShapeBox Box(ReadOnlySpan<LinkFrame> frames, in CollisionBody body)
         {
-            Span<ShapeBox> boxes = stackalloc ShapeBox[_bodies.Length];
-            Boxes(pose, boxes);
+            LinkFrame frame = frames[(int)body.Link];
+            Quaternion turn = _toObject * frame.Rotation * body.Rotation;
+            Vector3 c = Vector3.Transform(frame.ToBase(body.Center) - _center, _toObject);
+            return new ShapeBox(c, Vector3.Transform(Vector3.UnitX, turn), Vector3.Transform(Vector3.UnitY, turn), Vector3.Transform(Vector3.UnitZ, turn), body.HalfExtents);
+        }
+
+        /// <summary>Whether the arm at <paramref name="pose"/>, the gripper at <paramref name="gripper"/>, touches the shape.</summary>
+        public bool Touches(in ArmPose pose, float gripper = SafetyScript.ApproachGripper)
+        {
+            Span<ShapeBox> boxes = stackalloc ShapeBox[BoxCount];
+            Boxes(pose, gripper, boxes);
             return _shape.Overlaps(boxes, 0);
         }
 
         /// <summary>The smallest inner radius of the slabs the arm touches at <paramref name="pose"/> (+inf when it touches none).</summary>
-        public float TouchedInnerRadius(in ArmPose pose)
+        public float TouchedInnerRadius(in ArmPose pose, float gripper = SafetyScript.ApproachGripper)
         {
-            Span<ShapeBox> boxes = stackalloc ShapeBox[_bodies.Length];
-            Boxes(pose, boxes);
+            Span<ShapeBox> boxes = stackalloc ShapeBox[BoxCount];
+            Boxes(pose, gripper, boxes);
             return _shape.TouchedInnerRadius(boxes);
         }
 
-        public float SignedGap(in ArmPose pose)
+        /// <summary>The arm's signed gap to the shape at <paramref name="pose"/>, the gripper at <paramref name="gripper"/> (open when NaN), metres.</summary>
+        public float SignedGap(in ArmPose pose, float gripper = SafetyScript.ApproachGripper)
         {
-            Span<ShapeBox> boxes = stackalloc ShapeBox[_bodies.Length];
-            Boxes(pose, boxes);
+            Span<ShapeBox> boxes = stackalloc ShapeBox[BoxCount];
+            Boxes(pose, gripper, boxes);
             if (!_shape.Overlaps(boxes, 0))
             {
                 int lo = 0, hi = ObjectShape.MaxSteps + 1; // clear at lo, touching at hi (past the ladder: clear all the way)

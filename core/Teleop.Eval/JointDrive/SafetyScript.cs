@@ -565,8 +565,9 @@ namespace Teleop.Eval.JointDrive
             var ladder = new GapLadder(profile, model, o);
             var gap = new float[line.Usable];
             for (int i = 0; i < line.Usable; i++) gap[i] = ladder.SignedGap(line.Poses[i]);
-            // A touch of an object with a shape is measured against the shape, with the arm as the twin's links are; every
-            // clearance (where the final approach starts, the path there, the other objects) stays on the boxes.
+            // A touch of an object with a shape is measured against the shape, with the arm as the twin's links are (the line's
+            // poses with the gripper open, as the approach sets it; the final approach's with the gripper each tick commands);
+            // every clearance (where the final approach starts, the path there, the other objects) stays on the boxes.
             ShapeGap? touchShape = script == DriveScript.CollideAndRecover ? shape : null;
 
             // Where the final approach aims, on the sweep, and what it must reach there.
@@ -668,7 +669,7 @@ namespace Teleop.Eval.JointDrive
                     if (kind == HandEvent.Through && k > kEvent) break;
                     ArmPose p = hand.Poses[k];
                     if (clearOfOthers && (kind != HandEvent.Through || touching == 0) && !ArmCollision.IsValid(arm, othersClear, p)) clearOfOthers = false;
-                    float g = touchShape != null ? touchShape.SignedGap(p) : ladder.SignedGap(p);
+                    float g = touchShape != null ? touchShape.SignedGap(p, hand.Commands[k].Gripper) : ladder.SignedGap(p); // the pads where the gripper holds them
                     closest = MathF.Min(closest, g);
                     if (g < 0)
                     {

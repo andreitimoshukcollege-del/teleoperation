@@ -3616,7 +3616,7 @@ isaac-host scene="fr3-duo-bench" scene_seed="auto" feeds="true":
     )
     ssh -o ConnectTimeout=10 "{{gpu_host}}" "COMMIT='$commit' SCENE='{{scene}}' SCENE_SEED='{{scene_seed}}' FEEDS='{{feeds}}' bash -c $(printf '%q' "$remote")"
 
-# Let another account on the GPU machine read the headset's scenario takes (docs/adr/0033) and their LeRobot datasets (docs/adr/0036), once: ACLs, no sudo. It may enter (not list) our home, ~/data and ~/data/takes; read everything under ~/data/takes/fr3_duo-isaac (the FR3 Duo's) and ~/data/takes/jetrover-isaac, and every take written there from now on (a default ACL); edit each scenarios.txt (the list the headset shows) and save into those folders (editors replace a file when they save); and read the real robot's takes copied into ~/data/takes/jetrover-real and every dataset under ~/data/lerobot, written or rebuilt. Takes and datasets stay read-only to it. Run it again after deleting a folder
+# Let another account on the GPU machine read the headset's scenario takes (docs/adr/0033) and their LeRobot datasets (docs/adr/0036), once: ACLs, no sudo. It may list and enter our home, ~/data and ~/data/takes (a named ACL entry overrides the folders' own "other" bits, so "enter only" made `ls` there fail; what is private stays so by its own mode: ~/.ssh, ~/.config, ~/.cache, ~/.local are 700); read everything under ~/data/takes/fr3_duo-isaac (the FR3 Duo's) and ~/data/takes/jetrover-isaac, and every take written there from now on (a default ACL); edit each scenarios.txt (the list the headset shows) and save into those folders (editors replace a file when they save); and read the real robot's takes copied into ~/data/takes/jetrover-real and every dataset under ~/data/lerobot, written or rebuilt. Takes and datasets stay read-only to it. Run it again after deleting a folder
 [group('isaac')]
 isaac-share-scenarios user="seaqueue-cheng":
     #!/usr/bin/env bash
@@ -3626,7 +3626,7 @@ isaac-share-scenarios user="seaqueue-cheng":
     set -euo pipefail
     id "$U" > /dev/null || { echo "error: no account $U here" >&2; exit 1; }
     mkdir -p "$HOME/data/takes"
-    setfacl -m "u:$U:x" "$HOME" "$HOME/data" "$HOME/data/takes"
+    setfacl -m "u:$U:rx" "$HOME" "$HOME/data" "$HOME/data/takes"
     # The FR3 Duo's and the JetRover's takes (docs/adr/0033): read the takes, edit the scenario list.
     for root in "$HOME/data/takes/fr3_duo-isaac" "$HOME/data/takes/jetrover-isaac"; do
         mkdir -p "$root"

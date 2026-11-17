@@ -35,7 +35,9 @@ they need. Nothing here is edited by hand, except a take list (`scenarios.txt`).
 └── teleoperation/                   the trainer's checkout (just gpu-train): its trainer/.venv and trainer/runs/<run>/
 ```
 
-The labmate's account reads parts of `data/` once `just isaac-share-scenarios` has run:
+The labmate's account reads parts of `data/` once `just isaac-share-scenarios` has run. It can list the home folder,
+`data/` and `data/takes/` (an "enter only" entry there made `ls` fail, 2026-11-17); what is private keeps its own mode
+(`.ssh`, `.config`, `.cache`, `.local` are 700):
 
 - `data/takes/fr3_duo-isaac` and `data/takes/jetrover-isaac`: read, and edit their `scenarios.txt`;
 - `data/takes/jetrover-real` and `data/lerobot`: read only.

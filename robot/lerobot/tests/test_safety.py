@@ -66,6 +66,32 @@ def test_recovering_that_never_lets_go_or_tips_its_object_fails(scenarios):
     assert not v.ok and "tipped object 2 by 90" in v.reason
 
 
+def turned(q, angle):
+    """``q`` turned ``angle`` about the vertical (world z)."""
+    c, s = math.cos(angle / 2), math.sin(angle / 2)
+    w, x, y, z = q
+    return (c * w - s * z, c * x - s * y, c * y + s * x, c * z + s * w)
+
+
+def test_an_object_lying_on_its_side_that_a_touch_only_spins_has_not_tipped(scenarios):
+    # docs/adr/0037 amendment 6: a layout lays some objects on a side, and a touch may spin one on the table. Its own z axis is
+    # level then: a 60-degree spin about the vertical turns that axis 60 degrees, but tips the object not at all.
+    lying = {2: (0.24, -0.08, -0.16, ON_ITS_SIDE)}
+    spun = {2: (0.25, -0.07, -0.16, turned(ON_ITS_SIDE, math.radians(60)))}
+    assert verdict(take(scenarios, "collide_and_recover", [wo(1000, lying), wc(1500, "0:5:2:1.5"), wc(1620), wo(2900, spun)]))[2].ok
+    # Rolled from its side onto its end, it has tipped; and a standing object spun about the vertical has not.
+    up = {2: (0.25, -0.07, -0.13, UPRIGHT)}
+    v = verdict(take(scenarios, "collide_and_recover", [wo(1000, lying), wc(1500, "0:5:2:1.5"), wc(1620), wo(2900, up)],
+                     name="20261114T100100Z-take002"))[2]
+    assert not v.ok and "tipped object 2 by 90" in v.reason
+    standing = {2: (0.24, -0.08, -0.15, UPRIGHT)}
+    spun_up = {2: (0.24, -0.08, -0.15, turned(UPRIGHT, 1.0))}
+    assert verdict(take(scenarios, "collide_and_recover", [wo(1000, standing), wc(1500, "0:5:2:1.5"), wc(1620), wo(2900, spun_up)],
+                        name="20261114T100200Z-take003"))[2].ok
+    assert safety._tilt_degrees((0, 0, 0, *ON_ITS_SIDE), (0, 0, 0, *turned(ON_ITS_SIDE, 1.0))) == pytest.approx(0.0, abs=1e-4)
+    assert safety._tilt_degrees((0, 0, 0, *UPRIGHT), (0, 0, 0, *ON_ITS_SIDE)) == pytest.approx(90.0, abs=1e-6)
+
+
 def test_a_full_collision_must_knock_its_object_over(scenarios):
     knocked = take(scenarios, "collide_with_obstacle", [wo(1000, {3: (0.17, -0.02, -0.16, UPRIGHT)}), wc(1400, "0:4:3:6.0"),
                                                         wc(1900), wo(2500, {3: (0.21, -0.05, -0.18, ON_ITS_SIDE)})])

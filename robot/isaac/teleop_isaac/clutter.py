@@ -573,8 +573,10 @@ def draw(s: Spec, seed: int, change: int) -> List[Piece]:
 
 
 def cl_items(pieces: Sequence[Piece]) -> List[list]:
-    """``CL``'s list: ``kind``, x, y (m, the robot's base frame) and yaw (rad, 0 to 2 pi) of each piece."""
-    return [[p.kind, round(p.x, 4), round(p.y, 4), round(p.yaw % (2.0 * math.pi), 4)] for p in pieces]
+    """``CL``'s list: ``kind``, x, y (m, the robot's base frame, to 0.1 mm) and yaw (rad, from 0 up to but not 2 pi) of each
+    piece."""
+    full = round(2.0 * math.pi, 4)
+    return [[p.kind, round(p.x, 4), round(p.y, 4), round(p.yaw % (2.0 * math.pi), 4) % full] for p in pieces]
 
 
 # --- the meshes ------------------------------------------------------------------------------------------------------------

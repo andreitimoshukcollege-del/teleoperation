@@ -198,9 +198,9 @@ The bridge runs from the pushed commit. Sample frames stay on that machine, in
 |---|---|---|
 | `teleop_isaac/wire.py` | RobotHost's `ArmServer/ArmServerWire.cs` | `golden/arm-server-wire-v1.json`, written by the C# tests (`just gen-arm-server-golden`) |
 | `teleop_isaac/shaper.py` | Core's `JointTrajectoryShaper` (via the trainer's copy, as text) | `golden/joint-shaper-v1.json`, the trainer's golden; an Eval test holds the two equal (`just gen-trainer-golden` refreshes both) |
-| `teleop_isaac/scene.py` | Core's `WorldScene` reader | `core/Scenes/testdata/vectors.json` and `golden/scene-fr3-duo-bench.json` (`just gen-isaac-goldens`) |
+| `teleop_isaac/scene.py` | Core's `WorldScene` reader, and its rests (docs/adr/0037 amendment 6) | `core/Scenes/testdata/vectors.json`, `golden/scene-fr3-duo-bench.json` and `golden/scene-rests-jetrover-bench.json` (`just gen-isaac-goldens`) |
 | `teleop_isaac/kinematics.py` | Core's FK | `golden/fr3-duo-fk-v1.json` (`just gen-isaac-goldens`) |
-| `teleop_isaac/world.py`'s rules | RobotHost's `StaticWorld` | `tests/test_world.py`, including Core's frozen seed-1 layout |
+| `teleop_isaac/world.py`'s rules | RobotHost's `StaticWorld` (a placement on the rest nearest its rotation) | `tests/test_world.py`, including Core's frozen seed-1 layout |
 | `teleop_isaac/camwire.py`, `camfeed.py` | ADR 0014's `CameraChunkCodec`, `CameraSubscribeCodec`, `FramePacer`, `CameraStreamer` | `golden/camera-wire-v1.json`, written by `CameraWireGoldenTests` (`just gen-camera-wire-golden`) |
 
 `just isaac-bridge-test` runs those checks. They are plain Python and need no Isaac. Change a copy

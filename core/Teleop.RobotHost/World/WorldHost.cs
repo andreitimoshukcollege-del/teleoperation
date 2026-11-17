@@ -18,7 +18,8 @@ namespace Teleop.RobotHost.World
     /// otherwise the object stays where it was. Layouts never change on their own.</item>
     /// <item><b>Pools</b> (docs/adr/0037 decision 3). For a scene whose objects are a pool, the layout also chooses which take
     /// part: the rest are sent to the backend with <see cref="PlaceCause.Park"/>. A layout spot the backend refuses is redrawn
-    /// anywhere in the region, and an object that finds none is parked. Reset puts the layout back as it was drawn; a parked
+    /// anywhere in the region (by the edge for an object drawn there, on its drawn rest: docs/adr/0037 amendment 6), and an
+    /// object that finds none is parked. Reset puts the layout back as it was drawn, lying objects lying; a parked
     /// object cannot be moved or resized from the headset. A pool that draws sizes (docs/adr/0037 amendment 2) changes them
     /// on the shelf: a new layout parks every object, resizes there each one whose drawn size differs, then places the
     /// drawn ones, so the table is empty while it is filled.</item>
@@ -390,7 +391,10 @@ namespace Teleop.RobotHost.World
             if (done.Edit != 0) Resolve(done.Edit, outcome, now, done.Cause == PlaceCause.Resize ? WorldEditOp.Resize : WorldEditOp.Move, pose);
         }
 
-        /// <summary>Another spot for object <paramref name="index"/>, clear of the others' targets: within its jitter, or for a pool anywhere in the region.</summary>
+        /// <summary>
+        /// Another spot for object <paramref name="index"/>, clear of the others' targets: within its jitter, or for a pool anywhere
+        /// in the region (a movable one in the reach band, or by the edge if it was drawn there), on the rest it was drawn on.
+        /// </summary>
         private bool Redraw(int index, int tries)
         {
             SceneObject o = _scene.Objects[index];
@@ -416,7 +420,7 @@ namespace Teleop.RobotHost.World
                     yaw = o.NominalYaw + (2 * rng.NextDouble() - 1) * o.JitterYaw;
                 }
 
-                if (!_scene.FitsOnTable(index, x, y, ScaleFor(index), rest) || (_scene.IsPool && !_scene.InReach(index, x, y))) continue;
+                if (!_scene.FitsOnTable(index, x, y, ScaleFor(index), rest) || (_scene.IsPool && !atEdge && !_scene.InReach(index, x, y))) continue;
                 bool clear = true;
                 for (int k = 0; k < _targets.Length && clear; k++)
                 {

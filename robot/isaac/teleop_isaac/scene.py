@@ -5,7 +5,9 @@ start of every error, so the two agree on every case in ``core/Scenes/testdata/v
 shipped scene is pinned by ``golden/scene-fr3-duo-bench.json``, which Core writes. Isaac also reads the sections Core
 skips (``backdrops``, ``cameras``, ``lights``, docs/adr/0032); they are kept as given in :attr:`Scene.extra`.
 
-Layouts are RobotHost's to draw; this module has no copy of the draw.
+Layouts are RobotHost's to draw; this module has no copy of the draw. It has Core's rests (docs/adr/0037 amendment 6): the
+ways an object may rest on the table, and the footprint, height and pose of each, pinned by
+``golden/scene-rests-jetrover-bench.json``, which Core writes too.
 """
 
 from __future__ import annotations
@@ -23,6 +25,43 @@ TOLERANCE = 0.001
 PARK_X, PARK_Z = 17.0, -5.0  # where a parked object rests (docs/adr/0037 decision 3): Core's WorldScene.ParkX / ParkZ
 _NAME = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
 _ASSET = re.compile(r"^[a-z0-9_]{1,64}/[a-z0-9_]{1,64}$")
+
+# The rests (docs/adr/0037 amendment 6, Core's WorldScene.RestRotation): each a turn of the object's own frame before its yaw.
+# 0 upright (its +z up), 1 its +y up (+90 degrees about x), 2 its +x up (-90 degrees about y), 3 upside down, 4 its -y up,
+# 5 its -x up. Rests 1, 2, 4 and 5 lie on a side.
+REST_UPRIGHT, REST_COUNT = 0, 6
+LIE_ASPECT = 1.25  # a side rest a layout draws: the object lying on it at most this many times as tall as its narrower side
+MIN_LYING_HEIGHT = 0.03  # m: and at least this tall, for a touch
+_H = 0.70710678118654752
+_REST_ROTATIONS = {1: (_H, _H, 0.0, 0.0), 2: (_H, 0.0, -_H, 0.0), 3: (0.0, 1.0, 0.0, 0.0), 4: (_H, -_H, 0.0, 0.0), 5: (_H, 0.0, _H, 0.0)}
+
+
+def rest_rotation(rest: int) -> Tuple[float, float, float, float]:
+    """The turn of rest ``rest``, a unit quaternion w, x, y, z (Core's ``WorldScene.RestRotation``)."""
+    return _REST_ROTATIONS.get(rest, (1.0, 0.0, 0.0, 0.0))
+
+
+def rest_of(q) -> Tuple[int, float]:
+    """The rest of a rotation (w, x, y, z, or a pose x, y, z, w, x, y, z: its last four), the one whose up axis is nearest the
+    vertical, and the yaw left once that rest is taken out, in (-pi, pi]: ``Scene.pose_at`` gives the pose back. As Core's
+    ``WorldScene.RestOf``, operation for operation."""
+    w, x, y, z = q[-4:]
+    zx, zy, zz = 2 * (x * z - w * y), 2 * (y * z + w * x), 1 - 2 * (x * x + y * y)  # the world z of each of its axes
+    ax, ay, az = abs(zx), abs(zy), abs(zz)
+    if az >= ax and az >= ay:
+        rest = 0 if zz >= 0 else 3
+    elif ay >= ax:
+        rest = 1 if zy >= 0 else 4
+    else:
+        rest = 2 if zx >= 0 else 5
+    rw, rx, ry, rz = rest_rotation(rest)
+    tw, tz = w * rw + x * rx + y * ry + z * rz, z * rw - w * rz - x * ry + y * rx  # q times the rest's inverse
+    yaw = 2 * math.atan2(tz, tw)
+    if yaw > math.pi:
+        yaw -= 2 * math.pi
+    elif yaw <= -math.pi:
+        yaw += 2 * math.pi
+    return rest, yaw
 
 
 class SceneError(ValueError):
@@ -83,6 +122,29 @@ class Object:
         sx, sy, _ = self.size
         return 0.5 * math.sqrt(sx * sx + sy * sy) if self.shape in ("box", "mesh") else 0.5 * sx
 
+    def rest_extents(self, rest: int) -> Tuple[float, float, float]:
+        """Its extents on rest ``rest`` before its yaw, at its file size: along x and y (its footprint), and up."""
+        sx, sy, sz = self.size
+        if rest % 3 == 1:
+            return sx, sz, sy
+        if rest % 3 == 2:
+            return sz, sy, sx
+        return sx, sy, sz
+
+    def footprint_radius_at(self, rest: int) -> float:
+        """The radius of a circle that holds its footprint on rest ``rest`` at any yaw, at its file size."""
+        if rest % 3 == 0 or self.shape == "sphere":
+            return self.footprint_radius
+        ex, ey, _ = self.rest_extents(rest)
+        return 0.5 * math.sqrt(ex * ex + ey * ey)
+
+    def can_lie(self, rest: int) -> bool:
+        """Whether a layout may lay it on side rest ``rest``: movable, stable on it and at least ``MIN_LYING_HEIGHT`` tall."""
+        if not 0 <= rest < REST_COUNT or rest % 3 == 0 or not self.movable or self.shape == "sphere":
+            return False
+        ex, ey, ez = self.rest_extents(rest)
+        return ez <= LIE_ASPECT * min(ex, ey) + 1e-12 and ez >= MIN_LYING_HEIGHT - 1e-12
+
     @property
     def nominal(self) -> Tuple[float, float, float, float, float, float, float]:
         """The nominal pose: x, y, z, then the quaternion w, x, y, z (a turn about the vertical)."""
@@ -106,6 +168,13 @@ class Scene:
     fixed_regions: Tuple[float, ...] = ()
     # The robot's footprint no object's footprint may reach (xMin, xMax, yMin, yMax), or () (docs/adr/0037 amendment 5).
     robot_keep_out: Tuple[float, ...] = ()
+    # docs/adr/0037 amendment 6, for RobotHost's layouts: the chance that a movable object in reach joins a cluster, that one
+    # with a stable side lies on it, and that a layout stands one more by the bench's edge, in edge_regions (flat xMin, xMax,
+    # yMin, yMax, ...: outside the region, out of reach). A movable object may stand in edge_regions (fits_on_table).
+    cluster_share: float = 0.0
+    lying_share: float = 0.0
+    edge_regions: Tuple[float, ...] = ()
+    edge_share: float = 0.0
 
     def clear_of_robot(self, x: float, y: float, r: float) -> bool:
         if len(self.robot_keep_out) != 4:
@@ -123,25 +192,46 @@ class Scene:
         return (PARK_X, (index - len(self.objects) / 2.0) * 1.0, PARK_Z + self.objects[index].size[2] * scale / 2 + 0.001,
                 1.0, 0.0, 0.0, 0.0)
 
-    def fits_on_table(self, index: int, x: float, y: float, scale: float = 1.0) -> bool:
-        r = self.objects[index].footprint_radius * scale
+    def _surface_bounds(self) -> Tuple[float, float, float, float]:
+        """The table and the bench beside it, together: where a fixture's or an edge object's footprint may lie."""
+        t, b = self.table, self.bench
+        sx0, sx1 = (min(t.x_min, b.x_min), max(t.x_max, b.x_max)) if b else (t.x_min, t.x_max)
+        sy0, sy1 = (max(t.y_min, b.y_min), min(t.y_max, b.y_max)) if b else (t.y_min, t.y_max)
+        return sx0, sx1, sy0, sy1
+
+    def in_edge_regions(self, x: float, y: float) -> bool:
+        e = self.edge_regions
+        return any(e[k] - 1e-9 <= x <= e[k + 1] + 1e-9 and e[k + 2] - 1e-9 <= y <= e[k + 3] + 1e-9 for k in range(0, len(e) - 3, 4))
+
+    def fits_on_table(self, index: int, x: float, y: float, scale: float = 1.0, rest: int = REST_UPRIGHT) -> bool:
+        """Whether object ``index``'s footprint on rest ``rest`` at ``scale``, centred at (x, y), lies on the table and in the
+        region (a pool's fixed object: in fixed_regions; a movable one may also stand in edge_regions, its footprint on the table
+        or the bench), clear of the robot's keep-out. As Core's ``WorldScene.FitsOnTable``."""
+        o = self.objects[index]
+        r = o.footprint_radius_at(rest) * scale
         t, (x0, x1, y0, y1) = self.table, self.region
         if not self.clear_of_robot(x, y, r):
             return False
-        if self.fixed_regions and not self.objects[index].movable:
+        if self.fixed_regions and not o.movable:
             # Its centre in a rectangle, its footprint on the table or on the bench beside it (flush with it).
-            b = self.bench
-            sx0, sx1 = (min(t.x_min, b.x_min), max(t.x_max, b.x_max)) if b else (t.x_min, t.x_max)
-            sy0, sy1 = (max(t.y_min, b.y_min), min(t.y_max, b.y_max)) if b else (t.y_min, t.y_max)
+            sx0, sx1, sy0, sy1 = self._surface_bounds()
             if x - r < sx0 - 1e-9 or x + r > sx1 + 1e-9 or y - r < sy0 - 1e-9 or y + r > sy1 + 1e-9:
                 return False
             f = self.fixed_regions
             return any(f[k] - 1e-9 <= x <= f[k + 1] + 1e-9 and f[k + 2] - 1e-9 <= y <= f[k + 3] + 1e-9 for k in range(0, len(f) - 3, 4))
-        return (x - r >= max(t.x_min, x0) - 1e-9 and x + r <= min(t.x_max, x1) + 1e-9 and
-                y - r >= max(t.y_min, y0) - 1e-9 and y + r <= min(t.y_max, y1) + 1e-9)
+        if (x - r >= max(t.x_min, x0) - 1e-9 and x + r <= min(t.x_max, x1) + 1e-9 and
+                y - r >= max(t.y_min, y0) - 1e-9 and y + r <= min(t.y_max, y1) + 1e-9):
+            return True
+        if not o.movable or not self.in_edge_regions(x, y):
+            return False
+        sx0, sx1, sy0, sy1 = self._surface_bounds()
+        return x - r >= sx0 - 1e-9 and x + r <= sx1 + 1e-9 and y - r >= sy0 - 1e-9 and y + r <= sy1 + 1e-9
 
-    def overlaps(self, a: int, ax: float, ay: float, b: int, bx: float, by: float, scale_a: float = 1.0, scale_b: float = 1.0) -> bool:
-        reach = self.objects[a].footprint_radius * scale_a + self.objects[b].footprint_radius * scale_b + self.clearance
+    def overlaps(self, a: int, ax: float, ay: float, b: int, bx: float, by: float, scale_a: float = 1.0, scale_b: float = 1.0,
+                 rest_a: int = REST_UPRIGHT, rest_b: int = REST_UPRIGHT) -> bool:
+        """Whether two objects' footprints, each on its rest, come closer than the clearance (Core's ``WorldScene.Overlaps``)."""
+        reach = (self.objects[a].footprint_radius_at(rest_a) * scale_a + self.objects[b].footprint_radius_at(rest_b) * scale_b
+                 + self.clearance)
         return (ax - bx) ** 2 + (ay - by) ** 2 < reach * reach
 
     def clamp_on_table(self, index: int, x: float, y: float, scale: float = 1.0) -> Optional[Tuple[float, float]]:
@@ -170,9 +260,16 @@ class Scene:
         grid.sort(key=lambda p: (p[0] - x) ** 2 + (p[1] - y) ** 2)
         return [at] + grid
 
-    def pose_at(self, index: int, x: float, y: float, yaw: float, scale: float = 1.0) -> Tuple[float, ...]:
-        """Object ``index`` upright on the table at (x, y), turned ``yaw``, resized by ``scale``: x, y, z, qw, qx, qy, qz."""
-        return (x, y, self.table.top + self.objects[index].size[2] * scale / 2, math.cos(yaw / 2), 0.0, 0.0, math.sin(yaw / 2))
+    def pose_at(self, index: int, x: float, y: float, yaw: float, scale: float = 1.0, rest: int = REST_UPRIGHT) -> Tuple[float, ...]:
+        """Object ``index`` resting on the table at (x, y) on rest ``rest`` (upright unless given), then turned ``yaw`` about the
+        vertical, resized by ``scale``, its box's lowest face on the table top: x, y, z, qw, qx, qy, qz. As Core's
+        ``WorldScene.PoseAt``."""
+        if rest == REST_UPRIGHT:
+            return (x, y, self.table.top + self.objects[index].size[2] * scale / 2, math.cos(yaw / 2), 0.0, 0.0, math.sin(yaw / 2))
+        rw, rx, ry, rz = rest_rotation(rest)
+        c, s = math.cos(yaw / 2), math.sin(yaw / 2)
+        ez = self.objects[index].rest_extents(rest)[2]
+        return (x, y, self.table.top + ez * scale / 2, c * rw - s * rz, c * rx - s * ry, c * ry + s * rx, c * rz + s * rw)
 
 
 # The sizes the headset may give an object (Core's WorldScene resize steps, docs/adr/0034 amendment 6): 1.25 to the power
@@ -219,6 +316,15 @@ def _colour(c: Any, where: str) -> Tuple[float, float, float]:
 def _friction(s: Any, d: Any, where: str) -> None:
     if not (_finite(s) and _finite(d) and s >= 0 and d >= 0):
         raise _bad("friction", f"{where}: 0 or more, and finite")
+
+
+def _share(v: Any, name: str, is_pool: bool) -> float:
+    """A pool's chance (docs/adr/0037 amendment 6), as Core's ``WorldScene.Share``."""
+    if not _finite(v) or not 0 <= v <= 1:
+        raise _bad("pool", f"{name} is a chance from 0 to 1")
+    if v > 0 and not is_pool:
+        raise _bad("pool", f"{name} is only for a pool")
+    return float(v)
 
 
 def parse(doc: Dict[str, Any]) -> Scene:
@@ -369,10 +475,32 @@ def parse(doc: Dict[str, Any]) -> Scene:
     near = pd.get("fixedNearMax", 0.0)
     if not _finite(near) or near < 0:
         raise _bad("pool", "fixedNearMax is 0 (no bound) or a distance in metres")
+    # docs/adr/0037 amendment 6, in Core's order.
+    cluster_share = _share(pd.get("clusterShare", 0.0), "clusterShare", is_pool)
+    lying_share = _share(pd.get("lyingShare", 0.0), "lyingShare", is_pool)
+    er = pd.get("edgeRegions", []) or []
+    if not isinstance(er, list) or len(er) % 4 != 0:
+        raise _bad("pool", "edgeRegions holds xMin, xMax, yMin, yMax for each rectangle")
+    for k in range(0, len(er), 4):
+        a, b, c, d = er[k:k + 4]
+        if not all(_finite(v) for v in (a, b, c, d)) or not (a < b and c < d):
+            raise _bad("pool", "each edgeRegions rectangle needs min < max on both axes")
+        sx0 = min(table.x_min, bench.x_min) if bench else table.x_min
+        sx1 = max(table.x_max, bench.x_max) if bench else table.x_max
+        if b < sx0 or a > sx1 or d < table.y_min or c > table.y_max:
+            raise _bad("pool", "an edgeRegions rectangle does not overlap the table or the bench")
+        if a < x1 and b > x0 and c < y1 and d > y0:
+            raise _bad("pool", "an edgeRegions rectangle overlaps the placement region: edge objects stand outside it, out of reach")
+    if er and not is_pool:
+        raise _bad("pool", "edgeRegions are only for a pool")
+    edge_share = _share(pd.get("edgeShare", 0.0), "edgeShare", is_pool)
+    if edge_share > 0 and not er:
+        raise _bad("pool", "edgeShare needs edgeRegions")
     known = {"format", "version", "name", "robotProfile", "surfaces", "objects", "placement", "pool"}
     scene = Scene(name, robot_profile, tuple(surfaces), table, bench, tuple(objects), (float(x0), float(x1), float(y0), float(y1)),
                   float(clearance), {k: v for k, v in doc.items() if k not in known}, pool, tuple(float(v) for v in fr),
-                  tuple(float(v) for v in ko))
+                  tuple(float(v) for v in ko), cluster_share=cluster_share, lying_share=lying_share,
+                  edge_regions=tuple(float(v) for v in er), edge_share=edge_share)
     for i, o in enumerate(objects):
         for sx in (-1, 0, 1):
             for sy in (-1, 0, 1):

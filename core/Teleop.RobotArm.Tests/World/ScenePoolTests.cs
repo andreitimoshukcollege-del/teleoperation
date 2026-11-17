@@ -41,7 +41,7 @@ namespace Teleop.RobotArm.Tests.World
             for (ulong seed = 1; seed <= 200; seed++)
             {
                 ((RigidTransform[] poses, bool[] parked, int missed), double[] scales) = DrawSized(seed);
-                int movable = 0, fixeds = 0;
+                int movable = 0, fixeds = 0, byTheEdge = 0;
                 for (int i = 0; i < poses.Length; i++)
                 {
                     if (parked[i])
@@ -50,23 +50,34 @@ namespace Teleop.RobotArm.Tests.World
                         continue;
                     }
 
-                    if (Pool.Objects[i].Movable) movable++;
+                    SceneObject o = Pool.Objects[i];
+                    // Each on its rest (amendment 6): upright, or lying on a side it lies on stably; a fixture stands upright.
+                    int rest = WorldScene.RestOf(poses[i]);
+                    Assert.True(rest == WorldScene.RestUpright || Pool.CanLie(i, rest), $"seed {seed}: {o.Name} on rest {rest}");
+                    bool atEdge = o.Movable && Pool.InEdgeRegions(poses[i].X, poses[i].Y);
+                    if (atEdge) byTheEdge++;
+                    else if (o.Movable) movable++;
                     else fixeds++;
-                    Assert.True(Pool.FitsOnTable(i, poses[i].X, poses[i].Y, scales[i]), $"seed {seed}: {Pool.Objects[i].Name} off the table");
-                    Assert.True(Pool.ClearOfRobot(poses[i].X, poses[i].Y, Pool.Objects[i].FootprintRadius * scales[i]), $"seed {seed}: {Pool.Objects[i].Name} on the robot");
+                    Assert.True(Pool.FitsOnTable(i, poses[i].X, poses[i].Y, scales[i], rest), $"seed {seed}: {o.Name} off the table");
+                    Assert.True(Pool.ClearOfRobot(poses[i].X, poses[i].Y, Pool.FootprintRadiusAt(i, rest) * scales[i]), $"seed {seed}: {o.Name} on the robot");
                     // A fixture stands beside the robot, its near side within the arm's reach (amendment 5).
-                    if (Pool.InFixedRegions(i)) Assert.True(Math.Sqrt(poses[i].X * poses[i].X + poses[i].Y * poses[i].Y) - Pool.Objects[i].FootprintRadius <= Pool.FixedNearMax + 1e-9, $"seed {seed}: {Pool.Objects[i].Name} out of reach");
-                    // A movable object stands where the arm reaches it (amendment 3): within the band from the robot's base.
-                    if (Pool.Objects[i].Movable) Assert.InRange(Math.Sqrt(poses[i].X * poses[i].X + poses[i].Y * poses[i].Y), Pool.ReachMin, Pool.ReachMax);
-                    Assert.Equal(Pool.Table.Top + Pool.Objects[i].SizeZ * scales[i] / 2, poses[i].Z, 9);
+                    if (Pool.InFixedRegions(i)) Assert.True(Math.Sqrt(poses[i].X * poses[i].X + poses[i].Y * poses[i].Y) - o.FootprintRadius <= Pool.FixedNearMax + 1e-9, $"seed {seed}: {o.Name} out of reach");
+                    // A movable object stands where the arm reaches it (amendment 3): within the band from the robot's base, in front
+                    // of it. The one by the edge (amendment 6) stands outside the region, behind the arm's base.
+                    if (atEdge) Assert.True(poses[i].X < 0 && poses[i].X < Pool.RegionXMin, $"seed {seed}: {o.Name} by the edge in front of the robot");
+                    else if (o.Movable) Assert.InRange(Math.Sqrt(poses[i].X * poses[i].X + poses[i].Y * poses[i].Y), Pool.ReachMin, Pool.ReachMax);
+                    Pool.RestExtents(i, rest, out _, out _, out double up);
+                    Assert.Equal(Pool.Table.Top + up * scales[i] / 2, poses[i].Z, 9);
                     for (int k = 0; k < i; k++)
                     {
-                        if (!parked[k]) Assert.False(Pool.Overlaps(i, poses[i].X, poses[i].Y, k, poses[k].X, poses[k].Y, scales[i], scales[k]), $"seed {seed}: {Pool.Objects[i].Name} on {Pool.Objects[k].Name}");
+                        if (!parked[k]) Assert.False(Pool.Overlaps(i, poses[i].X, poses[i].Y, k, poses[k].X, poses[k].Y, scales[i], scales[k], rest, WorldScene.RestOf(poses[k])), $"seed {seed}: {o.Name} on {Pool.Objects[k].Name}");
                     }
                 }
 
                 // An object that found no spot is parked too: never more on the table than the range, and fewer only by the misses.
+                // At most one more stands by the edge, beyond the range (amendment 6).
                 Assert.InRange(movable, Pool.MovableMin - missed, Pool.MovableMax);
+                Assert.InRange(byTheEdge, 0, 1);
                 Assert.InRange(fixeds, Pool.FixedMin - missed, Pool.FixedMax);
                 // A fixture always finds its spot beside the robot (2026-11-16: drawn from its whole rectangle, 17% of layouts had none).
                 Assert.True(fixeds >= Pool.FixedMin, $"seed {seed}: {fixeds} fixture(s)");
@@ -85,10 +96,11 @@ namespace Teleop.RobotArm.Tests.World
             var many = Enumerable.Range(1, 300).Select(s => Draw((ulong)s)).ToArray();
             Assert.All(Enumerable.Range(0, Pool.Objects.Length), i => Assert.Contains(many, d => !d.Parked[i]));
             // Anywhere in the reach band, not around a nominal pose: the movable objects spread over most of its depth and
-            // swing, and the fixed ones over most of the region.
-            double[] rs = sets.SelectMany(d => d.Poses.Where((p, i) => !d.Parked[i] && Pool.Objects[i].Movable).Select(p => Math.Sqrt(p.X * p.X + p.Y * p.Y))).ToArray();
+            // swing, and the fixed ones over most of the region. (The one by the edge, amendment 6, is not in the band.)
+            bool InBand(RigidTransform p, int i) => Pool.Objects[i].Movable && !Pool.InEdgeRegions(p.X, p.Y);
+            double[] rs = sets.SelectMany(d => d.Poses.Where((p, i) => !d.Parked[i] && InBand(p, i)).Select(p => Math.Sqrt(p.X * p.X + p.Y * p.Y))).ToArray();
             Assert.True(rs.Max() - rs.Min() > 0.7 * (Pool.ReachMax - Pool.ReachMin));
-            double[] ys = sets.SelectMany(d => d.Poses.Where((p, i) => !d.Parked[i] && Pool.Objects[i].Movable).Select(p => p.Y)).ToArray();
+            double[] ys = sets.SelectMany(d => d.Poses.Where((p, i) => !d.Parked[i] && InBand(p, i)).Select(p => p.Y)).ToArray();
             Assert.True(ys.Max() - ys.Min() > 0.3);
         }
 

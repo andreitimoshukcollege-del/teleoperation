@@ -40,6 +40,13 @@ namespace Teleop.RobotArm.World
         /// in the region (a movable one also within the pool's reach band, if it has one), and yaw uniform in ±π, redrawn while it comes within the clearance of one already placed, up to
         /// <see cref="MaxPoolTries"/> times. One that finds no spot is parked too. Returns how many chosen objects found no
         /// spot. Allocates nothing.
+        /// <para>docs/adr/0037 amendment 6, each only for a pool that sets its share (any other takes exactly the draws it always
+        /// took): after which objects, whether one more movable object stands by the bench's edge
+        /// (<see cref="WorldScene.EdgeShare"/>), chosen among those left off the table that have room there, and placed last, out
+        /// of reach; for each movable object after its size, its rest (<see cref="WorldScene.LyingShare"/>: one of the sides it
+        /// lies on stably, uniform), then for one in reach after the first, whether it joins a cluster
+        /// (<see cref="WorldScene.ClusterShare"/>: half its tries beside one already standing, footprint circles the clearance and
+        /// up to <see cref="WorldScene.ClusterGap"/> apart).</para>
         /// </summary>
         public static int Draw(WorldScene scene, ulong seed, Span<RigidTransform> poses, Span<bool> parked)
         {
@@ -83,93 +90,152 @@ namespace Teleop.RobotArm.World
             Choose(ref rng, movable.Slice(0, movables), takeMovable);
             Choose(ref rng, fixedOnes.Slice(0, fixeds), takeFixed);
 
-            // docs/adr/0037 amendment 6: sometimes one more movable object, by the table's edge. Drawn only for a pool that asks,
-            // so every other pool's layouts take exactly the draws they always took.
-            int edge = -1;
-            if (scene.EdgeShare > 0 && rng.NextDouble() < scene.EdgeShare && movables > takeMovable)
-            {
-                Choose(ref rng, movable.Slice(takeMovable, movables - takeMovable), 1);
-                edge = movable[takeMovable];
-            }
+            // docs/adr/0037 amendment 6: sometimes one more movable object, by the bench's edge, from those left off the table, so
+            // it takes no object from the reach band.
+            int edge = scene.EdgeShare > 0 && rng.NextDouble() < scene.EdgeShare ? ChooseEdge(scene, ref rng, movable.Slice(takeMovable, movables - takeMovable)) : -1;
 
-            Span<int> order = stackalloc int[WorldScene.MaxObjects];
-            int count = 0;
-            for (int k = 0; k < takeFixed; k++) order[count++] = fixedOnes[k];
-            for (int k = 0; k < takeMovable; k++) order[count++] = movable[k];
-            if (edge >= 0) order[count++] = edge;
             Span<int> placed = stackalloc int[WorldScene.MaxObjects];
             Span<double> xs = stackalloc double[WorldScene.MaxObjects];
             Span<double> ys = stackalloc double[WorldScene.MaxObjects];
             Span<int> rests = stackalloc int[WorldScene.MaxObjects];
             Span<int> anchors = stackalloc int[WorldScene.MaxObjects];
-            int placedCount = 0, anchorCount = 0, failed = 0;
-            for (int k = 0; k < count; k++)
-            {
-                int i = order[k];
-                bool movableOne = scene.Objects[i].Movable, atEdge = i == edge;
-                double scale = 1.0;
-                if (scene.Resizable(i))
-                {
-                    scene.SizeSteps(i, out int lo, out int hi);
-                    int step = Math.Min(hi, lo + (int)(rng.NextDouble() * (hi - lo + 1)));
-                    scale = WorldScene.ScaleOfStep(step);
-                }
+            var standing = new Standing(scene, poses, parked, scales, placed, xs, ys, rests, anchors);
 
-                int rest = movableOne && scene.LyingShare > 0 ? DrawRest(scene, i, ref rng) : WorldScene.RestUpright;
-                bool beside = movableOne && !atEdge && anchorCount > 0 && scene.ClusterShare > 0 && rng.NextDouble() < scene.ClusterShare;
-                bool done = false;
-                for (int t = 0; t < MaxPoolTries && !done; t++)
-                {
-                    double x, y, yaw;
-                    if (atEdge)
-                    {
-                        if (!scene.DrawEdgeSpot(i, scale, rest, ref rng, out x, out y, out yaw)) continue;
-                    }
-                    else if (beside && t < MaxPoolTries / 2)
-                    {
-                        // Half the tries beside one already placed; then anywhere, as for one that joins no cluster.
-                        int a = placed[anchors[Math.Min(anchorCount - 1, (int)(rng.NextDouble() * anchorCount))]];
-                        if (!DrawBeside(scene, i, scale, rest, a, poses[a].X, poses[a].Y, scales[a], WorldScene.RestOf(poses[a]), ref rng, out x, out y, out yaw)) continue;
-                    }
-                    else if (!scene.DrawSpot(i, scale, rest, ref rng, out x, out y, out yaw)) continue;
-
-                    bool clear = true;
-                    for (int q = 0; q < placedCount && clear; q++)
-                    {
-                        if (scene.Overlaps(i, x, y, placed[q], xs[q], ys[q], scale, scales[placed[q]], rest, rests[q])) clear = false;
-                    }
-
-                    if (!clear) continue;
-                    if (movableOne && !atEdge) anchors[anchorCount++] = placedCount;
-                    placed[placedCount] = i;
-                    xs[placedCount] = x;
-                    ys[placedCount] = y;
-                    rests[placedCount] = rest;
-                    placedCount++;
-                    parked[i] = false;
-                    scales[i] = scale;
-                    poses[i] = scene.PoseAt(i, x, y, yaw, scale, rest);
-                    done = true;
-                }
-
-                if (!done) failed++;
-            }
-
+            // In passes, each object of a pass in turn: the fixed ones, the movable ones in reach (after the first, each may join a
+            // cluster), then the one by the edge. Another pass (scenery, say) is one more loop of Standing.Stand.
+            int failed = 0;
+            for (int k = 0; k < takeFixed; k++) failed += standing.Stand(fixedOnes[k], false, ref rng) ? 0 : 1;
+            for (int k = 0; k < takeMovable; k++) failed += standing.Stand(movable[k], false, ref rng) ? 0 : 1;
+            if (edge >= 0) failed += standing.Stand(edge, true, ref rng) ? 0 : 1;
             return failed;
         }
 
         /// <summary>
-        /// The rest a layout gives movable object <paramref name="index"/> (docs/adr/0037 amendment 6): one of its stable sides
-        /// (<see cref="WorldScene.CanLie"/>), uniform among them, with the pool's <see cref="WorldScene.LyingShare"/>; otherwise
-        /// upright. Draws nothing for an object with no stable side.
+        /// The objects a pool's layout has stood on the table so far, in order: what each next one keeps clear of, and the movable
+        /// ones in reach that a cluster grows from. <see cref="Stand"/> writes each one's pose, size and parked flag.
         /// </summary>
-        private static int DrawRest(WorldScene scene, int index, ref SeededRng rng)
+        private ref struct Standing
+        {
+            private readonly WorldScene _scene;
+            private readonly Span<RigidTransform> _poses;
+            private readonly Span<bool> _parked;
+            private readonly Span<double> _scales;
+            private readonly Span<int> _index;
+            private readonly Span<double> _x;
+            private readonly Span<double> _y;
+            private readonly Span<int> _rest;
+            private readonly Span<int> _anchors; // positions in _index of the movable objects in reach
+            private int _count;
+            private int _anchorCount;
+
+            public Standing(WorldScene scene, Span<RigidTransform> poses, Span<bool> parked, Span<double> scales, Span<int> index, Span<double> x,
+                Span<double> y, Span<int> rest, Span<int> anchors)
+            {
+                _scene = scene;
+                _poses = poses;
+                _parked = parked;
+                _scales = scales;
+                _index = index;
+                _x = x;
+                _y = y;
+                _rest = rest;
+                _anchors = anchors;
+                _count = 0;
+                _anchorCount = 0;
+            }
+
+            /// <summary>
+            /// Draws object <paramref name="i"/>'s size, rest and spot (by the edge when <paramref name="atEdge"/>), clear of every
+            /// object standing, and stands it there; false, leaving it parked, when no try of <see cref="MaxPoolTries"/> finds one.
+            /// </summary>
+            public bool Stand(int i, bool atEdge, ref SeededRng rng)
+            {
+                double scale = 1.0;
+                if (_scene.Resizable(i))
+                {
+                    _scene.SizeSteps(i, out int lo, out int hi);
+                    int step = Math.Min(hi, lo + (int)(rng.NextDouble() * (hi - lo + 1)));
+                    scale = WorldScene.ScaleOfStep(step);
+                }
+
+                bool movable = _scene.Objects[i].Movable;
+                int rest = movable && _scene.LyingShare > 0 ? DrawRest(_scene, i, scale, atEdge, ref rng) : WorldScene.RestUpright;
+                bool beside = movable && !atEdge && _anchorCount > 0 && _scene.ClusterShare > 0 && rng.NextDouble() < _scene.ClusterShare;
+                for (int t = 0; t < MaxPoolTries; t++)
+                {
+                    double x, y, yaw;
+                    if (atEdge)
+                    {
+                        if (!_scene.DrawEdgeSpot(i, scale, rest, ref rng, out x, out y, out yaw)) continue;
+                    }
+                    else if (beside && t < MaxPoolTries / 2)
+                    {
+                        // Half its tries beside one already standing (a cluster); then anywhere, as one that joins none.
+                        int a = _anchors[Math.Min(_anchorCount - 1, (int)(rng.NextDouble() * _anchorCount))];
+                        if (!DrawBeside(_scene, i, scale, rest, _index[a], _x[a], _y[a], _scales[_index[a]], _rest[a], ref rng, out x, out y, out yaw)) continue;
+                    }
+                    else if (!_scene.DrawSpot(i, scale, rest, ref rng, out x, out y, out yaw)) continue;
+
+                    if (!Clear(i, x, y, scale, rest)) continue;
+                    if (movable && !atEdge) _anchors[_anchorCount++] = _count;
+                    _index[_count] = i;
+                    _x[_count] = x;
+                    _y[_count] = y;
+                    _rest[_count] = rest;
+                    _count++;
+                    _parked[i] = false;
+                    _scales[i] = scale;
+                    _poses[i] = _scene.PoseAt(i, x, y, yaw, scale, rest);
+                    return true;
+                }
+
+                return false;
+            }
+
+            /// <summary>Whether object <paramref name="i"/> at (x, y), its size and rest, keeps the clearance from every object standing.</summary>
+            private bool Clear(int i, double x, double y, double scale, int rest)
+            {
+                for (int q = 0; q < _count; q++)
+                {
+                    if (_scene.Overlaps(i, x, y, _index[q], _x[q], _y[q], scale, _scales[_index[q]], rest, _rest[q])) return false;
+                }
+
+                return true;
+            }
+        }
+
+        /// <summary>
+        /// The movable object a layout stands by the edge (docs/adr/0037 amendment 6): one of <paramref name="left"/> (those it
+        /// leaves off the table) with room there upright at its file size (<see cref="WorldScene.HasEdgeRoom"/>), uniform among them;
+        /// -1 when none has. Moves those with room to the front of <paramref name="left"/>.
+        /// </summary>
+        private static int ChooseEdge(WorldScene scene, ref SeededRng rng, Span<int> left)
+        {
+            int n = 0;
+            for (int k = 0; k < left.Length; k++)
+            {
+                if (!scene.HasEdgeRoom(left[k], 1.0, WorldScene.RestUpright)) continue;
+                (left[n], left[k]) = (left[k], left[n]);
+                n++;
+            }
+
+            if (n == 0) return -1;
+            Choose(ref rng, left.Slice(0, n), 1);
+            return left[0];
+        }
+
+        /// <summary>
+        /// The rest a layout gives movable object <paramref name="index"/> (docs/adr/0037 amendment 6): with the pool's
+        /// <see cref="WorldScene.LyingShare"/>, one of the sides it lies on stably (<see cref="WorldScene.CanLie"/>; by the edge, only
+        /// one that leaves it room there), uniform among them; otherwise upright. Draws nothing for an object with no such side.
+        /// </summary>
+        private static int DrawRest(WorldScene scene, int index, double scale, bool atEdge, ref SeededRng rng)
         {
             Span<int> sides = stackalloc int[4];
             int n = 0;
             for (int rest = 1; rest < WorldScene.RestCount; rest++)
             {
-                if (scene.CanLie(index, rest)) sides[n++] = rest;
+                if (scene.CanLie(index, rest) && (!atEdge || scene.HasEdgeRoom(index, scale, rest))) sides[n++] = rest;
             }
 
             if (n == 0 || rng.NextDouble() >= scene.LyingShare) return WorldScene.RestUpright;
@@ -179,7 +245,8 @@ namespace Teleop.RobotArm.World
         /// <summary>
         /// A spot for object <paramref name="index"/> next to object <paramref name="anchor"/> at (ax, ay) (a cluster, docs/adr/0037
         /// amendment 6): their footprint circles apart by the clearance and up to <see cref="WorldScene.ClusterGap"/> more, at a
-        /// uniform bearing, yaw uniform; three draws. False when the spot leaves the table, the region or the reach band.
+        /// uniform bearing, yaw uniform; three draws. False when the spot leaves the table, the region or the reach band (by the edge
+        /// is not in reach).
         /// </summary>
         private static bool DrawBeside(WorldScene scene, int index, double scale, int rest, int anchor, double ax, double ay, double anchorScale, int anchorRest,
             ref SeededRng rng, out double x, out double y, out double yaw)
@@ -190,7 +257,7 @@ namespace Teleop.RobotArm.World
             x = ax + d * Math.Cos(bearing);
             y = ay + d * Math.Sin(bearing);
             yaw = (2 * rng.NextDouble() - 1) * Math.PI;
-            return scene.FitsOnTable(index, x, y, scale, rest) && scene.InReach(index, x, y);
+            return !scene.InEdgeRegions(x, y) && scene.FitsOnTable(index, x, y, scale, rest) && scene.InReach(index, x, y);
         }
 
         private static int Count(ref SeededRng rng, int min, int max)

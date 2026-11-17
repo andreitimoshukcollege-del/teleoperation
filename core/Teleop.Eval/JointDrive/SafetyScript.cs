@@ -13,11 +13,18 @@ namespace Teleop.Eval.JointDrive
     public sealed class SafetyOptions
     {
         /// <summary>
-        /// collide_and_recover's push past the collision model's first touch of the object's box, metres (joint-drive
-        /// --touch-depth-mm). The model's boxes for the arm are larger than Isaac's link shapes, so its first touch is short of
-        /// the real one; the default is <see cref="SafetyScript.TouchDepthMeters"/>, measured on the twin.
+        /// collide_and_recover's push into an object's box, metres (joint-drive --touch-depth-mm), for an object without a shape
+        /// (<see cref="SafetyObject.Shape"/>): its box is all the planner knows of it. The default is
+        /// <see cref="SafetyScript.TouchDepthMeters"/>, measured on the twin.
         /// </summary>
         public float TouchDepthMeters { get; set; } = SafetyScript.TouchDepthMeters;
+
+        /// <summary>
+        /// collide_and_recover's push into an object's own shape, metres, for an object that has one (docs/adr/0037 amendment 5,
+        /// third revision): <see cref="SafetyScript.ShapeTouchDepthMeters"/> by default, kept 3 mm short of the inner radius of
+        /// the slab it meets.
+        /// </summary>
+        public float ShapeTouchDepthMeters { get; set; } = SafetyScript.ShapeTouchDepthMeters;
 
         /// <summary>
         /// docs/adr/0037 P4: the heaviest movable object, at its size, kg, that the arm knocks over (the scene's knockMaxMass,
@@ -40,7 +47,8 @@ namespace Teleop.Eval.JointDrive
     /// <summary>
     /// One scene object as a safety script plans around it, in the arm base frame (metres): its box as it is turned
     /// (<see cref="Center"/>, <see cref="Rotation"/>, <see cref="HalfExtents"/>), and that box's axis-aligned bounds
-    /// (<see cref="Min"/>, <see cref="Max"/>), which place the sweeps.
+    /// (<see cref="Min"/>, <see cref="Max"/>), which place the sweeps; and, for a scanned object, its own shape in that box
+    /// (<see cref="Shape"/>), which only collide_and_recover's touch is planned against.
     /// </summary>
     public readonly struct SafetyObject
     {
@@ -66,14 +74,22 @@ namespace Teleop.Eval.JointDrive
         /// <summary>Height over narrower side above which a pushed object tips before it slides.</summary>
         public const double TippyAspect = 1.25;
 
+        /// <summary>
+        /// The object as it really is, in its box's frame (docs/adr/0037 amendment 5, third revision): a scanned object is far
+        /// smaller than its box when it is round or irregular. Null: the box is all there is to it. Only collide_and_recover's
+        /// touch is planned against it; every clearance stays on the box.
+        /// </summary>
+        public readonly ObjectShape? Shape;
+
         /// <summary>An axis-aligned object.</summary>
-        public SafetyObject(byte id, Vector3 min, Vector3 max, bool movable = true, double mass = 0, bool tippy = false)
-            : this(id, (min + max) / 2f, Quaternion.Identity, (max - min) / 2f, movable, mass, tippy)
+        public SafetyObject(byte id, Vector3 min, Vector3 max, bool movable = true, double mass = 0, bool tippy = false, ObjectShape? shape = null)
+            : this(id, (min + max) / 2f, Quaternion.Identity, (max - min) / 2f, movable, mass, tippy, shape)
         {
         }
 
         /// <summary>A turned object: its box centred at <paramref name="center"/>, turned by <paramref name="rotation"/>.</summary>
-        public SafetyObject(byte id, Vector3 center, Quaternion rotation, Vector3 halfExtents, bool movable = true, double mass = 0, bool tippy = false)
+        public SafetyObject(byte id, Vector3 center, Quaternion rotation, Vector3 halfExtents, bool movable = true, double mass = 0, bool tippy = false,
+            ObjectShape? shape = null)
         {
             Id = id;
             Center = center;
@@ -85,17 +101,18 @@ namespace Teleop.Eval.JointDrive
             Movable = movable;
             Mass = mass;
             Tippy = tippy;
+            Shape = shape;
         }
 
         public CollisionBox Box(float grow) => new CollisionBox($"object {Id}", Center, Rotation, HalfExtents + new Vector3(grow));
 
-        /// <summary>This object's box grown by <paramref name="grow"/> on every side (shrunk when negative, never past its middle).</summary>
+        /// <summary>This object's box grown by <paramref name="grow"/> on every side (shrunk when negative, never past its middle); its shape as it is.</summary>
         public SafetyObject Grown(float grow)
         {
             Vector3 half = grow >= 0
                 ? HalfExtents + new Vector3(grow)
                 : HalfExtents - Vector3.Min(new Vector3(-grow), HalfExtents - new Vector3(0.0005f));
-            return new SafetyObject(Id, Center, Rotation, half, Movable, Mass, Tippy);
+            return new SafetyObject(Id, Center, Rotation, half, Movable, Mass, Tippy, Shape);
         }
     }
 
@@ -111,15 +128,18 @@ namespace Teleop.Eval.JointDrive
     /// <item><b>stop_before_collision:</b> free movement, then a move to a point beside an object and a slowing final approach
     /// toward it that stops with the arm <see cref="StopGapMinMeters"/>-<see cref="StopGapMaxMeters"/> from its box; a hold,
     /// and back out.</item>
-    /// <item><b>collide_and_recover:</b> the same approach, slowly, to <see cref="TouchDepthMeters"/> into the box; a moment
-    /// in contact, and back out before it tips.</item>
+    /// <item><b>collide_and_recover:</b> the same approach, slowly, to <see cref="ShapeTouchDepthMeters"/> into the object's
+    /// own shape (<see cref="TouchDepthMeters"/> into the box of one without a shape); a moment in contact, and back out before
+    /// it tips.</item>
     /// <item><b>collide_with_obstacle:</b> a fast swipe through the object, then lifted away.</item>
     /// </list>
     /// <para>Where an approach goes is found on a sideways sweep round the base past the object (the arm's reach is a thin
     /// shell, so an object is met from the side; <see cref="Sweeps"/>). How far the final approach goes is one number,
     /// searched with every random draw held fixed until the closest approach (or depth) the collision model measures over
-    /// every tick is the category's. An object is its box, turned as it stands (a round object is a little smaller than its box,
-    /// so a touch on its edge may fall short, which the take check catches). Every pose
+    /// every tick is the category's. An object is its box, turned as it stands; a touch is planned against the object's own
+    /// shape when it has one (docs/adr/0037 amendment 5, third revision: a round or irregular scan is far smaller than its box,
+    /// and touches planned into the box stopped 2-10 cm short of it), with the arm as the twin's links are
+    /// (<see cref="ShapeGap.TouchBodies"/>). Every pose
     /// stays in the envelope and passes the collision model (floor, body, the arm's own links), as every script's do; only the
     /// object is allowed to be hit, by the two collide scripts. Every tick is solved by the headset's IK
     /// (<see cref="ArmSolver"/>).</para>
@@ -135,6 +155,19 @@ namespace Teleop.Eval.JointDrive
         // box to touch in Isaac; pushes measured along the sweep (8 mm reached nothing, 15-25 mm touched, 35 mm tipped a post or
         // grazed) put it near 20 mm. Measured into the box since then: a grazing sweep goes along a box, not into it.
         public const float TouchDepthMeters = 0.020f;
+
+        /// <summary>
+        /// collide_and_recover goes this deep into an object's own shape (docs/adr/0037 amendment 5, third revision), measured
+        /// with the arm as the twin's links are: Isaac counts a touch only within 1 mm (or with an impulse), its mesh colliders lie
+        /// a little outside the render mesh the shape is surveyed from, and a slab's prism stands off a sloping mesh by up to
+        /// the survey's excess (a few millimetres); 9 mm clears all three. Kept <see cref="ShapeInnerMarginMeters"/> short of
+        /// the inner radius of the slab it meets (about 6 mm into the large marker).
+        /// </summary>
+        public const float ShapeTouchDepthMeters = 0.009f;
+
+        /// <summary>A touch into a shape stays this far short of the inner radius of the slab it meets: a touch, not a push through.</summary>
+        public const float ShapeInnerMarginMeters = 0.003f;
+
         public const float ThroughPastMeters = 0.04f;
 
         /// <summary>collide_with_obstacle goes at least this deep into the object's box (or as deep as the box allows): through it, not past its edge.</summary>
@@ -270,6 +303,15 @@ namespace Teleop.Eval.JointDrive
             }
 
             int builds = 0;
+            // A touch is planned against the object's own shape when it has one (docs/adr/0037 amendment 5, third revision).
+            var shapes = new ShapeGap?[objects.Count];
+            RobotArmProfile arm = profile; // a copy the local function can use
+            ShapeGap? ShapeOf(int i)
+            {
+                if (script != DriveScript.CollideAndRecover || objects[i].Shape == null) return null;
+                return shapes[i] ??= new ShapeGap(arm, model, objects[i]);
+            }
+
             // Roles (docs/adr/0037 P4): knocking over needs a body the arm can tip or shove (a fixed wall, or one too heavy, is an
             // obstacle, never the target). Touching and backing off prefers one that does not tip; when none of those can be
             // approached, the others are tried (2026-11-16: with fixtures beside the robot and many low objects, steady ones
@@ -293,10 +335,11 @@ namespace Teleop.Eval.JointDrive
                     if (Rank(objects[oi]) != pass) continue;
                     foreach (Sweep sweep in Sweeps(objects[oi], ref rng))
                     {
-                        if (!TryLine(profile, model, envelope, objects, oi, sweep, model.Home, out Line line)) continue;
+                        ShapeGap? shape = ShapeOf(oi);
+                        if (!TryLine(profile, model, envelope, objects, oi, sweep, model.Home, shape, out Line line)) continue;
                         if (++builds > MaxBuilds) break;
                         hand.Restore(rolled);
-                        if (TryEvent(script, profile, model, objects, oi, line, hand, ref rng, options, home, homePitch))
+                        if (TryEvent(script, profile, model, objects, oi, line, hand, ref rng, options, home, homePitch, shape))
                         {
                             double t0 = t; // the hand's timeline starts here in the plan
                             hand.AppendLegs(legs, ref t, ref current);
@@ -344,33 +387,35 @@ namespace Teleop.Eval.JointDrive
             current = k.To;
         }
 
-        /// <summary>The wrist's line towards one object, and its IK poses; the indices where the arm first comes within a gap of the object's box.</summary>
+        /// <summary>The wrist's line towards one object, and its IK poses; the indices where the arm first touches the object's box, and its shape.</summary>
         private readonly struct Line
         {
             public readonly Vector3[] Points;
             public readonly ArmPose[] Poses;
             public readonly int Usable; // poses 0..Usable-1 are reachable, in the envelope and free of everything but the object
             public readonly int Contact; // the first pose touching the object's box (gap 0), or -1
+            public readonly int ShapeContact; // the first pose touching its shape (the touch's arm, ShapeGap), or -1 (or no shape)
             public readonly float Pitch; // the wrist pitch it was solved at
 
-            public Line(Vector3[] points, ArmPose[] poses, int usable, int contact, float pitch)
+            public Line(Vector3[] points, ArmPose[] poses, int usable, int contact, int shapeContact, float pitch)
             {
                 Pitch = pitch;
                 Points = points;
                 Poses = poses;
                 Usable = usable;
                 Contact = contact;
+                ShapeContact = shapeContact;
             }
         }
 
         private static bool TryLine(in RobotArmProfile profile, ArmCollisionModel model, in DriveEnvelope envelope,
-            IReadOnlyList<SafetyObject> objects, int oi, Sweep sweep, in ArmPose from, out Line line)
+            IReadOnlyList<SafetyObject> objects, int oi, Sweep sweep, in ArmPose from, ShapeGap? shape, out Line line)
         {
             // The wrist swings sideways on an arc round the base, at a fixed radius, height and pitch, from SweepRadians to one
             // side of the object's bearing to past it: the arm's reach is a thin shell (measured 2026-11-14: the wrist 14-24 cm
             // out, its gripper pointing down), so an object is met from the side, as a swing knocks it over. The path starts at
             // its first reachable pose clear of every object, and the first touch of the object's box is wherever the collision
-            // model finds it, whichever link it is.
+            // model finds it, whichever link it is. A touch planned against the object's shape needs the line to reach that too.
             line = default;
             SafetyObject o = objects[oi];
             Vector3 c = o.Center;
@@ -395,7 +440,7 @@ namespace Teleop.Eval.JointDrive
             var points = new List<Vector3>(n);
             var poses = new List<ArmPose>(n);
             ArmPose at = from;
-            int contact = -1;
+            int contact = -1, shapeContact = -1;
             for (int i = 0; i < n; i++)
             {
                 float a = a0 + (a1 - a0) * i / (n - 1);
@@ -419,10 +464,12 @@ namespace Teleop.Eval.JointDrive
                 poses.Add(pose);
                 at = pose;
                 if (contact < 0 && !ArmCollision.IsValid(profile, touch, pose)) contact = poses.Count - 1;
+                if (shape != null && shapeContact < 0 && shape.Touches(pose)) shapeContact = poses.Count - 1;
             }
 
             if (contact < (int)(MinTravelMeters / LineStepMeters)) return false;
-            line = new Line(points.ToArray(), poses.ToArray(), poses.Count, contact, sweep.Pitch);
+            if (shape != null && shapeContact < (int)(MinTravelMeters / LineStepMeters)) return false; // the line misses the object itself
+            line = new Line(points.ToArray(), poses.ToArray(), poses.Count, contact, shapeContact, sweep.Pitch);
             return true;
         }
 
@@ -511,13 +558,16 @@ namespace Teleop.Eval.JointDrive
         }
 
         private static bool TryEvent(DriveScript script, in RobotArmProfile profile, ArmCollisionModel model, IReadOnlyList<SafetyObject> objects, int oi,
-            Line line, HumanOperator hand, ref SeededRng rng, SafetyOptions options, Vector3 home, float homePitch)
+            Line line, HumanOperator hand, ref SeededRng rng, SafetyOptions options, Vector3 home, float homePitch, ShapeGap? shape = null)
         {
             SafetyObject o = objects[oi];
             RobotArmProfile arm = profile; // a copy the local functions below can use
             var ladder = new GapLadder(profile, model, o);
             var gap = new float[line.Usable];
             for (int i = 0; i < line.Usable; i++) gap[i] = ladder.SignedGap(line.Poses[i]);
+            // A touch of an object with a shape is measured against the shape, with the arm as the twin's links are; every
+            // clearance (where the final approach starts, the path there, the other objects) stays on the boxes.
+            ShapeGap? touchShape = script == DriveScript.CollideAndRecover ? shape : null;
 
             // Where the final approach aims, on the sweep, and what it must reach there.
             HandEvent kind;
@@ -528,6 +578,14 @@ namespace Teleop.Eval.JointDrive
                 kind = HandEvent.Stop;
                 target = StopGapMinMeters + 0.003f + (float)rng.NextDouble() * (StopGapMaxMeters - StopGapMinMeters - 0.006f);
                 for (int i = 0; i < line.Contact && aim < 0; i++) if (gap[i] <= target) aim = i;
+            }
+            else if (script == DriveScript.CollideAndRecover && touchShape != null)
+            {
+                // Into the object's own shape (docs/adr/0037 amendment 5, third revision), kept short of the inner radius of the
+                // slab the line first meets: a thin object (the large marker) is touched, not pushed through.
+                kind = HandEvent.Touch;
+                target = ShapeTouchTarget(touchShape.Shape, options.ShapeTouchDepthMeters, touchShape.TouchedInnerRadius(line.Poses[line.ShapeContact]));
+                for (int i = line.ShapeContact; i < line.Usable && aim < 0; i++) if (-touchShape.SignedGap(line.Poses[i]) >= target) aim = i;
             }
             else if (script == DriveScript.CollideAndRecover)
             {
@@ -610,7 +668,7 @@ namespace Teleop.Eval.JointDrive
                     if (kind == HandEvent.Through && k > kEvent) break;
                     ArmPose p = hand.Poses[k];
                     if (clearOfOthers && (kind != HandEvent.Through || touching == 0) && !ArmCollision.IsValid(arm, othersClear, p)) clearOfOthers = false;
-                    float g = ladder.SignedGap(p);
+                    float g = touchShape != null ? touchShape.SignedGap(p) : ladder.SignedGap(p);
                     closest = MathF.Min(closest, g);
                     if (g < 0)
                     {
@@ -698,6 +756,14 @@ namespace Teleop.Eval.JointDrive
 
         /// <summary>How deep collide_and_recover goes into <paramref name="o"/>'s box: <paramref name="depth"/>, but never within 3 mm of its middle (a touch, not a push through).</summary>
         public static float TouchTarget(in SafetyObject o, float depth) => MathF.Max(0.001f, MathF.Min(depth, MaxDepth(o) - 0.003f));
+
+        /// <summary>
+        /// How deep collide_and_recover goes into an object's own shape: <paramref name="depth"/>, but
+        /// <see cref="ShapeInnerMarginMeters"/> short of <paramref name="slabInnerRadius"/> (the inner radius of the slab the touch
+        /// meets) and of the deepest the shape can be measured, and at least 1 mm.
+        /// </summary>
+        public static float ShapeTouchTarget(ObjectShape shape, float depth, float slabInnerRadius) =>
+            MathF.Max(0.001f, MathF.Min(depth, MathF.Min(slabInnerRadius, shape.MaxDepth) - ShapeInnerMarginMeters));
 
         /// <summary>The headset's IK from <paramref name="from"/> to the wrist <paramref name="target"/>, roll 0, until it gets there.</summary>
         private static bool TrySolve(in RobotArmProfile profile, in ArmPose from, Vector3 target, float pitch, out ArmPose pose)

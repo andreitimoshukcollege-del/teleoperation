@@ -123,6 +123,7 @@ namespace Teleop.Eval.Tests.JointDrive
             while (dir != null && !System.IO.File.Exists(System.IO.Path.Combine(dir, "core", "Scenes", "jetrover-bench.json"))) dir = System.IO.Path.GetDirectoryName(dir);
             Assert.NotNull(dir);
             var scene = WorldView.LoadScene(System.IO.Path.Combine(dir!, "core", "Scenes", "jetrover-bench.json"), out _);
+            var shapes = WorldView.ShapesOf(scene); // the objects' own shapes, which collide_and_recover touches (docs/adr/0037 amendment 5, third revision)
             var poses = new RigidTransform[scene.Objects.Length];
             var parked = new bool[scene.Objects.Length];
             var scales = new double[scene.Objects.Length];
@@ -133,7 +134,7 @@ namespace Teleop.Eval.Tests.JointDrive
             {
                 SceneLayout.Draw(scene, seed, poses, parked, scales); // a pool's (docs/adr/0037): the objects on the table, at their sizes
                 var objects = scene.Objects.Select((o, i) => (o, i)).Where(x => !parked[x.i])
-                    .Select(x => WorldView.Bounds(x.o, scales[x.i], poses[x.i].X, poses[x.i].Y, poses[x.i].Z, poses[x.i].Qw, poses[x.i].Qx, poses[x.i].Qy, poses[x.i].Qz)).ToArray();
+                    .Select(x => WorldView.Bounds(x.o, scales[x.i], poses[x.i].X, poses[x.i].Y, poses[x.i].Z, poses[x.i].Qw, poses[x.i].Qx, poses[x.i].Qy, poses[x.i].Qz, shapes)).ToArray();
                 foreach (DriveScript script in new[] { DriveScript.ReachNoObstacle, DriveScript.StopBeforeCollision, DriveScript.CollideAndRecover, DriveScript.CollideWithObstacle })
                 {
                     var roles = new SafetyOptions { KnockMaxKg = scene.KnockMaxMass }; // as joint-drive plans it (--scene)

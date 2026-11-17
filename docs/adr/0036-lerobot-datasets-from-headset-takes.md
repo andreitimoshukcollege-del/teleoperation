@@ -284,3 +284,40 @@ of those pauses, for holds up to 6 s. The user chose a continuous motion over th
   - `TheHand_MovesContinuously_InOverlappingSubmovements`: no release, at least 90% of ticks moving, no stillness over
     0.7 s with the smoothing, and the overlap and speed bands as before.
   - The scripts' own tests still hold every category to its event, with the cut never inside it.
+
+## Amendment 4 (2026-11-16): a touch is a touch, not a pair inside PhysX's margin
+
+**Measured** on the 98 takes of the first batch with turned boxes (read-only, after 2026-11-16T23:10Z):
+
+| Category | Kept | Set aside | Takes with any contact record |
+|---|---|---|---|
+| reach_no_obstacle | 25 | 0 | 0 |
+| stop_before_collision | 24 | 0 | 0 |
+| collide_with_obstacle | 25 | 0 | 25 |
+| collide_and_recover | 12 | 12 | 12 (the kept ones) |
+
+- **Every contact stretch began with records at 0 N**, for 20–200 ms. That was PhysX reporting the pair once it came within the
+  shapes' default contact offsets, before any push, so unsafe labels started up to 3 frames early. Stretches also went on
+  at 0 N after the push while the arm hovered inside the margin.
+- **5 of the 48 collide_with_obstacle stretches never had any force** (12–51 ms each). They were proximity, not touches.
+- **Forces once touching:**
+  - collide_and_recover: peak median 1.84 N (p10 0.96, p90 14.5), duration median 685 ms;
+  - collide_with_obstacle: peak median 2.36 N (max 44.9 N).
+- **No stop or reach take was set aside** for a weak or brief contact. The set-aside recover takes had no contact record
+  at all: they fell short of the real mesh (amendment 5 of ADR 0037 treats that).
+- **The colour images do not ghost.** The arm's colour edges sit within 1–1.5 px of its mask edges at every speed, under a
+  tenth of the per-frame motion, so `--subframes 1` stays.
+
+**Decision:**
+- **The rule.** A link–object pair counts as touching on a physics step only if one of its contact points is at most
+  1 mm apart (`contacts.TOUCH_SEPARATION_M`) or PhysX's solver applied an impulse between them that step. A pair that is
+  reported but further apart is *near*: it is not a contact, and the bridge counts these near events in its report.
+- **Offsets set explicitly** on every collider when contacts are reported: the robot's links, objects, surfaces and the
+  shelf.
+  - Contact offset is 5 mm, so PhysX generates a pair's contacts within 10 mm (the two offsets summed). That is above the
+    1 mm threshold, and over 4× the 2.4 mm a link at 8 rad/s, 0.3 m out, closes in one 1 ms step.
+  - Rest offset is 0, so bodies at rest touch at separation 0 and the 1 mm is a real gap.
+- **Where.** The rule is applied on the Isaac side, in `contacts.ContactTracker`, which still imports nothing from Isaac.
+  `world.contact_events` passes each event's smallest contact-point separation alongside its impulse. The labelling side
+  (`teleop_lerobot/safety.py`) is unchanged: what it reads is now a touch.
+- **Takes recorded before this** keep their early margin records. They are not relabelled.

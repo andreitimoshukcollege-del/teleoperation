@@ -98,6 +98,11 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     return a.parse_args(argv)
 
 
+def _mm(metres: float) -> str:
+    """A separation for the report, in millimetres; '-' before any was reported."""
+    return f"{metres * 1000:.2f}" if metres == metres and abs(metres) != float("inf") else "-"
+
+
 def convert_urdf(urdf: str, work: str) -> str:
     """The JetRover's URDF as Isaac's USD, converted once per content, meshes included (``urdf_usd``)."""
     return urdf_usd.convert_urdf(urdf, work, "jetrover")
@@ -182,6 +187,11 @@ def main(argv: Optional[List[str]] = None) -> int:
             from .contacts import urdf_links
 
             world.enable_contacts(urdf_links(urdf), args.dt)
+            from .contacts import CONTACT_OFFSET_M, REST_OFFSET_M, TOUCH_SEPARATION_M
+
+            print(f"[jetrover] contacts: {world.offset_colliders} colliders at contact offset {CONTACT_OFFSET_M * 1000:g} mm, rest offset "
+                  f"{REST_OFFSET_M * 1000:g} mm; a touch is a contact point within {TOUCH_SEPARATION_M * 1000:g} mm or an impulse "
+                  f"(docs/adr/0036 amendment 4)", flush=True)
 
         target = np.zeros((1, n))
 
@@ -407,7 +417,9 @@ def main(argv: Optional[List[str]] = None) -> int:
                 report_at = now + 5_000_000_000
                 print(f"[jetrover] {steps} steps, {late} late; {commands} commands, {torques} torque switches, {rejected_total} rejected; "
                       f"{sent} feedback sent; torque {'on' if torque else 'off'}"
-                      + (f"; contacts: {contact_changes} changes, {contacts_sent} sent, touching {world.contact_tracker.touching()}"
+                      + (f"; contacts: {contact_changes} changes, {contacts_sent} sent, touching {world.contact_tracker.touching()}, "
+                         f"{world.contact_tracker.near_events} near events (inside the offsets, not touching), "
+                         f"separations reported {_mm(world.contact_tracker.min_separation)}..{_mm(world.contact_tracker.max_separation)} mm"
                          if world is not None and world.contact_tracker is not None else ""), flush=True)
 
         if dlog is not None:

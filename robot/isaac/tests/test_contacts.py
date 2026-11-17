@@ -5,7 +5,8 @@ import os
 import pytest
 
 from teleop_isaac import wire
-from teleop_isaac.contacts import FOUND, LOST, PERSIST, UNKNOWN_LINK, ContactEvent, ContactTracker, urdf_links
+from teleop_isaac.contacts import (CONTACT_OFFSET_M, FOUND, LOST, PERSIST, REST_OFFSET_M, TOUCH_SEPARATION_M, UNKNOWN_LINK,
+                                   ContactEvent, ContactTracker, urdf_links)
 
 ROBOT = "/World/jetrover"
 LINKS = ["base_link", "turntable", "proximal_link", "distal_link", "wrist_link", "gripper_link", "left_finger", "right_finger"]
@@ -14,8 +15,8 @@ OBJECTS = {"/World/Scene/Objects/o1_cube": 1, "/World/Scene/Objects/o2_post": 2,
 TABLE = "/World/Scene/Surfaces/s1_table"
 
 
-def ev(body0, body1, kind, impulse=0.001, shape0=None, shape1=None):
-    return ContactEvent(body0, body1, shape0 or body0 + "/collisions", shape1 or body1 + "/Shape", kind, impulse)
+def ev(body0, body1, kind, impulse=0.001, shape0=None, shape1=None, separation=float("inf")):
+    return ContactEvent(body0, body1, shape0 or body0 + "/collisions", shape1 or body1 + "/Shape", kind, impulse, separation)
 
 
 def tracker():
@@ -97,3 +98,47 @@ def test_the_jetrover_urdf_links_are_in_file_order():
 def test_dt_must_be_positive():
     with pytest.raises(ValueError):
         ContactTracker(ROBOT, LINKS, OBJECTS, dt=0.0)
+
+
+GRIPPER, CUBE = f"{ROBOT}/gripper_link", "/World/Scene/Objects/o1_cube"
+
+
+def test_a_pair_inside_the_offsets_is_near_until_it_touches():
+    # docs/adr/0036 amendment 4: PhysX finds the pair 6 mm apart, with no push; it closes in and touches at 0.4 mm, pushes,
+    # backs off to 3 mm (still reported) and is lost.
+    t = tracker()
+    assert t.update([ev(GRIPPER, CUBE, FOUND, 0.0, separation=0.006)]) is False
+    assert t.touching() == () and t.contacts() == [] and t.near_events == 1
+    assert t.update([ev(GRIPPER, CUBE, PERSIST, 0.0, separation=0.0015)]) is False
+    assert t.update([ev(GRIPPER, CUBE, PERSIST, 0.0, separation=0.0004)]) is True  # within 1 mm, no push yet: a touch
+    assert t.contacts() == [(0, 5, 1, 0.0)]
+    assert t.update([ev(GRIPPER, CUBE, PERSIST, 0.0008, separation=-0.0002)]) is False
+    assert t.contacts() == [(0, 5, 1, pytest.approx(0.8))]
+    assert t.update([ev(GRIPPER, CUBE, PERSIST, 0.0, separation=0.003)]) is True  # backed off: near again, not a contact
+    assert t.touching() == ()
+    assert t.update([ev(GRIPPER, CUBE, LOST, 0.0)]) is False
+    assert t.near_events == 3
+    assert (t.min_separation, t.max_separation) == (pytest.approx(-0.0002), pytest.approx(0.006))
+
+
+def test_an_impulse_is_a_touch_whatever_the_separation():
+    # A fast link the solver stops before it would pass in during the step: its points start more than 1 mm apart.
+    t = tracker()
+    assert t.update([ev(GRIPPER, CUBE, FOUND, 0.0005, separation=0.0018)]) is True
+    assert t.touching() == ((5, 1),)
+
+
+def test_the_touch_threshold_is_exactly_one_millimetre():
+    t = tracker()
+    t.update([ev(GRIPPER, CUBE, FOUND, 0.0, separation=TOUCH_SEPARATION_M)])
+    assert t.touching() == ((5, 1),)
+    t.update([ev(GRIPPER, CUBE, PERSIST, 0.0, separation=TOUCH_SEPARATION_M + 1e-5)])
+    assert t.touching() == ()
+
+
+def test_the_offsets_can_report_a_touch_and_see_the_fastest_step_coming():
+    assert REST_OFFSET_M == 0.0  # bodies at rest touch at separation 0: the threshold measures a gap
+    pair = 2 * CONTACT_OFFSET_M  # PhysX: a pair's contacts within the two shapes' contact offsets summed
+    assert pair > TOUCH_SEPARATION_M
+    fastest_step = 8.0 * 0.3 * 0.001  # 8 rad/s, 0.3 m out, one 1 ms step
+    assert pair >= 2 * fastest_step

@@ -1347,7 +1347,7 @@ def run(app, args, p, scene, cameras, fps, joints, motors, tap) -> int:
                             world.set_scale(index, f)
                             if o.id in worn:  # a cylinder's projection runs in metres: retile it at its new size
                                 wear(mat_shaders[o.id], worn[o.id], object_extent(index))
-                            elif o.name in looks_worn:
+                            elif o.name in looks_worn and o.name not in surface_extent:  # a looked object, not a surface
                                 wear_look(look_shaders[o.name], mats["looks"][looks_worn[o.name]], object_extent(index))
                     world_sizes.update(revision=z[0], sizes=[[o.id, round(world.model.scales[i], 4)] for i, o in enumerate(scene.objects)])
                     session_record("SZ", z[0], world_sizes["sizes"])

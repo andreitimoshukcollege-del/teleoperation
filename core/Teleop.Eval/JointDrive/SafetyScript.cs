@@ -150,10 +150,11 @@ namespace Teleop.Eval.JointDrive
         public const float ApproachClearanceMeters = 0.02f;
         public const float StopGapMinMeters = 0.01f;
         public const float StopGapMaxMeters = 0.03f;
-        // collide_and_recover goes this deep into the object's box (capped by the box's size). Measured on the twin 2026-11-15:
-        // the collision model's arm boxes are larger than Isaac's link shapes (about 15 mm), so a touch must go well into the
-        // box to touch in Isaac; pushes measured along the sweep (8 mm reached nothing, 15-25 mm touched, 35 mm tipped a post or
-        // grazed) put it near 20 mm. Measured into the box since then: a grazing sweep goes along a box, not into it.
+        // collide_and_recover goes this deep into the box of an object without a shape (capped by the box's size). Measured on
+        // the twin 2026-11-15: pushes along the sweep (8 mm reached nothing, 15-25 mm touched, 35 mm tipped a post or grazed) put
+        // it near 20 mm. That was put down to the model's arm boxes being about 15 mm larger than Isaac's links; they are Isaac's
+        // links but for the fingers, and what fell short was the round objects' own shapes (docs/adr/0037 amendment 5, third
+        // revision: ShapeTouchDepthMeters). Measured into the box since then: a grazing sweep goes along a box, not into it.
         public const float TouchDepthMeters = 0.020f;
 
         /// <summary>
@@ -591,8 +592,8 @@ namespace Teleop.Eval.JointDrive
             else if (script == DriveScript.CollideAndRecover)
             {
                 // Into the object's box by the touch depth, not that far along the sweep: a sweep that grazes the box goes along
-                // it, not into it (2026-11-15: 20 mm along reached 1-3 mm in, and Isaac's links are ~15 mm inside the model's
-                // boxes, so it never touched). Capped at how deep this object's box can be entered at all.
+                // it, not into it (2026-11-15: 20 mm along reached 1-3 mm in, and never touched). Capped at how deep this object's
+                // box can be entered at all.
                 kind = HandEvent.Touch;
                 target = TouchTarget(o, options.TouchDepthMeters);
                 for (int i = line.Contact; i < line.Usable && aim < 0; i++) if (-gap[i] >= target) aim = i;

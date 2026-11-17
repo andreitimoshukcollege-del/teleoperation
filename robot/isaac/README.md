@@ -64,8 +64,13 @@ its own), and every 20 ms WORLD, the objects' poses as PhysX has them.
   - `just isaac-models-survey <categories>` measures Poly Haven's models and `just isaac-models-fetch` fetches the ones the
     scene names (`polyhaven/<id>`, into `~/isaacsim/assets/polyhaven/`, texture paths pointed at their own folder). The
     fixtures stand in the pool's `fixedRegions` (the table's wings).
-  - `just isaac-materials-fetch` fetches the 20 PBR textures the simple shapes wear per take, and the table's grey
-    laminate; the renderer projects them in object space.
+  - `just isaac-materials-fetch` fetches the PBR textures the simple shapes wear per take and the table-top ones, and makes
+    four Poly Haven lacks (a cutting mat, kraft paper, cardboard, white paper: `teleop_isaac.materials`, from a seed); the
+    renderer projects them in object space.
+- **Surfaces and flat clutter** (docs/adr/0037, its own section): the table and the bench each draw a look per take from the
+  scene's `materials.looks` (`LK`), and `teleop_isaac.clutter` lays flat clutter on the table (papers, a cutting mat,
+  cables, a plastic bag; `CL`, mask id 15). The renderer alone draws it: nothing is taller than 6 mm, which no accepted arm
+  pose can touch, so the bridge, the planner and the contact labels never see it.
 
 `just isaac-scene-check` (`scene_check.py`) runs the real bridge with the scene and talks to it as RobotHost
 would. It checks WORLD_INFO, WORLD at 50 ± 5 Hz, placements applied and refused, and the left hand

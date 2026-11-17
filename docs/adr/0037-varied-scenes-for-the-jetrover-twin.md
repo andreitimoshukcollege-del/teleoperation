@@ -680,3 +680,71 @@ random draw is taken for a share of 0.
   - the edge object on the bench (none falling behind it) and in both third-person frames, and never a safety take's
     target;
   - `collide_and_recover` takes whose lying object a touch only spun, kept by the checker.
+
+## Surfaces and flat clutter (2026-11-17)
+
+Set beside the real robot's camera frames, the twin's table was wrong in two ways. The real bench is a dark, almost black lab
+bench, and the real table carries clutter: loose blue cables, a plastic bag, papers, tools. The twin had one grey laminate on
+both and a bare table. The research the user cited ranks the table's texture the second-hardest factor for sim-to-real
+generalisation.
+
+- **Looks.** The scene's `materials` gains `looks`: each a texture with its desaturation, a tint (linear), an optional
+  roughness (OmniPBR's `reflection_roughness_constant`, with `roughnessTexture` the share of the texture's own, its
+  `reflectionroughness_texture_influence`) and a weight. A surface names a list of looks, or one texture as before. Each take
+  draws one per surface, by weight, from `random.Random("teleop-surface:<seed>:<change>:<surface>")`, so the table and the
+  bench are drawn apart. A simple shape may wear looks by name the same way (`jetrover-bench` has none).
+  - `jetrover-bench` has 14 looks:
+    - `black-resin`: `smooth_concrete_floor` greyed, tint 0.05, roughness 0.3: the real bench;
+    - `black-laminate`: `laminate_floor_02` near black;
+    - `grey-laminate`: the look the table had;
+    - four woods;
+    - a cutting mat;
+    - linen, denim and hessian;
+    - kraft paper, cardboard and white paper.
+  - The table draws from all 14 and the bench from its 7 furniture looks. The two dark looks weigh 2, so the bench is dark in
+    4 of 9 takes and the table in 4 of 16.
+- **Textures.**
+  - Eight more Poly Haven textures (CC0), in a class `surface` that objects never draw. Each id was checked on the API on
+    2026-11-17.
+  - Poly Haven has no CC0 cardboard, paper or cutting mat, so `materials fetch` makes four itself: periodic FFT noise from a
+    fixed seed, written as PNG. Nothing is downloaded, so they are CC0 by construction, and the manifest names the generator.
+    The cutting mat is green with a 1 cm grid and bold lines every 5 cm, on a 0.30 m tile.
+  - The renderer finds each map by its stem in the manifest's files, `diffuse.png` as well as `diffuse.jpg`.
+- **Flat clutter, drawn by the renderer alone.** The JetRover collision model's floor is the table top plus a 10 mm margin.
+  RobotHost's refusal check and every SafetyScript pose keep the arm above it, so nothing 6 mm or thinner on the table can be
+  touched in an accepted pose (and `contacts.py` ignores the robot on a surface anyway). Flat clutter therefore needs no
+  physics, no planner and no contact label.
+  - A new scene section, `clutter`: a count range, a region (the table), a keep-out (the robot's chassis, which overhangs the
+    table's near edge), and kinds with weights, caps and keep-outs of their own.
+  - `jetrover-bench` puts 0-8 placements on the table each take:
+    - stacks of 1-6 A4 sheets and sticky notes, fanned, wearing the white paper tinted;
+    - an A2 cutting mat, 2 mm thick;
+    - blue, black, white and grey cables: tubes 3.5-5 mm across along a smooth seeded curve, 0.35-1.1 m long;
+    - a flat glossy plastic bag, its wrinkles at most 5 mm tall, opaque.
+  - Cables and the bag keep out of the placement region, so they lie on the far strip and the wings, as in the real lab.
+    Sheets lie anywhere clear of the robot, under objects too.
+  - Pieces go down in layers (sheets, then bags, then cables), each on what is under it. The draw keeps every top within
+    6 mm: two cables never cross, and a cable crosses the mat only if it is thin enough, else it steers around.
+  - `teleop_isaac.clutter.draw` is a pure function of the seed, the change and the scene, tested offline. The renderer
+    rebuilds the pieces at each change under `/World/Clutter`, before the room settles, as mask class `clutter` (15).
+  - **The cost.** Physics stands an object on the table top, so one standing on a sheet sinks into it by the sheet's
+    thickness: 2 mm on the mat, under 1 mm on paper.
+- **Records.**
+  - New tags: `LK change name:look;...` and `CL change kind:x:y:yaw;...`. `MT` is unchanged.
+  - `environment.json` credits every texture worn; a generated one says so in its `source`.
+  - Every session reader (the trainer's contract, `robot/lerobot`, `isaac_session`) groups records by tag and passes
+    unknown ones by. Only `verify_session.py` reads mask ids, and only the hands' and the mat's.
+- **No C# change.** RobotHost, Eval and their tests read the scene with System.Text.Json, which skips unknown members, and
+  the headset reads it with `JsonUtility`, which ignores unknown fields. Both map only `SceneDocument`'s fields. The new
+  sections hold objects and flat arrays, with no nulls and no arrays of arrays, the file's rule for `JsonUtility`. The `core`
+  gate passes on the new file.
+
+**Consequences.**
+- The scene's sha256 changes. RobotHost and the bridge read the same file, but the headset refuses a scene whose sha differs
+  from its own copy's, so its twin must be re-baked (`just unity-world-jetrover-xr`, then `just unity-check-xr`) and the
+  sim app rebuilt (`just build-galaxy-sim`).
+- Assets: `just isaac-materials-fetch` downloads the eight new textures (about 48 MB) and makes the four, then
+  `just isaac-materials-status` checks them. Until then, the renderer leaves out of the draw any look or clutter kind whose
+  texture is missing, and says so in its log.
+- **Not in this section: raised clutter.** Tape, scissors, pliers, screwdrivers, a phone and a pen are taller than 6 mm, so
+  they must be scene objects with bodies, and they need `MaxObjects` raised from 24 to 32. That is a later change.

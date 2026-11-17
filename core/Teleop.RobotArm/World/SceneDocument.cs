@@ -132,6 +132,27 @@ namespace Teleop.RobotArm.World
         /// circle, comes within this distance of the robot's base, m: where the arm reaches it. 0: anywhere in its region.
         /// </summary>
         public double fixedNearMax;
+
+        /// <summary>
+        /// docs/adr/0037 amendment 6: the chance, 0-1, that each movable object after a layout's first stands next to one
+        /// already placed (a cluster), rather than anywhere in the reach band. 0: every one anywhere, as before.
+        /// </summary>
+        public double clusterShare;
+
+        /// <summary>
+        /// docs/adr/0037 amendment 6: the chance, 0-1, that a movable object with a stable side lies on it (a can, a parcel,
+        /// a marker) rather than standing upright. 0: every one upright, as before.
+        /// </summary>
+        public double lyingShare;
+
+        /// <summary>
+        /// docs/adr/0037 amendment 6: rectangles <c>[xMin, xMax, yMin, yMax, ...]</c>, root frame, that hold the centre of a
+        /// movable object standing by the table's edge, outside the reach band; its footprint lies on the table or the bench.
+        /// </summary>
+        public double[] edgeRegions = Array.Empty<double>();
+
+        /// <summary>docs/adr/0037 amendment 6: the chance, 0-1, that a layout also stands one more movable object in <see cref="edgeRegions"/>.</summary>
+        public double edgeShare;
     }
 
     /// <summary>Where objects may stand: every footprint lies inside this region and on the table, this far apart.</summary>

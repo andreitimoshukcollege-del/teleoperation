@@ -395,12 +395,19 @@ namespace Teleop.RobotHost.World
         {
             SceneObject o = _scene.Objects[index];
             var rng = new SeededRng(unchecked(LayoutSeed * 0x9E3779B97F4A7C15UL + (ulong)index * 1000 + (ulong)tries));
+            // Its drawn rest, and by the table's edge if it was drawn there (docs/adr/0037 amendment 6), are kept.
+            int rest = WorldScene.RestOf(_layoutTargets[index]);
+            bool atEdge = _scene.IsPool && o.Movable && _scene.InEdgeRegions(_layoutTargets[index].X, _layoutTargets[index].Y);
             for (int t = 0; t < (_scene.IsPool ? SceneLayout.MaxPoolTries : SceneLayout.MaxTries); t++)
             {
                 double x, y, yaw;
-                if (_scene.IsPool)
+                if (atEdge)
                 {
-                    if (!_scene.DrawSpot(index, ScaleFor(index), ref rng, out x, out y, out yaw)) continue;
+                    if (!_scene.DrawEdgeSpot(index, ScaleFor(index), rest, ref rng, out x, out y, out yaw)) continue;
+                }
+                else if (_scene.IsPool)
+                {
+                    if (!_scene.DrawSpot(index, ScaleFor(index), rest, ref rng, out x, out y, out yaw)) continue;
                 }
                 else
                 {
@@ -409,15 +416,16 @@ namespace Teleop.RobotHost.World
                     yaw = o.NominalYaw + (2 * rng.NextDouble() - 1) * o.JitterYaw;
                 }
 
-                if (!_scene.FitsOnTable(index, x, y, ScaleFor(index)) || (_scene.IsPool && !_scene.InReach(index, x, y))) continue;
+                if (!_scene.FitsOnTable(index, x, y, ScaleFor(index), rest) || (_scene.IsPool && !_scene.InReach(index, x, y))) continue;
                 bool clear = true;
                 for (int k = 0; k < _targets.Length && clear; k++)
                 {
-                    if (k != index && !_parked[k] && _scene.Overlaps(index, x, y, k, _targets[k].X, _targets[k].Y, ScaleFor(index), ScaleFor(k))) clear = false;
+                    if (k != index && !_parked[k] &&
+                        _scene.Overlaps(index, x, y, k, _targets[k].X, _targets[k].Y, ScaleFor(index), ScaleFor(k), rest, WorldScene.RestOf(_targets[k]))) clear = false;
                 }
 
                 if (!clear) continue;
-                _targets[index] = _scene.PoseAt(index, x, y, yaw, ScaleFor(index));
+                _targets[index] = _scene.PoseAt(index, x, y, yaw, ScaleFor(index), rest);
                 if (_scene.IsPool) _layoutTargets[index] = _targets[index];
                 return true;
             }

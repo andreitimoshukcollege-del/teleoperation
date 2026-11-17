@@ -92,7 +92,7 @@ namespace Teleop.RobotHost.World
                 {
                     for (int k = 0; k < _poses.Length; k++)
                     {
-                        if (k != me && !_poses[k].Parked && _scene.Overlaps(me, px, py, k, _poses[k].X, _poses[k].Y, scale, _scales[k])) return false;
+                        if (k != me && !_poses[k].Parked && _scene.Overlaps(me, px, py, k, _poses[k].X, _poses[k].Y, scale, _scales[k], WorldScene.RestUpright, RestOf(_poses[k]))) return false;
                     }
 
                     return true;
@@ -174,6 +174,8 @@ namespace Teleop.RobotHost.World
             return true;
         }
 
+        private static int RestOf(in ObjectPose p) => WorldScene.RestOf(p.Qw, p.Qx, p.Qy, p.Qz, out _);
+
         private PlaceOutcome Check(PlaceCause cause, in ObjectPose pose, out int index, out ObjectPose upright)
         {
             upright = default;
@@ -187,14 +189,17 @@ namespace Teleop.RobotHost.World
 
             if (cause == PlaceCause.Headset && (!_scene.Objects[index].OperatorMovable || _poses[index].Parked)) return PlaceOutcome.NotMovable;
             if (!pose.IsValid()) return PlaceOutcome.InvalidPose;
-            double yaw = WorldHost.YawOf(pose);
-            if (!_scene.FitsOnTable(index, pose.X, pose.Y, _scales[index])) return PlaceOutcome.OutsideRegion;
+            // On the rest nearest the pose's rotation (docs/adr/0037 amendment 6): upright, as always, unless it asks for a side.
+            int rest = WorldScene.RestOf(pose.Qw, pose.Qx, pose.Qy, pose.Qz, out double restYaw);
+            double yaw = rest == WorldScene.RestUpright ? WorldHost.YawOf(pose) : restYaw;
+            if (!_scene.FitsOnTable(index, pose.X, pose.Y, _scales[index], rest)) return PlaceOutcome.OutsideRegion;
             for (int k = 0; k < _poses.Length; k++)
             {
-                if (k != index && !_poses[k].Parked && _scene.Overlaps(index, pose.X, pose.Y, k, _poses[k].X, _poses[k].Y, _scales[index], _scales[k])) return PlaceOutcome.OverlapsObject;
+                if (k != index && !_poses[k].Parked &&
+                    _scene.Overlaps(index, pose.X, pose.Y, k, _poses[k].X, _poses[k].Y, _scales[index], _scales[k], rest, RestOf(_poses[k]))) return PlaceOutcome.OverlapsObject;
             }
 
-            upright = ObjectPose.Of(pose.Id, ObjectPose.FlagKinematic, _scene.PoseAt(index, pose.X, pose.Y, yaw, _scales[index]));
+            upright = ObjectPose.Of(pose.Id, ObjectPose.FlagKinematic, _scene.PoseAt(index, pose.X, pose.Y, yaw, _scales[index], rest));
             return PlaceOutcome.Applied;
         }
     }

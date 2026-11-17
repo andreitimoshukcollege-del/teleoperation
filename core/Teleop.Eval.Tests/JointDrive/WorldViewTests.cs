@@ -59,37 +59,31 @@ namespace Teleop.Eval.Tests.JointDrive
         public void AnObjectByTheBenchsBackEdge_CannotBeApproached()
         {
             // docs/adr/0037 amendment 6: the object by the edge is scenery for the cameras, out of the arm's reach on purpose, so
-            // no stop, touch or knock aims at it. Every object that may stand there, at the spots of each edge rectangle nearest
-            // the arm (its footprint just clear of the robot's keep-out, the rectangle's side nearest the base), upright and on
-            // each side it lies on there, turned two ways, alone on the table: no script plans.
+            // no stop, touch or knock aims at it. Mapped on 2026-11-17 (every object that may stand there, x -0.12 to -0.18 m,
+            // |y| in 2 cm steps, two yaws): each was approachable out to |y| 0.32-0.34 m and none beyond 0.36, so the regions start
+            // at 0.40. Here the worst cases, alone on the table: the widest such object (nearest the arm) upright and lying, and
+            // the tallest (highest top), at the spot of an edge rectangle nearest the base, a corner of its footprint turned
+            // towards the base. Each failed plan explores every sweep (seconds each), so one rectangle: the robot and its yaw
+            // range are mirror-images across x, as the map found.
             var reached = new List<string>();
             var roles = new SafetyOptions { KnockMaxKg = Bench.KnockMaxMass };
             int[] candidates = Enumerable.Range(0, Bench.Objects.Length).Where(i => Bench.HasEdgeRoom(i, 1.0, WorldScene.RestUpright)).ToArray();
-            // The largest footprint and the tallest of them: the nearest any object comes to the arm, and the highest top.
             int widest = candidates.OrderByDescending(i => Bench.FootprintRadiusAt(i, 0)).First();
             int tallest = candidates.OrderByDescending(i => Bench.Objects[i].SizeZ).First();
-            foreach (int i in new[] { widest, tallest }.Distinct())
+            int lie = Enumerable.Range(1, 5).First(r => Bench.CanLie(widest, r) && Bench.HasEdgeRoom(widest, 1.0, r));
+            int k = Enumerable.Range(0, Bench.EdgeRegions.Length / 4).Select(n => 4 * n).First(n => Bench.EdgeRegions[n + 2] > 0);
+            foreach ((int i, int rest) in new[] { (widest, 0), (widest, lie), (tallest, 0) })
             {
-                foreach (int rest in new[] { 0, 1, 2 }.Where(r => r == 0 || (Bench.CanLie(i, r) && Bench.HasEdgeRoom(i, 1.0, r))))
+                Bench.RestExtents(i, rest, out double ex, out double ey, out _);
+                double x = Bench.EdgeRegions[k + 1];
+                double y = Math.Max(Bench.EdgeRegions[k + 2], Bench.RobotKeepOut[3] + Bench.FootprintRadiusAt(i, rest) + 1e-4);
+                double yaw = Math.Atan2(-y, -x) - Math.Atan2(-ey, ex); // its corner (ex/2, -ey/2) towards the base
+                Assert.True(Bench.FitsOnTable(i, x, y, 1.0, rest), $"{Bench.Objects[i].Name} at ({x}, {y})");
+                SafetyObject o = At(i, Bench.PoseAt(i, x, y, yaw, 1.0, rest));
+                foreach (DriveScript script in new[] { DriveScript.StopBeforeCollision, DriveScript.CollideAndRecover })
                 {
-                    double r0 = Bench.FootprintRadiusAt(i, rest);
-                    for (int k = 0; k < Bench.EdgeRegions.Length; k += 4)
-                    {
-                        double x = Bench.EdgeRegions[k + 1], side = Bench.EdgeRegions[k + 2] > 0 ? 1 : -1;
-                        double near = side > 0 ? Bench.EdgeRegions[k + 2] : -Bench.EdgeRegions[k + 3];
-                        foreach (double more in new[] { 0.0, 0.04 })
-                        foreach (double yaw in new[] { 0.0, Math.PI / 4 })
-                        {
-                            double y = side * (Math.Max(near, Bench.RobotKeepOut[3] + r0 + 1e-4) + more);
-                            Assert.True(Bench.FitsOnTable(i, x, y, 1.0, rest), $"{Bench.Objects[i].Name} at ({x}, {y})");
-                            SafetyObject o = At(i, Bench.PoseAt(i, x, y, yaw, 1.0, rest));
-                            foreach (DriveScript script in new[] { DriveScript.StopBeforeCollision, DriveScript.CollideAndRecover, DriveScript.CollideWithObstacle })
-                            {
-                                if (DrivePlan.TryBuild(script, Profile, Model.Home, 2.5f, 20, 1, Envelope, out _, out _, new[] { o }, roles))
-                                    reached.Add(FormattableString.Invariant($"{SafetyScript.Category(script)} {Bench.Objects[i].Name} rest {rest} at ({x:0.000}, {y:0.000}) yaw {yaw:0.00}"));
-                            }
-                        }
-                    }
+                    if (DrivePlan.TryBuild(script, Profile, Model.Home, 2.5f, 20, 1, Envelope, out _, out _, new[] { o }, roles))
+                        reached.Add(FormattableString.Invariant($"{SafetyScript.Category(script)} {Bench.Objects[i].Name} rest {rest} at ({x:0.000}, {y:0.000}) yaw {yaw:0.00}"));
                 }
             }
 

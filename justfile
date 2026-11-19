@@ -2638,7 +2638,9 @@ robot-camera-check device="/dev/video0" remote_host=default_jetrover_host remote
         gst-launch-1.0 -q nvarguscamerasrc num-buffers=1 ! 'video/x-raw(memory:NVMM),width=1280,height=720' ! nvjpegenc ! filesink location="$out" </dev/null 2>&1 || true
     fi
     if [ ! -s "$out" ] && command -v ffmpeg >/dev/null 2>&1; then
-        ffmpeg -nostdin -hide_banner -loglevel error -f v4l2 -i "$dev" -frames:v 1 -y "$out" 2>&1 || true
+        # The 31st frame, not the first: a UVC camera's first frames come before its auto-exposure has settled, and
+        # are near black (two Orbbec Femto Bolts, 2026-11-19).
+        ffmpeg -nostdin -hide_banner -loglevel error -f v4l2 -i "$dev" -vf 'select=gte(n\,30)' -frames:v 1 -y "$out" 2>&1 || true
     fi
     if [ ! -s "$out" ] && command -v gst-launch-1.0 >/dev/null 2>&1; then
         gst-launch-1.0 -q v4l2src device="$dev" num-buffers=1 ! videoconvert ! jpegenc ! filesink location="$out" </dev/null 2>&1 || true

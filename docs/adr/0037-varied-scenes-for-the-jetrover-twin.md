@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted, 2026-11-15 (the user, on starting P1). P1 built 2026-11-15; P2 built 2026-11-15 (amendments 1 and 2); P3 built 2026-11-15 (amendment 3); P4 built 2026-11-15 (amendment 4). Real fixtures and materials 2026-11-16 (amendment 5). Tables that look used 2026-11-17 (amendment 6). Surfaces and flat clutter 2026-11-17, raised clutter 2026-11-21 (their own sections).
+Accepted, 2026-11-15 (the user, on starting P1). P1 built 2026-11-15; P2 built 2026-11-15 (amendments 1 and 2); P3 built 2026-11-15 (amendment 3); P4 built 2026-11-15 (amendment 4). Real fixtures and materials 2026-11-16 (amendment 5). Tables that look used 2026-11-17 (amendment 6). Surfaces and flat clutter 2026-11-17, raised clutter 2026-11-21 (their own sections). Two twins at once 2026-11-21 (amendment 7).
 
 ## Context
 
@@ -930,3 +930,102 @@ The arm can hit those, so they are scene objects with bodies, and every process 
   - its masks (`100 + id`, 160-165), the phone black and glossy and the pen coloured (`LK`);
   - no `reach_no_obstacle` or `stop_before_collision` take set aside for touching clutter, and the knock and touch targets
     in about the shares above.
+
+## Amendment 7 (2026-11-21): two twins at once
+
+**Why.** One twin used a third of the GPU machine while a safety batch ran (measured 2026-11-21, during a take):
+
+| One twin | |
+|---|---|
+| GPU memory | 8.4 GB of 32 GB: the bridge 2.9 GB, the renderer 4.3 GB idle |
+| GPU utilisation | 32-48 % |
+| RAM | about 13 GB |
+| CPU | about 7 cores: the bridge about 4 (on its 4 pinned threads), the renderer about 2.6 |
+
+A take recorded about 17 s and cost about 70 s end to end: the layout, the settle, the planning, joint-drive's 3 s
+countdown, and the check and save. The user approved two twins, so two batches record at once.
+
+**Decision.**
+
+- **Twin N.** `isaac-jetrover-host`, `isaac-stop`, `isaac-status` and `isaac-safety-batch` take a twin, 0 or 1.
+  - The default is 0, so every existing call does what it did.
+  - Twin 1's ports are twin 0's plus 100. Its runtime files (sockets, logs, RobotHost's build folder, the uplink control)
+    end in `-1`. Its data folders end in `-twin1`.
+  - The table of ports and paths is in docs/gpu-machine.md.
+- **Telling twins apart.** RobotHost, the bridge and the renderer all take `--record-control <sessions>/.active`, and each
+  twin has its own sessions folder. The recipes, the gpu-ui probe and `isaac-stop` find a twin's processes by that path.
+  The FR3 Duo's host names no JetRover sessions folder, so twin 0's stop also stops it, as before.
+- **One checkout.** Both twins run `~/repos/isaac`. A twin refuses to start at another commit while the other runs: a
+  checkout under a running twin changes its code.
+- **Its own RobotHost build.** Each twin builds into its own folder. A build into the folder a running RobotHost loaded
+  from would rewrite its assemblies under it.
+- **The renderer's feeds.** It gained `--feed-port-offset`. Twin 1 serves the wrist and third-person feeds on 6103, 6108
+  and 6109.
+- **Cores.** The bridge is pinned, since it spins on its threads:
+  - twin 0 on 2-5, as ADR 0032's spike measured;
+  - twin 1 on 26-29, the other CCD's second threads, which were idle;
+  - both renderers share 8-23.
+- **Takes.** Twin 1 records into `~/data/takes/jetrover-isaac-twin1/<category>/`. RobotHost numbers takes by what is in
+  their folder, so two hosts in one folder would collide.
+  - Its first start copies twin 0's `scenarios.txt` and its ACLs.
+  - `isaac-share-scenarios` and the LeRobot watcher's roots include the folder. The watcher picks it up when it next
+    restarts.
+- **Each batch its own files.** `recordings/.drive/safety-batch-1.json`, `PAUSE-1`, `STOP-1`, and the kept takes in
+  `safety-batch-1.kept`. Twin 0's names are unchanged. gpu-ui shows a card per twin and per batch.
+- **One dataset.** `isaac-safety-build twins=0,1` writes the takes both batches kept as one dataset, in recorded order.
+  The batch's own build goes through the same private recipe (`_isaac-safety-build`). `teleop_lerobot safety-build`
+  already took takes from any folder.
+- **The convenience recipes.**
+  - `isaac-twins-up n=2` starts the twins one after the other, in the background on the GPU machine
+    (`isaac-jetrover-host ... detach=true`), so a dropped ssh session leaves them running (the 2026-11-16 failure).
+  - `isaac-safety-batch-twins takes seed n=2` runs a batch per twin at once, with seeds `seed` and `seed+1000`. A take's
+    seed is `seed*100000+n`, so the two never meet. It then builds one dataset.
+  - `isaac-twins-down` is `isaac-stop all`.
+- **No countdown on the twin.** joint-drive skips its 3 s countdown with `--simulated-robot`, which every safety take
+  passes. Nobody stands beside the twin to step back. The real arm keeps the 3 s (`JointDriveCommand.CountdownSeconds`,
+  tested). The settle is unchanged.
+
+**Measured (2026-11-21, `work/twins` at 0fca851).** Both twins ran on jetrover-bench. The figures are sampled every 10 s.
+
+| Both twins idle | |
+|---|---|
+| GPU memory | 15.7 GB of 32 GB |
+| GPU utilisation | 63-68 % (51-80 % while either recorded) |
+| RAM, the whole machine | 38.5-40 GB used, 24-25 GB available; one twin and the rest of the machine used about 25 GB |
+| Load average | 35-45 on 32 threads (about 15-19 with one twin); the bridges' spinning is most of it |
+| Renderer frame rate (5 s windows) | 29.5-30.4 at idle |
+
+During takes the frame rate dipped for single 5 s windows:
+
+- twin 0: 28.6, 27.0;
+- twin 1: 25.6 once, during its knock take.
+
+Each was back to 29.5-30 by the next window.
+
+| Takes, 1 round of 4 categories on each twin | Twin 0 (seed 9101) | Twin 1 (seed 10101) |
+|---|---|---|
+| Wall time, start to verdict | 68, 32, 17, 20 s (2 min 17 s) | 42, 14, 19, 48 s (2 min 3 s) |
+| Kept | 3 (one recover take set aside: it tipped its object) | 4 |
+
+- **About 32 s a take,** start to verdict, without the countdown. That is about 110 takes an hour a twin, against the 70 s
+  (about 50 an hour) measured earlier. The batches' layouts asked for fewer events than that measurement's.
+- **The two batches did not overlap.** Twin 1's batch waited for twin 0's: the Teleop.Eval build lock was inherited by
+  MSBuild's servers, which outlive the build. `flock -o` fixed it. A takes=0 run then showed both builds going within a
+  second of each other. So each twin's takes ran with the other twin running but idle.
+- **Projection, not measured.** Two twins recording at once double the takes an hour if a take costs each twin what it
+  costs alone. Both renderers held about 30 fps at idle, the GPU was at two thirds, and 24 GB of RAM stayed free. The first
+  batch on both twins should confirm it from its progress files' rates.
+- **Bridge late steps.** They came in bursts of about 350-560 at each new layout (the objects placed), on either twin, and
+  stayed flat between takes.
+- **Start-up.** The first time, twin 1's renderer took 3 min 15 s to stream beside a running twin, past the recipe's 3 min
+  wait. The recipe now waits up to 7 min and stops a renderer that never streamed. A warm restart of both took 40 s.
+- **One dataset from both.** The 7 kept takes made one dataset of 7 episodes (1757 frames) in 1 min 48 s, interleaved by
+  recording time. It was written to a scratch folder and deleted.
+
+**Consequences.**
+
+- The headset, `isaac-relay`, `isaac-uplink-*`, `isaac-jetrover-record-drive` and `isaac-knock-probe`'s batch work with twin
+  0 only. Twin 1 answers discovery on 6105, which the headset never asks.
+- A third twin would fit in GPU memory (about 23 GB). It would not fit the CPU: load is already above the thread count,
+  and there are no idle threads left to pin a third bridge on.
+

@@ -13,6 +13,10 @@ namespace Teleop.Eval.Tests.JointDrive
     /// <summary>joint-drive's safety scripts (docs/adr/0036 amendment 1), planned around the bench scene's objects at their nominal places.</summary>
     public class SafetyScriptTests
     {
+        private readonly Xunit.Abstractions.ITestOutputHelper _output;
+
+        public SafetyScriptTests(Xunit.Abstractions.ITestOutputHelper output) => _output = output;
+
         private static readonly RobotArmProfile Profile = RobotArmProfile.JetRoverMeasuredDefault;
         private static readonly ArmCollisionModel Model = Profile.Collision!;
         private static readonly DriveEnvelope Envelope = DriveEnvelope.FromModel(Model, 15f * MathF.PI / 180f);
@@ -159,6 +163,93 @@ namespace Teleop.Eval.Tests.JointDrive
             {
                 Assert.True(planned.GetValueOrDefault(script) >= bar[script], $"{report}; e.g. {string.Join(" | ", why)}");
             }
+        }
+
+        [Fact]
+        public void OnRandomLayouts_ClutterIsSometimesTheTarget_NeverMostOfTheTargets()
+        {
+            // docs/adr/0037 "Raised clutter": a layout stands 1-3 pieces of desk clutter anywhere in the region, and they are scene
+            // objects, so the scripts plan around them and may aim at one. Knocking a pen or a phone is realistic; clutter taking most
+            // of the targets is not. Each category's targets over the layouts (the object the planned arm first comes within 3.5 cm
+            // of; one met as soon as another counts for both), and how many layouts plan with the clutter and without it.
+            WorldScene scene = WorldView.LoadScene(ObjectShapeTests.RepoFile("core", "Scenes", "jetrover-bench.json"), out _);
+            ObjectShapes? shapes = WorldView.ShapesOf(scene);
+            var poses = new RigidTransform[scene.Objects.Length];
+            var parked = new bool[scene.Objects.Length];
+            var scales = new double[scene.Objects.Length];
+            const int Layouts = 40;
+            DriveScript[] scripts = { DriveScript.StopBeforeCollision, DriveScript.CollideAndRecover, DriveScript.CollideWithObstacle };
+            var planned = scripts.ToDictionary(s => s, _ => 0);
+            var plannedWithout = scripts.ToDictionary(s => s, _ => 0);
+            var targets = scripts.ToDictionary(s => s, _ => new SortedDictionary<string, int>(StringComparer.Ordinal));
+            int clutterOnTable = 0, clutterInReach = 0, layoutsWithClutterInReach = 0;
+            for (ulong seed = 1; seed <= Layouts; seed++)
+            {
+                SceneLayout.Draw(scene, seed, poses, parked, scales);
+                int[] on = Enumerable.Range(0, scene.Objects.Length).Where(i => !parked[i]).ToArray();
+                var objects = on.Select(i => WorldView.Bounds(scene.Objects[i], scales[i], poses[i].X, poses[i].Y, poses[i].Z, poses[i].Qw, poses[i].Qx, poses[i].Qy, poses[i].Qz, shapes)).ToArray();
+                SafetyObject[] without = objects.Where((o, k) => !scene.Objects[on[k]].Clutter).ToArray();
+                int reachable = on.Count(i => scene.Objects[i].Clutter && InBand(poses[i]));
+                clutterOnTable += on.Count(i => scene.Objects[i].Clutter);
+                clutterInReach += reachable;
+                layoutsWithClutterInReach += reachable > 0 ? 1 : 0;
+                foreach (DriveScript script in scripts)
+                {
+                    var roles = new SafetyOptions { KnockMaxKg = scene.KnockMaxMass };
+                    if (DrivePlan.TryBuild(script, Profile, Model.Home, 2.5f, 20, seed, Envelope, out DrivePlan? plan, out _, objects, roles))
+                    {
+                        planned[script]++;
+                        foreach (int k in Targets(plan!, objects))
+                        {
+                            int i = on[k];
+                            string kind = scene.Objects[i].Clutter ? "clutter " + scene.Objects[i].Name : !scene.Objects[i].Movable ? "fixture"
+                                : scene.InEdgeRegions(poses[i].X, poses[i].Y) ? "by the edge" : WorldScene.RestOf(poses[i]) != WorldScene.RestUpright ? "lying" : "standing";
+                            targets[script][kind] = targets[script].GetValueOrDefault(kind) + 1;
+                        }
+                    }
+
+                    if (DrivePlan.TryBuild(script, Profile, Model.Home, 2.5f, 20, seed, Envelope, out _, out _, without, roles)) plannedWithout[script]++;
+                }
+            }
+
+            _output.WriteLine($"over {Layouts} layouts: {clutterOnTable} pieces of clutter on the table, {clutterInReach} with their centre in the reach band " +
+                              $"(in {layoutsWithClutterInReach} layouts)");
+            foreach (DriveScript script in scripts)
+            {
+                _output.WriteLine($"{SafetyScript.Category(script)}: planned {planned[script]} ({plannedWithout[script]} without the clutter); targets: " +
+                                  string.Join(", ", targets[script].Select(kv => $"{kv.Key} {kv.Value}")));
+            }
+
+            foreach (DriveScript script in scripts)
+            {
+                int clutter = targets[script].Where(kv => kv.Key.StartsWith("clutter ", StringComparison.Ordinal)).Sum(kv => kv.Value);
+                Assert.True(2 * clutter <= targets[script].Values.Sum(), $"{SafetyScript.Category(script)}: clutter {clutter} of {targets[script].Values.Sum()} targets");
+                Assert.True(planned[script] >= plannedWithout[script] - Layouts / 10, $"{SafetyScript.Category(script)}: {planned[script]} planned, {plannedWithout[script]} without the clutter");
+            }
+
+            static bool InBand(in RigidTransform p)
+            {
+                double r = Math.Sqrt(p.X * p.X + p.Y * p.Y);
+                return r >= 0.15 && r <= 0.30;
+            }
+        }
+
+        /// <summary>
+        /// The objects a plan aims at: of <paramref name="objects"/>, the one its script part first brings the arm within 3.5 cm of
+        /// (by the collision model's bodies), and any met at that same instant; none when it never comes that near.
+        /// </summary>
+        private static IEnumerable<int> Targets(DrivePlan plan, IReadOnlyList<SafetyObject> objects)
+        {
+            double start = plan.Legs.First(l => l.Phase == LegPhase.Script).Start;
+            var near = objects.Select(o => SafetyScript.WithObjects(Model, new[] { o }, 0.035f, 0f)).ToArray();
+            for (double t = start; t <= plan.TotalSeconds; t += 0.01)
+            {
+                ArmPose pose = plan.Sample(t);
+                int[] met = Enumerable.Range(0, objects.Count).Where(k => !ArmCollision.IsValid(Profile, near[k], pose)).ToArray();
+                if (met.Length > 0) return met;
+            }
+
+            return Array.Empty<int>();
         }
 
         [Fact]

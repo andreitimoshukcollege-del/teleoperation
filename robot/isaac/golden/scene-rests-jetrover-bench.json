@@ -1,7 +1,7 @@
 {
  "about": "docs/adr/0037 amendment 6: the rests of core/Scenes/jetrover-bench.json, written by SceneRestTests (just gen-isaac-goldens). objects: name, then per rest 0-5 its extents (x, y, up), footprint radius and whether a layout may lay it there. poses: index, rest, x, y, yaw, then PoseAt's x, y, z, qw, qx, qy, qz. restOf: qw, qx, qy, qz, then RestOf's rest and yaw. fits: index, rest, x, y, FitsOnTable. overlaps: a, x, y, rest, b, x, y, rest, Overlaps.",
  "scene": "jetrover-bench",
- "sha256": "37dfe0a718db4321cbd5b1e9bf61ea33df46ce788352cd310a1c7a0291e76c19",
+ "sha256": "c814e4216b85777c504141cef2a725e975df774a7299056ddab4a637d03bf194",
  "shares": [0.6, 0.35, 0.5],
  "edgeRegions": [-0.2, -0.12, 0.4, 0.62, -0.2, -0.12, -0.62, -0.4],
  "objects": [

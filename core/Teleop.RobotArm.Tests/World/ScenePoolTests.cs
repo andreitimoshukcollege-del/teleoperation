@@ -52,15 +52,16 @@ namespace Teleop.RobotArm.Tests.World
 
                     SceneObject o = Pool.Objects[i];
                     // Each on its rest (amendment 6): upright, or lying on a side it lies on stably; a fixture stands upright.
-                    int rest = WorldScene.RestOf(poses[i]);
+                    int rest = WorldScene.RestOf(poses[i], out double yaw);
                     Assert.True(rest == WorldScene.RestUpright || Pool.CanLie(i, rest), $"seed {seed}: {o.Name} on rest {rest}");
                     bool atEdge = o.Movable && !o.Clutter && Pool.InEdgeRegions(poses[i].X, poses[i].Y);
                     if (o.Clutter) clutter++;
                     else if (atEdge) byTheEdge++;
                     else if (o.Movable) movable++;
                     else fixeds++;
-                    Assert.True(Pool.FitsOnTable(i, poses[i].X, poses[i].Y, scales[i], rest), $"seed {seed}: {o.Name} off the table");
-                    Assert.True(Pool.ClearOfRobot(poses[i].X, poses[i].Y, Pool.FootprintRadiusAt(i, rest) * scales[i]), $"seed {seed}: {o.Name} on the robot");
+                    // On the table, clear of the robot: by its circle, but a piece of clutter by its own rectangle at its yaw.
+                    Assert.True(Pool.FitsOnTable(i, poses[i].X, poses[i].Y, yaw, scales[i], rest), $"seed {seed}: {o.Name} off the table");
+                    if (!o.Clutter) Assert.True(Pool.ClearOfRobot(poses[i].X, poses[i].Y, Pool.FootprintRadiusAt(i, rest) * scales[i]), $"seed {seed}: {o.Name} on the robot");
                     // A fixture stands beside the robot, its near side within the arm's reach (amendment 5).
                     if (Pool.InFixedRegions(i)) Assert.True(Math.Sqrt(poses[i].X * poses[i].X + poses[i].Y * poses[i].Y) - o.FootprintRadius <= Pool.FixedNearMax + 1e-9, $"seed {seed}: {o.Name} out of reach");
                     // A movable object stands where the arm reaches it (amendment 3): within the band from the robot's base, in front
@@ -69,19 +70,19 @@ namespace Teleop.RobotArm.Tests.World
                     else if (o.Movable && !o.Clutter) Assert.InRange(Math.Sqrt(poses[i].X * poses[i].X + poses[i].Y * poses[i].Y), Pool.ReachMin, Pool.ReachMax);
                     if (o.Clutter)
                     {
-                        // Raised clutter (docs/adr/0037 "Raised clutter"): flat as the file has it, at its own size, anywhere in the
+                        // Raised clutter (docs/adr/0037 "Raised clutter"): flat as the file has it, at its own size, its centre in the
                         // placement region (held to no reach band, never by the edge).
                         Assert.Equal(WorldScene.RestUpright, rest);
                         Assert.Equal(1.0, scales[i]);
-                        double r = o.FootprintRadius;
-                        Assert.True(poses[i].X - r >= Pool.RegionXMin - 1e-9 && poses[i].X + r <= Pool.RegionXMax + 1e-9 &&
-                                    poses[i].Y - r >= Pool.RegionYMin - 1e-9 && poses[i].Y + r <= Pool.RegionYMax + 1e-9, $"seed {seed}: {o.Name} out of the region");
+                        Assert.True(poses[i].X >= Pool.RegionXMin && poses[i].X <= Pool.RegionXMax && Math.Abs(poses[i].Y) <= Pool.RegionYMax, $"seed {seed}: {o.Name} out of the region");
                     }
                     Pool.RestExtents(i, rest, out _, out _, out double up);
                     Assert.Equal(Pool.Table.Top + up * scales[i] / 2, poses[i].Z, 9);
                     for (int k = 0; k < i; k++)
                     {
-                        if (!parked[k]) Assert.False(Pool.Overlaps(i, poses[i].X, poses[i].Y, k, poses[k].X, poses[k].Y, scales[i], scales[k], rest, WorldScene.RestOf(poses[k])), $"seed {seed}: {o.Name} on {Pool.Objects[k].Name}");
+                        if (parked[k]) continue;
+                        int restK = WorldScene.RestOf(poses[k], out double yawK);
+                        Assert.False(Pool.Overlaps(i, poses[i].X, poses[i].Y, yaw, k, poses[k].X, poses[k].Y, yawK, scales[i], scales[k], rest, restK), $"seed {seed}: {o.Name} on {Pool.Objects[k].Name}");
                     }
                 }
 

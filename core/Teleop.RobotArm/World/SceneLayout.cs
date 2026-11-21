@@ -105,7 +105,8 @@ namespace Teleop.RobotArm.World
             Span<double> ys = stackalloc double[WorldScene.MaxObjects];
             Span<int> rests = stackalloc int[WorldScene.MaxObjects];
             Span<int> anchors = stackalloc int[WorldScene.MaxObjects];
-            var standing = new Standing(scene, poses, parked, scales, placed, xs, ys, rests, anchors);
+            Span<double> yaws = stackalloc double[WorldScene.MaxObjects];
+            var standing = new Standing(scene, poses, parked, scales, placed, xs, ys, yaws, rests, anchors);
 
             // In passes, each object of a pass in turn: the fixed ones, the movable ones in reach (after the first, each may join a
             // cluster), then the one by the edge, then the clutter (docs/adr/0037 "Raised clutter"; its own generator, so none of the
@@ -132,14 +133,16 @@ namespace Teleop.RobotArm.World
             private readonly Span<int> _index;
             private readonly Span<double> _x;
             private readonly Span<double> _y;
+            private readonly Span<double> _yaw; // a piece of clutter is its own rectangle at its yaw (docs/adr/0037 "Raised clutter")
             private readonly Span<int> _rest;
             private readonly Span<int> _anchors; // positions in _index of the movable objects in reach
             private int _count;
             private int _anchorCount;
 
             public Standing(WorldScene scene, Span<RigidTransform> poses, Span<bool> parked, Span<double> scales, Span<int> index, Span<double> x,
-                Span<double> y, Span<int> rest, Span<int> anchors)
+                Span<double> y, Span<double> yaw, Span<int> rest, Span<int> anchors)
             {
+                _yaw = yaw;
                 _scene = scene;
                 _poses = poses;
                 _parked = parked;
@@ -185,7 +188,7 @@ namespace Teleop.RobotArm.World
                     }
                     else if (!_scene.DrawSpot(i, scale, rest, ref rng, out x, out y, out yaw)) continue;
 
-                    if (!Clear(i, x, y, scale, rest)) continue;
+                    if (!Clear(i, x, y, yaw, scale, rest)) continue;
                     if (movable && !atEdge) _anchors[_anchorCount++] = _count;
                     Add(i, x, y, yaw, scale, rest);
                     return true;
@@ -196,16 +199,16 @@ namespace Teleop.RobotArm.World
 
             /// <summary>
             /// Draws clutter object <paramref name="i"/>'s spot (docs/adr/0037 "Raised clutter"): at its file size and flat as the
-            /// file has it (its upright rest), anywhere in the placement region where its footprint fits (<see cref="WorldScene.InReach"/>
-            /// holds clutter to no band), clear of every object standing, three draws a try; false, leaving it parked, when no try of
-            /// <see cref="MaxPoolTries"/> finds one. It joins no cluster, and none grows from it.
+            /// file has it (its upright rest), its yaw uniform, anywhere in the placement region where its own rectangle fits at that
+            /// yaw (<see cref="WorldScene.DrawClutterSpot"/>: no reach band), clear of every object standing, three draws a try;
+            /// false, leaving it parked, when no try of <see cref="MaxPoolTries"/> finds one. It joins no cluster, and none grows from it.
             /// </summary>
             public bool StandClutter(int i, ref SeededRng rng)
             {
                 for (int t = 0; t < MaxPoolTries; t++)
                 {
-                    if (!_scene.DrawSpot(i, 1.0, WorldScene.RestUpright, ref rng, out double x, out double y, out double yaw)) continue;
-                    if (!Clear(i, x, y, 1.0, WorldScene.RestUpright)) continue;
+                    if (!_scene.DrawClutterSpot(i, ref rng, out double x, out double y, out double yaw)) continue;
+                    if (!Clear(i, x, y, yaw, 1.0, WorldScene.RestUpright)) continue;
                     Add(i, x, y, yaw, 1.0, WorldScene.RestUpright);
                     return true;
                 }
@@ -219,6 +222,7 @@ namespace Teleop.RobotArm.World
                 _index[_count] = i;
                 _x[_count] = x;
                 _y[_count] = y;
+                _yaw[_count] = yaw;
                 _rest[_count] = rest;
                 _count++;
                 _parked[i] = false;
@@ -226,12 +230,15 @@ namespace Teleop.RobotArm.World
                 _poses[i] = _scene.PoseAt(i, x, y, yaw, scale, rest);
             }
 
-            /// <summary>Whether object <paramref name="i"/> at (x, y), its size and rest, keeps the clearance from every object standing.</summary>
-            private bool Clear(int i, double x, double y, double scale, int rest)
+            /// <summary>
+            /// Whether object <paramref name="i"/> at (x, y), its yaw, size and rest, keeps the clearance from every object standing:
+            /// circles, but a piece of clutter its own rectangle (<see cref="WorldScene.Overlaps(int, double, double, double, int, double, double, double, double, double, int, int)"/>).
+            /// </summary>
+            private bool Clear(int i, double x, double y, double yaw, double scale, int rest)
             {
                 for (int q = 0; q < _count; q++)
                 {
-                    if (_scene.Overlaps(i, x, y, _index[q], _x[q], _y[q], scale, _scales[_index[q]], rest, _rest[q])) return false;
+                    if (_scene.Overlaps(i, x, y, yaw, _index[q], _x[q], _y[q], _yaw[q], scale, _scales[_index[q]], rest, _rest[q])) return false;
                 }
 
                 return true;

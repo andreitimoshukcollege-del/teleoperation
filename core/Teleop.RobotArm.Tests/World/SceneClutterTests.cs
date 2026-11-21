@@ -66,6 +66,42 @@ namespace Teleop.RobotArm.Tests.World
         }
 
         [Fact]
+        public void APieceOfClutter_IsItsOwnRectangle_InEveryRuleThatKnowsItsYaw()
+        {
+            // The circle that holds the screwdrivers at any yaw is 29 cm across: in the 32 cm deep region, clear of the robot, it fit
+            // only at its very middle, and beside the objects in reach almost never (none in 2000 layouts). Turned along y, the pair
+            // is 10 cm deep and stands by the region's far edge.
+            int screwdrivers = Index("screwdrivers"), pen = Index("pen"), can = Index("tomato-soup-can"), tape = Index("tape-roll");
+            SceneObject s = Bench.Objects[screwdrivers];
+            double x = Bench.RegionXMax - s.SizeX / 2 - 0.001;
+            Assert.False(Bench.FitsOnTable(screwdrivers, x, 0.0, 1.0, WorldScene.RestUpright));        // its circle: past the far edge
+            Assert.True(Bench.FitsOnTable(screwdrivers, x, 0.0, 0.0, 1.0, WorldScene.RestUpright));    // its rectangle, along y
+            Assert.False(Bench.FitsOnTable(screwdrivers, x, 0.0, Math.PI / 2, 1.0, WorldScene.RestUpright)); // across: 27 cm deep
+            Assert.True(Bench.FitsOnTable(screwdrivers, x, 0.0, Math.PI, 1.0, WorldScene.RestUpright));
+            // The robot's keep-out (x up to 0.14 m): a pen along x at 0.20 m reaches 0.13; turned across, it is clear.
+            Assert.False(Bench.FitsOnTable(pen, 0.20, 0.0, 0.0, 1.0, WorldScene.RestUpright));
+            Assert.True(Bench.FitsOnTable(pen, 0.20, 0.0, Math.PI / 2, 1.0, WorldScene.RestUpright));
+            // Against another object's circle: a can 7 cm beside a pen lying along x is 6.5 cm from it, apart; its circle was not.
+            Assert.True(Bench.Overlaps(pen, 0.30, 0.0, can, 0.30, 0.07, 1.0, 1.0, 0, 0));
+            Assert.False(Bench.Overlaps(pen, 0.30, 0.0, 0.0, can, 0.30, 0.07, 0.7, 1.0, 1.0, 0, 0));
+            Assert.True(Bench.Overlaps(pen, 0.30, 0.0, Math.PI / 2, can, 0.30, 0.07, 0.7, 1.0, 1.0, 0, 0)); // turned towards it
+            Assert.Equal(Bench.Overlaps(can, 0.30, 0.07, 0.7, pen, 0.30, 0.0, 0.0, 1.0, 1.0, 0, 0), Bench.Overlaps(pen, 0.30, 0.0, 0.0, can, 0.30, 0.07, 0.7, 1.0, 1.0, 0, 0));
+            // Two pieces of clutter: two pens side by side, the clearance (1 cm) between them or less.
+            Assert.False(Bench.Overlaps(pen, 0.30, 0.0, 0.0, pen, 0.30, 0.0195, 0.0, 1.0, 1.0, 0, 0));
+            Assert.True(Bench.Overlaps(pen, 0.30, 0.0, 0.0, pen, 0.30, 0.0185, 0.0, 1.0, 1.0, 0, 0));
+            Assert.True(Bench.Overlaps(tape, 0.30, 0.0, 0.3, pen, 0.30, 0.0, 1.2, 1.0, 1.0, 0, 0));
+            // Objects that are not clutter keep their circles, yaw or not.
+            int mug = Index("mug");
+            foreach (double d in new[] { 0.09, 0.10, 0.12, 0.13 })
+            {
+                Assert.Equal(Bench.Overlaps(can, 0.3, 0.0, mug, 0.3 + d, 0.0, 1.0, 1.0, 0, 1), Bench.Overlaps(can, 0.3, 0.0, 1.0, mug, 0.3 + d, 0.0, -2.0, 1.0, 1.0, 0, 1));
+                Assert.Equal(Bench.FitsOnTable(mug, 0.12 + d, 0.2, 1.0, 1), Bench.FitsOnTable(mug, 0.12 + d, 0.2, 0.8, 1.0, 1));
+            }
+        }
+
+        private static int Index(string name) => Array.FindIndex(Bench.Objects, o => o.Name == name);
+
+        [Fact]
         public void EveryOtherObject_StandsExactlyWhereItStoodBeforeClutter()
         {
             // The clutter pass draws from a generator of its own, after every other object: without clutter (none in the file, or

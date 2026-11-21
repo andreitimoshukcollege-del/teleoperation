@@ -626,9 +626,111 @@ namespace Teleop.RobotArm.World
                 return true;
             }
 
-            if (!Objects[index].Movable || !InEdgeRegions(x, y)) return false;
+            if (!Objects[index].Movable || Objects[index].Clutter || !InEdgeRegions(x, y)) return false;
             SurfaceBounds(out double ex0, out double ex1, out double ey0, out double ey1);
             return x - r >= ex0 - 1e-9 && x + r <= ex1 + 1e-9 && y - r >= ey0 - 1e-9 && y + r <= ey1 + 1e-9;
+        }
+
+        /// <summary>
+        /// As <see cref="FitsOnTable(int, double, double, double, int)"/>, for the object turned <paramref name="yaw"/> about the vertical
+        /// (on its rest). Clutter (docs/adr/0037 "Raised clutter") is taken as its own footprint, the rectangle of its sides on that
+        /// rest turned by the yaw: inside the placement region on the table, clear of the robot's keep-out (the circle that holds a
+        /// 27 cm pair of screwdrivers at any yaw is wider than the region allows, beside the objects in reach). Every other object
+        /// is taken as its circle, exactly as the overload without a yaw takes it.
+        /// </summary>
+        public bool FitsOnTable(int index, double x, double y, double yaw, double scale, int rest)
+        {
+            if (!Objects[index].Clutter) return FitsOnTable(index, x, y, scale, rest);
+            ClutterHalf(index, rest, scale, out double hx, out double hy);
+            double c = Math.Cos(yaw), s = Math.Sin(yaw);
+            double bx = Math.Abs(c) * hx + Math.Abs(s) * hy, by = Math.Abs(s) * hx + Math.Abs(c) * hy;
+            if (!(x - bx >= Math.Max(Table.XMin, RegionXMin) - 1e-9 && x + bx <= Math.Min(Table.XMax, RegionXMax) + 1e-9 &&
+                  y - by >= Math.Max(Table.YMin, RegionYMin) - 1e-9 && y + by <= Math.Min(Table.YMax, RegionYMax) + 1e-9))
+            {
+                return false;
+            }
+
+            if (RobotKeepOut.Length != 4) return true;
+            double kx = (RobotKeepOut[0] + RobotKeepOut[1]) / 2, ky = (RobotKeepOut[2] + RobotKeepOut[3]) / 2;
+            double kw = (RobotKeepOut[1] - RobotKeepOut[0]) / 2, kh = (RobotKeepOut[3] - RobotKeepOut[2]) / 2;
+            return RectsApart(x, y, c, s, hx, hy, kx, ky, 1, 0, kw, kh, 0);
+        }
+
+        /// <summary>
+        /// As <see cref="Overlaps(int, double, double, int, double, double, double, double, int, int)"/>, for the two objects turned
+        /// <paramref name="yawA"/> and <paramref name="yawB"/> (on their rests). A piece of clutter (docs/adr/0037 "Raised clutter") is
+        /// its own footprint, the rectangle of its sides on its rest turned by its yaw: against another object's circle, the circle
+        /// may come no closer to the rectangle than the clearance; two pieces of clutter must lie the clearance apart along one of
+        /// their four sides' directions (which may keep two apart that are a little further than that at a corner). Two objects that
+        /// are not clutter are their circles, exactly as the overload without yaws takes them.
+        /// </summary>
+        public bool Overlaps(int a, double ax, double ay, double yawA, int b, double bx, double by, double yawB, double scaleA, double scaleB, int restA, int restB)
+        {
+            bool ca = Objects[a].Clutter, cb = Objects[b].Clutter;
+            if (!ca && !cb) return Overlaps(a, ax, ay, b, bx, by, scaleA, scaleB, restA, restB);
+            if (ca && cb)
+            {
+                ClutterHalf(a, restA, scaleA, out double hxa, out double hya);
+                ClutterHalf(b, restB, scaleB, out double hxb, out double hyb);
+                return !RectsApart(ax, ay, Math.Cos(yawA), Math.Sin(yawA), hxa, hya, bx, by, Math.Cos(yawB), Math.Sin(yawB), hxb, hyb, Clearance);
+            }
+
+            // One piece of clutter and one circle: how near the circle's centre comes to the rectangle, in the rectangle's frame.
+            int rect = ca ? a : b, circle = ca ? b : a;
+            double rx = ca ? ax : bx, ry = ca ? ay : by, ryaw = ca ? yawA : yawB, cx = ca ? bx : ax, cy = ca ? by : ay;
+            ClutterHalf(rect, ca ? restA : restB, ca ? scaleA : scaleB, out double hx, out double hy);
+            double c = Math.Cos(ryaw), s = Math.Sin(ryaw), dx = cx - rx, dy = cy - ry;
+            double qx = Math.Max(Math.Abs(dx * c + dy * s) - hx, 0), qy = Math.Max(Math.Abs(-dx * s + dy * c) - hy, 0);
+            double reach = FootprintRadiusAt(circle, ca ? restB : restA) * (ca ? scaleB : scaleA) + Clearance;
+            return qx * qx + qy * qy < reach * reach;
+        }
+
+        /// <summary>
+        /// A random spot for clutter object <paramref name="index"/> (docs/adr/0037 "Raised clutter"), flat as the file has it: its yaw
+        /// uniform, then x and y uniform where its rectangle at that yaw lies inside the placement region on the table; three
+        /// draws. False when the draw misses (no room at that yaw, or the robot's keep-out); the clearance from other objects is the
+        /// caller's. No reach band applies.
+        /// </summary>
+        public bool DrawClutterSpot(int index, ref Teleop.Core.Types.SeededRng rng, out double x, out double y, out double yaw)
+        {
+            yaw = (2 * rng.NextDouble() - 1) * Math.PI;
+            ClutterHalf(index, RestUpright, 1.0, out double hx, out double hy);
+            double c = Math.Abs(Math.Cos(yaw)), s = Math.Abs(Math.Sin(yaw));
+            double bx = c * hx + s * hy, by = s * hx + c * hy;
+            double x0 = Math.Max(Table.XMin, RegionXMin) + bx, x1 = Math.Min(Table.XMax, RegionXMax) - bx;
+            double y0 = Math.Max(Table.YMin, RegionYMin) + by, y1 = Math.Min(Table.YMax, RegionYMax) - by;
+            x = x0 + rng.NextDouble() * (x1 - x0);
+            y = y0 + rng.NextDouble() * (y1 - y0);
+            return x0 <= x1 && y0 <= y1 && FitsOnTable(index, x, y, yaw, 1.0, RestUpright);
+        }
+
+        /// <summary>Half the sides of object <paramref name="index"/>'s footprint on rest <paramref name="rest"/> at <paramref name="scale"/>, along its own x and y.</summary>
+        private void ClutterHalf(int index, int rest, double scale, out double hx, out double hy)
+        {
+            RestExtents(index, rest, out double ex, out double ey, out _);
+            hx = ex * scale / 2;
+            hy = ey * scale / 2;
+        }
+
+        /// <summary>
+        /// Whether two rectangles, each its centre, the cosine and sine of its turn, and its half sides, lie at least
+        /// <paramref name="gap"/> apart along one of their four sides' directions (the separating-axis test, touching counts as apart).
+        /// </summary>
+        private static bool RectsApart(double ax, double ay, double ac, double asn, double ahx, double ahy,
+            double bx, double by, double bc, double bsn, double bhx, double bhy, double gap)
+        {
+            double dx = bx - ax, dy = by - ay;
+            for (int k = 0; k < 4; k++)
+            {
+                // The axis: A's x, A's y, B's x, B's y.
+                double nx = k == 0 ? ac : k == 1 ? -asn : k == 2 ? bc : -bsn;
+                double ny = k == 0 ? asn : k == 1 ? ac : k == 2 ? bsn : bc;
+                double pa = ahx * Math.Abs(nx * ac + ny * asn) + ahy * Math.Abs(-nx * asn + ny * ac);
+                double pb = bhx * Math.Abs(nx * bc + ny * bsn) + bhy * Math.Abs(-nx * bsn + ny * bc);
+                if (Math.Abs(nx * dx + ny * dy) - pa - pb >= gap - 1e-12) return true;
+            }
+
+            return false;
         }
 
         /// <summary>

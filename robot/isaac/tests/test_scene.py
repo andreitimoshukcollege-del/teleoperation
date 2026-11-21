@@ -93,6 +93,14 @@ def test_the_rests_and_spots_are_cores():
         assert s.fits_on_table(int(i), x, y, 1.0, int(rest)) == bool(fits), (s.objects[int(i)].name, rest, x, y)
     for a, ax, ay, ra, b, bx, by, rb, hit in g["overlaps"]:
         assert s.overlaps(int(a), ax, ay, int(b), bx, by, 1.0, 1.0, int(ra), int(rb)) == bool(hit), (a, b, ra, rb)
+    # docs/adr/0037 "Raised clutter": given its yaw, a piece of clutter is its own rectangle, in both readers, or Isaac refuses
+    # what RobotHost stands (OUTSIDE_REGION, OVERLAPS_OBJECT).
+    assert sum(f for *_, f in g["clutterFits"]) > 20 and sum(1 - f for *_, f in g["clutterFits"]) > 20
+    for i, x, y, yaw, fits in g["clutterFits"]:
+        assert s.fits_on_table(int(i), x, y, 1.0, scene.REST_UPRIGHT, yaw) == bool(fits), (s.objects[int(i)].name, x, y, yaw)
+    assert sum(h for *_, h in g["clutterOverlaps"]) > 20 and sum(1 - h for *_, h in g["clutterOverlaps"]) > 20
+    for a, ax, ay, ya, ra, b, bx, by, yb, rb, hit in g["clutterOverlaps"]:
+        assert s.overlaps(int(a), ax, ay, int(b), bx, by, 1.0, 1.0, int(ra), int(rb), ya, yb) == bool(hit), (a, b, ya, yb)
 
 
 def test_a_rest_round_trips_through_its_pose_and_a_tilt_keeps_it():

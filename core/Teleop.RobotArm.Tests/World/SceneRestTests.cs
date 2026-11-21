@@ -233,7 +233,9 @@ namespace Teleop.RobotArm.Tests.World
             sb.Append("objects: name, then per rest 0-5 its extents (x, y, up), footprint radius and whether a layout may lay it there. ");
             sb.Append("poses: index, rest, x, y, yaw, then PoseAt's x, y, z, qw, qx, qy, qz. restOf: qw, qx, qy, qz, then RestOf's rest and yaw. ");
             sb.Append("fits: index, rest, x, y, FitsOnTable. overlaps: a, x, y, rest, b, x, y, rest, Overlaps. ");
-            sb.Append("clutterRange and clutterObjects: the raised clutter (docs/adr/0037 \\\"Raised clutter\\\").\",\n");
+            sb.Append("clutterRange and clutterObjects: the raised clutter (docs/adr/0037 \\\"Raised clutter\\\"), which the rules with a yaw take as ");
+            sb.Append("its own rectangle. clutterFits: index, x, y, yaw, FitsOnTable at the yaw. clutterOverlaps: a, x, y, yaw, rest, b, x, y, yaw, rest, ");
+            sb.Append("Overlaps at the yaws.\",\n");
             sb.Append($" \"scene\": \"{s.Name}\",\n");
             sb.Append($" \"sha256\": \"{Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant()}\",\n");
             sb.Append($" \"shares\": {Row(s.ClusterShare, s.LyingShare, s.EdgeShare)},\n");
@@ -303,6 +305,34 @@ namespace Teleop.RobotArm.Tests.World
                 overlaps.Add(Row(a, ax, ay, ra, b, bx, by, rb, s.Overlaps(a, ax, ay, b, bx, by, 1.0, 1.0, ra, rb) ? 1 : 0));
             }
 
+            // docs/adr/0037 "Raised clutter": a piece of clutter as its own rectangle at a yaw. Spots over the placement region and a
+            // little past it, a third of them by the robot's keep-out; pairs of it and another movable object (clutter or not) from
+            // touching to a little apart, each on a rest and at a yaw.
+            int[] clutter = Enumerable.Range(0, s.Objects.Length).Where(i => s.Objects[i].Clutter).ToArray();
+            var clutterFits = new System.Collections.Generic.List<string>();
+            foreach (int i in clutter)
+            {
+                for (int n = 0; n < 30; n++)
+                {
+                    double x = n % 3 == 0 ? U(0.10, 0.28) : U(s.RegionXMin - 0.04, s.RegionXMax + 0.04);
+                    double y = n % 3 == 0 ? U(-0.25, 0.25) : U(s.RegionYMin - 0.04, s.RegionYMax + 0.04);
+                    double yaw = U(-Math.PI, Math.PI);
+                    clutterFits.Add(Row(i, x, y, yaw, s.FitsOnTable(i, x, y, yaw, 1.0, WorldScene.RestUpright) ? 1 : 0));
+                }
+            }
+
+            var clutterOverlaps = new System.Collections.Generic.List<string>();
+            for (int n = 0; n < 160; n++)
+            {
+                int a = clutter[(int)(rng.NextDouble() * clutter.Length)], b = movable[(int)(rng.NextDouble() * movable.Length)];
+                int rb = s.Objects[b].Clutter ? WorldScene.RestUpright : new[] { 0, 1, 2, 4 }[(int)(rng.NextDouble() * 4)];
+                double ax = U(0.15, 0.40), ay = U(-0.2, 0.2), bearing = U(-Math.PI, Math.PI), yawA = U(-Math.PI, Math.PI), yawB = U(-Math.PI, Math.PI);
+                double d = (s.FootprintRadiusAt(a, 0) + s.FootprintRadiusAt(b, rb) + s.Clearance) * U(0.2, 1.05);
+                double bx = ax + d * Math.Cos(bearing), by = ay + d * Math.Sin(bearing);
+                bool hit = s.Overlaps(a, ax, ay, yawA, b, bx, by, yawB, 1.0, 1.0, WorldScene.RestUpright, rb);
+                clutterOverlaps.Add(Row(a, ax, ay, yawA, 0, b, bx, by, yawB, rb, hit ? 1 : 0));
+            }
+
             void Rows(string name, System.Collections.Generic.List<string> rows, bool last)
             {
                 sb.Append($" \"{name}\": [\n  ").Append(string.Join(",\n  ", rows)).Append(last ? "\n ]\n" : "\n ],\n");
@@ -311,7 +341,9 @@ namespace Teleop.RobotArm.Tests.World
             Rows("poses", poses, false);
             Rows("restOf", restOf, false);
             Rows("fits", fits, false);
-            Rows("overlaps", overlaps, true);
+            Rows("overlaps", overlaps, false);
+            Rows("clutterFits", clutterFits, false);
+            Rows("clutterOverlaps", clutterOverlaps, true);
             sb.Append("}\n");
             return sb.ToString();
         }

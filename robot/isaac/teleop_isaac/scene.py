@@ -64,6 +64,20 @@ def rest_of(q) -> Tuple[int, float]:
     return rest, yaw
 
 
+def _rects_apart(ax: float, ay: float, ac: float, asn: float, ahx: float, ahy: float,
+                 bx: float, by: float, bc: float, bsn: float, bhx: float, bhy: float, gap: float) -> bool:
+    """Whether two rectangles, each its centre, the cosine and sine of its turn, and its half sides, lie at least ``gap`` apart
+    along one of their four sides' directions (the separating-axis test; touching counts as apart). As Core's
+    ``WorldScene.RectsApart``, operation for operation."""
+    dx, dy = bx - ax, by - ay
+    for nx, ny in ((ac, asn), (-asn, ac), (bc, bsn), (-bsn, bc)):  # A's x, A's y, B's x, B's y
+        pa = ahx * abs(nx * ac + ny * asn) + ahy * abs(-nx * asn + ny * ac)
+        pb = bhx * abs(nx * bc + ny * bsn) + bhy * abs(-nx * bsn + ny * bc)
+        if abs(nx * dx + ny * dy) - pa - pb >= gap - 1e-12:
+            return True
+    return False
+
+
 class SceneError(ValueError):
     """The file is not a valid scene; the message starts with what is wrong (``"table: ..."``)."""
 
@@ -210,11 +224,15 @@ class Scene:
         e = self.edge_regions
         return any(e[k] - 1e-9 <= x <= e[k + 1] + 1e-9 and e[k + 2] - 1e-9 <= y <= e[k + 3] + 1e-9 for k in range(0, len(e) - 3, 4))
 
-    def fits_on_table(self, index: int, x: float, y: float, scale: float = 1.0, rest: int = REST_UPRIGHT) -> bool:
+    def fits_on_table(self, index: int, x: float, y: float, scale: float = 1.0, rest: int = REST_UPRIGHT,
+                      yaw: Optional[float] = None) -> bool:
         """Whether object ``index``'s footprint on rest ``rest`` at ``scale``, centred at (x, y), lies on the table and in the
-        region (a pool's fixed object: in fixed_regions; a movable one may also stand in edge_regions, its footprint on the table
-        or the bench), clear of the robot's keep-out. As Core's ``WorldScene.FitsOnTable``."""
+        region (a pool's fixed object: in fixed_regions; a movable one but clutter may also stand in edge_regions, its footprint on
+        the table or the bench), clear of the robot's keep-out. As Core's ``WorldScene.FitsOnTable``. Given its ``yaw``, a piece of
+        clutter (docs/adr/0037 "Raised clutter") is its own rectangle turned by it, not the circle that holds it at any yaw."""
         o = self.objects[index]
+        if yaw is not None and o.clutter:
+            return self._clutter_fits(index, x, y, yaw, scale, rest)
         r = o.footprint_radius_at(rest) * scale
         t, (x0, x1, y0, y1) = self.table, self.region
         if not self.clear_of_robot(x, y, r):
@@ -229,17 +247,56 @@ class Scene:
         if (x - r >= max(t.x_min, x0) - 1e-9 and x + r <= min(t.x_max, x1) + 1e-9 and
                 y - r >= max(t.y_min, y0) - 1e-9 and y + r <= min(t.y_max, y1) + 1e-9):
             return True
-        if not o.movable or not self.in_edge_regions(x, y):
+        if not o.movable or o.clutter or not self.in_edge_regions(x, y):
             return False
         sx0, sx1, sy0, sy1 = self._surface_bounds()
         return x - r >= sx0 - 1e-9 and x + r <= sx1 + 1e-9 and y - r >= sy0 - 1e-9 and y + r <= sy1 + 1e-9
 
     def overlaps(self, a: int, ax: float, ay: float, b: int, bx: float, by: float, scale_a: float = 1.0, scale_b: float = 1.0,
-                 rest_a: int = REST_UPRIGHT, rest_b: int = REST_UPRIGHT) -> bool:
-        """Whether two objects' footprints, each on its rest, come closer than the clearance (Core's ``WorldScene.Overlaps``)."""
-        reach = (self.objects[a].footprint_radius_at(rest_a) * scale_a + self.objects[b].footprint_radius_at(rest_b) * scale_b
-                 + self.clearance)
-        return (ax - bx) ** 2 + (ay - by) ** 2 < reach * reach
+                 rest_a: int = REST_UPRIGHT, rest_b: int = REST_UPRIGHT, yaw_a: Optional[float] = None,
+                 yaw_b: Optional[float] = None) -> bool:
+        """Whether two objects' footprints, each on its rest, come closer than the clearance (Core's ``WorldScene.Overlaps``).
+        Given both yaws, a piece of clutter (docs/adr/0037 "Raised clutter") is its own rectangle turned by its yaw: another
+        object's circle may come no closer to it than the clearance, and two pieces lie the clearance apart along one of their
+        four sides' directions. Without them, or for two objects that are not clutter, every object is its circle."""
+        ca, cb = self.objects[a].clutter, self.objects[b].clutter
+        if yaw_a is None or yaw_b is None or not (ca or cb):
+            reach = (self.objects[a].footprint_radius_at(rest_a) * scale_a + self.objects[b].footprint_radius_at(rest_b) * scale_b
+                     + self.clearance)
+            return (ax - bx) ** 2 + (ay - by) ** 2 < reach * reach
+        if ca and cb:
+            hxa, hya = self._clutter_half(a, rest_a, scale_a)
+            hxb, hyb = self._clutter_half(b, rest_b, scale_b)
+            return not _rects_apart(ax, ay, math.cos(yaw_a), math.sin(yaw_a), hxa, hya,
+                                    bx, by, math.cos(yaw_b), math.sin(yaw_b), hxb, hyb, self.clearance)
+        # One piece of clutter and one circle: how near the circle's centre comes to the rectangle, in the rectangle's frame.
+        rect, circle = (a, b) if ca else (b, a)
+        rx, ry, ryaw, cx, cy = (ax, ay, yaw_a, bx, by) if ca else (bx, by, yaw_b, ax, ay)
+        hx, hy = self._clutter_half(rect, rest_a if ca else rest_b, scale_a if ca else scale_b)
+        c, s, dx, dy = math.cos(ryaw), math.sin(ryaw), cx - rx, cy - ry
+        qx, qy = max(abs(dx * c + dy * s) - hx, 0.0), max(abs(-dx * s + dy * c) - hy, 0.0)
+        reach = self.objects[circle].footprint_radius_at(rest_b if ca else rest_a) * (scale_b if ca else scale_a) + self.clearance
+        return qx * qx + qy * qy < reach * reach
+
+    def _clutter_half(self, index: int, rest: int, scale: float) -> Tuple[float, float]:
+        """Half the sides of object ``index``'s footprint on rest ``rest`` at ``scale``, along its own x and y."""
+        ex, ey, _ = self.objects[index].rest_extents(rest)
+        return ex * scale / 2, ey * scale / 2
+
+    def _clutter_fits(self, index: int, x: float, y: float, yaw: float, scale: float, rest: int) -> bool:
+        """A piece of clutter's rectangle turned by ``yaw``: inside the region on the table, clear of the robot's keep-out (Core's
+        ``WorldScene.FitsOnTable`` with a yaw)."""
+        hx, hy = self._clutter_half(index, rest, scale)
+        c, s = math.cos(yaw), math.sin(yaw)
+        bx, by = abs(c) * hx + abs(s) * hy, abs(s) * hx + abs(c) * hy
+        t, (x0, x1, y0, y1) = self.table, self.region
+        if not (x - bx >= max(t.x_min, x0) - 1e-9 and x + bx <= min(t.x_max, x1) + 1e-9 and
+                y - by >= max(t.y_min, y0) - 1e-9 and y + by <= min(t.y_max, y1) + 1e-9):
+            return False
+        if len(self.robot_keep_out) != 4:
+            return True
+        k0, k1, k2, k3 = self.robot_keep_out
+        return _rects_apart(x, y, c, s, hx, hy, (k0 + k1) / 2, (k2 + k3) / 2, 1.0, 0.0, (k1 - k0) / 2, (k3 - k2) / 2, 0.0)
 
     def clamp_on_table(self, index: int, x: float, y: float, scale: float = 1.0) -> Optional[Tuple[float, float]]:
         """The nearest point to (x, y) where object ``index`` at ``scale`` fits on the table and in the region (1 mm in), as

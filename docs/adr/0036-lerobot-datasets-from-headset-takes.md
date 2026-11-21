@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted, 2026-11-12.
+Accepted, 2026-11-12. Amendment 5 (several events a take, no stillness at the start) 2026-11-21.
 
 ## Context
 
@@ -321,3 +321,140 @@ of those pauses, for holds up to 6 s. The user chose a continuous motion over th
   `world.contact_events` passes each event's smallest contact-point separation alongside its impulse. The labelling side
   (`teleop_lerobot/safety.py`) is unchanged: what it reads is now a touch.
 - **Takes recorded before this** keep their early margin records. They are not relabelled.
+
+## Amendment 5 (2026-11-21): several events a take, at any point in it, and no stillness at the start
+
+The user (2026-11-21): "fix the collisions, they always happen at the end of the video and there is only one. Also can we
+remove the idle state in the first few seconds of the sim. I also want the robot to be able to collide multiple times in one
+video."
+
+**Measured** on the 16 takes of the 2026-11-21 check (ADR 0037, "Checked on the twin"), from each take's posed joints (`VQ`)
+and contacts (`WC`), read-only:
+
+- **Every take began with 3.1–3.9 s of the arm not moving** (no joint 0.5° from the first frame's), 20–30% of a 10–20 s take.
+  joint-drive started the take, *then* counted down its 3 s ("the arm moves in 3 s"), then the operator model waited a
+  reaction time of 0.15–0.45 s before its first move.
+- **Every contact began at 81–92% of its take, one event a take** (two collide_with_obstacle takes had a second stretch
+  0.7–0.9 s after the first: the same swipe). The scripts planned 3–8 s of free movement, one event, and ended the take
+  during the move after it (amendment 3).
+
+**Decisions.**
+
+1. **The take starts with the script.** joint-drive checks before anything moves that RobotHost records the scenario, counts
+   down (still the stop for a real arm), makes the slow move home when the arm is not clear of the objects, and only then
+   starts the take (`DrivePlan.ScriptStart`), with the arm still. The operator is already moving as it starts: its first part
+   began 0.04–0.22 s before (`HumanOperator.EngageOnTheMove`, the hand model's lead when the clutch is taken on the move), so
+   the first commands move the arm. This holds for every take joint-drive records (`record-take`, `isaac-jetrover-take`): the
+   move home is a setup move, pose to pose. A scenario RobotHost does not record still leaves the arm unmoved; should RobotHost
+   then refuse the start, the arm holds where the move home left it. Planning (seconds now) runs on a worker thread while
+   joint-drive keeps its link up, so RobotHost's stream does not lapse.
+2. **1–3 events a take** in stop_before_collision, collide_and_recover and collide_with_obstacle (`SafetyTake`), the count
+   drawn uniformly from the take's seed (`joint-drive --events`, the batch's `events=`, `SafetyOptions.MinEvents`/`MaxEvents`).
+   Free movement of 0.5–4 s comes before the first event (the lead), 1.5–5 s between events, and 1–4 s after the last (the
+   tail, longer to make a take at least 10 s); an event that would end the take after 30 s, or finds no approach, is left
+   out (a take needs only its first). So events land anywhere in a take and the cut is never inside one. reach_no_obstacle has
+   no events: free movement for `--seconds`, ending partway through its last move (it used to end partway through its last
+   run of moving ticks, which with continuous motion was most of the take: 9.5–11 s of a 15 s plan).
+3. **Targets.** Each event aims as its category aims (knockable objects for a knock, steady ones first for a touch, a fixture
+   first in `FixtureFirstShare` of the touch events, any object for a stop), and an object already aimed at is tried only after
+   every other: preferred last, not barred, so a layout with one object the category can use still gets several events.
+4. **Free movement between events and in the tail keeps 2 cm (the approach clearance) from every object**; the lead keeps the
+   5 cm of reach_no_obstacle, as before. Right after an event the arm is within 5 cm of the object it met, so an event is kept
+   only if, where free movement takes over, the arm is clear by the approach clearance, and a knock's lift and move away are
+   held to it for the other objects.
+5. **After a knock the world is not what was planned around**, so the event after it is never driven unchecked:
+   - The plan goes on with free movement (the runway, at most 12 s and never past 30 s of take), its goals at least 10 cm from
+     where the object stood and from where the swipe sent it, every other object kept 2 cm away.
+   - joint-drive watches RobotHost's world frames, as it does before a take, until every object has stayed within 1 mm and 1°
+     for 0.6 s (`RestWatch`).
+   - At the start the take also planned the rest of itself for the world the knock would leave if its object simply went away
+     (`SafetyContinuation.Assumed`), taking over 2.5 s after the knock's lift at the soonest and after the drawn free movement
+     between events. If every other object stands within 3 mm and 3° of where it stood and the knocked one lies clear of all
+     that plan does by the approach clearance (`Holds`), that plan takes over: no planning while the take runs.
+   - Otherwise the next event is planned on another thread against the objects as they now are, from a point of the runway at
+     least 4 s ahead (8 s on a second try): the planner's time. The new plan is the same as the runway before that point and
+     takes over there, so nothing jumps. If the objects do not settle within 6 s of the knock, no approach works, or the planner
+     is late twice, the runway ends the take: one knock is a whole take.
+   - **From the commanded pose, not the measured one** (the request said the measured one): the measured pose trails the command
+     by tens of milliseconds while the arm moves, and planning from it would make the command jump back by that much at the
+     switch. The watchdog already stops a drive whose arm falls 0.25 rad behind its command.
+   - Deterministic given the same world: the assumed plans come from the seed and the objects at the start, `Holds` is a
+     function of the objects seen, and a plan made at a knock of the objects and its point of the runway alone (tested). Which
+     point a re-plan starts from depends on when the objects are seen at rest.
+   - A runway snapshot kept only how many poses had been solved, which was right only while nothing went back past it; going
+     on from a later point of the runway after an earlier attempt would have kept that attempt's poses, and the spliced plan
+     would have jumped. A snapshot now keeps its poses and commands (`HandSnapshot`); the one-event planner plans exactly as
+     before with it.
+6. **Records.** joint-drive sends each event to RobotHost as its arm leaves free movement for the event's object
+   (`ScriptEventCodec`, tag 0x8C on the joint port; an older RobotHost ignores it), and RobotHost writes it into the take as `SE`
+   (trainer/contract/SESSION_FORMAT.md): its index, how many the take drew, its kind (`stop`, `touch`, `knock`) and target, and
+   when its final approach, first contact (a stop: its closest approach), end, and the free movement after it were planned.
+   `teleop_lerobot safety-check` reports each planned event against the contacts physics reported (`events`: planned contact,
+   observed contact and what it touched, seconds from the episode's first frame), and the batch prints how many had a contact.
+7. **Checks** hold for several events: no contact for reach and stop; for recover every stretch of contact ends (no `WC`
+   left open) and the episode does not end touching, and no touched object tipped; for a knock at least one touched object
+   tipped or moved. Each touched object is measured from its own first touch, not the take's first contact: a knock may shove
+   another object before the arm reaches it. Frame labels are as exact as before, several unsafe ranges an episode in
+   `manual_safety_labels.json`. `safety_events.jsonl` has a `contact` (and for recover a `clear`) for every unsafe range, where
+   it had one pair spanning the first contact to the last: a lead window before a contact never spans the free movement
+   between two events. `knocks`/`knock_summary` were per object already.
+8. **The one-event planner stays** (`SafetyOptions.OneEventAtTheEnd`), every draw as it was, for what was planned with it:
+   `TouchMissesTests` replays 12 takes of 2026-11-16 from their records and still reproduces every command within 0.0002 rad.
+
+**Planned, over RobotHost's layouts 1-8 of `jetrover-bench`** (`SafetyTakeLayoutTests`, the scene's roles, each knock simulated
+as its object over on its side 8 cm along the swipe, seen at rest 2 s after the lift; the GPU machine with the twin running,
+load ~22):
+
+| | stop_before_collision | collide_and_recover | collide_with_obstacle | all |
+|---|---|---|---|---|
+| layouts planned | 8 of 8 | 8 of 8 | 8 of 8 | 24 of 24 |
+| events drawn 1 / 2 / 3 | | | | 8 / 6 / 10 takes |
+| events planned 1 / 2 / 3 | 2 / 1 / 5 | 3 / 3 / 2 | 4 / 3 / 1 | 9 / 7 / 8 takes (47 of 50 drawn events) |
+| take length | 10.0-26.6 s | 10.0-30.0 s | 10.0-30.0 s | median 17.3 s |
+
+- **Where events land:** contacts (a stop's closest approach) from 10% to 90% of their take, median 46%; a take's first event
+  2.9-6.4 s in. Before: 81-92%, one a take.
+- **Targets repeat where little else qualifies:** 8 of the 15 takes with more than one event aimed at one object twice or more,
+  mostly the fixture for touches and stops, and a knock's own object again (lying) for knocks: the other objects of those
+  layouts had no approach the category could use. Three posts all in reach take three touches on three posts (tested).
+- **After a knock** (six that went on): one took the plan made at the start; five were planned against the objects as left,
+  in 0.05-7.6 s each (a knock take planned at the start, with what follows its knocks: 0.1-8.8 s; a take's stops or touches
+  planned at the start: 0.5-16.9 s, before the take is recorded). All within joint-drive's second try (9 s), one over its
+  first (6 s); on the PC, with nothing else running, planning should be faster. Unmeasured on the twin.
+- **The take's start:** from the script's first tick a joint moves 0.5° within 0.3 s in every category (tested: within the
+  first 0.3 s, from home and from a pose that needs the move home first). The countdown and the move home are outside the
+  take, so a take's first recorded frames should show the arm already moving, give or take the renderer's first frame (it
+  reads the control file every 0.1 s) and the arm's own lag.
+
+**Tests.**
+- `SafetyTakeLayoutTests`: on 8 random layouts each category plans; the count drawn is within 1-3 and the planned within it;
+  every event's approach comes after at least the shortest lead, every next one after at least the shortest free movement,
+  and the take ends at least the shortest tail after the last event, never inside one; takes last 10-30 s; at least a third of
+  the takes plan two or more events, three quarters of the drawn events are planned, the median contact is before 70% of its
+  take and a quarter of them before half of it; a knock's next event is the same plan as before up to where it takes over.
+- `SafetyTakeTests`: three stops or touches on the bench, with free movement before (5 cm) and between and after them (2 cm)
+  clear of every object, and the touches touching; three posts, three different targets; the take begins with the arm moving
+  (above); the one-event planner still plans one event and no records; `--events`; `RestWatch`.
+- `SafetyTakeKnockTests`: after a knock, with the knocked object over on its side and another shoved and turned, the plan made
+  at the start does not hold and the next event is planned against the objects where they now are: deterministic, the same as
+  the runway until it takes over, through its target's new box and clear of the knocked object; the plan made at the start
+  holds when the knocked object went off the table, and not when it lies in the next event's way or shoved another object; with
+  no object left to knock (the knocked one on the floor, the other too heavy), the take ends after a tail.
+- `SafetyScriptTests`: every touch of collide_and_recover on the bench is brief (each stretch in contact, not their sum); the
+  random-layout bars are unchanged (80%, 60%, 80%, 80%), planned for the first event alone (`MaxEvents = 1`): a take plans when
+  its first event does, and the count is drawn before the first event's draws, so it is the event a take of up to three would
+  plan. `TouchMissesTests` replays its 12 takes with the one-event planner.
+- `ScriptEventCodecTests`, `AScriptedEvent_IsItsSessionFormatLine`: the wire and the `SE` line.
+- `robot/lerobot` (`test_safety.py`): three touches backed off pass and are three unsafe ranges with a `contact`/`clear` pair
+  each; a touch that never ends, or an object tipped, fails; three knocks pass with one object over and fail with none; an
+  object shoved before its own first touch is measured from that touch; the planned events and their contacts read from `SE`.
+
+**The twin check** (not run: the twin must be restarted from this commit for RobotHost to record `SE`; `just isaac-stop; just
+isaac-jetrover-host jetrover-bench`), then `just isaac-safety-batch 4 13 all false`, and `take_timing.py` over the new takes:
+- the arm still for under 0.5 s at each take's start (it was 3.1-3.9 s);
+- in the three event categories, 1-3 contact stretches (stops: none) spread through the take, the first within its first 7 s;
+- every take kept, none set aside for a new reason; recover takes with several touches each backed off;
+- `SE` records in each event take's `robothost.jlog`, and safety-check's `events` with a contact near each planned touch or
+  knock;
+- joint-drive's log after each knock: "the objects are at rest", then either "as the plan assumed" or "planning event N", and
+  "it takes over at", never "came in late again"; take lengths of 10-30 s, reach takes about 15 s.

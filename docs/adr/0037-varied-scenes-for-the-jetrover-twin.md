@@ -886,7 +886,7 @@ The arm can hit those, so they are scene objects with bodies, and every process 
   | `collide_with_obstacle` | 39 (39) | 3 (the pen, the screwdrivers, the tape) / 3 / 8 / 25 / 0 |
 
   - The target is amendment 6's: the object the planned arm first comes within 3.5 cm of. For clutter that is an upper bound.
-    The pen cannot be touched at all, so its "touch" is the arm passing within 3.5 cm of it on the way to another object.
+    No planned pose can reach the pen, so each of its three is the arm passing within 3.5 cm of it on the way to another object.
   - Clutter is the target of at most 3 of 39 plans in any category, and blocks one plan in 120 (a stop).
   - **Desirable, within what this arm can do.** Clutter is mostly scenery and an obstacle, and now and then a target; it never
     takes most of the targets.

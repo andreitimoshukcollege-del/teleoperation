@@ -540,16 +540,44 @@ namespace Teleop.Eval.JointDrive
             Rolls = s.Rolls;
         }
 
-        /// <summary>Free movement until <paramref name="end"/> seconds: goals, back and forth, adjustments and pauses, every tick checked against <paramref name="check"/>.</summary>
-        public bool FreeUntil(double end, ArmCollisionModel check)
+        /// <summary>
+        /// Free movement until <paramref name="end"/> seconds: goals, back and forth, adjustments and pauses, every tick checked
+        /// against <paramref name="check"/>. With <paramref name="partStarts"/>, each part's start is added to it; with
+        /// <paramref name="snapshots"/>, the operator's state after each part (a point the plan can go on from another way).
+        /// </summary>
+        public bool FreeUntil(double end, ArmCollisionModel check, List<double>? partStarts = null, List<HandSnapshot>? snapshots = null)
         {
             while (_free < end)
             {
+                double start = _free;
                 if (!StepFree(check)) return false;
+                partStarts?.Add(start);
+                snapshots?.Add(Save());
             }
 
             return true;
         }
+
+        /// <summary>
+        /// The operator is already moving when the take begins (docs/adr/0036 amendment 5): its first part started a moment
+        /// before (<see cref="HandModel.EngageLeadLow"/>-<see cref="HandModel.EngageLeadHigh"/> s, as a pinch taken on the
+        /// move), so the first commands already move the arm, where a person's reaction time (0.15-0.45 s) left it still.
+        /// Call it before anything is planned.
+        /// </summary>
+        public void EngageOnTheMove()
+        {
+            if (_poses.Count > 0 || _timeline.Moves.Count > 0) throw new InvalidOperationException("the operator has already moved");
+            _free = -Draw.Uniform(ref _rng, HandModel.EngageLeadLow, HandModel.EngageLeadHigh);
+        }
+
+        /// <summary>
+        /// Places free goals are not drawn near (horizontally, arm base frame), within <see cref="AvoidRadius"/>: after a knock,
+        /// where the object stood and where it went (docs/adr/0036 amendment 5). Null: anywhere.
+        /// </summary>
+        public IReadOnlyList<Vector2>? AvoidGoals { get; set; }
+
+        /// <summary>How far from each of <see cref="AvoidGoals"/> a free goal is drawn, m.</summary>
+        public float AvoidRadius { get; set; } = 0.10f;
 
         /// <summary>
         /// A move to <paramref name="goal"/> (the wrist's target, arm base frame) with the wrist at <paramref name="pitch"/> and
@@ -1299,12 +1327,23 @@ namespace Teleop.Eval.JointDrive
                     if (r < HandModel.GoalRadiusLow || r > HandModel.GoalRadiusHigh || g.Z < HandModel.GoalHeightLow || g.Z > HandModel.GoalHeightHigh
                         || MathF.Abs(yaw) > HandModel.GoalYawDegrees) continue;
                     if (Vector3.Distance(g, shoulder) > maxReach + HandModel.ReachOvershootMeters) continue;
+                    if (AvoidGoals != null && Near(new Vector2(g.X, g.Y), AvoidGoals, AvoidRadius)) continue;
                     goal = g;
                     return true;
                 }
             }
 
             goal = from;
+            return false;
+        }
+
+        private static bool Near(Vector2 p, IReadOnlyList<Vector2> points, float radius)
+        {
+            for (int i = 0; i < points.Count; i++)
+            {
+                if (Vector2.Distance(p, points[i]) < radius) return true;
+            }
+
             return false;
         }
     }

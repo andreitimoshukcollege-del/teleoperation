@@ -170,6 +170,16 @@ namespace Teleop.RobotHost.Recording
             "|" + (float.IsNaN(s.SpeedLevel) ? "varied" : F(s.SpeedLevel)) + "|" + F(s.Score) + "|" + (s.Disturbed ? "1" : "0");
 
         /// <summary>
+        /// One event of a scripted take (docs/adr/0036 amendment 5, <see cref="ScriptEventCodec"/>):
+        /// <c>SE|t|index|drawn|kind|object|finalS|contactS|endS|clearS</c>, written when the tool's arm leaves free movement for the
+        /// event's object (<c>t</c>); the four times are seconds after <c>t</c>, as planned (contact <c>NaN</c> when none was).
+        /// </summary>
+        public static string ScriptEvent(long t, in ScriptEvent e) =>
+            "SE|" + I(t) + "|" + e.Index.ToString(CultureInfo.InvariantCulture) + "|" + e.Drawn.ToString(CultureInfo.InvariantCulture) + "|" +
+            ScriptEventCodec.Name(e.Kind) + "|" + e.ObjectId.ToString(CultureInfo.InvariantCulture) + "|" + F(e.FinalSeconds) + "|" + F(e.ContactSeconds) +
+            "|" + F(e.EndSeconds) + "|" + F(e.ClearSeconds);
+
+        /// <summary>
         /// What the headset does to its own link and view (docs/adr/0023 amendment):
         /// <c>HD|t|lagMs|jitterMs|lossPercent|addedDelayMs|seed</c>, the lag <c>NaN</c> for a named profile.
         /// Any non-zero value means the session is not a real-network measurement. When the headset reports its hand

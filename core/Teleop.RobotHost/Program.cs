@@ -174,6 +174,8 @@ namespace Teleop.RobotHost
             HeadsetConditions? lastHeadset = null;
             long lastHeadsetTicks = long.MinValue;
             long lastTrainingTicks = long.MinValue;
+            // A scripted take's events (docs/adr/0036 amendment 5): the tool sends each a few times; one record per sequence.
+            uint? lastScriptEvent = null;
 
             // The joint-state downlink (docs/adr/0018): streams to whoever last sent a keepalive on
             // this same port, at 50 Hz, whether or not commands are arriving.
@@ -484,6 +486,20 @@ namespace Teleop.RobotHost
                             lastTraining = training;
                             lastTrainingTicks = arrivalTicks;
                             if (recorder != null && recorder.IsActive) sessionState!.Training(arrivalTicks, training);
+                            continue;
+                        }
+
+                        // A scripted take's event (docs/adr/0036 amendment 5): where joint-drive's plan meets an object. A label
+                        // for the recording only; it moves nothing.
+                        if (ScriptEventCodec.TryDecode(jointRecvBuffer.AsSpan(0, byteCount), out ScriptEvent scripted, out uint scriptedSequence, out _))
+                        {
+                            if (lastScriptEvent != scriptedSequence)
+                            {
+                                lastScriptEvent = scriptedSequence;
+                                Console.WriteLine($"[script] event {scripted.Index} of {scripted.Drawn}: {ScriptEventCodec.Name(scripted.Kind)} object {scripted.ObjectId}");
+                                if (recorder != null && recorder.IsActive) recorder.Record(SessionLines.ScriptEvent(arrivalTicks, scripted));
+                            }
+
                             continue;
                         }
 

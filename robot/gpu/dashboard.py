@@ -6,8 +6,9 @@ long is left, with buttons for the few things it may stop, pause or start. `just
 
 Every --interval seconds it pipes probe.py to the machine over one multiplexed ssh connection and keeps the answer; a
 probe that fails keeps the last good answer, with its age and the error. It also reads
-<repo>/recordings/.drive/safety-batch.json, the progress file of a local `just isaac-safety-batch`. Standard library
-only: it runs on WSL's python3.
+<repo>/recordings/.drive/safety-batch.json, the progress file of a local `just isaac-safety-batch`, and
+safety-batch-<N>.json, that of a batch on twin N (docs/adr/0037 amendment 7). Standard library only: it runs on WSL's
+python3.
 
 The page is served on 127.0.0.1 only, and only to requests whose Host is 127.0.0.1:<port> or localhost:<port> (so no
 other site reaches it by DNS rebinding). A POST needs the random token the page was served with (so no other page can
@@ -44,7 +45,8 @@ TAIL_CHARS = 2000
 MAX_BODY = 4096
 HOST_RE = re.compile(r"[A-Za-z0-9_][A-Za-z0-9._-]*@[A-Za-z0-9._-]+|[A-Za-z0-9_][A-Za-z0-9._-]*")
 
-# The whitelist, by (job kind, action). A local recipe, run in --repo with GPU_HOST set to --host, and its timeout:
+# The whitelist, by (job kind, action). A local recipe, run in --repo with GPU_HOST set to --host, and its timeout (a
+# twin's stop names the twin when it is not twin 0: `just isaac-stop 1`):
 JUST_ACTIONS: Dict[Tuple[str, str], Tuple[str, int]] = {
     ("twin", "stop"): ("isaac-stop", 300),
     ("watcher", "stop"): ("lerobot-watch-stop", 720),  # watch.sh waits up to 10 min for the take it is writing
@@ -58,12 +60,14 @@ SIGNALS: Dict[Tuple[str, str], str] = {
     ("netfetch", "stop"): "TERM",
     ("simfit", "stop"): "TERM",
 }
-# The local safety batch's control files, in <repo>/recordings/.drive (the recipe reads them between takes):
+# The local safety batch's control files, in <repo>/recordings/.drive (the recipe reads them between takes); twin N's
+# batch has its own, suffixed -N (PAUSE-1, STOP-1):
 BATCH_ACTIONS: Dict[str, str] = {
     "pause": "write recordings/.drive/PAUSE",
     "resume": "remove recordings/.drive/PAUSE",
     "stop": "write recordings/.drive/STOP",
 }
+BATCH_FILE = re.compile(r"^safety-batch(?:-([1-9]))?\.json$")
 
 
 class Refused(Exception):
@@ -92,9 +96,21 @@ def last_json(text: str) -> Optional[dict]:
 # The local safety batch
 
 
-def batch_paths(repo: str) -> Dict[str, str]:
+def batch_paths(repo: str, twin: int = 0) -> Dict[str, str]:
+    """A batch's progress file and control files: twin 0's as they always were, twin N's suffixed -N."""
     d = os.path.join(repo, "recordings", ".drive")
-    return {"file": os.path.join(d, "safety-batch.json"), "pause": os.path.join(d, "PAUSE"), "stop": os.path.join(d, "STOP")}
+    sfx = "" if twin == 0 else f"-{twin}"
+    return {"file": os.path.join(d, f"safety-batch{sfx}.json"), "pause": os.path.join(d, f"PAUSE{sfx}"),
+            "stop": os.path.join(d, f"STOP{sfx}")}
+
+
+def batch_twins(repo: str) -> List[int]:
+    """The twins with a batch progress file in <repo>/recordings/.drive, twin 0 first."""
+    try:
+        names = os.listdir(os.path.join(repo, "recordings", ".drive"))
+    except OSError:
+        return []
+    return sorted(int(m.group(1) or 0) for m in map(BATCH_FILE.match, names) if m)
 
 
 def pid_alive(pid: int) -> bool:
@@ -154,7 +170,7 @@ PHASE_TEXT = {
 
 
 def batch_job(data: Optional[dict], now: float, alive: Callable[[int], bool], pause_file: bool,
-              stop_file: bool) -> Optional[dict]:
+              stop_file: bool, twin: int = 0) -> Optional[dict]:
     """The local safety batch, from its progress file's ``data``, as a job card (None without a file).
 
     A job while its recipe's pid is alive and the phase is not done or failed: pause and resume (the PAUSE file) and
@@ -171,7 +187,8 @@ def batch_job(data: Optional[dict], now: float, alive: Callable[[int], bool], pa
     dataset = data.get("dataset") if isinstance(data.get("dataset"), str) and data.get("dataset") else None
     detail = [f"take {take} of {total}: {kept} kept, {set_aside} set aside, {unplanned} not planned"
               + (f", {unchecked} not checked yet" if unchecked else "")]
-    job = {"id": f"batch-{name}", "kind": "batch", "title": f"Safety batch {name}", "phase": phase, "started": started,
+    title = f"Safety batch {name}" if twin == 0 else f"Safety batch on twin {twin}: {name}"
+    job = {"id": f"batch-{name}", "kind": "batch", "twin": twin, "title": title, "phase": phase, "started": started,
            "pids": [pid] if pid else [], "progress": {"done": take, "total": total, "unit": "takes"} if total > 0 else None,
            "eta_s": None, "eta_note": "", "actions": [], "detail": detail}
     if phase in ("done", "failed"):
@@ -205,16 +222,29 @@ def batch_job(data: Optional[dict], now: float, alive: Callable[[int], bool], pa
 # The whitelist
 
 
-def plan_action(remote: Optional[dict], batch: Optional[dict], job_id: object, action: object) -> dict:
+def _twin_number(job: dict) -> int:
+    """A job's twin (0 when it names none), refused unless it is a small whole number."""
+    twin = job.get("twin", 0)
+    if not isinstance(twin, int) or isinstance(twin, bool) or not 0 <= twin <= 9:
+        raise Refused(f"refused: {job.get('title') or job.get('id')} names no twin")
+    return twin
+
+
+def plan_action(remote: Optional[dict], batches, job_id: object, action: object) -> dict:
     """What ``action`` on ``job_id`` runs, decided from the latest status only: the job must be in it and list the
-    action, and the (kind, action) must be in the tables above. Raises Refused otherwise."""
+    action, and the (kind, action) must be in the tables above. ``batches`` are the local batches' jobs (one, a list, or
+    None). Raises Refused otherwise."""
     if not isinstance(job_id, str) or not isinstance(action, str):
         raise Refused("refused: job and action must be strings")
-    if batch and batch.get("id") == job_id:
+    for batch in [batches] if isinstance(batches, dict) else (batches or []):
+        if not (isinstance(batch, dict) and batch.get("id") == job_id):
+            continue
         title = str(batch.get("title") or job_id)
         if action not in BATCH_ACTIONS or action not in (batch.get("actions") or []):
             raise Refused(f"refused: {title} does not offer {action!r} now")
-        return {"type": "batch", "action": action, "title": title, "what": BATCH_ACTIONS[action]}
+        twin = _twin_number(batch)
+        what = BATCH_ACTIONS[action] + ("" if twin == 0 else f"-{twin}")
+        return {"type": "batch", "action": action, "twin": twin, "title": title, "what": what}
     jobs = remote.get("jobs") if isinstance(remote, dict) else None
     job = next((j for j in jobs or [] if isinstance(j, dict) and j.get("id") == job_id), None)
     if job is None:
@@ -225,6 +255,8 @@ def plan_action(remote: Optional[dict], batch: Optional[dict], job_id: object, a
     kind = job.get("kind")
     if (kind, action) in JUST_ACTIONS:
         recipe, timeout = JUST_ACTIONS[(kind, action)]
+        if kind == "twin" and _twin_number(job) != 0:
+            recipe = f"{recipe} {_twin_number(job)}"
         return {"type": "just", "recipe": recipe, "timeout": timeout, "title": title, "what": f"just {recipe}"}
     if (kind, action) in SIGNALS:
         pgid = job.get("pgid")
@@ -265,7 +297,7 @@ class Dashboard:
         self.actions_log: List[dict] = []
         self.inflight: Set[str] = set()
         self.next_id = 1
-        self.batch_last: Optional[dict] = None  # the batch file's last good read (a read can meet it half-written)
+        self.batch_last: Dict[int, Optional[dict]] = {}  # each batch file's last good read (a read can meet it half-written)
         self.control_dir: Optional[str] = None
         self.stopping = threading.Event()
         self.wake = threading.Event()
@@ -297,22 +329,29 @@ class Dashboard:
         with self.lock:
             remote, at, error = self.remote, self.remote_at, self.remote_error
             log = [dict(e) for e in self.actions_log]
+        batches = self.batches(now)
         return {"remote": remote, "remote_error": error, "remote_age_s": None if at is None else round(max(0.0, now - at), 1),
-                "batch": self.batch(now), "actions_log": log, "host": self.host, "interval_s": self.interval, "now": now}
+                "batch": next((b for b in batches if b.get("twin") == 0), None), "batches": batches, "actions_log": log,
+                "host": self.host, "interval_s": self.interval, "now": now}
 
-    def batch(self, now: Optional[float] = None) -> Optional[dict]:
-        paths = batch_paths(self.repo)
+    def batch(self, now: Optional[float] = None, twin: int = 0) -> Optional[dict]:
+        """Twin ``twin``'s batch (twin 0's by default) as a job card, from its progress file; None without one."""
+        paths = batch_paths(self.repo, twin)
         try:
             with open(paths["file"], encoding="utf-8") as f:
                 data = json.load(f)
-            self.batch_last = data
+            self.batch_last[twin] = data
         except FileNotFoundError:
-            self.batch_last = None
+            self.batch_last.pop(twin, None)
             return None
         except (OSError, ValueError):
-            data = self.batch_last
+            data = self.batch_last.get(twin)
         return batch_job(data, self.clock() if now is None else now, self.alive, os.path.exists(paths["pause"]),
-                         os.path.exists(paths["stop"]))
+                         os.path.exists(paths["stop"]), twin)
+
+    def batches(self, now: Optional[float] = None) -> List[dict]:
+        """Every batch with a progress file (one a twin, docs/adr/0037 amendment 7), twin 0's first."""
+        return [b for b in (self.batch(now, t) for t in batch_twins(self.repo)) if b is not None]
 
     def handle_action(self, token: Optional[str], body: bytes) -> Tuple[int, dict]:
         """POST /api/action: (HTTP status, {ok, message}). Starts the action and answers at once."""
@@ -335,7 +374,7 @@ class Dashboard:
         now = self.clock()
         with self.lock:
             remote, at = self.remote, self.remote_at
-        plan = plan_action(remote, self.batch(now), job_id, action)
+        plan = plan_action(remote, self.batches(now), job_id, action)
         if plan["type"] != "batch":
             age = None if at is None else now - at
             if age is None or age > self.max_age:
@@ -363,7 +402,7 @@ class Dashboard:
             elif plan["type"] == "signal":
                 ok, output = self._signal(plan)
             else:
-                ok, output = self._batch_file(plan["action"])
+                ok, output = self._batch_file(plan["action"], plan.get("twin", 0))
         except Exception as e:  # whatever happens, the outcome lands in the log
             ok, output = False, f"{type(e).__name__}: {e}"
         with self.lock:
@@ -384,25 +423,26 @@ class Dashboard:
             return False, f"ssh exited {code}: {tail_text(err or out, 600) or 'no message'}"
         return bool(answer.get("ok")), str(answer.get("message", ""))
 
-    def _batch_file(self, action: str) -> Tuple[bool, str]:
-        paths = batch_paths(self.repo)
+    def _batch_file(self, action: str, twin: int = 0) -> Tuple[bool, str]:
+        paths = batch_paths(self.repo, twin)
+        sfx = "" if twin == 0 else f"-{twin}"
         stamp = time.strftime("%H:%M:%S")
         if action == "pause":
             os.makedirs(os.path.dirname(paths["pause"]), exist_ok=True)
             with open(paths["pause"], "w", encoding="utf-8") as f:
                 f.write(f"paused from the GPU dashboard at {stamp}\n")
-            return True, "wrote recordings/.drive/PAUSE: the batch waits after the take in progress"
+            return True, f"wrote recordings/.drive/PAUSE{sfx}: the batch waits after the take in progress"
         if action == "resume":
             try:
                 os.remove(paths["pause"])
             except FileNotFoundError:
-                return True, "there was no recordings/.drive/PAUSE: nothing held the batch"
-            return True, "removed recordings/.drive/PAUSE: the batch goes on"
+                return True, f"there was no recordings/.drive/PAUSE{sfx}: nothing held the batch"
+            return True, f"removed recordings/.drive/PAUSE{sfx}: the batch goes on"
         if action == "stop":
             os.makedirs(os.path.dirname(paths["stop"]), exist_ok=True)
             with open(paths["stop"], "w", encoding="utf-8") as f:
                 f.write(f"stopped from the GPU dashboard at {stamp}\n")
-            return True, "wrote recordings/.drive/STOP: the batch stops after the take in progress and builds its dataset"
+            return True, f"wrote recordings/.drive/STOP{sfx}: the batch stops after the take in progress and builds its dataset"
         return False, f"not a batch action: {action!r}"
 
     # -- processes -------------------------------------------------------------------------------------------------
@@ -435,9 +475,10 @@ class Dashboard:
         if not just:
             return 127, "just is not on PATH"
         env = dict(os.environ, GPU_HOST=self.host)  # the recipes act on the machine this page shows
-        fd, out_path = tempfile.mkstemp(prefix=f"{recipe}-", suffix=".log", dir=self.control_dir)
+        argv = recipe.split()  # a recipe and its arguments, from the whitelist only (a twin's number at most)
+        fd, out_path = tempfile.mkstemp(prefix=f"{argv[0]}-", suffix=".log", dir=self.control_dir)
         with os.fdopen(fd, "wb") as out:
-            p = subprocess.Popen([just, recipe], cwd=self.repo, stdin=subprocess.DEVNULL, stdout=out,
+            p = subprocess.Popen([just] + argv, cwd=self.repo, stdin=subprocess.DEVNULL, stdout=out,
                                  stderr=subprocess.STDOUT, env=env, start_new_session=True)
         with self.lock:
             self.recipes[p] = out_path

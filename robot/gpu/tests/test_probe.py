@@ -121,10 +121,48 @@ def test_the_twin_is_its_real_processes_and_robothost_on_the_relay_is_the_jetrov
     procs = [_proc(10, "bash -c set -euo pipefail ... -m teleop_isaac.jetrover_bridge ... Teleop.RobotHost.dll", started=900.0),
              _proc(12, "dotnet /home/andrei/isaacsim/robothost/Teleop.RobotHost.dll --relay-socket /tmp/r.sock", pgid=10)]
     p = {"isaac_logs": str(tmp_path), "sessions_jetrover": str(tmp_path), "sessions_fr3": str(tmp_path)}
-    job = probe.job_twin(procs, p)
+    [job] = probe.job_twins(procs, p)
     assert job["title"] == "Isaac twin (JetRover)"
     assert job["pids"] == [12] and job["started"] == 1000.0
     assert job["detail"][0] == "JetRover twin: RobotHost (no renderer: no cameras)"
+    assert (job["id"], job["twin"]) == ("twin", 0)
+
+
+def test_two_twins_are_two_jobs_each_with_its_renderer_and_recording(tmp_path):
+    # docs/adr/0037 amendment 7: each twin's processes name its record control file; twin 1's logs and sessions are its own.
+    home = tmp_path
+    (home / "logs").mkdir()
+    (home / "logs" / "renderer.log").write_text("[render] streaming at 30 fps\n[render] 30.0 fps; states 1\n")
+    (home / "logs" / "renderer-1.log").write_text("[render] 28.5 fps; states 2\n")
+    s0, s1 = home / "sessions" / "jetrover-isaac", home / "sessions" / "jetrover-isaac-twin1"
+    s0.mkdir(parents=True), s1.mkdir(parents=True)
+    (s1 / ".active").write_text(str(s1 / "20261121T120000Z-take001") + "\n")
+    rc0, rc1 = f"--record-control {s0}/.active", f"--record-control {s1}/.active"
+    py = "/home/andrei/isaacsim/venv/bin/python -m "
+    procs = [_proc(20, f"{py}teleop_isaac.jetrover_bridge --socket /tmp/r.sock --client-socket /tmp/r.sock.robothost {rc0} --scene x"),
+             _proc(21, f"{py}teleop_isaac.renderer --sim s --scene x --tap /tmp/t.sock {rc0}"),
+             _proc(22, f"dotnet /home/andrei/isaacsim/robothost/Teleop.RobotHost.dll --relay-socket /tmp/r.sock {rc0} --uplink-control u"),
+             _proc(30, f"{py}teleop_isaac.jetrover_bridge --socket /tmp/r-1.sock {rc1} --scene x", started=2000.0),
+             _proc(31, f"{py}teleop_isaac.renderer --sim s --tap /tmp/t-1.sock {rc1} --feed-port-offset 100", started=2000.0),
+             _proc(32, f"dotnet /home/andrei/isaacsim/robothost-1/Teleop.RobotHost.dll --relay-socket /tmp/r-1.sock {rc1}", started=2000.0)]
+    p = {"isaac_logs": str(home / "logs"), "sessions_jetrover": str(s0), "sessions_fr3": str(home / "fr3")}
+    first, second = probe.job_twins(procs, p)
+    assert (first["id"], first["twin"], first["title"], first["pids"]) == ("twin", 0, "Isaac twin (JetRover)", [20, 21, 22])
+    assert first["detail"] == ["JetRover twin: RobotHost, bridge, renderer", "[render] 30.0 fps; states 1", "not recording"]
+    assert (second["id"], second["twin"], second["title"], second["pids"]) == ("twin-1", 1, "Isaac twin 1 (JetRover)", [30, 31, 32])
+    assert second["detail"][0] == "JetRover twin 1: RobotHost, bridge, renderer; joint port 6102"
+    assert second["detail"][1] == "[render] 28.5 fps; states 2"
+    assert second["detail"][2].startswith("recording a take: ") and second["detail"][2].endswith("jetrover-isaac-twin1/20261121T120000Z-take001")
+
+
+@pytest.mark.parametrize("cmd,twin", [
+    ("python -m teleop_isaac.renderer --record-control /home/a/data/sessions/jetrover-isaac/.active", 0),
+    ("python -m teleop_isaac.renderer --record-control /home/a/data/sessions/jetrover-isaac-twin1/.active --feed-port-offset 100", 1),
+    ("python -m teleop_isaac.renderer --record-control /home/a/data/sessions/fr3_duo-isaac/.active", None),
+    ("python -m teleop_isaac.bridge --socket /tmp/teleop-isaac-a.sock", None),
+])
+def test_a_process_belongs_to_the_twin_whose_control_file_it_names(cmd, twin):
+    assert probe.twin_of(cmd) == twin
 
 
 # -- toml_steps and run_steps --------------------------------------------------------------------------------------

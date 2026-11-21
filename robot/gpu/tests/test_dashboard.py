@@ -31,14 +31,14 @@ REMOTE = {
 }
 
 
-def batch_file(repo, **fields):
+def batch_file(repo, twin=0, **fields):
     data = {"recipe": "isaac-safety-batch", "pid": 31337, "name": "jetrover_20261115_160000_abcdef", "total": 40, "take": 10,
             "kept": 8, "setAside": 1, "unplanned": 1, "unchecked": 0, "started": NOW - 600, "updated": NOW, "phase": "takes",
             "dataset": None}
     data.update(fields)
     drive = os.path.join(str(repo), "recordings", ".drive")
     os.makedirs(drive, exist_ok=True)
-    with open(os.path.join(drive, "safety-batch.json"), "w", encoding="utf-8") as f:
+    with open(os.path.join(drive, "safety-batch.json" if twin == 0 else f"safety-batch-{twin}.json"), "w", encoding="utf-8") as f:
         json.dump(data, f)
     return data
 
@@ -124,6 +124,23 @@ def test_the_twin_stops_through_its_recipe(dash):
     assert (entry["job"], entry["action"], entry["ok"], entry["time"]) == ("twin", "stop", True, NOW)
     assert "stopped" in entry["output"] and entry["finished"] == NOW
     assert dash.inflight == set()
+
+
+def test_the_second_twin_stops_through_its_recipe_with_its_number(dash):
+    # docs/adr/0037 amendment 7: twin 1's card stops twin 1 only.
+    dash.remote["jobs"].append({"id": "twin-1", "kind": "twin", "twin": 1, "title": "Isaac twin 1 (JetRover)", "status": "running",
+                                "actions": ["stop"]})
+    code, answer = post(dash, "twin-1", "stop")
+    assert code == 202 and answer == {"ok": True, "message": "started: just isaac-stop 1"}
+    assert dash.calls == [("just", "isaac-stop 1", 300)]
+
+
+@pytest.mark.parametrize("twin", ["1; rm -rf ~", -1, 10, True, 1.5, None])
+def test_a_twin_job_naming_anything_but_a_small_number_is_refused(dash, twin):
+    dash.remote["jobs"].append({"id": "twin-x", "kind": "twin", "twin": twin, "title": "Isaac twin x", "status": "running",
+                                "actions": ["stop"]})
+    assert post(dash, "twin-x", "stop")[0] == 409
+    assert dash.calls == []
 
 
 def test_the_watcher_stops_and_starts_through_its_recipes(dash):
@@ -293,6 +310,33 @@ def test_batch_actions_write_and_remove_its_files(dash, tmp_path):
     assert os.path.exists(os.path.join(drive, "STOP")) and dash.batch()["actions"] == []
     assert post(dash, job_id, "stop")[0] == 409  # asked already
     assert dash.calls == [] and [e["ok"] for e in dash.actions_log] == [True, True, True]
+
+
+def test_two_twins_batches_are_two_cards_each_with_its_own_files(dash, tmp_path):
+    # docs/adr/0037 amendment 7: twin 1's batch writes safety-batch-1.json and reads PAUSE-1 and STOP-1.
+    batch_file(tmp_path)
+    batch_file(tmp_path, twin=1, name="jetrover_20261121_120000_123456", take=3)
+    s = dash.status()
+    assert [b["id"] for b in s["batches"]] == ["batch-jetrover_20261115_160000_abcdef", "batch-jetrover_20261121_120000_123456"]
+    assert s["batch"]["id"] == "batch-jetrover_20261115_160000_abcdef"
+    second = s["batches"][1]
+    assert (second["twin"], second["title"], second["progress"]["done"]) == (1, "Safety batch on twin 1: jetrover_20261121_120000_123456", 3)
+    drive = os.path.join(str(tmp_path), "recordings", ".drive")
+    code, answer = post(dash, "batch-jetrover_20261121_120000_123456", "pause")
+    assert code == 202 and answer["message"] == "started: write recordings/.drive/PAUSE-1"
+    assert os.path.exists(os.path.join(drive, "PAUSE-1")) and not os.path.exists(os.path.join(drive, "PAUSE"))
+    assert dash.batch(twin=1)["actions"] == ["resume", "stop"] and dash.batch()["actions"] == ["pause", "stop"]
+    assert post(dash, "batch-jetrover_20261121_120000_123456", "stop")[0] == 202
+    assert os.path.exists(os.path.join(drive, "STOP-1")) and not os.path.exists(os.path.join(drive, "STOP"))
+    assert "STOP-1" in dash.actions_log[-1]["output"]
+
+
+def test_batch_files_of_other_names_are_not_batches(tmp_path):
+    drive = tmp_path / "recordings" / ".drive"
+    drive.mkdir(parents=True)
+    for name in ("safety-batch.json", "safety-batch-1.json", "safety-batch-1.json.tmp", "safety-batch-x.json", "safety-batch.kept"):
+        (drive / name).write_text("{}")
+    assert d.batch_twins(str(tmp_path)) == [0, 1]
 
 
 def test_batch_actions_need_no_fresh_remote_status_but_a_live_recipe(dash, tmp_path):

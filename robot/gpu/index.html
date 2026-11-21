@@ -388,12 +388,13 @@ footer { color: var(--muted); font-size: 13px; padding: 24px 0 32px; }
   function currentJobs() {
     if (!last) return [];
     const out = [];
-    const b = last.batch;
-    const active = b && (b.status === "running" || b.status === "paused");
+    // Every local batch, one a twin (docs/adr/0037 amendment 7): the running ones first, the finished ones last.
+    const batches = last.batches || (last.batch ? [last.batch] : []);
+    const active = (b) => b.status === "running" || b.status === "paused";
     const rAge = remoteAge() || 0;
-    if (b && active) out.push({ job: b, now: localNow(), age: sinceFetch() });
+    for (const b of batches) if (active(b)) out.push({ job: b, now: localNow(), age: sinceFetch() });
     if (last.remote) for (const j of last.remote.jobs || []) out.push({ job: j, now: remoteNow(), age: rAge });
-    if (b && !active) out.push({ job: b, now: localNow(), age: sinceFetch() });
+    for (const b of batches) if (!active(b)) out.push({ job: b, now: localNow(), age: sinceFetch() });
     return out;
   }
 
@@ -516,10 +517,11 @@ footer { color: var(--muted); font-size: 13px; padding: 24px 0 32px; }
   function confirmSpec(job, action) {
     const pg = job.pgid;
     const sig = (s) => "Sends SIG" + s + " to process group " + pg + " on the GPU machine.";
+    const sfx = job.twin ? "-" + job.twin : "";  // twin N's batch files and stop recipe (docs/adr/0037 amendment 7)
     const specs = {
       "twin stop": ["Stop the Isaac twin?",
         "This stops RobotHost, the bridge and the renderer on the GPU machine, and closes a recording in progress. It can take a few minutes.",
-        "Runs just isaac-stop in the repo.", "Stop the twin"],
+        "Runs just isaac-stop" + (job.twin ? " " + job.twin : "") + " in the repo.", "Stop the twin"],
       "watcher stop": ["Stop the LeRobot watcher?",
         "This stops the watcher and removes its cron keeper too, so nothing starts it again until it is started here or with just lerobot-watch-start. It first finishes the take it is converting (up to 10 minutes).",
         "Runs just lerobot-watch-stop in the repo.", "Stop the watcher"],
@@ -536,12 +538,12 @@ footer { color: var(--muted); font-size: 13px; padding: 24px 0 32px; }
       "simfit stop": ["Stop the sim fit?", "This ends the fit. Its log stays.", sig("TERM"), "Stop the fit"],
       "batch pause": ["Pause the safety batch?",
         "This takes effect after the take in progress: the batch then waits before its next take until it is resumed.",
-        "Writes recordings/.drive/PAUSE in the repo.", "Pause after this take"],
+        "Writes recordings/.drive/PAUSE" + sfx + " in the repo.", "Pause after this take"],
       "batch resume": ["Resume the safety batch?", "The batch goes on with its next take.",
-        "Removes recordings/.drive/PAUSE in the repo.", "Resume the batch"],
+        "Removes recordings/.drive/PAUSE" + sfx + " in the repo.", "Resume the batch"],
       "batch stop": ["Stop the safety batch?",
         "This takes effect after the take in progress: no more takes are recorded, and the dataset is still built from the takes kept so far.",
-        "Writes recordings/.drive/STOP in the repo.", "Stop after this take"],
+        "Writes recordings/.drive/STOP" + sfx + " in the repo.", "Stop after this take"],
     };
     const s = specs[job.kind + " " + action] || [(LABELS[action] || action) + "?", "", "", LABELS[action] || action];
     return { title: s[0], job: job.title || job.id, text: s[1], how: s[2], ok: s[3], danger: action === "stop" };

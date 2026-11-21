@@ -450,14 +450,20 @@ namespace Teleop.Eval.JointDrive
         Through,
     }
 
-    /// <summary>An operator's state, to try more than one way on from it (<see cref="HumanOperator.Save"/>).</summary>
+    /// <summary>
+    /// An operator's state, to try more than one way on from it (<see cref="HumanOperator.Save"/>): its plan, and every pose and
+    /// command solved so far, so it can be gone back to whatever was tried from it, or from another state, since (2026-11-21: it
+    /// kept only how many there were, which was right only while nothing went back past it; a take that goes on after a knock
+    /// goes back to one of several points of its runway, docs/adr/0036 amendment 5).
+    /// </summary>
     public sealed class HandSnapshot
     {
-        internal HandSnapshot(HandTimeline timeline, double free, int ticks, SeededRng rng, bool grips, bool rolls)
+        internal HandSnapshot(HandTimeline timeline, double free, ArmPose[] poses, HandCommand[] commands, SeededRng rng, bool grips, bool rolls)
         {
             Timeline = timeline;
             Free = free;
-            Ticks = ticks;
+            Poses = poses;
+            Commands = commands;
             Rng = rng;
             Grips = grips;
             Rolls = rolls;
@@ -465,7 +471,9 @@ namespace Teleop.Eval.JointDrive
 
         internal HandTimeline Timeline { get; }
         internal double Free { get; }
-        internal int Ticks { get; }
+        internal ArmPose[] Poses { get; }
+        internal HandCommand[] Commands { get; }
+        internal int Ticks => Poses.Length;
         internal SeededRng Rng { get; }
         internal bool Grips { get; }
         internal bool Rolls { get; }
@@ -522,19 +530,17 @@ namespace Teleop.Eval.JointDrive
 
         public HandTimeline Timeline => _timeline;
 
-        public HandSnapshot Save() => new HandSnapshot(_timeline.Copy(), _free, _poses.Count, _rng, Grips, Rolls);
+        public HandSnapshot Save() => new HandSnapshot(_timeline.Copy(), _free, _poses.ToArray(), _commands.ToArray(), _rng, Grips, Rolls);
 
         /// <summary>Back to <paramref name="s"/>; with <paramref name="reseed"/>, every draw from here on comes from that seed instead (the same draws whatever came before).</summary>
         public void Restore(HandSnapshot s, ulong? reseed = null)
         {
             _timeline = s.Timeline.Copy();
             _free = s.Free;
-            if (_poses.Count > s.Ticks)
-            {
-                _poses.RemoveRange(s.Ticks, _poses.Count - s.Ticks);
-                _commands.RemoveRange(s.Ticks, _commands.Count - s.Ticks);
-            }
-
+            _poses.Clear();
+            _poses.AddRange(s.Poses);
+            _commands.Clear();
+            _commands.AddRange(s.Commands);
             _rng = reseed.HasValue ? new SeededRng(reseed.Value == 0 ? 1 : reseed.Value) : s.Rng;
             Grips = s.Grips;
             Rolls = s.Rolls;

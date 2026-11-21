@@ -399,7 +399,27 @@ namespace Teleop.Eval.JointDrive
 
             ArmPose start = link.Measured;
             Console.WriteLine($"[joint-drive] the arm is at {DrivePlan.Describe(start)}");
-            if (!DrivePlan.TryBuild(script, profile, start, speed, seconds, seed, envelope, out DrivePlan? plan, out string? error, objects, safetyOptions))
+            // A take with several events takes seconds to plan (docs/adr/0036 amendment 5): the link is kept up meanwhile, so
+            // RobotHost goes on streaming the joints and the world.
+            Task<(bool Built, DrivePlan? Plan, string? Error)> planning = Task.Run(() =>
+            {
+                bool built = DrivePlan.TryBuild(script, profile, start, speed, seconds, seed, envelope, out DrivePlan? p, out string? why, objects, safetyOptions);
+                return (built, p, why);
+            });
+            while (!planning.IsCompleted)
+            {
+                if (stop.IsSet)
+                {
+                    Console.Error.WriteLine("joint-drive: stopped by hand before anything moved.");
+                    return 130;
+                }
+
+                link.Pump(Stopwatch.GetTimestamp(), default);
+                Thread.Sleep(5);
+            }
+
+            (bool planned, DrivePlan? plan, string? error) = planning.Result;
+            if (!planned)
             {
                 Console.Error.WriteLine($"joint-drive: {error}");
                 return 1;
@@ -791,10 +811,12 @@ namespace Teleop.Eval.JointDrive
         }
 
         /// <summary>
-        /// After a knock (docs/adr/0036 amendment 5): watches the objects until they are at rest, then plans the next event on a
-        /// thread of its own while the arm goes on along the plan's runway (free movement away from the knocked object), and
-        /// hands back the new plan if it comes in time to take over at its switch point. The two plans are the same before that
-        /// point, so nothing jumps; without a new plan the runway ends the take.
+        /// After a knock (docs/adr/0036 amendment 5): watches the objects until they are at rest while the arm goes on along the
+        /// plan's runway (free movement away from the knocked object). Then the plan made at the start for after the knock takes
+        /// over if the world is as it assumed (<see cref="SafetyContinuation.Holds"/>); otherwise the next event is planned on a
+        /// thread of its own against the objects as they now are, and the new plan handed back if it comes in time to take over at
+        /// its switch point. Either plan is the same as the one driven before that point, so nothing jumps; without one the runway
+        /// ends the take.
         /// </summary>
         private sealed class Replanning
         {
@@ -870,8 +892,31 @@ namespace Teleop.Eval.JointDrive
                     return null;
                 }
 
+                if (!WorldView.TryObjects(world, out List<SafetyObject> objects))
+                {
+                    Console.WriteLine(FormattableString.Invariant($"[joint-drive] {planTime,5:0.0} s: the objects are not all posed; the runway ends the take"));
+                    _pending = null;
+                    return null;
+                }
+
+                // What was planned at the start for after this knock, if the world is as it assumed: no planning, nothing to wait for.
+                if (_task == null && _tries == 0 && _pending.Assumed != null && planTime < _pending.AssumedAt - HandModel.TickSeconds)
+                {
+                    if (_pending.Holds(objects, out string why))
+                    {
+                        DrivePlan assumed = _pending.Assumed;
+                        Console.WriteLine(FormattableString.Invariant(
+                            $"[joint-drive] {planTime,5:0.0} s: the objects are at rest as the plan assumed ({why}); event {_pending.NextIndex} as planned, from {_pending.AssumedAt:0.0} s"));
+                        _pending = assumed.Pending;
+                        _rest = null;
+                        return assumed;
+                    }
+
+                    Console.WriteLine(FormattableString.Invariant($"[joint-drive] {planTime,5:0.0} s: the plan made for after the knock no longer holds ({why})"));
+                }
+
                 _switchAt = _pending.SwitchAfter(planTime + BudgetSeconds * (1 + _tries));
-                if (double.IsNaN(_switchAt) || !WorldView.TryObjects(world, out List<SafetyObject> objects))
+                if (double.IsNaN(_switchAt))
                 {
                     Console.WriteLine(FormattableString.Invariant($"[joint-drive] {planTime,5:0.0} s: no time left on the runway to plan another event; it ends the take"));
                     _pending = null;

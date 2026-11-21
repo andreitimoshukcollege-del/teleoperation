@@ -51,10 +51,13 @@ namespace Teleop.Eval.JointDrive
 
     /// <summary>
     /// What a collide_with_obstacle take needs to go on past a knock (docs/adr/0036 amendment 5). A knock sends its object
-    /// wherever physics takes it, so the next event cannot be planned before the objects have settled: the plan goes on with
-    /// free movement away from the knocked object (the runway), and joint-drive, once it sees every object at rest, asks
-    /// <see cref="Continue"/> for a plan that is the same up to a point of the runway and plans the next event from there against
-    /// the objects as they now stand. Without that, the runway ends the take.
+    /// wherever physics takes it, so the next event cannot be known safe before the objects have settled: the plan goes on with
+    /// free movement away from the knocked object (the runway), and joint-drive watches the objects until every one is at rest.
+    /// Then, if the world is as <see cref="Assumed"/> was planned for at the start (every other object where it stood, the
+    /// knocked one wherever it lies but clear of all that plan does: <see cref="Holds"/>), that plan takes over at
+    /// <see cref="AssumedAt"/>; otherwise joint-drive asks <see cref="Continue"/> for a plan that is the same up to a later point
+    /// of the runway and plans the next event from there against the objects as they now stand. Without either, the runway ends
+    /// the take.
     /// </summary>
     public sealed class SafetyContinuation
     {
@@ -90,6 +93,35 @@ namespace Teleop.Eval.JointDrive
         internal SafetyEvent[] Events { get; }
         internal byte[] Used { get; }
         internal Vector2[] Away { get; }
+
+        /// <summary>
+        /// The rest of the take planned at the start for the world the knock would leave if its object simply went away: the
+        /// same as the runway before <see cref="AssumedAt"/>, then the next event (and on). Null when that plans no further event
+        /// (the knocked object may be the only one left to aim at, wherever it now lies: <see cref="Continue"/> finds out).
+        /// </summary>
+        public DrivePlan? Assumed { get; private set; }
+
+        /// <summary>Where <see cref="Assumed"/> takes over, plan seconds (NaN without one).</summary>
+        public double AssumedAt { get; private set; } = double.NaN;
+
+        internal SafetyObject[] AssumedObjects { get; private set; } = Array.Empty<SafetyObject>();
+
+        internal void Assume(DrivePlan plan, double at, SafetyObject[] objects)
+        {
+            Assumed = plan;
+            AssumedAt = at;
+            AssumedObjects = objects;
+        }
+
+        /// <summary>
+        /// Whether <see cref="Assumed"/> still holds with the objects as they now are (<paramref name="objects"/>, at rest): every
+        /// object it was planned around within <see cref="HoldsMeters"/> and <see cref="HoldsRadians"/> of where it stood, and every
+        /// other (the knocked ones) clear of all it does from <see cref="AssumedAt"/> on by the approach clearance. False, and why, when not.
+        /// </summary>
+        public bool Holds(IReadOnlyList<SafetyObject> objects, out string why) => _take.Holds(this, objects, out why);
+
+        /// <summary>How far an object planned around may have moved for <see cref="Assumed"/> to hold, m and rad.</summary>
+        public const float HoldsMeters = 0.003f, HoldsRadians = 3f * MathF.PI / 180f;
 
         /// <summary>The first point of the runway at or after <paramref name="notBefore"/> (plan seconds) the plan can go on from another way, or NaN when the runway ends before.</summary>
         public double SwitchAfter(double notBefore)
@@ -150,6 +182,13 @@ namespace Teleop.Eval.JointDrive
 
         /// <summary>After a knock, free goals are drawn this far from where the object stood and from where it was sent, m.</summary>
         public const float AwayMeters = 0.10f;
+
+        /// <summary>
+        /// The plan made at the start for after a knock (<see cref="SafetyContinuation.Assumed"/>) takes over no sooner than this
+        /// after the knock's lift ends, seconds, nor before the drawn free movement between events has passed: time for the
+        /// objects to settle and be seen at rest.
+        /// </summary>
+        public const double AssumeSettleSeconds = 2.5;
 
         private readonly DriveScript _script;
         private readonly RobotArmProfile _profile;
@@ -242,7 +281,7 @@ namespace Teleop.Eval.JointDrive
             }
 
             var take = new SafetyTake(script, profile, model, envelope, options, speed, prefix, t, current, hand, drawn);
-            if (!take.PlanEvents(1, objects, ref rng, new List<SafetyEvent>(), new HashSet<byte>(), out plan))
+            if (!take.PlanEvents(1, objects, ref rng, new List<SafetyEvent>(), new HashSet<byte>(), true, out plan))
             {
                 error = $"no object could be approached for {SafetyScript.Category(script)} from {DrivePlan.Describe(current)}";
                 return false;
@@ -257,7 +296,7 @@ namespace Teleop.Eval.JointDrive
         /// the take has no event at all (the first finds no approach).
         /// </summary>
         private bool PlanEvents(int first, IReadOnlyList<SafetyObject> objects, ref SeededRng rng, List<SafetyEvent> events, HashSet<byte> used,
-            out DrivePlan? plan)
+            bool assume, out DrivePlan? plan)
         {
             plan = null;
             ArmCollisionModel near = SafetyScript.WithObjects(_model, objects, SafetyScript.ApproachClearanceMeters);
@@ -293,7 +332,7 @@ namespace Teleop.Eval.JointDrive
                 if (knocked >= 0)
                 {
                     // The world is not what was planned around until the objects settle: the next event is planned then.
-                    if (TryRunway(objects, knocked, way, rng, events, used, out plan)) return true;
+                    if (TryRunway(objects, knocked, way, rng, events, used, assume, out plan)) return true;
                     break;
                 }
 
@@ -311,9 +350,13 @@ namespace Teleop.Eval.JointDrive
             return true;
         }
 
-        /// <summary>After a knock with more events to come: free movement away from the knocked object, a point to go on from after each part, and the take's end at its end.</summary>
+        /// <summary>
+        /// After a knock with more events to come: free movement away from the knocked object, a point to go on from after each
+        /// part, and the take's end at its end. With <paramref name="assume"/> (planning at the start, not at a knock), also the rest
+        /// of the take for the world the knock would leave if its object went away (<see cref="SafetyContinuation.Assumed"/>).
+        /// </summary>
         private bool TryRunway(IReadOnlyList<SafetyObject> objects, int knocked, Vector3 way, SeededRng rng, List<SafetyEvent> events, HashSet<byte> used,
-            out DrivePlan? plan)
+            bool assume, out DrivePlan? plan)
         {
             plan = null;
             double end = Math.Min(_hand.Free + RunwaySeconds, _options.MaxTakeSeconds);
@@ -333,7 +376,20 @@ namespace Teleop.Eval.JointDrive
             var used_ = new byte[used.Count];
             used.CopyTo(used_);
             var next = new SafetyContinuation(this, runway, rng, events.ToArray(), used_, events[events.Count - 1].End, objects[knocked].Id, away);
-            plan = Build(events, PlanTime(end), next);
+            plan = Build(events, PlanTime(end), next); // its legs are copies: what is planned from here on changes none of them
+            if (assume)
+            {
+                SeededRng r = rng;
+                double between = Draw.Uniform(ref r, _options.BetweenMinSeconds, _options.BetweenMaxSeconds);
+                double at = next.SwitchAfter(Math.Max(events[events.Count - 1].Clear + between, next.KnockEnd + AssumeSettleSeconds));
+                if (!double.IsNaN(at))
+                {
+                    SafetyObject[] rest = Without(objects, knocked).ToArray();
+                    DrivePlan assumed = Continue(next, rest, at, out _, true);
+                    if (assumed.Events.Count > events.Count) next.Assume(assumed, at, rest);
+                }
+            }
+
             return true;
         }
 
@@ -359,8 +415,8 @@ namespace Teleop.Eval.JointDrive
             return Build(events, PlanTime(from + (0.5 + 0.3 * rng.NextDouble()) * (end - from)), null);
         }
 
-        /// <summary>See <see cref="SafetyContinuation.Continue"/>.</summary>
-        internal DrivePlan Continue(SafetyContinuation c, IReadOnlyList<SafetyObject> objects, double switchAt, out string outcome)
+        /// <summary>See <see cref="SafetyContinuation.Continue"/>; with <paramref name="assume"/>, later knocks get their own assumed plans too.</summary>
+        internal DrivePlan Continue(SafetyContinuation c, IReadOnlyList<SafetyObject> objects, double switchAt, out string outcome, bool assume = false)
         {
             lock (_hand)
             {
@@ -386,7 +442,7 @@ namespace Teleop.Eval.JointDrive
                     return Tail(objects, -1, default, ref rng, events);
                 }
 
-                if (!PlanEvents(c.NextIndex, objects, ref rng, events, used, out DrivePlan? plan) || plan == null)
+                if (!PlanEvents(c.NextIndex, objects, ref rng, events, used, assume, out DrivePlan? plan) || plan == null)
                 {
                     outcome = "no approach to any object as they now stand: the take ends after a tail";
                     return Tail(objects, -1, default, ref rng, events);
@@ -397,6 +453,54 @@ namespace Teleop.Eval.JointDrive
                     : "no approach to any object as they now stand: the take ends after a tail";
                 return plan;
             }
+        }
+
+        /// <summary>See <see cref="SafetyContinuation.Holds"/>.</summary>
+        internal bool Holds(SafetyContinuation c, IReadOnlyList<SafetyObject> objects, out string why)
+        {
+            DrivePlan? plan = c.Assumed;
+            if (plan == null)
+            {
+                why = "nothing was planned for after this knock";
+                return false;
+            }
+
+            var planned = new HashSet<byte>();
+            foreach (SafetyObject a in c.AssumedObjects)
+            {
+                planned.Add(a.Id);
+                int i = -1;
+                for (int j = 0; j < objects.Count && i < 0; j++) if (objects[j].Id == a.Id) i = j;
+                if (i < 0)
+                {
+                    why = $"object {a.Id} is no longer on the table";
+                    return false;
+                }
+
+                float moved = Vector3.Distance(a.Center, objects[i].Center);
+                float turned = 2f * MathF.Acos(MathF.Min(1f, MathF.Abs(Quaternion.Dot(a.Rotation, objects[i].Rotation))));
+                if (moved > SafetyContinuation.HoldsMeters || turned > SafetyContinuation.HoldsRadians)
+                {
+                    why = FormattableString.Invariant($"object {a.Id} moved {moved * 1000:0.0} mm and turned {turned * 180 / MathF.PI:0.0} degrees");
+                    return false;
+                }
+            }
+
+            var gone = new List<SafetyObject>();
+            foreach (SafetyObject o in objects) if (!planned.Contains(o.Id)) gone.Add(o);
+            if (gone.Count > 0)
+            {
+                ArmCollisionModel check = SafetyScript.WithObjects(_model, gone, SafetyScript.ApproachClearanceMeters);
+                for (double t = c.AssumedAt; t <= plan.TotalSeconds; t += HandModel.TickSeconds)
+                {
+                    if (ArmCollision.IsValid(_profile, check, plan.Sample(t))) continue;
+                    why = FormattableString.Invariant($"the plan comes within {SafetyScript.ApproachClearanceMeters * 100:0} cm of a knocked object where it now lies, at {t:0.0} s");
+                    return false;
+                }
+            }
+
+            why = "every other object is where it stood, and the knocked one clear of what comes next";
+            return true;
         }
 
         /// <summary>The plan: the legs before the operator, every pose it was solved through, ended at <paramref name="cut"/> (plan seconds) while it moves.</summary>

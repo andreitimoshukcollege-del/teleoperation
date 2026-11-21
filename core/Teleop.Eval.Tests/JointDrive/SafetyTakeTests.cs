@@ -81,11 +81,14 @@ namespace Teleop.Eval.Tests.JointDrive
 
         /// <summary>
         /// The whole of a take as joint-drive drives it: the plan, and after each knock the objects as it left them (the knocked one
-        /// over on its side, <see cref="KnockedOver"/>) and the next event planned against them once they have settled, the planner
-        /// given joint-drive's budget. The plans it went through, last the one driven to the end.
+        /// over on its side, <see cref="KnockedOver"/>), seen at rest <paramref name="settleSeconds"/> after the knock's lift; then
+        /// the plan made at the start for after it if that still holds, else the next event planned against them, the planner given
+        /// joint-drive's budget. The plans it went through, last the one driven to the end; <paramref name="assumedTaken"/>: how
+        /// many knocks went on as planned at the start.
         /// </summary>
-        public static List<DrivePlan> Drive(DrivePlan plan, IReadOnlyList<SafetyObject> objects, double settleSeconds = 2.0)
+        public static List<DrivePlan> Drive(DrivePlan plan, IReadOnlyList<SafetyObject> objects, out int assumedTaken, double settleSeconds = 2.0)
         {
+            assumedTaken = 0;
             var plans = new List<DrivePlan> { plan };
             var now = objects.ToList();
             while (plan.Pending != null)
@@ -93,9 +96,21 @@ namespace Teleop.Eval.Tests.JointDrive
                 SafetyContinuation c = plan.Pending;
                 int k = now.FindIndex(o => o.Id == c.Knocked);
                 now[k] = KnockedOver(now[k], c.KnockWay);
-                double at = c.SwitchAfter(c.KnockEnd + settleSeconds + 4.0);
-                if (double.IsNaN(at)) break;
-                DrivePlan next = c.Continue(now, at, out _);
+                double seen = c.KnockEnd + settleSeconds, at;
+                DrivePlan next;
+                if (c.Assumed != null && seen < c.AssumedAt - Tick && c.Holds(now, out _))
+                {
+                    next = c.Assumed;
+                    at = c.AssumedAt;
+                    assumedTaken++;
+                }
+                else
+                {
+                    at = c.SwitchAfter(seen + 4.0);
+                    if (double.IsNaN(at)) break;
+                    next = c.Continue(now, at, out _);
+                }
+
                 for (double t = 0; t < at; t += 0.05) Assert.Equal(0f, plan.Sample(t).MaxJointDelta(next.Sample(t))); // the same until it takes over
                 plan = next;
                 plans.Add(plan);
@@ -130,7 +145,7 @@ namespace Teleop.Eval.Tests.JointDrive
             var where = new List<double>(); // each contact as a share of its take
             var firstAt = new List<double>(); // the first event's contact, seconds into the take
             var rows = new List<string>();
-            int unplanned = 0;
+            int unplanned = 0, knocksGoneOn = 0, assumed = 0;
             var watch = new Stopwatch();
             foreach (DriveScript script in EventScripts)
             {
@@ -146,7 +161,9 @@ namespace Teleop.Eval.Tests.JointDrive
                     }
 
                     double firstSeconds = watch.Elapsed.TotalSeconds;
-                    List<DrivePlan> plans = Drive(first!, objects);
+                    List<DrivePlan> plans = Drive(first!, objects, out int asPlanned);
+                    knocksGoneOn += plans.Count - 1;
+                    assumed += asPlanned;
                     double allSeconds = watch.Elapsed.TotalSeconds;
                     DrivePlan plan = plans[plans.Count - 1];
                     IReadOnlyList<SafetyEvent> events = plan.Events;
@@ -180,7 +197,7 @@ namespace Teleop.Eval.Tests.JointDrive
                     lengths.Add(length);
                     firstAt.Add(events[0].Contact - start);
                     rows.Add(FormattableString.Invariant(
-                        $"{SafetyScript.Category(script)} layout {seed}: {events.Count} of {plan.EventsDrawn} events, take {length:0.0} s, contacts at {string.Join(", ", events.Select(e => $"{e.Contact - start:0.0} s ({(e.Contact - start) / length:P0}) on {e.ObjectId}"))}; planned in {firstSeconds:0.0} s (all {allSeconds:0.0} s, {plans.Count} plan(s))"));
+                        $"{SafetyScript.Category(script)} layout {seed}: {events.Count} of {plan.EventsDrawn} events, take {length:0.0} s, contacts at {string.Join(", ", events.Select(e => $"{e.Contact - start:0.0} s ({(e.Contact - start) / length:P0}) on {e.ObjectId}"))}; planned in {firstSeconds:0.0} s (all {allSeconds:0.0} s, {plans.Count} plan(s), {asPlanned} as planned at the start)"));
                 }
             }
 
@@ -189,7 +206,8 @@ namespace Teleop.Eval.Tests.JointDrive
             lengths.Sort();
             string summary = FormattableString.Invariant(
                 $"{planned.Count} takes ({unplanned} not planned): drawn 1/2/3 {drawn.Count(d => d == 1)}/{drawn.Count(d => d == 2)}/{drawn.Count(d => d == 3)}, planned 1/2/3 {planned.Count(d => d == 1)}/{planned.Count(d => d == 2)}/{planned.Count(d => d == 3)}; ") +
-                FormattableString.Invariant($"take {lengths[0]:0.0}-{lengths[lengths.Count - 1]:0.0} s (median {lengths[lengths.Count / 2]:0.0}); contacts at {where[0]:P0}-{where[where.Count - 1]:P0} of the take (median {where[where.Count / 2]:P0}), the first {firstAt.Min():0.0}-{firstAt.Max():0.0} s in");
+                FormattableString.Invariant($"take {lengths[0]:0.0}-{lengths[lengths.Count - 1]:0.0} s (median {lengths[lengths.Count / 2]:0.0}); contacts at {where[0]:P0}-{where[where.Count - 1]:P0} of the take (median {where[where.Count / 2]:P0}), the first {firstAt.Min():0.0}-{firstAt.Max():0.0} s in; ") +
+                FormattableString.Invariant($"after {knocksGoneOn} knock(s) the take went on, {assumed} as planned at the start");
             _output.WriteLine(summary);
             // Several events a take, and not only at the end: two thirds of the takes draw more than one; most plan all they draw.
             Assert.True(planned.Count(p => p >= 2) >= planned.Count / 3, summary);
@@ -258,7 +276,7 @@ namespace Teleop.Eval.Tests.JointDrive
                 return Box(id, c, new Vector3(0.025f, 0.025f, 0.09f));
             }
 
-            SafetyObject[] posts = { Post(11, -35f), Post(12, 0f), Post(13, 35f) };
+            SafetyObject[] posts = { Post(11, -55f), Post(12, 0f), Post(13, 55f) }; // a sweep starts 0.6 rad (34 degrees) beside its object
             var three = new SafetyOptions { MinEvents = 3, MaxEvents = 3 };
             var report = new List<string>();
             int distinct = 0, events = 0;
@@ -390,6 +408,7 @@ namespace Teleop.Eval.Tests.JointDrive
                 int m = (k + 1) % now.Length;
                 now[m] = new SafetyObject(now[m].Id, now[m].Center + new Vector3(0.02f, 0.02f, 0f),
                     Quaternion.CreateFromAxisAngle(Vector3.UnitZ, MathF.PI / 6f), now[m].HalfExtents);
+                Assert.False(c.Holds(now, out _)); // what was planned at the start for after the knock no longer holds: plan again
                 double at = c.SwitchAfter(c.KnockEnd + 2.0 + 4.0);
                 Assert.False(double.IsNaN(at));
                 DrivePlan next = c.Continue(now, at, out string outcome);
@@ -417,6 +436,37 @@ namespace Teleop.Eval.Tests.JointDrive
             }
 
             Assert.True(checkedTakes >= 1);
+        }
+
+        [Fact]
+        public void AfterAKnock_ThePlanMadeAtTheStart_TakesOverWhenTheWorldIsAsItAssumed()
+        {
+            // At the start the take also plans what follows each knock for the world the knock would leave if its object simply went
+            // away. Once the objects are seen at rest, that plan takes over if every other object is where it stood and the knocked
+            // one lies clear of all of it; it needs no planning then, and it is the same as the runway before it takes over.
+            var two = new SafetyOptions { MinEvents = 2, MaxEvents = 2 };
+            DrivePlan plan = Plan(DriveScript.CollideWithObstacle, Bench, 2, two);
+            SafetyContinuation c = plan.Pending!;
+            Assert.NotNull(c.Assumed);
+            DrivePlan assumed = c.Assumed!;
+            Assert.Equal(2, assumed.Events.Count);
+            Assert.NotEqual(c.Knocked, assumed.Events[1].ObjectId);
+            Assert.True(c.AssumedAt >= c.KnockEnd + 2.5 - 1e-9 && assumed.Events[1].ApproachStart >= c.AssumedAt - 1e-9);
+            for (double t = 0; t < c.AssumedAt; t += Tick) Assert.Equal(0f, plan.Sample(t).MaxJointDelta(assumed.Sample(t)));
+
+            // The knocked object went off the table: the plan holds.
+            SafetyObject[] away = Bench.Select(o => o.Id == c.Knocked ? new SafetyObject(o.Id, new Vector3(0.30f, -0.45f, -0.95f), Quaternion.Identity, o.HalfExtents) : o).ToArray();
+            Assert.True(c.Holds(away, out string why), why);
+            // It lies where the next event goes: it does not.
+            SafetyObject target = Bench.First(o => o.Id == assumed.Events[1].ObjectId);
+            SafetyObject[] inTheWay = Bench.Select(o => o.Id == c.Knocked ? new SafetyObject(o.Id, target.Center + new Vector3(0f, 0f, target.HalfExtents.Z + 0.03f), Quaternion.Identity, o.HalfExtents) : o).ToArray();
+            Assert.False(c.Holds(inTheWay, out why));
+            Assert.Contains("knocked object", why);
+            // It shoved another object 1 cm: it does not either.
+            SafetyObject other = Bench.First(o => o.Id != c.Knocked && o.Id != target.Id);
+            SafetyObject[] shoved = away.Select(o => o.Id == other.Id ? new SafetyObject(o.Id, o.Center + new Vector3(0.01f, 0f, 0f), o.Rotation, o.HalfExtents) : o).ToArray();
+            Assert.False(c.Holds(shoved, out why));
+            Assert.Contains($"object {other.Id} moved", why);
         }
 
         [Fact]

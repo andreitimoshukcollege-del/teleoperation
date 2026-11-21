@@ -390,7 +390,8 @@ namespace Teleop.Eval.Tests.JointDrive
             // from a point of the free movement that follows the knock (the runway), against the objects as they now are.
             var two = new SafetyOptions { MinEvents = 2, MaxEvents = 2 };
             int checkedTakes = 0;
-            for (ulong seed = 1; seed <= 4 && checkedTakes < 2; seed++)
+            var outcomes = new List<string>();
+            for (ulong seed = 1; seed <= 6 && checkedTakes < 2; seed++)
             {
                 DrivePlan plan = Plan(DriveScript.CollideWithObstacle, Bench, seed, two);
                 Assert.Single(plan.Events);
@@ -418,6 +419,7 @@ namespace Teleop.Eval.Tests.JointDrive
                 for (int i = 0; i < next.Legs.Count; i++) Assert.Equal(0f, next.Legs[i].To.MaxJointDelta(again.Legs[i].To));
                 for (double t = 0; t < at; t += Tick) Assert.Equal(0f, plan.Sample(t).MaxJointDelta(next.Sample(t))); // nothing jumps
 
+                outcomes.Add($"seed {seed}, knocked {c.Knocked}, going on at {at:0.0} s: {outcome}");
                 if (next.Events.Count < 2) continue; // this layout as the knock left it had no approach: the take ends after a tail
                 checkedTakes++;
                 SafetyEvent second = next.Events[1];
@@ -436,7 +438,7 @@ namespace Teleop.Eval.Tests.JointDrive
                 Assert.True(next.TotalSeconds >= second.Clear + two.TailMinSeconds - Tick);
             }
 
-            Assert.True(checkedTakes >= 1);
+            Assert.True(checkedTakes >= 1, string.Join(" | ", outcomes));
         }
 
         [Fact]

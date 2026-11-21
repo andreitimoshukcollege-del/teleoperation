@@ -3911,6 +3911,8 @@ isaac-safety-batch takes="25" seed="1" categories="all" build="true" events="1-3
     #!/usr/bin/env bash
     set -euo pipefail
     case "{{takes}}{{seed}}" in *[!0-9]*|"") echo "error: takes and seed are numbers" >&2; exit 1 ;; esac
+    # At least one round: an empty plan read as one take with no category (joint-drive refused it, nothing moved).
+    [ "{{takes}}" -ge 1 ] || { echo "error: takes is at least 1 (rounds of the categories)" >&2; exit 1; }
     case "{{events}}" in [1-9]|[1-9]-[1-9]) ;; *) echo "error: events is a count or a range, like 2 or 1-3, not '{{events}}'" >&2; exit 1 ;; esac
     case "{{twin}}" in 0|1) ;; *) echo "error: twin is 0 or 1" >&2; exit 1 ;; esac
     cats="{{categories}}"; [ "$cats" != all ] || cats=reach_no_obstacle,stop_before_collision,collide_and_recover,collide_with_obstacle
@@ -4138,6 +4140,7 @@ isaac-safety-batch-twins takes="25" seed="1" n="2" categories="all" build="true"
     set -euo pipefail
     case "{{n}}" in 1|2) ;; *) echo "error: n is 1 or 2" >&2; exit 1 ;; esac
     case "{{takes}}{{seed}}" in *[!0-9]*|"") echo "error: takes and seed are numbers" >&2; exit 1 ;; esac
+    [ "{{takes}}" -ge 1 ] || { echo "error: takes is at least 1 (rounds of the categories)" >&2; exit 1; }
     case "{{build}}" in true|false) ;; *) echo "error: build is true or false" >&2; exit 1 ;; esac
     mkdir -p recordings/.drive
     # This run's kept takes only: a batch that fails before it starts must not leave an earlier run's list to be built.

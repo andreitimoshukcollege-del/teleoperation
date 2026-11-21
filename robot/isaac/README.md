@@ -71,6 +71,12 @@ its own), and every 20 ms WORLD, the objects' poses as PhysX has them.
   scene's `materials.looks` (`LK`), and `teleop_isaac.clutter` lays flat clutter on the table (papers, a cutting mat,
   cables, a plastic bag; `CL`, mask id 15). The renderer alone draws it: nothing is taller than 6 mm, which no accepted arm
   pose can touch, so the bridge, the planner and the contact labels never see it.
+- **Raised clutter** (docs/adr/0037, its own section): desk clutter tall enough for the arm to hit (a roll of tape, scissors,
+  pliers, two screwdrivers, a phone, a pen) is scene objects of `jetrover-bench` (ids 60-65, `"clutter": true`): movable
+  bodies the bridge collides with and the contact labels see. RobotHost stands 1-3 a take, after every other object,
+  anywhere in the placement region, each as its own rectangle at its heading, and `world.py`'s rules take it the same way.
+  The tools are scans (Poly Haven's, by `just isaac-models-fetch`, and YCB's scissors); the phone and the pen are boxes that
+  wear looks by name (`materials.objects`, `LK`).
 
 `just isaac-scene-check` (`scene_check.py`) runs the real bridge with the scene and talks to it as RobotHost
 would. It checks WORLD_INFO, WORLD at 50 ± 5 Hz, placements applied and refused, and the left hand

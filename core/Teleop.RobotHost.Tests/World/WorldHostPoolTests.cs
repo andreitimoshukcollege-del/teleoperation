@@ -205,6 +205,43 @@ namespace Teleop.RobotHost.Tests.World
         }
 
         [Fact]
+        public void AClutterSpotTheBackendRefuses_IsRedrawnFlatInTheRegion_ThenParked()
+        {
+            // docs/adr/0037 "Raised clutter": a refused piece of clutter is redrawn as clutter (anywhere in the region, its own
+            // rectangle at its yaw, flat), not in the reach band the pool's movable objects keep to; after the redraws it is parked.
+            var expected = new RigidTransform[Scene.Objects.Length];
+            var parked = new bool[Scene.Objects.Length];
+            ulong seed = 0;
+            int index = -1;
+            for (ulong s = 1; s <= 50 && index < 0; s++)
+            {
+                SceneLayout.Draw(Scene, s, expected, parked);
+                for (int i = 0; i < parked.Length && index < 0; i++)
+                {
+                    if (!parked[i] && Scene.Objects[i].Clutter) index = i;
+                }
+
+                seed = s;
+            }
+
+            Assert.True(index >= 0, "no layout of seeds 1-50 has clutter on the table");
+            byte id = Scene.Objects[index].Id;
+            var rig = new Rig(new Refusing { RefuseId = id }, seed);
+            for (int i = 0; i < 80; i++) rig.Tick(1);
+            Assert.True(rig.Host.IsParked(index));
+            string[] refused = rig.Records.Where(r => r.StartsWith("WP|") && r.Split('|')[4] == id.ToString() && r.EndsWith("|overlaps-arm")).ToArray();
+            Assert.InRange(refused.Length, 1, WorldHost.MaxRedraws + 1); // its layout spot, then each redraw until none is clear
+            foreach (string r in refused)
+            {
+                double[] p = r.Split('|')[5].Split(':').Select(v => double.Parse(v, System.Globalization.CultureInfo.InvariantCulture)).ToArray();
+                Assert.InRange(p[0], Scene.RegionXMin, Scene.RegionXMax);
+                Assert.InRange(p[1], Scene.RegionYMin, Scene.RegionYMax);
+                Assert.True(Math.Abs(p[4]) < 1e-4 && Math.Abs(p[5]) < 1e-4, $"{r}: not flat");
+                Assert.Equal(Scene.Table.Top + Scene.Objects[index].SizeZ / 2, p[2], 4);
+            }
+        }
+
+        [Fact]
         public void PlaceCausePark_CrossesTheWire_AndResizeNeverDoes()
         {
             var buffer = new byte[128];

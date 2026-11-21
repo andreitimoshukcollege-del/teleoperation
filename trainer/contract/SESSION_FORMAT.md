@@ -328,7 +328,9 @@ FR3's sided ones, and one more record, because a JetRover session has no `QS` to
 `jetrover-bench` has no backdrops: its table and bench were a plain grey, a grey laminate from 2026-11-16 and a look drawn
 per take from 2026-11-17 (`LK`), with flat clutter on the table (`CL`, mask id 15); the room around them is an HDRI (`EN`,
 `environment.json`) and the floor is not drawn, so no frame has the `floor`, `mat` or `screen` mask ids, and depth is 0
-wherever a ray reaches the room:
+wherever a ray reaches the room. Since 2026-11-21 (docs/adr/0037 "Raised clutter") its pool also holds desk clutter the arm can
+hit, ids 60-65 (a roll of tape, scissors, pliers, two screwdrivers, a phone, a pen): scene objects like the others, in `WL`,
+`WO`, `WC` and `SZ` and masked as `100 + n`, the phone's and the pen's looks in `LK`. The JetRover's own records:
 
 | Tag | Fields after the tag | Meaning |
 |---|---|---|

@@ -393,7 +393,8 @@ namespace Teleop.RobotHost.World
 
         /// <summary>
         /// Another spot for object <paramref name="index"/>, clear of the others' targets: within its jitter, or for a pool anywhere
-        /// in the region (a movable one in the reach band, or by the edge if it was drawn there), on the rest it was drawn on.
+        /// in the region (a movable one in the reach band, or by the edge if it was drawn there; clutter anywhere, as its own
+        /// rectangle at its yaw, docs/adr/0037 "Raised clutter"), on the rest it was drawn on.
         /// </summary>
         private bool Redraw(int index, int tries)
         {

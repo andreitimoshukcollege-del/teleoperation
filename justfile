@@ -3950,8 +3950,9 @@ isaac-safety-batch takes="25" seed="1" categories="all" build="true" events="1-3
     echo "[safety] twin $TWIN; checker at $(git log --oneline -1 | cut -c1-60); twin at ${twin:0:7}"
     REMOTE
     mkdir -p "$drive"
-    # One build at a time: two batches building Teleop.Eval into one output folder at once break each other.
-    (cd core && flock "../$drive/.eval-build.lock" dotnet build Teleop.Eval -nologo -v q > /dev/null)
+    # One build at a time: two batches building Teleop.Eval into one output folder at once break each other. -o: the build's
+    # MSBuild and compiler servers outlive it and must not hold the lock (they held the second twin's batch, 2026-11-21).
+    (cd core && flock -o -w 600 "../$drive/.eval-build.lock" dotnet build Teleop.Eval -nologo -v q > /dev/null)
     # The batch's progress for just gpu-ui (robot/gpu), rewritten whole at each step: progress <takes done> <phase> [dataset].
     progress() {
         printf '{"recipe":"isaac-safety-batch","pid":%d,"twin":%d,"name":"%s","total":%d,"take":%d,"kept":%d,"setAside":%d,"unplanned":%d,"unchecked":%d,"started":%d,"updated":%d,"phase":"%s","dataset":%s}\n' \

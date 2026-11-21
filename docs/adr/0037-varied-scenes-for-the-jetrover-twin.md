@@ -749,3 +749,29 @@ generalisation.
   texture is missing, and says so in its log.
 - **Not in this section: raised clutter.** Tape, scissors, pliers, screwdrivers, a phone and a pen are taller than 6 mm, so
   they must be scene objects with bodies, and they need `MaxObjects` raised from 24 to 32. That is a later change.
+
+## Checked on the twin (2026-11-21): the merged amendments, and lying round objects
+
+`just isaac-safety-batch 4 11 all false` on `real-scene` at 31d6e80 ran 16 takes. The twin and the checker both ran that
+commit, which merges the contact rule (ADR 0036 amendment 4), amendment 5's third revision, amendment 6, and "Surfaces and
+flat clutter".
+
+| | Result |
+|---|---|
+| Kept per category | reach 4/4, stop 4/4, recover 3/4, knock 4/4; none unplanned |
+| Recover takes that never touched | 0 (12 of 25 in the batch of 2026-11-16) |
+| Contact stretches | 10: time before any force at the start of a stretch is median 21 ms, max 60 ms (it was 20-200 ms before the contact rule); 2 brief ones (54 and 60 ms) never had force |
+| Lying objects | in 14 of 16 takes, all ones the layout may lay down (cans, tin, mug, foam brick, elephant, parcels) |
+| Edge object | 6 of 16 takes |
+| Looks | 9 different table looks; bench mostly the dark looks, as weighted |
+| Flat clutter | 0-17 pieces a take |
+
+**Change: lying round objects are not steady.** The one take set aside was a recover take whose touch rolled the mug,
+lying, 34 degrees. An object lying on a round side rolls when pushed, and the take check counts the turn as a tip.
+
+- **Round:** an asset is round when its median slab outline fills under 0.85 of its bounding box (`AssetShape.Round`). A
+  circle fills 0.79.
+  - On the bench, the cans, tin, mug, vases, kettle, bust, gnome, bowl and elephant measure 0.65-0.80.
+  - The boxes, parcels and jerrycans measure 0.90-0.98.
+- **Effect:** lying on a side, a round object is `Tippy`, so it is no steady target for collide_and_recover. It stays an
+  obstacle and a knock target. Standing objects are unchanged.

@@ -83,6 +83,9 @@ namespace Teleop.Eval.JointDrive
         /// <summary>The index the next event would have.</summary>
         public int NextIndex => Events.Length + 1;
 
+        /// <summary>Which way the swipe sent the knocked object: a horizontal unit vector, arm base frame.</summary>
+        public Vector2 KnockWay => (Away[1] - Away[0]) / SafetyTake.AwayMeters;
+
         internal SeededRng Rng { get; }
         internal SafetyEvent[] Events { get; }
         internal byte[] Used { get; }
@@ -137,9 +140,13 @@ namespace Teleop.Eval.JointDrive
 
         /// <summary>
         /// Free movement after a knock until the next event is planned, at most, seconds: long enough for the objects to settle and
-        /// the next event to be planned while the arm keeps moving (joint-drive's budgets). It ends the take when nothing replaces it.
+        /// the next event to be planned while the arm keeps moving (joint-drive's budgets). It ends the take when nothing replaces it,
+        /// and never runs past <see cref="SafetyOptions.MaxTakeSeconds"/>.
         /// </summary>
         public const double RunwaySeconds = 12.0;
+
+        /// <summary>A runway shorter than this, seconds (the take nearly at its longest), leaves no time to settle and plan: the take ends after a tail instead.</summary>
+        public const double MinRunwaySeconds = 7.0;
 
         /// <summary>After a knock, free goals are drawn this far from where the object stood and from where it was sent, m.</summary>
         public const float AwayMeters = 0.10f;
@@ -286,8 +293,7 @@ namespace Teleop.Eval.JointDrive
                 if (knocked >= 0)
                 {
                     // The world is not what was planned around until the objects settle: the next event is planned then.
-                    if (_hand.Free + MinEventSeconds + _options.TailMinSeconds <= _options.MaxTakeSeconds
-                        && TryRunway(objects, knocked, way, rng, events, used, out plan)) return true;
+                    if (TryRunway(objects, knocked, way, rng, events, used, out plan)) return true;
                     break;
                 }
 
@@ -310,12 +316,13 @@ namespace Teleop.Eval.JointDrive
             out DrivePlan? plan)
         {
             plan = null;
+            double end = Math.Min(_hand.Free + RunwaySeconds, _options.MaxTakeSeconds);
+            if (end - _hand.Free < MinRunwaySeconds) return false;
             HandSnapshot before = _hand.Save();
             Vector2[] away = Away(objects[knocked], way);
             var runway = new List<HandSnapshot>();
             _hand.AvoidGoals = away;
-            bool ok = _hand.FreeUntil(_hand.Free + RunwaySeconds, SafetyScript.WithObjects(_model, Without(objects, knocked), SafetyScript.ApproachClearanceMeters),
-                null, runway);
+            bool ok = _hand.FreeUntil(end, SafetyScript.WithObjects(_model, Without(objects, knocked), SafetyScript.ApproachClearanceMeters), null, runway);
             _hand.AvoidGoals = null;
             if (!ok || runway.Count == 0)
             {
@@ -326,7 +333,7 @@ namespace Teleop.Eval.JointDrive
             var used_ = new byte[used.Count];
             used.CopyTo(used_);
             var next = new SafetyContinuation(this, runway, rng, events.ToArray(), used_, events[events.Count - 1].End, objects[knocked].Id, away);
-            plan = Build(events, PlanTime(runway[runway.Count - 1].Free), next);
+            plan = Build(events, PlanTime(end), next);
             return true;
         }
 
@@ -340,6 +347,7 @@ namespace Teleop.Eval.JointDrive
         {
             double from = _hand.Free;
             double tail = Math.Max(Draw.Uniform(ref rng, _options.TailMinSeconds, _options.TailMaxSeconds), _options.MinTakeSeconds - from);
+            tail = Math.Min(tail, Math.Max(_options.TailMinSeconds, _options.MaxTakeSeconds - from));
             HandSnapshot before = _hand.Save();
             _hand.AvoidGoals = knocked >= 0 ? Away(objects[knocked], way) : null;
             bool ok = _hand.FreeUntil(from + tail + 0.6, SafetyScript.WithObjects(_model, knocked >= 0 ? Without(objects, knocked) : objects,

@@ -124,6 +124,18 @@ namespace Teleop.RobotHost.Tests.Recording
         }
 
         [Fact]
+        public void AScriptedEvent_IsItsSessionFormatLine()
+        {
+            // docs/adr/0036 amendment 5: SE|t|index|drawn|kind|object|finalS|contactS|endS|clearS, seconds after t.
+            Assert.Equal("SE|20|2|3|touch|41|1.25|1.75|2|3.5",
+                SessionLines.ScriptEvent(20, new ScriptEvent(2, 3, ScriptEventKind.Touch, 41, 1.25f, 1.75f, 2f, 3.5f)));
+            Assert.Equal("SE|21|1|1|knock|7|0.5|0.75|1.5|2.25",
+                SessionLines.ScriptEvent(21, new ScriptEvent(1, 1, ScriptEventKind.Knock, 7, 0.5f, 0.75f, 1.5f, 2.25f)));
+            Assert.Equal("SE|22|1|2|stop|33|1|NaN|2|3",
+                SessionLines.ScriptEvent(22, new ScriptEvent(1, 2, ScriptEventKind.Stop, 33, 1f, float.NaN, 2f, 3f)));
+        }
+
+        [Fact]
         public void TheArmPowerLineFormats_AreTheSessionFormats()
         {
             // docs/adr/0023 decisions 4 and 5.

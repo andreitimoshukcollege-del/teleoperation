@@ -53,7 +53,8 @@ namespace Teleop.Eval.JointDrive
     ///
     /// <para><c>--take &lt;scenario&gt;</c> records the drive as a take of that scenario, as the headset's RECORD button
     /// does (docs/adr/0033, <see cref="TakeClient"/>), so it becomes a LeRobot episode (docs/adr/0036) with nobody at the
-    /// headset. The take starts where the script does (docs/adr/0036 amendment 5): after the 3 s countdown and the slow move
+    /// headset. The take starts where the script does (docs/adr/0036 amendment 5): after the 3 s countdown (none with
+    /// <c>--simulated-robot</c>, docs/adr/0037 amendment 7) and the slow move
     /// home when there is one, as the arm begins to move, so neither is in the recording. It is stopped and kept on every way
     /// out after that, a fault or Enter included. A scenario RobotHost does not record leaves the arm unmoved; should RobotHost
     /// then refuse the start, the arm holds where the move home left it.</para>
@@ -233,8 +234,15 @@ namespace Teleop.Eval.JointDrive
             }
 
             return Drive(script.Value, profile, envelope, speed, seconds, seed, rateHz, robotEndPoint, logPath, sessionId ?? "joint-drive", stopFile, take,
-                stallSeconds, streamSeconds, scene, sceneSha, newLayout, safetyOptions);
+                stallSeconds, streamSeconds, scene, sceneSha, newLayout, safetyOptions, simulated);
         }
+
+        /// <summary>
+        /// The pause between the plan and the first move, in which Enter stops the arm before it moves: 3 s for a real arm, so
+        /// whoever watches it can step back or stop it, none for the Isaac twin (<c>--simulated-robot</c>), where it only cost
+        /// each safety take 3 s (docs/adr/0037 amendment 7). Not part of the take either way.
+        /// </summary>
+        internal static double CountdownSeconds(bool simulatedRobot) => simulatedRobot ? 0 : 3;
 
         private static void PrintEnvelope(in DriveEnvelope envelope, double marginDeg)
         {
@@ -332,7 +340,7 @@ namespace Teleop.Eval.JointDrive
 
         private static int Drive(DriveScript script, RobotArmProfile profile, DriveEnvelope envelope, float speed, double seconds, ulong seed,
             double rateHz, IPEndPoint robot, string? logPath, string sessionId, string? stopFile, string? takeScenario, double stallSeconds, double streamSeconds,
-            WorldScene? scene, byte[] sceneSha, bool newLayout, SafetyOptions safetyOptions)
+            WorldScene? scene, byte[] sceneSha, bool newLayout, SafetyOptions safetyOptions, bool simulatedRobot)
         {
             long tps = Stopwatch.Frequency;
             using var socket = new Socket(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp);
@@ -434,9 +442,13 @@ namespace Teleop.Eval.JointDrive
             }
 
             // The countdown comes before the take (docs/adr/0036 amendment 5): it is a stop for the real arm, not part of the
-            // recording, which starts where the script does (the plan's ScriptStart), as the arm begins to move.
-            Console.WriteLine("[joint-drive] the arm moves in 3 s. Press Enter to stop it where it is.");
-            for (long until = Stopwatch.GetTimestamp() + 3 * tps; Stopwatch.GetTimestamp() < until;)
+            // recording, which starts where the script does (the plan's ScriptStart), as the arm begins to move. The Isaac twin
+            // (--simulated-robot) has nobody beside it to step back, so it goes at once (docs/adr/0037 amendment 7).
+            double countdown = CountdownSeconds(simulatedRobot);
+            Console.WriteLine(countdown > 0
+                ? FormattableString.Invariant($"[joint-drive] the arm moves in {countdown:0} s. Press Enter to stop it where it is.")
+                : "[joint-drive] simulated robot: no countdown, the arm moves now. Press Enter to stop it where it is.");
+            for (long until = Stopwatch.GetTimestamp() + (long)(countdown * tps); Stopwatch.GetTimestamp() < until;)
             {
                 if (stop.IsSet)
                 {

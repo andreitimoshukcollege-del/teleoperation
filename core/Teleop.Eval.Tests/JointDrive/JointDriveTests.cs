@@ -236,6 +236,15 @@ namespace Teleop.Eval.Tests.JointDrive
         }
 
         [Fact]
+        public void TheCountdown_IsKeptForARealArm_AndSkippedOnlyForTheSimulatedRobot()
+        {
+            // docs/adr/0037 amendment 7: the 3 s before the first move are a stop for whoever watches the real arm; the Isaac
+            // twin (--simulated-robot) goes at once.
+            Assert.Equal(3.0, JointDriveCommand.CountdownSeconds(simulatedRobot: false));
+            Assert.Equal(0.0, JointDriveCommand.CountdownSeconds(simulatedRobot: true));
+        }
+
+        [Fact]
         public void AShortGap_OnlyPauses_AndTheStreamComingBackResumes()
         {
             var w = new DriveWatchdog();

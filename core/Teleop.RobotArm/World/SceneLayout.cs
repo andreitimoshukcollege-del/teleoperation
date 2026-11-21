@@ -47,6 +47,10 @@ namespace Teleop.RobotArm.World
         /// lies on stably, uniform), then for one in reach after the first, whether it joins a cluster
         /// (<see cref="WorldScene.ClusterShare"/>: half its tries beside one already standing, footprint circles the clearance and
         /// up to <see cref="WorldScene.ClusterGap"/> apart).</para>
+        /// <para>docs/adr/0037 "Raised clutter": a pool's clutter objects (<see cref="SceneObject.Clutter"/>) are none of its movable
+        /// objects. After every other object, <see cref="SceneClutter"/> stands <see cref="WorldScene.ClutterMin"/> to
+        /// <see cref="WorldScene.ClutterMax"/> of them anywhere in the region, from a generator of its own: a pool without clutter
+        /// draws exactly what it drew before, and with it, every other object stands where it would without it.</para>
         /// </summary>
         public static int Draw(WorldScene scene, ulong seed, Span<RigidTransform> poses, Span<bool> parked)
         {
@@ -75,12 +79,14 @@ namespace Teleop.RobotArm.World
 
             Span<int> movable = stackalloc int[WorldScene.MaxObjects];
             Span<int> fixedOnes = stackalloc int[WorldScene.MaxObjects];
-            int movables = 0, fixeds = 0;
+            Span<int> clutter = stackalloc int[WorldScene.MaxObjects];
+            int movables = 0, fixeds = 0, clutters = 0;
             for (int i = 0; i < n; i++)
             {
                 parked[i] = true;
                 poses[i] = scene.ParkedPose(i);
-                if (scene.Objects[i].Movable) movable[movables++] = i;
+                if (scene.Objects[i].Clutter) clutter[clutters++] = i; // its own pass, last (docs/adr/0037 "Raised clutter")
+                else if (scene.Objects[i].Movable) movable[movables++] = i;
                 else fixedOnes[fixeds++] = i;
             }
 
@@ -102,19 +108,22 @@ namespace Teleop.RobotArm.World
             var standing = new Standing(scene, poses, parked, scales, placed, xs, ys, rests, anchors);
 
             // In passes, each object of a pass in turn: the fixed ones, the movable ones in reach (after the first, each may join a
-            // cluster), then the one by the edge. Another pass (scenery, say) is one more loop of Standing.Stand.
+            // cluster), then the one by the edge, then the clutter (docs/adr/0037 "Raised clutter"; its own generator, so none of the
+            // others moves for it).
             int failed = 0;
             for (int k = 0; k < takeFixed; k++) failed += standing.Stand(fixedOnes[k], false, ref rng) ? 0 : 1;
             for (int k = 0; k < takeMovable; k++) failed += standing.Stand(movable[k], false, ref rng) ? 0 : 1;
             if (edge >= 0) failed += standing.Stand(edge, true, ref rng) ? 0 : 1;
+            failed += SceneClutter.Stand(scene, seed, clutter.Slice(0, clutters), ref standing);
             return failed;
         }
 
         /// <summary>
         /// The objects a pool's layout has stood on the table so far, in order: what each next one keeps clear of, and the movable
-        /// ones in reach that a cluster grows from. <see cref="Stand"/> writes each one's pose, size and parked flag.
+        /// ones in reach that a cluster grows from. <see cref="Stand"/> and <see cref="StandClutter"/> write each one's pose, size
+        /// and parked flag.
         /// </summary>
-        private ref struct Standing
+        internal ref struct Standing
         {
             private readonly WorldScene _scene;
             private readonly Span<RigidTransform> _poses;
@@ -178,18 +187,43 @@ namespace Teleop.RobotArm.World
 
                     if (!Clear(i, x, y, scale, rest)) continue;
                     if (movable && !atEdge) _anchors[_anchorCount++] = _count;
-                    _index[_count] = i;
-                    _x[_count] = x;
-                    _y[_count] = y;
-                    _rest[_count] = rest;
-                    _count++;
-                    _parked[i] = false;
-                    _scales[i] = scale;
-                    _poses[i] = _scene.PoseAt(i, x, y, yaw, scale, rest);
+                    Add(i, x, y, yaw, scale, rest);
                     return true;
                 }
 
                 return false;
+            }
+
+            /// <summary>
+            /// Draws clutter object <paramref name="i"/>'s spot (docs/adr/0037 "Raised clutter"): at its file size and flat as the
+            /// file has it (its upright rest), anywhere in the placement region where its footprint fits (<see cref="WorldScene.InReach"/>
+            /// holds clutter to no band), clear of every object standing, three draws a try; false, leaving it parked, when no try of
+            /// <see cref="MaxPoolTries"/> finds one. It joins no cluster, and none grows from it.
+            /// </summary>
+            public bool StandClutter(int i, ref SeededRng rng)
+            {
+                for (int t = 0; t < MaxPoolTries; t++)
+                {
+                    if (!_scene.DrawSpot(i, 1.0, WorldScene.RestUpright, ref rng, out double x, out double y, out double yaw)) continue;
+                    if (!Clear(i, x, y, 1.0, WorldScene.RestUpright)) continue;
+                    Add(i, x, y, yaw, 1.0, WorldScene.RestUpright);
+                    return true;
+                }
+
+                return false;
+            }
+
+            /// <summary>Stands object <paramref name="i"/> at (x, y), turned <paramref name="yaw"/>, at its size and rest: what the next ones keep clear of.</summary>
+            private void Add(int i, double x, double y, double yaw, double scale, int rest)
+            {
+                _index[_count] = i;
+                _x[_count] = x;
+                _y[_count] = y;
+                _rest[_count] = rest;
+                _count++;
+                _parked[i] = false;
+                _scales[i] = scale;
+                _poses[i] = _scene.PoseAt(i, x, y, yaw, scale, rest);
             }
 
             /// <summary>Whether object <paramref name="i"/> at (x, y), its size and rest, keeps the clearance from every object standing.</summary>
@@ -260,14 +294,15 @@ namespace Teleop.RobotArm.World
             return !scene.InEdgeRegions(x, y) && scene.FitsOnTable(index, x, y, scale, rest) && scene.InReach(index, x, y);
         }
 
-        private static int Count(ref SeededRng rng, int min, int max)
+        /// <summary>A count uniform in [<paramref name="min"/>, <paramref name="max"/>], one draw.</summary>
+        internal static int Count(ref SeededRng rng, int min, int max)
         {
             int k = min + (int)(rng.NextDouble() * (max - min + 1));
             return Math.Min(k, max);
         }
 
         /// <summary>Moves <paramref name="take"/> entries of <paramref name="items"/>, drawn without replacement, to its front.</summary>
-        private static void Choose(ref SeededRng rng, Span<int> items, int take)
+        internal static void Choose(ref SeededRng rng, Span<int> items, int take)
         {
             for (int k = 0; k < take && k < items.Length; k++)
             {

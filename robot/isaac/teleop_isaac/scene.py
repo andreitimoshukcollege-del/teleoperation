@@ -19,7 +19,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 FORMAT = "teleop-scene"
 VERSION = 2  # the newest version this reader knows; it reads every version from 1. Version 2 adds movable objects.
-MAX_OBJECTS = 24
+MAX_OBJECTS = 32  # Core's WorldScene.MaxObjects: 32 since raised clutter joined the JetRover bench's 24 (docs/adr/0037)
 MAX_MASS = 20.0  # kg
 TOLERANCE = 0.001
 PARK_X, PARK_Z = 17.0, -5.0  # where a parked object rests (docs/adr/0037 decision 3): Core's WorldScene.ParkX / ParkZ
@@ -116,6 +116,9 @@ class Object:
     colour: Tuple[float, float, float]
     jitter: Tuple[float, float, float]
     asset: str = ""  # a mesh's asset, library/name (docs/adr/0037 decision 4); empty for the other shapes
+    # Raised desk clutter (docs/adr/0037 "Raised clutter"): a movable object RobotHost's layouts stand in a pass of their own,
+    # anywhere in the region, flat as the file has it (never on a side); not one of the pool's movable objects.
+    clutter: bool = False
 
     @property
     def footprint_radius(self) -> float:
@@ -139,8 +142,9 @@ class Object:
         return 0.5 * math.sqrt(ex * ex + ey * ey)
 
     def can_lie(self, rest: int) -> bool:
-        """Whether a layout may lay it on side rest ``rest``: movable, stable on it and at least ``MIN_LYING_HEIGHT`` tall."""
-        if not 0 <= rest < REST_COUNT or rest % 3 == 0 or not self.movable or self.shape == "sphere":
+        """Whether a layout may lay it on side rest ``rest``: movable, stable on it and at least ``MIN_LYING_HEIGHT`` tall. Never
+        clutter: it lies flat as the file has it."""
+        if not 0 <= rest < REST_COUNT or rest % 3 == 0 or not self.movable or self.clutter or self.shape == "sphere":
             return False
         ex, ey, ez = self.rest_extents(rest)
         return ez <= LIE_ASPECT * min(ex, ey) + 1e-12 and ez >= MIN_LYING_HEIGHT - 1e-12
@@ -175,6 +179,9 @@ class Scene:
     lying_share: float = 0.0
     edge_regions: Tuple[float, ...] = ()
     edge_share: float = 0.0
+    # docs/adr/0037 "Raised clutter": how many clutter objects a layout stands, (clutterMin, clutterMax); RobotHost draws them
+    # last, anywhere in the region. A clutter object is a movable one to every placement rule here.
+    clutter: Tuple[int, int] = (0, 0)
 
     def clear_of_robot(self, x: float, y: float, r: float) -> bool:
         if len(self.robot_keep_out) != 4:
@@ -417,6 +424,10 @@ def parse(doc: Dict[str, Any]) -> Scene:
         if not isinstance(mass, (int, float)) or isinstance(mass, bool) or (not 0 < mass <= MAX_MASS if movable else mass != 0):
             raise _bad("mass", f"movable '{oname}' has mass {mass}: more than 0 and at most {MAX_MASS:g} kg" if movable
                        else f"fixed '{oname}' has a mass: only a movable object has one")
+        # docs/adr/0037 "Raised clutter": clutter is something the arm can push about, so it is a movable body.
+        clutter = bool(o.get("clutter", False))
+        if clutter and not movable:
+            raise _bad("kind", f"'{oname}' is clutter, which is movable, not '{kind}'")
         pos = _vector(o.get("position"), 3, "pose", f"'{oname}' position")
         rpy = _vector(o.get("rpy"), 3, "pose", f"'{oname}' rpy")
         if abs(rpy[0]) > 1e-9 or abs(rpy[1]) > 1e-9:
@@ -429,20 +440,30 @@ def parse(doc: Dict[str, Any]) -> Scene:
         if not all(v >= 0 for v in j):
             raise _bad("jitter", f"'{oname}' has a negative range")
         objects.append(Object(oid, oname, shape, z, pos, rpy[2], movable, float(mass), bool(o.get("operatorMovable", False)),
-                              float(o.get("staticFriction", 0.0)), float(o.get("dynamicFriction", 0.0)), col, j, asset))
+                              float(o.get("staticFriction", 0.0)), float(o.get("dynamicFriction", 0.0)), col, j, asset, clutter))
 
     pd = doc.get("pool", {}) or {}
     pool = tuple(pd.get(k, 0) for k in ("movableMin", "movableMax", "fixedMin", "fixedMax"))
+    clutter_range = tuple(pd.get(k, 0) for k in ("clutterMin", "clutterMax"))
     size_min, size_max = pd.get("sizeMin", 0.0), pd.get("sizeMax", 0.0)
     reach_min, reach_max = pd.get("reachMin", 0.0), pd.get("reachMax", 0.0)
-    if not all(isinstance(v, int) and not isinstance(v, bool) for v in pool) or min(pool) < 0 or pool[0] > pool[1] or pool[2] > pool[3]:
+    counts = pool + clutter_range
+    if (not all(isinstance(v, int) and not isinstance(v, bool) for v in counts) or min(counts) < 0 or pool[0] > pool[1] or pool[2] > pool[3]
+            or clutter_range[0] > clutter_range[1]):
         raise _bad("pool", "each kind needs 0 <= min <= max")
-    movables = sum(1 for o in objects if o.movable)
-    if pool[1] > movables or pool[3] > len(objects) - movables:
-        raise _bad("pool", f"it asks for up to {pool[1]} movable and {pool[3]} fixed objects; the scene has {movables} and {len(objects) - movables}")
+    # Clutter (docs/adr/0037 "Raised clutter") is not one of the pool's movable objects.
+    clutters = sum(1 for o in objects if o.clutter)
+    movables = sum(1 for o in objects if o.movable and not o.clutter)
+    fixeds = len(objects) - movables - clutters
+    if pool[1] > movables or pool[3] > fixeds:
+        raise _bad("pool", f"it asks for up to {pool[1]} movable and {pool[3]} fixed objects; the scene has {movables} and {fixeds}")
+    if clutter_range[1] > clutters:
+        raise _bad("pool", f"it asks for up to {clutter_range[1]} clutter objects; the scene has {clutters}")
     is_pool = pool[1] + pool[3] > 0
     if is_pool and version < 2:
         raise _bad("pool", "a pool needs version 2")
+    if (clutters > 0 or clutter_range[1] > 0) and not is_pool:
+        raise _bad("pool", "clutter is only for a pool, whose layouts choose it")
     if not (_finite(size_min) and _finite(size_max)) or not ((size_min == 0 and size_max == 0) or 0 < size_min < size_max):
         raise _bad("pool", "sizeMin and sizeMax are both 0, or 0 < sizeMin < sizeMax")
     if size_max > 0 and not is_pool:
@@ -500,7 +521,7 @@ def parse(doc: Dict[str, Any]) -> Scene:
     scene = Scene(name, robot_profile, tuple(surfaces), table, bench, tuple(objects), (float(x0), float(x1), float(y0), float(y1)),
                   float(clearance), {k: v for k, v in doc.items() if k not in known}, pool, tuple(float(v) for v in fr),
                   tuple(float(v) for v in ko), cluster_share=cluster_share, lying_share=lying_share,
-                  edge_regions=tuple(float(v) for v in er), edge_share=edge_share)
+                  edge_regions=tuple(float(v) for v in er), edge_share=edge_share, clutter=clutter_range)
     for i, o in enumerate(objects):
         for sx in (-1, 0, 1):
             for sy in (-1, 0, 1):

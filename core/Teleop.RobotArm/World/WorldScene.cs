@@ -73,9 +73,10 @@ namespace Teleop.RobotArm.World
     {
         internal SceneObject(byte id, string name, SceneShape shape, double sx, double sy, double sz, double x, double y, double z, double yaw,
             bool movable, double mass, bool operatorMovable, double staticFriction, double dynamicFriction, float r, float g, float b, double jx, double jy, double jyaw,
-            string asset = "")
+            string asset = "", bool clutter = false)
         {
             Asset = asset;
+            Clutter = clutter;
             Id = id;
             Name = name;
             Shape = shape;
@@ -130,6 +131,14 @@ namespace Teleop.RobotArm.World
 
         /// <summary>Whether the headset may move it (EDIT OBJECTS); independent of <see cref="Movable"/>.</summary>
         public bool OperatorMovable { get; }
+
+        /// <summary>
+        /// Raised desk clutter (docs/adr/0037 "Raised clutter"): a movable object low enough to lie flat as the file has it (a roll
+        /// of tape, tools, a phone, a pen) yet tall enough for the arm to hit. A pool's layout stands it in its own pass, after
+        /// every other object, anywhere in the placement region (<see cref="WorldScene.InReach"/> holds it to no band); it never
+        /// lies on a side and is not one of the pool's movable objects.
+        /// </summary>
+        public bool Clutter { get; }
         public double StaticFriction { get; }
         public double DynamicFriction { get; }
         public float R { get; }
@@ -156,7 +165,13 @@ namespace Teleop.RobotArm.World
 
         /// <summary>The newest version this reader knows; it reads every version from 1. Version 2 adds movable objects.</summary>
         public const int Version = 2;
-        public const int MaxObjects = 24;
+
+        /// <summary>
+        /// The most objects a scene holds (robot/isaac's <c>scene.MAX_OBJECTS</c> too): 32 since raised clutter joined the JetRover
+        /// bench's 24 (docs/adr/0037 "Raised clutter"). Every buffer that holds a scene's objects is sized from it; the world
+        /// frames split a snapshot into parts (<see cref="Wire.WorldCodec.MaxObjectsPerFrame"/> to the headset, 16 to Isaac).
+        /// </summary>
+        public const int MaxObjects = 32;
 
         /// <summary>
         /// The sizes the headset may give an object (docs/adr/0034 amendment 6): a factor on the scene file's size, in every
@@ -192,8 +207,10 @@ namespace Teleop.RobotArm.World
             SceneObject[] objects, double xMin, double xMax, double yMin, double yMax, double clearance,
             int movableMin, int movableMax, int fixedMin, int fixedMax, double sizeMin, double sizeMax, double reachMin, double reachMax,
             double knockMaxMass, double[] fixedRegions, double[] robotKeepOut, double fixedNearMax,
-            double clusterShare, double lyingShare, double[] edgeRegions, double edgeShare)
+            double clusterShare, double lyingShare, double[] edgeRegions, double edgeShare, int clutterMin, int clutterMax)
         {
+            ClutterMin = clutterMin;
+            ClutterMax = clutterMax;
             ClusterShare = clusterShare;
             LyingShare = lyingShare;
             EdgeRegions = edgeRegions;
@@ -276,6 +293,13 @@ namespace Teleop.RobotArm.World
         /// <summary>The chance that a layout also stands one more movable object in <see cref="EdgeRegions"/>.</summary>
         public double EdgeShare { get; }
 
+        /// <summary>
+        /// How many clutter objects (<see cref="SceneObject.Clutter"/>) a pool's layout stands on the table, inclusive (docs/adr/0037
+        /// "Raised clutter"): <see cref="SceneClutter"/>'s pass, after every other object. 0, 0: none.
+        /// </summary>
+        public int ClutterMin { get; }
+        public int ClutterMax { get; }
+
         /// <summary>The widest a cluster's gap between two footprint circles may be beyond <see cref="Clearance"/>, m.</summary>
         public const double ClusterGap = 0.02;
 
@@ -333,10 +357,13 @@ namespace Teleop.RobotArm.World
             return 0.5 * Math.Sqrt(ex * ex + ey * ey);
         }
 
-        /// <summary>Whether a layout may lay object <paramref name="index"/> on side rest <paramref name="rest"/>: movable, stable on it (<see cref="LieAspect"/>) and at least <see cref="MinLyingHeight"/> tall.</summary>
+        /// <summary>
+        /// Whether a layout may lay object <paramref name="index"/> on side rest <paramref name="rest"/>: movable, stable on it
+        /// (<see cref="LieAspect"/>) and at least <see cref="MinLyingHeight"/> tall. Never clutter: it lies flat as the file has it.
+        /// </summary>
         public bool CanLie(int index, int rest)
         {
-            if (rest < 0 || rest >= RestCount || rest % 3 == 0 || !Objects[index].Movable || Objects[index].Shape == SceneShape.Sphere) return false;
+            if (rest < 0 || rest >= RestCount || rest % 3 == 0 || !Objects[index].Movable || Objects[index].Clutter || Objects[index].Shape == SceneShape.Sphere) return false;
             RestExtents(index, rest, out double ex, out double ey, out double ez);
             return ez <= LieAspect * Math.Min(ex, ey) + 1e-12 && ez >= MinLyingHeight - 1e-12;
         }
@@ -411,7 +438,7 @@ namespace Teleop.RobotArm.World
 
         /// <summary>
         /// A random spot for object <paramref name="index"/> at <paramref name="scale"/> where it fits (its footprint on the table
-        /// and in its region; a movable one also in the reach band), drawn from <paramref name="rng"/>: three draws a try (a
+        /// and in its region; a movable one also in the reach band, but clutter), drawn from <paramref name="rng"/>: three draws a try (a
         /// fixed-region object first picks its rectangle). A fixed-region object faces the robot's base, give or take
         /// 20 degrees; any other turns at random. False when the draw misses (the caller tries again); the clearance from other
         /// objects is the caller's.
@@ -508,12 +535,13 @@ namespace Teleop.RobotArm.World
         /// <summary>
         /// Whether a pool's layout may stand object <paramref name="index"/> at (x, y): a movable object within the reach band, when
         /// there is one; any other anywhere. A movable object by the edge (<see cref="DrawEdgeSpot"/>) is out of reach on purpose,
-        /// and its draw does not ask.
+        /// and its draw does not ask. Clutter (docs/adr/0037 "Raised clutter") goes anywhere in the region: some in reach, some in
+        /// the cameras' foreground.
         /// </summary>
         public bool InReach(int index, double x, double y)
         {
             if (InFixedRegions(index) && FixedNearMax > 0) return Math.Sqrt(x * x + y * y) - Objects[index].FootprintRadius <= FixedNearMax;
-            if (!(ReachMax > 0) || !Objects[index].Movable) return true;
+            if (!(ReachMax > 0) || !Objects[index].Movable || Objects[index].Clutter) return true;
             double r = Math.Sqrt(x * x + y * y);
             return r >= ReachMin && r <= ReachMax;
         }
@@ -799,6 +827,9 @@ namespace Teleop.RobotArm.World
                     throw Bad("mass", movable ? $"movable '{o.name}' has mass {o.mass}: more than 0 and at most {MaxMass} kg" : $"fixed '{o.name}' has a mass: only a movable object has one");
                 }
 
+                // docs/adr/0037 "Raised clutter": clutter is something the arm can push about, so it is a movable body.
+                if (o.clutter && !movable) throw Bad("kind", $"'{o.name}' is clutter, which is movable, not '{o.kind}'");
+
                 double[] pos = Vector(o.position, 3, "pose", $"'{o.name}' position");
                 double[] rpy = Vector(o.rpy, 3, "pose", $"'{o.name}' rpy");
                 if (Math.Abs(rpy[0]) > 1e-9 || Math.Abs(rpy[1]) > 1e-9) throw Bad("pose", $"'{o.name}' must stand upright (roll and pitch 0)");
@@ -808,18 +839,20 @@ namespace Teleop.RobotArm.World
                 double[] j = Vector(o.jitter, 3, "jitter", $"'{o.name}'");
                 if (!(j[0] >= 0 && j[1] >= 0 && j[2] >= 0)) throw Bad("jitter", $"'{o.name}' has a negative range");
                 objects[i] = new SceneObject((byte)o.id, o.name, shape, z[0], z[1], z[2], pos[0], pos[1], pos[2], rpy[2], movable, o.mass, o.operatorMovable,
-                    o.staticFriction, o.dynamicFriction, (float)col[0], (float)col[1], (float)col[2], j[0], j[1], j[2], asset);
+                    o.staticFriction, o.dynamicFriction, (float)col[0], (float)col[1], (float)col[2], j[0], j[1], j[2], asset, o.clutter);
             }
 
             ScenePoolDocument pool = d.pool ?? new ScenePoolDocument();
-            int movables = 0, fixeds = 0;
+            int movables = 0, fixeds = 0, clutters = 0;
             foreach (SceneObject o in objects)
             {
-                if (o.Movable) movables++;
+                if (o.Clutter) clutters++; // not one of the pool's movable objects (docs/adr/0037 "Raised clutter")
+                else if (o.Movable) movables++;
                 else fixeds++;
             }
 
-            if (pool.movableMin < 0 || pool.fixedMin < 0 || pool.movableMin > pool.movableMax || pool.fixedMin > pool.fixedMax)
+            if (pool.movableMin < 0 || pool.fixedMin < 0 || pool.clutterMin < 0 || pool.movableMin > pool.movableMax || pool.fixedMin > pool.fixedMax ||
+                pool.clutterMin > pool.clutterMax)
             {
                 throw Bad("pool", "each kind needs 0 <= min <= max");
             }
@@ -829,8 +862,10 @@ namespace Teleop.RobotArm.World
                 throw Bad("pool", $"it asks for up to {pool.movableMax} movable and {pool.fixedMax} fixed objects; the scene has {movables} and {fixeds}");
             }
 
+            if (pool.clutterMax > clutters) throw Bad("pool", $"it asks for up to {pool.clutterMax} clutter objects; the scene has {clutters}");
             bool isPool = pool.movableMax + pool.fixedMax > 0;
             if (isPool && d.version < 2) throw Bad("pool", "a pool needs version 2");
+            if ((clutters > 0 || pool.clutterMax > 0) && !isPool) throw Bad("pool", "clutter is only for a pool, whose layouts choose it");
             if (!Finite(pool.sizeMin, pool.sizeMax) || !((pool.sizeMin == 0 && pool.sizeMax == 0) || (pool.sizeMin > 0 && pool.sizeMin < pool.sizeMax)))
             {
                 throw Bad("pool", "sizeMin and sizeMax are both 0, or 0 < sizeMin < sizeMax");
@@ -899,7 +934,7 @@ namespace Teleop.RobotArm.World
             if (edgeShare > 0 && er.Length == 0) throw Bad("pool", "edgeShare needs edgeRegions");
             var scene = new WorldScene(d.name, d.robotProfile, surfaces, table, bench, objects, p.xMin, p.xMax, p.yMin, p.yMax, p.clearance,
                 pool.movableMin, pool.movableMax, pool.fixedMin, pool.fixedMax, pool.sizeMin, pool.sizeMax, pool.reachMin, pool.reachMax,
-                pool.knockMaxMass, fr, ko, near, clusterShare, lyingShare, er, edgeShare);
+                pool.knockMaxMass, fr, ko, near, clusterShare, lyingShare, er, edgeShare, pool.clutterMin, pool.clutterMax);
             for (int i = 0; i < objects.Length; i++)
             {
                 SceneObject o = objects[i];

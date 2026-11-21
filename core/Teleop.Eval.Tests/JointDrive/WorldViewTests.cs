@@ -91,7 +91,8 @@ namespace Teleop.Eval.Tests.JointDrive
             // range are mirror-images across x, as the map found.
             var reached = new List<string>();
             var roles = new SafetyOptions { KnockMaxKg = Bench.KnockMaxMass };
-            int[] candidates = Enumerable.Range(0, Bench.Objects.Length).Where(i => Bench.HasEdgeRoom(i, 1.0, WorldScene.RestUpright)).ToArray();
+            // The objects the edge draw chooses from: movable, but not clutter (docs/adr/0037 "Raised clutter": a pass of its own).
+            int[] candidates = Enumerable.Range(0, Bench.Objects.Length).Where(i => !Bench.Objects[i].Clutter && Bench.HasEdgeRoom(i, 1.0, WorldScene.RestUpright)).ToArray();
             int widest = candidates.OrderByDescending(i => Bench.FootprintRadiusAt(i, 0)).First();
             int tallest = candidates.OrderByDescending(i => Bench.Objects[i].SizeZ).First();
             int lie = Enumerable.Range(1, 5).First(r => Bench.CanLie(widest, r) && Bench.HasEdgeRoom(widest, 1.0, r));

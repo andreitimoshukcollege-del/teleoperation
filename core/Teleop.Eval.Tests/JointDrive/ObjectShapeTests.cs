@@ -57,16 +57,19 @@ namespace Teleop.Eval.Tests.JointDrive
                 // are fractions of the object's.
                 double kx = o.SizeX / a!.Size.X, ky = o.SizeY / a.Size.Y, kz = o.SizeZ / a.Size.Z;
                 Assert.True(Math.Abs(kx / kz - 1) < 0.01 && Math.Abs(ky / kz - 1) < 0.01, $"{o.Name}: {o.Asset} scaled by {kx:0.000}, {ky:0.000}, {kz:0.000}");
-                // Its slabs stand from the bottom of its box to the top, and it can be touched.
+                // Its slabs stand from the bottom of its box to the top, and it can be touched. Raised clutter (docs/adr/0037 "Raised
+                // clutter") lies flat, 1.4-2.7 cm tall: a touch, which meets an object at least 10 mm below its top and the arm never
+                // closer than 10 mm to the table, has little or none of it to go into. It is an obstacle first.
                 Assert.InRange(a.Slabs.Count, 8, 48);
                 Assert.InRange(a.Slabs[0].Z0, -0.501f, -0.499f);
                 Assert.InRange(a.Slabs[a.Slabs.Count - 1].Z1, 0.49f, 0.501f);
                 ObjectShape shape = a.At(Half(o));
-                Assert.True(shape.MaxDepth > 0.006f, $"{o.Name}: the deepest it can be entered is {shape.MaxDepth * 1000:0.0} mm");
+                if (!o.Clutter) Assert.True(shape.MaxDepth > 0.006f, $"{o.Name}: the deepest it can be entered is {shape.MaxDepth * 1000:0.0} mm");
                 Assert.Same(shape, a.At(Half(o)));
             }
 
-            Assert.Equal(24, meshes);
+            // 20 movable objects and fixtures, and 4 pieces of clutter that are scans (the phone and the pen are boxes).
+            Assert.Equal(28, meshes);
         }
 
         [Fact]

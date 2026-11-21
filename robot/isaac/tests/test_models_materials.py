@@ -113,7 +113,8 @@ def test_the_table_and_the_bench_draw_a_look_each_take_and_the_bench_is_furnitur
     m = materials_spec(_bench())
     assert m["classes"] == {"box": ["wood"], "cylinder": ["metal", "wood"]}
     looks, table, bench = m["looks"], m["surfaces"]["table"], m["surfaces"]["bench"]
-    assert len(table) == len(looks) == 14 and set(bench) < set(table)  # the table may also be covered: a mat, cloth, paper
+    assert len(table) == 14 and set(bench) < set(table)  # the table may also be covered: a mat, cloth, paper
+    assert set(looks) == set(table) | {lid for ids in m["objects"].values() for lid in ids}  # and the clutter's (a phone, a pen)
     assert set(bench) == set(DARK) | {"grey-laminate", "wood-kitchen", "wood-table", "wood-plywood", "wood-oak"}
     assert all(looks[lid]["weight"] == (2.0 if lid in DARK else 1.0) for lid in table)
     resin = looks["black-resin"]  # the real lab bench: nearly black, satin
@@ -187,6 +188,22 @@ def test_a_surfaces_look_is_drawn_from_the_seed_the_change_and_the_surface_alone
     assert materials.pick_look({"a": {"weight": 3.0}, "b": {}}, ["a", "b"], "k") in ("a", "b")
     with pytest.raises(ValueError):
         materials.pick_look(looks, [], "k")
+
+
+def test_the_benchs_clutter_that_is_not_a_scan_wears_looks_of_its_own():
+    # docs/adr/0037 "Raised clutter": the phone and the pen are boxes, so they wear looks by name (amendment 5: nothing is a flat
+    # colour): the phone glossy black, the pen one of three plastic colours, drawn per take.
+    from teleop_isaac.renderer import materials_spec
+    s = _bench()
+    m = materials_spec(s)
+    assert m["objects"] == {"phone": ["glossy-black"], "pen": ["pen-blue", "pen-black", "pen-red"]}
+    assert {o.name for o in s.objects if o.shape != "mesh"} == set(m["objects"])  # every simple shape of the bench
+    assert all(o.clutter for o in s.objects if o.name in m["objects"])
+    phone = m["looks"]["glossy-black"]
+    assert max(phone["tint"]) <= 0.03 and phone["roughness"] <= 0.1 and phone["roughnessTexture"] == 0.0  # dark, glossy, even
+    assert all(m["looks"][lid]["roughness"] is not None for lid in m["objects"]["pen"])  # smooth plastic, not the texture's own
+    pens = [materials.object_look(m["looks"], m["objects"]["pen"], 7, k, "pen") for k in range(90)]
+    assert set(pens) == {"pen-blue", "pen-black", "pen-red"}
 
 
 def test_a_simple_shape_may_wear_looks_by_name_drawn_apart_from_the_surfaces():

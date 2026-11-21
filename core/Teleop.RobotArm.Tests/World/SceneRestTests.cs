@@ -109,7 +109,8 @@ namespace Teleop.RobotArm.Tests.World
                 Assert.True(Pool.Bench != null && Pool.EdgeRegions[k] >= Pool.Bench!.XMin);
             }
 
-            string[] none = Pool.Objects.Where((o, i) => o.Movable && !Pool.HasEdgeRoom(i, 1.0, WorldScene.RestUpright)).Select(o => o.Name).ToArray();
+            // Of the objects the edge draw chooses from: movable, but not clutter (docs/adr/0037 "Raised clutter": its own pass).
+            string[] none = Pool.Objects.Where((o, i) => o.Movable && !o.Clutter && !Pool.HasEdgeRoom(i, 1.0, WorldScene.RestUpright)).Select(o => o.Name).ToArray();
             Assert.Equal(new[] { "parcel-mid", "parcel-large", "parcel-medium" }, none);
             Assert.True(Pool.HasEdgeRoom(Index("parcel-mid"), 1.0, 2)); // lying on its end, it fits
             Assert.False(Pool.HasEdgeRoom(Array.FindIndex(Pool.Objects, o => !o.Movable), 1.0, 0)); // a fixture never stands there
@@ -151,7 +152,8 @@ namespace Teleop.RobotArm.Tests.World
         /// <summary>
         /// Over seeds 1 to <paramref name="layouts"/>: the share of movable objects that can lie which lie, of layouts with one by
         /// the edge, of movable objects in reach (in layouts with two or more) standing beside another (footprint circles at most
-        /// the clearance plus <see cref="WorldScene.ClusterGap"/> apart), and the movable objects in reach a layout.
+        /// the clearance plus <see cref="WorldScene.ClusterGap"/> apart), and the movable objects in reach a layout. Clutter
+        /// (docs/adr/0037 "Raised clutter") is none of these: it has a pass of its own, after them.
         /// </summary>
         private static Stats Measure(WorldScene scene, int layouts)
         {
@@ -160,17 +162,18 @@ namespace Teleop.RobotArm.Tests.World
             var scales = new double[scene.Objects.Length];
             var s = new Stats();
             int canLie = 0, lying = 0, edge = 0, inReachTotal = 0, onTable = 0, clusterCandidates = 0, clustered = 0;
+            bool Pooled(int i) => scene.Objects[i].Movable && !scene.Objects[i].Clutter;
             for (ulong seed = 1; seed <= (ulong)layouts; seed++)
             {
                 SceneLayout.Draw(scene, seed, poses, parked, scales);
-                var inReach = Enumerable.Range(0, poses.Length).Where(i => !parked[i] && scene.Objects[i].Movable && !scene.InEdgeRegions(poses[i].X, poses[i].Y)).ToArray();
-                bool hasEdge = Enumerable.Range(0, poses.Length).Any(i => !parked[i] && scene.Objects[i].Movable && scene.InEdgeRegions(poses[i].X, poses[i].Y));
+                var inReach = Enumerable.Range(0, poses.Length).Where(i => !parked[i] && Pooled(i) && !scene.InEdgeRegions(poses[i].X, poses[i].Y)).ToArray();
+                bool hasEdge = Enumerable.Range(0, poses.Length).Any(i => !parked[i] && Pooled(i) && scene.InEdgeRegions(poses[i].X, poses[i].Y));
                 edge += hasEdge ? 1 : 0;
                 inReachTotal += inReach.Length;
                 onTable += inReach.Length + (hasEdge ? 1 : 0);
                 s.InReach[inReach.Length]++;
                 s.OnTable[inReach.Length + (hasEdge ? 1 : 0)]++;
-                foreach (int i in Enumerable.Range(0, poses.Length).Where(i => !parked[i] && scene.Objects[i].Movable))
+                foreach (int i in Enumerable.Range(0, poses.Length).Where(i => !parked[i] && Pooled(i)))
                 {
                     if (!Enumerable.Range(1, 5).Any(r => scene.CanLie(i, r))) continue;
                     canLie++;
@@ -229,11 +232,14 @@ namespace Teleop.RobotArm.Tests.World
             sb.Append("{\n \"about\": \"docs/adr/0037 amendment 6: the rests of core/Scenes/jetrover-bench.json, written by SceneRestTests (just gen-isaac-goldens). ");
             sb.Append("objects: name, then per rest 0-5 its extents (x, y, up), footprint radius and whether a layout may lay it there. ");
             sb.Append("poses: index, rest, x, y, yaw, then PoseAt's x, y, z, qw, qx, qy, qz. restOf: qw, qx, qy, qz, then RestOf's rest and yaw. ");
-            sb.Append("fits: index, rest, x, y, FitsOnTable. overlaps: a, x, y, rest, b, x, y, rest, Overlaps.\",\n");
+            sb.Append("fits: index, rest, x, y, FitsOnTable. overlaps: a, x, y, rest, b, x, y, rest, Overlaps. ");
+            sb.Append("clutterRange and clutterObjects: the raised clutter (docs/adr/0037 \\\"Raised clutter\\\").\",\n");
             sb.Append($" \"scene\": \"{s.Name}\",\n");
             sb.Append($" \"sha256\": \"{Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant()}\",\n");
             sb.Append($" \"shares\": {Row(s.ClusterShare, s.LyingShare, s.EdgeShare)},\n");
             sb.Append($" \"edgeRegions\": {Row(s.EdgeRegions)},\n");
+            sb.Append($" \"clutterRange\": {Row(s.ClutterMin, s.ClutterMax)},\n");
+            sb.Append($" \"clutterObjects\": [{string.Join(", ", s.Objects.Where(o => o.Clutter).Select(o => "\"" + o.Name + "\""))}],\n");
             sb.Append(" \"objects\": [\n");
             for (int i = 0; i < s.Objects.Length; i++)
             {

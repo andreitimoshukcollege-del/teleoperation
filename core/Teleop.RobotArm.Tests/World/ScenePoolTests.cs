@@ -41,7 +41,7 @@ namespace Teleop.RobotArm.Tests.World
             for (ulong seed = 1; seed <= 200; seed++)
             {
                 ((RigidTransform[] poses, bool[] parked, int missed), double[] scales) = DrawSized(seed);
-                int movable = 0, fixeds = 0, byTheEdge = 0;
+                int movable = 0, fixeds = 0, byTheEdge = 0, clutter = 0;
                 for (int i = 0; i < poses.Length; i++)
                 {
                     if (parked[i])
@@ -54,8 +54,9 @@ namespace Teleop.RobotArm.Tests.World
                     // Each on its rest (amendment 6): upright, or lying on a side it lies on stably; a fixture stands upright.
                     int rest = WorldScene.RestOf(poses[i]);
                     Assert.True(rest == WorldScene.RestUpright || Pool.CanLie(i, rest), $"seed {seed}: {o.Name} on rest {rest}");
-                    bool atEdge = o.Movable && Pool.InEdgeRegions(poses[i].X, poses[i].Y);
-                    if (atEdge) byTheEdge++;
+                    bool atEdge = o.Movable && !o.Clutter && Pool.InEdgeRegions(poses[i].X, poses[i].Y);
+                    if (o.Clutter) clutter++;
+                    else if (atEdge) byTheEdge++;
                     else if (o.Movable) movable++;
                     else fixeds++;
                     Assert.True(Pool.FitsOnTable(i, poses[i].X, poses[i].Y, scales[i], rest), $"seed {seed}: {o.Name} off the table");
@@ -65,7 +66,17 @@ namespace Teleop.RobotArm.Tests.World
                     // A movable object stands where the arm reaches it (amendment 3): within the band from the robot's base, in front
                     // of it. The one by the edge (amendment 6) stands outside the region, behind the arm's base.
                     if (atEdge) Assert.True(poses[i].X < 0 && poses[i].X < Pool.RegionXMin, $"seed {seed}: {o.Name} by the edge in front of the robot");
-                    else if (o.Movable) Assert.InRange(Math.Sqrt(poses[i].X * poses[i].X + poses[i].Y * poses[i].Y), Pool.ReachMin, Pool.ReachMax);
+                    else if (o.Movable && !o.Clutter) Assert.InRange(Math.Sqrt(poses[i].X * poses[i].X + poses[i].Y * poses[i].Y), Pool.ReachMin, Pool.ReachMax);
+                    if (o.Clutter)
+                    {
+                        // Raised clutter (docs/adr/0037 "Raised clutter"): flat as the file has it, at its own size, anywhere in the
+                        // placement region (held to no reach band, never by the edge).
+                        Assert.Equal(WorldScene.RestUpright, rest);
+                        Assert.Equal(1.0, scales[i]);
+                        double r = o.FootprintRadius;
+                        Assert.True(poses[i].X - r >= Pool.RegionXMin - 1e-9 && poses[i].X + r <= Pool.RegionXMax + 1e-9 &&
+                                    poses[i].Y - r >= Pool.RegionYMin - 1e-9 && poses[i].Y + r <= Pool.RegionYMax + 1e-9, $"seed {seed}: {o.Name} out of the region");
+                    }
                     Pool.RestExtents(i, rest, out _, out _, out double up);
                     Assert.Equal(Pool.Table.Top + up * scales[i] / 2, poses[i].Z, 9);
                     for (int k = 0; k < i; k++)
@@ -79,6 +90,7 @@ namespace Teleop.RobotArm.Tests.World
                 Assert.InRange(movable, Pool.MovableMin - missed, Pool.MovableMax);
                 Assert.InRange(byTheEdge, 0, 1);
                 Assert.InRange(fixeds, Pool.FixedMin - missed, Pool.FixedMax);
+                Assert.InRange(clutter, Pool.ClutterMin - missed, Pool.ClutterMax);
                 // A fixture always finds its spot beside the robot (2026-11-16: drawn from its whole rectangle, 17% of layouts had none).
                 Assert.True(fixeds >= Pool.FixedMin, $"seed {seed}: {fixeds} fixture(s)");
             }
@@ -96,8 +108,8 @@ namespace Teleop.RobotArm.Tests.World
             var many = Enumerable.Range(1, 300).Select(s => Draw((ulong)s)).ToArray();
             Assert.All(Enumerable.Range(0, Pool.Objects.Length), i => Assert.Contains(many, d => !d.Parked[i]));
             // Anywhere in the reach band, not around a nominal pose: the movable objects spread over most of its depth and
-            // swing, and the fixed ones over most of the region. (The one by the edge, amendment 6, is not in the band.)
-            bool InBand(RigidTransform p, int i) => Pool.Objects[i].Movable && !Pool.InEdgeRegions(p.X, p.Y);
+            // swing, and the fixed ones over most of the region. (The one by the edge, amendment 6, is not in the band, nor is clutter.)
+            bool InBand(RigidTransform p, int i) => Pool.Objects[i].Movable && !Pool.Objects[i].Clutter && !Pool.InEdgeRegions(p.X, p.Y);
             double[] rs = sets.SelectMany(d => d.Poses.Where((p, i) => !d.Parked[i] && InBand(p, i)).Select(p => Math.Sqrt(p.X * p.X + p.Y * p.Y))).ToArray();
             Assert.True(rs.Max() - rs.Min() > 0.7 * (Pool.ReachMax - Pool.ReachMin));
             double[] ys = sets.SelectMany(d => d.Poses.Where((p, i) => !d.Parked[i] && InBand(p, i)).Select(p => p.Y)).ToArray();

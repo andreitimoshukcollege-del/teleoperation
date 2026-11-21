@@ -74,6 +74,9 @@ def test_the_rests_and_spots_are_cores():
     s = scene.load(path)
     assert [s.cluster_share, s.lying_share, s.edge_share] == pytest.approx(g["shares"], abs=1e-12)
     assert list(s.edge_regions) == pytest.approx(g["edgeRegions"], abs=1e-12)
+    # docs/adr/0037 "Raised clutter": the same clutter, and the same range a layout stands of it.
+    assert list(s.clutter) == [int(v) for v in g["clutterRange"]]
+    assert [o.name for o in s.objects if o.clutter] == g["clutterObjects"]
     assert [o.name for o in s.objects] == [e["name"] for e in g["objects"]]
     for o, e in zip(s.objects, g["objects"]):
         for rest, (ex, ey, ez, radius, lie) in enumerate(e["rests"]):

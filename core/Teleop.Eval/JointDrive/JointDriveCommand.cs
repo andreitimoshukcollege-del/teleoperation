@@ -824,11 +824,12 @@ namespace Teleop.Eval.JointDrive
             public const double StillSeconds = 0.6;
 
             /// <summary>
-            /// The planner's time to plan the next event, seconds of the runway (twice that for a second try). A contact event
-            /// plans in about 1-3 s (2026-11-21, the GPU machine's random-layout test: 2.6 s a plan, every sweep of a failed one
-            /// included).
+            /// The planner's time to plan the next event, seconds of the runway (half as much again for a second try). Measured on
+            /// the GPU machine with the twin and other tests running (2026-11-21): a contact event plans in 0.1-3 s, and a
+            /// knock planned against the objects a knock left in 4-11 s, mostly on its knocked object again after the others
+            /// failed.
             /// </summary>
-            public const double BudgetSeconds = 4.0;
+            public const double BudgetSeconds = 6.0;
 
             /// <summary>How long after a knock the objects may take to settle before the runway ends the take, seconds.</summary>
             public const double SettleSeconds = 6.0;
@@ -915,7 +916,7 @@ namespace Teleop.Eval.JointDrive
                     Console.WriteLine(FormattableString.Invariant($"[joint-drive] {planTime,5:0.0} s: the plan made for after the knock no longer holds ({why})"));
                 }
 
-                _switchAt = _pending.SwitchAfter(planTime + BudgetSeconds * (1 + _tries));
+                _switchAt = _pending.SwitchAfter(planTime + BudgetSeconds * (1 + 0.5 * _tries));
                 if (double.IsNaN(_switchAt))
                 {
                     Console.WriteLine(FormattableString.Invariant($"[joint-drive] {planTime,5:0.0} s: no time left on the runway to plan another event; it ends the take"));

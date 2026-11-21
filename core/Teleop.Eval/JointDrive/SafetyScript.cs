@@ -137,15 +137,22 @@ namespace Teleop.Eval.JointDrive
         /// </summary>
         public readonly ObjectShape? Shape;
 
+        /// <summary>
+        /// Scenery for the cameras, never a script's target (docs/adr/0037 amendment 6: the object a layout stands by the bench's
+        /// edge, out of the arm's reach on purpose); still an obstacle. Several events a take skip it (docs/adr/0036 amendment 5):
+        /// every search would otherwise spend its sweeps on it before going back to an object already aimed at.
+        /// </summary>
+        public readonly bool Scenery;
+
         /// <summary>An axis-aligned object.</summary>
-        public SafetyObject(byte id, Vector3 min, Vector3 max, bool movable = true, double mass = 0, bool tippy = false, ObjectShape? shape = null)
-            : this(id, (min + max) / 2f, Quaternion.Identity, (max - min) / 2f, movable, mass, tippy, shape)
+        public SafetyObject(byte id, Vector3 min, Vector3 max, bool movable = true, double mass = 0, bool tippy = false, ObjectShape? shape = null, bool scenery = false)
+            : this(id, (min + max) / 2f, Quaternion.Identity, (max - min) / 2f, movable, mass, tippy, shape, scenery)
         {
         }
 
         /// <summary>A turned object: its box centred at <paramref name="center"/>, turned by <paramref name="rotation"/>.</summary>
         public SafetyObject(byte id, Vector3 center, Quaternion rotation, Vector3 halfExtents, bool movable = true, double mass = 0, bool tippy = false,
-            ObjectShape? shape = null)
+            ObjectShape? shape = null, bool scenery = false)
         {
             Id = id;
             Center = center;
@@ -158,6 +165,7 @@ namespace Teleop.Eval.JointDrive
             Mass = mass;
             Tippy = tippy;
             Shape = shape;
+            Scenery = scenery;
         }
 
         public CollisionBox Box(float grow) => new CollisionBox($"object {Id}", Center, Rotation, HalfExtents + new Vector3(grow));
@@ -168,7 +176,7 @@ namespace Teleop.Eval.JointDrive
             Vector3 half = grow >= 0
                 ? HalfExtents + new Vector3(grow)
                 : HalfExtents - Vector3.Min(new Vector3(-grow), HalfExtents - new Vector3(0.0005f));
-            return new SafetyObject(Id, Center, Rotation, half, Movable, Mass, Tippy, Shape);
+            return new SafetyObject(Id, Center, Rotation, half, Movable, Mass, Tippy, Shape, Scenery);
         }
     }
 
@@ -441,6 +449,7 @@ namespace Teleop.Eval.JointDrive
                 foreach (int oi in order)
                 {
                     if (script == DriveScript.CollideWithObstacle && !options.Knockable(objects[oi])) continue;
+                    if (used != null && objects[oi].Scenery) continue;
                     if (Rank(objects[oi]) != pass) continue;
                     foreach (Sweep sweep in Sweeps(objects[oi], ref rng))
                     {

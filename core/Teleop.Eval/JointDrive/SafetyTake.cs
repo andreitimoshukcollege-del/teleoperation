@@ -175,10 +175,10 @@ namespace Teleop.Eval.JointDrive
         /// the next event to be planned while the arm keeps moving (joint-drive's budgets). It ends the take when nothing replaces it,
         /// and never runs past <see cref="SafetyOptions.MaxTakeSeconds"/>.
         /// </summary>
-        public const double RunwaySeconds = 12.0;
+        public const double RunwaySeconds = 15.0;
 
-        /// <summary>A runway shorter than this, seconds (the take nearly at its longest), leaves no time to settle and plan: the take ends after a tail instead.</summary>
-        public const double MinRunwaySeconds = 7.0;
+        /// <summary>A runway shorter than this, seconds (the take nearly at its longest), leaves no time to settle and go on: the take ends after a tail instead.</summary>
+        public const double MinRunwaySeconds = 6.0;
 
         /// <summary>After a knock, free goals are drawn this far from where the object stood and from where it was sent, m.</summary>
         public const float AwayMeters = 0.10f;

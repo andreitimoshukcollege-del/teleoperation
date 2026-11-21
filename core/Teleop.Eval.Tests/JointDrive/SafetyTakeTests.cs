@@ -65,7 +65,8 @@ namespace Teleop.Eval.Tests.JointDrive
             var scales = new double[scene.Objects.Length];
             SceneLayout.Draw(scene, seed, poses, parked, scales);
             return scene.Objects.Select((o, i) => (o, i)).Where(x => !parked[x.i])
-                .Select(x => WorldView.Bounds(x.o, scales[x.i], poses[x.i].X, poses[x.i].Y, poses[x.i].Z, poses[x.i].Qw, poses[x.i].Qx, poses[x.i].Qy, poses[x.i].Qz, shapes))
+                .Select(x => WorldView.Bounds(x.o, scales[x.i], poses[x.i].X, poses[x.i].Y, poses[x.i].Z, poses[x.i].Qw, poses[x.i].Qx, poses[x.i].Qy, poses[x.i].Qz, shapes,
+                    x.o.Movable && scene.InEdgeRegions(poses[x.i].X, poses[x.i].Y))) // as WorldView.TryObjects sees it
                 .ToArray();
         }
 
@@ -83,7 +84,7 @@ namespace Teleop.Eval.Tests.JointDrive
         /// The whole of a take as joint-drive drives it: the plan, and after each knock the objects as it left them (the knocked one
         /// over on its side, <see cref="KnockedOver"/>), seen at rest <paramref name="settleSeconds"/> after the knock's lift; then
         /// the plan made at the start for after it if that still holds, else the next event planned against them, the planner given
-        /// joint-drive's budget. The plans it went through, last the one driven to the end; <paramref name="assumedTaken"/>: how
+        /// joint-drive's budget (6 s). The plans it went through, last the one driven to the end; <paramref name="assumedTaken"/>: how
         /// many knocks went on as planned at the start.
         /// </summary>
         public static List<DrivePlan> Drive(DrivePlan plan, IReadOnlyList<SafetyObject> objects, out int assumedTaken, double settleSeconds = 2.0)
@@ -106,7 +107,7 @@ namespace Teleop.Eval.Tests.JointDrive
                 }
                 else
                 {
-                    at = c.SwitchAfter(seen + 4.0);
+                    at = c.SwitchAfter(seen + 6.0); // joint-drive's budget for planning
                     if (double.IsNaN(at)) break;
                     next = c.Continue(now, at, out _);
                 }
@@ -409,7 +410,7 @@ namespace Teleop.Eval.Tests.JointDrive
                 now[m] = new SafetyObject(now[m].Id, now[m].Center + new Vector3(0.02f, 0.02f, 0f),
                     Quaternion.CreateFromAxisAngle(Vector3.UnitZ, MathF.PI / 6f), now[m].HalfExtents);
                 Assert.False(c.Holds(now, out _)); // what was planned at the start for after the knock no longer holds: plan again
-                double at = c.SwitchAfter(c.KnockEnd + 2.0 + 4.0);
+                double at = c.SwitchAfter(c.KnockEnd + 2.0 + 6.0);
                 Assert.False(double.IsNaN(at));
                 DrivePlan next = c.Continue(now, at, out string outcome);
                 DrivePlan again = c.Continue(now, at, out _);

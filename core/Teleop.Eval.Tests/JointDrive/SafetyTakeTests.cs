@@ -10,27 +10,21 @@ using Teleop.RobotArm.Wire;
 using Teleop.RobotArm.World;
 using Xunit;
 using Xunit.Abstractions;
+using static Teleop.Eval.Tests.JointDrive.Takes;
 
 namespace Teleop.Eval.Tests.JointDrive
 {
-    /// <summary>
-    /// docs/adr/0036 amendment 5 (the user, 2026-11-21): "the collisions always happen at the end of the video and there is only
-    /// one; remove the idle state in the first few seconds; collide multiple times in one video". Measured on the 16 takes of the
-    /// 2026-11-21 check: 3.1-3.9 s of a still arm at every take's start, and one contact a take, at 81-92% of it.
-    /// </summary>
-    public class SafetyTakeTests
+    /// <summary>What the tests of docs/adr/0036 amendment 5 share: the arm, the bench at its nominal poses, layouts, and a take driven through its knocks.</summary>
+    internal static class Takes
     {
-        private static readonly RobotArmProfile Profile = RobotArmProfile.JetRoverMeasuredDefault;
-        private static readonly ArmCollisionModel Model = Profile.Collision!;
-        private static readonly DriveEnvelope Envelope = DriveEnvelope.FromModel(Model, 15f * MathF.PI / 180f);
-        private static readonly DriveScript[] EventScripts = { DriveScript.StopBeforeCollision, DriveScript.CollideAndRecover, DriveScript.CollideWithObstacle };
-        private const double Tick = HandModel.TickSeconds;
-        private readonly ITestOutputHelper _output;
-
-        public SafetyTakeTests(ITestOutputHelper output) => _output = output;
+        public static readonly RobotArmProfile Profile = RobotArmProfile.JetRoverMeasuredDefault;
+        public static readonly ArmCollisionModel Model = Profile.Collision!;
+        public static readonly DriveEnvelope Envelope = DriveEnvelope.FromModel(Model, 15f * MathF.PI / 180f);
+        public static readonly DriveScript[] EventScripts = { DriveScript.StopBeforeCollision, DriveScript.CollideAndRecover, DriveScript.CollideWithObstacle };
+        public const double Tick = HandModel.TickSeconds;
 
         // core/Scenes/jetrover-bench.json's first four objects at their nominal poses, as SafetyScriptTests has them.
-        private static readonly SafetyObject[] Bench =
+        public static readonly SafetyObject[] Bench =
         {
             Box(1, new Vector3(0.20f, 0.08f, -0.1837f), new Vector3(0.025f, 0.025f, 0.025f)),
             Box(2, new Vector3(0.24f, -0.08f, -0.1512f), new Vector3(0.025f, 0.025f, 0.09f)),
@@ -38,22 +32,22 @@ namespace Teleop.Eval.Tests.JointDrive
             Box(4, new Vector3(0.29f, 0.03f, -0.1712f), new Vector3(0.015f, 0.10f, 0.05f)),
         };
 
-        private static SafetyObject Box(byte id, Vector3 centre, Vector3 size) => new SafetyObject(id, centre - size / 2, centre + size / 2);
+        public static SafetyObject Box(byte id, Vector3 centre, Vector3 size) => new SafetyObject(id, centre - size / 2, centre + size / 2);
 
-        private static DrivePlan Plan(DriveScript script, IReadOnlyList<SafetyObject> objects, ulong seed, SafetyOptions? options = null, ArmPose? start = null)
+        public static DrivePlan Plan(DriveScript script, IReadOnlyList<SafetyObject> objects, ulong seed, SafetyOptions? options = null, ArmPose? start = null)
         {
             Assert.True(DrivePlan.TryBuild(script, Profile, start ?? Model.Home, 2.5f, 15, seed, Envelope, out DrivePlan? plan, out string? error, objects, options), error);
             return plan!;
         }
 
         /// <summary>Whether <paramref name="pose"/> comes within <paramref name="gap"/> of any of <paramref name="objects"/> (below 0: that far inside, never past a box's middle).</summary>
-        private static bool Within(in ArmPose pose, IReadOnlyList<SafetyObject> objects, float gap)
+        public static bool Within(in ArmPose pose, IReadOnlyList<SafetyObject> objects, float gap)
         {
             var grown = objects.Select(o => gap >= 0 ? o : o.Grown(Math.Max(gap, -SafetyScript.MaxDepth(o)))).ToArray();
             return !ArmCollision.IsValid(Profile, SafetyScript.WithObjects(Model, grown, Math.Max(gap, 0f), 0f), pose);
         }
 
-        private static WorldScene BenchScene(out ObjectShapes? shapes)
+        public static WorldScene BenchScene(out ObjectShapes? shapes)
         {
             string? dir = AppContext.BaseDirectory;
             while (dir != null && !System.IO.File.Exists(System.IO.Path.Combine(dir, "core", "Scenes", "jetrover-bench.json"))) dir = System.IO.Path.GetDirectoryName(dir);
@@ -64,7 +58,7 @@ namespace Teleop.Eval.Tests.JointDrive
         }
 
         /// <summary>RobotHost's layout <paramref name="seed"/> of the bench's pool: the objects on the table, as joint-drive sees them.</summary>
-        private static SafetyObject[] Layout(WorldScene scene, ObjectShapes? shapes, ulong seed)
+        public static SafetyObject[] Layout(WorldScene scene, ObjectShapes? shapes, ulong seed)
         {
             var poses = new RigidTransform[scene.Objects.Length];
             var parked = new bool[scene.Objects.Length];
@@ -76,7 +70,7 @@ namespace Teleop.Eval.Tests.JointDrive
         }
 
         /// <summary>The knocked object as a knock may leave it, for the planner: sent 8 cm along the swipe and over on its side, on the table.</summary>
-        private static SafetyObject KnockedOver(in SafetyObject o, Vector2 way)
+        public static SafetyObject KnockedOver(in SafetyObject o, Vector2 way)
         {
             Vector3 w = way.Length() > 1e-6f ? Vector3.Normalize(new Vector3(way.X, way.Y, 0f)) : Vector3.UnitY;
             Quaternion q = Quaternion.Normalize(Quaternion.Concatenate(o.Rotation, Quaternion.CreateFromAxisAngle(Vector3.Normalize(Vector3.Cross(Vector3.UnitZ, w)), MathF.PI / 2f)));
@@ -90,7 +84,7 @@ namespace Teleop.Eval.Tests.JointDrive
         /// over on its side, <see cref="KnockedOver"/>) and the next event planned against them once they have settled, the planner
         /// given joint-drive's budget. The plans it went through, last the one driven to the end.
         /// </summary>
-        private static List<DrivePlan> Drive(DrivePlan plan, IReadOnlyList<SafetyObject> objects, double settleSeconds = 2.0)
+        public static List<DrivePlan> Drive(DrivePlan plan, IReadOnlyList<SafetyObject> objects, double settleSeconds = 2.0)
         {
             var plans = new List<DrivePlan> { plan };
             var now = objects.ToList();
@@ -109,6 +103,17 @@ namespace Teleop.Eval.Tests.JointDrive
 
             return plans;
         }
+    }
+
+    /// <summary>
+    /// docs/adr/0036 amendment 5 over RobotHost's random layouts of the bench: how many events, where in the take, how long the take.
+    /// The rows and the summary go to the test's output (a TRX logger shows them).
+    /// </summary>
+    public class SafetyTakeLayoutTests
+    {
+        private readonly ITestOutputHelper _output;
+
+        public SafetyTakeLayoutTests(ITestOutputHelper output) => _output = output;
 
         [Fact]
         public void OnRandomLayouts_EventsFollowTheDraw_AndLandAnywhereInTheTake()
@@ -193,7 +198,15 @@ namespace Teleop.Eval.Tests.JointDrive
             Assert.True(where.Count(w => w < 0.5) >= where.Count / 4, summary);
             Assert.True(unplanned <= Layouts, summary);
         }
+    }
 
+    /// <summary>
+    /// docs/adr/0036 amendment 5 (the user, 2026-11-21): "the collisions always happen at the end of the video and there is only
+    /// one; remove the idle state in the first few seconds; collide multiple times in one video". Measured on the 16 takes of the
+    /// 2026-11-21 check: 3.1-3.9 s of a still arm at every take's start, and one contact a take, at 81-92% of it.
+    /// </summary>
+    public class SafetyTakeTests
+    {
         [Theory]
         [InlineData(DriveScript.StopBeforeCollision)]
         [InlineData(DriveScript.CollideAndRecover)]
@@ -235,17 +248,29 @@ namespace Teleop.Eval.Tests.JointDrive
         [Fact]
         public void SuccessiveEvents_AimAtDifferentObjects_WhenThereAreSeveral()
         {
-            // The bench's four objects: three touches go to three of them, not one object three times.
-            var three = new SafetyOptions { MinEvents = 3, MaxEvents = 3 };
-            int distinct = 0, events = 0;
-            for (ulong seed = 1; seed <= 3; seed++)
+            // Three posts in reach, each one a touch can meet: three touches go to the three of them, not one post three times.
+            // (An object already aimed at is only tried once no other works: on the bench, whose 2.5 cm cube is too low to touch,
+            // a third touch can go back to one of the other three.)
+            SafetyObject Post(byte id, float bearingDeg)
             {
-                DrivePlan plan = Plan(DriveScript.CollideAndRecover, Bench, seed, three);
-                events += plan.Events.Count;
-                distinct += plan.Events.Select(e => e.ObjectId).Distinct().Count();
+                float b = bearingDeg * MathF.PI / 180f;
+                var c = new Vector3(0.23f * MathF.Cos(b), 0.23f * MathF.Sin(b), -0.1512f);
+                return Box(id, c, new Vector3(0.025f, 0.025f, 0.09f));
             }
 
-            Assert.Equal(events, distinct);
+            SafetyObject[] posts = { Post(11, -35f), Post(12, 0f), Post(13, 35f) };
+            var three = new SafetyOptions { MinEvents = 3, MaxEvents = 3 };
+            var report = new List<string>();
+            int distinct = 0, events = 0;
+            for (ulong seed = 1; seed <= 2; seed++)
+            {
+                DrivePlan plan = Plan(DriveScript.CollideAndRecover, posts, seed, three);
+                events += plan.Events.Count;
+                distinct += plan.Events.Select(e => e.ObjectId).Distinct().Count();
+                report.Add(string.Join(", ", plan.Events.Select(e => e.ObjectId)));
+            }
+
+            Assert.True(events >= 4 && distinct == events, string.Join(" | ", report));
         }
 
         [Theory]
@@ -280,6 +305,65 @@ namespace Teleop.Eval.Tests.JointDrive
             }
         }
 
+        [Fact]
+        public void TheOneEventPlanner_IsStillThere_ForWhatWasRecordedWithIt()
+        {
+            // TouchMissesTests replans the takes of 2026-11-16 from their records with it: one event, at the end.
+            var old = new SafetyOptions { OneEventAtTheEnd = true };
+            DrivePlan plan = Plan(DriveScript.CollideAndRecover, Bench, 1, old);
+            Assert.Empty(plan.Events);
+            Assert.Equal(0, plan.EventsDrawn);
+            Assert.Null(plan.Pending);
+        }
+
+        [Fact]
+        public void TheEventCount_IsAnOption()
+        {
+            var o = new SafetyOptions();
+            JointDriveCommand.ParseEvents("2", o);
+            Assert.Equal((2, 2), (o.MinEvents, o.MaxEvents));
+            JointDriveCommand.ParseEvents("1-3", o);
+            Assert.Equal((1, 3), (o.MinEvents, o.MaxEvents));
+            Assert.Throws<ArgumentException>(() => JointDriveCommand.ParseEvents("x", o));
+            Assert.Throws<ArgumentException>(() => JointDriveCommand.ParseEvents("1-2-3", o));
+            o.MinEvents = 3;
+            o.MaxEvents = 2;
+            Assert.Throws<ArgumentException>(() => o.Validate());
+            var two = new SafetyOptions { MinEvents = 2, MaxEvents = 2 };
+            Assert.Equal(2, Plan(DriveScript.StopBeforeCollision, Bench, 4, two).EventsDrawn);
+        }
+
+        [Fact]
+        public void RestWatch_WaitsUntilEveryObjectHasStayedPut()
+        {
+            WorldScene scene = BenchScene(out _);
+            var world = new WorldState(scene, new byte[32]);
+            var rest = new RestWatch(0.6);
+            void Put(double x)
+            {
+                foreach (SceneObject o in scene.Objects)
+                {
+                    world.Apply(new ObjectPose(o.Id, 0, o.Id == scene.Objects[0].Id ? (float)x : 0.2f, 0f, -0.15f, 1f, 0f, 0f, 0f), 1);
+                }
+            }
+
+            Assert.False(rest.Still(world, 0.0)); // nothing posed yet
+            Put(0.20);
+            Assert.False(rest.Still(world, 0.1));
+            Assert.False(rest.Still(world, 0.5));
+            Assert.True(rest.Still(world, 0.71));
+            Put(0.2005); // half a millimetre: still at rest
+            Assert.True(rest.Still(world, 0.8));
+            Put(0.23); // rolled 3 cm: the wait starts again
+            Assert.False(rest.Still(world, 0.9));
+            Assert.False(rest.Still(world, 1.4));
+            Assert.True(rest.Still(world, 1.51));
+        }
+    }
+
+    /// <summary>docs/adr/0036 amendment 5: after a knock, the next event is planned once the objects have settled, against them as they are.</summary>
+    public class SafetyTakeKnockTests
+    {
         [Fact]
         public void AfterAKnock_TheNextIsPlannedAgainstTheObjectsWhereTheyNowAre()
         {
@@ -338,73 +422,21 @@ namespace Teleop.Eval.Tests.JointDrive
         [Fact]
         public void AfterAKnock_WithNothingLeftToApproach_TheTakeEndsAfterATail()
         {
-            // Every other object out of reach after the knock (here, carried off the table): no approach, so the take ends with free
-            // movement soon after the point it went on from, one knock being a whole take.
-            var two = new SafetyOptions { MinEvents = 2, MaxEvents = 2 };
-            DrivePlan plan = Plan(DriveScript.CollideWithObstacle, Bench, 1, two);
+            // The only object that can be knocked over went off the table (it lies on the floor), and the other is too heavy to
+            // knock over: no approach, so the take ends with free movement soon after the point it went on from, one knock being a
+            // whole take. (Were the knocked object still in reach, the next knock could aim at it again: preferred last, not barred.)
+            var roles = new SafetyOptions { MinEvents = 2, MaxEvents = 2, KnockMaxKg = 0.2 };
+            SafetyObject light = new SafetyObject(2, Bench[1].Min, Bench[1].Max, true, 0.03, tippy: true);
+            SafetyObject heavy = new SafetyObject(3, Bench[2].Min, Bench[2].Max, true, 1.5);
+            DrivePlan plan = Plan(DriveScript.CollideWithObstacle, new[] { light, heavy }, 1, roles);
+            Assert.Equal(2, plan.Events[0].ObjectId);
             SafetyContinuation c = plan.Pending!;
-            SafetyObject[] now = Bench.Select(o => o.Id == c.Knocked ? KnockedOver(o, c.KnockWay)
-                : new SafetyObject(o.Id, o.Center + new Vector3(1.5f, 0f, -0.5f), o.Rotation, o.HalfExtents)).ToArray();
+            var floor = new SafetyObject(2, new Vector3(0.30f, -0.45f, -0.95f), Quaternion.Identity, light.HalfExtents, true, 0.03);
             double at = c.SwitchAfter(c.KnockEnd + 6.0);
-            DrivePlan next = c.Continue(now, at, out string outcome);
+            DrivePlan next = c.Continue(new[] { floor, heavy }, at, out string outcome);
             Assert.Single(next.Events);
             Assert.Null(next.Pending);
-            Assert.True(next.TotalSeconds > at && next.TotalSeconds <= at + two.TailMaxSeconds + 1.0, $"{outcome}: ends at {next.TotalSeconds:0.0} s, going on from {at:0.0} s");
-        }
-
-        [Fact]
-        public void TheOneEventPlanner_IsStillThere_ForWhatWasRecordedWithIt()
-        {
-            // TouchMissesTests replans the takes of 2026-11-16 from their records with it: one event, at the end.
-            var old = new SafetyOptions { OneEventAtTheEnd = true };
-            DrivePlan plan = Plan(DriveScript.CollideAndRecover, Bench, 1, old);
-            Assert.Empty(plan.Events);
-            Assert.Equal(0, plan.EventsDrawn);
-            Assert.Null(plan.Pending);
-        }
-
-        [Fact]
-        public void TheEventCount_IsAnOption()
-        {
-            var o = new SafetyOptions();
-            JointDriveCommand.ParseEvents("2", o);
-            Assert.Equal((2, 2), (o.MinEvents, o.MaxEvents));
-            JointDriveCommand.ParseEvents("1-3", o);
-            Assert.Equal((1, 3), (o.MinEvents, o.MaxEvents));
-            Assert.Throws<ArgumentException>(() => JointDriveCommand.ParseEvents("x", o));
-            Assert.Throws<ArgumentException>(() => JointDriveCommand.ParseEvents("1-2-3", o));
-            o.MinEvents = 3;
-            o.MaxEvents = 2;
-            Assert.Throws<ArgumentException>(() => o.Validate());
-            var two = new SafetyOptions { MinEvents = 2, MaxEvents = 2 };
-            Assert.Equal(2, Plan(DriveScript.StopBeforeCollision, Bench, 4, two).EventsDrawn);
-        }
-
-        [Fact]
-        public void RestWatch_WaitsUntilEveryObjectHasStayedPut()
-        {
-            WorldScene scene = BenchScene(out _);
-            var world = new WorldState(scene, new byte[32]);
-            var rest = new RestWatch(0.6);
-            void Put(double x)
-            {
-                foreach (SceneObject o in scene.Objects)
-                {
-                    world.Apply(new ObjectPose(o.Id, 0, o.Id == scene.Objects[0].Id ? (float)x : 0.2f, 0f, -0.15f, 1f, 0f, 0f, 0f), 1);
-                }
-            }
-
-            Assert.False(rest.Still(world, 0.0)); // nothing posed yet
-            Put(0.20);
-            Assert.False(rest.Still(world, 0.1));
-            Assert.False(rest.Still(world, 0.5));
-            Assert.True(rest.Still(world, 0.71));
-            Put(0.2005); // half a millimetre: still at rest
-            Assert.True(rest.Still(world, 0.8));
-            Put(0.23); // rolled 3 cm: the wait starts again
-            Assert.False(rest.Still(world, 0.9));
-            Assert.False(rest.Still(world, 1.4));
-            Assert.True(rest.Still(world, 1.51));
+            Assert.True(next.TotalSeconds > at && next.TotalSeconds <= at + roles.TailMaxSeconds + 1.0, $"{outcome}: ends at {next.TotalSeconds:0.0} s, going on from {at:0.0} s");
         }
     }
 }

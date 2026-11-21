@@ -3873,12 +3873,13 @@ isaac-knock-probe takes="30" seed="1" since="":
     echo "[knock] rows: $out"
     REMOTE
 
-# The labmate's safety dataset from the JetRover twin, unattended (docs/adr/0036 amendment 1): `takes` rounds of the four categories (reach_no_obstacle, stop_before_collision, collide_and_recover, collide_with_obstacle) in a seeded order, each take one `joint-drive --script <category> --new-layout --take <category>` (a fresh layout, the arm driven relative to where the objects are), checked against its category by its physics contacts (teleop_lerobot safety-check: a take that fails is set aside to _discarded/<category>/ with its reason), then the kept takes written as one dataset in his label format at ~/data/lerobot/jetrover-isaac-safety/jetrover_<UTC>_<id>/ (front = the wrist camera; manual_safety_labels.json, meta/safety_labels.parquet, safety_events.jsonl). Needs `just isaac-jetrover-host jetrover-bench` running this commit (its bridge reports the contacts) and the LeRobot environment (just lerobot-setup). Stops after 5 takes in a row that could not be planned, or when recordings/.drive/STOP exists (after the take in progress); waits between takes while recordings/.drive/PAUSE exists. Writes its progress to recordings/.drive/safety-batch.json for `just gpu-ui`, which shows it and makes those two files. Only Isaac's arm moves
+# The labmate's safety dataset from the JetRover twin, unattended (docs/adr/0036 amendment 1): `takes` rounds of the four categories (reach_no_obstacle, stop_before_collision, collide_and_recover, collide_with_obstacle) in a seeded order, each take one `joint-drive --script <category> --new-layout --take <category> --events <events>` (a fresh layout, the arm driven relative to where the objects are; each take of the three event categories draws `events` events, a count or a range, default 1-3, anywhere in it, docs/adr/0036 amendment 5), checked against its category by its physics contacts (teleop_lerobot safety-check: a take that fails is set aside to _discarded/<category>/ with its reason), then the kept takes written as one dataset in his label format at ~/data/lerobot/jetrover-isaac-safety/jetrover_<UTC>_<id>/ (front = the wrist camera; manual_safety_labels.json, meta/safety_labels.parquet, safety_events.jsonl). Needs `just isaac-jetrover-host jetrover-bench` running this commit (its bridge reports the contacts) and the LeRobot environment (just lerobot-setup). Stops after 5 takes in a row that could not be planned, or when recordings/.drive/STOP exists (after the take in progress); waits between takes while recordings/.drive/PAUSE exists. Writes its progress to recordings/.drive/safety-batch.json for `just gpu-ui`, which shows it and makes those two files. Only Isaac's arm moves
 [group('isaac')]
-isaac-safety-batch takes="25" seed="1" categories="all" build="true":
+isaac-safety-batch takes="25" seed="1" categories="all" build="true" events="1-3":
     #!/usr/bin/env bash
     set -euo pipefail
     case "{{takes}}{{seed}}" in *[!0-9]*|"") echo "error: takes and seed are numbers" >&2; exit 1 ;; esac
+    case "{{events}}" in [1-9]|[1-9]-[1-9]) ;; *) echo "error: events is a count or a range, like 2 or 1-3, not '{{events}}'" >&2; exit 1 ;; esac
     cats="{{categories}}"; [ "$cats" != all ] || cats=reach_no_obstacle,stop_before_collision,collide_and_recover,collide_with_obstacle
     for c in ${cats//,/ }; do
         case "$c" in reach_no_obstacle|stop_before_collision|collide_and_recover|collide_with_obstacle) ;; *) echo "error: categories is all, or a comma list of the four, not '$c'" >&2; exit 1 ;; esac
@@ -3952,7 +3953,7 @@ isaac-safety-batch takes="25" seed="1" categories="all" build="true":
         echo "=== [safety] take $n: $cat (seed $sseed, speed slider $speed rad/s)"
         code=0
         (cd core && dotnet run --no-build --project Teleop.Eval -- joint-drive --script "$cat" --speed "$speed" --seconds 15 --seed "$sseed" \
-            --scene Scenes/jetrover-bench.json --new-layout --take "$cat" --remote-host "$host" --confirm-hardware-motion \
+            --scene Scenes/jetrover-bench.json --new-layout --take "$cat" --events "{{events}}" --remote-host "$host" --confirm-hardware-motion \
             --simulated-robot --stall-seconds 3 < /dev/null) || code=$?
         case "$code" in
             0|2|3|4) consecutive=0 ;;  # a take was recorded (2, 3: a watchdog stopped it; 4: not stopped cleanly): check it
@@ -3988,7 +3989,9 @@ isaac-safety-batch takes="25" seed="1" categories="all" build="true":
         sys.exit(1)
     v = json.loads(lines[-1])
     state = "kept" if v["ok"] else "set aside"
-    print("[safety] %s: %s: %s (%d of %d frames unsafe)" % (v["category"], state, v["reason"], v["unsafeFrames"], v["frames"]))
+    ev = v.get("events") or []
+    hits = "; events %d of %s planned, %d with a contact in its window" % (len(ev), v.get("eventsDrawn"), sum(1 for e in ev if e.get("contact") is not None)) if ev else ""
+    print("[safety] %s: %s: %s (%d of %d frames unsafe%s)" % (v["category"], state, v["reason"], v["unsafeFrames"], v["frames"], hits))
     sys.exit(0 if v["ok"] else 1)
     PY
         then

@@ -809,7 +809,7 @@ namespace Teleop.Eval.JointDrive
                 int k0 = (int)Math.Floor(finalStart / HandModel.TickSeconds);
                 int kEvent = (int)Math.Ceiling(eventEnd / HandModel.TickSeconds);
                 bool clearOfOthers = true;
-                float closest = float.MaxValue;
+                float closest = float.MaxValue, closestInEvent = float.MaxValue;
                 int touching = 0, last = -1, first = -1, nearest = -1;
                 for (int k = k0; k < hand.Poses.Count; k++)
                 {
@@ -822,9 +822,10 @@ namespace Teleop.Eval.JointDrive
                     if (clearOfOthers && (kind != HandEvent.Through || touching == 0 || past) && !ArmCollision.IsValid(arm, othersClear, p)) clearOfOthers = false;
                     if (past) continue;
                     float g = touchShape != null ? touchShape.SignedGap(p, hand.Commands[k].Gripper) : ladder.SignedGap(p); // the pads where the gripper holds them
-                    if (g < closest)
+                    closest = MathF.Min(closest, g);
+                    if (k * HandModel.TickSeconds <= eventEnd && g < closestInEvent)
                     {
-                        closest = g;
+                        closestInEvent = g; // where a stop is: its closest approach before it backs off
                         nearest = k;
                     }
 

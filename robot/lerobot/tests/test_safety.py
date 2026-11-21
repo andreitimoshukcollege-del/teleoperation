@@ -312,3 +312,33 @@ def test_the_planned_events_and_where_physics_put_them_come_from_the_take(scenar
     assert safety.planned_events(take(scenarios, "collide_and_recover", [], name="20261114T100100Z-take002")) == []  # an older take
     stop = take(scenarios, "stop_before_collision", [se(1500, 1, 1, "stop", 4, contact=float("nan"))], name="20261114T100200Z-take003")
     assert safety.planned_events(stop)[0]["contact"] is None
+
+
+def test_one_dataset_from_two_twins_takes(tmp_path):
+    # docs/adr/0037 amendment 7: two twins record into their own roots (jetrover-isaac, jetrover-isaac-twin1), and their kept
+    # takes, in the order they were recorded, become one dataset: an episode each, labelled as one batch's would be.
+    pytest.importorskip("pandas")
+    pytest.importorskip("pyarrow")
+    first, second = tmp_path / "jetrover-isaac", tmp_path / "jetrover-isaac-twin1"
+    first.mkdir(), second.mkdir()
+    a = take(str(first), "collide_and_recover", [wc(1500, "0:5:2:1.5"), wc(1620)], name="20261121T100000Z-take001")
+    b = take(str(second), "reach_no_obstacle", [], name="20261121T100030Z-take001")  # the same number: its own root's first
+    c = take(str(first), "stop_before_collision", [], name="20261121T100100Z-take002")
+
+    class Writer:
+        def __init__(self):
+            self.episodes = []
+
+        def append(self, root, repo, t):
+            self.episodes.append((repo, t.path))
+            return len(self.episodes) - 1
+
+    w = Writer()
+    out = str(tmp_path / "out" / "jetrover_20261121_100000_abcdef")
+    written = safety.build(w, out, [read_take(p) for p in (a, b, c)], log=lambda m: None)
+    assert [(ep, cat) for ep, cat, _ in written] == [(0, "collide_and_recover"), (1, "reach_no_obstacle"), (2, "stop_before_collision")]
+    assert [p for _, p in w.episodes] == [a, b, c]
+    assert {repo for repo, _ in w.episodes} == {"local/jetrover-isaac-safety_jetrover_20261121_100000_abcdef"}  # one dataset
+    ledger = [json.loads(x) for x in open(os.path.join(out, "meta", "teleop", "takes.jsonl"))]
+    assert [os.path.basename(os.path.dirname(os.path.dirname(e["take"]))) for e in ledger] == ["jetrover-isaac", "jetrover-isaac-twin1", "jetrover-isaac"]
+    assert json.loads(open(os.path.join(out, "manual_safety_labels.json")).read()).keys() == {"0"}

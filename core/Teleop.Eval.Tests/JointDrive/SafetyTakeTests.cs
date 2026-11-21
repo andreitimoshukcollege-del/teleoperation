@@ -387,16 +387,15 @@ namespace Teleop.Eval.Tests.JointDrive
         public void AfterAKnock_TheNextIsPlannedAgainstTheObjectsWhereTheyNowAre()
         {
             // A knock sends its object wherever physics takes it, so the next event is planned only once the objects have settled,
-            // from a point of the free movement that follows the knock (the runway), against the objects as they now are. Three
-            // posts that can be knocked over, spread round the arm: one knocked over on its side 8 cm along the swipe, and each
-            // other pushed 2 cm and turned 30 degrees by it.
-            SafetyObject[] posts = { Post(21, -50f), Post(22, 0f), Post(23, 50f) };
+            // from a point of the free movement that follows the knock (the runway), against the objects as they now are. On the
+            // bench: the knocked object went off the table, and on its way it shoved another 1.5 cm and turned it 25 degrees, so
+            // the plan made at the start for after the knock no longer holds and the next is planned against the shoved one's pose.
             var two = new SafetyOptions { MinEvents = 2, MaxEvents = 2 };
             int checkedTakes = 0;
             var outcomes = new List<string>();
-            for (ulong seed = 1; seed <= 4 && checkedTakes < 2; seed++)
+            for (ulong seed = 1; seed <= 6 && checkedTakes < 2; seed++)
             {
-                DrivePlan plan = Plan(DriveScript.CollideWithObstacle, posts, seed, two);
+                DrivePlan plan = Plan(DriveScript.CollideWithObstacle, Bench, seed, two);
                 Assert.Single(plan.Events);
                 SafetyContinuation? c = plan.Pending;
                 Assert.NotNull(c);
@@ -406,46 +405,45 @@ namespace Teleop.Eval.Tests.JointDrive
                 // Until something takes over, the runway is free movement, away from the knocked object, and ends the take.
                 Assert.True(plan.TotalSeconds - plan.Events[0].Clear >= 8.0, $"the runway is {plan.TotalSeconds - plan.Events[0].Clear:0.0} s");
 
-                SafetyObject[] now = posts.Select(o => o.Id == c.Knocked ? KnockedOver(o, c.KnockWay)
-                    : new SafetyObject(o.Id, o.Center + new Vector3(0.0141f, 0.0141f, 0f), Quaternion.CreateFromAxisAngle(Vector3.UnitZ, MathF.PI / 6f), o.HalfExtents)).ToArray();
-                SafetyObject knocked = now.First(o => o.Id == c.Knocked);
-                Assert.False(c.Holds(now, out _)); // the others moved: what was planned at the start for after the knock no longer holds
-                double at = c.SwitchAfter(c.KnockEnd + 2.0 + 6.0);
-                Assert.False(double.IsNaN(at));
-                DrivePlan next = c.Continue(now, at, out string outcome);
-                DrivePlan again = c.Continue(now, at, out _);
-                Assert.Equal(next.Legs.Count, again.Legs.Count); // deterministic: the same world, the same plan
-                for (int i = 0; i < next.Legs.Count; i++) Assert.Equal(0f, next.Legs[i].To.MaxJointDelta(again.Legs[i].To));
-                for (double t = 0; t < at; t += Tick) Assert.Equal(0f, plan.Sample(t).MaxJointDelta(next.Sample(t))); // nothing jumps
-
-                outcomes.Add($"seed {seed}, knocked {c.Knocked}, going on at {at:0.0} s: {outcome}");
-                if (next.Events.Count < 2) continue;
-                checkedTakes++;
-                SafetyEvent second = next.Events[1];
-                Assert.True(second.ApproachStart >= at - 1e-9, outcome);
-                Assert.NotEqual(c.Knocked, second.ObjectId); // another post first
-                SafetyObject target = now.First(o => o.Id == second.ObjectId), before = posts.First(o => o.Id == second.ObjectId);
-                // The swipe goes through the target where it now is (deeper in its new box than its old one, which it left), and the
-                // arm keeps clear of the knocked one where it now lies.
-                var swipe = Enumerable.Range(0, (int)((second.End - second.FinalStart) / Tick) + 1).Select(i => next.Sample(second.FinalStart + i * Tick)).ToArray();
-                Assert.Contains(swipe, q => Within(q, new[] { target }, -0.008f));
-                for (double t = at; t < second.Contact; t += Tick)
+                foreach (SafetyObject shoved in Bench.Where(o => o.Id != c.Knocked))
                 {
-                    Assert.False(Within(next.Sample(t), new[] { knocked }, SafetyScript.ApproachClearanceMeters - 0.002f), $"near the knocked post at {t:0.00} s ({outcome})");
-                }
+                    SafetyObject[] now = Bench.Select(o => o.Id == c.Knocked ? new SafetyObject(o.Id, new Vector3(0.30f, -0.45f, -0.95f), Quaternion.Identity, o.HalfExtents)
+                        : o.Id == shoved.Id ? new SafetyObject(o.Id, o.Center + new Vector3(0.0106f, 0.0106f, 0f), Quaternion.CreateFromAxisAngle(Vector3.UnitZ, 25f * MathF.PI / 180f), o.HalfExtents)
+                        : o).ToArray();
+                    Assert.False(c.Holds(now, out string why));
+                    Assert.Contains($"object {shoved.Id} moved", why);
+                    double at = c.SwitchAfter(c.KnockEnd + 2.0 + 6.0);
+                    Assert.False(double.IsNaN(at));
+                    DrivePlan next = c.Continue(now, at, out string outcome);
+                    outcomes.Add($"seed {seed}, knocked {c.Knocked}, shoved {shoved.Id}, going on at {at:0.0} s: {outcome}");
+                    for (double t = 0; t < at; t += Tick) Assert.Equal(0f, plan.Sample(t).MaxJointDelta(next.Sample(t))); // nothing jumps
+                    if (next.Events.Count < 2) continue;
 
-                Assert.Null(next.Pending); // the last of the two
-                Assert.True(next.TotalSeconds >= second.Clear + two.TailMinSeconds - Tick);
+                    DrivePlan again = c.Continue(now, at, out _);
+                    Assert.Equal(next.Legs.Count, again.Legs.Count); // deterministic: the same world, the same plan
+                    for (int i = 0; i < next.Legs.Count; i++) Assert.Equal(0f, next.Legs[i].To.MaxJointDelta(again.Legs[i].To));
+                    SafetyEvent second = next.Events[1];
+                    Assert.True(second.ApproachStart >= at - 1e-9, outcome);
+                    Assert.NotEqual(c.Knocked, second.ObjectId);
+                    SafetyObject target = now.First(o => o.Id == second.ObjectId);
+                    SafetyObject[] others = now.Where(o => o.Id != second.ObjectId).ToArray();
+                    // The swipe goes through the target where it now is, and until it meets it the arm keeps the approach clearance
+                    // from every other object where it now is, the shoved one included.
+                    Assert.Contains(Enumerable.Range(0, (int)((second.End - second.FinalStart) / Tick) + 1),
+                        i => Within(next.Sample(second.FinalStart + i * Tick), new[] { target }, -0.008f));
+                    for (double t = at; t < second.Contact; t += Tick)
+                    {
+                        Assert.False(Within(next.Sample(t), others, SafetyScript.ApproachClearanceMeters - 0.002f), $"near another object at {t:0.00} s ({outcome})");
+                    }
+
+                    Assert.Null(next.Pending); // the last of the two
+                    Assert.True(next.TotalSeconds >= second.Clear + two.TailMinSeconds - Tick);
+                    checkedTakes++;
+                    break;
+                }
             }
 
             Assert.True(checkedTakes >= 1, string.Join(" | ", outcomes));
-        }
-
-        /// <summary>A post 2.5 x 2.5 x 9 cm standing on the table 23 cm out at <paramref name="bearingDeg"/>: light enough to knock over, tall enough to touch.</summary>
-        private static SafetyObject Post(byte id, float bearingDeg)
-        {
-            float b = bearingDeg * MathF.PI / 180f;
-            return Box(id, new Vector3(0.23f * MathF.Cos(b), 0.23f * MathF.Sin(b), -0.1512f), new Vector3(0.025f, 0.025f, 0.09f));
         }
 
         [Fact]

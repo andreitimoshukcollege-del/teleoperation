@@ -4383,13 +4383,18 @@ isaac-jetrover-host scene="jetrover-bench" scene_seed="auto" twin="0" detach="fa
             --scene "../../core/Scenes/$SCENE.json" --tap "$tap" --record-control "$rec/.active" "${feeds[@]}") > "$rlog" 2>&1 &
         renderer=$!
         echo "[isaac-jetrover] renderer pid $renderer (log $rlog); waiting for its feeds"
-        for i in $(seq 1 180); do
+        # Up to 7 min: beside a running twin, the second renderer took 3 min 15 s to stream (2026-11-21, docs/adr/0037 amendment 7).
+        for i in $(seq 1 420); do
             grep -q "^\[render\] streaming" "$rlog" 2>/dev/null && break
             kill -0 $renderer 2>/dev/null || break
             sleep 1
         done
         if grep -q "^\[render\] streaming" "$rlog" 2>/dev/null; then grep "^\[render\]" "$rlog"; writer=(--auto-record-writer isaac:60)
-        else echo "warning: the renderer did not start, so there are no camera feeds or frames recorded (the robot runs without them):" >&2; tail -20 "$rlog" >&2; renderer=""; fi
+        else
+            echo "warning: the renderer did not start, so there are no camera feeds or frames recorded (the robot runs without them):" >&2; tail -20 "$rlog" >&2
+            # One that is still starting would stream later with RobotHost not waiting for its frames: stopped, not left behind.
+            kill $renderer 2>/dev/null || true; renderer=""
+        fi
     fi
     park=""; [ -n "{{jetrover_park_contact_deg}}" ] && park="--park-contact-deg {{jetrover_park_contact_deg}}"
     # As teleop-robothost.service runs it on the Jetson (just deploy-robothost), the relay socket aside; the bridge writes driver.jlog

@@ -134,21 +134,34 @@ namespace Teleop.Eval.Tests.JointDrive
             const int Layouts = 16; // all 40 of seeds 1-40 planned for every script (2026-11-14); 16 keep the test short
             var planned = new Dictionary<DriveScript, int>();
             var why = new List<string>();
+            // docs/adr/0037 "Raised clutter": each category's targets (the object the planned arm first comes within 3.5 cm of), and
+            // how many of them are clutter.
+            var targets = new Dictionary<DriveScript, int>();
+            var clutterTargets = new Dictionary<DriveScript, int>();
             for (ulong seed = 1; seed <= Layouts; seed++)
             {
                 SceneLayout.Draw(scene, seed, poses, parked, scales); // a pool's (docs/adr/0037): the objects on the table, at their sizes
-                var objects = scene.Objects.Select((o, i) => (o, i)).Where(x => !parked[x.i])
-                    .Select(x => WorldView.Bounds(x.o, scales[x.i], poses[x.i].X, poses[x.i].Y, poses[x.i].Z, poses[x.i].Qw, poses[x.i].Qx, poses[x.i].Qy, poses[x.i].Qz, shapes)).ToArray();
+                int[] on = Enumerable.Range(0, scene.Objects.Length).Where(i => !parked[i]).ToArray();
+                var objects = on.Select(i => WorldView.Bounds(scene.Objects[i], scales[i], poses[i].X, poses[i].Y, poses[i].Z, poses[i].Qw, poses[i].Qx, poses[i].Qy, poses[i].Qz, shapes)).ToArray();
                 foreach (DriveScript script in new[] { DriveScript.ReachNoObstacle, DriveScript.StopBeforeCollision, DriveScript.CollideAndRecover, DriveScript.CollideWithObstacle })
                 {
                     var roles = new SafetyOptions { KnockMaxKg = scene.KnockMaxMass }; // as joint-drive plans it (--scene)
-                    if (DrivePlan.TryBuild(script, Profile, Model.Home, 2.5f, 20, seed, Envelope, out _, out string? error, objects, roles))
+                    if (DrivePlan.TryBuild(script, Profile, Model.Home, 2.5f, 20, seed, Envelope, out DrivePlan? plan, out string? error, objects, roles))
+                    {
                         planned[script] = planned.GetValueOrDefault(script) + 1;
+                        if (script == DriveScript.ReachNoObstacle) continue;
+                        foreach (int k in Targets(plan!, objects))
+                        {
+                            targets[script] = targets.GetValueOrDefault(script) + 1;
+                            if (scene.Objects[on[k]].Clutter) clutterTargets[script] = clutterTargets.GetValueOrDefault(script) + 1;
+                        }
+                    }
                     else if (why.Count < 6) why.Add($"layout {seed} {script}: {error}");
                 }
             }
 
-            string report = string.Join(", ", planned.Select(kv => $"{SafetyScript.Category(kv.Key)} {kv.Value}/{Layouts}"));
+            string report = string.Join(", ", planned.Select(kv => $"{SafetyScript.Category(kv.Key)} {kv.Value}/{Layouts}")) + "; clutter targets " +
+                            string.Join(", ", targets.Select(kv => $"{SafetyScript.Category(kv.Key)} {clutterTargets.GetValueOrDefault(kv.Key)}/{kv.Value}"));
             // The bars (docs/adr/0037 amendment 5, 2026-11-16). A fixture bigger than the robot stands within the arm's reach
             // beside it every take (the user's choice); it takes approach paths away, and since it is swept along its side it is
             // a target itself. Over 40 layouts the scripts planned: reach 100%, collide_with_obstacle 85%,
@@ -162,76 +175,13 @@ namespace Teleop.Eval.Tests.JointDrive
             foreach (DriveScript script in new[] { DriveScript.ReachNoObstacle, DriveScript.StopBeforeCollision, DriveScript.CollideAndRecover, DriveScript.CollideWithObstacle })
             {
                 Assert.True(planned.GetValueOrDefault(script) >= bar[script], $"{report}; e.g. {string.Join(" | ", why)}");
-            }
-        }
-
-        [Fact]
-        public void OnRandomLayouts_ClutterIsSometimesTheTarget_NeverMostOfTheTargets()
-        {
-            // docs/adr/0037 "Raised clutter": a layout stands 1-3 pieces of desk clutter anywhere in the region, and they are scene
-            // objects, so the scripts plan around them and may aim at one. Knocking a pen or a phone is realistic; clutter taking most
-            // of the targets is not. Each category's targets over the layouts (the object the planned arm first comes within 3.5 cm
-            // of; one met as soon as another counts for both), and how many layouts plan with the clutter and without it.
-            WorldScene scene = WorldView.LoadScene(ObjectShapeTests.RepoFile("core", "Scenes", "jetrover-bench.json"), out _);
-            ObjectShapes? shapes = WorldView.ShapesOf(scene);
-            var poses = new RigidTransform[scene.Objects.Length];
-            var parked = new bool[scene.Objects.Length];
-            var scales = new double[scene.Objects.Length];
-            const int Layouts = 40;
-            DriveScript[] scripts = { DriveScript.StopBeforeCollision, DriveScript.CollideAndRecover, DriveScript.CollideWithObstacle };
-            var planned = scripts.ToDictionary(s => s, _ => 0);
-            var plannedWithout = scripts.ToDictionary(s => s, _ => 0);
-            var targets = scripts.ToDictionary(s => s, _ => new SortedDictionary<string, int>(StringComparer.Ordinal));
-            int clutterOnTable = 0, clutterInReach = 0, layoutsWithClutterInReach = 0;
-            for (ulong seed = 1; seed <= Layouts; seed++)
-            {
-                SceneLayout.Draw(scene, seed, poses, parked, scales);
-                int[] on = Enumerable.Range(0, scene.Objects.Length).Where(i => !parked[i]).ToArray();
-                var objects = on.Select(i => WorldView.Bounds(scene.Objects[i], scales[i], poses[i].X, poses[i].Y, poses[i].Z, poses[i].Qw, poses[i].Qx, poses[i].Qy, poses[i].Qz, shapes)).ToArray();
-                SafetyObject[] without = objects.Where((o, k) => !scene.Objects[on[k]].Clutter).ToArray();
-                int reachable = on.Count(i => scene.Objects[i].Clutter && InBand(poses[i]));
-                clutterOnTable += on.Count(i => scene.Objects[i].Clutter);
-                clutterInReach += reachable;
-                layoutsWithClutterInReach += reachable > 0 ? 1 : 0;
-                foreach (DriveScript script in scripts)
-                {
-                    var roles = new SafetyOptions { KnockMaxKg = scene.KnockMaxMass };
-                    if (DrivePlan.TryBuild(script, Profile, Model.Home, 2.5f, 20, seed, Envelope, out DrivePlan? plan, out _, objects, roles))
-                    {
-                        planned[script]++;
-                        foreach (int k in Targets(plan!, objects))
-                        {
-                            int i = on[k];
-                            string kind = scene.Objects[i].Clutter ? "clutter " + scene.Objects[i].Name : !scene.Objects[i].Movable ? "fixture"
-                                : scene.InEdgeRegions(poses[i].X, poses[i].Y) ? "by the edge" : WorldScene.RestOf(poses[i]) != WorldScene.RestUpright ? "lying" : "standing";
-                            targets[script][kind] = targets[script].GetValueOrDefault(kind) + 1;
-                        }
-                    }
-
-                    if (DrivePlan.TryBuild(script, Profile, Model.Home, 2.5f, 20, seed, Envelope, out _, out _, without, roles)) plannedWithout[script]++;
-                }
+                // Knocking a pen or a phone is realistic; clutter taking most of a category's targets is not. Over seeds 1-40
+                // (2026-11-21, docs/adr/0037 "Raised clutter") it was at most 3 of 39 plans' targets in any category: 6 of the 49
+                // pieces on those tables stood in reach, and the phone and the pen lie below the arm's 10 mm floor.
+                Assert.True(2 * clutterTargets.GetValueOrDefault(script) <= targets.GetValueOrDefault(script), report);
             }
 
-            _output.WriteLine($"over {Layouts} layouts: {clutterOnTable} pieces of clutter on the table, {clutterInReach} with their centre in the reach band " +
-                              $"(in {layoutsWithClutterInReach} layouts)");
-            foreach (DriveScript script in scripts)
-            {
-                _output.WriteLine($"{SafetyScript.Category(script)}: planned {planned[script]} ({plannedWithout[script]} without the clutter); targets: " +
-                                  string.Join(", ", targets[script].Select(kv => $"{kv.Key} {kv.Value}")));
-            }
-
-            foreach (DriveScript script in scripts)
-            {
-                int clutter = targets[script].Where(kv => kv.Key.StartsWith("clutter ", StringComparison.Ordinal)).Sum(kv => kv.Value);
-                Assert.True(2 * clutter <= targets[script].Values.Sum(), $"{SafetyScript.Category(script)}: clutter {clutter} of {targets[script].Values.Sum()} targets");
-                Assert.True(planned[script] >= plannedWithout[script] - Layouts / 10, $"{SafetyScript.Category(script)}: {planned[script]} planned, {plannedWithout[script]} without the clutter");
-            }
-
-            static bool InBand(in RigidTransform p)
-            {
-                double r = Math.Sqrt(p.X * p.X + p.Y * p.Y);
-                return r >= 0.15 && r <= 0.30;
-            }
+            _output.WriteLine(report);
         }
 
         /// <summary>

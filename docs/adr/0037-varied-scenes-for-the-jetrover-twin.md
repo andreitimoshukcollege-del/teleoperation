@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted, 2026-11-15 (the user, on starting P1). P1 built 2026-11-15; P2 built 2026-11-15 (amendments 1 and 2); P3 built 2026-11-15 (amendment 3); P4 built 2026-11-15 (amendment 4). Real fixtures and materials 2026-11-16 (amendment 5). Tables that look used 2026-11-17 (amendment 6).
+Accepted, 2026-11-15 (the user, on starting P1). P1 built 2026-11-15; P2 built 2026-11-15 (amendments 1 and 2); P3 built 2026-11-15 (amendment 3); P4 built 2026-11-15 (amendment 4). Real fixtures and materials 2026-11-16 (amendment 5). Tables that look used 2026-11-17 (amendment 6). Surfaces and flat clutter 2026-11-17, raised clutter 2026-11-21 (their own sections).
 
 ## Context
 
@@ -775,3 +775,158 @@ lying, 34 degrees. An object lying on a round side rolls when pushed, and the ta
   - The boxes, parcels and jerrycans measure 0.90-0.98.
 - **Effect:** lying on a side, a round object is `Tippy`, so it is no steady target for collide_and_recover. It stays an
   obstacle and a knock target. Standing objects are unchanged.
+
+## Raised clutter (2026-11-21)
+
+The section above left out the clutter that stands up from the table: tape, scissors, pliers, screwdrivers, a phone and a pen.
+The arm can hit those, so they are scene objects with bodies, and every process that knows the scene knows them.
+
+- **Where the line is.** The JetRover collision model's floor is the table top (`floorZ` −0.1962) and its margin 10 mm:
+  `ArmCollision` refuses any pose with a body lower than that, so RobotHost's refusal check and every planned pose keep the
+  arm 10 mm above the table. Anything 6 mm or thinner is the renderer's flat clutter; anything taller is an object.
+  - The phone is 7.9 mm, as real phones are, and the pen 9 mm: no planned pose can reach either.
+  - The arm can still meet them when it strays from its plan, or by pushing another object into them. As bodies, they are
+    then in the contact labels.
+
+- **The pool holds 32 objects.** `WorldScene.MaxObjects` and `scene.py`'s `MAX_OBJECTS` go from 24 to 32. Checked: nothing
+  else assumed 24.
+  - These size from the constant: RobotHost's `ArmServerClient` (the snapshot being assembled, the snapshot, the sizes),
+    `WorldHost` (the sizes taken from the backend), the headset's `JointPortSideChannels` (the sizes),
+    `WorldCodec.TryEncodeSizes`, joint-probe's world check and `SceneLayout`'s stack buffers.
+  - Everything else is sized from the scene, or keyed by object id (`WorldState`, 256 entries): `WorldHost`, `StaticWorld`,
+    Isaac's model and shelf, and the headset's baked twin.
+  - The frames split a snapshot into parts: 30 objects are four headset parts of up to 8 (0x86) and two Isaac parts of up to 16.
+  - The sizes fit every datagram: 167 bytes of the joint port's 256, and 173 of the arm-server wire's 512.
+  - The headset's world queue holds 512 parts, 2.5 s of frames at four parts a snapshot.
+  - The shared vectors' count case moves from 25 to 33, and a pool of 32 is accepted.
+
+- **The objects** (ids 60-65), all `"kind": "movable"`, `"clutter": true`, `"operatorMovable": false`:
+
+  | Id | Name | Shape | Size (m), lying flat as the file has it | Mass | Licence |
+  |---|---|---|---|---|---|
+  | 60 | `tape-roll` | `polyhaven/medical_tape` (Miroslav Turura) | 0.0453 × 0.04517 × 0.02504 | 30 g, estimated | CC0 |
+  | 61 | `scissors` | `ycb/037_scissors` | 0.09107 × 0.19724 × 0.01719 | 82 g, YCB's | CC BY 4.0 (YCB); NVIDIA's conversion |
+  | 62 | `pliers` | `polyhaven/tongue_groove_pliers` (BKS) | 0.06251 × 0.24442 × 0.01387 | 250 g, estimated | CC0 |
+  | 63 | `screwdrivers` | `polyhaven/screwdrivers_02` (BKS): two screwdrivers, one body | 0.10046 × 0.26993 × 0.02708 | 120 g, estimated | CC0 |
+  | 64 | `phone` | a box, `glossy-black` | 0.0715 × 0.1468 × 0.0079 | 170 g | the look's texture, CC0 |
+  | 65 | `pen` | a box, `pen-blue`, `pen-black` or `pen-red` | 0.140 × 0.009 × 0.009 | 12 g | the looks' texture, CC0 |
+
+  - Each scan's size is its manifest's standing box. Every manifest stands it with no turn (`up` z), lying flat.
+  - The two models fetched for this, measured from their USD, are within 0.01 mm of the dimensions quoted for them from Poly
+    Haven's API.
+  - Friction comes by material, as for the YCB objects: metal 0.35/0.3 (the scissors, the pliers), plastic 0.4/0.35 (the
+    screwdrivers' handles, the phone, the pen), and 0.5/0.4 for the tape.
+  - Nothing without a real surface (amendment 5). The phone and the pen are simple shapes, so they wear looks by name
+    (`materials.objects`, `LK`):
+    - the phone near-black and glossy (roughness 0.08);
+    - the pen one of three plastic colours, drawn per take.
+
+    All four looks are the bench's `smooth_concrete_floor`, desaturated and tinted.
+
+- **The pool and the scene file.**
+  - A scene object may be `clutter` (movable, or the reader refuses it: `kind`). A pool's `clutterMin`/`clutterMax` say how many
+    a layout stands (`jetrover-bench`: 1-3).
+  - Clutter is not one of the pool's movable objects: `movableMax` counts the others, and clutter never lies on a side
+    (`CanLie`), never stands by the edge, and is held to no reach band (`InReach`).
+  - Both readers refuse the same cases with the same keyword: clutter that is fixed (`kind`); a clutter range that is
+    negative, inverted or larger than the clutter there is (`pool`); clutter in a scene that is not a pool (`pool`). Eleven
+    new shared vectors pin these.
+
+- **The clutter pass** (`SceneClutter`, Core).
+  - It comes after every other object of the layout (fixtures, the movable objects in reach, the one by the edge). It draws
+    from a generator of its own, `SeededRng(seed ^ "clutter!")`.
+  - The draw: how many (uniform in the range), which (a partial shuffle), and each one's spot, anywhere in the placement
+    region where it fits, clear of the robot's keep-out and of everything standing; 64 tries, or it stays parked.
+  - A pool without clutter therefore draws exactly what it drew before. With clutter, every other object stands exactly where
+    it would without it: a test compares 500 layouts of the bench with those of the bench without its clutter, object by
+    object.
+
+- **Clutter is its own rectangle.** Every other object is the circle that holds its footprint at any yaw. The first
+  measurement used circles for clutter too: over 2000 layouts a layout stood 0.60 of its 1-3 pieces, and the screwdrivers in
+  none.
+  - Their circle is 29 cm across. In the 32 cm deep region, clear of the robot, it fits only at the region's very middle,
+    where the objects in reach stand.
+  - So a piece of clutter is the rectangle of its sides turned by its yaw, in every rule that knows the yaw:
+    - `WorldScene.FitsOnTable` and `Overlaps` have overloads with yaws (in robot/isaac, `Scene.fits_on_table` and
+      `overlaps` take yaw arguments);
+    - against another object's circle, the circle comes no closer to the rectangle than the clearance;
+    - two pieces of clutter lie the clearance apart along one of their four sides' directions (conservative at a corner);
+    - the keep-out is a rectangle test too.
+  - Without a yaw (the check of a file's nominal poses), every object is still its circle.
+  - The pass draws a piece's yaw first, then its spot where the rectangle fits (`DrawClutterSpot`).
+  - The rules with yaws are used by everything that places an object: the layout, RobotHost's redraws, `StaticWorld`, and
+    Isaac's `WorldModel` (rules 5 and 6). An object that is not clutter is taken exactly as before.
+  - The rests golden gains rows that pin the two readers' rectangles to each other (`clutterFits`, `clutterOverlaps`).
+  - Over the same 2000 layouts:
+
+    | | Circles | Rectangles |
+    |---|---|---|
+    | clutter on the table, a layout | 0.60 | 1.21 |
+    | layouts with 0 / 1 / 2 / 3 pieces | 941 / 919 / 138 / 2 | 313 / 1045 / 560 / 82 |
+    | centres in the reach band (0.15-0.30 m) | 0.127 | 0.126 |
+    | tape, scissors, pliers, screwdrivers, phone, pen: on the table in a share of layouts | 0.332, 0.006, 0.003, 0.000, 0.082, 0.179 | 0.332, 0.105, 0.158, 0.056, 0.226, 0.329 |
+
+  - Most clutter stands past the reach band, in the cameras' foreground, because it goes down last. The 2-5 movable objects
+    in reach and the fixture beside the robot already fill the band. A piece that finds no spot is parked, as any object is.
+
+- **Shapes.** `shape_survey.py`, run over all 24 mesh assets of the scene, gave the four new scans eight slabs each, with an
+  excess of 0.1 mm (tape), 1.3 (scissors), 0.3 (pliers) and 3.0 (screwdrivers). The twenty assets already in the file came out
+  byte for byte the same.
+  - A touch meets an object at least 10 mm below its top (`ObjectShape.TouchTop`), and the arm stays 10 mm above the table.
+    That leaves at most 5 mm of the tape and 7 mm of the screwdrivers to touch, and nothing of the others.
+  - The shapes test asks clutter to be in the file, but not to be touchable 6 mm deep.
+
+- **Planning** (`SafetyScriptTests`, seeds 1-40, the scene's roles and shapes, measured at ed41fba). Those 40 layouts held 49
+  pieces of clutter, 6 of them with their centre in the reach band (in 6 layouts).
+
+  | Category | Layouts planned (without the clutter) | The target: clutter / fixture / lying / standing / by the edge |
+  |---|---|---|
+  | `stop_before_collision` | 39 (40) | 3 (the pen, the screwdrivers, the tape) / 14 / 8 / 14 / 0 |
+  | `collide_and_recover` | 40 (40) | 1 (the pen) / 15 / 10 / 14 / 0 |
+  | `collide_with_obstacle` | 39 (39) | 3 (the pen, the screwdrivers, the tape) / 3 / 8 / 25 / 0 |
+
+  - The target is amendment 6's: the object the planned arm first comes within 3.5 cm of. For clutter that is an upper bound.
+    The pen cannot be touched at all, so its "touch" is the arm passing within 3.5 cm of it on the way to another object.
+  - Clutter is the target of at most 3 of 39 plans in any category, and blocks one plan in 120 (a stop).
+  - **Desirable, within what this arm can do.** Clutter is mostly scenery and an obstacle, and now and then a target; it never
+    takes most of the targets.
+    - The arm cannot be planned into the phone or the pen, which lie below its 10 mm floor, and into the scissors or the pliers
+      at most for a stop. A knock goes 12 mm into a box, or as deep as it allows (8.1 mm into the scissors, 6.4 into the
+      pliers), more than the 7.2 and 3.9 mm they rise above the floor; a touch meets an object at least 10 mm below its top.
+    - The tape and the screwdrivers can be stopped at, touched and knocked.
+    - Knocking a pen or a phone would be realistic, but it needs the arm's floor below 8 mm: a change to the collision model
+      and RobotHost's refusal check, not to the scene.
+  - `reach_no_obstacle` keeps 5 cm from every object's box, the clutter's too. The random-layout test (16 layouts) holds all
+    four categories at their bars with clutter on the table. It now also fails if clutter takes more than half of a category's
+    targets.
+
+- **Tests.**
+  - The shared vectors: eleven clutter cases, and the count case at 33 against 32.
+  - Both readers' clutter in the rests golden: the range, which objects, and the rectangles.
+  - The bench's clutter: six flat pieces that never lie, held to no reach band.
+  - Rectangles where circles would not fit: the screwdrivers by the far edge along y, not across; a pen by the robot's
+    keep-out; a can beside a pen; two pens side by side. Objects that are not clutter are unchanged, with a yaw or without.
+  - Every other object exactly where it stood before clutter, over 500 layouts.
+  - Clutter's shares over 2000 layouts, and every piece taking part.
+  - The pool's layouts with clutter: in range, flat, in the region, apart by the rules with yaws.
+  - RobotHost redrawing a refused piece as clutter, then parking it.
+  - Isaac's model placing clutter out of reach, refusing it off the region or on the robot, the screwdrivers along the edge
+    but not across, and a pen 1.05 cm from them but not 0.95 cm.
+  - The phone's and the pen's looks.
+  - The random-layout bars, and clutter's share of each category's targets (below half).
+
+**Consequences.**
+- The scene's sha256 changes, so the headset needs the new copy and a twin with six more objects.
+  - Re-bake it: `just unity-world-jetrover-xr`, then `just unity-check-xr`.
+  - Rebuild the sim app: `just build-galaxy-sim`.
+  - The headset draws a scan as its box, in the entry's colour.
+- Isaac needs the merged commit: `just isaac-stop; just isaac-jetrover-host jetrover-bench`. The assets are on the GPU machine:
+  the tape and YCB's scissors were already there, and the pliers and the screwdrivers were fetched on 2026-11-21 with
+  `teleop_isaac.models fetch` (`just isaac-models-fetch` fetches any that are missing).
+- **On the twin (not yet run).** What the next batch should show:
+  - every clutter placement applied (`WP`), none refused as `outside-region` or `overlaps-object`: the bridge's rectangles
+    are RobotHost's;
+  - clutter at rest within joint-drive's 20 s, flat: the screwdrivers and the pen must not roll, nor the tape roll stand up;
+  - its masks (`100 + id`, 160-165), the phone black and glossy and the pen coloured (`LK`);
+  - no `reach_no_obstacle` or `stop_before_collision` take set aside for touching clutter, and the knock and touch targets
+    in about the shares above.

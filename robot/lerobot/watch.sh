@@ -25,9 +25,10 @@ pidfile=$logs/watch.pid
 log=$logs/watch.log
 lock=$logs/.watch.lock
 tag="# teleop-lerobot-keeper (docs/adr/0036; just lerobot-watch-stop removes it)"
-# The take roots: the FR3 Duo's and the JetRover's Isaac takes, and the real robot's (copied in by ADR 0036
-# decision 7). A root that does not exist yet is skipped each pass.
-roots=(--root "$HOME/data/takes/fr3_duo-isaac" --root "$HOME/data/takes/jetrover-isaac" --root "$HOME/data/takes/jetrover-real")
+# The take roots: the FR3 Duo's and the JetRover's Isaac takes (its second twin's too, docs/adr/0037 amendment 7), and the
+# real robot's (copied in by ADR 0036 decision 7). A root that does not exist yet is skipped each pass.
+roots=(--root "$HOME/data/takes/fr3_duo-isaac" --root "$HOME/data/takes/jetrover-isaac" --root "$HOME/data/takes/jetrover-isaac-twin1"
+       --root "$HOME/data/takes/jetrover-real")
 # The real robot's complete takes are copied into its root (pull.py), with the key and address that
 # just lerobot-robot-key sets up; until then the watcher says once that it has no key.
 robot=(--pull-robot "$HOME/data/takes/jetrover-real" --robot-hosts-file "$out/robot-hosts" --robot-key "$HOME/.ssh/id_ed25519_jetrover")

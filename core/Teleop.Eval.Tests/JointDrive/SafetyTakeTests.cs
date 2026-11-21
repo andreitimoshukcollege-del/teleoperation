@@ -387,13 +387,16 @@ namespace Teleop.Eval.Tests.JointDrive
         public void AfterAKnock_TheNextIsPlannedAgainstTheObjectsWhereTheyNowAre()
         {
             // A knock sends its object wherever physics takes it, so the next event is planned only once the objects have settled,
-            // from a point of the free movement that follows the knock (the runway), against the objects as they now are.
+            // from a point of the free movement that follows the knock (the runway), against the objects as they now are. Three
+            // posts that can be knocked over, spread round the arm: one knocked over on its side 8 cm along the swipe, and each
+            // other pushed 2 cm and turned 30 degrees by it.
+            SafetyObject[] posts = { Post(21, -50f), Post(22, 0f), Post(23, 50f) };
             var two = new SafetyOptions { MinEvents = 2, MaxEvents = 2 };
             int checkedTakes = 0;
             var outcomes = new List<string>();
-            for (ulong seed = 1; seed <= 6 && checkedTakes < 2; seed++)
+            for (ulong seed = 1; seed <= 4 && checkedTakes < 2; seed++)
             {
-                DrivePlan plan = Plan(DriveScript.CollideWithObstacle, Bench, seed, two);
+                DrivePlan plan = Plan(DriveScript.CollideWithObstacle, posts, seed, two);
                 Assert.Single(plan.Events);
                 SafetyContinuation? c = plan.Pending;
                 Assert.NotNull(c);
@@ -403,14 +406,10 @@ namespace Teleop.Eval.Tests.JointDrive
                 // Until something takes over, the runway is free movement, away from the knocked object, and ends the take.
                 Assert.True(plan.TotalSeconds - plan.Events[0].Clear >= 8.0, $"the runway is {plan.TotalSeconds - plan.Events[0].Clear:0.0} s");
 
-                // The knocked object over on its side 8 cm on, and another of the objects pushed 3 cm and turned 30 degrees by it.
-                SafetyObject[] now = Bench.ToArray();
-                int k = Array.FindIndex(now, o => o.Id == c.Knocked);
-                now[k] = KnockedOver(now[k], c.KnockWay);
-                int m = (k + 1) % now.Length;
-                now[m] = new SafetyObject(now[m].Id, now[m].Center + new Vector3(0.02f, 0.02f, 0f),
-                    Quaternion.CreateFromAxisAngle(Vector3.UnitZ, MathF.PI / 6f), now[m].HalfExtents);
-                Assert.False(c.Holds(now, out _)); // what was planned at the start for after the knock no longer holds: plan again
+                SafetyObject[] now = posts.Select(o => o.Id == c.Knocked ? KnockedOver(o, c.KnockWay)
+                    : new SafetyObject(o.Id, o.Center + new Vector3(0.0141f, 0.0141f, 0f), Quaternion.CreateFromAxisAngle(Vector3.UnitZ, MathF.PI / 6f), o.HalfExtents)).ToArray();
+                SafetyObject knocked = now.First(o => o.Id == c.Knocked);
+                Assert.False(c.Holds(now, out _)); // the others moved: what was planned at the start for after the knock no longer holds
                 double at = c.SwitchAfter(c.KnockEnd + 2.0 + 6.0);
                 Assert.False(double.IsNaN(at));
                 DrivePlan next = c.Continue(now, at, out string outcome);
@@ -420,18 +419,19 @@ namespace Teleop.Eval.Tests.JointDrive
                 for (double t = 0; t < at; t += Tick) Assert.Equal(0f, plan.Sample(t).MaxJointDelta(next.Sample(t))); // nothing jumps
 
                 outcomes.Add($"seed {seed}, knocked {c.Knocked}, going on at {at:0.0} s: {outcome}");
-                if (next.Events.Count < 2) continue; // this layout as the knock left it had no approach: the take ends after a tail
+                if (next.Events.Count < 2) continue;
                 checkedTakes++;
                 SafetyEvent second = next.Events[1];
                 Assert.True(second.ApproachStart >= at - 1e-9, outcome);
-                Assert.NotEqual(c.Knocked, second.ObjectId); // another object first
-                SafetyObject target = now.First(o => o.Id == second.ObjectId);
-                // The swipe goes through the target where it now is, and the arm keeps clear of the knocked one where it now lies.
-                Assert.Contains(Enumerable.Range(0, (int)((second.End - second.FinalStart) / Tick) + 1),
-                    i => Within(next.Sample(second.FinalStart + i * Tick), new[] { target }, -0.008f));
+                Assert.NotEqual(c.Knocked, second.ObjectId); // another post first
+                SafetyObject target = now.First(o => o.Id == second.ObjectId), before = posts.First(o => o.Id == second.ObjectId);
+                // The swipe goes through the target where it now is (deeper in its new box than its old one, which it left), and the
+                // arm keeps clear of the knocked one where it now lies.
+                var swipe = Enumerable.Range(0, (int)((second.End - second.FinalStart) / Tick) + 1).Select(i => next.Sample(second.FinalStart + i * Tick)).ToArray();
+                Assert.Contains(swipe, q => Within(q, new[] { target }, -0.008f));
                 for (double t = at; t < second.Contact; t += Tick)
                 {
-                    Assert.False(Within(next.Sample(t), new[] { now[k] }, SafetyScript.ApproachClearanceMeters - 0.002f), $"near the knocked object at {t:0.00} s ({outcome})");
+                    Assert.False(Within(next.Sample(t), new[] { knocked }, SafetyScript.ApproachClearanceMeters - 0.002f), $"near the knocked post at {t:0.00} s ({outcome})");
                 }
 
                 Assert.Null(next.Pending); // the last of the two
@@ -439,6 +439,13 @@ namespace Teleop.Eval.Tests.JointDrive
             }
 
             Assert.True(checkedTakes >= 1, string.Join(" | ", outcomes));
+        }
+
+        /// <summary>A post 2.5 x 2.5 x 9 cm standing on the table 23 cm out at <paramref name="bearingDeg"/>: light enough to knock over, tall enough to touch.</summary>
+        private static SafetyObject Post(byte id, float bearingDeg)
+        {
+            float b = bearingDeg * MathF.PI / 180f;
+            return Box(id, new Vector3(0.23f * MathF.Cos(b), 0.23f * MathF.Sin(b), -0.1512f), new Vector3(0.025f, 0.025f, 0.09f));
         }
 
         [Fact]

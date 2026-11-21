@@ -68,6 +68,7 @@ namespace Teleop.Eval.JointDrive
         /// <summary>
         /// Whether a push tips it before it slides (docs/adr/0037 P4): taller than <see cref="TippyAspect"/> times its narrower
         /// side. Pushed at mid-height, an object tips first when its height exceeds its width over its friction (about 0.8).
+        /// Lying on a round side it rolls instead, which a touch's check counts the same (amendment 6; <see cref="WorldView.IsTippy"/>).
         /// </summary>
         public readonly bool Tippy;
 

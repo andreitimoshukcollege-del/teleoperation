@@ -56,6 +56,30 @@ namespace Teleop.Eval.Tests.JointDrive
         }
 
         [Fact]
+        public void ARoundObjectOnItsSide_Rolls_SoItIsNoSteadyTarget()
+        {
+            // The 2026-11-21 twin check: a collide_and_recover touch rolled the mug, lying, 34 degrees, and the take was set aside.
+            // Lying on a round side an object rolls when pushed. With the bench's shapes the tin, the soup can and the mug lying
+            // are tippy (no steady target for a touch); the foam brick and a parcel lying still slide, and standing nothing changes.
+            string? dir = AppContext.BaseDirectory;
+            while (dir != null && !System.IO.File.Exists(System.IO.Path.Combine(dir, "core", "Scenes", "jetrover-bench.json"))) dir = System.IO.Path.GetDirectoryName(dir);
+            ObjectShapes shapes = ObjectShapes.Load(ObjectShapes.PathFor(System.IO.Path.Combine(dir!, "core", "Scenes", "jetrover-bench.json")));
+            var options = new SafetyOptions { KnockMaxKg = 0.7 }; // the bench pool's knockMaxMass
+            foreach ((string name, int rest, bool tippy) in new[] { ("cleaner-tin", 1, true), ("tomato-soup-can", 2, true), ("mug", 4, true),
+                         ("foam-brick", 1, false), ("parcel-medium", 2, false), ("cleaner-tin", 0, true), ("tuna-fish-can", 0, false) })
+            {
+                int i = Index(name);
+                RigidTransform p = Bench.PoseAt(i, 0.25, 0.0, 0.6, 1.0, rest);
+                SafetyObject o = WorldView.Bounds(Bench.Objects[i], 1.0, p.X, p.Y, p.Z, p.Qw, p.Qx, p.Qy, p.Qz, shapes);
+                Assert.True(tippy == o.Tippy, $"{name} on rest {rest}");
+                Assert.True(tippy != options.Steady(o) || o.Mass > options.KnockMaxKg, $"{name} on rest {rest}: steady");
+            }
+
+            Assert.True(shapes.For(Bench.Objects[Index("mug")])!.Round);
+            Assert.False(shapes.For(Bench.Objects[Index("parcel-medium")])!.Round);
+        }
+
+        [Fact]
         public void AnObjectByTheBenchsBackEdge_CannotBeApproached()
         {
             // docs/adr/0037 amendment 6: the object by the edge is scenery for the cameras, out of the arm's reach on purpose, so

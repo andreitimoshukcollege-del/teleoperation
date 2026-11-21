@@ -6,8 +6,9 @@ shipped scene is pinned by ``golden/scene-fr3-duo-bench.json``, which Core write
 skips (``backdrops``, ``cameras``, ``lights``, docs/adr/0032); they are kept as given in :attr:`Scene.extra`.
 
 Layouts are RobotHost's to draw; this module has no copy of the draw. It has Core's rests (docs/adr/0037 amendment 6): the
-ways an object may rest on the table, and the footprint, height and pose of each, pinned by
-``golden/scene-rests-jetrover-bench.json``, which Core writes too.
+ways an object may rest on the table, and the footprint, height and pose of each; and raised clutter's footprint, the rectangle
+of its sides at its yaw (docs/adr/0037 "Raised clutter"), all pinned by ``golden/scene-rests-jetrover-bench.json``, which
+Core writes too.
 """
 
 from __future__ import annotations
@@ -194,7 +195,7 @@ class Scene:
     edge_regions: Tuple[float, ...] = ()
     edge_share: float = 0.0
     # docs/adr/0037 "Raised clutter": how many clutter objects a layout stands, (clutterMin, clutterMax); RobotHost draws them
-    # last, anywhere in the region. A clutter object is a movable one to every placement rule here.
+    # last, anywhere in the region. Given a yaw, the placement rules take a piece of clutter as its own rectangle.
     clutter: Tuple[int, int] = (0, 0)
 
     def clear_of_robot(self, x: float, y: float, r: float) -> bool:

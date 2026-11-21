@@ -1,4 +1,5 @@
-"""Real fixtures for the twin's table (docs/adr/0037 amendment 5): Poly Haven's CC0 3D models, as USD with their textures.
+"""Real fixtures and desk clutter for the twin's table (docs/adr/0037 amendment 5, and its section "Raised clutter"): Poly
+Haven's CC0 3D models, as USD with their textures.
 
 Run on the GPU machine with Isaac's Python (``just isaac-models-survey``, ``just isaac-models-fetch``, ``just isaac-models-status``):
 

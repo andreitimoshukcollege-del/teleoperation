@@ -187,7 +187,7 @@ namespace Teleop.Eval.JointDrive
             {
                 // A safety script's dry run plans around the scene's objects where the file puts them.
                 List<SafetyObject>? nominal = scene == null ? null : scene.Objects.Select(o => WorldView.Bounds(o, 1.0, o.Nominal.X, o.Nominal.Y,
-                    o.Nominal.Z, o.Nominal.Qw, o.Nominal.Qx, o.Nominal.Qy, o.Nominal.Qz)).ToList();
+                    o.Nominal.Z, o.Nominal.Qw, o.Nominal.Qx, o.Nominal.Qy, o.Nominal.Qz, WorldView.ShapesOf(scene))).ToList();
                 return DryRun(script.Value, profile, envelope, speed, seconds, seed, rateHz, logPath, sessionId ?? "joint-drive-dry-run", nominal, safetyOptions);
             }
 

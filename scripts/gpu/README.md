@@ -1,0 +1,22 @@
+# scripts/gpu: working against the GPU machine from a clone
+
+These are small tools the agents (and anyone else) use to check a branch, and to look at what the JetRover twin recorded, on the GPU
+machine (`andrei@10.188.58.133`; `GPU_HOST` overrides it, as it does for the justfile). Each one reads; none deletes anything.
+docs/agent-operations.md says when to use which.
+
+| Tool | What it does | How to run it |
+|---|---|---|
+| `gate.sh` | Pushes the clone's branch to a scratch repo there and runs gates in a scratch checkout: `core`, `test`, `test=FILTER`, `verify`, `audit`, `bridge`, `isaac`, `lerobot`, `gpu` | `scripts/gpu/gate.sh core bridge isaac lerobot` (from inside the clone, after committing) |
+| `take_report.py` | Per take: verdict, planned events, contact stretches (lead-in, peak force), layout (lying, edge, raised clutter), refused placements, looks, flat clutter; then the totals | `ssh andrei@10.188.58.133 'python3 - <since>' < scripts/gpu/take_report.py` |
+| `take_timing.py` | Per take: length, idle at the start, when contacts begin, and the planned contact times from `SE` | `ssh andrei@10.188.58.133 'python3 - <since>' < scripts/gpu/take_timing.py` |
+| `take_video.sh` | One take's cameras side by side as an mp4 | `ssh andrei@10.188.58.133 'bash -s <take_dir> /tmp/<name>.mp4' < scripts/gpu/take_video.sh` |
+| `contact_sheet.sh` | One frame of each of up to 16 takes, 4 by 4 | `ssh andrei@10.188.58.133 'bash -s /tmp/<name>.jpg third-right 0.15 <take_dir>...' < scripts/gpu/contact_sheet.sh` |
+
+Notes:
+- **Reading a batch.** `<since>` is a take-name prefix in UTC, such as `20261122T0003`. Every take named at or after it is
+  read, from both twins' takes folders (`~/data/takes/jetrover-isaac`, `~/data/takes/jetrover-isaac-twin1`). Pass other roots
+  after it.
+- **Getting a file back.** Fetch a video or sheet with `ssh andrei@10.188.58.133 'cat /tmp/<name>.mp4' > <local path>`, then
+  copy it to the user's Downloads (`/mnt/c/Users/andre/Downloads/`).
+- **Cost.** `gate.sh core` and `test` run the whole dotnet test suite there, about 10 minutes of the machine's CPU. The
+  machine is shared, so ask before a heavy gate when the user has said it is busy. The other gates and tools are light.

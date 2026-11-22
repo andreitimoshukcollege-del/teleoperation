@@ -10,8 +10,10 @@ what only physics can see: whether an arm is in the way.
 3. a pose that is not finite or not a unit quaternion: INVALID_POSE;
 4. from the headset, an object an arm is touching now: ARM_TOUCHING;
 5. off the table or the placement region (a pool's fixed object: its fixed regions; a movable one may also stand in the
-   pool's edge regions, docs/adr/0037 amendment 6): OUTSIDE_REGION;
-6. closer to another object than the clearance (footprints, as Core's ``WorldScene.Overlaps``): OVERLAPS_OBJECT;
+   pool's edge regions, docs/adr/0037 amendment 6, but clutter): OUTSIDE_REGION;
+6. closer to another object than the clearance (footprints, as Core's ``WorldScene.Overlaps``): OVERLAPS_OBJECT.
+   Raised clutter (docs/adr/0037 "Raised clutter": tape, tools, a phone, a pen, which RobotHost's layouts stand anywhere in
+   the region) is its own rectangle at its heading in rules 5 and 6; every other object is the circle that holds its footprint;
 7. an arm within the clearance of the object's shape at the new pose (a PhysX overlap query): OVERLAPS_ARM;
 8. otherwise the object is stood on the table at the pose's x, y and heading (``Scene.pose_at``): APPLIED. It rests on the
    rest nearest the pose's rotation (``scene.rest_of``, docs/adr/0037 amendment 6): upright unless the pose lies on a side,
@@ -149,12 +151,16 @@ class WorldModel:
 
     def _fits(self, i: int, x: float, y: float, yaw: float, scale: float, arm_near: ArmCheck,
               rest: int = REST_UPRIGHT) -> Tuple[int, int, Optional[Pose]]:
-        """Rules 5 to 8 for object ``i`` at (x, y, yaw) on rest ``rest`` and size ``scale``; every other object on its own rest."""
-        if not self.scene.fits_on_table(i, x, y, scale, rest):
+        """Rules 5 to 8 for object ``i`` at (x, y, yaw) on rest ``rest`` and size ``scale``; every other object on its own rest and
+        heading (a piece of clutter is its own rectangle, docs/adr/0037 "Raised clutter": ``Scene.fits_on_table`` and
+        ``Scene.overlaps`` with yaws, as RobotHost's ``StaticWorld``)."""
+        if not self.scene.fits_on_table(i, x, y, scale, rest, yaw):
             return wire.OUTSIDE_REGION, i, None
         for k, other in enumerate(self.poses):
-            if k != i and not self.parked[k] and self.scene.overlaps(i, x, y, k, other[0], other[1], scale, self.scales[k],
-                                                                       rest, rest_of(other)[0]):
+            if k == i or self.parked[k]:
+                continue
+            rest_k, yaw_k = rest_of(other)
+            if self.scene.overlaps(i, x, y, k, other[0], other[1], scale, self.scales[k], rest, rest_k, yaw, yaw_k):
                 return wire.OVERLAPS_OBJECT, i, None
         placed = tuple(self.scene.pose_at(i, x, y, yaw, scale, rest))
         if arm_near(i, placed, self.scene.clearance):
@@ -189,7 +195,7 @@ class WorldModel:
             first, arm_asks = None, 0
             for x, y in spots:
                 if any(k != i and not self.parked[k] and self.scene.overlaps(i, x, y, k, o[0], o[1], scale, self.scales[k],
-                                                                             REST_UPRIGHT, rest_of(o)[0])
+                                                                             REST_UPRIGHT, rest_of(o)[0], yaw_of(p), rest_of(o)[1])
                        for k, o in enumerate(self.poses)):
                     continue
                 outcome, _, upright = self._fits(i, x, y, yaw_of(p), scale, arm_near)

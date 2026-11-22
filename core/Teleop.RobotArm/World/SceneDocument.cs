@@ -84,6 +84,14 @@ namespace Teleop.RobotArm.World
 
         /// <summary>The seeded layout's ranges, ±: x and y (m), and yaw (rad).</summary>
         public double[] jitter = Array.Empty<double>();
+
+        /// <summary>
+        /// docs/adr/0037 "Raised clutter": desk clutter tall enough for the arm to hit (a roll of tape, tools, a phone, a pen), a
+        /// movable object a pool's clutter pass stands anywhere in the placement region (<see cref="ScenePoolDocument.clutterMin"/>
+        /// to <see cref="ScenePoolDocument.clutterMax"/> a layout), flat as the file has it. It is not one of the pool's movable
+        /// objects (<see cref="ScenePoolDocument.movableMax"/> counts the others).
+        /// </summary>
+        public bool clutter;
     }
 
     /// <summary>How many objects of each kind a pool's layout puts on the table, inclusive (docs/adr/0037 decision 3).</summary>
@@ -154,6 +162,14 @@ namespace Teleop.RobotArm.World
 
         /// <summary>docs/adr/0037 amendment 6: the chance, 0-1, that a layout also stands one more movable object in <see cref="edgeRegions"/>.</summary>
         public double edgeShare;
+
+        /// <summary>
+        /// docs/adr/0037 "Raised clutter": how many of the scene's clutter objects (<see cref="SceneObjectDocument.clutter"/>) a
+        /// layout stands on the table, inclusive, after every other object, anywhere in the placement region (no reach band).
+        /// Absent (0): none, and the layouts are exactly those drawn before clutter.
+        /// </summary>
+        public int clutterMin;
+        public int clutterMax;
     }
 
     /// <summary>Where objects may stand: every footprint lies inside this region and on the table, this far apart.</summary>

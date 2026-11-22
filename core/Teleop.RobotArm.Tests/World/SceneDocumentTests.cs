@@ -102,14 +102,27 @@ namespace Teleop.RobotArm.Tests.World
             // 12.1), real ones among them (decision 4); its fixed objects are real fixtures bigger than the robot (amendment 5:
             // at least 28 cm tall, scanned models), standing on the table's wings. Each layout puts a few of each on the table.
             Assert.True(s.MovableMin >= 1 && s.FixedMax >= 1);
-            // Every object is a real scan (amendment 5: nothing without a real surface); the movable ones up to ~12 cm, but the
-            // delivery parcels (up to 25 cm); the cleaner tin and the bowl are 12.7 and 12.9.
-            Assert.All(s.Objects, o => Assert.True(o.Shape == SceneShape.Mesh, o.Name));
-            Assert.All(s.Objects.Where(o => o.Movable), o => Assert.True(Math.Max(o.SizeX, Math.Max(o.SizeY, o.SizeZ)) <= (o.Name.StartsWith("parcel") ? 0.25 : 0.135), o.Name));
+            // Nothing without a real surface (amendment 5): every object is a real scan, but clutter that is a simple shape wears
+            // looks by name (the renderer's materials.objects: a phone, a pen). The movable ones up to ~12 cm, but the delivery
+            // parcels (up to 25 cm); the cleaner tin and the bowl are 12.7 and 12.9.
+            using (JsonDocument file = JsonDocument.Parse(File.ReadAllText(ScenePath(name))))
+            {
+                JsonElement worn = default;
+                bool looks = file.RootElement.TryGetProperty("materials", out JsonElement materials) && materials.TryGetProperty("objects", out worn);
+                Assert.All(s.Objects, o => Assert.True(o.Shape == SceneShape.Mesh || (o.Clutter && looks && worn.TryGetProperty(o.Name, out _)), o.Name));
+            }
+
+            Assert.All(s.Objects.Where(o => o.Movable && !o.Clutter), o => Assert.True(Math.Max(o.SizeX, Math.Max(o.SizeY, o.SizeZ)) <= (o.Name.StartsWith("parcel") ? 0.25 : 0.135), o.Name));
+            // Raised clutter (docs/adr/0037 "Raised clutter") lies flat as the file has it: taller than the renderer's flat clutter
+            // (6 mm), which the arm can never touch, and at most 3 cm; up to 28 cm long; something the headset leaves alone.
+            Assert.Contains(s.Objects, o => o.Clutter);
+            Assert.True(s.ClutterMin >= 1 && s.ClutterMax <= s.Objects.Count(o => o.Clutter));
+            Assert.All(s.Objects.Where(o => o.Clutter), o => Assert.True(o.Movable && !o.OperatorMovable && o.SizeZ > 0.006 && o.SizeZ <= 0.03 &&
+                                                                          Math.Max(o.SizeX, o.SizeY) <= 0.28, o.Name));
             Assert.All(s.Objects.Where(o => !o.Movable), o => Assert.True(o.SizeZ >= 0.28 && o.Shape == SceneShape.Mesh && s.InFixedRegions(Array.IndexOf(s.Objects, o)), o.Name));
             Assert.Contains(s.Objects, o => o.Shape == SceneShape.Mesh && o.Asset.StartsWith("ycb/"));
             Assert.All(s.Objects.Where(o => o.Shape == SceneShape.Mesh), o => Assert.False(s.Resizable(Array.IndexOf(s.Objects, o)), o.Name));
-
+            Assert.All(s.Objects.Where(o => o.Clutter), o => Assert.False(s.Resizable(Array.IndexOf(s.Objects, o)), o.Name));
         }
 
         [Fact]

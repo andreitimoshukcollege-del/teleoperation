@@ -393,7 +393,8 @@ namespace Teleop.RobotHost.World
 
         /// <summary>
         /// Another spot for object <paramref name="index"/>, clear of the others' targets: within its jitter, or for a pool anywhere
-        /// in the region (a movable one in the reach band, or by the edge if it was drawn there), on the rest it was drawn on.
+        /// in the region (a movable one in the reach band, or by the edge if it was drawn there; clutter anywhere, as its own
+        /// rectangle at its yaw, docs/adr/0037 "Raised clutter"), on the rest it was drawn on.
         /// </summary>
         private bool Redraw(int index, int tries)
         {
@@ -405,7 +406,12 @@ namespace Teleop.RobotHost.World
             for (int t = 0; t < (_scene.IsPool ? SceneLayout.MaxPoolTries : SceneLayout.MaxTries); t++)
             {
                 double x, y, yaw;
-                if (atEdge)
+                if (o.Clutter)
+                {
+                    // Raised clutter (docs/adr/0037 "Raised clutter"): anywhere in the region, its own rectangle at its yaw.
+                    if (!_scene.DrawClutterSpot(index, ref rng, out x, out y, out yaw)) continue;
+                }
+                else if (atEdge)
                 {
                     if (!_scene.DrawEdgeSpot(index, ScaleFor(index), rest, ref rng, out x, out y, out yaw)) continue;
                 }
@@ -420,12 +426,13 @@ namespace Teleop.RobotHost.World
                     yaw = o.NominalYaw + (2 * rng.NextDouble() - 1) * o.JitterYaw;
                 }
 
-                if (!_scene.FitsOnTable(index, x, y, ScaleFor(index), rest) || (_scene.IsPool && !atEdge && !_scene.InReach(index, x, y))) continue;
+                if (!_scene.FitsOnTable(index, x, y, yaw, ScaleFor(index), rest) || (_scene.IsPool && !atEdge && !_scene.InReach(index, x, y))) continue;
                 bool clear = true;
                 for (int k = 0; k < _targets.Length && clear; k++)
                 {
-                    if (k != index && !_parked[k] &&
-                        _scene.Overlaps(index, x, y, k, _targets[k].X, _targets[k].Y, ScaleFor(index), ScaleFor(k), rest, WorldScene.RestOf(_targets[k]))) clear = false;
+                    if (k == index || _parked[k]) continue;
+                    int restK = WorldScene.RestOf(_targets[k], out double yawK);
+                    if (_scene.Overlaps(index, x, y, yaw, k, _targets[k].X, _targets[k].Y, yawK, ScaleFor(index), ScaleFor(k), rest, restK)) clear = false;
                 }
 
                 if (!clear) continue;

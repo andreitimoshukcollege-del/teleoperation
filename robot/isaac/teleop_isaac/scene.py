@@ -6,8 +6,9 @@ shipped scene is pinned by ``golden/scene-fr3-duo-bench.json``, which Core write
 skips (``backdrops``, ``cameras``, ``lights``, docs/adr/0032); they are kept as given in :attr:`Scene.extra`.
 
 Layouts are RobotHost's to draw; this module has no copy of the draw. It has Core's rests (docs/adr/0037 amendment 6): the
-ways an object may rest on the table, and the footprint, height and pose of each, pinned by
-``golden/scene-rests-jetrover-bench.json``, which Core writes too.
+ways an object may rest on the table, and the footprint, height and pose of each; and raised clutter's footprint, the rectangle
+of its sides at its yaw (docs/adr/0037 "Raised clutter"), all pinned by ``golden/scene-rests-jetrover-bench.json``, which
+Core writes too.
 """
 
 from __future__ import annotations
@@ -19,7 +20,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 FORMAT = "teleop-scene"
 VERSION = 2  # the newest version this reader knows; it reads every version from 1. Version 2 adds movable objects.
-MAX_OBJECTS = 24
+MAX_OBJECTS = 32  # Core's WorldScene.MaxObjects: 32 since raised clutter joined the JetRover bench's 24 (docs/adr/0037)
 MAX_MASS = 20.0  # kg
 TOLERANCE = 0.001
 PARK_X, PARK_Z = 17.0, -5.0  # where a parked object rests (docs/adr/0037 decision 3): Core's WorldScene.ParkX / ParkZ
@@ -62,6 +63,20 @@ def rest_of(q) -> Tuple[int, float]:
     elif yaw <= -math.pi:
         yaw += 2 * math.pi
     return rest, yaw
+
+
+def _rects_apart(ax: float, ay: float, ac: float, asn: float, ahx: float, ahy: float,
+                 bx: float, by: float, bc: float, bsn: float, bhx: float, bhy: float, gap: float) -> bool:
+    """Whether two rectangles, each its centre, the cosine and sine of its turn, and its half sides, lie at least ``gap`` apart
+    along one of their four sides' directions (the separating-axis test; touching counts as apart). As Core's
+    ``WorldScene.RectsApart``, operation for operation."""
+    dx, dy = bx - ax, by - ay
+    for nx, ny in ((ac, asn), (-asn, ac), (bc, bsn), (-bsn, bc)):  # A's x, A's y, B's x, B's y
+        pa = ahx * abs(nx * ac + ny * asn) + ahy * abs(-nx * asn + ny * ac)
+        pb = bhx * abs(nx * bc + ny * bsn) + bhy * abs(-nx * bsn + ny * bc)
+        if abs(nx * dx + ny * dy) - pa - pb >= gap - 1e-12:
+            return True
+    return False
 
 
 class SceneError(ValueError):
@@ -116,6 +131,9 @@ class Object:
     colour: Tuple[float, float, float]
     jitter: Tuple[float, float, float]
     asset: str = ""  # a mesh's asset, library/name (docs/adr/0037 decision 4); empty for the other shapes
+    # Raised desk clutter (docs/adr/0037 "Raised clutter"): a movable object RobotHost's layouts stand in a pass of their own,
+    # anywhere in the region, flat as the file has it (never on a side); not one of the pool's movable objects.
+    clutter: bool = False
 
     @property
     def footprint_radius(self) -> float:
@@ -139,8 +157,9 @@ class Object:
         return 0.5 * math.sqrt(ex * ex + ey * ey)
 
     def can_lie(self, rest: int) -> bool:
-        """Whether a layout may lay it on side rest ``rest``: movable, stable on it and at least ``MIN_LYING_HEIGHT`` tall."""
-        if not 0 <= rest < REST_COUNT or rest % 3 == 0 or not self.movable or self.shape == "sphere":
+        """Whether a layout may lay it on side rest ``rest``: movable, stable on it and at least ``MIN_LYING_HEIGHT`` tall. Never
+        clutter: it lies flat as the file has it."""
+        if not 0 <= rest < REST_COUNT or rest % 3 == 0 or not self.movable or self.clutter or self.shape == "sphere":
             return False
         ex, ey, ez = self.rest_extents(rest)
         return ez <= LIE_ASPECT * min(ex, ey) + 1e-12 and ez >= MIN_LYING_HEIGHT - 1e-12
@@ -175,6 +194,9 @@ class Scene:
     lying_share: float = 0.0
     edge_regions: Tuple[float, ...] = ()
     edge_share: float = 0.0
+    # docs/adr/0037 "Raised clutter": how many clutter objects a layout stands, (clutterMin, clutterMax); RobotHost draws them
+    # last, anywhere in the region. Given a yaw, the placement rules take a piece of clutter as its own rectangle.
+    clutter: Tuple[int, int] = (0, 0)
 
     def clear_of_robot(self, x: float, y: float, r: float) -> bool:
         if len(self.robot_keep_out) != 4:
@@ -203,11 +225,15 @@ class Scene:
         e = self.edge_regions
         return any(e[k] - 1e-9 <= x <= e[k + 1] + 1e-9 and e[k + 2] - 1e-9 <= y <= e[k + 3] + 1e-9 for k in range(0, len(e) - 3, 4))
 
-    def fits_on_table(self, index: int, x: float, y: float, scale: float = 1.0, rest: int = REST_UPRIGHT) -> bool:
+    def fits_on_table(self, index: int, x: float, y: float, scale: float = 1.0, rest: int = REST_UPRIGHT,
+                      yaw: Optional[float] = None) -> bool:
         """Whether object ``index``'s footprint on rest ``rest`` at ``scale``, centred at (x, y), lies on the table and in the
-        region (a pool's fixed object: in fixed_regions; a movable one may also stand in edge_regions, its footprint on the table
-        or the bench), clear of the robot's keep-out. As Core's ``WorldScene.FitsOnTable``."""
+        region (a pool's fixed object: in fixed_regions; a movable one but clutter may also stand in edge_regions, its footprint on
+        the table or the bench), clear of the robot's keep-out. As Core's ``WorldScene.FitsOnTable``. Given its ``yaw``, a piece of
+        clutter (docs/adr/0037 "Raised clutter") is its own rectangle turned by it, not the circle that holds it at any yaw."""
         o = self.objects[index]
+        if yaw is not None and o.clutter:
+            return self._clutter_fits(index, x, y, yaw, scale, rest)
         r = o.footprint_radius_at(rest) * scale
         t, (x0, x1, y0, y1) = self.table, self.region
         if not self.clear_of_robot(x, y, r):
@@ -222,17 +248,56 @@ class Scene:
         if (x - r >= max(t.x_min, x0) - 1e-9 and x + r <= min(t.x_max, x1) + 1e-9 and
                 y - r >= max(t.y_min, y0) - 1e-9 and y + r <= min(t.y_max, y1) + 1e-9):
             return True
-        if not o.movable or not self.in_edge_regions(x, y):
+        if not o.movable or o.clutter or not self.in_edge_regions(x, y):
             return False
         sx0, sx1, sy0, sy1 = self._surface_bounds()
         return x - r >= sx0 - 1e-9 and x + r <= sx1 + 1e-9 and y - r >= sy0 - 1e-9 and y + r <= sy1 + 1e-9
 
     def overlaps(self, a: int, ax: float, ay: float, b: int, bx: float, by: float, scale_a: float = 1.0, scale_b: float = 1.0,
-                 rest_a: int = REST_UPRIGHT, rest_b: int = REST_UPRIGHT) -> bool:
-        """Whether two objects' footprints, each on its rest, come closer than the clearance (Core's ``WorldScene.Overlaps``)."""
-        reach = (self.objects[a].footprint_radius_at(rest_a) * scale_a + self.objects[b].footprint_radius_at(rest_b) * scale_b
-                 + self.clearance)
-        return (ax - bx) ** 2 + (ay - by) ** 2 < reach * reach
+                 rest_a: int = REST_UPRIGHT, rest_b: int = REST_UPRIGHT, yaw_a: Optional[float] = None,
+                 yaw_b: Optional[float] = None) -> bool:
+        """Whether two objects' footprints, each on its rest, come closer than the clearance (Core's ``WorldScene.Overlaps``).
+        Given both yaws, a piece of clutter (docs/adr/0037 "Raised clutter") is its own rectangle turned by its yaw: another
+        object's circle may come no closer to it than the clearance, and two pieces lie the clearance apart along one of their
+        four sides' directions. Without them, or for two objects that are not clutter, every object is its circle."""
+        ca, cb = self.objects[a].clutter, self.objects[b].clutter
+        if yaw_a is None or yaw_b is None or not (ca or cb):
+            reach = (self.objects[a].footprint_radius_at(rest_a) * scale_a + self.objects[b].footprint_radius_at(rest_b) * scale_b
+                     + self.clearance)
+            return (ax - bx) ** 2 + (ay - by) ** 2 < reach * reach
+        if ca and cb:
+            hxa, hya = self._clutter_half(a, rest_a, scale_a)
+            hxb, hyb = self._clutter_half(b, rest_b, scale_b)
+            return not _rects_apart(ax, ay, math.cos(yaw_a), math.sin(yaw_a), hxa, hya,
+                                    bx, by, math.cos(yaw_b), math.sin(yaw_b), hxb, hyb, self.clearance)
+        # One piece of clutter and one circle: how near the circle's centre comes to the rectangle, in the rectangle's frame.
+        rect, circle = (a, b) if ca else (b, a)
+        rx, ry, ryaw, cx, cy = (ax, ay, yaw_a, bx, by) if ca else (bx, by, yaw_b, ax, ay)
+        hx, hy = self._clutter_half(rect, rest_a if ca else rest_b, scale_a if ca else scale_b)
+        c, s, dx, dy = math.cos(ryaw), math.sin(ryaw), cx - rx, cy - ry
+        qx, qy = max(abs(dx * c + dy * s) - hx, 0.0), max(abs(-dx * s + dy * c) - hy, 0.0)
+        reach = self.objects[circle].footprint_radius_at(rest_b if ca else rest_a) * (scale_b if ca else scale_a) + self.clearance
+        return qx * qx + qy * qy < reach * reach
+
+    def _clutter_half(self, index: int, rest: int, scale: float) -> Tuple[float, float]:
+        """Half the sides of object ``index``'s footprint on rest ``rest`` at ``scale``, along its own x and y."""
+        ex, ey, _ = self.objects[index].rest_extents(rest)
+        return ex * scale / 2, ey * scale / 2
+
+    def _clutter_fits(self, index: int, x: float, y: float, yaw: float, scale: float, rest: int) -> bool:
+        """A piece of clutter's rectangle turned by ``yaw``: inside the region on the table, clear of the robot's keep-out (Core's
+        ``WorldScene.FitsOnTable`` with a yaw)."""
+        hx, hy = self._clutter_half(index, rest, scale)
+        c, s = math.cos(yaw), math.sin(yaw)
+        bx, by = abs(c) * hx + abs(s) * hy, abs(s) * hx + abs(c) * hy
+        t, (x0, x1, y0, y1) = self.table, self.region
+        if not (x - bx >= max(t.x_min, x0) - 1e-9 and x + bx <= min(t.x_max, x1) + 1e-9 and
+                y - by >= max(t.y_min, y0) - 1e-9 and y + by <= min(t.y_max, y1) + 1e-9):
+            return False
+        if len(self.robot_keep_out) != 4:
+            return True
+        k0, k1, k2, k3 = self.robot_keep_out
+        return _rects_apart(x, y, c, s, hx, hy, (k0 + k1) / 2, (k2 + k3) / 2, 1.0, 0.0, (k1 - k0) / 2, (k3 - k2) / 2, 0.0)
 
     def clamp_on_table(self, index: int, x: float, y: float, scale: float = 1.0) -> Optional[Tuple[float, float]]:
         """The nearest point to (x, y) where object ``index`` at ``scale`` fits on the table and in the region (1 mm in), as
@@ -417,6 +482,10 @@ def parse(doc: Dict[str, Any]) -> Scene:
         if not isinstance(mass, (int, float)) or isinstance(mass, bool) or (not 0 < mass <= MAX_MASS if movable else mass != 0):
             raise _bad("mass", f"movable '{oname}' has mass {mass}: more than 0 and at most {MAX_MASS:g} kg" if movable
                        else f"fixed '{oname}' has a mass: only a movable object has one")
+        # docs/adr/0037 "Raised clutter": clutter is something the arm can push about, so it is a movable body.
+        clutter = bool(o.get("clutter", False))
+        if clutter and not movable:
+            raise _bad("kind", f"'{oname}' is clutter, which is movable, not '{kind}'")
         pos = _vector(o.get("position"), 3, "pose", f"'{oname}' position")
         rpy = _vector(o.get("rpy"), 3, "pose", f"'{oname}' rpy")
         if abs(rpy[0]) > 1e-9 or abs(rpy[1]) > 1e-9:
@@ -429,20 +498,30 @@ def parse(doc: Dict[str, Any]) -> Scene:
         if not all(v >= 0 for v in j):
             raise _bad("jitter", f"'{oname}' has a negative range")
         objects.append(Object(oid, oname, shape, z, pos, rpy[2], movable, float(mass), bool(o.get("operatorMovable", False)),
-                              float(o.get("staticFriction", 0.0)), float(o.get("dynamicFriction", 0.0)), col, j, asset))
+                              float(o.get("staticFriction", 0.0)), float(o.get("dynamicFriction", 0.0)), col, j, asset, clutter))
 
     pd = doc.get("pool", {}) or {}
     pool = tuple(pd.get(k, 0) for k in ("movableMin", "movableMax", "fixedMin", "fixedMax"))
+    clutter_range = tuple(pd.get(k, 0) for k in ("clutterMin", "clutterMax"))
     size_min, size_max = pd.get("sizeMin", 0.0), pd.get("sizeMax", 0.0)
     reach_min, reach_max = pd.get("reachMin", 0.0), pd.get("reachMax", 0.0)
-    if not all(isinstance(v, int) and not isinstance(v, bool) for v in pool) or min(pool) < 0 or pool[0] > pool[1] or pool[2] > pool[3]:
+    counts = pool + clutter_range
+    if (not all(isinstance(v, int) and not isinstance(v, bool) for v in counts) or min(counts) < 0 or pool[0] > pool[1] or pool[2] > pool[3]
+            or clutter_range[0] > clutter_range[1]):
         raise _bad("pool", "each kind needs 0 <= min <= max")
-    movables = sum(1 for o in objects if o.movable)
-    if pool[1] > movables or pool[3] > len(objects) - movables:
-        raise _bad("pool", f"it asks for up to {pool[1]} movable and {pool[3]} fixed objects; the scene has {movables} and {len(objects) - movables}")
+    # Clutter (docs/adr/0037 "Raised clutter") is not one of the pool's movable objects.
+    clutters = sum(1 for o in objects if o.clutter)
+    movables = sum(1 for o in objects if o.movable and not o.clutter)
+    fixeds = len(objects) - movables - clutters
+    if pool[1] > movables or pool[3] > fixeds:
+        raise _bad("pool", f"it asks for up to {pool[1]} movable and {pool[3]} fixed objects; the scene has {movables} and {fixeds}")
+    if clutter_range[1] > clutters:
+        raise _bad("pool", f"it asks for up to {clutter_range[1]} clutter objects; the scene has {clutters}")
     is_pool = pool[1] + pool[3] > 0
     if is_pool and version < 2:
         raise _bad("pool", "a pool needs version 2")
+    if (clutters > 0 or clutter_range[1] > 0) and not is_pool:
+        raise _bad("pool", "clutter is only for a pool, whose layouts choose it")
     if not (_finite(size_min) and _finite(size_max)) or not ((size_min == 0 and size_max == 0) or 0 < size_min < size_max):
         raise _bad("pool", "sizeMin and sizeMax are both 0, or 0 < sizeMin < sizeMax")
     if size_max > 0 and not is_pool:
@@ -500,7 +579,7 @@ def parse(doc: Dict[str, Any]) -> Scene:
     scene = Scene(name, robot_profile, tuple(surfaces), table, bench, tuple(objects), (float(x0), float(x1), float(y0), float(y1)),
                   float(clearance), {k: v for k, v in doc.items() if k not in known}, pool, tuple(float(v) for v in fr),
                   tuple(float(v) for v in ko), cluster_share=cluster_share, lying_share=lying_share,
-                  edge_regions=tuple(float(v) for v in er), edge_share=edge_share)
+                  edge_regions=tuple(float(v) for v in er), edge_share=edge_share, clutter=clutter_range)
     for i, o in enumerate(objects):
         for sx in (-1, 0, 1):
             for sy in (-1, 0, 1):

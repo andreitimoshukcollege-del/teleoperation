@@ -13,6 +13,10 @@ namespace Teleop.Eval.Tests.JointDrive
     /// <summary>joint-drive's safety scripts (docs/adr/0036 amendment 1), planned around the bench scene's objects at their nominal places.</summary>
     public class SafetyScriptTests
     {
+        private readonly Xunit.Abstractions.ITestOutputHelper _output;
+
+        public SafetyScriptTests(Xunit.Abstractions.ITestOutputHelper output) => _output = output;
+
         private static readonly RobotArmProfile Profile = RobotArmProfile.JetRoverMeasuredDefault;
         private static readonly ArmCollisionModel Model = Profile.Collision!;
         private static readonly DriveEnvelope Envelope = DriveEnvelope.FromModel(Model, 15f * MathF.PI / 180f);
@@ -130,21 +134,34 @@ namespace Teleop.Eval.Tests.JointDrive
             const int Layouts = 16; // all 40 of seeds 1-40 planned for every script (2026-11-14); 16 keep the test short
             var planned = new Dictionary<DriveScript, int>();
             var why = new List<string>();
+            // docs/adr/0037 "Raised clutter": each category's targets (the object the planned arm first comes within 3.5 cm of), and
+            // how many of them are clutter.
+            var targets = new Dictionary<DriveScript, int>();
+            var clutterTargets = new Dictionary<DriveScript, int>();
             for (ulong seed = 1; seed <= Layouts; seed++)
             {
                 SceneLayout.Draw(scene, seed, poses, parked, scales); // a pool's (docs/adr/0037): the objects on the table, at their sizes
-                var objects = scene.Objects.Select((o, i) => (o, i)).Where(x => !parked[x.i])
-                    .Select(x => WorldView.Bounds(x.o, scales[x.i], poses[x.i].X, poses[x.i].Y, poses[x.i].Z, poses[x.i].Qw, poses[x.i].Qx, poses[x.i].Qy, poses[x.i].Qz, shapes)).ToArray();
+                int[] on = Enumerable.Range(0, scene.Objects.Length).Where(i => !parked[i]).ToArray();
+                var objects = on.Select(i => WorldView.Bounds(scene.Objects[i], scales[i], poses[i].X, poses[i].Y, poses[i].Z, poses[i].Qw, poses[i].Qx, poses[i].Qy, poses[i].Qz, shapes)).ToArray();
                 foreach (DriveScript script in new[] { DriveScript.ReachNoObstacle, DriveScript.StopBeforeCollision, DriveScript.CollideAndRecover, DriveScript.CollideWithObstacle })
                 {
                     var roles = new SafetyOptions { KnockMaxKg = scene.KnockMaxMass }; // as joint-drive plans it (--scene)
-                    if (DrivePlan.TryBuild(script, Profile, Model.Home, 2.5f, 20, seed, Envelope, out _, out string? error, objects, roles))
+                    if (DrivePlan.TryBuild(script, Profile, Model.Home, 2.5f, 20, seed, Envelope, out DrivePlan? plan, out string? error, objects, roles))
+                    {
                         planned[script] = planned.GetValueOrDefault(script) + 1;
+                        if (script == DriveScript.ReachNoObstacle) continue;
+                        foreach (int k in Targets(plan!, objects))
+                        {
+                            targets[script] = targets.GetValueOrDefault(script) + 1;
+                            if (scene.Objects[on[k]].Clutter) clutterTargets[script] = clutterTargets.GetValueOrDefault(script) + 1;
+                        }
+                    }
                     else if (why.Count < 6) why.Add($"layout {seed} {script}: {error}");
                 }
             }
 
-            string report = string.Join(", ", planned.Select(kv => $"{SafetyScript.Category(kv.Key)} {kv.Value}/{Layouts}"));
+            string report = string.Join(", ", planned.Select(kv => $"{SafetyScript.Category(kv.Key)} {kv.Value}/{Layouts}")) + "; clutter targets " +
+                            string.Join(", ", targets.Select(kv => $"{SafetyScript.Category(kv.Key)} {clutterTargets.GetValueOrDefault(kv.Key)}/{kv.Value}"));
             // The bars (docs/adr/0037 amendment 5, 2026-11-16). A fixture bigger than the robot stands within the arm's reach
             // beside it every take (the user's choice); it takes approach paths away, and since it is swept along its side it is
             // a target itself. Over 40 layouts the scripts planned: reach 100%, collide_with_obstacle 85%,
@@ -158,7 +175,31 @@ namespace Teleop.Eval.Tests.JointDrive
             foreach (DriveScript script in new[] { DriveScript.ReachNoObstacle, DriveScript.StopBeforeCollision, DriveScript.CollideAndRecover, DriveScript.CollideWithObstacle })
             {
                 Assert.True(planned.GetValueOrDefault(script) >= bar[script], $"{report}; e.g. {string.Join(" | ", why)}");
+                // Knocking a pen or a phone is realistic; clutter taking most of a category's targets is not. Over seeds 1-40
+                // (2026-11-21, docs/adr/0037 "Raised clutter") it was at most 3 of 39 plans' targets in any category: 6 of the 49
+                // pieces on those tables stood in reach, and the phone and the pen lie below the arm's 10 mm floor.
+                Assert.True(2 * clutterTargets.GetValueOrDefault(script) <= targets.GetValueOrDefault(script), report);
             }
+
+            _output.WriteLine(report);
+        }
+
+        /// <summary>
+        /// The objects a plan aims at: of <paramref name="objects"/>, the one its script part first brings the arm within 3.5 cm of
+        /// (by the collision model's bodies), and any met at that same instant; none when it never comes that near.
+        /// </summary>
+        private static IEnumerable<int> Targets(DrivePlan plan, IReadOnlyList<SafetyObject> objects)
+        {
+            double start = plan.Legs.First(l => l.Phase == LegPhase.Script).Start;
+            var near = objects.Select(o => SafetyScript.WithObjects(Model, new[] { o }, 0.035f, 0f)).ToArray();
+            for (double t = start; t <= plan.TotalSeconds; t += 0.01)
+            {
+                ArmPose pose = plan.Sample(t);
+                int[] met = Enumerable.Range(0, objects.Count).Where(k => !ArmCollision.IsValid(Profile, near[k], pose)).ToArray();
+                if (met.Length > 0) return met;
+            }
+
+            return Array.Empty<int>();
         }
 
         [Fact]

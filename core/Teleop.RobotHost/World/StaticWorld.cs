@@ -88,11 +88,14 @@ namespace Teleop.RobotHost.World
             else
             {
                 int me = index;
+                double yaw = WorldHost.YawOf(_poses[index]);
                 bool Clear(double px, double py)
                 {
                     for (int k = 0; k < _poses.Length; k++)
                     {
-                        if (k != me && !_poses[k].Parked && _scene.Overlaps(me, px, py, k, _poses[k].X, _poses[k].Y, scale, _scales[k], WorldScene.RestUpright, RestOf(_poses[k]))) return false;
+                        if (k == me || _poses[k].Parked) continue;
+                        int restK = RestOf(_poses[k], out double yawK);
+                        if (_scene.Overlaps(me, px, py, yaw, k, _poses[k].X, _poses[k].Y, yawK, scale, _scales[k], WorldScene.RestUpright, restK)) return false;
                     }
 
                     return true;
@@ -176,6 +179,8 @@ namespace Teleop.RobotHost.World
 
         private static int RestOf(in ObjectPose p) => WorldScene.RestOf(p.Qw, p.Qx, p.Qy, p.Qz, out _);
 
+        private static int RestOf(in ObjectPose p, out double yaw) => WorldScene.RestOf(p.Qw, p.Qx, p.Qy, p.Qz, out yaw);
+
         private PlaceOutcome Check(PlaceCause cause, in ObjectPose pose, out int index, out ObjectPose upright)
         {
             upright = default;
@@ -192,11 +197,13 @@ namespace Teleop.RobotHost.World
             // On the rest nearest the pose's rotation (docs/adr/0037 amendment 6): upright, as always, unless it asks for a side.
             int rest = WorldScene.RestOf(pose.Qw, pose.Qx, pose.Qy, pose.Qz, out double restYaw);
             double yaw = rest == WorldScene.RestUpright ? WorldHost.YawOf(pose) : restYaw;
-            if (!_scene.FitsOnTable(index, pose.X, pose.Y, _scales[index], rest)) return PlaceOutcome.OutsideRegion;
+            // Each footprint on its rest and heading: a piece of clutter is its own rectangle (docs/adr/0037 "Raised clutter").
+            if (!_scene.FitsOnTable(index, pose.X, pose.Y, yaw, _scales[index], rest)) return PlaceOutcome.OutsideRegion;
             for (int k = 0; k < _poses.Length; k++)
             {
-                if (k != index && !_poses[k].Parked &&
-                    _scene.Overlaps(index, pose.X, pose.Y, k, _poses[k].X, _poses[k].Y, _scales[index], _scales[k], rest, RestOf(_poses[k]))) return PlaceOutcome.OverlapsObject;
+                if (k == index || _poses[k].Parked) continue;
+                int restK = RestOf(_poses[k], out double yawK);
+                if (_scene.Overlaps(index, pose.X, pose.Y, yaw, k, _poses[k].X, _poses[k].Y, yawK, _scales[index], _scales[k], rest, restK)) return PlaceOutcome.OverlapsObject;
             }
 
             upright = ObjectPose.Of(pose.Id, ObjectPose.FlagKinematic, _scene.PoseAt(index, pose.X, pose.Y, yaw, _scales[index], rest));

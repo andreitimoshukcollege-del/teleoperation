@@ -1866,7 +1866,7 @@
    }
   },
   {
-   "name": "25 objects",
+   "name": "33 objects",
    "expect": "objects",
    "scene": {
     "format": "teleop-scene",
@@ -2769,6 +2769,278 @@
        0.05,
        0.3
       ]
+     },
+     {
+      "id": 26,
+      "name": "o25",
+      "shape": "box",
+      "size": [
+       0.06,
+       0.06,
+       0.3
+      ],
+      "position": [
+       0.5,
+       0.3,
+       0.15
+      ],
+      "rpy": [
+       0,
+       0,
+       0
+      ],
+      "kind": "fixed",
+      "operatorMovable": true,
+      "staticFriction": 0.8,
+      "dynamicFriction": 0.6,
+      "colour": [
+       0.5,
+       0.5,
+       0.5
+      ],
+      "jitter": [
+       0.05,
+       0.05,
+       0.3
+      ]
+     },
+     {
+      "id": 27,
+      "name": "o26",
+      "shape": "box",
+      "size": [
+       0.06,
+       0.06,
+       0.3
+      ],
+      "position": [
+       0.5,
+       0.3,
+       0.15
+      ],
+      "rpy": [
+       0,
+       0,
+       0
+      ],
+      "kind": "fixed",
+      "operatorMovable": true,
+      "staticFriction": 0.8,
+      "dynamicFriction": 0.6,
+      "colour": [
+       0.5,
+       0.5,
+       0.5
+      ],
+      "jitter": [
+       0.05,
+       0.05,
+       0.3
+      ]
+     },
+     {
+      "id": 28,
+      "name": "o27",
+      "shape": "box",
+      "size": [
+       0.06,
+       0.06,
+       0.3
+      ],
+      "position": [
+       0.5,
+       0.3,
+       0.15
+      ],
+      "rpy": [
+       0,
+       0,
+       0
+      ],
+      "kind": "fixed",
+      "operatorMovable": true,
+      "staticFriction": 0.8,
+      "dynamicFriction": 0.6,
+      "colour": [
+       0.5,
+       0.5,
+       0.5
+      ],
+      "jitter": [
+       0.05,
+       0.05,
+       0.3
+      ]
+     },
+     {
+      "id": 29,
+      "name": "o28",
+      "shape": "box",
+      "size": [
+       0.06,
+       0.06,
+       0.3
+      ],
+      "position": [
+       0.5,
+       0.3,
+       0.15
+      ],
+      "rpy": [
+       0,
+       0,
+       0
+      ],
+      "kind": "fixed",
+      "operatorMovable": true,
+      "staticFriction": 0.8,
+      "dynamicFriction": 0.6,
+      "colour": [
+       0.5,
+       0.5,
+       0.5
+      ],
+      "jitter": [
+       0.05,
+       0.05,
+       0.3
+      ]
+     },
+     {
+      "id": 30,
+      "name": "o29",
+      "shape": "box",
+      "size": [
+       0.06,
+       0.06,
+       0.3
+      ],
+      "position": [
+       0.5,
+       0.3,
+       0.15
+      ],
+      "rpy": [
+       0,
+       0,
+       0
+      ],
+      "kind": "fixed",
+      "operatorMovable": true,
+      "staticFriction": 0.8,
+      "dynamicFriction": 0.6,
+      "colour": [
+       0.5,
+       0.5,
+       0.5
+      ],
+      "jitter": [
+       0.05,
+       0.05,
+       0.3
+      ]
+     },
+     {
+      "id": 31,
+      "name": "o30",
+      "shape": "box",
+      "size": [
+       0.06,
+       0.06,
+       0.3
+      ],
+      "position": [
+       0.5,
+       0.3,
+       0.15
+      ],
+      "rpy": [
+       0,
+       0,
+       0
+      ],
+      "kind": "fixed",
+      "operatorMovable": true,
+      "staticFriction": 0.8,
+      "dynamicFriction": 0.6,
+      "colour": [
+       0.5,
+       0.5,
+       0.5
+      ],
+      "jitter": [
+       0.05,
+       0.05,
+       0.3
+      ]
+     },
+     {
+      "id": 32,
+      "name": "o31",
+      "shape": "box",
+      "size": [
+       0.06,
+       0.06,
+       0.3
+      ],
+      "position": [
+       0.5,
+       0.3,
+       0.15
+      ],
+      "rpy": [
+       0,
+       0,
+       0
+      ],
+      "kind": "fixed",
+      "operatorMovable": true,
+      "staticFriction": 0.8,
+      "dynamicFriction": 0.6,
+      "colour": [
+       0.5,
+       0.5,
+       0.5
+      ],
+      "jitter": [
+       0.05,
+       0.05,
+       0.3
+      ]
+     },
+     {
+      "id": 33,
+      "name": "o32",
+      "shape": "box",
+      "size": [
+       0.06,
+       0.06,
+       0.3
+      ],
+      "position": [
+       0.5,
+       0.3,
+       0.15
+      ],
+      "rpy": [
+       0,
+       0,
+       0
+      ],
+      "kind": "fixed",
+      "operatorMovable": true,
+      "staticFriction": 0.8,
+      "dynamicFriction": 0.6,
+      "colour": [
+       0.5,
+       0.5,
+       0.5
+      ],
+      "jitter": [
+       0.05,
+       0.05,
+       0.3
+      ]
      }
     ],
     "placement": {
@@ -2777,6 +3049,1211 @@
      "yMin": -0.65,
      "yMax": 0.65,
      "clearance": 0.02
+    }
+   }
+  },
+  {
+   "name": "32 objects, a pool's (docs/adr/0037 \"Raised clutter\")",
+   "expect": "ok",
+   "scene": {
+    "format": "teleop-scene",
+    "version": 2,
+    "name": "vectors",
+    "robotProfile": "fr3-duo",
+    "surfaces": [
+     {
+      "id": "bench",
+      "center": [
+       -0.45,
+       0.0,
+       -0.02
+      ],
+      "size": [
+       1.3,
+       1.6,
+       0.04
+      ],
+      "colour": [
+       0.2,
+       0.2,
+       0.2
+      ],
+      "staticFriction": 0.6,
+      "dynamicFriction": 0.5,
+      "collides": true,
+      "headset": "builtin"
+     },
+     {
+      "id": "table",
+      "center": [
+       0.55,
+       0.0,
+       -0.02
+      ],
+      "size": [
+       0.7,
+       1.6,
+       0.04
+      ],
+      "colour": [
+       0.4,
+       0.4,
+       0.4
+      ],
+      "staticFriction": 0.6,
+      "dynamicFriction": 0.5,
+      "collides": true,
+      "headset": "show"
+     }
+    ],
+    "objects": [
+     {
+      "id": 1,
+      "name": "a",
+      "shape": "box",
+      "size": [
+       0.06,
+       0.06,
+       0.3
+      ],
+      "position": [
+       0.5,
+       0.3,
+       0.15
+      ],
+      "rpy": [
+       0,
+       0,
+       0
+      ],
+      "kind": "fixed",
+      "operatorMovable": true,
+      "staticFriction": 0.8,
+      "dynamicFriction": 0.6,
+      "colour": [
+       0.5,
+       0.5,
+       0.5
+      ],
+      "jitter": [
+       0.05,
+       0.05,
+       0.3
+      ]
+     },
+     {
+      "id": 2,
+      "name": "m1",
+      "shape": "box",
+      "size": [
+       0.06,
+       0.06,
+       0.3
+      ],
+      "position": [
+       0.6,
+       -0.3,
+       0.15
+      ],
+      "rpy": [
+       0,
+       0,
+       0
+      ],
+      "kind": "movable",
+      "mass": 0.2,
+      "operatorMovable": true,
+      "staticFriction": 0.8,
+      "dynamicFriction": 0.6,
+      "colour": [
+       0.5,
+       0.5,
+       0.5
+      ],
+      "jitter": [
+       0.0,
+       0.0,
+       0.0
+      ]
+     },
+     {
+      "id": 3,
+      "name": "m2",
+      "shape": "box",
+      "size": [
+       0.06,
+       0.06,
+       0.3
+      ],
+      "position": [
+       0.6,
+       -0.3,
+       0.15
+      ],
+      "rpy": [
+       0,
+       0,
+       0
+      ],
+      "kind": "movable",
+      "mass": 0.2,
+      "operatorMovable": true,
+      "staticFriction": 0.8,
+      "dynamicFriction": 0.6,
+      "colour": [
+       0.5,
+       0.5,
+       0.5
+      ],
+      "jitter": [
+       0.0,
+       0.0,
+       0.0
+      ]
+     },
+     {
+      "id": 4,
+      "name": "m3",
+      "shape": "box",
+      "size": [
+       0.06,
+       0.06,
+       0.3
+      ],
+      "position": [
+       0.6,
+       -0.3,
+       0.15
+      ],
+      "rpy": [
+       0,
+       0,
+       0
+      ],
+      "kind": "movable",
+      "mass": 0.2,
+      "operatorMovable": true,
+      "staticFriction": 0.8,
+      "dynamicFriction": 0.6,
+      "colour": [
+       0.5,
+       0.5,
+       0.5
+      ],
+      "jitter": [
+       0.0,
+       0.0,
+       0.0
+      ]
+     },
+     {
+      "id": 5,
+      "name": "m4",
+      "shape": "box",
+      "size": [
+       0.06,
+       0.06,
+       0.3
+      ],
+      "position": [
+       0.6,
+       -0.3,
+       0.15
+      ],
+      "rpy": [
+       0,
+       0,
+       0
+      ],
+      "kind": "movable",
+      "mass": 0.2,
+      "operatorMovable": true,
+      "staticFriction": 0.8,
+      "dynamicFriction": 0.6,
+      "colour": [
+       0.5,
+       0.5,
+       0.5
+      ],
+      "jitter": [
+       0.0,
+       0.0,
+       0.0
+      ]
+     },
+     {
+      "id": 6,
+      "name": "m5",
+      "shape": "box",
+      "size": [
+       0.06,
+       0.06,
+       0.3
+      ],
+      "position": [
+       0.6,
+       -0.3,
+       0.15
+      ],
+      "rpy": [
+       0,
+       0,
+       0
+      ],
+      "kind": "movable",
+      "mass": 0.2,
+      "operatorMovable": true,
+      "staticFriction": 0.8,
+      "dynamicFriction": 0.6,
+      "colour": [
+       0.5,
+       0.5,
+       0.5
+      ],
+      "jitter": [
+       0.0,
+       0.0,
+       0.0
+      ]
+     },
+     {
+      "id": 7,
+      "name": "m6",
+      "shape": "box",
+      "size": [
+       0.06,
+       0.06,
+       0.3
+      ],
+      "position": [
+       0.6,
+       -0.3,
+       0.15
+      ],
+      "rpy": [
+       0,
+       0,
+       0
+      ],
+      "kind": "movable",
+      "mass": 0.2,
+      "operatorMovable": true,
+      "staticFriction": 0.8,
+      "dynamicFriction": 0.6,
+      "colour": [
+       0.5,
+       0.5,
+       0.5
+      ],
+      "jitter": [
+       0.0,
+       0.0,
+       0.0
+      ]
+     },
+     {
+      "id": 8,
+      "name": "m7",
+      "shape": "box",
+      "size": [
+       0.06,
+       0.06,
+       0.3
+      ],
+      "position": [
+       0.6,
+       -0.3,
+       0.15
+      ],
+      "rpy": [
+       0,
+       0,
+       0
+      ],
+      "kind": "movable",
+      "mass": 0.2,
+      "operatorMovable": true,
+      "staticFriction": 0.8,
+      "dynamicFriction": 0.6,
+      "colour": [
+       0.5,
+       0.5,
+       0.5
+      ],
+      "jitter": [
+       0.0,
+       0.0,
+       0.0
+      ]
+     },
+     {
+      "id": 9,
+      "name": "m8",
+      "shape": "box",
+      "size": [
+       0.06,
+       0.06,
+       0.3
+      ],
+      "position": [
+       0.6,
+       -0.3,
+       0.15
+      ],
+      "rpy": [
+       0,
+       0,
+       0
+      ],
+      "kind": "movable",
+      "mass": 0.2,
+      "operatorMovable": true,
+      "staticFriction": 0.8,
+      "dynamicFriction": 0.6,
+      "colour": [
+       0.5,
+       0.5,
+       0.5
+      ],
+      "jitter": [
+       0.0,
+       0.0,
+       0.0
+      ]
+     },
+     {
+      "id": 10,
+      "name": "m9",
+      "shape": "box",
+      "size": [
+       0.06,
+       0.06,
+       0.3
+      ],
+      "position": [
+       0.6,
+       -0.3,
+       0.15
+      ],
+      "rpy": [
+       0,
+       0,
+       0
+      ],
+      "kind": "movable",
+      "mass": 0.2,
+      "operatorMovable": true,
+      "staticFriction": 0.8,
+      "dynamicFriction": 0.6,
+      "colour": [
+       0.5,
+       0.5,
+       0.5
+      ],
+      "jitter": [
+       0.0,
+       0.0,
+       0.0
+      ]
+     },
+     {
+      "id": 11,
+      "name": "m10",
+      "shape": "box",
+      "size": [
+       0.06,
+       0.06,
+       0.3
+      ],
+      "position": [
+       0.6,
+       -0.3,
+       0.15
+      ],
+      "rpy": [
+       0,
+       0,
+       0
+      ],
+      "kind": "movable",
+      "mass": 0.2,
+      "operatorMovable": true,
+      "staticFriction": 0.8,
+      "dynamicFriction": 0.6,
+      "colour": [
+       0.5,
+       0.5,
+       0.5
+      ],
+      "jitter": [
+       0.0,
+       0.0,
+       0.0
+      ]
+     },
+     {
+      "id": 12,
+      "name": "m11",
+      "shape": "box",
+      "size": [
+       0.06,
+       0.06,
+       0.3
+      ],
+      "position": [
+       0.6,
+       -0.3,
+       0.15
+      ],
+      "rpy": [
+       0,
+       0,
+       0
+      ],
+      "kind": "movable",
+      "mass": 0.2,
+      "operatorMovable": true,
+      "staticFriction": 0.8,
+      "dynamicFriction": 0.6,
+      "colour": [
+       0.5,
+       0.5,
+       0.5
+      ],
+      "jitter": [
+       0.0,
+       0.0,
+       0.0
+      ]
+     },
+     {
+      "id": 13,
+      "name": "m12",
+      "shape": "box",
+      "size": [
+       0.06,
+       0.06,
+       0.3
+      ],
+      "position": [
+       0.6,
+       -0.3,
+       0.15
+      ],
+      "rpy": [
+       0,
+       0,
+       0
+      ],
+      "kind": "movable",
+      "mass": 0.2,
+      "operatorMovable": true,
+      "staticFriction": 0.8,
+      "dynamicFriction": 0.6,
+      "colour": [
+       0.5,
+       0.5,
+       0.5
+      ],
+      "jitter": [
+       0.0,
+       0.0,
+       0.0
+      ]
+     },
+     {
+      "id": 14,
+      "name": "m13",
+      "shape": "box",
+      "size": [
+       0.06,
+       0.06,
+       0.3
+      ],
+      "position": [
+       0.6,
+       -0.3,
+       0.15
+      ],
+      "rpy": [
+       0,
+       0,
+       0
+      ],
+      "kind": "movable",
+      "mass": 0.2,
+      "operatorMovable": true,
+      "staticFriction": 0.8,
+      "dynamicFriction": 0.6,
+      "colour": [
+       0.5,
+       0.5,
+       0.5
+      ],
+      "jitter": [
+       0.0,
+       0.0,
+       0.0
+      ]
+     },
+     {
+      "id": 15,
+      "name": "m14",
+      "shape": "box",
+      "size": [
+       0.06,
+       0.06,
+       0.3
+      ],
+      "position": [
+       0.6,
+       -0.3,
+       0.15
+      ],
+      "rpy": [
+       0,
+       0,
+       0
+      ],
+      "kind": "movable",
+      "mass": 0.2,
+      "operatorMovable": true,
+      "staticFriction": 0.8,
+      "dynamicFriction": 0.6,
+      "colour": [
+       0.5,
+       0.5,
+       0.5
+      ],
+      "jitter": [
+       0.0,
+       0.0,
+       0.0
+      ]
+     },
+     {
+      "id": 16,
+      "name": "m15",
+      "shape": "box",
+      "size": [
+       0.06,
+       0.06,
+       0.3
+      ],
+      "position": [
+       0.6,
+       -0.3,
+       0.15
+      ],
+      "rpy": [
+       0,
+       0,
+       0
+      ],
+      "kind": "movable",
+      "mass": 0.2,
+      "operatorMovable": true,
+      "staticFriction": 0.8,
+      "dynamicFriction": 0.6,
+      "colour": [
+       0.5,
+       0.5,
+       0.5
+      ],
+      "jitter": [
+       0.0,
+       0.0,
+       0.0
+      ]
+     },
+     {
+      "id": 17,
+      "name": "m16",
+      "shape": "box",
+      "size": [
+       0.06,
+       0.06,
+       0.3
+      ],
+      "position": [
+       0.6,
+       -0.3,
+       0.15
+      ],
+      "rpy": [
+       0,
+       0,
+       0
+      ],
+      "kind": "movable",
+      "mass": 0.2,
+      "operatorMovable": true,
+      "staticFriction": 0.8,
+      "dynamicFriction": 0.6,
+      "colour": [
+       0.5,
+       0.5,
+       0.5
+      ],
+      "jitter": [
+       0.0,
+       0.0,
+       0.0
+      ]
+     },
+     {
+      "id": 18,
+      "name": "m17",
+      "shape": "box",
+      "size": [
+       0.06,
+       0.06,
+       0.3
+      ],
+      "position": [
+       0.6,
+       -0.3,
+       0.15
+      ],
+      "rpy": [
+       0,
+       0,
+       0
+      ],
+      "kind": "movable",
+      "mass": 0.2,
+      "operatorMovable": true,
+      "staticFriction": 0.8,
+      "dynamicFriction": 0.6,
+      "colour": [
+       0.5,
+       0.5,
+       0.5
+      ],
+      "jitter": [
+       0.0,
+       0.0,
+       0.0
+      ]
+     },
+     {
+      "id": 19,
+      "name": "m18",
+      "shape": "box",
+      "size": [
+       0.06,
+       0.06,
+       0.3
+      ],
+      "position": [
+       0.6,
+       -0.3,
+       0.15
+      ],
+      "rpy": [
+       0,
+       0,
+       0
+      ],
+      "kind": "movable",
+      "mass": 0.2,
+      "operatorMovable": true,
+      "staticFriction": 0.8,
+      "dynamicFriction": 0.6,
+      "colour": [
+       0.5,
+       0.5,
+       0.5
+      ],
+      "jitter": [
+       0.0,
+       0.0,
+       0.0
+      ]
+     },
+     {
+      "id": 20,
+      "name": "m19",
+      "shape": "box",
+      "size": [
+       0.06,
+       0.06,
+       0.3
+      ],
+      "position": [
+       0.6,
+       -0.3,
+       0.15
+      ],
+      "rpy": [
+       0,
+       0,
+       0
+      ],
+      "kind": "movable",
+      "mass": 0.2,
+      "operatorMovable": true,
+      "staticFriction": 0.8,
+      "dynamicFriction": 0.6,
+      "colour": [
+       0.5,
+       0.5,
+       0.5
+      ],
+      "jitter": [
+       0.0,
+       0.0,
+       0.0
+      ]
+     },
+     {
+      "id": 21,
+      "name": "m20",
+      "shape": "box",
+      "size": [
+       0.06,
+       0.06,
+       0.3
+      ],
+      "position": [
+       0.6,
+       -0.3,
+       0.15
+      ],
+      "rpy": [
+       0,
+       0,
+       0
+      ],
+      "kind": "movable",
+      "mass": 0.2,
+      "operatorMovable": true,
+      "staticFriction": 0.8,
+      "dynamicFriction": 0.6,
+      "colour": [
+       0.5,
+       0.5,
+       0.5
+      ],
+      "jitter": [
+       0.0,
+       0.0,
+       0.0
+      ]
+     },
+     {
+      "id": 22,
+      "name": "m21",
+      "shape": "box",
+      "size": [
+       0.06,
+       0.06,
+       0.3
+      ],
+      "position": [
+       0.6,
+       -0.3,
+       0.15
+      ],
+      "rpy": [
+       0,
+       0,
+       0
+      ],
+      "kind": "movable",
+      "mass": 0.2,
+      "operatorMovable": true,
+      "staticFriction": 0.8,
+      "dynamicFriction": 0.6,
+      "colour": [
+       0.5,
+       0.5,
+       0.5
+      ],
+      "jitter": [
+       0.0,
+       0.0,
+       0.0
+      ]
+     },
+     {
+      "id": 23,
+      "name": "m22",
+      "shape": "box",
+      "size": [
+       0.06,
+       0.06,
+       0.3
+      ],
+      "position": [
+       0.6,
+       -0.3,
+       0.15
+      ],
+      "rpy": [
+       0,
+       0,
+       0
+      ],
+      "kind": "movable",
+      "mass": 0.2,
+      "operatorMovable": true,
+      "staticFriction": 0.8,
+      "dynamicFriction": 0.6,
+      "colour": [
+       0.5,
+       0.5,
+       0.5
+      ],
+      "jitter": [
+       0.0,
+       0.0,
+       0.0
+      ]
+     },
+     {
+      "id": 24,
+      "name": "m23",
+      "shape": "box",
+      "size": [
+       0.06,
+       0.06,
+       0.3
+      ],
+      "position": [
+       0.6,
+       -0.3,
+       0.15
+      ],
+      "rpy": [
+       0,
+       0,
+       0
+      ],
+      "kind": "movable",
+      "mass": 0.2,
+      "operatorMovable": true,
+      "staticFriction": 0.8,
+      "dynamicFriction": 0.6,
+      "colour": [
+       0.5,
+       0.5,
+       0.5
+      ],
+      "jitter": [
+       0.0,
+       0.0,
+       0.0
+      ]
+     },
+     {
+      "id": 25,
+      "name": "m24",
+      "shape": "box",
+      "size": [
+       0.06,
+       0.06,
+       0.3
+      ],
+      "position": [
+       0.6,
+       -0.3,
+       0.15
+      ],
+      "rpy": [
+       0,
+       0,
+       0
+      ],
+      "kind": "movable",
+      "mass": 0.2,
+      "operatorMovable": true,
+      "staticFriction": 0.8,
+      "dynamicFriction": 0.6,
+      "colour": [
+       0.5,
+       0.5,
+       0.5
+      ],
+      "jitter": [
+       0.0,
+       0.0,
+       0.0
+      ]
+     },
+     {
+      "id": 26,
+      "name": "m25",
+      "shape": "box",
+      "size": [
+       0.06,
+       0.06,
+       0.3
+      ],
+      "position": [
+       0.6,
+       -0.3,
+       0.15
+      ],
+      "rpy": [
+       0,
+       0,
+       0
+      ],
+      "kind": "movable",
+      "mass": 0.2,
+      "operatorMovable": true,
+      "staticFriction": 0.8,
+      "dynamicFriction": 0.6,
+      "colour": [
+       0.5,
+       0.5,
+       0.5
+      ],
+      "jitter": [
+       0.0,
+       0.0,
+       0.0
+      ]
+     },
+     {
+      "id": 27,
+      "name": "m26",
+      "shape": "box",
+      "size": [
+       0.06,
+       0.06,
+       0.3
+      ],
+      "position": [
+       0.6,
+       -0.3,
+       0.15
+      ],
+      "rpy": [
+       0,
+       0,
+       0
+      ],
+      "kind": "movable",
+      "mass": 0.2,
+      "operatorMovable": true,
+      "staticFriction": 0.8,
+      "dynamicFriction": 0.6,
+      "colour": [
+       0.5,
+       0.5,
+       0.5
+      ],
+      "jitter": [
+       0.0,
+       0.0,
+       0.0
+      ]
+     },
+     {
+      "id": 28,
+      "name": "m27",
+      "shape": "box",
+      "size": [
+       0.06,
+       0.06,
+       0.3
+      ],
+      "position": [
+       0.6,
+       -0.3,
+       0.15
+      ],
+      "rpy": [
+       0,
+       0,
+       0
+      ],
+      "kind": "movable",
+      "mass": 0.2,
+      "operatorMovable": true,
+      "staticFriction": 0.8,
+      "dynamicFriction": 0.6,
+      "colour": [
+       0.5,
+       0.5,
+       0.5
+      ],
+      "jitter": [
+       0.0,
+       0.0,
+       0.0
+      ]
+     },
+     {
+      "id": 29,
+      "name": "m28",
+      "shape": "box",
+      "size": [
+       0.06,
+       0.06,
+       0.3
+      ],
+      "position": [
+       0.6,
+       -0.3,
+       0.15
+      ],
+      "rpy": [
+       0,
+       0,
+       0
+      ],
+      "kind": "movable",
+      "mass": 0.2,
+      "operatorMovable": true,
+      "staticFriction": 0.8,
+      "dynamicFriction": 0.6,
+      "colour": [
+       0.5,
+       0.5,
+       0.5
+      ],
+      "jitter": [
+       0.0,
+       0.0,
+       0.0
+      ]
+     },
+     {
+      "id": 30,
+      "name": "m29",
+      "shape": "box",
+      "size": [
+       0.06,
+       0.06,
+       0.3
+      ],
+      "position": [
+       0.6,
+       -0.3,
+       0.15
+      ],
+      "rpy": [
+       0,
+       0,
+       0
+      ],
+      "kind": "movable",
+      "mass": 0.2,
+      "operatorMovable": true,
+      "staticFriction": 0.8,
+      "dynamicFriction": 0.6,
+      "colour": [
+       0.5,
+       0.5,
+       0.5
+      ],
+      "jitter": [
+       0.0,
+       0.0,
+       0.0
+      ]
+     },
+     {
+      "id": 31,
+      "name": "m30",
+      "shape": "box",
+      "size": [
+       0.06,
+       0.06,
+       0.3
+      ],
+      "position": [
+       0.6,
+       -0.3,
+       0.15
+      ],
+      "rpy": [
+       0,
+       0,
+       0
+      ],
+      "kind": "movable",
+      "mass": 0.2,
+      "operatorMovable": true,
+      "staticFriction": 0.8,
+      "dynamicFriction": 0.6,
+      "colour": [
+       0.5,
+       0.5,
+       0.5
+      ],
+      "jitter": [
+       0.0,
+       0.0,
+       0.0
+      ]
+     },
+     {
+      "id": 32,
+      "name": "m31",
+      "shape": "box",
+      "size": [
+       0.06,
+       0.06,
+       0.3
+      ],
+      "position": [
+       0.6,
+       -0.3,
+       0.15
+      ],
+      "rpy": [
+       0,
+       0,
+       0
+      ],
+      "kind": "movable",
+      "mass": 0.2,
+      "operatorMovable": true,
+      "staticFriction": 0.8,
+      "dynamicFriction": 0.6,
+      "colour": [
+       0.5,
+       0.5,
+       0.5
+      ],
+      "jitter": [
+       0.0,
+       0.0,
+       0.0
+      ]
+     }
+    ],
+    "placement": {
+     "xMin": 0.28,
+     "xMax": 0.85,
+     "yMin": -0.65,
+     "yMax": 0.65,
+     "clearance": 0.02
+    },
+    "pool": {
+     "movableMin": 1,
+     "movableMax": 2,
+     "fixedMin": 0,
+     "fixedMax": 1,
+     "robotKeepOut": [
+      -0.2,
+      0.1,
+      -0.15,
+      0.15
+     ],
+     "clusterShare": 0.6,
+     "lyingShare": 0.35,
+     "edgeShare": 0.5,
+     "edgeRegions": [
+      -0.5,
+      -0.3,
+      0.3,
+      0.7
+     ]
     }
    }
   },
@@ -14305,6 +15782,2620 @@
      "fixedMin": 0,
      "fixedMax": 0,
      "edgeShare": 0.5
+    }
+   }
+  },
+  {
+   "name": "a pool with raised clutter (docs/adr/0037 \"Raised clutter\")",
+   "expect": "ok",
+   "scene": {
+    "format": "teleop-scene",
+    "version": 2,
+    "name": "vectors",
+    "robotProfile": "fr3-duo",
+    "surfaces": [
+     {
+      "id": "bench",
+      "center": [
+       -0.45,
+       0.0,
+       -0.02
+      ],
+      "size": [
+       1.3,
+       1.6,
+       0.04
+      ],
+      "colour": [
+       0.2,
+       0.2,
+       0.2
+      ],
+      "staticFriction": 0.6,
+      "dynamicFriction": 0.5,
+      "collides": true,
+      "headset": "builtin"
+     },
+     {
+      "id": "table",
+      "center": [
+       0.55,
+       0.0,
+       -0.02
+      ],
+      "size": [
+       0.7,
+       1.6,
+       0.04
+      ],
+      "colour": [
+       0.4,
+       0.4,
+       0.4
+      ],
+      "staticFriction": 0.6,
+      "dynamicFriction": 0.5,
+      "collides": true,
+      "headset": "show"
+     }
+    ],
+    "objects": [
+     {
+      "id": 1,
+      "name": "a",
+      "shape": "box",
+      "size": [
+       0.06,
+       0.06,
+       0.3
+      ],
+      "position": [
+       0.5,
+       0.3,
+       0.15
+      ],
+      "rpy": [
+       0,
+       0,
+       0
+      ],
+      "kind": "fixed",
+      "operatorMovable": true,
+      "staticFriction": 0.8,
+      "dynamicFriction": 0.6,
+      "colour": [
+       0.5,
+       0.5,
+       0.5
+      ],
+      "jitter": [
+       0.05,
+       0.05,
+       0.3
+      ]
+     },
+     {
+      "id": 2,
+      "name": "m1",
+      "shape": "box",
+      "size": [
+       0.06,
+       0.06,
+       0.3
+      ],
+      "position": [
+       0.6,
+       -0.3,
+       0.15
+      ],
+      "rpy": [
+       0,
+       0,
+       0
+      ],
+      "kind": "movable",
+      "mass": 0.2,
+      "operatorMovable": true,
+      "staticFriction": 0.8,
+      "dynamicFriction": 0.6,
+      "colour": [
+       0.5,
+       0.5,
+       0.5
+      ],
+      "jitter": [
+       0.0,
+       0.0,
+       0.0
+      ]
+     },
+     {
+      "id": 3,
+      "name": "m2",
+      "shape": "box",
+      "size": [
+       0.06,
+       0.06,
+       0.3
+      ],
+      "position": [
+       0.6,
+       -0.3,
+       0.15
+      ],
+      "rpy": [
+       0,
+       0,
+       0
+      ],
+      "kind": "movable",
+      "mass": 0.2,
+      "operatorMovable": true,
+      "staticFriction": 0.8,
+      "dynamicFriction": 0.6,
+      "colour": [
+       0.5,
+       0.5,
+       0.5
+      ],
+      "jitter": [
+       0.0,
+       0.0,
+       0.0
+      ]
+     },
+     {
+      "id": 4,
+      "name": "pen",
+      "shape": "box",
+      "size": [
+       0.14,
+       0.009,
+       0.009
+      ],
+      "position": [
+       0.6,
+       0.3,
+       0.0045
+      ],
+      "rpy": [
+       0,
+       0,
+       0
+      ],
+      "kind": "movable",
+      "mass": 0.05,
+      "operatorMovable": false,
+      "staticFriction": 0.5,
+      "dynamicFriction": 0.4,
+      "colour": [
+       0.1,
+       0.1,
+       0.1
+      ],
+      "jitter": [
+       0.0,
+       0.0,
+       0.0
+      ],
+      "clutter": true
+     },
+     {
+      "id": 5,
+      "name": "tape",
+      "shape": "box",
+      "size": [
+       0.045,
+       0.045,
+       0.025
+      ],
+      "position": [
+       0.6,
+       0.3,
+       0.0125
+      ],
+      "rpy": [
+       0,
+       0,
+       0
+      ],
+      "kind": "movable",
+      "mass": 0.05,
+      "operatorMovable": false,
+      "staticFriction": 0.5,
+      "dynamicFriction": 0.4,
+      "colour": [
+       0.1,
+       0.1,
+       0.1
+      ],
+      "jitter": [
+       0.0,
+       0.0,
+       0.0
+      ],
+      "clutter": true
+     }
+    ],
+    "placement": {
+     "xMin": 0.28,
+     "xMax": 0.85,
+     "yMin": -0.65,
+     "yMax": 0.65,
+     "clearance": 0.02
+    },
+    "pool": {
+     "movableMin": 1,
+     "movableMax": 2,
+     "fixedMin": 0,
+     "fixedMax": 1,
+     "robotKeepOut": [
+      -0.2,
+      0.1,
+      -0.15,
+      0.15
+     ],
+     "clusterShare": 0.6,
+     "lyingShare": 0.35,
+     "edgeShare": 0.5,
+     "edgeRegions": [
+      -0.5,
+      -0.3,
+      0.3,
+      0.7
+     ],
+     "clutterMin": 1,
+     "clutterMax": 2
+    }
+   }
+  },
+  {
+   "name": "clutter of 0 to 0 is none, and the clutter objects stay parked",
+   "expect": "ok",
+   "scene": {
+    "format": "teleop-scene",
+    "version": 2,
+    "name": "vectors",
+    "robotProfile": "fr3-duo",
+    "surfaces": [
+     {
+      "id": "bench",
+      "center": [
+       -0.45,
+       0.0,
+       -0.02
+      ],
+      "size": [
+       1.3,
+       1.6,
+       0.04
+      ],
+      "colour": [
+       0.2,
+       0.2,
+       0.2
+      ],
+      "staticFriction": 0.6,
+      "dynamicFriction": 0.5,
+      "collides": true,
+      "headset": "builtin"
+     },
+     {
+      "id": "table",
+      "center": [
+       0.55,
+       0.0,
+       -0.02
+      ],
+      "size": [
+       0.7,
+       1.6,
+       0.04
+      ],
+      "colour": [
+       0.4,
+       0.4,
+       0.4
+      ],
+      "staticFriction": 0.6,
+      "dynamicFriction": 0.5,
+      "collides": true,
+      "headset": "show"
+     }
+    ],
+    "objects": [
+     {
+      "id": 1,
+      "name": "a",
+      "shape": "box",
+      "size": [
+       0.06,
+       0.06,
+       0.3
+      ],
+      "position": [
+       0.5,
+       0.3,
+       0.15
+      ],
+      "rpy": [
+       0,
+       0,
+       0
+      ],
+      "kind": "fixed",
+      "operatorMovable": true,
+      "staticFriction": 0.8,
+      "dynamicFriction": 0.6,
+      "colour": [
+       0.5,
+       0.5,
+       0.5
+      ],
+      "jitter": [
+       0.05,
+       0.05,
+       0.3
+      ]
+     },
+     {
+      "id": 2,
+      "name": "m1",
+      "shape": "box",
+      "size": [
+       0.06,
+       0.06,
+       0.3
+      ],
+      "position": [
+       0.6,
+       -0.3,
+       0.15
+      ],
+      "rpy": [
+       0,
+       0,
+       0
+      ],
+      "kind": "movable",
+      "mass": 0.2,
+      "operatorMovable": true,
+      "staticFriction": 0.8,
+      "dynamicFriction": 0.6,
+      "colour": [
+       0.5,
+       0.5,
+       0.5
+      ],
+      "jitter": [
+       0.0,
+       0.0,
+       0.0
+      ]
+     },
+     {
+      "id": 3,
+      "name": "m2",
+      "shape": "box",
+      "size": [
+       0.06,
+       0.06,
+       0.3
+      ],
+      "position": [
+       0.6,
+       -0.3,
+       0.15
+      ],
+      "rpy": [
+       0,
+       0,
+       0
+      ],
+      "kind": "movable",
+      "mass": 0.2,
+      "operatorMovable": true,
+      "staticFriction": 0.8,
+      "dynamicFriction": 0.6,
+      "colour": [
+       0.5,
+       0.5,
+       0.5
+      ],
+      "jitter": [
+       0.0,
+       0.0,
+       0.0
+      ]
+     },
+     {
+      "id": 4,
+      "name": "pen",
+      "shape": "box",
+      "size": [
+       0.14,
+       0.009,
+       0.009
+      ],
+      "position": [
+       0.6,
+       0.3,
+       0.0045
+      ],
+      "rpy": [
+       0,
+       0,
+       0
+      ],
+      "kind": "movable",
+      "mass": 0.05,
+      "operatorMovable": false,
+      "staticFriction": 0.5,
+      "dynamicFriction": 0.4,
+      "colour": [
+       0.1,
+       0.1,
+       0.1
+      ],
+      "jitter": [
+       0.0,
+       0.0,
+       0.0
+      ],
+      "clutter": true
+     },
+     {
+      "id": 5,
+      "name": "tape",
+      "shape": "box",
+      "size": [
+       0.045,
+       0.045,
+       0.025
+      ],
+      "position": [
+       0.6,
+       0.3,
+       0.0125
+      ],
+      "rpy": [
+       0,
+       0,
+       0
+      ],
+      "kind": "movable",
+      "mass": 0.05,
+      "operatorMovable": false,
+      "staticFriction": 0.5,
+      "dynamicFriction": 0.4,
+      "colour": [
+       0.1,
+       0.1,
+       0.1
+      ],
+      "jitter": [
+       0.0,
+       0.0,
+       0.0
+      ],
+      "clutter": true
+     }
+    ],
+    "placement": {
+     "xMin": 0.28,
+     "xMax": 0.85,
+     "yMin": -0.65,
+     "yMax": 0.65,
+     "clearance": 0.02
+    },
+    "pool": {
+     "movableMin": 1,
+     "movableMax": 2,
+     "fixedMin": 0,
+     "fixedMax": 1,
+     "robotKeepOut": [
+      -0.2,
+      0.1,
+      -0.15,
+      0.15
+     ],
+     "clusterShare": 0.6,
+     "lyingShare": 0.35,
+     "edgeShare": 0.5,
+     "edgeRegions": [
+      -0.5,
+      -0.3,
+      0.3,
+      0.7
+     ],
+     "clutterMin": 0,
+     "clutterMax": 0
+    }
+   }
+  },
+  {
+   "name": "clutter may be a mesh",
+   "expect": "ok",
+   "scene": {
+    "format": "teleop-scene",
+    "version": 2,
+    "name": "vectors",
+    "robotProfile": "fr3-duo",
+    "surfaces": [
+     {
+      "id": "bench",
+      "center": [
+       -0.45,
+       0.0,
+       -0.02
+      ],
+      "size": [
+       1.3,
+       1.6,
+       0.04
+      ],
+      "colour": [
+       0.2,
+       0.2,
+       0.2
+      ],
+      "staticFriction": 0.6,
+      "dynamicFriction": 0.5,
+      "collides": true,
+      "headset": "builtin"
+     },
+     {
+      "id": "table",
+      "center": [
+       0.55,
+       0.0,
+       -0.02
+      ],
+      "size": [
+       0.7,
+       1.6,
+       0.04
+      ],
+      "colour": [
+       0.4,
+       0.4,
+       0.4
+      ],
+      "staticFriction": 0.6,
+      "dynamicFriction": 0.5,
+      "collides": true,
+      "headset": "show"
+     }
+    ],
+    "objects": [
+     {
+      "id": 1,
+      "name": "a",
+      "shape": "box",
+      "size": [
+       0.06,
+       0.06,
+       0.3
+      ],
+      "position": [
+       0.5,
+       0.3,
+       0.15
+      ],
+      "rpy": [
+       0,
+       0,
+       0
+      ],
+      "kind": "fixed",
+      "operatorMovable": true,
+      "staticFriction": 0.8,
+      "dynamicFriction": 0.6,
+      "colour": [
+       0.5,
+       0.5,
+       0.5
+      ],
+      "jitter": [
+       0.05,
+       0.05,
+       0.3
+      ]
+     },
+     {
+      "id": 2,
+      "name": "m1",
+      "shape": "box",
+      "size": [
+       0.06,
+       0.06,
+       0.3
+      ],
+      "position": [
+       0.6,
+       -0.3,
+       0.15
+      ],
+      "rpy": [
+       0,
+       0,
+       0
+      ],
+      "kind": "movable",
+      "mass": 0.2,
+      "operatorMovable": true,
+      "staticFriction": 0.8,
+      "dynamicFriction": 0.6,
+      "colour": [
+       0.5,
+       0.5,
+       0.5
+      ],
+      "jitter": [
+       0.0,
+       0.0,
+       0.0
+      ]
+     },
+     {
+      "id": 3,
+      "name": "m2",
+      "shape": "box",
+      "size": [
+       0.06,
+       0.06,
+       0.3
+      ],
+      "position": [
+       0.6,
+       -0.3,
+       0.15
+      ],
+      "rpy": [
+       0,
+       0,
+       0
+      ],
+      "kind": "movable",
+      "mass": 0.2,
+      "operatorMovable": true,
+      "staticFriction": 0.8,
+      "dynamicFriction": 0.6,
+      "colour": [
+       0.5,
+       0.5,
+       0.5
+      ],
+      "jitter": [
+       0.0,
+       0.0,
+       0.0
+      ]
+     },
+     {
+      "id": 4,
+      "name": "pen",
+      "shape": "box",
+      "size": [
+       0.14,
+       0.009,
+       0.009
+      ],
+      "position": [
+       0.6,
+       0.3,
+       0.0045
+      ],
+      "rpy": [
+       0,
+       0,
+       0
+      ],
+      "kind": "movable",
+      "mass": 0.05,
+      "operatorMovable": false,
+      "staticFriction": 0.5,
+      "dynamicFriction": 0.4,
+      "colour": [
+       0.1,
+       0.1,
+       0.1
+      ],
+      "jitter": [
+       0.0,
+       0.0,
+       0.0
+      ],
+      "clutter": true
+     },
+     {
+      "id": 5,
+      "name": "tape",
+      "shape": "mesh",
+      "size": [
+       0.045,
+       0.045,
+       0.025
+      ],
+      "position": [
+       0.6,
+       0.3,
+       0.0125
+      ],
+      "rpy": [
+       0,
+       0,
+       0
+      ],
+      "kind": "movable",
+      "mass": 0.05,
+      "operatorMovable": false,
+      "staticFriction": 0.5,
+      "dynamicFriction": 0.4,
+      "colour": [
+       0.1,
+       0.1,
+       0.1
+      ],
+      "jitter": [
+       0.0,
+       0.0,
+       0.0
+      ],
+      "clutter": true,
+      "asset": "polyhaven/medical_tape"
+     }
+    ],
+    "placement": {
+     "xMin": 0.28,
+     "xMax": 0.85,
+     "yMin": -0.65,
+     "yMax": 0.65,
+     "clearance": 0.02
+    },
+    "pool": {
+     "movableMin": 1,
+     "movableMax": 2,
+     "fixedMin": 0,
+     "fixedMax": 1,
+     "robotKeepOut": [
+      -0.2,
+      0.1,
+      -0.15,
+      0.15
+     ],
+     "clusterShare": 0.6,
+     "lyingShare": 0.35,
+     "edgeShare": 0.5,
+     "edgeRegions": [
+      -0.5,
+      -0.3,
+      0.3,
+      0.7
+     ],
+     "clutterMin": 1,
+     "clutterMax": 2
+    }
+   }
+  },
+  {
+   "name": "movableMax counts only the movable objects that are not clutter",
+   "expect": "pool",
+   "scene": {
+    "format": "teleop-scene",
+    "version": 2,
+    "name": "vectors",
+    "robotProfile": "fr3-duo",
+    "surfaces": [
+     {
+      "id": "bench",
+      "center": [
+       -0.45,
+       0.0,
+       -0.02
+      ],
+      "size": [
+       1.3,
+       1.6,
+       0.04
+      ],
+      "colour": [
+       0.2,
+       0.2,
+       0.2
+      ],
+      "staticFriction": 0.6,
+      "dynamicFriction": 0.5,
+      "collides": true,
+      "headset": "builtin"
+     },
+     {
+      "id": "table",
+      "center": [
+       0.55,
+       0.0,
+       -0.02
+      ],
+      "size": [
+       0.7,
+       1.6,
+       0.04
+      ],
+      "colour": [
+       0.4,
+       0.4,
+       0.4
+      ],
+      "staticFriction": 0.6,
+      "dynamicFriction": 0.5,
+      "collides": true,
+      "headset": "show"
+     }
+    ],
+    "objects": [
+     {
+      "id": 1,
+      "name": "a",
+      "shape": "box",
+      "size": [
+       0.06,
+       0.06,
+       0.3
+      ],
+      "position": [
+       0.5,
+       0.3,
+       0.15
+      ],
+      "rpy": [
+       0,
+       0,
+       0
+      ],
+      "kind": "fixed",
+      "operatorMovable": true,
+      "staticFriction": 0.8,
+      "dynamicFriction": 0.6,
+      "colour": [
+       0.5,
+       0.5,
+       0.5
+      ],
+      "jitter": [
+       0.05,
+       0.05,
+       0.3
+      ]
+     },
+     {
+      "id": 2,
+      "name": "m1",
+      "shape": "box",
+      "size": [
+       0.06,
+       0.06,
+       0.3
+      ],
+      "position": [
+       0.6,
+       -0.3,
+       0.15
+      ],
+      "rpy": [
+       0,
+       0,
+       0
+      ],
+      "kind": "movable",
+      "mass": 0.2,
+      "operatorMovable": true,
+      "staticFriction": 0.8,
+      "dynamicFriction": 0.6,
+      "colour": [
+       0.5,
+       0.5,
+       0.5
+      ],
+      "jitter": [
+       0.0,
+       0.0,
+       0.0
+      ]
+     },
+     {
+      "id": 3,
+      "name": "m2",
+      "shape": "box",
+      "size": [
+       0.06,
+       0.06,
+       0.3
+      ],
+      "position": [
+       0.6,
+       -0.3,
+       0.15
+      ],
+      "rpy": [
+       0,
+       0,
+       0
+      ],
+      "kind": "movable",
+      "mass": 0.2,
+      "operatorMovable": true,
+      "staticFriction": 0.8,
+      "dynamicFriction": 0.6,
+      "colour": [
+       0.5,
+       0.5,
+       0.5
+      ],
+      "jitter": [
+       0.0,
+       0.0,
+       0.0
+      ]
+     },
+     {
+      "id": 4,
+      "name": "pen",
+      "shape": "box",
+      "size": [
+       0.14,
+       0.009,
+       0.009
+      ],
+      "position": [
+       0.6,
+       0.3,
+       0.0045
+      ],
+      "rpy": [
+       0,
+       0,
+       0
+      ],
+      "kind": "movable",
+      "mass": 0.05,
+      "operatorMovable": false,
+      "staticFriction": 0.5,
+      "dynamicFriction": 0.4,
+      "colour": [
+       0.1,
+       0.1,
+       0.1
+      ],
+      "jitter": [
+       0.0,
+       0.0,
+       0.0
+      ],
+      "clutter": true
+     },
+     {
+      "id": 5,
+      "name": "tape",
+      "shape": "box",
+      "size": [
+       0.045,
+       0.045,
+       0.025
+      ],
+      "position": [
+       0.6,
+       0.3,
+       0.0125
+      ],
+      "rpy": [
+       0,
+       0,
+       0
+      ],
+      "kind": "movable",
+      "mass": 0.05,
+      "operatorMovable": false,
+      "staticFriction": 0.5,
+      "dynamicFriction": 0.4,
+      "colour": [
+       0.1,
+       0.1,
+       0.1
+      ],
+      "jitter": [
+       0.0,
+       0.0,
+       0.0
+      ],
+      "clutter": true
+     }
+    ],
+    "placement": {
+     "xMin": 0.28,
+     "xMax": 0.85,
+     "yMin": -0.65,
+     "yMax": 0.65,
+     "clearance": 0.02
+    },
+    "pool": {
+     "movableMin": 1,
+     "movableMax": 3,
+     "fixedMin": 0,
+     "fixedMax": 1,
+     "robotKeepOut": [
+      -0.2,
+      0.1,
+      -0.15,
+      0.15
+     ],
+     "clusterShare": 0.6,
+     "lyingShare": 0.35,
+     "edgeShare": 0.5,
+     "edgeRegions": [
+      -0.5,
+      -0.3,
+      0.3,
+      0.7
+     ],
+     "clutterMin": 1,
+     "clutterMax": 2
+    }
+   }
+  },
+  {
+   "name": "a pool asking for more clutter than it has",
+   "expect": "pool",
+   "scene": {
+    "format": "teleop-scene",
+    "version": 2,
+    "name": "vectors",
+    "robotProfile": "fr3-duo",
+    "surfaces": [
+     {
+      "id": "bench",
+      "center": [
+       -0.45,
+       0.0,
+       -0.02
+      ],
+      "size": [
+       1.3,
+       1.6,
+       0.04
+      ],
+      "colour": [
+       0.2,
+       0.2,
+       0.2
+      ],
+      "staticFriction": 0.6,
+      "dynamicFriction": 0.5,
+      "collides": true,
+      "headset": "builtin"
+     },
+     {
+      "id": "table",
+      "center": [
+       0.55,
+       0.0,
+       -0.02
+      ],
+      "size": [
+       0.7,
+       1.6,
+       0.04
+      ],
+      "colour": [
+       0.4,
+       0.4,
+       0.4
+      ],
+      "staticFriction": 0.6,
+      "dynamicFriction": 0.5,
+      "collides": true,
+      "headset": "show"
+     }
+    ],
+    "objects": [
+     {
+      "id": 1,
+      "name": "a",
+      "shape": "box",
+      "size": [
+       0.06,
+       0.06,
+       0.3
+      ],
+      "position": [
+       0.5,
+       0.3,
+       0.15
+      ],
+      "rpy": [
+       0,
+       0,
+       0
+      ],
+      "kind": "fixed",
+      "operatorMovable": true,
+      "staticFriction": 0.8,
+      "dynamicFriction": 0.6,
+      "colour": [
+       0.5,
+       0.5,
+       0.5
+      ],
+      "jitter": [
+       0.05,
+       0.05,
+       0.3
+      ]
+     },
+     {
+      "id": 2,
+      "name": "m1",
+      "shape": "box",
+      "size": [
+       0.06,
+       0.06,
+       0.3
+      ],
+      "position": [
+       0.6,
+       -0.3,
+       0.15
+      ],
+      "rpy": [
+       0,
+       0,
+       0
+      ],
+      "kind": "movable",
+      "mass": 0.2,
+      "operatorMovable": true,
+      "staticFriction": 0.8,
+      "dynamicFriction": 0.6,
+      "colour": [
+       0.5,
+       0.5,
+       0.5
+      ],
+      "jitter": [
+       0.0,
+       0.0,
+       0.0
+      ]
+     },
+     {
+      "id": 3,
+      "name": "m2",
+      "shape": "box",
+      "size": [
+       0.06,
+       0.06,
+       0.3
+      ],
+      "position": [
+       0.6,
+       -0.3,
+       0.15
+      ],
+      "rpy": [
+       0,
+       0,
+       0
+      ],
+      "kind": "movable",
+      "mass": 0.2,
+      "operatorMovable": true,
+      "staticFriction": 0.8,
+      "dynamicFriction": 0.6,
+      "colour": [
+       0.5,
+       0.5,
+       0.5
+      ],
+      "jitter": [
+       0.0,
+       0.0,
+       0.0
+      ]
+     },
+     {
+      "id": 4,
+      "name": "pen",
+      "shape": "box",
+      "size": [
+       0.14,
+       0.009,
+       0.009
+      ],
+      "position": [
+       0.6,
+       0.3,
+       0.0045
+      ],
+      "rpy": [
+       0,
+       0,
+       0
+      ],
+      "kind": "movable",
+      "mass": 0.05,
+      "operatorMovable": false,
+      "staticFriction": 0.5,
+      "dynamicFriction": 0.4,
+      "colour": [
+       0.1,
+       0.1,
+       0.1
+      ],
+      "jitter": [
+       0.0,
+       0.0,
+       0.0
+      ],
+      "clutter": true
+     },
+     {
+      "id": 5,
+      "name": "tape",
+      "shape": "box",
+      "size": [
+       0.045,
+       0.045,
+       0.025
+      ],
+      "position": [
+       0.6,
+       0.3,
+       0.0125
+      ],
+      "rpy": [
+       0,
+       0,
+       0
+      ],
+      "kind": "movable",
+      "mass": 0.05,
+      "operatorMovable": false,
+      "staticFriction": 0.5,
+      "dynamicFriction": 0.4,
+      "colour": [
+       0.1,
+       0.1,
+       0.1
+      ],
+      "jitter": [
+       0.0,
+       0.0,
+       0.0
+      ],
+      "clutter": true
+     }
+    ],
+    "placement": {
+     "xMin": 0.28,
+     "xMax": 0.85,
+     "yMin": -0.65,
+     "yMax": 0.65,
+     "clearance": 0.02
+    },
+    "pool": {
+     "movableMin": 1,
+     "movableMax": 2,
+     "fixedMin": 0,
+     "fixedMax": 1,
+     "robotKeepOut": [
+      -0.2,
+      0.1,
+      -0.15,
+      0.15
+     ],
+     "clusterShare": 0.6,
+     "lyingShare": 0.35,
+     "edgeShare": 0.5,
+     "edgeRegions": [
+      -0.5,
+      -0.3,
+      0.3,
+      0.7
+     ],
+     "clutterMin": 1,
+     "clutterMax": 3
+    }
+   }
+  },
+  {
+   "name": "a clutterMin above its clutterMax",
+   "expect": "pool",
+   "scene": {
+    "format": "teleop-scene",
+    "version": 2,
+    "name": "vectors",
+    "robotProfile": "fr3-duo",
+    "surfaces": [
+     {
+      "id": "bench",
+      "center": [
+       -0.45,
+       0.0,
+       -0.02
+      ],
+      "size": [
+       1.3,
+       1.6,
+       0.04
+      ],
+      "colour": [
+       0.2,
+       0.2,
+       0.2
+      ],
+      "staticFriction": 0.6,
+      "dynamicFriction": 0.5,
+      "collides": true,
+      "headset": "builtin"
+     },
+     {
+      "id": "table",
+      "center": [
+       0.55,
+       0.0,
+       -0.02
+      ],
+      "size": [
+       0.7,
+       1.6,
+       0.04
+      ],
+      "colour": [
+       0.4,
+       0.4,
+       0.4
+      ],
+      "staticFriction": 0.6,
+      "dynamicFriction": 0.5,
+      "collides": true,
+      "headset": "show"
+     }
+    ],
+    "objects": [
+     {
+      "id": 1,
+      "name": "a",
+      "shape": "box",
+      "size": [
+       0.06,
+       0.06,
+       0.3
+      ],
+      "position": [
+       0.5,
+       0.3,
+       0.15
+      ],
+      "rpy": [
+       0,
+       0,
+       0
+      ],
+      "kind": "fixed",
+      "operatorMovable": true,
+      "staticFriction": 0.8,
+      "dynamicFriction": 0.6,
+      "colour": [
+       0.5,
+       0.5,
+       0.5
+      ],
+      "jitter": [
+       0.05,
+       0.05,
+       0.3
+      ]
+     },
+     {
+      "id": 2,
+      "name": "m1",
+      "shape": "box",
+      "size": [
+       0.06,
+       0.06,
+       0.3
+      ],
+      "position": [
+       0.6,
+       -0.3,
+       0.15
+      ],
+      "rpy": [
+       0,
+       0,
+       0
+      ],
+      "kind": "movable",
+      "mass": 0.2,
+      "operatorMovable": true,
+      "staticFriction": 0.8,
+      "dynamicFriction": 0.6,
+      "colour": [
+       0.5,
+       0.5,
+       0.5
+      ],
+      "jitter": [
+       0.0,
+       0.0,
+       0.0
+      ]
+     },
+     {
+      "id": 3,
+      "name": "m2",
+      "shape": "box",
+      "size": [
+       0.06,
+       0.06,
+       0.3
+      ],
+      "position": [
+       0.6,
+       -0.3,
+       0.15
+      ],
+      "rpy": [
+       0,
+       0,
+       0
+      ],
+      "kind": "movable",
+      "mass": 0.2,
+      "operatorMovable": true,
+      "staticFriction": 0.8,
+      "dynamicFriction": 0.6,
+      "colour": [
+       0.5,
+       0.5,
+       0.5
+      ],
+      "jitter": [
+       0.0,
+       0.0,
+       0.0
+      ]
+     },
+     {
+      "id": 4,
+      "name": "pen",
+      "shape": "box",
+      "size": [
+       0.14,
+       0.009,
+       0.009
+      ],
+      "position": [
+       0.6,
+       0.3,
+       0.0045
+      ],
+      "rpy": [
+       0,
+       0,
+       0
+      ],
+      "kind": "movable",
+      "mass": 0.05,
+      "operatorMovable": false,
+      "staticFriction": 0.5,
+      "dynamicFriction": 0.4,
+      "colour": [
+       0.1,
+       0.1,
+       0.1
+      ],
+      "jitter": [
+       0.0,
+       0.0,
+       0.0
+      ],
+      "clutter": true
+     },
+     {
+      "id": 5,
+      "name": "tape",
+      "shape": "box",
+      "size": [
+       0.045,
+       0.045,
+       0.025
+      ],
+      "position": [
+       0.6,
+       0.3,
+       0.0125
+      ],
+      "rpy": [
+       0,
+       0,
+       0
+      ],
+      "kind": "movable",
+      "mass": 0.05,
+      "operatorMovable": false,
+      "staticFriction": 0.5,
+      "dynamicFriction": 0.4,
+      "colour": [
+       0.1,
+       0.1,
+       0.1
+      ],
+      "jitter": [
+       0.0,
+       0.0,
+       0.0
+      ],
+      "clutter": true
+     }
+    ],
+    "placement": {
+     "xMin": 0.28,
+     "xMax": 0.85,
+     "yMin": -0.65,
+     "yMax": 0.65,
+     "clearance": 0.02
+    },
+    "pool": {
+     "movableMin": 1,
+     "movableMax": 2,
+     "fixedMin": 0,
+     "fixedMax": 1,
+     "robotKeepOut": [
+      -0.2,
+      0.1,
+      -0.15,
+      0.15
+     ],
+     "clusterShare": 0.6,
+     "lyingShare": 0.35,
+     "edgeShare": 0.5,
+     "edgeRegions": [
+      -0.5,
+      -0.3,
+      0.3,
+      0.7
+     ],
+     "clutterMin": 2,
+     "clutterMax": 1
+    }
+   }
+  },
+  {
+   "name": "a negative clutterMin",
+   "expect": "pool",
+   "scene": {
+    "format": "teleop-scene",
+    "version": 2,
+    "name": "vectors",
+    "robotProfile": "fr3-duo",
+    "surfaces": [
+     {
+      "id": "bench",
+      "center": [
+       -0.45,
+       0.0,
+       -0.02
+      ],
+      "size": [
+       1.3,
+       1.6,
+       0.04
+      ],
+      "colour": [
+       0.2,
+       0.2,
+       0.2
+      ],
+      "staticFriction": 0.6,
+      "dynamicFriction": 0.5,
+      "collides": true,
+      "headset": "builtin"
+     },
+     {
+      "id": "table",
+      "center": [
+       0.55,
+       0.0,
+       -0.02
+      ],
+      "size": [
+       0.7,
+       1.6,
+       0.04
+      ],
+      "colour": [
+       0.4,
+       0.4,
+       0.4
+      ],
+      "staticFriction": 0.6,
+      "dynamicFriction": 0.5,
+      "collides": true,
+      "headset": "show"
+     }
+    ],
+    "objects": [
+     {
+      "id": 1,
+      "name": "a",
+      "shape": "box",
+      "size": [
+       0.06,
+       0.06,
+       0.3
+      ],
+      "position": [
+       0.5,
+       0.3,
+       0.15
+      ],
+      "rpy": [
+       0,
+       0,
+       0
+      ],
+      "kind": "fixed",
+      "operatorMovable": true,
+      "staticFriction": 0.8,
+      "dynamicFriction": 0.6,
+      "colour": [
+       0.5,
+       0.5,
+       0.5
+      ],
+      "jitter": [
+       0.05,
+       0.05,
+       0.3
+      ]
+     },
+     {
+      "id": 2,
+      "name": "m1",
+      "shape": "box",
+      "size": [
+       0.06,
+       0.06,
+       0.3
+      ],
+      "position": [
+       0.6,
+       -0.3,
+       0.15
+      ],
+      "rpy": [
+       0,
+       0,
+       0
+      ],
+      "kind": "movable",
+      "mass": 0.2,
+      "operatorMovable": true,
+      "staticFriction": 0.8,
+      "dynamicFriction": 0.6,
+      "colour": [
+       0.5,
+       0.5,
+       0.5
+      ],
+      "jitter": [
+       0.0,
+       0.0,
+       0.0
+      ]
+     },
+     {
+      "id": 3,
+      "name": "m2",
+      "shape": "box",
+      "size": [
+       0.06,
+       0.06,
+       0.3
+      ],
+      "position": [
+       0.6,
+       -0.3,
+       0.15
+      ],
+      "rpy": [
+       0,
+       0,
+       0
+      ],
+      "kind": "movable",
+      "mass": 0.2,
+      "operatorMovable": true,
+      "staticFriction": 0.8,
+      "dynamicFriction": 0.6,
+      "colour": [
+       0.5,
+       0.5,
+       0.5
+      ],
+      "jitter": [
+       0.0,
+       0.0,
+       0.0
+      ]
+     },
+     {
+      "id": 4,
+      "name": "pen",
+      "shape": "box",
+      "size": [
+       0.14,
+       0.009,
+       0.009
+      ],
+      "position": [
+       0.6,
+       0.3,
+       0.0045
+      ],
+      "rpy": [
+       0,
+       0,
+       0
+      ],
+      "kind": "movable",
+      "mass": 0.05,
+      "operatorMovable": false,
+      "staticFriction": 0.5,
+      "dynamicFriction": 0.4,
+      "colour": [
+       0.1,
+       0.1,
+       0.1
+      ],
+      "jitter": [
+       0.0,
+       0.0,
+       0.0
+      ],
+      "clutter": true
+     },
+     {
+      "id": 5,
+      "name": "tape",
+      "shape": "box",
+      "size": [
+       0.045,
+       0.045,
+       0.025
+      ],
+      "position": [
+       0.6,
+       0.3,
+       0.0125
+      ],
+      "rpy": [
+       0,
+       0,
+       0
+      ],
+      "kind": "movable",
+      "mass": 0.05,
+      "operatorMovable": false,
+      "staticFriction": 0.5,
+      "dynamicFriction": 0.4,
+      "colour": [
+       0.1,
+       0.1,
+       0.1
+      ],
+      "jitter": [
+       0.0,
+       0.0,
+       0.0
+      ],
+      "clutter": true
+     }
+    ],
+    "placement": {
+     "xMin": 0.28,
+     "xMax": 0.85,
+     "yMin": -0.65,
+     "yMax": 0.65,
+     "clearance": 0.02
+    },
+    "pool": {
+     "movableMin": 1,
+     "movableMax": 2,
+     "fixedMin": 0,
+     "fixedMax": 1,
+     "robotKeepOut": [
+      -0.2,
+      0.1,
+      -0.15,
+      0.15
+     ],
+     "clusterShare": 0.6,
+     "lyingShare": 0.35,
+     "edgeShare": 0.5,
+     "edgeRegions": [
+      -0.5,
+      -0.3,
+      0.3,
+      0.7
+     ],
+     "clutterMin": -1,
+     "clutterMax": 2
+    }
+   }
+  },
+  {
+   "name": "a fixed object marked as clutter",
+   "expect": "kind",
+   "scene": {
+    "format": "teleop-scene",
+    "version": 2,
+    "name": "vectors",
+    "robotProfile": "fr3-duo",
+    "surfaces": [
+     {
+      "id": "bench",
+      "center": [
+       -0.45,
+       0.0,
+       -0.02
+      ],
+      "size": [
+       1.3,
+       1.6,
+       0.04
+      ],
+      "colour": [
+       0.2,
+       0.2,
+       0.2
+      ],
+      "staticFriction": 0.6,
+      "dynamicFriction": 0.5,
+      "collides": true,
+      "headset": "builtin"
+     },
+     {
+      "id": "table",
+      "center": [
+       0.55,
+       0.0,
+       -0.02
+      ],
+      "size": [
+       0.7,
+       1.6,
+       0.04
+      ],
+      "colour": [
+       0.4,
+       0.4,
+       0.4
+      ],
+      "staticFriction": 0.6,
+      "dynamicFriction": 0.5,
+      "collides": true,
+      "headset": "show"
+     }
+    ],
+    "objects": [
+     {
+      "id": 1,
+      "name": "a",
+      "shape": "box",
+      "size": [
+       0.06,
+       0.06,
+       0.3
+      ],
+      "position": [
+       0.5,
+       0.3,
+       0.15
+      ],
+      "rpy": [
+       0,
+       0,
+       0
+      ],
+      "kind": "fixed",
+      "operatorMovable": true,
+      "staticFriction": 0.8,
+      "dynamicFriction": 0.6,
+      "colour": [
+       0.5,
+       0.5,
+       0.5
+      ],
+      "jitter": [
+       0.05,
+       0.05,
+       0.3
+      ]
+     },
+     {
+      "id": 2,
+      "name": "m1",
+      "shape": "box",
+      "size": [
+       0.06,
+       0.06,
+       0.3
+      ],
+      "position": [
+       0.6,
+       -0.3,
+       0.15
+      ],
+      "rpy": [
+       0,
+       0,
+       0
+      ],
+      "kind": "movable",
+      "mass": 0.2,
+      "operatorMovable": true,
+      "staticFriction": 0.8,
+      "dynamicFriction": 0.6,
+      "colour": [
+       0.5,
+       0.5,
+       0.5
+      ],
+      "jitter": [
+       0.0,
+       0.0,
+       0.0
+      ]
+     },
+     {
+      "id": 3,
+      "name": "m2",
+      "shape": "box",
+      "size": [
+       0.06,
+       0.06,
+       0.3
+      ],
+      "position": [
+       0.6,
+       -0.3,
+       0.15
+      ],
+      "rpy": [
+       0,
+       0,
+       0
+      ],
+      "kind": "movable",
+      "mass": 0.2,
+      "operatorMovable": true,
+      "staticFriction": 0.8,
+      "dynamicFriction": 0.6,
+      "colour": [
+       0.5,
+       0.5,
+       0.5
+      ],
+      "jitter": [
+       0.0,
+       0.0,
+       0.0
+      ]
+     },
+     {
+      "id": 4,
+      "name": "pen",
+      "shape": "box",
+      "size": [
+       0.14,
+       0.009,
+       0.009
+      ],
+      "position": [
+       0.6,
+       0.3,
+       0.0045
+      ],
+      "rpy": [
+       0,
+       0,
+       0
+      ],
+      "kind": "fixed",
+      "operatorMovable": false,
+      "staticFriction": 0.5,
+      "dynamicFriction": 0.4,
+      "colour": [
+       0.1,
+       0.1,
+       0.1
+      ],
+      "jitter": [
+       0.0,
+       0.0,
+       0.0
+      ],
+      "clutter": true
+     },
+     {
+      "id": 5,
+      "name": "tape",
+      "shape": "box",
+      "size": [
+       0.045,
+       0.045,
+       0.025
+      ],
+      "position": [
+       0.6,
+       0.3,
+       0.0125
+      ],
+      "rpy": [
+       0,
+       0,
+       0
+      ],
+      "kind": "movable",
+      "mass": 0.05,
+      "operatorMovable": false,
+      "staticFriction": 0.5,
+      "dynamicFriction": 0.4,
+      "colour": [
+       0.1,
+       0.1,
+       0.1
+      ],
+      "jitter": [
+       0.0,
+       0.0,
+       0.0
+      ],
+      "clutter": true
+     }
+    ],
+    "placement": {
+     "xMin": 0.28,
+     "xMax": 0.85,
+     "yMin": -0.65,
+     "yMax": 0.65,
+     "clearance": 0.02
+    },
+    "pool": {
+     "movableMin": 1,
+     "movableMax": 2,
+     "fixedMin": 0,
+     "fixedMax": 1,
+     "robotKeepOut": [
+      -0.2,
+      0.1,
+      -0.15,
+      0.15
+     ],
+     "clusterShare": 0.6,
+     "lyingShare": 0.35,
+     "edgeShare": 0.5,
+     "edgeRegions": [
+      -0.5,
+      -0.3,
+      0.3,
+      0.7
+     ],
+     "clutterMin": 1,
+     "clutterMax": 2
+    }
+   }
+  },
+  {
+   "name": "clutter without a pool",
+   "expect": "pool",
+   "scene": {
+    "format": "teleop-scene",
+    "version": 2,
+    "name": "vectors",
+    "robotProfile": "fr3-duo",
+    "surfaces": [
+     {
+      "id": "bench",
+      "center": [
+       -0.45,
+       0.0,
+       -0.02
+      ],
+      "size": [
+       1.3,
+       1.6,
+       0.04
+      ],
+      "colour": [
+       0.2,
+       0.2,
+       0.2
+      ],
+      "staticFriction": 0.6,
+      "dynamicFriction": 0.5,
+      "collides": true,
+      "headset": "builtin"
+     },
+     {
+      "id": "table",
+      "center": [
+       0.55,
+       0.0,
+       -0.02
+      ],
+      "size": [
+       0.7,
+       1.6,
+       0.04
+      ],
+      "colour": [
+       0.4,
+       0.4,
+       0.4
+      ],
+      "staticFriction": 0.6,
+      "dynamicFriction": 0.5,
+      "collides": true,
+      "headset": "show"
+     }
+    ],
+    "objects": [
+     {
+      "id": 1,
+      "name": "a",
+      "shape": "box",
+      "size": [
+       0.06,
+       0.06,
+       0.3
+      ],
+      "position": [
+       0.5,
+       0.3,
+       0.15
+      ],
+      "rpy": [
+       0,
+       0,
+       0
+      ],
+      "kind": "fixed",
+      "operatorMovable": true,
+      "staticFriction": 0.8,
+      "dynamicFriction": 0.6,
+      "colour": [
+       0.5,
+       0.5,
+       0.5
+      ],
+      "jitter": [
+       0.05,
+       0.05,
+       0.3
+      ]
+     },
+     {
+      "id": 2,
+      "name": "pen",
+      "shape": "box",
+      "size": [
+       0.14,
+       0.009,
+       0.009
+      ],
+      "position": [
+       0.6,
+       -0.3,
+       0.0045
+      ],
+      "rpy": [
+       0,
+       0,
+       0
+      ],
+      "kind": "movable",
+      "mass": 0.05,
+      "operatorMovable": false,
+      "staticFriction": 0.5,
+      "dynamicFriction": 0.4,
+      "colour": [
+       0.1,
+       0.1,
+       0.1
+      ],
+      "jitter": [
+       0.0,
+       0.0,
+       0.0
+      ],
+      "clutter": true
+     }
+    ],
+    "placement": {
+     "xMin": 0.28,
+     "xMax": 0.85,
+     "yMin": -0.65,
+     "yMax": 0.65,
+     "clearance": 0.02
+    }
+   }
+  },
+  {
+   "name": "a clutterMax without clutter or a pool",
+   "expect": "pool",
+   "scene": {
+    "format": "teleop-scene",
+    "version": 2,
+    "name": "vectors",
+    "robotProfile": "fr3-duo",
+    "surfaces": [
+     {
+      "id": "bench",
+      "center": [
+       -0.45,
+       0.0,
+       -0.02
+      ],
+      "size": [
+       1.3,
+       1.6,
+       0.04
+      ],
+      "colour": [
+       0.2,
+       0.2,
+       0.2
+      ],
+      "staticFriction": 0.6,
+      "dynamicFriction": 0.5,
+      "collides": true,
+      "headset": "builtin"
+     },
+     {
+      "id": "table",
+      "center": [
+       0.55,
+       0.0,
+       -0.02
+      ],
+      "size": [
+       0.7,
+       1.6,
+       0.04
+      ],
+      "colour": [
+       0.4,
+       0.4,
+       0.4
+      ],
+      "staticFriction": 0.6,
+      "dynamicFriction": 0.5,
+      "collides": true,
+      "headset": "show"
+     }
+    ],
+    "objects": [
+     {
+      "id": 1,
+      "name": "a",
+      "shape": "box",
+      "size": [
+       0.06,
+       0.06,
+       0.3
+      ],
+      "position": [
+       0.5,
+       0.3,
+       0.15
+      ],
+      "rpy": [
+       0,
+       0,
+       0
+      ],
+      "kind": "fixed",
+      "operatorMovable": true,
+      "staticFriction": 0.8,
+      "dynamicFriction": 0.6,
+      "colour": [
+       0.5,
+       0.5,
+       0.5
+      ],
+      "jitter": [
+       0.05,
+       0.05,
+       0.3
+      ]
+     }
+    ],
+    "placement": {
+     "xMin": 0.28,
+     "xMax": 0.85,
+     "yMin": -0.65,
+     "yMax": 0.65,
+     "clearance": 0.02
+    },
+    "pool": {
+     "clutterMin": 0,
+     "clutterMax": 1
+    }
+   }
+  },
+  {
+   "name": "clutter leaving the region at its nominal pose",
+   "expect": "fits",
+   "scene": {
+    "format": "teleop-scene",
+    "version": 2,
+    "name": "vectors",
+    "robotProfile": "fr3-duo",
+    "surfaces": [
+     {
+      "id": "bench",
+      "center": [
+       -0.45,
+       0.0,
+       -0.02
+      ],
+      "size": [
+       1.3,
+       1.6,
+       0.04
+      ],
+      "colour": [
+       0.2,
+       0.2,
+       0.2
+      ],
+      "staticFriction": 0.6,
+      "dynamicFriction": 0.5,
+      "collides": true,
+      "headset": "builtin"
+     },
+     {
+      "id": "table",
+      "center": [
+       0.55,
+       0.0,
+       -0.02
+      ],
+      "size": [
+       0.7,
+       1.6,
+       0.04
+      ],
+      "colour": [
+       0.4,
+       0.4,
+       0.4
+      ],
+      "staticFriction": 0.6,
+      "dynamicFriction": 0.5,
+      "collides": true,
+      "headset": "show"
+     }
+    ],
+    "objects": [
+     {
+      "id": 1,
+      "name": "a",
+      "shape": "box",
+      "size": [
+       0.06,
+       0.06,
+       0.3
+      ],
+      "position": [
+       0.5,
+       0.3,
+       0.15
+      ],
+      "rpy": [
+       0,
+       0,
+       0
+      ],
+      "kind": "fixed",
+      "operatorMovable": true,
+      "staticFriction": 0.8,
+      "dynamicFriction": 0.6,
+      "colour": [
+       0.5,
+       0.5,
+       0.5
+      ],
+      "jitter": [
+       0.05,
+       0.05,
+       0.3
+      ]
+     },
+     {
+      "id": 2,
+      "name": "m1",
+      "shape": "box",
+      "size": [
+       0.06,
+       0.06,
+       0.3
+      ],
+      "position": [
+       0.6,
+       -0.3,
+       0.15
+      ],
+      "rpy": [
+       0,
+       0,
+       0
+      ],
+      "kind": "movable",
+      "mass": 0.2,
+      "operatorMovable": true,
+      "staticFriction": 0.8,
+      "dynamicFriction": 0.6,
+      "colour": [
+       0.5,
+       0.5,
+       0.5
+      ],
+      "jitter": [
+       0.0,
+       0.0,
+       0.0
+      ]
+     },
+     {
+      "id": 3,
+      "name": "m2",
+      "shape": "box",
+      "size": [
+       0.06,
+       0.06,
+       0.3
+      ],
+      "position": [
+       0.6,
+       -0.3,
+       0.15
+      ],
+      "rpy": [
+       0,
+       0,
+       0
+      ],
+      "kind": "movable",
+      "mass": 0.2,
+      "operatorMovable": true,
+      "staticFriction": 0.8,
+      "dynamicFriction": 0.6,
+      "colour": [
+       0.5,
+       0.5,
+       0.5
+      ],
+      "jitter": [
+       0.0,
+       0.0,
+       0.0
+      ]
+     },
+     {
+      "id": 4,
+      "name": "pen",
+      "shape": "box",
+      "size": [
+       0.14,
+       0.009,
+       0.009
+      ],
+      "position": [
+       0.84,
+       0.3,
+       0.0045
+      ],
+      "rpy": [
+       0,
+       0,
+       0
+      ],
+      "kind": "movable",
+      "mass": 0.05,
+      "operatorMovable": false,
+      "staticFriction": 0.5,
+      "dynamicFriction": 0.4,
+      "colour": [
+       0.1,
+       0.1,
+       0.1
+      ],
+      "jitter": [
+       0.0,
+       0.0,
+       0.0
+      ],
+      "clutter": true
+     },
+     {
+      "id": 5,
+      "name": "tape",
+      "shape": "box",
+      "size": [
+       0.045,
+       0.045,
+       0.025
+      ],
+      "position": [
+       0.6,
+       0.3,
+       0.0125
+      ],
+      "rpy": [
+       0,
+       0,
+       0
+      ],
+      "kind": "movable",
+      "mass": 0.05,
+      "operatorMovable": false,
+      "staticFriction": 0.5,
+      "dynamicFriction": 0.4,
+      "colour": [
+       0.1,
+       0.1,
+       0.1
+      ],
+      "jitter": [
+       0.0,
+       0.0,
+       0.0
+      ],
+      "clutter": true
+     }
+    ],
+    "placement": {
+     "xMin": 0.28,
+     "xMax": 0.85,
+     "yMin": -0.65,
+     "yMax": 0.65,
+     "clearance": 0.02
+    },
+    "pool": {
+     "movableMin": 1,
+     "movableMax": 2,
+     "fixedMin": 0,
+     "fixedMax": 1,
+     "robotKeepOut": [
+      -0.2,
+      0.1,
+      -0.15,
+      0.15
+     ],
+     "clusterShare": 0.6,
+     "lyingShare": 0.35,
+     "edgeShare": 0.5,
+     "edgeRegions": [
+      -0.5,
+      -0.3,
+      0.3,
+      0.7
+     ],
+     "clutterMin": 1,
+     "clutterMax": 2
     }
    }
   }

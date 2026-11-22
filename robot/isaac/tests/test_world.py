@@ -363,6 +363,47 @@ def test_a_movable_object_may_be_placed_by_the_edge_and_a_fixed_one_may_not():
     assert m.check(wire.CAUSE_LAYOUT, s.objects[fixture].id, at(-0.16, y, z=0.0), no_arm)[0] == wire.OUTSIDE_REGION
 
 
+def test_clutter_is_placed_anywhere_in_the_region_flat_by_the_rules_every_movable_object_has():
+    # docs/adr/0037 "Raised clutter": RobotHost stands a layout's clutter anywhere in the placement region, flat as the file has
+    # it, out of the arm's reach too (the cameras' foreground). The bridge places it by the rules of every movable object.
+    m = pool_model()
+    s, pen, tape = m.scene, named(m, "pen"), named(m, "tape-roll")
+    o = s.objects[pen]
+    assert o.clutter and o.movable and not o.operator_movable and s.clutter == (1, 3)
+    x, y = s.region[1] - o.footprint_radius - 0.001, s.region[3] - o.footprint_radius - 0.001  # the region's far corner
+    assert math.hypot(x, y) > 0.30  # beyond the reach band the pool's other movable objects stand in
+    outcome, i, placed = m.check(wire.CAUSE_LAYOUT, o.id, s.pose_at(pen, x, y, 0.4), no_arm)
+    assert (outcome, i) == (wire.APPLIED, pen) and scene.rest_of(placed) == (scene.REST_UPRIGHT, pytest.approx(0.4, abs=1e-12))
+    assert abs(placed[2] - (s.table.top + o.size[2] / 2)) < 1e-12  # flat on the table, 4.5 mm up
+    m.apply(pen, placed)
+    assert m.flags(pen) == 0  # a dynamic body on the table: the arm can push it about
+    # Another object keeps clear of its footprint; off the region, or on the robot's keep-out, it is refused.
+    assert m.check(wire.CAUSE_LAYOUT, s.objects[tape].id, s.pose_at(tape, x, y, 0.0), no_arm)[0] == wire.OVERLAPS_OBJECT
+    assert m.check(wire.CAUSE_LAYOUT, o.id, s.pose_at(pen, s.region[1] + 0.05, 0.0, 0.0), no_arm)[0] == wire.OUTSIDE_REGION
+    assert m.check(wire.CAUSE_LAYOUT, o.id, s.pose_at(pen, 0.2, 0.0, 0.0), no_arm)[0] == wire.OUTSIDE_REGION  # in the region, on the robot
+    # It never lies on a side, and the headset leaves it alone.
+    assert not any(o.can_lie(r) for r in range(scene.REST_COUNT))
+    assert m.check(wire.CAUSE_HEADSET, o.id, s.pose_at(pen, 0.3, 0.0, 0.0), no_arm)[0] == wire.NOT_MOVABLE
+
+
+def test_clutter_is_its_own_rectangle_at_its_heading_where_its_circle_would_not_fit():
+    # docs/adr/0037 "Raised clutter": the screwdrivers' circle is 29 cm across; turned along y, the pair is 10 cm deep and stands by
+    # the region's far edge, as RobotHost draws it. Across, it would reach past the edge. Rules 5 and 6 take the same rectangle.
+    m = pool_model()
+    s, sd, pen = m.scene, named(m, "screwdrivers"), named(m, "pen")
+    o = s.objects[sd]
+    x = s.region[1] - o.size[0] / 2 - 0.001
+    assert not s.fits_on_table(sd, x, 0.0)  # its circle, which holds it at any heading
+    outcome, _, placed = m.check(wire.CAUSE_LAYOUT, o.id, s.pose_at(sd, x, 0.0, 0.0), no_arm)
+    assert outcome == wire.APPLIED
+    assert m.check(wire.CAUSE_LAYOUT, o.id, s.pose_at(sd, x, 0.0, math.pi / 2), no_arm)[0] == wire.OUTSIDE_REGION
+    m.apply(sd, placed)
+    # A pen lying along it in front of it (nearer the robot) keeps the 1 cm clearance from its side at 1.05 cm; at 0.95 cm, not.
+    gap = o.size[0] / 2 + s.objects[pen].size[1] / 2
+    assert m.check(wire.CAUSE_LAYOUT, s.objects[pen].id, s.pose_at(pen, x - gap - 0.0105, 0.0, math.pi / 2), no_arm)[0] == wire.APPLIED
+    assert m.check(wire.CAUSE_LAYOUT, s.objects[pen].id, s.pose_at(pen, x - gap - 0.0095, 0.0, math.pi / 2), no_arm)[0] == wire.OVERLAPS_OBJECT
+
+
 def test_a_resize_stands_the_object_up_clear_of_a_lying_neighbour_as_it_lies():
     m = model()  # the FR3 bench: every object may be resized
     s, post, can = m.scene, 0, 3

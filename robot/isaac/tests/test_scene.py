@@ -74,6 +74,9 @@ def test_the_rests_and_spots_are_cores():
     s = scene.load(path)
     assert [s.cluster_share, s.lying_share, s.edge_share] == pytest.approx(g["shares"], abs=1e-12)
     assert list(s.edge_regions) == pytest.approx(g["edgeRegions"], abs=1e-12)
+    # docs/adr/0037 "Raised clutter": the same clutter, and the same range a layout stands of it.
+    assert list(s.clutter) == [int(v) for v in g["clutterRange"]]
+    assert [o.name for o in s.objects if o.clutter] == g["clutterObjects"]
     assert [o.name for o in s.objects] == [e["name"] for e in g["objects"]]
     for o, e in zip(s.objects, g["objects"]):
         for rest, (ex, ey, ez, radius, lie) in enumerate(e["rests"]):
@@ -90,6 +93,14 @@ def test_the_rests_and_spots_are_cores():
         assert s.fits_on_table(int(i), x, y, 1.0, int(rest)) == bool(fits), (s.objects[int(i)].name, rest, x, y)
     for a, ax, ay, ra, b, bx, by, rb, hit in g["overlaps"]:
         assert s.overlaps(int(a), ax, ay, int(b), bx, by, 1.0, 1.0, int(ra), int(rb)) == bool(hit), (a, b, ra, rb)
+    # docs/adr/0037 "Raised clutter": given its yaw, a piece of clutter is its own rectangle, in both readers, or Isaac refuses
+    # what RobotHost stands (OUTSIDE_REGION, OVERLAPS_OBJECT).
+    assert sum(f for *_, f in g["clutterFits"]) > 20 and sum(1 - f for *_, f in g["clutterFits"]) > 20
+    for i, x, y, yaw, fits in g["clutterFits"]:
+        assert s.fits_on_table(int(i), x, y, 1.0, scene.REST_UPRIGHT, yaw) == bool(fits), (s.objects[int(i)].name, x, y, yaw)
+    assert sum(h for *_, h in g["clutterOverlaps"]) > 20 and sum(1 - h for *_, h in g["clutterOverlaps"]) > 20
+    for a, ax, ay, ya, ra, b, bx, by, yb, rb, hit in g["clutterOverlaps"]:
+        assert s.overlaps(int(a), ax, ay, int(b), bx, by, 1.0, 1.0, int(ra), int(rb), ya, yb) == bool(hit), (a, b, ya, yb)
 
 
 def test_a_rest_round_trips_through_its_pose_and_a_tilt_keeps_it():

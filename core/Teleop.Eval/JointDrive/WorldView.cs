@@ -46,14 +46,15 @@ namespace Teleop.Eval.JointDrive
         /// a scanned object also has its own shape in that box, at its size.
         /// </summary>
         public static SafetyObject Bounds(SceneObject o, double scale, double x, double y, double z, double qw, double qx, double qy, double qz,
-            ObjectShapes? shapes = null)
+            ObjectShapes? shapes = null, bool scenery = false)
         {
             var rotation = Quaternion.Normalize(new Quaternion((float)qx, (float)qy, (float)qz, (float)qw));
             var half = new Vector3((float)(o.SizeX * scale / 2), (float)(o.SizeY * scale / 2), (float)(o.SizeZ * scale / 2));
             var centre = new Vector3((float)x, (float)y, (float)z);
 
             // Mass at size, as Isaac's bodies have it; tippy from the proportions as it rests (a uniform size keeps them).
-            return new SafetyObject(o.Id, centre, rotation, half, o.Movable, o.Mass * scale * scale * scale, IsTippy(o, qw, qx, qy, qz, shapes?.For(o)), shapes?.For(o)?.At(half));
+            return new SafetyObject(o.Id, centre, rotation, half, o.Movable, o.Mass * scale * scale * scale, IsTippy(o, qw, qx, qy, qz, shapes?.For(o)), shapes?.For(o)?.At(half),
+                scenery);
         }
 
         /// <summary>
@@ -93,7 +94,8 @@ namespace Teleop.Eval.JointDrive
             {
                 if (!state.TryGet(o.Id, out ObjectPose p, out _)) return false;
                 if (p.Parked) continue;
-                objects.Add(Bounds(o, state.Scale(o.Id), p.X, p.Y, p.Z, p.Qw, p.Qx, p.Qy, p.Qz, shapes));
+                // A movable object standing by the bench's edge is scenery (docs/adr/0037 amendment 6), an obstacle and never a target.
+                objects.Add(Bounds(o, state.Scale(o.Id), p.X, p.Y, p.Z, p.Qw, p.Qx, p.Qy, p.Qz, shapes, o.Movable && state.Scene.InEdgeRegions(p.X, p.Y)));
             }
 
             return true;

@@ -78,9 +78,22 @@ namespace Teleop.Eval.Tests.JointDrive
         {
             DrivePlan plan = Plan(DriveScript.CollideAndRecover);
             ArmPose[] poses = Poses(plan).ToArray();
-            int touching = poses.Count(p => Within(p, Bench, 0f));
-            // A touch, not a push: easing in, a moment held, easing out (by the model's boxes, ~15 mm larger than Isaac's links).
-            Assert.InRange(touching * 0.01, 0.05, 3.0);
+            // A touch, not a push: easing in, a moment held, easing out (by the model's boxes). Several a take since 2026-11-21
+            // (docs/adr/0036 amendment 5): each stretch in contact is one touch, and there is one for each event.
+            var stretches = new List<int>();
+            for (int i = 0, run = 0; i <= poses.Length; i++)
+            {
+                if (i < poses.Length && Within(poses[i], Bench, 0f)) run++;
+                else if (run > 0)
+                {
+                    stretches.Add(run);
+                    run = 0;
+                }
+            }
+
+            Assert.NotEmpty(stretches);
+            Assert.All(stretches, n => Assert.InRange(n * 0.01, 0.05, 3.0));
+            Assert.True(stretches.Count >= plan.Events.Count, $"{stretches.Count} stretches in contact, {plan.Events.Count} touches planned");
             // Never deep: each object at most 2 mm past its own touch depth (TouchDepthMeters, kept 3 mm short of its middle).
             foreach (SafetyObject o in Bench)
             {
@@ -145,7 +158,10 @@ namespace Teleop.Eval.Tests.JointDrive
                 var objects = on.Select(i => WorldView.Bounds(scene.Objects[i], scales[i], poses[i].X, poses[i].Y, poses[i].Z, poses[i].Qw, poses[i].Qx, poses[i].Qy, poses[i].Qz, shapes)).ToArray();
                 foreach (DriveScript script in new[] { DriveScript.ReachNoObstacle, DriveScript.StopBeforeCollision, DriveScript.CollideAndRecover, DriveScript.CollideWithObstacle })
                 {
-                    var roles = new SafetyOptions { KnockMaxKg = scene.KnockMaxMass }; // as joint-drive plans it (--scene)
+                    // As joint-drive plans it (--scene), but for the first event alone: a take plans when its first event does (later
+                    // ones that find no approach are left out, docs/adr/0036 amendment 5), and the count is drawn before any of the first event's
+                    // draws, so it is the one a take with up to three would plan. Three would only make this test slower.
+                    var roles = new SafetyOptions { KnockMaxKg = scene.KnockMaxMass, MaxEvents = 1 };
                     if (DrivePlan.TryBuild(script, Profile, Model.Home, 2.5f, 20, seed, Envelope, out DrivePlan? plan, out string? error, objects, roles))
                     {
                         planned[script] = planned.GetValueOrDefault(script) + 1;

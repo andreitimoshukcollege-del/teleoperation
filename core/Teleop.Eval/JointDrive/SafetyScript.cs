@@ -42,6 +42,61 @@ namespace Teleop.Eval.JointDrive
         /// squat object slides before it tips; see <see cref="SafetyObject.Tippy"/>).
         /// </summary>
         public bool Steady(in SafetyObject o) => !o.Movable || (KnockMaxKg > 0 && o.Mass > KnockMaxKg) || !o.Tippy;
+
+        /// <summary>
+        /// The planner as it was until 2026-11-21 (docs/adr/0036 amendments 2 and 3): 3-8 s of free movement after a reaction
+        /// time, one event, and the take ending during the move after it. Only to plan again what was recorded then
+        /// (<c>TouchMissesTests</c>): every draw is the same as it was.
+        /// </summary>
+        public bool OneEventAtTheEnd { get; set; }
+
+        /// <summary>
+        /// How many events a take of stop_before_collision, collide_and_recover or collide_with_obstacle has: drawn uniformly
+        /// from <see cref="MinEvents"/> to <see cref="MaxEvents"/> (docs/adr/0036 amendment 5; joint-drive --events). Fewer may
+        /// be planned: a later event that finds no approach, or would make the take longer than <see cref="MaxTakeSeconds"/>,
+        /// is left out, and after a knock the next is planned only once the objects have settled.
+        /// </summary>
+        public int MinEvents { get; set; } = 1;
+
+        /// <summary>See <see cref="MinEvents"/>.</summary>
+        public int MaxEvents { get; set; } = 3;
+
+        /// <summary>Free movement before the first event, seconds (uniform between the two).</summary>
+        public double LeadMinSeconds { get; set; } = 0.5;
+
+        /// <summary>See <see cref="LeadMinSeconds"/>.</summary>
+        public double LeadMaxSeconds { get; set; } = 4.0;
+
+        /// <summary>Free movement between one event and the approach to the next, seconds (uniform between the two); after a knock, at least until the objects have settled and the next is planned.</summary>
+        public double BetweenMinSeconds { get; set; } = 1.5;
+
+        /// <summary>See <see cref="BetweenMinSeconds"/>.</summary>
+        public double BetweenMaxSeconds { get; set; } = 5.0;
+
+        /// <summary>Free movement after the last event before the take ends, seconds (uniform between the two), longer when the take would otherwise be shorter than <see cref="MinTakeSeconds"/>.</summary>
+        public double TailMinSeconds { get; set; } = 1.0;
+
+        /// <summary>See <see cref="TailMinSeconds"/>.</summary>
+        public double TailMaxSeconds { get; set; } = 4.0;
+
+        /// <summary>The shortest take of an event category, seconds: the tail grows to it.</summary>
+        public double MinTakeSeconds { get; set; } = 10.0;
+
+        /// <summary>The longest take of an event category, seconds: an event that would end the take later is left out.</summary>
+        public double MaxTakeSeconds { get; set; } = 30.0;
+
+        /// <summary>Throws when the event and timing options make no sense together.</summary>
+        public void Validate()
+        {
+            if (MinEvents < 1 || MaxEvents < MinEvents || MaxEvents > 10) throw new ArgumentException($"events must be 1 <= min <= max <= 10, not {MinEvents}-{MaxEvents}");
+            foreach ((double lo, double hi, string name) in new[] { (LeadMinSeconds, LeadMaxSeconds, "lead"), (BetweenMinSeconds, BetweenMaxSeconds, "between"),
+                         (TailMinSeconds, TailMaxSeconds, "tail") })
+            {
+                if (!(lo >= 0 && hi >= lo)) throw new ArgumentException($"{name} seconds must be 0 <= min <= max, not {lo}-{hi}");
+            }
+
+            if (!(MinTakeSeconds >= 0 && MaxTakeSeconds > MinTakeSeconds)) throw new ArgumentException($"take seconds must be 0 <= min < max, not {MinTakeSeconds}-{MaxTakeSeconds}");
+        }
     }
 
     /// <summary>
@@ -82,15 +137,22 @@ namespace Teleop.Eval.JointDrive
         /// </summary>
         public readonly ObjectShape? Shape;
 
+        /// <summary>
+        /// Scenery for the cameras, never a script's target (docs/adr/0037 amendment 6: the object a layout stands by the bench's
+        /// edge, out of the arm's reach on purpose); still an obstacle. Several events a take skip it (docs/adr/0036 amendment 5):
+        /// every search would otherwise spend its sweeps on it before going back to an object already aimed at.
+        /// </summary>
+        public readonly bool Scenery;
+
         /// <summary>An axis-aligned object.</summary>
-        public SafetyObject(byte id, Vector3 min, Vector3 max, bool movable = true, double mass = 0, bool tippy = false, ObjectShape? shape = null)
-            : this(id, (min + max) / 2f, Quaternion.Identity, (max - min) / 2f, movable, mass, tippy, shape)
+        public SafetyObject(byte id, Vector3 min, Vector3 max, bool movable = true, double mass = 0, bool tippy = false, ObjectShape? shape = null, bool scenery = false)
+            : this(id, (min + max) / 2f, Quaternion.Identity, (max - min) / 2f, movable, mass, tippy, shape, scenery)
         {
         }
 
         /// <summary>A turned object: its box centred at <paramref name="center"/>, turned by <paramref name="rotation"/>.</summary>
         public SafetyObject(byte id, Vector3 center, Quaternion rotation, Vector3 halfExtents, bool movable = true, double mass = 0, bool tippy = false,
-            ObjectShape? shape = null)
+            ObjectShape? shape = null, bool scenery = false)
         {
             Id = id;
             Center = center;
@@ -103,6 +165,7 @@ namespace Teleop.Eval.JointDrive
             Mass = mass;
             Tippy = tippy;
             Shape = shape;
+            Scenery = scenery;
         }
 
         public CollisionBox Box(float grow) => new CollisionBox($"object {Id}", Center, Rotation, HalfExtents + new Vector3(grow));
@@ -113,7 +176,7 @@ namespace Teleop.Eval.JointDrive
             Vector3 half = grow >= 0
                 ? HalfExtents + new Vector3(grow)
                 : HalfExtents - Vector3.Min(new Vector3(-grow), HalfExtents - new Vector3(0.0005f));
-            return new SafetyObject(Id, Center, Rotation, half, Movable, Mass, Tippy, Shape);
+            return new SafetyObject(Id, Center, Rotation, half, Movable, Mass, Tippy, Shape, Scenery);
         }
     }
 
@@ -250,6 +313,8 @@ namespace Teleop.Eval.JointDrive
         /// Appends the script's episode from <paramref name="t"/>, moving <paramref name="current"/> along: until
         /// <paramref name="end"/> for reach_no_obstacle, one approach (with free movement before it) for the others. False, with
         /// the reason, when no object can be approached as the script needs (or, for reach_no_obstacle, no free movement exists).
+        /// <para>The planner as it was until 2026-11-21 (<see cref="SafetyOptions.OneEventAtTheEnd"/>): one event, at the end.
+        /// Takes are planned by <see cref="SafetyTake"/> now, with several events at any point (docs/adr/0036 amendment 5).</para>
         /// </summary>
         public static bool Append(DriveScript script, in RobotArmProfile profile, ArmCollisionModel model, in DriveEnvelope envelope,
             IReadOnlyList<SafetyObject> objects, float speed, ref ArmPose current, ref double t, double end, ref SeededRng rng,
@@ -265,8 +330,6 @@ namespace Teleop.Eval.JointDrive
             }
 
             var hand = new HumanOperator(profile, envelope, current, rng.NextUInt64());
-            Vector3 home = HandModel.Wrist(profile, model.Home);
-            float homePitch = HandModel.PitchOf(model.Home);
             if (script == DriveScript.ReachNoObstacle)
             {
                 if (!hand.FreeUntil(end - t, clear))
@@ -293,6 +356,55 @@ namespace Teleop.Eval.JointDrive
                 return false;
             }
 
+            if (TryAnyEvent(script, profile, model, envelope, objects, hand, ref rng, options, null, null, false, out _))
+            {
+                double t0 = t; // the hand's timeline starts here in the plan
+                hand.AppendLegs(legs, ref t, ref current);
+                EndMoving(legs, ref t, ref current, ref rng, t0 + hand.OnwardStart, t0 + hand.OnwardEnd);
+                return true;
+            }
+
+            error = $"no object could be approached for {Category(script)} from {DrivePlan.Describe(current)}";
+            return false;
+        }
+
+        /// <summary>What <see cref="TryAnyEvent"/> planned: the object, the event's kind and times on the hand's timeline, and the way its final approach went.</summary>
+        internal readonly struct PlannedEvent
+        {
+            public readonly int Object; // its index in the objects planned around
+            public readonly HandEvent Kind;
+            public readonly double ApproachStart, FinalStart, Contact, End, Clear;
+            public readonly Vector3 Way; // the final approach's direction at its aim (a swipe's: where the object is sent)
+
+            public PlannedEvent(int obj, HandEvent kind, double approachStart, double finalStart, double contact, double end, double clear, Vector3 way)
+            {
+                Object = obj;
+                Kind = kind;
+                ApproachStart = approachStart;
+                FinalStart = finalStart;
+                Contact = contact;
+                End = end;
+                Clear = clear;
+                Way = way;
+            }
+        }
+
+        /// <summary>
+        /// One event of <paramref name="script"/> from where <paramref name="hand"/> is: objects in a random order, by their
+        /// role's rank, and for each its sweeps in turn: the first approach that works (<see cref="TryEvent"/>) is planned onto
+        /// the hand. False, with the hand as it was, when none works within <see cref="MaxBuilds"/> approaches.
+        /// <para>With <paramref name="used"/> (several events a take, docs/adr/0036 amendment 5), objects already aimed at are
+        /// tried after every other, and the share of collide_and_recover events that try a fixture first is drawn per event;
+        /// with <paramref name="after"/>, the arm must be clear of it once the event is over, where free movement takes over.
+        /// With neither, every draw is the one-event planner's (<see cref="SafetyOptions.OneEventAtTheEnd"/>).</para>
+        /// </summary>
+        internal static bool TryAnyEvent(DriveScript script, in RobotArmProfile profile, ArmCollisionModel model, in DriveEnvelope envelope,
+            IReadOnlyList<SafetyObject> objects, HumanOperator hand, ref SeededRng rng, SafetyOptions options, ICollection<byte>? used,
+            Func<int, ArmCollisionModel>? after, bool multi, out PlannedEvent planned)
+        {
+            planned = default;
+            Vector3 home = HandModel.Wrist(profile, model.Home);
+            float homePitch = HandModel.PitchOf(model.Home);
             HandSnapshot rolled = hand.Save();
 
             // Objects in a random order; for each, its sweeps in turn: the first approach that works.
@@ -319,21 +431,25 @@ namespace Teleop.Eval.JointDrive
             // approached, the others are tried (2026-11-16: with fixtures beside the robot and many low objects, steady ones
             // alone left 10 of 16 layouts unplannable; a tipped object sets the take aside at its check instead). A fixture is
             // always steady and, swept along its side, nearly always in reach, so it would be nearly every touch (34 of 40
-            // layouts): it is tried first in FixtureFirstShare of the takes, and after every movable object in the rest.
+            // layouts): it is tried first in FixtureFirstShare of the takes (of the events, with several a take), and after
+            // every movable object in the rest. With several events, an object already aimed at comes after all the others.
             bool roles = options.KnockMaxKg > 0;
             bool fixtureFirst = script == DriveScript.CollideAndRecover && roles && rng.NextDouble() < FixtureFirstShare;
             int Rank(in SafetyObject o)
             {
-                if (script != DriveScript.CollideAndRecover || !roles) return 0;
-                if (!o.Movable) return fixtureFirst ? 0 : 2;
-                return options.Steady(o) ? 0 : 1;
+                int again = used != null && used.Contains(o.Id) ? 3 : 0;
+                if (script != DriveScript.CollideAndRecover || !roles) return again;
+                if (!o.Movable) return again + (fixtureFirst ? 0 : 2);
+                return again + (options.Steady(o) ? 0 : 1);
             }
 
-            for (int pass = 0; pass < 3; pass++)
+            int passes = used == null ? 3 : 6;
+            for (int pass = 0; pass < passes; pass++)
             {
                 foreach (int oi in order)
                 {
                     if (script == DriveScript.CollideWithObstacle && !options.Knockable(objects[oi])) continue;
+                    if (used != null && objects[oi].Scenery) continue;
                     if (Rank(objects[oi]) != pass) continue;
                     foreach (Sweep sweep in Sweeps(objects[oi], ref rng))
                     {
@@ -341,11 +457,10 @@ namespace Teleop.Eval.JointDrive
                         if (!TryLine(profile, model, envelope, objects, oi, sweep, model.Home, shape, out Line line)) continue;
                         if (++builds > MaxBuilds) break;
                         hand.Restore(rolled);
-                        if (TryEvent(script, profile, model, objects, oi, line, hand, ref rng, options, home, homePitch, shape))
+                        if (TryEvent(script, profile, model, objects, oi, line, hand, ref rng, options, home, homePitch, shape, after?.Invoke(oi), multi,
+                                out EventTimes times))
                         {
-                            double t0 = t; // the hand's timeline starts here in the plan
-                            hand.AppendLegs(legs, ref t, ref current);
-                            EndMoving(legs, ref t, ref current, ref rng, t0 + hand.OnwardStart, t0 + hand.OnwardEnd);
+                            planned = new PlannedEvent(oi, times.Kind, times.ApproachStart, times.FinalStart, times.Contact, times.End, hand.Free, times.Way);
                             return true;
                         }
                     }
@@ -356,7 +471,7 @@ namespace Teleop.Eval.JointDrive
                 if (builds > MaxBuilds) break;
             }
 
-            error = $"no object could be approached for {Category(script)} from {DrivePlan.Describe(current)}";
+            hand.Restore(rolled);
             return false;
         }
 
@@ -381,8 +496,18 @@ namespace Teleop.Eval.JointDrive
                 to = windowTo;
             }
             double cut = from + (0.5 + 0.3 * rng.NextDouble()) * (to - from);
+            CutAt(legs, ref t, ref current, cut, moving: false);
+        }
+
+        /// <summary>
+        /// Ends the plan with the leg in force at <paramref name="cut"/> (plan seconds), dropping what follows; with
+        /// <paramref name="moving"/>, at the first leg from there on that moves the arm, so the take ends with the arm moving.
+        /// </summary>
+        internal static void CutAt(List<DriveLeg> legs, ref double t, ref ArmPose current, double cut, bool moving = true)
+        {
             int keep = legs.FindLastIndex(l => l.Start <= cut);
             if (keep < 0) return;
+            while (moving && keep < legs.Count - 1 && (legs[keep].Duration <= 0 || legs[keep].From.MaxJointDelta(legs[keep].To) < 1e-5f)) keep++;
             legs.RemoveRange(keep + 1, legs.Count - keep - 1);
             DriveLeg k = legs[keep];
             t = k.Start + k.Duration + k.Hold;
@@ -547,8 +672,11 @@ namespace Teleop.Eval.JointDrive
             public readonly bool Solved, OthersClear;
             public readonly float Closest; // the smallest signed gap to the object over the measured ticks (below 0: that deep inside)
             public readonly double ContactSeconds, LastContact, EventEnd;
+            public readonly double FinalStart, FirstContact, ClosestAt; // seconds on the hand's timeline (FirstContact NaN: none)
+            public readonly bool AfterClear; // clear of the free movement's model once the event is over (or none was given)
 
-            public Outcome(bool solved, bool othersClear, float closest, double contactSeconds, double lastContact, double eventEnd)
+            public Outcome(bool solved, bool othersClear, float closest, double contactSeconds, double lastContact, double eventEnd,
+                double finalStart = double.NaN, double firstContact = double.NaN, double closestAt = double.NaN, bool afterClear = true)
             {
                 Solved = solved;
                 OthersClear = othersClear;
@@ -556,12 +684,40 @@ namespace Teleop.Eval.JointDrive
                 ContactSeconds = contactSeconds;
                 LastContact = lastContact;
                 EventEnd = eventEnd;
+                FinalStart = finalStart;
+                FirstContact = firstContact;
+                ClosestAt = closestAt;
+                AfterClear = afterClear;
+            }
+        }
+
+        /// <summary>When an event planned by <see cref="TryEvent"/> happens on the hand's timeline, seconds, and the way its final approach went.</summary>
+        private readonly struct EventTimes
+        {
+            public readonly HandEvent Kind;
+            public readonly double ApproachStart; // the move to where the final approach starts (the hand leaves free movement)
+            public readonly double FinalStart; // the final approach
+            public readonly double Contact; // the first planned contact (touch, swipe), or the closest approach (stop)
+            public readonly double End; // the stop's stillness or the touch's moment in contact ends; the swipe's lift away ends
+            public readonly Vector3 Way;
+
+            public EventTimes(HandEvent kind, double approachStart, double finalStart, double contact, double end, Vector3 way)
+            {
+                Kind = kind;
+                ApproachStart = approachStart;
+                FinalStart = finalStart;
+                Contact = contact;
+                End = end;
+                Way = way;
             }
         }
 
         private static bool TryEvent(DriveScript script, in RobotArmProfile profile, ArmCollisionModel model, IReadOnlyList<SafetyObject> objects, int oi,
-            Line line, HumanOperator hand, ref SeededRng rng, SafetyOptions options, Vector3 home, float homePitch, ShapeGap? shape = null)
+            Line line, HumanOperator hand, ref SeededRng rng, SafetyOptions options, Vector3 home, float homePitch, ShapeGap? shape,
+            ArmCollisionModel? after, bool multi, out EventTimes times)
         {
+            times = default;
+            double approachStart = hand.Free;
             SafetyObject o = objects[oi];
             RobotArmProfile arm = profile; // a copy the local functions below can use
             var ladder = new GapLadder(profile, model, o);
@@ -662,30 +818,51 @@ namespace Teleop.Eval.JointDrive
                 int k0 = (int)Math.Floor(finalStart / HandModel.TickSeconds);
                 int kEvent = (int)Math.Ceiling(eventEnd / HandModel.TickSeconds);
                 bool clearOfOthers = true;
-                float closest = float.MaxValue;
-                int touching = 0, last = -1;
+                float closest = float.MaxValue, closestInEvent = float.MaxValue;
+                int touching = 0, last = -1, first = -1, nearest = -1;
                 for (int k = k0; k < hand.Poses.Count; k++)
                 {
                     // After a swipe the object is anywhere (knocked over): only the event is judged, and the other objects only
                     // until the swipe meets its own (they stand close on the bench; what the swipe sends flying is physics').
-                    if (kind == HandEvent.Through && k > kEvent) break;
+                    // With more to come in the take (multi), the other objects are judged again once the swipe and lift are done.
+                    bool past = kind == HandEvent.Through && k > kEvent;
+                    if (past && !multi) break;
                     ArmPose p = hand.Poses[k];
-                    if (clearOfOthers && (kind != HandEvent.Through || touching == 0) && !ArmCollision.IsValid(arm, othersClear, p)) clearOfOthers = false;
+                    if (clearOfOthers && (kind != HandEvent.Through || touching == 0 || past) && !ArmCollision.IsValid(arm, othersClear, p)) clearOfOthers = false;
+                    if (past) continue;
                     float g = touchShape != null ? touchShape.SignedGap(p, hand.Commands[k].Gripper) : ladder.SignedGap(p); // the pads where the gripper holds them
                     closest = MathF.Min(closest, g);
+                    if (k * HandModel.TickSeconds <= eventEnd && g < closestInEvent)
+                    {
+                        closestInEvent = g; // where a stop is: its closest approach before it backs off
+                        nearest = k;
+                    }
+
                     if (g < 0)
                     {
                         touching++;
                         last = k;
+                        if (first < 0) first = k;
                     }
                 }
 
-                return new Outcome(true, clearOfOthers, closest, touching * HandModel.TickSeconds, last * HandModel.TickSeconds, eventEnd);
+                // Where free movement takes over (the next part may start), the arm must be clear of its model.
+                bool afterClear = true;
+                if (after != null)
+                {
+                    for (int k = Math.Max(0, (int)Math.Floor(hand.Free / HandModel.TickSeconds)); k < hand.Poses.Count && afterClear; k++)
+                    {
+                        afterClear = ArmCollision.IsValid(arm, after, hand.Poses[k]);
+                    }
+                }
+
+                return new Outcome(true, clearOfOthers, closest, touching * HandModel.TickSeconds, last * HandModel.TickSeconds, eventEnd, finalStart,
+                    first < 0 ? double.NaN : first * HandModel.TickSeconds, nearest * HandModel.TickSeconds, afterClear);
             }
 
             bool Good(in Outcome r)
             {
-                if (!r.Solved || !r.OthersClear) return false;
+                if (!r.Solved || !r.OthersClear || !r.AfterClear) return false;
                 return kind switch
                 {
                     HandEvent.Stop => r.Closest >= StopGapMinMeters && r.Closest <= StopGapMaxMeters,
@@ -747,7 +924,11 @@ namespace Teleop.Eval.JointDrive
 
             // DrivePlan returns home from here on a path the model calls free: an event that leaves no such path would refuse the
             // whole take (2026-11-15: "no free path back to home"), so another approach is tried instead.
-            return DrivePlan.PathValid(profile, model, null, hand.Poses[hand.Poses.Count - 1], model.Home);
+            if (!DrivePlan.PathValid(profile, model, null, hand.Poses[hand.Poses.Count - 1], model.Home)) return false;
+            Vector3 way = points[aim] - points[Math.Max(0, aim - 1)];
+            times = new EventTimes(kind, approachStart, final.FinalStart, kind == HandEvent.Stop ? final.ClosestAt : final.FirstContact, final.EventEnd,
+                way.Length() > 1e-6f ? Vector3.Normalize(way) : Vector3.UnitY);
+            return true;
         }
 
         /// <summary>The deepest a pose can be measured inside <paramref name="o"/>: its smallest half-size, less 0.5 mm.</summary>

@@ -7,6 +7,7 @@ using System.Linq;
 using System.Net;
 using System.Net.Sockets;
 using System.Threading;
+using System.Threading.Tasks;
 using Teleop.Core.Types;
 using Teleop.RobotArm.Collision;
 using Teleop.RobotArm.Operator;
@@ -52,8 +53,14 @@ namespace Teleop.Eval.JointDrive
     ///
     /// <para><c>--take &lt;scenario&gt;</c> records the drive as a take of that scenario, as the headset's RECORD button
     /// does (docs/adr/0033, <see cref="TakeClient"/>), so it becomes a LeRobot episode (docs/adr/0036) with nobody at the
-    /// headset. The take starts once the arm's reading is in and before anything moves, and is stopped and kept on every
-    /// way out after that, a fault or Enter included. A take that cannot start leaves the arm unmoved.</para>
+    /// headset. The take starts where the script does (docs/adr/0036 amendment 5): after the 3 s countdown and the slow move
+    /// home when there is one, as the arm begins to move, so neither is in the recording. It is stopped and kept on every way
+    /// out after that, a fault or Enter included. A scenario RobotHost does not record leaves the arm unmoved; should RobotHost
+    /// then refuse the start, the arm holds where the move home left it.</para>
+    ///
+    /// <para>A safety take (<c>--scene</c>) plans 1-3 events (<c>--events</c>) at random points of the take
+    /// (<see cref="SafetyTake"/>), sends each to RobotHost as the arm leaves free movement for its object, which records it
+    /// (<c>SE</c>), and after a knock plans the next once the objects have settled, while the arm keeps moving.</para>
     ///
     /// <para><c>--dry-run</c> plans from home, prints the envelope and what the session would do, and
     /// sends nothing; with <c>--operator-log</c> it writes the commands it would send, stamped on a
@@ -71,7 +78,7 @@ namespace Teleop.Eval.JointDrive
             "usage: joint-drive --script waypoints|steps|course --speed <rad/s> [--seconds 300] [--seed 1] [--margin-deg 15] [--rate-hz 48]\n" +
             "                   (--dry-run | --remote-host <ip> [--remote-port 6002] --confirm-hardware-motion)\n" +
             "                   [--operator-log <path> [--session-id <id>]] [--stop-file <path>] [--take <scenario>]\n" +
-            "                   [--simulated-robot [--stall-seconds 1] [--stream-seconds 3]] [--scene <file> [--new-layout] [--touch-depth-mm 8]]";
+            "                   [--simulated-robot [--stall-seconds 1] [--stream-seconds 3]] [--scene <file> [--new-layout] [--touch-depth-mm 8] [--events 1-3]]";
 
         public static int Run(string[] args)
         {
@@ -128,6 +135,7 @@ namespace Teleop.Eval.JointDrive
                         case "--scene": scenePath = Next(); break;
                         case "--new-layout": newLayout = true; break;
                         case "--touch-depth-mm": safetyOptions.TouchDepthMeters = (float)(Number() / 1000.0); break;
+                        case "--events": ParseEvents(Next(), safetyOptions); break;
                         default: throw new ArgumentException($"unknown argument '{args[i]}'");
                     }
                 }
@@ -138,6 +146,7 @@ namespace Teleop.Eval.JointDrive
                 if (!safety && (scenePath != null || newLayout)) throw new ArgumentException("--scene and --new-layout are for the safety scripts");
                 if (newLayout && dryRun) throw new ArgumentException("--new-layout asks RobotHost for a layout; a dry run sends nothing");
                 if (!(safetyOptions.TouchDepthMeters > 0f && safetyOptions.TouchDepthMeters <= 0.06f)) throw new ArgumentException("--touch-depth-mm must be in (0, 60]");
+                safetyOptions.Validate();
                 if (!(speed > 0f) || speed > MaxSpeedRadPerSec) throw new ArgumentException($"--speed must be in (0, {MaxSpeedRadPerSec}] rad/s, the headset slider's range");
                 if (!(seconds > 0)) throw new ArgumentException("--seconds must be positive");
                 if (!(marginDeg >= 5)) throw new ArgumentException("--margin-deg must be at least 5");
@@ -274,6 +283,14 @@ namespace Teleop.Eval.JointDrive
                 if (min[j] > max[j]) continue;
                 Console.WriteLine(FormattableString.Invariant($"  {DriveEnvelope.JointName(j),-9} targets from {min[j] * 180 / Math.PI,7:0.0}° to {max[j] * 180 / Math.PI,6:0.0}°"));
             }
+
+            if (plan.EventsDrawn > 0)
+            {
+                // docs/adr/0036 amendment 5: events anywhere in the take, the take starting at ScriptStart.
+                Console.WriteLine(FormattableString.Invariant(
+                    $"[joint-drive] {plan.Events.Count} of {plan.EventsDrawn} event(s) drawn planned now{(plan.Pending != null ? ", the next after the knock's objects settle" : "")}; the take runs {plan.TotalSeconds - plan.ScriptStart:0.0} s from {plan.ScriptStart:0.0} s:"));
+                foreach (SafetyEvent e in plan.Events) Console.WriteLine("  " + e);
+            }
         }
 
         private static int DryRun(DriveScript script, RobotArmProfile profile, DriveEnvelope envelope, float speed, double seconds, ulong seed,
@@ -382,22 +399,51 @@ namespace Teleop.Eval.JointDrive
 
             ArmPose start = link.Measured;
             Console.WriteLine($"[joint-drive] the arm is at {DrivePlan.Describe(start)}");
-            if (!DrivePlan.TryBuild(script, profile, start, speed, seconds, seed, envelope, out DrivePlan? plan, out string? error, objects, safetyOptions))
+            // A take with several events takes seconds to plan (docs/adr/0036 amendment 5): the link is kept up meanwhile, so
+            // RobotHost goes on streaming the joints and the world.
+            Task<(bool Built, DrivePlan? Plan, string? Error)> planning = Task.Run(() =>
+            {
+                bool built = DrivePlan.TryBuild(script, profile, start, speed, seconds, seed, envelope, out DrivePlan? p, out string? why, objects, safetyOptions);
+                return (built, p, why);
+            });
+            while (!planning.IsCompleted)
+            {
+                if (stop.IsSet)
+                {
+                    Console.Error.WriteLine("joint-drive: stopped by hand before anything moved.");
+                    return 130;
+                }
+
+                link.Pump(Stopwatch.GetTimestamp(), default);
+                Thread.Sleep(5);
+            }
+
+            (bool planned, DrivePlan? plan, string? error) = planning.Result;
+            if (!planned)
             {
                 Console.Error.WriteLine($"joint-drive: {error}");
                 return 1;
             }
 
             PrintPlan(plan!, rateHz);
-            if (take != null && !StartTake(take, takeScenario!, link, stop))
+            // A take of a scenario RobotHost does not record leaves the arm unmoved: that is known before anything moves.
+            int scenarioIndex = -1;
+            if (take != null && !AwaitScenario(take, takeScenario!, link, stop, out scenarioIndex))
             {
                 return 1; // nothing moved
             }
 
+            // The countdown comes before the take (docs/adr/0036 amendment 5): it is a stop for the real arm, not part of the
+            // recording, which starts where the script does (the plan's ScriptStart), as the arm begins to move.
             Console.WriteLine("[joint-drive] the arm moves in 3 s. Press Enter to stop it where it is.");
             for (long until = Stopwatch.GetTimestamp() + 3 * tps; Stopwatch.GetTimestamp() < until;)
             {
-                if (stop.IsSet) return FinishTake(take, link, 130);
+                if (stop.IsSet)
+                {
+                    Console.Error.WriteLine("joint-drive: stopped by hand before anything moved.");
+                    return 130;
+                }
+
                 link.Pump(Stopwatch.GetTimestamp(), default);
                 Thread.Sleep(5);
             }
@@ -440,6 +486,13 @@ namespace Teleop.Eval.JointDrive
             bool paused = false;
             int pauses = 0;
             double pausedSeconds = 0;
+            bool recording = false, notRecorded = false;
+            // A safety take's events (docs/adr/0036 amendment 5): each sent to RobotHost, which records it (SE), as the arm leaves
+            // free movement for its object; and after a knock, the next one planned once the objects have settled.
+            var sentEvents = new HashSet<int>();
+            uint eventSequence = (uint)(Stopwatch.GetTimestamp() & 0x3FFFFFFF) | 1u;
+            var eventDatagram = new byte[ScriptEventCodec.Size];
+            var replan = new Replanning(plan.Pending);
             while (true)
             {
                 long now = Stopwatch.GetTimestamp();
@@ -462,6 +515,41 @@ namespace Teleop.Eval.JointDrive
                         : FormattableString.Invariant($"[joint-drive] {planTime,5:0} s: frames are back; going on"));
                 }
 
+                if (take != null && !recording && planTime >= plan.ScriptStart)
+                {
+                    // The take starts where the script does: the arm still (at home after the move there, or where it was),
+                    // and its first command goes out as soon as RobotHost records.
+                    planTime = plan.ScriptStart;
+                    if (!StartTake(take, takeScenario!, scenarioIndex, link, stop, watchdog, commanded))
+                    {
+                        notRecorded = true;
+                        break;
+                    }
+
+                    recording = true;
+                    lastLoop = Stopwatch.GetTimestamp(); // the wait for RobotHost is not plan time
+                    nextSend = lastLoop;
+                    continue;
+                }
+
+                foreach (SafetyEvent e in plan.Events)
+                {
+                    if (planTime < e.ApproachStart || !sentEvents.Add(e.Index)) continue;
+                    var record = new ScriptEvent((byte)e.Index, (byte)plan.EventsDrawn, e.Kind, e.ObjectId,
+                        (float)(e.FinalStart - e.ApproachStart), (float)(e.Contact - e.ApproachStart), (float)(e.End - e.ApproachStart), (float)(e.Clear - e.ApproachStart));
+                    eventSequence++;
+                    for (int copy = 0; copy < 3 && ScriptEventCodec.TryEncode(record, eventSequence, now, eventDatagram, out int n); copy++)
+                    {
+                        socket.SendTo(eventDatagram, 0, n, SocketFlags.None, robot); // a few copies: UDP; RobotHost records one per sequence
+                    }
+
+                    Console.WriteLine(FormattableString.Invariant(
+                        $"[joint-drive] {planTime,5:0.0} s: event {e.Index} of {plan.EventsDrawn}, {ScriptEventCodec.Name(e.Kind)} object {e.ObjectId}: contact planned at {e.Contact:0.0} s, clear at {e.Clear:0.0} s"));
+                }
+
+                DrivePlan? next = replan.Step(planTime, now / (double)tps, link.World);
+                if (next != null) plan = next;
+
                 if (now >= nextSend)
                 {
                     commanded = plan.Sample(planTime);
@@ -483,7 +571,8 @@ namespace Teleop.Eval.JointDrive
                 Thread.Sleep(1);
             }
 
-            if (fault != DriveFault.None || stop.IsSet)
+            replan.Abandon();
+            if (fault != DriveFault.None || stop.IsSet || notRecorded)
             {
                 // Hold where the arm is, not where it was told to go: a stalled joint stops pushing.
                 ArmPose hold = link.Measured;
@@ -492,6 +581,13 @@ namespace Teleop.Eval.JointDrive
                     Send(Stopwatch.GetTimestamp(), hold);
                     Thread.Sleep(20);
                 }
+            }
+
+            if (notRecorded)
+            {
+                log?.Close();
+                Console.Error.WriteLine($"joint-drive: RobotHost did not start the take; the arm holds at {DrivePlan.Describe(link.Measured)}.");
+                return 1;
             }
 
             log?.Close();
@@ -664,11 +760,12 @@ namespace Teleop.Eval.JointDrive
         public const double SettleSeconds = 1.0;
 
         /// <summary>
-        /// Starts the take: waits for RobotHost's scenario list, then sends Start until its status echoes it. False, with
-        /// the reason printed, when the list never comes, the scenario is not on it, or RobotHost refuses.
+        /// Waits for RobotHost's scenario list and finds <paramref name="scenario"/> on it, before anything moves. False, with the
+        /// reason printed, when the list never comes or the scenario is not on it.
         /// </summary>
-        private static bool StartTake(TakeClient take, string scenario, Link link, ManualResetEventSlim stop)
+        private static bool AwaitScenario(TakeClient take, string scenario, Link link, ManualResetEventSlim stop, out int index)
         {
+            index = -1;
             long tps = Stopwatch.Frequency;
             for (long until = Stopwatch.GetTimestamp() + 10 * tps; !take.State.HasList || !take.State.HasStatus;)
             {
@@ -684,22 +781,176 @@ namespace Teleop.Eval.JointDrive
                 Thread.Sleep(5);
             }
 
-            int index = take.IndexOf(scenario);
+            index = take.IndexOf(scenario);
             if (index < 0)
             {
                 Console.Error.WriteLine($"joint-drive: RobotHost has no scenario '{scenario}'; it has: {take.Names()}. Nothing moved.");
                 return false;
             }
 
-            RecordOutcome outcome = Request(take, link, RecordOp.Start, (byte)index, take.State.ListRevision);
+            return true;
+        }
+
+        /// <summary>
+        /// Starts the take: sends Start until RobotHost's status echoes it, the joint-state stream still feeding
+        /// <paramref name="watchdog"/> against <paramref name="commanded"/>. False, with the reason printed, when RobotHost refuses
+        /// or does not answer.
+        /// </summary>
+        private static bool StartTake(TakeClient take, string scenario, int index, Link link, ManualResetEventSlim stop, DriveWatchdog watchdog, in ArmPose commanded)
+        {
+            if (stop.IsSet) return false;
+            RecordOutcome outcome = Request(take, link, RecordOp.Start, (byte)index, take.State.ListRevision, watchdog, commanded);
             if (outcome != RecordOutcome.Started || take.State.Status.State != RecordState.Recording)
             {
-                Console.Error.WriteLine($"joint-drive: RobotHost did not start a take of '{scenario}' ({Describe(outcome)}). Nothing moved.");
+                Console.Error.WriteLine($"joint-drive: RobotHost did not start a take of '{scenario}' ({Describe(outcome)}).");
                 return false;
             }
 
             Console.WriteLine($"[joint-drive] recording take {take.State.Status.Take} of '{scenario}'");
             return true;
+        }
+
+        /// <summary>
+        /// After a knock (docs/adr/0036 amendment 5): watches the objects until they are at rest while the arm goes on along the
+        /// plan's runway (free movement away from the knocked object). Then the plan made at the start for after the knock takes
+        /// over if the world is as it assumed (<see cref="SafetyContinuation.Holds"/>); otherwise the next event is planned on a
+        /// thread of its own against the objects as they now are, and the new plan handed back if it comes in time to take over at
+        /// its switch point. Either plan is the same as the one driven before that point, so nothing jumps; without one the runway
+        /// ends the take.
+        /// </summary>
+        private sealed class Replanning
+        {
+            /// <summary>How long every object must stay put before the next event is planned against them, seconds.</summary>
+            public const double StillSeconds = 0.6;
+
+            /// <summary>
+            /// The planner's time to plan the next event, seconds of the runway (half as much again for a second try). Measured on
+            /// the GPU machine with the twin and other tests running (2026-11-21): a contact event plans in 0.1-3 s, and a
+            /// knock planned against the objects a knock left in 4-11 s, mostly on its knocked object again after the others
+            /// failed.
+            /// </summary>
+            public const double BudgetSeconds = 6.0;
+
+            /// <summary>How long after a knock the objects may take to settle before the runway ends the take, seconds.</summary>
+            public const double SettleSeconds = 6.0;
+
+            private SafetyContinuation? _pending;
+            private RestWatch? _rest;
+            private Task<(DrivePlan Plan, string Outcome)>? _task;
+            private double _switchAt = double.NaN;
+            private int _tries;
+
+            public Replanning(SafetyContinuation? pending)
+            {
+                _pending = pending;
+            }
+
+            /// <summary>One turn of the drive loop at <paramref name="planTime"/> (<paramref name="now"/>: seconds on a rising clock): the plan to take over, or null.</summary>
+            public DrivePlan? Step(double planTime, double now, WorldState? world)
+            {
+                if (_task != null)
+                {
+                    if (!_task.IsCompleted) return null;
+                    Task<(DrivePlan Plan, string Outcome)> done = _task;
+                    _task = null;
+                    if (done.IsFaulted || done.IsCanceled)
+                    {
+                        Console.Error.WriteLine($"joint-drive: planning after the knock failed ({done.Exception?.GetBaseException().Message}); the runway ends the take");
+                        _pending = null;
+                        return null;
+                    }
+
+                    (DrivePlan plan, string outcome) = done.Result;
+                    if (planTime < _switchAt - HandModel.TickSeconds)
+                    {
+                        Console.WriteLine(FormattableString.Invariant($"[joint-drive] {planTime,5:0.0} s: after the knock, {outcome}; it takes over at {_switchAt:0.0} s"));
+                        _pending = plan.Pending;
+                        _rest = null;
+                        _tries = 0;
+                        return plan;
+                    }
+
+                    if (++_tries >= 2)
+                    {
+                        Console.WriteLine(FormattableString.Invariant($"[joint-drive] {planTime,5:0.0} s: planning after the knock came in late again; the runway ends the take"));
+                        _pending = null;
+                        return null;
+                    }
+
+                    Console.WriteLine(FormattableString.Invariant($"[joint-drive] {planTime,5:0.0} s: planning after the knock came in late (for {_switchAt:0.00} s); again, with more time"));
+                }
+
+                if (_pending == null || world == null || planTime < _pending.KnockEnd) return null;
+                _rest ??= new RestWatch(StillSeconds);
+                if (!_rest.Still(world, now))
+                {
+                    if (planTime > _pending.KnockEnd + SettleSeconds)
+                    {
+                        Console.WriteLine(FormattableString.Invariant($"[joint-drive] {planTime,5:0.0} s: the objects did not settle within {SettleSeconds:0} s of the knock; the runway ends the take"));
+                        _pending = null;
+                    }
+
+                    return null;
+                }
+
+                if (!WorldView.TryObjects(world, out List<SafetyObject> objects))
+                {
+                    Console.WriteLine(FormattableString.Invariant($"[joint-drive] {planTime,5:0.0} s: the objects are not all posed; the runway ends the take"));
+                    _pending = null;
+                    return null;
+                }
+
+                // What was planned at the start for after this knock, if the world is as it assumed: no planning, nothing to wait for.
+                if (_task == null && _tries == 0 && _pending.Assumed != null && planTime < _pending.AssumedAt - HandModel.TickSeconds)
+                {
+                    if (_pending.Holds(objects, out string why))
+                    {
+                        DrivePlan assumed = _pending.Assumed;
+                        Console.WriteLine(FormattableString.Invariant(
+                            $"[joint-drive] {planTime,5:0.0} s: the objects are at rest as the plan assumed ({why}); event {_pending.NextIndex} as planned, from {_pending.AssumedAt:0.0} s"));
+                        _pending = assumed.Pending;
+                        _rest = null;
+                        return assumed;
+                    }
+
+                    Console.WriteLine(FormattableString.Invariant($"[joint-drive] {planTime,5:0.0} s: the plan made for after the knock no longer holds ({why})"));
+                }
+
+                _switchAt = _pending.SwitchAfter(planTime + BudgetSeconds * (1 + 0.5 * _tries));
+                if (double.IsNaN(_switchAt))
+                {
+                    Console.WriteLine(FormattableString.Invariant($"[joint-drive] {planTime,5:0.0} s: no time left on the runway to plan another event; it ends the take"));
+                    _pending = null;
+                    return null;
+                }
+
+                SafetyContinuation c = _pending;
+                double at = _switchAt;
+                Console.WriteLine(FormattableString.Invariant($"[joint-drive] {planTime,5:0.0} s: the objects are at rest; planning event {c.NextIndex} against them, to take over at {at:0.0} s"));
+                _task = Task.Run(() =>
+                {
+                    DrivePlan p = c.Continue(objects, at, out string outcome);
+                    return (p, outcome);
+                });
+                return null;
+            }
+
+            /// <summary>The drive is over: nothing more is planned (a plan being made is left to finish on its own).</summary>
+            public void Abandon() => _pending = null;
+        }
+
+        /// <summary>--events: how many events a safety take draws, a count (2) or a range (1-3) (docs/adr/0036 amendment 5).</summary>
+        internal static void ParseEvents(string text, SafetyOptions options)
+        {
+            string[] parts = text.Split('-');
+            if (parts.Length > 2 || !int.TryParse(parts[0], NumberStyles.None, CultureInfo.InvariantCulture, out int min) ||
+                !int.TryParse(parts[parts.Length - 1], NumberStyles.None, CultureInfo.InvariantCulture, out int max))
+            {
+                throw new ArgumentException($"--events is a count or a range, like 2 or 1-3, not '{text}'");
+            }
+
+            options.MinEvents = min;
+            options.MaxEvents = max;
         }
 
         /// <summary>Stops and keeps the take, if one is going; the drive's own exit code stands unless that fails (exit 4).</summary>
@@ -718,8 +969,12 @@ namespace Teleop.Eval.JointDrive
             return code == 0 ? 4 : code;
         }
 
-        /// <summary>One RECORD request, sent every 0.25 s until RobotHost's status echoes it; its outcome, or None unanswered.</summary>
-        private static RecordOutcome Request(TakeClient take, Link link, RecordOp op, byte scenario, ushort revision)
+        /// <summary>
+        /// One RECORD request, sent every 0.25 s until RobotHost's status echoes it; its outcome, or None unanswered. With
+        /// <paramref name="watchdog"/>, the stream feeds it meanwhile, against <paramref name="commanded"/>.
+        /// </summary>
+        private static RecordOutcome Request(TakeClient take, Link link, RecordOp op, byte scenario, ushort revision, DriveWatchdog? watchdog = null,
+            ArmPose commanded = default)
         {
             long tps = Stopwatch.Frequency;
             long now = Stopwatch.GetTimestamp();
@@ -735,7 +990,7 @@ namespace Teleop.Eval.JointDrive
                     nextSend = now + tps / 4;
                 }
 
-                link.Pump(now, default);
+                link.Pump(now, watchdog, commanded);
                 Thread.Sleep(5);
             }
 

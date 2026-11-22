@@ -121,8 +121,11 @@ def test_his_label_files(tmp_path):
     episodes = [(0, "reach_no_obstacle", [0, 0, 0]), (1, "collide_and_recover", [0, 1, 1, 0, 1, 0]),
                 (2, "collide_with_obstacle", [0, 0, 1, 1])]
     assert safety.ranges([0, 1, 1, 0, 1, 0]) == [[1, 2], [4, 4]]
+    # A pair a range (docs/adr/0036 amendment 5: several events a take), so a lead window never spans the free movement between.
     assert safety.events(1, "collide_and_recover", [0, 1, 1, 0, 1, 0]) == [
         {"episode": 1, "kind": "contact", "frame_in_episode": 1, "source": "physics"},
+        {"episode": 1, "kind": "clear", "frame_in_episode": 3, "source": "physics"},
+        {"episode": 1, "kind": "contact", "frame_in_episode": 4, "source": "physics"},
         {"episode": 1, "kind": "clear", "frame_in_episode": 5, "source": "physics"}]
     assert [e["kind"] for e in safety.events(2, "collide_with_obstacle", [0, 0, 1, 1])] == ["contact"]  # no recovery: no clear
     rows = safety.label_rows(1, "collide_and_recover", [0, 1])
@@ -134,7 +137,7 @@ def test_his_label_files(tmp_path):
     # His manual JSON: string episode keys, inclusive ranges, all-safe episodes left out.
     assert json.loads((tmp_path / "manual_safety_labels.json").read_text()) == {"1": [[1, 2], [4, 4]], "2": [[2, 3]]}
     lines = [json.loads(x) for x in (tmp_path / "safety_events.jsonl").read_text().splitlines()]
-    assert [(e["episode"], e["kind"]) for e in lines] == [(1, "contact"), (1, "clear"), (2, "contact")]
+    assert [(e["episode"], e["kind"]) for e in lines] == [(1, "contact"), (1, "clear"), (1, "contact"), (1, "clear"), (2, "contact")]
     df = pd.read_parquet(tmp_path / "meta" / "safety_labels.parquet")
     assert list(df.columns) == ["episode_index", "frame_index", "label", "category", "effective_category", "overridden", "source"]
     assert len(df) == 13 and int(df["label"].sum()) == 5
@@ -233,3 +236,79 @@ def test_the_sizes_come_from_the_renderers_first_sz_record():
     # The record lists hold the fields after the tag: SZ|58|1:1.5625;2:1.0 is ["58", "1:1.5625;2:1.0"].
     assert safety.sizes([["58", "1:1.5625;2:1.0;31:1.0"], ["59", "1:0.8"]]) == {1: 1.5625, 2: 1.0, 31: 1.0}
     assert safety.sizes([]) == {} and safety.sizes([["58"]]) == {}
+
+
+def se(t_ms, index, drawn, kind, obj, final=0.5, contact=0.7, end=0.9, clear=1.1):
+    """A planned event (SE), its times in seconds after its approach began at ``t_ms``."""
+    return ["SE", t_ms * MS, index, drawn, kind, obj, final, contact, end, clear]
+
+
+def test_several_touches_each_backed_off_pass_and_each_is_its_own_unsafe_range(scenarios, tmp_path):
+    # docs/adr/0036 amendment 5: three touches in one take, on three objects, each ending before the next.
+    up = {2: (0.24, -0.08, -0.15, UPRIGHT), 3: (0.17, -0.02, -0.16, UPRIGHT), 4: (0.29, 0.03, -0.17, UPRIGHT)}
+    rows = [wo(1000, up), wc(1200, "0:5:2:1.5"), wc(1300), wc(1800, "0:6:3:1.0"), wc(1900), wc(2400, "0:5:4:2.0"), wc(2500), wo(2900, up)]
+    t, labels, v = verdict(take(scenarios, "collide_and_recover", rows))
+    assert v.ok, v.reason
+    assert v.touched == (2, 3, 4) and v.contacts == 3 and "3 touches" in v.reason
+    assert len(safety.ranges(labels)) == 3  # several unsafe ranges an episode, exact
+    assert all(r[1] - r[0] <= 4 for r in safety.ranges(labels))
+    episodes = [(0, "collide_and_recover", labels)]
+    assert [e["kind"] for e in safety.events(0, "collide_and_recover", labels)] == ["contact", "clear"] * 3
+    pytest.importorskip("pandas")
+    pytest.importorskip("pyarrow")
+    safety.write_labels(str(tmp_path), episodes)
+    assert json.loads((tmp_path / "manual_safety_labels.json").read_text()) == {"0": safety.ranges(labels)}
+
+
+def test_several_touches_fail_if_any_does_not_back_off_or_any_object_tips(scenarios):
+    up = {2: (0.24, -0.08, -0.15, UPRIGHT), 3: (0.17, -0.02, -0.16, UPRIGHT)}
+    held = take(scenarios, "collide_and_recover", [wo(1000, up), wc(1200, "0:5:2:1.5"), wc(1300), wc(2400, "0:5:3:2.0")])
+    assert "no recovery" in verdict(held)[2].reason  # the last touch never ended
+    tipped = {2: (0.24, -0.08, -0.15, UPRIGHT), 3: (0.19, -0.02, -0.18, ON_ITS_SIDE)}
+    v = verdict(take(scenarios, "collide_and_recover", [wo(1000, up), wc(1200, "0:5:2:1.5"), wc(1300), wc(1800, "0:6:3:1.0"), wc(1900),
+                                                        wo(2900, tipped)], name="20261114T100100Z-take002"))[2]
+    assert not v.ok and "tipped object 3 by 90" in v.reason
+
+
+def test_several_knocks_pass_with_one_object_over_and_fail_with_none(scenarios):
+    before = {3: (0.17, -0.02, -0.16, UPRIGHT), 4: (0.29, 0.03, -0.17, UPRIGHT), 5: (0.22, 0.10, -0.17, UPRIGHT)}
+    rows = [wo(1000, before), wc(1200, "0:4:3:0.6"), wc(1250), wc(1800, "0:4:4:6.0"), wc(1950), wc(2400, "0:4:5:0.4"), wc(2450)]
+    after = {3: (0.171, -0.02, -0.16, UPRIGHT), 4: (0.33, 0.06, -0.18, ON_ITS_SIDE), 5: (0.221, 0.10, -0.17, UPRIGHT)}
+    v = verdict(take(scenarios, "collide_with_obstacle", rows + [wo(2900, after)]))[2]
+    assert v.ok and v.contacts == 3 and "knocked [4]" in v.reason
+    grazed = {3: (0.171, -0.02, -0.16, UPRIGHT), 4: (0.291, 0.03, -0.17, UPRIGHT), 5: (0.221, 0.10, -0.17, UPRIGHT)}
+    v = verdict(take(scenarios, "collide_with_obstacle", rows + [wo(2900, grazed)], name="20261114T100100Z-take002"))[2]
+    assert not v.ok and "tipped none" in v.reason
+
+
+def test_each_touched_object_is_measured_from_its_own_first_touch(scenarios):
+    # The first knock sent object 3 into object 4, shoving it 4 cm before the arm ever touched it; the second knock then only
+    # grazed 4. Measured from its own first touch, 4 was not knocked by the arm (3 was, so the take passes on 3 alone).
+    before = {3: (0.17, -0.02, -0.16, UPRIGHT), 4: (0.29, 0.03, -0.17, UPRIGHT)}
+    shoved = {3: (0.24, 0.00, -0.18, ON_ITS_SIDE), 4: (0.33, 0.03, -0.17, UPRIGHT)}
+    rows = [wo(1000, before), wc(1200, "0:4:3:6.0"), wc(1300), wo(1500, shoved), wc(2400, "0:4:4:0.4"), wc(2450), wo(2900, shoved)]
+    path = take(scenarios, "collide_with_obstacle", rows)
+    v = verdict(path)[2]
+    assert v.ok and "knocked [3]" in v.reason
+    first = safety.first_touches(safety.contacts(path))
+    assert first == {3: 1200 * MS, 4: 2400 * MS}
+
+
+def test_the_planned_events_and_where_physics_put_them_come_from_the_take(scenarios):
+    # docs/adr/0036 amendment 5: joint-drive sends each event as its approach begins; RobotHost records it as SE.
+    rows = [se(1100, 1, 3, "touch", 2, contact=0.15), wc(1260, "0:5:2:1.5"), wc(1330),
+            se(1700, 2, 3, "touch", 3, contact=0.2), wc(1910, "0:6:3:1.0"), wc(1990),
+            se(2300, 3, 3, "touch", 4, contact=0.25)]
+    path = take(scenarios, "collide_and_recover", rows)
+    planned = safety.planned_events(path)
+    assert [(e["index"], e["drawn"], e["kind"], e["object"]) for e in planned] == [(1, 3, "touch", 2), (2, 3, "touch", 3), (3, 3, "touch", 4)]
+    assert planned[0]["approach"] == 1100 * MS and planned[0]["contact"] == 1250 * MS and planned[0]["clear"] == 2200 * MS
+    t = read_take(path)
+    timing = safety.event_timing(t, safety.contacts(path), planned)
+    start = t.frames[0].timing["sensed"] / 1e9
+    assert timing[0]["planned"] == pytest.approx(1.25 - start, abs=1e-3) and timing[0]["contact"] == pytest.approx(1.26 - start, abs=1e-3)
+    assert timing[1]["touched"] == [3] and timing[1]["contact"] == pytest.approx(1.91 - start, abs=1e-3)
+    assert timing[2]["contact"] is None and timing[2]["touched"] == []  # the third never touched
+    assert safety.planned_events(take(scenarios, "collide_and_recover", [], name="20261114T100100Z-take002")) == []  # an older take
+    stop = take(scenarios, "stop_before_collision", [se(1500, 1, 1, "stop", 4, contact=float("nan"))], name="20261114T100200Z-take003")
+    assert safety.planned_events(stop)[0]["contact"] is None

@@ -183,12 +183,21 @@ namespace Teleop.Eval.JointDrive
         private readonly List<DriveLeg> _legs;
         private int _cursor;
 
-        private DrivePlan(List<DriveLeg> legs, DriveScript script, float speed)
+        private DrivePlan(List<DriveLeg> legs, DriveScript script, float speed, SafetyEvent[]? events = null, int eventsDrawn = 0, SafetyContinuation? pending = null)
         {
             _legs = legs;
             Script = script;
             SpeedRadPerSec = speed;
+            Events = events ?? Array.Empty<SafetyEvent>();
+            EventsDrawn = eventsDrawn;
+            Pending = pending;
+            int first = legs.FindIndex(l => l.Phase == LegPhase.Script);
+            ScriptStart = first >= 0 ? legs[first].Start : TotalSeconds;
         }
+
+        /// <summary>A safety take's plan (<see cref="SafetyTake"/>): its legs, the events planned, how many were drawn, and what must happen to go on past a knock.</summary>
+        internal static DrivePlan ForSafety(List<DriveLeg> legs, DriveScript script, float speed, SafetyEvent[] events, int eventsDrawn, SafetyContinuation? pending) =>
+            new DrivePlan(legs, script, speed, events, eventsDrawn, pending);
 
         public IReadOnlyList<DriveLeg> Legs => _legs;
 
@@ -197,6 +206,24 @@ namespace Teleop.Eval.JointDrive
         public float SpeedRadPerSec { get; }
 
         public double TotalSeconds => _legs.Count == 0 ? 0 : _legs[_legs.Count - 1].End;
+
+        /// <summary>
+        /// When the script begins, plan seconds: after the move home (0 when the plan starts with the script). A take is recorded
+        /// from here (docs/adr/0036 amendment 5): the move home is a setup move, slow and pose to pose, ending with the arm still.
+        /// </summary>
+        public double ScriptStart { get; }
+
+        /// <summary>The events a safety take planned so far (docs/adr/0036 amendment 5), in time order; none for the other scripts.</summary>
+        public IReadOnlyList<SafetyEvent> Events { get; }
+
+        /// <summary>How many events the take drew: more than <see cref="Events"/> when a later one found no approach, or waits on <see cref="Pending"/>.</summary>
+        public int EventsDrawn { get; }
+
+        /// <summary>
+        /// After a knock with more events to come: how to plan the next once the objects have settled (<see cref="SafetyContinuation"/>).
+        /// Null when the plan is all there is.
+        /// </summary>
+        public SafetyContinuation? Pending { get; }
 
         /// <summary>
         /// Plans a session. False, with the reason, when the arm's start pose cannot reach home on a
@@ -275,6 +302,13 @@ namespace Teleop.Eval.JointDrive
                 {
                     error = $"{SafetyScript.Category(script)} plans around the scene's objects: it needs their poses (--scene)";
                     return false;
+                }
+
+                if (safetyOptions == null || !safetyOptions.OneEventAtTheEnd)
+                {
+                    // Several events, anywhere in the take (docs/adr/0036 amendment 5).
+                    return SafetyTake.TryPlan(script, profile, model, envelope, objects, speedRadPerSec, current, t, end, ref rng, legs,
+                        safetyOptions ?? new SafetyOptions(), out plan, out error);
                 }
 
                 if (!SafetyScript.Append(script, profile, model, envelope, objects, speedRadPerSec, ref current, ref t, end, ref rng, legs, out error, safetyOptions))

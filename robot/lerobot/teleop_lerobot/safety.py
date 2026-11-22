@@ -14,8 +14,13 @@ for file (:func:`write_labels`):
   an episode with none is left out (his convention: all safe);
 - ``meta/safety_labels.parquet``: the rows ``label_safety.py`` writes from that JSON (``episode_index``, ``frame_index``,
   ``label``, ``category``, ``effective_category``, ``overridden``, ``source``), ``source`` ``physics``;
-- ``safety_events.jsonl``: ``contact`` (the first unsafe frame) and, for ``collide_and_recover``, ``clear`` (the first safe
-  frame after the last unsafe one), in his ``record_jetrover.py`` fields, so his lead-window labels are one command away.
+- ``safety_events.jsonl``: ``contact`` at the first frame of each unsafe range and, for ``collide_and_recover``, ``clear`` at
+  the first safe frame after it, in his ``record_jetrover.py`` fields, so his lead-window labels are one command away.
+
+Since 2026-11-21 (docs/adr/0036 amendment 5) a take of an event category holds 1-3 events anywhere in it, each a stretch of
+contact (or, for a stop, of coming close), and the take records what was planned (``SE``, :func:`planned_events`). Every
+check holds for several: a recover take backs off from every touch, and each touched object is measured from its own first
+touch.
 
 No LeRobot or pandas here but in :func:`write_labels`'s parquet, so the tests run with plain Python.
 """
@@ -117,53 +122,105 @@ def _at(poses: List[Tuple[int, Tuple[float, ...]]], t: int) -> Optional[Tuple[fl
     return before[-1] if before else (poses[0][1] if poses else None)
 
 
+def first_touches(stretches: Sequence[Contact]) -> Dict[int, int]:
+    """Each touched object's first touch: the start of the first stretch that names it."""
+    first: Dict[int, int] = {}
+    for c in sorted(stretches, key=lambda c: c.start):
+        for o in c.objects:
+            first.setdefault(o, c.start)
+    return first
+
+
 @dataclass(frozen=True)
 class Verdict:
     ok: bool
     reason: str
     unsafe_frames: int
     touched: Tuple[int, ...]
+    contacts: int = 0  # stretches of contact in the episode: one a touch or a knock
 
 
 def check(take: Take, labels: Sequence[int], stretches: Sequence[Contact],
           poses: Dict[int, List[Tuple[int, Tuple[float, ...]]]]) -> Verdict:
-    """Whether the take is what its category says (docs/adr/0036 amendment 1, decision 3)."""
+    """Whether the take is what its category says (docs/adr/0036 amendment 1, decision 3), with any number of events
+    (amendment 5): no contact for reach and stop; for recover every touch backed off from (each stretch of contact ends, and
+    the episode does not end touching) and no touched object tipped; for a knock at least one touched object tipped or moved.
+    Each touched object is measured from its own first touch to the episode's end."""
     category = take.scenario
     unsafe = sum(labels)
     half = 1_000_000_000 // (2 * take.fps)  # as frame_labels: a frame's period reaches half a frame past its time
     t0, t1 = int(take.frames[0].timing["sensed"]) - half, int(take.frames[-1].timing["sensed"]) + half
     inside = [c for c in stretches if c.end >= t0 and c.start <= t1]
     touched = tuple(sorted({o for c in inside for o in c.objects}))
+    first = first_touches(inside)
+    n = len(inside)
 
     def moved(obj: int) -> Tuple[float, float]:
         p = poses.get(obj, [])
-        a, b = _at(p, min(c.start for c in inside)), _at(p, t1)
+        a, b = _at(p, first[obj]), _at(p, t1)
         if a is None or b is None:
             return 0.0, 0.0
         return _tilt_degrees(a, b), math.dist(a[:3], b[:3])
 
     if category not in CATEGORIES:
-        return Verdict(False, f"{category!r} is not a safety category", unsafe, touched)
+        return Verdict(False, f"{category!r} is not a safety category", unsafe, touched, n)
     if category in (REACH, STOP):
         if unsafe or inside:
-            return Verdict(False, f"{category} touched object(s) {list(touched)} ({unsafe} unsafe frames)", unsafe, touched)
-        return Verdict(True, "no contact", 0, ())
+            return Verdict(False, f"{category} touched object(s) {list(touched)} ({unsafe} unsafe frames)", unsafe, touched, n)
+        return Verdict(True, "no contact", 0, (), 0)
     if not unsafe:
-        return Verdict(False, f"{category} never touched an object", 0, ())
+        return Verdict(False, f"{category} never touched an object", 0, (), n)
     if category == RECOVER:
-        if labels[-1]:
-            return Verdict(False, "collide_and_recover was still touching at the episode's end: no recovery", unsafe, touched)
+        held = [c for c in inside if c.end == OPEN_END]
+        if labels[-1] or held:
+            return Verdict(False, "collide_and_recover was still touching at the episode's end: no recovery", unsafe, touched, n)
         for obj in touched:
             tilt, dist = moved(obj)
             if tilt > UPRIGHT_DEGREES:
-                return Verdict(False, f"collide_and_recover tipped object {obj} by {tilt:.0f} degrees", unsafe, touched)
-        return Verdict(True, f"touched {list(touched)} and backed off", unsafe, touched)
+                return Verdict(False, f"collide_and_recover tipped object {obj} by {tilt:.0f} degrees", unsafe, touched, n)
+        return Verdict(True, f"touched {list(touched)} and backed off ({n} touch{'es' if n != 1 else ''})", unsafe, touched, n)
     knocked = [(obj, moved(obj)) for obj in touched]
     if not any(tilt >= TIPPED_DEGREES or dist >= MOVED_METERS for _, (tilt, dist) in knocked):
         worst = max(knocked, key=lambda k: (k[1][0], k[1][1]))
         return Verdict(False, f"collide_with_obstacle touched {list(touched)} but tipped none (object {worst[0]}: "
-                              f"{worst[1][0]:.0f} degrees, {worst[1][1] * 100:.1f} cm)", unsafe, touched)
-    return Verdict(True, f"knocked {[o for o, (tl, d) in knocked if tl >= TIPPED_DEGREES or d >= MOVED_METERS]}", unsafe, touched)
+                              f"{worst[1][0]:.0f} degrees, {worst[1][1] * 100:.1f} cm)", unsafe, touched, n)
+    over = [o for o, (tl, d) in knocked if tl >= TIPPED_DEGREES or d >= MOVED_METERS]
+    return Verdict(True, f"knocked {over} ({n} contact{'s' if n != 1 else ''})", unsafe, touched, n)
+
+
+def planned_events(path: str) -> List[Dict]:
+    """The events the script planned (docs/adr/0036 amendment 5), from the take's ``SE`` records, in order: ``index``,
+    ``drawn``, ``kind``, ``object``, and their times on the take's clock (ns): ``approach`` (the record's ``t``: the arm left
+    free movement for the object), ``final``, ``contact`` (a stop: its closest approach; None when none was planned), ``end``
+    and ``clear``. Takes recorded before then have none."""
+    host = read_jlog(os.path.join(path, "robothost.jlog"), "robothost")
+    out = []
+    for r in host.tag("SE"):
+        t = int(r[0])
+
+        def at(seconds: str) -> Optional[int]:
+            v = float(seconds)
+            return None if math.isnan(v) else t + round(v * 1e9)
+
+        out.append({"index": int(r[1]), "drawn": int(r[2]), "kind": r[3], "object": int(r[4]), "approach": t,
+                    "final": at(r[5]), "contact": at(r[6]), "end": at(r[7]), "clear": at(r[8])})
+    return sorted(out, key=lambda e: e["index"])
+
+
+def event_timing(take: Take, stretches: Sequence[Contact], planned: Sequence[Dict]) -> List[Dict]:
+    """Each planned event against what physics did, seconds from the episode's first frame: when its contact was planned,
+    and when the first stretch of contact between its approach and the next event's began (None: no contact then), with
+    the objects that stretch touched. For checking that events land where they were planned, from the take alone."""
+    start = int(take.frames[0].timing["sensed"])
+    rows = []
+    for i, e in enumerate(planned):
+        until = planned[i + 1]["approach"] if i + 1 < len(planned) else OPEN_END
+        hit = next((c for c in sorted(stretches, key=lambda c: c.start) if e["approach"] <= c.start < until), None)
+        rows.append({"index": e["index"], "kind": e["kind"], "object": e["object"],
+                     "planned": None if e["contact"] is None else round((e["contact"] - start) / 1e9, 3),
+                     "contact": None if hit is None else round((hit.start - start) / 1e9, 3),
+                     "touched": [] if hit is None else list(hit.objects)})
+    return rows
 
 
 def knocks(path: str) -> List[Dict]:
@@ -177,10 +234,7 @@ def knocks(path: str) -> List[Dict]:
     stretches = contacts(path)
     poses = object_poses(path)
     end = max((p[-1][0] for p in poses.values() if p), default=0)
-    first: Dict[int, int] = {}
-    for c in stretches:
-        for o in c.objects:
-            first.setdefault(o, c.start)
+    first = first_touches(stretches)  # each object from its own first touch: a take may knock several (amendment 5)
     out = []
     for obj, t in sorted(first.items()):
         p = poses.get(obj, [])
@@ -248,14 +302,15 @@ def ranges(labels: Sequence[int]) -> List[List[int]]:
 
 
 def events(episode: int, category: str, labels: Sequence[int]) -> List[dict]:
-    """His ``safety_events.jsonl`` markers for one episode: ``contact`` at the first unsafe frame, and for
-    ``collide_and_recover`` ``clear`` at the first safe frame after the last unsafe one."""
-    unsafe = [i for i, v in enumerate(labels) if v]
-    if not unsafe:
-        return []
-    out = [{"episode": episode, "kind": "contact", "frame_in_episode": unsafe[0], "source": SOURCE}]
-    if category == RECOVER and unsafe[-1] + 1 < len(labels):
-        out.append({"episode": episode, "kind": "clear", "frame_in_episode": unsafe[-1] + 1, "source": SOURCE})
+    """His ``safety_events.jsonl`` markers for one episode: ``contact`` at the first frame of each unsafe range, and for
+    ``collide_and_recover`` ``clear`` at the first safe frame after it. With one event a take (until 2026-11-21) that was one
+    pair; with several (docs/adr/0036 amendment 5), each range has its own, so a lead window before a contact never spans the
+    free movement between two events."""
+    out = []
+    for start, end in ranges(labels):
+        out.append({"episode": episode, "kind": "contact", "frame_in_episode": start, "source": SOURCE})
+        if category == RECOVER and end + 1 < len(labels):
+            out.append({"episode": episode, "kind": "clear", "frame_in_episode": end + 1, "source": SOURCE})
     return out
 
 
@@ -293,7 +348,7 @@ def set_aside(take_path: str, verdict: Verdict) -> str:
     shutil.move(take_path, dest)
     with open(os.path.join(dest, "safety-check.json"), "w", encoding="utf-8") as f:
         json.dump({"ok": verdict.ok, "reason": verdict.reason, "unsafeFrames": verdict.unsafe_frames,
-                   "touched": list(verdict.touched)}, f, indent=2)
+                   "touched": list(verdict.touched), "contacts": verdict.contacts}, f, indent=2)
     return dest
 
 
@@ -314,5 +369,6 @@ def build(writer, root: str, takes: Sequence[Take], log=print) -> List[Tuple[int
     return written
 
 
-__all__ = ["CATEGORIES", "Contact", "Verdict", "as_safety", "build", "check", "contacts", "events", "frame_labels",
-           "label_rows", "object_poses", "ranges", "set_aside", "write_labels"]
+__all__ = ["CATEGORIES", "Contact", "Verdict", "as_safety", "build", "check", "contacts", "event_timing", "events",
+           "first_touches", "frame_labels", "label_rows", "object_poses", "planned_events", "ranges", "set_aside",
+           "write_labels"]

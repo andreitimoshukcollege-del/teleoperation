@@ -3,8 +3,9 @@
 - ``watch``: keep every scenario's dataset up to date, for good (``--once`` for one pass);
 - ``inspect TAKE``: what a take would become, as JSON (no LeRobot needed);
 - ``rebuild DATASET``: rebuild one dataset from its kept takes;
-- ``safety-check TAKE...``: each safety take's labels and verdict against its category, as JSON lines (``--set-aside``
-  moves a failing one to ``_discarded``; no LeRobot needed);
+- ``safety-check TAKE...``: each safety take's labels and verdict against its category, as JSON lines, with its planned
+  events (``SE``) against the contacts physics reported (``--set-aside`` moves a failing one to ``_discarded``; no LeRobot
+  needed);
 - ``safety-build --out DATASET TAKE...``: one safety dataset from checked takes, in the lab's label format
   (docs/adr/0036 amendment 1);
 - ``knock-report TAKE...``: every object each take touched, its mass at its size and whether it was knocked over, as JSON
@@ -73,11 +74,14 @@ def main(argv=None) -> int:
             stretches = safety.contacts(path)
             labels = safety.frame_labels(t, stretches)
             v = safety.check(t, labels, stretches, safety.object_poses(path))
+            planned = safety.planned_events(path)  # read before a failing take is moved
             moved = safety.set_aside(path, v) if (a.set_aside and not v.ok) else None
             failed += 0 if v.ok else 1
             print(json.dumps({"take": os.path.abspath(path), "category": t.scenario, "ok": v.ok, "reason": v.reason,
                               "frames": len(labels), "unsafeFrames": v.unsafe_frames, "touched": list(v.touched),
-                              "unsafeRanges": safety.ranges(labels), "setAside": moved}), flush=True)
+                              "unsafeRanges": safety.ranges(labels), "contacts": v.contacts,
+                              "eventsDrawn": planned[0]["drawn"] if planned else None, "events": safety.event_timing(t, stretches, planned),
+                              "setAside": moved}), flush=True)
         return 1 if failed else 0
 
     if a.command == "knock-report":

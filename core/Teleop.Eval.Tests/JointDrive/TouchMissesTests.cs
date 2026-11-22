@@ -116,7 +116,9 @@ namespace Teleop.Eval.Tests.JointDrive
         {
             List<Take> takes = Takes(out double seconds);
             WorldScene scene = ObjectShapeTests.Bench(out ObjectShapes shapes);
-            var roles = new SafetyOptions { KnockMaxKg = scene.KnockMaxMass }; // as joint-drive plans it (--scene)
+            // As joint-drive planned them then (--scene): one event at the end, every draw as it was (docs/adr/0036 amendment 5 plans
+            // several, so the record would no longer be reproduced).
+            var roles = new SafetyOptions { KnockMaxKg = scene.KnockMaxMass, OneEventAtTheEnd = true };
             var rows = new List<string> { "take | target | old plan into box | old plan into shape | new target | new plan into shape" };
             int replanned = 0;
             foreach (Take take in takes)

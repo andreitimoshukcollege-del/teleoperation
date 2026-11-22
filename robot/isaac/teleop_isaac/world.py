@@ -276,11 +276,24 @@ class IsaacWorld:
     def build(self, stage, physics: bool = True, contact_report: bool = False) -> None:
         """The scene's prims. ``physics=False`` is the renderer's copy (docs/adr/0032 decision 2): every surface, the
         floor included, as visuals alone, and objects it poses itself; no collider, body or physics material.
-        ``contact_report`` marks every object body for PhysX's contact report (threshold 0: every touch), which
-        :meth:`contact_step` reads (docs/adr/0036 amendment 1)."""
+        ``contact_report`` marks every object body for PhysX's contact report (threshold 0: every pair PhysX finds), which
+        :meth:`contact_step` reads (docs/adr/0036 amendment 1), and sets the contact and rest offsets of every collider
+        it makes and of the robot's (``contacts.CONTACT_OFFSET_M``, ``REST_OFFSET_M``; amendment 4): what counts as a touch
+        is measured from them."""
         from pxr import Gf, PhysxSchema, Sdf, Usd, UsdGeom, UsdPhysics, UsdShade
 
+        from .contacts import CONTACT_OFFSET_M, REST_OFFSET_M
+
         self._contact_report = bool(physics and contact_report)
+        self.offset_colliders = 0
+
+        def offsets(prim) -> None:
+            if not self._contact_report:
+                return
+            api = PhysxSchema.PhysxCollisionAPI.Apply(prim)
+            api.CreateContactOffsetAttr().Set(CONTACT_OFFSET_M)
+            api.CreateRestOffsetAttr().Set(REST_OFFSET_M)
+            self.offset_colliders += 1
 
         def material(path: str, static: float, dynamic: float):
             mat = UsdShade.Material.Define(stage, path)
@@ -316,6 +329,7 @@ class IsaacWorld:
                 cube.CreateDisplayColorAttr([Gf.Vec3f(*s.colour)])
                 if physics and s.collides:
                     UsdPhysics.CollisionAPI.Apply(cube.GetPrim())
+                    offsets(cube.GetPrim())
                     # The robot's mount stands in the bench; a contact with a body no joint moves only fights the base's pin.
                     UsdPhysics.FilteredPairsAPI.Apply(cube.GetPrim()).CreateFilteredPairsRel().SetTargets([Sdf.Path(b) for b in fixed])
                     bind_physics(cube.GetPrim(), material(f"{self.ROOT}/Materials/{name}", s.static_friction, s.dynamic_friction))
@@ -362,12 +376,14 @@ class IsaacWorld:
                         if m.IsA(UsdGeom.Mesh):
                             UsdPhysics.CollisionAPI.Apply(m)
                             UsdPhysics.MeshCollisionAPI.Apply(m).CreateApproximationAttr(UsdPhysics.Tokens.convexDecomposition)
+                            offsets(m)
                     # Stronger than the asset's own (render) material binding, which would otherwise give PhysX no friction.
                     UsdShade.MaterialBindingAPI.Apply(g.GetPrim()).Bind(
                         material(f"{self.ROOT}/Materials/{path.rsplit('/', 1)[1]}", o.static_friction, o.dynamic_friction),
                         UsdShade.Tokens.strongerThanDescendants, "physics")
                 elif physics:
                     UsdPhysics.CollisionAPI.Apply(g.GetPrim())
+                    offsets(g.GetPrim())
                     bind_physics(g.GetPrim(), material(f"{self.ROOT}/Materials/{path.rsplit('/', 1)[1]}", o.static_friction, o.dynamic_friction))
 
             # A pool's objects start on the shelf (the model's poses): Scene.parked_pose is the shelf's slot at the file's size.
@@ -381,6 +397,7 @@ class IsaacWorld:
                 sx.AddTranslateOp().Set(Gf.Vec3d(SHELF_X - 0.5, -0.5, SHELF_Z - 0.05))
                 sx.AddScaleOp().Set(Gf.Vec3f(len(RESIZE_SCALES) + 2.0, len(scene.objects) + 2.0, 0.1))
                 UsdPhysics.CollisionAPI.Apply(shelf.GetPrim())
+                offsets(shelf.GetPrim())
                 UsdGeom.Imageable(shelf).MakeInvisible()
                 for i, (o, path) in enumerate(zip(scene.objects, self.object_paths)):
                     if not (o.movable and o.operator_movable) or o.shape == "mesh":
@@ -391,6 +408,13 @@ class IsaacWorld:
                         self.slots[i][k] = len(self.body_paths)
                         self.body_paths.append(f"{path}_s{k}")
                         body(o, self.body_paths[-1], self.parked(i, k), s)
+            if self._contact_report:
+                # The robot's colliders too (the URDF importer authors no offsets: PhysX would pick them from each
+                # shape's extent). Its visuals are instanced, its colliders plain prims, so this reaches every one.
+                robot = stage.GetPrimAtPath(self.robot_path)
+                for prim in Usd.PrimRange(robot) if robot and robot.IsValid() else []:
+                    if prim.HasAPI(UsdPhysics.CollisionAPI):
+                        offsets(prim)
 
     def fixed_bodies(self, stage) -> List[str]:
         """The robot's rigid bodies no joint moves (its mount and what is bolted to it): those reached from the pinned base
@@ -500,11 +524,12 @@ class IsaacWorld:
             kind = kinds.get(h.type)
             if kind is None:
                 continue
-            impulse = 0.0
+            impulse, separation = 0.0, math.inf
             for d in data[h.contact_data_offset:h.contact_data_offset + h.num_contact_data]:
                 impulse += math.sqrt(d.impulse[0] ** 2 + d.impulse[1] ** 2 + d.impulse[2] ** 2)
+                separation = min(separation, float(d.separation))
             out.append(ContactEvent(str(path(h.actor0)), str(path(h.actor1)), str(path(h.collider0)), str(path(h.collider1)),
-                                    kind, impulse))
+                                    kind, impulse, separation))
         return out
 
     def contact_step(self) -> bool:

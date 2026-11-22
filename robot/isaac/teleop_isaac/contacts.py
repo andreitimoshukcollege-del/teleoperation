@@ -7,12 +7,18 @@ and answers by (link, object): one contact however many shapes of the two touch,
 Every other pair (an object on the table or on another object, the robot on a surface) is not a contact here: the
 label is "the arm touches an object".
 
+PhysX reports a pair from the moment the two shapes come within their contact offsets of each other (both shapes'
+summed), before they touch (docs/adr/0036 amendment 4). So a pair counts as touching on a step only when it has a contact
+point no more than :data:`TOUCH_SEPARATION_M` apart, or PhysX's solver pushed the two apart that step (an impulse); a
+pair inside the offsets but further apart is near, and not a contact.
+
 No Isaac import here, so the tests run it with made-up events; ``world.IsaacWorld.contact_events`` turns PhysX's
 report into the events this takes.
 """
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from typing import Dict, Iterable, List, Mapping, Sequence, Tuple
 
@@ -20,11 +26,23 @@ FOUND, PERSIST, LOST = 0, 1, 2
 UNKNOWN_LINK = 255  # a robot body that is not one of the URDF's links (it should not happen; it is still a contact)
 JETROVER_ARM = 0  # the JetRover has one arm
 
+# A touch (docs/adr/0036 amendment 4): a contact point at most this far apart (m), or any impulse.
+TOUCH_SEPARATION_M = 0.001
+# The colliders' offsets, set on the robot's links and on every object and surface when contacts are reported
+# (world.IsaacWorld.build). PhysX generates a pair's contacts within the two shapes' contact offsets summed (10 mm here):
+# that must exceed TOUCH_SEPARATION_M, or a touch would never be reported, and the most two bodies close in one 1 ms
+# step (a link at 8 rad/s, 0.3 m out: 2.4 mm; a falling object about the same), or a fast one would pass into another
+# before PhysX sees the pair. Rest offset 0, PhysX's own for rigid bodies, pinned: bodies at rest touch at separation 0,
+# so the 1 mm means a 1 mm gap.
+CONTACT_OFFSET_M = 0.005
+REST_OFFSET_M = 0.0
+
 
 @dataclass(frozen=True)
 class ContactEvent:
     """One PhysX contact event between two shapes: the rigid bodies they belong to, the shapes themselves, what happened,
-    and the impulse PhysX applied between them over the step (N s)."""
+    the impulse PhysX applied between them over the step (N s), and the smallest separation of its contact points (m;
+    negative when they overlap, infinite when the event carries none, as a ``LOST`` does)."""
 
     body0: str
     body1: str
@@ -32,6 +50,12 @@ class ContactEvent:
     shape1: str
     kind: int
     impulse: float
+    separation: float = math.inf
+
+    @property
+    def touches(self) -> bool:
+        """A contact point within :data:`TOUCH_SEPARATION_M`, or the solver pushed the shapes apart this step."""
+        return self.kind != LOST and (self.separation <= TOUCH_SEPARATION_M or self.impulse > 0.0)
 
 
 class ContactTracker:
@@ -53,6 +77,11 @@ class ContactTracker:
         # (link, object, robot shape, object shape) -> force (N): the shape pairs touching now.
         self._pairs: Dict[Tuple[int, int, str, str], float] = {}
         self._last: Tuple[Tuple[int, int], ...] = ()
+        # What the filter saw, for the bridge's report: robot-object pair events inside the offsets but not touching,
+        # and the separations PhysX reported for robot-object pairs (the largest is about the contact offsets in use).
+        self.near_events = 0
+        self.max_separation = -math.inf
+        self.min_separation = math.inf
 
     def _link_of(self, body: str) -> int:
         for part in reversed(body[len(self.robot):].split("/")):
@@ -74,10 +103,16 @@ class ContactTracker:
             key = self._classify(e)
             if key is None:
                 continue
-            if e.kind == LOST:
-                self._pairs.pop(key, None)
-            else:
+            if math.isfinite(e.separation):
+                self.max_separation = max(self.max_separation, e.separation)
+                self.min_separation = min(self.min_separation, e.separation)
+            if e.touches:
                 self._pairs[key] = abs(e.impulse) / self.dt
+            else:
+                # LOST, or still reported but no longer (or not yet) touching: near is not a contact.
+                self._pairs.pop(key, None)
+                if e.kind != LOST:
+                    self.near_events += 1
         now = self.touching()
         changed = now != self._last
         self._last = now

@@ -231,7 +231,12 @@ namespace Teleop.Eval.JointDrive
 
             var legs = new List<DriveLeg>();
             double t = 0;
-            if (start.MaxJointDelta(home) > 0.01f)
+            // A safety take carries on from wherever the last one left the arm (docs/adr/0036 amendment 3), when that pose is in
+            // the envelope and clear of the objects by the scripts' clearance; otherwise it goes home first, as every take used to.
+            bool safety = SafetyScript.IsSafety(script);
+            bool fromHere = safety && objects != null && envelope.Contains(start) &&
+                            ArmCollision.IsValid(profile, SafetyScript.WithObjects(model, objects, SafetyScript.ClearanceMeters), start);
+            if (!fromHere && start.MaxJointDelta(home) > 0.01f)
             {
                 if (!TryApproach(profile, model, start, home, out List<(ArmPose To, bool Step)> via, out error))
                 {
@@ -253,7 +258,7 @@ namespace Teleop.Eval.JointDrive
             }
 
             var rng = new SeededRng(seed);
-            ArmPose current = home;
+            ArmPose current = fromHere ? start : home;
             double end = t + seconds;
             int stepJoint = 0;
             if (script == DriveScript.Course)
@@ -264,7 +269,6 @@ namespace Teleop.Eval.JointDrive
                 }
             }
 
-            bool safety = SafetyScript.IsSafety(script);
             if (safety)
             {
                 if (objects == null)
@@ -296,7 +300,7 @@ namespace Teleop.Eval.JointDrive
                 current = leg.To;
             }
 
-            if (current.MaxJointDelta(home) > 0.01f)
+            if (!safety && current.MaxJointDelta(home) > 0.01f) // a safety take ends where it is, moving (amendment 3)
             {
                 if (!PathValid(profile, model, envelope, current, home))
                 {

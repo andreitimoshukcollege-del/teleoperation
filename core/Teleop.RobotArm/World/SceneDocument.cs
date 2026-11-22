@@ -115,6 +115,23 @@ namespace Teleop.RobotArm.World
         /// at others. Absent (0): no roles.
         /// </summary>
         public double knockMaxMass;
+
+        /// <summary>
+        /// docs/adr/0037 amendment 5: where a pool's fixed objects stand instead of the placement region, as flat rectangles
+        /// <c>[xMin, xMax, yMin, yMax, ...]</c> in the root frame that hold the object's centre (beside the robot, within the
+        /// arm's reach and clear of the cameras' view); its footprint lies on the table or the bench beside it. Empty: the
+        /// placement region, as for every object.
+        /// </summary>
+        public double[] fixedRegions = Array.Empty<double>();
+
+        /// <summary>The robot's own footprint, <c>[xMin, xMax, yMin, yMax]</c>, root frame, that no object's footprint may reach. Empty: none.</summary>
+        public double[] robotKeepOut = Array.Empty<double>();
+
+        /// <summary>
+        /// When above 0: a layout stands each fixed object (in <see cref="fixedRegions"/>) so its near side, by its footprint's
+        /// circle, comes within this distance of the robot's base, m: where the arm reaches it. 0: anywhere in its region.
+        /// </summary>
+        public double fixedNearMax;
     }
 
     /// <summary>Where objects may stand: every footprint lies inside this region and on the table, this far apart.</summary>

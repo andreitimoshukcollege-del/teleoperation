@@ -53,6 +53,9 @@ namespace Teleop.RobotArm.Tests.World
                     if (Pool.Objects[i].Movable) movable++;
                     else fixeds++;
                     Assert.True(Pool.FitsOnTable(i, poses[i].X, poses[i].Y, scales[i]), $"seed {seed}: {Pool.Objects[i].Name} off the table");
+                    Assert.True(Pool.ClearOfRobot(poses[i].X, poses[i].Y, Pool.Objects[i].FootprintRadius * scales[i]), $"seed {seed}: {Pool.Objects[i].Name} on the robot");
+                    // A fixture stands beside the robot, its near side within the arm's reach (amendment 5).
+                    if (Pool.InFixedRegions(i)) Assert.True(Math.Sqrt(poses[i].X * poses[i].X + poses[i].Y * poses[i].Y) - Pool.Objects[i].FootprintRadius <= Pool.FixedNearMax + 1e-9, $"seed {seed}: {Pool.Objects[i].Name} out of reach");
                     // A movable object stands where the arm reaches it (amendment 3): within the band from the robot's base.
                     if (Pool.Objects[i].Movable) Assert.InRange(Math.Sqrt(poses[i].X * poses[i].X + poses[i].Y * poses[i].Y), Pool.ReachMin, Pool.ReachMax);
                     Assert.Equal(Pool.Table.Top + Pool.Objects[i].SizeZ * scales[i] / 2, poses[i].Z, 9);
@@ -65,6 +68,8 @@ namespace Teleop.RobotArm.Tests.World
                 // An object that found no spot is parked too: never more on the table than the range, and fewer only by the misses.
                 Assert.InRange(movable, Pool.MovableMin - missed, Pool.MovableMax);
                 Assert.InRange(fixeds, Pool.FixedMin - missed, Pool.FixedMax);
+                // A fixture always finds its spot beside the robot (2026-11-16: drawn from its whole rectangle, 17% of layouts had none).
+                Assert.True(fixeds >= Pool.FixedMin, $"seed {seed}: {fixeds} fixture(s)");
             }
         }
 
@@ -90,7 +95,13 @@ namespace Teleop.RobotArm.Tests.World
         [Fact]
         public void EachLayout_DrawsSizesFromTheResizeSteps_KeepingTheLargestSideInThePoolsRange()
         {
-            Assert.True(Pool.DrawsSizes);
+            if (!Pool.DrawsSizes || !Enumerable.Range(0, Pool.Objects.Length).Any(Pool.Resizable))
+            {
+                // Every object a real scan at its real size (amendment 5): no layout resizes anything.
+                for (ulong seed = 1; seed <= 50; seed++) Assert.All(DrawSized(seed).Item2, k => Assert.Equal(1.0, k));
+                return;
+            }
+
             var seen = new System.Collections.Generic.Dictionary<string, System.Collections.Generic.HashSet<double>>();
             for (ulong seed = 1; seed <= 300; seed++)
             {

@@ -26,29 +26,20 @@ namespace Teleop.Eval.JointDrive
         }
 
         /// <summary>
-        /// Object <paramref name="o"/>'s axis-aligned bounds in the arm base frame, at <paramref name="scale"/> times its file size,
-        /// posed at (<paramref name="x"/>, <paramref name="y"/>, <paramref name="z"/>) with the rotation w, x, y, z: the box's
-        /// eight corners turned and bounded, so a tipped or turned object is a little larger than it is (a cylinder or sphere is
-        /// its box).
+        /// Object <paramref name="o"/>'s box in the arm base frame, at <paramref name="scale"/> times its file size, posed at
+        /// (<paramref name="x"/>, <paramref name="y"/>, <paramref name="z"/>) with the rotation w, x, y, z, turned as the object
+        /// is (a cylinder or sphere is its box). Its axis-aligned bounds were the whole object until 2026-11-16, and a touch at a
+        /// turned object's corner stopped up to 3 cm short of it.
         /// </summary>
         public static SafetyObject Bounds(SceneObject o, double scale, double x, double y, double z, double qw, double qx, double qy, double qz)
         {
             var rotation = Quaternion.Normalize(new Quaternion((float)qx, (float)qy, (float)qz, (float)qw));
             var half = new Vector3((float)(o.SizeX * scale / 2), (float)(o.SizeY * scale / 2), (float)(o.SizeZ * scale / 2));
             var centre = new Vector3((float)x, (float)y, (float)z);
-            var min = new Vector3(float.MaxValue);
-            var max = new Vector3(float.MinValue);
-            for (int k = 0; k < 8; k++)
-            {
-                var corner = new Vector3((k & 1) == 0 ? -half.X : half.X, (k & 2) == 0 ? -half.Y : half.Y, (k & 4) == 0 ? -half.Z : half.Z);
-                Vector3 p = centre + Vector3.Transform(corner, rotation);
-                min = Vector3.Min(min, p);
-                max = Vector3.Max(max, p);
-            }
 
             // Mass at size, as Isaac's bodies have it; tippy from the file's proportions, which a uniform size keeps.
             bool tippy = o.SizeZ > SafetyObject.TippyAspect * Math.Min(o.SizeX, o.SizeY);
-            return new SafetyObject(o.Id, min, max, o.Movable, o.Mass * scale * scale * scale, tippy);
+            return new SafetyObject(o.Id, centre, rotation, half, o.Movable, o.Mass * scale * scale * scale, tippy);
         }
 
         /// <summary>

@@ -523,7 +523,9 @@ namespace Teleop.Eval.JointDrive
                 return FinishTake(take, link, 130);
             }
 
-            Console.WriteLine("[joint-drive] done: the arm is back at home.");
+            Console.WriteLine(SafetyScript.IsSafety(plan.Script)
+                ? "[joint-drive] done: the arm carries on from here next take (docs/adr/0036 amendment 3)."
+                : "[joint-drive] done: the arm is back at home.");
             return FinishTake(take, link, 0);
         }
 

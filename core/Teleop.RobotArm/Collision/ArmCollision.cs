@@ -172,9 +172,8 @@ namespace Teleop.RobotArm.Collision
                     }
 
                     // The fixed box grown by the margin, against the body.
-                    Vector3 boxCentre = 0.5f * (boxes[k].Min + boxes[k].Max);
-                    Vector3 boxHalf = 0.5f * (boxes[k].Max - boxes[k].Min) + pad;
-                    if (BoxesOverlap(centre[i], ax[i], ay[i], az[i], half[i], boxCentre, Vector3.UnitX, Vector3.UnitY, Vector3.UnitZ, boxHalf))
+                    ref readonly CollisionBox box = ref boxes[k];
+                    if (BoxesOverlap(centre[i], ax[i], ay[i], az[i], half[i], box.Center, box.AxisX, box.AxisY, box.AxisZ, box.HalfExtents + pad))
                     {
                         return new CollisionHit(CollisionHitKind.BodyBox, i, k);
                     }

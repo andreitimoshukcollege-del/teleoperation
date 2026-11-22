@@ -191,9 +191,12 @@ namespace Teleop.RobotArm.World
         private WorldScene(string name, string robotProfile, SceneSurface[] surfaces, SceneSurface table, SceneSurface? bench,
             SceneObject[] objects, double xMin, double xMax, double yMin, double yMax, double clearance,
             int movableMin, int movableMax, int fixedMin, int fixedMax, double sizeMin, double sizeMax, double reachMin, double reachMax,
-            double knockMaxMass)
+            double knockMaxMass, double[] fixedRegions, double[] robotKeepOut, double fixedNearMax)
         {
+            FixedNearMax = fixedNearMax;
             KnockMaxMass = knockMaxMass;
+            FixedRegions = fixedRegions;
+            RobotKeepOut = robotKeepOut;
             ReachMin = reachMin;
             ReachMax = reachMax;
             SizeMin = sizeMin;
@@ -244,6 +247,82 @@ namespace Teleop.RobotArm.World
         public double SizeMin { get; }
         public double SizeMax { get; }
 
+        /// <summary>Where a pool's fixed objects stand, flat <c>[xMin, xMax, yMin, yMax, ...]</c> (docs/adr/0037 amendment 5); empty: the placement region.</summary>
+        public double[] FixedRegions { get; }
+
+        /// <summary>A fixed object's near side comes within this of the robot's base in a layout, m; 0: no bound.</summary>
+        public double FixedNearMax { get; }
+
+        /// <summary>The robot's footprint no object may reach, <c>[xMin, xMax, yMin, yMax]</c>; empty: none.</summary>
+        public double[] RobotKeepOut { get; }
+
+        /// <summary>Whether a footprint of radius <paramref name="r"/> at (x, y) stays out of <see cref="RobotKeepOut"/>.</summary>
+        public bool ClearOfRobot(double x, double y, double r)
+        {
+            if (RobotKeepOut.Length != 4) return true;
+            double dx = Math.Max(Math.Max(RobotKeepOut[0] - x, 0), x - RobotKeepOut[1]);
+            double dy = Math.Max(Math.Max(RobotKeepOut[2] - y, 0), y - RobotKeepOut[3]);
+            return dx * dx + dy * dy >= r * r - 1e-12;
+        }
+
+        /// <summary>Whether object <paramref name="index"/> stands in <see cref="FixedRegions"/> rather than the placement region.</summary>
+        public bool InFixedRegions(int index) => FixedRegions.Length > 0 && !Objects[index].Movable;
+
+        /// <summary>
+        /// A random spot for object <paramref name="index"/> at <paramref name="scale"/> where it fits (its footprint on the table
+        /// and in its region; a movable one also in the reach band), drawn from <paramref name="rng"/>: three draws a try (a
+        /// fixed-region object first picks its rectangle). A fixed-region object faces the robot's base, give or take
+        /// 20 degrees; any other turns at random. False when the draw misses (the caller tries again); the clearance from other
+        /// objects is the caller's.
+        /// </summary>
+        public bool DrawSpot(int index, double scale, ref Teleop.Core.Types.SeededRng rng, out double x, out double y, out double yaw)
+        {
+            double r = Objects[index].FootprintRadius * scale;
+            double x0, x1, y0, y1;
+            if (InFixedRegions(index))
+            {
+                // A fixed-region rectangle holds the centre; the footprint lies on the table or the bench. Draw x there, then y
+                // only where the object clears the robot's keep-out and its near side is within reach (a thin band beside the
+                // robot: drawn from the whole rectangle, 3-4% of tries landed in it). FitsOnTable and InReach still decide.
+                int k = Math.Min(FixedRegions.Length / 4 - 1, (int)(rng.NextDouble() * (FixedRegions.Length / 4)));
+                double sx0 = Bench != null ? Math.Min(Table.XMin, Bench.XMin) : Table.XMin, sx1 = Bench != null ? Math.Max(Table.XMax, Bench.XMax) : Table.XMax;
+                double sy0 = Bench != null ? Math.Max(Table.YMin, Bench.YMin) : Table.YMin, sy1 = Bench != null ? Math.Min(Table.YMax, Bench.YMax) : Table.YMax;
+                x0 = Math.Max(FixedRegions[4 * k], sx0 + r);
+                x1 = Math.Min(FixedRegions[4 * k + 1], sx1 - r);
+                x = x0 + rng.NextDouble() * (x1 - x0);
+                y0 = Math.Max(FixedRegions[4 * k + 2], sy0 + r);
+                y1 = Math.Min(FixedRegions[4 * k + 3], sy1 - r);
+                if (FixedNearMax > 0)
+                {
+                    double reach = FixedNearMax + r, half = reach * reach - x * x;
+                    double ymax = half > 0 ? Math.Sqrt(half) : 0;
+                    y0 = Math.Max(y0, -ymax);
+                    y1 = Math.Min(y1, ymax);
+                }
+
+                if (RobotKeepOut.Length == 4 && x >= RobotKeepOut[0] - r && x <= RobotKeepOut[1] + r)
+                {
+                    if (FixedRegions[4 * k + 2] >= RobotKeepOut[3]) y0 = Math.Max(y0, RobotKeepOut[3] + r);
+                    else if (FixedRegions[4 * k + 3] <= RobotKeepOut[2]) y1 = Math.Min(y1, RobotKeepOut[2] - r);
+                }
+
+                y = y0 + rng.NextDouble() * (y1 - y0);
+            }
+            else
+            {
+                x0 = Math.Max(Table.XMin, RegionXMin) + r;
+                x1 = Math.Min(Table.XMax, RegionXMax) - r;
+                y0 = Math.Max(Table.YMin, RegionYMin) + r;
+                y1 = Math.Min(Table.YMax, RegionYMax) - r;
+                x = x0 + rng.NextDouble() * (x1 - x0);
+                y = y0 + rng.NextDouble() * (y1 - y0);
+            }
+
+            double turn = (2 * rng.NextDouble() - 1) * Math.PI;
+            yaw = InFixedRegions(index) ? Math.Atan2(-y, -x) + turn * (20.0 / 180.0) : turn;
+            return x0 <= x1 && y0 <= y1 && FitsOnTable(index, x, y, scale) && InReach(index, x, y);
+        }
+
         /// <summary>The heaviest a movable object may be at its size, kg, and be one the arm knocks over (docs/adr/0037 P4); 0: no roles.</summary>
         public double KnockMaxMass { get; }
 
@@ -254,6 +333,7 @@ namespace Teleop.RobotArm.World
         /// <summary>Whether a pool's layout may stand object <paramref name="index"/> at (x, y): a movable object within the reach band, when there is one; any other anywhere.</summary>
         public bool InReach(int index, double x, double y)
         {
+            if (InFixedRegions(index) && FixedNearMax > 0) return Math.Sqrt(x * x + y * y) - Objects[index].FootprintRadius <= FixedNearMax;
             if (!(ReachMax > 0) || !Objects[index].Movable) return true;
             double r = Math.Sqrt(x * x + y * y);
             return r >= ReachMin && r <= ReachMax;
@@ -305,6 +385,24 @@ namespace Teleop.RobotArm.World
         public bool FitsOnTable(int index, double x, double y, double scale)
         {
             double r = Objects[index].FootprintRadius * scale;
+            if (!ClearOfRobot(x, y, r)) return false;
+            if (InFixedRegions(index))
+            {
+                // Its centre in a rectangle, its footprint on the table or on the bench beside it (flush with it).
+                double sx0 = Bench != null ? Math.Min(Table.XMin, Bench.XMin) : Table.XMin, sx1 = Bench != null ? Math.Max(Table.XMax, Bench.XMax) : Table.XMax;
+                double sy0 = Bench != null ? Math.Max(Table.YMin, Bench.YMin) : Table.YMin, sy1 = Bench != null ? Math.Min(Table.YMax, Bench.YMax) : Table.YMax;
+                if (x - r < sx0 - 1e-9 || x + r > sx1 + 1e-9 || y - r < sy0 - 1e-9 || y + r > sy1 + 1e-9) return false;
+                for (int k = 0; k + 3 < FixedRegions.Length; k += 4)
+                {
+                    if (x >= FixedRegions[k] - 1e-9 && x <= FixedRegions[k + 1] + 1e-9 && y >= FixedRegions[k + 2] - 1e-9 && y <= FixedRegions[k + 3] + 1e-9)
+                    {
+                        return true;
+                    }
+                }
+
+                return false;
+            }
+
             return x - r >= Math.Max(Table.XMin, RegionXMin) - 1e-9 && x + r <= Math.Min(Table.XMax, RegionXMax) + 1e-9 &&
                    y - r >= Math.Max(Table.YMin, RegionYMin) - 1e-9 && y + r <= Math.Min(Table.YMax, RegionYMax) + 1e-9;
         }
@@ -533,9 +631,32 @@ namespace Teleop.RobotArm.World
             if (pool.reachMax > 0 && !isPool) throw Bad("pool", "a reach band is only for a pool");
             if (!Finite(pool.knockMaxMass) || pool.knockMaxMass < 0 || pool.knockMaxMass > MaxMass) throw Bad("pool", $"knockMaxMass is 0 (no roles) to {MaxMass} kg");
             if (pool.knockMaxMass > 0 && !isPool) throw Bad("pool", "roles are only for a pool");
+            double[] fr = pool.fixedRegions ?? Array.Empty<double>();
+            if (fr.Length % 4 != 0) throw Bad("pool", "fixedRegions holds xMin, xMax, yMin, yMax for each rectangle");
+            for (int k = 0; k < fr.Length; k += 4)
+            {
+                if (!Finite(fr[k], fr[k + 1], fr[k + 2], fr[k + 3]) || !(fr[k] < fr[k + 1] && fr[k + 2] < fr[k + 3]))
+                {
+                    throw Bad("pool", "each fixedRegions rectangle needs min < max on both axes");
+                }
+
+                double sx0 = bench != null ? Math.Min(table.XMin, bench.XMin) : table.XMin, sx1 = bench != null ? Math.Max(table.XMax, bench.XMax) : table.XMax;
+                if (fr[k + 1] < sx0 || fr[k] > sx1 || fr[k + 3] < table.YMin || fr[k + 2] > table.YMax)
+                {
+                    throw Bad("pool", "a fixedRegions rectangle does not overlap the table or the bench");
+                }
+            }
+
+            if (fr.Length > 0 && !isPool) throw Bad("pool", "fixedRegions are only for a pool");
+            double[] ko = pool.robotKeepOut ?? Array.Empty<double>();
+            if (ko.Length != 0 && (ko.Length != 4 || !Finite(ko[0], ko[1], ko[2], ko[3]) || !(ko[0] < ko[1] && ko[2] < ko[3])))
+            {
+                throw Bad("pool", "robotKeepOut is [xMin, xMax, yMin, yMax] with min < max, or absent");
+            }
+
             var scene = new WorldScene(d.name, d.robotProfile, surfaces, table, bench, objects, p.xMin, p.xMax, p.yMin, p.yMax, p.clearance,
                 pool.movableMin, pool.movableMax, pool.fixedMin, pool.fixedMax, pool.sizeMin, pool.sizeMax, pool.reachMin, pool.reachMax,
-                pool.knockMaxMass);
+                pool.knockMaxMass, fr, ko, ValidNear(pool.fixedNearMax));
             for (int i = 0; i < objects.Length; i++)
             {
                 SceneObject o = objects[i];
@@ -561,6 +682,12 @@ namespace Teleop.RobotArm.World
             }
 
             return scene;
+        }
+
+        private static double ValidNear(double v)
+        {
+            if (!Finite(v) || v < 0) throw Bad("pool", "fixedNearMax is 0 (no bound) or a distance in metres");
+            return v;
         }
 
         private static FormatException Bad(string what, string detail) => new FormatException(what + ": " + detail);

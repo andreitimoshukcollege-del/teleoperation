@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted, 2026-11-15 (the user, on starting P1). P1 built 2026-11-15; P2 built 2026-11-15 (amendments 1 and 2); P3 built 2026-11-15 (amendment 3); P4 built 2026-11-15 (amendment 4).
+Accepted, 2026-11-15 (the user, on starting P1). P1 built 2026-11-15; P2 built 2026-11-15 (amendments 1 and 2); P3 built 2026-11-15 (amendment 3); P4 built 2026-11-15 (amendment 4). Real fixtures and materials 2026-11-16 (amendment 5).
 
 ## Context
 
@@ -309,3 +309,128 @@ measured on the twin.
   - the random-layout test, which every category passes at its 80% bar with roles on;
   - the knock report and its size parse;
   - the pool's `knockMaxMass` in the shared vectors.
+
+## Amendment 5 (2026-11-16): fixtures bigger than the robot, and nothing without a real surface
+
+The user's judgement after P4:
+1. In real life, immovable things near a robot are big, bigger than the robot itself; the thin walls were tiny.
+2. Nothing should be a flat colour, since such objects cannot exist in real life.
+
+The user chose furniture-scale fixtures at the edges, and real materials together with the scans.
+
+- **Fixtures.** The 8 thin walls become 8 Poly Haven models (CC0), each 30-69 cm tall: two jerrycans, an electric kettle, two
+  vases, a marble bust, a garden gnome and a brass vase. They stay `fixed` (kinematic) and keep their real look and size.
+  - **The fetcher.** `teleop_isaac.models` fetches them as USD with their textures. Each file is checked against the API's
+    size and md5, and is fetched only from Poly Haven's download host and only under `textures/`.
+  - **Texture paths.** Poly Haven's USD names its textures by an absolute path on Poly Haven's own machines. The fetch
+    points each reference at the file downloaded beside it, or at the same map in the format the download included, and
+    refuses a model that names one it lacks.
+  - **Choosing them.** `survey` measured 270 models of the fitting categories. These 8 stand sensibly on a table, are
+    taller than the robot, and fit a wing.
+- **Where fixtures stand.** A pool's `fixedRegions` are rectangles where its fixed objects stand instead of the placement
+  region. `jetrover-bench` uses the table's two wings, |y| 0.36-0.80 m.
+  - The third-person cameras sit beyond the table's far edge, looking back at the robot, so a fixture there would block
+    their view.
+  - A fixture is drawn facing the robot, give or take 20 degrees.
+  - Every placement rule (Core's `FitsOnTable`, the bridge's `Scene.fits_on_table`) uses the regions, and the shared
+    vectors hold the two readers equal.
+- **Materials.** The simple shapes wear real CC0 PBR textures, drawn per take with the room (seeded, recorded as `MT`, and
+  attributed in `environment.json`).
+  - Boxes are wooden blocks: walnut, ash, bamboo, oak, cherry and pine veneers, and painted planks.
+  - Cylinders are metal or wooden cans: plain and rusted plates, painted metal.
+  - The table and bench are a grey oak laminate (`grey_oak_veneer_01`, desaturated and tinted grey).
+  - `teleop_isaac.materials` fetches the 20 textures, checked the same way, with each one's real-world size so it tiles
+    at its true scale. The shapes have no UVs, so the renderer projects in object space (OmniPBR's `project_uvw`), which
+    keeps the texture on as the object moves.
+- **What is left.** Every object in the scene now has a scanned or real-material surface; only the hidden floor and the
+  shelf have none.
+- **On the twin, a 4-take check:** 3 kept and 1 not planned. Fixtures and textures rendered with every texture found.
+
+### Amendment 5, revised the same day: fixtures within reach, scans only, delivery boxes
+
+The user's judgement of the first check:
+- the fixtures stood on the wings, 36-80 cm from the arm's base, out of the reach of a wrist that reaches 14-24 cm;
+- the small simple shapes still looked untextured: a 2-5 cm block shows only a few pixels of a texture that spans 1.5-2 m;
+- and the user asked for cardboard delivery boxes.
+
+The user chose fixtures beside the robot, and real scans in place of the simple shapes.
+
+- **Fixtures beside the robot.**
+  - A fixed region now bounds the object's **centre**, and the footprint must lie on the table or on the bench beside it
+    (flush with it). `jetrover-bench` puts the regions beside the robot's body: x -0.15 to 0.06 m, |y| 0.25-0.50 m.
+  - Two more pool fields:
+    - `robotKeepOut`: no footprint may reach the robot, at x -0.21 to 0.14 m and |y| up to 0.20 m. That is the chassis, plus
+      room for the elbow to swing; fixtures hugging the chassis took the arm's paths.
+    - `fixedNearMax` (0.22 m): a fixture's near side comes within the arm's reach.
+  - The third-person cameras see the robot from the front, so a fixture beside it blocks nothing of their view.
+- **One fixture a take** (`fixedMax` 1). Two, one on each side, boxed the arm in.
+- **Every object is a real scan.**
+  - The 8 simple shapes are gone. In their place are five small Poly Haven props (a cleaner tin, a carved wooden elephant,
+    a wooden bowl) and **delivery parcels**: Poly Haven's cardboard box at 0.30, 0.34, 0.38 and 0.42 of its size. The two
+    flattest props (a mousetrap 1.8 cm tall, a roll of tape 2.5 cm) were dropped, too low for a touch.
+  - A mesh entry may be its asset uniformly scaled (`world.mesh_factor`; every axis must agree within 3%).
+  - The same box at 0.85, 33 x 44 x 29 cm, is a fixture.
+  - Masses for Poly Haven props are estimates: Poly Haven publishes none (a parcel 120-250 g, as an empty box).
+  - No object is resizable now (meshes keep their size), so the pool has no size range.
+- **`collide_and_recover`** prefers steady objects, and tries the others only when none can be approached. With fixtures
+  beside the robot and many low objects, steady ones alone left half the layouts unplannable; a tipped object sets the
+  take aside at its check instead.
+- **What a big object within reach costs.** It takes the arm's approach paths away. Over 40 layouts, with the scene's roles:
+
+  | Category | Layouts planned |
+  |---|---|
+  | `reach_no_obstacle` | 100% |
+  | `collide_with_obstacle` | 80% |
+  | `stop_before_collision` | 70% |
+  | `collide_and_recover` | 63% |
+
+  Without the fixture, nearly all layouts plan. The random-layout test's bars were 80% for every category. They are now 80%,
+  60%, 50% and 50% respectively, with this reason in the test: a layout a script cannot use costs the batch a few seconds
+  and another layout, never a take.
+
+### Amendment 5, second revision (2026-11-16): fixtures are touched, and the cameras come closer
+
+The user saw that the fixtures still looked out of reach, and asked whether the arm ever touched one. It never had. No take
+since the fixtures came touched one (ids 41-49), and a fixture standing alone beside the robot planned no stop and no touch
+at any spot:
+- the safety scripts approached an object only on arcs **above its top**, and every fixture's top (28 cm and up) is out of a
+  wrist that reaches only 2 cm below to 10 cm above the arm base frame's origin, 16-24 cm out, within 90° of straight ahead
+  (mapped through the headset's IK);
+- and a fixture beside the robot is wide and near: seen from the base it spans 20-30° each side of its middle, so a level
+  hand already reaches its corner where the arc began, 0.6 rad off its middle, and no arc found a clear start.
+
+So an object at least 15 cm tall (`SafetyScript.TallObjectMeters`) is also swept **along its side**: the wrist at 16-24 cm
+and 2 cm below to 6 cm above the frame's origin, at least 4 cm below the object's top, the hand level or tilted down by up to
+0.6 rad, so the gripper reaching past the wrist meets the object's side. The arc begins 0.6 rad beyond the object's edge
+as seen from the base, not its middle, and goes as far past its far edge.
+
+A fixture is always steady, and now nearly always in reach, so `collide_and_recover` would have touched it in 34 of 40
+layouts. It tries the fixture first in half of its takes (`FixtureFirstShare`) and after every movable object in the rest.
+Over 40 layouts, with the scene's roles:
+
+| Category | Layouts planned | The fixture the target |
+|---|---|---|
+| `reach_no_obstacle` | 100% | (none touched) |
+| `collide_with_obstacle` | 85% | never: a fixture cannot be knocked over |
+| `stop_before_collision` | 98% | 22 |
+| `collide_and_recover` | 98% | 21 |
+
+The random-layout test's bars for the stop and the touch go back to 80%. A new test plans both against a 22 × 22 × 50 cm box
+alone beside the robot, in front of it and off to either side.
+
+The third-person cameras move a quarter of the way in towards the point they look at: from (1.15, ±0.68, 0.40) m to
+(0.88, ±0.51, 0.32) m, the user's request, so the robot and the objects fill more of the frame.
+
+**Objects as they are turned (the same day).** The first check on the twin aimed a touch at a fixture, a jerrycan turned
+95°, and Isaac reported no contact. Each object was its axis-aligned bounds. Measured offline at the jerrycan's pose, the
+touches went 18-20 mm into those bounds but between 10 mm short of the can's own box and 5 mm into it: the arc meets a box at
+a corner, and a turned object's real corner lies up to 3 cm inside its bounds' corner. The collision model's arm boxes
+are also about 15 mm larger than Isaac's links (the reason for the 20 mm depth), so the arm stopped just short. A turned
+movable object had the same shortfall, only less often seen.
+
+So `CollisionBox` may be turned (`Teleop.RobotArm`): its own axes, centre and half extents, with `Min`/`Max` kept as its
+bounds for the broad phase. The separating-axis test already took two turned boxes, and an axis-aligned box computes
+exactly as before. `SafetyObject` carries the object's rotation from its world pose. A touch now goes 19-20 mm into the
+jerrycan's own box. Sweeps are still placed from the bounds.
+Over the same 40 layouts the fixture is now the target of 17 stops and 16 touches (it was 22 and 21): its own box is
+smaller than its bounds, so fewer arcs meet it.

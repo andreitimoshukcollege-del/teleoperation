@@ -3431,6 +3431,54 @@ isaac-ycb-status:
     set -euo pipefail
     ssh -o ConnectTimeout=10 "{{gpu_host}}" 'cd "$HOME/repos/isaac/robot/isaac" && "$HOME/isaacsim/venv/bin/python" -m teleop_isaac.ycb status'
 
+# Measure Poly Haven's CC0 3D models for fixtures (docs/adr/0037 amendment 5): for each model in `categories` (Poly Haven's, comma-separated, e.g. containers,electronics,plants,decorative), fetches only its USD into a scratch folder on the GPU machine and prints its size standing, so fixtures can be picked by size. Nothing is kept
+[group('isaac')]
+isaac-models-survey categories="containers":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    case "{{categories}}" in *[!a-z,\ ]*|"") echo "error: categories are Poly Haven's, comma-separated" >&2; exit 1 ;; esac
+    commit=$(just _pushed-commit)
+    ssh -o ConnectTimeout=10 "{{gpu_host}}" "COMMIT='$commit' CATS='{{categories}}' bash -s" <<'REMOTE'
+    set -euo pipefail
+    cd "$HOME/repos/isaac" && git fetch -q origin && git checkout -q "$COMMIT" && cd robot/isaac
+    IFS=, read -ra cats <<< "$CATS"
+    "$HOME/isaacsim/venv/bin/python" -m teleop_isaac.models survey "${cats[@]}" 2>&1 | grep '^\[models\]'
+    REMOTE
+
+# Fetch the Poly Haven models a scene's fixtures name (docs/adr/0037 amendment 5: every "polyhaven/<id>" asset in core/Scenes/<scene>.json) onto the GPU machine, once: each USD with its textures, checked against the API's md5, its texture paths pointed at its own folder, into ~/isaacsim/assets/polyhaven with a manifest of its files (sha256), how it stands and its size. Resumes where it stopped. Runs this commit (it must be on GitHub)
+[group('isaac')]
+isaac-models-fetch scene="jetrover-bench":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    case "{{scene}}" in *[!A-Za-z0-9._-]*|"") echo "error: scene is a file name in core/Scenes without .json" >&2; exit 1 ;; esac
+    ids=$(python3 -c "import json,sys; print(' '.join(sorted({o['asset'].split('/',1)[1] for o in json.load(open(sys.argv[1]))['objects'] if o.get('asset','').startswith('polyhaven/')})))" "core/Scenes/{{scene}}.json")
+    [ -n "$ids" ] || { echo "core/Scenes/{{scene}}.json names no Poly Haven model"; exit 0; }
+    commit=$(just _pushed-commit)
+    ssh -o ConnectTimeout=10 "{{gpu_host}}" "COMMIT='$commit' IDS='$ids' bash -s" <<'REMOTE'
+    set -euo pipefail
+    cd "$HOME/repos/isaac" && git fetch -q origin && git checkout -q "$COMMIT" && cd robot/isaac
+    "$HOME/isaacsim/venv/bin/python" -m teleop_isaac.models fetch $IDS 2>&1 | grep -E '^\[models\]|^\{'
+    REMOTE
+
+# Fetch the PBR textures the twin's shapes and surfaces wear (docs/adr/0037 amendment 5): teleop_isaac.materials' 20 Poly Haven textures (CC0; wood and metal; colour, roughness and normal maps at 1K), checked against the API's md5, into ~/isaacsim/assets/textures/polyhaven with their real-world size. Resumes where it stopped. Runs this commit (it must be on GitHub)
+[group('isaac')]
+isaac-materials-fetch:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    commit=$(just _pushed-commit)
+    ssh -o ConnectTimeout=10 "{{gpu_host}}" "COMMIT='$commit' bash -s" <<'REMOTE'
+    set -euo pipefail
+    cd "$HOME/repos/isaac" && git fetch -q origin && git checkout -q "$COMMIT" && cd robot/isaac
+    "$HOME/isaacsim/venv/bin/python" -m teleop_isaac.materials fetch 2>&1 | grep -E '^\[materials\]|^\{'
+    REMOTE
+
+# How the Poly Haven models and textures stand on the GPU machine: how many, their sizes and classes, and any file whose sha256 no longer matches its manifest (exit 1 then)
+[group('isaac')]
+isaac-materials-status:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    ssh -o ConnectTimeout=10 "{{gpu_host}}" 'cd "$HOME/repos/isaac/robot/isaac" && py="$HOME/isaacsim/venv/bin/python" && "$py" -m teleop_isaac.models status && "$py" -m teleop_isaac.materials status'
+
 # The recording, end to end (docs/adr/0032 decision 6), against a running `just isaac-host`: drives the simulated arms from here through seeded joint-space moves (chain-drive, ±amplitude rad, as the headset so RobotHost records it), waits for the session to close (30 s without commands), then checks it on the GPU machine with robot/isaac/verify_session.py: files.sha256 with the frame sidecars, isaac.jlog's trailer and FS lines, the frame count against the duration, every frame stamped with a QS state, depth on the table mat p99 < 3 mm, and each hand's point landing in its mask in >= 95% of the frames where it moved and shows. Prints one RESULT line; exits non-zero if any check fails or has nothing to measure. Simulated arms only
 [group('isaac')]
 isaac-record-check seconds="40" amplitude="0.6" seed="3":

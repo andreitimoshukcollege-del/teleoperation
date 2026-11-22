@@ -120,13 +120,13 @@ namespace Teleop.RobotHost.Tests.World
             SceneLayout.Draw(Scene, 5, expected, parked, scales);
             Dictionary<byte, ObjectPose> seen = rig.LastSnapshot();
             Assert.Equal(Scene.Objects.Length, seen.Count);
-            Assert.Contains(Enumerable.Range(0, scales.Length), i => !parked[i] && scales[i] != 1.0); // seed 5 resizes something
+            bool resizes = Scene.DrawsSizes && Enumerable.Range(0, scales.Length).Any(Scene.Resizable);
             for (int i = 0; i < Scene.Objects.Length; i++)
             {
                 ObjectPose p = seen[Scene.Objects[i].Id];
                 Assert.Equal(parked[i], p.Parked);
                 if (!parked[i]) Assert.Equal(scales[i], rig.Host.ScaleOf(i), 4); // resized on the shelf, then placed at that size
-                if (!parked[i]) Assert.Equal(expected[i].Z, p.Z, 4);
+                if (!parked[i]) Assert.True(Math.Abs(expected[i].Z - p.Z) < 1e-4, $"{Scene.Objects[i].Name}: z {p.Z} not {expected[i].Z}"); // float32 on the wire
                 Assert.Equal(parked[i], rig.Host.IsParked(i));
                 Assert.Equal(expected[i].X, p.X, 4);
                 Assert.Equal(expected[i].Y, p.Y, 4);
@@ -137,7 +137,7 @@ namespace Teleop.RobotHost.Tests.World
             string wl = rig.Records.First(r => r.StartsWith("WL|"));
             string active = string.Join(";", Scene.Objects.Where((o, i) => !parked[i]).Select(o => o.Id));
             Assert.EndsWith("|" + active, wl);
-            Assert.Equal(Scene.Objects.Length, rig.Records.Count(r => r.StartsWith("WP|") && r.Split('|')[3] == "park" && r.EndsWith("|applied")));
+            Assert.Equal(resizes ? Scene.Objects.Length : parked.Count(p => p), rig.Records.Count(r => r.StartsWith("WP|") && r.Split('|')[3] == "park" && r.EndsWith("|applied")));
             Assert.Equal(parked.Count(p => !p), rig.Records.Count(r => r.StartsWith("WP|") && r.Split('|')[3] == "layout" && r.EndsWith("|applied")));
         }
 

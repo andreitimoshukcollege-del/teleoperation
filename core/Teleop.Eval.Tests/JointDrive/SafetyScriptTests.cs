@@ -117,8 +117,8 @@ namespace Teleop.Eval.Tests.JointDrive
         [Fact]
         public void OnRandomLayouts_EveryScriptUsuallyFindsAnApproach()
         {
-            // RobotHost draws a new layout per take (SceneLayout, the bench scene's region and jitter): each category must plan on
-            // most of them. A layout a script cannot use is skipped by the batch, not driven badly.
+            // RobotHost draws a new layout per take (SceneLayout, the bench scene's pool): each category must plan on enough of them.
+            // A layout a script cannot use is skipped by the batch, not driven badly.
             string? dir = AppContext.BaseDirectory;
             while (dir != null && !System.IO.File.Exists(System.IO.Path.Combine(dir, "core", "Scenes", "jetrover-bench.json"))) dir = System.IO.Path.GetDirectoryName(dir);
             Assert.NotNull(dir);
@@ -136,16 +136,72 @@ namespace Teleop.Eval.Tests.JointDrive
                     .Select(x => WorldView.Bounds(x.o, scales[x.i], poses[x.i].X, poses[x.i].Y, poses[x.i].Z, poses[x.i].Qw, poses[x.i].Qx, poses[x.i].Qy, poses[x.i].Qz)).ToArray();
                 foreach (DriveScript script in new[] { DriveScript.ReachNoObstacle, DriveScript.StopBeforeCollision, DriveScript.CollideAndRecover, DriveScript.CollideWithObstacle })
                 {
-                    if (DrivePlan.TryBuild(script, Profile, Model.Home, 2.5f, 20, seed, Envelope, out _, out string? error, objects))
+                    var roles = new SafetyOptions { KnockMaxKg = scene.KnockMaxMass }; // as joint-drive plans it (--scene)
+                    if (DrivePlan.TryBuild(script, Profile, Model.Home, 2.5f, 20, seed, Envelope, out _, out string? error, objects, roles))
                         planned[script] = planned.GetValueOrDefault(script) + 1;
                     else if (why.Count < 6) why.Add($"layout {seed} {script}: {error}");
                 }
             }
 
             string report = string.Join(", ", planned.Select(kv => $"{SafetyScript.Category(kv.Key)} {kv.Value}/{Layouts}"));
+            // The bars (docs/adr/0037 amendment 5, 2026-11-16). A fixture bigger than the robot stands within the arm's reach
+            // beside it every take (the user's choice); it takes approach paths away, and since it is swept along its side it is
+            // a target itself. Over 40 layouts the scripts planned: reach 100%, collide_with_obstacle 85%,
+            // stop_before_collision 98% (the fixture the target in 17), collide_and_recover 98% (the fixture in 16). A layout a
+            // script cannot use costs the batch a few seconds and another layout, never a take.
+            var bar = new Dictionary<DriveScript, int>
+            {
+                [DriveScript.ReachNoObstacle] = Layouts * 8 / 10, [DriveScript.CollideWithObstacle] = Layouts * 6 / 10,
+                [DriveScript.StopBeforeCollision] = Layouts * 8 / 10, [DriveScript.CollideAndRecover] = Layouts * 8 / 10,
+            };
             foreach (DriveScript script in new[] { DriveScript.ReachNoObstacle, DriveScript.StopBeforeCollision, DriveScript.CollideAndRecover, DriveScript.CollideWithObstacle })
             {
-                Assert.True(planned.GetValueOrDefault(script) >= Layouts * 8 / 10, $"{report}; e.g. {string.Join(" | ", why)}");
+                Assert.True(planned.GetValueOrDefault(script) >= bar[script], $"{report}; e.g. {string.Join(" | ", why)}");
+            }
+        }
+
+        [Fact]
+        public void ATurnedObject_IsCheckedAsItIsTurned_NotAsItsBounds()
+        {
+            // 2026-11-16: an object was its axis-aligned bounds, and a touch at a turned jerrycan's corner stopped 10 mm short
+            // of it to 5 mm in, never touching in Isaac. A thin slab turned 135 degrees about z, 10 cm ahead of the gripper: its
+            // bounds take in the gripper, the slab does not.
+            Span<LinkFrame> frames = stackalloc LinkFrame[5];
+            ArmCollision.ComputeFrames(Profile, Model.Home, frames);
+            LinkFrame gf = frames[(int)ArmLink.Gripper];
+            System.Numerics.Vector3 p = Model.Bodies.Where(b => b.Link == ArmLink.Gripper).Select(b => gf.ToBase(b.Center)).OrderBy(c => c.X + c.Y).Last(); // its foremost part
+            var ahead = System.Numerics.Vector3.Normalize(new System.Numerics.Vector3(1f, 1f, 0f)); // ahead of the gripper and to its left
+            var turn = System.Numerics.Quaternion.CreateFromAxisAngle(System.Numerics.Vector3.UnitZ, 3f * MathF.PI / 4f); // thin along ahead
+            var slab = new SafetyObject(70, p + 0.10f * ahead, turn, new System.Numerics.Vector3(0.12f, 0.005f, 0.04f), movable: false);
+            Assert.True(p.X > slab.Min.X && p.X < slab.Max.X && p.Y > slab.Min.Y && p.Y < slab.Max.Y, "the slab's bounds take in the gripper");
+            var turned = SafetyScript.WithObjects(Model, new[] { slab }, 0f, 0f);
+            Assert.True(ArmCollision.IsValid(Profile, turned, Model.Home), ArmCollision.Check(Profile, turned, Model.Home).Describe(turned));
+            var bounds = new SafetyObject(70, slab.Min, slab.Max, movable: false);
+            Assert.False(ArmCollision.IsValid(Profile, SafetyScript.WithObjects(Model, new[] { bounds }, 0f, 0f), Model.Home));
+            Assert.Equal(slab.HalfExtents.Y + 0.01f, slab.Grown(0.01f).HalfExtents.Y, 5);
+        }
+
+        [Fact]
+        public void AFixtureTallerThanTheArmReaches_IsMetAlongItsSide()
+        {
+            // docs/adr/0037 amendment 5: a fixture's top is out of the wrist's reach, so it is swept along its side; seen from
+            // the base it is wide and near, so the sweep starts beyond its edge (2026-11-16: neither, and no fixture was ever
+            // approached). A 22 x 22 x 50 cm box standing on the table beside the robot, in front of it and off to its side.
+            const float Half = 0.11f, Table = -0.1962f, Height = 0.5f;
+            foreach ((float bearingDeg, float near) in new[] { (60f, 0.15f), (90f, 0.20f), (90f, 0.28f), (100f, 0.24f), (-80f, 0.20f) })
+            {
+                float b = bearingDeg * MathF.PI / 180f;
+                var c = new System.Numerics.Vector2(MathF.Cos(b), MathF.Sin(b)) * (near + Half);
+                var box = new SafetyObject(60, new System.Numerics.Vector3(c.X - Half, c.Y - Half, Table),
+                    new System.Numerics.Vector3(c.X + Half, c.Y + Half, Table + Height), movable: false);
+                var roles = new SafetyOptions { KnockMaxKg = 0.7 };
+                foreach (DriveScript script in new[] { DriveScript.StopBeforeCollision, DriveScript.CollideAndRecover })
+                {
+                    Assert.True(DrivePlan.TryBuild(script, Profile, Model.Home, 2.5f, 20, 1, Envelope, out _, out string? error, new[] { box }, roles),
+                        $"{script}, the box at {bearingDeg} degrees, its near side {near} m out: {error}");
+                }
+
+                Assert.False(DrivePlan.TryBuild(DriveScript.CollideWithObstacle, Profile, Model.Home, 2.5f, 20, 1, Envelope, out _, out _, new[] { box }, roles));
             }
         }
 
@@ -153,7 +209,8 @@ namespace Teleop.Eval.Tests.JointDrive
         public void Roles_AimEachCollideScriptOnlyAtObjectsThatCanDoWhatItNeeds()
         {
             // docs/adr/0037 P4: collide_with_obstacle needs an object the arm knocks over (movable, light enough at its size);
-            // collide_and_recover one a touch does not tip (a wall, one too heavy, or a squat one). With only the other kind in reach, a script plans
+            // collide_and_recover prefers one a touch does not tip (a wall, one too heavy, or a squat one), and takes another
+            // only when none of those can be approached. With only the other kind in reach, a script plans
             // nothing, and the batch draws another layout.
             SafetyObject Post(double massKg, bool movable = true) // 2.5 x 2.5 x 9 cm: tippy
             {
@@ -176,7 +233,7 @@ namespace Teleop.Eval.Tests.JointDrive
             Assert.False(Plans(DriveScript.CollideWithObstacle, Post(0, movable: false))); // a wall
             Assert.True(Plans(DriveScript.CollideAndRecover, Post(1.5)));
             Assert.True(Plans(DriveScript.CollideAndRecover, Post(0, movable: false)));
-            Assert.False(Plans(DriveScript.CollideAndRecover, Post(0.03)));             // it would tip: a failed take
+            Assert.True(Plans(DriveScript.CollideAndRecover, Post(0.03)));              // only a tippy one in reach: tried after all
             Assert.True(Plans(DriveScript.CollideAndRecover, Squat(0.03)));             // light but squat: it slides
             // No roles (a scene without knockMaxMass): collide_with_obstacle takes any movable object, as before.
             Assert.True(DrivePlan.TryBuild(DriveScript.CollideWithObstacle, Profile, Model.Home, 2.5f, 20, 1, Envelope, out _, out _, new[] { Post(1.5) }, new SafetyOptions()));
@@ -210,8 +267,11 @@ namespace Teleop.Eval.Tests.JointDrive
         }
 
         [Fact]
-        public void TheHand_MovesAsAPersonDoes_NotFromRestToRest()
+        public void TheHand_MovesContinuously_InOverlappingSubmovements()
         {
+            // docs/adr/0036 amendment 3 (the user, 2026-11-16): the motion flows. The hand never lets go of the clutch mid-take,
+            // is almost always moving, and a stillness lasts at most about half a second. The submovements still overlap as a
+            // person's do (amendment 2, below), at the speed people move.
             // People at the headset (2026-11-15, 31 sessions, docs/adr/0036 amendment 2) chain overlapping submovements: 5.4
             // speed peaks a bout, a quarter of bouts with a single one; they let go of the clutch while still moving (75% of
             // holds begin with a step faster than 30 mm/s); they hold it let go 27% of the time, and move the wrist at ~98 mm/s
@@ -255,10 +315,20 @@ namespace Teleop.Eval.Tests.JointDrive
             double median = inMotion[inMotion.Count / 2];
             double perBout = peaks.Average(), single = peaks.Count(p => p <= 1) / (double)peaks.Count;
             string report = $"{peaks.Count} bouts, {perBout:0.0} peaks a bout, {single:P0} single-peak; {atSpeed}/{holds} holds entered at speed; held {held * dt / (n * dt):P0}; median speed moving {median * 1000:0} mm/s";
+            int still = 0, longest = 0, run = 0;
+            for (int k = 0; k < n; k++)
+            {
+                run = speed[k] < 0.005 ? run + 1 : 0;
+                if (run > 0) still++;
+                longest = Math.Max(longest, run);
+            }
+
+            report += $"; still {still / (double)n:P0}, longest stillness {longest * dt:0.00} s";
             Assert.True(perBout >= 2.0, report);
             Assert.True(single <= 0.5, report);
-            Assert.True(holds >= 10 && atSpeed >= 0.5 * holds, report);
-            Assert.InRange(held / (double)n, 0.10, 0.45);
+            Assert.True(holds == 0 && held == 0, report);            // the clutch is never let go mid-take
+            Assert.True(still <= 0.10 * n, report);                  // almost always moving
+            Assert.True(longest * dt <= 0.7, report);                // a pause is brief (at most 0.5 s, plus the smoothing)
             Assert.True(median >= 0.045 && median <= 0.2, report);
         }
 

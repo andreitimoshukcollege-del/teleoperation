@@ -48,18 +48,45 @@ namespace Teleop.RobotArm.Collision
         }
     }
 
-    /// <summary>A fixed part of the robot's body: an axis-aligned box in the arm base frame (metres).</summary>
+    /// <summary>
+    /// A fixed box in the arm base frame (metres): a part of the robot's body, axis-aligned, or an object a planner keeps the
+    /// arm from (or brings it to), which may be turned. <see cref="Min"/> and <see cref="Max"/> are always its axis-aligned
+    /// bounds; the check itself is against the box as it is turned.
+    /// </summary>
     public readonly struct CollisionBox
     {
         public readonly string Name;
         public readonly Vector3 Min;
         public readonly Vector3 Max;
+        public readonly Vector3 Center;
+        public readonly Vector3 HalfExtents;
+        /// <summary>The box's own axes in the arm base frame: the unit axes when it is axis-aligned.</summary>
+        public readonly Vector3 AxisX, AxisY, AxisZ;
 
         public CollisionBox(string name, Vector3 min, Vector3 max)
         {
             Name = name;
             Min = min;
             Max = max;
+            Center = 0.5f * (min + max);
+            HalfExtents = 0.5f * (max - min);
+            AxisX = Vector3.UnitX;
+            AxisY = Vector3.UnitY;
+            AxisZ = Vector3.UnitZ;
+        }
+
+        /// <summary>A turned box: centred at <paramref name="center"/>, its axes turned by <paramref name="rotation"/>.</summary>
+        public CollisionBox(string name, Vector3 center, Quaternion rotation, Vector3 halfExtents)
+        {
+            Name = name;
+            Center = center;
+            HalfExtents = halfExtents;
+            AxisX = Vector3.Transform(Vector3.UnitX, rotation);
+            AxisY = Vector3.Transform(Vector3.UnitY, rotation);
+            AxisZ = Vector3.Transform(Vector3.UnitZ, rotation);
+            Vector3 reach = Vector3.Abs(AxisX) * halfExtents.X + Vector3.Abs(AxisY) * halfExtents.Y + Vector3.Abs(AxisZ) * halfExtents.Z;
+            Min = center - reach;
+            Max = center + reach;
         }
     }
 

@@ -102,16 +102,10 @@ namespace Teleop.RobotArm.World
                     scale = WorldScene.ScaleOfStep(step);
                 }
 
-                double r = scene.Objects[i].FootprintRadius * scale;
-                double x0 = Math.Max(scene.Table.XMin, scene.RegionXMin) + r, x1 = Math.Min(scene.Table.XMax, scene.RegionXMax) - r;
-                double y0 = Math.Max(scene.Table.YMin, scene.RegionYMin) + r, y1 = Math.Min(scene.Table.YMax, scene.RegionYMax) - r;
                 bool done = false;
                 for (int t = 0; t < MaxPoolTries && !done; t++)
                 {
-                    double x = x0 + rng.NextDouble() * (x1 - x0);
-                    double y = y0 + rng.NextDouble() * (y1 - y0);
-                    double yaw = (2 * rng.NextDouble() - 1) * Math.PI;
-                    if (x0 > x1 || y0 > y1 || !scene.FitsOnTable(i, x, y, scale) || !scene.InReach(i, x, y)) continue;
+                    if (!scene.DrawSpot(i, scale, ref rng, out double x, out double y, out double yaw)) continue;
                     bool clear = true;
                     for (int q = 0; q < placedCount && clear; q++)
                     {

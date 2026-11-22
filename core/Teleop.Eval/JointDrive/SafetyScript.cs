@@ -37,12 +37,19 @@ namespace Teleop.Eval.JointDrive
         public bool Steady(in SafetyObject o) => !o.Movable || (KnockMaxKg > 0 && o.Mass > KnockMaxKg) || !o.Tippy;
     }
 
-    /// <summary>One scene object as a safety script plans around it: its axis-aligned bounds in the arm base frame (metres).</summary>
+    /// <summary>
+    /// One scene object as a safety script plans around it, in the arm base frame (metres): its box as it is turned
+    /// (<see cref="Center"/>, <see cref="Rotation"/>, <see cref="HalfExtents"/>), and that box's axis-aligned bounds
+    /// (<see cref="Min"/>, <see cref="Max"/>), which place the sweeps.
+    /// </summary>
     public readonly struct SafetyObject
     {
         public readonly byte Id;
         public readonly Vector3 Min;
         public readonly Vector3 Max;
+        public readonly Vector3 Center;
+        public readonly Quaternion Rotation;
+        public readonly Vector3 HalfExtents;
 
         /// <summary>Whether physics can move it (a scene's movable object): only such an object can be knocked over.</summary>
         public readonly bool Movable;
@@ -59,27 +66,36 @@ namespace Teleop.Eval.JointDrive
         /// <summary>Height over narrower side above which a pushed object tips before it slides.</summary>
         public const double TippyAspect = 1.25;
 
+        /// <summary>An axis-aligned object.</summary>
         public SafetyObject(byte id, Vector3 min, Vector3 max, bool movable = true, double mass = 0, bool tippy = false)
+            : this(id, (min + max) / 2f, Quaternion.Identity, (max - min) / 2f, movable, mass, tippy)
+        {
+        }
+
+        /// <summary>A turned object: its box centred at <paramref name="center"/>, turned by <paramref name="rotation"/>.</summary>
+        public SafetyObject(byte id, Vector3 center, Quaternion rotation, Vector3 halfExtents, bool movable = true, double mass = 0, bool tippy = false)
         {
             Id = id;
-            Min = min;
-            Max = max;
+            Center = center;
+            Rotation = rotation;
+            HalfExtents = halfExtents;
+            var box = new CollisionBox("", center, rotation, halfExtents);
+            Min = box.Min;
+            Max = box.Max;
             Movable = movable;
             Mass = mass;
             Tippy = tippy;
         }
 
-        public Vector3 Center => (Min + Max) / 2f;
-
-        public CollisionBox Box(float grow) =>
-            new CollisionBox($"object {Id}", Min - new Vector3(grow), Max + new Vector3(grow));
+        public CollisionBox Box(float grow) => new CollisionBox($"object {Id}", Center, Rotation, HalfExtents + new Vector3(grow));
 
         /// <summary>This object's box grown by <paramref name="grow"/> on every side (shrunk when negative, never past its middle).</summary>
         public SafetyObject Grown(float grow)
         {
-            if (grow >= 0) return new SafetyObject(Id, Min - new Vector3(grow), Max + new Vector3(grow), Movable, Mass, Tippy);
-            Vector3 s = Vector3.Min(new Vector3(-grow), (Max - Min) / 2f - new Vector3(0.0005f));
-            return new SafetyObject(Id, Min + s, Max - s, Movable, Mass, Tippy);
+            Vector3 half = grow >= 0
+                ? HalfExtents + new Vector3(grow)
+                : HalfExtents - Vector3.Min(new Vector3(-grow), HalfExtents - new Vector3(0.0005f));
+            return new SafetyObject(Id, Center, Rotation, half, Movable, Mass, Tippy);
         }
     }
 
@@ -102,8 +118,8 @@ namespace Teleop.Eval.JointDrive
     /// <para>Where an approach goes is found on a sideways sweep round the base past the object (the arm's reach is a thin
     /// shell, so an object is met from the side; <see cref="Sweeps"/>). How far the final approach goes is one number,
     /// searched with every random draw held fixed until the closest approach (or depth) the collision model measures over
-    /// every tick is the category's. An object is its axis-aligned box, so a rotated object is a little larger than it is: a
-    /// stop stops a little early, and a touch may fall short by a few millimetres, which the take check catches. Every pose
+    /// every tick is the category's. An object is its box, turned as it stands (a round object is a little smaller than its box,
+    /// so a touch on its edge may fall short, which the take check catches). Every pose
     /// stays in the envelope and passes the collision model (floor, body, the arm's own links), as every script's do; only the
     /// object is allowed to be hit, by the two collide scripts. Every tick is solved by the headset's IK
     /// (<see cref="ArmSolver"/>).</para>
@@ -142,12 +158,26 @@ namespace Teleop.Eval.JointDrive
         /// <summary>How many approaches (object, sweep) are built before the script gives up.</summary>
         public const int MaxBuilds = 40;
 
+        /// <summary>The share of collide_and_recover takes that try a fixed object (a fixture) before the movable ones.</summary>
+        public const double FixtureFirstShare = 0.5;
+
 
         // The wrist is the IK's target and sits well above the table (the JetRover's wrist barely goes below its shoulder), so the
         // gripper comes down beside the object, pointing down, its tip 1-6 cm below the object's top.
         private static readonly float[] Pitches = { -1.5f, -1.2f, -0.9f };
         private static readonly float[] HeightsAboveTop = { 0.10f, 0.12f, 0.08f, 0.14f, 0.06f, 0.16f };
         private static readonly float[] RadiusInside = { 0.0f, 0.02f, 0.04f, 0.06f, 0.08f, -0.02f, 0.10f };
+
+        // A tall object (a fixture bigger than the robot, docs/adr/0037 amendment 5): its top is out of the arm's reach, so it
+        // is also swept along its side, the hand near level, so the gripper reaching out past the wrist meets it. The wrist
+        // goes only where the IK reaches it (mapped 2026-11-16 in the arm base frame: 16-24 cm out, 2 cm below to 10 cm above
+        // the base frame's origin, within 90 degrees of straight ahead); the sweeps above the top alone never approached a fixture.
+        public const float TallObjectMeters = 0.15f;
+        private static readonly float[] SideWristZ = { 0.02f, 0.0f, 0.04f, 0.06f, -0.02f };
+        private static readonly float[] SideRadii = { 0.20f, 0.18f, 0.22f, 0.16f, 0.24f };
+        private static readonly float[] SidePitches = { 0.0f, -0.3f, -0.6f };
+        /// <summary>A side sweep's wrist stays at least this far below a tall object's top, so the hand meets its side.</summary>
+        public const float SideBelowTopMeters = 0.04f;
 
         public static bool IsSafety(DriveScript script) => script == DriveScript.ReachNoObstacle || script == DriveScript.StopBeforeCollision
             || script == DriveScript.CollideAndRecover || script == DriveScript.CollideWithObstacle;
@@ -210,10 +240,9 @@ namespace Teleop.Eval.JointDrive
                     return false;
                 }
 
-                // Back toward home as an operator brings it (DrivePlan then settles any small remainder); without a free way
-                // there, DrivePlan's own return.
-                hand.MoveTo(home, homePitch, 0f, clear, 0.004);
+                // No way home (docs/adr/0036 amendment 3): the take ends partway through its last move, the arm still moving.
                 hand.AppendLegs(legs, ref t, ref current);
+                EndMoving(legs, ref t, ref current, ref rng);
                 return true;
             }
 
@@ -241,22 +270,42 @@ namespace Teleop.Eval.JointDrive
             }
 
             int builds = 0;
-            foreach (int oi in order)
+            // Roles (docs/adr/0037 P4): knocking over needs a body the arm can tip or shove (a fixed wall, or one too heavy, is an
+            // obstacle, never the target). Touching and backing off prefers one that does not tip; when none of those can be
+            // approached, the others are tried (2026-11-16: with fixtures beside the robot and many low objects, steady ones
+            // alone left 10 of 16 layouts unplannable; a tipped object sets the take aside at its check instead). A fixture is
+            // always steady and, swept along its side, nearly always in reach, so it would be nearly every touch (34 of 40
+            // layouts): it is tried first in FixtureFirstShare of the takes, and after every movable object in the rest.
+            bool roles = options.KnockMaxKg > 0;
+            bool fixtureFirst = script == DriveScript.CollideAndRecover && roles && rng.NextDouble() < FixtureFirstShare;
+            int Rank(in SafetyObject o)
             {
-                // Roles (docs/adr/0037 P4): knocking over needs a body the arm can tip or shove (a fixed wall, or one too heavy, is
-                // an obstacle, never the target); touching and backing off needs one that does not tip.
-                if (script == DriveScript.CollideWithObstacle && !options.Knockable(objects[oi])) continue;
-                if (script == DriveScript.CollideAndRecover && options.KnockMaxKg > 0 && !options.Steady(objects[oi])) continue;
-                foreach (Sweep sweep in Sweeps(objects[oi], ref rng))
+                if (script != DriveScript.CollideAndRecover || !roles) return 0;
+                if (!o.Movable) return fixtureFirst ? 0 : 2;
+                return options.Steady(o) ? 0 : 1;
+            }
+
+            for (int pass = 0; pass < 3; pass++)
+            {
+                foreach (int oi in order)
                 {
-                    if (!TryLine(profile, model, envelope, objects, oi, sweep, model.Home, out Line line)) continue;
-                    if (++builds > MaxBuilds) break;
-                    hand.Restore(rolled);
-                    if (TryEvent(script, profile, model, objects, oi, line, hand, ref rng, options, home, homePitch))
+                    if (script == DriveScript.CollideWithObstacle && !options.Knockable(objects[oi])) continue;
+                    if (Rank(objects[oi]) != pass) continue;
+                    foreach (Sweep sweep in Sweeps(objects[oi], ref rng))
                     {
-                        hand.AppendLegs(legs, ref t, ref current);
-                        return true;
+                        if (!TryLine(profile, model, envelope, objects, oi, sweep, model.Home, out Line line)) continue;
+                        if (++builds > MaxBuilds) break;
+                        hand.Restore(rolled);
+                        if (TryEvent(script, profile, model, objects, oi, line, hand, ref rng, options, home, homePitch))
+                        {
+                            double t0 = t; // the hand's timeline starts here in the plan
+                            hand.AppendLegs(legs, ref t, ref current);
+                            EndMoving(legs, ref t, ref current, ref rng, t0 + hand.OnwardStart, t0 + hand.OnwardEnd);
+                            return true;
+                        }
                     }
+
+                    if (builds > MaxBuilds) break;
                 }
 
                 if (builds > MaxBuilds) break;
@@ -264,6 +313,35 @@ namespace Teleop.Eval.JointDrive
 
             error = $"no object could be approached for {Category(script)} from {DrivePlan.Describe(current)}";
             return false;
+        }
+
+        /// <summary>
+        /// Ends the take partway (50-80%) through a final move, dropping what follows, so it stops while the arm still moves
+        /// (docs/adr/0036 amendment 3): the next take carries on from wherever this one left the arm. The move is the plan's
+        /// [<paramref name="windowFrom"/>, <paramref name="windowTo"/>] when given (an event's move onward: never the event
+        /// itself), else its last run of moving ticks.
+        /// </summary>
+        internal static void EndMoving(List<DriveLeg> legs, ref double t, ref ArmPose current, ref SeededRng rng,
+            double windowFrom = double.NaN, double windowTo = double.NaN)
+        {
+            int last = legs.Count - 1;
+            while (last >= 0 && legs[last].From.MaxJointDelta(legs[last].To) < 1e-5f) last--;
+            if (last < 0) return;
+            int first = last;
+            while (first > 0 && legs[first - 1].From.MaxJointDelta(legs[first - 1].To) >= 1e-5f && legs[first - 1].Hold < 1e-6) first--;
+            double from = legs[first].Start, to = legs[last].Start + legs[last].Duration;
+            if (!double.IsNaN(windowFrom) && windowTo > windowFrom)
+            {
+                from = windowFrom;
+                to = windowTo;
+            }
+            double cut = from + (0.5 + 0.3 * rng.NextDouble()) * (to - from);
+            int keep = legs.FindLastIndex(l => l.Start <= cut);
+            if (keep < 0) return;
+            legs.RemoveRange(keep + 1, legs.Count - keep - 1);
+            DriveLeg k = legs[keep];
+            t = k.Start + k.Duration + k.Hold;
+            current = k.To;
         }
 
         /// <summary>The wrist's line towards one object, and its IK poses; the indices where the arm first comes within a gap of the object's box.</summary>
@@ -299,7 +377,18 @@ namespace Teleop.Eval.JointDrive
             float bearing = MathF.Atan2(c.Y, c.X);
             float halfWidth = MathF.Max(o.Max.X - o.Min.X, o.Max.Y - o.Min.Y) / 2f;
             float past = (halfWidth + ThroughPastMeters) / sweep.Radius;
-            float a0 = bearing + sweep.Side * SweepRadians, a1 = bearing - sweep.Side * past;
+            float lead = SweepRadians;
+            if (o.Max.Z - o.Min.Z >= TallObjectMeters)
+            {
+                // A fixture beside the robot is wide and near: seen from the base it spans 20-30 degrees each side, and a level
+                // hand reaches its corner from well off its middle (2026-11-16: every arc began touching it). So the arc begins
+                // SweepRadians beyond its edge, and goes as far past its far edge.
+                float span = AngularHalfSpan(o, bearing);
+                lead = span + SweepRadians;
+                past = span + ThroughPastMeters / sweep.Radius;
+            }
+
+            float a0 = bearing + sweep.Side * lead, a1 = bearing - sweep.Side * past;
             int n = (int)MathF.Ceiling(MathF.Abs(a1 - a0) * sweep.Radius / LineStepMeters) + 1;
             ArmCollisionModel touch = WithObjects(model, new[] { o }, 0f, 0f);
             ArmCollisionModel clearOfAll = WithObjects(model, objects, ApproachClearanceMeters);
@@ -337,6 +426,22 @@ namespace Teleop.Eval.JointDrive
             return true;
         }
 
+        /// <summary>How far, in radians either side of <paramref name="bearing"/>, an object's footprint reaches as seen from the base axis.</summary>
+        private static float AngularHalfSpan(in SafetyObject o, float bearing)
+        {
+            float span = 0f;
+            foreach (float x in new[] { o.Min.X, o.Max.X })
+            foreach (float y in new[] { o.Min.Y, o.Max.Y })
+            {
+                float d = MathF.Atan2(y, x) - bearing;
+                while (d > MathF.PI) d -= 2f * MathF.PI;
+                while (d < -MathF.PI) d += 2f * MathF.PI;
+                span = MathF.Max(span, MathF.Abs(d));
+            }
+
+            return span;
+        }
+
         /// <summary>One sideways sweep's geometry: the wrist's radius from the base axis and height (arm base frame), its pitch, and which side it comes from (+1: from the object's left, counter-clockwise of it).</summary>
         private readonly struct Sweep
         {
@@ -352,7 +457,7 @@ namespace Teleop.Eval.JointDrive
             }
         }
 
-        /// <summary>The sweeps to try for one object, in a seeded order: radii a little inside its own, heights above its top, pitches, both sides.</summary>
+        /// <summary>The sweeps to try for one object, in a seeded order: radii a little inside its own, heights above its top, pitches, both sides; and a tall object also along its side.</summary>
         private static List<Sweep> Sweeps(in SafetyObject o, ref SeededRng rng)
         {
             Vector3 c = o.Center;
@@ -365,6 +470,17 @@ namespace Teleop.Eval.JointDrive
             {
                 float r = reach - inside;
                 if (r > 0.06f) all.Add(new Sweep(r, o.Max.Z + above, pitch, side));
+            }
+
+            if (o.Max.Z - o.Min.Z >= TallObjectMeters)
+            {
+                foreach (float r in SideRadii)
+                foreach (float z in SideWristZ)
+                foreach (float pitch in SidePitches)
+                foreach (int side in new[] { 1, -1 })
+                {
+                    if (z <= o.Max.Z - SideBelowTopMeters) all.Add(new Sweep(r, z, pitch, side));
+                }
             }
 
             for (int i = all.Count - 1; i > 0; i--)
@@ -576,7 +692,7 @@ namespace Teleop.Eval.JointDrive
         /// <summary>The deepest a pose can be measured inside <paramref name="o"/>: its smallest half-size, less 0.5 mm.</summary>
         public static float MaxDepth(in SafetyObject o)
         {
-            Vector3 half = (o.Max - o.Min) / 2f;
+            Vector3 half = o.HalfExtents;
             return MathF.Max(0f, MathF.Min(half.X, MathF.Min(half.Y, half.Z)) - 0.0005f);
         }
 

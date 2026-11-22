@@ -105,3 +105,24 @@ def test_a_parallel_safety_build_writes_the_files_a_sequential_one_does(scenario
     ds = LeRobotDataset("local/jetrover-isaac-safety_jetrover_x", root=together)
     assert ds.meta.total_episodes == 3 and len(ds) == sum(len(t.frames) for t in takes)
     assert tuple(ds[len(takes[0].frames)]["observation.images.front"].shape) == (3, 48, 64)
+
+
+def test_safety_build_with_spawned_workers_writes_what_one_process_does(scenarios, tmp_path):
+    # The command as the batch runs it, its workers real spawned processes (each imports LeRobot: a few seconds).
+    import subprocess
+    import sys
+
+    from teleop_lerobot import safety
+    from teleop_lerobot.writer import SAFETY_CRF, SAFETY_PRESET
+
+    paths = [jetrover_take(scenarios, name=f"20261121T1100{i}0Z-take00{i}", scenario="reach_no_obstacle", image=jpeg)
+             for i in range(2)]
+    alone, spawned = str(tmp_path / "a" / "jetrover_y"), str(tmp_path / "b" / "jetrover_y")
+    safety.build(LeRobotWriter(crf=SAFETY_CRF, preset=SAFETY_PRESET), alone, [read_take(p) for p in paths], log=lambda m: None)
+    run = subprocess.run([sys.executable, "-m", "teleop_lerobot", "safety-build", "--jobs", "2", "--out", spawned, *paths],
+                         cwd=os.path.dirname(os.path.dirname(os.path.abspath(__file__))), capture_output=True, text=True,
+                         timeout=300)
+    assert run.returncode == 0, run.stdout[-2000:] + run.stderr[-2000:]
+    assert "with 2 worker(s)" in run.stdout
+    assert safety.compare_datasets(alone, spawned) == []
+    assert not os.path.exists(spawned + ".prepare")

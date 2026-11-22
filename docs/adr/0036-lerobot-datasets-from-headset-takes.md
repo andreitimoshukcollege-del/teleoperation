@@ -458,3 +458,52 @@ isaac-jetrover-host jetrover-bench`), then `just isaac-safety-batch 4 13 all fal
   knock;
 - joint-drive's log after each knock: "the objects are at rest", then either "as the plan assumed" or "planning event N", and
   "it takes over at", never "came in late again"; take lengths of 10-30 s, reach takes about 15 s.
+
+## Amendment 6 (2026-11-21): the safety build prepares episodes in parallel
+
+**Context.** The last two-twin batch (ADR 0037 amendment 7) built its 177 episodes (45,039 frames) in 43 min after its takes
+had finished: 14.5 s an episode. Its log's episode lines fit **45 ms a frame plus 3.0 s an episode**, with no growth over the
+build. A frame is three 640x360 cameras, and one process did everything for each one: decoded three JPEGs and wrote three
+PNGs (LeRobot's `add_frame`, zlib level 1). At each episode's end the same process encoded three AV1 videos from those
+PNGs (`parallel_encoding=False`, kept for the watcher: a forked pool from a long-lived torch process), computed LeRobot's
+stats from 100 sampled PNGs a camera, and resumed and finalized the dataset (so each episode has data, video and
+metadata files of its own). How the 45 ms splits between decoding, PNGs and encoding was estimated from the code, not
+measured: encoding about half, PNG writes about a quarter.
+
+**Decisions.**
+
+1. **`safety-build --jobs N`** (default a quarter of the cores, at most 8: 8 on the 5090). N worker processes, spawned
+   rather than forked, each *prepare* an episode: they decode its JPEGs, write the PNGs with LeRobot's own `write_image` at
+   `add_frame`'s level, and encode each camera with LeRobot's own `encode_video_frames`, with the arguments its writer
+   passes and the safety CRF and preset. All of that goes into `<dataset>.prepare/`, at most N+2 episodes ahead
+   (about 300 MB each). The writer process still appends every episode in order with LeRobot (resume, `add_frame`,
+   `save_episode`, finalize). Two methods of LeRobot's writer are handed the prepared files: the image save moves the
+   prepared PNG into place, where LeRobot's stats read it, and the episode's encode returns the prepared video.
+   Parquet, stats, metadata and file layout are LeRobot's, written as before. `--jobs 1` is the old build. The watcher
+   never prepares: its path is unchanged.
+2. **The same files.** The same pixels go into the same encoder with the same settings. Tested byte for byte at 64x48:
+   workers as threads, and `safety-build --jobs 2` with spawned workers, each against a sequential build.
+   `teleop_lerobot safety-compare` compares a rebuild with a reference: every per-episode parquet and video byte for byte,
+   the files that run through every episode line for line, and JSON by value. LeRobot's `stats.json` orders its keys by
+   the run's hash seed, so two sequential builds already differ there in bytes.
+3. **Not changed, because each changes the content:** CRF and preset; `fast-decode`; LeRobot's `streaming_encoding`,
+   whose video stats come from every frame, not the sampled PNGs; and one dataset kept open instead of a resume each
+   episode, which would pack episodes into shared files and concatenate their videos. Also left alone: SVT-AV1's `lp`
+   (encoder threads, auto: 6), which does not touch quality, but parallel episodes already use the cores. LeRobot's own
+   `parallel_encoding=True` would only run an episode's three encodes side by side (at most 3x on half the time), from a
+   pool forked out of a torch process.
+4. **No incremental build during the batch.** The episode order is fixed only at the end: the two twins' takes are
+   interleaved by recording time, and a take set aside or deleted later is left out, while LeRobot can neither delete
+   nor reorder episodes. Preparing ahead during the batch would also take CPU from the two Isaac twins while they record
+   real-time takes. The end-of-batch build stays the only one.
+
+**Expected, not measured** (the GPU machine was busy): a worker needs about 11 s an episode (the 45 ms a frame), so 8 of
+them prepare an episode every ~1.4 s. That leaves the writer as the bottleneck, at most the old 3 s fixed part (resume,
+stats from 300 PNGs, parquet, finalize, now without the encoders' start-up) plus about 0.1 s of file moves. So **about 3 s
+an episode: 177 episodes in roughly 9-10 min instead of 43 (4-5x)**. The ~18 s of start-up (imports, reading every take) is
+unchanged. If it measures writer-bound, LeRobot's stats over the sampled PNGs are the next part to take off the writer.
+
+**To measure** (when the GPU machine is free): `just isaac-safety-build-check jetrover_20261122_005619_20ccb6 40 8` rebuilds
+that dataset's first 40 episodes with 8 workers in a checkout of its own. It prints the seconds an episode against the
+original build's log and compares the rebuild with the original file for file (exit 1 on any difference). `... 40 1` times
+the old path on the same takes.

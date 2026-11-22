@@ -188,6 +188,17 @@ def test_the_render_settings_default_to_frames_that_show_only_their_own_pose():
             parse_args(["--scene", "s.json"] + bad)
 
 
+def test_the_feeds_move_up_by_the_twins_port_offset():
+    # A second twin on the machine (docs/adr/0037 amendment 7) serves its camera feeds 100 ports up; the first keeps the scene's.
+    from teleop_isaac.renderer import parse_args
+
+    assert parse_args(["--scene", "s.json"]).feed_port_offset == 0
+    assert parse_args(["--scene", "s.json", "--feed-port-offset", "100"]).feed_port_offset == 100
+    for bad in (["--feed-port-offset", "-1"], ["--feed-port-offset", "60000"]):
+        with pytest.raises(SystemExit):
+            parse_args(["--scene", "s.json"] + bad)
+
+
 def test_the_render_settings_are_the_carb_settings_run_sets_and_checks():
     # Set once the stage has loaded (opening it puts Isaac's back) and checked again before streaming.
     from teleop_isaac.renderer import parse_args, render_settings

@@ -277,28 +277,56 @@ def twin_role(cmd: str) -> str:
     return "renderer" if "teleop_isaac.renderer" in cmd else "bridge"
 
 
-def job_twin(procs: List[dict], p: Dict[str, str]) -> Optional[dict]:
+# A JetRover twin's processes all name its record control file (docs/adr/0037 amendment 7): twin 0's in
+# ~/data/sessions/jetrover-isaac, twin N's in ~/data/sessions/jetrover-isaac-twinN.
+TWIN_CONTROL = re.compile(r"--record-control \S*/jetrover-isaac(?:-twin(\d+))?/\.active(?:\s|$)")
+
+
+def twin_of(cmd: str) -> Optional[int]:
+    """Which JetRover twin a process belongs to, from the record control file it names; None for none (the FR3 Duo's)."""
+    m = TWIN_CONTROL.search(cmd)
+    return None if m is None else int(m.group(1) or 0)
+
+
+def job_twins(procs: List[dict], p: Dict[str, str]) -> List[dict]:
+    """Each Isaac host as a job: every JetRover twin (by the record control file its processes name), and the FR3 Duo's."""
     mine = [x for x in procs if x["kind"] == "twin"]
-    if not mine:
-        return None
-    # The JetRover's: its bridge, or a RobotHost on the relay socket (as isaac-stop tells them apart).
-    jetrover = any("jetrover_bridge" in x["cmd"] or "--relay-socket" in x["cmd"] for x in mine)
-    robot = "JetRover" if jetrover else "FR3 Duo"
+    groups: Dict[Optional[int], List[dict]] = {}
+    for x in mine:
+        n = twin_of(x["cmd"])
+        # A JetRover process that names no control file (an older one): twin 0's, as isaac-stop took it before twins.
+        if n is None and ("jetrover_bridge" in x["cmd"] or "--relay-socket" in x["cmd"]):
+            n = 0
+        groups.setdefault(n, []).append(x)
+    jobs = []
+    for n in sorted(groups, key=lambda k: -1 if k is None else k):
+        jobs.append(_twin_job(groups[n], p, n))
+    return jobs
+
+
+def _twin_job(mine: List[dict], p: Dict[str, str], twin: Optional[int]) -> dict:
+    robot = "FR3 Duo" if twin is None else "JetRover"
+    name = f"{robot} twin" if not twin else f"{robot} twin {twin}"
     roles = sorted({twin_role(x["cmd"]) for x in mine})
-    lines = [f"{robot} twin: {', '.join(roles)}" + ("" if "renderer" in roles else " (no renderer: no cameras)")]
-    fps = [l for l in tail(os.path.join(p["isaac_logs"], "renderer.log"), 6000) if re.match(r"^\[render\] [0-9.]+ fps", l)]
+    lines = [f"{name}: {', '.join(roles)}" + ("" if "renderer" in roles else " (no renderer: no cameras)")]
+    if twin:
+        lines[0] += f"; joint port {6002 + 100 * twin}"
+    log = "renderer.log" if not twin else f"renderer-{twin}.log"
+    fps = [l for l in tail(os.path.join(p["isaac_logs"], log), 6000) if re.match(r"^\[render\] [0-9.]+ fps", l)]
     if fps and "renderer" in roles:
         lines.append(fps[-1][:160])
-    active = os.path.join(p["sessions_jetrover" if jetrover else "sessions_fr3"], ".active")
+    sessions = p["sessions_fr3"] if twin is None else p["sessions_jetrover"] if twin == 0 else \
+        os.path.join(os.path.dirname(p["sessions_jetrover"]), f"jetrover-isaac-twin{twin}")
     try:
-        recording = open(active).read().strip()
+        recording = open(os.path.join(sessions, ".active")).read().strip()
     except OSError:
         recording = ""
     if recording:
         lines.append(("recording a take: " if "take" in os.path.basename(recording) else "recording: ") + recording.replace(HOME, "~"))
     else:
         lines.append("not recording")
-    return {"id": "twin", "kind": "twin", "title": f"Isaac twin ({robot})", "status": "running",
+    return {"id": "twin" if not twin else f"twin-{twin}", "kind": "twin", "twin": twin or 0,
+            "title": f"Isaac twin ({robot})" if not twin else f"Isaac twin {twin} ({robot})", "status": "running",
             "started": min(x["started"] for x in mine), "pids": [x["pid"] for x in mine], "detail": lines,
             "progress": None, "eta_s": None, "eta_note": "runs until stopped", "actions": ["stop"]}
 
@@ -446,9 +474,7 @@ def status() -> dict:
     p = paths()
     procs = processes()
     jobs: List[dict] = []
-    twin = job_twin(procs, p)
-    if twin:
-        jobs.append(twin)
+    jobs += job_twins(procs, p)
     sb = job_safety_build(procs, p, now)
     if sb:
         jobs.append(sb)

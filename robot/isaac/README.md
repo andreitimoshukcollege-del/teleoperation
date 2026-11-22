@@ -33,6 +33,24 @@ people's GPU jobs no longer stop it (2026-11-02): it says how much of the GPU th
 can make physics steps late. The bridge's log is `~/logs/isaac/bridge.log` on that machine (what lives where there:
 docs/gpu-machine.md).
 
+## Two JetRover twins at once (docs/adr/0037 amendment 7)
+
+The JetRover's twin (`just isaac-jetrover-host`, docs/adr/0034) can run twice on the GPU machine, so two safety batches
+record at once:
+
+```bash
+just isaac-twins-up 2                          # twins 0 and 1, one after the other, in the background there
+just isaac-safety-batch-twins 25 1             # 25 rounds on each (seeds 1 and 1001) at once, then one dataset of both
+just isaac-status                              # each twin: its processes, joint port, recording, renderer fps
+just isaac-twins-down                          # both (just isaac-stop all)
+```
+
+Or one at a time: `just isaac-jetrover-host jetrover-bench auto 1` (a terminal; `... auto 1 true` in the background),
+`just isaac-safety-batch 25 1001 all false 1-3 1`, `just isaac-stop 1`, and `just isaac-safety-build 0,1` for one dataset
+from both batches' kept takes. Twin 1's ports are twin 0's plus 100 (joint 6102, feeds 6103, 6108, 6109; the renderer's
+`--feed-port-offset 100`), and its takes go to `~/data/takes/jetrover-isaac-twin1`. What lives where:
+docs/gpu-machine.md. Both twins run the same checkout, so starting one at another commit than the other refuses.
+
 ## The world (docs/adr/0031 amendment 2)
 
 With a scene (`core/Scenes/<scene>.json`, default `fr3-duo-bench`), `world.py` puts the file's surfaces in

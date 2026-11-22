@@ -523,6 +523,8 @@ def parse_args(argv=None) -> argparse.Namespace:
     a.add_argument("--lag", type=int, default=-1, help="the render lag in frames; -1: measure it at start-up")
     a.add_argument("--seconds", type=float, default=0.0, help="stop after this long (0: until stopped)")
     a.add_argument("--bind", default="0.0.0.0", help="the address the feeds listen on")
+    a.add_argument("--feed-port-offset", type=int, default=0, help="added to each camera's feedPort: a second twin on the same "
+                                                                    "machine (docs/adr/0037 amendment 7) serves its feeds 100 ports up")
     a.add_argument("--record-control", default="", help="RobotHost's session control file; while it names a session, frames "
                                                           "are recorded into it (docs/adr/0032 decision 6). Empty: never")
     a.add_argument("--record-every", type=int, default=1, help="record every this many rendered frames")
@@ -553,6 +555,8 @@ def parse_args(argv=None) -> argparse.Namespace:
         a.error("--subframes must be at least 1")
     if args.samples_per_pixel < 1:
         a.error("--samples-per-pixel must be at least 1")
+    if not 0 <= args.feed_port_offset <= 10000:
+        a.error("--feed-port-offset must be in [0, 10000]")
     return args
 
 
@@ -908,7 +912,7 @@ def run(app, args, p, scene, cameras, fps, joints, motors, tap) -> int:
         if "depth" in records:
             annotators.append("distance_to_image_plane")
         sensors.append((cam, CameraSensor(cam, resolution=(h, w), annotators=annotators)))
-        feeds.append(camfeed.CameraFeed(c["id"], int(c["feedPort"]), bind=args.bind))
+        feeds.append(camfeed.CameraFeed(c["id"], int(c["feedPort"]) + args.feed_port_offset, bind=args.bind))
         specs.append({"id": c["id"], "width": w, "height": h, "quality": int(c.get("feedQuality", 80)), "record": records,
                       "recordQuality": int(c.get("recordQuality", 92)), "near": float(c.get("near", 0.05)),
                       "far": float(c.get("far", 10.0)), "mount": c.get("mount", ""), **intrinsics(w, h, hfov)})

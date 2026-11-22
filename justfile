@@ -557,6 +557,37 @@ robot_mdns_name := env_var_or_default("JETROVER_NAME", "jetrover-sinrg")
 gpu_host := env_var_or_default("GPU_HOST", "andrei@10.188.58.133")
 # The Isaac Sim installed in our own account on the GPU machine (docs/adr/0031): NVIDIA's pip build, whose 6.x wheels are for Python 3.12, the machine's own.
 isaac_version := env_var_or_default("ISAAC_VERSION", "6.2.0.0")
+# The JetRover's Isaac twins on the GPU machine (docs/adr/0037 amendment 7), as bash the recipes put into their remote
+# scripts. twin_names N sets twin N's names: its ports 100*N up (toff), its runtime files (sockets, logs, the RobotHost
+# build, the uplink control) suffixed -N and its data folders (sessions, takes) -twinN, for N > 0; twin 0 keeps every
+# name and port it had before there were two. twin_pids N PATTERN EXE lists twin N's real processes (python or dotnet,
+# not a shell whose text names them) by the record control file they all take (RobotHost, the bridge, the renderer).
+isaac_twin_sh := '''
+twin_names() {
+    tsfx=""; tdata=""; [ "$1" = 0 ] || { tsfx="-$1"; tdata="-twin$1"; }
+    toff=$((100 * $1))
+    trec=$HOME/data/sessions/jetrover-isaac$tdata
+    ttakes=$HOME/data/takes/jetrover-isaac$tdata
+    trelay=/tmp/teleop-jetrover-relay-$USER$tsfx.sock
+    ttap=/tmp/teleop-isaac-tap-$USER$tsfx.sock
+    tbridge_log=$HOME/logs/isaac/jetrover-bridge$tsfx.log
+    trender_log=$HOME/logs/isaac/renderer$tsfx.log
+    thost_log=$HOME/logs/isaac/jetrover-host$tsfx.log
+    tbuild_log=$HOME/logs/isaac/robothost-build$tsfx.log
+    tbuild=$HOME/isaacsim/robothost$tsfx
+    tuplink=$HOME/isaacsim/jetrover-uplink$tsfx
+}
+twin_pids() {
+    local rc p
+    rc="$HOME/data/sessions/jetrover-isaac$([ "$1" = 0 ] || echo "-twin$1")/.active"
+    for p in $(pgrep -u "$USER" -f "$2" || true); do
+        case "$(readlink "/proc/$p/exe" 2>/dev/null)" in
+            *"$3"*) tr '\0' ' ' < "/proc/$p/cmdline" 2>/dev/null | grep -qF -- "--record-control $rc " && echo "$p" ;;
+        esac
+    done
+    return 0
+}
+'''
 # Where ROBOT OFF parks the arm before its torque goes off (docs/adr/0023 decision 5), passed by
 # deploy-robothost as --rest-pose-deg: degrees, motors 1-5 (base yaw, shoulder, elbow, wrist pitch,
 # wrist roll; the gripper is left as it is), in RobotHost's joint angles as `just joint-probe` prints
@@ -3618,7 +3649,7 @@ isaac-host scene="fr3-duo-bench" scene_seed="auto" feeds="true":
     )
     ssh -o ConnectTimeout=10 "{{gpu_host}}" "COMMIT='$commit' SCENE='{{scene}}' SCENE_SEED='{{scene_seed}}' FEEDS='{{feeds}}' bash -c $(printf '%q' "$remote")"
 
-# Let another account on the GPU machine read the headset's scenario takes (docs/adr/0033) and their LeRobot datasets (docs/adr/0036), once: ACLs, no sudo. It may list and enter our home, ~/data and ~/data/takes (a named ACL entry overrides the folders' own "other" bits, so "enter only" made `ls` there fail; what is private stays so by its own mode: ~/.ssh, ~/.config, ~/.cache, ~/.local are 700); read everything under ~/data/takes/fr3_duo-isaac (the FR3 Duo's) and ~/data/takes/jetrover-isaac, and every take written there from now on (a default ACL); edit each scenarios.txt (the list the headset shows) and save into those folders (editors replace a file when they save); and read the real robot's takes copied into ~/data/takes/jetrover-real and every dataset under ~/data/lerobot, written or rebuilt. Takes and datasets stay read-only to it. Run it again after deleting a folder
+# Let another account on the GPU machine read the headset's scenario takes (docs/adr/0033) and their LeRobot datasets (docs/adr/0036), once: ACLs, no sudo. It may list and enter our home, ~/data and ~/data/takes (a named ACL entry overrides the folders' own "other" bits, so "enter only" made `ls` there fail; what is private stays so by its own mode: ~/.ssh, ~/.config, ~/.cache, ~/.local are 700); read everything under ~/data/takes/fr3_duo-isaac (the FR3 Duo's), ~/data/takes/jetrover-isaac and ~/data/takes/jetrover-isaac-twin1 (the second twin's, docs/adr/0037 amendment 7), and every take written there from now on (a default ACL); edit each scenarios.txt (the list the headset shows) and save into those folders (editors replace a file when they save); and read the real robot's takes copied into ~/data/takes/jetrover-real and every dataset under ~/data/lerobot, written or rebuilt. Takes and datasets stay read-only to it. Run it again after deleting a folder
 [group('isaac')]
 isaac-share-scenarios user="seaqueue-cheng":
     #!/usr/bin/env bash
@@ -3629,8 +3660,9 @@ isaac-share-scenarios user="seaqueue-cheng":
     id "$U" > /dev/null || { echo "error: no account $U here" >&2; exit 1; }
     mkdir -p "$HOME/data/takes"
     setfacl -m "u:$U:rx" "$HOME" "$HOME/data" "$HOME/data/takes"
-    # The FR3 Duo's and the JetRover's takes (docs/adr/0033): read the takes, edit the scenario list.
-    for root in "$HOME/data/takes/fr3_duo-isaac" "$HOME/data/takes/jetrover-isaac"; do
+    # The FR3 Duo's and the JetRover's takes (docs/adr/0033), its second twin's included (docs/adr/0037 amendment 7): read the
+    # takes, edit the scenario list.
+    for root in "$HOME/data/takes/fr3_duo-isaac" "$HOME/data/takes/jetrover-isaac" "$HOME/data/takes/jetrover-isaac-twin1"; do
         mkdir -p "$root"
         setfacl -R -m "u:$U:rX" "$root"
         find "$root" -type d -exec setfacl -d -m "u:$U:rX" {} +
@@ -3864,7 +3896,7 @@ isaac-knock-probe takes="30" seed="1" since="":
     set -euo pipefail
     mkdir -p "$HOME/analysis/knock"; out=$HOME/analysis/knock/$(date -u +%Y%m%dT%H%M%SZ).jsonl
     takes=()
-    for d in "$HOME"/data/takes/jetrover-isaac/{,_discarded/}{collide_with_obstacle,collide_and_recover}/*-take*; do
+    for d in "$HOME"/data/takes/jetrover-isaac{,-twin1}/{,_discarded/}{collide_with_obstacle,collide_and_recover}/*-take*; do
         n=$(basename "$d"); [[ "$n" > "$SINCE" ]] && [ -f "$d/files.sha256" ] && takes+=("$d")
     done
     echo "[knock] ${#takes[@]} collide take(s) since $SINCE"
@@ -3873,13 +3905,29 @@ isaac-knock-probe takes="30" seed="1" since="":
     echo "[knock] rows: $out"
     REMOTE
 
-# The labmate's safety dataset from the JetRover twin, unattended (docs/adr/0036 amendment 1): `takes` rounds of the four categories (reach_no_obstacle, stop_before_collision, collide_and_recover, collide_with_obstacle) in a seeded order, each take one `joint-drive --script <category> --new-layout --take <category> --events <events>` (a fresh layout, the arm driven relative to where the objects are; each take of the three event categories draws `events` events, a count or a range, default 1-3, anywhere in it, docs/adr/0036 amendment 5), checked against its category by its physics contacts (teleop_lerobot safety-check: a take that fails is set aside to _discarded/<category>/ with its reason), then the kept takes written as one dataset in his label format at ~/data/lerobot/jetrover-isaac-safety/jetrover_<UTC>_<id>/ (front = the wrist camera; manual_safety_labels.json, meta/safety_labels.parquet, safety_events.jsonl). Needs `just isaac-jetrover-host jetrover-bench` running this commit (its bridge reports the contacts) and the LeRobot environment (just lerobot-setup). Stops after 5 takes in a row that could not be planned, or when recordings/.drive/STOP exists (after the take in progress); waits between takes while recordings/.drive/PAUSE exists. Writes its progress to recordings/.drive/safety-batch.json for `just gpu-ui`, which shows it and makes those two files. Only Isaac's arm moves
+# The labmate's safety dataset from the JetRover twin, unattended (docs/adr/0036 amendment 1): `takes` rounds of the four categories (reach_no_obstacle, stop_before_collision, collide_and_recover, collide_with_obstacle) in a seeded order, each take one `joint-drive --script <category> --new-layout --take <category> --events <events>` (a fresh layout, the arm driven relative to where the objects are; each take of the three event categories draws `events` events, a count or a range, default 1-3, anywhere in it, docs/adr/0036 amendment 5), checked against its category by its physics contacts (teleop_lerobot safety-check: a take that fails is set aside to _discarded/<category>/ with its reason), then the kept takes written as one dataset in his label format at ~/data/lerobot/jetrover-isaac-safety/jetrover_<UTC>_<id>/ (front = the wrist camera; manual_safety_labels.json, meta/safety_labels.parquet, safety_events.jsonl). Needs `just isaac-jetrover-host jetrover-bench` running this commit (its bridge reports the contacts) and the LeRobot environment (just lerobot-setup). Stops after 5 takes in a row that could not be planned, or when recordings/.drive/STOP exists (after the take in progress); waits between takes while recordings/.drive/PAUSE exists. Writes its progress to recordings/.drive/safety-batch.json for `just gpu-ui`, which shows it and makes those two files, and its kept takes to recordings/.drive/safety-batch.kept (for just isaac-safety-build). `twin=1` drives the second twin instead (docs/adr/0037 amendment 7: its joint port 6102, its takes in ~/data/takes/jetrover-isaac-twin1); its files are suffixed -1 (safety-batch-1.json, safety-batch-1.kept, PAUSE-1, STOP-1). Only Isaac's arm moves
 [group('isaac')]
-isaac-safety-batch takes="25" seed="1" categories="all" build="true" events="1-3":
+isaac-safety-batch takes="25" seed="1" categories="all" build="true" events="1-3" twin="0":
     #!/usr/bin/env bash
     set -euo pipefail
     case "{{takes}}{{seed}}" in *[!0-9]*|"") echo "error: takes and seed are numbers" >&2; exit 1 ;; esac
+    # One ssh call to the GPU machine, tried again while ssh itself fails (exit 255: the connection refused or dropped, not the
+    # remote command's status), at most 5 tries in about 30 s. 2026-11-21: its sshd dropped connections under two batches and the
+    # dashboard, and a twin that was running was read as gone. Its standard input is RSSH_IN when set (sent again each try), else none.
+    rssh() {
+        local i rc
+        for i in 1 2 3 4 5; do
+            if [ -n "${RSSH_IN-}" ]; then ssh "$@" <<<"$RSSH_IN" && rc=0 || rc=$?; else ssh -n "$@" && rc=0 || rc=$?; fi
+            [ "$rc" -ne 255 ] && return "$rc"
+            echo "[safety] ssh to the GPU machine failed (try $i of 5); trying again" >&2
+            sleep $((i * 2))
+        done
+        return 255
+    }
+    # At least one round: an empty plan read as one take with no category (joint-drive refused it, nothing moved).
+    [ "{{takes}}" -ge 1 ] || { echo "error: takes is at least 1 (rounds of the categories)" >&2; exit 1; }
     case "{{events}}" in [1-9]|[1-9]-[1-9]) ;; *) echo "error: events is a count or a range, like 2 or 1-3, not '{{events}}'" >&2; exit 1 ;; esac
+    case "{{twin}}" in 0|1) ;; *) echo "error: twin is 0 or 1" >&2; exit 1 ;; esac
     cats="{{categories}}"; [ "$cats" != all ] || cats=reach_no_obstacle,stop_before_collision,collide_and_recover,collide_with_obstacle
     for c in ${cats//,/ }; do
         case "$c" in reach_no_obstacle|stop_before_collision|collide_and_recover|collide_with_obstacle) ;; *) echo "error: categories is all, or a comma list of the four, not '$c'" >&2; exit 1 ;; esac
@@ -3887,34 +3935,47 @@ isaac-safety-batch takes="25" seed="1" categories="all" build="true" events="1-3
     case "{{build}}" in true|false) ;; *) echo "error: build is true or false" >&2; exit 1 ;; esac
     gpu="{{gpu_host}}"; host="${gpu#*@}"
     case "$host" in *[!0-9.]*) echo "error: joint-drive needs the GPU machine's address as numbers, got '$host' (GPU_HOST)" >&2; exit 1 ;; esac
+    # Twin N's joint port, takes folder and this batch's files (docs/adr/0037 amendment 7); twin 0's are what they always were.
+    twin={{twin}} sfx="" tdata=""; [ "$twin" = 0 ] || { sfx="-$twin"; tdata="-twin$twin"; }
+    port=$((6002 + 100 * twin)) troot="data/takes/jetrover-isaac$tdata"
+    drive=recordings/.drive
+    pfile=$drive/safety-batch$sfx.json kfile=$drive/safety-batch$sfx.kept pause=$drive/PAUSE$sfx stopf=$drive/STOP$sfx
     commit=$(just _pushed-commit)
     # The checker and builder run from this commit, in a checkout of their own (the watcher's stays as it is); the twin must
     # run it too, or its bridge reports no contacts and every collide take fails its check. Its scenario list gets the four.
-    ssh -o ConnectTimeout=10 "$gpu" "COMMIT='$commit' bash -s" <<'REMOTE'
+    ssh -o ConnectTimeout=10 "$gpu" "COMMIT='$commit' TWIN='$twin' bash -s" <<'REMOTE'
     set -euo pipefail
+    {{isaac_twin_sh}}
+    twin_names "$TWIN"
     repo=$HOME/repos/safety
+    # One checkout at a time: the twins' batches start together (isaac-safety-batch-twins).
+    mkdir -p "$HOME/repos"; exec 9> "$HOME/repos/.safety-checkout.lock"; flock -w 120 9
     [ -d "$repo" ] || git clone -q https://github.com/andreitimoshukcollege-del/teleoperation.git "$repo"
     cd "$repo" && git fetch -q origin && git checkout -q "$COMMIT"
     [ -x "$HOME/isaacsim/lerobot-venv/bin/python" ] || { echo "error: no LeRobot environment: just lerobot-setup" >&2; exit 1; }
-    pgrep -u "$USER" -f "teleop_isaac[.]renderer" > /dev/null || { echo "error: the twin is not running with a scene: just isaac-jetrover-host jetrover-bench" >&2; exit 1; }
+    [ -n "$(twin_pids "$TWIN" "teleop_isaac[.]renderer" python)" ] || { echo "error: twin $TWIN is not running with a scene: just isaac-jetrover-host jetrover-bench auto $TWIN" >&2; exit 1; }
     twin=$(git -C "$HOME/repos/isaac" rev-parse HEAD 2>/dev/null || echo none)
     if ! git -C "$repo" merge-base --is-ancestor "$(git -C "$repo" log -1 --format=%H -- robot/isaac/teleop_isaac/contacts.py)" "$twin" 2>/dev/null; then
         echo "error: the twin runs $twin, which has no contact reporting: restart it from this commit (just isaac-stop; just isaac-jetrover-host jetrover-bench)" >&2; exit 1
     fi
-    list=$HOME/data/takes/jetrover-isaac/scenarios.txt
+    list=$ttakes/scenarios.txt
     for c in reach_no_obstacle stop_before_collision collide_and_recover collide_with_obstacle; do
-        grep -q "^$c\b" "$list" || echo "$c | safety dataset (docs/adr/0036 amendment 1): joint-drive --script $c" >> "$list"
+        grep -q "^$c\b" "$list" 2>/dev/null || echo "$c | safety dataset (docs/adr/0036 amendment 1): joint-drive --script $c" >> "$list"
     done
-    echo "[safety] checker at $(git log --oneline -1 | cut -c1-60); twin at ${twin:0:7}"
+    echo "[safety] twin $TWIN; checker at $(git log --oneline -1 | cut -c1-60); twin at ${twin:0:7}"
     REMOTE
-    (cd core && dotnet build Teleop.Eval -nologo -v q > /dev/null)
+    mkdir -p "$drive"
+    # One build at a time: two batches building Teleop.Eval into one output folder at once break each other. -o: the build's
+    # MSBuild and compiler servers outlive it and must not hold the lock (they held the second twin's batch, 2026-11-21).
+    (cd core && flock -o -w 600 "../$drive/.eval-build.lock" dotnet build Teleop.Eval -nologo -v q > /dev/null)
     # The batch's progress for just gpu-ui (robot/gpu), rewritten whole at each step: progress <takes done> <phase> [dataset].
     progress() {
-        printf '{"recipe":"isaac-safety-batch","pid":%d,"name":"%s","total":%d,"take":%d,"kept":%d,"setAside":%d,"unplanned":%d,"unchecked":%d,"started":%d,"updated":%d,"phase":"%s","dataset":%s}\n' \
-            $$ "$name" "$total" "$1" "${#kept[@]}" "$setaside" "$unplanned" "$unchecked" "$started" "$(date +%s)" "$2" "${3:-null}" \
-            > recordings/.drive/safety-batch.json.tmp && mv recordings/.drive/safety-batch.json.tmp recordings/.drive/safety-batch.json
+        printf '{"recipe":"isaac-safety-batch","pid":%d,"twin":%d,"name":"%s","total":%d,"take":%d,"kept":%d,"setAside":%d,"unplanned":%d,"unchecked":%d,"started":%d,"updated":%d,"phase":"%s","dataset":%s}\n' \
+            $$ "$twin" "$name" "$total" "$1" "${#kept[@]}" "$setaside" "$unplanned" "$unchecked" "$started" "$(date +%s)" "$2" "${3:-null}" \
+            > "$pfile.tmp" && mv "$pfile.tmp" "$pfile"
     }
-    mkdir -p recordings/.drive && rm -f recordings/.drive/STOP recordings/.drive/PAUSE
+    rm -f "$stopf" "$pause"
+    : > "$kfile"
     name="jetrover_$(date -u +%Y%m%d_%H%M%S)_$(printf '%06x' $(( (RANDOM << 15 | RANDOM) & 0xFFFFFF )))"
     # The plan: each round the four categories in a seeded order, each take its own seed and the speed slider's setting
     # (the joint speed the commands ask for: mostly 3.8 rad/s, as the human sessions on the twin had it; slower caps a
@@ -3934,27 +3995,34 @@ isaac-safety-batch takes="25" seed="1" categories="all" build="true" events="1-3
     )
     kept=() setaside=0 unplanned=0 consecutive=0 n=0 unchecked=0 paused=0
     started=$(date +%s) total=$(( {{takes}} * $(echo "$cats" | tr ',' '\n' | wc -l) ))
+    # Whether twin N's bridge and renderer still run (counted by the record control file they name).
+    alive_sh=$(cat <<'REMOTE'
+    {{isaac_twin_sh}}
+    echo $(( $(twin_pids "$TWIN" "teleop_isaac[.]jetrover_bridge" python | wc -l) + $(twin_pids "$TWIN" "teleop_isaac[.]renderer" python | wc -l) ))
+    REMOTE
+    )
     while read -r cat speed sseed; do
-        # just gpu-ui's pause: wait here, between takes, while recordings/.drive/PAUSE exists (STOP still stops).
-        while [ -e recordings/.drive/PAUSE ] && [ ! -e recordings/.drive/STOP ]; do
-            [ "$paused" = 1 ] || { echo "[safety] paused before take $((n + 1)): delete recordings/.drive/PAUSE to go on"; progress "$n" paused; paused=1; }
+        # just gpu-ui's pause: wait here, between takes, while the PAUSE file exists (STOP still stops).
+        while [ -e "$pause" ] && [ ! -e "$stopf" ]; do
+            [ "$paused" = 1 ] || { echo "[safety] paused before take $((n + 1)): delete $pause to go on"; progress "$n" paused; paused=1; }
             sleep 2
         done
-        if [ -e recordings/.drive/STOP ]; then rm -f recordings/.drive/STOP recordings/.drive/PAUSE; echo "[safety] STOP file: stopping before take $((n + 1))"; break; fi
+        if [ -e "$stopf" ]; then rm -f "$stopf" "$pause"; echo "[safety] STOP file: stopping before take $((n + 1))"; break; fi
         paused=0
         progress "$n" takes
         n=$((n + 1))
         # The twin must still be whole: with its bridge or renderer gone (2026-11-16: the ssh session that started them timed
         # out in a VPN drop), RobotHost still records takes, with no physics and no frames, and every one fails its check.
-        alive=$(ssh -n -o ConnectTimeout=10 "$gpu" 'n=0; for p in "teleop_isaac[.]jetrover_bridge" "teleop_isaac[.]renderer"; do for q in $(pgrep -u "$USER" -f "$p" || true); do case "$(readlink /proc/$q/exe 2>/dev/null)" in *python*) n=$((n+1)); break ;; esac; done; done; echo $n' || echo 0)
-        if [ "$alive" != 2 ]; then echo "[safety] the twin is not whole before take $n (bridge and renderer: $alive of 2 running): stopping; restart it (just isaac-stop; just isaac-jetrover-host jetrover-bench)" >&2; n=$((n - 1)); break; fi
+        alive=$(rssh -o ConnectTimeout=10 "$gpu" "TWIN='$twin' bash -c $(printf '%q' "$alive_sh")") && arc=0 || arc=$?
+        if [ "$arc" = 255 ]; then echo "[safety] the GPU machine did not answer ssh in 5 tries before take $n: stopping (the twin itself may be fine; run the batch again)" >&2; n=$((n - 1)); break; fi
+        if [ "$alive" != 2 ]; then echo "[safety] twin $twin is not whole before take $n (bridge and renderer: $alive of 2 running): stopping; restart it (just isaac-stop $twin; just isaac-jetrover-host jetrover-bench auto $twin)" >&2; n=$((n - 1)); break; fi
         # ssh -n in the loop: a plain ssh would read the plan from the loop's standard input and end it.
-        before=$(ssh -n -o ConnectTimeout=10 "$gpu" "ls ~/data/takes/jetrover-isaac/$cat 2>/dev/null | grep -- '-take' | sort | tail -1" || true)
+        before=$(rssh -o ConnectTimeout=10 "$gpu" "ls ~/$troot/$cat 2>/dev/null | grep -- '-take' | sort | tail -1" || true)
         echo "=== [safety] take $n: $cat (seed $sseed, speed slider $speed rad/s)"
         code=0
         (cd core && dotnet run --no-build --project Teleop.Eval -- joint-drive --script "$cat" --speed "$speed" --seconds 15 --seed "$sseed" \
-            --scene Scenes/jetrover-bench.json --new-layout --take "$cat" --events "{{events}}" --remote-host "$host" --confirm-hardware-motion \
-            --simulated-robot --stall-seconds 3 < /dev/null) || code=$?
+            --scene Scenes/jetrover-bench.json --new-layout --take "$cat" --events "{{events}}" --remote-host "$host" --remote-port "$port" \
+            --confirm-hardware-motion --simulated-robot --stall-seconds 3 < /dev/null) || code=$?
         case "$code" in
             0|2|3|4) consecutive=0 ;;  # a take was recorded (2, 3: a watchdog stopped it; 4: not stopped cleanly): check it
             1) unplanned=$((unplanned + 1)); consecutive=$((consecutive + 1)); echo "[safety] take $n: nothing recorded (no plan or no world)" >&2
@@ -3963,8 +4031,8 @@ isaac-safety-batch takes="25" seed="1" categories="all" build="true" events="1-3
             *) echo "[safety] joint-drive exited $code: stopping" >&2; break ;;
         esac
         # RobotHost completes the take (files.sha256) once every writer has closed: up to a minute for the renderer's.
-        take=$(ssh -o ConnectTimeout=10 "$gpu" "CAT='$cat' BEFORE='$before' bash -s" <<'REMOTE'
-    d=$HOME/data/takes/jetrover-isaac/$CAT
+        take_sh=$(cat <<'REMOTE'
+    d=$HOME/$ROOT/$CAT
     for i in $(seq 1 240); do
         newest=$(ls "$d" 2>/dev/null | grep -- '-take' | sort | tail -1)
         if [ -n "$newest" ] && [ "$newest" != "$BEFORE" ] && [ -f "$d/$newest/files.sha256" ]; then echo "$d/$newest"; exit 0; fi
@@ -3972,10 +4040,11 @@ isaac-safety-batch takes="25" seed="1" categories="all" build="true" events="1-3
     done
     exit 1
     REMOTE
-        ) || { echo "[safety] take $n: RobotHost did not complete a new $cat take in 2 min" >&2; unchecked=$((unchecked + 1)); continue; }
+        )
+        take=$(RSSH_IN="$take_sh" rssh -o ConnectTimeout=10 "$gpu" "CAT='$cat' BEFORE='$before' ROOT='$troot' bash -s") || { echo "[safety] take $n: RobotHost did not complete a new $cat take in 2 min" >&2; unchecked=$((unchecked + 1)); continue; }
         # Asked again once if no verdict comes back (2026-11-15: one check returned nothing, the take was fine when run again).
         for attempt in 1 2; do
-            verdict=$(ssh -n -o ConnectTimeout=10 "$gpu" "cd ~/repos/safety/robot/lerobot && ~/isaacsim/lerobot-venv/bin/python -m teleop_lerobot safety-check --set-aside '$take'" || true)
+            verdict=$(rssh -o ConnectTimeout=10 "$gpu" "cd ~/repos/safety/robot/lerobot && ~/isaacsim/lerobot-venv/bin/python -m teleop_lerobot safety-check --set-aside '$take'" || true)
             case "$verdict" in *'"ok":'*) break ;; esac
             echo "[safety] no verdict for $take (attempt $attempt)${verdict:+: ${verdict: -200}}" >&2; sleep 5
         done
@@ -3996,22 +4065,29 @@ isaac-safety-batch takes="25" seed="1" categories="all" build="true" events="1-3
     PY
         then
             kept+=("$take")
+            echo "$take" >> "$kfile"
         else
             setaside=$((setaside + 1))
         fi
-        if [ -e recordings/.drive/STOP ]; then rm -f recordings/.drive/STOP; echo "[safety] STOP file: stopping after take $n"; break; fi
+        if [ -e "$stopf" ]; then rm -f "$stopf"; echo "[safety] STOP file: stopping after take $n"; break; fi
     done <<< "$plan"
     echo "[safety] $n take(s): ${#kept[@]} kept, $setaside set aside, $unplanned not planned"
     [ "${#kept[@]}" -gt 0 ] || { echo "[safety] nothing kept: no dataset written" >&2; progress "$n" failed; exit 1; }
-    if [ "{{build}}" != true ]; then echo "[safety] build=false: no dataset written"; progress "$n" done; exit 0; fi
+    if [ "{{build}}" != true ]; then echo "[safety] build=false: no dataset written; the kept takes are listed in $kfile"; progress "$n" done; exit 0; fi
     progress "$n" building
-    # A build that fails is retried once into a fresh folder, a failed one set aside, and every attempt's full log kept there.
-    # (The one failure seen, 2026-11-15, was the LeRobot watcher deleting the half-written dataset, since fixed: it leaves the
-    # *-safety groups alone.)
-    build=0
-    ssh -o ConnectTimeout=10 "$gpu" "NAME='$name' bash -s $(printf "'%s' " "${kept[@]}")" <<'REMOTE' || build=$?
+    if just _isaac-safety-build "$name" "" "${kept[@]}"; then progress "$n" done "\"~/data/lerobot/jetrover-isaac-safety/$name\""; else progress "$n" failed; exit 1; fi
+
+# Internal: write `takes` (paths on the GPU machine, already checked) as one safety dataset `name` under `out` there (default ~/data/lerobot/jetrover-isaac-safety), with ~/repos/safety's builder (teleop_lerobot safety-build). A build that fails is retried once into a fresh folder, a failed one set aside, and every attempt's full log kept beside it. (The one failure seen, 2026-11-15, was the LeRobot watcher deleting the half-written dataset, since fixed: it leaves the *-safety groups alone.)
+[positional-arguments]
+_isaac-safety-build name out +takes:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    case "{{name}}" in *[!A-Za-z0-9._-]*|"") echo "error: name may hold only letters, digits, . _ -" >&2; exit 1 ;; esac
+    case "{{out}}" in ""|/*|"~/"*) ;; *) echo "error: out is an absolute path on the GPU machine, or ~/..." >&2; exit 1 ;; esac
+    case "{{out}}" in *[!A-Za-z0-9._/~-]*) echo "error: out may hold only letters, digits, . _ - / ~" >&2; exit 1 ;; esac
+    ssh -o ConnectTimeout=10 "{{gpu_host}}" "NAME='{{name}}' OUT='{{out}}' bash -s $(printf "'%s' " "${@:3}")" <<'REMOTE'
     set -uo pipefail
-    out=$HOME/data/lerobot/jetrover-isaac-safety; mkdir -p "$out"
+    out=${OUT:-$HOME/data/lerobot/jetrover-isaac-safety}; out=${out/#\~/$HOME}; mkdir -p "$out"
     cd "$HOME/repos/safety/robot/lerobot"
     for attempt in 1 2; do
         dest=$out/$NAME; [ "$attempt" = 1 ] || dest=$out/$NAME-retry
@@ -4026,7 +4102,86 @@ isaac-safety-batch takes="25" seed="1" categories="all" build="true" events="1-3
     done
     exit 1
     REMOTE
-    if [ "$build" = 0 ]; then progress "$n" done "\"~/data/lerobot/jetrover-isaac-safety/$name\""; else progress "$n" failed; exit 1; fi
+
+# One safety dataset from the takes several batches kept (docs/adr/0037 amendment 7): the takes listed in recordings/.drive/safety-batch.kept (twin 0's batch) and safety-batch-1.kept (twin 1's), as `twins` names them, in the order they were recorded (by their UTC names), written by the GPU machine's ~/repos/safety builder as ~/data/lerobot/jetrover-isaac-safety/<name> (default jetrover_<UTC>_<id>, as a batch names its own). `out` writes it under another folder there instead (absolute or ~/...). A take set aside or deleted since is left out. `just isaac-safety-batch-twins` runs it after its batches; run it by hand after batches run with build=false
+[group('isaac')]
+isaac-safety-build twins="0,1" name="" out="":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    name="{{name}}"; [ -n "$name" ] || name="jetrover_$(date -u +%Y%m%d_%H%M%S)_$(printf '%06x' $(( (RANDOM << 15 | RANDOM) & 0xFFFFFF )))"
+    takes=()
+    for t in $(echo "{{twins}}" | tr ',' ' '); do
+        case "$t" in 0) f=recordings/.drive/safety-batch.kept ;; [1-9]) f=recordings/.drive/safety-batch-$t.kept ;; *) echo "error: twins is a comma list of twin numbers, like 0,1" >&2; exit 1 ;; esac
+        [ -f "$f" ] || { echo "error: no $f: twin $t's batch has not run here" >&2; exit 1; }
+        echo "[safety] twin $t: $(grep -c . "$f" || true) kept take(s) in $f"
+        while read -r p; do [ -n "$p" ] && takes+=("$p"); done < "$f"
+    done
+    [ "${#takes[@]}" -gt 0 ] || { echo "error: no kept takes listed" >&2; exit 1; }
+    # Recorded order across the twins (each take's folder starts with its UTC start), each once; then only those still kept.
+    mapfile -t takes < <(printf '%s\n' "${takes[@]}" | awk -F/ '{print $NF "\t" $0}' | sort -u | cut -f2)
+    mapfile -t present < <(ssh -o ConnectTimeout=10 "{{gpu_host}}" "for t in $(printf "'%s' " "${takes[@]}"); do [ -f \"\$t/files.sha256\" ] && echo \"\$t\"; done" | awk -F/ '{print $NF "\t" $0}' | sort | cut -f2)
+    gone=$(( ${#takes[@]} - ${#present[@]} ))
+    [ "$gone" = 0 ] || echo "[safety] $gone listed take(s) are no longer kept there (set aside or deleted): left out" >&2
+    [ "${#present[@]}" -gt 0 ] || { echo "error: none of the listed takes is still there" >&2; exit 1; }
+    echo "[safety] building $name from ${#present[@]} take(s)"
+    just _isaac-safety-build "$name" "{{out}}" "${present[@]}"
+
+# Start the JetRover's Isaac twins on the GPU machine (docs/adr/0037 amendment 7): twins 0 to n-1 (n is 1 or 2), each `just isaac-jetrover-host <scene> auto <N> true`, one after the other (each waits for the last to listen: two Isaac start-ups at once only slow each other), in the background there, so a dropped ssh session leaves them running. A twin already running is left as it is. Stop them with just isaac-twins-down; just isaac-status shows them
+[group('isaac')]
+isaac-twins-up n="2" scene="jetrover-bench":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    case "{{n}}" in 1|2) ;; *) echo "error: n is 1 or 2" >&2; exit 1 ;; esac
+    for t in $(seq 0 $(( {{n}} - 1 ))); do
+        running=$(ssh -o ConnectTimeout=10 "{{gpu_host}}" "TWIN=$t bash -s" <<'REMOTE'
+    {{isaac_twin_sh}}
+    twin_pids "$TWIN" "Teleop[.]RobotHost[.]dll" dotnet | wc -l
+    REMOTE
+        )
+        if [ "$running" != 0 ]; then echo "[twins] twin $t is already running: left as it is"; continue; fi
+        just isaac-jetrover-host "{{scene}}" auto "$t" true
+    done
+    just isaac-status 0
+
+# Stop every JetRover Isaac twin on the GPU machine (docs/adr/0037 amendment 7): just isaac-stop all
+[group('isaac')]
+isaac-twins-down:
+    just isaac-stop all
+
+# Two twins, one dataset (docs/adr/0037 amendment 7): `just isaac-safety-batch <takes> <seed+1000*N> <categories> false <events> <N>` on each of twins 0 to n-1 at once (they must run: just isaac-twins-up), each batch's output prefixed [twin N] and kept in recordings/.drive/safety-batch-twins-<N>.log, then, if build=true, one dataset from every take they kept (just isaac-safety-build). Each twin's seeds are its own (take seeds seed*100000+n, so seed and seed+1000 never meet). Stop a twin's batch with gpu-ui, or recordings/.drive/STOP (twin 0) and STOP-1 (twin 1): it stops after the take in progress, and the dataset is still built from what both kept. Only Isaac's arms move
+[group('isaac')]
+isaac-safety-batch-twins takes="25" seed="1" n="2" categories="all" build="true" events="1-3":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    case "{{n}}" in 1|2) ;; *) echo "error: n is 1 or 2" >&2; exit 1 ;; esac
+    case "{{takes}}{{seed}}" in *[!0-9]*|"") echo "error: takes and seed are numbers" >&2; exit 1 ;; esac
+    [ "{{takes}}" -ge 1 ] || { echo "error: takes is at least 1 (rounds of the categories)" >&2; exit 1; }
+    case "{{build}}" in true|false) ;; *) echo "error: build is true or false" >&2; exit 1 ;; esac
+    mkdir -p recordings/.drive
+    # This run's kept takes only: a batch that fails before it starts must not leave an earlier run's list to be built.
+    rm -f recordings/.drive/safety-batch.kept recordings/.drive/safety-batch-[0-9].kept
+    pids=() twins=()
+    for t in $(seq 0 $(( {{n}} - 1 ))); do
+        s=$(( {{seed}} + 1000 * t ))
+        echo "[twins] twin $t: {{takes}} round(s) of {{categories}}, seed $s"
+        ( set -o pipefail; just isaac-safety-batch "{{takes}}" "$s" "{{categories}}" false "{{events}}" "$t" < /dev/null 2>&1 \
+            | sed -u "s/^/[twin $t] /" | tee "recordings/.drive/safety-batch-twins-$t.log" ) &
+        pids+=($!) twins+=($t)
+        # A few seconds apart: the two setups' checkouts and builds take turns anyway (each under a lock).
+        [ "$t" = $(( {{n}} - 1 )) ] || sleep 15
+    done
+    failed=0 ok=()
+    for i in "${!pids[@]}"; do
+        t=${twins[$i]}
+        wait "${pids[$i]}" || { failed=$((failed + 1)); echo "[twins] twin $t's batch failed (its log: recordings/.drive/safety-batch-twins-$t.log)" >&2; }
+        # What a batch kept counts, even if it stopped early (a twin that fell over, a STOP file).
+        f=recordings/.drive/safety-batch.kept; [ "$t" = 0 ] || f=recordings/.drive/safety-batch-$t.kept
+        [ -s "$f" ] && ok+=("$t")
+    done
+    [ "${#ok[@]}" -gt 0 ] || { echo "[twins] no batch kept a take: no dataset" >&2; exit 1; }
+    if [ "{{build}}" != true ]; then echo "[twins] build=false: build later with just isaac-safety-build $(IFS=,; echo "${ok[*]}")"; exit $(( failed > 0 )); fi
+    just isaac-safety-build "$(IFS=,; echo "${ok[*]}")"
+    exit $(( failed > 0 ))
 
 # Build the LeRobot converter's environment on the GPU machine (docs/adr/0036), once and after robot/lerobot/requirements.txt changes: ~/isaacsim/lerobot-venv (Python 3.12) with that lerobot version, and pytest for just lerobot-test. Runs the pushed commit
 [group('lerobot')]
@@ -4160,42 +4315,74 @@ robot-prune-takes apply="false" remote_host=default_jetrover_host remote_user="j
     if [ "{{apply}}" != true ] || [ "$n" = 0 ]; then [ "{{apply}}" != true ] && echo "dry run: nothing deleted. just robot-prune-takes true deletes them"; exit 0; fi
     ssh "$target" "cd ~/recordings/scenarios && for d in $(echo $deletable); do rm -rf -- \"\$d\" && echo \"  deleted \$d\"; done; echo \"--- free now: \$(df -h ~/recordings | tail -1 | awk '{print \$4}')\""
 
-# The JetRover's arm in Isaac Sim on the GPU machine, behind the JetRover's own RobotHost (docs/adr/0034 J2): checks out this commit in ~/repos/isaac (it must be on GitHub), builds RobotHost, starts teleop_isaac.jetrover_bridge on a relay socket (log ~/logs/isaac/jetrover-bridge.log) and then RobotHost exactly as the Jetson runs it, with --relay-socket pointing at Isaac instead of the ROS relay: joint port 6002, discovery 6005, the JetRover profile, sessions recorded into ~/data/sessions/jetrover-isaac marked source isaac. Point the headset's JetRover app at it with `just push-galaxy-config <GPU machine's address>`. Enter stops both, as does `just isaac-stop`. Refuses while an Isaac host of ours (FR3 or JetRover) is running there: they share the ports. No real robot moves
+# The JetRover's arm in Isaac Sim on the GPU machine, behind the JetRover's own RobotHost (docs/adr/0034 J2): checks out this commit in ~/repos/isaac (it must be on GitHub), builds RobotHost, starts teleop_isaac.jetrover_bridge on a relay socket (log ~/logs/isaac/jetrover-bridge.log) and then RobotHost exactly as the Jetson runs it, with --relay-socket pointing at Isaac instead of the ROS relay: joint port 6002, discovery 6005, the JetRover profile, sessions recorded into ~/data/sessions/jetrover-isaac marked source isaac. Point the headset's JetRover app at it with `just push-galaxy-config <GPU machine's address>`. Enter stops both, as does `just isaac-stop`. `twin=1` starts a second twin beside the first (docs/adr/0037 amendment 7): every port 100 up (joint 6102, discovery 6105, camera feeds 6103/6108/6109), its sockets and logs suffixed -1, its sessions and takes in ~/data/sessions/jetrover-isaac-twin1 and ~/data/takes/jetrover-isaac-twin1 (the scenario list copied from twin 0's the first time); both run the one checkout, so a twin refuses another commit while the other runs. `detach=true` starts it in the background on the GPU machine (log ~/logs/isaac/jetrover-host[-N].log; a dropped ssh session no longer stops it), returns once RobotHost listens, and leaves it to `just isaac-stop`. Refuses while that twin, or the FR3 Duo's Isaac host, is running there: they share the ports. No real robot moves
 [group('isaac')]
-isaac-jetrover-host scene="jetrover-bench" scene_seed="auto":
+isaac-jetrover-host scene="jetrover-bench" scene_seed="auto" twin="0" detach="false":
     #!/usr/bin/env bash
     set -euo pipefail
     case "{{scene}}" in *[!A-Za-z0-9._-]*|"") echo "error: scene is a file name in core/Scenes without .json, or none" >&2; exit 1 ;; esac
     case "{{scene_seed}}" in auto|[0-9]*) ;; *) echo "error: scene_seed is a number or auto" >&2; exit 1 ;; esac
+    case "{{twin}}" in 0|1) ;; *) echo "error: twin is 0 or 1 (docs/adr/0037 amendment 7: two twins were measured on the machine)" >&2; exit 1 ;; esac
+    case "{{detach}}" in true|false) ;; *) echo "error: detach is true or false" >&2; exit 1 ;; esac
     [ "{{scene}}" = none ] || [ -f "core/Scenes/{{scene}}.json" ] || { echo "error: no core/Scenes/{{scene}}.json" >&2; exit 1; }
     commit=$(just _pushed-commit)
     remote=$(cat <<'REMOTE'
     set -euo pipefail
+    {{isaac_twin_sh}}
+    twin_names "$TWIN"
     repo=$HOME/repos/isaac
     [ -x "$HOME/isaacsim/venv/bin/python" ] || { echo "error: no Isaac Sim in our account here: just isaac-setup" >&2; exit 1; }
-    for p in $(pgrep -u "$USER" -f "teleop_isaac[.](bridge|jetrover_bridge)" || true); do
-        case "$(readlink "/proc/$p/exe" 2>/dev/null)" in *python*) echo "error: an Isaac host of ours is already running on $(hostname) (pid $p): stop it first (just isaac-stop)" >&2; exit 1 ;; esac
+    for p in $(twin_pids "$TWIN" "teleop_isaac[.](jetrover_bridge|renderer)" python) $(twin_pids "$TWIN" "Teleop[.]RobotHost[.]dll" dotnet); do
+        echo "error: JetRover twin $TWIN is already running on $(hostname) (pid $p): stop it first (just isaac-stop $TWIN)" >&2; exit 1
     done
+    for p in $(pgrep -u "$USER" -f "teleop_isaac[.]bridge" || true); do
+        case "$(readlink "/proc/$p/exe" 2>/dev/null)" in *python*) echo "error: the FR3 Duo's Isaac host is running on $(hostname) (pid $p): stop it first (just isaac-stop)" >&2; exit 1 ;; esac
+    done
+    # The twins share one checkout (and its built bridge code): another commit under a running twin would change its code.
+    other=""
+    for p in $(pgrep -u "$USER" -f "teleop_isaac[.]jetrover_bridge" || true); do
+        case "$(readlink "/proc/$p/exe" 2>/dev/null)" in *python*) other=$p ;; esac
+    done
+    if [ -n "$other" ] && [ "$(git -C "$repo" rev-parse HEAD 2>/dev/null)" != "$COMMIT" ]; then
+        echo "error: another twin (bridge pid $other) runs $(git -C "$repo" log --oneline -1 | cut -c1-60) from $repo, which both twins share: start this one from that commit, or stop it first (just isaac-stop all)" >&2; exit 1
+    fi
     [ -d "$repo" ] || git clone -q https://github.com/andreitimoshukcollege-del/teleoperation.git "$repo"
-    cd "$repo" && git fetch -q origin && git checkout -q "$COMMIT" && echo "[isaac-jetrover] repo at $(git log --oneline -1)"
+    cd "$repo" && git fetch -q origin && git checkout -q "$COMMIT" && echo "[isaac-jetrover] twin $TWIN; repo at $(git log --oneline -1)"
     # Every take recorded here becomes a LeRobot episode (docs/adr/0036): start the converter if it is not running.
     "$repo/robot/lerobot/watch.sh" ensure "$COMMIT" || echo "[isaac-jetrover] the LeRobot converter is not running: just lerobot-setup, then just lerobot-watch-start" >&2
     mkdir -p "$HOME/logs/isaac"
-    dotnet build -c Release -v q -nologo core/Teleop.RobotHost/Teleop.RobotHost.csproj -o "$HOME/isaacsim/robothost" > "$HOME/logs/isaac/robothost-build.log" 2>&1         || { tail -20 "$HOME/logs/isaac/robothost-build.log" >&2; exit 1; }
-    relay=/tmp/teleop-jetrover-relay-$USER.sock
-    log=$HOME/logs/isaac/jetrover-bridge.log
-    rec=$HOME/data/sessions/jetrover-isaac
-    mkdir -p "$rec" "$HOME/data/takes/jetrover-isaac"
-    pin() { if [ "$(nproc)" -ge 24 ]; then echo "taskset -c $1"; fi; }
+    # Each twin its own build folder: a build into the folder a running RobotHost loaded its assemblies from would rewrite them under it.
+    dotnet build -c Release -v q -nologo core/Teleop.RobotHost/Teleop.RobotHost.csproj -o "$tbuild" > "$tbuild_log" 2>&1 \
+        || { tail -20 "$tbuild_log" >&2; exit 1; }
+    relay=$trelay
+    log=$tbridge_log
+    rec=$trec
+    mkdir -p "$rec"
+    if [ "$TWIN" != 0 ] && [ ! -d "$ttakes" ]; then
+        # A new twin's takes folder: the same scenario list as twin 0's, shared with the labmate as twin 0's is (its ACLs).
+        mkdir -p "$ttakes"
+        first=$HOME/data/takes/jetrover-isaac
+        if [ -f "$first/scenarios.txt" ]; then cp "$first/scenarios.txt" "$ttakes/scenarios.txt"; fi
+        if command -v getfacl > /dev/null; then
+            getfacl -p "$first" 2>/dev/null | setfacl --set-file=- "$ttakes" 2>/dev/null || true
+            [ -f "$ttakes/scenarios.txt" ] && { getfacl -p "$first/scenarios.txt" 2>/dev/null | setfacl --set-file=- "$ttakes/scenarios.txt" 2>/dev/null || true; }
+        fi
+        echo "[isaac-jetrover] twin $TWIN records its takes in $ttakes"
+    fi
+    mkdir -p "$ttakes"
+    pin() { if [ "$(nproc)" -ge 32 ] || { [ "$TWIN" = 0 ] && [ "$(nproc)" -ge 24 ]; }; then echo "taskset -c $1"; fi; }
+    # The cores ADR 0032's spike measured: twin 0's bridge on 2-5, the renderers on 8-23; twin 1's bridge on 26-29 (the other
+    # CCD's second threads, otherwise idle), docs/adr/0037 amendment 7.
+    case "$TWIN" in 0) bridge_cpus=2-5 ;; *) bridge_cpus=26-29 ;; esac
     bridge_scene=(); host_scene=()
     if [ "$SCENE" != none ]; then
         bridge_scene=(--scene "../../core/Scenes/$SCENE.json" --world-socket "$relay.world")
-        host_scene=(--scene "core/Scenes/$SCENE.json" --scene-seed "$SCENE_SEED" --world-socket "$relay.world" --scenarios "$HOME/data/takes/jetrover-isaac")
+        host_scene=(--scene "core/Scenes/$SCENE.json" --scene-seed "$SCENE_SEED" --world-socket "$relay.world" --scenarios "$ttakes")
         echo "[isaac-jetrover] scene $SCENE (seed $SCENE_SEED)"
     fi
-    tap=/tmp/teleop-isaac-tap-$USER.sock
+    tap=$ttap
     tap_args=(); [ "$SCENE" != none ] && tap_args=(--tap "$tap")
-    (cd robot/isaac && exec $(pin 2-5) "$HOME/isaacsim/venv/bin/python" -m teleop_isaac.jetrover_bridge --socket "$relay" --client-socket "$relay.robothost" --record-control "$rec/.active" "${bridge_scene[@]}" "${tap_args[@]}") > "$log" 2>&1 &
+    (cd robot/isaac && exec $(pin $bridge_cpus) "$HOME/isaacsim/venv/bin/python" -m teleop_isaac.jetrover_bridge --socket "$relay" --client-socket "$relay.robothost" --record-control "$rec/.active" "${bridge_scene[@]}" "${tap_args[@]}") > "$log" 2>&1 &
     bridge=$!
     renderer=""
     trap 'kill $bridge $renderer 2>/dev/null; wait $bridge $renderer 2>/dev/null || true' EXIT
@@ -4209,81 +4396,132 @@ isaac-jetrover-host scene="jetrover-bench" scene_seed="auto":
     writer=()
     if [ "$SCENE" != none ]; then
         # The cameras, backdrops and recorded frames (docs/adr/0034 J5): the FR3's renderer, given the JetRover's URDF and motors.
-        rlog=$HOME/logs/isaac/renderer.log
+        rlog=$trender_log
+        feeds=(); [ "$toff" = 0 ] || feeds=(--feed-port-offset "$toff")
         (cd robot/isaac && exec $(pin 8-23) "$HOME/isaacsim/venv/bin/python" -m teleop_isaac.renderer --sim ../jetrover/urdf/jetrover.sim.json \
-            --scene "../../core/Scenes/$SCENE.json" --tap "$tap" --record-control "$rec/.active") > "$rlog" 2>&1 &
+            --scene "../../core/Scenes/$SCENE.json" --tap "$tap" --record-control "$rec/.active" "${feeds[@]}") > "$rlog" 2>&1 &
         renderer=$!
         echo "[isaac-jetrover] renderer pid $renderer (log $rlog); waiting for its feeds"
-        for i in $(seq 1 180); do
+        # Up to 7 min: beside a running twin, the second renderer took 3 min 15 s to stream (2026-11-21, docs/adr/0037 amendment 7).
+        for i in $(seq 1 420); do
             grep -q "^\[render\] streaming" "$rlog" 2>/dev/null && break
             kill -0 $renderer 2>/dev/null || break
             sleep 1
         done
         if grep -q "^\[render\] streaming" "$rlog" 2>/dev/null; then grep "^\[render\]" "$rlog"; writer=(--auto-record-writer isaac:60)
-        else echo "warning: the renderer did not start, so there are no camera feeds or frames recorded (the robot runs without them):" >&2; tail -20 "$rlog" >&2; renderer=""; fi
+        else
+            echo "warning: the renderer did not start, so there are no camera feeds or frames recorded (the robot runs without them):" >&2; tail -20 "$rlog" >&2
+            # One that is still starting would stream later with RobotHost not waiting for its frames: stopped, not left behind.
+            kill $renderer 2>/dev/null || true; renderer=""
+        fi
     fi
     park=""; [ -n "{{jetrover_park_contact_deg}}" ] && park="--park-contact-deg {{jetrover_park_contact_deg}}"
     # As teleop-robothost.service runs it on the Jetson (just deploy-robothost), the relay socket aside; the bridge writes driver.jlog
     # (docs/adr/0035 N4), and RobotHost waits for its trailer as it waits for the real driver's.
-    dotnet "$HOME/isaacsim/robothost/Teleop.RobotHost.dll" --local-port 6000 --remote-host 127.0.0.1 --remote-port 6001 \
-        --relay-socket "$relay" --local-relay-socket "$relay.robothost" --joint-local-port 6002 --discovery-port 6005 \
+    dotnet "$tbuild/Teleop.RobotHost.dll" --local-port $((6000 + toff)) --remote-host 127.0.0.1 --remote-port $((6001 + toff)) \
+        --relay-socket "$relay" --local-relay-socket "$relay.robothost" --joint-local-port $((6002 + toff)) --discovery-port $((6005 + toff)) \
         --profile-path core/RobotProfiles/jetrover.json --record-control "$rec/.active" \
-        --uplink-control "$HOME/isaacsim/jetrover-uplink" --uplink-traces "$HOME/data/network" \
+        --uplink-control "$tuplink" --uplink-traces "$HOME/data/network" \
         --auto-record --auto-record-root "$rec" --auto-record-profile core/RobotProfiles/jetrover.json --auto-record-source isaac \
         --rest-pose-deg {{jetrover_rest_pose_deg}} $park "${host_scene[@]}" "${writer[@]}"
     REMOTE
     )
-    ssh -o ConnectTimeout=10 "{{gpu_host}}" "COMMIT='$commit' SCENE='{{scene}}' SCENE_SEED='{{scene_seed}}' bash -c $(printf '%q' "$remote")"
+    vars="TWIN='{{twin}}' COMMIT='$commit' SCENE='{{scene}}' SCENE_SEED='{{scene_seed}}'"
+    if [ "{{detach}}" != true ]; then
+        ssh -o ConnectTimeout=10 "{{gpu_host}}" "$vars bash -c $(printf '%q' "$remote")"
+        exit
+    fi
+    # In the background there, in a session of its own: it outlives this ssh connection, and isaac-stop finds it as it finds
+    # one started in a terminal. Its output goes to the host log; this waits until RobotHost listens on the joint port.
+    sfx=""; [ "{{twin}}" = 0 ] || sfx="-{{twin}}"
+    hlog="logs/isaac/jetrover-host$sfx.log"
+    pid=$(ssh -o ConnectTimeout=10 "{{gpu_host}}" "mkdir -p ~/logs/isaac; $vars setsid nohup bash -c $(printf '%q' "$remote") > ~/$hlog 2>&1 < /dev/null & echo \$!")
+    echo "[isaac-jetrover] twin {{twin}} starting in the background on the GPU machine (pid $pid, log ~/$hlog)"
+    for i in $(seq 1 96); do
+        sleep 5
+        state=$(ssh -o ConnectTimeout=10 "{{gpu_host}}" "if grep -q '^\[joint\] listening' ~/$hlog 2>/dev/null; then echo ready; elif kill -0 $pid 2>/dev/null; then echo starting; else echo gone; fi" || echo unknown)
+        case "$state" in
+            ready) ssh -o ConnectTimeout=10 "{{gpu_host}}" "grep -E '^\[(isaac-jetrover|render\] (camera|streaming))|^warning|^error|^\[joint\] listening|^\[world\]' ~/$hlog | cut -c1-200" || true
+                   echo "[isaac-jetrover] twin {{twin}} is up (joint port $((6002 + 100 * {{twin}}))); stop it with just isaac-stop {{twin}}"; exit 0 ;;
+            gone) echo "error: twin {{twin}} stopped while starting:" >&2; ssh -o ConnectTimeout=10 "{{gpu_host}}" "tail -30 ~/$hlog" >&2 || true; exit 1 ;;
+        esac
+    done
+    echo "error: twin {{twin}} did not come up within 8 min (log ~/$hlog on the GPU machine); it may still be starting: just isaac-status" >&2
+    exit 1
 
-# Stop the Isaac host that `just isaac-host` or `just isaac-jetrover-host` started on the GPU machine (docs/adr/0031, 0034), from any terminal: what Enter does where it was started. RobotHost gets SIGTERM first, which it takes as Enter, so it closes its recording, and isaac-host then stops the bridge. Whatever still runs after 30 s gets SIGTERM, and after 60 s more, SIGKILL. Says which recording is newest and whether it is complete. Nothing running is not an error
+# Stop the Isaac host that `just isaac-host` or `just isaac-jetrover-host` started on the GPU machine (docs/adr/0031, 0034), from any terminal: what Enter does where it was started. RobotHost gets SIGTERM first, which it takes as Enter, so it closes its recording, and isaac-host then stops the bridge. Whatever still runs after 90 s gets SIGTERM, and after 60 s more, SIGKILL. Says which recording is newest and whether it is complete. `twin` picks the JetRover twin (docs/adr/0037 amendment 7): 0 (the default, which also stops the FR3 Duo's host if that is what runs), 1, or all. Nothing running is not an error
 [group('isaac')]
-isaac-stop:
+isaac-stop twin="0":
     #!/usr/bin/env bash
     set -euo pipefail
+    case "{{twin}}" in 0|1|all) ;; *) echo "error: twin is 0, 1 or all" >&2; exit 1 ;; esac
     remote=$(cat <<'REMOTE'
     set -euo pipefail
+    {{isaac_twin_sh}}
     # Real processes only, as in isaac-host: this script's own shell, and isaac-host's, carry both command lines in their text.
     ours() { for p in $(pgrep -u "$USER" -f "$1" || true); do case "$(readlink "/proc/$p/exe" 2>/dev/null)" in *"$2"*) echo "$p" ;; esac; done; }
-    host=$(ours "isaacsim/robothost/Teleop[.]RobotHost[.]dll" dotnet)
-    bridge=$(ours "teleop_isaac[.](bridge|jetrover_bridge)" python)
-    renderer=$(ours "teleop_isaac[.]renderer" python)
-    if [ -z "$host$bridge$renderer" ]; then echo "[isaac-stop] no Isaac host of ours is running on $(hostname)"; exit 0; fi
-    # Which host this is, read before stopping it: the JetRover's (isaac-jetrover-host: its bridge, or a RobotHost on a relay
-    # socket) or the FR3 Duo's (isaac-host). Each has its own bridge log, recordings and sockets.
-    if [ -n "$(ours "teleop_isaac[.]jetrover_bridge" python)" ] || { [ -n "$host" ] && grep -qa -- "--relay-socket" $(printf '/proc/%s/cmdline ' $host) 2>/dev/null; }; then
-        kind="JetRover"; log=$HOME/logs/isaac/jetrover-bridge.log; rec=$HOME/data/sessions/jetrover-isaac
-        socks="/tmp/teleop-jetrover-relay-$USER.sock /tmp/teleop-jetrover-relay-$USER.sock.world"
-    else
-        kind="FR3 Duo"; log=$HOME/logs/isaac/bridge.log; rec=$HOME/data/sessions/fr3_duo-isaac; socks="/tmp/teleop-isaac-$USER.sock"
-    fi
     alive() { for p in "$@"; do kill -0 "$p" 2>/dev/null && return 0; done; return 1; }
     gone_within() { local seconds=$1; shift; for _ in $(seq 1 "$seconds"); do alive "$@" || return 0; sleep 1; done; ! alive "$@"; }
-    if [ -n "$host" ]; then
-        echo "[isaac-stop] the $kind's RobotHost pid" $host "on $(hostname): stopping it; it closes its recording, then its host recipe stops the bridge"
-        kill -TERM $host 2>/dev/null || true
-    else
-        echo "[isaac-stop] the $kind's bridge or renderer (pids" $bridge $renderer ") runs without RobotHost on $(hostname): stopping it"
-        kill -TERM $bridge $renderer 2>/dev/null || true
-    fi
-    # RobotHost waits up to 60 s for the renderer's isaac.jlog trailer before it completes the session.
-    if ! gone_within 90 $host $bridge $renderer; then
-        echo "[isaac-stop] still running after 90 s: SIGTERM to all of it" >&2
-        kill -TERM $host $bridge $renderer 2>/dev/null || true
-        if ! gone_within 60 $host $bridge $renderer; then
-            echo "[isaac-stop] still running after 150 s: SIGKILL" >&2
-            kill -KILL $host $bridge $renderer 2>/dev/null || true
-            rm -f $socks
+    # One host: its RobotHost first (it closes its recording; its host recipe then stops the bridge and the renderer), then
+    # whatever is left. stop_host <name> <bridge log> <recordings> <sockets> <RobotHost pids> <bridge pids> <renderer pids>
+    stop_host() {
+        local kind=$1 log=$2 rec=$3 socks=$4 host=$5 bridge=$6 renderer=$7
+        if [ -n "$host" ]; then
+            echo "[isaac-stop] the $kind's RobotHost pid" $host "on $(hostname): stopping it; it closes its recording, then its host recipe stops the bridge"
+            kill -TERM $host 2>/dev/null || true
+        else
+            echo "[isaac-stop] the $kind's bridge or renderer (pids" $bridge $renderer ") runs without RobotHost on $(hostname): stopping it"
+            kill -TERM $bridge $renderer 2>/dev/null || true
+        fi
+        # RobotHost waits up to 60 s for the renderer's isaac.jlog trailer before it completes the session.
+        if ! gone_within 90 $host $bridge $renderer; then
+            echo "[isaac-stop] still running after 90 s: SIGTERM to all of it" >&2
+            kill -TERM $host $bridge $renderer 2>/dev/null || true
+            if ! gone_within 60 $host $bridge $renderer; then
+                echo "[isaac-stop] still running after 150 s: SIGKILL" >&2
+                kill -KILL $host $bridge $renderer 2>/dev/null || true
+                rm -f $socks
+            fi
+        fi
+        echo "[isaac-stop] the $kind stopped"
+        tail -n 2 "$log" 2>/dev/null | sed 's/^/[isaac-stop] bridge log: /' || true
+        local last
+        last=$(ls -1td "$rec"/*/ 2>/dev/null | head -1 || true)
+        if [ -n "$last" ] && [ -f "$last/files.sha256" ]; then echo "[isaac-stop] newest recording, complete: $last"
+        elif [ -n "$last" ]; then echo "[isaac-stop] newest recording has no files.sha256 (not completed): $last" >&2
+        fi
+    }
+    stopped=0
+    case "$TWIN" in all) twins="0 1" ;; *) twins=$TWIN ;; esac
+    for n in $twins; do
+        # A JetRover twin's processes all name its record control file (docs/adr/0037 amendment 7).
+        twin_names "$n"
+        host=$(twin_pids "$n" "Teleop[.]RobotHost[.]dll" dotnet | xargs)
+        bridge=$(twin_pids "$n" "teleop_isaac[.]jetrover_bridge" python | xargs)
+        renderer=$(twin_pids "$n" "teleop_isaac[.]renderer" python | xargs)
+        [ -n "$host$bridge$renderer" ] || continue
+        stop_host "JetRover twin $n" "$tbridge_log" "$trec" "$trelay $trelay.world" "$host" "$bridge" "$renderer"
+        stopped=$((stopped + 1))
+    done
+    if [ "$TWIN" != 1 ]; then
+        # The FR3 Duo's (isaac-host): its bridge, its renderer, and a RobotHost on the arm-server socket.
+        bridge=$(ours "teleop_isaac[.]bridge" python | xargs)
+        host=""; for p in $(ours "isaacsim/robothost/Teleop[.]RobotHost[.]dll" dotnet); do grep -qa -- "--arm-server-socket" "/proc/$p/cmdline" 2>/dev/null && host="$host $p"; done
+        renderer=""; for p in $(ours "teleop_isaac[.]renderer" python); do grep -qa -- "fr3_duo-isaac/.active" "/proc/$p/cmdline" 2>/dev/null && renderer="$renderer $p"; done
+        if [ -n "$host$bridge$renderer" ]; then
+            stop_host "FR3 Duo" "$HOME/logs/isaac/bridge.log" "$HOME/data/sessions/fr3_duo-isaac" "/tmp/teleop-isaac-$USER.sock" "$(echo $host)" "$bridge" "$(echo $renderer)"
+            stopped=$((stopped + 1))
         fi
     fi
-    echo "[isaac-stop] stopped"
-    tail -n 2 "$log" 2>/dev/null | sed 's/^/[isaac-stop] bridge log: /' || true
-    last=$(ls -1td "$rec"/*/ 2>/dev/null | head -1 || true)
-    if [ -n "$last" ] && [ -f "$last/files.sha256" ]; then echo "[isaac-stop] newest recording, complete: $last"
-    elif [ -n "$last" ]; then echo "[isaac-stop] newest recording has no files.sha256 (not completed): $last" >&2
+    if [ "$stopped" = 0 ]; then
+        what="no Isaac host of ours"; [ "$TWIN" = 1 ] && what="no JetRover twin 1"
+        echo "[isaac-stop] $what is running on $(hostname)"
     fi
+    left=$(ours "teleop_isaac[.](bridge|jetrover_bridge|renderer)" python | wc -l)
+    [ "$left" = 0 ] || echo "[isaac-stop] still running: $left Isaac process(es) of another host (just isaac-status)"
     REMOTE
     )
-    ssh -o ConnectTimeout=10 "{{gpu_host}}" "bash -c $(printf '%q' "$remote")"
+    ssh -o ConnectTimeout=10 "{{gpu_host}}" "TWIN='{{twin}}' bash -c $(printf '%q' "$remote")"
 
 # The Isaac bridge's plain-Python tests (robot/isaac/tests): its copies of the arm-server wire and the shaper against their golden files, and the profile's motor order. No Isaac needed. Needs `just trainer-setup` (its numpy and pytest)
 [group('isaac')]
@@ -4320,18 +4558,38 @@ gen-isaac-goldens:
     cd core && TELEOP_WRITE_GOLDEN=1 WSLENV="${WSLENV:+$WSLENV:}TELEOP_WRITE_GOLDEN" dotnet test Teleop.RobotArm.Tests --filter "FullyQualifiedName~SceneDocumentTests.TheIsaacGoldenFile|FullyQualifiedName~SceneRestTests.TheRestsGoldenFile|FullyQualifiedName~Fr3FkGoldenTests|FullyQualifiedName~SceneLayoutTests.ALayoutIsFrozen"
     just gen-arm-server-golden
 
-# How the GPU machine's Isaac Sim stands (docs/adr/0031): the version installed in our account, whether a setup is going and its log's last lines, the GPU's load (it is shared), and whether an Isaac host runs, with the renderer's newest health line
+# How the GPU machine's Isaac Sim stands (docs/adr/0031): the version installed in our account, whether a setup is going and its log's last lines, the GPU's load (it is shared), and which Isaac hosts run: each JetRover twin (docs/adr/0037 amendment 7) with its joint port, whether it is recording and its renderer's newest health line, and the FR3 Duo's host
 [group('isaac')]
 isaac-status lines="6":
-    @ssh -o ConnectTimeout=10 "{{gpu_host}}" 'root=$HOME/isaacsim; \
-        echo "installed: $(cat $root/VERSION 2>/dev/null || echo nothing yet)"; \
-        p=$(cat $HOME/logs/isaac/setup.pid 2>/dev/null); \
-        if [ -n "$p" ] && kill -0 "$p" 2>/dev/null; then echo "setup: going (pid $p), venv $(du -sh $root/venv 2>/dev/null | cut -f1)"; else echo "setup: not going"; fi; \
-        nvidia-smi --query-gpu=name,memory.used,memory.total,utilization.gpu --format=csv,noheader; \
-        n=0; for p in $(pgrep -u "$USER" -f "teleop_isaac[.](bridge|jetrover_bridge|renderer)" || true); do case "$(readlink /proc/$p/exe 2>/dev/null)" in *python*) n=$((n+1)) ;; esac; done; \
-        echo "isaac host: $n bridge/renderer process(es) running"; \
-        [ "$n" -gt 0 ] && grep "^\[render\] [0-9]" $HOME/logs/isaac/renderer.log 2>/dev/null | tail -1; \
-        echo; tail -n {{lines}} $HOME/logs/isaac/setup.log 2>/dev/null || echo "(no setup log)"'
+    #!/usr/bin/env bash
+    set -euo pipefail
+    case "{{lines}}" in *[!0-9]*|"") echo "error: lines is a number" >&2; exit 1 ;; esac
+    remote=$(cat <<'REMOTE'
+    {{isaac_twin_sh}}
+    root=$HOME/isaacsim
+    echo "installed: $(cat $root/VERSION 2>/dev/null || echo nothing yet)"
+    p=$(cat $HOME/logs/isaac/setup.pid 2>/dev/null)
+    if [ -n "$p" ] && kill -0 "$p" 2>/dev/null; then echo "setup: going (pid $p), venv $(du -sh $root/venv 2>/dev/null | cut -f1)"; else echo "setup: not going"; fi
+    nvidia-smi --query-gpu=name,memory.used,memory.total,utilization.gpu --format=csv,noheader
+    n=0; for p in $(pgrep -u "$USER" -f "teleop_isaac[.](bridge|jetrover_bridge|renderer)" || true); do case "$(readlink /proc/$p/exe 2>/dev/null)" in *python*) n=$((n+1)) ;; esac; done
+    echo "isaac host: $n bridge/renderer process(es) running"
+    for t in 0 1; do
+        twin_names "$t"
+        h=$(twin_pids "$t" "Teleop[.]RobotHost[.]dll" dotnet | wc -l)
+        b=$(twin_pids "$t" "teleop_isaac[.]jetrover_bridge" python | wc -l)
+        r=$(twin_pids "$t" "teleop_isaac[.]renderer" python | wc -l)
+        [ $((h + b + r)) -gt 0 ] || { [ "$t" = 0 ] || continue; echo "JetRover twin 0: not running"; continue; }
+        parts=(); [ "$h" -gt 0 ] && parts+=(RobotHost); [ "$b" -gt 0 ] && parts+=(bridge); [ "$r" -gt 0 ] && parts+=(renderer)
+        rec=$(cat "$trec/.active" 2>/dev/null || true)
+        echo "JetRover twin $t: ${parts[*]} (joint port $((6002 + toff)), takes ${ttakes/#$HOME/\~}); ${rec:+recording ${rec/#$HOME/\~}}${rec:-not recording}"
+        [ "$r" -gt 0 ] && grep "^\[render\] [0-9]" "$trender_log" 2>/dev/null | tail -1 | sed "s/^/  /"
+    done
+    f=0; for p in $(pgrep -u "$USER" -f "teleop_isaac[.]bridge" || true); do case "$(readlink /proc/$p/exe 2>/dev/null)" in *python*) f=1 ;; esac; done
+    if [ "$f" = 1 ]; then echo "FR3 Duo host: running"; grep "^\[render\] [0-9]" $HOME/logs/isaac/renderer.log 2>/dev/null | tail -1 | sed "s/^/  /"; fi
+    echo; tail -n "$NLINES" $HOME/logs/isaac/setup.log 2>/dev/null || echo "(no setup log)"
+    REMOTE
+    )
+    ssh -o ConnectTimeout=10 "{{gpu_host}}" "NLINES='{{lines}}' bash -c $(printf '%q' "$remote")"
 
 # One-time local trainer venv, CPU only: the contract, the checker, the simulator and the tests (torch=true adds the CPU torch build, for smoke training and export). GPU machines use trainer/setup.sh from the packed file instead
 [group('trainer')]

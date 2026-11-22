@@ -390,7 +390,7 @@ _TOTALS = {os.path.join("meta", "info.json"), os.path.join("meta", "stats.json")
 def compare_datasets(reference: str, rebuilt: str) -> List[str]:
     """How ``rebuilt``, a safety dataset written from the first takes of ``reference``'s ledger (all of them, or fewer),
     differs from it: every file of the rebuilt one, byte for byte, but ``takes.jsonl``'s ``convertedUtc`` (when it was
-    written); with fewer episodes the files that run on through every episode (``_LINES``, the label files) as the
+    written) and JSON files as their values (key order aside); with fewer episodes the files that run on through every episode (``_LINES``, the label files) as the
     reference's lines, rows and ranges of those episodes, and the totals (``_TOTALS``) not at all. Empty when they are the
     same: how a build's speed-up is checked to change nothing (docs/adr/0036 amendment 6)."""
     from .writer import recorded_episodes
@@ -439,6 +439,10 @@ def compare_datasets(reference: str, rebuilt: str) -> List[str]:
                     out.append(f"{rel}: differs ({len(mine)} rows, the reference's {len(theirs)} for those episodes)")
             elif rel in _TOTALS and nb < na:
                 continue
+            elif rel.endswith(".json"):  # as JSON: LeRobot's stats.json orders its keys by a set's, so by the run's hash seed
+                with open(path, encoding="utf-8") as f, open(ref, encoding="utf-8") as g:
+                    if json.load(f) != json.load(g):
+                        out.append(f"{rel}: differs")
             else:
                 with open(path, "rb") as f, open(ref, "rb") as g:
                     if f.read() != g.read():

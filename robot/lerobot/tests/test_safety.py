@@ -503,6 +503,8 @@ def test_a_rebuild_of_the_first_episodes_compares_file_for_file(tmp_path):
     _fake_dataset(same, 4, stamp="2026-11-22T09:00:00Z")  # written another time: the same
     _fake_dataset(prefix, 2)  # the first two episodes: the totals are its own
     _fake_dataset(other, 3, flip=1)
+    with open(os.path.join(same, "meta", "stats.json"), "w") as f:
+        f.write('{\n  "episodes": 4\n}')  # the same values, written otherwise
     assert safety.compare_datasets(ref, same) == []
     assert safety.compare_datasets(ref, prefix) == []
     assert safety.compare_datasets(ref, other) == [os.path.join("data", "chunk-000", "file-001.parquet") + ": differs"]

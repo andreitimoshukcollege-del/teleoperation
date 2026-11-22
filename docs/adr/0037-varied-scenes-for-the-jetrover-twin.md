@@ -1029,3 +1029,13 @@ Each was back to 29.5-30 by the next window.
 - A third twin would fit in GPU memory (about 23 GB). It would not fit the CPU: load is already above the thread count,
   and there are no idle threads left to pin a third bridge on.
 
+
+**The first two-twin batch (2026-11-22).** 196 takes ran, 177 were kept, and they built into one dataset of 177 episodes. The
+twins ran at about 115 and 127 takes an hour, roughly 240 together.
+
+- **What went wrong.** Six takes in, twin 1's batch stopped. The GPU machine's sshd refused new connections (MaxStartups
+  10:30:100) under two batches plus the dashboard. The batch then read its failed liveness check as "twin 1 is gone", while the
+  twin itself was running.
+- **Fix 1: one connection per host.** The PC now shares one connection per host (`ControlMaster` in `~/.ssh/config`).
+- **Fix 2: retries.** `isaac-safety-batch` retries every ssh call that fails at the connection (exit 255), up to 5 tries in about
+  30 s. It stops only on a real answer: the twin's processes gone, or no answer after 5 tries.

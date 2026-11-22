@@ -3911,6 +3911,19 @@ isaac-safety-batch takes="25" seed="1" categories="all" build="true" events="1-3
     #!/usr/bin/env bash
     set -euo pipefail
     case "{{takes}}{{seed}}" in *[!0-9]*|"") echo "error: takes and seed are numbers" >&2; exit 1 ;; esac
+    # One ssh call to the GPU machine, tried again while ssh itself fails (exit 255: the connection refused or dropped, not the
+    # remote command's status), at most 5 tries in about 30 s. 2026-11-21: its sshd dropped connections under two batches and the
+    # dashboard, and a twin that was running was read as gone. Its standard input is RSSH_IN when set (sent again each try), else none.
+    rssh() {
+        local i rc
+        for i in 1 2 3 4 5; do
+            if [ -n "${RSSH_IN-}" ]; then ssh "$@" <<<"$RSSH_IN" && rc=0 || rc=$?; else ssh -n "$@" && rc=0 || rc=$?; fi
+            [ "$rc" -ne 255 ] && return "$rc"
+            echo "[safety] ssh to the GPU machine failed (try $i of 5); trying again" >&2
+            sleep $((i * 2))
+        done
+        return 255
+    }
     # At least one round: an empty plan read as one take with no category (joint-drive refused it, nothing moved).
     [ "{{takes}}" -ge 1 ] || { echo "error: takes is at least 1 (rounds of the categories)" >&2; exit 1; }
     case "{{events}}" in [1-9]|[1-9]-[1-9]) ;; *) echo "error: events is a count or a range, like 2 or 1-3, not '{{events}}'" >&2; exit 1 ;; esac
@@ -4000,10 +4013,11 @@ isaac-safety-batch takes="25" seed="1" categories="all" build="true" events="1-3
         n=$((n + 1))
         # The twin must still be whole: with its bridge or renderer gone (2026-11-16: the ssh session that started them timed
         # out in a VPN drop), RobotHost still records takes, with no physics and no frames, and every one fails its check.
-        alive=$(ssh -n -o ConnectTimeout=10 "$gpu" "TWIN='$twin' bash -c $(printf '%q' "$alive_sh")" || echo 0)
+        alive=$(rssh -o ConnectTimeout=10 "$gpu" "TWIN='$twin' bash -c $(printf '%q' "$alive_sh")") && arc=0 || arc=$?
+        if [ "$arc" = 255 ]; then echo "[safety] the GPU machine did not answer ssh in 5 tries before take $n: stopping (the twin itself may be fine; run the batch again)" >&2; n=$((n - 1)); break; fi
         if [ "$alive" != 2 ]; then echo "[safety] twin $twin is not whole before take $n (bridge and renderer: $alive of 2 running): stopping; restart it (just isaac-stop $twin; just isaac-jetrover-host jetrover-bench auto $twin)" >&2; n=$((n - 1)); break; fi
         # ssh -n in the loop: a plain ssh would read the plan from the loop's standard input and end it.
-        before=$(ssh -n -o ConnectTimeout=10 "$gpu" "ls ~/$troot/$cat 2>/dev/null | grep -- '-take' | sort | tail -1" || true)
+        before=$(rssh -o ConnectTimeout=10 "$gpu" "ls ~/$troot/$cat 2>/dev/null | grep -- '-take' | sort | tail -1" || true)
         echo "=== [safety] take $n: $cat (seed $sseed, speed slider $speed rad/s)"
         code=0
         (cd core && dotnet run --no-build --project Teleop.Eval -- joint-drive --script "$cat" --speed "$speed" --seconds 15 --seed "$sseed" \
@@ -4017,7 +4031,7 @@ isaac-safety-batch takes="25" seed="1" categories="all" build="true" events="1-3
             *) echo "[safety] joint-drive exited $code: stopping" >&2; break ;;
         esac
         # RobotHost completes the take (files.sha256) once every writer has closed: up to a minute for the renderer's.
-        take=$(ssh -o ConnectTimeout=10 "$gpu" "CAT='$cat' BEFORE='$before' ROOT='$troot' bash -s" <<'REMOTE'
+        take_sh=$(cat <<'REMOTE'
     d=$HOME/$ROOT/$CAT
     for i in $(seq 1 240); do
         newest=$(ls "$d" 2>/dev/null | grep -- '-take' | sort | tail -1)
@@ -4026,10 +4040,11 @@ isaac-safety-batch takes="25" seed="1" categories="all" build="true" events="1-3
     done
     exit 1
     REMOTE
-        ) || { echo "[safety] take $n: RobotHost did not complete a new $cat take in 2 min" >&2; unchecked=$((unchecked + 1)); continue; }
+        )
+        take=$(RSSH_IN="$take_sh" rssh -o ConnectTimeout=10 "$gpu" "CAT='$cat' BEFORE='$before' ROOT='$troot' bash -s") || { echo "[safety] take $n: RobotHost did not complete a new $cat take in 2 min" >&2; unchecked=$((unchecked + 1)); continue; }
         # Asked again once if no verdict comes back (2026-11-15: one check returned nothing, the take was fine when run again).
         for attempt in 1 2; do
-            verdict=$(ssh -n -o ConnectTimeout=10 "$gpu" "cd ~/repos/safety/robot/lerobot && ~/isaacsim/lerobot-venv/bin/python -m teleop_lerobot safety-check --set-aside '$take'" || true)
+            verdict=$(rssh -o ConnectTimeout=10 "$gpu" "cd ~/repos/safety/robot/lerobot && ~/isaacsim/lerobot-venv/bin/python -m teleop_lerobot safety-check --set-aside '$take'" || true)
             case "$verdict" in *'"ok":'*) break ;; esac
             echo "[safety] no verdict for $take (attempt $attempt)${verdict:+: ${verdict: -200}}" >&2; sleep 5
         done

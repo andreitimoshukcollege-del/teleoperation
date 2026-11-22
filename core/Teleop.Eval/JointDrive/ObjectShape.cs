@@ -137,6 +137,48 @@ namespace Teleop.Eval.JointDrive
             Size = size;
             ExcessMm = excessMm;
             Slabs = slabs;
+            Round = MedianFill(slabs) < RoundFill;
+        }
+
+        /// <summary>A slab outline's share of its bounding box below which an asset is round about its height.</summary>
+        public const double RoundFill = 0.85;
+
+        /// <summary>
+        /// Whether the asset is round about its height (docs/adr/0037 amendment 6, the 2026-11-21 check): its median slab's outline
+        /// fills less than <see cref="RoundFill"/> of its bounding box. A circle fills pi/4 (0.79), a box all of it. On its side
+        /// such an object rolls when pushed. On the bench: the cans, the tin, the mug, the vases, kettle, bust, gnome, bowl and
+        /// elephant 0.65-0.80; the boxes, parcels and jerrycans 0.90-0.98.
+        /// </summary>
+        public bool Round { get; }
+
+        private static double MedianFill(ShapeSlab[] slabs)
+        {
+            var fills = new List<double>(slabs.Length);
+            foreach (ShapeSlab slab in slabs)
+            {
+                IReadOnlyList<Vector2> p = slab.Outline;
+                if (p.Count < 3)
+                    continue;
+                double twice = 0, minX = double.MaxValue, maxX = double.MinValue, minY = double.MaxValue, maxY = double.MinValue;
+                for (int i = 0; i < p.Count; i++)
+                {
+                    Vector2 a = p[i], b = p[(i + 1) % p.Count];
+                    twice += (double)a.X * b.Y - (double)b.X * a.Y;
+                    minX = Math.Min(minX, a.X);
+                    maxX = Math.Max(maxX, a.X);
+                    minY = Math.Min(minY, a.Y);
+                    maxY = Math.Max(maxY, a.Y);
+                }
+
+                double box = (maxX - minX) * (maxY - minY);
+                if (box > 0)
+                    fills.Add(Math.Abs(twice) / 2 / box);
+            }
+
+            if (fills.Count == 0)
+                return 1;
+            fills.Sort();
+            return fills[fills.Count / 2];
         }
 
         public string Asset { get; }

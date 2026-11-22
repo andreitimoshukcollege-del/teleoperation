@@ -53,7 +53,7 @@ namespace Teleop.Eval.JointDrive
             var centre = new Vector3((float)x, (float)y, (float)z);
 
             // Mass at size, as Isaac's bodies have it; tippy from the proportions as it rests (a uniform size keeps them).
-            return new SafetyObject(o.Id, centre, rotation, half, o.Movable, o.Mass * scale * scale * scale, IsTippy(o, qw, qx, qy, qz), shapes?.For(o)?.At(half));
+            return new SafetyObject(o.Id, centre, rotation, half, o.Movable, o.Mass * scale * scale * scale, IsTippy(o, qw, qx, qy, qz, shapes?.For(o)), shapes?.For(o)?.At(half));
         }
 
         /// <summary>
@@ -61,10 +61,16 @@ namespace Teleop.Eval.JointDrive
         /// times its narrower side: upright, its file's height over its footprint; lying on a side (docs/adr/0037 amendment 6), the
         /// side that is up over the two that lie flat. A marker on its side is not tippy; standing, it is.
         /// </summary>
-        public static bool IsTippy(SceneObject o, double qw, double qx, double qy, double qz)
+        public static bool IsTippy(SceneObject o, double qw, double qx, double qy, double qz, AssetShape? shape = null)
         {
+            int rest = WorldScene.RestOf(qw, qx, qy, qz, out _) % 3;
+            // Lying on a round side it rolls when pushed, which the take check counts as a tip: no steady target for a touch
+            // (the 2026-11-21 check: a touch rolled the mug, lying, 34 degrees). Without its shape only a cylinder is known round.
+            if (rest != 0 && (o.Shape == SceneShape.Cylinder || (shape != null && shape.Round)))
+                return true;
+
             double up, a, b;
-            switch (WorldScene.RestOf(qw, qx, qy, qz, out _) % 3)
+            switch (rest)
             {
                 case 1: up = o.SizeY; a = o.SizeX; b = o.SizeZ; break;
                 case 2: up = o.SizeX; a = o.SizeZ; b = o.SizeY; break;

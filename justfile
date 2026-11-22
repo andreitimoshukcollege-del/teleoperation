@@ -4126,6 +4126,50 @@ isaac-safety-build twins="0,1" name="" out="":
     echo "[safety] building $name from ${#present[@]} take(s)"
     just _isaac-safety-build "$name" "{{out}}" "${present[@]}"
 
+# Time the safety build and check it writes what the sequential one did (docs/adr/0036 amendment 6): on the GPU machine, from a checkout of this pushed commit of its own (~/repos/safety-check, never the batches' ~/repos/safety), rebuild the first `episodes` episodes of the safety dataset `dataset` (a folder name under ~/data/lerobot/jetrover-isaac-safety, e.g. jetrover_20261122_005619_20ccb6) from the takes its meta/teleop/takes.jsonl lists, with `jobs` workers (1: the old sequential build), into ~/scratch/safety-build-check/, then compare it with the original file for file (teleop_lerobot safety-compare: every per-episode parquet and video byte for byte) and print both builds' seconds an episode. The rebuild is deleted afterwards, its log kept. Busy for minutes on every core it is given: run it when the GPU machine is free. Nothing moves
+[group('isaac')]
+isaac-safety-build-check dataset episodes="40" jobs="8":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    case "{{dataset}}" in *[!A-Za-z0-9._-]*|"") echo "error: dataset is a folder name under ~/data/lerobot/jetrover-isaac-safety" >&2; exit 1 ;; esac
+    case "{{episodes}}{{jobs}}" in *[!0-9]*) echo "error: episodes and jobs are numbers" >&2; exit 1 ;; esac
+    [ "{{episodes}}" -ge 2 ] && [ "{{jobs}}" -ge 1 ] || { echo "error: at least 2 episodes and 1 job" >&2; exit 1; }
+    commit=$(just _pushed-commit)
+    ssh -o ConnectTimeout=10 "{{gpu_host}}" "COMMIT='$commit' DATASET='{{dataset}}' N='{{episodes}}' JOBS='{{jobs}}' bash -s" <<'REMOTE'
+    set -euo pipefail
+    repo=$HOME/repos/safety-check py=$HOME/isaacsim/lerobot-venv/bin/python
+    [ -d "$repo" ] || git clone -q https://github.com/andreitimoshukcollege-del/teleoperation.git "$repo"
+    cd "$repo" && git fetch -q origin && git checkout -q "$COMMIT" && cd robot/lerobot
+    src=$HOME/data/lerobot/jetrover-isaac-safety/$DATASET
+    [ -f "$src/meta/teleop/takes.jsonl" ] || { echo "error: no safety dataset at $src" >&2; exit 1; }
+    out=$HOME/scratch/safety-build-check/$DATASET-first$N-jobs$JOBS
+    mkdir -p "$(dirname "$out")"; rm -rf "$out" "$out.prepare"
+    mapfile -t takes < <(head -n "$N" "$src/meta/teleop/takes.jsonl" | "$py" -c 'import json, sys; [print(json.loads(l)["take"]) for l in sys.stdin if l.strip()]')
+    echo "[check] rebuilding the first ${#takes[@]} episode(s) of $DATASET with $JOBS job(s) at ${COMMIT:0:7}"
+    start=$(date +%s.%N)
+    "$py" -m teleop_lerobot safety-build --jobs "$JOBS" --out "$out" "${takes[@]}" > "$out.log" 2>&1 || { echo "[check] build failed: $(grep -vE '^(Svt|Map)' "$out.log" | tail -5)" >&2; exit 1; }
+    end=$(date +%s.%N)
+    # Seconds an episode: this build's wall clock, and both logs' from their first episode line to the Nth (the original's
+    # log is the batch's, beside its dataset).
+    "$py" - "$out.log" "$(ls "$src".build-*.log 2>/dev/null | tail -1)" "$N" "$start" "$end" <<'PY'
+    import re, sys, datetime
+    def span(log, n):
+        try:
+            ts = [datetime.datetime.fromisoformat(m.group(1)) for l in open(log) for m in [re.search(r"(\d{4}-\d\d-\d\dT[\d:]+)Z episode (\d+):", l)] if m and int(m.group(2)) < n]
+        except OSError:
+            return None
+        return (ts[-1] - ts[0]).total_seconds() / (len(ts) - 1) if len(ts) > 1 else None
+    new, old, n = span(sys.argv[1], int(sys.argv[3])), span(sys.argv[2], int(sys.argv[3])) if sys.argv[2] else None, int(sys.argv[3])
+    wall = float(sys.argv[5]) - float(sys.argv[4])
+    print(f"[check] this build: {wall:.0f} s for {n} episodes ({wall / n:.1f} s an episode with start-up; {new:.1f} s an episode once running)")
+    print(f"[check] the original: {old:.1f} s an episode" + (f": {old / new:.1f}x" if new else "") if old else "[check] the original's build log: not found")
+    PY
+    rc=0; "$py" -m teleop_lerobot safety-compare "$src" "$out" || rc=$?
+    rm -rf "$out"
+    echo "[check] log: $out.log"
+    exit $rc
+    REMOTE
+
 # Start the JetRover's Isaac twins on the GPU machine (docs/adr/0037 amendment 7): twins 0 to n-1 (n is 1 or 2), each `just isaac-jetrover-host <scene> auto <N> true`, one after the other (each waits for the last to listen: two Isaac start-ups at once only slow each other), in the background there, so a dropped ssh session leaves them running. A twin already running is left as it is. Stop them with just isaac-twins-down; just isaac-status shows them
 [group('isaac')]
 isaac-twins-up n="2" scene="jetrover-bench":

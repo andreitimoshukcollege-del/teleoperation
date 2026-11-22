@@ -27,6 +27,7 @@ No LeRobot or pandas here but in :func:`write_labels`'s parquet, so the tests ru
 
 from __future__ import annotations
 
+import contextlib
 import json
 import math
 import os
@@ -352,23 +353,99 @@ def set_aside(take_path: str, verdict: Verdict) -> str:
     return dest
 
 
-def build(writer, root: str, takes: Sequence[Take], log=print) -> List[Tuple[int, str, List[int]]]:
+def build(writer, root: str, takes: Sequence[Take], log=print, jobs: int = 1, executor=None) -> List[Tuple[int, str, List[int]]]:
     """Writes ``takes`` (already checked) as one safety dataset at ``root``: each an episode, in order, then his label
-    files. A dataset already there is refused: a batch's dataset is written once, from its kept takes."""
-    from .writer import append_take
+    files. A dataset already there is refused: a batch's dataset is written once, from its kept takes.
+
+    ``jobs`` above 1 (docs/adr/0036 amendment 6): that many worker processes decode each take's frames and encode its videos
+    ahead (``writer.prepare_job``), while this process appends the episodes in order with LeRobot as before; the same files
+    either way. ``executor`` replaces the workers (tests)."""
+    from .writer import append_take, prepared_in_order
 
     if os.path.exists(root):
         raise FileExistsError(f"{root} exists: a safety dataset is written once (rebuild it into a new folder)")
+    shown = [as_safety(take) for take in takes]
+    if jobs > 1 and hasattr(writer, "prepare_job"):
+        stream = prepared_in_order(writer, root, shown, jobs, executor=executor)
+    else:
+        stream = ((t, None) for t in shown)
     written = []
-    for take in takes:
-        labels = frame_labels(take, contacts(take.path))
-        line = append_take(writer, root, as_safety(take), repo=f"local/{take.dataset_group}-safety_{os.path.basename(root)}")
-        written.append((int(line["episode"]), take.scenario, labels))
-        log(f"episode {line['episode']}: {take.scenario}, {len(labels)} frames, {sum(labels)} unsafe ({os.path.basename(take.path)})")
+    with contextlib.closing(stream):
+        for take, (safe, prepared) in zip(takes, stream):
+            labels = frame_labels(take, contacts(take.path))
+            line = append_take(writer, root, safe, repo=f"local/{take.dataset_group}-safety_{os.path.basename(root)}",
+                               prepared=prepared)
+            written.append((int(line["episode"]), take.scenario, labels))
+            log(f"episode {line['episode']}: {take.scenario}, {len(labels)} frames, {sum(labels)} unsafe ({os.path.basename(take.path)})")
     write_labels(root, written)
     return written
 
 
-__all__ = ["CATEGORIES", "Contact", "Verdict", "as_safety", "build", "check", "contacts", "event_timing", "events",
+# What a rebuild of a dataset's first episodes holds that is not file for file the reference's (compare_datasets):
+_LINES = {"capture_timing.jsonl": "episode_saved_so_far", "safety_events.jsonl": "episode", "raw_ros_events.jsonl": None,
+          os.path.join("meta", "teleop", "takes.jsonl"): "episode"}  # one line a record, in episode order
+_TOTALS = {os.path.join("meta", "info.json"), os.path.join("meta", "stats.json"), os.path.join("meta", "tasks.parquet")}
+
+
+def compare_datasets(reference: str, rebuilt: str) -> List[str]:
+    """How ``rebuilt``, a safety dataset written from the first takes of ``reference``'s ledger (all of them, or fewer),
+    differs from it: every file of the rebuilt one, byte for byte, but ``takes.jsonl``'s ``convertedUtc`` (when it was
+    written); with fewer episodes the files that run on through every episode (``_LINES``, the label files) as the
+    reference's lines, rows and ranges of those episodes, and the totals (``_TOTALS``) not at all. Empty when they are the
+    same: how a build's speed-up is checked to change nothing (docs/adr/0036 amendment 6)."""
+    from .writer import recorded_episodes
+
+    na, nb = recorded_episodes(reference), recorded_episodes(rebuilt)
+    if na is None or nb is None:
+        return [f"{reference if na is None else rebuilt}: no LeRobot dataset there"]
+    if nb > na:
+        return [f"{rebuilt} has {nb} episodes, more than {reference}'s {na}"]
+    out = []
+    for folder, _, names in os.walk(rebuilt):
+        for name in names:
+            path = os.path.join(folder, name)
+            rel = os.path.relpath(path, rebuilt)
+            ref = os.path.join(reference, rel)
+            if not os.path.exists(ref):
+                out.append(f"{rel}: not in the reference")
+            elif rel in _LINES:
+                field = _LINES[rel]
+
+                def lines(p):
+                    with open(p, encoding="utf-8") as f:
+                        rows = [json.loads(x) for x in f if x.strip()]
+                    for r in rows:
+                        r.pop("convertedUtc", None)
+                    return rows
+                mine, theirs = lines(path), lines(ref)
+                if field is not None:
+                    theirs = [r for r in theirs if int(r[field]) < nb]
+                elif nb < na:
+                    theirs = theirs[:len(mine)]  # no episode field: the reference's first lines
+                if mine != theirs:
+                    first = next((i for i, (x, y) in enumerate(zip(mine, theirs)) if x != y), min(len(mine), len(theirs)))
+                    out.append(f"{rel}: differs from line {first + 1} ({len(mine)} lines, the reference's {len(theirs)})")
+            elif rel == "manual_safety_labels.json":
+                with open(path, encoding="utf-8") as f, open(ref, encoding="utf-8") as g:
+                    mine, theirs = json.load(f), {k: v for k, v in json.load(g).items() if int(k) < nb}
+                if mine != theirs:
+                    out.append(f"{rel}: differs (episodes {sorted(int(k) for k in set(mine) | set(theirs) if mine.get(k) != theirs.get(k))})")
+            elif rel == os.path.join("meta", "safety_labels.parquet"):
+                import pandas as pd
+
+                mine, theirs = pd.read_parquet(path), pd.read_parquet(ref)
+                theirs = theirs[theirs["episode_index"] < nb].reset_index(drop=True)
+                if not mine.equals(theirs):
+                    out.append(f"{rel}: differs ({len(mine)} rows, the reference's {len(theirs)} for those episodes)")
+            elif rel in _TOTALS and nb < na:
+                continue
+            else:
+                with open(path, "rb") as f, open(ref, "rb") as g:
+                    if f.read() != g.read():
+                        out.append(f"{rel}: differs")
+    return sorted(out)
+
+
+__all__ = ["CATEGORIES", "compare_datasets", "Contact", "Verdict", "as_safety", "build", "check", "contacts", "event_timing", "events",
            "first_touches", "frame_labels", "label_rows", "object_poses", "planned_events", "ranges", "set_aside",
            "write_labels"]

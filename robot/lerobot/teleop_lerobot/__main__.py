@@ -7,7 +7,9 @@
   events (``SE``) against the contacts physics reported (``--set-aside`` moves a failing one to ``_discarded``; no LeRobot
   needed);
 - ``safety-build --out DATASET TAKE...``: one safety dataset from checked takes, in the lab's label format
-  (docs/adr/0036 amendment 1);
+  (docs/adr/0036 amendment 1), with ``--jobs`` worker processes preparing episodes ahead (amendment 6);
+- ``safety-compare REFERENCE REBUILT``: whether a safety dataset rebuilt from a reference's first takes holds the same
+  files (amendment 6; no LeRobot needed);
 - ``knock-report TAKE...``: every object each take touched, its mass at its size and whether it was knocked over, as JSON
   lines, then a summary by mass (docs/adr/0037 P4; no LeRobot needed).
 """
@@ -25,6 +27,12 @@ from .takes import read_take
 
 def _log(message: str) -> None:
     print(time.strftime("%Y-%m-%dT%H:%M:%SZ ", time.gmtime()) + message, flush=True)
+
+
+def default_jobs() -> int:
+    """safety-build's workers: a quarter of the cores (each encoder runs threads of its own), at most 8 (the writer, one
+    process, keeps up with about that many; docs/adr/0036 amendment 6)."""
+    return max(1, min(8, (os.cpu_count() or 1) // 4))
 
 
 def main(argv=None) -> int:
@@ -63,7 +71,23 @@ def main(argv=None) -> int:
     s.add_argument("--vcodec", default="libsvtav1")
     s.add_argument("--crf", type=int, default=None, help="the videos' CRF (default: writer.SAFETY_CRF)")
     s.add_argument("--preset", type=int, default=None, help="the AV1 encoder's preset (default: writer.SAFETY_PRESET)")
+    s.add_argument("--jobs", type=int, default=default_jobs(),
+                   help="worker processes decoding and encoding episodes ahead of the writer (1: all in this process, as "
+                        "before); the files are the same either way (docs/adr/0036 amendment 6). Default: a quarter of the "
+                        "cores, at most 8")
+    s = sub.add_parser("safety-compare")
+    s.add_argument("reference", help="a safety dataset")
+    s.add_argument("rebuilt", help="one written from the first takes of the reference's meta/teleop/takes.jsonl")
     a = p.parse_args(argv)
+
+    if a.command == "safety-compare":
+        from . import safety
+
+        diffs = safety.compare_datasets(os.path.expanduser(a.reference), os.path.expanduser(a.rebuilt))
+        for d in diffs:
+            print("[compare] " + d)
+        print(f"[compare] {'the same' if not diffs else f'{len(diffs)} difference(s)'}: {a.rebuilt} against {a.reference}")
+        return 1 if diffs else 0
 
     if a.command == "safety-check":
         from . import safety
@@ -105,7 +129,10 @@ def main(argv=None) -> int:
 
         takes = [read_take(path, a.fps) for path in a.takes]
         writer = LeRobotWriter(a.vcodec, crf=SAFETY_CRF if a.crf is None else a.crf, preset=SAFETY_PRESET if a.preset is None else a.preset)
-        safety.build(writer, os.path.expanduser(a.out), takes, _log)
+        if a.jobs < 1:
+            p.error("--jobs is at least 1")
+        _log(f"building {len(takes)} episode(s) with {a.jobs} worker(s)")
+        safety.build(writer, os.path.expanduser(a.out), takes, _log, jobs=a.jobs)
         return 0
 
     if a.command == "inspect":

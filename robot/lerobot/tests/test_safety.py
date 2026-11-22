@@ -342,3 +342,172 @@ def test_one_dataset_from_two_twins_takes(tmp_path):
     ledger = [json.loads(x) for x in open(os.path.join(out, "meta", "teleop", "takes.jsonl"))]
     assert [os.path.basename(os.path.dirname(os.path.dirname(e["take"]))) for e in ledger] == ["jetrover-isaac", "jetrover-isaac-twin1", "jetrover-isaac"]
     assert json.loads(open(os.path.join(out, "manual_safety_labels.json")).read()).keys() == {"0"}
+
+
+class PreparingWriter:
+    """A writer with workers' half (docs/adr/0036 amendment 6): its job 'prepares' an episode into the folder it is given,
+    the later ones faster than the earlier, so they finish out of order; ``append`` records what it was handed."""
+
+    def __init__(self, fail_at=None, total=3):
+        import threading
+
+        self.episodes, self.fail_at, self.total = [], fail_at, total
+        self.lock, self.running, self.most_running, self.started = threading.Lock(), 0, 0, []
+
+    def prepare_job(self):
+        def job(t, episode, folder):
+            import time
+
+            from teleop_lerobot.writer import Prepared
+
+            with self.lock:
+                self.started.append(episode)
+                self.running += 1
+                self.most_running = max(self.most_running, self.running)
+            try:
+                os.makedirs(folder)
+                with open(os.path.join(folder, "frame.png"), "w") as f:
+                    f.write(t.path)
+                time.sleep(0.02 * (self.total - episode))
+                if episode == self.fail_at:
+                    raise RuntimeError(f"episode {episode} could not be prepared")
+                return Prepared(episode, folder, {"observation.images.front": [os.path.join(folder, "frame.png")]}, {})
+            finally:
+                with self.lock:
+                    self.running -= 1
+        return job
+
+    def append(self, root, repo, t, prepared=None):
+        assert prepared is not None and os.path.exists(prepared.images["observation.images.front"][0])
+        with open(prepared.images["observation.images.front"][0]) as f:
+            assert f.read() == t.path  # its own take's
+        self.episodes.append((prepared.episode, t.path, [c.name for c in t.cameras]))
+        return len(self.episodes) - 1
+
+
+def test_a_parallel_build_appends_what_the_workers_prepared_in_the_takes_order(scenarios, tmp_path):
+    pytest.importorskip("pandas")
+    pytest.importorskip("pyarrow")
+    from concurrent.futures import ThreadPoolExecutor
+
+    paths = [take(scenarios, c, [wc(1500, "0:5:2:1.5"), wc(1620)] if c == "collide_and_recover" else [], name=f"20261121T1000{i}0Z-take00{i}")
+             for i, c in enumerate(("collide_and_recover", "reach_no_obstacle", "stop_before_collision", "collide_and_recover"))]
+    takes = [read_take(p) for p in paths]
+    w = PreparingWriter(total=4)
+    out = str(tmp_path / "out" / "jetrover_20261121_100000_abcdef")
+    with ThreadPoolExecutor(4) as pool:
+        written = safety.build(w, out, takes, log=lambda m: None, jobs=2, executor=pool)
+    assert [(ep, p) for ep, p, _ in w.episodes] == [(0, paths[0]), (1, paths[1]), (2, paths[2]), (3, paths[3])]
+    assert all(cams == ["third-left", "front"] for _, _, cams in w.episodes)  # the safety take: wrist named front
+    assert w.most_running >= 2  # prepared side by side
+    assert not os.path.exists(out + ".prepare")  # every prepared file gone
+
+    class Sequential:
+        def __init__(self):
+            self.n = 0
+
+        def append(self, root, repo, t):
+            self.n += 1
+            return self.n - 1
+    alone = str(tmp_path / "out" / "alone")
+    assert safety.build(Sequential(), alone, takes, log=lambda m: None) == written  # the same episodes and labels
+    for name in ("manual_safety_labels.json", "safety_events.jsonl", "capture_timing.jsonl", "raw_ros_events.jsonl"):
+        assert open(os.path.join(out, name)).read() == open(os.path.join(alone, name)).read()
+
+
+def test_the_workers_run_at_most_ahead_of_the_writer(scenarios, tmp_path):
+    from concurrent.futures import ThreadPoolExecutor
+
+    from teleop_lerobot.writer import prepared_in_order
+
+    takes = [read_take(take(scenarios, "reach_no_obstacle", [], name=f"20261121T1000{i:02d}Z-take0{i:02d}")) for i in range(7)]
+    w = PreparingWriter(total=7)
+    root = str(tmp_path / "ds")
+    seen = []
+    with ThreadPoolExecutor(7) as pool:
+        stream = prepared_in_order(w, root, takes, 2, executor=pool, ahead=3)
+        for i, (t, prepared) in enumerate(stream):
+            assert prepared.episode == i and t is takes[i]
+            assert len(w.started) <= i + 4  # this one and the three after it, at most
+            seen.append(prepared.folder)
+            assert os.path.exists(prepared.folder)
+    assert len(seen) == 7 and not os.path.exists(root + ".prepare")
+
+
+def test_a_worker_that_fails_stops_the_build_and_leaves_no_prepared_files(scenarios, tmp_path):
+    from concurrent.futures import ThreadPoolExecutor
+
+    takes = [read_take(take(scenarios, "reach_no_obstacle", [], name=f"20261121T1000{i}0Z-take00{i}")) for i in range(4)]
+    w = PreparingWriter(fail_at=1, total=4)
+    out = str(tmp_path / "out" / "failed")
+    with ThreadPoolExecutor(2) as pool, pytest.raises(RuntimeError, match="episode 1 could not be prepared"):
+        safety.build(w, out, takes, log=lambda m: None, jobs=2, executor=pool)
+    assert [ep for ep, _, _ in w.episodes] == [0]  # what came before it was written; nothing after
+    assert not os.path.exists(out + ".prepare") and not os.path.exists(os.path.join(out, "manual_safety_labels.json"))
+
+
+def test_one_job_prepares_nothing(scenarios, tmp_path):
+    class Writer:
+        def prepare_job(self):
+            raise AssertionError("jobs=1 builds in this process, as before")
+
+        def append(self, root, repo, t):
+            return 0
+    pytest.importorskip("pandas")
+    pytest.importorskip("pyarrow")
+    t = read_take(take(scenarios, "reach_no_obstacle", []))
+    safety.build(Writer(), str(tmp_path / "one"), [t], log=lambda m: None, jobs=1)
+    assert not os.path.exists(str(tmp_path / "one") + ".prepare")
+
+
+def test_a_take_and_the_prepare_job_go_to_a_spawned_worker(scenarios):
+    # The workers are spawned, not forked (LeRobot brings torch): what they are handed must pickle, and come back the same.
+    import functools
+    import pickle
+
+    from teleop_lerobot.writer import prepare_episode
+
+    t = safety.as_safety(read_take(take(scenarios, "collide_and_recover", [wc(1500, "0:5:2:1.5"), wc(1620)])))
+    job = functools.partial(prepare_episode, vcodec="libsvtav1", crf=18, preset=8)
+    again = pickle.loads(pickle.dumps(job))
+    assert again.func is prepare_episode and again.keywords == {"vcodec": "libsvtav1", "crf": 18, "preset": 8}
+    back = pickle.loads(pickle.dumps(t))
+    assert back == t and back.jpeg(back.frames[3], back.cameras[1]) == t.jpeg(t.frames[3], t.cameras[1])
+
+
+def _fake_dataset(root, episodes, stamp="2026-11-21T10:00:00Z", flip=None):
+    """A dataset's files as the safety build lays them out (one file per episode and kind), without LeRobot."""
+    def put(rel, data):
+        p = os.path.join(root, rel)
+        os.makedirs(os.path.dirname(p), exist_ok=True)
+        with open(p, "wb" if isinstance(data, bytes) else "w") as f:
+            f.write(data)
+    put("meta/info.json", json.dumps({"total_episodes": episodes}))
+    put("meta/stats.json", json.dumps({"episodes": episodes}))
+    for ep in range(episodes):
+        put(f"data/chunk-000/file-{ep:03d}.parquet", bytes([ep, 1, 2, 3]) if ep != flip else bytes([ep, 1, 2, 4]))
+        put(f"videos/observation.images.front/chunk-000/file-{ep:03d}.mp4", bytes([ep]) * 9)
+        put(f"meta/teleop/episode_{ep:06d}.timing.jsonl", json.dumps({"frameIndex": 0, "ep": ep}) + "\n")
+    put("capture_timing.jsonl", "".join(json.dumps({"episode_saved_so_far": ep, "frame_in_episode": i}) + "\n"
+                                        for ep in range(episodes) for i in range(2)))
+    put("raw_ros_events.jsonl", "".join(json.dumps({"type": "state", "n": n}) + "\n" for n in range(3 * episodes)))
+    put("safety_events.jsonl", "".join(json.dumps({"episode": ep, "kind": "contact"}) + "\n" for ep in range(episodes) if ep % 2))
+    put("meta/teleop/takes.jsonl", "".join(json.dumps({"episode": ep, "take": f"t{ep}", "convertedUtc": stamp}) + "\n"
+                                           for ep in range(episodes)))
+    put("manual_safety_labels.json", json.dumps({str(ep): [[1, 2]] for ep in range(episodes) if ep % 2}))
+
+
+def test_a_rebuild_of_the_first_episodes_compares_file_for_file(tmp_path):
+    ref, same, prefix, other = (str(tmp_path / n) for n in ("ref", "same", "prefix", "other"))
+    _fake_dataset(ref, 4)
+    _fake_dataset(same, 4, stamp="2026-11-22T09:00:00Z")  # written another time: the same
+    _fake_dataset(prefix, 2)  # the first two episodes: the totals are its own
+    _fake_dataset(other, 3, flip=1)
+    assert safety.compare_datasets(ref, same) == []
+    assert safety.compare_datasets(ref, prefix) == []
+    assert safety.compare_datasets(ref, other) == [os.path.join("data", "chunk-000", "file-001.parquet") + ": differs"]
+    with open(os.path.join(same, "manual_safety_labels.json"), "w") as f:
+        f.write(json.dumps({"1": [[1, 3]], "3": [[1, 2]]}))
+    assert safety.compare_datasets(ref, same) == ["manual_safety_labels.json: differs (episodes [1])"]
+    _fake_dataset(str(tmp_path / "more"), 5)
+    assert "more than" in safety.compare_datasets(ref, str(tmp_path / "more"))[0]

@@ -65,3 +65,43 @@ def test_a_safety_writer_encodes_at_its_own_crf_and_says_so(scenarios, tmp_path,
     assert dataset_writer.encode_video_frames is spy  # put back after the episode
     assert json.load(open(os.path.join(root, "meta", "teleop", "encoding.json")))["crf"] == SAFETY_CRF
     assert LeRobotDataset(repo_id(take.dataset_group, take.scenario), root=root).meta.total_episodes == 1
+
+
+def test_a_parallel_safety_build_writes_the_files_a_sequential_one_does(scenarios, tmp_path, monkeypatch):
+    # docs/adr/0036 amendment 6: workers decode and encode ahead, the writer appends in order; every file is the one the
+    # sequential build writes, byte for byte (but each ledger line's convertedUtc). Two workers as threads here: spawned
+    # processes would import torch twice for a test of 64x48 frames.
+    from concurrent.futures import ThreadPoolExecutor
+
+    from lerobot.datasets import dataset_writer
+    from teleop_lerobot import safety
+    from teleop_lerobot.writer import SAFETY_CRF, SAFETY_PRESET
+
+    def jpeg_frame(cam, n):  # a different picture on each camera and frame, so a swap or a shift would show
+        buf = io.BytesIO()
+        Image.new("RGB", (64, 48), ((n * 11) % 256, 30 if cam == "wrist" else 220, (n * 5) % 256)).save(buf, "JPEG", quality=90)
+        return buf.getvalue()
+
+    paths = [jetrover_take(scenarios, name=f"20261121T1000{i}0Z-take00{i}", scenario=c, image=jpeg_frame)
+             for i, c in enumerate(("reach_no_obstacle", "stop_before_collision", "reach_no_obstacle"))]
+    takes = [read_take(p) for p in paths]
+    alone, together = str(tmp_path / "alone" / "jetrover_x"), str(tmp_path / "together" / "jetrover_x")  # one repo name
+    safety.build(LeRobotWriter(crf=SAFETY_CRF, preset=SAFETY_PRESET), alone, takes, log=lambda m: None)
+
+    calls = []
+    real = dataset_writer.encode_video_frames
+    monkeypatch.setattr(dataset_writer, "encode_video_frames", lambda *a, **k: calls.append(1) or real(*a, **k))
+    with ThreadPoolExecutor(2) as pool:
+        safety.build(LeRobotWriter(crf=SAFETY_CRF, preset=SAFETY_PRESET), together, takes, log=lambda m: None, jobs=2,
+                     executor=pool)
+    assert calls == []  # every video came from the workers, none from LeRobot's own encode
+    assert safety.compare_datasets(alone, together) == []
+    files = lambda root: sorted(os.path.relpath(os.path.join(d, n), root) for d, _, ns in os.walk(root) for n in ns)
+    assert files(alone) == files(together)
+    assert sum(1 for f in files(together) if f.endswith(".mp4")) == 3 * 2  # an episode a file, each camera
+    assert not os.path.exists(together + ".prepare")
+    from lerobot.datasets import LeRobotDataset
+
+    ds = LeRobotDataset("local/jetrover-isaac-safety_jetrover_x", root=together)
+    assert ds.meta.total_episodes == 3 and len(ds) == sum(len(t.frames) for t in takes)
+    assert tuple(ds[len(takes[0].frames)]["observation.images.front"].shape) == (3, 48, 64)

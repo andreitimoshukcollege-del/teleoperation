@@ -9,13 +9,17 @@ what only physics can see: whether an arm is in the way.
 2. from the headset, an object it may not move: NOT_MOVABLE;
 3. a pose that is not finite or not a unit quaternion: INVALID_POSE;
 4. from the headset, an object an arm is touching now: ARM_TOUCHING;
-5. off the table or the placement region: OUTSIDE_REGION;
+5. off the table or the placement region (a pool's fixed object: its fixed regions; a movable one may also stand in the
+   pool's edge regions, docs/adr/0037 amendment 6): OUTSIDE_REGION;
 6. closer to another object than the clearance (footprints, as Core's ``WorldScene.Overlaps``): OVERLAPS_OBJECT;
 7. an arm within the clearance of the object's shape at the new pose (a PhysX overlap query): OVERLAPS_ARM;
-8. otherwise the object is stood upright on the table at the pose's x, y and yaw (``Scene.pose_at``): APPLIED. A movable
-   object is also brought to rest there (its velocities zeroed), wherever it had fallen.
+8. otherwise the object is stood on the table at the pose's x, y and heading (``Scene.pose_at``): APPLIED. It rests on the
+   rest nearest the pose's rotation (``scene.rest_of``, docs/adr/0037 amendment 6): upright unless the pose lies on a side,
+   as a layout's lying object does. A movable object is also brought to rest there (its velocities zeroed), wherever it had
+   fallen.
 
 Rules 4, 6 and 7 use where the objects are now: a movable object's pose is PhysX's, read at every WORLD (:meth:`IsaacWorld.read`).
+Rules 5 and 6 take each object's footprint on its rest (lying, a footprint differs).
 
 **Parking** (docs/adr/0037 decision 3). A scene whose objects are a pool lets each layout choose which take part; RobotHost sends
 the others with CAUSE_PARK. A parked object is stood on the hidden shelf (``Scene.parked_pose``, at its current size's slot),
@@ -45,7 +49,7 @@ import re
 from typing import Callable, Dict, List, Optional, Sequence, Tuple
 
 from . import wire
-from .scene import RESIZE_SCALES, Scene, is_valid_scale, step_of
+from .scene import REST_UPRIGHT, RESIZE_SCALES, Scene, is_valid_scale, rest_of, step_of
 
 Pose = Tuple[float, float, float, float, float, float, float]  # x, y, z, qw, qx, qy, qz
 
@@ -125,7 +129,7 @@ class WorldModel:
         return -1
 
     def check(self, cause: int, object_id: int, pose: Sequence[float], arm_near: ArmCheck) -> Tuple[int, int, Optional[Pose]]:
-        """(outcome, object index or -1, the upright pose to apply when the outcome is APPLIED)."""
+        """(outcome, object index or -1, the pose to apply when the outcome is APPLIED: on the table, on the pose's rest)."""
         i = self.index_of(object_id)
         if i < 0:
             return wire.UNKNOWN_OBJECT, -1, None
@@ -138,19 +142,24 @@ class WorldModel:
             return wire.INVALID_POSE, i, None
         if cause == wire.CAUSE_HEADSET and arm_near(i, self.poses[i], TOUCH_MARGIN):
             return wire.ARM_TOUCHING, i, None
-        return self._fits(i, pose[0], pose[1], yaw_of(pose), self.scales[i], arm_near)
+        # The rest nearest the pose's rotation (docs/adr/0037 amendment 6), as RobotHost's StaticWorld: upright keeps the yaw it
+        # always took, a side its yaw once that side is taken out.
+        rest, yaw = rest_of(pose)
+        return self._fits(i, pose[0], pose[1], yaw_of(pose) if rest == REST_UPRIGHT else yaw, self.scales[i], arm_near, rest)
 
-    def _fits(self, i: int, x: float, y: float, yaw: float, scale: float, arm_near: ArmCheck) -> Tuple[int, int, Optional[Pose]]:
-        """Rules 5 to 8 for object ``i`` at (x, y, yaw) and size ``scale``."""
-        if not self.scene.fits_on_table(i, x, y, scale):
+    def _fits(self, i: int, x: float, y: float, yaw: float, scale: float, arm_near: ArmCheck,
+              rest: int = REST_UPRIGHT) -> Tuple[int, int, Optional[Pose]]:
+        """Rules 5 to 8 for object ``i`` at (x, y, yaw) on rest ``rest`` and size ``scale``; every other object on its own rest."""
+        if not self.scene.fits_on_table(i, x, y, scale, rest):
             return wire.OUTSIDE_REGION, i, None
         for k, other in enumerate(self.poses):
-            if k != i and not self.parked[k] and self.scene.overlaps(i, x, y, k, other[0], other[1], scale, self.scales[k]):
+            if k != i and not self.parked[k] and self.scene.overlaps(i, x, y, k, other[0], other[1], scale, self.scales[k],
+                                                                       rest, rest_of(other)[0]):
                 return wire.OVERLAPS_OBJECT, i, None
-        upright = tuple(self.scene.pose_at(i, x, y, yaw, scale))
-        if arm_near(i, upright, self.scene.clearance):
+        placed = tuple(self.scene.pose_at(i, x, y, yaw, scale, rest))
+        if arm_near(i, placed, self.scene.clearance):
             return wire.OVERLAPS_ARM, i, None
-        return wire.APPLIED, i, upright
+        return wire.APPLIED, i, placed
 
     def check_resize(self, object_id: int, scale: float, arm_near: ArmCheck) -> Tuple[int, int, Optional[Pose]]:
         """(outcome, object index or -1, the upright pose at the new size when APPLIED). The arm check sees the new size:
@@ -175,10 +184,12 @@ class WorldModel:
         old = self.scales[i]
         self.scales[i] = scale
         try:
-            # The nearest spot clear of the others; the arm is asked about the first few such spots only (PhysX queries).
+            # The nearest spot clear of the others (each on its rest; the resized one stands up), as RobotHost's StaticWorld; the
+            # arm is asked about the first few such spots only (PhysX queries).
             first, arm_asks = None, 0
             for x, y in spots:
-                if any(k != i and not self.parked[k] and self.scene.overlaps(i, x, y, k, o[0], o[1], scale, self.scales[k])
+                if any(k != i and not self.parked[k] and self.scene.overlaps(i, x, y, k, o[0], o[1], scale, self.scales[k],
+                                                                             REST_UPRIGHT, rest_of(o)[0])
                        for k, o in enumerate(self.poses)):
                     continue
                 outcome, _, upright = self._fits(i, x, y, yaw_of(p), scale, arm_near)

@@ -100,10 +100,13 @@ def object_poses(path: str) -> Dict[int, List[Tuple[int, Tuple[float, ...]]]]:
 
 
 def _tilt_degrees(a: Tuple[float, ...], b: Tuple[float, ...]) -> float:
-    """The angle between two poses' up axes (z), degrees: how far the object tipped from ``a`` to ``b``."""
+    """How far the object tipped from ``a`` to ``b``, degrees: the angle between the vertical as each pose's own frame sees it
+    (its rotation's third row). For an object that starts upright that is the angle its z axis turned. A turn about the
+    vertical alone is no tip: an object a layout lays on its side (docs/adr/0037 amendment 6) has a level z axis, which a push
+    that only spins it on the table turns (measured with the z axes, a 60-degree spin was a 60-degree tip)."""
     def up(q):
         w, x, y, z = q[3:7]
-        return (2 * (x * z + w * y), 2 * (y * z - w * x), 1 - 2 * (x * x + y * y))
+        return (2 * (x * z - w * y), 2 * (y * z + w * x), 1 - 2 * (x * x + y * y))
     ua, ub = up(a), up(b)
     dot = max(-1.0, min(1.0, sum(p * q for p, q in zip(ua, ub))))
     return math.degrees(math.acos(dot))

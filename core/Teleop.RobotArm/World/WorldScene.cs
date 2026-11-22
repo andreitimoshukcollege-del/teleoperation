@@ -191,8 +191,13 @@ namespace Teleop.RobotArm.World
         private WorldScene(string name, string robotProfile, SceneSurface[] surfaces, SceneSurface table, SceneSurface? bench,
             SceneObject[] objects, double xMin, double xMax, double yMin, double yMax, double clearance,
             int movableMin, int movableMax, int fixedMin, int fixedMax, double sizeMin, double sizeMax, double reachMin, double reachMax,
-            double knockMaxMass, double[] fixedRegions, double[] robotKeepOut, double fixedNearMax)
+            double knockMaxMass, double[] fixedRegions, double[] robotKeepOut, double fixedNearMax,
+            double clusterShare, double lyingShare, double[] edgeRegions, double edgeShare)
         {
+            ClusterShare = clusterShare;
+            LyingShare = lyingShare;
+            EdgeRegions = edgeRegions;
+            EdgeShare = edgeShare;
             FixedNearMax = fixedNearMax;
             KnockMaxMass = knockMaxMass;
             FixedRegions = fixedRegions;
@@ -256,6 +261,142 @@ namespace Teleop.RobotArm.World
         /// <summary>The robot's footprint no object may reach, <c>[xMin, xMax, yMin, yMax]</c>; empty: none.</summary>
         public double[] RobotKeepOut { get; }
 
+        /// <summary>The chance that each movable object in reach after a layout's first joins a cluster (docs/adr/0037 amendment 6); 0: none.</summary>
+        public double ClusterShare { get; }
+
+        /// <summary>The chance that a movable object with a stable side lies on it (docs/adr/0037 amendment 6); 0: every one upright.</summary>
+        public double LyingShare { get; }
+
+        /// <summary>
+        /// Rectangles <c>[xMin, xMax, yMin, yMax, ...]</c> outside the placement region that hold the centre of a movable object by
+        /// the bench's edge, out of the arm's reach (docs/adr/0037 amendment 6); its footprint lies on the table or the bench. Empty: none.
+        /// </summary>
+        public double[] EdgeRegions { get; }
+
+        /// <summary>The chance that a layout also stands one more movable object in <see cref="EdgeRegions"/>.</summary>
+        public double EdgeShare { get; }
+
+        /// <summary>The widest a cluster's gap between two footprint circles may be beyond <see cref="Clearance"/>, m.</summary>
+        public const double ClusterGap = 0.02;
+
+        /// <summary>
+        /// The ways an object may rest on the table (docs/adr/0037 amendment 6), each a turn of the object's own frame before its
+        /// yaw: 0 upright (its +z up), 1 its +y up (+90 degrees about x), 2 its +x up (-90 degrees about y), 3 upside down,
+        /// 4 its -y up, 5 its -x up. Rests 1, 2, 4 and 5 lie on a side. A pose's rest is the one whose up axis is nearest the
+        /// vertical (<see cref="RestOf(double, double, double, double, out double)"/>).
+        /// </summary>
+        public const int RestUpright = 0, RestCount = 6;
+
+        /// <summary>
+        /// A side rest is stable enough to be drawn when the object lying on it is at most this many times as tall as its narrower
+        /// side: not tippy, as joint-drive's <c>SafetyObject.TippyAspect</c> decides from the rest it is in.
+        /// </summary>
+        public const double LieAspect = 1.25;
+
+        /// <summary>A side rest lower than this is not drawn, m: too low for the arm to touch (the marker on its side, 2 cm).</summary>
+        public const double MinLyingHeight = 0.03;
+
+        /// <summary>The turn of rest <paramref name="rest"/>, a unit quaternion w, x, y, z.</summary>
+        public static void RestRotation(int rest, out double qw, out double qx, out double qy, out double qz)
+        {
+            const double h = 0.70710678118654752;
+            qw = 1;
+            qx = qy = qz = 0;
+            switch (rest)
+            {
+                case 1: qw = h; qx = h; break;
+                case 2: qw = h; qy = -h; break;
+                case 3: qw = 0; qx = 1; break;
+                case 4: qw = h; qx = -h; break;
+                case 5: qw = h; qy = h; break;
+            }
+        }
+
+        /// <summary>Object <paramref name="index"/>'s extents at rest <paramref name="rest"/> before its yaw, at its file size: along x and y (its footprint) and up.</summary>
+        public void RestExtents(int index, int rest, out double ex, out double ey, out double ez)
+        {
+            SceneObject o = Objects[index];
+            switch (rest % 3)
+            {
+                case 1: ex = o.SizeX; ey = o.SizeZ; ez = o.SizeY; break;
+                case 2: ex = o.SizeZ; ey = o.SizeY; ez = o.SizeX; break;
+                default: ex = o.SizeX; ey = o.SizeY; ez = o.SizeZ; break;
+            }
+        }
+
+        /// <summary>The radius of a circle that holds object <paramref name="index"/>'s footprint at rest <paramref name="rest"/> and any yaw, at its file size.</summary>
+        public double FootprintRadiusAt(int index, int rest)
+        {
+            SceneObject o = Objects[index];
+            if (rest % 3 == 0 || o.Shape == SceneShape.Sphere) return o.FootprintRadius;
+            RestExtents(index, rest, out double ex, out double ey, out _);
+            return 0.5 * Math.Sqrt(ex * ex + ey * ey);
+        }
+
+        /// <summary>Whether a layout may lay object <paramref name="index"/> on side rest <paramref name="rest"/>: movable, stable on it (<see cref="LieAspect"/>) and at least <see cref="MinLyingHeight"/> tall.</summary>
+        public bool CanLie(int index, int rest)
+        {
+            if (rest < 0 || rest >= RestCount || rest % 3 == 0 || !Objects[index].Movable || Objects[index].Shape == SceneShape.Sphere) return false;
+            RestExtents(index, rest, out double ex, out double ey, out double ez);
+            return ez <= LieAspect * Math.Min(ex, ey) + 1e-12 && ez >= MinLyingHeight - 1e-12;
+        }
+
+        /// <summary>
+        /// The rest of a pose's rotation (w, x, y, z): the one whose up axis is nearest the vertical. <paramref name="yaw"/> is
+        /// the turn about the vertical left once that rest is taken out, in (-pi, pi]:
+        /// <see cref="PoseAt(int, double, double, double, double, int)"/> gives the pose back. A settled object tilted a little
+        /// keeps its rest.
+        /// </summary>
+        public static int RestOf(double qw, double qx, double qy, double qz, out double yaw)
+        {
+            // The world z of each of the object's axes: the third row of its rotation matrix.
+            double zx = 2 * (qx * qz - qw * qy), zy = 2 * (qy * qz + qw * qx), zz = 1 - 2 * (qx * qx + qy * qy);
+            double ax = Math.Abs(zx), ay = Math.Abs(zy), az = Math.Abs(zz);
+            int rest = az >= ax && az >= ay ? (zz >= 0 ? 0 : 3) : ay >= ax ? (zy >= 0 ? 1 : 4) : (zx >= 0 ? 2 : 5);
+            RestRotation(rest, out double rw, out double rx, out double ry, out double rz);
+            double w = qw * rw + qx * rx + qy * ry + qz * rz, z = qz * rw - qw * rz - qx * ry + qy * rx; // q times the rest's inverse
+            yaw = 2 * Math.Atan2(z, w);
+            if (yaw > Math.PI) yaw -= 2 * Math.PI;
+            else if (yaw <= -Math.PI) yaw += 2 * Math.PI;
+            return rest;
+        }
+
+        /// <summary>The rest of <paramref name="pose"/> (<see cref="RestOf(double, double, double, double, out double)"/>).</summary>
+        public static int RestOf(in RigidTransform pose) => RestOf(pose.Qw, pose.Qx, pose.Qy, pose.Qz, out _);
+
+        /// <summary>The rest of <paramref name="pose"/>, and its yaw once that rest is taken out (<see cref="RestOf(double, double, double, double, out double)"/>).</summary>
+        public static int RestOf(in RigidTransform pose, out double yaw) => RestOf(pose.Qw, pose.Qx, pose.Qy, pose.Qz, out yaw);
+
+        /// <summary>Whether (x, y) lies in one of <see cref="EdgeRegions"/>.</summary>
+        public bool InEdgeRegions(double x, double y)
+        {
+            for (int k = 0; k + 3 < EdgeRegions.Length; k += 4)
+            {
+                if (x >= EdgeRegions[k] - 1e-9 && x <= EdgeRegions[k + 1] + 1e-9 && y >= EdgeRegions[k + 2] - 1e-9 && y <= EdgeRegions[k + 3] + 1e-9) return true;
+            }
+
+            return false;
+        }
+
+        /// <summary>
+        /// Whether movable object <paramref name="index"/> at <paramref name="scale"/>, on rest <paramref name="rest"/>, has room by the
+        /// edge: some rectangle of <see cref="EdgeRegions"/> holds a centre whose footprint lies on the table or the bench (the
+        /// spots <see cref="DrawEdgeSpot"/> draws from). The largest parcels have none.
+        /// </summary>
+        public bool HasEdgeRoom(int index, double scale, int rest)
+        {
+            if (!Objects[index].Movable) return false;
+            double r = FootprintRadiusAt(index, rest) * scale;
+            SurfaceBounds(out double sx0, out double sx1, out double sy0, out double sy1);
+            for (int k = 0; k + 3 < EdgeRegions.Length; k += 4)
+            {
+                if (Math.Max(EdgeRegions[k], sx0 + r) <= Math.Min(EdgeRegions[k + 1], sx1 - r) &&
+                    Math.Max(EdgeRegions[k + 2], sy0 + r) <= Math.Min(EdgeRegions[k + 3], sy1 - r)) return true;
+            }
+
+            return false;
+        }
+
         /// <summary>Whether a footprint of radius <paramref name="r"/> at (x, y) stays out of <see cref="RobotKeepOut"/>.</summary>
         public bool ClearOfRobot(double x, double y, double r)
         {
@@ -275,9 +416,13 @@ namespace Teleop.RobotArm.World
         /// 20 degrees; any other turns at random. False when the draw misses (the caller tries again); the clearance from other
         /// objects is the caller's.
         /// </summary>
-        public bool DrawSpot(int index, double scale, ref Teleop.Core.Types.SeededRng rng, out double x, out double y, out double yaw)
+        public bool DrawSpot(int index, double scale, ref Teleop.Core.Types.SeededRng rng, out double x, out double y, out double yaw) =>
+            DrawSpot(index, scale, RestUpright, ref rng, out x, out y, out yaw);
+
+        /// <summary>As <see cref="DrawSpot(int, double, ref Teleop.Core.Types.SeededRng, out double, out double, out double)"/>, for the object at rest <paramref name="rest"/> (its footprint there).</summary>
+        public bool DrawSpot(int index, double scale, int rest, ref Teleop.Core.Types.SeededRng rng, out double x, out double y, out double yaw)
         {
-            double r = Objects[index].FootprintRadius * scale;
+            double r = FootprintRadiusAt(index, rest) * scale;
             double x0, x1, y0, y1;
             if (InFixedRegions(index))
             {
@@ -285,8 +430,7 @@ namespace Teleop.RobotArm.World
                 // only where the object clears the robot's keep-out and its near side is within reach (a thin band beside the
                 // robot: drawn from the whole rectangle, 3-4% of tries landed in it). FitsOnTable and InReach still decide.
                 int k = Math.Min(FixedRegions.Length / 4 - 1, (int)(rng.NextDouble() * (FixedRegions.Length / 4)));
-                double sx0 = Bench != null ? Math.Min(Table.XMin, Bench.XMin) : Table.XMin, sx1 = Bench != null ? Math.Max(Table.XMax, Bench.XMax) : Table.XMax;
-                double sy0 = Bench != null ? Math.Max(Table.YMin, Bench.YMin) : Table.YMin, sy1 = Bench != null ? Math.Min(Table.YMax, Bench.YMax) : Table.YMax;
+                SurfaceBounds(out double sx0, out double sx1, out double sy0, out double sy1);
                 x0 = Math.Max(FixedRegions[4 * k], sx0 + r);
                 x1 = Math.Min(FixedRegions[4 * k + 1], sx1 - r);
                 x = x0 + rng.NextDouble() * (x1 - x0);
@@ -320,7 +464,38 @@ namespace Teleop.RobotArm.World
 
             double turn = (2 * rng.NextDouble() - 1) * Math.PI;
             yaw = InFixedRegions(index) ? Math.Atan2(-y, -x) + turn * (20.0 / 180.0) : turn;
-            return x0 <= x1 && y0 <= y1 && FitsOnTable(index, x, y, scale) && InReach(index, x, y);
+            return x0 <= x1 && y0 <= y1 && FitsOnTable(index, x, y, scale, rest) && InReach(index, x, y);
+        }
+
+        /// <summary>
+        /// A random spot for movable object <paramref name="index"/> at rest <paramref name="rest"/> by the bench's edge, in one of
+        /// <see cref="EdgeRegions"/> (docs/adr/0037 amendment 6): its rectangle first, then x and y uniform where its footprint lies
+        /// on the table or the bench, and yaw uniform; four draws. False when the draw misses (that rectangle has no room, or the
+        /// footprint reaches the robot's keep-out); the clearance from other objects is the caller's. The reach band does not apply.
+        /// </summary>
+        public bool DrawEdgeSpot(int index, double scale, int rest, ref Teleop.Core.Types.SeededRng rng, out double x, out double y, out double yaw)
+        {
+            x = y = yaw = 0;
+            int rects = EdgeRegions.Length / 4;
+            if (rects == 0) return false;
+            double r = FootprintRadiusAt(index, rest) * scale;
+            int k = Math.Min(rects - 1, (int)(rng.NextDouble() * rects));
+            SurfaceBounds(out double sx0, out double sx1, out double sy0, out double sy1);
+            double x0 = Math.Max(EdgeRegions[4 * k], sx0 + r), x1 = Math.Min(EdgeRegions[4 * k + 1], sx1 - r);
+            double y0 = Math.Max(EdgeRegions[4 * k + 2], sy0 + r), y1 = Math.Min(EdgeRegions[4 * k + 3], sy1 - r);
+            x = x0 + rng.NextDouble() * (x1 - x0);
+            y = y0 + rng.NextDouble() * (y1 - y0);
+            yaw = (2 * rng.NextDouble() - 1) * Math.PI;
+            return x0 <= x1 && y0 <= y1 && FitsOnTable(index, x, y, scale, rest);
+        }
+
+        /// <summary>The table and the bench beside it, together: where a fixture's or an edge object's footprint may lie.</summary>
+        private void SurfaceBounds(out double sx0, out double sx1, out double sy0, out double sy1)
+        {
+            sx0 = Bench != null ? Math.Min(Table.XMin, Bench.XMin) : Table.XMin;
+            sx1 = Bench != null ? Math.Max(Table.XMax, Bench.XMax) : Table.XMax;
+            sy0 = Bench != null ? Math.Max(Table.YMin, Bench.YMin) : Table.YMin;
+            sy1 = Bench != null ? Math.Min(Table.YMax, Bench.YMax) : Table.YMax;
         }
 
         /// <summary>The heaviest a movable object may be at its size, kg, and be one the arm knocks over (docs/adr/0037 P4); 0: no roles.</summary>
@@ -330,7 +505,11 @@ namespace Teleop.RobotArm.World
         public double ReachMin { get; }
         public double ReachMax { get; }
 
-        /// <summary>Whether a pool's layout may stand object <paramref name="index"/> at (x, y): a movable object within the reach band, when there is one; any other anywhere.</summary>
+        /// <summary>
+        /// Whether a pool's layout may stand object <paramref name="index"/> at (x, y): a movable object within the reach band, when
+        /// there is one; any other anywhere. A movable object by the edge (<see cref="DrawEdgeSpot"/>) is out of reach on purpose,
+        /// and its draw does not ask.
+        /// </summary>
         public bool InReach(int index, double x, double y)
         {
             if (InFixedRegions(index) && FixedNearMax > 0) return Math.Sqrt(x * x + y * y) - Objects[index].FootprintRadius <= FixedNearMax;
@@ -378,19 +557,29 @@ namespace Teleop.RobotArm.World
             return -1;
         }
 
-        /// <summary>Whether object <paramref name="index"/>'s footprint, centred at (x, y), lies on the table and inside the placement region.</summary>
+        /// <summary>
+        /// Whether object <paramref name="index"/>'s footprint, centred at (x, y), lies on the table and inside the placement region
+        /// (a pool's fixed object: in <see cref="FixedRegions"/>; a movable one may also stand in <see cref="EdgeRegions"/>), clear
+        /// of the robot's keep-out. Upright: see the overload with a rest for one lying on a side.
+        /// </summary>
         public bool FitsOnTable(int index, double x, double y) => FitsOnTable(index, x, y, 1.0);
 
         /// <summary>As <see cref="FitsOnTable(int, double, double)"/>, for the object resized by <paramref name="scale"/>.</summary>
-        public bool FitsOnTable(int index, double x, double y, double scale)
+        public bool FitsOnTable(int index, double x, double y, double scale) => FitsOnTable(index, x, y, scale, RestUpright);
+
+        /// <summary>
+        /// As <see cref="FitsOnTable(int, double, double, double)"/>, for the object at rest <paramref name="rest"/> (its footprint
+        /// there). A movable object may also stand in one of <see cref="EdgeRegions"/>: its centre there, its footprint on the
+        /// table or the bench (docs/adr/0037 amendment 6).
+        /// </summary>
+        public bool FitsOnTable(int index, double x, double y, double scale, int rest)
         {
-            double r = Objects[index].FootprintRadius * scale;
+            double r = FootprintRadiusAt(index, rest) * scale;
             if (!ClearOfRobot(x, y, r)) return false;
             if (InFixedRegions(index))
             {
                 // Its centre in a rectangle, its footprint on the table or on the bench beside it (flush with it).
-                double sx0 = Bench != null ? Math.Min(Table.XMin, Bench.XMin) : Table.XMin, sx1 = Bench != null ? Math.Max(Table.XMax, Bench.XMax) : Table.XMax;
-                double sy0 = Bench != null ? Math.Max(Table.YMin, Bench.YMin) : Table.YMin, sy1 = Bench != null ? Math.Min(Table.YMax, Bench.YMax) : Table.YMax;
+                SurfaceBounds(out double sx0, out double sx1, out double sy0, out double sy1);
                 if (x - r < sx0 - 1e-9 || x + r > sx1 + 1e-9 || y - r < sy0 - 1e-9 || y + r > sy1 + 1e-9) return false;
                 for (int k = 0; k + 3 < FixedRegions.Length; k += 4)
                 {
@@ -403,8 +592,15 @@ namespace Teleop.RobotArm.World
                 return false;
             }
 
-            return x - r >= Math.Max(Table.XMin, RegionXMin) - 1e-9 && x + r <= Math.Min(Table.XMax, RegionXMax) + 1e-9 &&
-                   y - r >= Math.Max(Table.YMin, RegionYMin) - 1e-9 && y + r <= Math.Min(Table.YMax, RegionYMax) + 1e-9;
+            if (x - r >= Math.Max(Table.XMin, RegionXMin) - 1e-9 && x + r <= Math.Min(Table.XMax, RegionXMax) + 1e-9 &&
+                y - r >= Math.Max(Table.YMin, RegionYMin) - 1e-9 && y + r <= Math.Min(Table.YMax, RegionYMax) + 1e-9)
+            {
+                return true;
+            }
+
+            if (!Objects[index].Movable || !InEdgeRegions(x, y)) return false;
+            SurfaceBounds(out double ex0, out double ex1, out double ey0, out double ey1);
+            return x - r >= ex0 - 1e-9 && x + r <= ex1 + 1e-9 && y - r >= ey0 - 1e-9 && y + r <= ey1 + 1e-9;
         }
 
         /// <summary>
@@ -464,9 +660,13 @@ namespace Teleop.RobotArm.World
         public bool Overlaps(int a, double ax, double ay, int b, double bx, double by) => Overlaps(a, ax, ay, b, bx, by, 1.0, 1.0);
 
         /// <summary>As <see cref="Overlaps(int, double, double, int, double, double)"/>, for the two objects resized.</summary>
-        public bool Overlaps(int a, double ax, double ay, int b, double bx, double by, double scaleA, double scaleB)
+        public bool Overlaps(int a, double ax, double ay, int b, double bx, double by, double scaleA, double scaleB) =>
+            Overlaps(a, ax, ay, b, bx, by, scaleA, scaleB, RestUpright, RestUpright);
+
+        /// <summary>As <see cref="Overlaps(int, double, double, int, double, double, double, double)"/>, for the two objects at their rests (their footprints there).</summary>
+        public bool Overlaps(int a, double ax, double ay, int b, double bx, double by, double scaleA, double scaleB, int restA, int restB)
         {
-            double reach = Objects[a].FootprintRadius * scaleA + Objects[b].FootprintRadius * scaleB + Clearance;
+            double reach = FootprintRadiusAt(a, restA) * scaleA + FootprintRadiusAt(b, restB) * scaleB + Clearance;
             double dx = ax - bx, dy = ay - by;
             return dx * dx + dy * dy < reach * reach;
         }
@@ -479,6 +679,20 @@ namespace Teleop.RobotArm.World
         {
             RigidTransform turn = RigidTransform.Rotation(0, 0, 1, yaw);
             return new RigidTransform(x, y, Table.Top + Objects[index].SizeZ * scale / 2, turn.Qw, turn.Qx, turn.Qy, turn.Qz);
+        }
+
+        /// <summary>
+        /// Object <paramref name="index"/> resting on the table at (x, y) on rest <paramref name="rest"/> (docs/adr/0037 amendment 6),
+        /// then turned <paramref name="yaw"/> about the vertical, resized by <paramref name="scale"/>: its box's lowest face on the
+        /// table top. Rest 0 is <see cref="PoseAt(int, double, double, double, double)"/> exactly.
+        /// </summary>
+        public RigidTransform PoseAt(int index, double x, double y, double yaw, double scale, int rest)
+        {
+            if (rest == RestUpright) return PoseAt(index, x, y, yaw, scale);
+            RestRotation(rest, out double rw, out double rx, out double ry, out double rz);
+            double c = Math.Cos(yaw / 2), s = Math.Sin(yaw / 2);
+            RestExtents(index, rest, out _, out _, out double ez);
+            return new RigidTransform(x, y, Table.Top + ez * scale / 2, c * rw - s * rz, c * rx - s * ry, c * ry + s * rx, c * rz + s * rw);
         }
 
         /// <summary>Whether <paramref name="scale"/> is a size the headset may ask for.</summary>
@@ -654,9 +868,38 @@ namespace Teleop.RobotArm.World
                 throw Bad("pool", "robotKeepOut is [xMin, xMax, yMin, yMax] with min < max, or absent");
             }
 
+            double near = ValidNear(pool.fixedNearMax);
+
+            // docs/adr/0037 amendment 6, checked in this order by robot/isaac's scene.py too.
+            double clusterShare = Share(pool.clusterShare, "clusterShare", isPool);
+            double lyingShare = Share(pool.lyingShare, "lyingShare", isPool);
+            double[] er = pool.edgeRegions ?? Array.Empty<double>();
+            if (er.Length % 4 != 0) throw Bad("pool", "edgeRegions holds xMin, xMax, yMin, yMax for each rectangle");
+            for (int k = 0; k < er.Length; k += 4)
+            {
+                if (!Finite(er[k], er[k + 1], er[k + 2], er[k + 3]) || !(er[k] < er[k + 1] && er[k + 2] < er[k + 3]))
+                {
+                    throw Bad("pool", "each edgeRegions rectangle needs min < max on both axes");
+                }
+
+                double sx0 = bench != null ? Math.Min(table.XMin, bench.XMin) : table.XMin, sx1 = bench != null ? Math.Max(table.XMax, bench.XMax) : table.XMax;
+                if (er[k + 1] < sx0 || er[k] > sx1 || er[k + 3] < table.YMin || er[k + 2] > table.YMax)
+                {
+                    throw Bad("pool", "an edgeRegions rectangle does not overlap the table or the bench");
+                }
+
+                if (er[k] < p.xMax && er[k + 1] > p.xMin && er[k + 2] < p.yMax && er[k + 3] > p.yMin)
+                {
+                    throw Bad("pool", "an edgeRegions rectangle overlaps the placement region: edge objects stand outside it, out of reach");
+                }
+            }
+
+            if (er.Length > 0 && !isPool) throw Bad("pool", "edgeRegions are only for a pool");
+            double edgeShare = Share(pool.edgeShare, "edgeShare", isPool);
+            if (edgeShare > 0 && er.Length == 0) throw Bad("pool", "edgeShare needs edgeRegions");
             var scene = new WorldScene(d.name, d.robotProfile, surfaces, table, bench, objects, p.xMin, p.xMax, p.yMin, p.yMax, p.clearance,
                 pool.movableMin, pool.movableMax, pool.fixedMin, pool.fixedMax, pool.sizeMin, pool.sizeMax, pool.reachMin, pool.reachMax,
-                pool.knockMaxMass, fr, ko, ValidNear(pool.fixedNearMax));
+                pool.knockMaxMass, fr, ko, near, clusterShare, lyingShare, er, edgeShare);
             for (int i = 0; i < objects.Length; i++)
             {
                 SceneObject o = objects[i];
@@ -682,6 +925,13 @@ namespace Teleop.RobotArm.World
             }
 
             return scene;
+        }
+
+        private static double Share(double v, string name, bool isPool)
+        {
+            if (!Finite(v) || v < 0 || v > 1) throw Bad("pool", $"{name} is a chance from 0 to 1");
+            if (v > 0 && !isPool) throw Bad("pool", $"{name} is only for a pool");
+            return v;
         }
 
         private static double ValidNear(double v)

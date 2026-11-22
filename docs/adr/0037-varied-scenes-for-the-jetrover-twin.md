@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted, 2026-11-15 (the user, on starting P1). P1 built 2026-11-15; P2 built 2026-11-15 (amendments 1 and 2); P3 built 2026-11-15 (amendment 3); P4 built 2026-11-15 (amendment 4). Real fixtures and materials 2026-11-16 (amendment 5).
+Accepted, 2026-11-15 (the user, on starting P1). P1 built 2026-11-15; P2 built 2026-11-15 (amendments 1 and 2); P3 built 2026-11-15 (amendment 3); P4 built 2026-11-15 (amendment 4). Real fixtures and materials 2026-11-16 (amendment 5). Tables that look used 2026-11-17 (amendment 6).
 
 ## Context
 
@@ -560,3 +560,123 @@ slabs of several convex polygons.
 isaac-stop; just isaac-jetrover-host jetrover-bench`): `just isaac-safety-batch 25 10 collide_and_recover true`. It passes
 when no take is set aside as "never touched an object", and none for a tipped object. RobotHost draws its own layouts, so
 this is a new sample, not the same 25.
+
+## Amendment 6 (2026-11-17): tables that look used: clusters, objects on their side, one by the edge
+
+The user's goal: layouts that look like a real lab table, with objects in clusters, some near the edge, some movable ones
+lying on their side, and all of it settled by physics before a take.
+
+What the last 86 takes showed:
+- every object started its take upright (tilt at most 2.9°) and within 1.5 mm of its placement height;
+- 13 of them had a single movable object on the table, and one had four. A movable object often found no free spot in the
+  reach band (the fixture beside the robot takes much of it);
+- the third-person cameras see the reach band only at the bottom of the frame. The table's far and side edges are out of
+  frame, but the bench's back edge, beside and behind the robot, is in view.
+
+Four pool fields, each 0 or absent by default. A pool that sets none of them draws exactly the layouts it always drew: no
+random draw is taken for a share of 0.
+
+- **Rests.**
+  - An object may rest in six ways, each a turn of its own frame before its yaw: 0 upright; 1 its +y up; 2 its +x up; 3
+    upside down; 4 its −y up; 5 its −x up. A pose's rest is the one whose up axis is nearest the vertical
+    (`WorldScene.RestOf`). Its yaw is the turn left about the vertical once that rest is taken out, so a settled object
+    tilted a little keeps both. Lying, an object has the footprint and height of that side (`RestExtents`,
+    `FootprintRadiusAt`), and `PoseAt` stands its lowest face on the table.
+  - `lyingShare` (0.35) is the chance that a movable object lies on a side, if it has one it lies on stably
+    (`CanLie`). That means not tippy as it lies: at most 1.25 times as tall as its narrower side (`SafetyObject.TippyAspect`).
+    It must also be at least 3 cm tall, for a touch. The side is drawn uniformly among those.
+  - The cans, the cleaner tin, the mug, the foam brick, the elephant and the four parcels may lie. The tuna can and the
+    pudding and gelatin boxes would stand on an edge, the bowl on its rim, and the marker lies 2 cm low, so they stay upright.
+- **Clusters, on footprint circles.**
+  - `clusterShare` (0.6) is the chance that a movable object in reach, after a layout's first, joins a cluster. Half its
+    tries then go beside one already standing: footprint circles the clearance plus 0-2 cm apart (`ClusterGap`), at a uniform
+    bearing. The rest go anywhere, as before.
+  - A footprint circle holds a box's corners, so neighbours stand a few centimetres further apart than real ones would.
+    Oriented footprints (the turned boxes the planner already uses since amendment 5) are the follow-up; every placement rule,
+    in both readers, would change with them.
+- **One object by the bench's back edge.**
+  - Why there. The real table's far and side edges are out of the arm's reach and out of the cameras' frames. The bench's back
+    edge, beside and behind the robot, is in both third-person frames (projected from the scene file: mid-frame, where the
+    reach band is at the bottom).
+  - `edgeRegions` are rectangles that hold such an object's centre, its footprint on the table or the bench. They must lie
+    outside the placement region (both readers refuse one that overlaps it). `edgeShare` (0.5) is the chance that a layout
+    stands one more movable object there, on top of its count, so it takes nothing from the reach band. It is chosen among
+    the objects the layout left off the table that have room there upright (`HasEdgeRoom`: the three largest parcels never
+    do), and if it lies, only on a side that leaves it room. It is placed last.
+  - A movable object centred in an edge region fits (`FitsOnTable`, the bridge's `fits_on_table`), so RobotHost's
+    `StaticWorld` and Isaac agree on it. `InReach` still means the reach band; the edge draws do not ask it.
+  - **Out of reach, measured.** The first regions, at x −0.20 to −0.12 m and |y| 0.24-0.62 m, were not: alone on the table at
+    their nearest corner, the small parcel planned a stop, a touch and a knock (at (−0.12, ±0.30) and (−0.12, ±0.34), upright
+    and lying). Mapped with the planner (each object that may stand there, x −0.12 to −0.18 m, |y| in 2 cm steps, two
+    yaws), every one was approachable out to |y| 0.32-0.34 m and none beyond 0.36 m. The regions now start at 0.40 m:
+    x −0.20 to −0.12 m, |y| 0.40-0.62 m, centres 3-11 cm from the bench's back edge. That is in both third-person frames,
+    with room for the same 12 objects.
+- **Leaning is not drawn.** An object leaning on another needs that partner's pose, which is known only after physics has
+  settled it; a layout drawn from a seed cannot say it. It could come later as a second placement after a settle.
+- **Settled poses already reached the planner.**
+  - Isaac's `read()` reports PhysX's poses with their full rotation. They go into the `WO` records and the world frames, and
+    from those into joint-drive's `WorldState`.
+  - joint-drive's `PrepareWorld` waits until every object has moved less than 1 mm and 1° for 1 s, then plans from those
+    poses. `WorldView.Bounds` turns each object's box as it rests, and the take starts after that.
+  - What stood every object up were the placement rules. Isaac's `WorldModel._fits` and RobotHost's `StaticWorld` kept
+    only a pose's yaw. Both now place on the pose's nearest rest (`rest_of`), and check every footprint on its own rest.
+    A pose within 45° of upright still stands up, so the headset's moves (always upright poses) are unchanged.
+  - `WorldView` called an object tippy from the file's upright proportions. `IsTippy` now decides from the rest it is in:
+    the marker standing is tippy, the marker lying is not.
+  - The LeRobot checker measured a tip as the turn of the object's own z axis. That axis is level for a lying object, so a
+    push that only spun one on the table counted as a tip: `collide_and_recover` would set such a take aside, and
+    `collide_with_obstacle` would count a 30° spin as a knock. It now measures the turn of the vertical in the object's own
+    frame. That is the same number for every object that starts upright, and 0 for any spin on the table.
+- **Measured, over 2000 layouts** (`SceneRestTests`):
+
+  | | With the shares | The same pool without them |
+  |---|---|---|
+  | movable objects that can lie, lying | 0.335 | 0 |
+  | movable objects in reach standing beside another (gap at most the clearance + 2 cm; layouts with two or more) | 0.756 | 0.427 |
+  | layouts with one by the edge | 0.498 | 0 |
+  | movable objects in reach, a layout | 2.24 | 2.21 |
+  | movable objects on the table, a layout | 2.74 | 2.21 |
+  | layouts with 1 / 2 / 3 / 4 in reach | 170 / 1229 / 554 / 47 | 179 / 1251 / 534 / 36 |
+  | layouts with 1 / 2 / 3 / 4 / 5 on the table | 95 / 692 / 881 / 308 / 24 | 179 / 1251 / 534 / 36 / 0 |
+
+  The reach band holds two or three movable objects beside the fixture, and clusters do not change that: the footprint
+  circles fill it either way. A fifth is never placed, but half the layouts gain the one by the edge. A single movable
+  object on the table goes from 9% of layouts to 5%, and three or more from 29% to 61%. Oriented footprints would let
+  more stand in the band.
+
+- **Planning.** Lying objects are lower, so the collide categories might have planned less. They did not. Over 40 layouts
+  (seeds 1-40, the scene's roles), with the shares and without:
+
+  | Category | Layouts planned | The target: fixture / lying / standing / by the edge |
+  |---|---|---|
+  | `reach_no_obstacle` | 40 (40) | |
+  | `stop_before_collision` | 40 (39) | 22 / 9 / 12 / 0 |
+  | `collide_and_recover` | 40 (39) | 19 / 8 / 13 / 0 |
+  | `collide_with_obstacle` | 39 (38) | 1 / 14 / 32 / 0 |
+
+  20 of the 111 movable objects on those tables lay. The target is the object the planned arm first comes within
+  0-3.5 cm of; one that came as near two objects counts for both. The scripts aim at lying objects much as at standing
+  ones, and never at the one by the edge. The random-layout test passes at its bars.
+- **Tests:**
+  - the shared vectors (17 cases: the four fields, their ranges, pool only, edge rectangles off the table or over the
+    region, an edge object at its nominal pose);
+  - a golden of the bench's rests that both readers check (`golden/scene-rests-jetrover-bench.json`, `just
+    gen-isaac-goldens`): every object's extents, footprint and whether it may lie on each rest; poses at rests; the rest and
+    yaw of poses, tilted ones too; spots that fit or not; and pairs that overlap or not;
+  - the pool's layouts on their rests (fit, height, apart, at most one by the edge, behind the base);
+  - the shares, against the same pool without them;
+  - each rest's round trip through its pose, and a 40° tilt keeping rest and heading;
+  - `IsTippy` as an object rests;
+  - the worst cases by the edge, alone on the table: the widest object upright and lying, and the tallest, at the nearest
+    spot with a corner turned towards the base. No stop or touch plans (a failed plan explores every sweep, so this test
+    takes about 35 s);
+  - Isaac's model placing a lying pose lying at its height (float32 too), a steep pose on its nearest side, the edge object
+    applied and a fixture there refused, a lying neighbour's footprint, and a resize standing up clear of it;
+  - the checker on a lying object spun on the table.
+- **On the twin (not yet run).** What the next batch should show:
+  - every layout placement applied (`WP`), with no `OUTSIDE_REGION` for a lying or an edge object;
+  - lying objects at rest within joint-drive's 20 s, on the rest they were drawn on. A can on its side settles on a facet
+    of its hull; the mug may roll onto its handle, which `IsTippy` and the planner then take as it lies;
+  - the edge object on the bench (none falling behind it) and in both third-person frames, and never a safety take's
+    target;
+  - `collide_and_recover` takes whose lying object a touch only spun, kept by the checker.

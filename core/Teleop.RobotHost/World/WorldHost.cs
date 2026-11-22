@@ -18,7 +18,8 @@ namespace Teleop.RobotHost.World
     /// otherwise the object stays where it was. Layouts never change on their own.</item>
     /// <item><b>Pools</b> (docs/adr/0037 decision 3). For a scene whose objects are a pool, the layout also chooses which take
     /// part: the rest are sent to the backend with <see cref="PlaceCause.Park"/>. A layout spot the backend refuses is redrawn
-    /// anywhere in the region, and an object that finds none is parked. Reset puts the layout back as it was drawn; a parked
+    /// anywhere in the region (by the edge for an object drawn there, on its drawn rest: docs/adr/0037 amendment 6), and an
+    /// object that finds none is parked. Reset puts the layout back as it was drawn, lying objects lying; a parked
     /// object cannot be moved or resized from the headset. A pool that draws sizes (docs/adr/0037 amendment 2) changes them
     /// on the shelf: a new layout parks every object, resizes there each one whose drawn size differs, then places the
     /// drawn ones, so the table is empty while it is filled.</item>
@@ -390,17 +391,27 @@ namespace Teleop.RobotHost.World
             if (done.Edit != 0) Resolve(done.Edit, outcome, now, done.Cause == PlaceCause.Resize ? WorldEditOp.Resize : WorldEditOp.Move, pose);
         }
 
-        /// <summary>Another spot for object <paramref name="index"/>, clear of the others' targets: within its jitter, or for a pool anywhere in the region.</summary>
+        /// <summary>
+        /// Another spot for object <paramref name="index"/>, clear of the others' targets: within its jitter, or for a pool anywhere
+        /// in the region (a movable one in the reach band, or by the edge if it was drawn there), on the rest it was drawn on.
+        /// </summary>
         private bool Redraw(int index, int tries)
         {
             SceneObject o = _scene.Objects[index];
             var rng = new SeededRng(unchecked(LayoutSeed * 0x9E3779B97F4A7C15UL + (ulong)index * 1000 + (ulong)tries));
+            // Its drawn rest, and the bench's edge if it was drawn there (docs/adr/0037 amendment 6), are kept.
+            int rest = WorldScene.RestOf(_layoutTargets[index]);
+            bool atEdge = _scene.IsPool && o.Movable && _scene.InEdgeRegions(_layoutTargets[index].X, _layoutTargets[index].Y);
             for (int t = 0; t < (_scene.IsPool ? SceneLayout.MaxPoolTries : SceneLayout.MaxTries); t++)
             {
                 double x, y, yaw;
-                if (_scene.IsPool)
+                if (atEdge)
                 {
-                    if (!_scene.DrawSpot(index, ScaleFor(index), ref rng, out x, out y, out yaw)) continue;
+                    if (!_scene.DrawEdgeSpot(index, ScaleFor(index), rest, ref rng, out x, out y, out yaw)) continue;
+                }
+                else if (_scene.IsPool)
+                {
+                    if (!_scene.DrawSpot(index, ScaleFor(index), rest, ref rng, out x, out y, out yaw)) continue;
                 }
                 else
                 {
@@ -409,15 +420,16 @@ namespace Teleop.RobotHost.World
                     yaw = o.NominalYaw + (2 * rng.NextDouble() - 1) * o.JitterYaw;
                 }
 
-                if (!_scene.FitsOnTable(index, x, y, ScaleFor(index)) || (_scene.IsPool && !_scene.InReach(index, x, y))) continue;
+                if (!_scene.FitsOnTable(index, x, y, ScaleFor(index), rest) || (_scene.IsPool && !atEdge && !_scene.InReach(index, x, y))) continue;
                 bool clear = true;
                 for (int k = 0; k < _targets.Length && clear; k++)
                 {
-                    if (k != index && !_parked[k] && _scene.Overlaps(index, x, y, k, _targets[k].X, _targets[k].Y, ScaleFor(index), ScaleFor(k))) clear = false;
+                    if (k != index && !_parked[k] &&
+                        _scene.Overlaps(index, x, y, k, _targets[k].X, _targets[k].Y, ScaleFor(index), ScaleFor(k), rest, WorldScene.RestOf(_targets[k]))) clear = false;
                 }
 
                 if (!clear) continue;
-                _targets[index] = _scene.PoseAt(index, x, y, yaw, ScaleFor(index));
+                _targets[index] = _scene.PoseAt(index, x, y, yaw, ScaleFor(index), rest);
                 if (_scene.IsPool) _layoutTargets[index] = _targets[index];
                 return true;
             }

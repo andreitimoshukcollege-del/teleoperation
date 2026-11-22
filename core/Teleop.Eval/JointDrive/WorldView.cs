@@ -52,9 +52,26 @@ namespace Teleop.Eval.JointDrive
             var half = new Vector3((float)(o.SizeX * scale / 2), (float)(o.SizeY * scale / 2), (float)(o.SizeZ * scale / 2));
             var centre = new Vector3((float)x, (float)y, (float)z);
 
-            // Mass at size, as Isaac's bodies have it; tippy from the file's proportions, which a uniform size keeps.
-            bool tippy = o.SizeZ > SafetyObject.TippyAspect * Math.Min(o.SizeX, o.SizeY);
-            return new SafetyObject(o.Id, centre, rotation, half, o.Movable, o.Mass * scale * scale * scale, tippy, shapes?.For(o)?.At(half));
+            // Mass at size, as Isaac's bodies have it; tippy from the proportions as it rests (a uniform size keeps them).
+            return new SafetyObject(o.Id, centre, rotation, half, o.Movable, o.Mass * scale * scale * scale, IsTippy(o, qw, qx, qy, qz), shapes?.For(o)?.At(half));
+        }
+
+        /// <summary>
+        /// Whether object <paramref name="o"/>, resting with the rotation w, x, y, z, is taller than <see cref="SafetyObject.TippyAspect"/>
+        /// times its narrower side: upright, its file's height over its footprint; lying on a side (docs/adr/0037 amendment 6), the
+        /// side that is up over the two that lie flat. A marker on its side is not tippy; standing, it is.
+        /// </summary>
+        public static bool IsTippy(SceneObject o, double qw, double qx, double qy, double qz)
+        {
+            double up, a, b;
+            switch (WorldScene.RestOf(qw, qx, qy, qz, out _) % 3)
+            {
+                case 1: up = o.SizeY; a = o.SizeX; b = o.SizeZ; break;
+                case 2: up = o.SizeX; a = o.SizeZ; b = o.SizeY; break;
+                default: up = o.SizeZ; a = o.SizeX; b = o.SizeY; break;
+            }
+
+            return up > SafetyObject.TippyAspect * Math.Min(a, b);
         }
 
         /// <summary>

@@ -2,6 +2,9 @@
 
 import math
 import os
+import struct
+
+import pytest
 
 from conftest import REPO
 from teleop_isaac import scene, wire
@@ -296,3 +299,78 @@ def test_park_crosses_the_wire_and_resize_never_does():
     d = wire.encode_place(1, 2, 3, wire.CAUSE_PARK, 4, at(0, 0))
     assert wire.decode_place(d)[2] == wire.CAUSE_PARK
     assert wire.decode_place(wire.encode_place(1, 2, 3, 4, 4, at(0, 0))) is None  # 4 is RobotHost's resize record only
+
+
+# --- rests (docs/adr/0037 amendment 6) ---------------------------------------------------------------------------------
+
+def named(m, name):
+    return next(i for i, o in enumerate(m.scene.objects) if o.name == name)
+
+
+def test_a_lying_pose_is_placed_lying_on_its_rest_at_its_height():
+    # RobotHost lays some of a layout's objects on a side; the bridge stands each as drawn, not upright.
+    m = pool_model()
+    s, tin = m.scene, named(m, "cleaner-tin")
+    want = s.pose_at(tin, 0.26, 0.05, 0.9, 1.0, 2)
+    outcome, i, placed = m.check(wire.CAUSE_LAYOUT, s.objects[tin].id, (*want[:2], 0.3, *want[3:]), no_arm)
+    assert (outcome, i) == (wire.APPLIED, tin)
+    assert placed == pytest.approx(want, abs=1e-12)
+    assert abs(placed[2] - (s.table.top + s.objects[tin].size[0] / 2)) < 1e-12  # its x side up: 8.8 cm tall, whatever z came
+    # As the wire carries it (float32): the same rest and heading.
+    f32 = struct.unpack("<7f", struct.pack("<7f", *want))
+    outcome, _, again = m.check(wire.CAUSE_LAYOUT, s.objects[tin].id, f32, no_arm)
+    assert outcome == wire.APPLIED and again[:3] == pytest.approx(want[:3], abs=1e-6)
+    assert scene.rest_of(again)[0] == 2 and scene.rest_of(again)[1] == pytest.approx(0.9, abs=1e-6)
+
+
+def test_an_upright_or_slightly_tilted_pose_stands_up_and_a_steep_one_lies_on_its_nearest_side():
+    m = pool_model()
+    s, tin = m.scene, named(m, "cleaner-tin")
+    oid = s.objects[tin].id
+    outcome, _, placed = m.check(wire.CAUSE_LAYOUT, oid, at(0.26, 0.05, 0.9, z=0.3), no_arm)
+    assert outcome == wire.APPLIED and placed == pytest.approx(s.pose_at(tin, 0.26, 0.05, 0.9), abs=1e-12)  # as before
+    for degrees, rest in ((30, 0), (60, 1), (-60, 4), (150, 3)):
+        a = math.radians(degrees)
+        outcome, _, placed = m.check(wire.CAUSE_LAYOUT, oid, (0.26, 0.05, 0.3, math.cos(a / 2), math.sin(a / 2), 0.0, 0.0), no_arm)
+        assert outcome == wire.APPLIED and scene.rest_of(placed)[0] == rest, degrees
+        assert abs(placed[2] - (s.table.top + s.objects[tin].rest_extents(rest)[2] / 2)) < 1e-12
+
+
+def test_a_lying_object_keeps_the_others_off_its_footprint_there():
+    m = pool_model()
+    s, tin, can = m.scene, named(m, "cleaner-tin"), named(m, "tomato-soup-can")
+    outcome, _, placed = m.check(wire.CAUSE_LAYOUT, s.objects[tin].id, s.pose_at(tin, 0.25, 0.0, 0.0, 1.0, 1), no_arm)
+    assert outcome == wire.APPLIED
+    m.apply(tin, placed)
+    standing = s.objects[tin].footprint_radius + s.objects[can].footprint_radius + s.clearance
+    lying = s.objects[tin].footprint_radius_at(1) + s.objects[can].footprint_radius + s.clearance
+    d = (standing + lying) / 2  # clear of the tin standing, not of the tin lying
+    assert m.check(wire.CAUSE_LAYOUT, s.objects[can].id, at(0.25, d, z=0.0), no_arm)[0] == wire.OVERLAPS_OBJECT
+    m.apply(tin, s.pose_at(tin, 0.25, 0.0, 0.0))  # stood up again: its round base
+    assert m.check(wire.CAUSE_LAYOUT, s.objects[can].id, at(0.25, d, z=0.0), no_arm)[0] == wire.APPLIED
+
+
+def test_a_movable_object_may_be_placed_by_the_edge_and_a_fixed_one_may_not():
+    # The edge regions lie outside the placement region (the bench's back edge, behind the arm): a layout's edge object stands
+    # there, and the bridge must not refuse it as OUTSIDE_REGION.
+    m = pool_model()
+    s, can = m.scene, named(m, "tomato-soup-can")
+    y = max(s.edge_regions[2], s.robot_keep_out[3] + s.objects[can].footprint_radius_at(1) + 0.001)
+    for rest in (0, 1):
+        outcome, _, placed = m.check(wire.CAUSE_LAYOUT, s.objects[can].id, s.pose_at(can, -0.16, y, 0.3, 1.0, rest), no_arm)
+        assert outcome == wire.APPLIED and scene.rest_of(placed)[0] == rest
+    fixture = next(i for i, o in enumerate(s.objects) if not o.movable)
+    assert m.check(wire.CAUSE_LAYOUT, s.objects[fixture].id, at(-0.16, y, z=0.0), no_arm)[0] == wire.OUTSIDE_REGION
+
+
+def test_a_resize_stands_the_object_up_clear_of_a_lying_neighbour_as_it_lies():
+    m = model()  # the FR3 bench: every object may be resized
+    s, post, can = m.scene, 0, 3
+    # The post knocked over 20 cm from the can: lying, its footprint reaches 15 cm (standing, 4 cm), so the can grown by a
+    # quarter no longer fits where it stands and moves to the nearest spot clear of it.
+    m.sense(post, s.pose_at(post, 0.40, 0.20, 0.0, 1.0, 1))
+    assert not s.overlaps(can, 0.40, 0.0, post, 0.40, 0.20, 1.25, 1.0) and s.overlaps(can, 0.40, 0.0, post, 0.40, 0.20, 1.25, 1.0, 0, 1)
+    outcome, _, upright = m.check_resize(s.objects[can].id, 1.25, no_arm)
+    assert outcome == wire.APPLIED and scene.rest_of(upright)[0] == 0
+    assert not s.overlaps(can, upright[0], upright[1], post, 0.40, 0.20, 1.25, 1.0, 0, 1)
+    assert (upright[0] - 0.40) ** 2 + upright[1] ** 2 < 0.06 ** 2  # moved only as far as it had to

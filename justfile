@@ -3462,7 +3462,7 @@ isaac-models-fetch scene="jetrover-bench":
     "$HOME/isaacsim/venv/bin/python" -m teleop_isaac.models fetch $IDS 2>&1 | grep -E '^\[models\]|^\{'
     REMOTE
 
-# Fetch the PBR textures the twin's shapes and surfaces wear (docs/adr/0037 amendment 5): teleop_isaac.materials' 20 Poly Haven textures (CC0; wood and metal; colour, roughness and normal maps at 1K), checked against the API's md5, into ~/isaacsim/assets/textures/polyhaven with their real-world size. Resumes where it stopped. Runs this commit (it must be on GitHub)
+# Fetch the PBR textures the twin's shapes and surfaces wear (docs/adr/0037 amendment 5 and "Surfaces and flat clutter"): teleop_isaac.materials' 28 Poly Haven textures (CC0; wood and metal for the shapes, table tops for the looks; colour, roughness and normal maps at 1K), checked against the API's md5, into ~/isaacsim/assets/textures/polyhaven with their real-world size, and the 4 it makes itself from a seed (a cutting mat, kraft paper, cardboard, white paper; CC0, nothing downloaded). Resumes where it stopped. Runs this commit (it must be on GitHub)
 [group('isaac')]
 isaac-materials-fetch:
     #!/usr/bin/env bash

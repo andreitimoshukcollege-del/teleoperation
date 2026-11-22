@@ -101,24 +101,195 @@ def _bench():
     return scene_module.load(os.path.join(REPO, "core", "Scenes", "jetrover-bench.json"))
 
 
-def test_the_bench_wears_wood_and_metal_and_a_grey_laminate_table():
+def _with_materials(s, **change):
+    return dataclasses.replace(s, extra=dict(s.extra, materials=dict(s.extra["materials"], **change)))
+
+
+DARK = ("black-resin", "black-laminate")
+
+
+def test_the_table_and_the_bench_draw_a_look_each_take_and_the_bench_is_furniture_dark_more_often():
     from teleop_isaac.renderer import materials_spec
     m = materials_spec(_bench())
     assert m["classes"] == {"box": ["wood"], "cylinder": ["metal", "wood"]}
-    assert m["surfaces"] == {"table": "grey_oak_veneer_01", "bench": "grey_oak_veneer_01"}
-    assert 0 < m["surfaceDesaturation"] <= 1 and max(m["surfaceTint"]) < 0.6  # grey, not the light oak's own colour
+    looks, table, bench = m["looks"], m["surfaces"]["table"], m["surfaces"]["bench"]
+    assert len(table) == len(looks) == 14 and set(bench) < set(table)  # the table may also be covered: a mat, cloth, paper
+    assert set(bench) == set(DARK) | {"grey-laminate", "wood-kitchen", "wood-table", "wood-plywood", "wood-oak"}
+    assert all(looks[lid]["weight"] == (2.0 if lid in DARK else 1.0) for lid in table)
+    resin = looks["black-resin"]  # the real lab bench: nearly black, satin
+    assert resin["texture"] == "smooth_concrete_floor" and max(resin["tint"]) <= 0.06 and resin["desaturation"] == 1.0
+    assert resin["roughness"] == 0.3 and 0 < resin["roughnessTexture"] < 0.5
+    grey = looks["grey-laminate"]  # the look the table had before
+    assert grey["texture"] == "grey_oak_veneer_01" and grey["desaturation"] == 0.85 and grey["tint"] == [0.42] * 3
+    assert looks["wood-oak"]["roughness"] is None and looks["wood-oak"]["roughnessTexture"] == 1.0  # its texture's own
+    assert {looks[lid]["texture"] for lid in table} >= set(materials.PROCEDURAL)
+    assert all(materials.TEXTURES[looks[lid]["texture"]] in ("surface", "wood") for lid in table)
 
 
-def test_a_materials_section_names_known_classes_surfaces_and_textures():
+def test_a_materials_section_names_known_classes_surfaces_looks_and_textures():
     from teleop_isaac.renderer import materials_spec
     s = _bench()
-    for change, word in (({"box": ["plastic"]}, "classes"), ({"surfaces": {"ceiling": "oak_veneer_01"}}, "ceiling"),
-                         ({"surfaces": {"table": "nope"}}, "nope"), ({"tileScale": 0}, "tileScale"),
-                         ({"surfaceTint": [2, 0, 0]}, "surfaceTint")):
-        t = dataclasses.replace(s, extra=dict(s.extra, materials=dict(s.extra["materials"], **change)))
+    looks = s.extra["materials"]["looks"]
+
+    def look(**change):
+        return dict(looks, **{"black-resin": dict(looks["black-resin"], **change)})
+
+    for change, word in (
+            ({"box": ["plastic"]}, "classes"), ({"box": ["surface"]}, "classes"),  # a shape never draws a table top
+            ({"surfaces": {"ceiling": "oak_veneer_01"}}, "ceiling"), ({"surfaces": {"table": "nope"}}, "nope"),
+            ({"surfaces": {"table": ["black-resin", "no-such-look"]}}, "no-such-look"),
+            ({"surfaces": {"table": []}}, "empty"), ({"surfaces": {"table": ["wood-oak", "wood-oak"]}}, "twice"),
+            ({"looks": look(texture="marble_99")}, "marble_99"),
+            ({"looks": look(weight=0)}, "weight"), ({"looks": look(weight=-1)}, "weight"), ({"looks": look(weight="2")}, "weight"),
+            ({"looks": look(weight=True)}, "weight"), ({"looks": look(weight=float("nan"))}, "weight"),
+            ({"looks": look(roughness=1.5)}, "roughness"), ({"looks": look(roughness=-0.1)}, "roughness"),
+            ({"looks": look(roughness="satin")}, "roughness"), ({"looks": look(roughnessTexture=2)}, "roughnessTexture"),
+            ({"looks": look(tint=[0.1, 0.1])}, "tint"), ({"looks": look(tint=[0.1, 0.1, 1.5])}, "tint"),
+            ({"looks": look(desaturation=2)}, "desaturation"), ({"looks": look(shine=1)}, "shine"),
+            ({"looks": dict(looks, plywood={"texture": "plywood"})}, "texture's id"),
+            ({"looks": dict(looks, **{"Black Resin": {"texture": "plywood"}})}, "lowercase"),
+            ({"objects": {"no-such-object": ["wood-oak"]}}, "no-such-object"),
+            ({"objects": {"mug": ["wood-oak"]}}, "keeps its own look"),  # a scan wears its own textures
+            ({"tileScale": 0}, "tileScale"), ({"surfaceTint": [2, 0, 0]}, "surfaceTint")):
         with pytest.raises(ValueError, match=word):
-            materials_spec(t)
+            materials_spec(_with_materials(s, **change))
     assert materials_spec(dataclasses.replace(s, extra={k: v for k, v in s.extra.items() if k != "materials"})) is None
+
+
+def test_a_surface_may_still_name_one_texture_which_wears_the_sections_desaturation_and_tint():
+    from teleop_isaac.renderer import materials_spec
+    m = materials_spec(_with_materials(_bench(), surfaces={"table": "grey_oak_veneer_01"}, surfaceDesaturation=0.85,
+                                       surfaceTint=[0.42, 0.42, 0.42]))
+    assert m["surfaces"] == {"table": ["grey_oak_veneer_01"]}
+    look = m["looks"]["grey_oak_veneer_01"]
+    assert look["texture"] == "grey_oak_veneer_01" and look["desaturation"] == 0.85 and look["tint"] == [0.42] * 3
+    assert {materials.surface_look(m["looks"], m["surfaces"]["table"], 7, k, "table") for k in range(20)} == {"grey_oak_veneer_01"}
+
+
+def test_a_surfaces_look_is_drawn_from_the_seed_the_change_and_the_surface_alone_by_weight():
+    import math
+    from teleop_isaac.renderer import materials_spec
+    m = materials_spec(_bench())
+    looks, table, bench = m["looks"], m["surfaces"]["table"], m["surfaces"]["bench"]
+    assert materials.surface_look(looks, table, 7, 3, "table") == materials.surface_look(looks, table, 7, 3, "table")
+    n = 6000
+    on_table = [materials.surface_look(looks, table, 7, k, "table") for k in range(n)]
+    on_bench = [materials.surface_look(looks, bench, 7, k, "bench") for k in range(n)]
+    for ids, seen in ((table, on_table), (bench, on_bench)):
+        total = sum(looks[lid]["weight"] for lid in ids)
+        for lid in ids:
+            p = looks[lid]["weight"] / total
+            assert abs(seen.count(lid) / n - p) < 4 * math.sqrt(p * (1 - p) / n), lid
+    dark_bench, dark_table = (sum(seen.count(lid) for lid in DARK) / n for seen in (on_bench, on_table))
+    assert dark_bench > 0.4 and dark_table < 0.3  # 4 in 9 against 4 in 16
+    assert sum(a == b for a, b in zip(on_table, on_bench)) < 0.15 * n  # each surface its own draw
+    assert [materials.surface_look(looks, table, 8, k, "table") for k in range(50)] != on_table[:50]
+    assert materials.pick_look({"a": {"weight": 3.0}, "b": {}}, ["a", "b"], "k") in ("a", "b")
+    with pytest.raises(ValueError):
+        materials.pick_look(looks, [], "k")
+
+
+def test_a_simple_shape_may_wear_looks_by_name_drawn_apart_from_the_surfaces():
+    from teleop_isaac.renderer import materials_spec
+    s = _bench()
+    phone = dataclasses.replace(s.objects[0], name="phone", shape="box", asset="")
+    t = _with_materials(dataclasses.replace(s, objects=(phone,) + s.objects[1:]), objects={"phone": ["black-laminate", "grey-laminate"]})
+    m = materials_spec(t)
+    assert m["objects"] == {"phone": ["black-laminate", "grey-laminate"]}
+    drawn = [materials.object_look(m["looks"], m["objects"]["phone"], 7, k, "phone") for k in range(60)]
+    assert set(drawn) == {"black-laminate", "grey-laminate"}
+    assert drawn != [materials.surface_look(m["looks"], m["objects"]["phone"], 7, k, "phone") for k in range(60)]
+
+
+def test_the_table_top_textures_are_never_a_shapes_and_four_of_them_are_made_here():
+    surface = {t for t, c in materials.TEXTURES.items() if c == "surface"}
+    assert surface == {"smooth_concrete_floor", "laminate_floor_02", "kitchen_wood", "wood_table_001", "plywood", "rough_linen",
+                       "denim_fabric_03", "hessian_230"} | set(materials.PROCEDURAL)
+    assert all(materials.ASSET_ID.match(t) for t in materials.TEXTURES)
+    tex = [{"id": t, "class": c} for t, c in materials.TEXTURES.items()]
+    assert all(materials.pick(tex, ["wood", "metal"], 7, k, 31)["class"] != "surface" for k in range(300))
+
+
+def _png_pixels(data: bytes):
+    """A PNG as materials.png writes it (8-bit, filter 0 on every row), decoded: an (h, w, channels) uint8 array."""
+    import struct
+    import zlib
+
+    import numpy as np
+    assert data[:8] == b"\x89PNG\r\n\x1a\n"
+    at, idat, head = 8, b"", None
+    while at < len(data):
+        (n,) = struct.unpack(">I", data[at:at + 4])
+        tag, body = data[at + 4:at + 8], data[at + 8:at + 8 + n]
+        assert zlib.crc32(tag + body) & 0xFFFFFFFF == struct.unpack(">I", data[at + 8 + n:at + 12 + n])[0]
+        if tag == b"IHDR":
+            head = struct.unpack(">IIBBBBB", body)
+        elif tag == b"IDAT":
+            idat += body
+        at += 12 + n
+    w, h, depth, colour_type = head[:4]
+    ch = {0: 1, 2: 3}[colour_type]
+    raw = np.frombuffer(zlib.decompress(idat), np.uint8).reshape(h, 1 + w * ch)
+    assert depth == 8 and (raw[:, 0] == 0).all()
+    return raw[:, 1:].reshape(h, w, ch)
+
+
+def test_the_textures_made_here_need_no_download_tile_seamlessly_and_are_kept_like_the_rest(tmp_path):
+    import numpy as np
+
+    def offline(url, limit):
+        raise AssertionError(f"made here, never fetched: {url}")
+
+    m = materials.fetch(str(tmp_path), list(materials.PROCEDURAL), download=offline, say=lambda *_: None)
+    assert [e["id"] for e in m["textures"]] == sorted(materials.PROCEDURAL)
+    for e in m["textures"]:
+        assert e["class"] == "surface" and e["generator"] == materials.GENERATOR and e["license"].startswith("CC0 1.0")
+        assert e["sizeM"] == materials.PROCEDURAL[e["id"]][0] and sorted(e["files"]) == ["diffuse.png", "normal.png", "roughness.png"]
+        for name, channels in (("diffuse.png", 3), ("roughness.png", 1), ("normal.png", 3)):
+            data = (tmp_path / e["id"] / name).read_bytes()
+            a = _png_pixels(data).astype(float)
+            assert materials.map_ok(name, data) and a.shape == (materials.PROCEDURAL_PX, materials.PROCEDURAL_PX, channels)
+            # Seamless: across the wrap, neighbouring columns and rows differ no more than neighbours inside do.
+            inner_x, inner_y = np.abs(np.diff(a, axis=1)).mean(), np.abs(np.diff(a, axis=0)).mean()
+            assert np.abs(a[:, 0] - a[:, -1]).mean() <= 2 * inner_x + 0.5, (e["id"], name)
+            assert np.abs(a[0] - a[-1]).mean() <= 2 * inner_y + 0.5, (e["id"], name)
+            if name == "normal.png":
+                assert a[..., 2].mean() > 240  # a little relief, not a bumpy surface
+            if name == "roughness.png":
+                assert 0.45 * 255 < a.mean() < 0.95 * 255
+    assert materials.status(str(tmp_path))["bad"] == []
+    # The same bytes again; one made by another generator is made again, the rest left alone.
+    assert materials.procedural_maps("teleop_kraft_paper")["diffuse.png"] == (tmp_path / "teleop_kraft_paper" / "diffuse.png").read_bytes()
+    m["textures"][0]["generator"] = "an older one"
+    materials.save_manifest(str(tmp_path), m)
+    said = []
+    materials.fetch(str(tmp_path), list(materials.PROCEDURAL), download=offline, say=said.append)
+    assert len(said) == 1 and m["textures"][0]["id"] in said[0]
+
+
+def test_the_cutting_mat_is_green_with_a_line_every_centimetre_and_a_bold_one_every_five():
+    n = 600  # half a millimetre a pixel
+    a = _png_pixels(materials.procedural_maps("teleop_cutting_mat", n)["diffuse.png"]).astype(float)
+    assert a[..., 1].mean() > a[..., 0].mean() + 20 and a[..., 1].mean() > a[..., 2].mean()
+    column = a.mean(axis=(0, 2))  # a vertical line brightens its column
+
+    def at(u: float) -> float:  # the brighter of the two columns either side of u metres
+        k = int(round(u / (0.30 / n)))
+        return max(column[(k - 1) % n], column[k % n])
+
+    lines, between = [at(k * 0.01) for k in range(30)], [at(k * 0.01 + 0.005) for k in range(30)]
+    bold, thin = [at(k * 0.05) for k in range(6)], [at(k * 0.01) for k in range(30) if k % 5]
+    assert min(lines) > max(between) + 10 and min(bold) > max(thin)
+
+
+def test_wear_finds_each_map_by_its_stem_whatever_its_format():
+    from teleop_isaac.renderer import texture_maps
+    polyhaven = {"files": {"diffuse.jpg": "a", "roughness.jpg": "b", "normal.png": "c"}}
+    made = {"files": {"diffuse.png": "a", "roughness.png": "b", "normal.png": "c"}}
+    assert texture_maps(polyhaven) == [("diffuse_texture", "diffuse.jpg", False), ("reflectionroughness_texture", "roughness.jpg", True),
+                                       ("normalmap_texture", "normal.png", True)]
+    assert [name for _, name, _ in texture_maps(made)] == ["diffuse.png", "roughness.png", "normal.png"]
+    assert texture_maps({"files": {"diffuse.png": "a"}})[1:] == [("reflectionroughness_texture", "", True), ("normalmap_texture", "", True)]
 
 
 def test_the_benchs_fixtures_are_real_models_bigger_than_the_robot_beside_it_within_reach():

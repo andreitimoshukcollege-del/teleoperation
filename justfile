@@ -4211,6 +4211,46 @@ isaac-safety-build-check dataset episodes="40" jobs="8":
     exit $rc
     REMOTE
 
+# The geometry PhysX collides with, for the clearance the safety datasets carry (docs/adr/0038 decision 4): every arm link's collision boxes (the URDF importer's colliders, checked against the URDF) and each mesh asset of core/Scenes/<scene>.json as convex pieces, CoACD at PhysX's convex-decomposition budget (32 hulls of 64 vertices; method=hull gives each mesh one hull, into ~/isaacsim/assets/clearance-hull), into ~/isaacsim/assets/clearance on the GPU machine. An asset already there whose manifest entry and method are unchanged is kept, so run it after any scene or asset change. Isaac's Python without Kit or rendering, 4 threads at low priority (about 6 minutes for jetrover-bench's 24 assets the first time), in its own checkout (~/repos/clearance), at this commit (it must be on GitHub)
+[group('isaac')]
+isaac-clearance-geometry scene="jetrover-bench" method="coacd":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    case "{{scene}}" in *[!A-Za-z0-9._-]*|"") echo "error: scene is a file name in core/Scenes without .json" >&2; exit 1 ;; esac
+    case "{{method}}" in coacd|hull) ;; *) echo "error: method is coacd or hull" >&2; exit 1 ;; esac
+    [ -f "core/Scenes/{{scene}}.json" ] || { echo "error: no core/Scenes/{{scene}}.json" >&2; exit 1; }
+    commit=$(just _pushed-commit)
+    ssh -o ConnectTimeout=10 "{{gpu_host}}" "COMMIT='$commit' SCENE='{{scene}}' METHOD='{{method}}' bash -s" <<'REMOTE'
+    set -euo pipefail
+    repo=$HOME/repos/clearance
+    [ -d "$repo" ] || git clone -q https://github.com/andreitimoshukcollege-del/teleoperation.git "$repo"
+    cd "$repo" && git fetch -q origin && git checkout -q "$COMMIT" && cd robot/isaac
+    out=$HOME/isaacsim/assets/clearance
+    [ "$METHOD" = coacd ] || out=$out-$METHOD
+    OMP_NUM_THREADS=4 nice -n 10 "$HOME/isaacsim/venv/bin/python" -m teleop_isaac.clearance_geometry "../../core/Scenes/$SCENE.json" \
+        --method "$METHOD" --out "$out" 2>&1 | grep -E '^\[clearance-geometry\]'
+    REMOTE
+
+# The clearance against PhysX's own contacts (docs/adr/0038, workstream C), for a safety dataset's takes (a folder under ~/data/lerobot/jetrover-isaac-safety): at every WC touch onset, the signed distance from the touching link to its object (median and 90th percentile of its size, by object and link); the share of contact-free frames whose nearest obstacle overlaps a link; the distance while in contact; the distance from 300 ms before to 300 ms after each take's first touch; the seconds a take takes. `geometry` is a cache on the GPU machine (default ~/isaacsim/assets/clearance, just isaac-clearance-geometry); `limit` checks only the first takes (0: all). Reads only; the lerobot venv in ~/repos/clearance at this commit (it must be on GitHub)
+[group('isaac')]
+isaac-clearance-check dataset geometry="" limit="0":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    case "{{dataset}}" in *[!A-Za-z0-9._-]*|"") echo "error: dataset is a folder name under ~/data/lerobot/jetrover-isaac-safety" >&2; exit 1 ;; esac
+    case "{{geometry}}" in *[!A-Za-z0-9._/~-]*) echo "error: geometry is a folder on the GPU machine" >&2; exit 1 ;; esac
+    case "{{limit}}" in *[!0-9]*|"") echo "error: limit is a number" >&2; exit 1 ;; esac
+    commit=$(just _pushed-commit)
+    ssh -o ConnectTimeout=10 "{{gpu_host}}" "COMMIT='$commit' DATASET='{{dataset}}' GEOMETRY='{{geometry}}' LIMIT='{{limit}}' bash -s" <<'REMOTE'
+    set -euo pipefail
+    repo=$HOME/repos/clearance
+    [ -d "$repo" ] || git clone -q https://github.com/andreitimoshukcollege-del/teleoperation.git "$repo"
+    cd "$repo" && git fetch -q origin && git checkout -q "$COMMIT" && cd robot/lerobot
+    geometry=${GEOMETRY:-$HOME/isaacsim/assets/clearance}
+    geometry=${geometry/#\~/$HOME}
+    nice -n 10 "$HOME/isaacsim/lerobot-venv/bin/python" -m teleop_lerobot.clearance_check --geometry "$geometry" \
+        --dataset "$HOME/data/lerobot/jetrover-isaac-safety/$DATASET" --limit "$LIMIT" --traces 1
+    REMOTE
+
 # Start the JetRover's Isaac twins on the GPU machine (docs/adr/0037 amendment 7): twins 0 to n-1 (n is 1 or 2), each `just isaac-jetrover-host <scene> auto <N> true`, one after the other (each waits for the last to listen: two Isaac start-ups at once only slow each other), in the background there, so a dropped ssh session leaves them running. A twin already running is left as it is. Stop them with just isaac-twins-down; just isaac-status shows them
 [group('isaac')]
 isaac-twins-up n="2" scene="jetrover-bench":

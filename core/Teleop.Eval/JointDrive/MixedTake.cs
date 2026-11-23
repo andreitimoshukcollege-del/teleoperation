@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Numerics;
 using Teleop.Core.Types;
 using Teleop.RobotArm.Collision;
@@ -229,7 +230,8 @@ namespace Teleop.Eval.JointDrive
 
         /// <summary>The object-directed moves tried and planned, and why the rest were not.</summary>
         internal string ObjectReport() => FormattableString.Invariant(
-            $"object moves {_objectMoves} of {_objectTries} tried (missed: too low {_objectMisses[0]}, no line {_objectMisses[1]}, no end {_objectMisses[2]}, no start {_objectMisses[3]}, move there {_objectMisses[4]}, approach {_objectMisses[5]}, sweep {_objectMisses[6]}; lines: no seed {_lineBreaks[0]}, walks broken by IK {_lineBreaks[1]}, envelope {_lineBreaks[2]}, model {_lineBreaks[3]}, flip {_lineBreaks[4]}, base {_lineBreaks[5]})");
+            $"object moves {_objectMoves} of {_objectTries} tried (missed: too low {_objectMisses[0]}, no line {_objectMisses[1]}, no end {_objectMisses[2]}, no start {_objectMisses[3]}, move there {_objectMisses[4]}, approach {_objectMisses[5]}, sweep {_objectMisses[6]}; lines: no seed {_lineBreaks[0]}, walks broken by IK {_lineBreaks[1]}, envelope {_lineBreaks[2]}, model {_lineBreaks[3]}, flip {_lineBreaks[4]}, base {_lineBreaks[5]}); objects: " + string.Join(", ", _missesInARow.Select(kv =>
+            FormattableString.Invariant($"{_objects[kv.Key].Id} r {new Vector2(_objects[kv.Key].Center.X, _objects[kv.Key].Center.Y).Length():0.00} az {MathF.Atan2(_objects[kv.Key].Center.Y, _objects[kv.Key].Center.X) * 180 / MathF.PI:0} h {(_objects[kv.Key].Max.Z - _objects[kv.Key].Min.Z) * 100:0}cm{(_objects[kv.Key].Movable ? "" : " fixed")} misses {kv.Value}"))));
 
         private bool Miss(int why)
         {

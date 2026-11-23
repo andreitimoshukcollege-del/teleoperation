@@ -288,7 +288,66 @@ golden did not change.
 
 ### M, motion
 
-(pending)
+**Built** (branch `work/v2-motion`; docs/adr/0038 decisions 1 and 2, items 1, 6, 7, 8, 10, 11, 23, 24 and 29's caps).
+
+- **`joint-drive --script mixed`** (`DriveScript.Mixed`, `MixedTake`; scenario `mixed`). A take is a run of the hand model's moves
+  from two sources, mixed in every take:
+  - *layout-blind* parts (`HumanOperator.MixedFree`): moves to goals drawn anywhere in reach (`BlindReach`: the wrist 8-25 cm
+    from the base axis, within 100 degrees of straight ahead; 40% low, the wrist at most 6 cm above the base frame with the
+    gripper pitched -45 to -85 degrees, so the pads come within a few cm of the table), back-and-forth strokes (`reverse`) and
+    small adjustments, checked against the robot's own model only, so they may meet an object;
+  - *object-directed* moves: an **aim** reaches at a point of an object's own shape (`shapes.json`; its box without one) at a
+    drawn height (26 mm above its bottom, the pads clear of the 10 mm floor model, to 20 mm below its top or 20 cm up) and
+    stops at a **signed offset drawn uniformly from -40 mm (into it, no deeper than the model measures that object) to +60 mm
+    (short of it)**; a **pass** sweeps across an object at a drawn lateral offset (through a movable one, beside or grazing a
+    fixture), so contact comes mid-move. A quarter of the aims start 4-20 mm from their object (`NearStartShare`), so a contact
+    comes early in the move. Most aims and every pass follow an **arc round the base** at one radius (the arm's reach is a thin
+    shell: pointing down the pads reach 18-24 cm out, 2.5-9 cm above the table; at -60 degrees 24-33 cm, 4-18 cm up), from
+    either side, its height changing by a drawn slope (-12 to +8 degrees); a quarter of the aims come straight out from the base
+    (within 25 degrees). The path is solved outward from where it meets the object, the wrist at the middle of the pitches that
+    reach that point. The arm's clearance is measured as the old planner's is: `ShapeGap` (the twin's links, the pads where each
+    tick's gripper holds them) against a shape, `GapLadder` against a box.
+  - Every move draws its slowness from one lognormal (sd 0.30, 0.65-1.8); any move may be followed by a pause (12%, 0.1-0.5 s), an
+    object-directed one by a pull back (`reverse`, 35%). The gripper does what it does in free movement; no opening for an
+    approach. An object planned to be pushed into is aimed at no more in the take.
+  - **Timing:** the arm moves from the first tick (`EngageOnTheMove`); every tick before 1.5 s and in the take's last 1.0 s keeps
+    2 cm from every object's box (`HumanOperator.Guard`, the model's margin on top), so no contact is planned there; the tail
+    begins with a move up and away that ends clear, and the take ends partway through a later move, at least 1.0 s after the
+    last object-directed move ended. Nothing is checked against a category.
+  - **Speed caps** (`MotionCaps`, `MixedOptions.DefaultCaps`): workstream R's real p99 per joint, speed tick to tick and
+    acceleration over two ticks: yaw 3.8 / 40, shoulder 2.6 / 32, elbow 3.6 / 51, wrist pitch 2.8 / 44, roll 4.0 / 47 (rad/s,
+    rad/s²). With R's advice not to lean on them, a **hand style** (`HandStyle`, `MixedOptions.DefaultStyle`) ...
+  - The four old scripts are unchanged: every new hand-model option is off for them (`TouchMissesTests`, `SafetyScriptTests`
+    and `SafetyTakeTests` as before).
+- **Records** on the joint port, written by RobotHost once per sequence while a take records, documented field by field in
+  trainer/contract/SESSION_FORMAT.md: `MV` (tag 0x8D, `ScriptMoveCodec`) for every planned move as it begins
+  (`index count kind object offsetMm gapMm startS contactS closestS endS`), and `RP` (tag 0x8E, `ReplayCodec`) once a take of
+  the script starts (`group role edit`, exactly decision 2; `group` is the take's `--seed`).
+- **Replays** (`joint-drive ... --replays N`, `--simulated-robot` only). After the source take: reset-layout, checked against
+  where every object stood at the source's start (1 cm, 5 degrees; three tries: a knocked object on another's spot blocks it
+  once); motion on and a slow setup move back to where the source began, clear of the objects by 1 cm; one edit, drawn
+  (`ReplayEdits`, deterministic from the group, the replay and the try): the replays of a group take remove, shift and move in
+  an order drawn from the group, at the object the take came closest to (its aims' and passes' planned gap, else the pads'
+  nearest pass); a removal prefers an object the source moved (it touched it) and parks it (**new world op 6, `park`**: WorldHost
+  stands it on the shelf as a layout parks one; reset-layout brings it back; the headset never sends it); a shift moves an
+  operator-movable, table-level object 10-40 mm along the approach of that closest move, toward the arm when the move stopped
+  short and away when it went in (three times in four); a move stands one elsewhere in reach (15-30 cm out, within 60 degrees,
+  in the placement region) at a drawn yaw on its rest. Nothing that holds another object is edited, and a raised one is only
+  removed. An edit whose new box the replay's quiet start or end would meet, or that RobotHost refuses, is drawn again (six
+  tries, then removal). Then the objects at rest (`RestWatch`), motion on, and a take that sends the source's commands at the
+  same times from its start (`TapePlayer`: in order, none early; the clock held while the joint-state stream is unhealthy, as the
+  source's was) with `RP replay` and the source's `MV` records. joint-drive prints `take recorded: ... ended <code>` for every
+  take and `keep-look: on` / `off` (on as the source records, off as the last replay records).
+- **Batch:** `just isaac-safety-batch ... <twin> <replays=0> <scene=jetrover-bench>` and `isaac-safety-batch-twins ... <replays>
+  <scene>`. Categories may name `mixed`; a mixed take's replays count as takes; every take a run recorded is waited for and
+  checked with its own exit code (`safety-check --set-aside --drive-exit <code>`, workstream L); the verdict's `outcome` and
+  `tableContact` are printed. While a group records, the twin's sessions root holds `.keep-look` (made on `keep-look: on`,
+  removed on `off` and after the run; workstream A's renderer keeps a look while it stands as a session closes), so replays keep
+  the source's look. The scene is passed through (workstream S: mixed batches run on `jetrover-mixed`).
+- **Dry run:** `joint-drive --script <safety script> --dry-run --scene <file> --layouts a-b [--rows]` plans on RobotHost's
+  layouts and prints the figures below (`MixedDryRun`).
+
+FIGURES-PENDING
 
 ### C, clearance and contacts
 

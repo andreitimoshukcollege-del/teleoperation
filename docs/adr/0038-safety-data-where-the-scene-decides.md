@@ -925,7 +925,7 @@ exits non-zero on a failure.
   pacing is reported too.
 - `--sheet` makes a contact sheet of each scanned object across takes, captioned with its drawn colour.
 - On four takes of 2026-11-22 (no section, `--baseline`):
-  - `CM` was within 0.004° of the scene file's poses;
+  - `CM` was within 0.00001° of the scene file's poses (0.004° as first measured: the arc-cosine artefact below);
   - table depth through `CM` was 0.31 mm at p99 for the room cameras and 0.49 mm for the wrist;
   - late-colour jumps were 2.5-5.0 (of 255; the arm's shadow);
   - median frame interval 32.1 ms.
@@ -951,3 +951,36 @@ exits non-zero on a failure.
 5. **Optional and decisive for the material path.** The same with exaggerated `objects` ranges (brightness [0.5, 1.5],
    desaturation [0, 1], tint 0.3) on a scratch copy of the scene. Some objects must come out grey and some clearly tinted,
    both YCB (OmniPBR) and Poly Haven (MaterialX) ones.
+
+**The twin check, 2026-11-23** (20 `mixed` takes on one twin, at 65946e2). The checker flagged every take, twice. In both
+cases `CM` was right and the checker was wrong. Fixed in `appearance_check.py` (and in the renderer's read-back warning),
+measured read-only on the same takes:
+
+- **Table depth through `CM` 4.8-21.3 mm off at p99** for third-left or third-right in 10 of 20 takes.
+  - Through `CM`, the median height error was 0.00-0.01 mm in every one of them.
+  - Every point off lay at x = 0.572 m, 3-40 mm below the top: the table's front face. The `table` mask covers the table's
+    sides too, and a camera that its jitter turned or moved down sees that face in a bottom corner of its image (1-2.4% of
+    its table pixels in the takes that failed).
+  - None of the alternatives fitted better: the jitter's shift or turn in the room's frame, the turn alone, the shift alone,
+    or the change before or after.
+  - The checker now takes only table points that fall on the top's footprint, 1 cm inside its edges.
+  - Through `CM`, every camera of every take is then 0.28-0.52 mm at p99 (0.28-0.30 for the room cameras, 0.48-0.52 for
+    the wrist), against 2.4-66.5 mm (median 16.7) through the scene file's pose. A plane fitted to the top through `CM` is
+    level within 0.003°.
+- **`CM` 0.01-0.04° from the scene file's pose moved by `CJ`**, in every take.
+  - The angle was measured as twice the arc cosine of the two quaternions' dot product, which near 1 turns the 1e-7
+    rounding of `CM`'s 7 decimals into hundredths of a degree. It read exactly 0 wherever the rounded dot product reached 1.
+  - Measured from the relative quaternion (`appearance.turn_deg`), it is 0.00001° and 0.0001 mm in every take. The check's
+    bounds are now 0.01 mm and 0.001°.
+  - The renderer's read-back warnings (0.020-0.022°, 3 of them in the run) were the same artefact. They use `turn_deg` now,
+    at 0.001°.
+- **Tests that would have caught it** (`tests/test_appearance_check.py`):
+  - the bench's table is ray-cast from take 017's jittered pose, with its front face in view: flat to 0.6 mm through the
+    pose rendered, more than 3 mm without the footprint, and more than 3 mm through four wrong poses (the scene file's, 0.5°
+    more, 1 cm lower, the jitter's turn in the room's frame);
+  - `CM` rounded to 7 decimals is within the check's bounds over 300 draws;
+  - `turn_deg` is exact at small turns, where the arc cosine reads a 7-decimal rounding as up to 0.05°.
+- **Frame pacing, the first measure since the fixes** (one twin recording, so not like for like with the 240 takes above,
+  which ran beside a second twin): median interval 32.04 ms, 0.24% over 55 ms, all of the grid recorded. Late-colour jumps
+  are at most 7.2.
+- The renderer's look was right as recorded, so no take needs re-recording for this.

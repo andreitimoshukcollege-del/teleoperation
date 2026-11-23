@@ -129,9 +129,12 @@ namespace Teleop.Eval.JointDrive
         public ScriptMove Record(double sentAt, int count) => new ScriptMove((ushort)Math.Min(Index, ushort.MaxValue), (ushort)Math.Min(count, ushort.MaxValue), Kind, ObjectId,
             OffsetMeters * 1000f, GapMeters * 1000f, (float)(Start - sentAt), (float)(Contact - sentAt), (float)(Closest - sentAt), (float)(End - sentAt));
 
-        public override string ToString() => FormattableString.Invariant(
-            $"move {Index}: {ScriptMoveCodec.Name(Kind)}{(ObjectId != 0 ? $" object {ObjectId}, offset {OffsetMeters * 1000:0.0} mm, gap {GapMeters * 1000:0.0} mm" : "")}, {Start:0.00}-{End:0.00} s" +
-            (double.IsNaN(Contact) ? "" : $", contact {Contact:0.00} s") + (double.IsNaN(Closest) ? "" : $", closest {Closest:0.00} s"));
+        public override string ToString() =>
+            FormattableString.Invariant($"move {Index}: {ScriptMoveCodec.Name(Kind)}") +
+            (ObjectId != 0 ? FormattableString.Invariant($" object {ObjectId}, offset {OffsetMeters * 1000:0.0} mm, gap {GapMeters * 1000:0.0} mm") : "") +
+            FormattableString.Invariant($", {Start:0.00}-{End:0.00} s") +
+            (double.IsNaN(Contact) ? "" : FormattableString.Invariant($", contact {Contact:0.00} s")) +
+            (double.IsNaN(Closest) ? "" : FormattableString.Invariant($", closest {Closest:0.00} s"));
     }
 
     /// <summary>

@@ -1,6 +1,6 @@
 {
  "about": "docs/adr/0038 decision 3: the first 20 layouts of each mixed scene as RobotHost's WorldHost sends them, written by WorldHostMixedTests (just gen-isaac-goldens): every park, resize and layout placement in order, each [kind, id, ...] with a placement's pose (x, y, z, qw, qx, qy, qz, float32 as the wire carries it) or a resize's factor. robot/isaac/tests/test_world.py replays them through Isaac's WorldModel, which must apply every one.",
- "jetrover-mixed": {"sha256": "f529cb4aca1438a93b2ae17262aab586f04d5ba4327e46ec8bf0e66f8be262eb", "requests": [
+ "jetrover-mixed": {"sha256": "f9a3c9b3a7284a0a18531c4c3ca6c7f655131b99ac5bbf5ac46eff7e010c8713", "requests": [
   ["park", 31, 0.20057618618011475, 0.2536812424659729, -0.14527499675750732, 0.6519925594329834, 0, 0, 0.7582253217697144],
   ["park", 32, 17, -13.5, -4.982230186462402, 1, 0, 0, 0],
   ["park", 34, 17, -12.5, -4.984010219573975, 1, 0, 0, 0],
@@ -724,7 +724,7 @@
   ["layout", 74, -0.0018393417121842504, 0.30241087079048157, -0.1408199965953827, 0.8844837546348572, 0, 0, 0.4665709435939789],
   ["layout", 80, 0.25424614548683167, 0.1793639361858368, -0.02995000034570694, 0.535888135433197, -0, -0, -0.8442890048027039]
  ]},
- "jetrover-mixed-holdout": {"sha256": "68057cbbf9a0c820b1e2206d238dc7ff6c2e09a3f09a65bb9618248dc0ebd057", "requests": [
+ "jetrover-mixed-holdout": {"sha256": "14cf8ffbd3da7c07d575f4c9bb61f4d6ef5118f2e534adf9a3d9d1144bcec1a7", "requests": [
   ["park", 102, 17, -13, -4.928909778594971, 1, 0, 0, 0],
   ["park", 103, 17, -12, -4.979764938354492, 1, 0, 0, 0],
   ["park", 104, 17, -11, -4.97643518447876, 1, 0, 0, 0],

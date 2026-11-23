@@ -14,7 +14,7 @@ import glob
 import os
 import sys
 
-CATS = ["reach_no_obstacle", "stop_before_collision", "collide_and_recover", "collide_with_obstacle"]
+CATS = ["reach_no_obstacle", "stop_before_collision", "collide_and_recover", "collide_with_obstacle", "mixed"]
 since = sys.argv[1] if len(sys.argv) > 1 else ""
 roots = sys.argv[2:] or [os.path.expanduser("~/data/takes/jetrover-isaac"), os.path.expanduser("~/data/takes/jetrover-isaac-twin1")]
 
@@ -51,6 +51,8 @@ for root in roots:
             wc = sorted((int(r[2]), r[3] if len(r) > 3 else "") for r in recs(host, "WC") if len(r) > 2)
             starts, on = [], False
             for t, s in wc:
+                # WC object 0 is the table (docs/adr/0038 decision 4): never an obstacle contact.
+                s = ";".join(p for p in s.split(";") if p and p.split(":")[2:3] != ["0"])
                 if s and not on:
                     starts.append(t)
                     on = True

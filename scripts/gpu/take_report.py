@@ -23,7 +23,7 @@ import os
 import statistics
 import sys
 
-CATS = ["reach_no_obstacle", "stop_before_collision", "collide_and_recover", "collide_with_obstacle"]
+CATS = ["reach_no_obstacle", "stop_before_collision", "collide_and_recover", "collide_with_obstacle", "mixed"]
 since = sys.argv[1] if len(sys.argv) > 1 else ""
 roots = sys.argv[2:] or [os.path.expanduser("~/data/takes/jetrover-isaac"), os.path.expanduser("~/data/takes/jetrover-isaac-twin1")]
 
@@ -48,11 +48,13 @@ def tilt_deg(qx, qy):
     return math.degrees(math.acos(max(-1.0, min(1.0, 1 - 2 * (qx * qx + qy * qy)))))
 
 
-def stretches(host):
+def stretches(host, table=False):
+    """The contact stretches with obstacles, or with ``table=True`` those with the table: WC object 0, which the bridge
+    reports since docs/adr/0038 decision 4 and which is never an obstacle."""
     rows = sorted((int(r[2]), r[3] if len(r) > 3 else "") for r in records(host, "WC") if len(r) > 2)
     out, cur = [], None
     for t, s in rows:
-        its = items(s)
+        its = [i for i in items(s) if len(i) > 2 and (i[2] == "0") == table]
         if its:
             force = max((float(i[3]) for i in its if len(i) > 3), default=0.0)
             if cur is None:
@@ -125,7 +127,7 @@ for root in roots:
                 wp = collections.Counter(r[6] for r in records(host, "WP") if len(r) > 6)
                 rows.append(dict(root=os.path.basename(root), cat=cat, name=name, kept=kept, reason=verdict.get("reason", ""),
                                  clutter_ids={i for i, o in objs.items() if o.get("clutter")},
-                                 st=stretches(host), placed=placed, lying=lying, edge=edge, clutter=clutter, looks=looks,
+                                 st=stretches(host), tst=stretches(host, table=True), placed=placed, lying=lying, edge=edge, clutter=clutter, looks=looks,
                                  pieces=pieces, events=len({r[2] for r in se if len(r) > 2}), wp=wp))
 
 print(f"{len(rows)} takes since {since or 'the start'} in {', '.join(os.path.basename(r) for r in roots)}")
@@ -138,6 +140,8 @@ for r in rows:
         length = ((s["end"] or s["start"]) - s["start"]) / 1e6
         lead = ((s["first_force"] or s["end"] or s["start"]) - s["start"]) / 1e6
         print(f"{'':30}contact {length:.0f} ms, peak {s['peak']:.2f} N, lead-in {lead:.0f} ms, objects {sorted(s['objects'])}")
+    if r["tst"]:
+        print(f"{'':30}table contacts {len(r['tst'])}, peak {max(s['peak'] for s in r['tst']):.2f} N")
 
 print("\n== kept / total per category")
 for cat in CATS:
@@ -148,6 +152,8 @@ if allst:
     leads = [((s["first_force"] or s["end"] or s["start"]) - s["start"]) / 1e6 for s in allst]
     print(f"== contact stretches {len(allst)}: lead-in median {statistics.median(leads):.0f} ms, max {max(leads):.0f} ms; "
           f"{sum(1 for s in allst if s['first_force'] is None)} never had force")
+tables = [r for r in rows if r["tst"]]
+print(f"== table contacts (WC object 0, never an obstacle): {sum(len(r['tst']) for r in tables)} in {len(tables)}/{len(rows)} takes")
 if rows:
     print(f"== lying objects in {sum(1 for r in rows if r['lying'])}/{len(rows)} takes; edge object in {sum(1 for r in rows if r['edge'])}/{len(rows)}; "
           f"raised clutter per take {[len(r['clutter']) for r in rows]}, max settled tilt {max([t for r in rows for _, t in r['clutter']], default=None)}")

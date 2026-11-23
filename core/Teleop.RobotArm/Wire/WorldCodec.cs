@@ -18,6 +18,13 @@ namespace Teleop.RobotArm.Wire
         /// the new size.
         /// </summary>
         Resize = 5,
+
+        /// <summary>
+        /// Take one object off the table for now (docs/adr/0038 decision 2, a replay's <c>remove</c>): it is stood on the shelf as a
+        /// layout's parked objects are, whatever it is, until <see cref="ResetObject"/> or <see cref="ResetLayout"/> brings it back.
+        /// The layout stays as drawn. The edit's pose is unused but for its id. Only <c>joint-drive</c> sends it; the headset never has.
+        /// </summary>
+        Park = 6,
     }
 
     /// <summary>The world's state as RobotHost reports it to the headset, once a second and on change.</summary>
@@ -117,7 +124,7 @@ namespace Teleop.RobotArm.Wire
             sequence = 0;
             operatorSendTicks = 0;
             pose = default;
-            if (source.Length != EditBytes || source[0] != EditTag || source[1] != Version || source[2] < 1 || source[2] > 5) return false;
+            if (source.Length != EditBytes || source[0] != EditTag || source[1] != Version || source[2] < 1 || source[2] > (byte)WorldEditOp.Park) return false;
             sequence = BinaryPrimitives.ReadUInt32LittleEndian(source.Slice(4));
             if (sequence == 0) return false;
             op = (WorldEditOp)source[2];

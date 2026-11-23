@@ -170,6 +170,21 @@ namespace Teleop.RobotHost.World
 
                 outcome = PlaceOutcome.Applied;
             }
+            else if (op == WorldEditOp.Park)
+            {
+                // docs/adr/0038 decision 2: one object off the table for a replay, stood on the shelf as a layout's parked objects
+                // are (any object: a fixture too); reset-object or reset-layout brings it back. The layout stays as drawn.
+                int index = _scene.IndexOf(pose.Id);
+                if (index < 0) outcome = PlaceOutcome.UnknownObject;
+                else if (_parked[index]) outcome = PlaceOutcome.NotMovable;
+                else
+                {
+                    _targets[index] = _scene.ParkedPose(index, _sizeScales[index]);
+                    SendPlace(index, PlaceCause.Park, sequence, now);
+                    _record?.Invoke(SessionLines.WorldEdit(now, sequence, op, pose, null));
+                    return; // settles when the backend answers
+                }
+            }
             else if (op == WorldEditOp.Resize)
             {
                 int index = _scene.IndexOf(pose.Id);
@@ -427,7 +442,10 @@ namespace Teleop.RobotHost.World
                 return;
             }
 
-            if (done.Edit != 0) Resolve(done.Edit, outcome, now, done.Cause == PlaceCause.Resize ? WorldEditOp.Resize : WorldEditOp.Move, pose);
+            if (done.Edit != 0)
+            {
+                Resolve(done.Edit, outcome, now, done.Cause == PlaceCause.Resize ? WorldEditOp.Resize : done.Cause == PlaceCause.Park ? WorldEditOp.Park : WorldEditOp.Move, pose);
+            }
         }
 
         /// <summary>

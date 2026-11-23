@@ -114,6 +114,10 @@ just explorer-train sim-pretrain    # prepare (CPU) then the grid (configs/grid.
 just explorer-fetch sim-pretrain-<sha>/runs    # bring the runs back (no checkpoints, no data)
 ```
 
+Measured on 2026-11-23 (commit 7dbf7c6): the build job takes 5 minutes and makes a 3.9 GB image; the selftest (109
+tests) and smoke run take 10 minutes on one H200, 6 of them the smoke's evaluation; `explorer-fetch` of the smoke run
+brings back 71 MB. Neither job waited in the queue.
+
 Commit before `explorer-push`: the pack records the commit, every model card carries it, and a pack of uncommitted
 work is marked `-dirty` (and replaced on the next push, image and all). Configs and grids must be committed too: the
 cluster only has what the pack holds.

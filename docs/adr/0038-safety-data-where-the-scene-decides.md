@@ -205,7 +205,123 @@ Each workstream owns the files listed. It adds to its own "as built" section bel
 
 ### R, arm response
 
-(pending)
+**What world-models saw.** In the twin datasets the arm is more than 20 units (4.8 degrees) behind its command on 65–74% of
+frames, median about 8 degrees, against real reaches at that threshold of 3–6 frames.
+
+**Measured** with `scripts/gpu/arm_response.py` (standard library, rerunnable; 15 fps frames: the newest reading `RI` against
+the newest relay target `RO`, as the dataset builder takes them). Real: the 9 human headset sessions on the robot of
+2026-10-25 and 27 (four teleop, three ghost-check, two course; 20,073 frames, 22.3 min of commands) and
+`jetrover-real/free-play`, the real dataset world-models holds (2 takes of 2026-11-13, 1,120 frames). Twin: the three safety
+datasets and their takes.
+
+| | Real, 9 human sessions | Real, free-play | Twin val / train / test |
+|---|---|---|---|
+| Frames over 20 units | 62% (36–74% by session) | 75% | 73% / 74% / 65% |
+| Largest joint error, p50 / p90 | 7.6 / 28.4 degrees | 12.5 / 32.4 | 9.2 / 30.0 (val) |
+| Tool point error, p50 / p90 | 2.9 / 9.2 cm | 4.7 / 12.2 | 3.0 / 9.1 (val) |
+| Stretches over 20 units, p50 / p90 | 9 / 29 frames | 8.5 / 30 | 8 / 22–24 |
+| Delay from relay target to reading, joints 1–4 | 230 / 170 / 210 / 200 ms | 210 / 180 / 220 / 200 | 210 / 200 / 200 / 190 |
+
+The same arm at the same commanded speed (yaw and pitch joints pooled; median error in units, and the share of joint-frames):
+
+| Commanded speed, units/s | Real, 9 human | Real, free-play | Twin val |
+|---|---|---|---|
+| 0–25 | 4.3 (45%) | 5.2 (35%) | 3.3 (29%) |
+| 50–100 | 15.0 (14%) | 13.9 (16%) | 14.1 (18%) |
+| 100–200 | 29.1 (15%) | 27.4 (15%) | 26.7 (18%) |
+| 200–400 | 55.0 (11%) | 55.6 (12%) | 51.3 (13%) |
+| 400–800 | 102 (4%) | 101 (6%) | 98 (6%) |
+
+Steps (a relay target jumps 40+ units and holds): real at 597 pulses/s reaches 10 / 50 / 90% at 162 / 254 / 340 ms, the twin
+at 907 at 137 / 209 / 311 ms; both have about 145 ms of dead time before the ramp. Top speed 917 units/s real (asked 1432),
+959 twin (asked 1194). The real servo overshoots 2–4 units and settles 3.0–3.3 from its target; the twin 0.1–0.3 and 1.2–1.9.
+
+- **The emulation is not the cause, and `servo.py` is unchanged.** Same delay, same error at the same commanded speed (the twin
+  1–4 units closer), same step timing and top speed. The overshoot and settle differences are one to three pulses.
+  docs/adr/0034 amendment 13's fit (held-out p95 2.64 degrees) stands.
+- **Being over 20 units most of the time is how this arm teleoperates.** Any arm here trails its command by about 0.2 s, so a
+  joint commanded faster than about 100 units/s (0.42 rad/s) is over the threshold (82% of such joint-frames, real or twin),
+  and people keep the arm moving 70–86% of the time. The real dataset world-models holds is at 75% itself.
+- **The 3–6 frames** come from `jetrover_20261022_084431_89285d` (world-models' `wm/jetrover/windows.py`), a recording of
+  2026-10-22 that is not in our data and predates the robot's feedback timing of 2026-10-25. No real recording we have agrees
+  with it. World-models should say which recording and which columns it used.
+- **History.** The twin's human sessions of 2026-11-08 and 09, before docs/adr/0034 amendment 13, answered in 50–70 ms and were
+  over 20 units on 37% of frames. The driver emulation brought the delay to the real arm's.
+
+**The commanded motion (item 29).** Per 15 fps frame, p50 / p90 / p95 / p99:
+
+| | Real, 9 human | Real, free-play | Twin safety val / train / test | Twin, human, 2026-11-08/09 |
+|---|---|---|---|---|
+| Largest arm-joint step (joints 1–4), rad | 0.031 / 0.140 / 0.194 / 0.341 | 0.051 / 0.173 / 0.238 / 0.338 | 0.047 / 0.195 / 0.282 / 0.506 (val); p99 0.495, 0.453 | 0.012 / 0.166 / 0.257 / 0.535 |
+| Wrist pivot step, mm | 3.7 / 14.9 / 19.7 / 35.1 | 5.7 / 19.7 / 23.9 / 32.6 | 5.2 / 18.9 / 26.0 / 44.0 (val); p99 45.6, 44.4 | 1.4 / 19.9 / 30.1 / 54.6 |
+| Tool point step, cm | 0.62 / 2.71 / 3.75 / 6.26 | 1.20 / 4.27 / 5.42 / 7.53 | 0.86 / 3.27 / 4.56 / 8.16 (val) | 0.24 / 3.78 / 5.66 / 10.81 |
+
+Workstream M's own figures (12 real human sessions, 21k frames: 0.029 / 0.139 / 0.193 / 0.348 rad and 3.4 / 14.7 / 19.4 /
+35.7 mm; 19 twin human sessions: 0.014 / 0.177 / 0.272 / 0.530 rad and 1.6 / 20.9 / 31.2 / 56.3 mm) agree with these.
+
+Per joint at the command rate (smoothed with a 25 ms Gaussian, as `~/analysis/motion/metrics.py` does): speed p50 / p90 / p99
+in rad/s, acceleration p90 / p99 in rad/s².
+
+| Joint | Real, 9 human: speed | accel | Real, free-play: speed | Twin val: speed | accel |
+|---|---|---|---|---|---|
+| Yaw | 0.14 / 1.27 / 3.75 | 10.3 / 40.4 | 0.53 / 2.27 / 4.50 | 0.22 / 1.01 / 2.85 | 9.3 / 27.3 |
+| Shoulder | 0.14 / 1.02 / 2.62 | 9.7 / 31.5 | 0.14 / 0.69 / 1.50 | 0.24 / 1.26 / 3.20 | 13.7 / 44.5 |
+| Elbow | 0.14 / 1.29 / 3.64 | 13.2 / 51.4 | 0.23 / 1.43 / 3.12 | 0.29 / 1.84 / 5.47 | 21.4 / 82.4 |
+| Wrist pitch | 0.15 / 1.05 / 2.77 | 13.7 / 43.8 | 0.18 / 1.00 / 2.36 | 0.41 / 2.07 / 5.51 | 25.9 / 74.4 |
+| Roll | 0.04 / 0.38 / 3.99 | 5.9 / 47.3 | 0.08 / 0.72 / 5.42 | 0.07 / 0.68 / 2.19 | 7.5 / 28.2 |
+
+The command moves (2+ units on a joint per frame) 70% of frames real, 86% free-play, 87% twin; reversals of 3 degrees or more
+on joints 1–4: 242 a minute real, 343 free-play, 345 twin; the tool point's speed p50 / p90 / p99: 0.10 / 0.40 / 0.87 m/s real,
+0.19 / 0.61 / 1.12 free-play, 0.14 / 0.47 / 1.11 twin. The scripts are too fast in the elbow and the wrist pitch (speed about
+1.5 times at p90 and p99, acceleration 1.6–1.9 times), a little in the shoulder (1.2 times), slower than people in the yaw
+(0.8 times), and inside the real range at the tool point.
+
+**Caps for the `mixed` script (M)**, from the 9 real human sessions:
+
+- **Joint speed**, the real p99: yaw 3.8, shoulder 2.6, elbow 3.6, wrist pitch 2.8, roll 4.0 rad/s.
+- **Joint acceleration**, the real p99: yaw 40, shoulder 32, elbow 51, wrist pitch 44, roll 47 rad/s².
+- **Targets a batch should land on** (check with `arm_response.py --only motion,kinematics`): each joint's speed p90 1.0–1.3
+  rad/s; per frame, the largest arm-joint step about 0.03 / 0.14 / 0.19 / 0.34 rad and the wrist pivot's step 3.7 / 14.9 / 19.7 /
+  35 mm (p50 / p90 / p95 / p99); moving 70–86% of the time.
+- The caps clip the top 1% of real motion. A script whose distribution is right under them (smaller and slower pitch changes
+  per move) is better than one that leans on them.
+- Expected effect: frames over 20 units fall to about 55–65%, where real teleop is, not to 3–6-frame reaches.
+
+**Stops (items 32 and 17).** `stop-latency` (Teleop.Eval) with `just stop-latency` (the real arm, recorded as a session) and
+`just isaac-stop-latency` (a running twin): torque on, home as `joint-drive` goes there, then 22 trials of one joint swinging
+from home at 0.5, 1 or 2 rad/s (11, 23 or 46 degrees, the tool point up to 26 cm), its command stopping dead and holding 1.5 s.
+Live figures per trial and per joint and speed, `--json`; the recorded session gives the same on the robot's clock
+(`arm_response.py --only stops`). 15 tests (the plan inside the envelope and free, the dead stop, the meter on a delayed and on
+an overshooting arm, the refusals). **Not run on the robot or on a twin.**
+
+From recorded data meanwhile: moments the relay target stops after moving at least 60 units/s and holds 0.6 s or more. Stop
+time (until the reading stays within 2 units of where it ends) and the tool point's travel after the stop, p50:
+
+| Tool speed at the stop | Real, 9 human (104) | Real, joint-drive waypoints (148) | Twin, waypoints of 2026-11-14 (229) |
+|---|---|---|---|
+| under 0.1 m/s | 190 ms, 1.7 cm | 178 ms, 2.3 cm | 193 ms, 2.0 cm |
+| 0.1–0.2 m/s | 271 ms, 2.7 cm | 193 ms, 4.0 cm | 223 ms, 4.1 cm |
+| 0.2–0.4 m/s | 294 ms, 5.6 cm | 261 ms, 7.2 cm | 239 ms, 7.9 cm |
+| 0.4 m/s and more | 375 ms, 10.1 cm | 337 ms, 15.9 cm | 254 ms, 13.5 cm |
+| Travel over speed, p10 / p50 / p90 | 0.10 / 0.19 / 0.32 s | 0.21 / 0.26 / 0.36 s | 0.19 / 0.25 / 0.33 s |
+
+Past the held command: p50 0 degrees, p90 0.4–1.9, real and twin. **Provisional for item 17:** after its command stops, the
+tool goes on for about 0.25 s of its speed (p90 0.35 s) and stops within 0.2–0.4 s (p90 0.6 s), twin and real alike: the arm
+finishes the distance it trailed by, and barely overshoots. Measured from RobotHost's last relay target to the readings'
+arrival, so it includes the read pipeline (about 20 ms) and leaves out the operator's uplink. The real run of
+`just stop-latency` replaces these numbers.
+
+**Item 33, what the real servos report.** The HTD-35H bus servos answer, through the board's STM32 (`robot_controller_sdk.py`),
+position (whole pulses), input voltage (mV), temperature (°C), torque state, offset and limits. There is no current or load
+reading in the board's protocol. The driver reads only position (every ~21 ms, motors 1–5 and 10). `getServoTemp`, `getServoVolt`
+and `getServoTorque` exist but nothing calls them, and temperature and voltage change over seconds, too slowly for a contact.
+So the real contact signal is position error and the reading's rate. The 0.2 s lag dominates that error (median 15 units at
+50–100 units/s), so a detector has to expect it: a blocked joint shows as a growing error with a still reading, which is the
+stall rule `DriveWatchdog` already uses (0.25 rad for 1 s). A load signal would need other servos or board firmware.
+
+**Not done or untested:** the stop tool against a robot or a twin; `isaac-stop-latency` runs over the VPN and takes the
+measured round trip out, but not the read pipeline; the caps are M's to apply; the twin's physics truth (`VQ`) is not used,
+only the readings, to compare with the real arm on the same terms.
 
 ### A, appearance
 

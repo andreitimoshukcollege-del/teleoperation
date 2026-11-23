@@ -227,6 +227,7 @@ namespace Teleop.Eval.JointDrive
         private int _objectTries, _objectMoves;
         private readonly int[] _lineBreaks = new int[6]; // diagnostics: no seed, then a walk's break: IK, envelope, model, branch flip, over the base
         private readonly Dictionary<int, int> _missesInARow = new Dictionary<int, int>();
+        private readonly List<string> _seedFails = new List<string>();
 
         /// <summary>The object-directed moves tried and planned, and why the rest were not.</summary>
         internal string ObjectReport()
@@ -242,7 +243,7 @@ namespace Teleop.Eval.JointDrive
                     $"{o.Id} r {new Vector2(o.Center.X, o.Center.Y).Length():0.00} az {MathF.Atan2(o.Center.Y, o.Center.X) * 180 / MathF.PI:0} h {(o.Max.Z - o.Min.Z) * 100:0}cm{(o.Movable ? "" : " fixed")} misses {kv.Value}"));
             }
 
-            return counts + "; objects: " + string.Join(", ", objects);
+            return counts + "; objects: " + string.Join(", ", objects) + "; seeds: " + string.Join(" | ", _seedFails);
         }
 
         private bool Miss(int why)
@@ -801,6 +802,14 @@ namespace Teleop.Eval.JointDrive
             if (seed < 0)
             {
                 _lineBreaks[0]++;
+                if (_seedFails.Count < 6 && wrist[mid].HasValue)
+                {
+                    Vector3 tool = middle + (s0 + mid * LineStepMeters) * u;
+                    TrySolve(_model.Home, wrist[mid]!.Value, pitch, out ArmPose p0);
+                    _seedFails.Add(FormattableString.Invariant(
+                        $"tool r {new Vector2(tool.X, tool.Y).Length():0.000} z {tool.Z:0.000} pitch {pitch * 180 / MathF.PI:0} -> wrist ({wrist[mid]!.Value.X:0.000},{wrist[mid]!.Value.Y:0.000},{wrist[mid]!.Value.Z:0.000}) why {Why(_model.Home, wrist[mid]!.Value, pitch, out _)} pose {DrivePlan.Describe(p0)}"));
+                }
+
                 return false;
             }
 

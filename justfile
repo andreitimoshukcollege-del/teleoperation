@@ -3278,7 +3278,7 @@ explorer-build smoke="true":
     #!/usr/bin/env bash
     set -euo pipefail
     case "{{smoke}}" in true|false) ;; *) echo "error: smoke is true or false" >&2; exit 1 ;; esac
-    ssh -o ConnectTimeout=20 "{{explorer_host}}" "TORCH='{{explorer_torch}}' GPU='{{explorer_gpu}}' SMOKE='{{smoke}}' RUNS='{{explorer_runs}}' bash -s" <<'REMOTE'
+    ssh -o ConnectTimeout=20 "{{explorer_host}}" "TORCH='{{explorer_torch}}' GPU='{{explorer_gpu}}' SMOKE='{{smoke}}' RUNS=$(printf %q '{{explorer_runs}}') bash -s" <<'REMOTE'
     set -euo pipefail
     [ -e ~/armpred/current ] || { echo "error: nothing pushed there yet: just explorer-push" >&2; exit 1; }
     cd "$(readlink -f ~/armpred/current)"   # the jobs keep this pack even if a later push moves current
@@ -3302,7 +3302,7 @@ explorer-train config grid="grid" name="" at_once="4":
         case "$v" in *[!A-Za-z0-9._-]*) echo "error: '$v': config and grid are trainer/configs names, name a plain folder name" >&2; exit 1 ;; esac
     done
     case "{{at_once}}" in ''|*[!0-9]*|0) echo "error: at_once is a positive number" >&2; exit 1 ;; esac
-    ssh -o ConnectTimeout=20 "{{explorer_host}}" "CONFIG='{{config}}' GRID='{{grid}}' NAME='{{name}}' AT_ONCE='{{at_once}}' GPU='{{explorer_gpu}}' RUNS='{{explorer_runs}}' bash -s" <<'REMOTE'
+    ssh -o ConnectTimeout=20 "{{explorer_host}}" "CONFIG='{{config}}' GRID='{{grid}}' NAME='{{name}}' AT_ONCE='{{at_once}}' GPU='{{explorer_gpu}}' RUNS=$(printf %q '{{explorer_runs}}') bash -s" <<'REMOTE'
     set -euo pipefail
     [ -e ~/armpred/current ] || { echo "error: nothing pushed there yet: just explorer-push" >&2; exit 1; }
     cd "$(readlink -f ~/armpred/current)"
@@ -3330,7 +3330,7 @@ explorer-train config grid="grid" name="" at_once="4":
 explorer-status lines="6" logs="3":
     #!/usr/bin/env bash
     set -euo pipefail
-    ssh -o ConnectTimeout=20 "{{explorer_host}}" "RUNS='{{explorer_runs}}' LINES='{{lines}}' LOGS='{{logs}}' bash -s" <<'REMOTE'
+    ssh -o ConnectTimeout=20 "{{explorer_host}}" "RUNS=$(printf %q '{{explorer_runs}}') LINES='{{lines}}' LOGS='{{logs}}' bash -s" <<'REMOTE'
     RUNS=${RUNS//\$USER/$USER}
     squeue -u "$USER" -o "%.12i %.18j %.9P %.8T %.10M %.10l %R"
     echo
@@ -3349,7 +3349,7 @@ explorer-fetch path:
     [ ! -e "trainer/runs/explorer/$p" ] || { echo "error: trainer/runs/explorer/$p is already here" >&2; exit 1; }
     mkdir -p dist trainer/runs/explorer
     tgz="dist/explorer-${p//\//_}.tgz"
-    ssh -o ConnectTimeout=20 "{{explorer_host}}" "RUNS='{{explorer_runs}}' P='$p' bash -s" > "$tgz" <<'REMOTE' \
+    ssh -o ConnectTimeout=20 "{{explorer_host}}" "RUNS=$(printf %q '{{explorer_runs}}') P='$p' bash -s" > "$tgz" <<'REMOTE' \
         || { rm -f "$tgz"; echo "error: no $p in" '{{explorer_runs}}' "there (just explorer-status lists the runs)" >&2; exit 1; }
     set -euo pipefail
     RUNS=${RUNS//\$USER/$USER}

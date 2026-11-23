@@ -40,6 +40,19 @@ namespace Teleop.Eval.Tests.JointDrive
             return plan!;
         }
 
+        /// <summary>The plan of the first of ten seeds from <paramref name="seed"/> that plans on <paramref name="objects"/> (about 3% of plans find no tail).</summary>
+        internal static DrivePlan AnyMixed(IReadOnlyList<SafetyObject> objects, ulong seed, MixedOptions? options = null)
+        {
+            string? error = null;
+            for (ulong s = seed; s < seed + 10; s++)
+            {
+                if (TryMixed(objects, s, out DrivePlan? plan, out error, options)) return plan!;
+            }
+
+            Assert.Fail(error);
+            return null!;
+        }
+
         [Fact]
         public void AMixedTake_IsDeterministic_AndItsMovesTileIt()
         {
@@ -172,15 +185,25 @@ namespace Teleop.Eval.Tests.JointDrive
             var capped = new MixedOptions();
             MotionCaps caps = capped.Caps!;
             DrivePlan plan = Mixed(objects, 21, capped);
-            // Every tick of the take within each joint's speed cap (the legs are linear a tick apart, so the ticks are the plan's own).
+            // Every tick of the take within each joint's caps as they are measured: speed and acceleration over three ticks (about
+            // the 25 ms smoothing people's figures were measured with; the legs are linear a tick apart, so the ticks are the plan's
+            // own). A single tick may go faster with the commands' own jitter, at most 2.5 times.
             var ticks = new List<ArmPose>();
             for (double t = plan.ScriptStart; t <= plan.TotalSeconds + 1e-9; t += Tick) ticks.Add(plan.Sample(t));
+            int m = MotionCaps.AccelerationTicks;
             for (int k = 1; k < ticks.Count; k++)
             {
                 for (int j = 0; j < DriveEnvelope.JointCount; j++)
                 {
-                    double v = Math.Abs(DrivePlan.Joint(ticks[k], j) - DrivePlan.Joint(ticks[k - 1], j)) / Tick;
-                    Assert.True(v <= caps.JointSpeed[j] * 1.02 + 0.02, $"{DriveEnvelope.JointName(j)} at {v:0.00} rad/s, tick {k}");
+                    double q0 = DrivePlan.Joint(ticks[k], j);
+                    double v1 = Math.Abs(q0 - DrivePlan.Joint(ticks[k - 1], j)) / Tick;
+                    Assert.True(v1 <= 2.5 * caps.JointSpeed[j], $"{DriveEnvelope.JointName(j)} at {v1:0.00} rad/s in one tick, tick {k}");
+                    if (k < m) continue;
+                    double v = Math.Abs(q0 - DrivePlan.Joint(ticks[k - m], j)) / (m * Tick);
+                    Assert.True(v <= caps.JointSpeed[j] * 1.02 + 0.02, $"{DriveEnvelope.JointName(j)} at {v:0.00} rad/s over {m} ticks, tick {k}");
+                    if (k < 2 * m) continue;
+                    double a = Math.Abs(q0 - 2 * DrivePlan.Joint(ticks[k - m], j) + DrivePlan.Joint(ticks[k - 2 * m], j)) / (m * m * Tick * Tick);
+                    Assert.True(a <= caps.JointAcceleration[j] * 1.02 + 0.5, $"{DriveEnvelope.JointName(j)} at {a:0.0} rad/s2, tick {k}");
                 }
             }
 

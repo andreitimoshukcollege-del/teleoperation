@@ -294,8 +294,9 @@ golden did not change.
   from two sources, mixed in every take:
   - *layout-blind* parts (`HumanOperator.MixedFree`): moves to goals drawn anywhere in reach (`BlindReach`: the wrist 8-25 cm
     from the base axis, within 100 degrees of straight ahead; 40% low, the wrist at most 6 cm above the base frame with the
-    gripper pitched -45 to -85 degrees, so the pads come within a few cm of the table), back-and-forth strokes (`reverse`) and
-    small adjustments, checked against the robot's own model only, so they may meet an object;
+    gripper pitched -45 to -85 degrees, so the pads come within a few cm of the table; 80% of goals a lognormal distance from the
+    hand, their parts out from the base and up scaled by 0.55, so the hand moves round the base as people do), back-and-forth
+    strokes (`reverse`) and small adjustments, checked against the robot's own model only, so they may meet an object;
   - *object-directed* moves: an **aim** reaches at a point of an object's own shape (`shapes.json`; its box without one) at a
     drawn height (26 mm above its bottom, the pads clear of the 10 mm floor model, to 20 mm below its top or 20 cm up) and
     stops at a **signed offset drawn uniformly from -40 mm (into it, no deeper than the model measures that object) to +60 mm
@@ -307,16 +308,26 @@ golden did not change.
     (within 25 degrees). The path is solved outward from where it meets the object, the wrist at the middle of the pitches that
     reach that point. The arm's clearance is measured as the old planner's is: `ShapeGap` (the twin's links, the pads where each
     tick's gripper holds them) against a shape, `GapLadder` against a box.
-  - Every move draws its slowness from one lognormal (sd 0.30, 0.65-1.8); any move may be followed by a pause (12%, 0.1-0.5 s), an
-    object-directed one by a pull back (`reverse`, 35%). The gripper does what it does in free movement; no opening for an
+  - Every move draws its slowness from one lognormal (sd 0.30, 0.65-1.8); any move may be followed by a pause (30%, 0.15-0.7 s),
+    an object-directed one by a pull back (`reverse`, 35%). The gripper does what it does in free movement; no opening for an
     approach. An object planned to be pushed into is aimed at no more in the take.
   - **Timing:** the arm moves from the first tick (`EngageOnTheMove`); every tick before 1.5 s and in the take's last 1.0 s keeps
     2 cm from every object's box (`HumanOperator.Guard`, the model's margin on top), so no contact is planned there; the tail
     begins with a move up and away that ends clear, and the take ends partway through a later move, at least 1.0 s after the
     last object-directed move ended. Nothing is checked against a category.
-  - **Speed caps** (`MotionCaps`, `MixedOptions.DefaultCaps`): workstream R's real p99 per joint, speed tick to tick and
-    acceleration over two ticks: yaw 3.8 / 40, shoulder 2.6 / 32, elbow 3.6 / 51, wrist pitch 2.8 / 44, roll 4.0 / 47 (rad/s,
-    rad/s²). With R's advice not to lean on them, a **hand style** (`HandStyle`, `MixedOptions.DefaultStyle`) ...
+  - **Speed caps** (`MotionCaps`, `MixedOptions.DefaultCaps`): workstream R's real p99 per joint, speed and acceleration: yaw
+    3.8 / 40, shoulder 2.6 / 32, elbow 3.6 / 51, wrist pitch 2.8 / 44, roll 4.0 / 47 (rad/s, rad/s²). Each is measured over
+    three ticks (62 ms; the acceleration as the second difference over three ticks each side), about the 25 ms smoothing R
+    measured people with. Checked tick to tick on the raw 48 Hz command instead, the hand's jitter met them on most fast moves,
+    and refusing whole parts left only slow ones: every measure fell to about half of people's (per-frame p90 0.088 rad over
+    200 layouts, below). So a part the caps refuse is drawn again with the same draws, a third slower each time up to 2.5
+    times (`HumanOperator.Stretch`): the caps stretch fast moves instead of trading them for slow ones. With R's advice not to
+    lean on them, a **hand style** (`HandStyle`, `MixedOptions.DefaultStyle`) brings the elbow and wrist pitch down toward
+    people's: each move's pitch change 0.5 of the hand model's and its roll change 0.55, the pitch followed over the whole of a
+    submovement (the hand model: 0.7 of it), every submovement 0.9 times as long, near goals round the base (above), and pauses
+    after 30% of moves. Chosen from 12 settings over 40 layouts each (`--style`, `--blind`, `--pause` and the cap options set
+    them; R's next measurement can change them without a build). Off (`--no-caps --no-style`) the script is the hand model's
+    own pace.
   - The four old scripts are unchanged: every new hand-model option is off for them (`TouchMissesTests`, `SafetyScriptTests`
     and `SafetyTakeTests` as before).
 - **Records** on the joint port, written by RobotHost once per sequence while a take records, documented field by field in
@@ -347,7 +358,62 @@ golden did not change.
 - **Dry run:** `joint-drive --script <safety script> --dry-run --scene <file> --layouts a-b [--rows]` plans on RobotHost's
   layouts and prints the figures below (`MixedDryRun`).
 
-FIGURES-PENDING
+**Measured** offline (`joint-drive --script mixed --dry-run --scene Scenes/jetrover-bench.json --layouts 1-200`, seed 1, speed
+3.8 rad/s, `--seconds 15`: RobotHost's layouts 1-200 of the bench, take seeds as a batch draws them, on the GPU machine).
+"Before" is the hand model's own pace (`--no-caps --no-style`, at e2234df); "after" the defaults (at 847dd4f). People: the
+human headset sessions on the real JetRover (R's 9: 0.031 / 0.140 / 0.194 / 0.341 rad and 3.7 / 14.9 / 19.7 / 35.1 mm; mine,
+12 sessions, 21k frames: 0.029 / 0.139 / 0.193 / 0.348 rad and 3.4 / 14.7 / 19.4 / 35.7 mm).
+
+| | Before | After | People |
+|---|---|---|---|
+| Layouts planned | 199 of 200 | 194 of 200 | |
+| Plan time, p50 / p99 | 0.82 / 1.60 s | 0.85 / 1.68 s | |
+| Take length, p50 / p90 / max | 17.1 / 18.4 / 20.4 s | 17.6 / 19.4 / 24.2 s | |
+| Moves a take: free, aim, pass, pause, reverse | 13.6, 2.8, 0.4, 1.4, 4.3 | 12.3, 2.0, 0.3, 3.1, 3.1 | |
+| Takes with a planned contact | 166 of 199 (275 contacts) | 142 of 194 (202 contacts) | |
+| Largest arm-joint step a frame (15 fps), p50 / p90 / p95 / p99 | 0.052 / 0.188 / 0.260 / 0.447 rad | 0.036 / 0.112 / 0.138 / 0.185 rad | 0.03 / 0.14 / 0.19 / 0.34 |
+| Wrist step a frame, p50 / p90 / p95 / p99 | 5.8 / 20.5 / 28.5 / 49.7 mm | 4.4 / 14.8 / 19.2 / 28.5 mm | 3.7 / 14.9 / 19.7 / 35 |
+| The command moving (a joint 2 servo units a frame) | 93% of frames | 87% | 70-86% |
+| Speed p90 (25 ms smoothed): yaw, shoulder, elbow, wrist pitch, roll | 1.14, 1.22, 1.73, 2.06, 0.68 rad/s | 0.84, 0.85, 1.12, 1.16, 0.28 | 1.27, 1.02, 1.29, 1.05, 0.38 |
+| Speed p99, same joints (caps 3.8, 2.6, 3.6, 2.8, 4.0) | 3.26, 3.22, 5.00, 5.25, 2.34 | 2.01, 1.81, 2.37, 2.21, 0.91 | the caps |
+| Acceleration p99, same joints (caps 40, 32, 51, 44, 47) | 30.0, 44.8, 75.9, 80.6, 33.0 rad/s² | 18.6, 18.9, 28.2, 29.6, 9.3 | the caps |
+
+With the defaults (after):
+- **Offsets,** aims, in 10 mm bins from -40 to +60 mm: 27 33 33 41 38 45 52 39 39 45 (392 aims, median 16 mm): one continuous
+  range across the surface, every bin filled (fewer in the deepest, which some small objects cannot be measured into). Passes'
+  closest points on their line, from below -40 mm: 10, then 5 16 8 14 5 2 4 (64). The closest approach over each object move
+  as planned (`gapMm`, the hand's error included), from below -40 mm: 17, then 30 46 47 62 40 47 42 41 84.
+- **Contacts** (planned, by the model): the first 5.8 s into a take at the median (p90 12.2 s, none before 1.5 s); by thirds of
+  the take 74 / 91 / 37, and of their move 77 / 92 / 27 (a pass's mid-move, an aim started close), not only at a move's end.
+- **Heights** (the arm's lowest point at a planned contact, above the table): p50 56 mm, p90 135, max 192; in 20 mm bins from
+  0: 13 52 47 30 20 12 10 9 5 4. The arm cannot meet an object lower than 26 mm above its bottom from the side.
+- **Approach directions:** 449 of 456 object moves sweep round the base from either side (207 and 242), 7 come straight out
+  from it. Straight-out approaches seldom fit the thin shell the arm reaches: most that are drawn find no path.
+- **The motion:** the wrist's step a frame sits on people's at p50-p95, every joint well under its cap; the largest joint step
+  stays under people's at p99 (their tails include the headset IK's jumps, which the hand model does not make), the yaw and
+  shoulder p90s about 0.7-0.85 of people's, the elbow and wrist pitch within 10%.
+- **Not planned:** 6 of 200 layouts, each when a move or the tail's exit found no part the caps and the quiet margin let
+  through; a batch draws another layout.
+
+**Checked:**
+- `MixedTakeTests`: deterministic plans, and moves numbered in the order they begin. On 24 random layouts: the timing rules
+  (the arm moving within 0.3 s; nothing within 1 cm of an object's box before 1.5 s or in the last 1.0 s; every planned
+  contact at least 1.0 s before the end), offsets on both sides of the surface with no gap over 25 mm, contacts at more than
+  one height, some early in their move. The caps hold on every tick; the options are checked.
+- `ReplaysTests`: a replay sends the same targets, bit for bit and in order, none early; the edits are deterministic, take
+  their kinds in turn and keep to their rules; a removal takes the object the source moved; an edit in the quiet start's way is
+  seen; a planned move's record carries its times from when it is sent.
+- `ScriptMoveCodecTests` (the `MV` and `RP` wire), `AMixedTakesMovesAndReplayGroup_AreTheirSessionFormatLines`,
+  `WorldHostParkTests` (op 6 parks any object, fixtures included, and reset-layout brings it back; refused while motion is on).
+- The four old scripts' tests unchanged: `SafetyScriptTests` (the random-layout bars as they were), `SafetyTakeTests`,
+  `TouchMissesTests`.
+
+**Untested:**
+- Nothing has run on a twin: the records as RobotHost writes them in a take; the replays' world edits, restores and setup
+  moves; the keep-look timing against A's renderer; the batch's handling of several takes a run.
+- The scene `jetrover-mixed` (S's reader is not on this branch); its distractors are targets until the integration line makes
+  them scenery (`WorldView.TryObjects`).
+- The real arm: `--replays` needs `--simulated-robot`, and the caps were set from R's human figures, not from the arm.
 
 ### C, clearance and contacts
 

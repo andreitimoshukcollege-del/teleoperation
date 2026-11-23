@@ -42,7 +42,7 @@ namespace Teleop.Eval.Tests.JointDrive
         {
             (WorldScene scene, ObjectShapes? shapes) = Bench();
             SafetyObject[] objects = Layout(scene, shapes, 4);
-            DrivePlan plan = MixedTakeTests.Mixed(objects, 31);
+            DrivePlan plan = MixedTakeTests.AnyMixed(objects, 31);
             List<SentCommand> tape = Tape(plan, 7);
             // The replay's loop runs on its own jittery clock, sometimes late by several ticks.
             var player = new TapePlayer(tape);
@@ -132,7 +132,7 @@ namespace Teleop.Eval.Tests.JointDrive
         {
             (WorldScene scene, ObjectShapes? shapes) = Bench();
             SafetyObject[] objects = Layout(scene, shapes, 2);
-            DrivePlan plan = MixedTakeTests.Mixed(objects, 51);
+            DrivePlan plan = MixedTakeTests.AnyMixed(objects, 51);
             ulong group = 77;
             int removal = Enumerable.Range(1, 3).First(r => ReplayEdits.Draw(group, r, 0, plan, objects, scene, new HashSet<byte>(), Profile).Record.Edit == ReplayEdit.Remove);
             SafetyObject knocked = objects.First(o => !o.Scenery && !ReplayEdits.Holds(objects, Array.IndexOf(objects, o)));
@@ -147,7 +147,7 @@ namespace Teleop.Eval.Tests.JointDrive
         {
             (WorldScene scene, ObjectShapes? shapes) = Bench();
             SafetyObject[] objects = Layout(scene, shapes, 3);
-            DrivePlan plan = MixedTakeTests.Mixed(objects, 61);
+            DrivePlan plan = MixedTakeTests.AnyMixed(objects, 61);
             var options = new MixedOptions();
             // A box where the arm is as the take begins: in the quiet start's way. One far off: not.
             Span<LinkFrame> frames = stackalloc LinkFrame[5];

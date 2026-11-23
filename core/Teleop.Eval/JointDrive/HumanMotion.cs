@@ -677,6 +677,9 @@ namespace Teleop.Eval.JointDrive
         /// <summary>The gripper fraction once everything planned so far has run.</summary>
         public float GripperEnd => _timeline.FinalGripper;
 
+        /// <summary>How many ticks refused a part, by what: the IK (blocked, out of reach), the envelope or the check, a jump, the guard, the caps. For reports only.</summary>
+        public int[] Refusals { get; } = new int[5];
+
         /// <summary>
         /// A move to <paramref name="goal"/> (the wrist's target, arm base frame) with the wrist at <paramref name="pitch"/> and
         /// <paramref name="roll"/>, ending within <paramref name="tolerance"/>, every tick checked against <paramref name="check"/>
@@ -1095,11 +1098,11 @@ namespace Teleop.Eval.JointDrive
             foreach (HandCommand c in commands)
             {
                 ArmSolution s = solver.Solve(_profile, c.Target, c.Pitch, c.Roll);
-                if (s.Status == ArmSolveStatus.Blocked || s.Status == ArmSolveStatus.Approaching || s.ReachClamped) return false;
-                if (!_envelope.Contains(s.Pose) || !ArmCollision.IsValid(_profile, check, s.Pose)) return false;
-                if (Vector3.Distance(s.Position, last) > step) return false;
-                if (guard != null && (k * Tick < GuardBefore || k * Tick >= GuardFrom) && !ArmCollision.IsValid(_profile, guard, s.Pose)) return false;
-                if (caps != null && !caps.Allows(beforePrevious, previous, s.Pose, Tick)) return false;
+                if (s.Status == ArmSolveStatus.Blocked || s.Status == ArmSolveStatus.Approaching || s.ReachClamped) return Refuse(0);
+                if (!_envelope.Contains(s.Pose) || !ArmCollision.IsValid(_profile, check, s.Pose)) return Refuse(1);
+                if (Vector3.Distance(s.Position, last) > step) return Refuse(2);
+                if (guard != null && (k * Tick < GuardBefore || k * Tick >= GuardFrom) && !ArmCollision.IsValid(_profile, guard, s.Pose)) return Refuse(3);
+                if (caps != null && !caps.Allows(beforePrevious, previous, s.Pose, Tick)) return Refuse(4);
                 last = s.Position;
                 poses.Add(s.Pose);
                 beforePrevious = previous;
@@ -1108,6 +1111,12 @@ namespace Teleop.Eval.JointDrive
             }
 
             return true;
+        }
+
+        private bool Refuse(int why)
+        {
+            Refusals[why]++;
+            return false;
         }
 
         // The clutch's pieces: engaged (the target follows the hand relative to where both were at the piece's first tick) or

@@ -69,6 +69,9 @@ namespace Teleop.Eval.JointDrive
         /// <summary>Where layout-blind goals are drawn.</summary>
         public BlindReach Reach { get; set; } = new BlindReach();
 
+        /// <summary>Where they are drawn in the quiet start and end, which keep clear of every object: never low.</summary>
+        public BlindReach QuietReach { get; set; } = new BlindReach { LowShare = 0, NearShare = 0.7, HeightLow = 0.0f };
+
         /// <summary>The speed caps (docs/adr/0038 decision 1, item 29): <see cref="DefaultCaps"/> unless told otherwise; null for none.</summary>
         public MotionCaps? Caps { get; set; } = DefaultCaps();
 
@@ -77,7 +80,7 @@ namespace Teleop.Eval.JointDrive
         /// motion of 12 human sessions on the real JetRover (docs/adr/0038, "M, motion"): to be set again from workstream R's
         /// measurement of the real arm's tracking.
         /// </summary>
-        public static MotionCaps DefaultCaps() => new MotionCaps { MaxJointSpeed = 2.5f, MaxWristSpeed = 0.75f, MaxPeakSpeed = 0.45 };
+        public static MotionCaps? DefaultCaps() => null;
 
         /// <summary>Throws when the options make no sense together.</summary>
         public void Validate()
@@ -240,6 +243,13 @@ namespace Teleop.Eval.JointDrive
             return take.Plan(prefix, current, speed, seconds, out plan, out error);
         }
 
+        /// <summary>What refused the hand's parts so far, for a report.</summary>
+        internal string Refusals()
+        {
+            int[] r = _hand.Refusals;
+            return $"ticks refused: IK {r[0]}, envelope or model {r[1]}, jump {r[2]}, quiet margin {r[3]}, caps {r[4]}";
+        }
+
         private double Slowness() => Math.Clamp(Math.Exp(_options.SlowSigma * Draw.Normal(ref _rng)), _options.SlowMin, _options.SlowMax);
 
         private bool Plan(List<DriveLeg> prefix, in ArmPose current, float speed, double seconds, out DrivePlan? plan, out string? error)
@@ -256,7 +266,7 @@ namespace Teleop.Eval.JointDrive
                 if (!done) done = TryBlindMove(first);
                 if (!done)
                 {
-                    error = $"no movement from {DrivePlan.Describe(current)} keeps the take's quiet start ({_options.QuietStartSeconds:0.0} s clear of the objects)";
+                    error = FormattableString.Invariant($"no movement from {_hand.Free:0.0} s on of the take ({Refusals()})");
                     return false;
                 }
 
@@ -273,7 +283,7 @@ namespace Teleop.Eval.JointDrive
             {
                 if (!TryBlindMove(false, tailOnly: true, out double s, out double e))
                 {
-                    error = $"no free movement keeps the take's quiet end ({_options.QuietEndSeconds:0.0} s clear of the objects)";
+                    error = FormattableString.Invariant($"no free movement keeps the take's quiet end ({_options.QuietEndSeconds:0.0} s clear of the objects, from {tailStart:0.0} s; {Refusals()})");
                     return false;
                 }
 
@@ -359,7 +369,9 @@ namespace Teleop.Eval.JointDrive
 
         private bool TryBlindMove(bool first, bool tailOnly, out double start, out double end)
         {
-            if (!_hand.MixedFree(_model, _options.Reach, Slowness(), _options.BlindTransportShare, _options.BlindReverseShare, out ScriptMoveKind kind, out start, out end))
+            bool quiet = tailOnly || _hand.Free < _options.QuietStartSeconds;
+            if (!_hand.MixedFree(_model, quiet ? _options.QuietReach : _options.Reach, Slowness(), _options.BlindTransportShare, _options.BlindReverseShare,
+                    out ScriptMoveKind kind, out start, out end))
             {
                 return false;
             }

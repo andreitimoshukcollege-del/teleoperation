@@ -167,8 +167,8 @@ namespace Teleop.Eval.Tests.JointDrive
         public void TheCaps_HoldOnEveryTick_AndWithoutThemTheHandIsFaster()
         {
             SafetyObject[] objects = LayoutOf(5);
-            var capped = new MixedOptions();
-            MotionCaps caps = capped.Caps!;
+            var caps = new MotionCaps { MaxJointSpeed = 4f, MaxWristSpeed = 0.9f, MaxPeakSpeed = 0.5 };
+            var capped = new MixedOptions { Caps = caps };
             DrivePlan plan = Mixed(objects, 21, capped);
             double fastest = 0, fastestWrist = 0;
             ArmPose previous = plan.Sample(plan.ScriptStart);

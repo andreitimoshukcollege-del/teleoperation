@@ -237,10 +237,11 @@ at 907 at 137 / 209 / 311 ms; both have about 145 ms of dead time before the ram
 959 twin (asked 1194). The real servo overshoots 2–4 units and settles 3.0–3.3 from its target; the twin 0.1–0.3 and 1.2–1.9.
 
 - **The emulation is not the cause, and `servo.py` is unchanged.** Same delay, same error at the same commanded speed (the twin
-  1–4 units closer), same step timing and top speed. The overshoot and settle differences are one to three pulses.
+  0–4 units closer), same step timing and top speed. The overshoot and settle differences are one to three pulses.
   docs/adr/0034 amendment 13's fit (held-out p95 2.64 degrees) stands.
 - **Being over 20 units most of the time is how this arm teleoperates.** Any arm here trails its command by about 0.2 s, so a
-  joint commanded faster than about 100 units/s (0.42 rad/s) is over the threshold (82% of such joint-frames, real or twin),
+  joint commanded faster than about 100 units/s (0.42 rad/s) is over the threshold (78–82% of joint-frames at 100–200 units/s,
+  real or twin, and nearly all above),
   and people keep the arm moving 70–86% of the time. The real dataset world-models holds is at 75% itself.
 - **The 3–6 frames** come from `jetrover_20261022_084431_89285d` (world-models' `wm/jetrover/windows.py`), a recording of
   2026-10-22 that is not in our data and predates the robot's feedback timing of 2026-10-25. No real recording we have agrees
@@ -305,7 +306,7 @@ time (until the reading stays within 2 units of where it ends) and the tool poin
 | 0.4 m/s and more | 375 ms, 10.1 cm | 337 ms, 15.9 cm | 254 ms, 13.5 cm |
 | Travel over speed, p10 / p50 / p90 | 0.10 / 0.19 / 0.32 s | 0.21 / 0.26 / 0.36 s | 0.19 / 0.25 / 0.33 s |
 
-Past the held command: p50 0 degrees, p90 0.4–1.9, real and twin. **Provisional for item 17:** after its command stops, the
+Past the held command: p50 0 degrees, p90 0.2–1.9, real and twin. **Provisional for item 17:** after its command stops, the
 tool goes on for about 0.25 s of its speed (p90 0.35 s) and stops within 0.2–0.4 s (p90 0.6 s), twin and real alike: the arm
 finishes the distance it trailed by, and barely overshoots. Measured from RobotHost's last relay target to the readings'
 arrival, so it includes the read pipeline (about 20 ms) and leaves out the operator's uplink. The real run of

@@ -231,22 +231,23 @@ namespace Teleop.Eval.JointDrive
             return this;
         }
 
+        /// <summary>The ticks the acceleration is measured over (about the 25 ms smoothing people's figures were measured with): its second difference spans twice this.</summary>
+        public const int AccelerationTicks = 3;
+
         /// <summary>
         /// Whether the tick to <paramref name="p0"/> keeps to the joint caps, after <paramref name="history"/> (the poses before it,
-        /// newest last; at least two), <paramref name="dt"/> apart: its speed from the tick before, its acceleration from the second
-        /// difference over two ticks (the oldest of the four before it when there are four, else over one).
+        /// newest last; at least <see cref="AccelerationTicks"/> times two), <paramref name="dt"/> apart: its speed from the tick
+        /// before, its acceleration from the second difference over <see cref="AccelerationTicks"/> ticks each side.
         /// </summary>
         public bool Allows(ReadOnlySpan<ArmPose> history, in ArmPose p0, double dt)
         {
-            int n = history.Length;
+            int n = history.Length, m = AccelerationTicks;
             for (int j = 0; j < DriveEnvelope.JointCount; j++)
             {
                 float q0 = DrivePlan.Joint(p0, j), q1 = DrivePlan.Joint(history[n - 1], j);
                 if (MathF.Abs(q0 - q1) > JointSpeed[j] * (float)dt) return false;
-                if (float.IsPositiveInfinity(JointAcceleration[j])) continue;
-                float a = n >= 4
-                    ? (q0 - 2f * DrivePlan.Joint(history[n - 2], j) + DrivePlan.Joint(history[n - 4], j)) / (float)(4 * dt * dt)
-                    : (q0 - 2f * q1 + DrivePlan.Joint(history[n - 2], j)) / (float)(dt * dt);
+                if (float.IsPositiveInfinity(JointAcceleration[j]) || n < 2 * m) continue;
+                float a = (q0 - 2f * DrivePlan.Joint(history[n - m], j) + DrivePlan.Joint(history[n - 2 * m], j)) / (float)(m * m * dt * dt);
                 if (MathF.Abs(a) > JointAcceleration[j]) return false;
             }
 
@@ -930,10 +931,14 @@ namespace Teleop.Eval.JointDrive
         {
             kind = Teleop.RobotArm.Wire.ScriptMoveKind.Free;
             start = end = _free;
+            double stretch = 1.0;
             for (int attempt = 0; attempt < 30; attempt++)
             {
+                SeededRng drawn = _rng;
+                int capped = Refusals[4];
                 HandTimeline tl = _timeline.Copy();
                 double t0 = _free, next, u = _rng.NextDouble();
+                slow *= stretch;
                 Teleop.RobotArm.Wire.ScriptMoveKind k = Teleop.RobotArm.Wire.ScriptMoveKind.Free;
                 if (u < transportShare)
                 {
@@ -952,7 +957,13 @@ namespace Teleop.Eval.JointDrive
 
                 double moving = tl.MotionEnd;
                 if (Grips) MaybeGrip(tl, t0, Math.Max(t0 + 0.3, moving));
-                if (!Accept(tl, t0, check)) continue;
+                slow /= stretch;
+                if (!Accept(tl, t0, check))
+                {
+                    stretch = Stretch(drawn, capped, stretch);
+                    continue;
+                }
+
                 _free = next;
                 kind = k;
                 start = t0;
@@ -964,6 +975,22 @@ namespace Teleop.Eval.JointDrive
         }
 
         /// <summary>
+        /// After a part was refused: when the caps refused it (and it is not yet 2.5 times as slow), the same draws again a third
+        /// slower, so the caps stretch a fast move instead of trading it for a slow one; otherwise new draws at the drawn pace.
+        /// The factor for the next try.
+        /// </summary>
+        private double Stretch(in SeededRng drawn, int cappedBefore, double stretch)
+        {
+            if (Refusals[4] > cappedBefore && stretch < 2.5)
+            {
+                _rng = drawn;
+                return stretch * 1.3;
+            }
+
+            return 1.0;
+        }
+
+        /// <summary>
         /// A move to <paramref name="goal"/> (the wrist's target) at slowness <paramref name="slow"/>, the wrist turning to
         /// <paramref name="pitch"/> and <paramref name="roll"/> when given, ending within <paramref name="tolerance"/>; every tick checked
         /// against <paramref name="check"/> (and the guard), redrawn on failure. The gripper is used on the way as in free movement.
@@ -972,10 +999,14 @@ namespace Teleop.Eval.JointDrive
             int attempts = 12, bool overTheTop = false)
         {
             start = end = _free;
+            double stretch = 1.0;
             for (int attempt = 0; attempt < attempts; attempt++)
             {
+                SeededRng drawn = _rng;
+                int capped = Refusals[4];
                 HandTimeline tl = _timeline.Copy();
                 double t0 = _free, next;
+                slow *= stretch;
                 if (overTheTop && attempt % 2 == 1)
                 {
                     // By a point above the goal first, as a hand reaching round something does.
@@ -991,7 +1022,13 @@ namespace Teleop.Eval.JointDrive
 
                 double moving = tl.MotionEnd;
                 if (Grips) MaybeGrip(tl, t0, Math.Max(t0 + 0.3, moving));
-                if (!Accept(tl, t0, check)) continue;
+                slow /= stretch;
+                if (!Accept(tl, t0, check))
+                {
+                    stretch = Stretch(drawn, capped, stretch);
+                    continue;
+                }
+
                 _free = next;
                 start = t0;
                 end = moving;
@@ -1016,14 +1053,22 @@ namespace Teleop.Eval.JointDrive
             Rolls = false; // the approach keeps the roll it has
             try
             {
+                double stretch = 1.0;
                 for (int attempt = 0; attempt < attempts; attempt++)
                 {
+                    SeededRng drawn = _rng;
+                    int capped = Refusals[4];
                     HandTimeline tl = _timeline.Copy();
                     double t0 = _free;
-                    double next = Along(tl, path, t0, slow: slow, maxPeak: null, alongMu: 0.0, errorScale: errorScale, pitchGoal: pitch, rollGoal: null,
+                    double next = Along(tl, path, t0, slow: slow * stretch, maxPeak: null, alongMu: 0.0, errorScale: errorScale, pitchGoal: pitch, rollGoal: null,
                         tolerance: tolerance, maxCorrections: maxCorrections);
                     double moving = tl.MotionEnd;
-                    if (!Accept(tl, t0, check)) continue;
+                    if (!Accept(tl, t0, check))
+                    {
+                        stretch = Stretch(drawn, capped, stretch);
+                        continue;
+                    }
+
                     _free = next;
                     start = t0;
                     end = moving;
@@ -1183,13 +1228,14 @@ namespace Teleop.Eval.JointDrive
             float step = HandModel.MaxWristSpeed * (float)Tick;
             MotionCaps? caps = Caps;
             ArmCollisionModel? guard = Guard;
-            Span<ArmPose> history = stackalloc ArmPose[4]; // the four ticks before this one, oldest first (the start pose before the first)
+            const int kept = 2 * MotionCaps.AccelerationTicks;
+            Span<ArmPose> history = stackalloc ArmPose[kept]; // the ticks before this one, oldest first (the start pose before the first)
             if (caps != null)
             {
                 step = MathF.Min(step, caps.MaxWristSpeed * (float)Tick);
-                for (int i = 0; i < 4; i++)
+                for (int i = 0; i < kept; i++)
                 {
-                    int k = firstTick - 4 + i;
+                    int k = firstTick - kept + i;
                     history[i] = k < 0 ? _start : k < _poses.Count ? _poses[k] : from;
                 }
             }
@@ -1205,8 +1251,8 @@ namespace Teleop.Eval.JointDrive
                 if (caps != null)
                 {
                     if (!caps.Allows(history, s.Pose, Tick)) return Refuse(4);
-                    for (int i = 0; i < 3; i++) history[i] = history[i + 1];
-                    history[3] = s.Pose;
+                    for (int i = 0; i < kept - 1; i++) history[i] = history[i + 1];
+                    history[kept - 1] = s.Pose;
                 }
 
                 last = s.Position;

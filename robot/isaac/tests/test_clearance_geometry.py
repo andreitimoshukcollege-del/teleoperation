@@ -38,7 +38,7 @@ def test_a_turned_box_follows_urdf_roll_pitch_yaw():
     r = cg.urdf_robot(URDF)
     g = next(b for b in r["boxes"] if b["name"] == "gripper.0")
     m = cg._rpy_matrix(0.3729971, -1.5053658, 1.2401309)
-    assert g["axes"] == pytest.approx([[m[0][k], m[1][k], m[2][k]] for k in range(3)])
+    assert [v for row in g["axes"] for v in row] == pytest.approx([m[r][k] for k in range(3) for r in range(3)])
     # The importer's matrix for it (seen in the converted USD, 2026-11-22): its rows are the box's sides times its axes.
     usd_rows = [[0.00074, 0.00216, 0.03493], [-0.06213, -0.00259, 0.00148], [0.0028, -0.06502, 0.00397]]
     for k in range(3):

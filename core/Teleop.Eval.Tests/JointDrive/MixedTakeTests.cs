@@ -213,11 +213,65 @@ namespace Teleop.Eval.Tests.JointDrive
         }
 
         [Fact]
+        public void AimsAndPassesMoveAsFreeMovesDo_AndEveryKindFollowsOneLawAfterIt()
+        {
+            // docs/adr/0038 "M, motion": a pull back or a pause after a move by one law whatever its kind, the hand always pulling back out
+            // of a fixture, aims and passes turning the wrist on the way as free moves do, and the layout-blind goals as low as aims go.
+            WorldScene scene = Bench_.Value.Scene;
+            float table = (float)scene.Table.Top;
+            int blindPullBacks = 0, objectMoves = 0, turned = 0, intoFixtures = 0, blindTransports = 0, lowBlind = 0;
+            Span<LinkFrame> frames = stackalloc LinkFrame[5];
+            for (ulong seed = 1; seed <= 12; seed++)
+            {
+                SafetyObject[] objects = LayoutOf(seed);
+                if (!TryMixed(objects, 2000 + seed, out DrivePlan? plan, out _)) continue;
+                IReadOnlyList<PlannedMove> moves = plan!.Moves;
+                for (int i = 0; i < moves.Count; i++)
+                {
+                    PlannedMove m = moves[i];
+                    PlannedMove? next = i + 1 < moves.Count ? moves[i + 1] : (PlannedMove?)null;
+                    bool blind = m.Part == MovePart.BlindTransport || m.Part == MovePart.BlindAdjust || m.Part == MovePart.BlindStrokes;
+                    if (blind && next.HasValue && next.Value.Part == MovePart.PullBack) blindPullBacks++;
+                    double low = double.MaxValue, pitch0 = double.MaxValue, pitch1 = double.MinValue;
+                    for (double t = Math.Max(m.Start, plan.ScriptStart); t <= Math.Min(m.End, plan.TotalSeconds); t += Tick)
+                    {
+                        ArmPose p = plan.Sample(t);
+                        ArmCollision.ComputeFrames(Profile, p, frames);
+                        low = Math.Min(low, frames[(int)ArmLink.Gripper].ToBase(MixedTake.ToolInGripper).Z - table);
+                        pitch0 = Math.Min(pitch0, HandModel.PitchOf(p));
+                        pitch1 = Math.Max(pitch1, HandModel.PitchOf(p));
+                    }
+
+                    if (m.Part == MovePart.BlindTransport)
+                    {
+                        blindTransports++;
+                        if (low < 0.16) lowBlind++;
+                    }
+
+                    if (m.ObjectId == 0) continue;
+                    objectMoves++;
+                    if (pitch1 - pitch0 > 3 * Math.PI / 180) turned++;
+                    if (objects.First(o => o.Id == m.ObjectId).Movable || m.OffsetMeters >= 0.005f) continue;
+                    intoFixtures++;
+                    Assert.True(next.HasValue && next.Value.Kind == ScriptMoveKind.Reverse, $"layout {seed}: {m} is not pulled back out of the fixture");
+                }
+            }
+
+            string report = $"{blindPullBacks} blind moves pulled back from; {turned} of {objectMoves} aims and passes turn the wrist; {lowBlind} of {blindTransports} blind moves to a goal go below 16 cm; {intoFixtures} into fixtures";
+            _output.WriteLine(report);
+            Assert.True(blindPullBacks >= 3, report);
+            Assert.True(objectMoves >= 8 && turned * 3 >= objectMoves, report);
+            Assert.True(lowBlind * 4 >= blindTransports * 3, report);
+        }
+
+        [Fact]
         public void TheMixedOptions_AreChecked()
         {
             Assert.Throws<ArgumentException>(() => new MixedOptions { OffsetMinMeters = 0.05f, OffsetMaxMeters = 0.01f }.Validate());
             Assert.Throws<ArgumentException>(() => new MixedOptions { TailMinSeconds = 0.5 }.Validate());
             Assert.Throws<ArgumentException>(() => new MixedOptions { Caps = new MotionCaps().AllSpeeds(0f) }.Validate());
+            Assert.Throws<ArgumentException>(() => new MixedOptions { PullBackShare = 1.5 }.Validate());
+            Assert.Throws<ArgumentException>(() => new MixedOptions { TurnDegreesPerMeter = -1 }.Validate());
             Assert.False(TryMixed(LayoutOf(1), 1, out _, out string? error, new MixedOptions { PassShare = 2 }));
             Assert.Contains("pass share", error);
             Assert.Equal("mixed", SafetyScript.Category(DriveScript.Mixed));

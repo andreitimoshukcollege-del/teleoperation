@@ -214,7 +214,8 @@ recipe; every field is defined in `robot/lerobot/README.md`, "Safety datasets: l
   only. An unreadable `mixed` take gets a verdict and is set aside; an unreadable old one still raises, as before. Every line
   also says what happened (`outcome`, table contact, timing flags, `RP`), never a reason to set a take aside.
 - **Labels:** `safety_ranges.json` with exactly `source` (`physics`), `notes` and `unsafe_ranges`, beside the three legacy
-  files, all the same ranges. `safety_events.jsonl` gives `mixed` a `clear` after every range that ends, as recover had.
+  files, all the same ranges. world-models' own loader (`wm/labeling/ranges.py`, run read-only on a copy) reads the ones built
+  from real takes without a warning. `safety_events.jsonl` gives `mixed` a `clear` after every range that ends, as recover had.
   `--table-unsafe` counts the table too.
 - **Captions:** `move the arm` for every episode by default; `--caption category` for rebuild comparisons. LeRobot reads a
   neutral build back with one task (tested with LeRobot 0.5.1, and on 3 real takes: 3 episodes, 586 frames, `tasks.parquet`
@@ -245,6 +246,12 @@ recipe; every field is defined in `robot/lerobot/README.md`, "Safety datasets: l
   that share an `RP` group, a layout hash or a scene and `WL` seed stay in one dataset; the parts go largest first to the
   dataset with the fewest episodes. Each dataset has its `report.json` and a `[mix]` line in the build log (run for real on 4
   takes into 2 datasets in scratch).
+- **The LeRobot watcher** leaves `mixed` takes alone, as it leaves the four categories (`safety.SCENARIOS`): they become a
+  batch's dataset, not one per scenario. The watcher running on the GPU machine (`~/repos/lerobot` at a2e543a, root
+  `~/data/takes/jetrover-isaac`) predates this, so it must be restarted from this work before a `mixed` batch on twin 0.
+- **`teleop_lerobot safety-report DATASET...`** checks one build's datasets from their files: the label keys, every replay
+  group in one dataset with one source, one look per group (`lookChanges`), one layout seed, edited replays hashed apart,
+  clearance at the frames in contact. Exit 1 on a fault. For the twin check.
 - **`safety-compare`** compares the sidecars by episode and `frames.parquet` by rows. A reference from before this ADR is
   compared without them, with a note; `isaac-safety-build-check` rebuilds with the reference's own options (an older one: its
   category captions). A `--caption category` rebuild of the first 3 episodes of `jetrover_20261122_145748_82747d` compared

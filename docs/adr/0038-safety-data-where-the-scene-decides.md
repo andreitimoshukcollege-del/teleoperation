@@ -84,10 +84,12 @@ logs so that can be measured.
      - It is capped at a documented cutoff and validated against PhysX contacts (about 0 at every `WC` touch).
    - **Table contacts:** the bridge also reports arm-table contacts, as `WC` object 0, which the format has always reserved for
      the table.
-   - **The table is its own kind, not unsafe.** `safety_ranges.json` keeps the v1 rule (unsafe = the arm touches an obstacle).
-     Table contacts are labelled separately, in the per-frame flags and the contacts sidecar. Counting them as unsafe would
-     reward "the path goes low", the shortcut this ADR exists to remove. A builder flag can count them for anyone who wants
-     that.
+   - **The table is its own kind, and since 2026-11-23 it is unsafe.** The world-models side's review, after the twin check:
+     on the real robot a hard table hit is a collision too. So `safety_ranges.json` counts an arm link touching an obstacle or
+     the table. Table contacts stay labelled as their own kind (`in_contact_table` per frame, kind `table` in the contacts
+     sidecar), so obstacle-only labels can be derived. `--table-safe` restores the first rule: unsafe = the arm touches an
+     obstacle. It was the default until then, because counting the table rewards "the path goes low", the shortcut this ADR
+     exists to remove; that trade-off still holds.
 
 5. **Looks and cameras vary** (items 30 and 31).
    - Each take draws:
@@ -124,8 +126,10 @@ logs so that can be measured.
        - time to the next obstacle contact (s; NaN when none follows in the episode);
        - `filled` (the frame repeats an earlier render);
        - state and action skew against the frame (ms).
-   - **Unavoidable-contact ranges** (item 17), from the arm's stopping time and distance, go in a separate file. They stay off
-     by default until the real arm's stop latency is measured (workstream R gives the tool; the run is the user's).
+   - **Unavoidable-contact ranges** (item 17), from the arm's stopping time and distance, go in a separate file, for analysis
+     only. Since 2026-11-23 they are on by default, for the twin's measured stop times: fast 0.17 s, median 0.245 s, slow
+     0.31 s (`just isaac-stop-latency` on twin 0). They stay provisional until the real arm's stop latency is measured
+     (workstream R gives the tool; the run is the user's). The main label stays contact.
    - **Sessions:** a build can split one batch into several smaller sessions (datasets) by layout, so world-models gets more
      independent sessions (item 20). It reports the scenario and outcome mix of each (item 21).
 
@@ -170,7 +174,7 @@ Each workstream owns the files listed. It adds to its own "as built" section bel
   - `cutoff_mm` and `method`.
   - When a take lacks what it needs, it raises `ClearanceUnavailable`. L calls it and writes NaN when it can't.
 - `RP` (M), as in decision 2. L reads it into `episodes.jsonl`.
-- `WC` object 0 is the table (C). L labels it `table`, never unsafe by default.
+- `WC` object 0 is the table (C). L labels it `table`, and since 2026-11-23 counts it as unsafe by default (decision 4).
 - `SE` stays as documented. The `mixed` script records each planned move in a record of M's choosing, documented in
   trainer/contract/SESSION_FORMAT.md. L copies it into `episodes.jsonl` as metadata only, never as labels.
 
@@ -852,9 +856,15 @@ So the real contact signal is position error and the reading's rate. The 0.2 s l
 50–100 units/s), so a detector has to expect it: a blocked joint shows as a growing error with a still reading, which is the
 stall rule `DriveWatchdog` already uses (0.25 rad for 1 s). A load signal would need other servos or board firmware.
 
-**Not done or untested:** the stop tool against a robot or a twin; `isaac-stop-latency` runs over the VPN and takes the
-measured round trip out, but not the read pipeline; the caps are M's to apply; the twin's physics truth (`VQ`) is not used,
-only the readings, to compare with the real arm on the same terms.
+**Run on the twin (2026-11-23, twin 0 at 6e9d34d):** `just isaac-stop-latency 0` measured all 22 of 22 trials. Medians net
+of the round trip (24 ms): 170-307 ms per joint and speed, about 245 ms overall. The arm travelled about the lag distance
+(7°, 14° and 27° at 0.5, 1 and 2 rad/s) and overshot its held command by at most 0.4°
+(`recordings/.stop-latency/20261123T133108Z-isaac-twin0.json`). These are the provisional stop times L's unavoidable ranges
+use.
+
+**Not done or untested:** the stop tool against the real robot. `isaac-stop-latency` runs over the VPN and takes the
+measured round trip out, but not the read pipeline. The caps are applied (M). The twin's physics truth (`VQ`) is not used,
+only the readings, so the twin compares with the real arm on the same terms.
 
 ### A, appearance
 

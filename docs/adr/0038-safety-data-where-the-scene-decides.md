@@ -965,8 +965,8 @@ measured read-only on the same takes:
     or the change before or after.
   - The checker now takes only table points that fall on the top's footprint, 1 cm inside its edges.
   - Through `CM`, every camera of every take is then 0.28-0.52 mm at p99 (0.28-0.30 for the room cameras, 0.48-0.52 for
-    the wrist), against 2.4-66.5 mm (median 16.7) through the scene file's pose. A plane fitted to the top through `CM` is
-    level within 0.003°.
+    the wrist), against 2.4-66.5 mm (median 16.7) through the scene file's pose. A plane fitted to the top through `CM` tilts
+    0.0031° at most (9 of the takes fitted).
 - **`CM` 0.01-0.04° from the scene file's pose moved by `CJ`**, in every take.
   - The angle was measured as twice the arc cosine of the two quaternions' dot product, which near 1 turns the 1e-7
     rounding of `CM`'s 7 decimals into hundredths of a degree. It read exactly 0 wherever the rounded dot product reached 1.

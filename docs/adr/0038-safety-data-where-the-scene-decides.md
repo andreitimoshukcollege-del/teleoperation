@@ -686,6 +686,21 @@ section says above, and decision 4's "the table is its own kind, not unsafe" and
      `isaac-safety-build-check` uses it. A report from before this change says `tableUnsafe` (false: `--table-safe` now), and
      `safety-compare` reads it by today's names. It leaves out a report's `split`, since a rebuild of a part's takes is one
      dataset.
+2. **Unavoidable-contact ranges are on by default,** for analysis only: the labels stay contact.
+   - **The stop model** (`Options.stop`) has three named stop times: `fast` 0.17 s, `median` 0.245 s, `slow` 0.31 s. Source:
+     "twin stop-latency 2026-11-23, provisional until the real arm is measured". `just isaac-stop-latency` on twin 0 gave
+     per-joint, per-speed medians of 170-307 ms net of the round trip. They replace the 0.25 s (p90 0.35 s) above.
+   - **The file:** `meta/teleop/unavoidable_ranges.json` is `{"source", "method", "stopTimes": {"fast": 0.17, "median":
+     0.245, "slow": 0.31}, "unavoidable_ranges": {"fast": {...}, "median": {...}, "slow": {...}}}`, each set
+     `{"<episode>": [[start, end], ...]}`. `--stop-time-s` gives one time instead, named `given`. `--no-unavoidable` writes
+     none, as builds before did, so a rebuild of one compares.
+   - **Before the contacts the labels count:** a frame that is not unsafe itself is unavoidable when the next counted contact
+     starts within the stop time. That is an obstacle, or the table unless built `--table-safe`. If the labels are later
+     extended backwards by the stop distance (world-models' roadmap), the file extends what they count. Obstacle-only ranges
+     come from `frames.parquet` (`in_contact` false and `time_to_contact_s` at most the stop time), which stays to the next
+     obstacle contact as decision 6 has it.
+   - **`safety-compare`** restricts each named set to the rebuilt episodes. A report's old `stopTimeS` reads as one
+     `given` time.
 
 ### R, arm response
 

@@ -136,20 +136,37 @@ computed (workstream C's `teleop_lerobot/clearance.py` and the geometry under `-
 
 `report.json`: the dataset's `episodes`, `frames`, `seconds`, `scenarios`, `outcomes`, `contactEpisodes`,
 `tableContactEpisodes`, `contacts` by kind, `unsafeFrames`, `unsafeRanges`, `replayGroups`, `roles`, `layoutHashes`,
-`layoutSeeds`, `clearanceEpisodes`, `timingFlagged` (episodes), `split` (`part`, `of`) and the build's `options`.
+`layoutSeeds`, `clearanceEpisodes`, `timingFlagged` (episodes), `split` (`part`, `of`) and the build's `options`
+(`caption`, `tableSafe`, `geometryDir`, `stopModel`: `{"stopTimes": {name: seconds}}` or null).
 
-`unavoidable_ranges.json`, only with a stop time (`--stop-time-s`; off by default), **provisional until the real arm's
-stop latency is measured** (docs/adr/0038 item 17): the frames from which stopping could no longer avoid the next obstacle
-contact, `unavoidable_ranges` `{"<episode>": [[start, end], ...]}`, with the `stopTimeS` used and the `method`. Stopped at a
-frame, the arm goes on for the stop time of its speed (travel = speed x time) along the path it was on, so a frame not in
-contact is unavoidable when the next contact starts within the stop time (exact at a constant speed; where the recorded
-motion speeds up or slows, it follows it). The provisional stop time is 0.25 s (p90 0.35 s), from recorded stops on the real
-arm and the twin (workstream R; real human stops 0.10 / 0.19 / 0.32 s, p10 / p50 / p90), until the real arm's run of
-`just stop-latency`. A system that detects and then stops adds its own delay to it.
+`unavoidable_ranges.json`, for analysis: the labels stay contact. Written by default since 2026-11-23 and **provisional
+until the real arm's stop latency is measured** (docs/adr/0038 item 17). It gives the frames from which stopping could no
+longer avoid the next contact:
+
+```
+{"source": "twin stop-latency 2026-11-23, provisional until the real arm is measured", "method": "...",
+ "stopTimes": {"fast": 0.17, "median": 0.245, "slow": 0.31},
+ "unavoidable_ranges": {"fast": {"<episode>": [[start, end], ...]}, "median": {...}, "slow": {...}}}
+```
+
+- **The rule.** Stopped at a frame, the arm goes on for the stop time of its speed (travel = speed x time) along the path it
+  was on. So a frame that is not unsafe itself is unavoidable when the next contact the labels count starts within the stop
+  time: an obstacle, or the table unless built `--table-safe`. This is exact at a constant speed; where the recorded motion
+  speeds up or slows, it follows it.
+- **The ranges** are inclusive and episode-relative, one set for each stop time; an episode with none is left out of a set.
+- **The default stop times** are the twin's fast, median and slow stops: `just isaac-stop-latency` on twin 0 gave per-joint,
+  per-speed medians of 170-307 ms, net of the network round trip.
+- **Options.** `--stop-time-s SECONDS` gives one time instead, named `given` (its `source` says so); `--no-unavoidable`
+  writes no file, as builds before 2026-11-23.
+- **Obstacle contacts alone:** with a table-counting build, the obstacle-only ranges for a stop time T are the frames of
+  `frames.parquet` with `in_contact` false and `time_to_contact_s` at most T.
+- A system that detects and then stops adds its own delay to the stop time.
 
 **Comparing** (`safety-compare REFERENCE REBUILT`): a rebuild of a reference's first takes, file for file; the sidecars by
 episode as the label files are. Rebuild a reference with the options `safety-options REFERENCE` prints, from its
 `report.json`; `just isaac-safety-build-check` does that by itself. A reference from before docs/adr/0038 has no sidecars
 and is compared without them (`--caption category`). A report from before 2026-11-23 names the table's option
-`tableUnsafe` (false: `--table-safe` now); `safety-compare` reads its options by today's names, and leaves out which part of
-a split build a report was (`split`), since a rebuild of a part's takes is one dataset.
+`tableUnsafe` (false: `--table-safe` now) and gives a stop time as `stopTimeS` (`stopModel` null: `--no-unavoidable` now);
+`safety-compare` reads its options by today's names. It compares `unavoidable_ranges.json` set by set over the rebuilt
+episodes, and leaves out which part of a split build a report was (`split`), since a rebuild of a part's takes is one
+dataset.

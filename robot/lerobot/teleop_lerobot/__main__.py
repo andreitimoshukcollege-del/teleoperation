@@ -9,7 +9,9 @@
   its line says what happened (its outcome);
 - ``safety-build --out DATASET TAKE...``: one safety dataset from checked takes, in the lab's label format
   (docs/adr/0036 amendment 1) and world-models' (``safety_ranges.json``), with the sidecars of docs/adr/0038 decision 6,
-  ``--jobs`` worker processes preparing episodes ahead (amendment 6), and ``--split K`` for K smaller datasets by layout;
+  ``--jobs`` worker processes preparing episodes ahead (amendment 6), ``--split K`` for K smaller datasets by layout, the
+  table counted as unsafe unless ``--table-safe``, and unavoidable-contact ranges for the twin's three stop times unless
+  ``--stop-time-s`` gives one or ``--no-unavoidable`` none;
 - ``safety-compare REFERENCE REBUILT``: whether a safety dataset rebuilt from a reference's first takes holds the same
   files (amendment 6; no LeRobot needed);
 - ``safety-options DATASET``: the ``safety-build`` options that rebuild a safety dataset as it was built, from its
@@ -97,10 +99,15 @@ def main(argv=None) -> int:
                         "clearance NaN). Default: %(default)s")
     s.add_argument("--split", type=int, default=1, metavar="K",
                    help="write K datasets, <out>_<k>of<K>, split by layout (a replay group and a layout never on two sides)")
-    s.add_argument("--stop-time-s", type=float, default=None, metavar="SECONDS",
-                   help="writes meta/teleop/unavoidable_ranges.json (docs/adr/0038 item 17; off by default): after a stop the "
-                        "arm goes on for this many seconds of its speed (travel = speed x time). Provisional: 0.25 (p90 0.35), "
-                        "until the real arm's just stop-latency run")
+    stops = s.add_mutually_exclusive_group()
+    stops.add_argument("--stop-time-s", type=float, default=None, metavar="SECONDS",
+                      help="meta/teleop/unavoidable_ranges.json (docs/adr/0038 item 17) for this one stop time, named 'given', "
+                           "instead of the default three: after a stop the arm goes on for this many seconds of its speed "
+                           "(travel = speed x time)")
+    stops.add_argument("--no-unavoidable", action="store_true",
+                      help="no meta/teleop/unavoidable_ranges.json, as builds before 2026-11-23 (by default it holds ranges for "
+                           "the twin's fast, median and slow stops, 0.17, 0.245 and 0.31 s: twin stop-latency 2026-11-23, "
+                           "provisional until the real arm is measured)")
     s = sub.add_parser("safety-report")
     s.add_argument("datasets", nargs="+", help="one build's safety datasets (every part of a split build)")
     s = sub.add_parser("safety-compare")
@@ -168,7 +175,7 @@ def main(argv=None) -> int:
             planned = safety.planned_events(path)  # read before a failing take is moved
             what = {}
             try:  # what happened (docs/adr/0038 decision 6), for every take; never a reason to set one aside
-                e = sidecars.episode(t, sidecars.Options(geometry_dir=a.geometry_dir or None))
+                e = sidecars.episode(t, sidecars.Options(geometry_dir=a.geometry_dir or None, stop=None))
                 what = {k: e.line[k] for k in ("outcome", "tableContact", "tableContacts", "knocked", "minClearanceMm",
                                                "firstContactS", "afterLastContactS", "timingFlags", "group", "role", "edit")}
             except Exception as err:  # noqa: BLE001
@@ -206,10 +213,10 @@ def main(argv=None) -> int:
             p.error("--jobs is at least 1")
         if a.split < 1:
             p.error("--split is at least 1")
-        stop = None
+        stop = None if a.no_unavoidable else sidecars.StopModel()
         if a.stop_time_s is not None:
             try:
-                stop = sidecars.StopModel(a.stop_time_s)
+                stop = sidecars.StopModel.given(a.stop_time_s)
             except ValueError as e:
                 p.error(str(e))
         options = sidecars.Options(caption=a.caption, table_safe=a.table_safe, geometry_dir=a.geometry_dir or None, stop=stop)
@@ -217,7 +224,8 @@ def main(argv=None) -> int:
         writer = LeRobotWriter(a.vcodec, crf=SAFETY_CRF if a.crf is None else a.crf, preset=SAFETY_PRESET if a.preset is None else a.preset)
         _log(f"building {len(takes)} episode(s) with {a.jobs} worker(s): captions {a.caption}, table contacts "
              f"{'not unsafe (--table-safe)' if a.table_safe else 'unsafe'}, clearance from {a.geometry_dir or 'nothing'}"
-             + (f", {a.split} datasets" if a.split > 1 else "") + (", unavoidable ranges" if stop else ""))
+             + (f", {a.split} datasets" if a.split > 1 else "") + ", unavoidable ranges "
+             + (", ".join(f"{n} {t:g} s" for n, t in stop.times) if stop else "off"))
         if a.split > 1:
             roots = safety.build_split(writer, os.path.expanduser(a.out), takes, a.split, _log, jobs=a.jobs, options=options)
             _log("datasets: " + " ".join(roots))

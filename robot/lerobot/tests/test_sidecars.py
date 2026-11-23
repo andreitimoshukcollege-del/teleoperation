@@ -445,28 +445,53 @@ def test_contacts_too_near_either_end_are_reported_not_set_aside(scenarios):
     assert episode(take(scenarios, "mixed", world(), name="20261122T100100Z-take002")).line["timingFlags"] == []
 
 
-def test_unavoidable_ranges_come_only_with_a_stop_time(scenarios, tmp_path):
-    # Item 17 (workstream R): stopped, the arm goes on for the stop time of its speed, so the frames within that time before
-    # a contact can no longer avoid it. Off by default; 0.25 s (p90 0.35 s) provisional.
+def test_unavoidable_ranges_come_by_default_for_the_twins_three_stop_times(scenarios, tmp_path):
+    # Item 17: stopped, the arm goes on for the stop time of its speed, so the frames within that time before a contact can
+    # no longer avoid it. Since 2026-11-23 by default, for the twin's fast, median and slow stops; the labels stay contact.
+    from teleop_lerobot.__main__ import main
+
     path = take(scenarios, "mixed", world([wc(2000, "0:5:2:1.5"), wc(2100), wc(2600, "0:4:4:0.5"), wc(2650)]))
-    assert episode(path).unavoidable is None
-    e = episode(path, stop=sidecars.StopModel(sidecars.STOP_TIME_S))
-    # Frames every 1/15 s from 1.0 s: the contacts span frames 15-17 and 24-25; 250 ms before them, 1.800-1.933 s and
-    # 2.400-2.533 s (1.733 s is 267 ms out).
-    assert e.unavoidable == [[12, 14], [21, 23]]
-    assert [i for i, v in enumerate(e.frames["in_contact"]) if v] == [15, 16, 17, 24, 25]
-    assert episode(path, stop=sidecars.StopModel(sidecars.STOP_TIME_P90_S)).unavoidable[0] == [10, 14]  # 0.35 s: from 1.667 s
-    for bad in (0.0, -0.1, float("nan")):
+    e = episode(path)
+    # Frames every 1/15 s from 1.0 s: the contacts span frames 15-17 and 24-25. Before each, the frames within the stop time:
+    # 0.17 s from 1.867 and 2.467 s, 0.245 s from 1.8 and 2.4 s, 0.31 s from 1.733 and 2.333 s (the frames before those are
+    # 0.2, 0.267 and 0.333 s out).
+    assert [i for i, v in enumerate(e.frames["in_contact"]) if v] == [15, 16, 17, 24, 25] and sum(e.labels) == 5
+    assert e.unavoidable == {"fast": [[13, 14], [22, 23]], "median": [[12, 14], [21, 23]], "slow": [[11, 14], [20, 23]]}
+    assert episode(path, stop=sidecars.StopModel.given(0.35)).unavoidable == {"given": [[10, 14], [19, 23]]}
+    assert episode(path, stop=None).unavoidable is None
+    # Before the contacts the labels count: a table brush too, unless built table_safe.
+    table = take(scenarios, "mixed", world([wc(2000, "0:6:0:3.0"), wc(2100)]), name="20261122T100100Z-take002")
+    assert episode(table).unavoidable["median"] == [[12, 14]]
+    assert episode(table, table_safe=True).unavoidable == {"fast": [], "median": [], "slow": []}
+    for bad in (0.0, -0.1, float("nan"), float("inf")):
+        with pytest.raises(ValueError):
+            sidecars.StopModel.given(bad)
+    for bad in ((), (("fast", 0.2), ("fast", 0.3)), (("", 0.2),)):  # none, a name twice, no name
         with pytest.raises(ValueError):
             sidecars.StopModel(bad)
+    for argv in (["--stop-time-s", "0.3", "--no-unavoidable"], ["--stop-time-s", "0"]):  # refused before anything is read
+        with pytest.raises(SystemExit):
+            main(["safety-build", "--out", str(tmp_path / "refused"), *argv, path])
     pytest.importorskip("pandas")
     pytest.importorskip("pyarrow")
-    root, plain = str(tmp_path / "ds"), str(tmp_path / "plain")
-    safety.build(Writer(), root, [read_take(path)], log=lambda m: None, options=sidecars.Options(stop=sidecars.StopModel(0.25)))
+    root, given, plain = (str(tmp_path / n) for n in ("ds", "given", "plain"))
+    safety.build(Writer(), root, [read_take(path), read_take(table)], log=lambda m: None)
     written = json.load(open(os.path.join(root, "meta", "teleop", "unavoidable_ranges.json")))
-    assert written["stopTimeS"] == 0.25 and written["unavoidable_ranges"] == {"0": e.unavoidable} and "provisional" in written["method"]
-    safety.build(Writer(), plain, [read_take(path)], log=lambda m: None)
-    assert not os.path.exists(os.path.join(plain, "meta", "teleop", "unavoidable_ranges.json"))  # off by default
+    assert list(written) == ["source", "method", "stopTimes", "unavoidable_ranges"]
+    assert written["source"] == "twin stop-latency 2026-11-23, provisional until the real arm is measured"
+    assert written["stopTimes"] == {"fast": 0.17, "median": 0.245, "slow": 0.31} and "the labels stay contact" in written["method"]
+    assert written["unavoidable_ranges"] == {"fast": {"0": [[13, 14], [22, 23]], "1": [[13, 14]]},
+                                             "median": {"0": [[12, 14], [21, 23]], "1": [[12, 14]]},
+                                             "slow": {"0": [[11, 14], [20, 23]], "1": [[11, 14]]}}
+    report = json.load(open(os.path.join(root, "meta", "teleop", "report.json")))
+    assert report["options"]["stopModel"] == {"stopTimes": {"fast": 0.17, "median": 0.245, "slow": 0.31}}
+    assert json.load(open(os.path.join(root, "safety_ranges.json")))["unsafe_ranges"] == {"0": [[15, 17], [24, 25]], "1": [[15, 17]]}
+    safety.build(Writer(), given, [read_take(path)], log=lambda m: None, options=sidecars.Options(stop=sidecars.StopModel.given(0.35)))
+    written = json.load(open(os.path.join(given, "meta", "teleop", "unavoidable_ranges.json")))
+    assert written["stopTimes"] == {"given": 0.35} and written["unavoidable_ranges"] == {"given": {"0": [[10, 14], [19, 23]]}}
+    assert written["source"] == "given to the build (--stop-time-s)"
+    safety.build(Writer(), plain, [read_take(path)], log=lambda m: None, options=sidecars.Options(stop=None))
+    assert not os.path.exists(os.path.join(plain, "meta", "teleop", "unavoidable_ranges.json"))  # --no-unavoidable
 
 
 # --- splitting a batch ---------------------------------------------------------------------------------------------------------
@@ -607,6 +632,13 @@ def test_safety_compare_reads_the_new_files_and_an_older_reference_without_them(
     with open(os.path.join(again, "meta", "teleop", "episodes.jsonl"), "a") as f:
         f.write(json.dumps({"episode": 3, "outcome": "contact"}) + "\n")
     assert safety.compare_datasets(full, again) == [os.path.join("meta", "teleop", "episodes.jsonl") + ": differs from line 5 (5 lines, the reference's 4)"]
+    # The unavoidable ranges, one set for each stop time, are compared set by set over the first episodes.
+    unav = os.path.join(full, "meta", "teleop", "unavoidable_ranges.json")
+    sets = json.load(open(unav))
+    assert sorted(sets["unavoidable_ranges"]) == ["fast", "median", "slow"] and "0" in sets["unavoidable_ranges"]["median"]
+    sets["unavoidable_ranges"]["median"]["0"] = [[0, 1]]
+    json.dump(sets, open(unav, "w"))
+    assert safety.compare_datasets(full, first) == [os.path.join("meta", "teleop", "unavoidable_ranges.json") + ": differs"]
     # A reference built before docs/adr/0038 has no safety_ranges.json or sidecars: they are left out, and said so.
     os.remove(os.path.join(full, "safety_ranges.json"))
     notes = []
@@ -621,10 +653,10 @@ def test_a_rebuild_takes_its_references_options_even_from_a_report_that_named_th
     from teleop_lerobot.__main__ import main
 
     takes = [read_take(p) for p in batch(scenarios)]
-    built = dict(table_safe=True, geometry_dir="/nowhere")
+    built = dict(table_safe=True, geometry_dir="/nowhere", stop=None)  # as the builds before 2026-11-23 by default
     ref, again, counted = (str(tmp_path / n) for n in ("ref", "again", "counted"))
     safety.build(Writer(), ref, takes, log=lambda m: None, options=sidecars.Options(**built))
-    want = ["--caption", "neutral", "--geometry-dir=/nowhere", "--table-safe"]
+    want = ["--caption", "neutral", "--geometry-dir=/nowhere", "--table-safe", "--no-unavoidable"]
     assert safety.rebuild_options(ref) == want
     path = os.path.join(ref, "meta", "teleop", "report.json")
     report = json.load(open(path))
@@ -636,11 +668,24 @@ def test_a_rebuild_takes_its_references_options_even_from_a_report_that_named_th
     safety.build(Writer(), again, takes, log=lambda m: None, options=sidecars.Options(**built))
     assert safety.compare_datasets(ref, again) == []  # the notes word for word, the options by their new names
     safety.build(Writer(), counted, takes, log=lambda m: None, options=sidecars.Options(geometry_dir="/nowhere"))
-    diffs = safety.compare_datasets(ref, counted)  # the table counted: episode 2's brush, and the options
+    diffs = safety.compare_datasets(ref, counted)  # today's defaults: episode 2's table brush, unavoidable ranges, the options
     assert "manual_safety_labels.json: differs (episodes [2])" in diffs and "safety_ranges.json: differs" in diffs
     assert os.path.join("meta", "teleop", "report.json") + ": differs" in diffs
+    assert os.path.join("meta", "teleop", "unavoidable_ranges.json") + ": not in the reference" in diffs
     os.remove(path)  # a dataset from before docs/adr/0038: category captions, and its twin reported no table contacts
     assert safety.rebuild_options(ref) == ["--caption", "category"]
+
+    def options_of(options):
+        (tmp_path / "opts" / "meta" / "teleop").mkdir(parents=True, exist_ok=True)
+        (tmp_path / "opts" / "meta" / "teleop" / "report.json").write_text(json.dumps({"options": options}))
+        return safety.rebuild_options(str(tmp_path / "opts"))
+    plain = ["--caption", "neutral", "--geometry-dir="]
+    assert options_of({"caption": "neutral", "tableSafe": False, "geometryDir": None,
+                       "stopModel": {"stopTimes": dict(sidecars.STOP_TIMES_S)}}) == plain  # today's defaults
+    assert options_of({"caption": "neutral", "tableSafe": False, "geometryDir": None,
+                       "stopModel": {"stopTimes": {"given": 0.35}}}) == plain + ["--stop-time-s=0.35"]
+    assert options_of({"caption": "neutral", "tableUnsafe": True, "geometryDir": None,  # before 2026-11-23, both given
+                       "stopModel": {"stopTimeS": 0.25}}) == plain + ["--stop-time-s=0.25"]
 
 
 def test_an_old_takes_planned_events_and_odd_numbers_reach_the_lines_as_json_can_hold_them(scenarios, tmp_path):

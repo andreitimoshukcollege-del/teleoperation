@@ -18,8 +18,9 @@ The files, under ``meta/teleop/`` (``robot/lerobot/README.md``, "Safety datasets
 - ``contacts.jsonl``: one line per stretch of the arm touching one object (or the table);
 - ``frames.parquet``: one row a frame: contact flags, labels, clearance, time to the next contact, ``filled``, skews;
 - ``report.json``: the dataset's scenario, outcome and contact counts, and the options it was built with;
-- ``unavoidable_ranges.json``: only with a stop model (:class:`StopModel`): the frames from which a stop could no longer
-  avoid the coming contact. Provisional until the real arm's stop latency is measured.
+- ``unavoidable_ranges.json``: for each stop time of the stop model (:class:`StopModel`; by default the twin's fast,
+  median and slow stops, since 2026-11-23), the frames from which a stop could no longer avoid the coming contact. For
+  analysis; the labels stay contact. Provisional until the real arm's stop latency is measured.
 
 No LeRobot here, and pandas only to write ``frames.parquet``: the rest runs and is tested with plain Python.
 """
@@ -58,21 +59,45 @@ MOVE_TAGS: Tuple[str, ...] = ("MV",)
 MOVE_FIELDS: Tuple[str, ...] = ("index", "count", "kind", "object", "offsetMm", "gapMm", "startS", "contactS", "closestS", "endS")
 
 
-STOP_TIME_S, STOP_TIME_P90_S = 0.25, 0.35  # provisional (workstream R, recorded stops on the real arm and the twin)
+# The arm's stop times (item 17), seconds after its command stops: the fastest, middle and slowest of the per-joint,
+# per-speed medians `just isaac-stop-latency` measured on twin 0, 170-307 ms net of the network round trip.
+STOP_TIMES_S: Tuple[Tuple[str, float], ...] = (("fast", 0.17), ("median", 0.245), ("slow", 0.31))
+STOP_SOURCE = "twin stop-latency 2026-11-23, provisional until the real arm is measured"
+GIVEN_SOURCE = "given to the build (--stop-time-s)"
+UNAVOIDABLE_METHOD = (
+    "docs/adr/0038 item 17, for analysis (the labels stay contact): stopped at a frame's time, the arm goes on for the stop "
+    "time of its speed (travel = speed x time) along the path it was on, so a frame that is not unsafe itself is unavoidable "
+    "when the next contact the labels count (safety_ranges.json's rule: an obstacle, and the table unless the build was "
+    "--table-safe) starts within the stop time. One set of ranges for each stop time in stopTimes (seconds). A system that "
+    "detects and then stops adds its own delay to it.")
 
 
 @dataclass(frozen=True)
 class StopModel:
-    """How the arm stops (item 17), for :func:`unavoidable`: after its command stops, the arm goes on for ``time_s`` of its
-    speed (travel = speed x time). Provisional: 0.25 s (p90 0.35 s), measured by workstream R from recorded stops on the
-    real arm and the twin (real human stops 0.10 / 0.19 / 0.32 s, p10 / p50 / p90), until the real arm's run of
-    ``just stop-latency``. A system that detects and then stops adds its own delay to it."""
+    """How the arm stops (item 17), for :func:`unavoidable`: after its command stops, the arm goes on for a stop time of its
+    speed (travel = speed x time). ``times``, each a name and seconds, gives one set of unavoidable ranges each: by default
+    :data:`STOP_TIMES_S`, the twin's fast, median and slow stops (:data:`STOP_SOURCE`), provisional until the real arm's run
+    of ``just stop-latency``. :meth:`given` is one time of the build's own, named ``given``. A system that detects and then
+    stops adds its own delay to it."""
 
-    time_s: float
+    times: Tuple[Tuple[str, float], ...] = STOP_TIMES_S
+    source: str = STOP_SOURCE
 
     def __post_init__(self):
-        if not (self.time_s > 0) or not math.isfinite(self.time_s):
-            raise ValueError("the stop time is a number of seconds above 0")
+        names = [name for name, _ in self.times]
+        if not names or len(set(names)) != len(names) or not all(isinstance(n, str) and n for n in names):
+            raise ValueError("a stop model has one or more stop times, each under a name of its own")
+        for name, seconds in self.times:
+            if not isinstance(seconds, (int, float)) or not (seconds > 0) or not math.isfinite(seconds):
+                raise ValueError(f"the stop time {name!r} is a number of seconds above 0, not {seconds!r}")
+
+    @classmethod
+    def given(cls, seconds: float) -> "StopModel":
+        """One stop time of the build's own (``--stop-time-s``), named ``given``."""
+        return cls((("given", float(seconds)),), GIVEN_SOURCE)
+
+    def seconds(self) -> Dict[str, float]:
+        return dict(self.times)
 
 
 @dataclass(frozen=True)
@@ -84,7 +109,8 @@ class Options:
     # unsafe: on the real robot a hard table hit is a collision (world-models' review of docs/adr/0038).
     table_safe: bool = False
     geometry_dir: Optional[str] = None  # the twin's collision geometry, for clearance; None: no clearance
-    stop: Optional[StopModel] = None  # writes unavoidable_ranges.json
+    # writes unavoidable_ranges.json, by default for the twin's three stop times (since 2026-11-23); None: no file, as before
+    stop: Optional[StopModel] = field(default_factory=StopModel)
 
     def __post_init__(self):
         if self.caption not in ("neutral", "category"):
@@ -95,7 +121,7 @@ class Options:
 
     def describe(self) -> Dict:
         return {"caption": self.caption, "tableSafe": self.table_safe, "geometryDir": self.geometry_dir,
-                "stopModel": None if self.stop is None else {"stopTimeS": self.stop.time_s}}
+                "stopModel": None if self.stop is None else {"stopTimes": self.stop.seconds()}}
 
 
 @dataclass(frozen=True)
@@ -122,7 +148,7 @@ class Episode:
     scene: Dict
     contacts: List[Dict]
     frames: Dict[str, list]
-    unavoidable: Optional[List[List[int]]] = None
+    unavoidable: Optional[Dict[str, List[List[int]]]] = None  # per stop time's name, its ranges (Options.stop)
     flags: List[str] = field(default_factory=list)
 
 
@@ -551,20 +577,21 @@ def _frame_span(times: Sequence[int], half: int, start: int, end: int) -> Tuple[
     return (hit[0], hit[-1]) if hit else (None, None)
 
 
-def unavoidable(take: Take, in_contact: Sequence[int], obstacle_starts: Sequence[int], stop: StopModel) -> List[List[int]]:
-    """The frames from which a stop could no longer avoid the next obstacle contact (item 17; provisional until the real
-    arm's stop latency is measured), as inclusive ranges. Stopped at a frame's time t, the arm goes on for the stop time T
-    of its speed (travel = speed x T), along the path it was on: it covers what the recorded motion covers from t to t + T
-    (exactly so at a constant speed). A frame not in contact is unavoidable when the next contact starts by t + T."""
+def unavoidable(take: Take, unsafe: Sequence[int], contact_starts: Sequence[int], time_s: float) -> List[List[int]]:
+    """The frames from which a stop could no longer avoid the next contact (item 17; provisional until the real arm's stop
+    latency is measured), as inclusive ranges. ``unsafe`` are the frame labels and ``contact_starts`` the start times of
+    the contacts they count. Stopped at a frame's time t, the arm goes on for the stop time T (``time_s``) of its speed
+    (travel = speed x T), along the path it was on: it covers what the recorded motion covers from t to t + T (exactly so at
+    a constant speed). A frame not unsafe itself is unavoidable when the next contact starts by t + T."""
     half = _frame_period(take)
     t_last = int(take.frames[-1].timing["sensed"]) + half
-    starts = sorted(s for s in obstacle_starts if s <= t_last)
-    horizon = stop.time_s * 1e9
+    starts = sorted(s for s in contact_starts if s <= t_last)
+    horizon = time_s * 1e9
     marks = []
     for i, f in enumerate(take.frames):
         t = int(f.timing["sensed"])
         k = bisect.bisect_right(starts, t)
-        marks.append(1 if not in_contact[i] and k < len(starts) and starts[k] - t <= horizon else 0)
+        marks.append(1 if not unsafe[i] and k < len(starts) and starts[k] - t <= horizon else 0)
     return ranges(marks)
 
 
@@ -639,6 +666,7 @@ def episode(take: Take, options: Options = Options(), records: Optional[Records]
     in_contact = frame_flags(take, obstacle)
     in_table = frame_flags(take, table)
     # The labels count an obstacle and, unless built table_safe, the table (the old categories' checks never count it).
+    counted = obstacle if options.table_safe else obstacle + table
     labels = list(in_contact) if options.table_safe else [max(a, b) for a, b in zip(in_contact, in_table)]
 
     # The scene: objects on the table, their sizes and poses.
@@ -824,8 +852,9 @@ def episode(take: Take, options: Options = Options(), records: Optional[Records]
                                for s in ((scene or {}).get("surfaces") or [])],
                   "cameras": cams}
     unav = None
-    if options.stop is not None:
-        unav = unavoidable(take, in_contact, starts_ns, options.stop)
+    if options.stop is not None:  # before the contacts the labels count (time_to_contact_s is to an obstacle's alone)
+        counted_starts = sorted(s.start for s in counted)
+        unav = {name: unavoidable(take, labels, counted_starts, seconds) for name, seconds in options.stop.times}
     return Episode(take.scenario, labels, line, scene_line, contact_lines, cols, unav, flags)
 
 
@@ -944,15 +973,17 @@ def write(root: str, written: Sequence[Tuple[int, Episode]], options: Options, s
         json.dump(_clean(rep), f, indent=1, allow_nan=False)
     if options.stop is not None:
         with open(os.path.join(teleop, "unavoidable_ranges.json"), "w", encoding="utf-8") as f:
-            json.dump({"method": "provisional (docs/adr/0038 decision 6, item 17): stopped at a frame, the arm goes on for the stop "
-                                 "time of its speed (travel = speed x time) along the path it was on, so a frame not in contact is "
-                                 "unavoidable when the next obstacle contact starts within the stop time. The stop time is "
-                                 f"provisional, {STOP_TIME_S} s (p90 {STOP_TIME_P90_S} s) from recorded stops on the real arm and "
-                                 "the twin, until the real arm's run of just stop-latency; a system that detects and then stops "
-                                 "adds its own delay to it.",
-                       "stopTimeS": options.stop.time_s,
-                       "unavoidable_ranges": {str(ep): e.unavoidable for ep, e in written if e.unavoidable}}, f, indent=1)
+            json.dump(unavoidable_file(written, options.stop), f, indent=1)
     return rep
+
+
+def unavoidable_file(written: Sequence[Tuple[int, Episode]], stop: StopModel) -> Dict:
+    """``unavoidable_ranges.json`` (item 17): ``source`` (where the stop times come from), ``method``, ``stopTimes`` (name to
+    seconds) and ``unavoidable_ranges``, for each stop time's name ``{"<episode>": [[start, end], ...]}`` as
+    ``safety_ranges.json``'s ranges are (an episode with none left out)."""
+    sets = {name: {str(ep): e.unavoidable[name] for ep, e in written if e.unavoidable and e.unavoidable.get(name)}
+            for name, _ in stop.times}
+    return {"source": stop.source, "method": UNAVOIDABLE_METHOD, "stopTimes": stop.seconds(), "unavoidable_ranges": sets}
 
 
 def write_frames(path: str, written: Sequence[Tuple[int, Episode]]) -> None:
@@ -1050,6 +1081,7 @@ def check_datasets(roots: Sequence[str]) -> Tuple[List[str], List[str]]:
     return lines, faults
 
 
-__all__ = ["Episode", "GEOMETRY_DIR", "NEUTRAL_CAPTION", "Options", "StopModel", "Stretch", "camera_jitter", "cameras", "check_datasets",
-           "clearance", "episode", "frame_flags", "layout_hash", "look_at", "object_stretches", "parse_edit", "planned_moves",
-           "read_records", "replay", "report", "split", "unavoidable", "write", "write_frames"]
+__all__ = ["Episode", "GEOMETRY_DIR", "NEUTRAL_CAPTION", "Options", "STOP_SOURCE", "STOP_TIMES_S", "StopModel", "Stretch",
+           "camera_jitter", "cameras", "check_datasets", "clearance", "episode", "frame_flags", "layout_hash", "look_at",
+           "object_stretches", "parse_edit", "planned_moves", "read_records", "replay", "report", "split", "unavoidable",
+           "unavoidable_file", "write", "write_frames"]

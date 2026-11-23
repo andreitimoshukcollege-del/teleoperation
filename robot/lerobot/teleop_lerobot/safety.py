@@ -37,7 +37,8 @@ Since 2026-11-22 (docs/adr/0038 decision 6):
 - **Labels:** ``safety_ranges.json`` at the root, world-models' format (exactly ``source``, ``notes``, ``unsafe_ranges``),
   beside the three files above, which are kept.
 - **Sidecars** under ``meta/teleop/`` (``episodes.jsonl``, ``scenes.jsonl``, ``contacts.jsonl``, ``frames.parquet``,
-  ``report.json``), and a build can split one batch into several datasets by layout (:func:`build_split`).
+  ``report.json``, and since 2026-11-23 by default ``unavoidable_ranges.json``), and a build can split one batch into
+  several datasets by layout (:func:`build_split`).
 
 No LeRobot or pandas here but in :func:`write_labels`'s parquet, so the tests run with plain Python.
 """
@@ -593,10 +594,14 @@ def _first_ranges(ranges_by_episode: Dict[str, list], n: int) -> Dict[str, list]
 
 def _options(options: Optional[Dict]) -> Dict:
     """A ``report.json``'s build options as this version names them: a build before 2026-11-23 says ``tableUnsafe`` (the
-    table counted only when true) where one now says ``tableSafe``."""
+    table counted only when true) where one now says ``tableSafe``, and gave its one stop time as ``stopTimeS`` where one
+    now names its stop times (``stopTimes``; one given on the command line is ``given``)."""
     o = dict(options or {})
     if "tableUnsafe" in o:
         o["tableSafe"] = not o.pop("tableUnsafe")
+    stop = o.get("stopModel")
+    if isinstance(stop, dict) and "stopTimeS" in stop:
+        o["stopModel"] = {"stopTimes": {"given": stop["stopTimeS"]}}
     return o
 
 
@@ -604,8 +609,11 @@ def rebuild_options(root: str) -> List[str]:
     """The ``safety-build`` options that rebuild the safety dataset at ``root`` as it was built, from the options its
     ``meta/teleop/report.json`` records (``just isaac-safety-build-check``; ``--jobs`` and ``--split`` aside: a rebuild is
     one dataset, its report's ``split`` left out of the comparison). A dataset from before docs/adr/0038 has no report: its
-    captions were its categories, and its twin reported no table contacts, so ``--caption category``. One built before
-    2026-11-23 says ``tableUnsafe``, false when the table was left out: ``--table-safe`` now."""
+    captions were its categories, and its twin reported no table contacts, so ``--caption category`` (its unavoidable
+    ranges, which it lacks, are left out of the comparison with the rest of docs/adr/0038's files). One built before
+    2026-11-23 says ``tableUnsafe``, false when the table was left out (``--table-safe`` now), and had no unavoidable ranges
+    unless given a stop time (``--no-unavoidable`` now). Stop times other than the defaults or one given (a default changed
+    since) cannot be asked for: the comparison then shows them."""
     path = os.path.join(root, "meta", "teleop", "report.json")
     if not os.path.exists(path):
         return ["--caption", "category"]
@@ -613,8 +621,11 @@ def rebuild_options(root: str) -> List[str]:
         o = _options(json.load(f).get("options"))
     out = ["--caption", o.get("caption", "neutral"), "--geometry-dir=" + (o.get("geometryDir") or "")]
     out += ["--table-safe"] if o.get("tableSafe") else []
-    s = o.get("stopModel") or {}
-    out += [f"--stop-time-s={s['stopTimeS']}"] if s.get("stopTimeS") is not None else []
+    times = (o.get("stopModel") or {}).get("stopTimes")
+    if o.get("stopModel") is None:
+        out += ["--no-unavoidable"]
+    elif isinstance(times, dict) and list(times) == ["given"]:
+        out += [f"--stop-time-s={times['given']}"]
     return out
 
 
@@ -672,7 +683,11 @@ def compare_datasets(reference: str, rebuilt: str, notes: Optional[List[str]] = 
                 key = "unsafe_ranges" if rel == "safety_ranges.json" else "unavoidable_ranges"
                 with open(path, encoding="utf-8") as f, open(ref, encoding="utf-8") as g:
                     mine, theirs = json.load(f), json.load(g)
-                theirs[key] = _first_ranges(theirs.get(key, {}), nb)
+                sets = theirs.get(key, {})
+                if key == "unavoidable_ranges" and "stopTimes" in theirs:  # one set of ranges for each stop time's name
+                    theirs[key] = {name: _first_ranges(r, nb) for name, r in sets.items()}
+                else:
+                    theirs[key] = _first_ranges(sets, nb)
                 if "unmeasured" in theirs:
                     theirs["unmeasured"] = [e for e in theirs["unmeasured"] if e < nb]
                 if mine != theirs:

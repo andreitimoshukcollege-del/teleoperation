@@ -597,6 +597,9 @@ namespace Teleop.Eval.JointDrive
 
                     recording = true;
                     if (mixed) SendReplay(socket, robot, ReplayRecord.Source(seed), ref recordSequence, recordDatagram);
+                    // The replays keep this take's look (the renderer keeps it while .keep-look stands beside its control file when a
+                    // session closes; the batch makes and removes the file on these lines, docs/adr/0038 decision 2).
+                    if (mixed && replays > 0) Console.WriteLine("[joint-drive] keep-look: on");
                     lastLoop = Stopwatch.GetTimestamp(); // the wait for RobotHost is not plan time
                     nextSend = lastLoop;
                     continue;
@@ -800,7 +803,22 @@ namespace Teleop.Eval.JointDrive
         /// </summary>
         private static int Replay(ReplayContext c, int replays, ref uint sequence, ref uint recordSequence)
         {
-            Console.WriteLine("[joint-drive] keep-look: on (the replays keep the source take's look; docs/adr/0038 decision 2)");
+            // The look is kept until the last replay is recording (the renderer decides as each session closes), or the replays end.
+            try
+            {
+                return Replays(c, replays, ref sequence, ref recordSequence);
+            }
+            finally
+            {
+                if (!_lookReleased) Console.WriteLine("[joint-drive] keep-look: off");
+                _lookReleased = false;
+            }
+        }
+
+        private static bool _lookReleased;
+
+        private static int Replays(ReplayContext c, int replays, ref uint sequence, ref uint recordSequence)
+        {
             for (int r = 1; r <= replays; r++)
             {
                 if (c.Stop.IsSet) return 130;
@@ -848,7 +866,7 @@ namespace Teleop.Eval.JointDrive
                     return 0;
                 }
 
-                int code = ReplayTake(c, r, edit.Record, ref sequence, ref recordSequence);
+                int code = ReplayTake(c, r, edit.Record, ref sequence, ref recordSequence, r == replays);
                 Console.WriteLine($"[joint-drive] take recorded: replay {r} of {replays} of group {c.Group}, {ReplayCodec.Describe(edit.Record)}, ended {code}");
                 if (code != 0 && code != 4) return code;
             }
@@ -1022,7 +1040,7 @@ namespace Teleop.Eval.JointDrive
         /// from the take's start (the clock held while the joint-state stream is unhealthy, as the source's was) and its moves (MV) at
         /// theirs, the watchdog as for any drive; then stopped and kept. Its exit code, as a drive's.
         /// </summary>
-        private static int ReplayTake(ReplayContext c, int replay, in ReplayRecord record, ref uint sequence, ref uint recordSequence)
+        private static int ReplayTake(ReplayContext c, int replay, in ReplayRecord record, ref uint sequence, ref uint recordSequence, bool last)
         {
             var watchdog = new DriveWatchdog(c.StallSeconds, c.StreamSeconds);
             ArmPose commanded = c.Tape[0].Pose;
@@ -1034,6 +1052,11 @@ namespace Teleop.Eval.JointDrive
 
             var recordDatagram = new byte[Math.Max(ScriptMoveCodec.Size, ReplayCodec.Size)];
             SendReplay(c.Socket, c.Robot, record, ref recordSequence, recordDatagram);
+            if (last)
+            {
+                Console.WriteLine("[joint-drive] keep-look: off");
+                _lookReleased = true;
+            }
             var targets = new JointTarget[c.Profile.JointCount];
             var datagram = new byte[MaxDatagramBytes];
             long tps = Stopwatch.Frequency, lastLoop = Stopwatch.GetTimestamp();

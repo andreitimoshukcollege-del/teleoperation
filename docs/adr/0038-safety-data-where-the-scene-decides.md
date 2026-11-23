@@ -416,6 +416,31 @@ With the defaults (after):
   them scenery (`WorldView.TryObjects`).
 - The real arm: `--replays` needs `--simulated-robot`, and the caps were set from R's human figures, not from the arm.
 
+**After the twin check of 2026-11-23** (branch `work/v2-motion-fix`). Four fixes:
+- **The start pose.** A mixed take needs only the quiet margin (2 cm) at its start, not the old scripts' 5 cm. When neither the
+  arm's pose nor home has it, the take starts from a pose turned or raised from home, reached by a slow setup move clear of the
+  objects by 1 cm. With `--new-layout`, a layout with no plan is replaced, up to 4 layouts a take. A hand cornered mid-take moves
+  back toward the middle of reach before the take gives up.
+- **Replays never repeat an edit.** Each kind takes the first object the group has not edited that way. A removal tries first
+  what the take moved; a shift goes only along a move the take made at the object; a move uses a spot from the scene's own rules
+  (`DrawSpot`, `FitsOnTable`, `InReach`, `Overlaps`). When no kind has anything new, the replay is skipped and logged.
+- **Blind moves stop at fixtures.** From 0.3 s into a layout-blind move, it keeps to a fixed object's box, a drawn 5 mm into it to
+  15 mm short (the check had a shelf rig touched for 99 of 262 frames). A move into a fixture always pulls back out. Aims and
+  passes at fixtures, and every movable object, are as before.
+- **Beside the robot.** The IK reaches no further round than about 95 degrees (nothing at 100), so beyond 60 degrees an arc
+  comes from the front, and beyond 80 degrees a pass is an aim.
+
+On `jetrover-mixed`, layouts 1-200 (dry run as above):
+
+| | Before (5559eb2) | After (521603d) |
+|---|---|---|
+| Layouts planned | 176 of 200 | 195 of 200 |
+| Refused for the start pose | 11 | 0 |
+| Aims / passes a take | 1.1 / 0.2 | 1.4 / 0.2 |
+| Planned contacts | 86 in 57 takes (0.49 a take) | 112 in 80 takes (0.57 a take) |
+
+The 5 layouts left unplanned are 4 cornered hands and 1 tail. On the twin, `--new-layout` draws another layout for those.
+
 ### C, clearance and contacts
 
 Built 2026-11-22 on `work/v2-contacts`. Checked offline against recorded takes; the table contacts are not yet run on the twin.

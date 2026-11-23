@@ -18,5 +18,11 @@ DATA="${3:?prepared data directory}"
 OUT="${4:?runs directory}"
 SIF="${ARMPRED_SIF:-armpred.sif}"
 
-apptainer exec --nv "$SIF" armpred grid --config "$CONFIG" --grid "$GRID" --data "$DATA" --out "$OUT" \
+# Apptainer mounts only $HOME, /tmp and the working directory into the container: the folders the outputs
+# go to (a /scratch or /projects path) are bound explicitly, at the same path, made first if missing.
+binds=()
+bind_parent() { local d; d=$(dirname "$(realpath -m "$1")"); mkdir -p "$d"; binds+=(--bind "$d"); }
+bind_parent "$DATA"; bind_parent "$OUT"
+
+apptainer exec --nv "${binds[@]}" "$SIF" armpred grid --config "$CONFIG" --grid "$GRID" --data "$DATA" --out "$OUT" \
   --index "${SLURM_ARRAY_TASK_ID:?run as an array job}" --workers "${SLURM_CPUS_PER_TASK:-8}"

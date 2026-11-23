@@ -22,7 +22,8 @@ echo "selftest on $(hostname), $(tr -d '\n' < VERSION)"
 nvidia-smi --query-gpu=name,driver_version,memory.total --format=csv,noheader
 apptainer exec --nv "$SIF" armpred selftest
 if [ "$OUT" != "-" ]; then
-  mkdir -p "$(dirname "$OUT")"
-  apptainer exec --nv "$SIF" armpred sim-pretrain --config configs/smoke.toml --out "$OUT"
+  # Apptainer mounts only $HOME, /tmp and the working directory: bind the run's folder (made first) at its own path.
+  parent=$(dirname "$(realpath -m "$OUT")"); mkdir -p "$parent"
+  apptainer exec --nv --bind "$parent" "$SIF" armpred sim-pretrain --config configs/smoke.toml --out "$OUT"
   echo "smoke run: $OUT"
 fi

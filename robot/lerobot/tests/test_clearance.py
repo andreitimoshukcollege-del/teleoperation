@@ -346,7 +346,7 @@ def test_a_300_frame_take_with_thirty_objects_takes_seconds_at_most(scenarios, g
         world.poses.p[100 + k] = [(x, y, 0.04, 1.0, 0.0, 0.0, 0.0)]
     world.bodies = world.bodies + extra
     t0 = time.monotonic()
-    frames = take.frames * 7  # about 300
+    frames = take.frames * 10  # about 300
     values = {k: v[[world.vq_frame[int(f.timing["frame"])] for f in frames]] for k, v in world.vq.items()}
     centres, axes = world.link_boxes(values, len(frames))
     per = C._box_index(world.robot)

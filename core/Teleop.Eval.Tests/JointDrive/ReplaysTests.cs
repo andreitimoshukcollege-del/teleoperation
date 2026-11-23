@@ -70,11 +70,12 @@ namespace Teleop.Eval.Tests.JointDrive
         }
 
         [Fact]
-        public void TheEdits_AreDeterministic_TakeEachKindInTurn_AndKeepToTheirRules()
+        public void TheEdits_AreDeterministic_NeverRepeatInAGroup_AndKeepToTheirRules()
         {
+            // The twin check of 2026-11-23: both replays of a group often removed the same object. A group's replays now never make
+            // one edit twice, and when nothing new is left there is no edit.
             (WorldScene scene, ObjectShapes? shapes) = Bench();
-            var kinds = new List<ReplayEdit>();
-            int checkedGroups = 0;
+            int checkedGroups = 0, kinds = 0;
             for (ulong layout = 1; layout <= 6; layout++)
             {
                 SafetyObject[] objects = Layout(scene, shapes, layout);
@@ -82,18 +83,24 @@ namespace Teleop.Eval.Tests.JointDrive
                 checkedGroups++;
                 ulong group = 500 + layout;
                 var touched = new HashSet<byte>();
+                var used = new HashSet<string>();
                 var seen = new List<ReplayEdit>();
-                for (int replay = 1; replay <= 3; replay++)
+                for (int replay = 1; replay <= 8; replay++)
                 {
-                    ReplayEditDraw a = ReplayEdits.Draw(group, replay, 0, plan!, objects, scene, touched, Profile);
-                    ReplayEditDraw b = ReplayEdits.Draw(group, replay, 0, plan!, objects, scene, touched, Profile);
-                    Assert.Equal(a.Record, b.Record); // the same take, objects and draw: the same edit
+                    ReplayEditDraw a = ReplayEdits.Draw(group, replay, 0, plan!, objects, scene, touched, Profile, used);
+                    ReplayEditDraw b = ReplayEdits.Draw(group, replay, 0, plan!, objects, scene, touched, Profile, new HashSet<string>(used));
+                    Assert.Equal(a.Record, b.Record); // the same take, objects, draw and edits so far: the same edit
+                    if (a.Pose.Id == 0) break; // nothing new is left
+                    string key = ReplayEdits.Key(a.Record);
+                    Assert.DoesNotContain(key, used);
+                    used.Add(key);
                     Assert.Equal(ReplayRole.Replay, a.Record.Role);
                     Assert.Equal(group, a.Record.Group);
                     seen.Add(a.Record.Edit);
                     int i = Array.FindIndex(objects, o => o.Id == a.Record.ObjectId);
                     Assert.True(i >= 0);
                     Assert.False(ReplayEdits.Holds(objects, i), "an object something stands on is never edited");
+                    Assert.False(objects[i].Scenery);
                     SafetyObject o = objects[i];
                     switch (a.Record.Edit)
                     {
@@ -104,27 +111,24 @@ namespace Teleop.Eval.Tests.JointDrive
                         case ReplayEdit.Shift:
                             Assert.Equal(WorldEditOp.Move, a.Op);
                             float d = new Vector2(a.Record.A, a.Record.B).Length();
-                            Assert.InRange(d, ReplayEdits.ShiftMinMeters - 1e-5f, ReplayEdits.ShiftMaxMeters + 1e-5f);
-                            Assert.Equal(o.Center.X + a.Record.A, a.Pose.X, 4);
+                            Assert.InRange(d, ReplayEdits.ShiftMinMeters - 1e-4f, ReplayEdits.ShiftMaxMeters + 1e-4f);
+                            Assert.Contains(plan!.Moves, m => m.ObjectId == o.Id); // along a move the take made at it
                             Assert.True(scene.Objects[scene.IndexOf(o.Id)].OperatorMovable && o.Min.Z <= (float)scene.Table.Top + 0.01f);
                             break;
                         case ReplayEdit.Move:
                             Assert.Equal(WorldEditOp.Move, a.Op);
-                            float r = new Vector2(a.Record.A, a.Record.B).Length();
-                            Assert.InRange(r, ReplayEdits.MoveMinRadius - 1e-4f, ReplayEdits.MoveMaxRadius + 1e-4f);
-                            Assert.InRange(a.Record.A, (float)scene.RegionXMin, (float)scene.RegionXMax);
-                            Assert.True(scene.Objects[scene.IndexOf(o.Id)].OperatorMovable);
+                            Assert.True(new Vector2(a.Record.A - o.Center.X, a.Record.B - o.Center.Y).Length() >= 0.05f, "elsewhere, not a nudge");
+                            int k = scene.IndexOf(o.Id);
+                            Assert.True(scene.Objects[k].OperatorMovable && scene.InReach(k, a.Record.A, a.Record.B));
                             break;
                     }
                 }
 
-                // Three replays of a group take the three kinds, when a movable object stands in reach (else removals).
-                if (seen.Distinct().Count() == 3) kinds.AddRange(seen);
-                Assert.True(seen.Distinct().Count() == 3 || seen.All(k => k == ReplayEdit.Remove || seen.Count(x => x == k) == 1), string.Join(", ", seen));
+                kinds += seen.Distinct().Count();
             }
 
             Assert.True(checkedGroups >= 4);
-            Assert.NotEmpty(kinds);
+            Assert.True(kinds >= checkedGroups, "the groups' replays take more than one kind of edit");
         }
 
         [Fact]

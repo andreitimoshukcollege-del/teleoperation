@@ -282,9 +282,21 @@ namespace Teleop.Eval.JointDrive
             bool safety = SafetyScript.IsSafety(script);
             bool fromHere = safety && objects != null && envelope.Contains(start) &&
                             ArmCollision.IsValid(profile, SafetyScript.WithObjects(model, objects, SafetyScript.ClearanceMeters), start);
-            if (!fromHere && start.MaxJointDelta(home) > 0.01f)
+            // A mixed take starts where the arm is, or home, or a pose near home, whichever is the quiet margin from every object
+            // (docs/adr/0038), and goes there on a path clear of the objects.
+            ArmPose begin = home;
+            List<(ArmPose To, bool Step)>? mixedVia = null;
+            if (script == DriveScript.Mixed && objects != null)
             {
-                if (!TryApproach(profile, model, start, home, out List<(ArmPose To, bool Step)> via, out error))
+                if (!MixedTake.TryStartPose(profile, model, envelope, objects, mixedOptions ?? new MixedOptions(), start, out begin, out mixedVia, out error)) return false;
+                fromHere = start.MaxJointDelta(begin) <= 0.01f;
+            }
+
+            if (!fromHere && start.MaxJointDelta(begin) > 0.01f)
+            {
+                List<(ArmPose To, bool Step)> via;
+                if (mixedVia != null) via = mixedVia;
+                else if (!TryApproach(profile, model, start, home, out via, out error))
                 {
                     return false;
                 }
@@ -304,7 +316,7 @@ namespace Teleop.Eval.JointDrive
             }
 
             var rng = new SeededRng(seed);
-            ArmPose current = fromHere ? start : home;
+            ArmPose current = fromHere ? start : begin;
             double end = t + seconds;
             int stepJoint = 0;
             if (script == DriveScript.Course)

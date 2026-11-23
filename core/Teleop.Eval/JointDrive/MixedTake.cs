@@ -221,6 +221,7 @@ namespace Teleop.Eval.JointDrive
         private readonly GapLadder?[] _ladders;
         private readonly List<Draft> _drafts = new List<Draft>();
         private readonly HashSet<int> _moved = new HashSet<int>(); // objects a move planned to push into, as later targets
+        private readonly ArmCollisionModel[]? _walls; // the fixed objects' boxes at each of WallOffsets (null: no fixed object)
         private readonly List<Vector2> _avoid = new List<Vector2>();
         private SeededRng _rng;
         private double _lastObjectEnd = double.NegativeInfinity;
@@ -277,7 +278,27 @@ namespace Teleop.Eval.JointDrive
             _rng = rng;
             _shapes = new ShapeGap?[objects.Count];
             _ladders = new GapLadder?[objects.Count];
+            var fixedObjects = new List<SafetyObject>();
+            foreach (SafetyObject o in objects) if (!o.Movable) fixedObjects.Add(o);
+            if (fixedObjects.Count > 0)
+            {
+                _walls = new ArmCollisionModel[WallOffsets.Length];
+                for (int i = 0; i < WallOffsets.Length; i++)
+                {
+                    var grown = new SafetyObject[fixedObjects.Count];
+                    for (int k = 0; k < grown.Length; k++) grown[k] = fixedObjects[k].Grown(WallOffsets[i]);
+                    _walls[i] = SafetyScript.WithObjects(model, grown, 0f, 0f);
+                }
+            }
         }
+
+        /// <summary>
+        /// How close to a fixed object's box a layout-blind move may come (one drawn for each move), m: from 5 mm into it to 15 mm short
+        /// of it. A person stops at a wall, a little short of it or touching it; a movable object stays fair game for physics.
+        /// </summary>
+        public static readonly float[] WallOffsets = { -0.005f, 0f, 0.005f, 0.010f, 0.015f };
+
+        private ArmCollisionModel? DrawWalls() => _walls == null ? null : _walls[(int)(_rng.NextDouble() * _walls.Length) % _walls.Length];
 
         /// <summary>
         /// Plans a mixed take from <paramref name="current"/> at plan time <paramref name="t"/> (after <paramref name="prefix"/>, the
@@ -299,9 +320,9 @@ namespace Teleop.Eval.JointDrive
                 return false;
             }
 
-            if (!ArmCollision.IsValid(profile, SafetyScript.WithObjects(model, objects, SafetyScript.ClearanceMeters), current))
+            if (!ArmCollision.IsValid(profile, SafetyScript.WithObjects(model, objects, options.QuietMarginMeters), current))
             {
-                error = $"the arm at {DrivePlan.Describe(current)} is already within {SafetyScript.ClearanceMeters * 100:0} cm of an object";
+                error = $"the arm at {DrivePlan.Describe(current)} is already within {options.QuietMarginMeters * 100:0} cm of an object";
                 return false;
             }
 
@@ -319,7 +340,41 @@ namespace Teleop.Eval.JointDrive
         internal string Refusals()
         {
             int[] r = _hand.Refusals;
-            return $"ticks refused: IK {r[0]}, envelope or model {r[1]}, jump {r[2]}, quiet margin {r[3]}, caps {r[4]}; {ObjectReport()}";
+            return $"ticks refused: IK {r[0]}, envelope or model {r[1]}, jump {r[2]}, quiet margin {r[3]}, caps {r[4]}, walls {r[5]}; {ObjectReport()}";
+        }
+
+        /// <summary>
+        /// Where a mixed take may start from <paramref name="start"/> (docs/adr/0038; the twin check of 2026-11-23: the model's home was
+        /// within the old scripts' 5 cm of an obstacle on 13% of the mixed scene's layouts): there, when it is in the envelope and the
+        /// quiet margin from every object; else home, or one of a few poses turned and raised from home (the first that is clear by
+        /// the margin and 1 cm more), reached by a slow setup move (straight, or a joint at a time) clear of the objects by 1 cm.
+        /// False, and why, when none is.
+        /// </summary>
+        internal static bool TryStartPose(in RobotArmProfile profile, ArmCollisionModel model, in DriveEnvelope envelope, IReadOnlyList<SafetyObject> objects,
+            MixedOptions options, in ArmPose start, out ArmPose target, out List<(ArmPose To, bool Step)> via, out string? error)
+        {
+            target = start;
+            via = new List<(ArmPose, bool)>();
+            error = null;
+            ArmCollisionModel quiet = SafetyScript.WithObjects(model, objects, options.QuietMarginMeters);
+            if (envelope.Contains(start) && ArmCollision.IsValid(profile, quiet, start)) return true;
+            ArmCollisionModel roomy = SafetyScript.WithObjects(model, objects, options.QuietMarginMeters + 0.01f);
+            ArmCollisionModel path = SafetyScript.WithObjects(model, objects, 0.01f);
+            ArmPose home = model.Home;
+            foreach (float lift in new[] { 0f, 0.2f })
+            foreach (float yaw in new[] { 0f, 0.35f, -0.35f, 0.7f, -0.7f, 1.05f, -1.05f, 1.4f, -1.4f })
+            {
+                ArmPose p = DrivePlan.WithJoint(DrivePlan.WithJoint(home, 0, home.BaseYaw + yaw), 1, home.Proximal + lift);
+                if (!envelope.Contains(p) || !ArmCollision.IsValid(profile, roomy, p)) continue;
+                if (start.MaxJointDelta(p) <= 0.01f || DrivePlan.TryApproach(profile, path, start, p, out via, out _))
+                {
+                    target = p;
+                    return true;
+                }
+            }
+
+            error = $"no start pose near home is {options.QuietMarginMeters * 100 + 1:0} cm clear of the objects with a clear way there from {DrivePlan.Describe(start)}";
+            return false;
         }
 
         private double Slowness() => Math.Clamp(Math.Exp(_options.SlowSigma * Draw.Normal(ref _rng)), _options.SlowMin, _options.SlowMax);
@@ -422,7 +477,7 @@ namespace Teleop.Eval.JointDrive
                 if (!TrySolve(from, goal, pitch, out ArmPose there) || !_envelope.Contains(there) || !ArmCollision.IsValid(_profile, _hand.Guard!, there)) continue;
                 HandSnapshot before = _hand.Save();
                 int drafts = _drafts.Count;
-                if (!_hand.MixedTo(goal, pitch, null, Slowness(), 0.010, _model, out double s, out double e)) continue;
+                if (!_hand.MixedTo(goal, pitch, null, Slowness(), 0.010, _model, out double s, out double e, walls: DrawWalls())) continue;
                 int k = Math.Min(_hand.Poses.Count - 1, (int)Math.Ceiling(e / HandModel.TickSeconds));
                 if (!ArmCollision.IsValid(_profile, _hand.Guard!, _hand.Poses[k]))
                 {
@@ -502,7 +557,7 @@ namespace Teleop.Eval.JointDrive
         {
             bool quiet = tailOnly || _hand.Free < _options.QuietStartSeconds;
             if (!_hand.MixedFree(_model, quiet ? _options.QuietReach : _options.Reach, Slowness(), _options.BlindTransportShare, _options.BlindReverseShare,
-                    out ScriptMoveKind kind, out start, out end))
+                    out ScriptMoveKind kind, out start, out end, DrawWalls()))
             {
                 return false;
             }
@@ -674,6 +729,7 @@ namespace Teleop.Eval.JointDrive
             u = u.Length() > 1e-6f ? Vector3.Normalize(u) : radialDir;
             HandSnapshot before = _hand.Save();
             int drafts = _drafts.Count;
+            double lastObjectEnd = _lastObjectEnd;
             // To where it starts, clear of its object's box by what that point leaves of it (less 4 mm, the model's margin kept), blind
             // to the others.
             float boxGap = (_ladders[oi] ??= new GapLadder(_profile, _model, o)).SignedGap(poses[stage]);
@@ -704,13 +760,23 @@ namespace Teleop.Eval.JointDrive
                 _avoid.Add(c + 0.10f * Vector2.Normalize(new Vector2(u.X, u.Y) + new Vector2(1e-6f, 0f)));
             }
 
-            if (Draw.Chance(ref _rng, _options.ReverseAfterShare))
+            // Into a fixture, the hand always pulls back out (a person does; and the blind moves after keep out of fixtures); else now
+            // and then.
+            bool intoFixture = !o.Movable && offset < 0.005f;
+            if (intoFixture || Draw.Chance(ref _rng, _options.ReverseAfterShare))
             {
                 Vector3 back = _hand.TargetEnd - u * (float)Draw.Uniform(ref _rng, 0.03, 0.08) + new Vector3(0f, 0f, (float)Draw.Uniform(ref _rng, 0.01, 0.04));
                 if (_hand.MixedTo(back, null, null, Slowness(), 0.008, _model, out s, out e))
                 {
                     Add(ScriptMoveKind.Reverse, -1, float.NaN, s, e);
                     _lastObjectEnd = Math.Max(_lastObjectEnd, e);
+                }
+                else if (intoFixture)
+                {
+                    Undo(before, drafts);
+                    _lastObjectEnd = lastObjectEnd;
+                    _objectMoves--;
+                    return Miss(5);
                 }
             }
             else

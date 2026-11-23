@@ -472,39 +472,57 @@ namespace Teleop.Eval.JointDrive
             // A safety script plans around the objects where RobotHost says they are (docs/adr/0036 amendment 1), after a new
             // layout when asked: every object posed, and at rest.
             List<SafetyObject>? objects = null;
-            if (link.World != null && !PrepareWorld(link, socket, robot, newLayout, stop, out objects))
+            // With --new-layout, a layout the take finds no plan on is replaced by another, up to MaxLayoutTries times (docs/adr/0038:
+            // the twin check of 2026-11-23 lost 2 of 5 mixed takes to one), the arm unmoved meanwhile.
+            DrivePlan? found = null;
+            string? error = null;
+            for (int layoutTry = 1; ; layoutTry++)
             {
-                return 1; // nothing moved
-            }
-
-            ArmPose start = link.Measured;
-            Console.WriteLine($"[joint-drive] the arm is at {DrivePlan.Describe(start)}");
-            // A take with several events takes seconds to plan (docs/adr/0036 amendment 5): the link is kept up meanwhile, so
-            // RobotHost goes on streaming the joints and the world.
-            Task<(bool Built, DrivePlan? Plan, string? Error)> planning = Task.Run(() =>
-            {
-                bool built = DrivePlan.TryBuild(script, profile, start, speed, seconds, seed, envelope, out DrivePlan? p, out string? why, objects, safetyOptions, mixedOptions);
-                return (built, p, why);
-            });
-            while (!planning.IsCompleted)
-            {
-                if (stop.IsSet)
+                if (link.World != null && !PrepareWorld(link, socket, robot, newLayout, stop, out objects))
                 {
-                    Console.Error.WriteLine("joint-drive: stopped by hand before anything moved.");
-                    return 130;
+                    return 1; // nothing moved
                 }
 
-                link.Pump(Stopwatch.GetTimestamp(), default);
-                Thread.Sleep(5);
+                ArmPose start = link.Measured;
+                Console.WriteLine($"[joint-drive] the arm is at {DrivePlan.Describe(start)}");
+                // A take with several events takes seconds to plan (docs/adr/0036 amendment 5): the link is kept up meanwhile, so
+                // RobotHost goes on streaming the joints and the world.
+                List<SafetyObject>? around = objects;
+                Task<(bool Built, DrivePlan? Plan, string? Error)> planning = Task.Run(() =>
+                {
+                    bool built = DrivePlan.TryBuild(script, profile, start, speed, seconds, seed, envelope, out DrivePlan? p, out string? why, around, safetyOptions, mixedOptions);
+                    return (built, p, why);
+                });
+                while (!planning.IsCompleted)
+                {
+                    if (stop.IsSet)
+                    {
+                        Console.Error.WriteLine("joint-drive: stopped by hand before anything moved.");
+                        return 130;
+                    }
+
+                    link.Pump(Stopwatch.GetTimestamp(), default);
+                    Thread.Sleep(5);
+                }
+
+                (bool planned, DrivePlan? p, string? why) = planning.Result;
+                if (planned)
+                {
+                    found = p;
+                    break;
+                }
+
+                error = why;
+                if (!newLayout || layoutTry >= MaxLayoutTries)
+                {
+                    Console.Error.WriteLine($"joint-drive: {error}");
+                    return 1;
+                }
+
+                Console.WriteLine($"[joint-drive] no plan on this layout ({error}); another layout ({layoutTry + 1} of {MaxLayoutTries})");
             }
 
-            (bool planned, DrivePlan? plan, string? error) = planning.Result;
-            if (!planned)
-            {
-                Console.Error.WriteLine($"joint-drive: {error}");
-                return 1;
-            }
-
+            DrivePlan plan = found!;
             PrintPlan(plan!, rateHz);
             // A take of a scenario RobotHost does not record leaves the arm unmoved: that is known before anything moves.
             int scenarioIndex = -1;
@@ -841,9 +859,20 @@ namespace Teleop.Eval.JointDrive
 
         private static int Replays(ReplayContext c, int replays, ref uint sequence, ref uint recordSequence)
         {
+            // A group's replays never make one edit twice (the twin check of 2026-11-23: remove:77 twice); a replay with nothing new
+            // to edit is skipped, and so are the rest.
+            var used = new HashSet<string>();
+            WorldScene scene = c.Link.World!.Scene;
+            Func<byte, double> scaleOf = id => c.Link.World!.Scale(id);
             for (int r = 1; r <= replays; r++)
             {
                 if (c.Stop.IsSet) return 130;
+                if (ReplayEdits.Draw(c.Group, r, 0, c.Plan, c.Objects, scene, c.Touched, c.Profile, used, scaleOf).Pose.Id == 0)
+                {
+                    Console.WriteLine($"[joint-drive] replay {r} of {replays}: no edit this group has not made ({(used.Count > 0 ? string.Join(", ", used) : "none")}); skipped, with the rest");
+                    return 0;
+                }
+
                 Console.WriteLine($"[joint-drive] replay {r} of {replays}: putting the source's layout back");
                 if (!RestoreLayout(c))
                 {
@@ -867,20 +896,26 @@ namespace Teleop.Eval.JointDrive
 
                 ReplayEditDraw edit = default;
                 bool applied = false;
-                WorldScene scene = c.Link.World!.Scene;
-                for (int attempt = 0; attempt < 6 && !applied && !c.Stop.IsSet; attempt++)
+                var tried = new HashSet<string>(used);
+                for (int attempt = 0; attempt < 8 && !applied && !c.Stop.IsSet; attempt++)
                 {
-                    edit = ReplayEdits.Draw(c.Group, r, attempt, c.Plan, c.Objects, scene, c.Touched, c.Profile);
+                    edit = ReplayEdits.Draw(c.Group, r, attempt, c.Plan, c.Objects, scene, c.Touched, c.Profile, tried, scaleOf);
                     if (edit.Pose.Id == 0) break;
                     if (edit.After.HasValue && !ReplayEdits.KeepsQuiet(c.Plan, edit.After.Value, c.Profile, c.Profile.Collision!, c.Options))
                     {
                         Console.WriteLine($"[joint-drive] replay {r}: {ReplayCodec.Describe(edit.Record)} would meet the take's quiet start or end; another");
+                        if (edit.Record.Edit != ReplayEdit.Move || attempt >= 3) tried.Add(ReplayEdits.Key(edit.Record));
                         continue;
                     }
 
                     byte outcome = EditWorld(c, edit.Op, edit.Pose);
                     applied = outcome == EditApplied;
-                    if (!applied) Console.WriteLine($"[joint-drive] replay {r}: RobotHost refused {ReplayCodec.Describe(edit.Record)} (placement code {outcome}); another");
+                    if (applied) used.Add(ReplayEdits.Key(edit.Record));
+                    else
+                    {
+                        Console.WriteLine($"[joint-drive] replay {r}: RobotHost refused {ReplayCodec.Describe(edit.Record)} (placement code {outcome}); another");
+                        if (edit.Record.Edit != ReplayEdit.Move || attempt >= 3) tried.Add(ReplayEdits.Key(edit.Record)); // a move draws another spot first
+                    }
                 }
 
                 if (!applied || !WaitAtRest(c, 20))
@@ -1282,6 +1317,9 @@ namespace Teleop.Eval.JointDrive
 
         /// <summary>How long every object must stay put before a safety script plans around it, seconds.</summary>
         public const double SettleSeconds = 1.0;
+
+        /// <summary>With --new-layout, how many layouts a take tries before it gives up for want of a plan.</summary>
+        public const int MaxLayoutTries = 4;
 
         /// <summary>
         /// Waits for RobotHost's scenario list and finds <paramref name="scenario"/> on it, before anything moves. False, with the

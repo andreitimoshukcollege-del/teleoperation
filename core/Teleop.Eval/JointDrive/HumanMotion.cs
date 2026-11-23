@@ -749,8 +749,18 @@ namespace Teleop.Eval.JointDrive
         /// <summary>The gripper fraction once everything planned so far has run.</summary>
         public float GripperEnd => _timeline.FinalGripper;
 
-        /// <summary>How many ticks refused a part, by what: the IK (blocked, out of reach), the envelope or the check, a jump, the guard, the caps. For reports only.</summary>
-        public int[] Refusals { get; } = new int[5];
+        /// <summary>How many ticks refused a part, by what: the IK (blocked, out of reach), the envelope or the check, a jump, the guard, the caps, a wall. For reports only.</summary>
+        public int[] Refusals { get; } = new int[6];
+
+        /// <summary>
+        /// docs/adr/0038 (the twin check of 2026-11-23): while a layout-blind part is planned, its ticks from <see cref="WallsFrom"/>
+        /// on (seconds on the hand's timeline) must also pass this model, the fixed objects as walls: a person stops at a wall, where
+        /// a blind move pushed the arm into a shelf for seconds. Null: none.
+        /// </summary>
+        public ArmCollisionModel? Walls { get; set; }
+
+        /// <summary>See <see cref="Walls"/>.</summary>
+        public double WallsFrom { get; set; } = double.PositiveInfinity;
 
         /// <summary>
         /// A move to <paramref name="goal"/> (the wrist's target, arm base frame) with the wrist at <paramref name="pitch"/> and
@@ -930,6 +940,21 @@ namespace Teleop.Eval.JointDrive
         /// or <see cref="Teleop.RobotArm.Wire.ScriptMoveKind.Reverse"/>.
         /// </summary>
         public bool MixedFree(ArmCollisionModel check, BlindReach reach, double slow, double transportShare, double reverseShare,
+            out Teleop.RobotArm.Wire.ScriptMoveKind kind, out double start, out double end, ArmCollisionModel? walls = null)
+        {
+            Walls = walls;
+            try
+            {
+                return MixedFreeParts(check, reach, slow, transportShare, reverseShare, out kind, out start, out end);
+            }
+            finally
+            {
+                Walls = null;
+                WallsFrom = double.PositiveInfinity;
+            }
+        }
+
+        private bool MixedFreeParts(ArmCollisionModel check, BlindReach reach, double slow, double transportShare, double reverseShare,
             out Teleop.RobotArm.Wire.ScriptMoveKind kind, out double start, out double end)
         {
             kind = Teleop.RobotArm.Wire.ScriptMoveKind.Free;
@@ -941,6 +966,7 @@ namespace Teleop.Eval.JointDrive
                 int capped = Refusals[4];
                 HandTimeline tl = _timeline.Copy();
                 double t0 = _free, next, u = _rng.NextDouble();
+                WallsFrom = t0 + 0.3; // where the last move left the hand, against a wall, it has a moment to leave
                 slow *= stretch;
                 Teleop.RobotArm.Wire.ScriptMoveKind k = Teleop.RobotArm.Wire.ScriptMoveKind.Free;
                 if (u < transportShare)
@@ -999,7 +1025,23 @@ namespace Teleop.Eval.JointDrive
         /// against <paramref name="check"/> (and the guard), redrawn on failure. The gripper is used on the way as in free movement.
         /// </summary>
         public bool MixedTo(Vector3 goal, float? pitch, float? roll, double slow, double tolerance, ArmCollisionModel check, out double start, out double end,
-            int attempts = 12, bool overTheTop = false)
+            int attempts = 12, bool overTheTop = false, ArmCollisionModel? walls = null)
+        {
+            Walls = walls;
+            WallsFrom = _free + 0.3;
+            try
+            {
+                return MixedToParts(goal, pitch, roll, slow, tolerance, check, out start, out end, attempts, overTheTop);
+            }
+            finally
+            {
+                Walls = null;
+                WallsFrom = double.PositiveInfinity;
+            }
+        }
+
+        private bool MixedToParts(Vector3 goal, float? pitch, float? roll, double slow, double tolerance, ArmCollisionModel check, out double start, out double end,
+            int attempts, bool overTheTop)
         {
             start = end = _free;
             double stretch = 1.0;
@@ -1230,7 +1272,7 @@ namespace Teleop.Eval.JointDrive
             Vector3 last = HandModel.Wrist(_profile, from);
             float step = HandModel.MaxWristSpeed * (float)Tick;
             MotionCaps? caps = Caps;
-            ArmCollisionModel? guard = Guard;
+            ArmCollisionModel? guard = Guard, walls = Walls;
             const int kept = 2 * MotionCaps.AccelerationTicks;
             Span<ArmPose> history = stackalloc ArmPose[kept]; // the ticks before this one, oldest first (the start pose before the first)
             if (caps != null)
@@ -1251,6 +1293,7 @@ namespace Teleop.Eval.JointDrive
                 if (!_envelope.Contains(s.Pose) || !ArmCollision.IsValid(_profile, check, s.Pose)) return Refuse(1);
                 if (Vector3.Distance(s.Position, last) > step) return Refuse(2);
                 if (guard != null && (tick * Tick < GuardBefore || tick * Tick >= GuardFrom) && !ArmCollision.IsValid(_profile, guard, s.Pose)) return Refuse(3);
+                if (walls != null && tick * Tick >= WallsFrom && !ArmCollision.IsValid(_profile, walls, s.Pose)) return Refuse(5);
                 if (caps != null)
                 {
                     if (!caps.Allows(history, s.Pose, Tick)) return Refuse(4);

@@ -186,6 +186,13 @@ namespace Teleop.Eval.JointDrive
         /// <summary>The tool line's step, m.</summary>
         public const float LineStepMeters = 0.005f;
 
+        /// <summary>
+        /// The lowest an aim or a pass meets an object, m above its bottom: the pads' centre, which pointing down hangs 15 mm above their
+        /// lowest corner, kept clear of the collision model's floor (10 mm above the table). Lower parts of an object are met only by
+        /// moves that come down onto it, which the mixed script leaves to its layout-blind moves.
+        /// </summary>
+        public const float LowestContactMeters = 0.026f;
+
         /// <summary>The point between the finger pads in the gripper's frame (their centres' midpoint, <see cref="ShapeGap.LeftPadAtZero"/>): where an aim's line is drawn through.</summary>
         public static readonly Vector3 ToolInGripper = (ShapeGap.LeftPadAtZero.Center + ShapeGap.RightPadAtZero.Center) / 2f;
 
@@ -493,13 +500,14 @@ namespace Teleop.Eval.JointDrive
             for (int i = 0; i < _objects.Count; i++)
             {
                 if (_objects[i].Scenery || _moved.Contains(i)) continue;
+                if (_objects[i].Max.Z - _objects[i].Min.Z < LowestContactMeters + 0.016f) continue; // flat: met only from above
                 Vector3 c = _objects[i].Center;
                 float r = new Vector2(c.X, c.Y).Length();
                 if (r - Footprint(_objects[i]) < 0.40f) targets.Add(i);
             }
 
             if (targets.Count == 0) return false;
-            for (int attempt = 0; attempt < 6; attempt++)
+            for (int attempt = 0; attempt < 10; attempt++)
             {
                 int oi = targets[(int)(_rng.NextDouble() * targets.Count) % targets.Count];
                 ScriptMoveKind kind = Draw.Chance(ref _rng, _options.PassShare) ? ScriptMoveKind.Pass : ScriptMoveKind.Aim;
@@ -528,10 +536,10 @@ namespace Teleop.Eval.JointDrive
 
             // The height the pads meet it at: from just above the model's floor to just below its top (a touch into its side, never
             // down through its top, where a shape may cover a hollow).
-            float zLo = o.Min.Z + 0.012f, zHi = o.Max.Z - (o.Shape != null ? ObjectShape.TopMarginMeters + 0.003f : 0.004f);
+            float zLo = o.Min.Z + LowestContactMeters, zHi = o.Max.Z - (o.Shape != null ? ObjectShape.TopMarginMeters + 0.003f : 0.004f);
             if (zHi < zLo + 0.003f) return Miss(0);
             float h = (float)Draw.Uniform(ref _rng, zLo, zHi);
-            float pitch = (float)((h - o.Min.Z < 0.05f ? Draw.Uniform(ref _rng, -83, -43) : Draw.Uniform(ref _rng, -80, -15)) * deg);
+            float pitch = (float)((h - o.Min.Z < 0.06f ? Draw.Uniform(ref _rng, -88, -55) : Draw.Uniform(ref _rng, -80, -15)) * deg);
             float lateral;
             if (kind == ScriptMoveKind.Aim) lateral = (float)Draw.Uniform(ref _rng, -0.6, 0.6) * halfAcross;
             else

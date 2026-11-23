@@ -46,6 +46,15 @@ namespace Teleop.Eval.JointDrive
             var frameJoint = new List<double>();
             var frameWrist = new List<double>();
             var tickJoint = new List<double>();
+            var jointSpeed = new List<double>[5];
+            var jointAccel = new List<double>[5];
+            for (int j = 0; j < 5; j++)
+            {
+                jointSpeed[j] = new List<double>();
+                jointAccel[j] = new List<double>();
+            }
+
+            int movingFrames = 0, allFrames = 0;
             var kinds = new int[6];
             var failures = new List<string>();
             int planned = 0, contactTakes = 0;
@@ -93,7 +102,9 @@ namespace Teleop.Eval.JointDrive
                 }
 
                 if (touched) contactTakes++;
-                Motion(profile, plan, frameJoint, frameWrist, tickJoint);
+                int before = frameJoint.Count;
+                Motion(profile, plan, frameJoint, frameWrist, tickJoint, jointSpeed, jointAccel, ref movingFrames);
+                allFrames += frameJoint.Count - before;
                 if (rows)
                 {
                     Console.WriteLine(FormattableString.Invariant($"  layout {layout}: {length:0.0} s, {plan.Moves.Count} moves, planned in {planSeconds[planSeconds.Count - 1]:0.00} s; {plan.PlanningReport}"));
@@ -126,18 +137,55 @@ namespace Teleop.Eval.JointDrive
             Console.WriteLine("  commanded motion per frame (15 fps), largest arm-joint change rad: " + Percentiles(frameJoint, "0.0000"));
             Console.WriteLine("  commanded motion per frame (15 fps), wrist travel mm: " + Percentiles(frameWrist, "0.0"));
             Console.WriteLine("  commanded joint speed tick to tick (48 Hz), fastest joint rad/s: " + Percentiles(tickJoint, "0.00"));
+            Console.WriteLine(FormattableString.Invariant($"  the command moves (a joint 2 servo units, 0.48 deg, or more in a frame) in {100.0 * movingFrames / Math.Max(1, allFrames):0}% of frames"));
+            string[] names = { "yaw", "shoulder", "elbow", "wrist pitch", "roll" };
+            for (int j = 0; j < 5; j++)
+            {
+                Console.WriteLine($"  {names[j]}, smoothed 25 ms: speed rad/s {Percentiles(jointSpeed[j], "0.00")}; acceleration rad/s2 {Percentiles(jointAccel[j], "0.0")}");
+            }
             Console.WriteLine("[joint-drive] dry run: nothing was sent");
             return 0;
         }
 
         /// <summary>The plan's commanded motion from the take's start: per dataset frame (sample and hold of the 48 Hz commands), its largest arm-joint change and the wrist's travel; per tick, its fastest joint.</summary>
-        internal static void Motion(in RobotArmProfile profile, DrivePlan plan, List<double> frameJoint, List<double> frameWrist, List<double> tickJoint)
+        internal static void Motion(in RobotArmProfile profile, DrivePlan plan, List<double> frameJoint, List<double> frameWrist, List<double> tickJoint,
+            List<double>[] jointSpeed, List<double>[] jointAccel, ref int movingFrames)
         {
             double tick = HandModel.TickSeconds, frame = 1.0 / FramesPerSecond;
             double start = plan.ScriptStart;
             var commands = new List<ArmPose>();
             for (double t = start; t <= plan.TotalSeconds + 1e-9; t += tick) commands.Add(plan.Sample(t));
             for (int k = 1; k < commands.Count; k++) tickJoint.Add(commands[k].MaxJointDelta(commands[k - 1]) / tick);
+            // Each joint at the command rate, smoothed with a 25 ms Gaussian, as workstream R measured people (metrics.py): speed and
+            // acceleration by central differences.
+            const double sigma = 0.025;
+            int r = (int)Math.Ceiling(3 * sigma / tick);
+            var w = new double[2 * r + 1];
+            for (int i = -r; i <= r; i++) w[i + r] = Math.Exp(-0.5 * (i * tick / sigma) * (i * tick / sigma));
+            for (int j = 0; j < 5; j++)
+            {
+                var q = new double[commands.Count];
+                for (int k = 0; k < q.Length; k++)
+                {
+                    double sum = 0, ws = 0;
+                    for (int i = -r; i <= r; i++)
+                    {
+                        int m = k + i;
+                        if (m < 0 || m >= q.Length) continue;
+                        sum += w[i + r] * DrivePlan.Joint(commands[m], j);
+                        ws += w[i + r];
+                    }
+
+                    q[k] = sum / ws;
+                }
+
+                for (int k = 1; k + 1 < q.Length; k++)
+                {
+                    jointSpeed[j].Add(Math.Abs(q[k + 1] - q[k - 1]) / (2 * tick));
+                    jointAccel[j].Add(Math.Abs(q[k + 1] - 2 * q[k] + q[k - 1]) / (tick * tick));
+                }
+            }
+
             ArmPose? previous = null;
             for (double f = 0; f <= plan.TotalSeconds - start + 1e-9; f += frame)
             {
@@ -148,6 +196,9 @@ namespace Teleop.Eval.JointDrive
                     double d = 0;
                     for (int j = 0; j < 4; j++) d = Math.Max(d, Math.Abs(DrivePlan.Joint(p, j) - DrivePlan.Joint(q, j)));
                     frameJoint.Add(d);
+                    double any = d;
+                    any = Math.Max(any, Math.Abs(DrivePlan.Joint(p, 4) - DrivePlan.Joint(q, 4)));
+                    if (any >= 2 * 0.24 * Math.PI / 180) movingFrames++;
                     frameWrist.Add(Vector3.Distance(HandModel.Wrist(profile, p), HandModel.Wrist(profile, q)) * 1000.0);
                 }
 

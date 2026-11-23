@@ -590,8 +590,8 @@ namespace Teleop.Eval.JointDrive
                 while (stage > 0 && gaps[stage] < 0.006f) stage--;
                 int exit = closest;
                 while (exit < gaps.Count && gaps[exit] < Math.Max(offset, 0f) + 0.010f) exit++;
-                end = exit + (int)MathF.Round((float)Draw.Uniform(ref _rng, 0.02, 0.06) / LineStepMeters);
-                if (end >= gaps.Count || gaps[stage] < 0.003f) return Miss(6);
+                if (exit >= gaps.Count || gaps[stage] < 0.003f) return Miss(6); // the sweep does not come out past the object
+                end = Math.Min(gaps.Count - 1, exit + (int)MathF.Round((float)Draw.Uniform(ref _rng, 0.02, 0.06) / LineStepMeters));
             }
 
             var path = new List<Vector3>(end - stage + 1);
@@ -699,8 +699,9 @@ namespace Teleop.Eval.JointDrive
         /// <summary>
         /// The aim's line: the pads' midpoint from <paramref name="middle"/> + <paramref name="s0"/>·<paramref name="u"/> to
         /// <paramref name="middle"/> + <paramref name="s1"/>·<paramref name="u"/>, the wrist pitched at <paramref name="pitch"/>, solved
-        /// by the headset's IK point to point; from its first pose in reach, in the envelope and free of the robot's own model, to the
-        /// first that is not (or flips branch). The wrist targets, their poses, and the arm's gap to the object at each.
+        /// by the headset's IK point to point outward from the object (the point nearest <paramref name="middle"/> first, then back
+        /// toward the start and on toward the end), each part as far as its poses are in reach, in the envelope, free of the robot's
+        /// own model and on one branch. The wrist targets in order, their poses, and the arm's gap to the object at each.
         /// </summary>
         private bool Line(int oi, Vector3 middle, Vector3 u, float s0, float s1, float pitch, float gripper, out List<Vector3> wrists, out List<ArmPose> poses,
             out List<float> gaps)
@@ -711,37 +712,45 @@ namespace Teleop.Eval.JointDrive
             gaps = new List<float>(n);
             float lh = ToolInGripper.X * MathF.Cos(pitch) - ToolInGripper.Z * MathF.Sin(pitch);
             float lv = ToolInGripper.X * MathF.Sin(pitch) + ToolInGripper.Z * MathF.Cos(pitch);
-            ArmPose at = _model.Home;
-            bool started = false;
+            var wrist = new Vector3?[n];
             for (int i = 0; i < n; i++)
             {
                 Vector3 tool = middle + (s0 + i * LineStepMeters) * u;
                 var radial = new Vector2(tool.X, tool.Y);
-                if (radial.Length() < 0.05f)
-                {
-                    if (started) break;
-                    continue; // over the base: the line starts beyond it
-                }
-
+                if (radial.Length() < 0.05f) continue; // over the base
                 radial = Vector2.Normalize(radial);
-                var wrist = new Vector3(tool.X - lh * radial.X, tool.Y - lh * radial.Y, tool.Z - lv);
-                bool ok = TrySolve(at, wrist, pitch, out ArmPose pose) && _envelope.Contains(pose) && ArmCollision.IsValid(_profile, _model, pose)
-                          && (!started || at.MaxJointDelta(pose) <= 0.15f);
-                if (!ok)
-                {
-                    if (started) break;
-                    continue;
-                }
+                wrist[i] = new Vector3(tool.X - lh * radial.X, tool.Y - lh * radial.Y, tool.Z - lv);
+            }
 
-                started = true;
-                at = pose;
-                wrists.Add(wrist);
-                poses.Add(pose);
-                gaps.Add(Gap(oi, pose, gripper));
+            // A first pose as near the object as the line has one, then outward from it both ways.
+            int mid = Math.Clamp((int)MathF.Round(-s0 / LineStepMeters), 0, n - 1), seed = -1;
+            var solved = new ArmPose[n];
+            for (int d = 0; d <= 6 && seed < 0; d++)
+            {
+                foreach (int i in new[] { mid - d, mid + d })
+                {
+                    if (seed >= 0 || i < 0 || i >= n || !wrist[i].HasValue) continue;
+                    if (Solve(_model.Home, wrist[i]!.Value, pitch, out solved[i], false)) seed = i;
+                }
+            }
+
+            if (seed < 0) return false;
+            int first = seed, last = seed;
+            for (int i = seed - 1; i >= 0 && wrist[i].HasValue && Solve(solved[i + 1], wrist[i]!.Value, pitch, out solved[i], true); i--) first = i;
+            for (int i = seed + 1; i < n && wrist[i].HasValue && Solve(solved[i - 1], wrist[i]!.Value, pitch, out solved[i], true); i++) last = i;
+            for (int i = first; i <= last; i++)
+            {
+                wrists.Add(wrist[i]!.Value);
+                poses.Add(solved[i]);
+                gaps.Add(Gap(oi, solved[i], gripper));
             }
 
             return wrists.Count >= 3;
         }
+
+        /// <summary>One point of a line: the IK from <paramref name="from"/>, in the envelope, free of the robot's own model, and (<paramref name="chained"/>) no branch flip from it.</summary>
+        private bool Solve(in ArmPose from, Vector3 wrist, float pitch, out ArmPose pose, bool chained) =>
+            TrySolve(from, wrist, pitch, out pose) && _envelope.Contains(pose) && ArmCollision.IsValid(_profile, _model, pose) && (!chained || from.MaxJointDelta(pose) <= 0.15f);
 
         /// <summary>The lowest point of the arm as the twin's links are (<see cref="ShapeGap.TouchBodies"/>, the gripper as given), arm base frame z: how high a contact is.</summary>
         internal static float Lowest(in RobotArmProfile profile, ArmCollisionModel model, in ArmPose pose, float gripper = SafetyScript.ApproachGripper)

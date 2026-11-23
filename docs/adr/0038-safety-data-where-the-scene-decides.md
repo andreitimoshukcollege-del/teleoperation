@@ -189,7 +189,102 @@ Each workstream owns the files listed. It adds to its own "as built" section bel
 
 ### S, scene
 
-(pending)
+**Two new scenes, the bench untouched.** `core/Scenes/jetrover-mixed.json` (29 objects) and its held-out family
+`jetrover-mixed-holdout.json` (26), each with its shapes file (`shape_survey.py`: 15 and 16 assets; every asset the bench also has
+came out byte for byte as in its file). `jetrover-bench.json` and its headset copy are unchanged, so the headset needs no rebake.
+The twin runs one with `just isaac-jetrover-host jetrover-mixed`: the recipe, RobotHost, the bridge and the renderer take any scene
+name and needed no change. joint-drive must be given the same file (M's batch recipe names `jetrover-bench`).
+
+**A mixed pool**, opt-in: a pool whose `obstacleMax` or `distractorMax` is above 0. Every other scene draws exactly as before.
+- **Fields.** Per object: `role` (`obstacle`, `distractor`, `stand`, `plank`, `support`), a plank's `supports` (one or two ids),
+  and `steps` (`[min, max]` resize steps a layout draws a size from). In the pool: `obstacleMin`/`obstacleMax`, `reachBearing`,
+  `standShare`, `rigShare`, `distractorMin`/`distractorMax`, `distractorRegions` and `distractorReach`, with the existing
+  `reachMin`/`reachMax`. Both readers refuse the same 49 cases with the same keyword (`role`, `steps`, `pool`, `fits`); 4 more
+  are accepted. A mixed pool has no movable, fixed or clutter counts, clusters, edge objects, fixed regions or pool sizes.
+- **The draw** (`SceneLayout.DrawMixed`, one seeded generator, no allocation):
+  - 0-3 obstacles, uniform. Each is a plank on its supports (`rigShare` 0.2, when one is free) or an obstacle object.
+  - A movable obstacle is raised on a free stand that holds it (`standShare` 0.3).
+  - Each is centred uniformly by area over the band (r is the square root of a uniform draw between `reachMin`² and
+    `reachMax`², bearing uniform within `reachBearing`), at any yaw, where it fits and keeps clear (64 tries).
+  - Then 2-6 distractors, each in its regions.
+- **No new shape kinds.** A stand is a box with the obstacle on its top (aligned or turned a quarter, off its middle by up to the
+  room its top leaves). An overhang is a box plank on box supports under its ends: two for a bridge, one for a cantilever, the
+  same step for both legs, and a clear span of at least 10 cm under it.
+- **The rules, in both readers and in Isaac's model.** In a mixed pool every footprint is its rectangle. Two objects one above the
+  other never overlap (heights within 1 mm count as touching). RobotHost's own placements may stand an object above the table, a
+  movable one only on a stand that holds it (its bottom within 2 mm of the stand's top, its centre over it); the headset's never.
+  `WorldHost` places what stands on the table before what is raised on it. A refused part of a stand or of a rig parks its whole
+  group; a lone object is redrawn first, as in any pool.
+- **Sizes** are uniform resize steps per object (1.25^k on every axis), boxes and cylinders, fixed ones too: Isaac builds a
+  kinematic body for each of its steps. They are in `WZ`, so the layout is the scene file, `WL`, `WZ` and the first `WO`. No
+  per-axis dimensions, and no new record (trainer/contract/SESSION_FORMAT.md, "A mixed pool's layouts").
+
+**The reachable workspace, measured** (`robot/isaac/reach_envelope.py`).
+- **The sweep:** the URDF over a joint grid of 9.58 M poses. 8.68 M keep Core's floor rule; self-collision is not checked, so the
+  figures err on the far side.
+- **The reach:** the arm's colliders come 0.364 m from the base's axis at 1 cm above the table, 0.406 m at 10 cm, and 0.427 m at
+  any height. The base turns 120° either way.
+- **Obstacles** are centred 0.13-0.34 m out, within ±2.0944 rad. The robot's keep-out and the table's edges cut where they fit.
+- **Distractors** keep their footprint 0.45 m from the axis, in four rectangles that at least one third-person camera sees: beside
+  the robot on the bench and the table, |y| 0.47-0.72 m, and the table's far corners, x 0.28-0.52 m and |y| 0.28-0.47 m.
+- **The bench's edge objects,** by the same measure, stand within the arm's reach: the planner could not reach them, but an
+  arbitrary pose could.
+
+**What stands in reach** (the train family). The arm's base frame is 19.6 cm above the table.
+- **Scans:** 7 YCB objects and 2 Poly Haven props at their real size.
+- **Small things, 2.4-4.6 cm:** the tape, a tin and a parcel scaled to a third and a tenth, and a wooden cube in three sizes.
+- **Tall and thin:** a steel rod fixed to the table (14-34 cm tall, 1.5-3.8 cm across) and a free wooden dowel (16-31 cm).
+- **Stands:** a block 3.8-11.7 cm tall and a crate 4-7.8 cm.
+- **Overhangs:** a shelf on legs 4.1-19.5 cm up, and a plank cantilevered off a block 5.1-15.6 cm up.
+- **Distractors:** pliers, screwdrivers, a phone, a pen, a parcel, a bowl and the kettle, and the bench's flat clutter.
+- **Surfaces:** every simple shape wears looks by name (`materials.objects`, drawn per take, recorded as `LK`).
+
+**The held-out family** shares nothing with the train family's objects:
+- **Assets:**
+  - train: YCB 005, 007, 009, 010, 025, 040 and 061, and Poly Haven's cleaner tin, elephant, tape, cardboard box, pliers,
+    screwdrivers, wooden bowl and kettle;
+  - held out: YCB 002, 003, 004, 006, 008, 011, 019, 021, 024, 035, 036, 037, 051 and 052, and Poly Haven's mousetrap and gnome.
+- **Kinds:** a square post 36-45 cm tall, a slat on its edge, a rubber puck 2.8-4.4 cm.
+- **Heights:** stands 12-15 cm (train: up to 11.7) and a 3.5-5.5 cm riser; overhangs 2.6-4 cm and 19-24 cm up (train: 4.1-19.5).
+- **Textures:** the simple shapes wear 10 textures the train family's never do.
+- **Ids and names:** none in common.
+
+**Measured over 2000 layouts** (`SceneMixedTests`, seeds 1-2000):
+
+| | `jetrover-mixed` | `jetrover-mixed-holdout` |
+|---|---|---|
+| obstacles a layout (layouts with 0 / 1 / 2 / 3) | 1.48 (522 / 482 / 511 / 485) | 1.47 (522 / 486 / 525 / 467) |
+| distractors a layout (layouts with 2-6) | 3.80 (458 / 425 / 409 / 453 / 252) | 3.78 (430 / 413 / 497 / 494 / 166) |
+| objects that found no spot, a layout | 0.117 | 0.214 |
+| obstacles raised on a stand / planks | 0.215 / 0.195 | 0.193 / 0.210 |
+| obstacle centres inside the band's middle radius (the area there) | 0.157 (0.186) | 0.101 (0.123) |
+| obstacles more than 60° from straight ahead | 0.408 | 0.395 |
+| obstacle tops above the table, 5 / 50 / 95 % | 2.5 / 9.3 / 25.0 cm | 1.8 / 6.5 / 36.0 cm |
+
+- **Shortfalls.** Large distractors account for most of the misses: a 32 cm kettle at any yaw fits only by the table's side edge.
+  With 2-8 distractors and two large ones, 8 fitted in 16 layouts of 2000, so the range is 2-6 with one large one per family.
+- **Spread.** At the same number of objects (1000 earlier, 200 new), a new layout's obstacles stand a median 5.7 mm (90%:
+  12.3 mm) from the nearest earlier one, against 3.3 mm (6.5 mm) for the bench's objects in reach: about three times the area.
+
+**The bench draws as before.** `core/Scenes/testdata/layout-jetrover-bench.txt` holds the bench's first 25 pool layouts, written
+by the commit before this work (f401b58, on a throwaway branch). The new code reproduces them to the last bit, and the rests
+golden did not change.
+
+**Tests.**
+- C#: the shared vectors; the mixed scenes' fields, surfaces, shapes and the held-out family's split; 400 layouts of each (fit,
+  clearance at heights, band and bearing, stands under raised objects, supports under planks); determinism and no allocation; the
+  shares above; the frozen bench layouts; a mixed rules golden for Python; `WorldHost` over `StaticWorld` (60 layouts each, every
+  placement applied, raised ones after what they rest on; a refused support parks its plank and the other support; a refused stand
+  parks what it holds).
+- Python: the vectors and the rules golden. Isaac's `WorldModel` replays the first 20 layouts of each scene as `WorldHost` sends
+  them (`golden/scene-layouts-jetrover-mixed.json`, 1399 requests) and applies every one. It also checks a raised object on a stand
+  only, the headset never raising, and a fixed object resized within its own steps.
+
+**Not checked.**
+- **On the twin, nothing yet.** Unchecked there: `OVERLAPS_ARM` with the arm at rest beside a plank or a tall rod; whether
+  objects raised on stands and the free dowel come to rest within joint-drive's 20 s; the kinematic resize bodies' start-up cost.
+- **Not mine to check:** the planner against planks and raised objects (M), textures on long thin boxes (A), and the clearance and
+  labels (C, L).
 
 ### M, motion
 

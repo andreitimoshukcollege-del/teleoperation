@@ -277,6 +277,21 @@ Z up, the profile's frame); `sensed` is on the host's clock, like `QS.sensed`.
 | `WZ` | `t` `revision` `id:factor;...` | Every object's size factor on the scene file's size, as the backend reports it (docs/adr/0034 amendment 6): in the preamble and on change. Absent before 2026-11-08: every object at its file size. A `WP` with cause `resize` is a resize's answer |
 | `WC` | `t` `sensed` `contacts` | Contacts between the arms and objects, `arm:link:object:forceN;...` (object 0 is the table); empty when they end. Only when the arm server reports them: the Isaac JetRover bridge does since 2026-11-14 (docs/adr/0036 amendment 1), sent the physics step the touching (link, object) pairs change and every 20 steps while one lasts. There `arm` is 0, `link` the index of the link in the URDF's `<link>` order (`robot/jetrover/urdf/jetrover.urdf`; 255 for a body naming none), `object` the scene object's id, and `sensed` CLOCK_MONOTONIC at that step, the clock the renderer stamps frames' `stateSensed` with. Since docs/adr/0038 (2026-11-22) a link touching any scene surface (the table, the bench beside it, the floor) is reported too, as object 0, by the same rule as an object (a contact point within 1 mm, or an impulse; docs/adr/0036 amendment 4); one link on two surfaces is one entry, their forces summed. The robot's base never is: PhysX filters it against the surfaces. Before that, contacts with the table were not reported. Contacts between objects are not reported |
 
+**A mixed pool's layouts** (docs/adr/0038 decision 3; `core/Scenes/jetrover-mixed.json` and its held-out family
+`jetrover-mixed-holdout.json`, since 2026-11-22). No new record. Each object of the scene file (`scene.json`) has a `role`:
+`obstacle` (0-3 a layout, centred anywhere over the arm's reachable band, `reachMin`-`reachMax` m from the base's axis within
+`reachBearing` rad of straight ahead), `stand` (a box an obstacle is raised on), `plank` (a box held up on its `supports`, the
+ids of one or two boxes of role `support` under its ends: an overhang), or `distractor` (2-6 a layout, in `distractorRegions`,
+its footprint no nearer the base's axis than `distractorReach`, beyond every pose of the arm). Read with it:
+- `WL` lists every object on the table, stands, planks and supports too.
+- `WO` poses are where the objects stand: an obstacle on a stand, or a plank, has its centre above the table (`z` more than
+  1 mm over half its height above the table top); the stand under an obstacle is the `stand` whose top its bottom sits on.
+- `WZ` factors apply to every axis of the file's `size`, and in a mixed pool they are drawn for each object with `steps`
+  (boxes and cylinders, fixed ones too: posts, stands, planks, supports); scans keep their size (factor 1).
+- The layout is therefore the scene file (by its sha256), the `WL` seed and ids, the `WZ` factors and the first `WO`.
+- A part of a stand or of a plank's supports that the backend refuses leaves the layout with its whole group (`WP` `park`,
+  `WL` written again); a lone obstacle or distractor is redrawn first, as in any pool.
+
 **Objects are not the truth for the arm.** An arm stopped by an obstacle shows up as `QS` falling short
 of `AO`, never in the joint records themselves.
 

@@ -302,7 +302,7 @@ namespace Teleop.Eval.StopLatency
                 Thread.Sleep(20);
             }
 
-            WriteSummary(results, plan, jsonPath, simulated);
+            WriteSummary(results, plan, jsonPath, simulated, link.MedianRoundTripMs);
             if (fault != DriveFault.None)
             {
                 Console.Error.WriteLine($"stop-latency: STOPPED ({fault}): the arm holds where it is. Check it before going on.");
@@ -325,7 +325,7 @@ namespace Teleop.Eval.StopLatency
             return 0;
         }
 
-        private static void WriteSummary(List<StopResult> results, StopLatencyPlan plan, string? jsonPath, bool simulated)
+        private static void WriteSummary(List<StopResult> results, StopLatencyPlan plan, string? jsonPath, bool simulated, double roundTripMs)
         {
             static double Median(IEnumerable<double> v)
             {
@@ -334,12 +334,17 @@ namespace Teleop.Eval.StopLatency
             }
 
             var groups = results.GroupBy(r => (r.Joint, r.SpeedRadPerSec)).OrderBy(g => g.Key.Joint).ThenBy(g => g.Key.SpeedRadPerSec).ToList();
-            if (groups.Count > 0) Console.WriteLine("[stop-latency] medians (this machine's clock: includes a reading's way back, about one 20 ms driver cycle):");
+            if (groups.Count > 0)
+            {
+                Console.WriteLine("[stop-latency] medians (this machine's clock: they include a reading's way back, about one 20 ms driver cycle, and the network's round trip, " +
+                    FormattableString.Invariant($"median {roundTripMs:0} ms here, which the last column takes out):"));
+            }
             foreach (var g in groups)
             {
                 Console.WriteLine(FormattableString.Invariant(
                     $"  {DriveEnvelope.JointName(g.Key.Joint),-9} {g.Key.SpeedRadPerSec,4:0.##} rad/s: {Median(g.Select(r => r.StopMs)),4:0} ms, {Median(g.Select(r => r.TravelDeg)),5:0.0} degrees, ") +
-                    FormattableString.Invariant($"{Median(g.Select(r => r.PastTargetDeg)),4:0.0} past the command; tool point {Median(g.Select(r => r.ToolTravelCm)),5:0.0} cm ({g.Count()} trials)"));
+                    FormattableString.Invariant($"{Median(g.Select(r => r.PastTargetDeg)),4:0.0} past the command; tool point {Median(g.Select(r => r.ToolTravelCm)),5:0.0} cm ({g.Count()} trials); ") +
+                    FormattableString.Invariant($"{Median(g.Select(r => r.StopMs)) - (double.IsNaN(roundTripMs) ? 0 : roundTripMs),4:0} ms less the round trip"));
             }
 
             if (jsonPath == null) return;
@@ -352,6 +357,7 @@ namespace Teleop.Eval.StopLatency
                 settleRadians = StopMeter.SettleRadians,
                 toolOffsetMeters = StopMeter.ToolOffsetMeters,
                 runUpSeconds = plan.RunUpSeconds,
+                roundTripMsMedian = double.IsNaN(roundTripMs) ? (double?)null : Math.Round(roundTripMs, 1),
                 trials = results.Select(r => new
                 {
                     trial = r.Trial + 1,
@@ -407,6 +413,19 @@ namespace Teleop.Eval.StopLatency
                 }
             }
 
+            private readonly List<double> _roundTrips = new List<double>();
+
+            /// <summary>The joint port's round trip, median over the run, ms (NaN before any echo).</summary>
+            public double MedianRoundTripMs
+            {
+                get
+                {
+                    if (_roundTrips.Count == 0) return double.NaN;
+                    var s = _roundTrips.OrderBy(x => x).ToList();
+                    return s[s.Count / 2] * 1000.0;
+                }
+            }
+
             public bool HasFullReading => Array.TrueForAll(_sensed, s => s);
             public ArmPose Measured => new ArmPose(_measured[0], _measured[1], _measured[2], _measured[3], _measured[4]);
             public float Gripper { get; private set; }
@@ -433,13 +452,21 @@ namespace Teleop.Eval.StopLatency
                         break;
                     }
 
-                    if (!JointStateCodec.TryDecode(_buffer.AsSpan(0, received), out _, out _, out long sensedTicks, out _, out _,
-                            out long robotTps, _joints, out int count))
+                    if (!JointStateCodec.TryDecode(_buffer.AsSpan(0, received), out _, out long robotSend, out long sensedTicks, out long echoOperator,
+                            out long echoRobotRecv, out long robotTps, _joints, out int count))
                     {
                         continue;
                     }
 
-                    double arrival = Stopwatch.GetTimestamp() / (double)Stopwatch.Frequency;
+                    long arrivalTicks = Stopwatch.GetTimestamp();
+                    double arrival = arrivalTicks / (double)Stopwatch.Frequency;
+                    // The round trip, as ClockSync takes it: our stamp's age when its echo came back, less the robot's hold of it.
+                    if (echoOperator > 0 && echoRobotRecv > 0 && robotSend >= echoRobotRecv && _roundTrips.Count < 100_000)
+                    {
+                        double rtt = (arrivalTicks - echoOperator) / (double)Stopwatch.Frequency - (robotSend - echoRobotRecv) / (double)robotTps;
+                        if (rtt >= 0 && rtt < 2.0) _roundTrips.Add(rtt);
+                    }
+
                     watchdog?.OnFrame(arrival);
                     for (int i = 0; i < count; i++)
                     {

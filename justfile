@@ -3848,6 +3848,25 @@ isaac-jetrover-record-drive label script speed *options:
     [ "$status" -eq 0 ] || echo "joint-drive exited $status; the session is recorded up to there" >&2
     exit "$status"
 
+# just stop-latency on the JetRover's Isaac twin (docs/adr/0038 R, item 32): the same 22 trials against a running twin (just isaac-jetrover-host jetrover-bench auto <twin>), with --simulated-robot (no countdown). It runs here and reaches the twin over the VPN, so its stop times include the network's round trip, which it measures and takes out in the last column. Records no session: the twin's stops on its own clock come from recorded sessions (scripts/gpu/arm_response.py --only stops). Writes recordings/.stop-latency/<UTC>-isaac-twin<twin>.json. No real robot moves; the twin's arm does, so not while a batch or a headset drives that twin
+[group('isaac')]
+isaac-stop-latency twin="0" speeds="0.5,1,2" joints="yaw,proximal,distal,wrist":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    case "{{twin}}" in 0|1) ;; *) echo "error: twin is 0 or 1" >&2; exit 1 ;; esac
+    case "{{speeds}}" in *[!0-9.,]*|"") echo "error: speeds is a list of rad/s, e.g. 0.5,1,2" >&2; exit 1 ;; esac
+    case "{{joints}}" in *[!a-z,]*|"") echo "error: joints is a list of yaw, proximal, distal, wrist" >&2; exit 1 ;; esac
+    gpu="{{gpu_host}}"; host="${gpu#*@}"
+    case "$host" in *[!0-9.]*) echo "error: the GPU machine's address must be numbers, got '$host' (GPU_HOST)" >&2; exit 1 ;; esac
+    if pgrep -f "Teleop[.]Eval.* joint-drive .*--remote-port $((6002 + 100 * {{twin}}))" > /dev/null; then
+        echo "error: a joint-drive from here is driving twin {{twin}} (a batch?): wait for it" >&2; exit 1
+    fi
+    (cd core && dotnet build Teleop.Eval -nologo -v q > /dev/null)
+    mkdir -p recordings/.stop-latency
+    out="recordings/.stop-latency/$(date -u +%Y%m%dT%H%M%SZ)-isaac-twin{{twin}}.json"
+    (cd core && dotnet run --no-build --project Teleop.Eval -- stop-latency --remote-host "$host" --remote-port "$((6002 + 100 * {{twin}}))" \
+        --confirm-hardware-motion --simulated-robot --speeds "{{speeds}}" --joints "{{joints}}" --json "../$out")
+
 # Many twin sessions in a row for the trainer, unattended (docs/adr/0035 N4): `hours` of just isaac-jetrover-record-drive, each about `minutes` long, with its script, speed and network drawn from `seed` (course half the time, waypoints and steps otherwise; 1 to 6 rad/s; the tiers' uplink schedule half the time, the plain LAN otherwise), labelled b<seed>-<n>-<script>-<speed>. A session joint-drive's watchdog cut short is kept and the batch goes on; it stops after three of those in a row, any other failure, or when a file recordings/.drive/STOP exists (it is removed). Needs `just isaac-jetrover-host none` running. Bring the sessions here with just isaac-jetrover-recording-fetch <id>
 [group('isaac')]
 isaac-jetrover-drive-batch hours="2" minutes="5" seed="1":
@@ -4903,6 +4922,32 @@ record-drive label script speed *options:
     fi
     just record-stop "$host" "$remote_user"
     [ "$status" -eq 0 ] || echo "joint-drive exited $status; the session is recorded up to there" >&2
+    exit "$status"
+
+# How long and how far the REAL JetRover's arm keeps moving after its command stops mid-move (docs/adr/0038 R, item 32): MOVES THE REAL ARM. Torque on, then to the collision model's home pose (yaw 0, shoulder 60, elbow -90, wrist 30 degrees) the way joint-drive goes there, then 22 trials, 101 s in all, each swinging ONE joint from home at 0.5, 1 or 2 rad/s, stopping its command dead (as the headset's does when the clutch is let go), holding 1.5 s and returning at 0.5 rad/s: the base yaw both ways by 11, 23 and 46 degrees, the shoulder both ways by 11 and 23 (46 leaves its range), the elbow by 11 both ways and by 23 and 46 upward only, the wrist pitch both ways by 11, 23 and 46. The gripper's tip sweeps up to 26 cm sideways (the yaw at 2 rad/s) and 21 cm up and down (the elbow). Every commanded pose is inside the IK's ranges less 15 degrees and free by the collision model, which knows only the robot's own body and the floor: clear about 35 cm all round the arm, and someone watches it. Prints the trials first (nothing moves), counts down 3 s; Enter stops it where it is, as do a stall and a lost stream. Records the run as a session (record-start, record-stop) and prints each stop as measured here, with the JSON in recordings/.stop-latency/<session>.json; then `just fetch-recordings` and `python3 scripts/gpu/arm_response.py recordings/jetrover/<session> --only stops` measure the same stops on the robot's clock. `speeds` and `joints` narrow it, e.g. `just stop-latency 0.5,1 yaw,wrist`
+[group('robot: recording (docs/adr/0021)')]
+stop-latency speeds="0.5,1,2" joints="yaw,proximal,distal,wrist" remote_host=default_jetrover_host remote_user="jetson":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    case "{{speeds}}" in *[!0-9.,]*|"") echo "error: speeds is a list of rad/s, e.g. 0.5,1,2" >&2; exit 1 ;; esac
+    case "{{joints}}" in *[!a-z,]*|"") echo "error: joints is a list of yaw, proximal, distal, wrist" >&2; exit 1 ;; esac
+    host=$(just _robot-host "{{remote_host}}")
+    target="{{remote_user}}@$host"
+    # Built before the session opens, so the recording does not start with a compile; then what will move, before anything does.
+    (cd core && dotnet build Teleop.Eval -nologo -v q > /dev/null)
+    (cd core && dotnet run --no-build --project Teleop.Eval -- stop-latency --dry-run --speeds "{{speeds}}" --joints "{{joints}}")
+    just record-start stop-latency 3.8 motion=stop-latency operator=stop-latency remote_host="$host" remote_user="{{remote_user}}"
+    id=$(ssh "$target" 'basename "$(cat {{robot_recordings}}/.active)"')
+    mkdir -p recordings/.stop-latency
+    # Enter stops the tool, which holds the arm and exits; this script then closes the session, a Ctrl+C included.
+    trap 'echo "interrupted: closing the session"' INT
+    status=0
+    (cd core && dotnet run --no-build --project Teleop.Eval -- stop-latency --remote-host "$host" --confirm-hardware-motion \
+        --speeds "{{speeds}}" --joints "{{joints}}" --json "../recordings/.stop-latency/$id.json") || status=$?
+    trap - INT
+    just record-stop "$host" "{{remote_user}}"
+    echo "session $id; on the robot's clock: just fetch-recordings, then python3 scripts/gpu/arm_response.py recordings/jetrover/$id --only stops"
+    [ "$status" -eq 0 ] || echo "stop-latency exited $status; the session is recorded up to there" >&2
     exit "$status"
 
 # The battery voltage (mV) in the newest recorded session's driver log -- moves nothing. Empty when the log has no battery report

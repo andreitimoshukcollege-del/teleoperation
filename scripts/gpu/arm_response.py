@@ -713,21 +713,10 @@ def stops(sessions: List[Session], hold_s: float = 0.6, min_speed: float = 60.0)
             by_speed[f"{lo}-{hi}"] = {"n": len(rs), "stop_ms": summary([e["stop_ms"] for e in rs], (0.5, 0.9), 0),
                                       "tool_travel_cm": summary([e["tool_travel_cm"] for e in rs], (0.5, 0.9)),
                                       "tool_error_at_stop_cm": summary([e["tool_error_at_stop_cm"] for e in rs], (0.5, 0.9))}
-    def fit(xs: List[float], ys: List[float]) -> Optional[Dict]:
-        """Least squares y = slope * x + intercept."""
-        if len(xs) < 3:
-            return None
-        mx, my = sum(xs) / len(xs), sum(ys) / len(ys)
-        sxx = sum((x - mx) ** 2 for x in xs)
-        if sxx <= 0:
-            return None
-        slope = sum((x - mx) * (y - my) for x, y in zip(xs, ys)) / sxx
-        res = sorted(abs(y - (slope * x + my - slope * mx)) for x, y in zip(xs, ys))
-        return {"slope": round(slope, 3), "intercept": round(my - slope * mx, 3), "abs_residual_p90": round(pct(res, 0.9), 3), "n": len(xs)}
-
-    v = [e["tool_speed_m_s"] for e in events]
-    fits = {"tool_travel_cm_vs_tool_speed_m_s": fit(v, [e["tool_travel_cm"] for e in events]),
-            "stop_ms_vs_tool_speed_m_s": fit(v, [float(e["stop_ms"]) for e in events])}
+    # The tool's travel after the stop over its speed at the stop: how many seconds of motion the arm still had in it. A
+    # ratio per event, not a line through them all: a step script's jumps make the speed over 0.15 s meaningless.
+    ratio = [e["tool_travel_cm"] / (e["tool_speed_m_s"] * 100.0) for e in events if 0.1 <= e["tool_speed_m_s"] <= 1.0]
+    fits = {"tool_travel_over_speed_s": summary(ratio, (0.1, 0.5, 0.9), 3)}
     return {"n": len(events), "joints": joints, "tool_by_command_speed_m_s": by_speed, "fits": fits,
             "stop_ms": summary([e["stop_ms"] for e in events], (0.5, 0.9), 0),
             "tool_travel_cm": summary([e["tool_travel_cm"] for e in events], (0.5, 0.9)),

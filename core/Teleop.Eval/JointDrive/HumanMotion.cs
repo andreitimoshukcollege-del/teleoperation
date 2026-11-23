@@ -197,18 +197,19 @@ namespace Teleop.Eval.JointDrive
 
     /// <summary>
     /// Caps on the commanded motion (docs/adr/0038 decision 1, the mixed script's speed caps; joint-drive's --max-joint-speed,
-    /// --max-joint-accel, --max-wrist-speed, --max-peak-speed): each tick's joint values within <see cref="MaxJointSpeed"/> of the
-    /// tick before (yaw, proximal, distal, wrist and roll alike) and their change within <see cref="MaxJointAcceleration"/>, the wrist
-    /// within <see cref="MaxWristSpeed"/>, and every submovement planned to peak no faster than <see cref="MaxPeakSpeed"/>. A part of
-    /// the plan that breaks one is drawn again. Infinite: no cap.
+    /// --max-joint-accel, --max-wrist-speed, --max-peak-speed): each joint's commanded speed tick to tick within its
+    /// <see cref="JointSpeed"/>, and its acceleration within its <see cref="JointAcceleration"/>, measured over two ticks (about the
+    /// 25 ms smoothing the human figures were measured with); the wrist within <see cref="MaxWristSpeed"/>, and every submovement
+    /// planned to peak no faster than <see cref="MaxPeakSpeed"/>. A part of the plan that breaks one is drawn again. Joints in the
+    /// model's order: yaw, proximal (shoulder), distal (elbow), wrist pitch, roll. Infinite: no cap.
     /// </summary>
     public sealed class MotionCaps
     {
-        /// <summary>Any joint's commanded speed, tick to tick, rad/s.</summary>
-        public float MaxJointSpeed { get; set; } = float.PositiveInfinity;
+        /// <summary>Each joint's commanded speed, rad/s.</summary>
+        public float[] JointSpeed { get; } = { float.PositiveInfinity, float.PositiveInfinity, float.PositiveInfinity, float.PositiveInfinity, float.PositiveInfinity };
 
-        /// <summary>Any joint's commanded acceleration, tick to tick, rad/s².</summary>
-        public float MaxJointAcceleration { get; set; } = float.PositiveInfinity;
+        /// <summary>Each joint's commanded acceleration, rad/s², over two ticks.</summary>
+        public float[] JointAcceleration { get; } = { float.PositiveInfinity, float.PositiveInfinity, float.PositiveInfinity, float.PositiveInfinity, float.PositiveInfinity };
 
         /// <summary>The wrist's commanded travel, tick to tick, m/s (the hand model refuses more than <see cref="HandModel.MaxWristSpeed"/> anyway).</summary>
         public float MaxWristSpeed { get; set; } = HandModel.MaxWristSpeed;
@@ -216,15 +217,37 @@ namespace Teleop.Eval.JointDrive
         /// <summary>A submovement's planned peak speed at the wrist, m/s: its duration stretches to it (the hand model's own is <see cref="HandModel.MaxPeakSpeed"/>).</summary>
         public double MaxPeakSpeed { get; set; } = HandModel.MaxPeakSpeed;
 
-        /// <summary>Whether a tick from <paramref name="p1"/> (after <paramref name="p2"/>) to <paramref name="p0"/>, <paramref name="dt"/> apart, keeps to the joint caps.</summary>
-        public bool Allows(in ArmPose p2, in ArmPose p1, in ArmPose p0, double dt)
+        /// <summary>Every joint's speed cap at once, rad/s.</summary>
+        public MotionCaps AllSpeeds(float radPerSecond)
         {
-            if (float.IsPositiveInfinity(MaxJointSpeed) && float.IsPositiveInfinity(MaxJointAcceleration)) return true;
-            float v = MaxJointSpeed * (float)dt, a = MaxJointAcceleration * (float)(dt * dt);
+            for (int j = 0; j < JointSpeed.Length; j++) JointSpeed[j] = radPerSecond;
+            return this;
+        }
+
+        /// <summary>Every joint's acceleration cap at once, rad/s².</summary>
+        public MotionCaps AllAccelerations(float radPerSecond2)
+        {
+            for (int j = 0; j < JointAcceleration.Length; j++) JointAcceleration[j] = radPerSecond2;
+            return this;
+        }
+
+        /// <summary>
+        /// Whether the tick to <paramref name="p0"/> keeps to the joint caps, after <paramref name="history"/> (the poses before it,
+        /// newest last; at least two), <paramref name="dt"/> apart: its speed from the tick before, its acceleration from the second
+        /// difference over two ticks (the oldest of the four before it when there are four, else over one).
+        /// </summary>
+        public bool Allows(ReadOnlySpan<ArmPose> history, in ArmPose p0, double dt)
+        {
+            int n = history.Length;
             for (int j = 0; j < DriveEnvelope.JointCount; j++)
             {
-                float d0 = DrivePlan.Joint(p0, j) - DrivePlan.Joint(p1, j), d1 = DrivePlan.Joint(p1, j) - DrivePlan.Joint(p2, j);
-                if (MathF.Abs(d0) > v || MathF.Abs(d0 - d1) > a) return false;
+                float q0 = DrivePlan.Joint(p0, j), q1 = DrivePlan.Joint(history[n - 1], j);
+                if (MathF.Abs(q0 - q1) > JointSpeed[j] * (float)dt) return false;
+                if (float.IsPositiveInfinity(JointAcceleration[j])) continue;
+                float a = n >= 4
+                    ? (q0 - 2f * DrivePlan.Joint(history[n - 2], j) + DrivePlan.Joint(history[n - 4], j)) / (float)(4 * dt * dt)
+                    : (q0 - 2f * q1 + DrivePlan.Joint(history[n - 2], j)) / (float)(dt * dt);
+                if (MathF.Abs(a) > JointAcceleration[j]) return false;
             }
 
             return true;
@@ -233,9 +256,28 @@ namespace Teleop.Eval.JointDrive
         /// <summary>Throws when a cap is not positive.</summary>
         public void Validate()
         {
-            if (!(MaxJointSpeed > 0) || !(MaxJointAcceleration > 0) || !(MaxWristSpeed > 0) || !(MaxPeakSpeed > 0))
-                throw new ArgumentException("the speed caps must be positive");
+            for (int j = 0; j < DriveEnvelope.JointCount; j++)
+            {
+                if (!(JointSpeed[j] > 0) || !(JointAcceleration[j] > 0)) throw new ArgumentException("the joint caps must be positive");
+            }
+
+            if (!(MaxWristSpeed > 0) || !(MaxPeakSpeed > 0)) throw new ArgumentException("the speed caps must be positive");
         }
+    }
+
+    /// <summary>
+    /// How a hand moves where the mixed script asks it to move more like the people measured (docs/adr/0038 decision 1, workstream
+    /// R's figures: the scripts turned the wrist pitch twice as fast as people at p90, and the elbow 1.4 times): each move's pitch
+    /// and roll change scaled by <see cref="PitchScale"/> and <see cref="RollScale"/>, followed over <see cref="PitchTime"/> of each
+    /// submovement (the hand model: 0.7), and every submovement stretched by <see cref="Slow"/>. Null on the operator: the hand
+    /// model's own (the four safety scripts).
+    /// </summary>
+    public sealed class HandStyle
+    {
+        public double PitchScale { get; set; } = 1.0;
+        public double RollScale { get; set; } = 1.0;
+        public double PitchTime { get; set; } = HandModel.PitchTime;
+        public double Slow { get; set; } = 1.0;
     }
 
     /// <summary>
@@ -347,9 +389,12 @@ namespace Teleop.Eval.JointDrive
         public List<ClutchRelease> Releases { get; } = new List<ClutchRelease>();
         public List<GripMove> Grips { get; } = new List<GripMove>();
 
+        /// <summary>The share of each submovement over which the pitch and roll follow (<see cref="HandModel.PitchTime"/> unless a <see cref="HandStyle"/> says otherwise).</summary>
+        public double PitchTime { get; set; } = HandModel.PitchTime;
+
         public HandTimeline Copy()
         {
-            var c = new HandTimeline(Start, StartPitch, StartRoll, StartGripper);
+            var c = new HandTimeline(Start, StartPitch, StartRoll, StartGripper) { PitchTime = PitchTime };
             c.Moves.AddRange(Moves);
             c.Releases.AddRange(Releases);
             c.Grips.AddRange(Grips);
@@ -418,7 +463,7 @@ namespace Teleop.Eval.JointDrive
                 double w = Math.Pow(u, s.Skew);
                 position += (float)HandModel.MinimumJerk(w) * s.Displacement;
                 velocity += (float)(HandModel.MinimumJerkRate(w) * s.Skew * Math.Pow(u, s.Skew - 1) / s.Duration) * s.Displacement;
-                double up = Math.Min(1.0, (t - s.Start) / (s.Duration * HandModel.PitchTime));
+                double up = Math.Min(1.0, (t - s.Start) / (s.Duration * PitchTime));
                 float a = (float)HandModel.MinimumJerk(up);
                 pitch += a * s.Pitch;
                 roll += a * s.Roll;
@@ -657,6 +702,19 @@ namespace Teleop.Eval.JointDrive
         /// the hand model's own limits only, every draw as before.
         /// </summary>
         public MotionCaps? Caps { get; set; }
+
+        /// <summary>How the hand moves when the mixed script asks for people's own pace (<see cref="HandStyle"/>); null: the hand model's (every draw as before).</summary>
+        public HandStyle? Style
+        {
+            get => _style;
+            set
+            {
+                _style = value;
+                _timeline.PitchTime = value?.PitchTime ?? HandModel.PitchTime;
+            }
+        }
+
+        private HandStyle? _style;
 
         /// <summary>
         /// docs/adr/0038 decision 1: a tick before <see cref="GuardBefore"/> or from <see cref="GuardFrom"/> on (seconds on the hand's
@@ -1069,7 +1127,7 @@ namespace Teleop.Eval.JointDrive
             var commands = new List<HandCommand>(k1 - k0 + 1);
             Render(tl, k0, k1, commands);
             var poses = new List<ArmPose>(commands.Count);
-            if (!Follow(k0 == 0 ? _start : _poses[k0 - 1], commands, check, poses, k0, k0 <= 1 ? _start : _poses[k0 - 2])) return false;
+            if (!Follow(k0 == 0 ? _start : _poses[k0 - 1], commands, check, poses, k0)) return false;
             _poses.RemoveRange(k0, _poses.Count - k0);
             _commands.RemoveRange(k0, _commands.Count - k0);
             _poses.AddRange(poses);
@@ -1084,7 +1142,7 @@ namespace Teleop.Eval.JointDrive
         /// jump, outside the envelope or fails <paramref name="check"/>, or, when they are set, the <see cref="Guard"/> in its windows
         /// or the <see cref="Caps"/>.
         /// </summary>
-        private bool Follow(ArmPose from, List<HandCommand> commands, ArmCollisionModel check, List<ArmPose> poses, int firstTick, in ArmPose beforeFrom)
+        private bool Follow(ArmPose from, List<HandCommand> commands, ArmCollisionModel check, List<ArmPose> poses, int firstTick)
         {
             var solver = new ArmSolver();
             solver.Reset(_profile, from);
@@ -1092,22 +1150,35 @@ namespace Teleop.Eval.JointDrive
             float step = HandModel.MaxWristSpeed * (float)Tick;
             MotionCaps? caps = Caps;
             ArmCollisionModel? guard = Guard;
-            if (caps != null) step = MathF.Min(step, caps.MaxWristSpeed * (float)Tick);
-            ArmPose previous = from, beforePrevious = beforeFrom;
-            int k = firstTick;
+            Span<ArmPose> history = stackalloc ArmPose[4]; // the four ticks before this one, oldest first (the start pose before the first)
+            if (caps != null)
+            {
+                step = MathF.Min(step, caps.MaxWristSpeed * (float)Tick);
+                for (int i = 0; i < 4; i++)
+                {
+                    int k = firstTick - 4 + i;
+                    history[i] = k < 0 ? _start : k < _poses.Count ? _poses[k] : from;
+                }
+            }
+
+            int tick = firstTick;
             foreach (HandCommand c in commands)
             {
                 ArmSolution s = solver.Solve(_profile, c.Target, c.Pitch, c.Roll);
                 if (s.Status == ArmSolveStatus.Blocked || s.Status == ArmSolveStatus.Approaching || s.ReachClamped) return Refuse(0);
                 if (!_envelope.Contains(s.Pose) || !ArmCollision.IsValid(_profile, check, s.Pose)) return Refuse(1);
                 if (Vector3.Distance(s.Position, last) > step) return Refuse(2);
-                if (guard != null && (k * Tick < GuardBefore || k * Tick >= GuardFrom) && !ArmCollision.IsValid(_profile, guard, s.Pose)) return Refuse(3);
-                if (caps != null && !caps.Allows(beforePrevious, previous, s.Pose, Tick)) return Refuse(4);
+                if (guard != null && (tick * Tick < GuardBefore || tick * Tick >= GuardFrom) && !ArmCollision.IsValid(_profile, guard, s.Pose)) return Refuse(3);
+                if (caps != null)
+                {
+                    if (!caps.Allows(history, s.Pose, Tick)) return Refuse(4);
+                    for (int i = 0; i < 3; i++) history[i] = history[i + 1];
+                    history[3] = s.Pose;
+                }
+
                 last = s.Position;
                 poses.Add(s.Pose);
-                beforePrevious = previous;
-                previous = s.Pose;
-                k++;
+                tick++;
             }
 
             return true;
@@ -1234,6 +1305,7 @@ namespace Teleop.Eval.JointDrive
 
         private double Duration(double amplitude, double slow = 1.0, double? maxPeak = null)
         {
+            if (_style != null) slow *= _style.Slow;
             double d = HandModel.DurationScale * Math.Pow(Math.Max(amplitude, 1e-4), HandModel.DurationExponent)
                        * Math.Exp(HandModel.DurationSigma * Draw.Normal(ref _rng)) * slow;
             d = Math.Clamp(d, HandModel.MinDuration, HandModel.MaxDuration * Math.Max(1.0, slow));
@@ -1258,7 +1330,7 @@ namespace Teleop.Eval.JointDrive
             }
 
             want = Math.Clamp(want, HandModel.PitchLowDegrees * deg, HandModel.PitchHighDegrees * deg);
-            return (float)(want - current);
+            return (float)((want - current) * (_style?.PitchScale ?? 1.0));
         }
 
         private float RollStep(float current, float? goal)
@@ -1270,7 +1342,7 @@ namespace Teleop.Eval.JointDrive
                 ? Draw.Normal(ref _rng, 0, HandModel.RollOrientSigmaDegrees * deg)
                 : current + Draw.Laplace(ref _rng, HandModel.RollLaplaceDegrees * deg) - HandModel.RollPull * current;
             want = Math.Clamp(want, -HandModel.RollMaxDegrees * deg, HandModel.RollMaxDegrees * deg);
-            return (float)(want - current);
+            return (float)((want - current) * (_style?.RollScale ?? 1.0));
         }
 
         /// <summary>

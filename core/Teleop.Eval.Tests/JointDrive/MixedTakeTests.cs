@@ -167,22 +167,22 @@ namespace Teleop.Eval.Tests.JointDrive
         public void TheCaps_HoldOnEveryTick_AndWithoutThemTheHandIsFaster()
         {
             SafetyObject[] objects = LayoutOf(5);
-            var caps = new MotionCaps { MaxJointSpeed = 4f, MaxWristSpeed = 0.9f, MaxPeakSpeed = 0.5 };
-            var capped = new MixedOptions { Caps = caps };
+            var capped = new MixedOptions();
+            MotionCaps caps = capped.Caps!;
             DrivePlan plan = Mixed(objects, 21, capped);
-            double fastest = 0, fastestWrist = 0;
-            ArmPose previous = plan.Sample(plan.ScriptStart);
-            for (double t = plan.ScriptStart + Tick; t <= plan.TotalSeconds; t += Tick)
+            // Every tick of the take within each joint's speed cap (the legs are linear a tick apart, so the ticks are the plan's own).
+            var ticks = new List<ArmPose>();
+            for (double t = plan.ScriptStart; t <= plan.TotalSeconds + 1e-9; t += Tick) ticks.Add(plan.Sample(t));
+            for (int k = 1; k < ticks.Count; k++)
             {
-                ArmPose p = plan.Sample(t);
-                fastest = Math.Max(fastest, p.MaxJointDelta(previous) / Tick);
-                fastestWrist = Math.Max(fastestWrist, Vector3.Distance(HandModel.Wrist(Profile, p), HandModel.Wrist(Profile, previous)) / Tick);
-                previous = p;
+                for (int j = 0; j < DriveEnvelope.JointCount; j++)
+                {
+                    double v = Math.Abs(DrivePlan.Joint(ticks[k], j) - DrivePlan.Joint(ticks[k - 1], j)) / Tick;
+                    Assert.True(v <= caps.JointSpeed[j] * 1.02 + 0.02, $"{DriveEnvelope.JointName(j)} at {v:0.00} rad/s, tick {k}");
+                }
             }
 
-            Assert.True(fastest <= caps.MaxJointSpeed * 1.02, $"a joint at {fastest:0.00} rad/s");
-            Assert.True(fastestWrist <= caps.MaxWristSpeed * 1.02 + 0.01, $"the wrist at {fastestWrist:0.000} m/s");
-            var uncapped = new MixedOptions { Caps = null };
+            var uncapped = new MixedOptions { Caps = null, Style = null };
             Assert.True(TryMixed(objects, 21, out DrivePlan? free, out string? error, uncapped), error);
             Assert.NotEqual(plan.Legs.Count, free!.Legs.Count);
         }
@@ -192,7 +192,7 @@ namespace Teleop.Eval.Tests.JointDrive
         {
             Assert.Throws<ArgumentException>(() => new MixedOptions { OffsetMinMeters = 0.05f, OffsetMaxMeters = 0.01f }.Validate());
             Assert.Throws<ArgumentException>(() => new MixedOptions { TailMinSeconds = 0.5 }.Validate());
-            Assert.Throws<ArgumentException>(() => new MixedOptions { Caps = new MotionCaps { MaxJointSpeed = 0 } }.Validate());
+            Assert.Throws<ArgumentException>(() => new MixedOptions { Caps = new MotionCaps().AllSpeeds(0f) }.Validate());
             Assert.False(TryMixed(LayoutOf(1), 1, out _, out string? error, new MixedOptions { PassShare = 2 }));
             Assert.Contains("pass share", error);
             Assert.Equal("mixed", SafetyScript.Category(DriveScript.Mixed));

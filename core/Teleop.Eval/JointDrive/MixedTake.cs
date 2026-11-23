@@ -75,12 +75,30 @@ namespace Teleop.Eval.JointDrive
         /// <summary>The speed caps (docs/adr/0038 decision 1, item 29): <see cref="DefaultCaps"/> unless told otherwise; null for none.</summary>
         public MotionCaps? Caps { get; set; } = DefaultCaps();
 
+        /// <summary>How the hand moves under the caps (<see cref="DefaultStyle"/> unless told otherwise); null: the hand model's own pace.</summary>
+        public HandStyle? Style { get; set; } = DefaultStyle();
+
         /// <summary>
-        /// The caps the mixed script drives with by default, chosen 2026-11-22 from dry runs of the hand model against the commanded
-        /// motion of 12 human sessions on the real JetRover (docs/adr/0038, "M, motion"): to be set again from workstream R's
-        /// measurement of the real arm's tracking.
+        /// The caps the mixed script drives with by default: each joint's speed and acceleration at the 99th percentile of 9 human
+        /// headset sessions on the real JetRover (docs/adr/0038, workstream R: the command smoothed 25 ms). Yaw, shoulder, elbow,
+        /// wrist pitch, roll.
         /// </summary>
-        public static MotionCaps? DefaultCaps() => null;
+        public static MotionCaps DefaultCaps()
+        {
+            var caps = new MotionCaps();
+            float[] speed = { 3.8f, 2.6f, 3.6f, 2.8f, 4.0f }, acceleration = { 40f, 32f, 51f, 44f, 47f };
+            speed.CopyTo(caps.JointSpeed, 0);
+            acceleration.CopyTo(caps.JointAcceleration, 0);
+            return caps;
+        }
+
+        /// <summary>
+        /// The mixed script's hand, so its motion sits under the caps rather than at them (workstream R: the scripted operator turned
+        /// the wrist pitch about twice as fast as people at p90, the elbow 1.4 times): pitch and roll changes 0.55 and 0.7 of the
+        /// hand model's, followed over the whole of each submovement, and every submovement 1.25 times as long. Chosen from this
+        /// script's dry runs against R's targets (docs/adr/0038, "M, motion").
+        /// </summary>
+        public static HandStyle DefaultStyle() => new HandStyle { PitchScale = 0.55, RollScale = 0.7, PitchTime = 1.0, Slow = 1.25 };
 
         /// <summary>Throws when the options make no sense together.</summary>
         public void Validate()
@@ -115,8 +133,13 @@ namespace Teleop.Eval.JointDrive
         public readonly float OffsetMeters, GapMeters;
         public readonly double Start, Contact, Closest, End;
 
-        public PlannedMove(int index, ScriptMoveKind kind, byte objectId, float offsetMeters, float gapMeters, double start, double contact, double closest, double end)
+        /// <summary>An aim's or pass's direction of travel about the object's bearing from the base, degrees (0: straight out from the base; NaN for the other kinds). Reports only.</summary>
+        public readonly float ApproachDegrees;
+
+        public PlannedMove(int index, ScriptMoveKind kind, byte objectId, float offsetMeters, float gapMeters, double start, double contact, double closest, double end,
+            float approachDegrees = float.NaN)
         {
+            ApproachDegrees = approachDegrees;
             Index = index;
             Kind = kind;
             ObjectId = objectId;
@@ -204,7 +227,7 @@ namespace Teleop.Eval.JointDrive
         {
             public ScriptMoveKind Kind;
             public int Object;
-            public float Offset;
+            public float Offset, Approach;
             public double Start, End;
         }
 
@@ -252,6 +275,7 @@ namespace Teleop.Eval.JointDrive
             var hand = new HumanOperator(profile, envelope, current, rng.NextUInt64());
             hand.EngageOnTheMove();
             hand.Caps = options.Caps;
+            hand.Style = options.Style;
             hand.Guard = SafetyScript.WithObjects(model, objects, options.QuietMarginMeters);
             hand.GuardBefore = options.QuietStartSeconds;
             var take = new MixedTake(profile, model, envelope, objects, options, hand, t, new SeededRng(rng.NextUInt64()));
@@ -413,14 +437,15 @@ namespace Teleop.Eval.JointDrive
                     if (gap == float.MaxValue) gap = float.NaN;
                 }
 
-                moves.Add(new PlannedMove(moves.Count + 1, d.Kind, id, d.Object >= 0 ? d.Offset : float.NaN, gap, _start + d.Start, contact, closest, _start + d.End));
+                moves.Add(new PlannedMove(moves.Count + 1, d.Kind, id, d.Object >= 0 ? d.Offset : float.NaN, gap, _start + d.Start, contact, closest, _start + d.End,
+                    d.Object >= 0 ? d.Approach : float.NaN));
             }
 
             return moves.ToArray();
         }
 
-        private void Add(ScriptMoveKind kind, int obj, float offset, double start, double end) =>
-            _drafts.Add(new Draft { Kind = kind, Object = obj, Offset = offset, Start = start, End = end });
+        private void Add(ScriptMoveKind kind, int obj, float offset, double start, double end, float approach = float.NaN) =>
+            _drafts.Add(new Draft { Kind = kind, Object = obj, Offset = offset, Start = start, End = end, Approach = approach });
 
         /// <summary>The arm's signed gap to object <paramref name="oi"/> at <paramref name="pose"/>: against its shape with the twin's links (the gripper as given), else its box with the model's.</summary>
         private float Gap(int oi, in ArmPose pose, float gripper)
@@ -586,7 +611,10 @@ namespace Teleop.Eval.JointDrive
             }
 
             _objectMoves++;
-            Add(kind, oi, offset, s, e);
+            float approach = (alpha - bearing) * 180f / MathF.PI;
+            while (approach > 180f) approach -= 360f;
+            while (approach < -180f) approach += 360f;
+            Add(kind, oi, offset, s, e, approach);
             _lastObjectEnd = Math.Max(_lastObjectEnd, e);
             if (offset < 0 && o.Movable)
             {
@@ -705,6 +733,26 @@ namespace Teleop.Eval.JointDrive
             }
 
             return wrists.Count >= 3;
+        }
+
+        /// <summary>The lowest point of the arm as the twin's links are (<see cref="ShapeGap.TouchBodies"/>, the gripper as given), arm base frame z: how high a contact is.</summary>
+        internal static float Lowest(in RobotArmProfile profile, ArmCollisionModel model, in ArmPose pose, float gripper = SafetyScript.ApproachGripper)
+        {
+            Span<LinkFrame> frames = stackalloc LinkFrame[5];
+            ArmCollision.ComputeFrames(profile, pose, frames);
+            float low = float.MaxValue;
+            foreach (CollisionBody b in ShapeGap.TouchBodies(model, gripper))
+            {
+                LinkFrame f = frames[(int)b.Link];
+                for (int k = 0; k < 8; k++)
+                {
+                    var corner = new Vector3((k & 1) == 0 ? -b.HalfExtents.X : b.HalfExtents.X, (k & 2) == 0 ? -b.HalfExtents.Y : b.HalfExtents.Y,
+                        (k & 4) == 0 ? -b.HalfExtents.Z : b.HalfExtents.Z);
+                    low = MathF.Min(low, f.ToBase(b.Center + Vector3.Transform(corner, b.Rotation)).Z);
+                }
+            }
+
+            return low;
         }
 
         /// <summary>The headset's IK from <paramref name="from"/> to the wrist <paramref name="target"/>, roll 0, until it gets there.</summary>

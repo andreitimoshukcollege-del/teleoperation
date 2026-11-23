@@ -79,7 +79,9 @@ namespace Teleop.Eval.JointDrive
             "usage: joint-drive --script waypoints|steps|course --speed <rad/s> [--seconds 300] [--seed 1] [--margin-deg 15] [--rate-hz 48]\n" +
             "                   (--dry-run | --remote-host <ip> [--remote-port 6002] --confirm-hardware-motion)\n" +
             "                   [--operator-log <path> [--session-id <id>]] [--stop-file <path>] [--take <scenario>]\n" +
-            "                   [--simulated-robot [--stall-seconds 1] [--stream-seconds 3]] [--scene <file> [--new-layout] [--touch-depth-mm 8] [--events 1-3]]";
+            "                   [--simulated-robot [--stall-seconds 1] [--stream-seconds 3]] [--scene <file> [--new-layout] [--touch-depth-mm 8] [--events 1-3]]\n" +
+            "                   [--script mixed [--replays 0] [--max-joint-speed <rad/s>[,x4]] [--max-joint-accel <rad/s2>[,x4]] [--max-wrist-speed <m/s>]\n" +
+            "                                   [--max-peak-speed <m/s>] [--no-caps] [--no-style] [--offset-mm -40,60]] [--dry-run --layouts 1-200 [--rows]]";
 
         public static int Run(string[] args)
         {
@@ -94,6 +96,18 @@ namespace Teleop.Eval.JointDrive
             string? scenePath = null;
             bool newLayout = false;
             var safetyOptions = new SafetyOptions();
+            // docs/adr/0038: the mixed script's options, its replays, and the dry run over RobotHost's layouts.
+            var mixedOptions = new MixedOptions();
+            int replays = 0;
+            int layoutsFrom = 0, layoutsTo = -1;
+            bool rows = false;
+            MotionCaps Caps() => mixedOptions.Caps ??= MixedOptions.DefaultCaps();
+            void PerJoint(string text, float[] into, string option)
+            {
+                string[] v = text.Split(',');
+                if (v.Length != 1 && v.Length != into.Length) throw new ArgumentException($"{option} is one number for every joint, or five (yaw, shoulder, elbow, wrist pitch, roll)");
+                for (int j = 0; j < into.Length; j++) into[j] = float.Parse(v[v.Length == 1 ? 0 : j], NumberStyles.Float, CultureInfo.InvariantCulture);
+            }
             try
             {
                 for (int i = 1; i < args.Length; i++)
@@ -113,8 +127,9 @@ namespace Teleop.Eval.JointDrive
                                 "stop_before_collision" => DriveScript.StopBeforeCollision,
                                 "collide_and_recover" => DriveScript.CollideAndRecover,
                                 "collide_with_obstacle" => DriveScript.CollideWithObstacle,
+                                "mixed" => DriveScript.Mixed,
                                 _ => throw new ArgumentException($"unknown script '{name}' (waypoints, steps, course, reach_no_obstacle, " +
-                                                                 "stop_before_collision, collide_and_recover or collide_with_obstacle)"),
+                                                                 "stop_before_collision, collide_and_recover, collide_with_obstacle or mixed)"),
                             };
                             break;
                         case "--speed": speed = (float)Number(); break;
@@ -137,6 +152,21 @@ namespace Teleop.Eval.JointDrive
                         case "--new-layout": newLayout = true; break;
                         case "--touch-depth-mm": safetyOptions.TouchDepthMeters = (float)(Number() / 1000.0); break;
                         case "--events": ParseEvents(Next(), safetyOptions); break;
+                        case "--replays": replays = int.Parse(Next(), NumberStyles.None, CultureInfo.InvariantCulture); break;
+                        case "--layouts": ParseRange(Next(), "--layouts", out layoutsFrom, out layoutsTo); break;
+                        case "--rows": rows = true; break;
+                        case "--max-joint-speed": PerJoint(Next(), Caps().JointSpeed, "--max-joint-speed"); break;
+                        case "--max-joint-accel": PerJoint(Next(), Caps().JointAcceleration, "--max-joint-accel"); break;
+                        case "--no-style": mixedOptions.Style = null; break;
+                        case "--max-wrist-speed": Caps().MaxWristSpeed = (float)Number(); break;
+                        case "--max-peak-speed": Caps().MaxPeakSpeed = Number(); break;
+                        case "--no-caps": mixedOptions.Caps = null; break;
+                        case "--offset-mm":
+                            string[] mm = Next().Split(',');
+                            if (mm.Length != 2) throw new ArgumentException("--offset-mm is two numbers, like -40,60");
+                            mixedOptions.OffsetMinMeters = (float)(double.Parse(mm[0], NumberStyles.Float, CultureInfo.InvariantCulture) / 1000.0);
+                            mixedOptions.OffsetMaxMeters = (float)(double.Parse(mm[1], NumberStyles.Float, CultureInfo.InvariantCulture) / 1000.0);
+                            break;
                         default: throw new ArgumentException($"unknown argument '{args[i]}'");
                     }
                 }
@@ -148,6 +178,11 @@ namespace Teleop.Eval.JointDrive
                 if (newLayout && dryRun) throw new ArgumentException("--new-layout asks RobotHost for a layout; a dry run sends nothing");
                 if (!(safetyOptions.TouchDepthMeters > 0f && safetyOptions.TouchDepthMeters <= 0.06f)) throw new ArgumentException("--touch-depth-mm must be in (0, 60]");
                 safetyOptions.Validate();
+                mixedOptions.Validate();
+                if (replays < 0 || replays > MaxReplays) throw new ArgumentException($"--replays must be in [0, {MaxReplays}]");
+                if (replays > 0 && script != DriveScript.Mixed) throw new ArgumentException("--replays is for --script mixed (docs/adr/0038 decision 2)");
+                if (replays > 0 && (take == null || dryRun)) throw new ArgumentException("--replays records more takes: it needs --take, and a dry run records none");
+                if (layoutsTo >= layoutsFrom && (!dryRun || !safety)) throw new ArgumentException("--layouts plans a safety script on RobotHost's layouts of --scene: a dry run");
                 if (!(speed > 0f) || speed > MaxSpeedRadPerSec) throw new ArgumentException($"--speed must be in (0, {MaxSpeedRadPerSec}] rad/s, the headset slider's range");
                 if (!(seconds > 0)) throw new ArgumentException("--seconds must be positive");
                 if (!(marginDeg >= 5)) throw new ArgumentException("--margin-deg must be at least 5");
@@ -198,7 +233,12 @@ namespace Teleop.Eval.JointDrive
                 // A safety script's dry run plans around the scene's objects where the file puts them.
                 List<SafetyObject>? nominal = scene == null ? null : scene.Objects.Select(o => WorldView.Bounds(o, 1.0, o.Nominal.X, o.Nominal.Y,
                     o.Nominal.Z, o.Nominal.Qw, o.Nominal.Qx, o.Nominal.Qy, o.Nominal.Qz, WorldView.ShapesOf(scene))).ToList();
-                return DryRun(script.Value, profile, envelope, speed, seconds, seed, rateHz, logPath, sessionId ?? "joint-drive-dry-run", nominal, safetyOptions);
+                if (layoutsTo >= layoutsFrom)
+                {
+                    return MixedDryRun.Run(script.Value, scene!, profile, envelope, speed, seconds, seed, layoutsFrom, layoutsTo, safetyOptions, mixedOptions, rows);
+                }
+
+                return DryRun(script.Value, profile, envelope, speed, seconds, seed, rateHz, logPath, sessionId ?? "joint-drive-dry-run", nominal, safetyOptions, mixedOptions);
             }
 
             if (!confirmed)
@@ -292,6 +332,14 @@ namespace Teleop.Eval.JointDrive
                 Console.WriteLine(FormattableString.Invariant($"  {DriveEnvelope.JointName(j),-9} targets from {min[j] * 180 / Math.PI,7:0.0}° to {max[j] * 180 / Math.PI,6:0.0}°"));
             }
 
+            if (plan.Moves.Count > 0)
+            {
+                // docs/adr/0038 decision 1: the mixed take's moves, each sent to RobotHost (MV) as it begins.
+                Console.WriteLine(FormattableString.Invariant(
+                    $"[joint-drive] {plan.Moves.Count} moves ({plan.Moves.Count(m => m.Kind == ScriptMoveKind.Aim)} aims, {plan.Moves.Count(m => m.Kind == ScriptMoveKind.Pass)} passes); the take runs {plan.TotalSeconds - plan.ScriptStart:0.0} s from {plan.ScriptStart:0.0} s; {plan.PlanningReport}"));
+                foreach (PlannedMove m in plan.Moves.Where(x => x.ObjectId != 0)) Console.WriteLine("  " + m);
+            }
+
             if (plan.EventsDrawn > 0)
             {
                 // docs/adr/0036 amendment 5: events anywhere in the take, the take starting at ScriptStart.
@@ -302,9 +350,10 @@ namespace Teleop.Eval.JointDrive
         }
 
         private static int DryRun(DriveScript script, RobotArmProfile profile, DriveEnvelope envelope, float speed, double seconds, ulong seed,
-            double rateHz, string? logPath, string sessionId, IReadOnlyList<SafetyObject>? objects, SafetyOptions? safetyOptions = null)
+            double rateHz, string? logPath, string sessionId, IReadOnlyList<SafetyObject>? objects, SafetyOptions? safetyOptions = null, MixedOptions? mixedOptions = null)
         {
-            if (!DrivePlan.TryBuild(script, profile, profile.Collision!.Home, speed, seconds, seed, envelope, out DrivePlan? plan, out string? error, objects, safetyOptions))
+            if (!DrivePlan.TryBuild(script, profile, profile.Collision!.Home, speed, seconds, seed, envelope, out DrivePlan? plan, out string? error, objects, safetyOptions,
+                    mixedOptions))
             {
                 Console.Error.WriteLine($"joint-drive: {error}");
                 return 1;
@@ -949,6 +998,20 @@ namespace Teleop.Eval.JointDrive
 
             /// <summary>The drive is over: nothing more is planned (a plan being made is left to finish on its own).</summary>
             public void Abandon() => _pending = null;
+        }
+
+        /// <summary>The most replays a mixed take records after itself (docs/adr/0038 decision 2).</summary>
+        public const int MaxReplays = 8;
+
+        /// <summary>A count (2) or a range (1-200) of non-negative integers, for <paramref name="option"/>.</summary>
+        internal static void ParseRange(string text, string option, out int min, out int max)
+        {
+            string[] parts = text.Split('-');
+            if (parts.Length > 2 || !int.TryParse(parts[0], NumberStyles.None, CultureInfo.InvariantCulture, out min) ||
+                !int.TryParse(parts[parts.Length - 1], NumberStyles.None, CultureInfo.InvariantCulture, out max) || max < min)
+            {
+                throw new ArgumentException($"{option} is a count or a range, like 2 or 1-200, not '{text}'");
+            }
         }
 
         /// <summary>--events: how many events a safety take draws, a count (2) or a range (1-3) (docs/adr/0036 amendment 5).</summary>

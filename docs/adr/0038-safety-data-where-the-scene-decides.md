@@ -241,8 +241,8 @@ at 907 at 137 / 209 / 311 ms; both have about 145 ms of dead time before the ram
   docs/adr/0034 amendment 13's fit (held-out p95 2.64 degrees) stands.
 - **Being over 20 units most of the time is how this arm teleoperates.** Any arm here trails its command by about 0.2 s, so a
   joint commanded faster than about 100 units/s (0.42 rad/s) is over the threshold (78–82% of joint-frames at 100–200 units/s,
-  real or twin, and nearly all above),
-  and people keep the arm moving 70–86% of the time. The real dataset world-models holds is at 75% itself.
+  real or twin, and nearly all above), and people keep the arm moving 70–86% of the time. The real dataset world-models holds
+  is at 75% itself.
 - **The 3–6 frames** come from `jetrover_20261022_084431_89285d` (world-models' `wm/jetrover/windows.py`), a recording of
   2026-10-22 that is not in our data and predates the robot's feedback timing of 2026-10-25. No real recording we have agrees
   with it. World-models should say which recording and which columns it used.

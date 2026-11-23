@@ -34,7 +34,7 @@ import os
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Sequence, Tuple
 
-from .jlog import Jlog, JlogError, items, read_jlog
+from .jlog import Jlog, items, read_jlog
 from .takes import Take
 
 TABLE = 0  # WC's object 0: the table (docs/adr/0038 decision 4), never unsafe by default

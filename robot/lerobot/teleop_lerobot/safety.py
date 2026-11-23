@@ -50,7 +50,7 @@ from dataclasses import dataclass
 from typing import Dict, List, Optional, Sequence, Tuple
 
 from .jlog import JlogError, items, read_jlog
-from .takes import Camera, Frame, Take, TakeError
+from .takes import Camera, Frame, Take
 
 REACH, STOP, RECOVER, COLLIDE = "reach_no_obstacle", "stop_before_collision", "collide_and_recover", "collide_with_obstacle"
 CATEGORIES = (REACH, STOP, RECOVER, COLLIDE)

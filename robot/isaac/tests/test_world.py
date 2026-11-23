@@ -475,10 +475,10 @@ def test_a_mixed_pool_raises_a_movable_object_only_on_a_stand_and_a_plank_anywhe
     outcome, _, _ = m.check(wire.CAUSE_LAYOUT, s.objects[can].id, at(0.25, 0.12, 0.3, on[2]), no_arm)
     assert outcome == wire.OUTSIDE_REGION
     # A plank is a fixed body: it stands where it is put, above the table, and over the stand without touching it nothing is in its way.
-    high = at(0.25, 0.0, 0.0, s.table.top + 0.25 + s.objects[plank].size[2] / 2)
+    high = at(0.32, 0.0, 0.0, s.table.top + 0.25 + s.objects[plank].size[2] / 2)  # x 0.17-0.47, over the stand and the can
     outcome, _, p = m.check(wire.CAUSE_LAYOUT, s.objects[plank].id, high, no_arm)
     assert outcome == wire.APPLIED and abs(p[2] - high[2]) < 1e-12
-    low = at(0.25, 0.0, 0.0, s.table.top + 0.03 + s.objects[plank].size[2] / 2)  # into the stand (6 cm tall)
+    low = at(0.32, 0.0, 0.0, s.table.top + 0.03 + s.objects[plank].size[2] / 2)  # into the stand (6 cm tall)
     outcome, _, _ = m.check(wire.CAUSE_LAYOUT, s.objects[plank].id, low, no_arm)
     assert outcome == wire.OVERLAPS_OBJECT
 
@@ -486,10 +486,10 @@ def test_a_mixed_pool_raises_a_movable_object_only_on_a_stand_and_a_plank_anywhe
 def test_a_mixed_pool_resizes_a_fixed_object_within_its_own_steps_only():
     s = scene.load(MIXED)
     m = WorldModel(s)
-    leg = next(i for i, o in enumerate(s.objects) if o.name == "shelf-leg-a")
-    lo, hi = s.objects[leg].steps
-    for step, expected in ((lo, wire.APPLIED), (hi, wire.APPLIED), (hi + 1, wire.NOT_MOVABLE), (lo - 1, wire.NOT_MOVABLE)):
-        outcome, _, _ = m.check_resize(s.objects[leg].id, 1.25 ** step, no_arm)
+    stand = next(i for i, o in enumerate(s.objects) if o.name == "stand-block")
+    lo, hi = s.objects[stand].steps  # -2 to 3: a resize step either side is one of the 12, but not its own
+    for step, expected in ((lo, wire.APPLIED), (hi, wire.APPLIED), (hi + 1, wire.NOT_MOVABLE), (lo - 1, wire.NOT_MOVABLE), (-4, wire.INVALID_POSE)):
+        outcome, _, _ = m.check_resize(s.objects[stand].id, 1.25 ** step, no_arm)
         assert outcome == expected, step
     can = next(i for i, o in enumerate(s.objects) if o.name == "tomato-soup-can")
     assert m.check_resize(s.objects[can].id, 1.25, no_arm)[0] == wire.NOT_MOVABLE  # a scan keeps its size

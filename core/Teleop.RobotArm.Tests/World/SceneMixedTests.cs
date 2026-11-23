@@ -87,7 +87,8 @@ namespace Teleop.RobotArm.Tests.World
             string shapesPath = Path.Combine(Path.GetDirectoryName(SceneDocumentTests.ScenePath(name))!, name + ".shapes.json");
             using JsonDocument shapes = JsonDocument.Parse(File.ReadAllText(shapesPath));
             JsonElement assets = shapes.RootElement.GetProperty("assets");
-            Assert.All(s.Objects.Where(o => o.Shape == SceneShape.Mesh), o => Assert.True(assets.TryGetProperty(o.Asset, out _), $"{name}: no shape for {o.Asset}"));
+            string[] surveyed = assets.EnumerateObject().Select(a => a.Name).ToArray();
+            Assert.All(s.Objects.Where(o => o.Shape == SceneShape.Mesh), o => Assert.Contains(o.Asset, surveyed));
             Assert.Equal(s.Objects.Where(o => o.Shape == SceneShape.Mesh).Select(o => o.Asset).Distinct().Count(), assets.EnumerateObject().Count());
 
             // Sizes are drawn from each object's own steps: boxes and cylinders only, fixed ones too; scans keep their size.

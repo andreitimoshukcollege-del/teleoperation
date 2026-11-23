@@ -7,6 +7,7 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using Teleop.RobotArm.Types;
+using Teleop.RobotArm.Wire;
 using Teleop.RobotArm.World;
 using Teleop.RobotHost.ArmServer;
 using Teleop.RobotHost.Tests.Backend;

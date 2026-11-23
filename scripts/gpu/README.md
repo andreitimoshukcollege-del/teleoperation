@@ -11,6 +11,7 @@ docs/agent-operations.md says when to use which.
 | `take_timing.py` | Per take: length, idle at the start, when contacts begin, and the planned contact times from `SE` | `ssh andrei@10.188.58.133 'python3 - <since>' < scripts/gpu/take_timing.py` |
 | `take_video.sh` | One take's cameras side by side as an mp4 | `ssh andrei@10.188.58.133 'bash -s <take_dir> /tmp/<name>.mp4' < scripts/gpu/take_video.sh` |
 | `contact_sheet.sh` | One frame of each of up to 16 takes, 4 by 4 | `ssh andrei@10.188.58.133 'bash -s /tmp/<name>.jpg third-right 0.15 <take_dir>...' < scripts/gpu/contact_sheet.sh` |
+| `arm_response.py` | How the arm follows its commands, real and twin (docs/adr/0038 workstream R): the share of frames over 20 units of `max|state - action|`, per-joint error and its stretches, the tool point's error, the commanded motion per 15 fps frame (joints, wrist pivot, tool point), error by commanded speed, the RO-to-RI delay, commanded joint speed and acceleration, step responses, and stops after the command holds. Reads sessions, takes and LeRobot datasets; standard library except the parquet | `python3 scripts/gpu/arm_response.py --group real=<sessions> --group twin=<dataset> --follow-takes --json out.json`, or on the GPU machine `ssh andrei@10.188.58.133 'TELEOP_REPO=~/repos/isaac ~/isaacsim/lerobot-venv/bin/python - <paths>' < scripts/gpu/arm_response.py` |
 
 Notes:
 - **Reading a batch.** `<since>` is a take-name prefix in UTC, such as `20261122T0003`. Every take named at or after it is

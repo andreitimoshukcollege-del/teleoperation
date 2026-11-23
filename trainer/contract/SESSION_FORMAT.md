@@ -75,7 +75,8 @@ and closes and completes it. In the session they are recognised by `label` and `
   an automatic session, means RobotHost's own impairment changed during it; its `UP` records say
   when. `addedDelayMs` (the headset's added delay) is `null` in an automatic session: the robot does
   not know it.
-- `conditions.motion` is `teleop`, `joint-drive:<script>`, `auto` (an automatic session), or
+- `conditions.motion` is `teleop`, `joint-drive:<script>`, `stop-latency` (`just stop-latency`'s one-joint swings that stop
+  dead, docs/adr/0038 workstream R; `conditions.operator` is then `stop-latency`), `auto` (an automatic session), or
   `scenario:<name>` (a take from the headset's RECORD button, docs/adr/0033). A take's `label` is
   `scenario-<name>`, and it has a `scenario` object: `name`, `take` (its number, counting up per
   scenario) and `description` (what `scenarios.txt` says to do). Takes are in the scenarios folder

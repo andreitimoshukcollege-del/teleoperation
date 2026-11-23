@@ -201,7 +201,74 @@ Each workstream owns the files listed. It adds to its own "as built" section bel
 
 ### L, labels and dataset
 
-(pending)
+Built in `robot/lerobot/teleop_lerobot/` (`safety.py`, the new `sidecars.py`, `__main__.py`) and the `isaac-safety-build`
+recipe; every field is defined in `robot/lerobot/README.md`, "Safety datasets: labels and sidecars".
+
+- **The table is object 0 and never a contact** for the labels or the checks: `safety.contacts` drops `WC` pairs naming
+  object 0, so a `WC` naming only the table ends a stretch. The four old categories check exactly as before.
+- **`safety-check` for `mixed`** sets a take aside only when it is broken: it can't be read as an episode (no scenario, a
+  `.jlog` cut off or failing its trailer, no accepted command, no colour camera, no frame with its joints), joint-drive cut it
+  short (`--drive-exit` 2, 3 or 130; 0 and 4 are fine), an `ER` record, records dropped by a writer, no `WO`, or the episode
+  repeating one render for 1 s or more. On the 340 episodes of the two datasets of 2026-11-22, the twin's repeats were
+  single frames (598 of 45,039 and 560 of 40,685 frames, at most 10 an episode), so the last rule catches a stalled renderer
+  only. An unreadable `mixed` take gets a verdict and is set aside; an unreadable old one still raises, as before. Every line
+  also says what happened (`outcome`, table contact, timing flags, `RP`), never a reason to set a take aside.
+- **Labels:** `safety_ranges.json` with exactly `source` (`physics`), `notes` and `unsafe_ranges`, beside the three legacy
+  files, all the same ranges. `safety_events.jsonl` gives `mixed` a `clear` after every range that ends, as recover had.
+  `--table-unsafe` counts the table too.
+- **Captions:** `move the arm` for every episode by default; `--caption category` for rebuild comparisons. LeRobot reads a
+  neutral build back with one task (tested with LeRobot 0.5.1, and on 3 real takes: 3 episodes, 586 frames, `tasks.parquet`
+  holding `move the arm` alone).
+- **Sidecars** under `meta/teleop/`: `episodes.jsonl`, `scenes.jsonl`, `contacts.jsonl`, `frames.parquet` and `report.json`,
+  read from the take alone. They cost 0.05 s a take with `read_take` (340 takes in 16.8 s on the GPU machine at load 5-6, no
+  clearance), and build up front, with `--jobs` processes when there are several.
+- **Outcome:** `knock` (an obstacle the arm touched moved at least 3 cm or tipped at least 30 degrees from its first touch to
+  the episode's end: the old knock check's rule), `contact`, `near_miss` (no contact, minimum obstacle clearance under 30 mm),
+  `no_contact`, and **`unknown`** when there is no contact and no clearance to tell the last two apart. Chosen over
+  `no_contact` with a null clearance so that a count of outcomes never passes near misses off as clean negatives. Table
+  contact is its own flag.
+- **Layout hash (item 36):** sha256 of a canonical JSON of the scene's sha256 and, per object on the table (by `WL`, parked
+  ones left out) sorted by id, its integer dimensions after the size factor and position in mm and its rotation matrix in
+  thousandths (0.06 degrees), rounded half up, from its pose at the episode's first frame. Pinned by a test that writes the
+  recipe out again. The same draw placed twice can settle across a rounding boundary and hash differently, so the split
+  groups by the `WL` seed as well.
+- **Clearance** comes from workstream C's `clearance.compute`, imported guarded: NaN, and the reason in
+  `clearanceUnavailable`, when the geometry folder (`--geometry-dir`, default `~/isaacsim/assets/clearance`) or the module
+  is missing or raises. Tested with a fake.
+- **Item 17:** `meta/teleop/unavoidable_ranges.json` only with `--stop-latency-ms` and `--stop-time-ms` (or
+  `--stop-decel-rad-s2`, from `VQ` joint speeds). Provisional: the stop rests where the recorded motion was latency plus half
+  the stop time later.
+- **Item 24:** `firstContactS`, `afterLastContactS` and `timingFlags` per episode, the flagged episodes in `report.json` and
+  the build log. Never set aside.
+- **Items 20 and 21:** `safety-build --split K` and `just isaac-safety-build ... split=K` write `<name>_<k>of<K>`. Episodes
+  that share an `RP` group, a layout hash or a scene and `WL` seed stay in one dataset; the parts go largest first to the
+  dataset with the fewest episodes. Each dataset has its `report.json` and a `[mix]` line in the build log (run for real on 4
+  takes into 2 datasets in scratch).
+- **`safety-compare`** compares the sidecars by episode and `frames.parquet` by rows. A reference from before this ADR is
+  compared without them, with a note; `isaac-safety-build-check` rebuilds with the reference's own options (an older one: its
+  category captions). A `--caption category` rebuild of the first 3 episodes of `jetrover_20261122_145748_82747d` compared
+  "the same".
+
+**Measured on the old data** (the 340 episodes of `jetrover_20261122_005619_20ccb6` and `jetrover_20261122_145748_82747d`,
+read-only, before any `mixed` take exists):
+
+| | 005619 (177) | 145748 (163) |
+|---|---|---|
+| labels equal to the dataset's | 177 | 163 |
+| outcomes: recover | 37 contact, 3 knock | 34 contact, 1 knock |
+| outcomes: knock, reach, stop | 41 knock; 49 and 47 unknown | 40 knock; 45 and 43 unknown |
+| contact stretches (object, fixture) | 158, 27 | 118, 36 |
+| first contact after the start | min 2.28 s, median 5.24 s | min 2.52 s, median 5.16 s |
+| item 24 flags | 2 (last contact under 1.0 s before the end) | 1 (the same) |
+| distinct layout hashes, `WL` seeds | 177, 177 | 163, 163 |
+| table contacts | 0 (the twin did not report them yet) | 0 |
+
+Four recover takes count as `knock`: their check allows an object moved a few cm while it stays within 20 degrees.
+
+**Untested:** a `mixed` take, `RP` and `MV` from a real twin (synthetic records only; `MV`'s field names follow M's
+description and are read leniently), table contacts from the bridge, clearance from C's real module, and a full-size split
+build. The batch must pass joint-drive's exit code to `safety-check --drive-exit` (workstream M's recipe) for a watchdog stop
+to count as broken.
 
 ### R, arm response
 

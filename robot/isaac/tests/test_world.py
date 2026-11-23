@@ -491,13 +491,15 @@ def test_a_mixed_pool_resizes_a_fixed_object_within_its_own_steps_only():
     for step, expected in ((lo, wire.APPLIED), (hi, wire.APPLIED), (hi + 1, wire.NOT_MOVABLE), (lo - 1, wire.NOT_MOVABLE), (-4, wire.INVALID_POSE)):
         outcome, _, _ = m.check_resize(s.objects[stand].id, 1.25 ** step, no_arm)
         assert outcome == expected, step
-    can = next(i for i, o in enumerate(s.objects) if o.name == "tomato-soup-can")
-    assert m.check_resize(s.objects[can].id, 1.25, no_arm)[0] == wire.NOT_MOVABLE  # a scan keeps its size
+    # A scan the operator may not move keeps its size (the movable obstacles are operatorMovable since the twin check, for the
+    # replays' shifts and moves; a distractor scan is not).
+    scan = next(i for i, o in enumerate(s.objects) if o.shape == "mesh" and not o.operator_movable and not o.steps)
+    assert m.check_resize(s.objects[scan].id, 1.25, no_arm)[0] == wire.NOT_MOVABLE
 
 
 def test_the_headset_never_raises_an_object_in_a_mixed_pool():
     # docs/adr/0038: only RobotHost's own placements stand an object above the table; a move from the headset stands it on the table,
-    # whatever height it asks, as in every other scene. (The mixed scenes let the headset move nothing; this one lets it the can.)
+    # whatever height it asks, as in every other scene. (The mixed scenes let it move only their movable obstacles, the can among them.)
     import json
 
     with open(MIXED, encoding="utf-8") as f:

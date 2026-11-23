@@ -180,6 +180,24 @@ namespace Teleop.RobotHost.Recording
             "|" + F(e.EndSeconds) + "|" + F(e.ClearSeconds);
 
         /// <summary>
+        /// One planned move of a <c>mixed</c> take (docs/adr/0038 decision 1, <see cref="ScriptMoveCodec"/>):
+        /// <c>MV|t|index|count|kind|object|offsetMm|gapMm|startS|contactS|closestS|endS</c>, written when the move begins
+        /// (<c>t</c>); the four times are seconds after <c>t</c>, as planned. <c>object</c> 0 and <c>NaN</c> where the move has none.
+        /// </summary>
+        public static string ScriptMove(long t, in ScriptMove m) =>
+            "MV|" + I(t) + "|" + m.Index.ToString(CultureInfo.InvariantCulture) + "|" + m.Count.ToString(CultureInfo.InvariantCulture) + "|" +
+            ScriptMoveCodec.Name(m.Kind) + "|" + m.ObjectId.ToString(CultureInfo.InvariantCulture) + "|" + F(m.OffsetMm) + "|" + F(m.GapMm) + "|" +
+            F(m.StartSeconds) + "|" + F(m.ContactSeconds) + "|" + F(m.ClosestSeconds) + "|" + F(m.EndSeconds);
+
+        /// <summary>
+        /// A <c>mixed</c> take's replay group (docs/adr/0038 decision 2, <see cref="ReplayCodec"/>): <c>RP|t|group|role|edit</c>,
+        /// written when the tool sends it, after the take has started. <c>group</c> names the source take (decimal), <c>role</c> is
+        /// <c>source</c> or <c>replay</c>, <c>edit</c> is <see cref="ReplayCodec.Describe"/>'s.
+        /// </summary>
+        public static string Replay(long t, in ReplayRecord r) =>
+            "RP|" + I(t) + "|" + r.Group.ToString(CultureInfo.InvariantCulture) + "|" + ReplayCodec.Name(r.Role) + "|" + ReplayCodec.Describe(r);
+
+        /// <summary>
         /// What the headset does to its own link and view (docs/adr/0023 amendment):
         /// <c>HD|t|lagMs|jitterMs|lossPercent|addedDelayMs|seed</c>, the lag <c>NaN</c> for a named profile.
         /// Any non-zero value means the session is not a real-network measurement. When the headset reports its hand

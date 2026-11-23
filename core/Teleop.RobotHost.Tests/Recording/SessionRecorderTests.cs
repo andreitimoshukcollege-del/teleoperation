@@ -136,6 +136,24 @@ namespace Teleop.RobotHost.Tests.Recording
         }
 
         [Fact]
+        public void AMixedTakesMovesAndReplayGroup_AreTheirSessionFormatLines()
+        {
+            // docs/adr/0038 decision 1: MV|t|index|count|kind|object|offsetMm|gapMm|startS|contactS|closestS|endS, seconds after t.
+            Assert.Equal("MV|30|4|21|aim|41|-12.5|-9|0|0.5|0.75|1.25",
+                SessionLines.ScriptMove(30, new ScriptMove(4, 21, ScriptMoveKind.Aim, 41, -12.5f, -9f, 0f, 0.5f, 0.75f, 1.25f)));
+            Assert.Equal("MV|31|1|21|free|0|NaN|NaN|-0.125|NaN|NaN|0.875",
+                SessionLines.ScriptMove(31, new ScriptMove(1, 21, ScriptMoveKind.Free, 0, float.NaN, float.NaN, -0.125f, float.NaN, float.NaN, 0.875f)));
+            Assert.Equal("MV|32|9|21|pass|7|25|23.5|0|NaN|0.5|1", SessionLines.ScriptMove(32, new ScriptMove(9, 21, ScriptMoveKind.Pass, 7, 25f, 23.5f, 0f, float.NaN, 0.5f, 1f)));
+            // docs/adr/0038 decision 2: RP|t|group|role|edit, exactly.
+            Assert.Equal("RP|40|100003|source|none", SessionLines.Replay(40, ReplayRecord.Source(100003)));
+            Assert.Equal("RP|41|100003|replay|remove:33", SessionLines.Replay(41, new ReplayRecord(ReplayRole.Replay, 100003, ReplayEdit.Remove, 33)));
+            Assert.Equal("RP|42|100003|replay|shift:34:0.025:-0.0125",
+                SessionLines.Replay(42, new ReplayRecord(ReplayRole.Replay, 100003, ReplayEdit.Shift, 34, 0.025f, -0.0125f)));
+            Assert.Equal("RP|43|100003|replay|move:35:0.25:-0.125:1.5",
+                SessionLines.Replay(43, new ReplayRecord(ReplayRole.Replay, 100003, ReplayEdit.Move, 35, 0.25f, -0.125f, 1.5f)));
+        }
+
+        [Fact]
         public void TheArmPowerLineFormats_AreTheSessionFormats()
         {
             // docs/adr/0023 decisions 4 and 5.

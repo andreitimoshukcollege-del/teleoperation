@@ -176,6 +176,8 @@ namespace Teleop.RobotHost
             long lastTrainingTicks = long.MinValue;
             // A scripted take's events (docs/adr/0036 amendment 5): the tool sends each a few times; one record per sequence.
             uint? lastScriptEvent = null;
+            // A mixed take's planned moves and replay group (docs/adr/0038 decisions 1 and 2): likewise, one record per sequence.
+            uint? lastScriptMove = null, lastReplay = null;
 
             // The joint-state downlink (docs/adr/0018): streams to whoever last sent a keepalive on
             // this same port, at 50 Hz, whether or not commands are arriving.
@@ -498,6 +500,31 @@ namespace Teleop.RobotHost
                                 lastScriptEvent = scriptedSequence;
                                 Console.WriteLine($"[script] event {scripted.Index} of {scripted.Drawn}: {ScriptEventCodec.Name(scripted.Kind)} object {scripted.ObjectId}");
                                 if (recorder != null && recorder.IsActive) recorder.Record(SessionLines.ScriptEvent(arrivalTicks, scripted));
+                            }
+
+                            continue;
+                        }
+
+                        // A mixed take's planned move (docs/adr/0038 decision 1): metadata for the recording only; it moves nothing.
+                        if (ScriptMoveCodec.TryDecode(jointRecvBuffer.AsSpan(0, byteCount), out ScriptMove scriptMove, out uint scriptMoveSequence, out _))
+                        {
+                            if (lastScriptMove != scriptMoveSequence)
+                            {
+                                lastScriptMove = scriptMoveSequence;
+                                if (recorder != null && recorder.IsActive) recorder.Record(SessionLines.ScriptMove(arrivalTicks, scriptMove));
+                            }
+
+                            continue;
+                        }
+
+                        // A mixed take's replay group (docs/adr/0038 decision 2): which source take it belongs to, and the replay's edit.
+                        if (ReplayCodec.TryDecode(jointRecvBuffer.AsSpan(0, byteCount), out ReplayRecord replay, out uint replaySequence, out _))
+                        {
+                            if (lastReplay != replaySequence)
+                            {
+                                lastReplay = replaySequence;
+                                Console.WriteLine($"[script] {ReplayCodec.Name(replay.Role)} of group {replay.Group}: {ReplayCodec.Describe(replay)}");
+                                if (recorder != null && recorder.IsActive) recorder.Record(SessionLines.Replay(arrivalTicks, replay));
                             }
 
                             continue;

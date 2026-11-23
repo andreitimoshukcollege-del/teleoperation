@@ -193,6 +193,12 @@ namespace Teleop.Eval.JointDrive
         /// </summary>
         public const float LowestContactMeters = 0.026f;
 
+        /// <summary>The highest an aim or a pass meets an object, m above its bottom: about as high as the pads reach near the table (the shell <see cref="PitchFor"/> follows).</summary>
+        public const float HighestContactMeters = 0.20f;
+
+        /// <summary>An object every one of whose last this many aims and passes found no plan is tried no more in the take.</summary>
+        public const int MaxObjectMisses = 8;
+
         /// <summary>The point between the finger pads in the gripper's frame (their centres' midpoint, <see cref="ShapeGap.LeftPadAtZero"/>): where an aim's line is drawn through.</summary>
         public static readonly Vector3 ToolInGripper = (ShapeGap.LeftPadAtZero.Center + ShapeGap.RightPadAtZero.Center) / 2f;
 
@@ -218,6 +224,7 @@ namespace Teleop.Eval.JointDrive
         private readonly int[] _objectMisses = new int[7];
 
         private int _objectTries, _objectMoves;
+        private readonly Dictionary<int, int> _missesInARow = new Dictionary<int, int>();
 
         /// <summary>The object-directed moves tried and planned, and why the rest were not.</summary>
         internal string ObjectReport() => FormattableString.Invariant(
@@ -501,6 +508,7 @@ namespace Teleop.Eval.JointDrive
             {
                 if (_objects[i].Scenery || _moved.Contains(i)) continue;
                 if (_objects[i].Max.Z - _objects[i].Min.Z < LowestContactMeters + 0.016f) continue; // flat: met only from above
+                if (_missesInARow.TryGetValue(i, out int misses) && misses >= MaxObjectMisses) continue; // out of reach, it seems
                 Vector3 c = _objects[i].Center;
                 float r = new Vector2(c.X, c.Y).Length();
                 if (r - Footprint(_objects[i]) < 0.40f) targets.Add(i);
@@ -511,7 +519,18 @@ namespace Teleop.Eval.JointDrive
             {
                 int oi = targets[(int)(_rng.NextDouble() * targets.Count) % targets.Count];
                 ScriptMoveKind kind = Draw.Chance(ref _rng, _options.PassShare) ? ScriptMoveKind.Pass : ScriptMoveKind.Aim;
-                if (TryObjectMove(oi, kind)) return true;
+                if (TryObjectMove(oi, kind))
+                {
+                    _missesInARow[oi] = 0;
+                    return true;
+                }
+
+                _missesInARow[oi] = _missesInARow.TryGetValue(oi, out int m) ? m + 1 : 1;
+                if (m + 1 >= MaxObjectMisses)
+                {
+                    targets.Remove(oi);
+                    if (targets.Count == 0) return false;
+                }
             }
 
             return false;
@@ -539,6 +558,7 @@ namespace Teleop.Eval.JointDrive
             // The height the pads meet it at: from just above the model's floor to just below its top (a touch into its side, never
             // down through its top, where a shape may cover a hollow).
             float zLo = o.Min.Z + LowestContactMeters, zHi = o.Max.Z - (o.Shape != null ? ObjectShape.TopMarginMeters + 0.003f : 0.004f);
+            zHi = MathF.Min(zHi, o.Min.Z + HighestContactMeters); // a tall fixture's upper part is out of the pads' reach
             if (zHi < zLo + 0.003f) return Miss(0);
             float h = (float)Draw.Uniform(ref _rng, zLo, zHi);
             float pitch = PitchFor(new Vector2(o.Center.X, o.Center.Y).Length()) + (float)(Draw.Uniform(ref _rng, -8, 8) * deg);

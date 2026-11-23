@@ -415,3 +415,50 @@ def test_a_texture_is_tiled_at_its_real_size_whatever_the_size_of_what_wears_it(
     # Tiles across a side are its length times k: the 1.8 cm edge shows 0.012 of a tile, the 30 cm side 0.2, as on a real
     # plank. The unit cube's projection showed k tiles across every side, 30 cm and 1.8 cm alike.
     assert 0.018 * k == pytest.approx(0.012) and 0.30 * k == pytest.approx(0.2)
+
+
+def test_a_box_turned_into_a_mesh_keeps_its_place_size_transform_binding_and_label():
+    """metric_box on a box as world.py builds it for the renderer (an object's Xform, its Shape a size-1 Cube scaled by its
+    prim, a material bound to it, a mask label): the same box in the room, now with texture coordinates in metres. Needs pxr
+    (Isaac's Python); skipped elsewhere."""
+    pytest.importorskip("pxr")
+    from pxr import Gf, Usd, UsdGeom, UsdShade
+    from teleop_isaac.renderer import box_mesh, metric_box
+
+    stage = Usd.Stage.CreateInMemory()
+    obj = UsdGeom.Xform.Define(stage, "/World/Twin/Objects/o77")
+    ox = UsdGeom.Xformable(obj)
+    ox.AddTranslateOp().Set(Gf.Vec3d(0.2, -0.1, -0.18))
+    ox.AddOrientOp(UsdGeom.XformOp.PrecisionDouble).Set(Gf.Quatd(math.cos(0.26), 0, 0, math.sin(0.26)))
+    path = "/World/Twin/Objects/o77/Shape"
+    cube = UsdGeom.Cube.Define(stage, path)
+    cube.CreateSizeAttr(1.0)
+    UsdGeom.Xformable(cube).AddScaleOp().Set(Gf.Vec3f(0.30, 0.08, 0.018))
+    cube.CreateDisplayColorAttr([Gf.Vec3f(0.6, 0.4, 0.2)])
+    mtl = UsdShade.Material.Define(stage, "/World/Looks/m77")
+    UsdShade.MaterialBindingAPI.Apply(cube.GetPrim()).Bind(mtl, UsdShade.Tokens.strongerThanDescendants)
+    labelled = False
+    try:
+        from pxr import UsdSemantics
+        UsdSemantics.LabelsAPI.Apply(obj.GetPrim(), "class").CreateLabelsAttr().Set(["object_77"])
+        labelled = True
+    except ImportError:
+        pass
+
+    def bounds():
+        r = UsdGeom.BBoxCache(Usd.TimeCode.Default(), ["default"]).ComputeWorldBound(stage.GetPrimAtPath(path)).ComputeAlignedRange()
+        return [tuple(r.GetMin()), tuple(r.GetMax())]
+
+    before, ops = bounds(), [op.GetOpName() for op in UsdGeom.Xformable(cube).GetOrderedXformOps()]
+    st = metric_box(stage, path, (0.30, 0.08, 0.018))
+    prim = stage.GetPrimAtPath(path)
+    assert prim.GetTypeName() == "Mesh"
+    after = bounds()
+    assert all(abs(a - b) < 1e-6 for x, y in zip(before, after) for a, b in zip(x, y))  # the same box in the room
+    assert [op.GetOpName() for op in UsdGeom.Xformable(prim).GetOrderedXformOps()] == ops
+    assert UsdShade.MaterialBindingAPI(prim).ComputeBoundMaterial()[0].GetPath() == mtl.GetPath()
+    if labelled:
+        assert stage.GetPrimAtPath("/World/Twin/Objects/o77").HasAPI(UsdSemantics.LabelsAPI)
+    assert st.GetInterpolation() == UsdGeom.Tokens.vertex
+    assert [tuple(round(c, 6) for c in v) for v in st.Get()] == [tuple(round(c, 6) for c in v) for v in box_mesh((0.30, 0.08, 0.018))[4]]
+    assert len(UsdGeom.Mesh(prim).GetPointsAttr().Get()) == 24 and list(UsdGeom.Mesh(prim).GetFaceVertexCountsAttr().Get()) == [4] * 6

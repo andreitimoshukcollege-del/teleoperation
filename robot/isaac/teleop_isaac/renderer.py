@@ -472,6 +472,29 @@ def box_mesh(size: Sequence[float]):
     return points, [4] * 6, list(range(24)), normals, st
 
 
+def metric_box(stage, path: str, size: Sequence[float]):
+    """The unit cube at ``path`` (a box or a surface: a UsdGeom.Cube of size 1 scaled by its prim) turned, in place, into the
+    same unit cube as a mesh with texture coordinates in metres at its real ``size`` (:func:`box_mesh`), authored where the
+    stage's edit target is (the renderer's session layer). The prim keeps its path, transform (its scale included), mask
+    label, visibility and material binding, so its geometry, depth and masks are what they were. Returns its st primvar."""
+    from pxr import Gf, Sdf, UsdGeom
+
+    prim = stage.GetPrimAtPath(path)
+    prim.SetTypeName("Mesh")
+    m = UsdGeom.Mesh(prim)
+    points, counts, indices, normals, st = box_mesh(size)
+    m.CreatePointsAttr([Gf.Vec3f(*v) for v in points])
+    m.CreateFaceVertexCountsAttr(counts)
+    m.CreateFaceVertexIndicesAttr(indices)
+    m.CreateNormalsAttr([Gf.Vec3f(*v) for v in normals])
+    m.SetNormalsInterpolation(UsdGeom.Tokens.vertex)
+    m.CreateSubdivisionSchemeAttr(UsdGeom.Tokens.none)
+    m.CreateExtentAttr([Gf.Vec3f(-0.5, -0.5, -0.5), Gf.Vec3f(0.5, 0.5, 0.5)])
+    pv = UsdGeom.PrimvarsAPI(m).CreatePrimvar("st", Sdf.ValueTypeNames.TexCoord2fArray, UsdGeom.Tokens.vertex)
+    pv.Set([Gf.Vec2f(*v) for v in st])
+    return pv
+
+
 def settled(trace: Sequence[float], at_least: int, still: int = 3, tolerance: float = 0.25) -> bool:
     """Whether a room change has shown: at least ``at_least`` frames rendered, and the camera's mean brightness (0-255) has
     moved less than ``tolerance`` over each of the last ``still`` frames."""
@@ -957,25 +980,6 @@ def run(app, args, p, scene, cameras, fps, joints, motors, tap) -> int:
     surface_ids = {s.id for s in scene.surfaces}
     box_st: Dict[int, object] = {}  # object id -> the st primvar of its box, turned into a mesh (box_mesh): redone on a resize
 
-    def metric_box(path: str, size: Sequence[float]):
-        """The unit cube at ``path`` (a box or a surface: a UsdGeom.Cube of size 1 scaled by its prim) turned, in place, into
-        the same unit cube as a mesh with texture coordinates in metres at its real ``size`` (box_mesh). The prim keeps its
-        path, transform (its scale included), mask label, visibility and material binding, so its geometry, depth and masks
-        are what they were. Returns its st primvar."""
-        prim = stage.GetPrimAtPath(path)
-        prim.SetTypeName("Mesh")
-        m = UsdGeom.Mesh(prim)
-        points, counts, indices, normals, st = box_mesh(size)
-        m.CreatePointsAttr([Gf.Vec3f(*v) for v in points])
-        m.CreateFaceVertexCountsAttr(counts)
-        m.CreateFaceVertexIndicesAttr(indices)
-        m.CreateNormalsAttr([Gf.Vec3f(*v) for v in normals])
-        m.SetNormalsInterpolation(UsdGeom.Tokens.vertex)
-        m.CreateSubdivisionSchemeAttr(UsdGeom.Tokens.none)
-        m.CreateExtentAttr([Gf.Vec3f(-0.5, -0.5, -0.5), Gf.Vec3f(0.5, 0.5, 0.5)])
-        pv = UsdGeom.PrimvarsAPI(m).CreatePrimvar("st", Sdf.ValueTypeNames.TexCoord2fArray, UsdGeom.Tokens.vertex)
-        pv.Set([Gf.Vec2f(*v) for v in st])
-        return pv
 
     if mats is not None:
         tex_root = os.path.dirname(os.path.expanduser(mats["manifest"])) or materials_module.DEFAULT_ROOT
@@ -997,7 +1001,7 @@ def run(app, args, p, scene, cameras, fps, joints, motors, tap) -> int:
                 """Object ``o``'s OmniPBR material, bound to its shape: a box first becomes a mesh with coordinates in metres
                 (metric_box, at its size now); a cylinder or sphere is projected."""
                 if o.shape == "box":
-                    box_st[o.id] = metric_box(f"{path}/Shape", [v * world.model.scales[index] for v in o.size])
+                    box_st[o.id] = metric_box(stage, f"{path}/Shape", [v * world.model.scales[index] for v in o.size])
                 mtl, sh = omnipbr(f"/World/Looks/{prim_name('m', str(o.id))}", project=o.shape != "box")
                 UsdShade.MaterialBindingAPI.Apply(stage.GetPrimAtPath(f"{path}/Shape")).Bind(mtl, UsdShade.Tokens.strongerThanDescendants)
                 return sh
@@ -1011,7 +1015,7 @@ def run(app, args, p, scene, cameras, fps, joints, motors, tap) -> int:
             for sid, ids in mats["surfaces"].items():
                 if sid in world.surface_paths and fetched(ids):
                     s = next(x for x in scene.surfaces if x.id == sid)
-                    metric_box(world.surface_paths[sid], s.size)  # the table and the bench are unit cubes scaled too
+                    metric_box(stage, world.surface_paths[sid], s.size)  # the table and the bench are unit cubes scaled too
                     mtl, sh = omnipbr(f"/World/Looks/{prim_name('s', sid)}", project=False)
                     UsdShade.MaterialBindingAPI.Apply(stage.GetPrimAtPath(world.surface_paths[sid])).Bind(mtl, UsdShade.Tokens.strongerThanDescendants)
                     look_shaders[sid], look_choices[sid] = sh, fetched(ids)

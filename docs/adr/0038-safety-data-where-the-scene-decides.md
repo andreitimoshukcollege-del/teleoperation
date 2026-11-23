@@ -445,6 +445,109 @@ On `jetrover-mixed`, layouts 1-200 (dry run as above):
 
 The 5 layouts left unplanned are 4 cornered hands and 1 tail. On the twin, `--new-layout` draws another layout for those.
 
+**Aims move as free moves do, and an `add` replay (2026-11-23, branch `work/v2-motion-add`).** Two changes the world-models side
+asked for after the twin check. Where they differ, they replace the description above.
+
+- **The motion, measured first.** The dry run writes one row per planned move (`--features <csv>`, `MoveFeatures`), and
+  `scripts/gpu/move_features.py` scores it. The features are measured on the pads' midpoint, smoothed 25 ms:
+  - duration, path length, peak and mean speed, peak acceleration;
+  - the last 30%'s mean speed against the peak, and the time to stop;
+  - a pause or a pull back after the move;
+  - the lowest height.
+
+  Before the change, a logistic regression on these told aims from free moves at AUC 0.93, and a decision stump at 0.67 (both
+  5-fold cross-validated by take). With roll, pitch and gripper ranges the regression reached 0.97. Compared with free moves, aims
+  were:
+  - shorter (path p50 8.4 cm against 11.8);
+  - lower (69 mm against 179);
+  - nearly fixed in roll and pitch (0.2 and 1.5 degrees against 4.4 and 14);
+  - pulled back after far more often (47% against 7%).
+- **Aims and passes.** Each is now made by the free moves' own constructor, `MixedTo`, as a free move to a goal is:
+  - the same endpoint error, 10% undershoot and corrections to 4 mm;
+  - curved through a via point or split into two pushes as often;
+  - roll and gripper moving as they go.
+
+  Before, they followed their line in 4 cm segments to a 2.5 mm stop. Other rules:
+  - **Passes** go straight across the object, not round the arc. A pass's offset is its line's closest approach, and `gapMm` gives
+    the closest it really came.
+  - **The start.** Each starts as far back as a free move's goal is from the hand: the same lognormal, with 10% at a small
+    adjustment's distance.
+  - **The wrist.** The hand reaches the start at a pitch drawn as a low blind goal's is, with the pads where the line starts. It turns
+    the wrist on the way, at most 300 degrees a metre of approach: larger turns broke the caps, which slowed those moves down.
+- **One law after every move**, whatever its kind: a pull back with probability 0.15, else a pause with 0.35. A move that ends in a
+  fixture, or within 5 mm of one, always pulls back out, and so now does a blind move. That pull back goes at least as deep as the arm
+  went in, plus 1.5 cm, and the pause is still drawn after it.
+- **Layout-blind goals are all low.** The wrist stays at most 5 cm above the base frame and the pads end 2-14 cm above the table.
+  - This holds in the quiet start and tail too, falling back to goals that are not low when the guard refuses.
+  - A low goal stays 3 cm inside the reach: a stretched arm by the table broke the caps whichever way it moved.
+  - A blind part keeps its drawn kind for 20 of its 30 tries. Small adjustments, which seldom fail, had been 46% of the parts that
+    are not strokes, not 27%.
+  - A cornered hand first lifts straight up, ignoring the walls: a hand cornered beside a fixture was often inside its wall already.
+    A failed exit lifts and tries again.
+  - Object share 0.85 and pass share 0.45 keep the contacts a take.
+- **Replays: `add`** (RP `add:<id>:<x>:<y>:<yawRad>`). It gives explicit safe-to-unsafe pairs; the other edits mostly turn unsafe
+  takes safe. A movable obstacle is stood with its footprint centred under the arm's lowest point, at a moment of the source take
+  when that point passed lower over the table than the object is tall less 15 mm. The moment comes from:
+  - the measured joints when joint-drive has them, else the commanded ones;
+  - neither the first 1.5 s nor the last 1.0 s (with 0.25 s more at each end);
+  - a draw among the moments that work, not the lowest, so contacts come at every height the take passes.
+
+  The spot must satisfy the scene's rules (`FitsOnTable`, `InReach`, the reach bearing, `Overlaps`) and stay clear of the quiet start
+  and end, both as planned and as the arm went. The object is, in order of preference:
+  - one of the layout's objects on the table that the take neither touched nor came within 1 cm of, holding nothing and not raised,
+    moved there with op `move`;
+  - else one the layout parked, stood there upright with a **new world op 7, `unpark`**. RobotHost places it as a reset does (the
+    placement rules decide), lists it in `WL` while it stands there, and parks it again on reset-layout. The headset never sends it.
+
+  The existing rules hold: objects holding another are never edited, a group never repeats an edit, and a replay with nothing new is
+  skipped. In a group with two replays, the add is the first or the second (drawn from the group), and the other is remove, shift or
+  move as before. `sidecars.parse_edit` reads `add` (it raised before, and the episode lost its group).
+
+On `jetrover-mixed`, layouts 1-200, with the dry run as above. "Before" is 0457599's planner with the same feature definitions; "after"
+is 8320e68. The main part runs from 1.5 s to the last 2.5 s, where aims happen; in the quiet start and the tail, a move's time alone
+says it is free.
+
+| | Before | After |
+|---|---|---|
+| Layouts planned | 195 of 200 | 196 of 200 |
+| Aims / passes a take | 1.4 / 0.2 | 1.2 / 0.2 |
+| Planned contacts | 112 in 80 takes (0.57 a take) | 131 in 80 takes (0.67 a take) |
+| Aim against free, logistic AUC, whole take / main part | 0.932 / 0.896 | 0.689 / 0.629 |
+| The same without `pullback_after` (fixtures' forced pull back) | 0.904 / 0.850 | 0.612 / 0.527 |
+| The same with roll, pitch, gripper, speed peaks, chord, any reverse after | 0.973 / 0.961 | 0.793 / 0.727 |
+| Decision stump AUC, whole / main | 0.673 / 0.678 | 0.585 / 0.582 |
+| Pass against free, logistic AUC, whole / main | 0.922 / 0.908 | 0.796 / 0.800 |
+| Strongest single features (AUC, whole take) | low 0.80, duration 0.74, pull back 0.70, path 0.68 | low 0.62, pull back 0.61, all else 0.55 or less |
+| Aim / free p50: duration, path | 0.46 / 0.78 s, 8.4 / 11.8 cm | 0.87 / 0.82 s, 14.0 / 13.4 cm |
+| Aim / free: lowest point p50, pull back after, pause after | 69 / 179 mm, 47% / 7%, 15% / 18% | 67 / 88 mm, 37% / 15%, 26% / 28% |
+| Aim / free p50: roll range, pitch range | 0.2 / 4.4, 1.5 / 14.2 degrees | 4.5 / 4.4, 11.1 / 19.1 degrees |
+| Largest arm-joint step a frame, p50 / p90 / p95 / p99 | 0.036 / 0.114 / 0.140 / 0.185 rad | 0.035 / 0.113 / 0.138 / 0.182 rad |
+| The command moving | 88% of frames | 85% |
+| Free and reverse moves into a movable object's box, by the model (pull backs out of one included) | 277 of 3191, in 78 takes | 267 of 2911, in 80 takes |
+
+- **What is left.** The forced pull back out of fixtures fires after 0.39 aims and passes a take into one, 0.33 a take beyond the
+  draw. In the main part, aims are followed by a pull back 37% of the time against 15% for free moves, which alone scores AUC 0.61.
+  Without that feature, the main part separates at 0.53. The pitch range (0.67 in the main part) and a pass's length (0.83) are what
+  the extras still see.
+- **Replays**, two a group, drawn offline with nothing refused:
+  - an add in 175 of 196 groups (89%): 16 move one of the layout's objects, 159 stand a parked one;
+  - in all 175 the plan's arm meets the added box by the model: first at p50 5.0 s into the take, p90 10.2 s, max 14.2 s, never in
+    the first 1.5 s;
+  - the added object's top is p50 102 mm above the table, p90 200 mm;
+  - the other replays: remove 148, shift 24, move 45.
+
+  On `jetrover-bench`, whose placement region is the front rectangle, an add fits in 13 of 40 groups.
+- **Checked:**
+  - `MixedTakeTests`: blind moves pulled back from, aims turning the wrist, every aim into a fixture pulled back, blind goals low,
+    the options;
+  - `ReplaysTests`: an add's spot by the scene's rules, the arm meeting it after the quiet start, the add in the group's drawn replay
+    with the other remove, shift or move, and the rules (touched, holding, raised, added already, nothing left);
+  - `WorldHostParkTests`: unpark stands a parked object, `WL` lists it, reset-layout parks it again; refused for an object on the
+    table, a fixture, or with motion on; op 7 crosses the wire, op 8 does not;
+  - the RP and session-line tests; `test_sidecars`.
+- **Not run on the twin.** Untested there: unpark against Isaac's placement rules; the measured track joint-drive gives the add; the
+  physics contacts the low blind goals now make with movable objects; the motion's look.
+
 ### C, clearance and contacts
 
 Built 2026-11-22 on `work/v2-contacts`. Checked offline against recorded takes; the table contacts are not yet run on the twin.

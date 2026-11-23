@@ -236,16 +236,19 @@ namespace Teleop.Eval.JointDrive
 
         /// <summary>
         /// Whether the tick to <paramref name="p0"/> keeps to the joint caps, after <paramref name="history"/> (the poses before it,
-        /// newest last; at least <see cref="AccelerationTicks"/> times two), <paramref name="dt"/> apart: its speed from the tick
-        /// before, its acceleration from the second difference over <see cref="AccelerationTicks"/> ticks each side.
+        /// newest last; at least <see cref="AccelerationTicks"/> times two), <paramref name="dt"/> apart: its speed and its
+        /// acceleration over <see cref="AccelerationTicks"/> ticks (the second difference over as many each side), as people's were
+        /// measured smoothed: the commands' own tick to tick jitter is not the arm's motion.
         /// </summary>
         public bool Allows(ReadOnlySpan<ArmPose> history, in ArmPose p0, double dt)
         {
             int n = history.Length, m = AccelerationTicks;
             for (int j = 0; j < DriveEnvelope.JointCount; j++)
             {
-                float q0 = DrivePlan.Joint(p0, j), q1 = DrivePlan.Joint(history[n - 1], j);
-                if (MathF.Abs(q0 - q1) > JointSpeed[j] * (float)dt) return false;
+                // The speed over the same ticks as the acceleration (one tick before there are that many).
+                int back = Math.Min(m, n);
+                float q0 = DrivePlan.Joint(p0, j), qb = DrivePlan.Joint(history[n - back], j);
+                if (MathF.Abs(q0 - qb) > JointSpeed[j] * (float)(back * dt)) return false;
                 if (float.IsPositiveInfinity(JointAcceleration[j]) || n < 2 * m) continue;
                 float a = (q0 - 2f * DrivePlan.Joint(history[n - m], j) + DrivePlan.Joint(history[n - 2 * m], j)) / (float)(m * m * dt * dt);
                 if (MathF.Abs(a) > JointAcceleration[j]) return false;

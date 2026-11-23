@@ -54,10 +54,10 @@ namespace Teleop.Eval.JointDrive
         public double SlowMax { get; set; } = 1.8;
 
         /// <summary>The share of moves followed by a pause of <see cref="PauseMinSeconds"/>-<see cref="PauseMaxSeconds"/>, whatever the move.</summary>
-        public double PauseShare { get; set; } = 0.12;
+        public double PauseShare { get; set; } = 0.30;
 
-        public double PauseMinSeconds { get; set; } = 0.10;
-        public double PauseMaxSeconds { get; set; } = 0.50;
+        public double PauseMinSeconds { get; set; } = 0.15;
+        public double PauseMaxSeconds { get; set; } = 0.70;
 
         /// <summary>The share of object-directed moves followed by a pull back the way they came (a reverse).</summary>
         public double ReverseAfterShare { get; set; } = 0.35;
@@ -68,7 +68,7 @@ namespace Teleop.Eval.JointDrive
         public double BlindReverseShare { get; set; } = 0.25;
 
         /// <summary>Where layout-blind goals are drawn.</summary>
-        public BlindReach Reach { get; set; } = new BlindReach();
+        public BlindReach Reach { get; set; } = new BlindReach { NearShare = 0.8, RadialScale = 0.55f, VerticalScale = 0.55f };
 
         /// <summary>Where they are drawn in the quiet start and end, which keep clear of every object: never low.</summary>
         public BlindReach QuietReach { get; set; } = new BlindReach { LowShare = 0, NearShare = 0.7, HeightLow = 0.0f };
@@ -95,11 +95,12 @@ namespace Teleop.Eval.JointDrive
 
         /// <summary>
         /// The mixed script's hand, so its motion sits under the caps rather than at them (workstream R: the scripted operator turned
-        /// the wrist pitch about twice as fast as people at p90, the elbow 1.4 times): pitch and roll changes 0.55 and 0.7 of the
-        /// hand model's, followed over the whole of each submovement, and every submovement 1.25 times as long. Chosen from this
-        /// script's dry runs against R's targets (docs/adr/0038, "M, motion").
+        /// the wrist pitch about twice as fast as people at p90, the elbow 1.4 times, the yaw 0.8 times): pitch and roll changes 0.5
+        /// and 0.55 of the hand model's, followed over the whole of each submovement, every submovement 0.9 times as long, and
+        /// (<see cref="Reach"/>) near goals more round the base than out from it or up. Chosen from this script's dry runs against
+        /// R's targets (docs/adr/0038, "M, motion").
         /// </summary>
-        public static HandStyle DefaultStyle() => new HandStyle { PitchScale = 0.55, RollScale = 0.7, PitchTime = 1.0, Slow = 1.25 };
+        public static HandStyle DefaultStyle() => new HandStyle { PitchScale = 0.5, RollScale = 0.55, PitchTime = 1.0, Slow = 0.9 };
 
         /// <summary>Throws when the options make no sense together.</summary>
         public void Validate()

@@ -391,6 +391,7 @@ namespace Teleop.Eval.JointDrive
                 bool done = false;
                 if (!first && _hand.Free >= _options.QuietStartSeconds - 0.9 && Draw.Chance(ref _rng, _options.ObjectShare)) done = TryObjectMove();
                 if (!done) done = TryBlindMove(first);
+                if (!done) done = Recentre(); // cornered (every part left the envelope or met the arm itself): back toward the middle
                 if (!done)
                 {
                     error = FormattableString.Invariant($"no movement from {_hand.Free:0.0} s on of the take ({Refusals()})");
@@ -439,6 +440,29 @@ namespace Teleop.Eval.JointDrive
             SafetyScript.CutAt(legs, ref t, ref at0, _start + cut);
             plan = DrivePlan.ForMixed(legs, speed, Moves(_start + cut), ObjectReport() + "; " + Refusals());
             return true;
+        }
+
+        /// <summary>
+        /// When no layout-blind part works from where the hand is (cornered at the edge of the envelope, or folded against the arm's own
+        /// body): a move back toward the middle of reach (the wrist 12-17 cm out, 8-16 cm up, within 40 degrees of where it is),
+        /// keeping the quiet start's margin when it applies and the walls. False when that does not work either.
+        /// </summary>
+        private bool Recentre()
+        {
+            const double deg = Math.PI / 180.0;
+            Vector3 at = _hand.TargetEnd;
+            float here = MathF.Atan2(at.Y, at.X);
+            for (int attempt = 0; attempt < 8; attempt++)
+            {
+                float r = (float)Draw.Uniform(ref _rng, 0.12, 0.17), z = (float)Draw.Uniform(ref _rng, 0.08, 0.16);
+                float az = Math.Clamp(here + (float)(Draw.Uniform(ref _rng, -40, 40) * deg), (float)(-80 * deg), (float)(80 * deg));
+                var goal = new Vector3(r * MathF.Cos(az), r * MathF.Sin(az), z);
+                if (!_hand.MixedTo(goal, (float)(Draw.Uniform(ref _rng, -45, 0) * deg), null, Slowness(), 0.010, _model, out double s, out double e, walls: DrawWalls())) continue;
+                Add(ScriptMoveKind.Free, -1, float.NaN, s, e);
+                return true;
+            }
+
+            return false;
         }
 
         /// <summary>

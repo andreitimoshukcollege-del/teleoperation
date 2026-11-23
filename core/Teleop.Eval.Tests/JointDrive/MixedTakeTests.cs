@@ -57,7 +57,7 @@ namespace Teleop.Eval.Tests.JointDrive
         public void AMixedTake_IsDeterministic_AndItsMovesTileIt()
         {
             SafetyObject[] objects = LayoutOf(3);
-            DrivePlan a = Mixed(objects, 11), b = Mixed(objects, 11), c = Mixed(objects, 12);
+            DrivePlan a = AnyMixed(objects, 11), b = AnyMixed(objects, 11), c = AnyMixed(objects, 31);
             Assert.Equal(DriveScript.Mixed, a.Script);
             Assert.Equal(a.Legs.Count, b.Legs.Count);
             for (int i = 0; i < a.Legs.Count; i++)

@@ -147,22 +147,40 @@ class WorldModel:
         # The rest nearest the pose's rotation (docs/adr/0037 amendment 6), as RobotHost's StaticWorld: upright keeps the yaw it
         # always took, a side its yaw once that side is taken out.
         rest, yaw = rest_of(pose)
-        return self._fits(i, pose[0], pose[1], yaw_of(pose) if rest == REST_UPRIGHT else yaw, self.scales[i], arm_near, rest)
+        # docs/adr/0038: in a mixed pool, RobotHost's own placement may stand an object above the table (on a stand, a plank on its
+        # supports) at the height it asks; a movable one only on a stand that holds it. Everything else stands on the table.
+        z = pose[2] if cause != wire.CAUSE_HEADSET and self.scene.is_elevated(i, pose[2], self.scales[i], rest) else None
+        return self._fits(i, pose[0], pose[1], yaw_of(pose) if rest == REST_UPRIGHT else yaw, self.scales[i], arm_near, rest, z)
 
     def _fits(self, i: int, x: float, y: float, yaw: float, scale: float, arm_near: ArmCheck,
-              rest: int = REST_UPRIGHT) -> Tuple[int, int, Optional[Pose]]:
+              rest: int = REST_UPRIGHT, z: Optional[float] = None) -> Tuple[int, int, Optional[Pose]]:
         """Rules 5 to 8 for object ``i`` at (x, y, yaw) on rest ``rest`` and size ``scale``; every other object on its own rest and
         heading (a piece of clutter is its own rectangle, docs/adr/0037 "Raised clutter": ``Scene.fits_on_table`` and
-        ``Scene.overlaps`` with yaws, as RobotHost's ``StaticWorld``)."""
+        ``Scene.overlaps`` with yaws, as RobotHost's ``StaticWorld``). ``z``, a mixed pool's raised placement (docs/adr/0038), is its
+        centre's height; None stands it on the table. In a mixed pool every footprint is its rectangle, and nothing one above the
+        other overlaps (``Scene.overlaps_at_heights``)."""
         if not self.scene.fits_on_table(i, x, y, scale, rest, yaw):
             return wire.OUTSIDE_REGION, i, None
+        height = self.scene.resting_z(i, scale, rest) if z is None else z
+        if z is not None and self.scene.objects[i].movable and not any(
+                not self.parked[k] and k != i and self.scene.holds_on_top(k, o[0], o[1], o[2], rest_of(o)[1], self.scales[k], rest_of(o)[0],
+                                                                         i, x, y, z, scale, rest)
+                for k, o in enumerate(self.poses)):
+            return wire.OUTSIDE_REGION, i, None  # a movable object above the table only on a stand
         for k, other in enumerate(self.poses):
             if k == i or self.parked[k]:
                 continue
             rest_k, yaw_k = rest_of(other)
-            if self.scene.overlaps(i, x, y, k, other[0], other[1], scale, self.scales[k], rest, rest_k, yaw, yaw_k):
+            if self.scene.mixed:
+                hit = self.scene.overlaps_at_heights(i, x, y, height, yaw, k, other[0], other[1], other[2], yaw_k, scale, self.scales[k],
+                                                     rest, rest_k)
+            else:
+                hit = self.scene.overlaps(i, x, y, k, other[0], other[1], scale, self.scales[k], rest, rest_k, yaw, yaw_k)
+            if hit:
                 return wire.OVERLAPS_OBJECT, i, None
         placed = tuple(self.scene.pose_at(i, x, y, yaw, scale, rest))
+        if z is not None:
+            placed = (placed[0], placed[1], z, *placed[3:])
         if arm_near(i, placed, self.scene.clearance):
             return wire.OVERLAPS_ARM, i, None
         return wire.APPLIED, i, placed
@@ -173,10 +191,13 @@ class WorldModel:
         i = self.index_of(object_id)
         if i < 0:
             return wire.UNKNOWN_OBJECT, -1, None
-        if not self.scene.objects[i].operator_movable:
+        o = self.scene.objects[i]
+        if not o.operator_movable and not o.steps:
             return wire.NOT_MOVABLE, i, None
         if not is_valid_scale(scale):
             return wire.INVALID_POSE, i, None
+        if o.steps and not self.scene.in_steps(i, scale):
+            return wire.NOT_MOVABLE, i, None  # docs/adr/0038: a mixed pool's layouts resize it only within its own steps (its bodies)
         if self.parked[i]:
             # On the shelf (docs/adr/0037 amendment 2): it only changes size there. RobotHost refuses the headset's resize of a
             # parked object before it gets here; a layout resizes on the shelf before it places.
@@ -417,10 +438,11 @@ class IsaacWorld:
                 offsets(shelf.GetPrim())
                 UsdGeom.Imageable(shelf).MakeInvisible()
                 for i, (o, path) in enumerate(zip(scene.objects, self.object_paths)):
-                    if not (o.movable and o.operator_movable) or o.shape == "mesh":
+                    if not ((o.movable and o.operator_movable) or o.steps) or o.shape == "mesh":
                         continue  # a real object keeps its real size: no resize bodies
                     for k, s in enumerate(RESIZE_SCALES):
-                        if k == UNIT:
+                        # A mixed pool's object with steps of its own (docs/adr/0038), movable or fixed: a body for each of them only.
+                        if k == UNIT or (o.steps and not o.steps[0] <= k - UNIT <= o.steps[1]):
                             continue
                         self.slots[i][k] = len(self.body_paths)
                         self.body_paths.append(f"{path}_s{k}")

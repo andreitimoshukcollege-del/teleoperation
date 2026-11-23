@@ -59,6 +59,8 @@ namespace Teleop.RobotHost.World
         private readonly Pending[] _pending = new Pending[128];
         private readonly byte[] _sizeIds;
         private readonly float[] _sizeScales;
+        private readonly int[] _parkGroup = new int[WorldScene.MaxObjects];
+        private int _parkCount;
         private readonly byte[] _takenIds = new byte[WorldScene.MaxObjects];
         private readonly float[] _takenScales = new float[WorldScene.MaxObjects];
         private uint _sizesRevision;
@@ -303,15 +305,44 @@ namespace Teleop.RobotHost.World
                     }
                 }
 
+                PlaceDrawn(now);
+                return;
+            }
+
+            if (_scene.Mixed)
+            {
                 for (int i = 0; i < _targets.Length; i++)
                 {
-                    if (!_parked[i]) SendPlace(i, PlaceCause.Layout, 0, now);
+                    if (_parked[i]) SendPlace(i, PlaceCause.Park, 0, now);
                 }
 
+                PlaceDrawn(now);
                 return;
             }
 
             for (int i = 0; i < _targets.Length; i++) SendPlace(i, _parked[i] ? PlaceCause.Park : PlaceCause.Layout, 0, now);
+        }
+
+        /// <summary>
+        /// Places the layout's objects that are on the table, in file order. In a mixed pool (docs/adr/0038) those standing on the table go
+        /// first and those raised on them after (an obstacle on its stand, a plank on its supports), so each placement meets what it rests on.
+        /// </summary>
+        private void PlaceDrawn(long now)
+        {
+            for (int pass = 0; pass < (_scene.Mixed ? 2 : 1); pass++)
+            {
+                for (int i = 0; i < _targets.Length; i++)
+                {
+                    if (!_parked[i] && IsRaised(i) == (pass == 1)) SendPlace(i, PlaceCause.Layout, 0, now);
+                }
+            }
+        }
+
+        /// <summary>Whether the layout raises object <paramref name="index"/> above the table (docs/adr/0038): on a stand, or a plank on its supports.</summary>
+        public bool IsRaised(int index)
+        {
+            int rest = WorldScene.RestOf(_layoutTargets[index]);
+            return !_parked[index] && _scene.IsElevated(index, _layoutTargets[index].Z, ScaleFor(index), rest);
         }
 
         /// <summary>The size a layout redraw checks object <paramref name="index"/> at: the drawn one for a pool that draws sizes, else the backend's.</summary>
@@ -371,6 +402,12 @@ namespace Teleop.RobotHost.World
             _pending[slot].Active = false;
             _record?.Invoke(SessionLines.WorldPlace(now, request, done.Cause, pose, outcome));
             if (outcome != PlaceOutcome.Applied) PlacementsRefused++;
+            if (outcome != PlaceOutcome.Applied && done.Cause == PlaceCause.Layout && outcome != PlaceOutcome.TimedOut && _scene.Mixed && !_parked[done.Index] &&
+                ParkGroup(done.Index, now))
+            {
+                return; // docs/adr/0038: part of an obstacle on its stand, or of a plank on its supports, parked whole
+            }
+
             if (outcome != PlaceOutcome.Applied && done.Cause == PlaceCause.Layout && outcome != PlaceOutcome.TimedOut && done.Tries < MaxRedraws &&
                 Redraw(done.Index, done.Tries))
             {
@@ -392,6 +429,52 @@ namespace Teleop.RobotHost.World
         }
 
         /// <summary>
+        /// In a mixed pool (docs/adr/0038), parks object <paramref name="index"/> with what it belongs to when the backend refused it and it
+        /// is part of a group: a plank or a support (the plank and all its supports), a stand (with whatever the layout raised on it), or an
+        /// object raised on a stand (itself: its stand stays, a box on the table). A redraw would split the group. False, parking nothing,
+        /// for an object that stands alone on the table, which is redrawn as in any pool.
+        /// </summary>
+        private bool ParkGroup(int index, long now)
+        {
+            SceneObject o = _scene.Objects[index];
+            int plank = o.Role == SceneRole.Plank ? index : -1;
+            for (int k = 0; k < _targets.Length && o.Role == SceneRole.Support && plank < 0; k++)
+            {
+                if (_scene.Objects[k].Role == SceneRole.Plank && Array.IndexOf(_scene.Objects[k].SupportIds, o.Id) >= 0) plank = k;
+            }
+
+            bool grouped = plank >= 0 || o.Role == SceneRole.Stand || IsRaised(index);
+            if (!grouped) return false;
+            for (int k = 0; k < _targets.Length; k++)
+            {
+                if (_parked[k]) continue;
+                bool member = k == index;
+                if (plank >= 0) member |= k == plank || Array.IndexOf(_scene.Objects[plank].SupportIds, _scene.Objects[k].Id) >= 0;
+                if (o.Role == SceneRole.Stand && k != index && IsRaised(k))
+                {
+                    int restK = WorldScene.RestOf(_layoutTargets[k]);
+                    int restS = WorldScene.RestOf(_layoutTargets[index], out double yawS);
+                    member |= _scene.HoldsOnTop(index, _layoutTargets[index].X, _layoutTargets[index].Y, _layoutTargets[index].Z, yawS, ScaleFor(index), restS,
+                        k, _layoutTargets[k].X, _layoutTargets[k].Y, _layoutTargets[k].Z, ScaleFor(k), restK);
+                }
+
+                if (member) _parkGroup[_parkCount++] = k;
+            }
+
+            for (int q = 0; q < _parkCount; q++)
+            {
+                int k = _parkGroup[q];
+                _parked[k] = true;
+                _targets[k] = _layoutTargets[k] = _scene.ParkedPose(k);
+            }
+
+            _record?.Invoke(LayoutLine(now));
+            for (int q = 0; q < _parkCount; q++) SendPlace(_parkGroup[q], PlaceCause.Park, 0, now);
+            _parkCount = 0;
+            return true;
+        }
+
+        /// <summary>
         /// Another spot for object <paramref name="index"/>, clear of the others' targets: within its jitter, or for a pool anywhere
         /// in the region (a movable one in the reach band, or by the edge if it was drawn there; clutter anywhere, as its own
         /// rectangle at its yaw, docs/adr/0037 "Raised clutter"), on the rest it was drawn on.
@@ -406,6 +489,26 @@ namespace Teleop.RobotHost.World
             for (int t = 0; t < (_scene.IsPool ? SceneLayout.MaxPoolTries : SceneLayout.MaxTries); t++)
             {
                 double x, y, yaw;
+                if (_scene.Mixed)
+                {
+                    // docs/adr/0038: an obstacle anywhere over the arm's reachable band, a distractor anywhere in its regions.
+                    if (o.Role == SceneRole.Distractor) _scene.DrawDistractorSpot(ref rng, out x, out y, out yaw);
+                    else _scene.DrawObstacleSpot(ref rng, out x, out y, out yaw);
+                    double z = _scene.RestingZ(index, ScaleFor(index), rest);
+                    if (!_scene.FitsOnTable(index, x, y, yaw, ScaleFor(index), rest)) continue;
+                    bool free = true;
+                    for (int k = 0; k < _targets.Length && free; k++)
+                    {
+                        if (k == index || _parked[k]) continue;
+                        int restK = WorldScene.RestOf(_targets[k], out double yawK);
+                        free = !_scene.OverlapsAtHeights(index, x, y, z, yaw, k, _targets[k].X, _targets[k].Y, _targets[k].Z, yawK, ScaleFor(index), ScaleFor(k), rest, restK);
+                    }
+
+                    if (!free) continue;
+                    _targets[index] = _layoutTargets[index] = _scene.PoseAt(index, x, y, yaw, ScaleFor(index), rest);
+                    return true;
+                }
+
                 if (o.Clutter)
                 {
                     // Raised clutter (docs/adr/0037 "Raised clutter"): anywhere in the region, its own rectangle at its yaw.

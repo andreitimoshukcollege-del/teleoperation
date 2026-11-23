@@ -92,6 +92,25 @@ namespace Teleop.RobotArm.World
         /// objects (<see cref="ScenePoolDocument.movableMax"/> counts the others).
         /// </summary>
         public bool clutter;
+
+        /// <summary>
+        /// docs/adr/0038 decision 3, a mixed pool's (<see cref="ScenePoolDocument.obstacleMax"/>): what a layout does with the object.
+        /// <c>obstacle</c>: one of 0-3 things in the arm's reach, anywhere over its reachable workspace (raised on a stand sometimes);
+        /// <c>distractor</c>: in the cameras' view, beyond every arm pose's reach; <c>stand</c>: a box fixture an obstacle is raised
+        /// on; <c>plank</c>: a box fixture held up on its <see cref="supports"/>, an overhang; <c>support</c>: a plank's leg or base.
+        /// Empty: every object of a scene that is not a mixed pool, which draws as it always did.
+        /// </summary>
+        public string role = "";
+
+        /// <summary>A plank's supports (docs/adr/0038): the ids of the one (a cantilever) or two (a bridge) box fixtures under its ends.</summary>
+        public int[] supports = Array.Empty<int>();
+
+        /// <summary>
+        /// docs/adr/0038: the resize steps a mixed pool's layout draws this object's size from, uniform, <c>[min, max]</c> of
+        /// <see cref="WorldScene.MinResizeStep"/> to <see cref="WorldScene.MaxResizeStep"/> (the factor 1.25 to that power, every
+        /// axis), for a box or a cylinder, movable or fixed. Empty: its file size.
+        /// </summary>
+        public int[] steps = Array.Empty<int>();
     }
 
     /// <summary>How many objects of each kind a pool's layout puts on the table, inclusive (docs/adr/0037 decision 3).</summary>
@@ -170,6 +189,41 @@ namespace Teleop.RobotArm.World
         /// </summary>
         public int clutterMin;
         public int clutterMax;
+
+        /// <summary>
+        /// docs/adr/0038 decision 3: a mixed pool. Each layout stands <see cref="obstacleMin"/> to <see cref="obstacleMax"/> obstacles
+        /// (an object of role <c>obstacle</c>, maybe raised on a stand, or a plank on its supports), each centred uniformly by area
+        /// over the band <see cref="reachMin"/>-<see cref="reachMax"/> within <see cref="reachBearing"/> of straight ahead, then
+        /// <see cref="distractorMin"/> to <see cref="distractorMax"/> distractors in <see cref="distractorRegions"/>. Every object has
+        /// a role, and the movable, fixed and clutter counts are 0. Absent (0): not a mixed pool.
+        /// </summary>
+        public int obstacleMin;
+        public int obstacleMax;
+
+        /// <summary>docs/adr/0038: how far either side of straight ahead (+x) an obstacle's centre may stand, rad (the base's yaw range).</summary>
+        public double reachBearing;
+
+        /// <summary>docs/adr/0038: the chance, 0-1, that a movable obstacle is raised on a free stand that holds it.</summary>
+        public double standShare;
+
+        /// <summary>docs/adr/0038: the chance, 0-1, that an obstacle is a plank on its supports, when one is free.</summary>
+        public double rigShare;
+
+        /// <summary>docs/adr/0038: how many distractors a mixed layout stands, inclusive.</summary>
+        public int distractorMin;
+        public int distractorMax;
+
+        /// <summary>
+        /// docs/adr/0038: rectangles <c>[xMin, xMax, yMin, yMax, ...]</c>, root frame, that hold a distractor's centre; its footprint
+        /// lies on the table or the bench, and no nearer the robot's base than <see cref="distractorReach"/>.
+        /// </summary>
+        public double[] distractorRegions = Array.Empty<double>();
+
+        /// <summary>
+        /// docs/adr/0038: the nearest a distractor's footprint may come to the base's yaw axis, horizontally, m: beyond the farthest
+        /// any arm pose reaches (robot/isaac/reach_envelope.py), so no accepted pose touches one.
+        /// </summary>
+        public double distractorReach;
     }
 
     /// <summary>Where objects may stand: every footprint lies inside this region and on the table, this far apart.</summary>

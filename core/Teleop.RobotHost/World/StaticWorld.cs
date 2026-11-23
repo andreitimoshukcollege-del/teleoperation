@@ -68,8 +68,9 @@ namespace Teleop.RobotHost.World
             PlaceOutcome outcome;
             double cx = 0, cy = 0;
             if (index < 0) outcome = PlaceOutcome.UnknownObject;
-            else if (!_scene.Objects[index].OperatorMovable) outcome = PlaceOutcome.NotMovable;
+            else if (!_scene.Objects[index].OperatorMovable && !_scene.Objects[index].HasSteps) outcome = PlaceOutcome.NotMovable;
             else if (!WorldScene.IsValidScale(scale)) outcome = PlaceOutcome.InvalidPose;
+            else if (_scene.Objects[index].HasSteps && !_scene.InSteps(index, scale)) outcome = PlaceOutcome.NotMovable; // docs/adr/0038: its own steps only, as Isaac's bodies
             else if (_poses[index].Parked)
             {
                 // On the shelf (docs/adr/0037 amendment 2): nothing to fit, it only changes size there. RobotHost refuses the
@@ -197,17 +198,36 @@ namespace Teleop.RobotHost.World
             // On the rest nearest the pose's rotation (docs/adr/0037 amendment 6): upright, as always, unless it asks for a side.
             int rest = WorldScene.RestOf(pose.Qw, pose.Qx, pose.Qy, pose.Qz, out double restYaw);
             double yaw = rest == WorldScene.RestUpright ? WorldHost.YawOf(pose) : restYaw;
+            double scale = _scales[index];
+            // docs/adr/0038: in a mixed pool, RobotHost's own placement may stand an object above the table (on a stand, a plank on its
+            // supports), at the height it asks; a movable one only on a stand that holds it. Everything else stands on the table.
+            bool raised = cause != PlaceCause.Headset && _scene.IsElevated(index, pose.Z, scale, rest);
+            double z = raised ? pose.Z : _scene.RestingZ(index, scale, rest);
             // Each footprint on its rest and heading: a piece of clutter is its own rectangle (docs/adr/0037 "Raised clutter").
-            if (!_scene.FitsOnTable(index, pose.X, pose.Y, yaw, _scales[index], rest)) return PlaceOutcome.OutsideRegion;
+            if (!_scene.FitsOnTable(index, pose.X, pose.Y, yaw, scale, rest)) return PlaceOutcome.OutsideRegion;
+            if (raised && _scene.Objects[index].Movable && !OnAStand(index, pose.X, pose.Y, z, scale, rest)) return PlaceOutcome.OutsideRegion;
             for (int k = 0; k < _poses.Length; k++)
             {
                 if (k == index || _poses[k].Parked) continue;
                 int restK = RestOf(_poses[k], out double yawK);
-                if (_scene.Overlaps(index, pose.X, pose.Y, yaw, k, _poses[k].X, _poses[k].Y, yawK, _scales[index], _scales[k], rest, restK)) return PlaceOutcome.OverlapsObject;
+                if (_scene.OverlapsAtHeights(index, pose.X, pose.Y, z, yaw, k, _poses[k].X, _poses[k].Y, _poses[k].Z, yawK, scale, _scales[k], rest, restK)) return PlaceOutcome.OverlapsObject;
             }
 
-            upright = ObjectPose.Of(pose.Id, ObjectPose.FlagKinematic, _scene.PoseAt(index, pose.X, pose.Y, yaw, _scales[index], rest));
+            upright = ObjectPose.Of(pose.Id, ObjectPose.FlagKinematic, _scene.PoseAtHeight(index, pose.X, pose.Y, z, yaw, scale, rest));
             return PlaceOutcome.Applied;
+        }
+
+        /// <summary>Whether a stand on the table now holds object <paramref name="index"/> at (x, y, z) (docs/adr/0038).</summary>
+        private bool OnAStand(int index, double x, double y, double z, double scale, int rest)
+        {
+            for (int k = 0; k < _poses.Length; k++)
+            {
+                if (k == index || _poses[k].Parked) continue;
+                int restK = RestOf(_poses[k], out double yawK);
+                if (_scene.HoldsOnTop(k, _poses[k].X, _poses[k].Y, _poses[k].Z, yawK, _scales[k], restK, index, x, y, z, scale, rest)) return true;
+            }
+
+            return false;
         }
     }
 }

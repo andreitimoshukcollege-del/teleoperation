@@ -77,7 +77,7 @@ namespace Teleop.Eval.JointDrive
         /// motion of 12 human sessions on the real JetRover (docs/adr/0038, "M, motion"): to be set again from workstream R's
         /// measurement of the real arm's tracking.
         /// </summary>
-        public static MotionCaps DefaultCaps() => new MotionCaps { MaxJointSpeed = 2.5f, MaxJointAcceleration = 60f, MaxWristSpeed = 0.75f, MaxPeakSpeed = 0.45 };
+        public static MotionCaps DefaultCaps() => new MotionCaps { MaxJointSpeed = 2.5f, MaxWristSpeed = 0.75f, MaxPeakSpeed = 0.45 };
 
         /// <summary>Throws when the options make no sense together.</summary>
         public void Validate()

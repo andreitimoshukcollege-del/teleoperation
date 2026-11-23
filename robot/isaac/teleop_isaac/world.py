@@ -23,6 +23,12 @@ what only physics can see: whether an arm is in the way.
 Rules 4, 6 and 7 use where the objects are now: a movable object's pose is PhysX's, read at every WORLD (:meth:`IsaacWorld.read`).
 Rules 5 and 6 take each object's footprint on its rest (lying, a footprint differs).
 
+**A mixed pool** (docs/adr/0038 decision 3, ``core/Scenes/jetrover-mixed.json``) takes every footprint as its rectangle in rules 5 and 6,
+and two objects one above the other never overlap (``Scene.overlaps_at_heights``). A placement from RobotHost (not the headset) more
+than 1 mm above the table is stood at the height it asks: a plank on its supports anywhere (a fixed body floats), a movable object
+only on a stand that holds it (``Scene.holds_on_top``; else OUTSIDE_REGION). Objects with steps of their own, fixed ones too, get a
+body for each of those steps, and a resize to any other is NOT_MOVABLE.
+
 **Parking** (docs/adr/0037 decision 3). A scene whose objects are a pool lets each layout choose which take part; RobotHost sends
 the others with CAUSE_PARK. A parked object is stood on the hidden shelf (``Scene.parked_pose``, at its current size's slot),
 whatever pose came with it, and is reported with FLAG_PARKED until a placement of another cause brings it back. The headset
@@ -702,7 +708,10 @@ class IsaacWorld:
                     parked = self.parked(i, old_k)
                     self._bodies.set_world_poses(positions=np.array([parked[:3], upright[:3]]),
                                                  orientations=np.array([parked[3:], upright[3:]]), indices=[old, new])
-                    self._bodies.set_velocities(np.zeros((2, 3)), np.zeros((2, 3)), indices=[old, new])
+                    if self.model.scene.objects[i].movable:
+                        # A mixed pool's fixed objects take sizes too (docs/adr/0038); their bodies are kinematic, and PhysX
+                        # refuses a kinematic body's velocities.
+                        self._bodies.set_velocities(np.zeros((2, 3)), np.zeros((2, 3)), indices=[old, new])
                     self._float([old], True)
                     self._float([new], self.model.parked[i])
                     if self.contact_tracker is not None:  # both bodies teleported

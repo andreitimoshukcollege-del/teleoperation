@@ -8,7 +8,8 @@ skips (``backdrops``, ``cameras``, ``lights``, docs/adr/0032); they are kept as 
 Layouts are RobotHost's to draw; this module has no copy of the draw. It has Core's rests (docs/adr/0037 amendment 6): the
 ways an object may rest on the table, and the footprint, height and pose of each; and raised clutter's footprint, the rectangle
 of its sides at its yaw (docs/adr/0037 "Raised clutter"), all pinned by ``golden/scene-rests-jetrover-bench.json``, which
-Core writes too.
+Core writes too. A mixed pool (docs/adr/0038 decision 3) adds roles, a plank's supports, steps of an object's own, and its rules:
+rectangles, heights, and stands (``golden/scene-rules-jetrover-mixed.json``, which Core writes).
 """
 
 from __future__ import annotations

@@ -52,9 +52,10 @@ ASSETS = os.path.expanduser("~/isaacsim/assets")
 WORK = os.path.expanduser("~/isaacsim/work")
 # PhysxConvexDecompositionCollisionAPI's defaults (Isaac Sim 6.2, omni.physx 110.4), which world.py leaves as they are.
 MAX_HULLS, HULL_VERTICES = 32, 64
-# CoACD at PhysX's budget. Its concavity threshold is its own default; seed 0 makes it the same every run.
-COACD = {"threshold": 0.05, "max_convex_hull": MAX_HULLS, "max_ch_vertex": HULL_VERTICES, "preprocess_mode": "auto",
-         "preprocess_resolution": 50, "resolution": 2000, "seed": 0}
+# CoACD at PhysX's budget: at most 32 hulls, each decimated to at most 64 vertices (CoACD keeps every vertex of a hull unless
+# it decimates: 287 a hull of the mug without). Its concavity threshold is its own default; seed 0 makes it the same every run.
+COACD = {"threshold": 0.05, "max_convex_hull": MAX_HULLS, "max_ch_vertex": HULL_VERTICES, "decimate": True,
+         "preprocess_mode": "auto", "preprocess_resolution": 50, "resolution": 2000, "seed": 0}
 METHODS = ("coacd", "hull")
 
 

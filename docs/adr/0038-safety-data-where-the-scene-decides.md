@@ -475,7 +475,7 @@ two renderers, or Kit).
   as above;
 - the masks, the exposure table, the collector's and the loop's reports, `--gc-freeze` and `.keep-look`.
 
-`scripts/gpu/gate.sh isaac` runs 212 tests, and skips the 4 pxr cases, since the gate's Python has no pxr. All 34
+`scripts/gpu/gate.sh isaac` runs 213 tests, and skips the 4 pxr cases, since the gate's Python has no pxr. All 34
 appearance cases pass under Isaac's Python on the GPU machine.
 
 **A check for the takes, `robot/isaac/appearance_check.py`** (read-only, the LeRobot venv). It prints a `RESULT` line and

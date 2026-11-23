@@ -273,9 +273,15 @@ namespace Teleop.Eval.JointDrive
                 first = false;
             }
 
-            // The tail: free movement clear of every object (and its goals away from those pushed into) from where the last
-            // object-directed move has ended, then the cut partway through a move.
-            double tailStart = Math.Max(Math.Max(_hand.Free, _lastObjectEnd), _hand.Timeline.MotionEnd);
+            // The tail: first up and away from wherever the main part left the arm, to a point clear of every object, then free
+            // movement clear of them all (its goals away from those pushed into) from where that move ends, and the cut partway
+            // through a move.
+            if (!Exit(out double tailStart))
+            {
+                error = FormattableString.Invariant($"no move from {_hand.Free:0.0} s on of the take ends clear of every object ({Refusals()})");
+                return false;
+            }
+
             _hand.GuardFrom = tailStart;
             _hand.AvoidGoals = _avoid.Count > 0 ? _avoid : null;
             double cut = double.NaN;
@@ -306,6 +312,40 @@ namespace Teleop.Eval.JointDrive
             SafetyScript.CutAt(legs, ref t, ref at0, _start + cut);
             plan = DrivePlan.ForMixed(legs, speed, Moves(_start + cut));
             return true;
+        }
+
+        /// <summary>
+        /// The tail's first move: up (5-10 cm, to at least 10 cm above the base frame's origin) and toward the middle of reach from
+        /// where everything planned so far ends, until the arm is clear of every object by the quiet margin; when its motion ends,
+        /// seconds on the hand's timeline. Tried from a few goals; false when none ends clear.
+        /// </summary>
+        private bool Exit(out double end)
+        {
+            end = double.NaN;
+            const double deg = Math.PI / 180.0;
+            for (int attempt = 0; attempt < 10; attempt++)
+            {
+                Vector3 at = _hand.TargetEnd;
+                var radial = new Vector2(at.X, at.Y);
+                float r = Math.Clamp(radial.Length(), 0.10f, 0.19f), az = MathF.Atan2(radial.Y, radial.X);
+                float z = MathF.Max(at.Z + (float)Draw.Uniform(ref _rng, 0.05, 0.10), (float)Draw.Uniform(ref _rng, 0.10, 0.20));
+                var goal = new Vector3(r * MathF.Cos(az), r * MathF.Sin(az), MathF.Min(z, 0.24f));
+                HandSnapshot before = _hand.Save();
+                int drafts = _drafts.Count;
+                if (!_hand.MixedTo(goal, (float)(Draw.Uniform(ref _rng, -40, 0) * deg), null, Slowness(), 0.010, _model, out double s, out double e)) continue;
+                int k = Math.Min(_hand.Poses.Count - 1, (int)Math.Ceiling(e / HandModel.TickSeconds));
+                if (!ArmCollision.IsValid(_profile, _hand.Guard!, _hand.Poses[k]))
+                {
+                    Undo(before, drafts);
+                    continue;
+                }
+
+                Add(ScriptMoveKind.Free, -1, float.NaN, s, e);
+                end = e;
+                return true;
+            }
+
+            return false;
         }
 
         /// <summary>The moves as planned, measured on the final plan, in the order they begin; those after <paramref name="cut"/> (plan seconds) left out.</summary>

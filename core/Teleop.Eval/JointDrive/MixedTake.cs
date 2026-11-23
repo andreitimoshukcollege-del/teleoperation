@@ -552,7 +552,17 @@ namespace Teleop.Eval.JointDrive
             Vector3 middle = new Vector3(o.Center.X, o.Center.Y, h) + lateral * across;
             float s0 = -(halfAlong + 0.24f), s1 = kind == ScriptMoveKind.Aim ? 0f : halfAlong + 0.12f;
             float gripper = _hand.GripperEnd;
-            if (!Line(oi, middle, u, s0, s1, pitch, gripper, out List<Vector3> wrists, out List<ArmPose> poses, out List<float> gaps)) return Miss(1);
+            // The arm's reach depends on the wrist's pitch as much as on where it goes: other pitches are tried at that height.
+            List<Vector3>? wrists = null;
+            List<ArmPose>? poses = null;
+            List<float>? gaps = null;
+            for (int p = 0; p < 4 && wrists == null; p++)
+            {
+                if (p > 0) pitch = (float)(Draw.Uniform(ref _rng, h - o.Min.Z < 0.06f ? -88 : -80, h - o.Min.Z < 0.06f ? -40 : -10) * deg);
+                if (Line(oi, middle, u, s0, s1, pitch, gripper, out List<Vector3> w, out List<ArmPose> q, out List<float> g)) (wrists, poses, gaps) = (w, q, g);
+            }
+
+            if (wrists == null || poses == null || gaps == null) return Miss(1);
 
             int stage, end;
             float offset, f = 1f;

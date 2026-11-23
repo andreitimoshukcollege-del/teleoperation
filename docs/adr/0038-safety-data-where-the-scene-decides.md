@@ -326,4 +326,192 @@ only the readings, to compare with the real arm on the same terms.
 
 ### A, appearance
 
-(pending)
+Built 2026-11-22 on `work/v2-looks`; nothing of it has run on the twin yet. Items 30, 31 and the renderer's side of 28.
+
+**An optional scene section, `appearance`.** `robot/isaac/teleop_isaac/appearance.py` reads it and draws from it, and
+`renderer.py` applies it at every change: at start-up and after each closed session, so once per take. **A scene file
+without the section renders and records exactly as before**: no draw, no record, no wait. `core/Scenes/jetrover-bench.json`
+does not get one, since the headset checks its sha. The coordinator adds this section to `core/Scenes/jetrover-mixed.json`
+at integration. It is the same as `robot/isaac/tests/appearance-example.json`, which the tests read:
+
+```json
+"appearance": {
+ "objects": {"brightness": [0.85, 1.1], "desaturation": [0.0, 0.25], "tint": 0.05},
+ "lighting": {
+  "colourTemperatureK": [5500, 7500],
+  "exposure": [108, 128],
+  "key": {"intensity": [0.5, 2.5], "azimuthDeg": [0, 360], "elevationDeg": [35, 75], "angleDeg": [1, 6],
+          "colourTemperatureK": [3500, 6500]}
+ },
+ "cameras": {
+  "room": {"translationM": 0.015, "rotationDeg": 2.0},
+  "mounted": {"translationM": 0.003, "rotationDeg": 1.5}
+ }
+}
+```
+
+Every part is optional, and every value is checked against fixed bounds, for example brightness 0.5-1.5, tint at most 0.3
+and a camera moved at most 5 cm and 10°. An unknown field is refused. Each draw is a pure function of `BK`'s seed, the change
+and what it is for, from its own `random.Random` key, so a draw never moves another. Values are rounded before they are
+applied, so the records hold exactly what was applied.
+
+- **Obstacle colours** (`objects`, record `OA`). Every scanned object (`shape` `mesh`), fixtures and raised clutter
+  included, gets its own colour each take:
+  - its albedo is mixed toward its own luminance by `desaturation`;
+  - it is multiplied by a tint, a slight cast of a random hue whose Rec. 709 luminance is 1, so the cast moves the hue and
+    not the brightness;
+  - it is multiplied by `brightness`.
+
+  How depends on the network the renderer draws, the first of Kit's render contexts (`mdl`, `mtlx`, then the universal one)
+  that the material has:
+  - an OmniPBR material through its own `albedo_desaturation`, `diffuse_tint` and `albedo_brightness`;
+  - a MaterialX surface through two nodes put in front of its `base_color`, `ND_saturate_color3` then `ND_multiply_color3`,
+    neutral until set;
+  - a UsdPreviewSurface through its colour texture's `scale`, which takes no desaturation.
+
+  Checked offline with pxr against every scanned asset of the bench (24, referenced into a stage as `world.py` does):
+  - the 9 YCB objects are OmniPBR;
+  - the 15 Poly Haven models are MaterialX, 16 materials in all (the kettle has two): 9 `standard_surface` and 6 OpenPBR
+    models. The marble bust's base colour comes from a Mix node;
+  - none sits inside an instance, where it could not be edited.
+
+  Simple shapes keep the looks `materials.objects` gives them. Alternate textures: none of the libraries has any. Each Poly
+  Haven model and YCB object comes with one texture set, and the green jerrycan is an asset of its own, already in the pool.
+  So nothing is downloaded and no licence changes.
+- **The light** (`lighting`, record `LT`).
+  - Every light the scene file lists (the HDRI dome) gets a colour temperature.
+  - The metering aims at a drawn `exposure` instead of the environment's `targetBrightness`. The metering still runs after
+    the light is set, so overall intensity is kept within what a camera's auto-exposure would allow.
+  - A key light the section adds gives the take's key direction. It is a distant light, `/World/Lights/AppearanceKey`,
+    with its azimuth (from +x toward +y, in the base frame), elevation, intensity, angular size and colour temperature drawn.
+    Its intensity is a multiple of the environment's `meanRadiance`. The metering then lowers the dome to hold the exposure,
+    so a stronger key gives harder shadows, not a brighter image.
+
+  The HDRI's yaw was already drawn per take, which turned the room's own light about the vertical. The key adds a
+  directional light that can come from any side and height.
+- **Camera jitter** (`cameras`, records `CJ` and `CM`). Every camera is moved along each of its own axes and turned about
+  each (x, then y, then z: tilt, pan, roll): up to 1.5 cm and 2° for `room` cameras and 3 mm and 1.5° for the `mounted` wrist
+  camera (`front` in the datasets).
+  - A room camera is set where Isaac renders it, and its pose is read back as a check.
+  - The wrist camera's pose in `wrist_link`'s frame, which the render loop composes with the link every frame, is moved.
+  - `CM` records the start-up pose moved by the same offset, so it is the pose the take was rendered from. `CM` is written
+    in every session's preamble, and each take is a session.
+  - Moving the pose in the mount frame and posing it by the link equals posing it and then moving it in its own frame (a
+    test), so a reader's forward kinematics agrees with the renderer.
+- **Order within a change.** Object colours go first, so the materials have the rest of the change to take. Then the
+  existing materials, looks and clutter. Then the jitter and the light, before the room settles, so the metering and each
+  camera's own gain see the take as it will be recorded.
+- **A session waits for its change.** RobotHost can open the next take's session in the same 0.1 s poll that closes the
+  last one. With the section, the session's preamble then waits, up to 30 s, until the change is in force, so its `CM`,
+  `LT`, `CJ`, `OA`, `EN`, `LK` and `CL` describe its frames. Without the section, it opens at once, as before.
+- **Counterfactual replays (a proposal to M; dormant until used).** Each replay is a new session, so the renderer would
+  give it a new room, colours, light and camera pose, and a pair would differ by more than its edit.
+  - While a file `.keep-look` sits beside RobotHost's control file (`~/data/sessions/jetrover-isaac[-twin1]/.keep-look`), a
+    closed session brings no change, for at most 16 sessions in a row.
+  - The replay's records then repeat its source's change number, so L can check a group shares one look.
+  - Proposed use: joint-drive creates the file when it starts a source take with `--replays N`, and removes it when it
+    starts the last replay. Nothing writes it yet.
+
+**Frame pacing (item 28), measured read-only** over the last 120 takes of each twin (2026-11-22, `~/data/takes/jetrover-isaac*`,
+106,893 recorded frames in 3,964 s of recording):
+
+| | Twin 0 | Twin 1 |
+|---|---|---|
+| Frames recorded, against the recorded span at 30 fps | 54,456 of 60,208 (90.4%) | 52,437 of 58,702 (89.3%) |
+| Frame interval (state stamps): p5 / median / p95 / p99 / max | 28.0 / 36.0 / 44.1 / 96.1 / 116.1 ms | 28.0 / 36.0 / 44.1 / 99.9 / 112.3 ms |
+| Intervals over 55 ms | 803 (1.48%), 789 of them 80-150 ms | 863 (1.65%), 847 of them 80-150 ms |
+| Renderer frame rate in its 5 s reports (`RH`): p5 / median | 24.2 / 28.1 fps | 23.8 / 27.2 fps |
+| Frame queued for writing after its physics state (`VF` t − `stateSensed`): median / p99 | 114 / 193 ms | 117 / 194 ms |
+
+- No frame was dropped (no `FD`, no gap in frame numbers), and no frame showed the same state as the one before.
+- Frames with the same joint values as the one before (418 and 410) were the arm standing still, with new state stamps.
+- So frames missing from a fixed 30 fps grid come from the render loop itself running slow while it records: about 36 ms a
+  frame, against 29.5-30.4 fps at idle (amendment 7 of ADR 0037).
+- On top of that, 1.5% of intervals are stalls of 96-116 ms, three frame times, at irregular moments (0.7-13 s apart), not
+  at the 5 s reports or the world snapshots.
+
+**Causes found, and the cheap fixes** (`renderer.py`). Measured on the GPU machine's CPU, one core, 640×360:
+
+- **Masks** were made by comparing the frame with each label in turn: 2.3, 2.7 and 3.7 ms a camera for 8, 16 and 32
+  labels, on the render thread, for every camera that records masks (three). One table lookup over the frame (`stable_mask`)
+  takes 0.20 ms and gives the same ids (a test against the old way on random frames, signed and out-of-range ids included).
+  That is about 7-10 ms back on every recorded frame.
+- **A camera's exposure gain** goes through OpenCV's table lookup: 0.13 ms against 0.45 ms, the same bytes (a test).
+- **Objects' poses**: a pose that has not changed is no longer set again. Parked and sleeping bodies resend theirs about
+  100 times a second, for 30 objects.
+- **Python's garbage collector**: a full collection over Kit's whole heap is one cause that fits the stalls. The heap is
+  frozen out of later collections once the scene is built (`--gc-freeze`, on by default; `--no-gc-freeze` turns it off).
+  This is not shown to be the cause yet. Each 5 s report now prints the collector's counts per generation and its longest
+  pause.
+- **Where each frame's time goes**: each 5 s report also gives the median and longest of `tap`, `pose`, `render`, `read`,
+  `frame` and `change` in ms, so the twin check can attribute what is left.
+- The writer thread's encoding is unchanged and kept up: PNG 2.1 ms for a mask and 3.2 ms for a depth image, JPEG 0.75 ms.
+
+Expected, not measured: recording no longer costs the loop its frame rate, so a median interval near 33.3 ms and over 98% of
+the grid recorded. If the 100 ms stalls remain with the collector's pauses short, their cause is elsewhere (the GPU shared by
+two renderers, or Kit).
+
+**Frame-rate cost of the look, estimated (nothing measured on the twin):**
+- Object colours, colour temperature, exposure and camera jitter cost nothing per frame: each is set once per take.
+  - A camera's DLAA history restarts when it moves, which happens inside the unrecorded settle.
+  - A MaterialX material whose inputs change may be recompiled by RTX, once per take, between takes. How long that takes is
+    unknown. It is the one risk to the take's first frames, so the check below measures it.
+- The key light is the only per-frame cost: one more light in Real-Time 2.0 at 2 samples a pixel, about 1.4 M more shadow
+  rays a frame for three 640×360 cameras. Estimated at under 3% of the render time.
+  - Leaving `key` out of the section removes it.
+  - The mask fix gives the render thread back several times that.
+
+**Tests** (`robot/isaac/tests/test_appearance.py`, 34 cases, and `test_renderer.py`):
+- the shipped scenes have no section;
+- the example reads, and a bad section is refused (16 cases);
+- every draw is deterministic, within its bounds and fills them;
+- a tint keeps unit luminance and its own hue;
+- each light quantity is drawn from its own stream;
+- the key light shines from its drawn direction;
+- a jitter moves the camera along and turns it about its own axes, within bounds, the same in the mount frame as in the
+  room;
+- `OA`, `LT` and `CJ` encode as documented;
+- with pxr (Isaac's Python): an OmniPBR, a MaterialX, a preview-only and an unsupported material, each changed or left alone
+  as above;
+- the masks, the exposure table, the collector's and the loop's reports, `--gc-freeze` and `.keep-look`.
+
+`scripts/gpu/gate.sh isaac` runs 212 tests, and skips the 4 pxr cases, since the gate's Python has no pxr. All 34
+appearance cases pass under Isaac's Python on the GPU machine.
+
+**A check for the takes, `robot/isaac/appearance_check.py`** (read-only, the LeRobot venv). It prints a `RESULT` line and
+exits non-zero on a failure.
+- **Records against the draws:** `LT`, `CJ` and `OA` must be the draws, and `CM` the scene file's pose moved by `CJ`.
+- **Each camera's pose in its own depth:** every camera's table depth, back-projected through its `CM` pose (the wrist's
+  through forward kinematics of the frame's `VQ`), must land on the table top within 3 mm at p99.
+  - The same through the scene file's pose, ignoring the jitter, is reported beside it. A camera the renderer did not
+    really move would match the file's pose instead.
+- **Late colours and pacing:** a late colour shows as a jump between a take's first frame and a second later. The frame
+  pacing is reported too.
+- `--sheet` makes a contact sheet of each scanned object across takes, captioned with its drawn colour.
+- On four takes of 2026-11-22 (no section, `--baseline`):
+  - `CM` was within 0.004° of the scene file's poses;
+  - table depth through `CM` was 0.31 mm at p99 for the room cameras and 0.49 mm for the wrist;
+  - late-colour jumps were 2.5-5.0 (of 255; the arm's shadow);
+  - median frame interval 32.1 ms.
+
+**The twin check** (needs the user's go). After the merge, on `jetrover-mixed` with this section:
+1. A short batch of `mixed` takes on one twin (M's `isaac-safety-batch`, 4 takes, no build). Then, on the GPU machine from `robot/isaac`:
+   `~/isaacsim/lerobot-venv/bin/python appearance_check.py <the takes> --sheet /tmp/sheet.jpg`. It passes with no problem
+   listed, every camera's `cm_p99` under 3 mm and `file_p99` larger.
+2. **The renderer's log.**
+   - At start: `[render] appearance: N scanned objects, their materials {'mtlx': .., 'omnipbr': ..} under render contexts
+     ['mdl', 'mtlx', '']`, with `none to vary on none`, and `[render] Python heap frozen: ...`.
+   - In each 5 s report: the frame rate, `read` at a few ms (the masks alone took about 7-10 ms of it before), and the
+     collector's longest pause.
+   - With two twins recording, the frame rate must hold about 30 fps. Compare `render` with and without `key` if it does not.
+3. **The contact sheet and one video per camera.**
+   - Objects differ in brightness, saturation and a slight hue across takes, and stay what they are: a soup can stays red.
+   - None is black, magenta, flat grey or untextured. That would be a MaterialX network RTX did not compile.
+   - The key light's shadows fall in different directions.
+   - Colour casts stay mild, warm to cool.
+   - The third-person and wrist views shift slightly between takes, with the gripper still in the wrist view's lower half.
+4. **Late colours.** `colour_jump_worst` stays under about 8. Tens means a material took after the take began; the settle
+   must then wait for it.
+5. **Optional and decisive for the material path.** The same with exaggerated `objects` ranges (brightness [0.5, 1.5],
+   desaturation [0, 1], tint 0.3) on a scratch copy of the scene. Some objects must come out grey and some clearly tinted,
+   both YCB (OmniPBR) and Poly Haven (MaterialX) ones.

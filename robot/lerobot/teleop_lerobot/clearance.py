@@ -649,7 +649,7 @@ def _nearest(boxes: List[Box], obstacles, best: float) -> Tuple[float, int]:
         sphere_lb = np.linalg.norm(np.maximum(np.abs(local) - halves[:, None, :], 0.0), axis=2) \
             + np.minimum((np.abs(local) - halves[:, None, :]).max(axis=2), 0.0) - pr[idx][None, :]
         for jj, j in enumerate(idx):
-            proj = placed[j].vertices @ axes.transpose(0, 2, 1).reshape(-1, 3).T  # (v, b*3)
+            proj = placed[j].vertices @ axes.reshape(-1, 3).T  # (v, b*3): each box's axes in turn
             lo, hi = proj.min(axis=0).reshape(len(boxes), 3), proj.max(axis=0).reshape(len(boxes), 3)
             c = np.einsum("bij,bj->bi", axes, centres)
             gap = np.maximum(lo - (c + halves), (c - halves) - hi).max(axis=1)

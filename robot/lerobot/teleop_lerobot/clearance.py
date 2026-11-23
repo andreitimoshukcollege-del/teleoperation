@@ -187,18 +187,19 @@ def _triangle(a, b, c):
         return b, [b]
     vc = d1 * d4 - d3 * d2
     if vc <= 0 and d1 >= 0 and d3 <= 0:
-        t = d1 / (d1 - d3)
+        t = d1 / (d1 - d3) if d1 != d3 else 0.0
         return (a[0] + t * ab[0], a[1] + t * ab[1], a[2] + t * ab[2]), [a, b]
     d5, d6 = -_dot(ab, c), -_dot(ac, c)
     if d6 >= 0 and d5 <= d6:
         return c, [c]
     vb = d5 * d2 - d1 * d6
     if vb <= 0 and d2 >= 0 and d6 <= 0:
-        t = d2 / (d2 - d6)
+        t = d2 / (d2 - d6) if d2 != d6 else 0.0
         return (a[0] + t * ac[0], a[1] + t * ac[1], a[2] + t * ac[2]), [a, c]
     va = d3 * d6 - d5 * d4
     if va <= 0 and (d4 - d3) >= 0 and (d5 - d6) >= 0:
-        t = (d4 - d3) / ((d4 - d3) + (d5 - d6))
+        den = (d4 - d3) + (d5 - d6)
+        t = (d4 - d3) / den if den != 0 else 0.0
         bc = _sub(c, b)
         return (b[0] + t * bc[0], b[1] + t * bc[1], b[2] + t * bc[2]), [b, c]
     den = va + vb + vc

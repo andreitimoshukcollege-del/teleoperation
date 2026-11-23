@@ -660,6 +660,11 @@ namespace Teleop.Eval.JointDrive
             // instead, a short way (the shell is about 6 cm deep at one pitch). Its height changes along it by a drawn slope.
             var tools = new List<Vector3>();
             float side = Draw.Chance(ref _rng, 0.5) ? 1f : -1f, slope = MathF.Tan((float)(Draw.Uniform(ref _rng, -12, 8) * deg)), approach;
+            // Beside the robot (more than 60 degrees round), the arm reaches no further round than about 95 degrees (measured
+            // 2026-11-23 over the IK: nothing at 100), so an arc comes from the front; a pass would have to go on past the object,
+            // so beyond 80 degrees it is an aim.
+            if (MathF.Abs(bearing) > 60f * MathF.PI / 180f) side = MathF.Sign(bearing);
+            if (kind == ScriptMoveKind.Pass && MathF.Abs(bearing) > 80f * MathF.PI / 180f) kind = ScriptMoveKind.Aim;
             if (kind == ScriptMoveKind.Pass || !Draw.Chance(ref _rng, RadialShare))
             {
                 float rLine;

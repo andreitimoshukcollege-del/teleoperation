@@ -843,6 +843,10 @@ def episode(take: Take, options: Options = Options(), records: Optional[Records]
         line["replayError"] = rp["replayError"]
     scene_line = {"take": os.path.abspath(take.path), "sceneName": line["sceneName"], "sceneSha256": scene_sha,
                   "layout": layout, "layoutSeed": layout_seed, "layoutHash": lhash, "objects": scene_objects,
+                  "placements": [{"t": round((int(r[0]) - t_first) / 1e9, 3), "cause": r[2], "id": int(r[3]), "outcome": r[5]}
+                                 for r in host.tag("WP") if len(r) >= 6],
+                  "edits": [{"t": round((int(r[0]) - t_first) / 1e9, 3), "op": r[2], "id": int(r[3]) if r[3].lstrip("-").isdigit() else r[3],
+                             "outcome": r[5]} for r in host.tag("WE") if len(r) >= 6],
                   "surfaces": [{"id": s.get("id"), "center": s.get("center"), "size": s.get("size"), "collides": s.get("collides", True)}
                                for s in ((scene or {}).get("surfaces") or [])],
                   "cameras": cams}

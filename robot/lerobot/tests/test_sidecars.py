@@ -312,7 +312,11 @@ def test_the_layout_hash_is_its_documented_recipe(scenarios):
 
 def test_the_scene_line_has_every_object_on_the_table_the_surfaces_and_the_cameras(scenarios):
     moved = {**STANDING, 2: (0.26, -0.08, -0.15, UPRIGHT)}
-    e = episode(take(scenarios, "mixed", world([wo(1500, moved), wo(1600, moved)], ids="2;3;4;5;6")))
+    edits = [["WE", 950 * MS, 7, "park", 3, "17:1:-4.97:1:0:0:0", "pending"], ["WE", 960 * MS, 7, "park", 3, "17:1:-4.97:1:0:0:0", "applied"],
+             ["WP", 960 * MS, 7, "park", 3, "17:1:-4.97:1:0:0:0", "applied"]]
+    e = episode(take(scenarios, "mixed", world([wo(1500, moved), wo(1600, moved)] + edits, ids="2;3;4;5;6")))
+    assert [(x["op"], x["id"], x["outcome"]) for x in e.scene["edits"]] == [("park", 3, "pending"), ("park", 3, "applied")]
+    assert e.scene["placements"] == [{"t": -0.04, "cause": "park", "id": 3, "outcome": "applied"}]
     objects = {o["id"]: o for o in e.scene["objects"]}
     assert sorted(objects) == [2, 3, 4, 5]  # 6 is in WL but on the parking shelf
     cube, vase, mug, can = objects[3], objects[4], objects[5], objects[2]

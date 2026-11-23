@@ -84,7 +84,8 @@ link names are the URDF's. JSON has no NaN: a value that is not there is `null` 
 | `speedSlider`, `operator` | from session.json's conditions |
 | `room` | the `EN` in force: `change`, `seed`, `hdri`, `sha256`, `yawDeg`, `intensity`, `settleFrames`, `brightness`, `gains` (per recorded camera name), later fields under `extra` |
 | `looks`, `materials`, `clutter` | `LK` and `MT` of that change (name to look, id to texture), and `CL` counted (`pieces`, `kinds`) |
-| `cameraJitter` | per camera (dataset names), its `CM` pose against the scene file's: `mm` apart and the turn in `deg` |
+| `cameraJitter` | per camera (dataset names), its `CM` pose against the scene file's: `mm` apart and the turn in `deg`; with the drawn offset (`CJ`: `dx`, `dy`, `dz` m along the camera's own axes, `pitchDeg`, `yawDeg`, `rollDeg`) when the take records it |
+| `lighting`, `objectColours` | `LT` (`domeKelvin`, `exposure`, `key`: `azimuthDeg`, `elevationDeg`, `intensity`, `kelvin`, `angleDeg`) and `OA` (per object id: `method`, `brightness`, `desaturation`, `tint`) of the room's change, when the take has an appearance section |
 | `moves` | the mixed script's planned moves (`MV`): `count`, `kinds`, and every record's fields as strings. Metadata, never labels |
 | `events` | an old script's planned events (`SE`): `approachS` and its times after that |
 
@@ -92,9 +93,12 @@ link names are the URDF's. JSON has no NaN: a value that is not there is `null` 
 
 - `objects`: every object the layout put on the table (not the parked ones): `id`, `name`, `kind` (`movable` or
   `fixture`), `shape`, `asset` (a mesh's) or `primitive`, `clutter`, `sizeFactor`, `dimensionsM` (the box after the size
-  factor), `massKg` (at that size; null for a fixture), `reach` (`distractor` for a movable object by the bench's edge,
-  else `in_reach`), `baseDistanceM` (its centre from the base axis), `start` and `end` poses, and `changes`: `[t, x, y, z,
-  qw, qx, qy, qz]` each time it had moved 1 mm or turned 1 degree from the last listed pose;
+  factor), `massKg` (at that size; null for a fixture), `role` (a mixed pool's: `obstacle`, `distractor`, `stand`, `plank`,
+  `support`; null without), `reach` (`distractor` for a mixed pool's distractor or, in a scene without roles, a movable object
+  by the bench's edge; else `in_reach`), `baseDistanceM` (its centre from the base axis), `start` and `end` poses, and
+  `changes`: `[t, x, y, z, qw, qx, qy, qz]` each time it had moved 1 mm or turned 1 degree from the last listed pose;
+- `placements` and `edits`: the take's `WP` (`t`, `cause`, `id`, `outcome`) and `WE` (`t`, `op`, `id`, `outcome`) records, so
+  a replay's edit shows whether it was applied (it is usually made before the take starts, then neither is there);
 - `surfaces`: the scene file's (`id`, `center`, `size`, `collides`);
 - `cameras`: per recorded camera, its dataset `name`, the `recorded` one, `width`, `height`, `fx`, `fy`, `cx`, `cy`, `near`,
   `far`, `pose`, `mount` and `poseFrame` (`CM`, trainer/contract/SESSION_FORMAT.md: a wrist camera's pose is in its mount
@@ -110,7 +114,8 @@ stretch with it, or the episode's end.
 `frames.parquet`, one row a frame: `episode_index`, `frame_index`, `sensed_ns` (the state the frame shows), `t_s`,
 `in_contact` (an obstacle, the labels' rule), `in_contact_table`, `unsafe` (the labels, 0 or 1), per link
 `clearance_mm.<link>` and `clearance_id.<link>` (signed distance to the nearest obstacle and its id) and `surface_mm.<link>`
-(to the table surface), `min_clearance_mm`, `min_clearance_id`, `min_surface_mm`, `time_to_contact_s` (to the next obstacle
+(to the table surface; NaN for a link no joint moves), `min_clearance_mm`, `min_clearance_id` (null when nothing is within
+the clearance's cutoff, 150 mm, where the distance is that cutoff), `min_surface_mm`, `time_to_contact_s` (to the next obstacle
 contact's start; 0 in contact, NaN when none follows in the episode), `filled` (the frame repeats an earlier render: the 15
 fps grid point had no recorded frame within half a step, or the same one as the point before), `state_skew_ms` and
 `action_skew_ms` (how much older the state reading and the command behind the frame, received at

@@ -526,9 +526,11 @@ namespace Teleop.Eval.JointDrive
             SafetyObject o = _objects[oi];
             const double deg = Math.PI / 180.0;
             float bearing = MathF.Atan2(o.Center.Y, o.Center.X);
+            // The arm's reach is a thin shell round the base, so most approaches come from the side; some straight out from it.
+            float side0 = Draw.Chance(ref _rng, 0.5) ? 1f : -1f;
             float alpha = kind == ScriptMoveKind.Aim
-                ? bearing + (float)(Draw.Uniform(ref _rng, -100, 100) * deg)
-                : bearing + (Draw.Chance(ref _rng, 0.5) ? 1f : -1f) * (float)((90 + Draw.Uniform(ref _rng, -35, 35)) * deg);
+                ? bearing + side0 * (float)((Draw.Chance(ref _rng, 0.7) ? Draw.Uniform(ref _rng, 45, 100) : Draw.Uniform(ref _rng, 0, 45)) * deg)
+                : bearing + side0 * (float)((90 + Draw.Uniform(ref _rng, -35, 35)) * deg);
             float elevation = (float)(Draw.Uniform(ref _rng, -15, 10) * deg);
             var u = new Vector3(MathF.Cos(alpha) * MathF.Cos(elevation), MathF.Sin(alpha) * MathF.Cos(elevation), MathF.Sin(elevation));
             var across = new Vector3(-MathF.Sin(alpha), MathF.Cos(alpha), 0f);
@@ -539,7 +541,7 @@ namespace Teleop.Eval.JointDrive
             float zLo = o.Min.Z + LowestContactMeters, zHi = o.Max.Z - (o.Shape != null ? ObjectShape.TopMarginMeters + 0.003f : 0.004f);
             if (zHi < zLo + 0.003f) return Miss(0);
             float h = (float)Draw.Uniform(ref _rng, zLo, zHi);
-            float pitch = (float)((h - o.Min.Z < 0.06f ? Draw.Uniform(ref _rng, -88, -55) : Draw.Uniform(ref _rng, -80, -15)) * deg);
+            float pitch = PitchFor(new Vector2(o.Center.X, o.Center.Y).Length()) + (float)(Draw.Uniform(ref _rng, -8, 8) * deg);
             float lateral;
             if (kind == ScriptMoveKind.Aim) lateral = (float)Draw.Uniform(ref _rng, -0.6, 0.6) * halfAcross;
             else
@@ -558,7 +560,7 @@ namespace Teleop.Eval.JointDrive
             List<float>? gaps = null;
             for (int p = 0; p < 4 && wrists == null; p++)
             {
-                if (p > 0) pitch = (float)(Draw.Uniform(ref _rng, h - o.Min.Z < 0.06f ? -88 : -80, h - o.Min.Z < 0.06f ? -40 : -10) * deg);
+                if (p > 0) pitch = PitchFor(new Vector2(o.Center.X, o.Center.Y).Length() + (float)Draw.Uniform(ref _rng, -0.04, 0.04)) + (float)(Draw.Uniform(ref _rng, -10, 10) * deg);
                 if (Line(oi, middle, u, s0, s1, pitch, gripper, out List<Vector3> w, out List<ArmPose> q, out List<float> g)) (wrists, poses, gaps) = (w, q, g);
             }
 
@@ -664,6 +666,23 @@ namespace Teleop.Eval.JointDrive
         {
             _hand.Restore(before);
             _drafts.RemoveRange(drafts, _drafts.Count - drafts);
+        }
+
+        /// <summary>
+        /// The wrist pitch that puts the pads <paramref name="radius"/> from the base axis near the table (measured 2026-11-22 over the
+        /// IK and the envelope: pointing down they reach 18-24 cm out, 2.5-9 cm above the table; at -60 degrees 24-33 cm, 4-18 cm up;
+        /// at -45 degrees 27-33 cm), radians, interpolated and clamped to that table.
+        /// </summary>
+        internal static float PitchFor(float radius)
+        {
+            float[] r = { 0.18f, 0.21f, 0.24f, 0.27f, 0.30f, 0.33f }, degrees = { -88f, -82f, -70f, -55f, -42f, -30f };
+            if (radius <= r[0]) return degrees[0] * MathF.PI / 180f;
+            for (int i = 1; i < r.Length; i++)
+            {
+                if (radius <= r[i]) return (degrees[i - 1] + (degrees[i] - degrees[i - 1]) * (radius - r[i - 1]) / (r[i] - r[i - 1])) * MathF.PI / 180f;
+            }
+
+            return degrees[degrees.Length - 1] * MathF.PI / 180f;
         }
 
         /// <summary>How far <paramref name="o"/>'s box reaches along <paramref name="axis"/> (a unit vector) from its centre, m.</summary>

@@ -1,7 +1,7 @@
 {
  "about": "docs/adr/0038 decision 3: the rules of core/Scenes/jetrover-mixed.json, a mixed pool, written by SceneMixedTests (just gen-isaac-goldens). objects: name, role, steps (min, max, or empty), supports (ids). fits: index, rest, scale, x, y, yaw, FitsOnTable at the yaw, FitsOnTable without one. overlaps: a, x, y, z, yaw, rest, scale, b, x, y, z, yaw, rest, scale, OverlapsAtHeights. holds: stand, x, y, z, yaw, scale, object, x, y, z, rest, scale, HoldsOnTop. elevated: index, rest, scale, z, RestingZ, IsElevated.",
  "scene": "jetrover-mixed",
- "sha256": "20c6dbbb47bac92248229a056e8922dd6eb5e95f3ae27836c879e2c0b1024fb0",
+ "sha256": "f529cb4aca1438a93b2ae17262aab586f04d5ba4327e46ec8bf0e66f8be262eb",
  "pool": [0, 3, 2, 6, 0.13, 0.34, 2.0944, 0.3, 0.2, 0.45],
  "distractorRegions": [-0.2, 0.4, 0.47, 0.72, -0.2, 0.4, -0.72, -0.47, 0.28, 0.52, 0.28, 0.47, 0.28, 0.52, -0.47, -0.28],
  "objects": [

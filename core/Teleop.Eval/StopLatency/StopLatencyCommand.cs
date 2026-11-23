@@ -280,8 +280,9 @@ namespace Teleop.Eval.StopLatency
                         {
                             results.Add(r);
                             Console.WriteLine(FormattableString.Invariant(
-                                $"  trial {p.Index + 1,2}: {DriveEnvelope.JointName(p.Joint),-9} at {p.SpeedRadPerSec:0.##} rad/s: kept moving {r.StopMs:0} ms and {r.TravelDeg:0.0} degrees " +
-                                $"(it trailed by {r.ErrorAtStopDeg:0.0} at the stop, went {r.PastTargetDeg:0.0} past it); tool point {r.ToolTravelCm:0.0} cm{(r.Settled ? "" : " (NOT settled by the hold's end)")}"));
+                                $"  trial {p.Index + 1,2}: {DriveEnvelope.JointName(p.Joint),-9} at {p.SpeedRadPerSec:0.##} rad/s: kept moving {r.StopMs:0} ms and {r.TravelDeg:0.0} degrees ") +
+                                FormattableString.Invariant($"(it trailed by {r.ErrorAtStopDeg:0.0} at the stop, went {r.PastTargetDeg:0.0} past it); tool point {r.ToolTravelCm:0.0} cm") +
+                                (r.Settled ? "" : " (NOT settled by the hold's end)"));
                         }
                         else
                         {
@@ -337,8 +338,8 @@ namespace Teleop.Eval.StopLatency
             foreach (var g in groups)
             {
                 Console.WriteLine(FormattableString.Invariant(
-                    $"  {DriveEnvelope.JointName(g.Key.Joint),-9} {g.Key.SpeedRadPerSec,4:0.##} rad/s: {Median(g.Select(r => r.StopMs)),4:0} ms, {Median(g.Select(r => r.TravelDeg)),5:0.0} degrees, " +
-                    $"{Median(g.Select(r => r.PastTargetDeg)),4:0.0} past the command; tool point {Median(g.Select(r => r.ToolTravelCm)),5:0.0} cm ({g.Count()} trials)"));
+                    $"  {DriveEnvelope.JointName(g.Key.Joint),-9} {g.Key.SpeedRadPerSec,4:0.##} rad/s: {Median(g.Select(r => r.StopMs)),4:0} ms, {Median(g.Select(r => r.TravelDeg)),5:0.0} degrees, ") +
+                    FormattableString.Invariant($"{Median(g.Select(r => r.PastTargetDeg)),4:0.0} past the command; tool point {Median(g.Select(r => r.ToolTravelCm)),5:0.0} cm ({g.Count()} trials)"));
             }
 
             if (jsonPath == null) return;

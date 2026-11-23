@@ -416,8 +416,9 @@ def load_robot(geometry_dir: str, name: str = "jetrover") -> Robot:
     return robot
 
 
-def load_asset(geometry_dir: str, asset: str) -> Tuple[List[Piece], Tuple[float, float, float]]:
-    """A mesh asset's convex pieces in its body frame at k = 1, and the asset's size (its manifest's box)."""
+def load_asset(geometry_dir: str, asset: str) -> Tuple[List[Piece], Tuple[float, float, float], str]:
+    """A mesh asset's convex pieces in its body frame at k = 1, the asset's size (its manifest's box), and how the cache made
+    them (its ``method``)."""
     key = (os.path.abspath(geometry_dir), "asset:" + asset)
     if key in _CACHE:
         return _CACHE[key]
@@ -429,7 +430,7 @@ def load_asset(geometry_dir: str, asset: str) -> Tuple[List[Piece], Tuple[float,
     except OSError as e:
         raise ClearanceUnavailable(f"no geometry for {asset} at {path} (just isaac-clearance-geometry): {e}") from e
     pieces = [piece_from_mesh(p["vertices"], p["faces"]) for p in doc["pieces"]]
-    out = (pieces, tuple(float(v) for v in doc["size"]))
+    out = (pieces, tuple(float(v) for v in doc["size"]), str(doc.get("method", "?")))
     _CACHE[key] = out
     return out
 
@@ -463,7 +464,7 @@ def _bodies(scene: Dict, geometry_dir: str) -> List[Body]:
         size = [float(v) for v in o["size"]]
         shape = o.get("shape")
         if shape == "mesh":
-            pieces, asset_size = load_asset(geometry_dir, o["asset"])
+            pieces, asset_size, _ = load_asset(geometry_dir, o["asset"])
             ratios = [e / a for e, a in zip(size, asset_size)]
             if not all(abs(r / ratios[2] - 1.0) <= 0.03 for r in ratios):
                 raise ClearanceUnavailable(f"{o['name']}: its size {size} is not its asset's {list(asset_size)} scaled uniformly")
@@ -560,6 +561,8 @@ class TakeWorld:
             raise ClearanceUnavailable(f"{path}: no scene.json: {e}") from e
         self.robot = load_robot(geometry_dir, self.scene.get("robotProfile", "jetrover"))
         self.bodies = _bodies(self.scene, geometry_dir)
+        meshes = sorted({load_asset(geometry_dir, o["asset"])[2] for o in self.scene["objects"] if o.get("shape") == "mesh"})
+        self.method = METHOD + (f"; mesh pieces by {' | '.join(meshes)}" if meshes else "")
         self.surfaces = _surfaces(self.scene)
         try:
             host = read_jlog(os.path.join(path, "robothost.jlog"), "robothost")
@@ -595,13 +598,14 @@ class TakeWorld:
         return centres, axes
 
     def obstacles_at(self, t: float) -> List[Tuple[Body, Optional[Tuple[float, ...]], float, List[Piece]]]:
-        """Every obstacle at time ``t`` that is not parked: (body, pose, scale, its pieces placed in the world)."""
+        """Every obstacle at time ``t`` that is not parked: (body, pose, its size factor, its pieces placed in the world)."""
         out = []
         for b in self.bodies:
             pose = self.poses.at(b.id, t)
             if pose is None or pose[2] < PARKED_BELOW_Z:
                 continue
-            k = b.base_scale * self.sizes.at(b.id, t)
+            factor = self.sizes.at(b.id, t)
+            k = b.base_scale * factor
             key = (b.id, pose, k)
             placed = self._placed.get(key)
             if placed is None:
@@ -610,7 +614,7 @@ class TakeWorld:
                 if len(self._placed) > 4096:
                     self._placed.clear()
                 self._placed[key] = placed
-            out.append((b, pose, k / b.base_scale if b.base_scale else k, placed))
+            out.append((b, pose, factor, placed))
         return out
 
 
@@ -629,10 +633,10 @@ def _nearest(boxes: List[Box], obstacles, best: float) -> Tuple[float, int]:
     link_c = centres.mean(axis=0)
     link_r = float(max(np.linalg.norm(c - link_c) + np.linalg.norm(h) for c, h in zip(centres, halves)))
     cands = []  # (lower bound, box index, body, piece or sphere)
-    for body, pose, _, placed in obstacles:
+    for body, pose, factor, placed in obstacles:
         if body.sphere > 0:
             centre = np.asarray(pose[:3], float)
-            r = body.sphere * _sphere_scale(body, placed)
+            r = body.sphere * factor
             for i, b in enumerate(boxes):
                 d = box_sphere_distance(b, centre, r)
                 cands.append((d, i, body, None, (centre, r)))
@@ -666,10 +670,6 @@ def _nearest(boxes: List[Box], obstacles, best: float) -> Tuple[float, int]:
         if d < best:
             best, best_id = d, body.id
     return best, best_id
-
-
-def _sphere_scale(body: Body, placed) -> float:
-    return 1.0
 
 
 def surface_distance(corners: np.ndarray, surfaces: Sequence[Tuple[str, Piece]]) -> float:
@@ -717,7 +717,7 @@ def compute(take, geometry_dir: str = DEFAULT_GEOMETRY, cutoff_mm: float = CUTOF
         obstacle_mm.append(tuple(row_d))
         obstacle_id.append(tuple(row_id))
         surface_mm.append(tuple(row_s))
-    return Clearance(robot.links, obstacle_mm, obstacle_id, surface_mm, float(cutoff_mm), METHOD)
+    return Clearance(robot.links, obstacle_mm, obstacle_id, surface_mm, float(cutoff_mm), world.method)
 
 
 def link_object_distance(world: TakeWorld, t: float, link: int, object_id: int, cutoff: float = 1.0) -> float:
@@ -731,5 +731,16 @@ def link_object_distance(world: TakeWorld, t: float, link: int, object_id: int, 
     return d
 
 
+def link_surface_distance(world: TakeWorld, t: float, link: int) -> float:
+    """The signed distance (m) from link ``link`` (its URDF index) to the nearest surface at time ``t``, joint values interpolated
+    between frames; NaN for a body PhysX never collides with a surface."""
+    if world.robot.links[link] in world.robot.fixed:
+        return float("nan")
+    values = world.joint_values_at([t])
+    centres, axes = world.link_boxes(values, 1)
+    boxes = [Box(centres[0, b], axes[0, b], world.robot.box_half[b]) for b in _box_index(world.robot)[link]]
+    return surface_distance(np.concatenate([b.corners() for b in boxes]), world.surfaces)
+
+
 __all__ = ["CUTOFF_MM", "Clearance", "ClearanceUnavailable", "DEFAULT_GEOMETRY", "NO_OBSTACLE", "TakeWorld", "compute",
-           "link_object_distance"]
+           "link_object_distance", "link_surface_distance"]

@@ -181,7 +181,7 @@ def geometry(tmp_path):
              [1, 5, 7], [1, 7, 3]]
     with open(d / "assets" / "test" / "cube.json", "w", encoding="utf-8") as f:
         json.dump({"format": "teleop-clearance-geometry", "version": 1, "asset": "test/cube", "size": [0.05, 0.05, 0.05],
-                   "pieces": [{"vertices": cube, "faces": faces}]}, f)
+                   "method": "a test cube", "pieces": [{"vertices": cube, "faces": faces}]}, f)
     C._CACHE.clear()
     return str(d)
 
@@ -288,7 +288,12 @@ def test_a_tiny_take_end_to_end(scenarios, geometry):
     assert np.isnan(s[:, 0]).all()  # the base stands in the bench: PhysX never collides it with a surface
     assert s[:, 6] == pytest.approx((0.035 + 0.002667 - 0.00739 / 2) * 1000, abs=0.01)  # the left pad's underside over the table top
     assert s[:, 7] == pytest.approx((0.035 + 0.003051 - 0.007074 / 2) * 1000, abs=0.01)
-    assert c.method == C.METHOD
+    assert c.method == C.METHOD + "; mesh pieces by a test cube"
+    world = C.TakeWorld(take.path, geometry)
+    t = take.frames[3].timing["sensed"]
+    assert C.link_object_distance(world, t, 6, 31) * 1000 == pytest.approx(10.0, abs=0.01)
+    assert C.link_surface_distance(world, t, 6) * 1000 == pytest.approx(s[3, 6], abs=0.01)
+    assert math.isnan(C.link_surface_distance(world, t, 0))
 
 
 def test_the_size_factor_in_force_scales_an_object(scenarios, geometry):

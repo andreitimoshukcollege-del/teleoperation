@@ -10,7 +10,8 @@ It reads the takes (a safety dataset's ``meta/teleop/takes.jsonl``, or take fold
 
 - **at every touch onset** (a ``WC`` record naming a (link, object) pair the one before it did not): the signed distance from
   that link to that object at the record's time (joint values interpolated between the frames around it), its median and
-  90th percentile of the absolute value, by object kind and link;
+  90th percentile of the absolute value, by object kind and link; for the table (object 0, since docs/adr/0038), the link's
+  distance to the nearest surface;
 - **in contact-free frames** (no ``WC`` contact with an object within half a frame and :data:`MARGIN_NS` of the frame's
   time): the share whose nearest obstacle overlaps a link (negative clearance), a false overlap;
 - **in contact**: each frame's clearance of the link ``WC`` names, against that object;
@@ -80,7 +81,12 @@ def check_take(path: str, geometry: str, traces: int = 0) -> Dict:
     world = clearance.TakeWorld(path, geometry)
     kinds = {int(o["id"]): (o.get("name", "?"), o.get("kind", "?")) for o in world.scene["objects"]}
     rows = []
-    for e in onsets(world):
+    for e in onsets(world, table=True):
+        if e["object"] == 0:  # the table (docs/adr/0038): the link's distance to the nearest surface
+            d = clearance.link_surface_distance(world, e["t"], e["link"])
+            name, kind = "table", "table"
+            rows.append({**e, "name": name, "kind": kind, "mm": round(d * 1000, 2)})
+            continue
         d = clearance.link_object_distance(world, e["t"], e["link"], e["object"])
         name, kind = kinds.get(e["object"], ("?", "?"))
         row = {**e, "name": name, "kind": kind, "mm": round(d * 1000, 2)}
@@ -115,7 +121,8 @@ def _pct(values: Sequence[float], q: float) -> float:
 
 def summary(results: Sequence[Dict]) -> List[str]:
     out = []
-    ons = [r for res in results for r in res["onsets"]]
+    table = [r["mm"] for res in results for r in res["onsets"] if r["kind"] == "table"]
+    ons = [r for res in results for r in res["onsets"] if r["kind"] != "table"]
     absd = [abs(r["mm"]) for r in ons]
     out.append(f"takes {len(results)}, frames {sum(r['frames'] for r in results)}, compute {np.mean([r['seconds'] for r in results]):.2f} s "
                f"a take (max {max(r['seconds'] for r in results):.2f} s)")
@@ -133,6 +140,11 @@ def summary(results: Sequence[Dict]) -> List[str]:
         for r in ons:
             by_name.setdefault(r["name"], []).append(r["mm"])
         out.append("  by object (signed median mm, n): " + ", ".join(f"{k} {_pct(v, 50):.1f} ({len(v)})" for k, v in sorted(by_name.items())))
+    if table:
+        out.append(f"table touch onsets {len(table)} (WC object 0): the link's surface distance |d| median {_pct(np.abs(table), 50):.2f} "
+                   f"mm, p90 {_pct(np.abs(table), 90):.2f} mm; signed median {_pct(table, 50):.2f} mm")
+    else:
+        out.append("table touch onsets: none (WC reports the table since docs/adr/0038; older takes have none)")
     free = [v for res in results for v in res["free"]]
     if free:
         out.append(f"contact-free frames {len(free)}: nearest obstacle < 0 mm {np.mean(np.asarray(free) < 0):.2%}, < -1 mm "

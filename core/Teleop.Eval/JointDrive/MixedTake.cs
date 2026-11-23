@@ -197,6 +197,9 @@ namespace Teleop.Eval.JointDrive
         /// <summary>The highest an aim or a pass meets an object, m above its bottom: about as high as the pads reach near the table (the shell <see cref="PitchFor"/> follows).</summary>
         public const float HighestContactMeters = 0.20f;
 
+        /// <summary>The share of aims that come straight out from the base (within 25 degrees) rather than round it.</summary>
+        public const double RadialShare = 0.25;
+
         /// <summary>An object every one of whose last this many aims and passes found no plan is tried no more in the take.</summary>
         public const int MaxObjectMisses = 8;
 
@@ -227,7 +230,6 @@ namespace Teleop.Eval.JointDrive
         private int _objectTries, _objectMoves;
         private readonly int[] _lineBreaks = new int[6]; // diagnostics: no seed, then a walk's break: IK, envelope, model, branch flip, over the base
         private readonly Dictionary<int, int> _missesInARow = new Dictionary<int, int>();
-        private readonly List<string> _seedFails = new List<string>();
 
         /// <summary>The object-directed moves tried and planned, and why the rest were not.</summary>
         internal string ObjectReport()
@@ -243,7 +245,7 @@ namespace Teleop.Eval.JointDrive
                     $"{o.Id} r {new Vector2(o.Center.X, o.Center.Y).Length():0.00} az {MathF.Atan2(o.Center.Y, o.Center.X) * 180 / MathF.PI:0} h {(o.Max.Z - o.Min.Z) * 100:0}cm{(o.Movable ? "" : " fixed")} misses {kv.Value}"));
             }
 
-            return counts + "; objects: " + string.Join(", ", objects) + "; seeds: " + string.Join(" | ", _seedFails);
+            return counts + "; objects: " + string.Join(", ", objects);
         }
 
         private bool Miss(int why)
@@ -561,15 +563,10 @@ namespace Teleop.Eval.JointDrive
             SafetyObject o = _objects[oi];
             const double deg = Math.PI / 180.0;
             float bearing = MathF.Atan2(o.Center.Y, o.Center.X);
-            // The arm's reach is a thin shell round the base, so most approaches come from the side; some straight out from it.
-            float side0 = Draw.Chance(ref _rng, 0.5) ? 1f : -1f;
-            float alpha = kind == ScriptMoveKind.Aim
-                ? bearing + side0 * (float)((Draw.Chance(ref _rng, 0.7) ? Draw.Uniform(ref _rng, 45, 100) : Draw.Uniform(ref _rng, 0, 45)) * deg)
-                : bearing + side0 * (float)((90 + Draw.Uniform(ref _rng, -35, 35)) * deg);
-            float elevation = (float)(Draw.Uniform(ref _rng, -15, 10) * deg);
-            var u = new Vector3(MathF.Cos(alpha) * MathF.Cos(elevation), MathF.Sin(alpha) * MathF.Cos(elevation), MathF.Sin(elevation));
-            var across = new Vector3(-MathF.Sin(alpha), MathF.Cos(alpha), 0f);
-            float halfAcross = Support(o, across), halfAlong = Support(o, u);
+            var radialDir = new Vector3(MathF.Cos(bearing), MathF.Sin(bearing), 0f);
+            var tangentDir = new Vector3(-MathF.Sin(bearing), MathF.Cos(bearing), 0f);
+            float rObj = new Vector2(o.Center.X, o.Center.Y).Length();
+            float halfRadial = Support(o, radialDir), halfTangential = Support(o, tangentDir);
 
             // The height the pads meet it at: from just above the model's floor to just below its top (a touch into its side, never
             // down through its top, where a shape may cover a hollow).
@@ -577,31 +574,57 @@ namespace Teleop.Eval.JointDrive
             zHi = MathF.Min(zHi, o.Min.Z + HighestContactMeters); // a tall fixture's upper part is out of the pads' reach
             if (zHi < zLo + 0.003f) return Miss(0);
             float h = (float)Draw.Uniform(ref _rng, zLo, zHi);
-            float lateral;
-            if (kind == ScriptMoveKind.Aim) lateral = (float)Draw.Uniform(ref _rng, -0.6, 0.6) * halfAcross;
+
+            // The pads' path. Mostly an arc round the base at one radius, from either side: the arm's reach is a thin shell round
+            // the base, and an arc keeps it there as a hand sweeping sideways does. Some aims come straight out from the base
+            // instead, a short way (the shell is about 6 cm deep at one pitch). Its height changes along it by a drawn slope.
+            var tools = new List<Vector3>();
+            float side = Draw.Chance(ref _rng, 0.5) ? 1f : -1f, slope = MathF.Tan((float)(Draw.Uniform(ref _rng, -12, 8) * deg)), approach;
+            if (kind == ScriptMoveKind.Pass || !Draw.Chance(ref _rng, RadialShare))
+            {
+                float rLine;
+                if (kind == ScriptMoveKind.Aim) rLine = rObj + (float)Draw.Uniform(ref _rng, -0.6, 0.6) * halfRadial;
+                else
+                {
+                    float out_ = Draw.Chance(ref _rng, 0.5) ? 1f : -1f;
+                    // Through a movable object, or beside it; a fixture only grazed or passed (it does not give way).
+                    rLine = rObj + out_ * (float)(o.Movable ? Draw.Uniform(ref _rng, 0, halfRadial + 0.07) : Draw.Uniform(ref _rng, halfRadial - 0.010, halfRadial + 0.07));
+                }
+
+                if (rLine < 0.10f) return Miss(1);
+                float s0 = -(halfTangential + 0.24f), s1 = kind == ScriptMoveKind.Aim ? 0f : halfTangential + 0.12f;
+                for (float a = s0; a <= s1 + 1e-6f; a += LineStepMeters)
+                {
+                    float phi = bearing + side * a / rLine;
+                    tools.Add(new Vector3(rLine * MathF.Cos(phi), rLine * MathF.Sin(phi), h + slope * a));
+                }
+
+                approach = side * 90f;
+            }
             else
             {
-                float side = Draw.Chance(ref _rng, 0.5) ? 1f : -1f;
-                // Through a movable object, or beside it; a fixture only grazed or passed (it does not give way).
-                lateral = side * (float)(o.Movable ? Draw.Uniform(ref _rng, 0, halfAcross + 0.07) : Draw.Uniform(ref _rng, halfAcross - 0.010, halfAcross + 0.07));
+                float delta = (float)(Draw.Uniform(ref _rng, -25, 25) * deg), elevation = MathF.Atan(slope);
+                var u0 = new Vector3(MathF.Cos(bearing + delta) * MathF.Cos(elevation), MathF.Sin(bearing + delta) * MathF.Cos(elevation), MathF.Sin(elevation));
+                var across = new Vector3(-MathF.Sin(bearing + delta), MathF.Cos(bearing + delta), 0f);
+                Vector3 middle = new Vector3(o.Center.X, o.Center.Y, h) + (float)Draw.Uniform(ref _rng, -0.6, 0.6) * Support(o, across) * across;
+                for (float a = -(Support(o, u0) + 0.14f); a <= 1e-6f; a += LineStepMeters) tools.Add(middle + a * u0);
+                approach = delta * 180f / MathF.PI;
             }
 
-            Vector3 middle = new Vector3(o.Center.X, o.Center.Y, h) + lateral * across;
-            float s0 = -(halfAlong + 0.24f), s1 = kind == ScriptMoveKind.Aim ? 0f : halfAlong + 0.12f;
-            // The line is first solved where it meets the object's box (or passes nearest it), with the wrist pitched for how far out
-            // that is: the arm's reach is a shell whose pitch changes with the radius. Other pitches are tried there too.
-            float meet = Math.Clamp(Meets(o, middle, u), s0, s1);
-            Vector3 at = middle + meet * u;
-            float radius = new Vector2(at.X, at.Y).Length();
+            // The path is first solved where it meets the object's box (or passes nearest it), the wrist pitched for how far out
+            // that is: the shell's pitch changes with the radius. Other pitches are tried there too.
+            int meet = Meets(o, tools);
+            float radius = new Vector2(tools[meet].X, tools[meet].Y).Length();
             float pitch = PitchFor(radius) + (float)(Draw.Uniform(ref _rng, -8, 8) * deg);
             float gripper = _hand.GripperEnd;
             List<Vector3>? wrists = null;
             List<ArmPose>? poses = null;
             List<float>? gaps = null;
+            int first = 0;
             for (int p = 0; p < 4 && wrists == null; p++)
             {
                 if (p > 0) pitch = PitchFor(radius + (float)Draw.Uniform(ref _rng, -0.03, 0.03)) + (float)(Draw.Uniform(ref _rng, -10, 10) * deg);
-                if (Line(oi, middle, u, s0, s1, meet, pitch, gripper, out List<Vector3> w, out List<ArmPose> q, out List<float> g)) (wrists, poses, gaps) = (w, q, g);
+                if (Line(oi, tools, meet, pitch, gripper, out List<Vector3> w, out List<ArmPose> q, out List<float> g, out int f0)) (wrists, poses, gaps, first) = (w, q, g, f0);
             }
 
             if (wrists == null || poses == null || gaps == null) return Miss(1);
@@ -650,6 +673,8 @@ namespace Teleop.Eval.JointDrive
             for (int i = stage; i < end; i++) path.Add(wrists[i]);
             path.Add(kind == ScriptMoveKind.Aim ? Vector3.Lerp(wrists[end - 1], wrists[end], f) : wrists[end]);
 
+            Vector3 u = path[path.Count - 1] - path[Math.Max(0, path.Count - 3)];
+            u = u.Length() > 1e-6f ? Vector3.Normalize(u) : radialDir;
             HandSnapshot before = _hand.Save();
             int drafts = _drafts.Count;
             // To where it starts, clear of its object's box by what that point leaves of it (less 4 mm, the model's margin kept), blind
@@ -671,9 +696,6 @@ namespace Teleop.Eval.JointDrive
             }
 
             _objectMoves++;
-            float approach = (alpha - bearing) * 180f / MathF.PI;
-            while (approach > 180f) approach -= 360f;
-            while (approach < -180f) approach += 360f;
             Add(kind, oi, offset, s, e, approach);
             _lastObjectEnd = Math.Max(_lastObjectEnd, e);
             if (offset < 0 && o.Movable)
@@ -706,32 +728,6 @@ namespace Teleop.Eval.JointDrive
         {
             _hand.Restore(before);
             _drafts.RemoveRange(drafts, _drafts.Count - drafts);
-        }
-
-        /// <summary>
-        /// Where along <paramref name="u"/> from <paramref name="origin"/> a line first enters <paramref name="o"/>'s box, m (the slab
-        /// test in the box's frame), or, when it misses the box, where it passes nearest the box's centre.
-        /// </summary>
-        internal static float Meets(in SafetyObject o, Vector3 origin, Vector3 u)
-        {
-            Quaternion toBox = Quaternion.Conjugate(Quaternion.Normalize(o.Rotation));
-            Vector3 p = Vector3.Transform(origin - o.Center, toBox), d = Vector3.Transform(u, toBox), half = o.HalfExtents;
-            float enter = float.NegativeInfinity, exit = float.PositiveInfinity;
-            for (int k = 0; k < 3; k++)
-            {
-                float pk = k == 0 ? p.X : k == 1 ? p.Y : p.Z, dk = k == 0 ? d.X : k == 1 ? d.Y : d.Z, hk = k == 0 ? half.X : k == 1 ? half.Y : half.Z;
-                if (MathF.Abs(dk) < 1e-9f)
-                {
-                    if (MathF.Abs(pk) > hk) return Vector3.Dot(o.Center - origin, u);
-                    continue;
-                }
-
-                float a = (-hk - pk) / dk, b = (hk - pk) / dk;
-                enter = MathF.Max(enter, MathF.Min(a, b));
-                exit = MathF.Min(exit, MathF.Max(a, b));
-            }
-
-            return enter <= exit ? enter : Vector3.Dot(o.Center - origin, u);
         }
 
         /// <summary>
@@ -792,37 +788,38 @@ namespace Teleop.Eval.JointDrive
         }
 
         /// <summary>
-        /// The aim's line: the pads' midpoint from <paramref name="middle"/> + <paramref name="s0"/>·<paramref name="u"/> to
-        /// <paramref name="middle"/> + <paramref name="s1"/>·<paramref name="u"/>, the wrist pitched at <paramref name="pitch"/>, solved
-        /// by the headset's IK point to point outward from the object (the point nearest <paramref name="middle"/> first, then back
-        /// toward the start and on toward the end), each part as far as its poses are in reach, in the envelope, free of the robot's
-        /// own model and on one branch. The wrist targets in order, their poses, and the arm's gap to the object at each.
+        /// An object-directed move's line: the pads' midpoint through <paramref name="tools"/> (5 mm apart), the wrist pitched at
+        /// <paramref name="pitch"/>, solved by the headset's IK point to point outward from the object (from index
+        /// <paramref name="meet"/>, where the path meets it, back toward the start and on toward the end), each part as far as its
+        /// poses are in reach, in the envelope, free of the robot's own model and on one branch. The wrist targets in order, their
+        /// poses, the arm's gap to the object at each, and the index in <paramref name="tools"/> of the first.
         /// </summary>
-        private bool Line(int oi, Vector3 middle, Vector3 u, float s0, float s1, float meet, float pitch, float gripper, out List<Vector3> wrists, out List<ArmPose> poses,
-            out List<float> gaps)
+        private bool Line(int oi, List<Vector3> tools, int meet, float pitch, float gripper, out List<Vector3> wrists, out List<ArmPose> poses, out List<float> gaps,
+            out int firstIndex)
         {
-            int n = (int)MathF.Ceiling((s1 - s0) / LineStepMeters) + 1;
+            int n = tools.Count;
             wrists = new List<Vector3>(n);
             poses = new List<ArmPose>(n);
             gaps = new List<float>(n);
+            firstIndex = 0;
             float lh = ToolInGripper.X * MathF.Cos(pitch) - ToolInGripper.Z * MathF.Sin(pitch);
             float lv = ToolInGripper.X * MathF.Sin(pitch) + ToolInGripper.Z * MathF.Cos(pitch);
             var wrist = new Vector3?[n];
             for (int i = 0; i < n; i++)
             {
-                Vector3 tool = middle + (s0 + i * LineStepMeters) * u;
+                Vector3 tool = tools[i];
                 var radial = new Vector2(tool.X, tool.Y);
                 if (radial.Length() < 0.05f) continue; // over the base
                 radial = Vector2.Normalize(radial);
                 wrist[i] = new Vector3(tool.X - lh * radial.X, tool.Y - lh * radial.Y, tool.Z - lv);
             }
 
-            // A first pose as near the object as the line has one, then outward from it both ways.
-            int mid = Math.Clamp((int)MathF.Round((meet - s0) / LineStepMeters), 0, n - 1), seed = -1;
+            // A first pose as near the object as the path has one, then outward from it both ways.
+            int seed = -1;
             var solved = new ArmPose[n];
             for (int d = 0; d <= 6 && seed < 0; d++)
             {
-                foreach (int i in new[] { mid - d, mid + d })
+                foreach (int i in new[] { meet - d, meet + d })
                 {
                     if (seed >= 0 || i < 0 || i >= n || !wrist[i].HasValue) continue;
                     if (Solve(_model.Home, wrist[i]!.Value, pitch, out solved[i], false)) seed = i;
@@ -832,14 +829,6 @@ namespace Teleop.Eval.JointDrive
             if (seed < 0)
             {
                 _lineBreaks[0]++;
-                if (_seedFails.Count < 6 && wrist[mid].HasValue)
-                {
-                    Vector3 tool = middle + (s0 + mid * LineStepMeters) * u;
-                    TrySolve(_model.Home, wrist[mid]!.Value, pitch, out ArmPose p0);
-                    _seedFails.Add(FormattableString.Invariant(
-                        $"tool r {new Vector2(tool.X, tool.Y).Length():0.000} z {tool.Z:0.000} pitch {pitch * 180 / MathF.PI:0} -> wrist ({wrist[mid]!.Value.X:0.000},{wrist[mid]!.Value.Y:0.000},{wrist[mid]!.Value.Z:0.000}) why {Why(_model.Home, wrist[mid]!.Value, pitch, out _)} pose {DrivePlan.Describe(p0)}"));
-                }
-
                 return false;
             }
 
@@ -859,6 +848,7 @@ namespace Teleop.Eval.JointDrive
                 if (why > 0) { _lineBreaks[why]++; break; }
                 last = i;
             }
+
             for (int i = first; i <= last; i++)
             {
                 wrists.Add(wrist[i]!.Value);
@@ -866,7 +856,30 @@ namespace Teleop.Eval.JointDrive
                 gaps.Add(Gap(oi, solved[i], gripper));
             }
 
+            firstIndex = first;
             return wrists.Count >= 3;
+        }
+
+        /// <summary>The first of <paramref name="tools"/> inside <paramref name="o"/>'s box, or, when none is, the one nearest it.</summary>
+        internal static int Meets(in SafetyObject o, List<Vector3> tools)
+        {
+            Quaternion toBox = Quaternion.Conjugate(Quaternion.Normalize(o.Rotation));
+            int nearest = 0;
+            float best = float.MaxValue;
+            for (int i = 0; i < tools.Count; i++)
+            {
+                Vector3 p = Vector3.Transform(tools[i] - o.Center, toBox);
+                Vector3 outside = Vector3.Max(Vector3.Abs(p) - o.HalfExtents, Vector3.Zero);
+                float d = outside.Length();
+                if (d <= 0f) return i;
+                if (d < best)
+                {
+                    best = d;
+                    nearest = i;
+                }
+            }
+
+            return nearest;
         }
 
         /// <summary>Why a chained point of a line fails: 0 none, 1 the IK, 2 the envelope, 3 the robot's model, 4 a branch flip.</summary>

@@ -79,6 +79,10 @@ twins, the robot and the user's own changes. Every agent in `.claude/agents/` re
   - Keep his and the user's personal details out of anything sent outside.
 - **Copying files:** `scp` is denied. Fetch a small result with `ssh host 'cat <file>' > <local>`, as the take tools do.
 
+- **Northeastern's Explorer cluster** (H200s, for trainer grids): `ssh explorer`, with the key RC issued (own keys are
+  refused there). Use the `just explorer-*` recipes. Never run work on its login nodes, and keep runs out of `/scratch`,
+  which RC empties every month. Access, limits and layout: `docs/explorer-cluster.md`.
+
 ## 4. The twins
 
 - **Recipes** (run from a clone whose HEAD is on GitHub; they check):

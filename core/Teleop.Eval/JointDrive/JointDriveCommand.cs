@@ -829,6 +829,13 @@ namespace Teleop.Eval.JointDrive
                     return 0;
                 }
 
+                // Edits pause the operator's motion (RobotHost takes them only then): on again for the move back.
+                if (ArmPower.ArmPowerCommand.Request(c.Robot, ArmPowerRequest.Hold, 10, out _) != 0)
+                {
+                    Console.Error.WriteLine("joint-drive: RobotHost did not switch motion back on after the reset; no more replays");
+                    return 0;
+                }
+
                 ArmPose start = c.Plan.Sample(c.Plan.ScriptStart);
                 if (!SetupMove(c, start, ref sequence))
                 {

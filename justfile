@@ -4063,7 +4063,7 @@ isaac-safety-batch takes="25" seed="1" categories="all" build="true" events="1-3
         set -e
         [ "$cat" != mixed ] || rssh -o ConnectTimeout=10 "$gpu" "rm -f ~/$sroot/.keep-look" || true
         # The takes it recorded, each with its own exit code (a mixed run's lines; any other run: one take, the run's code).
-        mapfile -t codes < <(sed -n 's/.*\[joint-drive\] take recorded: .*, ended \([0-9]*\)$/\1/p' "$jlog")
+        mapfile -t codes < <(sed -n 's/\r$//; s/.*\[joint-drive\] take recorded: .*, ended \([0-9]*\)$/\1/p' "$jlog") # joint-drive is Windows' dotnet: CRLF
         rm -f "$jlog"
         [ "$cat" = mixed ] && [ "${#codes[@]}" -gt 0 ] || codes=("$code")
         case "$code" in

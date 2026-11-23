@@ -959,14 +959,26 @@ namespace Teleop.Eval.JointDrive
         /// against <paramref name="check"/> (and the guard), redrawn on failure. The gripper is used on the way as in free movement.
         /// </summary>
         public bool MixedTo(Vector3 goal, float? pitch, float? roll, double slow, double tolerance, ArmCollisionModel check, out double start, out double end,
-            int attempts = 12)
+            int attempts = 12, bool overTheTop = false)
         {
             start = end = _free;
             for (int attempt = 0; attempt < attempts; attempt++)
             {
                 HandTimeline tl = _timeline.Copy();
-                double t0 = _free;
-                double next = Transport(tl, goal, t0, slow: slow, tolerance: tolerance, pitchGoal: pitch, rollGoal: roll);
+                double t0 = _free, next;
+                if (overTheTop && attempt % 2 == 1)
+                {
+                    // By a point above the goal first, as a hand reaching round something does.
+                    Vector3 above = goal + new Vector3(0, 0, (float)Draw.Uniform(ref _rng, 0.04, 0.08));
+                    above.Z = MathF.Min(above.Z, 0.20f);
+                    double mid = Transport(tl, above, t0, slow: slow, tolerance: 0.012, pitchGoal: pitch, rollGoal: roll, maxCorrections: 1);
+                    next = Transport(tl, goal, mid, slow: slow, tolerance: tolerance, pitchGoal: pitch, rollGoal: roll);
+                }
+                else
+                {
+                    next = Transport(tl, goal, t0, slow: slow, tolerance: tolerance, pitchGoal: pitch, rollGoal: roll);
+                }
+
                 double moving = tl.MotionEnd;
                 if (Grips) MaybeGrip(tl, t0, Math.Max(t0 + 0.3, moving));
                 if (!Accept(tl, t0, check)) continue;

@@ -678,7 +678,7 @@ namespace Teleop.Eval.JointDrive
             // to the others.
             float boxGap = (_ladders[oi] ??= new GapLadder(_profile, _model, o)).SignedGap(poses[stage]);
             ArmCollisionModel staging = SafetyScript.WithObjects(_model, new[] { o.Grown(boxGap - 0.004f - _model.Margin) }, 0f);
-            if (!_hand.MixedTo(wrists[stage], pitch, null, Slowness(), 0.004, staging, out double s, out double e))
+            if (!_hand.MixedTo(wrists[stage], pitch, null, Slowness(), 0.004, staging, out double s, out double e, overTheTop: true))
             {
                 Undo(before, drafts);
                 return Miss(4);
@@ -806,29 +806,22 @@ namespace Teleop.Eval.JointDrive
             // solver refuses what would hit the floor or the arm itself, and the envelope what bends a joint too far: which
             // pitches reach a point near the table changes with its radius and height); then outward from it both ways.
             float asked = pitch;
-            for (int k = 0; k < SeedPitchSteps.Length && seed < 0; k++)
+            var works = new List<int>(SeedPitchSteps.Length);
+            for (int k = 0; k < SeedPitchSteps.Length; k++)
             {
-                pitch = Math.Clamp(asked + SeedPitchSteps[k] * MathF.PI / 180f, -89f * MathF.PI / 180f, -8f * MathF.PI / 180f);
-                float lh = ToolInGripper.X * MathF.Cos(pitch) - ToolInGripper.Z * MathF.Sin(pitch);
-                float lv = ToolInGripper.X * MathF.Sin(pitch) + ToolInGripper.Z * MathF.Cos(pitch);
-                for (int i = 0; i < n; i++)
-                {
-                    Vector3 tool = tools[i];
-                    var radial = new Vector2(tool.X, tool.Y);
-                    wrist[i] = null;
-                    if (radial.Length() < 0.05f) continue; // over the base
-                    radial = Vector2.Normalize(radial);
-                    wrist[i] = new Vector3(tool.X - lh * radial.X, tool.Y - lh * radial.Y, tool.Z - lv);
-                }
+                if (Seed(tools, meet, PitchStep(asked, k), wrist, solved) >= 0) works.Add(k);
+                else if (works.Count > 0 && k >= 2) break; // past the run of pitches that work on this side
+            }
 
-                for (int d = 0; d <= 6 && seed < 0; d++)
-                {
-                    foreach (int i in new[] { meet - d, meet + d })
-                    {
-                        if (seed >= 0 || i < 0 || i >= n || !wrist[i].HasValue) continue;
-                        if (Solve(_model.Home, wrist[i]!.Value, pitch, out solved[i], false)) seed = i;
-                    }
-                }
+            if (works.Count > 0)
+            {
+                // The middle of the pitches that work, as near the one drawn as that allows: a line pitched at the edge of what reaches
+                // its first point breaks a step or two on.
+                var degrees = works.Select(k => SeedPitchSteps[k]).OrderBy(d => d).ToList();
+                float middle = degrees[degrees.Count / 2];
+                int best = works.OrderBy(k => MathF.Abs(SeedPitchSteps[k] - middle)).First();
+                pitch = PitchStep(asked, best);
+                seed = Seed(tools, meet, pitch, wrist, solved);
             }
 
             if (seed < 0)
@@ -880,8 +873,38 @@ namespace Teleop.Eval.JointDrive
             return wrists.Count >= 3;
         }
 
+        private static float PitchStep(float asked, int k) => Math.Clamp(asked + SeedPitchSteps[k] * MathF.PI / 180f, -89f * MathF.PI / 180f, -8f * MathF.PI / 180f);
+
+        /// <summary>The wrists of <paramref name="tools"/> at <paramref name="pitch"/> into <paramref name="wrist"/>, and the first of them near <paramref name="meet"/> the IK reaches (its pose in <paramref name="solved"/>), or -1.</summary>
+        private int Seed(List<Vector3> tools, int meet, float pitch, Vector3?[] wrist, ArmPose[] solved)
+        {
+            int n = tools.Count;
+            float lh = ToolInGripper.X * MathF.Cos(pitch) - ToolInGripper.Z * MathF.Sin(pitch);
+            float lv = ToolInGripper.X * MathF.Sin(pitch) + ToolInGripper.Z * MathF.Cos(pitch);
+            for (int i = 0; i < n; i++)
+            {
+                Vector3 tool = tools[i];
+                var radial = new Vector2(tool.X, tool.Y);
+                wrist[i] = null;
+                if (radial.Length() < 0.05f) continue; // over the base
+                radial = Vector2.Normalize(radial);
+                wrist[i] = new Vector3(tool.X - lh * radial.X, tool.Y - lh * radial.Y, tool.Z - lv);
+            }
+
+            for (int d = 0; d <= 6; d++)
+            {
+                foreach (int i in new[] { meet - d, meet + d })
+                {
+                    if (i < 0 || i >= n || !wrist[i].HasValue) continue;
+                    if (Solve(_model.Home, wrist[i]!.Value, pitch, out solved[i], false)) return i;
+                }
+            }
+
+            return -1;
+        }
+
         /// <summary>The pitches a line's first pose tries, degrees about the one drawn: that one, then nearer ones first.</summary>
-        private static readonly float[] SeedPitchSteps = { 0f, 8f, -8f, 16f, -16f, 24f, -24f, 32f, -32f, 44f, -44f };
+        private static readonly float[] SeedPitchSteps = { 0f, 8f, -8f, 16f, -16f, 24f, -24f, 32f, -32f, 40f, -40f, 48f, -48f };
 
         /// <summary>The first of <paramref name="tools"/> inside <paramref name="o"/>'s box, or, when none is, the one nearest it.</summary>
         internal static int Meets(in SafetyObject o, List<Vector3> tools)

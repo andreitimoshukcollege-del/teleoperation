@@ -81,7 +81,8 @@ namespace Teleop.Eval.JointDrive
             "                   [--operator-log <path> [--session-id <id>]] [--stop-file <path>] [--take <scenario>]\n" +
             "                   [--simulated-robot [--stall-seconds 1] [--stream-seconds 3]] [--scene <file> [--new-layout] [--touch-depth-mm 8] [--events 1-3]]\n" +
             "                   [--script mixed [--replays 0] [--max-joint-speed <rad/s>[,x4]] [--max-joint-accel <rad/s2>[,x4]] [--max-wrist-speed <m/s>]\n" +
-            "                                   [--max-peak-speed <m/s>] [--no-caps] [--no-style] [--offset-mm -40,60]] [--dry-run --layouts 1-200 [--rows]]";
+            "                                   [--max-peak-speed <m/s>] [--no-caps] [--no-style | --style p,r,t,s] [--blind n,r,v,l] [--offset-mm -40,60]]\n" +
+            "                   [--dry-run --layouts 1-200 [--rows]]";
 
         public static int Run(string[] args)
         {
@@ -158,6 +159,21 @@ namespace Teleop.Eval.JointDrive
                         case "--max-joint-speed": PerJoint(Next(), Caps().JointSpeed, "--max-joint-speed"); break;
                         case "--max-joint-accel": PerJoint(Next(), Caps().JointAcceleration, "--max-joint-accel"); break;
                         case "--no-style": mixedOptions.Style = null; break;
+                        case "--style":
+                            // pitch scale, roll scale, pitch time, slowness (docs/adr/0038, the mixed hand's pace)
+                            double[] st = Next().Split(',').Select(x => double.Parse(x, NumberStyles.Float, CultureInfo.InvariantCulture)).ToArray();
+                            if (st.Length != 4) throw new ArgumentException("--style is four numbers: pitch scale, roll scale, pitch time, slowness");
+                            mixedOptions.Style = new HandStyle { PitchScale = st[0], RollScale = st[1], PitchTime = st[2], Slow = st[3] };
+                            break;
+                        case "--blind":
+                            // near share, radial scale, vertical scale, low share (where layout-blind goals are drawn)
+                            double[] bl = Next().Split(',').Select(x => double.Parse(x, NumberStyles.Float, CultureInfo.InvariantCulture)).ToArray();
+                            if (bl.Length != 4) throw new ArgumentException("--blind is four numbers: near share, radial scale, vertical scale, low share");
+                            mixedOptions.Reach.NearShare = bl[0];
+                            mixedOptions.Reach.RadialScale = (float)bl[1];
+                            mixedOptions.Reach.VerticalScale = (float)bl[2];
+                            mixedOptions.Reach.LowShare = bl[3];
+                            break;
                         case "--max-wrist-speed": Caps().MaxWristSpeed = (float)Number(); break;
                         case "--max-peak-speed": Caps().MaxPeakSpeed = Number(); break;
                         case "--no-caps": mixedOptions.Caps = null; break;

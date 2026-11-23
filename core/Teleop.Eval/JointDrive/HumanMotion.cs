@@ -301,6 +301,16 @@ namespace Teleop.Eval.JointDrive
 
         /// <summary>The share of goals drawn as free movement draws them, a lognormal distance from where the hand is; the rest anywhere in the region.</summary>
         public double NearShare { get; set; } = 0.5;
+
+        /// <summary>
+        /// A near goal's direction from the hand, its part out from the base and its vertical part scaled by these before it is
+        /// normalized (1: as free movement draws it): below 1, the hand moves more round the base, as people do (workstream R: the
+        /// scripted hand moved the shoulder and elbow 1.2-1.4 times as fast as people at p90, the yaw 0.8 times).
+        /// </summary>
+        public float RadialScale { get; set; } = 1f;
+
+        /// <summary>See <see cref="RadialScale"/>.</summary>
+        public float VerticalScale { get; set; } = 1f;
     }
 
     /// <summary>One submovement: a minimum-jerk displacement of the hand (and of its pitch and roll), from <see cref="Start"/> over <see cref="Duration"/>.</summary>
@@ -1051,7 +1061,18 @@ namespace Teleop.Eval.JointDrive
                 if (Draw.Chance(ref _rng, reach.NearShare))
                 {
                     float a = (float)Math.Clamp(Draw.LogNormal(ref _rng, HandModel.TransportMedian, HandModel.TransportSigma), 0.01, HandModel.TransportMax);
-                    g = from + a * Draw.Direction(ref _rng, 0.7f);
+                    Vector3 direction = Draw.Direction(ref _rng, 0.7f);
+                    if (reach.RadialScale != 1f || reach.VerticalScale != 1f)
+                    {
+                        var radial = new Vector2(from.X, from.Y);
+                        radial = radial.Length() > 1e-4f ? Vector2.Normalize(radial) : Vector2.UnitX;
+                        var r3 = new Vector3(radial.X, radial.Y, 0f);
+                        var t3 = new Vector3(-radial.Y, radial.X, 0f);
+                        Vector3 scaled = Vector3.Dot(direction, r3) * reach.RadialScale * r3 + Vector3.Dot(direction, t3) * t3 + direction.Z * reach.VerticalScale * Vector3.UnitZ;
+                        if (scaled.Length() > 1e-4f) direction = Vector3.Normalize(scaled);
+                    }
+
+                    g = from + a * direction;
                     if (low) g.Z = (float)Draw.Uniform(ref _rng, zLow, zHigh);
                 }
                 else

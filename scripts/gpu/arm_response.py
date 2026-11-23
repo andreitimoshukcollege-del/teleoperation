@@ -264,6 +264,15 @@ def tool(pulses: Sequence[float], offsets: Dict[int, float]) -> Tuple[Tuple[floa
     return (p[0] + d[0], p[1] + d[1], p[2] + d[2]), q
 
 
+def wrist(pulses: Sequence[float], offsets: Dict[int, float]) -> Tuple[float, float, float]:
+    """The wrist pivot (wrist_link's origin: the point the headset's IK aims, ArmKinematics.Forward), base frame."""
+    global _JOINTS
+    if _JOINTS is None:
+        _JOINTS = kin.read_urdf(URDF)
+    values = {JOINT_OF[m]: (p - ZERO_PULSE) / PULSE_PER_RAD - offsets.get(m, 0.0) for m, p in zip(ARM, pulses)}
+    return kin.link_pose(_JOINTS, values, "wrist_link")[0]
+
+
 def dist(a: Sequence[float], b: Sequence[float]) -> float:
     return math.sqrt(sum((x - y) ** 2 for x, y in zip(a, b)))
 
@@ -342,15 +351,21 @@ def motion(eps: List[Episode]) -> Dict:
     cmd = {m: [] for m in ARM}
     meas = {m: [] for m in ARM}
     cmd_tool, meas_tool, cmd_tool_moving = [], [], []
+    largest_1_4, largest_1_5, wrist_mm = [], [], []
     axes = ([], [], [])
     moving = n = 0
     for e in eps:
         prev_a = prev_s = None
+        prev_w = None
         for s, a in zip(e.state, e.action):
             pa, qa = tool(a, e.offsets)
             ps, _ = tool(s, e.offsets)
+            wa = wrist(a, e.offsets)
             if prev_a is not None:
                 da = [abs(x - y) for x, y in zip(a, prev_a[0])]
+                largest_1_4.append(max(da[:4]) / PULSE_PER_RAD)
+                largest_1_5.append(max(da) / PULSE_PER_RAD)
+                wrist_mm.append(dist(wa, prev_w) * 1000.0)
                 for m, v in zip(ARM, da):
                     cmd[m].append(v)
                 for m, v in zip(ARM, (abs(x - y) for x, y in zip(s, prev_s[0]))):
@@ -364,9 +379,12 @@ def motion(eps: List[Episode]) -> Dict:
                 if max(da) >= 2.0:
                     moving += 1
                     cmd_tool_moving.append(d)
-            prev_a, prev_s = (a, pa, qa), (s, ps)
+            prev_a, prev_s, prev_w = (a, pa, qa), (s, ps), wa
     return {
         "frame_pairs": n,
+        "command_largest_joint_step_rad_1_4": summary(largest_1_4, (0.5, 0.9, 0.95, 0.99), 3),
+        "command_largest_joint_step_rad_1_5": summary(largest_1_5, (0.5, 0.9, 0.95, 0.99), 3),
+        "command_wrist_step_mm": summary(wrist_mm, (0.5, 0.9, 0.95, 0.99), 1),
         "share_command_moving": round(moving / n, 3) if n else None,
         "command_units_per_frame": {str(m): summary(cmd[m]) for m in ARM},
         "measured_units_per_frame": {str(m): summary(meas[m]) for m in ARM},

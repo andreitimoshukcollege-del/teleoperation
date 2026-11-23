@@ -4,7 +4,7 @@ Explorer is Northeastern Research Computing's (RC) Slurm cluster. We use it for 
 its H200s run the grid of training runs that would take the RTX 5090 box days, one run per GPU. Everything else (the
 twins, Isaac, LeRobot) stays on the GPU machine (`docs/gpu-machine.md`).
 
-What follows was measured on the account `timoshuk.a` on 2026-11-23. Limits change; the commands to re-check them are
+What follows was measured on the user's account on 2026-11-23. Limits change; the commands to re-check them are
 given with each.
 
 ## Getting in
@@ -50,9 +50,9 @@ change `IdentityFile`.
 
 | | |
 |---|---|
-| Slurm account | `m.dasari` (the PI's; the only one, so no `--account` is needed) |
-| Unix groups | `users`, `world-models` (with `m.dasari` and `cheng.qian`) |
-| Home | `/home/<user>`, on RC's VAST storage. Code, the trainer's image, logs |
+| Slurm account | the PI's (our only one, so no `--account` is needed) |
+| Unix groups | `users` and the lab's `world-models` (the PI, the labmate and us) |
+| Home | `/home/<user>`, on RC's VAST storage. Code, the trainer's images, logs. Its quota is not shown to us (`quota` fails there): ask RC before keeping many 3.9 GB images |
 | Lab space | `/projects/world-models`, 11 TB, group `world-models`, new files group-writable. Results we keep |
 | Scratch | `/scratch/<user>`, 20 TB and 20 M files per user. **Emptied on the first Tuesday of every month** (below) |
 | Software | Rocky Linux 9.7; Apptainer 1.4.5 system-wide (no module), `--fakeroot` works on compute nodes; `module avail` has cuda (12.1-13.2), anaconda3, miniconda3, python/3.13 |
@@ -69,6 +69,11 @@ The lab space also holds the lab's own conda install and notes (`/projects/world
 nothing the lab installs can change its libraries.
 
 ## The GPUs and their limits
+
+**Nothing is booked.** There is no calendar for the H200s: a job goes into Slurm's queue and starts when a GPU of the
+kind it asked for is free, the order set by priority (fair share: recent heavy use lowers it). Ours started at once
+on 2026-11-23. The limits below are what bound us, not a reservation. A reservation for a fixed time is something
+only RC can make, on request; the trainer does not need one.
 
 ```bash
 sinfo -o "%.18P %.5a %.11l %.6D %.25G"                     # partitions, time limits, GPUs per node
@@ -97,8 +102,15 @@ ssh explorer
 srun -p gpu-interactive --gres=gpu:h200:1 -n 1 -c 8 --mem=32G -t 1:00:00 --pty bash
 ```
 
-Pass `-n 1`: without it `srun` started our command twice. The login nodes are for editing and submitting; RC kills
-work run on them.
+Pass `-n 1`: without it `srun` started our command twice. A bare `srun --pty /bin/bash`, as the login banner
+suggests, gets a CPU node on `short` and no GPU.
+
+**The login nodes are for editing and submitting.** The banner asks for no heavy work there, and RC kills jobs run
+on them. The recipes keep to that: building, testing, preparing and training are all Slurm jobs. What they do on a
+login node is submit and read (`sbatch`, `squeue`, `sacct`, `tail` of logs), unpack a pack (8 MB), count a grid's
+combinations (`apptainer exec ... grid --list`: 0.9 s of CPU and 40 MB, measured), and, in `explorer-fetch`, a `tar`
+of the run. A fetch of a whole 30-run grid is the heaviest of these (perhaps a minute of CPU); if it grows past that,
+move the tar into a job or copy through the transfer node.
 
 ## The trainer there
 
@@ -142,6 +154,10 @@ What goes where:
 `at_once` stays at 4 unless RC raises the per-user cap. A grid task gets 6 h (`train-array.sbatch`), under the `gpu`
 partition's 8 h.
 
+Each push leaves its pack in `~/armpred/<pack>` and, once built, a 3.9 GB image in it. Nothing removes old ones;
+delete a pack folder by hand when it is no longer the one jobs or results refer to (`readlink ~/armpred/current` is
+the newest; a run's `model-card.json` names the commit that made it).
+
 By hand, from the unpacked folder (`cd ~/armpred/current` on a login node), the same jobs are:
 
 ```bash
@@ -161,6 +177,23 @@ names a transfer node for large copies in its SSH instructions (`xfer.discovery.
 it with the same key for anything big, e.g.
 `rsync -av -e "ssh -i ~/.ssh/<user>-<stamp>" bundle.tar <user>@xfer.discovery.neu.edu:/projects/world-models/<user>/`.
 Robot recordings and data bundles may go there only with the user's say-so, as on the GPU machine.
+
+## Changing the recipes
+
+What tripped the first version, so it does not again:
+
+- **`$USER` in a path sent over ssh.** A recipe's ssh command is a double-quoted string, so `$USER` in it expands on
+  this machine (the laptop's user), not on the cluster (the Northeastern username). `EXPLORER_RUNS` keeps a literal `$USER`, sent
+  `printf %q`-quoted and replaced on the far side (`${RUNS//\$USER/$USER}`).
+- **Apptainer sees only home, `/tmp` and the working directory.** Anything written under `/scratch` or `/projects` from
+  inside the image needs `--bind <folder>` (the sbatch files bind each output's parent, at the same path), or it fails
+  with "Read-only file system".
+- **Explorer's settings live on the sbatch command line** (`--partition`, `--gres=gpu:h200:1`), not in
+  `trainer/slurm/`, whose `#SBATCH` lines stay generic for any cluster. Command-line flags override `#SBATCH` lines.
+- **Dependent jobs use `--kill-on-invalid-dep=yes`**, so a failed build or prepare cancels what waits on it instead
+  of leaving it pending forever.
+- **Jobs run from the pack folder itself** (`readlink -f ~/armpred/current`), so a later push does not change what an
+  already-submitted job runs.
 
 ## When something fails
 

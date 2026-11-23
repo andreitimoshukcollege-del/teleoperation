@@ -22,6 +22,20 @@ contact (or, for a stop, of coming close), and the take records what was planned
 check holds for several: a recover take backs off from every touch, and each touched object is measured from its own first
 touch.
 
+Since 2026-11-22 (docs/adr/0038 decision 6):
+
+- **The ``mixed`` script** (one scenario, physics decides the outcome) is never checked against a category: a take is set
+  aside only when it is broken (:func:`broken`). What happened is computed afterwards and kept as metadata (``sidecars``).
+- **The table is object 0** of ``WC``. It is never a contact for the labels or the checks (:func:`contacts`), so the four
+  old categories behave as before; the sidecars label it on its own, and ``Options.table_unsafe`` counts it for anyone who
+  wants that.
+- **Captions:** every episode's task is ``move the arm`` (``sidecars.NEUTRAL_CAPTION``) unless the build asks for the old
+  category captions (``caption="category"``, for rebuild comparisons). The scenario is in ``meta/teleop/episodes.jsonl``.
+- **Labels:** ``safety_ranges.json`` at the root, world-models' format (exactly ``source``, ``notes``, ``unsafe_ranges``),
+  beside the three files above, which are kept.
+- **Sidecars** under ``meta/teleop/`` (``episodes.jsonl``, ``scenes.jsonl``, ``contacts.jsonl``, ``frames.parquet``,
+  ``report.json``), and a build can split one batch into several datasets by layout (:func:`build_split`).
+
 No LeRobot or pandas here but in :func:`write_labels`'s parquet, so the tests run with plain Python.
 """
 
@@ -35,11 +49,15 @@ import shutil
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Sequence, Tuple
 
-from .jlog import items, read_jlog
-from .takes import Camera, Frame, Take
+from .jlog import JlogError, items, read_jlog
+from .takes import Camera, Frame, Take, TakeError
 
 REACH, STOP, RECOVER, COLLIDE = "reach_no_obstacle", "stop_before_collision", "collide_and_recover", "collide_with_obstacle"
 CATEGORIES = (REACH, STOP, RECOVER, COLLIDE)
+MIXED = "mixed"  # docs/adr/0038 decision 1: one script, physics decides; checked only for being broken
+SCENARIOS = CATEGORIES + (MIXED,)
+TABLE = 0  # WC's object 0: the table, never a contact for the labels or the checks (docs/adr/0038 decision 4)
+FROZEN_SECONDS = 1.0  # a mixed take whose episode repeats one render this long is broken (the twin's are single repeats)
 SOURCE = "physics"
 GROUP_SUFFIX = "-safety"  # the datasets' folder, <out>/<robot>-<source>-safety/<batch>/: the watcher leaves it alone
 FRONT = "wrist"  # the twin's camera that is the real robot's (on the arm): his datasets' observation.images.front
@@ -58,13 +76,16 @@ class Contact:
     objects: Tuple[int, ...]
 
 
-def contacts(path: str) -> List[Contact]:
-    """The take's contact stretches from its ``WC`` records, by their ``sensed`` times."""
+def contacts(path: str, table: bool = False, obstacles: bool = True) -> List[Contact]:
+    """The take's contact stretches from its ``WC`` records, by their ``sensed`` times: the arm touching any object but the
+    table (object 0, docs/adr/0038 decision 4), which is never a contact for the labels or the checks. ``table`` adds the
+    table's pairs, and ``obstacles=False`` leaves the objects out (the table's own stretches). A ``WC`` lists every pair
+    touching then, so one naming only pairs left out ends a stretch."""
     host = read_jlog(os.path.join(path, "robothost.jlog"), "robothost")
     rows = sorted(((int(r[1]), r[2] if len(r) > 2 else "") for r in host.tag("WC")), key=lambda x: x[0])
     out, start, touched = [], None, set()
     for sensed, text in rows:
-        pairs = [it for it in items(text) if len(it) >= 3]
+        pairs = [it for it in items(text) if len(it) >= 3 and (table if int(it[2]) == TABLE else obstacles)]
         if pairs:
             if start is None:
                 start, touched = sensed, set()
@@ -146,7 +167,8 @@ def check(take: Take, labels: Sequence[int], stretches: Sequence[Contact],
     """Whether the take is what its category says (docs/adr/0036 amendment 1, decision 3), with any number of events
     (amendment 5): no contact for reach and stop; for recover every touch backed off from (each stretch of contact ends, and
     the episode does not end touching) and no touched object tipped; for a knock at least one touched object tipped or moved.
-    Each touched object is measured from its own first touch to the episode's end."""
+    Each touched object is measured from its own first touch to the episode's end. A ``mixed`` take (docs/adr/0038) has no
+    category to meet and always passes here, with what it touched and knocked as the reason; :func:`broken` is its check."""
     category = take.scenario
     unsafe = sum(labels)
     half = 1_000_000_000 // (2 * take.fps)  # as frame_labels: a frame's period reaches half a frame past its time
@@ -163,6 +185,10 @@ def check(take: Take, labels: Sequence[int], stretches: Sequence[Contact],
             return 0.0, 0.0
         return _tilt_degrees(a, b), math.dist(a[:3], b[:3])
 
+    if category == MIXED:  # docs/adr/0038 decision 1: no category to meet; broken() sets a broken take aside
+        over = [o for o in touched if moved(o)[0] >= TIPPED_DEGREES or moved(o)[1] >= MOVED_METERS]
+        what = f"knocked {over}" if over else (f"touched {list(touched)}" if touched else "no contact")
+        return Verdict(True, f"{what} ({n} contact{'s' if n != 1 else ''})", unsafe, touched, n)
     if category not in CATEGORIES:
         return Verdict(False, f"{category!r} is not a safety category", unsafe, touched, n)
     if category in (REACH, STOP):
@@ -187,6 +213,69 @@ def check(take: Take, labels: Sequence[int], stretches: Sequence[Contact],
                               f"{worst[1][0]:.0f} degrees, {worst[1][1] * 100:.1f} cm)", unsafe, touched, n)
     over = [o for o, (tl, d) in knocked if tl >= TIPPED_DEGREES or d >= MOVED_METERS]
     return Verdict(True, f"knocked {over} ({n} contact{'s' if n != 1 else ''})", unsafe, touched, n)
+
+
+# joint-drive's exit codes that mean the take was cut short (JointDriveCommand: 2 a stall, 3 the joint-state stream failed;
+# 130 stopped by hand). 0 is a clean finish, 4 a take RobotHost stopped itself (its episode still ends at the last command).
+DRIVE_EXITS = {2: "a joint stalled and joint-drive's watchdog stopped the drive (exit 2)",
+               3: "the joint-state stream failed and joint-drive's watchdog stopped the drive (exit 3)",
+               130: "joint-drive was stopped by hand (exit 130)"}
+
+
+def scenario_of(path: str) -> Optional[str]:
+    """A take's scenario, from its session.json, else its folder's name (``<root>/<scenario>/<take>``); None if neither."""
+    try:
+        with open(os.path.join(path, "session.json"), encoding="utf-8") as f:
+            name = (json.load(f).get("scenario") or {}).get("name")
+        if name:
+            return str(name)
+    except (OSError, ValueError, AttributeError):
+        pass
+    folder = os.path.basename(os.path.dirname(os.path.abspath(path)))
+    return folder or None
+
+
+def broken(path: str, take: Optional[Take], drive_exit: Optional[int] = None, error: Optional[BaseException] = None) -> List[str]:
+    """Why a ``mixed`` take cannot be an episode (docs/adr/0038 decision 1: the only reasons one is set aside), empty when
+    it can:
+
+    - it cannot be read as an episode (``error``, from ``read_take``): no scenario, a ``.jlog`` cut off or failing its trailer,
+      no accepted command, no camera recording colour, or no frame with its joints between the first and last command;
+    - joint-drive cut it short (``drive_exit``, :data:`DRIVE_EXITS`): a stall, a failed joint-state stream, or by hand;
+    - its frames ended early (an ``ER`` record: a nearly full disk, an I/O error);
+    - a writer dropped records (``robothost.jlog`` or the frames log's trailer): contacts or poses may be missing;
+    - no object poses (``WO``): not a take of a scene, so nothing can say what happened;
+    - its episode repeats one render for :data:`FROZEN_SECONDS` or more (the renderer stalled; the twin's repeats are single
+      frames, 1.3% of them, measured over 177 episodes on 2026-11-22)."""
+    reasons = []
+    if error is not None:
+        reasons.append(f"cannot be read as an episode ({error})")
+    if drive_exit is not None and drive_exit not in (0, 1, 4):
+        reasons.append(DRIVE_EXITS.get(drive_exit, f"joint-drive exited {drive_exit}"))
+    for writer in ("robothost", "isaac", "camera"):
+        p = os.path.join(path, writer + ".jlog")
+        if not os.path.exists(p):
+            continue
+        try:
+            log = read_jlog(p, writer)
+        except (JlogError, OSError, ValueError) as e:
+            if error is None:
+                reasons.append(f"{writer}.jlog cannot be read ({e})")
+            continue
+        if log.dropped:
+            reasons.append(f"{writer}.jlog dropped {log.dropped} record(s): its contacts or poses may be missing")
+        for r in log.tag("ER"):
+            reasons.append(f"its frames ended early ({writer}.jlog ER: {r[1] if len(r) > 1 else '?'})")
+        if writer == "robothost" and take is not None and not log.tag("WO"):
+            reasons.append("no object poses (WO): not a take of a scene")
+    if take is not None:
+        run = longest = 0
+        for f in take.frames:
+            run = run + 1 if f.timing.get("filled") else 0
+            longest = max(longest, run)
+        if longest and longest / take.fps >= FROZEN_SECONDS:
+            reasons.append(f"its frames repeat one render for {longest / take.fps:.1f} s (the renderer stalled)")
+    return reasons
 
 
 def planned_events(path: str) -> List[Dict]:
@@ -278,16 +367,20 @@ def knock_summary(rows: Sequence[Dict]) -> List[str]:
     return out
 
 
-def as_safety(take: Take) -> Take:
+def as_safety(take: Take, caption: str = "neutral") -> Take:
     """The take as the safety dataset writes it: its ``wrist`` camera named ``front`` (his tools read that), and its task
-    string its category (his ``label_safety.py`` reads an episode's category from it)."""
+    string ``move the arm`` (docs/adr/0038 decision 6: a caption naming the scenario gave the outcome away), or with
+    ``caption="category"`` its scenario, as datasets built before 2026-11-22 have it (his ``label_safety.py`` reads an
+    episode's category from it)."""
+    from .sidecars import Options
+
     if not any(c.name == FRONT for c in take.cameras):
         raise ValueError(f"{take.path}: no {FRONT} camera to be the front one")
     rename = {FRONT: "front"}
     cameras = [Camera(rename.get(c.name, c.name), c.width, c.height, c.sidecar) for c in take.cameras]
     frames = [Frame({rename.get(k, k): v for k, v in f.parts.items()}, f.state, f.action, f.timing) for f in take.frames]
-    return Take(take.path, take.session_id, take.robot, take.source, take.scenario, take.scenario, take.names, take.fps,
-                cameras, frames)
+    return Take(take.path, take.session_id, take.robot, take.source, take.scenario, Options(caption=caption).task(take.scenario),
+                take.names, take.fps, cameras, frames)
 
 
 def ranges(labels: Sequence[int]) -> List[List[int]]:
@@ -304,13 +397,13 @@ def ranges(labels: Sequence[int]) -> List[List[int]]:
 
 def events(episode: int, category: str, labels: Sequence[int]) -> List[dict]:
     """His ``safety_events.jsonl`` markers for one episode: ``contact`` at the first frame of each unsafe range, and for
-    ``collide_and_recover`` ``clear`` at the first safe frame after it. With one event a take (until 2026-11-21) that was one
+    ``collide_and_recover`` and ``mixed`` (docs/adr/0038) ``clear`` at the first safe frame after it. With one event a take (until 2026-11-21) that was one
     pair; with several (docs/adr/0036 amendment 5), each range has its own, so a lead window before a contact never spans the
     free movement between two events."""
     out = []
     for start, end in ranges(labels):
         out.append({"episode": episode, "kind": "contact", "frame_in_episode": start, "source": SOURCE})
-        if category == RECOVER and end + 1 < len(labels):
+        if category in (RECOVER, MIXED) and end + 1 < len(labels):
             out.append({"episode": episode, "kind": "clear", "frame_in_episode": end + 1, "source": SOURCE})
     return out
 
@@ -321,10 +414,23 @@ def label_rows(episode: int, category: str, labels: Sequence[int]) -> List[dict]
              "effective_category": category, "overridden": False, "source": SOURCE} for i, v in enumerate(labels)]
 
 
-def write_labels(root: str, episodes: Sequence[Tuple[int, str, Sequence[int]]]) -> None:
-    """Writes his three label files at the dataset ``root`` for ``episodes`` ((index, category, frame labels) each),
-    replacing any there."""
+NOTES = ("Physics labels from the JetRover's Isaac twin (teleoperation docs/adr/0036 amendment 1, docs/adr/0038 decision 6): "
+         "a frame is unsafe when any arm link touched a scene object other than the table at any moment of its frame period "
+         "(its time, half a frame either side); a touch is a contact point within 1 mm or an impulse (docs/adr/0036 amendment 4). "
+         "Table contacts are not unsafe: meta/teleop/frames.parquet (in_contact_table) and contacts.jsonl list them.")
+NOTES_TABLE = NOTES.replace("other than the table ", "or the table ").replace(
+    "Table contacts are not unsafe: meta/teleop/frames.parquet (in_contact_table) and contacts.jsonl list them.",
+    "Built with table contacts counted as unsafe (--table-unsafe).")
+RANGES_KEYS = ("source", "notes", "unsafe_ranges")  # world-models' loader (wm/labeling/ranges.py) rejects any other key
+
+
+def write_labels(root: str, episodes: Sequence[Tuple[int, str, Sequence[int]]], notes: str = NOTES) -> None:
+    """Writes the label files at the dataset ``root`` for ``episodes`` ((index, category, frame labels) each), replacing any
+    there: world-models' ``safety_ranges.json`` (docs/adr/0038 decision 6: exactly ``source``, ``notes`` and
+    ``unsafe_ranges``), and his three, whose ranges are the same."""
     manual = {str(ep): ranges(labels) for ep, _, labels in episodes if any(labels)}
+    with open(os.path.join(root, "safety_ranges.json"), "w", encoding="utf-8") as f:
+        json.dump(dict(zip(RANGES_KEYS, (SOURCE, notes, manual))), f, indent=2)
     with open(os.path.join(root, "manual_safety_labels.json"), "w", encoding="utf-8") as f:
         json.dump(manual, f, indent=2)
     with open(os.path.join(root, "safety_events.jsonl"), "w", encoding="utf-8") as f:
@@ -353,46 +459,132 @@ def set_aside(take_path: str, verdict: Verdict) -> str:
     return dest
 
 
-def build(writer, root: str, takes: Sequence[Take], log=print, jobs: int = 1, executor=None) -> List[Tuple[int, str, List[int]]]:
-    """Writes ``takes`` (already checked) as one safety dataset at ``root``: each an episode, in order, then his label
-    files. A dataset already there is refused: a batch's dataset is written once, from its kept takes.
+def _episode(take: Take, options):
+    """``sidecars.episode``, a failure naming its take (a worker's traceback stays in the worker)."""
+    from . import sidecars
+
+    try:
+        return sidecars.episode(take, options)
+    except Exception as e:  # noqa: BLE001  (re-raised with the take's path)
+        raise RuntimeError(f"{take.path}: its sidecars could not be made ({type(e).__name__}: {e})") from e
+
+
+def episodes_of(takes: Sequence[Take], options=None, jobs: int = 1, executor=None) -> list:
+    """Each take as a safety episode (``sidecars.episode``: its labels and sidecar lines), in order. ``jobs`` above 1: that
+    many spawned processes read the takes side by side (each take's records, and its clearance when there is geometry), or
+    ``executor`` does (tests)."""
+    from . import sidecars
+
+    options = options or sidecars.Options()
+    if executor is not None and len(takes) > 1:
+        return list(executor.map(_episode, takes, [options] * len(takes)))
+    if jobs > 1 and len(takes) > 1:
+        import multiprocessing
+        from concurrent.futures import ProcessPoolExecutor
+
+        with ProcessPoolExecutor(max_workers=min(jobs, len(takes)), mp_context=multiprocessing.get_context("spawn")) as pool:
+            return list(pool.map(_episode, takes, [options] * len(takes)))
+    return [_episode(t, options) for t in takes]
+
+
+def build(writer, root: str, takes: Sequence[Take], log=print, jobs: int = 1, executor=None, options=None, episodes=None,
+          split_of: Optional[Tuple[int, int]] = None) -> List[Tuple[int, str, List[int]]]:
+    """Writes ``takes`` (already checked) as one safety dataset at ``root``: each an episode, in order, then the label files
+    and the sidecars (docs/adr/0038 decision 6). A dataset already there is refused: a batch's dataset is written once, from
+    its kept takes. Returns (episode, scenario, frame labels) for each.
 
     ``jobs`` above 1 (docs/adr/0036 amendment 6): that many worker processes decode each take's frames and encode its videos
     ahead (``writer.prepare_job``), while this process appends the episodes in order with LeRobot as before; the same files
-    either way. ``executor`` replaces the workers (tests)."""
+    either way. ``executor`` replaces the workers (tests). ``options`` (``sidecars.Options``): the caption, whether table
+    contacts are unsafe, the clearance geometry, a stop model. ``episodes``: the takes' ``sidecars.episode`` already made
+    (:func:`build_split`); ``split_of``: (part, parts) for its report."""
+    from . import sidecars
     from .writer import append_take, prepared_in_order
 
+    options = options or sidecars.Options()
     if os.path.exists(root):
         raise FileExistsError(f"{root} exists: a safety dataset is written once (rebuild it into a new folder)")
-    shown = [as_safety(take) for take in takes]
+    infos = list(episodes) if episodes is not None else episodes_of(takes, options, jobs, executor)
+    shown = [as_safety(take, options.caption) for take in takes]
     if jobs > 1 and hasattr(writer, "prepare_job"):
         stream = prepared_in_order(writer, root, shown, jobs, executor=executor)
     else:
         stream = ((t, None) for t in shown)
-    written = []
+    written, sides = [], []
     with contextlib.closing(stream):
-        for take, (safe, prepared) in zip(takes, stream):
-            labels = frame_labels(take, contacts(take.path))
+        for take, info, (safe, prepared) in zip(takes, infos, stream):
+            labels = info.labels
             line = append_take(writer, root, safe, repo=f"local/{take.dataset_group}-safety_{os.path.basename(root)}",
                                prepared=prepared)
             written.append((int(line["episode"]), take.scenario, labels))
-            log(f"episode {line['episode']}: {take.scenario}, {len(labels)} frames, {sum(labels)} unsafe ({os.path.basename(take.path)})")
-    write_labels(root, written)
+            sides.append((int(line["episode"]), info))
+            log(f"episode {line['episode']}: {take.scenario}, {len(labels)} frames, {sum(labels)} unsafe ({os.path.basename(take.path)})"
+                f", {info.line['outcome']}")
+    write_labels(root, written, NOTES_TABLE if options.table_unsafe else NOTES)
+    rep = sidecars.write(root, sides, options, split_of)
+    for ep, info in sides:
+        if info.flags:
+            log(f"[timing] episode {ep}: {'; '.join(info.flags)}")
+    log("[mix] " + sidecars.mix(os.path.basename(root), rep))
     return written
 
 
+def split_roots(out: str, parts: int) -> List[str]:
+    """The datasets a split build writes for ``out``: ``<out>_<k>of<parts>``."""
+    return [f"{out}_{k}of{parts}" for k in range(1, parts + 1)]
+
+
+def build_split(writer, out: str, takes: Sequence[Take], parts: int, log=print, jobs: int = 1, executor=None,
+                options=None) -> List[str]:
+    """Writes ``takes`` as ``parts`` smaller safety datasets (docs/adr/0038 decision 6, items 20 and 21), each by
+    :func:`build` at ``<out>_<k>of<parts>``, every take in exactly one. Takes that share a replay group (``RP``), a layout
+    hash, or a scene and layout seed stay in one dataset (``sidecars.split``), so no layout and no replay is on two sides.
+    Each dataset's ``meta/teleop/report.json`` holds its scenario, outcome and contact counts, and the log its mix. Returns
+    the datasets' folders. None is written unless every take finds its place."""
+    from . import sidecars
+
+    options = options or sidecars.Options()
+    if parts < 1:
+        raise ValueError("a split build writes at least one dataset")
+    roots = split_roots(out, parts)
+    there = [r for r in roots if os.path.exists(r)]
+    if there:
+        raise FileExistsError(f"{there[0]} exists: a safety dataset is written once (rebuild it into a new folder)")
+    infos = episodes_of(takes, options, jobs, executor)
+    bins = sidecars.split([e.line for e in infos], parts)
+    for k, (root, members) in enumerate(zip(roots, bins), start=1):
+        log(f"[split] {os.path.basename(root)}: {len(members)} episode(s)")
+        build(writer, root, [takes[i] for i in members], log, jobs, executor, options, [infos[i] for i in members], (k, parts))
+    return roots
+
+
 # What a rebuild of a dataset's first episodes holds that is not file for file the reference's (compare_datasets):
+_TELEOP = os.path.join("meta", "teleop")
 _LINES = {"capture_timing.jsonl": "episode_saved_so_far", "safety_events.jsonl": "episode", "raw_ros_events.jsonl": None,
-          os.path.join("meta", "teleop", "takes.jsonl"): "episode"}  # one line a record, in episode order
-_TOTALS = {os.path.join("meta", "info.json"), os.path.join("meta", "stats.json"), os.path.join("meta", "tasks.parquet")}
+          os.path.join(_TELEOP, "takes.jsonl"): "episode", os.path.join(_TELEOP, "episodes.jsonl"): "episode",
+          os.path.join(_TELEOP, "scenes.jsonl"): "episode", os.path.join(_TELEOP, "contacts.jsonl"): "episode"}  # one line a record
+_TOTALS = {os.path.join("meta", "info.json"), os.path.join("meta", "stats.json"), os.path.join("meta", "tasks.parquet"),
+           os.path.join(_TELEOP, "report.json")}
+_PARQUETS = {os.path.join("meta", "safety_labels.parquet"), os.path.join(_TELEOP, "frames.parquet")}  # rows by episode_index
+# docs/adr/0038's files: a reference built before them has none, and is compared without them.
+_ADR38 = {"safety_ranges.json", os.path.join(_TELEOP, "episodes.jsonl"), os.path.join(_TELEOP, "scenes.jsonl"),
+          os.path.join(_TELEOP, "contacts.jsonl"), os.path.join(_TELEOP, "frames.parquet"), os.path.join(_TELEOP, "report.json"),
+          os.path.join(_TELEOP, "unavoidable_ranges.json")}
 
 
-def compare_datasets(reference: str, rebuilt: str) -> List[str]:
+def _first_ranges(ranges_by_episode: Dict[str, list], n: int) -> Dict[str, list]:
+    return {k: v for k, v in ranges_by_episode.items() if int(k) < n}
+
+
+def compare_datasets(reference: str, rebuilt: str, notes: Optional[List[str]] = None) -> List[str]:
     """How ``rebuilt``, a safety dataset written from the first takes of ``reference``'s ledger (all of them, or fewer),
     differs from it: every file of the rebuilt one, byte for byte, but ``takes.jsonl``'s ``convertedUtc`` (when it was
-    written) and JSON files as their values (key order aside); with fewer episodes the files that run on through every episode (``_LINES``, the label files) as the
-    reference's lines, rows and ranges of those episodes, and the totals (``_TOTALS``) not at all. Empty when they are the
-    same: how a build's speed-up is checked to change nothing (docs/adr/0036 amendment 6)."""
+    written) and JSON files as their values (key order aside); with fewer episodes the files that run on through every
+    episode (``_LINES``, the label files, the parquet rows) as the reference's lines, rows and ranges of those episodes, and
+    the totals (``_TOTALS``) not at all. A ``frames.parquet`` column only one of them has must be empty there. A reference
+    from before docs/adr/0038 has none of its files (``_ADR38``): those are left out, and said so in ``notes``. Empty when
+    they are the same: how a build's speed-up is checked to change nothing (docs/adr/0036 amendment 6). Rebuild an old
+    reference with ``--caption category``: its captions were its categories."""
     from .writer import recorded_episodes
 
     na, nb = recorded_episodes(reference), recorded_episodes(rebuilt)
@@ -400,13 +592,16 @@ def compare_datasets(reference: str, rebuilt: str) -> List[str]:
         return [f"{reference if na is None else rebuilt}: no LeRobot dataset there"]
     if nb > na:
         return [f"{rebuilt} has {nb} episodes, more than {reference}'s {na}"]
-    out = []
+    old = not os.path.exists(os.path.join(reference, "safety_ranges.json"))
+    out, skipped = [], []
     for folder, _, names in os.walk(rebuilt):
         for name in names:
             path = os.path.join(folder, name)
             rel = os.path.relpath(path, rebuilt)
             ref = os.path.join(reference, rel)
-            if not os.path.exists(ref):
+            if old and rel in _ADR38:
+                skipped.append(rel)
+            elif not os.path.exists(ref):
                 out.append(f"{rel}: not in the reference")
             elif rel in _LINES:
                 field = _LINES[rel]
@@ -427,16 +622,29 @@ def compare_datasets(reference: str, rebuilt: str) -> List[str]:
                     out.append(f"{rel}: differs from line {first + 1} ({len(mine)} lines, the reference's {len(theirs)})")
             elif rel == "manual_safety_labels.json":
                 with open(path, encoding="utf-8") as f, open(ref, encoding="utf-8") as g:
-                    mine, theirs = json.load(f), {k: v for k, v in json.load(g).items() if int(k) < nb}
+                    mine, theirs = json.load(f), _first_ranges(json.load(g), nb)
                 if mine != theirs:
                     out.append(f"{rel}: differs (episodes {sorted(int(k) for k in set(mine) | set(theirs) if mine.get(k) != theirs.get(k))})")
-            elif rel == os.path.join("meta", "safety_labels.parquet"):
+            elif rel in ("safety_ranges.json", os.path.join(_TELEOP, "unavoidable_ranges.json")):
+                key = "unsafe_ranges" if rel == "safety_ranges.json" else "unavoidable_ranges"
+                with open(path, encoding="utf-8") as f, open(ref, encoding="utf-8") as g:
+                    mine, theirs = json.load(f), json.load(g)
+                theirs[key] = _first_ranges(theirs.get(key, {}), nb)
+                if "unmeasured" in theirs:
+                    theirs["unmeasured"] = [e for e in theirs["unmeasured"] if e < nb]
+                if mine != theirs:
+                    out.append(f"{rel}: differs")
+            elif rel in _PARQUETS:
                 import pandas as pd
 
                 mine, theirs = pd.read_parquet(path), pd.read_parquet(ref)
                 theirs = theirs[theirs["episode_index"] < nb].reset_index(drop=True)
-                if not mine.equals(theirs):
-                    out.append(f"{rel}: differs ({len(mine)} rows, the reference's {len(theirs)} for those episodes)")
+                lone = [c for c in mine.columns if c not in theirs.columns and mine[c].notna().any()]
+                lone += [c for c in theirs.columns if c not in mine.columns and theirs[c].notna().any()]
+                common = [c for c in theirs.columns if c in mine.columns]
+                if lone or not mine[common].equals(theirs[common]):
+                    out.append(f"{rel}: differs ({len(mine)} rows, the reference's {len(theirs)} for those episodes"
+                               + (f"; columns {sorted(lone)} only on one side" if lone else "") + ")")
             elif rel in _TOTALS and nb < na:
                 continue
             elif rel.endswith(".json"):  # as JSON: LeRobot's stats.json orders its keys by a set's, so by the run's hash seed
@@ -447,9 +655,11 @@ def compare_datasets(reference: str, rebuilt: str) -> List[str]:
                 with open(path, "rb") as f, open(ref, "rb") as g:
                     if f.read() != g.read():
                         out.append(f"{rel}: differs")
+    if skipped and notes is not None:
+        notes.append(f"the reference predates docs/adr/0038: left out {', '.join(sorted(skipped))}")
     return sorted(out)
 
 
-__all__ = ["CATEGORIES", "compare_datasets", "Contact", "Verdict", "as_safety", "build", "check", "contacts", "event_timing", "events",
-           "first_touches", "frame_labels", "label_rows", "object_poses", "planned_events", "ranges", "set_aside",
-           "write_labels"]
+__all__ = ["CATEGORIES", "MIXED", "SCENARIOS", "compare_datasets", "Contact", "Verdict", "as_safety", "broken", "build",
+           "build_split", "check", "contacts", "episodes_of", "event_timing", "events", "first_touches", "frame_labels",
+           "label_rows", "object_poses", "planned_events", "ranges", "scenario_of", "set_aside", "split_roots", "write_labels"]

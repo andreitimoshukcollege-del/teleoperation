@@ -5,9 +5,11 @@
 - ``rebuild DATASET``: rebuild one dataset from its kept takes;
 - ``safety-check TAKE...``: each safety take's labels and verdict against its category, as JSON lines, with its planned
   events (``SE``) against the contacts physics reported (``--set-aside`` moves a failing one to ``_discarded``; no LeRobot
-  needed);
+  needed). A ``mixed`` take (docs/adr/0038) fails only when it is broken (``--drive-exit``: joint-drive's exit code), and
+  its line says what happened (its outcome);
 - ``safety-build --out DATASET TAKE...``: one safety dataset from checked takes, in the lab's label format
-  (docs/adr/0036 amendment 1), with ``--jobs`` worker processes preparing episodes ahead (amendment 6);
+  (docs/adr/0036 amendment 1) and world-models' (``safety_ranges.json``), with the sidecars of docs/adr/0038 decision 6,
+  ``--jobs`` worker processes preparing episodes ahead (amendment 6), and ``--split K`` for K smaller datasets by layout;
 - ``safety-compare REFERENCE REBUILT``: whether a safety dataset rebuilt from a reference's first takes holds the same
   files (amendment 6; no LeRobot needed);
 - ``knock-report TAKE...``: every object each take touched, its mass at its size and whether it was knocked over, as JSON
@@ -22,6 +24,7 @@ import os
 import sys
 import time
 
+from .sidecars import GEOMETRY_DIR
 from .takes import read_take
 
 
@@ -62,6 +65,10 @@ def main(argv=None) -> int:
     s.add_argument("takes", nargs="+")
     s.add_argument("--fps", type=int, default=15)
     s.add_argument("--set-aside", action="store_true", help="move a take that fails its category to _discarded")
+    s.add_argument("--drive-exit", type=int, default=None,
+                   help="joint-drive's exit code for the take: a mixed take it cut short (2, 3, 130) is broken (docs/adr/0038)")
+    s.add_argument("--geometry-dir", default="", help="the twin's collision geometry, to tell a near miss from no contact "
+                                                      "in a mixed take's outcome (default: none, the outcome says unknown)")
     s = sub.add_parser("knock-report")
     s.add_argument("takes", nargs="*")
     s = sub.add_parser("safety-build")
@@ -75,6 +82,20 @@ def main(argv=None) -> int:
                    help="worker processes decoding and encoding episodes ahead of the writer (1: all in this process, as "
                         "before); the files are the same either way (docs/adr/0036 amendment 6). Default: a quarter of the "
                         "cores, at most 8")
+    s.add_argument("--caption", choices=("neutral", "category"), default="neutral",
+                   help="every episode's task: 'move the arm' (docs/adr/0038), or its scenario's name as before 2026-11-22 "
+                        "(to compare a rebuild with an older dataset)")
+    s.add_argument("--table-unsafe", action="store_true", help="count the arm touching the table (WC object 0) as unsafe")
+    s.add_argument("--geometry-dir", default=GEOMETRY_DIR,
+                   help="the twin's collision geometry for each frame's clearance (workstream C's export; '' for none: "
+                        "clearance NaN). Default: %(default)s")
+    s.add_argument("--split", type=int, default=1, metavar="K",
+                   help="write K datasets, <out>_<k>of<K>, split by layout (a replay group and a layout never on two sides)")
+    s.add_argument("--stop-latency-ms", type=float, default=None,
+                   help="a stop model's latency: with --stop-time-ms or --stop-decel-rad-s2 writes "
+                        "meta/teleop/unavoidable_ranges.json (provisional, docs/adr/0038 item 17)")
+    s.add_argument("--stop-time-ms", type=float, default=None, help="the stop model's time from slowing to rest")
+    s.add_argument("--stop-decel-rad-s2", type=float, default=None, help="or its joints' deceleration")
     s = sub.add_parser("safety-compare")
     s.add_argument("reference", help="a safety dataset")
     s.add_argument("rebuilt", help="one written from the first takes of the reference's meta/teleop/takes.jsonl")
@@ -83,28 +104,56 @@ def main(argv=None) -> int:
     if a.command == "safety-compare":
         from . import safety
 
-        diffs = safety.compare_datasets(os.path.expanduser(a.reference), os.path.expanduser(a.rebuilt))
+        notes = []
+        diffs = safety.compare_datasets(os.path.expanduser(a.reference), os.path.expanduser(a.rebuilt), notes)
+        for n in notes:
+            print("[compare] note: " + n)
         for d in diffs:
             print("[compare] " + d)
         print(f"[compare] {'the same' if not diffs else f'{len(diffs)} difference(s)'}: {a.rebuilt} against {a.reference}")
         return 1 if diffs else 0
 
     if a.command == "safety-check":
-        from . import safety
+        from . import safety, sidecars
+        from .jlog import JlogError
+        from .takes import TakeError
 
         failed = 0
         for path in a.takes:
-            t = read_take(path, a.fps)
+            try:
+                t = read_take(path, a.fps)
+            except (TakeError, JlogError, OSError, ValueError, KeyError) as e:
+                if safety.scenario_of(path) != safety.MIXED:
+                    raise  # the four categories as before
+                reasons = safety.broken(path, None, a.drive_exit, error=e)
+                v = safety.Verdict(False, "broken: " + "; ".join(reasons), 0, (), 0)
+                moved = safety.set_aside(path, v) if a.set_aside else None
+                failed += 1
+                print(json.dumps({"take": os.path.abspath(path), "category": safety.MIXED, "ok": False, "reason": v.reason,
+                                  "frames": 0, "unsafeFrames": 0, "touched": [], "unsafeRanges": [], "contacts": 0,
+                                  "eventsDrawn": None, "events": [], "broken": reasons, "setAside": moved}), flush=True)
+                continue
             stretches = safety.contacts(path)
             labels = safety.frame_labels(t, stretches)
             v = safety.check(t, labels, stretches, safety.object_poses(path))
+            reasons = safety.broken(path, t, a.drive_exit) if t.scenario == safety.MIXED else []
+            if reasons:
+                v = safety.Verdict(False, "broken: " + "; ".join(reasons), v.unsafe_frames, v.touched, v.contacts)
             planned = safety.planned_events(path)  # read before a failing take is moved
+            what = {}
+            try:  # what happened (docs/adr/0038 decision 6), for every take; never a reason to set one aside
+                e = sidecars.episode(t, sidecars.Options(geometry_dir=a.geometry_dir or None))
+                what = {k: e.line[k] for k in ("outcome", "tableContact", "tableContacts", "knocked", "minClearanceMm",
+                                               "firstContactS", "afterLastContactS", "timingFlags", "group", "role", "edit")}
+            except Exception as err:  # noqa: BLE001
+                what = {"outcomeError": f"{type(err).__name__}: {err}"}
             moved = safety.set_aside(path, v) if (a.set_aside and not v.ok) else None
             failed += 0 if v.ok else 1
             print(json.dumps({"take": os.path.abspath(path), "category": t.scenario, "ok": v.ok, "reason": v.reason,
                               "frames": len(labels), "unsafeFrames": v.unsafe_frames, "touched": list(v.touched),
                               "unsafeRanges": safety.ranges(labels), "contacts": v.contacts,
                               "eventsDrawn": planned[0]["drawn"] if planned else None, "events": safety.event_timing(t, stretches, planned),
+                              **({"broken": reasons} if t.scenario == safety.MIXED else {}), **what,
                               "setAside": moved}), flush=True)
         return 1 if failed else 0
 
@@ -124,15 +173,32 @@ def main(argv=None) -> int:
         return 0 if rows else 1
 
     if a.command == "safety-build":
-        from . import safety
+        from . import safety, sidecars
         from .writer import SAFETY_CRF, SAFETY_PRESET, LeRobotWriter
 
-        takes = [read_take(path, a.fps) for path in a.takes]
-        writer = LeRobotWriter(a.vcodec, crf=SAFETY_CRF if a.crf is None else a.crf, preset=SAFETY_PRESET if a.preset is None else a.preset)
         if a.jobs < 1:
             p.error("--jobs is at least 1")
-        _log(f"building {len(takes)} episode(s) with {a.jobs} worker(s)")
-        safety.build(writer, os.path.expanduser(a.out), takes, _log, jobs=a.jobs)
+        if a.split < 1:
+            p.error("--split is at least 1")
+        stop = None
+        if a.stop_latency_ms is not None or a.stop_time_ms is not None or a.stop_decel_rad_s2 is not None:
+            if a.stop_latency_ms is None:
+                p.error("a stop model needs --stop-latency-ms")
+            try:
+                stop = sidecars.StopModel(a.stop_latency_ms, a.stop_time_ms, a.stop_decel_rad_s2)
+            except ValueError as e:
+                p.error(str(e))
+        options = sidecars.Options(caption=a.caption, table_unsafe=a.table_unsafe, geometry_dir=a.geometry_dir or None, stop=stop)
+        takes = [read_take(path, a.fps) for path in a.takes]
+        writer = LeRobotWriter(a.vcodec, crf=SAFETY_CRF if a.crf is None else a.crf, preset=SAFETY_PRESET if a.preset is None else a.preset)
+        _log(f"building {len(takes)} episode(s) with {a.jobs} worker(s): captions {a.caption}, table contacts "
+             f"{'unsafe' if a.table_unsafe else 'not unsafe'}, clearance from {a.geometry_dir or 'nothing'}"
+             + (f", {a.split} datasets" if a.split > 1 else "") + (", unavoidable ranges" if stop else ""))
+        if a.split > 1:
+            roots = safety.build_split(writer, os.path.expanduser(a.out), takes, a.split, _log, jobs=a.jobs, options=options)
+            _log("datasets: " + " ".join(roots))
+        else:
+            safety.build(writer, os.path.expanduser(a.out), takes, _log, jobs=a.jobs, options=options)
         return 0
 
     if a.command == "inspect":

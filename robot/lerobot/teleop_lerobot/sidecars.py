@@ -51,10 +51,13 @@ OPEN_END = 2 ** 62  # a contact no WC ended (as safety.OPEN_END)
 JETROVER_LINKS = ("base_link", "turntable", "proximal_link", "distal_link", "wrist_link", "gripper_link", "left_finger",
                   "right_finger")
 
-# The mixed script's planned-move record in robothost.jlog (workstream M; trainer/contract/SESSION_FORMAT.md). Metadata
-# only, read leniently: every field kept, as a string, under the names SESSION_FORMAT.md gives them when they are known.
+# The mixed script's planned-move record in robothost.jlog, one per planned move (workstream M; trainer/contract/
+# SESSION_FORMAT.md has the authoritative field order). Metadata only, never labels, read leniently: every field kept as a
+# string, named by MOVE_FIELDS in order after ``t`` (as M described them on 2026-11-22: index, count, kind
+# free/aim/pass/pause/reverse, object, offset, the model's gap, then the start, contact, closest and end times), the rest
+# under ``extra``.
 MOVE_TAGS: Tuple[str, ...] = ("MV",)
-MOVE_FIELDS: Tuple[str, ...] = ()
+MOVE_FIELDS: Tuple[str, ...] = ("index", "count", "kind", "object", "offset", "gap", "start", "contact", "closest", "end")
 
 
 @dataclass(frozen=True)
@@ -290,6 +293,14 @@ def planned_moves(host: Jlog) -> List[Dict]:
                     row.setdefault("extra", []).append(v)
             out.append(row)
     return out
+
+
+def _kinds(moves: Sequence[Dict]) -> Dict[str, int]:
+    out: Dict[str, int] = {}
+    for m in moves:
+        k = str(m.get("kind", "?"))
+        out[k] = out.get(k, 0) + 1
+    return dict(sorted(out.items()))
 
 
 def planned_events(host: Jlog) -> List[Dict]:
@@ -561,12 +572,15 @@ def clearance(take: Take, geometry_dir: Optional[str]):
     still written, with NaN clearance)."""
     if not geometry_dir:
         return None, "no geometry folder given"
+    folder = os.path.expanduser(geometry_dir)
+    if not os.path.isdir(folder):
+        return None, f"no geometry at {geometry_dir}"
     try:
         from . import clearance as module
     except ImportError as e:
         return None, f"no clearance module ({e})"
     try:
-        c = module.compute(take, os.path.expanduser(geometry_dir))
+        c = module.compute(take, folder)
     except Exception as e:  # noqa: BLE001  (ClearanceUnavailable, or a fault in it: the dataset gets NaN, and says why)
         return None, f"{type(e).__name__}: {e}"
     n = len(take.frames)
@@ -771,7 +785,7 @@ def episode(take: Take, options: Options = Options(), records: Optional[Records]
         "materials": _named(materials[1]) if materials and len(materials) > 1 else None,
         "clutter": _clutter(_by_change(frames.tag("CL"), change)) if frames is not None else None,
         "cameraJitter": camera_jitter(scene, cams),
-        "moves": {"count": len(moves), "records": moves}, "events": planned_events(host)}
+        "moves": {"count": len(moves), "kinds": _kinds(moves), "records": moves}, "events": planned_events(host)}
     if "replayError" in rp:
         line["replayError"] = rp["replayError"]
     scene_line = {"take": os.path.abspath(take.path), "sceneName": line["sceneName"], "sceneSha256": scene_sha,

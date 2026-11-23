@@ -15,11 +15,11 @@ REPO = os.path.abspath(os.path.join(HERE, "..", "..", ".."))
 MS = 1_000_000
 
 
-def write_jlog(path, writer, sid, rows):
+def write_jlog(path, writer, sid, rows, dropped=0):
     lines = [f"JSES|1|{writer}|1000000000|CLOCK_MONOTONIC|{sid}"] + ["|".join(str(x) for x in r) for r in rows]
     body = ("\n".join(lines) + "\n").encode("ascii")
     with open(path, "wb") as f:
-        f.write(body + f"END|{len(rows)}|0|{hashlib.sha256(body).hexdigest()}\n".encode("ascii"))
+        f.write(body + f"END|{len(rows)}|{dropped}|{hashlib.sha256(body).hexdigest()}\n".encode("ascii"))
 
 
 class Sidecar:
@@ -59,15 +59,21 @@ def session_json(take, fmt, version, source, scenario="reach", description="reac
     return sid
 
 
-def frames_log(take, writer, folder, sid, cameras, vfs, image=lambda cam, n: f"{cam}-{n}".encode()):
-    """``vfs``: (t ns, frame, stateSensed, flags). Every camera's rgb, one record per frame."""
+def frames_log(take, writer, folder, sid, cameras, vfs, image=lambda cam, n: f"{cam}-{n}".encode(), extra=(), vq=None, cm=None):
+    """``vfs``: (t ns, frame, stateSensed, flags). Every camera's rgb, one record per frame. ``extra``: more rows (``[tag,
+    ...]``) after the cameras'; ``vq(n, sensed)``: frame n's posed joints ({joint: value}), written as a ``VQ`` before its
+    ``VF``; ``cm(camera)``: that camera's ``CM`` row instead of the default."""
     sidecars = {c: Sidecar(os.path.join(take, folder, c + ".rgb.frames")) for c in cameras}
-    rows = [["CM", c, 64, 48, 1, 1, 32, 24, 0.01, 6, 0, 0, 0, 1, 0, 0, 0, "", "rgb;depth;mask", "base"] for c in cameras]
+    rows = [(cm(c) if cm else None) or ["CM", c, 64, 48, 1, 1, 32, 24, 0.01, 6, 0, 0, 0, 1, 0, 0, 0, "", "rgb;depth;mask", "base"]
+            for c in cameras]
+    rows.extend(list(r) for r in extra)
     for t, n, sensed, flags in vfs:
         parts = []
         for c in cameras:
             off, length = sidecars[c].add(image(c, n))
             parts.append(f"{c}.rgb:{off}:{length}")
+        if vq is not None:
+            rows.append(["VQ", n, sensed, ";".join(f"{k}:{v}" for k, v in sorted(vq(n, sensed).items()))])
         rows.append(["VF", t, n, sensed, flags, ";".join(parts)])
     for s in sidecars.values():
         s.close()
@@ -75,14 +81,26 @@ def frames_log(take, writer, folder, sid, cameras, vfs, image=lambda cam, n: f"{
 
 
 def jetrover_take(root, name="20261112T100000Z-take001", scenario="reach", source="isaac", gap=None, image=None,
-                  cameras=("third-left", "wrist"), extra=(), jitter=0.0):
+                  cameras=("third-left", "wrist"), extra=(), jitter=0.0, isaac_extra=(), vq=None, cm=None, scene=None,
+                  session=None, dropped=0):
     """A JetRover take: commands accepted from 1.0 to 3.0 s, RO and RI every 20 ms, frames at 30 fps from 0.5 to
     3.5 s (the first two with B). ``gap``: (from, to) seconds with no frame recorded. ``extra``: more robothost.jlog rows
     (``[tag, t, ...]``), such as contacts (WC) and object poses (WO). ``jitter``: each frame's time wobbles by up to that
-    many ms (seeded), as the twin's renderer's do (sd ~3 ms, 2026-11-15)."""
+    many ms (seeded), as the twin's renderer's do (sd ~3 ms, 2026-11-15). ``isaac_extra``, ``vq``, ``cm``: the frames log's
+    (:func:`frames_log`). ``scene``: written as scene.json. ``session``: more session.json keys. ``dropped``: the
+    robothost.jlog trailer's dropped records."""
     take = os.path.join(root, scenario, name)
     os.makedirs(take)
     sid = session_json(take, "jetrover-session", 1, source, scenario)
+    if session:
+        with open(os.path.join(take, "session.json"), encoding="utf-8") as f:
+            meta = json.load(f)
+        meta.update(session)
+        with open(os.path.join(take, "session.json"), "w", encoding="utf-8") as f:
+            json.dump(meta, f)
+    if scene is not None:
+        with open(os.path.join(take, "scene.json"), "w", encoding="utf-8") as f:
+            json.dump(scene, f)
     rows = []
     for k in range(0, 41):  # JC every 50 ms, 1.0..3.0 s
         t = (1000 + 50 * k) * MS
@@ -95,7 +113,7 @@ def jetrover_take(root, name="20261112T100000Z-take001", scenario="reach", sourc
         rows.append(["RI", t + 5 * MS, ri])
     rows.extend(list(r) for r in extra)
     rows.sort(key=lambda r: int(r[1]))
-    write_jlog(os.path.join(take, "robothost.jlog"), "robothost", sid, rows)
+    write_jlog(os.path.join(take, "robothost.jlog"), "robothost", sid, rows, dropped=dropped)
     vfs = []
     wobble = __import__("random").Random(7)
     for n in range(0, 91):
@@ -106,7 +124,7 @@ def jetrover_take(root, name="20261112T100000Z-take001", scenario="reach", sourc
     folder = "camera" if source == "robot" else "isaac"
     frames_log(take, "camera" if source == "robot" else "isaac", folder, sid,
                ["front"] if source == "robot" else list(cameras), vfs,
-               **({"image": image} if image else {}))
+               **({"image": image} if image else {}), extra=isaac_extra, vq=vq, cm=cm)
     finish(take)
     return take
 

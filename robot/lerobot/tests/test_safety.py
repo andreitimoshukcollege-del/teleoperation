@@ -110,11 +110,14 @@ def test_no_contact_categories_fail_on_any_touch(scenarios):
     assert not verdict(take(scenarios, "collide_with_obstacle", [], name="20261114T100300Z-take004"))[2].ok  # never touched
 
 
-def test_the_dataset_take_has_his_front_camera_and_category_task(scenarios):
+def test_the_dataset_take_has_his_front_camera_and_a_neutral_task_or_its_category(scenarios):
     t = safety.as_safety(read_take(take(scenarios, "collide_and_recover", [])))
     assert [c.name for c in t.cameras] == ["third-left", "front"]
     assert all("front" in f.parts and "wrist" not in f.parts for f in t.frames)
-    assert t.task == "collide_and_recover" and t.scenario == "collide_and_recover"
+    # docs/adr/0038 decision 6: the caption no longer names the scenario; the old one on request (rebuild comparisons).
+    assert t.task == "move the arm" and t.scenario == "collide_and_recover"
+    old = safety.as_safety(read_take(take(scenarios, "collide_and_recover", [], name="20261114T100100Z-take002")), caption="category")
+    assert old.task == "collide_and_recover"
 
 
 def test_his_label_files(tmp_path):

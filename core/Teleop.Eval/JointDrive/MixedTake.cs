@@ -229,9 +229,21 @@ namespace Teleop.Eval.JointDrive
         private readonly Dictionary<int, int> _missesInARow = new Dictionary<int, int>();
 
         /// <summary>The object-directed moves tried and planned, and why the rest were not.</summary>
-        internal string ObjectReport() => FormattableString.Invariant(
-            $"object moves {_objectMoves} of {_objectTries} tried (missed: too low {_objectMisses[0]}, no line {_objectMisses[1]}, no end {_objectMisses[2]}, no start {_objectMisses[3]}, move there {_objectMisses[4]}, approach {_objectMisses[5]}, sweep {_objectMisses[6]}; lines: no seed {_lineBreaks[0]}, walks broken by IK {_lineBreaks[1]}, envelope {_lineBreaks[2]}, model {_lineBreaks[3]}, flip {_lineBreaks[4]}, base {_lineBreaks[5]}); objects: " + string.Join(", ", _missesInARow.Select(kv =>
-            FormattableString.Invariant($"{_objects[kv.Key].Id} r {new Vector2(_objects[kv.Key].Center.X, _objects[kv.Key].Center.Y).Length():0.00} az {MathF.Atan2(_objects[kv.Key].Center.Y, _objects[kv.Key].Center.X) * 180 / MathF.PI:0} h {(_objects[kv.Key].Max.Z - _objects[kv.Key].Min.Z) * 100:0}cm{(_objects[kv.Key].Movable ? "" : " fixed")} misses {kv.Value}"))));
+        internal string ObjectReport()
+        {
+            string counts = FormattableString.Invariant(
+                $"object moves {_objectMoves} of {_objectTries} tried (missed: too low {_objectMisses[0]}, no line {_objectMisses[1]}, no end {_objectMisses[2]}, no start {_objectMisses[3]}, move there {_objectMisses[4]}, approach {_objectMisses[5]}, sweep {_objectMisses[6]}; ") +
+                FormattableString.Invariant($"lines: no seed {_lineBreaks[0]}, walks broken by IK {_lineBreaks[1]}, envelope {_lineBreaks[2]}, model {_lineBreaks[3]}, flip {_lineBreaks[4]}, base {_lineBreaks[5]})");
+            var objects = new List<string>();
+            foreach (KeyValuePair<int, int> kv in _missesInARow)
+            {
+                SafetyObject o = _objects[kv.Key];
+                objects.Add(FormattableString.Invariant(
+                    $"{o.Id} r {new Vector2(o.Center.X, o.Center.Y).Length():0.00} az {MathF.Atan2(o.Center.Y, o.Center.X) * 180 / MathF.PI:0} h {(o.Max.Z - o.Min.Z) * 100:0}cm{(o.Movable ? "" : " fixed")} misses {kv.Value}"));
+            }
+
+            return counts + "; objects: " + string.Join(", ", objects);
+        }
 
         private bool Miss(int why)
         {

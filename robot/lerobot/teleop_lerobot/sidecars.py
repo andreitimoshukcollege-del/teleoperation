@@ -52,12 +52,10 @@ JETROVER_LINKS = ("base_link", "turntable", "proximal_link", "distal_link", "wri
                   "right_finger")
 
 # The mixed script's planned-move record in robothost.jlog, one per planned move (workstream M; trainer/contract/
-# SESSION_FORMAT.md has the authoritative field order). Metadata only, never labels, read leniently: every field kept as a
-# string, named by MOVE_FIELDS in order after ``t`` (as M described them on 2026-11-22: index, count, kind
-# free/aim/pass/pause/reverse, object, offset, the model's gap, then the start, contact, closest and end times), the rest
-# under ``extra``.
+# SESSION_FORMAT.md, ``MV``). Metadata only, never labels, read leniently: every field kept as a string, named by
+# MOVE_FIELDS in order after ``t``, any later ones under ``extra``.
 MOVE_TAGS: Tuple[str, ...] = ("MV",)
-MOVE_FIELDS: Tuple[str, ...] = ("index", "count", "kind", "object", "offset", "gap", "start", "contact", "closest", "end")
+MOVE_FIELDS: Tuple[str, ...] = ("index", "count", "kind", "object", "offsetMm", "gapMm", "startS", "contactS", "closestS", "endS")
 
 
 @dataclass(frozen=True)
@@ -352,6 +350,16 @@ def layout_hash(scene_sha256: str, objects: Sequence[Tuple[int, Sequence[float],
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
+def _reach(o: Dict, movable: bool, edges: Sequence[float], start: Sequence[float]) -> str:
+    """``distractor`` for an object the arm is not meant to reach: one a mixed pool draws as a distractor (its ``role``,
+    docs/adr/0038 decision 3), or, in a scene without roles, a movable object by the bench's edge (docs/adr/0037 amendment 6);
+    else ``in_reach``."""
+    role = o.get("role")
+    if role:
+        return "distractor" if role == "distractor" else "in_reach"
+    return "distractor" if (movable and _in_regions(edges, start[0], start[1])) else "in_reach"
+
+
 def _in_regions(regions: Sequence[float], x: float, y: float) -> bool:
     return any(regions[k] - 1e-9 <= x <= regions[k + 1] + 1e-9 and regions[k + 2] - 1e-9 <= y <= regions[k + 3] + 1e-9
                for k in range(0, len(regions) - 3, 4))
@@ -474,6 +482,36 @@ def _named(text: str) -> Dict[str, str]:
     return {it[0]: ":".join(it[1:]) for it in items(text) if len(it) >= 2}
 
 
+def _lighting(row: Optional[Sequence[str]]) -> Optional[Dict]:
+    """``LT`` (workstream A): the dome's colour temperature, the brightness the metering aimed for, and the key light."""
+    if row is None:
+        return None
+    key = row[3].split(":") if len(row) > 3 and row[3] else None
+    return {"domeKelvin": _num(row[1]) if len(row) > 1 else None, "exposure": _num(row[2]) if len(row) > 2 else None,
+            "key": None if not key else dict(zip(("azimuthDeg", "elevationDeg", "intensity", "kelvin", "angleDeg"),
+                                                 (_num(v) for v in key)))}
+
+
+def _offsets(row: Optional[Sequence[str]], rename: Dict[str, str]) -> Dict[str, Dict]:
+    """``CJ`` (workstream A): each camera's offset from the scene file's pose, by its dataset name."""
+    out = {}
+    for it in items(row[1] if row is not None and len(row) > 1 else ""):
+        if len(it) >= 7:
+            out[rename.get(it[0], it[0])] = dict(zip(("dx", "dy", "dz", "pitchDeg", "yawDeg", "rollDeg"), (_num(v) for v in it[1:7])))
+    return out
+
+
+def _colours(row: Optional[Sequence[str]]) -> Optional[Dict]:
+    """``OA`` (workstream A): each scanned object's colour change, by object id."""
+    if row is None:
+        return None
+    out = {}
+    for it in items(row[1] if len(row) > 1 else ""):
+        if len(it) >= 7:
+            out[it[0]] = {"method": it[1], "brightness": _num(it[2]), "desaturation": _num(it[3]), "tint": [_num(v) for v in it[4:7]]}
+    return out
+
+
 def _clutter(row: Optional[Sequence[str]]) -> Optional[Dict]:
     if row is None:
         return None
@@ -481,6 +519,11 @@ def _clutter(row: Optional[Sequence[str]]) -> Optional[Dict]:
     for it in items(row[1] if len(row) > 1 else ""):
         kinds[it[0]] = kinds.get(it[0], 0) + 1
     return {"pieces": sum(kinds.values()), "kinds": dict(sorted(kinds.items()))}
+
+
+def _jitter(measured: Dict[str, Dict], recorded: Dict[str, Dict]) -> Dict[str, Dict]:
+    """Per camera, its pose against the scene file's (``mm``, ``deg``) and, when the take records it, the drawn offset."""
+    return {name: {**measured.get(name, {}), **recorded.get(name, {})} for name in list(measured) + [n for n in recorded if n not in measured]}
 
 
 def _frame_period(take: Take) -> int:
@@ -590,6 +633,12 @@ def clearance(take: Take, geometry_dir: Optional[str]):
     return c, None
 
 
+def _object_id(v) -> Optional[int]:
+    """An obstacle id from the clearance, or None for none within its cutoff (its ``NO_OBSTACLE``, -1) or none at all."""
+    f = _finite(v)
+    return int(f) if f is not None and f >= 0 else None
+
+
 def _finite(v) -> Optional[float]:
     try:
         f = float(v)
@@ -661,7 +710,8 @@ def episode(take: Take, options: Options = Options(), records: Optional[Records]
             "primitive": None if o.get("shape") == "mesh" else o.get("shape"),
             "clutter": bool(o.get("clutter", False)), "sizeFactor": factor, "dimensionsM": [round(d, 6) for d in dims],
             "massKg": None if (mass is None or not movable) else round(float(mass) * factor ** 3, 9),
-            "reach": "distractor" if (movable and _in_regions(edges, start[0], start[1])) else "in_reach",
+            "role": o.get("role") or None,
+            "reach": _reach(o, movable, edges, start),
             "baseDistanceM": round(math.hypot(start[0], start[1]), 4),
             "start": [round(v, 6) for v in start], "end": [round(v, 6) for v in end] if end else None, "changes": changes})
     lhash = layout_hash(scene_sha or "", hashed) if placed else None
@@ -708,10 +758,10 @@ def episode(take: Take, options: Options = Options(), records: Optional[Records]
     if c is not None:
         for li, link in enumerate(c.links):
             cols[f"clearance_mm.{link}"] = [_finite(row[li]) for row in c.obstacle_mm]
-            cols[f"clearance_id.{link}"] = [None if _finite(row[li]) is None else int(row[li]) for row in c.obstacle_id]
+            cols[f"clearance_id.{link}"] = [_object_id(row[li]) for row in c.obstacle_id]
             cols[f"surface_mm.{link}"] = [_finite(row[li]) for row in c.surface_mm]
         for i in range(len(times)):
-            vals = [(v, int(oid)) for v, oid in zip(map(_finite, c.obstacle_mm[i]), c.obstacle_id[i]) if v is not None]
+            vals = [(v, _object_id(oid)) for v, oid in zip(map(_finite, c.obstacle_mm[i]), c.obstacle_id[i]) if v is not None]
             m = min(vals, key=lambda x: x[0]) if vals else None
             mins.append(m[0] if m else None)
             min_ids.append(m[1] if m else None)
@@ -785,7 +835,9 @@ def episode(take: Take, options: Options = Options(), records: Optional[Records]
         "room": room, "looks": _named(looks[1]) if looks and len(looks) > 1 else None,
         "materials": _named(materials[1]) if materials and len(materials) > 1 else None,
         "clutter": _clutter(_by_change(frames.tag("CL"), change)) if frames is not None else None,
-        "cameraJitter": camera_jitter(scene, cams),
+        "cameraJitter": _jitter(camera_jitter(scene, cams), _offsets(_by_change(frames.tag("CJ"), change) if frames is not None else None, rename)),
+        "lighting": _lighting(_by_change(frames.tag("LT"), change)) if frames is not None else None,
+        "objectColours": _colours(_by_change(frames.tag("OA"), change)) if frames is not None else None,
         "moves": {"count": len(moves), "kinds": _kinds(moves), "records": moves}, "events": planned_events(host, t_first)}
     if "replayError" in rp:
         line["replayError"] = rp["replayError"]

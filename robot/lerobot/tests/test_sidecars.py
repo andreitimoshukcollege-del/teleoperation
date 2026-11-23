@@ -206,6 +206,9 @@ def test_each_episode_has_an_outcome_and_unknown_when_no_clearance_tells_a_near_
     assert e.line["clearanceMethod"] == "fake" and e.line["clearanceCutoffMm"] == 200.0 and e.line["clearanceUnavailable"] is None
     geometry = clearance(FakeClearance(base=45.0, dip=5.0))
     assert episode(table, geometry_dir=geometry).line["outcome"] == "no_contact"
+    far = episode(table, geometry_dir=clearance(FakeClearance(base=150.0, nearest=-1)))  # C's cutoff, nothing within it
+    assert far.line["outcome"] == "no_contact" and far.line["minClearanceObject"] is None
+    assert set(far.frames["clearance_id.gripper_link"]) == {None}
     assert episode(touch, geometry_dir=geometry).line["outcome"] == "contact"  # a contact needs no clearance
     assert episode(table, geometry_dir=str(scenarios) + "/none").line["clearanceUnavailable"].startswith("no geometry at")
 
@@ -327,6 +330,18 @@ def test_the_scene_line_has_every_object_on_the_table_the_surfaces_and_the_camer
     assert all(j["mm"] < 0.01 and j["deg"] < 0.01 for j in e.line["cameraJitter"].values())
 
 
+def test_a_mixed_pools_roles_say_what_is_in_reach(scenarios):
+    # docs/adr/0038 decision 3: a mixed pool gives each object a role; a distractor is out of reach wherever it stands, and an
+    # obstacle in reach even by the bench's edge (that rule is for scenes without roles).
+    roles = json.loads(json.dumps(SCENE))
+    for o in roles["objects"]:
+        o["role"] = {2: "distractor", 5: "obstacle", 4: "stand"}.get(o["id"], "obstacle")
+    e = episode(take(scenarios, "mixed", world(), scene=roles))
+    by = {o["id"]: o for o in e.scene["objects"]}
+    assert (by[2]["reach"], by[2]["role"]) == ("distractor", "distractor") and by[5]["reach"] == "in_reach"
+    assert (by[4]["reach"], by[4]["role"], by[4]["kind"]) == ("in_reach", "stand", "fixture")
+
+
 def test_camera_jitter_is_the_recorded_pose_against_the_scene_files(scenarios):
     shifted = list(THIRD_LEFT)
     shifted[10] = 0.885  # 5 mm along x
@@ -345,7 +360,11 @@ def test_the_room_looks_clutter_moves_and_replay_go_into_the_episode_line(scenar
     isaac = [["EN", 800 * MS, 87, 1622916560, "royal_esplanade", "2bd8", 7.752, 1493.182, 18, 116.51,
               "third-left:1.0;wrist:0.974", "5600"],
              ["LK", 87, "bench:black-resin;table:fabric-denim"], ["MT", 87, "3:wood_planks"],
-             ["CL", 87, "a4:0.43:0.36:2.95;a4:0.41:0.37:2.91;bag:0.33:0.45:1.84"]]
+             ["CL", 87, "a4:0.43:0.36:2.95;a4:0.41:0.37:2.91;bag:0.33:0.45:1.84"],
+             ["LT", 86, 4000, "", ""],  # an earlier change's: not this take's
+             ["LT", 87, 5200, 110, "35.0:40.0:2.5:4500:5.0"],
+             ["CJ", 87, "third-left:0.004:-0.002:0.001:0.5:-0.3:0.1;wrist:0.001:0:0:0.2:0:0"],
+             ["OA", 87, "2:omnipbr:0.9:0.2:1.02:0.99:0.97"]]
     host = world([["RP", 950 * MS, "13.4", "replay", "shift:2:0.03:-0.01"],
                   ["MV", 1000 * MS, 1, 3, "aim", 2, -0.02, 0.031, 0.1, 0.9, 0.95, 1.4, "later"],
                   ["MV", 1000 * MS, 2, 3, "free", 0, "", "", 1.4, "", "", 2.0],
@@ -364,6 +383,12 @@ def test_the_room_looks_clutter_moves_and_replay_go_into_the_episode_line(scenar
     moves = line["moves"]
     assert moves["count"] == 3 and moves["kinds"] == {"aim": 2, "free": 1}
     assert moves["records"][0]["kind"] == "aim" and moves["records"][0]["object"] == "2" and moves["records"][0]["extra"] == ["later"]
+    assert moves["records"][0]["offsetMm"] == "-0.02" and moves["records"][0]["endS"] == "1.4"  # SESSION_FORMAT.md's names
+    assert line["lighting"] == {"domeKelvin": 5200.0, "exposure": 110.0,
+                                "key": {"azimuthDeg": 35.0, "elevationDeg": 40.0, "intensity": 2.5, "kelvin": 4500.0, "angleDeg": 5.0}}
+    assert line["cameraJitter"]["front"]["pitchDeg"] == 0.2 and line["cameraJitter"]["third-left"]["dx"] == 0.004
+    assert "mm" in line["cameraJitter"]["third-left"]  # the pose against the scene file's, beside the drawn offset
+    assert line["objectColours"] == {"2": {"method": "omnipbr", "brightness": 0.9, "desaturation": 0.2, "tint": [1.02, 0.99, 0.97]}}
     assert line["speedSlider"] == 3.8 and line["scenario"] == "mixed" and line["events"] == []
 
 

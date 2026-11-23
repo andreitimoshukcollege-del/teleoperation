@@ -15,7 +15,7 @@ namespace Teleop.Eval.JointDrive
     public sealed class MixedOptions
     {
         /// <summary>The share of moves aimed at an object (an aim or a pass), when one can be; the rest are layout-blind.</summary>
-        public double ObjectShare { get; set; } = 0.45;
+        public double ObjectShare { get; set; } = 0.6;
 
         /// <summary>The share of object-directed moves that pass across the object rather than reach at it.</summary>
         public double PassShare { get; set; } = 0.3;
@@ -201,7 +201,7 @@ namespace Teleop.Eval.JointDrive
         public const double RadialShare = 0.25;
 
         /// <summary>An object every one of whose last this many aims and passes found no plan is tried no more in the take.</summary>
-        public const int MaxObjectMisses = 8;
+        public const int MaxObjectMisses = 12;
 
         /// <summary>The point between the finger pads in the gripper's frame (their centres' midpoint, <see cref="ShapeGap.LeftPadAtZero"/>): where an aim's line is drawn through.</summary>
         public static readonly Vector3 ToolInGripper = (ShapeGap.LeftPadAtZero.Center + ShapeGap.RightPadAtZero.Center) / 2f;
@@ -534,7 +534,7 @@ namespace Teleop.Eval.JointDrive
             }
 
             if (targets.Count == 0) return false;
-            for (int attempt = 0; attempt < 10; attempt++)
+            for (int attempt = 0; attempt < 14; attempt++)
             {
                 int oi = targets[(int)(_rng.NextDouble() * targets.Count) % targets.Count];
                 ScriptMoveKind kind = Draw.Chance(ref _rng, _options.PassShare) ? ScriptMoveKind.Pass : ScriptMoveKind.Aim;

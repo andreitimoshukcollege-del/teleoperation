@@ -195,6 +195,72 @@ namespace Teleop.Eval.JointDrive
         }
     }
 
+    /// <summary>
+    /// Caps on the commanded motion (docs/adr/0038 decision 1, the mixed script's speed caps; joint-drive's --max-joint-speed,
+    /// --max-joint-accel, --max-wrist-speed, --max-peak-speed): each tick's joint values within <see cref="MaxJointSpeed"/> of the
+    /// tick before (yaw, proximal, distal, wrist and roll alike) and their change within <see cref="MaxJointAcceleration"/>, the wrist
+    /// within <see cref="MaxWristSpeed"/>, and every submovement planned to peak no faster than <see cref="MaxPeakSpeed"/>. A part of
+    /// the plan that breaks one is drawn again. Infinite: no cap.
+    /// </summary>
+    public sealed class MotionCaps
+    {
+        /// <summary>Any joint's commanded speed, tick to tick, rad/s.</summary>
+        public float MaxJointSpeed { get; set; } = float.PositiveInfinity;
+
+        /// <summary>Any joint's commanded acceleration, tick to tick, rad/s².</summary>
+        public float MaxJointAcceleration { get; set; } = float.PositiveInfinity;
+
+        /// <summary>The wrist's commanded travel, tick to tick, m/s (the hand model refuses more than <see cref="HandModel.MaxWristSpeed"/> anyway).</summary>
+        public float MaxWristSpeed { get; set; } = HandModel.MaxWristSpeed;
+
+        /// <summary>A submovement's planned peak speed at the wrist, m/s: its duration stretches to it (the hand model's own is <see cref="HandModel.MaxPeakSpeed"/>).</summary>
+        public double MaxPeakSpeed { get; set; } = HandModel.MaxPeakSpeed;
+
+        /// <summary>Whether a tick from <paramref name="p1"/> (after <paramref name="p2"/>) to <paramref name="p0"/>, <paramref name="dt"/> apart, keeps to the joint caps.</summary>
+        public bool Allows(in ArmPose p2, in ArmPose p1, in ArmPose p0, double dt)
+        {
+            if (float.IsPositiveInfinity(MaxJointSpeed) && float.IsPositiveInfinity(MaxJointAcceleration)) return true;
+            float v = MaxJointSpeed * (float)dt, a = MaxJointAcceleration * (float)(dt * dt);
+            for (int j = 0; j < DriveEnvelope.JointCount; j++)
+            {
+                float d0 = DrivePlan.Joint(p0, j) - DrivePlan.Joint(p1, j), d1 = DrivePlan.Joint(p1, j) - DrivePlan.Joint(p2, j);
+                if (MathF.Abs(d0) > v || MathF.Abs(d0 - d1) > a) return false;
+            }
+
+            return true;
+        }
+
+        /// <summary>Throws when a cap is not positive.</summary>
+        public void Validate()
+        {
+            if (!(MaxJointSpeed > 0) || !(MaxJointAcceleration > 0) || !(MaxWristSpeed > 0) || !(MaxPeakSpeed > 0))
+                throw new ArgumentException("the speed caps must be positive");
+        }
+    }
+
+    /// <summary>
+    /// Where the mixed script's layout-blind goals are drawn (docs/adr/0038 decision 1): the wrist anywhere in reach, not only where
+    /// people work, and a share of the goals low with the gripper pointing down, so the hand reaches near the table as often as
+    /// an object-directed move does. Heights are the wrist's (the gripper's pads hang 13-15 cm below it pointing down).
+    /// </summary>
+    public sealed class BlindReach
+    {
+        public float RadiusLow { get; set; } = 0.08f;
+        public float RadiusHigh { get; set; } = 0.25f;
+        public float HeightLow { get; set; } = -0.03f;
+        public float HeightHigh { get; set; } = 0.26f;
+        public float YawDegrees { get; set; } = 85f;
+
+        /// <summary>The share of goals drawn low: the wrist at most <see cref="LowHeightHigh"/>, the gripper pitched <see cref="LowPitchLowDegrees"/> to <see cref="LowPitchHighDegrees"/>.</summary>
+        public double LowShare { get; set; } = 0.4;
+        public float LowHeightHigh { get; set; } = 0.06f;
+        public double LowPitchLowDegrees { get; set; } = -85;
+        public double LowPitchHighDegrees { get; set; } = -45;
+
+        /// <summary>The share of goals drawn as free movement draws them, a lognormal distance from where the hand is; the rest anywhere in the region.</summary>
+        public double NearShare { get; set; } = 0.5;
+    }
+
     /// <summary>One submovement: a minimum-jerk displacement of the hand (and of its pitch and roll), from <see cref="Start"/> over <see cref="Duration"/>.</summary>
     public readonly struct Submovement
     {
@@ -586,6 +652,32 @@ namespace Teleop.Eval.JointDrive
         public float AvoidRadius { get; set; } = 0.10f;
 
         /// <summary>
+        /// What the commands may do tick to tick (docs/adr/0038 decision 1, the mixed script's speed caps): every solved tick within
+        /// them, and every submovement planned no faster than <see cref="MotionCaps.MaxPeakSpeed"/>. Null (the four safety scripts):
+        /// the hand model's own limits only, every draw as before.
+        /// </summary>
+        public MotionCaps? Caps { get; set; }
+
+        /// <summary>
+        /// docs/adr/0038 decision 1: a tick before <see cref="GuardBefore"/> or from <see cref="GuardFrom"/> on (seconds on the hand's
+        /// timeline) must also pass this model, the take's quiet start and end, whatever its part is checked against otherwise.
+        /// Null: no guard (the four safety scripts).
+        /// </summary>
+        public ArmCollisionModel? Guard { get; set; }
+
+        /// <summary>See <see cref="Guard"/>.</summary>
+        public double GuardBefore { get; set; } = double.NegativeInfinity;
+
+        /// <summary>See <see cref="Guard"/>.</summary>
+        public double GuardFrom { get; set; } = double.PositiveInfinity;
+
+        /// <summary>Where the target comes to rest once everything planned so far has run, arm base frame.</summary>
+        public Vector3 TargetEnd => TargetEndpoint(_timeline);
+
+        /// <summary>The gripper fraction once everything planned so far has run.</summary>
+        public float GripperEnd => _timeline.FinalGripper;
+
+        /// <summary>
         /// A move to <paramref name="goal"/> (the wrist's target, arm base frame) with the wrist at <paramref name="pitch"/> and
         /// <paramref name="roll"/>, ending within <paramref name="tolerance"/>, every tick checked against <paramref name="check"/>
         /// (redrawn on failure). With <paramref name="overTheTop"/>, every other try goes by a point above the goal first. With
@@ -752,6 +844,164 @@ namespace Teleop.Eval.JointDrive
             a.BaseYaw == b.BaseYaw && a.Proximal == b.Proximal && a.Distal == b.Distal && a.Wrist == b.Wrist && a.Roll == b.Roll;
 
         // ---------------------------------------------------------------------------------------------------------------
+        // The mixed script's moves (docs/adr/0038 decision 1): each one part of the hand's plan, made of the same overlapping
+        // submovements, corrections and jitter as free movement, at a slowness the caller draws for every move alike. Each says
+        // when it began and when its motion ends, seconds on the hand's timeline; the next part begins before that, as a hand's do.
+
+        /// <summary>
+        /// A layout-blind part at slowness <paramref name="slow"/>: a move to a goal drawn anywhere in <paramref name="reach"/> (with
+        /// <paramref name="transportShare"/>), back-and-forth strokes (<paramref name="reverseShare"/>), or small adjustments, every
+        /// tick checked against <paramref name="check"/> (and the guard). Its kind: <see cref="Teleop.RobotArm.Wire.ScriptMoveKind.Free"/>
+        /// or <see cref="Teleop.RobotArm.Wire.ScriptMoveKind.Reverse"/>.
+        /// </summary>
+        public bool MixedFree(ArmCollisionModel check, BlindReach reach, double slow, double transportShare, double reverseShare,
+            out Teleop.RobotArm.Wire.ScriptMoveKind kind, out double start, out double end)
+        {
+            kind = Teleop.RobotArm.Wire.ScriptMoveKind.Free;
+            start = end = _free;
+            for (int attempt = 0; attempt < 30; attempt++)
+            {
+                HandTimeline tl = _timeline.Copy();
+                double t0 = _free, next, u = _rng.NextDouble();
+                Teleop.RobotArm.Wire.ScriptMoveKind k = Teleop.RobotArm.Wire.ScriptMoveKind.Free;
+                if (u < transportShare)
+                {
+                    if (!BlindGoal(tl, reach, out Vector3 goal, out float? pitch)) continue;
+                    next = Transport(tl, goal, t0, slow: slow, pitchGoal: pitch);
+                }
+                else if (u < transportShare + reverseShare)
+                {
+                    next = Reciprocate(tl, t0, slow);
+                    k = Teleop.RobotArm.Wire.ScriptMoveKind.Reverse;
+                }
+                else
+                {
+                    next = Adjust(tl, t0, slow);
+                }
+
+                double moving = tl.MotionEnd;
+                if (Grips) MaybeGrip(tl, t0, Math.Max(t0 + 0.3, moving));
+                if (!Accept(tl, t0, check)) continue;
+                _free = next;
+                kind = k;
+                start = t0;
+                end = moving;
+                return true;
+            }
+
+            return false;
+        }
+
+        /// <summary>
+        /// A move to <paramref name="goal"/> (the wrist's target) at slowness <paramref name="slow"/>, the wrist turning to
+        /// <paramref name="pitch"/> and <paramref name="roll"/> when given, ending within <paramref name="tolerance"/>; every tick checked
+        /// against <paramref name="check"/> (and the guard), redrawn on failure. The gripper is used on the way as in free movement.
+        /// </summary>
+        public bool MixedTo(Vector3 goal, float? pitch, float? roll, double slow, double tolerance, ArmCollisionModel check, out double start, out double end,
+            int attempts = 12)
+        {
+            start = end = _free;
+            for (int attempt = 0; attempt < attempts; attempt++)
+            {
+                HandTimeline tl = _timeline.Copy();
+                double t0 = _free;
+                double next = Transport(tl, goal, t0, slow: slow, tolerance: tolerance, pitchGoal: pitch, rollGoal: roll);
+                double moving = tl.MotionEnd;
+                if (Grips) MaybeGrip(tl, t0, Math.Max(t0 + 0.3, moving));
+                if (!Accept(tl, t0, check)) continue;
+                _free = next;
+                start = t0;
+                end = moving;
+                return true;
+            }
+
+            return false;
+        }
+
+        /// <summary>
+        /// One stroke along <paramref name="path"/> (the wrist's targets: an aim's final approach, or a pass across an object) at
+        /// slowness <paramref name="slow"/>, the wrist at <paramref name="pitch"/> and its roll held, ending on the path's end with no
+        /// bias (<paramref name="errorScale"/> scales the endpoint error), then corrections within <paramref name="tolerance"/>. No new
+        /// gripper move starts during it. Every tick checked against <paramref name="check"/> (and the guard).
+        /// </summary>
+        public bool MixedAlong(IReadOnlyList<Vector3> path, float pitch, double slow, double tolerance, int maxCorrections, double errorScale, ArmCollisionModel check,
+            out double start, out double end, int attempts = 8)
+        {
+            start = end = _free;
+            if (path.Count < 2) return false;
+            bool rolls = Rolls;
+            Rolls = false; // the approach keeps the roll it has
+            try
+            {
+                for (int attempt = 0; attempt < attempts; attempt++)
+                {
+                    HandTimeline tl = _timeline.Copy();
+                    double t0 = _free;
+                    double next = Along(tl, path, t0, slow: slow, maxPeak: null, alongMu: 0.0, errorScale: errorScale, pitchGoal: pitch, rollGoal: null,
+                        tolerance: tolerance, maxCorrections: maxCorrections);
+                    double moving = tl.MotionEnd;
+                    if (!Accept(tl, t0, check)) continue;
+                    _free = next;
+                    start = t0;
+                    end = moving;
+                    return true;
+                }
+
+                return false;
+            }
+            finally
+            {
+                Rolls = rolls;
+            }
+        }
+
+        /// <summary>The hand kept still, the clutch held, for <paramref name="seconds"/> once its motion has ended: a pause, from <paramref name="start"/> to <paramref name="end"/>.</summary>
+        public void MixedPause(double seconds, out double start, out double end)
+        {
+            start = Math.Max(_free, _timeline.MotionEnd);
+            end = start + Math.Max(0.0, seconds);
+            _free = end;
+        }
+
+        /// <summary>A goal for a layout-blind move (<see cref="BlindReach"/>), the wrist's pitch for it when it is a low one; false when none of the draws is in reach.</summary>
+        private bool BlindGoal(HandTimeline tl, BlindReach reach, out Vector3 goal, out float? pitch)
+        {
+            Vector3 from = TargetEndpoint(tl);
+            float maxReach = _profile.ProximalLinkLength + _profile.DistalLinkLength;
+            var shoulder = new Vector3(0, 0, _profile.BaseHeight);
+            const double deg = Math.PI / 180.0;
+            for (int i = 0; i < 40; i++)
+            {
+                bool low = Draw.Chance(ref _rng, reach.LowShare);
+                float zLow = reach.HeightLow, zHigh = low ? reach.LowHeightHigh : reach.HeightHigh;
+                Vector3 g;
+                if (Draw.Chance(ref _rng, reach.NearShare))
+                {
+                    float a = (float)Math.Clamp(Draw.LogNormal(ref _rng, HandModel.TransportMedian, HandModel.TransportSigma), 0.01, HandModel.TransportMax);
+                    g = from + a * Draw.Direction(ref _rng, 0.7f);
+                    if (low) g.Z = (float)Draw.Uniform(ref _rng, zLow, zHigh);
+                }
+                else
+                {
+                    double r = Draw.Uniform(ref _rng, reach.RadiusLow, reach.RadiusHigh), az = Draw.Uniform(ref _rng, -reach.YawDegrees, reach.YawDegrees) * deg;
+                    g = new Vector3((float)(r * Math.Cos(az)), (float)(r * Math.Sin(az)), (float)Draw.Uniform(ref _rng, zLow, zHigh));
+                }
+
+                float radius = MathF.Sqrt(g.X * g.X + g.Y * g.Y), yaw = MathF.Atan2(g.Y, g.X) * 180f / MathF.PI;
+                if (radius < reach.RadiusLow || radius > reach.RadiusHigh || g.Z < zLow || g.Z > zHigh || MathF.Abs(yaw) > reach.YawDegrees) continue;
+                if (Vector3.Distance(g, shoulder) > maxReach + HandModel.ReachOvershootMeters) continue;
+                if (AvoidGoals != null && Near(new Vector2(g.X, g.Y), AvoidGoals, AvoidRadius)) continue;
+                goal = g;
+                pitch = low ? (float)(Draw.Uniform(ref _rng, reach.LowPitchLowDegrees, reach.LowPitchHighDegrees) * deg) : (float?)null;
+                return true;
+            }
+
+            goal = from;
+            pitch = null;
+            return false;
+        }
+
+        // ---------------------------------------------------------------------------------------------------------------
         // Checking: render the commands, solve them, accept.
 
         private bool StepFree(ArmCollisionModel check)
@@ -816,7 +1066,7 @@ namespace Teleop.Eval.JointDrive
             var commands = new List<HandCommand>(k1 - k0 + 1);
             Render(tl, k0, k1, commands);
             var poses = new List<ArmPose>(commands.Count);
-            if (!Follow(k0 == 0 ? _start : _poses[k0 - 1], commands, check, poses)) return false;
+            if (!Follow(k0 == 0 ? _start : _poses[k0 - 1], commands, check, poses, k0, k0 <= 1 ? _start : _poses[k0 - 2])) return false;
             _poses.RemoveRange(k0, _poses.Count - k0);
             _commands.RemoveRange(k0, _commands.Count - k0);
             _poses.AddRange(poses);
@@ -825,21 +1075,36 @@ namespace Teleop.Eval.JointDrive
             return true;
         }
 
-        /// <summary>The headset's IK along <paramref name="commands"/>, one solve a tick from <paramref name="from"/>: false when a tick is blocked, out of reach, a jump, outside the envelope or fails <paramref name="check"/>.</summary>
-        private bool Follow(ArmPose from, List<HandCommand> commands, ArmCollisionModel check, List<ArmPose> poses)
+        /// <summary>
+        /// The headset's IK along <paramref name="commands"/> (tick <paramref name="firstTick"/> on), one solve a tick from
+        /// <paramref name="from"/> (<paramref name="beforeFrom"/> the tick before it): false when a tick is blocked, out of reach, a
+        /// jump, outside the envelope or fails <paramref name="check"/>, or, when they are set, the <see cref="Guard"/> in its windows
+        /// or the <see cref="Caps"/>.
+        /// </summary>
+        private bool Follow(ArmPose from, List<HandCommand> commands, ArmCollisionModel check, List<ArmPose> poses, int firstTick, in ArmPose beforeFrom)
         {
             var solver = new ArmSolver();
             solver.Reset(_profile, from);
             Vector3 last = HandModel.Wrist(_profile, from);
             float step = HandModel.MaxWristSpeed * (float)Tick;
+            MotionCaps? caps = Caps;
+            ArmCollisionModel? guard = Guard;
+            if (caps != null) step = MathF.Min(step, caps.MaxWristSpeed * (float)Tick);
+            ArmPose previous = from, beforePrevious = beforeFrom;
+            int k = firstTick;
             foreach (HandCommand c in commands)
             {
                 ArmSolution s = solver.Solve(_profile, c.Target, c.Pitch, c.Roll);
                 if (s.Status == ArmSolveStatus.Blocked || s.Status == ArmSolveStatus.Approaching || s.ReachClamped) return false;
                 if (!_envelope.Contains(s.Pose) || !ArmCollision.IsValid(_profile, check, s.Pose)) return false;
                 if (Vector3.Distance(s.Position, last) > step) return false;
+                if (guard != null && (k * Tick < GuardBefore || k * Tick >= GuardFrom) && !ArmCollision.IsValid(_profile, guard, s.Pose)) return false;
+                if (caps != null && !caps.Allows(beforePrevious, previous, s.Pose, Tick)) return false;
                 last = s.Position;
                 poses.Add(s.Pose);
+                beforePrevious = previous;
+                previous = s.Pose;
+                k++;
             }
 
             return true;
@@ -963,7 +1228,7 @@ namespace Teleop.Eval.JointDrive
             double d = HandModel.DurationScale * Math.Pow(Math.Max(amplitude, 1e-4), HandModel.DurationExponent)
                        * Math.Exp(HandModel.DurationSigma * Draw.Normal(ref _rng)) * slow;
             d = Math.Clamp(d, HandModel.MinDuration, HandModel.MaxDuration * Math.Max(1.0, slow));
-            double peak = Math.Min(maxPeak ?? HandModel.MaxPeakSpeed, HandModel.MaxPeakSpeed);
+            double peak = Math.Min(maxPeak ?? Caps?.MaxPeakSpeed ?? HandModel.MaxPeakSpeed, HandModel.MaxPeakSpeed);
             return Math.Max(d, 1.875 * amplitude / peak);
         }
 
@@ -1160,8 +1425,8 @@ namespace Teleop.Eval.JointDrive
             return (t2, dur2);
         }
 
-        /// <summary>Back-and-forth strokes along an axis, each starting before the last ends, bowed to one side: retracing one arc, or (mostly) going round a loop, so the reversals keep moving.</summary>
-        private double Reciprocate(HandTimeline tl, double start)
+        /// <summary>Back-and-forth strokes along an axis, each starting before the last ends, bowed to one side: retracing one arc, or (mostly) going round a loop, so the reversals keep moving. <paramref name="slow"/> stretches every stroke (the mixed script's drawn speed).</summary>
+        private double Reciprocate(HandTimeline tl, double start, double slow = 1.0)
         {
             int n = 1 + Draw.Poisson(ref _rng, HandModel.ReciprocateMean);
             double amplitude = Math.Clamp(Draw.LogNormal(ref _rng, HandModel.ReciprocateMedian, HandModel.ReciprocateSigma), 0.006, 0.12);
@@ -1184,7 +1449,7 @@ namespace Teleop.Eval.JointDrive
 
                 TargetAngles(tl, out float pitch, out float roll); // the target's, which releases set apart from the hand's
                 Vector3 across = (loop ? sign : 1f) * side;
-                (tLast, dLast) = Bowed(tl, t, dp, bow * dp.Length() * across, 0.4f * PitchStep(pitch, null), 0.5f * RollStep(roll, null));
+                (tLast, dLast) = Bowed(tl, t, dp, bow * dp.Length() * across, 0.4f * PitchStep(pitch, null), 0.5f * RollStep(roll, null), slow);
                 t = Overlap(tLast, dLast);
                 sign = -sign;
                 amplitude = Math.Clamp(amplitude * Math.Exp(Draw.Normal(ref _rng, 0, HandModel.ReciprocateRatioSigma)), 0.004, 0.12);
@@ -1193,8 +1458,8 @@ namespace Teleop.Eval.JointDrive
             return Overlap(tLast, dLast);
         }
 
-        /// <summary>A few small moves in random directions: fine positioning.</summary>
-        private double Adjust(HandTimeline tl, double start)
+        /// <summary>A few small moves in random directions: fine positioning. <paramref name="slow"/> stretches every move (the mixed script's drawn speed).</summary>
+        private double Adjust(HandTimeline tl, double start, double slow = 1.0)
         {
             int n = 1 + (int)(_rng.NextDouble() * HandModel.AdjustMax);
             double t = start, tLast = start, dLast = 0;
@@ -1202,7 +1467,7 @@ namespace Teleop.Eval.JointDrive
             {
                 double a = Math.Clamp(Draw.LogNormal(ref _rng, HandModel.AdjustMedian, HandModel.AdjustSigma), 0.002, 0.04);
                 Vector3 dp = (float)a * Draw.Direction(ref _rng, 1f);
-                double d = Duration(a, 1.15);
+                double d = Duration(a, 1.15 * slow);
                 TargetAngles(tl, out float pitch, out float roll);
                 tl.Moves.Add(Move(t, d, dp, 0.5f * PitchStep(pitch, null), 0.5f * RollStep(roll, null)));
                 (tLast, dLast) = (t, d);

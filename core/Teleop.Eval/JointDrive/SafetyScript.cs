@@ -278,7 +278,7 @@ namespace Teleop.Eval.JointDrive
         public const float SideBelowTopMeters = 0.04f;
 
         public static bool IsSafety(DriveScript script) => script == DriveScript.ReachNoObstacle || script == DriveScript.StopBeforeCollision
-            || script == DriveScript.CollideAndRecover || script == DriveScript.CollideWithObstacle;
+            || script == DriveScript.CollideAndRecover || script == DriveScript.CollideWithObstacle || script == DriveScript.Mixed;
 
         /// <summary>The lab's category name (the take's scenario and the episode's task string) for a safety script.</summary>
         public static string Category(DriveScript script) => script switch
@@ -287,6 +287,7 @@ namespace Teleop.Eval.JointDrive
             DriveScript.StopBeforeCollision => "stop_before_collision",
             DriveScript.CollideAndRecover => "collide_and_recover",
             DriveScript.CollideWithObstacle => "collide_with_obstacle",
+            DriveScript.Mixed => "mixed", // docs/adr/0038: its scenario too; the dataset's caption is neutral
             _ => throw new ArgumentOutOfRangeException(nameof(script)),
         };
 

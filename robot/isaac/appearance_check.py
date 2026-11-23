@@ -219,14 +219,15 @@ def check_take(take, joints, sheet_rows, wrist_frames, baseline=False):
                 continue
             mask = cv2.imdecode(np.frombuffer(payload(take, f"{cid}.mask", parts[f"{cid}.mask"]), np.uint8), cv2.IMREAD_UNCHANGED)
             rgb = cv2.imdecode(np.frombuffer(payload(take, f"{cid}.rgb", parts[f"{cid}.rgb"]), np.uint8), cv2.IMREAD_COLOR)
-            for oid in oa:
+            for oid in sorted({int(v) - 100 for v in np.unique(mask) if 100 <= v < 400}):  # every scene object in view
                 if (take, oid) in sheet_rows:
                     continue
                 vv, uu = np.nonzero(mask == 100 + oid)
                 if len(uu) < 150:
                     continue
                 y0, y1, x0, x1 = vv.min(), vv.max() + 1, uu.min(), uu.max() + 1
-                sheet_rows[(take, oid)] = (rgb[y0:y1, x0:x1].copy(), f"b{oa[oid][2]} d{oa[oid][3]}")
+                caption = f"b{oa[oid][2]} d{oa[oid][3]}" if oid in oa else cid
+                sheet_rows[(take, oid)] = (rgb[y0:y1, x0:x1].copy(), caption)
     return out
 
 

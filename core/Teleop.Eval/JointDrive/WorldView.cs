@@ -94,8 +94,10 @@ namespace Teleop.Eval.JointDrive
             {
                 if (!state.TryGet(o.Id, out ObjectPose p, out _)) return false;
                 if (p.Parked) continue;
-                // A movable object standing by the bench's edge is scenery (docs/adr/0037 amendment 6), an obstacle and never a target.
-                objects.Add(Bounds(o, state.Scale(o.Id), p.X, p.Y, p.Z, p.Qw, p.Qx, p.Qy, p.Qz, shapes, o.Movable && state.Scene.InEdgeRegions(p.X, p.Y)));
+                // A movable object standing by the bench's edge is scenery (docs/adr/0037 amendment 6), an obstacle and never a target;
+                // so is a mixed pool's distractor (docs/adr/0038 decision 3), drawn beyond every arm pose's reach.
+                bool scenery = (o.Movable && state.Scene.InEdgeRegions(p.X, p.Y)) || o.Role == SceneRole.Distractor;
+                objects.Add(Bounds(o, state.Scale(o.Id), p.X, p.Y, p.Z, p.Qw, p.Qx, p.Qy, p.Qz, shapes, scenery));
             }
 
             return true;

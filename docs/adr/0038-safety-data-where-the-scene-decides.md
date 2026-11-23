@@ -297,7 +297,7 @@ Built 2026-11-22 on `work/v2-contacts`. Checked offline against recorded takes; 
 | frames in contact, movable (872 link-object frames) | median -0.76 mm (p10 -1.28, p90 1.84); 2.5% over 3 mm | median -0.36 mm (p10 -1.13, p90 1.49); 1.1% over 3 mm |
 | frames in contact, fixtures (376) | median 7.10 mm (p10 -2.58, p90 13.71) | median 3.12 mm (p10 -10.82, p90 12.96) |
 | contact-free frames (39,176) with a link overlapping an obstacle | 0.00% | 0.03% (0.01% deeper than 3 mm) |
-| compute, a take of about 250 frames | 0.62 s (max 1.36) | 0.44 s (max 1.68) |
+| compute, a take of about 250 frames | 0.59 s (max 1.28; at b050ccb) | 0.44 s (max 1.68) |
 
 - **Movable objects** agree with PhysX within about 1-2 mm at the onset and in contact, for both methods.
 - **The large round fixtures are PhysX's own bulge.** By object, the signed onset medians are:

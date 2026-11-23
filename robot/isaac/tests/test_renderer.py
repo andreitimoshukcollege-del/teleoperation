@@ -363,3 +363,55 @@ def test_a_session_keeps_the_look_before_it_only_while_the_keep_file_is_there_an
     (tmp_path / KEEP_LOOK_FILE).write_text("")
     assert keep_look(control, 0) and keep_look(control, KEEP_LOOK_MAX - 1)
     assert not keep_look(control, KEEP_LOOK_MAX)  # a file left behind: the look changes anyway
+
+
+# --- textures at their real size (docs/adr/0038 "A, appearance", 2026-11-23) ------------------------------------------
+
+def _sub(a, b):
+    return tuple(x - y for x, y in zip(a, b))
+
+
+def test_a_box_mesh_is_the_unit_cube_with_texture_coordinates_in_metres_on_every_face():
+    """A box (or the table) was a unit cube scaled by its prim, and OmniPBR projected its texture in the cube's object space,
+    which runs +-0.5 whatever the box's size: the table's 1 cm cutting-mat grid came out 1.6 cm along its 1.6 m and about
+    0.5 cm along its 0.47 m. box_mesh gives each face texture coordinates that are its real size in metres."""
+    from teleop_isaac.renderer import box_mesh
+    for size in ((0.30, 0.08, 0.018), (0.472, 1.6, 0.04), (0.03, 0.03, 0.03), (0.02, 0.02, 0.36), (0.012, 0.06, 0.24)):
+        points, counts, indices, normals, st = box_mesh(size)
+        assert counts == [4] * 6 and indices == list(range(24)) and len(points) == len(normals) == len(st) == 24
+        assert all(abs(abs(c) - 0.5) < 1e-12 for p in points for c in p)  # the unit cube the prim's scale makes the box
+        faces = set()
+        for f in range(6):
+            p, n, s = points[4 * f:4 * f + 4], normals[4 * f], st[4 * f:4 * f + 4]
+            assert all(x == n for x in normals[4 * f:4 * f + 4])
+            axis = next(i for i in range(3) if n[i] != 0)
+            faces.add((axis, n[axis]))
+            assert all(q[axis] == 0.5 * n[axis] for q in p)  # on the face it says
+            e1, e2 = _sub(p[1], p[0]), _sub(p[3], p[0])
+            cross = (e1[1] * e2[2] - e1[2] * e2[1], e1[2] * e2[0] - e1[0] * e2[2], e1[0] * e2[1] - e1[1] * e2[0])
+            assert sum(c * m for c, m in zip(cross, n)) > 0  # counter-clockwise seen from outside
+            real = [tuple(c * z for c, z in zip(q, size)) for q in p]  # the corners where the box really is
+            for i in range(4):
+                for j in range(4):  # the texture coordinates are the face itself, in metres: no stretch along either side
+                    assert abs(math.dist(s[i], s[j]) - math.dist(real[i], real[j])) < 1e-12
+            t1, t2 = _sub(s[1], s[0]), _sub(s[3], s[0])
+            assert t1[0] * t2[1] - t1[1] * t2[0] > 0  # turned the way the face turns: a texture is never mirrored
+            us, vs = [q[0] for q in s], [q[1] for q in s]
+            assert max(us) - min(us) >= max(vs) - min(vs) - 1e-12  # u along the longer side: a plank's grain along its length
+        assert faces == {(a, sign) for a in range(3) for sign in (1.0, -1.0)}
+
+
+def test_a_texture_is_tiled_at_its_real_size_whatever_the_size_of_what_wears_it():
+    from teleop_isaac.renderer import box_mesh, tiling
+    assert tiling(2.0) == 0.5 and tiling(0.3, 1.0) == pytest.approx(1 / 0.3) and tiling(2.0, 2.0) == 1.0
+    k = tiling(1.5)  # a 1.5 m veneer
+    plank = (0.30, 0.08, 0.018)
+    st = box_mesh(plank)[4]
+    spans = []
+    for f in range(6):
+        s = st[4 * f:4 * f + 4]
+        spans.append(tuple(sorted((round(max(q[i] for q in s) - min(q[i] for q in s), 9) for i in range(2)), reverse=True)))
+    assert sorted(spans) == sorted([(0.30, 0.08), (0.30, 0.08), (0.30, 0.018), (0.30, 0.018), (0.08, 0.018), (0.08, 0.018)])
+    # Tiles across a side are its length times k: the 1.8 cm edge shows 0.012 of a tile, the 30 cm side 0.2, as on a real
+    # plank. The unit cube's projection showed k tiles across every side, 30 cm and 1.8 cm alike.
+    assert 0.018 * k == pytest.approx(0.012) and 0.30 * k == pytest.approx(0.2)

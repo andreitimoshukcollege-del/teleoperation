@@ -425,6 +425,53 @@ def texture_maps(tex: Mapping) -> List[Tuple[str, str, bool]]:
     return out
 
 
+def tiling(texture_size_m: float, tile_scale: float = 1.0) -> float:
+    """OmniPBR's ``texture_scale`` for texture coordinates in metres: repeats a metre, so a texture whose tile is
+    ``texture_size_m`` across shows at its real size (``tile_scale`` 1), whatever the size of what wears it.
+
+    ``texture_scale`` multiplies the coordinates (MDL's ``base::transform_coordinate``), and every textured scene shape's
+    coordinates are metres: a box's and a surface's from :func:`box_mesh`, a cylinder's and a sphere's from OmniPBR's projection
+    in object space, which is metres for a shape built at its size. Until 2026-11-23 a box was a unit cube projected in object
+    space, and a cylinder's tiling was multiplied by its size: docs/adr/0038 "A, appearance"."""
+    return float(tile_scale) / float(texture_size_m)
+
+
+# Each face of a box, by the axis it faces and its sign: (axis a, then two in-plane axes b and c with b x c = a).
+_BOX_AXES = ((0, 1, 2), (1, 2, 0), (2, 0, 1))
+
+
+def box_mesh(size: Sequence[float]):
+    """A unit cube (each corner at +-0.5) as a mesh, to replace a box the scene builds as a unit cube scaled by its prim, and
+    its texture coordinates in metres at the box's real ``size`` (x, y, z): (points, face vertex counts, indices, normals, st).
+
+    Why: OmniPBR's projection in object space uses the shape's own coordinates, and a unit cube's run +-0.5 whatever the
+    box's size, so every face showed as many tiles along a 1.8 cm side as along a 30 cm one (the table's 1 cm cutting-mat
+    grid measured 1.6 cm along its 1.6 m and about 0.5 cm along its 0.47 m, docs/adr/0038 "A, appearance").
+
+    Each face has its own four points (so its own normal and coordinates), counter-clockwise seen from outside. Its u runs
+    along its longer side and its v along the other, turned rather than mirrored, so a texture reads the right way round on
+    every face and a plank's grain runs along its length."""
+    points, normals, st = [], [], []
+    for a, b, c in _BOX_AXES:
+        for s in (1.0, -1.0):
+            corners = ((-1, -1), (1, -1), (1, 1), (-1, 1)) if s > 0 else ((-1, -1), (-1, 1), (1, 1), (1, -1))
+            longer_b = size[b] >= size[c]
+            for cb, cc in corners:
+                p = [0.0, 0.0, 0.0]
+                p[a], p[b], p[c] = 0.5 * s, 0.5 * cb, 0.5 * cc
+                points.append(tuple(p))
+                n = [0.0, 0.0, 0.0]
+                n[a] = s
+                normals.append(tuple(n))
+                rb, rc = p[b] * size[b], p[c] * size[c]  # metres from the face's centre along b and c
+                # (u, v) with u x v along the outward normal: on a +a face (b, c) or (c, -b); on a -a face (b, -c) or (c, b).
+                if longer_b:
+                    st.append((rb, rc) if s > 0 else (rb, -rc))
+                else:
+                    st.append((rc, -rb) if s > 0 else (rc, rb))
+    return points, [4] * 6, list(range(24)), normals, st
+
+
 def settled(trace: Sequence[float], at_least: int, still: int = 3, tolerance: float = 0.25) -> bool:
     """Whether a room change has shown: at least ``at_least`` frames rendered, and the camera's mean brightness (0-255) has
     moved less than ``tolerance`` over each of the last ``still`` frames."""
@@ -875,48 +922,60 @@ def run(app, args, p, scene, cameras, fps, joints, motors, tap) -> int:
         sh.CreateImplementationSourceAttr(UsdShade.Tokens.sourceAsset)
         sh.SetSourceAsset("OmniPBR.mdl", "mdl")
         sh.SetSourceAssetSubIdentifier("OmniPBR", "mdl")
-        sh.CreateInput("project_uvw", Sdf.ValueTypeNames.Bool).Set(project)  # the shapes have no UVs: projected; clutter has its own
-        sh.CreateInput("world_or_object", Sdf.ValueTypeNames.Bool).Set(False)  # object space: it stays on as the object moves
+        # A cylinder or sphere has no texture coordinates: projected, in object space (metres: it is built at its size), so the
+        # texture stays on as it moves. A box or surface wears its own, in metres (box_mesh), as clutter does.
+        sh.CreateInput("project_uvw", Sdf.ValueTypeNames.Bool).Set(project)
+        sh.CreateInput("world_or_object", Sdf.ValueTypeNames.Bool).Set(False)
         sh.CreateInput("reflectionroughness_texture_influence", Sdf.ValueTypeNames.Float).Set(1.0)
         mtl.CreateSurfaceOutput("mdl").ConnectToSource(sh.ConnectableAPI(), "out")
         mtl.CreateVolumeOutput("mdl").ConnectToSource(sh.ConnectableAPI(), "out")
         mtl.CreateDisplacementOutput("mdl").ConnectToSource(sh.ConnectableAPI(), "out")
         return mtl, sh
 
-    def wear(sh, tex: Dict, scale_m: float, projected: bool = True) -> None:
-        """Texture ``tex`` on shader ``sh``, each map its manifest entry has (``texture_maps``), tiled at its real size: on an
-        object ``scale_m`` across in its projection's units, or (not ``projected``) on a mesh whose texture coordinates are
-        metres."""
+    def wear(sh, tex: Dict, k: float) -> None:
+        """Texture ``tex`` on shader ``sh``, each map its manifest entry has (``texture_maps``), tiled ``k`` times a unit of
+        the shape's texture coordinates (``tiling``: they are metres on every textured shape)."""
         d = os.path.join(tex_root, tex["id"])
         for inp, name, raw in texture_maps(tex):
             a = sh.CreateInput(inp, Sdf.ValueTypeNames.Asset)
             a.Set(Sdf.AssetPath(os.path.join(d, name) if name else ""))
             if raw:
                 a.GetAttr().SetColorSpace("raw")
-        k = (mats["tileScale"] * scale_m if projected else 1.0) / float(tex["sizeM"])
         sh.CreateInput("texture_scale", Sdf.ValueTypeNames.Float2).Set(Gf.Vec2f(k, k))
 
-    def wear_look(sh, look: Dict, scale_m: float) -> None:
-        """Look ``look`` on shader ``sh``: its texture desaturated and tinted, and its roughness. Every input is set, so
-        nothing of the look before stays."""
-        wear(sh, tex_by_id[look["texture"]], scale_m)
+    def wear_look(sh, look: Dict) -> None:
+        """Look ``look`` on shader ``sh``: its texture at its real size, desaturated and tinted, and its roughness. Every input
+        is set, so nothing of the look before stays."""
+        tex = tex_by_id[look["texture"]]
+        wear(sh, tex, tiling(tex["sizeM"], mats["tileScale"]))
         sh.CreateInput("albedo_desaturation", Sdf.ValueTypeNames.Float).Set(look["desaturation"])
         sh.CreateInput("diffuse_tint", Sdf.ValueTypeNames.Color3f).Set(Gf.Vec3f(*look["tint"]))
         sh.CreateInput("reflection_roughness_constant", Sdf.ValueTypeNames.Float).Set(
             0.5 if look["roughness"] is None else look["roughness"])
         sh.CreateInput("reflectionroughness_texture_influence", Sdf.ValueTypeNames.Float).Set(look["roughnessTexture"])
 
-    def object_extent(index: int) -> float:
-        """How far across the object's projection runs, in its units: a box is a unit cube scaled by its prim, a cylinder
-        is built at its size."""
-        o = scene.objects[index]
-        return 1.0 if o.shape == "box" else max(o.size) * world.model.scales[index]
+    surface_ids = {s.id for s in scene.surfaces}
+    box_st: Dict[int, object] = {}  # object id -> the st primvar of its box, turned into a mesh (box_mesh): redone on a resize
 
-    surface_extent = {s.id: max(s.size[0], s.size[1]) / max(s.size) for s in scene.surfaces}  # a unit cube scaled: its long side
-    object_index = {o.name: i for i, o in enumerate(scene.objects)}
-
-    def look_extent(name: str) -> float:
-        return surface_extent[name] if name in surface_extent else object_extent(object_index[name])
+    def metric_box(path: str, size: Sequence[float]):
+        """The unit cube at ``path`` (a box or a surface: a UsdGeom.Cube of size 1 scaled by its prim) turned, in place, into
+        the same unit cube as a mesh with texture coordinates in metres at its real ``size`` (box_mesh). The prim keeps its
+        path, transform (its scale included), mask label, visibility and material binding, so its geometry, depth and masks
+        are what they were. Returns its st primvar."""
+        prim = stage.GetPrimAtPath(path)
+        prim.SetTypeName("Mesh")
+        m = UsdGeom.Mesh(prim)
+        points, counts, indices, normals, st = box_mesh(size)
+        m.CreatePointsAttr([Gf.Vec3f(*v) for v in points])
+        m.CreateFaceVertexCountsAttr(counts)
+        m.CreateFaceVertexIndicesAttr(indices)
+        m.CreateNormalsAttr([Gf.Vec3f(*v) for v in normals])
+        m.SetNormalsInterpolation(UsdGeom.Tokens.vertex)
+        m.CreateSubdivisionSchemeAttr(UsdGeom.Tokens.none)
+        m.CreateExtentAttr([Gf.Vec3f(-0.5, -0.5, -0.5), Gf.Vec3f(0.5, 0.5, 0.5)])
+        pv = UsdGeom.PrimvarsAPI(m).CreatePrimvar("st", Sdf.ValueTypeNames.TexCoord2fArray, UsdGeom.Tokens.vertex)
+        pv.Set([Gf.Vec2f(*v) for v in st])
+        return pv
 
     if mats is not None:
         tex_root = os.path.dirname(os.path.expanduser(mats["manifest"])) or materials_module.DEFAULT_ROOT
@@ -934,21 +993,31 @@ def run(app, args, p, scene, cameras, fps, joints, motors, tap) -> int:
             def fetched(ids: Sequence[str]) -> List[str]:
                 return [lid for lid in ids if mats["looks"][lid]["texture"] in tex_by_id]
 
-            for o, path in zip(scene.objects, world.object_paths):
+            def textured(index: int, o, path: str):
+                """Object ``o``'s OmniPBR material, bound to its shape: a box first becomes a mesh with coordinates in metres
+                (metric_box, at its size now); a cylinder or sphere is projected."""
+                if o.shape == "box":
+                    box_st[o.id] = metric_box(f"{path}/Shape", [v * world.model.scales[index] for v in o.size])
+                mtl, sh = omnipbr(f"/World/Looks/{prim_name('m', str(o.id))}", project=o.shape != "box")
+                UsdShade.MaterialBindingAPI.Apply(stage.GetPrimAtPath(f"{path}/Shape")).Bind(mtl, UsdShade.Tokens.strongerThanDescendants)
+                return sh
+
+            for index, (o, path) in enumerate(zip(scene.objects, world.object_paths)):
                 if o.name in mats["objects"]:
                     if fetched(mats["objects"][o.name]):
-                        mtl, sh = omnipbr(f"/World/Looks/{prim_name('m', str(o.id))}")
-                        UsdShade.MaterialBindingAPI.Apply(stage.GetPrimAtPath(f"{path}/Shape")).Bind(mtl, UsdShade.Tokens.strongerThanDescendants)
-                        look_shaders[o.name], look_choices[o.name] = sh, fetched(mats["objects"][o.name])
+                        look_shaders[o.name], look_choices[o.name] = textured(index, o, path), fetched(mats["objects"][o.name])
                 elif o.shape in mats["classes"] and mats["classes"][o.shape]:
-                    mtl, sh = omnipbr(f"/World/Looks/{prim_name('m', str(o.id))}")
-                    UsdShade.MaterialBindingAPI.Apply(stage.GetPrimAtPath(f"{path}/Shape")).Bind(mtl, UsdShade.Tokens.strongerThanDescendants)
-                    mat_shaders[o.id] = sh
+                    mat_shaders[o.id] = textured(index, o, path)
             for sid, ids in mats["surfaces"].items():
                 if sid in world.surface_paths and fetched(ids):
-                    mtl, sh = omnipbr(f"/World/Looks/{prim_name('s', sid)}")
+                    s = next(x for x in scene.surfaces if x.id == sid)
+                    metric_box(world.surface_paths[sid], s.size)  # the table and the bench are unit cubes scaled too
+                    mtl, sh = omnipbr(f"/World/Looks/{prim_name('s', sid)}", project=False)
                     UsdShade.MaterialBindingAPI.Apply(stage.GetPrimAtPath(world.surface_paths[sid])).Bind(mtl, UsdShade.Tokens.strongerThanDescendants)
                     look_shaders[sid], look_choices[sid] = sh, fetched(ids)
+            if box_st or any(sid in look_shaders for sid in surface_ids):
+                print(f"[render] textures at their real size: {len(box_st)} boxes and "
+                      f"{sum(1 for sid in surface_ids if sid in look_shaders)} surfaces as meshes with coordinates in metres", flush=True)
 
     # --- flat clutter on the table, the renderer's alone (docs/adr/0037, "Surfaces and flat clutter") ------------------
     clutter_all = clutter_module.spec(scene)
@@ -1224,13 +1293,13 @@ def run(app, args, p, scene, cameras, fps, joints, motors, tap) -> int:
                 continue
             tex = materials_module.pick(textures, mats["classes"][o.shape], backdrop_seed, backdrop["change"], o.id)
             if tex is not None:
-                wear(sh, tex, object_extent(index))
+                wear(sh, tex, tiling(tex["sizeM"], mats["tileScale"]))
                 worn[o.id] = tex
         drawn = {}
         for name, ids in look_choices.items():  # each surface and looked object its own draw, by the looks' weights
-            draw = materials_module.surface_look if name in surface_extent else materials_module.object_look
+            draw = materials_module.surface_look if name in surface_ids else materials_module.object_look
             drawn[name] = draw(mats["looks"], ids, backdrop_seed, backdrop["change"], name)
-            wear_look(look_shaders[name], mats["looks"][drawn[name]], look_extent(name))
+            wear_look(look_shaders[name], mats["looks"][drawn[name]])
         looks_worn.clear()  # the writer thread's preamble reads it: refilled only once the new looks are on
         looks_worn.update(drawn)
 
@@ -1264,7 +1333,7 @@ def run(app, args, p, scene, cameras, fps, joints, motors, tap) -> int:
             if piece.texture:
                 st = UsdGeom.PrimvarsAPI(m).CreatePrimvar("st", Sdf.ValueTypeNames.TexCoord2fArray, UsdGeom.Tokens.vertex)
                 st.Set([Gf.Vec2f(*v) for v in geo.st])
-                wear(sh, tex_by_id[piece.texture], 1.0, projected=False)
+                wear(sh, tex_by_id[piece.texture], tiling(tex_by_id[piece.texture]["sizeM"]))  # its coordinates are metres
                 sh.CreateInput("diffuse_tint", Sdf.ValueTypeNames.Color3f).Set(Gf.Vec3f(*piece.colour))
             else:
                 sh.CreateInput("diffuse_color_constant", Sdf.ValueTypeNames.Color3f).Set(Gf.Vec3f(*piece.colour))
@@ -1615,10 +1684,10 @@ def run(app, args, p, scene, cameras, fps, joints, motors, tap) -> int:
                         f = sizes.get(o.id)
                         if f is not None and abs(f - world.model.scales[index]) > 1e-6:
                             world.set_scale(index, f)
-                            if o.id in worn:  # a cylinder's projection runs in metres: retile it at its new size
-                                wear(mat_shaders[o.id], worn[o.id], object_extent(index))
-                            elif o.name in looks_worn and o.name not in surface_extent:  # a looked object, not a surface
-                                wear_look(look_shaders[o.name], mats["looks"][looks_worn[o.name]], object_extent(index))
+                            # A box's texture coordinates are metres at its size: redone at the new one, so its texture keeps
+                            # its real size. A cylinder's or sphere's projection is in metres already and follows its size.
+                            if o.id in box_st:
+                                box_st[o.id].Set([Gf.Vec2f(*v) for v in box_mesh([s * f for s in o.size])[4]])
                     world_sizes.update(revision=z[0], sizes=[[o.id, round(world.model.scales[i], 4)] for i, o in enumerate(scene.objects)])
                     session_record("SZ", z[0], world_sizes["sizes"])
         for f in feeds:

@@ -44,6 +44,14 @@ The twin's scripted takes become one dataset per batch, `~/data/lerobot/jetrover
 is the twin's wrist camera. Every episode's task is `move the arm` (`--caption category` gives the scenario's name, as
 datasets built before 2026-11-22 have it); the scenario is in `meta/teleop/episodes.jsonl`.
 
+**Splits keep each replay group and each layout inside one split part.** A source take and its replays send the same
+commands, and takes of one layout share its scene, so either in two parts leaks between them. A split build never parts
+episodes that share an `RP` group, a layout hash, or a scene and `WL` seed. `teleop_lerobot safety-report DATASET...`
+checks any set of datasets the same way: give it a split build's parts, or every dataset of a train, val and test set at
+once. It faults (exit 1) when a replay group, a layout hash, or a scene's layout seed is in more than one of them, naming
+the datasets and episodes; also on label files that disagree, a replay group without one source, unavoidable ranges over
+an unsafe frame, a missing file, or a dataset given twice. Datasets from before docs/adr/0038 have no sidecars to check.
+
 **The checks** (`safety-check`). The four old categories are checked as before. A `mixed` take is set aside (to
 `_discarded/mixed/`, its reasons in `safety-check.json`) only when it is broken: it cannot be read as an episode (no
 scenario, a `.jlog` cut off or failing its trailer, no accepted command, no colour camera, no frame with its joints), joint-drive

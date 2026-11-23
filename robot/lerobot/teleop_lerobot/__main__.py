@@ -16,8 +16,9 @@
   files (amendment 6; no LeRobot needed);
 - ``safety-options DATASET``: the ``safety-build`` options that rebuild a safety dataset as it was built, from its
   ``report.json`` (``just isaac-safety-build-check``; no LeRobot needed);
-- ``safety-report DATASET...``: what one build's datasets (a split build's parts together) hold, and any fault in their labels,
-  sidecars or replay groups (docs/adr/0038; the twin check);
+- ``safety-report DATASET...``: what a set of safety datasets holds (a split build's parts, or a whole train, val and test
+  set), and any fault in their labels or sidecars, or a replay group, layout hash or layout seed in more than one of them
+  (docs/adr/0038; the twin check);
 - ``knock-report TAKE...``: every object each take touched, its mass at its size and whether it was knocked over, as JSON
   lines, then a summary by mass (docs/adr/0037 P4; no LeRobot needed).
 """
@@ -109,7 +110,8 @@ def main(argv=None) -> int:
                            "the twin's fast, median and slow stops, 0.17, 0.245 and 0.31 s: twin stop-latency 2026-11-23, "
                            "provisional until the real arm is measured)")
     s = sub.add_parser("safety-report")
-    s.add_argument("datasets", nargs="+", help="one build's safety datasets (every part of a split build)")
+    s.add_argument("datasets", nargs="+", help="safety datasets: every part of a split build, or every dataset of a train, val "
+                                                "and test set (a replay group or a layout in two of them is a fault)")
     s = sub.add_parser("safety-compare")
     s.add_argument("reference", help="a safety dataset")
     s.add_argument("rebuilt", help="one written from the first takes of the reference's meta/teleop/takes.jsonl")

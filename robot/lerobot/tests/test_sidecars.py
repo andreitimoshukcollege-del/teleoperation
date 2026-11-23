@@ -725,4 +725,51 @@ def test_safety_report_says_what_a_split_build_holds_and_finds_a_parted_group(sc
     safety.build(Writer(), b, [read_take(paths[1])], log=lambda m: None)
     assert main(["safety-report", a, b]) == 1
     text = capsys.readouterr().out
-    assert "FAULT: replay group 3.1 is in 2 datasets" in text and "FAULT: replay group 3.1 has" not in text
+    assert "FAULT: replay group 3.1 is in 2 datasets: a (episode 0); b (episode 0)" in text and "FAULT: replay group 3.1 has" not in text
+    # Two parts with one folder name, in two folders, are told apart by their paths.
+    x, y = str(tmp_path / "x" / "part"), str(tmp_path / "y" / "part")
+    safety.build(Writer(), x, [read_take(paths[0])], log=lambda m: None)
+    safety.build(Writer(), y, [read_take(paths[1])], log=lambda m: None)
+    assert main(["safety-report", x, y, x + "/"]) == 1
+    text = capsys.readouterr().out
+    assert f"FAULT: replay group 3.1 is in 2 datasets: {x} (episode 0); {y} (episode 0)" in text
+    assert f"FAULT: {x} is given twice" in text
+
+
+def test_safety_report_checks_a_train_val_test_set_at_once_and_faults_a_layout_or_a_seed_in_two(scenarios, tmp_path, capsys):
+    # A replay group's takes share their commands and a layout's takes their scene: each stays inside one split part, or the
+    # parts leak. Every dataset of a train, val and test set can be checked together.
+    pytest.importorskip("pandas")
+    pytest.importorskip("pyarrow")
+    from teleop_lerobot.__main__ import main
+
+    paths = batch(scenarios)  # a source and its replay (seed 639309532987986191), then seed 11 (ELSEWHERE) and 12 (THIRD)
+    train, val, test, leaky = (str(tmp_path / n) for n in ("train", "val", "test", "leaky"))
+    safety.build(Writer(), train, [read_take(p) for p in paths[:2]], log=lambda m: None)
+    safety.build(Writer(), val, [read_take(paths[2])], log=lambda m: None)
+    safety.build(Writer(), test, [read_take(paths[3])], log=lambda m: None)
+    assert main(["safety-report", train, val, test]) == 0
+    text = capsys.readouterr().out
+    assert "[report] across 3 datasets: each of 1 replay group(s), 4 layout hash(es) and 3 layout seed(s) in one dataset" in text
+    assert "[report] train: unavoidable ranges (twin stop-latency 2026-11-23, provisional until the real arm is measured): " \
+           "fast 0.17 s: 2 frames in 1 episode(s); median 0.245 s: 3 frames in 1 episode(s); slow 0.31 s: 4 frames in 1 episode(s)" in text
+    # Val's layout again (the same objects where they stood, another seed), and test's seed again (the same draw settled
+    # elsewhere: another hash).
+    same_layout = take(scenarios, "mixed", world(seed=13, poses=ELSEWHERE), name="20261122T100400Z-take005")
+    same_seed = take(scenarios, "mixed", world(seed=12, poses={**STANDING, 2: (0.22, 0.12, -0.15, UPRIGHT)}),
+                     name="20261122T100500Z-take006")
+    safety.build(Writer(), leaky, [read_take(same_layout), read_take(same_seed)], log=lambda m: None)
+    assert main(["safety-report", train, val, test, leaky]) == 1
+    text = capsys.readouterr().out
+    layout = json.loads(open(os.path.join(val, "meta", "teleop", "episodes.jsonl")).readline())["layoutHash"]
+    assert f"FAULT: layout hash {layout[:16]} is in 2 datasets: leaky (episode 0); val (episode 0)" in text
+    assert f"FAULT: layout seed 12 of scene {SCENE_SHA[:12]} is in 2 datasets: leaky (episode 1); test (episode 0)" in text
+    assert "across 4 datasets: 0 of 1 replay group(s), 1 of 5 layout hash(es) and 1 of 4 layout seed(s) in more than one" in text
+    assert text.count("FAULT") == 2
+    # Unavoidable ranges are frames the labels leave safe: one over an unsafe frame is a fault.
+    path = os.path.join(train, "meta", "teleop", "unavoidable_ranges.json")
+    unav = json.load(open(path))
+    unav["unavoidable_ranges"]["median"]["0"] = [[16, 16]]  # inside episode 0's contact, frames 15-17
+    json.dump(unav, open(path, "w"))
+    assert main(["safety-report", train]) == 1
+    assert "FAULT: train: unavoidable ranges (median) overlap unsafe frames in episode(s) [0]" in capsys.readouterr().out

@@ -1018,25 +1018,57 @@ def write_frames(path: str, written: Sequence[Tuple[int, Episode]]) -> None:
     df.to_parquet(path, index=False)
 
 
+LISTED = 20  # check_datasets lists this many of one kind of fault, then counts the rest
+
+
+def _across(kind: str, where_by_key: Dict, show, faults: List[str]) -> int:
+    """Faults for the keys of one kind found in more than one dataset (``where_by_key``: key -> dataset -> its episodes),
+    the first :data:`LISTED` with where they are; returns how many there are."""
+    many = sorted(((k, w) for k, w in where_by_key.items() if len(w) > 1), key=lambda kw: str(kw[0]))
+    for key, where in many[:LISTED]:
+        faults.append(f"{kind} {show(key)} is in {len(where)} datasets: " + "; ".join(
+            f"{n} (episode{'s' if len(eps) > 1 else ''} {', '.join(str(e) for e in eps)})" for n, eps in sorted(where.items())))
+    if len(many) > LISTED:
+        faults.append(f"and {len(many) - LISTED} more {kind}s in more than one dataset")
+    return len(many)
+
+
 def check_datasets(roots: Sequence[str]) -> Tuple[List[str], List[str]]:
-    """What a set of safety datasets (one build, or the parts of a split one) holds, and what is wrong with it, from their
-    files alone: (lines to print, faults). Faults: a ``safety_ranges.json`` with other keys than world-models' three or ranges
-    other than ``manual_safety_labels.json``'s, a replay group in more than one dataset or without its source, a sidecar
-    missing. The lines: each dataset's mix (``report.json``), how many episodes have clearance and how close it is at the
-    frames in contact (about 0 when it agrees with PhysX), and per replay group whether its takes share one look (their
-    change numbers), one layout seed, and differ in layout hash where an edit was made. For the twin check."""
+    """What a set of safety datasets holds, and what is wrong with it, from their files alone: (lines to print, faults).
+    Give it one build's datasets (every part of a split one), or every dataset of a train, val and test set at once: the
+    takes of a replay group share their commands and those of a layout their scene, so one in two datasets leaks.
+
+    Faults: a dataset given twice or missing a file; a ``safety_ranges.json`` with other keys than world-models' three or
+    ranges other than ``manual_safety_labels.json``'s; a replay group, a layout hash, or a scene's layout seed (one draw) in
+    more than one dataset; a replay group without one source; unavoidable ranges whose stop times and sets disagree or
+    that overlap an unsafe frame. The lines: each dataset's mix (``report.json``), how many episodes have clearance and how
+    close it is at the frames in contact (about 0 when it agrees with PhysX), its unavoidable ranges, per replay group
+    whether its takes share one look (their change numbers), one layout seed, and differ in layout hash where an edit was
+    made, and across the datasets how many groups, layouts and seeds are in more than one. For the twin check."""
     import pandas as pd  # lerobot's own dependency
 
     lines, faults = [], []
     groups: Dict[str, List[Tuple[str, Dict]]] = {}
-    for root in roots:
-        name = os.path.basename(root.rstrip("/"))
-        teleop = os.path.join(root, "meta", "teleop")
-        missing = [f for f in ("episodes.jsonl", "scenes.jsonl", "contacts.jsonl", "frames.parquet", "report.json")
-                   if not os.path.exists(os.path.join(teleop, f))]
-        if missing or not os.path.exists(os.path.join(root, "safety_ranges.json")):
-            faults.append(f"{name}: missing {', '.join(missing + ([] if os.path.exists(os.path.join(root, 'safety_ranges.json')) else ['safety_ranges.json']))}")
+    hashes: Dict[str, Dict[str, List[int]]] = {}
+    seeds: Dict[Tuple, Dict[str, List[int]]] = {}
+    bases = [os.path.basename(r.rstrip("/")) or r for r in roots]
+    names = [b if bases.count(b) == 1 else r.rstrip("/") for b, r in zip(bases, roots)]  # one name twice: their paths
+    seen, checked = set(), 0
+    for root, name in zip(roots, names):
+        real = os.path.realpath(root)
+        if real in seen:
+            faults.append(f"{name} is given twice")
             continue
+        seen.add(real)
+        teleop = os.path.join(root, "meta", "teleop")
+        missing = [f for f in ("safety_ranges.json", "manual_safety_labels.json") if not os.path.exists(os.path.join(root, f))]
+        missing += [os.path.join("meta", "teleop", f) for f in ("episodes.jsonl", "scenes.jsonl", "contacts.jsonl",
+                                                                "frames.parquet", "report.json")
+                    if not os.path.exists(os.path.join(teleop, f))]
+        if missing:
+            faults.append(f"{name}: missing {', '.join(missing)}")
+            continue
+        checked += 1
         with open(os.path.join(root, "safety_ranges.json"), encoding="utf-8") as f:
             ranges_ = json.load(f)
         with open(os.path.join(root, "manual_safety_labels.json"), encoding="utf-8") as f:
@@ -1052,6 +1084,10 @@ def check_datasets(roots: Sequence[str]) -> Tuple[List[str], List[str]]:
         for e in eps:
             if e.get("group") is not None:
                 groups.setdefault(str(e["group"]), []).append((name, e))
+            if e.get("layoutHash"):
+                hashes.setdefault(e["layoutHash"], {}).setdefault(name, []).append(e.get("episode"))
+            if e.get("layoutSeed") is not None:
+                seeds.setdefault((e.get("sceneSha256"), e["layoutSeed"]), {}).setdefault(name, []).append(e.get("episode"))
         frames = pd.read_parquet(os.path.join(teleop, "frames.parquet"))
         touching = frames.loc[frames["in_contact"], "min_clearance_mm"].dropna()
         have = sum(1 for e in eps if e.get("clearanceUnavailable") is None)
@@ -1060,24 +1096,57 @@ def check_datasets(roots: Sequence[str]) -> Tuple[List[str], List[str]]:
                         f"90% under {touching.quantile(0.9):.1f} mm, largest {touching.max():.1f} mm" if len(touching) else "")
                      + (f"; why not: {sorted({e['clearanceUnavailable'] for e in eps if e.get('clearanceUnavailable')})[:3]}"
                         if have < len(eps) else ""))
+        unavoidable_path = os.path.join(teleop, "unavoidable_ranges.json")
+        if not os.path.exists(unavoidable_path):
+            lines.append(f"{name}: no unavoidable ranges")
+        else:
+            with open(unavoidable_path, encoding="utf-8") as f:
+                unav = json.load(f)
+            times, sets = unav.get("stopTimes") or {}, unav.get("unavoidable_ranges") or {}
+            if not times or set(times) != set(sets) or not all(isinstance(s, dict) for s in sets.values()):
+                faults.append(f"{name}: unavoidable_ranges.json gives stop times {sorted(times)} for the sets {sorted(sets)}")
+            else:
+                unsafe = {int(k): v for k, v in manual.items()}
+                parts = []
+                for set_name, seconds in times.items():
+                    by_episode = sets[set_name]
+                    over = sorted(int(k) for k, rs in by_episode.items()
+                                  if any(a <= y and x <= b for a, b in rs for x, y in unsafe.get(int(k), [])))
+                    if over:
+                        faults.append(f"{name}: unavoidable ranges ({set_name}) overlap unsafe frames in episode(s) {over}")
+                    parts.append(f"{set_name} {seconds:g} s: {sum(b - a + 1 for rs in by_episode.values() for a, b in rs)} "
+                                 f"frames in {len(by_episode)} episode(s)")
+                lines.append(f"{name}: unavoidable ranges ({unav.get('source')}): " + "; ".join(parts))
     shared_look = same_seed = hashed_apart = 0
     for g, members in sorted(groups.items()):
-        where = {n for n, _ in members}
-        if len(where) > 1:
-            faults.append(f"replay group {g} is in {len(where)} datasets: {sorted(where)}")
         if sum(1 for _, e in members if e.get("role") == "source") != 1:
             faults.append(f"replay group {g} has {sum(1 for _, e in members if e.get('role') == 'source')} source(s)")
         looks = {json.dumps(e.get("lookChanges"), sort_keys=True) for _, e in members}
-        seeds = {e.get("layoutSeed") for _, e in members}
+        group_seeds = {e.get("layoutSeed") for _, e in members}
         source = next((e for _, e in members if e.get("role") == "source"), None)
         edited = [e for _, e in members if e.get("role") == "replay" and (e.get("editParsed") or {}).get("op") not in (None, "none")]
         shared_look += len(looks) == 1
-        same_seed += len(seeds) == 1
+        same_seed += len(group_seeds) == 1
         hashed_apart += bool(source) and all(e.get("layoutHash") != source.get("layoutHash") for e in edited)
     if groups:
         n = len(groups)
         lines.append(f"replay groups: {n}; one look in {shared_look}, one layout seed in {same_seed}, every edited replay's layout "
                      f"hash unlike its source's in {hashed_apart}")
+    # Each replay group and each layout inside one dataset (one split part): a group's takes share their commands.
+    where_groups: Dict[str, Dict[str, List[int]]] = {}
+    for g, members in groups.items():
+        for n, e in members:
+            where_groups.setdefault(g, {}).setdefault(n, []).append(e.get("episode"))
+    parted = (_across("replay group", where_groups, str, faults),
+              _across("layout hash", hashes, lambda h: h[:16], faults),
+              _across("layout seed", seeds, lambda k: f"{k[1]} of scene {(k[0] or '?')[:12]}", faults))
+    if checked > 1:
+        counts = (len(groups), len(hashes), len(seeds))
+        lines.append(f"across {checked} datasets: " + (
+            f"each of {counts[0]} replay group(s), {counts[1]} layout hash(es) and {counts[2]} layout seed(s) in one dataset"
+            if not any(parted) else
+            f"{parted[0]} of {counts[0]} replay group(s), {parted[1]} of {counts[1]} layout hash(es) and {parted[2]} of "
+            f"{counts[2]} layout seed(s) in more than one dataset"))
     return lines, faults
 
 

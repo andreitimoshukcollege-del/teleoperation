@@ -701,6 +701,14 @@ section says above, and decision 4's "the table is its own kind, not unsafe" and
      obstacle contact as decision 6 has it.
    - **`safety-compare`** restricts each named set to the rebuilt episodes. A report's old `stopTimeS` reads as one
      `given` time.
+3. **Splits across datasets.** A source take and its replays share their commands, so a replay group or a layout in two
+   split parts leaks. `safety-report` (`sidecars.check_datasets`) now faults when a replay group, a layout hash, or a (scene
+   sha, layout seed) is in more than one of the datasets it is given, naming the datasets and episodes (the first 20 of
+   each kind, then a count). So a whole train, val and test set can be checked at once. It also prints how many of each
+   are in more than one, and each dataset's unavoidable ranges, faulting one that overlaps an unsafe frame.
+   - **Fixed on the way:** two datasets with one folder name (`train/ds`, `val/ds`) were one name to the replay-group
+     check, so a group parted between them went unseen. Such datasets are now named by their paths, and one given twice is a
+     fault.
 
 ### R, arm response
 

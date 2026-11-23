@@ -280,8 +280,9 @@ def replay(host: Jlog) -> Dict:
 
 
 def parse_edit(text: str) -> Dict:
-    """An ``RP`` edit (docs/adr/0038 decision 2): ``none``, ``remove:<id>``, ``shift:<id>:<dx>:<dy>`` (m, base frame) or
-    ``move:<id>:<x>:<y>:<yawRad>``. Raises ValueError for anything else."""
+    """An ``RP`` edit (docs/adr/0038 decision 2): ``none``, ``remove:<id>``, ``shift:<id>:<dx>:<dy>`` (m, base frame),
+    ``move:<id>:<x>:<y>:<yawRad>`` or ``add:<id>:<x>:<y>:<yawRad>`` (an object stood in the arm's way, workstream M's add of
+    2026-11-23). Raises ValueError for anything else."""
     parts = text.split(":")
     op = parts[0]
     try:
@@ -291,11 +292,11 @@ def parse_edit(text: str) -> Dict:
             return {"op": "remove", "object": int(parts[1])}
         if op == "shift" and len(parts) == 4:
             return {"op": "shift", "object": int(parts[1]), "dx": float(parts[2]), "dy": float(parts[3])}
-        if op == "move" and len(parts) == 5:
-            return {"op": "move", "object": int(parts[1]), "x": float(parts[2]), "y": float(parts[3]), "yawRad": float(parts[4])}
+        if op in ("move", "add") and len(parts) == 5:
+            return {"op": op, "object": int(parts[1]), "x": float(parts[2]), "y": float(parts[3]), "yawRad": float(parts[4])}
     except ValueError:
         pass
-    raise ValueError(f"RP edit {text!r} is not none, remove:<id>, shift:<id>:<dx>:<dy> or move:<id>:<x>:<y>:<yawRad>")
+    raise ValueError(f"RP edit {text!r} is not none, remove:<id>, shift:<id>:<dx>:<dy>, move:<id>:<x>:<y>:<yawRad> or add:<id>:<x>:<y>:<yawRad>")
 
 
 def planned_moves(host: Jlog) -> List[Dict]:

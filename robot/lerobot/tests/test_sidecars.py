@@ -423,7 +423,8 @@ def test_the_replay_record_is_read_exactly_as_adr_0038_defines_it():
     assert sidecars.parse_edit("none") == {"op": "none"}
     assert sidecars.parse_edit("remove:52") == {"op": "remove", "object": 52}
     assert sidecars.parse_edit("move:52:0.31:-0.12:1.5708") == {"op": "move", "object": 52, "x": 0.31, "y": -0.12, "yawRad": 1.5708}
-    for bad in ("shift:52:0.1", "remove:x", "spin:52", "none:1", ""):
+    assert sidecars.parse_edit("add:36:0.21:0.0625:-0.5") == {"op": "add", "object": 36, "x": 0.21, "y": 0.0625, "yawRad": -0.5}
+    for bad in ("shift:52:0.1", "remove:x", "spin:52", "none:1", "", "add:36:0.21"):
         with pytest.raises(ValueError):
             sidecars.parse_edit(bad)
     host = types.SimpleNamespace(tag=lambda name: [["5", "g", "source", "none"]] if name == "RP" else [])

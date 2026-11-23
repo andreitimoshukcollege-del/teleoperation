@@ -632,6 +632,7 @@ def _nearest(boxes: List[Box], obstacles, best: float) -> Tuple[float, int]:
     halves = np.array([b.half for b in boxes])
     link_c = centres.mean(axis=0)
     link_r = float(max(np.linalg.norm(c - link_c) + np.linalg.norm(h) for c, h in zip(centres, halves)))
+    along = np.einsum("bij,bj->bi", axes, centres)  # each box's centre along its own axes
     cands = []  # (lower bound, box index, body, piece or sphere)
     for body, pose, factor, placed in obstacles:
         if body.sphere > 0:
@@ -650,14 +651,13 @@ def _nearest(boxes: List[Box], obstacles, best: float) -> Tuple[float, int]:
             continue
         idx = np.flatnonzero(near)
         # Lower bounds for each (box, piece): the box against the piece's bounding sphere, and the gap along the box's own axes.
-        local = np.einsum("bij,pj->bpi", axes, pc[idx]) - np.einsum("bij,bj->bi", axes, centres)[:, None, :]
+        local = np.einsum("bij,pj->bpi", axes, pc[idx]) - along[:, None, :]
         sphere_lb = np.linalg.norm(np.maximum(np.abs(local) - halves[:, None, :], 0.0), axis=2) \
             + np.minimum((np.abs(local) - halves[:, None, :]).max(axis=2), 0.0) - pr[idx][None, :]
         for jj, j in enumerate(idx):
             proj = placed[j].vertices @ axes.reshape(-1, 3).T  # (v, b*3): each box's axes in turn
             lo, hi = proj.min(axis=0).reshape(len(boxes), 3), proj.max(axis=0).reshape(len(boxes), 3)
-            c = np.einsum("bij,bj->bi", axes, centres)
-            gap = np.maximum(lo - (c + halves), (c - halves) - hi).max(axis=1)
+            gap = np.maximum(lo - (along + halves), (along - halves) - hi).max(axis=1)
             for i in range(len(boxes)):
                 lb = max(float(sphere_lb[i, jj]), float(gap[i]))
                 if lb < best:

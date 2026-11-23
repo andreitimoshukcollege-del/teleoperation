@@ -83,8 +83,10 @@ its own), and every 20 ms WORLD, the objects' poses as PhysX has them.
     scene names (`polyhaven/<id>`, into `~/isaacsim/assets/polyhaven/`, texture paths pointed at their own folder). The
     fixtures stand in the pool's `fixedRegions` (the table's wings).
   - `just isaac-materials-fetch` fetches the PBR textures the simple shapes wear per take and the table-top ones, and makes
-    four Poly Haven lacks (a cutting mat, kraft paper, cardboard, white paper: `teleop_isaac.materials`, from a seed); the
-    renderer projects them in object space.
+    four Poly Haven lacks (a cutting mat, kraft paper, cardboard, white paper: `teleop_isaac.materials`, from a seed). Each
+    shows at its real size (since 2026-11-23, docs/adr/0038 "A, appearance"): a textured box, the table and the bench become
+    meshes with texture coordinates in metres (`renderer.box_mesh`), and a cylinder is projected in its own object space,
+    which is metres. (A box projected in object space had been a unit cube: every side as many tiles as any other.)
 - **Surfaces and flat clutter** (docs/adr/0037, its own section): the table and the bench each draw a look per take from the
   scene's `materials.looks` (`LK`), and `teleop_isaac.clutter` lays flat clutter on the table (papers, a cutting mat,
   cables, a plastic bag; `CL`, mask id 15). The renderer alone draws it: nothing is taller than 6 mm, which no accepted arm

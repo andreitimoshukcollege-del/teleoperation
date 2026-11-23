@@ -984,3 +984,58 @@ measured read-only on the same takes:
   which ran beside a second twin): median interval 32.04 ms, 0.24% over 55 ms, all of the grid recorded. Late-colour jumps
   are at most 7.2.
 - The renderer's look was right as recorded, so no take needs re-recording for this.
+
+**Textures at their real size (2026-11-23).** After the twin check, the simple shapes looked pale or nearly flat white, their
+grain stretched. These were the mixed scenes' stand blocks, crates, planks, legs and supports (boxes), and the rod, dowel and
+puck (cylinders).
+
+- **The cause, from the shader's own code** (`OmniPBR_ClearCoat.mdl`; `base::coordinate_projection`, `compute_cubic_transform`
+  and `transform_coordinate` in NVIDIA's MDL SDK).
+  - Projecting in object space, OmniPBR takes two of the shape's own coordinates as a face's texture coordinates, and
+    `texture_scale` multiplies them.
+  - A box (and the table and the bench) is a `UsdGeom.Cube` of size 1 scaled by its prim. Its object coordinates run ±0.5
+    whatever its size, so every side of every face showed the same number of tiles: the 1.8 cm edge of a 30 × 8 × 1.8 cm
+    plank as many as its 30 cm length.
+  - A 1 m veneer was squeezed about 10× onto a 10 cm block and 55× onto that edge, and mip-mapping averaged it to its mean
+    colour, hence the flat, pale look. The pale woods (ash, bamboo, pine) made it worse.
+  - A cylinder is built at its size, so its object space is metres, but its tiling was multiplied by its size: a 22 cm
+    rod's texture was 4.5× too large.
+- **Measured on a recorded take** (`stop_before_collision/20261122T141557Z-take127`, table look `cutting-mat`, a 1 cm grid on
+  a 0.30 m tile). The table top seen by each third-person camera was resampled top-down at 0.5 mm a pixel through `CM`.
+  - The grid repeated every 1.55 cm along the table's 1.6 m (harmonics at 3.1, 4.7 and 6.3 cm), in both cameras, and
+    about every 0.5 cm along its 0.47 m. That is the unit cube's 1.6 cm and 0.47 cm, not 1 cm both ways.
+  - Every table and bench look since 2026-11-17 was stretched 3.4:1 the same way.
+- **The fix** (`renderer.py`, the renderer only; the bridge and its colliders are unchanged).
+  - A box, the table or the bench, when it wears a texture, becomes in place the same unit cube as a mesh, with texture
+    coordinates in metres at its real size (`box_mesh`).
+    - Each face has its own four corners and u runs along its longer side, so a plank's grain follows its length.
+    - Each face's coordinates are turned, not mirrored, so a texture reads the right way round.
+    - OmniPBR reads these coordinates instead of projecting.
+  - The prim keeps its path, transform (its scale too), mask label, visibility and material binding (`metric_box`; a pxr
+    test checks each), so geometry, depth and masks are unchanged.
+  - A resize redoes the coordinates at the new size.
+  - Every textured shape now tiles at `tileScale / sizeM` a metre (`tiling`), whatever its size; a cylinder stays projected
+    in its own object space. Shapes and surfaces without a texture are untouched, so `fr3-duo-bench` renders as before.
+  - The looks the mixed scenes give these shapes are real woods and metals, 0.3-2.5 m a tile, and are unchanged. At real
+    size a face shows its own few centimetres of grain, at about 1 mm a texel. No scene file changed, and no golden either.
+- **Tests:**
+  - every face of `box_mesh` is the box's real size in metres, for five boxes from a cube to a 36 cm post: any two corners
+    as far apart in texture coordinates as in the room, counter-clockwise from outside, not mirrored, u along the longer
+    side;
+  - the tiling is repeats a metre;
+  - with pxr, a box turned into a mesh keeps its world bounds, transform, binding and label.
+- **This changes every scene with textured boxes or surfaces,** `jetrover-bench` too: its table and bench looks, the phone
+  and the pen.
+- **What to look for on the next twin run** (any scene with looks; the contact sheet from `appearance_check.py --sheet`, and
+  frames from each third-person camera):
+  - **Planks** (shelf, cantilever and bench planks, slats): wood grain running along their length and unstretched on all
+    faces. The thin edges show a thin strip of grain, not smeared stripes.
+  - **Blocks, crates, legs, pedestals, risers:** visible wood or metal texture on every face, at the same scale on each
+    face. None flat white or cream (pale ash or pine is fine if its grain shows).
+  - **Rod, dowel, puck:** grain or metal at real scale. The four seams where the cube projection meets around a cylinder
+    remain, unchanged.
+  - **The table and bench:** the cutting mat's squares square (1 cm, a bold line every 5 cm). Laminate and wood grain at a
+    believable scale. Fabric and paper weaves fine, not stretched sideways.
+  - **Masks and depth unchanged:** `appearance_check.py` still has every camera's table depth through `CM` under 3 mm.
+  - **The renderer's log:** `[render] textures at their real size: N boxes and M surfaces as meshes with coordinates in
+    metres`, and no warning.

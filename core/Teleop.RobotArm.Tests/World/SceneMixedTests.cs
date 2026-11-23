@@ -62,7 +62,7 @@ namespace Teleop.RobotArm.Tests.World
             Assert.True(s.Mixed && s.IsPool && s.DrawsSizes);
             Assert.Equal("jetrover", s.RobotProfile);
             Assert.Equal((0, 3), (s.ObstacleMin, s.ObstacleMax));
-            Assert.Equal((2, 8), (s.DistractorMin, s.DistractorMax));
+            Assert.Equal((2, 6), (s.DistractorMin, s.DistractorMax));
             Assert.All(s.Objects, o => Assert.NotEqual(SceneRole.None, o.Role));
             // At every yaw the arm reaches (its base turns 120 degrees either way), and to the reach of a low touch.
             Assert.Equal(2.0944, s.ReachBearing, 4);
@@ -272,7 +272,7 @@ namespace Teleop.RobotArm.Tests.World
             // The phone, 7 by 15 cm, across y at the region's near edge: its near side 0.47 - 0.036 from the axis, short of 0.45.
             Assert.False(s.FitsOnTable(phone, 0.10, 0.47, Math.PI / 2, 1.0, 0));
             Assert.True(s.FitsOnTable(phone, 0.10, 0.50, Math.PI / 2, 1.0, 0));
-            Assert.False(s.FitsOnTable(phone, 0.45, 0.30, 0, 1.0, 0)); // beyond the reach, but outside the regions
+            Assert.False(s.FitsOnTable(phone, 0.50, 0.10, 0, 1.0, 0)); // beyond the reach, but outside the regions
             Assert.False(s.FitsOnTable(kettle, 0.20, 0.70, 0, 1.0, 0)); // off the table's side edge
             Assert.True(s.FitsOnTable(kettle, 0.20, 0.62, 0, 1.0, 0));
             // An obstacle never stands there: the placement region holds it, and the draws centre it within the reach band.
@@ -289,9 +289,9 @@ namespace Teleop.RobotArm.Tests.World
             {
                 Stats m = Measure(s, 2000);
                 _output.WriteLine($"{s.Name}: {m}");
-                // 0-3 obstacles uniform, fewer only by the ones that found no spot; 2-8 distractors the same.
+                // 0-3 obstacles uniform, fewer only by the ones that found no spot; 2-6 distractors the same.
                 Assert.InRange(m.MeanUnits, 1.3, 1.5);
-                Assert.InRange(m.MeanDistractors, 4.3, 5.0);
+                Assert.InRange(m.MeanDistractors, 3.6, 4.0);
                 Assert.True(m.MissedPerLayout < 0.4, $"{m.MissedPerLayout:0.00} found no spot a layout");
                 // Raised on stands, and planks on their supports, in a share of the obstacles; every object takes part.
                 Assert.InRange(m.RaisedShare, 0.08, 0.30);
@@ -309,11 +309,11 @@ namespace Teleop.RobotArm.Tests.World
         {
             public double MeanUnits, MeanDistractors, MissedPerLayout, RaisedShare, RigShare, InnerShare, InnerArea, SideShare, NnMedian, Nn90;
             public int NeverPlaced;
-            public int[] Units = new int[4], Distractors = new int[9];
+            public int[] Units = new int[4], Distractors = new int[7];
             public double[] TopHeights = new double[3]; // the 5th, 50th and 95th percentile of the obstacles' tops above the table, m
 
             public override string ToString() => FormattableString.Invariant(
-                $"obstacles {MeanUnits:0.00} a layout ({string.Join("/", Units)} with 0-3), distractors {MeanDistractors:0.00} ({string.Join("/", Distractors.Skip(2))} with 2-8), ") +
+                $"obstacles {MeanUnits:0.00} a layout ({string.Join("/", Units)} with 0-3), distractors {MeanDistractors:0.00} ({string.Join("/", Distractors.Skip(2))} with 2-6), ") +
                 FormattableString.Invariant($"{MissedPerLayout:0.000} found no spot a layout; raised on a stand {RaisedShare:0.000} and a plank {RigShare:0.000} of the obstacles; ") +
                 FormattableString.Invariant($"centres inside the band's middle radius {InnerShare:0.000} (area {InnerArea:0.000}), beyond 60 degrees {SideShare:0.000}; ") +
                 FormattableString.Invariant($"tops {TopHeights[0]:0.000}/{TopHeights[1]:0.000}/{TopHeights[2]:0.000} m (5/50/95%); ") +

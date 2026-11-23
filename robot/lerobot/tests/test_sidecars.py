@@ -455,9 +455,13 @@ def batch(scenarios):
     return [take(scenarios, "mixed", world([wc(2000, "0:5:2:1.5"), wc(2100), ["RP", 950 * MS, "3.1", "source", "none"]]),
                  name="20261122T100000Z-take001"),
             take(scenarios, "mixed", world([["RP", 950 * MS, "3.1", "replay", "remove:2"]], ids="3;4;5"), name="20261122T100100Z-take002"),
-            take(scenarios, "mixed", world([wc(1600, "0:5:0:2.0"), wc(1700)], seed=11), name="20261122T100200Z-take003"),
-            take(scenarios, "mixed", world([wc(2000, "0:4:3:6.0"), wc(2300), wo(2600, {**STANDING, 3: (0.2, 0.0, -0.18, ON_ITS_SIDE)})],
-                                           seed=12), name="20261122T100300Z-take004")]
+            take(scenarios, "mixed", world([wc(1600, "0:5:0:2.0"), wc(1700)], seed=11, poses=ELSEWHERE), name="20261122T100200Z-take003"),
+            take(scenarios, "mixed", world([wc(2000, "0:4:3:6.0"), wc(2300), wo(2600, {**THIRD, 3: (0.2, 0.0, -0.18, ON_ITS_SIDE)})],
+                                           seed=12, poses=THIRD), name="20261122T100300Z-take004")]
+
+
+ELSEWHERE = {**STANDING, 2: (0.20, 0.10, -0.15, UPRIGHT)}  # other layouts: the can stands elsewhere
+THIRD = {**STANDING, 2: (0.28, 0.05, -0.15, UPRIGHT)}
 
 
 def test_a_build_writes_world_models_labels_neutral_captions_and_every_sidecar(scenarios, tmp_path):

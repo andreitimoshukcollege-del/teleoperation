@@ -98,8 +98,7 @@ class Options:
         return NEUTRAL_CAPTION if self.caption == "neutral" else scenario
 
     def describe(self) -> Dict:
-        return {"caption": self.caption, "tableUnsafe": self.table_unsafe,
-                "clearance": bool(self.geometry_dir),
+        return {"caption": self.caption, "tableUnsafe": self.table_unsafe, "geometryDir": self.geometry_dir,
                 "stopModel": None if self.stop is None else {"latencyMs": self.stop.latency_ms, "stopTimeMs": self.stop.stop_time_ms,
                                                              "decelRadS2": self.stop.decel_rad_s2}}
 
@@ -659,7 +658,7 @@ def episode(take: Take, options: Options = Options(), records: Optional[Records]
             "shape": o.get("shape"), "asset": o.get("asset") if o.get("shape") == "mesh" else None,
             "primitive": None if o.get("shape") == "mesh" else o.get("shape"),
             "clutter": bool(o.get("clutter", False)), "sizeFactor": factor, "dimensionsM": [round(d, 6) for d in dims],
-            "massKg": None if (mass is None or not movable) else round(float(mass) * factor ** 3, 6),
+            "massKg": None if (mass is None or not movable) else round(float(mass) * factor ** 3, 9),
             "reach": "distractor" if (movable and _in_regions(edges, start[0], start[1])) else "in_reach",
             "baseDistanceM": round(math.hypot(start[0], start[1]), 4),
             "start": [round(v, 6) for v in start], "end": [round(v, 6) for v in end] if end else None, "changes": changes})

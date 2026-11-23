@@ -112,13 +112,14 @@ def test_safety_build_with_spawned_workers_writes_what_one_process_does(scenario
     import subprocess
     import sys
 
-    from teleop_lerobot import safety
+    from teleop_lerobot import safety, sidecars
     from teleop_lerobot.writer import SAFETY_CRF, SAFETY_PRESET
 
     paths = [jetrover_take(scenarios, name=f"20261121T1100{i}0Z-take00{i}", scenario="reach_no_obstacle", image=jpeg)
              for i in range(2)]
     alone, spawned = str(tmp_path / "a" / "jetrover_y"), str(tmp_path / "b" / "jetrover_y")
-    safety.build(LeRobotWriter(crf=SAFETY_CRF, preset=SAFETY_PRESET), alone, [read_take(p) for p in paths], log=lambda m: None)
+    safety.build(LeRobotWriter(crf=SAFETY_CRF, preset=SAFETY_PRESET), alone, [read_take(p) for p in paths], log=lambda m: None,
+                 options=sidecars.Options(geometry_dir=sidecars.GEOMETRY_DIR))  # the command's own defaults
     run = subprocess.run([sys.executable, "-m", "teleop_lerobot", "safety-build", "--jobs", "2", "--out", spawned, *paths],
                          cwd=os.path.dirname(os.path.dirname(os.path.abspath(__file__))), capture_output=True, text=True,
                          timeout=300)
@@ -126,3 +127,30 @@ def test_safety_build_with_spawned_workers_writes_what_one_process_does(scenario
     assert "with 2 worker(s)" in run.stdout
     assert safety.compare_datasets(alone, spawned) == []
     assert not os.path.exists(spawned + ".prepare")
+
+
+def test_a_safety_build_with_neutral_captions_is_a_dataset_lerobot_reads_with_one_task(scenarios, tmp_path):
+    # docs/adr/0038 decision 6: every episode's task is "move the arm", whatever its scenario; LeRobot's tasks.parquet then
+    # holds that one task, and every episode and frame points at it. The scenario is in meta/teleop/episodes.jsonl.
+    import json
+
+    import pandas as pd
+    from lerobot.datasets import LeRobotDataset
+    from teleop_lerobot import safety
+    from teleop_lerobot.writer import SAFETY_CRF, SAFETY_PRESET
+
+    paths = [jetrover_take(scenarios, name=f"20261122T1100{i}0Z-take00{i}", scenario=c, image=jpeg)
+             for i, c in enumerate(("mixed", "reach_no_obstacle", "mixed"))]
+    root = str(tmp_path / "jetrover_z")
+    safety.build(LeRobotWriter(crf=SAFETY_CRF, preset=SAFETY_PRESET), root, [read_take(p) for p in paths], log=lambda m: None)
+    ds = LeRobotDataset("local/jetrover-isaac-safety_jetrover_z", root=root)
+    assert ds.meta.total_episodes == 3 and ds.meta.total_tasks == 1
+    tasks = pd.read_parquet(os.path.join(root, "meta", "tasks.parquet"))
+    assert len(tasks) == 1 and "move the arm" in set(tasks.index.astype(str)) | set(tasks.get("task", pd.Series(dtype=str)).astype(str))
+    assert {ds[i]["task"] for i in (0, len(ds) - 1)} == {"move the arm"}
+    lines = [json.loads(x) for x in open(os.path.join(root, "meta", "teleop", "episodes.jsonl"))]
+    assert [l["scenario"] for l in lines] == ["mixed", "reach_no_obstacle", "mixed"]
+    frames = pd.read_parquet(os.path.join(root, "meta", "teleop", "frames.parquet"))
+    assert len(frames) == len(ds)
+    assert frames.groupby("episode_index").size().tolist() == [len(read_take(p).frames) for p in paths]
+    assert json.load(open(os.path.join(root, "safety_ranges.json")))["unsafe_ranges"] == {}

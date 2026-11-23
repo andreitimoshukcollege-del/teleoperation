@@ -305,6 +305,48 @@ namespace Teleop.RobotArm.Tests.World
             }
         }
 
+        [Fact]
+        public void AMixedLayoutsObstacles_LieFartherFromEarlierLayouts_ThanTheBenchsObjectsInReach()
+        {
+            // docs/adr/0038 (world-models: val and test contacts sat a median 2.5 cm from the nearest train contact): how near an object a
+            // new layout puts within the arm's reach comes to one an earlier layout put there, at the same number of objects (1000
+            // earlier, 200 new), and how high their tops stand. The bench's are its movable objects in the reach band and its fixture.
+            WorldScene bench = Load("jetrover-bench");
+            (double Median, double P90, double TopLo, double TopHi) mixed = Spread(Mixed, (s, i, p, scale) => s.Objects[i].Role == SceneRole.Obstacle || s.Objects[i].Role == SceneRole.Plank);
+            (double Median, double P90, double TopLo, double TopHi) old = Spread(bench, (s, i, p, scale) => !s.Objects[i].Clutter && !(s.Objects[i].Movable && s.InEdgeRegions(p.X, p.Y)));
+            _output.WriteLine(FormattableString.Invariant(
+                $"a new layout's objects in reach to the nearest of 1000 earlier ones: jetrover-mixed median {mixed.Median * 1000:0.0} mm, 90% {mixed.P90 * 1000:0.0} mm; ") +
+                FormattableString.Invariant($"jetrover-bench median {old.Median * 1000:0.0} mm, 90% {old.P90 * 1000:0.0} mm. ") +
+                FormattableString.Invariant($"Their tops 5-95%: mixed {mixed.TopLo:0.000}-{mixed.TopHi:0.000} m, bench {old.TopLo:0.000}-{old.TopHi:0.000} m"));
+            Assert.True(mixed.Median > old.Median, "the mixed layouts' obstacles spread over more of the arm's reach");
+        }
+
+        /// <summary>
+        /// Centres of the objects <paramref name="select"/> takes from layouts 1, 2, ...: the first 1000 are the earlier ones, the next 200
+        /// the new; the median and 90th percentile of each new one's distance to the nearest earlier one, and the 5th and 95th percentile
+        /// of their tops above the table.
+        /// </summary>
+        private static (double, double, double, double) Spread(WorldScene s, Func<WorldScene, int, RigidTransform, double, bool> select)
+        {
+            var centres = new List<(double X, double Y)>();
+            var tops = new List<double>();
+            for (ulong seed = 1; centres.Count < 1200; seed++)
+            {
+                (RigidTransform[] p, bool[] parked, double[] scales, _) = Draw(s, seed);
+                for (int i = 0; i < p.Length && centres.Count < 1200; i++)
+                {
+                    if (parked[i] || !select(s, i, p[i], scales[i])) continue;
+                    centres.Add((p[i].X, p[i].Y));
+                    s.RestExtents(i, WorldScene.RestOf(p[i]), out _, out _, out double ez);
+                    tops.Add(p[i].Z + ez * scales[i] / 2 - s.Table.Top);
+                }
+            }
+
+            var nn = centres.Skip(1000).Select(c => Math.Sqrt(centres.Take(1000).Min(e => (c.X - e.X) * (c.X - e.X) + (c.Y - e.Y) * (c.Y - e.Y)))).OrderBy(d => d).ToArray();
+            tops.Sort();
+            return (nn[nn.Length / 2], nn[(int)(0.9 * nn.Length)], tops[(int)(0.05 * tops.Count)], tops[(int)(0.95 * tops.Count)]);
+        }
+
         private sealed class Stats
         {
             public double MeanUnits, MeanDistractors, MissedPerLayout, RaisedShare, RigShare, InnerShare, InnerArea, SideShare, NnMedian, Nn90;

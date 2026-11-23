@@ -39,7 +39,8 @@ Tests: `python -m pytest robot/lerobot/tests` anywhere (the LeRobot round trip i
 ## Safety datasets: labels and sidecars (docs/adr/0036 amendment 1, docs/adr/0038 decision 6)
 
 The twin's scripted takes become one dataset per batch, `~/data/lerobot/jetrover-isaac-safety/jetrover_<UTC>_<id>/`
-(`just isaac-safety-build`; `split=K` writes K datasets `<name>_<k>of<K>` instead, by layout). `observation.images.front`
+(`just isaac-safety-build <twins> <name> <out> <split> <caption>`, arguments by position; a split of K writes K datasets
+`<name>_<k>of<K>` instead, by layout). `observation.images.front`
 is the twin's wrist camera. Every episode's task is `move the arm` (`--caption category` gives the scenario's name, as
 datasets built before 2026-11-22 have it); the scenario is in `meta/teleop/episodes.jsonl`.
 

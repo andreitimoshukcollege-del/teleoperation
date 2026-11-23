@@ -240,7 +240,7 @@ recipe; every field is defined in `robot/lerobot/README.md`, "Safety datasets: l
   the stop time later.
 - **Item 24:** `firstContactS`, `afterLastContactS` and `timingFlags` per episode, the flagged episodes in `report.json` and
   the build log. Never set aside.
-- **Items 20 and 21:** `safety-build --split K` and `just isaac-safety-build ... split=K` write `<name>_<k>of<K>`. Episodes
+- **Items 20 and 21:** `safety-build --split K` and `just isaac-safety-build <twins> <name> <out> K` write `<name>_<k>of<K>`. Episodes
   that share an `RP` group, a layout hash or a scene and `WL` seed stay in one dataset; the parts go largest first to the
   dataset with the fewest episodes. Each dataset has its `report.json` and a `[mix]` line in the build log (run for real on 4
   takes into 2 datasets in scratch).

@@ -289,7 +289,7 @@ def pct(v: Sequence[float], q: float) -> Optional[float]:
 
 
 def summary(v: Sequence[float], qs=(0.5, 0.9, 0.95, 0.99), nd: int = 2) -> Dict:
-    out = {f"p{int(q * 100)}": (round(pct(v, q), nd) if v else None) for q in qs}
+    out = {"p" + format(q * 100, "g"): (round(pct(v, q), nd) if v else None) for q in qs}
     out["n"] = len(v)
     return out
 

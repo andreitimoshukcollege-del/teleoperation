@@ -81,7 +81,8 @@ namespace Teleop.Eval.JointDrive
             "                   [--operator-log <path> [--session-id <id>]] [--stop-file <path>] [--take <scenario>]\n" +
             "                   [--simulated-robot [--stall-seconds 1] [--stream-seconds 3]] [--scene <file> [--new-layout] [--touch-depth-mm 8] [--events 1-3]]\n" +
             "                   [--script mixed [--replays 0] [--max-joint-speed <rad/s>[,x4]] [--max-joint-accel <rad/s2>[,x4]] [--max-wrist-speed <m/s>]\n" +
-            "                                   [--max-peak-speed <m/s>] [--no-caps] [--no-style | --style p,r,t,s] [--blind n,r,v,l] [--offset-mm -40,60]]\n" +
+            "                                   [--max-peak-speed <m/s>] [--no-caps] [--no-style | --style p,r,t,s] [--blind n,r,v,l[,q,h]] [--pause s,min,max] [--pullback s] [--pass-share s] [--object-share s]\n" +
+            "                                   [--approach short,turn] [--offset-mm -40,60]]\n" +
             "                   [--dry-run --layouts 1-200 [--rows] [--features <csv>]]";
 
         public static int Run(string[] args)
@@ -173,14 +174,29 @@ namespace Teleop.Eval.JointDrive
                             if (pz.Length != 3) throw new ArgumentException("--pause is three numbers: share, min seconds, max seconds");
                             (mixedOptions.PauseShare, mixedOptions.PauseMinSeconds, mixedOptions.PauseMaxSeconds) = (pz[0], pz[1], pz[2]);
                             break;
+                        case "--pullback": mixedOptions.PullBackShare = Number(); break;
+                        case "--pass-share": mixedOptions.PassShare = Number(); break;
+                        case "--object-share": mixedOptions.ObjectShare = Number(); break;
+                        case "--approach":
+                            // aims' and passes' start: the share drawn as a small adjustment's distance (below 0: the blind parts'), and the most
+                            // the wrist's pitch turns on the way, degrees a metre (docs/adr/0038 "M, motion")
+                            double[] ap = Next().Split(',').Select(x => double.Parse(x, NumberStyles.Float, CultureInfo.InvariantCulture)).ToArray();
+                            if (ap.Length != 2) throw new ArgumentException("--approach is two numbers: short share, turn degrees a metre");
+                            (mixedOptions.ShortApproachShare, mixedOptions.TurnDegreesPerMeter) = (ap[0], ap[1]);
+                            break;
                         case "--blind":
                             // near share, radial scale, vertical scale, low share (where layout-blind goals are drawn)
                             double[] bl = Next().Split(',').Select(x => double.Parse(x, NumberStyles.Float, CultureInfo.InvariantCulture)).ToArray();
-                            if (bl.Length != 4) throw new ArgumentException("--blind is four numbers: near share, radial scale, vertical scale, low share");
+                            if (bl.Length != 4 && bl.Length != 6) throw new ArgumentException("--blind is four numbers (near share, radial scale, vertical scale, low share) or six (and the quiet windows' low share, the low goals' top m)");
                             mixedOptions.Reach.NearShare = bl[0];
                             mixedOptions.Reach.RadialScale = (float)bl[1];
                             mixedOptions.Reach.VerticalScale = (float)bl[2];
                             mixedOptions.Reach.LowShare = bl[3];
+                            if (bl.Length == 6)
+                            {
+                                mixedOptions.QuietReach.LowShare = bl[4];
+                                mixedOptions.Reach.LowHeightHigh = mixedOptions.QuietReach.LowHeightHigh = (float)bl[5];
+                            }
                             break;
                         case "--max-wrist-speed": Caps().MaxWristSpeed = (float)Number(); break;
                         case "--max-peak-speed": Caps().MaxPeakSpeed = Number(); break;

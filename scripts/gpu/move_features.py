@@ -9,8 +9,11 @@ Reads the CSV that ``joint-drive --script mixed --dry-run --layouts a-b --featur
 - each feature's distribution by kind (n, p10 / p50 / p90 and the mean);
 - how well a classifier tells aims (and passes, and both) from free moves: each feature's own AUC (whichever way round is larger),
   a decision stump's and a logistic regression's, both cross-validated over ``--folds`` folds of whole takes (a take's moves in one
-  fold), their out-of-fold scores pooled into one AUC. The required features first, then with the joint-space extras (roll, pitch,
-  gripper, speed peaks, chord).
+  fold), their out-of-fold scores pooled into one AUC. The required features first, then without ``pullback_after`` (a move into a
+  fixture always pulls back, whatever its kind: what that rule costs), then with the joint-space extras (roll, pitch, gripper, speed
+  peaks, chord, any reverse after);
+- the same for the take's main part only (``--main``: moves within [1.5 s, end - 2.5 s], where aims happen; the quiet start and the
+  tail plan none, so there a move's time alone says it is free).
 
 numpy only (the GPU machine: ``~/isaacsim/lerobot-venv/bin/python``). An AUC of 0.5 is chance.
 """
@@ -24,7 +27,7 @@ import sys
 import numpy as np
 
 REQUIRED = ["duration_s", "path_m", "peak_speed", "mean_speed", "peak_accel", "end_ratio", "stop_s", "pause_after", "pullback_after", "low_mm"]
-EXTRA = ["chord_m", "peaks", "roll_range_deg", "pitch_range_deg", "grip_range"]
+EXTRA = ["chord_m", "peaks", "roll_range_deg", "pitch_range_deg", "grip_range", "reverse_after"]
 KINDS = ["aim", "pass", "free", "reverse", "pause"]
 
 
@@ -143,13 +146,22 @@ def logistic_score(model, x):
     return z @ w
 
 
+def main_part(rows, start=1.5, tail=2.5):
+    """The moves of each take's main part: from ``start`` s to ``tail`` s before the take's last move ends."""
+    ends = {}
+    for r in rows:
+        key = (r["layout"], r["seed"])
+        ends[key] = max(ends.get(key, 0.0), float(r["end_s"]))
+    return [r for r in rows if float(r["start_s"]) >= start and float(r["end_s"]) <= ends[(r["layout"], r["seed"])] - tail]
+
+
 def separability(rows, positive, negative, names, k, seed):
     chosen = [r for r in rows if r["kind"] in positive + negative]
     y = np.array([1 if r["kind"] in positive else 0 for r in chosen])
     if y.sum() == 0 or y.sum() == len(y):
         return None
     x, used = design(chosen, names)
-    takes = [(r["layout"], r["seed"]) for r in chosen]
+    takes = [r["layout"] + "/" + r["seed"] for r in chosen]
     fold = folds_by_take(takes, k, seed)
     stump_scores = np.zeros(len(y))
     lr_scores = np.zeros(len(y))
@@ -177,8 +189,11 @@ def main(argv=None):
     ap.add_argument("csv")
     ap.add_argument("--folds", type=int, default=5)
     ap.add_argument("--seed", type=int, default=1)
+    ap.add_argument("--main", action="store_true", help="only the moves of each take's main part (1.5 s from the start to 2.5 s before the end)")
     args = ap.parse_args(argv)
     rows = read(args.csv)
+    if args.main:
+        rows = main_part(rows)
     takes = {(r["layout"], r["seed"]) for r in rows}
     counts = {kind: sum(1 for r in rows if r["kind"] == kind) for kind in KINDS}
     print(f"{len(rows)} moves of {len(takes)} takes: " + ", ".join(f"{kind} {counts[kind]}" for kind in KINDS))
@@ -197,8 +212,20 @@ def main(argv=None):
             parts.append(f"{kind} {p10:.3g} / {p50:.3g} / {p90:.3g} ({v.mean():.3g})")
         nan = int(np.isnan(x).sum())
         print(f"  {name:16s} " + "; ".join(parts) + (f"; NaN in {nan}" if nan else ""))
+    parts = sorted({r.get("part", "") for r in rows if r["kind"] == "free"} - {""})
+    if parts:
+        print()
+        print("Free moves by part: n, and p50 of duration_s, path_m, peak_speed, low_mm")
+        for part in parts:
+            sel = [r for r in rows if r["kind"] == "free" and r.get("part") == part]
+            med = [np.nanmedian(column(sel, name)) for name in ("duration_s", "path_m", "peak_speed", "low_mm")]
+            print(f"  {part:16s} {len(sel):5d}  " + "  ".join(f"{m:.3g}" for m in med))
+        forced = sum(1 for r in rows if r.get("part") == "forced-pull-back")
+        drawn = sum(1 for r in rows if r.get("part") == "pull-back")
+        print(f"  pull-backs: {drawn} drawn, {forced} more forced out of fixtures")
     for label, positive in (("aim", ["aim"]), ("pass", ["pass"]), ("aim+pass", ["aim", "pass"])):
-        for set_name, names in (("required", REQUIRED), ("required+extra", REQUIRED + EXTRA)):
+        for set_name, names in (("required", REQUIRED), ("required but pullback_after", [n for n in REQUIRED if n != "pullback_after"]),
+                                ("required+extra", REQUIRED + EXTRA)):
             res = separability(rows, positive, ["free"], names, args.folds, args.seed)
             if res is None:
                 continue

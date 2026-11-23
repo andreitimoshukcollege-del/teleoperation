@@ -63,6 +63,8 @@ namespace Teleop.Eval.JointDrive
             var kinds = new int[6];
             var failures = new List<string>();
             int planned = 0, contactTakes = 0;
+            int pullBacks = 0, forcedPullBacks = 0, intoFixtures = 0; // docs/adr/0038 "M, motion": one pull-back law, and the fixtures' forced one
+            int blindMoves = 0, blindTouching = 0, blindTakes = 0; // layout-blind moves that meet a movable object's box by the model
             var watch = new Stopwatch();
             for (int layout = from; layout <= to; layout++)
             {
@@ -93,6 +95,9 @@ namespace Teleop.Eval.JointDrive
                 foreach (PlannedMove m in plan.Moves)
                 {
                     kinds[(int)m.Kind]++;
+                    if (m.Part == MovePart.PullBack) pullBacks++;
+                    if (m.Part == MovePart.ForcedPullBack) forcedPullBacks++;
+                    if (m.ObjectId != 0 && m.OffsetMeters < 0.005f && objects.Exists(o => o.Id == m.ObjectId && !o.Movable)) intoFixtures++;
                     if (m.ObjectId == 0) continue;
                     if (m.Kind == ScriptMoveKind.Aim) offsets.Add(m.OffsetMeters);
                     else passOffsets.Add(m.OffsetMeters);
@@ -107,6 +112,12 @@ namespace Teleop.Eval.JointDrive
                 }
 
                 if (touched) contactTakes++;
+                if (script == DriveScript.Mixed)
+                {
+                    int t0 = blindTouching;
+                    BlindContacts(profile, model, plan, objects, ref blindMoves, ref blindTouching);
+                    if (blindTouching > t0) blindTakes++;
+                }
                 if (features != null) featureRows += MoveFeatures.Write(features, layout, takeSeed, profile, plan, table);
                 int before = frameJoint.Count;
                 Motion(profile, plan, frameJoint, frameWrist, tickJoint, jointSpeed, jointAccel, ref movingFrames);
@@ -128,6 +139,10 @@ namespace Teleop.Eval.JointDrive
             {
                 Console.WriteLine(FormattableString.Invariant(
                     $"  moves a take: free {kinds[1] / (double)planned:0.0}, aim {kinds[2] / (double)planned:0.0}, pass {kinds[3] / (double)planned:0.0}, pause {kinds[4] / (double)planned:0.0}, reverse {kinds[5] / (double)planned:0.0}"));
+                Console.WriteLine(FormattableString.Invariant(
+                    $"  pull-backs a take: {pullBacks / (double)planned:0.00} drawn, {forcedPullBacks / (double)planned:0.00} more forced out of a fixture (aims and passes into fixtures: {intoFixtures / (double)planned:0.00})"));
+                Console.WriteLine(FormattableString.Invariant(
+                    $"  layout-blind moves (free and reverse) meeting a movable object's box by the model: {blindTouching} of {blindMoves}, in {blindTakes} of {planned} takes"));
                 Console.WriteLine("  aims' offsets mm (aimed at), 10 mm bins from -40: " + Histogram(offsets.Select(o => o * 1000.0), -40, 10, 10));
                 Console.WriteLine("  aims' offsets mm: " + Percentiles(offsets.Select(o => o * 1000.0).ToList(), "0"));
                 Console.WriteLine("  passes' offsets mm (closest on the line), 10 mm bins from -40: " + Histogram(passOffsets.Select(o => o * 1000.0), -40, 10, 9));
@@ -152,6 +167,29 @@ namespace Teleop.Eval.JointDrive
             if (features != null) Console.WriteLine($"  features: {featureRows} moves of {planned} takes written to {featuresPath}");
             Console.WriteLine("[joint-drive] dry run: nothing was sent");
             return 0;
+        }
+
+        /// <summary>
+        /// How many of the plan's layout-blind moves (free and reverse, not aims or passes) come into a movable object's box (the
+        /// collision model's bodies, its margin off), checked every tick of the move: physics decides those, and the plan does not
+        /// count them as contacts.
+        /// </summary>
+        internal static void BlindContacts(in RobotArmProfile profile, ArmCollisionModel model, DrivePlan plan, List<SafetyObject> objects, ref int moves, ref int touching)
+        {
+            var movable = objects.Where(o => o.Movable && !o.Scenery).ToArray();
+            ArmCollisionModel check = SafetyScript.WithObjects(model, movable, 0f, 0f);
+            foreach (PlannedMove m in plan.Moves)
+            {
+                if (m.Kind != ScriptMoveKind.Free && m.Kind != ScriptMoveKind.Reverse) continue;
+                moves++;
+                if (movable.Length == 0) continue;
+                for (double t = Math.Max(m.Start, plan.ScriptStart); t <= Math.Min(m.End, plan.TotalSeconds); t += HandModel.TickSeconds)
+                {
+                    if (ArmCollision.IsValid(profile, check, plan.Sample(t))) continue;
+                    touching++;
+                    break;
+                }
+            }
         }
 
         /// <summary>The plan's commanded motion from the take's start: per dataset frame (sample and hold of the 48 Hz commands), its largest arm-joint change and the wrist's travel; per tick, its fastest joint.</summary>

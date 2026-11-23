@@ -26,15 +26,17 @@ namespace Teleop.Eval.JointDrive
     /// <item><c>peaks</c>: the speed's local maxima over 30% of the peak.</item>
     /// <item><c>low_mm</c>: the tool's lowest point above the table.</item>
     /// <item><c>roll_range_deg</c>, <c>pitch_range_deg</c> (the wrist's absolute pitch) and <c>grip_range</c> over the span.</item>
-    /// <item><c>next_kind</c>, <c>pause_after</c> (the next move is a pause) and <c>pullback_after</c> (it is a reverse that heads back
-    /// against this move's last 30%).</item>
+    /// <item><c>next_kind</c>, <c>pause_after</c> (the next move is a pause), <c>reverse_after</c> (a reverse) and <c>pullback_after</c>
+    /// (a reverse that heads back against this move's first 70%: the next move begins before this one ends, so its last part already
+    /// turns).</item>
+    /// <item><c>part</c>: what part of the plan it is (<see cref="MovePart"/>), which the record does not say.</item>
     /// </list>
     /// </summary>
     internal static class MoveFeatures
     {
         public const string Header =
             "layout,seed,move,kind,object,offset_mm,gap_mm,contact,start_s,end_s,duration_s,path_m,chord_m,peak_speed,mean_speed,peak_accel,end_ratio,stop_s,peaks,low_mm," +
-            "roll_range_deg,pitch_range_deg,grip_range,next_kind,pause_after,pullback_after";
+            "roll_range_deg,pitch_range_deg,grip_range,next_kind,pause_after,reverse_after,pullback_after,part";
 
         /// <summary>The smoothing of the tool point, s (sigma of the Gaussian): workstream R's 25 ms.</summary>
         public const double SmoothSeconds = 0.025;
@@ -141,8 +143,9 @@ namespace Teleop.Eval.JointDrive
                     next = ScriptMoveCodec.Name(nm.Kind);
                     if (nm.Kind == ScriptMoveKind.Reverse && Span(nm, start, end, tick, n, out int n0, out int n1, out _, out _))
                     {
-                        Vector3 last = s[k1] - s[k30], ahead = s[n1] - s[n0];
-                        pullBack = Vector3.Dot(last, ahead) < 0f;
+                        int k70 = Math.Max(k0, Math.Min(k1, (int)Math.Floor((a + 0.7 * (b - a) - start) / tick + 1e-9)));
+                        Vector3 went = s[k70] - s[k0], ahead = s[n1] - s[n0];
+                        pullBack = Vector3.Dot(went, ahead) < 0f;
                     }
                 }
 
@@ -152,7 +155,8 @@ namespace Teleop.Eval.JointDrive
                     double.IsNaN(m.Contact) ? "0" : "1", F(a - start), F(b - start), F(b - a), F(path), F(Vector3.Distance(s[k1], s[k0])), F(peak),
                     F(b > a ? path / (b - a) : 0.0), F(top), F(peak > 0 ? tail / peak : double.NaN), F(stop), peaks.ToString(CultureInfo.InvariantCulture),
                     F((lowest - table) * 1000.0), F((roll1 - roll0) * 180.0 / Math.PI), F((pitch1 - pitch0) * 180.0 / Math.PI),
-                    F(grip1 >= grip0 ? grip1 - grip0 : double.NaN), next, next == "pause" ? "1" : "0", pullBack ? "1" : "0"));
+                    F(grip1 >= grip0 ? grip1 - grip0 : double.NaN), next, next == "pause" ? "1" : "0", next == "reverse" ? "1" : "0", pullBack ? "1" : "0",
+                    PartName(m.Part)));
                 rows++;
             }
 
@@ -168,6 +172,21 @@ namespace Teleop.Eval.JointDrive
             k1 = Math.Min(n - 1, Math.Max(k0, (int)Math.Floor((b - start) / tick + 1e-9)));
             return b >= a;
         }
+
+        private static string PartName(MovePart p) => p switch
+        {
+            MovePart.BlindTransport => "blind-transport",
+            MovePart.BlindStrokes => "blind-strokes",
+            MovePart.BlindAdjust => "blind-adjust",
+            MovePart.Staging => "staging",
+            MovePart.Approach => "approach",
+            MovePart.PullBack => "pull-back",
+            MovePart.ForcedPullBack => "forced-pull-back",
+            MovePart.Pause => "pause",
+            MovePart.Recentre => "recentre",
+            MovePart.Exit => "exit",
+            _ => "other",
+        };
 
         private static string F(double v) => double.IsNaN(v) || double.IsInfinity(v) ? "nan" : v.ToString("0.######", CultureInfo.InvariantCulture);
     }

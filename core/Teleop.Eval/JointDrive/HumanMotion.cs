@@ -153,6 +153,16 @@ namespace Teleop.Eval.JointDrive
 
         public static double LogNormal(ref SeededRng rng, double median, double sigma) => median * Math.Exp(sigma * Normal(ref rng));
 
+        /// <summary>
+        /// How far a free move's goal is from the hand, m (the mixed script's layout-blind goals near the hand; docs/adr/0038 "M, motion":
+        /// an aim's approach and a pass's lead-in draw the same): lognormal about <see cref="HandModel.TransportMedian"/>, within 1 cm and
+        /// <see cref="HandModel.TransportMax"/>.
+        /// </summary>
+        public static float ReachDistance(ref SeededRng rng) => (float)Math.Clamp(LogNormal(ref rng, HandModel.TransportMedian, HandModel.TransportSigma), 0.01, HandModel.TransportMax);
+
+        /// <summary>One small adjustment's distance, m, as the hand model's adjustments draw it: lognormal about <see cref="HandModel.AdjustMedian"/>, within 2 mm and 4 cm.</summary>
+        public static float AdjustDistance(ref SeededRng rng) => (float)Math.Clamp(LogNormal(ref rng, HandModel.AdjustMedian, HandModel.AdjustSigma), 0.002, 0.04);
+
         public static double Laplace(ref SeededRng rng, double scale)
         {
             double u = rng.NextDouble() - 0.5;
@@ -302,6 +312,9 @@ namespace Teleop.Eval.JointDrive
         public float LowHeightHigh { get; set; } = 0.06f;
         public double LowPitchLowDegrees { get; set; } = -85;
         public double LowPitchHighDegrees { get; set; } = -45;
+
+        /// <summary>How far inside the arm's reach (from the shoulder) a low goal stays, m; a goal that is not low may be past it by <see cref="HandModel.ReachOvershootMeters"/>.</summary>
+        public float LowReachInset { get; set; } = 0.03f;
 
         /// <summary>The share of goals drawn as free movement draws them, a lognormal distance from where the hand is; the rest anywhere in the region.</summary>
         public double NearShare { get; set; } = 0.5;
@@ -959,13 +972,17 @@ namespace Teleop.Eval.JointDrive
         {
             kind = Teleop.RobotArm.Wire.ScriptMoveKind.Free;
             start = end = _free;
-            double stretch = 1.0;
+            double stretch = 1.0, u = _rng.NextDouble();
             for (int attempt = 0; attempt < 30; attempt++)
             {
+                // The kind of part drawn is kept for most of the tries (a goal out of reach draws another goal), so the parts come in the
+                // shares asked for (docs/adr/0038 "M, motion": when a failed goal drew the kind again, small adjustments, which seldom
+                // fail, were 46% of the parts that are not strokes, not 27%); a cornered hand then tries any kind.
+                if (attempt >= KeepPartTries && stretch == 1.0) u = _rng.NextDouble();
                 SeededRng drawn = _rng;
                 int capped = Refusals[4];
                 HandTimeline tl = _timeline.Copy();
-                double t0 = _free, next, u = _rng.NextDouble();
+                double t0 = _free, next;
                 WallsFrom = t0 + 0.3; // where the last move left the hand, against a wall, it has a moment to leave
                 slow *= stretch;
                 Teleop.RobotArm.Wire.ScriptMoveKind k = Teleop.RobotArm.Wire.ScriptMoveKind.Free;
@@ -995,6 +1012,7 @@ namespace Teleop.Eval.JointDrive
 
                 _free = next;
                 kind = k;
+                LastFreePart = k == Teleop.RobotArm.Wire.ScriptMoveKind.Reverse ? MovePart.BlindStrokes : u < transportShare ? MovePart.BlindTransport : MovePart.BlindAdjust;
                 start = t0;
                 end = moving;
                 return true;
@@ -1002,6 +1020,12 @@ namespace Teleop.Eval.JointDrive
 
             return false;
         }
+
+        /// <summary>How many of a layout-blind part's tries keep the kind of part first drawn.</summary>
+        public const int KeepPartTries = 20;
+
+        /// <summary>What the last <see cref="MixedFree"/> made: a move to a goal, strokes or adjustments. For reports only.</summary>
+        public MovePart LastFreePart { get; private set; }
 
         /// <summary>
         /// After a part was refused: when the caps refused it (and it is not yet 2.5 times as slow), the same draws again a third
@@ -1083,51 +1107,6 @@ namespace Teleop.Eval.JointDrive
             return false;
         }
 
-        /// <summary>
-        /// One stroke along <paramref name="path"/> (the wrist's targets: an aim's final approach, or a pass across an object) at
-        /// slowness <paramref name="slow"/>, the wrist at <paramref name="pitch"/> and its roll held, ending on the path's end with no
-        /// bias (<paramref name="errorScale"/> scales the endpoint error), then corrections within <paramref name="tolerance"/>. No new
-        /// gripper move starts during it. Every tick checked against <paramref name="check"/> (and the guard).
-        /// </summary>
-        public bool MixedAlong(IReadOnlyList<Vector3> path, float pitch, double slow, double tolerance, int maxCorrections, double errorScale, ArmCollisionModel check,
-            out double start, out double end, int attempts = 8)
-        {
-            start = end = _free;
-            if (path.Count < 2) return false;
-            bool rolls = Rolls;
-            Rolls = false; // the approach keeps the roll it has
-            try
-            {
-                double stretch = 1.0;
-                for (int attempt = 0; attempt < attempts; attempt++)
-                {
-                    SeededRng drawn = _rng;
-                    int capped = Refusals[4];
-                    HandTimeline tl = _timeline.Copy();
-                    double t0 = _free;
-                    double next = Along(tl, path, t0, slow: slow * stretch, maxPeak: null, alongMu: 0.0, errorScale: errorScale, pitchGoal: pitch, rollGoal: null,
-                        tolerance: tolerance, maxCorrections: maxCorrections);
-                    double moving = tl.MotionEnd;
-                    if (!Accept(tl, t0, check))
-                    {
-                        stretch = Stretch(drawn, capped, stretch);
-                        continue;
-                    }
-
-                    _free = next;
-                    start = t0;
-                    end = moving;
-                    return true;
-                }
-
-                return false;
-            }
-            finally
-            {
-                Rolls = rolls;
-            }
-        }
-
         /// <summary>The hand kept still, the clutch held, for <paramref name="seconds"/> once its motion has ended: a pause, from <paramref name="start"/> to <paramref name="end"/>.</summary>
         public void MixedPause(double seconds, out double start, out double end)
         {
@@ -1150,7 +1129,7 @@ namespace Teleop.Eval.JointDrive
                 Vector3 g;
                 if (Draw.Chance(ref _rng, reach.NearShare))
                 {
-                    float a = (float)Math.Clamp(Draw.LogNormal(ref _rng, HandModel.TransportMedian, HandModel.TransportSigma), 0.01, HandModel.TransportMax);
+                    float a = Draw.ReachDistance(ref _rng);
                     Vector3 direction = Draw.Direction(ref _rng, 0.7f);
                     if (reach.RadialScale != 1f || reach.VerticalScale != 1f)
                     {
@@ -1173,7 +1152,9 @@ namespace Teleop.Eval.JointDrive
 
                 float radius = MathF.Sqrt(g.X * g.X + g.Y * g.Y), yaw = MathF.Atan2(g.Y, g.X) * 180f / MathF.PI;
                 if (radius < reach.RadiusLow || radius > reach.RadiusHigh || g.Z < zLow || g.Z > zHigh || MathF.Abs(yaw) > reach.YawDegrees) continue;
-                if (Vector3.Distance(g, shoulder) > maxReach + HandModel.ReachOvershootMeters) continue;
+                // A low goal stays inside the reach (docs/adr/0038 "M, motion": low goals past it left the arm stretched out near the table,
+                // where every move broke the speed caps); others may push past it, as the clutch lets a hand.
+                if (Vector3.Distance(g, shoulder) > maxReach + (low ? -reach.LowReachInset : HandModel.ReachOvershootMeters)) continue;
                 if (AvoidGoals != null && Near(new Vector2(g.X, g.Y), AvoidGoals, AvoidRadius)) continue;
                 goal = g;
                 pitch = low ? (float)(Draw.Uniform(ref _rng, reach.LowPitchLowDegrees, reach.LowPitchHighDegrees) * deg) : (float?)null;

@@ -14,14 +14,21 @@ namespace Teleop.Eval.JointDrive
     /// <summary>What the mixed script may be told (joint-drive's options; docs/adr/0038 decision 1).</summary>
     public sealed class MixedOptions
     {
-        /// <summary>The share of moves aimed at an object (an aim or a pass), when one can be; the rest are layout-blind.</summary>
-        public double ObjectShare { get; set; } = 0.6;
+        /// <summary>
+        /// The share of moves aimed at an object (an aim or a pass), when one can be; the rest are layout-blind. 0.85 (0.6 before docs/adr/0038
+        /// "M, motion"): an aim made as a free move is made plans less often, and this keeps the planned contacts a take as they were.
+        /// </summary>
+        public double ObjectShare { get; set; } = 0.85;
 
-        /// <summary>The share of object-directed moves that pass across the object rather than reach at it.</summary>
-        public double PassShare { get; set; } = 0.3;
+        /// <summary>The share of object-directed moves that pass across the object rather than reach at it (0.45: about one pass to five aims planned, as before docs/adr/0038 "M, motion").</summary>
+        public double PassShare { get; set; } = 0.45;
 
-        /// <summary>The share of aims that start close to their object (4-20 mm from it), so a contact comes early in the move.</summary>
-        public double NearStartShare { get; set; } = 0.25;
+        /// <summary>
+        /// The share of aims that start close to their object (4-20 mm from it), so a contact comes early in the move. 0 by default: an aim's
+        /// start is as far back along its line as a free move's goal is from the hand (one law, docs/adr/0038 "M, motion"), whose short
+        /// draws start close anyway.
+        /// </summary>
+        public double NearStartShare { get; set; }
 
         /// <summary>
         /// An aim's signed offset from the object's surface is drawn uniformly from here to <see cref="OffsetMaxMeters"/> (one range
@@ -53,25 +60,48 @@ namespace Teleop.Eval.JointDrive
         public double SlowMin { get; set; } = 0.65;
         public double SlowMax { get; set; } = 1.8;
 
-        /// <summary>The share of moves followed by a pause of <see cref="PauseMinSeconds"/>-<see cref="PauseMaxSeconds"/>, whatever the move.</summary>
-        public double PauseShare { get; set; } = 0.30;
+        /// <summary>The share of moves not pulled back from (<see cref="PullBackShare"/>) followed by a pause of <see cref="PauseMinSeconds"/>-<see cref="PauseMaxSeconds"/>, whatever the move.</summary>
+        public double PauseShare { get; set; } = 0.35;
 
         public double PauseMinSeconds { get; set; } = 0.15;
         public double PauseMaxSeconds { get; set; } = 0.70;
 
-        /// <summary>The share of object-directed moves followed by a pull back the way they came (a reverse).</summary>
-        public double ReverseAfterShare { get; set; } = 0.35;
+        /// <summary>
+        /// The share of moves of every kind (a layout-blind part, an aim, a pass) followed by a pull back the way they came (a reverse:
+        /// 3-8 cm back, 1-4 cm up). One law for all (docs/adr/0038 "M, motion": only object moves pulled back, and a model of the path
+        /// could tell them by it); a move into a fixture always pulls back out.
+        /// </summary>
+        public double PullBackShare { get; set; } = 0.15;
+
+        /// <summary>
+        /// The share of aims and passes that start a small adjustment's distance back (<see cref="Draw.AdjustDistance"/>); the rest start a
+        /// layout-blind goal's distance back (<see cref="Draw.ReachDistance"/>): 0.1 puts aims' lengths on free moves' (docs/adr/0038 "M,
+        /// motion"; free moves mix goals, adjustments and the longer moves to where aims start). Below 0: the share of small adjustments
+        /// among the layout-blind parts that are not strokes (<see cref="BlindTransportShare"/>, <see cref="BlindReverseShare"/>).
+        /// </summary>
+        public double ShortApproachShare { get; set; } = 0.1;
+
+        /// <summary>The most an aim or a pass turns the wrist's pitch on its way, degrees a metre of its length (free transports turn about 130 at the median).</summary>
+        public double TurnDegreesPerMeter { get; set; } = 300;
 
         /// <summary>A layout-blind part is a move to a goal with this share, back-and-forth strokes with <see cref="BlindReverseShare"/>, else small adjustments.</summary>
         public double BlindTransportShare { get; set; } = 0.55;
 
         public double BlindReverseShare { get; set; } = 0.25;
 
-        /// <summary>Where layout-blind goals are drawn.</summary>
-        public BlindReach Reach { get; set; } = new BlindReach { NearShare = 0.8, RadialScale = 0.55f, VerticalScale = 0.55f };
+        /// <summary>
+        /// Where layout-blind goals are drawn: every one low (the wrist at most 5 cm above the base frame, the gripper pitched -45 to -85
+        /// degrees, the pads 2-14 cm above the table), docs/adr/0038 "M, motion": aims are as low as the objects they reach at, and 40% low
+        /// blind goals left the path's height telling the two apart (AUC 0.80 alone).
+        /// </summary>
+        public BlindReach Reach { get; set; } = new BlindReach { NearShare = 0.8, RadialScale = 0.55f, VerticalScale = 0.55f, LowShare = 1.0, LowHeightHigh = 0.05f };
 
-        /// <summary>Where they are drawn in the quiet start and end, which keep clear of every object: never low.</summary>
-        public BlindReach QuietReach { get; set; } = new BlindReach { LowShare = 0, NearShare = 0.7, HeightLow = 0.0f };
+        /// <summary>
+        /// Where they are drawn in the quiet start and end, which keep clear of every object (the guard): as low as elsewhere (docs/adr/0038
+        /// "M, motion": never low before, so 42% of the free moves, those of the start and the tail, were 24 cm up at the median, and the
+        /// path's height told them from aims).
+        /// </summary>
+        public BlindReach QuietReach { get; set; } = new BlindReach { LowShare = 1.0, NearShare = 0.7, HeightLow = 0.0f, LowHeightHigh = 0.05f };
 
         /// <summary>The speed caps (docs/adr/0038 decision 1, item 29): <see cref="DefaultCaps"/> unless told otherwise; null for none.</summary>
         public MotionCaps? Caps { get; set; } = DefaultCaps();
@@ -106,7 +136,7 @@ namespace Teleop.Eval.JointDrive
         public void Validate()
         {
             foreach ((double v, string name) in new[] { (ObjectShare, "object share"), (PassShare, "pass share"), (NearStartShare, "near-start share"), (PauseShare, "pause share"),
-                         (ReverseAfterShare, "reverse share"), (BlindTransportShare, "blind transport share"), (BlindReverseShare, "blind reverse share") })
+                         (PullBackShare, "pull-back share"), (BlindTransportShare, "blind transport share"), (BlindReverseShare, "blind reverse share") })
             {
                 if (!(v >= 0 && v <= 1)) throw new ArgumentException($"the {name} must be in [0, 1], not {v}");
             }
@@ -118,8 +148,47 @@ namespace Teleop.Eval.JointDrive
             if (!(TailMinSeconds >= QuietEndSeconds && TailMaxSeconds >= TailMinSeconds)) throw new ArgumentException("the tail must be at least the quiet end, min <= max");
             if (!(SlowMin > 0 && SlowMax >= SlowMin && SlowSigma >= 0)) throw new ArgumentException("slowness must be 0 < min <= max");
             if (!(PauseMinSeconds >= 0 && PauseMaxSeconds >= PauseMinSeconds)) throw new ArgumentException("pause seconds must be 0 <= min <= max");
+            if (!(ShortApproachShare <= 1) || !(TurnDegreesPerMeter >= 0 && TurnDegreesPerMeter <= 2000)) throw new ArgumentException("the short approach share must be at most 1, the turn 0-2000 degrees a metre");
             Caps?.Validate();
         }
+    }
+
+    /// <summary>
+    /// What part of the plan a mixed take's move is (docs/adr/0038 "M, motion"), for reports only (the dry run's <c>--features</c>): the
+    /// record carries its kind alone, and a model of the path must not tell these apart.
+    /// </summary>
+    public enum MovePart : byte
+    {
+        Other = 0,
+
+        /// <summary>A layout-blind move to a goal.</summary>
+        BlindTransport = 1,
+
+        /// <summary>Layout-blind back-and-forth strokes.</summary>
+        BlindStrokes = 2,
+
+        /// <summary>Layout-blind small adjustments.</summary>
+        BlindAdjust = 3,
+
+        /// <summary>The move to where an aim or a pass starts.</summary>
+        Staging = 4,
+
+        /// <summary>An aim or a pass.</summary>
+        Approach = 5,
+
+        /// <summary>A pull back after a move, drawn.</summary>
+        PullBack = 6,
+
+        /// <summary>A pull back out of a fixture that the draw did not give: the hand always pulls back out of one.</summary>
+        ForcedPullBack = 7,
+
+        Pause = 8,
+
+        /// <summary>A cornered hand's move back toward the middle of reach.</summary>
+        Recentre = 9,
+
+        /// <summary>The tail's first move, up and clear.</summary>
+        Exit = 10,
     }
 
     /// <summary>
@@ -138,10 +207,14 @@ namespace Teleop.Eval.JointDrive
         /// <summary>An aim's or pass's direction of travel about the object's bearing from the base, degrees (0: straight out from the base; NaN for the other kinds). Reports only.</summary>
         public readonly float ApproachDegrees;
 
+        /// <summary>What part of the plan it is (<see cref="MovePart"/>). Reports only.</summary>
+        public readonly MovePart Part;
+
         public PlannedMove(int index, ScriptMoveKind kind, byte objectId, float offsetMeters, float gapMeters, double start, double contact, double closest, double end,
-            float approachDegrees = float.NaN)
+            float approachDegrees = float.NaN, MovePart part = MovePart.Other)
         {
             ApproachDegrees = approachDegrees;
+            Part = part;
             Index = index;
             Kind = kind;
             ObjectId = objectId;
@@ -175,8 +248,12 @@ namespace Teleop.Eval.JointDrive
     /// drawn direction and height and stops at a signed offset from its surface drawn from one continuous range (into it, or short
     /// of it); a <b>pass</b> sweeps across an object at a drawn lateral offset, so contact can come mid-move. Some aims start close
     /// to their object, so contact can come early in the move.</item>
-    /// <item>Every move draws its slowness from one distribution, and any move may be followed by a pause; an object-directed one
-    /// also by a pull back.</item>
+    /// <item>Aims and passes move as free moves do (docs/adr/0038 "M, motion", measured by the dry run's <c>--features</c>): each is made
+    /// by the same constructor as a layout-blind move to a goal (endpoint error, undershoot, corrections to the same tolerance, curved or
+    /// in two pushes as often, the roll and the gripper as they go, the wrist's pitch turning on the way), starts as far back as a free
+    /// move's goal is from the hand, and comes at the height free moves go (every layout-blind goal is low).</item>
+    /// <item>Every move draws its slowness from one distribution, and every move is followed by a pull back or a pause by one law; a move
+    /// that ends in or at a fixture always pulls back out.</item>
     /// </list>
     /// The arm moves from the first tick; no tick before <see cref="MixedOptions.QuietStartSeconds"/> or in the take's last
     /// <see cref="MixedOptions.QuietEndSeconds"/> comes within <see cref="MixedOptions.QuietMarginMeters"/> of any object's box, and the
@@ -223,8 +300,8 @@ namespace Teleop.Eval.JointDrive
         private readonly HashSet<int> _moved = new HashSet<int>(); // objects a move planned to push into, as later targets
         private readonly ArmCollisionModel[]? _walls; // the fixed objects' boxes at each of WallOffsets (null: no fixed object)
         private readonly List<Vector2> _avoid = new List<Vector2>();
+        private BlindReach? _quietHigh; // the quiet windows' goals, none low: their fallback
         private SeededRng _rng;
-        private double _lastObjectEnd = double.NegativeInfinity;
 
         /// <summary>Why object-directed moves were not planned, for a report: too low to meet, no line, no end at the offset, no start, the move there, the approach, a pass's sweep.</summary>
         private readonly int[] _objectMisses = new int[7];
@@ -263,6 +340,7 @@ namespace Teleop.Eval.JointDrive
             public int Object;
             public float Offset, Approach;
             public double Start, End;
+            public MovePart Part;
         }
 
         private MixedTake(in RobotArmProfile profile, ArmCollisionModel model, in DriveEnvelope envelope, IReadOnlyList<SafetyObject> objects, MixedOptions options,
@@ -404,7 +482,7 @@ namespace Teleop.Eval.JointDrive
             // The tail: first up and away from wherever the main part left the arm, to a point clear of every object, then free
             // movement clear of them all (its goals away from those pushed into) from where that move ends, and the cut partway
             // through a move.
-            if (!Exit(out double tailStart))
+            if (!Exit(out double tailStart) && (!Recentre() || !Exit(out tailStart)))
             {
                 error = FormattableString.Invariant($"no move from {_hand.Free:0.0} s on of the take ends clear of every object ({Refusals()})");
                 return false;
@@ -443,22 +521,37 @@ namespace Teleop.Eval.JointDrive
         }
 
         /// <summary>
-        /// When no layout-blind part works from where the hand is (cornered at the edge of the envelope, or folded against the arm's own
-        /// body): a move back toward the middle of reach (the wrist 12-17 cm out, 8-16 cm up, within 40 degrees of where it is),
-        /// keeping the quiet start's margin when it applies and the walls. False when that does not work either.
+        /// When no layout-blind part works from where the hand is (cornered at the edge of the envelope, low by the table, or folded against
+        /// the arm's own body): a lift straight up (4-10 cm), else a move back toward the middle of reach (the wrist 12-17 cm out, 8-16 cm up,
+        /// within 40 degrees of where it is), keeping the quiet start's margin when it applies (not the walls). Also before the tail's exit
+        /// is tried again. False when that does not work either.
         /// </summary>
         private bool Recentre()
         {
             const double deg = Math.PI / 180.0;
             Vector3 at = _hand.TargetEnd;
             float here = MathF.Atan2(at.Y, at.X);
-            for (int attempt = 0; attempt < 8; attempt++)
+            for (int attempt = 0; attempt < 11; attempt++)
             {
-                float r = (float)Draw.Uniform(ref _rng, 0.12, 0.17), z = (float)Draw.Uniform(ref _rng, 0.08, 0.16);
-                float az = Math.Clamp(here + (float)(Draw.Uniform(ref _rng, -40, 40) * deg), (float)(-80 * deg), (float)(80 * deg));
-                var goal = new Vector3(r * MathF.Cos(az), r * MathF.Sin(az), z);
-                if (!_hand.MixedTo(goal, (float)(Draw.Uniform(ref _rng, -45, 0) * deg), null, Slowness(), 0.010, _model, out double s, out double e, walls: DrawWalls())) continue;
-                Add(ScriptMoveKind.Free, -1, float.NaN, s, e);
+                // First straight up from where it is, the wrist as it is (the way out of a low pose by the table, where every layout-blind
+                // goal is: docs/adr/0038 "M, motion"); then toward the middle of reach.
+                Vector3 goal;
+                float? pitch = null;
+                if (attempt < 3) goal = at + new Vector3(0f, 0f, (float)Draw.Uniform(ref _rng, 0.04, 0.10));
+                else
+                {
+                    float r = (float)Draw.Uniform(ref _rng, 0.12, 0.17), z = (float)Draw.Uniform(ref _rng, 0.08, 0.16);
+                    float az = Math.Clamp(here + (float)(Draw.Uniform(ref _rng, -40, 40) * deg), (float)(-80 * deg), (float)(80 * deg));
+                    goal = new Vector3(r * MathF.Cos(az), r * MathF.Sin(az), z);
+                    pitch = (float)(Draw.Uniform(ref _rng, -45, 0) * deg);
+                }
+
+                // No walls: a hand cornered beside a fixture is often inside its wall already (a move blind to the other objects, an aim
+                // or the move to where one starts, may end in one), and every wall refuses it.
+                Vector3 from = _hand.TargetEnd;
+                if (!_hand.MixedTo(goal, pitch, null, Slowness(), 0.010, _model, out double s, out double e)) continue;
+                Add(ScriptMoveKind.Free, -1, float.NaN, s, e, part: MovePart.Recentre);
+                AfterMove(_hand.TargetEnd - from, pullBack: true, walls: true);
                 return true;
             }
 
@@ -466,7 +559,8 @@ namespace Teleop.Eval.JointDrive
         }
 
         /// <summary>
-        /// The tail's first move: up (5-10 cm, to at least 10 cm above the base frame's origin) and toward the middle of reach from
+        /// The tail's first move: up (3-7 cm, to a drawn 0-10 cm above the base frame's origin at least; from the 13th try 5-10 cm, to 6-16 cm)
+        /// and toward the middle of reach from
         /// where everything planned so far ends, until the arm is clear of every object by the quiet margin; when its motion ends,
         /// seconds on the hand's timeline. Tried from a few goals; false when none ends clear.
         /// </summary>
@@ -494,7 +588,9 @@ namespace Teleop.Eval.JointDrive
                 }
 
                 float top = _profile.BaseHeight + MathF.Sqrt(MathF.Max(0f, reach * reach - r * r));
-                float z = MathF.Min(MathF.Max(at.Z + (float)Draw.Uniform(ref _rng, 0.05, 0.10), (float)Draw.Uniform(ref _rng, 0.06, 0.16)), top);
+                float z = attempt < 12
+                    ? MathF.Min(MathF.Max(at.Z + (float)Draw.Uniform(ref _rng, 0.03, 0.07), (float)Draw.Uniform(ref _rng, 0.0, 0.10)), top)
+                    : MathF.Min(MathF.Max(at.Z + (float)Draw.Uniform(ref _rng, 0.05, 0.10), (float)Draw.Uniform(ref _rng, 0.06, 0.16)), top);
                 var goal = new Vector3(r * MathF.Cos(az), r * MathF.Sin(az), z);
                 float pitch = (float)(Draw.Uniform(ref _rng, -40, 0) * deg);
                 ArmPose from = _hand.Poses.Count > 0 ? _hand.Poses[_hand.Poses.Count - 1] : _model.Home;
@@ -509,8 +605,11 @@ namespace Teleop.Eval.JointDrive
                     continue;
                 }
 
-                Add(ScriptMoveKind.Free, -1, float.NaN, s, e);
+                Add(ScriptMoveKind.Free, -1, float.NaN, s, e, part: MovePart.Exit);
                 end = e;
+                _hand.GuardFrom = e; // what follows keeps the quiet end's margin
+                AfterMove(goal - at, pullBack: true, walls: true);
+                _hand.GuardFrom = double.PositiveInfinity;
                 return true;
             }
 
@@ -550,14 +649,14 @@ namespace Teleop.Eval.JointDrive
                 }
 
                 moves.Add(new PlannedMove(moves.Count + 1, d.Kind, id, d.Object >= 0 ? d.Offset : float.NaN, gap, _start + d.Start, contact, closest, _start + d.End,
-                    d.Object >= 0 ? d.Approach : float.NaN));
+                    d.Object >= 0 ? d.Approach : float.NaN, d.Part));
             }
 
             return moves.ToArray();
         }
 
-        private void Add(ScriptMoveKind kind, int obj, float offset, double start, double end, float approach = float.NaN) =>
-            _drafts.Add(new Draft { Kind = kind, Object = obj, Offset = offset, Start = start, End = end, Approach = approach });
+        private void Add(ScriptMoveKind kind, int obj, float offset, double start, double end, float approach = float.NaN, MovePart part = MovePart.Other) =>
+            _drafts.Add(new Draft { Kind = kind, Object = obj, Offset = offset, Start = start, End = end, Approach = approach, Part = part });
 
         /// <summary>The arm's signed gap to object <paramref name="oi"/> at <paramref name="pose"/>: against its shape with the twin's links (the gripper as given), else its box with the model's.</summary>
         private float Gap(int oi, in ArmPose pose, float gripper)
@@ -574,28 +673,91 @@ namespace Teleop.Eval.JointDrive
             return o.Shape != null ? o.Shape.ShrinkSteps * ObjectShape.Step : SafetyScript.MaxDepth(o);
         }
 
-        /// <summary>A layout-blind part (a move, strokes or adjustments; now and then followed by a pause), or, in the tail, one clear of every object.</summary>
+        /// <summary>A layout-blind part (a move, strokes or adjustments; then now and then a pull back or a pause), or, in the tail, one clear of every object.</summary>
         private bool TryBlindMove(bool first, bool tailOnly = false) => TryBlindMove(first, tailOnly, out _, out _);
 
         private bool TryBlindMove(bool first, bool tailOnly, out double start, out double end)
         {
             bool quiet = tailOnly || _hand.Free < _options.QuietStartSeconds;
-            if (!_hand.MixedFree(_model, quiet ? _options.QuietReach : _options.Reach, Slowness(), _options.BlindTransportShare, _options.BlindReverseShare,
-                    out ScriptMoveKind kind, out start, out end, DrawWalls()))
+            Vector3 from = _hand.TargetEnd;
+            BlindReach reach = quiet ? _options.QuietReach : _options.Reach;
+            if (!_hand.MixedFree(_model, reach, Slowness(), _options.BlindTransportShare, _options.BlindReverseShare, out ScriptMoveKind kind, out start, out end, DrawWalls()))
             {
-                return false;
+                // The quiet start and end keep clear of every object: where low goals all come too near one, goals that are not low.
+                if (!quiet || reach.LowShare <= 0) return false;
+                _quietHigh ??= new BlindReach
+                {
+                    RadiusLow = reach.RadiusLow, RadiusHigh = reach.RadiusHigh, HeightLow = reach.HeightLow, HeightHigh = reach.HeightHigh, YawDegrees = reach.YawDegrees,
+                    LowShare = 0, NearShare = reach.NearShare, RadialScale = reach.RadialScale, VerticalScale = reach.VerticalScale,
+                };
+                if (!_hand.MixedFree(_model, _quietHigh, Slowness(), _options.BlindTransportShare, _options.BlindReverseShare, out kind, out start, out end, DrawWalls())) return false;
             }
 
-            Add(kind, -1, float.NaN, start, end);
-            if (!first && !tailOnly) MaybePause();
+            Add(kind, -1, float.NaN, start, end, part: _hand.LastFreePart);
+            // A blind move that ends at a fixture (within 5 mm of its box) pulls back out of it, as an aim into one does: the pull back
+            // follows the contact, whatever kind of move made it.
+            AfterMove(_hand.TargetEnd - from, pullBack: true, forced: AtFixture(end), walls: true, atLeast: 0.02f);
             return true;
         }
 
-        private void MaybePause()
+        /// <summary>Whether the hand's pose where its motion ends (seconds <paramref name="end"/> on its timeline) is within 5 mm of a fixed object's box.</summary>
+        private bool AtFixture(double end)
         {
-            if (!Draw.Chance(ref _rng, _options.PauseShare)) return;
-            _hand.MixedPause(Draw.Uniform(ref _rng, _options.PauseMinSeconds, _options.PauseMaxSeconds), out double s, out double e);
-            Add(ScriptMoveKind.Pause, -1, float.NaN, s, e);
+            if (_walls == null || _hand.Poses.Count == 0) return false;
+            int k = Math.Min(_hand.Poses.Count - 1, Math.Max(0, (int)Math.Ceiling(end / HandModel.TickSeconds)));
+            return !ArmCollision.IsValid(_profile, _walls[FixtureTouchWall], _hand.Poses[k]);
+        }
+
+        /// <summary>The index in <see cref="WallOffsets"/> of the fixtures grown by 5 mm: a move that ends inside it pulls back out.</summary>
+        private const int FixtureTouchWall = 2;
+
+        /// <summary>
+        /// After a move, one law for every kind (docs/adr/0038 "M, motion": before, only aims and passes pulled back, and they paused less):
+        /// a pull back the way the move went (<paramref name="way"/>, the target's travel over it: 3-8 cm back and 1-4 cm up) with
+        /// <see cref="MixedOptions.PullBackShare"/>, else a pause with <see cref="MixedOptions.PauseShare"/>. With <paramref name="pullBack"/>
+        /// false (the move to where an aim starts) the same draws, but no pull back. <paramref name="forced"/> (a move into a fixture): the
+        /// pull back whatever the draw, and false when it finds no way. A layout-blind move's pull back keeps to the fixtures as walls
+        /// (<paramref name="walls"/>), as the move did. A pull back goes at least <paramref name="atLeast"/> back (out of a fixture: as deep
+        /// as the arm went in, and 1.5 cm more).
+        /// </summary>
+        private bool AfterMove(Vector3 way, bool pullBack, bool forced = false, bool walls = false, float atLeast = 0f)
+        {
+            bool back = Draw.Chance(ref _rng, _options.PullBackShare);
+            if ((back && pullBack) || forced)
+            {
+                Vector3 u = way.Length() > 0.005f ? Vector3.Normalize(way) : LastDirection();
+                float distance = MathF.Max((float)Draw.Uniform(ref _rng, 0.03, 0.08), atLeast);
+                Vector3 to = _hand.TargetEnd - u * distance + new Vector3(0f, 0f, (float)Draw.Uniform(ref _rng, 0.01, 0.04));
+                if (!_hand.MixedTo(to, null, null, Slowness(), 0.008, _model, out double s, out double e, walls: walls ? DrawWalls() : null))
+                {
+                    return !forced; // no way back: on from where it is, unless it is in a fixture
+                }
+
+                Add(ScriptMoveKind.Reverse, -1, float.NaN, s, e, part: back && pullBack ? MovePart.PullBack : MovePart.ForcedPullBack);
+                if (back) return true;
+            }
+
+            // The pause, drawn whenever the law gave no pull back (a forced one included: the pull back out of a fixture, then the pause
+            // any move might have had).
+            if (!back && Draw.Chance(ref _rng, _options.PauseShare))
+            {
+                _hand.MixedPause(Draw.Uniform(ref _rng, _options.PauseMinSeconds, _options.PauseMaxSeconds), out double s, out double e);
+                Add(ScriptMoveKind.Pause, -1, float.NaN, s, e, part: MovePart.Pause);
+            }
+
+            return true;
+        }
+
+        /// <summary>The direction of the hand's last submovement that moved it (x when none did): a pull back's way after a move that ended about where it began.</summary>
+        private Vector3 LastDirection()
+        {
+            List<Submovement> moves = _hand.Timeline.Moves;
+            for (int i = moves.Count - 1; i >= 0; i--)
+            {
+                if (moves[i].Displacement.Length() > 1e-4f) return Vector3.Normalize(moves[i].Displacement);
+            }
+
+            return Vector3.UnitX;
         }
 
         /// <summary>An aim or a pass at an object of the layout (a few tries over objects and geometries), with the move to where it starts; false when none plans.</summary>
@@ -677,7 +839,7 @@ namespace Teleop.Eval.JointDrive
                 }
 
                 if (rLine < 0.10f) return Miss(1);
-                float s0 = -(halfTangential + 0.24f), s1 = kind == ScriptMoveKind.Aim ? 0f : halfTangential + 0.12f;
+                float s0 = -(halfTangential + 0.32f), s1 = kind == ScriptMoveKind.Aim ? 0f : halfTangential + 0.12f;
                 for (float a = s0; a <= s1 + 1e-6f; a += LineStepMeters)
                 {
                     float phi = bearing + side * a / rLine;
@@ -713,6 +875,7 @@ namespace Teleop.Eval.JointDrive
             int stage, end;
             float offset, f = 1f;
             bool near = false;
+            Vector3 goal;
             if (kind == ScriptMoveKind.Aim)
             {
                 // The end: where the gap first comes to the drawn offset (beyond what the model measures clear, extrapolated back
@@ -720,7 +883,8 @@ namespace Teleop.Eval.JointDrive
                 float deepest = DeepestGap(oi);
                 offset = (float)Draw.Uniform(ref _rng, Math.Max(_options.OffsetMinMeters, -(deepest - 0.0005f)), _options.OffsetMaxMeters);
                 if (!AimIndex(gaps, offset, out end, out f)) return Miss(2);
-                near = Draw.Chance(ref _rng, _options.NearStartShare) && end >= 3;
+                goal = Vector3.Lerp(wrists[end - 1], wrists[end], f);
+                near = _options.NearStartShare > 0 && Draw.Chance(ref _rng, _options.NearStartShare) && end >= 3;
                 if (near)
                 {
                     float close = (float)Draw.Uniform(ref _rng, 0.004, 0.020);
@@ -729,7 +893,9 @@ namespace Teleop.Eval.JointDrive
                 }
                 else
                 {
-                    stage = Math.Max(0, end - (int)MathF.Round((float)Draw.Uniform(ref _rng, 0.04, 0.12) / LineStepMeters));
+                    // Where it starts: as far back along its line from its end as a free move's goal is from the hand (one law for both,
+                    // docs/adr/0038 "M, motion"; aims came 4-12 cm), and clear of the object by 6 mm.
+                    stage = Back(wrists, end - 1, goal, ApproachLength());
                     while (stage > 0 && gaps[stage] < 0.006f) stage--;
                 }
 
@@ -737,49 +903,89 @@ namespace Teleop.Eval.JointDrive
             }
             else
             {
-                // The closest point of the sweep; it starts well before and goes on past the object.
+                // The closest point of the sweep; it starts as far before it as a free move's goal is from the hand (at least 3 cm), and
+                // goes on past the object.
                 int closest = 0;
                 for (int i = 1; i < gaps.Count; i++) if (gaps[i] < gaps[closest]) closest = i;
-                offset = gaps[closest];
-                stage = closest - (int)MathF.Round((float)Draw.Uniform(ref _rng, 0.05, 0.12) / LineStepMeters);
-                if (stage < 0) return Miss(6);
+                stage = Back(wrists, closest, wrists[closest], MathF.Max(0.03f, ApproachLength()));
+                if (Vector3.Distance(wrists[stage], wrists[closest]) < 0.03f) return Miss(6);
                 while (stage > 0 && gaps[stage] < 0.006f) stage--;
                 int exit = closest;
-                while (exit < gaps.Count && gaps[exit] < Math.Max(offset, 0f) + 0.010f) exit++;
+                while (exit < gaps.Count && gaps[exit] < Math.Max(gaps[closest], 0f) + 0.010f) exit++;
                 if (exit >= gaps.Count || gaps[stage] < 0.003f) return Miss(6); // the sweep does not come out past the object
                 end = Math.Min(gaps.Count - 1, exit + (int)MathF.Round((float)Draw.Uniform(ref _rng, 0.02, 0.06) / LineStepMeters));
+                goal = wrists[end];
+                // What it was aimed at: its line's closest approach. The hand goes across as a free move goes (straight, or curved, below),
+                // not round the arc, a centimetre or two inside it at the object; how close it came is the move's gap, measured.
+                offset = gaps[closest];
             }
 
-            var path = new List<Vector3>(end - stage + 1);
-            for (int i = stage; i < end; i++) path.Add(wrists[i]);
-            path.Add(kind == ScriptMoveKind.Aim ? Vector3.Lerp(wrists[end - 1], wrists[end], f) : wrists[end]);
+            // The hand comes to where the move starts at a pitch drawn as a low layout-blind goal's is (docs/adr/0038 "M, motion": aims and
+            // passes kept the pitch the move before had set, 1.5 degrees of turn at the median against 14 for free moves), and the move
+            // turns the wrist to the line's on the way. The pads start where the line starts (the wrist placed for the pitch it comes at),
+            // and the turn moves them off the straight way by a few millimetres at most (to first order the pads go straight when the
+            // wrist and its pitch move together). Half the turn, then none, when the start is out of reach or within 6 mm of the object.
+            float startPitch = pitch;
+            Vector3 startWrist = wrists[stage];
+            ArmPose startPose = poses[stage];
+            float turn = (float)(Draw.Uniform(ref _rng, _options.Reach.LowPitchLowDegrees, _options.Reach.LowPitchHighDegrees) * deg) - pitch;
+            // A free move's turn grows with its length (free transports: about 13 degrees per 10 cm at the median); a large turn over a
+            // short approach broke the caps, and the moves they stretched were slower than free ones.
+            float most = (float)(_options.TurnDegreesPerMeter * deg) * Vector3.Distance(goal, wrists[stage]);
+            turn = Math.Clamp(turn, -most, most);
+            for (int t = 0; t < 2 && MathF.Abs(turn) > 1e-3f; t++, turn /= 2f)
+            {
+                float p = Math.Clamp(pitch + turn, -89f * MathF.PI / 180f, -8f * MathF.PI / 180f);
+                Vector3 there = WristFor(tools[first + stage], p);
+                if (!TrySolve(poses[stage], there, p, out ArmPose at) || !_envelope.Contains(at) || !ArmCollision.IsValid(_profile, _model, at) || Gap(oi, at, gripper) < 0.006f) continue;
+                (startPitch, startWrist, startPose) = (p, there, at);
+                break;
+            }
 
-            Vector3 u = path[path.Count - 1] - path[Math.Max(0, path.Count - 3)];
+            Vector3 u = goal - startWrist;
             u = u.Length() > 1e-6f ? Vector3.Normalize(u) : radialDir;
             HandSnapshot before = _hand.Save();
             int drafts = _drafts.Count;
-            double lastObjectEnd = _lastObjectEnd;
-            // To where it starts, clear of its object's box by what that point leaves of it (less 4 mm, the model's margin kept), blind
-            // to the others.
-            float boxGap = (_ladders[oi] ??= new GapLadder(_profile, _model, o)).SignedGap(poses[stage]);
-            ArmCollisionModel staging = SafetyScript.WithObjects(_model, new[] { o.Grown(boxGap - 0.004f - _model.Margin) }, 0f);
-            if (!_hand.MixedTo(wrists[stage], pitch, null, Slowness(), 0.004, staging, out double s, out double e, overTheTop: true))
+            // To where it starts, clear of its object's box by what that point leaves of it (less 4 mm, the model's margin kept; at most the
+            // quiet margin, or a start far back would keep the hand out of a wide ring round the object), blind to the others.
+            double s = 0, e = 0;
+            bool staged = false;
+            for (int t = 0; t < 2 && !staged; t++)
+            {
+                // At the pitch drawn; when that finds no way there, at the line's own (no turn on the way).
+                if (t == 1)
+                {
+                    if (startPitch == pitch) break;
+                    (startPitch, startWrist, startPose) = (pitch, wrists[stage], poses[stage]);
+                    u = goal - startWrist;
+                    u = u.Length() > 1e-6f ? Vector3.Normalize(u) : radialDir;
+                }
+
+                float boxGap = (_ladders[oi] ??= new GapLadder(_profile, _model, o)).SignedGap(startPose);
+                ArmCollisionModel staging = SafetyScript.WithObjects(_model, new[] { o.Grown(MathF.Min(boxGap - 0.004f - _model.Margin, _options.QuietMarginMeters)) }, 0f);
+                staged = _hand.MixedTo(startWrist, startPitch, null, Slowness(), HandModel.Tolerance, staging, out s, out e, overTheTop: true);
+            }
+
+            if (!staged)
             {
                 Undo(before, drafts);
                 return Miss(4);
             }
 
-            Add(ScriptMoveKind.Free, -1, float.NaN, s, e);
-            if (!near) MaybePause();
-            if (!_hand.MixedAlong(path, pitch, Slowness(), kind == ScriptMoveKind.Aim ? 0.0025 : 0.008, kind == ScriptMoveKind.Aim ? 2 : 0, 0.5, _model, out s, out e))
+            Add(ScriptMoveKind.Free, -1, float.NaN, s, e, part: MovePart.Staging);
+            if (!near) AfterMove(u, pullBack: false); // the law's draws (a pause, never a pull back: the approach starts here)
+
+            // The aim or pass itself, made as a free move is made (docs/adr/0038 "M, motion": aims and passes followed their line in
+            // short segments to a tighter stop, and a model of the path could tell them by it): one goal, the same endpoint error,
+            // undershoot and corrections to the same tolerance, sometimes curved or in two pushes, the roll and the gripper as they go.
+            if (!_hand.MixedTo(goal, pitch, null, Slowness(), HandModel.Tolerance, _model, out s, out e))
             {
                 Undo(before, drafts);
                 return Miss(5);
             }
 
             _objectMoves++;
-            Add(kind, oi, offset, s, e, approach);
-            _lastObjectEnd = Math.Max(_lastObjectEnd, e);
+            Add(kind, oi, offset, s, e, approach, MovePart.Approach);
             if (offset < 0 && o.Movable)
             {
                 // Pushed into, it may be anywhere afterwards: no later move aims at it, and the tail's goals keep away from it.
@@ -789,31 +995,45 @@ namespace Teleop.Eval.JointDrive
                 _avoid.Add(c + 0.10f * Vector2.Normalize(new Vector2(u.X, u.Y) + new Vector2(1e-6f, 0f)));
             }
 
-            // Into a fixture, the hand always pulls back out (a person does; and the blind moves after keep out of fixtures); else now
-            // and then.
+            // Then the law every move follows; into a fixture, the hand always pulls back out (a person does; and the blind moves after
+            // keep out of fixtures).
             bool intoFixture = !o.Movable && offset < 0.005f;
-            if (intoFixture || Draw.Chance(ref _rng, _options.ReverseAfterShare))
+            float deep = 0f;
+            if (intoFixture)
             {
-                Vector3 back = _hand.TargetEnd - u * (float)Draw.Uniform(ref _rng, 0.03, 0.08) + new Vector3(0f, 0f, (float)Draw.Uniform(ref _rng, 0.01, 0.04));
-                if (_hand.MixedTo(back, null, null, Slowness(), 0.008, _model, out s, out e))
-                {
-                    Add(ScriptMoveKind.Reverse, -1, float.NaN, s, e);
-                    _lastObjectEnd = Math.Max(_lastObjectEnd, e);
-                }
-                else if (intoFixture)
-                {
-                    Undo(before, drafts);
-                    _lastObjectEnd = lastObjectEnd;
-                    _objectMoves--;
-                    return Miss(5);
-                }
+                // How deep the arm went into its box (the hand's own error included): the pull back goes that far and 1.5 cm more.
+                int k1 = Math.Min(_hand.Poses.Count - 1, (int)Math.Ceiling(e / HandModel.TickSeconds));
+                for (int k = Math.Max(0, (int)Math.Floor(s / HandModel.TickSeconds)); k <= k1; k++) deep = MathF.Max(deep, -_ladders[oi]!.SignedGap(_hand.Poses[k]));
             }
-            else
+
+            if (!AfterMove(u, pullBack: true, forced: intoFixture, atLeast: deep + 0.015f))
             {
-                MaybePause();
+                Undo(before, drafts);
+                _objectMoves--;
+                return Miss(5);
             }
 
             return true;
+        }
+
+        /// <summary>
+        /// How far back an aim or a pass starts, m: as far as a layout-blind part that is not strokes goes (one law, docs/adr/0038 "M,
+        /// motion"): small adjustments' distance with their share of those parts (<see cref="MixedOptions.BlindTransportShare"/>,
+        /// <see cref="MixedOptions.BlindReverseShare"/>), else a goal's (<see cref="Draw.ReachDistance"/>).
+        /// </summary>
+        private float ApproachLength()
+        {
+            double adjust = 1.0 - _options.BlindTransportShare - _options.BlindReverseShare, parts = 1.0 - _options.BlindReverseShare;
+            double share = _options.ShortApproachShare >= 0 ? _options.ShortApproachShare : parts > 0 ? adjust / parts : 0;
+            return Draw.Chance(ref _rng, share) ? Draw.AdjustDistance(ref _rng) : Draw.ReachDistance(ref _rng);
+        }
+
+        /// <summary>The last index at or before <paramref name="from"/>, walking back along a line, whose wrist is at least <paramref name="length"/> from <paramref name="target"/>; 0 when none is.</summary>
+        private static int Back(List<Vector3> wrists, int from, Vector3 target, float length)
+        {
+            int i = Math.Max(0, Math.Min(from, wrists.Count - 1));
+            while (i > 0 && Vector3.Distance(wrists[i], target) < length) i--;
+            return i;
         }
 
         private void Undo(HandSnapshot before, int drafts)
@@ -981,6 +1201,16 @@ namespace Teleop.Eval.JointDrive
             }
 
             return -1;
+        }
+
+        /// <summary>The wrist that puts the pads' midpoint at <paramref name="tool"/> with the wrist at <paramref name="pitch"/> (roll 0), as <see cref="Seed"/> places a line's.</summary>
+        private static Vector3 WristFor(Vector3 tool, float pitch)
+        {
+            float lh = ToolInGripper.X * MathF.Cos(pitch) - ToolInGripper.Z * MathF.Sin(pitch);
+            float lv = ToolInGripper.X * MathF.Sin(pitch) + ToolInGripper.Z * MathF.Cos(pitch);
+            var radial = new Vector2(tool.X, tool.Y);
+            radial = radial.Length() > 1e-4f ? Vector2.Normalize(radial) : Vector2.UnitX;
+            return new Vector3(tool.X - lh * radial.X, tool.Y - lh * radial.Y, tool.Z - lv);
         }
 
         /// <summary>The pitches a line's first pose tries, degrees about the one drawn: that one, then nearer ones first.</summary>

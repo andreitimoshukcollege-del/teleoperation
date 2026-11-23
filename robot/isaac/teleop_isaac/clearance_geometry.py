@@ -378,6 +378,42 @@ def export(scene_path: str, out: str = DEFAULT_OUT, root: str = ASSETS, urdf: st
     return summary
 
 
+def fit(root: str, out: str, asset: str, samples: int = 20000, seed: int = 0) -> Dict:
+    """How well the cache's pieces of ``asset`` cover its render mesh: ``samples`` points drawn on the mesh's triangles by area,
+    each one's distance outside the nearest piece by the pieces' face planes (negative inside; outside, a lower bound of the
+    distance). Needs pxr."""
+    import numpy as np
+
+    library, name = asset.split("/")
+    with open(os.path.join(out, "assets", library, f"{name}.json"), encoding="utf-8") as f:
+        doc = json.load(f)
+    meshes, _ = asset_meshes(root, asset)
+    rng = np.random.default_rng(seed)
+    V = np.concatenate([v for v, _ in meshes])
+    base = np.cumsum([0] + [len(v) for v, _ in meshes[:-1]])
+    F = np.concatenate([f + b for (_, f), b in zip(meshes, base)])
+    A, B, C = V[F[:, 0]], V[F[:, 1]], V[F[:, 2]]
+    area = 0.5 * np.linalg.norm(np.cross(B - A, C - A), axis=1)
+    k = rng.choice(len(F), size=samples, p=area / area.sum())
+    u, w = rng.random(samples), rng.random(samples)
+    flip = u + w > 1
+    u[flip], w[flip] = 1 - u[flip], 1 - w[flip]
+    P = A[k] + u[:, None] * (B[k] - A[k]) + w[:, None] * (C[k] - A[k])
+    outside = np.full(samples, np.inf)
+    for piece in doc["pieces"]:
+        v, f = np.asarray(piece["vertices"], float), np.asarray(piece["faces"], int)
+        n = np.cross(v[f[:, 1]] - v[f[:, 0]], v[f[:, 2]] - v[f[:, 0]])
+        norm = np.linalg.norm(n, axis=1)
+        ok = norm > 1e-14
+        n = n[ok] / norm[ok, None]
+        d = np.einsum("ij,ij->i", n, v[f[ok, 0]])
+        outside = np.minimum(outside, (P @ n.T - d).max(axis=1))
+    mm = outside * 1000
+    return {"asset": asset, "pieces": len(doc["pieces"]), "samples": samples, "over1mm": float(np.mean(mm > 1)),
+            "over5mm": float(np.mean(mm > 5)), "p50mm": float(np.median(mm)), "p90mm": float(np.percentile(mm, 90)),
+            "maxmm": float(mm.max())}
+
+
 def main(argv: Optional[Sequence[str]] = None) -> int:
     here = os.path.dirname(os.path.abspath(__file__))
     a = argparse.ArgumentParser(description="The geometry PhysX collides with, for the clearance (docs/adr/0038 decision 4)")
@@ -388,7 +424,15 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     a.add_argument("--work", default=WORK, help="where the URDF's USD conversion is kept")
     a.add_argument("--method", choices=METHODS, default="coacd")
     a.add_argument("--asset", action="append", default=[], help="only this asset (library/name); repeat for more")
+    a.add_argument("--fit", action="store_true", help="export nothing: how well the cache's pieces cover each asset's mesh")
     args = a.parse_args(argv)
+    if args.fit:
+        for asset in (args.asset or scene_assets(args.scene)):
+            r = fit(os.path.expanduser(args.assets_root), os.path.expanduser(args.out), asset)
+            print(f"[clearance-geometry] {asset}: {r['pieces']} pieces; of {r['samples']} points on its mesh {r['over1mm']:.1%} lie over "
+                  f"1 mm outside them, {r['over5mm']:.1%} over 5 mm; median {r['p50mm']:.1f} mm (negative: inside), p90 "
+                  f"{r['p90mm']:.1f}, max {r['maxmm']:.1f}")
+        return 0
     s = export(args.scene, os.path.expanduser(args.out), os.path.expanduser(args.assets_root), os.path.abspath(args.urdf),
                os.path.expanduser(args.work), args.method, args.asset)
     print(f"[clearance-geometry] {len(s['exported'])} exported, {len(s['kept'])} up to date, {len(s['failed'])} failed, in {s['out']}")

@@ -224,11 +224,12 @@ namespace Teleop.Eval.JointDrive
         private readonly int[] _objectMisses = new int[7];
 
         private int _objectTries, _objectMoves;
+        private readonly int[] _lineBreaks = new int[6]; // diagnostics: no seed, then a walk's break: IK, envelope, model, branch flip, over the base
         private readonly Dictionary<int, int> _missesInARow = new Dictionary<int, int>();
 
         /// <summary>The object-directed moves tried and planned, and why the rest were not.</summary>
         internal string ObjectReport() => FormattableString.Invariant(
-            $"object moves {_objectMoves} of {_objectTries} tried (missed: too low {_objectMisses[0]}, no line {_objectMisses[1]}, no end {_objectMisses[2]}, no start {_objectMisses[3]}, move there {_objectMisses[4]}, approach {_objectMisses[5]}, sweep {_objectMisses[6]})");
+            $"object moves {_objectMoves} of {_objectTries} tried (missed: too low {_objectMisses[0]}, no line {_objectMisses[1]}, no end {_objectMisses[2]}, no start {_objectMisses[3]}, move there {_objectMisses[4]}, approach {_objectMisses[5]}, sweep {_objectMisses[6]}; lines: no seed {_lineBreaks[0]}, walks broken by IK {_lineBreaks[1]}, envelope {_lineBreaks[2]}, model {_lineBreaks[3]}, flip {_lineBreaks[4]}, base {_lineBreaks[5]})");
 
         private bool Miss(int why)
         {
@@ -783,10 +784,28 @@ namespace Teleop.Eval.JointDrive
                 }
             }
 
-            if (seed < 0) return false;
+            if (seed < 0)
+            {
+                _lineBreaks[0]++;
+                return false;
+            }
+
             int first = seed, last = seed;
-            for (int i = seed - 1; i >= 0 && wrist[i].HasValue && Solve(solved[i + 1], wrist[i]!.Value, pitch, out solved[i], true); i--) first = i;
-            for (int i = seed + 1; i < n && wrist[i].HasValue && Solve(solved[i - 1], wrist[i]!.Value, pitch, out solved[i], true); i++) last = i;
+            for (int i = seed - 1; i >= 0; i--)
+            {
+                if (!wrist[i].HasValue) { _lineBreaks[5]++; break; }
+                int why = Why(solved[i + 1], wrist[i]!.Value, pitch, out solved[i]);
+                if (why > 0) { _lineBreaks[why]++; break; }
+                first = i;
+            }
+
+            for (int i = seed + 1; i < n; i++)
+            {
+                if (!wrist[i].HasValue) { _lineBreaks[5]++; break; }
+                int why = Why(solved[i - 1], wrist[i]!.Value, pitch, out solved[i]);
+                if (why > 0) { _lineBreaks[why]++; break; }
+                last = i;
+            }
             for (int i = first; i <= last; i++)
             {
                 wrists.Add(wrist[i]!.Value);
@@ -795,6 +814,15 @@ namespace Teleop.Eval.JointDrive
             }
 
             return wrists.Count >= 3;
+        }
+
+        /// <summary>Why a chained point of a line fails: 0 none, 1 the IK, 2 the envelope, 3 the robot's model, 4 a branch flip.</summary>
+        private int Why(in ArmPose from, Vector3 wrist, float pitch, out ArmPose pose)
+        {
+            if (!TrySolve(from, wrist, pitch, out pose)) return 1;
+            if (!_envelope.Contains(pose)) return 2;
+            if (!ArmCollision.IsValid(_profile, _model, pose)) return 3;
+            return from.MaxJointDelta(pose) <= 0.15f ? 0 : 4;
         }
 
         /// <summary>One point of a line: the IK from <paramref name="from"/>, in the envelope, free of the robot's own model, and (<paramref name="chained"/>) no branch flip from it.</summary>

@@ -8,6 +8,7 @@ using System.Net;
 using System.Net.Sockets;
 using System.Text.Json;
 using System.Threading;
+using Teleop.Core.Types;
 using Teleop.Eval.JointDrive;
 using Teleop.RobotArm.Collision;
 using Teleop.RobotArm.Types;

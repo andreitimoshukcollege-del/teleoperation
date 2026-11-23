@@ -291,7 +291,7 @@ namespace Teleop.Eval.JointDrive
         public float RadiusHigh { get; set; } = 0.25f;
         public float HeightLow { get; set; } = -0.03f;
         public float HeightHigh { get; set; } = 0.26f;
-        public float YawDegrees { get; set; } = 85f;
+        public float YawDegrees { get; set; } = 100f; // the obstacles stand round the base to +-120 degrees; the envelope's yaw ends at +-105
 
         /// <summary>The share of goals drawn low: the wrist at most <see cref="LowHeightHigh"/>, the gripper pitched <see cref="LowPitchLowDegrees"/> to <see cref="LowPitchHighDegrees"/>.</summary>
         public double LowShare { get; set; } = 0.4;

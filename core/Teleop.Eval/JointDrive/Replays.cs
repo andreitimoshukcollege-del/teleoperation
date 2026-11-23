@@ -73,18 +73,23 @@ namespace Teleop.Eval.JointDrive
             }
 
             ReplayEdit kind = order[(replay - 1) % order.Length];
-            var r = new SeededRng(unchecked(group * 0xBF58476D1CE4E5B9UL + (ulong)replay * 1000 + (ulong)attempt));
-            int closest = Closest(plan, objects, profile, out PlannedMove? move, null);
+            var r = new SeededRng(unchecked(group * 0x9E3779B97F4A7C15UL ^ ((ulong)replay * 1000 + (ulong)attempt)));
+            // An object something stands on (a stand, a plank's support) is never edited: what it holds would fall. A raised one
+            // (on a stand) is only removed: shifted off its stand, RobotHost would refuse it in the air.
+            float table = (float)scene.Table.Top;
+            bool Free(int i) => !Holds(objects, i);
+            bool OnTable(int i) => objects[i].Min.Z <= table + 0.01f;
+            bool Movable(int i) => Free(i) && OnTable(i) && scene.IndexOf(objects[i].Id) >= 0 && scene.Objects[scene.IndexOf(objects[i].Id)].OperatorMovable;
+            int closest = Closest(plan, objects, profile, out PlannedMove? move, Free);
             if (closest < 0) return default;
-            int movable = scene.IndexOf(objects[closest].Id) >= 0 && scene.Objects[scene.IndexOf(objects[closest].Id)].OperatorMovable ? closest
-                : Closest(plan, objects, profile, out move, i => scene.IndexOf(objects[i].Id) >= 0 && scene.Objects[scene.IndexOf(objects[i].Id)].OperatorMovable);
+            int movable = Movable(closest) ? closest : Closest(plan, objects, profile, out move, Movable);
             if (kind != ReplayEdit.Remove && movable < 0) kind = ReplayEdit.Remove;
             if (attempt >= 4) kind = ReplayEdit.Remove; // placements kept being refused
 
             if (kind == ReplayEdit.Remove)
             {
                 int which = closest;
-                for (int i = 0; i < objects.Count; i++) if (touched.Contains(objects[i].Id) && !objects[i].Scenery) which = i;
+                for (int i = 0; i < objects.Count; i++) if (touched.Contains(objects[i].Id) && !objects[i].Scenery && Free(i)) which = i;
                 byte id = objects[which].Id;
                 return new ReplayEditDraw(new ReplayRecord(ReplayRole.Replay, group, ReplayEdit.Remove, id), WorldEditOp.Park, new ObjectPose(id, 0, 0, 0, 0, 1, 0, 0, 0), null);
             }
@@ -123,6 +128,20 @@ namespace Teleop.Eval.JointDrive
             }
 
             return new ReplayEditDraw(new ReplayRecord(ReplayRole.Replay, group, ReplayEdit.Remove, o.Id), WorldEditOp.Park, new ObjectPose(o.Id, 0, 0, 0, 0, 1, 0, 0, 0), null);
+        }
+
+        /// <summary>Whether another of <paramref name="objects"/> stands on object <paramref name="i"/>: its bottom within 1 cm of this one's top, their footprints overlapping.</summary>
+        public static bool Holds(IReadOnlyList<SafetyObject> objects, int i)
+        {
+            SafetyObject o = objects[i];
+            for (int k = 0; k < objects.Count; k++)
+            {
+                if (k == i) continue;
+                SafetyObject p = objects[k];
+                if (MathF.Abs(p.Min.Z - o.Max.Z) < 0.01f && p.Min.X < o.Max.X && p.Max.X > o.Min.X && p.Min.Y < o.Max.Y && p.Max.Y > o.Min.Y) return true;
+            }
+
+            return false;
         }
 
         private static SafetyObject Moved(in SafetyObject o, Vector3 center, Quaternion rotation) =>

@@ -95,6 +95,12 @@ its own), and every 20 ms WORLD, the objects' poses as PhysX has them.
   anywhere in the placement region, each as its own rectangle at its heading, and `world.py`'s rules take it the same way.
   The tools are scans (Poly Haven's, by `just isaac-models-fetch`, and YCB's scissors); the phone and the pen are boxes that
   wear looks by name (`materials.objects`, `LK`).
+- **Contacts and clearance, the JetRover twin** (docs/adr/0036 amendment 1, docs/adr/0038 decision 4): its bridge reports the
+  arm's touches as `WC`, an object by its id and any surface (the table, the bench, the floor) as object 0, the table.
+  `just isaac-clearance-geometry <scene>` (`teleop_isaac/clearance_geometry.py`, Isaac's Python without Kit) writes what PhysX
+  collides with to `~/isaacsim/assets/clearance`: the links' boxes as the URDF importer made them, and each mesh asset as
+  convex pieces (CoACD at PhysX's convex-decomposition budget). The safety build's per-frame clearance reads it
+  (`teleop_lerobot.clearance`). Run it again after a scene names a new asset.
 
 `just isaac-scene-check` (`scene_check.py`) runs the real bridge with the scene and talks to it as RobotHost
 would. It checks WORLD_INFO, WORLD at 50 ± 5 Hz, placements applied and refused, and the left hand

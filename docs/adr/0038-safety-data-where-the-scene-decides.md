@@ -197,7 +197,143 @@ Each workstream owns the files listed. It adds to its own "as built" section bel
 
 ### C, clearance and contacts
 
-(pending)
+Built 2026-11-22 on `work/v2-contacts`. Checked offline against recorded takes; the table contacts are not yet run on the twin.
+
+**Table contacts.**
+- The arm's eight link bodies now take PhysX's contact report themselves (`PhysxContactReportAPI`, threshold 0, set in
+  `world.IsaacWorld.build` with the offsets). A surface is a static collider, and the schema takes the report only on a rigid
+  body or an articulation, so a link against the table reaches the tracker this way.
+- `contacts.ContactTracker(surfaces=...)` reports a link against any colliding scene surface as `WC` object 0, the id the
+  format always reserved for the table. That covers the table, the bench beside it (flush with it, the robot stands on it)
+  and the floor.
+- Unchanged: the touch rule (a contact point within 1 mm, or an impulse), the link index, the force (summed over shape pairs,
+  so one link on table and bench is one contact), and the cadence (on change, and every 20 steps while one lasts).
+- The base never appears. PhysX filters it against the surfaces, because the mount stands in the bench.
+- RobotHost passes object ids through unchecked, so it records `0:<link>:0:<force>` with no change.
+- Unit tests (`robot/isaac/tests/test_contacts.py`, synthetic events):
+  - a link on the table or bench is object 0, in either order;
+  - the touch rule applies to the table too;
+  - one link on two surfaces is one contact;
+  - objects resting on the table are still not contacts;
+  - placing an object never forgets the table;
+  - a surface named only by its shape path still counts;
+  - without `surfaces` the tracker behaves as before;
+  - object 0 round-trips the wire.
+- **Fixtures already reported:** they are kinematic bodies with the report API. In the validation set, 41 of 178 touch onsets
+  are with fixtures (take 119's right pad on the kettle, id 43, for one).
+- **Self-collision is off:** `jetrover_bridge.py` sets `physxArticulation:enabledSelfCollisions` false. Left as it is: no
+  link-link contact exists to report.
+
+**The collision geometry** (`robot/isaac/teleop_isaac/clearance_geometry.py`, `just isaac-clearance-geometry <scene>
+[coacd|hull]`).
+- **How it runs.** Isaac's Python, with no Kit and no rendering: plain `pxr`, numpy, scipy and CoACD (which Isaac's core
+  ships). It reads a scene file and writes a cache, by default `~/isaacsim/assets/clearance`.
+- **The arm:** `robot-jetrover.json`.
+  - Read from the URDF importer's own USD (`~/isaacsim/work/jetrover-<digest>`): 35 `UsdGeom.Cube` colliders on the 8
+    links, the finger pads included. They match the URDF's `<collision><box>` box for box (checked on every export).
+  - It also holds the links in the URDF's order (WC's index), the joints for forward kinematics, and the fixed bodies (the
+    base).
+- **Mesh assets:** `assets/<library>/<name>.json`.
+  - **What PhysX uses.** `world.py` gives every `UsdGeom.Mesh` a `convexDecomposition` collider, with
+    `PhysxConvexDecompositionCollisionAPI`'s defaults: V-HACD, at most 32 hulls of 64 vertices, voxel resolution 500000,
+    error 10%, no shrink wrap. Only a running Kit cooks it.
+  - **What the export does instead.** It decomposes each mesh with CoACD 1.0.7 at the same budget: 32 hulls, each decimated
+    to 64 vertices, threshold 0.05, seed 0. Each piece is stored as a convex hull in its body frame at k = 1.
+  - **Its key** is the sha256 of the asset's manifest entry and of the method: a changed asset is exported again, an
+    unchanged one is kept.
+  - **Cost.** jetrover-bench's 24 assets took 5.4 min on 4 threads. They became 2-70 pieces each: a box 2-3, the cans
+    30-31, the round fixtures 32, the green jerrycan's five meshes 70.
+  - **Fit.** Against 20,000 points sampled on each render mesh (6 assets), the pieces leave at most 1.0% of the surface more
+    than 1 mm outside, and none more than 6.1 mm. The mesh lies a median 0.2-3.6 mm inside the pieces (CoACD's manifold
+    remesh).
+- **Primitives and surfaces** need no export: the clearance builds them from the scene file. A box is exact, a cylinder a
+  32-sided prism, a sphere exact.
+
+**The clearance** (`robot/lerobot/teleop_lerobot/clearance.py`).
+- **Interface.** `compute(take, geometry_dir)` returns the shared `Clearance`, or raises `ClearanceUnavailable`. That
+  happens with no `VQ`, no `WO`, no `scene.json`, or a cache missing the robot or one of the take's assets.
+- **Inputs at each frame** (pure numpy):
+  - the link poses: forward kinematics of the frame's `VQ`, by frame number;
+  - object poses: `WO`, interpolated to the frame's `stateSensed`, with no interpolation to or from the shelf;
+  - sizes: the `WZ` in force, else the first `SZ`, else 1;
+  - obstacles: every scene object not parked (z below -2 m), clutter included.
+- **The distance.**
+  - Box against convex piece: GJK when apart, exact to about 1 µm. When they overlap, the separating-axis penetration depth,
+    using both shapes' face normals and their edge-edge axes.
+  - A link to a surface: its nearest box corner. That is exact wherever the surface's top face is the nearest part, which is
+    everywhere the arm reaches.
+  - Pairs are culled by bounding spheres and the box's own axes, and visited nearest first.
+- **The cutoff is 150 mm.** A near miss (under 30 mm) and about 0.5-0.7 s of a typical approach fall inside it. Beyond it,
+  the distance reads 150 and `obstacle_id` reads -1 (`NO_OBSTACLE`).
+- **The base's surface distance is NaN,** because PhysX never collides it with a surface.
+- **`method`** names the cache's mesh method. `link_object_distance` and `link_surface_distance` give one link's distance at
+  any time, with joints interpolated between frames.
+- **Tests** (`robot/lerobot/tests/test_clearance.py`):
+  - box and box: apart, corner to corner, overlapping;
+  - 100+ random turned box pairs against an exact feature-pair reference, within 2 µm;
+  - a cylinder prism's corner and side, a sphere, and an octahedron mesh;
+  - forward kinematics at hand-worked poses (zero, shoulder up, turntable round, forearm down, fingers apart, roll);
+  - a tiny take end to end: a wall 10 mm from the left pad gives 10.00 mm, and 5.00 at factor 1.25 from `WZ` or `SZ`;
+  - pose interpolation, parked objects left out, the unavailable cases;
+  - 300 frames with 30 objects inside a time budget.
+
+**Checked against PhysX's contacts** (`robot/lerobot/teleop_lerobot/clearance_check.py`, `just isaac-clearance-check
+<dataset>`).
+- **The set:** the 163 takes of `jetrover_20261122_145748_82747d` (world-models' val split), read-only: 40,685 frames and
+  178 touch onsets.
+- **A touch onset** is a `WC` record naming a (link, object) pair the record before it did not. PhysX's contact point is
+  then within 1 mm, so the right answer is 0-1 mm. Distances are taken at the record's time.
+- **Contact-free frames** have no object contact within half a frame plus 50 ms.
+
+| | CoACD pieces (the default) | one hull a mesh (`hull`) |
+|---|---|---|
+| touch onsets, \|d\| median / p90 | 2.04 / 9.81 mm (signed median +1.94) | 1.81 / 8.20 mm (signed median +1.21) |
+| movable objects (137) | 1.57 / 4.09 mm | 1.25 / 3.71 mm |
+| fixtures (41) | 8.74 / 14.77 mm | 7.23 / 14.50 mm |
+| frames in contact, movable (872 link-object frames) | median -0.76 mm (p10 -1.28, p90 1.84); 2.5% over 3 mm | median -0.36 mm (p10 -1.13, p90 1.49); 1.1% over 3 mm |
+| frames in contact, fixtures (376) | median 7.10 mm (p10 -2.58, p90 13.71) | median 3.12 mm (p10 -10.82, p90 12.96) |
+| contact-free frames (39,176) with a link overlapping an obstacle | 0.00% | 0.03% (0.01% deeper than 3 mm) |
+| compute, a take of about 250 frames | 0.62 s (max 1.36) | 0.44 s (max 1.68) |
+
+- **Movable objects** agree with PhysX within about 1-2 mm at the onset and in contact, for both methods.
+- **The large round fixtures are PhysX's own bulge.** By object, the signed onset medians are:
+  - marble bust +14.8 mm, antique vase +12.3, brass vase +10.9, ceramic vase +9.6, gnome +7.9, kettle +4.9;
+  - the box-like ones near 0: the jerrycans -1.8 and -2.1, the delivery box -3.5, the parcels -0.3 to +1.6.
+
+  Traces show the arm resting 7-16 mm from the bust and vase meshes all through a contact. So V-HACD's hulls for these
+  0.4-0.7 m scans stand that far outside the mesh. No mesh-faithful geometry reproduces that: only PhysX's cooked hulls,
+  or a shrink-wrapped decomposition on the PhysX side, would (open question 1).
+- **Why CoACD is the default.** It never shows an overlap without a contact. It also keeps concave parts open, as V-HACD
+  does, where a hull bridges them: at the brass vase's neck the hull reads -14.7 mm at PhysX's onset.
+- **Traces** (mm, from 300 ms before the onset to 300 ms after it; onset marked |):
+  - foam brick, right pad: 9.2 5.9 4.1 1.8 0.9 0.6 0.3 | 0.0 -0.2 -0.7 -0.8 -0.5 -0.2;
+  - large parcel, gripper: 20.5 14.9 6.9 2.9 1.1 0.5 -0.2 | -0.7 -1.1 -1.1 -1.1 -1.1 -1.0;
+  - mug, left pad: 70.2 50.9 34.9 24.2 10.3 5.8 2.3 | 1.1 1.0 1.6 2.0 2.5 4.0;
+  - kettle, right pad: 44.4 30.8 16.8 11.1 7.5 6.2 5.4 | 5.0 4.5 3.6 2.8 2.0 1.9;
+  - marble bust, wrist: 28.2 23.3 20.1 17.9 16.8 16.5 16.4 | 16.2 16.0 15.7 15.5 15.4 16.7.
+- **Surfaces.** The table was not reported in these takes, so this is a sanity check only. The nearest approach a take was a
+  median 77 mm. One knock take put a finger pad 3.3-3.9 mm into the table for two frames.
+
+**Untested, for the twin check.**
+- The bridge's start line names the surfaces as object 0.
+- Takes with low reaches record `WC` entries `0:<link>:0:<force>`, and object contacts are unchanged.
+- `just isaac-clearance-check <dataset>` on those takes prints "table touch onsets": the link's surface distance at each
+  should be 0-1 mm.
+- Run `just isaac-clearance-geometry jetrover-bench` once (into `~/isaacsim/assets/clearance`) before the build, and again
+  after S's scene adds assets.
+
+**For L and the others.**
+- Until `safety.py` leaves object 0 out, `safety.contacts()` counts a table touch as a contact stretch. A reach or stop take
+  that brushes the table would then be set aside as "touched object(s) [0]", and its frames labelled unsafe. Object 0 must
+  stay out of `unsafe` and out of the old categories' checks.
+- `scripts/gpu/take_report.py` and `take_timing.py` likewise count it as a contact.
+
+**Open questions.**
+1. **Should PhysX hug the meshes?** `physxConvexDecompositionCollision:shrinkWrap` (or a higher voxel resolution) in
+   `world.py` would bring the fixtures' colliders onto their meshes, and the clearance and the contacts within about 2 mm
+   everywhere. It changes the twin's physics, and the touch planner's 9 mm depth was set against today's colliders.
+2. **Should the export cook PhysX's own decomposition** in a headless Kit (no rendering), instead of CoACD? Not done: the
+   brief asked for no Kit.
 
 ### L, labels and dataset
 

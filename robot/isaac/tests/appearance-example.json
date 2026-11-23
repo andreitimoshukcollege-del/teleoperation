@@ -1,0 +1,24 @@
+{
+ "appearance": {
+  "objects": {
+   "brightness": [0.85, 1.1],
+   "desaturation": [0.0, 0.25],
+   "tint": 0.05
+  },
+  "lighting": {
+   "colourTemperatureK": [5500, 7500],
+   "exposure": [108, 128],
+   "key": {
+    "intensity": [0.5, 2.5],
+    "azimuthDeg": [0, 360],
+    "elevationDeg": [35, 75],
+    "angleDeg": [1, 6],
+    "colourTemperatureK": [3500, 6500]
+   }
+  },
+  "cameras": {
+   "room": {"translationM": 0.015, "rotationDeg": 2.0},
+   "mounted": {"translationM": 0.003, "rotationDeg": 1.5}
+  }
+ }
+}

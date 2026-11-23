@@ -282,3 +282,74 @@ def test_a_cameras_own_exposure_is_a_gain_in_linear_light_within_its_range():
     assert abs(int(up[118]) - 161) <= 1 and abs(int(down[118]) - 85) <= 1
     img = np.array([[[118, 0, 255]]], np.uint8)
     assert up[img].tolist() == [[[up[118], 0, 255]]]
+
+
+# --- frame pacing (docs/adr/0038 "A, appearance", item 28) ------------------------------------------------------------
+
+def _masks_label_by_label(seg, id_to_labels, table):
+    """The renderer's masks as they were made before 2026-11-23: one comparison of the frame per label."""
+    import numpy as np
+
+    out = np.zeros(seg.shape, np.uint16)
+    for k, v in id_to_labels.items():
+        label = v.get("class") if isinstance(v, dict) else v
+        if label in table:
+            out[seg == int(k)] = table[label]
+    return out
+
+
+def test_masks_made_by_one_table_lookup_are_the_masks_made_label_by_label():
+    import numpy as np
+    from teleop_isaac.renderer import mask_table, stable_mask
+    rng = np.random.default_rng(7)
+    table = mask_table([31, 32, 41, 60, 65])
+    labels = ["arm", "hand", "table", "bench", "clutter", "object_31", "object_32", "object_41", "object_60", "object_65",
+              "BACKGROUND", "UNLABELLED", "lag_cube", "object_99"]
+    for trial in range(40):
+        keys = rng.choice(np.arange(0, 200), size=len(labels), replace=False)
+        info = {str(int(k)): ({"class": lab} if trial % 2 else lab) for k, lab in zip(keys, labels)}
+        seg = rng.choice(np.concatenate([keys, [201, 4000, 0]]), size=(36, 64)).astype(np.uint32)
+        got = stable_mask(seg, info, table)
+        assert got.dtype == np.uint16 and (got == _masks_label_by_label(seg, info, table)).all()
+    signed = np.array([[-3, 5, 7], [9, 12, 99999]], np.int32)  # ids the table does not name, below 0 too, are 0
+    info = {"5": {"class": "hand"}, "9": {"class": "object_41"}, "12": {"class": "BACKGROUND"}}
+    assert stable_mask(signed, info, table).tolist() == [[0, 8, 0], [141, 0, 0]]
+    huge = np.array([[70000, 3]], np.uint32)  # an id past the lookup table's reach is labelled the old way
+    assert stable_mask(huge, {"70000": {"class": "table"}, "3": {"class": "arm"}}, table).tolist() == [[10, 7]]
+    assert stable_mask(huge, {}, table).tolist() == [[0, 0]]
+
+
+def test_a_cameras_exposure_table_gives_the_same_bytes_through_opencv():
+    import numpy as np
+    from teleop_isaac.renderer import apply_lut, exposure_lut
+    rgb = np.random.default_rng(3).integers(0, 256, size=(36, 64, 3), dtype=np.uint8)
+    for gain in (0.3, 0.8, 1.7, 3.9):
+        lut = exposure_lut(gain)
+        out = apply_lut(rgb, lut)
+        assert out.dtype == np.uint8 and out.shape == rgb.shape and (out == lut[rgb]).all()
+
+
+def test_the_garbage_collectors_pauses_and_the_loops_stretches_are_reported_per_window():
+    from teleop_isaac.renderer import GcWatch, LoopTimes
+    now = [0.0]
+    w = GcWatch(clock=lambda: now[0])
+    for gen, ms in ((0, 0.2), (0, 0.3), (2, 65.0), (1, 1.0)):
+        w("start", {"generation": gen})
+        now[0] += ms / 1e3
+        w("stop", {"generation": gen, "collected": 0})
+    assert w.report() == "gc 2/1/1 (gen 0/1/2), 66.5 ms, longest 65.0 ms (gen 2)"
+    assert w.report() == "gc 0/0/0 (gen 0/1/2), 0.0 ms, longest 0.0 ms (gen -1)"  # a new window
+    w("stop", {"generation": 0})  # a stop without its start (registered mid-collection) is not counted
+    assert w.counts == [0, 0, 0]
+    t = LoopTimes()
+    for ms in (30.0, 10.0, 20.0):
+        t.add("render", ms)
+    t.add("read", 2.5)
+    assert t.report() == "ms median/longest: render 20.0/30.0, read 2.5/2.5"
+    assert t.report() == "ms: none"
+
+
+def test_the_heap_is_frozen_unless_asked_not_to():
+    from teleop_isaac.renderer import parse_args
+    assert parse_args(["--scene", "x.json"]).gc_freeze is True
+    assert parse_args(["--scene", "x.json", "--no-gc-freeze"]).gc_freeze is False

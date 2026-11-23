@@ -20,6 +20,7 @@ frame's ``captureTicks`` with the sensed time of the state it shows: CLOCK_MONOT
 from __future__ import annotations
 
 import argparse
+import gc
 import hashlib
 import json
 import math
@@ -35,6 +36,7 @@ from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 from typing import Dict, List, Mapping, Optional, Sequence, Tuple
 
+from . import appearance as appearance_module
 from . import backdrops as backdrops_module
 from . import clutter as clutter_module
 from . import environments as environments_module
@@ -255,6 +257,7 @@ METER_GAMMA = 2.2        # an image's brightness goes roughly with radiance to t
 
 
 CAMERA_GAIN_RANGE = (0.25, 4.0)  # a camera's own exposure gain, in linear light
+APPEARANCE_WAIT_S = 30.0  # a session's preamble waits at most this long for a change under way (an appearance section only)
 
 
 def camera_gain(brightness: float, target: float) -> float:
@@ -466,8 +469,16 @@ def mask_table(object_ids: Sequence[int]) -> Dict[str, int]:
     return table
 
 
+MASK_LUT_MAX = 1 << 16  # annotator ids up to this go through one table lookup; larger ones (never seen) label by label
+
+
 def stable_mask(seg, id_to_labels: Mapping, table: Mapping[str, int]):
-    """A frame's segmentation (the annotator's ids, which change between frames) as stable ids, uint16."""
+    """A frame's segmentation (the annotator's ids, which change between frames) as stable ids, uint16.
+
+    One table lookup over the frame (docs/adr/0038 "A, appearance", item 28): the annotator's ids are small integers, so a
+    table indexed by them maps every pixel at once, about 0.2 ms a 640x360 camera. Comparing the frame with each label in
+    turn cost 2.3-3.7 ms a camera (8-32 labels, measured on the GPU machine's CPU), on the render thread, for every camera
+    that records masks. An id the table does not name is 0, as before."""
     import numpy as np
 
     lut_keys, lut_vals = [], []
@@ -476,10 +487,28 @@ def stable_mask(seg, id_to_labels: Mapping, table: Mapping[str, int]):
         if label in table:
             lut_keys.append(int(k))
             lut_vals.append(table[label])
+    if not lut_keys:
+        return np.zeros(seg.shape, np.uint16)
+    top = max(lut_keys)
+    if 0 <= min(lut_keys) and top < MASK_LUT_MAX:
+        lut = np.zeros(top + 2, np.uint16)  # its last entry, 0, takes every id above the largest named one (and below 0)
+        lut[lut_keys] = lut_vals
+        seg = np.asarray(seg)
+        return lut[np.clip(seg, -1, top + 1) if seg.dtype.kind == "i" else np.minimum(seg, top + 1)]
     out = np.zeros(seg.shape, np.uint16)
     for k, v in zip(lut_keys, lut_vals):
         out[seg == k] = v
     return out
+
+
+def apply_lut(rgb, lut):
+    """``lut`` (256 entries, uint8) on every channel of an 8-bit image: OpenCV's table lookup when it is there (0.13 ms a
+    640x360 frame, against 0.45 ms for numpy's indexing, which gives the same bytes)."""
+    try:
+        import cv2
+    except ImportError:
+        return lut[rgb]
+    return cv2.LUT(rgb, lut)
 
 
 def depth_mm(depth):
@@ -550,6 +579,12 @@ def parse_args(argv=None) -> argparse.Namespace:
     a.add_argument("--samples-per-pixel", type=int, default=2, help="Real-Time 2.0's path-traced samples a pixel, each render")
     a.add_argument("--subframes", type=int, default=1, help="render each pose this many times before reading it (Replicator's rt_subframes)")
     a.add_argument("--motion-blur", action="store_true", help="leave Isaac's motion blur setting as it is (off otherwise)")
+    # Frame pacing (docs/adr/0038 "A, appearance", item 28): 240 recent takes recorded a median frame every 36 ms, not 33.3, and
+    # 1.4% of their frame intervals were stalls of 96-116 ms with no frame lost or repeated. A full collection by Python's
+    # garbage collector over Kit's whole heap is one cause that fits; freezing the heap as it is once the scene is built takes
+    # every object that exists then out of later collections. Each 5 s report says how often the collector ran and its longest.
+    a.add_argument("--gc-freeze", action=argparse.BooleanOptionalAction, default=True,
+                   help="freeze Python's heap once the scene is built, so later garbage collections never walk it (default on)")
     args = a.parse_args(argv)
     if args.subframes < 1:
         a.error("--subframes must be at least 1")
@@ -570,6 +605,55 @@ def render_settings(args) -> Dict[str, object]:
     if not args.motion_blur:
         out["/rtx/post/motionblur/enabled"] = False
     return out
+
+
+class GcWatch:
+    """How long Python's garbage collector holds the render loop (item 28). Registered in ``gc.callbacks``, it times every
+    collection; :meth:`report` gives the window's counts per generation and the longest, then starts a new window."""
+
+    def __init__(self, clock=time.perf_counter):
+        self._clock = clock
+        self._started: Optional[float] = None
+        self.counts = [0, 0, 0]
+        self.longest_ms, self.longest_generation, self.total_ms = 0.0, -1, 0.0
+
+    def __call__(self, phase: str, info: Mapping) -> None:
+        if phase == "start":
+            self._started = self._clock()
+        elif phase == "stop" and self._started is not None:
+            ms = (self._clock() - self._started) * 1e3
+            self._started = None
+            g = int(info.get("generation", 0))
+            self.counts[min(max(g, 0), 2)] += 1
+            self.total_ms += ms
+            if ms > self.longest_ms:
+                self.longest_ms, self.longest_generation = ms, g
+
+    def report(self) -> str:
+        out = (f"gc {self.counts[0]}/{self.counts[1]}/{self.counts[2]} (gen 0/1/2), {self.total_ms:.1f} ms, longest "
+               f"{self.longest_ms:.1f} ms (gen {self.longest_generation})")
+        self.counts = [0, 0, 0]
+        self.longest_ms, self.longest_generation, self.total_ms = 0.0, -1, 0.0
+        return out
+
+
+class LoopTimes:
+    """Where the render loop's time goes (item 28): each named stretch of every frame, in ms; :meth:`report` gives each one's
+    median and longest over the window, then starts a new one."""
+
+    def __init__(self):
+        self.samples: Dict[str, List[float]] = {}
+
+    def add(self, name: str, ms: float) -> None:
+        self.samples.setdefault(name, []).append(ms)
+
+    def report(self) -> str:
+        parts = []
+        for name, xs in self.samples.items():
+            s = sorted(xs)
+            parts.append(f"{name} {s[len(s) // 2]:.1f}/{s[-1]:.1f}")
+        self.samples = {}
+        return "ms median/longest: " + ", ".join(parts) if parts else "ms: none"
 
 
 def main(argv=None) -> int:
@@ -677,14 +761,42 @@ def run(app, args, p, scene, cameras, fps, joints, motors, tap) -> int:
         object_ops[o.id] = (ops[0], ops[1])
         object_shown[o.id] = [UsdGeom.Imageable(stage.GetPrimAtPath(path)), True]
     domes = {}
+    scene_lights = []  # every light the scene file lists (an appearance section's colour temperature goes on each)
     for light in scene.extra.get("lights") or []:
         if light.get("kind") == "dome":
             domes[light["id"]] = UsdLux.DomeLight.Define(stage, f"/World/Lights/{light['id']}")
             domes[light["id"]].CreateIntensityAttr(float(light.get("intensity", 800)))
+            scene_lights.append(domes[light["id"]])
         elif light.get("kind") == "distant":
             d = UsdLux.DistantLight.Define(stage, f"/World/Lights/{light['id']}")
             d.CreateIntensityAttr(float(light.get("intensity", 2500)))
             UsdGeom.Xformable(d).AddRotateXYZOp().Set(Gf.Vec3f(*light.get("rotateXYZDeg", [0, 0, 0])))
+            scene_lights.append(d)
+
+    # --- each take's look (docs/adr/0038 decision 5): only for a scene file with an appearance section ----------------
+    look = appearance_module.spec(scene)
+    key_light = key_orient = None
+    colour_targets: Dict[int, List] = {}  # scanned object id -> its materials the section varies (appearance.prepare_colour)
+    if look is not None:
+        if look.lighting is not None and look.lighting.key is not None:
+            key_light = UsdLux.DistantLight.Define(stage, "/World/Lights/AppearanceKey")  # its light set at every change
+            key_light.CreateIntensityAttr(0.0)
+            key_light.CreateAngleAttr(0.53)
+            key_orient = UsdGeom.Xformable(key_light).AddOrientOp()
+        if look.objects is not None:
+            contexts = appearance_module.render_contexts(carb_settings.get("/persistent/app/hydra/material/renderContexts"))
+            for o, path in zip(scene.objects, world.object_paths):
+                if o.shape == "mesh":
+                    colour_targets[o.id] = appearance_module.prepare_colour(stage, f"{path}/Shape", contexts)
+            kinds: Dict[str, int] = {}
+            for targets in colour_targets.values():
+                for t in targets:
+                    kinds[t.method] = kinds.get(t.method, 0) + 1
+            bare = sorted(o.name for o in scene.objects if o.id in colour_targets and not colour_targets[o.id])
+            print(f"[render] appearance: {len(colour_targets)} scanned objects, their materials {kinds} under render contexts "
+                  f"{list(contexts)}; none to vary on {bare or 'none'}", flush=True)
+        print(f"[render] appearance: objects {look.objects}, lighting {look.lighting}, cameras room {look.room}, mounted "
+              f"{look.mounted}", flush=True)
 
     # --- the backdrop: a mat on the table top and a screen beyond the table (docs/adr/0032 decision 4) -------------
     from pxr import Sdf, UsdShade
@@ -884,7 +996,9 @@ def run(app, args, p, scene, cameras, fps, joints, motors, tap) -> int:
     lag_i = next((i for i, c in enumerate(cameras) if "mount" not in c or c["mount"] in ("head_camera_mounting_point",)), None)
     if lag_i is None:
         raise SystemExit("error: the scene has no camera that stands still, to measure the render lag with")
-    sensors, feeds, specs, riding = [], [], [], []  # riding: (camera, mount link, its pose in that link's frame)
+    sensors, feeds, specs, riding = [], [], [], []  # riding: [camera, mount link, its pose in that link's frame]
+    nominal = []  # each camera's pose in the scene file: in the base frame (fixed in the room) or its mount link's frame
+    riding_of: Dict[int, int] = {}  # camera index -> its entry in riding
     for i, c in enumerate(cameras):
         w, h, hfov = int(c["width"]), int(c["height"]), float(c["hfovDeg"])
         focal = APERTURE_MM / (2 * math.tan(math.radians(hfov) / 2))
@@ -901,10 +1015,13 @@ def run(app, args, p, scene, cameras, fps, joints, motors, tap) -> int:
             world_p, world_q = compose(kinematics.link_pose(joints, {}, c["mount"]), (local_t, local_q))
             cam = RtxCamera(f"/World/Cameras/{prim_name('Cam', c['id'])}", positions=[list(world_p)],
                             orientations=[list(world_q)], attributes=attrs)
-            riding.append((cam, c["mount"], (local_t, local_q)))
+            riding_of[i] = len(riding)
+            riding.append([cam, c["mount"], (local_t, local_q)])
+            nominal.append((tuple(local_t), tuple(local_q)))
         else:
             cam = RtxCamera(f"/World/Cameras/{prim_name('Cam', c['id'])}", positions=[list(c["position"])],
                             orientations=[list(look_at(c["position"], c["lookAt"]))], attributes=attrs)
+            nominal.append((tuple(float(v) for v in c["position"]), look_at(c["position"], c["lookAt"])))
         records = list(c.get("record") or [])
         annotators = ["rgb"]
         if i == lag_i or "mask" in records:
@@ -996,6 +1113,10 @@ def run(app, args, p, scene, cameras, fps, joints, motors, tap) -> int:
             camera_poses.append((*local_p, *local_q))
         else:
             camera_poses.append((*at[0], *at[1]))
+    # What CM records: each camera's pose in force this change. Without an appearance section, the poses above; with one,
+    # those moved by the change's jitter (apply_jitter).
+    camera_used = list(camera_poses)
+    jitters = [appearance_module.NO_JITTER] * len(specs)
 
     # --- backdrops: one seeded pair at start-up and after every recorded session (docs/adr/0032 decision 4) ------------
     backdrop = {"change": -1, "images": {}, "settle_until": -1}  # images: quad id -> manifest entry
@@ -1003,6 +1124,83 @@ def run(app, args, p, scene, cameras, fps, joints, motors, tap) -> int:
     room = {"hdri": None, "yaw": 0.0, "intensity": 0.0, "base": 0.0, "settle": 0, "trace": [], "brightness": 0.0, "gains": {}}
     worn = {}  # object id -> texture it wears this change (docs/adr/0037 amendment 5)
     looks_worn = {}  # surface id or object name -> the look it wears this change ("Surfaces and flat clutter")
+
+    # --- each take's look (docs/adr/0038 decision 5): drawn at every change, only with an appearance section ------------
+    lighting_now = {"draw": None}  # this change's appearance.Lighting
+    colours_now = {}  # scanned object id -> (how its materials were changed, its appearance.ObjectColour as applied)
+    appearance_ready = threading.Event()  # set once a change's look is all in force: a session's preamble waits for it
+    key_reference = appearance_module.key_reference(scene)
+
+    def apply_colours() -> None:
+        colours_now.clear()
+        for oid, targets in colour_targets.items():
+            if targets:
+                drawn = appearance_module.object_colour(look.objects, backdrop_seed, backdrop["change"], oid)
+                colours_now[oid] = appearance_module.apply_colour(targets, drawn)
+
+    def apply_jitter() -> None:
+        """Every camera moved by this change's jitter. A room camera is moved where Isaac renders it; a mounted camera's
+        pose in its link's frame, which the loop composes with the link every frame, is moved. CM records the start-up
+        pose (as Isaac rendered it) moved by the same jitter."""
+        for i, c in enumerate(specs):
+            mounted = bool(c["mount"])
+            j = appearance_module.camera_jitter(look.jitter_for(mounted), backdrop_seed, backdrop["change"], c["id"])
+            jitters[i] = j
+            p, q = appearance_module.jittered((camera_poses[i][:3], camera_poses[i][3:]), j)
+            camera_used[i] = (*p, *q)
+            if mounted:
+                local = appearance_module.jittered(nominal[i], j)
+                riding[riding_of[i]][2] = local
+                # Now as well, so the camera meters its exposure where it will record from (the arm at rest between takes).
+                wp, wq = compose(kinematics.link_pose(joints, state_values, c["mount"]), local)
+                sensors[i][0].set_world_poses(positions=[list(wp)], orientations=[list(wq)])
+                continue
+            cam = sensors[i][0]
+            np_, nq = appearance_module.jittered(nominal[i], j)
+            cam.set_world_poses(positions=[list(np_)], orientations=[list(nq)])
+            cp, cq = (np.asarray(x.numpy() if hasattr(x, "numpy") else x, float).reshape(-1) for x in cam.get_world_poses())
+            off_mm = 1000.0 * math.dist(cp[:3], p)
+            off_deg = math.degrees(2 * math.acos(min(1.0, abs(sum(a * b for a, b in zip(cq[:4], q))))))
+            if off_mm > 0.1 or off_deg > 0.01:
+                print(f"[render] warning: camera {c['id']} reads back {off_mm:.2f} mm and {off_deg:.3f} deg from the pose it was "
+                      f"given; CM records the pose given", flush=True)
+
+    def apply_lighting() -> None:
+        """This change's light: every scene light's colour temperature, and the key light's direction, strength, size and
+        colour. The metering that follows (settle_room) aims at the drawn exposure."""
+        lt = appearance_module.lighting(look.lighting, backdrop_seed, backdrop["change"], key_reference)
+        lighting_now["draw"] = lt
+        if lt.kelvin is not None:
+            for light in scene_lights:
+                light.CreateEnableColorTemperatureAttr().Set(True)
+                light.CreateColorTemperatureAttr().Set(float(lt.kelvin))
+        if key_light is not None and lt.key is not None:
+            key_light.GetIntensityAttr().Set(float(lt.key.intensity))
+            key_light.GetAngleAttr().Set(float(lt.key.angle_deg))
+            key_orient.Set(Gf.Quatf(*lt.key.orientation()))
+            key_light.CreateEnableColorTemperatureAttr().Set(lt.key.kelvin is not None)
+            if lt.key.kelvin is not None:
+                key_light.CreateColorTemperatureAttr().Set(float(lt.key.kelvin))
+
+    def appearance_records() -> List[tuple]:
+        """LT, CJ and OA for this change (trainer/contract/SESSION_FORMAT.md), for the parts the section has."""
+        out: List[tuple] = []
+        if look is None:
+            return out
+        if look.lighting is not None and lighting_now["draw"] is not None:
+            out.append(("LT", backdrop["change"], *appearance_module.lt_fields(lighting_now["draw"])))
+        if look.room is not None or look.mounted is not None:
+            out.append(("CJ", backdrop["change"], appearance_module.cj_items([(c["id"], j) for c, j in zip(specs, jitters)])))
+        if look.objects is not None:
+            out.append(("OA", backdrop["change"], appearance_module.oa_items(colours_now)))
+        return out
+
+    def metering_target() -> Optional[float]:
+        """The brightness the metering aims for: the change's drawn exposure, else the environment's targetBrightness."""
+        lt = lighting_now["draw"]
+        if lt is not None and lt.exposure is not None:
+            return lt.exposure
+        return env["targetBrightness"] if env is not None else None
 
     def change_materials() -> None:
         worn.clear()
@@ -1086,7 +1284,18 @@ def run(app, args, p, scene, cameras, fps, joints, motors, tap) -> int:
                 [[c["id"], room["gains"].get(c["id"], 1.0)] for c in specs])
 
     def change_backdrop(frame_now: int) -> None:
+        """The next change: backdrop, room, materials, clutter and, with an appearance section, the take's look. A session's
+        preamble waits until it is all in force (appearance_ready), so its records describe the frames it holds."""
+        try:
+            _change_backdrop(frame_now)
+        finally:
+            if not want_backdrop_change:  # another session closed meanwhile: its change comes next, and the wait goes on
+                appearance_ready.set()
+
+    def _change_backdrop(frame_now: int) -> None:
         backdrop["change"] += 1
+        if look is not None and look.objects is not None:
+            apply_colours()  # first: the materials it changes have the rest of the change to take
         change_materials()
         session_record("MT", backdrop["change"], [[oid, t["id"]] for oid, t in sorted(worn.items())])
         if looks_worn:
@@ -1094,6 +1303,13 @@ def run(app, args, p, scene, cameras, fps, joints, motors, tap) -> int:
         rebuild_clutter()  # before the room settles: the cameras meter the table as it will be recorded
         if clutter_all is not None:
             session_record("CL", backdrop["change"], clutter_module.cl_items(clutter_now))
+        if look is not None:
+            if look.room is not None or look.mounted is not None:
+                apply_jitter()  # before the room settles: each camera meters its own exposure where it now is
+            if look.lighting is not None:
+                apply_lighting()  # before the room settles: the metering corrects the dome with this light on
+            for record in appearance_records():
+                session_record(*record)
         if change_room():
             settle_room()
             session_record("EN", *en_fields())
@@ -1132,6 +1348,11 @@ def run(app, args, p, scene, cameras, fps, joints, motors, tap) -> int:
             session.record(tag, *fields)
 
     def preamble():
+        # With an appearance section, a session that opens while a change is pending or under way (the one before closed in
+        # the same poll of the control file) waits for it: its CM, LT, CJ and OA must be the change its frames show.
+        if look is not None and not appearance_ready.wait(APPEARANCE_WAIT_S):
+            print(f"[render] warning: a session opened while a change had not finished after {APPEARANCE_WAIT_S:.0f} s; its "
+                  f"preamble describes the change as it stands", flush=True)
         used_this_session.clear()
         used_this_session.extend(backdrop["images"].values())
         rooms_this_session.clear()
@@ -1140,7 +1361,7 @@ def run(app, args, p, scene, cameras, fps, joints, motors, tap) -> int:
         out = [("IV", version("isaacsim"), fps, args.record_every, lag, round(agree, 4), len(samples)),
                ("RX", args.rtx_renderer, args.anti_aliasing, args.subframes, 1 if args.motion_blur else 0, args.samples_per_pixel),
                ("SC", scene.name, scene_sha)]
-        for c, pose in zip(specs, camera_poses):
+        for c, pose in zip(specs, camera_used):
             out.append(("CM", c["id"], c["width"], c["height"], round(c["fx"], 6), round(c["fy"], 6), c["cx"], c["cy"], c["near"],
                         c["far"], *[round(v, 7) for v in pose], c["mount"], [[st] for st in c["record"]],
                         "mount" if c["mount"] else "base"))
@@ -1154,6 +1375,7 @@ def run(app, args, p, scene, cameras, fps, joints, motors, tap) -> int:
             out.append(("LK", backdrop["change"], lk_items()))
         if clutter_all is not None:
             out.append(("CL", backdrop["change"], clutter_module.cl_items(clutter_now)))
+        out.extend(appearance_records())  # none without an appearance section
         if world_snapshot["objects"]:
             out.append(("OL", world_snapshot["sensed"], world_snapshot["revision"], world_snapshot["objects"]))
         out.append(("SZ", max(0, world_sizes["revision"]), world_sizes["sizes"]))
@@ -1187,13 +1409,20 @@ def run(app, args, p, scene, cameras, fps, joints, motors, tap) -> int:
             out["environment.json"] = (json.dumps(doc, indent=1, sort_keys=True) + "\n").encode("utf-8")
         return out
 
+    def on_closed(directory) -> None:
+        """After a session's trailer (the writer thread): the next change is due. With an appearance section, a session that
+        opens before it is done waits in its preamble."""
+        if look is not None:
+            appearance_ready.clear()
+        want_backdrop_change.append(directory)
+
     if args.record_control:
         if agree < 0.995 or not samples and args.lag < 0:
             print(f"[render] warning: not recording: the render lag agreed in {agree:.1%} of {len(samples)} samples (needs 99.5%)", flush=True)
         else:
             from .isaac_session import IsaacSession
             session = IsaacSession(args.record_control, streams, preamble=preamble, final_files=final_files,
-                                   on_closed=lambda d: want_backdrop_change.append(d), min_free_bytes=int(args.min_free_gb * 1024 ** 3),
+                                   on_closed=on_closed, min_free_bytes=int(args.min_free_gb * 1024 ** 3),
                                    poll_seconds=0.1)  # frames after RobotHost closes a session have no QS: keep that tail short
             print(f"[render] recording {', '.join(streams)} every {args.record_every} frame(s) into the sessions {args.record_control} names", flush=True)
     recorder = ThreadPoolExecutor(max_workers=1, thread_name_prefix="record")
@@ -1264,7 +1493,7 @@ def run(app, args, p, scene, cameras, fps, joints, motors, tap) -> int:
 
         ok = until_settled()
         steps = []
-        target = env["targetBrightness"]
+        target = metering_target()  # the environment's targetBrightness, or the change's drawn exposure (appearance)
         # The camera's auto-exposure (docs/adr/0037 decision 2): meter the still camera's image, set the dome toward the
         # target, settle again; a few steps at most, and within METER_RANGE of the luminance-normalised intensity.
         while ok and target is not None and trace and abs(trace[-1] - target) > METER_TOLERANCE and len(steps) < METER_STEPS:
@@ -1310,8 +1539,17 @@ def run(app, args, p, scene, cameras, fps, joints, motors, tap) -> int:
         print(f"[render] rooms: {len(hdris)} HDRIs from {env_root}, mean radiance {env['meanRadiance']}, yaw {env['yawDeg']}, "
               f"hidden {env['hideSurfaces']}", flush=True)
     check_render_settings("at the start of the stream")
+    # Frame pacing (item 28): how long the garbage collector holds the loop, and where each frame's time goes, every 5 s.
+    gc_watch, loop = GcWatch(), LoopTimes()
+    gc.callbacks.append(gc_watch)
+    if args.gc_freeze:
+        gc.collect()
+        gc.freeze()
+        print(f"[render] Python heap frozen: {gc.get_freeze_count()} objects left out of later garbage collections", flush=True)
+    last_pose: Dict[int, tuple] = {}  # object id -> the pose last set on its prim: an unchanged one is not set again
     print(f"[render] streaming at {fps} fps", flush=True)
     while not stop and (stop_at is None or time.perf_counter() < stop_at):
+        t_frame = time.perf_counter()
         while True:
             try:
                 d = tap.recv(wire.MAX_BYTES)
@@ -1329,9 +1567,12 @@ def run(app, args, p, scene, cameras, fps, joints, motors, tap) -> int:
                     worlds_in += 1
                     for o in w[5]:
                         if o.id in object_ops:
-                            t_op, q_op = object_ops[o.id]
-                            t_op.Set(Gf.Vec3d(*o.pose[:3]))
-                            q_op.Set(Gf.Quatd(*o.pose[3:]))
+                            pose = tuple(o.pose)
+                            if last_pose.get(o.id) != pose:  # a parked or sleeping body sends the same pose 100 times a second
+                                t_op, q_op = object_ops[o.id]
+                                t_op.Set(Gf.Vec3d(*pose[:3]))
+                                q_op.Set(Gf.Quatd(*pose[3:]))
+                                last_pose[o.id] = pose
                             # A parked object (docs/adr/0037 decision 3) is out of sight on the shelf already; hidden, too.
                             shown = not (o.flags & wire.FLAG_PARKED)
                             if object_shown[o.id][1] != shown:
@@ -1357,9 +1598,14 @@ def run(app, args, p, scene, cameras, fps, joints, motors, tap) -> int:
                     session_record("SZ", z[0], world_sizes["sizes"])
         for f in feeds:
             f.poll()
+        t_now = time.perf_counter()
+        loop.add("tap", (t_now - t_frame) * 1e3)
         if want_backdrop_change:
             want_backdrop_change.clear()
             change_backdrop(frames)
+            t_changed = time.perf_counter()
+            loop.add("change", (t_changed - t_now) * 1e3)
+            t_now = t_changed
 
         for cam, mount, local in riding:  # the state the links had one frame ago: see where the cameras are made
             cp, cq = compose(kinematics.link_pose(joints, posed_values, mount), local)
@@ -1372,7 +1618,11 @@ def run(app, args, p, scene, cameras, fps, joints, motors, tap) -> int:
         view.set_local_poses(ts, qs)
         stamps.posed(state_sensed)
         frame_values.append(state_values)
+        t_posed = time.perf_counter()
+        loop.add("pose", (t_posed - t_now) * 1e3)
         render_frame()
+        t_rendered = time.perf_counter()
+        loop.add("render", (t_rendered - t_posed) * 1e3)
         capture = stamps.shown(lag)
         recording = session is not None and session.active and frames % max(1, args.record_every) == 0 and capture != camwire.UNSET
         if recording:
@@ -1395,7 +1645,7 @@ def run(app, args, p, scene, cameras, fps, joints, motors, tap) -> int:
                 continue
             rgb = np.ascontiguousarray(rgb[..., :3])
             if camera_luts[i] is not None:
-                rgb = camera_luts[i][rgb]
+                rgb = apply_lut(rgb, camera_luts[i])
             if send:
                 with pending_lock:
                     behind = pending[i] >= 2
@@ -1430,6 +1680,8 @@ def run(app, args, p, scene, cameras, fps, joints, motors, tap) -> int:
         window_frames += 1
 
         now = time.perf_counter()
+        loop.add("read", (now - t_rendered) * 1e3)  # the images read, converted and handed to the encoders
+        loop.add("frame", (now - t_frame) * 1e3)
         if now >= report_at:
             age = (time.monotonic_ns() - state_sensed) / 1e6 if state_sensed != camwire.UNSET else float("nan")
             sent = ", ".join(f"{f.name} {f.frames_sent} sent ({f.bytes_sent / 1e6:.1f} MB)" for f in feeds)
@@ -1437,7 +1689,7 @@ def run(app, args, p, scene, cameras, fps, joints, motors, tap) -> int:
             rec = f"; recording {session.directory} ({session.frames_written} written, {session.frames_dropped} dropped)" \
                 if session is not None and session.active else ""
             print(f"[render] {rate:.1f} fps; states {states_in}, world {worlds_in}; newest state {age:.0f} ms old; {sent}; "
-                  f"skipped {skipped}{rec}", flush=True)
+                  f"skipped {skipped}{rec}; {loop.report()}; {gc_watch.report()}", flush=True)
             session_record("RH", time.monotonic_ns(), round(rate, 2), round(age, 1), skipped[0], skipped[-1], record_skipped[0], list(skipped))
             report_at, window_frames = now + 5.0, 0
         wait = start + frames * frame_s - time.perf_counter()

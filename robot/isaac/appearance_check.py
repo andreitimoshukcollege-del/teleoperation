@@ -12,7 +12,10 @@ It prints one ``RESULT {...}`` line and exits non-zero when a check fails:
    ``CM`` pose (a mounted camera's through its link's forward kinematics at the frame's ``VQ`` values), lands on the table top:
    p99 under 3 mm, as ``verify_session.py`` holds it. The same through the scene file's pose, ignoring the jitter, is reported
    beside it: a 2 degree turn tilts the table by centimetres there, so this tells whether the renderer moved the camera.
-3. **Frame pacing** (item 28): the median frame interval, the share of intervals over 55 ms, and frames recorded against the
+3. **A colour that arrives late** (reported, not checked): each scanned object's mean colour difference (0-255) between a
+   take's first frame and a second later, over the pixels that are the object in both. A material still compiling when the
+   take began shows as a jump of tens; the arm's moving shadow gives a few.
+4. **Frame pacing** (item 28): the median frame interval, the share of intervals over 55 ms, and frames recorded against the
    recorded span at 30 fps. Before this change (240 takes of 2026-11-22, two twins): 36 ms, 1.6%, 90%.
 
 ``--sheet`` writes a contact sheet: each scanned object a row, each take a column, the object's crop from the first still
@@ -197,6 +200,30 @@ def check_take(take, joints, sheet_rows, wrist_frames, baseline=False):
     if not out["table_mm"]:
         out["problems"].append("no camera saw the table in depth")
 
+    # A colour that arrives late (a material still compiling when the take began) shows as a jump: each scanned object's mean
+    # colour in the take's first frame and about a second later, over the pixels that are the object in both (so the arm
+    # passing in front of it is left out). Reported, not checked: the arm's shadow moves too.
+    if len(vf) > 31:
+        jumps = []
+        a, b = vf[0], vf[30]
+        pa = {p.rsplit(":", 2)[0]: (int(p.rsplit(":", 2)[1]), int(p.rsplit(":", 2)[2])) for p in a[4].split(";") if p}
+        pb = {p.rsplit(":", 2)[0]: (int(p.rsplit(":", 2)[1]), int(p.rsplit(":", 2)[2])) for p in b[4].split(";") if p}
+        for cid, cam in cams.items():
+            names = (f"{cid}.rgb", f"{cid}.mask")
+            if cam["mount"] or not all(n in pa and n in pb for n in names):
+                continue
+            imgs = [cv2.imdecode(np.frombuffer(payload(take, n, parts[n]), np.uint8), cv2.IMREAD_UNCHANGED)
+                    for parts in (pa, pb) for n in names]
+            rgb_a, mask_a, rgb_b, mask_b = imgs
+            for v in np.unique(mask_a):
+                if not 100 <= v < 400:
+                    continue
+                both = (mask_a == v) & (mask_b == v)
+                if both.sum() >= 150:
+                    diff = np.abs(rgb_a[both].astype(np.int16) - rgb_b[both].astype(np.int16)).mean()
+                    jumps.append((round(float(diff), 1), cid, int(v) - 100))
+        out["colour_jump_first_vs_1s"] = sorted(jumps, reverse=True)[:3]
+
     # 3. Frame pacing.
     sensed = [int(r[2]) for r in rec.get("VF", [])]
     gaps = [(b - a) / 1e6 for a, b in zip(sensed, sensed[1:])]
@@ -286,6 +313,7 @@ def main(argv=None) -> int:
         "table_mm_cm_p99_worst": max((v["cm_p99"] for r in results for v in r.get("table_mm", {}).values()), default=None),
         "table_mm_file_p99_median": statistics.median([v["file_p99"] for r in results for v in r.get("table_mm", {}).values()])
         if any(r.get("table_mm") for r in results) else None,
+        "colour_jump_worst": max((j for r in results for j in r.get("colour_jump_first_vs_1s", [])), default=None),
         "pacing_median_ms": statistics.median([p["median_ms"] for p in pace]) if pace else None,
         "pacing_over_55ms": round(sum(p["over_55ms"] * p["frames"] for p in pace) / max(1, sum(p["frames"] for p in pace)), 4) if pace else None,
         "pacing_recorded_share": round(statistics.median([p["recorded_share"] for p in pace]), 3) if pace else None,

@@ -136,3 +136,50 @@ def test_a_movable_object_may_stand_by_the_edge_a_fixed_one_not():
     assert not s.fits_on_table(fixture, x, y)
     assert not s.fits_on_table(can, x, y0 - 0.03)  # outside the rectangle and the region
     assert not s.fits_on_table(can, x0 + 0.005, y, rest=1)  # lying, its footprint would reach past the bench's back edge
+
+
+def test_a_mixed_pools_rules_are_cores():
+    # docs/adr/0038 decision 3: Core's canonical rules of the mixed scene (golden/scene-rules-jetrover-mixed.json, written by
+    # SceneMixedTests). Every footprint of a mixed pool is its rectangle, nothing one above the other overlaps, and a movable object
+    # stands above the table only on a stand that holds it; Isaac must take what RobotHost draws by the same rules, or it refuses
+    # it (OUTSIDE_REGION, OVERLAPS_OBJECT) or stands a raised object on the table.
+    g = golden("scene-rules-jetrover-mixed.json")
+    path = os.path.join(SCENES, "jetrover-mixed.json")
+    with open(path, "rb") as f:
+        assert hashlib.sha256(f.read()).hexdigest() == g["sha256"], "the scene changed: run `just gen-isaac-goldens`"
+    s = scene.load(path)
+    assert s.mixed and s.is_pool
+    omin, omax, dmin, dmax, _, _, bearing, stand, rig, far = g["pool"]
+    assert (s.obstacles, s.distractors) == ((int(omin), int(omax)), (int(dmin), int(dmax)))
+    assert [s.reach_bearing, s.stand_share, s.rig_share, s.distractor_reach] == pytest.approx([bearing, stand, rig, far], abs=1e-12)
+    assert list(s.distractor_regions) == pytest.approx(g["distractorRegions"], abs=1e-12)
+    assert len(s.objects) == len(g["objects"])
+    for o, (name, role, steps, supports) in zip(s.objects, g["objects"]):
+        assert (o.name, o.role, list(o.steps), list(o.supports)) == (name, role, [int(v) for v in steps], [int(v) for v in supports])
+    for column in (6, 7):  # both answers are pinned, with a yaw and without
+        assert sum(r[column] for r in g["fits"]) > 20 and sum(1 - r[column] for r in g["fits"]) > 20
+    for i, rest, scale, x, y, yaw, fits_yaw, fits in g["fits"]:
+        assert s.fits_on_table(int(i), x, y, scale, int(rest), yaw) == bool(fits_yaw), (s.objects[int(i)].name, x, y, yaw)
+        assert s.fits_on_table(int(i), x, y, scale, int(rest)) == bool(fits), (s.objects[int(i)].name, x, y)
+    assert sum(r[-1] for r in g["overlaps"]) > 20 and sum(1 - r[-1] for r in g["overlaps"]) > 20
+    for a, ax, ay, az, ya, ra, sa, b, bx, by, bz, yb, rb, sb, hit in g["overlaps"]:
+        assert s.overlaps_at_heights(int(a), ax, ay, az, ya, int(b), bx, by, bz, yb, sa, sb, int(ra), int(rb)) == bool(hit), (a, b, az, bz)
+    assert sum(r[-1] for r in g["holds"]) > 10 and sum(1 - r[-1] for r in g["holds"]) > 10
+    for k, kx, ky, kz, kyaw, ks, i, x, y, z, rest, sc, held in g["holds"]:
+        assert s.holds_on_top(int(k), kx, ky, kz, kyaw, ks, 0, int(i), x, y, z, sc, int(rest)) == bool(held), (k, i, z)
+    for i, rest, sc, z, resting, up in g["elevated"]:
+        assert s.resting_z(int(i), sc, int(rest)) == pytest.approx(resting, abs=1e-12)
+        assert s.is_elevated(int(i), z, sc, int(rest)) == bool(up), (s.objects[int(i)].name, z, resting)
+
+
+def test_the_mixed_scenes_keep_what_isaac_alone_reads():
+    # The renderer's sections ride along unread by Core; an unknown top-level section (workstream A's appearance) is kept, not refused.
+    for name in ("jetrover-mixed", "jetrover-mixed-holdout"):
+        with open(os.path.join(SCENES, name + ".json"), encoding="utf-8") as f:
+            doc = json.load(f)
+        doc["appearance"] = {"objects": {"hue": [-0.05, 0.05]}}
+        s = scene.parse(doc)
+        assert s.extra["appearance"] == {"objects": {"hue": [-0.05, 0.05]}}
+        assert [c["id"] for c in s.extra["cameras"]] == ["third-left", "third-right", "wrist"]
+        worn = s.extra["materials"]["objects"]
+        assert all(o.name in worn for o in s.objects if o.shape != "mesh"), name  # every simple shape wears looks (LK)

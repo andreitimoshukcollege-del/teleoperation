@@ -402,10 +402,12 @@ namespace Teleop.RobotHost.World
             _pending[slot].Active = false;
             _record?.Invoke(SessionLines.WorldPlace(now, request, done.Cause, pose, outcome));
             if (outcome != PlaceOutcome.Applied) PlacementsRefused++;
-            if (outcome != PlaceOutcome.Applied && done.Cause == PlaceCause.Layout && outcome != PlaceOutcome.TimedOut && _scene.Mixed && !_parked[done.Index] &&
-                ParkGroup(done.Index, now))
+            if (outcome != PlaceOutcome.Applied && done.Cause == PlaceCause.Layout && outcome != PlaceOutcome.TimedOut && _scene.Mixed &&
+                (_parked[done.Index] || ParkGroup(done.Index, now)))
             {
-                return; // docs/adr/0038: part of an obstacle on its stand, or of a plank on its supports, parked whole
+                // docs/adr/0038: part of an obstacle on its stand, or of a plank on its supports, parked whole; or the answer to one
+                // its group's refusal parked already (an object sent onto a stand that was then refused).
+                return;
             }
 
             if (outcome != PlaceOutcome.Applied && done.Cause == PlaceCause.Layout && outcome != PlaceOutcome.TimedOut && done.Tries < MaxRedraws &&

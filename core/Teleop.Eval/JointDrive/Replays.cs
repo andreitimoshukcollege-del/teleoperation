@@ -53,6 +53,61 @@ namespace Teleop.Eval.JointDrive
         }
     }
 
+    /// <summary>A point of the arm's way through a take: seconds from its start, the pose, and the gripper fraction commanded.</summary>
+    public readonly struct TrackPoint
+    {
+        public readonly double At;
+        public readonly ArmPose Pose;
+        public readonly float Gripper;
+
+        public TrackPoint(double at, in ArmPose pose, float gripper)
+        {
+            At = at;
+            Pose = pose;
+            Gripper = gripper;
+        }
+    }
+
+    /// <summary>
+    /// What a replay's <c>add</c> needs besides what every edit has (docs/adr/0038 decision 2; the twin check's review asked for an edit
+    /// that puts an obstacle into the path: a safe take's unsafe twin): the arm's way through the source take (as measured when the take
+    /// measured it, else as commanded), how long the take ran, the pool's parked objects it may stand on the table, and the model and
+    /// options the take's quiet start and end are kept with.
+    /// </summary>
+    public sealed class ReplayAdd
+    {
+        public ReplayAdd(IReadOnlyList<TrackPoint> track, double takeSeconds, IReadOnlyList<byte> parked, ArmCollisionModel model, MixedOptions options)
+        {
+            Track = track ?? throw new ArgumentNullException(nameof(track));
+            TakeSeconds = takeSeconds;
+            Parked = parked ?? Array.Empty<byte>();
+            Model = model ?? throw new ArgumentNullException(nameof(model));
+            Options = options ?? throw new ArgumentNullException(nameof(options));
+        }
+
+        public IReadOnlyList<TrackPoint> Track { get; }
+        public double TakeSeconds { get; }
+
+        /// <summary>The ids of objects the layout left out that an add may stand on the table (movable obstacles the headset may move).</summary>
+        public IReadOnlyList<byte> Parked { get; }
+
+        public ArmCollisionModel Model { get; }
+        public MixedOptions Options { get; }
+
+        /// <summary>A planned take's commanded way, every tick from its start (the dry run's, and joint-drive's when the take measured too little of its own).</summary>
+        public static List<TrackPoint> Commanded(DrivePlan plan)
+        {
+            var track = new List<TrackPoint>();
+            for (double t = plan.ScriptStart; t <= plan.TotalSeconds + 1e-9; t += HandModel.TickSeconds)
+            {
+                float g = plan.GripperAt(t);
+                track.Add(new TrackPoint(t - plan.ScriptStart, plan.Sample(t), float.IsNaN(g) ? 0f : g));
+            }
+
+            return track;
+        }
+    }
+
     /// <summary>One replay's edit (docs/adr/0038 decision 2): the record that says it, the world edit that makes it, and the edited object's box afterwards (none for a removal).</summary>
     public readonly struct ReplayEditDraw
     {
@@ -77,6 +132,8 @@ namespace Teleop.Eval.JointDrive
     /// moves an object an aim or a pass was made at, along that move's approach; a move stands an object at a spot the scene's own
     /// rules give (in reach, on the table, clear of the others). When a kind has nothing new, the next kind; when no kind has, no
     /// edit. Its numbers come from the group, the replay and the try (a placement RobotHost refuses is drawn again). Deterministic.
+    /// <para>With a <see cref="ReplayAdd"/>, one of the group's first two replays (drawn from the group) is an <c>add</c> whenever a
+    /// spot for one exists (<see cref="Add"/>): an obstacle stood where the source's arm passed low; the other replays are as above.</para>
     /// </summary>
     public static class ReplayEdits
     {
@@ -89,8 +146,180 @@ namespace Teleop.Eval.JointDrive
             ReplayEdit.Remove => "remove:",
             ReplayEdit.Shift => "shift:",
             ReplayEdit.Move => "move:",
+            ReplayEdit.Add => "add:",
             _ => "none:",
         } + r.ObjectId.ToString(System.Globalization.CultureInfo.InvariantCulture);
+
+        /// <summary>Which of a group's replays is its <c>add</c> (when a spot for one exists): the first or the second, drawn from the group.</summary>
+        public static int AddReplay(ulong group)
+        {
+            var rng = new SeededRng(unchecked(group * 0x9E3779B97F4A7C15UL + 0xADD));
+            return rng.NextDouble() < 0.5 ? 1 : 2;
+        }
+
+        /// <summary>How far below an object's top the arm's lowest point must pass for an add to stand it there, m: the arm goes at least that deep into it.</summary>
+        public const float AddDepthMeters = 0.015f;
+
+        /// <summary>An object on the table is moved for an add only when the source take kept this far from its box throughout, m: where it stood made no difference to what the take touched.</summary>
+        public const float AddFarMeters = 0.01f;
+
+        /// <summary>The add's moments keep this far inside the take's quiet start and end, s: the arm meets the object's box a little before its lowest point under it.</summary>
+        public const double AddQuietSlackSeconds = 0.25;
+
+        /// <summary>
+        /// Replay <paramref name="group"/>'s <c>add</c> (docs/adr/0038 decision 2): a movable obstacle stood with its footprint centred under
+        /// the arm's lowest point (the twin's links, the pads where the gripper held them) at a moment of the source take outside its
+        /// quiet start and end, where that point passed lower over the table than the object is tall less <see cref="AddDepthMeters"/>;
+        /// by the scene's own rules (on the table, in reach, clear of the others as they stand) and clear of the take's quiet start and
+        /// end (as planned, and as the arm went). First an object of the layout on the table (moved there, <see cref="WorldEditOp.Move"/>)
+        /// that the take did not touch and kept <see cref="AddFarMeters"/> from, holding nothing and not raised; when none will do, one the
+        /// layout left out (<see cref="WorldEditOp.Unpark"/>), upright. The moment is drawn among those that work, not the lowest, so
+        /// contacts come at every height the take passed at. Nothing the group has added already. No edit (<c>Pose.Id</c> 0) when nothing
+        /// works.
+        /// </summary>
+        public static ReplayEditDraw Add(ulong group, ref SeededRng r, DrivePlan plan, IReadOnlyList<SafetyObject> objects, WorldScene scene, ICollection<byte> touched,
+            in RobotArmProfile profile, ICollection<string> used, Func<byte, double>? scaleOf, ReplayAdd add)
+        {
+            MixedOptions options = add.Options;
+            float table = (float)scene.Table.Top;
+            // Where the arm passed lowest, every tick of the take but its quiet start and end.
+            var spots = new List<Vector3>(add.Track.Count);
+            double from = options.QuietStartSeconds + AddQuietSlackSeconds, to = add.TakeSeconds - options.QuietEndSeconds - AddQuietSlackSeconds;
+            foreach (TrackPoint p in add.Track)
+            {
+                if (p.At < from || p.At > to) continue;
+                Vector3 low = LowestPoint(profile, add.Model, p.Pose, p.Gripper);
+                spots.Add(new Vector3(low.X, low.Y, low.Z - table));
+            }
+
+            if (spots.Count == 0) return default;
+            // Objects of the layout on the table the take kept clear of, then parked ones: each in an order drawn from the replay.
+            var onTable = new List<int>();
+            for (int i = 0; i < objects.Count; i++)
+            {
+                SafetyObject o = objects[i];
+                int k = scene.IndexOf(o.Id);
+                if (k < 0 || o.Scenery || Holds(objects, i) || o.Min.Z > table + 0.01f || !scene.Objects[k].OperatorMovable || touched.Contains(o.Id)) continue;
+                if (used.Contains("add:" + o.Id) || !KeptClear(add, profile, o)) continue;
+                onTable.Add(i);
+            }
+
+            var parked = new List<byte>();
+            foreach (byte id in add.Parked)
+            {
+                int k = scene.IndexOf(id);
+                if (k >= 0 && scene.Objects[k].OperatorMovable && scene.Objects[k].Movable && !used.Contains("add:" + id) && IndexOf(objects, id) < 0) parked.Add(id);
+            }
+
+            Shuffle(onTable, ref r);
+            Shuffle(parked, ref r);
+            ObjectShapes? shapes = WorldView.ShapesOf(scene);
+            for (int pass = 0; pass < 2; pass++)
+            {
+                int n = pass == 0 ? onTable.Count : parked.Count;
+                for (int c = 0; c < n; c++)
+                {
+                    int i = pass == 0 ? onTable[c] : -1;
+                    byte id = pass == 0 ? objects[i].Id : parked[c];
+                    int k = scene.IndexOf(id);
+                    double scale = scaleOf?.Invoke(id) ?? 1.0, yawNow = 0;
+                    int rest = pass == 0 ? WorldScene.RestOf(objects[i].Rotation.W, objects[i].Rotation.X, objects[i].Rotation.Y, objects[i].Rotation.Z, out yawNow) : WorldScene.RestUpright;
+                    float height = (float)(2 * (scene.RestingZ(k, scale, rest) - scene.Table.Top));
+                    var deep = new List<int>();
+                    for (int m = 0; m < spots.Count; m++) if (spots[m].Z < height - AddDepthMeters) deep.Add(m);
+                    for (int tries = 0; tries < 12 && deep.Count > 0; tries++)
+                    {
+                        Vector3 at = spots[deep[(int)(r.NextDouble() * deep.Count) % deep.Count]];
+                        double yaw = pass == 0 && tries == 0 ? yawNow : (2 * r.NextDouble() - 1) * Math.PI;
+                        if (scene.ReachBearing > 0 && Math.Abs(Math.Atan2(at.Y, at.X)) > scene.ReachBearing) continue;
+                        if (!Fits(scene, objects, k, i, at.X, at.Y, yaw, scale, rest, scaleOf, out RigidTransform pose)) continue;
+                        SafetyObject after = pass == 0
+                            ? Moved(objects[i], pose)
+                            : WorldView.Bounds(scene.Objects[k], scale, pose.X, pose.Y, pose.Z, pose.Qw, pose.Qx, pose.Qy, pose.Qz, shapes);
+                        if (!KeepsQuiet(plan, after, profile, add.Model, options) || !KeepsQuietAsWent(add, profile, after)) continue;
+                        var record = new ReplayRecord(ReplayRole.Replay, group, ReplayEdit.Add, id, (float)pose.X, (float)pose.Y, (float)yaw);
+                        return new ReplayEditDraw(record, pass == 0 ? WorldEditOp.Move : WorldEditOp.Unpark, Pose(id, pose), after);
+                    }
+                }
+            }
+
+            return default;
+        }
+
+        /// <summary>The lowest point of the arm's bodies as the twin's links are (the pads where <paramref name="gripper"/> holds them), arm base frame.</summary>
+        public static Vector3 LowestPoint(in RobotArmProfile profile, ArmCollisionModel model, in ArmPose pose, float gripper)
+        {
+            Span<LinkFrame> frames = stackalloc LinkFrame[5];
+            ArmCollision.ComputeFrames(profile, pose, frames);
+            Vector3 low = new Vector3(0f, 0f, float.MaxValue);
+            foreach (CollisionBody b in ShapeGap.TouchBodies(model, gripper))
+            {
+                LinkFrame f = frames[(int)b.Link];
+                for (int c = 0; c < 8; c++)
+                {
+                    var corner = new Vector3((c & 1) == 0 ? -b.HalfExtents.X : b.HalfExtents.X, (c & 2) == 0 ? -b.HalfExtents.Y : b.HalfExtents.Y, (c & 4) == 0 ? -b.HalfExtents.Z : b.HalfExtents.Z);
+                    Vector3 p = f.ToBase(b.Center + Vector3.Transform(corner, b.Rotation));
+                    if (p.Z < low.Z) low = p;
+                }
+            }
+
+            return low;
+        }
+
+        /// <summary>Whether the arm, as it went through the take (every other tick), kept <see cref="AddFarMeters"/> from <paramref name="o"/>'s box.</summary>
+        private static bool KeptClear(ReplayAdd add, in RobotArmProfile profile, in SafetyObject o)
+        {
+            ArmCollisionModel check = SafetyScript.WithObjects(add.Model, new[] { o }, AddFarMeters, 0f);
+            for (int t = 0; t < add.Track.Count; t += 2) if (!ArmCollision.IsValid(profile, check, add.Track[t].Pose)) return false;
+            return true;
+        }
+
+        /// <summary>Whether the arm as it went (<see cref="ReplayAdd.Track"/>) kept the quiet margin from <paramref name="after"/> in the take's quiet start and end.</summary>
+        private static bool KeepsQuietAsWent(ReplayAdd add, in RobotArmProfile profile, in SafetyObject after)
+        {
+            ArmCollisionModel check = SafetyScript.WithObjects(add.Model, new[] { after }, add.Options.QuietMarginMeters);
+            foreach (TrackPoint p in add.Track)
+            {
+                if (p.At >= add.Options.QuietStartSeconds && p.At <= add.TakeSeconds - add.Options.QuietEndSeconds) continue;
+                if (!ArmCollision.IsValid(profile, check, p.Pose)) return false;
+            }
+
+            return true;
+        }
+
+        private static void Shuffle<T>(List<T> items, ref SeededRng r)
+        {
+            for (int i = items.Count - 1; i > 0; i--)
+            {
+                int j = (int)(r.NextDouble() * (i + 1)) % (i + 1);
+                (items[i], items[j]) = (items[j], items[i]);
+            }
+        }
+
+        /// <summary>
+        /// Whether scene object <paramref name="k"/> may stand at (<paramref name="x"/>, <paramref name="y"/>) turned to <paramref name="yaw"/> on
+        /// rest <paramref name="rest"/> at <paramref name="scale"/>, by the scene's rules (on the table, in reach) and clear of every other of
+        /// <paramref name="objects"/> as it stands (all but index <paramref name="skip"/>, the object itself when it is on the table); the
+        /// pose it would have there.
+        /// </summary>
+        private static bool Fits(WorldScene scene, IReadOnlyList<SafetyObject> objects, int k, int skip, double x, double y, double yaw, double scale, int rest,
+            Func<byte, double>? scaleOf, out RigidTransform at)
+        {
+            at = default;
+            if (!scene.FitsOnTable(k, x, y, yaw, scale, rest) || !scene.InReach(k, x, y)) return false;
+            for (int b = 0; b < objects.Count; b++)
+            {
+                if (b == skip) continue;
+                int kb = scene.IndexOf(objects[b].Id);
+                if (kb < 0) continue;
+                Quaternion q = objects[b].Rotation;
+                int restB = WorldScene.RestOf(q.W, q.X, q.Y, q.Z, out double yawB);
+                if (scene.Overlaps(k, x, y, yaw, kb, objects[b].Center.X, objects[b].Center.Y, yawB, scale, scaleOf?.Invoke(objects[b].Id) ?? 1.0, rest, restB)) return false;
+            }
+
+            at = scene.PoseAt(k, x, y, yaw, scale, rest);
+            return true;
+        }
 
         /// <summary>
         /// Replay <paramref name="replay"/> (from 1) of group <paramref name="group"/>, try <paramref name="attempt"/> (from 0): an edit
@@ -100,7 +329,7 @@ namespace Teleop.Eval.JointDrive
         /// (<c>Pose.Id</c> 0) when nothing new is left.
         /// </summary>
         public static ReplayEditDraw Draw(ulong group, int replay, int attempt, DrivePlan plan, IReadOnlyList<SafetyObject> objects, WorldScene scene,
-            ICollection<byte> touched, in RobotArmProfile profile, ICollection<string>? used = null, Func<byte, double>? scaleOf = null)
+            ICollection<byte> touched, in RobotArmProfile profile, ICollection<string>? used = null, Func<byte, double>? scaleOf = null, ReplayAdd? add = null)
         {
             var rng = new SeededRng(unchecked(group * 0x9E3779B97F4A7C15UL + 0x5EED));
             ReplayEdit[] order = { ReplayEdit.Remove, ReplayEdit.Shift, ReplayEdit.Move };
@@ -112,6 +341,12 @@ namespace Teleop.Eval.JointDrive
 
             var r = new SeededRng(unchecked(group * 0x9E3779B97F4A7C15UL ^ ((ulong)replay * 1000 + (ulong)attempt)));
             used ??= Array.Empty<string>();
+            if (add != null && replay == AddReplay(group))
+            {
+                ReplayEditDraw a = Add(group, ref r, plan, objects, scene, touched, profile, used, scaleOf, add);
+                if (a.Pose.Id != 0) return a;
+            }
+
             float table = (float)scene.Table.Top;
             int[] ranked = Ranked(plan, objects, profile, out Dictionary<int, PlannedMove> closest);
             // An object something stands on (a stand, a plank's support) is never edited: what it holds would fall. A raised one

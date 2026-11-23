@@ -163,6 +163,151 @@ namespace Teleop.Eval.Tests.JointDrive
             Assert.True(ReplayEdits.KeepsQuiet(plan, faraway, Profile, Model, options));
         }
 
+        /// <summary>The objects RobotHost's layout <paramref name="seed"/> of <paramref name="scene"/> leaves out that an add may stand on the table, as joint-drive takes them.</summary>
+        private static List<byte> ParkedOf(WorldScene scene, ulong seed)
+        {
+            var poses = new RigidTransform[scene.Objects.Length];
+            var parked = new bool[scene.Objects.Length];
+            var scales = new double[scene.Objects.Length];
+            SceneLayout.Draw(scene, seed, poses, parked, scales);
+            return Enumerable.Range(0, scene.Objects.Length)
+                .Where(i => parked[i] && scene.Objects[i].Movable && scene.Objects[i].OperatorMovable && (!scene.Mixed || scene.Objects[i].Role == SceneRole.Obstacle))
+                .Select(i => scene.Objects[i].Id).ToList();
+        }
+
+        private static ReplayAdd AddFor(DrivePlan plan, IReadOnlyList<byte> parked) =>
+            new ReplayAdd(ReplayAdd.Commanded(plan), plan.TotalSeconds - plan.ScriptStart, parked, Model, new MixedOptions());
+
+        [Fact]
+        public void AnAdd_StandsAMovableObstacleWhereTheArmPassedLow_ByTheScenesRules_AndTheArmMeetsIt_ButNotInTheQuietStartOrEnd()
+        {
+            // docs/adr/0038 decision 2 (the twin check's review): an obstacle put into the path, a safe take's unsafe twin.
+            (WorldScene scene, ObjectShapes? shapes) = Bench();
+            var options = new MixedOptions();
+            float table = (float)scene.Table.Top;
+            int adds = 0;
+            for (ulong layout = 1; layout <= 8; layout++)
+            {
+                SafetyObject[] objects = Layout(scene, shapes, layout);
+                if (!MixedTakeTests.TryMixed(objects, 70 + layout, out DrivePlan? plan, out _)) continue;
+                ReplayAdd add = AddFor(plan!, ParkedOf(scene, layout));
+                var r = new SeededRng(layout);
+                ReplayEditDraw a = ReplayEdits.Add(900 + layout, ref r, plan!, objects, scene, new HashSet<byte>(), Profile, new HashSet<string>(), null, add);
+                var again = new SeededRng(layout);
+                Assert.Equal(a.Record, ReplayEdits.Add(900 + layout, ref again, plan!, objects, scene, new HashSet<byte>(), Profile, new HashSet<string>(), null, add).Record);
+                if (a.Pose.Id == 0) continue;
+                adds++;
+                Assert.Equal((ReplayRole.Replay, (ulong)(900 + layout), ReplayEdit.Add), (a.Record.Role, a.Record.Group, a.Record.Edit));
+                Assert.StartsWith($"add:{a.Record.ObjectId}:", ReplayCodec.Describe(a.Record));
+                int k = scene.IndexOf(a.Record.ObjectId);
+                Assert.True(scene.Objects[k].Movable && scene.Objects[k].OperatorMovable);
+                SafetyObject after = a.After!.Value;
+                Assert.True(scene.InReach(k, after.Center.X, after.Center.Y), "in reach");
+                Assert.InRange(after.Min.Z, table - 0.002f, table + 0.002f); // standing on the table
+                Assert.Equal(a.Record.A, after.Center.X, 4);
+                Assert.Equal(a.Record.B, after.Center.Y, 4);
+                Assert.True(ReplayEdits.KeepsQuiet(plan!, after, Profile, Model, options), "clear of the quiet start and end");
+                double met = MixedDryRun.FirstMeeting(Profile, Model, plan!, after);
+                Assert.False(double.IsNaN(met), $"layout {layout}: the arm never meets {ReplayCodec.Describe(a.Record)}");
+                Assert.True(met >= options.QuietStartSeconds, $"layout {layout}: met at {met:0.00} s");
+                if (a.Op == WorldEditOp.Move) Assert.Contains(objects, o => o.Id == a.Record.ObjectId); // one of the layout's, moved there
+                else
+                {
+                    Assert.Equal(WorldEditOp.Unpark, a.Op); // one the layout left out, stood there
+                    Assert.Contains(a.Record.ObjectId, add.Parked);
+                    Assert.DoesNotContain(objects, o => o.Id == a.Record.ObjectId);
+                }
+            }
+
+            Assert.True(adds >= 4, $"{adds} adds in 8 layouts");
+        }
+
+        [Fact]
+        public void InAGroupOfTwo_OneReplayIsTheAdd_WhenOneFits_AndTheOtherRemovesShiftsOrMoves()
+        {
+            (WorldScene scene, ObjectShapes? shapes) = Bench();
+            int groups = 0, withAdd = 0;
+            for (ulong layout = 1; layout <= 8; layout++)
+            {
+                SafetyObject[] objects = Layout(scene, shapes, layout);
+                if (!MixedTakeTests.TryMixed(objects, 70 + layout, out DrivePlan? plan, out _)) continue;
+                groups++;
+                ulong group = 1200 + layout;
+                ReplayAdd add = AddFor(plan!, ParkedOf(scene, layout));
+                var used = new HashSet<string>();
+                var edits = new List<ReplayEditDraw>();
+                for (int replay = 1; replay <= 2; replay++)
+                {
+                    ReplayEditDraw e = ReplayEdits.Draw(group, replay, 0, plan!, objects, scene, new HashSet<byte>(), Profile, used, null, add);
+                    if (e.Pose.Id == 0) break;
+                    used.Add(ReplayEdits.Key(e.Record));
+                    edits.Add(e);
+                }
+
+                int at = edits.FindIndex(e => e.Record.Edit == ReplayEdit.Add);
+                Assert.True(edits.Count(e => e.Record.Edit == ReplayEdit.Add) <= 1);
+                if (at >= 0)
+                {
+                    withAdd++;
+                    Assert.Equal(ReplayEdits.AddReplay(group), at + 1); // the replay the group drew for it
+                }
+
+                foreach (ReplayEditDraw e in edits.Where(e => e.Record.Edit != ReplayEdit.Add))
+                {
+                    Assert.Contains(e.Record.Edit, new[] { ReplayEdit.Remove, ReplayEdit.Shift, ReplayEdit.Move });
+                }
+
+                Assert.Equal(edits.Count, edits.Select(e => ReplayEdits.Key(e.Record)).Distinct().Count()); // never one edit twice
+            }
+
+            Assert.True(groups >= 4);
+            Assert.True(withAdd * 3 >= groups * 2, $"an add in {withAdd} of {groups} groups");
+            Assert.Contains(1, Enumerable.Range(0, 40).Select(g => ReplayEdits.AddReplay((ulong)g)));
+            Assert.Contains(2, Enumerable.Range(0, 40).Select(g => ReplayEdits.AddReplay((ulong)g)));
+        }
+
+        [Fact]
+        public void AnAdd_NeverTakesWhatTheTakeTouched_WhatHoldsAnother_WhatIsRaised_OrWhatTheGroupAddedAlready()
+        {
+            (WorldScene scene, ObjectShapes? shapes) = Bench();
+            SafetyObject[] objects = Layout(scene, shapes, 5);
+            DrivePlan plan = MixedTakeTests.AnyMixed(objects, 75);
+            List<byte> parked = ParkedOf(scene, 5);
+            ReplayAdd add = AddFor(plan, parked), nothingParked = AddFor(plan, Array.Empty<byte>());
+            var everything = new HashSet<byte>(objects.Select(o => o.Id));
+            for (int attempt = 0; attempt < 6; attempt++)
+            {
+                // Everything on the table touched: only a parked one may be stood there.
+                var r = new SeededRng((ulong)attempt + 1);
+                ReplayEditDraw e = ReplayEdits.Add(31, ref r, plan, objects, scene, everything, Profile, new HashSet<string>(), null, add);
+                if (e.Pose.Id != 0) Assert.Equal(WorldEditOp.Unpark, e.Op);
+                // And with nothing parked, nothing at all.
+                r = new SeededRng((ulong)attempt + 1);
+                Assert.Equal(0, ReplayEdits.Add(31, ref r, plan, objects, scene, everything, Profile, new HashSet<string>(), null, nothingParked).Pose.Id);
+            }
+
+            // Every object added already: nothing new.
+            var added = new HashSet<string>(parked.Select(id => "add:" + id).Concat(objects.Select(o => "add:" + o.Id)));
+            var rng = new SeededRng(9);
+            Assert.Equal(0, ReplayEdits.Add(31, ref rng, plan, objects, scene, new HashSet<byte>(), Profile, added, null, add).Pose.Id);
+
+            // One object standing on another: the one below holds it, the one above is raised; neither is moved for an add.
+            int a = Array.FindIndex(objects, o => !o.Scenery && scene.Objects[scene.IndexOf(o.Id)].OperatorMovable);
+            int b = Array.FindIndex(objects, o => !o.Scenery && o.Id != objects[a].Id && scene.Objects[scene.IndexOf(o.Id)].OperatorMovable);
+            Assert.True(a >= 0 && b >= 0);
+            SafetyObject below = objects[a], top = objects[b];
+            var stacked = (SafetyObject[])objects.Clone();
+            stacked[b] = new SafetyObject(top.Id, new Vector3(below.Center.X, below.Center.Y, below.Max.Z + (top.Max.Z - top.Min.Z) / 2f), top.Rotation, top.HalfExtents, top.Movable,
+                top.Mass, top.Tippy, top.Shape, top.Scenery);
+            Assert.True(ReplayEdits.Holds(stacked, a));
+            var others = new HashSet<byte>(stacked.Where((o, i) => i != a && i != b).Select(o => o.Id));
+            for (int attempt = 0; attempt < 6; attempt++)
+            {
+                var r = new SeededRng((ulong)attempt + 20);
+                Assert.Equal(0, ReplayEdits.Add(31, ref r, plan, stacked, scene, others, Profile, new HashSet<string>(), null, nothingParked).Pose.Id);
+            }
+        }
+
         [Fact]
         public void APlannedMovesRecord_SaysItsTimesFromWhenItIsSent()
         {

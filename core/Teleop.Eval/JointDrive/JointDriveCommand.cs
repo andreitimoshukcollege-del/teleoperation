@@ -617,6 +617,7 @@ namespace Teleop.Eval.JointDrive
             // A mixed take (docs/adr/0038): its replay group (RP) as it starts, each planned move (MV) as it begins, and every command
             // sent while it records, for its replays to send again.
             var tape = new List<SentCommand>();
+            var went = new List<TrackPoint>(); // where the arm was, as the stream measured it, at every command sent while it recorded (a replay's add)
             int movesSent = 0;
             uint recordSequence = (uint)(Stopwatch.GetTimestamp() & 0x3FFFFFFF) | 2u;
             var recordDatagram = new byte[Math.Max(ScriptMoveCodec.Size, ReplayCodec.Size)];
@@ -695,7 +696,11 @@ namespace Teleop.Eval.JointDrive
                     float plannedGripper = plan.GripperAt(planTime);
                     sendGripper = float.IsNaN(plannedGripper) ? gripper : plannedGripper;
                     Send(now, commanded);
-                    if (recording) tape.Add(new SentCommand(planTime - plan.ScriptStart, commanded, sendGripper, sendSpeed));
+                    if (recording)
+                    {
+                        tape.Add(new SentCommand(planTime - plan.ScriptStart, commanded, sendGripper, sendSpeed));
+                        if (link.HasFullReading) went.Add(new TrackPoint(planTime - plan.ScriptStart, link.Measured, sendGripper));
+                    }
                     nextSend += interval;
                     if (nextSend < now) nextSend = now + interval;
                 }
@@ -777,13 +782,35 @@ namespace Teleop.Eval.JointDrive
                 }
             }
 
+            // A replay's add (docs/adr/0038 decision 2) stands an obstacle where the arm went low: as the stream measured it, when it
+            // measured most of the take, else as commanded; on the table one of the layout's, else one the layout parked.
+            List<TrackPoint> track = went.Count >= tape.Count * 8 / 10 ? went : ReplayAdd.Commanded(plan);
+            var add = new ReplayAdd(track, tape[tape.Count - 1].At, ParkedObstacles(link.World!), profile.Collision!, mixedOptions);
+            Console.WriteLine($"[joint-drive] replays: the add looks where the arm went {(ReferenceEquals(track, went) ? "as measured" : "as commanded")} ({track.Count} points), {add.Parked.Count} parked object(s) it may stand on the table");
+
             // The operator log holds the source's commands; each replay sends the same again.
             var replayed = new ReplayContext(socket, robot, link, take, takeScenario!, scenarioIndex, profile, plan, tape, objects, touched, seed, stop, rateHz, stallSeconds,
-                streamSeconds, mixedOptions, null);
+                streamSeconds, mixedOptions, null, add);
             return Replay(replayed, replays, ref sequence, ref recordSequence);
         }
 
         private static float Vector3Distance(in SafetyObject a, in SafetyObject b) => System.Numerics.Vector3.Distance(a.Center, b.Center);
+
+        /// <summary>
+        /// The objects the layout left out (parked: on the shelf) that a replay's add may stand on the table (docs/adr/0038 decision 2):
+        /// movable ones the headset may move, in a mixed pool the obstacles among them (never a distractor, stand, plank or support).
+        /// </summary>
+        internal static List<byte> ParkedObstacles(WorldState world)
+        {
+            var ids = new List<byte>();
+            foreach (SceneObject o in world.Scene.Objects)
+            {
+                if (!o.Movable || !o.OperatorMovable || (world.Scene.Mixed && o.Role != SceneRole.Obstacle)) continue;
+                if (world.TryGet(o.Id, out ObjectPose p, out _) && p.Parked) ids.Add(o.Id);
+            }
+
+            return ids;
+        }
 
         private static float Turned(in SafetyObject a, in SafetyObject b) =>
             2f * MathF.Acos(MathF.Min(1f, MathF.Abs(System.Numerics.Quaternion.Dot(a.Rotation, b.Rotation))));
@@ -807,8 +834,9 @@ namespace Teleop.Eval.JointDrive
         {
             public ReplayContext(Socket socket, IPEndPoint robot, Link link, TakeClient take, string scenario, int scenarioIndex, RobotArmProfile profile, DrivePlan plan,
                 List<SentCommand> tape, List<SafetyObject> objects, HashSet<byte> touched, ulong group, ManualResetEventSlim stop, double rateHz, double stallSeconds,
-                double streamSeconds, MixedOptions options, OperatorLog? log)
+                double streamSeconds, MixedOptions options, OperatorLog? log, ReplayAdd? add)
             {
+                Add = add;
                 Socket = socket;
                 Robot = robot;
                 Link = link;
@@ -847,6 +875,9 @@ namespace Teleop.Eval.JointDrive
             public double StreamSeconds { get; }
             public MixedOptions Options { get; }
             public OperatorLog? Log { get; }
+
+            /// <summary>What the group's add needs (docs/adr/0038 decision 2); null: no add.</summary>
+            public ReplayAdd? Add { get; }
         }
 
         /// <summary>A world edit's outcome on the wire (RobotHost's placement codes): applied, and busy (motion not off yet).</summary>
@@ -886,7 +917,7 @@ namespace Teleop.Eval.JointDrive
             for (int r = 1; r <= replays; r++)
             {
                 if (c.Stop.IsSet) return 130;
-                if (ReplayEdits.Draw(c.Group, r, 0, c.Plan, c.Objects, scene, c.Touched, c.Profile, used, scaleOf).Pose.Id == 0)
+                if (ReplayEdits.Draw(c.Group, r, 0, c.Plan, c.Objects, scene, c.Touched, c.Profile, used, scaleOf, c.Add).Pose.Id == 0)
                 {
                     Console.WriteLine($"[joint-drive] replay {r} of {replays}: no edit this group has not made ({(used.Count > 0 ? string.Join(", ", used) : "none")}); skipped, with the rest");
                     return 0;
@@ -918,12 +949,12 @@ namespace Teleop.Eval.JointDrive
                 var tried = new HashSet<string>(used);
                 for (int attempt = 0; attempt < 8 && !applied && !c.Stop.IsSet; attempt++)
                 {
-                    edit = ReplayEdits.Draw(c.Group, r, attempt, c.Plan, c.Objects, scene, c.Touched, c.Profile, tried, scaleOf);
+                    edit = ReplayEdits.Draw(c.Group, r, attempt, c.Plan, c.Objects, scene, c.Touched, c.Profile, tried, scaleOf, c.Add);
                     if (edit.Pose.Id == 0) break;
                     if (edit.After.HasValue && !ReplayEdits.KeepsQuiet(c.Plan, edit.After.Value, c.Profile, c.Profile.Collision!, c.Options))
                     {
                         Console.WriteLine($"[joint-drive] replay {r}: {ReplayCodec.Describe(edit.Record)} would meet the take's quiet start or end; another");
-                        if (edit.Record.Edit != ReplayEdit.Move || attempt >= 3) tried.Add(ReplayEdits.Key(edit.Record));
+                        if (!Respotted(edit.Record) || attempt >= 3) tried.Add(ReplayEdits.Key(edit.Record));
                         continue;
                     }
 
@@ -933,7 +964,7 @@ namespace Teleop.Eval.JointDrive
                     else
                     {
                         Console.WriteLine($"[joint-drive] replay {r}: RobotHost refused {ReplayCodec.Describe(edit.Record)} (placement code {outcome}); another");
-                        if (edit.Record.Edit != ReplayEdit.Move || attempt >= 3) tried.Add(ReplayEdits.Key(edit.Record)); // a move draws another spot first
+                        if (!Respotted(edit.Record) || attempt >= 3) tried.Add(ReplayEdits.Key(edit.Record)); // a move or an add draws another spot first
                     }
                 }
 
@@ -956,6 +987,9 @@ namespace Teleop.Eval.JointDrive
 
             return 0;
         }
+
+        /// <summary>Whether a refused edit of this kind tries another spot for the same object first (a move, an add), not another object.</summary>
+        private static bool Respotted(in ReplayRecord r) => r.Edit == ReplayEdit.Move || r.Edit == ReplayEdit.Add;
 
         private static uint _editSequence = (uint)(Stopwatch.GetTimestamp() & 0x3FFFFFFF) | 1u;
 

@@ -65,6 +65,11 @@ namespace Teleop.Eval.JointDrive
             int planned = 0, contactTakes = 0;
             int pullBacks = 0, forcedPullBacks = 0, intoFixtures = 0; // docs/adr/0038 "M, motion": one pull-back law, and the fixtures' forced one
             int blindMoves = 0, blindTouching = 0, blindTakes = 0; // layout-blind moves that meet a movable object's box by the model
+            // docs/adr/0038 decision 2: the edits of a group of two replays, as joint-drive draws them
+            var editKinds = new int[5];
+            int groups = 0, addGroups = 0, addsMoved = 0, addsUnparked = 0, addsMet = 0, noEdit = 0;
+            var addFirst = new List<double>();
+            var addHeights = new List<float>();
             var watch = new Stopwatch();
             for (int layout = from; layout <= to; layout++)
             {
@@ -117,6 +122,22 @@ namespace Teleop.Eval.JointDrive
                     int t0 = blindTouching;
                     BlindContacts(profile, model, plan, objects, ref blindMoves, ref blindTouching);
                     if (blindTouching > t0) blindTakes++;
+                    groups++;
+                    ReplayEditDraw[] edits = GroupEdits(scene, profile, model, plan, objects, parked, scales, takeSeed, mixedOptions);
+                    if (edits.Length < 2) noEdit++;
+                    foreach (ReplayEditDraw e in edits)
+                    {
+                        editKinds[(int)e.Record.Edit]++;
+                        if (e.Record.Edit != ReplayEdit.Add) continue;
+                        addGroups++;
+                        if (e.Op == WorldEditOp.Unpark) addsUnparked++;
+                        else addsMoved++;
+                        addHeights.Add((e.After!.Value.Max.Z - table) * 1000f);
+                        double met = FirstMeeting(profile, model, plan, e.After!.Value);
+                        if (double.IsNaN(met)) continue;
+                        addsMet++;
+                        addFirst.Add(met);
+                    }
                 }
                 if (features != null) featureRows += MoveFeatures.Write(features, layout, takeSeed, profile, plan, table);
                 int before = frameJoint.Count;
@@ -143,6 +164,10 @@ namespace Teleop.Eval.JointDrive
                     $"  pull-backs a take: {pullBacks / (double)planned:0.00} drawn, {forcedPullBacks / (double)planned:0.00} more forced out of a fixture (aims and passes into fixtures: {intoFixtures / (double)planned:0.00})"));
                 Console.WriteLine(FormattableString.Invariant(
                     $"  layout-blind moves (free and reverse) meeting a movable object's box by the model: {blindTouching} of {blindMoves}, in {blindTakes} of {planned} takes"));
+                Console.WriteLine(FormattableString.Invariant(
+                    $"  replays, 2 a group as drawn (nothing refused offline): an add in {addGroups} of {groups} groups ({addsMoved} moving one of the layout's, {addsUnparked} a parked one); edits remove {editKinds[1]}, shift {editKinds[2]}, move {editKinds[3]}, add {editKinds[4]}; groups with fewer than 2 edits {noEdit}"));
+                Console.WriteLine(FormattableString.Invariant(
+                    $"  adds: the arm meets the added object's box by the model in {addsMet} of {addGroups}, first {Percentiles(addFirst, "0.0")} s into the take; the added object's top mm above the table: {Percentiles(addHeights.Select(h => (double)h).ToList(), "0")}"));
                 Console.WriteLine("  aims' offsets mm (aimed at), 10 mm bins from -40: " + Histogram(offsets.Select(o => o * 1000.0), -40, 10, 10));
                 Console.WriteLine("  aims' offsets mm: " + Percentiles(offsets.Select(o => o * 1000.0).ToList(), "0"));
                 Console.WriteLine("  passes' offsets mm (closest on the line), 10 mm bins from -40: " + Histogram(passOffsets.Select(o => o * 1000.0), -40, 10, 9));
@@ -167,6 +192,54 @@ namespace Teleop.Eval.JointDrive
             if (features != null) Console.WriteLine($"  features: {featureRows} moves of {planned} takes written to {featuresPath}");
             Console.WriteLine("[joint-drive] dry run: nothing was sent");
             return 0;
+        }
+
+        /// <summary>
+        /// The edits a group of two replays of <paramref name="plan"/> draws (docs/adr/0038 decision 2), as joint-drive draws them with nothing
+        /// refused: the add looks where the plan's commands go, may stand the pool's parked obstacles on the table, and the objects the take
+        /// moved are taken to be those its moves planned to touch. Fewer than two when a replay finds nothing new.
+        /// </summary>
+        internal static ReplayEditDraw[] GroupEdits(WorldScene scene, in RobotArmProfile profile, ArmCollisionModel model, DrivePlan plan, List<SafetyObject> objects,
+            bool[] parked, double[] scales, ulong group, MixedOptions options)
+        {
+            var touched = new HashSet<byte>(plan.Moves.Where(m => m.ObjectId != 0 && !double.IsNaN(m.Contact)).Select(m => m.ObjectId));
+            var parkedIds = new List<byte>();
+            for (int i = 0; i < scene.Objects.Length; i++)
+            {
+                SceneObject o = scene.Objects[i];
+                if (parked[i] && o.Movable && o.OperatorMovable && (!scene.Mixed || o.Role == SceneRole.Obstacle)) parkedIds.Add(o.Id);
+            }
+
+            var add = new ReplayAdd(ReplayAdd.Commanded(plan), plan.TotalSeconds - plan.ScriptStart, parkedIds, model, options);
+            var used = new HashSet<string>();
+            var edits = new List<ReplayEditDraw>();
+            double ScaleOf(byte id)
+            {
+                int k = scene.IndexOf(id);
+                return k >= 0 && scales[k] > 0 ? scales[k] : 1.0;
+            }
+
+            for (int r = 1; r <= 2; r++)
+            {
+                ReplayEditDraw e = ReplayEdits.Draw(group, r, 0, plan, objects, scene, touched, profile, used, ScaleOf, add);
+                if (e.Pose.Id == 0) break;
+                used.Add(ReplayEdits.Key(e.Record));
+                edits.Add(e);
+            }
+
+            return edits.ToArray();
+        }
+
+        /// <summary>When the plan's arm first comes into <paramref name="o"/>'s box by the collision model (its margin off), seconds into the take; NaN when it never does.</summary>
+        internal static double FirstMeeting(in RobotArmProfile profile, ArmCollisionModel model, DrivePlan plan, in SafetyObject o)
+        {
+            ArmCollisionModel check = SafetyScript.WithObjects(model, new[] { o }, 0f, 0f);
+            for (double t = plan.ScriptStart; t <= plan.TotalSeconds; t += HandModel.TickSeconds)
+            {
+                if (!ArmCollision.IsValid(profile, check, plan.Sample(t))) return t - plan.ScriptStart;
+            }
+
+            return double.NaN;
         }
 
         /// <summary>

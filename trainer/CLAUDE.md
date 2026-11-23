@@ -93,5 +93,5 @@ sha256 in the model card.
 | `armpred/golden_learned.py`, `golden_learned_v4.py`, `golden_forecast.py` | the golden fixtures for the repo's C# copies, written to `core/testdata/learned/` (`armpred golden-learned`, `golden-learned-v4`, `golden-forecast`) |
 | `armpred/pipeline.py`, `armpred/cli.py` | the session matrix, `prepare`, `train-run`, `sim-pretrain`, `grid`, `finetune`, `sysid`, and the rest of `armpred`'s subcommands |
 | `configs/` | TOML run configs; the splits, the pre-registered `split-v1.toml` first; `priors/`, the prior's fitted reading ages and servo parameters |
-| `slurm/` | `apptainer.def`, `prepare.sbatch`, `train-array.sbatch` |
+| `slurm/` | `apptainer.def`, `build.sbatch` (the image, as a CPU job), `selftest.sbatch` (selftest + smoke on one GPU), `prepare.sbatch`, `train-array.sbatch`; cluster-neutral (Explorer's settings are the repo's `just explorer-*` recipes, `docs/explorer-cluster.md`) |
 | `tests/` | pytest; `tests/golden/` checks the copies of Core |

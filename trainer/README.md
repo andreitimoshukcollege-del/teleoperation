@@ -45,10 +45,14 @@ kernels for the GPU it finds.
 
 ## 2b. On the H200 Slurm cluster
 
+On Northeastern's Explorer the repo's `just explorer-push`, `explorer-build`, `explorer-train`, `explorer-status`
+and `explorer-fetch` do all of this from the repo machine (`docs/explorer-cluster.md`: access, limits, where
+things go). Its H200s' driver is CUDA 12.8: the cu128 build. On another cluster, by hand:
+
 ```bash
 cd armpred
-apptainer build --build-arg TORCH_INDEX=cu130 --build-arg TORCH_VERSION=2.14.1 armpred.sif slurm/apptainer.def
-apptainer exec --nv armpred.sif armpred selftest                    # on a GPU node
+sbatch slurm/build.sbatch cu130          # the image, as a CPU job (cu128 if the driver is CUDA 12.8-12.9)
+sbatch slurm/selftest.sbatch runs/smoke  # on one GPU: armpred selftest, then the smoke pretraining
 
 # Prepare once (CPU: simulation and shards), then the grid, one run per GPU:
 jid=$(sbatch --parsable slurm/prepare.sbatch configs/sim-pretrain.toml $SCRATCH/armpred/data-sim1)

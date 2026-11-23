@@ -95,8 +95,9 @@ namespace Teleop.RobotArm.Tests.Wire
                 new ReplayRecord(ReplayRole.Replay, 100003, ReplayEdit.Remove, 33),
                 new ReplayRecord(ReplayRole.Replay, 100003, ReplayEdit.Shift, 34, 0.025f, -0.0125f),
                 new ReplayRecord(ReplayRole.Replay, ulong.MaxValue, ReplayEdit.Move, 35, 0.25f, -0.125f, 1.5f),
+                new ReplayRecord(ReplayRole.Replay, 100003, ReplayEdit.Add, 36, 0.21f, 0.0625f, -0.5f),
             };
-            string[] said = { "none", "remove:33", "shift:34:0.025:-0.0125", "move:35:0.25:-0.125:1.5" };
+            string[] said = { "none", "remove:33", "shift:34:0.025:-0.0125", "move:35:0.25:-0.125:1.5", "add:36:0.21:0.0625:-0.5" };
             var buffer = new byte[ReplayCodec.Size];
             for (int i = 0; i < records.Length; i++)
             {
@@ -135,7 +136,7 @@ namespace Teleop.RobotArm.Tests.Wire
         [Theory]
         [InlineData(2, 0)]    // no role
         [InlineData(2, 3)]    // a role this build does not define
-        [InlineData(3, 4)]    // an edit this build does not define
+        [InlineData(3, 5)]    // an edit this build does not define (4, add, since docs/adr/0038's add)
         [InlineData(1, 2)]    // another version
         [InlineData(0, 0x8D)] // another message
         public void UnknownReplayBytes_AreRefused(int index, byte value)

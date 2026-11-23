@@ -29,6 +29,13 @@ namespace Teleop.RobotArm.Wire
 
         /// <summary>One object stood elsewhere: at (<c>A</c>, <c>B</c>), metres in the arm base frame, turned to yaw <c>C</c> radians.</summary>
         Move = 3,
+
+        /// <summary>
+        /// One object stood in the arm's way (docs/adr/0038, the twin check's review: a safe take's unsafe twin): at (<c>A</c>, <c>B</c>),
+        /// metres in the arm base frame, turned to yaw <c>C</c> radians, its footprint centred under where the source's arm passed lower
+        /// than the object is tall. One of the layout's objects moved there, or one the layout left out stood there.
+        /// </summary>
+        Add = 4,
     }
 
     /// <summary>
@@ -83,7 +90,7 @@ namespace Teleop.RobotArm.Wire
             sequence = 0;
             operatorSendTicks = 0;
             if (source.Length < Size || source[0] != Tag || source[1] != Version) return false;
-            if (source[2] < (byte)ReplayRole.Source || source[2] > (byte)ReplayRole.Replay || source[3] > (byte)ReplayEdit.Move) return false;
+            if (source[2] < (byte)ReplayRole.Source || source[2] > (byte)ReplayRole.Replay || source[3] > (byte)ReplayEdit.Add) return false;
             if (source[2] == (byte)ReplayRole.Source && source[3] != (byte)ReplayEdit.None) return false;
             r = new ReplayRecord((ReplayRole)source[2], BinaryPrimitives.ReadUInt64LittleEndian(source.Slice(12)), (ReplayEdit)source[3], source[4],
                 BitConverter.Int32BitsToSingle(BinaryPrimitives.ReadInt32LittleEndian(source.Slice(20))),
@@ -103,8 +110,8 @@ namespace Teleop.RobotArm.Wire
 
         /// <summary>
         /// The edit as the session's <c>RP</c> record writes it (docs/adr/0038 decision 2): <c>none</c>, <c>remove:&lt;id&gt;</c>,
-        /// <c>shift:&lt;id&gt;:&lt;dx&gt;:&lt;dy&gt;</c> (m, arm base frame) or <c>move:&lt;id&gt;:&lt;x&gt;:&lt;y&gt;:&lt;yawRad&gt;</c>, the
-        /// numbers in round-trip form.
+        /// <c>shift:&lt;id&gt;:&lt;dx&gt;:&lt;dy&gt;</c> (m, arm base frame), <c>move:&lt;id&gt;:&lt;x&gt;:&lt;y&gt;:&lt;yawRad&gt;</c> or
+        /// <c>add:&lt;id&gt;:&lt;x&gt;:&lt;y&gt;:&lt;yawRad&gt;</c>, the numbers in round-trip form.
         /// </summary>
         public static string Describe(in ReplayRecord r)
         {
@@ -114,6 +121,7 @@ namespace Teleop.RobotArm.Wire
                 ReplayEdit.Remove => "remove:" + id,
                 ReplayEdit.Shift => "shift:" + id + ":" + F(r.A) + ":" + F(r.B),
                 ReplayEdit.Move => "move:" + id + ":" + F(r.A) + ":" + F(r.B) + ":" + F(r.C),
+                ReplayEdit.Add => "add:" + id + ":" + F(r.A) + ":" + F(r.B) + ":" + F(r.C),
                 _ => "none",
             };
         }

@@ -151,6 +151,8 @@ namespace Teleop.RobotHost.Tests.Recording
                 SessionLines.Replay(42, new ReplayRecord(ReplayRole.Replay, 100003, ReplayEdit.Shift, 34, 0.025f, -0.0125f)));
             Assert.Equal("RP|43|100003|replay|move:35:0.25:-0.125:1.5",
                 SessionLines.Replay(43, new ReplayRecord(ReplayRole.Replay, 100003, ReplayEdit.Move, 35, 0.25f, -0.125f, 1.5f)));
+            Assert.Equal("RP|44|100003|replay|add:36:0.21:0.0625:-0.5",
+                SessionLines.Replay(44, new ReplayRecord(ReplayRole.Replay, 100003, ReplayEdit.Add, 36, 0.21f, 0.0625f, -0.5f)));
         }
 
         [Fact]

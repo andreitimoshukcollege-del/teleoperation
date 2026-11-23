@@ -25,6 +25,14 @@ namespace Teleop.RobotArm.Wire
         /// The layout stays as drawn. The edit's pose is unused but for its id. Only <c>joint-drive</c> sends it; the headset never has.
         /// </summary>
         Park = 6,
+
+        /// <summary>
+        /// Stand one object the layout left out (parked) on the table at the edit's pose for now (docs/adr/0038, a replay's <c>add</c>
+        /// when no object on the table will do): placed as a reset places one, by the placement rules, and listed in the layout's
+        /// <c>WL</c> while it stands there; <see cref="ResetLayout"/> parks it again. Only an object the headset may move. Only
+        /// <c>joint-drive</c> sends it; the headset never has.
+        /// </summary>
+        Unpark = 7,
     }
 
     /// <summary>The world's state as RobotHost reports it to the headset, once a second and on change.</summary>
@@ -124,7 +132,7 @@ namespace Teleop.RobotArm.Wire
             sequence = 0;
             operatorSendTicks = 0;
             pose = default;
-            if (source.Length != EditBytes || source[0] != EditTag || source[1] != Version || source[2] < 1 || source[2] > (byte)WorldEditOp.Park) return false;
+            if (source.Length != EditBytes || source[0] != EditTag || source[1] != Version || source[2] < 1 || source[2] > (byte)WorldEditOp.Unpark) return false;
             sequence = BinaryPrimitives.ReadUInt32LittleEndian(source.Slice(4));
             if (sequence == 0) return false;
             op = (WorldEditOp)source[2];

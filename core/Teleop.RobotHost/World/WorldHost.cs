@@ -24,7 +24,8 @@ namespace Teleop.RobotHost.World
     /// on the shelf: a new layout parks every object, resizes there each one whose drawn size differs, then places the
     /// drawn ones, so the table is empty while it is filled.</item>
     /// <item><b>Edits.</b> Moves and resets from the headset (joint port <c>0x85</c>), each applied once however often it is
-    /// re-sent; the status echoes its sequence and outcome once settled.</item>
+    /// re-sent; the status echoes its sequence and outcome once settled. <c>joint-drive</c>'s replays also park one object (op 6) or
+    /// stand a parked one on the table (op 7, listed in <c>WL</c> until a reset parks it again), docs/adr/0038 decision 2.</item>
     /// <item><b>Sizes</b> (docs/adr/0034 amendment 6). A resize from the headset (<see cref="WorldEditOp.Resize"/>) goes to the
     /// backend, which applies or refuses it by the placement rules at the new size. The backend's sizes are the truth: they go to
     /// the headset (<c>0x8B</c>) with the status, and into the records (<c>WZ</c>) when they change.</item>
@@ -50,6 +51,7 @@ namespace Teleop.RobotHost.World
         private readonly RigidTransform[] _targets;
         private readonly RigidTransform[] _layoutTargets;
         private readonly bool[] _parked;
+        private readonly bool[] _added; // a parked object stood on the table by an unpark (op 7) until a reset or a new layout
         private readonly double[] _layoutScales;
         private readonly byte[] _activeIds;
         private readonly ObjectPose[] _snapshot;
@@ -83,6 +85,7 @@ namespace Teleop.RobotHost.World
             public int Tries;
             public long Sent;
             public uint Edit;
+            public WorldEditOp Op; // the edit's op, for its record; Move for any placement that is not an edit's park, resize or unpark
         }
 
         public WorldHost(WorldScene scene, ReadOnlySpan<byte> sceneSha256, IWorldBackend backend, long ticksPerSecond, ulong seed,
@@ -98,6 +101,7 @@ namespace Teleop.RobotHost.World
             _targets = new RigidTransform[scene.Objects.Length];
             _layoutTargets = new RigidTransform[scene.Objects.Length];
             _parked = new bool[scene.Objects.Length];
+            _added = new bool[scene.Objects.Length];
             _layoutScales = new double[scene.Objects.Length];
             _activeIds = new byte[scene.Objects.Length];
             _snapshot = new ObjectPose[scene.Objects.Length];
@@ -162,13 +166,34 @@ namespace Teleop.RobotHost.World
             }
             else if (op == WorldEditOp.ResetLayout)
             {
+                bool wasAdded = false;
                 for (int i = 0; i < _targets.Length; i++)
                 {
                     _targets[i] = _scene.IsPool ? _layoutTargets[i] : _scene.Objects[i].Nominal;
-                    SendPlace(i, _parked[i] ? PlaceCause.Park : PlaceCause.Reset, 0, now);
+                    SendPlace(i, _parked[i] ? PlaceCause.Park : PlaceCause.Reset, 0, now); // an unparked object (op 7) goes back to the shelf
+                    wasAdded |= _added[i];
+                    _added[i] = false;
                 }
 
+                if (wasAdded) _record?.Invoke(LayoutLine(now));
                 outcome = PlaceOutcome.Applied;
+            }
+            else if (op == WorldEditOp.Unpark)
+            {
+                // docs/adr/0038, a replay's add when no object on the table will do: one object the layout left out stood on the table for
+                // now, as a reset places one (the placement rules decide), and listed in WL while it stands there; reset-layout parks it
+                // again. Only one the headset may move, and only from the shelf (an object on the table moves by op 1).
+                int index = _scene.IndexOf(pose.Id);
+                if (index < 0) outcome = PlaceOutcome.UnknownObject;
+                else if (!_scene.Objects[index].OperatorMovable || !_parked[index]) outcome = PlaceOutcome.NotMovable;
+                else if (!pose.IsValid()) outcome = PlaceOutcome.InvalidPose;
+                else
+                {
+                    _targets[index] = pose.ToTransform();
+                    SendPlace(index, PlaceCause.Reset, sequence, now, op: WorldEditOp.Unpark);
+                    _record?.Invoke(SessionLines.WorldEdit(now, sequence, op, pose, null));
+                    return; // settles when the backend answers
+                }
             }
             else if (op == WorldEditOp.Park)
             {
@@ -298,6 +323,7 @@ namespace Teleop.RobotHost.World
 
         private void NewLayout(long now)
         {
+            Array.Clear(_added, 0, _added.Length);
             LayoutNumber++;
             LayoutSeed = unchecked(_baseSeed + LayoutNumber - 1);
             int missed = SceneLayout.Draw(_scene, LayoutSeed, _targets, _parked, _layoutScales);
@@ -376,18 +402,18 @@ namespace Teleop.RobotHost.World
             int n = 0;
             for (int i = 0; i < _parked.Length; i++)
             {
-                if (!_parked[i]) _activeIds[n++] = _scene.Objects[i].Id;
+                if (!_parked[i] || _added[i]) _activeIds[n++] = _scene.Objects[i].Id;
             }
 
             return SessionLines.WorldLayout(now, LayoutNumber, LayoutSeed, _activeIds.AsSpan(0, n));
         }
 
-        private void SendPlace(int index, PlaceCause cause, uint edit, long now, int tries = 0)
+        private void SendPlace(int index, PlaceCause cause, uint edit, long now, int tries = 0, WorldEditOp op = WorldEditOp.Move)
         {
             uint request = ++_request;
             int slot = Array.FindIndex(_pending, p => !p.Active);
             if (slot < 0) slot = (int)(request % (uint)_pending.Length);
-            _pending[slot] = new Pending { Active = true, Request = request, Index = index, Cause = cause, Tries = tries, Sent = now, Edit = edit };
+            _pending[slot] = new Pending { Active = true, Request = request, Index = index, Cause = cause, Tries = tries, Sent = now, Edit = edit, Op = op };
             _backend.Place(request, cause, ObjectPose.Of(_scene.Objects[index].Id, ObjectPose.FlagKinematic, _targets[index]), now);
         }
 
@@ -442,9 +468,23 @@ namespace Teleop.RobotHost.World
                 return;
             }
 
+            if (done.Op == WorldEditOp.Unpark)
+            {
+                // Standing on the table now, listed in the layout until a reset parks it; or refused, and still on the shelf.
+                if (outcome == PlaceOutcome.Applied)
+                {
+                    _added[done.Index] = true;
+                    _record?.Invoke(LayoutLine(now));
+                }
+                else
+                {
+                    _targets[done.Index] = _layoutTargets[done.Index];
+                }
+            }
+
             if (done.Edit != 0)
             {
-                Resolve(done.Edit, outcome, now, done.Cause == PlaceCause.Resize ? WorldEditOp.Resize : done.Cause == PlaceCause.Park ? WorldEditOp.Park : WorldEditOp.Move, pose);
+                Resolve(done.Edit, outcome, now, done.Cause == PlaceCause.Resize ? WorldEditOp.Resize : done.Cause == PlaceCause.Park ? WorldEditOp.Park : done.Op, pose);
             }
         }
 

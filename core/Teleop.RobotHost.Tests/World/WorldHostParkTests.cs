@@ -8,13 +8,15 @@ using Teleop.RobotArm.Wire;
 using Teleop.RobotArm.World;
 using Teleop.RobotHost.ArmServer;
 using Teleop.RobotHost.Tests.Backend;
+using Teleop.RobotHost.Recording;
 using Teleop.RobotHost.World;
 
 namespace Teleop.RobotHost.Tests.World
 {
     /// <summary>
     /// docs/adr/0038 decision 2: a replay's <c>remove</c> takes one object off the table with the park edit (op 6), any object, a
-    /// fixture too; reset-layout puts the source's layout back. The headset never sends it, and the wire still refuses op 7.
+    /// fixture too; its <c>add</c> stands an object the layout left out on the table with the unpark edit (op 7), listed in the layout
+    /// until reset-layout parks it again. The headset sends neither, and the wire refuses op 8.
     /// </summary>
     public class WorldHostParkTests
     {
@@ -99,14 +101,69 @@ namespace Teleop.RobotHost.Tests.World
         }
 
         [Fact]
-        public void TheParkOp_CrossesTheWire_AndNothingPastItDoes()
+        public void TheParkAndUnparkOps_CrossTheWire_AndNothingPastThemDoes()
         {
             var buffer = new byte[WorldCodec.EditBytes];
             Assert.True(WorldCodec.TryEncodeEdit(WorldEditOp.Park, 41, 7, 9, new ObjectPose(41, 0, 0, 0, 0, 1, 0, 0, 0), buffer, out int n));
             Assert.True(WorldCodec.TryDecodeEdit(buffer.AsSpan(0, n), out WorldEditOp op, out uint sequence, out _, out ObjectPose pose));
             Assert.Equal((WorldEditOp.Park, 7u, (byte)41), (op, sequence, pose.Id));
-            buffer[2] = 7;
+            Assert.True(WorldCodec.TryEncodeEdit(WorldEditOp.Unpark, 42, 8, 9, new ObjectPose(42, 0, 0.2f, -0.05f, -0.15f, 1, 0, 0, 0), buffer, out n));
+            Assert.True(WorldCodec.TryDecodeEdit(buffer.AsSpan(0, n), out op, out sequence, out _, out pose));
+            Assert.Equal((WorldEditOp.Unpark, 8u, (byte)42, 0.2f), (op, sequence, pose.Id, pose.X));
+            Assert.Equal("unpark", SessionLines.EditName(WorldEditOp.Unpark));
+            buffer[2] = 8;
             Assert.False(WorldCodec.TryDecodeEdit(buffer.AsSpan(0, n), out _, out _, out _, out _));
+        }
+
+        /// <summary>The ids the newest <c>WL</c> record lists.</summary>
+        private HashSet<byte> Listed() => new HashSet<byte>(_records.Last(r => r.StartsWith("WL|")).Split('|')[4].Split(';').Where(x => x.Length > 0).Select(byte.Parse));
+
+        [Fact]
+        public void AnUnparkEdit_StandsAParkedObjectOnTheTable_ListedInTheLayout_UntilResetLayoutParksItAgain()
+        {
+            Tick(50);
+            int index = Enumerable.Range(0, Scene.Objects.Length).First(i => _host.IsParked(i) && Scene.Objects[i].Movable && Scene.Objects[i].OperatorMovable && !Scene.Objects[i].Clutter);
+            byte id = Scene.Objects[index].Id;
+            Assert.True(Seen()[id].Parked);
+            Assert.DoesNotContain(id, Listed());
+            // A spot the scene's rules give it; the backend may still find another object there: then another spot.
+            var rng = new Teleop.Core.Types.SeededRng(3);
+            uint sequence = 30;
+            bool applied = false;
+            for (int t = 0; t < 40 && !applied; t++)
+            {
+                if (!Scene.DrawSpot(index, 1.0, ref rng, out double x, out double y, out double yaw)) continue;
+                _host.HandleEdit(WorldEditOp.Unpark, ++sequence, ObjectPose.Of(id, 0, Scene.PoseAt(index, x, y, yaw, 1.0, WorldScene.RestUpright)), true, _now);
+                Tick(20);
+                Assert.Equal($"unpark|{id}", string.Join("|", LastEdit().Split('|').Skip(3).Take(2)));
+                applied = LastEdit().EndsWith("|applied");
+            }
+
+            Assert.True(applied, "no spot the backend took");
+            Assert.False(Seen()[id].Parked, $"{Scene.Objects[index].Name} is still on the shelf");
+            Assert.True(_host.IsParked(index)); // the layout as drawn left it out: the edit is the replay's
+            Assert.Contains(id, Listed()); // but WL lists it while it stands on the table
+
+            // An object on the table is not unparked (it moves by op 1), nor is a fixture; nothing with motion on.
+            int onTable = Enumerable.Range(0, Scene.Objects.Length).First(i => !_host.IsParked(i) && Scene.Objects[i].OperatorMovable);
+            _host.HandleEdit(WorldEditOp.Unpark, ++sequence, new ObjectPose(Scene.Objects[onTable].Id, 0, 0.2f, 0f, -0.15f, 1, 0, 0, 0), true, _now);
+            Tick(5);
+            Assert.EndsWith("|not-movable", LastEdit());
+            foreach (int fixture in Enumerable.Range(0, Scene.Objects.Length).Where(i => _host.IsParked(i) && !Scene.Objects[i].OperatorMovable).Take(1))
+            {
+                _host.HandleEdit(WorldEditOp.Unpark, ++sequence, new ObjectPose(Scene.Objects[fixture].Id, 0, 0.2f, 0f, -0.15f, 1, 0, 0, 0), true, _now);
+                Tick(5);
+                Assert.EndsWith("|not-movable", LastEdit());
+            }
+
+            _host.HandleEdit(WorldEditOp.Unpark, ++sequence, new ObjectPose(id, 0, 0.2f, 0f, -0.15f, 1, 0, 0, 0), false, _now);
+            Tick(5, motionOff: false);
+            Assert.EndsWith("|busy", LastEdit());
+
+            _host.HandleEdit(WorldEditOp.ResetLayout, ++sequence, default, true, _now);
+            Tick(30);
+            Assert.True(Seen()[id].Parked, "reset-layout leaves it on the table");
+            Assert.DoesNotContain(id, Listed());
         }
     }
 }

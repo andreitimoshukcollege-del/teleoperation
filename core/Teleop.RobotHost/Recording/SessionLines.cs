@@ -309,6 +309,7 @@ namespace Teleop.RobotHost.Recording
             WorldEditOp.ResetLayout => "reset-layout",
             WorldEditOp.Resize => "resize",
             WorldEditOp.Park => "park",
+            WorldEditOp.Unpark => "unpark",
             _ => "?",
         };
 

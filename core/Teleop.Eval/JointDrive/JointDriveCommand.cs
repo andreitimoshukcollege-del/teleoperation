@@ -165,6 +165,12 @@ namespace Teleop.Eval.JointDrive
                             if (st.Length != 4) throw new ArgumentException("--style is four numbers: pitch scale, roll scale, pitch time, slowness");
                             mixedOptions.Style = new HandStyle { PitchScale = st[0], RollScale = st[1], PitchTime = st[2], Slow = st[3] };
                             break;
+                        case "--pause":
+                            // share of moves followed by a pause, its shortest and longest, seconds
+                            double[] pz = Next().Split(',').Select(x => double.Parse(x, NumberStyles.Float, CultureInfo.InvariantCulture)).ToArray();
+                            if (pz.Length != 3) throw new ArgumentException("--pause is three numbers: share, min seconds, max seconds");
+                            (mixedOptions.PauseShare, mixedOptions.PauseMinSeconds, mixedOptions.PauseMaxSeconds) = (pz[0], pz[1], pz[2]);
+                            break;
                         case "--blind":
                             // near share, radial scale, vertical scale, low share (where layout-blind goals are drawn)
                             double[] bl = Next().Split(',').Select(x => double.Parse(x, NumberStyles.Float, CultureInfo.InvariantCulture)).ToArray();

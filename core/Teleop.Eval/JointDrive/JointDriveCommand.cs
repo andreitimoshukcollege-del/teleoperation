@@ -82,7 +82,7 @@ namespace Teleop.Eval.JointDrive
             "                   [--simulated-robot [--stall-seconds 1] [--stream-seconds 3]] [--scene <file> [--new-layout] [--touch-depth-mm 8] [--events 1-3]]\n" +
             "                   [--script mixed [--replays 0] [--max-joint-speed <rad/s>[,x4]] [--max-joint-accel <rad/s2>[,x4]] [--max-wrist-speed <m/s>]\n" +
             "                                   [--max-peak-speed <m/s>] [--no-caps] [--no-style | --style p,r,t,s] [--blind n,r,v,l] [--offset-mm -40,60]]\n" +
-            "                   [--dry-run --layouts 1-200 [--rows]]";
+            "                   [--dry-run --layouts 1-200 [--rows] [--features <csv>]]";
 
         public static int Run(string[] args)
         {
@@ -102,6 +102,7 @@ namespace Teleop.Eval.JointDrive
             int replays = 0;
             int layoutsFrom = 0, layoutsTo = -1;
             bool rows = false;
+            string? featuresPath = null;
             MotionCaps Caps() => mixedOptions.Caps ??= MixedOptions.DefaultCaps();
             void PerJoint(string text, float[] into, string option)
             {
@@ -156,6 +157,7 @@ namespace Teleop.Eval.JointDrive
                         case "--replays": replays = int.Parse(Next(), NumberStyles.None, CultureInfo.InvariantCulture); break;
                         case "--layouts": ParseRange(Next(), "--layouts", out layoutsFrom, out layoutsTo); break;
                         case "--rows": rows = true; break;
+                        case "--features": featuresPath = Next(); break;
                         case "--max-joint-speed": PerJoint(Next(), Caps().JointSpeed, "--max-joint-speed"); break;
                         case "--max-joint-accel": PerJoint(Next(), Caps().JointAcceleration, "--max-joint-accel"); break;
                         case "--no-style": mixedOptions.Style = null; break;
@@ -205,6 +207,7 @@ namespace Teleop.Eval.JointDrive
                 if (replays > 0 && script != DriveScript.Mixed) throw new ArgumentException("--replays is for --script mixed (docs/adr/0038 decision 2)");
                 if (replays > 0 && (take == null || dryRun)) throw new ArgumentException("--replays records more takes: it needs --take, and a dry run records none");
                 if (layoutsTo >= layoutsFrom && (!dryRun || !safety)) throw new ArgumentException("--layouts plans a safety script on RobotHost's layouts of --scene: a dry run");
+                if (featuresPath != null && (layoutsTo < layoutsFrom || script != DriveScript.Mixed)) throw new ArgumentException("--features writes each planned move of a mixed dry run over --layouts");
                 if (replays > 0 && !simulated) throw new ArgumentException("--replays has RobotHost move the objects, which only the Isaac twin can: it needs --simulated-robot");
                 if (!(speed > 0f) || speed > MaxSpeedRadPerSec) throw new ArgumentException($"--speed must be in (0, {MaxSpeedRadPerSec}] rad/s, the headset slider's range");
                 if (!(seconds > 0)) throw new ArgumentException("--seconds must be positive");
@@ -258,7 +261,7 @@ namespace Teleop.Eval.JointDrive
                     o.Nominal.Z, o.Nominal.Qw, o.Nominal.Qx, o.Nominal.Qy, o.Nominal.Qz, WorldView.ShapesOf(scene))).ToList();
                 if (layoutsTo >= layoutsFrom)
                 {
-                    return MixedDryRun.Run(script.Value, scene!, profile, envelope, speed, seconds, seed, layoutsFrom, layoutsTo, safetyOptions, mixedOptions, rows);
+                    return MixedDryRun.Run(script.Value, scene!, profile, envelope, speed, seconds, seed, layoutsFrom, layoutsTo, safetyOptions, mixedOptions, rows, featuresPath);
                 }
 
                 return DryRun(script.Value, profile, envelope, speed, seconds, seed, rateHz, logPath, sessionId ?? "joint-drive-dry-run", nominal, safetyOptions, mixedOptions);

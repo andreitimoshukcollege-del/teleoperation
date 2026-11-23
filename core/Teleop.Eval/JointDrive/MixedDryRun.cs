@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Globalization;
+using System.IO;
 using System.Linq;
 using System.Numerics;
 using Teleop.RobotArm.Collision;
@@ -25,9 +26,13 @@ namespace Teleop.Eval.JointDrive
         public const double FramesPerSecond = 15.0;
 
         internal static int Run(DriveScript script, WorldScene scene, in RobotArmProfile profile, in DriveEnvelope envelope, float speed, double seconds, ulong seed,
-            int from, int to, SafetyOptions safetyOptions, MixedOptions mixedOptions, bool rows)
+            int from, int to, SafetyOptions safetyOptions, MixedOptions mixedOptions, bool rows, string? featuresPath = null)
         {
             ArmCollisionModel model = profile.Collision!;
+            // docs/adr/0038, "M, motion": every planned move's own motion, one CSV row a move (MoveFeatures).
+            using StreamWriter? features = featuresPath != null && script == DriveScript.Mixed ? new StreamWriter(featuresPath, false) : null;
+            features?.WriteLine(MoveFeatures.Header);
+            int featureRows = 0;
             ObjectShapes? shapes = WorldView.ShapesOf(scene);
             float table = (float)scene.Table.Top;
             var poses = new RigidTransform[scene.Objects.Length];
@@ -102,6 +107,7 @@ namespace Teleop.Eval.JointDrive
                 }
 
                 if (touched) contactTakes++;
+                if (features != null) featureRows += MoveFeatures.Write(features, layout, takeSeed, profile, plan, table);
                 int before = frameJoint.Count;
                 Motion(profile, plan, frameJoint, frameWrist, tickJoint, jointSpeed, jointAccel, ref movingFrames);
                 allFrames += frameJoint.Count - before;
@@ -143,6 +149,7 @@ namespace Teleop.Eval.JointDrive
             {
                 Console.WriteLine($"  {names[j]}, smoothed 25 ms: speed rad/s {Percentiles(jointSpeed[j], "0.00")}; acceleration rad/s2 {Percentiles(jointAccel[j], "0.0")}");
             }
+            if (features != null) Console.WriteLine($"  features: {featureRows} moves of {planned} takes written to {featuresPath}");
             Console.WriteLine("[joint-drive] dry run: nothing was sent");
             return 0;
         }

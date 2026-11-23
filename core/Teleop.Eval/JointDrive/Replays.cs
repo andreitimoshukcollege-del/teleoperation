@@ -25,6 +25,34 @@ namespace Teleop.Eval.JointDrive
         }
     }
 
+    /// <summary>
+    /// Plays a take's commands back (docs/adr/0038 decision 2): each comes out once the replay's clock (seconds from its take's start)
+    /// reaches the time it was sent at in the source take, in the order they were sent, none early and none twice. Behind the clock,
+    /// the commands due come out one after another.
+    /// </summary>
+    public sealed class TapePlayer
+    {
+        private readonly IReadOnlyList<SentCommand> _tape;
+        private int _next;
+
+        public TapePlayer(IReadOnlyList<SentCommand> tape) => _tape = tape ?? throw new ArgumentNullException(nameof(tape));
+
+        /// <summary>How many have come out.</summary>
+        public int Played => _next;
+
+        /// <summary>Whether every command has come out and the clock is past the last by <paramref name="after"/> seconds.</summary>
+        public bool Done(double clock, double after) => _next >= _tape.Count && (_tape.Count == 0 || clock > _tape[_tape.Count - 1].At + after);
+
+        /// <summary>The next command due at <paramref name="clock"/>, if one is.</summary>
+        public bool TryNext(double clock, out SentCommand command)
+        {
+            command = default;
+            if (_next >= _tape.Count || _tape[_next].At > clock) return false;
+            command = _tape[_next++];
+            return true;
+        }
+    }
+
     /// <summary>One replay's edit (docs/adr/0038 decision 2): the record that says it, the world edit that makes it, and the edited object's box afterwards (none for a removal).</summary>
     public readonly struct ReplayEditDraw
     {

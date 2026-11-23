@@ -1061,9 +1061,10 @@ namespace Teleop.Eval.JointDrive
             var datagram = new byte[MaxDatagramBytes];
             long tps = Stopwatch.Frequency, lastLoop = Stopwatch.GetTimestamp();
             double clock = 0;
-            int next = 0, moves = 0;
+            int moves = 0;
             DriveFault fault = DriveFault.None;
             List<SentCommand> tape = c.Tape;
+            var player = new TapePlayer(tape);
             while (true)
             {
                 long now = Stopwatch.GetTimestamp();
@@ -1081,9 +1082,8 @@ namespace Teleop.Eval.JointDrive
                     moves++;
                 }
 
-                while (next < tape.Count && tape[next].At <= clock)
+                while (player.TryNext(clock, out SentCommand s))
                 {
-                    SentCommand s = tape[next++];
                     commanded = s.Pose;
                     int count = Targets(c.Profile, s.Pose, s.Gripper, s.Speed, targets);
                     if (JointCommandCodec.TryEncode(sequence, now, targets.AsSpan(0, count), datagram, out int written))
@@ -1094,16 +1094,17 @@ namespace Teleop.Eval.JointDrive
                     }
                 }
 
-                if (next >= tape.Count && clock > tape[tape.Count - 1].At + 0.5) break;
+                if (player.Done(clock, 0.5)) break;
                 Thread.Sleep(1);
             }
 
             if (fault != DriveFault.None || c.Stop.IsSet)
             {
                 ArmPose hold = c.Link.Measured;
+                SentCommand lastSent = tape[Math.Max(0, player.Played - 1)];
                 for (int i = 0; i < 15; i++)
                 {
-                    int count = Targets(c.Profile, hold, tape[Math.Max(0, next - 1)].Gripper, tape[Math.Max(0, next - 1)].Speed, targets);
+                    int count = Targets(c.Profile, hold, lastSent.Gripper, lastSent.Speed, targets);
                     if (JointCommandCodec.TryEncode(sequence, Stopwatch.GetTimestamp(), targets.AsSpan(0, count), datagram, out int written))
                     {
                         c.Socket.SendTo(datagram, 0, written, SocketFlags.None, c.Robot);

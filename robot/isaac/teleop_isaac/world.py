@@ -432,6 +432,10 @@ class IsaacWorld:
                 for prim in Usd.PrimRange(robot) if robot and robot.IsValid() else []:
                     if prim.HasAPI(UsdPhysics.CollisionAPI):
                         offsets(prim)
+                    # docs/adr/0038 decision 4: the arm's links report their contacts themselves, so a link against a surface
+                    # (a static collider, which takes no contact report of its own) reaches contact_step as the table.
+                    if prim.HasAPI(UsdPhysics.RigidBodyAPI):
+                        PhysxSchema.PhysxContactReportAPI.Apply(prim).CreateThresholdAttr().Set(0.0)
 
     def fixed_bodies(self, stage) -> List[str]:
         """The robot's rigid bodies no joint moves (its mount and what is bolted to it): those reached from the pinned base
@@ -509,8 +513,9 @@ class IsaacWorld:
     # --- the arm's contacts with the objects (docs/adr/0036 amendment 1) ---------------------------------------------
 
     def enable_contacts(self, links: Sequence[str], dt: float) -> None:
-        """Tracks the robot's contacts with the objects: ``links`` the URDF's link names in order (a contact's link
-        number), ``dt`` the physics step. Needs :meth:`build` with ``contact_report=True``."""
+        """Tracks the robot's contacts with the objects, and with the surfaces as the table (object 0, docs/adr/0038):
+        ``links`` the URDF's link names in order (a contact's link number), ``dt`` the physics step. Needs :meth:`build` with
+        ``contact_report=True``."""
         from .contacts import ContactTracker
 
         if not self._contact_report:
@@ -519,7 +524,7 @@ class IsaacWorld:
         for i, o in enumerate(self.model.scene.objects):
             for slot in self.slots[i].values():
                 bodies[self.body_paths[slot]] = o.id
-        self.contact_tracker = ContactTracker(self.robot_path, links, bodies, dt)
+        self.contact_tracker = ContactTracker(self.robot_path, links, bodies, dt, surfaces=self.surface_paths.values())
 
     def contact_events(self) -> list:
         """PhysX's contact report since the last call, as :class:`~teleop_isaac.contacts.ContactEvent` s."""

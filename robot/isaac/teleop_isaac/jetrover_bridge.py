@@ -191,7 +191,8 @@ def main(argv: Optional[List[str]] = None) -> int:
 
             print(f"[jetrover] contacts: {world.offset_colliders} colliders at contact offset {CONTACT_OFFSET_M * 1000:g} mm, rest offset "
                   f"{REST_OFFSET_M * 1000:g} mm; a touch is a contact point within {TOUCH_SEPARATION_M * 1000:g} mm or an impulse "
-                  f"(docs/adr/0036 amendment 4)", flush=True)
+                  f"(docs/adr/0036 amendment 4); the surfaces {', '.join(sorted(world.surface_paths))} are object 0, the table "
+                  f"(docs/adr/0038)", flush=True)
 
         target = np.zeros((1, n))
 
@@ -371,9 +372,10 @@ def main(argv: Optional[List[str]] = None) -> int:
                 tap(wire.encode_state(next_wseq(), time.monotonic_ns(), steps * step_ns, wire.FLAG_ENABLED if torque else 0, report))
             world_server.publish(steps, world_client, bool(args.tap))
             if world is not None and world.contact_tracker is not None:
-                # The arm's contacts with the objects, read every physics step (docs/adr/0036 amendment 1): sent the step
-                # the touching (link, object) pairs change, an empty message when the last ends, and again with the world
-                # while one lasts (its force). RobotHost records them as WC, stamped like the renderer's frames.
+                # The arm's contacts with the objects, read every physics step (docs/adr/0036 amendment 1), and with the
+                # surfaces as object 0, the table (docs/adr/0038): sent the step the touching (link, object) pairs change, an
+                # empty message when the last ends, and again with the world while one lasts (its force). RobotHost records
+                # them as WC, stamped like the renderer's frames.
                 changed = world.contact_step()
                 if changed or (world.contact_tracker.touching() and steps % args.world_every == 0):
                     message = wire.encode_contacts(next_wseq(), time.monotonic_ns(), world.contact_tracker.contacts())

@@ -182,11 +182,12 @@ namespace Teleop.Eval.JointDrive
         {
             MixedOptions options = add.Options;
             float table = (float)scene.Table.Top;
-            // Where the arm passed lowest, every tick of the take but its quiet start and end.
-            var spots = new List<Vector3>(add.Track.Count);
+            // Where the arm passed lowest, every other tick of the take but its quiet start and end.
+            var spots = new List<Vector3>(add.Track.Count / 2 + 1);
             double from = options.QuietStartSeconds + AddQuietSlackSeconds, to = add.TakeSeconds - options.QuietEndSeconds - AddQuietSlackSeconds;
-            foreach (TrackPoint p in add.Track)
+            for (int t = 0; t < add.Track.Count; t += 2)
             {
+                TrackPoint p = add.Track[t];
                 if (p.At < from || p.At > to) continue;
                 Vector3 low = LowestPoint(profile, add.Model, p.Pose, p.Gripper);
                 spots.Add(new Vector3(low.X, low.Y, low.Z - table));
@@ -194,16 +195,7 @@ namespace Teleop.Eval.JointDrive
 
             if (spots.Count == 0) return default;
             // Objects of the layout on the table the take kept clear of, then parked ones: each in an order drawn from the replay.
-            var onTable = new List<int>();
-            for (int i = 0; i < objects.Count; i++)
-            {
-                SafetyObject o = objects[i];
-                int k = scene.IndexOf(o.Id);
-                if (k < 0 || o.Scenery || Holds(objects, i) || o.Min.Z > table + 0.01f || !scene.Objects[k].OperatorMovable || touched.Contains(o.Id)) continue;
-                if (used.Contains("add:" + o.Id) || !KeptClear(add, profile, o)) continue;
-                onTable.Add(i);
-            }
-
+            List<int> onTable = AddCandidatesOnTable(objects, scene, touched, used, add, profile);
             var parked = new List<byte>();
             foreach (byte id in add.Parked)
             {
@@ -225,14 +217,24 @@ namespace Teleop.Eval.JointDrive
                     double scale = scaleOf?.Invoke(id) ?? 1.0, yawNow = 0;
                     int rest = pass == 0 ? WorldScene.RestOf(objects[i].Rotation.W, objects[i].Rotation.X, objects[i].Rotation.Y, objects[i].Rotation.Z, out yawNow) : WorldScene.RestUpright;
                     float height = (float)(2 * (scene.RestingZ(k, scale, rest) - scene.Table.Top));
-                    var deep = new List<int>();
-                    for (int m = 0; m < spots.Count; m++) if (spots[m].Z < height - AddDepthMeters) deep.Add(m);
-                    for (int tries = 0; tries < 12 && deep.Count > 0; tries++)
+                    // The moments low enough for it whose spot the scene's rules take, at the yaw it would stand at (its own on the table, else
+                    // one drawn): the draw is among those, and the quiet start and end decide.
+                    double yaw = pass == 0 ? yawNow : (2 * r.NextDouble() - 1) * Math.PI;
+                    var fits = new List<int>();
+                    for (int m = 0; m < spots.Count; m++)
                     {
-                        Vector3 at = spots[deep[(int)(r.NextDouble() * deep.Count) % deep.Count]];
-                        double yaw = pass == 0 && tries == 0 ? yawNow : (2 * r.NextDouble() - 1) * Math.PI;
-                        if (scene.ReachBearing > 0 && Math.Abs(Math.Atan2(at.Y, at.X)) > scene.ReachBearing) continue;
-                        if (!Fits(scene, objects, k, i, at.X, at.Y, yaw, scale, rest, scaleOf, out RigidTransform pose)) continue;
+                        Vector3 at = spots[m];
+                        if (at.Z >= height - AddDepthMeters || (scene.ReachBearing > 0 && Math.Abs(Math.Atan2(at.Y, at.X)) > scene.ReachBearing)) continue;
+                        if (Fits(scene, objects, k, i, at.X, at.Y, yaw, scale, rest, scaleOf, out _)) fits.Add(m);
+                    }
+
+                    for (int tries = 0; tries < 12 && fits.Count > 0; tries++)
+                    {
+                        int pick = (int)(r.NextDouble() * fits.Count) % fits.Count;
+                        Vector3 at = spots[fits[pick]];
+                        fits[pick] = fits[fits.Count - 1];
+                        fits.RemoveAt(fits.Count - 1);
+                        Fits(scene, objects, k, i, at.X, at.Y, yaw, scale, rest, scaleOf, out RigidTransform pose);
                         SafetyObject after = pass == 0
                             ? Moved(objects[i], pose)
                             : WorldView.Bounds(scene.Objects[k], scale, pose.X, pose.Y, pose.Z, pose.Qw, pose.Qx, pose.Qy, pose.Qz, shapes);
@@ -244,6 +246,28 @@ namespace Teleop.Eval.JointDrive
             }
 
             return default;
+        }
+
+        /// <summary>
+        /// The objects of the layout on the table an add may move (indices into <paramref name="objects"/>): those the headset may move, not
+        /// scenery, holding nothing, not raised (their bottom within 1 cm of the table), not touched by the take (<paramref name="touched"/>),
+        /// kept <see cref="AddFarMeters"/> from all through it, and not added by the group already.
+        /// </summary>
+        internal static List<int> AddCandidatesOnTable(IReadOnlyList<SafetyObject> objects, WorldScene scene, ICollection<byte> touched, ICollection<string> used, ReplayAdd add,
+            in RobotArmProfile profile)
+        {
+            float table = (float)scene.Table.Top;
+            var list = new List<int>();
+            for (int i = 0; i < objects.Count; i++)
+            {
+                SafetyObject o = objects[i];
+                int k = scene.IndexOf(o.Id);
+                if (k < 0 || o.Scenery || Holds(objects, i) || o.Min.Z > table + 0.01f || !scene.Objects[k].OperatorMovable || touched.Contains(o.Id)) continue;
+                if (used.Contains("add:" + o.Id) || !KeptClear(add, profile, o)) continue;
+                list.Add(i);
+            }
+
+            return list;
         }
 
         /// <summary>The lowest point of the arm's bodies as the twin's links are (the pads where <paramref name="gripper"/> holds them), arm base frame.</summary>

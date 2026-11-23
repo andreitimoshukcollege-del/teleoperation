@@ -163,6 +163,16 @@ namespace Teleop.Eval.Tests.JointDrive
             Assert.True(ReplayEdits.KeepsQuiet(plan, faraway, Profile, Model, options));
         }
 
+        /// <summary>core/Scenes/jetrover-mixed.json (docs/adr/0038 decision 3), the scene the mixed script and its replays run on, and its shapes.</summary>
+        private static readonly Lazy<(WorldScene Scene, ObjectShapes? Shapes)> Mixed_ = new Lazy<(WorldScene, ObjectShapes?)>(() =>
+        {
+            string? dir = AppContext.BaseDirectory;
+            while (dir != null && !System.IO.File.Exists(System.IO.Path.Combine(dir, "core", "Scenes", "jetrover-mixed.json"))) dir = System.IO.Path.GetDirectoryName(dir);
+            Assert.NotNull(dir);
+            WorldScene scene = WorldView.LoadScene(System.IO.Path.Combine(dir!, "core", "Scenes", "jetrover-mixed.json"), out _);
+            return (scene, WorldView.ShapesOf(scene));
+        });
+
         /// <summary>The objects RobotHost's layout <paramref name="seed"/> of <paramref name="scene"/> leaves out that an add may stand on the table, as joint-drive takes them.</summary>
         private static List<byte> ParkedOf(WorldScene scene, ulong seed)
         {
@@ -182,7 +192,7 @@ namespace Teleop.Eval.Tests.JointDrive
         public void AnAdd_StandsAMovableObstacleWhereTheArmPassedLow_ByTheScenesRules_AndTheArmMeetsIt_ButNotInTheQuietStartOrEnd()
         {
             // docs/adr/0038 decision 2 (the twin check's review): an obstacle put into the path, a safe take's unsafe twin.
-            (WorldScene scene, ObjectShapes? shapes) = Bench();
+            (WorldScene scene, ObjectShapes? shapes) = Mixed_.Value;
             var options = new MixedOptions();
             float table = (float)scene.Table.Top;
             int adds = 0;
@@ -225,7 +235,7 @@ namespace Teleop.Eval.Tests.JointDrive
         [Fact]
         public void InAGroupOfTwo_OneReplayIsTheAdd_WhenOneFits_AndTheOtherRemovesShiftsOrMoves()
         {
-            (WorldScene scene, ObjectShapes? shapes) = Bench();
+            (WorldScene scene, ObjectShapes? shapes) = Mixed_.Value;
             int groups = 0, withAdd = 0;
             for (ulong layout = 1; layout <= 8; layout++)
             {
@@ -269,7 +279,7 @@ namespace Teleop.Eval.Tests.JointDrive
         [Fact]
         public void AnAdd_NeverTakesWhatTheTakeTouched_WhatHoldsAnother_WhatIsRaised_OrWhatTheGroupAddedAlready()
         {
-            (WorldScene scene, ObjectShapes? shapes) = Bench();
+            (WorldScene scene, ObjectShapes? shapes) = Mixed_.Value;
             SafetyObject[] objects = Layout(scene, shapes, 5);
             DrivePlan plan = MixedTakeTests.AnyMixed(objects, 75);
             List<byte> parked = ParkedOf(scene, 5);
@@ -291,21 +301,30 @@ namespace Teleop.Eval.Tests.JointDrive
             var rng = new SeededRng(9);
             Assert.Equal(0, ReplayEdits.Add(31, ref rng, plan, objects, scene, new HashSet<byte>(), Profile, added, null, add).Pose.Id);
 
-            // One object standing on another: the one below holds it, the one above is raised; neither is moved for an add.
-            int a = Array.FindIndex(objects, o => !o.Scenery && scene.Objects[scene.IndexOf(o.Id)].OperatorMovable);
-            int b = Array.FindIndex(objects, o => !o.Scenery && o.Id != objects[a].Id && scene.Objects[scene.IndexOf(o.Id)].OperatorMovable);
-            Assert.True(a >= 0 && b >= 0);
-            SafetyObject below = objects[a], top = objects[b];
-            var stacked = (SafetyObject[])objects.Clone();
-            stacked[b] = new SafetyObject(top.Id, new Vector3(below.Center.X, below.Center.Y, below.Max.Z + (top.Max.Z - top.Min.Z) / 2f), top.Rotation, top.HalfExtents, top.Movable,
-                top.Mass, top.Tippy, top.Shape, top.Scenery);
-            Assert.True(ReplayEdits.Holds(stacked, a));
-            var others = new HashSet<byte>(stacked.Where((o, i) => i != a && i != b).Select(o => o.Id));
-            for (int attempt = 0; attempt < 6; attempt++)
+            // One object standing on another: the one below holds it, the one above is raised; neither is moved for an add, though each
+            // would be on its own (the arm far off, nothing touched).
+            var far = new ReplayAdd(new[] { new TrackPoint(0, Model.Home, 0f), new TrackPoint(20, Model.Home, 0f) }, 20, parked, Model, new MixedOptions());
+            for (ulong layout = 1; layout <= 40; layout++)
             {
-                var r = new SeededRng((ulong)attempt + 20);
-                Assert.Equal(0, ReplayEdits.Add(31, ref r, plan, stacked, scene, others, Profile, new HashSet<string>(), null, nothingParked).Pose.Id);
+                SafetyObject[] laid = Layout(scene, shapes, layout);
+                List<int> alone = ReplayEdits.AddCandidatesOnTable(laid, scene, new HashSet<byte>(), new HashSet<string>(), far, Profile);
+                if (alone.Count < 2) continue;
+                int a = alone[0], b = alone[1];
+                SafetyObject below = laid[a], top = laid[b];
+                var stacked = (SafetyObject[])laid.Clone();
+                stacked[b] = new SafetyObject(top.Id, new Vector3(below.Center.X, below.Center.Y, below.Max.Z + (top.Max.Z - top.Min.Z) / 2f), top.Rotation, top.HalfExtents,
+                    top.Movable, top.Mass, top.Tippy, top.Shape, top.Scenery);
+                Assert.True(ReplayEdits.Holds(stacked, a));
+                List<int> now = ReplayEdits.AddCandidatesOnTable(stacked, scene, new HashSet<byte>(), new HashSet<string>(), far, Profile);
+                Assert.DoesNotContain(a, now);
+                Assert.DoesNotContain(b, now);
+                // Nor one the take touched, nor one the group added already.
+                Assert.DoesNotContain(a, ReplayEdits.AddCandidatesOnTable(laid, scene, new HashSet<byte> { below.Id }, new HashSet<string>(), far, Profile));
+                Assert.DoesNotContain(a, ReplayEdits.AddCandidatesOnTable(laid, scene, new HashSet<byte>(), new HashSet<string> { "add:" + below.Id }, far, Profile));
+                return;
             }
+
+            Assert.Fail("no layout has two objects an add may move");
         }
 
         [Fact]

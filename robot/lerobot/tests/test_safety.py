@@ -213,6 +213,7 @@ def test_the_video_encoding_override_reaches_lerobots_encoder_and_is_put_back(mo
 
 def test_the_watcher_leaves_the_safety_scenarios_alone(scenarios):
     take(scenarios, "collide_with_obstacle", [])
+    take(scenarios, "mixed", [], name="20261122T100000Z-take001")  # docs/adr/0038's script: a batch's dataset too
     jetrover_take(scenarios, scenario="free-play")
     found = complete_takes([scenarios], now=1e12, settle=0)
     assert [os.path.basename(os.path.dirname(t)) for t in found] == ["free-play"]

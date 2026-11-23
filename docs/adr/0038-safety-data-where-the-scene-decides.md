@@ -399,7 +399,8 @@ With the defaults (after):
 - `MixedTakeTests`: deterministic plans, and moves numbered in the order they begin. On 24 random layouts: the timing rules
   (the arm moving within 0.3 s; nothing within 1 cm of an object's box before 1.5 s or in the last 1.0 s; every planned
   contact at least 1.0 s before the end), offsets on both sides of the surface with no gap over 25 mm, contacts at more than
-  one height, some early in their move. The caps hold on every tick; the options are checked.
+  one height, some early in their move. The caps hold on every tick as they are measured (speed and acceleration over three
+  ticks; a single tick at most 2.5 times a joint's speed cap, the commands' own jitter); the options are checked.
 - `ReplaysTests`: a replay sends the same targets, bit for bit and in order, none early; the edits are deterministic, take
   their kinds in turn and keep to their rules; a removal takes the object the source moved; an edit in the quiet start's way is
   seen; a planned move's record carries its times from when it is sent.

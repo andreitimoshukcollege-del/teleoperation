@@ -243,9 +243,13 @@ Built 2026-11-22 on `work/v2-contacts`. Checked offline against recorded takes; 
     unchanged one is kept.
   - **Cost.** jetrover-bench's 24 assets took 5.4 min on 4 threads. They became 2-70 pieces each: a box 2-3, the cans
     30-31, the round fixtures 32, the green jerrycan's five meshes 70.
-  - **Fit.** Against 20,000 points sampled on each render mesh (6 assets), the pieces leave at most 1.0% of the surface more
-    than 1 mm outside, and none more than 6.1 mm. The mesh lies a median 0.2-3.6 mm inside the pieces (CoACD's manifold
-    remesh).
+  - **Fit** (`--fit`). For each asset, 20,000 points were sampled on its render mesh and measured against the pieces' face
+    planes:
+    - more than 1 mm outside: a median 1.0% of the surface over the 24 assets;
+    - the exceptions: the marble bust 29% (the decimation to 64 vertices shrinks its 22 hulls) and the pudding box 12.7%;
+    - more than 5 mm outside: at most 2.6%;
+    - the worst point: the ceramic vase's, 31.4 mm out, a thin part the remesh lost; else at most 10.4 mm.
+    - Typically the mesh lies 0.1-4.2 mm inside the pieces (CoACD's manifold remesh at resolution 50).
 - **Primitives and surfaces** need no export: the clearance builds them from the scene file. A box is exact, a cylinder a
   32-sided prism, a sphere exact.
 

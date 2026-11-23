@@ -622,11 +622,7 @@ namespace Teleop.Eval.JointDrive
             List<ArmPose>? poses = null;
             List<float>? gaps = null;
             int first = 0;
-            for (int p = 0; p < 4 && wrists == null; p++)
-            {
-                if (p > 0) pitch = PitchFor(radius + (float)Draw.Uniform(ref _rng, -0.03, 0.03)) + (float)(Draw.Uniform(ref _rng, -10, 10) * deg);
-                if (Line(oi, tools, meet, pitch, gripper, out List<Vector3> w, out List<ArmPose> q, out List<float> g, out int f0)) (wrists, poses, gaps, first) = (w, q, g, f0);
-            }
+            if (Line(oi, tools, meet, ref pitch, gripper, out List<Vector3> w, out List<ArmPose> q, out List<float> g, out int f0)) (wrists, poses, gaps, first) = (w, q, g, f0);
 
             if (wrists == null || poses == null || gaps == null) return Miss(1);
 
@@ -795,7 +791,7 @@ namespace Teleop.Eval.JointDrive
         /// poses are in reach, in the envelope, free of the robot's own model and on one branch. The wrist targets in order, their
         /// poses, the arm's gap to the object at each, and the index in <paramref name="tools"/> of the first.
         /// </summary>
-        private bool Line(int oi, List<Vector3> tools, int meet, float pitch, float gripper, out List<Vector3> wrists, out List<ArmPose> poses, out List<float> gaps,
+        private bool Line(int oi, List<Vector3> tools, int meet, ref float pitch, float gripper, out List<Vector3> wrists, out List<ArmPose> poses, out List<float> gaps,
             out int firstIndex)
         {
             int n = tools.Count;
@@ -803,27 +799,35 @@ namespace Teleop.Eval.JointDrive
             poses = new List<ArmPose>(n);
             gaps = new List<float>(n);
             firstIndex = 0;
-            float lh = ToolInGripper.X * MathF.Cos(pitch) - ToolInGripper.Z * MathF.Sin(pitch);
-            float lv = ToolInGripper.X * MathF.Sin(pitch) + ToolInGripper.Z * MathF.Cos(pitch);
             var wrist = new Vector3?[n];
-            for (int i = 0; i < n; i++)
-            {
-                Vector3 tool = tools[i];
-                var radial = new Vector2(tool.X, tool.Y);
-                if (radial.Length() < 0.05f) continue; // over the base
-                radial = Vector2.Normalize(radial);
-                wrist[i] = new Vector3(tool.X - lh * radial.X, tool.Y - lh * radial.Y, tool.Z - lv);
-            }
-
-            // A first pose as near the object as the path has one, then outward from it both ways.
-            int seed = -1;
             var solved = new ArmPose[n];
-            for (int d = 0; d <= 6 && seed < 0; d++)
+            int seed = -1;
+            // A first pose as near the object as the path has one, at the pitch asked for or the nearest one that reaches it (the
+            // solver refuses what would hit the floor or the arm itself, and the envelope what bends a joint too far: which
+            // pitches reach a point near the table changes with its radius and height); then outward from it both ways.
+            float asked = pitch;
+            for (int k = 0; k < SeedPitchSteps.Length && seed < 0; k++)
             {
-                foreach (int i in new[] { meet - d, meet + d })
+                pitch = Math.Clamp(asked + SeedPitchSteps[k] * MathF.PI / 180f, -89f * MathF.PI / 180f, -8f * MathF.PI / 180f);
+                float lh = ToolInGripper.X * MathF.Cos(pitch) - ToolInGripper.Z * MathF.Sin(pitch);
+                float lv = ToolInGripper.X * MathF.Sin(pitch) + ToolInGripper.Z * MathF.Cos(pitch);
+                for (int i = 0; i < n; i++)
                 {
-                    if (seed >= 0 || i < 0 || i >= n || !wrist[i].HasValue) continue;
-                    if (Solve(_model.Home, wrist[i]!.Value, pitch, out solved[i], false)) seed = i;
+                    Vector3 tool = tools[i];
+                    var radial = new Vector2(tool.X, tool.Y);
+                    wrist[i] = null;
+                    if (radial.Length() < 0.05f) continue; // over the base
+                    radial = Vector2.Normalize(radial);
+                    wrist[i] = new Vector3(tool.X - lh * radial.X, tool.Y - lh * radial.Y, tool.Z - lv);
+                }
+
+                for (int d = 0; d <= 6 && seed < 0; d++)
+                {
+                    foreach (int i in new[] { meet - d, meet + d })
+                    {
+                        if (seed >= 0 || i < 0 || i >= n || !wrist[i].HasValue) continue;
+                        if (Solve(_model.Home, wrist[i]!.Value, pitch, out solved[i], false)) seed = i;
+                    }
                 }
             }
 
@@ -875,6 +879,9 @@ namespace Teleop.Eval.JointDrive
             firstIndex = first;
             return wrists.Count >= 3;
         }
+
+        /// <summary>The pitches a line's first pose tries, degrees about the one drawn: that one, then nearer ones first.</summary>
+        private static readonly float[] SeedPitchSteps = { 0f, 8f, -8f, 16f, -16f, 24f, -24f, 32f, -32f, 44f, -44f };
 
         /// <summary>The first of <paramref name="tools"/> inside <paramref name="o"/>'s box, or, when none is, the one nearest it.</summary>
         internal static int Meets(in SafetyObject o, List<Vector3> tools)

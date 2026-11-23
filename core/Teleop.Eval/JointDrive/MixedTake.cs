@@ -230,7 +230,6 @@ namespace Teleop.Eval.JointDrive
         private int _objectTries, _objectMoves;
         private readonly int[] _lineBreaks = new int[6]; // diagnostics: no seed, then a walk's break: IK, envelope, model, branch flip, over the base
         private readonly Dictionary<int, int> _missesInARow = new Dictionary<int, int>();
-        private readonly List<string> _seedFails = new List<string>();
 
         /// <summary>The object-directed moves tried and planned, and why the rest were not.</summary>
         internal string ObjectReport()
@@ -246,7 +245,7 @@ namespace Teleop.Eval.JointDrive
                     $"{o.Id} r {new Vector2(o.Center.X, o.Center.Y).Length():0.00} az {MathF.Atan2(o.Center.Y, o.Center.X) * 180 / MathF.PI:0} h {(o.Max.Z - o.Min.Z) * 100:0}cm{(o.Movable ? "" : " fixed")} misses {kv.Value}"));
             }
 
-            return counts + "; objects: " + string.Join(", ", objects) + "; seeds: " + string.Join(" | ", _seedFails);
+            return counts + "; objects: " + string.Join(", ", objects);
         }
 
         private bool Miss(int why)
@@ -827,21 +826,6 @@ namespace Teleop.Eval.JointDrive
             if (seed < 0)
             {
                 _lineBreaks[0]++;
-                if (_seedFails.Count < 8 && wrist[meet].HasValue)
-                {
-                    var solver = new ArmSolver();
-                    solver.Reset(_profile, _model.Home);
-                    ArmSolution sol = default;
-                    for (int i = 0; i < TrainingTargetSampler.MaxSolvesPerCheck; i++)
-                    {
-                        sol = solver.Solve(_profile, wrist[meet]!.Value, pitch, 0f);
-                        if (sol.Status != ArmSolveStatus.Approaching) break;
-                    }
-
-                    _seedFails.Add(FormattableString.Invariant(
-                        $"r {new Vector2(tools[meet].X, tools[meet].Y).Length():0.000} h {(tools[meet].Z + 0.1962f) * 100:0.0}cm pitch {pitch * 180 / MathF.PI:0}: {sol.Status} clamped {sol.ReachClamped} off {Vector3.Distance(sol.Position, wrist[meet]!.Value) * 1000:0}mm env {_envelope.Contains(sol.Pose)} model {ArmCollision.IsValid(_profile, _model, sol.Pose)} {DrivePlan.Describe(sol.Pose)}"));
-                }
-
                 return false;
             }
 

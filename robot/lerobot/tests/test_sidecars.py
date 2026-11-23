@@ -543,3 +543,22 @@ def test_safety_compare_reads_the_new_files_and_an_older_reference_without_them(
     os.remove(os.path.join(full, "safety_ranges.json"))
     notes = []
     assert safety.compare_datasets(full, first, notes) == [] and "predates docs/adr/0038" in notes[0]
+
+
+def test_an_old_takes_planned_events_and_odd_numbers_reach_the_lines_as_json_can_hold_them(scenarios, tmp_path):
+    pytest.importorskip("pandas")
+    pytest.importorskip("pyarrow")
+    se = ["SE", 1100 * MS, 1, 2, "touch", 2, 0.5, 0.7, float("nan"), 1.1]
+    nan_pose = {**STANDING, 3: (float("nan"), -0.02, -0.17, UPRIGHT)}
+    path = take(scenarios, "collide_and_recover", world([se, wc(1800, "0:5:2:nan")], poses=nan_pose, sizes="2:nan;3:1"))
+    e = episode(path)
+    assert e.line["events"] == [{"index": 1, "drawn": 2, "kind": "touch", "object": 2, "approachS": 0.1, "finalS": 0.5,
+                                 "contactS": 0.7, "endS": None, "clearS": 1.1}]
+    assert [o["id"] for o in e.scene["objects"]] == [2, 4, 5] and e.scene["objects"][0]["sizeFactor"] == 1.0
+    assert e.contacts[0]["peakForceN"] == 0.0 and e.contacts[0]["open"]
+    root = str(tmp_path / "ds")
+    safety.build(Writer(), root, [read_take(path)], log=lambda m: None)
+    for name in ("episodes.jsonl", "scenes.jsonl", "contacts.jsonl"):
+        text = open(os.path.join(root, "meta", "teleop", name)).read()
+        assert "NaN" not in text and "Infinity" not in text
+        [json.loads(x) for x in text.splitlines()]

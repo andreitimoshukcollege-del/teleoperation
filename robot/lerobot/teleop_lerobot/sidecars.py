@@ -302,13 +302,15 @@ def _kinds(moves: Sequence[Dict]) -> Dict[str, int]:
     return dict(sorted(out.items()))
 
 
-def planned_events(host: Jlog) -> List[Dict]:
-    """An old script's planned events (``SE``, docs/adr/0036 amendment 5), times in seconds after the record's ``t``."""
+def planned_events(host: Jlog, t_first: int = 0) -> List[Dict]:
+    """An old script's planned events (``SE``, docs/adr/0036 amendment 5): ``approachS``, when its approach began, in seconds
+    from ``t_first`` (the episode's first frame), and the record's own times in seconds after that."""
     out = []
     for r in host.tag("SE"):
         if len(r) >= 9:
-            out.append({"index": int(r[1]), "drawn": int(r[2]), "kind": r[3], "object": int(r[4]), "finalS": _num(r[5]),
-                        "contactS": _num(r[6]), "endS": _num(r[7]), "clearS": _num(r[8])})
+            out.append({"index": int(r[1]), "drawn": int(r[2]), "kind": r[3], "object": int(r[4]),
+                        "approachS": round((int(r[0]) - t_first) / 1e9, 3), "finalS": _num(r[5]), "contactS": _num(r[6]),
+                        "endS": _num(r[7]), "clearS": _num(r[8])})
     return sorted(out, key=lambda e: e["index"])
 
 
@@ -620,7 +622,7 @@ def episode(take: Take, options: Options = Options(), records: Optional[Records]
     # The scene: objects on the table, their sizes and poses.
     poses = object_poses(host)
     objects_by_id = {int(o["id"]): o for o in ((scene or {}).get("objects") or [])}
-    sizes = {int(it[0]): float(it[1]) for it in items((_latest(host.tag("WZ"), t_first) or ["", "", ""])[2])
+    sizes = {int(it[0]): _num(it[1]) or 1.0 for it in items((_latest(host.tag("WZ"), t_first) or ["", "", ""])[2])
              if len(it) >= 2} if host.tag("WZ") else {}
     if not sizes and frames is not None and frames.tag("SZ"):
         sizes = safety.sizes(frames.tag("SZ"))
@@ -632,7 +634,7 @@ def episode(take: Take, options: Options = Options(), records: Optional[Records]
     else:
         placed = sorted(objects_by_id) or sorted(poses)
     starts = {o: pose_at(poses.get(o, []), t_first) for o in placed}
-    placed = [o for o in placed if starts[o] is not None and starts[o][2] > PARKED_Z]
+    placed = [o for o in placed if starts[o] is not None and all(math.isfinite(v) for v in starts[o]) and starts[o][2] > PARKED_Z]
     scene_sha = (rec.session.get("scene") or {}).get("sha256")
     if frames is not None and frames.tag("SC") and len(frames.tag("SC")[0]) > 1:
         scene_sha = scene_sha or frames.tag("SC")[0][1]
@@ -784,7 +786,7 @@ def episode(take: Take, options: Options = Options(), records: Optional[Records]
         "materials": _named(materials[1]) if materials and len(materials) > 1 else None,
         "clutter": _clutter(_by_change(frames.tag("CL"), change)) if frames is not None else None,
         "cameraJitter": camera_jitter(scene, cams),
-        "moves": {"count": len(moves), "kinds": _kinds(moves), "records": moves}, "events": planned_events(host)}
+        "moves": {"count": len(moves), "kinds": _kinds(moves), "records": moves}, "events": planned_events(host, t_first)}
     if "replayError" in rp:
         line["replayError"] = rp["replayError"]
     scene_line = {"take": os.path.abspath(take.path), "sceneName": line["sceneName"], "sceneSha256": scene_sha,
@@ -873,6 +875,21 @@ def mix(name: str, rep: Dict) -> str:
             + (f"; contact timing flagged in {len(rep['timingFlagged'])}" if rep["timingFlagged"] else ""))
 
 
+def _clean(v):
+    """``v`` with every number that is not finite as None: JSON has no NaN, and a reader in another language rejects it."""
+    if isinstance(v, float):
+        return v if math.isfinite(v) else None
+    if isinstance(v, dict):
+        return {k: _clean(x) for k, x in v.items()}
+    if isinstance(v, (list, tuple)):
+        return [_clean(x) for x in v]
+    return v
+
+
+def _line(d: Dict) -> str:
+    return json.dumps(_clean(d), separators=(",", ":"), allow_nan=False) + "\n"
+
+
 def write(root: str, written: Sequence[Tuple[int, Episode]], options: Options, split_of: Optional[Tuple[int, int]] = None) -> Dict:
     """Writes the sidecars of ``written`` ((episode index, :class:`Episode`) each, in order) under ``root``/meta/teleop.
     Returns the report."""
@@ -883,19 +900,19 @@ def write(root: str, written: Sequence[Tuple[int, Episode]], options: Options, s
         for ep, e in written:
             line = {"episode": ep, **e.line}
             lines.append(line)
-            f.write(json.dumps(line, separators=(",", ":"), allow_nan=False) + "\n")
+            f.write(_line(line))
     with open(os.path.join(teleop, "scenes.jsonl"), "w", encoding="utf-8") as f:
         for ep, e in written:
-            f.write(json.dumps({"episode": ep, **e.scene}, separators=(",", ":"), allow_nan=False) + "\n")
+            f.write(_line({"episode": ep, **e.scene}))
     with open(os.path.join(teleop, "contacts.jsonl"), "w", encoding="utf-8") as f:
         for ep, e in written:
             for c in e.contacts:
                 contacts.append(c)
-                f.write(json.dumps({"episode": ep, **c}, separators=(",", ":"), allow_nan=False) + "\n")
+                f.write(_line({"episode": ep, **c}))
     write_frames(os.path.join(teleop, "frames.parquet"), written)
     rep = report(lines, contacts, options, split_of)
     with open(os.path.join(teleop, "report.json"), "w", encoding="utf-8") as f:
-        json.dump(rep, f, indent=1, allow_nan=False)
+        json.dump(_clean(rep), f, indent=1, allow_nan=False)
     if options.stop is not None:
         s = options.stop
         with open(os.path.join(teleop, "unavoidable_ranges.json"), "w", encoding="utf-8") as f:

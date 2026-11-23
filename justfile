@@ -4096,7 +4096,7 @@ isaac-safety-batch takes="25" seed="1" categories="all" build="true" events="1-3
     progress "$n" building
     if just _isaac-safety-build "$name" "" "${kept[@]}"; then progress "$n" done "\"~/data/lerobot/jetrover-isaac-safety/$name\""; else progress "$n" failed; exit 1; fi
 
-# Internal: write `takes` (paths on the GPU machine, already checked) as one safety dataset `name` under `out` there (default ~/data/lerobot/jetrover-isaac-safety), with ~/repos/safety's builder (teleop_lerobot safety-build). A build that fails is retried once into a fresh folder, a failed one set aside, and every attempt's full log kept beside it. (The one failure seen, 2026-11-15, was the LeRobot watcher deleting the half-written dataset, since fixed: it leaves the *-safety groups alone.)
+# Internal: write `takes` (paths on the GPU machine, already checked) as one safety dataset `name` under `out` there (default ~/data/lerobot/jetrover-isaac-safety), with ~/repos/safety's builder (teleop_lerobot safety-build), in the lab's and world-models' label formats with the sidecars of docs/adr/0038 decision 6 (neutral captions, clearance from ~/isaacsim/assets/clearance when it is there). SAFETY_BUILD_ARGS, when set, adds safety-build options (just isaac-safety-build sets --split and --caption): a split build writes <name>_<k>of<K>. A build that fails is retried once into a fresh folder, a failed one set aside, and every attempt's full log kept beside it. (The one failure seen, 2026-11-15, was the LeRobot watcher deleting the half-written dataset, since fixed: it leaves the *-safety groups alone.)
 [positional-arguments]
 _isaac-safety-build name out +takes:
     #!/usr/bin/env bash
@@ -4104,29 +4104,35 @@ _isaac-safety-build name out +takes:
     case "{{name}}" in *[!A-Za-z0-9._-]*|"") echo "error: name may hold only letters, digits, . _ -" >&2; exit 1 ;; esac
     case "{{out}}" in ""|/*|"~/"*) ;; *) echo "error: out is an absolute path on the GPU machine, or ~/..." >&2; exit 1 ;; esac
     case "{{out}}" in *[!A-Za-z0-9._/~-]*) echo "error: out may hold only letters, digits, . _ - / ~" >&2; exit 1 ;; esac
-    ssh -o ConnectTimeout=10 "{{gpu_host}}" "NAME='{{name}}' OUT='{{out}}' bash -s $(printf "'%s' " "${@:3}")" <<'REMOTE'
+    args="${SAFETY_BUILD_ARGS-}"
+    case "$args" in *[!A-Za-z0-9\ ._=/~-]*) echo "error: SAFETY_BUILD_ARGS may hold only letters, digits, spaces and . _ = / ~ -" >&2; exit 1 ;; esac
+    ssh -o ConnectTimeout=10 "{{gpu_host}}" "NAME='{{name}}' OUT='{{out}}' ARGS='$args' bash -s $(printf "'%s' " "${@:3}")" <<'REMOTE'
     set -uo pipefail
     out=${OUT:-$HOME/data/lerobot/jetrover-isaac-safety}; out=${out/#\~/$HOME}; mkdir -p "$out"
     cd "$HOME/repos/safety/robot/lerobot"
     for attempt in 1 2; do
         dest=$out/$NAME; [ "$attempt" = 1 ] || dest=$out/$NAME-retry
         log=$out/$NAME.build-$attempt.log
-        if "$HOME/isaacsim/lerobot-venv/bin/python" -m teleop_lerobot safety-build --out "$dest" "$@" > "$log" 2>&1; then
-            grep -E "episode [0-9]+:" "$log" | sed 's/^/  /'
-            echo "[safety] dataset: $dest on the GPU machine (log $log)"
+        # $ARGS unquoted: its words are safety-build options (checked above: no quotes, globs or $).
+        if "$HOME/isaacsim/lerobot-venv/bin/python" -m teleop_lerobot safety-build $ARGS --out "$dest" "$@" > "$log" 2>&1; then
+            grep -E "episode [0-9]+:|\[(split|timing|mix)\]" "$log" | sed 's/^/  /'
+            for d in "$dest" "$dest"_*of*; do [ -d "$d" ] && echo "[safety] dataset: $d on the GPU machine"; done
+            echo "[safety] log $log"
             exit 0
         fi
         echo "[safety] build attempt $attempt failed: $(grep -vE '^(Svt|Map)' "$log" | tail -3 | tr '\n' ' ')" >&2
-        [ -e "$dest" ] && mv "$dest" "$dest.failed-$(date -u +%H%M%S)"
+        for d in "$dest" "$dest"_*of*; do [ -e "$d" ] && mv "$d" "$d.failed-$(date -u +%H%M%S)"; done
     done
     exit 1
     REMOTE
 
-# One safety dataset from the takes several batches kept (docs/adr/0037 amendment 7): the takes listed in recordings/.drive/safety-batch.kept (twin 0's batch) and safety-batch-1.kept (twin 1's), as `twins` names them, in the order they were recorded (by their UTC names), written by the GPU machine's ~/repos/safety builder as ~/data/lerobot/jetrover-isaac-safety/<name> (default jetrover_<UTC>_<id>, as a batch names its own). `out` writes it under another folder there instead (absolute or ~/...). A take set aside or deleted since is left out. `just isaac-safety-batch-twins` runs it after its batches; run it by hand after batches run with build=false
+# One safety dataset from the takes several batches kept (docs/adr/0037 amendment 7): the takes listed in recordings/.drive/safety-batch.kept (twin 0's batch) and safety-batch-1.kept (twin 1's), as `twins` names them, in the order they were recorded (by their UTC names), written by the GPU machine's ~/repos/safety builder as ~/data/lerobot/jetrover-isaac-safety/<name> (default jetrover_<UTC>_<id>, as a batch names its own), with the sidecars of docs/adr/0038 decision 6 (robot/lerobot/README.md). `out` writes it under another folder there instead (absolute or ~/...). `split` above 1 writes that many smaller datasets instead, <name>_<k>of<split>, split by layout (a replay group and a layout never on two sides; docs/adr/0038 items 20 and 21), and prints each one's scenario, outcome and contact mix. `caption` is neutral (every task "move the arm") or category (the scenario's name, as datasets before 2026-11-22). A take set aside or deleted since is left out. `just isaac-safety-batch-twins` runs it after its batches; run it by hand after batches run with build=false
 [group('isaac')]
-isaac-safety-build twins="0,1" name="" out="":
+isaac-safety-build twins="0,1" name="" out="" split="1" caption="neutral":
     #!/usr/bin/env bash
     set -euo pipefail
+    case "{{split}}" in [1-9]|[1-9][0-9]) ;; *) echo "error: split is a number of datasets, 1 to 99" >&2; exit 1 ;; esac
+    case "{{caption}}" in neutral|category) ;; *) echo "error: caption is neutral or category" >&2; exit 1 ;; esac
     name="{{name}}"; [ -n "$name" ] || name="jetrover_$(date -u +%Y%m%d_%H%M%S)_$(printf '%06x' $(( (RANDOM << 15 | RANDOM) & 0xFFFFFF )))"
     takes=()
     for t in $(echo "{{twins}}" | tr ',' ' '); do
@@ -4142,8 +4148,9 @@ isaac-safety-build twins="0,1" name="" out="":
     gone=$(( ${#takes[@]} - ${#present[@]} ))
     [ "$gone" = 0 ] || echo "[safety] $gone listed take(s) are no longer kept there (set aside or deleted): left out" >&2
     [ "${#present[@]}" -gt 0 ] || { echo "error: none of the listed takes is still there" >&2; exit 1; }
-    echo "[safety] building $name from ${#present[@]} take(s)"
-    just _isaac-safety-build "$name" "{{out}}" "${present[@]}"
+    echo "[safety] building $name from ${#present[@]} take(s)$([ "{{split}}" = 1 ] || echo " as {{split}} datasets")"
+    args="--caption {{caption}}"; [ "{{split}}" = 1 ] || args="$args --split {{split}}"
+    SAFETY_BUILD_ARGS="$args" just _isaac-safety-build "$name" "{{out}}" "${present[@]}"
 
 # Time the safety build and check it writes what the sequential one did (docs/adr/0036 amendment 6): on the GPU machine, from a checkout of this pushed commit of its own (~/repos/safety-check, never the batches' ~/repos/safety), rebuild the first `episodes` episodes of the safety dataset `dataset` (a folder name under ~/data/lerobot/jetrover-isaac-safety, e.g. jetrover_20261122_005619_20ccb6) from the takes its meta/teleop/takes.jsonl lists, with `jobs` workers (1: the old sequential build), into ~/scratch/safety-build-check/, then compare it with the original file for file (teleop_lerobot safety-compare: every per-episode parquet and video byte for byte) and print both builds' seconds an episode. The rebuild is deleted afterwards, its log kept. Busy for minutes on every core it is given: run it when the GPU machine is free. Nothing moves
 [group('isaac')]
@@ -4164,9 +4171,24 @@ isaac-safety-build-check dataset episodes="40" jobs="8":
     out=$HOME/scratch/safety-build-check/$DATASET-first$N-jobs$JOBS
     mkdir -p "$(dirname "$out")"; rm -rf "$out" "$out.prepare"
     mapfile -t takes < <(head -n "$N" "$src/meta/teleop/takes.jsonl" | "$py" -c 'import json, sys; [print(json.loads(l)["take"]) for l in sys.stdin if l.strip()]')
-    echo "[check] rebuilding the first ${#takes[@]} episode(s) of $DATASET with $JOBS job(s) at ${COMMIT:0:7}"
+    # The reference's own build options (docs/adr/0038): from its report, or, built before it, its category captions.
+    opts=$("$py" - "$src" <<'PY'
+    import json, os, sys
+    p = os.path.join(sys.argv[1], "meta", "teleop", "report.json")
+    if not os.path.exists(p):
+        print("--caption category")
+    else:
+        o = json.load(open(p)).get("options") or {}
+        args = ["--caption", o.get("caption", "neutral"), "--geometry-dir=" + (o.get("geometryDir") or "")]
+        args += ["--table-unsafe"] if o.get("tableUnsafe") else []
+        s = o.get("stopModel") or {}
+        args += [f"--{k}={s[n]}" for n, k in (("latencyMs", "stop-latency-ms"), ("stopTimeMs", "stop-time-ms"), ("decelRadS2", "stop-decel-rad-s2")) if s.get(n) is not None]
+        print(" ".join(args))
+    PY
+    )
+    echo "[check] rebuilding the first ${#takes[@]} episode(s) of $DATASET with $JOBS job(s) at ${COMMIT:0:7} ($opts)"
     start=$(date +%s.%N)
-    "$py" -m teleop_lerobot safety-build --jobs "$JOBS" --out "$out" "${takes[@]}" > "$out.log" 2>&1 || { echo "[check] build failed: $(grep -vE '^(Svt|Map)' "$out.log" | tail -5)" >&2; exit 1; }
+    "$py" -m teleop_lerobot safety-build --jobs "$JOBS" $opts --out "$out" "${takes[@]}" > "$out.log" 2>&1 || { echo "[check] build failed: $(grep -vE '^(Svt|Map)' "$out.log" | tail -5)" >&2; exit 1; }
     end=$(date +%s.%N)
     # Seconds an episode: this build's wall clock, and both logs' from their first episode line to the Nth (the original's
     # log is the batch's, beside its dataset).

@@ -258,6 +258,18 @@ METER_GAMMA = 2.2        # an image's brightness goes roughly with radiance to t
 
 CAMERA_GAIN_RANGE = (0.25, 4.0)  # a camera's own exposure gain, in linear light
 APPEARANCE_WAIT_S = 30.0  # a session's preamble waits at most this long for a change under way (an appearance section only)
+KEEP_LOOK_FILE = ".keep-look"  # beside the control file: the next session keeps this one's look (counterfactual replays)
+KEEP_LOOK_MAX = 16  # at most this many sessions in a row keep a look: a file left behind cannot freeze a whole batch
+
+
+def keep_look(control_path: str, kept_in_a_row: int, max_kept: int = KEEP_LOOK_MAX) -> bool:
+    """Whether the change after a closed session is skipped, so the next session keeps its room, materials, clutter and look
+    (docs/adr/0038 "A, appearance": a counterfactual replay should differ from its source take only by its edit). It is,
+    while :data:`KEEP_LOOK_FILE` exists beside RobotHost's control file, for at most ``max_kept`` sessions in a row. The
+    replay's records then repeat its source's change number, so a reader can tell the group shares one look."""
+    if not control_path:
+        return False
+    return os.path.exists(os.path.join(os.path.dirname(os.path.abspath(control_path)), KEEP_LOOK_FILE)) and kept_in_a_row < max_kept
 
 
 def camera_gain(brightness: float, target: float) -> float:
@@ -1409,9 +1421,20 @@ def run(app, args, p, scene, cameras, fps, joints, motors, tap) -> int:
             out["environment.json"] = (json.dumps(doc, indent=1, sort_keys=True) + "\n").encode("utf-8")
         return out
 
+    kept = {"in_a_row": 0}  # sessions in a row that kept the look before them (keep_look)
+
     def on_closed(directory) -> None:
-        """After a session's trailer (the writer thread): the next change is due. With an appearance section, a session that
-        opens before it is done waits in its preamble."""
+        """After a session's trailer (the writer thread): the next change is due, unless the next session is to keep this
+        one's look (keep_look). With an appearance section, a session that opens before the change is done waits in its
+        preamble."""
+        if keep_look(args.record_control, kept["in_a_row"]):
+            kept["in_a_row"] += 1
+            print(f"[render] the next session keeps this one's look (change {backdrop['change']}): {KEEP_LOOK_FILE} is there", flush=True)
+            return
+        if kept["in_a_row"] >= KEEP_LOOK_MAX:
+            print(f"[render] warning: {KEEP_LOOK_FILE} is still there after {KEEP_LOOK_MAX} sessions kept one look; changing anyway",
+                  flush=True)
+        kept["in_a_row"] = 0
         if look is not None:
             appearance_ready.clear()
         want_backdrop_change.append(directory)

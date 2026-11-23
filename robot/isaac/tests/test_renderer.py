@@ -353,3 +353,13 @@ def test_the_heap_is_frozen_unless_asked_not_to():
     from teleop_isaac.renderer import parse_args
     assert parse_args(["--scene", "x.json"]).gc_freeze is True
     assert parse_args(["--scene", "x.json", "--no-gc-freeze"]).gc_freeze is False
+
+
+def test_a_session_keeps_the_look_before_it_only_while_the_keep_file_is_there_and_never_for_long(tmp_path):
+    from teleop_isaac.renderer import KEEP_LOOK_FILE, KEEP_LOOK_MAX, keep_look
+    control = str(tmp_path / ".active")
+    assert not keep_look(control, 0)  # no file: every closed session brings a new look, as before
+    assert not keep_look("", 0)  # not recording: nothing to keep
+    (tmp_path / KEEP_LOOK_FILE).write_text("")
+    assert keep_look(control, 0) and keep_look(control, KEEP_LOOK_MAX - 1)
+    assert not keep_look(control, KEEP_LOOK_MAX)  # a file left behind: the look changes anyway

@@ -577,7 +577,6 @@ namespace Teleop.Eval.JointDrive
             zHi = MathF.Min(zHi, o.Min.Z + HighestContactMeters); // a tall fixture's upper part is out of the pads' reach
             if (zHi < zLo + 0.003f) return Miss(0);
             float h = (float)Draw.Uniform(ref _rng, zLo, zHi);
-            float pitch = PitchFor(new Vector2(o.Center.X, o.Center.Y).Length()) + (float)(Draw.Uniform(ref _rng, -8, 8) * deg);
             float lateral;
             if (kind == ScriptMoveKind.Aim) lateral = (float)Draw.Uniform(ref _rng, -0.6, 0.6) * halfAcross;
             else
@@ -589,15 +588,20 @@ namespace Teleop.Eval.JointDrive
 
             Vector3 middle = new Vector3(o.Center.X, o.Center.Y, h) + lateral * across;
             float s0 = -(halfAlong + 0.24f), s1 = kind == ScriptMoveKind.Aim ? 0f : halfAlong + 0.12f;
+            // The line is first solved where it meets the object's box (or passes nearest it), with the wrist pitched for how far out
+            // that is: the arm's reach is a shell whose pitch changes with the radius. Other pitches are tried there too.
+            float meet = Math.Clamp(Meets(o, middle, u), s0, s1);
+            Vector3 at = middle + meet * u;
+            float radius = new Vector2(at.X, at.Y).Length();
+            float pitch = PitchFor(radius) + (float)(Draw.Uniform(ref _rng, -8, 8) * deg);
             float gripper = _hand.GripperEnd;
-            // The arm's reach depends on the wrist's pitch as much as on where it goes: other pitches are tried at that height.
             List<Vector3>? wrists = null;
             List<ArmPose>? poses = null;
             List<float>? gaps = null;
             for (int p = 0; p < 4 && wrists == null; p++)
             {
-                if (p > 0) pitch = PitchFor(new Vector2(o.Center.X, o.Center.Y).Length() + (float)Draw.Uniform(ref _rng, -0.04, 0.04)) + (float)(Draw.Uniform(ref _rng, -10, 10) * deg);
-                if (Line(oi, middle, u, s0, s1, pitch, gripper, out List<Vector3> w, out List<ArmPose> q, out List<float> g)) (wrists, poses, gaps) = (w, q, g);
+                if (p > 0) pitch = PitchFor(radius + (float)Draw.Uniform(ref _rng, -0.03, 0.03)) + (float)(Draw.Uniform(ref _rng, -10, 10) * deg);
+                if (Line(oi, middle, u, s0, s1, meet, pitch, gripper, out List<Vector3> w, out List<ArmPose> q, out List<float> g)) (wrists, poses, gaps) = (w, q, g);
             }
 
             if (wrists == null || poses == null || gaps == null) return Miss(1);
@@ -705,6 +709,32 @@ namespace Teleop.Eval.JointDrive
         }
 
         /// <summary>
+        /// Where along <paramref name="u"/> from <paramref name="origin"/> a line first enters <paramref name="o"/>'s box, m (the slab
+        /// test in the box's frame), or, when it misses the box, where it passes nearest the box's centre.
+        /// </summary>
+        internal static float Meets(in SafetyObject o, Vector3 origin, Vector3 u)
+        {
+            Quaternion toBox = Quaternion.Conjugate(Quaternion.Normalize(o.Rotation));
+            Vector3 p = Vector3.Transform(origin - o.Center, toBox), d = Vector3.Transform(u, toBox), half = o.HalfExtents;
+            float enter = float.NegativeInfinity, exit = float.PositiveInfinity;
+            for (int k = 0; k < 3; k++)
+            {
+                float pk = k == 0 ? p.X : k == 1 ? p.Y : p.Z, dk = k == 0 ? d.X : k == 1 ? d.Y : d.Z, hk = k == 0 ? half.X : k == 1 ? half.Y : half.Z;
+                if (MathF.Abs(dk) < 1e-9f)
+                {
+                    if (MathF.Abs(pk) > hk) return Vector3.Dot(o.Center - origin, u);
+                    continue;
+                }
+
+                float a = (-hk - pk) / dk, b = (hk - pk) / dk;
+                enter = MathF.Max(enter, MathF.Min(a, b));
+                exit = MathF.Min(exit, MathF.Max(a, b));
+            }
+
+            return enter <= exit ? enter : Vector3.Dot(o.Center - origin, u);
+        }
+
+        /// <summary>
         /// The wrist pitch that puts the pads <paramref name="radius"/> from the base axis near the table (measured 2026-11-22 over the
         /// IK and the envelope: pointing down they reach 18-24 cm out, 2.5-9 cm above the table; at -60 degrees 24-33 cm, 4-18 cm up;
         /// at -45 degrees 27-33 cm), radians, interpolated and clamped to that table.
@@ -768,7 +798,7 @@ namespace Teleop.Eval.JointDrive
         /// toward the start and on toward the end), each part as far as its poses are in reach, in the envelope, free of the robot's
         /// own model and on one branch. The wrist targets in order, their poses, and the arm's gap to the object at each.
         /// </summary>
-        private bool Line(int oi, Vector3 middle, Vector3 u, float s0, float s1, float pitch, float gripper, out List<Vector3> wrists, out List<ArmPose> poses,
+        private bool Line(int oi, Vector3 middle, Vector3 u, float s0, float s1, float meet, float pitch, float gripper, out List<Vector3> wrists, out List<ArmPose> poses,
             out List<float> gaps)
         {
             int n = (int)MathF.Ceiling((s1 - s0) / LineStepMeters) + 1;
@@ -788,7 +818,7 @@ namespace Teleop.Eval.JointDrive
             }
 
             // A first pose as near the object as the line has one, then outward from it both ways.
-            int mid = Math.Clamp((int)MathF.Round(-s0 / LineStepMeters), 0, n - 1), seed = -1;
+            int mid = Math.Clamp((int)MathF.Round((meet - s0) / LineStepMeters), 0, n - 1), seed = -1;
             var solved = new ArmPose[n];
             for (int d = 0; d <= 6 && seed < 0; d++)
             {

@@ -383,7 +383,10 @@ def test_the_room_looks_clutter_moves_and_replay_go_into_the_episode_line(scenar
     assert room["hdri"] == "royal_esplanade" and room["yawDeg"] == 7.752 and room["gains"] == {"third-left": 1.0, "wrist": 0.974}
     assert room["change"] == 87 and room["extra"] == ["5600"]  # a later field (workstream A's light) kept as it came
     assert line["looks"] == {"bench": "black-resin", "table": "fabric-denim"} and line["materials"] == {"3": "wood_planks"}
-    assert line["clutter"] == {"pieces": 3, "kinds": {"a4": 2, "bag": 1}}
+    assert line["clutter"] == {"pieces": 3, "kinds": {"a4": 2, "bag": 1},
+                               "items": [["a4", 0.43, 0.36, 2.95], ["a4", 0.41, 0.37, 2.91], ["bag", 0.33, 0.45, 1.84]]}
+    # Which change each look came from: a replay group shares one look, so its takes' numbers match.
+    assert line["lookChanges"] == {"EN": 87, "LK": 87, "MT": 87, "CL": 87, "LT": 87, "CJ": 87, "OA": 87}
     moves = line["moves"]
     assert moves["count"] == 3 and moves["kinds"] == {"aim": 2, "free": 1}
     assert moves["records"][0]["kind"] == "aim" and moves["records"][0]["object"] == "2" and moves["records"][0]["extra"] == ["later"]
@@ -422,24 +425,28 @@ def test_contacts_too_near_either_end_are_reported_not_set_aside(scenarios):
     assert episode(take(scenarios, "mixed", world(), name="20261122T100100Z-take002")).line["timingFlags"] == []
 
 
-def test_unavoidable_ranges_come_only_with_a_stop_model(scenarios):
-    path = take(scenarios, "mixed", world([wc(2000, "0:5:2:1.5"), wc(2100)]),
-                vq=lambda n, sensed: {"base_yaw": 0.01 * n, "proximal": 0.0, "gripper": 0.5})
+def test_unavoidable_ranges_come_only_with_a_stop_time(scenarios, tmp_path):
+    # Item 17 (workstream R): stopped, the arm goes on for the stop time of its speed, so the frames within that time before
+    # a contact can no longer avoid it. Off by default; 0.25 s (p90 0.35 s) provisional.
+    path = take(scenarios, "mixed", world([wc(2000, "0:5:2:1.5"), wc(2100), wc(2600, "0:4:4:0.5"), wc(2650)]))
     assert episode(path).unavoidable is None
-    e = episode(path, stop=sidecars.StopModel(latency_ms=100, stop_time_ms=200))  # at rest 200 ms after the ask
-    first = e.frames["in_contact"].index(True)
-    (a, b), = e.unavoidable
-    assert b == first - 1 and all(2000 * MS - e.frames["sensed_ns"][i] <= 200 * MS for i in range(a, b + 1))
-    assert 2000 * MS - e.frames["sensed_ns"][a - 1] > 200 * MS
-    # By deceleration: base_yaw turns 0.3 rad/s (0.01 a frame at 30 fps), so at 1.4 rad/s^2 it takes 214 ms to stop, at rest
-    # 207 ms after the ask: the same frames (the one before is 267 ms out).
-    d = episode(path, stop=sidecars.StopModel(latency_ms=100, decel_rad_s2=1.4))
-    assert d.unavoidable == e.unavoidable
-    assert episode(take(scenarios, "mixed", world([wc(2000, "0:5:2:1.5"), wc(2100)]), name="20261122T100100Z-take002"),
-                   stop=sidecars.StopModel(latency_ms=100, decel_rad_s2=1.5)).unavoidable is None  # no VQ: unmeasured
-    for bad in ({"latency_ms": 100}, {"latency_ms": 100, "stop_time_ms": 1, "decel_rad_s2": 1}, {"latency_ms": -1, "stop_time_ms": 1}):
+    e = episode(path, stop=sidecars.StopModel(sidecars.STOP_TIME_S))
+    # Frames every 1/15 s from 1.0 s: the contacts span frames 15-17 and 24-25; 250 ms before them, 1.800-1.933 s and
+    # 2.400-2.533 s (1.733 s is 267 ms out).
+    assert e.unavoidable == [[12, 14], [21, 23]]
+    assert [i for i, v in enumerate(e.frames["in_contact"]) if v] == [15, 16, 17, 24, 25]
+    assert episode(path, stop=sidecars.StopModel(sidecars.STOP_TIME_P90_S)).unavoidable[0] == [10, 14]  # 0.35 s: from 1.667 s
+    for bad in (0.0, -0.1, float("nan")):
         with pytest.raises(ValueError):
-            sidecars.StopModel(**bad)
+            sidecars.StopModel(bad)
+    pytest.importorskip("pandas")
+    pytest.importorskip("pyarrow")
+    root, plain = str(tmp_path / "ds"), str(tmp_path / "plain")
+    safety.build(Writer(), root, [read_take(path)], log=lambda m: None, options=sidecars.Options(stop=sidecars.StopModel(0.25)))
+    written = json.load(open(os.path.join(root, "meta", "teleop", "unavoidable_ranges.json")))
+    assert written["stopTimeS"] == 0.25 and written["unavoidable_ranges"] == {"0": e.unavoidable} and "provisional" in written["method"]
+    safety.build(Writer(), plain, [read_take(path)], log=lambda m: None)
+    assert not os.path.exists(os.path.join(plain, "meta", "teleop", "unavoidable_ranges.json"))  # off by default
 
 
 # --- splitting a batch ---------------------------------------------------------------------------------------------------------

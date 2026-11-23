@@ -58,25 +58,21 @@ MOVE_TAGS: Tuple[str, ...] = ("MV",)
 MOVE_FIELDS: Tuple[str, ...] = ("index", "count", "kind", "object", "offsetMm", "gapMm", "startS", "contactS", "closestS", "endS")
 
 
+STOP_TIME_S, STOP_TIME_P90_S = 0.25, 0.35  # provisional (workstream R, recorded stops on the real arm and the twin)
+
+
 @dataclass(frozen=True)
 class StopModel:
-    """How the arm stops (item 17), for :func:`unavoidable`: a stop takes effect ``latency_ms`` after it is asked for, then the
-    arm slows linearly to rest over ``stop_time_ms``, or, with ``decel_rad_s2`` instead, over the time its fastest joint
-    needs at that deceleration from its speed at the frame (from the posed joints, ``VQ``)."""
+    """How the arm stops (item 17), for :func:`unavoidable`: after its command stops, the arm goes on for ``time_s`` of its
+    speed (travel = speed x time). Provisional: 0.25 s (p90 0.35 s), measured by workstream R from recorded stops on the
+    real arm and the twin (real human stops 0.10 / 0.19 / 0.32 s, p10 / p50 / p90), until the real arm's run of
+    ``just stop-latency``. A system that detects and then stops adds its own delay to it."""
 
-    latency_ms: float
-    stop_time_ms: Optional[float] = None
-    decel_rad_s2: Optional[float] = None
+    time_s: float
 
     def __post_init__(self):
-        if not (self.latency_ms >= 0):
-            raise ValueError("the stop latency is at least 0 ms")
-        if (self.stop_time_ms is None) == (self.decel_rad_s2 is None):
-            raise ValueError("a stop model needs a stop time or a deceleration, not both")
-        if self.stop_time_ms is not None and not (self.stop_time_ms >= 0):
-            raise ValueError("the stop time is at least 0 ms")
-        if self.decel_rad_s2 is not None and not (self.decel_rad_s2 > 0):
-            raise ValueError("the deceleration is above 0 rad/s^2")
+        if not (self.time_s > 0) or not math.isfinite(self.time_s):
+            raise ValueError("the stop time is a number of seconds above 0")
 
 
 @dataclass(frozen=True)
@@ -97,8 +93,7 @@ class Options:
 
     def describe(self) -> Dict:
         return {"caption": self.caption, "tableUnsafe": self.table_unsafe, "geometryDir": self.geometry_dir,
-                "stopModel": None if self.stop is None else {"latencyMs": self.stop.latency_ms, "stopTimeMs": self.stop.stop_time_ms,
-                                                             "decelRadS2": self.stop.decel_rad_s2}}
+                "stopModel": None if self.stop is None else {"stopTimeS": self.stop.time_s}}
 
 
 @dataclass(frozen=True)
@@ -478,6 +473,11 @@ def _by_change(rows: Sequence[Sequence[str]], change: Optional[str]) -> Optional
     return rows[-1]
 
 
+def _int_or(v):
+    """A change number as an int when it is one, else as it came (None stays None)."""
+    return int(v) if isinstance(v, str) and v.lstrip("-").isdigit() else v
+
+
 def _named(text: str) -> Dict[str, str]:
     return {it[0]: ":".join(it[1:]) for it in items(text) if len(it) >= 2}
 
@@ -513,12 +513,15 @@ def _colours(row: Optional[Sequence[str]]) -> Optional[Dict]:
 
 
 def _clutter(row: Optional[Sequence[str]]) -> Optional[Dict]:
+    """``CL``: the flat clutter's pieces (kind, x, y, yaw in the base frame) and their count by kind."""
     if row is None:
         return None
     kinds: Dict[str, int] = {}
+    pieces = []
     for it in items(row[1] if len(row) > 1 else ""):
         kinds[it[0]] = kinds.get(it[0], 0) + 1
-    return {"pieces": sum(kinds.values()), "kinds": dict(sorted(kinds.items()))}
+        pieces.append([it[0]] + [_num(v) for v in it[1:4]])
+    return {"pieces": len(pieces), "kinds": dict(sorted(kinds.items())), "items": pieces}
 
 
 def _jitter(measured: Dict[str, Dict], recorded: Dict[str, Dict]) -> Dict[str, Dict]:
@@ -546,53 +549,20 @@ def _frame_span(times: Sequence[int], half: int, start: int, end: int) -> Tuple[
     return (hit[0], hit[-1]) if hit else (None, None)
 
 
-def _joint_speeds(frames: Optional[Jlog]) -> Tuple[List[int], List[float]]:
-    """From ``VQ``: each posed state's time and the fastest arm joint's speed there (rad/s, against the state before; the
-    gripper's fingers left out). Empty without ``VQ``."""
-    rows = []
-    for r in (frames.tag("VQ") if frames is not None else []):
-        if len(r) >= 3:
-            values = {it[0]: float(it[1]) for it in items(r[2]) if len(it) >= 2 and not it[0].startswith("gripper")}
-            rows.append((int(r[1]), values))
-    rows.sort(key=lambda x: x[0])
-    times, speeds = [], []
-    for (t0, a), (t1, b) in zip(rows, rows[1:]):
-        if t1 <= t0:
-            continue
-        times.append(t1)
-        speeds.append(max((abs(b[k] - a[k]) for k in a if k in b), default=0.0) / ((t1 - t0) / 1e9))
-    return times, speeds
-
-
-def unavoidable(take: Take, in_contact: Sequence[int], obstacle_starts: Sequence[int], stop: StopModel,
-                speeds: Tuple[List[int], List[float]]) -> Optional[List[List[int]]]:
+def unavoidable(take: Take, in_contact: Sequence[int], obstacle_starts: Sequence[int], stop: StopModel) -> List[List[int]]:
     """The frames from which a stop could no longer avoid the next obstacle contact (item 17; provisional until the real
-    arm's stop latency is measured), as inclusive ranges. A stop asked for at a frame's time t takes effect after the
-    latency L; the arm then slows linearly to rest over T, covering the path it would have covered in T/2 at the speed it
-    had, so it comes to rest where the recorded motion was at t + L + T/2. A frame not in contact is unavoidable when the
-    next contact starts by then. T is the model's stop time, or the fastest arm joint's speed at the frame over the
-    model's deceleration (``VQ``; None when the take has no ``VQ``)."""
-    if stop.decel_rad_s2 is not None and not speeds[0]:
-        return None
+    arm's stop latency is measured), as inclusive ranges. Stopped at a frame's time t, the arm goes on for the stop time T
+    of its speed (travel = speed x T), along the path it was on: it covers what the recorded motion covers from t to t + T
+    (exactly so at a constant speed). A frame not in contact is unavoidable when the next contact starts by t + T."""
     half = _frame_period(take)
     t_last = int(take.frames[-1].timing["sensed"]) + half
     starts = sorted(s for s in obstacle_starts if s <= t_last)
+    horizon = stop.time_s * 1e9
     marks = []
     for i, f in enumerate(take.frames):
         t = int(f.timing["sensed"])
-        if in_contact[i]:
-            marks.append(0)
-            continue
         k = bisect.bisect_right(starts, t)
-        if k >= len(starts):
-            marks.append(0)
-            continue
-        if stop.stop_time_ms is not None:
-            stop_ns = stop.stop_time_ms * 1e6
-        else:
-            j = bisect.bisect_right(speeds[0], t) - 1
-            stop_ns = (speeds[1][j] if j >= 0 else speeds[1][0]) / stop.decel_rad_s2 * 1e9
-        marks.append(1 if starts[k] - t <= stop.latency_ms * 1e6 + stop_ns / 2 else 0)
+        marks.append(1 if not in_contact[i] and k < len(starts) and starts[k] - t <= horizon else 0)
     return ranges(marks)
 
 
@@ -813,8 +783,8 @@ def episode(take: Take, options: Options = Options(), records: Optional[Records]
     except ValueError as e:
         rp = {"group": None, "role": None, "edit": None, "editParsed": None, "replayError": str(e)}
     room, change = _room(frames, t_first)
-    looks = _by_change(frames.tag("LK"), change) if frames is not None else None
-    materials = _by_change(frames.tag("MT"), change) if frames is not None else None
+    chosen = {tag: (_by_change(frames.tag(tag), change) if frames is not None else None) for tag in ("LK", "MT", "CL", "LT", "CJ", "OA")}
+    looks, materials = chosen["LK"], chosen["MT"]
     cams = cameras(frames, rename)
     moves = planned_moves(host)
     conditions = rec.session.get("conditions") or {}
@@ -834,10 +804,10 @@ def episode(take: Take, options: Options = Options(), records: Optional[Records]
         "speedSlider": conditions.get("speedSliderRadPerSec"), "operator": conditions.get("operator"),
         "room": room, "looks": _named(looks[1]) if looks and len(looks) > 1 else None,
         "materials": _named(materials[1]) if materials and len(materials) > 1 else None,
-        "clutter": _clutter(_by_change(frames.tag("CL"), change)) if frames is not None else None,
-        "cameraJitter": _jitter(camera_jitter(scene, cams), _offsets(_by_change(frames.tag("CJ"), change) if frames is not None else None, rename)),
-        "lighting": _lighting(_by_change(frames.tag("LT"), change)) if frames is not None else None,
-        "objectColours": _colours(_by_change(frames.tag("OA"), change)) if frames is not None else None,
+        "clutter": _clutter(chosen["CL"]),
+        "cameraJitter": _jitter(camera_jitter(scene, cams), _offsets(chosen["CJ"], rename)),
+        "lighting": _lighting(chosen["LT"]), "objectColours": _colours(chosen["OA"]),
+        "lookChanges": {"EN": _int_or(change), **{tag: _int_or(r[0]) for tag, r in chosen.items() if r}},
         "moves": {"count": len(moves), "kinds": _kinds(moves), "records": moves}, "events": planned_events(host, t_first)}
     if "replayError" in rp:
         line["replayError"] = rp["replayError"]
@@ -852,7 +822,7 @@ def episode(take: Take, options: Options = Options(), records: Optional[Records]
                   "cameras": cams}
     unav = None
     if options.stop is not None:
-        unav = unavoidable(take, in_contact, starts_ns, options.stop, _joint_speeds(frames))
+        unav = unavoidable(take, in_contact, starts_ns, options.stop)
     return Episode(take.scenario, labels, line, scene_line, contact_lines, cols, unav, flags)
 
 
@@ -970,15 +940,14 @@ def write(root: str, written: Sequence[Tuple[int, Episode]], options: Options, s
     with open(os.path.join(teleop, "report.json"), "w", encoding="utf-8") as f:
         json.dump(_clean(rep), f, indent=1, allow_nan=False)
     if options.stop is not None:
-        s = options.stop
         with open(os.path.join(teleop, "unavoidable_ranges.json"), "w", encoding="utf-8") as f:
-            json.dump({"method": "provisional (docs/adr/0038 decision 6, item 17): a stop asked for at a frame takes effect after "
-                                 "the latency, then the arm slows linearly to rest over the stop time (or its fastest arm joint's "
-                                 "speed over the deceleration), coming to rest where the recorded motion was at latency + half "
-                                 "the stop time later; a frame not in contact is unavoidable when the next obstacle contact "
-                                 "starts by then. Until the real arm's stop latency is measured.",
-                       "stopLatencyMs": s.latency_ms, "stopTimeMs": s.stop_time_ms, "stopDecelRadS2": s.decel_rad_s2,
-                       "unmeasured": [ep for ep, e in written if e.unavoidable is None],
+            json.dump({"method": "provisional (docs/adr/0038 decision 6, item 17): stopped at a frame, the arm goes on for the stop "
+                                 "time of its speed (travel = speed x time) along the path it was on, so a frame not in contact is "
+                                 "unavoidable when the next obstacle contact starts within the stop time. The stop time is "
+                                 f"provisional, {STOP_TIME_S} s (p90 {STOP_TIME_P90_S} s) from recorded stops on the real arm and "
+                                 "the twin, until the real arm's run of just stop-latency; a system that detects and then stops "
+                                 "adds its own delay to it.",
+                       "stopTimeS": options.stop.time_s,
                        "unavoidable_ranges": {str(ep): e.unavoidable for ep, e in written if e.unavoidable}}, f, indent=1)
     return rep
 

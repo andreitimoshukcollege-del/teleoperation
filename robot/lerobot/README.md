@@ -84,7 +84,8 @@ link names are the URDF's. JSON has no NaN: a value that is not there is `null` 
 | `firstContactS`, `afterLastContactS`, `timingFlags` | item 24: when the first obstacle contact began, how long after the last one ended the episode runs (0 when still touching), and the reasons it is reported: a first contact under 1.5 s or a last one ending under 1.0 s before the end (never set aside for it) |
 | `speedSlider`, `operator` | from session.json's conditions |
 | `room` | the `EN` in force: `change`, `seed`, `hdri`, `sha256`, `yawDeg`, `intensity`, `settleFrames`, `brightness`, `gains` (per recorded camera name), later fields under `extra` |
-| `looks`, `materials`, `clutter` | `LK` and `MT` of that change (name to look, id to texture), and `CL` counted (`pieces`, `kinds`) |
+| `looks`, `materials`, `clutter` | `LK` and `MT` of that change (name to look, id to texture), and `CL` (`pieces`, `kinds`, and `items`: `[kind, x, y, yaw]` each) |
+| `lookChanges` | the change number each of `EN`, `LK`, `MT`, `CL`, `LT`, `CJ` and `OA` came from: a replay group shares one look, so its takes' numbers match |
 | `cameraJitter` | per camera (dataset names), its `CM` pose against the scene file's: `mm` apart and the turn in `deg`; with the drawn offset (`CJ`: `dx`, `dy`, `dz` m along the camera's own axes, `pitchDeg`, `yawDeg`, `rollDeg`) when the take records it |
 | `lighting`, `objectColours` | `LT` (`domeKelvin`, `exposure`, `key`: `azimuthDeg`, `elevationDeg`, `intensity`, `kelvin`, `angleDeg`) and `OA` (per object id: `method`, `brightness`, `desaturation`, `tint`) of the room's change, when the take has an appearance section |
 | `moves` | the mixed script's planned moves (`MV`): `count`, `kinds`, and every record's fields as strings. Metadata, never labels |
@@ -128,13 +129,14 @@ computed (workstream C's `teleop_lerobot/clearance.py` and the geometry under `-
 `tableContactEpisodes`, `contacts` by kind, `unsafeFrames`, `unsafeRanges`, `replayGroups`, `roles`, `layoutHashes`,
 `layoutSeeds`, `clearanceEpisodes`, `timingFlagged` (episodes), `split` (`part`, `of`) and the build's `options`.
 
-`unavoidable_ranges.json`, only with a stop model (`--stop-latency-ms` with `--stop-time-ms` or `--stop-decel-rad-s2`),
-**provisional until the real arm's stop latency is measured** (docs/adr/0038 item 17): the frames from which stopping could
-no longer avoid the next obstacle contact, `{"<episode>": [[start, end], ...]}`. A stop asked for at a frame takes effect
-after the latency, then the arm slows linearly to rest over the stop time (or its fastest arm joint's speed at the frame,
-from `VQ`, over the deceleration), so it rests where the recorded motion was half the stop time after the latency; a frame
-not in contact is unavoidable when the next contact starts by then. `unmeasured` lists episodes without `VQ` under a
-deceleration model.
+`unavoidable_ranges.json`, only with a stop time (`--stop-time-s`; off by default), **provisional until the real arm's
+stop latency is measured** (docs/adr/0038 item 17): the frames from which stopping could no longer avoid the next obstacle
+contact, `unavoidable_ranges` `{"<episode>": [[start, end], ...]}`, with the `stopTimeS` used and the `method`. Stopped at a
+frame, the arm goes on for the stop time of its speed (travel = speed x time) along the path it was on, so a frame not in
+contact is unavoidable when the next contact starts within the stop time (exact at a constant speed; where the recorded
+motion speeds up or slows, it follows it). The provisional stop time is 0.25 s (p90 0.35 s), from recorded stops on the real
+arm and the twin (workstream R; real human stops 0.10 / 0.19 / 0.32 s, p10 / p50 / p90), until the real arm's run of
+`just stop-latency`. A system that detects and then stops adds its own delay to it.
 
 **Comparing** (`safety-compare REFERENCE REBUILT`): a rebuild of a reference's first takes, file for file; the sidecars by
 episode as the label files are. A reference from before docs/adr/0038 has no sidecars and is compared without them (rebuild

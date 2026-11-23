@@ -235,9 +235,10 @@ recipe; every field is defined in `robot/lerobot/README.md`, "Safety datasets: l
 - **Clearance** comes from workstream C's `clearance.compute`, imported guarded: NaN, and the reason in
   `clearanceUnavailable`, when the geometry folder (`--geometry-dir`, default `~/isaacsim/assets/clearance`) or the module
   is missing or raises. Tested with a fake.
-- **Item 17:** `meta/teleop/unavoidable_ranges.json` only with `--stop-latency-ms` and `--stop-time-ms` (or
-  `--stop-decel-rad-s2`, from `VQ` joint speeds). Provisional: the stop rests where the recorded motion was latency plus half
-  the stop time later.
+- **Item 17:** `meta/teleop/unavoidable_ranges.json` only with `--stop-time-s` (off by default). Stopped, the arm goes on for
+  that time of its speed (travel = speed x time) along its recorded path: a frame not in contact is unavoidable when the next
+  contact starts within it. Provisional 0.25 s (p90 0.35 s), workstream R's figure from recorded stops, until the real arm's
+  `just stop-latency` run.
 - **Item 24:** `firstContactS`, `afterLastContactS` and `timingFlags` per episode, the flagged episodes in `report.json` and
   the build log. Never set aside.
 - **Items 20 and 21:** `safety-build --split K` and `just isaac-safety-build <twins> <name> <out> K` write `<name>_<k>of<K>`. Episodes

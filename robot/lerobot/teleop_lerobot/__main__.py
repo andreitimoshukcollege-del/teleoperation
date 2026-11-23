@@ -91,11 +91,10 @@ def main(argv=None) -> int:
                         "clearance NaN). Default: %(default)s")
     s.add_argument("--split", type=int, default=1, metavar="K",
                    help="write K datasets, <out>_<k>of<K>, split by layout (a replay group and a layout never on two sides)")
-    s.add_argument("--stop-latency-ms", type=float, default=None,
-                   help="a stop model's latency: with --stop-time-ms or --stop-decel-rad-s2 writes "
-                        "meta/teleop/unavoidable_ranges.json (provisional, docs/adr/0038 item 17)")
-    s.add_argument("--stop-time-ms", type=float, default=None, help="the stop model's time from slowing to rest")
-    s.add_argument("--stop-decel-rad-s2", type=float, default=None, help="or its joints' deceleration")
+    s.add_argument("--stop-time-s", type=float, default=None, metavar="SECONDS",
+                   help="writes meta/teleop/unavoidable_ranges.json (docs/adr/0038 item 17; off by default): after a stop the "
+                        "arm goes on for this many seconds of its speed (travel = speed x time). Provisional: 0.25 (p90 0.35), "
+                        "until the real arm's just stop-latency run")
     s = sub.add_parser("safety-compare")
     s.add_argument("reference", help="a safety dataset")
     s.add_argument("rebuilt", help="one written from the first takes of the reference's meta/teleop/takes.jsonl")
@@ -181,11 +180,9 @@ def main(argv=None) -> int:
         if a.split < 1:
             p.error("--split is at least 1")
         stop = None
-        if a.stop_latency_ms is not None or a.stop_time_ms is not None or a.stop_decel_rad_s2 is not None:
-            if a.stop_latency_ms is None:
-                p.error("a stop model needs --stop-latency-ms")
+        if a.stop_time_s is not None:
             try:
-                stop = sidecars.StopModel(a.stop_latency_ms, a.stop_time_ms, a.stop_decel_rad_s2)
+                stop = sidecars.StopModel(a.stop_time_s)
             except ValueError as e:
                 p.error(str(e))
         options = sidecars.Options(caption=a.caption, table_unsafe=a.table_unsafe, geometry_dir=a.geometry_dir or None, stop=stop)

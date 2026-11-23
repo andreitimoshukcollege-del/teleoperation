@@ -4182,7 +4182,7 @@ isaac-safety-build-check dataset episodes="40" jobs="8":
         args = ["--caption", o.get("caption", "neutral"), "--geometry-dir=" + (o.get("geometryDir") or "")]
         args += ["--table-unsafe"] if o.get("tableUnsafe") else []
         s = o.get("stopModel") or {}
-        args += [f"--{k}={s[n]}" for n, k in (("latencyMs", "stop-latency-ms"), ("stopTimeMs", "stop-time-ms"), ("decelRadS2", "stop-decel-rad-s2")) if s.get(n) is not None]
+        args += [f"--stop-time-s={s['stopTimeS']}"] if s.get("stopTimeS") is not None else []
         print(" ".join(args))
     PY
     )

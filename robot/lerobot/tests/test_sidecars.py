@@ -598,3 +598,24 @@ def test_an_old_takes_planned_events_and_odd_numbers_reach_the_lines_as_json_can
         text = open(os.path.join(root, "meta", "teleop", name)).read()
         assert "NaN" not in text and "Infinity" not in text
         [json.loads(x) for x in text.splitlines()]
+
+
+def test_safety_report_says_what_a_split_build_holds_and_finds_a_parted_group(scenarios, tmp_path, capsys):
+    pytest.importorskip("pandas")
+    pytest.importorskip("pyarrow")
+    from teleop_lerobot.__main__ import main
+
+    paths = batch(scenarios)
+    out = str(tmp_path / "out" / "v2check")
+    roots = safety.build_split(Writer(), out, [read_take(p) for p in paths], 2, log=lambda m: None)
+    assert main(["safety-report", *roots]) == 0
+    text = capsys.readouterr().out
+    assert "[report] no faults in 2 dataset(s)" in text and text.count("[mix]") == 0 and "clearance in 2 of 2" not in text
+    assert "replay groups: 1; one look in 1, one layout seed in 1, every edited replay's layout hash unlike its source's in 1" in text
+    # Built apart, a group's source and replay land in two datasets: a fault.
+    a, b = str(tmp_path / "a"), str(tmp_path / "b")
+    safety.build(Writer(), a, [read_take(paths[0])], log=lambda m: None)
+    safety.build(Writer(), b, [read_take(paths[1])], log=lambda m: None)
+    assert main(["safety-report", a, b]) == 1
+    text = capsys.readouterr().out
+    assert "FAULT: replay group 3.1 is in 2 datasets" in text and "FAULT: replay group 3.1 has" not in text

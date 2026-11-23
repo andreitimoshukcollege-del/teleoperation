@@ -12,6 +12,8 @@
   ``--jobs`` worker processes preparing episodes ahead (amendment 6), and ``--split K`` for K smaller datasets by layout;
 - ``safety-compare REFERENCE REBUILT``: whether a safety dataset rebuilt from a reference's first takes holds the same
   files (amendment 6; no LeRobot needed);
+- ``safety-report DATASET...``: what one build's datasets (a split build's parts together) hold, and any fault in their labels,
+  sidecars or replay groups (docs/adr/0038; the twin check);
 - ``knock-report TAKE...``: every object each take touched, its mass at its size and whether it was knocked over, as JSON
   lines, then a summary by mass (docs/adr/0037 P4; no LeRobot needed).
 """
@@ -95,6 +97,8 @@ def main(argv=None) -> int:
                    help="writes meta/teleop/unavoidable_ranges.json (docs/adr/0038 item 17; off by default): after a stop the "
                         "arm goes on for this many seconds of its speed (travel = speed x time). Provisional: 0.25 (p90 0.35), "
                         "until the real arm's just stop-latency run")
+    s = sub.add_parser("safety-report")
+    s.add_argument("datasets", nargs="+", help="one build's safety datasets (every part of a split build)")
     s = sub.add_parser("safety-compare")
     s.add_argument("reference", help="a safety dataset")
     s.add_argument("rebuilt", help="one written from the first takes of the reference's meta/teleop/takes.jsonl")
@@ -111,6 +115,17 @@ def main(argv=None) -> int:
             print("[compare] " + d)
         print(f"[compare] {'the same' if not diffs else f'{len(diffs)} difference(s)'}: {a.rebuilt} against {a.reference}")
         return 1 if diffs else 0
+
+    if a.command == "safety-report":
+        from . import sidecars
+
+        lines, faults = sidecars.check_datasets([os.path.expanduser(d) for d in a.datasets])
+        for line in lines:
+            print("[report] " + line)
+        for fault in faults:
+            print("[report] FAULT: " + fault)
+        print(f"[report] {'no faults' if not faults else f'{len(faults)} fault(s)'} in {len(a.datasets)} dataset(s)")
+        return 1 if faults else 0
 
     if a.command == "safety-check":
         from . import safety, sidecars

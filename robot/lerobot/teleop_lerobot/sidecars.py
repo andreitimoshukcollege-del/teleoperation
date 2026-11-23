@@ -984,6 +984,69 @@ def write_frames(path: str, written: Sequence[Tuple[int, Episode]]) -> None:
     df.to_parquet(path, index=False)
 
 
-__all__ = ["Episode", "GEOMETRY_DIR", "NEUTRAL_CAPTION", "Options", "StopModel", "Stretch", "camera_jitter", "cameras",
+def check_datasets(roots: Sequence[str]) -> Tuple[List[str], List[str]]:
+    """What a set of safety datasets (one build, or the parts of a split one) holds, and what is wrong with it, from their
+    files alone: (lines to print, faults). Faults: a ``safety_ranges.json`` with other keys than world-models' three or ranges
+    other than ``manual_safety_labels.json``'s, a replay group in more than one dataset or without its source, a sidecar
+    missing. The lines: each dataset's mix (``report.json``), how many episodes have clearance and how close it is at the
+    frames in contact (about 0 when it agrees with PhysX), and per replay group whether its takes share one look (their
+    change numbers), one layout seed, and differ in layout hash where an edit was made. For the twin check."""
+    import pandas as pd  # lerobot's own dependency
+
+    lines, faults = [], []
+    groups: Dict[str, List[Tuple[str, Dict]]] = {}
+    for root in roots:
+        name = os.path.basename(root.rstrip("/"))
+        teleop = os.path.join(root, "meta", "teleop")
+        missing = [f for f in ("episodes.jsonl", "scenes.jsonl", "contacts.jsonl", "frames.parquet", "report.json")
+                   if not os.path.exists(os.path.join(teleop, f))]
+        if missing or not os.path.exists(os.path.join(root, "safety_ranges.json")):
+            faults.append(f"{name}: missing {', '.join(missing + ([] if os.path.exists(os.path.join(root, 'safety_ranges.json')) else ['safety_ranges.json']))}")
+            continue
+        with open(os.path.join(root, "safety_ranges.json"), encoding="utf-8") as f:
+            ranges_ = json.load(f)
+        with open(os.path.join(root, "manual_safety_labels.json"), encoding="utf-8") as f:
+            manual = json.load(f)
+        if list(ranges_) != ["source", "notes", "unsafe_ranges"] or ranges_.get("source") != "physics":
+            faults.append(f"{name}: safety_ranges.json has keys {list(ranges_)}, source {ranges_.get('source')!r}")
+        if ranges_.get("unsafe_ranges") != manual:
+            faults.append(f"{name}: safety_ranges.json's ranges differ from manual_safety_labels.json's")
+        with open(os.path.join(teleop, "report.json"), encoding="utf-8") as f:
+            lines.append(mix(name, json.load(f)))
+        with open(os.path.join(teleop, "episodes.jsonl"), encoding="utf-8") as f:
+            eps = [json.loads(x) for x in f if x.strip()]
+        for e in eps:
+            if e.get("group") is not None:
+                groups.setdefault(str(e["group"]), []).append((name, e))
+        frames = pd.read_parquet(os.path.join(teleop, "frames.parquet"))
+        touching = frames.loc[frames["in_contact"], "min_clearance_mm"].dropna()
+        have = sum(1 for e in eps if e.get("clearanceUnavailable") is None)
+        lines.append(f"{name}: clearance in {have} of {len(eps)} episode(s)"
+                     + (f"; at the {len(touching)} frames in contact, min clearance median {touching.median():.1f} mm, "
+                        f"90% under {touching.quantile(0.9):.1f} mm, largest {touching.max():.1f} mm" if len(touching) else "")
+                     + (f"; why not: {sorted({e['clearanceUnavailable'] for e in eps if e.get('clearanceUnavailable')})[:3]}"
+                        if have < len(eps) else ""))
+    shared_look = same_seed = hashed_apart = 0
+    for g, members in sorted(groups.items()):
+        where = {n for n, _ in members}
+        if len(where) > 1:
+            faults.append(f"replay group {g} is in {len(where)} datasets: {sorted(where)}")
+        if sum(1 for _, e in members if e.get("role") == "source") != 1:
+            faults.append(f"replay group {g} has {sum(1 for _, e in members if e.get('role') == 'source')} source(s)")
+        looks = {json.dumps(e.get("lookChanges"), sort_keys=True) for _, e in members}
+        seeds = {e.get("layoutSeed") for _, e in members}
+        source = next((e for _, e in members if e.get("role") == "source"), None)
+        edited = [e for _, e in members if e.get("role") == "replay" and (e.get("editParsed") or {}).get("op") not in (None, "none")]
+        shared_look += len(looks) == 1
+        same_seed += len(seeds) == 1
+        hashed_apart += bool(source) and all(e.get("layoutHash") != source.get("layoutHash") for e in edited)
+    if groups:
+        n = len(groups)
+        lines.append(f"replay groups: {n}; one look in {shared_look}, one layout seed in {same_seed}, every edited replay's layout "
+                     f"hash unlike its source's in {hashed_apart}")
+    return lines, faults
+
+
+__all__ = ["Episode", "GEOMETRY_DIR", "NEUTRAL_CAPTION", "Options", "StopModel", "Stretch", "camera_jitter", "cameras", "check_datasets",
            "clearance", "episode", "frame_flags", "layout_hash", "look_at", "object_stretches", "parse_edit", "planned_moves",
            "read_records", "replay", "report", "split", "unavoidable", "write", "write_frames"]

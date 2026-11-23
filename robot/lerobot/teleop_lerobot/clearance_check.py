@@ -22,6 +22,7 @@ It reads the takes (a safety dataset's ``meta/teleop/takes.jsonl``, or take fold
 from __future__ import annotations
 
 import argparse
+import bisect
 import json
 import math
 import os
@@ -91,15 +92,18 @@ def check_take(path: str, geometry: str, traces: int = 0) -> Dict:
     half = 1e9 / (2 * take.fps)
     free, touching = [], []
     obstacle = np.array(c.obstacle_mm)
+    records = [(sensed, [(int(it[1]), int(it[2])) for it in items(text) if len(it) >= 4 and int(it[2]) != 0])
+               for sensed, text in world.contacts]
+    times = [r[0] for r in records]
     for i, f in enumerate(take.frames):
         t = float(f.timing["sensed"])
         hit = [r for r in runs if r["start"] - half - MARGIN_NS <= t <= r["end"] + half + MARGIN_NS]
         if not hit:
             free.append(float(obstacle[i].min()))
-        inside = [r for r in runs if r["start"] <= t <= r["end"]]
-        for r in inside:
-            for link, obj in r["pairs"]:
-                touching.append(round(clearance.link_object_distance(world, t, link, obj) * 1000, 2))
+        k = bisect.bisect_right(times, t) - 1  # the WC record in force at the frame: the pairs touching then
+        for link, obj in (records[k][1] if k >= 0 else []):
+            touching.append({"mm": round(clearance.link_object_distance(world, t, link, obj) * 1000, 2),
+                             "kind": kinds.get(obj, ("?", "?"))[1]})
     surface = np.array(c.surface_mm, float)
     return {"take": path, "scenario": take.scenario, "frames": len(take.frames), "seconds": round(seconds, 3), "onsets": rows,
             "free": free, "touching": touching, "surfaceMinMm": float(np.nanmin(surface)) if np.isfinite(surface).any() else None}
@@ -134,10 +138,12 @@ def summary(results: Sequence[Dict]) -> List[str]:
         out.append(f"contact-free frames {len(free)}: nearest obstacle < 0 mm {np.mean(np.asarray(free) < 0):.2%}, < -1 mm "
                    f"{np.mean(np.asarray(free) < -1):.2%}, < -3 mm {np.mean(np.asarray(free) < -3):.2%}; under 10 mm "
                    f"{np.mean(np.asarray(free) < 10):.1%}, under 30 mm {np.mean(np.asarray(free) < 30):.1%}")
-    touching = [v for res in results for v in res["touching"]]
-    if touching:
-        out.append(f"frames in contact {len(touching)} (link, object): the touching link's distance median {_pct(touching, 50):.2f} mm, "
-                   f"p10 {_pct(touching, 10):.2f}, p90 {_pct(touching, 90):.2f}, > 3 mm {np.mean(np.asarray(touching) > 3):.1%}")
+    for label, kinds in (("", ("fixed", "movable", "?")), (" fixed", ("fixed",)), (" movable", ("movable",))):
+        touching = [v["mm"] for res in results for v in res["touching"] if v["kind"] in kinds]
+        if touching:
+            out.append(f"frames in contact{label} {len(touching)} (link, object pairs WC names then): the link's distance median "
+                       f"{_pct(touching, 50):.2f} mm, p10 {_pct(touching, 10):.2f}, p90 {_pct(touching, 90):.2f}, > 3 mm "
+                       f"{np.mean(np.asarray(touching) > 3):.1%}, > 10 mm {np.mean(np.asarray(touching) > 10):.1%}")
     surf = [r["surfaceMinMm"] for r in results if r["surfaceMinMm"] is not None]
     if surf:
         out.append(f"surfaces: nearest approach a take median {_pct(surf, 50):.1f} mm, min {min(surf):.1f} mm")

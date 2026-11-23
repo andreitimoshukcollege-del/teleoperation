@@ -209,7 +209,11 @@ namespace Teleop.Eval.JointDrive
             new DrivePlan(legs, script, speed, events, eventsDrawn, pending);
 
         /// <summary>A mixed take's plan (<see cref="MixedTake"/>): its legs and its moves.</summary>
-        internal static DrivePlan ForMixed(List<DriveLeg> legs, float speed, PlannedMove[] moves) => new DrivePlan(legs, DriveScript.Mixed, speed, moves: moves);
+        internal static DrivePlan ForMixed(List<DriveLeg> legs, float speed, PlannedMove[] moves, string report) =>
+            new DrivePlan(legs, DriveScript.Mixed, speed, moves: moves) { PlanningReport = report };
+
+        /// <summary>How the plan was found, for a report (a mixed take's object-directed moves tried and planned, and what refused the hand's parts).</summary>
+        public string PlanningReport { get; private set; } = "";
 
         public IReadOnlyList<DriveLeg> Legs => _legs;
 

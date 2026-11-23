@@ -184,6 +184,21 @@ namespace Teleop.Eval.JointDrive
         private SeededRng _rng;
         private double _lastObjectEnd = double.NegativeInfinity;
 
+        /// <summary>Why object-directed moves were not planned, for a report: too low to meet, no line, no end at the offset, no start, the move there, the approach, a pass's sweep.</summary>
+        private readonly int[] _objectMisses = new int[7];
+
+        private int _objectTries, _objectMoves;
+
+        /// <summary>The object-directed moves tried and planned, and why the rest were not.</summary>
+        internal string ObjectReport() => FormattableString.Invariant(
+            $"object moves {_objectMoves} of {_objectTries} tried (missed: too low {_objectMisses[0]}, no line {_objectMisses[1]}, no end {_objectMisses[2]}, no start {_objectMisses[3]}, move there {_objectMisses[4]}, approach {_objectMisses[5]}, sweep {_objectMisses[6]})");
+
+        private bool Miss(int why)
+        {
+            _objectMisses[why]++;
+            return false;
+        }
+
         /// <summary>A move as planned, before the plan is final: its times on the hand's timeline, its object's index (-1: none).</summary>
         private struct Draft
         {
@@ -247,7 +262,7 @@ namespace Teleop.Eval.JointDrive
         internal string Refusals()
         {
             int[] r = _hand.Refusals;
-            return $"ticks refused: IK {r[0]}, envelope or model {r[1]}, jump {r[2]}, quiet margin {r[3]}, caps {r[4]}";
+            return $"ticks refused: IK {r[0]}, envelope or model {r[1]}, jump {r[2]}, quiet margin {r[3]}, caps {r[4]}; {ObjectReport()}";
         }
 
         private double Slowness() => Math.Clamp(Math.Exp(_options.SlowSigma * Draw.Normal(ref _rng)), _options.SlowMin, _options.SlowMax);
@@ -310,7 +325,7 @@ namespace Teleop.Eval.JointDrive
             ArmPose at0 = current;
             _hand.AppendLegs(legs, ref t, ref at0);
             SafetyScript.CutAt(legs, ref t, ref at0, _start + cut);
-            plan = DrivePlan.ForMixed(legs, speed, Moves(_start + cut));
+            plan = DrivePlan.ForMixed(legs, speed, Moves(_start + cut), ObjectReport() + "; " + Refusals());
             return true;
         }
 
@@ -327,9 +342,12 @@ namespace Teleop.Eval.JointDrive
             {
                 Vector3 at = _hand.TargetEnd;
                 var radial = new Vector2(at.X, at.Y);
-                float r = Math.Clamp(radial.Length(), 0.10f, 0.19f), az = MathF.Atan2(radial.Y, radial.X);
-                float z = MathF.Max(at.Z + (float)Draw.Uniform(ref _rng, 0.05, 0.10), (float)Draw.Uniform(ref _rng, 0.10, 0.20));
-                var goal = new Vector3(r * MathF.Cos(az), r * MathF.Sin(az), MathF.Min(z, 0.24f));
+                float r = Math.Clamp(radial.Length(), 0.10f, 0.17f), az = MathF.Atan2(radial.Y, radial.X);
+                float z = MathF.Max(at.Z + (float)Draw.Uniform(ref _rng, 0.05, 0.10), (float)Draw.Uniform(ref _rng, 0.06, 0.16));
+                // Inside the reach shell: the wrist at most 3 cm short of the arm's length from the shoulder.
+                float reach = _profile.ProximalLinkLength + _profile.DistalLinkLength - 0.03f;
+                float top = _profile.BaseHeight + MathF.Sqrt(MathF.Max(0f, reach * reach - r * r));
+                var goal = new Vector3(r * MathF.Cos(az), r * MathF.Sin(az), MathF.Min(z, top));
                 HandSnapshot before = _hand.Save();
                 int drafts = _drafts.Count;
                 if (!_hand.MixedTo(goal, (float)(Draw.Uniform(ref _rng, -40, 0) * deg), null, Slowness(), 0.010, _model, out double s, out double e)) continue;
@@ -456,6 +474,7 @@ namespace Teleop.Eval.JointDrive
         /// <summary>One aim or pass at object <paramref name="oi"/>: its line drawn and measured, then the hand's moves along it; the hand as it was when it does not plan.</summary>
         private bool TryObjectMove(int oi, ScriptMoveKind kind)
         {
+            _objectTries++;
             SafetyObject o = _objects[oi];
             const double deg = Math.PI / 180.0;
             float bearing = MathF.Atan2(o.Center.Y, o.Center.X);
@@ -470,7 +489,7 @@ namespace Teleop.Eval.JointDrive
             // The height the pads meet it at: from just above the model's floor to just below its top (a touch into its side, never
             // down through its top, where a shape may cover a hollow).
             float zLo = o.Min.Z + 0.012f, zHi = o.Max.Z - (o.Shape != null ? ObjectShape.TopMarginMeters + 0.003f : 0.004f);
-            if (zHi < zLo + 0.003f) return false;
+            if (zHi < zLo + 0.003f) return Miss(0);
             float h = (float)Draw.Uniform(ref _rng, zLo, zHi);
             float pitch = (float)((h - o.Min.Z < 0.05f ? Draw.Uniform(ref _rng, -83, -43) : Draw.Uniform(ref _rng, -80, -15)) * deg);
             float lateral;
@@ -485,7 +504,7 @@ namespace Teleop.Eval.JointDrive
             Vector3 middle = new Vector3(o.Center.X, o.Center.Y, h) + lateral * across;
             float s0 = -(halfAlong + 0.24f), s1 = kind == ScriptMoveKind.Aim ? 0f : halfAlong + 0.12f;
             float gripper = _hand.GripperEnd;
-            if (!Line(oi, middle, u, s0, s1, pitch, gripper, out List<Vector3> wrists, out List<ArmPose> poses, out List<float> gaps)) return false;
+            if (!Line(oi, middle, u, s0, s1, pitch, gripper, out List<Vector3> wrists, out List<ArmPose> poses, out List<float> gaps)) return Miss(1);
 
             int stage, end;
             float offset, f = 1f;
@@ -496,7 +515,7 @@ namespace Teleop.Eval.JointDrive
                 // along the approach); a part of a step for the rest.
                 float deepest = DeepestGap(oi);
                 offset = (float)Draw.Uniform(ref _rng, Math.Max(_options.OffsetMinMeters, -(deepest - 0.0005f)), _options.OffsetMaxMeters);
-                if (!AimIndex(gaps, offset, out end, out f)) return false;
+                if (!AimIndex(gaps, offset, out end, out f)) return Miss(2);
                 near = Draw.Chance(ref _rng, _options.NearStartShare) && end >= 3;
                 if (near)
                 {
@@ -510,7 +529,7 @@ namespace Teleop.Eval.JointDrive
                     while (stage > 0 && gaps[stage] < 0.006f) stage--;
                 }
 
-                if (gaps[stage] < 0.003f || end - stage < 2) return false;
+                if (gaps[stage] < 0.003f || end - stage < 2) return Miss(3);
             }
             else
             {
@@ -519,12 +538,12 @@ namespace Teleop.Eval.JointDrive
                 for (int i = 1; i < gaps.Count; i++) if (gaps[i] < gaps[closest]) closest = i;
                 offset = gaps[closest];
                 stage = closest - (int)MathF.Round((float)Draw.Uniform(ref _rng, 0.05, 0.12) / LineStepMeters);
-                if (stage < 0) return false;
+                if (stage < 0) return Miss(6);
                 while (stage > 0 && gaps[stage] < 0.006f) stage--;
                 int exit = closest;
                 while (exit < gaps.Count && gaps[exit] < Math.Max(offset, 0f) + 0.010f) exit++;
                 end = exit + (int)MathF.Round((float)Draw.Uniform(ref _rng, 0.02, 0.06) / LineStepMeters);
-                if (end >= gaps.Count || gaps[stage] < 0.003f) return false;
+                if (end >= gaps.Count || gaps[stage] < 0.003f) return Miss(6);
             }
 
             var path = new List<Vector3>(end - stage + 1);
@@ -540,7 +559,7 @@ namespace Teleop.Eval.JointDrive
             if (!_hand.MixedTo(wrists[stage], pitch, null, Slowness(), 0.004, staging, out double s, out double e))
             {
                 Undo(before, drafts);
-                return false;
+                return Miss(4);
             }
 
             Add(ScriptMoveKind.Free, -1, float.NaN, s, e);
@@ -548,9 +567,10 @@ namespace Teleop.Eval.JointDrive
             if (!_hand.MixedAlong(path, pitch, Slowness(), kind == ScriptMoveKind.Aim ? 0.0025 : 0.008, kind == ScriptMoveKind.Aim ? 2 : 0, 0.5, _model, out s, out e))
             {
                 Undo(before, drafts);
-                return false;
+                return Miss(5);
             }
 
+            _objectMoves++;
             Add(kind, oi, offset, s, e);
             _lastObjectEnd = Math.Max(_lastObjectEnd, e);
             if (offset < 0 && o.Movable)

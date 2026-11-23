@@ -15,7 +15,8 @@ for file (:func:`write_labels`):
 - ``meta/safety_labels.parquet``: the rows ``label_safety.py`` writes from that JSON (``episode_index``, ``frame_index``,
   ``label``, ``category``, ``effective_category``, ``overridden``, ``source``), ``source`` ``physics``;
 - ``safety_events.jsonl``: ``contact`` at the first frame of each unsafe range and, for ``collide_and_recover``, ``clear`` at
-  the first safe frame after it, in his ``record_jetrover.py`` fields, so his lead-window labels are one command away.
+  the first safe frame after it, in his ``record_jetrover.py`` fields, so his lead-window labels are one command away
+  (since 2026-11-23 every category but ``collide_with_obstacle`` gets its ``clear``: :func:`events`).
 
 Since 2026-11-21 (docs/adr/0036 amendment 5) a take of an event category holds 1-3 events anywhere in it, each a stretch of
 contact (or, for a stop, of coming close), and the take records what was planned (``SE``, :func:`planned_events`). Every
@@ -26,9 +27,11 @@ Since 2026-11-22 (docs/adr/0038 decision 6):
 
 - **The ``mixed`` script** (one scenario, physics decides the outcome) is never checked against a category: a take is set
   aside only when it is broken (:func:`broken`). What happened is computed afterwards and kept as metadata (``sidecars``).
-- **The table is object 0** of ``WC``. It is never a contact for the labels or the checks (:func:`contacts`), so the four
-  old categories behave as before; the sidecars label it on its own, and ``Options.table_unsafe`` counts it for anyone who
-  wants that.
+- **The table is object 0** of ``WC``. It is never a contact for the checks (:func:`contacts`), so the four old categories
+  are kept or set aside as before. Since 2026-11-23 the labels count it (world-models' review: on the real robot a hard table
+  hit is a collision), so a kept reach or stop take that brushed the table has those frames unsafe; ``Options.table_safe``
+  leaves it out, as before. The sidecars keep the two apart (``frames.parquet``'s ``in_contact`` and ``in_contact_table``,
+  ``contacts.jsonl``'s kind ``table``).
 - **Captions:** every episode's task is ``move the arm`` (``sidecars.NEUTRAL_CAPTION``) unless the build asks for the old
   category captions (``caption="category"``, for rebuild comparisons). The scenario is in ``meta/teleop/episodes.jsonl``.
 - **Labels:** ``safety_ranges.json`` at the root, world-models' format (exactly ``source``, ``notes``, ``unsafe_ranges``),
@@ -56,7 +59,7 @@ REACH, STOP, RECOVER, COLLIDE = "reach_no_obstacle", "stop_before_collision", "c
 CATEGORIES = (REACH, STOP, RECOVER, COLLIDE)
 MIXED = "mixed"  # docs/adr/0038 decision 1: one script, physics decides; checked only for being broken
 SCENARIOS = CATEGORIES + (MIXED,)
-TABLE = 0  # WC's object 0: the table, never a contact for the labels or the checks (docs/adr/0038 decision 4)
+TABLE = 0  # WC's object 0: the table, never a contact for the checks; the labels count it unless built table_safe
 FROZEN_SECONDS = 1.0  # a mixed take whose episode repeats one render this long is broken (the twin's are single repeats)
 SOURCE = "physics"
 GROUP_SUFFIX = "-safety"  # the datasets' folder, <out>/<robot>-<source>-safety/<batch>/: the watcher leaves it alone
@@ -78,9 +81,9 @@ class Contact:
 
 def contacts(path: str, table: bool = False, obstacles: bool = True) -> List[Contact]:
     """The take's contact stretches from its ``WC`` records, by their ``sensed`` times: the arm touching any object but the
-    table (object 0, docs/adr/0038 decision 4), which is never a contact for the labels or the checks. ``table`` adds the
-    table's pairs, and ``obstacles=False`` leaves the objects out (the table's own stretches). A ``WC`` lists every pair
-    touching then, so one naming only pairs left out ends a stretch."""
+    table (object 0, docs/adr/0038 decision 4), which is never a contact for the checks (a dataset's labels count it by
+    default: ``sidecars.episode``). ``table`` adds the table's pairs, and ``obstacles=False`` leaves the objects out (the
+    table's own stretches). A ``WC`` lists every pair touching then, so one naming only pairs left out ends a stretch."""
     host = read_jlog(os.path.join(path, "robothost.jlog"), "robothost")
     rows = sorted(((int(r[1]), r[2] if len(r) > 2 else "") for r in host.tag("WC")), key=lambda x: x[0])
     out, start, touched = [], None, set()
@@ -396,14 +399,20 @@ def ranges(labels: Sequence[int]) -> List[List[int]]:
 
 
 def events(episode: int, category: str, labels: Sequence[int]) -> List[dict]:
-    """His ``safety_events.jsonl`` markers for one episode: ``contact`` at the first frame of each unsafe range, and for
-    ``collide_and_recover`` and ``mixed`` (docs/adr/0038) ``clear`` at the first safe frame after it. With one event a take (until 2026-11-21) that was one
-    pair; with several (docs/adr/0036 amendment 5), each range has its own, so a lead window before a contact never spans the
-    free movement between two events."""
+    """His ``safety_events.jsonl`` markers for one episode: ``contact`` at the first frame of each unsafe range, and
+    ``clear`` at the first safe frame after it, but in ``collide_with_obstacle``, which his recorder never clears (nothing
+    recovers from a knock: his ``label_safety.py`` holds it unsafe to the end). With one event a take (until 2026-11-21)
+    that was one pair; with several (docs/adr/0036 amendment 5), each range has its own, so a lead window before a contact
+    never spans the free movement between two events.
+
+    Until 2026-11-23 only ``collide_and_recover`` and ``mixed`` had a ``clear``. Since the labels count the table, a kept
+    ``reach_no_obstacle`` or ``stop_before_collision`` take can have unsafe ranges (a brush with the table, which ends), and
+    its ``clear`` keeps the markers saying what the ranges say. His ``label_safety.py`` leaves those two categories all
+    safe whatever their markers, so it reads them as before."""
     out = []
     for start, end in ranges(labels):
         out.append({"episode": episode, "kind": "contact", "frame_in_episode": start, "source": SOURCE})
-        if category in (RECOVER, MIXED) and end + 1 < len(labels):
+        if category != COLLIDE and end + 1 < len(labels):
             out.append({"episode": episode, "kind": "clear", "frame_in_episode": end + 1, "source": SOURCE})
     return out
 
@@ -414,17 +423,23 @@ def label_rows(episode: int, category: str, labels: Sequence[int]) -> List[dict]
              "effective_category": category, "overridden": False, "source": SOURCE} for i, v in enumerate(labels)]
 
 
+# safety_ranges.json's notes. NOTES_TABLE, the default since 2026-11-23, counts the table; NOTES (--table-safe) does not, and
+# is word for word the default of the builds before, so a rebuild of one with its own options compares the same.
 NOTES = ("Physics labels from the JetRover's Isaac twin (teleoperation docs/adr/0036 amendment 1, docs/adr/0038 decision 6): "
          "a frame is unsafe when any arm link touched a scene object other than the table at any moment of its frame period "
          "(its time, half a frame either side); a touch is a contact point within 1 mm or an impulse (docs/adr/0036 amendment 4). "
          "Table contacts are not unsafe: meta/teleop/frames.parquet (in_contact_table) and contacts.jsonl list them.")
-NOTES_TABLE = NOTES.replace("other than the table ", "or the table ").replace(
-    "Table contacts are not unsafe: meta/teleop/frames.parquet (in_contact_table) and contacts.jsonl list them.",
-    "Built with table contacts counted as unsafe (--table-unsafe).")
+NOTES_TABLE = ("Physics labels from the JetRover's Isaac twin (teleoperation docs/adr/0036 amendment 1, docs/adr/0038 decision "
+               "6): a frame is unsafe when any arm link touched a scene object or the table at any moment of its frame period "
+               "(its time, half a frame either side); a touch is a contact point within 1 mm or an impulse (docs/adr/0036 "
+               "amendment 4). The table counts because on the real robot a hard table hit is a collision. The trade-off: "
+               "labels that count it reward 'the path goes low', the shortcut docs/adr/0038 set out to remove. "
+               "meta/teleop/frames.parquet keeps the two apart (in_contact: an obstacle; in_contact_table: the table), as "
+               "contacts.jsonl does (kind table), so obstacle-only labels can be derived.")
 RANGES_KEYS = ("source", "notes", "unsafe_ranges")  # world-models' loader (wm/labeling/ranges.py) rejects any other key
 
 
-def write_labels(root: str, episodes: Sequence[Tuple[int, str, Sequence[int]]], notes: str = NOTES) -> None:
+def write_labels(root: str, episodes: Sequence[Tuple[int, str, Sequence[int]]], notes: str = NOTES_TABLE) -> None:
     """Writes the label files at the dataset ``root`` for ``episodes`` ((index, category, frame labels) each), replacing any
     there: world-models' ``safety_ranges.json`` (docs/adr/0038 decision 6: exactly ``source``, ``notes`` and
     ``unsafe_ranges``), and his three, whose ranges are the same."""
@@ -520,7 +535,7 @@ def build(writer, root: str, takes: Sequence[Take], log=print, jobs: int = 1, ex
             sides.append((int(line["episode"]), info))
             log(f"episode {line['episode']}: {take.scenario}, {len(labels)} frames, {sum(labels)} unsafe ({os.path.basename(take.path)})"
                 f", {info.line['outcome']}")
-    write_labels(root, written, NOTES_TABLE if options.table_unsafe else NOTES)
+    write_labels(root, written, NOTES if options.table_safe else NOTES_TABLE)
     rep = sidecars.write(root, sides, options, split_of)
     for ep, info in sides:
         if info.flags:
@@ -576,6 +591,33 @@ def _first_ranges(ranges_by_episode: Dict[str, list], n: int) -> Dict[str, list]
     return {k: v for k, v in ranges_by_episode.items() if int(k) < n}
 
 
+def _options(options: Optional[Dict]) -> Dict:
+    """A ``report.json``'s build options as this version names them: a build before 2026-11-23 says ``tableUnsafe`` (the
+    table counted only when true) where one now says ``tableSafe``."""
+    o = dict(options or {})
+    if "tableUnsafe" in o:
+        o["tableSafe"] = not o.pop("tableUnsafe")
+    return o
+
+
+def rebuild_options(root: str) -> List[str]:
+    """The ``safety-build`` options that rebuild the safety dataset at ``root`` as it was built, from the options its
+    ``meta/teleop/report.json`` records (``just isaac-safety-build-check``; ``--jobs`` and ``--split`` aside: a rebuild is
+    one dataset, its report's ``split`` left out of the comparison). A dataset from before docs/adr/0038 has no report: its
+    captions were its categories, and its twin reported no table contacts, so ``--caption category``. One built before
+    2026-11-23 says ``tableUnsafe``, false when the table was left out: ``--table-safe`` now."""
+    path = os.path.join(root, "meta", "teleop", "report.json")
+    if not os.path.exists(path):
+        return ["--caption", "category"]
+    with open(path, encoding="utf-8") as f:
+        o = _options(json.load(f).get("options"))
+    out = ["--caption", o.get("caption", "neutral"), "--geometry-dir=" + (o.get("geometryDir") or "")]
+    out += ["--table-safe"] if o.get("tableSafe") else []
+    s = o.get("stopModel") or {}
+    out += [f"--stop-time-s={s['stopTimeS']}"] if s.get("stopTimeS") is not None else []
+    return out
+
+
 def compare_datasets(reference: str, rebuilt: str, notes: Optional[List[str]] = None) -> List[str]:
     """How ``rebuilt``, a safety dataset written from the first takes of ``reference``'s ledger (all of them, or fewer),
     differs from it: every file of the rebuilt one, byte for byte, but ``takes.jsonl``'s ``convertedUtc`` (when it was
@@ -583,8 +625,9 @@ def compare_datasets(reference: str, rebuilt: str, notes: Optional[List[str]] = 
     episode (``_LINES``, the label files, the parquet rows) as the reference's lines, rows and ranges of those episodes, and
     the totals (``_TOTALS``) not at all. A ``frames.parquet`` column only one of them has must be empty there. A reference
     from before docs/adr/0038 has none of its files (``_ADR38``): those are left out, and said so in ``notes``. Empty when
-    they are the same: how a build's speed-up is checked to change nothing (docs/adr/0036 amendment 6). Rebuild an old
-    reference with ``--caption category``: its captions were its categories."""
+    they are the same: how a build's speed-up is checked to change nothing (docs/adr/0036 amendment 6). Rebuild a reference
+    with the options :func:`rebuild_options` gives (an old one's captions were its categories); ``report.json``'s options
+    are compared by this version's names (:func:`_options`), and its ``split`` (which part of a split build) not at all."""
     from .writer import recorded_episodes
 
     na, nb = recorded_episodes(reference), recorded_episodes(rebuilt)
@@ -647,6 +690,14 @@ def compare_datasets(reference: str, rebuilt: str, notes: Optional[List[str]] = 
                                + (f"; columns {sorted(lone)} only on one side" if lone else "") + ")")
             elif rel in _TOTALS and nb < na:
                 continue
+            elif rel == os.path.join(_TELEOP, "report.json"):
+                with open(path, encoding="utf-8") as f, open(ref, encoding="utf-8") as g:
+                    mine, theirs = json.load(f), json.load(g)
+                for r in (mine, theirs):  # options by this version's names; which part of a split build it was aside
+                    r["options"] = _options(r.get("options"))
+                    r.pop("split", None)
+                if mine != theirs:
+                    out.append(f"{rel}: differs")
             elif rel.endswith(".json"):  # as JSON: LeRobot's stats.json orders its keys by a set's, so by the run's hash seed
                 with open(path, encoding="utf-8") as f, open(ref, encoding="utf-8") as g:
                     if json.load(f) != json.load(g):
@@ -662,4 +713,5 @@ def compare_datasets(reference: str, rebuilt: str, notes: Optional[List[str]] = 
 
 __all__ = ["CATEGORIES", "MIXED", "SCENARIOS", "compare_datasets", "Contact", "Verdict", "as_safety", "broken", "build",
            "build_split", "check", "contacts", "episodes_of", "event_timing", "events", "first_touches", "frame_labels",
-           "label_rows", "object_poses", "planned_events", "ranges", "scenario_of", "set_aside", "split_roots", "write_labels"]
+           "label_rows", "object_poses", "planned_events", "ranges", "rebuild_options", "scenario_of", "set_aside", "split_roots",
+           "write_labels"]

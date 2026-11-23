@@ -49,17 +49,25 @@ datasets built before 2026-11-22 have it); the scenario is in `meta/teleop/episo
 scenario, a `.jlog` cut off or failing its trailer, no accepted command, no colour camera, no frame with its joints), joint-drive
 cut it short (`--drive-exit` 2 a stall, 3 the joint-state stream, 130 by hand; 0 and 4 are fine), its frames ended early (`ER`),
 a writer dropped records, it has no object poses (`WO`), or its episode repeats one render for 1 s or more. What happened
-is never a reason. `WC` object 0 is the table: never a contact for the labels or the checks.
+is never a reason. `WC` object 0 is the table: never a contact for the checks, so a reach or stop take that touches it is
+kept and a recover take is judged by its obstacle touches alone, as before. The checker's line (`unsafeFrames`,
+`unsafeRanges`) counts what it judged, the obstacle contacts.
 
-**Labels**, the same ranges in every file: a frame is unsafe when an arm link touched a scene object other than the table at
-any moment of its frame period (its time, half a frame either side); `--table-unsafe` counts the table too.
+**Labels**, the same ranges in every file: a frame is unsafe when an arm link touched a scene object **or the table** at any
+moment of its frame period (its time, half a frame either side). The table counts since 2026-11-23, at world-models' request:
+on the real robot a hard table hit is a collision. The trade-off is the one docs/adr/0038 decision 4 named: labels that
+count it reward "the path goes low", the shortcut that ADR set out to remove. So the kinds stay apart in the sidecars
+(`frames.parquet`'s `in_contact` and `in_contact_table`, `contacts.jsonl`'s kind `table`, `episodes.jsonl`'s
+`tableContact`), and obstacle-only labels are `in_contact` alone. `--table-safe` builds them as the labels, as builds did
+before 2026-11-23 (`safety_ranges.json`'s `notes` then says so, word for word as those builds did). A kept reach or stop take
+that brushed the table has only those frames unsafe.
 
 | File | What |
 |---|---|
 | `safety_ranges.json` | world-models' (`wm/labeling/ranges.py`): exactly `source` (`physics`), `notes` (the rule) and `unsafe_ranges` (`{"<episode>": [[start, end], ...]}`, inclusive, episode-relative frames; an episode left out is all safe) |
 | `manual_safety_labels.json` | the same ranges, the bare legacy map |
 | `meta/safety_labels.parquet` | one row a frame: `episode_index`, `frame_index`, `label`, `category`, `effective_category` (the scenario), `overridden` (false), `source` (`physics`) |
-| `safety_events.jsonl` | `contact` at each unsafe range's first frame and, for `collide_and_recover` and `mixed`, `clear` at the first safe frame after it |
+| `safety_events.jsonl` | `contact` at each unsafe range's first frame and `clear` at the first safe frame after it, but in `collide_with_obstacle` (the lab's recorder never clears a knock). Until 2026-11-23 only `collide_and_recover` and `mixed` had a `clear`; a reach or stop take can now have a range (a table brush, which ends), and the lab's `label_safety.py` keeps those two categories all safe whatever their markers |
 
 **Sidecars** under `meta/teleop/`, beside `takes.jsonl` and the timing files. Times are seconds from the episode's first
 frame (its `stateSensed`, the take's CLOCK_MONOTONIC); poses are `[x, y, z, qw, qx, qy, qz]` in the robot's base frame (m);
@@ -114,7 +122,8 @@ when no `WC` ended it), `peakForceN` (the largest of its `WC` records' summed fo
 stretch with it, or the episode's end.
 
 `frames.parquet`, one row a frame: `episode_index`, `frame_index`, `sensed_ns` (the state the frame shows), `t_s`,
-`in_contact` (an obstacle, the labels' rule), `in_contact_table`, `unsafe` (the labels, 0 or 1), per link
+`in_contact` (an obstacle), `in_contact_table` (the table), `unsafe` (the labels, 0 or 1: either of the two, or `in_contact`
+alone when built `--table-safe`), per link
 `clearance_mm.<link>` and `clearance_id.<link>` (signed distance to the nearest obstacle and its id) and `surface_mm.<link>`
 (to the table surface; NaN for a link no joint moves), `min_clearance_mm`, `min_clearance_id` (null when nothing is within
 the clearance's cutoff, 150 mm, where the distance is that cutoff), `min_surface_mm`, `time_to_contact_s` (to the next obstacle
@@ -139,5 +148,8 @@ arm and the twin (workstream R; real human stops 0.10 / 0.19 / 0.32 s, p10 / p50
 `just stop-latency`. A system that detects and then stops adds its own delay to it.
 
 **Comparing** (`safety-compare REFERENCE REBUILT`): a rebuild of a reference's first takes, file for file; the sidecars by
-episode as the label files are. A reference from before docs/adr/0038 has no sidecars and is compared without them (rebuild
-it with `--caption category`); `just isaac-safety-build-check` does that by itself.
+episode as the label files are. Rebuild a reference with the options `safety-options REFERENCE` prints, from its
+`report.json`; `just isaac-safety-build-check` does that by itself. A reference from before docs/adr/0038 has no sidecars
+and is compared without them (`--caption category`). A report from before 2026-11-23 names the table's option
+`tableUnsafe` (false: `--table-safe` now); `safety-compare` reads its options by today's names, and leaves out which part of
+a split build a report was (`split`), since a rebuild of a part's takes is one dataset.

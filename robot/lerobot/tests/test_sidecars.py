@@ -107,23 +107,40 @@ def clearance(monkeypatch, tmp_path):
 
 # --- the table, and the old categories --------------------------------------------------------------------------------------
 
-def test_the_table_is_never_a_contact_for_the_labels_or_the_old_checks(scenarios):
+def test_the_table_is_never_a_contact_for_the_old_checks_and_unsafe_in_the_labels_unless_built_table_safe(scenarios, capsys):
+    from teleop_lerobot.__main__ import main
+
     # docs/adr/0038 decision 4: the bridge reports the arm touching the table as WC object 0. A reach take that only brushes the
-    # table is still a reach take; its labels stay safe.
+    # table is still a reach take, kept as before. Since 2026-11-23 (world-models' review: on the real robot a hard table hit
+    # is a collision) the labels count the brush; table_safe leaves it out, as builds did before.
     path = take(scenarios, "reach_no_obstacle", world([wc(1500, "0:5:0:2.0"), wc(1700)]))
     t = read_take(path)
     assert safety.contacts(path) == [] and len(safety.contacts(path, table=True)) == 1
     labels = safety.frame_labels(t, safety.contacts(path))
     assert sum(labels) == 0 and safety.check(t, labels, safety.contacts(path), safety.object_poses(path)).ok
+    assert main(["safety-check", path]) == 0  # the verdict, and its line's counts, as before: obstacles only
+    line = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+    assert line["ok"] and line["reason"] == "no contact" and line["unsafeFrames"] == 0 and line["tableContact"]
+    e = episode(path)
+    assert sum(e.labels) > 0 and e.labels == [int(v) for v in e.frames["in_contact_table"]]  # the table's frames, no others
+    assert not any(e.frames["in_contact"]) and e.frames["unsafe"] == e.labels and e.line["unsafeRanges"] == 1
+    assert sum(episode(path, table_safe=True).labels) == 0
+    # The brush ends, so its range has a clear as a recover's does (docs/adr/0038, 2026-11-23); a knock's never has one.
+    assert [x["kind"] for x in safety.events(0, "reach_no_obstacle", e.labels)] == ["contact", "clear"]
+    assert [x["kind"] for x in safety.events(0, "collide_with_obstacle", e.labels)] == ["contact"]
     # A touch on an object while the gripper also rests on the table: the object's stretch ends when its pair goes, though
-    # the table's carries on.
-    rec = take(scenarios, "collide_and_recover", world([wc(1500, "0:5:2:1.5;0:6:0:3.0"), wc(1620, "0:6:0:3.0"), wc(1900)]),
+    # the table's carries on to the episode's end. A recover take is judged by its obstacle touches alone: it backed off.
+    rec = take(scenarios, "collide_and_recover", world([wc(1500, "0:5:2:1.5;0:6:0:3.0"), wc(1620, "0:6:0:3.0")]),
                name="20261122T100100Z-take002")
     stretches = safety.contacts(rec)
     assert [(c.start, c.end, c.objects) for c in stretches] == [(1500 * MS, 1620 * MS, (2,))]
     t = read_take(rec)
-    assert safety.check(t, safety.frame_labels(t, stretches), stretches, safety.object_poses(rec)).ok
+    v = safety.check(t, safety.frame_labels(t, stretches), stretches, safety.object_poses(rec))
+    assert v.ok and v.touched == (2,) and v.contacts == 1
     assert [s.object for s in sidecars.object_stretches(sidecars.read_records(rec).host)] == [0, 2]
+    e = episode(rec)
+    assert e.labels[-1] == 1 and e.frames["in_contact_table"][-1] and not e.frames["in_contact"][-1]  # the table, to the end
+    assert episode(rec, table_safe=True).labels == safety.frame_labels(t, stretches)
 
 
 def test_the_jetrover_links_are_the_urdfs_in_order():
@@ -198,7 +215,7 @@ def test_each_episode_has_an_outcome_and_unknown_when_no_clearance_tells_a_near_
     e = episode(table)
     assert e.line["outcome"] == "unknown" and e.line["tableContact"] and e.line["tableContacts"] == 1
     assert e.line["minClearanceMm"] is None and e.line["clearanceUnavailable"] == "no geometry folder given"
-    assert sum(e.labels) == 0 and sum(episode(table, table_unsafe=True).labels) > 0  # the builder flag counts it
+    assert sum(e.labels) > 0 and sum(episode(table, table_safe=True).labels) == 0  # counted; the builder flag leaves it out
     # With clearance (workstream C's module, faked): 20 mm at its closest is a near miss, 40 mm no contact.
     geometry = clearance(FakeClearance(base=45.0, dip=25.0))
     e = episode(table, geometry_dir=geometry)
@@ -263,8 +280,11 @@ def test_every_frame_has_its_flags_labels_time_to_contact_fill_and_skews(scenari
     f = e.frames
     n = len(t.frames)
     assert f["frame_index"] == list(range(n)) and f["sensed_ns"] == [x.timing["sensed"] for x in t.frames]
-    assert f["unsafe"] == safety.frame_labels(t, safety.contacts(path)) == [int(v) for v in f["in_contact"]]
     assert any(f["in_contact_table"]) and not any(a and b for a, b in zip(f["in_contact"], f["in_contact_table"]))
+    assert f["unsafe"] == [int(a or b) for a, b in zip(f["in_contact"], f["in_contact_table"])]  # an obstacle or the table
+    safe = episode(path, table_safe=True).frames  # the table left out: the obstacles' frames alone, the check's rule
+    assert safe["unsafe"] == safety.frame_labels(t, safety.contacts(path)) == [int(v) for v in f["in_contact"]]
+    assert safe["in_contact_table"] == f["in_contact_table"]  # the kinds stay apart either way
     first = f["in_contact"].index(True)
     assert f["time_to_contact_s"][first] == 0.0
     assert f["time_to_contact_s"][first - 1] == pytest.approx((1500 * MS - f["sensed_ns"][first - 1]) / 1e9, abs=1e-6)
@@ -511,10 +531,13 @@ def test_a_build_writes_world_models_labels_neutral_captions_and_every_sidecar(s
     ranges = json.load(open(os.path.join(out, "safety_ranges.json")))
     assert list(ranges) == ["source", "notes", "unsafe_ranges"] and ranges["source"] == "physics"  # exactly world-models' keys
     assert ranges["unsafe_ranges"] == json.load(open(os.path.join(out, "manual_safety_labels.json")))
-    assert set(ranges["unsafe_ranges"]) == {"0", "3"} and "table" in ranges["notes"]
+    # The table counts (episode 2 only brushed it), and the notes say why and what it costs (docs/adr/0038, 2026-11-23).
+    assert set(ranges["unsafe_ranges"]) == {"0", "2", "3"} and ranges["notes"] == safety.NOTES_TABLE
+    assert "a hard table hit is a collision" in ranges["notes"] and "'the path goes low'" in ranges["notes"]
     assert all(isinstance(x, int) for rs in ranges["unsafe_ranges"].values() for r in rs for x in r)
     events = [json.loads(x) for x in open(os.path.join(out, "safety_events.jsonl"))]
-    assert [(e["episode"], e["kind"]) for e in events] == [(0, "contact"), (0, "clear"), (3, "contact"), (3, "clear")]
+    assert [(e["episode"], e["kind"]) for e in events] == [(0, "contact"), (0, "clear"), (2, "contact"), (2, "clear"),
+                                                           (3, "contact"), (3, "clear")]
     lines = [json.loads(x) for x in open(os.path.join(out, "meta", "teleop", "episodes.jsonl"))]
     assert [l["episode"] for l in lines] == [0, 1, 2, 3] and [l["outcome"] for l in lines] == ["contact", "unknown", "unknown", "knock"]
     assert [l["role"] for l in lines] == ["source", "replay", None, None] and lines[2]["tableContact"]
@@ -527,13 +550,22 @@ def test_a_build_writes_world_models_labels_neutral_captions_and_every_sidecar(s
     assert list(frames.columns[:4]) == ["episode_index", "frame_index", "sensed_ns", "t_s"]
     assert frames["unsafe"].tolist() == [v for _, _, l in written for v in l]
     assert frames["min_clearance_mm"].isna().all() and str(frames["min_clearance_id"].dtype) == "Int32"
-    assert frames["in_contact_table"].sum() > 0 and frames.loc[frames["in_contact_table"], "unsafe"].sum() == 0
+    assert frames["in_contact_table"].sum() > 0 and (frames.loc[frames["in_contact_table"], "unsafe"] == 1).all()
     report = json.load(open(os.path.join(out, "meta", "teleop", "report.json")))
     assert report["episodes"] == 4 and report["outcomes"] == {"contact": 1, "knock": 1, "unknown": 2}
     assert report["contacts"] == {"object": 2, "table": 1} and report["replayGroups"] == 1 and report["scenarios"] == {"mixed": 4}
-    assert report["options"]["caption"] == "neutral" and report["split"] is None
+    assert report["options"]["caption"] == "neutral" and report["options"]["tableSafe"] is False and report["split"] is None
     assert any(m.startswith("[mix] jetrover_20261122_100000_abcdef: 4 episode(s)") for m in logged)
     assert any(m.startswith("episode 3: mixed") and m.endswith("knock") for m in logged)
+    # Built table_safe: the rule before 2026-11-23, word for word its notes; the sidecars hold the same contacts.
+    safe = str(tmp_path / "safe")
+    safety.build(Writer(), safe, [read_take(p) for p in paths], log=lambda m: None, options=sidecars.Options(table_safe=True))
+    ranges = json.load(open(os.path.join(safe, "safety_ranges.json")))
+    assert set(ranges["unsafe_ranges"]) == {"0", "3"} and ranges["notes"] == safety.NOTES and "other than the table" in safety.NOTES
+    assert [json.loads(x)["episode"] for x in open(os.path.join(safe, "safety_events.jsonl"))] == [0, 0, 3, 3]
+    frames = pd.read_parquet(os.path.join(safe, "meta", "teleop", "frames.parquet"))
+    assert frames["in_contact_table"].sum() > 0 and frames.loc[frames["in_contact_table"], "unsafe"].sum() == 0
+    assert json.load(open(os.path.join(safe, "meta", "teleop", "report.json")))["options"]["tableSafe"] is True
     # The old captions on request, for comparing a rebuild with a dataset from before.
     w2 = Writer()
     safety.build(w2, str(tmp_path / "old"), [read_take(paths[0])], log=lambda m: None, options=sidecars.Options(caption="category"))
@@ -579,6 +611,36 @@ def test_safety_compare_reads_the_new_files_and_an_older_reference_without_them(
     os.remove(os.path.join(full, "safety_ranges.json"))
     notes = []
     assert safety.compare_datasets(full, first, notes) == [] and "predates docs/adr/0038" in notes[0]
+
+
+def test_a_rebuild_takes_its_references_options_even_from_a_report_that_named_them_otherwise(scenarios, tmp_path, capsys):
+    # just isaac-safety-build-check rebuilds a reference with the options its report.json records (teleop_lerobot
+    # safety-options). A report from before 2026-11-23 says tableUnsafe (false: the table left out, --table-safe now).
+    pytest.importorskip("pandas")
+    pytest.importorskip("pyarrow")
+    from teleop_lerobot.__main__ import main
+
+    takes = [read_take(p) for p in batch(scenarios)]
+    built = dict(table_safe=True, geometry_dir="/nowhere")
+    ref, again, counted = (str(tmp_path / n) for n in ("ref", "again", "counted"))
+    safety.build(Writer(), ref, takes, log=lambda m: None, options=sidecars.Options(**built))
+    want = ["--caption", "neutral", "--geometry-dir=/nowhere", "--table-safe"]
+    assert safety.rebuild_options(ref) == want
+    path = os.path.join(ref, "meta", "teleop", "report.json")
+    report = json.load(open(path))
+    report["options"] = {"caption": "neutral", "tableUnsafe": False, "geometryDir": "/nowhere", "stopModel": None}
+    report["split"] = {"part": 1, "of": 2}  # a split build's part: a rebuild of its takes is one dataset
+    json.dump(report, open(path, "w"), indent=1)
+    assert safety.rebuild_options(ref) == want
+    assert main(["safety-options", ref]) == 0 and capsys.readouterr().out.strip() == " ".join(want)
+    safety.build(Writer(), again, takes, log=lambda m: None, options=sidecars.Options(**built))
+    assert safety.compare_datasets(ref, again) == []  # the notes word for word, the options by their new names
+    safety.build(Writer(), counted, takes, log=lambda m: None, options=sidecars.Options(geometry_dir="/nowhere"))
+    diffs = safety.compare_datasets(ref, counted)  # the table counted: episode 2's brush, and the options
+    assert "manual_safety_labels.json: differs (episodes [2])" in diffs and "safety_ranges.json: differs" in diffs
+    assert os.path.join("meta", "teleop", "report.json") + ": differs" in diffs
+    os.remove(path)  # a dataset from before docs/adr/0038: category captions, and its twin reported no table contacts
+    assert safety.rebuild_options(ref) == ["--caption", "category"]
 
 
 def test_an_old_takes_planned_events_and_odd_numbers_reach_the_lines_as_json_can_hold_them(scenarios, tmp_path):

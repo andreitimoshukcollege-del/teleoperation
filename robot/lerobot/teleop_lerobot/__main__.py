@@ -12,6 +12,8 @@
   ``--jobs`` worker processes preparing episodes ahead (amendment 6), and ``--split K`` for K smaller datasets by layout;
 - ``safety-compare REFERENCE REBUILT``: whether a safety dataset rebuilt from a reference's first takes holds the same
   files (amendment 6; no LeRobot needed);
+- ``safety-options DATASET``: the ``safety-build`` options that rebuild a safety dataset as it was built, from its
+  ``report.json`` (``just isaac-safety-build-check``; no LeRobot needed);
 - ``safety-report DATASET...``: what one build's datasets (a split build's parts together) hold, and any fault in their labels,
   sidecars or replay groups (docs/adr/0038; the twin check);
 - ``knock-report TAKE...``: every object each take touched, its mass at its size and whether it was knocked over, as JSON
@@ -87,7 +89,9 @@ def main(argv=None) -> int:
     s.add_argument("--caption", choices=("neutral", "category"), default="neutral",
                    help="every episode's task: 'move the arm' (docs/adr/0038), or its scenario's name as before 2026-11-22 "
                         "(to compare a rebuild with an older dataset)")
-    s.add_argument("--table-unsafe", action="store_true", help="count the arm touching the table (WC object 0) as unsafe")
+    s.add_argument("--table-safe", action="store_true",
+                   help="leave the arm touching the table (WC object 0) out of the labels, as builds did until 2026-11-23 "
+                        "(by default it is unsafe: on the real robot a hard table hit is a collision)")
     s.add_argument("--geometry-dir", default=GEOMETRY_DIR,
                    help="the twin's collision geometry for each frame's clearance (workstream C's export; '' for none: "
                         "clearance NaN). Default: %(default)s")
@@ -102,7 +106,15 @@ def main(argv=None) -> int:
     s = sub.add_parser("safety-compare")
     s.add_argument("reference", help="a safety dataset")
     s.add_argument("rebuilt", help="one written from the first takes of the reference's meta/teleop/takes.jsonl")
+    s = sub.add_parser("safety-options")
+    s.add_argument("dataset", help="a safety dataset")
     a = p.parse_args(argv)
+
+    if a.command == "safety-options":
+        from . import safety
+
+        print(" ".join(safety.rebuild_options(os.path.expanduser(a.dataset))))
+        return 0
 
     if a.command == "safety-compare":
         from . import safety
@@ -200,11 +212,11 @@ def main(argv=None) -> int:
                 stop = sidecars.StopModel(a.stop_time_s)
             except ValueError as e:
                 p.error(str(e))
-        options = sidecars.Options(caption=a.caption, table_unsafe=a.table_unsafe, geometry_dir=a.geometry_dir or None, stop=stop)
+        options = sidecars.Options(caption=a.caption, table_safe=a.table_safe, geometry_dir=a.geometry_dir or None, stop=stop)
         takes = [read_take(path, a.fps) for path in a.takes]
         writer = LeRobotWriter(a.vcodec, crf=SAFETY_CRF if a.crf is None else a.crf, preset=SAFETY_PRESET if a.preset is None else a.preset)
         _log(f"building {len(takes)} episode(s) with {a.jobs} worker(s): captions {a.caption}, table contacts "
-             f"{'unsafe' if a.table_unsafe else 'not unsafe'}, clearance from {a.geometry_dir or 'nothing'}"
+             f"{'not unsafe (--table-safe)' if a.table_safe else 'unsafe'}, clearance from {a.geometry_dir or 'nothing'}"
              + (f", {a.split} datasets" if a.split > 1 else "") + (", unavoidable ranges" if stop else ""))
         if a.split > 1:
             roots = safety.build_split(writer, os.path.expanduser(a.out), takes, a.split, _log, jobs=a.jobs, options=options)

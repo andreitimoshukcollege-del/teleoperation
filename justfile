@@ -4204,21 +4204,9 @@ isaac-safety-build-check dataset episodes="40" jobs="8":
     out=$HOME/scratch/safety-build-check/$DATASET-first$N-jobs$JOBS
     mkdir -p "$(dirname "$out")"; rm -rf "$out" "$out.prepare"
     mapfile -t takes < <(head -n "$N" "$src/meta/teleop/takes.jsonl" | "$py" -c 'import json, sys; [print(json.loads(l)["take"]) for l in sys.stdin if l.strip()]')
-    # The reference's own build options (docs/adr/0038): from its report, or, built before it, its category captions.
-    opts=$("$py" - "$src" <<'PY'
-    import json, os, sys
-    p = os.path.join(sys.argv[1], "meta", "teleop", "report.json")
-    if not os.path.exists(p):
-        print("--caption category")
-    else:
-        o = json.load(open(p)).get("options") or {}
-        args = ["--caption", o.get("caption", "neutral"), "--geometry-dir=" + (o.get("geometryDir") or "")]
-        args += ["--table-unsafe"] if o.get("tableUnsafe") else []
-        s = o.get("stopModel") or {}
-        args += [f"--stop-time-s={s['stopTimeS']}"] if s.get("stopTimeS") is not None else []
-        print(" ".join(args))
-    PY
-    )
+    # The reference's own build options (docs/adr/0038): from its report, or, built before it, its category captions
+    # (teleop_lerobot safety-options; a report from before 2026-11-23 names them as it did then).
+    opts=$("$py" -m teleop_lerobot safety-options "$src")
     echo "[check] rebuilding the first ${#takes[@]} episode(s) of $DATASET with $JOBS job(s) at ${COMMIT:0:7} ($opts)"
     start=$(date +%s.%N)
     "$py" -m teleop_lerobot safety-build --jobs "$JOBS" $opts --out "$out" "${takes[@]}" > "$out.log" 2>&1 || { echo "[check] build failed: $(grep -vE '^(Svt|Map)' "$out.log" | tail -5)" >&2; exit 1; }

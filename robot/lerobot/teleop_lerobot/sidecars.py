@@ -37,7 +37,7 @@ from typing import Dict, List, Optional, Sequence, Tuple
 from .jlog import Jlog, items, read_jlog
 from .takes import Take
 
-TABLE = 0  # WC's object 0: the table (docs/adr/0038 decision 4), never unsafe by default
+TABLE = 0  # WC's object 0: the table (docs/adr/0038 decision 4), unsafe by default since 2026-11-23 (Options.table_safe)
 NEUTRAL_CAPTION = "move the arm"  # every episode's task, whatever its scenario (docs/adr/0038 decision 6)
 NEAR_MISS_MM = 30.0  # no contact, but some link came within this of an obstacle: a near miss
 EARLY_CONTACT_S = 1.5  # item 24: a first contact sooner than this after the episode's start is reported
@@ -80,7 +80,9 @@ class Options:
     """How a safety dataset is built (docs/adr/0038 decision 6)."""
 
     caption: str = "neutral"  # "neutral": every task NEUTRAL_CAPTION; "category": the scenario's name, as before
-    table_unsafe: bool = False  # count the arm touching the table (WC object 0) as unsafe too
+    # Leave the arm touching the table (WC object 0) out of the labels, as builds did until 2026-11-23. By default it is
+    # unsafe: on the real robot a hard table hit is a collision (world-models' review of docs/adr/0038).
+    table_safe: bool = False
     geometry_dir: Optional[str] = None  # the twin's collision geometry, for clearance; None: no clearance
     stop: Optional[StopModel] = None  # writes unavoidable_ranges.json
 
@@ -92,7 +94,7 @@ class Options:
         return NEUTRAL_CAPTION if self.caption == "neutral" else scenario
 
     def describe(self) -> Dict:
-        return {"caption": self.caption, "tableUnsafe": self.table_unsafe, "geometryDir": self.geometry_dir,
+        return {"caption": self.caption, "tableSafe": self.table_safe, "geometryDir": self.geometry_dir,
                 "stopModel": None if self.stop is None else {"stopTimeS": self.stop.time_s}}
 
 
@@ -636,7 +638,8 @@ def episode(take: Take, options: Options = Options(), records: Optional[Records]
     table = [s for s in all_stretches if s.object == TABLE]
     in_contact = frame_flags(take, obstacle)
     in_table = frame_flags(take, table)
-    labels = [max(a, b) for a, b in zip(in_contact, in_table)] if options.table_unsafe else list(in_contact)
+    # The labels count an obstacle and, unless built table_safe, the table (the old categories' checks never count it).
+    labels = list(in_contact) if options.table_safe else [max(a, b) for a, b in zip(in_contact, in_table)]
 
     # The scene: objects on the table, their sizes and poses.
     poses = object_poses(host)

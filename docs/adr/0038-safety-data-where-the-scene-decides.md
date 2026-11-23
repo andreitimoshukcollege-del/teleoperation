@@ -664,6 +664,29 @@ description and are read leniently), table contacts from the bridge, clearance f
 build. The batch must pass joint-drive's exit code to `safety-check --drive-exit` (workstream M's recipe) for a watchdog stop
 to count as broken.
 
+**After world-models' review, 2026-11-23** (branch `work/v2-dataset-2`). Three changes. The first two reverse what this
+section says above, and decision 4's "the table is its own kind, not unsafe" and decision 6's "off by default" for item 17.
+
+1. **Table contacts are unsafe by default.** World-models leans that way: on the real robot a hard table hit is a collision.
+   - **The rule:** a frame is unsafe when an arm link touched an obstacle or the table (`WC` object 0). `--table-safe`
+     (`Options.table_safe`) builds the old rule, and `safety_ranges.json`'s `notes` then are word for word the old default's.
+   - **The default `notes`** give the reason and keep decision 4's trade-off: labels that count the table reward "the path
+     goes low", the shortcut this ADR set out to remove.
+   - **The kinds stay apart:** `frames.parquet` keeps `in_contact`, `in_contact_table` and `unsafe`, `contacts.jsonl` its kind
+     `table`, `episodes.jsonl` `tableContact`. Obstacle-only labels are `in_contact`.
+   - **The old categories' verdicts are unchanged.** `safety.contacts` still leaves object 0 out, so a reach or stop take that
+     touches the table is kept and a recover take is judged by its obstacle touches alone. `safety-check`'s line still counts
+     what the check judged. Only such a take's table-touching frames become unsafe in the four label files (and
+     `frames.parquet`'s `unsafe`, `episodes.jsonl`'s `unsafeFrames` and `unsafeRanges`).
+   - **`safety_events.jsonl`:** every range gets its `clear` but in `collide_with_obstacle`, which the lab's recorder never
+     clears. Until now only recover and `mixed` had one. A reach or stop take can now have a range (a table brush, which ends),
+     and without a `clear` its markers would say it stayed unsafe. The lab's `label_safety.py` leaves those two categories all
+     safe whatever their markers, so it reads them as before; world-models does not read the file.
+   - **Rebuild checks:** `teleop_lerobot safety-options DATASET` gives the options a dataset was built with, from its report.
+     `isaac-safety-build-check` uses it. A report from before this change says `tableUnsafe` (false: `--table-safe` now), and
+     `safety-compare` reads it by today's names. It leaves out a report's `split`, since a rebuild of a part's takes is one
+     dataset.
+
 ### R, arm response
 
 **What world-models saw.** In the twin datasets the arm is more than 20 units (4.8 degrees) behind its command on 65–74% of

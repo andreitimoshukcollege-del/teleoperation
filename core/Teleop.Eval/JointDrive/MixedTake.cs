@@ -338,19 +338,34 @@ namespace Teleop.Eval.JointDrive
         {
             end = double.NaN;
             const double deg = Math.PI / 180.0;
-            for (int attempt = 0; attempt < 10; attempt++)
+            Vector3 at = _hand.TargetEnd;
+            var here = new Vector2(at.X, at.Y);
+            float reach = _profile.ProximalLinkLength + _profile.DistalLinkLength - 0.03f;
+            for (int attempt = 0; attempt < 24; attempt++)
             {
-                Vector3 at = _hand.TargetEnd;
-                var radial = new Vector2(at.X, at.Y);
-                float r = Math.Clamp(radial.Length(), 0.10f, 0.17f), az = MathF.Atan2(radial.Y, radial.X);
-                float z = MathF.Max(at.Z + (float)Draw.Uniform(ref _rng, 0.05, 0.10), (float)Draw.Uniform(ref _rng, 0.06, 0.16));
-                // Inside the reach shell: the wrist at most 3 cm short of the arm's length from the shoulder.
-                float reach = _profile.ProximalLinkLength + _profile.DistalLinkLength - 0.03f;
+                // A goal whose own pose is clear of every object: first above and in from where the hand is, then anywhere in
+                // front within the reach shell (the wrist at most 3 cm short of the arm's length from the shoulder).
+                float r, az;
+                if (attempt < 8)
+                {
+                    r = Math.Clamp(here.Length() - (float)Draw.Uniform(ref _rng, 0.0, 0.06), 0.10f, 0.17f);
+                    az = MathF.Atan2(here.Y, here.X) + (float)(Draw.Uniform(ref _rng, -20, 20) * deg);
+                }
+                else
+                {
+                    r = (float)Draw.Uniform(ref _rng, 0.10, 0.17);
+                    az = (float)(Draw.Uniform(ref _rng, -70, 70) * deg);
+                }
+
                 float top = _profile.BaseHeight + MathF.Sqrt(MathF.Max(0f, reach * reach - r * r));
-                var goal = new Vector3(r * MathF.Cos(az), r * MathF.Sin(az), MathF.Min(z, top));
+                float z = MathF.Min(MathF.Max(at.Z + (float)Draw.Uniform(ref _rng, 0.05, 0.10), (float)Draw.Uniform(ref _rng, 0.06, 0.16)), top);
+                var goal = new Vector3(r * MathF.Cos(az), r * MathF.Sin(az), z);
+                float pitch = (float)(Draw.Uniform(ref _rng, -40, 0) * deg);
+                ArmPose from = _hand.Poses.Count > 0 ? _hand.Poses[_hand.Poses.Count - 1] : _model.Home;
+                if (!TrySolve(from, goal, pitch, out ArmPose there) || !_envelope.Contains(there) || !ArmCollision.IsValid(_profile, _hand.Guard!, there)) continue;
                 HandSnapshot before = _hand.Save();
                 int drafts = _drafts.Count;
-                if (!_hand.MixedTo(goal, (float)(Draw.Uniform(ref _rng, -40, 0) * deg), null, Slowness(), 0.010, _model, out double s, out double e)) continue;
+                if (!_hand.MixedTo(goal, pitch, null, Slowness(), 0.010, _model, out double s, out double e)) continue;
                 int k = Math.Min(_hand.Poses.Count - 1, (int)Math.Ceiling(e / HandModel.TickSeconds));
                 if (!ArmCollision.IsValid(_profile, _hand.Guard!, _hand.Poses[k]))
                 {
@@ -666,7 +681,12 @@ namespace Teleop.Eval.JointDrive
             {
                 Vector3 tool = middle + (s0 + i * LineStepMeters) * u;
                 var radial = new Vector2(tool.X, tool.Y);
-                if (radial.Length() < 0.05f) break;
+                if (radial.Length() < 0.05f)
+                {
+                    if (started) break;
+                    continue; // over the base: the line starts beyond it
+                }
+
                 radial = Vector2.Normalize(radial);
                 var wrist = new Vector3(tool.X - lh * radial.X, tool.Y - lh * radial.Y, tool.Z - lv);
                 bool ok = TrySolve(at, wrist, pitch, out ArmPose pose) && _envelope.Contains(pose) && ArmCollision.IsValid(_profile, _model, pose)

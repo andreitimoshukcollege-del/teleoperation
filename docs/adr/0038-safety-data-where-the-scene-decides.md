@@ -710,6 +710,31 @@ section says above, and decision 4's "the table is its own kind, not unsafe" and
      check, so a group parted between them went unseen. Such datasets are now named by their paths, and one given twice is a
      fault.
 
+**Measured on the twin check's takes** (read-only: the 20 `mixed` takes of 2026-11-23 behind `v2check_20261123_133318_1of2`
+and `_2of2`, rebuilt at aa1d3a7 on the GPU machine into scratch, `--jobs 4`, 85 s for both parts). "Before" is the twin
+check's own build (at the integration tip, before these changes); "after" is today's defaults, `--split 2`.
+
+| | Before | After |
+|---|---|---|
+| Split (episodes a part), mix | 10 / 10; outcomes 5 contact, 1 knock, 1 near miss, 3 none / 3 contact, 1 knock, 6 none | the same parts and mix |
+| Unsafe ranges (frames) | 12 (127) / 8 (264) | the same: world-models' `load_ranges` reads equal ranges, no warning |
+| Episodes with a table contact | 0 of 20 | 0 of 20 |
+| Unavoidable ranges, fast / median / slow | none | 26 / 40 / 52 frames (6 episodes) and 17 / 25 / 31 (4): 2.1-2.2, 3.1-3.3 and 3.9-4.3 frames before each unsafe range |
+| `safety-compare` against before | | 3 differences a part, all intended: `safety_ranges.json`'s notes, `report.json`'s options, and the new `unavoidable_ranges.json` |
+| `safety-report` on the two parts | no faults (the old checker) | no faults: 8 replay groups, 16 layout hashes and 8 layout seeds, each in one part |
+
+- **No take touched the table.** The twin's bridge did report surfaces as object 0, but none of the 20 takes, or the 14 later
+  ones of that day, has a `WC` pair naming it. So the default labels and events changed nothing here, and the table rule is
+  tested only on synthetic takes so far.
+- **The options a report records rebuild it.** `safety-options` read each before-part's report, with its old names:
+  `--caption neutral --geometry-dir=~/isaacsim/assets/clearance --table-safe --no-unavoidable`. The rebuilds compared
+  "the same" file for file with both parts, videos included.
+- **The cross-dataset check, on real data.** The after part 1 checked beside the before part 1 (the same takes) gives 20
+  faults: 4 replay groups, 8 layout hashes and 4 layout seeds in two datasets (and each group then has two sources).
+
+**Untested:** a real take that touches the table (its labels, `clear` markers and unavoidable ranges before it); the
+three stop times against the real arm (`just stop-latency`, the user's run); a full-size train, val and test set.
+
 ### R, arm response
 
 **What world-models saw.** In the twin datasets the arm is more than 20 units (4.8 degrees) behind its command on 65–74% of

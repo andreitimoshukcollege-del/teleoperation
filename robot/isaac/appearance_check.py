@@ -7,11 +7,14 @@ It prints one ``RESULT {...}`` line and exits non-zero when a check fails:
 
 1. **Records.** Every take has ``LT``, ``CJ`` and ``OA`` for the parts its scene's section has, and each equals the draw
    ``teleop_isaac.appearance`` makes from ``BK``'s seed and the change. Each camera's ``CM`` pose is the scene file's pose
-   moved by its ``CJ`` offset (within 0.1 mm and 0.01 degree).
-2. **The pose recorded is the pose rendered.** Every camera's depth on the table (mask id 10), back-projected through its
-   ``CM`` pose (a mounted camera's through its link's forward kinematics at the frame's ``VQ`` values), lands on the table top:
-   p99 under 3 mm, as ``verify_session.py`` holds it. The same through the scene file's pose, ignoring the jitter, is reported
-   beside it: a 2 degree turn tilts the table by centimetres there, so this tells whether the renderer moved the camera.
+   moved by its ``CJ`` offset (within 0.01 mm and 0.001 degree, the angle measured by ``appearance.turn_deg``).
+2. **The pose recorded is the pose rendered.** Every camera's depth on the table top, back-projected through its ``CM`` pose
+   (a mounted camera's through its link's forward kinematics at the frame's ``VQ`` values), lands on the table top: p99 under
+   3 mm, as ``verify_session.py`` holds it. The top is the table pixels (mask id 10) whose point falls on the top's footprint,
+   1 cm inside its edges: the mask also covers the table's sides, and a camera turned down by its jitter sees the front one,
+   up to 4 cm below the top, in a corner of its image (the twin check of 2026-11-23 counted those as the top). The same
+   through the scene file's pose, ignoring the jitter, is reported beside it: a 2 degree turn tilts the table by centimetres
+   there, so this tells whether the renderer moved the camera.
 3. **A colour that arrives late** (reported, not checked): each scanned object's mean colour difference (0-255) between a
    take's first frame and a second later, over the pixels that are the object in both. A material still compiling when the
    take began shows as a jump of tens; the arm's moving shadow gives a few.
@@ -43,6 +46,7 @@ from teleop_isaac.renderer import look_at, mounted_camera_local  # noqa: E402
 REPO = os.path.dirname(os.path.dirname(HERE))
 URDF = os.path.join(REPO, "robot", "jetrover", "urdf", "jetrover.urdf")
 TABLE_ID = 10
+TOP_EDGE_M = 0.01  # the table top's points are those this far inside its footprint's edges: never a side face
 FRAMES_PER_TAKE = 12  # frames sampled a take for the depth check
 
 
@@ -61,8 +65,27 @@ def quat_matrix(w, x, y, z):
             (2 * (x * z - w * y), 2 * (y * z + w * x), 1 - 2 * (x * x + y * y)))
 
 
-def angle_deg(q1, q2):
-    return math.degrees(2 * math.acos(min(1.0, abs(sum(a * b for a, b in zip(q1, q2))))))
+def table_top(scene):
+    """The table top's height and its footprint, :data:`TOP_EDGE_M` inside its edges: (top, x0, x1, y0, y1), base frame."""
+    s = next(s for s in scene.surfaces if s.id == "table")
+    return (s.top, s.center[0] - s.size[0] / 2 + TOP_EDGE_M, s.center[0] + s.size[0] / 2 - TOP_EDGE_M,
+            s.center[1] - s.size[1] / 2 + TOP_EDGE_M, s.center[1] + s.size[1] / 2 - TOP_EDGE_M)
+
+
+CM_MM, CM_DEG = 0.01, 0.001  # how far CM may be from the scene file's pose moved by CJ (7 decimals, float32 read-backs)
+
+
+def scene_pose(camera):
+    """A camera's pose as the scene file gives it: in the base frame, or in its mount link's frame."""
+    if camera.get("mount"):
+        return mounted_camera_local(camera)
+    return tuple(camera["position"]), look_at(camera["position"], camera["lookAt"])
+
+
+def cm_offset(cm_pose, camera, jitter):
+    """How far a ``CM`` pose is from the scene file's camera moved by its ``CJ`` jitter: (mm, degrees)."""
+    moved = appearance.jittered(scene_pose(camera), jitter)
+    return 1000.0 * math.dist(moved[0], cm_pose[0]), appearance.turn_deg(moved[1], cm_pose[1])
 
 
 def payload(take, stream, part):
@@ -72,15 +95,16 @@ def payload(take, stream, part):
         return f.read(length)
 
 
-def table_heights(depth_mm, mask, cam, pose):
-    """Every table pixel's height (m) in the base frame, back-projected through ``pose`` (position, w-x-y-z)."""
+def table_heights(depth_mm, mask, cam, pose, footprint=None, sample=4000):
+    """The heights (m, base frame) of table pixels back-projected through ``pose`` (position, w-x-y-z), at most ``sample`` of
+    them. With ``footprint`` (x0, x1, y0, y1), only the points that fall on it: the table top's, not its sides'."""
     import numpy as np
 
     vv, uu = np.nonzero((mask == TABLE_ID) & (depth_mm > 0))
     if len(uu) == 0:
         return np.zeros(0)
-    if len(uu) > 4000:
-        pick = np.linspace(0, len(uu) - 1, 4000).astype(int)
+    if sample and len(uu) > sample:
+        pick = np.linspace(0, len(uu) - 1, sample).astype(int)
         vv, uu = vv[pick], uu[pick]
     d = depth_mm[vv, uu].astype(np.float64) / 1000.0
     xc = (uu + 0.5 - cam["cx"]) * d / cam["fx"]
@@ -88,6 +112,9 @@ def table_heights(depth_mm, mask, cam, pose):
     zc = -d
     r = np.array(quat_matrix(*pose[1]))
     pts = (r @ np.stack([xc, yc, zc])).T + np.array(pose[0])
+    if footprint is not None:
+        x0, x1, y0, y1 = footprint
+        pts = pts[(pts[:, 0] > x0) & (pts[:, 0] < x1) & (pts[:, 1] > y0) & (pts[:, 1] < y1)]
     return pts[:, 2]
 
 
@@ -142,12 +169,10 @@ def check_take(take, joints, sheet_rows, wrist_frames, baseline=False):
         if c is None:
             out["problems"].append(f"camera {cid} is not in the scene file")
             continue
-        nominal[cid] = mounted_camera_local(c) if c.get("mount") else (tuple(c["position"]), look_at(c["position"], c["lookAt"]))
-        moved = appearance.jittered(nominal[cid], jit.get(cid, appearance.NO_JITTER))
-        mm = 1000.0 * math.dist(moved[0], cam["pose"][0])
-        deg = angle_deg(moved[1], cam["pose"][1])
+        nominal[cid] = scene_pose(c)
+        mm, deg = cm_offset(cam["pose"], c, jit.get(cid, appearance.NO_JITTER))
         worst = [max(worst[0], mm), max(worst[1], deg)]
-        if mm > 0.1 or deg > 0.01:
+        if mm > CM_MM or deg > CM_DEG:
             out["problems"].append(f"CM {cid} is {mm:.3f} mm and {deg:.4f} deg from the scene file's pose moved by CJ")
     out["cm_vs_cj"] = [round(worst[0], 4), round(worst[1], 5)]
     if spec.objects is not None:
@@ -168,7 +193,7 @@ def check_take(take, joints, sheet_rows, wrist_frames, baseline=False):
     vf = [r for r in rec.get("VF", []) if "B" not in r[3]]
     picks = [vf[int(i)] for i in np.linspace(0, len(vf) - 1, min(FRAMES_PER_TAKE, len(vf)))] if vf else []
     err = {cid: {"cm": [], "file": []} for cid in cams}
-    top = scene.table.top
+    top, *footprint = table_top(scene)
     for r in picks:
         frame = int(r[1])
         parts = {}
@@ -187,7 +212,7 @@ def check_take(take, joints, sheet_rows, wrist_frames, baseline=False):
                     link = kinematics.link_pose(joints, values, cam["mount"])
                     d = kinematics.q_rotate(link[1], pose[0])
                     pose = (tuple(a + b for a, b in zip(link[0], d)), kinematics.q_mul(link[1], tuple(pose[1])))
-                h = table_heights(depth, mask, cam, pose)
+                h = table_heights(depth, mask, cam, pose, footprint)
                 err[cid][which].extend(np.abs(h - top).tolist())
     out["table_mm"] = {}
     for cid, e in err.items():

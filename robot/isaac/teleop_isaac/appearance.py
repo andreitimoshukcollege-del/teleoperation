@@ -283,6 +283,20 @@ def camera_jitter(s: Optional[JitterSpec], seed: int, change: int, camera_id: st
     return CameraJitter(*(round(r.uniform(-t, t), 5) for _ in range(3)), *(round(r.uniform(-a, a), 4) for _ in range(3)))
 
 
+def turn_deg(q1: Sequence[float], q2: Sequence[float]) -> float:
+    """The angle in degrees of the turn from orientation ``q1`` to ``q2`` (w, x, y, z), well conditioned at small angles: the
+    relative quaternion's vector length against its scalar part, through atan2. Twice the arc cosine of the two quaternions'
+    dot product is not: near 1 it turns a rounding error of 1e-7 into hundredths of a degree, so 7-decimal ``CM`` quaternions
+    a hundred-thousandth of a degree apart measured 0.01-0.05 degrees that way (docs/adr/0038 "A, appearance", the twin
+    check of 2026-11-23)."""
+    n1 = math.sqrt(sum(c * c for c in q1))
+    n2 = math.sqrt(sum(c * c for c in q2))
+    a = tuple(c / n1 for c in q1)
+    b = tuple(c / n2 for c in q2)
+    r = kinematics.q_mul((a[0], -a[1], -a[2], -a[3]), b)
+    return math.degrees(2.0 * math.atan2(math.sqrt(r[1] * r[1] + r[2] * r[2] + r[3] * r[3]), abs(r[0])))
+
+
 def jittered(pose: Tuple[Sequence[float], Sequence[float]], j: CameraJitter):
     """A camera's pose (position, w-x-y-z orientation, in whatever frame it is given) moved by ``j`` in its own frame."""
     p, q = pose

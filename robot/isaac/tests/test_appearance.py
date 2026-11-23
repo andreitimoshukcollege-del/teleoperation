@@ -36,7 +36,7 @@ def bench(tmp_path, section=None):
 
 
 def angle_deg(q1, q2):
-    return math.degrees(2 * math.acos(min(1.0, abs(sum(a * b for a, b in zip(q1, q2))))))
+    return appearance.turn_deg(q1, q2)
 
 
 # --- the section ---------------------------------------------------------------------------------------------------------
@@ -210,6 +210,31 @@ def test_a_wrist_cameras_jitter_in_its_mount_frame_is_the_same_turn_and_shift_in
     a = compose(link, appearance.jittered(local, j))
     b = appearance.jittered(compose(link, local), j)
     assert math.dist(a[0], b[0]) < 1e-12 and angle_deg(a[1], b[1]) < 1e-6
+
+
+def test_the_turn_between_two_orientations_is_measured_well_at_small_angles_and_through_seven_decimals():
+    """The twin check of 2026-11-23 read CM 0.01-0.04 degrees from the scene file's pose moved by CJ, for poses a hundred
+    thousandth of a degree apart: twice the arc cosine of a dot product, on quaternions CM rounds to 7 decimals. turn_deg
+    measures the turn from the relative quaternion instead."""
+    import random
+
+    def acos_deg(q1, q2):  # the way it was measured
+        return math.degrees(2 * math.acos(min(1.0, abs(sum(a * b for a, b in zip(q1, q2))))))
+
+    rng = random.Random(4)
+    worst_acos = 0.0
+    for _ in range(300):
+        q = kinematics.q_rpy(rng.uniform(-3, 3), rng.uniform(-1.5, 1.5), rng.uniform(-3, 3))
+        for rad in (1e-6, 1e-4, 1e-2, 0.5):
+            axis = (rng.uniform(-1, 1), rng.uniform(-1, 1), rng.uniform(-1, 1))
+            q2 = kinematics.q_mul(q, kinematics.q_axis(axis, rad))
+            assert abs(appearance.turn_deg(q, q2) - math.degrees(rad)) < 1e-9 + 1e-9 * math.degrees(rad)
+            assert abs(appearance.turn_deg(q2, q) - math.degrees(rad)) < 1e-9 + 1e-9 * math.degrees(rad)
+        written = tuple(round(c, 7) for c in q)  # as CM writes it
+        assert appearance.turn_deg(q, written) < 3e-5
+        assert appearance.turn_deg(q, tuple(-c for c in q)) < 1e-9  # q and -q are one orientation
+        worst_acos = max(worst_acos, acos_deg(q, written))
+    assert worst_acos > 0.005  # the arc cosine reads a rounding as hundredths of a degree
 
 
 # --- the records -------------------------------------------------------------------------------------------------------

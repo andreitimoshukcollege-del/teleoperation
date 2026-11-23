@@ -1171,11 +1171,13 @@ def run(app, args, p, scene, cameras, fps, joints, motors, tap) -> int:
             np_, nq = appearance_module.jittered(nominal[i], j)
             cam.set_world_poses(positions=[list(np_)], orientations=[list(nq)])
             cp, cq = (np.asarray(x.numpy() if hasattr(x, "numpy") else x, float).reshape(-1) for x in cam.get_world_poses())
+            # Isaac keeps a pose in float32: it reads back within about 1e-4 mm and 1e-5 degrees. (Measured as twice the arc cosine
+            # of a dot product, the same pose read back 0.02 degrees off on the twin; appearance.turn_deg measures it properly.)
             off_mm = 1000.0 * math.dist(cp[:3], p)
-            off_deg = math.degrees(2 * math.acos(min(1.0, abs(sum(a * b for a, b in zip(cq[:4], q))))))
-            if off_mm > 0.1 or off_deg > 0.01:
-                print(f"[render] warning: camera {c['id']} reads back {off_mm:.2f} mm and {off_deg:.3f} deg from the pose it was "
-                      f"given; CM records the pose given", flush=True)
+            off_deg = appearance_module.turn_deg(cq[:4], q)
+            if off_mm > 0.01 or off_deg > 0.001:
+                print(f"[render] warning: camera {c['id']} reads back {off_mm:.3f} mm and {off_deg:.4f} deg from the pose CM records "
+                      f"(the start-up pose moved by the jitter)", flush=True)
 
     def apply_lighting() -> None:
         """This change's light: every scene light's colour temperature, and the key light's direction, strength, size and

@@ -82,7 +82,7 @@ def test_a_parallel_safety_build_writes_the_files_a_sequential_one_does(scenario
         Image.new("RGB", (64, 48), ((n * 11) % 256, 30 if cam == "wrist" else 220, (n * 5) % 256)).save(buf, "JPEG", quality=90)
         return buf.getvalue()
 
-    paths = [jetrover_take(scenarios, name=f"20261121T1000{i}0Z-take00{i}", scenario=c, image=jpeg_frame)
+    paths = [jetrover_take(scenarios, name=f"20261121T1000{i}0Z-take00{i}", scenario=c, image=jpeg_frame, at_s=10 * i)
              for i, c in enumerate(("reach_no_obstacle", "stop_before_collision", "reach_no_obstacle"))]
     takes = [read_take(p) for p in paths]
     alone, together = str(tmp_path / "alone" / "jetrover_x"), str(tmp_path / "together" / "jetrover_x")  # one repo name
@@ -115,7 +115,7 @@ def test_safety_build_with_spawned_workers_writes_what_one_process_does(scenario
     from teleop_lerobot import safety, sidecars
     from teleop_lerobot.writer import SAFETY_CRF, SAFETY_PRESET
 
-    paths = [jetrover_take(scenarios, name=f"20261121T1100{i}0Z-take00{i}", scenario="reach_no_obstacle", image=jpeg)
+    paths = [jetrover_take(scenarios, name=f"20261121T1100{i}0Z-take00{i}", scenario="reach_no_obstacle", image=jpeg, at_s=10 * i)
              for i in range(2)]
     alone, spawned = str(tmp_path / "a" / "jetrover_y"), str(tmp_path / "b" / "jetrover_y")
     safety.build(LeRobotWriter(crf=SAFETY_CRF, preset=SAFETY_PRESET), alone, [read_take(p) for p in paths], log=lambda m: None,
@@ -139,7 +139,7 @@ def test_a_safety_build_with_neutral_captions_is_a_dataset_lerobot_reads_with_on
     from teleop_lerobot import safety
     from teleop_lerobot.writer import SAFETY_CRF, SAFETY_PRESET
 
-    paths = [jetrover_take(scenarios, name=f"20261122T1100{i}0Z-take00{i}", scenario=c, image=jpeg)
+    paths = [jetrover_take(scenarios, name=f"20261122T1100{i}0Z-take00{i}", scenario=c, image=jpeg, at_s=10 * i)
              for i, c in enumerate(("mixed", "reach_no_obstacle", "mixed"))]
     root = str(tmp_path / "jetrover_z")
     safety.build(LeRobotWriter(crf=SAFETY_CRF, preset=SAFETY_PRESET), root, [read_take(p) for p in paths], log=lambda m: None)

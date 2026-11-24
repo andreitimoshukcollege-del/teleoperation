@@ -40,6 +40,12 @@ Since 2026-11-22 (docs/adr/0038 decision 6):
   ``report.json``, and since 2026-11-23 by default ``unavoidable_ranges.json``), and a build can split one batch into
   several datasets by layout (:func:`build_split`).
 
+Since 2026-11-24 (docs/adr/0038 L, world-models' review of ``jetrover_20261124_021454_cb1e21``): **one dataset holds one
+collection stream.** Two twins record at once on the GPU machine's one CLOCK_MONOTONIC, so their takes overlap in time, and
+a reader that picks ``raw_ros_events.jsonl``'s commands by time took a third of its checkpoints from the other twin's arm.
+A build refuses episodes that overlap on that clock (:func:`refuse_overlaps`, :class:`OverlapError`), and
+:func:`build_streams` writes the takes of each takes root (each twin records into its own) as a dataset of its own.
+
 No LeRobot or pandas here but in :func:`write_labels`'s parquet, so the tests run with plain Python.
 """
 
@@ -49,6 +55,7 @@ import contextlib
 import json
 import math
 import os
+import re
 import shutil
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Sequence, Tuple
@@ -503,23 +510,67 @@ def episodes_of(takes: Sequence[Take], options=None, jobs: int = 1, executor=Non
     return [_episode(t, options) for t in takes]
 
 
+class OverlapError(ValueError):
+    """Takes a build would write into one dataset overlap in time on the clock its ``raw_ros_events.jsonl`` and
+    ``capture_timing.jsonl`` share (docs/adr/0038 L). Nothing was written."""
+
+
+LISTED_PAIRS = 20  # a refusal names this many overlapping pairs, then counts the rest
+
+
+def overlap_refusal(root: str, takes: Sequence[Take], spans: Sequence[Tuple[int, int]], what: str = "episode") -> List[str]:
+    """Why ``takes`` cannot be one dataset at ``root``, one line each (empty when they can): every pair whose spans on the
+    session's clock (``writer.clock_span``) share a moment, by ``what`` and number (an episode's, in the order given) and
+    take."""
+    from .writer import overlap_lines, overlapping
+
+    pairs = overlapping(spans)
+    if not pairs:
+        return []
+    labels = [f"{what} {i} ({os.path.abspath(t.path)})" for i, t in enumerate(takes)]
+    roots = len({stream_of(t.path) for t in takes})
+    why = (f"they come from {roots} takes roots, and safety-build (build_streams) writes each root's takes, each twin's, as a "
+           f"dataset of its own" if roots > 1 else
+           "they come from one takes root, whose takes overlap only when one is given twice or two recorders wrote into it")
+    return [f"{root}: {len(pairs)} pair(s) of the {len(takes)} takes overlap in time on the clock raw_ros_events.jsonl and "
+            f"capture_timing.jsonl share, so a reader that picks the raw log's commands by time would take one's for "
+            f"another's. One dataset holds one collection stream (docs/adr/0038 L): {why}."] + [
+        "  " + line for line in overlap_lines(labels, spans, pairs, LISTED_PAIRS)]
+
+
+def refuse_overlaps(root: str, takes: Sequence[Take], spans: Optional[Sequence[Tuple[int, int]]] = None,
+                    what: str = "episode") -> List[Tuple[int, int]]:
+    """Raises :class:`OverlapError` when any two of ``takes`` overlap in time on the clock of the dataset's lab files (each
+    take's ``writer.clock_span``, or ``spans``), naming them; else returns their spans."""
+    from .writer import clock_span
+
+    spans = list(spans) if spans is not None else [clock_span(t) for t in takes]
+    lines = overlap_refusal(root, takes, spans, what)
+    if lines:
+        raise OverlapError("\n".join(lines))
+    return spans
+
+
 def build(writer, root: str, takes: Sequence[Take], log=print, jobs: int = 1, executor=None, options=None, episodes=None,
-          split_of: Optional[Tuple[int, int]] = None) -> List[Tuple[int, str, List[int]]]:
+          split_of: Optional[Tuple[int, int]] = None, spans=None) -> List[Tuple[int, str, List[int]]]:
     """Writes ``takes`` (already checked) as one safety dataset at ``root``: each an episode, in order, then the label files
     and the sidecars (docs/adr/0038 decision 6). A dataset already there is refused: a batch's dataset is written once, from
-    its kept takes. Returns (episode, scenario, frame labels) for each.
+    its kept takes. So are takes that overlap in time (:func:`refuse_overlaps`: one dataset holds one collection stream),
+    before anything is written. Returns (episode, scenario, frame labels) for each.
 
     ``jobs`` above 1 (docs/adr/0036 amendment 6): that many worker processes decode each take's frames and encode its videos
     ahead (``writer.prepare_job``), while this process appends the episodes in order with LeRobot as before; the same files
     either way. ``executor`` replaces the workers (tests). ``options`` (``sidecars.Options``): the caption, whether table
     contacts are unsafe, the clearance geometry, a stop model. ``episodes``: the takes' ``sidecars.episode`` already made
-    (:func:`build_split`); ``split_of``: (part, parts) for its report."""
+    (:func:`build_split`); ``split_of``: (part, parts) for its report; ``spans``: the takes' ``writer.clock_span`` already
+    measured."""
     from . import sidecars
     from .writer import append_take, prepared_in_order
 
     options = options or sidecars.Options()
     if os.path.exists(root):
         raise FileExistsError(f"{root} exists: a safety dataset is written once (rebuild it into a new folder)")
+    refuse_overlaps(root, takes, spans)
     infos = list(episodes) if episodes is not None else episodes_of(takes, options, jobs, executor)
     shown = [as_safety(take, options.caption) for take in takes]
     if jobs > 1 and hasattr(writer, "prepare_job"):
@@ -551,12 +602,14 @@ def split_roots(out: str, parts: int) -> List[str]:
 
 
 def build_split(writer, out: str, takes: Sequence[Take], parts: int, log=print, jobs: int = 1, executor=None,
-                options=None) -> List[str]:
+                options=None, episodes=None, spans=None) -> List[str]:
     """Writes ``takes`` as ``parts`` smaller safety datasets (docs/adr/0038 decision 6, items 20 and 21), each by
     :func:`build` at ``<out>_<k>of<parts>``, every take in exactly one. Takes that share a replay group (``RP``), a layout
     hash, or a scene and layout seed stay in one dataset (``sidecars.split``), so no layout and no replay is on two sides.
     Each dataset's ``meta/teleop/report.json`` holds its scenario, outcome and contact counts, and the log its mix. Returns
-    the datasets' folders. None is written unless every take finds its place."""
+    the datasets' folders. None is written unless every take finds its place, and none when any two takes overlap in time
+    (:func:`refuse_overlaps`, over them all: the parts split one collection stream). ``episodes`` and ``spans``: the
+    takes' ``sidecars.episode`` and ``writer.clock_span`` already made (:func:`build_streams`)."""
     from . import sidecars
 
     options = options or sidecars.Options()
@@ -566,17 +619,112 @@ def build_split(writer, out: str, takes: Sequence[Take], parts: int, log=print, 
     there = [r for r in roots if os.path.exists(r)]
     if there:
         raise FileExistsError(f"{there[0]} exists: a safety dataset is written once (rebuild it into a new folder)")
-    infos = episodes_of(takes, options, jobs, executor)
+    spans = refuse_overlaps(out, takes, spans, what="take")
+    infos = list(episodes) if episodes is not None else episodes_of(takes, options, jobs, executor)
     bins = sidecars.split([e.line for e in infos], parts)
     for k, (root, members) in enumerate(zip(roots, bins), start=1):
         log(f"[split] {os.path.basename(root)}: {len(members)} episode(s)")
-        build(writer, root, [takes[i] for i in members], log, jobs, executor, options, [infos[i] for i in members], (k, parts))
+        build(writer, root, [takes[i] for i in members], log, jobs, executor, options, [infos[i] for i in members], (k, parts),
+              [spans[i] for i in members])
     return roots
+
+
+def stream_of(path: str) -> str:
+    """The collection stream a take belongs to: the takes root it was recorded into (``<root>/<scenario>/<take>``, its
+    links resolved). Each twin records into a root of its own (``~/data/takes/jetrover-isaac`` twin 0's,
+    ``jetrover-isaac-twin<N>`` twin N's: docs/adr/0037 amendment 7), one take after another, so one root's takes never
+    overlap in time; two twins' recorded at once do, on the machine's one clock."""
+    return os.path.dirname(os.path.dirname(os.path.realpath(path)))
+
+
+def stream_names(roots: Sequence[str]) -> Dict[str, str]:
+    """Each takes root's name in its dataset's (``<out>_<name>``): ``twin<N>`` for a root named ``<x>-twin<N>``, and
+    ``twin0`` for ``<x>`` itself beside one (the twins' roots, the justfile's ``isaac_twin_sh``); any other root is its
+    folder's name. Raises ValueError when two roots would have one name."""
+    bases = {r: os.path.basename(r.rstrip("/")) for r in roots}
+    names = {}
+    for root, base in bases.items():
+        m = re.fullmatch(r"(.+)-twin(\d+)", base)
+        if m:
+            names[root] = f"twin{int(m.group(2))}"
+        elif any(re.fullmatch(re.escape(base) + r"-twin\d+", other) for other in bases.values()):
+            names[root] = "twin0"
+        else:
+            names[root] = base
+    seen: Dict[str, str] = {}
+    for root, name in sorted(names.items()):
+        if name in seen:
+            raise ValueError(f"the takes roots {seen[name]} and {root} would both be named {name!r}: build each on its own")
+        seen[name] = root
+    return names
+
+
+def streams(takes: Sequence[Take]) -> List[Tuple[str, str, List[int]]]:
+    """``takes`` by collection stream (:func:`stream_of`): (name, takes root, indices into ``takes`` in the order given)
+    each, by name (:func:`stream_names`)."""
+    members: Dict[str, List[int]] = {}
+    for i, t in enumerate(takes):
+        members.setdefault(stream_of(t.path), []).append(i)
+    names = stream_names(list(members))
+    return sorted(((names[root], root, idx) for root, idx in members.items()), key=lambda s: s[0])
+
+
+def stream_roots(out: str, names: Sequence[str], parts: int = 1) -> List[str]:
+    """The datasets :func:`build_streams` writes for streams ``names``: ``out`` for one stream, else ``<out>_<name>`` each;
+    with ``parts`` above 1 each of those split, ``<...>_<k>of<parts>``."""
+    bases = [out] if len(names) == 1 else [f"{out}_{name}" for name in names]
+    return [r for b in bases for r in ([b] if parts == 1 else split_roots(b, parts))]
+
+
+def build_streams(writer, out: str, takes: Sequence[Take], parts: int = 1, log=print, jobs: int = 1, executor=None,
+                  options=None) -> List[str]:
+    """Writes ``takes`` as one safety dataset per collection stream (docs/adr/0038 L): the takes of each takes root
+    (:func:`streams`), in the order given, at ``out`` when they all come from one, else at ``<out>_<name>`` each (``twin0``,
+    ``twin1``: :func:`stream_names`). ``parts`` above 1 splits each stream's dataset by layout (:func:`build_split`:
+    ``<out>[_<name>]_<k>of<parts>``), never two streams in one part. Nothing is written unless every stream can be: no
+    dataset there yet, no two takes of a stream overlapping in time (:class:`OverlapError`, naming them all), and enough
+    layouts in each for its parts. Returns the datasets' folders, in that order."""
+    from . import sidecars
+    from .writer import clock_span
+
+    options = options or sidecars.Options()
+    if parts < 1:
+        raise ValueError("a build writes at least one dataset")
+    if not takes:
+        raise ValueError("a build needs at least one take")
+    groups = streams(takes)
+    bases = stream_roots(out, [name for name, _, _ in groups])
+    there = [r for r in stream_roots(out, [name for name, _, _ in groups], parts) if os.path.exists(r)]
+    if there:
+        raise FileExistsError(f"{there[0]} exists: a safety dataset is written once (rebuild it into a new folder)")
+    spans = [clock_span(t) for t in takes]
+    refusal = [line for (name, root, idx), base in zip(groups, bases)
+               for line in overlap_refusal(base, [takes[i] for i in idx], [spans[i] for i in idx], "take" if parts > 1 else "episode")]
+    if refusal:
+        raise OverlapError("\n".join(refusal))
+    infos = episodes_of(takes, options, jobs, executor)
+    if parts > 1:
+        for (name, _, idx), base in zip(groups, bases):
+            try:
+                sidecars.split([infos[i].line for i in idx], parts)
+            except ValueError as e:
+                raise ValueError(f"{base}: {e}") from e
+    written: List[str] = []
+    for (name, root, idx), base in zip(groups, bases):
+        if len(groups) > 1:
+            log(f"[stream] {os.path.basename(base)}: {len(idx)} take(s) from {root}")
+        mine, mine_infos, mine_spans = [takes[i] for i in idx], [infos[i] for i in idx], [spans[i] for i in idx]
+        if parts == 1:
+            build(writer, base, mine, log, jobs, executor, options, mine_infos, None, mine_spans)
+            written.append(base)
+        else:
+            written += build_split(writer, base, mine, parts, log, jobs, executor, options, mine_infos, mine_spans)
+    return written
 
 
 # What a rebuild of a dataset's first episodes holds that is not file for file the reference's (compare_datasets):
 _TELEOP = os.path.join("meta", "teleop")
-_LINES = {"capture_timing.jsonl": "episode_saved_so_far", "safety_events.jsonl": "episode", "raw_ros_events.jsonl": None,
+_LINES = {"capture_timing.jsonl": "episode_saved_so_far", "safety_events.jsonl": "episode", "raw_ros_events.jsonl": "episode_index",
           os.path.join(_TELEOP, "takes.jsonl"): "episode", os.path.join(_TELEOP, "episodes.jsonl"): "episode",
           os.path.join(_TELEOP, "scenes.jsonl"): "episode", os.path.join(_TELEOP, "contacts.jsonl"): "episode"}  # one line a record
 _TOTALS = {os.path.join("meta", "info.json"), os.path.join("meta", "stats.json"), os.path.join("meta", "tasks.parquet"),
@@ -635,8 +783,10 @@ def compare_datasets(reference: str, rebuilt: str, notes: Optional[List[str]] = 
     written) and JSON files as their values (key order aside); with fewer episodes the files that run on through every
     episode (``_LINES``, the label files, the parquet rows) as the reference's lines, rows and ranges of those episodes, and
     the totals (``_TOTALS``) not at all. A ``frames.parquet`` column only one of them has must be empty there. A reference
-    from before docs/adr/0038 has none of its files (``_ADR38``): those are left out, and said so in ``notes``. Empty when
-    they are the same: how a build's speed-up is checked to change nothing (docs/adr/0036 amendment 6). Rebuild a reference
+    from before docs/adr/0038 has none of its files (``_ADR38``): those are left out, and said so in ``notes``; one whose
+    ``raw_ros_events.jsonl`` lines name no episode (before 2026-11-24) is compared without the rebuild's ``episode_index``,
+    also said so. Empty when they are the same: how a build's speed-up is checked to change nothing (docs/adr/0036
+    amendment 6). Rebuild a reference
     with the options :func:`rebuild_options` gives (an old one's captions were its categories); ``report.json``'s options
     are compared by this version's names (:func:`_options`), and its ``split`` (which part of a split build) not at all."""
     from .writer import recorded_episodes
@@ -647,7 +797,7 @@ def compare_datasets(reference: str, rebuilt: str, notes: Optional[List[str]] = 
     if nb > na:
         return [f"{rebuilt} has {nb} episodes, more than {reference}'s {na}"]
     old = not os.path.exists(os.path.join(reference, "safety_ranges.json"))
-    out, skipped = [], []
+    out, skipped, untagged = [], [], False
     for folder, _, names in os.walk(rebuilt):
         for name in names:
             path = os.path.join(folder, name)
@@ -667,6 +817,12 @@ def compare_datasets(reference: str, rebuilt: str, notes: Optional[List[str]] = 
                         r.pop("convertedUtc", None)
                     return rows
                 mine, theirs = lines(path), lines(ref)
+                if field == "episode_index" and theirs and field not in theirs[0]:
+                    # A raw log from before its lines named their episode (2026-11-24): compared without the field.
+                    untagged = True
+                    for r in mine:
+                        r.pop(field, None)
+                    field = None
                 if field is not None:
                     theirs = [r for r in theirs if int(r[field]) < nb]
                 elif nb < na:
@@ -723,10 +879,13 @@ def compare_datasets(reference: str, rebuilt: str, notes: Optional[List[str]] = 
                         out.append(f"{rel}: differs")
     if skipped and notes is not None:
         notes.append(f"the reference predates docs/adr/0038: left out {', '.join(sorted(skipped))}")
+    if untagged and notes is not None:
+        notes.append("the reference's raw_ros_events.jsonl predates its lines' episode_index (2026-11-24): compared without it")
     return sorted(out)
 
 
-__all__ = ["CATEGORIES", "MIXED", "SCENARIOS", "compare_datasets", "Contact", "Verdict", "as_safety", "broken", "build",
-           "build_split", "check", "contacts", "episodes_of", "event_timing", "events", "first_touches", "frame_labels",
-           "label_rows", "object_poses", "planned_events", "ranges", "rebuild_options", "scenario_of", "set_aside", "split_roots",
+__all__ = ["CATEGORIES", "MIXED", "SCENARIOS", "compare_datasets", "Contact", "OverlapError", "Verdict", "as_safety", "broken",
+           "build", "build_split", "build_streams", "check", "contacts", "episodes_of", "event_timing", "events", "first_touches",
+           "frame_labels", "label_rows", "object_poses", "overlap_refusal", "planned_events", "ranges", "rebuild_options",
+           "refuse_overlaps", "scenario_of", "set_aside", "split_roots", "stream_names", "stream_of", "stream_roots", "streams",
            "write_labels"]

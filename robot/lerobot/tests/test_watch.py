@@ -197,7 +197,11 @@ def test_the_lab_recorders_two_files_sit_beside_the_dataset_in_its_format(scenar
     assert len(readies) == 2 and readies[0]["servo_ids"] == [1, 2, 3, 4, 5, 10]  # one per take, as the bridge says ready
     actions = [e for e in events if e["type"] == "action"]
     states = [e for e in events if e["type"] == "state"]
-    assert {frozenset(e) for e in actions + states} == {frozenset({"type", "jetson_wall_ns", "jetson_mono_ns", "servo_ids", "values", "pc_received_mono_ns"})}
+    # The bridge's fields, and since 2026-11-24 the episode each line belongs to (docs/adr/0038 L: nothing need place a
+    # take's commands by time; readers ignore a field they do not know).
+    assert {frozenset(e) for e in actions + states} == {frozenset({"type", "jetson_wall_ns", "jetson_mono_ns", "servo_ids", "values",
+                                                                   "pc_received_mono_ns", "episode_index"})}
+    assert [e["episode_index"] for e in events] == [0] * (1 + 116 + 115) + [1] * (1 + 116 + 115)
     assert actions[0]["servo_ids"] == [1, 2, 3, 4, 5, 10] and actions[0]["values"] == [501.5, 502.5, 503.5, 504.5, 505.5, 510.5]
     assert states[0]["servo_ids"] == [1, 2, 3, 4, 5] and states[0]["values"] == [401.0, 402.0, 403.0, 404.0, 405.0]
     # The bridge emits a state only when every arm servo read: the one RI with motor 3 invalid is not a state.

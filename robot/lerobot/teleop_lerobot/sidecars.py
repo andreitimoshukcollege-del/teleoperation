@@ -1034,15 +1034,46 @@ def _across(kind: str, where_by_key: Dict, show, faults: List[str]) -> int:
     return len(many)
 
 
+def _check_streams(root: str, name: str, lines: List[str], faults: List[str]) -> None:
+    """One collection stream a dataset (docs/adr/0038 L): its episodes' spans on the clock of its two lab files
+    (``writer.episode_spans``) and the takes roots its takes came from, as a line; as faults, every raw line that cannot be
+    placed in an episode and every pair of episodes that overlap in time (the first :data:`LISTED`, then a count)."""
+    from .writer import episode_spans, overlap_lines, overlapping, read_ledger
+
+    spans, unplaced = episode_spans(root)
+    ledger = {int(l["episode"]): str(l.get("take") or "?") for l in read_ledger(root)}
+    order = sorted(spans)
+    pairs = overlapping([spans[e] for e in order])
+    roots_seen: Dict[str, int] = {}
+    for take in ledger.values():
+        base = os.path.basename(os.path.dirname(os.path.dirname(take.rstrip("/")))) or "?"
+        roots_seen[base] = roots_seen.get(base, 0) + 1
+    lines.append(f"{name}: time spans of its {len(order)} episode(s) on the clock of raw_ros_events.jsonl and "
+                 f"capture_timing.jsonl: {f'{len(pairs)} overlapping pair(s)' if pairs else 'none overlap'}; takes from "
+                 f"{len(roots_seen)} takes root(s): " + ", ".join(f"{r} {n}" for r, n in sorted(roots_seen.items())))
+    faults.extend(f"{name}: {p}" for p in unplaced)
+    if pairs:
+        faults.append(f"{name}: {len(pairs)} pair(s) of its episodes overlap in time on the clock raw_ros_events.jsonl and "
+                      f"capture_timing.jsonl share, so a reader that picks the raw log's commands by time takes one episode's "
+                      f"for another's. One dataset must hold one collection stream: rebuild it one dataset per takes root "
+                      f"(just isaac-safety-rebuild {os.path.basename(os.path.realpath(root))})")
+        labels = [f"episode {e} ({'/'.join(ledger.get(e, '?').rstrip('/').split('/')[-3:])})" for e in order]
+        faults.extend(f"{name}: {line}" for line in overlap_lines(labels, [spans[e] for e in order], pairs, LISTED))
+
+
 def check_datasets(roots: Sequence[str]) -> Tuple[List[str], List[str]]:
     """What a set of safety datasets holds, and what is wrong with it, from their files alone: (lines to print, faults).
     Give it one build's datasets (every part of a split one), or every dataset of a train, val and test set at once: the
     takes of a replay group share their commands and those of a layout their scene, so one in two datasets leaks.
 
-    Faults: a dataset given twice or missing a file; a ``safety_ranges.json`` with other keys than world-models' three or
+    Faults: a dataset given twice or missing a file; episodes of one dataset that overlap in time on the clock its
+    ``raw_ros_events.jsonl`` and ``capture_timing.jsonl`` share (``writer.episode_spans``: a reader that picks the raw log's
+    commands by time mixes them, as two twins' takes built into one dataset did until 2026-11-24, docs/adr/0038 L), or raw
+    lines it cannot place in an episode; a ``safety_ranges.json`` with other keys than world-models' three or
     ranges other than ``manual_safety_labels.json``'s; a replay group, a layout hash, or a scene's layout seed (one draw) in
     more than one dataset; a replay group without one source; unavoidable ranges whose stop times and sets disagree or
-    that overlap an unsafe frame. The lines: each dataset's mix (``report.json``), how many episodes have clearance and how
+    that overlap an unsafe frame. The lines: each dataset's mix (``report.json``), its episodes' time spans and the takes
+    roots (streams) its takes came from, how many episodes have clearance and how
     close it is at the frames in contact (about 0 when it agrees with PhysX), its unavoidable ranges, per replay group
     whether its takes share one look (their change numbers), one layout seed, and differ in layout hash where an edit was
     made, and across the datasets how many groups, layouts and seeds are in more than one. For the twin check."""
@@ -1062,10 +1093,13 @@ def check_datasets(roots: Sequence[str]) -> Tuple[List[str], List[str]]:
             continue
         seen.add(real)
         teleop = os.path.join(root, "meta", "teleop")
+        lab = [f for f in ("capture_timing.jsonl", "raw_ros_events.jsonl") if not os.path.exists(os.path.join(root, f))]
+        if not lab:  # checked even in a dataset from before docs/adr/0038's sidecars: world-models trained on such
+            _check_streams(root, name, lines, faults)
         missing = [f for f in ("safety_ranges.json", "manual_safety_labels.json") if not os.path.exists(os.path.join(root, f))]
-        missing += [os.path.join("meta", "teleop", f) for f in ("episodes.jsonl", "scenes.jsonl", "contacts.jsonl",
-                                                                "frames.parquet", "report.json")
-                    if not os.path.exists(os.path.join(teleop, f))]
+        missing += lab + [os.path.join("meta", "teleop", f) for f in ("episodes.jsonl", "scenes.jsonl", "contacts.jsonl",
+                                                                      "frames.parquet", "report.json")
+                          if not os.path.exists(os.path.join(teleop, f))]
         if missing:
             faults.append(f"{name}: missing {', '.join(missing)}")
             continue

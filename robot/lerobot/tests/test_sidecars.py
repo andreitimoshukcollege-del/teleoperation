@@ -461,7 +461,7 @@ def test_unavoidable_ranges_come_by_default_for_the_twins_three_stop_times(scena
     assert episode(path, stop=sidecars.StopModel.given(0.35)).unavoidable == {"given": [[10, 14], [19, 23]]}
     assert episode(path, stop=None).unavoidable is None
     # Before the contacts the labels count: a table brush too, unless built table_safe.
-    table = take(scenarios, "mixed", world([wc(2000, "0:6:0:3.0"), wc(2100)]), name="20261122T100100Z-take002")
+    table = take(scenarios, "mixed", world([wc(2000, "0:6:0:3.0"), wc(2100)]), name="20261122T100100Z-take002", at_s=60)
     assert episode(table).unavoidable["median"] == [[12, 14]]
     assert episode(table, table_safe=True).unavoidable == {"fast": [], "median": [], "slow": []}
     for bad in (0.0, -0.1, float("nan"), float("inf")):
@@ -533,13 +533,16 @@ class Writer:
 
 
 def batch(scenarios):
-    """Four mixed takes: a source and its replay (one group), and two more on their own layouts."""
+    """Four mixed takes: a source and its replay (one group), and two more on their own layouts; recorded a minute apart,
+    as their names say (one twin's takes, one after another: none overlaps another in time)."""
     return [take(scenarios, "mixed", world([wc(2000, "0:5:2:1.5"), wc(2100), ["RP", 950 * MS, "3.1", "source", "none"]]),
                  name="20261122T100000Z-take001"),
-            take(scenarios, "mixed", world([["RP", 950 * MS, "3.1", "replay", "remove:2"]], ids="3;4;5"), name="20261122T100100Z-take002"),
-            take(scenarios, "mixed", world([wc(1600, "0:5:0:2.0"), wc(1700)], seed=11, poses=ELSEWHERE), name="20261122T100200Z-take003"),
+            take(scenarios, "mixed", world([["RP", 950 * MS, "3.1", "replay", "remove:2"]], ids="3;4;5"), name="20261122T100100Z-take002",
+                 at_s=60),
+            take(scenarios, "mixed", world([wc(1600, "0:5:0:2.0"), wc(1700)], seed=11, poses=ELSEWHERE), name="20261122T100200Z-take003",
+                 at_s=120),
             take(scenarios, "mixed", world([wc(2000, "0:4:3:6.0"), wc(2300), wo(2600, {**THIRD, 3: (0.2, 0.0, -0.18, ON_ITS_SIDE)})],
-                                           seed=12, poses=THIRD), name="20261122T100300Z-take004")]
+                                           seed=12, poses=THIRD), name="20261122T100300Z-take004", at_s=180)]
 
 
 ELSEWHERE = {**STANDING, 2: (0.20, 0.10, -0.15, UPRIGHT)}  # other layouts: the can stands elsewhere
@@ -756,9 +759,9 @@ def test_safety_report_checks_a_train_val_test_set_at_once_and_faults_a_layout_o
            "fast 0.17 s: 2 frames in 1 episode(s); median 0.245 s: 3 frames in 1 episode(s); slow 0.31 s: 4 frames in 1 episode(s)" in text
     # Val's layout again (the same objects where they stood, another seed), and test's seed again (the same draw settled
     # elsewhere: another hash).
-    same_layout = take(scenarios, "mixed", world(seed=13, poses=ELSEWHERE), name="20261122T100400Z-take005")
+    same_layout = take(scenarios, "mixed", world(seed=13, poses=ELSEWHERE), name="20261122T100400Z-take005", at_s=240)
     same_seed = take(scenarios, "mixed", world(seed=12, poses={**STANDING, 2: (0.22, 0.12, -0.15, UPRIGHT)}),
-                     name="20261122T100500Z-take006")
+                     name="20261122T100500Z-take006", at_s=300)
     safety.build(Writer(), leaky, [read_take(same_layout), read_take(same_seed)], log=lambda m: None)
     assert main(["safety-report", train, val, test, leaky]) == 1
     text = capsys.readouterr().out
@@ -774,3 +777,192 @@ def test_safety_report_checks_a_train_val_test_set_at_once_and_faults_a_layout_o
     json.dump(unav, open(path, "w"))
     assert main(["safety-report", train]) == 1
     assert "FAULT: train: unavoidable ranges (median) overlap unsafe frames in episode(s) [0]" in capsys.readouterr().out
+
+
+# --- one dataset, one collection stream (docs/adr/0038 L, 2026-11-24) ----------------------------------------------------------
+
+def twin_takes(root, twin, start):
+    """One twin's four mixed takes into its own takes root, as :func:`batch`'s (a source and its replay, two more on their
+    own layouts) but with a replay group, layout seeds and poses of its own; recorded from ``start`` s on, 30 s apart."""
+    here = {**STANDING, 2: (0.24, -0.08 + 0.05 * twin, -0.15, UPRIGHT), 3: (0.17, -0.02 - 0.05 * twin, -0.17, UPRIGHT)}
+    group, seed = f"{43 + 10 * twin}.1", 1000 * (twin + 1)
+    rows = [world([wc(2000, "0:5:2:1.5"), wc(2100), ["RP", 950 * MS, group, "source", "none"]], poses=here, seed=seed),
+            world([["RP", 950 * MS, group, "replay", "remove:2"]], ids="3;4;5", poses=here, seed=seed),
+            world([wc(1600, "0:5:0:2.0"), wc(1700)], seed=seed + 1, poses={**here, 2: (0.20, 0.10, -0.15, UPRIGHT)}),
+            world([wc(2000, "0:4:3:6.0"), wc(2300)], seed=seed + 2, poses={**here, 2: (0.28, 0.05, -0.15, UPRIGHT)})]
+    return [take(root, "mixed", r, name=f"20261124T0200{k}{twin}Z-take00{k + 1}", at_s=start + 30 * k) for k, r in enumerate(rows)]
+
+
+def two_twins(tmp_path):
+    """Twin 0's takes and twin 1's, each in its root as the twins record them (jetrover-isaac, jetrover-isaac-twin1), twin 1's
+    a second after twin 0's: each overlaps the other twin's take of its round. The paths in recorded order (interleaved, as
+    just isaac-safety-build sorts them by their UTC names) and each twin's."""
+    mine = {}
+    for t in (0, 1):
+        root = tmp_path / "takes" / ("jetrover-isaac" + ("" if t == 0 else f"-twin{t}"))
+        root.mkdir(parents=True)
+        mine[t] = twin_takes(str(root), t, t)
+    return [p for pair in zip(mine[0], mine[1]) for p in pair], mine
+
+
+def test_two_twins_takes_build_a_dataset_each_split_inside_each_and_report_clean(tmp_path, capsys):
+    # The twins record at once on the GPU machine's one CLOCK_MONOTONIC: one dataset of both is refused, and the build
+    # writes one per takes root, named by twin, each split on its own. Replay groups and layouts stay together, as before.
+    pytest.importorskip("pandas")
+    pytest.importorskip("pyarrow")
+    from teleop_lerobot.__main__ import main
+
+    paths, mine = two_twins(tmp_path)
+    takes = [read_take(p) for p in paths]
+    out = str(tmp_path / "out" / "jetrover_20261124_021454_abcdef")
+    with pytest.raises(safety.OverlapError) as refused:
+        safety.build(Writer(), out, takes, log=lambda m: None)
+    assert f"{out}: 4 pair(s) of the 8 takes overlap in time" in str(refused.value)
+    assert not os.path.exists(out)
+
+    logged = []
+    built = safety.build_streams(Writer(), out, takes, log=logged.append)
+    assert built == [out + "_twin0", out + "_twin1"]
+    for t, root in zip((0, 1), built):
+        assert [json.loads(x)["take"] for x in open(os.path.join(root, "meta", "teleop", "takes.jsonl"))] == mine[t]
+        lines = [json.loads(x) for x in open(os.path.join(root, "meta", "teleop", "episodes.jsonl"))]
+        assert [l["episode"] for l in lines] == [0, 1, 2, 3] and [l["role"] for l in lines] == ["source", "replay", None, None]
+        assert {e["episode_index"] for e in map(json.loads, open(os.path.join(root, "raw_ros_events.jsonl")))} == {0, 1, 2, 3}
+    assert sum(1 for m in logged if m.startswith("[stream] ")) == 2 and sum(1 for m in logged if m.startswith("[mix] ")) == 2
+    assert main(["safety-report", *built]) == 0
+    text = capsys.readouterr().out
+    assert "[report] no faults in 2 dataset(s)" in text
+    for t in (0, 1):
+        assert (f"[report] jetrover_20261124_021454_abcdef_twin{t}: time spans of its 4 episode(s) on the clock of "
+                f"raw_ros_events.jsonl and capture_timing.jsonl: none overlap; takes from 1 takes root(s): "
+                f"jetrover-isaac{'' if t == 0 else '-twin1'} 4") in text
+    assert "across 2 datasets: each of 2 replay group(s), 8 layout hash(es) and 6 layout seed(s) in one dataset" in text
+
+    # --split 2: two parts of each twin's, never two twins in a part, a replay group inside one.
+    split = safety.build_streams(Writer(), out + "-split", takes, 2, log=logged.append)
+    assert [os.path.basename(r) for r in split] == [f"jetrover_20261124_021454_abcdef-split_twin{t}_{k}of2" for t in (0, 1) for k in (1, 2)]
+    for root in split:
+        ledger = [json.loads(x)["take"] for x in open(os.path.join(root, "meta", "teleop", "takes.jsonl"))]
+        twin = 0 if os.path.basename(root).split("_twin")[1].startswith("0") else 1
+        assert ledger and set(ledger) <= set(mine[twin])
+        assert (mine[twin][0] in ledger) == (mine[twin][1] in ledger)  # a source and its replay, together
+        report = json.load(open(os.path.join(root, "meta", "teleop", "report.json")))
+        assert report["split"]["of"] == 2 and report["episodes"] == len(ledger)
+    assert sorted(t for r in split for t in (json.loads(x)["take"] for x in open(os.path.join(r, "meta", "teleop", "takes.jsonl")))) == sorted(paths)
+    assert main(["safety-report", *split]) == 0
+    capsys.readouterr()
+
+    # One twin's takes alone: the dataset named as asked, as before; and a name in use is refused before anything is written.
+    assert safety.build_streams(Writer(), out + "-alone", [read_take(p) for p in mine[0]], log=lambda m: None) == [out + "-alone"]
+    with pytest.raises(FileExistsError):
+        safety.build_streams(Writer(), out, takes, log=lambda m: None)
+    with pytest.raises(ValueError, match="not enough for 5"):  # twin 0 holds 3 layouts: refused before twin 0's is written
+        safety.build_streams(Writer(), out + "-five", takes, 5, log=lambda m: None)
+    assert not any(n.startswith("jetrover_20261124_021454_abcdef-five") for n in os.listdir(os.path.dirname(out)))
+
+
+def test_the_build_command_writes_a_dataset_per_twin_and_lists_them(tmp_path, capsys, monkeypatch):
+    # What just isaac-safety-build runs: the twins' takes interleaved as recorded, --split 2. Its log names each stream and
+    # ends with the datasets written, which the recipe lists (its "datasets:" line).
+    pytest.importorskip("pandas")
+    pytest.importorskip("pyarrow")
+    from teleop_lerobot import writer
+    from teleop_lerobot.__main__ import main
+
+    class CliWriter(Writer):
+        def __init__(self, *args, **kwargs):
+            super().__init__()
+    monkeypatch.setattr(writer, "LeRobotWriter", CliWriter)
+    paths, mine = two_twins(tmp_path)
+    out = str(tmp_path / "out" / "jetrover_20261124_021454_abcdef")
+    assert main(["safety-build", "--jobs", "1", "--geometry-dir", "", "--split", "2", "--out", out, *paths]) == 0
+    text = capsys.readouterr().out
+    assert ", one dataset per takes root (twin0 4, twin1 4), 2 datasets each, " in text
+    roots = {t: os.path.realpath(str(tmp_path / "takes" / ("jetrover-isaac" + ("" if t == 0 else f"-twin{t}")))) for t in (0, 1)}
+    for t in (0, 1):
+        assert f"[stream] jetrover_20261124_021454_abcdef_twin{t}: 4 take(s) from {roots[t]}" in text
+    written = [f"{out}_twin{t}_{k}of2" for t in (0, 1) for k in (1, 2)]
+    assert text.rstrip().splitlines()[-1].endswith("datasets: " + " ".join(written))
+    assert all(os.path.isdir(r) for r in written) and not os.path.exists(out)
+    assert main(["safety-report", *written]) == 0
+    capsys.readouterr()
+
+
+def test_safety_report_faults_a_dataset_whose_episodes_overlap_in_time(tmp_path, capsys, monkeypatch):
+    # world-models' review of jetrover_20261124_021454_cb1e21: two twins' takes in one dataset, 25 pairs overlapping in time,
+    # and a third of the path checkpoints from the other twin's arm. A dataset already built that way is a fault.
+    pytest.importorskip("pandas")
+    pytest.importorskip("pyarrow")
+    from teleop_lerobot.__main__ import main
+
+    paths, mine = two_twins(tmp_path)
+    merged = str(tmp_path / "merged")
+    monkeypatch.setattr(safety, "refuse_overlaps", lambda *a, **k: None)  # the builder before 2026-11-24
+    safety.build(Writer(), merged, [read_take(p) for p in paths], log=lambda m: None)
+    monkeypatch.undo()
+    want = ["[report] merged: time spans of its 8 episode(s) on the clock of raw_ros_events.jsonl and capture_timing.jsonl: "
+            "4 overlapping pair(s); takes from 2 takes root(s): jetrover-isaac 4, jetrover-isaac-twin1 4",
+            "[report] FAULT: merged: 4 pair(s) of its episodes overlap in time on the clock raw_ros_events.jsonl and "
+            "capture_timing.jsonl share",
+            f"[report] FAULT: merged: episode 0 (jetrover-isaac/mixed/{os.path.basename(mine[0][0])}) (0.00-2.31 s) and episode 1 "
+            f"(jetrover-isaac-twin1/mixed/{os.path.basename(mine[1][0])}) (1.00-3.31 s) overlap by 1.30 s",
+            f"[report] FAULT: merged: episode 6 (jetrover-isaac/mixed/{os.path.basename(mine[0][3])}) (90.00-92.31 s) and episode 7 "
+            f"(jetrover-isaac-twin1/mixed/{os.path.basename(mine[1][3])}) (91.00-93.31 s) overlap by 1.30 s",
+            "[report] 5 fault(s) in 1 dataset(s)"]
+    assert main(["safety-report", merged]) == 1
+    text = capsys.readouterr().out
+    assert all(w in text for w in want), text
+    assert "One dataset must hold one collection stream: rebuild it one dataset per takes root (just isaac-safety-rebuild merged)" in text
+    # Built before raw lines named their episode: each take's lines follow its ready line, which places them.
+    raw = os.path.join(merged, "raw_ros_events.jsonl")
+    lines = [json.loads(x) for x in open(raw)]
+    with open(raw, "w") as f:
+        for line in lines:
+            line.pop("episode_index")
+            f.write(json.dumps(line, separators=(",", ":")) + "\n")
+    assert main(["safety-report", merged]) == 1
+    text = capsys.readouterr().out
+    assert all(w in text for w in want), text
+    # A line that names another episode than the take it follows cannot be placed: a fault too.
+    lines[5]["episode_index"] = 3
+    with open(raw, "w") as f:
+        f.writelines(json.dumps(line, separators=(",", ":")) + "\n" for line in lines)
+    assert main(["safety-report", merged]) == 1
+    assert "FAULT: merged: raw_ros_events.jsonl: 1 line(s) name another episode than the ready line before them" in capsys.readouterr().out
+    # A dataset from before docs/adr/0038's sidecars (world-models' v2 train and val sets): its two lab files are still checked.
+    del lines[5]["episode_index"]
+    with open(raw, "w") as f:
+        f.writelines(json.dumps(line, separators=(",", ":")) + "\n" for line in lines)
+    for rel in ("safety_ranges.json", os.path.join("meta", "teleop", "episodes.jsonl")):
+        os.remove(os.path.join(merged, rel))
+    assert main(["safety-report", merged]) == 1
+    text = capsys.readouterr().out
+    assert "FAULT: merged: missing safety_ranges.json, meta/teleop/episodes.jsonl" in text and all(w in text for w in want[:4]), text
+
+
+def test_a_rebuild_compares_with_a_reference_whose_raw_lines_name_no_episode(scenarios, tmp_path):
+    # isaac-safety-build-check rebuilds a reference's first takes: one built before 2026-11-24 has no episode_index in its raw
+    # lines, so they are compared without it (and said so); a reference that has it is compared by it, episode by episode.
+    pytest.importorskip("pandas")
+    pytest.importorskip("pyarrow")
+    takes = [read_take(p) for p in batch(scenarios)]
+    ref, first = str(tmp_path / "ref"), str(tmp_path / "first")
+    safety.build(Writer(), ref, takes, log=lambda m: None)
+    safety.build(Writer(), first, takes[:2], log=lambda m: None)
+    notes = []
+    assert safety.compare_datasets(ref, first, notes) == [] and notes == []
+    raw = os.path.join(ref, "raw_ros_events.jsonl")
+    lines = [json.loads(x) for x in open(raw)]
+    assert sorted({line["episode_index"] for line in lines}) == [0, 1, 2, 3]
+    with open(raw, "w") as f:
+        for line in lines:
+            line.pop("episode_index")
+            f.write(json.dumps(line, separators=(",", ":")) + "\n")
+    assert safety.compare_datasets(ref, first, notes) == []
+    assert notes == ["the reference's raw_ros_events.jsonl predates its lines' episode_index (2026-11-24): compared without it"]
+    # Without the field, the rest of each line still counts: a line the reference does not have is a difference.
+    mine = os.path.join(first, "raw_ros_events.jsonl")
+    n = sum(1 for _ in open(mine))
+    with open(mine, "a") as f:
+        f.write(json.dumps({"type": "action", "values": [1], "episode_index": 1}) + "\n")
+    assert safety.compare_datasets(ref, first) == [f"raw_ros_events.jsonl: differs from line {n + 1} ({n + 1} lines, the reference's {n + 1})"]

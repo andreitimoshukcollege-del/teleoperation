@@ -11,14 +11,16 @@
   (docs/adr/0036 amendment 1) and world-models' (``safety_ranges.json``), with the sidecars of docs/adr/0038 decision 6,
   ``--jobs`` worker processes preparing episodes ahead (amendment 6), ``--split K`` for K smaller datasets by layout, the
   table counted as unsafe unless ``--table-safe``, and unavoidable-contact ranges for the twin's three stop times unless
-  ``--stop-time-s`` gives one or ``--no-unavoidable`` none;
+  ``--stop-time-s`` gives one or ``--no-unavoidable`` none. One dataset per collection stream (docs/adr/0038 L): takes
+  from several takes roots (twins) become ``DATASET_twin0``, ``DATASET_twin1``, ..., each split on its own; takes of one
+  dataset that overlap in time are refused (exit 3, ``[refused]`` lines naming them), and nothing is written;
 - ``safety-compare REFERENCE REBUILT``: whether a safety dataset rebuilt from a reference's first takes holds the same
   files (amendment 6; no LeRobot needed);
 - ``safety-options DATASET``: the ``safety-build`` options that rebuild a safety dataset as it was built, from its
   ``report.json`` (``just isaac-safety-build-check``; no LeRobot needed);
 - ``safety-report DATASET...``: what a set of safety datasets holds (a split build's parts, or a whole train, val and test
-  set), and any fault in their labels or sidecars, or a replay group, layout hash or layout seed in more than one of them
-  (docs/adr/0038; the twin check);
+  set), and any fault in their labels or sidecars, a dataset whose episodes overlap in time on its lab files' clock, or a
+  replay group, layout hash or layout seed in more than one of them (docs/adr/0038; the twin check);
 - ``knock-report TAKE...``: every object each take touched, its mass at its size and whether it was knocked over, as JSON
   lines, then a summary by mass (docs/adr/0037 P4; no LeRobot needed).
 """
@@ -80,7 +82,8 @@ def main(argv=None) -> int:
     s.add_argument("takes", nargs="*")
     s = sub.add_parser("safety-build")
     s.add_argument("takes", nargs="+")
-    s.add_argument("--out", required=True, help="the new dataset's folder, e.g. ~/data/lerobot/jetrover-isaac-safety/jetrover_<UTC>_<id>")
+    s.add_argument("--out", required=True, help="the new dataset's folder, e.g. ~/data/lerobot/jetrover-isaac-safety/jetrover_<UTC>_<id>; "
+                                                "takes from several takes roots (twins) are written as <out>_twin0, <out>_twin1, ...")
     s.add_argument("--fps", type=int, default=15)
     s.add_argument("--vcodec", default="libsvtav1")
     s.add_argument("--crf", type=int, default=None, help="the videos' CRF (default: writer.SAFETY_CRF)")
@@ -99,7 +102,8 @@ def main(argv=None) -> int:
                    help="the twin's collision geometry for each frame's clearance (workstream C's export; '' for none: "
                         "clearance NaN). Default: %(default)s")
     s.add_argument("--split", type=int, default=1, metavar="K",
-                   help="write K datasets, <out>_<k>of<K>, split by layout (a replay group and a layout never on two sides)")
+                   help="write K datasets, <out>_<k>of<K>, split by layout (a replay group and a layout never on two sides); "
+                        "with several takes roots, K of each root's, <out>_<twin>_<k>of<K>")
     stops = s.add_mutually_exclusive_group()
     stops.add_argument("--stop-time-s", type=float, default=None, metavar="SECONDS",
                       help="meta/teleop/unavoidable_ranges.json (docs/adr/0038 item 17) for this one stop time, named 'given', "
@@ -224,15 +228,19 @@ def main(argv=None) -> int:
         options = sidecars.Options(caption=a.caption, table_safe=a.table_safe, geometry_dir=a.geometry_dir or None, stop=stop)
         takes = [read_take(path, a.fps) for path in a.takes]
         writer = LeRobotWriter(a.vcodec, crf=SAFETY_CRF if a.crf is None else a.crf, preset=SAFETY_PRESET if a.preset is None else a.preset)
+        groups = safety.streams(takes)
         _log(f"building {len(takes)} episode(s) with {a.jobs} worker(s): captions {a.caption}, table contacts "
              f"{'not unsafe (--table-safe)' if a.table_safe else 'unsafe'}, clearance from {a.geometry_dir or 'nothing'}"
-             + (f", {a.split} datasets" if a.split > 1 else "") + ", unavoidable ranges "
+             + (f", one dataset per takes root ({', '.join(f'{n} {len(i)}' for n, _, i in groups)})" if len(groups) > 1 else "")
+             + (f", {a.split} datasets{' each' if len(groups) > 1 else ''}" if a.split > 1 else "") + ", unavoidable ranges "
              + (", ".join(f"{n} {t:g} s" for n, t in stop.times) if stop else "off"))
-        if a.split > 1:
-            roots = safety.build_split(writer, os.path.expanduser(a.out), takes, a.split, _log, jobs=a.jobs, options=options)
-            _log("datasets: " + " ".join(roots))
-        else:
-            safety.build(writer, os.path.expanduser(a.out), takes, _log, jobs=a.jobs, options=options)
+        try:
+            roots = safety.build_streams(writer, os.path.expanduser(a.out), takes, a.split, _log, jobs=a.jobs, options=options)
+        except safety.OverlapError as e:  # nothing written: one dataset holds one collection stream (docs/adr/0038 L)
+            for line in str(e).splitlines():
+                print("[refused] " + line, flush=True)
+            return 3
+        _log("datasets: " + " ".join(roots))
         return 0
 
     if a.command == "inspect":

@@ -14,6 +14,21 @@ sys.path.insert(0, os.path.dirname(HERE))
 REPO = os.path.abspath(os.path.join(HERE, "..", "..", ".."))
 MS = 1_000_000
 
+# Each record's fields that are times on the session's clock (positions in a row, its tag first; trainer/contract/
+# SESSION_FORMAT.md): what a take's ``at_s`` moves. A record named in neither table cannot be moved, and says so.
+TIMES = {"JC": (1, 2, 4), "RO": (1,), "RI": (1,), "WC": (1, 2), "WO": (1, 2), "WL": (1,), "WZ": (1,), "RP": (1,), "SE": (1,),
+         "MV": (1,), "WP": (1,), "WE": (1,), "QS": (1, 2), "AO": (1,), "VF": (1, 3), "VQ": (2,), "EN": (1,), "ER": (1,)}
+UNTIMED = {"CM", "LK", "MT", "CL", "LT", "CJ", "OA", "SZ", "SC"}
+
+
+def moved(row, ns):
+    """``row`` with its times ``ns`` later (:data:`TIMES`)."""
+    if not ns or row[0] in UNTIMED:
+        return list(row)
+    if row[0] not in TIMES:
+        raise ValueError(f"a {row[0]} record's times are not known here: add them to TIMES")
+    return [int(v) + ns if i in TIMES[row[0]] else v for i, v in enumerate(row)]
+
 
 def write_jlog(path, writer, sid, rows, dropped=0):
     lines = [f"JSES|1|{writer}|1000000000|CLOCK_MONOTONIC|{sid}"] + ["|".join(str(x) for x in r) for r in rows]
@@ -59,22 +74,24 @@ def session_json(take, fmt, version, source, scenario="reach", description="reac
     return sid
 
 
-def frames_log(take, writer, folder, sid, cameras, vfs, image=lambda cam, n: f"{cam}-{n}".encode(), extra=(), vq=None, cm=None):
+def frames_log(take, writer, folder, sid, cameras, vfs, image=lambda cam, n: f"{cam}-{n}".encode(), extra=(), vq=None, cm=None,
+               shift=0):
     """``vfs``: (t ns, frame, stateSensed, flags). Every camera's rgb, one record per frame. ``extra``: more rows (``[tag,
     ...]``) after the cameras'; ``vq(n, sensed)``: frame n's posed joints ({joint: value}), written as a ``VQ`` before its
-    ``VF``; ``cm(camera)``: that camera's ``CM`` row instead of the default."""
+    ``VF``; ``cm(camera)``: that camera's ``CM`` row instead of the default. ``shift``: every time written that many ns later
+    (``vq`` is given the frame's time before it)."""
     sidecars = {c: Sidecar(os.path.join(take, folder, c + ".rgb.frames")) for c in cameras}
     rows = [(cm(c) if cm else None) or ["CM", c, 64, 48, 1, 1, 32, 24, 0.01, 6, 0, 0, 0, 1, 0, 0, 0, "", "rgb;depth;mask", "base"]
             for c in cameras]
-    rows.extend(list(r) for r in extra)
+    rows.extend(moved(r, shift) for r in extra)
     for t, n, sensed, flags in vfs:
         parts = []
         for c in cameras:
             off, length = sidecars[c].add(image(c, n))
             parts.append(f"{c}.rgb:{off}:{length}")
         if vq is not None:
-            rows.append(["VQ", n, sensed, ";".join(f"{k}:{v}" for k, v in sorted(vq(n, sensed).items()))])
-        rows.append(["VF", t, n, sensed, flags, ";".join(parts)])
+            rows.append(moved(["VQ", n, sensed, ";".join(f"{k}:{v}" for k, v in sorted(vq(n, sensed).items()))], shift))
+        rows.append(moved(["VF", t, n, sensed, flags, ";".join(parts)], shift))
     for s in sidecars.values():
         s.close()
     write_jlog(os.path.join(take, writer + ".jlog"), writer, sid, rows)
@@ -82,13 +99,16 @@ def frames_log(take, writer, folder, sid, cameras, vfs, image=lambda cam, n: f"{
 
 def jetrover_take(root, name="20261112T100000Z-take001", scenario="reach", source="isaac", gap=None, image=None,
                   cameras=("third-left", "wrist"), extra=(), jitter=0.0, isaac_extra=(), vq=None, cm=None, scene=None,
-                  session=None, dropped=0):
+                  session=None, dropped=0, at_s=0.0):
     """A JetRover take: commands accepted from 1.0 to 3.0 s, RO and RI every 20 ms, frames at 30 fps from 0.5 to
     3.5 s (the first two with B). ``gap``: (from, to) seconds with no frame recorded. ``extra``: more robothost.jlog rows
     (``[tag, t, ...]``), such as contacts (WC) and object poses (WO). ``jitter``: each frame's time wobbles by up to that
     many ms (seeded), as the twin's renderer's do (sd ~3 ms, 2026-11-15). ``isaac_extra``, ``vq``, ``cm``: the frames log's
     (:func:`frames_log`). ``scene``: written as scene.json. ``session``: more session.json keys. ``dropped``: the
-    robothost.jlog trailer's dropped records."""
+    robothost.jlog trailer's dropped records. ``at_s``: the take recorded that many seconds later, every time in it with it
+    (``extra``'s and ``isaac_extra``'s too, as given from 0): takes of one dataset must not overlap on the session's clock
+    (docs/adr/0038 L), and two at the same ``at_s`` do."""
+    shift = round(at_s * 1e9)
     take = os.path.join(root, scenario, name)
     os.makedirs(take)
     sid = session_json(take, "jetrover-session", 1, source, scenario)
@@ -113,6 +133,7 @@ def jetrover_take(root, name="20261112T100000Z-take001", scenario="reach", sourc
         rows.append(["RI", t + 5 * MS, ri])
     rows.extend(list(r) for r in extra)
     rows.sort(key=lambda r: int(r[1]))
+    rows = [moved(r, shift) for r in rows]
     write_jlog(os.path.join(take, "robothost.jlog"), "robothost", sid, rows, dropped=dropped)
     vfs = []
     wobble = __import__("random").Random(7)
@@ -124,7 +145,7 @@ def jetrover_take(root, name="20261112T100000Z-take001", scenario="reach", sourc
     folder = "camera" if source == "robot" else "isaac"
     frames_log(take, "camera" if source == "robot" else "isaac", folder, sid,
                ["front"] if source == "robot" else list(cameras), vfs,
-               **({"image": image} if image else {}), extra=isaac_extra, vq=vq, cm=cm)
+               **({"image": image} if image else {}), extra=isaac_extra, vq=vq, cm=cm, shift=shift)
     finish(take)
     return take
 

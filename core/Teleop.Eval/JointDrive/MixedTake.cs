@@ -152,9 +152,10 @@ namespace Teleop.Eval.JointDrive
         /// On top of <see cref="AccidentShare"/>, the share of the main part's would-be layout-blind parts that are a move to a point near an object (a few cm off
         /// its surface, at a height it stands over) with an accident in it (drawn from the accidents' own generator too; when none plans, a
         /// layout-blind part carries it): accidents placed near objects, so about a third of the contacts come from accidents (docs/adr/0038
-        /// "M, motion"). Recorded as a <c>free</c> move with its accident.
+        /// "M, motion"). Recorded as a <c>free</c> move with its accident. 0.6 since the 2026-11-24 review (0.4 before): on the twin, replays'
+        /// adds bring contacts of their own, none from accidents.
         /// </summary>
-        public double AccidentNearShare { get; set; } = 0.4;
+        public double AccidentNearShare { get; set; } = 0.6;
 
         /// <summary>
         /// Whether the accidents placed near objects are aimed at them (docs/adr/0038 "M, motion", the 2026-11-24 review): a jerk, an overshoot, a
@@ -972,10 +973,15 @@ namespace Teleop.Eval.JointDrive
         }
 
         /// <summary>
-        /// An accident placed near an object (docs/adr/0038 "M, motion", <see cref="MixedOptions.AccidentNearShare"/>): a move to a point 1-6 cm
-        /// off an object's surface (toward the base, within 50 degrees of it, at a height drawn over the object's own as an aim's is), the wrist
+        /// An accident placed near an object (docs/adr/0038 "M, motion", <see cref="MixedOptions.AccidentNearShare"/>): a move to a point off an
+        /// object's surface (toward the base, within 50 degrees of it, at a height drawn over the object's own as an aim's is), the wrist
         /// pitched for that height, with an accident of <paramref name="kind"/> in it, checked as a layout-blind move is (the robot's own model,
-        /// the walls but in the accident); then the law every move follows. False when no try plans.
+        /// the walls but in the accident); then the law every move follows. False when no try plans. With
+        /// <see cref="MixedOptions.AimAccidents"/> (the 2026-11-24 review) a jerk, an overshoot, a slip or a rush is aimed: the move stops its
+        /// kind's own distance (<see cref="AimedReach"/>) less a drawn depth short of where the model first meets the object on the line in
+        /// toward it, and the accident carries the hand that distance on, 1-3 cm past that point (no deeper than the model measures), held
+        /// for the reaction before it recovers; the twin's arm, trailing the command by about 0.2 s, gets there too. A wrong way, and every
+        /// accident without the option, comes 1-6 cm off the surface in its own drawn way.
         /// </summary>
         private bool TryNearAccident(ScriptMoveKind kind)
         {
@@ -1139,12 +1145,16 @@ namespace Teleop.Eval.JointDrive
 
         /// <summary>
         /// A link aim (docs/adr/0038 "M, motion", the 2026-11-24 review, <see cref="MixedOptions.LinkAimShare"/>): object <paramref name="oi"/> met
-        /// near its top (a bar from below) by the proximal or distal link (the elbow's two) or the wrist, not the pads. A pose is looked for
-        /// whose link passes within a few cm of a point drawn there (the arm turned to it, the two elbow joints on a 3-degree grid, the wrist
-        /// drawn), checked by the model to be met by that link first on the way there from where the hand is (joint-space, 2% steps); the hand
-        /// then moves as a free move does to that pose's wrist and pitch, stopping at a signed offset drawn from -15 mm (into it, no deeper than
-        /// the model measures) to +40 mm (short of it) as the model measures along that way. Recorded as an <c>aim</c>, with an accident when the
-        /// part drew one; then the law every move follows. False when nothing plans in a few tries.
+        /// near its top (a plank from below) by the proximal or distal link (the elbow's two) or the wrist, not the pads. A pose is looked for
+        /// whose link passes 1.2-4 cm from a point drawn there (a long object's near the point of its length nearest the base; the arm turned
+        /// to it, the two elbow joints on a 3-degree grid, the gripper pitched from down to level), valid by the robot's own model and what
+        /// holds the object up. Its approach starts as far back as an aim's (<see cref="ApproachLength"/>): turned round the base by that much at
+        /// the wrist's radius, or for a plank lifted at the shoulder, either side, 1 cm clear; on the joint-space way from there the model must
+        /// meet the object first with that kind of link (2% steps). The hand is staged at the start (clear of the object by 1 cm), then moves
+        /// as a free move does to the wrist and pitch of the pose on that way at a signed offset drawn from -15 mm (into it, no deeper than the
+        /// model measures) to +40 mm (short of it). Recorded as an <c>aim</c>, with an accident when the part drew one; then the law every move
+        /// follows. False when nothing plans in a few tries. The JetRover's links are 13 cm from a shoulder 3.5 cm above the base frame: the
+        /// upper arm meets only what stands within about 15 cm of the base's axis and high, the forearm within about 25 cm.
         /// </summary>
         private bool TryLinkAim(int oi, ScriptMoveKind? accident)
         {

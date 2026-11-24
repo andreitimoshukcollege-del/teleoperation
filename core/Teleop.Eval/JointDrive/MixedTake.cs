@@ -149,10 +149,11 @@ namespace Teleop.Eval.JointDrive
         public double AccidentShare { get; set; } = 0.12;
 
         /// <summary>
-        /// On top of <see cref="AccidentShare"/>, the share of aims and passes that carry one (so about a third of the contacts come from
-        /// accidents; docs/adr/0038 "M, motion").
+        /// On top of <see cref="AccidentShare"/>, the share of the main part's parts that are an aim or a pass with an accident (drawn from the
+        /// accidents' own generator too; when no object move plans, a layout-blind part carries it): accidents placed near objects, so about a
+        /// third of the contacts come from accidents (docs/adr/0038 "M, motion").
         /// </summary>
-        public double AccidentNearShare { get; set; } = 0.25;
+        public double AccidentNearShare { get; set; } = 0.2;
 
         /// <summary>The accidents' kinds, in proportion: jerk, overshoot, wrong way, slip, rush (<see cref="AccidentKinds"/>).</summary>
         public double[] AccidentWeights { get; set; } = { 1, 1, 1, 1, 1 };
@@ -569,7 +570,10 @@ namespace Teleop.Eval.JointDrive
             {
                 bool done = false;
                 ScriptMoveKind? accident = DrawAccident(_options.AccidentShare);
-                if (!first && _hand.Free >= _options.QuietStartSeconds - 0.9 && Draw.Chance(ref _rng, _options.ObjectShare)) done = TryObjectMove(accident);
+                bool objectTime = !first && _hand.Free >= _options.QuietStartSeconds - 0.9;
+                // Accidents placed near objects (on top of those drawn for every part): this part an aim or a pass with one.
+                bool near = objectTime && !accident.HasValue && (accident = DrawAccident(_options.AccidentNearShare)).HasValue;
+                if (objectTime && (near || Draw.Chance(ref _rng, _options.ObjectShare))) done = TryObjectMove(accident);
                 if (!done) done = TryBlindMove(first, accident: accident);
                 if (!done) done = Recentre(); // cornered (every part left the envelope or met the arm itself): back toward the middle
                 if (!done)
@@ -883,8 +887,6 @@ namespace Teleop.Eval.JointDrive
         /// <summary>An aim or a pass at an object of the layout (a few tries over objects and geometries), with the move to where it starts; false when none plans.</summary>
         private bool TryObjectMove(ScriptMoveKind? accident = null)
         {
-            // On top of the accidents drawn for every part, some for aims and passes alone, so about a third of the contacts are accidents'.
-            if (!accident.HasValue) accident = DrawAccident(_options.AccidentNearShare);
             var targets = new List<int>(_objects.Count);
             var weights = new List<float>(_objects.Count);
             for (int i = 0; i < _objects.Count; i++)

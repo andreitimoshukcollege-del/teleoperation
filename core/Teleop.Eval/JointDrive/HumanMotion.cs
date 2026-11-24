@@ -138,9 +138,9 @@ namespace Teleop.Eval.JointDrive
     /// <summary>
     /// The mixed script's accidents (docs/adr/0038 "M, motion", world-models' request 3): moves the planner would not make, for a
     /// robot-side safety check that must catch them. Each is a fast submovement laid into a move as the hand model makes it, then the
-    /// hand's recovery at its usual pace: a <b>jerk</b> (5-15 cm in a random direction, during whatever the hand was doing, a startled
+    /// hand's recovery at its usual pace: a <b>jerk</b> (5-15 cm in a random direction leaning the way the hand was going, during whatever it was doing, a startled
     /// moment, then back toward where it was going), an <b>overshoot</b> (3-10 cm past the target, then back), a <b>wrong way</b>
-    /// start (3-8 cm off at 90-180 degrees to the way, then turned to the target), a <b>slip</b> mid-reach (2-6 cm, mostly down,
+    /// start (3-8 cm off at 90-180 degrees to the way, then turned to the target), a <b>slip</b> mid-reach (2-6 cm, down or on along the way,
     /// then corrected) and a <b>rush</b> (the last 10 cm at full speed). Their ticks keep to the arm's own limits instead of
     /// people's caps (<see cref="ServoTopSpeed"/>, <see cref="Acceleration"/>, the joint limits by the envelope), and everything else
     /// every tick keeps (the IK, the robot's own model, the quiet start and end).
@@ -150,7 +150,10 @@ namespace Teleop.Eval.JointDrive
         public const double JerkMin = 0.05, JerkMax = 0.15;
         public const double OvershootMin = 0.03, OvershootMax = 0.10;
         public const double WrongWayMin = 0.03, WrongWayMax = 0.08, WrongWayAngleMinDegrees = 90, WrongWayAngleMaxDegrees = 180;
-        public const double SlipMin = 0.02, SlipMax = 0.06, SlipDownShare = 0.6;
+        public const double SlipMin = 0.02, SlipMax = 0.06, SlipDownShare = 0.5;
+
+        /// <summary>A jerk's direction is a random one plus this much of the way the part it comes in was going (normalised after).</summary>
+        public const double JerkLean = 0.8;
 
         /// <summary>A rush's fast stretch: the last this many metres of the move.</summary>
         public const double RushMeters = 0.10;
@@ -1344,9 +1347,10 @@ namespace Teleop.Eval.JointDrive
                     Transport(tl, goal, start, slow: slow, tolerance: tolerance, pitchGoal: pitch, rollGoal: roll, maxCorrections: 0);
                     double primaryEnd = tl.MotionEnd;
                     double at = start + Draw.Uniform(ref _rng, 0.3, 0.7) * Math.Max(0.1, primaryEnd - start);
+                    // Down, or on along the way (the hand slipping forward), a little aside either way.
                     Vector3 dir = Draw.Chance(ref _rng, AccidentModel.SlipDownShare)
                         ? Vector3.Normalize(new Vector3(0f, 0f, -1f) + Draw.Across(ref _rng, Vector3.UnitZ, 0.35))
-                        : Vector3.Normalize(Draw.Across(ref _rng, u, 1.0) * new Vector3(1f, 1f, 0.3f) + 1e-4f * Vector3.UnitX);
+                        : Vector3.Normalize(u + Draw.Across(ref _rng, u, 0.5));
                     (double s0, double d0) = Push(tl, at, dir * (float)Draw.Uniform(ref _rng, AccidentModel.SlipMin, AccidentModel.SlipMax), 0f, 0f, Jolt(stretch));
                     tl.Accidents.Add((s0, s0 + d0 + AccidentModel.CapsTail));
                     onset = s0;
@@ -1393,7 +1397,14 @@ namespace Teleop.Eval.JointDrive
             TargetAngles(tl, out float pitch, out float roll);
             double end = Math.Max(start + 0.1, tl.MotionEnd);
             onset = start + Draw.Uniform(ref _rng, 0.05, 0.9) * (end - start);
-            Vector3 jerk = Draw.Direction(ref _rng, 0.6f) * (float)Draw.Uniform(ref _rng, AccidentModel.JerkMin, AccidentModel.JerkMax);
+            // A random direction, leaning the way the part was going (a hand jerks on along its motion as often as aside), whatever the part is.
+            tl.Hand(start, out Vector3 at0, out _, out _, out _);
+            tl.Endpoint(out Vector3 at1, out _, out _);
+            Vector3 along = at1 - at0;
+            along = along.Length() > 0.01f ? Vector3.Normalize(along) : Vector3.Zero;
+            Vector3 dir = Draw.Direction(ref _rng, 0.6f) + (float)AccidentModel.JerkLean * along;
+            dir = dir.Length() > 1e-3f ? Vector3.Normalize(dir) : Vector3.UnitX;
+            Vector3 jerk = dir * (float)Draw.Uniform(ref _rng, AccidentModel.JerkMin, AccidentModel.JerkMax);
             (double s0, double d0) = Push(tl, onset, jerk, (float)(Draw.Uniform(ref _rng, -10, 10) * deg), 0f, Peak(stretch));
             tl.Accidents.Add((s0, s0 + d0 + AccidentModel.CapsTail));
             double back = Math.Max(s0 + d0, Math.Min(end, s0 + 2 * d0)) + Draw.Uniform(ref _rng, AccidentModel.StartleLow, AccidentModel.StartleHigh);

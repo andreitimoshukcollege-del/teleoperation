@@ -46,6 +46,7 @@ namespace Teleop.RobotHost
             var outcomes = new SortedDictionary<string, int>(StringComparer.Ordinal);
             var alphas = new List<float>();
             var checks = new List<int>();
+            var heldChecks = new List<int>();
             var micros = new Dictionary<char, List<double>>();
             int commands = 0, mismatches = 0, grid = 0, violations = 0, takesWithClamps = 0;
             foreach (string file in files)
@@ -70,6 +71,7 @@ namespace Teleop.RobotHost
                 violations += replay.Plant.ClampInvariantViolations;
                 alphas.AddRange(replay.Alphas);
                 checks.AddRange(replay.ClampChecks);
+                heldChecks.AddRange(replay.HeldChecks);
                 if (replay.Alphas.Count > 0) takesWithClamps++;
                 foreach (KeyValuePair<string, int> kv in replay.Outcomes) outcomes[kv.Key] = outcomes.TryGetValue(kv.Key, out int c) ? c + kv.Value : kv.Value;
                 foreach (KeyValuePair<char, List<double>> kv in replay.Micros)
@@ -103,6 +105,12 @@ namespace Teleop.RobotHost
             {
                 List<double> c = checks.Select(x => (double)x).ToList();
                 Console.WriteLine($"checks per clamp search: p50 {Quantile(c, 0.5)} p90 {Quantile(c, 0.9)} max {c.Max()} (bound {LineClamp.MaxChecks}, plus the command's own and the re-check)");
+            }
+
+            if (heldChecks.Count > 0)
+            {
+                Console.WriteLine($"held with nothing passing: {heldChecks.Count}, of which the line's start (the measured pose) failed in " +
+                    $"{heldChecks.Count(c => c == 1)}; the others found no passing point beyond it");
             }
 
             foreach (KeyValuePair<char, List<double>> kv in micros.OrderBy(kv => kv.Key))

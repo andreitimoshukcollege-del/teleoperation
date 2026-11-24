@@ -37,8 +37,11 @@ namespace Teleop.RobotHost.Plant
         /// <summary>Every clamped command's alpha, in order.</summary>
         public List<float> Alphas { get; } = new List<float>();
 
-        /// <summary>How many checks each clamp, or each failed clamp (replayed <c>R</c>), asked.</summary>
+        /// <summary>How many checks each clamp asked.</summary>
         public List<int> ClampChecks { get; } = new List<int>();
+
+        /// <summary>How many checks each clamp search that found nothing (replayed <c>R</c>) asked: 1 when the line's start failed.</summary>
+        public List<int> HeldChecks { get; } = new List<int>();
 
         /// <summary>Wall time of each command's <see cref="GenericArmPlant.CommandJointAngles"/>, microseconds, by replayed outcome letter.</summary>
         public Dictionary<char, List<double>> Micros { get; } = new Dictionary<char, List<double>>();
@@ -111,7 +114,7 @@ namespace Teleop.RobotHost.Plant
                 }
                 else if (outcome == JointCommandOutcome.Refused && _plant.LastClamp.Checks > 0)
                 {
-                    ClampChecks.Add(_plant.LastClamp.Checks);
+                    HeldChecks.Add(_plant.LastClamp.Checks);
                 }
 
                 if (recorded != replayed)

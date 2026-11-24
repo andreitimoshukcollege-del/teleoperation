@@ -1211,7 +1211,11 @@ namespace Teleop.Eval.JointDrive
                     // Where the approach starts: turned 12-25 degrees to a side, so every link sweeps round the base and what meets the object
                     // first is what stands at its radius and height; or, under a plank, lowered 8-14 degrees at the shoulder, up into it.
                     bool lift = o.Role == SceneRole.Plank; // a turn would keep a link under a bar across the reach
-                    float side = Draw.Chance(ref _rng, 0.5) ? 1f : -1f, turn = (float)((lift ? Draw.Uniform(ref _rng, 15, 25) : Draw.Uniform(ref _rng, 12, 25)) * deg);
+                    // As far back as an aim starts (ApproachLength, the free moves' own law), turned round the base at the wrist's radius or
+                    // lifted at the shoulder by that much of the forearm's swing; at least 12 (15) degrees, so the start is clear.
+                    float back = ApproachLength(), wristRadius = MathF.Max(0.08f, new Vector2(HandModel.Wrist(_profile, target).X, HandModel.Wrist(_profile, target).Y).Length());
+                    float side = Draw.Chance(ref _rng, 0.5) ? 1f : -1f;
+                    float turn = lift ? Math.Clamp(back / 0.13f, (float)(15 * deg), (float)(50 * deg)) : Math.Clamp(back / wristRadius, (float)(12 * deg), (float)(70 * deg));
                     ArmPose start = target;
                     bool clear = false;
                     for (int t = 0; t < 2 && !clear; t++, side = -side)

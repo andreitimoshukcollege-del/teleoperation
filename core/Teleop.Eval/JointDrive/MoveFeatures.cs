@@ -192,6 +192,7 @@ namespace Teleop.Eval.JointDrive
             MovePart.Pause => "pause",
             MovePart.Recentre => "recentre",
             MovePart.Exit => "exit",
+            MovePart.NearAccident => "near-accident",
             _ => "other",
         };
 

@@ -149,9 +149,10 @@ namespace Teleop.Eval.JointDrive
         public double AccidentShare { get; set; } = 0.12;
 
         /// <summary>
-        /// On top of <see cref="AccidentShare"/>, the share of the main part's parts that are an aim or a pass with an accident (drawn from the
-        /// accidents' own generator too; when no object move plans, a layout-blind part carries it): accidents placed near objects, so about a
-        /// third of the contacts come from accidents (docs/adr/0038 "M, motion").
+        /// On top of <see cref="AccidentShare"/>, the share of the main part's parts that are a move to a point near an object (a few cm off
+        /// its surface, at a height it stands over) with an accident in it (drawn from the accidents' own generator too; when none plans, a
+        /// layout-blind part carries it): accidents placed near objects, so about a third of the contacts come from accidents (docs/adr/0038
+        /// "M, motion"). Recorded as a <c>free</c> move with its accident.
         /// </summary>
         public double AccidentNearShare { get; set; } = 0.2;
 
@@ -228,6 +229,9 @@ namespace Teleop.Eval.JointDrive
 
         /// <summary>The tail's first move, up and clear.</summary>
         Exit = 10,
+
+        /// <summary>A move to a point near an object with an accident in it (<see cref="MixedOptions.AccidentNearShare"/>).</summary>
+        NearAccident = 11,
     }
 
     /// <summary>
@@ -573,7 +577,8 @@ namespace Teleop.Eval.JointDrive
                 bool objectTime = !first && _hand.Free >= _options.QuietStartSeconds - 0.9;
                 // Accidents placed near objects (on top of those drawn for every part): this part an aim or a pass with one.
                 bool near = objectTime && !accident.HasValue && (accident = DrawAccident(_options.AccidentNearShare)).HasValue;
-                if (objectTime && (near || Draw.Chance(ref _rng, _options.ObjectShare))) done = TryObjectMove(accident);
+                if (near) done = TryNearAccident(accident!.Value);
+                else if (objectTime && Draw.Chance(ref _rng, _options.ObjectShare)) done = TryObjectMove(accident);
                 if (!done) done = TryBlindMove(first, accident: accident);
                 if (!done) done = Recentre(); // cornered (every part left the envelope or met the arm itself): back toward the middle
                 if (!done)
@@ -926,6 +931,53 @@ namespace Teleop.Eval.JointDrive
                     weights.RemoveAt(k);
                     if (targets.Count == 0) return false;
                 }
+            }
+
+            return false;
+        }
+
+        /// <summary>
+        /// An accident placed near an object (docs/adr/0038 "M, motion", <see cref="MixedOptions.AccidentNearShare"/>): a move to a point 1-6 cm
+        /// off an object's surface (toward the base, within 50 degrees of it, at a height drawn over the object's own as an aim's is), the wrist
+        /// pitched for that height, with an accident of <paramref name="kind"/> in it, checked as a layout-blind move is (the robot's own model,
+        /// the walls but in the accident); then the law every move follows. False when no try plans.
+        /// </summary>
+        private bool TryNearAccident(ScriptMoveKind kind)
+        {
+            const double deg = Math.PI / 180.0;
+            var targets = new List<int>(_objects.Count);
+            for (int i = 0; i < _objects.Count; i++)
+            {
+                SafetyObject o = _objects[i];
+                if (o.Scenery || o.Role == SceneRole.Stand || o.Role == SceneRole.Support || !HeightRange(i, out _, out _)) continue;
+                if (new Vector2(o.Center.X, o.Center.Y).Length() - Footprint(o) >= 0.40f) continue;
+                targets.Add(i);
+            }
+
+            if (targets.Count == 0) return false;
+            for (int attempt = 0; attempt < 6; attempt++)
+            {
+                int oi = targets[(int)(_rng.NextDouble() * targets.Count) % targets.Count];
+                SafetyObject o = _objects[oi];
+                HeightRange(oi, out float zLo, out float zHi);
+                float bearing = MathF.Atan2(o.Center.Y, o.Center.X) + MathF.PI + (float)(Draw.Uniform(ref _rng, -50, 50) * deg);
+                var dir = new Vector3(MathF.Cos(bearing), MathF.Sin(bearing), 0f);
+                Vector3 tool = new Vector3(o.Center.X, o.Center.Y, (float)Draw.Uniform(ref _rng, zLo, zHi)) + dir * (Support(o, dir) + (float)Draw.Uniform(ref _rng, 0.01, 0.06));
+                float pitch = PitchAt(new Vector2(tool.X, tool.Y).Length(), tool.Z) + (float)(Draw.Uniform(ref _rng, -8, 8) * deg);
+                Vector3 goal = WristFor(tool, pitch), from = _hand.TargetEnd;
+                if (!_hand.MixedTo(goal, pitch, null, Slowness(), HandModel.Tolerance, _model, out double s, out double e, walls: DrawWalls(), accident: kind)) continue;
+                double onset = _hand.AccidentOnset, recovered = _hand.AccidentEnd;
+                if (double.IsNaN(onset)) continue; // made without its accident (a try over the top): not this
+                int baseMove = Add(ScriptMoveKind.Free, -1, float.NaN, s, e, part: MovePart.NearAccident);
+                Add(kind, -1, float.NaN, onset, recovered, part: MovePart.NearAccident, overlies: baseMove);
+                Tally(kind, true);
+                // Into a movable object by the model, it may be anywhere afterwards: no later aim at it, and the tail's goals keep away.
+                bool pushed = false;
+                int k1 = Math.Min(_hand.Poses.Count - 1, (int)Math.Ceiling(recovered / HandModel.TickSeconds));
+                for (int k = Math.Max(0, (int)Math.Floor(onset / HandModel.TickSeconds)); k <= k1 && o.Movable && !pushed; k++) pushed = Gap(oi, _hand.Poses[k], _hand.Commands[k].Gripper) < 0f;
+                if (pushed && _moved.Add(oi)) _avoid.Add(new Vector2(o.Center.X, o.Center.Y));
+                AfterMove(_hand.TargetEnd - from, pullBack: true, forced: AtFixture(e), walls: true, atLeast: 0.02f);
+                return true;
             }
 
             return false;

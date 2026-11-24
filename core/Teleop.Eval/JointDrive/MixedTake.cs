@@ -109,7 +109,7 @@ namespace Teleop.Eval.JointDrive
         /// it): low, mid and high, as aims meet objects (docs/adr/0038 "M, motion", the 2026-11-23 review: every blind goal low had the
         /// path's height telling a take that hits from one that does not; aims and free moves share one height distribution).
         /// </summary>
-        public static float[] DefaultToolBands() => new[] { -0.180f, -0.120f, 0.60f, -0.120f, -0.070f, 0.28f, -0.070f, 0.020f, 0.12f };
+        public static float[] DefaultToolBands() => new[] { -0.180f, -0.130f, 0.30f, -0.130f, -0.080f, 0.25f, -0.080f, -0.030f, 0.20f, -0.030f, 0.020f, 0.15f, 0.020f, 0.080f, 0.10f };
 
         /// <summary>The speed caps (docs/adr/0038 decision 1, item 29): <see cref="DefaultCaps"/> unless told otherwise; null for none.</summary>
         public MotionCaps? Caps { get; set; } = DefaultCaps();
@@ -1202,20 +1202,6 @@ namespace Teleop.Eval.JointDrive
                 }
 
                 if (candidates.Count == 0) _linkWhy[0]++;
-                if (candidates.Count == 0 && Environment.GetEnvironmentVariable("LINKDEBUG") == "1")
-                {
-                    float bestD = 9f, bestT = 0f;
-                    for (float p1 = rp.Min; p1 <= rp.Max; p1 += (float)(3 * deg))
-                    for (float p2 = rd.Min; p2 <= rd.Max; p2 += (float)(3 * deg))
-                    {
-                        ArmCollision.ComputeFrames(_profile, new ArmPose(yaw, p1, p2, 0f, 0f), frames);
-                        int li = (int)want;
-                        float dd = SegmentDistance(point, frames[li].Origin, li + 1 < 5 ? frames[li + 1].Origin : frames[li].ToBase(ToolInGripper), out float tt);
-                        if (dd < bestD) { bestD = dd; bestT = tt; }
-                    }
-                    ArmCollision.ComputeFrames(_profile, _model.Home, frames);
-                    Console.Error.WriteLine(FormattableString.Invariant($"LINK {o.Id} want {want} point {point.X:0.000},{point.Y:0.000},{point.Z:0.000} r {r:0.000} best d {bestD:0.000} t {bestT:0.00}; home frames {frames[1].Origin.X:0.000},{frames[1].Origin.Z:0.000} {frames[2].Origin.X:0.000},{frames[2].Origin.Z:0.000} {frames[3].Origin.X:0.000},{frames[3].Origin.Z:0.000}"));
-                }
                 for (int c = 0; c < 6 && candidates.Count > 0; c++)
                 {
                     int pick = (int)(_rng.NextDouble() * candidates.Count) % candidates.Count;

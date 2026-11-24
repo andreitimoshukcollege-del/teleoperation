@@ -2,11 +2,12 @@
 at commands and sampled poses"): the labels world-models' robot-side safety check learns obstacle distance from. Two
 sidecars of a safety dataset, both computed offline from the take's own records and the twin's collision geometry:
 
-- ``meta/teleop/commands.parquet``, one row per command RobotHost received (``JC``): when it was sent and received, what
-  RobotHost did with it, its six servo values in the dataset's ``action`` units, and the signed distance from each arm link
+- ``meta/teleop/commands.parquet``, one row per action event of ``raw_ros_events.jsonl`` (every ``RO``, and every command
+  RobotHost refused as the plant would have sent it: what the dataset's ``action`` is made of), at the commands' own rate:
+  when RobotHost received it, whether it was sent or refused, its six servo values exactly as the action has them, and the signed distance from each arm link
   to the nearest obstacle and to the nearest surface **at the commanded pose**, and the smallest **along the way** there: at
   :data:`PATH_STEPS` poses from the arm's measured state when the command arrived (``RI``) to the commanded pose, each joint
-  ramping at the command's own speed as the twin's servos do (``teleop_isaac.servo.TimedSetpoint``);
+  ramping at the event's own rate as the twin's servos do (``teleop_isaac.servo.TimedSetpoint``);
 - ``meta/teleop/pose_samples.parquet``, for every frame, :data:`SAMPLES` made-up poses that are never executed, with the same
   distance columns, in that frame's scene: past the current command along its direction, reachable in
   :data:`REACH_SECONDS` at the mixed script's speed caps, anywhere within the joint limits, and searched to land
@@ -37,7 +38,8 @@ import numpy as np
 
 from . import clearance as C
 from .jlog import items, read_jlog
-from .takes import JETROVER_MOTORS, PULSE_PER_RADIAN, ZERO_PULSE, Take, TakeError, _jetrover_pulses, _tracks
+from .takes import (JETROVER_MOTORS, PULSE_PER_RADIAN, ZERO_PULSE, Take, TakeError, _jetrover_actions, _jetrover_pulses,
+                    _tracks)
 
 REPO = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", ".."))
 SIM_SIDECAR = os.path.join(REPO, "robot", "jetrover", "urdf", "jetrover.sim.json")  # motor -> joint, the gripper's fingers
@@ -62,10 +64,13 @@ REACH_M = 0.45  # an obstacle is a near sample's target only when its bounding s
 SEED_MASK = (1 << 53) - 1  # the seed fits a double, for readers in other languages
 METHOD = ("teleop_lerobot.clearance's signed distance (link boxes to obstacles' convex pieces: GJK apart, the separating "
           "axis's penetration depth overlapping; surfaces by the links' box corners), vectorised over poses; object poses WO "
-          "interpolated to the command's arrival or the frame's stateSensed")
+          "interpolated to the command's arrival or the frame's stateSensed. The min_ and path_min_ columns are over the links a "
+          "joint moves: the base never moves, so an object a layout put near it would set every row's minimum; its own distance "
+          "is in the per-link columns")
 PATH_METHOD = (f"{PATH_STEPS} poses from the arm's measured state when the command arrived (RI, the newest valid reading of "
-               "each servo at or before its arrival) to the commanded pose, at 1/8..8/8 of the time the slowest servo needs: "
-               "each servo ramps linearly in pulses at its command's speed (speedRadPerSec x pulsePerRadian) and stops at its "
+               "each servo at or before received_ns) to the commanded pose, at 1/8..8/8 of the time the slowest servo needs: "
+               "each servo ramps linearly in pulses at the event's rate (an RO's pulsesPerSecond, a refused command's speedRadPerSec x "
+               "pulsePerRadian) and stops at its "
                "target, as the twin's servo setpoints do (teleop_isaac.servo.TimedSetpoint). The setpoint ramps from where "
                "the last ramp stood, not from the reading, and the PhysX drive trails it; neither is modelled. The start "
                "itself is not one of the poses")
@@ -288,6 +293,9 @@ class Engine:
                 continue
             lb = np.linalg.norm(link_c[group][:, :, None, :] - bc[bodies][None, None], axis=3) - link_r[group][:, :, None] - br[bodies]
             i, l, e = np.nonzero(lb < cutoff)
+            if min_only:  # the nearest moving link: the base never moves (its own distance is in the per-link columns)
+                keep = ~self.fixed[l]
+                i, l, e = i[keep], l[keep], e[keep]
             tp.append(group[i]); tl.append(l); tb.append(bodies[e])
         if not tp:
             return self._result(best, best_id, surface, n)
@@ -550,9 +558,11 @@ def seed_of(layout_seed, session: str) -> int:
     return int.from_bytes(digest[:8], "little") & SEED_MASK
 
 
-def _distance_columns(out: Dict[str, object], links: Sequence[str], res: Optional[Result], n: int, prefix: str = "") -> None:
+def _distance_columns(out: Dict[str, object], links: Sequence[str], res: Optional[Result], n: int, moving: np.ndarray,
+                      prefix: str = "") -> None:
     """Per link ``clearance_mm.<link>``, ``clearance_id.<link>``, ``surface_mm.<link>`` (mm, frames.parquet's names), and
-    ``min_clearance_mm``, ``min_clearance_id``, ``min_clearance_link``, ``min_surface_mm``. NaN (and null ids) without ``res``."""
+    over the ``moving`` links (every link a joint moves: not the base) ``min_clearance_mm``, ``min_clearance_id``,
+    ``min_clearance_link``, ``min_surface_mm``. NaN (and null ids) without ``res``."""
     if res is None:
         for link in links:
             out[f"{prefix}clearance_mm.{link}"] = np.full(n, np.nan)
@@ -567,12 +577,33 @@ def _distance_columns(out: Dict[str, object], links: Sequence[str], res: Optiona
         out[f"{prefix}clearance_mm.{link}"] = mm[:, li]
         out[f"{prefix}clearance_id.{link}"] = res.obstacle_id[:, li]
         out[f"{prefix}surface_mm.{link}"] = sm[:, li]
-    arg = np.argmin(mm, axis=1) if n else np.zeros(0, int)
+    idx = np.flatnonzero(moving)
+    sub = np.where(np.isnan(mm[:, idx]), np.inf, mm[:, idx])
+    arg = idx[np.argmin(sub, axis=1)] if n else np.zeros(0, int)
     rows = np.arange(n)
-    out["min_clearance_mm"] = mm[rows, arg] if n else np.zeros(0)
-    out["min_clearance_id"] = res.obstacle_id[rows, arg] if n else np.zeros(0, int)
-    out["min_clearance_link"] = [links[a] for a in arg]
-    out["min_surface_mm"] = _nanmin_rows(sm)
+    none = np.isinf(sub.min(axis=1)) if n else np.zeros(0, bool)
+    out["min_clearance_mm"] = np.where(none, np.nan, mm[rows, arg]) if n else np.zeros(0)
+    out["min_clearance_id"] = np.where(none, -1, res.obstacle_id[rows, arg]) if n else np.zeros(0, int)
+    out["min_clearance_link"] = [None if z else links[a] for a, z in zip(arg, none)]
+    out["min_surface_mm"] = _nanmin_rows(sm[:, idx])
+
+
+def path_poses(start: np.ndarray, cmd: np.ndarray, pps: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+    """The way from ``start`` to ``cmd`` (pulses, (n, 6)) as the servos go, each at its own rate ``pps`` (pulses per second,
+    0: it jumps): :data:`PATH_STEPS` poses (n, steps, 6) at 1/8..8/8 of the time ``T`` (n,) the slowest servo needs, each
+    servo ramping linearly to its target and holding there (``TimedSetpoint``); the last pose is ``cmd``."""
+    n = len(start)
+    delta = cmd - start
+    with np.errstate(all="ignore"):
+        need = np.where(pps > 0, np.abs(delta) / pps, 0.0)
+    need = np.where(np.isnan(need), 0.0, need)
+    T = need.max(axis=1) if n else np.zeros(0)
+    tk = T[:, None] * (np.arange(1, PATH_STEPS + 1) / PATH_STEPS)[None, :]  # (n, steps)
+    with np.errstate(all="ignore"):
+        frac = np.where(need[:, None, :] > 0, np.minimum(1.0, tk[:, :, None] / np.where(need > 0, need, 1.0)[:, None, :]), 1.0)
+    path = start[:, None, :] + frac * delta[:, None, :]
+    path[:, -1] = cmd
+    return path, T
 
 
 def _nanmin_rows(a: np.ndarray) -> np.ndarray:
@@ -604,6 +635,46 @@ def _state_at(read, relay, t: int) -> Tuple[np.ndarray, int]:
     return out, oldest
 
 
+def action_events(path: str, host) -> List[Tuple[int, str, Dict[int, float], Dict[int, float], Optional[int]]]:
+    """The take's action events, one per line ``raw_ros_events.jsonl`` gives type ``action`` (``takes.raw_events``): every
+    ``RO`` and every command RobotHost refused (``JC`` ``R``) as the plant would have sent it, in time order, those naming all
+    six servos. Each is (time, ``A`` sent to the relay or ``R`` refused, its pulses, each servo's rate in pulses a second (the
+    ``RO``'s own, a refused command's speed x pulsePerRadian), the ``JC`` sequence it carries: an ``RO``'s the newest accepted
+    command delivered at or before it, None for one before any). Checked against ``takes._jetrover_actions``, the action
+    column's own events, value for value."""
+    ro = sorted(((int(r[0]), "A", {int(it[0]): float(it[1]) for it in items(r[1])},
+                  {int(it[0]): float(it[2]) for it in items(r[1]) if len(it) > 2}) for r in host.tag("RO")), key=lambda e: e[0])
+    commands = host.tag("JC")
+    accepted = sorted((int(r[1]), int(r[2])) for r in commands if r[4] == "A")
+    out = [e + (None,) for e in ro]
+    refused = [r for r in commands if r[4] == "R"]
+    if refused:
+        convert = _jetrover_pulses(path)
+        for r in refused:
+            values = convert(r[5])
+            if values:
+                speeds = {}
+                for it in items(r[5]):
+                    try:
+                        speeds.setdefault(int(it[0]), float(it[2]) * PULSE_PER_RADIAN)
+                    except (IndexError, ValueError):
+                        pass
+                out.append((int(r[1]), "R", values, speeds, int(r[2])))
+        out.sort(key=lambda e: e[0])
+    want = _jetrover_actions(path, host)
+    if [(e[0], e[2]) for e in out] != [(t, v) for t, v in want]:
+        raise Unavailable("the action events here differ from takes.py's: the two readings of RO and JC have parted")
+    times = [t for t, _ in accepted]
+    full = []
+    for t, kind, values, rates, seq in out:
+        if all(m in values for m in JETROVER_MOTORS):
+            if kind == "A":
+                k = bisect.bisect_right(times, t) - 1
+                seq = accepted[k][1] if k >= 0 else None
+            full.append((t, kind, values, rates, seq))
+    return full
+
+
 def compute(take: Take, geometry_dir: Optional[str], layout_seed=None, host=None, cutoff_mm: float = C.CUTOFF_MM) -> Tables:
     """The episode's ``commands.parquet`` and ``pose_samples.parquet`` columns (a JetRover take's). Without the geometry (or a
     record they need), the times, outcomes and servo values are still given, with NaN distances, and ``unavailable`` says
@@ -633,62 +704,32 @@ def compute(take: Take, geometry_dir: Optional[str], layout_seed=None, host=None
             engine = Engine(world, cutoff_mm)
         except C.ClearanceUnavailable as e:
             why = f"ClearanceUnavailable: {e}"
-    try:
-        convert = _jetrover_pulses(take.path)
-    except TakeError as e:
-        convert, why = None, why or str(e)
     links = list(world.robot.links) if world is not None else list(_LINKS)
     read, relay = _measured(host)
     frame_t = [int(f.timing["sensed"]) for f in take.frames]
 
-    # --- commands
-    jc = sorted(host.tag("JC"), key=lambda r: (int(r[0]), int(r[2])))
-    n = len(jc)
-    received = np.array([int(r[0]) for r in jc], np.int64)
-    tps = [int(r[2]) for r in host.tag("KA") if len(r) > 2 and r[2].isdigit() and int(r[2]) > 0]
-    op_tps = tps[0] if tps else None
-    cmd = np.full((n, 6), np.nan)
+    # --- commands: the action events, as raw_ros_events.jsonl has them
+    events = action_events(take.path, host)
+    n = len(events)
+    received = np.array([e[0] for e in events], np.int64)
+    cmd = np.array([[e[2][m] for m in JETROVER_MOTORS] for e in events], float).reshape(n, 6)
+    pps = np.array([[e[3].get(m, 0.0) for m in JETROVER_MOTORS] for e in events], float).reshape(n, 6)
+    pps = np.where(np.isfinite(pps) & (pps > 0), pps, 0.0)
     start = np.full((n, 6), np.nan)
-    pps = np.full((n, 6), np.nan)
     state_ns = np.zeros(n, np.int64)
-    for i, r in enumerate(jc):
-        st, oldest = _state_at(read, relay, int(r[0]))
-        start[i], state_ns[i] = st, oldest
-        got = convert(r[5]) if convert is not None else {}
-        speeds = {}
-        for it in items(r[5]):
-            try:
-                speeds.setdefault(int(it[0]), float(it[2]))
-            except (IndexError, ValueError):
-                pass
-        for j, m in enumerate(JETROVER_MOTORS):
-            cmd[i, j] = got.get(m, st[j]) if convert is not None else np.nan  # a servo the command does not name holds
-            sp = speeds.get(m, 0.0)
-            pps[i, j] = sp * PULSE_PER_RADIAN if math.isfinite(sp) and sp > 0 else 0.0
+    for i, t in enumerate(received):
+        start[i], state_ns[i] = _state_at(read, relay, int(t))
     commands: Dict[str, object] = {
         "frame_index": [(bisect.bisect_right(frame_t, t) - 1) if frame_t and t >= frame_t[0] else None for t in received],
-        "seq": np.array([int(r[2]) for r in jc], np.int64),
-        "sent_ns": [int(r[3]) * 1_000_000_000 // op_tps if op_tps else None for r in jc],
-        "received_ns": received, "delivered_ns": np.array([int(r[1]) for r in jc], np.int64),
-        "outcome": [r[4] for r in jc], "accepted": np.array([r[4] == "A" for r in jc])}
+        "received_ns": received, "seq": [e[4] for e in events], "outcome": [e[1] for e in events],
+        "accepted": np.array([e[1] == "A" for e in events], bool)}
     for j, name in enumerate(SERVO_NAMES):
         commands[name] = cmd[:, j]
     for j, name in enumerate(SERVO_NAMES):
         commands["state." + name] = start[:, j]
     commands["state_ns"] = state_ns
-    delta = cmd - start
-    with np.errstate(all="ignore"):
-        need = np.where(pps > 0, np.abs(delta) / pps, 0.0)
-    need = np.where(np.isnan(need), 0.0, need)
-    T = need.max(axis=1) if n else np.zeros(0)
+    path, T = path_poses(start, cmd, pps)
     commands["path_s"] = np.round(T, 6)
-    # PATH_STEPS poses each, the last the commanded pose.
-    steps = np.arange(1, PATH_STEPS + 1) / PATH_STEPS
-    tk = T[:, None] * steps[None, :]  # (n, steps)
-    with np.errstate(all="ignore"):
-        frac = np.where(need[:, None, :] > 0, np.minimum(1.0, tk[:, :, None] / np.where(need > 0, need, 1.0)[:, None, :]), 1.0)
-    path = start[:, None, :] + frac * delta[:, None, :]  # (n, steps, 6)
-    path[:, -1] = cmd
     path_ok = ~np.isnan(path).any(axis=2)
     res_cmd = None
     if engine is not None and n:
@@ -696,10 +737,11 @@ def compute(take: Take, geometry_dir: Optional[str], layout_seed=None, host=None
         res_cmd = _evaluate(engine, arm, cmd, scenes, path_ok[:, -1])
         mid = path[:, :-1].reshape(-1, 6)
         res_mid = _evaluate(engine, arm, mid, np.repeat(scenes, PATH_STEPS - 1), path_ok[:, :-1].reshape(-1), min_only=True)
-    _distance_columns(commands, links, res_cmd, n)
+    moving = ~engine.fixed if engine is not None else np.array([x != "base_link" for x in links])
+    _distance_columns(commands, links, res_cmd, n, moving)
     if res_cmd is not None:
         L = len(links)
-        last = np.where(np.isnan(res_cmd.obstacle), np.inf, res_cmd.obstacle)
+        last = np.where(np.isnan(res_cmd.obstacle) | ~moving[None, :], np.inf, res_cmd.obstacle)
         last_link = np.argmin(last, axis=1)
         rows = np.arange(n)
         dist = np.concatenate([res_mid.obstacle.reshape(n, PATH_STEPS - 1), res_cmd.obstacle[rows, last_link][:, None]], axis=1)
@@ -723,7 +765,7 @@ def compute(take: Take, geometry_dir: Optional[str], layout_seed=None, host=None
         commands["path_min_surface_mm"] = np.full(n, np.nan)
 
     # --- pose samples
-    samples = _samples(take, arm, engine, rng, jc, cmd, links, frame_t)
+    samples = _samples(take, arm, engine, rng, links, frame_t)
     return Tables(commands, samples, seed, why, _time.perf_counter() - started)
 
 
@@ -747,16 +789,15 @@ def _evaluate(engine: Engine, arm: Arm, pulses: np.ndarray, scenes: np.ndarray, 
     return out
 
 
-def _samples(take: Take, arm: Optional[Arm], engine: Optional[Engine], rng, jc, cmd, links, frame_t) -> Dict[str, object]:
+def _samples(take: Take, arm: Optional[Arm], engine: Optional[Engine], rng, links, frame_t) -> Dict[str, object]:
     nf = len(take.frames)
     total = sum(c for _, c in SAMPLES)
     kinds = [k for k, c in SAMPLES for _ in range(c)]
     state = np.array([f.state for f in take.frames], float).reshape(nf, 6)
     lo = arm.lo if arm is not None else np.array([0, 0, 0, 0, 0, 116.0])
     hi = arm.hi if arm is not None else np.array([1000.0] * 5 + [645.0])
-    # The command in force at each frame: the newest one RobotHost accepted or refused (the ones that make the action).
-    driven = [(int(r[0]), i) for i, r in enumerate(jc) if r[4] in ("A", "R")]
-    dt = [t for t, _ in driven]
+    # The command in force at each frame is its action: the newest action event at or before it (commands.parquet's rows).
+    action = np.array([f.action for f in take.frames], float).reshape(nf, 6)
     poses = np.full((nf, total, 6), np.nan)
     scale = np.full((nf, total), np.nan)
     target = np.full((nf, total), np.nan)
@@ -765,9 +806,7 @@ def _samples(take: Take, arm: Optional[Arm], engine: Optional[Engine], rng, jc, 
     kind_at = {k: [i for i, x in enumerate(kinds) if x == k] for k, _ in SAMPLES}
     for fi in range(nf):
         q = state[fi]
-        k = bisect.bisect_right(dt, frame_t[fi]) - 1
-        c = cmd[driven[k][1]] if k >= 0 else q
-        c = np.where(np.isnan(c), q, c)
+        c = np.where(np.isnan(action[fi]), q, action[fi])
         b = kind_at["beyond"]
         s = BEYOND[0] + (BEYOND[1] - BEYOND[0]) * (np.arange(len(b)) + rng.random(len(b))) / len(b)
         poses[fi, b] = np.clip(q + s[:, None] * (c - q), lo, hi)
@@ -794,7 +833,8 @@ def _samples(take: Take, arm: Optional[Arm], engine: Optional[Engine], rng, jc, 
     out["scale"] = np.round(scale.reshape(-1), 6)
     out["target_mm"] = np.round(target.reshape(-1), 3)
     out["target_id"] = target_obj.reshape(-1)
-    _distance_columns(out, links, res, nf * total)
+    moving = ~engine.fixed if engine is not None else np.array([x != "base_link" for x in links])
+    _distance_columns(out, links, res, nf * total, moving)
     return out
 
 
@@ -809,7 +849,8 @@ def _near_search(engine, arm, rng, state, scenes, poses, target, target_obj, nea
     """Each frame's near samples (in place): toward a pose whose fingers sit inside an obstacle in reach, along a straight line
     in joint space from the measured pose (the first and third) or a reachable pose (the second and fourth), bisected until
     the minimum distance over the links is within NEAR_TOLERANCE_MM of a target drawn from NEAR_MM. A frame with no obstacle
-    in reach searches toward the nearest one anyway; a line that never brackets its target keeps the end nearer to it."""
+    in reach searches toward the nearest one anyway. When both ends lie on one side of the target, the start is drawn once more
+    from anywhere within the limits; a line that still does not straddle it keeps the pose nearest the target."""
     nf = len(state)
     grid = lo + rng.random((GRID_POSES, 6)) * (hi - lo)
     tips = _tool_points(engine, arm, grid)
@@ -853,8 +894,18 @@ def _near_search(engine, arm, rng, state, scenes, poses, target, target_obj, nea
     da, db = dmin(A, allsel), dmin(Bp, allsel)
     best_p = np.where((np.abs(da - tau) <= np.abs(db - tau))[:, None], A, Bp)
     best_e = np.minimum(np.abs(da - tau), np.abs(db - tau))
-    lo_s, hi_s = np.zeros(m), np.ones(m)  # d(lo_s) above the target, d(hi_s) below
-    active = np.flatnonzero((da >= tau) & (db < tau) & (best_e > NEAR_TOLERANCE_MM / 1000.0))
+    # Ends on one side of the target (the arm already that close, or the end not inside): once more from anywhere in the limits.
+    again = np.flatnonzero((da >= tau) == (db >= tau))
+    if len(again):
+        A[again] = lo + rng.random((len(again), 6)) * (hi - lo)
+        d2 = dmin(A[again], again)
+        e2 = np.abs(d2 - tau[again])
+        better = e2 < best_e[again]
+        best_e[again[better]], best_p[again[better]] = e2[better], A[again][better]
+        da[again] = d2
+    lo_s, hi_s = np.zeros(m), np.ones(m)  # d(lo_s) on the start's side of the target, d(hi_s) on the other
+    side = da >= tau
+    active = np.flatnonzero((side != (db >= tau)) & (best_e > NEAR_TOLERANCE_MM / 1000.0))
     for _ in range(NEAR_STEPS):
         if not len(active):
             break
@@ -865,9 +916,9 @@ def _near_search(engine, arm, rng, state, scenes, poses, target, target_obj, nea
         better = e < best_e[active]
         best_e[active[better]] = e[better]
         best_p[active[better]] = p[better]
-        above = d >= tau[active]
-        lo_s[active[above]] = s[above]
-        hi_s[active[~above]] = s[~above]
+        same = (d >= tau[active]) == side[active]
+        lo_s[active[same]] = s[same]
+        hi_s[active[~same]] = s[~same]
         active = active[e > NEAR_TOLERANCE_MM / 1000.0]
     for i, (fi, col, k, obj) in enumerate(slot):
         poses[fi, col] = best_p[i]
@@ -882,11 +933,14 @@ def metadata(cutoff_mm: float = C.CUTOFF_MM) -> Dict[str, Dict]:
               "links": list(_LINKS), "source": "docs/adr/0038 L"}
     return {
         "commands": {**common, "pathMethod": PATH_METHOD, "pathSteps": PATH_STEPS,
-                     "clocks": "received_ns, delivered_ns and state_ns: RobotHost's CLOCK_MONOTONIC (the session's clock, "
-                               "as frames.parquet's sensed_ns); sent_ns: the sender's capture stamp in ns on the sender's own "
-                               "clock (JC captureTicks over the KA records' opTps), not aligned with RobotHost's",
-                     "outcome": "JC's: A accepted, R refused (would collide, or the servo path from the measured pose would), "
-                                "S stale, P ignored while parking or relaxed"},
+                     "clocks": "received_ns (raw_ros_events.jsonl's pc_received_mono_ns of the action event) and state_ns: "
+                               "RobotHost's CLOCK_MONOTONIC, capture_timing.jsonl's and frames.parquet's sensed_ns clock; "
+                               "frame_index is the last frame captured at or before received_ns (null before the first)",
+                     "rows": "one per action event of raw_ros_events.jsonl, at the commands' own rate: every RO (what RobotHost "
+                             "sent the relay for an accepted command, or of its own while parking) and every refused command as "
+                             "the plant would have sent it; each frame's action is the last row received at or before it",
+                     "outcome": "A: an RO, sent to the relay; R: a command RobotHost refused (it would collide, or the servo "
+                                "path from the measured pose would); seq: the JC it carries (an RO's: the newest accepted one)"},
         "pose_samples": {**common, "samples": dict(SAMPLES), "beyond": list(BEYOND), "reachSeconds": REACH_SECONDS,
                          "capsRadPerS": list(CAPS_RAD_S), "gripperPulsesPerS": GRIPPER_PPS, "nearMm": list(NEAR_MM),
                          "nearToleranceMm": NEAR_TOLERANCE_MM,
@@ -899,12 +953,40 @@ def metadata(cutoff_mm: float = C.CUTOFF_MM) -> Dict[str, Dict]:
                                  "little-endian, 53 bits"}}
 
 
+ACTION_TOLERANCE = 0.01  # pulses: takes.PULSE_TOLERANCE, and the data parquet's float32 holds a pulse to about 3e-5
+
+
+def action_agreement(commands, frames) -> Tuple[int, int, List[Tuple[int, int]]]:
+    """The pilot check of world-models' commands.parquet spec: each frame's ``action`` (``frames``: ``episode_index``,
+    ``frame_index``, ``sensed_ns``, ``action``) must be the last command (``commands``: commands.parquet's rows) received at
+    or before the frame was captured, within :data:`ACTION_TOLERANCE`. Returns (frames that agree, frames, the first 20
+    (episode, frame) that do not)."""
+    agree, total, bad = 0, 0, []
+    by_ep = {int(ep): g for ep, g in commands.groupby("episode_index", sort=False)}
+    for ep, g in frames.groupby("episode_index", sort=False):
+        c = by_ep.get(int(ep))
+        acts = np.array([np.asarray(a, float) for a in g["action"]]).reshape(len(g), -1)
+        total += len(g)
+        if c is None:
+            bad.extend((int(ep), int(f)) for f in g["frame_index"][:20 - len(bad)])
+            continue
+        received = c["received_ns"].to_numpy()
+        vals = c[list(SERVO_NAMES)].to_numpy(float)
+        idx = np.searchsorted(received, g["sensed_ns"].to_numpy(), side="right") - 1
+        ok = (idx >= 0) & (np.abs(acts - vals[np.maximum(idx, 0)]) <= ACTION_TOLERANCE).all(axis=1)
+        agree += int(ok.sum())
+        for f in g["frame_index"].to_numpy()[~ok]:
+            if len(bad) < 20:
+                bad.append((int(ep), int(f)))
+    return agree, total, bad
+
+
 def _column(name: str, values: list):
     import pandas as pd
 
-    if name in ("seq", "received_ns", "delivered_ns", "state_ns", "sample", "episode_index"):
+    if name in ("received_ns", "state_ns", "sample", "episode_index"):
         return pd.array(np.asarray(values, np.int64), dtype="int64")
-    if name in ("frame_index", "sent_ns"):
+    if name in ("frame_index", "seq"):
         return pd.array([None if v is None else int(v) for v in values], dtype="Int64")
     if "clearance_id" in name or name == "target_id":
         return pd.array([None if v is None or int(v) < 0 else int(v) for v in values], dtype="Int32")
@@ -945,5 +1027,5 @@ def write_parquet(path: str, written: Sequence[Tuple[int, Dict[str, object]]], m
     return len(df)
 
 
-__all__ = ["Arm", "Engine", "METHOD", "PATH_STEPS", "Result", "SAMPLES", "Tables", "Unavailable", "compute", "gjk_batch",
-           "metadata", "seed_of", "write_parquet"]
+__all__ = ["ACTION_TOLERANCE", "action_agreement", "action_events", "Arm", "Engine", "METHOD", "PATH_STEPS", "Result", "SAMPLES", "Tables", "Unavailable", "compute", "gjk_batch",
+           "metadata", "path_poses", "seed_of", "write_parquet"]

@@ -1152,6 +1152,24 @@ def command_line(teleop: str, name: str, eps: Sequence[Dict], lines: List[str], 
     why = sorted({e["commandClearanceUnavailable"] for e in eps if e.get("commandClearanceUnavailable")})
     if why:
         parts.append(f"why not: {why[:3]}")
+    # The pilot check: each frame's action is the last command received at or before its capture (world-models' spec).
+    import glob
+
+    from .command_clearance import action_agreement
+    data = sorted(glob.glob(os.path.join(os.path.dirname(os.path.dirname(teleop)), "data", "**", "*.parquet"), recursive=True))
+    if data and len(cmd):
+        acts = pd.concat([pd.read_parquet(p, columns=["episode_index", "frame_index", "action"]) for p in data])
+        times = pd.read_parquet(os.path.join(teleop, "frames.parquet"), columns=["episode_index", "frame_index", "sensed_ns"])
+        frames = acts.merge(times, on=["episode_index", "frame_index"], how="left")
+        if frames["sensed_ns"].isna().any():
+            faults.append(f"{name}: {int(frames['sensed_ns'].isna().sum())} data frame(s) not in frames.parquet")
+            frames = frames.dropna(subset=["sensed_ns"])
+        frames = frames[frames["episode_index"].isin(have)]
+        agree, total, bad = action_agreement(cmd, frames)
+        parts.append(f"each frame's action is the last command received before it in {agree} of {total} frames")
+        if agree < total:
+            faults.append(f"{name}: in {total - agree} frame(s) the action is not the last command of commands.parquet "
+                          f"received before it, e.g. (episode, frame) {bad[:5]}")
     lines.append("; ".join(parts))
 
 

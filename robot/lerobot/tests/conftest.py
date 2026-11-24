@@ -3,6 +3,7 @@ trailers with their sha256, TFRM sidecars, files.sha256."""
 
 import hashlib
 import json
+import math
 import os
 import struct
 import sys
@@ -97,9 +98,21 @@ def frames_log(take, writer, folder, sid, cameras, vfs, image=lambda cam, n: f"{
     write_jlog(os.path.join(take, writer + ".jlog"), writer, sid, rows)
 
 
+JETROVER_PROFILE = os.path.join(REPO, "core", "RobotProfiles", "jetrover.json")
+
+
+def relay_pulse(motor, value):
+    """What RobotHost sends the relay for one target of a JetRover joint command (GenericArmPlantConfig.Default and
+    core/RobotProfiles/jetrover.json): 1000 pulses per 240 degrees from 500, the shoulder's mounting offset added; the gripper's
+    fraction from 116 (open) to 645 (closed)."""
+    if motor == 10:
+        return 116.0 + value * (645.0 - 116.0)
+    return 500.0 + (value + (-0.64494798 if motor == 2 else 0.0)) * 1000.0 / math.radians(240.0)
+
+
 def jetrover_take(root, name="20261112T100000Z-take001", scenario="reach", source="isaac", gap=None, image=None,
                   cameras=("third-left", "wrist"), extra=(), jitter=0.0, isaac_extra=(), vq=None, cm=None, scene=None,
-                  session=None, dropped=0, at_s=0.0):
+                  session=None, dropped=0, at_s=0.0, commands=None, relay=relay_pulse):
     """A JetRover take: commands accepted from 1.0 to 3.0 s, RO and RI every 20 ms, frames at 30 fps from 0.5 to
     3.5 s (the first two with B). ``gap``: (from, to) seconds with no frame recorded. ``extra``: more robothost.jlog rows
     (``[tag, t, ...]``), such as contacts (WC) and object poses (WO). ``jitter``: each frame's time wobbles by up to that
@@ -107,7 +120,11 @@ def jetrover_take(root, name="20261112T100000Z-take001", scenario="reach", sourc
     (:func:`frames_log`). ``scene``: written as scene.json. ``session``: more session.json keys. ``dropped``: the
     robothost.jlog trailer's dropped records. ``at_s``: the take recorded that many seconds later, every time in it with it
     (``extra``'s and ``isaac_extra``'s too, as given from 0): takes of one dataset must not overlap on the session's clock
-    (docs/adr/0038 L), and two at the same ``at_s`` do."""
+    (docs/adr/0038 L), and two at the same ``at_s`` do.
+
+    ``commands``: the JC records instead, ``(ms, outcome, {motor: value})`` in order, each with the next sequence number and
+    its time as its capture stamp; an accepted one's RO 30 us later, ``relay(motor, value)`` for each target, as RobotHost
+    writes it (no other RO); and the take's robot-profile.json, as RobotHost's auto-record copies it."""
     shift = round(at_s * 1e9)
     take = os.path.join(root, scenario, name)
     os.makedirs(take)
@@ -122,13 +139,23 @@ def jetrover_take(root, name="20261112T100000Z-take001", scenario="reach", sourc
         with open(os.path.join(take, "scene.json"), "w", encoding="utf-8") as f:
             json.dump(scene, f)
     rows = []
-    for k in range(0, 41):  # JC every 50 ms, 1.0..3.0 s
-        t = (1000 + 50 * k) * MS
-        rows.append(["JC", t, t, k, t, "A", "1:0.1:1"])
+    if commands is None:
+        for k in range(0, 41):  # JC every 50 ms, 1.0..3.0 s
+            t = (1000 + 50 * k) * MS
+            rows.append(["JC", t, t, k, t, "A", "1:0.1:1"])
+    else:
+        for seq, (ms, outcome, values) in enumerate(commands):
+            t = round(ms * MS)
+            rows.append(["JC", t, t, seq, t, outcome, ";".join(f"{m}:{v!r}:3.8" for m, v in values.items())])
+            if outcome == "A":
+                rows.append(["RO", t + 30_000, ";".join(f"{m}:{relay(m, v)!r}:907.1831" for m, v in values.items())])
+        with open(JETROVER_PROFILE, encoding="utf-8") as f, open(os.path.join(take, "robot-profile.json"), "w", encoding="utf-8") as g:
+            g.write(f.read())
     for k in range(0, 116):  # 0.9..3.2 s
         t = (900 + 20 * k) * MS
-        ro = ";".join(f"{m}:{500 + m + k}.5:300" for m in (1, 2, 3, 4, 10, 5))
-        rows.append(["RO", t, ro])
+        if commands is None:
+            ro = ";".join(f"{m}:{500 + m + k}.5:300" for m in (1, 2, 3, 4, 10, 5))
+            rows.append(["RO", t, ro])
         ri = ";".join(f"{m}:{0 if (m == 3 and k == 60) else 1}:{400 + m + k}" for m in (1, 2, 3, 4, 5, 10))
         rows.append(["RI", t + 5 * MS, ri])
     rows.extend(list(r) for r in extra)

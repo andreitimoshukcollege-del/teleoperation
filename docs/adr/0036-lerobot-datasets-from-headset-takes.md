@@ -55,7 +55,8 @@ CameraHost streams the camera's own MJPEG and writes nothing to disk.
    `stateSensed`; on the robot it is the camera's `captureTicks`, the start of exposure.
    - **JetRover `state`:** the newest valid `RI` pulse at or before `t` for motors 1–5. The gripper's slot holds its
      newest `RO` pulse, which is the lab's convention: the gripper as a commanded belief (ADR 0018).
-   - **JetRover `action`:** the newest `RO` at or before `t`, all six motors.
+   - **JetRover `action`:** the newest `RO` at or before `t`, all six motors. (Since 2026-11-24 the newest command sent: a
+     command RobotHost refused or ignored counts too, as its plant would have turned it into pulses; docs/adr/0038 "M, motion".)
    - **FR3 `state`:** the `QS` whose `sensed` is `t`, an exact join. Joints are in radians. Each hand's 0..1 opening is
      turned into one finger's travel in metres, the opening times the profile's `fingerTravel` (0.04 m).
    - **FR3 `action`:** the newest `AO` at or before `t`, in the same units.

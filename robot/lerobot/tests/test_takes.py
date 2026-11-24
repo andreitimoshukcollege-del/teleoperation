@@ -4,8 +4,8 @@ import os
 
 import pytest
 
-from conftest import MS, finish, fr3_take, jetrover_take
-from teleop_lerobot.takes import TakeError, read_take, verify_checksums
+from conftest import MS, finish, fr3_take, jetrover_take, relay_pulse
+from teleop_lerobot.takes import TakeError, raw_events, read_take, verify_checksums
 
 
 def test_a_jetrover_frame_holds_the_newest_reading_and_command_at_the_time_it_shows(scenarios):
@@ -108,3 +108,120 @@ def test_a_cut_off_frames_log_is_refused(scenarios):
     finish(path)
     with pytest.raises(ValueError, match="trailer"):
         read_take(path)
+
+
+# The JetRover's action is the command sent (docs/adr/0038 "M, motion", 2026-11-24). RobotHost refused 146 of a source take's 814
+# commands for 3.0 s (episode 23 of jetrover_20261124_021454_cb1e21: its collision backstop judges the servo path from where the
+# arm is measured, docs/adr/0020) and 32 of its replay's, which sent the same 814 commands; the action, then the newest RO,
+# differed between the two by 258 servo units at p95.
+
+MOTORS = (1, 2, 3, 4, 5, 10)
+
+
+def motion(ms):
+    """A joint command's targets ms into the take: every joint moving, the gripper closing."""
+    s = (ms - 1000) / 1000
+    return {1: -0.5 + 0.4 * s, 2: 0.3 + 0.1 * s, 3: -1.2 + 0.2 * s, 4: 0.1 * s, 10: min(1.0, 0.25 * s), 5: -0.05 + 0.02 * s}
+
+
+def commands(refused=(), stale=(), parked=()):
+    """Every 20 ms from 1.007 to 2.987 s (no frame within 30 us of one), each ``motion``; the outcome by its ms."""
+    out = []
+    for ms in range(1007, 3001, 20):
+        if ms in stale:
+            out.append((ms, "S", {m: 0.9 for m in MOTORS}))  # an old command arriving late: nothing like the motion
+            continue
+        outcome = "R" if any(a <= ms < b for a, b in refused) else "P" if ms in parked else "A"
+        out.append((ms, outcome, motion(ms)))
+    return out
+
+
+def newest(cmds, t, outcomes=("A", "R", "P")):
+    """The command in force at t: an accepted one from its RO, 30 us after it arrived; one refused or ignored from its arrival."""
+    best = None
+    for ms, outcome, values in cmds:
+        at = ms * MS + (30_000 if outcome == "A" else 0)
+        if outcome in outcomes and at <= t:
+            best = (at, values)
+    return best
+
+
+def test_a_command_robothost_refused_is_still_the_action(scenarios):
+    cmds = commands(refused=[(1500, 2200)])
+    take = read_take(jetrover_take(scenarios, commands=cmds))
+    inside = 0
+    for f in take.frames:
+        t = f.timing["sensed"]
+        at, values = newest(cmds, t)
+        assert f.action == pytest.approx([relay_pulse(m, values[m]) for m in MOTORS], abs=1e-6)
+        assert f.timing["actionAge"] == t - at
+        # The gripper's slot is the relay's: the gripper as RobotHost last told it, which a refused command never reached.
+        _, accepted = newest(cmds, t, ("A",))
+        assert f.state[5] == pytest.approx(relay_pulse(10, accepted[10]))
+        inside += 1500 * MS < t < 2200 * MS
+    assert inside >= 9  # 0.7 s at 15 fps
+    refused = [f for f in take.frames if 1600 * MS < f.timing["sensed"] < 2200 * MS]
+    assert len({tuple(f.action) for f in refused}) == len(refused)  # it moves on, as the operator's commands did
+    assert all(f.state[5] != f.action[5] for f in refused)
+
+
+def test_a_replay_has_its_sources_action_whatever_robothost_refused(scenarios):
+    # The same commands, refused for 1.0 s in one take and for 0.2 s in the other, as in the pair above.
+    source = read_take(jetrover_take(scenarios, name="20261124T021149Z-take013", commands=commands(refused=[(1400, 2400)])))
+    replay = read_take(jetrover_take(scenarios, name="20261124T021216Z-take014", commands=commands(refused=[(1400, 1600)])))
+    assert [f.timing["sensed"] for f in source.frames] == [f.timing["sensed"] for f in replay.frames]
+    for a, b in zip(source.frames, replay.frames):
+        assert a.action == pytest.approx(b.action, abs=1e-6)
+    # The relay targets alone, the action until then, differ by tens of units for most of the source's refusals.
+    held = [abs(a.state[5] - b.state[5]) for a, b in zip(source.frames, replay.frames)]
+    assert max(held) > 20
+
+
+def test_the_action_of_a_refused_command_is_the_plants_own_conversion(scenarios):
+    # Pinned by hand (GenericArmPlantConfig.Default; core/RobotProfiles/jetrover.json): 238.732 pulses a radian from 500, the
+    # shoulder's offset -0.64494798 rad added; the gripper 116 open, 645 closed; the range 0..1000.
+    pinned = {1: 0.0, 2: 0.64494798, 3: 0.5, 4: 3.0, 5: -3.0, 10: 0.5}
+    cmds = [(ms, "A", motion(ms)) for ms in range(1007, 2000, 20)] + [(2007, "R", pinned)]
+    cmds += [(ms, "A", motion(ms)) for ms in range(2507, 3001, 20)]
+    take = read_take(jetrover_take(scenarios, commands=cmds))
+    after = [f for f in take.frames if 2008 * MS < f.timing["sensed"] < 2500 * MS]
+    assert after and all(f.action == pytest.approx([500.0, 500.0, 619.3662, 1000.0, 0.0, 380.5], abs=1e-4) for f in after)
+
+
+def test_a_stale_command_is_not_the_action_and_an_ignored_one_is(scenarios):
+    cmds = commands(stale=(2007,), parked=(2507, 2527, 2547))
+    take = read_take(jetrover_take(scenarios, commands=cmds))
+    assert all(f.action[0] != pytest.approx(relay_pulse(1, 0.9)) for f in take.frames)  # a newer command had replaced it
+    for f in take.frames:
+        _, values = newest(cmds, f.timing["sensed"])
+        assert f.action == pytest.approx([relay_pulse(m, values[m]) for m in MOTORS], abs=1e-6)
+    assert any(2507 * MS <= f.timing["sensed"] < 2567 * MS for f in take.frames)  # a frame while the parked ones stood
+
+
+def test_a_take_whose_relay_targets_are_not_its_commands_converted_is_refused(scenarios):
+    # RobotHost's conversion changed (another gripper calibration, say): the action of the commands it did not pass on cannot be
+    # built, and saying so beats guessing.
+    off = lambda m, v: relay_pulse(m, v) + (1.0 if m == 3 else 0.0)
+    path = jetrover_take(scenarios, commands=commands(refused=[(2000, 2100)]), relay=off)
+    with pytest.raises(TakeError, match="conversion has changed"):
+        read_take(path)
+    # With every command passed on, nothing is converted: the action is the RO, as it always was.
+    ok = read_take(jetrover_take(scenarios, name="20261112T100000Z-take002", commands=commands(), relay=off))
+    assert ok.frames and all(f.action[2] == pytest.approx(off(3, newest(commands(), f.timing["sensed"])[1][3])) for f in ok.frames)
+
+
+def test_a_take_with_refused_commands_and_no_profile_is_refused(scenarios):
+    path = jetrover_take(scenarios, commands=commands(refused=[(2000, 2100)]))
+    os.remove(os.path.join(path, "robot-profile.json"))
+    finish(path)
+    with pytest.raises(TakeError, match="robot-profile.json"):
+        read_take(path)
+
+
+def test_the_raw_events_actions_are_the_action_columns_commands(scenarios):
+    cmds = commands(refused=[(2000, 2100)])
+    take = read_take(jetrover_take(scenarios, commands=cmds))
+    actions = [e for e in raw_events(take) if e["type"] == "action"]
+    sent = [(ms * MS + (30_000 if o == "A" else 0), [relay_pulse(m, v[m]) for m in MOTORS]) for ms, o, v in cmds if o in "AR"]
+    assert [e["jetson_mono_ns"] for e in actions] == [t for t, _ in sent]
+    assert all(e["values"] == pytest.approx(v, abs=1e-6) for e, (_, v) in zip(actions, sent))

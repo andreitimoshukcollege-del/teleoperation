@@ -93,6 +93,27 @@ namespace Teleop.RobotHost.Tests.Plant
         }
 
         [Fact]
+        public void TheSameCommand_IsRefusedOrAccepted_ByWhereTheArmIsMeasured()
+        {
+            // Why a take's relay targets (RO) depend on physics, so the dataset's action is the command sent instead (docs/adr/0038
+            // "M, motion", 2026-11-24): a replay sends its source's commands exactly, but its arm is measured elsewhere (lagging
+            // differently, blocked by an added object), and the backstop judges the servo path from there. On the twin it refused
+            // 476 of 32131 commands of 38 takes, every one for its path, none for its pose.
+            var rng = new Random(20261124);
+            for (int attempt = 0; attempt < 20000; attempt++)
+            {
+                ArmPose a = RandomValidPose(rng), b = RandomValidPose(rng);
+                if (a.MaxJointDelta(b) < 20f * MathF.PI / 180f || !PathHits(a, b)) continue;
+
+                Assert.Equal(JointCommandOutcome.Refused, PlantAt(a, new FakeRelayClient()).CommandJointAngles(Targets(b), captureTicks: 10));
+                Assert.Equal(JointCommandOutcome.Accepted, PlantAt(b, new FakeRelayClient()).CommandJointAngles(Targets(b), captureTicks: 10));
+                return;
+            }
+
+            Assert.Fail("no pair of clear poses with a colliding servo path was found to test with");
+        }
+
+        [Fact]
         public void AMoveWhosePathIsClear_IsAccepted()
         {
             var rng = new Random(7);

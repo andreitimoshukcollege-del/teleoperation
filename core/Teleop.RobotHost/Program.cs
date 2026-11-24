@@ -166,7 +166,7 @@ namespace Teleop.RobotHost
             }
 
             int loggedIgnored = 0;
-            long lastIgnoredLogTicks = long.MinValue;
+            long lastIgnoredLogTicks = LogThrottle.Never;
             // The latest operator message's sender, client kind and mode (docs/adr/0018 §9).
             string? operatorText = null, operatorKind = null, operatorMode = null;
             long lastOperatorTicks = long.MinValue;
@@ -328,7 +328,7 @@ namespace Teleop.RobotHost
             EndPoint? jointCommander = null;
             int loggedRefusals = 0;
             bool loggedPrecedence = false;
-            long lastRefusalLogTicks = long.MinValue;
+            long lastRefusalLogTicks = LogThrottle.Never;
             while (!stop.IsSet)
             {
                 auto?.Tick(clock.NowTicks);
@@ -587,7 +587,7 @@ namespace Teleop.RobotHost
                 discovery?.Poll();
                 power?.Tick(clock.NowTicks);
 
-                if (power != null && power.IgnoredCommands != loggedIgnored && clock.NowTicks - lastIgnoredLogTicks >= 2 * clock.TicksPerSecond)
+                if (power != null && power.IgnoredCommands != loggedIgnored && LogThrottle.Due(clock.NowTicks, lastIgnoredLogTicks, 2 * clock.TicksPerSecond))
                 {
                     Console.WriteLine($"[power] ignored {power.IgnoredCommands - loggedIgnored} operator command(s): the arm is " +
                         $"{SessionLines.StateName(power.State)}; a hold request (ROBOT ON) lets them through");
@@ -603,9 +603,10 @@ namespace Teleop.RobotHost
 
                 // Refused joint commands (a pose that would collide, docs/adr/0020), at most one line
                 // every 2 s while they keep coming.
-                if (plant.RefusedJointCommands != loggedRefusals && clock.NowTicks - lastRefusalLogTicks >= 2 * clock.TicksPerSecond)
+                if (plant.RefusedJointCommands != loggedRefusals && LogThrottle.Due(clock.NowTicks, lastRefusalLogTicks, 2 * clock.TicksPerSecond))
                 {
-                    Console.WriteLine($"[plant] refused {plant.RefusedJointCommands - loggedRefusals} joint command(s): the pose would collide " +
+                    Console.WriteLine($"[plant] refused {plant.RefusedJointCommands - loggedRefusals} joint command(s): the pose, or the servo path to it " +
+                        "from where the arm is measured, would collide " +
                         $"({plant.DescribeLastRefusal()}); the arm holds");
                     loggedRefusals = plant.RefusedJointCommands;
                     lastRefusalLogTicks = clock.NowTicks;

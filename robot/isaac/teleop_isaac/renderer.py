@@ -49,6 +49,8 @@ APERTURE_MM = 20.955  # horizontal aperture; the focal length follows from the f
 # A mount link's frame looks along +x with z up; a USD camera looks along its -z with +y up.
 MOUNT_TO_CAMERA = ((0.0, 0.0, -1.0), (-1.0, 0.0, 0.0), (0.0, 1.0, 0.0))  # columns: the camera's x, y, z in the mount frame
 LAG_CUBE = 0.06
+SIGHT_STILL_M, SIGHT_MOUNTED_M = 0.5, 2.0  # how far a still camera (its jitter) and a camera on the arm may move from start-up
+MASK_CHECK_FRAMES = 6  # recorded frames a mask check counts over (MaskCheck)
 
 
 # --- what needs no Isaac (tests/test_renderer.py) ---------------------------------------------------------------------
@@ -551,6 +553,26 @@ def mask_table(object_ids: Sequence[int]) -> Dict[str, int]:
     return table
 
 
+def mask_label_id(labels, table: Mapping[str, int]) -> int:
+    """The stable id of one ``idToLabels`` entry (``{"class": "object_37"}`` or the bare label), 0 when the table names none.
+
+    Isaac joins the labels of a prim and of its ancestors with commas ("object_37,object_37", "object_37, mug"), so a label
+    that is not a key is read part by part: the one stable id its parts name, else the one object id among them (a prim of
+    an object that also carries a label of its own), else 0 (docs/adr/0038 "A, masks")."""
+    label = labels.get("class") if isinstance(labels, dict) else labels
+    if isinstance(label, (list, tuple, set)):
+        label = ",".join(str(x) for x in label)
+    if not isinstance(label, str) or not label:
+        return 0
+    if label in table:
+        return table[label]
+    ids = {table[part.strip()] for part in label.split(",") if part.strip() in table}
+    if len(ids) == 1:
+        return ids.pop()
+    objects = [i for i in ids if i >= OBJECT_BASE]
+    return objects[0] if len(objects) == 1 else 0
+
+
 MASK_LUT_MAX = 1 << 16  # annotator ids up to this go through one table lookup; larger ones (never seen) label by label
 
 
@@ -565,10 +587,10 @@ def stable_mask(seg, id_to_labels: Mapping, table: Mapping[str, int]):
 
     lut_keys, lut_vals = [], []
     for k, v in (id_to_labels or {}).items():
-        label = v.get("class") if isinstance(v, dict) else v
-        if label in table:
+        stable = mask_label_id(v, table)
+        if stable:
             lut_keys.append(int(k))
-            lut_vals.append(table[label])
+            lut_vals.append(stable)
     if not lut_keys:
         return np.zeros(seg.shape, np.uint16)
     top = max(lut_keys)
@@ -581,6 +603,214 @@ def stable_mask(seg, id_to_labels: Mapping, table: Mapping[str, int]):
     for k, v in zip(lut_keys, lut_vals):
         out[seg == k] = v
     return out
+
+
+BACKGROUND_LABELS = ("BACKGROUND",)  # Isaac's id 0: nothing drawn there (the dome); its 1 is UNLABELLED: drawn, no label
+
+
+def unlabelled_px(seg, id_to_labels: Mapping, table: Mapping[str, int]) -> int:
+    """How many pixels of a frame's segmentation were drawn with no stable id: Isaac's UNLABELLED, or a label the table does
+    not name. A drawn object whose label Isaac lost lands here (docs/adr/0038 "A, masks"); so does any robot part with no
+    mask class. One table lookup, as :func:`stable_mask`."""
+    import numpy as np
+
+    seg = np.asarray(seg)
+    named = set()
+    for k, v in (id_to_labels or {}).items():
+        label = v.get("class") if isinstance(v, dict) else v
+        if mask_label_id(v, table) or label in BACKGROUND_LABELS:
+            named.add(int(k))
+    if seg.size == 0:
+        return 0
+    top = int(seg.max())
+    if top >= MASK_LUT_MAX or (seg.dtype.kind == "i" and int(seg.min()) < 0):
+        return int(seg.size - np.isin(seg, list(named)).sum())
+    lut = np.ones(top + 1, bool)
+    lut[[k for k in named if 0 <= k <= top]] = False
+    return int(np.count_nonzero(lut[seg]))
+
+
+def object_label_paths(stage, root_path: str) -> List[str]:
+    """The prims of one scene object that carry its mask label: every shape it draws (each ``UsdGeom.Gprim`` below
+    ``root_path``: a box, cylinder or sphere, a box turned into a mesh, each mesh of a scanned asset), or an instanced
+    asset's instance where its shapes cannot be edited; the object's prim itself when it draws nothing yet.
+
+    Why the shapes and not the object's Xform, which they inherit it from (docs/adr/0038 "A, masks"): on the twins
+    (2026-11-23/24) a label inherited from an ancestor was lost whenever the shapes went back into the renderer's scene (the
+    object's visibility toggled, unparked), for whole takes. A shape's own label is resolved with the shape."""
+    from pxr import Usd, UsdGeom
+
+    root = stage.GetPrimAtPath(root_path)
+    out: List[str] = []
+    for prim in Usd.PrimRange(root, Usd.TraverseInstanceProxies()):
+        if not prim.IsA(UsdGeom.Gprim):
+            continue
+        if prim.IsInstanceProxy():
+            up = prim.GetParent()
+            while up and not up.IsInstance():
+                up = up.GetParent()
+            prim = up if up else root
+        path = str(prim.GetPath())
+        if path not in out:
+            out.append(path)
+    return out or [root_path]
+
+
+def label_object(stage, root_path: str, name: str) -> List[str]:
+    """``name`` as the mask label (``class``) of each of :func:`object_label_paths`, and of no other prim of the object, so
+    labels never nest (they would come out joined). Returns the labelled paths."""
+    from pxr import Usd, UsdSemantics
+
+    paths = object_label_paths(stage, root_path)
+    for prim in Usd.PrimRange(stage.GetPrimAtPath(root_path)):
+        if str(prim.GetPath()) not in paths and prim.HasAPI(UsdSemantics.LabelsAPI, "class"):
+            clear_labels(stage, [str(prim.GetPath())])
+    set_labels(stage, paths, [name])
+    return paths
+
+
+def set_labels(stage, paths: Sequence[str], labels: Sequence[str]) -> None:
+    from pxr import UsdSemantics
+
+    for path in paths:
+        UsdSemantics.LabelsAPI.Apply(stage.GetPrimAtPath(path), "class").CreateLabelsAttr().Set(list(labels))
+
+
+def clear_labels(stage, paths: Sequence[str]) -> None:
+    """No mask label on ``paths``: the property and the API both gone, as Replicator's own clear does. Set again a couple of
+    frames later (:func:`set_labels`), Isaac resolves the label afresh: the renderer's relabel."""
+    from pxr import UsdSemantics
+
+    for path in paths:
+        prim = stage.GetPrimAtPath(path)
+        prim.RemoveProperty("semantics:labels:class")
+        prim.RemoveAPI(UsdSemantics.LabelsAPI, "class")
+
+
+def labels_lost(stage, paths: Sequence[str], name: str) -> List[str]:
+    """The paths of ``paths`` whose mask label is no longer exactly ``name`` on the stage."""
+    from pxr import UsdSemantics
+
+    lost = []
+    for path in paths:
+        prim = stage.GetPrimAtPath(path)
+        attr = UsdSemantics.LabelsAPI(prim, "class").GetLabelsAttr() if prim and prim.HasAPI(UsdSemantics.LabelsAPI, "class") else None
+        value = attr.Get() if attr else None
+        if value is None or list(value) != [name]:
+            lost.append(path)
+    return lost
+
+
+def out_of_sight(p: Sequence[float], sight: Sequence[Tuple[Sequence[float], float]]) -> bool:
+    """Whether point ``p`` is farther from every camera than it can see: ``sight`` is (camera position, its far plane plus
+    how far it may move). A parked object out of sight on the shelf is left drawn there: hiding it, and drawing it again
+    when it is unparked, is what lost its mask label (docs/adr/0038 "A, masks")."""
+    return all(math.dist(p, c) > reach for c, reach in sight)
+
+
+def project_centre(p: Sequence[float], pose: Sequence[float], spec: Mapping) -> Optional[Tuple[float, float]]:
+    """Pixel (u, v) of world point ``p`` in a camera at ``pose`` (x, y, z, qw, qx, qy, qz; a USD camera looking along its
+    -z, +y up) with ``spec``'s intrinsics, or None when it is behind the camera, outside its near and far planes or outside
+    the image."""
+    q = pose[3:7]
+    d = [p[k] - pose[k] for k in range(3)]
+    xc, yc, zc = kinematics.q_rotate(q_conj(q), d)
+    depth = -zc
+    if depth <= max(spec.get("near", 0.0), 1e-6) or depth > spec.get("far", float("inf")):
+        return None
+    u = spec["cx"] + spec["fx"] * xc / depth
+    v = spec["cy"] - spec["fy"] * yc / depth
+    if not (0.0 <= u < spec["width"] and 0.0 <= v < spec["height"]):
+        return None
+    return u, v
+
+
+def objects_in_view(poses: Mapping[int, Sequence[float]], cameras: Sequence[Tuple[Mapping, Sequence[float], object]],
+                    radii: Optional[Mapping[int, float]] = None) -> Dict[int, List[str]]:
+    """Each object whose centre a still camera sees (:func:`project_centre`) and nothing nearer hides: object id -> those
+    cameras' ids. ``poses`` are the objects on the table (not parked); ``cameras`` (spec, pose, depth) the room cameras, with
+    their last depth image in millimetres (:func:`depth_mm`) or None. Where the depth at the centre's pixel is nearer than
+    the object's near side (its centre less ``radii[id]``, metres, less 2 cm), something stands in front of it there."""
+    out: Dict[int, List[str]] = {}
+    for oid, pose in sorted(poses.items()):
+        seen = []
+        for spec, cam_pose, depth in cameras:
+            uv = project_centre(pose[:3], cam_pose, spec)
+            if uv is None:
+                continue
+            if depth is not None:
+                q = pose[:3]
+                d = [q[k] - cam_pose[k] for k in range(3)]
+                centre_mm = -kinematics.q_rotate(q_conj(cam_pose[3:7]), d)[2] * 1000.0
+                hit = int(depth[min(int(uv[1]), len(depth) - 1)][min(int(uv[0]), len(depth[0]) - 1)])
+                if 0 < hit < centre_mm - 1000.0 * (radii or {}).get(oid, 0.0) - 20.0:
+                    continue
+            seen.append(spec["id"])
+        if seen:
+            out[oid] = seen
+    return out
+
+
+class MaskCheck:
+    """The renderer's check that every drawn object carries its mask id (docs/adr/0038 "A, masks"): over ``frames`` recorded
+    frames after a take starts (or an object is unparked, resized or relabelled), the pixels of each object's stable id in
+    every camera that records masks, and the drawn pixels with none. :meth:`result` then names the objects a still camera
+    sees the centre of that no mask holds."""
+
+    def __init__(self, frames: int = 6):
+        self.frames = frames
+        self.left = self.skip = 0
+        self.why = ""
+        self.counts: Dict[int, int] = {}
+        self.unlabelled: Dict[str, int] = {}
+        self.depth: Dict[str, object] = {}
+        self.added = 0
+
+    @property
+    def active(self) -> bool:
+        return self.left > 0
+
+    def begin(self, why: str, skip: int = 0, fresh: bool = False) -> None:
+        """A new window, after ``skip`` recorded frames (the render lag: a frame shows the poses of ``lag`` frames before).
+        A window already running starts over and keeps its reason first (``take+unpark``), unless ``fresh``."""
+        if self.active and not fresh:
+            if why not in self.why.split("+"):
+                self.why = f"{self.why}+{why}"
+            skip = max(skip, self.skip)
+        else:
+            self.why = why
+        self.left, self.skip = self.frames, skip
+        self.counts, self.unlabelled, self.depth, self.added = {}, {}, {}, 0
+
+    def add(self, camera: str, stable, unlabelled: int, depth=None) -> None:
+        """One camera's frame: its stable mask, its unlabelled pixels (:func:`unlabelled_px`) and its depth in mm, if any."""
+        import numpy as np
+
+        if not self.active or self.skip > 0:
+            return
+        counts = np.bincount(np.asarray(stable).ravel())
+        for i in np.nonzero(counts[OBJECT_BASE:])[0] if len(counts) > OBJECT_BASE else ():
+            self.counts[int(i)] = self.counts.get(int(i), 0) + int(counts[OBJECT_BASE + i])
+        self.unlabelled[camera] = self.unlabelled.get(camera, 0) + int(unlabelled)
+        if depth is not None:
+            self.depth[camera] = depth
+        self.added += 1
+
+    def frame_done(self) -> bool:
+        """One recorded frame over; True when that was the window's last."""
+        if not self.active:
+            return False
+        if self.skip > 0:
+            self.skip -= 1
+            return False
+        self.left -= 1
+        return self.left == 0
+
+    def result(self, in_view: Mapping[int, Sequence[str]]) -> Tuple[List[int], Dict[str, int]]:
+        """(the objects in view with no pixel of their id in any mask, each camera's unlabelled pixels a frame)."""
+        frames = max(1, self.frames)
+        missing = sorted(oid for oid in in_view if self.counts.get(oid, 0) == 0)
+        return missing, {c: int(round(n / frames)) for c, n in self.unlabelled.items()}
 
 
 def apply_lut(rgb, lut):
@@ -1058,8 +1288,13 @@ def run(app, args, p, scene, cameras, fps, joints, motors, tap) -> int:
     for sid, path in world.surface_paths.items():
         if sid in MASK_IDS:
             label(stage.GetPrimAtPath(path), sid)
+    # Each object's shapes carry its label themselves, not its Xform (object_label_paths): after the textured boxes became
+    # meshes (metric_box, above), so the label is on the prim that draws.
+    object_labels: Dict[int, List[str]] = {}  # object id -> the prims that carry its mask label
     for o, path in zip(scene.objects, world.object_paths):
-        label(stage.GetPrimAtPath(path), f"object_{o.id}")
+        object_labels[o.id] = label_object(stage, path, f"object_{o.id}")
+    print(f"[render] mask labels: {sum(len(v) for v in object_labels.values())} shapes of {len(object_labels)} objects labelled "
+          f"themselves", flush=True)
     for qid, cls, _ in quads:
         label(quad_meshes[qid].GetPrim(), cls)
 
@@ -1148,9 +1383,11 @@ def run(app, args, p, scene, cameras, fps, joints, motors, tap) -> int:
 
     lag, agree, samples = args.lag, 1.0, []
     if args.lag < 0:
-        # On the table, in that camera's view, with the scene's objects hidden so none hides it.
-        objects_root = UsdGeom.Imageable(stage.GetPrimAtPath(f"{IsaacWorld.ROOT}/Objects"))
-        objects_root.MakeInvisible()
+        # On the table, in that camera's view, with the scene's objects moved a kilometre down so none hides it. Moved, not
+        # hidden: hiding them and drawing them again lost their mask labels (docs/adr/0038 "A, masks").
+        objects_away = UsdGeom.Xformable(stage.GetPrimAtPath(f"{IsaacWorld.ROOT}/Objects")).AddTranslateOp(
+            UsdGeom.XformOp.PrecisionDouble, "lagAway")
+        objects_away.Set(Gf.Vec3d(0.0, 0.0, -1000.0))
         history = []
         top = scene.table.top
         for k in range(90):
@@ -1175,7 +1412,7 @@ def run(app, args, p, scene, cameras, fps, joints, motors, tap) -> int:
                         best = (e, j)
             if best is not None and best[0] < 8:
                 samples.append(best[1])
-        objects_root.MakeVisible()
+        objects_away.Set(Gf.Vec3d(0.0, 0.0, 0.0))
         lag, agree = estimate_lag(samples)
         if lag is None:
             print("[render] warning: the render lag could not be measured (the cube was never seen); using 2", flush=True)
@@ -1190,9 +1427,11 @@ def run(app, args, p, scene, cameras, fps, joints, motors, tap) -> int:
     # frame, as Isaac rendered it (the robot is still at its rest pose, every joint 0), so a reader poses it at every
     # frame from the frame's state by forward kinematics (docs/adr/0032 amendment 3).
     camera_poses = []
+    sight = []  # (each camera's place in the room, how far it sees plus how far it may move): out_of_sight
     for (cam, _), c in zip(sensors, specs):
         cp, cq = (np.asarray(x.numpy() if hasattr(x, "numpy") else x, float).reshape(-1) for x in cam.get_world_poses())
         at = (tuple(float(v) for v in cp[:3]), tuple(float(v) for v in cq[:4]))
+        sight.append((at[0], c["far"] + (SIGHT_MOUNTED_M if c["mount"] else SIGHT_STILL_M)))
         if c["mount"]:
             local_p, local_q = relative_pose(kinematics.link_pose(joints, {}, c["mount"]), at)
             camera_poses.append((*local_p, *local_q))
@@ -1645,6 +1884,60 @@ def run(app, args, p, scene, cameras, fps, joints, motors, tap) -> int:
         gc.freeze()
         print(f"[render] Python heap frozen: {gc.get_freeze_count()} objects left out of later garbage collections", flush=True)
     last_pose: Dict[int, tuple] = {}  # object id -> the pose last set on its prim: an unchanged one is not set again
+    object_parked: Dict[int, bool] = {}  # object id -> whether the bridge says it is parked (on the shelf)
+
+    # --- the mask check (docs/adr/0038 "A, masks"): every drawn object carries its own mask id --------------------------
+    checks = MaskCheck(MASK_CHECK_FRAMES)
+    relabel_due: Dict[int, int] = {}  # object id -> the frame its label is set again, cleared until then
+    relabelled_in_take: set = set()  # objects relabelled since the take started: once each, then only reported
+    check_take = {"directory": None}
+    room_cameras = [i for i, c in enumerate(specs) if not c["mount"]]
+    masks_recorded = any("mask" in c["record"] for c in specs)
+    radii = {o.id: max(o.size) / 2 for o in scene.objects}  # at the file's size: a resized one is scaled (world_sizes)
+
+    def relabel(oid: int, why: str) -> None:
+        """Object ``oid``'s mask label cleared now and set again two frames later, so Isaac resolves it afresh."""
+        clear_labels(stage, object_labels[oid])
+        relabel_due[oid] = frames + 2
+        relabelled_in_take.add(oid)
+        print(f"[render] mask labels: object {oid} relabelled ({why})", flush=True)
+
+    def take_started(directory: str) -> None:
+        """A take's start: every object's labels as authored (put back where one was lost), then a check window."""
+        relabelled_in_take.clear()
+        lost = {o.id: labels_lost(stage, object_labels[o.id], f"object_{o.id}") for o in scene.objects}
+        for oid, paths in lost.items():
+            if paths:
+                print(f"[render] warning: mask labels: object {oid} lost its label on {', '.join(paths)} in the stage; set again",
+                      flush=True)
+                set_labels(stage, paths, [f"object_{oid}"])
+        checks.begin("take", fresh=True)
+
+    def mask_checked() -> None:
+        """A check window's end: the objects a still camera sees the centre of that no mask holds are reported (log and ML),
+        and relabelled once a take."""
+        placed = {oid: pose for oid, pose in last_pose.items() if object_parked.get(oid) is False}
+        scale = dict((oid, f) for oid, f in world_sizes["sizes"])
+        in_view = objects_in_view(placed, [(specs[i], camera_used[i], checks.depth.get(specs[i]["id"])) for i in room_cameras],
+                                  {oid: r * scale.get(oid, 1.0) for oid, r in radii.items()})
+        missing, unlabelled = checks.result(in_view)
+        retry = [oid for oid in missing if oid not in relabelled_in_take and oid not in relabel_due]
+        name = os.path.basename(str(check_take["directory"] or ""))
+        px = ", ".join(f"{c} {n}" for c, n in unlabelled.items())
+        if missing:
+            print(f"[render] warning: mask check ({checks.why}, {name}): objects {', '.join(map(str, missing))} in view of a room "
+                  f"camera but in no mask over {checks.frames} frames; "
+                  f"{'relabelled ' + ', '.join(map(str, retry)) if retry else 'still, after a relabel this take (or something hides it)'}; "
+                  f"unlabelled px a frame: {px}", flush=True)
+        else:
+            print(f"[render] mask check ({checks.why}, {name}): {len(placed)} objects on the table, {len(in_view)} in view, every one "
+                  f"in the masks; unlabelled px a frame: {px}", flush=True)
+        session_record("ML", time.monotonic_ns(), frames, checks.why, [[oid] for oid in sorted(in_view)], [[oid] for oid in missing],
+                       [[oid] for oid in retry], [[c, n] for c, n in unlabelled.items()])
+        for oid in retry:
+            relabel(oid, "in view, in no mask")
+        if retry:
+            checks.begin("recheck", skip=lag + 4, fresh=True)  # cleared, set again two frames on, then shown lag frames later
     print(f"[render] streaming at {fps} fps", flush=True)
     while not stop and (stop_at is None or time.perf_counter() < stop_at):
         t_frame = time.perf_counter()
@@ -1666,16 +1959,26 @@ def run(app, args, p, scene, cameras, fps, joints, motors, tap) -> int:
                     for o in w[5]:
                         if o.id in object_ops:
                             pose = tuple(o.pose)
-                            if last_pose.get(o.id) != pose:  # a parked or sleeping body sends the same pose 100 times a second
+                            moved = last_pose.get(o.id) != pose
+                            if moved:  # a parked or sleeping body sends the same pose 100 times a second
                                 t_op, q_op = object_ops[o.id]
                                 t_op.Set(Gf.Vec3d(*pose[:3]))
                                 q_op.Set(Gf.Quatd(*pose[3:]))
                                 last_pose[o.id] = pose
-                            # A parked object (docs/adr/0037 decision 3) is out of sight on the shelf already; hidden, too.
-                            shown = not (o.flags & wire.FLAG_PARKED)
-                            if object_shown[o.id][1] != shown:
-                                (object_shown[o.id][0].MakeVisible if shown else object_shown[o.id][0].MakeInvisible)()
-                                object_shown[o.id][1] = shown
+                            parked, was = bool(o.flags & wire.FLAG_PARKED), object_parked.get(o.id)
+                            if was and not parked:
+                                checks.begin("unpark", skip=lag + 1)  # on the table now: is it in the masks?
+                            if moved or was != parked:
+                                object_parked[o.id] = parked
+                                # A parked object (docs/adr/0037 decision 3) is out of sight on the shelf: left drawn there
+                                # when no camera can see that far (out_of_sight), hidden only when one might. Drawn again, an
+                                # object hidden is relabelled (docs/adr/0038 "A, masks").
+                                shown = not parked or out_of_sight(pose[:3], sight)
+                                if object_shown[o.id][1] != shown:
+                                    (object_shown[o.id][0].MakeVisible if shown else object_shown[o.id][0].MakeInvisible)()
+                                    object_shown[o.id][1] = shown
+                                    if shown:
+                                        relabel(o.id, "shown again")
                     if w[2] != world_snapshot["revision"] and w[3] == w[4] - 1:
                         world_snapshot.update(sensed=w[0], revision=w[2],
                                               objects=[[o.id, *[round(v, 6) for v in o.pose]] for o in w[5]])
@@ -1688,6 +1991,8 @@ def run(app, args, p, scene, cameras, fps, joints, motors, tap) -> int:
                         f = sizes.get(o.id)
                         if f is not None and abs(f - world.model.scales[index]) > 1e-6:
                             world.set_scale(index, f)
+                            if not object_parked.get(o.id, True):
+                                checks.begin("resize", skip=lag + 1)
                             # A box's texture coordinates are metres at its size: redone at the new one, so its texture keeps
                             # its real size. A cylinder's or sphere's projection is in metres already and follows its size.
                             if o.id in box_st:
@@ -1709,6 +2014,9 @@ def run(app, args, p, scene, cameras, fps, joints, motors, tap) -> int:
             cp, cq = compose(kinematics.link_pose(joints, posed_values, mount), local)
             cam.set_world_poses(positions=[list(cp)], orientations=[list(cq)])
         posed_values = state_values
+        for oid in [k for k, due in relabel_due.items() if due <= frames]:
+            set_labels(stage, object_labels[oid], [f"object_{oid}"])
+            del relabel_due[oid]
         ts, qs = rest_t.copy(), rest_q.copy()
         for i, j in enumerate(moving):
             t_i, q_i = kinematics.local_motion(j, tuple(rest_t[i]), tuple(rest_q[i]), state_values.get(j.name, 0.0))
@@ -1723,6 +2031,10 @@ def run(app, args, p, scene, cameras, fps, joints, motors, tap) -> int:
         loop.add("render", (t_rendered - t_posed) * 1e3)
         capture = stamps.shown(lag)
         recording = session is not None and session.active and frames % max(1, args.record_every) == 0 and capture != camwire.UNSET
+        if recording and session.directory != check_take["directory"]:
+            check_take["directory"] = session.directory
+            take_started(session.directory)
+        checking = recording and checks.active
         if recording:
             with record_lock:
                 if record_pending[0] >= 3:
@@ -1756,14 +2068,22 @@ def run(app, args, p, scene, cameras, fps, joints, motors, tap) -> int:
             if keep:
                 if "rgb" in c["record"]:
                     arrays[f"{c['id']}.rgb"] = ("rgb", rgb, c["recordQuality"])
+                depth_now = None
                 if "depth" in c["record"]:
                     dep, _ = read(sensor, "distance_to_image_plane")
                     if dep is not None:
-                        arrays[f"{c['id']}.depth"] = ("png", depth_mm(dep), 0)
+                        depth_now = depth_mm(dep)
+                        arrays[f"{c['id']}.depth"] = ("png", depth_now, 0)
                 if "mask" in c["record"]:
                     seg, info = read(sensor, "semantic_segmentation")
                     if seg is not None:
-                        arrays[f"{c['id']}.mask"] = ("png", stable_mask(seg, (info or {}).get("idToLabels") or {}, table), 0)
+                        id_to_labels = (info or {}).get("idToLabels") or {}
+                        stable = stable_mask(seg, id_to_labels, table)
+                        arrays[f"{c['id']}.mask"] = ("png", stable, 0)
+                        if checking:
+                            checks.add(c["id"], stable, unlabelled_px(seg, id_to_labels, table), None if c["mount"] else depth_now)
+        if checking and masks_recorded and checks.frame_done():
+            mask_checked()
         if recording and arrays:
             # The joint values the frame shows (the state posed lag frames ago): a session with no QS records (the JetRover's,
             # docs/adr/0034 J5) still knows what each frame shows.

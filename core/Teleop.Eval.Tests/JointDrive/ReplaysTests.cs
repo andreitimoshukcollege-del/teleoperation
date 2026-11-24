@@ -434,6 +434,30 @@ namespace Teleop.Eval.Tests.JointDrive
         }
 
         [Fact]
+        public void AnAddRobotHostRefused_LeavesAnotherObjectToAdd_ButAnAddMadeEndsTheGroupsAdds()
+        {
+            (WorldScene scene, ObjectShapes? shapes) = Mixed_.Value;
+            for (ulong layout = 1; layout <= 20; layout++)
+            {
+                SafetyObject[] objects = MixedTakeTests.MixedLayout(layout);
+                if (!MixedTakeTests.TryMixed(objects, 150 + layout, out DrivePlan? plan, out _)) continue;
+                ReplayAdd add = AddFor(plan!, ParkedOf(scene, layout));
+                ulong group = 1700 + layout;
+                int at = ReplayEdits.AddReplay(group);
+                ReplayEditDraw first = ReplayEdits.Draw(group, at, 0, plan!, objects, scene, new HashSet<byte>(), Profile, new HashSet<string>(), null, add);
+                if (first.Record.Edit != ReplayEdit.Add) continue;
+                string key = ReplayEdits.Key(first.Record);
+                ReplayEditDraw again = ReplayEdits.Draw(group, at, 1, plan!, objects, scene, new HashSet<byte>(), Profile, new HashSet<string>(), null, add, null, new HashSet<string> { key });
+                Assert.NotEqual(key, ReplayEdits.Key(again.Record)); // refused: never that one again, though another may be added
+                ReplayEditDraw after = ReplayEdits.Draw(group, 2, 0, plan!, objects, scene, new HashSet<byte>(), Profile, new HashSet<string> { key }, null, add);
+                Assert.NotEqual(ReplayEdit.Add, after.Record.Edit); // made: one add a group
+                return;
+            }
+
+            Assert.Fail("no layout gave an add");
+        }
+
+        [Fact]
         public void APathsProximity_MeasuresTheArmAsTheTwinsLinksAre()
         {
             DrivePlan plan = MixedTakeTests.AnyMixed(MixedTakeTests.MixedLayout(2), 7);

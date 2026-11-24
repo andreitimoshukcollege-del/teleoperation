@@ -965,10 +965,10 @@ namespace Teleop.Eval.JointDrive
 
                 ReplayEditDraw edit = default;
                 bool applied = false;
-                var tried = new HashSet<string>(used);
+                var tried = new HashSet<string>(); // what RobotHost refused (or the quiet start or end would meet) in this replay
                 for (int attempt = 0; attempt < 8 && !applied && !c.Stop.IsSet; attempt++)
                 {
-                    edit = ReplayEdits.Draw(c.Group, r, attempt, c.Plan, c.Objects, scene, c.Touched, c.Profile, tried, scaleOf, c.Add, near);
+                    edit = ReplayEdits.Draw(c.Group, r, attempt, c.Plan, c.Objects, scene, c.Touched, c.Profile, used, scaleOf, c.Add, near, tried);
                     if (edit.Pose.Id == 0)
                     {
                         Console.WriteLine($"[joint-drive] replay {r}: {edit.Note}");

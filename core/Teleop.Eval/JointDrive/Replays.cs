@@ -427,12 +427,12 @@ namespace Teleop.Eval.JointDrive
         /// <item>nothing farther from the path is edited: with nothing else left, no edit, and <see cref="ReplayEditDraw.Note"/> says why.</item>
         /// </list>
         /// The kinds come in an order drawn from the group, each replay starting one further on; within a kind, the objects nearest the path
-        /// first. Nothing that holds another object is edited, a raised one is only removed, and a moved or shifted one must keep the take's
+        /// first. <paramref name="refused"/>: edits RobotHost refused in this replay, not drawn again. Nothing that holds another object is edited, a raised one is only removed, and a moved or shifted one must keep the take's
         /// quiet start and end. Deterministic from the group, the replay and the try (a placement RobotHost refuses is drawn again).
         /// </summary>
         public static ReplayEditDraw Draw(ulong group, int replay, int attempt, DrivePlan plan, IReadOnlyList<SafetyObject> objects, WorldScene scene,
             ICollection<byte> touched, in RobotArmProfile profile, ICollection<string>? used = null, Func<byte, double>? scaleOf = null, ReplayAdd? add = null,
-            PathProximity? near = null)
+            PathProximity? near = null, ICollection<string>? refused = null)
         {
             var rng = new SeededRng(unchecked(group * 0x9E3779B97F4A7C15UL + 0x5EED));
             ReplayEdit[] order = { ReplayEdit.Remove, ReplayEdit.Shift, ReplayEdit.Move };
@@ -448,6 +448,8 @@ namespace Teleop.Eval.JointDrive
             near ??= new PathProximity(profile, model, add?.Track ?? ReplayAdd.Commanded(plan), objects, 2);
             bool added = false;
             foreach (string k in used) added |= k.StartsWith("add:", StringComparison.Ordinal);
+            // What RobotHost refused in this replay is not drawn again, but a refused add is not one the group made: another object may be added.
+            if (refused != null && refused.Count > 0) used = new HashSet<string>(used.Concat(refused));
             bool mayAdd = add != null && !added && replay <= 2, addTurn = mayAdd && (replay == AddReplay(group) || replay == 2);
             string? addNote = null;
             if (addTurn)

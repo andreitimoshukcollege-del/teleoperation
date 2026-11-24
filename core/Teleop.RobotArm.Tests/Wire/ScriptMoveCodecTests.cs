@@ -61,9 +61,29 @@ namespace Teleop.RobotArm.Tests.Wire
                 new[] { ScriptMoveKind.Free, ScriptMoveKind.Aim, ScriptMoveKind.Pass, ScriptMoveKind.Pause, ScriptMoveKind.Reverse }.Select(ScriptMoveCodec.Name));
         }
 
+        [Fact]
+        public void AnAccident_RoundTripsWithItsObject_AndSaysItsKind()
+        {
+            var kinds = new[] { ScriptMoveKind.Jerk, ScriptMoveKind.Overshoot, ScriptMoveKind.WrongWay, ScriptMoveKind.Slip, ScriptMoveKind.Rush };
+            Assert.Equal(new[] { "jerk", "overshoot", "wrong-way", "slip", "rush" }, kinds.Select(ScriptMoveCodec.Name));
+            Assert.Equal(new byte[] { 6, 7, 8, 9, 10 }, kinds.Select(k => (byte)k));
+            var buffer = new byte[ScriptMoveCodec.Size];
+            foreach (ScriptMoveKind k in kinds)
+            {
+                Assert.True(ScriptMoveCodec.IsAccident(k));
+                var m = new ScriptMove(4, 19, k, k == ScriptMoveKind.Rush ? (byte)33 : (byte)0, -8f, -11.5f, -0.25f, 0.375f, 0.5f, 0.875f);
+                Assert.True(ScriptMoveCodec.TryEncode(m, 9, 10, buffer, out _));
+                Assert.Equal((byte)k, buffer[2]);
+                Assert.True(ScriptMoveCodec.TryDecode(buffer, out ScriptMove back, out _, out _));
+                Assert.Equal(m, back);
+            }
+
+            foreach (ScriptMoveKind k in new[] { ScriptMoveKind.Free, ScriptMoveKind.Aim, ScriptMoveKind.Pass, ScriptMoveKind.Pause, ScriptMoveKind.Reverse }) Assert.False(ScriptMoveCodec.IsAccident(k));
+        }
+
         [Theory]
         [InlineData(2, 0)]    // no kind
-        [InlineData(2, 6)]    // a kind this build does not define
+        [InlineData(2, 11)]   // a kind this build does not define (6-10 are the accidents, docs/adr/0038 "M, motion")
         [InlineData(1, 2)]    // another version
         [InlineData(0, 0x8C)] // another message
         public void UnknownMoveBytes_AreRefused(int index, byte value)

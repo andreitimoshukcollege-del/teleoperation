@@ -30,19 +30,22 @@ namespace Teleop.Eval.JointDrive
     /// (a reverse that heads back against this move's first 70%: the next move begins before this one ends, so its last part already
     /// turns).</item>
     /// <item><c>part</c>: what part of the plan it is (<see cref="MovePart"/>), which the record does not say.</item>
+    /// <item><c>accident</c>: the kind of the accident that came in this move (its own row says the accident's span), else empty; <c>touch</c>:
+    /// the contacts by the model (the twin's links, each object's shape or box) that began while this was the move last begun (docs/adr/0038
+    /// "M, motion"). <c>next_kind</c> and the after-flags skip accidents' rows.</item>
     /// </list>
     /// </summary>
     internal static class MoveFeatures
     {
         public const string Header =
             "layout,seed,move,kind,object,offset_mm,gap_mm,contact,start_s,end_s,duration_s,path_m,chord_m,peak_speed,mean_speed,peak_accel,end_ratio,stop_s,peaks,low_mm," +
-            "roll_range_deg,pitch_range_deg,grip_range,next_kind,pause_after,reverse_after,pullback_after,part";
+            "roll_range_deg,pitch_range_deg,grip_range,next_kind,pause_after,reverse_after,pullback_after,part,accident,touch";
 
         /// <summary>The smoothing of the tool point, s (sigma of the Gaussian): workstream R's 25 ms.</summary>
         public const double SmoothSeconds = 0.025;
 
         /// <summary>One row a move of <paramref name="plan"/> (layout <paramref name="layout"/>, take seed <paramref name="seed"/>) to <paramref name="output"/>; how many.</summary>
-        public static int Write(TextWriter output, int layout, ulong seed, in RobotArmProfile profile, DrivePlan plan, float table)
+        public static int Write(TextWriter output, int layout, ulong seed, in RobotArmProfile profile, DrivePlan plan, float table, int[]? touches = null)
         {
             double tick = HandModel.TickSeconds, start = plan.ScriptStart, end = plan.TotalSeconds;
             int n = Math.Max(2, (int)Math.Floor((end - start) / tick + 1e-9) + 1);
@@ -137,9 +140,13 @@ namespace Teleop.Eval.JointDrive
 
                 string next = "none";
                 bool pullBack = false;
-                if (i + 1 < moves.Count)
+                int ni = i + 1;
+                while (ni < moves.Count && ScriptMoveCodec.IsAccident(moves[ni].Kind)) ni++; // an accident overlies a move: the next move is the next that is not one
+                string accident = "";
+                foreach (PlannedMove am in moves) if (am.Overlies == m.Index) accident = ScriptMoveCodec.Name(am.Kind);
+                if (ni < moves.Count)
                 {
-                    PlannedMove nm = moves[i + 1];
+                    PlannedMove nm = moves[ni];
                     next = ScriptMoveCodec.Name(nm.Kind);
                     if (nm.Kind == ScriptMoveKind.Reverse && Span(nm, start, end, tick, n, out int n0, out int n1, out _, out _))
                     {
@@ -156,7 +163,7 @@ namespace Teleop.Eval.JointDrive
                     F(b > a ? path / (b - a) : 0.0), F(top), F(peak > 0 ? tail / peak : double.NaN), F(stop), peaks.ToString(CultureInfo.InvariantCulture),
                     F((lowest - table) * 1000.0), F((roll1 - roll0) * 180.0 / Math.PI), F((pitch1 - pitch0) * 180.0 / Math.PI),
                     F(grip1 >= grip0 ? grip1 - grip0 : double.NaN), next, next == "pause" ? "1" : "0", next == "reverse" ? "1" : "0", pullBack ? "1" : "0",
-                    PartName(m.Part)));
+                    PartName(m.Part), accident, touches != null && i < touches.Length ? touches[i].ToString(CultureInfo.InvariantCulture) : ""));
                 rows++;
             }
 

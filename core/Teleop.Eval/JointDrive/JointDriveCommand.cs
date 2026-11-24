@@ -82,7 +82,8 @@ namespace Teleop.Eval.JointDrive
             "                   [--simulated-robot [--stall-seconds 1] [--stream-seconds 3]] [--scene <file> [--new-layout] [--touch-depth-mm 8] [--events 1-3]]\n" +
             "                   [--script mixed [--replays 0] [--max-joint-speed <rad/s>[,x4]] [--max-joint-accel <rad/s2>[,x4]] [--max-wrist-speed <m/s>]\n" +
             "                                   [--max-peak-speed <m/s>] [--no-caps] [--no-style | --style p,r,t,s] [--blind n,r,v,l[,q,h]] [--pause s,min,max] [--pullback s] [--pass-share s] [--object-share s]\n" +
-            "                                   [--approach short,turn] [--offset-mm -40,60] [--tool-bands lo,hi,share,...|none]]\n" +
+            "                                   [--approach short,turn] [--offset-mm -40,60] [--tool-bands lo,hi,share,...|none]\n" +
+            "                                   [--accidents 0.12[,0.25] | --no-accidents] [--accident-kinds jerk,overshoot,wrong-way,slip,rush[:weight]]]\n" +
             "                   [--dry-run --layouts 1-200 [--rows] [--features <csv>] [--chain] [--lag <s>]]";
 
         public static int Run(string[] args)
@@ -212,6 +213,27 @@ namespace Teleop.Eval.JointDrive
                         case "--max-wrist-speed": Caps().MaxWristSpeed = (float)Number(); break;
                         case "--max-peak-speed": Caps().MaxPeakSpeed = Number(); break;
                         case "--no-caps": mixedOptions.Caps = null; break;
+                        case "--no-accidents": mixedOptions.AccidentShare = mixedOptions.AccidentNearShare = 0; break;
+                        case "--accidents":
+                            // the share of parts that carry an accident, and the share of aims and passes on top (docs/adr/0038 "M, motion")
+                            double[] ac = Next().Split(',').Select(x => double.Parse(x, NumberStyles.Float, CultureInfo.InvariantCulture)).ToArray();
+                            if (ac.Length != 1 && ac.Length != 2) throw new ArgumentException("--accidents is a share of the parts, or that and the share of aims and passes on top, like 0.12,0.25");
+                            mixedOptions.AccidentShare = ac[0];
+                            if (ac.Length == 2) mixedOptions.AccidentNearShare = ac[1];
+                            break;
+                        case "--accident-kinds":
+                            // which accidents, each with a weight when given (jerk:2): the rest weigh 0
+                            var weights = new double[MixedOptions.AccidentKinds.Length];
+                            foreach (string item in Next().Split(','))
+                            {
+                                string[] kv = item.Split(':');
+                                int k = Array.FindIndex(MixedOptions.AccidentKinds, x => ScriptMoveCodec.Name(x) == kv[0]);
+                                if (k < 0 || kv.Length > 2) throw new ArgumentException($"--accident-kinds names jerk, overshoot, wrong-way, slip, rush (each with :weight if wanted), not '{item}'");
+                                weights[k] = kv.Length == 2 ? double.Parse(kv[1], NumberStyles.Float, CultureInfo.InvariantCulture) : 1.0;
+                            }
+
+                            mixedOptions.AccidentWeights = weights;
+                            break;
                         case "--offset-mm":
                             string[] mm = Next().Split(',');
                             if (mm.Length != 2) throw new ArgumentException("--offset-mm is two numbers, like -40,60");
@@ -391,8 +413,8 @@ namespace Teleop.Eval.JointDrive
             {
                 // docs/adr/0038 decision 1: the mixed take's moves, each sent to RobotHost (MV) as it begins.
                 Console.WriteLine(FormattableString.Invariant(
-                    $"[joint-drive] {plan.Moves.Count} moves ({plan.Moves.Count(m => m.Kind == ScriptMoveKind.Aim)} aims, {plan.Moves.Count(m => m.Kind == ScriptMoveKind.Pass)} passes); the take runs {plan.TotalSeconds - plan.ScriptStart:0.0} s from {plan.ScriptStart:0.0} s; {plan.PlanningReport}"));
-                foreach (PlannedMove m in plan.Moves.Where(x => x.ObjectId != 0)) Console.WriteLine("  " + m);
+                    $"[joint-drive] {plan.Moves.Count} moves ({plan.Moves.Count(m => m.Kind == ScriptMoveKind.Aim)} aims, {plan.Moves.Count(m => m.Kind == ScriptMoveKind.Pass)} passes, {plan.Moves.Count(m => ScriptMoveCodec.IsAccident(m.Kind))} accidents); the take runs {plan.TotalSeconds - plan.ScriptStart:0.0} s from {plan.ScriptStart:0.0} s; {plan.PlanningReport}"));
+                foreach (PlannedMove m in plan.Moves.Where(x => x.ObjectId != 0 || ScriptMoveCodec.IsAccident(x.Kind))) Console.WriteLine("  " + m);
             }
 
             if (plan.EventsDrawn > 0)

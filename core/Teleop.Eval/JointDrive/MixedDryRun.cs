@@ -72,7 +72,13 @@ namespace Teleop.Eval.JointDrive
             }
 
             int movingFrames = 0, allFrames = 0;
-            var kinds = new int[6];
+            var kinds = new int[16];
+            // docs/adr/0038 "M, motion" (accidents): each record's contacts by the model, whether it is an accident, and where the accidents came.
+            int records = 0, contactRecords = 0, accidentRecords = 0, accidentContactRecords = 0, accidentOnsets = 0, plannedAccidentContacts = 0;
+            int accidentsTouching = 0, accidentsNear = 0, accidentsFree = 0, accidentsQuietStart = 0, accidentsLate = 0, accidentTakes = 0;
+            var accidentKinds = new Dictionary<string, int>();
+            var accidentKindContacts = new Dictionary<string, int>();
+            var wild = new Wild();
             var failures = new List<string>();
             int planned = 0, contactTakes = 0;
             int pullBacks = 0, forcedPullBacks = 0, intoFixtures = 0; // docs/adr/0038 "M, motion": one pull-back law, and the fixtures' forced one
@@ -134,6 +140,14 @@ namespace Teleop.Eval.JointDrive
                 foreach (PlannedMove m in plan.Moves)
                 {
                     kinds[(int)m.Kind]++;
+                    if (ScriptMoveCodec.IsAccident(m.Kind))
+                    {
+                        // An accident's record: counted apart from the aims and passes it may overlie (it keeps their object and offset).
+                        Count(accidentKinds, ScriptMoveCodec.Name(m.Kind));
+                        if (m.ObjectId != 0 && !double.IsNaN(m.Contact)) plannedAccidentContacts++;
+                        continue;
+                    }
+
                     if (m.Part == MovePart.PullBack) pullBacks++;
                     if (m.Part == MovePart.ForcedPullBack) forcedPullBacks++;
                     if (m.ObjectId != 0 && m.OffsetMeters < 0.005f && objects.Exists(o => o.Id == m.ObjectId && !o.Movable)) intoFixtures++;
@@ -155,7 +169,7 @@ namespace Teleop.Eval.JointDrive
 
                 foreach (PlannedMove m in plan.Moves)
                 {
-                    if (m.ObjectId == 0) continue;
+                    if (m.ObjectId == 0 || ScriptMoveCodec.IsAccident(m.Kind)) continue;
                     int oi = objects.FindIndex(o => o.Id == m.ObjectId);
                     if (oi >= 0) Count(aimKinds, (m.Kind == ScriptMoveKind.Aim ? "aim " : "pass ") + KindOf(objects[oi], scene, table));
                 }
@@ -163,7 +177,7 @@ namespace Teleop.Eval.JointDrive
                 foreach (PlannedMove m in plan.Moves)
                 {
                     // Where each aim and each layout-blind move to a goal ends: the height parity docs/adr/0038 "M, motion" asks for.
-                    if (m.Part != MovePart.Approach && m.Part != MovePart.BlindTransport) continue;
+                    if ((m.Part != MovePart.Approach && m.Part != MovePart.BlindTransport) || ScriptMoveCodec.IsAccident(m.Kind)) continue;
                     double at = Math.Min(m.End, plan.TotalSeconds);
                     if (at < start) continue;
                     double z = arm.At(plan.Sample(at), plan.GripperAt(at)).Tool.Z;
@@ -172,9 +186,13 @@ namespace Teleop.Eval.JointDrive
                 }
 
                 List<TrackPoint> commanded = ReplayAdd.Commanded(plan);
-                int onsets = ModelContacts(arm, plan, commanded, objects, scene, table, modelTool, modelKinds, modelParts);
+                var byMove = new int[plan.Moves.Count];
+                int onsets = ModelContacts(arm, plan, commanded, objects, scene, table, modelTool, modelKinds, modelParts, byMove);
                 modelOnsets += onsets;
                 if (onsets > 0) modelTakes++;
+                if (script == DriveScript.Mixed)
+                    Accidents(profile, model, plan, objects, byMove, ref records, ref contactRecords, ref accidentRecords, ref accidentContactRecords, ref accidentOnsets,
+                        ref accidentsTouching, ref accidentsNear, ref accidentsFree, ref accidentsQuietStart, ref accidentsLate, ref accidentTakes, accidentKindContacts);
 
                 if (touched) contactTakes++;
                 if (script == DriveScript.Mixed)
@@ -210,9 +228,11 @@ namespace Teleop.Eval.JointDrive
                         addFirst.Add(met);
                     }
                 }
-                if (features != null) featureRows += MoveFeatures.Write(features, layout, takeSeed, profile, plan, table);
+                if (features != null) featureRows += MoveFeatures.Write(features, layout, takeSeed, profile, plan, table, byMove);
                 int before = frameJoint.Count;
-                Motion(profile, plan, frameJoint, frameWrist, tickJoint, jointSpeed, jointAccel, ref movingFrames);
+                wild.Spans.Clear();
+                foreach (PlannedMove m in plan.Moves) if (ScriptMoveCodec.IsAccident(m.Kind)) wild.Spans.Add((m.Start, m.End));
+                Motion(profile, plan, frameJoint, frameWrist, tickJoint, jointSpeed, jointAccel, ref movingFrames, wild);
                 allFrames += frameJoint.Count - before;
                 if (rows)
                 {
@@ -252,6 +272,15 @@ namespace Teleop.Eval.JointDrive
                 Console.WriteLine("  planned contacts' tool point, cm from the base frame (the table at " + (table * 100).ToString("0.0", CultureInfo.InvariantCulture) + "): " +
                     Spread(plannedTool) + "; by kind: " + Kinds(plannedKinds));
                 Console.WriteLine(FormattableString.Invariant($"  contacts by the model over every move (the twin's links, each object's shape or box): {modelOnsets} onsets in {modelTakes} of {planned} takes; by kind: {Kinds(modelKinds)}; by move: {Kinds(modelParts)}"));
+                Console.WriteLine(FormattableString.Invariant(
+                    $"  accidents: {accidentRecords} in {accidentTakes} of {planned} takes ({accidentRecords / (double)planned:0.00} a take); by kind: {Kinds(accidentKinds)}; with a contact by the model, by kind: {Kinds(accidentKindContacts)}"));
+                Console.WriteLine(FormattableString.Invariant(
+                    $"  accidents' contacts by the model: {accidentOnsets} of {modelOnsets} onsets ({100.0 * accidentOnsets / Math.Max(1, modelOnsets):0}%) made under an accident; planned (on an aim or a pass): {plannedAccidentContacts}"));
+                Console.WriteLine(FormattableString.Invariant(
+                    $"  where accidents came: touching an object by the model {accidentsTouching}, within 5 cm of one's box {accidentsNear}, farther (free space) {accidentsFree}; begun in the first 1.5 s {accidentsQuietStart}, in the last 2.5 s {accidentsLate}"));
+                double tpr = accidentContactRecords / (double)Math.Max(1, contactRecords), fpr = (accidentRecords - accidentContactRecords) / (double)Math.Max(1, records - contactRecords);
+                Console.WriteLine(FormattableString.Invariant(
+                    $"  'the move is an accident' for 'the move makes a contact' (by the model, each onset to the move last begun): AUC {0.5 * (1 + tpr - fpr):0.000} (of {records} records, {contactRecords} with a contact; accidents {accidentContactRecords} of them, and {accidentRecords - accidentContactRecords} of the {records - contactRecords} without)"));
                 Console.WriteLine("  their tool point, cm from the base frame: " + Spread(modelTool) + "; 5 cm bins from -20: " + Histogram(modelTool.Select(z => z * 100.0), -20, 5, 8));
                 Console.WriteLine("  tool point where moves end, cm from the base frame: aims " + Spread(aimTool) + "; layout-blind moves to a goal " + Spread(blindTool));
                 Console.WriteLine("  aims' ends, 5 cm bins from -20: " + Histogram(aimTool.Select(z => z * 100.0), -20, 5, 8) + "; blind goals': " + Histogram(blindTool.Select(z => z * 100.0), -20, 5, 8));
@@ -272,6 +301,21 @@ namespace Teleop.Eval.JointDrive
             for (int j = 0; j < 5; j++)
             {
                 Console.WriteLine($"  {names[j]}, smoothed 25 ms: speed rad/s {Percentiles(jointSpeed[j], "0.00")}; acceleration rad/s2 {Percentiles(jointAccel[j], "0.0")}");
+            }
+
+            if (wild.FrameJoint[1].Count > 0)
+            {
+                // docs/adr/0038 "M, motion": the same in accidents' spans (each from its onset to the hand's recovery), and every frame outside them.
+                int inFrames = wild.FrameJoint[1].Count, outFrames = wild.FrameJoint[0].Count;
+                Console.WriteLine(FormattableString.Invariant($"  in accidents' spans: {inFrames} of {inFrames + outFrames} frames ({100.0 * inFrames / Math.Max(1, inFrames + outFrames):0.0}%)"));
+                for (int w = 0; w < 2; w++)
+                {
+                    Console.WriteLine((w == 0 ? "  outside them" : "  in them") + ", per frame: largest arm-joint change rad " + Percentiles(wild.FrameJoint[w], "0.0000") + "; wrist travel mm " +
+                        Percentiles(wild.FrameWrist[w], "0.0") + "; fastest joint tick to tick rad/s " + Percentiles(wild.TickJoint[w], "0.00") +
+                        FormattableString.Invariant($"; the command moves in {100.0 * wild.Moving[w] / Math.Max(1, wild.FrameJoint[w].Count):0}% of frames"));
+                    for (int j = 0; j < 5; j++)
+                        Console.WriteLine($"    {names[j]}, smoothed 25 ms: speed rad/s {Percentiles(wild.Speed[w][j], "0.00")}; acceleration rad/s2 {Percentiles(wild.Accel[w][j], "0.0")}");
+                }
             }
             if (features != null) Console.WriteLine($"  features: {featureRows} moves of {planned} takes written to {featuresPath}");
             if (dry.Chain || dry.LagSeconds > 0) Console.WriteLine(FormattableString.Invariant($"  planned {(dry.Chain ? "each from where the last left the arm" : "from home")}; adds looked at the commanded way {dry.LagSeconds:0.00} s late"));
@@ -359,14 +403,82 @@ namespace Teleop.Eval.JointDrive
         }
 
         /// <summary>The plan's commanded motion from the take's start: per dataset frame (sample and hold of the 48 Hz commands), its largest arm-joint change and the wrist's travel; per tick, its fastest joint.</summary>
+        /// <summary>The motion figures split by whether they fall in an accident's span (docs/adr/0038 "M, motion"): index 0 outside every span, 1 in one.</summary>
+        internal sealed class Wild
+        {
+            public readonly List<(double From, double To)> Spans = new List<(double, double)>();
+            public readonly List<double>[] FrameJoint = { new List<double>(), new List<double>() }, FrameWrist = { new List<double>(), new List<double>() };
+            public readonly List<double>[] TickJoint = { new List<double>(), new List<double>() };
+            public readonly List<double>[][] Speed = { Five(), Five() }, Accel = { Five(), Five() };
+            public readonly int[] Moving = new int[2];
+
+            private static List<double>[] Five() => new[] { new List<double>(), new List<double>(), new List<double>(), new List<double>(), new List<double>() };
+
+            /// <summary>1 when plan time <paramref name="t"/> is in a span, else 0.</summary>
+            public int At(double t)
+            {
+                foreach ((double from, double to) in Spans) if (t >= from && t <= to) return 1;
+                return 0;
+            }
+        }
+
+        /// <summary>
+        /// docs/adr/0038 "M, motion": the plan's records, each with its contacts by the model (<paramref name="byMove"/>, each onset given to the move
+        /// last begun), tallied by whether it is an accident; and each accident by where it came: touching an object by the model, within 5 cm of
+        /// one's box, or farther (free space); begun in the take's first 1.5 s or its last 2.5 s.
+        /// </summary>
+        internal static void Accidents(in RobotArmProfile profile, ArmCollisionModel model, DrivePlan plan, List<SafetyObject> objects, int[] byMove,
+            ref int records, ref int contactRecords, ref int accidentRecords, ref int accidentContactRecords, ref int accidentOnsets, ref int touching, ref int near,
+            ref int free, ref int quietStart, ref int late, ref int takes, Dictionary<string, int> kindContacts)
+        {
+            SafetyObject[] inReach = objects.Where(o => !o.Scenery).ToArray();
+            ArmCollisionModel within5 = SafetyScript.WithObjects(model, inReach, 0.05f);
+            bool any = false;
+            for (int k = 0; k < plan.Moves.Count; k++)
+            {
+                PlannedMove m = plan.Moves[k];
+                bool accident = ScriptMoveCodec.IsAccident(m.Kind), contact = byMove[k] > 0;
+                records++;
+                if (contact) contactRecords++;
+                if (!accident) continue;
+                any = true;
+                accidentRecords++;
+                accidentOnsets += byMove[k];
+                if (contact)
+                {
+                    accidentContactRecords++;
+                    touching++;
+                    Count(kindContacts, ScriptMoveCodec.Name(m.Kind));
+                }
+                else
+                {
+                    bool close = false;
+                    for (double t = Math.Max(m.Start, plan.ScriptStart); t <= Math.Min(m.End, plan.TotalSeconds) && !close; t += HandModel.TickSeconds)
+                        close = !ArmCollision.IsValid(profile, within5, plan.Sample(t));
+                    if (close) near++;
+                    else free++;
+                }
+
+                if (m.Start - plan.ScriptStart < 1.5) quietStart++;
+                if (plan.TotalSeconds - m.Start < 2.5) late++;
+            }
+
+            if (any) takes++;
+        }
+
         internal static void Motion(in RobotArmProfile profile, DrivePlan plan, List<double> frameJoint, List<double> frameWrist, List<double> tickJoint,
-            List<double>[] jointSpeed, List<double>[] jointAccel, ref int movingFrames)
+            List<double>[] jointSpeed, List<double>[] jointAccel, ref int movingFrames, Wild? wild = null)
         {
             double tick = HandModel.TickSeconds, frame = 1.0 / FramesPerSecond;
             double start = plan.ScriptStart;
             var commands = new List<ArmPose>();
             for (double t = start; t <= plan.TotalSeconds + 1e-9; t += tick) commands.Add(plan.Sample(t));
-            for (int k = 1; k < commands.Count; k++) tickJoint.Add(commands[k].MaxJointDelta(commands[k - 1]) / tick);
+            for (int k = 1; k < commands.Count; k++)
+            {
+                tickJoint.Add(commands[k].MaxJointDelta(commands[k - 1]) / tick);
+                wild?.TickJoint[wild.At(start + k * tick)].Add(tickJoint[tickJoint.Count - 1]);
+            }
+
             // Each joint at the command rate, smoothed with a 25 ms Gaussian, as workstream R measured people (metrics.py): speed and
             // acceleration by central differences.
             const double sigma = 0.025;
@@ -394,6 +506,10 @@ namespace Teleop.Eval.JointDrive
                 {
                     jointSpeed[j].Add(Math.Abs(q[k + 1] - q[k - 1]) / (2 * tick));
                     jointAccel[j].Add(Math.Abs(q[k + 1] - 2 * q[k] + q[k - 1]) / (tick * tick));
+                    if (wild == null) continue;
+                    int w = wild.At(start + k * tick);
+                    wild.Speed[w][j].Add(jointSpeed[j][jointSpeed[j].Count - 1]);
+                    wild.Accel[w][j].Add(jointAccel[j][jointAccel[j].Count - 1]);
                 }
             }
 
@@ -411,6 +527,13 @@ namespace Teleop.Eval.JointDrive
                     any = Math.Max(any, Math.Abs(DrivePlan.Joint(p, 4) - DrivePlan.Joint(q, 4)));
                     if (any >= 2 * 0.24 * Math.PI / 180) movingFrames++;
                     frameWrist.Add(Vector3.Distance(HandModel.Wrist(profile, p), HandModel.Wrist(profile, q)) * 1000.0);
+                    if (wild != null)
+                    {
+                        int w = wild.At(start + f);
+                        wild.FrameJoint[w].Add(d);
+                        wild.FrameWrist[w].Add(frameWrist[frameWrist.Count - 1]);
+                        if (any >= 2 * 0.24 * Math.PI / 180) wild.Moving[w]++;
+                    }
                 }
 
                 previous = p;
@@ -439,7 +562,7 @@ namespace Teleop.Eval.JointDrive
         /// part of the plan that made it. How many onsets.
         /// </summary>
         internal static int ModelContacts(ArmTouch arm, DrivePlan plan, List<TrackPoint> track, List<SafetyObject> objects, WorldScene scene, float table,
-            List<double> tool, Dictionary<string, int> kinds, Dictionary<string, int> parts)
+            List<double> tool, Dictionary<string, int> kinds, Dictionary<string, int> parts, int[]? byMove = null)
         {
             var reach = new List<int>();
             for (int i = 0; i < objects.Count; i++)
@@ -465,8 +588,17 @@ namespace Teleop.Eval.JointDrive
                         // The move under way: the last to begin by then (they overlap as a hand's do), and whether it was aimed at this object.
                         double t = plan.ScriptStart + p.At;
                         PlannedMove? under = null;
-                        foreach (PlannedMove m in moves) if (m.Start <= t) under = m;
+                        int underIndex = -1;
+                        for (int k = 0; k < moves.Count; k++)
+                        {
+                            if (moves[k].Start > t) continue;
+                            under = moves[k];
+                            underIndex = k;
+                        }
+
+                        if (byMove != null && underIndex >= 0) byMove[underIndex]++;
                         string part = under == null ? "none"
+                            : ScriptMoveCodec.IsAccident(under.Value.Kind) ? "accident"
                             : under.Value.ObjectId == objects[i].Id ? "aimed" : under.Value.ObjectId != 0 ? "aimed elsewhere"
                             : under.Value.Part == MovePart.BlindTransport || under.Value.Part == MovePart.BlindStrokes || under.Value.Part == MovePart.BlindAdjust ? "blind"
                             : under.Value.Part == MovePart.Staging ? "staging" : under.Value.Part == MovePart.PullBack || under.Value.Part == MovePart.ForcedPullBack ? "pull-back" : "other";

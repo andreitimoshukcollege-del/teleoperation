@@ -135,6 +135,80 @@ namespace Teleop.Eval.JointDrive
         public static double MinimumJerkRate(double u) => u <= 0 || u >= 1 ? 0 : 30 * u * u * (1 - u) * (1 - u);
     }
 
+    /// <summary>
+    /// The mixed script's accidents (docs/adr/0038 "M, motion", world-models' request 3): moves the planner would not make, for a
+    /// robot-side safety check that must catch them. Each is a fast submovement laid into a move as the hand model makes it, then the
+    /// hand's recovery at its usual pace: a <b>jerk</b> (5-15 cm in a random direction, during whatever the hand was doing, a startled
+    /// moment, then back toward where it was going), an <b>overshoot</b> (3-10 cm past the target, then back), a <b>wrong way</b>
+    /// start (3-8 cm off at 90-180 degrees to the way, then turned to the target), a <b>slip</b> mid-reach (2-6 cm, mostly down,
+    /// then corrected) and a <b>rush</b> (the last 10 cm at full speed). Their ticks keep to the arm's own limits instead of
+    /// people's caps (<see cref="ServoTopSpeed"/>, <see cref="Acceleration"/>, the joint limits by the envelope), and everything else
+    /// every tick keeps (the IK, the robot's own model, the quiet start and end).
+    /// </summary>
+    public static class AccidentModel
+    {
+        public const double JerkMin = 0.05, JerkMax = 0.15;
+        public const double OvershootMin = 0.03, OvershootMax = 0.10;
+        public const double WrongWayMin = 0.03, WrongWayMax = 0.08, WrongWayAngleMinDegrees = 90, WrongWayAngleMaxDegrees = 180;
+        public const double SlipMin = 0.02, SlipMax = 0.06, SlipDownShare = 0.6;
+
+        /// <summary>A rush's fast stretch: the last this many metres of the move.</summary>
+        public const double RushMeters = 0.10;
+
+        /// <summary>The planned peak speed of an accident's fast submovement, m/s (people's fastest are about 1 m/s at the wrist; the hand model keeps to 0.9).</summary>
+        public const double PeakLow = 0.9, PeakHigh = 1.4;
+
+        /// <summary>The wrong way's and the slip's peak (a jolt, not a throw), m/s.</summary>
+        public const double JoltLow = 0.5, JoltHigh = 1.0;
+
+        /// <summary>The shortest an accident's fast submovement lasts, s (the hand model's own moves: <see cref="HandModel.MinDuration"/>).</summary>
+        public const double MinDuration = 0.08;
+
+        /// <summary>After a jerk or a slip, the hand is still a moment before it recovers, s.</summary>
+        public const double StartleLow = 0.08, StartleHigh = 0.35;
+
+        /// <summary>An accident's span of the arm's own limits goes on this long after its fast submovement ends, s: the slowing after it (the acceleration is measured over six ticks).</summary>
+        public const double CapsTail = 0.15;
+
+        /// <summary>
+        /// The JetRover's servos' top speed, rad/s: 917 units/s measured on the real arm (docs/adr/0038 "R, arm response": asked 1432; the
+        /// twin 959), at 238.73 units a radian. The twin's servo ramps at the command's own speed (the slider's, times its fitted 0.97,
+        /// robot/isaac/teleop_isaac/servo.py), capped at RobotHost's 2200 units/s.
+        /// </summary>
+        public const float ServoTopSpeed = 3.84f;
+
+        /// <summary>
+        /// The acceleration an accident's joints may command, rad/s², over three ticks as the caps measure it: 2.4-3.8 times people's p99
+        /// (32-51). Not measured on the arm: the servo's ramp starts at its full speed (the setpoint has no acceleration limit), so the drive's
+        /// torque is the limit.
+        /// </summary>
+        public const float Acceleration = 120f;
+
+        /// <summary>The planned peak of an accident's fast submovement at the wrist, m/s (the jump check stays <see cref="HandModel.MaxWristSpeed"/> a tick).</summary>
+        public const double MaxPeakSpeed = 1.4;
+
+        /// <summary>
+        /// The caps an accident's ticks keep to: each joint at the commanded <paramref name="speed"/> (what the servo is asked to ramp at) or its
+        /// cap for people when that is higher, never above <see cref="ServoTopSpeed"/>; <see cref="Acceleration"/> (or people's cap when higher).
+        /// </summary>
+        public static MotionCaps CapsFor(MotionCaps? people, float speed)
+        {
+            var caps = new MotionCaps { MaxPeakSpeed = MaxPeakSpeed };
+            for (int j = 0; j < caps.JointSpeed.Length; j++)
+            {
+                float p = people == null || float.IsPositiveInfinity(people.JointSpeed[j]) ? 0f : people.JointSpeed[j];
+                caps.JointSpeed[j] = MathF.Min(ServoTopSpeed, MathF.Max(p, speed));
+                float pa = people == null || float.IsPositiveInfinity(people.JointAcceleration[j]) ? 0f : people.JointAcceleration[j];
+                caps.JointAcceleration[j] = MathF.Max(Acceleration, pa);
+            }
+
+            return caps;
+        }
+
+        /// <summary>Whether an accident of <paramref name="kind"/> needs a move to a goal (all but a jerk, which comes during anything).</summary>
+        public static bool NeedsGoal(Teleop.RobotArm.Wire.ScriptMoveKind kind) => kind != Teleop.RobotArm.Wire.ScriptMoveKind.Jerk;
+    }
+
     /// <summary>The random draws the hand model needs, all from the plan's seeded generator.</summary>
     internal static class Draw
     {
@@ -482,12 +556,26 @@ namespace Teleop.Eval.JointDrive
         /// <summary>The share of each submovement over which the pitch and roll follow (<see cref="HandModel.PitchTime"/> unless a <see cref="HandStyle"/> says otherwise).</summary>
         public double PitchTime { get; set; } = HandModel.PitchTime;
 
+        /// <summary>
+        /// The spans of the mixed script's accidents (docs/adr/0038 "M, motion"), seconds: their ticks keep to the arm's own limits
+        /// (<see cref="HumanOperator.AccidentCaps"/>) instead of people's caps, and pass through the walls. Empty for every other plan.
+        /// </summary>
+        public List<(double From, double To)> Accidents { get; } = new List<(double, double)>();
+
+        /// <summary>Whether <paramref name="t"/> (seconds) is in one of <see cref="Accidents"/>.</summary>
+        public bool InAccident(double t)
+        {
+            foreach ((double from, double to) in Accidents) if (t >= from && t <= to) return true;
+            return false;
+        }
+
         public HandTimeline Copy()
         {
             var c = new HandTimeline(Start, StartPitch, StartRoll, StartGripper) { PitchTime = PitchTime };
             c.Moves.AddRange(Moves);
             c.Releases.AddRange(Releases);
             c.Grips.AddRange(Grips);
+            c.Accidents.AddRange(Accidents);
             return c;
         }
 
@@ -793,6 +881,18 @@ namespace Teleop.Eval.JointDrive
         /// </summary>
         public MotionCaps? Caps { get; set; }
 
+        /// <summary>
+        /// What an accident's ticks may do instead of <see cref="Caps"/> (docs/adr/0038 "M, motion": the arm's own limits,
+        /// <see cref="AccidentModel.CapsFor"/>), in the timeline's <see cref="HandTimeline.Accidents"/>. Null: those ticks keep to <see cref="Caps"/>.
+        /// </summary>
+        public MotionCaps? AccidentCaps { get; set; }
+
+        /// <summary>The last <see cref="MixedFree"/>'s or <see cref="MixedTo"/>'s accident, when it made one: its onset and when the hand had recovered (its motion's end), seconds on the hand's timeline; NaN when it made none.</summary>
+        public double AccidentOnset { get; private set; } = double.NaN;
+
+        /// <summary>See <see cref="AccidentOnset"/>.</summary>
+        public double AccidentEnd { get; private set; } = double.NaN;
+
         /// <summary>How the hand moves when the mixed script asks for people's own pace (<see cref="HandStyle"/>); null: the hand model's (every draw as before).</summary>
         public HandStyle? Style
         {
@@ -1016,12 +1116,14 @@ namespace Teleop.Eval.JointDrive
         /// or <see cref="Teleop.RobotArm.Wire.ScriptMoveKind.Reverse"/>.
         /// </summary>
         public bool MixedFree(ArmCollisionModel check, BlindReach reach, double slow, double transportShare, double reverseShare,
-            out Teleop.RobotArm.Wire.ScriptMoveKind kind, out double start, out double end, ArmCollisionModel? walls = null)
+            out Teleop.RobotArm.Wire.ScriptMoveKind kind, out double start, out double end, ArmCollisionModel? walls = null,
+            Teleop.RobotArm.Wire.ScriptMoveKind? accident = null)
         {
             Walls = walls;
+            AccidentOnset = AccidentEnd = double.NaN;
             try
             {
-                return MixedFreeParts(check, reach, slow, transportShare, reverseShare, out kind, out start, out end);
+                return MixedFreeParts(check, reach, slow, transportShare, reverseShare, out kind, out start, out end, accident);
             }
             finally
             {
@@ -1031,8 +1133,10 @@ namespace Teleop.Eval.JointDrive
         }
 
         private bool MixedFreeParts(ArmCollisionModel check, BlindReach reach, double slow, double transportShare, double reverseShare,
-            out Teleop.RobotArm.Wire.ScriptMoveKind kind, out double start, out double end)
+            out Teleop.RobotArm.Wire.ScriptMoveKind kind, out double start, out double end, Teleop.RobotArm.Wire.ScriptMoveKind? accident)
         {
+            // An accident that needs a goal (all but a jerk) makes the part a move to one (docs/adr/0038 "M, motion").
+            bool toGoal = accident.HasValue && AccidentModel.NeedsGoal(accident.Value);
             kind = Teleop.RobotArm.Wire.ScriptMoveKind.Free;
             start = end = _free;
             double stretch = 1.0, u = _rng.NextDouble();
@@ -1042,6 +1146,7 @@ namespace Teleop.Eval.JointDrive
                 // shares asked for (docs/adr/0038 "M, motion": when a failed goal drew the kind again, small adjustments, which seldom
                 // fail, were 46% of the parts that are not strokes, not 27%); a cornered hand then tries any kind.
                 if (attempt >= KeepPartTries && stretch == 1.0) u = _rng.NextDouble();
+                if (toGoal) u = 0.0;
                 SeededRng drawn = _rng;
                 int capped = Refusals[4];
                 HandTimeline tl = _timeline.Copy();
@@ -1049,10 +1154,12 @@ namespace Teleop.Eval.JointDrive
                 WallsFrom = t0 + 0.3; // where the last move left the hand, against a wall, it has a moment to leave
                 slow *= stretch;
                 Teleop.RobotArm.Wire.ScriptMoveKind k = Teleop.RobotArm.Wire.ScriptMoveKind.Free;
+                double onset = double.NaN;
                 if (u < transportShare)
                 {
                     if (!BlindGoal(tl, reach, out Vector3 goal, out float? pitch)) continue;
-                    next = Transport(tl, goal, t0, slow: slow, pitchGoal: pitch);
+                    next = toGoal ? AccidentTo(tl, accident!.Value, goal, pitch, null, t0, slow, HandModel.Tolerance, stretch, out onset)
+                        : Transport(tl, goal, t0, slow: slow, pitchGoal: pitch);
                 }
                 else if (u < transportShare + reverseShare)
                 {
@@ -1064,6 +1171,7 @@ namespace Teleop.Eval.JointDrive
                     next = Adjust(tl, t0, slow);
                 }
 
+                if (accident == Teleop.RobotArm.Wire.ScriptMoveKind.Jerk) next = Math.Max(next, Jerk(tl, t0, stretch, out onset));
                 double moving = tl.MotionEnd;
                 if (Grips) MaybeGrip(tl, t0, Math.Max(t0 + 0.3, moving));
                 slow /= stretch;
@@ -1074,6 +1182,7 @@ namespace Teleop.Eval.JointDrive
                 }
 
                 _free = next;
+                if (accident.HasValue) (AccidentOnset, AccidentEnd) = (onset, moving);
                 kind = k;
                 LastFreePart = k == Teleop.RobotArm.Wire.ScriptMoveKind.Reverse ? MovePart.BlindStrokes : u < transportShare ? MovePart.BlindTransport : MovePart.BlindAdjust;
                 start = t0;
@@ -1112,13 +1221,14 @@ namespace Teleop.Eval.JointDrive
         /// against <paramref name="check"/> (and the guard), redrawn on failure. The gripper is used on the way as in free movement.
         /// </summary>
         public bool MixedTo(Vector3 goal, float? pitch, float? roll, double slow, double tolerance, ArmCollisionModel check, out double start, out double end,
-            int attempts = 12, bool overTheTop = false, ArmCollisionModel? walls = null)
+            int attempts = 12, bool overTheTop = false, ArmCollisionModel? walls = null, Teleop.RobotArm.Wire.ScriptMoveKind? accident = null)
         {
             Walls = walls;
             WallsFrom = _free + 0.3;
+            AccidentOnset = AccidentEnd = double.NaN;
             try
             {
-                return MixedToParts(goal, pitch, roll, slow, tolerance, check, out start, out end, attempts, overTheTop);
+                return MixedToParts(goal, pitch, roll, slow, tolerance, check, out start, out end, attempts, overTheTop, accident);
             }
             finally
             {
@@ -1128,7 +1238,7 @@ namespace Teleop.Eval.JointDrive
         }
 
         private bool MixedToParts(Vector3 goal, float? pitch, float? roll, double slow, double tolerance, ArmCollisionModel check, out double start, out double end,
-            int attempts, bool overTheTop)
+            int attempts, bool overTheTop, Teleop.RobotArm.Wire.ScriptMoveKind? accident)
         {
             start = end = _free;
             double stretch = 1.0;
@@ -1137,7 +1247,7 @@ namespace Teleop.Eval.JointDrive
                 SeededRng drawn = _rng;
                 int capped = Refusals[4];
                 HandTimeline tl = _timeline.Copy();
-                double t0 = _free, next;
+                double t0 = _free, next, onset = double.NaN;
                 slow *= stretch;
                 if (overTheTop && attempt % 2 == 1)
                 {
@@ -1147,11 +1257,16 @@ namespace Teleop.Eval.JointDrive
                     double mid = Transport(tl, above, t0, slow: slow, tolerance: 0.012, pitchGoal: pitch, rollGoal: roll, maxCorrections: 1);
                     next = Transport(tl, goal, mid, slow: slow, tolerance: tolerance, pitchGoal: pitch, rollGoal: roll);
                 }
+                else if (accident.HasValue && AccidentModel.NeedsGoal(accident.Value))
+                {
+                    next = AccidentTo(tl, accident.Value, goal, pitch, roll, t0, slow, tolerance, stretch, out onset);
+                }
                 else
                 {
                     next = Transport(tl, goal, t0, slow: slow, tolerance: tolerance, pitchGoal: pitch, rollGoal: roll);
                 }
 
+                if (accident == Teleop.RobotArm.Wire.ScriptMoveKind.Jerk) next = Math.Max(next, Jerk(tl, t0, stretch, out onset));
                 double moving = tl.MotionEnd;
                 if (Grips) MaybeGrip(tl, t0, Math.Max(t0 + 0.3, moving));
                 slow /= stretch;
@@ -1162,6 +1277,7 @@ namespace Teleop.Eval.JointDrive
                 }
 
                 _free = next;
+                if (accident.HasValue) (AccidentOnset, AccidentEnd) = (onset, moving);
                 start = t0;
                 end = moving;
                 return true;
@@ -1177,6 +1293,124 @@ namespace Teleop.Eval.JointDrive
             end = start + Math.Max(0.0, seconds);
             _free = end;
         }
+
+        // ---------------------------------------------------------------------------------------------------------------
+        // The mixed script's accidents (docs/adr/0038 "M, motion", AccidentModel): a fast submovement laid into the move as the hand
+        // model makes it, and the hand's recovery at its own pace. Each adds its fast span to the timeline's Accidents (the arm's own
+        // limits there) and says when it began; a slower try (the caps' stretch) slows its fast submovement too.
+
+        /// <summary>
+        /// A move to <paramref name="goal"/> with an accident of <paramref name="kind"/> (an overshoot, a wrong way start, a slip or a rush) in
+        /// it, from <paramref name="start"/>; <paramref name="onset"/> is when the accident begins. Returns when the next part may start.
+        /// </summary>
+        private double AccidentTo(HandTimeline tl, Teleop.RobotArm.Wire.ScriptMoveKind kind, Vector3 goal, float? pitch, float? roll, double start, double slow,
+            double tolerance, double stretch, out double onset)
+        {
+            const double deg = Math.PI / 180.0;
+            Vector3 from = TargetEndpoint(tl);
+            Vector3 way = goal - from;
+            float a = way.Length();
+            Vector3 u = a > 0.02f ? way / a : Draw.Direction(ref _rng, 0.3f);
+            onset = start;
+            switch (kind)
+            {
+                case Teleop.RobotArm.Wire.ScriptMoveKind.Overshoot:
+                {
+                    // Fast to a point past the target, then back to it as a correction is made (a moment's reaction first).
+                    Vector3 past = goal + u * (float)Draw.Uniform(ref _rng, AccidentModel.OvershootMin, AccidentModel.OvershootMax);
+                    TargetAngles(tl, out float tp, out float tr);
+                    (double s0, double d0) = Push(tl, start, past - from, PitchStep(tp, pitch), RollStep(tr, roll), Peak(stretch));
+                    tl.Accidents.Add((s0, s0 + d0 + AccidentModel.CapsTail));
+                    return Transport(tl, goal, s0 + Draw.Uniform(ref _rng, 0.9, 1.15) * d0, slow: slow * HandModel.CorrectionSlow, tolerance: tolerance, pitchGoal: pitch,
+                        rollGoal: roll, via: false);
+                }
+                case Teleop.RobotArm.Wire.ScriptMoveKind.WrongWay:
+                {
+                    // Off the wrong way (turned 90-180 degrees from the way, to either side, a little up or down), then turned to the target.
+                    double turn = Draw.Uniform(ref _rng, AccidentModel.WrongWayAngleMinDegrees, AccidentModel.WrongWayAngleMaxDegrees) * deg * (Draw.Chance(ref _rng, 0.5) ? 1 : -1);
+                    var flat = new Vector2(u.X, u.Y);
+                    flat = flat.Length() > 1e-3f ? Vector2.Normalize(flat) : new Vector2(1f, 0f);
+                    var wrong = new Vector3((float)(flat.X * Math.Cos(turn) - flat.Y * Math.Sin(turn)), (float)(flat.X * Math.Sin(turn) + flat.Y * Math.Cos(turn)),
+                        (float)Draw.Uniform(ref _rng, -0.35, 0.35));
+                    wrong = Vector3.Normalize(wrong) * (float)Draw.Uniform(ref _rng, AccidentModel.WrongWayMin, AccidentModel.WrongWayMax);
+                    (double s0, double d0) = Push(tl, start, wrong, 0f, 0f, Jolt(stretch));
+                    tl.Accidents.Add((s0, s0 + d0 + AccidentModel.CapsTail));
+                    return Transport(tl, goal, s0 + Draw.Uniform(ref _rng, 0.5, 0.9) * d0, slow: slow, tolerance: tolerance, pitchGoal: pitch, rollGoal: roll);
+                }
+                case Teleop.RobotArm.Wire.ScriptMoveKind.Slip:
+                {
+                    // The move as made, without its corrections; partway through its primary the hand slips (mostly down, else across the
+                    // way), is still a moment, then corrects to the target.
+                    Transport(tl, goal, start, slow: slow, tolerance: tolerance, pitchGoal: pitch, rollGoal: roll, maxCorrections: 0);
+                    double primaryEnd = tl.MotionEnd;
+                    double at = start + Draw.Uniform(ref _rng, 0.3, 0.7) * Math.Max(0.1, primaryEnd - start);
+                    Vector3 dir = Draw.Chance(ref _rng, AccidentModel.SlipDownShare)
+                        ? Vector3.Normalize(new Vector3(0f, 0f, -1f) + Draw.Across(ref _rng, Vector3.UnitZ, 0.35))
+                        : Vector3.Normalize(Draw.Across(ref _rng, u, 1.0) * new Vector3(1f, 1f, 0.3f) + 1e-4f * Vector3.UnitX);
+                    (double s0, double d0) = Push(tl, at, dir * (float)Draw.Uniform(ref _rng, AccidentModel.SlipMin, AccidentModel.SlipMax), 0f, 0f, Jolt(stretch));
+                    tl.Accidents.Add((s0, s0 + d0 + AccidentModel.CapsTail));
+                    onset = s0;
+                    double back = Math.Max(s0 + d0, primaryEnd - 0.1) + Draw.Uniform(ref _rng, AccidentModel.StartleLow, AccidentModel.StartleHigh);
+                    return Transport(tl, goal, back, slow: slow * HandModel.CorrectionSlow, tolerance: tolerance, pitchGoal: pitch, rollGoal: roll, via: false);
+                }
+                default:
+                {
+                    // A rush: the move at its pace to 10 cm short of the target (no corrections), and the last 10 cm in one fast push begun
+                    // before the first has slowed (a short move: all of it fast), then the corrections.
+                    double s0 = start;
+                    if (a > AccidentModel.RushMeters + 0.03)
+                    {
+                        Vector3 short_ = goal - u * (float)AccidentModel.RushMeters;
+                        float? partPitch = null;
+                        if (pitch.HasValue)
+                        {
+                            TargetAngles(tl, out float tp0, out _);
+                            partPitch = tp0 + (pitch.Value - tp0) * (1f - (float)AccidentModel.RushMeters / a);
+                        }
+
+                        s0 = Transport(tl, short_, start, slow: slow, tolerance: 0.03, pitchGoal: partPitch, rollGoal: roll, maxCorrections: 0, via: false);
+                    }
+
+                    TargetAngles(tl, out float tp, out float tr);
+                    (double s1, double d1) = Push(tl, s0, goal - TargetEndpoint(tl), PitchStep(tp, pitch), RollStep(tr, roll), Peak(stretch));
+                    tl.Accidents.Add((s1, s1 + d1 + AccidentModel.CapsTail));
+                    onset = s1;
+                    return Transport(tl, goal, s1 + Draw.Uniform(ref _rng, 0.8, 1.0) * d1, slow: slow * HandModel.CorrectionSlow, tolerance: tolerance, pitchGoal: pitch,
+                        rollGoal: roll, via: false);
+                }
+            }
+        }
+
+        /// <summary>
+        /// A jerk during the part just laid into <paramref name="tl"/> from <paramref name="start"/>: at a drawn moment while it moves, a fast
+        /// 5-15 cm in a random direction (the pitch jolted a little), a startled moment, then back toward where the part was going.
+        /// <paramref name="onset"/> is the jerk's start. Returns when the next part may start.
+        /// </summary>
+        private double Jerk(HandTimeline tl, double start, double stretch, out double onset)
+        {
+            const double deg = Math.PI / 180.0;
+            Vector3 going = TargetEndpoint(tl);
+            TargetAngles(tl, out float pitch, out float roll);
+            double end = Math.Max(start + 0.1, tl.MotionEnd);
+            onset = start + Draw.Uniform(ref _rng, 0.05, 0.9) * (end - start);
+            Vector3 jerk = Draw.Direction(ref _rng, 0.6f) * (float)Draw.Uniform(ref _rng, AccidentModel.JerkMin, AccidentModel.JerkMax);
+            (double s0, double d0) = Push(tl, onset, jerk, (float)(Draw.Uniform(ref _rng, -10, 10) * deg), 0f, Peak(stretch));
+            tl.Accidents.Add((s0, s0 + d0 + AccidentModel.CapsTail));
+            double back = Math.Max(s0 + d0, Math.Min(end, s0 + 2 * d0)) + Draw.Uniform(ref _rng, AccidentModel.StartleLow, AccidentModel.StartleHigh);
+            return Transport(tl, going, back, slow: HandModel.CorrectionSlow, pitchGoal: pitch, rollGoal: roll, via: false);
+        }
+
+        /// <summary>One fast submovement of <paramref name="displacement"/> from <paramref name="start"/> planned to peak at <paramref name="peak"/> m/s (at least <see cref="AccidentModel.MinDuration"/> long).</summary>
+        private (double Start, double Duration) Push(HandTimeline tl, double start, Vector3 displacement, float pitch, float roll, double peak)
+        {
+            double d = Math.Max(AccidentModel.MinDuration, 1.875 * displacement.Length() / Math.Min(peak, AccidentModel.MaxPeakSpeed));
+            tl.Moves.Add(Move(start, d, displacement, pitch, roll));
+            return (start, d);
+        }
+
+        private double Peak(double stretch) => Draw.Uniform(ref _rng, AccidentModel.PeakLow, AccidentModel.PeakHigh) / stretch;
+
+        private double Jolt(double stretch) => Draw.Uniform(ref _rng, AccidentModel.JoltLow, AccidentModel.JoltHigh) / stretch;
 
         /// <summary>A goal for a layout-blind move (<see cref="BlindReach"/>), the wrist's pitch for it when it is a low one; false when none of the draws is in reach.</summary>
         private bool BlindGoal(HandTimeline tl, BlindReach reach, out Vector3 goal, out float? pitch)
@@ -1350,7 +1584,7 @@ namespace Teleop.Eval.JointDrive
             var commands = new List<HandCommand>(k1 - k0 + 1);
             Render(tl, k0, k1, commands);
             var poses = new List<ArmPose>(commands.Count);
-            if (!Follow(k0 == 0 ? _start : _poses[k0 - 1], commands, check, poses, k0)) return false;
+            if (!Follow(k0 == 0 ? _start : _poses[k0 - 1], commands, check, poses, k0, tl.Accidents.Count > 0 ? tl : null)) return false;
             _poses.RemoveRange(k0, _poses.Count - k0);
             _commands.RemoveRange(k0, _commands.Count - k0);
             _poses.AddRange(poses);
@@ -1365,19 +1599,21 @@ namespace Teleop.Eval.JointDrive
         /// jump, outside the envelope or fails <paramref name="check"/>, or, when they are set, the <see cref="Guard"/> in its windows
         /// or the <see cref="Caps"/>.
         /// </summary>
-        private bool Follow(ArmPose from, List<HandCommand> commands, ArmCollisionModel check, List<ArmPose> poses, int firstTick)
+        private bool Follow(ArmPose from, List<HandCommand> commands, ArmCollisionModel check, List<ArmPose> poses, int firstTick, HandTimeline? accidents = null)
         {
             var solver = new ArmSolver();
             solver.Reset(_profile, from);
             Vector3 last = HandModel.Wrist(_profile, from);
             float step = HandModel.MaxWristSpeed * (float)Tick;
-            MotionCaps? caps = Caps;
+            MotionCaps? caps = Caps, wildCaps = accidents != null ? AccidentCaps ?? Caps : Caps;
             ArmCollisionModel? guard = Guard, walls = Walls;
             const int kept = 2 * MotionCaps.AccelerationTicks;
             Span<ArmPose> history = stackalloc ArmPose[kept]; // the ticks before this one, oldest first (the start pose before the first)
-            if (caps != null)
+            float wildStep = step;
+            if (wildCaps != null) wildStep = MathF.Min(step, wildCaps.MaxWristSpeed * (float)Tick);
+            if (caps != null || wildCaps != null)
             {
-                step = MathF.Min(step, caps.MaxWristSpeed * (float)Tick);
+                if (caps != null) step = MathF.Min(step, caps.MaxWristSpeed * (float)Tick);
                 for (int i = 0; i < kept; i++)
                 {
                     int k = firstTick - kept + i;
@@ -1388,15 +1624,19 @@ namespace Teleop.Eval.JointDrive
             int tick = firstTick;
             foreach (HandCommand c in commands)
             {
+                // An accident's ticks (docs/adr/0038 "M, motion") keep to the arm's own limits, not people's caps, and pass through the
+                // walls; everything else holds for them as for any tick.
+                bool wild = accidents != null && accidents.InAccident(tick * Tick);
+                MotionCaps? tickCaps = wild ? wildCaps : caps;
                 ArmSolution s = solver.Solve(_profile, c.Target, c.Pitch, c.Roll);
                 if (s.Status == ArmSolveStatus.Blocked || s.Status == ArmSolveStatus.Approaching || s.ReachClamped) return Refuse(0);
                 if (!_envelope.Contains(s.Pose) || !ArmCollision.IsValid(_profile, check, s.Pose)) return Refuse(1);
-                if (Vector3.Distance(s.Position, last) > step) return Refuse(2);
+                if (Vector3.Distance(s.Position, last) > (wild ? wildStep : step)) return Refuse(2);
                 if (guard != null && (tick * Tick < GuardBefore || tick * Tick >= GuardFrom) && !ArmCollision.IsValid(_profile, guard, s.Pose)) return Refuse(3);
-                if (walls != null && tick * Tick >= WallsFrom && !ArmCollision.IsValid(_profile, walls, s.Pose)) return Refuse(5);
-                if (caps != null)
+                if (walls != null && !wild && tick * Tick >= WallsFrom && !ArmCollision.IsValid(_profile, walls, s.Pose)) return Refuse(5);
+                if (tickCaps != null && !tickCaps.Allows(history, s.Pose, Tick)) return Refuse(4);
+                if (caps != null || wildCaps != null)
                 {
-                    if (!caps.Allows(history, s.Pose, Tick)) return Refuse(4);
                     for (int i = 0; i < kept - 1; i++) history[i] = history[i + 1];
                     history[kept - 1] = s.Pose;
                 }

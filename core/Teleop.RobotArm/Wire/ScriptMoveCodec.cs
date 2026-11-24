@@ -21,6 +21,26 @@ namespace Teleop.RobotArm.Wire
 
         /// <summary>Back the way the hand came: a pull back after a move, or back-and-forth strokes.</summary>
         Reverse = 5,
+
+        // Accidents (docs/adr/0038 "M, motion", world-models' request 3): moves the planner would not make, for a robot-side safety
+        // check that must catch them. Each record spans the accident and the hand's recovery from it. Drawn where and when they happen
+        // without regard to the layout, so they come in free space as often as near an object; on an aim or a pass the record keeps its
+        // object and offset.
+
+        /// <summary>A sudden fast move of 5-15 cm in a random direction, during whatever the hand was doing, then back toward where it was going.</summary>
+        Jerk = 6,
+
+        /// <summary>A move that goes 3-10 cm past its target, fast, then comes back to it.</summary>
+        Overshoot = 7,
+
+        /// <summary>A move that starts the wrong way (3-8 cm off its line, 90-180 degrees from it), then turns to its target.</summary>
+        WrongWay = 8,
+
+        /// <summary>A slip mid-reach: a sudden 2-6 cm drop or sideways jolt partway through a move, then corrected.</summary>
+        Slip = 9,
+
+        /// <summary>A move whose last 10 cm come at full speed: no slowing for the approach.</summary>
+        Rush = 10,
     }
 
     /// <summary>
@@ -33,7 +53,8 @@ namespace Teleop.RobotArm.Wire
     /// the take planned. For an aim or a pass, <c>objectId</c> is the object and <c>offsetMm</c> the signed offset the move was
     /// planned at, from the object's own surface (its shape, else its box): above 0 short of it, below 0 into it; <c>gapMm</c> is
     /// the arm's closest approach to the object over the move by the collision model with the twin's links, as deep as the model
-    /// measures. For the other kinds the object is 0 and those four are NaN. RobotHost records it in the session as <c>MV</c>, once
+    /// measures. An accident (kinds 6-10) made on an aim or a pass carries its object and offset the same way. For the other kinds
+    /// the object is 0 and those four are NaN. RobotHost records it in the session as <c>MV</c>, once
     /// per sequence (the tool sends each a few times). A plan for the recording only; it moves nothing. Every decoder on the joint
     /// port checks its first byte exactly, so an older RobotHost ignores it.
     /// </summary>
@@ -42,6 +63,9 @@ namespace Teleop.RobotArm.Wire
         public const byte Tag = 0x8D;
         public const byte Version = 1;
         public const int Size = 12 + 6 * 4 + 8;
+
+        /// <summary>Whether <paramref name="kind"/> is an accident (<see cref="ScriptMoveKind.Jerk"/> to <see cref="ScriptMoveKind.Rush"/>).</summary>
+        public static bool IsAccident(ScriptMoveKind kind) => kind >= ScriptMoveKind.Jerk && kind <= ScriptMoveKind.Rush;
 
         public static bool IsScriptMove(ReadOnlySpan<byte> source) => source.Length >= 1 && source[0] == Tag;
 
@@ -76,7 +100,7 @@ namespace Teleop.RobotArm.Wire
             m = default;
             sequence = 0;
             operatorSendTicks = 0;
-            if (source.Length < Size || source[0] != Tag || source[1] != Version || source[2] < (byte)ScriptMoveKind.Free || source[2] > (byte)ScriptMoveKind.Reverse)
+            if (source.Length < Size || source[0] != Tag || source[1] != Version || source[2] < (byte)ScriptMoveKind.Free || source[2] > (byte)ScriptMoveKind.Rush)
             {
                 return false;
             }
@@ -96,6 +120,11 @@ namespace Teleop.RobotArm.Wire
             ScriptMoveKind.Pass => "pass",
             ScriptMoveKind.Pause => "pause",
             ScriptMoveKind.Reverse => "reverse",
+            ScriptMoveKind.Jerk => "jerk",
+            ScriptMoveKind.Overshoot => "overshoot",
+            ScriptMoveKind.WrongWay => "wrong-way",
+            ScriptMoveKind.Slip => "slip",
+            ScriptMoveKind.Rush => "rush",
             _ => "unknown",
         };
 

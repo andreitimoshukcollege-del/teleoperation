@@ -14,6 +14,10 @@ Reads the CSV that ``joint-drive --script mixed --dry-run --layouts a-b --featur
   peaks, chord, any reverse after);
 - the same for the take's main part only (``--main``: moves within [1.5 s, end - 2.5 s], where aims happen; the quiet start and the
   tail plan none, so there a move's time alone says it is free).
+- the accidents (docs/adr/0038 "M, motion", when the CSV has the ``accident`` and ``touch`` columns): their count by kind, and how well
+  "the move is an accident" predicts "the move makes a contact by the model" (each contact given to the move last begun): the AUC of
+  that one yes/no, and of a logistic regression on the path features with and without it. Aims against free moves are also scored
+  without the moves an accident came in (``accident`` set), which move as accidents do and come more often on aims.
 
 numpy only (the GPU machine: ``~/isaacsim/lerobot-venv/bin/python``). An AUC of 0.5 is chance.
 """
@@ -29,6 +33,7 @@ import numpy as np
 REQUIRED = ["duration_s", "path_m", "peak_speed", "mean_speed", "peak_accel", "end_ratio", "stop_s", "pause_after", "pullback_after", "low_mm"]
 EXTRA = ["chord_m", "peaks", "roll_range_deg", "pitch_range_deg", "grip_range", "reverse_after"]
 KINDS = ["aim", "pass", "free", "reverse", "pause"]
+ACCIDENTS = ["jerk", "overshoot", "wrong-way", "slip", "rush"]
 
 
 def read(path):
@@ -184,6 +189,32 @@ def separability(rows, positive, negative, names, k, seed):
             "stumpPicks": stump_picks, "weights": weights}
 
 
+def accidents(rows, k, seed):
+    """The accidents' count by kind and their contacts, and how well "an accident" predicts "a contact" (docs/adr/0038 "M, motion")."""
+    touch = np.array([1 if (r.get("touch") or "0") not in ("", "0") else 0 for r in rows])
+    is_acc = np.array([1 if r["kind"] in ACCIDENTS else 0 for r in rows])
+    print()
+    n_acc = int(is_acc.sum())
+    print(f"Accidents: {n_acc} of {len(rows)} records; " + ", ".join(
+        f"{a} {sum(1 for r in rows if r['kind'] == a)} ({sum(1 for r, t in zip(rows, touch) if r['kind'] == a and t)} with a contact)" for a in ACCIDENTS))
+    onsets = np.array([float(r.get("touch") or 0) for r in rows])
+    print(f"  contacts by the model: {int(onsets.sum())} onsets, {int(onsets[is_acc == 1].sum())} under an accident "
+          f"({100.0 * onsets[is_acc == 1].sum() / max(1.0, onsets.sum()):.0f}%); records with a contact {int(touch.sum())}, accidents among them {int((touch & is_acc).sum())}")
+    if 0 < touch.sum() < len(touch):
+        print(f"  'the move is an accident' for 'the move makes a contact': AUC {auc(is_acc, touch):.3f}")
+        x, used = design(rows, REQUIRED)
+        takes = [r["layout"] + "/" + r["seed"] for r in rows]
+        fold = folds_by_take(takes, k, seed)
+        for label, xx in (("path features", x), ("path features and the accident flag", np.column_stack([x, is_acc]))):
+            scores = np.zeros(len(touch))
+            for f in range(k):
+                train, test = fold != f, fold == f
+                if touch[train].sum() == 0 or test.sum() == 0:
+                    continue
+                scores[test] = logistic_score(logistic_fit(xx[train], touch[train]), xx[test])
+            print(f"  a contact from the {label}: logistic AUC {auc(scores, touch):.3f} ({k}-fold by take)")
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("csv")
@@ -223,6 +254,14 @@ def main(argv=None):
         forced = sum(1 for r in rows if r.get("part") == "forced-pull-back")
         drawn = sum(1 for r in rows if r.get("part") == "pull-back")
         print(f"  pull-backs: {drawn} drawn, {forced} more forced out of fixtures")
+    if rows and "accident" in rows[0]:
+        accidents(rows, args.folds, args.seed)
+        clean = [r for r in rows if not r.get("accident")]
+        res = separability(clean, ["aim"], ["free"], REQUIRED, args.folds, args.seed)
+        if res is not None:
+            print()
+            print(f"aim against free without the moves an accident came in, required features ({res['positives']} of {res['n']} moves): "
+                  f"stump AUC {res['stump']:.3f}, logistic AUC {res['logistic']:.3f} ({args.folds}-fold by take)")
     for label, positive in (("aim", ["aim"]), ("pass", ["pass"]), ("aim+pass", ["aim", "pass"])):
         for set_name, names in (("required", REQUIRED), ("required but pullback_after", [n for n in REQUIRED if n != "pullback_after"]),
                                 ("required+extra", REQUIRED + EXTRA)):

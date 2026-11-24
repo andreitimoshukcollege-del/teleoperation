@@ -140,9 +140,37 @@ namespace Teleop.Eval.JointDrive
         /// </summary>
         public static HandStyle DefaultStyle() => new HandStyle { PitchScale = 0.5, RollScale = 0.55, PitchTime = 1.0, Slow = 0.9 };
 
+        /// <summary>
+        /// The share of the take's parts (a layout-blind part, or an aim or a pass with the move to where it starts) that carry an accident
+        /// (docs/adr/0038 "M, motion", world-models' request 3: <see cref="AccidentModel"/>), drawn before the part is chosen and from a draw of
+        /// its own, so where and when accidents come does not depend on whether an object is near: in free space, in the quiet start and the
+        /// tail (clear of the objects there, as every move is), and on aims alike. 0: none, and the take plans exactly as without them.
+        /// </summary>
+        public double AccidentShare { get; set; } = 0.12;
+
+        /// <summary>
+        /// On top of <see cref="AccidentShare"/>, the share of aims and passes that carry one (so about a third of the contacts come from
+        /// accidents; docs/adr/0038 "M, motion").
+        /// </summary>
+        public double AccidentNearShare { get; set; } = 0.25;
+
+        /// <summary>The accidents' kinds, in proportion: jerk, overshoot, wrong way, slip, rush (<see cref="AccidentKinds"/>).</summary>
+        public double[] AccidentWeights { get; set; } = { 1, 1, 1, 1, 1 };
+
+        /// <summary>The kinds <see cref="AccidentWeights"/> weigh, in order.</summary>
+        public static readonly ScriptMoveKind[] AccidentKinds = { ScriptMoveKind.Jerk, ScriptMoveKind.Overshoot, ScriptMoveKind.WrongWay, ScriptMoveKind.Slip, ScriptMoveKind.Rush };
+
+        /// <summary>No accidents (<see cref="AccidentShare"/> and <see cref="AccidentNearShare"/> 0).</summary>
+        public bool NoAccidents => !(AccidentShare > 0) && !(AccidentNearShare > 0);
+
         /// <summary>Throws when the options make no sense together.</summary>
         public void Validate()
         {
+            if (!(AccidentShare >= 0 && AccidentShare <= 1) || !(AccidentNearShare >= 0 && AccidentNearShare <= 1))
+                throw new ArgumentException($"the accident shares must be in [0, 1], not {AccidentShare} and {AccidentNearShare}");
+            if (AccidentWeights == null || AccidentWeights.Length != AccidentKinds.Length || AccidentWeights.Any(w => !(w >= 0)) || (!NoAccidents && !(AccidentWeights.Sum() > 0)))
+                throw new ArgumentException("the accident kinds' weights are five numbers at least 0, some above 0");
+
             foreach ((double v, string name) in new[] { (ObjectShare, "object share"), (PassShare, "pass share"), (NearStartShare, "near-start share"), (PauseShare, "pause share"),
                          (PullBackShare, "pull-back share"), (BlindTransportShare, "blind transport share"), (BlindReverseShare, "blind reverse share") })
             {
@@ -220,9 +248,13 @@ namespace Teleop.Eval.JointDrive
         /// <summary>What part of the plan it is (<see cref="MovePart"/>). Reports only.</summary>
         public readonly MovePart Part;
 
+        /// <summary>For an accident, the <see cref="Index"/> of the move it came in (0: none). Reports only.</summary>
+        public readonly int Overlies;
+
         public PlannedMove(int index, ScriptMoveKind kind, byte objectId, float offsetMeters, float gapMeters, double start, double contact, double closest, double end,
-            float approachDegrees = float.NaN, MovePart part = MovePart.Other)
+            float approachDegrees = float.NaN, MovePart part = MovePart.Other, int overlies = 0)
         {
+            Overlies = overlies;
             ApproachDegrees = approachDegrees;
             Part = part;
             Index = index;
@@ -327,6 +359,8 @@ namespace Teleop.Eval.JointDrive
         private BlindReach? _quietHigh; // the quiet windows' goals, none low: their fallback
         private BlindReach? _tailReach; // the tail's goals after its exit: the quiet windows' without the low band
         private SeededRng _rng;
+        private SeededRng _accidentRng; // where and when accidents come: a generator of its own, so drawing them changes no other draw's place
+        private readonly int[] _accidentsMade = new int[MixedOptions.AccidentKinds.Length], _accidentsDropped = new int[MixedOptions.AccidentKinds.Length];
 
         /// <summary>Why object-directed moves were not planned, for a report: too low to meet, no line, no end at the offset, no start, the move there, the approach, a pass's sweep.</summary>
         private readonly int[] _objectMisses = new int[7];
@@ -349,7 +383,42 @@ namespace Teleop.Eval.JointDrive
                     $"{o.Id} r {new Vector2(o.Center.X, o.Center.Y).Length():0.00} az {MathF.Atan2(o.Center.Y, o.Center.X) * 180 / MathF.PI:0} h {(o.Max.Z - o.Min.Z) * 100:0}cm{(o.Movable ? "" : " fixed")} misses {kv.Value}"));
             }
 
-            return counts + "; objects: " + string.Join(", ", objects);
+            return counts + "; objects: " + string.Join(", ", objects) + (_options.NoAccidents ? "" : "; " + AccidentReport());
+        }
+
+        /// <summary>The accidents made, and those drawn that no try could make (the move made without one), by kind.</summary>
+        internal string AccidentReport()
+        {
+            var parts = new List<string>();
+            for (int k = 0; k < MixedOptions.AccidentKinds.Length; k++)
+                parts.Add(FormattableString.Invariant($"{ScriptMoveCodec.Name(MixedOptions.AccidentKinds[k])} {_accidentsMade[k]}/{_accidentsMade[k] + _accidentsDropped[k]}"));
+            return "accidents made of drawn: " + string.Join(", ", parts);
+        }
+
+        /// <summary>
+        /// Whether the next part carries an accident, and its kind (docs/adr/0038 "M, motion"): drawn with <paramref name="share"/> from the
+        /// accidents' own generator, before anything about the part is known; null for none.
+        /// </summary>
+        private ScriptMoveKind? DrawAccident(double share)
+        {
+            if (!(share > 0) || !Draw.Chance(ref _accidentRng, share)) return null;
+            double[] w = _options.AccidentWeights;
+            double u = _accidentRng.NextDouble() * w.Sum();
+            for (int k = 0; k < w.Length; k++)
+            {
+                u -= w[k];
+                if (u < 0 && w[k] > 0) return MixedOptions.AccidentKinds[k];
+            }
+
+            for (int k = w.Length - 1; k >= 0; k--) if (w[k] > 0) return MixedOptions.AccidentKinds[k];
+            return null;
+        }
+
+        private void Tally(ScriptMoveKind accident, bool made)
+        {
+            int k = Array.IndexOf(MixedOptions.AccidentKinds, accident);
+            if (made) _accidentsMade[k]++;
+            else _accidentsDropped[k]++;
         }
 
         private bool Miss(int why)
@@ -361,6 +430,7 @@ namespace Teleop.Eval.JointDrive
         /// <summary>A move as planned, before the plan is final: its times on the hand's timeline, its object's index (-1: none).</summary>
         private struct Draft
         {
+            public int Id, Base; // its own id, and for an accident the id of the move it came in (-1: none)
             public ScriptMoveKind Kind;
             public int Object;
             public float Offset, Approach;
@@ -369,8 +439,9 @@ namespace Teleop.Eval.JointDrive
         }
 
         private MixedTake(in RobotArmProfile profile, ArmCollisionModel model, in DriveEnvelope envelope, IReadOnlyList<SafetyObject> objects, MixedOptions options,
-            HumanOperator hand, double start, SeededRng rng)
+            HumanOperator hand, double start, SeededRng rng, SeededRng accidents)
         {
+            _accidentRng = accidents;
             _profile = profile;
             _model = model;
             _envelope = envelope;
@@ -436,7 +507,11 @@ namespace Teleop.Eval.JointDrive
             hand.Style = options.Style;
             hand.Guard = SafetyScript.WithObjects(model, objects, options.QuietMarginMeters);
             hand.GuardBefore = options.QuietStartSeconds;
-            var take = new MixedTake(profile, model, envelope, objects, options, hand, t, new SeededRng(rng.NextUInt64()));
+            // An accident's ticks keep to the arm's own limits: the servos ramp at the commanded speed, which joint-drive's --speed sets.
+            hand.AccidentCaps = AccidentModel.CapsFor(options.Caps, speed);
+            ulong takeSeed = rng.NextUInt64();
+            // Where and when accidents come is drawn from a generator of its own (docs/adr/0038 "M, motion"), seeded from the take's.
+            var take = new MixedTake(profile, model, envelope, objects, options, hand, t, new SeededRng(takeSeed), new SeededRng(takeSeed ^ 0xA5C1_DE47_5EED_0001UL));
             return take.Plan(prefix, current, speed, seconds, out plan, out error);
         }
 
@@ -493,8 +568,9 @@ namespace Teleop.Eval.JointDrive
             while (_hand.Free < mainEnd)
             {
                 bool done = false;
-                if (!first && _hand.Free >= _options.QuietStartSeconds - 0.9 && Draw.Chance(ref _rng, _options.ObjectShare)) done = TryObjectMove();
-                if (!done) done = TryBlindMove(first);
+                ScriptMoveKind? accident = DrawAccident(_options.AccidentShare);
+                if (!first && _hand.Free >= _options.QuietStartSeconds - 0.9 && Draw.Chance(ref _rng, _options.ObjectShare)) done = TryObjectMove(accident);
+                if (!done) done = TryBlindMove(first, accident: accident);
                 if (!done) done = Recentre(); // cornered (every part left the envelope or met the arm itself): back toward the middle
                 if (!done)
                 {
@@ -519,7 +595,7 @@ namespace Teleop.Eval.JointDrive
             double cut = double.NaN;
             for (int part = 0; part < 12 && double.IsNaN(cut); part++)
             {
-                if (!TryBlindMove(false, tailOnly: true, out double s, out double e))
+                if (!TryBlindMove(false, tailOnly: true, out double s, out double e, DrawAccident(_options.AccidentShare)))
                 {
                     error = FormattableString.Invariant($"no free movement keeps the take's quiet end ({_options.QuietEndSeconds:0.0} s clear of the objects, from {tailStart:0.0} s; {Refusals()})");
                     return false;
@@ -645,8 +721,15 @@ namespace Teleop.Eval.JointDrive
         /// <summary>The moves as planned, measured on the final plan, in the order they begin; those after <paramref name="cut"/> (plan seconds) left out.</summary>
         private PlannedMove[] Moves(double cut)
         {
-            _drafts.Sort((a, b) => a.Start.CompareTo(b.Start));
+            // In the order they begin; an accident that begins with its move after it (the move under way when a contact comes is the last to begin).
+            _drafts.Sort((a, b) =>
+            {
+                int c = a.Start.CompareTo(b.Start);
+                return c != 0 ? c : ScriptMoveCodec.IsAccident(a.Kind).CompareTo(ScriptMoveCodec.IsAccident(b.Kind));
+            });
             var moves = new List<PlannedMove>(_drafts.Count);
+            var indexOf = new Dictionary<int, int>();
+            foreach (Draft d in _drafts) if (_start + d.Start < cut) indexOf[d.Id] = indexOf.Count + 1;
             foreach (Draft d in _drafts)
             {
                 if (_start + d.Start >= cut) continue;
@@ -675,14 +758,19 @@ namespace Teleop.Eval.JointDrive
                 }
 
                 moves.Add(new PlannedMove(moves.Count + 1, d.Kind, id, d.Object >= 0 ? d.Offset : float.NaN, gap, _start + d.Start, contact, closest, _start + d.End,
-                    d.Object >= 0 ? d.Approach : float.NaN, d.Part));
+                    d.Object >= 0 ? d.Approach : float.NaN, d.Part, d.Base >= 0 && indexOf.TryGetValue(d.Base, out int over) ? over : 0));
             }
 
             return moves.ToArray();
         }
 
-        private void Add(ScriptMoveKind kind, int obj, float offset, double start, double end, float approach = float.NaN, MovePart part = MovePart.Other) =>
-            _drafts.Add(new Draft { Kind = kind, Object = obj, Offset = offset, Start = start, End = end, Approach = approach, Part = part });
+        private int Add(ScriptMoveKind kind, int obj, float offset, double start, double end, float approach = float.NaN, MovePart part = MovePart.Other, int overlies = -1)
+        {
+            _drafts.Add(new Draft { Id = _nextDraft, Base = overlies, Kind = kind, Object = obj, Offset = offset, Start = start, End = end, Approach = approach, Part = part });
+            return _nextDraft++;
+        }
+
+        private int _nextDraft;
 
         /// <summary>The arm's signed gap to object <paramref name="oi"/> at <paramref name="pose"/>: against its shape with the twin's links (the gripper as given), else its box with the model's.</summary>
         private float Gap(int oi, in ArmPose pose, float gripper)
@@ -700,9 +788,9 @@ namespace Teleop.Eval.JointDrive
         }
 
         /// <summary>A layout-blind part (a move, strokes or adjustments; then now and then a pull back or a pause), or, in the tail, one clear of every object.</summary>
-        private bool TryBlindMove(bool first, bool tailOnly = false) => TryBlindMove(first, tailOnly, out _, out _);
+        private bool TryBlindMove(bool first, bool tailOnly = false, ScriptMoveKind? accident = null) => TryBlindMove(first, tailOnly, out _, out _, accident);
 
-        private bool TryBlindMove(bool first, bool tailOnly, out double start, out double end)
+        private bool TryBlindMove(bool first, bool tailOnly, out double start, out double end, ScriptMoveKind? accident = null)
         {
             bool quiet = tailOnly || _hand.Free < _options.QuietStartSeconds;
             Vector3 from = _hand.TargetEnd;
@@ -710,7 +798,13 @@ namespace Teleop.Eval.JointDrive
             // that starts low sweeps the table in its quiet start, where a replay's add may then stand nothing (chained dry runs: 70% of groups
             // with an add, against 86% from home).
             BlindReach reach = tailOnly ? (_tailReach ??= _options.QuietReach.WithoutLow()) : quiet ? _options.QuietReach : _options.Reach;
-            if (!_hand.MixedFree(_model, reach, Slowness(), _options.BlindTransportShare, _options.BlindReverseShare, out ScriptMoveKind kind, out start, out end, DrawWalls()))
+            ScriptMoveKind kind = ScriptMoveKind.Free;
+            start = end = _hand.Free;
+            // With an accident drawn, first with it; when no try makes it, the part as it would have been without one.
+            bool made = accident.HasValue && _hand.MixedFree(_model, reach, Slowness(), _options.BlindTransportShare, _options.BlindReverseShare, out kind, out start, out end, DrawWalls(), accident);
+            double onset = _hand.AccidentOnset, recovered = _hand.AccidentEnd;
+            if (accident.HasValue) Tally(accident.Value, made);
+            if (!made && !_hand.MixedFree(_model, reach, Slowness(), _options.BlindTransportShare, _options.BlindReverseShare, out kind, out start, out end, DrawWalls()))
             {
                 // The quiet start and end keep clear of every object: where low goals all come too near one, goals that are not low.
                 if (!quiet || (reach.ToolBands == null ? reach.LowShare <= 0 : reach.ToolBands.Length <= 3)) return false;
@@ -718,7 +812,8 @@ namespace Teleop.Eval.JointDrive
                 if (!_hand.MixedFree(_model, _quietHigh, Slowness(), _options.BlindTransportShare, _options.BlindReverseShare, out kind, out start, out end, DrawWalls())) return false;
             }
 
-            Add(kind, -1, float.NaN, start, end, part: _hand.LastFreePart);
+            int baseMove = Add(kind, -1, float.NaN, start, end, part: _hand.LastFreePart);
+            if (made) Add(accident!.Value, -1, float.NaN, onset, recovered, part: _hand.LastFreePart, overlies: baseMove);
             // A blind move that ends at a fixture (within 5 mm of its box) pulls back out of it, as an aim into one does: the pull back
             // follows the contact, whatever kind of move made it.
             AfterMove(_hand.TargetEnd - from, pullBack: true, forced: AtFixture(end), walls: true, atLeast: 0.02f);
@@ -786,8 +881,10 @@ namespace Teleop.Eval.JointDrive
         }
 
         /// <summary>An aim or a pass at an object of the layout (a few tries over objects and geometries), with the move to where it starts; false when none plans.</summary>
-        private bool TryObjectMove()
+        private bool TryObjectMove(ScriptMoveKind? accident = null)
         {
+            // On top of the accidents drawn for every part, some for aims and passes alone, so about a third of the contacts are accidents'.
+            if (!accident.HasValue) accident = DrawAccident(_options.AccidentNearShare);
             var targets = new List<int>(_objects.Count);
             var weights = new List<float>(_objects.Count);
             for (int i = 0; i < _objects.Count; i++)
@@ -813,7 +910,7 @@ namespace Teleop.Eval.JointDrive
             {
                 int oi = targets[Pick(weights)];
                 ScriptMoveKind kind = Draw.Chance(ref _rng, _options.PassShare) ? ScriptMoveKind.Pass : ScriptMoveKind.Aim;
-                if (TryObjectMove(oi, kind))
+                if (TryObjectMove(oi, kind, accident))
                 {
                     _missesInARow[oi] = 0;
                     return true;
@@ -924,7 +1021,7 @@ namespace Teleop.Eval.JointDrive
         private static float Footprint(in SafetyObject o) => MathF.Max(o.Max.X - o.Min.X, o.Max.Y - o.Min.Y) / 2f;
 
         /// <summary>One aim or pass at object <paramref name="oi"/>: its line drawn and measured, then the hand's moves along it; the hand as it was when it does not plan.</summary>
-        private bool TryObjectMove(int oi, ScriptMoveKind kind)
+        private bool TryObjectMove(int oi, ScriptMoveKind kind, ScriptMoveKind? accident = null)
         {
             _objectTries++;
             SafetyObject o = _objects[oi];
@@ -1121,15 +1218,27 @@ namespace Teleop.Eval.JointDrive
             // The aim or pass itself, made as a free move is made (docs/adr/0038 "M, motion": aims and passes followed their line in
             // short segments to a tighter stop, and a model of the path could tell them by it): one goal, the same endpoint error,
             // undershoot and corrections to the same tolerance, sometimes curved or in two pushes, the roll and the gripper as they go.
-            if (!_hand.MixedTo(goal, pitch, null, Slowness(), HandModel.Tolerance, holders, out s, out e))
+            // With an accident (docs/adr/0038 "M, motion"), first with it; when no try makes it, the move as it would have been without one.
+            bool withAccident = accident.HasValue && _hand.MixedTo(goal, pitch, null, Slowness(), HandModel.Tolerance, holders, out s, out e, accident: accident);
+            double onset = _hand.AccidentOnset, recovered = _hand.AccidentEnd;
+            if (!withAccident && !_hand.MixedTo(goal, pitch, null, Slowness(), HandModel.Tolerance, holders, out s, out e))
             {
                 Undo(before, drafts);
                 return Miss(5);
             }
 
             _objectMoves++;
-            Add(kind, oi, offset, s, e, approach, MovePart.Approach);
-            if (offset < 0 && o.Movable)
+            int baseMove = Add(kind, oi, offset, s, e, approach, MovePart.Approach);
+            bool pushed = false;
+            if (withAccident)
+            {
+                Add(accident!.Value, oi, offset, onset, recovered, approach, MovePart.Approach, baseMove);
+                // Whether the accident went into its object by the model: then, movable, it may be anywhere afterwards, as when aimed into.
+                int k1 = Math.Min(_hand.Poses.Count - 1, (int)Math.Ceiling(recovered / HandModel.TickSeconds));
+                for (int k = Math.Max(0, (int)Math.Floor(onset / HandModel.TickSeconds)); k <= k1 && !pushed; k++) pushed = Gap(oi, _hand.Poses[k], _hand.Commands[k].Gripper) < 0f;
+            }
+
+            if ((offset < 0 || pushed) && o.Movable)
             {
                 // Pushed into, it may be anywhere afterwards: no later move aims at it, and the tail's goals keep away from it.
                 _moved.Add(oi);
@@ -1156,6 +1265,7 @@ namespace Teleop.Eval.JointDrive
                 return Miss(5);
             }
 
+            if (accident.HasValue) Tally(accident.Value, withAccident);
             return true;
         }
 

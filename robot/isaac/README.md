@@ -83,8 +83,10 @@ its own), and every 20 ms WORLD, the objects' poses as PhysX has them.
     scene names (`polyhaven/<id>`, into `~/isaacsim/assets/polyhaven/`, texture paths pointed at their own folder). The
     fixtures stand in the pool's `fixedRegions` (the table's wings).
   - `just isaac-materials-fetch` fetches the PBR textures the simple shapes wear per take and the table-top ones, and makes
-    four Poly Haven lacks (a cutting mat, kraft paper, cardboard, white paper: `teleop_isaac.materials`, from a seed); the
-    renderer projects them in object space.
+    four Poly Haven lacks (a cutting mat, kraft paper, cardboard, white paper: `teleop_isaac.materials`, from a seed). Each
+    shows at its real size (since 2026-11-23, docs/adr/0038 "A, appearance"): a textured box, the table and the bench become
+    meshes with texture coordinates in metres (`renderer.box_mesh`), and a cylinder is projected in its own object space,
+    which is metres. (A box projected in object space had been a unit cube: every side as many tiles as any other.)
 - **Surfaces and flat clutter** (docs/adr/0037, its own section): the table and the bench each draw a look per take from the
   scene's `materials.looks` (`LK`), and `teleop_isaac.clutter` lays flat clutter on the table (papers, a cutting mat,
   cables, a plastic bag; `CL`, mask id 15). The renderer alone draws it: nothing is taller than 6 mm, which no accepted arm
@@ -95,6 +97,12 @@ its own), and every 20 ms WORLD, the objects' poses as PhysX has them.
   anywhere in the placement region, each as its own rectangle at its heading, and `world.py`'s rules take it the same way.
   The tools are scans (Poly Haven's, by `just isaac-models-fetch`, and YCB's scissors); the phone and the pen are boxes that
   wear looks by name (`materials.objects`, `LK`).
+- **Contacts and clearance, the JetRover twin** (docs/adr/0036 amendment 1, docs/adr/0038 decision 4): its bridge reports the
+  arm's touches as `WC`, an object by its id and any surface (the table, the bench, the floor) as object 0, the table.
+  `just isaac-clearance-geometry <scene>` (`teleop_isaac/clearance_geometry.py`, Isaac's Python without Kit) writes what PhysX
+  collides with to `~/isaacsim/assets/clearance`: the links' boxes as the URDF importer made them, and each mesh asset as
+  convex pieces (CoACD at PhysX's convex-decomposition budget). The safety build's per-frame clearance reads it
+  (`teleop_lerobot.clearance`). Run it again after a scene names a new asset.
 
 `just isaac-scene-check` (`scene_check.py`) runs the real bridge with the scene and talks to it as RobotHost
 would. It checks WORLD_INFO, WORLD at 50 ± 5 Hz, placements applied and refused, and the left hand
@@ -121,6 +129,11 @@ tracked exactly (0.000 rad), and there were no late steps in 16 s.
 - **The capture stamp.** `captureTicks` is the sensed time of the state the frame shows, on RobotHost's CLOCK_MONOTONIC.
   The image read after posing frame k shows frame k − lag. The lag is measured at start-up with a cube on the table, with
   the objects hidden; on 2026-11-02 it was 2 frames in 100% of 87 samples.
+
+- **The 5 s report** in its log gives the frame rate, then where each frame's time went (`tap`, `pose`, `render`, `read`,
+  `frame`, and `change` when the room changed; median/longest in ms) and how often Python's garbage collector ran, with its
+  longest pause. The heap as it stands once the scene is built is frozen out of later collections (`--no-gc-freeze` keeps
+  it in).
 
 If the renderer fails to start, `isaac-host` says so and runs the robot without feeds. `isaac-stop` stops it with the rest.
 ADR 0032 amendment 1 holds the 2026-11-02 numbers: both feeds at 29.4–29.5 fps from the PC, no incomplete frames, and
@@ -160,6 +173,16 @@ just isaac-edit-check                # against isaac-host fr3-duo-bench 7: heads
   - The floor is not drawn (the room's own floor shows); it still catches a falling object in the bridge.
   - Each session records `EN` and `isaac/environment.json`, the attribution of every room shown.
   - Without rooms, the dome is plain.
+- **Each take's look** (docs/adr/0038 "A, appearance"), for a scene with an `appearance` section (`teleop_isaac.appearance`;
+  a scene without one renders exactly as before). At every change, before the room settles:
+  - every scanned object's colour (brightness, desaturation, a slight tint), through OmniPBR's albedo inputs (YCB) or two
+    MaterialX nodes in front of the base colour (Poly Haven); recorded as `OA`;
+  - the light: the dome's colour temperature, the metering's target, and a key light the section adds, from a drawn
+    direction, strength, size and colour (`LT`);
+  - every camera moved by up to a few millimetres or centimetres and turned by up to a degree or two in its own frame
+    (`CJ`); `CM` records the pose each camera then has.
+
+  A session that opens while a change is under way waits for it, so its records describe its frames.
 - **Recording.** While RobotHost's control file (`~/data/sessions/fr3_duo-isaac/.active`) names a session, the renderer writes
   into it `isaac.jlog` and `isaac/<camera>.<stream>.frames`:
   - head colour (JPEG 92), depth (16-bit PNG, mm) and masks (16-bit PNG, stable ids);

@@ -161,6 +161,69 @@ and the gripper clear of the deck.
 On this board the torque codes are the other way round from Hiwonder's SDK: 0x0B switches the
 torque off and 0x0C on (read back with 0x0D). The SDK in `robot/ros` is corrected.
 
+### Amendment (2026-11-24): a refused joint command is clamped, not dropped
+
+Decision 4's backstop refused a failing command whole and the arm held. Since the 2026-11 bug hunt (C-05) it also judges the
+servo path from the arm's **measured** pose, and the arm trails its commands by about 0.2 s, so commands that are themselves
+clear were refused while the arm lagged: 1.0% of all twin commands, in runs of up to 3 s that ended in a jump of about 25°,
+and 2.0% of the real course sessions (docs/adr/0038 "M, motion"). The world-models side asked for the arm to keep moving
+toward the command instead, and the user approved it. Built on branch `work/v2-clamp6`; **not yet run on a twin or the robot.**
+
+- **The rule** (`GenericArmPlant.CommandJointAngles`, `LineClamp`). Passing, the command is sent as before (`JC` `A`). Failing,
+  the plant sends the farthest point toward it on the joint-space line s + α(c − s), α in [0, 1], from the measured pose s
+  (put into the model's joint ranges, the start the servo-path check itself uses) that passes **the same check**, the end pose
+  and the servo path from s (`JC` `C`, its `RO`, and `JK t seq alpha`). Only the joints the check covers move along the line:
+  base yaw, proximal, distal, wrist, wrist roll. The gripper's opening (servo 10) and every speed are the command's. Nothing
+  passing, the command is refused as before (`JC` `R`, no `RO`), and the arm holds.
+- **The search.** The line's start first: failing, nothing passes. Then 8 rounds of bisection, to 1/256 of the line. Bisection
+  alone cannot see a second passing stretch beyond its failing bound, and the check is not monotone along the line: the servo
+  path to a nearer point is not part of the path to a farther one, and paths under 4° are not sampled at all. So the grid
+  points k/16 beyond the failing bound are asked from the end down, stopping at the first that passes. One passing means the
+  line is not monotone, and that largest passing grid point is the answer. A failure below the passing bound is not looked
+  for: it cannot give a larger α, and every candidate is judged on its own from s. At most 24 checks, deterministic and
+  allocation-free.
+- **The invariant.** The targets about to be sent are judged once more, exactly as a received command is, from the same
+  measured pose; failing, they are refused and held, and `ClampInvariantViolations` counts it. So the clamp never sends what
+  the check refuses. Tests over 300 refused random commands, and the replay of 664 twin takes below, found it 0 every time.
+- **Order.** Check, clamp, then the command gate (docs/adr/0038 N), which judges the clamped command, then the relay. The park
+  (docs/adr/0023) never clamps: its path is planned and checked first, so a refused waypoint is a bug, and the park holds.
+- **Records** (trainer/contract/SESSION_FORMAT.md): `JC` outcome `C`; `RO` for every command sent (`A` and `C`), with the
+  targets sent; `JK|t|seq|alpha` per `JC` `C`; and `HK|t|measured|clamp|1` (or `refuse`) at the start of every session. A
+  session without `HK` refused.
+- **One flag back:** `--host-check-onfail refuse` restores the old behaviour exactly. The default is `clamp`, on the twin and
+  the real robot alike (the same RobotHost). RobotHost prints which at start, and a throttled line of clamps and refusals.
+- **Offline replay.** `Teleop.RobotHost --replay-commands [--host-check-onfail clamp|refuse] <robothost.jlog>...` runs a
+  take's `JC` through the plant with its `RI` where they were recorded; it exits 1 when refuse mode does not reproduce every
+  recorded outcome or a clamp fails its re-check. Open loop: after a clamp the recorded arm still holds, so each command's
+  outcome is right for its measured pose, while a live clamp would shorten the runs (the arm follows). At ad61965, Release,
+  on the GPU machine:
+
+| | The 12 mixed takes of 2026-11-24 18:44-18:49 | All 664 JetRover twin takes (both twins) | Real `free-play` (2 takes) |
+|---|---|---|---|
+| Commands replayed | 10,396 | 515,479 | 2,682 |
+| Refuse mode against the recording | 0 differ | 0 differ | 0 differ |
+| Refused before | 322 (3.1%, 10 takes) | 5,629 (1.1%, 281 takes) | 0 |
+| Clamped now / still held | 322 / 0 | 5,617 / 12 (3 with the measured pose itself failing) | – |
+| From the grid (non-monotone) | 2 | 73 (1.3% of clamps) | – |
+| α p10 / p25 / p50 / p75 / p90 | 0.023 / 0.21 / 0.41 / 0.69 / 0.91 | 0.10 / 0.22 / 0.45 / 0.75 / 0.90 | – |
+| Checks per search, p50 / max | 18 / 24 | 17 / 24 | – |
+| Plant time, `A` command, p50 / p99 | 4.1 / 14 µs | 4.5 / 23 µs | 7.5 / 26 µs |
+| Plant time, `C` command, p50 / p99 / max | 42 / 101 / 856 µs | 48 / 167 / 1,118 µs | – |
+
+  α spreads across (0, 1): over all twin takes about 10% per tenth, 551 under 0.1. Small α means the arm barely moves
+  toward the command; in a live run it would then be measured nearer and the next command's α larger.
+- **Cost.** A stress test of 300 commands drawn anywhere in the ranges (largest joint change p50 165°, far beyond any lag):
+  p50 380 µs, p99 817 µs, max 892 µs per clamped command on the GPU machine (`HostCheckClampTests`, logged). The Jetson's
+  cores are slower, by an unmeasured factor (perhaps 3-5x); even so the replay's worst clamp would be a few ms against a
+  command every 20 ms. A command's check cost grows with its distance from the measured pose (one sample per 2° of the
+  largest joint change), and the clamp asks at most 26 of them.
+- **Not checked:** the six real headset sessions of 2026-10-25 and 27 (2.0% refused in the two course sessions) are on the
+  laptop and were not replayed here; nothing ran on the twin or the robot. A twin check should show `HK` in every take, `JC`
+  `C` with a `JK` and an `RO` each, far fewer `R`, and no `CLAMP RESULT(S) FAILED THE RE-CHECK` line. The real-robot test,
+  supervised, should confirm the start line, then drive the course with the arm lagging (fast moves near the deck and the
+  body) and look for: no contact, the arm creeping toward the command where it used to freeze and jump, no oscillation at the
+  boundary, and `JC` `C` in the session with no re-check failures.
+
 ## Consequences
 
 - **The ghost and the robot agree by construction:** one model, one solver, both sides.

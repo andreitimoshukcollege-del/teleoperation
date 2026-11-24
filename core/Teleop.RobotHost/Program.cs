@@ -8,6 +8,7 @@ using Teleop.Core.Transport;
 using Teleop.RobotArm.Types;
 using Teleop.Core.Types;
 using Teleop.RobotArm.Wire;
+using Teleop.RobotHost.Gate;
 using Teleop.RobotHost.Net;
 using Teleop.RobotHost.Plant;
 using Teleop.RobotHost.Power;
@@ -46,6 +47,12 @@ namespace Teleop.RobotHost
             if (args.Length == 1 && args[0] == "--clock-echo")
             {
                 return ClockEcho();
+            }
+
+            // Offline: recorded takes' joint commands through the plant (docs/adr/0020 amendment 2026-11-24). Moves nothing.
+            if (args.Length >= 1 && args[0] == "--replay-commands")
+            {
+                return CommandReplayCli.Run(args);
             }
 
             // A serial-chain profile (the FR3 Duo, docs/adr/0026) runs its own host loop (docs/adr/0027 decision 5);
@@ -107,7 +114,32 @@ namespace Teleop.RobotHost
                 gripperClosedPulse: defaults.GripperClosedPulse);
             // The headset sends its IK's joint angles and, for timing, the Cartesian target; only the
             // joint angles move the arm while they arrive (docs/adr/0020).
-            var plant = new GenericArmPlant(plantConfig, plantRelay) { JointPrecedenceTicks = clock.TicksPerSecond / 2 };
+            var plant = new GenericArmPlant(plantConfig, plantRelay) { JointPrecedenceTicks = clock.TicksPerSecond / 2, OnHostCheckFail = a.HostCheckOnFail };
+            // What a joint command that fails the collision check gets (docs/adr/0020 amendment 2026-11-24), said once at start.
+            Console.WriteLine(profile.Collision == null
+                ? "[plant] no collision model: joint commands are not collision-checked"
+                : a.HostCheckOnFail == HostCheckOnFail.Clamp
+                    ? "[plant] collision check: from the measured pose; a command that fails is clamped to the farthest point toward it " +
+                      "that passes (--host-check-onfail clamp, the default), held only when none does"
+                    : "[plant] collision check: from the measured pose; a command that fails is refused and the arm holds (--host-check-onfail refuse)");
+
+            // The optional command gate (docs/adr/0038 N): off without --command-gate, and then the plant asks nothing.
+            CommandGate? commandGate = null;
+            if (a.CommandGate != null)
+            {
+                if (!CommandGate.TryCreateCheck(a.CommandGate, profile, a.CommandGateDeadlineMs, clock, out ICommandCheck? check, out string? gateError))
+                {
+                    Console.Error.WriteLine($"[gate] {gateError}");
+                    return 2;
+                }
+
+                commandGate = new CommandGate(check!, a.CommandGate, a.CommandGateDeadlineMs, a.CommandGateFailClosed, clock,
+                    line => { if (recorder != null && recorder.IsActive) recorder.Record(line); });
+                plant.CommandGate = commandGate.ShouldHold;
+                Console.WriteLine($"[gate] ON: every joint command is put to '{a.CommandGate}' first, {a.CommandGateDeadlineMs} ms deadline, " +
+                    $"fail-{(a.CommandGateFailClosed ? "closed (no answer holds)" : "open (no answer lets it through)")}" +
+                    (a.CommandGateOnRealRobot ? "; ON THE REAL ROBOT (--command-gate-on-real-robot)" : ""));
+            }
 
             var endpoint = new RobotEndpoint(
                 plant,
@@ -166,7 +198,7 @@ namespace Teleop.RobotHost
             }
 
             int loggedIgnored = 0;
-            long lastIgnoredLogTicks = long.MinValue;
+            long lastIgnoredLogTicks = LogThrottle.Never;
             // The latest operator message's sender, client kind and mode (docs/adr/0018 §9).
             string? operatorText = null, operatorKind = null, operatorMode = null;
             long lastOperatorTicks = long.MinValue;
@@ -176,6 +208,8 @@ namespace Teleop.RobotHost
             long lastTrainingTicks = long.MinValue;
             // A scripted take's events (docs/adr/0036 amendment 5): the tool sends each a few times; one record per sequence.
             uint? lastScriptEvent = null;
+            // A mixed take's planned moves and replay group (docs/adr/0038 decisions 1 and 2): likewise, one record per sequence.
+            uint? lastScriptMove = null, lastReplay = null;
 
             // The joint-state downlink (docs/adr/0018): streams to whoever last sent a keepalive on
             // this same port, at 50 Hz, whether or not commands are arriving.
@@ -236,6 +270,9 @@ namespace Teleop.RobotHost
             void StartSessionState(long now)
             {
                 sessionState!.Reset();
+                // The collision check's policy (docs/adr/0020 amendment 2026-11-24), in every session: one without it refused.
+                recorder!.Record(SessionLines.HostCheck(now, plant.OnHostCheckFail));
+                if (commandGate != null) recorder!.Record(commandGate.ConfigLine(now));
                 if (currentSubscriberText != null && jointStreamer.IsSubscribed(now)) sessionState.Subscriber(now, currentSubscriberText);
                 if (jointCommanderText != null && lastJointCommandTicks != long.MinValue && now - lastJointCommandTicks <= 3 * clock.TicksPerSecond)
                 {
@@ -325,8 +362,12 @@ namespace Teleop.RobotHost
             EndPoint? loggedReplyTarget = transport.CurrentRemoteEndPoint;
             EndPoint? jointCommander = null;
             int loggedRefusals = 0;
+            int loggedClamps = 0, loggedGridClamps = 0, loggedViolations = 0;
+            long lastClampLogTicks = LogThrottle.Never;
+            int loggedHolds = 0, loggedMisses = 0;
+            long lastHoldLogTicks = LogThrottle.Never;
             bool loggedPrecedence = false;
-            long lastRefusalLogTicks = long.MinValue;
+            long lastRefusalLogTicks = LogThrottle.Never;
             while (!stop.IsSet)
             {
                 auto?.Tick(clock.NowTicks);
@@ -503,6 +544,31 @@ namespace Teleop.RobotHost
                             continue;
                         }
 
+                        // A mixed take's planned move (docs/adr/0038 decision 1): metadata for the recording only; it moves nothing.
+                        if (ScriptMoveCodec.TryDecode(jointRecvBuffer.AsSpan(0, byteCount), out ScriptMove scriptMove, out uint scriptMoveSequence, out _))
+                        {
+                            if (lastScriptMove != scriptMoveSequence)
+                            {
+                                lastScriptMove = scriptMoveSequence;
+                                if (recorder != null && recorder.IsActive) recorder.Record(SessionLines.ScriptMove(arrivalTicks, scriptMove));
+                            }
+
+                            continue;
+                        }
+
+                        // A mixed take's replay group (docs/adr/0038 decision 2): which source take it belongs to, and the replay's edit.
+                        if (ReplayCodec.TryDecode(jointRecvBuffer.AsSpan(0, byteCount), out ReplayRecord replay, out uint replaySequence, out _))
+                        {
+                            if (lastReplay != replaySequence)
+                            {
+                                lastReplay = replaySequence;
+                                Console.WriteLine($"[script] {ReplayCodec.Name(replay.Role)} of group {replay.Group}: {ReplayCodec.Describe(replay)}");
+                                if (recorder != null && recorder.IsActive) recorder.Record(SessionLines.Replay(arrivalTicks, replay));
+                            }
+
+                            continue;
+                        }
+
                         if (WorldCodec.TryDecodeEdit(jointRecvBuffer.AsSpan(0, byteCount), out WorldEditOp editOp, out uint editSequence, out _, out ObjectPose editPose))
                         {
                             world?.HandleEdit(editOp, editSequence, editPose, operatorMode != "on", arrivalTicks);
@@ -543,14 +609,16 @@ namespace Teleop.RobotHost
 
                             // Parking or relaxed: ignored (counted, and recorded as P). The first one after start-up
                             // switches the torque on before it is applied.
+                            if (commandGate != null) commandGate.Sequence = commandSequence;
                             JointCommandOutcome outcome = power == null || power.AcceptOperatorCommand(arrivalTicks)
                                 ? plant.CommandJointAngles(jointTargetsBuffer!.AsSpan(0, targetCount), captureTicks)
                                 : JointCommandOutcome.Parked;
                             if (recorder != null && recorder.IsActive)
                             {
                                 // Read from the socket at socketTicks; reached the plant now (later only when the uplink is impaired).
-                                recorder.Record(SessionLines.JointCommand(socketTicks, arrivalTicks, commandSequence, captureTicks, outcome,
-                                    jointTargetsBuffer.AsSpan(0, targetCount)));
+                                // JC, and a clamped command's JK (docs/adr/0020 amendment 2026-11-24); its RO is already written.
+                                JointCommandRecords.Write(recorder.Record, socketTicks, arrivalTicks, commandSequence, captureTicks, outcome,
+                                    jointTargetsBuffer.AsSpan(0, targetCount), plant.LastClamp);
                             }
                         }
                     }
@@ -560,7 +628,7 @@ namespace Teleop.RobotHost
                 discovery?.Poll();
                 power?.Tick(clock.NowTicks);
 
-                if (power != null && power.IgnoredCommands != loggedIgnored && clock.NowTicks - lastIgnoredLogTicks >= 2 * clock.TicksPerSecond)
+                if (power != null && power.IgnoredCommands != loggedIgnored && LogThrottle.Due(clock.NowTicks, lastIgnoredLogTicks, 2 * clock.TicksPerSecond))
                 {
                     Console.WriteLine($"[power] ignored {power.IgnoredCommands - loggedIgnored} operator command(s): the arm is " +
                         $"{SessionLines.StateName(power.State)}; a hold request (ROBOT ON) lets them through");
@@ -574,14 +642,47 @@ namespace Teleop.RobotHost
                     loggedPrecedence = true;
                 }
 
-                // Refused joint commands (a pose that would collide, docs/adr/0020), at most one line
-                // every 2 s while they keep coming.
-                if (plant.RefusedJointCommands != loggedRefusals && clock.NowTicks - lastRefusalLogTicks >= 2 * clock.TicksPerSecond)
+                // Refused joint commands (a pose that would collide, docs/adr/0020; with the clamp, nothing toward it passed either),
+                // at most one line every 2 s while they keep coming.
+                if (plant.RefusedJointCommands != loggedRefusals && LogThrottle.Due(clock.NowTicks, lastRefusalLogTicks, 2 * clock.TicksPerSecond))
                 {
-                    Console.WriteLine($"[plant] refused {plant.RefusedJointCommands - loggedRefusals} joint command(s): the pose would collide " +
-                        $"({plant.DescribeLastRefusal()}); the arm holds");
+                    Console.WriteLine($"[plant] refused {plant.RefusedJointCommands - loggedRefusals} joint command(s): the pose, or the servo path to it " +
+                        "from where the arm is measured, would collide " +
+                        $"({plant.DescribeLastRefusal()})" +
+                        (plant.OnHostCheckFail == HostCheckOnFail.Clamp ? ", and no point toward it passes" : "") + "; the arm holds");
                     loggedRefusals = plant.RefusedJointCommands;
                     lastRefusalLogTicks = clock.NowTicks;
+                }
+
+                // Clamped joint commands (docs/adr/0020 amendment 2026-11-24): the check, then the clamp, then the gate. At most
+                // one line every 2 s. An invariant violation (never expected) is always worth the line.
+                if ((plant.ClampedJointCommands != loggedClamps || plant.ClampInvariantViolations != loggedViolations) &&
+                    LogThrottle.Due(clock.NowTicks, lastClampLogTicks, 2 * clock.TicksPerSecond))
+                {
+                    LineClampResult last = plant.LastClamp;
+                    Console.WriteLine($"[plant] clamped {plant.ClampedJointCommands - loggedClamps} joint command(s) to the farthest point toward " +
+                        $"them that passes the collision check ({plant.DescribeLastRefusal()} at the command" +
+                        (last.Kind != LineClampKind.Nothing ? $"; the last at alpha {last.Alpha:0.###}, {last.Checks} checks" : "") +
+                        (plant.GridClamps != loggedGridClamps ? $"; {plant.GridClamps - loggedGridClamps} on a non-monotone line, from the grid" : "") +
+                        ")" + (commandGate != null ? "; the gate judged the clamped command" : "") +
+                        (plant.ClampInvariantViolations != loggedViolations
+                            ? $"; {plant.ClampInvariantViolations - loggedViolations} CLAMP RESULT(S) FAILED THE RE-CHECK and were refused (a bug)"
+                            : ""));
+                    loggedClamps = plant.ClampedJointCommands;
+                    loggedGridClamps = plant.GridClamps;
+                    loggedViolations = plant.ClampInvariantViolations;
+                    lastClampLogTicks = clock.NowTicks;
+                }
+
+                // The command gate's holds and misses (docs/adr/0038 N), at most one line every 2 s.
+                if (commandGate != null && (commandGate.Holds != loggedHolds || commandGate.Misses != loggedMisses) &&
+                    LogThrottle.Due(clock.NowTicks, lastHoldLogTicks, 2 * clock.TicksPerSecond))
+                {
+                    Console.WriteLine($"[gate] held {commandGate.Holds - loggedHolds} joint command(s); the check missed its deadline " +
+                        $"{commandGate.Misses - loggedMisses} time(s)");
+                    loggedHolds = commandGate.Holds;
+                    loggedMisses = commandGate.Misses;
+                    lastHoldLogTicks = clock.NowTicks;
                 }
 
                 if (jointTransport != null)
@@ -644,6 +745,7 @@ namespace Teleop.RobotHost
 
             scenarios?.Stop("RobotHost is stopping");
             worldServer?.Dispose();
+            commandGate?.Dispose();
             sigterm?.Dispose();
             Console.WriteLine("Stopped.");
             return 0;

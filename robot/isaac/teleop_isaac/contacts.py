@@ -1,11 +1,13 @@
-"""Which of the arm's links touch which of the scene's objects (docs/adr/0036 amendment 1): PhysX's contact report, as
-the arm-server wire's contacts message (``wire.encode_contacts``) that RobotHost records as ``WC``.
+"""Which of the arm's links touch which of the scene's objects (docs/adr/0036 amendment 1), and the table (docs/adr/0038
+decision 4): PhysX's contact report, as the arm-server wire's contacts message (``wire.encode_contacts``) that RobotHost
+records as ``WC``.
 
 PhysX reports contact events per pair of shapes: ``FOUND`` when two start touching, ``PERSIST`` while they do, ``LOST``
 when they part. :class:`ContactTracker` keeps the pairs between a robot link and an object body that are touching now,
 and answers by (link, object): one contact however many shapes of the two touch, its normal force the sum of theirs.
-Every other pair (an object on the table or on another object, the robot on a surface) is not a contact here: the
-label is "the arm touches an object".
+Given ``surfaces``, a robot link against one of the scene's surfaces is a contact too, as object :data:`TABLE` (0), which
+the wire has always reserved for the table (the bench and the floor are reported as it: every surface the arm can stand
+on). Every other pair (an object on the table or on another object) is not a contact here.
 
 PhysX reports a pair from the moment the two shapes come within their contact offsets of each other (both shapes'
 summed), before they touch (docs/adr/0036 amendment 4). So a pair counts as touching on a step only when it has a contact
@@ -25,6 +27,7 @@ from typing import Dict, Iterable, List, Mapping, Sequence, Tuple
 FOUND, PERSIST, LOST = 0, 1, 2
 UNKNOWN_LINK = 255  # a robot body that is not one of the URDF's links (it should not happen; it is still a contact)
 JETROVER_ARM = 0  # the JetRover has one arm
+TABLE = 0  # the object id of the table on the wire and in WC (docs/adr/0038): every scene surface the arm touches
 
 # A touch (docs/adr/0036 amendment 4): a contact point at most this far apart (m), or any impulse.
 TOUCH_SEPARATION_M = 0.001
@@ -64,14 +67,17 @@ class ContactTracker:
     ``robot_path`` is the robot's prim (its links are the bodies under it); ``links`` the URDF's link names in order (a
     contact's link is the index of the last path element that names one); ``objects`` each object body's prim path and
     the object id it stands for (a resizable object has several bodies, one per size, all its id); ``dt`` the physics
-    step (s), to turn an impulse into a force."""
+    step (s), to turn an impulse into a force; ``surfaces`` the prim paths of the scene's colliding surfaces, each a static
+    collider whose own path PhysX reports as its body (matched on the shape's path too), reported as :data:`TABLE`."""
 
-    def __init__(self, robot_path: str, links: Sequence[str], objects: Mapping[str, int], dt: float, arm: int = JETROVER_ARM):
+    def __init__(self, robot_path: str, links: Sequence[str], objects: Mapping[str, int], dt: float, arm: int = JETROVER_ARM,
+                 surfaces: Iterable[str] = ()):
         if dt <= 0:
             raise ValueError("dt must be positive")
         self.robot = robot_path.rstrip("/") + "/"
         self.links = {name: i for i, name in enumerate(links)}
         self.objects = dict(objects)
+        self.surfaces = frozenset(surfaces)
         self.dt = dt
         self.arm = arm
         # (link, object, robot shape, object shape) -> force (N): the shape pairs touching now.
@@ -90,11 +96,14 @@ class ContactTracker:
         return UNKNOWN_LINK
 
     def _classify(self, e: ContactEvent):
-        """(link, object, robot shape, object shape) for a robot-object pair, else None."""
-        if e.body0.startswith(self.robot) and e.body1 in self.objects:
-            return self._link_of(e.body0), self.objects[e.body1], e.shape0, e.shape1
-        if e.body1.startswith(self.robot) and e.body0 in self.objects:
-            return self._link_of(e.body1), self.objects[e.body0], e.shape1, e.shape0
+        """(link, object, robot shape, object shape) for a robot-object or robot-surface pair (object :data:`TABLE`), else None."""
+        for robot, other, robot_shape, other_shape in ((e.body0, e.body1, e.shape0, e.shape1), (e.body1, e.body0, e.shape1, e.shape0)):
+            if not robot.startswith(self.robot) or other.startswith(self.robot):
+                continue
+            if other in self.objects:
+                return self._link_of(robot), self.objects[other], robot_shape, other_shape
+            if other in self.surfaces or other_shape in self.surfaces:
+                return self._link_of(robot), TABLE, robot_shape, other_shape
         return None
 
     def update(self, events: Iterable[ContactEvent]) -> bool:

@@ -73,6 +73,29 @@ namespace Teleop.RobotHost
         public double? ScenarioStopFreeGigabytes { get; init; }
 
         /// <summary>
+        /// The optional command gate (docs/adr/0038 N): <c>socket:&lt;path&gt;</c> or the example <c>table:&lt;mm&gt;:&lt;z&gt;</c>. Null, the
+        /// default, is off: RobotHost then asks nothing and writes no gate record. Only with <c>--auto-record-source isaac</c>
+        /// (the twin) unless <see cref="CommandGateOnRealRobot"/>.
+        /// </summary>
+        public string? CommandGate { get; init; }
+
+        /// <summary>How long the gate waits for its check, ms (default 5).</summary>
+        public double CommandGateDeadlineMs { get; init; } = 5;
+
+        /// <summary>A check that does not answer in time holds the command (default: it goes on).</summary>
+        public bool CommandGateFailClosed { get; init; }
+
+        /// <summary><c>--command-gate-on-real-robot</c>: the explicit flag a gate needs on anything but the twin.</summary>
+        public bool CommandGateOnRealRobot { get; init; }
+
+        /// <summary>
+        /// <c>--host-check-onfail clamp|refuse</c> (docs/adr/0020 amendment 2026-11-24): what the plant does with a joint command
+        /// that fails its collision check. Clamp, the default on the twin and the robot alike, sends the farthest point toward it
+        /// that passes; refuse drops it and holds, as before.
+        /// </summary>
+        public Plant.HostCheckOnFail HostCheckOnFail { get; init; } = Plant.HostCheckOnFail.Clamp;
+
+        /// <summary>
         /// Path to a <c>RobotArmProfile</c> JSON file (<c>core/RobotProfiles/*.json</c> convention,
         /// docs/adr/0011-generic-robot-arm-profiles.md) -- null (the default) falls back to
         /// <c>RobotArmProfile.JetRoverMeasuredDefault</c>, a compatibility convenience, not the
@@ -142,7 +165,7 @@ namespace Teleop.RobotHost
             "  [--scene <file> --world-socket <path> [--local-world-socket <path>] [--scene-seed <n>|auto] [--world-timeout <s>]]\n" +
             "  [--scenarios <dir> [--scenario-start-free-gb <gb>] [--scenario-stop-free-gb <gb>]]\n" +
             "  [--rest-pose-deg <d1,d2,...>] [--park-speed-rad-per-sec <r>] [--park-tolerance-deg <d>] [--park-timeout-seconds <s>]\n" +
-            "  [--park-contact-deg <d>]\n" +
+            "  [--park-contact-deg <d>] [--host-check-onfail clamp|refuse]\n" +
             "  --reply-to sender (default) replies to wherever the latest command came from;\n" +
             "  --remote-host/--remote-port are then only the target before the first command.\n" +
             "  --reply-to fixed always replies to --remote-host:--remote-port, which it requires.\n" +
@@ -187,7 +210,10 @@ namespace Teleop.RobotHost
             "  and gives up, holding, after --park-timeout-seconds (20). The straight joint path there is checked\n" +
             "  against the collision model, every sample, the rest pose included; --park-contact-deg (0: off) lets\n" +
             "  the samples within that many degrees of the rest pose touch the fixed boxes the rest pose itself\n" +
-            "  rests on, and nothing else.";
+            "  rests on, and nothing else.\n" +
+            "  --host-check-onfail says what happens to a joint command that fails the collision check (docs/adr/0020):\n" +
+            "  clamp (the default) sends the farthest point toward it, on the joint-space line from the measured pose,\n" +
+            "  that passes the same check, and holds only when none does; refuse drops it and holds, as before 2026-11-24.";
 
         private RobotHostArgs(
             int localPort, IPAddress? remoteHost, int? remotePort, bool replyToSender,
@@ -227,6 +253,10 @@ namespace Teleop.RobotHost
             string? recordControlPath = null;
             string? scenePath = null, worldSocket = null, localWorldSocket = null, scenarios = null;
             double? scenarioStartFree = null, scenarioStopFree = null;
+            string? commandGate = null;
+            double? gateDeadlineMs = null;
+            bool gateFailClosed = false, gateOnRealRobot = false;
+            Plant.HostCheckOnFail onFail = Plant.HostCheckOnFail.Clamp;
             ulong? sceneSeed = null;
             double worldTimeout = 60;
             string? uplinkControlPath = null;
@@ -404,6 +434,24 @@ namespace Teleop.RobotHost
                     case "--scenario-stop-free-gb" when i + 1 < args.Length:
                         scenarioStopFree = Number(args[i], args[++i]);
                         break;
+                    case "--command-gate" when i + 1 < args.Length:
+                        commandGate = args[++i];
+                        break;
+                    case "--command-gate-deadline-ms" when i + 1 < args.Length:
+                        gateDeadlineMs = Number(args[i], args[++i]);
+                        break;
+                    case "--command-gate-fail-closed":
+                        gateFailClosed = true;
+                        break;
+                    case "--command-gate-on-real-robot":
+                        gateOnRealRobot = true;
+                        break;
+                    case "--host-check-onfail" when i + 1 < args.Length:
+                        string onFailText = args[++i];
+                        if (onFailText == "clamp") onFail = Plant.HostCheckOnFail.Clamp;
+                        else if (onFailText == "refuse") onFail = Plant.HostCheckOnFail.Refuse;
+                        else autoError ??= $"--host-check-onfail is clamp or refuse, not '{onFailText}'.";
+                        break;
                 }
             }
 
@@ -485,6 +533,36 @@ namespace Teleop.RobotHost
                 return null;
             }
 
+            // The command gate (docs/adr/0038 N) holds the arm on another process's word, so it is off unless asked for, and on
+            // anything but the twin it also needs its own explicit flag: a copied command line cannot switch it on at the robot.
+            if (commandGate == null && (gateDeadlineMs != null || gateFailClosed || gateOnRealRobot))
+            {
+                error = "--command-gate-deadline-ms, --command-gate-fail-closed and --command-gate-on-real-robot need --command-gate.";
+                return null;
+            }
+
+            if (commandGate != null)
+            {
+                if (!Gate.CommandGate.TryParseSpec(commandGate, out _, out _, out _, out _, out string? gateError))
+                {
+                    error = gateError + ".";
+                    return null;
+                }
+
+                if (gateDeadlineMs is not null && !(gateDeadlineMs > 0 && gateDeadlineMs <= 100))
+                {
+                    error = "--command-gate-deadline-ms is more than 0 and at most 100.";
+                    return null;
+                }
+
+                if (!(autoRecord && auto.Source == "isaac") && !gateOnRealRobot)
+                {
+                    error = "--command-gate is for the twin (--auto-record --auto-record-source isaac); on the real robot it also needs " +
+                        "--command-gate-on-real-robot, after the review docs/adr/0038 N asks for.";
+                    return null;
+                }
+            }
+
             string? powerInvalid = power.Validate();
             if (powerInvalid != null)
             {
@@ -507,6 +585,11 @@ namespace Teleop.RobotHost
                 ScenariosRoot = scenarios,
                 ScenarioStartFreeGigabytes = scenarioStartFree,
                 ScenarioStopFreeGigabytes = scenarioStopFree,
+                CommandGate = commandGate,
+                CommandGateDeadlineMs = gateDeadlineMs ?? 5,
+                CommandGateFailClosed = gateFailClosed,
+                CommandGateOnRealRobot = gateOnRealRobot,
+                HostCheckOnFail = onFail,
             };
         }
 

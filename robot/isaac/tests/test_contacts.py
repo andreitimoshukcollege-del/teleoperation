@@ -6,6 +6,7 @@ import pytest
 
 from teleop_isaac import wire
 from teleop_isaac.contacts import (CONTACT_OFFSET_M, FOUND, LOST, PERSIST, REST_OFFSET_M, TOUCH_SEPARATION_M, UNKNOWN_LINK,
+                                   TABLE as TABLE_ID,
                                    ContactEvent, ContactTracker, urdf_links)
 
 ROBOT = "/World/jetrover"
@@ -142,3 +143,63 @@ def test_the_offsets_can_report_a_touch_and_see_the_fastest_step_coming():
     assert pair > TOUCH_SEPARATION_M
     fastest_step = 8.0 * 0.3 * 0.001  # 8 rad/s, 0.3 m out, one 1 ms step
     assert pair >= 2 * fastest_step
+
+
+# docs/adr/0038 decision 4: the arm against a surface is a contact with the table, object 0, the id the wire reserved for it.
+BENCH, FLOOR = "/World/Scene/Surfaces/s0_bench", "/World/Scene/Surfaces/s2_floor"
+
+
+def table_tracker():
+    return ContactTracker(ROBOT, LINKS, OBJECTS, dt=0.001, surfaces=[BENCH, TABLE, FLOOR])
+
+
+def test_a_link_on_a_surface_is_the_table_object_0():
+    t = table_tracker()
+    assert TABLE_ID == 0
+    assert t.update([ev(f"{ROBOT}/right_finger", TABLE, FOUND, 0.003, shape1=TABLE)]) is True
+    assert t.contacts() == [(0, 7, TABLE_ID, pytest.approx(3.0))]
+    # Either order, the bench is the table too, and one link on two surfaces is one contact, the forces summed.
+    assert t.update([ev(BENCH, f"{ROBOT}/right_finger", FOUND, 0.001, shape0=BENCH)]) is False
+    assert t.contacts() == [(0, 7, TABLE_ID, pytest.approx(4.0))]
+    assert t.update([ev(f"{ROBOT}/right_finger", TABLE, LOST, 0.0, shape1=TABLE),
+                     ev(BENCH, f"{ROBOT}/right_finger", LOST, 0.0, shape0=BENCH)]) is True
+    assert t.contacts() == []
+
+
+def test_the_table_beside_an_object_and_the_same_touch_rule():
+    t = table_tracker()
+    t.update([ev(GRIPPER, TABLE, FOUND, 0.0, shape1=TABLE, separation=0.004),  # inside the offsets: near, not a contact
+              ev(GRIPPER, CUBE, FOUND, 0.002)])
+    assert t.touching() == ((5, 1),) and t.near_events == 1
+    t.update([ev(GRIPPER, TABLE, PERSIST, 0.0, shape1=TABLE, separation=0.0006)])  # within 1 mm: a touch
+    assert t.touching() == ((5, TABLE_ID), (5, 1))
+    assert [c[:3] for c in t.contacts()] == [(0, 5, TABLE_ID), (0, 5, 1)]  # the wire's order: by link, then object
+    t.forget(1)  # placing an object never forgets the table
+    assert t.touching() == ((5, TABLE_ID),)
+
+
+def test_a_surface_reported_by_its_shape_path_is_the_table():
+    # PhysX names a static collider's body by its own prim; should it name another, the shape still says it is a surface.
+    t = table_tracker()
+    t.update([ev(f"{ROBOT}/wrist_link", "/World/Scene/Surfaces", FOUND, 0.001, shape1=TABLE)])
+    assert t.touching() == ((4, TABLE_ID),)
+
+
+def test_objects_on_the_table_are_still_not_contacts():
+    t = table_tracker()
+    changed = t.update([ev(CUBE, TABLE, FOUND, 0.01, shape1=TABLE),  # an object resting on the table
+                        ev(CUBE, "/World/Scene/Objects/o2_post", FOUND, 0.01)])
+    assert changed is False and t.contacts() == [] and t.near_events == 0
+
+
+def test_without_surfaces_the_table_is_not_reported_as_before():
+    t = tracker()
+    t.update([ev(f"{ROBOT}/right_finger", TABLE, FOUND, 0.003, shape1=TABLE)])
+    assert t.contacts() == []
+
+
+def test_a_table_contact_goes_on_the_wire_as_object_0():
+    t = table_tracker()
+    t.update([ev(f"{ROBOT}/left_finger", TABLE, FOUND, 0.0012, shape1=TABLE)])
+    sensed, contacts = wire.decode_contacts(wire.encode_contacts(9, 42, t.contacts()))
+    assert sensed == 42 and [(a, l, o) for a, l, o, _ in contacts] == [(0, 6, 0)]

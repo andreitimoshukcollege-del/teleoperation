@@ -33,6 +33,13 @@ namespace Teleop.Eval.JointDrive
 
         /// <summary>Safety: drive through an object and knock it over.</summary>
         CollideWithObstacle,
+
+        /// <summary>
+        /// Safety data where the scene decides (docs/adr/0038 decision 1, <see cref="MixedTake"/>): layout-blind moves and moves aimed
+        /// at or across objects at a signed offset from one continuous range, so physics alone decides whether the take touches
+        /// anything. Last, so the scripts before it keep their numbers (and seeds that use them).
+        /// </summary>
+        Mixed,
     }
 
     /// <summary>
@@ -183,7 +190,8 @@ namespace Teleop.Eval.JointDrive
         private readonly List<DriveLeg> _legs;
         private int _cursor;
 
-        private DrivePlan(List<DriveLeg> legs, DriveScript script, float speed, SafetyEvent[]? events = null, int eventsDrawn = 0, SafetyContinuation? pending = null)
+        private DrivePlan(List<DriveLeg> legs, DriveScript script, float speed, SafetyEvent[]? events = null, int eventsDrawn = 0, SafetyContinuation? pending = null,
+            PlannedMove[]? moves = null)
         {
             _legs = legs;
             Script = script;
@@ -191,6 +199,7 @@ namespace Teleop.Eval.JointDrive
             Events = events ?? Array.Empty<SafetyEvent>();
             EventsDrawn = eventsDrawn;
             Pending = pending;
+            Moves = moves ?? Array.Empty<PlannedMove>();
             int first = legs.FindIndex(l => l.Phase == LegPhase.Script);
             ScriptStart = first >= 0 ? legs[first].Start : TotalSeconds;
         }
@@ -199,7 +208,17 @@ namespace Teleop.Eval.JointDrive
         internal static DrivePlan ForSafety(List<DriveLeg> legs, DriveScript script, float speed, SafetyEvent[] events, int eventsDrawn, SafetyContinuation? pending) =>
             new DrivePlan(legs, script, speed, events, eventsDrawn, pending);
 
+        /// <summary>A mixed take's plan (<see cref="MixedTake"/>): its legs and its moves.</summary>
+        internal static DrivePlan ForMixed(List<DriveLeg> legs, float speed, PlannedMove[] moves, string report) =>
+            new DrivePlan(legs, DriveScript.Mixed, speed, moves: moves) { PlanningReport = report };
+
+        /// <summary>How the plan was found, for a report (a mixed take's object-directed moves tried and planned, and what refused the hand's parts).</summary>
+        public string PlanningReport { get; private set; } = "";
+
         public IReadOnlyList<DriveLeg> Legs => _legs;
+
+        /// <summary>A mixed take's planned moves (docs/adr/0038 decision 1), in the order they begin; none for the other scripts.</summary>
+        public IReadOnlyList<PlannedMove> Moves { get; }
 
         public DriveScript Script { get; }
 
@@ -232,7 +251,7 @@ namespace Teleop.Eval.JointDrive
         public static bool TryBuild(
             DriveScript script, in RobotArmProfile profile, in ArmPose start, float speedRadPerSec, double seconds, ulong seed,
             in DriveEnvelope envelope, out DrivePlan? plan, out string? error, IReadOnlyList<SafetyObject>? objects = null,
-            SafetyOptions? safetyOptions = null)
+            SafetyOptions? safetyOptions = null, MixedOptions? mixedOptions = null)
         {
             plan = null;
             error = null;
@@ -263,9 +282,21 @@ namespace Teleop.Eval.JointDrive
             bool safety = SafetyScript.IsSafety(script);
             bool fromHere = safety && objects != null && envelope.Contains(start) &&
                             ArmCollision.IsValid(profile, SafetyScript.WithObjects(model, objects, SafetyScript.ClearanceMeters), start);
-            if (!fromHere && start.MaxJointDelta(home) > 0.01f)
+            // A mixed take starts where the arm is, or home, or a pose near home, whichever is the quiet margin from every object
+            // (docs/adr/0038), and goes there on a path clear of the objects.
+            ArmPose begin = home;
+            List<(ArmPose To, bool Step)>? mixedVia = null;
+            if (script == DriveScript.Mixed && objects != null)
             {
-                if (!TryApproach(profile, model, start, home, out List<(ArmPose To, bool Step)> via, out error))
+                if (!MixedTake.TryStartPose(profile, model, envelope, objects, mixedOptions ?? new MixedOptions(), start, out begin, out mixedVia, out error)) return false;
+                fromHere = start.MaxJointDelta(begin) <= 0.01f;
+            }
+
+            if (!fromHere && start.MaxJointDelta(begin) > 0.01f)
+            {
+                List<(ArmPose To, bool Step)> via;
+                if (mixedVia != null) via = mixedVia;
+                else if (!TryApproach(profile, model, start, home, out via, out error))
                 {
                     return false;
                 }
@@ -285,7 +316,7 @@ namespace Teleop.Eval.JointDrive
             }
 
             var rng = new SeededRng(seed);
-            ArmPose current = fromHere ? start : home;
+            ArmPose current = fromHere ? start : begin;
             double end = t + seconds;
             int stepJoint = 0;
             if (script == DriveScript.Course)
@@ -302,6 +333,13 @@ namespace Teleop.Eval.JointDrive
                 {
                     error = $"{SafetyScript.Category(script)} plans around the scene's objects: it needs their poses (--scene)";
                     return false;
+                }
+
+                if (script == DriveScript.Mixed)
+                {
+                    // docs/adr/0038 decision 1: about --seconds of mixed moves, the take ending partway through one.
+                    return MixedTake.TryPlan(profile, model, envelope, objects, speedRadPerSec, current, t, seconds, ref rng, legs, mixedOptions ?? new MixedOptions(),
+                        out plan, out error);
                 }
 
                 if (safetyOptions == null || !safetyOptions.OneEventAtTheEnd)

@@ -1,0 +1,128 @@
+{
+  "format": "teleop-scene",
+  "version": 2,
+  "name": "jetrover-mixed",
+  "robotProfile": "jetrover",
+  "surfaces": [
+    {"id": "bench", "center": [-0.064, -0.014, -0.2162], "size": [0.328, 1.6, 0.04], "colour": [0.18, 0.18, 0.18], "staticFriction": 0.6, "dynamicFriction": 0.5, "collides": true, "headset": "builtin"},
+    {"id": "table", "center": [0.336, -0.014, -0.2162], "size": [0.472, 1.6, 0.04], "colour": [0.18, 0.18, 0.18], "staticFriction": 0.6, "dynamicFriction": 0.5, "collides": true, "headset": "builtin"},
+    {"id": "floor", "center": [0.0, 0.0, -1.055], "size": [8.0, 8.0, 0.02], "colour": [0.3, 0.3, 0.3], "staticFriction": 0.6, "dynamicFriction": 0.5, "collides": true, "headset": "hide"}
+  ],
+  "objects": [
+    {"id": 31, "name": "tomato-soup-can", "shape": "mesh", "asset": "ycb/005_tomato_soup_can", "size": [0.06766, 0.06771, 0.10185], "position": [0.3, 0.0, -0.14528], "rpy": [0, 0, 0.0], "kind": "movable", "mass": 0.349, "operatorMovable": true, "staticFriction": 0.35, "dynamicFriction": 0.3, "colour": [0.75, 0.15, 0.12], "jitter": [0, 0, 0], "role": "obstacle"},
+    {"id": 32, "name": "tuna-fish-can", "shape": "mesh", "asset": "ycb/007_tuna_fish_can", "size": [0.08556, 0.08554, 0.03354], "position": [0.3, 0.0, -0.17943], "rpy": [0, 0, 0.0], "kind": "movable", "mass": 0.171, "operatorMovable": true, "staticFriction": 0.35, "dynamicFriction": 0.3, "colour": [0.25, 0.4, 0.7], "jitter": [0, 0, 0], "role": "obstacle"},
+    {"id": 34, "name": "gelatin-box", "shape": "mesh", "asset": "ycb/009_gelatin_box", "size": [0.08918, 0.07312, 0.02998], "position": [0.3, 0.0, -0.18121], "rpy": [0, 0, 0.0], "kind": "movable", "mass": 0.097, "operatorMovable": true, "staticFriction": 0.5, "dynamicFriction": 0.4, "colour": [0.8, 0.2, 0.25], "jitter": [0, 0, 0], "role": "obstacle"},
+    {"id": 35, "name": "potted-meat-can", "shape": "mesh", "asset": "ycb/010_potted_meat_can", "size": [0.10165, 0.0576, 0.08354], "position": [0.3, 0.0, -0.15443], "rpy": [0, 0, 0.0], "kind": "movable", "mass": 0.37, "operatorMovable": true, "staticFriction": 0.35, "dynamicFriction": 0.3, "colour": [0.2, 0.35, 0.65], "jitter": [0, 0, 0], "role": "obstacle"},
+    {"id": 36, "name": "mug", "shape": "mesh", "asset": "ycb/025_mug", "size": [0.11699, 0.09309, 0.0813], "position": [0.3, 0.0, -0.15555], "rpy": [0, 0, 0.0], "kind": "movable", "mass": 0.118, "operatorMovable": true, "staticFriction": 0.5, "dynamicFriction": 0.4, "colour": [0.85, 0.85, 0.8], "jitter": [0, 0, 0], "role": "obstacle"},
+    {"id": 37, "name": "large-marker", "shape": "mesh", "asset": "ycb/040_large_marker", "size": [0.01883, 0.01948, 0.12089], "position": [0.3, 0.0, -0.13576], "rpy": [0, 0, 0.0], "kind": "movable", "mass": 0.0158, "operatorMovable": true, "staticFriction": 0.4, "dynamicFriction": 0.35, "colour": [0.1, 0.1, 0.12], "jitter": [0, 0, 0], "role": "obstacle"},
+    {"id": 38, "name": "foam-brick", "shape": "mesh", "asset": "ycb/061_foam_brick", "size": [0.07787, 0.05119, 0.05256], "position": [0.3, 0.0, -0.16992], "rpy": [0, 0, 0.0], "kind": "movable", "mass": 0.028, "operatorMovable": true, "staticFriction": 0.9, "dynamicFriction": 0.8, "colour": [0.8, 0.2, 0.15], "jitter": [0, 0, 0], "role": "obstacle"},
+    {"id": 51, "name": "cleaner-tin", "shape": "mesh", "asset": "polyhaven/cleaner_tin_01", "size": [0.0876, 0.0876, 0.1304], "position": [0.3, 0.0, -0.131], "rpy": [0, 0, 0.0], "kind": "movable", "mass": 0.25, "operatorMovable": true, "staticFriction": 0.35, "dynamicFriction": 0.3, "colour": [0.55, 0.55, 0.5], "jitter": [0, 0, 0], "role": "obstacle"},
+    {"id": 52, "name": "wooden-elephant", "shape": "mesh", "asset": "polyhaven/carved_wooden_elephant", "size": [0.1092, 0.0576, 0.0961], "position": [0.3, 0.0, -0.14815], "rpy": [0, 0, 0.0], "kind": "movable", "mass": 0.15, "operatorMovable": true, "staticFriction": 0.5, "dynamicFriction": 0.4, "colour": [0.55, 0.38, 0.22], "jitter": [0, 0, 0], "role": "obstacle"},
+    {"id": 60, "name": "tape-roll", "shape": "mesh", "asset": "polyhaven/medical_tape", "size": [0.0453, 0.04517, 0.02504], "position": [0.3, 0.0, -0.18368], "rpy": [0, 0, 0.0], "kind": "movable", "mass": 0.03, "operatorMovable": true, "staticFriction": 0.5, "dynamicFriction": 0.4, "colour": [0.85, 0.85, 0.8], "jitter": [0, 0, 0], "role": "obstacle"},
+    {"id": 73, "name": "small-tin", "shape": "mesh", "asset": "polyhaven/cleaner_tin_01", "size": [0.02977, 0.02977, 0.04434], "position": [0.3, 0.0, -0.17403], "rpy": [0, 0, 0.0], "kind": "movable", "mass": 0.03, "operatorMovable": true, "staticFriction": 0.35, "dynamicFriction": 0.3, "colour": [0.55, 0.55, 0.5], "jitter": [0, 0, 0], "role": "obstacle"},
+    {"id": 74, "name": "small-box", "shape": "mesh", "asset": "polyhaven/cardboard_box_01", "size": [0.03483, 0.04643, 0.03076], "position": [0.3, 0.0, -0.18082], "rpy": [0, 0, 0.0], "kind": "movable", "mass": 0.01, "operatorMovable": true, "staticFriction": 0.5, "dynamicFriction": 0.4, "colour": [0.68, 0.52, 0.34], "jitter": [0, 0, 0], "role": "obstacle"},
+    {"id": 72, "name": "small-cube", "shape": "box", "size": [0.03, 0.03, 0.03], "position": [0.3, 0.0, -0.1812], "rpy": [0, 0, 0.0], "kind": "movable", "mass": 0.0176, "operatorMovable": true, "staticFriction": 0.5, "dynamicFriction": 0.4, "colour": [0.6, 0.45, 0.3], "jitter": [0, 0, 0], "role": "obstacle", "steps": [-1, 1]},
+    {"id": 70, "name": "steel-rod", "shape": "cylinder", "size": [0.024, 0.024, 0.22], "position": [0.3, 0.0, -0.0862], "rpy": [0, 0, 0.0], "kind": "fixed", "operatorMovable": false, "staticFriction": 0.6, "dynamicFriction": 0.5, "colour": [0.6, 0.6, 0.62], "jitter": [0, 0, 0], "role": "obstacle", "steps": [-2, 2]},
+    {"id": 71, "name": "wooden-dowel", "shape": "cylinder", "size": [0.02, 0.02, 0.2], "position": [0.3, 0.0, -0.0962], "rpy": [0, 0, 0.0], "kind": "movable", "mass": 0.041, "operatorMovable": true, "staticFriction": 0.5, "dynamicFriction": 0.4, "colour": [0.62, 0.45, 0.28], "jitter": [0, 0, 0], "role": "obstacle", "steps": [-1, 2]},
+    {"id": 82, "name": "stand-post", "shape": "box", "size": [0.04, 0.04, 0.16], "position": [0.3, 0.0, -0.1162], "rpy": [0, 0, 0.0], "kind": "fixed", "operatorMovable": false, "staticFriction": 0.6, "dynamicFriction": 0.5, "colour": [0.5, 0.38, 0.25], "jitter": [0, 0, 0], "role": "stand", "steps": [-3, 0]},
+    {"id": 83, "name": "stand-pillar", "shape": "box", "size": [0.05, 0.05, 0.12], "position": [0.3, 0.0, -0.1362], "rpy": [0, 0, 0.0], "kind": "fixed", "operatorMovable": false, "staticFriction": 0.6, "dynamicFriction": 0.5, "colour": [0.6, 0.48, 0.32], "jitter": [0, 0, 0], "role": "stand", "steps": [-2, 1]},
+    {"id": 77, "name": "shelf-plank", "shape": "box", "size": [0.3, 0.08, 0.018], "position": [0.3, 0.0, -0.1872], "rpy": [0, 0, 0.0], "kind": "fixed", "operatorMovable": false, "staticFriction": 0.6, "dynamicFriction": 0.5, "colour": [0.62, 0.48, 0.3], "jitter": [0, 0, 0], "role": "plank", "supports": [78, 79], "steps": [-1, 1]},
+    {"id": 78, "name": "shelf-leg-a", "shape": "box", "size": [0.04, 0.06, 0.08], "position": [0.3, 0.0, -0.1562], "rpy": [0, 0, 0.0], "kind": "fixed", "operatorMovable": false, "staticFriction": 0.6, "dynamicFriction": 0.5, "colour": [0.55, 0.42, 0.28], "jitter": [0, 0, 0], "role": "support", "steps": [-3, 4]},
+    {"id": 79, "name": "shelf-leg-b", "shape": "box", "size": [0.04, 0.06, 0.08], "position": [0.3, 0.0, -0.1562], "rpy": [0, 0, 0.0], "kind": "fixed", "operatorMovable": false, "staticFriction": 0.6, "dynamicFriction": 0.5, "colour": [0.55, 0.42, 0.28], "jitter": [0, 0, 0], "role": "support", "steps": [-3, 4]},
+    {"id": 80, "name": "cantilever-plank", "shape": "box", "size": [0.26, 0.07, 0.02], "position": [0.3, 0.0, -0.1862], "rpy": [0, 0, 0.0], "kind": "fixed", "operatorMovable": false, "staticFriction": 0.6, "dynamicFriction": 0.5, "colour": [0.58, 0.46, 0.3], "jitter": [0, 0, 0], "role": "plank", "supports": [81], "steps": [-1, 1]},
+    {"id": 81, "name": "cantilever-base", "shape": "box", "size": [0.1, 0.1, 0.1], "position": [0.3, 0.0, -0.1462], "rpy": [0, 0, 0.0], "kind": "fixed", "operatorMovable": false, "staticFriction": 0.6, "dynamicFriction": 0.5, "colour": [0.45, 0.35, 0.24], "jitter": [0, 0, 0], "role": "support", "steps": [-3, 2]},
+    {"id": 62, "name": "pliers", "shape": "mesh", "asset": "polyhaven/tongue_groove_pliers", "size": [0.06251, 0.24442, 0.01387], "position": [0.15, 0.62, -0.18927], "rpy": [0, 0, 0.0], "kind": "movable", "mass": 0.25, "operatorMovable": false, "staticFriction": 0.35, "dynamicFriction": 0.3, "colour": [0.65, 0.12, 0.1], "jitter": [0, 0, 0], "clutter": true, "role": "distractor"},
+    {"id": 63, "name": "screwdrivers", "shape": "mesh", "asset": "polyhaven/screwdrivers_02", "size": [0.10046, 0.26993, 0.02708], "position": [0.15, 0.62, -0.18266], "rpy": [0, 0, 0.0], "kind": "movable", "mass": 0.12, "operatorMovable": false, "staticFriction": 0.4, "dynamicFriction": 0.35, "colour": [0.85, 0.65, 0.1], "jitter": [0, 0, 0], "clutter": true, "role": "distractor"},
+    {"id": 64, "name": "phone", "shape": "box", "size": [0.0715, 0.1468, 0.0079], "position": [0.15, 0.62, -0.19225], "rpy": [0, 0, 0.0], "kind": "movable", "mass": 0.17, "operatorMovable": false, "staticFriction": 0.4, "dynamicFriction": 0.35, "colour": [0.03, 0.03, 0.035], "jitter": [0, 0, 0], "clutter": true, "role": "distractor"},
+    {"id": 65, "name": "pen", "shape": "box", "size": [0.14, 0.009, 0.009], "position": [0.15, 0.62, -0.1917], "rpy": [0, 0, 0.0], "kind": "movable", "mass": 0.012, "operatorMovable": false, "staticFriction": 0.4, "dynamicFriction": 0.35, "colour": [0.05, 0.12, 0.5], "jitter": [0, 0, 0], "clutter": true, "role": "distractor"},
+    {"id": 58, "name": "parcel-mid", "shape": "mesh", "asset": "polyhaven/cardboard_box_01", "size": [0.1316, 0.1754, 0.1162], "position": [0.15, 0.62, -0.1381], "rpy": [0, 0, 0.0], "kind": "movable", "mass": 0.15, "operatorMovable": false, "staticFriction": 0.5, "dynamicFriction": 0.4, "colour": [0.68, 0.52, 0.34], "jitter": [0, 0, 0], "role": "distractor"},
+    {"id": 53, "name": "wooden-bowl", "shape": "mesh", "asset": "polyhaven/wooden_bowl_02", "size": [0.1307, 0.1245, 0.0731], "position": [0.15, 0.62, -0.15965], "rpy": [0, 0, 0.0], "kind": "movable", "mass": 0.12, "operatorMovable": false, "staticFriction": 0.5, "dynamicFriction": 0.4, "colour": [0.6, 0.42, 0.25], "jitter": [0, 0, 0], "role": "distractor"},
+    {"id": 43, "name": "vintage-electric-kettle", "shape": "mesh", "asset": "polyhaven/vintage_electric_kettle", "size": [0.32089, 0.24855, 0.30474], "position": [0.2, 0.62, -0.04383], "rpy": [0, 0, 0.0], "kind": "fixed", "operatorMovable": false, "staticFriction": 0.6, "dynamicFriction": 0.5, "colour": [0.75, 0.75, 0.72], "jitter": [0, 0, 0], "role": "distractor"}
+  ],
+  "placement": {"xMin": -0.3, "xMax": 0.6, "yMin": -0.6, "yMax": 0.6, "clearance": 0.01},
+  "pool": {"obstacleMin": 0, "obstacleMax": 3, "reachMin": 0.13, "reachMax": 0.34, "reachBearing": 1.658, "lyingShare": 0.35, "standShare": 0.3, "rigShare": 0.2, "tallShare": 0.1, "workMin": 0.16, "workMax": 0.3, "workBearing": 1.0472, "standTopMin": 0.4, "standTopMax": 0.75, "rigUnderMin": 0.04, "rigUnderMax": 0.2, "distractorMin": 2, "distractorMax": 6, "distractorRegions": [-0.2, 0.4, 0.47, 0.72, -0.2, 0.4, -0.72, -0.47, 0.28, 0.52, 0.28, 0.47, 0.28, 0.52, -0.47, -0.28], "distractorReach": 0.45, "robotKeepOut": [-0.21, 0.14, -0.2, 0.2], "knockMaxMass": 0.7},
+  "environment": {"kind": "hdri", "dome": "dome", "change": "per-session", "manifest": "~/isaacsim/assets/hdri/polyhaven-indoor/manifest.json", "meanRadiance": 1000, "targetBrightness": 118, "yawDeg": [0, 360], "rotateXYZDeg": [0, 0, 0], "hideSurfaces": ["floor"]},
+  "materials": {
+    "manifest": "~/isaacsim/assets/textures/polyhaven/manifest.json",
+    "box": ["wood"],
+    "cylinder": ["metal", "wood"],
+    "looks": {
+      "black-resin": {"texture": "smooth_concrete_floor", "desaturation": 1.0, "tint": [0.05, 0.05, 0.05], "roughness": 0.3, "roughnessTexture": 0.25, "weight": 2},
+      "black-laminate": {"texture": "laminate_floor_02", "desaturation": 0.9, "tint": [0.08, 0.08, 0.08], "roughness": 0.4, "roughnessTexture": 0.5, "weight": 2},
+      "grey-laminate": {"texture": "grey_oak_veneer_01", "desaturation": 0.85, "tint": [0.42, 0.42, 0.42]},
+      "wood-kitchen": {"texture": "kitchen_wood"},
+      "wood-table": {"texture": "wood_table_001"},
+      "wood-plywood": {"texture": "plywood"},
+      "wood-oak": {"texture": "oak_veneer_01"},
+      "cutting-mat": {"texture": "teleop_cutting_mat"},
+      "fabric-linen": {"texture": "rough_linen"},
+      "fabric-denim": {"texture": "denim_fabric_03"},
+      "fabric-hessian": {"texture": "hessian_230"},
+      "kraft-paper": {"texture": "teleop_kraft_paper"},
+      "cardboard": {"texture": "teleop_cardboard"},
+      "white-paper": {"texture": "teleop_white_paper"},
+      "glossy-black": {"texture": "smooth_concrete_floor", "desaturation": 1.0, "tint": [0.02, 0.02, 0.022], "roughness": 0.08},
+      "pen-blue": {"texture": "smooth_concrete_floor", "desaturation": 1.0, "tint": [0.03, 0.09, 0.45], "roughness": 0.35},
+      "pen-black": {"texture": "smooth_concrete_floor", "desaturation": 1.0, "tint": [0.025, 0.025, 0.025], "roughness": 0.35},
+      "pen-red": {"texture": "smooth_concrete_floor", "desaturation": 1.0, "tint": [0.55, 0.04, 0.03], "roughness": 0.35},
+      "wood-walnut": {"texture": "american_walnut_veneer"},
+      "wood-ash": {"texture": "ash_veneer"},
+      "wood-bamboo": {"texture": "bamboo_veneer"},
+      "wood-cherry": {"texture": "cherry_veneer"},
+      "wood-natural-walnut": {"texture": "natural_walnut_veneer"},
+      "wood-pine": {"texture": "coated_pine"},
+      "metal-plate": {"texture": "metal_plate"},
+      "metal-rusty": {"texture": "rusty_metal"},
+      "metal-green-rust": {"texture": "green_metal_rust"}
+    },
+    "surfaces": {
+      "table": ["black-resin", "black-laminate", "grey-laminate", "wood-kitchen", "wood-table", "wood-plywood", "wood-oak", "cutting-mat", "fabric-linen", "fabric-denim", "fabric-hessian", "kraft-paper", "cardboard", "white-paper"],
+      "bench": ["black-resin", "black-laminate", "grey-laminate", "wood-kitchen", "wood-table", "wood-plywood", "wood-oak"]
+    },
+    "objects": {
+      "phone": ["glossy-black"],
+      "pen": ["pen-blue", "pen-black", "pen-red"],
+      "steel-rod": ["metal-plate", "metal-rusty", "metal-green-rust"],
+      "wooden-dowel": ["wood-walnut", "wood-ash", "wood-bamboo", "wood-cherry", "wood-natural-walnut", "wood-pine"],
+      "small-cube": ["wood-walnut", "wood-ash", "wood-bamboo", "wood-cherry", "wood-natural-walnut", "wood-pine"],
+      "stand-post": ["wood-walnut", "wood-ash", "wood-bamboo", "wood-cherry", "wood-natural-walnut", "wood-pine"],
+      "stand-pillar": ["wood-walnut", "wood-ash", "wood-bamboo", "wood-cherry", "wood-natural-walnut", "wood-pine"],
+      "shelf-plank": ["wood-walnut", "wood-ash", "wood-bamboo", "wood-cherry", "wood-natural-walnut", "wood-pine"],
+      "shelf-leg-a": ["wood-walnut", "wood-ash", "wood-bamboo", "wood-cherry", "wood-natural-walnut", "wood-pine"],
+      "shelf-leg-b": ["wood-walnut", "wood-ash", "wood-bamboo", "wood-cherry", "wood-natural-walnut", "wood-pine"],
+      "cantilever-plank": ["wood-walnut", "wood-ash", "wood-bamboo", "wood-cherry", "wood-natural-walnut", "wood-pine", "metal-plate", "metal-rusty", "metal-green-rust"],
+      "cantilever-base": ["wood-walnut", "wood-ash", "wood-bamboo", "wood-cherry", "wood-natural-walnut", "wood-pine"]
+    },
+    "tileScale": 1.0
+  },
+  "clutter": {
+    "countMin": 0,
+    "countMax": 8,
+    "region": [0.105, 0.567, -0.809, 0.781],
+    "keepOut": [-0.25, 0.14, -0.15, 0.15],
+    "kinds": [
+      {"kind": "a4", "shape": "sheet", "weight": 3, "size": [0.21, 0.297], "thickness": 0.0001, "stackMin": 1, "stackMax": 6, "fan": 0.35, "spread": 0.03, "texture": "teleop_white_paper", "colours": [1.0, 1.0, 1.0, 0.95, 0.92, 0.82, 0.86, 0.9, 0.97]},
+      {"kind": "sticky-note", "shape": "sheet", "weight": 2, "size": [0.076, 0.076], "thickness": 0.0001, "stackMin": 1, "stackMax": 5, "fan": 1.0, "spread": 0.06, "texture": "teleop_white_paper", "colours": [1.0, 0.85, 0.2, 1.0, 0.45, 0.55, 0.35, 0.65, 1.0, 0.4, 0.85, 0.3, 1.0, 0.5, 0.12]},
+      {"kind": "cutting-mat", "shape": "sheet", "weight": 1, "maxCount": 1, "size": [0.42, 0.594], "thickness": 0.002, "yawJitter": 0.05, "texture": "teleop_cutting_mat"},
+      {"kind": "cable-blue", "shape": "cable", "weight": 3, "diameterMin": 0.0035, "diameterMax": 0.005, "lengthMin": 0.35, "lengthMax": 1.1, "colours": [0.02, 0.1, 0.5], "roughness": 0.45, "keepOut": [-0.25, 0.42, -0.42, 0.42]},
+      {"kind": "cable-black", "shape": "cable", "weight": 1.5, "diameterMin": 0.0035, "diameterMax": 0.005, "lengthMin": 0.35, "lengthMax": 1.1, "colours": [0.02, 0.02, 0.022], "roughness": 0.4, "keepOut": [-0.25, 0.42, -0.42, 0.42]},
+      {"kind": "cable-white", "shape": "cable", "weight": 1, "diameterMin": 0.0035, "diameterMax": 0.005, "lengthMin": 0.35, "lengthMax": 1.1, "colours": [0.7, 0.7, 0.68], "roughness": 0.45, "keepOut": [-0.25, 0.42, -0.42, 0.42]},
+      {"kind": "cable-grey", "shape": "cable", "weight": 1, "diameterMin": 0.0035, "diameterMax": 0.005, "lengthMin": 0.35, "lengthMax": 1.1, "colours": [0.2, 0.21, 0.22], "roughness": 0.45, "keepOut": [-0.25, 0.42, -0.42, 0.42]},
+      {"kind": "bag", "shape": "bag", "weight": 1, "maxCount": 1, "size": [0.26, 0.36], "sizeJitter": 0.2, "height": 0.005, "colours": [0.75, 0.75, 0.73, 0.03, 0.1, 0.45, 0.015, 0.015, 0.015, 0.35, 0.37, 0.4], "roughness": 0.18, "keepOut": [-0.25, 0.42, -0.42, 0.42]}
+    ]
+  },
+  "cameras": [
+    {"id": "third-left", "position": [0.88, 0.51, 0.32], "lookAt": [0.08, 0.0, 0.07], "width": 640, "height": 360, "hfovDeg": 69.0, "near": 0.02, "far": 6.0, "fps": 30, "feedPort": 6008, "feedQuality": 80, "recordQuality": 92, "record": ["rgb", "depth", "mask"]},
+    {"id": "third-right", "position": [0.88, -0.51, 0.32], "lookAt": [0.08, 0.0, 0.07], "width": 640, "height": 360, "hfovDeg": 69.0, "near": 0.02, "far": 6.0, "fps": 30, "feedPort": 6009, "feedQuality": 80, "recordQuality": 92, "record": ["rgb", "depth", "mask"]},
+    {"id": "wrist", "mount": "wrist_link", "mountPosition": [0.1, 0.0, 0.05], "mountLookAt": [0.26, 0.0, -0.01], "mountUp": [0.0, 0.0, 1.0], "width": 640, "height": 360, "hfovDeg": 87.0, "near": 0.01, "far": 6.0, "fps": 30, "feedPort": 6003, "feedQuality": 80, "recordQuality": 92, "record": ["rgb", "depth", "mask"]}
+  ],
+  "lights": [
+    {"id": "dome", "kind": "dome", "intensity": 1000}
+  ],
+  "appearance": {
+    "objects": {"brightness": [0.85, 1.1], "desaturation": [0.0, 0.25], "tint": 0.05},
+    "lighting": {"colourTemperatureK": [5500, 7500], "exposure": [108, 128],
+                 "key": {"intensity": [0.5, 2.5], "azimuthDeg": [0, 360], "elevationDeg": [35, 75], "angleDeg": [1, 6], "colourTemperatureK": [3500, 6500]}},
+    "cameras": {"room": {"translationM": 0.015, "rotationDeg": 2.0}, "mounted": {"translationM": 0.003, "rotationDeg": 1.5}}
+  }
+}

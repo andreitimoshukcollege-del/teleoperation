@@ -26,8 +26,8 @@ def wo(t_ms, poses):
     return ["WO", t_ms * MS + MS, t_ms * MS, 1, text]
 
 
-def take(root, category, extra, name="20261114T100000Z-take001"):
-    return jetrover_take(root, name=name, scenario=category, extra=extra)
+def take(root, category, extra, name="20261114T100000Z-take001", at_s=0.0):
+    return jetrover_take(root, name=name, scenario=category, extra=extra, at_s=at_s)
 
 
 def verdict(path):
@@ -110,11 +110,14 @@ def test_no_contact_categories_fail_on_any_touch(scenarios):
     assert not verdict(take(scenarios, "collide_with_obstacle", [], name="20261114T100300Z-take004"))[2].ok  # never touched
 
 
-def test_the_dataset_take_has_his_front_camera_and_category_task(scenarios):
+def test_the_dataset_take_has_his_front_camera_and_a_neutral_task_or_its_category(scenarios):
     t = safety.as_safety(read_take(take(scenarios, "collide_and_recover", [])))
     assert [c.name for c in t.cameras] == ["third-left", "front"]
     assert all("front" in f.parts and "wrist" not in f.parts for f in t.frames)
-    assert t.task == "collide_and_recover" and t.scenario == "collide_and_recover"
+    # docs/adr/0038 decision 6: the caption no longer names the scenario; the old one on request (rebuild comparisons).
+    assert t.task == "move the arm" and t.scenario == "collide_and_recover"
+    old = safety.as_safety(read_take(take(scenarios, "collide_and_recover", [], name="20261114T100100Z-take002")), caption="category")
+    assert old.task == "collide_and_recover"
 
 
 def test_his_label_files(tmp_path):
@@ -210,6 +213,7 @@ def test_the_video_encoding_override_reaches_lerobots_encoder_and_is_put_back(mo
 
 def test_the_watcher_leaves_the_safety_scenarios_alone(scenarios):
     take(scenarios, "collide_with_obstacle", [])
+    take(scenarios, "mixed", [], name="20261122T100000Z-take001")  # docs/adr/0038's script: a batch's dataset too
     jetrover_take(scenarios, scenario="free-play")
     found = complete_takes([scenarios], now=1e12, settle=0)
     assert [os.path.basename(os.path.dirname(t)) for t in found] == ["free-play"]
@@ -314,34 +318,126 @@ def test_the_planned_events_and_where_physics_put_them_come_from_the_take(scenar
     assert safety.planned_events(stop)[0]["contact"] is None
 
 
-def test_one_dataset_from_two_twins_takes(tmp_path):
-    # docs/adr/0037 amendment 7: two twins record into their own roots (jetrover-isaac, jetrover-isaac-twin1), and their kept
-    # takes, in the order they were recorded, become one dataset: an episode each, labelled as one batch's would be.
+class RootWriter:
+    """A LeRobot stand-in that numbers each dataset's episodes from 0, as LeRobot does (its meta/info.json)."""
+
+    def __init__(self):
+        self.episodes = []
+
+    def append(self, root, repo, t):
+        n = sum(1 for r, _, _ in self.episodes if r == root)
+        self.episodes.append((root, repo, t.path))
+        os.makedirs(os.path.join(root, "meta"), exist_ok=True)
+        with open(os.path.join(root, "meta", "info.json"), "w") as f:
+            json.dump({"total_episodes": n + 1}, f)
+        return n
+
+
+def test_two_twins_takes_become_a_dataset_each_and_never_one(tmp_path):
+    # docs/adr/0037 amendment 7 built the two twins' kept takes, in the order they were recorded, as one dataset. The twins
+    # record at once on the GPU machine's one CLOCK_MONOTONIC, so their takes overlap on it, and a reader that picks
+    # raw_ros_events.jsonl's commands by time took a third of its checkpoints from the other twin's arm (world-models' review
+    # of jetrover_20261124_021454_cb1e21, docs/adr/0038 L). One dataset of both is refused; each twin's is its own.
     pytest.importorskip("pandas")
     pytest.importorskip("pyarrow")
     first, second = tmp_path / "jetrover-isaac", tmp_path / "jetrover-isaac-twin1"
     first.mkdir(), second.mkdir()
     a = take(str(first), "collide_and_recover", [wc(1500, "0:5:2:1.5"), wc(1620)], name="20261121T100000Z-take001")
-    b = take(str(second), "reach_no_obstacle", [], name="20261121T100030Z-take001")  # the same number: its own root's first
-    c = take(str(first), "stop_before_collision", [], name="20261121T100100Z-take002")
-
-    class Writer:
-        def __init__(self):
-            self.episodes = []
-
-        def append(self, root, repo, t):
-            self.episodes.append((repo, t.path))
-            return len(self.episodes) - 1
-
-    w = Writer()
+    b = take(str(second), "reach_no_obstacle", [], name="20261121T100001Z-take001", at_s=1)  # while a records
+    c = take(str(first), "stop_before_collision", [], name="20261121T100100Z-take002", at_s=60)
+    takes = [read_take(p) for p in (a, b, c)]
+    w = RootWriter()
     out = str(tmp_path / "out" / "jetrover_20261121_100000_abcdef")
-    written = safety.build(w, out, [read_take(p) for p in (a, b, c)], log=lambda m: None)
-    assert [(ep, cat) for ep, cat, _ in written] == [(0, "collide_and_recover"), (1, "reach_no_obstacle"), (2, "stop_before_collision")]
-    assert [p for _, p in w.episodes] == [a, b, c]
-    assert {repo for repo, _ in w.episodes} == {"local/jetrover-isaac-safety_jetrover_20261121_100000_abcdef"}  # one dataset
-    ledger = [json.loads(x) for x in open(os.path.join(out, "meta", "teleop", "takes.jsonl"))]
-    assert [os.path.basename(os.path.dirname(os.path.dirname(e["take"]))) for e in ledger] == ["jetrover-isaac", "jetrover-isaac-twin1", "jetrover-isaac"]
-    assert json.loads(open(os.path.join(out, "manual_safety_labels.json")).read()).keys() == {"0"}
+    with pytest.raises(safety.OverlapError) as refused:
+        safety.build(w, out, takes, log=lambda m: None)
+    message = str(refused.value)
+    assert message.startswith(f"{out}: 1 pair(s) of the 3 takes overlap in time on the clock raw_ros_events.jsonl and ")
+    assert ("One dataset holds one collection stream (docs/adr/0038 L): they come from 2 takes roots, and safety-build "
+            "(build_streams) writes each root's takes, each twin's, as a dataset of its own.") in message
+    # A take's span is every time the two lab files hold for it: here its first command (RO, 0.9 s) to its last reading
+    # (RI, 3.205 s), around its frames (1.0 to 3.0 s); seconds from the earliest.
+    from teleop_lerobot.writer import clock_span
+
+    assert [clock_span(t) for t in takes] == [(900 * MS, 3205 * MS), (1900 * MS, 4205 * MS), (60900 * MS, 63205 * MS)]
+    assert f"episode 0 ({a}) (0.00-2.31 s) and episode 1 ({b}) (1.00-3.31 s) overlap by 1.30 s" in message
+    assert "episode 2" not in message  # c, a minute later, overlaps nothing
+    assert w.episodes == [] and not os.path.exists(out)  # refused before anything was written
+    with pytest.raises(safety.OverlapError):
+        safety.build_split(w, out, takes, 2, log=lambda m: None)
+    assert not any(os.path.exists(r) for r in safety.split_roots(out, 2))
+
+    logged = []
+    roots = safety.build_streams(w, out, takes, log=logged.append)
+    assert roots == [out + "_twin0", out + "_twin1"]
+    assert [(os.path.basename(r), p) for r, _, p in w.episodes] == [(os.path.basename(out) + "_twin0", a),
+                                                                     (os.path.basename(out) + "_twin0", c),
+                                                                     (os.path.basename(out) + "_twin1", b)]
+    ledgers = [[(e["episode"], e["take"]) for e in map(json.loads, open(os.path.join(r, "meta", "teleop", "takes.jsonl")))]
+               for r in roots]
+    assert ledgers == [[(0, a), (1, c)], [(0, b)]]  # each dataset numbers its own episodes, in the order recorded
+    assert json.load(open(os.path.join(roots[0], "manual_safety_labels.json"))).keys() == {"0"}
+    assert json.load(open(os.path.join(roots[1], "manual_safety_labels.json"))) == {}
+    assert f"[stream] {os.path.basename(out)}_twin0: 2 take(s) from {os.path.realpath(first)}" in logged
+    assert f"[stream] {os.path.basename(out)}_twin1: 1 take(s) from {os.path.realpath(second)}" in logged
+    # Every raw command and reading names its episode, so nothing need place it by time (docs/adr/0038 L).
+    raw = [json.loads(x) for x in open(os.path.join(roots[0], "raw_ros_events.jsonl"))]
+    assert sorted({e["episode_index"] for e in raw}) == [0, 1] and [e["episode_index"] for e in raw] == sorted(e["episode_index"] for e in raw)
+    from teleop_lerobot.writer import episode_spans
+
+    spans, unplaced = episode_spans(roots[0])
+    assert unplaced == [] and sorted(spans) == [0, 1] and spans[0][1] < spans[1][0]
+
+
+def test_overlapping_spans_are_every_pair_that_shares_a_moment():
+    from teleop_lerobot.writer import overlap_lines, overlapping
+
+    spans = [(0, 10), (10, 20), (21, 30), (5, 6), (31, 31), (25, 40)]
+    assert overlapping(spans) == [(0, 1), (0, 3), (2, 5), (4, 5)]  # ends included: 10 is in both of the first two
+    assert overlapping([(0, 1)]) == [] and overlapping([]) == []
+    assert overlapping([(5, 9), (5, 9)]) == [(0, 1)]  # a take given twice
+    lines = overlap_lines([f"e{i}" for i in range(6)], [(s * 10 ** 9, e * 10 ** 9) for s, e in spans], overlapping(spans), listed=2)
+    assert lines == ["e0 (0.00-10.00 s) and e1 (10.00-20.00 s) overlap by 0.00 s",
+                     "e0 (0.00-10.00 s) and e3 (5.00-6.00 s) overlap by 1.00 s", "and 2 more overlapping pair(s)"]
+
+
+def test_a_stream_is_the_takes_root_and_the_twins_roots_are_named_by_twin(tmp_path):
+    assert safety.stream_of(str(tmp_path / "jetrover-isaac-twin1" / "mixed" / "20261124T020651Z-take001")) == \
+        os.path.realpath(str(tmp_path / "jetrover-isaac-twin1"))
+    twins = ["/d/takes/jetrover-isaac", "/d/takes/jetrover-isaac-twin1"]
+    assert safety.stream_names(twins) == {twins[0]: "twin0", twins[1]: "twin1"}
+    assert safety.stream_names(["/d/takes/jetrover-isaac-twin1"]) == {"/d/takes/jetrover-isaac-twin1": "twin1"}
+    assert safety.stream_names(["/d/takes/jetrover-isaac", "/d/takes/jetrover-real"]) == {
+        "/d/takes/jetrover-isaac": "jetrover-isaac", "/d/takes/jetrover-real": "jetrover-real"}  # no twins: folder names
+    with pytest.raises(ValueError, match="would both be named 'jetrover-isaac'"):
+        safety.stream_names(["/a/jetrover-isaac", "/b/jetrover-isaac"])
+    assert safety.stream_roots("/o/x", ["twin0"]) == ["/o/x"]  # one stream: the name asked for, as before
+    assert safety.stream_roots("/o/x", ["twin0", "twin1"], 2) == ["/o/x_twin0_1of2", "/o/x_twin0_2of2", "/o/x_twin1_1of2",
+                                                                  "/o/x_twin1_2of2"]
+
+
+def test_the_build_command_refuses_takes_that_overlap_and_writes_nothing(scenarios, tmp_path, capsys, monkeypatch):
+    # One takes root whose takes overlap in time (a twin's clock gone wrong, or one take given twice): exit 3, every pair named.
+    from teleop_lerobot import writer
+    from teleop_lerobot.__main__ import main
+
+    class NoWriter:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def append(self, *args, **kwargs):
+            raise AssertionError("a refused build wrote an episode")
+    monkeypatch.setattr(writer, "LeRobotWriter", NoWriter)
+    a = take(scenarios, "reach_no_obstacle", [], name="20261124T100000Z-take001")
+    b = take(scenarios, "reach_no_obstacle", [], name="20261124T100002Z-take002", at_s=2)
+    out = str(tmp_path / "ds")
+    assert main(["safety-build", "--jobs", "1", "--geometry-dir", "", "--out", out, a, b]) == 3
+    text = capsys.readouterr().out
+    assert f"[refused] {out}: 1 pair(s) of the 2 takes overlap in time" in text
+    assert "they come from one takes root, whose takes overlap only when one is given twice or two recorders wrote into it." in text
+    assert f"[refused]   episode 0 ({a}) (0.00-2.31 s) and episode 1 ({b}) (2.00-4.30 s) overlap by 0.30 s" in text
+    assert not os.path.exists(out)
+    assert main(["safety-build", "--jobs", "1", "--geometry-dir", "", "--split", "2", "--out", out, a, a]) == 3
+    assert "take 0 (" in capsys.readouterr().out and not os.path.exists(out + "_1of2")
 
 
 class PreparingWriter:
@@ -390,7 +486,8 @@ def test_a_parallel_build_appends_what_the_workers_prepared_in_the_takes_order(s
     pytest.importorskip("pyarrow")
     from concurrent.futures import ThreadPoolExecutor
 
-    paths = [take(scenarios, c, [wc(1500, "0:5:2:1.5"), wc(1620)] if c == "collide_and_recover" else [], name=f"20261121T1000{i}0Z-take00{i}")
+    paths = [take(scenarios, c, [wc(1500, "0:5:2:1.5"), wc(1620)] if c == "collide_and_recover" else [], name=f"20261121T1000{i}0Z-take00{i}",
+                  at_s=10 * i)
              for i, c in enumerate(("collide_and_recover", "reach_no_obstacle", "stop_before_collision", "collide_and_recover"))]
     takes = [read_take(p) for p in paths]
     w = PreparingWriter(total=4)
@@ -437,7 +534,7 @@ def test_the_workers_run_at_most_ahead_of_the_writer(scenarios, tmp_path):
 def test_a_worker_that_fails_stops_the_build_and_leaves_no_prepared_files(scenarios, tmp_path):
     from concurrent.futures import ThreadPoolExecutor
 
-    takes = [read_take(take(scenarios, "reach_no_obstacle", [], name=f"20261121T1000{i}0Z-take00{i}")) for i in range(4)]
+    takes = [read_take(take(scenarios, "reach_no_obstacle", [], name=f"20261121T1000{i}0Z-take00{i}", at_s=10 * i)) for i in range(4)]
     w = PreparingWriter(fail_at=1, total=4)
     out = str(tmp_path / "out" / "failed")
     with ThreadPoolExecutor(2) as pool, pytest.raises(RuntimeError, match="episode 1 could not be prepared"):

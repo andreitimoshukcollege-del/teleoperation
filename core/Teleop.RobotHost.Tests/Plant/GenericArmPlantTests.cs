@@ -155,7 +155,7 @@ namespace Teleop.RobotHost.Tests.Plant
         public void CommandJointAngles_RefusesAPoseThatWouldHitTheRobot()
         {
             var relay = new FakeRelayClient();
-            var plant = new GenericArmPlant(Config, relay);
+            var plant = new GenericArmPlant(Config, relay) { OnHostCheckFail = HostCheckOnFail.Refuse };
             // The shoulder driven down into the plate.
             plant.CommandJointAngles(AllJoints(new ArmPose(0f, -1.7f, 1.0f, 0f, 0f)), captureTicks: 10);
 

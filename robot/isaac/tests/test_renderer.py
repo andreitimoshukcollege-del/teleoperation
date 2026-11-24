@@ -282,3 +282,183 @@ def test_a_cameras_own_exposure_is_a_gain_in_linear_light_within_its_range():
     assert abs(int(up[118]) - 161) <= 1 and abs(int(down[118]) - 85) <= 1
     img = np.array([[[118, 0, 255]]], np.uint8)
     assert up[img].tolist() == [[[up[118], 0, 255]]]
+
+
+# --- frame pacing (docs/adr/0038 "A, appearance", item 28) ------------------------------------------------------------
+
+def _masks_label_by_label(seg, id_to_labels, table):
+    """The renderer's masks as they were made before 2026-11-23: one comparison of the frame per label."""
+    import numpy as np
+
+    out = np.zeros(seg.shape, np.uint16)
+    for k, v in id_to_labels.items():
+        label = v.get("class") if isinstance(v, dict) else v
+        if label in table:
+            out[seg == int(k)] = table[label]
+    return out
+
+
+def test_masks_made_by_one_table_lookup_are_the_masks_made_label_by_label():
+    import numpy as np
+    from teleop_isaac.renderer import mask_table, stable_mask
+    rng = np.random.default_rng(7)
+    table = mask_table([31, 32, 41, 60, 65])
+    labels = ["arm", "hand", "table", "bench", "clutter", "object_31", "object_32", "object_41", "object_60", "object_65",
+              "BACKGROUND", "UNLABELLED", "lag_cube", "object_99"]
+    for trial in range(40):
+        keys = rng.choice(np.arange(0, 200), size=len(labels), replace=False)
+        info = {str(int(k)): ({"class": lab} if trial % 2 else lab) for k, lab in zip(keys, labels)}
+        seg = rng.choice(np.concatenate([keys, [201, 4000, 0]]), size=(36, 64)).astype(np.uint32)
+        got = stable_mask(seg, info, table)
+        assert got.dtype == np.uint16 and (got == _masks_label_by_label(seg, info, table)).all()
+    signed = np.array([[-3, 5, 7], [9, 12, 99999]], np.int32)  # ids the table does not name, below 0 too, are 0
+    info = {"5": {"class": "hand"}, "9": {"class": "object_41"}, "12": {"class": "BACKGROUND"}}
+    assert stable_mask(signed, info, table).tolist() == [[0, 8, 0], [141, 0, 0]]
+    huge = np.array([[70000, 3]], np.uint32)  # an id past the lookup table's reach is labelled the old way
+    assert stable_mask(huge, {"70000": {"class": "table"}, "3": {"class": "arm"}}, table).tolist() == [[10, 7]]
+    assert stable_mask(huge, {}, table).tolist() == [[0, 0]]
+
+
+def test_a_cameras_exposure_table_gives_the_same_bytes_through_opencv():
+    import numpy as np
+    from teleop_isaac.renderer import apply_lut, exposure_lut
+    rgb = np.random.default_rng(3).integers(0, 256, size=(36, 64, 3), dtype=np.uint8)
+    for gain in (0.3, 0.8, 1.7, 3.9):
+        lut = exposure_lut(gain)
+        out = apply_lut(rgb, lut)
+        assert out.dtype == np.uint8 and out.shape == rgb.shape and (out == lut[rgb]).all()
+
+
+def test_the_garbage_collectors_pauses_and_the_loops_stretches_are_reported_per_window():
+    from teleop_isaac.renderer import GcWatch, LoopTimes
+    now = [0.0]
+    w = GcWatch(clock=lambda: now[0])
+    for gen, ms in ((0, 0.2), (0, 0.3), (2, 65.0), (1, 1.0)):
+        w("start", {"generation": gen})
+        now[0] += ms / 1e3
+        w("stop", {"generation": gen, "collected": 0})
+    assert w.report() == "gc 2/1/1 (gen 0/1/2), 66.5 ms, longest 65.0 ms (gen 2)"
+    assert w.report() == "gc 0/0/0 (gen 0/1/2), 0.0 ms, longest 0.0 ms (gen -1)"  # a new window
+    w("stop", {"generation": 0})  # a stop without its start (registered mid-collection) is not counted
+    assert w.counts == [0, 0, 0]
+    t = LoopTimes()
+    for ms in (30.0, 10.0, 20.0):
+        t.add("render", ms)
+    t.add("read", 2.5)
+    assert t.report() == "ms median/longest: render 20.0/30.0, read 2.5/2.5"
+    assert t.report() == "ms: none"
+
+
+def test_the_heap_is_frozen_unless_asked_not_to():
+    from teleop_isaac.renderer import parse_args
+    assert parse_args(["--scene", "x.json"]).gc_freeze is True
+    assert parse_args(["--scene", "x.json", "--no-gc-freeze"]).gc_freeze is False
+
+
+def test_a_session_keeps_the_look_before_it_only_while_the_keep_file_is_there_and_never_for_long(tmp_path):
+    from teleop_isaac.renderer import KEEP_LOOK_FILE, KEEP_LOOK_MAX, keep_look
+    control = str(tmp_path / ".active")
+    assert not keep_look(control, 0)  # no file: every closed session brings a new look, as before
+    assert not keep_look("", 0)  # not recording: nothing to keep
+    (tmp_path / KEEP_LOOK_FILE).write_text("")
+    assert keep_look(control, 0) and keep_look(control, KEEP_LOOK_MAX - 1)
+    assert not keep_look(control, KEEP_LOOK_MAX)  # a file left behind: the look changes anyway
+
+
+# --- textures at their real size (docs/adr/0038 "A, appearance", 2026-11-23) ------------------------------------------
+
+def _sub(a, b):
+    return tuple(x - y for x, y in zip(a, b))
+
+
+def test_a_box_mesh_is_the_unit_cube_with_texture_coordinates_in_metres_on_every_face():
+    """A box (or the table) was a unit cube scaled by its prim, and OmniPBR projected its texture in the cube's object space,
+    which runs +-0.5 whatever the box's size: the table's 1 cm cutting-mat grid came out 1.6 cm along its 1.6 m and about
+    0.5 cm along its 0.47 m. box_mesh gives each face texture coordinates that are its real size in metres."""
+    from teleop_isaac.renderer import box_mesh
+    for size in ((0.30, 0.08, 0.018), (0.472, 1.6, 0.04), (0.03, 0.03, 0.03), (0.02, 0.02, 0.36), (0.012, 0.06, 0.24)):
+        points, counts, indices, normals, st = box_mesh(size)
+        assert counts == [4] * 6 and indices == list(range(24)) and len(points) == len(normals) == len(st) == 24
+        assert all(abs(abs(c) - 0.5) < 1e-12 for p in points for c in p)  # the unit cube the prim's scale makes the box
+        faces = set()
+        for f in range(6):
+            p, n, s = points[4 * f:4 * f + 4], normals[4 * f], st[4 * f:4 * f + 4]
+            assert all(x == n for x in normals[4 * f:4 * f + 4])
+            axis = next(i for i in range(3) if n[i] != 0)
+            faces.add((axis, n[axis]))
+            assert all(q[axis] == 0.5 * n[axis] for q in p)  # on the face it says
+            e1, e2 = _sub(p[1], p[0]), _sub(p[3], p[0])
+            cross = (e1[1] * e2[2] - e1[2] * e2[1], e1[2] * e2[0] - e1[0] * e2[2], e1[0] * e2[1] - e1[1] * e2[0])
+            assert sum(c * m for c, m in zip(cross, n)) > 0  # counter-clockwise seen from outside
+            real = [tuple(c * z for c, z in zip(q, size)) for q in p]  # the corners where the box really is
+            for i in range(4):
+                for j in range(4):  # the texture coordinates are the face itself, in metres: no stretch along either side
+                    assert abs(math.dist(s[i], s[j]) - math.dist(real[i], real[j])) < 1e-12
+            t1, t2 = _sub(s[1], s[0]), _sub(s[3], s[0])
+            assert t1[0] * t2[1] - t1[1] * t2[0] > 0  # turned the way the face turns: a texture is never mirrored
+            us, vs = [q[0] for q in s], [q[1] for q in s]
+            assert max(us) - min(us) >= max(vs) - min(vs) - 1e-12  # u along the longer side: a plank's grain along its length
+        assert faces == {(a, sign) for a in range(3) for sign in (1.0, -1.0)}
+
+
+def test_a_texture_is_tiled_at_its_real_size_whatever_the_size_of_what_wears_it():
+    from teleop_isaac.renderer import box_mesh, tiling
+    assert tiling(2.0) == 0.5 and tiling(0.3, 1.0) == pytest.approx(1 / 0.3) and tiling(2.0, 2.0) == 1.0
+    k = tiling(1.5)  # a 1.5 m veneer
+    plank = (0.30, 0.08, 0.018)
+    st = box_mesh(plank)[4]
+    spans = []
+    for f in range(6):
+        s = st[4 * f:4 * f + 4]
+        spans.append(tuple(sorted((round(max(q[i] for q in s) - min(q[i] for q in s), 9) for i in range(2)), reverse=True)))
+    assert sorted(spans) == sorted([(0.30, 0.08), (0.30, 0.08), (0.30, 0.018), (0.30, 0.018), (0.08, 0.018), (0.08, 0.018)])
+    # Tiles across a side are its length times k: the 1.8 cm edge shows 0.012 of a tile, the 30 cm side 0.2, as on a real
+    # plank. The unit cube's projection showed k tiles across every side, 30 cm and 1.8 cm alike.
+    assert 0.018 * k == pytest.approx(0.012) and 0.30 * k == pytest.approx(0.2)
+
+
+def test_a_box_turned_into_a_mesh_keeps_its_place_size_transform_binding_and_label():
+    """metric_box on a box as world.py builds it for the renderer (an object's Xform, its Shape a size-1 Cube scaled by its
+    prim, a material bound to it, a mask label): the same box in the room, now with texture coordinates in metres. Needs pxr
+    (Isaac's Python); skipped elsewhere."""
+    pytest.importorskip("pxr")
+    from pxr import Gf, Usd, UsdGeom, UsdShade
+    from teleop_isaac.renderer import box_mesh, metric_box
+
+    stage = Usd.Stage.CreateInMemory()
+    obj = UsdGeom.Xform.Define(stage, "/World/Twin/Objects/o77")
+    ox = UsdGeom.Xformable(obj)
+    ox.AddTranslateOp().Set(Gf.Vec3d(0.2, -0.1, -0.18))
+    ox.AddOrientOp(UsdGeom.XformOp.PrecisionDouble).Set(Gf.Quatd(math.cos(0.26), 0, 0, math.sin(0.26)))
+    path = "/World/Twin/Objects/o77/Shape"
+    cube = UsdGeom.Cube.Define(stage, path)
+    cube.CreateSizeAttr(1.0)
+    UsdGeom.Xformable(cube).AddScaleOp().Set(Gf.Vec3f(0.30, 0.08, 0.018))
+    cube.CreateDisplayColorAttr([Gf.Vec3f(0.6, 0.4, 0.2)])
+    mtl = UsdShade.Material.Define(stage, "/World/Looks/m77")
+    UsdShade.MaterialBindingAPI.Apply(cube.GetPrim()).Bind(mtl, UsdShade.Tokens.strongerThanDescendants)
+    labelled = False
+    try:
+        from pxr import UsdSemantics
+        UsdSemantics.LabelsAPI.Apply(obj.GetPrim(), "class").CreateLabelsAttr().Set(["object_77"])
+        labelled = True
+    except ImportError:
+        pass
+
+    def bounds():
+        r = UsdGeom.BBoxCache(Usd.TimeCode.Default(), ["default"]).ComputeWorldBound(stage.GetPrimAtPath(path)).ComputeAlignedRange()
+        return [tuple(r.GetMin()), tuple(r.GetMax())]
+
+    before, ops = bounds(), [op.GetOpName() for op in UsdGeom.Xformable(cube).GetOrderedXformOps()]
+    st = metric_box(stage, path, (0.30, 0.08, 0.018))
+    prim = stage.GetPrimAtPath(path)
+    assert prim.GetTypeName() == "Mesh"
+    after = bounds()
+    assert all(abs(a - b) < 1e-6 for x, y in zip(before, after) for a, b in zip(x, y))  # the same box in the room
+    assert [op.GetOpName() for op in UsdGeom.Xformable(prim).GetOrderedXformOps()] == ops
+    assert UsdShade.MaterialBindingAPI(prim).ComputeBoundMaterial()[0].GetPath() == mtl.GetPath()
+    if labelled:
+        assert stage.GetPrimAtPath("/World/Twin/Objects/o77").HasAPI(UsdSemantics.LabelsAPI)
+    assert st.GetInterpolation() == UsdGeom.Tokens.vertex
+    assert [tuple(round(c, 6) for c in v) for v in st.Get()] == [tuple(round(c, 6) for c in v) for v in box_mesh((0.30, 0.08, 0.018))[4]]
+    assert len(UsdGeom.Mesh(prim).GetPointsAttr().Get()) == 24 and list(UsdGeom.Mesh(prim).GetFaceVertexCountsAttr().Get()) == [4] * 6

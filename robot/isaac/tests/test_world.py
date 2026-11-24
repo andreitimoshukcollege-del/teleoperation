@@ -415,3 +415,101 @@ def test_a_resize_stands_the_object_up_clear_of_a_lying_neighbour_as_it_lies():
     assert outcome == wire.APPLIED and scene.rest_of(upright)[0] == 0
     assert not s.overlaps(can, upright[0], upright[1], post, 0.40, 0.20, 1.25, 1.0, 0, 1)
     assert (upright[0] - 0.40) ** 2 + upright[1] ** 2 < 0.06 ** 2  # moved only as far as it had to
+
+
+MIXED = os.path.join(REPO, "core", "Scenes", "jetrover-mixed.json")
+
+
+def test_isaac_applies_every_placement_robothost_draws_for_a_mixed_pool():
+    # docs/adr/0038 decision 3: golden/scene-layouts-jetrover-mixed.json holds the first 20 layouts of each mixed scene as RobotHost's
+    # WorldHost sends them (WorldHostMixedTests). Isaac's model applies every one: no OUTSIDE_REGION, no OVERLAPS_OBJECT; the raised ones
+    # at their height, on the stand or the supports placed before them.
+    import hashlib
+
+    from conftest import golden
+    from teleop_isaac.scene import RESIZE_SCALES
+
+    g = golden("scene-layouts-jetrover-mixed.json")
+    for name in ("jetrover-mixed", "jetrover-mixed-holdout"):
+        path = os.path.join(REPO, "core", "Scenes", name + ".json")
+        with open(path, "rb") as f:
+            assert hashlib.sha256(f.read()).hexdigest() == g[name]["sha256"], "the scene changed: run `just gen-isaac-goldens`"
+        s = scene.load(path)
+        m = WorldModel(s)
+        raised = layouts = 0
+        for kind, oid, *rest in g[name]["requests"]:
+            if kind == "resize":
+                factor = min(RESIZE_SCALES, key=lambda v: abs(v - rest[0]))  # the body of that step, as IsaacWorld.resize takes it
+                outcome, i, pose = m.check_resize(oid, factor, no_arm)
+                assert outcome == wire.APPLIED, (name, s.objects[i].name, rest[0], outcome)
+                m.apply_resize(i, factor, pose)
+                continue
+            if kind == "park":
+                outcome, i, _ = m.check(wire.CAUSE_PARK, oid, tuple(rest), no_arm)
+                assert outcome == wire.APPLIED
+                m.park(i, s.parked_pose(i, m.scales[i]))
+                continue
+            assert kind == "layout", kind
+            outcome, i, pose = m.check(wire.CAUSE_LAYOUT, oid, tuple(rest), no_arm)
+            assert outcome == wire.APPLIED, (name, s.objects[i].name, rest, outcome)
+            assert abs(pose[2] - rest[2]) < 1e-6 and abs(pose[0] - rest[0]) < 1e-9  # where RobotHost drew it, at its height
+            m.apply(i, pose)
+            layouts += 1
+            raised += s.is_elevated(i, pose[2], m.scales[i], scene.rest_of(pose)[0])
+        assert layouts > 100 and raised > 5, (name, layouts, raised)
+
+
+def test_a_mixed_pool_raises_a_movable_object_only_on_a_stand_and_a_plank_anywhere_above_the_table():
+    s = scene.load(MIXED)
+    m = WorldModel(s)
+    idx = {o.name: i for i, o in enumerate(s.objects)}
+    stand, can, plank = idx["stand-post"], idx["tomato-soup-can"], idx["shelf-plank"]
+    outcome, _, p = m.check(wire.CAUSE_LAYOUT, s.objects[stand].id, s.pose_at(stand, 0.25, 0.0, 0.3), no_arm)
+    assert outcome == wire.APPLIED
+    m.apply(stand, p)
+    top = s.table.top + s.objects[stand].size[2]
+    on = at(0.25, 0.01, 0.3, top + s.objects[can].size[2] / 2)
+    outcome, _, p = m.check(wire.CAUSE_LAYOUT, s.objects[can].id, on, no_arm)
+    assert outcome == wire.APPLIED and abs(p[2] - on[2]) < 1e-12  # on the stand, at its height
+    # Beside the stand at that height it would fall: refused.
+    outcome, _, _ = m.check(wire.CAUSE_LAYOUT, s.objects[can].id, at(0.25, 0.12, 0.3, on[2]), no_arm)
+    assert outcome == wire.OUTSIDE_REGION
+    # A plank is a fixed body: it stands where it is put, above the table, and over the stand without touching it nothing is in its way.
+    high = at(0.32, 0.0, 0.0, s.table.top + 0.25 + s.objects[plank].size[2] / 2)  # x 0.17-0.47, over the stand and the can
+    outcome, _, p = m.check(wire.CAUSE_LAYOUT, s.objects[plank].id, high, no_arm)
+    assert outcome == wire.APPLIED and abs(p[2] - high[2]) < 1e-12
+    low = at(0.32, 0.0, 0.0, s.table.top + 0.03 + s.objects[plank].size[2] / 2)  # into the stand (12 cm tall)
+    outcome, _, _ = m.check(wire.CAUSE_LAYOUT, s.objects[plank].id, low, no_arm)
+    assert outcome == wire.OVERLAPS_OBJECT
+
+
+def test_a_mixed_pool_resizes_a_fixed_object_within_its_own_steps_only():
+    s = scene.load(MIXED)
+    m = WorldModel(s)
+    stand = next(i for i, o in enumerate(s.objects) if o.name == "stand-pillar")
+    lo, hi = s.objects[stand].steps  # -2 to 2: a resize step either side is one of the 12, but not its own
+    for step, expected in ((lo, wire.APPLIED), (hi, wire.APPLIED), (hi + 1, wire.NOT_MOVABLE), (lo - 1, wire.NOT_MOVABLE), (-4, wire.INVALID_POSE)):
+        outcome, _, _ = m.check_resize(s.objects[stand].id, 1.25 ** step, no_arm)
+        assert outcome == expected, step
+    # A scan the operator may not move keeps its size (the movable obstacles are operatorMovable since the twin check, for the
+    # replays' shifts and moves; a distractor scan is not).
+    scan = next(i for i, o in enumerate(s.objects) if o.shape == "mesh" and not o.operator_movable and not o.steps)
+    assert m.check_resize(s.objects[scan].id, 1.25, no_arm)[0] == wire.NOT_MOVABLE
+
+
+def test_the_headset_never_raises_an_object_in_a_mixed_pool():
+    # docs/adr/0038: only RobotHost's own placements stand an object above the table; a move from the headset stands it on the table,
+    # whatever height it asks, as in every other scene. (The mixed scenes let it move only their movable obstacles, the can among them.)
+    import json
+
+    with open(MIXED, encoding="utf-8") as f:
+        doc = json.load(f)
+    next(o for o in doc["objects"] if o["name"] == "tomato-soup-can")["operatorMovable"] = True
+    s = scene.parse(doc)
+    m = WorldModel(s)
+    can = next(i for i, o in enumerate(s.objects) if o.name == "tomato-soup-can")
+    outcome, _, p = m.check(wire.CAUSE_LAYOUT, s.objects[can].id, s.pose_at(can, 0.25, -0.1, 0.0), no_arm)
+    assert outcome == wire.APPLIED
+    m.apply(can, p)
+    outcome, _, p = m.check(wire.CAUSE_HEADSET, s.objects[can].id, at(0.25, 0.1, 0.0, 0.2), no_arm)
+    assert outcome == wire.APPLIED and abs(p[2] - s.resting_z(can)) < 1e-12

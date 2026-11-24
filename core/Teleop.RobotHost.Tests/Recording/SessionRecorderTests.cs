@@ -121,6 +121,65 @@ namespace Teleop.RobotHost.Tests.Recording
             Assert.Equal("SS|9|10.0.0.5:6002", SessionLines.Subscriber(9, "10.0.0.5:6002"));
             Assert.Equal("JS|9|a/b", SessionLines.Sender(9, "a|b"));
             Assert.Equal("UP|9|150ms-20j-0.5loss|3", SessionLines.Uplink(9, "150ms-20j-0.5loss", 3));
+            // The clamp (docs/adr/0020 amendment 2026-11-24): JC's C, JK per clamped command, HK at every session's start.
+            Assert.Equal("JC|1|1|4|0|C|1:0.25:2.5;10:1:0", SessionLines.JointCommand(1, 1, 4, 0, JointCommandOutcome.Clamped, targets));
+            Assert.Equal("JK|11|4|0.4296875", SessionLines.Clamp(11, 4, 0.4296875f));
+            Assert.Equal("HK|12|measured|clamp|1", SessionLines.HostCheck(12, HostCheckOnFail.Clamp));
+            Assert.Equal("HK|12|measured|refuse|1", SessionLines.HostCheck(12, HostCheckOnFail.Refuse));
+            Assert.Equal(new[] { 'A', 'S', 'R', 'P', 'H', 'C' },
+                new[] { JointCommandOutcome.Accepted, JointCommandOutcome.Stale, JointCommandOutcome.Refused, JointCommandOutcome.Parked,
+                    JointCommandOutcome.Held, JointCommandOutcome.Clamped }.Select(SessionLines.Outcome));
+        }
+
+        [Fact]
+        public void AClampedCommand_IsRecorded_HK_RO_JC_C_JK_AndAnAcceptedOneWritesNoJK()
+        {
+            // What the twin's and the robot's RobotHost write for a clamped command, through the real recorder and the recording
+            // relay client: the session's HK first, the plant's RO as it sends, then the JC (outcome C) and its JK.
+            (Teleop.RobotArm.Collision.ArmPose a, Teleop.RobotArm.Collision.ArmPose b) = HostCheckClampTests.RefusedPairs(5)
+                .First(p => HostCheckClampTests.Clamp(p.At, ServoPathCollisionTests.Targets(p.To)).Outcome == JointCommandOutcome.Clamped);
+            string root = TempDir();
+            string control = Path.Combine(root, ".active");
+            string session = Path.Combine(root, "c");
+            var fake = new FakeRelayClient();
+            fake.EnqueueFeedback(ServoPathCollisionTests.FeedbackAt(a));
+            float alpha;
+            using (var recorder = new SessionRecorder(control, 1_000_000_000, pollSeconds: 0.02))
+            {
+                var clock = new ManualClock();
+                var plant = new GenericArmPlant(GenericArmPlantConfig.Default, new RecordingRelayClient(fake, recorder, clock));
+                File.WriteAllText(control, session);
+                Assert.True(WaitFor(() => recorder.IsActive));
+                Assert.True(recorder.TakePreambleOwed());
+                recorder.Record(SessionLines.HostCheck(1, plant.OnHostCheckFail));
+                clock.Now = 2;
+                plant.Step(2);
+                clock.Now = 3;
+                JointTarget[] command = ServoPathCollisionTests.Targets(b);
+                JointCommandOutcome outcome = plant.CommandJointAngles(command, captureTicks: 10);
+                Assert.Equal(JointCommandOutcome.Clamped, outcome);
+                alpha = plant.LastClamp.Alpha;
+                JointCommandRecords.Write(recorder.Record, 3, 3, 42, 10, outcome, command, plant.LastClamp);
+
+                // Accepted: its JC alone (and its RO).
+                clock.Now = 4;
+                JointCommandOutcome next = plant.CommandJointAngles(ServoPathCollisionTests.Targets(a), captureTicks: 11);
+                Assert.Equal(JointCommandOutcome.Accepted, next);
+                JointCommandRecords.Write(recorder.Record, 4, 4, 43, 11, next, ServoPathCollisionTests.Targets(a), plant.LastClamp);
+                File.Delete(control);
+                Assert.True(WaitFor(() => !recorder.IsActive));
+            }
+
+            string[] lines = File.ReadAllLines(Path.Combine(session, "robothost.jlog"));
+            Assert.Equal("HK|1|measured|clamp|1", lines[1]);
+            Assert.StartsWith("RI|2|", lines[2]);
+            Assert.StartsWith("RO|3|", lines[3]);
+            Assert.StartsWith("JC|3|3|42|10|C|", lines[4]);
+            Assert.Equal("JK|3|42|" + alpha.ToString("R", System.Globalization.CultureInfo.InvariantCulture), lines[5]);
+            Assert.InRange(alpha, float.Epsilon, 1f - float.Epsilon);
+            Assert.StartsWith("RO|4|", lines[6]);
+            Assert.StartsWith("JC|4|4|43|11|A|", lines[7]);
+            Assert.DoesNotContain(lines.Skip(8), l => l.StartsWith("JK|", StringComparison.Ordinal));
         }
 
         [Fact]
@@ -133,6 +192,26 @@ namespace Teleop.RobotHost.Tests.Recording
                 SessionLines.ScriptEvent(21, new ScriptEvent(1, 1, ScriptEventKind.Knock, 7, 0.5f, 0.75f, 1.5f, 2.25f)));
             Assert.Equal("SE|22|1|2|stop|33|1|NaN|2|3",
                 SessionLines.ScriptEvent(22, new ScriptEvent(1, 2, ScriptEventKind.Stop, 33, 1f, float.NaN, 2f, 3f)));
+        }
+
+        [Fact]
+        public void AMixedTakesMovesAndReplayGroup_AreTheirSessionFormatLines()
+        {
+            // docs/adr/0038 decision 1: MV|t|index|count|kind|object|offsetMm|gapMm|startS|contactS|closestS|endS, seconds after t.
+            Assert.Equal("MV|30|4|21|aim|41|-12.5|-9|0|0.5|0.75|1.25",
+                SessionLines.ScriptMove(30, new ScriptMove(4, 21, ScriptMoveKind.Aim, 41, -12.5f, -9f, 0f, 0.5f, 0.75f, 1.25f)));
+            Assert.Equal("MV|31|1|21|free|0|NaN|NaN|-0.125|NaN|NaN|0.875",
+                SessionLines.ScriptMove(31, new ScriptMove(1, 21, ScriptMoveKind.Free, 0, float.NaN, float.NaN, -0.125f, float.NaN, float.NaN, 0.875f)));
+            Assert.Equal("MV|32|9|21|pass|7|25|23.5|0|NaN|0.5|1", SessionLines.ScriptMove(32, new ScriptMove(9, 21, ScriptMoveKind.Pass, 7, 25f, 23.5f, 0f, float.NaN, 0.5f, 1f)));
+            // docs/adr/0038 decision 2: RP|t|group|role|edit, exactly.
+            Assert.Equal("RP|40|100003|source|none", SessionLines.Replay(40, ReplayRecord.Source(100003)));
+            Assert.Equal("RP|41|100003|replay|remove:33", SessionLines.Replay(41, new ReplayRecord(ReplayRole.Replay, 100003, ReplayEdit.Remove, 33)));
+            Assert.Equal("RP|42|100003|replay|shift:34:0.025:-0.0125",
+                SessionLines.Replay(42, new ReplayRecord(ReplayRole.Replay, 100003, ReplayEdit.Shift, 34, 0.025f, -0.0125f)));
+            Assert.Equal("RP|43|100003|replay|move:35:0.25:-0.125:1.5",
+                SessionLines.Replay(43, new ReplayRecord(ReplayRole.Replay, 100003, ReplayEdit.Move, 35, 0.25f, -0.125f, 1.5f)));
+            Assert.Equal("RP|44|100003|replay|add:36:0.21:0.0625:-0.5",
+                SessionLines.Replay(44, new ReplayRecord(ReplayRole.Replay, 100003, ReplayEdit.Add, 36, 0.21f, 0.0625f, -0.5f)));
         }
 
         [Fact]

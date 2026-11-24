@@ -10,6 +10,11 @@ At the dataset's top, as the lab's recorder writes them (SINRG-Lab/world-models,
 and habits carry over: ``capture_timing.jsonl`` (one line per frame, every episode) and ``raw_ros_events.jsonl`` (every
 take's commands and readings, ``takes.raw_events``). Their times are the session's one clock; the lab's ``*_wall_ns``
 fields are null, since a take keeps no wall clock per record.
+
+A reader picks the raw log's commands by time (world-models' path checkpoints), so the episodes of one dataset must not
+overlap on that clock (docs/adr/0038 L, 2026-11-24): :func:`clock_span` is a take's span on it, :func:`episode_spans` each
+episode's in a dataset already written, and :func:`overlapping` the pairs that share a moment. Since then every
+``raw_ros_events.jsonl`` line also names its episode (``episode_index``, a field the lab's recorder does not write).
 """
 
 from __future__ import annotations
@@ -320,6 +325,113 @@ def prepared_in_order(writer, root: str, takes: Sequence[Take], jobs: int, execu
         shutil.rmtree(folder, ignore_errors=True)
 
 
+def capture_timing(take: Take, episode: int) -> List[dict]:
+    """The take's ``capture_timing.jsonl`` lines as episode ``episode``: the lab recorder's field names, filled from the
+    take's one clock (see the module doc)."""
+    out = []
+    for i, frame in enumerate(take.frames):
+        t = frame.timing
+        out.append({
+            "episode_saved_so_far": episode,
+            "frame_in_episode": i,
+            "pc_sample_mono_ns": t["grid"],
+            "jetson_state_wall_ns": None,
+            "jetson_action_wall_ns": None,
+            "pc_state_recv_mono_ns": t["sensed"] - t["stateAge"],
+            "pc_action_recv_mono_ns": t["sensed"] - t["actionAge"],
+            "pc_camera_read_mono_ns": t["sensed"],
+        })
+    return out
+
+
+def _clock_times(line: dict) -> List[int]:
+    """The times a line of the two lab files holds on the session's clock: its ``*_mono_ns`` fields that are set."""
+    return [int(v) for k, v in line.items() if k.endswith("_mono_ns") and isinstance(v, int) and not isinstance(v, bool)]
+
+
+def clock_span(take: Take, events: Optional[List[dict]] = None) -> Tuple[int, int]:
+    """The earliest and latest time (ns) the dataset's two lab files would hold for ``take``: every time of its frames'
+    ``capture_timing.jsonl`` lines and of its ``raw_ros_events.jsonl`` commands and readings (``events``, else read from
+    the take: ``takes.raw_events``; its ``ready`` line repeats the first one's time, or is 0 when there is none). Both files
+    are on the session's one clock, on which two episodes of one dataset must not overlap (docs/adr/0038 L)."""
+    times = [x for line in capture_timing(take, 0) for x in _clock_times(line)]
+    times += [x for e in (raw_events(take) if events is None else events) if e.get("type") != "ready" for x in _clock_times(e)]
+    if not times:
+        raise TakeError(f"{take.path}: no time on the session's clock to place it by")
+    return min(times), max(times)
+
+
+def episode_spans(root: str) -> Tuple[Dict[int, Tuple[int, int]], List[str]]:
+    """Each episode's span on the clock of the dataset at ``root``, from its own files: the earliest and latest time its
+    ``capture_timing.jsonl`` lines (``episode_saved_so_far``) and its ``raw_ros_events.jsonl`` commands and readings hold.
+    A raw line names its episode (``episode_index``) since 2026-11-24; before, each take's lines followed its ``ready``
+    line in episode order, which places them. Returns the spans and what could not be placed (empty when all was)."""
+    spans: Dict[int, List[int]] = {}
+    problems: List[str] = []
+
+    def add(episode: int, times: List[int]) -> None:
+        if times:
+            s = spans.setdefault(episode, [min(times), max(times)])
+            s[0], s[1] = min(s[0], min(times)), max(s[1], max(times))
+
+    with open(os.path.join(root, "capture_timing.jsonl"), encoding="utf-8") as f:
+        for line in f:
+            if line.strip():
+                row = json.loads(line)
+                add(int(row["episode_saved_so_far"]), _clock_times(row))
+    block, unplaced, disagree = -1, 0, 0
+    with open(os.path.join(root, "raw_ros_events.jsonl"), encoding="utf-8") as f:
+        for n, line in enumerate(f, start=1):
+            if not line.strip():
+                continue
+            event = json.loads(line)
+            if event.get("type") == "ready":
+                block += 1
+                continue
+            named = event.get("episode_index")
+            if named is not None and block >= 0 and int(named) != block:
+                disagree += 1
+            episode = int(named) if named is not None else block
+            if episode < 0:
+                unplaced += 1
+                continue
+            add(episode, _clock_times(event))
+    if unplaced:
+        problems.append(f"raw_ros_events.jsonl: {unplaced} line(s) before any ready line name no episode")
+    if disagree:
+        problems.append(f"raw_ros_events.jsonl: {disagree} line(s) name another episode than the ready line before them")
+    return {k: (v[0], v[1]) for k, v in sorted(spans.items())}, problems
+
+
+def overlapping(spans: Sequence[Tuple[int, int]]) -> List[Tuple[int, int]]:
+    """Every pair (i, j), i < j, of ``spans`` ((start, end) each, both included) that share a moment, in order."""
+    out, active = [], []
+    for i in sorted(range(len(spans)), key=lambda k: (spans[k][0], spans[k][1], k)):
+        start = spans[i][0]
+        active = [j for j in active if spans[j][1] >= start]
+        out.extend((min(i, j), max(i, j)) for j in active)
+        active.append(i)
+    return sorted(out)
+
+
+def overlap_lines(labels: Sequence[str], spans: Sequence[Tuple[int, int]], pairs: Sequence[Tuple[int, int]],
+                  listed: int = 20) -> List[str]:
+    """One line for each of the first ``listed`` ``pairs`` (from :func:`overlapping`), naming both and how long they
+    overlap, then how many more: ``labels`` name each span (an episode and its take), and every time is in seconds from
+    the earliest span's start."""
+    if not spans:
+        return []
+    t0 = min(s for s, _ in spans)
+
+    def at(i: int) -> str:
+        return f"{labels[i]} ({(spans[i][0] - t0) / 1e9:.2f}-{(spans[i][1] - t0) / 1e9:.2f} s)"
+    out = [f"{at(i)} and {at(j)} overlap by {(min(spans[i][1], spans[j][1]) - max(spans[i][0], spans[j][0])) / 1e9:.2f} s"
+           for i, j in pairs[:listed]]
+    if len(pairs) > listed:
+        out.append(f"and {len(pairs) - listed} more overlapping pair(s)")
+    return out
+
+
 def append_take(writer, root: str, take: Take, repo: Optional[str] = None, prepared: Optional[Prepared] = None) -> dict:
     """Writes one take as an episode and records it in ``meta/teleop``. Returns its ledger line. ``repo`` names the
     dataset when its episodes are of several scenarios (a safety dataset); by default it is the take's scenario's.
@@ -334,23 +446,14 @@ def append_take(writer, root: str, take: Take, repo: Optional[str] = None, prepa
     with open(os.path.join(teleop, f"episode_{episode:06d}.timing.jsonl"), "w", encoding="utf-8") as f:
         for i, frame in enumerate(take.frames):
             f.write(json.dumps({"frameIndex": i, **frame.timing}, separators=(",", ":")) + "\n")
-    # The lab recorder's two files (see the module doc): its field names, filled from the take's one clock.
+    # The lab recorder's two files (see the module doc): its field names, filled from the take's one clock. Each raw line
+    # also names its episode (docs/adr/0038 L), so nothing need place it by time; readers ignore a field they do not know.
     with open(os.path.join(root, "capture_timing.jsonl"), "a", encoding="utf-8") as f:
-        for i, frame in enumerate(take.frames):
-            t = frame.timing
-            f.write(json.dumps({
-                "episode_saved_so_far": episode,
-                "frame_in_episode": i,
-                "pc_sample_mono_ns": t["grid"],
-                "jetson_state_wall_ns": None,
-                "jetson_action_wall_ns": None,
-                "pc_state_recv_mono_ns": t["sensed"] - t["stateAge"],
-                "pc_action_recv_mono_ns": t["sensed"] - t["actionAge"],
-                "pc_camera_read_mono_ns": t["sensed"],
-            }, separators=(",", ":")) + "\n")
+        for line in capture_timing(take, episode):
+            f.write(json.dumps(line, separators=(",", ":")) + "\n")
     with open(os.path.join(root, "raw_ros_events.jsonl"), "a", encoding="utf-8") as f:
         for event in raw_events(take):
-            f.write(json.dumps(event, separators=(",", ":")) + "\n")
+            f.write(json.dumps({**event, "episode_index": episode}, separators=(",", ":")) + "\n")
     line = {"episode": episode, "take": os.path.abspath(take.path), "session": take.session_id,
             "filesSha256": checksum_id(take.path), "frames": len(take.frames),
             "filled": sum(1 for f in take.frames if f.timing["filled"]), "fps": take.fps, "task": take.task,

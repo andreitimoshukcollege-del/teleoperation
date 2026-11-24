@@ -8,6 +8,18 @@ namespace Teleop.RobotHost.Tests
             { "--local-port", "6000", "--relay-socket", "/tmp/a.sock", "--local-relay-socket", "/tmp/b.sock" };
 
         [Fact]
+        public void TheHostCheck_ClampsByDefault_AndRefuseIsOneFlagAway()
+        {
+            Assert.Equal(Teleop.RobotHost.Plant.HostCheckOnFail.Clamp, RobotHostArgs.TryParse(Base, out _)!.Value.HostCheckOnFail);
+            Assert.Equal(Teleop.RobotHost.Plant.HostCheckOnFail.Refuse,
+                RobotHostArgs.TryParse(Base.Concat(new[] { "--host-check-onfail", "refuse" }).ToArray(), out _)!.Value.HostCheckOnFail);
+            Assert.Equal(Teleop.RobotHost.Plant.HostCheckOnFail.Clamp,
+                RobotHostArgs.TryParse(Base.Concat(new[] { "--host-check-onfail", "clamp" }).ToArray(), out _)!.Value.HostCheckOnFail);
+            Assert.Null(RobotHostArgs.TryParse(Base.Concat(new[] { "--host-check-onfail", "hold" }).ToArray(), out string? error));
+            Assert.Contains("--host-check-onfail", error);
+        }
+
+        [Fact]
         public void PulsesPerSecond_IsOptional_AndParsed()
         {
             Assert.Null(RobotHostArgs.TryParse(Base, out _)!.Value.PulsesPerSecond);

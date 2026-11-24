@@ -1,0 +1,124 @@
+{
+  "format": "teleop-scene",
+  "version": 2,
+  "name": "jetrover-mixed-holdout",
+  "robotProfile": "jetrover",
+  "surfaces": [
+    {"id": "bench", "center": [-0.064, -0.014, -0.2162], "size": [0.328, 1.6, 0.04], "colour": [0.18, 0.18, 0.18], "staticFriction": 0.6, "dynamicFriction": 0.5, "collides": true, "headset": "builtin"},
+    {"id": "table", "center": [0.336, -0.014, -0.2162], "size": [0.472, 1.6, 0.04], "colour": [0.18, 0.18, 0.18], "staticFriction": 0.6, "dynamicFriction": 0.5, "collides": true, "headset": "builtin"},
+    {"id": "floor", "center": [0.0, 0.0, -1.055], "size": [8.0, 8.0, 0.02], "colour": [0.3, 0.3, 0.3], "staticFriction": 0.6, "dynamicFriction": 0.5, "collides": true, "headset": "hide"}
+  ],
+  "objects": [
+    {"id": 102, "name": "master-chef-can", "shape": "mesh", "asset": "ycb/002_master_chef_can", "size": [0.1024, 0.10231, 0.14018], "position": [0.3, 0.0, -0.12611], "rpy": [0, 0, 0.0], "kind": "movable", "mass": 0.414, "operatorMovable": true, "staticFriction": 0.35, "dynamicFriction": 0.3, "colour": [0.2, 0.3, 0.6], "jitter": [0, 0, 0], "role": "obstacle"},
+    {"id": 103, "name": "pudding-box", "shape": "mesh", "asset": "ycb/008_pudding_box", "size": [0.11365, 0.08982, 0.03847], "position": [0.3, 0.0, -0.17697], "rpy": [0, 0, 0.0], "kind": "movable", "mass": 0.187, "operatorMovable": true, "staticFriction": 0.5, "dynamicFriction": 0.4, "colour": [0.55, 0.35, 0.2], "jitter": [0, 0, 0], "role": "obstacle"},
+    {"id": 104, "name": "sugar-box", "shape": "mesh", "asset": "ycb/004_sugar_box", "size": [0.09268, 0.17625, 0.04513], "position": [0.3, 0.0, -0.17364], "rpy": [0, 0, 0.0], "kind": "movable", "mass": 0.514, "operatorMovable": true, "staticFriction": 0.5, "dynamicFriction": 0.4, "colour": [0.9, 0.85, 0.3], "jitter": [0, 0, 0], "role": "obstacle"},
+    {"id": 105, "name": "mustard-bottle", "shape": "mesh", "asset": "ycb/006_mustard_bottle", "size": [0.09602, 0.1913, 0.05825], "position": [0.3, 0.0, -0.16708], "rpy": [0, 0, 0.0], "kind": "movable", "mass": 0.603, "operatorMovable": true, "staticFriction": 0.4, "dynamicFriction": 0.35, "colour": [0.9, 0.8, 0.1], "jitter": [0, 0, 0], "role": "obstacle"},
+    {"id": 106, "name": "bowl", "shape": "mesh", "asset": "ycb/024_bowl", "size": [0.16116, 0.16146, 0.05501], "position": [0.3, 0.0, -0.1687], "rpy": [0, 0, 0.0], "kind": "movable", "mass": 0.147, "operatorMovable": true, "staticFriction": 0.4, "dynamicFriction": 0.35, "colour": [0.7, 0.2, 0.15], "jitter": [0, 0, 0], "role": "obstacle"},
+    {"id": 107, "name": "banana", "shape": "mesh", "asset": "ycb/011_banana", "size": [0.19717, 0.07407, 0.03865], "position": [0.3, 0.0, -0.17688], "rpy": [0, 0, 0.0], "kind": "movable", "mass": 0.066, "operatorMovable": true, "staticFriction": 0.5, "dynamicFriction": 0.4, "colour": [0.9, 0.8, 0.2], "jitter": [0, 0, 0], "role": "obstacle"},
+    {"id": 108, "name": "wood-block", "shape": "mesh", "asset": "ycb/036_wood_block", "size": [0.0897, 0.20609, 0.09078], "position": [0.3, 0.0, -0.15081], "rpy": [0, 0, 0.0], "kind": "movable", "mass": 0.729, "operatorMovable": true, "staticFriction": 0.5, "dynamicFriction": 0.4, "colour": [0.75, 0.6, 0.4], "jitter": [0, 0, 0], "role": "obstacle"},
+    {"id": 109, "name": "large-clamp", "shape": "mesh", "asset": "ycb/051_large_clamp", "size": [0.16494, 0.12167, 0.03641], "position": [0.3, 0.0, -0.178], "rpy": [0, 0, 0.0], "kind": "movable", "mass": 0.125, "operatorMovable": true, "staticFriction": 0.4, "dynamicFriction": 0.35, "colour": [0.2, 0.2, 0.2], "jitter": [0, 0, 0], "role": "obstacle"},
+    {"id": 110, "name": "mousetrap", "shape": "mesh", "asset": "polyhaven/mousetrap", "size": [0.05499, 0.10044, 0.01793], "position": [0.3, 0.0, -0.18724], "rpy": [0, 0, 0.0], "kind": "movable", "mass": 0.04, "operatorMovable": true, "staticFriction": 0.5, "dynamicFriction": 0.4, "colour": [0.7, 0.55, 0.35], "jitter": [0, 0, 0], "role": "obstacle"},
+    {"id": 111, "name": "square-post", "shape": "box", "size": [0.02, 0.02, 0.36], "position": [0.3, 0.0, -0.0162], "rpy": [0, 0, 0.0], "kind": "fixed", "operatorMovable": false, "staticFriction": 0.6, "dynamicFriction": 0.5, "colour": [0.4, 0.4, 0.42], "jitter": [0, 0, 0], "role": "obstacle", "steps": [0, 1]},
+    {"id": 112, "name": "slat", "shape": "box", "size": [0.012, 0.06, 0.24], "position": [0.3, 0.0, -0.0762], "rpy": [0, 0, 0.0], "kind": "movable", "mass": 0.112, "operatorMovable": true, "staticFriction": 0.5, "dynamicFriction": 0.4, "colour": [0.6, 0.5, 0.35], "jitter": [0, 0, 0], "role": "obstacle", "steps": [-1, 1]},
+    {"id": 113, "name": "puck", "shape": "cylinder", "size": [0.035, 0.035, 0.02], "position": [0.3, 0.0, -0.1862], "rpy": [0, 0, 0.0], "kind": "movable", "mass": 0.021, "operatorMovable": true, "staticFriction": 0.9, "dynamicFriction": 0.8, "colour": [0.05, 0.05, 0.05], "jitter": [0, 0, 0], "role": "obstacle", "steps": [-1, 1]},
+    {"id": 115, "name": "pedestal", "shape": "box", "size": [0.045, 0.045, 0.17], "position": [0.3, 0.0, -0.1112], "rpy": [0, 0, 0.0], "kind": "fixed", "operatorMovable": false, "staticFriction": 0.6, "dynamicFriction": 0.5, "colour": [0.45, 0.45, 0.47], "jitter": [0, 0, 0], "role": "stand", "steps": [0, 1]},
+    {"id": 116, "name": "riser", "shape": "box", "size": [0.06, 0.06, 0.025], "position": [0.3, 0.0, -0.1837], "rpy": [0, 0, 0.0], "kind": "fixed", "operatorMovable": false, "staticFriction": 0.6, "dynamicFriction": 0.5, "colour": [0.4, 0.3, 0.2], "jitter": [0, 0, 0], "role": "stand", "steps": [0, 2]},
+    {"id": 117, "name": "bench-plank", "shape": "box", "size": [0.36, 0.12, 0.025], "position": [0.34, 0.0, -0.1837], "rpy": [0, 0, 0.0], "kind": "fixed", "operatorMovable": false, "staticFriction": 0.6, "dynamicFriction": 0.5, "colour": [0.5, 0.36, 0.22], "jitter": [0, 0, 0], "role": "plank", "supports": [118, 119], "steps": [-1, 0]},
+    {"id": 118, "name": "bench-leg-a", "shape": "box", "size": [0.03, 0.1, 0.032], "position": [0.3, 0.0, -0.1802], "rpy": [0, 0, 0.0], "kind": "fixed", "operatorMovable": false, "staticFriction": 0.6, "dynamicFriction": 0.5, "colour": [0.45, 0.32, 0.2], "jitter": [0, 0, 0], "role": "support", "steps": [-1, 1]},
+    {"id": 119, "name": "bench-leg-b", "shape": "box", "size": [0.03, 0.1, 0.032], "position": [0.3, 0.0, -0.1802], "rpy": [0, 0, 0.0], "kind": "fixed", "operatorMovable": false, "staticFriction": 0.6, "dynamicFriction": 0.5, "colour": [0.45, 0.32, 0.2], "jitter": [0, 0, 0], "role": "support", "steps": [-1, 1]},
+    {"id": 120, "name": "arm-plank", "shape": "box", "size": [0.22, 0.05, 0.025], "position": [0.3, 0.0, -0.1837], "rpy": [0, 0, 0.0], "kind": "fixed", "operatorMovable": false, "staticFriction": 0.6, "dynamicFriction": 0.5, "colour": [0.3, 0.3, 0.32], "jitter": [0, 0, 0], "role": "plank", "supports": [121], "steps": [0, 1]},
+    {"id": 121, "name": "arm-base", "shape": "box", "size": [0.06, 0.06, 0.19], "position": [0.3, 0.0, -0.1012], "rpy": [0, 0, 0.0], "kind": "fixed", "operatorMovable": false, "staticFriction": 0.6, "dynamicFriction": 0.5, "colour": [0.25, 0.25, 0.27], "jitter": [0, 0, 0], "role": "support", "steps": [0, 1]},
+    {"id": 122, "name": "scissors", "shape": "mesh", "asset": "ycb/037_scissors", "size": [0.09107, 0.19724, 0.01719], "position": [0.15, 0.62, -0.18761], "rpy": [0, 0, 0.0], "kind": "movable", "mass": 0.082, "operatorMovable": false, "staticFriction": 0.35, "dynamicFriction": 0.3, "colour": [0.2, 0.3, 0.55], "jitter": [0, 0, 0], "clutter": true, "role": "distractor"},
+    {"id": 123, "name": "cracker-box", "shape": "mesh", "asset": "ycb/003_cracker_box", "size": [0.16404, 0.21344, 0.0718], "position": [0.15, 0.62, -0.1603], "rpy": [0, 0, 0.0], "kind": "movable", "mass": 0.411, "operatorMovable": false, "staticFriction": 0.5, "dynamicFriction": 0.4, "colour": [0.8, 0.15, 0.1], "jitter": [0, 0, 0], "role": "distractor"},
+    {"id": 124, "name": "bleach-cleanser", "shape": "mesh", "asset": "ycb/021_bleach_cleanser", "size": [0.10243, 0.25058, 0.0677], "position": [0.15, 0.62, -0.16235], "rpy": [0, 0, 0.0], "kind": "movable", "mass": 1.131, "operatorMovable": false, "staticFriction": 0.4, "dynamicFriction": 0.35, "colour": [0.9, 0.9, 0.9], "jitter": [0, 0, 0], "role": "distractor"},
+    {"id": 125, "name": "power-drill", "shape": "mesh", "asset": "ycb/035_power_drill", "size": [0.18436, 0.18684, 0.05719], "position": [0.15, 0.62, -0.16761], "rpy": [0, 0, 0.0], "kind": "movable", "mass": 0.895, "operatorMovable": false, "staticFriction": 0.4, "dynamicFriction": 0.35, "colour": [0.15, 0.15, 0.15], "jitter": [0, 0, 0], "role": "distractor"},
+    {"id": 126, "name": "pitcher-base", "shape": "mesh", "asset": "ycb/019_pitcher_base", "size": [0.18862, 0.13311, 0.24239], "position": [0.15, 0.62, -0.07501], "rpy": [0, 0, 0.0], "kind": "movable", "mass": 0.178, "operatorMovable": false, "staticFriction": 0.4, "dynamicFriction": 0.35, "colour": [0.2, 0.4, 0.8], "jitter": [0, 0, 0], "role": "distractor"},
+    {"id": 127, "name": "extra-large-clamp", "shape": "mesh", "asset": "ycb/052_extra_large_clamp", "size": [0.2026, 0.1652, 0.03648], "position": [0.15, 0.62, -0.17796], "rpy": [0, 0, 0.0], "kind": "movable", "mass": 0.202, "operatorMovable": false, "staticFriction": 0.4, "dynamicFriction": 0.35, "colour": [0.2, 0.2, 0.2], "jitter": [0, 0, 0], "role": "distractor"},
+    {"id": 129, "name": "garden-gnome", "shape": "mesh", "asset": "polyhaven/garden_gnome", "size": [0.25792, 0.20972, 0.59909], "position": [0.1, 0.62, 0.10334], "rpy": [0, 0, 0.0], "kind": "fixed", "operatorMovable": false, "staticFriction": 0.6, "dynamicFriction": 0.5, "colour": [0.7, 0.2, 0.15], "jitter": [0, 0, 0], "role": "distractor"}
+  ],
+  "placement": {"xMin": -0.3, "xMax": 0.6, "yMin": -0.6, "yMax": 0.6, "clearance": 0.01},
+  "pool": {"obstacleMin": 0, "obstacleMax": 3, "reachMin": 0.13, "reachMax": 0.34, "reachBearing": 1.658, "lyingShare": 0.35, "standShare": 0.3, "rigShare": 0.2, "tallShare": 0.1, "workMin": 0.16, "workMax": 0.3, "workBearing": 1.0472, "standTopMin": 0.4, "standTopMax": 0.75, "rigUnderMin": 0.02, "rigUnderMax": 0.25, "distractorMin": 2, "distractorMax": 6, "distractorRegions": [-0.2, 0.4, 0.47, 0.72, -0.2, 0.4, -0.72, -0.47, 0.28, 0.52, 0.28, 0.47, 0.28, 0.52, -0.47, -0.28], "distractorReach": 0.45, "robotKeepOut": [-0.21, 0.14, -0.2, 0.2], "knockMaxMass": 0.7},
+  "environment": {"kind": "hdri", "dome": "dome", "change": "per-session", "manifest": "~/isaacsim/assets/hdri/polyhaven-indoor/manifest.json", "meanRadiance": 1000, "targetBrightness": 118, "yawDeg": [0, 360], "rotateXYZDeg": [0, 0, 0], "hideSurfaces": ["floor"]},
+  "materials": {
+    "manifest": "~/isaacsim/assets/textures/polyhaven/manifest.json",
+    "box": ["wood"],
+    "cylinder": ["metal", "wood"],
+    "looks": {
+      "black-resin": {"texture": "smooth_concrete_floor", "desaturation": 1.0, "tint": [0.05, 0.05, 0.05], "roughness": 0.3, "roughnessTexture": 0.25, "weight": 2},
+      "black-laminate": {"texture": "laminate_floor_02", "desaturation": 0.9, "tint": [0.08, 0.08, 0.08], "roughness": 0.4, "roughnessTexture": 0.5, "weight": 2},
+      "grey-laminate": {"texture": "grey_oak_veneer_01", "desaturation": 0.85, "tint": [0.42, 0.42, 0.42]},
+      "wood-kitchen": {"texture": "kitchen_wood"},
+      "wood-table": {"texture": "wood_table_001"},
+      "wood-plywood": {"texture": "plywood"},
+      "wood-oak": {"texture": "oak_veneer_01"},
+      "cutting-mat": {"texture": "teleop_cutting_mat"},
+      "fabric-linen": {"texture": "rough_linen"},
+      "fabric-denim": {"texture": "denim_fabric_03"},
+      "fabric-hessian": {"texture": "hessian_230"},
+      "kraft-paper": {"texture": "teleop_kraft_paper"},
+      "cardboard": {"texture": "teleop_cardboard"},
+      "white-paper": {"texture": "teleop_white_paper"},
+      "glossy-black": {"texture": "smooth_concrete_floor", "desaturation": 1.0, "tint": [0.02, 0.02, 0.022], "roughness": 0.08},
+      "pen-blue": {"texture": "smooth_concrete_floor", "desaturation": 1.0, "tint": [0.03, 0.09, 0.45], "roughness": 0.35},
+      "pen-black": {"texture": "smooth_concrete_floor", "desaturation": 1.0, "tint": [0.025, 0.025, 0.025], "roughness": 0.35},
+      "pen-red": {"texture": "smooth_concrete_floor", "desaturation": 1.0, "tint": [0.55, 0.04, 0.03], "roughness": 0.35},
+      "wood-black-oak": {"texture": "black_oak_veneer"},
+      "wood-mocha-oak": {"texture": "mocha_oak_veneer"},
+      "wood-fine": {"texture": "fine_grained_wood"},
+      "wood-blue-planks": {"texture": "blue_painted_planks"},
+      "wood-distressed": {"texture": "distressed_painted_planks"},
+      "metal-plate-2": {"texture": "metal_plate_02"},
+      "metal-blue": {"texture": "blue_metal_plate"},
+      "metal-rusty-painted": {"texture": "rusty_painted_metal"},
+      "metal-rusty-2": {"texture": "rusty_metal_02"},
+      "rubber-black": {"texture": "smooth_concrete_floor", "desaturation": 1.0, "tint": [0.03, 0.03, 0.03], "roughness": 0.7}
+    },
+    "surfaces": {
+      "table": ["black-resin", "black-laminate", "grey-laminate", "wood-kitchen", "wood-table", "wood-plywood", "wood-oak", "cutting-mat", "fabric-linen", "fabric-denim", "fabric-hessian", "kraft-paper", "cardboard", "white-paper"],
+      "bench": ["black-resin", "black-laminate", "grey-laminate", "wood-kitchen", "wood-table", "wood-plywood", "wood-oak"]
+    },
+    "objects": {
+      "square-post": ["metal-plate-2", "metal-blue", "metal-rusty-painted", "metal-rusty-2", "wood-black-oak", "wood-mocha-oak", "wood-fine", "wood-blue-planks", "wood-distressed"],
+      "slat": ["wood-black-oak", "wood-mocha-oak", "wood-fine", "wood-blue-planks", "wood-distressed"],
+      "puck": ["rubber-black"],
+      "pedestal": ["metal-plate-2", "metal-blue", "metal-rusty-painted", "metal-rusty-2"],
+      "riser": ["wood-black-oak", "wood-mocha-oak", "wood-fine", "wood-blue-planks", "wood-distressed"],
+      "bench-plank": ["wood-black-oak", "wood-mocha-oak", "wood-fine", "wood-blue-planks", "wood-distressed"],
+      "bench-leg-a": ["wood-black-oak", "wood-mocha-oak", "wood-fine", "wood-blue-planks", "wood-distressed"],
+      "bench-leg-b": ["wood-black-oak", "wood-mocha-oak", "wood-fine", "wood-blue-planks", "wood-distressed"],
+      "arm-plank": ["metal-plate-2", "metal-blue", "metal-rusty-painted", "metal-rusty-2"],
+      "arm-base": ["metal-plate-2", "metal-blue", "metal-rusty-painted", "metal-rusty-2"]
+    },
+    "tileScale": 1.0
+  },
+  "clutter": {
+    "countMin": 0,
+    "countMax": 8,
+    "region": [0.105, 0.567, -0.809, 0.781],
+    "keepOut": [-0.25, 0.14, -0.15, 0.15],
+    "kinds": [
+      {"kind": "a4", "shape": "sheet", "weight": 3, "size": [0.21, 0.297], "thickness": 0.0001, "stackMin": 1, "stackMax": 6, "fan": 0.35, "spread": 0.03, "texture": "teleop_white_paper", "colours": [1.0, 1.0, 1.0, 0.95, 0.92, 0.82, 0.86, 0.9, 0.97]},
+      {"kind": "sticky-note", "shape": "sheet", "weight": 2, "size": [0.076, 0.076], "thickness": 0.0001, "stackMin": 1, "stackMax": 5, "fan": 1.0, "spread": 0.06, "texture": "teleop_white_paper", "colours": [1.0, 0.85, 0.2, 1.0, 0.45, 0.55, 0.35, 0.65, 1.0, 0.4, 0.85, 0.3, 1.0, 0.5, 0.12]},
+      {"kind": "cutting-mat", "shape": "sheet", "weight": 1, "maxCount": 1, "size": [0.42, 0.594], "thickness": 0.002, "yawJitter": 0.05, "texture": "teleop_cutting_mat"},
+      {"kind": "cable-blue", "shape": "cable", "weight": 3, "diameterMin": 0.0035, "diameterMax": 0.005, "lengthMin": 0.35, "lengthMax": 1.1, "colours": [0.02, 0.1, 0.5], "roughness": 0.45, "keepOut": [-0.25, 0.42, -0.42, 0.42]},
+      {"kind": "cable-black", "shape": "cable", "weight": 1.5, "diameterMin": 0.0035, "diameterMax": 0.005, "lengthMin": 0.35, "lengthMax": 1.1, "colours": [0.02, 0.02, 0.022], "roughness": 0.4, "keepOut": [-0.25, 0.42, -0.42, 0.42]},
+      {"kind": "cable-white", "shape": "cable", "weight": 1, "diameterMin": 0.0035, "diameterMax": 0.005, "lengthMin": 0.35, "lengthMax": 1.1, "colours": [0.7, 0.7, 0.68], "roughness": 0.45, "keepOut": [-0.25, 0.42, -0.42, 0.42]},
+      {"kind": "cable-grey", "shape": "cable", "weight": 1, "diameterMin": 0.0035, "diameterMax": 0.005, "lengthMin": 0.35, "lengthMax": 1.1, "colours": [0.2, 0.21, 0.22], "roughness": 0.45, "keepOut": [-0.25, 0.42, -0.42, 0.42]},
+      {"kind": "bag", "shape": "bag", "weight": 1, "maxCount": 1, "size": [0.26, 0.36], "sizeJitter": 0.2, "height": 0.005, "colours": [0.75, 0.75, 0.73, 0.03, 0.1, 0.45, 0.015, 0.015, 0.015, 0.35, 0.37, 0.4], "roughness": 0.18, "keepOut": [-0.25, 0.42, -0.42, 0.42]}
+    ]
+  },
+  "cameras": [
+    {"id": "third-left", "position": [0.88, 0.51, 0.32], "lookAt": [0.08, 0.0, 0.07], "width": 640, "height": 360, "hfovDeg": 69.0, "near": 0.02, "far": 6.0, "fps": 30, "feedPort": 6008, "feedQuality": 80, "recordQuality": 92, "record": ["rgb", "depth", "mask"]},
+    {"id": "third-right", "position": [0.88, -0.51, 0.32], "lookAt": [0.08, 0.0, 0.07], "width": 640, "height": 360, "hfovDeg": 69.0, "near": 0.02, "far": 6.0, "fps": 30, "feedPort": 6009, "feedQuality": 80, "recordQuality": 92, "record": ["rgb", "depth", "mask"]},
+    {"id": "wrist", "mount": "wrist_link", "mountPosition": [0.1, 0.0, 0.05], "mountLookAt": [0.26, 0.0, -0.01], "mountUp": [0.0, 0.0, 1.0], "width": 640, "height": 360, "hfovDeg": 87.0, "near": 0.01, "far": 6.0, "fps": 30, "feedPort": 6003, "feedQuality": 80, "recordQuality": 92, "record": ["rgb", "depth", "mask"]}
+  ],
+  "lights": [
+    {"id": "dome", "kind": "dome", "intensity": 1000}
+  ],
+  "appearance": {
+    "objects": {"brightness": [0.85, 1.1], "desaturation": [0.0, 0.25], "tint": 0.05},
+    "lighting": {"colourTemperatureK": [5500, 7500], "exposure": [108, 128],
+                 "key": {"intensity": [0.5, 2.5], "azimuthDeg": [0, 360], "elevationDeg": [35, 75], "angleDeg": [1, 6], "colourTemperatureK": [3500, 6500]}},
+    "cameras": {"room": {"translationM": 0.015, "rotationDeg": 2.0}, "mounted": {"translationM": 0.003, "rotationDeg": 1.5}}
+  }
+}

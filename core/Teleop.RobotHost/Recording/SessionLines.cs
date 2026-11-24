@@ -26,8 +26,30 @@ namespace Teleop.RobotHost.Recording
             JointCommandOutcome.Stale => 'S',
             JointCommandOutcome.Refused => 'R',
             JointCommandOutcome.Parked => 'P',
+            JointCommandOutcome.Held => 'H',
+            JointCommandOutcome.Clamped => 'C',
             _ => '?',
         };
+
+        /// <summary>
+        /// Joint command <paramref name="sequence"/> failed the collision check and was clamped (its <c>JC</c> has outcome
+        /// <c>C</c>): the point <paramref name="alpha"/> of the way, in (0, 1), along the joint-space line from the measured pose
+        /// to the command went to the relay instead (its <c>RO</c>). docs/adr/0020 amendment 2026-11-24.
+        /// </summary>
+        public static string Clamp(long t, uint sequence, float alpha) =>
+            "JK|" + I(t) + "|" + sequence.ToString(CultureInfo.InvariantCulture) + "|" + F(alpha);
+
+        /// <summary>The <c>HK</c> record's version: 1 since 2026-11-24.</summary>
+        public const int HostCheckVersion = 1;
+
+        /// <summary>
+        /// The collision check's policy, at the start of every session (docs/adr/0020 amendment 2026-11-24): the servo path is
+        /// judged from the <c>measured</c> pose, and a failing command is clamped (<c>clamp</c>) or refused (<c>refuse</c>).
+        /// A session without it refused.
+        /// </summary>
+        public static string HostCheck(long t, HostCheckOnFail onFail) =>
+            "HK|" + I(t) + "|measured|" + (onFail == HostCheckOnFail.Refuse ? "refuse" : "clamp") + "|" +
+            HostCheckVersion.ToString(CultureInfo.InvariantCulture);
 
         public static string Keepalive(long t, long operatorTicks, long operatorTicksPerSecond) =>
             "KA|" + I(t) + "|" + I(operatorTicks) + "|" + I(operatorTicksPerSecond);
@@ -180,6 +202,24 @@ namespace Teleop.RobotHost.Recording
             "|" + F(e.EndSeconds) + "|" + F(e.ClearSeconds);
 
         /// <summary>
+        /// One planned move of a <c>mixed</c> take (docs/adr/0038 decision 1, <see cref="ScriptMoveCodec"/>):
+        /// <c>MV|t|index|count|kind|object|offsetMm|gapMm|startS|contactS|closestS|endS</c>, written when the move begins
+        /// (<c>t</c>); the four times are seconds after <c>t</c>, as planned. <c>object</c> 0 and <c>NaN</c> where the move has none.
+        /// </summary>
+        public static string ScriptMove(long t, in ScriptMove m) =>
+            "MV|" + I(t) + "|" + m.Index.ToString(CultureInfo.InvariantCulture) + "|" + m.Count.ToString(CultureInfo.InvariantCulture) + "|" +
+            ScriptMoveCodec.Name(m.Kind) + "|" + m.ObjectId.ToString(CultureInfo.InvariantCulture) + "|" + F(m.OffsetMm) + "|" + F(m.GapMm) + "|" +
+            F(m.StartSeconds) + "|" + F(m.ContactSeconds) + "|" + F(m.ClosestSeconds) + "|" + F(m.EndSeconds);
+
+        /// <summary>
+        /// A <c>mixed</c> take's replay group (docs/adr/0038 decision 2, <see cref="ReplayCodec"/>): <c>RP|t|group|role|edit</c>,
+        /// written when the tool sends it, after the take has started. <c>group</c> names the source take (decimal), <c>role</c> is
+        /// <c>source</c> or <c>replay</c>, <c>edit</c> is <see cref="ReplayCodec.Describe"/>'s.
+        /// </summary>
+        public static string Replay(long t, in ReplayRecord r) =>
+            "RP|" + I(t) + "|" + r.Group.ToString(CultureInfo.InvariantCulture) + "|" + ReplayCodec.Name(r.Role) + "|" + ReplayCodec.Describe(r);
+
+        /// <summary>
         /// What the headset does to its own link and view (docs/adr/0023 amendment):
         /// <c>HD|t|lagMs|jitterMs|lossPercent|addedDelayMs|seed</c>, the lag <c>NaN</c> for a named profile.
         /// Any non-zero value means the session is not a real-network measurement. When the headset reports its hand
@@ -290,6 +330,8 @@ namespace Teleop.RobotHost.Recording
             WorldEditOp.ResetObject => "reset-object",
             WorldEditOp.ResetLayout => "reset-layout",
             WorldEditOp.Resize => "resize",
+            WorldEditOp.Park => "park",
+            WorldEditOp.Unpark => "unpark",
             _ => "?",
         };
 
@@ -351,6 +393,21 @@ namespace Teleop.RobotHost.Recording
             ArmPowerReason.HoldRequested => "hold-requested",
             _ => "?" + ((byte)reason).ToString(CultureInfo.InvariantCulture),
         };
+
+        /// <summary>The command gate held joint command <paramref name="sequence"/> (docs/adr/0038 N): the check's reason, or
+        /// <c>no-answer</c> when a fail-closed gate heard nothing in time.</summary>
+        public static string GateHold(long t, uint sequence, string reason) =>
+            "GH|" + I(t) + "|" + sequence.ToString(CultureInfo.InvariantCulture) + "|" + Clean(reason);
+
+        /// <summary>The command gate's check did not answer joint command <paramref name="sequence"/> within its deadline; it
+        /// waited <paramref name="waitedMicroseconds"/>. The command went on (fail-open) or was held (fail-closed, with a GH).</summary>
+        public static string GateMiss(long t, uint sequence, long waitedMicroseconds) =>
+            "GT|" + I(t) + "|" + sequence.ToString(CultureInfo.InvariantCulture) + "|" + I(waitedMicroseconds);
+
+        /// <summary>The command gate is on: what checks (<c>socket:&lt;path&gt;</c> or <c>table:...</c>), its deadline and what a
+        /// miss does (<c>open</c> or <c>closed</c>). Written at the start of every session while it is on.</summary>
+        public static string GateConfig(long t, string check, double deadlineMs, bool failClosed) =>
+            "GC|" + I(t) + "|" + Clean(check) + "|" + deadlineMs.ToString("R", CultureInfo.InvariantCulture) + "|" + (failClosed ? "closed" : "open");
 
         public static string Subscriber(long t, string endpoint) => "SS|" + I(t) + "|" + Clean(endpoint);
 

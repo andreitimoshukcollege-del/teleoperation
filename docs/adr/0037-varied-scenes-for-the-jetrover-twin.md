@@ -974,7 +974,8 @@ countdown, and the check and save. The user approved two twins, so two batches r
   `safety-batch-1.kept`. Twin 0's names are unchanged. gpu-ui shows a card per twin and per batch.
 - **One dataset.** `isaac-safety-build twins=0,1` writes the takes both batches kept as one dataset, in recorded order.
   The batch's own build goes through the same private recipe (`_isaac-safety-build`). `teleop_lerobot safety-build`
-  already took takes from any folder.
+  already took takes from any folder. *Reversed 2026-11-24 (docs/adr/0038 L): the two twins' takes overlap in time on
+  the machine's one clock, so each twin's are a dataset of their own.*
 - **The convenience recipes.**
   - `isaac-twins-up n=2` starts the twins one after the other, in the background on the GPU machine
     (`isaac-jetrover-host ... detach=true`), so a dropped ssh session leaves them running (the 2026-11-16 failure).

@@ -25,6 +25,30 @@ namespace Teleop.RobotArm.World
         Hide,
     }
 
+    /// <summary>
+    /// What a mixed pool's layout does with an object (docs/adr/0038 decision 3): <see cref="None"/> for every object of a scene that
+    /// is not one.
+    /// </summary>
+    public enum SceneRole
+    {
+        None,
+
+        /// <summary>One of the 0-3 things a layout stands in the arm's reach, anywhere over its reachable workspace.</summary>
+        Obstacle,
+
+        /// <summary>In the cameras' view and beyond every arm pose's reach.</summary>
+        Distractor,
+
+        /// <summary>A box fixture a movable obstacle is raised on, so contacts come at other heights.</summary>
+        Stand,
+
+        /// <summary>A box fixture held up on its supports: an overhang the arm meets from the side or from below.</summary>
+        Plank,
+
+        /// <summary>A plank's leg (a bridge has two) or its base (a cantilever has one): a box fixture under one of its ends.</summary>
+        Support,
+    }
+
     /// <summary>A flat box in the root frame (ROS convention: Z up, X forward), axis-aligned.</summary>
     public sealed class SceneSurface
     {
@@ -73,10 +97,16 @@ namespace Teleop.RobotArm.World
     {
         internal SceneObject(byte id, string name, SceneShape shape, double sx, double sy, double sz, double x, double y, double z, double yaw,
             bool movable, double mass, bool operatorMovable, double staticFriction, double dynamicFriction, float r, float g, float b, double jx, double jy, double jyaw,
-            string asset = "", bool clutter = false)
+            string asset = "", bool clutter = false, SceneRole role = SceneRole.None, byte[]? supports = null, int stepMin = 0, int stepMax = 0,
+            bool hasSteps = false)
         {
             Asset = asset;
             Clutter = clutter;
+            Role = role;
+            SupportIds = supports ?? Array.Empty<byte>();
+            HasSteps = hasSteps;
+            StepMin = hasSteps ? stepMin : 0;
+            StepMax = hasSteps ? stepMax : 0;
             Id = id;
             Name = name;
             Shape = shape;
@@ -139,6 +169,20 @@ namespace Teleop.RobotArm.World
         /// lies on a side and is not one of the pool's movable objects.
         /// </summary>
         public bool Clutter { get; }
+
+        /// <summary>What a mixed pool's layout does with it (docs/adr/0038 decision 3); <see cref="SceneRole.None"/> otherwise.</summary>
+        public SceneRole Role { get; }
+
+        /// <summary>A plank's supports, by id (docs/adr/0038): one (a cantilever) or two (a bridge); empty for any other object.</summary>
+        public byte[] SupportIds { get; }
+
+        /// <summary>
+        /// Whether a mixed pool's layout draws its size (docs/adr/0038): a resize step uniform in <see cref="StepMin"/> to
+        /// <see cref="StepMax"/>, the factor 1.25 to that power on every axis. A box or a cylinder, movable or fixed.
+        /// </summary>
+        public bool HasSteps { get; }
+        public int StepMin { get; }
+        public int StepMax { get; }
         public double StaticFriction { get; }
         public double DynamicFriction { get; }
         public float R { get; }
@@ -207,8 +251,29 @@ namespace Teleop.RobotArm.World
             SceneObject[] objects, double xMin, double xMax, double yMin, double yMax, double clearance,
             int movableMin, int movableMax, int fixedMin, int fixedMax, double sizeMin, double sizeMax, double reachMin, double reachMax,
             double knockMaxMass, double[] fixedRegions, double[] robotKeepOut, double fixedNearMax,
-            double clusterShare, double lyingShare, double[] edgeRegions, double edgeShare, int clutterMin, int clutterMax)
+            double clusterShare, double lyingShare, double[] edgeRegions, double edgeShare, int clutterMin, int clutterMax,
+            int obstacleMin, int obstacleMax, double reachBearing, double standShare, double rigShare, int distractorMin, int distractorMax,
+            double[] distractorRegions, double distractorReach, double tallShare, double workMin, double workMax, double workBearing,
+            double standTopMin, double standTopMax, double rigUnderMin, double rigUnderMax)
         {
+            TallShare = tallShare;
+            WorkMin = workMin;
+            WorkMax = workMax;
+            WorkBearing = workBearing;
+            StandTopMin = standTopMin;
+            StandTopMax = standTopMax;
+            RigUnderMin = rigUnderMin;
+            RigUnderMax = rigUnderMax;
+            ObstacleMin = obstacleMin;
+            ObstacleMax = obstacleMax;
+            ReachBearing = reachBearing;
+            StandShare = standShare;
+            RigShare = rigShare;
+            DistractorMin = distractorMin;
+            DistractorMax = distractorMax;
+            DistractorRegions = distractorRegions;
+            DistractorReach = distractorReach;
+            foreach (SceneObject o in objects) _anySteps |= o.HasSteps;
             ClutterMin = clutterMin;
             ClutterMax = clutterMax;
             ClusterShare = clusterShare;
@@ -252,8 +317,70 @@ namespace Teleop.RobotArm.World
         public double RegionYMax { get; }
         public double Clearance { get; }
 
-        /// <summary>Whether the objects are a pool that each layout chooses from (docs/adr/0037 decision 3).</summary>
-        public bool IsPool => MovableMax + FixedMax > 0;
+        /// <summary>Whether the objects are a pool that each layout chooses from (docs/adr/0037 decision 3; a mixed pool is one too).</summary>
+        public bool IsPool => MovableMax + FixedMax > 0 || Mixed;
+
+        /// <summary>
+        /// Whether the pool is a mixed one (docs/adr/0038 decision 3): each layout stands <see cref="ObstacleMin"/> to
+        /// <see cref="ObstacleMax"/> obstacles over the arm's reachable workspace and <see cref="DistractorMin"/> to
+        /// <see cref="DistractorMax"/> distractors beyond its reach, every object by its <see cref="SceneObject.Role"/>.
+        /// </summary>
+        public bool Mixed => ObstacleMax + DistractorMax > 0;
+        public int ObstacleMin { get; }
+        public int ObstacleMax { get; }
+        public int DistractorMin { get; }
+        public int DistractorMax { get; }
+
+        /// <summary>How far either side of straight ahead (+x) a mixed layout centres an obstacle, rad: the base's yaw range.</summary>
+        public double ReachBearing { get; }
+
+        /// <summary>The chance that a movable obstacle is raised on a free stand that holds it (docs/adr/0038).</summary>
+        public double StandShare { get; }
+
+        /// <summary>The chance that an obstacle is a plank on its supports, when one is free (docs/adr/0038).</summary>
+        public double RigShare { get; }
+
+        /// <summary>Rectangles <c>[xMin, xMax, yMin, yMax, ...]</c> that hold a distractor's centre (docs/adr/0038).</summary>
+        public double[] DistractorRegions { get; }
+
+        /// <summary>The nearest a distractor's footprint comes to the base's yaw axis, m: beyond every arm pose's reach.</summary>
+        public double DistractorReach { get; }
+
+        /// <summary>
+        /// An obstacle at least this tall at its file size, m, is one of a mixed pool's tall thin kinds (docs/adr/0038, the scene's second
+        /// pass): a rod, a dowel, a post, a slat. joint-drive's <c>SafetyScript.TallObjectMeters</c> is the same height.
+        /// </summary>
+        public const double TallHeight = 0.15;
+
+        /// <summary>The chance that an obstacle that is not a plank is a tall one, when one is free (docs/adr/0038, second pass); 0: none drawn so.</summary>
+        public double TallShare { get; }
+
+        /// <summary>
+        /// The arm's working band (docs/adr/0038, second pass): tall obstacles and planks are centred <see cref="WorkMin"/>-<see cref="WorkMax"/> m
+        /// from the base's axis within <see cref="WorkBearing"/> rad of straight ahead. All 0: the obstacles' band.
+        /// </summary>
+        public double WorkMin { get; }
+        public double WorkMax { get; }
+        public double WorkBearing { get; }
+
+        /// <summary>
+        /// A stand's top sides as fractions of the narrower side of the object it holds (docs/adr/0038, second pass): above 0, a stand is
+        /// narrower than its object, which overhangs it and stands upright on it; 0: a stand's top holds the whole footprint.
+        /// </summary>
+        public double StandTopMin { get; }
+        public double StandTopMax { get; }
+
+        /// <summary>The range a rig's underside height is drawn from, uniform, m (docs/adr/0038, second pass); 0, 0: its steps' pairs, uniform.</summary>
+        public double RigUnderMin { get; }
+        public double RigUnderMax { get; }
+
+        /// <summary>Whether object <paramref name="index"/> is one of a mixed pool's tall thin obstacles (<see cref="TallHeight"/> or taller at its file size).</summary>
+        public bool IsTall(int index) => Objects[index].Role == SceneRole.Obstacle && Objects[index].SizeZ >= TallHeight - 1e-12;
+
+        /// <summary>Whether a layout centres object <paramref name="index"/> in the working band: a tall obstacle or a plank, when the pool has one.</summary>
+        public bool InWorkBand(int index) => WorkMax > 0 && (IsTall(index) || Objects[index].Role == SceneRole.Plank);
+
+        private readonly bool _anySteps;
 
         /// <summary>A pool's layout puts <see cref="MovableMin"/> to <see cref="MovableMax"/> movable objects on the table, and <see cref="FixedMin"/> to <see cref="FixedMax"/> fixed ones.</summary>
         public int MovableMin { get; }
@@ -265,7 +392,7 @@ namespace Teleop.RobotArm.World
         /// Whether a pool's layouts also draw sizes (docs/adr/0037 amendment 2): each movable object the headset may resize
         /// gets a resize step that keeps its largest side within <see cref="SizeMin"/> to <see cref="SizeMax"/>, m.
         /// </summary>
-        public bool DrawsSizes => SizeMax > 0;
+        public bool DrawsSizes => SizeMax > 0 || _anySteps;
         public double SizeMin { get; }
         public double SizeMax { get; }
 
@@ -546,13 +673,27 @@ namespace Teleop.RobotArm.World
             return r >= ReachMin && r <= ReachMax;
         }
 
-        /// <summary>Whether a layout may give object <paramref name="index"/> another size: a movable object the headset may resize, in a pool that draws sizes.</summary>
-        public bool Resizable(int index) => DrawsSizes && Objects[index].Movable && Objects[index].OperatorMovable && Objects[index].Shape != SceneShape.Mesh;
+        /// <summary>
+        /// Whether a layout may give object <paramref name="index"/> another size: a movable object the headset may resize, in a pool
+        /// that draws sizes; or one with steps of its own (docs/adr/0038), movable or fixed.
+        /// </summary>
+        public bool Resizable(int index) =>
+            Objects[index].HasSteps || (SizeMax > 0 && Objects[index].Movable && Objects[index].OperatorMovable && Objects[index].Shape != SceneShape.Mesh);
 
-        /// <summary>The resize steps a layout may give object <paramref name="index"/>: its largest side within the pool's size range (step 0 when none is).</summary>
+        /// <summary>
+        /// The resize steps a layout may give object <paramref name="index"/>: its own (docs/adr/0038), or those that keep its largest
+        /// side within the pool's size range (step 0 when none is).
+        /// </summary>
         public void SizeSteps(int index, out int min, out int max)
         {
             SceneObject o = Objects[index];
+            if (o.HasSteps)
+            {
+                min = o.StepMin;
+                max = o.StepMax;
+                return;
+            }
+
             double largest = Math.Max(o.SizeX, Math.Max(o.SizeY, o.SizeZ));
             min = MaxResizeStep + 1;
             max = MinResizeStep - 1;
@@ -603,6 +744,7 @@ namespace Teleop.RobotArm.World
         public bool FitsOnTable(int index, double x, double y, double scale, int rest)
         {
             double r = FootprintRadiusAt(index, rest) * scale;
+            if (Mixed) return FitsMixed(index, x, y, r);
             if (!ClearOfRobot(x, y, r)) return false;
             if (InFixedRegions(index))
             {
@@ -640,6 +782,7 @@ namespace Teleop.RobotArm.World
         /// </summary>
         public bool FitsOnTable(int index, double x, double y, double yaw, double scale, int rest)
         {
+            if (Mixed) return FitsMixed(index, x, y, yaw, scale, rest);
             if (!Objects[index].Clutter) return FitsOnTable(index, x, y, scale, rest);
             ClutterHalf(index, rest, scale, out double hx, out double hy);
             double c = Math.Cos(yaw), s = Math.Sin(yaw);
@@ -833,6 +976,185 @@ namespace Teleop.RobotArm.World
             return step >= MinResizeStep && step <= MaxResizeStep && Math.Abs(scale - ScaleOfStep(step)) <= 1e-4 * scale;
         }
 
+        // --- docs/adr/0038 decision 3: a mixed pool -----------------------------------------------------------------------
+
+        /// <summary>Whether <paramref name="scale"/> is one of object <paramref name="index"/>'s own steps (<see cref="SceneObject.HasSteps"/>).</summary>
+        public bool InSteps(int index, double scale)
+        {
+            SceneObject o = Objects[index];
+            if (!o.HasSteps || !IsValidScale(scale)) return false;
+            int step = StepOf(scale);
+            return step >= o.StepMin && step <= o.StepMax;
+        }
+
+        /// <summary>The height of object <paramref name="index"/>'s centre resting on the table on rest <paramref name="rest"/> at <paramref name="scale"/>.</summary>
+        public double RestingZ(int index, double scale, int rest)
+        {
+            RestExtents(index, rest, out _, out _, out double ez);
+            return Table.Top + ez * scale / 2;
+        }
+
+        /// <summary>
+        /// Whether a placement with its centre at height <paramref name="z"/> stands object <paramref name="index"/> above the table, not
+        /// on it (docs/adr/0038): only in a mixed pool, and more than <see cref="Tolerance"/> up. Every other placement is stood on the
+        /// table whatever height it asks, as always. The placement rules take it only from RobotHost's own layouts, never the headset.
+        /// </summary>
+        public bool IsElevated(int index, double z, double scale, int rest) => Mixed && z > RestingZ(index, scale, rest) + Tolerance;
+
+        /// <summary>As <see cref="PoseAt(int, double, double, double, double, int)"/>, with the centre at height <paramref name="z"/> (on a stand, or a plank on its supports).</summary>
+        public RigidTransform PoseAtHeight(int index, double x, double y, double z, double yaw, double scale, int rest)
+        {
+            RigidTransform p = PoseAt(index, x, y, yaw, scale, rest);
+            return new RigidTransform(p.X, p.Y, z, p.Qw, p.Qx, p.Qy, p.Qz);
+        }
+
+        /// <summary>
+        /// Whether stand <paramref name="k"/>, at (<paramref name="kx"/>, <paramref name="ky"/>, <paramref name="kz"/>) turned
+        /// <paramref name="kyaw"/> on rest <paramref name="krest"/> at <paramref name="kscale"/>, holds object <paramref name="index"/> at
+        /// (<paramref name="x"/>, <paramref name="y"/>, <paramref name="z"/>) on rest <paramref name="rest"/> at <paramref name="scale"/>:
+        /// its bottom on the stand's top (within 2 mm) and its centre over that top. A movable object stands above the table only so
+        /// (docs/adr/0038); anything else falls.
+        /// </summary>
+        public bool HoldsOnTop(int k, double kx, double ky, double kz, double kyaw, double kscale, int krest, int index, double x, double y, double z, double scale, int rest)
+        {
+            if (Objects[k].Role != SceneRole.Stand) return false;
+            RestExtents(k, krest, out double kex, out double key, out double kez);
+            RestExtents(index, rest, out _, out _, out double ez);
+            if (Math.Abs(kz + kez * kscale / 2 - (z - ez * scale / 2)) > 2 * Tolerance) return false;
+            double c = Math.Cos(kyaw), s = Math.Sin(kyaw), dx = x - kx, dy = y - ky;
+            return Math.Abs(dx * c + dy * s) <= kex * kscale / 2 + 1e-9 && Math.Abs(-dx * s + dy * c) <= key * kscale / 2 + 1e-9;
+        }
+
+        /// <summary>
+        /// As <see cref="Overlaps(int, double, double, double, int, double, double, double, double, double, int, int)"/>, with each object's
+        /// centre height (docs/adr/0038). In a mixed pool every footprint is the rectangle of its sides on its rest turned by its yaw, and
+        /// two objects one above the other (their heights touching within <see cref="Tolerance"/>, or apart) never overlap: a plank on
+        /// its legs, an object on its stand, a can under a bridge. Any other pool ignores the heights, exactly as that overload.
+        /// </summary>
+        public bool OverlapsAtHeights(int a, double ax, double ay, double az, double yawA, int b, double bx, double by, double bz, double yawB,
+            double scaleA, double scaleB, int restA, int restB)
+        {
+            if (!Mixed) return Overlaps(a, ax, ay, yawA, b, bx, by, yawB, scaleA, scaleB, restA, restB);
+            RestExtents(a, restA, out double eax, out double eay, out double eaz);
+            RestExtents(b, restB, out double ebx, out double eby, out double ebz);
+            double ha = eaz * scaleA / 2, hb = ebz * scaleB / 2;
+            if (az - ha >= bz + hb - Tolerance || bz - hb >= az + ha - Tolerance) return false;
+            return !RectsApart(ax, ay, Math.Cos(yawA), Math.Sin(yawA), eax * scaleA / 2, eay * scaleA / 2,
+                bx, by, Math.Cos(yawB), Math.Sin(yawB), ebx * scaleB / 2, eby * scaleB / 2, Clearance);
+        }
+
+        /// <summary>Whether (x, y) lies in one of <see cref="DistractorRegions"/>.</summary>
+        public bool InDistractorRegions(double x, double y)
+        {
+            for (int k = 0; k + 3 < DistractorRegions.Length; k += 4)
+            {
+                if (x >= DistractorRegions[k] - 1e-9 && x <= DistractorRegions[k + 1] + 1e-9 && y >= DistractorRegions[k + 2] - 1e-9 && y <= DistractorRegions[k + 3] + 1e-9) return true;
+            }
+
+            return false;
+        }
+
+        /// <summary>
+        /// A random centre for an obstacle (docs/adr/0038): uniform by area over the band <see cref="ReachMin"/>-<see cref="ReachMax"/>
+        /// from the base's yaw axis within <see cref="ReachBearing"/> of straight ahead, and a yaw uniform; three draws. Whether it fits
+        /// and keeps clear is the caller's to check.
+        /// </summary>
+        public void DrawObstacleSpot(ref Teleop.Core.Types.SeededRng rng, out double x, out double y, out double yaw)
+        {
+            double r = Math.Sqrt(ReachMin * ReachMin + rng.NextDouble() * (ReachMax * ReachMax - ReachMin * ReachMin));
+            double bearing = (2 * rng.NextDouble() - 1) * ReachBearing;
+            x = r * Math.Cos(bearing);
+            y = r * Math.Sin(bearing);
+            yaw = (2 * rng.NextDouble() - 1) * Math.PI;
+        }
+
+        /// <summary>
+        /// As <see cref="DrawObstacleSpot(ref Teleop.Core.Types.SeededRng, out double, out double, out double)"/>, for object
+        /// <paramref name="index"/> (docs/adr/0038, second pass): a tall obstacle or a plank uniform by area over the working band when the
+        /// pool has one (<see cref="InWorkBand"/>), anything else over the obstacles' band; three draws either way.
+        /// </summary>
+        public void DrawObstacleSpot(int index, ref Teleop.Core.Types.SeededRng rng, out double x, out double y, out double yaw)
+        {
+            if (!InWorkBand(index))
+            {
+                DrawObstacleSpot(ref rng, out x, out y, out yaw);
+                return;
+            }
+
+            double r = Math.Sqrt(WorkMin * WorkMin + rng.NextDouble() * (WorkMax * WorkMax - WorkMin * WorkMin));
+            double bearing = (2 * rng.NextDouble() - 1) * WorkBearing;
+            x = r * Math.Cos(bearing);
+            y = r * Math.Sin(bearing);
+            yaw = (2 * rng.NextDouble() - 1) * Math.PI;
+        }
+
+        /// <summary>
+        /// A random centre for a distractor (docs/adr/0038): one of <see cref="DistractorRegions"/> by its area, x and y uniform in it,
+        /// and a yaw uniform; four draws. Whether it fits and keeps clear is the caller's to check.
+        /// </summary>
+        public void DrawDistractorSpot(ref Teleop.Core.Types.SeededRng rng, out double x, out double y, out double yaw)
+        {
+            double total = 0;
+            for (int k = 0; k + 3 < DistractorRegions.Length; k += 4) total += (DistractorRegions[k + 1] - DistractorRegions[k]) * (DistractorRegions[k + 3] - DistractorRegions[k + 2]);
+            double pick = rng.NextDouble() * total;
+            int at = 0;
+            for (int k = 0; k + 3 < DistractorRegions.Length; k += 4)
+            {
+                at = k;
+                double area = (DistractorRegions[k + 1] - DistractorRegions[k]) * (DistractorRegions[k + 3] - DistractorRegions[k + 2]);
+                if (pick < area) break;
+                pick -= area;
+            }
+
+            x = DistractorRegions[at] + rng.NextDouble() * (DistractorRegions[at + 1] - DistractorRegions[at]);
+            y = DistractorRegions[at + 2] + rng.NextDouble() * (DistractorRegions[at + 3] - DistractorRegions[at + 2]);
+            yaw = (2 * rng.NextDouble() - 1) * Math.PI;
+        }
+
+        /// <summary>
+        /// A mixed pool's rule for a footprint of radius <paramref name="r"/> at (x, y) (docs/adr/0038): on the table or the bench, clear
+        /// of the robot's keep-out, and a distractor centred in <see cref="DistractorRegions"/> no nearer the base's axis than
+        /// <see cref="DistractorReach"/>; anything else inside the placement region.
+        /// </summary>
+        private bool FitsMixed(int index, double x, double y, double r)
+        {
+            if (!ClearOfRobot(x, y, r)) return false;
+            SurfaceBounds(out double sx0, out double sx1, out double sy0, out double sy1);
+            if (Objects[index].Role == SceneRole.Distractor)
+            {
+                return InDistractorRegions(x, y) && x - r >= sx0 - 1e-9 && x + r <= sx1 + 1e-9 && y - r >= sy0 - 1e-9 && y + r <= sy1 + 1e-9 &&
+                       Math.Sqrt(x * x + y * y) - r >= DistractorReach - 1e-9;
+            }
+
+            return x - r >= Math.Max(sx0, RegionXMin) - 1e-9 && x + r <= Math.Min(sx1, RegionXMax) + 1e-9 &&
+                   y - r >= Math.Max(sy0, RegionYMin) - 1e-9 && y + r <= Math.Min(sy1, RegionYMax) + 1e-9;
+        }
+
+        /// <summary>As <see cref="FitsMixed(int, double, double, double)"/>, the footprint the rectangle of the object's sides on its rest turned by <paramref name="yaw"/>.</summary>
+        private bool FitsMixed(int index, double x, double y, double yaw, double scale, int rest)
+        {
+            ClutterHalf(index, rest, scale, out double hx, out double hy);
+            double c = Math.Cos(yaw), s = Math.Sin(yaw);
+            double bx = Math.Abs(c) * hx + Math.Abs(s) * hy, by = Math.Abs(s) * hx + Math.Abs(c) * hy;
+            SurfaceBounds(out double sx0, out double sx1, out double sy0, out double sy1);
+            bool distractor = Objects[index].Role == SceneRole.Distractor;
+            double x0 = distractor ? sx0 : Math.Max(sx0, RegionXMin), x1 = distractor ? sx1 : Math.Min(sx1, RegionXMax);
+            double y0 = distractor ? sy0 : Math.Max(sy0, RegionYMin), y1 = distractor ? sy1 : Math.Min(sy1, RegionYMax);
+            if (!(x - bx >= x0 - 1e-9 && x + bx <= x1 + 1e-9 && y - by >= y0 - 1e-9 && y + by <= y1 + 1e-9)) return false;
+            if (distractor)
+            {
+                // The rectangle's nearest point to the base's axis: the axis in the rectangle's frame, clamped to it.
+                double px = -x * c - y * s, py = x * s - y * c;
+                double qx = Math.Max(Math.Abs(px) - hx, 0), qy = Math.Max(Math.Abs(py) - hy, 0);
+                if (!InDistractorRegions(x, y) || Math.Sqrt(qx * qx + qy * qy) < DistractorReach - 1e-9) return false;
+            }
+
+            if (RobotKeepOut.Length != 4) return true;
+            double kx = (RobotKeepOut[0] + RobotKeepOut[1]) / 2, ky = (RobotKeepOut[2] + RobotKeepOut[3]) / 2;
+            double kw = (RobotKeepOut[1] - RobotKeepOut[0]) / 2, kh = (RobotKeepOut[3] - RobotKeepOut[2]) / 2;
+            return RectsApart(x, y, c, s, hx, hy, kx, ky, 1, 0, kw, kh, 0);
+        }
+
         internal static WorldScene Build(SceneDocument d)
         {
             if (d == null) throw new ArgumentNullException(nameof(d));
@@ -932,6 +1254,45 @@ namespace Teleop.RobotArm.World
                 // docs/adr/0037 "Raised clutter": clutter is something the arm can push about, so it is a movable body.
                 if (o.clutter && !movable) throw Bad("kind", $"'{o.name}' is clutter, which is movable, not '{o.kind}'");
 
+                // docs/adr/0038 decision 3: a mixed pool's roles, a plank's supports and the steps a layout draws a size from.
+                SceneRole role = (o.role ?? "") switch
+                {
+                    "" => SceneRole.None,
+                    "obstacle" => SceneRole.Obstacle,
+                    "distractor" => SceneRole.Distractor,
+                    "stand" => SceneRole.Stand,
+                    "plank" => SceneRole.Plank,
+                    "support" => SceneRole.Support,
+                    _ => throw Bad("role", $"'{o.name}' has role '{o.role}': obstacle, distractor, stand, plank or support"),
+                };
+                if ((role == SceneRole.Stand || role == SceneRole.Plank || role == SceneRole.Support) && (movable || shape != SceneShape.Box))
+                {
+                    throw Bad("role", $"'{o.name}' is a {o.role}, which is a fixed box");
+                }
+
+                int[] sup = o.supports ?? Array.Empty<int>();
+                if (role == SceneRole.Plank ? sup.Length < 1 || sup.Length > 2 : sup.Length > 0)
+                {
+                    throw Bad("role", role == SceneRole.Plank ? $"plank '{o.name}' needs one or two supports" : $"'{o.name}' is no plank: only a plank has supports");
+                }
+
+                foreach (int id in sup)
+                {
+                    if (id < 1 || id > 254) throw Bad("role", $"plank '{o.name}' names support {id}; ids run from 1 to 254");
+                }
+
+                int[] st = o.steps ?? Array.Empty<int>();
+                if (st.Length != 0 && st.Length != 2) throw Bad("steps", $"'{o.name}': steps is [min, max]");
+                if (st.Length == 2 && !(st[0] >= MinResizeStep && st[0] <= st[1] && st[1] <= MaxResizeStep))
+                {
+                    throw Bad("steps", $"'{o.name}': steps run from {MinResizeStep} to {MaxResizeStep}, min <= max");
+                }
+
+                if (st.Length == 2 && ((shape != SceneShape.Box && shape != SceneShape.Cylinder) || o.clutter))
+                {
+                    throw Bad("steps", $"'{o.name}': only a box or a cylinder that is not clutter takes steps");
+                }
+
                 double[] pos = Vector(o.position, 3, "pose", $"'{o.name}' position");
                 double[] rpy = Vector(o.rpy, 3, "pose", $"'{o.name}' rpy");
                 if (Math.Abs(rpy[0]) > 1e-9 || Math.Abs(rpy[1]) > 1e-9) throw Bad("pose", $"'{o.name}' must stand upright (roll and pitch 0)");
@@ -940,8 +1301,11 @@ namespace Teleop.RobotArm.World
                 Friction(o.staticFriction, o.dynamicFriction, $"object '{o.name}'");
                 double[] j = Vector(o.jitter, 3, "jitter", $"'{o.name}'");
                 if (!(j[0] >= 0 && j[1] >= 0 && j[2] >= 0)) throw Bad("jitter", $"'{o.name}' has a negative range");
+                var supportIds = new byte[sup.Length];
+                for (int k = 0; k < sup.Length; k++) supportIds[k] = (byte)sup[k];
                 objects[i] = new SceneObject((byte)o.id, o.name, shape, z[0], z[1], z[2], pos[0], pos[1], pos[2], rpy[2], movable, o.mass, o.operatorMovable,
-                    o.staticFriction, o.dynamicFriction, (float)col[0], (float)col[1], (float)col[2], j[0], j[1], j[2], asset, o.clutter);
+                    o.staticFriction, o.dynamicFriction, (float)col[0], (float)col[1], (float)col[2], j[0], j[1], j[2], asset, o.clutter, role, supportIds,
+                    st.Length == 2 ? st[0] : 0, st.Length == 2 ? st[1] : 0, st.Length == 2);
             }
 
             ScenePoolDocument pool = d.pool ?? new ScenePoolDocument();
@@ -954,7 +1318,8 @@ namespace Teleop.RobotArm.World
             }
 
             if (pool.movableMin < 0 || pool.fixedMin < 0 || pool.clutterMin < 0 || pool.movableMin > pool.movableMax || pool.fixedMin > pool.fixedMax ||
-                pool.clutterMin > pool.clutterMax)
+                pool.clutterMin > pool.clutterMax || pool.obstacleMin < 0 || pool.obstacleMin > pool.obstacleMax || pool.distractorMin < 0 ||
+                pool.distractorMin > pool.distractorMax)
             {
                 throw Bad("pool", "each kind needs 0 <= min <= max");
             }
@@ -965,7 +1330,8 @@ namespace Teleop.RobotArm.World
             }
 
             if (pool.clutterMax > clutters) throw Bad("pool", $"it asks for up to {pool.clutterMax} clutter objects; the scene has {clutters}");
-            bool isPool = pool.movableMax + pool.fixedMax > 0;
+            bool mixed = pool.obstacleMax + pool.distractorMax > 0; // docs/adr/0038 decision 3
+            bool isPool = pool.movableMax + pool.fixedMax > 0 || mixed;
             if (isPool && d.version < 2) throw Bad("pool", "a pool needs version 2");
             if ((clutters > 0 || pool.clutterMax > 0) && !isPool) throw Bad("pool", "clutter is only for a pool, whose layouts choose it");
             if (!Finite(pool.sizeMin, pool.sizeMax) || !((pool.sizeMin == 0 && pool.sizeMax == 0) || (pool.sizeMin > 0 && pool.sizeMin < pool.sizeMax)))
@@ -1034,9 +1400,122 @@ namespace Teleop.RobotArm.World
             if (er.Length > 0 && !isPool) throw Bad("pool", "edgeRegions are only for a pool");
             double edgeShare = Share(pool.edgeShare, "edgeShare", isPool);
             if (edgeShare > 0 && er.Length == 0) throw Bad("pool", "edgeShare needs edgeRegions");
+
+            // docs/adr/0038 decision 3, a mixed pool, checked in this order by robot/isaac's scene.py too.
+            if (mixed && (pool.movableMax > 0 || pool.fixedMax > 0 || pool.clutterMax > 0))
+            {
+                throw Bad("pool", "a mixed pool draws obstacles and distractors: its movable, fixed and clutter counts are 0");
+            }
+
+            if (mixed && (clusterShare > 0 || edgeShare > 0 || fr.Length > 0 || er.Length > 0 || pool.sizeMax > 0))
+            {
+                throw Bad("pool", "a mixed pool has no clusters, edge objects, fixed regions or pool sizes");
+            }
+
+            if (!Finite(pool.reachBearing) || pool.reachBearing < 0 || pool.reachBearing > Math.PI) throw Bad("pool", "reachBearing is 0 to pi rad");
+            if (pool.reachBearing > 0 && !mixed) throw Bad("pool", "reachBearing is only for a mixed pool");
+            if (pool.obstacleMax > 0 && !(pool.reachMax > 0 && pool.reachBearing > 0)) throw Bad("pool", "obstacles need reachMin, reachMax and reachBearing");
+            double standShare = MixedShare(pool.standShare, "standShare", mixed);
+            double rigShare = MixedShare(pool.rigShare, "rigShare", mixed);
+
+            // docs/adr/0038, the scene's second pass: tall obstacles more often, them and the planks in the arm's working band, stands narrower
+            // than what they hold, and rigs' heights uniform over a range. Checked in this order by robot/isaac's scene.py too.
+            double tallShare = MixedShare(pool.tallShare, "tallShare", mixed);
+            bool work = pool.workMin != 0 || pool.workMax != 0 || pool.workBearing != 0;
+            if (work && !mixed) throw Bad("pool", "a work band (workMin, workMax, workBearing) is only for a mixed pool");
+            if (work && !(Finite(pool.workMin, pool.workMax, pool.workBearing) && pool.workMin >= pool.reachMin && pool.workMin < pool.workMax &&
+                          pool.workMax <= pool.reachMax && pool.workBearing > 0 && pool.workBearing <= pool.reachBearing))
+            {
+                throw Bad("pool", "a work band lies within the obstacles' band: reachMin <= workMin < workMax <= reachMax and 0 < workBearing <= reachBearing");
+            }
+
+            bool narrow = pool.standTopMin != 0 || pool.standTopMax != 0;
+            if (narrow && !mixed) throw Bad("pool", "standTopMin and standTopMax are only for a mixed pool");
+            if (narrow && !(Finite(pool.standTopMin, pool.standTopMax) && pool.standTopMin > 0 && pool.standTopMin <= pool.standTopMax && pool.standTopMax <= 1))
+            {
+                throw Bad("pool", "standTopMin and standTopMax are both 0, or 0 < standTopMin <= standTopMax <= 1");
+            }
+
+            bool under = pool.rigUnderMin != 0 || pool.rigUnderMax != 0;
+            if (under && !mixed) throw Bad("pool", "rigUnderMin and rigUnderMax are only for a mixed pool");
+            if (under && !(Finite(pool.rigUnderMin, pool.rigUnderMax) && pool.rigUnderMin > 0 && pool.rigUnderMin < pool.rigUnderMax))
+            {
+                throw Bad("pool", "rigUnderMin and rigUnderMax are both 0, or 0 < rigUnderMin < rigUnderMax");
+            }
+
+            double[] dr = pool.distractorRegions ?? Array.Empty<double>();
+            if (dr.Length % 4 != 0) throw Bad("pool", "distractorRegions holds xMin, xMax, yMin, yMax for each rectangle");
+            for (int k = 0; k < dr.Length; k += 4)
+            {
+                if (!Finite(dr[k], dr[k + 1], dr[k + 2], dr[k + 3]) || !(dr[k] < dr[k + 1] && dr[k + 2] < dr[k + 3]))
+                {
+                    throw Bad("pool", "each distractorRegions rectangle needs min < max on both axes");
+                }
+
+                double sx0 = bench != null ? Math.Min(table.XMin, bench.XMin) : table.XMin, sx1 = bench != null ? Math.Max(table.XMax, bench.XMax) : table.XMax;
+                if (dr[k + 1] < sx0 || dr[k] > sx1 || dr[k + 3] < table.YMin || dr[k + 2] > table.YMax)
+                {
+                    throw Bad("pool", "a distractorRegions rectangle does not overlap the table or the bench");
+                }
+            }
+
+            if (dr.Length > 0 && !mixed) throw Bad("pool", "distractorRegions are only for a mixed pool");
+            if (!Finite(pool.distractorReach) || pool.distractorReach < 0) throw Bad("pool", "distractorReach is 0 or a distance in metres");
+            if (pool.distractorReach > 0 && !mixed) throw Bad("pool", "distractorReach is only for a mixed pool");
+            if (pool.distractorMax > 0 && (dr.Length == 0 || !(pool.distractorReach > 0))) throw Bad("pool", "distractors need distractorRegions and distractorReach");
+            if (pool.distractorReach > 0 && pool.distractorReach < pool.reachMax) throw Bad("pool", "distractorReach lies within the obstacles' band (reachMax)");
+
+            int obstacles = 0, distractors = 0, planks = 0;
+            for (int i = 0; i < objects.Length; i++)
+            {
+                SceneObject o = objects[i];
+                if (mixed && o.Role == SceneRole.None) throw Bad("role", $"'{o.Name}' has no role: every object of a mixed pool has one");
+                if (!mixed && o.Role != SceneRole.None) throw Bad("role", $"'{o.Name}' has a role: roles are for a mixed pool");
+                if (!mixed && o.HasSteps) throw Bad("steps", $"'{o.Name}' has steps: they are for a mixed pool's layouts");
+                if (o.Role == SceneRole.Obstacle) obstacles++;
+                if (o.Role == SceneRole.Distractor) distractors++;
+                if (o.Role != SceneRole.Plank) continue;
+                planks++;
+                foreach (byte id in o.SupportIds)
+                {
+                    int k = Array.FindIndex(objects, x => x.Id == id);
+                    if (k < 0) throw Bad("role", $"plank '{o.Name}' names support {id}, which is no object of the scene");
+                    if (objects[k].Role != SceneRole.Support) throw Bad("role", $"plank '{o.Name}' names '{objects[k].Name}', which is no support");
+                    int named = 0;
+                    foreach (SceneObject q in objects)
+                    {
+                        if (q.Role != SceneRole.Plank) continue;
+                        foreach (byte other in q.SupportIds) named += other == id ? 1 : 0;
+                    }
+
+                    if (named > 1) throw Bad("role", $"support '{objects[k].Name}' holds up two planks, or one twice");
+                }
+
+                if (o.SupportIds.Length == 2)
+                {
+                    SceneObject l = objects[Array.FindIndex(objects, x => x.Id == o.SupportIds[0])], r = objects[Array.FindIndex(objects, x => x.Id == o.SupportIds[1])];
+                    if (Math.Abs(l.SizeX - r.SizeX) > 1e-9 || Math.Abs(l.SizeY - r.SizeY) > 1e-9 || Math.Abs(l.SizeZ - r.SizeZ) > 1e-9 ||
+                        l.HasSteps != r.HasSteps || l.StepMin != r.StepMin || l.StepMax != r.StepMax)
+                    {
+                        throw Bad("role", $"plank '{o.Name}''s two supports differ in size or steps: they hold it level");
+                    }
+                }
+            }
+
+            foreach (SceneObject o in objects)
+            {
+                bool held = false;
+                foreach (SceneObject q in objects) held |= q.Role == SceneRole.Plank && Array.IndexOf(q.SupportIds, o.Id) >= 0;
+                if (o.Role == SceneRole.Support && !held) throw Bad("role", $"support '{o.Name}' holds up no plank");
+            }
+
+            if (pool.obstacleMax > obstacles + planks) throw Bad("pool", $"it asks for up to {pool.obstacleMax} obstacles; the scene has {obstacles} and {planks} planks");
+            if (pool.distractorMax > distractors) throw Bad("pool", $"it asks for up to {pool.distractorMax} distractors; the scene has {distractors}");
             var scene = new WorldScene(d.name, d.robotProfile, surfaces, table, bench, objects, p.xMin, p.xMax, p.yMin, p.yMax, p.clearance,
                 pool.movableMin, pool.movableMax, pool.fixedMin, pool.fixedMax, pool.sizeMin, pool.sizeMax, pool.reachMin, pool.reachMax,
-                pool.knockMaxMass, fr, ko, near, clusterShare, lyingShare, er, edgeShare, pool.clutterMin, pool.clutterMax);
+                pool.knockMaxMass, fr, ko, near, clusterShare, lyingShare, er, edgeShare, pool.clutterMin, pool.clutterMax,
+                pool.obstacleMin, pool.obstacleMax, pool.reachBearing, standShare, rigShare, pool.distractorMin, pool.distractorMax, dr, pool.distractorReach,
+                tallShare, pool.workMin, pool.workMax, pool.workBearing, pool.standTopMin, pool.standTopMax, pool.rigUnderMin, pool.rigUnderMax);
             for (int i = 0; i < objects.Length; i++)
             {
                 SceneObject o = objects[i];
@@ -1044,7 +1523,10 @@ namespace Teleop.RobotArm.World
                 {
                     for (int sy = -1; sy <= 1; sy++)
                     {
-                        if (!scene.FitsOnTable(i, o.NominalX + sx * o.JitterX, o.NominalY + sy * o.JitterY))
+                        bool fits = mixed
+                            ? scene.FitsOnTable(i, o.NominalX + sx * o.JitterX, o.NominalY + sy * o.JitterY, o.NominalYaw, 1.0, RestUpright)
+                            : scene.FitsOnTable(i, o.NominalX + sx * o.JitterX, o.NominalY + sy * o.JitterY);
+                        if (!fits)
                         {
                             throw Bad("fits", $"'{o.Name}' leaves the table or the placement region at its nominal pose or the edge of its jitter");
                         }
@@ -1068,6 +1550,13 @@ namespace Teleop.RobotArm.World
         {
             if (!Finite(v) || v < 0 || v > 1) throw Bad("pool", $"{name} is a chance from 0 to 1");
             if (v > 0 && !isPool) throw Bad("pool", $"{name} is only for a pool");
+            return v;
+        }
+
+        private static double MixedShare(double v, string name, bool mixed)
+        {
+            if (!Finite(v) || v < 0 || v > 1) throw Bad("pool", $"{name} is a chance from 0 to 1");
+            if (v > 0 && !mixed) throw Bad("pool", $"{name} is only for a mixed pool");
             return v;
         }
 

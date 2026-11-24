@@ -79,7 +79,12 @@ namespace Teleop.Eval.JointDrive
             "usage: joint-drive --script waypoints|steps|course --speed <rad/s> [--seconds 300] [--seed 1] [--margin-deg 15] [--rate-hz 48]\n" +
             "                   (--dry-run | --remote-host <ip> [--remote-port 6002] --confirm-hardware-motion)\n" +
             "                   [--operator-log <path> [--session-id <id>]] [--stop-file <path>] [--take <scenario>]\n" +
-            "                   [--simulated-robot [--stall-seconds 1] [--stream-seconds 3]] [--scene <file> [--new-layout] [--touch-depth-mm 8] [--events 1-3]]";
+            "                   [--simulated-robot [--stall-seconds 1] [--stream-seconds 3]] [--scene <file> [--new-layout] [--touch-depth-mm 8] [--events 1-3]]\n" +
+            "                   [--script mixed [--replays 0] [--max-joint-speed <rad/s>[,x4]] [--max-joint-accel <rad/s2>[,x4]] [--max-wrist-speed <m/s>]\n" +
+            "                                   [--max-peak-speed <m/s>] [--no-caps] [--no-style | --style p,r,t,s] [--blind n,r,v,l[,q,h]] [--pause s,min,max] [--pullback s] [--pass-share s] [--object-share s]\n" +
+            "                                   [--approach short,turn] [--offset-mm -40,60] [--tool-bands lo,hi,share,...|none]\n" +
+            "                                   [--accidents 0.12[,0.4] | --no-accidents] [--accident-kinds jerk,overshoot,wrong-way,slip,rush[:weight]]]\n" +
+            "                   [--dry-run --layouts 1-200 [--rows] [--features <csv>] [--chain] [--lag <s>]]";
 
         public static int Run(string[] args)
         {
@@ -94,6 +99,20 @@ namespace Teleop.Eval.JointDrive
             string? scenePath = null;
             bool newLayout = false;
             var safetyOptions = new SafetyOptions();
+            // docs/adr/0038: the mixed script's options, its replays, and the dry run over RobotHost's layouts.
+            var mixedOptions = new MixedOptions();
+            int replays = 0;
+            int layoutsFrom = 0, layoutsTo = -1;
+            bool rows = false;
+            string? featuresPath = null;
+            var dryOptions = new DryRunOptions();
+            MotionCaps Caps() => mixedOptions.Caps ??= MixedOptions.DefaultCaps();
+            void PerJoint(string text, float[] into, string option)
+            {
+                string[] v = text.Split(',');
+                if (v.Length != 1 && v.Length != into.Length) throw new ArgumentException($"{option} is one number for every joint, or five (yaw, shoulder, elbow, wrist pitch, roll)");
+                for (int j = 0; j < into.Length; j++) into[j] = float.Parse(v[v.Length == 1 ? 0 : j], NumberStyles.Float, CultureInfo.InvariantCulture);
+            }
             try
             {
                 for (int i = 1; i < args.Length; i++)
@@ -113,8 +132,9 @@ namespace Teleop.Eval.JointDrive
                                 "stop_before_collision" => DriveScript.StopBeforeCollision,
                                 "collide_and_recover" => DriveScript.CollideAndRecover,
                                 "collide_with_obstacle" => DriveScript.CollideWithObstacle,
+                                "mixed" => DriveScript.Mixed,
                                 _ => throw new ArgumentException($"unknown script '{name}' (waypoints, steps, course, reach_no_obstacle, " +
-                                                                 "stop_before_collision, collide_and_recover or collide_with_obstacle)"),
+                                                                 "stop_before_collision, collide_and_recover, collide_with_obstacle or mixed)"),
                             };
                             break;
                         case "--speed": speed = (float)Number(); break;
@@ -137,6 +157,89 @@ namespace Teleop.Eval.JointDrive
                         case "--new-layout": newLayout = true; break;
                         case "--touch-depth-mm": safetyOptions.TouchDepthMeters = (float)(Number() / 1000.0); break;
                         case "--events": ParseEvents(Next(), safetyOptions); break;
+                        case "--replays": replays = int.Parse(Next(), NumberStyles.None, CultureInfo.InvariantCulture); break;
+                        case "--layouts": ParseRange(Next(), "--layouts", out layoutsFrom, out layoutsTo); break;
+                        case "--rows": rows = true; break;
+                        case "--features": featuresPath = Next(); break;
+                        case "--chain": dryOptions.Chain = true; break; // a dry run's layouts each from where the last left the arm, as the twin's takes
+                        case "--lag": dryOptions.LagSeconds = Number(); break; // a dry run's adds look at the commanded way this late, as at a measured track
+                        case "--max-joint-speed": PerJoint(Next(), Caps().JointSpeed, "--max-joint-speed"); break;
+                        case "--max-joint-accel": PerJoint(Next(), Caps().JointAcceleration, "--max-joint-accel"); break;
+                        case "--no-style": mixedOptions.Style = null; break;
+                        case "--style":
+                            // pitch scale, roll scale, pitch time, slowness (docs/adr/0038, the mixed hand's pace)
+                            double[] st = Next().Split(',').Select(x => double.Parse(x, NumberStyles.Float, CultureInfo.InvariantCulture)).ToArray();
+                            if (st.Length != 4) throw new ArgumentException("--style is four numbers: pitch scale, roll scale, pitch time, slowness");
+                            mixedOptions.Style = new HandStyle { PitchScale = st[0], RollScale = st[1], PitchTime = st[2], Slow = st[3] };
+                            break;
+                        case "--pause":
+                            // share of moves followed by a pause, its shortest and longest, seconds
+                            double[] pz = Next().Split(',').Select(x => double.Parse(x, NumberStyles.Float, CultureInfo.InvariantCulture)).ToArray();
+                            if (pz.Length != 3) throw new ArgumentException("--pause is three numbers: share, min seconds, max seconds");
+                            (mixedOptions.PauseShare, mixedOptions.PauseMinSeconds, mixedOptions.PauseMaxSeconds) = (pz[0], pz[1], pz[2]);
+                            break;
+                        case "--pullback": mixedOptions.PullBackShare = Number(); break;
+                        case "--pass-share": mixedOptions.PassShare = Number(); break;
+                        case "--object-share": mixedOptions.ObjectShare = Number(); break;
+                        case "--approach":
+                            // aims' and passes' start: the share drawn as a small adjustment's distance (below 0: the blind parts'), and the most
+                            // the wrist's pitch turns on the way, degrees a metre (docs/adr/0038 "M, motion")
+                            double[] ap = Next().Split(',').Select(x => double.Parse(x, NumberStyles.Float, CultureInfo.InvariantCulture)).ToArray();
+                            if (ap.Length != 2) throw new ArgumentException("--approach is two numbers: short share, turn degrees a metre");
+                            (mixedOptions.ShortApproachShare, mixedOptions.TurnDegreesPerMeter) = (ap[0], ap[1]);
+                            break;
+                        case "--blind":
+                            // near share, radial scale, vertical scale, low share (where layout-blind goals are drawn)
+                            double[] bl = Next().Split(',').Select(x => double.Parse(x, NumberStyles.Float, CultureInfo.InvariantCulture)).ToArray();
+                            if (bl.Length != 4 && bl.Length != 6) throw new ArgumentException("--blind is four numbers (near share, radial scale, vertical scale, low share) or six (and the quiet windows' low share, the low goals' top m)");
+                            mixedOptions.Reach.NearShare = bl[0];
+                            mixedOptions.Reach.RadialScale = (float)bl[1];
+                            mixedOptions.Reach.VerticalScale = (float)bl[2];
+                            mixedOptions.Reach.LowShare = bl[3];
+                            if (bl.Length == 6)
+                            {
+                                mixedOptions.QuietReach.LowShare = bl[4];
+                                mixedOptions.Reach.LowHeightHigh = mixedOptions.QuietReach.LowHeightHigh = (float)bl[5];
+                            }
+                            break;
+                        case "--tool-bands":
+                            // the layout-blind goals' tool point heights, base frame z: low,high,share triples, or "none" for the wrist's
+                            // height drawn as before (docs/adr/0038 "M, motion")
+                            string tb = Next();
+                            float[]? bands = tb == "none" ? null : tb.Split(',').Select(x => float.Parse(x, NumberStyles.Float, CultureInfo.InvariantCulture)).ToArray();
+                            mixedOptions.Reach.ToolBands = bands;
+                            mixedOptions.QuietReach.ToolBands = bands == null ? null : (float[])bands.Clone();
+                            break;
+                        case "--max-wrist-speed": Caps().MaxWristSpeed = (float)Number(); break;
+                        case "--max-peak-speed": Caps().MaxPeakSpeed = Number(); break;
+                        case "--no-caps": mixedOptions.Caps = null; break;
+                        case "--no-accidents": mixedOptions.AccidentShare = mixedOptions.AccidentNearShare = 0; break;
+                        case "--accidents":
+                            // the share of parts that carry an accident, and the share of aims and passes on top (docs/adr/0038 "M, motion")
+                            double[] ac = Next().Split(',').Select(x => double.Parse(x, NumberStyles.Float, CultureInfo.InvariantCulture)).ToArray();
+                            if (ac.Length != 1 && ac.Length != 2) throw new ArgumentException("--accidents is a share of the parts, or that and the share of aims and passes on top, like 0.12,0.4");
+                            mixedOptions.AccidentShare = ac[0];
+                            if (ac.Length == 2) mixedOptions.AccidentNearShare = ac[1];
+                            break;
+                        case "--accident-kinds":
+                            // which accidents, each with a weight when given (jerk:2): the rest weigh 0
+                            var weights = new double[MixedOptions.AccidentKinds.Length];
+                            foreach (string item in Next().Split(','))
+                            {
+                                string[] kv = item.Split(':');
+                                int k = Array.FindIndex(MixedOptions.AccidentKinds, x => ScriptMoveCodec.Name(x) == kv[0]);
+                                if (k < 0 || kv.Length > 2) throw new ArgumentException($"--accident-kinds names jerk, overshoot, wrong-way, slip, rush (each with :weight if wanted), not '{item}'");
+                                weights[k] = kv.Length == 2 ? double.Parse(kv[1], NumberStyles.Float, CultureInfo.InvariantCulture) : 1.0;
+                            }
+
+                            mixedOptions.AccidentWeights = weights;
+                            break;
+                        case "--offset-mm":
+                            string[] mm = Next().Split(',');
+                            if (mm.Length != 2) throw new ArgumentException("--offset-mm is two numbers, like -40,60");
+                            mixedOptions.OffsetMinMeters = (float)(double.Parse(mm[0], NumberStyles.Float, CultureInfo.InvariantCulture) / 1000.0);
+                            mixedOptions.OffsetMaxMeters = (float)(double.Parse(mm[1], NumberStyles.Float, CultureInfo.InvariantCulture) / 1000.0);
+                            break;
                         default: throw new ArgumentException($"unknown argument '{args[i]}'");
                     }
                 }
@@ -148,6 +251,15 @@ namespace Teleop.Eval.JointDrive
                 if (newLayout && dryRun) throw new ArgumentException("--new-layout asks RobotHost for a layout; a dry run sends nothing");
                 if (!(safetyOptions.TouchDepthMeters > 0f && safetyOptions.TouchDepthMeters <= 0.06f)) throw new ArgumentException("--touch-depth-mm must be in (0, 60]");
                 safetyOptions.Validate();
+                mixedOptions.Validate();
+                if (replays < 0 || replays > MaxReplays) throw new ArgumentException($"--replays must be in [0, {MaxReplays}]");
+                if (replays > 0 && script != DriveScript.Mixed) throw new ArgumentException("--replays is for --script mixed (docs/adr/0038 decision 2)");
+                if (replays > 0 && (take == null || dryRun)) throw new ArgumentException("--replays records more takes: it needs --take, and a dry run records none");
+                if (layoutsTo >= layoutsFrom && (!dryRun || !safety)) throw new ArgumentException("--layouts plans a safety script on RobotHost's layouts of --scene: a dry run");
+                if (featuresPath != null && (layoutsTo < layoutsFrom || script != DriveScript.Mixed)) throw new ArgumentException("--features writes each planned move of a mixed dry run over --layouts");
+                if ((dryOptions.Chain || dryOptions.LagSeconds != 0) && layoutsTo < layoutsFrom) throw new ArgumentException("--chain and --lag are for a dry run over --layouts");
+                if (!(dryOptions.LagSeconds >= 0 && dryOptions.LagSeconds <= 1)) throw new ArgumentException("--lag must be in [0, 1] s");
+                if (replays > 0 && !simulated) throw new ArgumentException("--replays has RobotHost move the objects, which only the Isaac twin can: it needs --simulated-robot");
                 if (!(speed > 0f) || speed > MaxSpeedRadPerSec) throw new ArgumentException($"--speed must be in (0, {MaxSpeedRadPerSec}] rad/s, the headset slider's range");
                 if (!(seconds > 0)) throw new ArgumentException("--seconds must be positive");
                 if (!(marginDeg >= 5)) throw new ArgumentException("--margin-deg must be at least 5");
@@ -198,7 +310,12 @@ namespace Teleop.Eval.JointDrive
                 // A safety script's dry run plans around the scene's objects where the file puts them.
                 List<SafetyObject>? nominal = scene == null ? null : scene.Objects.Select(o => WorldView.Bounds(o, 1.0, o.Nominal.X, o.Nominal.Y,
                     o.Nominal.Z, o.Nominal.Qw, o.Nominal.Qx, o.Nominal.Qy, o.Nominal.Qz, WorldView.ShapesOf(scene))).ToList();
-                return DryRun(script.Value, profile, envelope, speed, seconds, seed, rateHz, logPath, sessionId ?? "joint-drive-dry-run", nominal, safetyOptions);
+                if (layoutsTo >= layoutsFrom)
+                {
+                    return MixedDryRun.Run(script.Value, scene!, profile, envelope, speed, seconds, seed, layoutsFrom, layoutsTo, safetyOptions, mixedOptions, rows, featuresPath, dryOptions);
+                }
+
+                return DryRun(script.Value, profile, envelope, speed, seconds, seed, rateHz, logPath, sessionId ?? "joint-drive-dry-run", nominal, safetyOptions, mixedOptions);
             }
 
             if (!confirmed)
@@ -234,7 +351,7 @@ namespace Teleop.Eval.JointDrive
             }
 
             return Drive(script.Value, profile, envelope, speed, seconds, seed, rateHz, robotEndPoint, logPath, sessionId ?? "joint-drive", stopFile, take,
-                stallSeconds, streamSeconds, scene, sceneSha, newLayout, safetyOptions, simulated);
+                stallSeconds, streamSeconds, scene, sceneSha, newLayout, safetyOptions, simulated, mixedOptions, replays);
         }
 
         /// <summary>
@@ -292,6 +409,14 @@ namespace Teleop.Eval.JointDrive
                 Console.WriteLine(FormattableString.Invariant($"  {DriveEnvelope.JointName(j),-9} targets from {min[j] * 180 / Math.PI,7:0.0}° to {max[j] * 180 / Math.PI,6:0.0}°"));
             }
 
+            if (plan.Moves.Count > 0)
+            {
+                // docs/adr/0038 decision 1: the mixed take's moves, each sent to RobotHost (MV) as it begins.
+                Console.WriteLine(FormattableString.Invariant(
+                    $"[joint-drive] {plan.Moves.Count} moves ({plan.Moves.Count(m => m.Kind == ScriptMoveKind.Aim)} aims, {plan.Moves.Count(m => m.Kind == ScriptMoveKind.Pass)} passes, {plan.Moves.Count(m => ScriptMoveCodec.IsAccident(m.Kind))} accidents); the take runs {plan.TotalSeconds - plan.ScriptStart:0.0} s from {plan.ScriptStart:0.0} s; {plan.PlanningReport}"));
+                foreach (PlannedMove m in plan.Moves.Where(x => x.ObjectId != 0 || ScriptMoveCodec.IsAccident(x.Kind))) Console.WriteLine("  " + m);
+            }
+
             if (plan.EventsDrawn > 0)
             {
                 // docs/adr/0036 amendment 5: events anywhere in the take, the take starting at ScriptStart.
@@ -302,9 +427,10 @@ namespace Teleop.Eval.JointDrive
         }
 
         private static int DryRun(DriveScript script, RobotArmProfile profile, DriveEnvelope envelope, float speed, double seconds, ulong seed,
-            double rateHz, string? logPath, string sessionId, IReadOnlyList<SafetyObject>? objects, SafetyOptions? safetyOptions = null)
+            double rateHz, string? logPath, string sessionId, IReadOnlyList<SafetyObject>? objects, SafetyOptions? safetyOptions = null, MixedOptions? mixedOptions = null)
         {
-            if (!DrivePlan.TryBuild(script, profile, profile.Collision!.Home, speed, seconds, seed, envelope, out DrivePlan? plan, out string? error, objects, safetyOptions))
+            if (!DrivePlan.TryBuild(script, profile, profile.Collision!.Home, speed, seconds, seed, envelope, out DrivePlan? plan, out string? error, objects, safetyOptions,
+                    mixedOptions))
             {
                 Console.Error.WriteLine($"joint-drive: {error}");
                 return 1;
@@ -340,7 +466,7 @@ namespace Teleop.Eval.JointDrive
 
         private static int Drive(DriveScript script, RobotArmProfile profile, DriveEnvelope envelope, float speed, double seconds, ulong seed,
             double rateHz, IPEndPoint robot, string? logPath, string sessionId, string? stopFile, string? takeScenario, double stallSeconds, double streamSeconds,
-            WorldScene? scene, byte[] sceneSha, bool newLayout, SafetyOptions safetyOptions, bool simulatedRobot)
+            WorldScene? scene, byte[] sceneSha, bool newLayout, SafetyOptions safetyOptions, bool simulatedRobot, MixedOptions mixedOptions, int replays)
         {
             long tps = Stopwatch.Frequency;
             using var socket = new Socket(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp);
@@ -400,39 +526,57 @@ namespace Teleop.Eval.JointDrive
             // A safety script plans around the objects where RobotHost says they are (docs/adr/0036 amendment 1), after a new
             // layout when asked: every object posed, and at rest.
             List<SafetyObject>? objects = null;
-            if (link.World != null && !PrepareWorld(link, socket, robot, newLayout, stop, out objects))
+            // With --new-layout, a layout the take finds no plan on is replaced by another, up to MaxLayoutTries times (docs/adr/0038:
+            // the twin check of 2026-11-23 lost 2 of 5 mixed takes to one), the arm unmoved meanwhile.
+            DrivePlan? found = null;
+            string? error = null;
+            for (int layoutTry = 1; ; layoutTry++)
             {
-                return 1; // nothing moved
-            }
-
-            ArmPose start = link.Measured;
-            Console.WriteLine($"[joint-drive] the arm is at {DrivePlan.Describe(start)}");
-            // A take with several events takes seconds to plan (docs/adr/0036 amendment 5): the link is kept up meanwhile, so
-            // RobotHost goes on streaming the joints and the world.
-            Task<(bool Built, DrivePlan? Plan, string? Error)> planning = Task.Run(() =>
-            {
-                bool built = DrivePlan.TryBuild(script, profile, start, speed, seconds, seed, envelope, out DrivePlan? p, out string? why, objects, safetyOptions);
-                return (built, p, why);
-            });
-            while (!planning.IsCompleted)
-            {
-                if (stop.IsSet)
+                if (link.World != null && !PrepareWorld(link, socket, robot, newLayout, stop, out objects))
                 {
-                    Console.Error.WriteLine("joint-drive: stopped by hand before anything moved.");
-                    return 130;
+                    return 1; // nothing moved
                 }
 
-                link.Pump(Stopwatch.GetTimestamp(), default);
-                Thread.Sleep(5);
+                ArmPose start = link.Measured;
+                Console.WriteLine($"[joint-drive] the arm is at {DrivePlan.Describe(start)}");
+                // A take with several events takes seconds to plan (docs/adr/0036 amendment 5): the link is kept up meanwhile, so
+                // RobotHost goes on streaming the joints and the world.
+                List<SafetyObject>? around = objects;
+                Task<(bool Built, DrivePlan? Plan, string? Error)> planning = Task.Run(() =>
+                {
+                    bool built = DrivePlan.TryBuild(script, profile, start, speed, seconds, seed, envelope, out DrivePlan? p, out string? why, around, safetyOptions, mixedOptions);
+                    return (built, p, why);
+                });
+                while (!planning.IsCompleted)
+                {
+                    if (stop.IsSet)
+                    {
+                        Console.Error.WriteLine("joint-drive: stopped by hand before anything moved.");
+                        return 130;
+                    }
+
+                    link.Pump(Stopwatch.GetTimestamp(), default);
+                    Thread.Sleep(5);
+                }
+
+                (bool planned, DrivePlan? p, string? why) = planning.Result;
+                if (planned)
+                {
+                    found = p;
+                    break;
+                }
+
+                error = why;
+                if (!newLayout || layoutTry >= MaxLayoutTries)
+                {
+                    Console.Error.WriteLine($"joint-drive: {error}");
+                    return 1;
+                }
+
+                Console.WriteLine($"[joint-drive] no plan on this layout ({error}); another layout ({layoutTry + 1} of {MaxLayoutTries})");
             }
 
-            (bool planned, DrivePlan? plan, string? error) = planning.Result;
-            if (!planned)
-            {
-                Console.Error.WriteLine($"joint-drive: {error}");
-                return 1;
-            }
-
+            DrivePlan plan = found!;
             PrintPlan(plan!, rateHz);
             // A take of a scenario RobotHost does not record leaves the arm unmoved: that is known before anything moves.
             int scenarioIndex = -1;
@@ -505,6 +649,14 @@ namespace Teleop.Eval.JointDrive
             uint eventSequence = (uint)(Stopwatch.GetTimestamp() & 0x3FFFFFFF) | 1u;
             var eventDatagram = new byte[ScriptEventCodec.Size];
             var replan = new Replanning(plan.Pending);
+            // A mixed take (docs/adr/0038): its replay group (RP) as it starts, each planned move (MV) as it begins, and every command
+            // sent while it records, for its replays to send again.
+            var tape = new List<SentCommand>();
+            var went = new List<TrackPoint>(); // where the arm was, as the stream measured it, at every command sent while it recorded (a replay's add)
+            int movesSent = 0;
+            uint recordSequence = (uint)(Stopwatch.GetTimestamp() & 0x3FFFFFFF) | 2u;
+            var recordDatagram = new byte[Math.Max(ScriptMoveCodec.Size, ReplayCodec.Size)];
+            bool mixed = plan.Script == DriveScript.Mixed;
             while (true)
             {
                 long now = Stopwatch.GetTimestamp();
@@ -539,6 +691,10 @@ namespace Teleop.Eval.JointDrive
                     }
 
                     recording = true;
+                    if (mixed) SendReplay(socket, robot, ReplayRecord.Source(seed), ref recordSequence, recordDatagram);
+                    // The replays keep this take's look (the renderer keeps it while .keep-look stands beside its control file when a
+                    // session closes; the batch makes and removes the file on these lines, docs/adr/0038 decision 2).
+                    if (mixed && replays > 0) Console.WriteLine("[joint-drive] keep-look: on");
                     lastLoop = Stopwatch.GetTimestamp(); // the wait for RobotHost is not plan time
                     nextSend = lastLoop;
                     continue;
@@ -559,6 +715,12 @@ namespace Teleop.Eval.JointDrive
                         $"[joint-drive] {planTime,5:0.0} s: event {e.Index} of {plan.EventsDrawn}, {ScriptEventCodec.Name(e.Kind)} object {e.ObjectId}: contact planned at {e.Contact:0.0} s, clear at {e.Clear:0.0} s"));
                 }
 
+                while (mixed && recording && movesSent < plan.Moves.Count && plan.Moves[movesSent].Start <= planTime)
+                {
+                    SendMove(socket, robot, plan.Moves[movesSent].Record(planTime, plan.Moves.Count), ref recordSequence, recordDatagram);
+                    movesSent++;
+                }
+
                 DrivePlan? next = replan.Step(planTime, now / (double)tps, link.World);
                 if (next != null) plan = next;
 
@@ -569,6 +731,11 @@ namespace Teleop.Eval.JointDrive
                     float plannedGripper = plan.GripperAt(planTime);
                     sendGripper = float.IsNaN(plannedGripper) ? gripper : plannedGripper;
                     Send(now, commanded);
+                    if (recording)
+                    {
+                        tape.Add(new SentCommand(planTime - plan.ScriptStart, commanded, sendGripper, sendSpeed));
+                        if (link.HasFullReading) went.Add(new TrackPoint(planTime - plan.ScriptStart, link.Measured, sendGripper));
+                    }
                     nextSend += interval;
                     if (nextSend < now) nextSend = now + interval;
                 }
@@ -634,7 +801,516 @@ namespace Teleop.Eval.JointDrive
             Console.WriteLine(SafetyScript.IsSafety(plan.Script)
                 ? "[joint-drive] done: the arm carries on from here next take (docs/adr/0036 amendment 3)."
                 : "[joint-drive] done: the arm is back at home.");
-            return FinishTake(take, link, 0);
+            int code = FinishTake(take, link, 0);
+            if (!mixed || take == null) return code;
+            Console.WriteLine($"[joint-drive] take recorded: source of group {seed}, ended {code}");
+            if (replays == 0 || code != 0 || objects == null || tape.Count == 0) return code;
+
+            // docs/adr/0038 decision 2: the same commands again, on the source's layout with one edit each.
+            var touched = new HashSet<byte>();
+            if (WorldView.TryObjects(link.World!, out List<SafetyObject> after))
+            {
+                foreach (SafetyObject o in objects)
+                {
+                    int k = after.FindIndex(x => x.Id == o.Id);
+                    if (k < 0 || Vector3Distance(o, after[k]) > 0.01f || Turned(o, after[k]) > 10f * MathF.PI / 180f) touched.Add(o.Id);
+                }
+            }
+
+            // A replay's add (docs/adr/0038 decision 2) stands an obstacle where the arm went low: as the stream measured it, when it
+            // measured most of the take, else as commanded; on the table one of the layout's, else one the layout parked.
+            List<TrackPoint> track = went.Count >= tape.Count * 8 / 10 ? went : ReplayAdd.Commanded(plan);
+            var add = new ReplayAdd(track, tape[tape.Count - 1].At, ParkedObstacles(link.World!), profile.Collision!, mixedOptions);
+            Console.WriteLine($"[joint-drive] replays: the add looks where the arm went {(ReferenceEquals(track, went) ? "as measured" : "as commanded")} ({track.Count} points), {add.Parked.Count} parked object(s) it may stand on the table");
+
+            // The operator log holds the source's commands; each replay sends the same again.
+            var replayed = new ReplayContext(socket, robot, link, take, takeScenario!, scenarioIndex, profile, plan, tape, objects, touched, seed, stop, rateHz, stallSeconds,
+                streamSeconds, mixedOptions, null, add);
+            return Replay(replayed, replays, ref sequence, ref recordSequence);
+        }
+
+        private static float Vector3Distance(in SafetyObject a, in SafetyObject b) => System.Numerics.Vector3.Distance(a.Center, b.Center);
+
+        /// <summary>
+        /// The objects the layout left out (parked: on the shelf) that a replay's add may stand on the table (docs/adr/0038 decision 2):
+        /// movable ones the headset may move, in a mixed pool the obstacles among them (never a distractor, stand, plank or support).
+        /// </summary>
+        internal static List<byte> ParkedObstacles(WorldState world)
+        {
+            var ids = new List<byte>();
+            foreach (SceneObject o in world.Scene.Objects)
+            {
+                if (!o.Movable || !o.OperatorMovable || (world.Scene.Mixed && o.Role != SceneRole.Obstacle)) continue;
+                if (world.TryGet(o.Id, out ObjectPose p, out _) && p.Parked) ids.Add(o.Id);
+            }
+
+            return ids;
+        }
+
+        private static float Turned(in SafetyObject a, in SafetyObject b) =>
+            2f * MathF.Acos(MathF.Min(1f, MathF.Abs(System.Numerics.Quaternion.Dot(a.Rotation, b.Rotation))));
+
+        /// <summary>Sends one planned move (MV) a few times under one sequence: UDP, and RobotHost records one per sequence.</summary>
+        private static void SendMove(Socket socket, IPEndPoint robot, in ScriptMove m, ref uint sequence, byte[] buffer)
+        {
+            sequence++;
+            for (int copy = 0; copy < 3 && ScriptMoveCodec.TryEncode(m, sequence, Stopwatch.GetTimestamp(), buffer, out int n); copy++) socket.SendTo(buffer, 0, n, SocketFlags.None, robot);
+        }
+
+        /// <summary>Sends the take's replay group (RP) a few times under one sequence.</summary>
+        private static void SendReplay(Socket socket, IPEndPoint robot, in ReplayRecord r, ref uint sequence, byte[] buffer)
+        {
+            sequence++;
+            for (int copy = 0; copy < 3 && ReplayCodec.TryEncode(r, sequence, Stopwatch.GetTimestamp(), buffer, out int n); copy++) socket.SendTo(buffer, 0, n, SocketFlags.None, robot);
+        }
+
+        /// <summary>What the replays of a mixed take need from its drive (docs/adr/0038 decision 2).</summary>
+        private sealed class ReplayContext
+        {
+            public ReplayContext(Socket socket, IPEndPoint robot, Link link, TakeClient take, string scenario, int scenarioIndex, RobotArmProfile profile, DrivePlan plan,
+                List<SentCommand> tape, List<SafetyObject> objects, HashSet<byte> touched, ulong group, ManualResetEventSlim stop, double rateHz, double stallSeconds,
+                double streamSeconds, MixedOptions options, OperatorLog? log, ReplayAdd? add)
+            {
+                Add = add;
+                Socket = socket;
+                Robot = robot;
+                Link = link;
+                Take = take;
+                Scenario = scenario;
+                ScenarioIndex = scenarioIndex;
+                Profile = profile;
+                Plan = plan;
+                Tape = tape;
+                Objects = objects;
+                Touched = touched;
+                Group = group;
+                Stop = stop;
+                RateHz = rateHz;
+                StallSeconds = stallSeconds;
+                StreamSeconds = streamSeconds;
+                Options = options;
+                Log = log;
+            }
+
+            public Socket Socket { get; }
+            public IPEndPoint Robot { get; }
+            public Link Link { get; }
+            public TakeClient Take { get; }
+            public string Scenario { get; }
+            public int ScenarioIndex { get; }
+            public RobotArmProfile Profile { get; }
+            public DrivePlan Plan { get; }
+            public List<SentCommand> Tape { get; }
+            public List<SafetyObject> Objects { get; }
+            public HashSet<byte> Touched { get; }
+            public ulong Group { get; }
+            public ManualResetEventSlim Stop { get; }
+            public double RateHz { get; }
+            public double StallSeconds { get; }
+            public double StreamSeconds { get; }
+            public MixedOptions Options { get; }
+            public OperatorLog? Log { get; }
+
+            /// <summary>What the group's add needs (docs/adr/0038 decision 2); null: no add.</summary>
+            public ReplayAdd? Add { get; }
+        }
+
+        /// <summary>A world edit's outcome on the wire (RobotHost's placement codes): applied, and busy (motion not off yet).</summary>
+        private const byte EditApplied = 0, EditBusy = 7;
+
+        /// <summary>
+        /// The replays of a mixed take (docs/adr/0038 decision 2): for each, the source's layout put back (reset-layout, checked against
+        /// where the objects stood at the source's start), the arm moved slowly back to where the source began (a setup move, not in
+        /// any take), one edit drawn and applied (park, or move; a placement RobotHost refuses drawn again), the objects at rest, and
+        /// then a new take of the scenario that sends the source's commands again at the same times from its start, with its
+        /// replay group (RP) and the source's moves (MV). Each says how it ended; the first that fails ends the replays. The exit
+        /// code: 0, or the first failing replay's.
+        /// </summary>
+        private static int Replay(ReplayContext c, int replays, ref uint sequence, ref uint recordSequence)
+        {
+            // The look is kept until the last replay is recording (the renderer decides as each session closes), or the replays end.
+            try
+            {
+                return Replays(c, replays, ref sequence, ref recordSequence);
+            }
+            finally
+            {
+                if (!_lookReleased) Console.WriteLine("[joint-drive] keep-look: off");
+                _lookReleased = false;
+            }
+        }
+
+        private static bool _lookReleased;
+
+        private static int Replays(ReplayContext c, int replays, ref uint sequence, ref uint recordSequence)
+        {
+            // A group's replays never make one edit twice (the twin check of 2026-11-23: remove:77 twice); a replay with nothing new
+            // to edit is skipped, and so are the rest.
+            var used = new HashSet<string>();
+            WorldScene scene = c.Link.World!.Scene;
+            Func<byte, double> scaleOf = id => c.Link.World!.Scale(id);
+            // How near the source's arm came to each object, on the track the add looks at (docs/adr/0038 "M, motion": edits where they can
+            // change what the take touches).
+            var near = new PathProximity(c.Profile, c.Profile.Collision!, c.Add?.Track ?? ReplayAdd.Commanded(c.Plan), c.Objects, 2);
+            Console.WriteLine("[joint-drive] replays: the source's arm " + Nearness(near));
+            for (int r = 1; r <= replays; r++)
+            {
+                if (c.Stop.IsSet) return 130;
+                ReplayEditDraw drawn = ReplayEdits.Draw(c.Group, r, 0, c.Plan, c.Objects, scene, c.Touched, c.Profile, used, scaleOf, c.Add, near);
+                if (drawn.AddNote != null) Console.WriteLine($"[joint-drive] replay {r} of {replays}: {drawn.AddNote}");
+                if (drawn.Pose.Id == 0)
+                {
+                    Console.WriteLine($"[joint-drive] replay {r} of {replays}: {drawn.Note}; skipped, with the rest");
+                    return 0;
+                }
+
+                Console.WriteLine($"[joint-drive] replay {r} of {replays}: putting the source's layout back");
+                if (!RestoreLayout(c))
+                {
+                    Console.Error.WriteLine("joint-drive: the source's layout could not be put back; no more replays");
+                    return 0;
+                }
+
+                // Edits pause the operator's motion (RobotHost takes them only then): on again for the move back.
+                if (ArmPower.ArmPowerCommand.Request(c.Robot, ArmPowerRequest.Hold, 10, out _) != 0)
+                {
+                    Console.Error.WriteLine("joint-drive: RobotHost did not switch motion back on after the reset; no more replays");
+                    return 0;
+                }
+
+                ArmPose start = c.Plan.Sample(c.Plan.ScriptStart);
+                if (!SetupMove(c, start, ref sequence))
+                {
+                    Console.Error.WriteLine($"joint-drive: no clear way back to where the source began ({DrivePlan.Describe(start)}); no more replays");
+                    return c.Stop.IsSet ? 130 : 0;
+                }
+
+                ReplayEditDraw edit = default;
+                bool applied = false;
+                var tried = new HashSet<string>(); // what RobotHost refused (or the quiet start or end would meet) in this replay
+                for (int attempt = 0; attempt < 8 && !applied && !c.Stop.IsSet; attempt++)
+                {
+                    edit = ReplayEdits.Draw(c.Group, r, attempt, c.Plan, c.Objects, scene, c.Touched, c.Profile, used, scaleOf, c.Add, near, tried);
+                    if (edit.Pose.Id == 0)
+                    {
+                        Console.WriteLine($"[joint-drive] replay {r}: {edit.Note}");
+                        break;
+                    }
+
+                    if (edit.After.HasValue && !ReplayEdits.KeepsQuiet(c.Plan, edit.After.Value, c.Profile, c.Profile.Collision!, c.Options))
+                    {
+                        Console.WriteLine($"[joint-drive] replay {r}: {ReplayCodec.Describe(edit.Record)} would meet the take's quiet start or end; another");
+                        if (!Respotted(edit.Record) || attempt >= 3) tried.Add(ReplayEdits.Key(edit.Record));
+                        continue;
+                    }
+
+                    byte outcome = EditWorld(c, edit.Op, edit.Pose);
+                    applied = outcome == EditApplied;
+                    if (applied) used.Add(ReplayEdits.Key(edit.Record));
+                    else
+                    {
+                        Console.WriteLine($"[joint-drive] replay {r}: RobotHost refused {ReplayCodec.Describe(edit.Record)} (placement code {outcome}); another");
+                        if (!Respotted(edit.Record) || attempt >= 3) tried.Add(ReplayEdits.Key(edit.Record)); // a move or an add draws another spot first
+                    }
+                }
+
+                if (!applied || !WaitAtRest(c, 20))
+                {
+                    Console.Error.WriteLine($"joint-drive: replay {r} found no edit RobotHost takes, or the objects did not settle; no more replays");
+                    return c.Stop.IsSet ? 130 : 0;
+                }
+
+                if (ArmPower.ArmPowerCommand.Request(c.Robot, ArmPowerRequest.Hold, 10, out _) != 0)
+                {
+                    Console.Error.WriteLine("joint-drive: RobotHost did not switch motion back on after the edit; no more replays");
+                    return 0;
+                }
+
+                int code = ReplayTake(c, r, edit.Record, ref sequence, ref recordSequence, r == replays);
+                Console.WriteLine($"[joint-drive] take recorded: replay {r} of {replays} of group {c.Group}, {ReplayCodec.Describe(edit.Record)}, ended {code}");
+                if (code != 0 && code != 4) return code;
+            }
+
+            return 0;
+        }
+
+        /// <summary>What a replay may edit, for the log: the objects the source's arm touched or came within 1 cm of, those within 5 cm, and the rest.</summary>
+        private static string Nearness(PathProximity near)
+        {
+            var parts = new List<string>();
+            for (int i = 0; i < near.Objects.Count; i++)
+            {
+                if (near.Objects[i].Scenery) continue;
+                float g = near.Gap(i);
+                string where = float.IsPositiveInfinity(g) ? "farther than 5 cm" : g <= 0 ? FormattableString.Invariant($"touched ({g * 1000:0} mm)") : FormattableString.Invariant($"within {g * 1000:0} mm");
+                parts.Add($"{near.Objects[i].Id} {where}");
+            }
+
+            return parts.Count == 0 ? "had no object near" : "came: " + string.Join(", ", parts);
+        }
+
+        /// <summary>Whether a refused edit of this kind tries another spot for the same object first (a move, an add), not another object.</summary>
+        private static bool Respotted(in ReplayRecord r) => r.Edit == ReplayEdit.Move || r.Edit == ReplayEdit.Add;
+
+        private static uint _editSequence = (uint)(Stopwatch.GetTimestamp() & 0x3FFFFFFF) | 1u;
+
+        /// <summary>One world edit, motion paused meanwhile (RobotHost takes edits only then): sent until the status answers it; its outcome (255 stopped, 254 no answer in 10 s).</summary>
+        private static byte EditWorld(ReplayContext c, WorldEditOp op, in ObjectPose pose)
+        {
+            WorldState world = c.Link.World!;
+            var buffer = new byte[256];
+            uint heartbeat = 0, edit = ++_editSequence;
+            long tps = Stopwatch.Frequency, next = 0, until = Stopwatch.GetTimestamp() + 10 * tps;
+            while (true)
+            {
+                long now = Stopwatch.GetTimestamp();
+                if (c.Stop.IsSet) return 255;
+                if (now > until) return 254;
+                if (world.Status.EditSequence == edit)
+                {
+                    if (world.Status.EditOutcome != EditBusy) return world.Status.EditOutcome;
+                    edit = ++_editSequence; // busy (motion not off yet): a refused sequence is spent, so a new one
+                }
+
+                if (now >= next)
+                {
+                    ArmPowerCodec.TryEncodeRequest(OperatorClientKind.Tool, OperatorMotionMode.Paused, ArmPowerRequest.None, ++heartbeat, now, buffer, out int n);
+                    c.Socket.SendTo(buffer, 0, n, SocketFlags.None, c.Robot);
+                    WorldCodec.TryEncodeEdit(op, pose.Id, edit, now, pose, buffer, out n);
+                    c.Socket.SendTo(buffer, 0, n, SocketFlags.None, c.Robot);
+                    next = now + tps * 3 / 10;
+                }
+
+                c.Link.Pump(now, null);
+                Thread.Sleep(5);
+            }
+        }
+
+        /// <summary>Waits until every object has stayed put for <see cref="SettleSeconds"/> (<see cref="RestWatch"/>), at most <paramref name="seconds"/>.</summary>
+        private static bool WaitAtRest(ReplayContext c, double seconds)
+        {
+            var rest = new RestWatch(SettleSeconds);
+            long tps = Stopwatch.Frequency, until = Stopwatch.GetTimestamp() + (long)(seconds * tps);
+            while (!c.Stop.IsSet && Stopwatch.GetTimestamp() < until)
+            {
+                long now = Stopwatch.GetTimestamp();
+                c.Link.Pump(now, null);
+                if (rest.Still(c.Link.World!, now / (double)tps)) return true;
+                Thread.Sleep(20);
+            }
+
+            return false;
+        }
+
+        /// <summary>
+        /// The source's layout back: reset-layout (RobotHost puts each object where the layout drew it), the objects at rest, and every
+        /// object within 1 cm and 5 degrees of where it stood when the source began (a knocked object lying on another's spot keeps
+        /// that one from going back: tried three times). False when it is not.
+        /// </summary>
+        private static bool RestoreLayout(ReplayContext c)
+        {
+            string why = "";
+            for (int attempt = 0; attempt < 3 && !c.Stop.IsSet; attempt++)
+            {
+                byte outcome = EditWorld(c, WorldEditOp.ResetLayout, default);
+                if (outcome != EditApplied)
+                {
+                    why = $"reset-layout refused (code {outcome})";
+                    continue;
+                }
+
+                if (!WaitAtRest(c, 20) || !WorldView.TryObjects(c.Link.World!, out List<SafetyObject> now))
+                {
+                    why = "the objects did not settle";
+                    continue;
+                }
+
+                why = "";
+                foreach (SafetyObject o in c.Objects)
+                {
+                    int k = now.FindIndex(x => x.Id == o.Id);
+                    if (k < 0) why += FormattableString.Invariant($" {o.Id} is off the table;");
+                    else if (Vector3Distance(o, now[k]) > 0.01f || Turned(o, now[k]) > 5f * MathF.PI / 180f)
+                        why += FormattableString.Invariant($" {o.Id} is {Vector3Distance(o, now[k]) * 1000:0} mm and {Turned(o, now[k]) * 180 / MathF.PI:0} degrees from where it stood;");
+                }
+
+                if (now.Count != c.Objects.Count) why += $" {now.Count} objects on the table, not {c.Objects.Count};";
+                if (why.Length == 0) return true;
+                Console.WriteLine($"[joint-drive] the layout is not the source's yet:{why} again");
+            }
+
+            Console.Error.WriteLine($"joint-drive: {why}");
+            return false;
+        }
+
+        /// <summary>
+        /// Slowly (<see cref="DrivePlan.ApproachSpeedRadPerSec"/>) from where the arm is to <paramref name="to"/>, on a path clear of the
+        /// objects as they now stand by 1 cm (straight, or a joint at a time), then still for half a second: a setup move, not in any
+        /// take. False when there is no such path, or the drive stops.
+        /// </summary>
+        private static bool SetupMove(ReplayContext c, in ArmPose to, ref uint sequence)
+        {
+            ArmCollisionModel model = c.Profile.Collision!;
+            if (!WorldView.TryObjects(c.Link.World!, out List<SafetyObject> now)) return false;
+            ArmPose from = c.Link.Measured;
+            if (!DrivePlan.TryApproach(c.Profile, SafetyScript.WithObjects(model, now, 0.01f), from, to, out List<(ArmPose To, bool Step)> via, out string? error))
+            {
+                Console.Error.WriteLine($"joint-drive: {error}");
+                return false;
+            }
+
+            var points = new List<(double At, ArmPose Pose)> { (0, from) };
+            double t = 0;
+            ArmPose p = from;
+            foreach ((ArmPose next, bool _) in via)
+            {
+                t += DrivePlan.SmoothDuration(p.MaxJointDelta(next), DrivePlan.ApproachSpeedRadPerSec);
+                points.Add((t, next));
+                p = next;
+            }
+
+            ArmPose Sample(double at)
+            {
+                for (int i = 1; i < points.Count; i++)
+                {
+                    if (at > points[i].At) continue;
+                    double u = (at - points[i - 1].At) / Math.Max(1e-9, points[i].At - points[i - 1].At);
+                    return ArmPose.Lerp(points[i - 1].Pose, points[i].Pose, (float)HandModel.MinimumJerk(u));
+                }
+
+                return points[points.Count - 1].Pose;
+            }
+
+            var watchdog = new DriveWatchdog(c.StallSeconds, c.StreamSeconds);
+            var targets = new JointTarget[c.Profile.JointCount];
+            var datagram = new byte[MaxDatagramBytes];
+            long tps = Stopwatch.Frequency, t0 = Stopwatch.GetTimestamp(), nextSend = t0, interval = (long)(tps / c.RateHz);
+            float gripper = c.Tape[0].Gripper, speed = DrivePlan.ApproachSpeedRadPerSec;
+            ArmPose commanded = from;
+            while (true)
+            {
+                long nowTicks = Stopwatch.GetTimestamp();
+                double at = (nowTicks - t0) / (double)tps;
+                c.Link.Pump(nowTicks, watchdog, commanded);
+                if (c.Stop.IsSet || watchdog.Check(nowTicks / (double)tps) != DriveFault.None) return false;
+                if (at > t + 0.5) return true;
+                if (nowTicks >= nextSend)
+                {
+                    commanded = Sample(at);
+                    int count = Targets(c.Profile, commanded, gripper, speed, targets);
+                    if (JointCommandCodec.TryEncode(sequence, nowTicks, targets.AsSpan(0, count), datagram, out int written))
+                    {
+                        c.Socket.SendTo(datagram, 0, written, SocketFlags.None, c.Robot);
+                        c.Log?.Command(nowTicks, sequence, nowTicks, targets.AsSpan(0, count));
+                        sequence++;
+                    }
+
+                    nextSend += interval;
+                    if (nextSend < nowTicks) nextSend = nowTicks + interval;
+                }
+
+                Thread.Sleep(1);
+            }
+        }
+
+        /// <summary>
+        /// One replay take: started as the source was (RECORD), its replay group (RP) sent, then the source's commands at their times
+        /// from the take's start (the clock held while the joint-state stream is unhealthy, as the source's was) and its moves (MV) at
+        /// theirs, the watchdog as for any drive; then stopped and kept. Its exit code, as a drive's.
+        /// </summary>
+        private static int ReplayTake(ReplayContext c, int replay, in ReplayRecord record, ref uint sequence, ref uint recordSequence, bool last)
+        {
+            var watchdog = new DriveWatchdog(c.StallSeconds, c.StreamSeconds);
+            ArmPose commanded = c.Tape[0].Pose;
+            if (!StartTake(c.Take, c.Scenario, c.ScenarioIndex, c.Link, c.Stop, watchdog, commanded))
+            {
+                Console.Error.WriteLine($"joint-drive: RobotHost did not start replay {replay}'s take");
+                return 1;
+            }
+
+            var recordDatagram = new byte[Math.Max(ScriptMoveCodec.Size, ReplayCodec.Size)];
+            SendReplay(c.Socket, c.Robot, record, ref recordSequence, recordDatagram);
+            if (last)
+            {
+                Console.WriteLine("[joint-drive] keep-look: off");
+                _lookReleased = true;
+            }
+            var targets = new JointTarget[c.Profile.JointCount];
+            var datagram = new byte[MaxDatagramBytes];
+            long tps = Stopwatch.Frequency, lastLoop = Stopwatch.GetTimestamp();
+            double clock = 0;
+            int moves = 0;
+            DriveFault fault = DriveFault.None;
+            List<SentCommand> tape = c.Tape;
+            var player = new TapePlayer(tape);
+            // Said at the end, as a source's drive says it: a held clock sends the rest of the tape later than the source did.
+            long framesBefore = c.Link.Frames;
+            int pauses = 0;
+            double pausedSeconds = 0;
+            bool paused = false;
+            while (true)
+            {
+                long now = Stopwatch.GetTimestamp();
+                double dt = (now - lastLoop) / (double)tps;
+                lastLoop = now;
+                c.Link.Pump(now, watchdog, commanded);
+                bool healthy = watchdog.IsHealthy(now / (double)tps);
+                fault = watchdog.Check(now / (double)tps);
+                if (fault != DriveFault.None || c.Stop.IsSet) break;
+                if (healthy) clock += dt;
+                else pausedSeconds += dt;
+                if (healthy == paused)
+                {
+                    paused = !healthy;
+                    if (paused) pauses++;
+                }
+
+                double planTime = c.Plan.ScriptStart + clock;
+                while (moves < c.Plan.Moves.Count && c.Plan.Moves[moves].Start <= planTime)
+                {
+                    SendMove(c.Socket, c.Robot, c.Plan.Moves[moves].Record(planTime, c.Plan.Moves.Count), ref recordSequence, recordDatagram);
+                    moves++;
+                }
+
+                while (player.TryNext(clock, out SentCommand s))
+                {
+                    commanded = s.Pose;
+                    int count = Targets(c.Profile, s.Pose, s.Gripper, s.Speed, targets);
+                    long stamp = player.Stamp(now); // strictly newer than the last, or RobotHost drops it as stale
+                    if (JointCommandCodec.TryEncode(sequence, stamp, targets.AsSpan(0, count), datagram, out int written))
+                    {
+                        c.Socket.SendTo(datagram, 0, written, SocketFlags.None, c.Robot);
+                        c.Log?.Command(now, sequence, stamp, targets.AsSpan(0, count));
+                        sequence++;
+                    }
+                }
+
+                if (player.Done(clock, 0.5)) break;
+                Thread.Sleep(1);
+            }
+
+            Console.WriteLine($"[joint-drive] replay {replay}: sent {player.Played} of the tape's {tape.Count} commands, received {c.Link.Frames - framesBefore} frames" +
+                (pauses > 0 ? FormattableString.Invariant($", paused {pauses} time(s) for {pausedSeconds:0.0} s in all") : ""));
+            if (fault != DriveFault.None || c.Stop.IsSet)
+            {
+                ArmPose hold = c.Link.Measured;
+                SentCommand lastSent = tape[Math.Max(0, player.Played - 1)];
+                for (int i = 0; i < 15; i++)
+                {
+                    int count = Targets(c.Profile, hold, lastSent.Gripper, lastSent.Speed, targets);
+                    if (JointCommandCodec.TryEncode(sequence, Stopwatch.GetTimestamp(), targets.AsSpan(0, count), datagram, out int written))
+                    {
+                        c.Socket.SendTo(datagram, 0, written, SocketFlags.None, c.Robot);
+                        sequence++;
+                    }
+
+                    Thread.Sleep(20);
+                }
+            }
+
+            int code = fault == DriveFault.Stall ? 2 : fault != DriveFault.None ? 3 : c.Stop.IsSet ? 130 : 0;
+            if (code != 0) Console.Error.WriteLine($"joint-drive: replay {replay} STOPPED ({fault}{(c.Stop.IsSet ? ", by hand" : "")}); the arm holds where it is");
+            return FinishTake(c.Take, c.Link, code);
         }
 
         /// <summary>How long a RECORD request is sent again before it counts as unanswered (the headset gives up after 2 s).</summary>
@@ -770,6 +1446,9 @@ namespace Teleop.Eval.JointDrive
 
         /// <summary>How long every object must stay put before a safety script plans around it, seconds.</summary>
         public const double SettleSeconds = 1.0;
+
+        /// <summary>With --new-layout, how many layouts a take tries before it gives up for want of a plan.</summary>
+        public const int MaxLayoutTries = 4;
 
         /// <summary>
         /// Waits for RobotHost's scenario list and finds <paramref name="scenario"/> on it, before anything moves. False, with the
@@ -949,6 +1628,20 @@ namespace Teleop.Eval.JointDrive
 
             /// <summary>The drive is over: nothing more is planned (a plan being made is left to finish on its own).</summary>
             public void Abandon() => _pending = null;
+        }
+
+        /// <summary>The most replays a mixed take records after itself (docs/adr/0038 decision 2).</summary>
+        public const int MaxReplays = 8;
+
+        /// <summary>A count (2) or a range (1-200) of non-negative integers, for <paramref name="option"/>.</summary>
+        internal static void ParseRange(string text, string option, out int min, out int max)
+        {
+            string[] parts = text.Split('-');
+            if (parts.Length > 2 || !int.TryParse(parts[0], NumberStyles.None, CultureInfo.InvariantCulture, out min) ||
+                !int.TryParse(parts[parts.Length - 1], NumberStyles.None, CultureInfo.InvariantCulture, out max) || max < min)
+            {
+                throw new ArgumentException($"{option} is a count or a range, like 2 or 1-200, not '{text}'");
+            }
         }
 
         /// <summary>--events: how many events a safety take draws, a count (2) or a range (1-3) (docs/adr/0036 amendment 5).</summary>

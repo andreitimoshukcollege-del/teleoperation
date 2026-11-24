@@ -3965,6 +3965,25 @@ isaac-jetrover-record-drive label script speed *options:
     [ "$status" -eq 0 ] || echo "joint-drive exited $status; the session is recorded up to there" >&2
     exit "$status"
 
+# just stop-latency on the JetRover's Isaac twin (docs/adr/0038 R, item 32): the same 22 trials against a running twin (just isaac-jetrover-host jetrover-bench auto <twin>), with --simulated-robot (no countdown). It runs here and reaches the twin over the VPN, so its stop times include the network's round trip, which it measures and takes out in the last column. Records no session: the twin's stops on its own clock come from recorded sessions (scripts/gpu/arm_response.py --only stops). Writes recordings/.stop-latency/<UTC>-isaac-twin<twin>.json. No real robot moves; the twin's arm does, so not while a batch or a headset drives that twin
+[group('isaac')]
+isaac-stop-latency twin="0" speeds="0.5,1,2" joints="yaw,proximal,distal,wrist":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    case "{{twin}}" in 0|1) ;; *) echo "error: twin is 0 or 1" >&2; exit 1 ;; esac
+    case "{{speeds}}" in *[!0-9.,]*|"") echo "error: speeds is a list of rad/s, e.g. 0.5,1,2" >&2; exit 1 ;; esac
+    case "{{joints}}" in *[!a-z,]*|"") echo "error: joints is a list of yaw, proximal, distal, wrist" >&2; exit 1 ;; esac
+    gpu="{{gpu_host}}"; host="${gpu#*@}"
+    case "$host" in *[!0-9.]*) echo "error: the GPU machine's address must be numbers, got '$host' (GPU_HOST)" >&2; exit 1 ;; esac
+    if pgrep -f "Teleop[.]Eval.* joint-drive .*--remote-port $((6002 + 100 * {{twin}}))" > /dev/null; then
+        echo "error: a joint-drive from here is driving twin {{twin}} (a batch?): wait for it" >&2; exit 1
+    fi
+    (cd core && dotnet build Teleop.Eval -nologo -v q > /dev/null)
+    mkdir -p recordings/.stop-latency
+    out="recordings/.stop-latency/$(date -u +%Y%m%dT%H%M%SZ)-isaac-twin{{twin}}.json"
+    (cd core && dotnet run --no-build --project Teleop.Eval -- stop-latency --remote-host "$host" --remote-port "$((6002 + 100 * {{twin}}))" \
+        --confirm-hardware-motion --simulated-robot --speeds "{{speeds}}" --joints "{{joints}}" --json "../$out")
+
 # Many twin sessions in a row for the trainer, unattended (docs/adr/0035 N4): `hours` of just isaac-jetrover-record-drive, each about `minutes` long, with its script, speed and network drawn from `seed` (course half the time, waypoints and steps otherwise; 1 to 6 rad/s; the tiers' uplink schedule half the time, the plain LAN otherwise), labelled b<seed>-<n>-<script>-<speed>. A session joint-drive's watchdog cut short is kept and the batch goes on; it stops after three of those in a row, any other failure, or when a file recordings/.drive/STOP exists (it is removed). Needs `just isaac-jetrover-host none` running. Bring the sessions here with just isaac-jetrover-recording-fetch <id>
 [group('isaac')]
 isaac-jetrover-drive-batch hours="2" minutes="5" seed="1":
@@ -4022,9 +4041,9 @@ isaac-knock-probe takes="30" seed="1" since="":
     echo "[knock] rows: $out"
     REMOTE
 
-# The labmate's safety dataset from the JetRover twin, unattended (docs/adr/0036 amendment 1): `takes` rounds of the four categories (reach_no_obstacle, stop_before_collision, collide_and_recover, collide_with_obstacle) in a seeded order, each take one `joint-drive --script <category> --new-layout --take <category> --events <events>` (a fresh layout, the arm driven relative to where the objects are; each take of the three event categories draws `events` events, a count or a range, default 1-3, anywhere in it, docs/adr/0036 amendment 5), checked against its category by its physics contacts (teleop_lerobot safety-check: a take that fails is set aside to _discarded/<category>/ with its reason), then the kept takes written as one dataset in his label format at ~/data/lerobot/jetrover-isaac-safety/jetrover_<UTC>_<id>/ (front = the wrist camera; manual_safety_labels.json, meta/safety_labels.parquet, safety_events.jsonl). Needs `just isaac-jetrover-host jetrover-bench` running this commit (its bridge reports the contacts) and the LeRobot environment (just lerobot-setup). Stops after 5 takes in a row that could not be planned, or when recordings/.drive/STOP exists (after the take in progress); waits between takes while recordings/.drive/PAUSE exists. Writes its progress to recordings/.drive/safety-batch.json for `just gpu-ui`, which shows it and makes those two files, and its kept takes to recordings/.drive/safety-batch.kept (for just isaac-safety-build). `twin=1` drives the second twin instead (docs/adr/0037 amendment 7: its joint port 6102, its takes in ~/data/takes/jetrover-isaac-twin1); its files are suffixed -1 (safety-batch-1.json, safety-batch-1.kept, PAUSE-1, STOP-1). Only Isaac's arm moves
+# The labmate's safety dataset from the JetRover twin, unattended (docs/adr/0036 amendment 1): `takes` rounds of the four categories (reach_no_obstacle, stop_before_collision, collide_and_recover, collide_with_obstacle) in a seeded order, each take one `joint-drive --script <category> --new-layout --take <category> --events <events>` (a fresh layout, the arm driven relative to where the objects are; each take of the three event categories draws `events` events, a count or a range, default 1-3, anywhere in it, docs/adr/0036 amendment 5), checked against its category by its physics contacts (teleop_lerobot safety-check: a take that fails is set aside to _discarded/<category>/ with its reason), then the kept takes written as one dataset in his label format at ~/data/lerobot/jetrover-isaac-safety/jetrover_<UTC>_<id>/ (front = the wrist camera; manual_safety_labels.json, meta/safety_labels.parquet, safety_events.jsonl). Needs `just isaac-jetrover-host jetrover-bench` running this commit (its bridge reports the contacts) and the LeRobot environment (just lerobot-setup). Stops after 5 takes in a row that could not be planned, or when recordings/.drive/STOP exists (after the take in progress); waits between takes while recordings/.drive/PAUSE exists. Writes its progress to recordings/.drive/safety-batch.json for `just gpu-ui`, which shows it and makes those two files, and its kept takes to recordings/.drive/safety-batch.kept (for just isaac-safety-build). `twin=1` drives the second twin instead (docs/adr/0037 amendment 7: its joint port 6102, its takes in ~/data/takes/jetrover-isaac-twin1); its files are suffixed -1 (safety-batch-1.json, safety-batch-1.kept, PAUSE-1, STOP-1). `categories` may also name `mixed` (docs/adr/0038 decision 1: one script whose motion does not give the outcome away; its takes go to the scenario `mixed`), with `replays` more takes after each mixed take that send its commands again on its layout with one edit (decision 2; each counts as a take, and each is checked with its own exit code); while a mixed take and its replays record, the twin's sessions root holds `.keep-look` (made on joint-drive's `keep-look: on` line, removed on `keep-look: off` and after the run), so the replays keep the source take's look. `scene` is the twin's scene file under core/Scenes (default jetrover-bench; mixed batches run on jetrover-mixed): joint-drive refuses a run whose scene is not the twin's. Only Isaac's arm moves
 [group('isaac')]
-isaac-safety-batch takes="25" seed="1" categories="all" build="true" events="1-3" twin="0":
+isaac-safety-batch takes="25" seed="1" categories="all" build="true" events="1-3" twin="0" replays="0" scene="jetrover-bench":
     #!/usr/bin/env bash
     set -euo pipefail
     case "{{takes}}{{seed}}" in *[!0-9]*|"") echo "error: takes and seed are numbers" >&2; exit 1 ;; esac
@@ -4045,22 +4064,25 @@ isaac-safety-batch takes="25" seed="1" categories="all" build="true" events="1-3
     [ "{{takes}}" -ge 1 ] || { echo "error: takes is at least 1 (rounds of the categories)" >&2; exit 1; }
     case "{{events}}" in [1-9]|[1-9]-[1-9]) ;; *) echo "error: events is a count or a range, like 2 or 1-3, not '{{events}}'" >&2; exit 1 ;; esac
     case "{{twin}}" in 0|1) ;; *) echo "error: twin is 0 or 1" >&2; exit 1 ;; esac
+    case "{{replays}}" in [0-8]) ;; *) echo "error: replays is 0 to 8, not '{{replays}}'" >&2; exit 1 ;; esac
+    case "{{scene}}" in *[!A-Za-z0-9._-]*|"") echo "error: scene names a file under core/Scenes, like jetrover-bench" >&2; exit 1 ;; esac
+    [ -f "core/Scenes/{{scene}}.json" ] || { echo "error: no core/Scenes/{{scene}}.json" >&2; exit 1; }
     cats="{{categories}}"; [ "$cats" != all ] || cats=reach_no_obstacle,stop_before_collision,collide_and_recover,collide_with_obstacle
     for c in ${cats//,/ }; do
-        case "$c" in reach_no_obstacle|stop_before_collision|collide_and_recover|collide_with_obstacle) ;; *) echo "error: categories is all, or a comma list of the four, not '$c'" >&2; exit 1 ;; esac
+        case "$c" in reach_no_obstacle|stop_before_collision|collide_and_recover|collide_with_obstacle|mixed) ;; *) echo "error: categories is all, or a comma list of the four and mixed, not '$c'" >&2; exit 1 ;; esac
     done
     case "{{build}}" in true|false) ;; *) echo "error: build is true or false" >&2; exit 1 ;; esac
     gpu="{{gpu_host}}"; host="${gpu#*@}"
     case "$host" in *[!0-9.]*) echo "error: joint-drive needs the GPU machine's address as numbers, got '$host' (GPU_HOST)" >&2; exit 1 ;; esac
     # Twin N's joint port, takes folder and this batch's files (docs/adr/0037 amendment 7); twin 0's are what they always were.
     twin={{twin}} sfx="" tdata=""; [ "$twin" = 0 ] || { sfx="-$twin"; tdata="-twin$twin"; }
-    port=$((6002 + 100 * twin)) troot="data/takes/jetrover-isaac$tdata"
+    port=$((6002 + 100 * twin)) troot="data/takes/jetrover-isaac$tdata" sroot="data/sessions/jetrover-isaac$tdata"
     drive=recordings/.drive
     pfile=$drive/safety-batch$sfx.json kfile=$drive/safety-batch$sfx.kept pause=$drive/PAUSE$sfx stopf=$drive/STOP$sfx
     commit=$(just _pushed-commit)
     # The checker and builder run from this commit, in a checkout of their own (the watcher's stays as it is); the twin must
     # run it too, or its bridge reports no contacts and every collide take fails its check. Its scenario list gets the four.
-    ssh -o ConnectTimeout=10 "$gpu" "COMMIT='$commit' TWIN='$twin' bash -s" <<'REMOTE'
+    ssh -o ConnectTimeout=10 "$gpu" "COMMIT='$commit' TWIN='$twin' CATS='$cats' bash -s" <<'REMOTE'
     set -euo pipefail
     {{isaac_twin_sh}}
     twin_names "$TWIN"
@@ -4079,6 +4101,8 @@ isaac-safety-batch takes="25" seed="1" categories="all" build="true" events="1-3
     for c in reach_no_obstacle stop_before_collision collide_and_recover collide_with_obstacle; do
         grep -q "^$c\b" "$list" 2>/dev/null || echo "$c | safety dataset (docs/adr/0036 amendment 1): joint-drive --script $c" >> "$list"
     done
+    case ",$CATS," in *,mixed,*) grep -q "^mixed\b" "$list" 2>/dev/null || echo "mixed | safety data where the scene decides (docs/adr/0038): joint-drive --script mixed" >> "$list" ;; esac
+    rm -f "$HOME/data/sessions/jetrover-isaac$tdata/.keep-look" # a run stopped mid-group may have left it
     echo "[safety] twin $TWIN; checker at $(git log --oneline -1 | cut -c1-60); twin at ${twin:0:7}"
     REMOTE
     mkdir -p "$drive"
@@ -4111,7 +4135,8 @@ isaac-safety-batch takes="25" seed="1" categories="all" build="true" events="1-3
     PY
     )
     kept=() setaside=0 unplanned=0 consecutive=0 n=0 unchecked=0 paused=0
-    started=$(date +%s) total=$(( {{takes}} * $(echo "$cats" | tr ',' '\n' | wc -l) ))
+    # A mixed take and its replays are 1 + replays takes (docs/adr/0038 decision 2).
+    started=$(date +%s) total=$(( {{takes}} * ($(echo "$cats" | tr ',' '\n' | wc -l) + {{replays}} * $(echo ",$cats," | grep -c ',mixed,')) ))
     # Whether twin N's bridge and renderer still run (counted by the record control file they name).
     alive_sh=$(cat <<'REMOTE'
     {{isaac_twin_sh}}
@@ -4137,9 +4162,27 @@ isaac-safety-batch takes="25" seed="1" categories="all" build="true" events="1-3
         before=$(rssh -o ConnectTimeout=10 "$gpu" "ls ~/$troot/$cat 2>/dev/null | grep -- '-take' | sort | tail -1" || true)
         echo "=== [safety] take $n: $cat (seed $sseed, speed slider $speed rad/s)"
         code=0
+        extra=(--events "{{events}}"); [ "$cat" != mixed ] || extra=(--replays "{{replays}}")
+        # joint-drive's lines go to the log as they come; a mixed run's keep-look lines make and remove the twin's .keep-look, and
+        # each take it recorded says how it ended (checked with that code).
+        jlog=$(mktemp)
+        set +e
         (cd core && dotnet run --no-build --project Teleop.Eval -- joint-drive --script "$cat" --speed "$speed" --seconds 15 --seed "$sseed" \
-            --scene Scenes/jetrover-bench.json --new-layout --take "$cat" --events "{{events}}" --remote-host "$host" --remote-port "$port" \
-            --confirm-hardware-motion --simulated-robot --stall-seconds 3 < /dev/null) || code=$?
+            --scene "Scenes/{{scene}}.json" --new-layout --take "$cat" "${extra[@]}" --remote-host "$host" --remote-port "$port" \
+            --confirm-hardware-motion --simulated-robot --stall-seconds 3 < /dev/null 2>&1) | while IFS= read -r line; do
+            printf '%s\n' "$line"; printf '%s\n' "$line" >> "$jlog"
+            case "$line" in
+                *"[joint-drive] keep-look: on"*) rssh -o ConnectTimeout=10 "$gpu" "touch ~/$sroot/.keep-look" || true ;;
+                *"[joint-drive] keep-look: off"*) rssh -o ConnectTimeout=10 "$gpu" "rm -f ~/$sroot/.keep-look" || true ;;
+            esac
+        done
+        code=${PIPESTATUS[0]}
+        set -e
+        [ "$cat" != mixed ] || rssh -o ConnectTimeout=10 "$gpu" "rm -f ~/$sroot/.keep-look" || true
+        # The takes it recorded, each with its own exit code (a mixed run's lines; any other run: one take, the run's code).
+        mapfile -t codes < <(sed -n 's/\r$//; s/.*\[joint-drive\] take recorded: .*, ended \([0-9]*\)$/\1/p' "$jlog") # joint-drive is Windows' dotnet: CRLF
+        rm -f "$jlog"
+        [ "$cat" = mixed ] && [ "${#codes[@]}" -gt 0 ] || codes=("$code")
         case "$code" in
             0|2|3|4) consecutive=0 ;;  # a take was recorded (2, 3: a watchdog stopped it; 4: not stopped cleanly): check it
             1) unplanned=$((unplanned + 1)); consecutive=$((consecutive + 1)); echo "[safety] take $n: nothing recorded (no plan or no world)" >&2
@@ -4148,20 +4191,27 @@ isaac-safety-batch takes="25" seed="1" categories="all" build="true" events="1-3
             *) echo "[safety] joint-drive exited $code: stopping" >&2; break ;;
         esac
         # RobotHost completes the take (files.sha256) once every writer has closed: up to a minute for the renderer's.
+        # The K takes the run recorded, once complete (files.sha256), oldest first.
         take_sh=$(cat <<'REMOTE'
     d=$HOME/$ROOT/$CAT
-    for i in $(seq 1 240); do
-        newest=$(ls "$d" 2>/dev/null | grep -- '-take' | sort | tail -1)
-        if [ -n "$newest" ] && [ "$newest" != "$BEFORE" ] && [ -f "$d/$newest/files.sha256" ]; then echo "$d/$newest"; exit 0; fi
+    for i in $(seq 1 $((240 * K))); do
+        mapfile -t new < <(ls "$d" 2>/dev/null | grep -- '-take' | sort | awk -v b="$BEFORE" '$0 > b')
+        done_=0; for t in "${new[@]}"; do [ -f "$d/$t/files.sha256" ] && done_=$((done_ + 1)); done
+        if [ "${#new[@]}" -ge "$K" ] && [ "$done_" -ge "$K" ]; then for t in "${new[@]:0:$K}"; do echo "$d/$t"; done; exit 0; fi
         sleep 0.5
     done
     exit 1
     REMOTE
         )
-        take=$(RSSH_IN="$take_sh" rssh -o ConnectTimeout=10 "$gpu" "CAT='$cat' BEFORE='$before' ROOT='$troot' bash -s") || { echo "[safety] take $n: RobotHost did not complete a new $cat take in 2 min" >&2; unchecked=$((unchecked + 1)); continue; }
+        k=${#codes[@]}
+        mapfile -t takes < <(RSSH_IN="$take_sh" rssh -o ConnectTimeout=10 "$gpu" "CAT='$cat' BEFORE='$before' ROOT='$troot' K='$k' bash -s") || true
+        if [ "${#takes[@]}" -lt "$k" ]; then echo "[safety] take $n: RobotHost did not complete $k new $cat take(s) in time (${#takes[@]} found)" >&2; unchecked=$((unchecked + k - ${#takes[@]})); fi
+        [ "$k" -le 1 ] || n=$((n + ${#takes[@]} - 1)) # a mixed take's replays count as takes
+        for i in "${!takes[@]}"; do
+        take=${takes[$i]} dcode=${codes[$i]:-$code}
         # Asked again once if no verdict comes back (2026-11-15: one check returned nothing, the take was fine when run again).
         for attempt in 1 2; do
-            verdict=$(rssh -o ConnectTimeout=10 "$gpu" "cd ~/repos/safety/robot/lerobot && ~/isaacsim/lerobot-venv/bin/python -m teleop_lerobot safety-check --set-aside '$take'" || true)
+            verdict=$(rssh -o ConnectTimeout=10 "$gpu" "cd ~/repos/safety/robot/lerobot && ~/isaacsim/lerobot-venv/bin/python -m teleop_lerobot safety-check --set-aside --drive-exit '$dcode' '$take'" || true)
             case "$verdict" in *'"ok":'*) break ;; esac
             echo "[safety] no verdict for $take (attempt $attempt)${verdict:+: ${verdict: -200}}" >&2; sleep 5
         done
@@ -4177,6 +4227,7 @@ isaac-safety-batch takes="25" seed="1" categories="all" build="true" events="1-3
     state = "kept" if v["ok"] else "set aside"
     ev = v.get("events") or []
     hits = "; events %d of %s planned, %d with a contact in its window" % (len(ev), v.get("eventsDrawn"), sum(1 for e in ev if e.get("contact") is not None)) if ev else ""
+    if "outcome" in v: hits += "; outcome %s%s" % (v["outcome"], ", table contact" if v.get("tableContact") else "")
     print("[safety] %s: %s: %s (%d of %d frames unsafe%s)" % (v["category"], state, v["reason"], v["unsafeFrames"], v["frames"], hits))
     sys.exit(0 if v["ok"] else 1)
     PY
@@ -4186,6 +4237,7 @@ isaac-safety-batch takes="25" seed="1" categories="all" build="true" events="1-3
         else
             setaside=$((setaside + 1))
         fi
+        done
         if [ -e "$stopf" ]; then rm -f "$stopf"; echo "[safety] STOP file: stopping after take $n"; break; fi
     done <<< "$plan"
     echo "[safety] $n take(s): ${#kept[@]} kept, $setaside set aside, $unplanned not planned"
@@ -4194,7 +4246,7 @@ isaac-safety-batch takes="25" seed="1" categories="all" build="true" events="1-3
     progress "$n" building
     if just _isaac-safety-build "$name" "" "${kept[@]}"; then progress "$n" done "\"~/data/lerobot/jetrover-isaac-safety/$name\""; else progress "$n" failed; exit 1; fi
 
-# Internal: write `takes` (paths on the GPU machine, already checked) as one safety dataset `name` under `out` there (default ~/data/lerobot/jetrover-isaac-safety), with ~/repos/safety's builder (teleop_lerobot safety-build). A build that fails is retried once into a fresh folder, a failed one set aside, and every attempt's full log kept beside it. (The one failure seen, 2026-11-15, was the LeRobot watcher deleting the half-written dataset, since fixed: it leaves the *-safety groups alone.)
+# Internal: write `takes` (paths on the GPU machine, already checked) as safety datasets named `name` under `out` there (default ~/data/lerobot/jetrover-isaac-safety), with ~/repos/safety's builder (teleop_lerobot safety-build), in the lab's and world-models' label formats with the sidecars of docs/adr/0038 decision 6 (neutral captions, clearance from ~/isaacsim/assets/clearance when it is there). One dataset per takes root (docs/adr/0038 L): one twin's takes are `name`, several twins' `name`_twin0, `name`_twin1, ..., since twins record at once on one clock and a dataset must not hold takes that overlap in time. SAFETY_BUILD_ARGS, when set, adds safety-build options (just isaac-safety-build sets --split and --caption): a split build writes <dataset>_<k>of<K>. Takes of one dataset that overlap in time are refused, with nothing written and no retry. A build that fails otherwise is retried once into a fresh folder, a failed one set aside, and every attempt's full log kept beside it. (The one failure seen, 2026-11-15, was the LeRobot watcher deleting the half-written dataset, since fixed: it leaves the *-safety groups alone.)
 [positional-arguments]
 _isaac-safety-build name out +takes:
     #!/usr/bin/env bash
@@ -4202,29 +4254,42 @@ _isaac-safety-build name out +takes:
     case "{{name}}" in *[!A-Za-z0-9._-]*|"") echo "error: name may hold only letters, digits, . _ -" >&2; exit 1 ;; esac
     case "{{out}}" in ""|/*|"~/"*) ;; *) echo "error: out is an absolute path on the GPU machine, or ~/..." >&2; exit 1 ;; esac
     case "{{out}}" in *[!A-Za-z0-9._/~-]*) echo "error: out may hold only letters, digits, . _ - / ~" >&2; exit 1 ;; esac
-    ssh -o ConnectTimeout=10 "{{gpu_host}}" "NAME='{{name}}' OUT='{{out}}' bash -s $(printf "'%s' " "${@:3}")" <<'REMOTE'
+    args="${SAFETY_BUILD_ARGS-}"
+    case "$args" in *[!A-Za-z0-9\ ._=/~-]*) echo "error: SAFETY_BUILD_ARGS may hold only letters, digits, spaces and . _ = / ~ -" >&2; exit 1 ;; esac
+    ssh -o ConnectTimeout=10 "{{gpu_host}}" "NAME='{{name}}' OUT='{{out}}' ARGS='$args' bash -s $(printf "'%s' " "${@:3}")" <<'REMOTE'
     set -uo pipefail
     out=${OUT:-$HOME/data/lerobot/jetrover-isaac-safety}; out=${out/#\~/$HOME}; mkdir -p "$out"
     cd "$HOME/repos/safety/robot/lerobot"
     for attempt in 1 2; do
         dest=$out/$NAME; [ "$attempt" = 1 ] || dest=$out/$NAME-retry
         log=$out/$NAME.build-$attempt.log
-        if "$HOME/isaacsim/lerobot-venv/bin/python" -m teleop_lerobot safety-build --out "$dest" "$@" > "$log" 2>&1; then
-            grep -E "episode [0-9]+:" "$log" | sed 's/^/  /'
-            echo "[safety] dataset: $dest on the GPU machine (log $log)"
+        # $ARGS unquoted: its words are safety-build options (checked above: no quotes, globs or $).
+        rc=0; "$HOME/isaacsim/lerobot-venv/bin/python" -m teleop_lerobot safety-build $ARGS --out "$dest" "$@" > "$log" 2>&1 || rc=$?
+        if [ "$rc" = 0 ]; then
+            grep -E "episode [0-9]+:|\[(stream|split|timing|mix)\]" "$log" | sed 's/^/  /'
+            # The datasets it wrote, one per takes root (twin) and each split when asked: its log's last line names them.
+            for d in $(sed -n 's/^[0-9TZ:-]* datasets: //p' "$log" | tail -1); do echo "[safety] dataset: $d on the GPU machine"; done
+            echo "[safety] log $log"
             exit 0
         fi
+        if [ "$rc" = 3 ]; then  # refused (docs/adr/0038 L): the same takes would be refused again
+            grep '^\[refused\]' "$log" | head -25 >&2
+            echo "[safety] build refused: takes of one dataset overlap in time; nothing written (log $log)" >&2
+            exit 1
+        fi
         echo "[safety] build attempt $attempt failed: $(grep -vE '^(Svt|Map)' "$log" | tail -3 | tr '\n' ' ')" >&2
-        [ -e "$dest" ] && mv "$dest" "$dest.failed-$(date -u +%H%M%S)"
+        for d in "$dest" "$dest"_*; do case "$d" in *.failed-*) continue ;; esac; [ -e "$d" ] && mv "$d" "$d.failed-$(date -u +%H%M%S)"; done
     done
     exit 1
     REMOTE
 
-# One safety dataset from the takes several batches kept (docs/adr/0037 amendment 7): the takes listed in recordings/.drive/safety-batch.kept (twin 0's batch) and safety-batch-1.kept (twin 1's), as `twins` names them, in the order they were recorded (by their UTC names), written by the GPU machine's ~/repos/safety builder as ~/data/lerobot/jetrover-isaac-safety/<name> (default jetrover_<UTC>_<id>, as a batch names its own). `out` writes it under another folder there instead (absolute or ~/...). A take set aside or deleted since is left out. `just isaac-safety-batch-twins` runs it after its batches; run it by hand after batches run with build=false
+# The safety datasets from the takes several batches kept, one per twin (docs/adr/0037 amendment 7, docs/adr/0038 L): the takes listed in recordings/.drive/safety-batch.kept (twin 0's batch) and safety-batch-1.kept (twin 1's), as `twins` names them, in the order they were recorded (by their UTC names), written by the GPU machine's ~/repos/safety builder as ~/data/lerobot/jetrover-isaac-safety/<name> when they are one twin's, else <name>_twin0, <name>_twin1 (default name jetrover_<UTC>_<id>, as a batch names its own), with the sidecars of docs/adr/0038 decision 6 (robot/lerobot/README.md). The twins record at once on the GPU machine's one clock, and a dataset must not hold takes that overlap in time on it: the builder writes each takes root's takes as a dataset of its own, and refuses a dataset whose takes overlap. `out` writes them under another folder there instead (absolute or ~/...). `split` above 1 writes that many smaller datasets of each instead, <dataset>_<k>of<split>, split by layout (a replay group and a layout never on two sides; docs/adr/0038 items 20 and 21), and prints each one's scenario, outcome and contact mix. `caption` is neutral (every task "move the arm") or category (the scenario's name, as datasets before 2026-11-22). A take set aside or deleted since is left out. `just isaac-safety-batch-twins` runs it after its batches; run it by hand after batches run with build=false
 [group('isaac')]
-isaac-safety-build twins="0,1" name="" out="":
+isaac-safety-build twins="0,1" name="" out="" split="1" caption="neutral":
     #!/usr/bin/env bash
     set -euo pipefail
+    case "{{split}}" in [1-9]|[1-9][0-9]) ;; *) echo "error: split is a number of datasets, 1 to 99" >&2; exit 1 ;; esac
+    case "{{caption}}" in neutral|category) ;; *) echo "error: caption is neutral or category" >&2; exit 1 ;; esac
     name="{{name}}"; [ -n "$name" ] || name="jetrover_$(date -u +%Y%m%d_%H%M%S)_$(printf '%06x' $(( (RANDOM << 15 | RANDOM) & 0xFFFFFF )))"
     takes=()
     for t in $(echo "{{twins}}" | tr ',' ' '); do
@@ -4240,10 +4305,57 @@ isaac-safety-build twins="0,1" name="" out="":
     gone=$(( ${#takes[@]} - ${#present[@]} ))
     [ "$gone" = 0 ] || echo "[safety] $gone listed take(s) are no longer kept there (set aside or deleted): left out" >&2
     [ "${#present[@]}" -gt 0 ] || { echo "error: none of the listed takes is still there" >&2; exit 1; }
-    echo "[safety] building $name from ${#present[@]} take(s)"
-    just _isaac-safety-build "$name" "{{out}}" "${present[@]}"
+    roots=$(printf '%s\n' "${present[@]}" | awk -F/ '{print $(NF-2)}' | sort | uniq -c | awk '{printf "%s%s %s", (NR > 1 ? ", " : ""), $2, $1}')
+    echo "[safety] building $name from ${#present[@]} take(s) ($roots): one dataset per takes root$([ "{{split}}" = 1 ] || echo ", each split in {{split}}")"
+    args="--caption {{caption}}"; [ "{{split}}" = 1 ] || args="$args --split {{split}}"
+    SAFETY_BUILD_ARGS="$args" just _isaac-safety-build "$name" "{{out}}" "${present[@]}"
 
-# Time the safety build and check it writes what the sequential one did (docs/adr/0036 amendment 6): on the GPU machine, from a checkout of this pushed commit of its own (~/repos/safety-check, never the batches' ~/repos/safety), rebuild the first `episodes` episodes of the safety dataset `dataset` (a folder name under ~/data/lerobot/jetrover-isaac-safety, e.g. jetrover_20261122_005619_20ccb6) from the takes its meta/teleop/takes.jsonl lists, with `jobs` workers (1: the old sequential build), into ~/scratch/safety-build-check/, then compare it with the original file for file (teleop_lerobot safety-compare: every per-episode parquet and video byte for byte) and print both builds' seconds an episode. The rebuild is deleted afterwards, its log kept. Busy for minutes on every core it is given: run it when the GPU machine is free. Nothing moves
+# Rebuild a safety dataset one dataset per twin (docs/adr/0038 L), for one whose episodes overlap in time (safety-report's fault: two twins' takes built as one, before 2026-11-24): the takes the dataset `dataset` (a folder name under ~/data/lerobot/jetrover-isaac-safety) lists in its meta/teleop/takes.jsonl, in that order, with the options its report.json records (teleop_lerobot safety-options), from a checkout of this pushed commit of its own on the GPU machine (~/repos/safety-check, never the batches' ~/repos/safety), into <out>/<name>_twin0, <name>_twin1 (`name` defaults to the dataset's own, `out` to ~/data/lerobot/jetrover-isaac-safety; takes of one twin are written as <name> itself, so give another name), each split in `split` when above 1, with `jobs` workers; then teleop_lerobot safety-report on what it wrote. Refused when a take it lists is gone (set aside or deleted since). The old dataset is left as it is, and it holds the same takes: tell world-models which to read, and set it aside only with the user's go. Busy for minutes on the cores it is given. Nothing moves
+[group('isaac')]
+isaac-safety-rebuild dataset name="" out="" split="1" jobs="4":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    case "{{dataset}}" in *[!A-Za-z0-9._-]*|"") echo "error: dataset is a folder name under ~/data/lerobot/jetrover-isaac-safety" >&2; exit 1 ;; esac
+    name="{{name}}"; [ -n "$name" ] || name="{{dataset}}"
+    case "$name" in *[!A-Za-z0-9._-]*) echo "error: name may hold only letters, digits, . _ -" >&2; exit 1 ;; esac
+    case "{{out}}" in ""|/*|"~/"*) ;; *) echo "error: out is an absolute path on the GPU machine, or ~/..." >&2; exit 1 ;; esac
+    case "{{out}}" in *[!A-Za-z0-9._/~-]*) echo "error: out may hold only letters, digits, . _ - / ~" >&2; exit 1 ;; esac
+    case "{{split}}" in [1-9]|[1-9][0-9]) ;; *) echo "error: split is a number of datasets, 1 to 99" >&2; exit 1 ;; esac
+    case "{{jobs}}" in [1-9]|[1-9][0-9]) ;; *) echo "error: jobs is a number of workers, 1 to 99" >&2; exit 1 ;; esac
+    commit=$(just _pushed-commit)
+    ssh -o ConnectTimeout=10 "{{gpu_host}}" "COMMIT='$commit' DATASET='{{dataset}}' NAME='$name' OUT='{{out}}' SPLIT='{{split}}' JOBS='{{jobs}}' bash -s" <<'REMOTE'
+    set -euo pipefail
+    repo=$HOME/repos/safety-check py=$HOME/isaacsim/lerobot-venv/bin/python
+    [ -d "$repo" ] || git clone -q https://github.com/andreitimoshukcollege-del/teleoperation.git "$repo"
+    cd "$repo" && git fetch -q origin && git checkout -q "$COMMIT" && cd robot/lerobot
+    src=$HOME/data/lerobot/jetrover-isaac-safety/$DATASET
+    [ -f "$src/meta/teleop/takes.jsonl" ] || { echo "error: no safety dataset at $src" >&2; exit 1; }
+    out=${OUT:-$HOME/data/lerobot/jetrover-isaac-safety}; out=${out/#\~/$HOME}; mkdir -p "$out"
+    mapfile -t takes < <("$py" -c 'import json, sys; [print(json.loads(l)["take"]) for l in open(sys.argv[1]) if l.strip()]' "$src/meta/teleop/takes.jsonl")
+    gone=(); for t in "${takes[@]}"; do [ -f "$t/files.sha256" ] || gone+=("$t"); done
+    [ "${#gone[@]}" = 0 ] || { echo "error: ${#gone[@]} of the ${#takes[@]} takes $DATASET lists are gone (set aside or deleted), e.g. ${gone[0]}: not rebuilt" >&2; exit 1; }
+    opts=$("$py" -m teleop_lerobot safety-options "$src")
+    [ "$SPLIT" = 1 ] || opts="$opts --split $SPLIT"
+    log=$out/$NAME.rebuild-$(date -u +%Y%m%dT%H%M%SZ).log
+    echo "[rebuild] $DATASET: ${#takes[@]} take(s) at ${COMMIT:0:7} with $JOBS job(s) ($opts) as $out/$NAME, one dataset per takes root"
+    # $opts unquoted: its words are safety-build options (safety-options writes no quotes, globs or $).
+    rc=0; "$py" -m teleop_lerobot safety-build --jobs "$JOBS" $opts --out "$out/$NAME" "${takes[@]}" > "$log" 2>&1 || rc=$?
+    if [ "$rc" != 0 ]; then
+        grep '^\[refused\]' "$log" | head -25 >&2 || true
+        echo "[rebuild] build failed (exit $rc): $(grep -vE '^(Svt|Map|\[refused\])' "$log" | tail -3 | tr '\n' ' ')" >&2
+        echo "[rebuild] log $log" >&2
+        exit 1
+    fi
+    grep -E "\[(stream|split|timing|mix)\]" "$log" | sed 's/^/  /'
+    read -r -a written <<< "$(sed -n 's/^[0-9TZ:-]* datasets: //p' "$log" | tail -1)"
+    for d in "${written[@]}"; do echo "[rebuild] dataset: $d on the GPU machine"; done
+    echo "[rebuild] log $log"
+    rc=0; "$py" -m teleop_lerobot safety-report "${written[@]}" | sed 's/^/  /' || rc=$?
+    echo "[rebuild] $src is left as it is, and holds the same takes: tell world-models which to read, and set it aside only with the user's go"
+    exit $rc
+    REMOTE
+
+# Time the safety build and check it writes what the sequential one did (docs/adr/0036 amendment 6): on the GPU machine, from a checkout of this pushed commit of its own (~/repos/safety-check, never the batches' ~/repos/safety), rebuild the first `episodes` episodes of the safety dataset `dataset` (a folder name under ~/data/lerobot/jetrover-isaac-safety, e.g. jetrover_20261123_215338_c00c5a) from the takes its meta/teleop/takes.jsonl lists, with `jobs` workers (1: the old sequential build), into ~/scratch/safety-build-check/, then compare it with the original file for file (teleop_lerobot safety-compare: every per-episode parquet and video byte for byte) and print both builds' seconds an episode. The rebuild is deleted afterwards, its log kept. A dataset of several twins' takes (built as one before 2026-11-24) is rebuilt one dataset per twin, so it cannot be compared: rebuild it with just isaac-safety-rebuild. Busy for minutes on every core it is given: run it when the GPU machine is free. Nothing moves
 [group('isaac')]
 isaac-safety-build-check dataset episodes="40" jobs="8":
     #!/usr/bin/env bash
@@ -4260,11 +4372,18 @@ isaac-safety-build-check dataset episodes="40" jobs="8":
     src=$HOME/data/lerobot/jetrover-isaac-safety/$DATASET
     [ -f "$src/meta/teleop/takes.jsonl" ] || { echo "error: no safety dataset at $src" >&2; exit 1; }
     out=$HOME/scratch/safety-build-check/$DATASET-first$N-jobs$JOBS
-    mkdir -p "$(dirname "$out")"; rm -rf "$out" "$out.prepare"
+    mkdir -p "$(dirname "$out")"; rm -rf "$out" "$out.prepare" "$out"_twin*
     mapfile -t takes < <(head -n "$N" "$src/meta/teleop/takes.jsonl" | "$py" -c 'import json, sys; [print(json.loads(l)["take"]) for l in sys.stdin if l.strip()]')
-    echo "[check] rebuilding the first ${#takes[@]} episode(s) of $DATASET with $JOBS job(s) at ${COMMIT:0:7}"
+    # The reference's own build options (docs/adr/0038): from its report, or, built before it, its category captions
+    # (teleop_lerobot safety-options; a report from before 2026-11-23 names them as it did then).
+    opts=$("$py" -m teleop_lerobot safety-options "$src")
+    echo "[check] rebuilding the first ${#takes[@]} episode(s) of $DATASET with $JOBS job(s) at ${COMMIT:0:7} ($opts)"
     start=$(date +%s.%N)
-    "$py" -m teleop_lerobot safety-build --jobs "$JOBS" --out "$out" "${takes[@]}" > "$out.log" 2>&1 || { echo "[check] build failed: $(grep -vE '^(Svt|Map)' "$out.log" | tail -5)" >&2; exit 1; }
+    "$py" -m teleop_lerobot safety-build --jobs "$JOBS" $opts --out "$out" "${takes[@]}" > "$out.log" 2>&1 || { echo "[check] build failed: $(grep -vE '^(Svt|Map)' "$out.log" | tail -5)" >&2; exit 1; }
+    if [ ! -d "$out" ]; then  # one dataset per takes root (docs/adr/0038 L): the reference mixes twins
+        echo "[check] $DATASET holds takes of several twins, rebuilt one dataset each ($(grep -o '\[stream\] [^:]*' "$out.log" | cut -d' ' -f2 | tr '\n' ' ')): nothing to compare it with; rebuild it with just isaac-safety-rebuild $DATASET" >&2
+        rm -rf "$out"_twin*; exit 1
+    fi
     end=$(date +%s.%N)
     # Seconds an episode: this build's wall clock, and both logs' from their first episode line to the Nth (the original's
     # log is the batch's, beside its dataset).
@@ -4285,6 +4404,46 @@ isaac-safety-build-check dataset episodes="40" jobs="8":
     rm -rf "$out"
     echo "[check] log: $out.log"
     exit $rc
+    REMOTE
+
+# The geometry PhysX collides with, for the clearance the safety datasets carry (docs/adr/0038 decision 4): every arm link's collision boxes (the URDF importer's colliders, checked against the URDF) and each mesh asset of core/Scenes/<scene>.json as convex pieces, CoACD at PhysX's convex-decomposition budget (32 hulls of 64 vertices; method=hull gives each mesh one hull, into ~/isaacsim/assets/clearance-hull), into ~/isaacsim/assets/clearance on the GPU machine. An asset already there whose manifest entry and method are unchanged is kept, so run it after any scene or asset change. Isaac's Python without Kit or rendering, 4 threads at low priority (about 6 minutes for jetrover-bench's 24 assets the first time), in its own checkout (~/repos/clearance), at this commit (it must be on GitHub)
+[group('isaac')]
+isaac-clearance-geometry scene="jetrover-bench" method="coacd":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    case "{{scene}}" in *[!A-Za-z0-9._-]*|"") echo "error: scene is a file name in core/Scenes without .json" >&2; exit 1 ;; esac
+    case "{{method}}" in coacd|hull) ;; *) echo "error: method is coacd or hull" >&2; exit 1 ;; esac
+    [ -f "core/Scenes/{{scene}}.json" ] || { echo "error: no core/Scenes/{{scene}}.json" >&2; exit 1; }
+    commit=$(just _pushed-commit)
+    ssh -o ConnectTimeout=10 "{{gpu_host}}" "COMMIT='$commit' SCENE='{{scene}}' METHOD='{{method}}' bash -s" <<'REMOTE'
+    set -euo pipefail
+    repo=$HOME/repos/clearance
+    [ -d "$repo" ] || git clone -q https://github.com/andreitimoshukcollege-del/teleoperation.git "$repo"
+    cd "$repo" && git fetch -q origin && git checkout -q "$COMMIT" && cd robot/isaac
+    out=$HOME/isaacsim/assets/clearance
+    [ "$METHOD" = coacd ] || out=$out-$METHOD
+    OMP_NUM_THREADS=4 nice -n 10 "$HOME/isaacsim/venv/bin/python" -m teleop_isaac.clearance_geometry "../../core/Scenes/$SCENE.json" \
+        --method "$METHOD" --out "$out" 2>&1 | grep -E '^\[clearance-geometry\]'
+    REMOTE
+
+# The clearance against PhysX's own contacts (docs/adr/0038, workstream C), for a safety dataset's takes (a folder under ~/data/lerobot/jetrover-isaac-safety): at every WC touch onset, the signed distance from the touching link to its object (median and 90th percentile of its size, by object and link); the share of contact-free frames whose nearest obstacle overlaps a link; the distance while in contact; the distance from 300 ms before to 300 ms after each take's first touch; the seconds a take takes. `geometry` is a cache on the GPU machine (default ~/isaacsim/assets/clearance, just isaac-clearance-geometry); `limit` checks only the first takes (0: all). Reads only; the lerobot venv in ~/repos/clearance at this commit (it must be on GitHub)
+[group('isaac')]
+isaac-clearance-check dataset geometry="" limit="0":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    case "{{dataset}}" in *[!A-Za-z0-9._-]*|"") echo "error: dataset is a folder name under ~/data/lerobot/jetrover-isaac-safety" >&2; exit 1 ;; esac
+    case "{{geometry}}" in *[!A-Za-z0-9._/~-]*) echo "error: geometry is a folder on the GPU machine" >&2; exit 1 ;; esac
+    case "{{limit}}" in *[!0-9]*|"") echo "error: limit is a number" >&2; exit 1 ;; esac
+    commit=$(just _pushed-commit)
+    ssh -o ConnectTimeout=10 "{{gpu_host}}" "COMMIT='$commit' DATASET='{{dataset}}' GEOMETRY='{{geometry}}' LIMIT='{{limit}}' bash -s" <<'REMOTE'
+    set -euo pipefail
+    repo=$HOME/repos/clearance
+    [ -d "$repo" ] || git clone -q https://github.com/andreitimoshukcollege-del/teleoperation.git "$repo"
+    cd "$repo" && git fetch -q origin && git checkout -q "$COMMIT" && cd robot/lerobot
+    geometry=${GEOMETRY:-$HOME/isaacsim/assets/clearance}
+    geometry=${geometry/#\~/$HOME}
+    nice -n 10 "$HOME/isaacsim/lerobot-venv/bin/python" -m teleop_lerobot.clearance_check --geometry "$geometry" \
+        --dataset "$HOME/data/lerobot/jetrover-isaac-safety/$DATASET" --limit "$LIMIT" --traces 1
     REMOTE
 
 # Start the JetRover's Isaac twins on the GPU machine (docs/adr/0037 amendment 7): twins 0 to n-1 (n is 1 or 2), each `just isaac-jetrover-host <scene> auto <N> true`, one after the other (each waits for the last to listen: two Isaac start-ups at once only slow each other), in the background there, so a dropped ssh session leaves them running. A twin already running is left as it is. Stop them with just isaac-twins-down; just isaac-status shows them
@@ -4309,9 +4468,9 @@ isaac-twins-up n="2" scene="jetrover-bench":
 isaac-twins-down:
     just isaac-stop all
 
-# Two twins, one dataset (docs/adr/0037 amendment 7): `just isaac-safety-batch <takes> <seed+1000*N> <categories> false <events> <N>` on each of twins 0 to n-1 at once (they must run: just isaac-twins-up), each batch's output prefixed [twin N] and kept in recordings/.drive/safety-batch-twins-<N>.log, then, if build=true, one dataset from every take they kept (just isaac-safety-build). Each twin's seeds are its own (take seeds seed*100000+n, so seed and seed+1000 never meet). Stop a twin's batch with gpu-ui, or recordings/.drive/STOP (twin 0) and STOP-1 (twin 1): it stops after the take in progress, and the dataset is still built from what both kept. Only Isaac's arms move
+# Two twins, a dataset each (docs/adr/0037 amendment 7, docs/adr/0038 L): `just isaac-safety-batch <takes> <seed+1000*N> <categories> false <events> <N>` on each of twins 0 to n-1 at once (they must run: just isaac-twins-up), each batch's output prefixed [twin N] and kept in recordings/.drive/safety-batch-twins-<N>.log, then, if build=true, one dataset per twin from the takes it kept, jetrover_<UTC>_<id>_twin0 and _twin1 (just isaac-safety-build: the twins record at once on one clock, and one dataset of both would hold takes that overlap in time). Each twin's seeds are its own (take seeds seed*100000+n, so seed and seed+1000 never meet). Stop a twin's batch with gpu-ui, or recordings/.drive/STOP (twin 0) and STOP-1 (twin 1): it stops after the take in progress, and the datasets are still built from what both kept. Only Isaac's arms move
 [group('isaac')]
-isaac-safety-batch-twins takes="25" seed="1" n="2" categories="all" build="true" events="1-3":
+isaac-safety-batch-twins takes="25" seed="1" n="2" categories="all" build="true" events="1-3" replays="0" scene="jetrover-bench":
     #!/usr/bin/env bash
     set -euo pipefail
     case "{{n}}" in 1|2) ;; *) echo "error: n is 1 or 2" >&2; exit 1 ;; esac
@@ -4325,7 +4484,7 @@ isaac-safety-batch-twins takes="25" seed="1" n="2" categories="all" build="true"
     for t in $(seq 0 $(( {{n}} - 1 ))); do
         s=$(( {{seed}} + 1000 * t ))
         echo "[twins] twin $t: {{takes}} round(s) of {{categories}}, seed $s"
-        ( set -o pipefail; just isaac-safety-batch "{{takes}}" "$s" "{{categories}}" false "{{events}}" "$t" < /dev/null 2>&1 \
+        ( set -o pipefail; just isaac-safety-batch "{{takes}}" "$s" "{{categories}}" false "{{events}}" "$t" "{{replays}}" "{{scene}}" < /dev/null 2>&1 \
             | sed -u "s/^/[twin $t] /" | tee "recordings/.drive/safety-batch-twins-$t.log" ) &
         pids+=($!) twins+=($t)
         # A few seconds apart: the two setups' checkouts and builds take turns anyway (each under a lock).
@@ -4713,10 +4872,11 @@ gen-camera-wire-golden:
 gen-camera-session-golden:
     cd core && TELEOP_WRITE_GOLDEN=1 WSLENV="${WSLENV:+$WSLENV:}TELEOP_WRITE_GOLDEN" dotnet test Teleop.CameraHost.Tests --filter "FullyQualifiedName~CameraSessionGoldenTests"
 
-# Rewrite the golden files Core writes for Isaac and the scene file (docs/adr/0031 amendment 2, docs/adr/0032), after a deliberate change: the canonical parse of core/Scenes/fr3-duo-bench.json (robot/isaac/golden/scene-fr3-duo-bench.json), the JetRover bench's rests and spots (robot/isaac/golden/scene-rests-jetrover-bench.json, docs/adr/0037 amendment 6), the FR3 Duo's tool poses at seeded joint sets (robot/isaac/golden/fr3-duo-fk-v1.json), seed 1's object layout (core/Scenes/testdata/layout-seed1.txt), and the arm-server wire's. Then change the Python copies until `just isaac-bridge-test` passes
+# Rewrite the golden files Core writes for Isaac and the scene file (docs/adr/0031 amendment 2, docs/adr/0032), after a deliberate change: the canonical parse of core/Scenes/fr3-duo-bench.json (robot/isaac/golden/scene-fr3-duo-bench.json), the JetRover bench's rests and spots (robot/isaac/golden/scene-rests-jetrover-bench.json, docs/adr/0037 amendment 6), the FR3 Duo's tool poses at seeded joint sets (robot/isaac/golden/fr3-duo-fk-v1.json), seed 1's object layout (core/Scenes/testdata/layout-seed1.txt), the JetRover bench's first 25 pool layouts (core/Scenes/testdata/layout-jetrover-bench.txt), the mixed scene's rules and the first 20 layouts of each mixed scene as RobotHost sends them (robot/isaac/golden/scene-rules-jetrover-mixed.json, scene-layouts-jetrover-mixed.json, docs/adr/0038), and the arm-server wire's. Then change the Python copies until `just isaac-bridge-test` passes
 [group('isaac')]
 gen-isaac-goldens:
-    cd core && TELEOP_WRITE_GOLDEN=1 WSLENV="${WSLENV:+$WSLENV:}TELEOP_WRITE_GOLDEN" dotnet test Teleop.RobotArm.Tests --filter "FullyQualifiedName~SceneDocumentTests.TheIsaacGoldenFile|FullyQualifiedName~SceneRestTests.TheRestsGoldenFile|FullyQualifiedName~Fr3FkGoldenTests|FullyQualifiedName~SceneLayoutTests.ALayoutIsFrozen"
+    cd core && TELEOP_WRITE_GOLDEN=1 WSLENV="${WSLENV:+$WSLENV:}TELEOP_WRITE_GOLDEN" dotnet test Teleop.RobotArm.Tests --filter "FullyQualifiedName~SceneDocumentTests.TheIsaacGoldenFile|FullyQualifiedName~SceneRestTests.TheRestsGoldenFile|FullyQualifiedName~Fr3FkGoldenTests|FullyQualifiedName~SceneLayoutTests.ALayoutIsFrozen|FullyQualifiedName~SceneMixedTests.TheRulesGoldenFile|FullyQualifiedName~SceneMixedTests.TheBenchsPoolLayouts"
+    cd core && TELEOP_WRITE_GOLDEN=1 WSLENV="${WSLENV:+$WSLENV:}TELEOP_WRITE_GOLDEN" dotnet test Teleop.RobotHost.Tests --filter "FullyQualifiedName~WorldHostMixedTests.TheLayoutsGoldenFile"
     just gen-arm-server-golden
 
 # How the GPU machine's Isaac Sim stands (docs/adr/0031): the version installed in our account, whether a setup is going and its log's last lines, the GPU's load (it is shared), and which Isaac hosts run: each JetRover twin (docs/adr/0037 amendment 7) with its joint port, whether it is recording and its renderer's newest health line, and the FR3 Duo's host
@@ -5020,6 +5180,32 @@ record-drive label script speed *options:
     fi
     just record-stop "$host" "$remote_user"
     [ "$status" -eq 0 ] || echo "joint-drive exited $status; the session is recorded up to there" >&2
+    exit "$status"
+
+# How long and how far the REAL JetRover's arm keeps moving after its command stops mid-move (docs/adr/0038 R, item 32): MOVES THE REAL ARM. Torque on, then to the collision model's home pose (yaw 0, shoulder 60, elbow -90, wrist 30 degrees) the way joint-drive goes there, then 22 trials, 101 s in all, each swinging ONE joint from home at 0.5, 1 or 2 rad/s, stopping its command dead (as the headset's does when the clutch is let go), holding 1.5 s and returning at 0.5 rad/s: the base yaw both ways by 11, 23 and 46 degrees, the shoulder both ways by 11 and 23 (46 leaves its range), the elbow by 11 both ways and by 23 and 46 upward only, the wrist pitch both ways by 11, 23 and 46. The gripper's tip sweeps up to 26 cm sideways (the yaw at 2 rad/s) and 21 cm up and down (the elbow). Every commanded pose is inside the IK's ranges less 15 degrees and free by the collision model, which knows only the robot's own body and the floor: clear about 35 cm all round the arm, and someone watches it. Prints the trials first (nothing moves), counts down 3 s; Enter stops it where it is, as do a stall and a lost stream. Records the run as a session (record-start, record-stop) and prints each stop as measured here, with the JSON in recordings/.stop-latency/<session>.json; then `just fetch-recordings` and `python3 scripts/gpu/arm_response.py recordings/jetrover/<session> --only stops` measure the same stops on the robot's clock. `speeds` and `joints` narrow it, e.g. `just stop-latency 0.5,1 yaw,wrist`
+[group('robot: recording (docs/adr/0021)')]
+stop-latency speeds="0.5,1,2" joints="yaw,proximal,distal,wrist" remote_host=default_jetrover_host remote_user="jetson":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    case "{{speeds}}" in *[!0-9.,]*|"") echo "error: speeds is a list of rad/s, e.g. 0.5,1,2" >&2; exit 1 ;; esac
+    case "{{joints}}" in *[!a-z,]*|"") echo "error: joints is a list of yaw, proximal, distal, wrist" >&2; exit 1 ;; esac
+    host=$(just _robot-host "{{remote_host}}")
+    target="{{remote_user}}@$host"
+    # Built before the session opens, so the recording does not start with a compile; then what will move, before anything does.
+    (cd core && dotnet build Teleop.Eval -nologo -v q > /dev/null)
+    (cd core && dotnet run --no-build --project Teleop.Eval -- stop-latency --dry-run --speeds "{{speeds}}" --joints "{{joints}}")
+    just record-start stop-latency 3.8 motion=stop-latency operator=stop-latency remote_host="$host" remote_user="{{remote_user}}"
+    id=$(ssh "$target" 'basename "$(cat {{robot_recordings}}/.active)"')
+    mkdir -p recordings/.stop-latency
+    # Enter stops the tool, which holds the arm and exits; this script then closes the session, a Ctrl+C included.
+    trap 'echo "interrupted: closing the session"' INT
+    status=0
+    (cd core && dotnet run --no-build --project Teleop.Eval -- stop-latency --remote-host "$host" --confirm-hardware-motion \
+        --speeds "{{speeds}}" --joints "{{joints}}" --json "../recordings/.stop-latency/$id.json") || status=$?
+    trap - INT
+    just record-stop "$host" "{{remote_user}}"
+    echo "session $id; on the robot's clock: just fetch-recordings, then python3 scripts/gpu/arm_response.py recordings/jetrover/$id --only stops"
+    [ "$status" -eq 0 ] || echo "stop-latency exited $status; the session is recorded up to there" >&2
     exit "$status"
 
 # The battery voltage (mV) in the newest recorded session's driver log -- moves nothing. Empty when the log has no battery report

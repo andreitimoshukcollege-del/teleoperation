@@ -24,7 +24,8 @@ namespace Teleop.RobotHost.World
     /// on the shelf: a new layout parks every object, resizes there each one whose drawn size differs, then places the
     /// drawn ones, so the table is empty while it is filled.</item>
     /// <item><b>Edits.</b> Moves and resets from the headset (joint port <c>0x85</c>), each applied once however often it is
-    /// re-sent; the status echoes its sequence and outcome once settled.</item>
+    /// re-sent; the status echoes its sequence and outcome once settled. <c>joint-drive</c>'s replays also park one object (op 6) or
+    /// stand a parked one on the table (op 7, listed in <c>WL</c> until a reset parks it again), docs/adr/0038 decision 2.</item>
     /// <item><b>Sizes</b> (docs/adr/0034 amendment 6). A resize from the headset (<see cref="WorldEditOp.Resize"/>) goes to the
     /// backend, which applies or refuses it by the placement rules at the new size. The backend's sizes are the truth: they go to
     /// the headset (<c>0x8B</c>) with the status, and into the records (<c>WZ</c>) when they change.</item>
@@ -50,6 +51,7 @@ namespace Teleop.RobotHost.World
         private readonly RigidTransform[] _targets;
         private readonly RigidTransform[] _layoutTargets;
         private readonly bool[] _parked;
+        private readonly bool[] _added; // a parked object stood on the table by an unpark (op 7) until a reset or a new layout
         private readonly double[] _layoutScales;
         private readonly byte[] _activeIds;
         private readonly ObjectPose[] _snapshot;
@@ -59,6 +61,8 @@ namespace Teleop.RobotHost.World
         private readonly Pending[] _pending = new Pending[128];
         private readonly byte[] _sizeIds;
         private readonly float[] _sizeScales;
+        private readonly int[] _parkGroup = new int[WorldScene.MaxObjects];
+        private int _parkCount;
         private readonly byte[] _takenIds = new byte[WorldScene.MaxObjects];
         private readonly float[] _takenScales = new float[WorldScene.MaxObjects];
         private uint _sizesRevision;
@@ -81,6 +85,7 @@ namespace Teleop.RobotHost.World
             public int Tries;
             public long Sent;
             public uint Edit;
+            public WorldEditOp Op; // the edit's op, for its record; Move for any placement that is not an edit's park, resize or unpark
         }
 
         public WorldHost(WorldScene scene, ReadOnlySpan<byte> sceneSha256, IWorldBackend backend, long ticksPerSecond, ulong seed,
@@ -96,6 +101,7 @@ namespace Teleop.RobotHost.World
             _targets = new RigidTransform[scene.Objects.Length];
             _layoutTargets = new RigidTransform[scene.Objects.Length];
             _parked = new bool[scene.Objects.Length];
+            _added = new bool[scene.Objects.Length];
             _layoutScales = new double[scene.Objects.Length];
             _activeIds = new byte[scene.Objects.Length];
             _snapshot = new ObjectPose[scene.Objects.Length];
@@ -160,13 +166,49 @@ namespace Teleop.RobotHost.World
             }
             else if (op == WorldEditOp.ResetLayout)
             {
+                bool wasAdded = false;
                 for (int i = 0; i < _targets.Length; i++)
                 {
                     _targets[i] = _scene.IsPool ? _layoutTargets[i] : _scene.Objects[i].Nominal;
-                    SendPlace(i, _parked[i] ? PlaceCause.Park : PlaceCause.Reset, 0, now);
+                    SendPlace(i, _parked[i] ? PlaceCause.Park : PlaceCause.Reset, 0, now); // an unparked object (op 7) goes back to the shelf
+                    wasAdded |= _added[i];
+                    _added[i] = false;
                 }
 
+                if (wasAdded) _record?.Invoke(LayoutLine(now));
                 outcome = PlaceOutcome.Applied;
+            }
+            else if (op == WorldEditOp.Unpark)
+            {
+                // docs/adr/0038, a replay's add when no object on the table will do: one object the layout left out stood on the table for
+                // now, as a reset places one (the placement rules decide), and listed in WL while it stands there; reset-layout parks it
+                // again. Only one the headset may move, and only from the shelf (an object on the table moves by op 1).
+                int index = _scene.IndexOf(pose.Id);
+                if (index < 0) outcome = PlaceOutcome.UnknownObject;
+                else if (!_scene.Objects[index].OperatorMovable || !_parked[index]) outcome = PlaceOutcome.NotMovable;
+                else if (!pose.IsValid()) outcome = PlaceOutcome.InvalidPose;
+                else
+                {
+                    _targets[index] = pose.ToTransform();
+                    SendPlace(index, PlaceCause.Reset, sequence, now, op: WorldEditOp.Unpark);
+                    _record?.Invoke(SessionLines.WorldEdit(now, sequence, op, pose, null));
+                    return; // settles when the backend answers
+                }
+            }
+            else if (op == WorldEditOp.Park)
+            {
+                // docs/adr/0038 decision 2: one object off the table for a replay, stood on the shelf as a layout's parked objects
+                // are (any object: a fixture too); reset-object or reset-layout brings it back. The layout stays as drawn.
+                int index = _scene.IndexOf(pose.Id);
+                if (index < 0) outcome = PlaceOutcome.UnknownObject;
+                else if (_parked[index]) outcome = PlaceOutcome.NotMovable;
+                else
+                {
+                    _targets[index] = _scene.ParkedPose(index, _sizeScales[index]);
+                    SendPlace(index, PlaceCause.Park, sequence, now);
+                    _record?.Invoke(SessionLines.WorldEdit(now, sequence, op, pose, null));
+                    return; // settles when the backend answers
+                }
             }
             else if (op == WorldEditOp.Resize)
             {
@@ -281,6 +323,7 @@ namespace Teleop.RobotHost.World
 
         private void NewLayout(long now)
         {
+            Array.Clear(_added, 0, _added.Length);
             LayoutNumber++;
             LayoutSeed = unchecked(_baseSeed + LayoutNumber - 1);
             int missed = SceneLayout.Draw(_scene, LayoutSeed, _targets, _parked, _layoutScales);
@@ -303,15 +346,44 @@ namespace Teleop.RobotHost.World
                     }
                 }
 
+                PlaceDrawn(now);
+                return;
+            }
+
+            if (_scene.Mixed)
+            {
                 for (int i = 0; i < _targets.Length; i++)
                 {
-                    if (!_parked[i]) SendPlace(i, PlaceCause.Layout, 0, now);
+                    if (_parked[i]) SendPlace(i, PlaceCause.Park, 0, now);
                 }
 
+                PlaceDrawn(now);
                 return;
             }
 
             for (int i = 0; i < _targets.Length; i++) SendPlace(i, _parked[i] ? PlaceCause.Park : PlaceCause.Layout, 0, now);
+        }
+
+        /// <summary>
+        /// Places the layout's objects that are on the table, in file order. In a mixed pool (docs/adr/0038) those standing on the table go
+        /// first and those raised on them after (an obstacle on its stand, a plank on its supports), so each placement meets what it rests on.
+        /// </summary>
+        private void PlaceDrawn(long now)
+        {
+            for (int pass = 0; pass < (_scene.Mixed ? 2 : 1); pass++)
+            {
+                for (int i = 0; i < _targets.Length; i++)
+                {
+                    if (!_parked[i] && IsRaised(i) == (pass == 1)) SendPlace(i, PlaceCause.Layout, 0, now);
+                }
+            }
+        }
+
+        /// <summary>Whether the layout raises object <paramref name="index"/> above the table (docs/adr/0038): on a stand, or a plank on its supports.</summary>
+        public bool IsRaised(int index)
+        {
+            int rest = WorldScene.RestOf(_layoutTargets[index]);
+            return !_parked[index] && _scene.IsElevated(index, _layoutTargets[index].Z, ScaleFor(index), rest);
         }
 
         /// <summary>The size a layout redraw checks object <paramref name="index"/> at: the drawn one for a pool that draws sizes, else the backend's.</summary>
@@ -330,18 +402,18 @@ namespace Teleop.RobotHost.World
             int n = 0;
             for (int i = 0; i < _parked.Length; i++)
             {
-                if (!_parked[i]) _activeIds[n++] = _scene.Objects[i].Id;
+                if (!_parked[i] || _added[i]) _activeIds[n++] = _scene.Objects[i].Id;
             }
 
             return SessionLines.WorldLayout(now, LayoutNumber, LayoutSeed, _activeIds.AsSpan(0, n));
         }
 
-        private void SendPlace(int index, PlaceCause cause, uint edit, long now, int tries = 0)
+        private void SendPlace(int index, PlaceCause cause, uint edit, long now, int tries = 0, WorldEditOp op = WorldEditOp.Move)
         {
             uint request = ++_request;
             int slot = Array.FindIndex(_pending, p => !p.Active);
             if (slot < 0) slot = (int)(request % (uint)_pending.Length);
-            _pending[slot] = new Pending { Active = true, Request = request, Index = index, Cause = cause, Tries = tries, Sent = now, Edit = edit };
+            _pending[slot] = new Pending { Active = true, Request = request, Index = index, Cause = cause, Tries = tries, Sent = now, Edit = edit, Op = op };
             _backend.Place(request, cause, ObjectPose.Of(_scene.Objects[index].Id, ObjectPose.FlagKinematic, _targets[index]), now);
         }
 
@@ -371,6 +443,14 @@ namespace Teleop.RobotHost.World
             _pending[slot].Active = false;
             _record?.Invoke(SessionLines.WorldPlace(now, request, done.Cause, pose, outcome));
             if (outcome != PlaceOutcome.Applied) PlacementsRefused++;
+            if (outcome != PlaceOutcome.Applied && done.Cause == PlaceCause.Layout && outcome != PlaceOutcome.TimedOut && _scene.Mixed &&
+                (_parked[done.Index] || ParkGroup(done.Index, now)))
+            {
+                // docs/adr/0038: part of an obstacle on its stand, or of a plank on its supports, parked whole; or the answer to one
+                // its group's refusal parked already (an object sent onto a stand that was then refused).
+                return;
+            }
+
             if (outcome != PlaceOutcome.Applied && done.Cause == PlaceCause.Layout && outcome != PlaceOutcome.TimedOut && done.Tries < MaxRedraws &&
                 Redraw(done.Index, done.Tries))
             {
@@ -388,7 +468,70 @@ namespace Teleop.RobotHost.World
                 return;
             }
 
-            if (done.Edit != 0) Resolve(done.Edit, outcome, now, done.Cause == PlaceCause.Resize ? WorldEditOp.Resize : WorldEditOp.Move, pose);
+            if (done.Op == WorldEditOp.Unpark)
+            {
+                // Standing on the table now, listed in the layout until a reset parks it; or refused, and still on the shelf.
+                if (outcome == PlaceOutcome.Applied)
+                {
+                    _added[done.Index] = true;
+                    _record?.Invoke(LayoutLine(now));
+                }
+                else
+                {
+                    _targets[done.Index] = _layoutTargets[done.Index];
+                }
+            }
+
+            if (done.Edit != 0)
+            {
+                Resolve(done.Edit, outcome, now, done.Cause == PlaceCause.Resize ? WorldEditOp.Resize : done.Cause == PlaceCause.Park ? WorldEditOp.Park : done.Op, pose);
+            }
+        }
+
+        /// <summary>
+        /// In a mixed pool (docs/adr/0038), parks object <paramref name="index"/> with what it belongs to when the backend refused it and it
+        /// is part of a group: a plank or a support (the plank and all its supports), a stand (with whatever the layout raised on it), or an
+        /// object raised on a stand (itself: its stand stays, a box on the table). A redraw would split the group. False, parking nothing,
+        /// for an object that stands alone on the table, which is redrawn as in any pool.
+        /// </summary>
+        private bool ParkGroup(int index, long now)
+        {
+            SceneObject o = _scene.Objects[index];
+            int plank = o.Role == SceneRole.Plank ? index : -1;
+            for (int k = 0; k < _targets.Length && o.Role == SceneRole.Support && plank < 0; k++)
+            {
+                if (_scene.Objects[k].Role == SceneRole.Plank && Array.IndexOf(_scene.Objects[k].SupportIds, o.Id) >= 0) plank = k;
+            }
+
+            bool grouped = plank >= 0 || o.Role == SceneRole.Stand || IsRaised(index);
+            if (!grouped) return false;
+            for (int k = 0; k < _targets.Length; k++)
+            {
+                if (_parked[k]) continue;
+                bool member = k == index;
+                if (plank >= 0) member |= k == plank || Array.IndexOf(_scene.Objects[plank].SupportIds, _scene.Objects[k].Id) >= 0;
+                if (o.Role == SceneRole.Stand && k != index && IsRaised(k))
+                {
+                    int restK = WorldScene.RestOf(_layoutTargets[k]);
+                    int restS = WorldScene.RestOf(_layoutTargets[index], out double yawS);
+                    member |= _scene.HoldsOnTop(index, _layoutTargets[index].X, _layoutTargets[index].Y, _layoutTargets[index].Z, yawS, ScaleFor(index), restS,
+                        k, _layoutTargets[k].X, _layoutTargets[k].Y, _layoutTargets[k].Z, ScaleFor(k), restK);
+                }
+
+                if (member) _parkGroup[_parkCount++] = k;
+            }
+
+            for (int q = 0; q < _parkCount; q++)
+            {
+                int k = _parkGroup[q];
+                _parked[k] = true;
+                _targets[k] = _layoutTargets[k] = _scene.ParkedPose(k);
+            }
+
+            _record?.Invoke(LayoutLine(now));
+            for (int q = 0; q < _parkCount; q++) SendPlace(_parkGroup[q], PlaceCause.Park, 0, now);
+            _parkCount = 0;
+            return true;
         }
 
         /// <summary>
@@ -406,6 +549,27 @@ namespace Teleop.RobotHost.World
             for (int t = 0; t < (_scene.IsPool ? SceneLayout.MaxPoolTries : SceneLayout.MaxTries); t++)
             {
                 double x, y, yaw;
+                if (_scene.Mixed)
+                {
+                    // docs/adr/0038: an obstacle anywhere over the arm's reachable band (a tall one over the working band, when the pool
+                    // has one), a distractor anywhere in its regions.
+                    if (o.Role == SceneRole.Distractor) _scene.DrawDistractorSpot(ref rng, out x, out y, out yaw);
+                    else _scene.DrawObstacleSpot(index, ref rng, out x, out y, out yaw);
+                    double z = _scene.RestingZ(index, ScaleFor(index), rest);
+                    if (!_scene.FitsOnTable(index, x, y, yaw, ScaleFor(index), rest)) continue;
+                    bool free = true;
+                    for (int k = 0; k < _targets.Length && free; k++)
+                    {
+                        if (k == index || _parked[k]) continue;
+                        int restK = WorldScene.RestOf(_targets[k], out double yawK);
+                        free = !_scene.OverlapsAtHeights(index, x, y, z, yaw, k, _targets[k].X, _targets[k].Y, _targets[k].Z, yawK, ScaleFor(index), ScaleFor(k), rest, restK);
+                    }
+
+                    if (!free) continue;
+                    _targets[index] = _layoutTargets[index] = _scene.PoseAt(index, x, y, yaw, ScaleFor(index), rest);
+                    return true;
+                }
+
                 if (o.Clutter)
                 {
                     // Raised clutter (docs/adr/0037 "Raised clutter"): anywhere in the region, its own rectangle at its yaw.

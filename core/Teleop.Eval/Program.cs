@@ -51,6 +51,8 @@ namespace Teleop.Eval
                     return ArmPower.ArmPowerCommand.Run(args);
                 case "joint-drive":
                     return JointDrive.JointDriveCommand.Run(args);
+                case "stop-latency":
+                    return StopLatency.StopLatencyCommand.Run(args);
                 case "chain-drive":
                     return JointDrive.ChainDriveCommand.Run(args);
                 case "chain-teleop-probe":

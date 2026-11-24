@@ -41,6 +41,11 @@ namespace Teleop.Eval.JointDrive
             _hi = new Vector3[_count];
         }
 
+        /// <summary>The arm's profile and collision model this measures with.</summary>
+        public RobotArmProfile Profile => _profile;
+
+        public ArmCollisionModel Model => _model;
+
         /// <summary>The pads' midpoint at the last <see cref="At"/>, base frame: the tool point.</summary>
         public Vector3 Tool { get; private set; }
 
@@ -94,6 +99,34 @@ namespace Teleop.Eval.JointDrive
             }
 
             return false;
+        }
+
+        /// <summary>
+        /// When the arm at the last <see cref="At"/> touches <paramref name="o"/> (<see cref="Touches"/>), the link that does and a point of
+        /// the contact (docs/adr/0038 "M, motion": contacts by height and link): of the arm's boxes that overlap the object's box, the one
+        /// whose centre comes nearest the object's centre, and the point of the object's box nearest that centre. False when it does not touch.
+        /// </summary>
+        public bool Touching(in SafetyObject o, out ArmLink link, out Vector3 point)
+        {
+            link = ArmLink.Gripper;
+            point = default;
+            if (!Touches(o)) return false;
+            Vector3 ax = Vector3.Transform(Vector3.UnitX, o.Rotation), ay = Vector3.Transform(Vector3.UnitY, o.Rotation), az = Vector3.Transform(Vector3.UnitZ, o.Rotation);
+            float best = float.MaxValue;
+            for (int i = 0; i < _count; i++)
+            {
+                if (!ArmCollision.BoxesOverlap(_c[i], _x[i], _y[i], _z[i], _h[i], o.Center, ax, ay, az, o.HalfExtents)) continue;
+                Vector3 d = _c[i] - o.Center;
+                Vector3 local = new Vector3(Math.Clamp(Vector3.Dot(d, ax), -o.HalfExtents.X, o.HalfExtents.X), Math.Clamp(Vector3.Dot(d, ay), -o.HalfExtents.Y, o.HalfExtents.Y),
+                    Math.Clamp(Vector3.Dot(d, az), -o.HalfExtents.Z, o.HalfExtents.Z));
+                float far = d.Length();
+                if (far >= best) continue;
+                best = far;
+                link = _bodies[i].Link;
+                point = o.Center + ax * local.X + ay * local.Y + az * local.Z;
+            }
+
+            return best < float.MaxValue;
         }
 
         /// <summary>Whether the arm at the last <see cref="At"/> touches <paramref name="o"/>: its own shape when it has one, else its box.</summary>

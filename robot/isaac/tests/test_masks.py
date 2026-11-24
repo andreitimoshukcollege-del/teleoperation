@@ -186,13 +186,8 @@ def _labels(stage, path):
 
 
 def _shapes_scene():
-    """jetrover-mixed with only its simple shapes (boxes, cylinders): IsaacWorld builds them with no asset files."""
-    import json
-    with open(os.path.join(REPO, "core", "Scenes", "jetrover-mixed.json"), encoding="utf-8") as f:
-        doc = json.load(f)
-    doc["objects"] = [o for o in doc["objects"] if o.get("shape") != "mesh"]
-    doc.pop("pool", None)
-    return scene_module.parse(doc)
+    """fr3-duo-bench: three boxes and a cylinder, which IsaacWorld builds with no asset files."""
+    return scene_module.load(os.path.join(REPO, "core", "Scenes", "fr3-duo-bench.json"))
 
 
 def test_each_objects_own_shapes_carry_its_label_through_a_box_turned_mesh_a_resize_and_a_relabel():

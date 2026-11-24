@@ -100,7 +100,15 @@ namespace Teleop.Eval.Tests.JointDrive
                 Assert.Equal(i + 1, m.Index);
                 if (i > 0) Assert.True(m.Start >= a.Moves[i - 1].Start);
                 Assert.True(m.End >= m.Start, m.ToString());
-                Assert.Equal(m.Kind == ScriptMoveKind.Aim || m.Kind == ScriptMoveKind.Pass, m.ObjectId != 0);
+                if (ScriptMoveCodec.IsAccident(m.Kind))
+                {
+                    // An accident overlies the move it came in, from its onset, and keeps that move's object (docs/adr/0038 "M, motion").
+                    PlannedMove over = a.Moves.Single(x => x.Index == m.Overlies);
+                    Assert.False(ScriptMoveCodec.IsAccident(over.Kind));
+                    Assert.True(over.Start <= m.Start, m.ToString());
+                    Assert.Equal(over.ObjectId, m.ObjectId);
+                }
+                else Assert.Equal(m.Kind == ScriptMoveKind.Aim || m.Kind == ScriptMoveKind.Pass, m.ObjectId != 0);
                 Assert.True(m.Start < a.TotalSeconds, m.ToString());
             }
 
@@ -145,6 +153,15 @@ namespace Teleop.Eval.Tests.JointDrive
 
                 foreach (PlannedMove m in plan.Moves.Where(m => m.ObjectId != 0))
                 {
+                    // An accident on an aim or a pass keeps the timing rules too; the figures are the aims' and passes' own.
+                    bool accident = ScriptMoveCodec.IsAccident(m.Kind);
+                    if (!double.IsNaN(m.Contact))
+                    {
+                        Assert.True(m.Contact - start >= 1.5 - 1e-9, $"layout {seed}: {m}");
+                        Assert.True(end - m.Contact >= 1.0 - 1e-9, $"layout {seed}: {m}, the take ends at {end:0.00} s");
+                    }
+
+                    if (accident) continue;
                     if (m.Kind == ScriptMoveKind.Aim)
                     {
                         aims++;
@@ -154,8 +171,6 @@ namespace Teleop.Eval.Tests.JointDrive
 
                     if (double.IsNaN(m.Contact)) continue;
                     contacts++;
-                    Assert.True(m.Contact - start >= 1.5 - 1e-9, $"layout {seed}: {m}");
-                    Assert.True(end - m.Contact >= 1.0 - 1e-9, $"layout {seed}: {m}, the take ends at {end:0.00} s");
                     where.Add((m.Contact - m.Start) / Math.Max(1e-6, m.End - m.Start));
                     heights.Add(Lowest(plan.Sample(m.Contact)) - table);
                 }
@@ -206,7 +221,8 @@ namespace Teleop.Eval.Tests.JointDrive
         public void TheCaps_HoldOnEveryTick_AndWithoutThemTheHandIsFaster()
         {
             SafetyObject[] objects = LayoutOf(5);
-            var capped = new MixedOptions();
+            // Without accidents, whose ticks keep to the arm's own limits instead (AccidentTests).
+            var capped = new MixedOptions { AccidentShare = 0, AccidentNearShare = 0 };
             MotionCaps caps = capped.Caps!;
             DrivePlan plan = Mixed(objects, 21, capped);
             // Every tick of the take within each joint's caps as they are measured: speed and acceleration over three ticks (about
@@ -231,7 +247,7 @@ namespace Teleop.Eval.Tests.JointDrive
                 }
             }
 
-            var uncapped = new MixedOptions { Caps = null, Style = null };
+            var uncapped = new MixedOptions { Caps = null, Style = null, AccidentShare = 0, AccidentNearShare = 0 };
             Assert.True(TryMixed(objects, 21, out DrivePlan? free, out string? error, uncapped), error);
             Assert.NotEqual(plan.Legs.Count, free!.Legs.Count);
         }
@@ -245,10 +261,11 @@ namespace Teleop.Eval.Tests.JointDrive
             float table = (float)scene.Table.Top;
             int blindPullBacks = 0, objectMoves = 0, turned = 0, intoFixtures = 0, blindTransports = 0, lowBlind = 0, highBlind = 0;
             Span<LinkFrame> frames = stackalloc LinkFrame[5];
+            var options = new MixedOptions { AccidentShare = 0, AccidentNearShare = 0 }; // the moves' own law; accidents overlie it (AccidentTests)
             for (ulong seed = 1; seed <= 12; seed++)
             {
                 SafetyObject[] objects = LayoutOf(seed);
-                if (!TryMixed(objects, 2000 + seed, out DrivePlan? plan, out _)) continue;
+                if (!TryMixed(objects, 2000 + seed, out DrivePlan? plan, out _, options)) continue;
                 IReadOnlyList<PlannedMove> moves = plan!.Moves;
                 for (int i = 0; i < moves.Count; i++)
                 {
@@ -311,12 +328,12 @@ namespace Teleop.Eval.Tests.JointDrive
                 planned++;
                 foreach (PlannedMove m in plan!.Moves.Where(m => m.ObjectId != 0))
                 {
-                    aims++;
+                    if (!ScriptMoveCodec.IsAccident(m.Kind)) aims++;
                     SafetyObject o = objects.First(x => x.Id == m.ObjectId);
                     Assert.NotEqual(SceneRole.Stand, o.Role);
                     Assert.NotEqual(SceneRole.Support, o.Role);
                     if (o.Role == SceneRole.Plank || o.Max.Z - o.Min.Z >= 0.12f) tallOrPlank++;
-                    if (!double.IsNaN(m.Contact))
+                    if (!double.IsNaN(m.Contact) && !ScriptMoveCodec.IsAccident(m.Kind))
                     {
                         ArmCollision.ComputeFrames(Profile, plan.Sample(m.Contact), frames);
                         tool.Add(frames[(int)ArmLink.Gripper].ToBase(MixedTake.ToolInGripper).Z);
@@ -326,7 +343,7 @@ namespace Teleop.Eval.Tests.JointDrive
                     SafetyObject[] stands = objects.Where(s => s.Id != o.Id && (s.Role == SceneRole.Stand || s.Role == SceneRole.Support) && s.Max.Z <= o.Min.Z + 0.015f
                         && s.Max.Z >= o.Min.Z - 0.03f && s.Max.X > o.Min.X && s.Min.X < o.Max.X && s.Max.Y > o.Min.Y && s.Min.Y < o.Max.Y).ToArray();
                     if (stands.Length == 0) continue;
-                    raisedAims++;
+                    if (!ScriptMoveCodec.IsAccident(m.Kind)) raisedAims++;
                     ArmCollisionModel off = SafetyScript.WithObjects(Model, stands, MixedTake.HolderClearMeters - 0.0015f, 0f);
                     // Until the move after it begins (they overlap, and a pull back is its own move).
                     double until = Math.Min(m.End, plan.Moves.Where(n => n.Index == m.Index + 1).Select(n => n.Start).DefaultIfEmpty(m.End).First());
@@ -357,7 +374,7 @@ namespace Teleop.Eval.Tests.JointDrive
             for (ulong seed = 41; seed < 47; seed++)
             {
                 if (!TryMixed(objects, seed, out DrivePlan? p, out _, options)) continue;
-                foreach (PlannedMove m in p!.Moves.Where(m => m.Part == MovePart.BlindTransport && m.End < p.TotalSeconds))
+                foreach (PlannedMove m in p!.Moves.Where(m => m.Part == MovePart.BlindTransport && m.End < p.TotalSeconds && !ScriptMoveCodec.IsAccident(m.Kind)))
                 {
                     ArmCollision.ComputeFrames(Profile, p.Sample(m.End), frames);
                     ends.Add(frames[(int)ArmLink.Gripper].ToBase(MixedTake.ToolInGripper).Z);
@@ -380,6 +397,11 @@ namespace Teleop.Eval.Tests.JointDrive
             Assert.Throws<ArgumentException>(() => new MixedOptions { Caps = new MotionCaps().AllSpeeds(0f) }.Validate());
             Assert.Throws<ArgumentException>(() => new MixedOptions { PullBackShare = 1.5 }.Validate());
             Assert.Throws<ArgumentException>(() => new MixedOptions { TurnDegreesPerMeter = -1 }.Validate());
+            Assert.Throws<ArgumentException>(() => new MixedOptions { AccidentShare = 1.5 }.Validate());
+            Assert.Throws<ArgumentException>(() => new MixedOptions { AccidentNearShare = -0.1 }.Validate());
+            Assert.Throws<ArgumentException>(() => new MixedOptions { AccidentWeights = new double[] { 1, 1 } }.Validate());
+            Assert.Throws<ArgumentException>(() => new MixedOptions { AccidentWeights = new double[] { 0, 0, 0, 0, 0 } }.Validate());
+            new MixedOptions { AccidentShare = 0, AccidentNearShare = 0, AccidentWeights = new double[] { 0, 0, 0, 0, 0 } }.Validate(); // none: no kinds needed
             Assert.False(TryMixed(LayoutOf(1), 1, out _, out string? error, new MixedOptions { PassShare = 2 }));
             Assert.Contains("pass share", error);
             Assert.Equal("mixed", SafetyScript.Category(DriveScript.Mixed));

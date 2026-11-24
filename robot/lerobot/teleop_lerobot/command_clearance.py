@@ -981,6 +981,9 @@ def action_agreement(commands, frames) -> Tuple[int, int, List[Tuple[int, int]]]
     return agree, total, bad
 
 
+TEXT_COLUMNS = ("outcome", "kind", "min_clearance_link", "path_min_clearance_link")  # every other column is a number
+
+
 def _column(name: str, values: list):
     import pandas as pd
 
@@ -994,9 +997,11 @@ def _column(name: str, values: list):
         return pd.array(np.asarray(values, np.int64), dtype="int8")
     if name == "accepted":
         return pd.array(np.asarray(values, bool), dtype="bool")
-    if name in ("outcome", "kind") or name.endswith("_link"):
+    if name in TEXT_COLUMNS:
         return pd.array([None if v is None else str(v) for v in values], dtype="object")
-    return pd.array(np.asarray(values, float), dtype="float64")
+    # Every other column is a number: a distance, a servo value, a time, a scale. Until 2026-11-25 a name ending in "_link"
+    # was taken for a link's name, so clearance_mm.<link>_link and surface_mm.<link>_link were written as text.
+    return pd.array(np.asarray(values, float), dtype="float64")  # None becomes NaN
 
 
 def write_parquet(path: str, written: Sequence[Tuple[int, Dict[str, object]]], meta: Dict) -> int:

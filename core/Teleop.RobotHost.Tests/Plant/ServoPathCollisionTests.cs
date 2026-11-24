@@ -21,7 +21,7 @@ namespace Teleop.RobotHost.Tests.Plant
         private static float Toward(float delta, float tau) => delta >= 0f ? Math.Min(delta, tau) : Math.Max(delta, -tau);
 
         /// <summary>The servos' path, sampled finely here and independently of the plant: does it hit anywhere?</summary>
-        private static bool PathHits(ArmPose a, ArmPose b)
+        internal static bool PathHits(ArmPose a, ArmPose b)
         {
             float[] d = { b.BaseYaw - a.BaseYaw, b.Proximal - a.Proximal, b.Distal - a.Distal, b.Wrist - a.Wrist, b.Roll - a.Roll };
             float longest = d.Max(Math.Abs);
@@ -37,7 +37,7 @@ namespace Teleop.RobotHost.Tests.Plant
             return false;
         }
 
-        private static ArmPose RandomValidPose(Random rng)
+        internal static ArmPose RandomValidPose(Random rng)
         {
             while (true)
             {
@@ -47,29 +47,42 @@ namespace Teleop.RobotHost.Tests.Plant
             }
         }
 
-        private static byte Motor(JointRole role) => JetRover.Joints[JetRover.TryGetJointIndex(role)].MotorId;
+        internal static byte Motor(JointRole role) => JetRover.Joints[JetRover.TryGetJointIndex(role)].MotorId;
 
-        private static JointTarget[] Targets(ArmPose p) => new[]
+        internal static JointTarget[] Targets(ArmPose p) => new[]
         {
             new JointTarget(Motor(JointRole.BaseYaw), p.BaseYaw, 0f), new JointTarget(Motor(JointRole.Proximal), p.Proximal, 0f),
             new JointTarget(Motor(JointRole.Distal), p.Distal, 0f), new JointTarget(Motor(JointRole.Wrist), p.Wrist, 0f),
             new JointTarget(Motor(JointRole.GripperRotate), p.Roll, 0f),
         };
 
-        /// <summary>A plant whose arm is measured at <paramref name="at"/> (the relay's feedback, as on the robot).</summary>
-        private static GenericArmPlant PlantAt(ArmPose at, FakeRelayClient relay)
+        /// <summary>
+        /// A plant whose arm is measured at <paramref name="at"/> (the relay's feedback, as on the robot). These tests are about
+        /// what the check refuses, so the plant refuses (<see cref="HostCheckOnFail.Refuse"/>); the clamp has its own tests
+        /// (<see cref="HostCheckClampTests"/>).
+        /// </summary>
+        internal static GenericArmPlant PlantAt(ArmPose at, FakeRelayClient relay, HostCheckOnFail onFail = HostCheckOnFail.Refuse)
         {
-            var plant = new GenericArmPlant(Config, relay);
+            var plant = new GenericArmPlant(Config, relay) { OnHostCheckFail = onFail };
+            relay.EnqueueFeedback(FeedbackAt(at));
+            plant.Step(1);
+            return plant;
+        }
+
+        /// <summary>The relay's feedback for an arm at <paramref name="at"/>: every joint the collision check reads, valid.</summary>
+        internal static JointFeedbackEntry[] FeedbackAt(ArmPose at)
+        {
             JointFeedbackEntry Entry(JointRole role, float angle)
             {
                 JointHardwareSpec j = JetRover.Joints[JetRover.TryGetJointIndex(role)];
                 return new JointFeedbackEntry(j.MotorId, true, Config.ZeroPulse + (angle + j.ZeroOffsetRadians) * Config.PulsePerRadian);
             }
 
-            relay.EnqueueFeedback(Entry(JointRole.BaseYaw, at.BaseYaw), Entry(JointRole.Proximal, at.Proximal), Entry(JointRole.Distal, at.Distal),
-                Entry(JointRole.Wrist, at.Wrist), Entry(JointRole.GripperRotate, at.Roll));
-            plant.Step(1);
-            return plant;
+            return new[]
+            {
+                Entry(JointRole.BaseYaw, at.BaseYaw), Entry(JointRole.Proximal, at.Proximal), Entry(JointRole.Distal, at.Distal),
+                Entry(JointRole.Wrist, at.Wrist), Entry(JointRole.GripperRotate, at.Roll),
+            };
         }
 
         [Fact]

@@ -293,7 +293,11 @@ namespace Teleop.RobotHost.Plant
         /// behavior, same clamp/belief-tracking tail.
         /// </summary>
         /// <param name="askGate">False for RobotHost's own motion (the park, docs/adr/0023), which the command gate never judges.</param>
-        public JointCommandOutcome CommandJointAngles(ReadOnlySpan<JointTarget> targets, long captureTicks, bool askGate = true)
+        /// <param name="mayClamp">
+        /// False for RobotHost's own motion (the park), whose path was planned and checked already: a waypoint the check refuses is
+        /// a bug there, refused whole whatever <see cref="OnHostCheckFail"/> says, and the park holds (docs/adr/0023).
+        /// </param>
+        public JointCommandOutcome CommandJointAngles(ReadOnlySpan<JointTarget> targets, long captureTicks, bool askGate = true, bool mayClamp = true)
         {
             if (captureTicks <= _lastAcceptedJointCaptureTicks)
             {
@@ -314,45 +318,160 @@ namespace Teleop.RobotHost.Plant
             _hadJointCommand = true;
             SeedBeliefsFromSensedIfNeeded();
 
-            // The backstop (docs/adr/0020): the same collision model the headset's IK uses. A pose
-            // that would hit the robot is refused whole and the arm holds. The headset never sends
-            // one, so this only ever catches a bug or another tool.
+            // The backstop (docs/adr/0020): the same collision model the headset's IK uses, judging the pose and the servo path
+            // to it from where the arm is measured. A command that fails is clamped (the farthest point toward it that passes,
+            // docs/adr/0020 amendment 2026-11-24) or, with nothing passing or in refuse mode, dropped whole while the arm holds.
+            // The order is fixed: this check, then the clamp, then the command gate, then the relay.
+            JointCommandOutcome taken = JointCommandOutcome.Accepted;
+            Span<JointTarget> clamped = stackalloc JointTarget[targets.Length];
+            LastClamp = default;
             if (_profile.Collision != null)
             {
+                ArmPose belief = BeliefPose();
                 ArmPose commanded = CommandedPose(targets);
-                CollisionHit hit = ArmCollision.Check(_profile, _profile.Collision, commanded);
-                // The end pose alone is not enough: every servo then travels to it at the same speed, and a path between two
-                // clear poses can pass through the robot (the 2026-11 bug hunt, C-05: 38% of the way, the distal link into
-                // the body). The path from where the arm is now is checked too.
-                if (!hit.IsHit)
-                {
-                    hit = ServoPathHit(BeliefPose(), commanded);
-                }
-
+                CollisionHit hit = HostCheckHit(belief, commanded);
                 if (hit.IsHit)
                 {
-                    RefusedJointCommands++;
                     LastRefusal = hit;
-                    return JointCommandOutcome.Refused;
+                    if (!mayClamp || OnHostCheckFail == HostCheckOnFail.Refuse || !TryClamp(targets, belief, commanded, clamped))
+                    {
+                        RefusedJointCommands++;
+                        return JointCommandOutcome.Refused;
+                    }
+
+                    taken = JointCommandOutcome.Clamped;
                 }
             }
 
-            // The optional command gate (docs/adr/0038 N): asked last, about a command that would otherwise move the arm. A held
-            // one is dropped whole as a refused one is, and the arm holds the last target it took.
-            if (askGate && CommandGate != null && CommandGate(targets, captureTicks))
+            ReadOnlySpan<JointTarget> sent = taken == JointCommandOutcome.Clamped ? clamped : targets;
+
+            // The optional command gate (docs/adr/0038 N): asked last, about the command that would otherwise move the arm, the
+            // clamped one when the clamp replaced it. A held one is dropped whole as a refused one is, and the arm holds the last
+            // target it took.
+            if (askGate && CommandGate != null && CommandGate(sent, captureTicks))
             {
                 HeldJointCommands++;
                 return JointCommandOutcome.Held;
             }
 
-            _pulsesPerSecond = RequestedPulsesPerSecond(targets);
-            ApplyJointTargets(targets);
-            return JointCommandOutcome.Accepted;
+            if (taken == JointCommandOutcome.Clamped) ClampedJointCommands++;
+            _pulsesPerSecond = RequestedPulsesPerSecond(sent);
+            ApplyJointTargets(sent);
+            return taken;
         }
 
         /// <summary>
-        /// Asked about every joint command the plant would accept, after the staleness, form and collision checks and before
-        /// anything reaches the relay; true holds it (<see cref="JointCommandOutcome.Held"/>). Null, the default, asks nothing,
+        /// What the plant does with a joint command that fails the collision check (docs/adr/0020 amendment 2026-11-24):
+        /// <see cref="HostCheckOnFail.Clamp"/>, the default, or <see cref="HostCheckOnFail.Refuse"/> as before. Program sets it
+        /// from <c>--host-check-onfail</c>. Without a collision model nothing is checked, so neither applies.
+        /// </summary>
+        public HostCheckOnFail OnHostCheckFail { get; set; } = HostCheckOnFail.Clamp;
+
+        /// <summary>
+        /// The most recent joint command's clamp (<see cref="LineClampResult.Kind"/> <see cref="LineClampKind.Nothing"/> when it
+        /// was not clamped): its alpha is the <c>JK</c> record's. Set even when the command gate then held the clamped command.
+        /// </summary>
+        public LineClampResult LastClamp { get; private set; }
+
+        /// <summary>Joint commands clamped and sent (<see cref="JointCommandOutcome.Clamped"/>), since construction.</summary>
+        public int ClampedJointCommands { get; private set; }
+
+        /// <summary>Clamps whose line was not monotone, so the grid gave the answer (<see cref="LineClampKind.Grid"/>), since construction.</summary>
+        public int GridClamps { get; private set; }
+
+        /// <summary>
+        /// Clamped commands the final re-check refused, since construction. Always 0 unless the clamp has a bug: the targets about
+        /// to be sent are judged once more, exactly as a received command is, and a failure is refused and held instead. The
+        /// tests and the offline replay assert it stays 0.
+        /// </summary>
+        public int ClampInvariantViolations { get; private set; }
+
+        /// <summary>
+        /// The collision check every joint command gets (docs/adr/0020): the pose, then the path every servo takes to it from
+        /// <paramref name="from"/> (the arm's measured pose). The end pose alone is not enough: every servo travels at the same
+        /// speed, and a path between two clear poses can pass through the robot (the 2026-11 bug hunt, C-05: 38% of the way, the
+        /// distal link into the body). The clamp asks exactly this, so it never sends what this refuses.
+        /// </summary>
+        private CollisionHit HostCheckHit(in ArmPose from, in ArmPose to)
+        {
+            CollisionHit hit = ArmCollision.Check(_profile, _profile.Collision!, to);
+            return hit.IsHit ? hit : ServoPathHit(from, to);
+        }
+
+        /// <summary>
+        /// The clamp (docs/adr/0020 amendment 2026-11-24): writes into <paramref name="clamped"/> the farthest point toward
+        /// <paramref name="commanded"/> on the joint-space line from the measured pose that passes <see cref="HostCheckHit"/>
+        /// (<see cref="LineClamp"/>), and returns false when none does. The line starts at the measured pose clamped into the
+        /// model's joint ranges, the start the servo-path check itself uses. Only the joints the check covers are moved along it;
+        /// every other target (the gripper's opening, servo 10 on the JetRover) is passed through unchanged, and every speed too.
+        /// The result is judged once more before it is returned, as the command it now is. Allocation-free.
+        /// </summary>
+        private bool TryClamp(ReadOnlySpan<JointTarget> targets, in ArmPose belief, in ArmPose commanded, Span<JointTarget> clamped)
+        {
+            ArmCollisionModel model = _profile.Collision!;
+            var start = new ArmPose(model.BaseYaw.Clamp(belief.BaseYaw), model.Proximal.Clamp(belief.Proximal), model.Distal.Clamp(belief.Distal),
+                model.Wrist.Clamp(belief.Wrist), model.Roll.Clamp(belief.Roll));
+            var line = new ClampLine(this, start, commanded);
+            LineClampResult result = LineClamp.Search(ref line);
+            LastClamp = result;
+            if (result.Kind == LineClampKind.Nothing)
+            {
+                return false;
+            }
+
+            ArmPose point = ArmPose.Lerp(start, commanded, result.Alpha);
+            for (int i = 0; i < targets.Length; i++)
+            {
+                JointTarget target = targets[i];
+                int index = FindJointIndexByMotorId(target.MotorId);
+                float angle = target.Angle;
+                if (index >= 0)
+                {
+                    JointHardwareSpec joint = _profile.Joints[index];
+                    switch (joint.Role)
+                    {
+                        case JointRole.BaseYaw: angle = point.BaseYaw; break;
+                        case JointRole.Proximal: angle = point.Proximal; break;
+                        case JointRole.Distal: angle = point.Distal; break;
+                        case JointRole.Wrist when joint.WristIndex == 0: angle = point.Wrist; break;
+                        case JointRole.GripperRotate: angle = point.Roll; break;
+                    }
+                }
+
+                clamped[i] = new JointTarget(target.MotorId, angle, target.Speed);
+            }
+
+            // The invariant: what is sent passes the very check a received command gets, judged from the same measured pose.
+            if (HostCheckHit(belief, CommandedPose(clamped)).IsHit)
+            {
+                ClampInvariantViolations++;
+                LastClamp = default;
+                return false;
+            }
+
+            if (result.Kind == LineClampKind.Grid) GridClamps++;
+            return true;
+        }
+
+        /// <summary>The clamp's question for <see cref="LineClamp"/>: does the point alpha of the way from start to command pass?</summary>
+        private readonly struct ClampLine : IAlphaCheck
+        {
+            private readonly GenericArmPlant _plant;
+            private readonly ArmPose _start, _end;
+
+            public ClampLine(GenericArmPlant plant, in ArmPose start, in ArmPose end)
+            {
+                _plant = plant;
+                _start = start;
+                _end = end;
+            }
+
+            public bool Passes(float alpha) => !_plant.HostCheckHit(_start, ArmPose.Lerp(_start, _end, alpha)).IsHit;
+        }
+
+        /// <summary>
+        /// Asked about every joint command the plant would send, after the staleness, form and collision checks and the clamp
+        /// (so about the clamped targets when the clamp replaced the command), before anything reaches the relay; true holds it (<see cref="JointCommandOutcome.Held"/>). Null, the default, asks nothing,
         /// so the plant does exactly what it did before the gate existed (docs/adr/0038 N). Program wires it to
         /// <c>Gate.CommandGate</c> only when <c>--command-gate</c> is given.
         /// </summary>
@@ -378,7 +497,10 @@ namespace Teleop.RobotHost.Plant
         /// <summary>Cartesian commands not applied because joint commands had precedence, since construction.</summary>
         public int IgnoredCartesianCommands { get; private set; }
 
-        /// <summary>Joint commands refused because the pose would collide (docs/adr/0020), since construction.</summary>
+        /// <summary>
+        /// Joint commands refused because the pose, or the servo path to it, would collide (docs/adr/0020) and nothing was sent:
+        /// in clamp mode, no point toward it passed either. Since construction.
+        /// </summary>
         public int RefusedJointCommands { get; private set; }
 
         /// <summary>
@@ -472,7 +594,7 @@ namespace Teleop.RobotHost.Plant
             return true;
         }
 
-        /// <summary>Why the most recent refused joint command was refused.</summary>
+        /// <summary>Why the most recent joint command that failed the collision check failed it (refused or clamped).</summary>
         public CollisionHit LastRefusal { get; private set; }
 
         /// <summary>A readable reason for <see cref="LastRefusal"/>, for the log. Allocates.</summary>

@@ -59,8 +59,10 @@ namespace Teleop.RobotHost.Power
             if (_recorder != null && _recorder.IsActive) _recorder.Record(SessionLines.Park(now, targets));
             // Stamped on the robot's clock; the ordering restarts on every change of state, so neither
             // the park nor the operator's commands after it are judged against the other's clock.
-            // The park is RobotHost's own motion: the command gate (docs/adr/0038 N) never holds it.
-            return _plant.CommandJointAngles(targets, now, askGate: false);
+            // The park is RobotHost's own motion: the command gate (docs/adr/0038 N) never holds it, and its path is checked
+            // before it starts, so the plant refuses a waypoint it disagrees with rather than clamping it (docs/adr/0020
+            // amendment 2026-11-24): the controller then holds with path-collides.
+            return _plant.CommandJointAngles(targets, now, askGate: false, mayClamp: false);
         }
 
         public void SetTorque(bool on, long now)

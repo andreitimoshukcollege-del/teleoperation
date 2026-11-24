@@ -27,8 +27,29 @@ namespace Teleop.RobotHost.Recording
             JointCommandOutcome.Refused => 'R',
             JointCommandOutcome.Parked => 'P',
             JointCommandOutcome.Held => 'H',
+            JointCommandOutcome.Clamped => 'C',
             _ => '?',
         };
+
+        /// <summary>
+        /// Joint command <paramref name="sequence"/> failed the collision check and was clamped (its <c>JC</c> has outcome
+        /// <c>C</c>): the point <paramref name="alpha"/> of the way, in (0, 1), along the joint-space line from the measured pose
+        /// to the command went to the relay instead (its <c>RO</c>). docs/adr/0020 amendment 2026-11-24.
+        /// </summary>
+        public static string Clamp(long t, uint sequence, float alpha) =>
+            "JK|" + I(t) + "|" + sequence.ToString(CultureInfo.InvariantCulture) + "|" + F(alpha);
+
+        /// <summary>The <c>HK</c> record's version: 1 since 2026-11-24.</summary>
+        public const int HostCheckVersion = 1;
+
+        /// <summary>
+        /// The collision check's policy, at the start of every session (docs/adr/0020 amendment 2026-11-24): the servo path is
+        /// judged from the <c>measured</c> pose, and a failing command is clamped (<c>clamp</c>) or refused (<c>refuse</c>).
+        /// A session without it refused.
+        /// </summary>
+        public static string HostCheck(long t, HostCheckOnFail onFail) =>
+            "HK|" + I(t) + "|measured|" + (onFail == HostCheckOnFail.Refuse ? "refuse" : "clamp") + "|" +
+            HostCheckVersion.ToString(CultureInfo.InvariantCulture);
 
         public static string Keepalive(long t, long operatorTicks, long operatorTicksPerSecond) =>
             "KA|" + I(t) + "|" + I(operatorTicks) + "|" + I(operatorTicksPerSecond);

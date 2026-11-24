@@ -89,6 +89,13 @@ namespace Teleop.RobotHost
         public bool CommandGateOnRealRobot { get; init; }
 
         /// <summary>
+        /// <c>--host-check-onfail clamp|refuse</c> (docs/adr/0020 amendment 2026-11-24): what the plant does with a joint command
+        /// that fails its collision check. Clamp, the default on the twin and the robot alike, sends the farthest point toward it
+        /// that passes; refuse drops it and holds, as before.
+        /// </summary>
+        public Plant.HostCheckOnFail HostCheckOnFail { get; init; } = Plant.HostCheckOnFail.Clamp;
+
+        /// <summary>
         /// Path to a <c>RobotArmProfile</c> JSON file (<c>core/RobotProfiles/*.json</c> convention,
         /// docs/adr/0011-generic-robot-arm-profiles.md) -- null (the default) falls back to
         /// <c>RobotArmProfile.JetRoverMeasuredDefault</c>, a compatibility convenience, not the
@@ -158,7 +165,7 @@ namespace Teleop.RobotHost
             "  [--scene <file> --world-socket <path> [--local-world-socket <path>] [--scene-seed <n>|auto] [--world-timeout <s>]]\n" +
             "  [--scenarios <dir> [--scenario-start-free-gb <gb>] [--scenario-stop-free-gb <gb>]]\n" +
             "  [--rest-pose-deg <d1,d2,...>] [--park-speed-rad-per-sec <r>] [--park-tolerance-deg <d>] [--park-timeout-seconds <s>]\n" +
-            "  [--park-contact-deg <d>]\n" +
+            "  [--park-contact-deg <d>] [--host-check-onfail clamp|refuse]\n" +
             "  --reply-to sender (default) replies to wherever the latest command came from;\n" +
             "  --remote-host/--remote-port are then only the target before the first command.\n" +
             "  --reply-to fixed always replies to --remote-host:--remote-port, which it requires.\n" +
@@ -203,7 +210,10 @@ namespace Teleop.RobotHost
             "  and gives up, holding, after --park-timeout-seconds (20). The straight joint path there is checked\n" +
             "  against the collision model, every sample, the rest pose included; --park-contact-deg (0: off) lets\n" +
             "  the samples within that many degrees of the rest pose touch the fixed boxes the rest pose itself\n" +
-            "  rests on, and nothing else.";
+            "  rests on, and nothing else.\n" +
+            "  --host-check-onfail says what happens to a joint command that fails the collision check (docs/adr/0020):\n" +
+            "  clamp (the default) sends the farthest point toward it, on the joint-space line from the measured pose,\n" +
+            "  that passes the same check, and holds only when none does; refuse drops it and holds, as before 2026-11-24.";
 
         private RobotHostArgs(
             int localPort, IPAddress? remoteHost, int? remotePort, bool replyToSender,
@@ -246,6 +256,7 @@ namespace Teleop.RobotHost
             string? commandGate = null;
             double? gateDeadlineMs = null;
             bool gateFailClosed = false, gateOnRealRobot = false;
+            Plant.HostCheckOnFail onFail = Plant.HostCheckOnFail.Clamp;
             ulong? sceneSeed = null;
             double worldTimeout = 60;
             string? uplinkControlPath = null;
@@ -435,6 +446,12 @@ namespace Teleop.RobotHost
                     case "--command-gate-on-real-robot":
                         gateOnRealRobot = true;
                         break;
+                    case "--host-check-onfail" when i + 1 < args.Length:
+                        string onFailText = args[++i];
+                        if (onFailText == "clamp") onFail = Plant.HostCheckOnFail.Clamp;
+                        else if (onFailText == "refuse") onFail = Plant.HostCheckOnFail.Refuse;
+                        else autoError ??= $"--host-check-onfail is clamp or refuse, not '{onFailText}'.";
+                        break;
                 }
             }
 
@@ -572,6 +589,7 @@ namespace Teleop.RobotHost
                 CommandGateDeadlineMs = gateDeadlineMs ?? 5,
                 CommandGateFailClosed = gateFailClosed,
                 CommandGateOnRealRobot = gateOnRealRobot,
+                HostCheckOnFail = onFail,
             };
         }
 

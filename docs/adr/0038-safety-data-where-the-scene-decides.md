@@ -1200,6 +1200,72 @@ Measured on `jetrover_20261124_142632_87d305`'s 10 takes, rebuilt into scratch a
 
 **Untested:** a full-size batch, and takes whose arm parks mid-take (their park `RO` rows count as `A`).
 
+**Visibility per frame, obstacle and camera (world-models' request 5, 2026-11-24, branch `work/v2-vis5`).** World-models'
+safety model sees only the images, and asked whether each obstacle could be seen at all. `teleop_lerobot/visibility.py`
+writes `meta/teleop/visibility.parquet` at build time, on by default (`--no-visibility`: none; `safety-options` gives it for
+a dataset built before): one row per (episode, frame, camera, object on the table), with `visible_px` (the object's pixels in
+the instance mask), `expected_px` (its silhouette with nothing in front: C's convex pieces or the scene file's primitive at
+the frame's `WO` pose and `WZ` size, projected through the take's `CM` camera, the wrist through `wrist_link`'s forward
+kinematics at the frame's `VQ`, clipped to the near plane, the union of the pieces' hulls by pixel centres), their ratio,
+`in_frustum` and a `reason` wherever a value is null. Obstacles are the roles `obstacle`, `stand`, `plank` and `support`;
+distractors are included with their role, the table and the flat clutter are not. `robot/lerobot/README.md` defines every
+column. `safety-report` adds a visibility line per dataset.
+
+- **Checked against the masks** where nothing stands in front of an object (the 48 takes below, every 25th frame,
+  silhouettes of 150 px or more, nothing of the arm or another object over more than 1% of it): visible over expected a
+  median 1.000 (p10 0.987) for boxes and cylinders in the room cameras, IoU 0.998 (310 cases); 0.986 (p10 0.942) for meshes,
+  IoU 0.982 (1141), 80% within 5%, since the pieces stand 0.1-4 mm outside the render mesh (C's fit); 1.000 for primitives
+  and 0.939 for meshes in the wrist camera, which sees them from 10-30 cm (78 cases). In the frames inspected pixel by pixel,
+  0-22 of an object's 180-4,800 mask pixels fell outside its silhouette, so the camera poses (`CM`, the wrist's kinematics)
+  are right.
+- **Cost:** about 1.3 s a take of about 260 frames on one core (the sidecars 1.74 s a take against 0.46 s without, 19 takes
+  on the GPU machine). In the build's `--jobs 4` workers the 19 takes' sidecars took 9.2 s against 2.5 s; the whole
+  rebuilds took 79, 81 and 47 s for 19, 19 and 10 episodes, as before.
+- **The twin's masks lose objects.** An object whose mask id is in no mask of a take, though its silhouette covers hundreds
+  or thousands of pixels in front of the table, reads 0 under that silhouette: drawn without its label. Such an object's
+  counts are null with the reason (`visibility.UNLABELLED_PX`, 200 px), not "hidden". In the takes below, 42 of 102
+  (episode, object) pairs of twin 0, 11 of 109 of twin 1 and 36 of 40 of the held-out run are unlabelled: in twin 0 in 11
+  of its last 13 takes, from take092 (the seventh) on, whose plank and support read 0 under 6,400 px each in both room
+  cameras; in twin 1 in 5 takes, objects of one replay group from its source on (64, 80, 81) and the objects two replays
+  added (`add:71`, `add:72`); and in the held-out scene (object ids 102-129, mask ids 202-229) every object but the
+  distractor 125 in 4 takes. Measured from the masks, so the figures below are of the labelled objects only. This
+  is the renderer's (`renderer.py` labels and `stable_mask`), for workstream A.
+
+**Measured** (rebuilt at 52d5f86, whose `visibility.compute` is the tip's, into scratch from the takes of `jetrover_20261124_021454_cb1e21_twin0`, `_twin1` and the
+held-out `jetrover_20261124_142632_87d305`, their own options with visibility on; `safety-report` found no faults):
+
+| | twin0 (19 ep.) | twin1 (19 ep.) | held out (10 ep.) |
+|---|---|---|---|
+| obstacle-frames, measured | 8,421, 3,418 | 7,507, 5,347 | 1,601, 0 |
+| at least 50% visible in 2+ cameras / 1 / none | 94.7% / 5.3% / 0.0% | 98.5% / 1.5% / 0.0% | n/a |
+| at least 50% visible: wrist (`front`), third-left, third-right | 16.3%, 94.7%, 99.9% | 32.2%, 100.0%, 97.4% | n/a |
+| in the frustum: wrist, third-left, third-right (every obstacle) | 18.2%, 100.0%, 96.1% | 30.1%, 97.2%, 100.0% | 41.6%, 100%, 100% |
+| contacts with the object 50% visible in 1+ camera in the second before | 16 of 16 (28 unmeasured) | 26 of 26 (4 unmeasured) | 0 of 0 (5 unmeasured) |
+
+- **The room cameras see nearly everything.** Counting every obstacle by geometry alone, 99.2% of the 17,529
+  obstacle-frames are in the frustum of at least two cameras, in every bearing from the base (obstacles stand at 0.13-0.34 m over
+  +-95 degrees, a few behind the base's line). Of the measured, the misses are occlusion: where a room camera has an obstacle in
+  its frustum but shows under half of it, it shows a median of none of it. They fall where the task expected: an obstacle on
+  the robot's left side (bearing 60-90 degrees) is at least half visible in third-right 93.3% of its frames, the robot and its
+  arm between them, and one in front (-30 to 30 degrees) in third-left 95.6%, the arm reaching over it.
+- **Every measured contact** (42 of 79; 37 with an unlabelled object) had its object at least half visible in both room
+  cameras in the second before; in the wrist camera 31 of 42.
+- **The wrist camera rarely frames an obstacle:** 25.4% of obstacle-frames by geometry, 5.0% for obstacles within 0.20 m
+  of the base and 9.5% at 0.20-0.27 m (30.9% beyond). It looks along the gripper, ahead of the reach, so an obstacle
+  beside the path or near the base stays out of it until the gripper is upon it.
+
+**Recommended, not made** (the scene and cameras are workstreams A's and S's):
+1. Fix the masks' lost labels before anyone trains or evaluates on masks or visibility: the held-out run has none to
+   measure. `safety-report`'s visibility line ("N measured") is the check; after the fix, every placed object should be
+   measured.
+2. The room cameras need no change for coverage (in frame 96-100%). To cut the arm's occlusion of side and front
+   obstacles, raise them (z 0.32 m now) or add a third view from above or behind the base; the side bin would be the
+   measure.
+3. If the wrist view should show what the arm is about to meet, tilt it further down and back (its `mountLookAt` z is
+   -0.01 m), or widen it; it is `observation.images.front`, the one view a real JetRover has, so change it only with the real
+   camera.
+4. Optional: draw fewer obstacles beyond 90 degrees of bearing (behind the base's line), which only the room cameras see.
+
 ### R, arm response
 
 **What world-models saw.** In the twin datasets the arm is more than 20 units (4.8 degrees) behind its command on 65–74% of

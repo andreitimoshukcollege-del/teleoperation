@@ -154,7 +154,7 @@ namespace Teleop.Eval.JointDrive
         /// layout-blind part carries it): accidents placed near objects, so about a third of the contacts come from accidents (docs/adr/0038
         /// "M, motion"). Recorded as a <c>free</c> move with its accident.
         /// </summary>
-        public double AccidentNearShare { get; set; } = 0.2;
+        public double AccidentNearShare { get; set; } = 0.4;
 
         /// <summary>The accidents' kinds, in proportion: jerk, overshoot, wrong way, slip, rush (<see cref="AccidentKinds"/>).</summary>
         public double[] AccidentWeights { get; set; } = { 1, 1, 1, 1, 1 };

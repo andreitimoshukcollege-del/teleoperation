@@ -535,18 +535,18 @@ namespace Teleop.RobotArm.Tests.World
             sb.Append("objects: name, role, steps (min, max, or empty), supports (ids). fits: index, rest, scale, x, y, yaw, FitsOnTable at the yaw, FitsOnTable without one. ");
             sb.Append("overlaps: a, x, y, z, yaw, rest, scale, b, x, y, z, yaw, rest, scale, OverlapsAtHeights. holds: stand, x, y, z, yaw, scale, object, x, y, z, rest, scale, HoldsOnTop. ");
             sb.Append("elevated: index, rest, scale, z, RestingZ, IsElevated. pool: obstacleMin, obstacleMax, distractorMin, distractorMax, reachMin, reachMax, reachBearing, ");
-            sb.Append("standShare, rigShare, distractorReach, then the second pass's tallShare, workMin, workMax, workBearing, standTopMin, standTopMax, rigUnderMin, rigUnderMax; ");
-            sb.Append("each object's fifth column is 1 for a tall thin obstacle (IsTall).\",\n");
+            sb.Append("standShare, rigShare, distractorReach, then the second pass's tallShare, workMin, workMax, workBearing, standTopMin, standTopMax, rigUnderMin, rigUnderMax, then the third pass's overheadShare and armRest (six, or none); ");
+            sb.Append("each object's fifth column is 1 for a tall thin obstacle (IsTall), its sixth 1 for an overhead bar.\",\n");
             sb.Append($" \"scene\": \"{s.Name}\",\n");
             sb.Append($" \"sha256\": \"{Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant()}\",\n");
-            sb.Append($" \"pool\": {Row(s.ObstacleMin, s.ObstacleMax, s.DistractorMin, s.DistractorMax, s.ReachMin, s.ReachMax, s.ReachBearing, s.StandShare, s.RigShare, s.DistractorReach, s.TallShare, s.WorkMin, s.WorkMax, s.WorkBearing, s.StandTopMin, s.StandTopMax, s.RigUnderMin, s.RigUnderMax)},\n");
+            sb.Append($" \"pool\": {Row(s.ObstacleMin, s.ObstacleMax, s.DistractorMin, s.DistractorMax, s.ReachMin, s.ReachMax, s.ReachBearing, s.StandShare, s.RigShare, s.DistractorReach, s.TallShare, s.WorkMin, s.WorkMax, s.WorkBearing, s.StandTopMin, s.StandTopMax, s.RigUnderMin, s.RigUnderMax).TrimEnd(']')}, {Row(new[] { s.OverheadShare }.Concat(s.ArmRest).ToArray()).TrimStart('[')},\n");
             sb.Append($" \"distractorRegions\": {Row(s.DistractorRegions)},\n");
             sb.Append(" \"objects\": [\n");
             for (int i = 0; i < s.Objects.Length; i++)
             {
                 SceneObject o = s.Objects[i];
                 string steps = o.HasSteps ? Row(o.StepMin, o.StepMax) : "[]";
-                sb.Append($"  [\"{o.Name}\", \"{o.Role.ToString().ToLowerInvariant()}\", {steps}, {Row(o.SupportIds.Select(b => (double)b).ToArray())}, {(s.IsTall(i) ? 1 : 0)}]{(i < s.Objects.Length - 1 ? "," : "")}\n");
+                sb.Append($"  [\"{o.Name}\", \"{o.Role.ToString().ToLowerInvariant()}\", {steps}, {Row(o.SupportIds.Select(b => (double)b).ToArray())}, {(s.IsTall(i) ? 1 : 0)}, {(o.Overhead ? 1 : 0)}]{(i < s.Objects.Length - 1 ? "," : "")}\n");
             }
 
             sb.Append(" ],\n");

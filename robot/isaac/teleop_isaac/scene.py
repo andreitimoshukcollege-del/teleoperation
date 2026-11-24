@@ -142,6 +142,9 @@ class Object:
     role: str = ""
     supports: Tuple[int, ...] = ()
     steps: Tuple[int, ...] = ()
+    # docs/adr/0038, the scene's third pass: a plank on two supports RobotHost lays across the arm's reach as an overhead bar. The
+    # placement rules take it as any plank.
+    overhead: bool = False
 
     @property
     def footprint_radius(self) -> float:
@@ -224,6 +227,11 @@ class Scene:
     work_band: Tuple[float, float, float] = (0.0, 0.0, 0.0)
     stand_top: Tuple[float, float] = (0.0, 0.0)
     rig_under: Tuple[float, float] = (0.0, 0.0)
+    # docs/adr/0038, the scene's third pass, for RobotHost's layouts: the chance an obstacle is an overhead bar, and the box where the arm
+    # stands between takes (xMin, xMax, yMin, yMax, zMin, zMax), which a layout keeps clear, or (). No rule here takes them: Isaac checks
+    # the arm where it is.
+    overhead_share: float = 0.0
+    arm_rest: Tuple[float, ...] = ()
 
     def clear_of_robot(self, x: float, y: float, r: float) -> bool:
         if len(self.robot_keep_out) != 4:
@@ -635,6 +643,10 @@ def parse(doc: Dict[str, Any]) -> Scene:
         for sid in sup:
             if not 1 <= sid <= 254:
                 raise _bad("role", f"plank '{oname}' names support {sid}; ids run from 1 to 254")
+        # docs/adr/0038, the scene's third pass: an overhead bar is a bridge.
+        overhead = bool(o.get("overhead", False))
+        if overhead and not (role == "plank" and len(sup) == 2):
+            raise _bad("role", f"'{oname}' is overhead, which only a plank on two supports is")
         st = o.get("steps", []) or []
         if len(st) not in (0, 2):
             raise _bad("steps", f"'{oname}': steps is [min, max]")
@@ -655,7 +667,7 @@ def parse(doc: Dict[str, Any]) -> Scene:
             raise _bad("jitter", f"'{oname}' has a negative range")
         objects.append(Object(oid, oname, shape, z, pos, rpy[2], movable, float(mass), bool(o.get("operatorMovable", False)),
                               float(o.get("staticFriction", 0.0)), float(o.get("dynamicFriction", 0.0)), col, j, asset, clutter,
-                              role, tuple(int(v) for v in sup), tuple(int(v) for v in st)))
+                              role, tuple(int(v) for v in sup), tuple(int(v) for v in st), overhead))
 
     pd = doc.get("pool", {}) or {}
     pool = tuple(pd.get(k, 0) for k in ("movableMin", "movableMax", "fixedMin", "fixedMax"))
@@ -770,6 +782,14 @@ def parse(doc: Dict[str, Any]) -> Scene:
         raise _bad("pool", "rigUnderMin and rigUnderMax are only for a mixed pool")
     if under and not (all(_finite(v) for v in rig_under) and 0 < rig_under[0] < rig_under[1]):
         raise _bad("pool", "rigUnderMin and rigUnderMax are both 0, or 0 < rigUnderMin < rigUnderMax")
+    # docs/adr/0038, the scene's third pass, in Core's order: overhead bars, and the box where the arm stands between takes.
+    overhead_share = _mixed_share(pd.get("overheadShare", 0.0), "overheadShare", mixed)
+    arm_rest = pd.get("armRest", []) or []
+    if arm_rest and not mixed:
+        raise _bad("pool", "armRest is only for a mixed pool")
+    if arm_rest and not (isinstance(arm_rest, list) and len(arm_rest) == 6 and all(_finite(v) for v in arm_rest)
+                         and arm_rest[0] < arm_rest[1] and arm_rest[2] < arm_rest[3] and arm_rest[4] < arm_rest[5]):
+        raise _bad("pool", "armRest is [xMin, xMax, yMin, yMax, zMin, zMax] with min < max, or absent")
     dr = pd.get("distractorRegions", []) or []
     if not isinstance(dr, list) or len(dr) % 4 != 0:
         raise _bad("pool", "distractorRegions holds xMin, xMax, yMin, yMax for each rectangle")
@@ -794,6 +814,7 @@ def parse(doc: Dict[str, Any]) -> Scene:
         raise _bad("pool", "distractorReach lies within the obstacles' band (reachMax)")
     by_id = {o.id: o for o in objects}
     n_obstacles = n_distractors = n_planks = 0
+    n_overhead = sum(1 for o in objects if o.overhead)
     for o in objects:
         if mixed and not o.role:
             raise _bad("role", f"'{o.name}' has no role: every object of a mixed pool has one")
@@ -820,6 +841,10 @@ def parse(doc: Dict[str, Any]) -> Scene:
     for o in objects:
         if o.role == "support" and not any(q.role == "plank" and o.id in q.supports for q in objects):
             raise _bad("role", f"support '{o.name}' holds up no plank")
+    if n_overhead > 0 and not overhead_share > 0:
+        raise _bad("pool", "overhead planks need overheadShare")
+    if overhead_share > 0 and n_overhead == 0:
+        raise _bad("pool", "overheadShare needs an overhead plank")
     if mixed_counts[1] > n_obstacles + n_planks:
         raise _bad("pool", f"it asks for up to {mixed_counts[1]} obstacles; the scene has {n_obstacles} and {n_planks} planks")
     if mixed_counts[3] > n_distractors:
@@ -833,7 +858,8 @@ def parse(doc: Dict[str, Any]) -> Scene:
                   reach_bearing=float(bearing), stand_share=stand_share, rig_share=rig_share,
                   distractor_regions=tuple(float(v) for v in dr), distractor_reach=float(far), tall_share=tall_share,
                   work_band=tuple(float(v) for v in work_band), stand_top=tuple(float(v) for v in stand_top),
-                  rig_under=tuple(float(v) for v in rig_under))
+                  rig_under=tuple(float(v) for v in rig_under), overhead_share=overhead_share,
+                  arm_rest=tuple(float(v) for v in arm_rest))
     for i, o in enumerate(objects):
         for sx in (-1, 0, 1):
             for sy in (-1, 0, 1):

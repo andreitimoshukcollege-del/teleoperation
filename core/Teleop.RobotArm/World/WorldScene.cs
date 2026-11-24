@@ -98,8 +98,9 @@ namespace Teleop.RobotArm.World
         internal SceneObject(byte id, string name, SceneShape shape, double sx, double sy, double sz, double x, double y, double z, double yaw,
             bool movable, double mass, bool operatorMovable, double staticFriction, double dynamicFriction, float r, float g, float b, double jx, double jy, double jyaw,
             string asset = "", bool clutter = false, SceneRole role = SceneRole.None, byte[]? supports = null, int stepMin = 0, int stepMax = 0,
-            bool hasSteps = false)
+            bool hasSteps = false, bool overhead = false)
         {
+            Overhead = overhead;
             Asset = asset;
             Clutter = clutter;
             Role = role;
@@ -175,6 +176,12 @@ namespace Teleop.RobotArm.World
 
         /// <summary>A plank's supports, by id (docs/adr/0038): one (a cantilever) or two (a bridge); empty for any other object.</summary>
         public byte[] SupportIds { get; }
+
+        /// <summary>
+        /// A plank on two supports that a mixed layout lays across the arm's reach as an overhead bar (docs/adr/0038, the scene's third
+        /// pass): <see cref="WorldScene.DrawBarSpot"/>, its posts beyond the obstacles' band.
+        /// </summary>
+        public bool Overhead { get; }
 
         /// <summary>
         /// Whether a mixed pool's layout draws its size (docs/adr/0038): a resize step uniform in <see cref="StepMin"/> to
@@ -254,8 +261,10 @@ namespace Teleop.RobotArm.World
             double clusterShare, double lyingShare, double[] edgeRegions, double edgeShare, int clutterMin, int clutterMax,
             int obstacleMin, int obstacleMax, double reachBearing, double standShare, double rigShare, int distractorMin, int distractorMax,
             double[] distractorRegions, double distractorReach, double tallShare, double workMin, double workMax, double workBearing,
-            double standTopMin, double standTopMax, double rigUnderMin, double rigUnderMax)
+            double standTopMin, double standTopMax, double rigUnderMin, double rigUnderMax, double overheadShare, double[] armRest)
         {
+            OverheadShare = overheadShare;
+            ArmRest = armRest;
             TallShare = tallShare;
             WorkMin = workMin;
             WorkMax = workMax;
@@ -373,6 +382,64 @@ namespace Teleop.RobotArm.World
         /// <summary>The range a rig's underside height is drawn from, uniform, m (docs/adr/0038, second pass); 0, 0: its steps' pairs, uniform.</summary>
         public double RigUnderMin { get; }
         public double RigUnderMax { get; }
+
+        /// <summary>The chance that an obstacle is an overhead bar, when one is free (docs/adr/0038, third pass); 0: none drawn so.</summary>
+        public double OverheadShare { get; }
+
+        /// <summary>
+        /// Where the arm stands between takes, <c>[xMin, xMax, yMin, yMax, zMin, zMax]</c> (docs/adr/0038, third pass): a mixed layout
+        /// stands nothing within the clearance of it (<see cref="InArmRest"/>). Empty: no such box.
+        /// </summary>
+        public double[] ArmRest { get; }
+
+        /// <summary>The longest a bar's spot is looked for, tries (docs/adr/0038, third pass): its posts and its span leave few spots.</summary>
+        public const int MaxBarTries = 256;
+
+        /// <summary>
+        /// Whether object <paramref name="index"/> centred at (x, y, z), turned <paramref name="yaw"/>, at its size and rest, comes within
+        /// the clearance of <see cref="ArmRest"/> (docs/adr/0038, third pass): its rectangle against the box's in plan, and its heights
+        /// against the box's. False when the scene has no such box.
+        /// </summary>
+        public bool InArmRest(int index, double x, double y, double z, double yaw, double scale, int rest)
+        {
+            if (ArmRest.Length != 6) return false;
+            RestExtents(index, rest, out double ex, out double ey, out double ez);
+            double hz = ez * scale / 2;
+            if (z - hz >= ArmRest[5] + Clearance - Tolerance || z + hz <= ArmRest[4] - Clearance + Tolerance) return false;
+            double kx = (ArmRest[0] + ArmRest[1]) / 2, ky = (ArmRest[2] + ArmRest[3]) / 2, kw = (ArmRest[1] - ArmRest[0]) / 2, kh = (ArmRest[3] - ArmRest[2]) / 2;
+            return !RectsApart(x, y, Math.Cos(yaw), Math.Sin(yaw), ex * scale / 2, ey * scale / 2, kx, ky, 1, 0, kw, kh, Clearance);
+        }
+
+        /// <summary>
+        /// A random spot for overhead bar <paramref name="index"/> (docs/adr/0038, third pass), across the arm's reach: the point of its
+        /// line nearest the base's axis <see cref="WorkMin"/>-<see cref="WorkMax"/> m out (uniform) within <see cref="ReachBearing"/> of
+        /// straight ahead, the bar square to that bearing, its centre along its line uniform within half its length
+        /// (<paramref name="scale"/>) of that point; three draws. Whether it and its posts fit and keep clear is the caller's to check.
+        /// </summary>
+        public void DrawBarSpot(int index, double scale, ref Teleop.Core.Types.SeededRng rng, out double x, out double y, out double yaw)
+        {
+            double d = WorkMin + rng.NextDouble() * (WorkMax - WorkMin);
+            double bearing = (2 * rng.NextDouble() - 1) * ReachBearing;
+            double along = (2 * rng.NextDouble() - 1) * Objects[index].SizeX * scale / 2;
+            yaw = bearing + Math.PI / 2;
+            if (yaw > Math.PI) yaw -= 2 * Math.PI;
+            x = d * Math.Cos(bearing) - along * Math.Sin(bearing);
+            y = d * Math.Sin(bearing) + along * Math.Cos(bearing);
+        }
+
+        /// <summary>
+        /// Whether object <paramref name="index"/>'s rectangle at (x, y), turned <paramref name="yaw"/>, at its size, comes no nearer the
+        /// base's axis than <see cref="ReachMax"/> (docs/adr/0038, third pass: an overhead bar's posts stand beyond the obstacles' band,
+        /// where the arm's turn at home never reaches).
+        /// </summary>
+        public bool BeyondBand(int index, double x, double y, double yaw, double scale)
+        {
+            RestExtents(index, RestUpright, out double ex, out double ey, out _);
+            double c = Math.Cos(yaw), s = Math.Sin(yaw);
+            double px = -x * c - y * s, py = x * s - y * c;
+            double qx = Math.Max(Math.Abs(px) - ex * scale / 2, 0), qy = Math.Max(Math.Abs(py) - ey * scale / 2, 0);
+            return Math.Sqrt(qx * qx + qy * qy) >= ReachMax - 1e-9;
+        }
 
         /// <summary>Whether object <paramref name="index"/> is one of a mixed pool's tall thin obstacles (<see cref="TallHeight"/> or taller at its file size).</summary>
         public bool IsTall(int index) => Objects[index].Role == SceneRole.Obstacle && Objects[index].SizeZ >= TallHeight - 1e-12;
@@ -1281,6 +1348,9 @@ namespace Teleop.RobotArm.World
                     if (id < 1 || id > 254) throw Bad("role", $"plank '{o.name}' names support {id}; ids run from 1 to 254");
                 }
 
+                // docs/adr/0038, the scene's third pass: an overhead bar is a bridge.
+                if (o.overhead && !(role == SceneRole.Plank && sup.Length == 2)) throw Bad("role", $"'{o.name}' is overhead, which only a plank on two supports is");
+
                 int[] st = o.steps ?? Array.Empty<int>();
                 if (st.Length != 0 && st.Length != 2) throw Bad("steps", $"'{o.name}': steps is [min, max]");
                 if (st.Length == 2 && !(st[0] >= MinResizeStep && st[0] <= st[1] && st[1] <= MaxResizeStep))
@@ -1305,7 +1375,7 @@ namespace Teleop.RobotArm.World
                 for (int k = 0; k < sup.Length; k++) supportIds[k] = (byte)sup[k];
                 objects[i] = new SceneObject((byte)o.id, o.name, shape, z[0], z[1], z[2], pos[0], pos[1], pos[2], rpy[2], movable, o.mass, o.operatorMovable,
                     o.staticFriction, o.dynamicFriction, (float)col[0], (float)col[1], (float)col[2], j[0], j[1], j[2], asset, o.clutter, role, supportIds,
-                    st.Length == 2 ? st[0] : 0, st.Length == 2 ? st[1] : 0, st.Length == 2);
+                    st.Length == 2 ? st[0] : 0, st.Length == 2 ? st[1] : 0, st.Length == 2, o.overhead);
             }
 
             ScenePoolDocument pool = d.pool ?? new ScenePoolDocument();
@@ -1443,6 +1513,17 @@ namespace Teleop.RobotArm.World
                 throw Bad("pool", "rigUnderMin and rigUnderMax are both 0, or 0 < rigUnderMin < rigUnderMax");
             }
 
+            // docs/adr/0038, the scene's third pass: overhead bars, and the box where the arm stands between takes. Checked in this order by
+            // robot/isaac's scene.py too.
+            double overheadShare = MixedShare(pool.overheadShare, "overheadShare", mixed);
+            double[] armRest = pool.armRest ?? Array.Empty<double>();
+            if (armRest.Length > 0 && !mixed) throw Bad("pool", "armRest is only for a mixed pool");
+            if (armRest.Length > 0 && !(armRest.Length == 6 && Finite(armRest[0], armRest[1], armRest[2], armRest[3]) && Finite(armRest[4], armRest[5]) &&
+                                        armRest[0] < armRest[1] && armRest[2] < armRest[3] && armRest[4] < armRest[5]))
+            {
+                throw Bad("pool", "armRest is [xMin, xMax, yMin, yMax, zMin, zMax] with min < max, or absent");
+            }
+
             double[] dr = pool.distractorRegions ?? Array.Empty<double>();
             if (dr.Length % 4 != 0) throw Bad("pool", "distractorRegions holds xMin, xMax, yMin, yMax for each rectangle");
             for (int k = 0; k < dr.Length; k += 4)
@@ -1465,10 +1546,11 @@ namespace Teleop.RobotArm.World
             if (pool.distractorMax > 0 && (dr.Length == 0 || !(pool.distractorReach > 0))) throw Bad("pool", "distractors need distractorRegions and distractorReach");
             if (pool.distractorReach > 0 && pool.distractorReach < pool.reachMax) throw Bad("pool", "distractorReach lies within the obstacles' band (reachMax)");
 
-            int obstacles = 0, distractors = 0, planks = 0;
+            int obstacles = 0, distractors = 0, planks = 0, overheads = 0;
             for (int i = 0; i < objects.Length; i++)
             {
                 SceneObject o = objects[i];
+                overheads += o.Overhead ? 1 : 0;
                 if (mixed && o.Role == SceneRole.None) throw Bad("role", $"'{o.Name}' has no role: every object of a mixed pool has one");
                 if (!mixed && o.Role != SceneRole.None) throw Bad("role", $"'{o.Name}' has a role: roles are for a mixed pool");
                 if (!mixed && o.HasSteps) throw Bad("steps", $"'{o.Name}' has steps: they are for a mixed pool's layouts");
@@ -1509,13 +1591,16 @@ namespace Teleop.RobotArm.World
                 if (o.Role == SceneRole.Support && !held) throw Bad("role", $"support '{o.Name}' holds up no plank");
             }
 
+            if (overheads > 0 && !(overheadShare > 0)) throw Bad("pool", "overhead planks need overheadShare");
+            if (overheadShare > 0 && overheads == 0) throw Bad("pool", "overheadShare needs an overhead plank");
             if (pool.obstacleMax > obstacles + planks) throw Bad("pool", $"it asks for up to {pool.obstacleMax} obstacles; the scene has {obstacles} and {planks} planks");
             if (pool.distractorMax > distractors) throw Bad("pool", $"it asks for up to {pool.distractorMax} distractors; the scene has {distractors}");
             var scene = new WorldScene(d.name, d.robotProfile, surfaces, table, bench, objects, p.xMin, p.xMax, p.yMin, p.yMax, p.clearance,
                 pool.movableMin, pool.movableMax, pool.fixedMin, pool.fixedMax, pool.sizeMin, pool.sizeMax, pool.reachMin, pool.reachMax,
                 pool.knockMaxMass, fr, ko, near, clusterShare, lyingShare, er, edgeShare, pool.clutterMin, pool.clutterMax,
                 pool.obstacleMin, pool.obstacleMax, pool.reachBearing, standShare, rigShare, pool.distractorMin, pool.distractorMax, dr, pool.distractorReach,
-                tallShare, pool.workMin, pool.workMax, pool.workBearing, pool.standTopMin, pool.standTopMax, pool.rigUnderMin, pool.rigUnderMax);
+                tallShare, pool.workMin, pool.workMax, pool.workBearing, pool.standTopMin, pool.standTopMax, pool.rigUnderMin, pool.rigUnderMax,
+                overheadShare, armRest);
             for (int i = 0; i < objects.Length; i++)
             {
                 SceneObject o = objects[i];

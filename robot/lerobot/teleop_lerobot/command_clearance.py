@@ -1132,7 +1132,7 @@ def action_agreement(commands, frames) -> Tuple[int, int, List[Tuple[int, int]]]
     :data:`ACTION_TOLERANCE`: the ``sent.*`` of the row (``commands``: commands.parquet's rows) with the newest ``sent_ns``
     at or before it (a command received but not yet sent, its RO some microseconds later, is not yet in force; a frame
     before the first send, the first row received at or before it). A file from
-    before 2026-11-25, without ``sent_ns``: the ``servo_*`` of the last row received at or before it. Returns (frames that
+    before work/v2-fix6 (2026-11-24), without ``sent_ns``: the ``servo_*`` of the last row received at or before it. Returns (frames that
     agree, frames, the first 20 (episode, frame) that do not)."""
     agree, total, bad = 0, 0, []
     by_ep = {int(ep): g for ep, g in commands.groupby("episode_index", sort=False)}

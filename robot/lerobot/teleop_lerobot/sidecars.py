@@ -1256,7 +1256,7 @@ def _read_some(path: str, columns: Sequence[str]):
 def stalls(cmd, frames) -> str:
     """``safety-report``'s stalls: the longest stretch of an episode (its first to its last frame) without a newly sent command,
     where the arm heads for one target while RobotHost refuses or nothing arrives. A send is an accepted or clamped row's own
-    RO (``sent_ns``); a file from before 2026-11-25, without it, an accepted row's arrival."""
+    RO (``sent_ns``); a file from before work/v2-fix6, without it, an accepted row's arrival."""
     import numpy as np
 
     longest = []  # (seconds, episode, seconds into the episode it starts)

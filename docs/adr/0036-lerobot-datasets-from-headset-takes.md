@@ -57,19 +57,21 @@ CameraHost streams the camera's own MJPEG and writes nothing to disk.
      newest `RO` pulse, which is the lab's convention: the gripper as a commanded belief (ADR 0018).
    - **JetRover `action`:** the newest `RO` at or before `t`, all six motors. (Since 2026-11-24 the newest command sent: a
      command RobotHost refused (`JC` `R`) counts too, as its plant would have turned it into pulses. One it ignored while the
-     arm parked (`P`) does not: RobotHost's own park targets are the `RO` then. docs/adr/0038 "M, motion".)
+     arm parked (`P`) does not: RobotHost's own park targets are the `RO` then. docs/adr/0038 "M, motion". Undone the same day,
+     docs/adr/0038 L "Sent commands": the action is the newest `RO` again, the target the arm is heading for, a command
+     RobotHost clamped (`JC` `C`) counting as the clamped point it sent; the commands as received are `commands.parquet`'s.)
    - **FR3 `state`:** the `QS` whose `sensed` is `t`, an exact join. Joints are in radians. Each hand's 0..1 opening is
      turned into one finger's travel in metres, the opening times the profile's `fingerTravel` (0.04 m).
    - **FR3 `action`:** the newest `AO` at or before `t`, in the same units. (Since 2026-11-24, as the JetRover's: a refused
-     command counts too, within the soft limits as its plant would have sent it.)
+     command counts too, within the soft limits as its plant would have sent it. Undone the same day: the newest `AO` again.)
 4. **The rate is fixed.** Episodes are written at 15 fps by default, on a uniform grid from the episode's first frame.
    - Each grid point takes the recorded frame nearest it, the earlier on a tie, if one is within half a step. A gap in
      the recording is filled by repeating the last frame, and the timing file flags it. (Until 2026-11-15 a point took the
      newest frame at most 1 ms past it. The twin's frame times wobble by ~3 ms, so at 30 fps written as 15 that picked
      frames 1, 2 or 3 apart, a 5 Hz judder in 80 of the first safety batch's 85 episodes. The datasets were rebuilt.)
    - **Start and end:** an episode runs from the take's first accepted operator command (`JC` outcome `A`) to its last.
-     (Since 2026-11-24 from its first command accepted or refused, `A` or `R`, to its last, the commands the action is
-     made of; docs/adr/0038 "M, motion".)
+     (Since 2026-11-24 from its first command RobotHost judged, accepted, clamped or refused (`A`, `C` or `R`), to its last;
+     docs/adr/0038 "M, motion" and L "Sent commands".)
      Parking and the idle seconds around a take are left out.
    - **Frames left out:** frames that have no state (the session's last ~0.1 s, after RobotHost closed it), and frames
      whose backdrop may still be settling (`B`).

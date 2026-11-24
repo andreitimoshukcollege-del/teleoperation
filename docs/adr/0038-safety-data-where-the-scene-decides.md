@@ -786,7 +786,9 @@ arm's way and was knocked over) differed from its source, episode 23, by 258 ser
 
   Across all 641 twin takes on the GPU machine, 5146 commands (1.0%) were refused, in 263 takes; every twin dataset built before held its
   action through them.
-- **The fix: the action is the command sent** (`takes.py` `_sent_actions`, begun in 735ab2f; docs/adr/0036 decision 3):
+- **The fix: the action is the command sent** (`takes.py` `_sent_actions`, begun in 735ab2f; docs/adr/0036 decision 3). **Reversed
+  the same day** (L, "Sent commands"): the action is the newest `RO` again, and the commands as received, refused ones included,
+  are `commands.parquet`'s rows. What follows is the record of the reversed change:
   - every `RO`, and every refused command (`JC` `R`) turned into pulses as the plant would have, at the time it reached the plant. The
     conversion is checked first against the take's own accepted commands and their `RO` (within 0.01 pulse), and pinned on both sides
     (`RelayPulseContractTests`, `test_takes.py`).
@@ -1347,6 +1349,84 @@ held-out `jetrover_20261124_142632_87d305`, their own options with visibility on
    -0.01 m), or widen it; it is `observation.images.front`, the one view a real JetRover has, so change it only with the real
    camera.
 4. Optional: draw fewer obstacles beyond 90 degrees of bearing (behind the base's line), which only the room cameras see.
+
+**Sent commands, clamping and the table distance: world-models' spec for the next pilot (2026-11-24, branch `work/v2-fix6`).**
+RobotHost is to clamp a command its collision check fails instead of refusing it (built in RobotHost by another workstream;
+its records are fixed): `JC` outcome `A` accepted, `C` clamped (RobotHost sent the farthest passing point on the joint line
+from the measured pose toward the command), `R` nothing passed (held); an `RO` for every command sent (`A` and `C`) with the
+targets sent; `JK|t|seq|alpha` per clamped command (`seq` the `JC`'s); and a session preamble `HK|t|start|onFail|version`, e.g.
+`HK|..|measured|clamp|1`. A session without `HK` refused. The dataset follows (`takes.py`, `command_clearance.py`,
+`sidecars.py`; every column in `robot/lerobot/README.md`):
+
+1. **A frame's `action` is the newest command sent:** the newest `RO`, the target the arm is heading for. A clamped command
+   counts as its clamped point; a refused one leaves the previous one in force. **This reverses M's "the action is the command
+   sent"** of the same day (735ab2f, 1dff8ed), which counted a refused `JC` as the plant would have sent it. Parked commands stay
+   out; RobotHost's own park `RO` stay in. `capture_timing.jsonl`'s action time and `raw_ros_events.jsonl`'s `action` lines
+   follow, and the FR3 Duo's action is the newest `AO` again. An episode still spans the commands RobotHost judged (`A`, `C`,
+   `R`). A take with no refused command reads as before either way.
+2. **`commands.parquet` has one row per command RobotHost judged** (`JC` `A`, `C` or `R`), refused ones included: `outcome`;
+   `servo_*` the command received in pulses (an accepted one's `RO` exactly; a clamped or refused one converted as the plant
+   does, checked against the take's accepted commands first); `sent_ns` and `sent.servo_1..5, 10`, what went to the servos
+   (an `A` or `C` command's own `RO`, an `R` command's the previous one sent); `clamp_fraction` (1 for `A`, 0 for `R`, the
+   `JK`'s alpha for `C`, NaN without one); `sent_min_clearance_mm` and `sent_path_min_clearance_mm`, the sent pose's distances
+   (`C`: the clamped point's; `A`: equal to the received command's; `R`: NaN, it sent nothing). The existing distance columns
+   stay the received command's. Two changes to the rows themselves: `received_ns` is the `JC`'s `tDeliver` (an accepted row's
+   was its `RO`'s time, a median 13 us and at most 2.6 ms later in the pilot), and RobotHost's own `RO` with no command (its
+   park; one before the first command in a synthetic take) are no longer rows. In the pilot's takes every `RO` belongs to a
+   command, so the rows are the same 10,396.
+3. **`hostCheck`** on every `episodes.jsonl` line and in `report.json`'s options, from `HK`: `{"start": "measured", "onFail":
+   "clamp", "version": 1}`; without `HK`, `{"start": "measured", "onFail": "refuse"}`. A report from before reads as refuse
+   (`safety._options`), so a rebuild of an older dataset compares equal there.
+4. **The pilot check** (`command_clearance.action_agreement`, in `safety-report`): every frame's `action` equals the `sent.*` of
+   the row with the newest `sent_ns` at or before its `sensed_ns`. By `sent_ns`, not `received_ns`: a frame captured in the
+   microseconds between a command's arrival and its `RO` still shows the previous target. A frame before the first send falls
+   back to the newest row received.
+5. **`safety-report` adds** the outcomes and the clamped share, the longest stretch of an episode without a newly sent command
+   (the arm heading for one target while RobotHost refuses), and the sent target's lead over the measured state in the frames
+   with a contact (the largest over servos 1-5, p50/p95/max, servo units).
+6. **The replay trade-off.** A replay sends its source's commands, so the two match on the commands received
+   (`commands.parquet`'s `servo_*`). The per-frame `action` is what RobotHost sent, so it differs wherever RobotHost judged a
+   command otherwise in the two takes; that depends on where the arm was measured, that is on physics. M's reversed change
+   made the action match across a pair at the price of an action the arm was never sent. Now the action is the arm's real
+   target, and the operator's command is a column of its own: compare a pair on `commands.parquet`, train or check a dynamics
+   model on `action`. `scripts/gpu/replay_pairs.py` gives both per frame (`received` and its phase-free `tape`, and `action`).
+   On the pilot's 6 pairs (5,232 matched commands, all identical): received p50/p95/max 1/20/64 units, `tape` 0/15/64,
+   `action` 1/21/80.
+7. **`surface_mm`** (`frames.parquet`, `commands.parquet`, `pose_samples.parquet`, per link, and the `min_` and `path_min_`
+   ones) is the distance to the scene file's colliding surfaces: the table, the bench beside it and the floor, which `WC`
+   reports as object 0 (`clearance.py`'s docstring), capped at 150 mm, NaN for the base, which no joint moves and PhysX never
+   collides with a surface. It is the table distance world-models asked for.
+
+The same branch's earlier commits, on the same files (by the agent before): every distance column is float64; one overall
+minimum everywhere, over the links a joint moves (the base left out), so `frames.parquet` and `episodes.jsonl` agree with the
+two command files, and `frames.parquet` names the link (`min_clearance_link`); no nearest link when nothing is within the
+150 mm cutoff; and each pose sample has its way from the frame's measured pose, as a command has (`path_s`, `path_min_*`).
+
+**Measured on the pilot** `jetrover_20261124_184421_b9d086` (12 takes, all refuse-mode, 6 replay pairs), read-only. "Before"
+is the pilot as built; "after" is a rebuild at 89da76a into scratch with its own options (`--jobs 4`, 91 s).
+
+| | Before | After |
+|---|---|---|
+| `*_mm` columns not float64 | 10 of 20 in commands, 10 of 19 in pose samples (the `*_link` ones, text) | none (22, 21 and 18 columns) |
+| overall minimum | commands and samples over the moving links; frames over every link, set by the base in 1,703 of 3,250 frames; episode 4's `minClearanceMm` 44.07 mm (the base) | over the moving links in all three files, 3,250 / 10,396 / 104,000 rows; episode 4 126.13 mm (outcome `no_contact` both) |
+| a link named with no object within the cutoff | 3,493 command rows, 50,289 samples | 0 (null link exactly where the id is null) |
+| pose-sample ways | none | all 104,000 finite, never farther than the sample; nearer by over 1 mm on 62,239. Under 0 on the way / at the sample: beyond 13.2% / 6.8%, reachable 16.2% / 4.7%, jump 15.5% / 2.2%, near 26.7% / 0.9% |
+| frames whose action is a refused command | 97 in 10 episodes (up to 199.3 units from the target sent) | 0 |
+| `raw_ros_events.jsonl` | 19,730 lines | 19,408: the 322 refused commands' action lines gone |
+| `commands.parquet` | 10,396 rows (10,074 A, 322 R) | the same rows; `sent.*` equals `servo_*` on all 10,074 A rows and is the previous row's on all 322 R rows (which differ from the received by p50 40.6, max 199.3 units) |
+| pilot check | each frame's action the last row received before it (refused rows included) | the newest command sent at or before it in 3,250 of 3,250 frames |
+| stalls (longest without a newly sent command) | | 1.67 s (episode 6, 4.29 s in); per episode p50 0.32 s, p95 1.03 s |
+| sent target's lead over the measured state in contact (398 frames) | | p50 49.1, p95 123.2, max 157.8 servo units |
+| `hostCheck` | | refuse, all 12 |
+| cost of the two command files | 2.05 s a worker an episode (the 10 takes above, no sample ways) | 11.4 s (max 26.6 s): the sample ways |
+
+`safety-report` finds no faults in the rebuild. `safety-compare` against the pilot: 37 differences, all intended: the data
+parquet, episode meta and timing files of the 10 episodes with a refused command (their action), `capture_timing.jsonl`,
+`raw_ros_events.jsonl`, `meta/stats.json`, and the sidecars' new columns and keys. The videos, labels, the other two
+episodes and every state are unchanged.
+
+**Untested:** a clamped take. None exists yet: the `C`, `JK` and `HK` handling is tested on synthetic takes only, written to the
+format above; the RobotHost side and its `SESSION_FORMAT.md` rows are the other workstream's. Not run on the twin.
 
 ### R, arm response
 

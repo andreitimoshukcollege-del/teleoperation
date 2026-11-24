@@ -25,13 +25,15 @@ readings as `state`, its bridge's fields, and since 2026-11-24 the episode in `e
 does not write). Their times are the session's one clock, CLOCK_MONOTONIC; the lab's
 `*_wall_ns` fields are null, since a take keeps no wall clock per record. Takes that could not be converted are in `~/data/lerobot/skipped.jsonl`, with the reason.
 
-A frame's `action` is the command the operator sent, the newest at the frame's time, in the units the plant sends its arm:
-what RobotHost passed on for an accepted command (`RO`, relay pulses, on the JetRover; `AO` on the FR3 Duo), and a command
-it refused (`JC` outcome `R`) as its plant would have turned it into those units. Until 2026-11-24 it was the `RO` or `AO`
-alone, so a refused command left the one before it in force, and a replay that sent its source's commands exactly could
-get another action (docs/adr/0038 "M, motion"). A command ignored while the arm parked (`P`) is not the action: RobotHost's
-own park targets are the `RO` then. An episode spans the commands accepted or refused (until then the accepted ones). The
-JetRover state's gripper slot stays the gripper's newest `RO`. A take with no refused command reads exactly as before.
+A frame's `action` is the newest command sent at the frame's time, in the units the plant sends its arm: the newest `RO`
+(relay pulses) on the JetRover, the newest `AO` on the FR3 Duo. That is the target the arm is heading for: an accepted
+command (`JC` outcome `A`) as received; a clamped one (`C`, since RobotHost's clamping check, `HK`) as the farthest passing
+point RobotHost sent toward it; RobotHost's own park targets while it parks (the commands it ignored meanwhile, `P`, are
+not the action). A refused command (`R`: nothing passed, the arm held) leaves the previous one in force (docs/adr/0038 L,
+"Sent commands"). For a few hours on 2026-11-24 (735ab2f, 1dff8ed) a refused command was the action too, as the plant would
+have sent it; that is undone, and the commands as received are `commands.parquet`'s rows instead. `capture_timing.jsonl`'s action time and
+`raw_ros_events.jsonl`'s `action` lines follow the same rule. An episode spans the commands RobotHost judged (`A`, `C` or
+`R`; before 2026-11-24 the accepted ones). The JetRover state's gripper slot is the gripper's newest `RO`.
 
 | Module | |
 |---|---|
@@ -74,9 +76,12 @@ once. It faults (exit 1) when a replay group, a layout hash, or a scene's layout
 the datasets and episodes; also on episodes of one dataset that overlap in time, label files that disagree, a replay group
 without one source, unavoidable ranges over an unsafe frame, a missing file, or a dataset given twice; and, for the command
 distances, a build that asked for them without their files, an episode with no rows and no reason, a frame without its pose
-samples, or a frame whose `action` is not the last `commands.parquet` row received at or before it (the pilot check). Its
-line on them gives their rows, the share with no distance, the share of commands whose commanded pose or the way there goes
-into an obstacle, and each sample kind's median and share under 0. Datasets from before
+samples, or a frame whose `action` is not the newest command sent at or before it (the pilot check: the `sent.*` of the
+`commands.parquet` row with the newest `sent_ns` at or before the frame's `sensed_ns`). Its line on them gives their rows, the
+share with no distance, the share of commands whose commanded pose or the way there goes into an obstacle, each sample
+kind's median and share under 0, the outcomes and the clamped share, the longest stretch of an episode without a newly sent
+command (the arm heading for one target while RobotHost refuses), and the sent target's lead over the measured state in the
+frames with a contact (the largest over servos 1-5 of `action` less `observation.state`, p50/p95/max, servo units). Datasets from before
 docs/adr/0038 have no sidecars to check, only their episodes' times.
 
 **The checks** (`safety-check`). The four old categories are checked as before. A `mixed` take is set aside (to
@@ -126,6 +131,7 @@ link names are the URDF's. JSON has no NaN: a value that is not there is `null` 
 | `frames`, `seconds`, `filled` | its length, and how many frames repeat an earlier render |
 | `firstContactS`, `afterLastContactS`, `timingFlags` | item 24: when the first obstacle contact began, how long after the last one ended the episode runs (0 when still touching), and the reasons it is reported: a first contact under 1.5 s or a last one ending under 1.0 s before the end (never set aside for it) |
 | `speedSlider`, `operator` | from session.json's conditions |
+| `hostCheck` | how RobotHost's collision check treated a failing command, from the session's `HK` preamble (`HK\|t\|start\|onFail\|version`): `{"start": "measured", "onFail": "clamp", "version": 1}` when it clamped; `{"start": "measured", "onFail": "refuse"}` for a session without `HK`, which refused (every take recorded before RobotHost's clamping) |
 | `room` | the `EN` in force: `change`, `seed`, `hdri`, `sha256`, `yawDeg`, `intensity`, `settleFrames`, `brightness`, `gains` (per recorded camera name), later fields under `extra` |
 | `looks`, `materials`, `clutter` | `LK` and `MT` of that change (name to look, id to texture), and `CL` (`pieces`, `kinds`, and `items`: `[kind, x, y, yaw]` each) |
 | `lookChanges` | the change number each of `EN`, `LK`, `MT`, `CL`, `LT`, `CJ` and `OA` came from: a replay group shares one look, so its takes' numbers match |
@@ -160,8 +166,10 @@ stretch with it, or the episode's end.
 `in_contact` (an obstacle), `in_contact_table` (the table), `unsafe` (the labels, 0 or 1: either of the two, or `in_contact`
 alone when built `--table-safe`), per link
 `clearance_mm.<link>` and `clearance_id.<link>` (signed distance to the nearest obstacle and its id) and `surface_mm.<link>`
-(to the table surface; NaN for a link no joint moves), `min_clearance_mm`, `min_clearance_id` (null when nothing is within
-the clearance's cutoff, 150 mm, where the distance is that cutoff), `min_surface_mm`, `time_to_contact_s` (to the next obstacle
+(to the scene file's colliding surfaces: the table, the bench beside it and the floor, which `WC` reports as object 0;
+capped at 150 mm; NaN for the base, which no joint moves and PhysX never collides with a surface; see `clearance.py`'s
+docstring. The table distance world-models asked for), `min_clearance_mm`, `min_clearance_id` and `min_clearance_link` (the least over the links a joint moves, the base left out;
+id and link null when nothing is within the clearance's cutoff, 150 mm, where the distance is that cutoff), `min_surface_mm`, `time_to_contact_s` (to the next obstacle
 contact's start; 0 in contact, NaN when none follows in the episode), `filled` (the frame repeats an earlier render: the 15
 fps grid point had no recorded frame within half a step, or the same one as the point before), `state_skew_ms` and
 `action_skew_ms` (how much older the state reading and the command behind the frame, received at
@@ -172,7 +180,9 @@ computed (workstream C's `teleop_lerobot/clearance.py` and the geometry under `-
 `report.json`: the dataset's `episodes`, `frames`, `seconds`, `scenarios`, `outcomes`, `contactEpisodes`,
 `tableContactEpisodes`, `contacts` by kind, `unsafeFrames`, `unsafeRanges`, `replayGroups`, `roles`, `layoutHashes`,
 `layoutSeeds`, `clearanceEpisodes`, `timingFlagged` (episodes), `split` (`part`, `of`) and the build's `options`
-(`caption`, `tableSafe`, `geometryDir`, `stopModel`: `{"stopTimes": {name: seconds}}` or null, `commandClearance`).
+(`caption`, `tableSafe`, `geometryDir`, `stopModel`: `{"stopTimes": {name: seconds}}` or null, `commandClearance`), and
+`hostCheck`: the episodes' one `hostCheck`, or the list of the distinct ones when they differ (not a build option: what the
+takes say; a report without it reads as refuse).
 
 `commands.parquet` and `pose_samples.parquet` (docs/adr/0038 L, since 2026-11-24; `--no-command-clearance` writes neither,
 as builds before): obstacle distances for a robot-side safety check, from `teleop_lerobot/command_clearance.py`. The
@@ -184,24 +194,32 @@ distance is in its per-link columns). Without geometry (or the take's `robot-pro
 with NaN distances, and `episodes.jsonl`'s `commandClearanceUnavailable` says why. Each file's parquet metadata (`teleop`
 key, JSON) describes it.
 
-- **`commands.parquet`, one row per action event** of `raw_ros_events.jsonl`, at the commands' own rate, not resampled:
-  every `RO` (what RobotHost sent the relay for an accepted command, or of its own while parking) and every command
-  RobotHost refused, as the plant would have sent it. These events are what the frames' `action` is made of, so each
-  frame's `action` equals the last row received at or before the frame was captured (`safety-report` checks it).
-  - Columns: `episode_index`, `frame_index` (the last frame captured at or before `received_ns`; null before the first),
-    `received_ns` (the event's `pc_received_mono_ns`: RobotHost's CLOCK_MONOTONIC, `capture_timing.jsonl`'s clock), `seq`
-    (the `JC` it carries; an `RO`'s is the newest accepted one), `outcome` (`A` sent to the relay, `R` refused), `accepted`,
-    and `servo_1` to `servo_5` and `servo_10`, exactly as the action has them (relay pulses).
-  - `state.servo_*` and `state_ns`: the arm as measured when it arrived (each servo's newest valid `RI` reading at or
-    before `received_ns`; the gripper's last relay target when it has none), and the oldest reading's time.
-  - At the commanded pose: per link `clearance_mm.<link>`, `clearance_id.<link>`, `surface_mm.<link>` (as
-    `frames.parquet`'s), then `min_clearance_mm`, `min_clearance_id`, `min_clearance_link` and `min_surface_mm`.
-  - Along the way: `path_s` (how long the slowest servo takes), and `path_min_clearance_mm`, `_id`, `_link`, `path_min_step`
-    (1-8) and `path_min_surface_mm`: the smallest over 8 poses from the measured state to the commanded pose, at 1/8..8/8 of
-    `path_s`. Each servo ramps linearly in pulses at the event's rate (an `RO`'s pulses per second, a refused command's
-    speed) and holds at its target, as the twin's servo setpoints do (`teleop_isaac/servo.py`, `TimedSetpoint`). Not
-    modelled: the setpoint starts from where its last ramp stood, not the reading, and PhysX's drive trails it. NaN before
-    the first reading.
+- **`commands.parquet`, one row per command RobotHost received and judged** (`JC` outcome `A` accepted, `C` clamped or `R`
+  refused), at the commands' own rate, not resampled, in the order they reached the plant. Not a stale (`S`), parked (`P`)
+  or gated (`H`) command, and not RobotHost's own park targets (`RO` with no command). Each row gives the command as
+  received and what went to the servos for it; the frames' `action` is the latter, so each frame's `action` equals the
+  `sent.*` of the row with the newest `sent_ns` at or before the frame was captured (`safety-report` checks it). A replay
+  and its source match on the received columns; their `sent.*` and `action` differ where RobotHost judged a command
+  otherwise in the two (docs/adr/0038 L, "Sent commands").
+
+| Column | Meaning |
+|---|---|
+| `episode_index`, `frame_index` | the episode; the last frame captured at or before `received_ns` (null before the first) |
+| `received_ns` | when the command reached the plant: its `JC`'s `tDeliver` (its arrival unless the robot-side uplink impairment is on), RobotHost's CLOCK_MONOTONIC, `capture_timing.jsonl`'s clock. In builds before work/v2-fix6 (2026-11-24) an accepted row's was its `RO`'s time, some microseconds later, and RobotHost's own `RO` were rows too |
+| `seq` | the `JC`'s sequence number |
+| `outcome` | `A` accepted, sent as received; `C` clamped: RobotHost sent the farthest point on the joint line from the measured pose toward the command whose servo path passed its collision check; `R` refused: nothing passed, the arm held its target. A session without `HK` refused and never clamped |
+| `accepted` | `outcome` is `A` |
+| `servo_1`..`servo_5`, `servo_10` | the command received, in relay pulses: an accepted one's `RO` exactly, a clamped or refused one as the plant converts it (checked against the take's accepted commands first; a take whose RobotHost converts otherwise gets no rows, and `commandClearanceUnavailable` says so) |
+| `sent_ns` | the `RO` in force once the command was judged: an `A` or `C` command's own (the first written after it reached the plant, before the next did; median 13 us after it), an `R` command's the previous one sent; null before any |
+| `sent.servo_1`..`sent.servo_10` | that `RO`'s pulses: what went to the servos. Equal to `servo_*` for `A`, the clamped point for `C`, the previous sent command for `R` |
+| `clamp_fraction` | how far from the measured pose toward the command was sent: 1 for `A`, 0 for `R`, the `JK`'s alpha for `C` (NaN without one) |
+| `state.servo_*`, `state_ns` | the arm as measured when it arrived (each servo's newest valid `RI` at or before `received_ns`; the gripper's last relay target when it has none), and the oldest reading's time |
+| `clearance_mm.<link>`, `clearance_id.<link>`, `surface_mm.<link>` | at the received command's pose, as `frames.parquet`'s |
+| `min_clearance_mm`, `min_clearance_id`, `min_clearance_link`, `min_surface_mm` | the same, the least over the links a joint moves; a null link and id when nothing is within the cutoff |
+| `path_s` | how long the slowest servo takes from the measured state to the received command |
+| `path_min_clearance_mm`, `_id`, `_link`, `path_min_step`, `path_min_surface_mm` | the least over 8 poses from the measured state to the received command, at 1/8..8/8 of `path_s` (`path_min_step` 1-8, 0 without a way). Each servo ramps linearly in pulses at the command's rate (an accepted one's `RO` pulses per second, a clamped or refused one's speed) and holds at its target, as the twin's servo setpoints do (`teleop_isaac/servo.py`, `TimedSetpoint`). Not modelled: the setpoint starts from where its last ramp stood, not the reading, and PhysX's drive trails it. NaN before the first reading |
+| `sent_min_clearance_mm`, `sent_path_min_clearance_mm` | `min_clearance_mm` and `path_min_clearance_mm` for the sent pose (the way from the same measured state at its `RO`'s rate): for `C` the clamped point's; for `A` equal to the received command's; NaN for `R`, which sent nothing (the target in force is an earlier row's) |
+
 - **`pose_samples.parquet`, 32 made-up poses a frame,** never executed: geometry only, in that frame's scene (object poses
   at its `sensed_ns`). Columns: `episode_index`, `frame_index`, `sample` (0-31), `kind`, `servo_*` (the pose, as the
   action), `scale`, `target_mm`, `target_id`, and the distance columns above. Kinds, in this order:
@@ -216,8 +234,13 @@ key, JSON) describes it.
     side. With no obstacle in reach nothing can land, and the pose nearest the target is kept.
   - Seeded per episode: `episodes.jsonl`'s `poseSampleSeed` (sha256 of `<layoutSeed>|<session>`, 53 bits), so a rebuild
     draws the same poses whatever the episode's index.
-- **Cost:** about 2 s of a worker an episode (2.05 s average, 2.92 s at most over 10 twin takes of 2026-11-24 with
-  `--jobs 4`). It runs in the workers beside video encoding, so the build took no longer (49.7 s with, 51.9 s without).
+  - Each sample's way (since work/v2-fix6, 2026-11-24): `path_s` and the `path_min_` columns as `commands.parquet`'s, over 8 poses from
+    the frame's measured state (its `observation.state`) to the sample, each servo at the rate of the command in force at
+    the frame (the sent `RO`'s, of the row with the newest `sent_ns` at or before it; the mixed script's caps for a servo it
+    gives none).
+- **Cost:** about 11 s of a worker an episode since the samples have their ways (11.4 s average, 26.6 s at most over the 12
+  takes of the 2026-11-24 pilot with `--jobs 4`, 91 s for the build; 2.05 s before). It runs in the workers beside video
+  encoding.
 (`caption`, `tableSafe`, `geometryDir`, `stopModel`: `{"stopTimes": {name: seconds}}` or null, `visibility`: true or
 false; a report without it is false).
 

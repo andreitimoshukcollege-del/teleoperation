@@ -262,7 +262,7 @@ def _jetrover_actions(path: str, host) -> List[Tuple[int, Dict[int, float]]]:
     passed on (``JC`` ``A``), the farthest passing point toward one it clamped (``C``, since RobotHost's clamping host check,
     ``HK``), and its own park targets; a command it refused (``R``: nothing passed, the arm holds) or ignored while parking
     (``P``) leaves the previous one in force. So the action is the target the arm is heading for (docs/adr/0038 L, "Sent
-    commands"; 2026-11-24 to 2026-11-25 a refused command was the action too)."""
+    commands"; for a few hours on 2026-11-24, 735ab2f and 1dff8ed, a refused command was the action too)."""
     return _out_events(host, "RO")
 
 

@@ -467,3 +467,14 @@ def test_a_build_writes_both_files_and_safety_report_sums_them_up(scenarios, geo
     os.remove(os.path.join(teleop, "pose_samples.parquet"))
     sidecars.command_line(teleop, "ds", [{**e.line, "episode": 4}], lines, faults)
     assert faults == ["ds: built with command distances, but pose_samples.parquet missing"]
+
+
+def test_a_datasets_host_check_is_its_takes_one_or_the_distinct_ones():
+    clamp = {"start": "measured", "onFail": "clamp", "version": 1}
+    refuse = {"start": "measured", "onFail": "refuse"}
+    assert sidecars.host_checks([{"hostCheck": clamp}, {"hostCheck": clamp}]) == clamp
+    assert sidecars.host_checks([{"hostCheck": refuse}, {}]) == refuse  # a line without one: refuse
+    assert sidecars.host_checks([{"hostCheck": refuse}, {"hostCheck": clamp}, {"hostCheck": refuse}]) == [refuse, clamp]
+    from teleop_lerobot import safety
+    assert safety._options({"caption": "neutral"})["hostCheck"] == refuse  # a report from before reads as refuse
+    assert safety._options({"hostCheck": clamp})["hostCheck"] == clamp

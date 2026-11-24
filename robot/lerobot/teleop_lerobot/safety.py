@@ -750,7 +750,7 @@ def _options(options: Optional[Dict]) -> Dict:
     """A ``report.json``'s build options as this version names them: a build before 2026-11-23 says ``tableUnsafe`` (the
     table counted only when true) where one now says ``tableSafe``, and gave its one stop time as ``stopTimeS`` where one
     now names its stop times (``stopTimes``; one given on the command line is ``given``). One built before 2026-11-24 wrote
-    no ``visibility.parquet``: ``visibility`` false. One built before 2026-11-25 recorded no ``hostCheck``: its takes'
+    no ``visibility.parquet``: ``visibility`` false. One built before work/v2-fix6 (2026-11-24) recorded no ``hostCheck``: its takes'
     RobotHost refused (``sidecars.REFUSE_CHECK``)."""
     o = dict(options or {})
     if "tableUnsafe" in o:
@@ -760,7 +760,7 @@ def _options(options: Optional[Dict]) -> Dict:
     if isinstance(stop, dict) and "stopTimeS" in stop:
         o["stopModel"] = {"stopTimes": {"given": stop["stopTimeS"]}}
     o.setdefault("visibility", False)  # a build before 2026-11-24 wrote no visibility.parquet
-    # Not a build option but what the takes say (sidecars.host_checks): a build before 2026-11-25 did not record it, and every
+    # Not a build option but what the takes say (sidecars.host_checks): a build before work/v2-fix6 did not record it, and every
     # take then came from a RobotHost that refused a failing command.
     from . import sidecars
 

@@ -1010,8 +1010,9 @@ namespace Teleop.Eval.JointDrive
                 // meets the object on this line, and the accident carries it on into the object, past that by a drawn depth.
                 bool aimed = _options.AimAccidents && kind != ScriptMoveKind.WrongWay;
                 (double reachMin, double reachMax) = AimedReach(kind);
-                float depth = MathF.Min((float)Draw.Uniform(ref _rng, AimedDepthMin, AimedDepthMax), MathF.Max(0.004f, DeepestGap(oi) - 0.002f));
-                float reach = (float)Draw.Uniform(ref _rng, reachMin, reachMax);
+                // Drawn only when aimed, so that with the option off every draw is as it was.
+                float depth = aimed ? MathF.Min((float)Draw.Uniform(ref _rng, AimedDepthMin, AimedDepthMax), MathF.Max(0.004f, DeepestGap(oi) - 0.002f)) : 0f;
+                float reach = aimed ? (float)Draw.Uniform(ref _rng, reachMin, reachMax) : 0f;
                 // The wrist pitched for the height (PitchAt), else up to 36 degrees either way: where the hand would stop must be in reach, in the
                 // envelope and clear of the robot itself, or no try there plans.
                 float pitch0 = PitchAt(new Vector2(tool.X, tool.Y).Length(), tool.Z) + (float)(Draw.Uniform(ref _rng, -8, 8) * deg), pitch = pitch0;

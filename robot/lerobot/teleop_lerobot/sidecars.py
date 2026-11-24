@@ -20,9 +20,12 @@ The files, under ``meta/teleop/`` (``robot/lerobot/README.md``, "Safety datasets
 - ``report.json``: the dataset's scenario, outcome and contact counts, and the options it was built with;
 - ``unavoidable_ranges.json``: for each stop time of the stop model (:class:`StopModel`; by default the twin's fast,
   median and slow stops, since 2026-11-23), the frames from which a stop could no longer avoid the coming contact. For
-  analysis; the labels stay contact. Provisional until the real arm's stop latency is measured.
+  analysis; the labels stay contact. Provisional until the real arm's stop latency is measured;
+- ``commands.parquet`` and ``pose_samples.parquet`` (``teleop_lerobot.command_clearance``, unless
+  ``Options.command_clearance`` is off): every command the robot side received with the distances at its commanded pose
+  and along the way there, and made-up poses near each frame's, for a robot-side safety check.
 
-No LeRobot here, and pandas only to write ``frames.parquet``: the rest runs and is tested with plain Python.
+No LeRobot here, and pandas only to write the parquet files: the rest runs and is tested with plain Python.
 """
 
 from __future__ import annotations
@@ -111,6 +114,8 @@ class Options:
     geometry_dir: Optional[str] = None  # the twin's collision geometry, for clearance; None: no clearance
     # writes unavoidable_ranges.json, by default for the twin's three stop times (since 2026-11-23); None: no file, as before
     stop: Optional[StopModel] = field(default_factory=StopModel)
+    # commands.parquet and pose_samples.parquet (teleop_lerobot.command_clearance), on by default since 2026-11-24
+    command_clearance: bool = True
 
     def __post_init__(self):
         if self.caption not in ("neutral", "category"):
@@ -121,7 +126,8 @@ class Options:
 
     def describe(self) -> Dict:
         return {"caption": self.caption, "tableSafe": self.table_safe, "geometryDir": self.geometry_dir,
-                "stopModel": None if self.stop is None else {"stopTimes": self.stop.seconds()}}
+                "stopModel": None if self.stop is None else {"stopTimes": self.stop.seconds()},
+                "commandClearance": self.command_clearance}
 
 
 @dataclass(frozen=True)
@@ -150,6 +156,9 @@ class Episode:
     frames: Dict[str, list]
     unavoidable: Optional[Dict[str, List[List[int]]]] = None  # per stop time's name, its ranges (Options.stop)
     flags: List[str] = field(default_factory=list)
+    commands: Optional[Dict[str, object]] = None  # commands.parquet's columns (Options.command_clearance)
+    pose_samples: Optional[Dict[str, object]] = None  # pose_samples.parquet's columns
+    command_seconds: Optional[float] = None  # how long they took, for the build log (written nowhere)
 
 
 # --- reading the take -----------------------------------------------------------------------------------------------------
@@ -633,6 +642,21 @@ def clearance(take: Take, geometry_dir: Optional[str]):
     return c, None
 
 
+def command_tables(e: "Episode", take: Take, options: Options, host: Jlog, layout_seed) -> None:
+    """The episode's ``commands.parquet`` and ``pose_samples.parquet`` columns (``teleop_lerobot.command_clearance``), into
+    ``e``, with ``poseSampleSeed`` and ``commandClearanceUnavailable`` on its line: NaN distances, and why, when the geometry
+    or a record is missing; no rows when the take cannot have them at all (not a JetRover take, or a fault in it)."""
+    try:
+        from . import command_clearance as cc
+
+        t = cc.compute(take, options.geometry_dir, layout_seed, host)
+    except Exception as err:  # noqa: BLE001  (the dataset is still written, and says why)
+        e.line["poseSampleSeed"], e.line["commandClearanceUnavailable"] = None, f"{type(err).__name__}: {err}"
+        return
+    e.commands, e.pose_samples, e.command_seconds = t.commands, t.samples, t.seconds
+    e.line["poseSampleSeed"], e.line["commandClearanceUnavailable"] = t.seed, t.unavailable
+
+
 def _object_id(v) -> Optional[int]:
     """An obstacle id from the clearance, or None for none within its cutoff (its ``NO_OBSTACLE``, -1) or none at all."""
     f = _finite(v)
@@ -856,7 +880,10 @@ def episode(take: Take, options: Options = Options(), records: Optional[Records]
     if options.stop is not None:  # before the contacts the labels count (time_to_contact_s is to an obstacle's alone)
         counted_starts = sorted(s.start for s in counted)
         unav = {name: unavoidable(take, labels, counted_starts, seconds) for name, seconds in options.stop.times}
-    return Episode(take.scenario, labels, line, scene_line, contact_lines, cols, unav, flags)
+    e = Episode(take.scenario, labels, line, scene_line, contact_lines, cols, unav, flags)
+    if options.command_clearance:
+        command_tables(e, take, options, host, layout_seed)
+    return e
 
 
 # --- many episodes ---------------------------------------------------------------------------------------------------------
@@ -969,6 +996,8 @@ def write(root: str, written: Sequence[Tuple[int, Episode]], options: Options, s
                 contacts.append(c)
                 f.write(_line({"episode": ep, **c}))
     write_frames(os.path.join(teleop, "frames.parquet"), written)
+    if options.command_clearance:
+        write_command_tables(teleop, written)
     rep = report(lines, contacts, options, split_of)
     with open(os.path.join(teleop, "report.json"), "w", encoding="utf-8") as f:
         json.dump(_clean(rep), f, indent=1, allow_nan=False)
@@ -976,6 +1005,18 @@ def write(root: str, written: Sequence[Tuple[int, Episode]], options: Options, s
         with open(os.path.join(teleop, "unavoidable_ranges.json"), "w", encoding="utf-8") as f:
             json.dump(unavoidable_file(written, options.stop), f, indent=1)
     return rep
+
+
+def write_command_tables(teleop: str, written: Sequence[Tuple[int, Episode]]) -> None:
+    """``commands.parquet`` and ``pose_samples.parquet`` (``teleop_lerobot.command_clearance``), each with its parquet
+    metadata saying how it was made."""
+    from . import command_clearance as cc
+
+    meta = cc.metadata()
+    cc.write_parquet(os.path.join(teleop, "commands.parquet"), [(ep, e.commands) for ep, e in written if e.commands is not None],
+                     meta["commands"])
+    cc.write_parquet(os.path.join(teleop, "pose_samples.parquet"),
+                     [(ep, e.pose_samples) for ep, e in written if e.pose_samples is not None], meta["pose_samples"])
 
 
 def unavoidable_file(written: Sequence[Tuple[int, Episode]], stop: StopModel) -> Dict:
@@ -1059,6 +1100,59 @@ def _check_streams(root: str, name: str, lines: List[str], faults: List[str]) ->
                       f"(just isaac-safety-rebuild {os.path.basename(os.path.realpath(root))})")
         labels = [f"episode {e} ({'/'.join(ledger.get(e, '?').rstrip('/').split('/')[-3:])})" for e in order]
         faults.extend(f"{name}: {line}" for line in overlap_lines(labels, [spans[e] for e in order], pairs, LISTED))
+
+
+def command_line(teleop: str, name: str, eps: Sequence[Dict], lines: List[str], faults: List[str]) -> None:
+    """``safety-report``'s line on ``commands.parquet`` and ``pose_samples.parquet`` (docs/adr/0038 L): their rows, the share
+    with no distance (NaN), the share of commands whose commanded pose, or a pose on the way there, goes into an obstacle
+    (minimum over the links under 0), and each sample kind's minimum-distance median and share under 0. Faults: a build that
+    asked for them without the files, an episode with no rows and no reason, and a frame without its samples."""
+    import pandas as pd
+
+    paths = [os.path.join(teleop, f) for f in ("commands.parquet", "pose_samples.parquet")]
+    with open(os.path.join(teleop, "report.json"), encoding="utf-8") as f:
+        asked = bool((json.load(f).get("options") or {}).get("commandClearance"))
+    if not all(os.path.exists(p) for p in paths):
+        if asked:
+            faults.append(f"{name}: built with command distances, but {', '.join(os.path.basename(p) for p in paths if not os.path.exists(p))} missing")
+        else:
+            lines.append(f"{name}: no command distances (built without them)")
+        return
+    cmd, smp = pd.read_parquet(paths[0]), pd.read_parquet(paths[1])
+    have = set(cmd["episode_index"].unique()) if len(cmd) else set()
+    lacking = [e.get("episode") for e in eps if e.get("episode") not in have and not e.get("commandClearanceUnavailable")]
+    if lacking:
+        faults.append(f"{name}: no commands.parquet rows and no reason for episode(s) {lacking[:LISTED]}")
+    total = sum(1 for _ in smp.groupby(["episode_index", "frame_index"])) if len(smp) else 0
+    frames_by_ep = {e.get("episode"): e.get("frames") for e in eps}
+    short = sorted(int(ep) for ep, n in smp.groupby("episode_index")["frame_index"].nunique().items()
+                   if frames_by_ep.get(int(ep)) is not None and n != frames_by_ep[int(ep)]) if len(smp) else []
+    if short:
+        faults.append(f"{name}: pose_samples.parquet lacks frames of episode(s) {short[:LISTED]}")
+
+    def share(x):
+        return f"{100 * x:.1f}%" if x == x else "n/a"
+    m, pm = cmd.get("min_clearance_mm"), cmd.get("path_min_clearance_mm")
+    known = m.notna() if m is not None else pd.Series(dtype=bool)
+    parts = [f"{name}: commands.parquet {len(cmd)} rows ({len(have)} episodes), no distance in {share(1 - known.mean() if len(cmd) else float('nan'))}"]
+    if len(cmd) and known.any():
+        parts.append(f"commanded pose into an obstacle {share((m[known] < 0).mean())}, on the way there {share((pm[pm.notna()] < 0).mean())}"
+                     f" (accepted ones {share((m[known & cmd['accepted']] < 0).mean())}), commanded min clearance median "
+                     f"{m[known].median():.1f} mm")
+    sm = smp.get("min_clearance_mm")
+    parts.append(f"pose_samples.parquet {len(smp)} rows ({total} frames), no distance in "
+                 f"{share(sm.isna().mean() if len(smp) else float('nan'))}")
+    if len(smp) and sm.notna().any():
+        kinds = []
+        for kind, g in smp.groupby("kind", sort=False):
+            v = g["min_clearance_mm"].dropna()
+            if len(v):
+                kinds.append(f"{kind} median {v.median():.1f} mm, {share((v < 0).mean())} under 0")
+        parts.append("; ".join(kinds))
+    why = sorted({e["commandClearanceUnavailable"] for e in eps if e.get("commandClearanceUnavailable")})
+    if why:
+        parts.append(f"why not: {why[:3]}")
+    lines.append("; ".join(parts))
 
 
 def check_datasets(roots: Sequence[str]) -> Tuple[List[str], List[str]]:
@@ -1152,6 +1246,7 @@ def check_datasets(roots: Sequence[str]) -> Tuple[List[str], List[str]]:
                     parts.append(f"{set_name} {seconds:g} s: {sum(b - a + 1 for rs in by_episode.values() for a, b in rs)} "
                                  f"frames in {len(by_episode)} episode(s)")
                 lines.append(f"{name}: unavoidable ranges ({unav.get('source')}): " + "; ".join(parts))
+        command_line(teleop, name, eps, lines, faults)
     shared_look = same_seed = hashed_apart = 0
     for g, members in sorted(groups.items()):
         if sum(1 for _, e in members if e.get("role") == "source") != 1:
@@ -1186,6 +1281,6 @@ def check_datasets(roots: Sequence[str]) -> Tuple[List[str], List[str]]:
 
 
 __all__ = ["Episode", "GEOMETRY_DIR", "NEUTRAL_CAPTION", "Options", "STOP_SOURCE", "STOP_TIMES_S", "StopModel", "Stretch",
-           "camera_jitter", "cameras", "check_datasets", "clearance", "episode", "frame_flags", "layout_hash", "look_at",
-           "object_stretches", "parse_edit", "planned_moves", "read_records", "replay", "report", "split", "unavoidable",
-           "unavoidable_file", "write", "write_frames"]
+           "camera_jitter", "cameras", "check_datasets", "clearance", "command_line", "command_tables", "episode", "frame_flags",
+           "layout_hash", "look_at", "object_stretches", "parse_edit", "planned_moves", "read_records", "replay", "report", "split",
+           "unavoidable", "unavoidable_file", "write", "write_command_tables", "write_frames"]

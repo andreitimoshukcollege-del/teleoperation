@@ -657,10 +657,10 @@ def test_a_rebuild_takes_its_references_options_even_from_a_report_that_named_th
     from teleop_lerobot.__main__ import main
 
     takes = [read_take(p) for p in batch(scenarios)]
-    built = dict(table_safe=True, geometry_dir="/nowhere", stop=None)  # as the builds before 2026-11-23 by default
+    built = dict(table_safe=True, geometry_dir="/nowhere", stop=None, command_clearance=False)  # as builds before 2026-11-23
     ref, again, counted = (str(tmp_path / n) for n in ("ref", "again", "counted"))
     safety.build(Writer(), ref, takes, log=lambda m: None, options=sidecars.Options(**built))
-    want = ["--caption", "neutral", "--geometry-dir=/nowhere", "--table-safe", "--no-unavoidable"]
+    want = ["--caption", "neutral", "--geometry-dir=/nowhere", "--table-safe", "--no-unavoidable", "--no-command-clearance"]
     assert safety.rebuild_options(ref) == want
     path = os.path.join(ref, "meta", "teleop", "report.json")
     report = json.load(open(path))
@@ -676,6 +676,7 @@ def test_a_rebuild_takes_its_references_options_even_from_a_report_that_named_th
     assert "manual_safety_labels.json: differs (episodes [2])" in diffs and "safety_ranges.json: differs" in diffs
     assert os.path.join("meta", "teleop", "report.json") + ": differs" in diffs
     assert os.path.join("meta", "teleop", "unavoidable_ranges.json") + ": not in the reference" in diffs
+    assert os.path.join("meta", "teleop", "commands.parquet") + ": not in the reference" in diffs
     os.remove(path)  # a dataset from before docs/adr/0038: category captions, and its twin reported no table contacts
     assert safety.rebuild_options(ref) == ["--caption", "category"]
 
@@ -684,12 +685,14 @@ def test_a_rebuild_takes_its_references_options_even_from_a_report_that_named_th
         (tmp_path / "opts" / "meta" / "teleop" / "report.json").write_text(json.dumps({"options": options}))
         return safety.rebuild_options(str(tmp_path / "opts"))
     plain = ["--caption", "neutral", "--geometry-dir="]
-    assert options_of({"caption": "neutral", "tableSafe": False, "geometryDir": None,
+    assert options_of({"caption": "neutral", "tableSafe": False, "geometryDir": None, "commandClearance": True,
                        "stopModel": {"stopTimes": dict(sidecars.STOP_TIMES_S)}}) == plain  # today's defaults
-    assert options_of({"caption": "neutral", "tableSafe": False, "geometryDir": None,
+    assert options_of({"caption": "neutral", "tableSafe": False, "geometryDir": None, "commandClearance": True,
                        "stopModel": {"stopTimes": {"given": 0.35}}}) == plain + ["--stop-time-s=0.35"]
+    assert options_of({"caption": "neutral", "tableSafe": False, "geometryDir": None,  # before 2026-11-24: no command distances
+                       "stopModel": {"stopTimes": dict(sidecars.STOP_TIMES_S)}}) == plain + ["--no-command-clearance"]
     assert options_of({"caption": "neutral", "tableUnsafe": True, "geometryDir": None,  # before 2026-11-23, both given
-                       "stopModel": {"stopTimeS": 0.25}}) == plain + ["--stop-time-s=0.25"]
+                       "stopModel": {"stopTimeS": 0.25}}) == plain + ["--stop-time-s=0.25", "--no-command-clearance"]
 
 
 def test_an_old_takes_planned_events_and_odd_numbers_reach_the_lines_as_json_can_hold_them(scenarios, tmp_path):

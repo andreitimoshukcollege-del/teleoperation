@@ -11,7 +11,8 @@
   (docs/adr/0036 amendment 1) and world-models' (``safety_ranges.json``), with the sidecars of docs/adr/0038 decision 6,
   ``--jobs`` worker processes preparing episodes ahead (amendment 6), ``--split K`` for K smaller datasets by layout, the
   table counted as unsafe unless ``--table-safe``, and unavoidable-contact ranges for the twin's three stop times unless
-  ``--stop-time-s`` gives one or ``--no-unavoidable`` none. One dataset per collection stream (docs/adr/0038 L): takes
+  ``--stop-time-s`` gives one or ``--no-unavoidable`` none, and every command's and sampled pose's distances
+  (``commands.parquet``, ``pose_samples.parquet``) unless ``--no-command-clearance``. One dataset per collection stream (docs/adr/0038 L): takes
   from several takes roots (twins) become ``DATASET_twin0``, ``DATASET_twin1``, ..., each split on its own; takes of one
   dataset that overlap in time are refused (exit 3, ``[refused]`` lines naming them), and nothing is written;
 - ``safety-compare REFERENCE REBUILT``: whether a safety dataset rebuilt from a reference's first takes holds the same
@@ -113,6 +114,10 @@ def main(argv=None) -> int:
                       help="no meta/teleop/unavoidable_ranges.json, as builds before 2026-11-23 (by default it holds ranges for "
                            "the twin's fast, median and slow stops, 0.17, 0.245 and 0.31 s: twin stop-latency 2026-11-23, "
                            "provisional until the real arm is measured)")
+    s.add_argument("--no-command-clearance", action="store_true",
+                   help="no meta/teleop/commands.parquet and pose_samples.parquet (docs/adr/0038 L: every command's distances "
+                        "at its commanded pose and along the way, and made-up poses near each frame's), as builds before "
+                        "2026-11-24; they cost about 2-3 s of a worker an episode")
     s = sub.add_parser("safety-report")
     s.add_argument("datasets", nargs="+", help="safety datasets: every part of a split build, or every dataset of a train, val "
                                                 "and test set (a replay group or a layout in two of them is a fault)")
@@ -181,7 +186,7 @@ def main(argv=None) -> int:
             planned = safety.planned_events(path)  # read before a failing take is moved
             what = {}
             try:  # what happened (docs/adr/0038 decision 6), for every take; never a reason to set one aside
-                e = sidecars.episode(t, sidecars.Options(geometry_dir=a.geometry_dir or None, stop=None))
+                e = sidecars.episode(t, sidecars.Options(geometry_dir=a.geometry_dir or None, stop=None, command_clearance=False))
                 what = {k: e.line[k] for k in ("outcome", "tableContact", "tableContacts", "knocked", "minClearanceMm",
                                                "firstContactS", "afterLastContactS", "timingFlags", "group", "role", "edit")}
             except Exception as err:  # noqa: BLE001
@@ -225,7 +230,8 @@ def main(argv=None) -> int:
                 stop = sidecars.StopModel.given(a.stop_time_s)
             except ValueError as e:
                 p.error(str(e))
-        options = sidecars.Options(caption=a.caption, table_safe=a.table_safe, geometry_dir=a.geometry_dir or None, stop=stop)
+        options = sidecars.Options(caption=a.caption, table_safe=a.table_safe, geometry_dir=a.geometry_dir or None, stop=stop,
+                                   command_clearance=not a.no_command_clearance)
         takes = [read_take(path, a.fps) for path in a.takes]
         writer = LeRobotWriter(a.vcodec, crf=SAFETY_CRF if a.crf is None else a.crf, preset=SAFETY_PRESET if a.preset is None else a.preset)
         groups = safety.streams(takes)
@@ -233,7 +239,8 @@ def main(argv=None) -> int:
              f"{'not unsafe (--table-safe)' if a.table_safe else 'unsafe'}, clearance from {a.geometry_dir or 'nothing'}"
              + (f", one dataset per takes root ({', '.join(f'{n} {len(i)}' for n, _, i in groups)})" if len(groups) > 1 else "")
              + (f", {a.split} datasets{' each' if len(groups) > 1 else ''}" if a.split > 1 else "") + ", unavoidable ranges "
-             + (", ".join(f"{n} {t:g} s" for n, t in stop.times) if stop else "off"))
+             + (", ".join(f"{n} {t:g} s" for n, t in stop.times) if stop else "off")
+             + (", command distances off" if a.no_command_clearance else ", command and pose-sample distances"))
         try:
             roots = safety.build_streams(writer, os.path.expanduser(a.out), takes, a.split, _log, jobs=a.jobs, options=options)
         except safety.OverlapError as e:  # nothing written: one dataset holds one collection stream (docs/adr/0038 L)

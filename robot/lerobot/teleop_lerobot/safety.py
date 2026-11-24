@@ -593,6 +593,10 @@ def build(writer, root: str, takes: Sequence[Take], log=print, jobs: int = 1, ex
         if info.flags:
             log(f"[timing] episode {ep}: {'; '.join(info.flags)}")
     log("[mix] " + sidecars.mix(os.path.basename(root), rep))
+    secs = [info.command_seconds for _, info in sides if getattr(info, "command_seconds", None) is not None]
+    if secs:  # docs/adr/0038 L: commands.parquet and pose_samples.parquet, computed in the workers
+        log(f"[commands] {len(secs)} episode(s): command and pose-sample distances {sum(secs):.1f} s of worker time, "
+            f"{sum(secs) / len(secs):.2f} s an episode (max {max(secs):.2f})")
     return written
 
 
@@ -729,7 +733,8 @@ _LINES = {"capture_timing.jsonl": "episode_saved_so_far", "safety_events.jsonl":
           os.path.join(_TELEOP, "scenes.jsonl"): "episode", os.path.join(_TELEOP, "contacts.jsonl"): "episode"}  # one line a record
 _TOTALS = {os.path.join("meta", "info.json"), os.path.join("meta", "stats.json"), os.path.join("meta", "tasks.parquet"),
            os.path.join(_TELEOP, "report.json")}
-_PARQUETS = {os.path.join("meta", "safety_labels.parquet"), os.path.join(_TELEOP, "frames.parquet")}  # rows by episode_index
+_PARQUETS = {os.path.join("meta", "safety_labels.parquet"), os.path.join(_TELEOP, "frames.parquet"),  # rows by episode_index
+             os.path.join(_TELEOP, "commands.parquet"), os.path.join(_TELEOP, "pose_samples.parquet")}
 # docs/adr/0038's files: a reference built before them has none, and is compared without them.
 _ADR38 = {"safety_ranges.json", os.path.join(_TELEOP, "episodes.jsonl"), os.path.join(_TELEOP, "scenes.jsonl"),
           os.path.join(_TELEOP, "contacts.jsonl"), os.path.join(_TELEOP, "frames.parquet"), os.path.join(_TELEOP, "report.json"),
@@ -747,6 +752,7 @@ def _options(options: Optional[Dict]) -> Dict:
     o = dict(options or {})
     if "tableUnsafe" in o:
         o["tableSafe"] = not o.pop("tableUnsafe")
+    o.setdefault("commandClearance", False)  # a build before 2026-11-24 wrote no command distances
     stop = o.get("stopModel")
     if isinstance(stop, dict) and "stopTimeS" in stop:
         o["stopModel"] = {"stopTimes": {"given": stop["stopTimeS"]}}
@@ -774,6 +780,8 @@ def rebuild_options(root: str) -> List[str]:
         out += ["--no-unavoidable"]
     elif isinstance(times, dict) and list(times) == ["given"]:
         out += [f"--stop-time-s={times['given']}"]
+    if not o.get("commandClearance"):
+        out += ["--no-command-clearance"]
     return out
 
 

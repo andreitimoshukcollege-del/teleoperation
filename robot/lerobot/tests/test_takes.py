@@ -1,10 +1,11 @@
 """A take into its episode frames (docs/adr/0036 decisions 2-4), without LeRobot."""
 
+import json
 import os
 
 import pytest
 
-from conftest import MS, finish, fr3_take, jetrover_take, relay_pulse
+from conftest import MS, REPO, finish, fr3_take, jetrover_take, relay_pulse
 from teleop_lerobot.takes import TakeError, raw_events, read_take, verify_checksums
 
 
@@ -233,10 +234,19 @@ def test_an_episode_runs_to_the_last_command_robothost_refused(scenarios):
 FR3_ORDER = list(range(1, 9)) + list(range(11, 19))  # each arm's seven joints, then its hand
 
 
+def _fr3_middles():
+    with open(os.path.join(REPO, "core", "RobotProfiles", "fr3-duo.json"), encoding="utf-8") as f:
+        profile = json.load(f)
+    return {j["motorId"]: (j["softLower"] + j["softUpper"]) / 2 for arm in profile["arms"] for j in arm["joints"]}
+
+
+FR3_MIDDLES = _fr3_middles()
+
+
 def fr3_motion(ms):
-    """An FR3 Duo command's targets ms into the take: every joint moving, both hands closing."""
+    """An FR3 Duo command's targets ms into the take: every joint moving inside its soft limits, both hands closing."""
     s = (ms - 1000) / 1000
-    return {m: (0.3 + 0.5 * s if m in (8, 18) else 0.02 * m - 0.1 * s) for m in FR3_ORDER}
+    return {m: (0.3 + 0.5 * s if m in (8, 18) else FR3_MIDDLES[m] + 0.01 * m - 0.1 * s) for m in FR3_ORDER}
 
 
 def test_an_fr3_command_robothost_refused_is_still_the_action_as_its_plant_would_send_it(scenarios):

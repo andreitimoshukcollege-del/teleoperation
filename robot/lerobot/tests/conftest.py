@@ -177,8 +177,24 @@ def jetrover_take(root, name="20261112T100000Z-take001", scenario="reach", sourc
     return take
 
 
-def fr3_take(root, name="20261112T110000Z-take001", scenario="handover"):
-    """An FR3 Duo take: QS every 4 ms, AO every 20 ms, commands 1.0..2.0 s, frames at 30 fps on QS times."""
+def fr3_sent(profile, motor, value):
+    """What the FR3 Duo's plant sends the arm backend for one target (SerialChainPlant): within the joint's soft limits, a
+    hand's fraction within 0..1."""
+    for arm in profile["arms"]:
+        if arm["gripper"]["motorId"] == motor:
+            return min(1.0, max(0.0, value))
+        for j in arm["joints"]:
+            if j["motorId"] == motor:
+                return min(j["softUpper"], max(j["softLower"], value))
+    raise KeyError(motor)
+
+
+def fr3_take(root, name="20261112T110000Z-take001", scenario="handover", commands=None):
+    """An FR3 Duo take: QS every 4 ms, AO every 20 ms, commands 1.0..2.0 s, frames at 30 fps on QS times.
+
+    ``commands``: the JC records instead, ``(ms, outcome, {motor: value})`` in order, each with the next sequence number and
+    its time as its capture stamp; an accepted one's AO at the same time, its values within the soft limits (a hand's
+    within 0..1), as SerialChainHost writes it (no other AO)."""
     take = os.path.join(root, scenario, name)
     os.makedirs(take)
     sid = session_json(take, "teleop-session", 2, "isaac", scenario, "")
@@ -188,14 +204,21 @@ def fr3_take(root, name="20261112T110000Z-take001", scenario="handover"):
         json.dump(profile, f)
     motors = list(range(1, 9)) + list(range(11, 19))
     rows = []
-    for k in range(0, 21):
-        t = (1000 + 50 * k) * MS
-        rows.append(["JC", t, t, k, t, "A", "1:0.1:1"])
+    if commands is None:
+        for k in range(0, 21):
+            t = (1000 + 50 * k) * MS
+            rows.append(["JC", t, t, k, t, "A", "1:0.1:1"])
+    else:
+        for seq, (ms, outcome, values) in enumerate(commands):
+            t = round(ms * MS)
+            rows.append(["JC", t, t, seq, t, outcome, ";".join(f"{m}:{v!r}:1" for m, v in values.items())])
+            if outcome == "A":
+                rows.append(["AO", t, ";".join(f"{m}:{fr3_sent(profile, m, v)!r}" for m, v in values.items())])
     for k in range(0, 700):  # QS 0..2.8 s
         sensed = 4 * k * MS
         qs = ";".join(f"{m}:{0.5 if m in (8, 18) else 0.01 * m + 0.001 * k}" for m in motors)
         rows.append(["QS", sensed + MS, sensed, qs])
-    for k in range(0, 120):
+    for k in range(0, 120 if commands is None else 0):
         t = (900 + 20 * k) * MS
         rows.append(["AO", t, ";".join(f"{m}:{1 if m in (8, 18) else -0.01 * m - 0.001 * k}" for m in motors)])
     rows.sort(key=lambda r: int(r[1]))

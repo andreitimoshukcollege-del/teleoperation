@@ -17,12 +17,15 @@ Per pair it compares, at each stage a command passes (trainer/contract/SESSION_F
   relay (`RO`): RobotHost's collision backstop (docs/adr/0020) refuses a command whose servo path from where the arm is
   measured would meet the robot's own model, and the arm keeps its last accepted target.
 - **action per frame**, by the episode frame's index (frames as robot/lerobot/teleop_lerobot/takes.py picks them: a 15 fps
-  grid over the frames recorded between the first and the last accepted command), the largest difference over the six
-  motors between the replay's frame k and its source's, in servo units, p50 / p95 / max, and the share over 20 units:
-  - `relay`: the newest relay target (`RO`) at the frame's time: the dataset's `action` until 2026-11-24;
-  - `sent`: the newest command sent, accepted or not, in relay units (every `RO`, and every refused or parked `JC` turned into
-    pulses as the plant would have): the dataset's `action` since 2026-11-24 (docs/adr/0038 "M, motion");
-  - `tape`: the same, both read at the source's frame times counted from each take's first accepted command: what is left
+  grid over the recorded frames between the first and the last command, each with every motor's value), the largest
+  difference over the six motors between the replay's frame k and its source's, in servo units, p50 / p95 / max, and the
+  share over 20 units:
+  - `relay`: the newest relay target (`RO`) at the frame's time, over the frames between the first and last accepted command:
+    the dataset's `action` until 2026-11-24;
+  - `sent`: the newest command sent, accepted or refused, in relay units (every `RO`, and every refused `JC` turned into pulses
+    as the plant would have; not a parked one, while RobotHost's own park is the `RO`), over the frames between the first
+    and last command accepted or refused: the dataset's `action` since 2026-11-24 (docs/adr/0038 "M, motion");
+  - `tape`: the same, both read at the source's frame times counted from each take's first such command: what is left
     without the frames' own phase against the commands (the renderer's frame clock runs free).
 """
 import bisect
@@ -37,6 +40,7 @@ ZERO_PULSE = 500.0
 GRIPPER_OPEN, GRIPPER_CLOSED = 116.0, 645.0
 MOTORS = (1, 2, 3, 4, 5, 10)
 SENSED = (1, 2, 3, 4, 5)
+GRIPPER = 10
 
 
 def records(path, tags):
@@ -104,39 +108,27 @@ def read(take):
     jc = [(int(r[1]), int(r[2]), r[4], r[5]) for r in host["JC"]]  # tDeliver, seq, outcome, targets
     ro = [(int(r[0]), {int(it[0]): float(it[1]) for it in items(r[1])}) for r in host["RO"]]
     relay = Track(ro)
-    sent = Track(ro + [(t, pulses(targets)) for t, _, o, targets in jc if o in ("R", "P")])
+    sent = Track(ro + [(t, pulses(targets)) for t, _, o, targets in jc if o == "R"])
     readings = {}
     for r in host["RI"]:
         for it in items(r[1]):
             if it[1] == "1":
                 readings.setdefault(int(it[0]), []).append(int(r[0]))
     accepted = [t for t, _, o, _ in jc if o == "A"]
-    first, last = (min(accepted), max(accepted)) if accepted else (0, -1)
-    frames, seen = [], set()
+    driven = [t for t, _, o, _ in jc if o in ("A", "R")]
+    recorded = []
     with open(os.path.join(take, "isaac.jlog"), errors="replace") as f:
         for line in f:
-            if not line.startswith("VF|"):
-                continue
-            r = line.rstrip("\n").split("|")[1:]
-            t = int(r[2])
-            if "B" in r[3] or t < first or t > last or t in seen:
-                continue
-            if any(not readings.get(m) or readings[m][0] > t for m in SENSED) or any(m not in relay.at(t) for m in MOTORS):
-                continue
-            seen.add(t)
-            frames.append(t)
-    frames.sort()
-    grid = []
-    if frames:
-        step, t0, i, previous, k = 1e9 / 15, frames[0], 0, None, 0
-        while t0 + k * step <= frames[-1] + step / 2:
-            g = t0 + k * step
-            while i + 1 < len(frames) and abs(frames[i + 1] - g) < abs(frames[i] - g):
-                i += 1
-            chosen = i if (abs(frames[i] - g) <= step / 2 or previous is None) else previous
-            grid.append(frames[chosen])
-            previous = chosen
-            k += 1
+            if line.startswith("VF|"):
+                r = line.rstrip("\n").split("|")[1:]
+                if "B" not in r[3]:
+                    recorded.append(int(r[2]))
+    sensed = lambda t: all(readings.get(m) and readings[m][0] <= t for m in SENSED)
+    # Until 2026-11-24 (relay): frames between the first and last accepted command, every motor with a relay target.
+    old = grid(recorded, accepted, lambda t: sensed(t) and all(m in relay.at(t) for m in MOTORS))
+    # Since (sent): between the first and last command accepted or refused, every motor with an action, the gripper a relay target.
+    new = grid(recorded, driven, lambda t: sensed(t) and all(m in sent.at(t) for m in MOTORS) and GRIPPER in relay.at(t))
+    first = min(driven) if driven else 0
     runs, start = [], None
     t_first = jc[0][0] if jc else 0
     for k, (t, _, o, _) in enumerate(jc + [(0, 0, "", "")]):
@@ -145,8 +137,29 @@ def read(take):
         elif o != "R" and start is not None:
             runs.append((start, k - 1, (jc[start][0] - t_first) / 1e9, (jc[k - 1][0] - t_first) / 1e9))
             start = None
-    return {"rp": rp, "jc": jc, "relay": relay, "sent": sent, "frames": grid, "first": first, "runs": runs,
+    return {"rp": rp, "jc": jc, "relay": relay, "sent": sent, "old": old, "frames": new, "first": first, "runs": runs,
             "contacts": len(host["WC"])}
+
+
+def grid(recorded, commands, usable):
+    """The episode's frames as robot/lerobot/teleop_lerobot/takes.py picks them: the recorded frames between the first and last
+    of ``commands`` that ``usable`` takes, on a 15 fps grid (the nearest within half a step, else the last again)."""
+    if not commands:
+        return []
+    lo, hi = min(commands), max(commands)
+    frames = sorted({t for t in recorded if lo <= t <= hi and usable(t)})
+    out = []
+    if frames:
+        step, t0, i, previous, k = 1e9 / 15, frames[0], 0, None, 0
+        while t0 + k * step <= frames[-1] + step / 2:
+            g = t0 + k * step
+            while i + 1 < len(frames) and abs(frames[i + 1] - g) < abs(frames[i] - g):
+                i += 1
+            chosen = i if (abs(frames[i] - g) <= step / 2 or previous is None) else previous
+            out.append(frames[chosen])
+            previous = chosen
+            k += 1
+    return out
 
 
 def pct(xs, q):
@@ -171,7 +184,7 @@ def compare(src, rep):
     dts = [((b[k + shift][0] - tb0) - (a[k][0] - ta0)) / 1e6 for k in matched]
     differ = sum(1 for k in matched if a[k][1] != b[k + shift][1])
     letters = lambda t: {o: sum(1 for _, _, x, _ in t["jc"] if x == o) for o in "ARSP" if any(x == o for _, _, x, _ in t["jc"])}
-    relay = [gap(src["relay"].at(x), rep["relay"].at(y)) for x, y in zip(src["frames"], rep["frames"])]
+    relay = [gap(src["relay"].at(x), rep["relay"].at(y)) for x, y in zip(src["old"], rep["old"])]
     sent = [gap(src["sent"].at(x), rep["sent"].at(y)) for x, y in zip(src["frames"], rep["frames"])]
     tape = [gap(src["sent"].at(x), rep["sent"].at(rep["first"] + (x - src["first"]))) for x in src["frames"]]
     return {

@@ -136,8 +136,8 @@ def commands(refused=(), stale=(), parked=()):
     return out
 
 
-def newest(cmds, t, outcomes=("A", "R", "P")):
-    """The command in force at t: an accepted one from its RO, 30 us after it arrived; one refused or ignored from its arrival."""
+def newest(cmds, t, outcomes=("A", "R")):
+    """The command in force at t: an accepted one from its RO, 30 us after it arrived; a refused one from its arrival."""
     best = None
     for ms, outcome, values in cmds:
         at = ms * MS + (30_000 if outcome == "A" else 0)
@@ -188,14 +188,75 @@ def test_the_action_of_a_refused_command_is_the_plants_own_conversion(scenarios)
     assert after and all(f.action == pytest.approx([500.0, 500.0, 619.3662, 1000.0, 0.0, 380.5], abs=1e-4) for f in after)
 
 
-def test_a_stale_command_is_not_the_action_and_an_ignored_one_is(scenarios):
-    cmds = commands(stale=(2007,), parked=(2507, 2527, 2547))
+def test_a_stale_command_is_not_the_action(scenarios):
+    cmds = commands(stale=(2007,))
     take = read_take(jetrover_take(scenarios, commands=cmds))
     assert all(f.action[0] != pytest.approx(relay_pulse(1, 0.9)) for f in take.frames)  # a newer command had replaced it
     for f in take.frames:
         _, values = newest(cmds, f.timing["sensed"])
         assert f.action == pytest.approx([relay_pulse(m, values[m]) for m in MOTORS], abs=1e-6)
-    assert any(2507 * MS <= f.timing["sensed"] < 2567 * MS for f in take.frames)  # a frame while the parked ones stood
+
+
+def test_while_the_arm_parks_the_action_is_robothosts_park_not_the_commands_it_ignored(scenarios):
+    # ROBOT OFF mid-take, then ROBOT ON (docs/adr/0023 decision 5): RobotHost parks the arm through the relay (RO of its own) and
+    # records the operator's commands meanwhile as P. Were those the action too, it would alternate between the two every few ms.
+    parked = tuple(range(1707, 2400, 20))
+    cmds = commands(parked=parked)
+    rest = {1: 495.0, 2: 870.0, 3: 180.0, 4: 30.0, 5: 520.0, 10: 116.0}
+    park = [((1710 + 20 * k) * MS + 7_000, {m: rest[m] + 60 - k for m in MOTORS}) for k in range(0, 31)]
+    extra = [["RO", t, ";".join(f"{m}:{v!r}:300" for m, v in values.items())] for t, values in park]
+    take = read_take(jetrover_take(scenarios, commands=cmds, extra=extra))
+    events = sorted([(ms * MS + 30_000, {m: relay_pulse(m, v[m]) for m in MOTORS}) for ms, o, v in cmds if o == "A"] + park,
+                    key=lambda e: e[0])
+    during = 0
+    for f in take.frames:
+        t = f.timing["sensed"]
+        values = [v for at, v in events if at <= t][-1]
+        assert f.action == pytest.approx([values[m] for m in MOTORS], abs=1e-6)
+        during += 1720 * MS < t < 2400 * MS
+    assert during >= 9
+    actions = [e["jetson_mono_ns"] for e in raw_events(take) if e["type"] == "action"]
+    assert actions == [at for at, _ in events]  # none at an ignored command's time
+
+
+def test_an_episode_runs_to_the_last_command_robothost_refused(scenarios):
+    # The episode spans the operator's commands that make the action: a take whose last commands RobotHost refused keeps its
+    # last frames (until 2026-11-24 it ended at the last accepted command), so a replay spans what its source does.
+    refused = read_take(jetrover_take(scenarios, commands=commands(refused=[(2400, 3100)])))
+    accepted = read_take(jetrover_take(scenarios, name="20261112T100000Z-take002", commands=commands()))
+    assert [f.timing["sensed"] for f in refused.frames] == [f.timing["sensed"] for f in accepted.frames]
+    assert refused.frames[-1].timing["sensed"] > 2900 * MS
+    for a, b in zip(refused.frames, accepted.frames):
+        assert a.action == pytest.approx(b.action, abs=1e-6)
+
+
+FR3_ORDER = list(range(1, 9)) + list(range(11, 19))  # each arm's seven joints, then its hand
+
+
+def fr3_motion(ms):
+    """An FR3 Duo command's targets ms into the take: every joint moving, both hands closing."""
+    s = (ms - 1000) / 1000
+    return {m: (0.3 + 0.5 * s if m in (8, 18) else 0.02 * m - 0.1 * s) for m in FR3_ORDER}
+
+
+def test_an_fr3_command_robothost_refused_is_still_the_action_as_its_plant_would_send_it(scenarios):
+    # The same rule for both robots. SerialChainPlant refuses a command whose pose would collide; its action is the command,
+    # within the soft limits as the plant would have sent it, a hand's fraction as finger travel (0.04 m).
+    cmds = [(ms, "R" if 1300 <= ms < 1600 else "A", fr3_motion(ms)) for ms in range(1002, 2000, 20)]
+    cmds[20] = (cmds[20][0], "R", {**fr3_motion(cmds[20][0]), 1: 5.0, 8: 1.7})  # beyond joint 1's soft limit, the hand past 1
+    take = read_take(fr3_take(scenarios, commands=cmds))
+    inside = 0
+    for f in take.frames:
+        t = f.timing["sensed"]
+        values = [v for ms, o, v in cmds if o in "AR" and ms * MS <= t][-1]
+        expect = [values[m] * (0.04 if m in (8, 18) else 1.0) for m in FR3_ORDER]
+        if values[1] == 5.0:
+            expect[0], expect[7] = 2.9007400166666666, 0.04
+        assert f.action == pytest.approx(expect, abs=1e-6)
+        inside += 1300 * MS <= t < 1600 * MS
+    assert inside >= 4
+    actions = [e for e in raw_events(take) if e["type"] == "action"]
+    assert [e["jetson_mono_ns"] for e in actions] == [ms * MS for ms, o, _ in cmds if o in "AR"]
 
 
 def test_a_take_whose_relay_targets_are_not_its_commands_converted_is_refused(scenarios):

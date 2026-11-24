@@ -25,11 +25,13 @@ readings as `state`, its bridge's fields, and since 2026-11-24 the episode in `e
 does not write). Their times are the session's one clock, CLOCK_MONOTONIC; the lab's
 `*_wall_ns` fields are null, since a take keeps no wall clock per record. Takes that could not be converted are in `~/data/lerobot/skipped.jsonl`, with the reason.
 
-A JetRover frame's `action` is the command the operator sent, the newest at the frame's time, in relay pulses: what RobotHost
-passed on for an accepted command (`RO`), and a command it refused or ignored (`JC` outcome `R` or `P`) as its plant would have
-turned it into pulses. Until 2026-11-24 it was the newest `RO` alone, so a refused command left the one before it in force, and a
-replay that sent its source's commands exactly could get another action (docs/adr/0038 "M, motion"). The state's gripper slot
-stays the gripper's newest `RO`. A take whose every command was accepted reads exactly as before.
+A frame's `action` is the command the operator sent, the newest at the frame's time, in the units the plant sends its arm:
+what RobotHost passed on for an accepted command (`RO`, relay pulses, on the JetRover; `AO` on the FR3 Duo), and a command
+it refused (`JC` outcome `R`) as its plant would have turned it into those units. Until 2026-11-24 it was the `RO` or `AO`
+alone, so a refused command left the one before it in force, and a replay that sent its source's commands exactly could
+get another action (docs/adr/0038 "M, motion"). A command ignored while the arm parked (`P`) is not the action: RobotHost's
+own park targets are the `RO` then. An episode spans the commands accepted or refused (until then the accepted ones). The
+JetRover state's gripper slot stays the gripper's newest `RO`. A take with no refused command reads exactly as before.
 
 | Module | |
 |---|---|

@@ -88,7 +88,7 @@ namespace Teleop.RobotHost.Gate
             }
 
             Holds++;
-            _record?.Invoke(Recording.SessionLines.GateHold(now, Sequence, reason.Length > 0 ? reason : "held"));
+            _record?.Invoke(Recording.SessionLines.GateHold(now, Sequence, reason.Length > 0 ? CommandGateWire.Clean(reason) : "held"));
             return true;
         }
 

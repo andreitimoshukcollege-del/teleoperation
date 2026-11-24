@@ -1612,54 +1612,23 @@ scanned meshes lost theirs the same way). The fix, in `robot/isaac/teleop_isaac/
 
 ### N, network and hold hook
 
-Two requests from the world-models side, for a robot-side safety check that sees each command as the robot receives it.
-Built 2026-11-24 on branch `work/v2-net5`. **Not yet run on a twin or the robot.**
+Built 2026-11-24 on branch `work/v2-net5`, for the world-models side's robot-side safety check. **Not yet run on a twin or
+the robot.**
 
-**Command timing as the robot sees it (their request 4).**
+**Request 4 (command timing and network delay): dropped by the user and world-models, 2026-11-24.** Without network
+disturbances, a hand-off or separate send time equals the receive time, which `raw_ros_events` already carries.
 
-- **What was already logged.**
-  - `JC`: `captureTicks` (sent, on the sender's clock), `t` (read from the socket) and `tDeliver` (reached the plant; the same
-    as `t` unless RobotHost's own uplink impairment, docs/adr/0035 N4, is on).
-  - `RO`: the time the plant handed targets to the relay, but with no sequence, so it could only be paired with its `JC` by
-    order in the file.
-  - `driver.jlog`: `CI` (the array reached the driver's gate) and `WR` (the board packet written), from the real driver or the
-    twin's bridge that emulates it. These are the servo side and need no change.
-- **Added: `JC`'s optional last field `tHandoff`**, after `targets`. For an accepted command (`A`) it is the `RO`'s own time:
-  the same clock read, stamped by `RecordingRelayClient` on every send. It is absent for every other outcome and in older
-  sessions, and a `JC` that is not accepted is byte for byte what it was. Every reader indexes `JC` by position, so the
-  trailing field breaks none of them.
-- **A command's three times:** sent `captureTicks`; received `t` (and `tDeliver`); handed off `tHandoff`. Then `CI`/`WR` say what
-  the servos did with it.
-  - Within a fast burst, each accepted command gets its own `tHandoff`. The driver's newest-wins gate then writes only the
-    last of them.
-- **Relating the sender's clock.** `captureTicks` is the sender's clock: `joint-drive`'s Stopwatch on the PC for the twin, the
-  headset's on the real robot.
-  - Relate it from the lower envelope of `t - captureTicks` (`armpred.data.clockmap`), never from `tDeliver`.
-  - The absolute one-way delay then carries the assumed minimum one-way delay (0.5 ms). Only its changes are measured
-    exactly.
-- **The real recorder** runs the same `Program.cs` path (`teleop-robothost.service`, `--record-control`), so it writes the same
-  fields. They appear after the next `just deploy-robothost`, which is the user's step.
-  - On the real robot, the headset's `ClockSync` estimate is not in the robot's records. The keepalive carries only the
-    headset's stamp, so the robot side cannot redo a round-trip sync.
-  - A ClockSync-based mapping needs the headset's link trace (trainer/contract/LINK_TRACE_FORMAT.md kind 2, `just
-    pull-galaxy-traces`).
-  - Putting the headset's offset into the robot's records would be a headset change (unity/), which this workstream does not
-    make.
-- **Dataset side.** `JC` field 7 (tag at 0) is `tHandoff`. D1's `commands.parquet` can carry it beside sent and received.
-  robot/lerobot's test helper `TIMES["JC"]` would need 7 added to move it in fixtures.
+- A `JC` hand-off field and a `stall:` uplink profile were built, then each reverted in a plain commit. The batch's `network=`
+  option was never committed. No timing field or record was added.
+- Two findings stay useful if it returns.
+  - **Staleness.** RobotHost's staleness rule refuses a command whose capture stamp is not newer than the last accepted one.
+    It is an ordering rule, not an age limit. A link that keeps its order, even one that stalls and then bursts, is refused
+    nothing; only reordering produces `S`. The real robot behaves the same.
+  - **The capture stamp.** On the real robot it is the headset's clock. The robot's records allow only the lower-envelope
+    mapping (`armpred.data.clockmap`, from `t - captureTicks`), because the keepalive carries the headset's stamp alone. A
+    ClockSync mapping needs the headset's link trace.
 
-**Network delay (their request 4, second half): dropped.** The user decided on 2026-11-24 not to add network delays or
-disturbances for now.
-
-- A `stall:` uplink profile was built and then reverted in a plain commit: RobotHost-side, a late link that keeps its order,
-  with stalls that end in a burst. The batch's `network=` option was never committed. Nothing of it remains.
-- If it comes back, the finding that matters is RobotHost's staleness rule. It refuses a command whose capture stamp is not
-  newer than the last accepted one. It is an ordering rule, not an age limit.
-  - A link that keeps its order (a queue, as real links mostly are) is refused nothing for staleness, even after a stall. The
-    burst's commands are all accepted and handed off within one loop pass.
-  - Only reordering, such as jitter that is independent per datagram, produces `S`. The real robot behaves the same.
-
-**A hold hook in RobotHost (their request 6).** All of it is in RobotHost (`core/Teleop.RobotHost/Gate/`). There is no Core
+**Request 6: a hold hook in RobotHost.** All of it is in RobotHost (`core/Teleop.RobotHost/Gate/`). There is no Core
 interface and no Core change.
 
 - **Where it acts.** `GenericArmPlant.CommandGate` is a hook asked last: after the staleness, form and ADR 0020 collision
@@ -1686,9 +1655,10 @@ interface and no Core change.
     first twin trial to confirm.
 - **Records,** only while it is on (trainer/contract/SESSION_FORMAT.md):
   - `GC t check deadlineMs failMode` at every session start;
-  - `GH t seq reason` for every hold (`no-answer` for a fail-closed miss);
+  - `GH t seq reason` for every hold (`no-answer` for a fail-closed miss), joined to its `JC` (outcome `H`) by `seq`;
   - `GT t seq waitedUs` for every miss.
   - A console line, throttled to one every 2 s, counts holds and misses.
+  - Commands refused for other reasons stay in `JC` as before (`R`, `S`, `P`).
 - **Off by default, and then exactly as before.** Without `--command-gate` the hook is null. Nothing is asked, so there is no
   added latency, and no `G*` record or `H` outcome is written.
 - **Safety on the real robot.**
@@ -1698,11 +1668,11 @@ interface and no Core change.
   - Review before anyone uses it on the robot:
     - a fail-closed gate whose check dies holds every command, so the arm stops dead mid-motion. That is safe for the arm but
       surprising to the operator;
-    - a slow check blocks RobotHost's single loop by up to the deadline per command, which delays joint-state frames and
-      keepalives as well;
-    - the check process runs with RobotHost's authority to hold the arm, so whoever can write to its socket path can stop the
-      arm. Place the socket in a directory only RobotHost's user can write;
-    - the hook cannot move the arm, only stop it. It never replaces the ADR 0020 backstop, which runs first.
+    - a slow check blocks RobotHost's single loop by up to the deadline per command, so a burst of N commands can wait N
+      deadlines. Joint-state frames and keepalives are delayed with it;
+    - whoever can write to the check's socket path can stop the arm. Place the socket in a directory only RobotHost's user
+      can write;
+    - the hook can only stop the arm, never move it, and the ADR 0020 backstop still runs first.
 - **Tests** (`core/Teleop.RobotHost.Tests/Gate/CommandGateTests.cs`):
   - off is unchanged;
   - a hold never reaches the relay and is logged;
@@ -1714,9 +1684,7 @@ interface and no Core change.
   - over a real Unix socket (Linux only): a hold with its reason, a missing check as a miss within the deadline, and a late
     reply ignored.
 - **The next twin check should verify:**
-  1. A take recorded after RobotHost is rebuilt has `tHandoff` on every `A` `JC`, equal to the preceding `RO`'s `t`, and
-     `tHandoff - tDeliver` is small (the backstop's cost, expected well under 1 ms on the GPU machine).
-  2. With the gate off (the default), nothing else changed: no `G*` records, no `H`, and the same take timing as before.
-  3. Optionally, one twin trial with `--command-gate table:20:-0.1962` added to `isaac-jetrover-host`'s RobotHost line, by hand
-     and not committed. It checks that low reaches are held (`GH`, `JC` `H`), that the arm stops short of the table, and the
-     table frame.
+  1. With the gate off (the default), nothing changed: no `G*` records and no `H` in a take.
+  2. One twin trial with `--command-gate table:20:-0.1962` added to `isaac-jetrover-host`'s RobotHost line, by hand and not
+     committed. It checks that low reaches are held (`GH`, `JC` `H`), that the arm stops short of the table, and the table
+     frame.

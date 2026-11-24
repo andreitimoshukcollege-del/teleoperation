@@ -83,7 +83,7 @@ namespace Teleop.Eval.JointDrive
             "                   [--script mixed [--replays 0] [--max-joint-speed <rad/s>[,x4]] [--max-joint-accel <rad/s2>[,x4]] [--max-wrist-speed <m/s>]\n" +
             "                                   [--max-peak-speed <m/s>] [--no-caps] [--no-style | --style p,r,t,s] [--blind n,r,v,l[,q,h]] [--pause s,min,max] [--pullback s] [--pass-share s] [--object-share s]\n" +
             "                                   [--approach short,turn] [--offset-mm -40,60]]\n" +
-            "                   [--dry-run --layouts 1-200 [--rows] [--features <csv>]]";
+            "                   [--dry-run --layouts 1-200 [--rows] [--features <csv>] [--chain] [--lag <s>]]";
 
         public static int Run(string[] args)
         {
@@ -104,6 +104,7 @@ namespace Teleop.Eval.JointDrive
             int layoutsFrom = 0, layoutsTo = -1;
             bool rows = false;
             string? featuresPath = null;
+            var dryOptions = new DryRunOptions();
             MotionCaps Caps() => mixedOptions.Caps ??= MixedOptions.DefaultCaps();
             void PerJoint(string text, float[] into, string option)
             {
@@ -159,6 +160,8 @@ namespace Teleop.Eval.JointDrive
                         case "--layouts": ParseRange(Next(), "--layouts", out layoutsFrom, out layoutsTo); break;
                         case "--rows": rows = true; break;
                         case "--features": featuresPath = Next(); break;
+                        case "--chain": dryOptions.Chain = true; break; // a dry run's layouts each from where the last left the arm, as the twin's takes
+                        case "--lag": dryOptions.LagSeconds = Number(); break; // a dry run's adds look at the commanded way this late, as at a measured track
                         case "--max-joint-speed": PerJoint(Next(), Caps().JointSpeed, "--max-joint-speed"); break;
                         case "--max-joint-accel": PerJoint(Next(), Caps().JointAcceleration, "--max-joint-accel"); break;
                         case "--no-style": mixedOptions.Style = null; break;
@@ -224,6 +227,8 @@ namespace Teleop.Eval.JointDrive
                 if (replays > 0 && (take == null || dryRun)) throw new ArgumentException("--replays records more takes: it needs --take, and a dry run records none");
                 if (layoutsTo >= layoutsFrom && (!dryRun || !safety)) throw new ArgumentException("--layouts plans a safety script on RobotHost's layouts of --scene: a dry run");
                 if (featuresPath != null && (layoutsTo < layoutsFrom || script != DriveScript.Mixed)) throw new ArgumentException("--features writes each planned move of a mixed dry run over --layouts");
+                if ((dryOptions.Chain || dryOptions.LagSeconds != 0) && layoutsTo < layoutsFrom) throw new ArgumentException("--chain and --lag are for a dry run over --layouts");
+                if (!(dryOptions.LagSeconds >= 0 && dryOptions.LagSeconds <= 1)) throw new ArgumentException("--lag must be in [0, 1] s");
                 if (replays > 0 && !simulated) throw new ArgumentException("--replays has RobotHost move the objects, which only the Isaac twin can: it needs --simulated-robot");
                 if (!(speed > 0f) || speed > MaxSpeedRadPerSec) throw new ArgumentException($"--speed must be in (0, {MaxSpeedRadPerSec}] rad/s, the headset slider's range");
                 if (!(seconds > 0)) throw new ArgumentException("--seconds must be positive");
@@ -277,7 +282,7 @@ namespace Teleop.Eval.JointDrive
                     o.Nominal.Z, o.Nominal.Qw, o.Nominal.Qx, o.Nominal.Qy, o.Nominal.Qz, WorldView.ShapesOf(scene))).ToList();
                 if (layoutsTo >= layoutsFrom)
                 {
-                    return MixedDryRun.Run(script.Value, scene!, profile, envelope, speed, seconds, seed, layoutsFrom, layoutsTo, safetyOptions, mixedOptions, rows, featuresPath);
+                    return MixedDryRun.Run(script.Value, scene!, profile, envelope, speed, seconds, seed, layoutsFrom, layoutsTo, safetyOptions, mixedOptions, rows, featuresPath, dryOptions);
                 }
 
                 return DryRun(script.Value, profile, envelope, speed, seconds, seed, rateHz, logPath, sessionId ?? "joint-drive-dry-run", nominal, safetyOptions, mixedOptions);

@@ -1240,7 +1240,8 @@ namespace Teleop.Eval.JointDrive
                     float goalPitch = HandModel.PitchOf(goalPose);
                     HandSnapshot before = _hand.Save();
                     int drafts = _drafts.Count;
-                    bool withAccident = accident.HasValue && _hand.MixedTo(goal, goalPitch, null, Slowness(), HandModel.Tolerance, holders, out double s, out double e, accident: accident);
+                    double s = 0, e = 0;
+                    bool withAccident = accident.HasValue && _hand.MixedTo(goal, goalPitch, null, Slowness(), HandModel.Tolerance, holders, out s, out e, accident: accident);
                     double onset = _hand.AccidentOnset, recovered = _hand.AccidentEnd;
                     if (!withAccident && !_hand.MixedTo(goal, goalPitch, null, Slowness(), HandModel.Tolerance, holders, out s, out e))
                     {

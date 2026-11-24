@@ -72,7 +72,11 @@ episodes that share an `RP` group, a layout hash, or a scene and `WL` seed. `tel
 checks any set of datasets the same way: give it a split build's parts, or every dataset of a train, val and test set at
 once. It faults (exit 1) when a replay group, a layout hash, or a scene's layout seed is in more than one of them, naming
 the datasets and episodes; also on episodes of one dataset that overlap in time, label files that disagree, a replay group
-without one source, unavoidable ranges over an unsafe frame, a missing file, or a dataset given twice. Datasets from before
+without one source, unavoidable ranges over an unsafe frame, a missing file, or a dataset given twice; and, for the command
+distances, a build that asked for them without their files, an episode with no rows and no reason, a frame without its pose
+samples, or a frame whose `action` is not the last `commands.parquet` row received at or before it (the pilot check). Its
+line on them gives their rows, the share with no distance, the share of commands whose commanded pose or the way there goes
+into an obstacle, and each sample kind's median and share under 0. Datasets from before
 docs/adr/0038 have no sidecars to check, only their episodes' times.
 
 **The checks** (`safety-check`). The four old categories are checked as before. A `mixed` take is set aside (to
@@ -168,7 +172,52 @@ computed (workstream C's `teleop_lerobot/clearance.py` and the geometry under `-
 `report.json`: the dataset's `episodes`, `frames`, `seconds`, `scenarios`, `outcomes`, `contactEpisodes`,
 `tableContactEpisodes`, `contacts` by kind, `unsafeFrames`, `unsafeRanges`, `replayGroups`, `roles`, `layoutHashes`,
 `layoutSeeds`, `clearanceEpisodes`, `timingFlagged` (episodes), `split` (`part`, `of`) and the build's `options`
-(`caption`, `tableSafe`, `geometryDir`, `stopModel`: `{"stopTimes": {name: seconds}}` or null).
+(`caption`, `tableSafe`, `geometryDir`, `stopModel`: `{"stopTimes": {name: seconds}}` or null, `commandClearance`).
+
+`commands.parquet` and `pose_samples.parquet` (docs/adr/0038 L, since 2026-11-24; `--no-command-clearance` writes neither,
+as builds before): obstacle distances for a robot-side safety check, from `teleop_lerobot/command_clearance.py`. The
+distance is `clearance.py`'s exactly (checked to 1e-16 m against it), at made-up poses: the same link boxes and obstacle
+pieces, GJK apart and the separating axis's depth overlapping, object poses `WO` interpolated to the row's time, capped at
+150 mm (id null there). Every distance column is signed (negative: into an obstacle). The `min_` and `path_min_` columns
+are over the links a joint moves: the base never moves, so an object placed near it would set every row's minimum (its own
+distance is in its per-link columns). Without geometry (or the take's `robot-profile.json`), the rows are still written,
+with NaN distances, and `episodes.jsonl`'s `commandClearanceUnavailable` says why. Each file's parquet metadata (`teleop`
+key, JSON) describes it.
+
+- **`commands.parquet`, one row per action event** of `raw_ros_events.jsonl`, at the commands' own rate, not resampled:
+  every `RO` (what RobotHost sent the relay for an accepted command, or of its own while parking) and every command
+  RobotHost refused, as the plant would have sent it. These events are what the frames' `action` is made of, so each
+  frame's `action` equals the last row received at or before the frame was captured (`safety-report` checks it).
+  - Columns: `episode_index`, `frame_index` (the last frame captured at or before `received_ns`; null before the first),
+    `received_ns` (the event's `pc_received_mono_ns`: RobotHost's CLOCK_MONOTONIC, `capture_timing.jsonl`'s clock), `seq`
+    (the `JC` it carries; an `RO`'s is the newest accepted one), `outcome` (`A` sent to the relay, `R` refused), `accepted`,
+    and `servo_1` to `servo_5` and `servo_10`, exactly as the action has them (relay pulses).
+  - `state.servo_*` and `state_ns`: the arm as measured when it arrived (each servo's newest valid `RI` reading at or
+    before `received_ns`; the gripper's last relay target when it has none), and the oldest reading's time.
+  - At the commanded pose: per link `clearance_mm.<link>`, `clearance_id.<link>`, `surface_mm.<link>` (as
+    `frames.parquet`'s), then `min_clearance_mm`, `min_clearance_id`, `min_clearance_link` and `min_surface_mm`.
+  - Along the way: `path_s` (how long the slowest servo takes), and `path_min_clearance_mm`, `_id`, `_link`, `path_min_step`
+    (1-8) and `path_min_surface_mm`: the smallest over 8 poses from the measured state to the commanded pose, at 1/8..8/8 of
+    `path_s`. Each servo ramps linearly in pulses at the event's rate (an `RO`'s pulses per second, a refused command's
+    speed) and holds at its target, as the twin's servo setpoints do (`teleop_isaac/servo.py`, `TimedSetpoint`). Not
+    modelled: the setpoint starts from where its last ramp stood, not the reading, and PhysX's drive trails it. NaN before
+    the first reading.
+- **`pose_samples.parquet`, 32 made-up poses a frame,** never executed: geometry only, in that frame's scene (object poses
+  at its `sensed_ns`). Columns: `episode_index`, `frame_index`, `sample` (0-31), `kind`, `servo_*` (the pose, as the
+  action), `scale`, `target_mm`, `target_id`, and the distance columns above. Kinds, in this order:
+  - 8 `beyond`: the measured state plus `scale` (stratified in 1.5-3) times the frame's action less the state, past the
+    command along its direction;
+  - 16 `reachable`: uniform within what each servo reaches in 0.5 s at the mixed script's caps (`MixedOptions.DefaultCaps`,
+    3.8/2.6/3.6/2.8/4.0 rad/s; the gripper at 2.5 rad/s), within the joint limits (the URDF's, within 0..1000);
+  - 4 `jump`: uniform within the joint limits, as accident-like jumps;
+  - 4 `near`: searched to land `target_mm` (drawn uniform in 0-50) from an obstacle, within 2.5 mm. It bisects a line in
+    joint space from the measured state or a reachable pose to a pose with the fingers inside an obstacle (`target_id`;
+    the nearest in reach for two, a random one for two), and draws the start again from anywhere when both ends lie on one
+    side. With no obstacle in reach nothing can land, and the pose nearest the target is kept.
+  - Seeded per episode: `episodes.jsonl`'s `poseSampleSeed` (sha256 of `<layoutSeed>|<session>`, 53 bits), so a rebuild
+    draws the same poses whatever the episode's index.
+- **Cost:** about 2 s of a worker an episode (2.05 s average, 2.92 s at most over 10 twin takes of 2026-11-24 with
+  `--jobs 4`). It runs in the workers beside video encoding, so the build took no longer (49.7 s with, 51.9 s without).
 
 `unavoidable_ranges.json`, for analysis: the labels stay contact. Written by default since 2026-11-23 and **provisional
 until the real arm's stop latency is measured** (docs/adr/0038 item 17). It gives the frames from which stopping could no

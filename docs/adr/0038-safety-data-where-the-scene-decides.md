@@ -1162,6 +1162,44 @@ by time (inside an episode's first to last frame) that belong to another episode
 - **World-models' v2 train and val sets mix twins too,** so their path features had the same fault. The test set and the
   pilot come from one twin.
 
+**Distances at commands and sampled poses, for world-models' robot-side safety check (2026-11-24, branch `work/v2-dist5`).**
+That check sees the images, the arm state and each command as the robot receives it, and learns from obstacle distance.
+Two new sidecars, on by default (`--no-command-clearance` writes neither, as builds before), computed at build time from
+the take's records by `teleop_lerobot/command_clearance.py`, are defined in `robot/lerobot/README.md`:
+
+- **`commands.parquet`**, following world-models' own spec, has one row per action event of `raw_ros_events.jsonl` (every
+  `RO`, and every refused command as the plant would have sent it), at the commands' own rate. Each row gives
+  `received_ns` (its `pc_received_mono_ns`), `frame_index` (the last frame captured at or before it), `outcome`, the six
+  servo values unchanged, and the measured state. Then the signed distance per link, the minimum and its object at the
+  commanded pose, and the smallest of 8 poses on the way there from the measured state, each servo ramping at its own rate
+  as `servo.py`'s `TimedSetpoint` does. There is no send time: in the twin it equals the receive time.
+- **`pose_samples.parquet`** has 32 poses a frame that are never executed. Of these, 8 lie past the command (1.5-3x), 16
+  are reachable in 0.5 s at the mixed script's caps, 4 are anywhere within the joint limits, and 4 are bisected to land
+  0-50 mm from an obstacle. They are seeded per episode (`poseSampleSeed` in `episodes.jsonl`).
+- **The distance is `clearance.py`'s, exactly.** Against its `_nearest` and `surface_distance` it agrees to 6e-17 m on
+  600 random poses of a real take, with the same ids. It is vectorised over poses: sphere and box-axis culls, a vertex
+  upper bound, and one GJK over the pairs left. That makes it about 7x faster per pose than calling `clearance.py`, which
+  matters at about 9,000 rows a take.
+- **Its minimum is over the links a joint moves.** In the first take a box stood 41.8 mm from the fixed base, which capped
+  every row's minimum.
+- **`WO` was enough.** The 10 takes log it every 20 ms (largest gap 0.021 s), so the once-a-second rule never applied.
+  The one knocked object moved at most 21.9 mm between records.
+
+Measured on `jetrover_20261124_142632_87d305`'s 10 takes, rebuilt into scratch at 66a57ba with `--jobs 4`:
+
+| | |
+|---|---|
+| cost | 2.05 s of a worker an episode (max 2.92); the build took 49.7 s, against 51.9 s without (video encoding dominates) |
+| `commands.parquet` | 8,611 rows (8,451 `A`, 160 `R`); none without a distance |
+| commanded minimum | p5 39.1 mm, p25 96.3 mm, median at the 150 mm cutoff; 4.0% under 30 mm |
+| into an obstacle | 2.3% of commands, at the commanded pose and on the way there alike; 3 more only on the way. Episode 8 (a contact take): 15.9%. Refused commands: 4 of 160 |
+| `pose_samples.parquet` | 86,080 rows; share under 0: beyond 1.8%, reachable 1.3%, jump 0.7%, near 0.5% |
+| near samples | in the 6 episodes with an obstacle in reach, 53-99% within 2.5 mm of their target; in the 4 with none, none can land |
+| pilot check | each frame's action is the last row received before it in 2,690 of 2,690 frames |
+| `safety-compare` | the original against the rebuild: only the two new files, `episodes.jsonl` (two new keys) and `report.json` (`commandClearance`) differ; a `--no-command-clearance` rebuild is "the same" |
+
+**Untested:** a full-size batch, and takes whose arm parks mid-take (their park `RO` rows count as `A`).
+
 ### R, arm response
 
 **What world-models saw.** In the twin datasets the arm is more than 20 units (4.8 degrees) behind its command on 65–74% of

@@ -935,7 +935,7 @@ median 12 cm below the base frame (80% from -15 to -6 cm).
   meets the object on the line in toward it, and the accident carries the hand on that far, into the object (`HumanOperator.AccidentReach`).
   Every accident then holds 0.2-0.4 s before the recovery (`AccidentModel.ReactionLow`), aimed or not, and a jerk's onset is drawn over
   0.3-0.95 of its part: holding is no sign of a contact. A wrong way is drawn as before. Placed near objects in 0.6 of the main part's
-  would-be blind parts (0.4 before). Of the aimed kinds, 69 of 97 placed accidents reached an object on the follower (bench-mixed scene, 71%;
+  would-be blind parts (0.4 before). Of the aimed kinds, 77 of 97 placed accidents reached an object on the follower (current scene, 79%;
   drawn as before 72 of 130, 55%). With the option off and the old shares, bands and no link aims, the plans are the old ones row for row.
 - **Heights.** The blind goals' tool bands are five (`--tool-bands`): -18 to -13 cm (30%), -13 to -8 (25%), -8 to -3 (20%), -3 to +2 (15%),
   +2 to +8 (10%). Aims, passes and placed accidents draw their height from the same bands within what the object offers, and objects by how
@@ -964,9 +964,9 @@ On layouts 1-200 (seed 1, 3.8 rad/s, 15 s; Release, on the GPU machine). "Before
 | Largest 5 cm band, tool point / touching link's contact point | 36% / 28% | 32% / 28% | 27% / 25% | 28% / 25% |
 | Touching link: gripper, wrist, distal | 83%, 17%, 0 | 81%, 18%, 1% | 79%, 21%, 0 | 73%, 26%, 1% |
 | Aim against free, logistic AUC, whole / main part | 0.660 / 0.677 | 0.696 / 0.727 | 0.644 / 0.677 | 0.670 / 0.710 |
-| Largest arm-joint step a frame, p50 / p90 / p95 / p99 rad | 0.031 / 0.112 / 0.143 / 0.202 | 0.028 / 0.114 / 0.146 / 0.205 | 0.031 / 0.113 / 0.143 / 0.200 | |
+| Largest arm-joint step a frame, p50 / p90 / p95 / p99 rad | 0.031 / 0.112 / 0.143 / 0.202 | 0.028 / 0.114 / 0.146 / 0.205 | 0.031 / 0.113 / 0.143 / 0.200 | 0.030 / 0.116 / 0.149 / 0.208 |
 | The command moving | 83% of frames | 80% | 83% | 81% |
-| Planned contacts (aims and passes) | 112 in 85 takes | 98 in 76 | 113 in 81 | |
+| Planned contacts (aims and passes) | 112 in 85 takes | 98 in 76 | 113 in 81 | 130 in 92 |
 
 - **The accident share:** on the dry run a third to four in ten of the contacts now come from accidents on the scene with bars, the
   scene the next batches run (37% of contact-making records, 41% of onsets), against 29% and 33%. The twin should land near a third with

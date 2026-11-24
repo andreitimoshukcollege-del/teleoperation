@@ -716,7 +716,7 @@ moves of distractors and which the bug below hid less); "after" is 30cd829. Seed
 
 - **What the edits do now.** Every remove, shift and move of an object the model has the arm touch changes that contact; so does every
   shift or move of a near one. The 15 that do not are of objects within 1 cm that the model has the arm miss: the rule treats them as
-  touched, as the brief asks, since physics may. No edit is of an object farther than 5 cm. 84 of 199 groups had fewer than two edits:
+  touched, since physics may touch them. No edit is of an object farther than 5 cm. 84 of 199 groups had fewer than two edits:
   nothing more was near the path.
 - **Why groups lack an add,** from home: the spots under the arm met the quiet start or end (29 groups), or the arm passed too high for
   the parked objects (8). Chained, the quiet start meets more spots (50 groups), since a take starts where the last one ended; with the
@@ -729,8 +729,8 @@ moves of distractors and which the bug below hid less); "after" is 30cd829. Seed
   sweeps the table there (above). The add's other failures are real: the spots meet the quiet windows.
 - **Contacts and height.** At least a third of the planned contacts' tool points are above -8 cm on every seed, and of all contacts by the
   model on two of three (33%, 39%, 38%; chained, 29%): blind moves into low objects keep the share near a third. Stands and supports took
-  5-7% of the contacts by the model (before 25%), no planned one. The planned contacts fell from 131 to 94 because the 62 aims at stands
-  and supports are gone; the thin objects' offsets made up some of it.
+  5-7% of the contacts by the model (before 25%), no planned one. The planned contacts fell from 131 to 94 because the 62 with stands and
+  supports are gone; the thin objects' offsets made up some of it.
 - **Checked:** `MixedTakeTests` (on jetrover-mixed: no aim at a stand or a support, aims at raised objects keep off their stands, a fifth
   of the planned contacts above -8 cm; blind goals at every height; the bands are checked; blind goals ending low and high on the bench);
   `ReplaysTests` (every edit changes the model's contact for the edited object or is of an object within 1 cm, none farther than 5 cm; a

@@ -649,7 +649,8 @@ namespace Teleop.Eval.JointDrive
         /// <summary>The lag-aware contacts' tallies (<see cref="LagAwareContacts"/>).</summary>
         internal sealed class LagTally
         {
-            public int Takes, Planned, Onsets, AccidentOnsets, Records, ContactRecords, Accidents, AccidentContacts, FreeAccidents;
+            public int Takes, Planned, Onsets, AccidentOnsets, Records, ContactRecords, Accidents, AccidentContacts, FreeAccidents, Placed, PlacedContacts;
+            public readonly Dictionary<string, int[]> PlacedByKind = new Dictionary<string, int[]>();
             public readonly List<double> Tool = new List<double>(), Point = new List<double>();
             public readonly Dictionary<string, int> Links = new Dictionary<string, int>();
             public readonly Dictionary<string, int> Parts = new Dictionary<string, int>();
@@ -662,6 +663,8 @@ namespace Teleop.Eval.JointDrive
                     $"  lag-aware contacts (the follower: {TakeAudit.FollowDelay:0.00} s late, tau {TakeAudit.FollowTau:0.00} s, {TakeAudit.FollowSpeed:0.0} rad/s): {Onsets} onsets in {Takes} of {Planned} takes; in an accident's span (+{LagSeconds:0.0} s) {AccidentOnsets} ({100.0 * AccidentOnsets / Math.Max(1, Onsets):0}%); by move: {Kinds(Parts)}"));
                 Console.WriteLine(FormattableString.Invariant(
                     $"    accidents {Accidents}, with a lag-aware contact {AccidentContacts} ({100.0 * AccidentContacts / Math.Max(1, Accidents):0}%), farther than 10 cm from every object's box (free space) {FreeAccidents}; 'the record is an accident' for 'it makes a contact': AUC {0.5 * (1 + tpr - fpr):0.000} (of {Records} records, {ContactRecords} with a contact)"));
+                Console.WriteLine(FormattableString.Invariant($"    of the accidents, placed near an object {Placed}, with a contact {PlacedContacts}; by kind (placed, with a contact): ") +
+                                  string.Join(", ", PlacedByKind.OrderBy(k => k.Key, StringComparer.Ordinal).Select(k => $"{k.Key} {k.Value[0]}/{k.Value[1]}")));
                 Console.WriteLine("    tool point cm, 5 cm bins from -20: " + Histogram(Tool.Select(z => z * 100.0), -20, 5, 8) + " (largest band " + Largest(Tool) + "); " + Spread(Tool));
                 Console.WriteLine("    contact point cm, 5 cm bins from -20: " + Histogram(Point.Select(z => z * 100.0), -20, 5, 8) + " (largest band " + Largest(Point) + ")");
                 Console.WriteLine("    touching link: " + Kinds(Links) + "; contact point by link, p50 cm: " +
@@ -762,6 +765,16 @@ namespace Teleop.Eval.JointDrive
                 if (contact[k]) tally.ContactRecords++;
                 if (!ScriptMoveCodec.IsAccident(moves[k].Kind)) continue;
                 tally.Accidents++;
+                if (moves[k].Part == MovePart.NearAccident)
+                {
+                    tally.Placed++;
+                    if (contact[k]) tally.PlacedContacts++;
+                    string kn = ScriptMoveCodec.Name(moves[k].Kind);
+                    if (!tally.PlacedByKind.TryGetValue(kn, out int[]? pk)) tally.PlacedByKind[kn] = pk = new int[2];
+                    pk[0]++;
+                    if (contact[k]) pk[1]++;
+                }
+
                 if (contact[k])
                 {
                     tally.AccidentContacts++;

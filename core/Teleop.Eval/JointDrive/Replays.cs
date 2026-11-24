@@ -556,6 +556,7 @@ namespace Teleop.Eval.JointDrive
                                 spots ??= LowSpots(onto, profile, table);
                                 if (SpotOnPath(scene, objects, k, i, spots, yawNow, scale, rest, scaleOf, plan, profile, onto, ref r, tally, p => Moved(o, p), out RigidTransform at,
                                         out SafetyObject after)
+                                    && Math.Sqrt((at.X - o.Center.X) * (at.X - o.Center.X) + (at.Y - o.Center.Y) * (at.Y - o.Center.Y)) >= 0.05 // elsewhere: nearer is a shift
                                     && PathProximity.GapOver(near.Arm, near.Track, after, 2, out _) <= -MeetMeters)
                                 {
                                     var move = new ReplayRecord(ReplayRole.Replay, group, ReplayEdit.Move, o.Id, (float)at.X, (float)at.Y, (float)yawNow);

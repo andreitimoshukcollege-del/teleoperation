@@ -731,7 +731,7 @@ moves of distractors and which the bug below hid less); "after" is 30cd829. Seed
   model on two of three (33%, 39%, 38%; chained, 29%): blind moves into low objects keep the share near a third. Stands and supports took
   5-7% of the contacts by the model (before 25%), no planned one. The planned contacts fell from 131 to 94 because the 62 aims at stands
   and supports are gone; the thin objects' offsets made up some of it.
-- **Checked:** `MixedTakeTests` (on jetrover-mixed: no aim at a stand or a support, aims at raised objects keep off their stands, a quarter
+- **Checked:** `MixedTakeTests` (on jetrover-mixed: no aim at a stand or a support, aims at raised objects keep off their stands, a fifth
   of the planned contacts above -8 cm; blind goals at every height; the bands are checked; blind goals ending low and high on the bench);
   `ReplaysTests` (every edit changes the model's contact for the edited object or is of an object within 1 cm, none farther than 5 cm; a
   group with nothing near its path gets its add at the first replay, and one add a group; a tilted object on a stand is held; each

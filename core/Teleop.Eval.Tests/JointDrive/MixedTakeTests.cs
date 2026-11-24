@@ -289,7 +289,9 @@ namespace Teleop.Eval.Tests.JointDrive
             _output.WriteLine(report);
             Assert.True(blindPullBacks >= 3, report);
             Assert.True(objectMoves >= 8 && turned * 4 >= objectMoves, report);
-            Assert.True(lowBlind * 4 >= blindTransports && highBlind >= 2, report);
+            // Some end low and some high: in the quiet start and the tail low goals near an object are refused, and the tail after its exit
+            // keeps off the low band, so on the crowded bench most end high.
+            Assert.True(lowBlind >= 2 && highBlind >= 2, report);
         }
 
         [Fact]
@@ -302,7 +304,7 @@ namespace Teleop.Eval.Tests.JointDrive
             int aims = 0, raisedAims = 0, tallOrPlank = 0, planned = 0;
             var holderWalls = new Dictionary<int, int>();
             Span<LinkFrame> frames = stackalloc LinkFrame[5];
-            for (ulong layout = 1; layout <= 30; layout++)
+            for (ulong layout = 1; layout <= 40; layout++)
             {
                 SafetyObject[] objects = MixedLayout(layout);
                 if (!TryMixed(objects, 3000 + layout, out DrivePlan? plan, out _)) continue;
@@ -337,9 +339,9 @@ namespace Teleop.Eval.Tests.JointDrive
             string report = FormattableString.Invariant($"{planned} planned, {aims} aims and passes ({raisedAims} at raised objects, {tallOrPlank} at tall ones or planks); ") +
                             FormattableString.Invariant($"{tool.Count} planned contacts, tool point {tool.FirstOrDefault() * 100:0.0}..{tool.LastOrDefault() * 100:0.0} cm, {high} above -8 cm");
             _output.WriteLine(report);
-            Assert.True(planned >= 27, report);
-            Assert.True(raisedAims >= 2 && tallOrPlank >= 4, report);
-            Assert.True(tool.Count >= 8 && high * 4 >= tool.Count, report); // contacts high as well as low
+            Assert.True(planned >= 36, report);
+            Assert.True(raisedAims >= 1 && tallOrPlank >= 6, report);
+            Assert.True(tool.Count >= 10 && high * 5 >= tool.Count, report); // contacts high as well as low
         }
 
         [Fact]

@@ -23,7 +23,8 @@ The object's pose is ``WO``'s interpolated to the frame's ``stateSensed`` and it
 as the clearance takes them. No depth test: the mask already resolves what is in front.
 
 What cannot be had is NaN (null) with a ``reason``: a camera with no mask stream, a frame whose mask is missing or damaged,
-an object with no geometry in the cache, a wrist camera at a frame with no joint values. An episode whose objects cannot be
+an object with no geometry in the cache, a wrist camera at a frame with no joint values, and an object the renderer drew
+without its mask label (its id in no mask of the take, though its silhouette reached :data:`UNLABELLED_PX` pixels). An episode whose objects cannot be
 known at all (no scene file, no ``WO``, no ``CM``) has one row with no camera or object and the reason.
 
 Pure numpy and OpenCV (the mask PNGs and the hulls).
@@ -44,6 +45,7 @@ from .jlog import items
 OBSTACLE_ROLES = ("obstacle", "stand", "plank", "support")  # a mixed pool's objects in reach (docs/adr/0038 decision 3)
 SEEN = 0.5  # summary(): an object counts as seen by a camera when at least this share of it shows
 MASK_OFFSET = 100  # an object's mask id is 100 + its scene id (SESSION_FORMAT.md, ID)
+UNLABELLED_PX = 200  # an object never in the masks though its silhouette reached this many pixels was drawn unlabelled
 SPHERE_POINTS = 96  # a sphere's silhouette: the hull of this many points on it
 COLUMNS = ("episode_index", "frame_index", "camera", "object_id", "role", "visible_px", "expected_px", "visible_fraction",
            "in_frustum", "reason")
@@ -437,7 +439,29 @@ def compute(take, geometry_dir: Optional[str], records=None, rename: Optional[Di
             for k, x in zip(("camera", "object_id", "role", "visible_px", "expected_px", "visible_fraction", "in_frustum",
                              "reason"), row):
                 cols[k].append(x)
+    _unlabelled(cols)
     return Visibility(cols)
+
+
+def _unlabelled(cols: Dict[str, list]) -> None:
+    """An object whose mask id is in no camera's mask at any frame, though its silhouette covered at least
+    :data:`UNLABELLED_PX` pixels of some camera at some frame, was drawn without its label (the twin's masks of 2026-11-24
+    lose some objects' labels for whole takes: their silhouettes read 0, unlabelled, where the object stands in front of the
+    table). Its counts are not measurements: null, with the reason."""
+    seen, big = set(), set()
+    for oid, vis, exp in zip(cols["object_id"], cols["visible_px"], cols["expected_px"]):
+        if vis:
+            seen.add(oid)
+        if exp is not None and exp >= UNLABELLED_PX:
+            big.add(oid)
+    lost = big - seen
+    for i, oid in enumerate(cols["object_id"]):
+        if oid in lost and cols["visible_px"][i] is not None:
+            cols["visible_px"][i] = None
+            cols["visible_fraction"][i] = float("nan")
+            why = (f"mask id {MASK_OFFSET + oid} is in no mask of the take though its silhouette reached {UNLABELLED_PX}+ px: "
+                   f"drawn without its label")
+            cols["reason"][i] = f"{cols['reason'][i]}; {why}" if cols["reason"][i] else why
 
 
 # --- the dataset's file and its summary ----------------------------------------------------------------------------------

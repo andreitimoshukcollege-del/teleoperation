@@ -77,7 +77,7 @@ SIDE = ["CM", "side", 64, 48, 100, 100, 32, 24, 0.01, 6, 0.3, 0.0, 1.0, 1, 0, 0,
 
 def masks_take(root, objects=None, wrist_mask=True, ids=True, wo=None):
     """A take whose arm stays at zero, seen from above by ``top`` (1 m over the box at x 0.3) and ``wrist``, and by ``side``
-    with no mask. The box (id 31, 10 cm) stands on z 0; its mask id 131 covers its 100 pixels in ``top`` but for the 20 of a
+    with no mask. The box (id 31, 10 cm) stands on z 0, and a larger one (35) beside it the masks never label; its mask id 131 covers its 100 pixels in ``top`` but for the 20 of a
     row the arm (7) covers in frames 30 on; ``wrist`` shows all 420 of its pixels."""
     take = os.path.join(root, "mixed", "20261124T100000Z-take001")
     os.makedirs(take)
@@ -86,6 +86,8 @@ def masks_take(root, objects=None, wrist_mask=True, ids=True, wo=None):
              "surfaces": [{"id": "table", "center": [0.35, 0, -0.02], "size": [0.5, 1.0, 0.04]}],
              "objects": objects or [
                  {"id": 31, "name": "box", "shape": "box", "size": [0.1, 0.1, 0.1], "kind": "movable", "role": "obstacle"},
+                 {"id": 35, "name": "unlabelled", "shape": "box", "size": [0.15, 0.15, 0.15], "kind": "movable",
+                  "role": "stand"},
                  {"id": 33, "name": "parked", "shape": "box", "size": [0.05, 0.05, 0.05], "kind": "movable", "role": "obstacle"},
                  {"id": 34, "name": "cube", "shape": "mesh", "asset": "test/missing", "size": [0.05, 0.05, 0.05],
                   "kind": "movable", "role": "distractor"}]}
@@ -99,7 +101,7 @@ def masks_take(root, objects=None, wrist_mask=True, ids=True, wo=None):
         t = (900 + 20 * k) * MS
         rows.append(["RO", t, ";".join(f"{m}:500:300" for m in (1, 2, 3, 4, 10, 5))])
         rows.append(["RI", t + 5 * MS, ";".join(f"{m}:1:500" for m in (1, 2, 3, 4, 5, 10))])
-    rows.append(["WO", 100 * MS, 90 * MS, 1, wo or "31:0.3:0:0:1:0:0:0;33:17:-15:-4.97:1:0:0:0;34:0.5:0.3:0:1:0:0:0"])
+    rows.append(["WO", 100 * MS, 90 * MS, 1, wo or "31:0.3:0:0:1:0:0:0;33:17:-15:-4.97:1:0:0:0;34:0.5:0.3:0:1:0:0:0;35:0.3:0.12:0:1:0:0:0"])
     rows.sort(key=lambda r: int(r[1]))
     write_jlog(os.path.join(take, "robothost.jlog"), "robothost", sid, rows)
     cams = ["top", "wrist", "side"]
@@ -161,6 +163,9 @@ def test_a_tiny_take_end_to_end(scenarios, geometry):  # noqa: F811
     cube = frame_rows(vis, "top", 34)  # a mesh with no geometry in the cache: visible counted, expected unknown
     assert all(r["visible_px"] == 0 and r["expected_px"] is None and r["in_frustum"] is None
                and "no geometry" in r["reason"] and r["role"] == "distractor" for r in cube)
+    lost = frame_rows(vis, "top", 35)  # 256 px of it in view, none in any mask: drawn without its label, not hidden
+    assert {r["expected_px"] for r in lost} == {256} and all(r["visible_px"] is None and math.isnan(r["visible_fraction"])
+                                                             and "drawn without its label" in r["reason"] for r in lost)
 
 
 def test_what_cannot_be_had_is_null_with_a_reason(scenarios, geometry, tmp_path):  # noqa: F811

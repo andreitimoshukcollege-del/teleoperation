@@ -6,6 +6,7 @@ using Teleop.RobotArm.Collision;
 using Teleop.RobotArm.Kinematics;
 using Teleop.RobotArm.Training;
 using Teleop.RobotArm.Types;
+using Teleop.RobotArm.World;
 
 namespace Teleop.Eval.JointDrive
 {
@@ -144,16 +145,24 @@ namespace Teleop.Eval.JointDrive
         /// </summary>
         public readonly bool Scenery;
 
+        /// <summary>
+        /// Its role in a mixed pool (docs/adr/0038 decision 3; <see cref="SceneRole.None"/> elsewhere): the mixed script never aims at a stand
+        /// or a plank's support, and keeps an approach to what one holds off it. The four old scripts do not read it.
+        /// </summary>
+        public readonly SceneRole Role;
+
         /// <summary>An axis-aligned object.</summary>
-        public SafetyObject(byte id, Vector3 min, Vector3 max, bool movable = true, double mass = 0, bool tippy = false, ObjectShape? shape = null, bool scenery = false)
-            : this(id, (min + max) / 2f, Quaternion.Identity, (max - min) / 2f, movable, mass, tippy, shape, scenery)
+        public SafetyObject(byte id, Vector3 min, Vector3 max, bool movable = true, double mass = 0, bool tippy = false, ObjectShape? shape = null, bool scenery = false,
+            SceneRole role = SceneRole.None)
+            : this(id, (min + max) / 2f, Quaternion.Identity, (max - min) / 2f, movable, mass, tippy, shape, scenery, role)
         {
         }
 
         /// <summary>A turned object: its box centred at <paramref name="center"/>, turned by <paramref name="rotation"/>.</summary>
         public SafetyObject(byte id, Vector3 center, Quaternion rotation, Vector3 halfExtents, bool movable = true, double mass = 0, bool tippy = false,
-            ObjectShape? shape = null, bool scenery = false)
+            ObjectShape? shape = null, bool scenery = false, SceneRole role = SceneRole.None)
         {
+            Role = role;
             Id = id;
             Center = center;
             Rotation = rotation;
@@ -176,7 +185,7 @@ namespace Teleop.Eval.JointDrive
             Vector3 half = grow >= 0
                 ? HalfExtents + new Vector3(grow)
                 : HalfExtents - Vector3.Min(new Vector3(-grow), HalfExtents - new Vector3(0.0005f));
-            return new SafetyObject(Id, Center, Rotation, half, Movable, Mass, Tippy, Shape, Scenery);
+            return new SafetyObject(Id, Center, Rotation, half, Movable, Mass, Tippy, Shape, Scenery, Role);
         }
     }
 

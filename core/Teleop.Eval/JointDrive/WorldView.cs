@@ -54,7 +54,7 @@ namespace Teleop.Eval.JointDrive
 
             // Mass at size, as Isaac's bodies have it; tippy from the proportions as it rests (a uniform size keeps them).
             return new SafetyObject(o.Id, centre, rotation, half, o.Movable, o.Mass * scale * scale * scale, IsTippy(o, qw, qx, qy, qz, shapes?.For(o)), shapes?.For(o)?.At(half),
-                scenery);
+                scenery, o.Role);
         }
 
         /// <summary>

@@ -328,6 +328,52 @@ namespace Teleop.Eval.JointDrive
 
         /// <summary>See <see cref="RadialScale"/>.</summary>
         public float VerticalScale { get; set; } = 1f;
+
+        /// <summary>
+        /// docs/adr/0038 "M, motion" (the 2026-11-23 review: every layout-blind goal low made how low a path goes say whether it hits): when
+        /// set, every goal's tool point (the pads' midpoint) is at a height drawn from these bands, base frame z, as triples (low, high,
+        /// share), and the wrist is pitched for that height as an aim at an object there is (<see cref="MixedTake.PitchAt"/>); its place across
+        /// is drawn as before (near the hand, or anywhere in the region), and <see cref="LowShare"/>, <see cref="HeightLow"/> and
+        /// <see cref="HeightHigh"/> are not used. Null: the wrist's height drawn as before.
+        /// </summary>
+        public float[]? ToolBands { get; set; }
+
+        /// <summary>Throws when <see cref="ToolBands"/> is not triples of low &lt; high and shares at least 0 that add up to more than 0.</summary>
+        public void Validate()
+        {
+            if (ToolBands == null) return;
+            if (ToolBands.Length == 0 || ToolBands.Length % 3 != 0) throw new ArgumentException("tool bands are triples: low, high, share");
+            float total = 0f;
+            for (int i = 0; i < ToolBands.Length; i += 3)
+            {
+                if (!(ToolBands[i] < ToolBands[i + 1]) || !(ToolBands[i + 2] >= 0) || ToolBands[i] < -0.25f || ToolBands[i + 1] > 0.25f)
+                    throw new ArgumentException($"a tool band must be -0.25 <= low < high <= 0.25 m with a share at least 0, not {ToolBands[i]}..{ToolBands[i + 1]} ({ToolBands[i + 2]})");
+                total += ToolBands[i + 2];
+            }
+
+            if (!(total > 0)) throw new ArgumentException("the tool bands' shares add up to 0");
+        }
+
+        /// <summary>A copy without the lowest of its <see cref="ToolBands"/> (or, without bands, with no low goals): the quiet windows' fallback where low goals all come too near an object.</summary>
+        public BlindReach WithoutLow()
+        {
+            var copy = new BlindReach
+            {
+                RadiusLow = RadiusLow, RadiusHigh = RadiusHigh, HeightLow = HeightLow, HeightHigh = HeightHigh, YawDegrees = YawDegrees, LowShare = 0, NearShare = NearShare,
+                RadialScale = RadialScale, VerticalScale = VerticalScale, LowHeightHigh = LowHeightHigh, LowPitchLowDegrees = LowPitchLowDegrees,
+                LowPitchHighDegrees = LowPitchHighDegrees, LowReachInset = LowReachInset,
+            };
+            if (ToolBands != null && ToolBands.Length > 3)
+            {
+                int lowest = 0;
+                for (int i = 3; i < ToolBands.Length; i += 3) if (ToolBands[i] < ToolBands[lowest]) lowest = i;
+                var rest = new List<float>();
+                for (int i = 0; i < ToolBands.Length; i += 3) if (i != lowest) rest.AddRange(new[] { ToolBands[i], ToolBands[i + 1], ToolBands[i + 2] });
+                copy.ToolBands = rest.ToArray();
+            }
+
+            return copy;
+        }
     }
 
     /// <summary>One submovement: a minimum-jerk displacement of the hand (and of its pitch and roll), from <see cref="Start"/> over <see cref="Duration"/>.</summary>
@@ -1118,6 +1164,7 @@ namespace Teleop.Eval.JointDrive
         /// <summary>A goal for a layout-blind move (<see cref="BlindReach"/>), the wrist's pitch for it when it is a low one; false when none of the draws is in reach.</summary>
         private bool BlindGoal(HandTimeline tl, BlindReach reach, out Vector3 goal, out float? pitch)
         {
+            if (reach.ToolBands != null) return BandGoal(tl, reach, out goal, out pitch);
             Vector3 from = TargetEndpoint(tl);
             float maxReach = _profile.ProximalLinkLength + _profile.DistalLinkLength;
             var shoulder = new Vector3(0, 0, _profile.BaseHeight);
@@ -1164,6 +1211,78 @@ namespace Teleop.Eval.JointDrive
             goal = from;
             pitch = null;
             return false;
+        }
+
+        /// <summary>
+        /// A layout-blind goal by its tool point's height (<see cref="BlindReach.ToolBands"/>, docs/adr/0038 "M, motion"): the height drawn from
+        /// the bands, the wrist pitched for it as an aim there is (<see cref="MixedTake.PitchAt"/>, the same jitter), its place across drawn as
+        /// <see cref="BlindGoal"/> draws one, and kept inside the arm's reach by <see cref="BlindReach.LowReachInset"/>. False when none of the
+        /// draws is in reach.
+        /// </summary>
+        private bool BandGoal(HandTimeline tl, BlindReach reach, out Vector3 goal, out float? pitch)
+        {
+            Vector3 from = TargetEndpoint(tl);
+            float maxReach = _profile.ProximalLinkLength + _profile.DistalLinkLength, table = _profile.Collision?.FloorZ ?? -0.1962f;
+            var shoulder = new Vector3(0, 0, _profile.BaseHeight);
+            Vector3 tool = MixedTake.ToolInGripper;
+            const double deg = Math.PI / 180.0;
+            float[] bands = reach.ToolBands!;
+            for (int i = 0; i < 40; i++)
+            {
+                float z = DrawBand(bands);
+                Vector3 g;
+                if (Draw.Chance(ref _rng, reach.NearShare))
+                {
+                    float a = Draw.ReachDistance(ref _rng);
+                    Vector3 direction = Draw.Direction(ref _rng, 0.7f);
+                    var radial = new Vector2(from.X, from.Y);
+                    radial = radial.Length() > 1e-4f ? Vector2.Normalize(radial) : Vector2.UnitX;
+                    var r3 = new Vector3(radial.X, radial.Y, 0f);
+                    var t3 = new Vector3(-radial.Y, radial.X, 0f);
+                    Vector3 scaled = Vector3.Dot(direction, r3) * reach.RadialScale * r3 + Vector3.Dot(direction, t3) * t3 + direction.Z * reach.VerticalScale * Vector3.UnitZ;
+                    if (scaled.Length() > 1e-4f) direction = Vector3.Normalize(scaled);
+                    g = from + a * direction;
+                }
+                else
+                {
+                    double r = Draw.Uniform(ref _rng, reach.RadiusLow, reach.RadiusHigh), az = Draw.Uniform(ref _rng, -reach.YawDegrees, reach.YawDegrees) * deg;
+                    g = new Vector3((float)(r * Math.Cos(az)), (float)(r * Math.Sin(az)), 0f);
+                }
+
+                float radius = MathF.Sqrt(g.X * g.X + g.Y * g.Y), yaw = MathF.Atan2(g.Y, g.X) * 180f / MathF.PI;
+                if (radius < reach.RadiusLow || radius > reach.RadiusHigh || MathF.Abs(yaw) > reach.YawDegrees) continue;
+                // The pads reach out from the wrist by their pitch's share of 15 cm: the pitch is the tool's radius's, so found in two steps.
+                float p = MixedTake.PitchAt(radius + 0.10f, z, table);
+                p = MixedTake.PitchAt(radius + tool.X * MathF.Cos(p) - tool.Z * MathF.Sin(p), z, table) + (float)(Draw.Uniform(ref _rng, -8, 8) * deg);
+                g.Z = z - (tool.X * MathF.Sin(p) + tool.Z * MathF.Cos(p));
+                if (g.Z < -0.06f || g.Z > 0.28f) continue;
+                if (Vector3.Distance(g, shoulder) > maxReach - reach.LowReachInset) continue;
+                if (AvoidGoals != null && Near(new Vector2(g.X, g.Y), AvoidGoals, AvoidRadius)) continue;
+                goal = g;
+                pitch = p;
+                return true;
+            }
+
+            goal = from;
+            pitch = null;
+            return false;
+        }
+
+        /// <summary>A height drawn from bands of (low, high, share) triples: a band by its share, then uniformly within it.</summary>
+        private float DrawBand(float[] bands)
+        {
+            float total = 0f;
+            for (int i = 2; i < bands.Length; i += 3) total += bands[i];
+            double u = _rng.NextDouble() * total;
+            int k = 0;
+            for (int i = 0; i < bands.Length; i += 3)
+            {
+                k = i;
+                u -= bands[i + 2];
+                if (u < 0) break;
+            }
+
+            return (float)Draw.Uniform(ref _rng, bands[k], bands[k + 1]);
         }
 
         // ---------------------------------------------------------------------------------------------------------------

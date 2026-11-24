@@ -8,6 +8,7 @@ using Teleop.RobotArm.Kinematics;
 using Teleop.RobotArm.Training;
 using Teleop.RobotArm.Types;
 using Teleop.RobotArm.Wire;
+using Teleop.RobotArm.World;
 
 namespace Teleop.Eval.JointDrive
 {
@@ -94,14 +95,21 @@ namespace Teleop.Eval.JointDrive
         /// degrees, the pads 2-14 cm above the table), docs/adr/0038 "M, motion": aims are as low as the objects they reach at, and 40% low
         /// blind goals left the path's height telling the two apart (AUC 0.80 alone).
         /// </summary>
-        public BlindReach Reach { get; set; } = new BlindReach { NearShare = 0.8, RadialScale = 0.55f, VerticalScale = 0.55f, LowShare = 1.0, LowHeightHigh = 0.05f };
+        public BlindReach Reach { get; set; } = new BlindReach { NearShare = 0.8, RadialScale = 0.55f, VerticalScale = 0.55f, LowShare = 1.0, LowHeightHigh = 0.05f, ToolBands = DefaultToolBands() };
 
         /// <summary>
         /// Where they are drawn in the quiet start and end, which keep clear of every object (the guard): as low as elsewhere (docs/adr/0038
         /// "M, motion": never low before, so 42% of the free moves, those of the start and the tail, were 24 cm up at the median, and the
         /// path's height told them from aims).
         /// </summary>
-        public BlindReach QuietReach { get; set; } = new BlindReach { LowShare = 1.0, NearShare = 0.7, HeightLow = 0.0f, LowHeightHigh = 0.05f };
+        public BlindReach QuietReach { get; set; } = new BlindReach { LowShare = 1.0, NearShare = 0.7, HeightLow = 0.0f, LowHeightHigh = 0.05f, ToolBands = DefaultToolBands() };
+
+        /// <summary>
+        /// The tool point's heights layout-blind goals are drawn at (<see cref="BlindReach.ToolBands"/>), base frame z (the table 19.6 cm below
+        /// it): low, mid and high, as aims meet objects (docs/adr/0038 "M, motion", the 2026-11-23 review: every blind goal low had the
+        /// path's height telling a take that hits from one that does not; aims and free moves share one height distribution).
+        /// </summary>
+        public static float[] DefaultToolBands() => new[] { -0.170f, -0.120f, 0.40f, -0.120f, -0.060f, 0.35f, -0.060f, 0.060f, 0.25f };
 
         /// <summary>The speed caps (docs/adr/0038 decision 1, item 29): <see cref="DefaultCaps"/> unless told otherwise; null for none.</summary>
         public MotionCaps? Caps { get; set; } = DefaultCaps();
@@ -149,6 +157,8 @@ namespace Teleop.Eval.JointDrive
             if (!(SlowMin > 0 && SlowMax >= SlowMin && SlowSigma >= 0)) throw new ArgumentException("slowness must be 0 < min <= max");
             if (!(PauseMinSeconds >= 0 && PauseMaxSeconds >= PauseMinSeconds)) throw new ArgumentException("pause seconds must be 0 <= min <= max");
             if (!(ShortApproachShare <= 1) || !(TurnDegreesPerMeter >= 0 && TurnDegreesPerMeter <= 2000)) throw new ArgumentException("the short approach share must be at most 1, the turn 0-2000 degrees a metre");
+            Reach.Validate();
+            QuietReach.Validate();
             Caps?.Validate();
         }
     }
@@ -272,8 +282,21 @@ namespace Teleop.Eval.JointDrive
         /// </summary>
         public const float LowestContactMeters = 0.026f;
 
-        /// <summary>The highest an aim or a pass meets an object, m above its bottom: about as high as the pads reach near the table (the shell <see cref="PitchFor"/> follows).</summary>
-        public const float HighestContactMeters = 0.20f;
+        /// <summary>
+        /// The highest an aim or a pass meets an object, base frame z (docs/adr/0038 "M, motion", the 2026-11-23 review: contacts at every
+        /// height): 29.6 cm above the table, where the arm still reaches with the wrist near level over the band objects stand in. Below it,
+        /// an object is met anywhere up its height (<see cref="ReachTop"/>), the wrist pitched for that height (<see cref="PitchAt"/>).
+        /// </summary>
+        public const float HighestContactMeters = 0.10f;
+
+        /// <summary>The lowest an aim or a pass meets an object raised on a stand, m above its bottom (the stand's top): the pads clear of it. The approach keeps off the stand (<see cref="HolderClearMeters"/>).</summary>
+        public const float RaisedLowestMeters = 0.010f;
+
+        /// <summary>An aim or a pass at a plank comes at it from this far below its bottom (from below: the arm's top meets its underside) up to its top.</summary>
+        public const float PlankUnderMeters = 0.030f;
+
+        /// <summary>An aim or a pass at what a stand holds (or at a plank) keeps this far off the stand (or the plank's supports): it meets its object, not what holds it up.</summary>
+        public const float HolderClearMeters = 0.005f;
 
         /// <summary>The share of aims that come straight out from the base (within 25 degrees) rather than round it.</summary>
         public const double RadialShare = 0.25;
@@ -296,6 +319,7 @@ namespace Teleop.Eval.JointDrive
         private readonly double _start; // plan seconds at the operator's first tick
         private readonly ShapeGap?[] _shapes;
         private readonly GapLadder?[] _ladders;
+        private readonly List<int>?[] _holders;
         private readonly List<Draft> _drafts = new List<Draft>();
         private readonly HashSet<int> _moved = new HashSet<int>(); // objects a move planned to push into, as later targets
         private readonly ArmCollisionModel[]? _walls; // the fixed objects' boxes at each of WallOffsets (null: no fixed object)
@@ -356,6 +380,7 @@ namespace Teleop.Eval.JointDrive
             _rng = rng;
             _shapes = new ShapeGap?[objects.Count];
             _ladders = new GapLadder?[objects.Count];
+            _holders = new List<int>?[objects.Count];
             var fixedObjects = new List<SafetyObject>();
             foreach (SafetyObject o in objects) if (!o.Movable) fixedObjects.Add(o);
             if (fixedObjects.Count > 0)
@@ -684,12 +709,8 @@ namespace Teleop.Eval.JointDrive
             if (!_hand.MixedFree(_model, reach, Slowness(), _options.BlindTransportShare, _options.BlindReverseShare, out ScriptMoveKind kind, out start, out end, DrawWalls()))
             {
                 // The quiet start and end keep clear of every object: where low goals all come too near one, goals that are not low.
-                if (!quiet || reach.LowShare <= 0) return false;
-                _quietHigh ??= new BlindReach
-                {
-                    RadiusLow = reach.RadiusLow, RadiusHigh = reach.RadiusHigh, HeightLow = reach.HeightLow, HeightHigh = reach.HeightHigh, YawDegrees = reach.YawDegrees,
-                    LowShare = 0, NearShare = reach.NearShare, RadialScale = reach.RadialScale, VerticalScale = reach.VerticalScale,
-                };
+                if (!quiet || (reach.ToolBands == null ? reach.LowShare <= 0 : reach.ToolBands.Length <= 3)) return false;
+                _quietHigh ??= reach.WithoutLow();
                 if (!_hand.MixedFree(_model, _quietHigh, Slowness(), _options.BlindTransportShare, _options.BlindReverseShare, out kind, out start, out end, DrawWalls())) return false;
             }
 
@@ -764,20 +785,29 @@ namespace Teleop.Eval.JointDrive
         private bool TryObjectMove()
         {
             var targets = new List<int>(_objects.Count);
+            var weights = new List<float>(_objects.Count);
             for (int i = 0; i < _objects.Count; i++)
             {
-                if (_objects[i].Scenery || _moved.Contains(i)) continue;
-                if (_objects[i].Max.Z - _objects[i].Min.Z < LowestContactMeters + 0.016f) continue; // flat: met only from above
+                SafetyObject o = _objects[i];
+                if (o.Scenery || _moved.Contains(i)) continue;
+                // A stand or a plank's support is never a target (docs/adr/0038 "M, motion", the 2026-11-23 review: the stands under raised
+                // objects took 18 of 41 contacts): what it holds up is.
+                if (o.Role == SceneRole.Stand || o.Role == SceneRole.Support) continue;
+                if (!HeightRange(i, out float zLo, out float zHi)) continue; // flat on the table: met only from above
                 if (_missesInARow.TryGetValue(i, out int misses) && misses >= MaxObjectMisses) continue; // out of reach, it seems
-                Vector3 c = _objects[i].Center;
+                Vector3 c = o.Center;
                 float r = new Vector2(c.X, c.Y).Length();
-                if (r - Footprint(_objects[i]) < 0.40f) targets.Add(i);
+                if (r - Footprint(o) >= 0.40f) continue;
+                targets.Add(i);
+                // Drawn by how much of its height the arm meets it over, so contacts spread over every height objects stand at (a tall rod as
+                // often as its height asks, a can less), not one height (docs/adr/0038 "M, motion").
+                weights.Add(MathF.Max(0.03f, zHi - zLo));
             }
 
             if (targets.Count == 0) return false;
             for (int attempt = 0; attempt < 14; attempt++)
             {
-                int oi = targets[(int)(_rng.NextDouble() * targets.Count) % targets.Count];
+                int oi = targets[Pick(weights)];
                 ScriptMoveKind kind = Draw.Chance(ref _rng, _options.PassShare) ? ScriptMoveKind.Pass : ScriptMoveKind.Aim;
                 if (TryObjectMove(oi, kind))
                 {
@@ -788,12 +818,100 @@ namespace Teleop.Eval.JointDrive
                 _missesInARow[oi] = _missesInARow.TryGetValue(oi, out int m) ? m + 1 : 1;
                 if (m + 1 >= MaxObjectMisses)
                 {
-                    targets.Remove(oi);
+                    int k = targets.IndexOf(oi);
+                    targets.RemoveAt(k);
+                    weights.RemoveAt(k);
                     if (targets.Count == 0) return false;
                 }
             }
 
             return false;
+        }
+
+        /// <summary>An index into <paramref name="weights"/>, drawn in proportion to them.</summary>
+        private int Pick(List<float> weights)
+        {
+            float total = 0f;
+            foreach (float w in weights) total += w;
+            double u = _rng.NextDouble() * total;
+            for (int i = 0; i < weights.Count; i++)
+            {
+                u -= weights[i];
+                if (u < 0) return i;
+            }
+
+            return weights.Count - 1;
+        }
+
+        /// <summary>
+        /// The tool point's heights an aim or a pass meets object <paramref name="oi"/> at, base frame z (docs/adr/0038 "M, motion", the
+        /// 2026-11-23 review: over the object's own height, base to top, within what the arm reaches): on the table, from just above the
+        /// model's floor (<see cref="LowestContactMeters"/>); raised on a stand, from just above the stand's top
+        /// (<see cref="RaisedLowestMeters"/>); a plank, from <see cref="PlankUnderMeters"/> below it (met from the side, or from below) to its
+        /// top; up to just below its top (never down through it) and <see cref="ReachTop"/>. False when that leaves too little: a flat object
+        /// on the table, met only from above.
+        /// </summary>
+        private bool HeightRange(int oi, out float zLo, out float zHi)
+        {
+            SafetyObject o = _objects[oi];
+            float floor = _model.FloorZ + LowestContactMeters; // the lowest the pads' centre passes anywhere
+            if (o.Role == SceneRole.Plank)
+            {
+                zLo = MathF.Max(floor, o.Min.Z - PlankUnderMeters);
+                zHi = o.Max.Z;
+            }
+            else
+            {
+                zLo = MathF.Max(floor, o.Min.Z + (Holders(oi).Count > 0 ? RaisedLowestMeters : LowestContactMeters));
+                zHi = o.Max.Z - (o.Shape != null ? ObjectShape.TopMarginMeters + 0.003f : 0.004f);
+            }
+
+            zHi = MathF.Min(zHi, ReachTop(new Vector2(o.Center.X, o.Center.Y).Length()));
+            return zHi >= zLo + 0.003f;
+        }
+
+        /// <summary>
+        /// The highest the tool point reaches <paramref name="radius"/> from the base axis, base frame z: the wrist level (the pads 15 cm out
+        /// from it) and 2 cm inside the arm's length from the shoulder, at most <see cref="HighestContactMeters"/>.
+        /// </summary>
+        internal float ReachTop(float radius)
+        {
+            float reach = _profile.ProximalLinkLength + _profile.DistalLinkLength - 0.02f, out_ = MathF.Max(0f, radius - ToolInGripper.X);
+            return MathF.Min(HighestContactMeters, _profile.BaseHeight + MathF.Sqrt(MathF.Max(0f, reach * reach - out_ * out_)));
+        }
+
+        /// <summary>
+        /// The objects that hold object <paramref name="oi"/> up (docs/adr/0038 decision 3): the stand under what is raised on one (its top
+        /// under the object's bottom, the object's centre over it), a plank's supports (their tops under its ends). An approach keeps off them.
+        /// </summary>
+        private List<int> Holders(int oi)
+        {
+            if (_holders[oi] != null) return _holders[oi]!;
+            var list = new List<int>();
+            SafetyObject o = _objects[oi];
+            for (int k = 0; k < _objects.Count; k++)
+            {
+                if (k == oi) continue;
+                SafetyObject s = _objects[k];
+                bool under = s.Max.Z <= o.Min.Z + 0.015f && s.Max.Z >= o.Min.Z - 0.03f; // a tilted object's box reaches below what it rests on
+                bool over = o.Role == SceneRole.Plank
+                    ? s.Max.X > o.Min.X && s.Min.X < o.Max.X && s.Max.Y > o.Min.Y && s.Min.Y < o.Max.Y
+                    : o.Center.X >= s.Min.X && o.Center.X <= s.Max.X && o.Center.Y >= s.Min.Y && o.Center.Y <= s.Max.Y;
+                if (under && over && (s.Role == SceneRole.Stand || s.Role == SceneRole.Support || !s.Movable)) list.Add(k);
+            }
+
+            _holders[oi] = list;
+            return list;
+        }
+
+        /// <summary>The robot's own model with the holders of object <paramref name="oi"/> (<see cref="Holders"/>) as walls kept <see cref="HolderClearMeters"/> off (the model's margin included); the model itself when it has none.</summary>
+        private ArmCollisionModel HolderWalls(int oi)
+        {
+            List<int> holders = Holders(oi);
+            if (holders.Count == 0) return _model;
+            var walls = new SafetyObject[holders.Count];
+            for (int k = 0; k < walls.Length; k++) walls[k] = _objects[holders[k]].Grown(HolderClearMeters - _model.Margin);
+            return SafetyScript.WithObjects(_model, walls, 0f);
         }
 
         private static float Footprint(in SafetyObject o) => MathF.Max(o.Max.X - o.Min.X, o.Max.Y - o.Min.Y) / 2f;
@@ -810,18 +928,18 @@ namespace Teleop.Eval.JointDrive
             float rObj = new Vector2(o.Center.X, o.Center.Y).Length();
             float halfRadial = Support(o, radialDir), halfTangential = Support(o, tangentDir);
 
-            // The height the pads meet it at: from just above the model's floor to just below its top (a touch into its side, never
-            // down through its top, where a shape may cover a hollow).
-            float zLo = o.Min.Z + LowestContactMeters, zHi = o.Max.Z - (o.Shape != null ? ObjectShape.TopMarginMeters + 0.003f : 0.004f);
-            zHi = MathF.Min(zHi, o.Min.Z + HighestContactMeters); // a tall fixture's upper part is out of the pads' reach
-            if (zHi < zLo + 0.003f) return Miss(0);
+            // The height the pads meet it at: uniform over its own height, base to top, within what the arm reaches (HeightRange: above the
+            // model's floor or its stand's top, below its top, never down through it; a plank from just under it to its top).
+            if (!HeightRange(oi, out float zLo, out float zHi)) return Miss(0);
             float h = (float)Draw.Uniform(ref _rng, zLo, zHi);
+            bool plank = o.Role == SceneRole.Plank, under = plank && h < o.Min.Z - 0.008f;
 
             // The pads' path. Mostly an arc round the base at one radius, from either side: the arm's reach is a thin shell round
             // the base, and an arc keeps it there as a hand sweeping sideways does. Some aims come straight out from the base
             // instead, a short way (the shell is about 6 cm deep at one pitch). Its height changes along it by a drawn slope.
             var tools = new List<Vector3>();
-            float side = Draw.Chance(ref _rng, 0.5) ? 1f : -1f, slope = MathF.Tan((float)(Draw.Uniform(ref _rng, -12, 8) * deg)), approach;
+            // A plank is met from the side or from below: its approach may rise into it (up to 20 degrees).
+            float side = Draw.Chance(ref _rng, 0.5) ? 1f : -1f, slope = MathF.Tan((float)(Draw.Uniform(ref _rng, -12, plank ? 20 : 8) * deg)), approach;
             // Beside the robot (more than 60 degrees round), the arm reaches no further round than about 95 degrees (measured
             // 2026-11-23 over the IK: nothing at 100), so an arc comes from the front; a pass would have to go on past the object,
             // so beyond 80 degrees it is an aim.
@@ -834,8 +952,8 @@ namespace Teleop.Eval.JointDrive
                 else
                 {
                     float out_ = Draw.Chance(ref _rng, 0.5) ? 1f : -1f;
-                    // Through a movable object, or beside it; a fixture only grazed or passed (it does not give way).
-                    rLine = rObj + out_ * (float)(o.Movable ? Draw.Uniform(ref _rng, 0, halfRadial + 0.07) : Draw.Uniform(ref _rng, halfRadial - 0.010, halfRadial + 0.07));
+                    // Through a movable object, or beside it; a fixture only grazed or passed (it does not give way), but under a plank anywhere.
+                    rLine = rObj + out_ * (float)(o.Movable || under ? Draw.Uniform(ref _rng, 0, halfRadial + 0.07) : Draw.Uniform(ref _rng, halfRadial - 0.010, halfRadial + 0.07));
                 }
 
                 if (rLine < 0.10f) return Miss(1);
@@ -862,7 +980,9 @@ namespace Teleop.Eval.JointDrive
             // that is: the shell's pitch changes with the radius. Other pitches are tried there too.
             int meet = Meets(o, tools);
             float radius = new Vector2(tools[meet].X, tools[meet].Y).Length();
-            float pitch = PitchFor(radius) + (float)(Draw.Uniform(ref _rng, -8, 8) * deg);
+            // The wrist pitched for the height (PitchAt, as a layout-blind goal there is): pointing down near the table, near level high up a
+            // tall object, so the pads lead into it rather than the wrist above them.
+            float pitch = PitchAt(radius, tools[meet].Z) + (float)(Draw.Uniform(ref _rng, -8, 8) * deg);
             float gripper = _hand.GripperEnd;
             List<Vector3>? wrists = null;
             List<ArmPose>? poses = null;
@@ -920,6 +1040,14 @@ namespace Teleop.Eval.JointDrive
                 offset = gaps[closest];
             }
 
+            // An approach to what a stand holds, or to a plank, keeps off what holds it up (docs/adr/0038 "M, motion": meeting the stand first
+            // made the stands the most touched objects): every point of its line from where it starts to where it ends, or else no aim here.
+            ArmCollisionModel holders = HolderWalls(oi);
+            if (!ReferenceEquals(holders, _model))
+            {
+                for (int i = stage; i <= end; i++) if (!ArmCollision.IsValid(_profile, holders, poses[i])) return Miss(5);
+            }
+
             // The hand comes to where the move starts at a pitch drawn as a low layout-blind goal's is (docs/adr/0038 "M, motion": aims and
             // passes kept the pitch the move before had set, 1.5 degrees of turn at the median against 14 for free moves), and the move
             // turns the wrist to the line's on the way. The pads start where the line starts (the wrist placed for the pitch it comes at),
@@ -928,7 +1056,10 @@ namespace Teleop.Eval.JointDrive
             float startPitch = pitch;
             Vector3 startWrist = wrists[stage];
             ArmPose startPose = poses[stage];
-            float turn = (float)(Draw.Uniform(ref _rng, _options.Reach.LowPitchLowDegrees, _options.Reach.LowPitchHighDegrees) * deg) - pitch;
+            // As a layout-blind goal there is pitched (its height's, PitchAt), or a low one's when the blind goals are drawn as before.
+            float turn = (_options.Reach.ToolBands != null
+                ? PitchAt(new Vector2(tools[first + stage].X, tools[first + stage].Y).Length(), tools[first + stage].Z) + (float)(Draw.Uniform(ref _rng, -8, 8) * deg)
+                : (float)(Draw.Uniform(ref _rng, _options.Reach.LowPitchLowDegrees, _options.Reach.LowPitchHighDegrees) * deg)) - pitch;
             // A free move's turn grows with its length (free transports: about 13 degrees per 10 cm at the median); a large turn over a
             // short approach broke the caps, and the moves they stretched were slower than free ones.
             float most = (float)(_options.TurnDegreesPerMeter * deg) * Vector3.Distance(goal, wrists[stage]);
@@ -962,7 +1093,7 @@ namespace Teleop.Eval.JointDrive
                 }
 
                 float boxGap = (_ladders[oi] ??= new GapLadder(_profile, _model, o)).SignedGap(startPose);
-                ArmCollisionModel staging = SafetyScript.WithObjects(_model, new[] { o.Grown(MathF.Min(boxGap - 0.004f - _model.Margin, _options.QuietMarginMeters)) }, 0f);
+                ArmCollisionModel staging = SafetyScript.WithObjects(holders, new[] { o.Grown(MathF.Min(boxGap - 0.004f - _model.Margin, _options.QuietMarginMeters)) }, 0f);
                 staged = _hand.MixedTo(startWrist, startPitch, null, Slowness(), HandModel.Tolerance, staging, out s, out e, overTheTop: true);
             }
 
@@ -978,7 +1109,7 @@ namespace Teleop.Eval.JointDrive
             // The aim or pass itself, made as a free move is made (docs/adr/0038 "M, motion": aims and passes followed their line in
             // short segments to a tighter stop, and a model of the path could tell them by it): one goal, the same endpoint error,
             // undershoot and corrections to the same tolerance, sometimes curved or in two pushes, the roll and the gripper as they go.
-            if (!_hand.MixedTo(goal, pitch, null, Slowness(), HandModel.Tolerance, _model, out s, out e))
+            if (!_hand.MixedTo(goal, pitch, null, Slowness(), HandModel.Tolerance, holders, out s, out e))
             {
                 Undo(before, drafts);
                 return Miss(5);
@@ -1058,6 +1189,24 @@ namespace Teleop.Eval.JointDrive
 
             return degrees[degrees.Length - 1] * MathF.PI / 180f;
         }
+
+        /// <summary>
+        /// The wrist pitch for the tool point (the pads' midpoint) <paramref name="radius"/> from the base axis at <paramref name="z"/> (base frame),
+        /// <paramref name="table"/> the table's top, radians (docs/adr/0038 "M, motion", the 2026-11-23 review: the approach follows the
+        /// height): near the table the reach shell's (<see cref="PitchFor"/>: pointing down close in, toward level farther out); higher up toward
+        /// level, -35 degrees 10 cm above the table, -20 at 20 cm, -10 at 30 cm, blended from 5 to 15 cm up. One rule for aims, passes and
+        /// layout-blind goals, so the wrist's pitch says no more than the height does.
+        /// </summary>
+        internal static float PitchAt(float radius, float z, float table)
+        {
+            float above = z - table;
+            float low = PitchFor(radius);
+            float high = Math.Clamp(-35f + (above - 0.10f) * 150f, -40f, -5f) * MathF.PI / 180f;
+            float w = Math.Clamp((above - 0.05f) / 0.10f, 0f, 1f);
+            return low + (high - low) * w;
+        }
+
+        private float PitchAt(float radius, float z) => PitchAt(radius, z, _model.FloorZ);
 
         /// <summary>How far <paramref name="o"/>'s box reaches along <paramref name="axis"/> (a unit vector) from its centre, m.</summary>
         private static float Support(in SafetyObject o, Vector3 axis)

@@ -541,7 +541,7 @@ namespace Teleop.Eval.JointDrive
         }
 
         private static SafetyObject Moved(in SafetyObject o, Vector3 center, Quaternion rotation) =>
-            new SafetyObject(o.Id, center, rotation, o.HalfExtents, o.Movable, o.Mass, o.Tippy, o.Shape, o.Scenery);
+            new SafetyObject(o.Id, center, rotation, o.HalfExtents, o.Movable, o.Mass, o.Tippy, o.Shape, o.Scenery, o.Role);
 
         private static int IndexOf(IReadOnlyList<SafetyObject> objects, byte id)
         {

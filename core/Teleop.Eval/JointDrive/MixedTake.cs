@@ -163,6 +163,21 @@ namespace Teleop.Eval.JointDrive
         /// </summary>
         public bool AimAccidents { get; set; } = true;
 
+        /// <summary>
+        /// Whether aims, passes and the accidents placed near objects draw the height they meet an object at from the layout-blind goals'
+        /// <see cref="BlindReach.ToolBands"/> (within what the object offers), and pick objects by how much of that distribution they offer
+        /// (docs/adr/0038 "M, motion", the 2026-11-24 review: one height distribution for aimed and free moves). Off: uniform over the object's
+        /// height, objects by that height to the power 1.5, as before.
+        /// </summary>
+        public bool SharedHeights { get; set; } = true;
+
+        /// <summary>
+        /// The share of object moves at an object reaching above <see cref="MixedTake.HighPointZ"/> (a tall one's upper part, a raised one, an
+        /// overhead bar) that are <b>link aims</b> (docs/adr/0038 "M, motion", the 2026-11-24 review): the elbow's two links or the wrist, not the
+        /// pads, meets it near its top or a bar's underside. Recorded as an <c>aim</c>. 0: none.
+        /// </summary>
+        public double LinkAimShare { get; set; } = 0.4;
+
         /// <summary>The accidents' kinds, in proportion: jerk, overshoot, wrong way, slip, rush (<see cref="AccidentKinds"/>).</summary>
         public double[] AccidentWeights { get; set; } = { 1, 1, 1, 1, 1 };
 
@@ -175,6 +190,7 @@ namespace Teleop.Eval.JointDrive
         /// <summary>Throws when the options make no sense together.</summary>
         public void Validate()
         {
+            if (!(LinkAimShare >= 0 && LinkAimShare <= 1)) throw new ArgumentException($"the link aims' share must be in [0, 1], not {LinkAimShare}");
             if (!(AccidentShare >= 0 && AccidentShare <= 1) || !(AccidentNearShare >= 0 && AccidentNearShare <= 1))
                 throw new ArgumentException($"the accident shares must be in [0, 1], not {AccidentShare} and {AccidentNearShare}");
             if (AccidentWeights == null || AccidentWeights.Length != AccidentKinds.Length || AccidentWeights.Any(w => !(w >= 0)) || (!NoAccidents && !(AccidentWeights.Sum() > 0)))
@@ -395,7 +411,8 @@ namespace Teleop.Eval.JointDrive
                     $"{o.Id} r {new Vector2(o.Center.X, o.Center.Y).Length():0.00} az {MathF.Atan2(o.Center.Y, o.Center.X) * 180 / MathF.PI:0} h {(o.Max.Z - o.Min.Z) * 100:0}cm{(o.Movable ? "" : " fixed")} misses {kv.Value}"));
             }
 
-            return counts + "; objects: " + string.Join(", ", objects) + (_options.NoAccidents ? "" : "; " + AccidentReport());
+            return counts + "; objects: " + string.Join(", ", objects) + (_options.LinkAimShare > 0 ? $"; link aims {_linkMade} of {_linkTried} (first met by proximal {_linkLinks[1]}, distal {_linkLinks[2]}, wrist {_linkLinks[3]})" : "") +
+                   (_options.NoAccidents ? "" : "; " + AccidentReport());
         }
 
         /// <summary>The accidents made, and those drawn that no try could make (the move made without one), by kind.</summary>
@@ -919,13 +936,21 @@ namespace Teleop.Eval.JointDrive
                 targets.Add(i);
                 // Drawn by how much of its height the arm meets it over (to the power 1.5: low heights are where every object is), so contacts
                 // spread over every height objects stand at, not one height (docs/adr/0038 "M, motion").
-                weights.Add(MathF.Pow(MathF.Max(0.03f, zHi - zLo), 1.5f));
+                // With shared heights, by how much of the blind goals' height distribution it offers, to the same power.
+                weights.Add(_options.SharedHeights ? MathF.Pow(MathF.Max(0.02f, BandMass(zLo, zHi)), 1.5f) : MathF.Pow(MathF.Max(0.03f, zHi - zLo), 1.5f));
             }
 
             if (targets.Count == 0) return false;
             for (int attempt = 0; attempt < 14; attempt++)
             {
                 int oi = targets[Pick(weights)];
+                // A link aim at what reaches high (docs/adr/0038 "M, motion", the 2026-11-24 review); else, or when none plans, an aim or a pass.
+                if (_options.LinkAimShare > 0 && _objects[oi].Max.Z >= HighPointZ && Draw.Chance(ref _rng, _options.LinkAimShare) && TryLinkAim(oi, accident))
+                {
+                    _missesInARow[oi] = 0;
+                    return true;
+                }
+
                 ScriptMoveKind kind = Draw.Chance(ref _rng, _options.PassShare) ? ScriptMoveKind.Pass : ScriptMoveKind.Aim;
                 if (TryObjectMove(oi, kind, accident))
                 {
@@ -974,7 +999,7 @@ namespace Teleop.Eval.JointDrive
                 HeightRange(oi, out float zLo, out float zHi);
                 float bearing = MathF.Atan2(o.Center.Y, o.Center.X) + MathF.PI + (float)(Draw.Uniform(ref _rng, -50, 50) * deg);
                 var dir = new Vector3(MathF.Cos(bearing), MathF.Sin(bearing), 0f);
-                Vector3 tool = new Vector3(o.Center.X, o.Center.Y, (float)Draw.Uniform(ref _rng, zLo, zHi)) + dir * (Support(o, dir) + (float)Draw.Uniform(ref _rng, 0.01, 0.06));
+                Vector3 tool = new Vector3(o.Center.X, o.Center.Y, Height(zLo, zHi)) + dir * (Support(o, dir) + (float)Draw.Uniform(ref _rng, 0.01, 0.06));
                 // Aimed (docs/adr/0038 "M, motion", the 2026-11-24 review): the hand stops a kind's own distance short of where the model first
                 // meets the object on this line, and the accident carries it on into the object, past that by a drawn depth.
                 bool aimed = _options.AimAccidents && kind != ScriptMoveKind.WrongWay;
@@ -1058,6 +1083,202 @@ namespace Teleop.Eval.JointDrive
             }
 
             return false;
+        }
+
+        /// <summary>
+        /// A height for meeting an object between <paramref name="lo"/> and <paramref name="hi"/> (base frame z): with
+        /// <see cref="MixedOptions.SharedHeights"/>, from the blind goals' <see cref="BlindReach.ToolBands"/> within that range (a band by its
+        /// share of the range, then uniform in it), uniform when they offer none of it; else uniform, as before.
+        /// </summary>
+        private float Height(float lo, float hi)
+        {
+            float[]? b = _options.Reach.ToolBands;
+            if (!_options.SharedHeights || b == null || !(hi > lo)) return (float)Draw.Uniform(ref _rng, lo, hi);
+            double total = BandMass(lo, hi);
+            if (!(total > 1e-6)) return (float)Draw.Uniform(ref _rng, lo, hi);
+            double u = _rng.NextDouble() * total;
+            for (int i = 0; i < b.Length; i += 3)
+            {
+                float a = MathF.Max(lo, b[i]), z = MathF.Min(hi, b[i + 1]);
+                if (!(z > a)) continue;
+                u -= BandShare(b, i) * (z - a) / (b[i + 1] - b[i]);
+                if (u < 0) return (float)Draw.Uniform(ref _rng, a, z);
+            }
+
+            return (float)Draw.Uniform(ref _rng, lo, hi);
+        }
+
+        /// <summary>How much of the blind goals' height distribution (<see cref="BlindReach.ToolBands"/>, as shares of 1) lies between <paramref name="lo"/> and <paramref name="hi"/>.</summary>
+        private float BandMass(float lo, float hi)
+        {
+            float[]? b = _options.Reach.ToolBands;
+            if (b == null) return MathF.Max(0f, hi - lo);
+            float m = 0f;
+            for (int i = 0; i < b.Length; i += 3)
+            {
+                float a = MathF.Max(lo, b[i]), z = MathF.Min(hi, b[i + 1]);
+                if (z > a) m += BandShare(b, i) * (z - a) / (b[i + 1] - b[i]);
+            }
+
+            return m;
+        }
+
+        private static float BandShare(float[] b, int i)
+        {
+            float total = 0f;
+            for (int k = 2; k < b.Length; k += 3) total += b[k];
+            return total > 0 ? b[i + 2] / total : 0f;
+        }
+
+        /// <summary>An object reaching above this (base frame z, m: 11.6 cm above the table) may be met by a link aim (<see cref="MixedOptions.LinkAimShare"/>).</summary>
+        public const float HighPointZ = -0.08f;
+
+        private int _linkTried, _linkMade;
+        private readonly int[] _linkLinks = new int[5];
+
+        /// <summary>
+        /// A link aim (docs/adr/0038 "M, motion", the 2026-11-24 review, <see cref="MixedOptions.LinkAimShare"/>): object <paramref name="oi"/> met
+        /// near its top (a bar from below) by the proximal or distal link (the elbow's two) or the wrist, not the pads. A pose is looked for
+        /// whose link passes within a few cm of a point drawn there (the arm turned to it, the two elbow joints on a 3-degree grid, the wrist
+        /// drawn), checked by the model to be met by that link first on the way there from where the hand is (joint-space, 2% steps); the hand
+        /// then moves as a free move does to that pose's wrist and pitch, stopping at a signed offset drawn from -15 mm (into it, no deeper than
+        /// the model measures) to +40 mm (short of it) as the model measures along that way. Recorded as an <c>aim</c>, with an accident when the
+        /// part drew one; then the law every move follows. False when nothing plans in a few tries.
+        /// </summary>
+        private bool TryLinkAim(int oi, ScriptMoveKind? accident)
+        {
+            const double deg = Math.PI / 180.0;
+            SafetyObject o = _objects[oi];
+            _linkTried++;
+            ArmPose last = _hand.Poses.Count > 0 ? _hand.Poses[_hand.Poses.Count - 1] : _model.Home;
+            float gripper = _hand.Commands.Count > 0 ? _hand.Commands[_hand.Commands.Count - 1].Gripper : 0f;
+            if (float.IsNaN(gripper)) gripper = 0f;
+            var arm = _linkArm ??= new ArmTouch(_profile, _model);
+            ArmCollisionModel holders = HolderWalls(oi);
+            Vector3 ax = Vector3.Transform(Vector3.UnitX, o.Rotation), ay = Vector3.Transform(Vector3.UnitY, o.Rotation);
+            Span<LinkFrame> frames = stackalloc LinkFrame[5];
+            var candidates = new List<(ArmPose Pose, ArmLink Link)>();
+            for (int attempt = 0; attempt < 4; attempt++)
+            {
+                // The point: on its top's upper few cm, or a high plank's underside, somewhere over its footprint (a bar along its length).
+                float fx = (float)Draw.Uniform(ref _rng, -0.8, 0.8) * o.HalfExtents.X, fy = (float)Draw.Uniform(ref _rng, -0.8, 0.8) * o.HalfExtents.Y;
+                float height = o.Max.Z - o.Min.Z;
+                float z = o.Role == SceneRole.Plank ? (Draw.Chance(ref _rng, 0.6) ? o.Min.Z : o.Max.Z) : o.Max.Z - (float)Draw.Uniform(ref _rng, 0, MathF.Min(0.06f, height / 2));
+                Vector3 point = new Vector3(o.Center.X, o.Center.Y, 0f) + ax * fx + ay * fy;
+                point.Z = z;
+                float r = new Vector2(point.X, point.Y).Length();
+                if (r < 0.06f || r > 0.42f) continue;
+                double w = _rng.NextDouble();
+                ArmLink want = w < 0.4 ? ArmLink.Distal : w < 0.7 ? ArmLink.Wrist : ArmLink.Proximal;
+                float yaw = MathF.Atan2(point.Y, point.X) + (float)(Draw.Uniform(ref _rng, -4, 4) * deg);
+                AngleRange ry = _envelope[0], rp = _envelope[1], rd = _envelope[2], rw = _envelope[3];
+                if (yaw < ry.Min || yaw > ry.Max) continue;
+                candidates.Clear();
+                // The wrist: the gripper pitched from straight down to level (the joint within its range), one pitch a try.
+                float pitch = (float)(Draw.Uniform(ref _rng, -90, 0) * deg);
+                for (float p1 = rp.Min; p1 <= rp.Max; p1 += (float)(3 * deg))
+                for (float p2 = rd.Min; p2 <= rd.Max; p2 += (float)(3 * deg))
+                {
+                    float p3 = Math.Clamp(pitch - p1 - p2, rw.Min, rw.Max);
+                    var pose = new ArmPose(yaw, p1, p2, p3, 0f);
+                    ArmCollision.ComputeFrames(_profile, pose, frames);
+                    int li = (int)want;
+                    Vector3 a = frames[li].Origin, b = li + 1 < 5 ? frames[li + 1].Origin : frames[li].ToBase(ToolInGripper);
+                    float d = SegmentDistance(point, a, b);
+                    if (d < 0.012f || d > 0.04f) continue;
+                    candidates.Add((pose, want));
+                }
+
+                for (int c = 0; c < 6 && candidates.Count > 0; c++)
+                {
+                    int pick = (int)(_rng.NextDouble() * candidates.Count) % candidates.Count;
+                    (ArmPose target, ArmLink link) = candidates[pick];
+                    candidates.RemoveAt(pick);
+                    if (!_envelope.Contains(target) || !ArmCollision.IsValid(_profile, holders, target)) continue;
+                    // Met first by a link that is not the pads, on the way there from where the hand is.
+                    float met = float.NaN;
+                    ArmLink first = ArmLink.Gripper;
+                    for (float l = 0f; l <= 1.0001f; l += 0.02f)
+                    {
+                        ArmPose q = ArmPose.Lerp(last, target, l);
+                        arm.At(q, gripper);
+                        if (!arm.Touching(o, out ArmLink by, out _)) continue;
+                        met = l;
+                        first = by;
+                        break;
+                    }
+
+                    if (float.IsNaN(met) || first == ArmLink.Gripper || first == ArmLink.Turntable) continue;
+                    // The stop: a signed offset along that way as the model measures it (into it no deeper than it measures).
+                    float offset = (float)Draw.Uniform(ref _rng, -0.015, 0.04);
+                    offset = MathF.Max(offset, -(DeepestGap(oi) - 0.002f));
+                    float stop = met;
+                    ArmPose goalPose = ArmPose.Lerp(last, target, met);
+                    if (offset >= 0f)
+                    {
+                        for (float l = met; l >= 0f; l -= 0.01f)
+                        {
+                            goalPose = ArmPose.Lerp(last, target, l);
+                            stop = l;
+                            if (Gap(oi, goalPose, gripper) >= offset) break;
+                        }
+                    }
+                    else
+                    {
+                        for (float l = met; l <= 1.3f; l += 0.01f)
+                        {
+                            ArmPose q = ArmPose.Lerp(last, target, l);
+                            if (!_envelope.Contains(q)) break;
+                            goalPose = q;
+                            stop = l;
+                            if (Gap(oi, q, gripper) <= offset) break;
+                        }
+                    }
+
+                    if (!_envelope.Contains(goalPose) || !ArmCollision.IsValid(_profile, holders, goalPose)) continue;
+                    Vector3 goal = HandModel.Wrist(_profile, goalPose), from = _hand.TargetEnd;
+                    float goalPitch = HandModel.PitchOf(goalPose);
+                    HandSnapshot before = _hand.Save();
+                    int drafts = _drafts.Count;
+                    bool withAccident = accident.HasValue && _hand.MixedTo(goal, goalPitch, null, Slowness(), HandModel.Tolerance, holders, out double s, out double e, accident: accident);
+                    double onset = _hand.AccidentOnset, recovered = _hand.AccidentEnd;
+                    if (!withAccident && !_hand.MixedTo(goal, goalPitch, null, Slowness(), HandModel.Tolerance, holders, out s, out e))
+                    {
+                        Undo(before, drafts);
+                        continue;
+                    }
+
+                    _objectMoves++;
+                    Vector3 u = goal - from;
+                    u = u.Length() > 1e-6f ? Vector3.Normalize(u) : Vector3.UnitX;
+                    int baseMove = Add(ScriptMoveKind.Aim, oi, offset, s, e, float.NaN, MovePart.Approach);
+                    if (withAccident) Add(accident!.Value, oi, offset, onset, recovered, float.NaN, MovePart.Approach, baseMove);
+                    if (offset < 0 && o.Movable && _moved.Add(oi)) _avoid.Add(new Vector2(o.Center.X, o.Center.Y));
+                    bool intoFixture = !o.Movable && offset < 0.005f;
+                    if (!AfterMove(u, pullBack: true, forced: intoFixture, atLeast: MathF.Max(0f, -offset) + 0.015f))
+                    {
+                        Undo(before, drafts);
+                        _objectMoves--;
+                        continue;
+                    }
+
+                    if (accident.HasValue) Tally(accident.Value, withAccident);
+                    _linkMade++;
+                    _linkLinks[(int)first]++;
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        private ArmTouch? _linkArm;
+
+        private static float SegmentDistance(Vector3 p, Vector3 a, Vector3 b)
+        {
+            Vector3 ab = b - a;
+            float t = ab.LengthSquared() > 1e-9f ? Math.Clamp(Vector3.Dot(p - a, ab) / ab.LengthSquared(), 0f, 1f) : 0f;
+            return Vector3.Distance(p, a + t * ab);
         }
 
         /// <summary>An aimed accident's depth past where the model first meets the object, m (docs/adr/0038 "M, motion", the 2026-11-24 review).</summary>
@@ -1178,7 +1399,7 @@ namespace Teleop.Eval.JointDrive
             // The height the pads meet it at: uniform over its own height, base to top, within what the arm reaches (HeightRange: above the
             // model's floor or its stand's top, below its top, never down through it; a plank from just under it to its top).
             if (!HeightRange(oi, out float zLo, out float zHi)) return Miss(0);
-            float h = (float)Draw.Uniform(ref _rng, zLo, zHi);
+            float h = Height(zLo, zHi);
             bool plank = o.Role == SceneRole.Plank, under = plank && h < o.Min.Z - 0.008f;
 
             // The pads' path. Mostly an arc round the base at one radius, from either side: the arm's reach is a thin shell round

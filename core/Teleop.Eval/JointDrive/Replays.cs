@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Numerics;
 using Teleop.Core.Types;
 using Teleop.RobotArm.Collision;
@@ -108,21 +109,35 @@ namespace Teleop.Eval.JointDrive
         }
     }
 
-    /// <summary>One replay's edit (docs/adr/0038 decision 2): the record that says it, the world edit that makes it, and the edited object's box afterwards (none for a removal).</summary>
+    /// <summary>
+    /// One replay's edit (docs/adr/0038 decision 2): the record that says it, the world edit that makes it, and the edited object's box
+    /// afterwards (none for a removal). No edit when <c>Pose.Id</c> is 0, and then <see cref="Note"/> says why; <see cref="AddNote"/> says
+    /// why the group's add was tried here and found no spot (docs/adr/0038 "M, motion": the twin check logged neither).
+    /// </summary>
     public readonly struct ReplayEditDraw
     {
         public readonly ReplayRecord Record;
         public readonly WorldEditOp Op;
         public readonly ObjectPose Pose;
         public readonly SafetyObject? After;
+        public readonly string? Note;
+        public readonly string? AddNote;
 
-        public ReplayEditDraw(in ReplayRecord record, WorldEditOp op, in ObjectPose pose, SafetyObject? after)
+        public ReplayEditDraw(in ReplayRecord record, WorldEditOp op, in ObjectPose pose, SafetyObject? after, string? note = null, string? addNote = null)
         {
             Record = record;
             Op = op;
             Pose = pose;
             After = after;
+            Note = note;
+            AddNote = addNote;
         }
+
+        /// <summary>No edit, and why.</summary>
+        public static ReplayEditDraw Nothing(string why, string? addNote = null) => new ReplayEditDraw(default, default, default, null, why, addNote);
+
+        /// <summary>This edit, saying why the add tried before it found nothing.</summary>
+        public ReplayEditDraw WithAddNote(string? addNote) => new ReplayEditDraw(Record, Op, Pose, After, Note, addNote);
     }
 
     /// <summary>
@@ -180,20 +195,8 @@ namespace Teleop.Eval.JointDrive
         public static ReplayEditDraw Add(ulong group, ref SeededRng r, DrivePlan plan, IReadOnlyList<SafetyObject> objects, WorldScene scene, ICollection<byte> touched,
             in RobotArmProfile profile, ICollection<string> used, Func<byte, double>? scaleOf, ReplayAdd add)
         {
-            MixedOptions options = add.Options;
-            float table = (float)scene.Table.Top;
-            // Where the arm passed lowest, every other tick of the take but its quiet start and end.
-            var spots = new List<Vector3>(add.Track.Count / 2 + 1);
-            double from = options.QuietStartSeconds + AddQuietSlackSeconds, to = add.TakeSeconds - options.QuietEndSeconds - AddQuietSlackSeconds;
-            for (int t = 0; t < add.Track.Count; t += 2)
-            {
-                TrackPoint p = add.Track[t];
-                if (p.At < from || p.At > to) continue;
-                Vector3 low = LowestPoint(profile, add.Model, p.Pose, p.Gripper);
-                spots.Add(new Vector3(low.X, low.Y, low.Z - table));
-            }
-
-            if (spots.Count == 0) return default;
+            List<Vector3> spots = LowSpots(add, profile, (float)scene.Table.Top);
+            if (spots.Count == 0) return ReplayEditDraw.Nothing("no add: the take has no moment outside its quiet start and end");
             // Objects of the layout on the table the take kept clear of, then parked ones: each in an order drawn from the replay.
             List<int> onTable = AddCandidatesOnTable(objects, scene, touched, used, add, profile);
             var parked = new List<byte>();
@@ -203,9 +206,12 @@ namespace Teleop.Eval.JointDrive
                 if (k >= 0 && scene.Objects[k].OperatorMovable && scene.Objects[k].Movable && !used.Contains("add:" + id) && IndexOf(objects, id) < 0) parked.Add(id);
             }
 
+            if (onTable.Count == 0 && parked.Count == 0)
+                return ReplayEditDraw.Nothing(FormattableString.Invariant($"no add: no object to stand there (none on the table that the take kept {AddFarMeters * 100:0} cm from and holds nothing, none parked)"));
             Shuffle(onTable, ref r);
             Shuffle(parked, ref r);
             ObjectShapes? shapes = WorldView.ShapesOf(scene);
+            var tally = new SpotTally();
             for (int pass = 0; pass < 2; pass++)
             {
                 int n = pass == 0 ? onTable.Count : parked.Count;
@@ -216,36 +222,82 @@ namespace Teleop.Eval.JointDrive
                     int k = scene.IndexOf(id);
                     double scale = scaleOf?.Invoke(id) ?? 1.0, yawNow = 0;
                     int rest = pass == 0 ? WorldScene.RestOf(objects[i].Rotation.W, objects[i].Rotation.X, objects[i].Rotation.Y, objects[i].Rotation.Z, out yawNow) : WorldScene.RestUpright;
-                    float height = (float)(2 * (scene.RestingZ(k, scale, rest) - scene.Table.Top));
-                    // The moments low enough for it whose spot the scene's rules take, at the yaw it would stand at (its own on the table, else
-                    // one drawn): the draw is among those, and the quiet start and end decide.
+                    // At the yaw it would stand at: its own on the table, else one drawn.
                     double yaw = pass == 0 ? yawNow : (2 * r.NextDouble() - 1) * Math.PI;
-                    var fits = new List<int>();
-                    for (int m = 0; m < spots.Count; m++)
-                    {
-                        Vector3 at = spots[m];
-                        if (at.Z >= height - AddDepthMeters || (scene.ReachBearing > 0 && Math.Abs(Math.Atan2(at.Y, at.X)) > scene.ReachBearing)) continue;
-                        if (Fits(scene, objects, k, i, at.X, at.Y, yaw, scale, rest, scaleOf, out _)) fits.Add(m);
-                    }
-
-                    for (int tries = 0; tries < 12 && fits.Count > 0; tries++)
-                    {
-                        int pick = (int)(r.NextDouble() * fits.Count) % fits.Count;
-                        Vector3 at = spots[fits[pick]];
-                        fits[pick] = fits[fits.Count - 1];
-                        fits.RemoveAt(fits.Count - 1);
-                        Fits(scene, objects, k, i, at.X, at.Y, yaw, scale, rest, scaleOf, out RigidTransform pose);
-                        SafetyObject after = pass == 0
-                            ? Moved(objects[i], pose)
-                            : WorldView.Bounds(scene.Objects[k], scale, pose.X, pose.Y, pose.Z, pose.Qw, pose.Qx, pose.Qy, pose.Qz, shapes);
-                        if (!KeepsQuiet(plan, after, profile, add.Model, options) || !KeepsQuietAsWent(add, profile, after)) continue;
-                        var record = new ReplayRecord(ReplayRole.Replay, group, ReplayEdit.Add, id, (float)pose.X, (float)pose.Y, (float)yaw);
-                        return new ReplayEditDraw(record, pass == 0 ? WorldEditOp.Move : WorldEditOp.Unpark, Pose(id, pose), after);
-                    }
+                    SafetyObject Placed(RigidTransform pose) => pass == 0
+                        ? Moved(objects[i], pose)
+                        : WorldView.Bounds(scene.Objects[k], scale, pose.X, pose.Y, pose.Z, pose.Qw, pose.Qx, pose.Qy, pose.Qz, shapes);
+                    if (!SpotOnPath(scene, objects, k, i, spots, yaw, scale, rest, scaleOf, plan, profile, add, ref r, tally, Placed, out RigidTransform at, out SafetyObject after)) continue;
+                    var record = new ReplayRecord(ReplayRole.Replay, group, ReplayEdit.Add, id, (float)at.X, (float)at.Y, (float)yaw);
+                    return new ReplayEditDraw(record, pass == 0 ? WorldEditOp.Move : WorldEditOp.Unpark, Pose(id, at), after);
                 }
             }
 
-            return default;
+            return ReplayEditDraw.Nothing(FormattableString.Invariant($"no add: {spots.Count} moments, {onTable.Count} object(s) on the table and {parked.Count} parked tried; ") + tally);
+        }
+
+        /// <summary>Where the arm's lowest point passed at every other moment of the add's track outside the quiet start and end (and their slack): x, y, and z above the table.</summary>
+        private static List<Vector3> LowSpots(ReplayAdd add, in RobotArmProfile profile, float table)
+        {
+            MixedOptions options = add.Options;
+            var spots = new List<Vector3>(add.Track.Count / 2 + 1);
+            double from = options.QuietStartSeconds + AddQuietSlackSeconds, to = add.TakeSeconds - options.QuietEndSeconds - AddQuietSlackSeconds;
+            for (int t = 0; t < add.Track.Count; t += 2)
+            {
+                TrackPoint p = add.Track[t];
+                if (p.At < from || p.At > to) continue;
+                Vector3 low = LowestPoint(profile, add.Model, p.Pose, p.Gripper);
+                spots.Add(new Vector3(low.X, low.Y, low.Z - table));
+            }
+
+            return spots;
+        }
+
+        /// <summary>Why spots under the arm did not take an object (counted over every moment and object tried), for the log.</summary>
+        private sealed class SpotTally
+        {
+            public int TooHigh, Bearing, Rules, Quiet;
+
+            public override string ToString() => FormattableString.Invariant(
+                $"moments too high over the table for the object {TooHigh}, beyond the reach bearing {Bearing}, off the table, out of reach or on another object {Rules}; spots that met the quiet start or end {Quiet}");
+        }
+
+        /// <summary>
+        /// Scene object <paramref name="k"/> (index <paramref name="skip"/> in <paramref name="objects"/> when it stands on the table, else -1) stood
+        /// with its footprint centred under the arm's lowest point at one of <paramref name="spots"/> where that point passed lower than the
+        /// object is tall less <see cref="AddDepthMeters"/>, by the scene's rules, clear of the take's quiet start and end as planned and as the
+        /// arm went: a moment drawn among those that work. The pose, and the object there (<paramref name="placed"/> makes it).
+        /// </summary>
+        private static bool SpotOnPath(WorldScene scene, IReadOnlyList<SafetyObject> objects, int k, int skip, List<Vector3> spots, double yaw, double scale, int rest,
+            Func<byte, double>? scaleOf, DrivePlan plan, in RobotArmProfile profile, ReplayAdd add, ref SeededRng r, SpotTally tally, Func<RigidTransform, SafetyObject> placed,
+            out RigidTransform pose, out SafetyObject after)
+        {
+            pose = default;
+            after = default;
+            float height = (float)(2 * (scene.RestingZ(k, scale, rest) - scene.Table.Top));
+            var fits = new List<int>();
+            for (int m = 0; m < spots.Count; m++)
+            {
+                Vector3 at = spots[m];
+                if (at.Z >= height - AddDepthMeters) { tally.TooHigh++; continue; }
+                if (scene.ReachBearing > 0 && Math.Abs(Math.Atan2(at.Y, at.X)) > scene.ReachBearing) { tally.Bearing++; continue; }
+                if (Fits(scene, objects, k, skip, at.X, at.Y, yaw, scale, rest, scaleOf, out _)) fits.Add(m);
+                else tally.Rules++;
+            }
+
+            for (int tries = 0; tries < 12 && fits.Count > 0; tries++)
+            {
+                int pick = (int)(r.NextDouble() * fits.Count) % fits.Count;
+                Vector3 at = spots[fits[pick]];
+                fits[pick] = fits[fits.Count - 1];
+                fits.RemoveAt(fits.Count - 1);
+                Fits(scene, objects, k, skip, at.X, at.Y, yaw, scale, rest, scaleOf, out pose);
+                after = placed(pose);
+                if (KeepsQuiet(plan, after, profile, add.Model, add.Options) && KeepsQuietAsWent(add, profile, after)) return true;
+                tally.Quiet++;
+            }
+
+            return false;
         }
 
         /// <summary>
@@ -346,14 +398,27 @@ namespace Teleop.Eval.JointDrive
         }
 
         /// <summary>
-        /// Replay <paramref name="replay"/> (from 1) of group <paramref name="group"/>, try <paramref name="attempt"/> (from 0): an edit
-        /// of <paramref name="objects"/> (the source take's, as they stood at its start) for the take <paramref name="plan"/> planned
-        /// that is not among <paramref name="used"/> (the group's edits so far, <see cref="Key"/>); <paramref name="touched"/>, the
-        /// objects the source take moved; <paramref name="scaleOf"/>, each object's size factor (1 when not given). No edit
-        /// (<c>Pose.Id</c> 0) when nothing new is left.
+        /// Replay <paramref name="replay"/> (from 1) of group <paramref name="group"/>, try <paramref name="attempt"/> (from 0): an edit of
+        /// <paramref name="objects"/> (the source take's, as they stood at its start) that is not among <paramref name="used"/> (the group's
+        /// edits so far, <see cref="Key"/>) and that the collision model expects to change what the source's commands touch (docs/adr/0038
+        /// "M, motion", the 2026-11-23 review: a removal and a move far from the path left the take's one contact as it was):
+        /// <list type="bullet">
+        /// <item>an object the arm touched or came within <see cref="PathProximity.TouchMeters"/> of (by the model on the source's track,
+        /// <paramref name="near"/>; or one the source moved, <paramref name="touched"/>) is removed, shifted away until the track keeps
+        /// <see cref="ClearMeters"/> from it, or moved elsewhere <see cref="AwayMeters"/> clear of it: a contact made a miss;</item>
+        /// <item>one it passed within <see cref="PathProximity.NearMeters"/> of is shifted toward the path or moved onto it, until the track goes
+        /// <see cref="MeetMeters"/> into it: a miss made a contact;</item>
+        /// <item>with <paramref name="add"/>, one of the group's first two replays is an <c>add</c> (<see cref="Add"/>): its drawn one
+        /// (<see cref="AddReplay"/>), or the first when that has nothing else to edit, or the second when the first found no spot;</item>
+        /// <item>nothing farther from the path is edited: with nothing else left, no edit, and <see cref="ReplayEditDraw.Note"/> says why.</item>
+        /// </list>
+        /// The kinds come in an order drawn from the group, each replay starting one further on; within a kind, the objects nearest the path
+        /// first. Nothing that holds another object is edited, a raised one is only removed, and a moved or shifted one must keep the take's
+        /// quiet start and end. Deterministic from the group, the replay and the try (a placement RobotHost refuses is drawn again).
         /// </summary>
         public static ReplayEditDraw Draw(ulong group, int replay, int attempt, DrivePlan plan, IReadOnlyList<SafetyObject> objects, WorldScene scene,
-            ICollection<byte> touched, in RobotArmProfile profile, ICollection<string>? used = null, Func<byte, double>? scaleOf = null, ReplayAdd? add = null)
+            ICollection<byte> touched, in RobotArmProfile profile, ICollection<string>? used = null, Func<byte, double>? scaleOf = null, ReplayAdd? add = null,
+            PathProximity? near = null)
         {
             var rng = new SeededRng(unchecked(group * 0x9E3779B97F4A7C15UL + 0x5EED));
             ReplayEdit[] order = { ReplayEdit.Remove, ReplayEdit.Shift, ReplayEdit.Move };
@@ -365,16 +430,67 @@ namespace Teleop.Eval.JointDrive
 
             var r = new SeededRng(unchecked(group * 0x9E3779B97F4A7C15UL ^ ((ulong)replay * 1000 + (ulong)attempt)));
             used ??= Array.Empty<string>();
-            if (add != null && replay == AddReplay(group))
+            ArmCollisionModel model = add?.Model ?? profile.Collision!;
+            near ??= new PathProximity(profile, model, add?.Track ?? ReplayAdd.Commanded(plan), objects, 2);
+            bool added = false;
+            foreach (string k in used) added |= k.StartsWith("add:", StringComparison.Ordinal);
+            bool mayAdd = add != null && !added && replay <= 2, addTurn = mayAdd && (replay == AddReplay(group) || replay == 2);
+            string? addNote = null;
+            if (addTurn)
             {
-                ReplayEditDraw a = Add(group, ref r, plan, objects, scene, touched, profile, used, scaleOf, add);
+                ReplayEditDraw a = Add(group, ref r, plan, objects, scene, touched, profile, used, scaleOf, add!);
                 if (a.Pose.Id != 0) return a;
+                addNote = a.Note;
             }
 
+            ReplayEditDraw e = PathEdit(group, order, replay, ref r, plan, objects, scene, touched, profile, used, scaleOf, add, near);
+            if (e.Pose.Id != 0) return e.WithAddNote(addNote);
+            if (mayAdd && !addTurn)
+            {
+                // Nothing else to edit in the replay before the add's: the add now, so a group with nothing near its path still gets one.
+                ReplayEditDraw a = Add(group, ref r, plan, objects, scene, touched, profile, used, scaleOf, add!);
+                if (a.Pose.Id != 0) return a;
+                addNote = a.Note;
+            }
+
+            return ReplayEditDraw.Nothing(e.Note ?? "no edit", addNote);
+        }
+
+        /// <summary>A shift or a move away from the path leaves the source's track at least this far from the object, m: a contact made a miss.</summary>
+        public const float ClearMeters = 0.005f;
+
+        /// <summary>A move elsewhere leaves the object at least this far from the track, m.</summary>
+        public const float AwayMeters = 0.02f;
+
+        /// <summary>A shift or a move onto the path puts the object where the source's track goes at least this far into it, m: a miss made a contact.</summary>
+        public const float MeetMeters = 0.003f;
+
+        /// <summary>The longest shift, m: a near object shifted toward the path goes as far as its gap and up to 2.5 cm more.</summary>
+        public const float ShiftFarthestMeters = 0.08f;
+
+        /// <summary>The remove, shift or move of <see cref="Draw"/>, by how near the path each object is; no edit (with why) when nothing near it is left.</summary>
+        private static ReplayEditDraw PathEdit(ulong group, ReplayEdit[] order, int replay, ref SeededRng r, DrivePlan plan, IReadOnlyList<SafetyObject> objects, WorldScene scene,
+            ICollection<byte> touched, in RobotArmProfile profile, ICollection<string> used, Func<byte, double>? scaleOf, ReplayAdd? add, PathProximity near)
+        {
             float table = (float)scene.Table.Top;
-            int[] ranked = Ranked(plan, objects, profile, out Dictionary<int, PlannedMove> closest);
-            // An object something stands on (a stand, a plank's support) is never edited: what it holds would fall. A raised one
-            // (on a stand) is only removed: shifted off its stand, RobotHost would refuse it in the air.
+            ArmCollisionModel model = add?.Model ?? profile.Collision!;
+            MixedOptions options = add?.Options ?? new MixedOptions();
+            // The path's own objects (touched, within 1 cm, or moved by the source) and those near it, each nearest first.
+            var own = new List<int>();
+            var close = new List<int>();
+            var far = new List<string>();
+            for (int i = 0; i < objects.Count; i++)
+            {
+                if (objects[i].Scenery) continue;
+                if (near.Touched(i) || touched.Contains(objects[i].Id)) own.Add(i);
+                else if (near.Near(i)) close.Add(i);
+                else far.Add(objects[i].Id.ToString(System.Globalization.CultureInfo.InvariantCulture));
+            }
+
+            own.Sort((a, b) => (touched.Contains(objects[b].Id) ? 1 : 0).CompareTo(touched.Contains(objects[a].Id) ? 1 : 0) is int c && c != 0 ? c : near.Gap(a).CompareTo(near.Gap(b)));
+            close.Sort((a, b) => near.Gap(a).CompareTo(near.Gap(b)));
+            // An object something stands on (a stand, a plank's support) is never edited: what it holds would fall. A raised one (on a stand)
+            // is only removed: shifted off its stand, RobotHost would refuse it in the air.
             bool Free(int i) => !objects[i].Scenery && !Holds(objects, i);
             bool Movable(int i)
             {
@@ -382,12 +498,15 @@ namespace Teleop.Eval.JointDrive
                 return Free(i) && objects[i].Min.Z <= table + 0.01f && k >= 0 && scene.Objects[k].OperatorMovable;
             }
 
+            List<Vector3>? spots = null;
+            var tally = new SpotTally();
             for (int t = 0; t < order.Length; t++)
             {
                 ReplayEdit kind = order[(replay - 1 + t) % order.Length];
-                foreach (int i in Candidates(kind, ranked, objects, touched))
+                foreach (int i in kind == ReplayEdit.Remove ? own : own.Concat(close))
                 {
                     SafetyObject o = objects[i];
+                    bool mine = own.Contains(i);
                     var remove = new ReplayRecord(ReplayRole.Replay, group, ReplayEdit.Remove, o.Id);
                     switch (kind)
                     {
@@ -396,21 +515,8 @@ namespace Teleop.Eval.JointDrive
                             return new ReplayEditDraw(remove, WorldEditOp.Park, new ObjectPose(o.Id, 0, 0, 0, 0, 1, 0, 0, 0), null);
                         case ReplayEdit.Shift:
                         {
-                            if (!Movable(i) || !closest.TryGetValue(i, out PlannedMove m) || used.Contains("shift:" + o.Id)) continue;
-                            // Along the approach of that move: toward the arm when it stopped short (a miss made a hit), away when it went
-                            // in (a hit made a miss), each three times in four; the other way, or shorter, when the scene does not take it.
-                            float heading = MathF.Atan2(o.Center.Y, o.Center.X) + (float.IsNaN(m.ApproachDegrees) ? 0f : m.ApproachDegrees * MathF.PI / 180f);
-                            var way = new Vector2(MathF.Cos(heading), MathF.Sin(heading));
-                            float sign = (m.GapMeters < 0 ? 1f : -1f) * (r.NextDouble() < 0.75 ? 1f : -1f);
-                            float d = ShiftMinMeters + (float)r.NextDouble() * (ShiftMaxMeters - ShiftMinMeters);
-                            foreach ((float sg, float dd) in new[] { (sign, d), (-sign, d), (sign, ShiftMinMeters), (-sign, ShiftMinMeters) })
-                            {
-                                Vector2 delta = sg * dd * way;
-                                if (!Placeable(scene, objects, i, o.Center.X + delta.X, o.Center.Y + delta.Y, null, scaleOf, out RigidTransform at)) continue;
-                                var shift = new ReplayRecord(ReplayRole.Replay, group, ReplayEdit.Shift, o.Id, delta.X, delta.Y);
-                                return new ReplayEditDraw(shift, WorldEditOp.Move, Pose(o.Id, at), Moved(o, at));
-                            }
-
+                            if (!Movable(i) || used.Contains("shift:" + o.Id)) continue;
+                            if (Shifted(group, i, mine, ref r, plan, objects, scene, profile, model, options, scaleOf, near, out ReplayEditDraw shift)) return shift;
                             continue;
                         }
 
@@ -418,15 +524,35 @@ namespace Teleop.Eval.JointDrive
                         {
                             if (!Movable(i) || used.Contains("move:" + o.Id)) continue;
                             int k = scene.IndexOf(o.Id);
-                            int rest = WorldScene.RestOf(o.Rotation.W, o.Rotation.X, o.Rotation.Y, o.Rotation.Z, out _);
+                            int rest = WorldScene.RestOf(o.Rotation.W, o.Rotation.X, o.Rotation.Y, o.Rotation.Z, out double yawNow);
                             double scale = scaleOf?.Invoke(o.Id) ?? 1.0;
+                            if (!mine)
+                            {
+                                // Onto the path: under the arm's way where it passed low enough to go into it, as an add stands one.
+                                ReplayAdd onto = add ?? new ReplayAdd(near.Track, plan.TotalSeconds - plan.ScriptStart, Array.Empty<byte>(), model, options);
+                                spots ??= LowSpots(onto, profile, table);
+                                if (SpotOnPath(scene, objects, k, i, spots, yawNow, scale, rest, scaleOf, plan, profile, onto, ref r, tally, p => Moved(o, p), out RigidTransform at,
+                                        out SafetyObject after)
+                                    && PathProximity.GapOver(near.Arm, near.Track, after, 2, out _) <= -MeetMeters)
+                                {
+                                    var move = new ReplayRecord(ReplayRole.Replay, group, ReplayEdit.Move, o.Id, (float)at.X, (float)at.Y, (float)yawNow);
+                                    return new ReplayEditDraw(move, WorldEditOp.Move, Pose(o.Id, at), after);
+                                }
+
+                                continue;
+                            }
+
+                            // Elsewhere, clear of the path: a spot the scene's rules give, the track kept AwayMeters from it.
                             for (int tries = 0; tries < 40; tries++)
                             {
                                 if (!scene.DrawSpot(k, scale, rest, ref r, out double x, out double y, out double yaw)) continue;
                                 if (Math.Sqrt((x - o.Center.X) * (x - o.Center.X) + (y - o.Center.Y) * (y - o.Center.Y)) < 0.05) continue; // elsewhere, not a nudge
                                 if (!Placeable(scene, objects, i, x, y, yaw, scaleOf, out RigidTransform at)) continue;
+                                SafetyObject after = Moved(o, at);
+                                if (PathProximity.GapOver(near.Arm, near.Track, after, 2, out _, AwayMeters + 0.001f) < AwayMeters) continue;
+                                if (!KeepsQuiet(plan, after, profile, model, options)) continue;
                                 var move = new ReplayRecord(ReplayRole.Replay, group, ReplayEdit.Move, o.Id, (float)at.X, (float)at.Y, (float)yaw);
-                                return new ReplayEditDraw(move, WorldEditOp.Move, Pose(o.Id, at), Moved(o, at));
+                                return new ReplayEditDraw(move, WorldEditOp.Move, Pose(o.Id, at), after);
                             }
 
                             continue;
@@ -435,60 +561,50 @@ namespace Teleop.Eval.JointDrive
                 }
             }
 
-            return default;
-        }
-
-        /// <summary>The objects a kind of edit tries, in order: for a removal those the take moved first; then every one as the take came close to it.</summary>
-        private static IEnumerable<int> Candidates(ReplayEdit kind, int[] ranked, IReadOnlyList<SafetyObject> objects, ICollection<byte> touched)
-        {
-            if (kind == ReplayEdit.Remove)
-            {
-                foreach (int i in ranked) if (touched.Contains(objects[i].Id)) yield return i;
-            }
-
-            foreach (int i in ranked)
-            {
-                if (kind == ReplayEdit.Remove && touched.Contains(objects[i].Id)) continue;
-                yield return i;
-            }
+            string List(IEnumerable<int> xs) => string.Join(" ", xs.Select(i => objects[i].Id.ToString(System.Globalization.CultureInfo.InvariantCulture)));
+            return ReplayEditDraw.Nothing(FormattableString.Invariant(
+                $"nothing near the path left to edit (touched or within {PathProximity.TouchMeters * 100:0} cm: {(own.Count > 0 ? List(own) : "none")}; within {PathProximity.NearMeters * 100:0} cm: {(close.Count > 0 ? List(close) : "none")}; farther, not edited: {(far.Count > 0 ? string.Join(" ", far) : "none")}; done: {(used.Count > 0 ? string.Join(", ", used) : "none")})"));
         }
 
         /// <summary>
-        /// The objects (not scenery) in the order the take came close to them: those its aims and passes went at, by their planned
-        /// closest approach, then the rest by how near the pads passed their box's centre; and each aimed-at one's closest move.
+        /// Object <paramref name="i"/> shifted on the table: away from the path (<paramref name="away"/>, the path's own object) until the
+        /// source's track keeps <see cref="ClearMeters"/> from it, or toward it (a near one) until the track goes <see cref="MeetMeters"/> into
+        /// it; along the way from the arm to the object where the track came closest, or up to 90 degrees off it, the shortest shift that does
+        /// it from a few, by the scene's rules and clear of the take's quiet start and end.
         /// </summary>
-        public static int[] Ranked(DrivePlan plan, IReadOnlyList<SafetyObject> objects, in RobotArmProfile profile, out Dictionary<int, PlannedMove> closest)
+        private static bool Shifted(ulong group, int i, bool away, ref SeededRng r, DrivePlan plan, IReadOnlyList<SafetyObject> objects, WorldScene scene,
+            in RobotArmProfile profile, ArmCollisionModel model, MixedOptions options, Func<byte, double>? scaleOf, PathProximity near, out ReplayEditDraw shift)
         {
-            closest = new Dictionary<int, PlannedMove>();
-            foreach (PlannedMove m in plan.Moves)
+            shift = default;
+            SafetyObject o = objects[i];
+            int at = Math.Max(0, near.ClosestAt(i));
+            Vector3 tool = near.Arm.At(near.Track[at].Pose, near.Track[at].Gripper).Tool;
+            var toObject = new Vector2(o.Center.X - tool.X, o.Center.Y - tool.Y);
+            toObject = toObject.Length() > 1e-4f ? Vector2.Normalize(toObject) : new Vector2(o.Center.X, o.Center.Y) / MathF.Max(1e-4f, new Vector2(o.Center.X, o.Center.Y).Length());
+            Vector2 way = away ? toObject : -toObject;
+            float gap = MathF.Max(0f, near.Gap(i));
+            float extra = (float)(0.005 + 0.020 * r.NextDouble());
+            float[] distances = away ? new[] { 0.015f, 0.025f, 0.035f, 0.05f, 0.065f } : new[] { gap + extra, gap + 0.5f * extra + 0.005f, gap + 0.03f };
+            float[] turns = { 0f, 30f, -30f, 60f, -60f, 90f, -90f };
+            foreach (float d in distances)
             {
-                if (m.ObjectId == 0 || float.IsNaN(m.GapMeters)) continue;
-                int i = IndexOf(objects, m.ObjectId);
-                if (i < 0 || objects[i].Scenery) continue;
-                if (!closest.TryGetValue(i, out PlannedMove best) || m.GapMeters < best.GapMeters) closest[i] = m;
+                if (d > ShiftFarthestMeters) continue;
+                foreach (float turn in turns)
+                {
+                    float c = MathF.Cos(turn * MathF.PI / 180f), s = MathF.Sin(turn * MathF.PI / 180f);
+                    Vector2 delta = d * new Vector2(c * way.X - s * way.Y, s * way.X + c * way.Y);
+                    if (!Placeable(scene, objects, i, o.Center.X + delta.X, o.Center.Y + delta.Y, null, scaleOf, out RigidTransform pose)) continue;
+                    SafetyObject after = Moved(o, pose);
+                    float g = PathProximity.GapOver(near.Arm, near.Track, after, 2, out _, ClearMeters + 0.001f);
+                    if (away ? g < ClearMeters : g > -MeetMeters) continue;
+                    if (!KeepsQuiet(plan, after, profile, model, options)) continue;
+                    var record = new ReplayRecord(ReplayRole.Replay, group, ReplayEdit.Shift, o.Id, delta.X, delta.Y);
+                    shift = new ReplayEditDraw(record, WorldEditOp.Move, Pose(o.Id, pose), after);
+                    return true;
+                }
             }
 
-            var nearest = new float[objects.Count];
-            for (int i = 0; i < nearest.Length; i++) nearest[i] = float.MaxValue;
-            Span<LinkFrame> frames = stackalloc LinkFrame[5];
-            for (double t = plan.ScriptStart; t <= plan.TotalSeconds; t += 0.1)
-            {
-                ArmCollision.ComputeFrames(profile, plan.Sample(t), frames);
-                Vector3 pads = frames[(int)ArmLink.Gripper].ToBase(MixedTake.ToolInGripper);
-                for (int i = 0; i < objects.Count; i++) nearest[i] = MathF.Min(nearest[i], Vector3.Distance(pads, objects[i].Center));
-            }
-
-            var order = new List<int>();
-            for (int i = 0; i < objects.Count; i++) if (!objects[i].Scenery) order.Add(i);
-            Dictionary<int, PlannedMove> c = closest;
-            order.Sort((a, b) =>
-            {
-                bool ma = c.TryGetValue(a, out PlannedMove pa), mb = c.TryGetValue(b, out PlannedMove pb);
-                if (ma != mb) return ma ? -1 : 1;
-                int byGap = ma ? pa.GapMeters.CompareTo(pb.GapMeters) : 0;
-                return byGap != 0 ? byGap : nearest[a] != nearest[b] ? nearest[a].CompareTo(nearest[b]) : a.CompareTo(b);
-            });
-            return order.ToArray();
+            return false;
         }
 
         /// <summary>
@@ -526,7 +642,7 @@ namespace Teleop.Eval.JointDrive
         private static SafetyObject Moved(in SafetyObject o, in RigidTransform t) =>
             Moved(o, new Vector3((float)t.X, (float)t.Y, (float)t.Z), Quaternion.Normalize(new Quaternion((float)t.Qx, (float)t.Qy, (float)t.Qz, (float)t.Qw)));
 
-        /// <summary>Whether another of <paramref name="objects"/> stands on object <paramref name="i"/>: its bottom within 1 cm of this one's top, their footprints overlapping.</summary>
+        /// <summary>Whether another of <paramref name="objects"/> stands on object <paramref name="i"/>: its bottom at this one's top, their footprints overlapping.</summary>
         public static bool Holds(IReadOnlyList<SafetyObject> objects, int i)
         {
             SafetyObject o = objects[i];
@@ -534,7 +650,11 @@ namespace Teleop.Eval.JointDrive
             {
                 if (k == i) continue;
                 SafetyObject p = objects[k];
-                if (MathF.Abs(p.Min.Z - o.Max.Z) < 0.01f && p.Min.X < o.Max.X && p.Max.X > o.Min.X && p.Min.Y < o.Max.Y && p.Max.Y > o.Min.Y) return true;
+                // Its bottom at this one's top: within 1.5 cm above it, or up to 3 cm below it (a tilted object's box reaches below what it
+                // rests on: the twin check's elephant lying on a stand read 1.5 cm low, the stand was taken for free, removed, and its layout
+                // could not be put back).
+                if (p.Min.Z <= o.Max.Z + 0.015f && p.Min.Z >= o.Max.Z - 0.03f && p.Center.Z > o.Max.Z && p.Min.X < o.Max.X && p.Max.X > o.Min.X && p.Min.Y < o.Max.Y && p.Max.Y > o.Min.Y)
+                    return true;
             }
 
             return false;

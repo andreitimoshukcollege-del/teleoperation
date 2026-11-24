@@ -96,6 +96,9 @@ namespace Teleop.Eval.JointDrive
             // docs/adr/0038 decision 2: whether the model expects each replay's edit to change what the take touches, by edit and by how near
             // the source's arm came to the edited object (contact, within 1 cm, within 5 cm, farther, or an object the layout left out).
             var editTally = new Dictionary<string, int[]>(); // key "kind/where": n, the object's contact changed, the take's any-contact changed
+            var groupNotes = new List<string>();
+            var aimKinds = new Dictionary<string, int>();
+            var noAddWhy = new Dictionary<string, int>();
             ArmPose startPose = model.Home;
             var watch = new Stopwatch();
             for (int layout = from; layout <= to; layout++)
@@ -152,6 +155,13 @@ namespace Teleop.Eval.JointDrive
 
                 foreach (PlannedMove m in plan.Moves)
                 {
+                    if (m.ObjectId == 0) continue;
+                    int oi = objects.FindIndex(o => o.Id == m.ObjectId);
+                    if (oi >= 0) Count(aimKinds, (m.Kind == ScriptMoveKind.Aim ? "aim " : "pass ") + KindOf(objects[oi], scene, table));
+                }
+
+                foreach (PlannedMove m in plan.Moves)
+                {
                     // Where each aim and each layout-blind move to a goal ends: the height parity docs/adr/0038 "M, motion" asks for.
                     if (m.Part != MovePart.Approach && m.Part != MovePart.BlindTransport) continue;
                     double at = Math.Min(m.End, plan.TotalSeconds);
@@ -174,7 +184,16 @@ namespace Teleop.Eval.JointDrive
                     if (blindTouching > t0) blindTakes++;
                     groups++;
                     List<TrackPoint> addTrack = dry.LagSeconds > 0 ? Lagged(plan, dry.LagSeconds) : commanded;
-                    ReplayEditDraw[] edits = GroupEdits(scene, profile, model, plan, objects, parked, scales, takeSeed, mixedOptions, addTrack);
+                    ReplayEditDraw[] edits = GroupEdits(scene, profile, model, plan, objects, parked, scales, takeSeed, mixedOptions, addTrack, groupNotes);
+                    bool gotAdd = edits.Any(x => x.Record.Edit == ReplayEdit.Add);
+                    foreach (string note in groupNotes)
+                    {
+                        // Why a group has no add, or a replay no edit: the reason's first words (the counts after them vary).
+                        if (note.StartsWith("no add", StringComparison.Ordinal) && gotAdd) continue;
+                        string key = note.StartsWith("no add: ", StringComparison.Ordinal) && note.Contains(" tried; ") ? "no add: no spot under the arm (" + Reason(note) + ")"
+                            : note.StartsWith("nothing near the path", StringComparison.Ordinal) ? "a replay with nothing near the path to edit" : note;
+                        Count(noAddWhy, key);
+                    }
                     TallyEdits(profile, model, commanded, objects, edits, editTally);
                     if (edits.Length < 2) noEdit++;
                     foreach (ReplayEditDraw e in edits)
@@ -236,6 +255,8 @@ namespace Teleop.Eval.JointDrive
                 Console.WriteLine("  their tool point, cm from the base frame: " + Spread(modelTool) + "; 5 cm bins from -20: " + Histogram(modelTool.Select(z => z * 100.0), -20, 5, 8));
                 Console.WriteLine("  tool point where moves end, cm from the base frame: aims " + Spread(aimTool) + "; layout-blind moves to a goal " + Spread(blindTool));
                 Console.WriteLine("  aims' ends, 5 cm bins from -20: " + Histogram(aimTool.Select(z => z * 100.0), -20, 5, 8) + "; blind goals': " + Histogram(blindTool.Select(z => z * 100.0), -20, 5, 8));
+                Console.WriteLine("  aims and passes by object kind: " + Kinds(aimKinds));
+                Console.WriteLine("  why a group has no add, or a replay no edit: " + Kinds(noAddWhy));
                 Console.WriteLine("  replays' edits the model expects to change contact (n: the edited object's own contact changed / the take's any contact changed):");
                 foreach (KeyValuePair<string, int[]> kv in editTally.OrderBy(k => k.Key, StringComparer.Ordinal))
                 {
@@ -264,7 +285,7 @@ namespace Teleop.Eval.JointDrive
         /// moved are taken to be those its moves planned to touch. Fewer than two when a replay finds nothing new.
         /// </summary>
         internal static ReplayEditDraw[] GroupEdits(WorldScene scene, in RobotArmProfile profile, ArmCollisionModel model, DrivePlan plan, List<SafetyObject> objects,
-            bool[] parked, double[] scales, ulong group, MixedOptions options, List<TrackPoint>? track = null)
+            bool[] parked, double[] scales, ulong group, MixedOptions options, List<TrackPoint>? track = null, List<string>? notes = null)
         {
             var touched = new HashSet<byte>(plan.Moves.Where(m => m.ObjectId != 0 && !double.IsNaN(m.Contact)).Select(m => m.ObjectId));
             var parkedIds = new List<byte>();
@@ -275,8 +296,10 @@ namespace Teleop.Eval.JointDrive
             }
 
             var add = new ReplayAdd(track ?? ReplayAdd.Commanded(plan), plan.TotalSeconds - plan.ScriptStart, parkedIds, model, options);
+            var near = new PathProximity(profile, model, add.Track, objects, 2);
             var used = new HashSet<string>();
             var edits = new List<ReplayEditDraw>();
+            notes?.Clear();
             double ScaleOf(byte id)
             {
                 int k = scene.IndexOf(id);
@@ -285,8 +308,14 @@ namespace Teleop.Eval.JointDrive
 
             for (int r = 1; r <= 2; r++)
             {
-                ReplayEditDraw e = ReplayEdits.Draw(group, r, 0, plan, objects, scene, touched, profile, used, ScaleOf, add);
-                if (e.Pose.Id == 0) break;
+                ReplayEditDraw e = ReplayEdits.Draw(group, r, 0, plan, objects, scene, touched, profile, used, ScaleOf, add, near);
+                if (e.AddNote != null) notes?.Add(e.AddNote);
+                if (e.Pose.Id == 0)
+                {
+                    notes?.Add(e.Note ?? "no edit");
+                    break;
+                }
+
                 used.Add(ReplayEdits.Key(e.Record));
                 edits.Add(e);
             }
@@ -494,6 +523,29 @@ namespace Teleop.Eval.JointDrive
         }
 
         private static void Count(Dictionary<string, int> counts, string key) => counts[key] = counts.TryGetValue(key, out int n) ? n + 1 : 1;
+
+        /// <summary>Which stage turned an add's spots down most, from its note's tally (too high, the bearing, the scene's rules, the quiet start and end).</summary>
+        private static string Reason(string note)
+        {
+            string[] names = { "too high for the object", "beyond the reach bearing", "off the table, out of reach or on another object", "met the quiet start or end" };
+            string[] keys = { "for the object ", "reach bearing ", "on another object ", "quiet start or end " };
+            int best = -1;
+            long most = 0;
+            for (int k = 0; k < keys.Length; k++)
+            {
+                int at = note.IndexOf(keys[k], StringComparison.Ordinal);
+                if (at < 0) continue;
+                string digits = new string(note.Substring(at + keys[k].Length).TakeWhile(char.IsDigit).ToArray());
+                if (long.TryParse(digits, out long n) && (k == 3 ? n > 0 : n > most) && (k != 3 || best < 0 || n > 0))
+                {
+                    if (k == 3 && n > 0) return names[3]; // a spot was found and the quiet windows refused it
+                    most = n;
+                    best = k;
+                }
+            }
+
+            return best < 0 ? "none" : "mostly " + names[best];
+        }
 
         private static string Kinds(Dictionary<string, int> counts)
         {

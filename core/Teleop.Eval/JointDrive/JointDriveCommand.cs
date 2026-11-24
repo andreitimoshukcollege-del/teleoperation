@@ -927,12 +927,18 @@ namespace Teleop.Eval.JointDrive
             var used = new HashSet<string>();
             WorldScene scene = c.Link.World!.Scene;
             Func<byte, double> scaleOf = id => c.Link.World!.Scale(id);
+            // How near the source's arm came to each object, on the track the add looks at (docs/adr/0038 "M, motion": edits where they can
+            // change what the take touches).
+            var near = new PathProximity(c.Profile, c.Profile.Collision!, c.Add?.Track ?? ReplayAdd.Commanded(c.Plan), c.Objects, 2);
+            Console.WriteLine("[joint-drive] replays: the source's arm " + Nearness(near));
             for (int r = 1; r <= replays; r++)
             {
                 if (c.Stop.IsSet) return 130;
-                if (ReplayEdits.Draw(c.Group, r, 0, c.Plan, c.Objects, scene, c.Touched, c.Profile, used, scaleOf, c.Add).Pose.Id == 0)
+                ReplayEditDraw drawn = ReplayEdits.Draw(c.Group, r, 0, c.Plan, c.Objects, scene, c.Touched, c.Profile, used, scaleOf, c.Add, near);
+                if (drawn.AddNote != null) Console.WriteLine($"[joint-drive] replay {r} of {replays}: {drawn.AddNote}");
+                if (drawn.Pose.Id == 0)
                 {
-                    Console.WriteLine($"[joint-drive] replay {r} of {replays}: no edit this group has not made ({(used.Count > 0 ? string.Join(", ", used) : "none")}); skipped, with the rest");
+                    Console.WriteLine($"[joint-drive] replay {r} of {replays}: {drawn.Note}; skipped, with the rest");
                     return 0;
                 }
 
@@ -962,8 +968,13 @@ namespace Teleop.Eval.JointDrive
                 var tried = new HashSet<string>(used);
                 for (int attempt = 0; attempt < 8 && !applied && !c.Stop.IsSet; attempt++)
                 {
-                    edit = ReplayEdits.Draw(c.Group, r, attempt, c.Plan, c.Objects, scene, c.Touched, c.Profile, tried, scaleOf, c.Add);
-                    if (edit.Pose.Id == 0) break;
+                    edit = ReplayEdits.Draw(c.Group, r, attempt, c.Plan, c.Objects, scene, c.Touched, c.Profile, tried, scaleOf, c.Add, near);
+                    if (edit.Pose.Id == 0)
+                    {
+                        Console.WriteLine($"[joint-drive] replay {r}: {edit.Note}");
+                        break;
+                    }
+
                     if (edit.After.HasValue && !ReplayEdits.KeepsQuiet(c.Plan, edit.After.Value, c.Profile, c.Profile.Collision!, c.Options))
                     {
                         Console.WriteLine($"[joint-drive] replay {r}: {ReplayCodec.Describe(edit.Record)} would meet the take's quiet start or end; another");
@@ -999,6 +1010,21 @@ namespace Teleop.Eval.JointDrive
             }
 
             return 0;
+        }
+
+        /// <summary>What a replay may edit, for the log: the objects the source's arm touched or came within 1 cm of, those within 5 cm, and the rest.</summary>
+        private static string Nearness(PathProximity near)
+        {
+            var parts = new List<string>();
+            for (int i = 0; i < near.Objects.Count; i++)
+            {
+                if (near.Objects[i].Scenery) continue;
+                float g = near.Gap(i);
+                string where = float.IsPositiveInfinity(g) ? "farther than 5 cm" : g <= 0 ? FormattableString.Invariant($"touched ({g * 1000:0} mm)") : FormattableString.Invariant($"within {g * 1000:0} mm");
+                parts.Add($"{near.Objects[i].Id} {where}");
+            }
+
+            return parts.Count == 0 ? "had no object near" : "came: " + string.Join(", ", parts);
         }
 
         /// <summary>Whether a refused edit of this kind tries another spot for the same object first (a move, an add), not another object.</summary>

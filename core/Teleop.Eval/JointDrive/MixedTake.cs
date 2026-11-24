@@ -411,7 +411,7 @@ namespace Teleop.Eval.JointDrive
                     $"{o.Id} r {new Vector2(o.Center.X, o.Center.Y).Length():0.00} az {MathF.Atan2(o.Center.Y, o.Center.X) * 180 / MathF.PI:0} h {(o.Max.Z - o.Min.Z) * 100:0}cm{(o.Movable ? "" : " fixed")} misses {kv.Value}"));
             }
 
-            return counts + "; objects: " + string.Join(", ", objects) + (_options.LinkAimShare > 0 ? $"; link aims {_linkMade} of {_linkTried} (first met by proximal {_linkLinks[1]}, distal {_linkLinks[2]}, wrist {_linkLinks[3]})" : "") +
+            return counts + "; objects: " + string.Join(", ", objects) + (_options.LinkAimShare > 0 ? $"; link aims {_linkMade} of {_linkTried} (first met by proximal {_linkLinks[1]}, distal {_linkLinks[2]}, wrist {_linkLinks[3]}; missed {string.Join(" ", _linkWhy)})" : "") +
                    (_options.NoAccidents ? "" : "; " + AccidentReport());
         }
 
@@ -1135,6 +1135,7 @@ namespace Teleop.Eval.JointDrive
 
         private int _linkTried, _linkMade;
         private readonly int[] _linkLinks = new int[5];
+        private readonly int[] _linkWhy = new int[10]; // why link aims failed, for the report: no candidate, pose, start, start near, unmet, met by pads, goal, staging, move, law
 
         /// <summary>
         /// A link aim (docs/adr/0038 "M, motion", the 2026-11-24 review, <see cref="MixedOptions.LinkAimShare"/>): object <paramref name="oi"/> met
@@ -1190,12 +1191,13 @@ namespace Teleop.Eval.JointDrive
                     candidates.Add((pose, want));
                 }
 
+                if (candidates.Count == 0) _linkWhy[0]++;
                 for (int c = 0; c < 6 && candidates.Count > 0; c++)
                 {
                     int pick = (int)(_rng.NextDouble() * candidates.Count) % candidates.Count;
                     (ArmPose target, ArmLink link) = candidates[pick];
                     candidates.RemoveAt(pick);
-                    if (!_envelope.Contains(target) || !ArmCollision.IsValid(_profile, holders, target)) continue;
+                    if (!_envelope.Contains(target) || !ArmCollision.IsValid(_profile, holders, target)) { _linkWhy[1]++; continue; }
                     // Where the approach starts: turned 12-25 degrees to a side, so every link sweeps round the base and what meets the object
                     // first is what stands at its radius and height; or, under a plank, lowered 8-14 degrees at the shoulder, up into it.
                     bool lift = o.Role == SceneRole.Plank && point.Z <= o.Min.Z + 1e-4f;
@@ -1203,9 +1205,9 @@ namespace Teleop.Eval.JointDrive
                     ArmPose start = lift
                         ? DrivePlan.WithJoint(target, 1, target.Proximal + side * (float)(Draw.Uniform(ref _rng, 8, 14) * deg))
                         : DrivePlan.WithJoint(target, 0, target.BaseYaw + side * (float)(Draw.Uniform(ref _rng, 12, 25) * deg));
-                    if (!_envelope.Contains(start) || !ArmCollision.IsValid(_profile, holders, start)) continue;
+                    if (!_envelope.Contains(start) || !ArmCollision.IsValid(_profile, holders, start)) { _linkWhy[2]++; continue; }
                     arm.At(start, gripper);
-                    if (arm.Gap(o, 0.02f) < 0.015f) continue;
+                    if (arm.Gap(o, 0.02f) < 0.015f) { _linkWhy[3]++; continue; }
                     // Met first by a link that is not the pads, on the way from there.
                     float met = float.NaN;
                     ArmLink first = ArmLink.Gripper;
@@ -1218,7 +1220,8 @@ namespace Teleop.Eval.JointDrive
                         break;
                     }
 
-                    if (float.IsNaN(met) || first == ArmLink.Gripper || first == ArmLink.Turntable) continue;
+                    if (float.IsNaN(met)) { _linkWhy[4]++; continue; }
+                    if (first == ArmLink.Gripper || first == ArmLink.Turntable) { _linkWhy[5]++; continue; }
                     // The stop: a signed offset along that way as the model measures it (into it no deeper than it measures).
                     float offset = (float)Draw.Uniform(ref _rng, -0.015, 0.04);
                     offset = MathF.Max(offset, -(DeepestGap(oi) - 0.002f));
@@ -1242,7 +1245,7 @@ namespace Teleop.Eval.JointDrive
                         }
                     }
 
-                    if (!_envelope.Contains(goalPose) || !ArmCollision.IsValid(_profile, holders, goalPose)) continue;
+                    if (!_envelope.Contains(goalPose) || !ArmCollision.IsValid(_profile, holders, goalPose)) { _linkWhy[6]++; continue; }
                     Vector3 startWrist = HandModel.Wrist(_profile, start), goal = HandModel.Wrist(_profile, goalPose);
                     float startPitch = HandModel.PitchOf(start), goalPitch = HandModel.PitchOf(goalPose);
                     HandSnapshot before = _hand.Save();

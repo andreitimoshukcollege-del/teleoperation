@@ -1195,6 +1195,20 @@ namespace Teleop.Eval.JointDrive
                 }
 
                 if (candidates.Count == 0) _linkWhy[0]++;
+                if (candidates.Count == 0 && Environment.GetEnvironmentVariable("LINKDEBUG") == "1")
+                {
+                    float bestD = 9f, bestT = 0f;
+                    for (float p1 = rp.Min; p1 <= rp.Max; p1 += (float)(3 * deg))
+                    for (float p2 = rd.Min; p2 <= rd.Max; p2 += (float)(3 * deg))
+                    {
+                        ArmCollision.ComputeFrames(_profile, new ArmPose(yaw, p1, p2, 0f, 0f), frames);
+                        int li = (int)want;
+                        float dd = SegmentDistance(point, frames[li].Origin, li + 1 < 5 ? frames[li + 1].Origin : frames[li].ToBase(ToolInGripper), out float tt);
+                        if (dd < bestD) { bestD = dd; bestT = tt; }
+                    }
+                    ArmCollision.ComputeFrames(_profile, _model.Home, frames);
+                    Console.Error.WriteLine(FormattableString.Invariant($"LINK {o.Id} want {want} point {point.X:0.000},{point.Y:0.000},{point.Z:0.000} r {r:0.000} best d {bestD:0.000} t {bestT:0.00}; home frames {frames[1].Origin.X:0.000},{frames[1].Origin.Z:0.000} {frames[2].Origin.X:0.000},{frames[2].Origin.Z:0.000} {frames[3].Origin.X:0.000},{frames[3].Origin.Z:0.000}"));
+                }
                 for (int c = 0; c < 6 && candidates.Count > 0; c++)
                 {
                     int pick = (int)(_rng.NextDouble() * candidates.Count) % candidates.Count;

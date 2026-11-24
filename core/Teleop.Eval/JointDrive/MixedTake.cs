@@ -1190,6 +1190,7 @@ namespace Teleop.Eval.JointDrive
                     float d = SegmentDistance(point, a, b, out float along);
                     // Along the link's middle, not by the joint at its far end (there the next link meets it first).
                     if (d < 0.012f || d > 0.04f || along < 0.1f || along > 0.9f) continue;
+                    if (!_envelope.Contains(pose) || !ArmCollision.IsValid(_profile, holders, pose)) continue;
                     candidates.Add((pose, want));
                 }
 
@@ -1203,13 +1204,19 @@ namespace Teleop.Eval.JointDrive
                     // Where the approach starts: turned 12-25 degrees to a side, so every link sweeps round the base and what meets the object
                     // first is what stands at its radius and height; or, under a plank, lowered 8-14 degrees at the shoulder, up into it.
                     bool lift = o.Role == SceneRole.Plank && point.Z <= o.Min.Z + 1e-4f;
-                    float side = Draw.Chance(ref _rng, 0.5) ? 1f : -1f;
-                    ArmPose start = lift
-                        ? DrivePlan.WithJoint(target, 1, target.Proximal + side * (float)(Draw.Uniform(ref _rng, 8, 14) * deg))
-                        : DrivePlan.WithJoint(target, 0, target.BaseYaw + side * (float)(Draw.Uniform(ref _rng, 12, 25) * deg));
-                    if (!_envelope.Contains(start) || !ArmCollision.IsValid(_profile, holders, start)) { _linkWhy[2]++; continue; }
-                    arm.At(start, gripper);
-                    if (arm.Gap(o, 0.02f) < 0.015f) { _linkWhy[3]++; continue; }
+                    float side = Draw.Chance(ref _rng, 0.5) ? 1f : -1f, turn = (float)((lift ? Draw.Uniform(ref _rng, 8, 14) : Draw.Uniform(ref _rng, 12, 25)) * deg);
+                    ArmPose start = target;
+                    bool clear = false;
+                    for (int t = 0; t < 2 && !clear; t++, side = -side)
+                    {
+                        // The drawn side first, then the other.
+                        start = lift ? DrivePlan.WithJoint(target, 1, target.Proximal + side * turn) : DrivePlan.WithJoint(target, 0, target.BaseYaw + side * turn);
+                        if (!_envelope.Contains(start) || !ArmCollision.IsValid(_profile, holders, start)) continue;
+                        arm.At(start, gripper);
+                        clear = arm.Gap(o, 0.02f) >= 0.015f;
+                    }
+
+                    if (!clear) { _linkWhy[2]++; continue; }
                     // Met first by a link that is not the pads, on the way from there.
                     float met = float.NaN;
                     ArmLink first = ArmLink.Gripper;

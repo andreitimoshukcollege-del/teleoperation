@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using Teleop.Bridge;
 using TMPro;
 using Unity.XR.CoreUtils;
@@ -12,10 +13,17 @@ namespace Teleop.XR
     /// slide along it. Near you is slow, far is fast. It sets
     /// <see cref="JetRoverOperatorBridge.SpeedRadPerSec"/>, which rides in every joint command; RobotHost
     /// caps it at the speed it was deployed with, and the predictor replays at the same speed. Like
-    /// the buttons it reads fingertips from XR Hands, so no ray or pinch can move it.
+    /// the buttons it reads fingertips from XR Hands, and like them it can be worked from a distance
+    /// while the robot is off: <see cref="Fr3HandPointer"/> pinches with its ray on the track and drags
+    /// the knob along it (<see cref="TryPointerHit"/>, <see cref="PointerDrag"/>).
     /// </summary>
     public sealed class SpeedSlider : MonoBehaviour
     {
+        private static readonly List<SpeedSlider> s_All = new List<SpeedSlider>();
+
+        /// <summary>Every enabled slider, for the hand pointer.</summary>
+        public static IReadOnlyList<SpeedSlider> All => s_All;
+
         /// <summary>What the slider sets.</summary>
         public enum Setting
         {
@@ -65,6 +73,64 @@ namespace Teleop.XR
             Apply();
         }
 
+        private void OnEnable() => s_All.Add(this);
+
+        private void OnDisable() => s_All.Remove(this);
+
+        /// <summary>A running training course holds every slider (docs/adr/0024 decisions 4 and 8).</summary>
+        private bool Locked => bridge != null && bridge.Training != null && bridge.Training.Running;
+
+        /// <summary>
+        /// Whether the ray passes over the track, within <see cref="touchRadius"/> of its centre line: how far along the ray
+        /// that is, and how far beside the line (the nearest of two sliders is the one the ray is most nearly on).
+        /// </summary>
+        public bool TryPointerHit(Ray ray, float maxMeters, out float distance, out float beside)
+        {
+            distance = beside = float.PositiveInfinity;
+            if (bridge == null || trackStart == null || trackEnd == null || !Closest(ray, out float s, out float along, out beside)) return false;
+            if (s <= 0f || s > maxMeters || along < -0.05f || along > 1.05f || beside > touchRadius) return false;
+            distance = s;
+            return true;
+        }
+
+        /// <summary>
+        /// A held pinch dragging the knob: it goes where the ray passes closest to the track, unless a running course holds it.
+        /// Returns how far along the ray that is (for drawing the ray), or -1.
+        /// </summary>
+        public float PointerDrag(Ray ray)
+        {
+            if (trackStart == null || trackEnd == null || !Closest(ray, out float s, out float along, out _)) return -1f;
+            if (!Locked)
+            {
+                SetFraction(Mathf.Clamp01(along));
+                Apply();
+            }
+
+            return s > 0f ? s : -1f;
+        }
+
+        /// <summary>The closest approach of the ray (s along it, metres) and the track's line (along, 0 at the slow end, 1 at the fast).</summary>
+        private bool Closest(Ray ray, out float s, out float along, out float gap)
+        {
+            s = along = 0f;
+            gap = float.PositiveInfinity;
+            Vector3 a = trackStart.position, ab = trackEnd.position - a, d = ray.direction, w = ray.origin - a;
+            float b = Vector3.Dot(d, ab), c = Vector3.Dot(ab, ab), e = Vector3.Dot(d, w), f = Vector3.Dot(ab, w);
+            float den = c - b * b; // |d| = 1
+            if (c < 1e-8f || den < 1e-6f * c) return false; // a degenerate track, or the ray runs along it
+            s = (b * f - c * e) / den;
+            along = (f - b * e) / den;
+            gap = Vector3.Distance(ray.GetPoint(s), a + Mathf.Clamp01(along) * ab);
+            return true;
+        }
+
+        private void SetFraction(float t)
+        {
+            // Tenths of a rad/s, so the value settles instead of trembling with the fingertip.
+            float step = setting == Setting.ArmSpeed ? 0.1f : setting == Setting.NetworkLoss ? 1f : setting == Setting.NetworkJitter ? 5f : 10f;
+            _value = Mathf.Round(Mathf.Lerp(minRadPerSec, maxRadPerSec, t) / step) * step;
+        }
+
         private void Update()
         {
             if (bridge == null || trackStart == null || trackEnd == null || origin == null)
@@ -107,9 +173,7 @@ namespace Teleop.XR
             Transform space = origin.TrackablesParent != null ? origin.TrackablesParent : origin.transform;
             if (_hands != null && (TryTouch(_hands.rightHand, space, out float t) || TryTouch(_hands.leftHand, space, out t)))
             {
-                // Tenths of a rad/s, so the value settles instead of trembling with the fingertip.
-                float step = setting == Setting.ArmSpeed ? 0.1f : setting == Setting.NetworkLoss ? 1f : setting == Setting.NetworkJitter ? 5f : 10f;
-                _value = Mathf.Round(Mathf.Lerp(minRadPerSec, maxRadPerSec, t) / step) * step;
+                SetFraction(t);
             }
 
             Apply();

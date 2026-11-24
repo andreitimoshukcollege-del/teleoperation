@@ -555,6 +555,14 @@ default_operator_host := env_var_or_default("OPERATOR_HOST", "100.82.140.80")
 robot_mdns_name := env_var_or_default("JETROVER_NAME", "jetrover-sinrg")
 # The GPU machine for trainer runs (just gpu-train, gpu-status, gpu-fetch): an account with this repo's SSH key.
 gpu_host := env_var_or_default("GPU_HOST", "andrei@10.188.58.133")
+# Northeastern's Explorer cluster for trainer runs (docs/explorer-cluster.md): an ssh name or user@host whose key RC issued
+# (own keys are refused there since 2026-11-06). The torch build its GPU nodes' driver takes, and the GPU type the jobs ask for.
+explorer_host := env_var_or_default("EXPLORER_HOST", "explorer")
+explorer_torch := env_var_or_default("EXPLORER_TORCH", "cu128")
+explorer_gpu := env_var_or_default("EXPLORER_GPU", "h200")
+# Where runs are kept there ($USER is the cluster account): the lab's /projects space, not /scratch, which RC empties on
+# the first Tuesday of every month. Only prepared data, which a prepare job regenerates, goes to /scratch/$USER/armpred.
+explorer_runs := env_var_or_default("EXPLORER_RUNS", "/projects/world-models/$USER/armpred")
 # The Isaac Sim installed in our own account on the GPU machine (docs/adr/0031): NVIDIA's pip build, whose 6.x wheels are for Python 3.12, the machine's own.
 isaac_version := env_var_or_default("ISAAC_VERSION", "6.2.0.0")
 # The JetRover's Isaac twins on the GPU machine (docs/adr/0037 amendment 7), as bash the recipes put into their remote
@@ -3240,6 +3248,115 @@ gpu-fetch run:
     tar xzf "dist/{{run}}.tgz" -C trainer/runs
     echo "trainer/runs/{{run}}:"; ls trainer/runs/{{run}}
     [ -f "trainer/runs/{{run}}/eval/report.md" ] && sed -n '1,20p' "trainer/runs/{{run}}/eval/report.md" || true
+
+# ---- Northeastern's Explorer cluster (docs/explorer-cluster.md) ----
+
+# Send this commit's trainer to Explorer ($EXPLORER_HOST, the ssh name `explorer` by default): `just pack-trainer`, copied to ~/armpred/packs there and unpacked into ~/armpred/<pack>/armpred, which ~/armpred/current then points at. A pack already unpacked there is kept (with any image built in it), unless it is a -dirty one, which is replaced. Next: just explorer-build
+[group('explorer')]
+explorer-push:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    out=$(just pack-trainer | tail -1 | cut -d' ' -f1)
+    name=$(basename "$out" .tar.gz)
+    ssh -o ConnectTimeout=20 "{{explorer_host}}" "mkdir -p ~/armpred/packs ~/armpred/logs && cat > ~/armpred/packs/$name.tar.gz" < "$out"
+    ssh -o ConnectTimeout=20 "{{explorer_host}}" "NAME='$name' bash -s" <<'REMOTE'
+    set -euo pipefail
+    cd ~/armpred
+    if [ -d "$NAME/armpred" ] && [ "${NAME%-dirty}" = "$NAME" ]; then
+        echo "$NAME was already unpacked there: kept"
+    else
+        rm -rf "$NAME"; mkdir -p "$NAME"; tar xzf "packs/$NAME.tar.gz" -C "$NAME"
+    fi
+    ln -sfn "$NAME/armpred" current
+    if [ -f current/armpred.sif ]; then state="image built"; else state="no image yet: just explorer-build"; fi
+    echo "Explorer ~/armpred/current -> $NAME/armpred ($state)"
+    REMOTE
+
+# Build the image of the trainer `just explorer-push` sent (~/armpred/current there) and check it on one GPU: a build job on the CPU partition `short` (slurm/build.sbatch, torch for $EXPLORER_TORCH, cu128 by default: the H200 nodes' driver 570 is CUDA 12.8), then, once it succeeds, a selftest job on one $EXPLORER_GPU (h200) in `gpu-short` (slurm/selftest.sbatch: `armpred selftest`, then the minutes-long configs/smoke.toml pretraining into $EXPLORER_RUNS/smoke-<pack sha>; smoke=false skips it). Submits and returns; logs in ~/armpred/logs there; watch with just explorer-status
+[group('explorer')]
+explorer-build smoke="true":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    case "{{smoke}}" in true|false) ;; *) echo "error: smoke is true or false" >&2; exit 1 ;; esac
+    ssh -o ConnectTimeout=20 "{{explorer_host}}" "TORCH='{{explorer_torch}}' GPU='{{explorer_gpu}}' SMOKE='{{smoke}}' RUNS=$(printf %q '{{explorer_runs}}') bash -s" <<'REMOTE'
+    set -euo pipefail
+    [ -e ~/armpred/current ] || { echo "error: nothing pushed there yet: just explorer-push" >&2; exit 1; }
+    cd "$(readlink -f ~/armpred/current)"   # the jobs keep this pack even if a later push moves current
+    pack=$(basename "$(dirname "$PWD")")
+    logs="$HOME/armpred/logs"
+    b=$(sbatch --parsable --partition=short --output="$logs/%x-%j.out" slurm/build.sbatch "$TORCH")
+    RUNS=${RUNS//\$USER/$USER}
+    out=-; [ "$SMOKE" = true ] && out="$RUNS/smoke-${pack#armpred-}"
+    t=$(sbatch --parsable --dependency=afterok:"$b" --kill-on-invalid-dep=yes --partition=gpu-short --gres=gpu:"$GPU":1 \
+        --output="$logs/%x-%j.out" slurm/selftest.sbatch "$out")
+    echo "$pack: build job $b ($TORCH), then selftest job $t on one $GPU$([ "$out" = - ] || echo ", smoke run $out")"
+    echo "logs: $logs/armpred-build-$b.out, $logs/armpred-selftest-$t.out; watch: just explorer-status"
+    REMOTE
+
+# Train on Explorer: `just explorer-train <config> [grid] [name] [at_once]`, e.g. `just explorer-train sim-pretrain`. With the image `just explorer-build` made, submits slurm/prepare.sbatch (simulation and shards, 64 CPUs on `short`) and, once it succeeds, slurm/train-array.sbatch: one task per combination of trainer/configs/<grid>.toml, each on one $EXPLORER_GPU in `gpu` (8 h at most there), at most at_once (4, the gpu QoS's per-user GPU cap) at a time. The runs go to $EXPLORER_RUNS/<name>/runs/<combination> there (name: <config>-<pack sha>), the prepared data to /scratch/$USER/armpred/<name>/data (RC empties /scratch monthly; a prepare regenerates it); refuses a name already used. The config and grid must be in the pushed pack. Watch with just explorer-status; bring results back with just explorer-fetch
+[group('explorer')]
+explorer-train config grid="grid" name="" at_once="4":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    for v in "{{config}}" "{{grid}}" "{{name}}"; do
+        case "$v" in *[!A-Za-z0-9._-]*) echo "error: '$v': config and grid are trainer/configs names, name a plain folder name" >&2; exit 1 ;; esac
+    done
+    case "{{at_once}}" in ''|*[!0-9]*|0) echo "error: at_once is a positive number" >&2; exit 1 ;; esac
+    ssh -o ConnectTimeout=20 "{{explorer_host}}" "CONFIG='{{config}}' GRID='{{grid}}' NAME='{{name}}' AT_ONCE='{{at_once}}' GPU='{{explorer_gpu}}' RUNS=$(printf %q '{{explorer_runs}}') bash -s" <<'REMOTE'
+    set -euo pipefail
+    [ -e ~/armpred/current ] || { echo "error: nothing pushed there yet: just explorer-push" >&2; exit 1; }
+    cd "$(readlink -f ~/armpred/current)"
+    pack=$(basename "$(dirname "$PWD")")
+    [ -f armpred.sif ] || { echo "error: $pack has no image yet: just explorer-build" >&2; exit 1; }
+    for f in "configs/$CONFIG.toml" "configs/$GRID.toml"; do [ -f "$f" ] || { echo "error: $pack has no $f (commit it, just explorer-push)" >&2; exit 1; }; done
+    [ -n "$NAME" ] || NAME="$CONFIG-${pack#armpred-}"
+    RUNS=${RUNS//\$USER/$USER}
+    root="$RUNS/$NAME" data="/scratch/$USER/armpred/$NAME/data"
+    for d in "$root" "$data"; do [ ! -e "$d" ] || { echo "error: $d already exists: pick another name" >&2; exit 1; }; done
+    n=$(apptainer exec armpred.sif armpred grid --config "configs/$CONFIG.toml" --grid "configs/$GRID.toml" --data x --out x --list | wc -l)
+    [ "$n" -gt 0 ] || { echo "error: the grid lists no combinations" >&2; exit 1; }
+    mkdir -p "$root" "$(dirname "$data")"
+    logs="$HOME/armpred/logs"
+    p=$(sbatch --parsable --partition=short --output="$logs/%x-%j.out" slurm/prepare.sbatch "configs/$CONFIG.toml" "$data")
+    t=$(sbatch --parsable --dependency=afterok:"$p" --kill-on-invalid-dep=yes --partition=gpu --gres=gpu:"$GPU":1 \
+        --array=0-$((n - 1))%"$AT_ONCE" --output="$logs/%x-%A_%a.out" \
+        slurm/train-array.sbatch "configs/$CONFIG.toml" "configs/$GRID.toml" "$data" "$root/runs")
+    echo "$pack: prepare job $p into $data, then train array $t ($n runs, $AT_ONCE at a time on $GPU) into $root/runs"
+    echo "logs: $logs/armpred-prepare-$p.out, $logs/armpred-train-${t}_<i>.out; watch: just explorer-status"
+    REMOTE
+
+# Explorer at a glance -- touches nothing: our jobs in the queue (pending ones with Slurm's reason), what ~/armpred/current is and whether its image is built, the runs kept ($EXPLORER_RUNS), and the end of the newest job logs
+[group('explorer')]
+explorer-status lines="6" logs="3":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    ssh -o ConnectTimeout=20 "{{explorer_host}}" "RUNS=$(printf %q '{{explorer_runs}}') LINES='{{lines}}' LOGS='{{logs}}' bash -s" <<'REMOTE'
+    RUNS=${RUNS//\$USER/$USER}
+    squeue -u "$USER" -o "%.12i %.18j %.9P %.8T %.10M %.10l %R"
+    echo
+    echo "current: $(readlink ~/armpred/current 2>/dev/null || echo none)$([ -f ~/armpred/current/armpred.sif ] && echo ' (image built)')"
+    echo "runs in $RUNS: $(ls "$RUNS" 2>/dev/null | tr '\n' ' ')"
+    for f in $(ls -t ~/armpred/logs/*.out 2>/dev/null | head -n "$LOGS"); do echo; echo "== $f"; tail -n "$LINES" "$f"; done
+    REMOTE
+
+# Bring an Explorer result back here: `just explorer-fetch <path under $EXPLORER_RUNS>`, e.g. `just explorer-fetch smoke-0123456789ab` or `just explorer-fetch sim-pretrain-0123456789ab/runs`. Streams it without any checkpoints/ or data/ folder (the weights that matter are exported, and prepared data is regenerated) to dist/explorer-<path>.tgz and unpacks it into trainer/runs/explorer/<path>, refusing to overwrite one already here
+[group('explorer')]
+explorer-fetch path:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    case "{{path}}" in *[!A-Za-z0-9._/-]*|""|/*|*..*) echo 'error: path is a plain relative path under {{explorer_runs}} there' >&2; exit 1 ;; esac
+    p="{{path}}"; p="${p%/}"
+    [ ! -e "trainer/runs/explorer/$p" ] || { echo "error: trainer/runs/explorer/$p is already here" >&2; exit 1; }
+    mkdir -p dist trainer/runs/explorer
+    tgz="dist/explorer-${p//\//_}.tgz"
+    ssh -o ConnectTimeout=20 "{{explorer_host}}" "RUNS=$(printf %q '{{explorer_runs}}') P='$p' bash -s" > "$tgz" <<'REMOTE' \
+        || { rm -f "$tgz"; echo "error: no $p in" '{{explorer_runs}}' "there (just explorer-status lists the runs)" >&2; exit 1; }
+    set -euo pipefail
+    RUNS=${RUNS//\$USER/$USER}
+    cd "$RUNS" && [ -d "$P" ] && tar czf - --exclude=checkpoints --exclude=data "$P"
+    REMOTE
+    tar xzf "$tgz" -C trainer/runs/explorer
+    echo "trainer/runs/explorer/$p ($(du -sh "trainer/runs/explorer/$p" | cut -f1)), archive $tgz"
 
 # ---- Isaac Sim on the GPU machine (docs/adr/0031) ----
 

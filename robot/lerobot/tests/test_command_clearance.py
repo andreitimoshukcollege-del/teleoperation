@@ -322,6 +322,15 @@ def test_a_build_writes_both_files_and_safety_report_sums_them_up(scenarios, geo
     assert str(cmd["min_clearance_id"].dtype) == "Int32" and cmd["clearance_id.base_link"].isna().all()  # none within the cutoff
     assert cmd["accepted"].dtype == bool and list(cmd["outcome"]) == ["A", "A", "A", "R", "A"]
     assert str(cmd["seq"].dtype) == "Int64" and cmd["seq"].isna().sum() == 1
+    # Every distance column is a float64 in every sidecar, NaN for missing: until 2026-11-25 clearance_mm.<link> and
+    # surface_mm.<link> of the links whose names end in "_link" were text in these two files.
+    frames = pd.read_parquet(os.path.join(teleop, "frames.parquet"))
+    for name, df in (("commands", cmd), ("pose_samples", smp), ("frames", frames)):
+        distance = [c for c in df.columns if "_mm" in c]
+        assert len(distance) >= 18, (name, distance)
+        assert {c: str(df[c].dtype) for c in distance if str(df[c].dtype) != "float64"} == {}, name
+        assert str(df["clearance_mm.base_link"].dtype) == "float64" and df["surface_mm.base_link"].isna().all()
+    assert {str(cmd[c].dtype) for c in K.SERVO_NAMES + tuple("state." + n for n in K.SERVO_NAMES) + ("path_s",)} == {"float64"}
     meta = json.loads(pq.read_schema(os.path.join(teleop, "commands.parquet")).metadata[b"teleop"])
     assert meta["pathSteps"] == K.PATH_STEPS and "received_ns" in meta["clocks"]
     assert json.loads(pq.read_schema(os.path.join(teleop, "pose_samples.parquet")).metadata[b"teleop"])["samples"]["near"] == 4

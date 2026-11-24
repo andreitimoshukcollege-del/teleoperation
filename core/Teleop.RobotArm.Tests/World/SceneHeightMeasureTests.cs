@@ -37,15 +37,28 @@ namespace Teleop.RobotArm.Tests.World
         [Fact]
         public void Report()
         {
+            // Everything is measured and written before anything is asserted, so a failing run still shows its figures.
+            string? more = Environment.GetEnvironmentVariable("TELEOP_MEASURE_SCENES");
+            foreach (string path in (more ?? "").Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries))
+            {
+                WorldScene extra = JsonSerializer.Deserialize<SceneDocument>(File.ReadAllText(path), Options)!.ToScene();
+                _output.WriteLine(path + ":\n" + Measure(extra, 2000));
+            }
+
             var figures = new Dictionary<string, Figures>();
             foreach (string name in new[] { "jetrover-mixed", "jetrover-mixed-holdout" })
             {
-                Figures f = Measure(SceneMixedTests.Load(name), 2000);
-                figures[name] = f;
-                _output.WriteLine(name + ":\n" + f);
+                figures[name] = Measure(SceneMixedTests.Load(name), 2000);
+                _output.WriteLine(name + ":\n" + figures[name]);
+            }
+
+            foreach (KeyValuePair<string, Figures> kv in figures)
+            {
+                string name = kv.Key;
+                Figures f = kv.Value;
                 // Every 5 cm band holds at most 40% of the obstacles' heights (the pilot's scene put 54% in the lowest band, 2026-11-24).
                 Assert.True(f.Shares(f.Spread).Max() <= MaxBandShare, $"{name}: a band holds {f.Shares(f.Spread).Max():0.000}");
-                // Bars are drawn, stand above the base frame's level or near it, and their posts beyond the obstacles' band.
+                // Bars are drawn, and their posts stand beyond the obstacles' band.
                 Assert.True(f.Bars > 0.15 * f.Units, $"{name}: bars {(double)f.Bars / f.Units:0.000} of the obstacles");
                 Assert.Equal(0, f.PostsInBand);
                 // Nothing a layout stands meets the arm at home (1 cm): the box where the arm stands between takes keeps it clear.
@@ -53,14 +66,8 @@ namespace Teleop.RobotArm.Tests.World
                 Assert.True(f.Missed < 0.3 * f.Layouts, $"{name}: {(double)f.Missed / f.Layouts:0.000} found no spot a layout");
             }
 
-            // The held-out family's bars and stands stand at heights the train family's never do (docs/adr/0038, the held-out split).
+            // The held-out family's bars stand at heights the train family's never do (docs/adr/0038, the held-out split).
             Assert.Empty(figures["jetrover-mixed"].BarHeights.Intersect(figures["jetrover-mixed-holdout"].BarHeights));
-            string? more = Environment.GetEnvironmentVariable("TELEOP_MEASURE_SCENES");
-            foreach (string path in (more ?? "").Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries))
-            {
-                WorldScene s = JsonSerializer.Deserialize<SceneDocument>(File.ReadAllText(path), Options)!.ToScene();
-                _output.WriteLine(path + ":\n" + Measure(s, 2000));
-            }
         }
 
         internal sealed class Figures

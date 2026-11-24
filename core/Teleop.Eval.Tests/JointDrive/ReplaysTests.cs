@@ -111,8 +111,7 @@ namespace Teleop.Eval.Tests.JointDrive
                         case ReplayEdit.Shift:
                             Assert.Equal(WorldEditOp.Move, a.Op);
                             float d = new Vector2(a.Record.A, a.Record.B).Length();
-                            Assert.InRange(d, ReplayEdits.ShiftMinMeters - 1e-4f, ReplayEdits.ShiftMaxMeters + 1e-4f);
-                            Assert.Contains(plan!.Moves, m => m.ObjectId == o.Id); // along a move the take made at it
+                            Assert.InRange(d, 0.005f, ReplayEdits.ShiftFarthestMeters + 1e-4f);
                             Assert.True(scene.Objects[scene.IndexOf(o.Id)].OperatorMovable && o.Min.Z <= (float)scene.Table.Top + 0.01f);
                             break;
                         case ReplayEdit.Move:
@@ -138,12 +137,14 @@ namespace Teleop.Eval.Tests.JointDrive
             SafetyObject[] objects = Layout(scene, shapes, 2);
             DrivePlan plan = MixedTakeTests.AnyMixed(objects, 51);
             ulong group = 77;
-            int removal = Enumerable.Range(1, 3).First(r => ReplayEdits.Draw(group, r, 0, plan, objects, scene, new HashSet<byte>(), Profile).Record.Edit == ReplayEdit.Remove);
+            // The object the source moved is the path's own, whatever the model says of it: the replay whose turn is a removal takes it.
             SafetyObject knocked = objects.First(o => !o.Scenery && !ReplayEdits.Holds(objects, Array.IndexOf(objects, o)));
-            ReplayEditDraw e = ReplayEdits.Draw(group, removal, 0, plan, objects, scene, new HashSet<byte> { knocked.Id }, Profile);
-            Assert.Equal(ReplayEdit.Remove, e.Record.Edit);
-            Assert.Equal(knocked.Id, e.Record.ObjectId);
-            Assert.Equal($"remove:{knocked.Id}", ReplayCodec.Describe(e.Record));
+            var touched = new HashSet<byte> { knocked.Id };
+            ReplayEditDraw[] e = Enumerable.Range(1, 3).Select(r => ReplayEdits.Draw(group, r, 0, plan, objects, scene, touched, Profile)).ToArray();
+            Assert.Contains(e, x => x.Record.Edit == ReplayEdit.Remove);
+            ReplayEditDraw removal = e.First(x => x.Record.Edit == ReplayEdit.Remove);
+            Assert.Equal(knocked.Id, removal.Record.ObjectId);
+            Assert.Equal($"remove:{knocked.Id}", ReplayCodec.Describe(removal.Record));
         }
 
         [Fact]
@@ -259,7 +260,8 @@ namespace Teleop.Eval.Tests.JointDrive
                 if (at >= 0)
                 {
                     withAdd++;
-                    Assert.Equal(ReplayEdits.AddReplay(group), at + 1); // the replay the group drew for it
+                    // The replay the group drew for it, or the first when that had nothing else near its path to edit.
+                    Assert.True(at + 1 == ReplayEdits.AddReplay(group) || at == 0, $"layout {layout}: the add came at replay {at + 1}, drawn for {ReplayEdits.AddReplay(group)}");
                 }
 
                 foreach (ReplayEditDraw e in edits.Where(e => e.Record.Edit != ReplayEdit.Add))
@@ -325,6 +327,127 @@ namespace Teleop.Eval.Tests.JointDrive
             }
 
             Assert.Fail("no layout has two objects an add may move");
+        }
+
+        [Fact]
+        public void EveryEdit_ChangesWhatTheModelSaysTheTakeTouches_AndNoneIsFarFromThePath()
+        {
+            // docs/adr/0038 "M, motion" (the 2026-11-23 review: a group whose removal and move left the same stand contact both times): what the
+            // arm touched or came within 1 cm of is removed or moved off the path, what it passed within 5 cm of is moved onto it, nothing
+            // farther is edited.
+            (WorldScene scene, ObjectShapes? shapes) = Mixed_.Value;
+            int edits = 0, onto = 0, off = 0;
+            for (ulong layout = 1; layout <= 16; layout++)
+            {
+                SafetyObject[] objects = MixedTakeTests.MixedLayout(layout);
+                if (!MixedTakeTests.TryMixed(objects, 90 + layout, out DrivePlan? plan, out _)) continue;
+                ReplayAdd add = AddFor(plan!, ParkedOf(scene, layout));
+                var near = new PathProximity(Profile, Model, add.Track, objects, 2);
+                var used = new HashSet<string>();
+                for (int replay = 1; replay <= 3; replay++)
+                {
+                    ReplayEditDraw e = ReplayEdits.Draw(1500 + layout, replay, 0, plan!, objects, scene, new HashSet<byte>(), Profile, used, null, add, near);
+                    if (e.Pose.Id == 0)
+                    {
+                        Assert.False(string.IsNullOrEmpty(e.Note), "no edit says why");
+                        break;
+                    }
+
+                    used.Add(ReplayEdits.Key(e.Record));
+                    edits++;
+                    if (e.Record.Edit == ReplayEdit.Add) continue;
+                    int i = Array.FindIndex(objects, o => o.Id == e.Record.ObjectId);
+                    Assert.True(near.Touched(i) || near.Near(i), $"layout {layout}: {ReplayCodec.Describe(e.Record)} edits an object {near.Gap(i) * 1000:0} mm from the path");
+                    if (e.Record.Edit == ReplayEdit.Remove)
+                    {
+                        Assert.True(near.Touched(i), $"layout {layout}: {ReplayCodec.Describe(e.Record)} removes what the arm did not come within 1 cm of");
+                        continue;
+                    }
+
+                    float after = PathProximity.GapOver(near.Arm, add.Track, e.After!.Value, 2, out _);
+                    if (near.Touched(i))
+                    {
+                        off++;
+                        Assert.True(after >= ReplayEdits.ClearMeters, $"layout {layout}: {ReplayCodec.Describe(e.Record)} leaves it {after * 1000:0} mm from the path");
+                    }
+                    else
+                    {
+                        onto++;
+                        Assert.True(after <= -ReplayEdits.MeetMeters, $"layout {layout}: {ReplayCodec.Describe(e.Record)} leaves it {after * 1000:0} mm from the path");
+                    }
+
+                    Assert.True(ReplayEdits.KeepsQuiet(plan!, e.After.Value, Profile, Model, new MixedOptions()));
+                }
+            }
+
+            Assert.True(edits >= 12, $"{edits} edits ({off} off the path, {onto} onto it)");
+        }
+
+        [Fact]
+        public void AGroupWithNothingNearItsPath_GetsItsAddAtTheFirstReplay_AndATiltedObjectOnAStandIsHeld()
+        {
+            (WorldScene scene, ObjectShapes? shapes) = Mixed_.Value;
+            for (ulong layout = 1; layout <= 40; layout++)
+            {
+                // Only what is far from the path stays (none of it can be edited), so the add's replay may be either.
+                SafetyObject[] all = MixedTakeTests.MixedLayout(layout);
+                if (!MixedTakeTests.TryMixed(all, 120 + layout, out DrivePlan? plan, out _)) continue;
+                ReplayAdd add = AddFor(plan!, ParkedOf(scene, layout));
+                var whole = new PathProximity(Profile, Model, add.Track, all, 2);
+                SafetyObject[] objects = all.Where((o, i) => o.Scenery || float.IsPositiveInfinity(whole.Gap(i))).ToArray();
+                ulong group = Enumerable.Range(1, 40).Select(g => (ulong)g).First(g => ReplayEdits.AddReplay(g) == 2);
+                ReplayEditDraw first = ReplayEdits.Draw(group, 1, 0, plan!, objects, scene, new HashSet<byte>(), Profile, new HashSet<string>(), null, add);
+                if (first.Pose.Id == 0)
+                {
+                    Assert.StartsWith("nothing near the path", first.Note);
+                    Assert.StartsWith("no add", first.AddNote);
+                    continue;
+                }
+
+                Assert.Equal(ReplayEdit.Add, first.Record.Edit);
+                ReplayEditDraw second = ReplayEdits.Draw(group, 2, 0, plan!, objects, scene, new HashSet<byte>(), Profile, new HashSet<string> { ReplayEdits.Key(first.Record) }, null, add);
+                Assert.NotEqual(ReplayEdit.Add, second.Record.Edit); // one add a group
+                break;
+            }
+
+            // The twin check's elephant lying on a stand: its box's bottom 1.5 cm below the stand's top, yet it rests there.
+            var stand = new SafetyObject(75, new Vector3(-0.1007f, -0.3224f, -0.1587f), Quaternion.Identity, new Vector3(0.0625f, 0.0625f, 0.0375f), false);
+            var lying = new SafetyObject(52, new Vector3(-0.1151f, -0.3261f, -0.0938f), Quaternion.Identity, new Vector3(0.05f, 0.03f, 0.0425f));
+            Assert.True(ReplayEdits.Holds(new[] { stand, lying }, 0));
+            Assert.False(ReplayEdits.Holds(new[] { stand, lying }, 1));
+            // An object on the table beside a stand is not on it.
+            var beside = new SafetyObject(38, new Vector3(-0.05f, -0.3224f, -0.1700f), Quaternion.Identity, new Vector3(0.03f, 0.03f, 0.0262f));
+            Assert.False(ReplayEdits.Holds(new[] { stand, beside }, 0));
+        }
+
+        [Fact]
+        public void APathsProximity_MeasuresTheArmAsTheTwinsLinksAre()
+        {
+            DrivePlan plan = MixedTakeTests.AnyMixed(MixedTakeTests.MixedLayout(2), 7);
+            List<TrackPoint> track = ReplayAdd.Commanded(plan);
+            var arm = new ArmTouch(Profile, Model);
+            TrackPoint p = track[track.Count / 2];
+            Vector3 tool = arm.At(p.Pose, p.Gripper).Tool;
+            // A box at the tool point is touched; moved straight up from there by 3 cm past its half height plus the pads' reach, it is clear, and
+            // the gap grows as it goes.
+            var at = new SafetyObject(201, tool, Quaternion.Identity, new Vector3(0.01f));
+            Assert.True(arm.Touches(at));
+            Assert.True(arm.Gap(at) < 0f);
+            float last = float.NegativeInfinity;
+            foreach (float up in new[] { 0.10f, 0.12f, 0.14f })
+            {
+                var above = new SafetyObject(202, tool + new Vector3(0f, 0f, up + 0.20f), Quaternion.Identity, new Vector3(0.01f));
+                float g = arm.Gap(above, 0.5f);
+                Assert.True(g >= last, $"{g} after {last}");
+                last = g;
+            }
+
+            var far = new SafetyObject(203, new Vector3(-0.3f, 0.6f, -0.17f), Quaternion.Identity, new Vector3(0.02f));
+            Assert.True(float.IsPositiveInfinity(arm.Gap(far)));
+            var near = new PathProximity(Profile, Model, track, new[] { at, far }, 1);
+            Assert.True(near.Contact(0) && near.Touched(0) && !near.Near(0));
+            Assert.False(near.Touched(1) || near.Near(1));
+            Assert.Equal(track.Count / 2, near.ClosestAt(0), 30);
         }
 
         [Fact]

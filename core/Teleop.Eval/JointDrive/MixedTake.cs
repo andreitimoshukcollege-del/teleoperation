@@ -109,7 +109,7 @@ namespace Teleop.Eval.JointDrive
         /// it): low, mid and high, as aims meet objects (docs/adr/0038 "M, motion", the 2026-11-23 review: every blind goal low had the
         /// path's height telling a take that hits from one that does not; aims and free moves share one height distribution).
         /// </summary>
-        public static float[] DefaultToolBands() => new[] { -0.170f, -0.120f, 0.40f, -0.120f, -0.060f, 0.35f, -0.060f, 0.060f, 0.25f };
+        public static float[] DefaultToolBands() => new[] { -0.180f, -0.120f, 0.60f, -0.120f, -0.070f, 0.28f, -0.070f, 0.020f, 0.12f };
 
         /// <summary>The speed caps (docs/adr/0038 decision 1, item 29): <see cref="DefaultCaps"/> unless told otherwise; null for none.</summary>
         public MotionCaps? Caps { get; set; } = DefaultCaps();
@@ -1000,8 +1000,12 @@ namespace Teleop.Eval.JointDrive
             {
                 // The end: where the gap first comes to the drawn offset (beyond what the model measures clear, extrapolated back
                 // along the approach); a part of a step for the rest.
-                float deepest = DeepestGap(oi);
-                offset = (float)Draw.Uniform(ref _rng, Math.Max(_options.OffsetMinMeters, -(deepest - 0.0005f)), _options.OffsetMaxMeters);
+                float deepest = DeepestGap(oi), lo = Math.Max(_options.OffsetMinMeters, -(deepest - 0.0005f)), hi = _options.OffsetMaxMeters;
+                // A thin object (a plank, a rod, a small tin) is measured no deeper than its own half thickness: the range short of it shrinks
+                // in proportion (to 15 mm at least), so it is touched as often as a thick one (docs/adr/0038 "M, motion": 4 of 62 aims at planks
+                // touched them).
+                if (lo > _options.OffsetMinMeters && _options.OffsetMinMeters < 0f) hi = MathF.Max(MathF.Min(hi, 0.015f), hi * lo / _options.OffsetMinMeters);
+                offset = (float)Draw.Uniform(ref _rng, lo, hi);
                 if (!AimIndex(gaps, offset, out end, out f)) return Miss(2);
                 goal = Vector3.Lerp(wrists[end - 1], wrists[end], f);
                 near = _options.NearStartShare > 0 && Draw.Chance(ref _rng, _options.NearStartShare) && end >= 3;

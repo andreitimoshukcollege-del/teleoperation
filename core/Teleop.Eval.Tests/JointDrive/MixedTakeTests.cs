@@ -31,6 +31,30 @@ namespace Teleop.Eval.Tests.JointDrive
 
         private static SafetyObject[] LayoutOf(ulong seed) => Layout(Bench_.Value.Scene, Bench_.Value.Shapes, seed);
 
+        /// <summary>core/Scenes/jetrover-mixed.json (docs/adr/0038 decision 3) and its shapes: stands, planks on supports, rods, raised objects.</summary>
+        internal static readonly Lazy<(WorldScene Scene, ObjectShapes? Shapes)> MixedScene = new Lazy<(WorldScene, ObjectShapes?)>(() =>
+        {
+            string? dir = AppContext.BaseDirectory;
+            while (dir != null && !System.IO.File.Exists(System.IO.Path.Combine(dir, "core", "Scenes", "jetrover-mixed.json"))) dir = System.IO.Path.GetDirectoryName(dir);
+            Assert.NotNull(dir);
+            WorldScene scene = WorldView.LoadScene(System.IO.Path.Combine(dir!, "core", "Scenes", "jetrover-mixed.json"), out _);
+            return (scene, WorldView.ShapesOf(scene));
+        });
+
+        /// <summary>RobotHost's layout <paramref name="seed"/> of jetrover-mixed as joint-drive sees it on the twin (a distractor is scenery, as WorldView.TryObjects has it).</summary>
+        internal static SafetyObject[] MixedLayout(ulong seed)
+        {
+            (WorldScene scene, ObjectShapes? shapes) = MixedScene.Value;
+            var poses = new RigidTransform[scene.Objects.Length];
+            var parked = new bool[scene.Objects.Length];
+            var scales = new double[scene.Objects.Length];
+            SceneLayout.Draw(scene, seed, poses, parked, scales);
+            return scene.Objects.Select((o, i) => (o, i)).Where(x => !parked[x.i])
+                .Select(x => WorldView.Bounds(x.o, scales[x.i], poses[x.i].X, poses[x.i].Y, poses[x.i].Z, poses[x.i].Qw, poses[x.i].Qx, poses[x.i].Qy, poses[x.i].Qz, shapes,
+                    (x.o.Movable && scene.InEdgeRegions(poses[x.i].X, poses[x.i].Y)) || x.o.Role == SceneRole.Distractor))
+                .ToArray();
+        }
+
         internal static bool TryMixed(IReadOnlyList<SafetyObject> objects, ulong seed, out DrivePlan? plan, out string? error, MixedOptions? options = null, ArmPose? start = null) =>
             DrivePlan.TryBuild(DriveScript.Mixed, Profile, start ?? Model.Home, 3.8f, 15, seed, Envelope, out plan, out error, objects, mixedOptions: options);
 
@@ -261,7 +285,84 @@ namespace Teleop.Eval.Tests.JointDrive
             _output.WriteLine(report);
             Assert.True(blindPullBacks >= 3, report);
             Assert.True(objectMoves >= 8 && turned * 3 >= objectMoves, report);
-            Assert.True(lowBlind * 4 >= blindTransports * 3, report);
+            // Blind goals at every height (docs/adr/0038 "M, motion", the 2026-11-23 review), not all low: some go below 16 cm, not all.
+            Assert.True(lowBlind * 4 >= blindTransports && lowBlind < blindTransports, report);
+        }
+
+        [Fact]
+        public void OnTheMixedScene_NoAimIsAtAStandOrASupport_AimsAtARaisedObjectKeepOffItsStand_AndContactsComeAtEveryHeight()
+        {
+            // docs/adr/0038 "M, motion" (the 2026-11-23 review of the pilot dataset): the stands under raised objects took 18 of 41 contacts, no
+            // tall object or plank was hit, and the tool point sat about 14.5 cm below the base frame at contact.
+            (WorldScene scene, _) = MixedScene.Value;
+            var tool = new List<float>(); // the tool point at each planned contact, base frame z
+            int aims = 0, raisedAims = 0, tallOrPlank = 0, planned = 0;
+            var holderWalls = new Dictionary<int, int>();
+            Span<LinkFrame> frames = stackalloc LinkFrame[5];
+            for (ulong layout = 1; layout <= 30; layout++)
+            {
+                SafetyObject[] objects = MixedLayout(layout);
+                if (!TryMixed(objects, 3000 + layout, out DrivePlan? plan, out _)) continue;
+                planned++;
+                foreach (PlannedMove m in plan!.Moves.Where(m => m.ObjectId != 0))
+                {
+                    aims++;
+                    SafetyObject o = objects.First(x => x.Id == m.ObjectId);
+                    Assert.NotEqual(SceneRole.Stand, o.Role);
+                    Assert.NotEqual(SceneRole.Support, o.Role);
+                    if (o.Role == SceneRole.Plank || o.Max.Z - o.Min.Z >= 0.12f) tallOrPlank++;
+                    if (!double.IsNaN(m.Contact))
+                    {
+                        ArmCollision.ComputeFrames(Profile, plan.Sample(m.Contact), frames);
+                        tool.Add(frames[(int)ArmLink.Gripper].ToBase(MixedTake.ToolInGripper).Z);
+                    }
+
+                    // What holds a raised object up is kept 5 mm off (the model's bodies) from where the move starts to where it ends.
+                    SafetyObject[] stands = objects.Where(s => s.Id != o.Id && (s.Role == SceneRole.Stand || s.Role == SceneRole.Support) && s.Max.Z <= o.Min.Z + 0.015f
+                        && s.Max.Z >= o.Min.Z - 0.03f && s.Max.X > o.Min.X && s.Min.X < o.Max.X && s.Max.Y > o.Min.Y && s.Min.Y < o.Max.Y).ToArray();
+                    if (stands.Length == 0) continue;
+                    raisedAims++;
+                    ArmCollisionModel off = SafetyScript.WithObjects(Model, stands, MixedTake.HolderClearMeters - 0.0015f, 0f);
+                    for (double t = m.Start; t <= m.End; t += Tick) Assert.True(ArmCollision.IsValid(Profile, off, plan.Sample(t)), $"layout {layout}: {m} meets what holds it up at {t:0.00} s");
+                }
+            }
+
+            tool.Sort();
+            int high = tool.Count(z => z > -0.08f);
+            string report = FormattableString.Invariant($"{planned} planned, {aims} aims and passes ({raisedAims} at raised objects, {tallOrPlank} at tall ones or planks); ") +
+                            FormattableString.Invariant($"{tool.Count} planned contacts, tool point {tool.FirstOrDefault() * 100:0.0}..{tool.LastOrDefault() * 100:0.0} cm, {high} above -8 cm");
+            _output.WriteLine(report);
+            Assert.True(planned >= 27, report);
+            Assert.True(raisedAims >= 2 && tallOrPlank >= 4, report);
+            Assert.True(tool.Count >= 8 && high * 4 >= tool.Count, report); // contacts high as well as low
+        }
+
+        [Fact]
+        public void BlindGoals_AreDrawnByTheToolPointsHeight_AndTheBandsAreChecked()
+        {
+            SafetyObject[] objects = MixedLayout(4);
+            var options = new MixedOptions();
+            Assert.NotNull(options.Reach.ToolBands);
+            DrivePlan plan = AnyMixed(objects, 41, options);
+            // The tool point where blind moves to a goal end: spread over the bands, low, middle and high.
+            var ends = new List<float>();
+            Span<LinkFrame> frames = stackalloc LinkFrame[5];
+            for (ulong seed = 41; seed < 47; seed++)
+            {
+                if (!TryMixed(objects, seed, out DrivePlan? p, out _, options)) continue;
+                foreach (PlannedMove m in p!.Moves.Where(m => m.Part == MovePart.BlindTransport && m.End < p.TotalSeconds))
+                {
+                    ArmCollision.ComputeFrames(Profile, p.Sample(m.End), frames);
+                    ends.Add(frames[(int)ArmLink.Gripper].ToBase(MixedTake.ToolInGripper).Z);
+                }
+            }
+
+            int low = ends.Count(z => z < -0.12f), mid = ends.Count(z => z >= -0.12f && z < -0.06f), high = ends.Count(z => z >= -0.06f);
+            Assert.True(low >= 2 && mid >= 2 && high >= 2, $"blind goals' tool point: {low} low, {mid} middle, {high} high");
+            Assert.Throws<ArgumentException>(() => new MixedOptions { Reach = new BlindReach { ToolBands = new[] { -0.1f, -0.2f, 1f } } }.Validate());
+            Assert.Throws<ArgumentException>(() => new MixedOptions { Reach = new BlindReach { ToolBands = new[] { -0.1f, 0.0f } } }.Validate());
+            Assert.Throws<ArgumentException>(() => new MixedOptions { QuietReach = new BlindReach { ToolBands = new[] { -0.1f, 0.0f, 0f } } }.Validate());
+            Assert.Equal(options.Reach.ToolBands!.Length - 3, options.Reach.WithoutLow().ToolBands!.Length);
         }
 
         [Fact]

@@ -256,14 +256,15 @@ namespace Teleop.RobotArm.World
 
             /// <summary>
             /// A mixed pool's obstacle <paramref name="i"/> (docs/adr/0038) on the table at its size and rest: centred uniformly by area over
-            /// the arm's reachable band (<see cref="WorldScene.DrawObstacleSpot"/>), where it fits and keeps clear; false, leaving it
-            /// parked, when no try of <see cref="MaxPoolTries"/> finds one.
+            /// the arm's reachable band, a tall one over the working band when the pool has one
+            /// (<see cref="WorldScene.DrawObstacleSpot(int, ref SeededRng, out double, out double, out double)"/>), where it fits and keeps
+            /// clear; false, leaving it parked, when no try of <see cref="MaxPoolTries"/> finds one.
             /// </summary>
             public bool StandObstacle(int i, double scale, int rest, ref SeededRng rng)
             {
                 for (int t = 0; t < MaxPoolTries; t++)
                 {
-                    _scene.DrawObstacleSpot(ref rng, out double x, out double y, out double yaw);
+                    _scene.DrawObstacleSpot(i, ref rng, out double x, out double y, out double yaw);
                     double z = _scene.RestingZ(i, scale, rest);
                     if (!_scene.FitsOnTable(i, x, y, yaw, scale, rest) || !ClearAt(i, x, y, z, yaw, scale, rest)) continue;
                     AddAt(i, x, y, z, yaw, scale, rest);
@@ -308,7 +309,7 @@ namespace Teleop.RobotArm.World
                 double standZ = _scene.RestingZ(k, standScale, WorldScene.RestUpright), z = _scene.Table.Top + kz * standScale + ez * scale / 2;
                 for (int t = 0; t < MaxPoolTries; t++)
                 {
-                    _scene.DrawObstacleSpot(ref rng, out double x, out double y, out double yaw);
+                    _scene.DrawObstacleSpot(i, ref rng, out double x, out double y, out double yaw); // where the object stands: a tall one in the work band
                     if (!_scene.FitsOnTable(k, x, y, yaw, standScale, WorldScene.RestUpright) || !ClearAt(k, x, y, standZ, yaw, standScale, WorldScene.RestUpright)) continue;
                     double c = Math.Cos(yaw), s = Math.Sin(yaw);
                     double px = x + offX * c - offY * s, py = y + offX * s + offY * c, pyaw = yaw + (turned ? Math.PI / 2 : 0);
@@ -338,7 +339,7 @@ namespace Teleop.RobotArm.World
                 double legZ = _scene.RestingZ(a, supportScale, WorldScene.RestUpright), z = _scene.Table.Top + height + plank.SizeZ * plankScale / 2;
                 for (int t = 0; t < MaxPoolTries; t++)
                 {
-                    _scene.DrawObstacleSpot(ref rng, out double x, out double y, out double yaw);
+                    _scene.DrawObstacleSpot(p, ref rng, out double x, out double y, out double yaw);
                     double c = Math.Cos(yaw), s = Math.Sin(yaw);
                     double ax = x - off * c, ay = y - off * s, bx = x + off * c, by = y + off * s;
                     if (!_scene.FitsOnTable(p, x, y, yaw, plankScale, WorldScene.RestUpright) || !ClearAt(p, x, y, z, yaw, plankScale, WorldScene.RestUpright)) continue;
@@ -382,6 +383,11 @@ namespace Teleop.RobotArm.World
         /// the other overlaps). Then how many distractors (uniform in the range), which (a partial shuffle), and each one's size, rest
         /// and spot in the distractor regions. One that finds no spot is parked with its stand or supports. Returns how many obstacles
         /// and distractors found no spot.
+        /// <para>The scene's second pass (docs/adr/0038), each only for a pool that sets it (any other takes exactly the draws it took):
+        /// an obstacle object is one of the tall thin ones with <see cref="WorldScene.TallShare"/>, when one is free; tall ones and planks
+        /// are centred over the working band (<see cref="WorldScene.InWorkBand"/>); stands narrower than what they hold
+        /// (<see cref="WorldScene.StandTopMax"/>) hold it upright, its stand drawn before its rest; and a rig's underside height is drawn
+        /// over <see cref="WorldScene.RigUnderMin"/>-<see cref="WorldScene.RigUnderMax"/>.</para>
         /// </summary>
         private static int DrawMixed(WorldScene scene, ulong seed, Span<RigidTransform> poses, Span<bool> parked, Span<double> scales)
         {
@@ -424,16 +430,23 @@ namespace Teleop.RobotArm.World
                     continue;
                 }
 
-                int i = Take(ref rng, obstacles, ref freeObstacles);
+                // The scene's second pass (docs/adr/0038): with a tall share, one of the tall thin obstacles, when one is free (one more draw).
+                int tall = scene.TallShare > 0 ? CountTall(scene, obstacles, freeObstacles) : 0;
+                int i = tall > 0 && rng.NextDouble() < scene.TallShare ? TakeTall(scene, ref rng, obstacles, ref freeObstacles, tall) : Take(ref rng, obstacles, ref freeObstacles);
                 double scale = DrawScale(scene, i, ref rng);
-                int rest = scene.Objects[i].Movable && scene.LyingShare > 0 ? DrawRest(scene, i, scale, false, ref rng) : WorldScene.RestUpright;
-                int stand = -1;
+                bool movable = scene.Objects[i].Movable, narrow = scene.StandTopMax > 0;
+                int rest = WorldScene.RestUpright, stand = -1;
                 double standScale = 1.0;
                 bool turned = false;
-                if (scene.Objects[i].Movable && freeStands > 0 && scene.StandShare > 0 && rng.NextDouble() < scene.StandShare)
+                // A stand narrower than what it holds (the second pass) holds it upright, and never a tall thin one, which would topple off
+                // it: whether it is raised is drawn before its rest.
+                if (!narrow && movable && scene.LyingShare > 0) rest = DrawRest(scene, i, scale, false, ref rng);
+                if (movable && !(narrow && scene.IsTall(i)) && freeStands > 0 && scene.StandShare > 0 && rng.NextDouble() < scene.StandShare)
                 {
                     stand = ChooseStand(scene, i, scale, rest, stands, ref freeStands, ref rng, out standScale, out turned);
                 }
+
+                if (narrow && stand < 0 && movable && scene.LyingShare > 0) rest = DrawRest(scene, i, scale, false, ref rng);
 
                 bool stood = stand >= 0 ? standing.StandRaised(i, scale, rest, stand, standScale, turned, ref rng) : standing.StandObstacle(i, scale, rest, ref rng);
                 failed += stood ? 0 : 1;
@@ -462,6 +475,33 @@ namespace Teleop.RobotArm.World
             return item;
         }
 
+        /// <summary>How many of the first <paramref name="count"/> of <paramref name="free"/> are tall thin obstacles (<see cref="WorldScene.IsTall"/>).</summary>
+        private static int CountTall(WorldScene scene, Span<int> free, int count)
+        {
+            int n = 0;
+            for (int k = 0; k < count; k++) n += scene.IsTall(free[k]) ? 1 : 0;
+            return n;
+        }
+
+        /// <summary>
+        /// One of the <paramref name="tall"/> tall thin obstacles among the first <paramref name="count"/> of <paramref name="free"/>, uniform; it
+        /// leaves the free ones as <see cref="Take"/> does. One draw.
+        /// </summary>
+        private static int TakeTall(WorldScene scene, ref SeededRng rng, Span<int> free, ref int count, int tall)
+        {
+            int pick = Math.Min(tall - 1, (int)(rng.NextDouble() * tall));
+            for (int j = 0; j < count; j++)
+            {
+                if (!scene.IsTall(free[j]) || pick-- > 0) continue;
+                int item = free[j];
+                free[j] = free[count - 1];
+                count--;
+                return item;
+            }
+
+            throw new InvalidOperationException("no tall obstacle is free"); // tall counts those there are
+        }
+
         /// <summary>Object <paramref name="i"/>'s size a layout draws: one of its own steps, uniform (one draw), or 1 without them.</summary>
         private static double DrawScale(WorldScene scene, int i, ref SeededRng rng)
         {
@@ -472,7 +512,9 @@ namespace Teleop.RobotArm.World
 
         /// <summary>
         /// A plank's size and its supports' (docs/adr/0038), one draw: uniform among the pairs of their steps that leave a clear span of
-        /// at least <see cref="MinRigSpan"/> under it. False when no pair does.
+        /// at least <see cref="MinRigSpan"/> under it. With the pool's <see cref="WorldScene.RigUnderMax"/> (the second pass), two: its
+        /// underside's height uniform over that range, the supports' step nearest it, and the plank's uniform among those that leave the span.
+        /// False when no pair does.
         /// </summary>
         private static bool DrawRigSizes(WorldScene scene, int p, ref SeededRng rng, out double plankScale, out double supportScale)
         {
@@ -491,6 +533,43 @@ namespace Teleop.RobotArm.World
 
             plankScale = supportScale = 1.0;
             if (pairs == 0) return false;
+            if (scene.RigUnderMax > 0)
+            {
+                // The scene's second pass (docs/adr/0038): the underside's height uniform over the pool's range, within the heights the
+                // supports' steps give (one draw); the support step nearest it, then the plank's uniform among those that leave the gripper
+                // room under it (one more).
+                double lowest = double.MaxValue, highest = 0, legZ = scene.Objects[a].SizeZ;
+                for (int ss = slo; ss <= shi; ss++)
+                {
+                    if (PlankSteps(scene, p, a, legs, plo, phi, ss) == 0) continue;
+                    lowest = Math.Min(lowest, legZ * WorldScene.ScaleOfStep(ss));
+                    highest = Math.Max(highest, legZ * WorldScene.ScaleOfStep(ss));
+                }
+
+                double lo = Math.Max(scene.RigUnderMin, lowest), hi = Math.Min(scene.RigUnderMax, highest);
+                double want = lo <= hi ? lo + rng.NextDouble() * (hi - lo) : scene.RigUnderMin > highest ? highest : lowest;
+                int best = slo;
+                double gap = double.MaxValue;
+                for (int ss = slo; ss <= shi; ss++)
+                {
+                    double d = Math.Abs(legZ * WorldScene.ScaleOfStep(ss) - want);
+                    if (PlankSteps(scene, p, a, legs, plo, phi, ss) == 0 || d >= gap) continue;
+                    gap = d;
+                    best = ss;
+                }
+
+                int count = PlankSteps(scene, p, a, legs, plo, phi, best), k = Math.Min(count - 1, (int)(rng.NextDouble() * count));
+                for (int ps = plo; ps <= phi; ps++)
+                {
+                    if (Span(scene, p, a, legs, ps, best) < MinRigSpan || k-- > 0) continue;
+                    plankScale = WorldScene.ScaleOfStep(ps);
+                    supportScale = WorldScene.ScaleOfStep(best);
+                    return true;
+                }
+
+                return false;
+            }
+
             int pick = Math.Min(pairs - 1, (int)(rng.NextDouble() * pairs));
             for (int ps = plo; ps <= phi; ps++)
             {
@@ -505,6 +584,14 @@ namespace Teleop.RobotArm.World
             }
 
             return false;
+        }
+
+        /// <summary>How many of plank <paramref name="p"/>'s steps <paramref name="plo"/>-<paramref name="phi"/> leave the gripper room on supports like <paramref name="a"/> at step <paramref name="ss"/>.</summary>
+        private static int PlankSteps(WorldScene scene, int p, int a, int legs, int plo, int phi, int ss)
+        {
+            int n = 0;
+            for (int ps = plo; ps <= phi; ps++) n += Span(scene, p, a, legs, ps, ss) >= MinRigSpan ? 1 : 0;
+            return n;
         }
 
         /// <summary>The clear span under plank <paramref name="p"/> at step <paramref name="ps"/> on <paramref name="legs"/> supports like <paramref name="a"/> at step <paramref name="ss"/>.</summary>
@@ -558,10 +645,21 @@ namespace Teleop.RobotArm.World
             else lo = hi = 0;
         }
 
-        /// <summary>Whether stand <paramref name="k"/>'s top at <paramref name="step"/> holds a footprint <paramref name="ex"/> by <paramref name="ey"/>: 1 as it is, 2 turned a quarter, 3 both ways, 0 neither.</summary>
+        /// <summary>
+        /// Whether stand <paramref name="k"/>'s top at <paramref name="step"/> holds a footprint <paramref name="ex"/> by <paramref name="ey"/>: 1 as it
+        /// is, 2 turned a quarter, 3 both ways, 0 neither. With the pool's <see cref="WorldScene.StandTopMax"/> (docs/adr/0038, second pass), a top
+        /// whose sides are each between <see cref="WorldScene.StandTopMin"/> and that fraction of the footprint's narrower side, either way (3): the
+        /// object overhangs it all round.
+        /// </summary>
         private static int Holds(WorldScene scene, int k, int step, double ex, double ey)
         {
             double f = WorldScene.ScaleOfStep(step), sx = scene.Objects[k].SizeX * f, sy = scene.Objects[k].SizeY * f;
+            if (scene.StandTopMax > 0)
+            {
+                double narrower = Math.Min(ex, ey);
+                return Math.Min(sx, sy) >= scene.StandTopMin * narrower - 1e-12 && Math.Max(sx, sy) <= scene.StandTopMax * narrower + 1e-12 ? 3 : 0;
+            }
+
             return (ex <= sx + 1e-12 && ey <= sy + 1e-12 ? 1 : 0) | (ey <= sx + 1e-12 && ex <= sy + 1e-12 ? 2 : 0);
         }
 

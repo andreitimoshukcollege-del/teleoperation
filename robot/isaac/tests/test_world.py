@@ -463,7 +463,7 @@ def test_a_mixed_pool_raises_a_movable_object_only_on_a_stand_and_a_plank_anywhe
     s = scene.load(MIXED)
     m = WorldModel(s)
     idx = {o.name: i for i, o in enumerate(s.objects)}
-    stand, can, plank = idx["stand-block"], idx["tomato-soup-can"], idx["shelf-plank"]
+    stand, can, plank = idx["stand-post"], idx["tomato-soup-can"], idx["shelf-plank"]
     outcome, _, p = m.check(wire.CAUSE_LAYOUT, s.objects[stand].id, s.pose_at(stand, 0.25, 0.0, 0.3), no_arm)
     assert outcome == wire.APPLIED
     m.apply(stand, p)
@@ -478,7 +478,7 @@ def test_a_mixed_pool_raises_a_movable_object_only_on_a_stand_and_a_plank_anywhe
     high = at(0.32, 0.0, 0.0, s.table.top + 0.25 + s.objects[plank].size[2] / 2)  # x 0.17-0.47, over the stand and the can
     outcome, _, p = m.check(wire.CAUSE_LAYOUT, s.objects[plank].id, high, no_arm)
     assert outcome == wire.APPLIED and abs(p[2] - high[2]) < 1e-12
-    low = at(0.32, 0.0, 0.0, s.table.top + 0.03 + s.objects[plank].size[2] / 2)  # into the stand (6 cm tall)
+    low = at(0.32, 0.0, 0.0, s.table.top + 0.03 + s.objects[plank].size[2] / 2)  # into the stand (12 cm tall)
     outcome, _, _ = m.check(wire.CAUSE_LAYOUT, s.objects[plank].id, low, no_arm)
     assert outcome == wire.OVERLAPS_OBJECT
 
@@ -486,8 +486,8 @@ def test_a_mixed_pool_raises_a_movable_object_only_on_a_stand_and_a_plank_anywhe
 def test_a_mixed_pool_resizes_a_fixed_object_within_its_own_steps_only():
     s = scene.load(MIXED)
     m = WorldModel(s)
-    stand = next(i for i, o in enumerate(s.objects) if o.name == "stand-block")
-    lo, hi = s.objects[stand].steps  # -2 to 3: a resize step either side is one of the 12, but not its own
+    stand = next(i for i, o in enumerate(s.objects) if o.name == "stand-pillar")
+    lo, hi = s.objects[stand].steps  # -2 to 2: a resize step either side is one of the 12, but not its own
     for step, expected in ((lo, wire.APPLIED), (hi, wire.APPLIED), (hi + 1, wire.NOT_MOVABLE), (lo - 1, wire.NOT_MOVABLE), (-4, wire.INVALID_POSE)):
         outcome, _, _ = m.check_resize(s.objects[stand].id, 1.25 ** step, no_arm)
         assert outcome == expected, step

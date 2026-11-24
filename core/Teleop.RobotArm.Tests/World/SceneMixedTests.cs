@@ -64,9 +64,16 @@ namespace Teleop.RobotArm.Tests.World
             Assert.Equal((0, 3), (s.ObstacleMin, s.ObstacleMax));
             Assert.Equal((2, 6), (s.DistractorMin, s.DistractorMax));
             Assert.All(s.Objects, o => Assert.NotEqual(SceneRole.None, o.Role));
-            // At every yaw the arm reaches (its base turns 120 degrees either way), and to the reach of a low touch.
-            Assert.Equal(2.0944, s.ReachBearing, 4);
+            // Centred within 95 degrees of straight ahead (the second pass): joint-drive's IK meets nothing past 90 degrees from home, and
+            // the arm turned that way first reaches 105 (SceneMixedMeasureTests.IkReach); and to the reach of a low touch.
+            Assert.Equal(95 * Math.PI / 180, s.ReachBearing, 3);
             Assert.True(s.ReachMax < ArmReachAt1cm - 0.02, "an obstacle's near side within reach of a touch 1 cm up");
+            // The second pass (docs/adr/0038): tall thin obstacles more often, them and the planks in the working band, inside the obstacles'
+            // band and away from its edges; stands narrower than what they hold; rigs' heights over their range.
+            Assert.True(s.TallShare > 0 && s.Objects.Where((o, i) => s.IsTall(i)).Count() >= 2);
+            Assert.True(s.WorkMin > s.ReachMin && s.WorkMax < s.ReachMax && s.WorkBearing < s.ReachBearing, "the working band inside the obstacles'");
+            Assert.True(s.StandTopMin > 0 && s.StandTopMax < 1, "stands narrower than what they hold");
+            Assert.True(s.RigUnderMin > 0 && s.RigUnderMax > s.RigUnderMin);
             // Distractors beyond the farthest any collider of the arm comes, at any height.
             Assert.True(s.DistractorReach > ArmReach + 0.02, $"distractorReach {s.DistractorReach}");
             Assert.Contains(s.Objects, o => o.Role == SceneRole.Stand);
@@ -117,7 +124,7 @@ namespace Teleop.RobotArm.Tests.World
 
             Assert.Empty(Textures("jetrover-mixed").Intersect(Textures("jetrover-mixed-holdout")));
             // Heights the train family never draws: its overhangs 4.1-19.5 cm up, the held-out bench's 2.6-4 cm and its cantilever 19-24 cm;
-            // its stands 3.8-11.7 cm, the held-out ones 12-15 cm and a 3.5-5.5 cm riser; its tall thin things round, the held-out post square.
+            // its stands 5.1-15 cm, the held-out ones 17-21 cm and a 2.5-3.9 cm riser; its tall thin things round, the held-out post square.
             (double Lo, double Hi) Heights(WorldScene s, SceneRole role) => (
                 s.Objects.Where(o => o.Role == role).Min(o => o.SizeZ * WorldScene.ScaleOfStep(o.StepMin)),
                 s.Objects.Where(o => o.Role == role).Max(o => o.SizeZ * WorldScene.ScaleOfStep(o.StepMax)));
@@ -125,6 +132,7 @@ namespace Teleop.RobotArm.Tests.World
             Assert.True(Heights(Mixed, SceneRole.Support).Lo > Heights(Holdout, SceneRole.Support).Lo);
             Assert.True(Heights(Mixed, SceneRole.Support).Hi < Heights(Holdout, SceneRole.Support).Hi);
             Assert.True(Holdout.Objects.Any(o => o.Role == SceneRole.Stand && o.SizeZ * WorldScene.ScaleOfStep(o.StepMin) > Heights(Mixed, SceneRole.Stand).Hi));
+            Assert.True(Holdout.Objects.Any(o => o.Role == SceneRole.Stand && o.SizeZ * WorldScene.ScaleOfStep(o.StepMax) < Heights(Mixed, SceneRole.Stand).Lo));
             Assert.All(Mixed.Objects.Where(o => o.Role == SceneRole.Obstacle && o.SizeZ >= 0.15), o => Assert.Equal(SceneShape.Cylinder, o.Shape));
             Assert.Contains(Holdout.Objects, o => o.Role == SceneRole.Obstacle && o.Shape == SceneShape.Box && o.SizeZ >= 0.3);
         }
@@ -169,16 +177,22 @@ namespace Teleop.RobotArm.Tests.World
                             Assert.True(s.InDistractorRegions(p[i].X, p[i].Y));
                             break;
                         case SceneRole.Obstacle when raised:
-                            // On a stand that holds it, the stand where an obstacle stands.
+                            // On a stand that holds it, the stand where an obstacle stands; upright, never a tall thin one, and overhanging a
+                            // stand narrower than it all round (the second pass).
                             units++;
-                            Assert.True(o.Movable, $"{name} seed {seed}: fixed {o.Name} raised");
-                            Assert.Contains(Enumerable.Range(0, p.Length), k => !parked[k] && s.HoldsOnTop(k, p[k].X, p[k].Y, p[k].Z, YawOf(p[k]),
+                            Assert.True(o.Movable && !s.IsTall(i) && rest == WorldScene.RestUpright, $"{name} seed {seed}: {o.Name} raised on rest {rest}");
+                            int holder = Enumerable.Range(0, p.Length).Single(k => !parked[k] && s.HoldsOnTop(k, p[k].X, p[k].Y, p[k].Z, YawOf(p[k]),
                                 scales[k], WorldScene.RestUpright, i, p[i].X, p[i].Y, p[i].Z, scales[i], rest));
+                            double narrower = Math.Min(o.SizeX, o.SizeY) * scales[i];
+                            double side = Math.Min(s.Objects[holder].SizeX, s.Objects[holder].SizeY) * scales[holder], wide = Math.Max(s.Objects[holder].SizeX, s.Objects[holder].SizeY) * scales[holder];
+                            Assert.InRange(side, s.StandTopMin * narrower - 1e-9, wide);
+                            Assert.InRange(wide, side, s.StandTopMax * narrower + 1e-9);
+                            Assert.True(Math.Abs(p[i].X - p[holder].X) < 1e-9 && Math.Abs(p[i].Y - p[holder].Y) < 1e-9, $"{name} seed {seed}: {o.Name} off its stand's middle");
                             break;
                         case SceneRole.Obstacle:
                             units++;
-                            Assert.InRange(r, s.ReachMin - 1e-9, s.ReachMax + 1e-9);
-                            Assert.InRange(bearing, 0, s.ReachBearing + 1e-9);
+                            Assert.InRange(r, (s.InWorkBand(i) ? s.WorkMin : s.ReachMin) - 1e-9, (s.InWorkBand(i) ? s.WorkMax : s.ReachMax) + 1e-9);
+                            Assert.InRange(bearing, 0, (s.InWorkBand(i) ? s.WorkBearing : s.ReachBearing) + 1e-9);
                             Assert.Equal(s.RestingZ(i, scales[i], rest), p[i].Z, 9);
                             break;
                         case SceneRole.Stand:
@@ -189,10 +203,10 @@ namespace Teleop.RobotArm.Tests.World
                                 scales[k], WorldScene.RestOf(p[k])));
                             break;
                         case SceneRole.Plank:
-                            // Centred as an obstacle is, its underside on its supports' tops, they under its ends, the gripper's room between.
+                            // Centred over the working band, its underside on its supports' tops, they under its ends, the gripper's room between.
                             units++;
-                            Assert.InRange(r, s.ReachMin - 1e-9, s.ReachMax + 1e-9);
-                            Assert.InRange(bearing, 0, s.ReachBearing + 1e-9);
+                            Assert.InRange(r, s.WorkMin - 1e-9, s.WorkMax + 1e-9);
+                            Assert.InRange(bearing, 0, s.WorkBearing + 1e-9);
                             Assert.True(raised, $"{name} seed {seed}: {o.Name} on the table");
                             double c = Math.Cos(yaw), sn = Math.Sin(yaw);
                             foreach (byte id in o.SupportIds)
@@ -242,13 +256,14 @@ namespace Teleop.RobotArm.Tests.World
         public void AStandHoldsWhatSitsOnItsTop_AndNothingOneAboveTheOtherOverlaps()
         {
             WorldScene s = Mixed;
-            int stand = Array.FindIndex(s.Objects, o => o.Name == "stand-block"), can = Array.FindIndex(s.Objects, o => o.Name == "tomato-soup-can");
+            int stand = Array.FindIndex(s.Objects, o => o.Name == "stand-post"), can = Array.FindIndex(s.Objects, o => o.Name == "tomato-soup-can");
             int plank = Array.FindIndex(s.Objects, o => o.Name == "shelf-plank"), leg = Array.FindIndex(s.Objects, o => o.Name == "shelf-leg-a");
             double standZ = s.RestingZ(stand, 1.0, 0), top = s.Table.Top + s.Objects[stand].SizeZ, canZ = top + s.Objects[can].SizeZ / 2;
             Assert.True(s.HoldsOnTop(stand, 0.25, 0.0, standZ, 0.3, 1.0, 0, can, 0.26, 0.01, canZ, 1.0, 0));
             Assert.True(s.HoldsOnTop(stand, 0.25, 0.0, standZ, 0.3, 1.0, 0, can, 0.25, 0.0, canZ + 0.0019, 1.0, 0)); // within 2 mm
             Assert.False(s.HoldsOnTop(stand, 0.25, 0.0, standZ, 0.3, 1.0, 0, can, 0.25, 0.0, canZ + 0.0025, 1.0, 0)); // floating
-            Assert.False(s.HoldsOnTop(stand, 0.25, 0.0, standZ, 0.0, 1.0, 0, can, 0.25 + 0.051, 0.0, canZ, 1.0, 0)); // past its edge
+            Assert.True(s.HoldsOnTop(stand, 0.25, 0.0, standZ, 0.0, 1.0, 0, can, 0.25 + s.Objects[stand].SizeX / 2 - 0.001, 0.0, canZ, 1.0, 0)); // over its edge
+            Assert.False(s.HoldsOnTop(stand, 0.25, 0.0, standZ, 0.0, 1.0, 0, can, 0.25 + s.Objects[stand].SizeX / 2 + 0.001, 0.0, canZ, 1.0, 0)); // past it
             Assert.False(s.HoldsOnTop(can, 0.25, 0.0, standZ, 0.0, 1.0, 0, stand, 0.25, 0.0, canZ, 1.0, 0)); // only a stand holds
             Assert.False(s.OverlapsAtHeights(stand, 0.25, 0.0, standZ, 0.3, can, 0.25, 0.0, canZ, 0.3, 1.0, 1.0, 0, 0));
             Assert.True(s.OverlapsAtHeights(stand, 0.25, 0.0, standZ, 0.3, can, 0.25, 0.0, canZ - 0.002, 0.3, 1.0, 1.0, 0, 0)); // 2 mm into it
@@ -373,7 +388,7 @@ namespace Teleop.RobotArm.Tests.World
             var placedEver = new bool[s.Objects.Length];
             var centres = new List<(int Layout, double X, double Y)>();
             var tops = new List<double>();
-            int units = 0, distractors = 0, missed = 0, raised = 0, rigs = 0, inner = 0, side = 0;
+            int units = 0, distractors = 0, missed = 0, raised = 0, rigs = 0, inner = 0, side = 0, band = 0;
             double mid = Math.Sqrt((s.ReachMin * s.ReachMin + s.ReachMax * s.ReachMax) / 2); // half the band's area inside it
             for (ulong seed = 1; seed <= (ulong)layouts; seed++)
             {
@@ -395,9 +410,13 @@ namespace Teleop.RobotArm.Tests.World
                     else if (up) raised++;
                     tops.Add(p[i].Z + ez * scales[i] / 2 - s.Table.Top);
                     double r = Math.Sqrt(p[i].X * p[i].X + p[i].Y * p[i].Y);
-                    // The stand's centre for a raised object (its offset aside), the plank's own.
-                    inner += r < mid ? 1 : 0;
-                    side += Math.Abs(Math.Atan2(p[i].Y, p[i].X)) > Math.PI / 3 ? 1 : 0;
+                    // Those centred over the obstacles' band (a raised one where its stand is): a tall one and a plank go to the working band.
+                    if (!s.InWorkBand(i))
+                    {
+                        band++;
+                        inner += r < mid ? 1 : 0;
+                        side += Math.Abs(Math.Atan2(p[i].Y, p[i].X)) > Math.PI / 3 ? 1 : 0;
+                    }
                     if (seed <= 1000) centres.Add(((int)seed, p[i].X, p[i].Y));
                 }
 
@@ -412,8 +431,8 @@ namespace Teleop.RobotArm.Tests.World
             m.MissedPerLayout = (double)missed / layouts;
             m.RaisedShare = (double)raised / units;
             m.RigShare = (double)rigs / units;
-            m.InnerShare = (double)inner / units;
-            m.SideShare = (double)side / units;
+            m.InnerShare = (double)inner / band;
+            m.SideShare = (double)side / band;
             m.NeverPlaced = placedEver.Count(x => !x);
             // The area inside the middle radius of the part of the band where an obstacle can stand: estimated over the same disc
             // sector the draw samples, kept where the first scan's footprint fits (the robot's keep-out and the surfaces cut it).
@@ -515,17 +534,19 @@ namespace Teleop.RobotArm.Tests.World
             sb.Append("{\n \"about\": \"docs/adr/0038 decision 3: the rules of core/Scenes/jetrover-mixed.json, a mixed pool, written by SceneMixedTests (just gen-isaac-goldens). ");
             sb.Append("objects: name, role, steps (min, max, or empty), supports (ids). fits: index, rest, scale, x, y, yaw, FitsOnTable at the yaw, FitsOnTable without one. ");
             sb.Append("overlaps: a, x, y, z, yaw, rest, scale, b, x, y, z, yaw, rest, scale, OverlapsAtHeights. holds: stand, x, y, z, yaw, scale, object, x, y, z, rest, scale, HoldsOnTop. ");
-            sb.Append("elevated: index, rest, scale, z, RestingZ, IsElevated.\",\n");
+            sb.Append("elevated: index, rest, scale, z, RestingZ, IsElevated. pool: obstacleMin, obstacleMax, distractorMin, distractorMax, reachMin, reachMax, reachBearing, ");
+            sb.Append("standShare, rigShare, distractorReach, then the second pass's tallShare, workMin, workMax, workBearing, standTopMin, standTopMax, rigUnderMin, rigUnderMax; ");
+            sb.Append("each object's fifth column is 1 for a tall thin obstacle (IsTall).\",\n");
             sb.Append($" \"scene\": \"{s.Name}\",\n");
             sb.Append($" \"sha256\": \"{Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant()}\",\n");
-            sb.Append($" \"pool\": {Row(s.ObstacleMin, s.ObstacleMax, s.DistractorMin, s.DistractorMax, s.ReachMin, s.ReachMax, s.ReachBearing, s.StandShare, s.RigShare, s.DistractorReach)},\n");
+            sb.Append($" \"pool\": {Row(s.ObstacleMin, s.ObstacleMax, s.DistractorMin, s.DistractorMax, s.ReachMin, s.ReachMax, s.ReachBearing, s.StandShare, s.RigShare, s.DistractorReach, s.TallShare, s.WorkMin, s.WorkMax, s.WorkBearing, s.StandTopMin, s.StandTopMax, s.RigUnderMin, s.RigUnderMax)},\n");
             sb.Append($" \"distractorRegions\": {Row(s.DistractorRegions)},\n");
             sb.Append(" \"objects\": [\n");
             for (int i = 0; i < s.Objects.Length; i++)
             {
                 SceneObject o = s.Objects[i];
                 string steps = o.HasSteps ? Row(o.StepMin, o.StepMax) : "[]";
-                sb.Append($"  [\"{o.Name}\", \"{o.Role.ToString().ToLowerInvariant()}\", {steps}, {Row(o.SupportIds.Select(b => (double)b).ToArray())}]{(i < s.Objects.Length - 1 ? "," : "")}\n");
+                sb.Append($"  [\"{o.Name}\", \"{o.Role.ToString().ToLowerInvariant()}\", {steps}, {Row(o.SupportIds.Select(b => (double)b).ToArray())}, {(s.IsTall(i) ? 1 : 0)}]{(i < s.Objects.Length - 1 ? "," : "")}\n");
             }
 
             sb.Append(" ],\n");

@@ -149,13 +149,17 @@ def test_a_mixed_pools_rules_are_cores():
         assert hashlib.sha256(f.read()).hexdigest() == g["sha256"], "the scene changed: run `just gen-isaac-goldens`"
     s = scene.load(path)
     assert s.mixed and s.is_pool
-    omin, omax, dmin, dmax, _, _, bearing, stand, rig, far = g["pool"]
+    omin, omax, dmin, dmax, _, _, bearing, stand, rig, far, *second = g["pool"]
     assert (s.obstacles, s.distractors) == ((int(omin), int(omax)), (int(dmin), int(dmax)))
     assert [s.reach_bearing, s.stand_share, s.rig_share, s.distractor_reach] == pytest.approx([bearing, stand, rig, far], abs=1e-12)
+    # docs/adr/0038, the scene's second pass: the tall share, the working band, the stands' tops and the rigs' heights, read alike.
+    assert [s.tall_share, *s.work_band, *s.stand_top, *s.rig_under] == pytest.approx(second, abs=1e-12)
     assert list(s.distractor_regions) == pytest.approx(g["distractorRegions"], abs=1e-12)
     assert len(s.objects) == len(g["objects"])
-    for o, (name, role, steps, supports) in zip(s.objects, g["objects"]):
+    for i, (o, (name, role, steps, supports, tall)) in enumerate(zip(s.objects, g["objects"])):
         assert (o.name, o.role, list(o.steps), list(o.supports)) == (name, role, [int(v) for v in steps], [int(v) for v in supports])
+        assert s.is_tall(i) == bool(tall), o.name
+    assert sum(r[4] for r in g["objects"]) >= 2  # the rod and the dowel
     for column in (6, 7):  # both answers are pinned, with a yaw and without
         assert sum(r[column] for r in g["fits"]) > 20 and sum(1 - r[column] for r in g["fits"]) > 20
     for i, rest, scale, x, y, yaw, fits_yaw, fits in g["fits"]:

@@ -253,8 +253,17 @@ namespace Teleop.RobotArm.World
             double knockMaxMass, double[] fixedRegions, double[] robotKeepOut, double fixedNearMax,
             double clusterShare, double lyingShare, double[] edgeRegions, double edgeShare, int clutterMin, int clutterMax,
             int obstacleMin, int obstacleMax, double reachBearing, double standShare, double rigShare, int distractorMin, int distractorMax,
-            double[] distractorRegions, double distractorReach)
+            double[] distractorRegions, double distractorReach, double tallShare, double workMin, double workMax, double workBearing,
+            double standTopMin, double standTopMax, double rigUnderMin, double rigUnderMax)
         {
+            TallShare = tallShare;
+            WorkMin = workMin;
+            WorkMax = workMax;
+            WorkBearing = workBearing;
+            StandTopMin = standTopMin;
+            StandTopMax = standTopMax;
+            RigUnderMin = rigUnderMin;
+            RigUnderMax = rigUnderMax;
             ObstacleMin = obstacleMin;
             ObstacleMax = obstacleMax;
             ReachBearing = reachBearing;
@@ -336,6 +345,40 @@ namespace Teleop.RobotArm.World
 
         /// <summary>The nearest a distractor's footprint comes to the base's yaw axis, m: beyond every arm pose's reach.</summary>
         public double DistractorReach { get; }
+
+        /// <summary>
+        /// An obstacle at least this tall at its file size, m, is one of a mixed pool's tall thin kinds (docs/adr/0038, the scene's second
+        /// pass): a rod, a dowel, a post, a slat. joint-drive's <c>SafetyScript.TallObjectMeters</c> is the same height.
+        /// </summary>
+        public const double TallHeight = 0.15;
+
+        /// <summary>The chance that an obstacle that is not a plank is a tall one, when one is free (docs/adr/0038, second pass); 0: none drawn so.</summary>
+        public double TallShare { get; }
+
+        /// <summary>
+        /// The arm's working band (docs/adr/0038, second pass): tall obstacles and planks are centred <see cref="WorkMin"/>-<see cref="WorkMax"/> m
+        /// from the base's axis within <see cref="WorkBearing"/> rad of straight ahead. All 0: the obstacles' band.
+        /// </summary>
+        public double WorkMin { get; }
+        public double WorkMax { get; }
+        public double WorkBearing { get; }
+
+        /// <summary>
+        /// A stand's top sides as fractions of the narrower side of the object it holds (docs/adr/0038, second pass): above 0, a stand is
+        /// narrower than its object, which overhangs it and stands upright on it; 0: a stand's top holds the whole footprint.
+        /// </summary>
+        public double StandTopMin { get; }
+        public double StandTopMax { get; }
+
+        /// <summary>The range a rig's underside height is drawn from, uniform, m (docs/adr/0038, second pass); 0, 0: its steps' pairs, uniform.</summary>
+        public double RigUnderMin { get; }
+        public double RigUnderMax { get; }
+
+        /// <summary>Whether object <paramref name="index"/> is one of a mixed pool's tall thin obstacles (<see cref="TallHeight"/> or taller at its file size).</summary>
+        public bool IsTall(int index) => Objects[index].Role == SceneRole.Obstacle && Objects[index].SizeZ >= TallHeight - 1e-12;
+
+        /// <summary>Whether a layout centres object <paramref name="index"/> in the working band: a tall obstacle or a plank, when the pool has one.</summary>
+        public bool InWorkBand(int index) => WorkMax > 0 && (IsTall(index) || Objects[index].Role == SceneRole.Plank);
 
         private readonly bool _anySteps;
 
@@ -1026,6 +1069,26 @@ namespace Teleop.RobotArm.World
         }
 
         /// <summary>
+        /// As <see cref="DrawObstacleSpot(ref Teleop.Core.Types.SeededRng, out double, out double, out double)"/>, for object
+        /// <paramref name="index"/> (docs/adr/0038, second pass): a tall obstacle or a plank uniform by area over the working band when the
+        /// pool has one (<see cref="InWorkBand"/>), anything else over the obstacles' band; three draws either way.
+        /// </summary>
+        public void DrawObstacleSpot(int index, ref Teleop.Core.Types.SeededRng rng, out double x, out double y, out double yaw)
+        {
+            if (!InWorkBand(index))
+            {
+                DrawObstacleSpot(ref rng, out x, out y, out yaw);
+                return;
+            }
+
+            double r = Math.Sqrt(WorkMin * WorkMin + rng.NextDouble() * (WorkMax * WorkMax - WorkMin * WorkMin));
+            double bearing = (2 * rng.NextDouble() - 1) * WorkBearing;
+            x = r * Math.Cos(bearing);
+            y = r * Math.Sin(bearing);
+            yaw = (2 * rng.NextDouble() - 1) * Math.PI;
+        }
+
+        /// <summary>
         /// A random centre for a distractor (docs/adr/0038): one of <see cref="DistractorRegions"/> by its area, x and y uniform in it,
         /// and a yaw uniform; four draws. Whether it fits and keeps clear is the caller's to check.
         /// </summary>
@@ -1354,6 +1417,32 @@ namespace Teleop.RobotArm.World
             if (pool.obstacleMax > 0 && !(pool.reachMax > 0 && pool.reachBearing > 0)) throw Bad("pool", "obstacles need reachMin, reachMax and reachBearing");
             double standShare = MixedShare(pool.standShare, "standShare", mixed);
             double rigShare = MixedShare(pool.rigShare, "rigShare", mixed);
+
+            // docs/adr/0038, the scene's second pass: tall obstacles more often, them and the planks in the arm's working band, stands narrower
+            // than what they hold, and rigs' heights uniform over a range. Checked in this order by robot/isaac's scene.py too.
+            double tallShare = MixedShare(pool.tallShare, "tallShare", mixed);
+            bool work = pool.workMin != 0 || pool.workMax != 0 || pool.workBearing != 0;
+            if (work && !mixed) throw Bad("pool", "a work band (workMin, workMax, workBearing) is only for a mixed pool");
+            if (work && !(Finite(pool.workMin, pool.workMax, pool.workBearing) && pool.workMin >= pool.reachMin && pool.workMin < pool.workMax &&
+                          pool.workMax <= pool.reachMax && pool.workBearing > 0 && pool.workBearing <= pool.reachBearing))
+            {
+                throw Bad("pool", "a work band lies within the obstacles' band: reachMin <= workMin < workMax <= reachMax and 0 < workBearing <= reachBearing");
+            }
+
+            bool narrow = pool.standTopMin != 0 || pool.standTopMax != 0;
+            if (narrow && !mixed) throw Bad("pool", "standTopMin and standTopMax are only for a mixed pool");
+            if (narrow && !(Finite(pool.standTopMin, pool.standTopMax) && pool.standTopMin > 0 && pool.standTopMin <= pool.standTopMax && pool.standTopMax <= 1))
+            {
+                throw Bad("pool", "standTopMin and standTopMax are both 0, or 0 < standTopMin <= standTopMax <= 1");
+            }
+
+            bool under = pool.rigUnderMin != 0 || pool.rigUnderMax != 0;
+            if (under && !mixed) throw Bad("pool", "rigUnderMin and rigUnderMax are only for a mixed pool");
+            if (under && !(Finite(pool.rigUnderMin, pool.rigUnderMax) && pool.rigUnderMin > 0 && pool.rigUnderMin < pool.rigUnderMax))
+            {
+                throw Bad("pool", "rigUnderMin and rigUnderMax are both 0, or 0 < rigUnderMin < rigUnderMax");
+            }
+
             double[] dr = pool.distractorRegions ?? Array.Empty<double>();
             if (dr.Length % 4 != 0) throw Bad("pool", "distractorRegions holds xMin, xMax, yMin, yMax for each rectangle");
             for (int k = 0; k < dr.Length; k += 4)
@@ -1425,7 +1514,8 @@ namespace Teleop.RobotArm.World
             var scene = new WorldScene(d.name, d.robotProfile, surfaces, table, bench, objects, p.xMin, p.xMax, p.yMin, p.yMax, p.clearance,
                 pool.movableMin, pool.movableMax, pool.fixedMin, pool.fixedMax, pool.sizeMin, pool.sizeMax, pool.reachMin, pool.reachMax,
                 pool.knockMaxMass, fr, ko, near, clusterShare, lyingShare, er, edgeShare, pool.clutterMin, pool.clutterMax,
-                pool.obstacleMin, pool.obstacleMax, pool.reachBearing, standShare, rigShare, pool.distractorMin, pool.distractorMax, dr, pool.distractorReach);
+                pool.obstacleMin, pool.obstacleMax, pool.reachBearing, standShare, rigShare, pool.distractorMin, pool.distractorMax, dr, pool.distractorReach,
+                tallShare, pool.workMin, pool.workMax, pool.workBearing, pool.standTopMin, pool.standTopMax, pool.rigUnderMin, pool.rigUnderMax);
             for (int i = 0; i < objects.Length; i++)
             {
                 SceneObject o = objects[i];

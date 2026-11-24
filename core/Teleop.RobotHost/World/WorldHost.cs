@@ -551,9 +551,10 @@ namespace Teleop.RobotHost.World
                 double x, y, yaw;
                 if (_scene.Mixed)
                 {
-                    // docs/adr/0038: an obstacle anywhere over the arm's reachable band, a distractor anywhere in its regions.
+                    // docs/adr/0038: an obstacle anywhere over the arm's reachable band (a tall one over the working band, when the pool
+                    // has one), a distractor anywhere in its regions.
                     if (o.Role == SceneRole.Distractor) _scene.DrawDistractorSpot(ref rng, out x, out y, out yaw);
-                    else _scene.DrawObstacleSpot(ref rng, out x, out y, out yaw);
+                    else _scene.DrawObstacleSpot(index, ref rng, out x, out y, out yaw);
                     double z = _scene.RestingZ(index, ScaleFor(index), rest);
                     if (!_scene.FitsOnTable(index, x, y, yaw, ScaleFor(index), rest)) continue;
                     bool free = true;

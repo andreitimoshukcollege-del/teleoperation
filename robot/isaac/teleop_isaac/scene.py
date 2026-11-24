@@ -28,6 +28,7 @@ PARK_X, PARK_Z = 17.0, -5.0  # where a parked object rests (docs/adr/0037 decisi
 _NAME = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
 _ASSET = re.compile(r"^[a-z0-9_]{1,64}/[a-z0-9_]{1,64}$")
 ROLES = ("", "obstacle", "distractor", "stand", "plank", "support")  # docs/adr/0038 decision 3: a mixed pool's (Core's SceneRole)
+TALL_HEIGHT = 0.15  # m: an obstacle this tall at its file size is a tall thin one (a rod, a dowel, a post): Core's WorldScene.TallHeight
 
 # The rests (docs/adr/0037 amendment 6, Core's WorldScene.RestRotation): each a turn of the object's own frame before its yaw.
 # 0 upright (its +z up), 1 its +y up (+90 degrees about x), 2 its +x up (-90 degrees about y), 3 upside down, 4 its -y up,
@@ -215,6 +216,14 @@ class Scene:
     rig_share: float = 0.0
     distractor_regions: Tuple[float, ...] = ()
     distractor_reach: float = 0.0
+    # docs/adr/0038, the scene's second pass, for RobotHost's layouts: the chance an obstacle is a tall thin one, the working band tall ones
+    # and planks are centred in ((min, max) m from the base's axis, bearing rad), stands' tops as fractions of their object's narrower side
+    # ((min, max): narrower than it, which then stands upright on it), and the range a rig's underside height is drawn from ((min, max) m).
+    # All 0: as before. No rule here takes them; the placements they lead to keep every rule above.
+    tall_share: float = 0.0
+    work_band: Tuple[float, float, float] = (0.0, 0.0, 0.0)
+    stand_top: Tuple[float, float] = (0.0, 0.0)
+    rig_under: Tuple[float, float] = (0.0, 0.0)
 
     def clear_of_robot(self, x: float, y: float, r: float) -> bool:
         if len(self.robot_keep_out) != 4:
@@ -370,6 +379,11 @@ class Scene:
             return False
         return not _rects_apart(ax, ay, math.cos(yaw_a), math.sin(yaw_a), eax * scale_a / 2, eay * scale_a / 2,
                                 bx, by, math.cos(yaw_b), math.sin(yaw_b), ebx * scale_b / 2, eby * scale_b / 2, self.clearance)
+
+    def is_tall(self, index: int) -> bool:
+        """Whether object ``index`` is one of a mixed pool's tall thin obstacles (Core's ``WorldScene.IsTall``)."""
+        o = self.objects[index]
+        return o.role == "obstacle" and o.size[2] >= TALL_HEIGHT - 1e-12
 
     def in_distractor_regions(self, x: float, y: float) -> bool:
         d = self.distractor_regions
@@ -734,6 +748,28 @@ def parse(doc: Dict[str, Any]) -> Scene:
         raise _bad("pool", "obstacles need reachMin, reachMax and reachBearing")
     stand_share = _mixed_share(pd.get("standShare", 0.0), "standShare", mixed)
     rig_share = _mixed_share(pd.get("rigShare", 0.0), "rigShare", mixed)
+    # docs/adr/0038, the scene's second pass, in Core's order: tall obstacles more often, them and the planks in the arm's working band,
+    # stands narrower than what they hold, and rigs' heights uniform over a range.
+    tall_share = _mixed_share(pd.get("tallShare", 0.0), "tallShare", mixed)
+    work_band = tuple(pd.get(k, 0.0) for k in ("workMin", "workMax", "workBearing"))
+    work = any(v != 0 for v in work_band)
+    if work and not mixed:
+        raise _bad("pool", "a work band (workMin, workMax, workBearing) is only for a mixed pool")
+    if work and not (all(_finite(v) for v in work_band) and reach_min <= work_band[0] < work_band[1] <= reach_max
+                     and 0 < work_band[2] <= bearing):
+        raise _bad("pool", "a work band lies within the obstacles' band: reachMin <= workMin < workMax <= reachMax and 0 < workBearing <= reachBearing")
+    stand_top = (pd.get("standTopMin", 0.0), pd.get("standTopMax", 0.0))
+    narrow = any(v != 0 for v in stand_top)
+    if narrow and not mixed:
+        raise _bad("pool", "standTopMin and standTopMax are only for a mixed pool")
+    if narrow and not (all(_finite(v) for v in stand_top) and 0 < stand_top[0] <= stand_top[1] <= 1):
+        raise _bad("pool", "standTopMin and standTopMax are both 0, or 0 < standTopMin <= standTopMax <= 1")
+    rig_under = (pd.get("rigUnderMin", 0.0), pd.get("rigUnderMax", 0.0))
+    under = any(v != 0 for v in rig_under)
+    if under and not mixed:
+        raise _bad("pool", "rigUnderMin and rigUnderMax are only for a mixed pool")
+    if under and not (all(_finite(v) for v in rig_under) and 0 < rig_under[0] < rig_under[1]):
+        raise _bad("pool", "rigUnderMin and rigUnderMax are both 0, or 0 < rigUnderMin < rigUnderMax")
     dr = pd.get("distractorRegions", []) or []
     if not isinstance(dr, list) or len(dr) % 4 != 0:
         raise _bad("pool", "distractorRegions holds xMin, xMax, yMin, yMax for each rectangle")
@@ -795,7 +831,9 @@ def parse(doc: Dict[str, Any]) -> Scene:
                   edge_regions=tuple(float(v) for v in er), edge_share=edge_share, clutter=clutter_range,
                   obstacles=(mixed_counts[0], mixed_counts[1]), distractors=(mixed_counts[2], mixed_counts[3]),
                   reach_bearing=float(bearing), stand_share=stand_share, rig_share=rig_share,
-                  distractor_regions=tuple(float(v) for v in dr), distractor_reach=float(far))
+                  distractor_regions=tuple(float(v) for v in dr), distractor_reach=float(far), tall_share=tall_share,
+                  work_band=tuple(float(v) for v in work_band), stand_top=tuple(float(v) for v in stand_top),
+                  rig_under=tuple(float(v) for v in rig_under))
     for i, o in enumerate(objects):
         for sx in (-1, 0, 1):
             for sy in (-1, 0, 1):

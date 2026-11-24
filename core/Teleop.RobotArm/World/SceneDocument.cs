@@ -209,6 +209,38 @@ namespace Teleop.RobotArm.World
         /// <summary>docs/adr/0038: the chance, 0-1, that an obstacle is a plank on its supports, when one is free.</summary>
         public double rigShare;
 
+        /// <summary>
+        /// docs/adr/0038 (the scene's second pass): the chance, 0-1, that an obstacle that is not a plank is one of the tall thin ones
+        /// (<see cref="WorldScene.TallHeight"/> or taller at its file size: a rod, a dowel, a post), when one is free. 0: every obstacle
+        /// object uniform among those free, as before.
+        /// </summary>
+        public double tallShare;
+
+        /// <summary>
+        /// docs/adr/0038 (the scene's second pass): the arm's working band, inside the obstacles' band. Tall obstacles and planks are centred
+        /// <see cref="workMin"/>-<see cref="workMax"/> m from the base's axis within <see cref="workBearing"/> rad of straight ahead, where the
+        /// arm reaches them at every height, not at the band's edges. All 0: the obstacles' band, as before.
+        /// </summary>
+        public double workMin;
+        public double workMax;
+        public double workBearing;
+
+        /// <summary>
+        /// docs/adr/0038 (the scene's second pass): when set, a stand holds an object only when its top's sides are each between these
+        /// fractions of the object's narrower side, so the object overhangs it all round and is met before its stand; the object stands
+        /// upright on it. Both 0: a stand's top holds the object's whole footprint, as before.
+        /// </summary>
+        public double standTopMin;
+        public double standTopMax;
+
+        /// <summary>
+        /// docs/adr/0038 (the scene's second pass): when set, each rig draws the height of its plank's underside uniform between these, m
+        /// (within the heights its supports' steps give), and takes the support step nearest it. Both 0: its sizes uniform among the pairs
+        /// of steps that leave the gripper room under it, as before.
+        /// </summary>
+        public double rigUnderMin;
+        public double rigUnderMax;
+
         /// <summary>docs/adr/0038: how many distractors a mixed layout stands, inclusive.</summary>
         public int distractorMin;
         public int distractorMax;

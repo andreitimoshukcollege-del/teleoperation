@@ -688,7 +688,8 @@ differ, these replace the description above.
 
 On `jetrover-mixed`, layouts 1-200, the dry run as above. "Before" is 6fb0c7b's planner and edits, measured by b3f4403's dry run (which
 only adds the figures, and makes distractors scenery as on the twin: the add share it reports is lower than the 89% above, which counted
-moves of distractors and which the bug below hid less); "after" is 30cd829. Seeds 1, 2 and 3 where three figures are given.
+moves of distractors and which the bug below hid less); "after" is 30cd829, and the edits 849f3cb's (the same plans; a move onto the path
+must now go at least 5 cm, which turned one of them into a removal). Seeds 1, 2 and 3 where three figures are given.
 
 | | Before | After |
 |---|---|---|
@@ -711,8 +712,8 @@ moves of distractors and which the bug below hid less); "after" is 30cd829. Seed
 | The command moving | 85% of frames | 85% |
 | Groups with an add, from home / chained (`--chain --lag 0.2`) | 152 of 196 (78%) / 141 of 189 (75%) | 171 of 199 (86%) / 151 of 196 (77%) |
 | Non-add edits the model expects to change the edited object's contact | 67 of 162 (41%) | 112 of 127 (88%) |
-| The same, of objects touched or within 1 cm / of the others | 63 of 106 (59%) / 4 of 56 (7%) | 105 of 120 (88%) / 7 of 7 |
-| Non-add edits that change whether the take touches anything | 32 of 162 (20%) | 77 of 127 (61%) |
+| The same, of objects touched or within 1 cm / of the others | 63 of 106 (59%) / 4 of 56 (7%) | 106 of 121 (88%) / 6 of 6 |
+| Non-add edits that change whether the take touches anything | 32 of 162 (20%) | 78 of 127 (61%) |
 
 - **What the edits do now.** Every remove, shift and move of an object the model has the arm touch changes that contact; so does every
   shift or move of a near one. The 15 that do not are of objects within 1 cm that the model has the arm miss: the rule treats them as

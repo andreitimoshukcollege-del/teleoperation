@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.Linq;
+using Teleop.Core.Types;
 using Teleop.RobotArm.Collision;
 using Teleop.RobotArm.Types;
 using Teleop.RobotArm.Wire;

@@ -1163,6 +1163,13 @@ namespace Teleop.Eval.JointDrive
             {
                 // The point: on its top's upper few cm, or a high plank's underside, somewhere over its footprint (a bar along its length).
                 float fx = (float)Draw.Uniform(ref _rng, -0.8, 0.8) * o.HalfExtents.X, fy = (float)Draw.Uniform(ref _rng, -0.8, 0.8) * o.HalfExtents.Y;
+                // A long one (a plank, a bar across the reach) near the point of its length nearest the base's axis, within 8 cm of it.
+                if (o.HalfExtents.X > 0.08f)
+                {
+                    var c2 = new Vector2(o.Center.X, o.Center.Y);
+                    var a2 = Vector2.Normalize(new Vector2(ax.X, ax.Y) + new Vector2(1e-6f, 0f));
+                    fx = Math.Clamp(-Vector2.Dot(c2, a2) + (float)Draw.Uniform(ref _rng, -0.08, 0.08), -0.9f * o.HalfExtents.X, 0.9f * o.HalfExtents.X);
+                }
                 float height = o.Max.Z - o.Min.Z;
                 float z = o.Role == SceneRole.Plank ? (Draw.Chance(ref _rng, 0.6) ? o.Min.Z : o.Max.Z) : o.Max.Z - (float)Draw.Uniform(ref _rng, 0, MathF.Min(0.06f, height / 2));
                 Vector3 point = new Vector3(o.Center.X, o.Center.Y, 0f) + ax * fx + ay * fy;
@@ -1189,7 +1196,7 @@ namespace Teleop.Eval.JointDrive
                     Vector3 a = frames[li].Origin, b = li + 1 < 5 ? frames[li + 1].Origin : frames[li].ToBase(ToolInGripper);
                     float d = SegmentDistance(point, a, b, out float along);
                     // Along the link's middle, not by the joint at its far end (there the next link meets it first).
-                    if (d < 0.012f || d > 0.04f || along < 0.1f || along > 0.9f) continue;
+                    if (d < 0.012f || d > 0.04f || along < (want == ArmLink.Wrist ? 0f : 0.1f) || along > 0.9f) continue;
                     if (!_envelope.Contains(pose) || !ArmCollision.IsValid(_profile, holders, pose)) continue;
                     candidates.Add((pose, want));
                 }

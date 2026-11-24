@@ -218,6 +218,34 @@ key, JSON) describes it.
     draws the same poses whatever the episode's index.
 - **Cost:** about 2 s of a worker an episode (2.05 s average, 2.92 s at most over 10 twin takes of 2026-11-24 with
   `--jobs 4`). It runs in the workers beside video encoding, so the build took no longer (49.7 s with, 51.9 s without).
+(`caption`, `tableSafe`, `geometryDir`, `stopModel`: `{"stopTimes": {name: seconds}}` or null, `visibility`: true or
+false; a report without it is false).
+
+`visibility.parquet` (`teleop_lerobot/visibility.py`, since 2026-11-24; `--no-visibility` writes none, as builds before):
+whether each object on the table could be seen, one row per (episode, frame, camera, object). World-models' safety model
+sees only the images; this says how much of each obstacle each camera showed.
+
+| Column | Meaning |
+|---|---|
+| `episode_index`, `frame_index` | the episode and its frame, as `frames.parquet`'s |
+| `camera` | as the dataset names it: `front` (the twin's `wrist`), `third-left`, `third-right` |
+| `object_id`, `role` | the scene object and its `role` in the scene file: `obstacle`, `stand`, `plank`, `support` (the obstacles in reach), `distractor` (in view, out of reach); empty in a scene without roles. Every object on the table at the frame (not parked); the table and the flat clutter are left out |
+| `visible_px` | the object's pixels in that camera's instance mask (`isaac/<camera>.mask.frames`, id `100 + object_id`): what the camera showed of it |
+| `expected_px` | its whole silhouette in the image with nothing in front: its collision geometry (the geometry cache's convex pieces for a mesh, the scene file's box or 32-sided cylinder) at the frame's pose (`WO` interpolated to the frame's `stateSensed`) and size (`WZ`), projected through the take's `CM` camera, clipped to the near plane, the union of the pieces' hulls, a pixel counted when its centre is inside. A room camera's pose is `CM`'s; the wrist camera's is `wrist_link`'s forward kinematics at the frame's `VQ` times `CM`'s. Pixels outside the image are not counted |
+| `visible_fraction` | `visible_px / expected_px`; NaN when nothing is expected. Slightly under 1 for an unoccluded mesh (the convex pieces stand a little outside the render mesh) |
+| `in_frustum` | the silhouette covers at least one pixel of the image (`expected_px > 0`) |
+| `reason` | why a value is null, else null: no mask stream or no mask for the frame, no geometry for the object (`--geometry-dir`), no joint values for the wrist, or an object whose mask id is in no mask of the take though its silhouette reached 200 px (drawn without its label: the twin's masks of 2026-11-24 lose some objects for whole takes). An episode whose objects cannot be known (no `scene.json`, `WO` or `CM`) has one row with no camera or object, and the reason |
+
+No depth test: the mask already resolves what stands in front. Checked against the masks where nothing stands in front of an
+object (48 takes of 2026-11-24, every 25th frame, silhouettes of 150 px or more): visible over expected a median 1.000 for
+boxes and cylinders (IoU 0.998) and 0.986 for meshes in the room cameras (IoU 0.982), 0.94 for meshes in the wrist camera,
+which sees them closer (docs/adr/0038 L). It costs about 1.3 s a take of about 260 frames on one core, in the build's
+`--jobs` workers.
+
+`safety-report` sums it up per dataset: the share of obstacle-frames (an obstacle at one frame) at least 50% visible in two
+or more cameras, in one, in none, and in no pixel of any camera; each camera's share and its frustum share; and the share of
+contacts with an object whose object was at least 50% visible in at least one camera at some frame of the second before the
+contact began (and at the frame before).
 
 `unavoidable_ranges.json`, for analysis: the labels stay contact. Written by default since 2026-11-23 and **provisional
 until the real arm's stop latency is measured** (docs/adr/0038 item 17). It gives the frames from which stopping could no

@@ -202,8 +202,12 @@ def test_the_summary_counts_cameras_per_obstacle_frame_and_contacts_seen_before(
     assert s["obstacleFrames"] == 20  # the distractor is not an obstacle
     assert (s["seenInTwoOrMore"], s["seenInOne"], s["seenInNone"]) == (0.5, 0.5, 0.0)
     assert s["perCamera"]["front"] == {"seen": 0.0, "inFrustum": 1.0} and s["perCamera"]["third-left"]["seen"] == 0.5
-    assert s["contacts"] == {"total": 3, "atStart": 1, "seenInSecondBefore": 1, "seenJustBefore": 1,
+    assert s["contacts"] == {"total": 3, "atStart": 1, "unmeasured": 0, "seenInSecondBefore": 1, "seenJustBefore": 1,
                              "shareSeenInSecondBefore": 0.5, "shareSeenJustBefore": 0.5}
+    assert s["perCamera"]["front"]["seen"] == 0.0  # the distractor's rows (out of view) count for nothing here
+    lost = df.assign(visible_px=df["visible_px"].where(df["object_id"] != 31), visible_fraction=float("nan"))
+    t = V.summary(lost, [{"episode": 0, "object": 31, "kind": "object", "startFrame": 18}], fps=15)
+    assert t["unmeasured"] == 20 and t["seenInTwoOrMore"] is None and t["contacts"]["unmeasured"] == 1
     line = V.summary_line("ds", s)
     assert "2+ cameras 50.0%" in line and "1 of 2 (50.0%)" in line and "1 at the first frame left out" in line
 

@@ -501,9 +501,11 @@ def summary(df, contacts: Sequence[Dict], fps: float) -> Dict:
     - per camera, the share of obstacle-frames it showed at least :data:`SEEN` of, and the share it had in its frustum;
     - per contact with an object (``contacts.jsonl``'s kinds ``object`` and ``fixture``), whether its object showed at least
       :data:`SEEN` of itself in at least one camera at some frame of the second before the contact began, and at the
-      frame just before. A contact at the episode's first frame has no second before, and is counted apart.
+      frame just before. A contact at the episode's first frame has no second before, and is counted apart, as is one
+      whose object was measured at no frame of that second.
 
-    Obstacle-frames whose rows have no fraction in any camera (NaN: no mask or no geometry) are counted apart."""
+    A row is measured when both its counts are known (an object out of the frustum is measured, and not seen). Obstacle-frames
+    with no measured row (no mask, no geometry, or drawn without its label) are counted apart; the shares are of the rest."""
     import pandas as pd
 
     rows = df[df["object_id"].notna()]
@@ -513,8 +515,9 @@ def summary(df, contacts: Sequence[Dict], fps: float) -> Dict:
                  "reasons": sorted({str(r) for r in df["reason"].dropna()})[:5]}
     if obstacle.empty:
         return {**out, "obstacleFrames": 0}
-    o = obstacle.assign(seen=obstacle["visible_fraction"] >= SEEN, measured=obstacle["visible_fraction"].notna(),
-                        any_px=obstacle["visible_px"].fillna(0) > 0)
+    measured = obstacle["visible_px"].notna() & obstacle["expected_px"].notna()
+    o = obstacle.assign(seen=(obstacle["visible_fraction"] >= SEEN) & measured, measured=measured,
+                        any_px=(obstacle["visible_px"].fillna(0) > 0) & measured)
     keys = ["episode_index", "frame_index", "object_id"]
     g = o.groupby(keys).agg(seen=("seen", "sum"), measured=("measured", "sum"), any_px=("any_px", "any"))
     m = g[g["measured"] > 0]
@@ -530,10 +533,12 @@ def summary(df, contacts: Sequence[Dict], fps: float) -> Dict:
                                 "inFrustum": round(float(c["in_frustum"].fillna(False).astype(bool).mean()), 4)}
     out["perCamera"] = dict(sorted(per_camera.items()))
 
-    seen_rows = rows[rows["visible_fraction"] >= SEEN]  # a contact's object, whatever its role
-    seen_any = seen_rows.groupby(["episode_index", "object_id"])["frame_index"].apply(lambda s: set(int(x) for x in s))
+    def frames_of(part):  # (episode, object) -> its frames in ``part``; a contact's object, whatever its role
+        return {k: set(int(x) for x in f) for k, f in part.groupby(["episode_index", "object_id"])["frame_index"]}
+    known = rows["visible_px"].notna() & rows["expected_px"].notna()
+    seen_any, measured_any = frames_of(rows[known & (rows["visible_fraction"] >= SEEN)]), frames_of(rows[known])
     window = max(1, int(round(fps)))
-    total = before = at_start = just_before = 0
+    total = before = at_start = just_before = unmeasured = 0
     for c in contacts:
         if c.get("kind") not in ("object", "fixture") or c.get("startFrame") is None:
             continue
@@ -542,13 +547,18 @@ def summary(df, contacts: Sequence[Dict], fps: float) -> Dict:
         if start <= 0:
             at_start += 1
             continue
-        frames = seen_any.get((int(c["episode"]), int(c["object"])), set())
+        key = (int(c["episode"]), int(c["object"]))
+        if not any(start - window <= x < start for x in measured_any.get(key, ())):
+            unmeasured += 1
+            continue
+        frames = seen_any.get(key, set())
         if any(start - window <= x < start for x in frames):
             before += 1
         if (start - 1) in frames:
             just_before += 1
-    counted = total - at_start
-    out["contacts"] = {"total": total, "atStart": at_start, "seenInSecondBefore": before, "seenJustBefore": just_before,
+    counted = total - at_start - unmeasured
+    out["contacts"] = {"total": total, "atStart": at_start, "unmeasured": unmeasured, "seenInSecondBefore": before,
+                       "seenJustBefore": just_before,
                        "shareSeenInSecondBefore": round(before / counted, 4) if counted else None,
                        "shareSeenJustBefore": round(just_before / counted, 4) if counted else None}
     return out
@@ -569,9 +579,10 @@ def summary_line(name: str, s: Dict) -> str:
             f"{int(SEEN * 100)}% visible in 2+ cameras {_pct(s['seenInTwoOrMore'])}, in 1 {_pct(s['seenInOne'])}, in none "
             f"{_pct(s['seenInNone'])}; not one pixel in any camera {_pct(s['notSeenAtAll'])}; per camera at least "
             f"{int(SEEN * 100)}%: {cams}; contacts whose object was at least {int(SEEN * 100)}% visible in 1+ camera in the "
-            f"second before: {c['seenInSecondBefore']} of {c['total'] - c['atStart']} ({_pct(c['shareSeenInSecondBefore'])}), "
-            f"in the frame before: {_pct(c['shareSeenJustBefore'])}"
+            f"second before: {c['seenInSecondBefore']} of {c['total'] - c['atStart'] - c['unmeasured']} "
+            f"({_pct(c['shareSeenInSecondBefore'])}), in the frame before: {_pct(c['shareSeenJustBefore'])}"
             + (f" ({c['atStart']} at the first frame left out)" if c["atStart"] else "")
+            + (f" ({c['unmeasured']} unmeasured left out)" if c["unmeasured"] else "")
             + (f"; {s['unmeasured']} obstacle-frames unmeasured" if s.get("unmeasured") else "")
             + (f"; {s['rowsWithReason']} rows with a reason, e.g. {s['reasons'][:2]}" if s.get("rowsWithReason") else ""))
 

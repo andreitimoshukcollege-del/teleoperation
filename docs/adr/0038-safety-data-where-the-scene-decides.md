@@ -290,6 +290,94 @@ golden did not change.
 - **Not mine to check:** the planner against planks and raised objects (M), textures on long thin boxes (A), and the clearance and
   labels (C, L).
 
+**The second pass (2026-11-23, branch `work/v2-scene2`).** World-models reviewed the 16-episode pilot on `jetrover-mixed`. At contact
+the tool point sat a median 14.5 cm below the base frame (5 cm above the table). Nothing tall was hit: no rod, shelf or plank, and the
+steel rod was in reach once. The stand blocks took 18 of 41 contacts. So "how low the path goes" still predicted contact. M's part
+(aims at every height, no aims at stands) is separate; this is the scene's. Where this differs from the description above, it
+replaces it.
+- **Eight pool fields in four groups, mixed pools only, all 0 by default.** With them all 0 a pool draws exactly what it drew
+  before, and the bench is no mixed pool: `layout-jetrover-bench.txt` and the rests golden did not change. Both readers refuse the
+  same 16 new cases with `pool` and accept 3 more (vectors.json).
+  - `tallShare`: the chance that an obstacle which is not a plank is a tall thin one, when one is free. Tall means at least 15 cm at
+    its file size (`WorldScene.TallHeight`, joint-drive's `TallObjectMeters`): the rod and the dowel, in the held-out family the post
+    and the slat. One more draw.
+  - `workMin`, `workMax`, `workBearing`: the working band, inside the obstacles' band. Tall obstacles and planks are centred there,
+    uniform by area, and so are their redraws (WorldHost). It is 0.16-0.30 m from the base's axis and within 60 degrees: the pads
+    reach 18-33 cm out (M), and inside 60 degrees an aim may come round the base from either side (MixedTake).
+  - `standTopMin`, `standTopMax`: a stand holds an object only when its top's sides are each between these fractions of the object's
+    narrower side (0.4 and 0.75), so the object overhangs it all round and is met first. The object stands upright and centred; a tall
+    one is never raised. Its stand is drawn before its rest.
+  - `rigUnderMin`, `rigUnderMax`: a rig's underside height is drawn uniform over this range, within the heights its supports' steps
+    give, and the support step nearest it is taken. Before, uniform pairs of steps put half the rigs 5-10 cm up. The range is 4-20 cm
+    in the train family and 2-25 cm in the held-out family, whose two rigs keep their own ranges (2.6-4 and 19-24 cm).
+- **The scenes.**
+  - `reachBearing` goes from 2.0944 to 1.658 (95 degrees). `SceneMixedMeasureTests.IkReach` measured joint-drive's IK
+    (`ArmSolver` from home, 40 solves, the joint ranges less 15 degrees, clear by the model). It puts the wrist 90.0 degrees round
+    at most from home, and nothing at 92.5, because `MaxApproach` is 90 degrees. Turned that way first, it reaches 105. The twin check's
+    obstacles at 107-116 degrees were out of every aim.
+  - In the train family, `stand-post` (82: 4×4×16 cm, steps -3..0, so 2-4 cm across and 8.2-16 cm tall) and `stand-pillar` (83:
+    5×5×12 cm, -2..1, so 3.2-6.25 across and 7.7-15 tall) replace `stand-block` (75) and `stand-crate` (76).
+  - In the held-out family, the pedestal becomes 4.5×4.5×17 cm (17-21 cm) and the riser 6×6×2.5 cm (2.5-3.9 cm), both outside the
+    train family's 7.7-16. `tallShare` is 0.1 in both families.
+
+Measured over 2000 layouts (`SceneMixedMeasureTests`, seeds 1-2000). "Before" is 6fb0c7b's draw. "The working band" is the one above
+for both columns:
+
+| | train before | train after | held-out before | held-out after |
+|---|---|---|---|---|
+| layouts with obstacles that have a tall obstacle or a rig in the working band (anywhere) | 0.163 (0.502) | 0.592 (0.592) | 0.179 (0.547) | 0.627 (0.627) |
+| obstacles a layout (layouts with 0 / 1 / 2 / 3) | 1.48 (522/482/511/485) | 1.46 (522/492/533/453) | 1.47 (522/486/525/467) | 1.46 (522/488/538/452) |
+| share of the obstacles: tall, rigs, raised | 0.106, 0.195, 0.215 | 0.178, 0.193, 0.162 | 0.130, 0.210, 0.193 | 0.202, 0.197, 0.138 |
+| obstacles centred in the working band | 0.302 | 0.625 | 0.267 | 0.591 |
+| obstacles by bearing, 15-degree bins from straight ahead | 588 493 417 254 259 361 342 245 | 782 645 531 339 246 282 92 0 | 621 529 405 221 249 381 356 175 | 762 705 529 315 212 287 110 0 |
+| beyond 60 / beyond 95 degrees | 0.408 / 0.159 | 0.213 / 0 | 0.395 / 0.136 | 0.209 / 0 |
+| obstacle tops above the table, 5 / 50 / 95 % | 2.5 / 9.3 / 25.0 cm | 2.5 / 12.0 / 27.5 | 1.8 / 6.5 / 36.0 | 1.8 / 8.6 / 45.0 |
+| tall obstacles' and rigs' tops | 6.7 / 14.1 / 34.4 cm | 7.8 / 17.4 / 31.3 | 4.6 / 22.1 / 45.0 | 5.2 / 24.0 / 45.0 |
+| raised objects' middles | 5.9 / 10.4 / 16.5 cm | 9.7 / 13.7 / 21.5 | 5.2 / 7.4 / 19.4 | 4.4 / 18.9 / 25.8 |
+| stands' heights | 4.0 / 6.3 / 11.7 cm | 7.7 / 10.2 / 16.0 | 3.5 / 5.5 / 12.0 | 2.5 / 17.0 / 21.3 |
+| a stand's top area over its object's footprint (narrower both ways) | 1.4 / 5.0 / 43 (none) | 0.1 / 0.3 / 0.5 (all) | 1.5 / 2.6 / 38 (none) | 0.1 / 0.2 / 0.4 (all) |
+| rigs' undersides, 5 / 50 / 95 %; in 0-5, 5-10, 10-15, 15-20, 20+ cm | 4.1 / 8.0 / 19.5; 32 295 143 107 0 | 5.1 / 10.0 / 19.5; 10 184 228 142 0 | 2.6 / 19.0 / 23.8; 307 0 0 162 149 | 2.6 / 19.0 / 23.8; 271 0 0 148 157 |
+| objects that found no spot, a layout | 0.117 | 0.127 | 0.214 | 0.201 |
+| placements the arm at home would meet (1 cm), objects in layouts | 31 in 31 | 102 in 101 | 135 in 113 | 360 in 302 |
+
+- **The choices.**
+  - A `tallShare` of 0.25 put a tall obstacle or a rig in 0.71 of the layouts with obstacles, mostly the same two tall objects. At 0.1
+    it is 0.59.
+  - The first stands, 12 and 8 cm tall for their width, left the raised objects' middles where they were (median 10.6 cm). Taller
+    ones (16 and 12 cm) raised it to 13.7.
+  - The raised share falls from 0.215 to 0.162 because tall obstacles are never raised and more units are tall. `standShare` stays 0.3.
+- **Planning, with M's planner as it was** (6fb0c7b; `joint-drive --script mixed --dry-run --layouts 1-200 --rows`, seed 1, speed
+  3.8, 15 s; "before" is 6fb0c7b's scene file read by the new code, which draws as 6fb0c7b did):
+
+  | | Before | After |
+  |---|---|---|
+  | Layouts planned | 196 of 200 | 198 of 200 |
+  | Planned contacts | 131 in 80 takes | 147 in 94 takes |
+  | On tall obstacles / rigs / stands / the rest | 17 / 32 / 29 / 53 | 29 / 42 / 24 / 52 |
+  | Aims and passes at stands | 53 | 77 |
+  | The arm's lowest point at a planned contact, p50 / p90 / max | 63 / 140 / 185 mm | 73 / 168 / 192 mm |
+
+  More aims went at stands, yet fewer reached them: the object over the stand overhangs it. M3 changes the planner (aims at every
+  height, none at stands), so these figures show only that the new layouts plan.
+- **Home.** The last row counts placements that would meet the model's arm at home. Home holds the gripper level about 28 cm above
+  the table, out to x 0.31. A take's tail ends with the wrist 0-10 cm above the base frame, and joint-drive asks for the next layout
+  with the arm there. So tall objects in front make Isaac's `OVERLAPS_ARM` likelier. A lone object refused so is redrawn in its band,
+  and a refused rig or stand parks its group. The held-out family's 36-45 cm post and its 17-21 cm pedestal make most of its count.
+- **Tests:**
+  - the vectors;
+  - per layout over 400 layouts of each scene: tall obstacles and planks in the working band; raised objects upright, never tall,
+    centred on a stand narrower than them within the fractions; obstacles within 95 degrees;
+  - the stands' heights outside each other's ranges across the two families;
+  - the shares above, pinned in `SceneMixedMeasureTests`;
+  - the obstacles' bearing between the IK's 90 and 105 degrees;
+  - the rules golden's pool row with the new fields, and each object's tall flag, read alike by `test_scene.py`;
+  - Isaac's model applying every placement of the new first 20 layouts of each scene (`golden/scene-layouts-jetrover-mixed.json`,
+    1391 requests).
+- **Not checked on the twin:**
+  - objects settling on stands narrower than them (a scan's hollow bottom or the elephant's legs may drop a few millimetres, or more);
+  - how often `OVERLAPS_ARM` refuses a tall rod, a plank or a raised object;
+  - the planner's figures with M3's changes.
+
 ### M, motion
 
 **Built** (branch `work/v2-motion`; docs/adr/0038 decisions 1 and 2, items 1, 6, 7, 8, 10, 11, 23, 24 and 29's caps).

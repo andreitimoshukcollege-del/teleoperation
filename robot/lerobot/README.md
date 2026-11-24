@@ -125,7 +125,7 @@ link names are the URDF's. JSON has no NaN: a value that is not there is `null` 
 | `tableContact`, `tableContacts` | whether, and how many stretches, the arm touched the table |
 | `contacts`, `touched`, `knocked` | obstacle contact stretches (contacts.jsonl's lines), the objects touched, those knocked |
 | `unsafeFrames`, `unsafeRanges` | the labels' frames and ranges |
-| `minClearanceMm`, `minClearanceObject` | the smallest obstacle clearance over the episode's frames and its object; null without clearance |
+| `minClearanceMm`, `minClearanceObject`, `minClearanceLink` | the smallest obstacle clearance over the episode's frames (over the links a joint moves, as `frames.parquet`'s `min_clearance_mm`), its object and the link; null without clearance, the object and link null when nothing came within the 150 mm cutoff |
 | `clearanceMethod`, `clearanceCutoffMm`, `clearanceUnavailable` | the clearance module's method and cutoff, or why there is none |
 | `group`, `role`, `edit`, `editParsed` | the take's `RP` (docs/adr/0038 decision 2): its replay group, `source` or `replay`, the edit as recorded and parsed (`op` `none`, `remove`, `shift` with `dx` `dy`, `move` with `x` `y` `yawRad`, and `object`); null for takes without one |
 | `frames`, `seconds`, `filled` | its length, and how many frames repeat an earlier render |

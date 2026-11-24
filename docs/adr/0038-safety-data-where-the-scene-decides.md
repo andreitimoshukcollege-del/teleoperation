@@ -758,7 +758,7 @@ arm's way and was knocked over) differed from its source, episode 23, by 258 ser
   - *Sent* (`JC`): every replay re-sent its source's commands exactly, 16135 of 16135 matched commands identical in the 19 pairs (7 UDP
     datagrams lost), 814 of 814 in this one.
   - *RobotHost:* its collision backstop refused 146 of the source's commands (a run of 145, 1.42-4.41 s into the take) and 32 of the
-    replay's (longest run 25, 1.45-1.94 s); the outcomes differ at 114 commands. Both runs began before the added tin mattered. The shaper
+    replay's (longest run 25, 1.45-1.94 s); the outcomes differ at 114 commands. Both runs began before the added tin mattered (first touched 9.4 s in). The shaper
     and the relay only follow what RobotHost passes on (`RO`).
   - *The dataset:* the action was the newest `RO`, which RobotHost writes only for an accepted command, so a refused command left the one
     before it in force: 258 units at p95.
@@ -769,8 +769,8 @@ arm's way and was knocked over) differed from its source, episode 23, by 258 ser
   *measured* to the command, and the arm trails its command by about 0.2 s, on the twin as on the real arm (workstream R). At the first
   refusal of each of the 57 runs:
   - the arm was 11.8 degrees from the command (p50; p90 23.2), about 220 ms behind it;
-  - the command was 1.6 degrees (p90 3.6) from the last accepted one, and 53 of the 57 were within 4 degrees of it, a step the check does
-    not sample when it is measured from the arm itself. Judged from the last accepted command, 2 of the 57 would have been refused.
+  - the command was 1.6 degrees (p90 3.6) from the last accepted one, and 53 of the 57 were within 4 degrees of it, a step the check would
+    not sample at all had the arm stood there. Judged from the last accepted command, 2 of the 57 would have been refused.
   - Refused, the arm finishes its last accepted command and holds there while the commands move on, and the path from it to them keeps
     crossing the margin. Runs last p50 5 commands, p90 16, max 145 (3.0 s, episode 23).
   - Whether a run starts, and how long it lasts, turns on the arm's measured pose to a fraction of a degree, that is on physics.
@@ -820,8 +820,8 @@ the phase: p95 28); this change does not touch it.
   - `LogThrottleTests`; `ServoPathCollisionTests` (the same command refused or accepted by where the arm is measured).
   - The dataset's 38 takes read with the new builder (10039 frames): every frame's action is the newest raw action event, and
     capture_timing's action time is that event's (0 exceptions); 152 frames (1.5%) have another action than before, all while
-    RobotHost refused. replay_pairs.py run with the lerobot venv adds the dataset's own action column, equal to `relay` for this
-    dataset and to `sent` for one built since.
+    RobotHost refused. replay_pairs.py run with the lerobot venv adds the dataset's own action column: equal to `relay` for this
+    dataset, as it should be; for one built by the new builder it should equal `sent` (not yet seen).
 - **Not run on the twin.** Untested there: RobotHost's refused-command line, joint-drive's replay line and a dataset built by the new
   builder.
 

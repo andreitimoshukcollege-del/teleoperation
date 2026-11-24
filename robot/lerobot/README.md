@@ -42,8 +42,9 @@ Tests: `python -m pytest robot/lerobot/tests` anywhere (the LeRobot round trip i
 The twin's scripted takes become one dataset per batch and twin, `~/data/lerobot/jetrover-isaac-safety/jetrover_<UTC>_<id>/`
 (`just isaac-safety-build <twins> <name> <out> <split> <caption>`, arguments by position; two twins' takes are two datasets,
 `<name>_twin0` and `<name>_twin1`; a split of K writes K datasets of each, `<name>_<k>of<K>` or `<name>_twin0_<k>of<K>`, by
-layout). `observation.images.front` is the twin's wrist camera. Every episode's task is `move the arm` (`--caption category` gives the scenario's name, as
-datasets built before 2026-11-22 have it); the scenario is in `meta/teleop/episodes.jsonl`.
+layout). `observation.images.front` is the twin's wrist camera. Every episode's task is `move the arm` (`--caption
+category` gives the scenario's name, as datasets built before 2026-11-22 have it); the scenario is in
+`meta/teleop/episodes.jsonl`.
 
 **One dataset holds one collection stream** (docs/adr/0038 L, 2026-11-24). `capture_timing.jsonl` and
 `raw_ros_events.jsonl` keep one clock across a dataset, and a reader that picks the raw log's commands by time

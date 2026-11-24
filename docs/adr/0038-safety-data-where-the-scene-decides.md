@@ -1044,6 +1044,47 @@ check's own build (at the integration tip, before these changes); "after" is tod
 **Untested:** a real take that touches the table (its labels, `clear` markers and unavoidable ranges before it); the
 three stop times against the real arm (`just stop-latency`, the user's run); a full-size train, val and test set.
 
+**One collection stream a dataset, after world-models' review of 2026-11-24** (branch `work/v2-dataset3`). This reverses
+docs/adr/0037 amendment 7's "one dataset" from two twins. `jetrover_20261124_021454_cb1e21` (`just
+isaac-safety-batch-twins`) held both twins' takes in recorded order. The twins record at once on the GPU machine's one
+CLOCK_MONOTONIC, the clock `capture_timing.jsonl` and `raw_ros_events.jsonl` share across a dataset. World-models picks its
+path checkpoints from the raw log by time, so a third of them came from the other twin's arm. Per-frame commands, states,
+images and labels were right.
+
+- **One dataset per takes root.** Each twin records into its own root, one take after another. `safety-build`
+  (`safety.build_streams`) writes each root's takes as a dataset: `<name>` when they all come from one root, else
+  `<name>_twin0`, `<name>_twin1` (a root not named for a twin gives its folder's name). `--split K` splits each one on its
+  own. The root says where a take was recorded, so grouping by it needs no guess from the times.
+- **Refused:** a dataset whose takes overlap on that clock. A take's span runs from the earliest to the latest time its
+  lines in the two files hold, ends included. The build exits 3, names every pair, and writes nothing; the recipe does not
+  retry it.
+- **`safety-report`** places each episode from the two files, by `episode_index` or, before it, by each take's `ready`
+  line. It faults overlapping pairs in any dataset that has those files, sidecars or not.
+- **`episode_index` on every `raw_ros_events.jsonl` line.** World-models' readers (`wm/jetrover/windows.py` at 70ca04b, and
+  the lab's `command_windows.py` on `main`) read `type`, `pc_received_mono_ns` and `values` by name, so the extra field is
+  ignored. `safety-compare` leaves it out against an older reference, and says so.
+- **`just isaac-safety-rebuild <dataset>`** rebuilds a dataset's takes this way, with the options its report records.
+
+Measured read-only at 0875ab8: the overlapping pairs `safety-report` finds, and the share of action lines a reader picks
+by time (inside an episode's first to last frame) that belong to another episode.
+
+| Dataset | Episodes (twin 0, twin 1) | Overlapping pairs | Actions from another episode |
+|---|---|---|---|
+| `jetrover_20261124_021454_cb1e21` | 38 (19, 19) | 25 | 41.0% (all 38 episodes) |
+| `jetrover_20261122_005619_20ccb6` (v2 train) | 177 (90, 87) | 89 | 33.3% (141 episodes) |
+| `jetrover_20261122_145748_82747d` (v2 val) | 163 (84, 79) | 76 | 31.3% (127 episodes) |
+| `jetrover_20261116_232145_e2369d` (v2 test) | 86 (86, 0) | 0 | 0 |
+| `jetrover_20261123_215338_c00c5a` (pilot) | 16 (16, 0) | 0 | 0 |
+
+- **After.** cb1e21's 38 takes rebuilt into scratch with the rebuild recipe's commands and its own options (`--jobs 4`,
+  140 s). Result: `_twin0` with 19 episodes and 5114 frames, and `_twin1` with 19 and 4925. Neither has an overlapping
+  pair or an action from another episode, and `safety-report` finds no faults in the two.
+- **Nothing else changed.** Take by take, the labels, `safety_ranges.json`, unavoidable ranges, events, the four sidecars,
+  the timing lines, the raw lines (less `episode_index`) and the data parquet's states, actions and times equal the merged
+  dataset's, 38 of 38. Videos were not compared.
+- **World-models' v2 train and val sets mix twins too,** so their path features had the same fault. The test set and the
+  pilot come from one twin.
+
 ### R, arm response
 
 **What world-models saw.** In the twin datasets the arm is more than 20 units (4.8 degrees) behind its command on 65–74% of

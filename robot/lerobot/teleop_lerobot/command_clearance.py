@@ -164,6 +164,7 @@ class Result:
     obstacle_id: np.ndarray
     surface: np.ndarray
     link: Optional[np.ndarray] = None  # min_only: the nearest link's index (-1 when nothing is within the cutoff)
+    pose: Optional[np.ndarray] = None  # groups: the pose of the group the nearest is at (-1 when nothing is within the cutoff)
 
 
 class Engine:
@@ -250,19 +251,28 @@ class Engine:
         axes = np.einsum("bkj,nbij->nbki", self.robot.box_axes, Rl)
         return centres, axes
 
-    def distances(self, values: Dict[str, np.ndarray], scene_of: Sequence[int], min_only: bool = False) -> Result:
+    def distances(self, values: Dict[str, np.ndarray], scene_of: Sequence[int], min_only: bool = False,
+                  groups: Optional[np.ndarray] = None) -> Result:
         """Every link's distances for poses ``values`` (joint name -> (n,)), pose i in scene ``scene_of[i]``. ``min_only``:
         only the nearest link's (``Result.obstacle`` (n, 1), its link in ``Result.link``), every link's surface distance
-        as ever."""
+        as ever. ``groups`` (min_only; (n,) of 0..G-1): only the nearest over each group's poses (``Result.obstacle`` (G, 1),
+        its link and the pose it is at in ``Result.pose``), one threshold for the whole group, so that a pair no nearer than
+        the group's best so far is never measured: the smallest on a way of several poses for little more than one."""
         scene_of = np.asarray(scene_of, int)
         n = len(scene_of)
         L, cutoff = self.L, self.cutoff
+        if groups is not None:
+            groups = np.asarray(groups, int)
+            min_only = True
         per = 1 if min_only else L  # keys per pose: one, or one a link
-        best = np.full(n * per, cutoff)
-        best_id = np.full(n * per, C.NO_OBSTACLE, int)
-        best_link = np.full(n * per, -1, int)
+        keys = (int(groups.max()) + 1 if n else 0) if groups is not None else n * per
+        best = np.full(keys, cutoff)
+        best_id = np.full(keys, C.NO_OBSTACLE, int)
+        best_link = np.full(keys, -1, int)
+        best_pose = np.full(keys, -1, int)
         surface = np.full((n, L), np.nan)
-        self._per, self._best_link = per, best_link
+        self._per, self._best_link, self._best_pose, self._grouped = per, best_link, best_pose, groups is not None
+        key_of = (lambda tp, tl: groups[tp]) if groups is not None else (lambda tp, tl: tp * per + (0 if min_only else tl))
         if n == 0:
             return self._result(best, best_id, surface, n)
         centres, axes = self.boxes(values, n)
@@ -320,9 +330,9 @@ class Engine:
             local = np.einsum("bij,bj->bi", axes[tp[k], idx], sph[0] - centres[tp[k], idx])
             q = np.abs(local) - half[idx]
             d = float((np.linalg.norm(np.maximum(q, 0), axis=1) + np.minimum(q.max(axis=1), 0)).min()) - sph[1]
-            key = tp[k] * per + (0 if min_only else tl[k])
+            key = key_of(tp[k], tl[k])
             if d < best[key]:
-                best[key], best_id[key], best_link[key] = d, bid[tb[k]], tl[k]
+                best[key], best_id[key], best_link[key], best_pose[key] = d, bid[tb[k]], tl[k], tp[k]
         keep = ~is_sphere
         tp, tl, tb = tp[keep], tl[keep], tb[keep]
         # Expand to pieces, cull by the pieces' spheres; then to the link's boxes.
@@ -342,7 +352,7 @@ class Engine:
         # most promising pair then gives an upper bound (below), a threshold the others must beat. For what is left: the
         # lower bound also the gap along the box's own axes, the upper bound the signed distance from the box to the piece's
         # nearest vertex (a vertex inside the box at depth d: the pair overlaps by d at least).
-        key = tp * per + (0 if min_only else tl)
+        key = key_of(tp, tl)
         cl = np.einsum("kij,kj->ki", axes[tp, box], pc[piece] - centres[tp, box])
         qc = np.abs(cl) - half[box]
         oc = np.maximum(qc, 0)
@@ -384,6 +394,7 @@ class Engine:
                 best[k[better]] = d[better]
                 best_id[k[better]] = bid[self._owner(piece[sel][better])]
                 best_link[k[better]] = self.robot.box_link[box[sel][better]]
+                best_pose[k[better]] = tp[sel][better]
             rest = ~first
             rest &= lb < best[key]
             key, lb, ub, tp, box, piece = key[rest], lb[rest], ub[rest], tp[rest], box[rest], piece[rest]
@@ -420,10 +431,13 @@ class Engine:
         per = self._per
         far = best >= self.cutoff
         best_id = np.where(far, C.NO_OBSTACLE, best_id)
-        link = None
+        link = pose = None
         if per == 1:
             link = np.where(far, -1, self._best_link)
-        return Result(np.minimum(best, self.cutoff).reshape(n, per), best_id.reshape(n, per), surface, link)
+        if self._grouped:
+            pose = np.where(far, -1, self._best_pose)
+        k = len(best) // per
+        return Result(np.minimum(best, self.cutoff).reshape(k, per), best_id.reshape(k, per), surface, link, pose)
 
     def _exact(self, c, ax, h, piece, verts, pc) -> np.ndarray:
         """The signed distance of each (box, piece) pair: batched GJK apart; overlapping (or within 0.1 um), minus the
@@ -598,13 +612,22 @@ def _distance_columns(out: Dict[str, object], links: Sequence[str], res: Optiona
     out["min_surface_mm"] = _nanmin_rows(sm[:, idx])
 
 
+def _way(engine: Engine, arm: Arm, path: np.ndarray, scenes: np.ndarray, path_ok: np.ndarray) -> Result:
+    """The nearest over the first PATH_STEPS - 1 poses of each way (``path`` (n, PATH_STEPS, 6), way i in ``scenes[i]``), one
+    group a way: (n, 1) results, ``Result.pose`` the index into the (n x (PATH_STEPS - 1)) poses, every pose's surfaces."""
+    n = len(path)
+    mid = path[:, :-1].reshape(-1, 6)
+    return _evaluate(engine, arm, mid, np.repeat(scenes, PATH_STEPS - 1), path_ok[:, :-1].reshape(-1),
+                     groups=np.repeat(np.arange(n), PATH_STEPS - 1), count=n)
+
+
 def _path_columns(out: Dict[str, object], links: Sequence[str], engine: Optional["Engine"], res_end: Optional[Result],
                   res_mid: Optional[Result], path_ok: np.ndarray, n: int, moving: np.ndarray) -> None:
     """``path_min_clearance_mm``, ``_id``, ``_link``, ``path_min_step`` (1..PATH_STEPS, 0 without a way) and
-    ``path_min_surface_mm``: the smallest over the :data:`PATH_STEPS` poses of each row's way (``res_mid``, min_only, the
-    first PATH_STEPS - 1 poses of n ways in order; ``res_end``, per link, the last), over the ``moving`` links. NaN (ids
-    -1, links null) where a pose of the way is unknown (``path_ok`` (n, PATH_STEPS) false), and a null link with nothing
-    within the cutoff."""
+    ``path_min_surface_mm``: the smallest over the :data:`PATH_STEPS` poses of each row's way (``res_mid``: :func:`_way`'s,
+    the first PATH_STEPS - 1; ``res_end``, per link, the last), over the ``moving`` links; a tie goes to the earlier pose.
+    NaN (ids -1, links null) where a pose of the way is unknown (``path_ok`` (n, PATH_STEPS) false), and a null link with
+    nothing within the cutoff."""
     if res_end is None or res_mid is None:
         out["path_min_clearance_mm"] = np.full(n, np.nan)
         out["path_min_clearance_id"] = np.full(n, -1)
@@ -616,18 +639,19 @@ def _path_columns(out: Dict[str, object], links: Sequence[str], engine: Optional
     last = np.where(np.isnan(res_end.obstacle) | ~moving[None, :], np.inf, res_end.obstacle)
     last_link = np.argmin(last, axis=1) if n else np.zeros(0, int)
     rows = np.arange(n)
-    dist = np.concatenate([res_mid.obstacle.reshape(n, PATH_STEPS - 1), res_end.obstacle[rows, last_link][:, None]], axis=1)
-    ids = np.concatenate([res_mid.obstacle_id.reshape(n, PATH_STEPS - 1), res_end.obstacle_id[rows, last_link][:, None]], axis=1)
-    lks = np.concatenate([res_mid.link.reshape(n, PATH_STEPS - 1), last_link[:, None]], axis=1)
-    step_i = np.argmin(np.where(np.isnan(dist), np.inf, dist), axis=1) if n else np.zeros(0, int)
+    end_d, end_id = res_end.obstacle[rows, last_link], res_end.obstacle_id[rows, last_link]
+    mid_d = res_mid.obstacle[:, 0]
+    on_way = ~(np.where(np.isnan(mid_d), np.inf, mid_d) > np.where(np.isnan(end_d), np.inf, end_d))  # the way's, or a tie
+    step = np.where(on_way, np.where(res_mid.pose >= 0, res_mid.pose % (PATH_STEPS - 1), 0) + 1, PATH_STEPS)
+    dist = np.where(on_way, mid_d, end_d)
+    best_id = np.where(on_way, res_mid.obstacle_id[:, 0], end_id)
+    best_link = np.where(on_way, res_mid.link, last_link)
     bad = ~path_ok.all(axis=1)
-    best_id = ids[rows, step_i]
-    out["path_min_clearance_mm"] = np.where(bad, np.nan, np.round(dist[rows, step_i] * 1000.0, 2))
+    out["path_min_clearance_mm"] = np.where(bad, np.nan, np.round(dist * 1000.0, 2))
     out["path_min_clearance_id"] = np.where(bad, -1, best_id)
-    far = (dist[rows, step_i] >= engine.cutoff) | (best_id < 0)
-    out["path_min_clearance_link"] = [None if (b or f or lks[i, si] < 0) else links[lks[i, si]]
-                                      for i, (si, b, f) in enumerate(zip(step_i, bad, far))]
-    out["path_min_step"] = np.where(bad, 0, step_i + 1)
+    far = (dist >= engine.cutoff) | (best_id < 0) | (best_link < 0)
+    out["path_min_clearance_link"] = [None if (b or f) else links[k] for k, b, f in zip(best_link, bad, far)]
+    out["path_min_step"] = np.where(bad, 0, step)
     sf = np.concatenate([res_mid.surface.reshape(n, PATH_STEPS - 1, L), res_end.surface[:, None, :]], axis=1)
     out["path_min_surface_mm"] = np.where(bad, np.nan, np.round(_nanmin_rows(sf.reshape(n, -1)) * 1000.0, 2))
 
@@ -779,8 +803,7 @@ def compute(take: Take, geometry_dir: Optional[str], layout_seed=None, host=None
     if engine is not None and n:
         scenes = np.array([engine.scene(float(t)) for t in received])
         res_cmd = _evaluate(engine, arm, cmd, scenes, path_ok[:, -1])
-        mid = path[:, :-1].reshape(-1, 6)
-        res_mid = _evaluate(engine, arm, mid, np.repeat(scenes, PATH_STEPS - 1), path_ok[:, :-1].reshape(-1), min_only=True)
+        res_mid = _way(engine, arm, path, scenes, path_ok)
     moving = ~engine.fixed if engine is not None else np.array([x != "base_link" for x in links])
     _distance_columns(commands, links, res_cmd, n, moving)
     _path_columns(commands, links, engine, res_cmd, res_mid, path_ok, n, moving)
@@ -803,19 +826,30 @@ _LINKS = ("base_link", "turntable", "proximal_link", "distal_link", "wrist_link"
 
 
 def _evaluate(engine: Engine, arm: Arm, pulses: np.ndarray, scenes: np.ndarray, ok: Optional[np.ndarray] = None,
-              min_only: bool = False) -> Result:
-    """Distances for poses in pulses; a pose with a NaN servo gets NaN (ids NO_OBSTACLE, link -1)."""
+              min_only: bool = False, groups: Optional[np.ndarray] = None, count: int = 0) -> Result:
+    """Distances for poses in pulses; a pose with a NaN servo gets NaN (ids NO_OBSTACLE, link -1). With ``groups`` ((n,) of
+    0..count-1): the nearest over each group's poses (:meth:`Engine.distances`), NaN for a group with no known pose, and
+    ``Result.pose`` the index into ``pulses``."""
     n = len(pulses)
     ok = np.ones(n, bool) if ok is None else ok
-    L, per = engine.L, (1 if min_only else engine.L)
-    out = Result(np.full((n, per), np.nan), np.full((n, per), C.NO_OBSTACLE, int), np.full((n, L), np.nan),
-                 np.full(n, -1, int) if min_only else None)
+    L, per = engine.L, (1 if (min_only or groups is not None) else engine.L)
+    rows = count if groups is not None else n
+    out = Result(np.full((rows, per), np.nan), np.full((rows, per), C.NO_OBSTACLE, int), np.full((n, L), np.nan),
+                 np.full(rows, -1, int) if per == 1 else None, np.full(rows, -1, int) if groups is not None else None)
     idx = np.flatnonzero(ok)
     if len(idx):
-        r = engine.distances(arm.values(pulses[idx]), scenes[idx], min_only)
-        out.obstacle[idx], out.obstacle_id[idx], out.surface[idx] = r.obstacle, r.obstacle_id, r.surface
-        if min_only:
-            out.link[idx] = r.link
+        if groups is None:
+            r = engine.distances(arm.values(pulses[idx]), scenes[idx], min_only)
+            out.obstacle[idx], out.obstacle_id[idx], out.surface[idx] = r.obstacle, r.obstacle_id, r.surface
+            if min_only:
+                out.link[idx] = r.link
+        else:
+            g = np.asarray(groups)[idx]
+            r = engine.distances(arm.values(pulses[idx]), scenes[idx], groups=g)
+            seen = np.unique(g)
+            out.obstacle[seen], out.obstacle_id[seen], out.link[seen] = r.obstacle[seen], r.obstacle_id[seen], r.link[seen]
+            out.pose[seen] = np.where(r.pose[seen] >= 0, idx[np.maximum(r.pose[seen], 0)], -1)
+            out.surface[idx] = r.surface
     return out
 
 
@@ -865,9 +899,7 @@ def _samples(take: Take, arm: Optional[Arm], engine: Optional[Engine], rng, link
         path, T = path_poses(start, poses.reshape(-1, 6), np.repeat(rates, total, axis=0))
         path_ok = ~np.isnan(path).any(axis=2)
         if res is not None:
-            mid = path[:, :-1].reshape(-1, 6)
-            res_mid = _evaluate(engine, arm, mid, np.repeat(scenes, total * (PATH_STEPS - 1)), path_ok[:, :-1].reshape(-1),
-                                min_only=True)
+            res_mid = _way(engine, arm, path, np.repeat(scenes, total), path_ok)
     out: Dict[str, object] = {"frame_index": np.repeat(np.arange(nf), total), "sample": np.tile(np.arange(total), nf),
                               "kind": kinds * nf}
     flat = poses.reshape(-1, 6)

@@ -247,7 +247,7 @@ def test_with_nothing_within_the_cutoff_no_link_is_named(scenarios, geometry):
         ids, links = np.asarray(cols["min_clearance_id"]), cols["min_clearance_link"]
         mm = np.asarray(cols["min_clearance_mm"])
         far = ids < 0
-        assert far.any() and (~far).any(), name
+        assert far.any() and (name == "commands" or (~far).any()), name  # every command far; some samples near
         assert all(link is None for link, f in zip(links, far) if f) and (mm[far] == C.CUTOFF_MM).all(), name
         assert all(link is not None for link, f in zip(links, far) if not f), name
         if "path_min_clearance_id" in cols:

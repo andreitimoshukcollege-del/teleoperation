@@ -87,8 +87,11 @@ twins, the robot and the user's own changes. Every agent in `.claude/agents/` re
   - `just isaac-stop <twin|all>`, `just isaac-status`.
   - `just isaac-safety-batch <takes> <seed> <categories> <build> <events> <twin>`, where `takes` is rounds of the four
     categories.
-  - `just isaac-safety-batch-twins <takes> <seed>`: one batch per twin (seeds `seed` and `seed+1000`), then one dataset.
-  - `just isaac-safety-build <twins> [name] [out]`: one dataset from the batches' `.kept` lists.
+  - `just isaac-safety-batch-twins <takes> <seed>`: one batch per twin (seeds `seed` and `seed+1000`), then one dataset
+    per twin (`<name>_twin0`, `<name>_twin1`).
+  - `just isaac-safety-build <twins> [name] [out]`: one dataset per twin from the batches' `.kept` lists. Two twins record
+    at once on one clock, so one dataset of both would hold takes that overlap in time, and the builder refuses that
+    (docs/adr/0038 L). `just isaac-safety-rebuild <dataset>` rebuilds one built that way before 2026-11-24.
   - Assets: `isaac-materials-fetch`/`status`, `isaac-models-fetch <scene>`.
 - **Twin 1** uses ports +100 (6100–6109), `-1` sockets and logs, `~/data/sessions/jetrover-isaac-twin1` and
   `~/data/takes/jetrover-isaac-twin1`. Both twins run one commit from `~/repos/isaac`, and a twin refuses to start at

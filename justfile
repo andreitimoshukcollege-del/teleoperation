@@ -4129,7 +4129,7 @@ isaac-safety-batch takes="25" seed="1" categories="all" build="true" events="1-3
     progress "$n" building
     if just _isaac-safety-build "$name" "" "${kept[@]}"; then progress "$n" done "\"~/data/lerobot/jetrover-isaac-safety/$name\""; else progress "$n" failed; exit 1; fi
 
-# Internal: write `takes` (paths on the GPU machine, already checked) as one safety dataset `name` under `out` there (default ~/data/lerobot/jetrover-isaac-safety), with ~/repos/safety's builder (teleop_lerobot safety-build), in the lab's and world-models' label formats with the sidecars of docs/adr/0038 decision 6 (neutral captions, clearance from ~/isaacsim/assets/clearance when it is there). SAFETY_BUILD_ARGS, when set, adds safety-build options (just isaac-safety-build sets --split and --caption): a split build writes <name>_<k>of<K>. A build that fails is retried once into a fresh folder, a failed one set aside, and every attempt's full log kept beside it. (The one failure seen, 2026-11-15, was the LeRobot watcher deleting the half-written dataset, since fixed: it leaves the *-safety groups alone.)
+# Internal: write `takes` (paths on the GPU machine, already checked) as safety datasets named `name` under `out` there (default ~/data/lerobot/jetrover-isaac-safety), with ~/repos/safety's builder (teleop_lerobot safety-build), in the lab's and world-models' label formats with the sidecars of docs/adr/0038 decision 6 (neutral captions, clearance from ~/isaacsim/assets/clearance when it is there). One dataset per takes root (docs/adr/0038 L): one twin's takes are `name`, several twins' `name`_twin0, `name`_twin1, ..., since twins record at once on one clock and a dataset must not hold takes that overlap in time. SAFETY_BUILD_ARGS, when set, adds safety-build options (just isaac-safety-build sets --split and --caption): a split build writes <dataset>_<k>of<K>. Takes of one dataset that overlap in time are refused, with nothing written and no retry. A build that fails otherwise is retried once into a fresh folder, a failed one set aside, and every attempt's full log kept beside it. (The one failure seen, 2026-11-15, was the LeRobot watcher deleting the half-written dataset, since fixed: it leaves the *-safety groups alone.)
 [positional-arguments]
 _isaac-safety-build name out +takes:
     #!/usr/bin/env bash
@@ -4147,19 +4147,26 @@ _isaac-safety-build name out +takes:
         dest=$out/$NAME; [ "$attempt" = 1 ] || dest=$out/$NAME-retry
         log=$out/$NAME.build-$attempt.log
         # $ARGS unquoted: its words are safety-build options (checked above: no quotes, globs or $).
-        if "$HOME/isaacsim/lerobot-venv/bin/python" -m teleop_lerobot safety-build $ARGS --out "$dest" "$@" > "$log" 2>&1; then
-            grep -E "episode [0-9]+:|\[(split|timing|mix)\]" "$log" | sed 's/^/  /'
-            for d in "$dest" "$dest"_*of*; do [ -d "$d" ] && echo "[safety] dataset: $d on the GPU machine"; done
+        rc=0; "$HOME/isaacsim/lerobot-venv/bin/python" -m teleop_lerobot safety-build $ARGS --out "$dest" "$@" > "$log" 2>&1 || rc=$?
+        if [ "$rc" = 0 ]; then
+            grep -E "episode [0-9]+:|\[(stream|split|timing|mix)\]" "$log" | sed 's/^/  /'
+            # The datasets it wrote, one per takes root (twin) and each split when asked: its log's last line names them.
+            for d in $(sed -n 's/^[0-9TZ:-]* datasets: //p' "$log" | tail -1); do echo "[safety] dataset: $d on the GPU machine"; done
             echo "[safety] log $log"
             exit 0
         fi
+        if [ "$rc" = 3 ]; then  # refused (docs/adr/0038 L): the same takes would be refused again
+            grep '^\[refused\]' "$log" | head -25 >&2
+            echo "[safety] build refused: takes of one dataset overlap in time; nothing written (log $log)" >&2
+            exit 1
+        fi
         echo "[safety] build attempt $attempt failed: $(grep -vE '^(Svt|Map)' "$log" | tail -3 | tr '\n' ' ')" >&2
-        for d in "$dest" "$dest"_*of*; do [ -e "$d" ] && mv "$d" "$d.failed-$(date -u +%H%M%S)"; done
+        for d in "$dest" "$dest"_*; do case "$d" in *.failed-*) continue ;; esac; [ -e "$d" ] && mv "$d" "$d.failed-$(date -u +%H%M%S)"; done
     done
     exit 1
     REMOTE
 
-# One safety dataset from the takes several batches kept (docs/adr/0037 amendment 7): the takes listed in recordings/.drive/safety-batch.kept (twin 0's batch) and safety-batch-1.kept (twin 1's), as `twins` names them, in the order they were recorded (by their UTC names), written by the GPU machine's ~/repos/safety builder as ~/data/lerobot/jetrover-isaac-safety/<name> (default jetrover_<UTC>_<id>, as a batch names its own), with the sidecars of docs/adr/0038 decision 6 (robot/lerobot/README.md). `out` writes it under another folder there instead (absolute or ~/...). `split` above 1 writes that many smaller datasets instead, <name>_<k>of<split>, split by layout (a replay group and a layout never on two sides; docs/adr/0038 items 20 and 21), and prints each one's scenario, outcome and contact mix. `caption` is neutral (every task "move the arm") or category (the scenario's name, as datasets before 2026-11-22). A take set aside or deleted since is left out. `just isaac-safety-batch-twins` runs it after its batches; run it by hand after batches run with build=false
+# The safety datasets from the takes several batches kept, one per twin (docs/adr/0037 amendment 7, docs/adr/0038 L): the takes listed in recordings/.drive/safety-batch.kept (twin 0's batch) and safety-batch-1.kept (twin 1's), as `twins` names them, in the order they were recorded (by their UTC names), written by the GPU machine's ~/repos/safety builder as ~/data/lerobot/jetrover-isaac-safety/<name> when they are one twin's, else <name>_twin0, <name>_twin1 (default name jetrover_<UTC>_<id>, as a batch names its own), with the sidecars of docs/adr/0038 decision 6 (robot/lerobot/README.md). The twins record at once on the GPU machine's one clock, and a dataset must not hold takes that overlap in time on it: the builder writes each takes root's takes as a dataset of its own, and refuses a dataset whose takes overlap. `out` writes them under another folder there instead (absolute or ~/...). `split` above 1 writes that many smaller datasets of each instead, <dataset>_<k>of<split>, split by layout (a replay group and a layout never on two sides; docs/adr/0038 items 20 and 21), and prints each one's scenario, outcome and contact mix. `caption` is neutral (every task "move the arm") or category (the scenario's name, as datasets before 2026-11-22). A take set aside or deleted since is left out. `just isaac-safety-batch-twins` runs it after its batches; run it by hand after batches run with build=false
 [group('isaac')]
 isaac-safety-build twins="0,1" name="" out="" split="1" caption="neutral":
     #!/usr/bin/env bash
@@ -4181,11 +4188,57 @@ isaac-safety-build twins="0,1" name="" out="" split="1" caption="neutral":
     gone=$(( ${#takes[@]} - ${#present[@]} ))
     [ "$gone" = 0 ] || echo "[safety] $gone listed take(s) are no longer kept there (set aside or deleted): left out" >&2
     [ "${#present[@]}" -gt 0 ] || { echo "error: none of the listed takes is still there" >&2; exit 1; }
-    echo "[safety] building $name from ${#present[@]} take(s)$([ "{{split}}" = 1 ] || echo " as {{split}} datasets")"
+    roots=$(printf '%s\n' "${present[@]}" | awk -F/ '{print $(NF-2)}' | sort | uniq -c | awk '{printf "%s%s %s", (NR > 1 ? ", " : ""), $2, $1}')
+    echo "[safety] building $name from ${#present[@]} take(s) ($roots): one dataset per takes root$([ "{{split}}" = 1 ] || echo ", each split in {{split}}")"
     args="--caption {{caption}}"; [ "{{split}}" = 1 ] || args="$args --split {{split}}"
     SAFETY_BUILD_ARGS="$args" just _isaac-safety-build "$name" "{{out}}" "${present[@]}"
 
-# Time the safety build and check it writes what the sequential one did (docs/adr/0036 amendment 6): on the GPU machine, from a checkout of this pushed commit of its own (~/repos/safety-check, never the batches' ~/repos/safety), rebuild the first `episodes` episodes of the safety dataset `dataset` (a folder name under ~/data/lerobot/jetrover-isaac-safety, e.g. jetrover_20261122_005619_20ccb6) from the takes its meta/teleop/takes.jsonl lists, with `jobs` workers (1: the old sequential build), into ~/scratch/safety-build-check/, then compare it with the original file for file (teleop_lerobot safety-compare: every per-episode parquet and video byte for byte) and print both builds' seconds an episode. The rebuild is deleted afterwards, its log kept. Busy for minutes on every core it is given: run it when the GPU machine is free. Nothing moves
+# Rebuild a safety dataset one dataset per twin (docs/adr/0038 L), for one whose episodes overlap in time (safety-report's fault: two twins' takes built as one, before 2026-11-24): the takes the dataset `dataset` (a folder name under ~/data/lerobot/jetrover-isaac-safety) lists in its meta/teleop/takes.jsonl, in that order, with the options its report.json records (teleop_lerobot safety-options), from a checkout of this pushed commit of its own on the GPU machine (~/repos/safety-check, never the batches' ~/repos/safety), into <out>/<name>_twin0, <name>_twin1 (`name` defaults to the dataset's own, `out` to ~/data/lerobot/jetrover-isaac-safety; takes of one twin are written as <name> itself, so give another name), each split in `split` when above 1, with `jobs` workers; then teleop_lerobot safety-report on what it wrote. Refused when a take it lists is gone (set aside or deleted since). The old dataset is left as it is, and it holds the same takes: tell world-models which to read, and set it aside only with the user's go. Busy for minutes on the cores it is given. Nothing moves
+[group('isaac')]
+isaac-safety-rebuild dataset name="" out="" split="1" jobs="4":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    case "{{dataset}}" in *[!A-Za-z0-9._-]*|"") echo "error: dataset is a folder name under ~/data/lerobot/jetrover-isaac-safety" >&2; exit 1 ;; esac
+    name="{{name}}"; [ -n "$name" ] || name="{{dataset}}"
+    case "$name" in *[!A-Za-z0-9._-]*) echo "error: name may hold only letters, digits, . _ -" >&2; exit 1 ;; esac
+    case "{{out}}" in ""|/*|"~/"*) ;; *) echo "error: out is an absolute path on the GPU machine, or ~/..." >&2; exit 1 ;; esac
+    case "{{out}}" in *[!A-Za-z0-9._/~-]*) echo "error: out may hold only letters, digits, . _ - / ~" >&2; exit 1 ;; esac
+    case "{{split}}" in [1-9]|[1-9][0-9]) ;; *) echo "error: split is a number of datasets, 1 to 99" >&2; exit 1 ;; esac
+    case "{{jobs}}" in [1-9]|[1-9][0-9]) ;; *) echo "error: jobs is a number of workers, 1 to 99" >&2; exit 1 ;; esac
+    commit=$(just _pushed-commit)
+    ssh -o ConnectTimeout=10 "{{gpu_host}}" "COMMIT='$commit' DATASET='{{dataset}}' NAME='$name' OUT='{{out}}' SPLIT='{{split}}' JOBS='{{jobs}}' bash -s" <<'REMOTE'
+    set -euo pipefail
+    repo=$HOME/repos/safety-check py=$HOME/isaacsim/lerobot-venv/bin/python
+    [ -d "$repo" ] || git clone -q https://github.com/andreitimoshukcollege-del/teleoperation.git "$repo"
+    cd "$repo" && git fetch -q origin && git checkout -q "$COMMIT" && cd robot/lerobot
+    src=$HOME/data/lerobot/jetrover-isaac-safety/$DATASET
+    [ -f "$src/meta/teleop/takes.jsonl" ] || { echo "error: no safety dataset at $src" >&2; exit 1; }
+    out=${OUT:-$HOME/data/lerobot/jetrover-isaac-safety}; out=${out/#\~/$HOME}; mkdir -p "$out"
+    mapfile -t takes < <("$py" -c 'import json, sys; [print(json.loads(l)["take"]) for l in open(sys.argv[1]) if l.strip()]' "$src/meta/teleop/takes.jsonl")
+    gone=(); for t in "${takes[@]}"; do [ -f "$t/files.sha256" ] || gone+=("$t"); done
+    [ "${#gone[@]}" = 0 ] || { echo "error: ${#gone[@]} of the ${#takes[@]} takes $DATASET lists are gone (set aside or deleted), e.g. ${gone[0]}: not rebuilt" >&2; exit 1; }
+    opts=$("$py" -m teleop_lerobot safety-options "$src")
+    [ "$SPLIT" = 1 ] || opts="$opts --split $SPLIT"
+    log=$out/$NAME.rebuild-$(date -u +%Y%m%dT%H%M%SZ).log
+    echo "[rebuild] $DATASET: ${#takes[@]} take(s) at ${COMMIT:0:7} with $JOBS job(s) ($opts) as $out/$NAME, one dataset per takes root"
+    # $opts unquoted: its words are safety-build options (safety-options writes no quotes, globs or $).
+    rc=0; "$py" -m teleop_lerobot safety-build --jobs "$JOBS" $opts --out "$out/$NAME" "${takes[@]}" > "$log" 2>&1 || rc=$?
+    if [ "$rc" != 0 ]; then
+        grep '^\[refused\]' "$log" | head -25 >&2 || true
+        echo "[rebuild] build failed (exit $rc): $(grep -vE '^(Svt|Map|\[refused\])' "$log" | tail -3 | tr '\n' ' ')" >&2
+        echo "[rebuild] log $log" >&2
+        exit 1
+    fi
+    grep -E "\[(stream|split|timing|mix)\]" "$log" | sed 's/^/  /'
+    read -r -a written <<< "$(sed -n 's/^[0-9TZ:-]* datasets: //p' "$log" | tail -1)"
+    for d in "${written[@]}"; do echo "[rebuild] dataset: $d on the GPU machine"; done
+    echo "[rebuild] log $log"
+    rc=0; "$py" -m teleop_lerobot safety-report "${written[@]}" | sed 's/^/  /' || rc=$?
+    echo "[rebuild] $src is left as it is, and holds the same takes: tell world-models which to read, and set it aside only with the user's go"
+    exit $rc
+    REMOTE
+
+# Time the safety build and check it writes what the sequential one did (docs/adr/0036 amendment 6): on the GPU machine, from a checkout of this pushed commit of its own (~/repos/safety-check, never the batches' ~/repos/safety), rebuild the first `episodes` episodes of the safety dataset `dataset` (a folder name under ~/data/lerobot/jetrover-isaac-safety, e.g. jetrover_20261123_215338_c00c5a) from the takes its meta/teleop/takes.jsonl lists, with `jobs` workers (1: the old sequential build), into ~/scratch/safety-build-check/, then compare it with the original file for file (teleop_lerobot safety-compare: every per-episode parquet and video byte for byte) and print both builds' seconds an episode. The rebuild is deleted afterwards, its log kept. A dataset of several twins' takes (built as one before 2026-11-24) is rebuilt one dataset per twin, so it cannot be compared: rebuild it with just isaac-safety-rebuild. Busy for minutes on every core it is given: run it when the GPU machine is free. Nothing moves
 [group('isaac')]
 isaac-safety-build-check dataset episodes="40" jobs="8":
     #!/usr/bin/env bash
@@ -4202,7 +4255,7 @@ isaac-safety-build-check dataset episodes="40" jobs="8":
     src=$HOME/data/lerobot/jetrover-isaac-safety/$DATASET
     [ -f "$src/meta/teleop/takes.jsonl" ] || { echo "error: no safety dataset at $src" >&2; exit 1; }
     out=$HOME/scratch/safety-build-check/$DATASET-first$N-jobs$JOBS
-    mkdir -p "$(dirname "$out")"; rm -rf "$out" "$out.prepare"
+    mkdir -p "$(dirname "$out")"; rm -rf "$out" "$out.prepare" "$out"_twin*
     mapfile -t takes < <(head -n "$N" "$src/meta/teleop/takes.jsonl" | "$py" -c 'import json, sys; [print(json.loads(l)["take"]) for l in sys.stdin if l.strip()]')
     # The reference's own build options (docs/adr/0038): from its report, or, built before it, its category captions
     # (teleop_lerobot safety-options; a report from before 2026-11-23 names them as it did then).
@@ -4210,6 +4263,10 @@ isaac-safety-build-check dataset episodes="40" jobs="8":
     echo "[check] rebuilding the first ${#takes[@]} episode(s) of $DATASET with $JOBS job(s) at ${COMMIT:0:7} ($opts)"
     start=$(date +%s.%N)
     "$py" -m teleop_lerobot safety-build --jobs "$JOBS" $opts --out "$out" "${takes[@]}" > "$out.log" 2>&1 || { echo "[check] build failed: $(grep -vE '^(Svt|Map)' "$out.log" | tail -5)" >&2; exit 1; }
+    if [ ! -d "$out" ]; then  # one dataset per takes root (docs/adr/0038 L): the reference mixes twins
+        echo "[check] $DATASET holds takes of several twins, rebuilt one dataset each ($(grep -o '\[stream\] [^:]*' "$out.log" | cut -d' ' -f2 | tr '\n' ' ')): nothing to compare it with; rebuild it with just isaac-safety-rebuild $DATASET" >&2
+        rm -rf "$out"_twin*; exit 1
+    fi
     end=$(date +%s.%N)
     # Seconds an episode: this build's wall clock, and both logs' from their first episode line to the Nth (the original's
     # log is the batch's, beside its dataset).
@@ -4294,7 +4351,7 @@ isaac-twins-up n="2" scene="jetrover-bench":
 isaac-twins-down:
     just isaac-stop all
 
-# Two twins, one dataset (docs/adr/0037 amendment 7): `just isaac-safety-batch <takes> <seed+1000*N> <categories> false <events> <N>` on each of twins 0 to n-1 at once (they must run: just isaac-twins-up), each batch's output prefixed [twin N] and kept in recordings/.drive/safety-batch-twins-<N>.log, then, if build=true, one dataset from every take they kept (just isaac-safety-build). Each twin's seeds are its own (take seeds seed*100000+n, so seed and seed+1000 never meet). Stop a twin's batch with gpu-ui, or recordings/.drive/STOP (twin 0) and STOP-1 (twin 1): it stops after the take in progress, and the dataset is still built from what both kept. Only Isaac's arms move
+# Two twins, a dataset each (docs/adr/0037 amendment 7, docs/adr/0038 L): `just isaac-safety-batch <takes> <seed+1000*N> <categories> false <events> <N>` on each of twins 0 to n-1 at once (they must run: just isaac-twins-up), each batch's output prefixed [twin N] and kept in recordings/.drive/safety-batch-twins-<N>.log, then, if build=true, one dataset per twin from the takes it kept, jetrover_<UTC>_<id>_twin0 and _twin1 (just isaac-safety-build: the twins record at once on one clock, and one dataset of both would hold takes that overlap in time). Each twin's seeds are its own (take seeds seed*100000+n, so seed and seed+1000 never meet). Stop a twin's batch with gpu-ui, or recordings/.drive/STOP (twin 0) and STOP-1 (twin 1): it stops after the take in progress, and the datasets are still built from what both kept. Only Isaac's arms move
 [group('isaac')]
 isaac-safety-batch-twins takes="25" seed="1" n="2" categories="all" build="true" events="1-3" replays="0" scene="jetrover-bench":
     #!/usr/bin/env bash

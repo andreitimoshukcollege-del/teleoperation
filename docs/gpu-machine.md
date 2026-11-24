@@ -35,7 +35,8 @@ they need. Nothing here is edited by hand, except a take list (`scenarios.txt`).
 │   └── training/                    train-sim-<run>.log and the network datasets' fetch log, with their pid files
 ├── repos/                           checkouts the recipes keep, each at the commit it was last asked to run:
 │                                    isaac (the Isaac hosts), lerobot (the watcher), safety (the safety batch's checker),
-│                                    datasets, simfit, lerobot-test
+│                                    safety-check (isaac-safety-build-check, isaac-safety-rebuild), datasets, simfit,
+│                                    lerobot-test
 └── teleoperation/                   the trainer's checkout (just gpu-train): its trainer/.venv and trainer/runs/<run>/
 ```
 

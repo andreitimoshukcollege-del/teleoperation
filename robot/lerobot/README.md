@@ -21,7 +21,8 @@ watcher's log and pid file are in `~/logs/lerobot/`). Beside LeRobot's files, `m
 the take behind each episode, and `episode_<n>.timing.jsonl` gives each frame's source times and its state's and
 action's ages. At the dataset's top, as the lab's `record_jetrover.py` writes them: `capture_timing.jsonl` (one line
 per frame of every episode, its field names) and `raw_ros_events.jsonl` (every take's commands as `action` and
-readings as `state`, its bridge's fields). Their times are the session's one clock, CLOCK_MONOTONIC; the lab's
+readings as `state`, its bridge's fields, and since 2026-11-24 the episode in `episode_index`, a field the lab's recorder
+does not write). Their times are the session's one clock, CLOCK_MONOTONIC; the lab's
 `*_wall_ns` fields are null, since a take keeps no wall clock per record. Takes that could not be converted are in `~/data/lerobot/skipped.jsonl`, with the reason.
 
 | Module | |
@@ -38,19 +39,32 @@ Tests: `python -m pytest robot/lerobot/tests` anywhere (the LeRobot round trip i
 
 ## Safety datasets: labels and sidecars (docs/adr/0036 amendment 1, docs/adr/0038 decision 6)
 
-The twin's scripted takes become one dataset per batch, `~/data/lerobot/jetrover-isaac-safety/jetrover_<UTC>_<id>/`
-(`just isaac-safety-build <twins> <name> <out> <split> <caption>`, arguments by position; a split of K writes K datasets
-`<name>_<k>of<K>` instead, by layout). `observation.images.front`
-is the twin's wrist camera. Every episode's task is `move the arm` (`--caption category` gives the scenario's name, as
+The twin's scripted takes become one dataset per batch and twin, `~/data/lerobot/jetrover-isaac-safety/jetrover_<UTC>_<id>/`
+(`just isaac-safety-build <twins> <name> <out> <split> <caption>`, arguments by position; two twins' takes are two datasets,
+`<name>_twin0` and `<name>_twin1`; a split of K writes K datasets of each, `<name>_<k>of<K>` or `<name>_twin0_<k>of<K>`, by
+layout). `observation.images.front` is the twin's wrist camera. Every episode's task is `move the arm` (`--caption category` gives the scenario's name, as
 datasets built before 2026-11-22 have it); the scenario is in `meta/teleop/episodes.jsonl`.
+
+**One dataset holds one collection stream** (docs/adr/0038 L, 2026-11-24). `capture_timing.jsonl` and
+`raw_ros_events.jsonl` keep one clock across a dataset, and a reader that picks the raw log's commands by time
+(world-models' path checkpoints) takes whichever episode's were recording then. The twins record at once on the GPU
+machine's one CLOCK_MONOTONIC, so `safety-build` writes the takes of each takes root (twin 0's `~/data/takes/jetrover-isaac`,
+twin 1's `jetrover-isaac-twin1`) as a dataset of its own: `<name>` when all come from one root, else `<name>_twin<N>` (a root
+not named for a twin gives its folder's name), each split on its own. It refuses any dataset whose takes overlap in time on
+that clock (exit 3, `[refused]` lines naming every pair, nothing written); a take's span runs from the earliest to the
+latest time its lines in the two files hold. `safety-report` places each episode the same way, from the files (by
+`episode_index`, or by each take's `ready` line in a dataset built before it), and faults overlapping pairs.
+`just isaac-safety-rebuild <dataset>` rebuilds a dataset built from two twins before then: its takes, one dataset per twin,
+with the options its report records.
 
 **Splits keep each replay group and each layout inside one split part.** A source take and its replays send the same
 commands, and takes of one layout share its scene, so either in two parts leaks between them. A split build never parts
 episodes that share an `RP` group, a layout hash, or a scene and `WL` seed. `teleop_lerobot safety-report DATASET...`
 checks any set of datasets the same way: give it a split build's parts, or every dataset of a train, val and test set at
 once. It faults (exit 1) when a replay group, a layout hash, or a scene's layout seed is in more than one of them, naming
-the datasets and episodes; also on label files that disagree, a replay group without one source, unavoidable ranges over
-an unsafe frame, a missing file, or a dataset given twice. Datasets from before docs/adr/0038 have no sidecars to check.
+the datasets and episodes; also on episodes of one dataset that overlap in time, label files that disagree, a replay group
+without one source, unavoidable ranges over an unsafe frame, a missing file, or a dataset given twice. Datasets from before
+docs/adr/0038 have no sidecars to check, only their episodes' times.
 
 **The checks** (`safety-check`). The four old categories are checked as before. A `mixed` take is set aside (to
 `_discarded/mixed/`, its reasons in `safety-check.json`) only when it is broken: it cannot be read as an episode (no

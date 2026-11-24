@@ -37,10 +37,11 @@ def pulses(text):
     return out
 
 
-def cmd_take(root, commands, gap=0.010, moving=None, name="20261124T100000Z-take001"):
+def cmd_take(root, commands, gap=0.010, moving=None, name="20261124T100000Z-take001", host_check=None):
     """The arm at zero with its fingers open throughout (VQ and RI), a box wall ``gap`` beyond the left pad's tip along x, a
     cube asset (``moving``: (t0 ms, y0, t1 ms, y1) of its WO poses, else at y 0.4), a parked object, a table and the floor.
-    ``commands``: (t ms, outcome, targets); an accepted one gets its RO at its arrival."""
+    ``commands``: (t ms, outcome, targets); an accepted one gets its RO 1 us after its arrival, a clamped one ``(t ms, "C",
+    targets, (sent targets, alpha))`` the sent targets' RO and its JK. ``host_check``: the session's HK fields."""
     take = os.path.join(root, "mixed", name)
     os.makedirs(take)
     sid = session_json(take, "jetrover-session", 1, "isaac", "mixed")
@@ -58,10 +59,15 @@ def cmd_take(root, commands, gap=0.010, moving=None, name="20261124T100000Z-take
                    {"motorId": 10, "role": "GripperMain"}, {"motorId": 5, "role": "GripperRotate"}]}, f)
     zero = ";".join(f"{m}:{ZERO[m]}:596.831" for m in (1, 2, 3, 4, 10, 5))
     rows = [["RO", 900 * MS, zero], ["KA", 800 * MS, 123_000_000, 10_000_000]]
-    for seq, (t, outcome, text) in enumerate(commands):
+    if host_check:
+        rows.append(["HK", 700 * MS] + list(host_check))
+    for seq, (t, outcome, text, *clamp) in enumerate(commands):
         rows.append(["JC", t * MS, t * MS, seq, 50_000_000 + t * 10_000, outcome, text])
         if outcome == "A":
             rows.append(["RO", t * MS + 1000, ";".join(f"{m}:{v}:596.831" for m, v in pulses(text).items())])
+        elif outcome == "C":
+            rows.append(["RO", t * MS + 1000, ";".join(f"{m}:{v}:596.831" for m, v in pulses(clamp[0][0]).items())])
+            rows.append(["JK", t * MS + 2000, seq, clamp[0][1]])
     for k in range(0, 160):
         t = (900 + 20 * k) * MS
         rows.append(["RI", t + 5 * MS, ";".join(f"{m}:1:{ZERO[m]}" for m in (1, 2, 3, 4, 5, 10))])
@@ -181,56 +187,125 @@ def test_the_way_there_ramps_each_servo_at_its_own_speed():
 
 # --- a take end to end -------------------------------------------------------------------------------------------------------------
 
-def test_every_action_event_gets_its_row_and_its_distances(scenarios, geometry):
+def rows_of(c):
+    """commands.parquet's columns of one episode as a DataFrame, as the pilot check reads them."""
+    pd = pytest.importorskip("pandas")
+    names = list(K.SERVO_NAMES) + ["sent." + n for n in K.SERVO_NAMES]
+    return pd.DataFrame({"episode_index": 0, "received_ns": c["received_ns"],
+                         "sent_ns": pd.array(c["sent_ns"], dtype="Int64"), **{n: c[n] for n in names}})
+
+
+def frames_of(take):
+    pd = pytest.importorskip("pandas")
+    return pd.DataFrame({"episode_index": 0, "frame_index": range(len(take.frames)),
+                         "sensed_ns": [f.timing["sensed"] for f in take.frames], "action": [f.action for f in take.frames]})
+
+
+def test_every_command_robothost_judged_gets_its_row_and_its_distances(scenarios, geometry):
     path = cmd_take(scenarios, COMMANDS)
     take = read_take(path)
     t = K.compute(take, geometry, layout_seed=777)
     c = t.commands
-    # One row per action event of raw_ros_events.jsonl: the RO before any command, an RO per accepted command, the refused one.
+    # One row per command RobotHost judged (not the stale ones, not RobotHost's own RO before any command), at its arrival.
+    assert t.unavailable is None and len(c["received_ns"]) == 4
+    assert list(c["received_ns"]) == [1000 * MS, 1100 * MS, 1200 * MS, 2000 * MS]
+    assert c["outcome"] == ["A", "A", "R", "A"] and list(c["accepted"]) == [True, True, False, True]
+    assert c["seq"] == [1, 2, 3, 5]
+    # servo_*: the command received (an accepted one's RO exactly; the refused one as the plant converts it). sent.*: what went to
+    # the servos, the refused one's the RO in force (the 1.1 s command's), as the dataset's action and raw events have it.
+    received = [[c[n][i] for n in K.SERVO_NAMES] for i in range(4)]
+    assert received[2] == pytest.approx([pulses(COMMANDS[3][2])[m] for m in (1, 2, 3, 4, 5, 10)])
+    sent = [[c["sent." + n][i] for n in K.SERVO_NAMES] for i in range(4)]
     raw = [e for e in raw_events(take) if e["type"] == "action"]
-    assert t.unavailable is None and len(c["received_ns"]) == len(raw) == 5
-    assert list(c["received_ns"]) == [e["pc_received_mono_ns"] for e in raw]
-    assert list(c["received_ns"]) == [900 * MS, 1000 * MS + 1000, 1100 * MS + 1000, 1200 * MS, 2000 * MS + 1000]
-    assert [[c[n][i] for n in K.SERVO_NAMES] for i in range(5)] == [e["values"] for e in raw]  # unchanged
-    assert c["outcome"] == ["A", "A", "A", "R", "A"] and list(c["accepted"]) == [True, True, True, False, True]
-    assert c["seq"] == [None, 1, 2, 3, 5] and "sent_ns" not in c and "delivered_ns" not in c
-    # Before the first reading (905 ms): the commanded pose's distances, but no way there.
-    assert np.isnan(c["state.servo_1"][0]) and c["min_clearance_mm"][0] == pytest.approx(10.0, abs=0.01)
-    assert np.isnan(c["path_min_clearance_mm"][0]) and c["path_min_step"][0] == 0
-    for i in range(1, 5):
+    by_time = {e["pc_received_mono_ns"]: e["values"] for e in raw}
+    assert c["sent_ns"] == [1000 * MS + 1000, 1100 * MS + 1000, 1100 * MS + 1000, 2000 * MS + 1000]
+    assert sent == [by_time[ns] for ns in c["sent_ns"]] and sent[2] == sent[1] == received[1]
+    assert [received[i] == sent[i] for i in range(4)] == [True, True, False, True]
+    assert list(c["clamp_fraction"]) == [1.0, 1.0, 0.0, 1.0]
+    for i in range(4):
         assert [c["state." + n][i] for n in K.SERVO_NAMES] == pytest.approx([ZERO[m] for m in (1, 2, 3, 4, 5, 10)])
     frame_t = [f.timing["sensed"] for f in take.frames]
-    assert c["frame_index"][0] is None and c["frame_index"][1] == 0  # before the first frame; at it (1000 ms)
-    assert c["frame_index"][2] == max(i for i, ft in enumerate(frame_t) if ft <= 1100 * MS + 1000)
-    # The pilot check: each frame's action is the last row received at or before the frame's capture.
-    pd = pytest.importorskip("pandas")
-    rows = pd.DataFrame({"episode_index": 0, "received_ns": c["received_ns"], **{n: c[n] for n in K.SERVO_NAMES}})
-    frames = pd.DataFrame({"episode_index": 0, "frame_index": range(len(take.frames)), "sensed_ns": frame_t,
-                           "action": [f.action for f in take.frames]})
+    assert c["frame_index"][0] == 0  # at the first frame (1000 ms)
+    assert c["frame_index"][1] == max(i for i, ft in enumerate(frame_t) if ft <= 1100 * MS)
+    # The pilot check: each frame's action is the newest command sent at or before the frame's capture.
+    rows, frames = rows_of(c), frames_of(take)
     assert K.action_agreement(rows, frames) == (len(frame_t), len(frame_t), [])
     frames.at[3, "action"] = [v + 1 for v in frames.at[3, "action"]]
     assert K.action_agreement(rows, frames) == (len(frame_t) - 1, len(frame_t), [(0, 3)])
+    # The received command is not the action: the refused one's frames would disagree.
+    wrong = rows.copy()
+    for n in K.SERVO_NAMES:
+        wrong["sent." + n] = wrong[n]
+    assert K.action_agreement(wrong, frames_of(take))[0] < len(frame_t)
+    # The sent pose's distances: an accepted command's are its own, a refused one sent nothing.
+    for name in ("min_clearance_mm", "path_min_clearance_mm"):
+        got, own = np.asarray(c["sent_" + name]), np.asarray(c[name])
+        assert got[[0, 1, 3]] == pytest.approx(own[[0, 1, 3]]) and np.isnan(got[2])
     # The commanded zero pose is the frames' pose: the same distances as the per-frame clearance, link by link.
     frame = C.compute(take, geometry)
     for li, link in enumerate(frame.links):
-        assert c[f"clearance_mm.{link}"][1] == frame.obstacle_mm[0][li]  # row 1: the first accepted command, the zero pose
-        assert c[f"clearance_id.{link}"][1] == frame.obstacle_id[0][li]
-        assert c[f"surface_mm.{link}"][1] == pytest.approx(frame.surface_mm[0][li], nan_ok=True)
-    assert c["min_clearance_mm"][1] == pytest.approx(10.0, abs=0.01) and c["min_clearance_id"][1] == 31
-    assert c["min_clearance_link"][1] == "left_finger" and c["min_surface_mm"][1] == pytest.approx(min(frame.surface_mm[0][1:]))
+        assert c[f"clearance_mm.{link}"][0] == frame.obstacle_mm[0][li]  # row 0: the first accepted command, the zero pose
+        assert c[f"clearance_id.{link}"][0] == frame.obstacle_id[0][li]
+        assert c[f"surface_mm.{link}"][0] == pytest.approx(frame.surface_mm[0][li], nan_ok=True)
+    assert c["min_clearance_mm"][0] == pytest.approx(10.0, abs=0.01) and c["min_clearance_id"][0] == 31
+    assert c["min_clearance_link"][0] == "left_finger" and c["min_surface_mm"][0] == pytest.approx(min(frame.surface_mm[0][1:]))
     # Turning the yaw 0.3 rad: 0.12 s at 2.5 rad/s, the way there starting next to the wall and leaving it.
-    assert c["path_s"][2] == pytest.approx(0.3 * PULSE_PER_RADIAN / 596.831, abs=1e-6) and c["path_s"][1] == 0
-    assert c["path_s"][3] == pytest.approx(0.4 / 2.5, abs=1e-6)  # refused: its own speed, the elbow's 0.4 rad the longest
-    assert c["path_min_clearance_mm"][2] < c["min_clearance_mm"][2] and 1 <= c["path_min_step"][2] < K.PATH_STEPS
-    assert c["path_min_clearance_id"][2] == 31 and c["path_min_clearance_link"][2] in ("left_finger", "right_finger")
+    assert c["path_s"][1] == pytest.approx(0.3 * PULSE_PER_RADIAN / 596.831, abs=1e-6) and c["path_s"][0] == 0
+    assert c["path_s"][2] == pytest.approx(0.4 / 2.5, abs=1e-6)  # refused: its own speed, the elbow's 0.4 rad the longest
+    assert c["path_min_clearance_mm"][1] < c["min_clearance_mm"][1] and 1 <= c["path_min_step"][1] < K.PATH_STEPS
+    assert c["path_min_clearance_id"][1] == 31 and c["path_min_clearance_link"][1] in ("left_finger", "right_finger")
     engine, arm = K.Engine(C.TakeWorld(path, geometry)), K.Arm(path)
     start = np.array([[ZERO[m] for m in (1, 2, 3, 4, 5, 10)]])
-    want, _ = K.path_poses(start, np.array([[c[n][2] for n in K.SERVO_NAMES]]), np.full((1, 6), 596.831))  # the RO's rate
-    res = engine.distances(arm.values(want[0]), [engine.scene(1100 * MS + 1000)] * K.PATH_STEPS)
-    assert c["path_min_clearance_mm"][2] == pytest.approx(round(res.obstacle.min() * 1000, 2))
-    assert c["path_min_surface_mm"][2] == pytest.approx(round(np.nanmin(res.surface) * 1000, 2))
+    want, _ = K.path_poses(start, np.array([[c[n][1] for n in K.SERVO_NAMES]]), np.full((1, 6), 596.831))  # the RO's rate
+    res = engine.distances(arm.values(want[0]), [engine.scene(1100 * MS)] * K.PATH_STEPS)
+    assert c["path_min_clearance_mm"][1] == pytest.approx(round(res.obstacle.min() * 1000, 2))
+    assert c["path_min_surface_mm"][1] == pytest.approx(round(np.nanmin(res.surface) * 1000, 2))
     pm, m = np.asarray(c["path_min_clearance_mm"]), np.asarray(c["min_clearance_mm"])
-    assert (pm[1:] <= m[1:] + 1e-9).all()
+    assert (pm <= m + 1e-9).all()
+
+
+def test_a_clamped_command_has_what_was_sent_and_how_far(scenarios, geometry):
+    # RobotHost clamping (HK measured clamp 1): the 1.1 s command, a yaw turn of 0.3 rad, sent 40% of the way, a 1.2 s one refused.
+    commands = [(1000, "A", targets()), (1100, "C", targets({1: 0.3}), (targets({1: 0.12}), 0.4)),
+                (1200, "R", targets({1: -0.2, 3: 0.4})), (2000, "A", targets())]
+    path = cmd_take(scenarios, commands, host_check=("measured", "clamp", 1))
+    take = read_take(path)
+    c = K.compute(take, geometry, layout_seed=777).commands
+    assert c["outcome"] == ["A", "C", "R", "A"] and list(c["accepted"]) == [True, False, False, True]
+    assert list(c["clamp_fraction"]) == [1.0, 0.4, 0.0, 1.0]
+    clamped = [pulses(targets({1: 0.12}))[m] for m in (1, 2, 3, 4, 5, 10)]
+    assert [c[n][1] for n in K.SERVO_NAMES] == pytest.approx([pulses(targets({1: 0.3}))[m] for m in (1, 2, 3, 4, 5, 10)])
+    assert [c["sent." + n][1] for n in K.SERVO_NAMES] == clamped and [c["sent." + n][2] for n in K.SERVO_NAMES] == clamped
+    assert c["sent_ns"][1] == c["sent_ns"][2] == 1100 * MS + 1000
+    # The clamped point's distances, and the way there from the measured state at its RO's rate.
+    engine, arm = K.Engine(C.TakeWorld(path, geometry)), K.Arm(path)
+    moving = ~engine.fixed
+    pose = np.array([clamped])
+    res = engine.distances(arm.values(pose), [engine.scene(1100 * MS)])
+    assert c["sent_min_clearance_mm"][1] == pytest.approx(round(res.obstacle[0, moving].min() * 1000, 2), abs=0.011)
+    way, _ = K.path_poses(np.array([[ZERO[m] for m in (1, 2, 3, 4, 5, 10)]]), pose, np.full((1, 6), 596.831))
+    res = engine.distances(arm.values(way[0]), [engine.scene(1100 * MS)] * K.PATH_STEPS)
+    assert c["sent_path_min_clearance_mm"][1] == pytest.approx(round(res.obstacle[:, moving].min() * 1000, 2), abs=0.011)
+    assert c["sent_min_clearance_mm"][1] != c["min_clearance_mm"][1]  # not the received command's
+    assert np.isnan(c["sent_min_clearance_mm"][2]) and c["sent_min_clearance_mm"][0] == c["min_clearance_mm"][0]
+    # The action is the clamped point, and the pilot check holds.
+    assert K.action_agreement(rows_of(c), frames_of(take))[:2] == (len(take.frames),) * 2
+    e = sidecars.episode(take, sidecars.Options(geometry_dir=geometry))
+    assert e.line["hostCheck"] == {"start": "measured", "onFail": "clamp", "version": 1}
+
+
+def test_a_refused_commands_received_values_need_robothosts_own_conversion(scenarios):
+    from conftest import jetrover_take, relay_pulse
+    from teleop_lerobot.takes import TakeError
+
+    motion = {1: 0.1, 2: 0.3, 3: -1.2, 4: 0.0, 10: 0.2, 5: 0.0}
+    cmds = [(ms, "R" if 2000 <= ms < 2100 else "A", motion) for ms in range(1007, 3001, 20)]
+    off = lambda m, v: relay_pulse(m, v) + (1.0 if m == 3 else 0.0)
+    take = read_take(jetrover_take(scenarios, commands=cmds, relay=off))
+    with pytest.raises(TakeError, match="conversion has changed"):
+        K.compute(take, None)
+    e = sidecars.episode(take, sidecars.Options(geometry_dir=None))
+    assert e.commands is None and "conversion has changed" in e.line["commandClearanceUnavailable"]
 
 
 def test_a_command_into_the_wall_reads_negative(scenarios, geometry):
@@ -268,7 +343,7 @@ def test_object_poses_are_the_ones_at_each_commands_arrival(scenarios, geometry)
                 want = C.link_object_distance(world, int(t), li, 32)
                 assert c[f"clearance_mm.{link}"][i] == pytest.approx(round(want * 1000, 2), abs=0.011)
                 seen += 1
-    assert seen >= 2 and c["min_clearance_mm"][2] > c["min_clearance_mm"][3]  # the cube closing in (rows: RO@900 first)
+    assert seen >= 2 and c["min_clearance_mm"][1] > c["min_clearance_mm"][2]  # the cube closing in
 
 
 def test_the_pose_samples_of_every_frame(scenarios, geometry):
@@ -326,7 +401,7 @@ def test_without_geometry_the_rows_stay_and_the_distances_are_nan(scenarios):
     take = read_take(cmd_take(scenarios, COMMANDS))
     t = K.compute(take, None, layout_seed=777)
     assert t.unavailable == "no geometry folder given"
-    assert len(t.commands["seq"]) == 5 and np.isnan(t.commands["min_clearance_mm"]).all()
+    assert len(t.commands["seq"]) == 4 and np.isnan(t.commands["min_clearance_mm"]).all()
     assert np.isfinite(np.asarray(t.commands["servo_1"])).all()
     kinds = np.array(t.samples["kind"])
     poses = np.array([t.samples[n] for n in K.SERVO_NAMES]).T
@@ -343,14 +418,18 @@ def test_a_build_writes_both_files_and_safety_report_sums_them_up(scenarios, geo
     root = str(tmp_path / "ds")
     rep = sidecars.write(root, [(4, e)], sidecars.Options(geometry_dir=geometry))
     assert rep["options"]["commandClearance"] is True
+    # A take without HK (every take before RobotHost's clamping): its RobotHost refused a failing command.
+    assert e.line["hostCheck"] == {"start": "measured", "onFail": "refuse"}
+    assert rep["options"]["hostCheck"] == {"start": "measured", "onFail": "refuse"}
     teleop = os.path.join(root, "meta", "teleop")
     cmd = pd.read_parquet(os.path.join(teleop, "commands.parquet"))
     smp = pd.read_parquet(os.path.join(teleop, "pose_samples.parquet"))
-    assert len(cmd) == 5 and set(cmd["episode_index"]) == {4} and len(smp) == len(take.frames) * 32
-    assert str(cmd["frame_index"].dtype) == "Int64" and cmd["frame_index"].isna().sum() == 1
+    assert len(cmd) == 4 and set(cmd["episode_index"]) == {4} and len(smp) == len(take.frames) * 32
+    assert str(cmd["frame_index"].dtype) == "Int64" and cmd["frame_index"].isna().sum() == 0
     assert str(cmd["min_clearance_id"].dtype) == "Int32" and cmd["clearance_id.base_link"].isna().all()  # none within the cutoff
-    assert cmd["accepted"].dtype == bool and list(cmd["outcome"]) == ["A", "A", "A", "R", "A"]
-    assert str(cmd["seq"].dtype) == "Int64" and cmd["seq"].isna().sum() == 1
+    assert cmd["accepted"].dtype == bool and list(cmd["outcome"]) == ["A", "A", "R", "A"]
+    assert str(cmd["seq"].dtype) == "Int64" and cmd["seq"].isna().sum() == 0 and str(cmd["sent_ns"].dtype) == "Int64"
+    assert {str(cmd[c].dtype) for c in ("clamp_fraction",) + tuple("sent." + n for n in K.SERVO_NAMES)} == {"float64"}
     # Every distance column is a float64 in every sidecar, NaN for missing: until 2026-11-25 clearance_mm.<link> and
     # surface_mm.<link> of the links whose names end in "_link" were text in these two files.
     frames = pd.read_parquet(os.path.join(teleop, "frames.parquet"))
@@ -369,13 +448,13 @@ def test_a_build_writes_both_files_and_safety_report_sums_them_up(scenarios, geo
         .to_parquet(os.path.join(data, "file-000.parquet"))
     lines, faults = [], []
     sidecars.command_line(teleop, "ds", [{**e.line, "episode": 4}], lines, faults)
-    assert faults == [] and "commands.parquet 5 rows (1 episodes)" in lines[0] and "commanded pose into an obstacle" in lines[0]
-    assert "near median" in lines[0]
-    assert f"last command received before it in {len(take.frames)} of {len(take.frames)} frames" in lines[0]
+    assert faults == [] and "commands.parquet 4 rows (1 episodes)" in lines[0] and "commanded pose into an obstacle" in lines[0]
+    assert "near median" in lines[0] and "outcomes A 3, C 0, R 1 (clamped 0.0%)" in lines[0]
+    assert f"the newest command sent at or before it in {len(take.frames)} of {len(take.frames)} frames" in lines[0]
     pd.DataFrame({"episode_index": 4, "frame_index": range(len(take.frames)), "action": [[0.0] * 6] * len(take.frames)}) \
         .to_parquet(os.path.join(data, "file-000.parquet"))
     sidecars.command_line(teleop, "ds", [{**e.line, "episode": 4}], lines, faults)
-    assert len(faults) == 1 and "the action is not the last command" in faults[0]
+    assert len(faults) == 1 and "the action is not the newest command sent" in faults[0]
     faults.clear()
     off = sidecars.episode(take, sidecars.Options(geometry_dir=geometry, command_clearance=False))
     assert off.commands is None and "poseSampleSeed" not in off.line

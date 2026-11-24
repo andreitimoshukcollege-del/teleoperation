@@ -5,9 +5,9 @@ The take is a session (trainer/contract/SESSION_FORMAT.md):
 
 - its joints come from ``robothost.jlog``: ``RO``, ``RI`` and ``JC`` for the JetRover (version 1), and ``QS``, ``AO``
   and ``JC`` for the FR3 Duo (version 2);
-- the action is the command the operator sent, in the units the plant sends its arm: every ``RO`` (JetRover, relay pulses)
-  or ``AO`` (FR3 Duo), what RobotHost passed on for an accepted command, and every command RobotHost refused as the plant
-  would have turned it into those units (docs/adr/0038 "M, motion", 2026-11-24);
+- the action is the newest command sent, in the units the plant sends its arm: the newest ``RO`` (JetRover, relay pulses)
+  or ``AO`` (FR3 Duo), the target the arm is heading for. A command RobotHost clamped counts (its ``RO`` is the clamped
+  point), one it refused does not (docs/adr/0038 L, "Sent commands");
 - its frames come from ``isaac.jlog`` (Isaac's renderer) or ``camera.jlog`` (the real robot's CameraHost), with ``VF``
   records pointing into TFRM sidecars.
 
@@ -37,15 +37,14 @@ FR3_NAMES = ([f"left_joint{i}" for i in range(1, 8)] + ["left_gripper"]
 
 # How RobotHost turns a JetRover joint command into relay pulses (GenericArmPlantConfig.Default, GenericArmPlant.ApplyJointTargets):
 # an arm joint's angle plus its profile's zeroOffsetRadians at 1000 pulses per 240 degrees from 500, within its range; the
-# gripper's 0..1 fraction from its open to its closed pulse. The action of a command RobotHost did not pass on is built with it,
-# once the take's own accepted commands have shown it is RobotHost's (within PULSE_TOLERANCE: the plant computes in float32).
+# gripper's 0..1 fraction from its open to its closed pulse. commands.parquet gives a command RobotHost did not pass on as given
+# (refused or clamped) in pulses with it, once the take's own accepted commands have shown it is RobotHost's (check_conversion,
+# within PULSE_TOLERANCE: the plant computes in float32).
 PULSE_PER_RADIAN = 1000.0 / math.radians(240.0)
 ZERO_PULSE = 500.0
 PULSE_RANGE = (0.0, 1000.0)
 GRIPPER_OPEN_PULSE, GRIPPER_CLOSED_PULSE = 116.0, 645.0
 PULSE_TOLERANCE = 0.01
-# The FR3 Duo's plant clamps a command's targets to the soft limits (a hand's fraction to 0..1) and records them in float32.
-FR3_TOLERANCE = 1e-5
 
 SOURCES = {"robot": "real", "isaac": "isaac"}  # session.json source -> the dataset folder's; nothing else has frames
 FRAMES = {"real": ("camera", "camera"), "isaac": ("isaac", "isaac")}  # source -> (frames log writer, sidecar folder)
@@ -205,7 +204,7 @@ def _jetrover_pulses(path: str):
                 hi = ZERO_PULSE + float(j["maxangleradians"]) * PULSE_PER_RADIAN
             joints[int(j["motorid"])] = (str(j["role"]).lower() == "grippermain", float(j.get("zerooffsetradians") or 0.0), lo, hi)
     except (OSError, ValueError, KeyError, TypeError) as e:
-        raise TakeError(f"{path}: RobotHost refused a command, and its action needs robot-profile.json ({e})")
+        raise TakeError(f"{path}: a command RobotHost did not pass on as given needs robot-profile.json to be put in pulses ({e})")
 
     def pulses(targets: str) -> Dict[int, float]:
         out: Dict[int, float] = {}
@@ -223,55 +222,14 @@ def _jetrover_pulses(path: str):
     return pulses
 
 
-def _fr3_targets(profile: dict):
-    """The FR3 Duo plant's own turning of a ``JC``'s targets into what it sends the arm backend (``SerialChainPlant``, recorded
-    as ``AO``): an arm joint's value within its soft limits, a hand's 0..1 fraction within 0..1. A motor the profile lacks, a
-    motor named a second time and a value that is not finite are left out, as the plant leaves them out."""
-    limits: Dict[int, Tuple[float, float]] = {}
-    for arm in profile["arms"]:
-        for j in arm["joints"]:
-            limits[int(j["motorId"])] = (float(j["softLower"]), float(j["softUpper"]))
-        if arm.get("hasGripper") and arm.get("gripper"):
-            limits[int(arm["gripper"]["motorId"])] = (0.0, 1.0)
-
-    def sent(targets: str) -> Dict[int, float]:
-        out: Dict[int, float] = {}
-        for it in items(targets):
-            m, value = int(it[0]), float(it[1])
-            if m not in limits or m in out or not math.isfinite(value):
-                continue
-            lo, hi = limits[m]
-            out[m] = min(hi, max(lo, value))
-        return out
-
-    return sent
-
-
-def _sent_actions(path: str, host, out_tag: str, convert, tolerance: float) -> List[Tuple[int, Dict[int, float]]]:
-    """A take's action as events in time order, ``(t, {motor: value})``: the command the operator sent, in the units the plant
-    sends its arm (docs/adr/0038 "M, motion", 2026-11-24). The same rule for both robots:
-
-    - every ``out_tag`` record (the JetRover's ``RO``, the FR3 Duo's ``AO``) at its time: what RobotHost passed on for an
-      accepted command (``JC`` ``A``), exactly as it sent it, and anything RobotHost sent of its own (the JetRover's park);
-    - every command RobotHost refused (``JC`` ``R``: the JetRover's backstop, docs/adr/0020, judges the pose and the servo path
-      from where the arm is measured; the FR3 Duo's the pose), turned into those units as the plant would have
-      (``convert(targets)``), at the time it reached the plant.
-
-    Not ``S``: a newer command had already replaced it. Not ``P``: while the arm parks or is relaxed the operator does not drive
-    it, RobotHost's own park targets are the action, and the two must not alternate.
-
-    Until then the action was the ``out_tag`` record alone, so a refused command left its predecessor in force. Whether the
-    JetRover's RobotHost refuses one depends on where the arm is measured, that is on physics, so a replay that sent its
-    source's commands exactly had another action (episode 25 of ``jetrover_20261124_021454_cb1e21``: 258 units at p95). A take
-    with no refused command reads exactly as before. The conversion is checked against the take's own accepted commands first:
-    each one's record (the first written once it reached the plant) must be it, within ``tolerance``."""
-    sent = sorted(((int(r[0]), {int(it[0]): float(it[1]) for it in items(r[1])}) for r in host.tag(out_tag)), key=lambda e: e[0])
-    commands = host.tag("JC")
-    refused = [r for r in commands if r[4] == "R"]
-    if not refused:
-        return sent
-    convert = convert()
+def check_conversion(path: str, host, convert, out_tag: str = "RO", tolerance: float = PULSE_TOLERANCE) -> int:
+    """Checks ``convert`` (:func:`_jetrover_pulses`) against the take's own accepted commands before a command RobotHost did
+    not pass on as given (refused, or clamped) is turned into relay units with it: each accepted command's own record (the
+    first ``out_tag`` written once it reached the plant, before the next command did) must be it, within ``tolerance``.
+    Returns how many were checked; raises ``TakeError`` when one differs or none has a record of its own."""
+    sent = _out_events(host, out_tag)
     times = [t for t, _ in sent]
+    commands = host.tag("JC")
     arrivals = sorted(int(r[1]) for r in commands)
     checked = 0
     for r in commands:
@@ -286,32 +244,32 @@ def _sent_actions(path: str, host, out_tag: str, convert, tolerance: float) -> L
             got = sent[i][1].get(m)
             if got is not None and abs(got - v) > tolerance:
                 raise TakeError(f"{path}: RobotHost sent motor {m} {got} ({out_tag}) for the command that reached it at {arrived}, "
-                                f"not {v:.6g} as takes.py converts it: its conversion has changed, so the action of the commands "
-                                f"it refused cannot be built")
+                                f"not {v:.6g} as takes.py converts it: its conversion has changed, so the commands it did not "
+                                f"pass on as given cannot be put in relay units")
         checked += 1
     if not checked:
         raise TakeError(f"{path}: no accepted command has an {out_tag} of its own to check the conversion against")
-    events = list(sent)
-    for r in refused:
-        values = convert(r[5])
-        if values:
-            events.append((int(r[1]), values))
-    events.sort(key=lambda e: e[0])
-    return events
+    return checked
+
+
+def _out_events(host, out_tag: str) -> List[Tuple[int, Dict[int, float]]]:
+    """Every ``out_tag`` record as ``(t, {motor: value})`` in time order."""
+    return sorted(((int(r[0]), {int(it[0]): float(it[1]) for it in items(r[1])}) for r in host.tag(out_tag)), key=lambda e: e[0])
 
 
 def _jetrover_actions(path: str, host) -> List[Tuple[int, Dict[int, float]]]:
-    """The JetRover's action (:func:`_sent_actions`), in relay pulses: every ``RO``, and every refused command as the plant would
-    have turned it into pulses (:func:`_jetrover_pulses`, checked within :data:`PULSE_TOLERANCE`: the plant computes in
-    float32)."""
-    return _sent_actions(path, host, "RO", lambda: _jetrover_pulses(path), PULSE_TOLERANCE)
+    """The JetRover's action events: every ``RO``, the targets RobotHost sent the relay, at its time. That is the command it
+    passed on (``JC`` ``A``), the farthest passing point toward one it clamped (``C``, since RobotHost's clamping host check,
+    ``HK``), and its own park targets; a command it refused (``R``: nothing passed, the arm holds) or ignored while parking
+    (``P``) leaves the previous one in force. So the action is the target the arm is heading for (docs/adr/0038 L, "Sent
+    commands"; 2026-11-24 to 2026-11-25 a refused command was the action too)."""
+    return _out_events(host, "RO")
 
 
 def _fr3_actions(path: str, host, profile: dict) -> List[Tuple[int, Dict[int, float]]]:
-    """The FR3 Duo's action (:func:`_sent_actions`), as the plant sends its arm backend (radians, a hand's 0..1 fraction): every
-    ``AO``, and every refused command clamped as the plant would have (:func:`_fr3_targets`, checked within
-    :data:`FR3_TOLERANCE`: ``AO`` is written in float32)."""
-    return _sent_actions(path, host, "AO", lambda: _fr3_targets(profile), FR3_TOLERANCE)
+    """The FR3 Duo's action events, as the plant sends its arm backend (radians, a hand's 0..1 fraction): every ``AO``. A
+    refused command leaves the previous one in force, as on the JetRover."""
+    return _out_events(host, "AO")
 
 
 def _fr3_order(profile: dict) -> Tuple[List[int], Dict[int, float]]:
@@ -346,7 +304,7 @@ def read_take(path: str, fps: int = 15) -> Take:
     if kind == ("jetrover-session", 1):
         robot, names, motors = "jetrover", JETROVER_NAMES, list(JETROVER_MOTORS)
         relay = _tracks(host.tag("RO"), 0, 1)
-        sent = _event_tracks(_jetrover_actions(path, host))
+        sent = relay  # the action: the newest relay target (_jetrover_actions)
         read = _tracks(host.tag("RI"), 0, 2, valid_part=1)
 
         def joints(t: int):
@@ -358,7 +316,7 @@ def read_take(path: str, fps: int = 15) -> Take:
                 ages.append(t - got[0])
                 state.append(got[1])
             # The gripper's slot: its newest relay target, the gripper as RobotHost last told it (the lab's recorder has its
-            # last command; a command RobotHost refused never reached it).
+            # last command), as the action has it.
             gripper = relay.get(motors[-1]) and relay[motors[-1]].at(t)
             if not gripper:
                 return None
@@ -398,13 +356,13 @@ def read_take(path: str, fps: int = 15) -> Take:
     else:
         raise TakeError(f"{path}: session {kind} has no schema here")
 
-    accepted = [int(r[1]) for r in host.tag("JC") if r[4] == "A"]
+    accepted = [int(r[1]) for r in host.tag("JC") if r[4] in ("A", "C")]
     if not accepted:
         raise TakeError(f"{path}: no operator command was accepted")
-    # The episode spans the operator's commands that make the action, accepted or refused (docs/adr/0038 "M, motion",
-    # 2026-11-24; until then the accepted ones): a take whose last commands RobotHost refused keeps its last frames, and a
-    # replay spans what its source does whatever RobotHost refused in either.
-    driven = [int(r[1]) for r in host.tag("JC") if r[4] in ("A", "R")]
+    # The episode spans the operator's commands RobotHost judged (A accepted, C clamped, R refused; since 2026-11-24, until
+    # then the accepted ones): a take whose last commands RobotHost refused keeps its last frames, their action the last one
+    # sent, and a replay spans what its source does whatever RobotHost refused in either.
+    driven = [int(r[1]) for r in host.tag("JC") if r[4] in ("A", "C", "R")]
     first, last = min(driven), max(driven)
 
     writer, folder = FRAMES[source]
@@ -468,8 +426,8 @@ def read_take(path: str, fps: int = 15) -> Take:
 def raw_events(take: "Take"):
     """The take's commands and readings as the lab recorder's ``raw_ros_events.jsonl`` lines (SINRG-Lab/world-models,
     ``jetrover_record_bridge.py``): a ``ready``, then ``action`` and ``state`` events in time order. ``action`` carries
-    every motor in the dataset's order, the commands the action column is made of (every ``RO`` or ``AO`` and every command
-    RobotHost refused, as the plant sends its arm); ``state`` the sensed ones (for the JetRover, motors 1 to 5, and only
+    every motor in the dataset's order, the commands the action column is made of (every ``RO`` or ``AO``: the commands sent,
+    a clamped one's clamped point included, a refused one not); ``state`` the sensed ones (for the JetRover, motors 1 to 5, and only
     when all of them read, as the lab's bridge emits them). Its times are the session's one clock (CLOCK_MONOTONIC):
     ``jetson_mono_ns`` and ``pc_received_mono_ns`` are both the time RobotHost logged it. ``jetson_wall_ns`` is
     null: a take keeps no wall clock per record."""
@@ -477,7 +435,7 @@ def raw_events(take: "Take"):
     events = []
     if take.robot == "jetrover":
         motors, sensed = list(JETROVER_MOTORS), list(JETROVER_SENSED)
-        for t, got in _jetrover_actions(take.path, host):  # the action column's: the commands sent, as relay pulses
+        for t, got in _jetrover_actions(take.path, host):  # the action column's: every RO
             if all(m in got for m in motors):
                 events.append((t, "action", motors, [got[m] for m in motors]))
         for r in host.tag("RI"):
@@ -488,7 +446,7 @@ def raw_events(take: "Take"):
         with open(os.path.join(take.path, "robot-profile.json"), encoding="utf-8") as f:
             profile = json.load(f)
         motors, travel = _fr3_order(profile)
-        for t, values in _fr3_actions(take.path, host, profile):  # the action column's: the commands sent
+        for t, values in _fr3_actions(take.path, host, profile):  # the action column's: every AO
             got = {m: v * travel.get(m, 1.0) for m, v in values.items()}
             ids = [m for m in motors if m in got]
             events.append((t, "action", ids, [got[m] for m in ids]))
@@ -505,5 +463,5 @@ def raw_events(take: "Take"):
     return out
 
 
-__all__ = ["Camera", "Frame", "JlogError", "Take", "TakeError", "checksum_id", "read_payload", "read_take",
+__all__ = ["Camera", "Frame", "JlogError", "Take", "TakeError", "check_conversion", "checksum_id", "read_payload", "read_take",
            "verify_checksums", "raw_events"]

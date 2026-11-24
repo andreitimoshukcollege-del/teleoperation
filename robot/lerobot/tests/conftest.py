@@ -18,7 +18,8 @@ MS = 1_000_000
 # Each record's fields that are times on the session's clock (positions in a row, its tag first; trainer/contract/
 # SESSION_FORMAT.md): what a take's ``at_s`` moves. A record named in neither table cannot be moved, and says so.
 TIMES = {"JC": (1, 2, 4), "RO": (1,), "RI": (1,), "WC": (1, 2), "WO": (1, 2), "WL": (1,), "WZ": (1,), "RP": (1,), "SE": (1,),
-         "MV": (1,), "WP": (1,), "WE": (1,), "QS": (1, 2), "AO": (1,), "VF": (1, 3), "VQ": (2,), "EN": (1,), "ER": (1,)}
+         "MV": (1,), "WP": (1,), "WE": (1,), "QS": (1, 2), "AO": (1,), "VF": (1, 3), "VQ": (2,), "EN": (1,), "ER": (1,),
+         "JK": (1,), "HK": (1,)}
 UNTIMED = {"CM", "LK", "MT", "CL", "LT", "CJ", "OA", "SZ", "SC"}
 
 
@@ -112,7 +113,7 @@ def relay_pulse(motor, value):
 
 def jetrover_take(root, name="20261112T100000Z-take001", scenario="reach", source="isaac", gap=None, image=None,
                   cameras=("third-left", "wrist"), extra=(), jitter=0.0, isaac_extra=(), vq=None, cm=None, scene=None,
-                  session=None, dropped=0, at_s=0.0, commands=None, relay=relay_pulse):
+                  session=None, dropped=0, at_s=0.0, commands=None, relay=relay_pulse, host_check=None):
     """A JetRover take: commands accepted from 1.0 to 3.0 s, RO and RI every 20 ms, frames at 30 fps from 0.5 to
     3.5 s (the first two with B). ``gap``: (from, to) seconds with no frame recorded. ``extra``: more robothost.jlog rows
     (``[tag, t, ...]``), such as contacts (WC) and object poses (WO). ``jitter``: each frame's time wobbles by up to that
@@ -124,7 +125,10 @@ def jetrover_take(root, name="20261112T100000Z-take001", scenario="reach", sourc
 
     ``commands``: the JC records instead, ``(ms, outcome, {motor: value})`` in order, each with the next sequence number and
     its time as its capture stamp; an accepted one's RO 30 us later, ``relay(motor, value)`` for each target, as RobotHost
-    writes it (no other RO); and the take's robot-profile.json, as RobotHost's auto-record copies it."""
+    writes it (no other RO); and the take's robot-profile.json, as RobotHost's auto-record copies it. A clamped one (``C``)
+    is ``(ms, "C", {motor: value}, ({motor: value sent}, alpha))``: its RO the targets sent, then its ``JK``.
+    ``host_check``: ``(start, onFail, version)`` written as the session's ``HK`` preamble at 0.5 s (none: a RobotHost that
+    refused)."""
     shift = round(at_s * 1e9)
     take = os.path.join(root, scenario, name)
     os.makedirs(take)
@@ -144,11 +148,15 @@ def jetrover_take(root, name="20261112T100000Z-take001", scenario="reach", sourc
             t = (1000 + 50 * k) * MS
             rows.append(["JC", t, t, k, t, "A", "1:0.1:1"])
     else:
-        for seq, (ms, outcome, values) in enumerate(commands):
+        for seq, (ms, outcome, values, *clamp) in enumerate(commands):
             t = round(ms * MS)
             rows.append(["JC", t, t, seq, t, outcome, ";".join(f"{m}:{v!r}:3.8" for m, v in values.items())])
             if outcome == "A":
                 rows.append(["RO", t + 30_000, ";".join(f"{m}:{relay(m, v)!r}:907.1831" for m, v in values.items())])
+            elif outcome == "C":
+                sent, alpha = clamp[0]
+                rows.append(["RO", t + 30_000, ";".join(f"{m}:{relay(m, v)!r}:907.1831" for m, v in sent.items())])
+                rows.append(["JK", t + 40_000, seq, alpha])
         with open(JETROVER_PROFILE, encoding="utf-8") as f, open(os.path.join(take, "robot-profile.json"), "w", encoding="utf-8") as g:
             g.write(f.read())
     for k in range(0, 116):  # 0.9..3.2 s
@@ -159,6 +167,8 @@ def jetrover_take(root, name="20261112T100000Z-take001", scenario="reach", sourc
         ri = ";".join(f"{m}:{0 if (m == 3 and k == 60) else 1}:{400 + m + k}" for m in (1, 2, 3, 4, 5, 10))
         rows.append(["RI", t + 5 * MS, ri])
     rows.extend(list(r) for r in extra)
+    if host_check is not None:
+        rows.append(["HK", 500 * MS] + list(host_check))
     rows.sort(key=lambda r: int(r[1]))
     rows = [moved(r, shift) for r in rows]
     write_jlog(os.path.join(take, "robothost.jlog"), "robothost", sid, rows, dropped=dropped)

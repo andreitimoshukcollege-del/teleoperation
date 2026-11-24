@@ -662,6 +662,38 @@ def command_tables(e: "Episode", take: Take, options: Options, host: Jlog, layou
     e.line["poseSampleSeed"], e.line["commandClearanceUnavailable"] = t.seed, t.unavailable
 
 
+REFUSE_CHECK = {"start": "measured", "onFail": "refuse"}  # a session without HK: RobotHost refused a failing command
+
+
+def host_check(host: Jlog) -> Dict:
+    """How RobotHost's collision check treated the commands of the take, from its session preamble ``HK|t|start|onFail|version``
+    (docs/adr/0038 L, "Sent commands"): ``{"start": "measured", "onFail": "clamp", "version": 1}`` when it clamped a failing
+    command to the farthest passing point from the measured pose. A session without ``HK`` refused one (``JC`` ``R``):
+    :data:`REFUSE_CHECK`, with no version."""
+    rows = host.tag("HK")
+    if not rows:
+        return dict(REFUSE_CHECK)
+    r = rows[0]
+    out: Dict[str, object] = {"start": r[1] if len(r) > 1 else None, "onFail": r[2] if len(r) > 2 else None}
+    if len(r) > 3:
+        try:
+            out["version"] = int(r[3])
+        except ValueError:
+            out["version"] = r[3]
+    return out
+
+
+def host_checks(lines: Sequence[Dict]) -> object:
+    """A dataset's ``hostCheck`` for ``report.json``'s options: its episodes' one value, or the distinct values in order of
+    first appearance when they differ (a dataset of takes from before and after RobotHost's clamping)."""
+    seen: List[Dict] = []
+    for l in lines:
+        hc = l.get("hostCheck") or dict(REFUSE_CHECK)
+        if hc not in seen:
+            seen.append(hc)
+    return seen[0] if len(seen) == 1 else (seen or dict(REFUSE_CHECK))
+
+
 def _object_id(v) -> Optional[int]:
     """An obstacle id from the clearance, or None for none within its cutoff (its ``NO_OBSTACLE``, -1) or none at all."""
     f = _finite(v)
@@ -872,6 +904,7 @@ def episode(take: Take, options: Options = Options(), records: Optional[Records]
         "frames": len(times), "seconds": round(len(times) / take.fps, 3), "filled": sum(cols["filled"]),
         "firstContactS": first_s, "afterLastContactS": after_s, "timingFlags": flags,
         "speedSlider": conditions.get("speedSliderRadPerSec"), "operator": conditions.get("operator"),
+        "hostCheck": host_check(host),
         "room": room, "looks": _named(looks[1]) if looks and len(looks) > 1 else None,
         "materials": _named(materials[1]) if materials and len(materials) > 1 else None,
         "clutter": _clutter(chosen["CL"]),
@@ -974,7 +1007,7 @@ def report(lines: Sequence[Dict], contacts: Sequence[Dict], options: Options, sp
         "clearanceEpisodes": sum(1 for l in lines if l.get("clearanceUnavailable") is None),
         "timingFlagged": [l["episode"] for l in lines if l.get("timingFlags")],
         "split": None if split_of is None else {"part": split_of[0], "of": split_of[1]},
-        "options": options.describe()}
+        "options": {**options.describe(), "hostCheck": host_checks(lines)}}
 
 
 def mix(name: str, rep: Dict) -> str:
@@ -1184,25 +1217,89 @@ def command_line(teleop: str, name: str, eps: Sequence[Dict], lines: List[str], 
     why = sorted({e["commandClearanceUnavailable"] for e in eps if e.get("commandClearanceUnavailable")})
     if why:
         parts.append(f"why not: {why[:3]}")
-    # The pilot check: each frame's action is the last command received at or before its capture (world-models' spec).
+    if "outcome" in cmd.columns and len(cmd):
+        n_out = cmd["outcome"].value_counts()
+        parts.append(f"outcomes A {int(n_out.get('A', 0))}, C {int(n_out.get('C', 0))}, R {int(n_out.get('R', 0))} "
+                     f"(clamped {share(n_out.get('C', 0) / len(cmd))})")
+    # The pilot check: each frame's action is the newest command sent at or before its capture (world-models' spec).
     import glob
 
     from .command_clearance import action_agreement
     data = sorted(glob.glob(os.path.join(os.path.dirname(os.path.dirname(teleop)), "data", "**", "*.parquet"), recursive=True))
     if data and len(cmd):
-        acts = pd.concat([pd.read_parquet(p, columns=["episode_index", "frame_index", "action"]) for p in data])
-        times = pd.read_parquet(os.path.join(teleop, "frames.parquet"), columns=["episode_index", "frame_index", "sensed_ns"])
+        acts = pd.concat([_read_some(p, ["episode_index", "frame_index", "action", "observation.state"]) for p in data])
+        times = _read_some(os.path.join(teleop, "frames.parquet"),
+                           ["episode_index", "frame_index", "sensed_ns", "in_contact", "in_contact_table"])
         frames = acts.merge(times, on=["episode_index", "frame_index"], how="left")
         if frames["sensed_ns"].isna().any():
             faults.append(f"{name}: {int(frames['sensed_ns'].isna().sum())} data frame(s) not in frames.parquet")
             frames = frames.dropna(subset=["sensed_ns"])
         frames = frames[frames["episode_index"].isin(have)]
         agree, total, bad = action_agreement(cmd, frames)
-        parts.append(f"each frame's action is the last command received before it in {agree} of {total} frames")
+        parts.append(f"each frame's action is the newest command sent at or before it in {agree} of {total} frames")
         if agree < total:
-            faults.append(f"{name}: in {total - agree} frame(s) the action is not the last command of commands.parquet "
-                          f"received before it, e.g. (episode, frame) {bad[:5]}")
+            faults.append(f"{name}: in {total - agree} frame(s) the action is not the newest command sent at or before it "
+                          f"(commands.parquet), e.g. (episode, frame) {bad[:5]}")
+        parts.append(stalls(cmd, frames))
+        parts.append(lead_in_contact(frames))
     lines.append("; ".join(parts))
+
+
+def _read_some(path: str, columns: Sequence[str]):
+    """The ``columns`` of a parquet file that it has."""
+    import pyarrow.parquet as pq
+
+    have = set(pq.read_schema(path).names)
+    return pq.read_table(path, columns=[c for c in columns if c in have]).to_pandas()
+
+
+def stalls(cmd, frames) -> str:
+    """``safety-report``'s stalls: the longest stretch of an episode (its first to its last frame) without a newly sent command,
+    where the arm heads for one target while RobotHost refuses or nothing arrives. A send is an accepted or clamped row's own
+    RO (``sent_ns``); a file from before 2026-11-25, without it, an accepted row's arrival."""
+    import numpy as np
+
+    longest = []  # (seconds, episode, seconds into the episode it starts)
+    for ep, g in frames.groupby("episode_index", sort=False):
+        c = cmd[cmd["episode_index"] == ep]
+        if "sent_ns" in c.columns:
+            sends = c.loc[c["outcome"].isin(["A", "C"]) & c["sent_ns"].notna(), "sent_ns"].to_numpy(np.int64)
+        else:
+            sends = c.loc[c["accepted"].astype(bool), "received_ns"].to_numpy(np.int64)
+        t = g["sensed_ns"].to_numpy(np.int64)
+        lo, hi = int(t.min()), int(t.max())
+        points = np.unique(np.concatenate([[lo, hi], sends[(sends > lo) & (sends < hi)]]))
+        gaps = np.diff(points)
+        if len(gaps):
+            k = int(np.argmax(gaps))
+            longest.append((gaps[k] / 1e9, int(ep), (points[k] - lo) / 1e9))
+    if not longest:
+        return "stalls: none measured"
+    worst = max(longest)
+    per = np.array([x[0] for x in longest])
+    return (f"longest without a newly sent command {worst[0]:.2f} s (episode {worst[1]}, {worst[2]:.2f} s in), per episode "
+            f"p50 {np.median(per):.2f} s, p95 {np.percentile(per, 95):.2f} s")
+
+
+def lead_in_contact(frames) -> str:
+    """``safety-report``'s lead: in the frames with a contact (an obstacle or the table), how far the sent target (``action``)
+    is ahead of the measured state (``observation.state``), the largest over servos 1 to 5 (the gripper's state slot is its
+    relay target), in servo units: p50, p95 and max."""
+    import numpy as np
+
+    if "observation.state" not in frames.columns or "in_contact" not in frames.columns:
+        return "lead in contact: not measured (no observation.state or in_contact)"
+    touching = frames["in_contact"].fillna(False).astype(bool)
+    if "in_contact_table" in frames.columns:
+        touching |= frames["in_contact_table"].fillna(False).astype(bool)
+    g = frames[touching]
+    if not len(g):
+        return "lead in contact: no frame in contact"
+    a = np.array([np.asarray(x, float) for x in g["action"]])[:, :5]
+    q = np.array([np.asarray(x, float) for x in g["observation.state"]])[:, :5]
+    lead = np.abs(a - q).max(axis=1)
+    return (f"sent target's lead over the measured state in contact ({len(g)} frames): p50 {np.median(lead):.1f}, p95 "
+            f"{np.percentile(lead, 95):.1f}, max {lead.max():.1f} servo units")
 
 
 def check_datasets(roots: Sequence[str]) -> Tuple[List[str], List[str]]:

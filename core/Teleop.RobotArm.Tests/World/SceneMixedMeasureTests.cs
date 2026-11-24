@@ -29,7 +29,10 @@ namespace Teleop.RobotArm.Tests.World
         /// </summary>
         internal const double WorkMin = 0.16, WorkMax = 0.30, WorkBearing = 60 * Math.PI / 180;
 
-        /// <summary>The widest bearing the arm's IK reaches from home, rad (<see cref="IkReach"/>): an obstacle centred beyond is out of every aim.</summary>
+        /// <summary>
+        /// The widest bearing a mixed layout centres an obstacle at, rad, and the measure counts one beyond as out of reach: between the 90
+        /// degrees joint-drive's IK reaches from home and the 105 the arm reaches turned that way first (<see cref="IkReach"/>).
+        /// </summary>
         internal const double ReachableBearing = 95 * Math.PI / 180;
 
         private readonly ITestOutputHelper _output;
@@ -44,12 +47,30 @@ namespace Teleop.RobotArm.Tests.World
                 Figures f = Measure(SceneMixedTests.Load(name), 2000);
                 _output.WriteLine(name + ":\n" + f);
                 Assert.True(f.LayoutsWithObstacles > 1000);
+                // The second pass (docs/adr/0038), measured 2026-11-23 against the first's 0.163 and 0.179: a tall thin obstacle or a rig in the
+                // working band in about half the layouts with obstacles or more (0.592 and 0.627), but not in nearly all of them.
+                double share = (double)f.WithTallOrRigInWork / f.LayoutsWithObstacles;
+                Assert.InRange(share, 0.5, 0.75);
+                // Nothing centred where joint-drive's aims cannot reach (16% and 14% of the obstacles before).
+                Assert.Equal(0, f.BeyondReach);
+                // Every raised object overhangs its stand all round (no stand was narrower before; the tops were 1.4-43 times the footprint).
+                Assert.Equal(f.Raised, f.RaisedNarrower);
+                Assert.True(f.StandAreaRatios.Max() < 1);
+                Assert.True(f.Missed < 0.3 * f.Layouts, $"{(double)f.Missed / f.Layouts:0.000} found no spot a layout");
             }
 
             (string table, double home, double turned) = IkReach();
             _output.WriteLine(table);
             _output.WriteLine(FormattableString.Invariant($"widest bearing the IK reaches from home: {home:0.0} deg; with the base turned that way first: {turned:0.0} deg"));
-            Assert.True(home > 60 && turned >= home);
+            // Measured 2026-11-23: 90.0 and 105.0 (ArmSolver.MaxApproach is 90 degrees from home; joint-drive's envelope is the yaw's 120 less
+            // 15). The obstacles' bearing lies between: an obstacle centred there has its near side where aims reach.
+            Assert.Equal(90.0, home, 1);
+            Assert.Equal(105.0, turned, 1);
+            foreach (WorldScene s in new[] { SceneMixedTests.Mixed, SceneMixedTests.Holdout })
+            {
+                Assert.InRange(s.ReachBearing * 180 / Math.PI, home, turned);
+                Assert.True(s.ReachBearing <= ReachableBearing);
+            }
         }
 
         internal sealed class Figures

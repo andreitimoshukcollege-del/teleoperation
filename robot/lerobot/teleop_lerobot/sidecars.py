@@ -116,6 +116,9 @@ class Options:
     stop: Optional[StopModel] = field(default_factory=StopModel)
     # commands.parquet and pose_samples.parquet (teleop_lerobot.command_clearance), on by default since 2026-11-24
     command_clearance: bool = True
+    # meta/teleop/visibility.parquet: each object's pixels per frame and camera against its silhouette (teleop_lerobot.
+    # visibility, since 2026-11-24); False: no file, as builds before
+    visibility: bool = True
 
     def __post_init__(self):
         if self.caption not in ("neutral", "category"):
@@ -127,7 +130,7 @@ class Options:
     def describe(self) -> Dict:
         return {"caption": self.caption, "tableSafe": self.table_safe, "geometryDir": self.geometry_dir,
                 "stopModel": None if self.stop is None else {"stopTimes": self.stop.seconds()},
-                "commandClearance": self.command_clearance}
+                "commandClearance": self.command_clearance, "visibility": self.visibility}
 
 
 @dataclass(frozen=True)
@@ -159,6 +162,7 @@ class Episode:
     commands: Optional[Dict[str, object]] = None  # commands.parquet's columns (Options.command_clearance)
     pose_samples: Optional[Dict[str, object]] = None  # pose_samples.parquet's columns
     command_seconds: Optional[float] = None  # how long they took, for the build log (written nowhere)
+    visibility: Optional[object] = None  # visibility.Visibility, its rows (Options.visibility)
 
 
 # --- reading the take -----------------------------------------------------------------------------------------------------
@@ -880,10 +884,22 @@ def episode(take: Take, options: Options = Options(), records: Optional[Records]
     if options.stop is not None:  # before the contacts the labels count (time_to_contact_s is to an obstacle's alone)
         counted_starts = sorted(s.start for s in counted)
         unav = {name: unavoidable(take, labels, counted_starts, seconds) for name, seconds in options.stop.times}
-    e = Episode(take.scenario, labels, line, scene_line, contact_lines, cols, unav, flags)
+    e = Episode(take.scenario, labels, line, scene_line, contact_lines, cols, unav, flags,
+                visibility=_visibility(take, options, rec, rename) if options.visibility else None)
     if options.command_clearance:
         command_tables(e, take, options, host, layout_seed)
     return e
+
+
+def _visibility(take: Take, options: Options, rec: Records, rename: Dict[str, str]):
+    """The episode's visibility rows (``teleop_lerobot.visibility``); a fault in it is one row saying why, and the dataset is
+    still written."""
+    from . import visibility
+
+    try:
+        return visibility.compute(take, options.geometry_dir, rec, rename)
+    except Exception as e:  # noqa: BLE001
+        return visibility.unavailable(f"{type(e).__name__}: {e}")
 
 
 # --- many episodes ---------------------------------------------------------------------------------------------------------
@@ -1004,6 +1020,10 @@ def write(root: str, written: Sequence[Tuple[int, Episode]], options: Options, s
     if options.stop is not None:
         with open(os.path.join(teleop, "unavoidable_ranges.json"), "w", encoding="utf-8") as f:
             json.dump(unavoidable_file(written, options.stop), f, indent=1)
+    if options.visibility:
+        from . import visibility
+
+        visibility.write(os.path.join(teleop, "visibility.parquet"), [(ep, e.visibility) for ep, e in written])
     return rep
 
 
@@ -1243,6 +1263,9 @@ def check_datasets(roots: Sequence[str]) -> Tuple[List[str], List[str]]:
                         f"90% under {touching.quantile(0.9):.1f} mm, largest {touching.max():.1f} mm" if len(touching) else "")
                      + (f"; why not: {sorted({e['clearanceUnavailable'] for e in eps if e.get('clearanceUnavailable')})[:3]}"
                         if have < len(eps) else ""))
+        from .visibility import dataset_line
+
+        lines.append(dataset_line(root, name) or f"{name}: no visibility")
         unavoidable_path = os.path.join(teleop, "unavoidable_ranges.json")
         if not os.path.exists(unavoidable_path):
             lines.append(f"{name}: no unavoidable ranges")

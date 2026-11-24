@@ -734,11 +734,12 @@ _LINES = {"capture_timing.jsonl": "episode_saved_so_far", "safety_events.jsonl":
 _TOTALS = {os.path.join("meta", "info.json"), os.path.join("meta", "stats.json"), os.path.join("meta", "tasks.parquet"),
            os.path.join(_TELEOP, "report.json")}
 _PARQUETS = {os.path.join("meta", "safety_labels.parquet"), os.path.join(_TELEOP, "frames.parquet"),  # rows by episode_index
-             os.path.join(_TELEOP, "commands.parquet"), os.path.join(_TELEOP, "pose_samples.parquet")}
+             os.path.join(_TELEOP, "commands.parquet"), os.path.join(_TELEOP, "pose_samples.parquet"),
+             os.path.join(_TELEOP, "visibility.parquet")}
 # docs/adr/0038's files: a reference built before them has none, and is compared without them.
 _ADR38 = {"safety_ranges.json", os.path.join(_TELEOP, "episodes.jsonl"), os.path.join(_TELEOP, "scenes.jsonl"),
           os.path.join(_TELEOP, "contacts.jsonl"), os.path.join(_TELEOP, "frames.parquet"), os.path.join(_TELEOP, "report.json"),
-          os.path.join(_TELEOP, "unavoidable_ranges.json")}
+          os.path.join(_TELEOP, "unavoidable_ranges.json"), os.path.join(_TELEOP, "visibility.parquet")}
 
 
 def _first_ranges(ranges_by_episode: Dict[str, list], n: int) -> Dict[str, list]:
@@ -748,7 +749,8 @@ def _first_ranges(ranges_by_episode: Dict[str, list], n: int) -> Dict[str, list]
 def _options(options: Optional[Dict]) -> Dict:
     """A ``report.json``'s build options as this version names them: a build before 2026-11-23 says ``tableUnsafe`` (the
     table counted only when true) where one now says ``tableSafe``, and gave its one stop time as ``stopTimeS`` where one
-    now names its stop times (``stopTimes``; one given on the command line is ``given``)."""
+    now names its stop times (``stopTimes``; one given on the command line is ``given``). One built before 2026-11-24 wrote
+    no ``visibility.parquet``: ``visibility`` false."""
     o = dict(options or {})
     if "tableUnsafe" in o:
         o["tableSafe"] = not o.pop("tableUnsafe")
@@ -756,6 +758,7 @@ def _options(options: Optional[Dict]) -> Dict:
     stop = o.get("stopModel")
     if isinstance(stop, dict) and "stopTimeS" in stop:
         o["stopModel"] = {"stopTimes": {"given": stop["stopTimeS"]}}
+    o.setdefault("visibility", False)  # a build before 2026-11-24 wrote no visibility.parquet
     return o
 
 
@@ -766,7 +769,8 @@ def rebuild_options(root: str) -> List[str]:
     captions were its categories, and its twin reported no table contacts, so ``--caption category`` (its unavoidable
     ranges, which it lacks, are left out of the comparison with the rest of docs/adr/0038's files). One built before
     2026-11-23 says ``tableUnsafe``, false when the table was left out (``--table-safe`` now), and had no unavoidable ranges
-    unless given a stop time (``--no-unavoidable`` now). Stop times other than the defaults or one given (a default changed
+    unless given a stop time (``--no-unavoidable`` now), and one built before 2026-11-24 no visibility (``--no-visibility``).
+    Stop times other than the defaults or one given (a default changed
     since) cannot be asked for: the comparison then shows them."""
     path = os.path.join(root, "meta", "teleop", "report.json")
     if not os.path.exists(path):
@@ -782,6 +786,7 @@ def rebuild_options(root: str) -> List[str]:
         out += [f"--stop-time-s={times['given']}"]
     if not o.get("commandClearance"):
         out += ["--no-command-clearance"]
+    out += [] if o.get("visibility") else ["--no-visibility"]
     return out
 
 

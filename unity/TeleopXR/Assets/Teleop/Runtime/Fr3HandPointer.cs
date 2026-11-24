@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using Teleop.Bridge;
 using Unity.XR.CoreUtils;
 using UnityEngine;
@@ -17,6 +18,8 @@ namespace Teleop.XR
     /// moves once the world frames say so. A fallen object is stood up by a click on it.</item>
     /// <item><b>On a camera display</b> the pinch grabs it, and it follows the ray at the distance it was grabbed at, up and
     /// down too, turning to face you (<see cref="DisplayMover"/>).</item>
+    /// <item><b>On a slider's track</b> (arm speed, added delay, the console's network sliders) the pinch takes its knob, and
+    /// the knob follows the ray along the track until the pinch lets go (<see cref="SpeedSlider.PointerDrag"/>).</item>
     /// </list>
     /// <para><b>Only while the robot is off</b>, so a pinch never does two things: with the robot on, the hands drive the arms and
     /// the rays are hidden (the fingertips still press buttons). A ray whose hit is closer than <see cref="nearMeters"/> is
@@ -46,6 +49,7 @@ namespace Teleop.XR
         private readonly bool[] _pinched = new bool[2];
         private readonly bool[] _onCap = new bool[2];
         private readonly DisplayMover[] _moving = new DisplayMover[2];
+        private readonly SpeedSlider[] _sliding = new SpeedSlider[2];
         private readonly bool[] _aiming = new bool[2];
         private readonly bool[] _holding = new bool[2];
 
@@ -105,13 +109,32 @@ namespace Teleop.XR
 
                 Renderer cap = null;
                 DisplayMover display = null;
-                float capAt = float.PositiveInfinity, objectAt = -1f, displayAt = float.PositiveInfinity;
+                SpeedSlider slider = null;
+                float capAt = float.PositiveInfinity, objectAt = -1f, displayAt = float.PositiveInfinity, sliderAt = float.PositiveInfinity;
                 var ray = new Ray(from, dir);
                 if (tracked)
                 {
                     cap = NearestCap(from, dir, out capAt);
                     objectAt = side.PointerHit(from, dir);
                     display = NearestDisplay(ray, out displayAt);
+                    slider = NearestSlider(ray, out sliderAt);
+                }
+
+                // A slider being dragged keeps the pinch until it is let go, like a display.
+                if (_sliding[h] != null)
+                {
+                    if (tracked && _pinched[h] && _sliding[h].isActiveAndEnabled)
+                    {
+                        float at = _sliding[h].PointerDrag(ray);
+                        _hovered[h] = null;
+                        side.UpdatePointer(h, tracked, false, from, dir);
+                        Show(h, true, from, dir, at, activeColor);
+                        _aiming[h] = false;
+                        _holding[h] = true;
+                        continue;
+                    }
+
+                    _sliding[h] = null;
                 }
 
                 // A display being moved keeps the pinch until it is let go.
@@ -132,12 +155,25 @@ namespace Teleop.XR
                     _moving[h] = null;
                 }
 
-                bool displayFirst = display != null && displayAt < capAt && (objectAt < 0f || displayAt < objectAt);
-                bool objectFirst = !displayFirst && objectAt >= 0f && objectAt < capAt;
-                float hitAt = displayFirst ? displayAt : objectFirst ? objectAt : cap != null ? capAt : -1f;
+                // Whichever the ray meets first; each test below only runs when the ones before it lost.
+                bool sliderFirst = slider != null && sliderAt < capAt && sliderAt < displayAt && (objectAt < 0f || sliderAt < objectAt);
+                bool displayFirst = !sliderFirst && display != null && displayAt < capAt && (objectAt < 0f || displayAt < objectAt);
+                bool objectFirst = !sliderFirst && !displayFirst && objectAt >= 0f && objectAt < capAt;
+                float hitAt = sliderFirst ? sliderAt : displayFirst ? displayAt : objectFirst ? objectAt : cap != null ? capAt : -1f;
                 bool near = hitAt >= 0f && hitAt < nearMeters;
                 bool dragging = side != null && side.PointerDragging;
                 _hovered[h] = displayFirst && !near ? display : null;
+                if (rising && sliderFirst && !near)
+                {
+                    _sliding[h] = slider;
+                    float at = slider.PointerDrag(ray);
+                    side.UpdatePointer(h, tracked, false, from, dir);
+                    Show(h, true, from, dir, at >= 0f ? at : sliderAt, activeColor);
+                    _aiming[h] = false;
+                    _holding[h] = true;
+                    continue;
+                }
+
                 if (rising && displayFirst && !near)
                 {
                     display.Begin(ray, displayAt);
@@ -150,7 +186,7 @@ namespace Teleop.XR
                 }
 
                 // A pinch that starts on a button clicks it, and is not also a drag for as long as it is held.
-                if (rising) _onCap[h] = cap != null && !objectFirst && !displayFirst && !near;
+                if (rising) _onCap[h] = cap != null && !objectFirst && !displayFirst && !sliderFirst && !near;
                 if (!_pinched[h]) _onCap[h] = false;
                 if (rising && _onCap[h])
                 {
@@ -159,7 +195,7 @@ namespace Teleop.XR
                 }
 
                 bool wasDragging = side != null && side.PointerDragging;
-                if (side != null) side.UpdatePointer(h, tracked && !near, _pinched[h] && !_onCap[h] && !displayFirst, from, dir);
+                if (side != null) side.UpdatePointer(h, tracked && !near, _pinched[h] && !_onCap[h] && !displayFirst && !sliderFirst, from, dir);
                 _aiming[h] = tracked && !near && hitAt >= 0f;
                 if (rising) _holding[h] = _aiming[h];
                 if (!_pinched[h]) _holding[h] = false;
@@ -219,6 +255,25 @@ namespace Teleop.XR
                 if (d == null || !d.gameObject.activeInHierarchy || !d.TryHit(ray, out float at) || at <= 0f || at > maxMeters + 3f || at >= distance) continue;
                 distance = at;
                 best = d;
+            }
+
+            return best;
+        }
+
+        /// <summary>The slider whose track the ray passes most nearly over (within its touch radius), and how far along the ray.</summary>
+        private SpeedSlider NearestSlider(Ray ray, out float distance)
+        {
+            distance = float.PositiveInfinity;
+            SpeedSlider best = null;
+            float bestBeside = float.PositiveInfinity;
+            IReadOnlyList<SpeedSlider> all = SpeedSlider.All;
+            for (int i = 0; i < all.Count; i++)
+            {
+                SpeedSlider s = all[i];
+                if (s == null || !s.TryPointerHit(ray, maxMeters, out float at, out float beside) || beside >= bestBeside) continue;
+                bestBeside = beside;
+                distance = at;
+                best = s;
             }
 
             return best;

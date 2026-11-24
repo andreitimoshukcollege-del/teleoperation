@@ -211,7 +211,8 @@ Contents:
     moving at servo speed, instead of copying the belief. The gripper takes its command.
 - **The arm-speed slider** (`SpeedSlider`) on the bench's left, left of the motion button.
   - Slide an index fingertip along it: near you is slow (0.5 rad/s), far is fast (6). It starts at
-    3.8.
+    3.8. With the robot off, every slider can also be worked from a distance: point the hand ray at
+    its track, pinch, and the knob follows the ray until you let go (`Fr3HandPointer`).
   - It sets `JetRoverOperatorBridge.SpeedRadPerSec`, which rides in every joint command's `Speed`
     field.
   - RobotHost turns it into the servo speed for both command paths, never faster than its deployed
@@ -245,8 +246,9 @@ Contents:
     that would reach an arm or another object, or leave the table; the label says the object and its size. The FR3 scene has
     the same pair behind EDIT OBJECTS.
   - **The hand pointer** (`Fr3HandPointer`), robot off only: a pinch on a button presses it, on an object drags it, on a
-    display moves it. **A pinch the pointer owns never engages the clutch** (`HandClutchDriver.handPointer`), and the
-    pointer, not the clutch, moves the displays. With the robot on, the pointer is off and the clutch is as described above.
+    display moves it, on a slider's track drags its knob along it. **A pinch the pointer owns never engages the clutch**
+    (`HandClutchDriver.handPointer`), and the pointer, not the clutch, moves the displays: with a pointer set, the clutch
+    ignores its own `displayMover` (it used to end the pointer's grab of the camera display the frame it began). With the robot on, the pointer is off and the clutch is as described above.
   - **Two more displays** for Isaac's third-person cameras, `3RD PERSON LEFT (REC)` on the operator's left (6008 → local
     6015) and `3RD PERSON RIGHT (REC)` above the wrist camera's display (6009 → 6016), at 15 fps. All three displays float
     and move up and down too. The wrist display keeps the robot camera's feed (6003 → 6004), Isaac's wrist camera here.
@@ -398,6 +400,7 @@ lighting.
   - **Pinch on a button** to press it, as a fingertip would: any cap a `FingertipPress` watches, power included.
   - **Pinch on an object** to drag it over the table; let go and RobotHost is asked to put it there (refusals as EDIT
     OBJECTS). A click on a fallen object stands it up.
+  - **Pinch on a slider's track** (ADDED DELAY, LAG, JITTER, LOSS) and drag: the knob follows the ray until you let go.
   - **With the robot on** the rays are hidden and pinches drive nothing but the arms; fingertips still press buttons. A ray
     nearer than 15 cm to what it hits is hidden too.
 - **Scenario recording** (docs/adr/0033), the left wing behind power: `< PREV` / `NEXT >` choose the scenario (NEXT names

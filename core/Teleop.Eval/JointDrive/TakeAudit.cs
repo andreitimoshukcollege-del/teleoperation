@@ -60,6 +60,7 @@ namespace Teleop.Eval.JointDrive
             var agree = new int[4, 4]; // predictor: commanded in, commanded in for the lag, the follower in, the measured arm in; TP FP FN TN against physics
             var followErr = new List<double>();
             var sourceOnsets = new int[2];
+            var causes = new[] { new HashSet<Move?>(), new HashSet<Move?>() };
             foreach (string take in takes)
             {
                 string log = Path.Combine(take, "robothost.jlog");
@@ -252,6 +253,13 @@ namespace Teleop.Eval.JointDrive
                     Move? under = moves.Where(m => !IsAccident(m.Kind) && m.Start <= t).OrderBy(m => m.Start).LastOrDefault();
                     Move? acc = moves.FirstOrDefault(m => IsAccident(m.Kind) && t >= m.Start && t <= m.End + lag);
                     if (acc != null) onsetsInAccident++;
+                    Move? acc0 = moves.FirstOrDefault(m => IsAccident(m.Kind) && t >= m.Start && t <= m.End);
+                    if (group.Contains(" source", StringComparison.Ordinal))
+                    {
+                        // The moves that made a contact: an accident whose span holds its onset (as recorded, and with the lag after), else the move under way.
+                        causes[0].Add(acc0 ?? under);
+                        causes[1].Add(acc ?? under);
+                    }
                     if (group.Contains(" source", StringComparison.Ordinal))
                     {
                         sourceOnsets[0]++;
@@ -288,6 +296,9 @@ namespace Teleop.Eval.JointDrive
             Console.WriteLine(FormattableString.Invariant(
                 $"  physics contacts with objects {onsets}: begun in an accident's span {onsetsInAccident} ({100.0 * onsetsInAccident / Math.Max(1, onsets):0}%); the command into the object within the lag before {onsetsCmdTouch}"));
             Console.WriteLine(FormattableString.Invariant($"    of them in source takes (not replays) {sourceOnsets[0]}: in an accident's span {sourceOnsets[1]}"));
+            for (int k = 0; k < 2; k++)
+                Console.WriteLine(FormattableString.Invariant(
+                    $"    moves of the source takes that made a contact, an accident's span {(k == 0 ? "as recorded" : $"and {lag:0.00} s after")}: {causes[k].Count}, accidents {causes[k].Count(m => m != null && IsAccident(m.Kind))}"));
             string[] predictors = { "the command in an object", "the command in one for the lag", $"the follower (delay {FollowDelay:0.00} s, tau {FollowTau:0.00} s, {FollowSpeed:0.00} rad/s) in one", "the measured arm in one" };
             Console.WriteLine("  follower against the measured joints, rms largest-joint error rad: " + MixedDryRun.Percentiles(followErr, "0.000"));
             for (int k = 0; k < 4; k++)
@@ -299,7 +310,7 @@ namespace Teleop.Eval.JointDrive
         }
 
         /// <summary>The follower: the command <see cref="FollowDelay"/> late, each joint at most <see cref="FollowSpeed"/>, and lagging it with time constant <see cref="FollowTau"/>.</summary>
-        internal static double FollowDelay = 0.0, FollowTau = 0.15, FollowSpeed = 3.7;
+        internal static double FollowDelay = 0.10, FollowTau = 0.08, FollowSpeed = 3.7;
 
         private static void Tally(int[,] t, int k, bool model, bool physics) => t[k, model ? (physics ? 0 : 1) : (physics ? 2 : 3)]++;
 

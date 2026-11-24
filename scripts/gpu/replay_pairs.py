@@ -6,30 +6,34 @@
 A dataset (a folder with meta/teleop/takes.jsonl) stands for its takes, with their episode numbers. Takes are paired by their
 `RP` record: each replay with its group's source. Standard library only.
 
-Per pair it compares, at each stage a command passes (trainer/contract/SESSION_FORMAT.md):
+Per pair it compares, at each stage a command passes (trainer/contract/SESSION_FORMAT.md). **A replay and its source are
+meant to match on the commands received** (`JC`, the rows of the dataset's `meta/teleop/commands.parquet`, its `servo_*`):
+the replay sends its source's commands. **The per-frame `action` may differ** wherever RobotHost's collision check judged a
+command otherwise in the two takes (docs/adr/0038 L, "Sent commands"): it is the newest command sent (`RO`, commands.parquet's
+`sent.*`), and RobotHost judges the servo path from where the arm is measured, so whether it refuses or clamps depends on
+physics.
 
-- **sent**: every `JC`, whatever its outcome: what joint-drive sent and RobotHost received. The two takes' commands are matched
-  by joint-drive's sequence number counted from each take's first (shifted by up to 3 when that does better: a lost first
-  datagram). `identical` counts matched commands whose targets are equal to the last digit; `lost` the commands one take has
-  and the other does not (UDP datagrams that never reached RobotHost); `dt` how much later than its source's the replay's
-  command arrived after the take's first, ms.
-- **outcome**: `JC`'s outcome letters (A accepted, R refused, S stale, P parked) in each take, the runs of refused commands
-  (from-to seconds into the take), and at how many matched commands the outcomes differ. A refused command never reaches the
-  relay (`RO`): RobotHost's collision backstop (docs/adr/0020) refuses a command whose servo path from where the arm is
-  measured would meet the robot's own model, and the arm keeps its last accepted target.
-- **action per frame**, by the episode frame's index (frames as robot/lerobot/teleop_lerobot/takes.py picks them: a 15 fps
-  grid over the recorded frames between the first and the last command, each with every motor's value), the largest
-  difference over the six motors between the replay's frame k and its source's, in servo units, p50 / p95 / max, and the
-  share over 20 units:
-  - `relay`: the newest relay target (`RO`) at the frame's time, over the frames between the first and last accepted command:
-    the dataset's `action` until 2026-11-24;
-  - `sent`: the newest command sent, accepted or refused, in relay units (every `RO`, and every refused `JC` turned into pulses
-    as the plant would have; not a parked one, while RobotHost's own park is the `RO`), over the frames between the first
-    and last command accepted or refused: the dataset's `action` since 2026-11-24 (docs/adr/0038 "M, motion");
+- **received**: every `JC`, whatever its outcome: what joint-drive sent and RobotHost received. The two takes' commands are
+  matched by joint-drive's sequence number counted from each take's first (shifted by up to 3 when that does better: a lost
+  first datagram). `identical` counts matched commands whose targets are equal to the last digit; `lost` the commands one
+  take has and the other does not (UDP datagrams that never reached RobotHost); `dt` how much later than its source's the
+  replay's command arrived after the take's first, ms.
+- **outcome**: `JC`'s outcome letters (A accepted, C clamped, R refused, S stale, P parked) in each take, the runs of refused
+  or clamped commands (from-to seconds into the take), and at how many matched commands the outcomes differ. A refused command
+  never reaches the relay (`RO`) and the arm keeps its last target; a clamped one reaches it as the farthest passing point
+  toward it.
+- **per frame**, by the episode frame's index (frames as robot/lerobot/teleop_lerobot/takes.py picks them: a 15 fps grid over
+  the recorded frames between the first and the last command RobotHost judged (A, C or R), each with every motor's value), the
+  largest difference over the six motors between the replay's frame k and its source's, in servo units, p50 / p95 / max, and
+  the share over 20 units:
+  - `received`: the newest command received (A, C or R), in relay units as the plant converts it: commands.parquet's
+    `servo_*`, the column a replay is meant to match on. What differs is the frames' phase against the commands;
   - `tape`: the same, both read at the source's frame times counted from each take's first such command: what is left
-    without the frames' own phase against the commands (the renderer's frame clock runs free).
-  - `dataset`: the dataset's own `action` column (with pyarrow, as the lerobot venv has it): equal to `sent` when the dataset
-    was built since 2026-11-24, to `relay` before.
+    without the frames' own phase (the renderer's frame clock runs free): the commands' own arrival jitter (`dt`) remains;
+  - `action`: the newest relay target (`RO`): the dataset's `action` column and commands.parquet's `sent.*` (as it was until
+    2026-11-24 and is again since 2026-11-25; in between a refused command counted too). It differs where the outcomes do;
+  - `dataset`: the dataset's own `action` column (with pyarrow, as the lerobot venv has it): equal to `action` but for a
+    dataset built 2026-11-24 to 2026-11-25.
 """
 import bisect
 import json
@@ -110,15 +114,15 @@ def read(take):
     rp = host["RP"][0] if host["RP"] else None
     jc = [(int(r[1]), int(r[2]), r[4], r[5]) for r in host["JC"]]  # tDeliver, seq, outcome, targets
     ro = [(int(r[0]), {int(it[0]): float(it[1]) for it in items(r[1])}) for r in host["RO"]]
-    relay = Track(ro)
-    sent = Track(ro + [(t, pulses(targets)) for t, _, o, targets in jc if o == "R"])
+    relay = Track(ro)  # the action: the newest command sent
+    judged = [(t, o, targets) for t, _, o, targets in jc if o in ("A", "C", "R")]
+    received = Track([(t, pulses(targets)) for t, _, targets in judged])  # commands.parquet's servo_*
     readings = {}
     for r in host["RI"]:
         for it in items(r[1]):
             if it[1] == "1":
                 readings.setdefault(int(it[0]), []).append(int(r[0]))
-    accepted = [t for t, _, o, _ in jc if o == "A"]
-    driven = [t for t, _, o, _ in jc if o in ("A", "R")]
+    driven = [t for t, _, _ in judged]
     recorded = []
     with open(os.path.join(take, "isaac.jlog"), errors="replace") as f:
         for line in f:
@@ -127,20 +131,17 @@ def read(take):
                 if "B" not in r[3]:
                     recorded.append(int(r[2]))
     sensed = lambda t: all(readings.get(m) and readings[m][0] <= t for m in SENSED)
-    # Until 2026-11-24 (relay): frames between the first and last accepted command, every motor with a relay target.
-    old = grid(recorded, accepted, lambda t: sensed(t) and all(m in relay.at(t) for m in MOTORS))
-    # Since (sent): between the first and last command accepted or refused, every motor with an action, the gripper a relay target.
-    new = grid(recorded, driven, lambda t: sensed(t) and all(m in sent.at(t) for m in MOTORS) and GRIPPER in relay.at(t))
+    frames = grid(recorded, driven, lambda t: sensed(t) and all(m in relay.at(t) for m in MOTORS))
     first = min(driven) if driven else 0
     runs, start = [], None
     t_first = jc[0][0] if jc else 0
     for k, (t, _, o, _) in enumerate(jc + [(0, 0, "", "")]):
-        if o == "R" and start is None:
+        if o in ("R", "C") and start is None:
             start = k
-        elif o != "R" and start is not None:
+        elif o not in ("R", "C") and start is not None:
             runs.append((start, k - 1, (jc[start][0] - t_first) / 1e9, (jc[k - 1][0] - t_first) / 1e9))
             start = None
-    return {"rp": rp, "jc": jc, "relay": relay, "sent": sent, "old": old, "frames": new, "first": first, "runs": runs,
+    return {"rp": rp, "jc": jc, "relay": relay, "received": received, "frames": frames, "first": first, "runs": runs,
             "contacts": len(host["WC"])}
 
 
@@ -186,16 +187,17 @@ def compare(src, rep):
     ta0, tb0 = src["jc"][0][0], rep["jc"][0][0]
     dts = [((b[k + shift][0] - tb0) - (a[k][0] - ta0)) / 1e6 for k in matched]
     differ = sum(1 for k in matched if a[k][1] != b[k + shift][1])
-    letters = lambda t: {o: sum(1 for _, _, x, _ in t["jc"] if x == o) for o in "ARSP" if any(x == o for _, _, x, _ in t["jc"])}
-    relay = [gap(src["relay"].at(x), rep["relay"].at(y)) for x, y in zip(src["old"], rep["old"])]
-    sent = [gap(src["sent"].at(x), rep["sent"].at(y)) for x, y in zip(src["frames"], rep["frames"])]
-    tape = [gap(src["sent"].at(x), rep["sent"].at(rep["first"] + (x - src["first"]))) for x in src["frames"]]
+    letters = lambda t: {o: sum(1 for _, _, x, _ in t["jc"] if x == o) for o in "ACRSP" if any(x == o for _, _, x, _ in t["jc"])}
+    pairs = list(zip(src["frames"], rep["frames"]))
+    action = [gap(src["relay"].at(x), rep["relay"].at(y)) for x, y in pairs]
+    received = [gap(src["received"].at(x), rep["received"].at(y)) for x, y in pairs]
+    tape = [gap(src["received"].at(x), rep["received"].at(rep["first"] + (x - src["first"]))) for x in src["frames"]]
     return {
         "n": (len(src["jc"]), len(rep["jc"])), "matched": len(matched), "identical": identical, "shift": shift,
         "lost": (len(b) - len(matched), len(a) - len(matched)),  # in the source, in the replay
         "dt_p50": statistics.median(dts) if dts else float("nan"), "dt_p95": pct([abs(d) for d in dts], 95),
         "outcome": (letters(src), letters(rep)), "differ": differ,
-        "relay": relay, "sent": sent, "tape": tape, "frames": (len(src["frames"]), len(rep["frames"])),
+        "received": received, "tape": tape, "action": action, "frames": (len(src["frames"]), len(rep["frames"])),
     }
 
 
@@ -252,7 +254,7 @@ def main(args):
     name = lambda t: (f"ep {episodes[t]} " if t in episodes else "") + os.path.basename(t)
     sources = {d["rp"][1]: t for t, d in data.items() if d["rp"] and d["rp"][2] == "source"}
     pairs = [(sources.get(d["rp"][1]), t) for t, d in data.items() if d["rp"] and d["rp"][2] == "replay"]
-    every = {"relay": [], "sent": [], "tape": [], "dataset": []}
+    every = {"received": [], "tape": [], "action": [], "dataset": []}
     worst, totals = [], {"n": 0, "matched": 0, "identical": 0, "lost": 0}
     for s, r in pairs:
         if s is None:
@@ -268,29 +270,32 @@ def main(args):
         totals["matched"] += c["matched"]
         totals["identical"] += c["identical"]
         totals["lost"] += sum(c["lost"])
-        worst.append((pct(c["relay"], 95), pct(c["sent"], 95), name(r)))
+        worst.append((pct(c["action"], 95), pct(c["tape"], 95), name(r)))
         print(f"group {data[r]['rp'][1]} {data[r]['rp'][3]}: {name(s)} -> {name(r)}; contact records (WC) {data[s]['contacts']} -> {data[r]['contacts']}")
-        print(f"  sent:    {c['n'][0]} / {c['n'][1]} commands, {c['matched']} matched (shift {c['shift']}), {c['identical']} identical;"
+        print(f"  received: {c['n'][0]} / {c['n'][1]} commands, {c['matched']} matched (shift {c['shift']}), {c['identical']} identical;"
               f" lost {c['lost'][0]} in the source, {c['lost'][1]} in the replay; dt p50 {c['dt_p50']:+.1f} ms, |dt| p95 {c['dt_p95']:.1f} ms")
-        print(f"  outcome: source {c['outcome'][0]}, refused {runs_text(data[s]['runs'])}; replay {c['outcome'][1]}, refused {runs_text(data[r]['runs'])};"
+        print(f"  outcome: source {c['outcome'][0]}, refused or clamped {runs_text(data[s]['runs'])}; replay {c['outcome'][1]}, refused or clamped {runs_text(data[r]['runs'])};"
               f" outcomes differ at {c['differ']} matched commands")
-        print(f"  action per frame ({c['frames'][0]} / {c['frames'][1]} frames), units p50 / p95 / max: relay {summary(c['relay'])};"
-              f" sent {summary(c['sent'])}; tape {summary(c['tape'])}"
+        print(f"  per frame ({c['frames'][0]} / {c['frames'][1]} frames), units p50 / p95 / max: received {summary(c['received'])};"
+              f" tape {summary(c['tape'])}; action {summary(c['action'])}"
               + (f"; dataset {summary(c['dataset'])}" if c["dataset"] else ""))
     print()
     print(f"{len(pairs)} replay pairs: {totals['identical']} of {totals['matched']} matched commands identical, {totals['lost']} lost;"
-          f" {sum(len(every['relay']) for _ in [0])} paired frames")
-    print(f"  action per frame, relay (RO: the dataset's until 2026-11-24): {summary(every['relay'])}")
-    print(f"  action per frame, sent (since 2026-11-24):                    {summary(every['sent'])}")
-    print(f"  the same at the source's frame times (no frame phase):        {summary(every['tape'])}")
+          f" {len(every['action'])} paired frames")
+    print(f"  received per frame (commands.parquet servo_*: what a replay matches on): {summary(every['received'])}")
+    print(f"  the same at the source's frame times (no frame phase):                 {summary(every['tape'])}")
+    print(f"  action per frame (RO, commands.parquet sent.*: differs where outcomes do): {summary(every['action'])}")
     if every["dataset"]:
-        print(f"  the dataset's own action column:                             {summary(every['dataset'])}")
-    print("  pairs by p95, relay / sent: " + ", ".join(f"{n} {p:.0f}/{q:.0f}" for p, q, n in sorted(worst, reverse=True)))
-    refusing = [(sum(1 for _, _, o, _ in d["jc"] if o == "R"), len(d["jc"]), name(t)) for t, d in data.items()]
-    total_r, total_n = sum(r for r, _, _ in refusing), sum(n for _, n, _ in refusing)
-    print(f"  refused commands: {total_r} of {total_n} ({100 * total_r / max(1, total_n):.1f}%) in {sum(1 for r, _, _ in refusing if r)} of"
-          f" {len(refusing)} takes; per take p50 / p90 / max {pct([r for r, _, _ in refusing], 50)} / {pct([r for r, _, _ in refusing], 90)} /"
-          f" {max(r for r, _, _ in refusing)}")
+        print(f"  the dataset's own action column:                                       {summary(every['dataset'])}")
+    print("  pairs by p95, action / tape: " + ", ".join(f"{n} {p:.0f}/{q:.0f}" for p, q, n in sorted(worst, reverse=True)))
+    for letter, word in (("R", "refused"), ("C", "clamped")):
+        counts = [(sum(1 for _, _, o, _ in d["jc"] if o == letter), len(d["jc"])) for d in data.values()]
+        if not counts:
+            continue
+        hit, total = sum(r for r, _ in counts), sum(n for _, n in counts)
+        print(f"  {word} commands: {hit} of {total} ({100 * hit / max(1, total):.1f}%) in {sum(1 for r, _ in counts if r)} of"
+              f" {len(counts)} takes; per take p50 / p90 / max {pct([r for r, _ in counts], 50)} / {pct([r for r, _ in counts], 90)} /"
+              f" {max(r for r, _ in counts)}")
 
 
 if __name__ == "__main__":

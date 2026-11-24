@@ -825,6 +825,88 @@ the phase: p95 28); this change does not touch it.
 - **Not run on the twin.** Untested there: RobotHost's refused-command line, joint-drive's replay line and a dataset built by the new
   builder.
 
+**Accidents: moves the planner would not make (2026-11-24, branch `work/v2-accident5`).** World-models' request 3: a robot-side safety check
+must catch accidents, so the data needs them, without "accident motion" giving the contact away.
+
+- **The kinds** (`AccidentModel`, `HumanOperator.AccidentTo` and `Jerk`): each a fast submovement laid into a move as the hand model makes it,
+  then the hand's recovery at its own pace.
+  - *jerk*: 5-15 cm in a random direction leaning the way the hand was going (a random unit vector plus 0.8 of the move's direction), at a
+    drawn moment of whatever part it comes in (strokes and adjustments too), a startled 0.08-0.35 s, then back toward where it was going;
+  - *overshoot*: fast 3-10 cm past the target, then back to it;
+  - *wrong way*: 3-8 cm off at 90-180 degrees to the way (either side, a little up or down), then turned to the target;
+  - *slip*: partway (30-70%) through the move's primary, 2-6 cm down or on along the way, a moment's stillness, then corrected;
+  - *rush*: the move at its pace to 10 cm short of the target, and the last 10 cm in one push begun before the first has slowed.
+  - The fast submovements are planned at 0.9-1.4 m/s at the wrist (jolts, the wrong way and the slip, 0.5-1.0), at least 80 ms long.
+- **Tagging:** `MV` kinds 6-10, `jerk`, `overshoot`, `wrong-way`, `slip`, `rush` (`ScriptMoveCodec`, trainer/contract/SESSION_FORMAT.md). An
+  accident is its own record over the move it came in, which keeps its own record and kind: `startS` is the onset (an overshoot's or a wrong
+  way's is the move's start), `endS` when the hand has recovered. On an aim or a pass it keeps that move's object and offset. RobotHost writes
+  the kind's name (`SessionLines` is unchanged); the dataset keeps it as a string. An older RobotHost drops these records (its decoder knows
+  kinds 1-5).
+- **Where and when:** drawn from a generator of their own, seeded from the take's, so drawing them moves no other draw.
+  - `--accidents share[,near]` (defaults 0.12, 0.4). Each part of the take (a layout-blind part, or an aim or a pass with its staging) carries
+    one with the first share, drawn before anything about the part is known: in free space, in the quiet start and the tail, on aims alike.
+  - Near objects, on top: a part of the main window that would be layout-blind is, with the second share, a `free` move to a point 1-6 cm off
+    an object's surface (toward the base within 50 degrees, at a height over the object's own, the wrist pitched for it), with an accident in
+    it. The aims and passes stay as many as before. When none plans (16 tries; 45% of the parts plan one), a layout-blind part carries it.
+  - `--accident-kinds jerk,overshoot,wrong-way,slip,rush[:weight]` (equal weights by default); `--no-accidents`. A kind other than a jerk
+    makes a layout-blind part a move to a goal. An accident no try can make leaves its move as it would have been.
+- **The arm's limits, not people's caps:** an accident's ticks (its fast submovement and 0.15 s after) keep to `AccidentModel.CapsFor`: each
+  joint at the commanded speed (`--speed`, what RobotHost asks the servos to ramp at) or people's cap when higher, never above the servos' top
+  speed 3.84 rad/s (917 units/s measured on the real arm, R; the twin's `servo.py` ramps at the command's speed times 0.97, RobotHost caps it
+  at 2200 units/s). Their commanded acceleration is bounded at 300 rad/s², which is not a servo limit: a servo's setpoint ramps at full speed
+  from the start, so the arm's own acceleration is its drive's torque (not measured). 120 refused most jerks. They pass through the walls;
+  the joint limits (envelope), the IK, the robot's own model and the quiet start and end hold for them as for every tick. Every other tick
+  keeps people's caps.
+- **Timing:** unchanged. The quiet start and end keep 2 cm from every object's box for accidents too (42 begin in the first 1.5 s, 22 in the
+  last 2.5 s, below).
+- **Replays** re-send the commands unchanged, so a replayed accident with its object shifted or removed gives hit/miss pairs; nothing changed.
+
+On `jetrover-mixed`, layouts 1-200, seed 1, speed 3.8 rad/s, 15 s (the dry run, Release build, on the GPU machine). "Before" is 77bcb53;
+"after" is da5ed60 with the defaults. `--no-accidents` at da5ed60 prints every figure of "before" and writes the same features, row for row.
+Contacts are by the model (the twin's links against each object's shape, else its box), each onset given to the move last begun. The AUCs
+of aims against free moves are `move_features.py`'s logistic regression on the required features, 5-fold by take.
+
+| | Before | After |
+|---|---|---|
+| Layouts planned | 197 of 200 | 194 of 200 |
+| Take length p50 / p90 | 16.9 / 18.9 s | 17.1 / 18.9 s |
+| Moves a take: free, aim, pass, pause, reverse | 10.9, 0.9, 0.2, 4.2, 4.9 | 10.5, 0.9, 0.2, 3.7, 3.9 |
+| Accidents | none | 567 in 183 takes (2.9 a take) |
+| By kind (made of drawn) | | overshoot 137 (137/156), slip 119 (119/130), rush 116 (118/138), wrong way 114 (114/152), jerk 81 (84/149) |
+| Where: touching an object by the model / within 5 cm of a box / farther (free space) | | 106 / 187 / 274 |
+| Contacts by the model | 378 onsets in 107 takes | 478 in 117 takes |
+| Of them under an accident | 0 | 158 (33%) |
+| Accidents with a contact, by kind | | wrong way 28, overshoot 23, rush 23, slip 18, jerk 14 |
+| Planned contacts (aims and passes) | 115 in 79 takes | 112 in 85 takes |
+| "The move is an accident" for "the move makes a contact", AUC, whole take / main part | | 0.585 / 0.571 |
+| A contact from the path features, logistic AUC: alone / with the accident flag | | 0.715 / 0.732 |
+| Aim against free, whole take / main part | 0.678 / 0.680 | 0.660 / 0.677 |
+| The same without the moves an accident came in | | 0.685 / 0.662 |
+| Largest arm-joint step a frame (15 fps), p50 / p90 / p95 / p99, all frames | 0.0330 / 0.1063 / 0.1325 / 0.1776 rad | 0.0312 / 0.1116 / 0.1434 / 0.2018 |
+| The same outside accidents' spans (75.3% of frames) / in them | | 0.0327 / 0.1062 / 0.1311 / 0.1775 / 0.0257 / 0.1421 / 0.1819 / 0.2315 |
+| Wrist step a frame, all frames | 4.3 / 14.1 / 18.6 / 28.4 mm | 3.9 / 15.2 / 20.4 / 33.3 |
+| The same outside / in accidents | | 4.1 / 14.2 / 18.3 / 27.8 / 3.3 / 20.0 / 28.3 / 40.9 |
+| The command moving | 85% of frames | 83% (outside 84%, in 81%) |
+| Joint speed p99 / max, smoothed 25 ms, outside accidents: yaw, shoulder, elbow, wrist pitch, roll | 1.98/3.70, 1.84/2.50, 2.25/3.35, 2.13/2.76, 0.97/3.77 rad/s | 1.95/3.70, 1.82/2.55, 2.17/3.37, 2.16/2.82, 0.97/3.39 |
+| The same in accidents | | 2.76/3.64, 2.71/3.70, 2.93/3.66, 2.76/3.66, 1.18/3.34 |
+
+- **The contact share:** a third of the contacts come from accidents, most from those placed near objects (near 0.2 gave 22%, 0.35 31%,
+  0.45 with the near parts taking the aims' place 43%). The accidents with a contact are 19% of all accidents; 48% come in free space.
+- **Not a shortcut:** "an accident" alone predicts a contact at AUC 0.585 (0.571 in the main part), against 0.715 for the path's own
+  features; adding the flag to them gains 0.017. 461 of the 3923 records without a contact are accidents, 106 of the 368 with one.
+- **The motion:** outside accidents the per-frame motion is the "before" distribution to the third decimal; accidents add the fast tail
+  (p99 0.23 rad a frame, 41 mm at the wrist) and keep within the servos' top speed smoothed (max 3.70 rad/s). Tick to tick a command's jitter
+  reaches 10 rad/s for one tick (outside accidents 5.7), which the servo's ramp does not follow.
+- **What it costs:** 3 more layouts of 200 find no plan (a cornered hand, or a tail kept clear): on the twin `--new-layout` draws another.
+  Aims against free moves stay where they were (0.66-0.68).
+- **Checked:** `AccidentTests` (each accident over the move it came in with its object; every tick in the joint limits, within the arm's own
+  limits in an accident and people's caps elsewhere, never above the servos' top speed; all five kinds, in free space and on aims; the options
+  and the caps); `MixedTakeTests` (the timing rules with accidents; the caps and the moves' law without them); `ScriptMoveCodecTests` (kinds
+  6-10 round-trip with their object, 11 refused). The four old scripts' tests are unchanged.
+- **Not run on the twin.** Untested there: the accidents' physics (the arm trails a fast command by about 0.2 s, so a jerk's peak lands
+  later and lower than planned), RobotHost's backstop refusing an accident's path into the table or the arm itself, and whether the twin's
+  contacts follow the model's third.
+
 ### C, clearance and contacts
 
 Built 2026-11-22 on `work/v2-contacts`. Checked offline against recorded takes; the table contacts are not yet run on the twin.

@@ -75,6 +75,13 @@ PATH_METHOD = (f"{PATH_STEPS} poses from the arm's measured state when the comma
                "the last ramp stood, not from the reading, and the PhysX drive trails it; neither is modelled. The start "
                "itself is not one of the poses")
 
+SAMPLE_PATH_METHOD = (f"{PATH_STEPS} poses from the frame's measured state (its observation.state: each servo's newest valid RI "
+                      "at or before sensed_ns, the gripper's newest relay target) to the sample, at 1/8..8/8 of the time the "
+                      "slowest servo needs, as commands.parquet's way: each servo ramps linearly in pulses at the rate of the "
+                      "command in force at the frame (the frame's action, the newest accepted row of commands.parquet at or "
+                      "before sensed_ns: its RO's pulsesPerSecond; the mixed script's caps for a servo it gives none) and stops "
+                      "at its target (teleop_isaac.servo.TimedSetpoint). The start itself is not one of the poses")
+
 
 class Unavailable(Exception):
     """The take lacks what the command distances need."""
@@ -591,6 +598,40 @@ def _distance_columns(out: Dict[str, object], links: Sequence[str], res: Optiona
     out["min_surface_mm"] = _nanmin_rows(sm[:, idx])
 
 
+def _path_columns(out: Dict[str, object], links: Sequence[str], engine: Optional["Engine"], res_end: Optional[Result],
+                  res_mid: Optional[Result], path_ok: np.ndarray, n: int, moving: np.ndarray) -> None:
+    """``path_min_clearance_mm``, ``_id``, ``_link``, ``path_min_step`` (1..PATH_STEPS, 0 without a way) and
+    ``path_min_surface_mm``: the smallest over the :data:`PATH_STEPS` poses of each row's way (``res_mid``, min_only, the
+    first PATH_STEPS - 1 poses of n ways in order; ``res_end``, per link, the last), over the ``moving`` links. NaN (ids
+    -1, links null) where a pose of the way is unknown (``path_ok`` (n, PATH_STEPS) false), and a null link with nothing
+    within the cutoff."""
+    if res_end is None or res_mid is None:
+        out["path_min_clearance_mm"] = np.full(n, np.nan)
+        out["path_min_clearance_id"] = np.full(n, -1)
+        out["path_min_clearance_link"] = [None] * n
+        out["path_min_step"] = np.zeros(n, int)
+        out["path_min_surface_mm"] = np.full(n, np.nan)
+        return
+    L = len(links)
+    last = np.where(np.isnan(res_end.obstacle) | ~moving[None, :], np.inf, res_end.obstacle)
+    last_link = np.argmin(last, axis=1) if n else np.zeros(0, int)
+    rows = np.arange(n)
+    dist = np.concatenate([res_mid.obstacle.reshape(n, PATH_STEPS - 1), res_end.obstacle[rows, last_link][:, None]], axis=1)
+    ids = np.concatenate([res_mid.obstacle_id.reshape(n, PATH_STEPS - 1), res_end.obstacle_id[rows, last_link][:, None]], axis=1)
+    lks = np.concatenate([res_mid.link.reshape(n, PATH_STEPS - 1), last_link[:, None]], axis=1)
+    step_i = np.argmin(np.where(np.isnan(dist), np.inf, dist), axis=1) if n else np.zeros(0, int)
+    bad = ~path_ok.all(axis=1)
+    best_id = ids[rows, step_i]
+    out["path_min_clearance_mm"] = np.where(bad, np.nan, np.round(dist[rows, step_i] * 1000.0, 2))
+    out["path_min_clearance_id"] = np.where(bad, -1, best_id)
+    far = (dist[rows, step_i] >= engine.cutoff) | (best_id < 0)
+    out["path_min_clearance_link"] = [None if (b or f or lks[i, si] < 0) else links[lks[i, si]]
+                                      for i, (si, b, f) in enumerate(zip(step_i, bad, far))]
+    out["path_min_step"] = np.where(bad, 0, step_i + 1)
+    sf = np.concatenate([res_mid.surface.reshape(n, PATH_STEPS - 1, L), res_end.surface[:, None, :]], axis=1)
+    out["path_min_surface_mm"] = np.where(bad, np.nan, np.round(_nanmin_rows(sf.reshape(n, -1)) * 1000.0, 2))
+
+
 def path_poses(start: np.ndarray, cmd: np.ndarray, pps: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
     """The way from ``start`` to ``cmd`` (pulses, (n, 6)) as the servos go, each at its own rate ``pps`` (pulses per second,
     0: it jumps): :data:`PATH_STEPS` poses (n, steps, 6) at 1/8..8/8 of the time ``T`` (n,) the slowest servo needs, each
@@ -734,7 +775,7 @@ def compute(take: Take, geometry_dir: Optional[str], layout_seed=None, host=None
     path, T = path_poses(start, cmd, pps)
     commands["path_s"] = np.round(T, 6)
     path_ok = ~np.isnan(path).any(axis=2)
-    res_cmd = None
+    res_cmd = res_mid = None
     if engine is not None and n:
         scenes = np.array([engine.scene(float(t)) for t in received])
         res_cmd = _evaluate(engine, arm, cmd, scenes, path_ok[:, -1])
@@ -742,33 +783,19 @@ def compute(take: Take, geometry_dir: Optional[str], layout_seed=None, host=None
         res_mid = _evaluate(engine, arm, mid, np.repeat(scenes, PATH_STEPS - 1), path_ok[:, :-1].reshape(-1), min_only=True)
     moving = ~engine.fixed if engine is not None else np.array([x != "base_link" for x in links])
     _distance_columns(commands, links, res_cmd, n, moving)
-    if res_cmd is not None:
-        L = len(links)
-        last = np.where(np.isnan(res_cmd.obstacle) | ~moving[None, :], np.inf, res_cmd.obstacle)
-        last_link = np.argmin(last, axis=1)
-        rows = np.arange(n)
-        dist = np.concatenate([res_mid.obstacle.reshape(n, PATH_STEPS - 1), res_cmd.obstacle[rows, last_link][:, None]], axis=1)
-        ids = np.concatenate([res_mid.obstacle_id.reshape(n, PATH_STEPS - 1), res_cmd.obstacle_id[rows, last_link][:, None]], axis=1)
-        lks = np.concatenate([res_mid.link.reshape(n, PATH_STEPS - 1), last_link[:, None]], axis=1)
-        step_i = np.argmin(np.where(np.isnan(dist), np.inf, dist), axis=1)
-        bad = ~path_ok.all(axis=1)
-        commands["path_min_clearance_mm"] = np.where(bad, np.nan, np.round(dist[rows, step_i] * 1000.0, 2))
-        commands["path_min_clearance_id"] = np.where(bad, -1, ids[rows, step_i])
-        far = dist[rows, step_i] >= engine.cutoff
-        commands["path_min_clearance_link"] = [None if (b or f or lks[i, si] < 0) else links[lks[i, si]]
-                                               for i, (si, b, f) in enumerate(zip(step_i, bad, far))]
-        commands["path_min_step"] = np.where(bad, 0, step_i + 1)
-        sf = np.concatenate([res_mid.surface.reshape(n, PATH_STEPS - 1, L), res_cmd.surface[:, None, :]], axis=1)
-        commands["path_min_surface_mm"] = np.where(bad, np.nan, np.round(_nanmin_rows(sf.reshape(n, -1)) * 1000.0, 2))
-    else:
-        commands["path_min_clearance_mm"] = np.full(n, np.nan)
-        commands["path_min_clearance_id"] = np.full(n, -1)
-        commands["path_min_clearance_link"] = [None] * n
-        commands["path_min_step"] = np.zeros(n, int)
-        commands["path_min_surface_mm"] = np.full(n, np.nan)
+    _path_columns(commands, links, engine, res_cmd, res_mid, path_ok, n, moving)
 
-    # --- pose samples
-    samples = _samples(take, arm, engine, rng, links, frame_t)
+    # --- pose samples, each with its way from the frame's measured pose at the rates of the command in force there (the
+    # frame's action: the newest accepted row at or before it)
+    fallback = np.array([c * PULSE_PER_RADIAN for c in CAPS_RAD_S] + [GRIPPER_PPS])  # a servo the command gives no rate
+    rates = np.tile(fallback, (len(frame_t), 1))
+    acc = np.array([i for i, e in enumerate(events) if e[1] == "A"], int)
+    if len(acc) and len(frame_t):
+        k = np.searchsorted(received[acc], np.asarray(frame_t, np.int64), side="right") - 1
+        have = k >= 0
+        got = pps[acc[k[have]]]
+        rates[have] = np.where(got > 0, got, fallback[None, :])
+    samples = _samples(take, arm, engine, rng, links, frame_t, rates)
     return Tables(commands, samples, seed, why, _time.perf_counter() - started)
 
 
@@ -792,7 +819,11 @@ def _evaluate(engine: Engine, arm: Arm, pulses: np.ndarray, scenes: np.ndarray, 
     return out
 
 
-def _samples(take: Take, arm: Optional[Arm], engine: Optional[Engine], rng, links, frame_t) -> Dict[str, object]:
+def _samples(take: Take, arm: Optional[Arm], engine: Optional[Engine], rng, links, frame_t,
+             rates: Optional[np.ndarray] = None) -> Dict[str, object]:
+    """Every frame's :data:`SAMPLES` poses and their distances; with ``rates`` (nf, 6: each servo's pulses a second at that
+    frame), also the smallest over the way to each from the frame's measured pose (:func:`path_poses`), as
+    commands.parquet's ``path_min_`` columns."""
     nf = len(take.frames)
     total = sum(c for _, c in SAMPLES)
     kinds = [k for k, c in SAMPLES for _ in range(c)]
@@ -821,13 +852,22 @@ def _samples(take: Take, arm: Optional[Arm], engine: Optional[Engine], rng, link
         poses[fi, j] = lo + rng.random((len(j), 6)) * (hi - lo)
     near = kind_at["near"]
     targets = NEAR_MM[0] + rng.random((nf, len(near))) * (NEAR_MM[1] - NEAR_MM[0])
+    res = res_mid = None
     if engine is not None and nf:
         scenes = np.array([engine.scene(float(t)) for t in frame_t])
         _near_search(engine, arm, rng, state, scenes, poses, target, target_obj, near, targets, lo, hi, reach)
         flat = poses.reshape(-1, 6)
         res = _evaluate(engine, arm, flat, np.repeat(scenes, total), ~np.isnan(flat).any(axis=1))
-    else:
-        res = None
+    # The way to each sample from the frame's measured pose, as a command's (the start itself is not one of the poses).
+    path = path_ok = T = None
+    if rates is not None:
+        start = np.repeat(state, total, axis=0)
+        path, T = path_poses(start, poses.reshape(-1, 6), np.repeat(rates, total, axis=0))
+        path_ok = ~np.isnan(path).any(axis=2)
+        if res is not None:
+            mid = path[:, :-1].reshape(-1, 6)
+            res_mid = _evaluate(engine, arm, mid, np.repeat(scenes, total * (PATH_STEPS - 1)), path_ok[:, :-1].reshape(-1),
+                                min_only=True)
     out: Dict[str, object] = {"frame_index": np.repeat(np.arange(nf), total), "sample": np.tile(np.arange(total), nf),
                               "kind": kinds * nf}
     flat = poses.reshape(-1, 6)
@@ -838,6 +878,9 @@ def _samples(take: Take, arm: Optional[Arm], engine: Optional[Engine], rng, link
     out["target_id"] = target_obj.reshape(-1)
     moving = ~engine.fixed if engine is not None else np.array([x != "base_link" for x in links])
     _distance_columns(out, links, res, nf * total, moving)
+    if rates is not None:
+        out["path_s"] = np.round(T, 6)
+        _path_columns(out, links, engine, res, res_mid, path_ok, nf * total, moving)
     return out
 
 
@@ -944,7 +987,7 @@ def metadata(cutoff_mm: float = C.CUTOFF_MM) -> Dict[str, Dict]:
                              "the plant would have sent it; each frame's action is the last row received at or before it",
                      "outcome": "A: an RO, sent to the relay; R: a command RobotHost refused (it would collide, or the servo "
                                 "path from the measured pose would); seq: the JC it carries (an RO's: the newest accepted one)"},
-        "pose_samples": {**common, "samples": dict(SAMPLES), "beyond": list(BEYOND), "reachSeconds": REACH_SECONDS,
+        "pose_samples": {**common, "pathMethod": SAMPLE_PATH_METHOD, "pathSteps": PATH_STEPS, "samples": dict(SAMPLES), "beyond": list(BEYOND), "reachSeconds": REACH_SECONDS,
                          "capsRadPerS": list(CAPS_RAD_S), "gripperPulsesPerS": GRIPPER_PPS, "nearMm": list(NEAR_MM),
                          "nearToleranceMm": NEAR_TOLERANCE_MM,
                          "kinds": "beyond: measured pose + scale x (current command - measured pose), scale stratified "

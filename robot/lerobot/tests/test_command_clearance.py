@@ -302,6 +302,20 @@ def test_the_pose_samples_of_every_frame(scenarios, geometry):
     assert landed.mean() > 0.75, landed.mean()
     # Here the arm starts 10 mm from the wall, so a line often has both ends on one side (the real takes: 86% within).
     assert (np.abs(d[near] - target[near]) <= K.NEAR_TOLERANCE_MM + 0.01).mean() > 0.4
+    # The way to each sample from the frame's measured pose (world-models' request, 2026-11-25), as a command's: 8 poses at the
+    # rate of the command in force (the frame's action, an RO at 596.831 pulses a second), the last the sample itself.
+    pm, step = np.asarray(s["path_min_clearance_mm"]), np.asarray(s["path_min_step"])
+    assert np.isfinite(pm).all() and ((step >= 1) & (step <= K.PATH_STEPS)).all()
+    assert (pm <= d + 1e-9).all() and (pm < d - 1).any()  # never farther than the sample itself, nearer on some ways
+    engine, i = K.Engine(C.TakeWorld(path, geometry)), int(np.argmax(d - pm))
+    fi = i // total
+    want, T = K.path_poses(state[fi][None], poses[i][None], np.full((1, 6), 596.831))
+    assert s["path_s"][i] == pytest.approx(T[0], abs=1e-6)
+    res = engine.distances(arm.values(want[0]), [engine.scene(take.frames[fi].timing["sensed"])] * K.PATH_STEPS)
+    moving = ~engine.fixed
+    assert pm[i] == pytest.approx(round(res.obstacle[:, moving].min() * 1000, 2), abs=0.011)
+    assert s["path_min_surface_mm"][i] == pytest.approx(round(np.nanmin(res.surface) * 1000, 2), abs=0.011)
+    assert (s["path_min_clearance_link"][i] is None) == (s["path_min_clearance_id"][i] < 0)
     # Seeded: the same take draws the same poses; another session other ones.
     again = K.compute(take, geometry, layout_seed=777).samples
     assert all(np.array_equal(np.asarray(again[n]), np.asarray(s[n]), equal_nan=True) for n in K.SERVO_NAMES)

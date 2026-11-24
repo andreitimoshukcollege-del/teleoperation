@@ -311,8 +311,8 @@ def test_a_refused_commands_received_values_need_robothosts_own_conversion(scena
 def test_a_command_into_the_wall_reads_negative(scenarios, geometry):
     t = K.compute(read_take(cmd_take(scenarios, COMMANDS, gap=-0.005)), geometry, layout_seed=777)
     c = t.commands
-    assert c["min_clearance_mm"][1] == pytest.approx(-5.0, abs=0.01) and c["min_clearance_id"][1] == 31
-    assert c["path_min_clearance_mm"][1] == pytest.approx(-5.0, abs=0.01)
+    assert c["min_clearance_mm"][0] == pytest.approx(-5.0, abs=0.01) and c["min_clearance_id"][0] == 31
+    assert c["path_min_clearance_mm"][0] == pytest.approx(-5.0, abs=0.01)
 
 
 def test_with_nothing_within_the_cutoff_no_link_is_named(scenarios, geometry):

@@ -967,15 +967,28 @@ namespace Teleop.Eval.JointDrive
                 float bearing = MathF.Atan2(o.Center.Y, o.Center.X) + MathF.PI + (float)(Draw.Uniform(ref _rng, -50, 50) * deg);
                 var dir = new Vector3(MathF.Cos(bearing), MathF.Sin(bearing), 0f);
                 Vector3 tool = new Vector3(o.Center.X, o.Center.Y, (float)Draw.Uniform(ref _rng, zLo, zHi)) + dir * (Support(o, dir) + (float)Draw.Uniform(ref _rng, 0.01, 0.06));
-                float pitch = PitchAt(new Vector2(tool.X, tool.Y).Length(), tool.Z) + (float)(Draw.Uniform(ref _rng, -8, 8) * deg);
-                Vector3 goal = WristFor(tool, pitch), from = _hand.TargetEnd;
-                // Where the hand would stop must be in reach, in the envelope and clear of the robot itself, or no try there plans.
+                // The wrist pitched for the height (PitchAt), else up to 36 degrees either way: where the hand would stop must be in reach, in the
+                // envelope and clear of the robot itself, or no try there plans.
+                float pitch0 = PitchAt(new Vector2(tool.X, tool.Y).Length(), tool.Z) + (float)(Draw.Uniform(ref _rng, -8, 8) * deg), pitch = pitch0;
                 ArmPose last = _hand.Poses.Count > 0 ? _hand.Poses[_hand.Poses.Count - 1] : _model.Home;
-                if (!TrySolve(last, goal, pitch, out ArmPose there) || !_envelope.Contains(there) || !ArmCollision.IsValid(_profile, _model, there))
+                bool reachable = false;
+                foreach (float d in new[] { 0f, 12f, -12f, 24f, -24f, 36f, -36f })
+                {
+                    pitch = Math.Clamp(pitch0 + d * (float)deg, -89f * (float)deg, 10f * (float)deg);
+                    if (TrySolve(last, WristFor(tool, pitch), pitch, out ArmPose there) && _envelope.Contains(there) && ArmCollision.IsValid(_profile, _model, there))
+                    {
+                        reachable = true;
+                        break;
+                    }
+                }
+
+                if (!reachable)
                 {
                     _nearUnreachable++;
                     continue;
                 }
+
+                Vector3 goal = WristFor(tool, pitch), from = _hand.TargetEnd;
 
                 if (!_hand.MixedTo(goal, pitch, null, Slowness(), HandModel.Tolerance, _model, out double s, out double e, walls: DrawWalls(), accident: kind))
                 {

@@ -1078,7 +1078,9 @@ by time (inside an episode's first to last frame) that belong to another episode
 
 - **After.** cb1e21's 38 takes rebuilt into scratch with the rebuild recipe's commands and its own options (`--jobs 4`,
   140 s). Result: `_twin0` with 19 episodes and 5114 frames, and `_twin1` with 19 and 4925. Neither has an overlapping
-  pair or an action from another episode, and `safety-report` finds no faults in the two.
+  pair or an action from another episode, and `safety-report` finds no faults in the two. With `--split 2` (166 s), each
+  twin's takes are parts of 9 and 10 episodes, each part one twin's, and every one of the 19 replay groups, 38 layout
+  hashes and 19 layout seeds is in one of the four parts.
 - **Nothing else changed.** Take by take, the labels, `safety_ranges.json`, unavoidable ranges, events, the four sidecars,
   the timing lines, the raw lines (less `episode_index`) and the data parquet's states, actions and times equal the merged
   dataset's, 38 of 38. Videos were not compared.

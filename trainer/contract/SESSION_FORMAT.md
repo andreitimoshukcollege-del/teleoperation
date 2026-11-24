@@ -75,6 +75,12 @@ and closes and completes it. In the session they are recognised by `label` and `
   an automatic session, means RobotHost's own impairment changed during it; its `UP` records say
   when. `addedDelayMs` (the headset's added delay) is `null` in an automatic session: the robot does
   not know it.
+  `stall:<baseMs>:<jitterMs>:<meanGapS>:<minStallMs>:<maxStallMs>` (since 2026-11-24, docs/adr/0038 N, the twin's takes) is
+  RobotHost's own late link: each command arrives the base delay plus up to the jitter after it was read (the jitter one draw
+  per 20 ms, the link keeping its order), and stalls of the shortest to the longest length, a mean gap apart (each gap
+  uniform in half to one and a half times it), hold everything read during them and deliver it at the stall's end plus the
+  base delay, at one moment, in order; nothing is lost. The draws follow `uplinkSeed`, and start afresh with every session.
+  `uplinkStall` then spells the five settings out: `baseMs`, `jitterMs`, `meanGapS`, `minStallMs`, `maxStallMs`.
 - `conditions.motion` is `teleop`, `joint-drive:<script>`, `stop-latency` (`just stop-latency`'s one-joint swings that stop
   dead, docs/adr/0038 workstream R; `conditions.operator` is then `stop-latency`), `auto` (an automatic session), or
   `scenario:<name>` (a take from the headset's RECORD button, docs/adr/0033). A take's `label` is
@@ -134,7 +140,7 @@ All times are RobotHost `Stopwatch` ticks on the Jetson (`CLOCK_MONOTONIC`, ns).
 | `FR` | `t` `seq` `robotSendTicks` `sensedTicks` `echoOperatorTicks` `echoRobotRecvTicks` `joints` | A joint-state frame sent, decoded from the bytes that went out. `joints` is `motor:flags:value;...` |
 | `SS` | `t` `endpoint` | The joint-state stream's subscriber: written at the start of every session while one is subscribed, then when it changes |
 | `JS` | `t` `endpoint` | The joint-command sender: written at the start of every session while one is commanding, or at the session's first command, then when it changes (the staleness check restarted) |
-| `UP` | `t` `profile` `seed` | The robot-side uplink impairment, at the start of every session when it is not `none` (since 2026-10-26), then whenever it changes (`profile` `none` is off): from then on, `JC`'s `tDeliver` is when that Core profile released the command, `t` when the socket was read. Keepalives go through it too. A schedule (ADR 0021 decision 13) writes one `UP` per change; a simulated session's trainer-only segments name themselves (`param:...`, `queue:...`, `outage:...`) and its `latents.jlog` `LP uplink_schedule` holds their parameters |
+| `UP` | `t` `profile` `seed` | The robot-side uplink impairment, at the start of every session when it is not `none` (since 2026-10-26), then whenever it changes (`profile` `none` is off): from then on, `JC`'s `tDeliver` is when that Core profile released the command, `t` when the socket was read. Keepalives go through it too. A schedule (ADR 0021 decision 13) writes one `UP` per change; a simulated session's trainer-only segments name themselves (`param:...`, `queue:...`, `outage:...`) and its `latents.jlog` `LP uplink_schedule` holds their parameters. A `stall:` profile (see `session.json`, docs/adr/0038 N) starts afresh at each session's start, so the `UP` there is its whole description |
 | `OM` | `t` `kind` `mode` `endpoint` | The operator message's sender (docs/adr/0018 §9): its client `kind` (`headset`, or `tool`) and motion `mode` (`on`, `paused`, `off`; the headset's ROBOT buttons), written at the start of every session while one is heard, then when any of the three changes. Since 2026-10-26 |
 | `PQ` | `t` `seq` `request` `opTicks` | An arm-power request arrived (docs/adr/0023 decision 5): `request` `relax` (park, then torque off) or `hold` (torque on), `?<n>` for an unknown one; `opTicks` on the sender's clock. Heartbeats (no request) are not written |
 | `PS` | `t` `state` `reason` | The arm-power state after a change, `holding`, `parking` or `relaxed`, and why: `none`, `no-rest-pose`, `path-collides`, `park-timed-out`, `board-not-answering`, `no-collision-model`, `unknown-request` or `hold-requested`. A refused relax is `holding` with its reason. From `parking` to `relaxed` or `holding`, no joint command reached the plant: those that arrived are `JC` with outcome `P` |

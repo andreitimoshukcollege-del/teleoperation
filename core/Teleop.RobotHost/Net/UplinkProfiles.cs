@@ -15,6 +15,8 @@ namespace Teleop.RobotHost.Net
     /// link it was measured on had them. Only version-2 traces (they carry their send interval and losses); delays are
     /// rescaled from the file's tick rate to this host's. A name that does not resolve is refused with the reason, so a
     /// typo never records a session as impaired when it was not.
+    /// Or <c>stall:...</c> (docs/adr/0038 N): a late, jittery link that now and then stalls and then delivers what it held in
+    /// a burst (<see cref="StallUplinkImpairment"/>), re-armed at the start of every session (<see cref="RestartsEachSession"/>).
     /// </summary>
     public static class UplinkProfiles
     {
@@ -27,8 +29,23 @@ namespace Teleop.RobotHost.Net
                 return TryLoadTrace(name.Substring(TracePrefix.Length), ticksPerSecond, tracesRoot, out impairments, out error);
             }
 
+            if (StallSettings.IsStall(name))
+            {
+                impairments = Array.Empty<INetworkImpairment>();
+                if (!StallSettings.TryParse(name, out StallSettings stall, out error)) return false;
+                impairments = new INetworkImpairment[] { new StallUplinkImpairment(stall, ticksPerSecond) };
+                return true;
+            }
+
             return NetworkProfileCatalog.TryResolveImpairments(name, ticksPerSecond, out impairments, out error);
         }
+
+        /// <summary>
+        /// Whether RobotHost starts this profile afresh (same seed) at the start of every session, so each take's delays follow
+        /// the same pattern from its start: <c>stall:</c> profiles (docs/adr/0038 N). Core's profiles and traces run on across
+        /// sessions, as they always have.
+        /// </summary>
+        public static bool RestartsEachSession(string profile) => StallSettings.IsStall(profile);
 
         private static bool Safe(string part) =>
             part.Length > 0 && part.Length <= 160 && part[0] != '.' && part.IndexOfAny(new[] { '/', '\\' }) < 0 &&

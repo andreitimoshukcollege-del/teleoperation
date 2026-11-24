@@ -245,6 +245,13 @@ namespace Teleop.RobotHost
                     sessionState.Sender(now, jointCommanderText);
                 }
 
+                // A stall: profile starts afresh with each session, so every take of a mixed take's replay group meets the same
+                // delays at the same times after its start (docs/adr/0038 N); what the previous run still holds arrives when due.
+                if (uplink != null && uplinkSchedule == null && UplinkProfiles.RestartsEachSession(uplink.Profile))
+                {
+                    uplink.SetProfile(uplink.Profile, uplinkSeedNow, drainPrevious: true);
+                }
+
                 sessionState.Uplink(now, uplink?.Profile ?? "none", uplinkSeedNow);
                 if (operatorText != null && now - lastOperatorTicks <= 3 * clock.TicksPerSecond)
                 {

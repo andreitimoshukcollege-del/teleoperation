@@ -8,6 +8,7 @@ using Teleop.RobotArm.Types;
 using Teleop.RobotArm.Wire;
 using Teleop.RobotHost.Plant;
 using Teleop.RobotHost.Recording;
+using Xunit.Abstractions;
 using static Teleop.RobotHost.Tests.Plant.ServoPathCollisionTests;
 
 namespace Teleop.RobotHost.Tests.Plant
@@ -20,6 +21,10 @@ namespace Teleop.RobotHost.Tests.Plant
     /// </summary>
     public sealed class HostCheckClampTests
     {
+        private readonly ITestOutputHelper _output;
+
+        public HostCheckClampTests(ITestOutputHelper output) => _output = output;
+
         private static readonly GenericArmPlantConfig Config = GenericArmPlantConfig.Default;
         private static readonly RobotArmProfile JetRover = Config.Profile;
         private static readonly ArmCollisionModel Model = JetRover.Collision!;
@@ -298,6 +303,34 @@ namespace Teleop.RobotHost.Tests.Plant
             GenericArmPlant parking = PlantAt(a, parkRelay, HostCheckOnFail.Clamp);
             Assert.Equal(JointCommandOutcome.Refused, parking.CommandJointAngles(Targets(b), captureTicks: 10, askGate: false, mayClamp: false));
             Assert.Empty(parkRelay.SentCommands);
+        }
+
+        [Fact]
+        public void TheClampsCost_OnFarApartCommands_IsLogged_AndWellUnderACommandPeriod()
+        {
+            // A stress case: measured and commanded poses drawn anywhere in the ranges, 20 degrees apart or more (p50 about 90),
+            // far beyond the lag a teleop command trails by. RobotHost runs one loop; a command arrives every 20 ms.
+            var micros = new List<double>();
+            var deltas = new List<double>();
+            var checks = new List<int>();
+            foreach ((ArmPose a, ArmPose b) in RefusedPairs(23).Take(300))
+            {
+                var relay = new FakeRelayClient();
+                GenericArmPlant plant = PlantAt(a, relay, HostCheckOnFail.Clamp);
+                JointTarget[] command = Targets(b);
+                long started = System.Diagnostics.Stopwatch.GetTimestamp();
+                plant.CommandJointAngles(command, captureTicks: 10);
+                micros.Add((System.Diagnostics.Stopwatch.GetTimestamp() - started) * 1e6 / System.Diagnostics.Stopwatch.Frequency);
+                deltas.Add(a.MaxJointDelta(b) / Deg);
+                checks.Add(plant.LastClamp.Checks);
+            }
+
+            double Q(List<double> v, double q) => v.OrderBy(x => x).ElementAt((int)Math.Round(q * (v.Count - 1)));
+            _output.WriteLine($"clamp, {micros.Count} far-apart commands (largest joint change p50 {Q(deltas, 0.5):0} deg, max {deltas.Max():0}): " +
+                $"us p50 {Q(micros, 0.5):0} p90 {Q(micros, 0.9):0} p99 {Q(micros, 0.99):0} max {micros.Max():0}; checks p50 " +
+                $"{Q(checks.Select(c => (double)c).ToList(), 0.5)} max {checks.Max()}");
+            Assert.All(checks, c => Assert.InRange(c, 1, LineClamp.MaxChecks));
+            Assert.True(Q(micros, 0.5) < 20_000, "the median clamp took a whole command period");
         }
 
         [Fact]

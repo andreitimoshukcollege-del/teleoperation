@@ -26,6 +26,7 @@ namespace Teleop.RobotHost.Recording
             JointCommandOutcome.Stale => 'S',
             JointCommandOutcome.Refused => 'R',
             JointCommandOutcome.Parked => 'P',
+            JointCommandOutcome.Held => 'H',
             _ => '?',
         };
 
@@ -374,6 +375,21 @@ namespace Teleop.RobotHost.Recording
             ArmPowerReason.HoldRequested => "hold-requested",
             _ => "?" + ((byte)reason).ToString(CultureInfo.InvariantCulture),
         };
+
+        /// <summary>The command gate held joint command <paramref name="sequence"/> (docs/adr/0038 N): the check's reason, or
+        /// <c>no-answer</c> when a fail-closed gate heard nothing in time.</summary>
+        public static string GateHold(long t, uint sequence, string reason) =>
+            "GH|" + I(t) + "|" + sequence.ToString(CultureInfo.InvariantCulture) + "|" + Clean(reason);
+
+        /// <summary>The command gate's check did not answer joint command <paramref name="sequence"/> within its deadline; it
+        /// waited <paramref name="waitedMicroseconds"/>. The command went on (fail-open) or was held (fail-closed, with a GH).</summary>
+        public static string GateMiss(long t, uint sequence, long waitedMicroseconds) =>
+            "GT|" + I(t) + "|" + sequence.ToString(CultureInfo.InvariantCulture) + "|" + I(waitedMicroseconds);
+
+        /// <summary>The command gate is on: what checks (<c>socket:&lt;path&gt;</c> or <c>table:...</c>), its deadline and what a
+        /// miss does (<c>open</c> or <c>closed</c>). Written at the start of every session while it is on.</summary>
+        public static string GateConfig(long t, string check, double deadlineMs, bool failClosed) =>
+            "GC|" + I(t) + "|" + Clean(check) + "|" + deadlineMs.ToString("R", CultureInfo.InvariantCulture) + "|" + (failClosed ? "closed" : "open");
 
         public static string Subscriber(long t, string endpoint) => "SS|" + I(t) + "|" + Clean(endpoint);
 

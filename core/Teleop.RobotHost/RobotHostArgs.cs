@@ -73,6 +73,22 @@ namespace Teleop.RobotHost
         public double? ScenarioStopFreeGigabytes { get; init; }
 
         /// <summary>
+        /// The optional command gate (docs/adr/0038 N): <c>socket:&lt;path&gt;</c> or the example <c>table:&lt;mm&gt;:&lt;z&gt;</c>. Null, the
+        /// default, is off: RobotHost then asks nothing and writes no gate record. Only with <c>--auto-record-source isaac</c>
+        /// (the twin) unless <see cref="CommandGateOnRealRobot"/>.
+        /// </summary>
+        public string? CommandGate { get; init; }
+
+        /// <summary>How long the gate waits for its check, ms (default 5).</summary>
+        public double CommandGateDeadlineMs { get; init; } = 5;
+
+        /// <summary>A check that does not answer in time holds the command (default: it goes on).</summary>
+        public bool CommandGateFailClosed { get; init; }
+
+        /// <summary><c>--command-gate-on-real-robot</c>: the explicit flag a gate needs on anything but the twin.</summary>
+        public bool CommandGateOnRealRobot { get; init; }
+
+        /// <summary>
         /// Path to a <c>RobotArmProfile</c> JSON file (<c>core/RobotProfiles/*.json</c> convention,
         /// docs/adr/0011-generic-robot-arm-profiles.md) -- null (the default) falls back to
         /// <c>RobotArmProfile.JetRoverMeasuredDefault</c>, a compatibility convenience, not the
@@ -227,6 +243,9 @@ namespace Teleop.RobotHost
             string? recordControlPath = null;
             string? scenePath = null, worldSocket = null, localWorldSocket = null, scenarios = null;
             double? scenarioStartFree = null, scenarioStopFree = null;
+            string? commandGate = null;
+            double? gateDeadlineMs = null;
+            bool gateFailClosed = false, gateOnRealRobot = false;
             ulong? sceneSeed = null;
             double worldTimeout = 60;
             string? uplinkControlPath = null;
@@ -404,6 +423,18 @@ namespace Teleop.RobotHost
                     case "--scenario-stop-free-gb" when i + 1 < args.Length:
                         scenarioStopFree = Number(args[i], args[++i]);
                         break;
+                    case "--command-gate" when i + 1 < args.Length:
+                        commandGate = args[++i];
+                        break;
+                    case "--command-gate-deadline-ms" when i + 1 < args.Length:
+                        gateDeadlineMs = Number(args[i], args[++i]);
+                        break;
+                    case "--command-gate-fail-closed":
+                        gateFailClosed = true;
+                        break;
+                    case "--command-gate-on-real-robot":
+                        gateOnRealRobot = true;
+                        break;
                 }
             }
 
@@ -485,6 +516,36 @@ namespace Teleop.RobotHost
                 return null;
             }
 
+            // The command gate (docs/adr/0038 N) holds the arm on another process's word, so it is off unless asked for, and on
+            // anything but the twin it also needs its own explicit flag: a copied command line cannot switch it on at the robot.
+            if (commandGate == null && (gateDeadlineMs != null || gateFailClosed || gateOnRealRobot))
+            {
+                error = "--command-gate-deadline-ms, --command-gate-fail-closed and --command-gate-on-real-robot need --command-gate.";
+                return null;
+            }
+
+            if (commandGate != null)
+            {
+                if (!Gate.CommandGate.TryParseSpec(commandGate, out _, out _, out _, out _, out string? gateError))
+                {
+                    error = gateError + ".";
+                    return null;
+                }
+
+                if (gateDeadlineMs is not null && !(gateDeadlineMs > 0 && gateDeadlineMs <= 100))
+                {
+                    error = "--command-gate-deadline-ms is more than 0 and at most 100.";
+                    return null;
+                }
+
+                if (!(autoRecord && auto.Source == "isaac") && !gateOnRealRobot)
+                {
+                    error = "--command-gate is for the twin (--auto-record --auto-record-source isaac); on the real robot it also needs " +
+                        "--command-gate-on-real-robot, after the review docs/adr/0038 N asks for.";
+                    return null;
+                }
+            }
+
             string? powerInvalid = power.Validate();
             if (powerInvalid != null)
             {
@@ -507,6 +568,10 @@ namespace Teleop.RobotHost
                 ScenariosRoot = scenarios,
                 ScenarioStartFreeGigabytes = scenarioStartFree,
                 ScenarioStopFreeGigabytes = scenarioStopFree,
+                CommandGate = commandGate,
+                CommandGateDeadlineMs = gateDeadlineMs ?? 5,
+                CommandGateFailClosed = gateFailClosed,
+                CommandGateOnRealRobot = gateOnRealRobot,
             };
         }
 

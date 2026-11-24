@@ -8,6 +8,7 @@ using Teleop.Core.Transport;
 using Teleop.RobotArm.Types;
 using Teleop.Core.Types;
 using Teleop.RobotArm.Wire;
+using Teleop.RobotHost.Gate;
 using Teleop.RobotHost.Net;
 using Teleop.RobotHost.Plant;
 using Teleop.RobotHost.Power;
@@ -109,6 +110,24 @@ namespace Teleop.RobotHost
             // The headset sends its IK's joint angles and, for timing, the Cartesian target; only the
             // joint angles move the arm while they arrive (docs/adr/0020).
             var plant = new GenericArmPlant(plantConfig, plantRelay) { JointPrecedenceTicks = clock.TicksPerSecond / 2 };
+
+            // The optional command gate (docs/adr/0038 N): off without --command-gate, and then the plant asks nothing.
+            CommandGate? gate = null;
+            if (a.CommandGate != null)
+            {
+                if (!CommandGate.TryCreateCheck(a.CommandGate, profile, a.CommandGateDeadlineMs, clock, out ICommandCheck? check, out string? gateError))
+                {
+                    Console.Error.WriteLine($"[gate] {gateError}");
+                    return 2;
+                }
+
+                gate = new CommandGate(check!, a.CommandGate, a.CommandGateDeadlineMs, a.CommandGateFailClosed, clock,
+                    line => { if (recorder != null && recorder.IsActive) recorder.Record(line); });
+                plant.CommandGate = gate.ShouldHold;
+                Console.WriteLine($"[gate] ON: every joint command is put to '{a.CommandGate}' first, {a.CommandGateDeadlineMs} ms deadline, " +
+                    $"fail-{(a.CommandGateFailClosed ? "closed (no answer holds)" : "open (no answer lets it through)")}" +
+                    (a.CommandGateOnRealRobot ? "; ON THE REAL ROBOT (--command-gate-on-real-robot)" : ""));
+            }
 
             var endpoint = new RobotEndpoint(
                 plant,
@@ -239,6 +258,7 @@ namespace Teleop.RobotHost
             void StartSessionState(long now)
             {
                 sessionState!.Reset();
+                if (gate != null) recorder!.Record(gate.ConfigLine(now));
                 if (currentSubscriberText != null && jointStreamer.IsSubscribed(now)) sessionState.Subscriber(now, currentSubscriberText);
                 if (jointCommanderText != null && lastJointCommandTicks != long.MinValue && now - lastJointCommandTicks <= 3 * clock.TicksPerSecond)
                 {
@@ -328,6 +348,8 @@ namespace Teleop.RobotHost
             EndPoint? loggedReplyTarget = transport.CurrentRemoteEndPoint;
             EndPoint? jointCommander = null;
             int loggedRefusals = 0;
+            int loggedHolds = 0, loggedMisses = 0;
+            long lastHoldLogTicks = LogThrottle.Never;
             bool loggedPrecedence = false;
             long lastRefusalLogTicks = LogThrottle.Never;
             while (!stop.IsSet)
@@ -572,6 +594,7 @@ namespace Teleop.RobotHost
                             // Parking or relaxed: ignored (counted, and recorded as P). The first one after start-up
                             // switches the torque on before it is applied.
                             long sendsBefore = recordingRelay?.Sends ?? 0;
+                            if (gate != null) gate.Sequence = commandSequence;
                             JointCommandOutcome outcome = power == null || power.AcceptOperatorCommand(arrivalTicks)
                                 ? plant.CommandJointAngles(jointTargetsBuffer!.AsSpan(0, targetCount), captureTicks)
                                 : JointCommandOutcome.Parked;
@@ -615,6 +638,17 @@ namespace Teleop.RobotHost
                         $"({plant.DescribeLastRefusal()}); the arm holds");
                     loggedRefusals = plant.RefusedJointCommands;
                     lastRefusalLogTicks = clock.NowTicks;
+                }
+
+                // The command gate's holds and misses (docs/adr/0038 N), at most one line every 2 s.
+                if (gate != null && (gate.Holds != loggedHolds || gate.Misses != loggedMisses) &&
+                    LogThrottle.Due(clock.NowTicks, lastHoldLogTicks, 2 * clock.TicksPerSecond))
+                {
+                    Console.WriteLine($"[gate] held {gate.Holds - loggedHolds} joint command(s); the check missed its deadline " +
+                        $"{gate.Misses - loggedMisses} time(s)");
+                    loggedHolds = gate.Holds;
+                    loggedMisses = gate.Misses;
+                    lastHoldLogTicks = clock.NowTicks;
                 }
 
                 if (jointTransport != null)
@@ -677,6 +711,7 @@ namespace Teleop.RobotHost
 
             scenarios?.Stop("RobotHost is stopping");
             worldServer?.Dispose();
+            gate?.Dispose();
             sigterm?.Dispose();
             Console.WriteLine("Stopped.");
             return 0;

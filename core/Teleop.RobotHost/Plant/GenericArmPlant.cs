@@ -292,7 +292,8 @@ namespace Teleop.RobotHost.Plant
         /// duplicate <paramref name="captureTicks"/> rejected whole, same one-time seed-from-sensed
         /// behavior, same clamp/belief-tracking tail.
         /// </summary>
-        public JointCommandOutcome CommandJointAngles(ReadOnlySpan<JointTarget> targets, long captureTicks)
+        /// <param name="askGate">False for RobotHost's own motion (the park, docs/adr/0023), which the command gate never judges.</param>
+        public JointCommandOutcome CommandJointAngles(ReadOnlySpan<JointTarget> targets, long captureTicks, bool askGate = true)
         {
             if (captureTicks <= _lastAcceptedJointCaptureTicks)
             {
@@ -336,10 +337,29 @@ namespace Teleop.RobotHost.Plant
                 }
             }
 
+            // The optional command gate (docs/adr/0038 N): asked last, about a command that would otherwise move the arm. A held
+            // one is dropped whole as a refused one is, and the arm holds the last target it took.
+            if (askGate && CommandGate != null && CommandGate(targets, captureTicks))
+            {
+                HeldJointCommands++;
+                return JointCommandOutcome.Held;
+            }
+
             _pulsesPerSecond = RequestedPulsesPerSecond(targets);
             ApplyJointTargets(targets);
             return JointCommandOutcome.Accepted;
         }
+
+        /// <summary>
+        /// Asked about every joint command the plant would accept, after the staleness, form and collision checks and before
+        /// anything reaches the relay; true holds it (<see cref="JointCommandOutcome.Held"/>). Null, the default, asks nothing,
+        /// so the plant does exactly what it did before the gate existed (docs/adr/0038 N). Program wires it to
+        /// <c>Gate.CommandGate</c> only when <c>--command-gate</c> is given.
+        /// </summary>
+        public JointCommandGate? CommandGate { get; set; }
+
+        /// <summary>Joint commands the command gate held, since construction.</summary>
+        public int HeldJointCommands { get; private set; }
 
         /// <summary>
         /// How long after a joint command a Cartesian command is not applied (this plant's clock
@@ -781,4 +801,7 @@ namespace Teleop.RobotHost.Plant
         private float ToDirection(float pulseDelta) =>
             Math.Clamp(pulseDelta / _config.StepSizePulses, -_config.MaxDirectionMagnitude, _config.MaxDirectionMagnitude);
     }
+
+    /// <summary>The plant's command gate (docs/adr/0038 N): true holds the command. <paramref name="captureTicks"/> is the sender's stamp.</summary>
+    public delegate bool JointCommandGate(ReadOnlySpan<JointTarget> targets, long captureTicks);
 }

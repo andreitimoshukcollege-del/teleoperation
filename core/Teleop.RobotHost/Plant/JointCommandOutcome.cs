@@ -20,5 +20,11 @@ namespace Teleop.RobotHost.Plant
 
         /// <summary>Dropped: the arm was parking or relaxed (docs/adr/0023 decision 5); nothing reached the plant.</summary>
         Parked,
+
+        /// <summary>
+        /// Dropped, and the arm holds: the optional command gate held it (docs/adr/0038 N, off by default). Only a command the
+        /// plant would otherwise have accepted reaches the gate.
+        /// </summary>
+        Held,
     }
 }

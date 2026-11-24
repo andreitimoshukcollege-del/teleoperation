@@ -575,15 +575,16 @@ def summary_line(name: str, s: Dict) -> str:
             f"; why not: {s['reasons']}" if s.get("reasons") else "") + ")"
     c = s["contacts"]
     cams = ", ".join(f"{k} {_pct(v['seen'])} (in frustum {_pct(v['inFrustum'])})" for k, v in s["perCamera"].items())
-    return (f"{name}: visibility of {s['obstacleFrames']} obstacle-frames in {s['episodes']} episode(s): at least "
-            f"{int(SEEN * 100)}% visible in 2+ cameras {_pct(s['seenInTwoOrMore'])}, in 1 {_pct(s['seenInOne'])}, in none "
-            f"{_pct(s['seenInNone'])}; not one pixel in any camera {_pct(s['notSeenAtAll'])}; per camera at least "
+    measured = s["obstacleFrames"] - s.get("unmeasured", 0)
+    return (f"{name}: visibility of {s['obstacleFrames']} obstacle-frames in {s['episodes']} episode(s), {measured} measured"
+            + (f" ({s['unmeasured']} not: no mask, no geometry or drawn without its label)" if s.get("unmeasured") else "")
+            + f"; of those, at least {int(SEEN * 100)}% visible in 2+ cameras {_pct(s['seenInTwoOrMore'])}, in 1 "
+            f"{_pct(s['seenInOne'])}, in none {_pct(s['seenInNone'])}; not one pixel in any camera {_pct(s['notSeenAtAll'])}; per camera at least "
             f"{int(SEEN * 100)}%: {cams}; contacts whose object was at least {int(SEEN * 100)}% visible in 1+ camera in the "
             f"second before: {c['seenInSecondBefore']} of {c['total'] - c['atStart'] - c['unmeasured']} "
             f"({_pct(c['shareSeenInSecondBefore'])}), in the frame before: {_pct(c['shareSeenJustBefore'])}"
             + (f" ({c['atStart']} at the first frame left out)" if c["atStart"] else "")
             + (f" ({c['unmeasured']} unmeasured left out)" if c["unmeasured"] else "")
-            + (f"; {s['unmeasured']} obstacle-frames unmeasured" if s.get("unmeasured") else "")
             + (f"; {s['rowsWithReason']} rows with a reason, e.g. {s['reasons'][:2]}" if s.get("rowsWithReason") else ""))
 
 

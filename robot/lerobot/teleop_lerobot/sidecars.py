@@ -52,6 +52,7 @@ GEOMETRY_DIR = "~/isaacsim/assets/clearance"  # where the twin's collision geome
 OPEN_END = 2 ** 62  # a contact no WC ended (as safety.OPEN_END)
 
 # The JetRover's links in the URDF's <link> order (robot/jetrover/urdf/jetrover.urdf): WC's link index (255: none).
+FIXED_LINKS = ("base_link",)  # no joint moves it: left out of every overall minimum (a clearance that names none of its own)
 JETROVER_LINKS = ("base_link", "turntable", "proximal_link", "distal_link", "wrist_link", "gripper_link", "left_finger",
                   "right_finger")
 
@@ -784,22 +785,29 @@ def episode(take: Take, options: Options = Options(), records: Optional[Records]
     cols: Dict[str, list] = {
         "frame_index": list(range(len(times))), "sensed_ns": times, "t_s": [round((t - t_first) / 1e9, 6) for t in times],
         "in_contact": [bool(v) for v in in_contact], "in_contact_table": [bool(v) for v in in_table], "unsafe": list(labels)}
-    mins, min_ids, surf_mins = [], [], []
+    mins, min_ids, min_links, surf_mins = [], [], [], []
     if c is not None:
         for li, link in enumerate(c.links):
             cols[f"clearance_mm.{link}"] = [_finite(row[li]) for row in c.obstacle_mm]
             cols[f"clearance_id.{link}"] = [_object_id(row[li]) for row in c.obstacle_id]
             cols[f"surface_mm.{link}"] = [_finite(row[li]) for row in c.surface_mm]
+        # The overall minimum is over the links a joint moves, as commands.parquet's and pose_samples.parquet's are: no command
+        # moves the base, and an object a layout put near it would set every frame's minimum (until 2026-11-25 it counted).
+        fixed = set(getattr(c, "fixed", None) or FIXED_LINKS)
+        moving = [li for li, link in enumerate(c.links) if link not in fixed]
         for i in range(len(times)):
-            vals = [(v, _object_id(oid)) for v, oid in zip(map(_finite, c.obstacle_mm[i]), c.obstacle_id[i]) if v is not None]
+            vals = [(_finite(c.obstacle_mm[i][li]), _object_id(c.obstacle_id[i][li]), c.links[li]) for li in moving]
+            vals = [v for v in vals if v[0] is not None]
             m = min(vals, key=lambda x: x[0]) if vals else None
             mins.append(m[0] if m else None)
             min_ids.append(m[1] if m else None)
+            min_links.append(m[2] if m and m[1] is not None else None)  # none within the cutoff: no nearest link
             s = [v for v in map(_finite, c.surface_mm[i]) if v is not None]
             surf_mins.append(min(s) if s else None)
     else:
-        mins = min_ids = surf_mins = [None] * len(times)
-    cols["min_clearance_mm"], cols["min_clearance_id"], cols["min_surface_mm"] = list(mins), list(min_ids), list(surf_mins)
+        mins = min_ids = min_links = surf_mins = [None] * len(times)
+    cols["min_clearance_mm"], cols["min_clearance_id"] = list(mins), list(min_ids)
+    cols["min_clearance_link"], cols["min_surface_mm"] = list(min_links), list(surf_mins)
     starts_ns = sorted(s.start for s in obstacle)
     ttc = []
     for i, t in enumerate(times):
@@ -816,6 +824,7 @@ def episode(take: Take, options: Options = Options(), records: Optional[Records]
     known = [m for m in mins if m is not None]
     min_clear = min(known) if known else None
     min_clear_id = min_ids[mins.index(min_clear)] if min_clear is not None else None
+    min_clear_link = min_links[mins.index(min_clear)] if min_clear is not None else None
     if knocked:
         outcome = "knock"
     elif obstacle:
@@ -855,6 +864,7 @@ def episode(take: Take, options: Options = Options(), records: Optional[Records]
         "outcome": outcome, "tableContact": bool(table), "contacts": len(obstacle), "tableContacts": len(table),
         "touched": touched, "knocked": knocked, "unsafeFrames": int(sum(labels)), "unsafeRanges": len(ranges(labels)),
         "minClearanceMm": None if min_clear is None else round(min_clear, 2), "minClearanceObject": min_clear_id,
+        "minClearanceLink": min_clear_link,
         "clearanceMethod": getattr(c, "method", None) if c is not None else None,
         "clearanceCutoffMm": _finite(getattr(c, "cutoff_mm", None)) if c is not None else None,
         "clearanceUnavailable": why,
@@ -1075,6 +1085,8 @@ def write_frames(path: str, written: Sequence[Tuple[int, Episode]]) -> None:
             df[k] = pd.array(data[k], dtype="bool")
         elif k.startswith("clearance_id.") or k == "min_clearance_id":
             df[k] = pd.array(data[k], dtype="Int32")
+        elif k == "min_clearance_link":
+            df[k] = pd.array(data[k], dtype="object")
         else:
             df[k] = pd.array([float("nan") if v is None else float(v) for v in data[k]], dtype="float64")
     df.to_parquet(path, index=False)

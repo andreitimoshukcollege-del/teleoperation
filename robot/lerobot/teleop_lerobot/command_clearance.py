@@ -584,7 +584,10 @@ def _distance_columns(out: Dict[str, object], links: Sequence[str], res: Optiona
     none = np.isinf(sub.min(axis=1)) if n else np.zeros(0, bool)
     out["min_clearance_mm"] = np.where(none, np.nan, mm[rows, arg]) if n else np.zeros(0)
     out["min_clearance_id"] = np.where(none, -1, res.obstacle_id[rows, arg]) if n else np.zeros(0, int)
-    out["min_clearance_link"] = [None if z else links[a] for a, z in zip(arg, none)]
+    # Nothing within the cutoff (every moving link at it, no object): no nearest link. Until 2026-11-25 it named the first
+    # moving link, the turntable, with no object.
+    far = res.obstacle_id[rows, arg] < 0 if n else np.zeros(0, bool)
+    out["min_clearance_link"] = [None if (z or f) else links[a] for a, z, f in zip(arg, none, far)]
     out["min_surface_mm"] = _nanmin_rows(sm[:, idx])
 
 

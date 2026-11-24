@@ -240,6 +240,21 @@ def test_a_command_into_the_wall_reads_negative(scenarios, geometry):
     assert c["path_min_clearance_mm"][1] == pytest.approx(-5.0, abs=0.01)
 
 
+def test_with_nothing_within_the_cutoff_no_link_is_named(scenarios, geometry):
+    # Until 2026-11-25 such a row's min_clearance_link was the first moving link, the turntable, with no object.
+    t = K.compute(read_take(cmd_take(scenarios, COMMANDS, gap=0.2)), geometry, layout_seed=777)
+    for name, cols in (("commands", t.commands), ("pose_samples", t.samples)):
+        ids, links = np.asarray(cols["min_clearance_id"]), cols["min_clearance_link"]
+        mm = np.asarray(cols["min_clearance_mm"])
+        far = ids < 0
+        assert far.any() and (~far).any(), name
+        assert all(link is None for link, f in zip(links, far) if f) and (mm[far] == C.CUTOFF_MM).all(), name
+        assert all(link is not None for link, f in zip(links, far) if not f), name
+        if "path_min_clearance_id" in cols:
+            pids, plinks = np.asarray(cols["path_min_clearance_id"]), cols["path_min_clearance_link"]
+            assert all((link is None) == (i < 0) for link, i in zip(plinks, pids)), name
+
+
 def test_object_poses_are_the_ones_at_each_commands_arrival(scenarios, geometry):
     commands = [(1000, "A", targets()), (1300, "A", targets()), (1350, "A", targets()), (2000, "A", targets())]
     path = cmd_take(scenarios, commands, gap=0.2, moving=(1000, 0.4, 1400, 0.06))

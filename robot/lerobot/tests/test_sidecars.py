@@ -230,6 +230,52 @@ def test_each_episode_has_an_outcome_and_unknown_when_no_clearance_tells_a_near_
     assert episode(table, geometry_dir=str(scenarios) + "/none").line["clearanceUnavailable"].startswith("no geometry at")
 
 
+class BaseNear(FakeClearance):
+    """The base 12 mm from object 7 throughout, the turntable beyond the cutoff, the gripper ``base`` mm from object 3, except
+    at frame ``at`` where it too is beyond the cutoff (150 mm, no object). ``fixed``: the clearance's own list, or none given."""
+
+    def __init__(self, base=40.0, at=5, fixed=("base_link",)):
+        super().__init__(base=base, at=at)
+        self.fixed = fixed
+
+    def module(self):
+        fake = types.ModuleType("teleop_lerobot.clearance")
+
+        class ClearanceUnavailable(Exception):
+            pass
+
+        def compute(take, geometry_dir):
+            n = len(take.frames)
+            mm = [(12.0, 150.0, 150.0 if i == self.at else self.base) for i in range(n)]
+            ids = [(7, -1, -1 if i == self.at else 3) for i in range(n)]
+            c = types.SimpleNamespace(links=("base_link", "turntable", "gripper_link"), obstacle_mm=mm, obstacle_id=ids,
+                                      surface_mm=[(float("nan"), 90.0, 40.0)] * n, cutoff_mm=150.0, method="fake")
+            if self.fixed is not None:
+                c.fixed = self.fixed
+            return c
+        fake.compute, fake.ClearanceUnavailable = compute, ClearanceUnavailable
+        return fake
+
+
+def test_the_overall_minimum_leaves_the_base_out_and_names_no_link_when_nothing_is_near(scenarios, clearance):
+    # world-models' review of jetrover_20261124_184421_b9d086 (2026-11-25): frames.parquet's minimum counted the fixed base,
+    # commands.parquet's and pose_samples.parquet's did not. Now none does: no command moves it. Its own column stays.
+    path = take(scenarios, "mixed", world())
+    for fixed in (("base_link",), None):  # the clearance's own list, or the base by name when it gives none
+        e = episode(path, geometry_dir=clearance(BaseNear(fixed=fixed)))
+        f = e.frames
+        assert set(f["clearance_mm.base_link"]) == {12.0} and set(f["clearance_id.base_link"]) == {7}
+        assert f["min_clearance_mm"][0] == 40.0 and f["min_clearance_id"][0] == 3 and f["min_clearance_link"][0] == "gripper_link"
+        # Nothing within the cutoff but the base: the cutoff, no object and no link (not the turntable).
+        assert (f["min_clearance_mm"][5], f["min_clearance_id"][5], f["min_clearance_link"][5]) == (150.0, None, None)
+        assert f["min_surface_mm"][0] == 40.0
+        # The episode's minimum and outcome on the same basis: 40 mm is no near miss, though the base stood 12 mm from object 7.
+        assert e.line["minClearanceMm"] == 40.0 and e.line["minClearanceObject"] == 3 and e.line["minClearanceLink"] == "gripper_link"
+        assert e.line["outcome"] == "no_contact"
+    near = episode(path, geometry_dir=clearance(BaseNear(base=25.0)))
+    assert near.line["outcome"] == "near_miss" and near.line["minClearanceMm"] == 25.0
+
+
 def test_a_clearance_module_that_fails_leaves_nan_and_says_why(scenarios, monkeypatch, tmp_path):
     import teleop_lerobot
 

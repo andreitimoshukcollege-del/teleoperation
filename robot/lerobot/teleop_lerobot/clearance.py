@@ -60,7 +60,8 @@ class ClearanceUnavailable(Exception):
 class Clearance:
     """Per frame of ``take.frames``, per link of ``links``: the signed distance (mm, negative when overlapping, at most
     ``cutoff_mm``) to the nearest obstacle and its scene id (:data:`NO_OBSTACLE` when none is within the cutoff), and to the
-    nearest surface (NaN for a body PhysX never collides with a surface)."""
+    nearest surface (NaN for a body PhysX never collides with a surface). ``fixed`` names the links no joint moves: a
+    reader's overall minimum leaves them out (docs/adr/0038 L)."""
 
     links: Tuple[str, ...]
     obstacle_mm: List[Tuple[float, ...]]
@@ -68,6 +69,7 @@ class Clearance:
     surface_mm: List[Tuple[float, ...]]
     cutoff_mm: float
     method: str
+    fixed: Tuple[str, ...] = ()  # the links no joint moves (the base): left out of every overall minimum
 
 
 # --- convex pieces --------------------------------------------------------------------------------------------------------
@@ -717,7 +719,8 @@ def compute(take, geometry_dir: str = DEFAULT_GEOMETRY, cutoff_mm: float = CUTOF
         obstacle_mm.append(tuple(row_d))
         obstacle_id.append(tuple(row_id))
         surface_mm.append(tuple(row_s))
-    return Clearance(robot.links, obstacle_mm, obstacle_id, surface_mm, float(cutoff_mm), world.method)
+    return Clearance(robot.links, obstacle_mm, obstacle_id, surface_mm, float(cutoff_mm), world.method,
+                     tuple(link for link in robot.links if link in robot.fixed))
 
 
 def link_object_distance(world: TakeWorld, t: float, link: int, object_id: int, cutoff: float = 1.0) -> float:

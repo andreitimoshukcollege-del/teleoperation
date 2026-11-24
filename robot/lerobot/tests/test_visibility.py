@@ -43,7 +43,8 @@ def test_the_union_counts_an_overlap_once_and_the_image_clips():
 
 def test_a_triangle_covers_about_its_area():
     tri = np.array([[3.0, 2.0], [60.0, 9.0], [21.0, 45.0]])
-    area = 0.5 * abs(np.cross(tri[1] - tri[0], tri[2] - tri[0]))
+    (ax, ay), (bx, by) = tri[1] - tri[0], tri[2] - tri[0]
+    area = 0.5 * abs(ax * by - ay * bx)
     assert abs(V.silhouette([tri], 64, 48) - area) < 0.03 * area
 
 
@@ -77,7 +78,7 @@ SIDE = ["CM", "side", 64, 48, 100, 100, 32, 24, 0.01, 6, 0.3, 0.0, 1.0, 1, 0, 0,
 def masks_take(root, objects=None, wrist_mask=True, ids=True, wo=None):
     """A take whose arm stays at zero, seen from above by ``top`` (1 m over the box at x 0.3) and ``wrist``, and by ``side``
     with no mask. The box (id 31, 10 cm) stands on z 0; its mask id 131 covers its 100 pixels in ``top`` but for the 20 of a
-    row the arm (7) covers in frames 30 on; ``wrist`` shows all 400 of its pixels."""
+    row the arm (7) covers in frames 30 on; ``wrist`` shows all 420 of its pixels."""
     take = os.path.join(root, "mixed", "20261124T100000Z-take001")
     os.makedirs(take)
     sid = session_json(take, "jetrover-session", 1, "isaac", "mixed")
@@ -121,7 +122,7 @@ def masks_take(root, objects=None, wrist_mask=True, ids=True, wo=None):
                     if n >= 30:
                         m[19:21, 27:37] = 7
                 else:
-                    m[14:34, 30:50] = 131
+                    m[14:34, 30:51] = 131
                 payload = cv2.imencode(".png", m)[1].tobytes()
             off, length = side.add(payload)
             parts.append(f"{stream}:{off}:{length}")
@@ -152,7 +153,7 @@ def test_a_tiny_take_end_to_end(scenarios, geometry):  # noqa: F811
     assert late and all(r["visible_fraction"] == pytest.approx(0.8) for r in late)
     assert {r["visible_px"] for r in top} == {80, 100} and all(r["reason"] is None for r in top)
     front = frame_rows(vis, "front", 31)  # the wrist, as the dataset names it: 0.485 m above the box top, 4 cm to its side
-    assert {r["expected_px"] for r in front} == {400} and {r["visible_px"] for r in front} == {400}
+    assert {r["expected_px"] for r in front} == {420} and {r["visible_px"] for r in front} == {420}  # u 29.94 .. 50.56
     assert not frame_rows(vis, "top", 33)  # parked: not on the table
     side = frame_rows(vis, "side", 31)
     assert all(r["visible_px"] is None and r["expected_px"] == 100 and math.isnan(r["visible_fraction"])
@@ -166,7 +167,7 @@ def test_what_cannot_be_had_is_null_with_a_reason(scenarios, geometry, tmp_path)
     take = read_take(masks_take(scenarios, wrist_mask=False, ids=False))
     vis = V.compute(take, geometry, rename={"wrist": "front"})
     front = frame_rows(vis, "front", 31)
-    assert all(r["visible_px"] is None and r["expected_px"] == 400 and r["reason"] == "no wrist.mask.frames" for r in front)
+    assert all(r["visible_px"] is None and r["expected_px"] == 420 and r["reason"] == "no wrist.mask.frames" for r in front)
     assert {r["visible_px"] for r in frame_rows(vis, "top", 31)} == {80, 100}  # no ID table: 100 + n all the same
     nothing = V.compute(take, None)
     assert all(r["expected_px"] is None and r["reason"] == "no geometry folder given" for r in frame_rows(nothing, "top", 31))

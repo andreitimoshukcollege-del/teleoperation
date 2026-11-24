@@ -96,7 +96,7 @@ namespace Teleop.Eval.Tests.JointDrive
             var o = new MixedOptions();
             Assert.True(o.AimAccidents);
             Assert.True(o.SharedHeights);
-            Assert.Equal(0.4, o.LinkAimShare);
+            Assert.Equal(0.2, o.LinkAimShare);
             Assert.Equal(0.6, o.AccidentNearShare);
             o.LinkAimShare = 1.5;
             Assert.Throws<ArgumentException>(() => o.Validate());

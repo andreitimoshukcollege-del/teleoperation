@@ -177,7 +177,7 @@ namespace Teleop.Eval.JointDrive
         /// overhead bar) that are <b>link aims</b> (docs/adr/0038 "M, motion", the 2026-11-24 review): the elbow's two links or the wrist, not the
         /// pads, meets it near its top or a bar's underside. Recorded as an <c>aim</c>. 0: none.
         /// </summary>
-        public double LinkAimShare { get; set; } = 0.4;
+        public double LinkAimShare { get; set; } = 0.2;
 
         /// <summary>The accidents' kinds, in proportion: jerk, overshoot, wrong way, slip, rush (<see cref="AccidentKinds"/>).</summary>
         public double[] AccidentWeights { get; set; } = { 1, 1, 1, 1, 1 };

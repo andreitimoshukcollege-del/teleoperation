@@ -507,9 +507,9 @@ namespace Teleop.Eval.JointDrive
                     jointSpeed[j].Add(Math.Abs(q[k + 1] - q[k - 1]) / (2 * tick));
                     jointAccel[j].Add(Math.Abs(q[k + 1] - 2 * q[k] + q[k - 1]) / (tick * tick));
                     if (wild == null) continue;
-                    int w = wild.At(start + k * tick);
-                    wild.Speed[w][j].Add(jointSpeed[j][jointSpeed[j].Count - 1]);
-                    wild.Accel[w][j].Add(jointAccel[j][jointAccel[j].Count - 1]);
+                    int inside = wild.At(start + k * tick);
+                    wild.Speed[inside][j].Add(jointSpeed[j][jointSpeed[j].Count - 1]);
+                    wild.Accel[inside][j].Add(jointAccel[j][jointAccel[j].Count - 1]);
                 }
             }
 
@@ -529,10 +529,10 @@ namespace Teleop.Eval.JointDrive
                     frameWrist.Add(Vector3.Distance(HandModel.Wrist(profile, p), HandModel.Wrist(profile, q)) * 1000.0);
                     if (wild != null)
                     {
-                        int w = wild.At(start + f);
-                        wild.FrameJoint[w].Add(d);
-                        wild.FrameWrist[w].Add(frameWrist[frameWrist.Count - 1]);
-                        if (any >= 2 * 0.24 * Math.PI / 180) wild.Moving[w]++;
+                        int inside = wild.At(start + f);
+                        wild.FrameJoint[inside].Add(d);
+                        wild.FrameWrist[inside].Add(frameWrist[frameWrist.Count - 1]);
+                        if (any >= 2 * 0.24 * Math.PI / 180) wild.Moving[inside]++;
                     }
                 }
 
